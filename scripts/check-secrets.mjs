@@ -18,6 +18,7 @@ const SKIP = new Set([
   '.pytest_cache',
   '.ruff_cache',
   'site-packages',
+  '.agents', // derived skill vendoring (`npx skills add`); reinstalled from skills-lock.json
 ]);
 const PATTERNS = [
   [/-----BEGIN (RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/, 'private key'],
@@ -30,6 +31,10 @@ let hits = 0;
 async function walk(d) {
   for (const e of await readdir(d, { withFileTypes: true })) {
     if (SKIP.has(e.name)) continue;
+    // Skip symlinks: a local pre-commit scanner must not crash on a dangling
+    // link (e.g. derived skill symlinks into a not-yet-vendored .agents/), nor
+    // follow links out of the tree or into cycles. gitleaks (CI) is authoritative.
+    if (e.isSymbolicLink()) continue;
     const p = path.join(d, e.name);
     if (e.isDirectory()) {
       await walk(p);
@@ -40,7 +45,12 @@ async function walk(d) {
     // commit-time scanner; skipping these avoids false positives on a developer's
     // real local .env, which would otherwise break `just security` / `just ci`.
     if (e.name === '.env' || e.name.startsWith('.env.')) continue;
-    const s = await stat(p);
+    let s;
+    try {
+      s = await stat(p);
+    } catch {
+      continue; // racey unlink / unreadable entry — skip, never crash the scan
+    }
     if (s.size > 1_000_000) continue;
     let txt;
     try {
