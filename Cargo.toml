@@ -1,0 +1,17 @@
+# monster-realm — cargo workspace (ADR-0005 single repo).
+# `resolver = "2"` keeps per-crate feature sets from leaking across the graph —
+# the structural half of feature-isolation (the eval is the proof, ADR-0003).
+[workspace]
+resolver = "2"
+members = ["game-core", "client-wasm", "server-module", "sim-harness"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# SSOT for shared dependency versions: declare once here, reference with
+# `dep.workspace = true` in members. Populated as crates take real deps —
+# spacetimedb (M2, matched to the installed CLI 2.6.0; crate ≠ product version),
+# wasm-bindgen (M3), proptest / criterion (test-tooling slice + its ADR).
+[workspace.dependencies]

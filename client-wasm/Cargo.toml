@@ -1,0 +1,15 @@
+[package]
+name = "client-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# `rlib` so it builds + tests on the host now; `cdylib` + wasm-bindgen are added
+# with the prediction-parity / wasm-pack slice.
+crate-type = ["rlib"]
+
+[dependencies]
+# game-core WITHOUT the `spacetimedb` feature — the client must never pull a
+# server-only dependency (the feature-isolation eval makes this mechanical).
+game-core = { path = "../game-core" }

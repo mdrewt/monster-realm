@@ -1,0 +1,14 @@
+[package]
+name = "game-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# `SpacetimeType` derives are enabled ONLY by `server-module` (the STDB shell),
+# never by `client-wasm` — the feature-isolation eval (next slice) proves the
+# client build graph never pulls this. The `spacetimedb` dep is wired at M2.
+default = []
+spacetimedb = []
+
+[dependencies]

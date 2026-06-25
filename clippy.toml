@@ -1,0 +1,14 @@
+# Determinism gate (ADR-0003): bans wall-clock reads + unseeded RNG
+# WORKSPACE-WIDE. `just lint` runs `clippy --workspace --all-targets --all-features
+# -- -D warnings`, so an impurity is a build failure, not a review note. Time is
+# injected (server: ctx.timestamp -> Millis; client: passed in; tests/sim-harness:
+# explicit seed + clock). A known-bad fixture (the proof-of-teeth slice) proves
+# this gate rejects a clock read.
+disallowed-methods = [
+  { path = "std::time::SystemTime::now", reason = "determinism: inject time (ctx.timestamp / Millis); never read a wall clock" },
+  { path = "std::time::Instant::now", reason = "determinism: inject time; never read a wall clock" },
+  { path = "std::time::SystemTime::elapsed", reason = "determinism: inject time; never read a wall clock" },
+  { path = "std::time::Instant::elapsed", reason = "determinism: inject time; never read a wall clock" },
+  { path = "rand::thread_rng", reason = "determinism: use a seeded RNG (ctx.rng() / injected seed)" },
+  { path = "rand::random", reason = "determinism: use a seeded RNG (ctx.rng() / injected seed)" },
+]

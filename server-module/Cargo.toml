@@ -1,0 +1,16 @@
+[package]
+name = "monster-realm-module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# `cdylib` is the SpacetimeDB module artifact; `rlib` lets the pure delegations
+# be unit-tested off-instance.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The pure rule layer (SSOT). The server runs the SAME code the client predicts
+# with. The `spacetimedb` crate is wired at M2 (crate version != product version
+# — match it to the installed CLI 2.6.0; confirm against current docs).
+game-core = { path = "../game-core", features = ["spacetimedb"] }
