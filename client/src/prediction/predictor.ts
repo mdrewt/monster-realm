@@ -142,9 +142,9 @@ export class Predictor {
    * (bounded prediction, ADR-0013) and is naturally bounded by the queue length.
    */
   drain(now: number): DrainResult {
+    if (this.#predicted === undefined) return { applied: 0, snapped: false };
     const snapped = now - this.#lastDrainAt > SNAP_GAP_STEPS * this.#stepMs;
     this.#lastDrainAt = now;
-    if (this.#predicted === undefined) return { applied: 0, snapped: false };
 
     const maxApply = this.#queueCap + this.#pending.length;
     let applied = 0;
