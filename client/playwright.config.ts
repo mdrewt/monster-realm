@@ -5,6 +5,8 @@ import { defineConfig } from '@playwright/test';
 // spacetime (ADR-0009); locally it reuses a running instance + dev server.
 export default defineConfig({
   testDir: './e2e',
+  // ADR-0009 preconditions: republish the module with --delete-data (zero players).
+  globalSetup: './e2e/global-setup.ts',
   timeout: 45_000,
   fullyParallel: false,
   use: { baseURL: 'http://localhost:5290', headless: true },
