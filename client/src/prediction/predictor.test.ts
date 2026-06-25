@@ -468,3 +468,51 @@ describe('Predictor: proof-of-teeth', () => {
     expect(p.queueDepth).toBe(0);
   });
 });
+
+// ================================================================================
+// ADR-0013 smoothness — MONOTONIC predicted tile (no backward step except a genuine
+// divergence). Closes the M3 smoothness-eval gap at the predictor level.
+// ================================================================================
+describe('Predictor: monotonic prediction (ADR-0013 smoothness)', () => {
+  it('the predicted East tile never moves backward across interleaved drains', () => {
+    fc.assert(
+      fc.property(fc.array(fc.integer({ min: 0, max: 400 }), { minLength: 1, maxLength: 30 }), (gaps) => {
+        const p = mkPredictor();
+        let t = 10_000;
+        p.reconcile(baseline(1, 5, t - 2 * STEP_MS), [], 0, t);
+        let lastX = p.predicted!.pos.x;
+        for (const g of gaps) {
+          p.enqueue(east());
+          t += g;
+          p.drain(t);
+          const x = p.predicted!.pos.x;
+          expect(x).toBeGreaterThanOrEqual(lastX); // never backward along the input path
+          lastX = x;
+        }
+      }),
+    );
+  });
+
+  it('a no-divergence reconcile does NOT move the predicted tile backward (no stutter)', () => {
+    const p = mkPredictor();
+    p.reconcile(baseline(5, 5, 10_000 - 2 * STEP_MS), [], 0, 10_000);
+    p.enqueue(east());
+    p.drain(10_000); // predicted x -> 6
+    const before = p.predicted!.pos.x;
+    const diverged = p.reconcile(baseline(6, 5, 10_000 - 2 * STEP_MS), [], 999, 10_000); // agreement
+    expect(diverged).toBe(false);
+    expect(p.predicted!.pos.x).toBe(before); // unchanged — no backward jump on agreement
+  });
+
+  it('BITES: monotonicity yields ONLY to a genuine divergence (a real pullback is reported)', () => {
+    const p = mkPredictor();
+    p.reconcile(baseline(5, 5, 10_000 - 2 * STEP_MS), [], 0, 10_000);
+    p.enqueue(east());
+    p.drain(10_000); // predicted thinks x=6
+    // server truth pulls back to x=4 (loss/warp): must report divergence and reset to truth,
+    // NOT silently smooth it away — a no-op-on-disagreement impl fails this.
+    const diverged = p.reconcile(baseline(4, 5, 10_000 - 2 * STEP_MS), [], 999, 10_000);
+    expect(diverged).toBe(true);
+    expect(p.predicted!.pos.x).toBe(4);
+  });
+});

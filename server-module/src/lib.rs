@@ -107,6 +107,11 @@ fn validate_name(name: &str) -> Result<String, String> {
 
 /// The map for a zone (M2: one authored zone; `map_for(zone_id)` generalizes at M11).
 fn zone_map(_zone_id: u32) -> TileMap {
+    // M2 has exactly one authored zone. A second active zone needs a real
+    // `map_for(zone_id)` (M11); fail loud in dev/CI if a non-zero zone tick ever
+    // reaches here rather than silently moving everyone on zone 0's map.
+    // (`_zone_id`: `debug_assert` is stripped in release, so keep it warning-free.)
+    debug_assert_eq!(_zone_id, ZONE_0, "zone_map: only zone_0 exists until M11");
     zone_0()
 }
 

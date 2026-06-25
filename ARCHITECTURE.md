@@ -74,3 +74,26 @@ Deferred-with-rationale: the criterion **perf-budget gate** (folded into the M20
 observability capstone — a non-flaky budget needs tuned baselines) and GitHub
 Actions *execution* (the workflow is committed; only local `just ci` is verifiable
 in this environment).
+
+### Finalization audit (2026-06-25) — named deferrals
+
+A read-only review of M0–M3 + M4a found **no correctness/security issues** (rule
+SSOT single-homed, reducers gate on `ctx.sender` + reject-not-clamp, the parity /
+no-logic / desync evals all bite). Hardened in the pass: a `debug_assert` guard on
+the server `zone_map` (fails loud if a non-zero zone ticks before M11), a content
+test pinning the `zone_0` placeholder map within its registry dims, a `drain`
+cleanup, and a predictor-level **monotonic-prediction** smoothness test. Tracked so
+they stay conscious, not forgotten:
+
+- **`isWasmReady()`** — M3 shipped the bridge + Vite plugin config; the readiness
+  gate lands in **M4** with the live `--target bundler` load (the loop awaits it).
+- **Renderer smoothness evals** (own slide-clock decoupling from `move_started_at`;
+  remote interpolation-buffer jitter) — **M4b**.
+- **`seq` boundary helper** (`u64` reducer / `bigint` store ↔ the predictor's session
+  `number`) — a typed conversion lands with the **M5** connection adapter; both sides
+  are internally consistent today.
+- **Spec path `frontend/` == delivered `client/`** — gates target `client/`; the spec
+  prose is stale (cosmetic).
+- **M2 spec items not yet gated** (a `client_connected` reducer, a schema-snapshot /
+  migration-smoke eval, soak/load tests) — soak/load is the **M20** capstone; the rest
+  carry forward with M2's 9 shipped proof-of-teeth evals as the live gate set.

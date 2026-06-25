@@ -82,4 +82,23 @@ mod tests {
         let zones = parse_zones(bad).expect("parses");
         assert!(validate_zones(&zones).is_err());
     }
+
+    #[test]
+    fn zone_0_placeholder_map_fits_within_its_registry_dimensions() {
+        // The hand-authored `ZONE_0_ROWS` placeholder map is smaller than zone 0's
+        // registry size; M11's Tiled->RON pipeline grows both together. Pin the
+        // load-bearing direction: the rule's map must NEVER exceed the registered
+        // zone bounds (a map larger than its `zone_def` would desync render/logic).
+        let zones = load_zones().expect("embedded zones must parse");
+        let z0 = zones.iter().find(|z| z.id == 0).expect("zone 0 exists");
+        let map = crate::zone_0();
+        assert!(
+            map.width as u32 <= z0.width && map.height as u32 <= z0.height,
+            "zone_0 map {}x{} exceeds registry {}x{}",
+            map.width,
+            map.height,
+            z0.width,
+            z0.height
+        );
+    }
 }
