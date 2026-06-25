@@ -1,0 +1,11 @@
+pre-commit:
+  parallel: true
+  commands:
+    secrets:
+      run: node scripts/check-secrets.mjs .
+    lint:
+      run: just lint
+commit-msg:
+  commands:
+    conventional:
+      run: node scripts/check-commit-msg.mjs {1}

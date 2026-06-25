@@ -1,0 +1,36 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+# Cancel superseded runs on the same ref (PR push / branch update) to save CI minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gitleaks/gitleaks-action@v2
+      - name: Dependency review (SCA on PRs)
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy }
+      - uses: extractions/setup-just@v2
+      - run: just setup
+      - run: just lint
+      - run: just typecheck
+      - run: just test
+      - run: just eval
+      - name: SCA (cargo audit)
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit --file server/Cargo.lock
+      - name: SAST (Semgrep)
+        run: pipx run semgrep scan --config auto --error
+      - name: SBOM
+        uses: anchore/sbom-action@v0
+      # build/publish/integration require a running SpacetimeDB instance (see README)

@@ -1,0 +1,9 @@
+{
+  "$comment": "Rename to .mcp.json for projects that need DB-aware tooling. Local Postgres example.",
+  "mcpServers": {
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "postgres://localhost:5432/monster-realm"]
+    }
+  }
+}

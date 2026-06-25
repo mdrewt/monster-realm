@@ -1,0 +1,12 @@
+# Normalize line endings to LF so shell scripts/justfiles work on Linux CI.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff2 binary
+*.pdf binary
+*.wasm binary
