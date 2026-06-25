@@ -19,12 +19,17 @@ jobs:
         uses: actions/dependency-review-action@v4
       - uses: dtolnay/rust-toolchain@stable
         with: { components: clippy }
+      - uses: actions/setup-node@v4
+        with: { node-version: '24.13.1' }
       - uses: extractions/setup-just@v2
       - run: just setup
       - run: just lint
       - run: just typecheck
       - run: just test
       - run: just eval
+      # Client prediction layer (M3): headless TS typecheck + vitest/fast-check.
+      - run: just client-typecheck
+      - run: just client-test
       - name: SCA (cargo audit)
         run: |
           cargo install cargo-audit --locked

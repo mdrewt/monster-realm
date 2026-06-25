@@ -4,6 +4,7 @@ set windows-shell := ["cmd.exe", "/c"]
 
 setup:
     cargo fetch
+    cd client && npm install --include=dev
 
 lint:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -39,6 +40,11 @@ client-setup:
 client-typecheck:
     cd client && npm run typecheck
 
+# Client unit/property tests (vitest + fast-check) — the headless prediction-layer
+# gate (convert + Predictor); node-only, no live server or wasm import.
+client-test:
+    cd client && npm test
+
 # Regenerate the committed TS bindings from the module (bindings-drift gate checks these).
 gen:
     spacetime generate --lang typescript --module-path server-module --out-dir client/src/module_bindings
@@ -47,4 +53,4 @@ gen:
 e2e:
     cd client && npm run e2e
 
-ci: lint typecheck test eval security
+ci: lint typecheck test eval security client-typecheck client-test

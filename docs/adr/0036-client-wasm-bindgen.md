@@ -35,3 +35,24 @@ byte-identical to the native `game-core` path, with a baked-in proof-of-teeth
 - Considered alternatives (rejected, per ADR-0003): re-implementing the rule in
   TypeScript (the desync bug); a Rust/`bevy`→wasm whole-client (heavier, deferred
   to ADR-0004's rejected alternatives).
+
+## M3 update — the consumable boundary (Accepted, 2026-06-25)
+
+M3 realizes the JS-consumable surface on top of this boundary:
+
+- **New deps (workspace SSOT):** `serde-wasm-bindgen` (`0.6`) marshals JS ↔ the
+  `game-core` serde types; `console_error_panic_hook` (`0.1`) surfaces a Rust panic
+  as a readable `console.error`. Both are wasm-marshaling only — the **no-logic-in-
+  wrapper** eval proves no rule lives in `client-wasm`.
+- **Exports:** `apply_move(state,input,now)` (serde-marshaled; `now` floored+clamped),
+  single-sourced `step_ms()`/`move_queue_cap()`, and `zone_map(zone_id)` so the
+  renderer draws the same map the rule evaluates (visual-SSOT). `game-core`'s `TileMap`
+  gained **one-way `Serialize`** for this (no `Deserialize`; `from_rows` stays the sole
+  invariant-holding constructor).
+- **New gate:** **js-path-parity** — the marshaled serde path == the flat
+  `predict_move` path (already pinned to native), isolating a *marshaling* fault.
+- **Client TS now gated:** the PixiJS client + the new `convert`/`Predictor` layer are
+  typechecked + vitest/fast-check tested in `just ci` and CI (a Node setup was added) —
+  closing a gap where the client TS was previously ungated.
+- **`seq` boundary:** session-monotonic integer on the client, sent to reducers as
+  `u64`; entity ids stay `bigint` end-to-end (no `number` downcast).

@@ -29,7 +29,13 @@ const ZONE_0_ROWS: &[&str] = &[
 ];
 
 /// A zone-tagged, bounds-safe walkability grid (row-major).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize` is one-way only (no `Deserialize`): the M3 `client-wasm`
+/// `zone_map()` export hands the renderer the SAME map the rule evaluates
+/// (visual-SSOT — a hard-coded TS map would visually desync). It is **not**
+/// deserialized back, so the `from_rows` parse-don't-validate constructor stays
+/// the sole way to build an invariant-holding `TileMap`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct TileMap {
     pub zone_id: u32,
     pub width: i32,

@@ -14,3 +14,7 @@ crate-type = ["cdylib", "rlib"]
 # server-only dependency (the feature-isolation eval makes this mechanical).
 game-core = { path = "../game-core" }
 wasm-bindgen = { workspace = true }
+# Marshaling boundary + browser panic hook (M3). serde_wasm_bindgen translates
+# JS values <-> game-core's serde types; no game rules live here.
+serde-wasm-bindgen = { workspace = true }
+console_error_panic_hook = { workspace = true }

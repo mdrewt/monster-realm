@@ -25,15 +25,32 @@ effectful shells.
   netcode tests without a browser.
 - **`client/`** — PixiJS + TS: connects, subscribes, renders from the **generated**
   bindings (never duplicated content). Read-only store + one-way flow (ADR-0014).
+- **prediction layer** (`client/src/`, M3) — the headless, node-testable core M4's
+  loop consumes. `convert/` marshals SDK shapes (tagged-union enums, `bigint` ids)
+  ↔ the wasm/serde shapes, dumb + explicit (no abstraction across the boundary), incl.
+  the **lossy local-time rebasing** baseline (no clock sync, ADR-0012). `prediction/`
+  is the **`Predictor`**: a local intent queue + `pending` **queue-ops** (`Enqueue`/
+  `SetMove`/`Clear`, not raw moves) + the four-step `reconcile` (drop acked → rebuild
+  from the server queue + replay ops → reset to truth → `step_ms`-paced `drain`) + a
+  divergence return; seeded by the first own-row; bounded prediction + snap-on-large-
+  gap (ADR-0013). The movement rule itself never lives here — `apply_move` is the
+  injected client-wasm export (proven by the parity + no-logic evals).
+  **M4 contract:** the own character animates from a **self-owned slide clock** and
+  **ignores `move_started_at`** (drain-pacing bookkeeping only); `reconcile` runs on
+  one **transaction-consistent** snapshot.
 
 ## Mechanical gates (each ships a proof-of-teeth fixture — ADR-0010)
 
 `just ci` is green **and meaningful**: determinism/safety (clippy), feature-
-isolation, prediction-parity (native == wasm-pack, incl. movement),
+isolation, prediction-parity (native == wasm-pack, incl. movement), **no-logic-in-
+wrapper** (client-wasm marshals, never re-decides the rule) and **js-path-parity**
+(the marshaled serde `apply_move` == the native-verified flat path, M3),
 netcode-determinism, zoned-schema (every world table carries an indexed
 `zone_id`, ADR-0007), append-only content ids (ADR-0006), bindings-drift
 (committed bindings == fresh `spacetime generate`, ADR-0009). Each gate has a
-known-bad fixture it must reject.
+known-bad fixture it must reject. The **client TS** is gated too (M3): `tsc` +
+vitest/fast-check over the convert + Predictor property suites (run in `just ci`
+and CI on a Node setup).
 
 ## Schema & content (ADR-0006)
 
@@ -49,8 +66,10 @@ hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest) and
 
 ## Status
 
-Phase A spine: M0 (foundation + gates + presence walking skeleton, e2e green) and
-M1 (movement core) complete. M2 (server move-queue + per-zone tick) is next.
+Phase A spine: M0 (foundation + gates + presence walking skeleton, e2e green),
+M1 (movement core), M2 (authoritative zoned movement + per-zone tick), and M3
+(the prediction layer — client-wasm marshaling bridge + convert + the Predictor)
+complete. M4 (PixiJS frontend + debug HUD + the ADR-0013 smoothness layer) is next.
 Deferred-with-rationale: the criterion **perf-budget gate** (folded into the M20
 observability capstone — a non-flaky budget needs tuned baselines) and GitHub
 Actions *execution* (the workflow is committed; only local `just ci` is verifiable
