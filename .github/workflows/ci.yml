@@ -1,6 +1,6 @@
 name: CI
 on:
-  push: { branches: [main] }
+  push: { branches: [master] }
   pull_request:
 # Cancel superseded runs on the same ref (PR push / branch update) to save CI minutes.
 concurrency:
@@ -12,7 +12,10 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 so gitleaks-action can diff the PR commit range on
+      # pull_request events (a shallow clone => "stderr is not empty").
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
       - uses: gitleaks/gitleaks-action@v2
         env:
           # gitleaks-action v2 requires a token to scan pull_request events
@@ -22,7 +25,11 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: actions/dependency-review-action@v4
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: clippy }
+        with: { components: clippy, targets: wasm32-unknown-unknown }
+      # wasm-pack builds the client-wasm pkg the prediction/movement-parity evals
+      # consume (`just eval`) — the runner has no wasm-pack otherwise.
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with: { version: 'v0.15.0' }
       - uses: actions/setup-node@v4
         with: { node-version: '24.13.1' }
       - uses: extractions/setup-just@v2
@@ -37,7 +44,7 @@ jobs:
       - name: SCA (cargo audit)
         run: |
           cargo install cargo-audit --locked
-          cargo audit --file server/Cargo.lock
+          cargo audit --file Cargo.lock
       - name: SAST (Semgrep)
         run: pipx run semgrep scan --config auto --error
       - name: SBOM
