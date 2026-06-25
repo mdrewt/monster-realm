@@ -6,11 +6,15 @@
 import { type Infer as __Infer } from "spacetimedb";
 
 // Import all reducer arg schemas
-import HeartbeatReducer from "../heartbeat_reducer";
-import JoinReducer from "../join_reducer";
+import ClearQueueReducer from "../clear_queue_reducer";
+import EnqueueMoveReducer from "../enqueue_move_reducer";
+import JoinGameReducer from "../join_game_reducer";
+import SetMoveReducer from "../set_move_reducer";
 import SyncContentReducer from "../sync_content_reducer";
 
-export type HeartbeatParams = __Infer<typeof HeartbeatReducer>;
-export type JoinParams = __Infer<typeof JoinReducer>;
+export type ClearQueueParams = __Infer<typeof ClearQueueReducer>;
+export type EnqueueMoveParams = __Infer<typeof EnqueueMoveReducer>;
+export type JoinGameParams = __Infer<typeof JoinGameReducer>;
+export type SetMoveParams = __Infer<typeof SetMoveReducer>;
 export type SyncContentParams = __Infer<typeof SyncContentReducer>;
 

@@ -10,4 +10,13 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export default {};
+import {
+  MoveInput,
+} from "./types";
+
+export default {
+  get input() {
+    return MoveInput;
+  },
+  seq: __t.u64(),
+};

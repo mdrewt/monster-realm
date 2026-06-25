@@ -8,6 +8,9 @@
 
 #![forbid(unsafe_code)]
 
+/// Headless model of the M2 server movement loop (queue + per-zone tick).
+pub mod world;
+
 use game_core::tick_seed;
 
 /// A deterministic clock the harness advances explicitly — never a wall clock.

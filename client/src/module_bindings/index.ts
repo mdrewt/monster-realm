@@ -34,21 +34,38 @@ import {
 } from "spacetimedb";
 
 // Import all reducer arg schemas
-import HeartbeatReducer from "./heartbeat_reducer";
-import JoinReducer from "./join_reducer";
+import ClearQueueReducer from "./clear_queue_reducer";
+import EnqueueMoveReducer from "./enqueue_move_reducer";
+import JoinGameReducer from "./join_game_reducer";
+import SetMoveReducer from "./set_move_reducer";
 import SyncContentReducer from "./sync_content_reducer";
 
 // Import all procedure arg schemas
 
 // Import all table schema definitions
+import CharacterRow from "./character_table";
 import ConfigRow from "./config_table";
-import PresenceRow from "./presence_table";
+import PlayerRow from "./player_table";
 import ZoneDefRow from "./zone_def_table";
 
 /** Type-only namespace exports for generated type groups. */
 
 /** The schema information for all tables in this module. This is defined the same was as the tables would have been defined in the server. */
 const tablesSchema = __schema({
+  character: __table({
+    name: 'character',
+    indexes: [
+      { accessor: 'entity_id', name: 'character_entity_id_idx_btree', algorithm: 'btree', columns: [
+        'entityId',
+      ] },
+      { accessor: 'zone_id', name: 'character_zone_id_idx_btree', algorithm: 'btree', columns: [
+        'zoneId',
+      ] },
+    ],
+    constraints: [
+      { name: 'character_entity_id_key', constraint: 'unique', columns: ['entityId'] },
+    ],
+  }, CharacterRow),
   config: __table({
     name: 'config',
     indexes: [
@@ -60,20 +77,20 @@ const tablesSchema = __schema({
       { name: 'config_id_key', constraint: 'unique', columns: ['id'] },
     ],
   }, ConfigRow),
-  presence: __table({
-    name: 'presence',
+  player: __table({
+    name: 'player',
     indexes: [
-      { accessor: 'identity', name: 'presence_identity_idx_btree', algorithm: 'btree', columns: [
-        'identity',
+      { accessor: 'entity_id', name: 'player_entity_id_idx_btree', algorithm: 'btree', columns: [
+        'entityId',
       ] },
-      { accessor: 'zone_id', name: 'presence_zone_id_idx_btree', algorithm: 'btree', columns: [
-        'zoneId',
+      { accessor: 'identity', name: 'player_identity_idx_btree', algorithm: 'btree', columns: [
+        'identity',
       ] },
     ],
     constraints: [
-      { name: 'presence_identity_key', constraint: 'unique', columns: ['identity'] },
+      { name: 'player_identity_key', constraint: 'unique', columns: ['identity'] },
     ],
-  }, PresenceRow),
+  }, PlayerRow),
   zone_def: __table({
     name: 'zone_def',
     indexes: [
@@ -89,8 +106,10 @@ const tablesSchema = __schema({
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
 const reducersSchema = __reducers(
-  __reducerSchema("heartbeat", HeartbeatReducer),
-  __reducerSchema("join", JoinReducer),
+  __reducerSchema("clear_queue", ClearQueueReducer),
+  __reducerSchema("enqueue_move", EnqueueMoveReducer),
+  __reducerSchema("join_game", JoinGameReducer),
+  __reducerSchema("set_move", SetMoveReducer),
   __reducerSchema("sync_content", SyncContentReducer),
 );
 

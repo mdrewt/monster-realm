@@ -10,11 +10,6 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export default __t.row({
-  identity: __t.identity().primaryKey(),
-  zoneId: __t.u32().name("zone_id"),
-  tileX: __t.i32().name("tile_x"),
-  tileY: __t.i32().name("tile_y"),
-  name: __t.string(),
-  lastSeenMs: __t.i64().name("last_seen_ms"),
-});
+export default {
+  seq: __t.u64(),
+};

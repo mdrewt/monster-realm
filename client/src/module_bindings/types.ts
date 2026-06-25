@@ -10,27 +10,72 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
+// The tagged union or sum type for the algebraic type `ActionState`.
+export const ActionState = __t.enum("ActionState", {
+  Idle: __t.unit(),
+  Walking: __t.unit(),
+  Jumping: __t.unit(),
+});
+export type ActionState = __Infer<typeof ActionState>;
+
+export const Character = __t.object("Character", {
+  entityId: __t.u64(),
+  zoneId: __t.u32(),
+  tileX: __t.i32(),
+  tileY: __t.i32(),
+  get facing() {
+    return Direction;
+  },
+  get action() {
+    return ActionState;
+  },
+  moveStartedAtMs: __t.i64(),
+  spriteId: __t.u32(),
+  get moveQueue() {
+    return __t.array(MoveInput);
+  },
+});
+export type Character = __Infer<typeof Character>;
+
 export const Config = __t.object("Config", {
   id: __t.u32(),
   contentVersion: __t.u32(),
 });
 export type Config = __Infer<typeof Config>;
 
-export const Presence = __t.object("Presence", {
-  identity: __t.identity(),
-  zoneId: __t.u32(),
-  tileX: __t.i32(),
-  tileY: __t.i32(),
-  name: __t.string(),
-  lastSeenMs: __t.i64(),
+// The tagged union or sum type for the algebraic type `Direction`.
+export const Direction = __t.enum("Direction", {
+  North: __t.unit(),
+  South: __t.unit(),
+  East: __t.unit(),
+  West: __t.unit(),
 });
-export type Presence = __Infer<typeof Presence>;
+export type Direction = __Infer<typeof Direction>;
 
-export const PresenceReaperSchedule = __t.object("PresenceReaperSchedule", {
+// The tagged union or sum type for the algebraic type `MoveInput`.
+export const MoveInput = __t.enum("MoveInput", {
+  get Step() {
+    return Direction;
+  },
+  Jump: __t.unit(),
+});
+export type MoveInput = __Infer<typeof MoveInput>;
+
+export const MovementTickSchedule = __t.object("MovementTickSchedule", {
   id: __t.u64(),
+  zoneId: __t.u32(),
   scheduledAt: __t.scheduleAt(),
 });
-export type PresenceReaperSchedule = __Infer<typeof PresenceReaperSchedule>;
+export type MovementTickSchedule = __Infer<typeof MovementTickSchedule>;
+
+export const Player = __t.object("Player", {
+  identity: __t.identity(),
+  entityId: __t.u64(),
+  name: __t.string(),
+  online: __t.bool(),
+  lastInputSeq: __t.u64(),
+});
+export type Player = __Infer<typeof Player>;
 
 export const ZoneDefRow = __t.object("ZoneDefRow", {
   zoneId: __t.u32(),

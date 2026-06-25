@@ -1,8 +1,8 @@
-// monster-realm M0b client — the walking-skeleton vertical: connect to the
-// SpacetimeDB module, subscribe to `presence`, render ONE PixiJS dot per row from
-// the GENERATED bindings + subscription (never duplicated content). A small DEV
-// introspection hook (`window.__mr`) lets the Playwright e2e assert on state, not
-// pixels. Real input/prediction/rendering depth arrives at M3/M4.
+// monster-realm client — renders the authoritative world from the GENERATED
+// bindings + subscription (never duplicated content). At M2 it shows one dot per
+// `character` row (the server owns movement; input/prediction land at M3/M4). A
+// small DEV introspection hook (`window.__mr`) lets the Playwright e2e assert on
+// state, not pixels.
 import { Application, Container, Graphics } from 'pixi.js';
 import { DbConnection } from './module_bindings';
 
@@ -10,25 +10,25 @@ const URI = (import.meta.env.VITE_STDB_URI as string | undefined) ?? 'ws://127.0
 const DB = (import.meta.env.VITE_STDB_DB as string | undefined) ?? 'monster-realm';
 const TILE_PX = 24;
 
-// A presence row, structurally (the SDK camelCases the server columns).
-interface PresenceRow {
-  identity: { toHexString(): string };
+// A character row, structurally (the SDK camelCases the server columns; entity_id
+// is u64 -> bigint).
+interface CharacterRow {
+  entityId: bigint | number;
   tileX: number;
   tileY: number;
-  name: string;
 }
 
-const presences = new Map<string, PresenceRow>();
+const chars = new Map<string, CharacterRow>();
 const dots = new Map<string, Graphics>();
 let world: Container | undefined;
 let conn: DbConnection | undefined;
 
-function keyOf(row: PresenceRow): string {
-  return row.identity.toHexString();
+function keyOf(row: CharacterRow): string {
+  return String(row.entityId);
 }
 
-function upsert(row: PresenceRow): void {
-  presences.set(keyOf(row), row);
+function upsert(row: CharacterRow): void {
+  chars.set(keyOf(row), row);
   if (!world) return;
   let dot = dots.get(keyOf(row));
   if (!dot) {
@@ -42,8 +42,8 @@ function upsert(row: PresenceRow): void {
   dot.y = row.tileY * TILE_PX + TILE_PX / 2;
 }
 
-function remove(row: PresenceRow): void {
-  presences.delete(keyOf(row));
+function remove(row: CharacterRow): void {
+  chars.delete(keyOf(row));
   const dot = dots.get(keyOf(row));
   if (dot) {
     dot.destroy();
@@ -56,15 +56,14 @@ const ready = new Promise<void>((r) => {
   resolveReady = r;
 });
 
-// DEV introspection hook — set at load so the e2e can await readiness + read
-// state regardless of connect timing.
 const hook = {
   ready,
   identity: '',
-  presenceCount: (): number => presences.size,
+  // Count of visible entities / rendered dots (the e2e asserts these).
+  presenceCount: (): number => chars.size,
   dotCount: (): number => dots.size,
   join: (name: string): void => {
-    conn?.reducers.join({ name });
+    conn?.reducers.joinGame({ name });
   },
 };
 (window as unknown as { __mr: typeof hook }).__mr = hook;
@@ -84,19 +83,24 @@ async function main(): Promise<void> {
       connection
         .subscriptionBuilder()
         .onApplied(() => {
-          connection.reducers.join({ name: `Player-${hook.identity.slice(0, 6)}` });
+          connection.reducers.joinGame({ name: `Player-${hook.identity.slice(0, 6)}` });
           resolveReady();
         })
         .onError(() => console.error('[net] subscription error'))
-        .subscribe(['SELECT * FROM presence', 'SELECT * FROM zone_def', 'SELECT * FROM config']);
+        .subscribe([
+          'SELECT * FROM character',
+          'SELECT * FROM player',
+          'SELECT * FROM zone_def',
+          'SELECT * FROM config',
+        ]);
     })
     .onConnectError((_ctx, err: Error) => console.error('[net] connect error', err))
     .onDisconnect(() => console.warn('[net] disconnected'))
     .build();
 
-  conn.db.presence.onInsert((_ctx, row) => upsert(row as unknown as PresenceRow));
-  conn.db.presence.onUpdate((_ctx, _old, row) => upsert(row as unknown as PresenceRow));
-  conn.db.presence.onDelete((_ctx, row) => remove(row as unknown as PresenceRow));
+  conn.db.character.onInsert((_ctx, row) => upsert(row as unknown as CharacterRow));
+  conn.db.character.onUpdate((_ctx, _old, row) => upsert(row as unknown as CharacterRow));
+  conn.db.character.onDelete((_ctx, row) => remove(row as unknown as CharacterRow));
 }
 
 void main();
