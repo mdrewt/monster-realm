@@ -85,8 +85,15 @@ M1 (movement core), M2 (authoritative zoned movement + per-zone tick), and M3
 complete. **M4a** (the connection adapter + `AuthoritativeStore`) and **M4b** (the
 render layer — tile map from `zone_map()`, pooled CharacterViews, the own-character
 slide clock + remote interpolation buffer + stable z-order, behind tested pure cores
-with proof-of-teeth) complete; **M4c** (the per-frame loop wiring own-from-predictor /
-remote-from-buffer + the debug HUD / `window.__game()`) and the M5 two-window e2e are next.
+with proof-of-teeth) complete. **M4c/M5a** (the per-frame loop wiring
+`connection → AuthoritativeStore → Predictor(apply_move) → WorldRenderer` with input +
+the `window.__game()` snapshot, plus the two-window Playwright golden flows: see-each-
+other, A↔B movement sync + prediction convergence, and the canonical **wall-bump ⇒
+predicted == authoritative** no-desync net) complete. **M5b** is next: the
+containerized-spacetime e2e **CI required gate** (ADR-0009), the jump /
+disconnect-despawn / reconnect flows, and the **end-to-end** smoothness assertions
+(M5a renders own-from-predictor at integer tiles; the slide-clock + interpolation
+buffer ride end-to-end with M5b).
 Deferred-with-rationale: the criterion **perf-budget gate** (folded into the M20
 observability capstone — a non-flaky budget needs tuned baselines) and GitHub
 Actions *execution* (the workflow is committed; only local `just ci` is verifiable

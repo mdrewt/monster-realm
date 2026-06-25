@@ -42,6 +42,9 @@ jobs:
       - run: just typecheck
       - run: just test
       - run: just eval
+      # M5a: the client now imports the client-wasm pkg, so build it before the TS
+      # typecheck resolves the import (gitignored; rebuilt from source).
+      - run: just wasm
       # Client prediction layer (M3): headless TS typecheck + vitest/fast-check.
       - run: just client-typecheck
       - run: just client-test

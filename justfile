@@ -18,6 +18,11 @@ test:
 eval:
     node evals/run.mjs
 
+# Build the client-prediction wasm pkg (--target bundler) the client imports +
+# the e2e/typecheck consume. Gitignored; rebuilt from source (client-wasm).
+wasm:
+    wasm-pack build client-wasm --target bundler
+
 security:
     node scripts/check-secrets.mjs .
 
@@ -50,7 +55,9 @@ gen:
     spacetime generate --lang typescript --module-path server-module --out-dir client/src/module_bindings
 
 # Multi-client e2e (real browser vs a running instance + published module).
-e2e:
+# Needs the wasm pkg (client imports it) + a running spacetime; global-setup
+# republishes --delete-data. CI-as-required-gate is M5b (containerized spacetime).
+e2e: wasm
     cd client && npm run e2e
 
-ci: lint typecheck test eval security client-typecheck client-test
+ci: lint typecheck test eval security wasm client-typecheck client-test
