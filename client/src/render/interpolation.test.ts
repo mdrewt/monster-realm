@@ -1,0 +1,105 @@
+// render/interpolation.ts behaviour suite (M4b, ADR-0013) — vitest.
+// SOURCE OF TRUTH: M4-frontend.spec.md §3 "Rendering" + "Smoothness evals":
+// remote drawn at now - interpDelay between the two bracketing snapshots; HOLD
+// (never extrapolate) past the latest; "remote interpolation no jump > one tile
+// under sub-buffer jitter; a remote renderer WITHOUT the buffer fails the jitter
+// test" (proof-of-teeth, ADR-0010).
+import { describe, expect, it } from 'vitest';
+import { type InterpSample, interpDelayMs, interpolate } from './interpolation';
+
+const s = (tileX: number, tileY: number, receivedAt: number): InterpSample => ({
+  tileX,
+  tileY,
+  receivedAt,
+});
+
+describe('interpDelayMs: the buffer is sized in STEP_MS multiples (ADR-0013)', () => {
+  it('is ~1.5-2x STEP_MS (renders remotes slightly in the past to absorb jitter)', () => {
+    expect(interpDelayMs(200)).toBe(300); // 1.5 * 200
+    expect(interpDelayMs(100)).toBeGreaterThan(100); // strictly behind real time
+  });
+});
+
+describe('interpolate: bracket / hold / clamp', () => {
+  it('with no prev snapshot, sits on latest', () => {
+    expect(interpolate(undefined, s(3, 4, 1000), 1234)).toEqual({ x: 3, y: 4 });
+  });
+
+  it('lerps linearly between prev and latest', () => {
+    const p = interpolate(s(0, 0, 0), s(1, 0, 200), 100);
+    expect(p.x).toBeCloseTo(0.5);
+    expect(p.y).toBeCloseTo(0);
+  });
+
+  it('BITES: HOLDS at latest past it (never extrapolates / overshoots)', () => {
+    // An extrapolating impl would return x > 1 here (the v1 rubberband). We hold.
+    const held = interpolate(s(0, 0, 0), s(1, 0, 200), 400);
+    expect(held).toEqual({ x: 1, y: 0 });
+  });
+
+  it('clamps to prev before the earlier snapshot', () => {
+    expect(interpolate(s(2, 2, 1000), s(3, 2, 1200), 500)).toEqual({ x: 2, y: 2 });
+  });
+
+  it('degenerate equal timestamps resolve to latest (no divide-by-zero)', () => {
+    expect(interpolate(s(0, 0, 500), s(9, 9, 500), 500)).toEqual({ x: 9, y: 9 });
+  });
+});
+
+// --- proof-of-teeth: buffered <= 1 tile/frame; unbuffered double-jumps ----------
+//
+// A deterministic SUB-buffer jitter stream (every arrival within interpDelay of
+// its logical step time) that compresses two arrivals into one frame interval —
+// the case that makes a no-buffer renderer (draw the latest snapshot directly)
+// leap two tiles in a single frame, while the delay buffer keeps every per-frame
+// step <= one tile.
+interface Arrival {
+  readonly tileX: number;
+  readonly at: number;
+}
+
+function maxFrameJump(
+  arrivals: readonly Arrival[],
+  frames: readonly number[],
+  render: (prev: InterpSample | undefined, latest: InterpSample, t: number) => number,
+): number {
+  let prev: InterpSample | undefined;
+  let latest: InterpSample | undefined;
+  let cursor = 0;
+  let last: number | undefined;
+  let worst = 0;
+  for (const f of frames) {
+    while (cursor < arrivals.length && arrivals[cursor].at <= f) {
+      const a = arrivals[cursor++];
+      prev = latest;
+      latest = s(a.tileX, 0, a.at);
+    }
+    if (latest === undefined) continue;
+    const x = render(prev, latest, f);
+    if (last !== undefined) worst = Math.max(worst, Math.abs(x - last));
+    last = x;
+  }
+  return worst;
+}
+
+describe('interpolation proof-of-teeth (ADR-0010): the buffer is load-bearing', () => {
+  const INTERP_DELAY = 300; // 1.5 * STEP_MS(200)
+  // logical steps x=0,1,2 at t=0,200,400; arrivals jittered but sub-buffer (<300):
+  // x=1 lands late at 290, x=2 on time-ish at 300 — two arrivals inside one 100ms frame.
+  const arrivals: Arrival[] = [
+    { tileX: 0, at: 0 },
+    { tileX: 1, at: 290 },
+    { tileX: 2, at: 300 },
+  ];
+  const frames = Array.from({ length: 9 }, (_, i) => i * 100); // 0..800 every 100ms
+
+  it('the delay buffer keeps every per-frame step <= one tile', () => {
+    const jump = maxFrameJump(arrivals, frames, (p, l, t) => interpolate(p, l, t - INTERP_DELAY).x);
+    expect(jump).toBeLessThanOrEqual(1);
+  });
+
+  it('BITES: the no-buffer renderer (latest only) leaps > one tile in a frame', () => {
+    const jump = maxFrameJump(arrivals, frames, (_p, l) => l.tileX);
+    expect(jump).toBeGreaterThan(1); // 0 -> 2 across one frame: the test bites
+  });
+});

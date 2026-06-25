@@ -38,6 +38,19 @@ effectful shells.
   **M4 contract:** the own character animates from a **self-owned slide clock** and
   **ignores `move_started_at`** (drain-pacing bookkeeping only); `reconcile` runs on
   one **transaction-consistent** snapshot.
+- **render layer** (`client/src/render/`, M4b) — the renderer's functional core +
+  thin Pixi shell. Pure, node-tested: `map` (the tile map parsed ONCE from the wasm
+  `zone_map()` value, never a hard-coded TS grid — visual-SSOT), `interpolation` (the
+  remote delay buffer — render at `now − interpDelay` between the two bracketing
+  snapshots, **hold-not-extrapolate**), `slideClock` (the own character's self-owned
+  slide, keyed to target-tile changes, **decoupled from `move_started_at`**), `zorder`
+  (stable overlap order), `viewRegistry` (pooled-view create/teardown). The Pixi shell
+  (`world`/`characterView`/`placeholderAssets`, no pixel tests — validated by the M5
+  e2e) draws `TILE_PX`-scaled tiles + one **pooled** sprite per entity (mutate-in-place,
+  torn down on despawn), behind an **`AssetProvider`** seam (albedo today; HD-2D
+  normal/material channels are an additive future render mode — ADR-0004). It owns no
+  state and reads no store/predictor: the M4c loop feeds it resolved positions
+  (own from the slide clock, remote from the interpolation buffer).
 
 ## Mechanical gates (each ships a proof-of-teeth fixture — ADR-0010)
 
@@ -69,7 +82,11 @@ hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest) and
 Phase A spine: M0 (foundation + gates + presence walking skeleton, e2e green),
 M1 (movement core), M2 (authoritative zoned movement + per-zone tick), and M3
 (the prediction layer — client-wasm marshaling bridge + convert + the Predictor)
-complete. M4 (PixiJS frontend + debug HUD + the ADR-0013 smoothness layer) is next.
+complete. **M4a** (the connection adapter + `AuthoritativeStore`) and **M4b** (the
+render layer — tile map from `zone_map()`, pooled CharacterViews, the own-character
+slide clock + remote interpolation buffer + stable z-order, behind tested pure cores
+with proof-of-teeth) complete; **M4c** (the per-frame loop wiring own-from-predictor /
+remote-from-buffer + the debug HUD / `window.__game()`) and the M5 two-window e2e are next.
 Deferred-with-rationale: the criterion **perf-budget gate** (folded into the M20
 observability capstone — a non-flaky budget needs tuned baselines) and GitHub
 Actions *execution* (the workflow is committed; only local `just ci` is verifiable
@@ -88,7 +105,11 @@ they stay conscious, not forgotten:
 - **`isWasmReady()`** — M3 shipped the bridge + Vite plugin config; the readiness
   gate lands in **M4** with the live `--target bundler` load (the loop awaits it).
 - **Renderer smoothness evals** (own slide-clock decoupling from `move_started_at`;
-  remote interpolation-buffer jitter) — **M4b**.
+  remote interpolation-buffer jitter) — **delivered in M4b** as vitest proof-of-teeth
+  (`render/slideClock.test.ts`, `render/interpolation.test.ts`: the bad clock that
+  reads `move_started_at` stutters; the no-buffer renderer double-jumps). The
+  standalone `evals/*.eval.mjs` smoothness gates ride with the M4c loop (which
+  resolves own-from-predictor / remote-from-buffer end-to-end).
 - **`seq` boundary helper** (`u64` reducer / `bigint` store ↔ the predictor's session
   `number`) — a typed conversion lands with the **M5** connection adapter; both sides
   are internally consistent today.
