@@ -5,11 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-# `rlib` so it builds + tests on the host now; `cdylib` + wasm-bindgen are added
-# with the prediction-parity / wasm-pack slice.
-crate-type = ["rlib"]
+# cdylib: the wasm artifact wasm-pack builds for the browser/node.
+# rlib: lets the same exports be unit-tested + driven on the host.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # game-core WITHOUT the `spacetimedb` feature — the client must never pull a
 # server-only dependency (the feature-isolation eval makes this mechanical).
 game-core = { path = "../game-core" }
+wasm-bindgen = { workspace = true }

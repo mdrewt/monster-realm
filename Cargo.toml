@@ -13,5 +13,7 @@ license = "MIT"
 # SSOT for shared dependency versions: declare once here, reference with
 # `dep.workspace = true` in members. Populated as crates take real deps —
 # spacetimedb (M2, matched to the installed CLI 2.6.0; crate ≠ product version),
-# wasm-bindgen (M3), proptest / criterion (test-tooling slice + its ADR).
+# proptest / criterion land with the test-tooling slice + their ADR.
 [workspace.dependencies]
+# The client-prediction wasm boundary (ADR-0036), built via wasm-pack.
+wasm-bindgen = "0.2"

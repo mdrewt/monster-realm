@@ -15,7 +15,7 @@ test:
     cargo test --workspace
 
 eval:
-    @echo "eval: workspace evals (feature-isolation, parity, schema, zoned, proof-of-teeth) land across M0a; integration evals need a running instance (spacetime start) — see README"
+    node evals/run.mjs
 
 security:
     node scripts/check-secrets.mjs .
