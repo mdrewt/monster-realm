@@ -32,4 +32,19 @@ publish:
 changelog:
     git cliff -o CHANGELOG.md
 
+# Client (PixiJS) — needs Linux node on PATH (CI setup-node; local asdf node 24.13.1).
+client-setup:
+    cd client && npm install --include=dev
+
+client-typecheck:
+    cd client && npm run typecheck
+
+# Regenerate the committed TS bindings from the module (bindings-drift gate checks these).
+gen:
+    spacetime generate --lang typescript --module-path server-module --out-dir client/src/module_bindings
+
+# Multi-client e2e (real browser vs a running instance + published module).
+e2e:
+    cd client && npm run e2e
+
 ci: lint typecheck test eval security

@@ -35,3 +35,21 @@ cannot observe a persistent presence row (it is created then deleted with the
 call's connection). A persistent client (a held subscription — the frontend/e2e,
 M0b-remaining) keeps its row for the connection's lifetime. Verified via module
 logs: `join` and the `heartbeat`-reject both fire as designed.
+
+
+## M0b client / e2e environment (confirmed)
+
+- **TS SDK:** `spacetimedb` ^2.6.0; `pixi.js` ^8.19. Generated bindings camelCase
+  columns (`tileX`, `zoneId`, `lastSeenMs`); reducer args are `{ name }`. Connect:
+  `DbConnection.builder().withUri('ws://127.0.0.1:3000').withDatabaseName('monster-realm').onConnect(...)`;
+  `conn.db.presence.onInsert/onUpdate/onDelete`; `conn.reducers.join({...})`.
+- **Toolchain gotcha (fixed):** in WSL, `npm` resolved to the **Windows** binary
+  via interop PATH (`/mnt/c/.../npm`), which runs postinstall scripts through
+  `cmd.exe` and fails on `\\wsl.localhost` UNC paths (esbuild). Fix: prepend the
+  Linux node (`~/.asdf/installs/nodejs/24.13.1/bin`) to PATH (persisted in
+  `~/.bashrc`); CI uses `actions/setup-node`. `just` recipes inherit PATH from the
+  invoking shell, so the client recipes work once Linux node is first.
+- **e2e (passing):** two browser contexts = two identities = two presence rows;
+  each converges via its subscription to **2 dots**. Playwright must use a
+  dedicated port (`5290`) and `reuseExistingServer: false` — a sibling project's
+  dev server on the common 5173 was being reused, loading the wrong app.
