@@ -21,8 +21,12 @@ jobs:
           # gitleaks-action v2 requires a token to scan pull_request events
           # (breaking change). The auto-provided GITHUB_TOKEN suffices.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Best-effort: needs the repo's Dependency graph enabled (a settings/GHAS
+      # feature, not toggleable from code). The BLOCKING SCA gate is `cargo audit`
+      # below; this surfaces dependency findings when the graph is available.
       - name: Dependency review (SCA on PRs)
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         uses: actions/dependency-review-action@v4
       - uses: dtolnay/rust-toolchain@stable
         with: { components: clippy, targets: wasm32-unknown-unknown }
