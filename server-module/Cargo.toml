@@ -5,12 +5,16 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-# `cdylib` is the SpacetimeDB module artifact; `rlib` lets the pure delegations
-# be unit-tested off-instance.
+# cdylib: the SpacetimeDB module (wasm) artifact; rlib lets the pure helpers be
+# unit-tested off-instance.
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # The pure rule layer (SSOT). The server runs the SAME code the client predicts
-# with. The `spacetimedb` crate is wired at M2 (crate version != product version
-# — match it to the installed CLI 2.6.0; confirm against current docs).
+# with; the `spacetimedb` feature enables game-core's SpacetimeType derives (M6).
 game-core = { path = "../game-core", features = ["spacetimedb"] }
+# SpacetimeDB module SDK — crate 1.12 matches the installed CLI 2.6.0 (crate
+# version != product version; confirmed against the v1 reference).
+spacetimedb = { workspace = true }
+# Structured logging facade (captured by the SpacetimeDB host).
+log = "0.4"

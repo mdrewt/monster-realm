@@ -12,3 +12,5 @@ default = []
 spacetimedb = []
 
 [dependencies]
+serde = { workspace = true }
+ron = { workspace = true }

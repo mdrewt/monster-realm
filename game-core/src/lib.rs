@@ -16,6 +16,10 @@
 /// clock itself; callers pass time in (the M0 clock contract).
 pub type Millis = i64;
 
+/// Data-driven content registries (RON parsed by pure loaders, ADR-0006).
+pub mod content;
+pub use content::{load_zones, parse_zones, validate_zones, ZoneDef};
+
 /// The trivial M0 proof-rule: a pure, deterministic state transition over an
 /// explicit seed (splitmix64-style mix). It exists only to prove the
 /// determinism/parity gates have teeth before any real rule (M1 movement)
