@@ -11,7 +11,7 @@ local instance (`127.0.0.1:3000`). Date: 2026-06-25.
 | 3 | Generator scaffolds a green build | ⚠️→✅ **Failed out of the box** (secret-scan crash + minimal gitignore); fixed in ADR-0035. `just ci` green since. |
 | 2 | Scheduled-reducer privacy + the module-identity accessor | ✅ **Confirmed.** Accessor is `ctx.identity()` (method); `ctx.sender` is a field. A client call to the scheduled `presence_reaper` (with valid args) is rejected by the in-body guard `ctx.sender != ctx.identity()` → `Error: presence_reaper is scheduler-only`. A bare client call is also rejected at argument validation. Defense-in-depth holds. |
 | 1 | RLS (`client_visibility_filter`) actually filters | ⏸️ **Deferred to M6** (first owner-private data). M0b has only public tables. ADR-0015 fallback (private tables) stands by. |
-| 4 | Per-transaction / `onApplied` batch hook (anti-rubberband) | ⏸️ **Deferred to M4** (the frontend reconcile path). |
+| 4 | Per-transaction / `onApplied` batch hook (anti-rubberband) | ✅ **Confirmed (M4a).** The TS SDK exposes per-row callbacks (`onInsert/onUpdate/onDelete`, each carrying a shared reducer-event `ctx` per transaction) + `subscriptionBuilder().onApplied()` (initial subscription only) — **no single per-transaction connection hook** in 2.6. Documented fallback adopted: the connection adapter coalesces per-row callbacks within a microtask and calls `AuthoritativeStore.flushBatch()` once per burst; the store's batch-applied signal is the loop's atomic reconcile trigger (ADR-0013). |
 | 5 | The netcode *feels* smooth | ⏸️ **Deferred to after M5** (needs the M0–M5 client). |
 
 ## Tier-2 (confirmed early while wiring M0b)
