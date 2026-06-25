@@ -22,3 +22,5 @@ spacetimedb = "1.12"
 # Content: serde derive + RON parser (pure; safe under the determinism guard).
 serde = { version = "1", features = ["derive"] }
 ron = "0.8"
+# Property testing for the logic-heavy rules (ADR-0038).
+proptest = "1"

@@ -6,11 +6,15 @@ license.workspace = true
 
 [features]
 # `SpacetimeType` derives are enabled ONLY by `server-module` (the STDB shell),
-# never by `client-wasm` — the feature-isolation eval (next slice) proves the
-# client build graph never pulls this. The `spacetimedb` dep is wired at M2.
+# never by `client-wasm` — the feature-isolation eval proves it. Enabling pulls
+# the optional `spacetimedb` dep (for the derive macro).
 default = []
-spacetimedb = []
+spacetimedb = ["dep:spacetimedb"]
 
 [dependencies]
 serde = { workspace = true }
 ron = { workspace = true }
+spacetimedb = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
