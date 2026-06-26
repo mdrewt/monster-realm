@@ -427,8 +427,8 @@ fn recruit_chance_current_above_max_no_panic() {
     );
 }
 
-/// Kills: any impl where recruit_chance produces a value outside [0, 1000].
-/// EARS C2: output is always in [0, 1000] for any valid u16 inputs.
+// Kills: any impl where recruit_chance produces a value outside [0, 1000].
+// EARS C2: output is always in [0, 1000] for any valid u16 inputs.
 proptest! {
     #[test]
     fn recruit_chance_bounded_output(
@@ -446,8 +446,8 @@ proptest! {
     }
 }
 
-/// Kills: an impl where chance doesn't rise as HP falls (monotonicity via proptest).
-/// EARS C2: for fixed max/base/bait, hp1 >= hp2 → chance(hp1) <= chance(hp2).
+// Kills: an impl where chance doesn't rise as HP falls (monotonicity via proptest).
+// EARS C2: for fixed max/base/bait, hp1 >= hp2 → chance(hp1) <= chance(hp2).
 proptest! {
     #[test]
     fn recruit_chance_monotone_in_damage(
