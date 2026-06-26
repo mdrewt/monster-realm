@@ -192,6 +192,40 @@ live here exactly once (ADR-0003 SSOT). Randomness injected via `TurnVariance`.
 Content validation (`validate_content`) extended: skill `power > 0` enforced,
 type chart effectiveness values restricted to {0, 5, 10, 20}.
 
+## Taming subsystem (`game-core/src/taming/`, M8a)
+
+Pure, deterministic encounter triggering and recruit-chance arithmetic. All
+integer-only (per-mille 0–1000, u32 intermediates, no floats). Randomness
+injected (no RNG/clock).
+
+- **`types`** — value objects: `EncounterEntry` (species_id, weight,
+  min_level/max_level as `Level` newtypes), `EncounterTable` (zone_id,
+  encounter_rate per-mille, entries vec). Parse-don't-validate via `Level`
+  invariants.
+- **`rules`** — 4 pure rule functions:
+  - `encounter_triggers(roll, threshold)` — `roll % 1000 < threshold` (per-mille
+    gate)
+  - `roll_encounter(table, roll, player_level)` — level-range filter → weighted
+    selection among eligible entries
+  - `recruit_chance(max_hp, current_hp, base_rate, bait_bonus)` — integer HP-bonus:
+    `(max_hp - current_hp) * MISSING_HP_FACTOR / max_hp`, capped at 1000. Guards:
+    max_hp==0 skips, current_hp>=max_hp treats as full HP
+  - `attempt_recruit(chance, roll)` — `roll % 1000 < chance`
+  - `MISSING_HP_FACTOR = 500` — per-mille constant (50 percentage points at 0 HP)
+
+Content pipeline extended: `encounters.ron` — per-zone weighted spawn tables (RON
+registry, ADR-0006). `parse_encounters` / `load_encounters` / `validate_encounters`
+follows existing loader pattern. Validation: unique zone_ids, zone exists,
+encounter_rate ≤ 1000, weight > 0, min_level ≤ max_level, species exists.
+
+`ItemDef.recruit_bonus: u16` added with `#[serde(default)]` — bait classification
+by data (`recruit_bonus > 0`), not magic item ID.
+
+24 gating tests (787 lines) covering both EARS criteria, including 5 proof-of-
+teeth fixtures (bad encounter_rate > 1000, weight == 0, min > max level,
+dangling species, dangling zone). 2 proptest suites (bounded output, monotone
+HP-bonus). All green.
+
 ## Status
 
 Phase A spine: M0 (foundation + gates + presence walking skeleton, e2e green),
@@ -229,7 +263,9 @@ DOM shell (textContent-only), connection wiring for `battle`+`skill_row` in same
 subscribe() call, main.ts integration with Escape priority battle>box>movement,
 auto-hide box during battle, heal_party button in box view — 57 new client tests, all
 green) complete. **M7 (Battle system) is now fully delivered** (M7a + M7b + M7c all
-merged).
+merged). **M8a** (taming rules — pure encounter triggering, recruit-chance arithmetic,
+encounters.ron registry, validation, 24 tests with 5 proof-of-teeth fixtures + 2
+proptest suites, all green) complete.
 Deferred-with-rationale: the criterion **perf-budget gate** (folded into the M20
 observability capstone — a non-flaky budget needs tuned baselines) and GitHub
 Actions *execution* (the workflow is committed; only local `just ci` is verifiable
