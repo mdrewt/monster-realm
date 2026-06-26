@@ -34,6 +34,39 @@ export interface StorePlayer {
   readonly lastInputSeq: bigint;
 }
 
+/** A monster public projection row, normalized (no hidden IVs/EVs/nature — ADR-0015). */
+export interface StoreMonsterPub {
+  readonly monsterId: bigint;
+  readonly ownerIdentity: string;
+  readonly speciesId: number;
+  readonly nickname: string;
+  readonly level: number;
+  readonly xp: number;
+  readonly bond: number;
+  readonly currentHp: number;
+  readonly statHp: number;
+  readonly statAttack: number;
+  readonly statDefense: number;
+  readonly statSpeed: number;
+  readonly statSpAttack: number;
+  readonly statSpDefense: number;
+  readonly partySlot: number;
+}
+
+/** A species row, normalized (affinity as bare string). */
+export interface StoreSpeciesRow {
+  readonly id: number;
+  readonly name: string;
+  readonly baseHp: number;
+  readonly baseAttack: number;
+  readonly baseDefense: number;
+  readonly baseSpeed: number;
+  readonly baseSpAttack: number;
+  readonly baseSpDefense: number;
+  readonly affinity: string;
+  readonly learnableSkillIds: readonly number[];
+}
+
 /** A positional snapshot stamped with local receive time (remote interpolation). */
 export interface Snapshot {
   readonly tileX: number;
@@ -53,6 +86,8 @@ export interface StoredCharacter {
 export class AuthoritativeStore {
   readonly #chars = new Map<bigint, StoredCharacter>();
   readonly #players = new Map<string, StorePlayer>();
+  readonly #monsters = new Map<bigint, StoreMonsterPub>();
+  readonly #species = new Map<number, StoreSpeciesRow>();
   readonly #batchListeners = new Set<() => void>();
   #dirty = false;
 
@@ -78,6 +113,24 @@ export class AuthoritativeStore {
     if (this.#players.delete(identity)) this.#dirty = true;
   }
 
+  upsertMonster(m: StoreMonsterPub): void {
+    this.#monsters.set(m.monsterId, m);
+    this.#dirty = true;
+  }
+
+  removeMonster(monsterId: bigint): void {
+    if (this.#monsters.delete(monsterId)) this.#dirty = true;
+  }
+
+  upsertSpecies(s: StoreSpeciesRow): void {
+    this.#species.set(s.id, s);
+    this.#dirty = true;
+  }
+
+  removeSpecies(id: number): void {
+    if (this.#species.delete(id)) this.#dirty = true;
+  }
+
   /** Emit ONE batch-applied signal iff something changed since the last flush.
    *  Called once per coalesced transaction burst by the connection adapter. */
   flushBatch(): void {
@@ -98,6 +151,8 @@ export class AuthoritativeStore {
   reset(): void {
     this.#chars.clear();
     this.#players.clear();
+    this.#monsters.clear();
+    this.#species.clear();
     this.#dirty = false;
   }
 
@@ -127,5 +182,35 @@ export class AuthoritativeStore {
 
   get characterCount(): number {
     return this.#chars.size;
+  }
+
+  // --- monster + species read (M6c box/party view reads truth here) ----------
+
+  monster(monsterId: bigint): StoreMonsterPub | undefined {
+    return this.#monsters.get(monsterId);
+  }
+
+  monsters(): IterableIterator<StoreMonsterPub> {
+    return this.#monsters.values();
+  }
+
+  ownMonsters(identity: string): StoreMonsterPub[] {
+    const out: StoreMonsterPub[] = [];
+    for (const m of this.#monsters.values()) {
+      if (m.ownerIdentity === identity) out.push(m);
+    }
+    return out;
+  }
+
+  species(id: number): StoreSpeciesRow | undefined {
+    return this.#species.get(id);
+  }
+
+  speciesMap(): ReadonlyMap<number, StoreSpeciesRow> {
+    return this.#species;
+  }
+
+  get monsterCount(): number {
+    return this.#monsters.size;
   }
 }

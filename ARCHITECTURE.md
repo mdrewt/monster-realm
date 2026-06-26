@@ -61,7 +61,9 @@ wrapper** (client-wasm marshals, never re-decides the rule) and **js-path-parity
 netcode-determinism, zoned-schema (every world table carries an indexed
 `zone_id`, ADR-0007), append-only content ids (ADR-0006), bindings-drift
 (committed bindings == fresh `spacetime generate`, ADR-0009), **monster-privacy**
-(private monster table, clean public projection, no client accessor — ADR-0040).
+(private monster table, clean public projection, no client accessor — ADR-0040),
+**box-view-privacy** (StoreMonsterPub interface contains no hidden IV/EV/nature
+fields — ADR-0015).
 Each gate has a
 known-bad fixture it must reject. The **client TS** is gated too (M3): `tsc` +
 vitest/fast-check over the convert + Predictor property suites (run in `just ci`
@@ -131,6 +133,33 @@ with privacy, starter grant, and management reducers.
   `MonsterInstance` → flat table columns), `pub_from_monster` (derives safe
   projection). Thin wrappers, no embedded rules.
 
+## Box/party view (`client/src/ui/`, M6c — ADR-0014)
+
+Client-side box and party management screen. Pure subscription view: reads
+from the `AuthoritativeStore`, mutates only via ownership-checked reducers
+(one-way flow, ADR-0014). No SDK imports in the view layer.
+
+- **Store extension** (`net/store.ts`): `StoreMonsterPub` and `StoreSpeciesRow`
+  interfaces + keyed Maps + CRUD methods. No hidden genome fields (IVs/EVs/
+  nature) — enforced by the `box-view-privacy` eval with proof-of-teeth.
+- **Row converters** (`net/rowConvert.ts`): `SdkMonsterPubRow`/`SdkSpeciesRowRow`
+  structural interfaces + converter functions. Flatten tagged-union `affinity`
+  to bare string. The store stays SDK-agnostic.
+- **Pure view-model** (`ui/boxModel.ts`): `buildPartyViewModel` (6-slot array,
+  `null` for empty), `buildBoxViewModel` (partySlot 255 filter), `hpPercent`,
+  `nextFreePartySlot`. No DOM, no side effects, fully node-testable.
+- **DOM shell** (`ui/boxView.ts`): thin overlay rendering `MonsterCardViewModel`s.
+  Rename via `prompt()`, party/box management via callbacks. Renders with
+  `textContent` (no `innerHTML` — XSS-safe). Refreshed on `onBatchApplied`
+  when visible.
+- **Connection wiring** (`net/connection.ts`): subscribes to `monster_pub` and
+  `species_row` tables, wires `onInsert/onUpdate/onDelete` callbacks to store
+  via `MicrotaskBatcher`.
+- **Main integration** (`main.ts`): 'B' key toggles box overlay, Escape closes
+  it, movement input suppressed while open. Reducer calls (`setNickname`,
+  `setPartySlot`) routed through the connection. `__game()` snapshot extended
+  with monster data.
+
 ## Status
 
 Phase A spine: M0 (foundation + gates + presence walking skeleton, e2e green),
@@ -151,7 +180,11 @@ stale-bindings, or rubberband regression now turns **CI red**, not just local
 content registries — 65 new tests, all green) complete. **M6b** (server integration
 — content tables, monster privacy via split-table fallback ADR-0040, starter grant,
 set_nickname/set_party_slot reducers, monster-privacy eval with proof-of-teeth)
-complete.
+complete. **M6c** (box/party view — client-side subscription-driven overlay, pure
+view-model + DOM shell, connection wiring for monster_pub/species_row, 'B' key
+toggle, reducer integration, box-view-privacy eval with proof-of-teeth — 35 new
+client tests, all green) complete. **M6 (Monsters & individuality) is now fully
+delivered** (M6a + M6b + M6c all merged).
 Deferred-with-rationale: the criterion **perf-budget gate** (folded into the M20
 observability capstone — a non-flaky budget needs tuned baselines) and GitHub
 Actions *execution* (the workflow is committed; only local `just ci` is verifiable
