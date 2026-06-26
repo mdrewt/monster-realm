@@ -9,13 +9,17 @@
 import { DbConnection } from '../module_bindings';
 import { MicrotaskBatcher } from './batch';
 import {
+  battleRowToStore,
   characterRowToStore,
   monsterPubRowToStore,
   playerRowToStore,
+  type SdkBattleRow,
   type SdkCharacterRow,
   type SdkMonsterPubRow,
   type SdkPlayerRow,
+  type SdkSkillRowRow,
   type SdkSpeciesRowRow,
+  skillRowToStore,
   speciesRowToStore,
 } from './rowConvert';
 import type { AuthoritativeStore } from './store';
@@ -66,6 +70,8 @@ export function connect(opts: ConnectionOptions): Connection {
           'SELECT * FROM player',
           'SELECT * FROM monster_pub',
           'SELECT * FROM species_row',
+          'SELECT * FROM battle',
+          'SELECT * FROM skill_row',
         ]);
     })
     .onConnectError((_ctx, err: Error) => opts.onError('connect', err.message))
@@ -120,6 +126,28 @@ export function connect(opts: ConnectionOptions): Connection {
   );
   conn.db.species_row.onDelete((_ctx, row) => {
     store.removeSpecies((row as unknown as SdkSpeciesRowRow).id);
+    batcher.schedule();
+  });
+
+  const ingestBattle = (row: SdkBattleRow): void => {
+    store.upsertBattle(battleRowToStore(row));
+    batcher.schedule();
+  };
+  conn.db.battle.onInsert((_ctx, row) => ingestBattle(row as unknown as SdkBattleRow));
+  conn.db.battle.onUpdate((_ctx, _old, row) => ingestBattle(row as unknown as SdkBattleRow));
+  conn.db.battle.onDelete((_ctx, row) => {
+    store.removeBattle((row as unknown as SdkBattleRow).battleId);
+    batcher.schedule();
+  });
+
+  const ingestSkill = (row: SdkSkillRowRow): void => {
+    store.upsertSkill(skillRowToStore(row));
+    batcher.schedule();
+  };
+  conn.db.skill_row.onInsert((_ctx, row) => ingestSkill(row as unknown as SdkSkillRowRow));
+  conn.db.skill_row.onUpdate((_ctx, _old, row) => ingestSkill(row as unknown as SdkSkillRowRow));
+  conn.db.skill_row.onDelete((_ctx, row) => {
+    store.removeSkill((row as unknown as SdkSkillRowRow).id);
     batcher.schedule();
   });
 

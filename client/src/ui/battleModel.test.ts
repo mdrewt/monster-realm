@@ -14,7 +14,7 @@ import type {
   StoreSkillRow,
   StoreSpeciesRow,
 } from '../net/store';
-import { type BattleViewModel, buildBattleViewModel } from './battleModel';
+import { buildBattleViewModel } from './battleModel';
 import { hpPercent } from './boxModel';
 
 // ---------------------------------------------------------------------------

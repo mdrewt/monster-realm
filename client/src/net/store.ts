@@ -53,6 +53,52 @@ export interface StoreMonsterPub {
   readonly partySlot: number;
 }
 
+/** A skill definition row, normalized (affinity as bare string). */
+export interface StoreSkillRow {
+  readonly id: number;
+  readonly name: string;
+  readonly affinity: string;
+  readonly power: number;
+  readonly accuracy: number;
+  readonly pp: number;
+}
+
+/** A monster projected into battle — flat stats, normalized affinity. */
+export interface StoreBattleMonster {
+  readonly speciesId: number;
+  readonly affinity: string;
+  readonly level: number;
+  readonly currentHp: number;
+  readonly maxHp: number;
+  readonly statHp: number;
+  readonly statAttack: number;
+  readonly statDefense: number;
+  readonly statSpeed: number;
+  readonly statSpAttack: number;
+  readonly statSpDefense: number;
+  readonly knownSkillIds: readonly number[];
+}
+
+/** One side of the battle: the active slot index and the team roster. */
+export interface StoreBattleSide {
+  readonly active: number;
+  readonly team: readonly StoreBattleMonster[];
+}
+
+/** A battle row, normalized (identities as hex strings, outcome as bare string). */
+export interface StoreBattle {
+  readonly battleId: bigint;
+  readonly playerIdentity: string;
+  readonly opponentIdentity: string;
+  readonly outcome: string;
+  readonly turnNumber: number;
+  readonly sideA: StoreBattleSide;
+  readonly sideB: StoreBattleSide;
+  readonly partyMonsterIds: readonly bigint[];
+  readonly opponentMonsterIds: readonly bigint[];
+  readonly createdAtMs: bigint;
+}
+
 /** A species row, normalized (affinity as bare string). */
 export interface StoreSpeciesRow {
   readonly id: number;
@@ -88,6 +134,8 @@ export class AuthoritativeStore {
   readonly #players = new Map<string, StorePlayer>();
   readonly #monsters = new Map<bigint, StoreMonsterPub>();
   readonly #species = new Map<number, StoreSpeciesRow>();
+  readonly #battles = new Map<bigint, StoreBattle>();
+  readonly #skills = new Map<number, StoreSkillRow>();
   readonly #batchListeners = new Set<() => void>();
   #dirty = false;
 
@@ -131,6 +179,24 @@ export class AuthoritativeStore {
     if (this.#species.delete(id)) this.#dirty = true;
   }
 
+  upsertBattle(b: StoreBattle): void {
+    this.#battles.set(b.battleId, b);
+    this.#dirty = true;
+  }
+
+  removeBattle(battleId: bigint): void {
+    if (this.#battles.delete(battleId)) this.#dirty = true;
+  }
+
+  upsertSkill(s: StoreSkillRow): void {
+    this.#skills.set(s.id, s);
+    this.#dirty = true;
+  }
+
+  removeSkill(id: number): void {
+    if (this.#skills.delete(id)) this.#dirty = true;
+  }
+
   /** Emit ONE batch-applied signal iff something changed since the last flush.
    *  Called once per coalesced transaction burst by the connection adapter. */
   flushBatch(): void {
@@ -153,6 +219,8 @@ export class AuthoritativeStore {
     this.#players.clear();
     this.#monsters.clear();
     this.#species.clear();
+    this.#battles.clear();
+    this.#skills.clear();
     this.#dirty = false;
   }
 
@@ -212,5 +280,27 @@ export class AuthoritativeStore {
 
   get monsterCount(): number {
     return this.#monsters.size;
+  }
+
+  // --- battle + skill read (M7c battle view reads truth here) ----------------
+
+  battle(battleId: bigint): StoreBattle | undefined {
+    return this.#battles.get(battleId);
+  }
+
+  /** The player's own ongoing battle (ADR-0042: public table, client-side filter). */
+  ongoingBattle(identity: string): StoreBattle | undefined {
+    for (const b of this.#battles.values()) {
+      if (b.playerIdentity === identity && b.outcome === 'Ongoing') return b;
+    }
+    return undefined;
+  }
+
+  skill(id: number): StoreSkillRow | undefined {
+    return this.#skills.get(id);
+  }
+
+  skillMap(): ReadonlyMap<number, StoreSkillRow> {
+    return this.#skills;
   }
 }

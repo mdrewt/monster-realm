@@ -30,6 +30,8 @@ import { connect } from './net/connection';
 import { AuthoritativeStore } from './net/store';
 import { type ApplyMove, Predictor } from './prediction/predictor';
 import { type RenderEntity, WorldRenderer } from './render/world';
+import { buildBattleViewModel } from './ui/battleModel';
+import type { BattleView } from './ui/battleView';
 import { buildBoxViewModel, buildPartyViewModel, nextFreePartySlot } from './ui/boxModel';
 import type { BoxView } from './ui/boxView';
 
@@ -50,6 +52,7 @@ let predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
 let identity = '';
 let conn: ReturnType<typeof connect> | undefined;
 let boxView: BoxView | undefined;
+let battleView: BattleView | undefined;
 
 let resolveReady: () => void = () => {};
 const ready = new Promise<void>((r) => {
@@ -102,13 +105,19 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
+  // Escape priority: battle > box > movement (ADR-0014 exit ordering).
+  if (e.code === 'Escape' && battleView?.visible) {
+    battleView.hide();
+    e.preventDefault();
+    return;
+  }
   if (e.code === 'Escape' && boxView?.visible) {
     boxView.hide();
     e.preventDefault();
     return;
   }
-  // Suppress movement input while box overlay is open.
-  if (boxView?.visible) return;
+  // Suppress movement input while an overlay is open.
+  if (battleView?.visible || boxView?.visible) return;
   const dir = KEY_DIR[e.code];
   if (dir !== undefined) {
     step(dir);
@@ -132,6 +141,21 @@ function refreshBox(): void {
   );
 }
 store.onBatchApplied(() => refreshBox());
+
+// --- battle view: refresh on batch, auto-show/hide (M7c, ADR-0014/0042) --------
+function refreshBattle(): void {
+  if (!battleView || identity === '') return;
+  const battle = store.ongoingBattle(identity);
+  if (battle) {
+    // Auto-hide box when battle is active to prevent overlapping overlays.
+    if (boxView?.visible) boxView.hide();
+    const vm = buildBattleViewModel(battle, store.skillMap(), store.speciesMap());
+    battleView.refresh(vm);
+  } else if (battleView.visible) {
+    battleView.hide();
+  }
+}
+store.onBatchApplied(() => refreshBattle());
 
 // --- DEV introspection hook (e2e asserts on this STATE, never pixels) ------------
 function snapshot() {
@@ -162,6 +186,11 @@ function snapshot() {
       level: m.level,
       partySlot: m.partySlot,
     })),
+    ongoingBattle: (() => {
+      const b = store.ongoingBattle(identity);
+      if (!b) return null;
+      return { battleId: b.battleId.toString(), outcome: b.outcome, turnNumber: b.turnNumber };
+    })(),
     step,
     jump,
   };
@@ -187,7 +216,10 @@ function renderEntities(): RenderEntity[] {
 }
 
 async function main(): Promise<void> {
-  const { BoxView: BoxViewClass } = await import('./ui/boxView');
+  const [{ BoxView: BoxViewClass }, { BattleView: BattleViewClass }] = await Promise.all([
+    import('./ui/boxView'),
+    import('./ui/battleView'),
+  ]);
   const renderer = new WorldRenderer();
   const mount = document.getElementById('app');
   if (mount !== null) {
@@ -200,6 +232,20 @@ async function main(): Promise<void> {
         const finalSlot =
           slot === -1 ? (nextFreePartySlot(store.ownMonsters(identity)) ?? 255) : slot;
         conn?.conn.reducers.setPartySlot({ monsterId, slot: finalSlot });
+      },
+      onHealParty: () => {
+        conn?.conn.reducers.healParty({});
+      },
+    });
+    battleView = new BattleViewClass(mount, {
+      onAttack: (battleId, skillId) => {
+        conn?.conn.reducers.submitAttack({ battleId, skillId });
+      },
+      onFlee: (battleId) => {
+        conn?.conn.reducers.flee({ battleId });
+      },
+      onSwap: (battleId, teamIndex) => {
+        conn?.conn.reducers.swapActive({ battleId, teamIndex });
       },
     });
   }

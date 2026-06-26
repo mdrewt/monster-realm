@@ -9,7 +9,15 @@ import {
   type WasmAction,
   type WasmDirection,
 } from '../convert/convert';
-import type { StoreCharacter, StoreMonsterPub, StorePlayer, StoreSpeciesRow } from './store';
+import type {
+  StoreBattle,
+  StoreBattleMonster,
+  StoreCharacter,
+  StoreMonsterPub,
+  StorePlayer,
+  StoreSkillRow,
+  StoreSpeciesRow,
+} from './store';
 
 // Structural views of the generated rows (just the fields convert reads). Kept
 // structural — not the SDK runtime classes — so tests build plain objects and the
@@ -121,5 +129,102 @@ export function speciesRowToStore(row: SdkSpeciesRowRow): StoreSpeciesRow {
     baseSpDefense: row.baseSpDefense,
     affinity: row.affinity.tag,
     learnableSkillIds: [...row.learnableSkillIds],
+  };
+}
+
+// --- M7c: battle + skill_row converters --------------------------------------
+
+export interface SdkBattleMonster {
+  readonly speciesId: number;
+  readonly affinity: { readonly tag: string };
+  readonly level: number;
+  readonly currentHp: number;
+  readonly maxHp: number;
+  readonly stats: {
+    readonly hp: number;
+    readonly attack: number;
+    readonly defense: number;
+    readonly speed: number;
+    readonly spAttack: number;
+    readonly spDefense: number;
+  };
+  readonly knownSkillIds: readonly number[];
+}
+
+export interface SdkBattleSide {
+  readonly active: number;
+  readonly team: readonly SdkBattleMonster[];
+}
+
+export interface SdkBattleRow {
+  readonly battleId: bigint;
+  readonly playerIdentity: { toHexString(): string };
+  readonly opponentIdentity: { toHexString(): string };
+  readonly state: {
+    readonly sideA: SdkBattleSide;
+    readonly sideB: SdkBattleSide;
+    readonly outcome: { readonly tag: string };
+    readonly turnNumber: number;
+  };
+  readonly partyMonsterIds: readonly bigint[];
+  readonly opponentMonsterIds: readonly bigint[];
+  readonly createdAtMs: bigint;
+}
+
+export interface SdkSkillRowRow {
+  readonly id: number;
+  readonly name: string;
+  readonly affinity: { readonly tag: string };
+  readonly power: number;
+  readonly accuracy: number;
+  readonly pp: number;
+}
+
+function battleMonsterToStore(m: SdkBattleMonster): StoreBattleMonster {
+  return {
+    speciesId: m.speciesId,
+    affinity: m.affinity.tag,
+    level: m.level,
+    currentHp: m.currentHp,
+    maxHp: m.maxHp,
+    statHp: m.stats.hp,
+    statAttack: m.stats.attack,
+    statDefense: m.stats.defense,
+    statSpeed: m.stats.speed,
+    statSpAttack: m.stats.spAttack,
+    statSpDefense: m.stats.spDefense,
+    knownSkillIds: [...m.knownSkillIds],
+  };
+}
+
+export function battleRowToStore(row: SdkBattleRow): StoreBattle {
+  return {
+    battleId: row.battleId,
+    playerIdentity: row.playerIdentity.toHexString(),
+    opponentIdentity: row.opponentIdentity.toHexString(),
+    outcome: row.state.outcome.tag,
+    turnNumber: row.state.turnNumber,
+    sideA: {
+      active: row.state.sideA.active,
+      team: row.state.sideA.team.map(battleMonsterToStore),
+    },
+    sideB: {
+      active: row.state.sideB.active,
+      team: row.state.sideB.team.map(battleMonsterToStore),
+    },
+    partyMonsterIds: [...row.partyMonsterIds],
+    opponentMonsterIds: [...row.opponentMonsterIds],
+    createdAtMs: row.createdAtMs,
+  };
+}
+
+export function skillRowToStore(row: SdkSkillRowRow): StoreSkillRow {
+  return {
+    id: row.id,
+    name: row.name,
+    affinity: row.affinity.tag,
+    power: row.power,
+    accuracy: row.accuracy,
+    pp: row.pp,
   };
 }
