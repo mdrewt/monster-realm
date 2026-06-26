@@ -2,9 +2,13 @@
 // M6c adds monsterPubRowToStore and speciesRowToStore.
 import { describe, expect, it } from 'vitest';
 import {
+  battleRowToStore,
   characterRowToStore,
   monsterPubRowToStore,
   playerRowToStore,
+  type SdkBattleRow,
+  type SdkSkillRowRow,
+  skillRowToStore,
   speciesRowToStore,
 } from './rowConvert';
 
@@ -189,6 +193,265 @@ describe('rowConvert M6c: speciesRowToStore — SDK row -> StoreSpeciesRow', () 
         baseSpDefense: 1,
         affinity: { tag },
         learnableSkillIds: [],
+      });
+      expect(store.affinity).toBe(tag);
+    }
+  });
+});
+
+// =============================================================================
+// M7c extension: battleRowToStore + skillRowToStore
+// SOURCE OF TRUTH: specs/monster-realm-v2/M7-battle-view.spec.md
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// Minimal SDK row shapes (structural stubs — the real generated rows satisfy these)
+// ---------------------------------------------------------------------------
+
+/** SDK BattleMonster shape (nested stats, tagged-union affinity). */
+function sdkBattleMonster(
+  speciesId: number,
+  affinity: string,
+  level: number,
+  currentHp: number,
+  maxHp: number,
+  stats: {
+    hp: number;
+    attack: number;
+    defense: number;
+    speed: number;
+    spAttack: number;
+    spDefense: number;
+  },
+  knownSkillIds: readonly number[],
+) {
+  return { speciesId, affinity: { tag: affinity }, level, currentHp, maxHp, stats, knownSkillIds };
+}
+
+/** Constructs a minimal valid SdkBattleRow for testing (matches the actual SDK shape:
+ *  state wraps sideA/sideB/outcome/turnNumber; BattleMonster has nested stats object). */
+function makeSdkBattleRow(
+  stateOverrides: {
+    outcome?: { tag: string };
+    turnNumber?: number;
+    sideA?: { active: number; team: ReturnType<typeof sdkBattleMonster>[] };
+    sideB?: { active: number; team: ReturnType<typeof sdkBattleMonster>[] };
+  } = {},
+): SdkBattleRow {
+  const defaultSideA = {
+    active: 0,
+    team: [
+      sdkBattleMonster(
+        7,
+        'Fire',
+        10,
+        40,
+        50,
+        { hp: 50, attack: 60, defense: 45, speed: 55, spAttack: 70, spDefense: 50 },
+        [1, 3],
+      ),
+    ],
+  };
+  const defaultSideB = {
+    active: 0,
+    team: [
+      sdkBattleMonster(
+        2,
+        'Water',
+        8,
+        30,
+        35,
+        { hp: 35, attack: 40, defense: 55, speed: 48, spAttack: 42, spDefense: 58 },
+        [2],
+      ),
+    ],
+  };
+  return {
+    battleId: 42n,
+    playerIdentity: { toHexString: () => 'aabbcc' },
+    opponentIdentity: { toHexString: () => 'ddeeff' },
+    state: {
+      sideA: stateOverrides.sideA ?? defaultSideA,
+      sideB: stateOverrides.sideB ?? defaultSideB,
+      outcome: stateOverrides.outcome ?? { tag: 'Ongoing' },
+      turnNumber: stateOverrides.turnNumber ?? 3,
+    },
+    partyMonsterIds: [100n, 101n],
+    opponentMonsterIds: [200n],
+    createdAtMs: 9999n,
+  };
+}
+
+describe('rowConvert M7c: battleRowToStore — SDK row -> StoreBattle', () => {
+  it('BITES: battleId stays bigint; identities become hex strings via toHexString()', () => {
+    // Kills: an impl that downcasts battleId to number (lossy for u64) or
+    // that stores the SDK identity object instead of calling toHexString().
+    const store = battleRowToStore(makeSdkBattleRow());
+    expect(typeof store.battleId).toBe('bigint');
+    expect(store.battleId).toBe(42n);
+    expect(typeof store.playerIdentity).toBe('string');
+    expect(store.playerIdentity).toBe('aabbcc');
+    expect(typeof store.opponentIdentity).toBe('string');
+    expect(store.opponentIdentity).toBe('ddeeff');
+  });
+
+  it('BITES: outcome tagged union {tag:"Ongoing"} is flattened to bare string "Ongoing"', () => {
+    // Kills: an impl that stores the object {tag:'Ongoing'} instead of 'Ongoing',
+    // breaking every downstream outcome==='Ongoing' check.
+    const store = battleRowToStore(makeSdkBattleRow({ outcome: { tag: 'Ongoing' } }));
+    expect(typeof store.outcome).toBe('string');
+    expect(store.outcome).toBe('Ongoing');
+  });
+
+  it('BITES: each outcome variant is flattened correctly', () => {
+    // Kills: an impl that only handles 'Ongoing' and leaves other tags as objects.
+    for (const tag of ['SideAWins', 'SideBWins', 'Fled']) {
+      const store = battleRowToStore(makeSdkBattleRow({ outcome: { tag } }));
+      expect(store.outcome).toBe(tag);
+    }
+  });
+
+  it('BITES: nested BattleMonster affinity {tag:"Fire"} is flattened to "Fire"', () => {
+    // Kills: an impl that passes through the tagged-union object for nested monster affinity.
+    const store = battleRowToStore(makeSdkBattleRow());
+    expect(typeof store.sideA.team[0]!.affinity).toBe('string');
+    expect(store.sideA.team[0]!.affinity).toBe('Fire');
+    expect(typeof store.sideB.team[0]!.affinity).toBe('string');
+    expect(store.sideB.team[0]!.affinity).toBe('Water');
+  });
+
+  it('BITES: nested stats object is flattened (stats.hp -> statHp, etc.)', () => {
+    // Kills: an impl that leaves a nested stats sub-object instead of spreading
+    // stat fields onto the StoreBattleMonster directly (the store interface is flat).
+    const store = battleRowToStore(makeSdkBattleRow());
+    const mon = store.sideA.team[0]!;
+    expect(mon.statHp).toBe(50);
+    expect(mon.statAttack).toBe(60);
+    expect(mon.statDefense).toBe(45);
+    expect(mon.statSpeed).toBe(55);
+    expect(mon.statSpAttack).toBe(70);
+    expect(mon.statSpDefense).toBe(50);
+    // Confirm the raw SDK nested shape is NOT present
+    expect((mon as unknown as Record<string, unknown>)['stats']).toBeUndefined();
+  });
+
+  it('BITES: turnNumber, currentHp, maxHp, level, speciesId stay as numbers', () => {
+    // Kills: an impl that accidentally bigints numeric fields or stringifies them.
+    const store = battleRowToStore(makeSdkBattleRow());
+    expect(typeof store.turnNumber).toBe('number');
+    expect(store.turnNumber).toBe(3);
+    const mon = store.sideA.team[0]!;
+    expect(typeof mon.speciesId).toBe('number');
+    expect(mon.speciesId).toBe(7);
+    expect(typeof mon.level).toBe('number');
+    expect(mon.level).toBe(10);
+    expect(typeof mon.currentHp).toBe('number');
+    expect(mon.currentHp).toBe(40);
+    expect(typeof mon.maxHp).toBe('number');
+    expect(mon.maxHp).toBe(50);
+  });
+
+  it('BITES: partyMonsterIds and opponentMonsterIds stay as bigint arrays', () => {
+    // Kills: an impl that converts bigint monster ids to numbers (lossy for u64).
+    const store = battleRowToStore(makeSdkBattleRow());
+    expect(store.partyMonsterIds).toEqual([100n, 101n]);
+    expect(store.opponentMonsterIds).toEqual([200n]);
+    for (const id of store.partyMonsterIds) expect(typeof id).toBe('bigint');
+    for (const id of store.opponentMonsterIds) expect(typeof id).toBe('bigint');
+  });
+
+  it('BITES: knownSkillIds on each BattleMonster stays as number array', () => {
+    // Kills: an impl that bigints skill ids (they are u32 — safe as number).
+    const store = battleRowToStore(makeSdkBattleRow());
+    expect(store.sideA.team[0]!.knownSkillIds).toEqual([1, 3]);
+    for (const id of store.sideA.team[0]!.knownSkillIds) expect(typeof id).toBe('number');
+  });
+
+  it('BITES: createdAtMs stays bigint', () => {
+    // Kills: an impl that converts the timestamp to number (lossy for large u64 ms values).
+    const store = battleRowToStore(makeSdkBattleRow());
+    expect(typeof store.createdAtMs).toBe('bigint');
+    expect(store.createdAtMs).toBe(9999n);
+  });
+
+  it('BITES: sideA.active and sideB.active are preserved correctly', () => {
+    // Kills: an impl that hardcodes active=0 instead of reading the field.
+    const mon = sdkBattleMonster(
+      7,
+      'Fire',
+      10,
+      40,
+      50,
+      { hp: 50, attack: 60, defense: 45, speed: 55, spAttack: 70, spDefense: 50 },
+      [1],
+    );
+    const row = makeSdkBattleRow({
+      sideA: { active: 1, team: [mon, mon] },
+    });
+    const store = battleRowToStore(row);
+    expect(store.sideA.active).toBe(1);
+  });
+});
+
+describe('rowConvert M7c: skillRowToStore — SDK row -> StoreSkillRow', () => {
+  it('BITES: id is number, affinity {tag:"Water"} is flattened to "Water"', () => {
+    // Kills: an impl that leaves affinity as the tagged-union object, or that
+    // casts id to bigint (skill ids are u32, safe as number).
+    const sdk: SdkSkillRowRow = {
+      id: 5,
+      name: 'Aqua Jet',
+      affinity: { tag: 'Water' },
+      power: 40,
+      accuracy: 100,
+      pp: 20,
+    };
+    const store = skillRowToStore(sdk);
+    expect(typeof store.id).toBe('number');
+    expect(store.id).toBe(5);
+    expect(typeof store.affinity).toBe('string');
+    expect(store.affinity).toBe('Water');
+    expect(store.name).toBe('Aqua Jet');
+  });
+
+  it('BITES: power, accuracy, pp are numbers (not stringified)', () => {
+    // Kills: an impl that accidentally serializes numeric fields to strings.
+    const sdk: SdkSkillRowRow = {
+      id: 1,
+      name: 'Ember',
+      affinity: { tag: 'Fire' },
+      power: 40,
+      accuracy: 100,
+      pp: 25,
+    };
+    const store = skillRowToStore(sdk);
+    expect(typeof store.power).toBe('number');
+    expect(store.power).toBe(40);
+    expect(typeof store.accuracy).toBe('number');
+    expect(store.accuracy).toBe(100);
+    expect(typeof store.pp).toBe('number');
+    expect(store.pp).toBe(25);
+  });
+
+  it('BITES: each affinity variant is flattened correctly for skills', () => {
+    // Kills: an impl that hard-codes Fire or only handles one tag for skills.
+    const variants = [
+      'Fire',
+      'Water',
+      'Plant',
+      'Electric',
+      'Earth',
+      'Wind',
+      'Light',
+      'Dark',
+    ] as const;
+    for (const tag of variants) {
+      const store = skillRowToStore({
+        id: 1,
+        name: 'X',
+        affinity: { tag },
+        power: 1,
+        accuracy: 1,
+        pp: 1,
       });
       expect(store.affinity).toBe(tag);
     }
