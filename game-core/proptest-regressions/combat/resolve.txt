@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc af8260539f62ec95507d860bf19f3be873559d4f0c417d3ba41defdbfffff32a # shrinks to aff_a = Fire, aff_b = Fire, spd_a = 1, spd_b = 1, damage_roll_a = 85, damage_roll_b = 85, accuracy_roll_a = 0, accuracy_roll_b = 0, tie_breaker = false

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ab9a6c2ed131d925b3d68b87b47bfe676b6988aea133ade8e5f69d66891a87cf # shrinks to attacker = Fire, defender = Fire

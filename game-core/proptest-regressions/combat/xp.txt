@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b3d3353fb1b575d5c22f9594f1c0b90fe1166020ba31a89bd0432a46bb10528f # shrinks to base_xp = 0, gain_small = 0, extra = 0
+cc 72b41f2157fe3ae378e210fcbd846ecd960278a71ce3657289b1bef5c1092bc5 # shrinks to winner_level = Level(1), loser_level = Level(1), loser_bst = 1

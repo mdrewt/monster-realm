@@ -11,11 +11,18 @@
 
 #![forbid(unsafe_code)]
 
+pub mod combat;
 pub mod content;
 pub mod monster;
 pub mod types;
 pub mod world;
 
+pub use combat::{
+    accuracy_check, apply_xp_gain, battle_xp_reward, calc_damage, pick_best_skill,
+    resolve_enemy_turn, resolve_player_swap, resolve_turn, BattleEvent, BattleMonster,
+    BattleOutcome, BattleSide, BattleState, Effectiveness, SideId, TurnChoice, TurnVariance,
+    TypeChart,
+};
 pub use content::{
     load_items, load_skills, load_species, load_type_chart, load_zones, parse_items, parse_skills,
     parse_species, parse_type_chart, parse_zones, validate_content, validate_zones, ItemDef,

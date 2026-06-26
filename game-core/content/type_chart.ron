@@ -1,2 +1,40 @@
 // Type effectiveness chart — DATA, not code (ADR-0006).
-[]
+// effectiveness: 0 = immune, 5 = half, 10 = neutral (default for unlisted pairs), 20 = super-effective.
+// Only non-neutral (non-10) pairs are listed; TypeChart::effectiveness returns 10 for all unlisted pairs.
+[
+    // Same-type resistance (5 = half damage)
+    (attacker: Fire,     defender: Fire,     effectiveness: 5),
+    (attacker: Water,    defender: Water,    effectiveness: 5),
+    (attacker: Plant,    defender: Plant,    effectiveness: 5),
+    (attacker: Electric, defender: Electric, effectiveness: 5),
+    (attacker: Earth,    defender: Earth,    effectiveness: 5),
+    (attacker: Wind,     defender: Wind,     effectiveness: 5),
+    (attacker: Light,    defender: Light,    effectiveness: 5),
+    (attacker: Dark,     defender: Dark,     effectiveness: 5),
+
+    // Fire triangle
+    (attacker: Fire,  defender: Plant, effectiveness: 20),
+    (attacker: Plant, defender: Fire,  effectiveness: 5),
+    (attacker: Water, defender: Fire,  effectiveness: 20),
+    (attacker: Fire,  defender: Water, effectiveness: 5),
+    (attacker: Plant, defender: Water, effectiveness: 20),
+    (attacker: Water, defender: Plant, effectiveness: 5),
+
+    // Electric relations
+    (attacker: Electric, defender: Water,    effectiveness: 20),
+    (attacker: Water,    defender: Electric, effectiveness: 5),
+    (attacker: Earth,    defender: Electric, effectiveness: 20),
+    (attacker: Electric, defender: Earth,    effectiveness: 5),
+
+    // Earth vs Fire
+    (attacker: Earth, defender: Fire, effectiveness: 20),
+    (attacker: Fire,  defender: Earth, effectiveness: 5),
+
+    // Wind vs Plant
+    (attacker: Wind,  defender: Plant, effectiveness: 20),
+    (attacker: Plant, defender: Wind,  effectiveness: 5),
+
+    // Light / Dark mutual super-effective
+    (attacker: Light, defender: Dark,  effectiveness: 20),
+    (attacker: Dark,  defender: Light, effectiveness: 20),
+]

@@ -9,6 +9,9 @@ pub mod rolls;
 pub mod rules;
 pub mod types;
 
+#[cfg(test)]
+mod battle_redteam_tests;
+
 pub use rolls::{roll_individuality, roll_starter};
 pub use rules::{derive_stats, level_bounds, level_for_xp, xp_for_level};
 pub use types::{

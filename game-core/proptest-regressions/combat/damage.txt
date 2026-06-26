@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c17e0faf2cbbee61af6beadedb68151f2913d01608ee502dcb532048bb8113ee # shrinks to atk_affinity = Fire, def_affinity = Fire, skill_affinity = Fire, attack = 5, defense = 5, power = 1, variance = 85
+cc afa8ebd3ac1520da05fbf8a5c94be553261eadef1d75e8fa0a8d50752f620464 # shrinks to atk_affinity = Fire, def_affinity = Fire, skill_affinity = Fire, attack = 1, defense = 1, power = 1, variance = 85, level = 1
