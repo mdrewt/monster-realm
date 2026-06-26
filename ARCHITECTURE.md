@@ -89,11 +89,15 @@ with proof-of-teeth) complete. **M4c/M5a** (the per-frame loop wiring
 `connection → AuthoritativeStore → Predictor(apply_move) → WorldRenderer` with input +
 the `window.__game()` snapshot, plus the two-window Playwright golden flows: see-each-
 other, A↔B movement sync + prediction convergence, and the canonical **wall-bump ⇒
-predicted == authoritative** no-desync net) complete. **M5b** is next: the
-containerized-spacetime e2e **CI required gate** (ADR-0009), the jump /
-disconnect-despawn / reconnect flows, and the **end-to-end** smoothness assertions
-(M5a renders own-from-predictor at integer tiles; the slide-clock + interpolation
-buffer ride end-to-end with M5b).
+predicted == authoritative** no-desync net) complete. **M5b** (those golden flows now
+run **in CI** against a real version-pinned standalone SpacetimeDB — ADR-0009/0039,
+falsified by a proof-of-teeth desync eval, ADR-0010) complete: a desync,
+stale-bindings, or rubberband regression now turns **CI red**, not just local
+`just e2e`. **M5c** is next: the deferred M5 flows (disconnect-despawn /
+reconnect-clean-reinit) and the **end-to-end** smoothness assertions (monotonic
+predicted tile; bounded remote frame-to-frame jump under injected jitter — ADR-0013;
+M5a renders own-from-predictor at integer tiles, the slide-clock + interpolation
+buffer ride end-to-end with M5c).
 Deferred-with-rationale: the criterion **perf-budget gate** (folded into the M20
 observability capstone — a non-flaky budget needs tuned baselines) and GitHub
 Actions *execution* (the workflow is committed; only local `just ci` is verifiable
