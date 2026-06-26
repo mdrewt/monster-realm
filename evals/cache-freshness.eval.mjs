@@ -41,7 +41,7 @@ export function noSharedCargoTargetDir(yaml) {
 // cache-all-crates: true, causing cross-job artifact bleed.
 // ---------------------------------------------------------------------------
 export function hasRustCacheWithoutCacheAllCrates(yaml) {
-  const hasRustCache = yaml.includes('Swatinem/rust-cache') || yaml.includes('rust-cache');
+  const hasRustCache = yaml.includes('Swatinem/rust-cache');
   const hasCacheAllCrates = yaml.includes('cache-all-crates: true');
   return hasRustCache && !hasCacheAllCrates;
 }
@@ -66,10 +66,13 @@ export function hasDistinctPrefixKeys(yaml) {
     if (pos === -1) break;
     // Grab the rest of the line after the marker
     const lineEnd = yaml.indexOf('\n', pos);
-    const value =
+    let value =
       lineEnd === -1
         ? yaml.slice(pos + marker.length).trim()
         : yaml.slice(pos + marker.length, lineEnd).trim();
+    // Strip inline YAML comments (e.g., "v1-ci  # main job" → "v1-ci")
+    const commentIdx = value.indexOf('#');
+    if (commentIdx !== -1) value = value.slice(0, commentIdx).trim();
     found.push(value);
     idx = pos + marker.length;
   }
@@ -136,7 +139,8 @@ export function testRecipeHasNextestAndDoctest(justfile) {
   const afterHeader = justfile.indexOf('\n', start + 1);
   if (afterHeader === -1) return false;
 
-  // Collect indented lines (recipe body)
+  // Collect indented lines (recipe body). Just 1.21 allows blank lines
+  // within a recipe body, so skip blank lines and keep scanning.
   let body = '';
   let pos = afterHeader + 1;
   while (pos < justfile.length) {
@@ -146,12 +150,16 @@ export function testRecipeHasNextestAndDoctest(justfile) {
     if (line.length > 0 && (line[0] === ' ' || line[0] === '\t')) {
       body += line + '\n';
       pos = lineEnd === -1 ? justfile.length : lineEnd + 1;
+    } else if (line.length === 0) {
+      // Blank line — skip it, may still be inside recipe in Just 1.21+
+      pos = lineEnd === -1 ? justfile.length : lineEnd + 1;
     } else {
       break;
     }
   }
 
-  const hasNextest = body.includes('nextest');
+  // Use 'nextest run' to avoid matching the word 'nextest' in comments
+  const hasNextest = body.includes('nextest run');
   const hasDoctest = body.includes('--doc') || body.includes('test --doc');
   return hasNextest && hasDoctest;
 }
@@ -163,7 +171,13 @@ export function testRecipeHasNextestAndDoctest(justfile) {
 // `ci-fast:` recipe, leaving no way to run the fast inner loop locally or in CI.
 // ---------------------------------------------------------------------------
 export function hasCiFastRecipe(justfile) {
-  return justfile.includes('\nci-fast:') || justfile.startsWith('ci-fast:');
+  // Match both `ci-fast:` (no args) and `ci-fast crate:` (parameterized)
+  return (
+    justfile.includes('\nci-fast:') ||
+    justfile.includes('\nci-fast ') ||
+    justfile.startsWith('ci-fast:') ||
+    justfile.startsWith('ci-fast ')
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -307,7 +321,7 @@ export default async function () {
         'proof-of-teeth #6: testRecipeHasNextestAndDoctest failed to reject a recipe using only cargo test --workspace',
     };
   }
-  // Teeth 6b: must reject recipe with nextest only (no --doc pass)
+  // Teeth 6b: must reject recipe with nextest run only (no --doc pass)
   const badTestNextestOnly =
     'test:\n    cargo nextest run --workspace\n\nlint:\n    cargo clippy\n';
   if (testRecipeHasNextestAndDoctest(badTestNextestOnly)) {
@@ -350,6 +364,18 @@ export default async function () {
       pass: false,
       detail:
         'proof-of-teeth #8b: usesInstallActionForAuditAndNextest failed to reject yaml that has install-action but still uses bare cargo install',
+    };
+  }
+
+  // Teeth 8c: must reject yaml with install-action for audit but bare cargo install for nextest
+  const badBareNextestInstall =
+    'uses: taiki-e/install-action@v2\nwith:\n  tool: cargo-audit\n- run: cargo install cargo-nextest --locked\n';
+  if (usesInstallActionForAuditAndNextest(badBareNextestInstall)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'proof-of-teeth #8c: usesInstallActionForAuditAndNextest failed to reject yaml that has install-action for audit but bare cargo install for nextest',
     };
   }
 
