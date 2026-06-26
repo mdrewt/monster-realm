@@ -6,6 +6,7 @@
 use serde::Deserialize;
 
 use crate::monster::types::{Affinity, StatBlock};
+use crate::taming::types::EncounterTable;
 
 /// A zone definition — the M0 content registry and the first real schema subject
 /// for the zoned-schema + append-only-ids evals. Mirrors the server `zone_def`
@@ -58,6 +59,10 @@ pub struct ItemDef {
     pub id: u32,
     pub name: String,
     pub description: String,
+    /// Per-mille bonus added to recruit_chance when this item is used as bait.
+    /// Defaults to 0 for items that have no taming function.
+    #[serde(default)]
+    pub recruit_bonus: u16,
 }
 
 /// The embedded zone registry (compiled in via `include_str!`, parsed at load).
@@ -169,6 +174,52 @@ pub fn load_items() -> Result<Vec<ItemDef>, String> {
 /// Returns `Err` if `ron_str` is not a valid item list.
 pub fn parse_items(ron_str: &str) -> Result<Vec<ItemDef>, String> {
     ron::from_str::<Vec<ItemDef>>(ron_str).map_err(|e| format!("items registry parse error: {e}"))
+}
+
+// ===========================================================================
+// M8a content — encounter tables
+// ===========================================================================
+
+const ENCOUNTERS_RON: &str = include_str!("../content/encounters.ron");
+
+/// Parse encounter tables from a RON string (separated for testability).
+///
+/// # Errors
+/// Returns `Err` with a descriptive message if `ron_str` is not valid.
+pub fn parse_encounters(ron_str: &str) -> Result<Vec<EncounterTable>, String> {
+    Err(format!(
+        "not implemented: parse_encounters received {ron_str:?}"
+    )) // STUB
+}
+
+/// Parse the embedded encounter registry.
+///
+/// # Errors
+/// Returns `Err` if the embedded RON fails to parse.
+pub fn load_encounters() -> Result<Vec<EncounterTable>, String> {
+    parse_encounters(ENCOUNTERS_RON)
+}
+
+/// Cross-registry validation for encounter tables.
+///
+/// Checks:
+/// - Unique zone ids
+/// - `encounter_rate` in [0, 1000]
+/// - Each entry has `weight > 0`
+/// - Each entry has `min_level <= max_level`
+/// - Each `species_id` exists in `species`
+/// - Each `zone_id` exists in `zones`
+///
+/// # Errors
+/// Returns `Err` with a descriptive message on the first violation found.
+pub fn validate_encounters(
+    tables: &[EncounterTable],
+    species: &[Species],
+    zones: &[ZoneDef],
+) -> Result<(), String> {
+    // STUB — accepts everything; tests will catch this
+    let _ = (tables, species, zones);
+    Ok(())
 }
 
 /// Cross-registry content validation:
@@ -359,6 +410,7 @@ mod tests {
             id,
             name: format!("Item{id}"),
             description: format!("Description for item {id}"),
+            recruit_bonus: 0,
         }
     }
 
