@@ -18,6 +18,7 @@
 //! If the resulting XP would bring the monster past level 100, XP is clamped
 //! to `xp_for_level(Level::new(100).unwrap())` and the level is capped at 100.
 
+use crate::monster::rules::{level_for_xp, xp_for_level};
 use crate::monster::types::{Level, Xp};
 
 /// Compute the XP reward for defeating the loser.
@@ -28,7 +29,11 @@ use crate::monster::types::{Level, Xp};
 ///
 /// Returns at least `Xp::new(1)`.
 pub fn battle_xp_reward(winner_level: Level, loser_base_stat_total: u16, loser_level: Level) -> Xp {
-    todo!()
+    let bst = u32::from(loser_base_stat_total);
+    let l_loser = u32::from(loser_level.as_u8());
+    let l_winner = u32::from(winner_level.as_u8());
+    let reward = (bst / 5) * (l_loser / l_winner) + 1;
+    Xp::new(reward)
 }
 
 /// Apply earned XP to a monster's current XP pool.
@@ -38,7 +43,14 @@ pub fn battle_xp_reward(winner_level: Level, loser_base_stat_total: u16, loser_l
 /// - If the new XP exceeds what is needed for level 100, clamp to `xp_for_level(100)`.
 /// - `did_level_up` is `true` if and only if `new_level > old_level`.
 pub fn apply_xp_gain(current_xp: Xp, gained: Xp) -> (Xp, Level, bool) {
-    todo!()
+    let max_xp = xp_for_level(Level::new(100).unwrap());
+    let old_level = level_for_xp(current_xp);
+    let total = current_xp.value().saturating_add(gained.value());
+    let clamped = std::cmp::min(total, max_xp.value());
+    let new_xp = Xp::new(clamped);
+    let new_level = level_for_xp(new_xp);
+    let did_level_up = new_level.as_u8() > old_level.as_u8();
+    (new_xp, new_level, did_level_up)
 }
 
 // ===========================================================================
@@ -73,7 +85,7 @@ mod tests {
     /// Kills: an impl with the wrong formula, wrong truncation, or wrong floor.
     /// Starts red because `battle_xp_reward` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn known_answer_xp_reward_equal_levels() {
         let xp = battle_xp_reward(level(5), 318, level(5));
         assert_eq!(xp.value(), 64, "expected XP reward of 64");
@@ -90,7 +102,7 @@ mod tests {
     ///
     /// Starts red because `apply_xp_gain` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn apply_xp_gain_causes_level_up() {
         // Level 1: xp_for_level(1) = 1; level 2: xp_for_level(2) = 8
         let (new_xp, new_level, did_level_up) = apply_xp_gain(Xp::new(1), Xp::new(7));
@@ -113,7 +125,7 @@ mod tests {
     ///
     /// Starts red because `apply_xp_gain` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn apply_xp_gain_without_level_up() {
         let (new_xp, new_level, did_level_up) = apply_xp_gain(Xp::new(1), Xp::new(3));
         assert_eq!(new_xp.value(), 4, "XP must be 4 after gaining 3 from 1");
@@ -135,7 +147,7 @@ mod tests {
     ///
     /// Starts red because `apply_xp_gain` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn apply_xp_gain_capped_at_level_100() {
         // Already at level-100 XP threshold
         let xp_cap = xp_for_level(level(100));

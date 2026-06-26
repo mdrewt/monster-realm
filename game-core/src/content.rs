@@ -217,6 +217,12 @@ pub fn validate_content(
         if !skill_ids.insert(sk.id) {
             return Err(format!("duplicate skill id {}", sk.id));
         }
+        if sk.power == 0 {
+            return Err(format!(
+                "skill {} has power=0; damaging skills must have power>0",
+                sk.id
+            ));
+        }
     }
 
     // Cross-check: every learnable_skill_id in species must exist in skills
@@ -237,6 +243,12 @@ pub fn validate_content(
             return Err(format!(
                 "duplicate type chart pair ({:?}, {:?})",
                 rel.attacker, rel.defender
+            ));
+        }
+        if !matches!(rel.effectiveness, 0 | 5 | 10 | 20) {
+            return Err(format!(
+                "type chart pair ({:?}, {:?}) has illegal effectiveness {}; must be 0, 5, 10, or 20",
+                rel.attacker, rel.defender, rel.effectiveness
             ));
         }
     }

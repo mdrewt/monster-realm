@@ -20,14 +20,20 @@ pub struct TypeChart {
 impl TypeChart {
     /// Build a `TypeChart` from a slice of `TypeRelation` values.
     pub fn new(relations: &[TypeRelation]) -> Self {
-        todo!()
+        Self {
+            relations: relations.to_vec(),
+        }
     }
 
     /// Return the raw effectiveness value (0, 5, 10, or 20) for the given
     /// attacker→defender affinity pair. Returns 10 (neutral) for any pair
     /// not explicitly listed in the chart.
     pub fn effectiveness(&self, attacker: Affinity, defender: Affinity) -> u8 {
-        todo!()
+        self.relations
+            .iter()
+            .find(|r| r.attacker == attacker && r.defender == defender)
+            .map(|r| r.effectiveness)
+            .unwrap_or(10)
     }
 
     /// Map a raw effectiveness value to the `Effectiveness` enum used by events.
@@ -39,7 +45,12 @@ impl TypeChart {
     /// | 10        | `Neutral`         |
     /// | 20        | `SuperEffective`  |
     pub fn classify(value: u8) -> Effectiveness {
-        todo!()
+        match value {
+            0 => Effectiveness::Immune,
+            5 => Effectiveness::NotVeryEffective,
+            20 => Effectiveness::SuperEffective,
+            _ => Effectiveness::Neutral,
+        }
     }
 }
 
@@ -72,7 +83,7 @@ pub(crate) mod tests {
     /// Kills: an impl that returns neutral or NVE for Fire→Plant.
     /// Starts red because `TypeChart::new` and `effectiveness` are `todo!()`.
     #[test]
-    #[should_panic]
+
     fn fire_vs_plant_is_super_effective() {
         let chart = make_type_chart();
         assert_eq!(
@@ -89,7 +100,7 @@ pub(crate) mod tests {
     /// Kills: an impl that returns neutral or super-effective for Fire→Water.
     /// Starts red because the stubs are `todo!()`.
     #[test]
-    #[should_panic]
+
     fn fire_vs_water_is_not_very_effective() {
         let chart = make_type_chart();
         assert_eq!(
@@ -106,7 +117,7 @@ pub(crate) mod tests {
     /// Kills: an impl that returns 10 (neutral) for same-type pairs.
     /// Starts red because the stubs are `todo!()`.
     #[test]
-    #[should_panic]
+
     fn fire_vs_fire_is_not_very_effective() {
         let chart = make_type_chart();
         assert_eq!(
@@ -123,7 +134,7 @@ pub(crate) mod tests {
     /// Kills: an impl that forgets Earth resists Fire (only models Fire>Earth).
     /// Starts red because the stubs are `todo!()`.
     #[test]
-    #[should_panic]
+
     fn fire_vs_earth_is_not_very_effective() {
         let chart = make_type_chart();
         assert_eq!(
@@ -140,7 +151,7 @@ pub(crate) mod tests {
     /// Kills: an impl that returns 0 or panics for unlisted pairs (e.g. Fire→Wind).
     /// Starts red because the stubs are `todo!()`.
     #[test]
-    #[should_panic]
+
     fn unlisted_pair_returns_neutral() {
         let chart = make_type_chart();
         // Fire vs Wind is not listed in the chart, so must default to 10
@@ -158,7 +169,7 @@ pub(crate) mod tests {
     /// Kills: an impl that returns Immune for any non-zero value.
     /// Starts red because `classify` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn classify_zero_is_immune() {
         assert_eq!(TypeChart::classify(0), Effectiveness::Immune);
     }
@@ -166,7 +177,7 @@ pub(crate) mod tests {
     /// Kills: an impl that maps 5 to Neutral instead of NVE.
     /// Starts red because `classify` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn classify_five_is_not_very_effective() {
         assert_eq!(TypeChart::classify(5), Effectiveness::NotVeryEffective);
     }
@@ -174,7 +185,7 @@ pub(crate) mod tests {
     /// Kills: an impl that maps 10 to something other than Neutral.
     /// Starts red because `classify` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn classify_ten_is_neutral() {
         assert_eq!(TypeChart::classify(10), Effectiveness::Neutral);
     }
@@ -182,7 +193,7 @@ pub(crate) mod tests {
     /// Kills: an impl that maps 20 to Neutral or NVE.
     /// Starts red because `classify` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn classify_twenty_is_super_effective() {
         assert_eq!(TypeChart::classify(20), Effectiveness::SuperEffective);
     }
@@ -194,7 +205,7 @@ pub(crate) mod tests {
     /// Kills: an impl that makes Light/Dark one-way or neutral.
     /// Starts red because the stubs are `todo!()`.
     #[test]
-    #[should_panic]
+
     fn light_vs_dark_is_super_effective() {
         let chart = make_type_chart();
         assert_eq!(
@@ -207,7 +218,7 @@ pub(crate) mod tests {
     /// Kills: an impl where only Light beats Dark but not the reverse.
     /// Starts red because the stubs are `todo!()`.
     #[test]
-    #[should_panic]
+
     fn dark_vs_light_is_super_effective() {
         let chart = make_type_chart();
         assert_eq!(
@@ -240,7 +251,7 @@ pub(crate) mod tests {
     /// #[should_panic] — see game-core-testing.md gotchas).
     /// Starts red because `effectiveness` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn effectiveness_is_total_known_pairs() {
         // Exercise all 64 (8×8) affinity pairs using the same chart fixture.
         // A correct implementation must never panic for any of them and must

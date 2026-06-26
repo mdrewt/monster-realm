@@ -36,14 +36,48 @@ pub fn calc_damage(
     type_chart: &TypeChart,
     variance: u8, // 85..=100
 ) -> (u16, Effectiveness) {
-    todo!()
+    let eff_raw = type_chart.effectiveness(skill.affinity, defender.affinity);
+    let effectiveness = TypeChart::classify(eff_raw);
+
+    if eff_raw == 0 {
+        return (0, Effectiveness::Immune);
+    }
+
+    let level = u32::from(attacker.level);
+    let power = u32::from(skill.power);
+    let attack = u32::from(attacker.stats.attack);
+    let defense = u32::from(defender.stats.defense);
+    let eff = u32::from(eff_raw);
+    let var = u32::from(variance);
+
+    // base = (2 * level / 5 + 2) * power * attack / defense / 50 + 2
+    let base = (2 * level / 5 + 2) * power * attack / defense / 50 + 2;
+
+    // STAB: same-type attack bonus
+    let stab = if skill.affinity == attacker.affinity {
+        base * 3 / 2
+    } else {
+        base
+    };
+
+    // type modifier
+    let type_mod = stab * eff / 10;
+
+    // variance scaling
+    let variance_mod = type_mod * var / 100;
+
+    // floor of 1 for non-immune hits
+    let final_dmg = std::cmp::max(1u32, variance_mod);
+    let clamped = std::cmp::min(final_dmg, u32::from(u16::MAX)) as u16;
+
+    (clamped, effectiveness)
 }
 
 /// Return `true` if the move hits (roll < accuracy), `false` if it misses.
 ///
 /// A skill with accuracy 100 always hits (roll is always 0..=99).
 pub fn accuracy_check(skill_accuracy: u8, roll: u8) -> bool {
-    todo!()
+    roll < skill_accuracy
 }
 
 // ===========================================================================
@@ -138,7 +172,7 @@ mod tests {
     /// forgets the type multiplier, or gets the formula order wrong.
     /// Starts red because `calc_damage` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn known_answer_fire_vs_plant_level5_power40_var100() {
         let chart = make_type_chart();
         let attacker = make_monster(Affinity::Fire, 40, 40);
@@ -160,7 +194,7 @@ mod tests {
     /// Kills: an impl that ignores STAB or applies it to both branches equally.
     /// Starts red because `calc_damage` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn stab_increases_damage_vs_no_stab() {
         let chart = make_type_chart();
         // Use Plant vs Earth (Earth is unlisted vs Plant = neutral) to test STAB cleanly.
@@ -202,7 +236,7 @@ mod tests {
     /// Kills: an impl that ignores the type multiplier.
     /// Starts red because `calc_damage` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn super_effective_deals_more_than_neutral() {
         let chart = make_type_chart();
         // Water vs Plant: neutral (Water resists Plant, but Plant resists Water;
@@ -252,7 +286,7 @@ mod tests {
     /// Kills: an impl that ignores immune effectiveness and still deals damage.
     /// Starts red because `TypeChart::new` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn immune_effectiveness_deals_zero_damage() {
         use crate::content::TypeRelation;
         let relations = vec![TypeRelation {
@@ -296,7 +330,7 @@ mod tests {
     /// Kills: an impl that forgets `max(1, result)` for non-immune hits.
     /// Starts red because `calc_damage` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn non_immune_deals_at_least_1_damage_floor() {
         // Use a real NVE pair: Water vs Fire (Water NVE vs Fire? No: Water beats Fire.
         // Plant vs Water = 5 (NVE): Plant skill vs Water defender.
@@ -365,7 +399,7 @@ mod tests {
     /// Kills: an impl that ignores variance or applies it as addition instead of scaling.
     /// Starts red because `calc_damage` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn variance_85_deals_less_than_variance_100() {
         let chart = make_type_chart();
         let attacker = make_monster(Affinity::Fire, 80, 40);
@@ -386,7 +420,7 @@ mod tests {
     /// Kills: an impl with the wrong comparison operator (e.g. `<=` instead of `<`).
     /// Starts red because `accuracy_check` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn accuracy_check_roll_below_accuracy_is_hit() {
         // accuracy=100, roll=0 → always hits
         assert!(accuracy_check(100, 0), "roll 0 vs accuracy 100 must hit");
@@ -397,7 +431,7 @@ mod tests {
     /// Kills: an impl that always returns true regardless of roll.
     /// Starts red because `accuracy_check` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn accuracy_check_roll_at_or_above_accuracy_is_miss() {
         // accuracy=80, roll=80 → misses (80 is not < 80)
         assert!(!accuracy_check(80, 80), "roll 80 vs accuracy 80 must miss");

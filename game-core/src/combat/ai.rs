@@ -31,7 +31,28 @@ pub fn pick_best_skill(
     skills: &[SkillDef],
     type_chart: &TypeChart,
 ) -> u32 {
-    todo!()
+    let mut best_id: Option<u32> = None;
+    let mut best_score: u32 = 0;
+
+    for &skill_id in &attacker.known_skill_ids {
+        if let Some(skill) = skills.iter().find(|s| s.id == skill_id) {
+            let eff = u32::from(type_chart.effectiveness(skill.affinity, defender.affinity));
+            let power = u32::from(skill.power);
+            // Multiply by 3 for STAB, 2 for non-STAB (avoids fractions)
+            let stab = if skill.affinity == attacker.affinity {
+                3
+            } else {
+                2
+            };
+            let score = power * eff * stab;
+            if best_id.is_none() || score > best_score {
+                best_score = score;
+                best_id = Some(skill_id);
+            }
+        }
+    }
+
+    best_id.expect("attacker must have at least one known skill in the skill registry")
 }
 
 // ===========================================================================
@@ -114,7 +135,7 @@ mod tests {
     ///
     /// Starts red because `pick_best_skill` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn picks_super_effective_over_not_very_effective() {
         let chart = make_type_chart();
         // Attacker is Fire, knows Fire skill (id=1, power=40) and Water skill (id=3, power=40)
@@ -140,7 +161,7 @@ mod tests {
     ///
     /// Starts red because `pick_best_skill` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn picks_higher_power_skill_when_same_effectiveness() {
         let chart = make_type_chart();
         // Both skills are Fire affinity → same STAB, same type effectiveness vs Electric
@@ -162,7 +183,7 @@ mod tests {
     ///
     /// Starts red because `pick_best_skill` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn single_skill_returns_that_skill() {
         let chart = make_type_chart();
         let attacker = make_monster(Affinity::Water, vec![3]);
@@ -183,7 +204,7 @@ mod tests {
     ///
     /// Starts red because `pick_best_skill` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn pick_best_skill_is_deterministic() {
         let chart = make_type_chart();
         let attacker = make_monster(Affinity::Fire, vec![1, 2, 3]);

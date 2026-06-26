@@ -14,7 +14,110 @@
 use crate::content::SkillDef;
 
 use super::type_chart::TypeChart;
-use super::types::{BattleEvent, BattleState, SideId, TurnChoice, TurnVariance};
+use super::types::{
+    BattleEvent, BattleOutcome, BattleState, Effectiveness, SideId, TurnChoice, TurnVariance,
+};
+
+fn opposite(side: SideId) -> SideId {
+    match side {
+        SideId::SideA => SideId::SideB,
+        SideId::SideB => SideId::SideA,
+    }
+}
+
+/// Resolve a single attack by `acting_side`, applying damage and faint/switch logic.
+fn resolve_one_attack(
+    state: &mut BattleState,
+    acting_side: SideId,
+    skill_id: u32,
+    skills: &[SkillDef],
+    type_chart: &TypeChart,
+    variance: &TurnVariance,
+    events: &mut Vec<BattleEvent>,
+) {
+    let skill = skills
+        .iter()
+        .find(|s| s.id == skill_id)
+        .unwrap_or_else(|| panic!("skill id {skill_id} not found in skills registry"));
+
+    let (damage_roll, accuracy_roll) = match acting_side {
+        SideId::SideA => (variance.damage_roll_a, variance.accuracy_roll_a),
+        SideId::SideB => (variance.damage_roll_b, variance.accuracy_roll_b),
+    };
+
+    if !super::damage::accuracy_check(skill.accuracy, accuracy_roll) {
+        events.push(BattleEvent::Miss { side: acting_side });
+        return;
+    }
+
+    let defender_side = opposite(acting_side);
+
+    let (attacker, defender) = match acting_side {
+        SideId::SideA => (
+            state.side_a.active_monster().clone(),
+            state.side_b.active_monster().clone(),
+        ),
+        SideId::SideB => (
+            state.side_b.active_monster().clone(),
+            state.side_a.active_monster().clone(),
+        ),
+    };
+
+    let (dmg, eff) =
+        super::damage::calc_damage(&attacker, &defender, skill, type_chart, damage_roll);
+
+    // Apply damage
+    let target = match defender_side {
+        SideId::SideA => state.side_a.active_monster_mut(),
+        SideId::SideB => state.side_b.active_monster_mut(),
+    };
+    target.current_hp = target.current_hp.saturating_sub(dmg);
+
+    events.push(BattleEvent::Damage {
+        side: defender_side,
+        amount: dmg,
+        effectiveness: eff,
+    });
+
+    // Immune hits (0 damage) never faint
+    if eff == Effectiveness::Immune {
+        return;
+    }
+
+    let fainted = match defender_side {
+        SideId::SideA => state.side_a.active_monster().is_fainted(),
+        SideId::SideB => state.side_b.active_monster().is_fainted(),
+    };
+
+    if fainted {
+        events.push(BattleEvent::Faint {
+            side: defender_side,
+        });
+
+        let next = match defender_side {
+            SideId::SideA => state.side_a.next_conscious_index(),
+            SideId::SideB => state.side_b.next_conscious_index(),
+        };
+
+        if let Some(idx) = next {
+            match defender_side {
+                SideId::SideA => state.side_a.active = idx,
+                SideId::SideB => state.side_b.active = idx,
+            }
+            events.push(BattleEvent::Switch {
+                side: defender_side,
+                new_active: idx,
+            });
+        } else {
+            let winner = acting_side;
+            state.outcome = match winner {
+                SideId::SideA => BattleOutcome::SideAWins,
+                SideId::SideB => BattleOutcome::SideBWins,
+            };
+            events.push(BattleEvent::BattleEnd { winner });
+        }
+    }
+}
 
 /// Resolve a full turn: both sides act according to their choices.
 ///
@@ -31,7 +134,110 @@ pub fn resolve_turn(
     type_chart: &TypeChart,
     variance: &TurnVariance,
 ) -> Vec<BattleEvent> {
-    todo!()
+    let mut events = Vec::new();
+    state.turn_number += 1;
+
+    // Swaps always happen before attacks
+    if let TurnChoice::Swap { team_index } = &choice_a {
+        state.side_a.active = *team_index;
+        events.push(BattleEvent::Switch {
+            side: SideId::SideA,
+            new_active: *team_index,
+        });
+    }
+    if let TurnChoice::Swap { team_index } = &choice_b {
+        state.side_b.active = *team_index;
+        events.push(BattleEvent::Switch {
+            side: SideId::SideB,
+            new_active: *team_index,
+        });
+    }
+
+    let a_attacks = matches!(choice_a, TurnChoice::Attack { .. });
+    let b_attacks = matches!(choice_b, TurnChoice::Attack { .. });
+
+    if a_attacks && b_attacks {
+        let speed_a = state.side_a.active_monster().stats.speed;
+        let speed_b = state.side_b.active_monster().stats.speed;
+
+        let a_goes_first = if speed_a > speed_b {
+            true
+        } else if speed_b > speed_a {
+            false
+        } else {
+            variance.speed_tie_breaker
+        };
+
+        let (first, second) = if a_goes_first {
+            (SideId::SideA, SideId::SideB)
+        } else {
+            (SideId::SideB, SideId::SideA)
+        };
+        let (first_skill, second_skill) = if a_goes_first {
+            (skill_id_from(&choice_a), skill_id_from(&choice_b))
+        } else {
+            (skill_id_from(&choice_b), skill_id_from(&choice_a))
+        };
+
+        resolve_one_attack(
+            state,
+            first,
+            first_skill,
+            skills,
+            type_chart,
+            variance,
+            &mut events,
+        );
+
+        if state.outcome != BattleOutcome::Ongoing {
+            return events;
+        }
+
+        // KO by the faster side prevents the slower side from acting
+        let second_had_faint = events
+            .iter()
+            .any(|e| matches!(e, BattleEvent::Faint { side } if *side == second));
+        if !second_had_faint {
+            resolve_one_attack(
+                state,
+                second,
+                second_skill,
+                skills,
+                type_chart,
+                variance,
+                &mut events,
+            );
+        }
+    } else if a_attacks {
+        resolve_one_attack(
+            state,
+            SideId::SideA,
+            skill_id_from(&choice_a),
+            skills,
+            type_chart,
+            variance,
+            &mut events,
+        );
+    } else if b_attacks {
+        resolve_one_attack(
+            state,
+            SideId::SideB,
+            skill_id_from(&choice_b),
+            skills,
+            type_chart,
+            variance,
+            &mut events,
+        );
+    }
+
+    events
+}
+
+fn skill_id_from(choice: &TurnChoice) -> u32 {
+    match choice {
+        TurnChoice::Attack { skill_id } => *skill_id,
+        TurnChoice::Swap { .. } => unreachable!("expected Attack, got Swap"),
+    }
 }
 
 /// Resolve a turn where only the enemy side acts (e.g. the player chose to Swap).
@@ -45,7 +251,31 @@ pub fn resolve_enemy_turn(
     type_chart: &TypeChart,
     variance: &TurnVariance,
 ) -> Vec<BattleEvent> {
-    todo!()
+    let mut events = Vec::new();
+
+    let (attacker, defender) = match enemy_side {
+        SideId::SideA => (
+            state.side_a.active_monster().clone(),
+            state.side_b.active_monster().clone(),
+        ),
+        SideId::SideB => (
+            state.side_b.active_monster().clone(),
+            state.side_a.active_monster().clone(),
+        ),
+    };
+
+    let skill_id = super::ai::pick_best_skill(&attacker, &defender, skills, type_chart);
+    resolve_one_attack(
+        state,
+        enemy_side,
+        skill_id,
+        skills,
+        type_chart,
+        variance,
+        &mut events,
+    );
+
+    events
 }
 
 /// Resolve a player swap: swap first, then the enemy side attacks the new active.
@@ -60,7 +290,22 @@ pub fn resolve_player_swap(
     type_chart: &TypeChart,
     variance: &TurnVariance,
 ) -> Vec<BattleEvent> {
-    todo!()
+    let mut events = Vec::new();
+
+    match swap_side {
+        SideId::SideA => state.side_a.active = new_active,
+        SideId::SideB => state.side_b.active = new_active,
+    }
+    events.push(BattleEvent::Switch {
+        side: swap_side,
+        new_active,
+    });
+
+    let enemy_side = opposite(swap_side);
+    let enemy_events = resolve_enemy_turn(state, enemy_side, skills, type_chart, variance);
+    events.extend(enemy_events);
+
+    events
 }
 
 // ===========================================================================
@@ -156,7 +401,7 @@ mod tests {
     /// verify that the first Damage event targets Side A (B struck first).
     /// Starts red because `resolve_turn` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn faster_side_attacks_first() {
         let chart = make_type_chart();
         // Side A: slow; Side B: fast
@@ -195,7 +440,7 @@ mod tests {
     /// Kills: an impl that ignores the tie_breaker on equal speed.
     /// Starts red because `resolve_turn` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn speed_tie_uses_tie_breaker() {
         let chart = make_type_chart();
         // Both monsters have the same speed
@@ -253,7 +498,7 @@ mod tests {
     /// has incorrect speed ordering (B acting before A when A is faster).
     /// Starts red because `resolve_turn` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn ko_by_faster_side_prevents_slower_side_from_acting() {
         let chart = make_type_chart();
         // Side A: much faster (100) and very high attack
@@ -315,7 +560,7 @@ mod tests {
     /// Kills: an impl that does not auto-switch when the active monster faints.
     /// Starts red because `resolve_turn` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn auto_switch_on_faint_when_backup_exists() {
         let chart = make_type_chart();
         // Side A: one strong monster
@@ -397,7 +642,7 @@ mod tests {
     /// Kills: an impl that doesn't emit BattleEnd or set the outcome.
     /// Starts red because `resolve_turn` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn battle_ends_when_all_members_fainted() {
         let chart = make_type_chart();
         // Side A: strong
@@ -455,7 +700,7 @@ mod tests {
     /// Kills: an impl where the enemy attacks the OLD active instead of the new one.
     /// Starts red because `resolve_player_swap` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn player_swap_then_enemy_attacks_new_active() {
         let chart = make_type_chart();
         let player_m0 = make_monster(Affinity::Fire, 100, 50);
@@ -516,7 +761,7 @@ mod tests {
     /// Kills: an impl where both sides act during resolve_enemy_turn.
     /// Starts red because `resolve_enemy_turn` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn resolve_enemy_turn_only_enemy_acts() {
         let chart = make_type_chart();
         let player = make_monster(Affinity::Fire, 200, 50);
@@ -568,7 +813,7 @@ mod tests {
     /// Kills: an impl that doesn't increment turn_number or increments by != 1.
     /// Starts red because `resolve_turn` is `todo!()`.
     #[test]
-    #[should_panic]
+
     fn turn_number_increments_by_one() {
         let chart = make_type_chart();
         let monster_a = make_monster(Affinity::Fire, 200, 50);
