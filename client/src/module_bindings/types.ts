@@ -18,6 +18,19 @@ export const ActionState = __t.enum("ActionState", {
 });
 export type ActionState = __Infer<typeof ActionState>;
 
+// The tagged union or sum type for the algebraic type `Affinity`.
+export const Affinity = __t.enum("Affinity", {
+  Fire: __t.unit(),
+  Water: __t.unit(),
+  Plant: __t.unit(),
+  Electric: __t.unit(),
+  Earth: __t.unit(),
+  Wind: __t.unit(),
+  Light: __t.unit(),
+  Dark: __t.unit(),
+});
+export type Affinity = __Infer<typeof Affinity>;
+
 export const Character = __t.object("Character", {
   entityId: __t.u64(),
   zoneId: __t.u32(),
@@ -52,6 +65,66 @@ export const Direction = __t.enum("Direction", {
 });
 export type Direction = __Infer<typeof Direction>;
 
+export const ItemRow = __t.object("ItemRow", {
+  id: __t.u32(),
+  name: __t.string(),
+  description: __t.string(),
+});
+export type ItemRow = __Infer<typeof ItemRow>;
+
+export const Monster = __t.object("Monster", {
+  monsterId: __t.u64(),
+  ownerIdentity: __t.identity(),
+  speciesId: __t.u32(),
+  nickname: __t.string(),
+  level: __t.u8(),
+  xp: __t.u32(),
+  bond: __t.u8(),
+  ivHp: __t.u8(),
+  ivAttack: __t.u8(),
+  ivDefense: __t.u8(),
+  ivSpeed: __t.u8(),
+  ivSpAttack: __t.u8(),
+  ivSpDefense: __t.u8(),
+  get natureKind() {
+    return NatureKind;
+  },
+  evHp: __t.u16(),
+  evAttack: __t.u16(),
+  evDefense: __t.u16(),
+  evSpeed: __t.u16(),
+  evSpAttack: __t.u16(),
+  evSpDefense: __t.u16(),
+  statHp: __t.u16(),
+  statAttack: __t.u16(),
+  statDefense: __t.u16(),
+  statSpeed: __t.u16(),
+  statSpAttack: __t.u16(),
+  statSpDefense: __t.u16(),
+  currentHp: __t.u16(),
+  partySlot: __t.u8(),
+});
+export type Monster = __Infer<typeof Monster>;
+
+export const MonsterPub = __t.object("MonsterPub", {
+  monsterId: __t.u64(),
+  ownerIdentity: __t.identity(),
+  speciesId: __t.u32(),
+  nickname: __t.string(),
+  level: __t.u8(),
+  xp: __t.u32(),
+  bond: __t.u8(),
+  currentHp: __t.u16(),
+  statHp: __t.u16(),
+  statAttack: __t.u16(),
+  statDefense: __t.u16(),
+  statSpeed: __t.u16(),
+  statSpAttack: __t.u16(),
+  statSpDefense: __t.u16(),
+  partySlot: __t.u8(),
+});
+export type MonsterPub = __Infer<typeof MonsterPub>;
+
 // The tagged union or sum type for the algebraic type `MoveInput`.
 export const MoveInput = __t.enum("MoveInput", {
   get Step() {
@@ -68,6 +141,36 @@ export const MovementTickSchedule = __t.object("MovementTickSchedule", {
 });
 export type MovementTickSchedule = __Infer<typeof MovementTickSchedule>;
 
+// The tagged union or sum type for the algebraic type `NatureKind`.
+export const NatureKind = __t.enum("NatureKind", {
+  Hardy: __t.unit(),
+  Lonely: __t.unit(),
+  Brave: __t.unit(),
+  Adamant: __t.unit(),
+  Naughty: __t.unit(),
+  Bold: __t.unit(),
+  Docile: __t.unit(),
+  Relaxed: __t.unit(),
+  Impish: __t.unit(),
+  Lax: __t.unit(),
+  Timid: __t.unit(),
+  Hasty: __t.unit(),
+  Serious: __t.unit(),
+  Jolly: __t.unit(),
+  Naive: __t.unit(),
+  Modest: __t.unit(),
+  Mild: __t.unit(),
+  Quiet: __t.unit(),
+  Bashful: __t.unit(),
+  Rash: __t.unit(),
+  Calm: __t.unit(),
+  Gentle: __t.unit(),
+  Sassy: __t.unit(),
+  Careful: __t.unit(),
+  Quirky: __t.unit(),
+});
+export type NatureKind = __Infer<typeof NatureKind>;
+
 export const Player = __t.object("Player", {
   identity: __t.identity(),
   entityId: __t.u64(),
@@ -76,6 +179,46 @@ export const Player = __t.object("Player", {
   lastInputSeq: __t.u64(),
 });
 export type Player = __Infer<typeof Player>;
+
+export const SkillRow = __t.object("SkillRow", {
+  id: __t.u32(),
+  name: __t.string(),
+  get affinity() {
+    return Affinity;
+  },
+  power: __t.u16(),
+  accuracy: __t.u8(),
+  pp: __t.u8(),
+});
+export type SkillRow = __Infer<typeof SkillRow>;
+
+export const SpeciesRow = __t.object("SpeciesRow", {
+  id: __t.u32(),
+  name: __t.string(),
+  baseHp: __t.u16(),
+  baseAttack: __t.u16(),
+  baseDefense: __t.u16(),
+  baseSpeed: __t.u16(),
+  baseSpAttack: __t.u16(),
+  baseSpDefense: __t.u16(),
+  get affinity() {
+    return Affinity;
+  },
+  learnableSkillIds: __t.array(__t.u32()),
+});
+export type SpeciesRow = __Infer<typeof SpeciesRow>;
+
+export const TypeRelationRow = __t.object("TypeRelationRow", {
+  id: __t.u64(),
+  get attacker() {
+    return Affinity;
+  },
+  get defender() {
+    return Affinity;
+  },
+  effectiveness: __t.u8(),
+});
+export type TypeRelationRow = __Infer<typeof TypeRelationRow>;
 
 export const ZoneDefRow = __t.object("ZoneDefRow", {
   zoneId: __t.u32(),

@@ -58,14 +58,21 @@ impl TileMap {
         for (y, row) in rows.iter().enumerate() {
             let row_len = i32::try_from(row.chars().count()).unwrap_or(i32::MAX);
             if row_len != width {
-                return Err(format!("ragged map: row {y} has width {row_len}, expected {width}"));
+                return Err(format!(
+                    "ragged map: row {y} has width {row_len}, expected {width}"
+                ));
             }
             for (x, c) in row.chars().enumerate() {
                 let kind = TileKind::from_char(c).map_err(|e| format!("{e} at ({x},{y})"))?;
                 walkable.push(kind.is_walkable());
             }
         }
-        Ok(TileMap { zone_id, width, height, walkable })
+        Ok(TileMap {
+            zone_id,
+            width,
+            height,
+            walkable,
+        })
     }
 
     #[must_use]
@@ -180,7 +187,12 @@ mod tests {
     use proptest::prelude::*;
 
     fn at(x: i32, y: i32, facing: Direction) -> CharacterState {
-        CharacterState { pos: TilePos { x, y }, facing, action: ActionState::Idle, move_started_at: Millis(0) }
+        CharacterState {
+            pos: TilePos { x, y },
+            facing,
+            action: ActionState::Idle,
+            move_started_at: Millis(0),
+        }
     }
 
     #[test]
@@ -202,7 +214,10 @@ mod tests {
     fn out_of_bounds_is_a_wall_not_a_panic() {
         let m = zone_0();
         assert!(!m.is_walkable(TilePos { x: -1, y: 0 }));
-        assert!(!m.is_walkable(TilePos { x: i32::MAX, y: i32::MAX }));
+        assert!(!m.is_walkable(TilePos {
+            x: i32::MAX,
+            y: i32::MAX
+        }));
         assert!(!m.in_bounds(TilePos { x: 1000, y: 1000 }));
     }
 

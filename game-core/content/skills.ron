@@ -1,2 +1,9 @@
 // Skill registry — DATA, not code (ADR-0006). Stable `id`s are APPEND-ONLY.
-[]
+[
+    (id: 1, name: "Ember",       affinity: Fire,    power: 40, accuracy: 100, pp: 25),
+    (id: 2, name: "Fire Fang",   affinity: Fire,    power: 65, accuracy: 95,  pp: 15),
+    (id: 3, name: "Water Gun",   affinity: Water,   power: 40, accuracy: 100, pp: 25),
+    (id: 4, name: "Aqua Jet",    affinity: Water,   power: 40, accuracy: 100, pp: 20),
+    (id: 5, name: "Vine Whip",   affinity: Plant,   power: 45, accuracy: 100, pp: 25),
+    (id: 6, name: "Razor Leaf",  affinity: Plant,   power: 55, accuracy: 95,  pp: 25),
+]

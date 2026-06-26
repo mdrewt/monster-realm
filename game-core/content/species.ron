@@ -1,2 +1,24 @@
 // Species registry — DATA, not code (ADR-0006). Stable `id`s are APPEND-ONLY.
-[]
+[
+    (
+        id: 1,
+        name: "Flameling",
+        base_stats: (hp: 45, attack: 49, defense: 49, speed: 65, sp_attack: 65, sp_defense: 45),
+        affinity: Fire,
+        learnable_skill_ids: [1, 2],
+    ),
+    (
+        id: 2,
+        name: "Tidalin",
+        base_stats: (hp: 44, attack: 48, defense: 65, speed: 43, sp_attack: 64, sp_defense: 64),
+        affinity: Water,
+        learnable_skill_ids: [3, 4],
+    ),
+    (
+        id: 3,
+        name: "Sproutlet",
+        base_stats: (hp: 45, attack: 49, defense: 49, speed: 45, sp_attack: 65, sp_defense: 65),
+        affinity: Plant,
+        learnable_skill_ids: [5, 6],
+    ),
+]
