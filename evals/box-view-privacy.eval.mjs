@@ -31,24 +31,31 @@ const HIDDEN_FIELDS = [
  * Handles the common single-file case: finds the FIRST occurrence of `interface NAME`.
  */
 export function extractInterfaceBody(src, interfaceName) {
-  // Match `interface StoreMonsterPub {` allowing for export / whitespace.
-  const startRe = new RegExp(`(?:export\\s+)?interface\\s+${interfaceName}\\s*\\{`);
-  const match = startRe.exec(src);
-  if (!match) return null;
-
-  // Walk forward counting braces to find the closing `}`.
-  let depth = 0;
-  let i = match.index + match[0].length - 1; // at the opening `{`
-  const start = i;
-  while (i < src.length) {
-    if (src[i] === '{') depth++;
-    else if (src[i] === '}') {
-      depth--;
-      if (depth === 0) break;
+  // Find `interface <name> {` (optionally preceded by `export`) using indexOf
+  // to avoid a dynamic RegExp that Semgrep flags as a ReDoS risk.
+  const needle = `interface ${interfaceName}`;
+  let idx = src.indexOf(needle);
+  while (idx !== -1) {
+    // Skip whitespace after the name, then expect `{`.
+    let j = idx + needle.length;
+    while (j < src.length && ' \t\n\r'.includes(src[j])) j++;
+    if (j < src.length && src[j] === '{') {
+      // Walk forward counting braces to find the closing `}`.
+      let depth = 0;
+      let i = j;
+      while (i < src.length) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}') {
+          depth--;
+          if (depth === 0) break;
+        }
+        i++;
+      }
+      return src.slice(j, i + 1); // includes the braces
     }
-    i++;
+    idx = src.indexOf(needle, idx + 1);
   }
-  return src.slice(start, i + 1); // includes the braces
+  return null;
 }
 
 /**
