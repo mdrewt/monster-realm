@@ -56,4 +56,60 @@ jobs:
         run: pipx run semgrep scan --config auto --error
       - name: SBOM
         uses: anchore/sbom-action@v0
-      # build/publish/integration require a running SpacetimeDB instance (see README)
+
+  # M5b (ADR-0009): the two-window e2e is now a merge gate run against a REAL
+  # version-pinned standalone SpacetimeDB in CI — not local-only. ADR-0039 records
+  # why a pinned CLI service realizes ADR-0009's "containerized spacetime" (CLI /
+  # server / committed-bindings version-match reliability; migrating to a service
+  # image is a named follow-up). Falsifiability: evals/e2e-desync-teeth.eval.mjs
+  # (ADR-0010) bites on a known desync fixture and asserts this job stays wired.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with: { version: 'v0.15.0' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '24.13.1' }
+      - uses: extractions/setup-just@v2
+      # Pinned SpacetimeDB CLI (2.6.0) so publish + `spacetime generate` protocol,
+      # the committed TS bindings, and the module all agree (ADR-0009).
+      - name: Install SpacetimeDB CLI
+        # `--yes`: the installer prompts to confirm and aborts on a non-tty CI
+        # runner ("IO error: not a terminal") without it. The install also
+        # generates the local identity keypair used to publish.
+        run: |
+          curl -sSf https://install.spacetimedb.com | sh -s -- --yes
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Pin spacetime 2.6.0
+        run: |
+          spacetime version install 2.6.0
+          spacetime version use 2.6.0
+          spacetime --version
+      # Ephemeral standalone instance on 127.0.0.1:3000 (the client default
+      # VITE_STDB_URI); in-memory, torn down with the runner.
+      - name: Start SpacetimeDB
+        run: nohup spacetime start --in-memory --listen-addr 127.0.0.1:3000 > /tmp/stdb.log 2>&1 &
+      - name: Wait for SpacetimeDB
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://127.0.0.1:3000/; then echo "ready after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "spacetime did not become ready on :3000" >&2; cat /tmp/stdb.log >&2 || true; exit 1
+      - name: Install client deps
+        run: cd client && npm ci
+      - name: Install Playwright chromium
+        run: cd client && npx playwright install --with-deps chromium
+      # `just e2e` builds the client-wasm pkg, then Playwright runs the two-window
+      # golden flows; global-setup republishes the module --delete-data (known
+      # preconditions: zero players). `publish -s` takes a raw URL — no server alias.
+      - name: Two-window e2e (golden flows vs real spacetime)
+        env:
+          STDB_SERVER: http://127.0.0.1:3000
+          VITE_STDB_URI: ws://127.0.0.1:3000
+          VITE_STDB_DB: monster-realm
+        run: just e2e
+        # build/publish/integration require a running SpacetimeDB instance (see README)
