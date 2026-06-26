@@ -8,17 +8,27 @@ import { type Infer as __Infer } from "spacetimedb";
 // Import all reducer arg schemas
 import ClearQueueReducer from "../clear_queue_reducer";
 import EnqueueMoveReducer from "../enqueue_move_reducer";
+import FleeReducer from "../flee_reducer";
+import HealPartyReducer from "../heal_party_reducer";
 import JoinGameReducer from "../join_game_reducer";
 import SetMoveReducer from "../set_move_reducer";
 import SetNicknameReducer from "../set_nickname_reducer";
 import SetPartySlotReducer from "../set_party_slot_reducer";
+import StartBattleReducer from "../start_battle_reducer";
+import SubmitAttackReducer from "../submit_attack_reducer";
+import SwapActiveReducer from "../swap_active_reducer";
 import SyncContentReducer from "../sync_content_reducer";
 
 export type ClearQueueParams = __Infer<typeof ClearQueueReducer>;
 export type EnqueueMoveParams = __Infer<typeof EnqueueMoveReducer>;
+export type FleeParams = __Infer<typeof FleeReducer>;
+export type HealPartyParams = __Infer<typeof HealPartyReducer>;
 export type JoinGameParams = __Infer<typeof JoinGameReducer>;
 export type SetMoveParams = __Infer<typeof SetMoveReducer>;
 export type SetNicknameParams = __Infer<typeof SetNicknameReducer>;
 export type SetPartySlotParams = __Infer<typeof SetPartySlotReducer>;
+export type StartBattleParams = __Infer<typeof StartBattleReducer>;
+export type SubmitAttackParams = __Infer<typeof SubmitAttackReducer>;
+export type SwapActiveParams = __Infer<typeof SwapActiveReducer>;
 export type SyncContentParams = __Infer<typeof SyncContentReducer>;
 

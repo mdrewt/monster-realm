@@ -294,35 +294,26 @@ fn m7b_3_resolve_turn_on_terminal_state_increments_turn_number() {
 // ===========================================================================
 
 #[test]
-fn m7b_4_flee_outcome_variant_is_undefined() {
-    // BattleOutcome has three variants. None represent "fled".
-    // Prove this is a gap by exhaustively matching.
-    let outcome = BattleOutcome::Ongoing;
+fn m7b_4_flee_outcome_variant_exists() {
+    // BattleOutcome now has four variants including Fled (added in M7b).
+    let outcome = BattleOutcome::Fled;
     let is_terminal = match outcome {
         BattleOutcome::Ongoing => false,
         BattleOutcome::SideAWins => true,
         BattleOutcome::SideBWins => true,
-        // No Fled variant — the plan does not define it.
-        // If flee() sets SideBWins (player lost), heal_party is blocked.
-        // If flee() leaves outcome = Ongoing (bad), heal_party is also blocked.
+        BattleOutcome::Fled => true,
     };
 
     assert!(
-        !is_terminal,
-        "M7b-4: BattleOutcome has no Fled variant. The plan's `flee` reducer \
-         must set the outcome to something. If it sets SideBWins, the player \
-         is treated as a loser. If it leaves Ongoing, heal_party is permanently \
-         blocked. Add BattleOutcome::Fled or BattleOutcome::SideAFled."
+        is_terminal,
+        "M7b-4: BattleOutcome::Fled must be a terminal outcome"
     );
 
-    // The real finding: there is no Fled variant.
-    // This assertion always passes (documenting the gap):
-    let has_fled_variant = false; // BattleOutcome does not have one
-    assert!(
-        !has_fled_variant,
-        "M7b-4 SPEC GAP: BattleOutcome::Fled does not exist. \
-         Define the exact outcome value that `flee` sets and ensure \
-         heal_party checks treat it as terminal."
+    // Fled variant now exists — gap resolved in M7b.
+    assert_ne!(
+        BattleOutcome::Fled,
+        BattleOutcome::Ongoing,
+        "Fled must be distinct from Ongoing so heal_party treats it as terminal"
     );
 }
 

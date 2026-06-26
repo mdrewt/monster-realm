@@ -31,6 +31,65 @@ export const Affinity = __t.enum("Affinity", {
 });
 export type Affinity = __Infer<typeof Affinity>;
 
+export const Battle = __t.object("Battle", {
+  battleId: __t.u64(),
+  playerIdentity: __t.identity(),
+  opponentIdentity: __t.identity(),
+  get state() {
+    return BattleState;
+  },
+  partyMonsterIds: __t.array(__t.u64()),
+  opponentMonsterIds: __t.array(__t.u64()),
+  createdAtMs: __t.i64(),
+});
+export type Battle = __Infer<typeof Battle>;
+
+export const BattleMonster = __t.object("BattleMonster", {
+  speciesId: __t.u32(),
+  get affinity() {
+    return Affinity;
+  },
+  level: __t.u8(),
+  currentHp: __t.u16(),
+  maxHp: __t.u16(),
+  get stats() {
+    return StatBlock;
+  },
+  knownSkillIds: __t.array(__t.u32()),
+});
+export type BattleMonster = __Infer<typeof BattleMonster>;
+
+// The tagged union or sum type for the algebraic type `BattleOutcome`.
+export const BattleOutcome = __t.enum("BattleOutcome", {
+  Ongoing: __t.unit(),
+  SideAWins: __t.unit(),
+  SideBWins: __t.unit(),
+  Fled: __t.unit(),
+});
+export type BattleOutcome = __Infer<typeof BattleOutcome>;
+
+export const BattleSide = __t.object("BattleSide", {
+  active: __t.u32(),
+  get team() {
+    return __t.array(BattleMonster);
+  },
+});
+export type BattleSide = __Infer<typeof BattleSide>;
+
+export const BattleState = __t.object("BattleState", {
+  get sideA() {
+    return BattleSide;
+  },
+  get sideB() {
+    return BattleSide;
+  },
+  get outcome() {
+    return BattleOutcome;
+  },
+  turnNumber: __t.u16(),
+});
+export type BattleState = __Infer<typeof BattleState>;
+
 export const Character = __t.object("Character", {
   entityId: __t.u64(),
   zoneId: __t.u32(),
@@ -207,6 +266,16 @@ export const SpeciesRow = __t.object("SpeciesRow", {
   learnableSkillIds: __t.array(__t.u32()),
 });
 export type SpeciesRow = __Infer<typeof SpeciesRow>;
+
+export const StatBlock = __t.object("StatBlock", {
+  hp: __t.u16(),
+  attack: __t.u16(),
+  defense: __t.u16(),
+  speed: __t.u16(),
+  spAttack: __t.u16(),
+  spDefense: __t.u16(),
+});
+export type StatBlock = __Infer<typeof StatBlock>;
 
 export const TypeRelationRow = __t.object("TypeRelationRow", {
   id: __t.u64(),

@@ -135,6 +135,13 @@ pub fn resolve_turn(
     variance: &TurnVariance,
 ) -> Vec<BattleEvent> {
     let mut events = Vec::new();
+
+    // Guard: reject calls on a terminal battle (server reducer should also
+    // check, but defence-in-depth prevents silent corruption).
+    if state.outcome != BattleOutcome::Ongoing {
+        return events;
+    }
+
     state.turn_number += 1;
 
     // Swaps always happen before attacks
@@ -285,7 +292,7 @@ pub fn resolve_enemy_turn(
 pub fn resolve_player_swap(
     state: &mut BattleState,
     swap_side: SideId,
-    new_active: usize,
+    new_active: u32,
     skills: &[SkillDef],
     type_chart: &TypeChart,
     variance: &TurnVariance,

@@ -8,10 +8,11 @@
 //! Time columns are `i64` ms (round-trip `game_core::Millis`). Syntax: crate 1.12.
 
 use game_core::{
-    apply_move, load_items, load_skills, load_species, load_type_chart, roll_starter, spawn,
-    validate_content, zone_0, ActionState, Affinity, CharacterState, Direction, Millis,
-    MonsterInstance, MoveInput, NatureKind, StatBlock, StatKind, TileMap, TilePos, MOVE_QUEUE_CAP,
-    STEP_MS,
+    apply_move, apply_xp_gain, battle_xp_reward, load_items, load_skills, load_species,
+    load_type_chart, resolve_turn, roll_starter, spawn, validate_content, zone_0, ActionState,
+    Affinity, BattleMonster, BattleOutcome, BattleSide, BattleState, CharacterState, Direction,
+    Millis, MonsterInstance, MoveInput, NatureKind, SkillDef, StatBlock, StatKind, TileMap,
+    TilePos, TurnChoice, TurnVariance, TypeChart, MOVE_QUEUE_CAP, STEP_MS,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
@@ -205,6 +206,26 @@ pub struct MonsterPub {
     pub party_slot: u8,
 }
 
+// --- Battle table (M7b, public, ADR-0042) ------------------------------------
+
+/// A single PvE or PvP battle. The `state` column holds the full `BattleState`
+/// (pure data from `game-core`); the server module is the ONLY writer. Public so
+/// both participants can subscribe; hidden fields (IVs/EVs) are NOT in
+/// `BattleState` — only derived stats appear there (ADR-0015 satisfied).
+#[spacetimedb::table(name = battle, public)]
+pub struct Battle {
+    #[primary_key]
+    #[auto_inc]
+    pub battle_id: u64,
+    #[index(btree)]
+    pub player_identity: Identity,
+    pub opponent_identity: Identity,
+    pub state: BattleState,
+    pub party_monster_ids: Vec<u64>,
+    pub opponent_monster_ids: Vec<u64>,
+    pub created_at_ms: i64,
+}
+
 /// 255 sentinel = monster is in the box (not in any party slot).
 const PARTY_SLOT_NONE: u8 = 255;
 
@@ -319,6 +340,73 @@ fn pub_from_monster(m: &Monster) -> MonsterPub {
         stat_sp_defense: m.stat_sp_defense,
         party_slot: m.party_slot,
     }
+}
+
+// --- Battle helpers (M7b, pure marshaling — no ctx) ---------------------------
+
+/// Marshal a Monster row + its species + its known skills into a BattleMonster.
+fn battle_monster_from_row(
+    monster: &Monster,
+    species: &SpeciesRow,
+    skills: &[SkillRow],
+) -> BattleMonster {
+    BattleMonster {
+        species_id: monster.species_id,
+        affinity: species.affinity,
+        level: monster.level,
+        current_hp: monster.current_hp,
+        max_hp: monster.stat_hp,
+        stats: StatBlock {
+            hp: monster.stat_hp,
+            attack: monster.stat_attack,
+            defense: monster.stat_defense,
+            speed: monster.stat_speed,
+            sp_attack: monster.stat_sp_attack,
+            sp_defense: monster.stat_sp_defense,
+        },
+        known_skill_ids: skills.iter().map(|s| s.id).collect(),
+    }
+}
+
+/// Write post-battle HP back from a BattleMonster to the persistent Monster row.
+fn write_back_hp(monster: &mut Monster, bm: &BattleMonster) {
+    monster.current_hp = bm.current_hp;
+}
+
+/// Sum the six base stats of a species (for the XP formula).
+fn loser_base_stat_total(species: &SpeciesRow) -> u16 {
+    species.base_hp
+        + species.base_attack
+        + species.base_defense
+        + species.base_speed
+        + species.base_sp_attack
+        + species.base_sp_defense
+}
+
+/// Build a `Vec<SkillDef>` from the DB skill rows for the resolver.
+fn skill_defs_from_rows(rows: &[SkillRow]) -> Vec<SkillDef> {
+    rows.iter()
+        .map(|r| SkillDef {
+            id: r.id,
+            name: r.name.clone(),
+            affinity: r.affinity,
+            power: r.power,
+            accuracy: r.accuracy,
+            pp: r.pp,
+        })
+        .collect()
+}
+
+/// Build the type chart from DB rows.
+fn type_chart_from_rows(rows: impl Iterator<Item = TypeRelationRow>) -> TypeChart {
+    let rels: Vec<game_core::TypeRelation> = rows
+        .map(|r| game_core::TypeRelation {
+            attacker: r.attacker,
+            defender: r.defender,
+            effectiveness: r.effectiveness,
+        })
+        .collect();
+    game_core::TypeChart::new(&rels)
 }
 
 fn sync_content_inner(ctx: &ReducerContext) {
@@ -759,6 +847,437 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
     Ok(())
 }
 
+// --- Battle reducers (M7b) ---------------------------------------------------
+
+/// Start a PvE battle: build BattleMonsters from the player's party and the
+/// opponent's party (owned by opponent_identity), create a BattleState, insert
+/// the Battle row. Both parties must have at least one conscious party member.
+#[spacetimedb::reducer]
+pub fn start_battle(
+    ctx: &ReducerContext,
+    opponent_identity: Identity,
+    party_monster_ids: Vec<u64>,
+    opponent_monster_ids: Vec<u64>,
+) -> Result<(), String> {
+    let me = ctx.sender;
+
+    if party_monster_ids.is_empty() {
+        let e = "party_monster_ids must not be empty".to_string();
+        log_reject("start_battle", me, &e);
+        return Err(e);
+    }
+    if opponent_monster_ids.is_empty() {
+        let e = "opponent_monster_ids must not be empty".to_string();
+        log_reject("start_battle", me, &e);
+        return Err(e);
+    }
+
+    // Check caller is not already in an ongoing battle.
+    let already_in_battle = ctx
+        .db
+        .battle()
+        .player_identity()
+        .filter(me)
+        .any(|b| b.state.outcome == BattleOutcome::Ongoing);
+    if already_in_battle {
+        let e = "already in an ongoing battle".to_string();
+        log_reject("start_battle", me, &e);
+        return Err(e);
+    }
+
+    // Build side A (player) team.
+    let mut team_a = Vec::new();
+    for &mid in &party_monster_ids {
+        let m = ctx
+            .db
+            .monster()
+            .monster_id()
+            .find(mid)
+            .ok_or_else(|| format!("party monster {mid} not found"))?;
+        if m.owner_identity != me {
+            let e = format!("monster {mid} not owned by caller");
+            log_reject("start_battle", me, &e);
+            return Err(e);
+        }
+        let sp = ctx
+            .db
+            .species_row()
+            .id()
+            .find(m.species_id)
+            .ok_or_else(|| format!("species {} not found", m.species_id))?;
+        let skills: Vec<SkillRow> = ctx
+            .db
+            .skill_row()
+            .iter()
+            .filter(|s| sp.learnable_skill_ids.contains(&s.id))
+            .collect();
+        team_a.push(battle_monster_from_row(&m, &sp, &skills));
+    }
+
+    // Build side B (opponent) team.
+    let mut team_b = Vec::new();
+    for &mid in &opponent_monster_ids {
+        let m = ctx
+            .db
+            .monster()
+            .monster_id()
+            .find(mid)
+            .ok_or_else(|| format!("opponent monster {mid} not found"))?;
+        if m.owner_identity != opponent_identity {
+            let e = format!("monster {mid} not owned by opponent");
+            log_reject("start_battle", me, &e);
+            return Err(e);
+        }
+        let sp = ctx
+            .db
+            .species_row()
+            .id()
+            .find(m.species_id)
+            .ok_or_else(|| format!("species {} not found", m.species_id))?;
+        let skills: Vec<SkillRow> = ctx
+            .db
+            .skill_row()
+            .iter()
+            .filter(|s| sp.learnable_skill_ids.contains(&s.id))
+            .collect();
+        team_b.push(battle_monster_from_row(&m, &sp, &skills));
+    }
+
+    // At least one conscious monster per side.
+    if !team_a.iter().any(|m| !m.is_fainted()) {
+        let e = "party has no conscious monster".to_string();
+        log_reject("start_battle", me, &e);
+        return Err(e);
+    }
+    if !team_b.iter().any(|m| !m.is_fainted()) {
+        let e = "opponent has no conscious monster".to_string();
+        log_reject("start_battle", me, &e);
+        return Err(e);
+    }
+
+    let state = BattleState {
+        side_a: BattleSide {
+            active: 0,
+            team: team_a,
+        },
+        side_b: BattleSide {
+            active: 0,
+            team: team_b,
+        },
+        outcome: BattleOutcome::Ongoing,
+        turn_number: 0,
+    };
+
+    let battle = ctx.db.battle().insert(Battle {
+        battle_id: 0,
+        player_identity: me,
+        opponent_identity,
+        state,
+        party_monster_ids,
+        opponent_monster_ids,
+        created_at_ms: now_ms(ctx),
+    });
+
+    log::info!(
+        "{{\"evt\":\"battle_start\",\"battle_id\":{},\"sender\":\"{me}\"}}",
+        battle.battle_id
+    );
+    Ok(())
+}
+
+/// Submit an attack: resolve one turn where the player attacks with `skill_id`
+/// and the opponent uses AI. Ownership + outcome guards enforced.
+#[spacetimedb::reducer]
+pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Result<(), String> {
+    let me = ctx.sender;
+    let mut battle = ctx
+        .db
+        .battle()
+        .battle_id()
+        .find(battle_id)
+        .ok_or_else(|| "battle not found".to_string())?;
+    if battle.player_identity != me {
+        let e = "not owner".to_string();
+        log_reject("submit_attack", me, &e);
+        return Err(e);
+    }
+    if battle.state.outcome != BattleOutcome::Ongoing {
+        let e = "battle is not ongoing".to_string();
+        log_reject("submit_attack", me, &e);
+        return Err(e);
+    }
+
+    // Load skills and type chart for the resolver.
+    let skill_rows: Vec<SkillRow> = ctx.db.skill_row().iter().collect();
+    let skill_defs = skill_defs_from_rows(&skill_rows);
+    let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter());
+    let variance = TurnVariance::from_ctx_random(ctx.random());
+
+    // AI picks a skill for side B.
+    let enemy_skill_id = game_core::pick_best_skill(
+        battle.state.side_b.active_monster(),
+        battle.state.side_a.active_monster(),
+        &skill_defs,
+        &type_chart,
+    );
+
+    let _events = resolve_turn(
+        &mut battle.state,
+        TurnChoice::Attack { skill_id },
+        TurnChoice::Attack {
+            skill_id: enemy_skill_id,
+        },
+        &skill_defs,
+        &type_chart,
+        &variance,
+    );
+
+    // Write back HP + XP if battle ended.
+    if battle.state.outcome != BattleOutcome::Ongoing {
+        write_back_battle_results(ctx, &battle)?;
+    }
+
+    ctx.db.battle().battle_id().update(battle);
+    Ok(())
+}
+
+/// Swap the player's active monster. Ownership + outcome guards enforced.
+#[spacetimedb::reducer]
+pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Result<(), String> {
+    let me = ctx.sender;
+    let mut battle = ctx
+        .db
+        .battle()
+        .battle_id()
+        .find(battle_id)
+        .ok_or_else(|| "battle not found".to_string())?;
+    if battle.player_identity != me {
+        let e = "not owner".to_string();
+        log_reject("swap_active", me, &e);
+        return Err(e);
+    }
+    if battle.state.outcome != BattleOutcome::Ongoing {
+        let e = "battle is not ongoing".to_string();
+        log_reject("swap_active", me, &e);
+        return Err(e);
+    }
+    let idx = team_index as usize;
+    if idx >= battle.state.side_a.team.len() {
+        let e = format!("team_index {team_index} out of bounds");
+        log_reject("swap_active", me, &e);
+        return Err(e);
+    }
+    if battle.state.side_a.team[idx].is_fainted() {
+        let e = format!("monster at index {team_index} is fainted");
+        log_reject("swap_active", me, &e);
+        return Err(e);
+    }
+    if battle.state.side_a.active == team_index {
+        let e = "already the active monster".to_string();
+        log_reject("swap_active", me, &e);
+        return Err(e);
+    }
+
+    // Swap then enemy attacks the new active.
+    let skill_rows: Vec<SkillRow> = ctx.db.skill_row().iter().collect();
+    let skill_defs = skill_defs_from_rows(&skill_rows);
+    let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter());
+    let variance = TurnVariance::from_ctx_random(ctx.random());
+
+    let _events = game_core::resolve_player_swap(
+        &mut battle.state,
+        game_core::SideId::SideA,
+        team_index,
+        &skill_defs,
+        &type_chart,
+        &variance,
+    );
+
+    if battle.state.outcome != BattleOutcome::Ongoing {
+        write_back_battle_results(ctx, &battle)?;
+    }
+
+    ctx.db.battle().battle_id().update(battle);
+    Ok(())
+}
+
+/// Flee from a battle. Sets outcome to `Fled`; no XP awarded.
+#[spacetimedb::reducer]
+pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
+    let me = ctx.sender;
+    let mut battle = ctx
+        .db
+        .battle()
+        .battle_id()
+        .find(battle_id)
+        .ok_or_else(|| "battle not found".to_string())?;
+    if battle.player_identity != me {
+        let e = "not owner".to_string();
+        log_reject("flee", me, &e);
+        return Err(e);
+    }
+    if battle.state.outcome != BattleOutcome::Ongoing {
+        let e = "battle is not ongoing".to_string();
+        log_reject("flee", me, &e);
+        return Err(e);
+    }
+    battle.state.outcome = BattleOutcome::Fled;
+
+    // Write back current HP (player keeps damage taken so far).
+    for (i, bm) in battle.state.side_a.team.iter().enumerate() {
+        let mid = battle.party_monster_ids[i];
+        if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
+            write_back_hp(&mut m, bm);
+            let pub_row = pub_from_monster(&m);
+            ctx.db.monster().monster_id().update(m);
+            ctx.db.monster_pub().monster_id().update(pub_row);
+        }
+    }
+
+    ctx.db.battle().battle_id().update(battle);
+    log::info!("{{\"evt\":\"battle_flee\",\"battle_id\":{battle_id},\"sender\":\"{me}\"}}");
+    Ok(())
+}
+
+/// Heal all party monsters to full HP. Only allowed when the player is NOT in
+/// an ongoing battle.
+#[spacetimedb::reducer]
+pub fn heal_party(ctx: &ReducerContext) -> Result<(), String> {
+    let me = ctx.sender;
+
+    // Reject if player is in an ongoing battle.
+    let in_battle = ctx
+        .db
+        .battle()
+        .player_identity()
+        .filter(me)
+        .any(|b| b.state.outcome == BattleOutcome::Ongoing);
+    if in_battle {
+        let e = "cannot heal during an ongoing battle".to_string();
+        log_reject("heal_party", me, &e);
+        return Err(e);
+    }
+
+    let monsters: Vec<Monster> = ctx
+        .db
+        .monster()
+        .owner_identity()
+        .filter(me)
+        .filter(|m| m.party_slot != PARTY_SLOT_NONE)
+        .collect();
+    for mut m in monsters {
+        m.current_hp = m.stat_hp;
+        let pub_row = pub_from_monster(&m);
+        ctx.db.monster().monster_id().update(m);
+        ctx.db.monster_pub().monster_id().update(pub_row);
+    }
+
+    log::info!("{{\"evt\":\"heal_party\",\"sender\":\"{me}\"}}");
+    Ok(())
+}
+
+/// After a battle ends (win/loss), write HP back to all party monsters and
+/// grant XP to the winner's team.
+fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<(), String> {
+    // Write back HP for player's team.
+    for (i, bm) in battle.state.side_a.team.iter().enumerate() {
+        let mid = battle.party_monster_ids[i];
+        if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
+            write_back_hp(&mut m, bm);
+            let pub_row = pub_from_monster(&m);
+            ctx.db.monster().monster_id().update(m);
+            ctx.db.monster_pub().monster_id().update(pub_row);
+        }
+    }
+
+    // Grant XP if the player won.
+    if battle.state.outcome == BattleOutcome::SideAWins {
+        // Find the loser's species base stat total for the XP formula.
+        let loser_active = battle.state.side_b.active_monster();
+        let loser_species = ctx
+            .db
+            .species_row()
+            .id()
+            .find(loser_active.species_id)
+            .ok_or_else(|| format!("loser species {} not found", loser_active.species_id))?;
+        let bst = loser_base_stat_total(&loser_species);
+
+        // Award XP to each conscious member of the winning team.
+        for (i, bm) in battle.state.side_a.team.iter().enumerate() {
+            if bm.is_fainted() {
+                continue;
+            }
+            let mid = battle.party_monster_ids[i];
+            if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
+                let xp_gained = battle_xp_reward(
+                    game_core::Level::new(bm.level).unwrap(),
+                    bst,
+                    game_core::Level::new(loser_active.level).unwrap(),
+                );
+                let current_xp = game_core::Xp::new(m.xp);
+                let (new_xp, new_level, leveled_up) = apply_xp_gain(current_xp, xp_gained);
+                m.xp = new_xp.value();
+                m.level = new_level.as_u8();
+                if leveled_up {
+                    // Recompute derived stats on level-up.
+                    let sp = ctx.db.species_row().id().find(m.species_id);
+                    if let Some(species) = sp {
+                        let base = StatBlock {
+                            hp: species.base_hp,
+                            attack: species.base_attack,
+                            defense: species.base_defense,
+                            speed: species.base_speed,
+                            sp_attack: species.base_sp_attack,
+                            sp_defense: species.base_sp_defense,
+                        };
+                        let ivs = game_core::IVs::new(
+                            m.iv_hp,
+                            m.iv_attack,
+                            m.iv_defense,
+                            m.iv_speed,
+                            m.iv_sp_attack,
+                            m.iv_sp_defense,
+                        )
+                        .unwrap();
+                        let evs = game_core::EVs::new(
+                            m.ev_hp,
+                            m.ev_attack,
+                            m.ev_defense,
+                            m.ev_speed,
+                            m.ev_sp_attack,
+                            m.ev_sp_defense,
+                        )
+                        .unwrap();
+                        let nature = game_core::Nature::new(m.nature_kind);
+                        let derived = game_core::derive_stats(
+                            &base,
+                            &ivs,
+                            &evs,
+                            &nature,
+                            game_core::Level::new(m.level).unwrap(),
+                        );
+                        m.stat_hp = derived.hp;
+                        m.stat_attack = derived.attack;
+                        m.stat_defense = derived.defense;
+                        m.stat_speed = derived.speed;
+                        m.stat_sp_attack = derived.sp_attack;
+                        m.stat_sp_defense = derived.sp_defense;
+                        // Heal HP delta from stat growth.
+                        m.current_hp = m
+                            .current_hp
+                            .saturating_add(derived.hp.saturating_sub(bm.max_hp));
+                    }
+                }
+                let pub_row = pub_from_monster(&m);
+                ctx.db.monster().monster_id().update(m);
+                ctx.db.monster_pub().monster_id().update(pub_row);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1018,10 +1537,10 @@ mod tests {
     #[test]
     fn m7b_battle_monster_from_row_maps_hp_correctly() {
         let monster = m7b_test_monster_row();
+        let species = m7b_test_species_row();
         let skills = m7b_test_skill_rows();
 
-        // battle_monster_from_row does not exist yet — this test is RED.
-        let bm: game_core::BattleMonster = battle_monster_from_row(&monster, &skills);
+        let bm: game_core::BattleMonster = battle_monster_from_row(&monster, &species, &skills);
 
         // current_hp in battle = Monster.current_hp (the persisted damage state)
         assert_eq!(
@@ -1041,9 +1560,10 @@ mod tests {
     #[test]
     fn m7b_battle_monster_from_row_maps_identity_fields() {
         let monster = m7b_test_monster_row();
+        let species = m7b_test_species_row();
         let skills = m7b_test_skill_rows();
 
-        let bm: game_core::BattleMonster = battle_monster_from_row(&monster, &skills);
+        let bm: game_core::BattleMonster = battle_monster_from_row(&monster, &species, &skills);
 
         assert_eq!(bm.species_id, monster.species_id, "species_id must match");
         assert_eq!(
@@ -1059,9 +1579,10 @@ mod tests {
     #[test]
     fn m7b_battle_monster_from_row_maps_derived_stats() {
         let monster = m7b_test_monster_row();
+        let species = m7b_test_species_row();
         let skills = m7b_test_skill_rows();
 
-        let bm: game_core::BattleMonster = battle_monster_from_row(&monster, &skills);
+        let bm: game_core::BattleMonster = battle_monster_from_row(&monster, &species, &skills);
 
         // The StatBlock in BattleMonster must come from the derived stat columns,
         // not from raw IV/EV values or base stats.
@@ -1095,10 +1616,11 @@ mod tests {
     #[test]
     fn m7b_battle_monster_from_row_known_skill_ids_match_skills_slice() {
         let monster = m7b_test_monster_row();
+        let species = m7b_test_species_row();
         // Only provide skill 1 (not skill 2) — simulates the monster only knowing one move.
         let one_skill = vec![m7b_test_skill_rows().remove(0)];
 
-        let bm: game_core::BattleMonster = battle_monster_from_row(&monster, &one_skill);
+        let bm: game_core::BattleMonster = battle_monster_from_row(&monster, &species, &one_skill);
 
         assert_eq!(
             bm.known_skill_ids,

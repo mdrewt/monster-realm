@@ -27,7 +27,7 @@ export function parseTableColumns(src) {
   const tables = {};
   // Match the full table attribute + struct block.
   const tableRe =
-    /#\[spacetimedb::table\(name\s*=\s*(\w+)[^\]]*\)\]\s*pub struct \w+\s*\{([\s\S]*?)\n\}/g;
+    /#\[spacetimedb::table\(name\s*=\s*(\w+)[^\]]*\)\]\s*pub struct \w+\s*\{([\s\S]*?)\n\s*\}/g;
   let m;
   while ((m = tableRe.exec(src)) !== null) {
     const tableName = m[1];

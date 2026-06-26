@@ -36,15 +36,21 @@ import {
 // Import all reducer arg schemas
 import ClearQueueReducer from "./clear_queue_reducer";
 import EnqueueMoveReducer from "./enqueue_move_reducer";
+import FleeReducer from "./flee_reducer";
+import HealPartyReducer from "./heal_party_reducer";
 import JoinGameReducer from "./join_game_reducer";
 import SetMoveReducer from "./set_move_reducer";
 import SetNicknameReducer from "./set_nickname_reducer";
 import SetPartySlotReducer from "./set_party_slot_reducer";
+import StartBattleReducer from "./start_battle_reducer";
+import SubmitAttackReducer from "./submit_attack_reducer";
+import SwapActiveReducer from "./swap_active_reducer";
 import SyncContentReducer from "./sync_content_reducer";
 
 // Import all procedure arg schemas
 
 // Import all table schema definitions
+import BattleRow from "./battle_table";
 import CharacterRow from "./character_table";
 import ConfigRow from "./config_table";
 import ItemRowRow from "./item_row_table";
@@ -59,6 +65,20 @@ import ZoneDefRow from "./zone_def_table";
 
 /** The schema information for all tables in this module. This is defined the same was as the tables would have been defined in the server. */
 const tablesSchema = __schema({
+  battle: __table({
+    name: 'battle',
+    indexes: [
+      { accessor: 'battle_id', name: 'battle_battle_id_idx_btree', algorithm: 'btree', columns: [
+        'battleId',
+      ] },
+      { accessor: 'player_identity', name: 'battle_player_identity_idx_btree', algorithm: 'btree', columns: [
+        'playerIdentity',
+      ] },
+    ],
+    constraints: [
+      { name: 'battle_battle_id_key', constraint: 'unique', columns: ['battleId'] },
+    ],
+  }, BattleRow),
   character: __table({
     name: 'character',
     indexes: [
@@ -173,10 +193,15 @@ const tablesSchema = __schema({
 const reducersSchema = __reducers(
   __reducerSchema("clear_queue", ClearQueueReducer),
   __reducerSchema("enqueue_move", EnqueueMoveReducer),
+  __reducerSchema("flee", FleeReducer),
+  __reducerSchema("heal_party", HealPartyReducer),
   __reducerSchema("join_game", JoinGameReducer),
   __reducerSchema("set_move", SetMoveReducer),
   __reducerSchema("set_nickname", SetNicknameReducer),
   __reducerSchema("set_party_slot", SetPartySlotReducer),
+  __reducerSchema("start_battle", StartBattleReducer),
+  __reducerSchema("submit_attack", SubmitAttackReducer),
+  __reducerSchema("swap_active", SwapActiveReducer),
   __reducerSchema("sync_content", SyncContentReducer),
 );
 

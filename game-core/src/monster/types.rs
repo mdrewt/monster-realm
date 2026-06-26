@@ -35,6 +35,7 @@ pub enum StatKind {
 
 /// The six combat stats, stored as plain u16 fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub struct StatBlock {
     pub hp: u16,
     pub attack: u16,
