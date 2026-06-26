@@ -8,7 +8,16 @@
 // rejection routing land with the M4c loop.
 import { DbConnection } from '../module_bindings';
 import { MicrotaskBatcher } from './batch';
-import { characterRowToStore, playerRowToStore, type SdkCharacterRow, type SdkPlayerRow } from './rowConvert';
+import {
+  characterRowToStore,
+  monsterPubRowToStore,
+  playerRowToStore,
+  type SdkCharacterRow,
+  type SdkMonsterPubRow,
+  type SdkPlayerRow,
+  type SdkSpeciesRowRow,
+  speciesRowToStore,
+} from './rowConvert';
 import type { AuthoritativeStore } from './store';
 
 export interface ConnectionOptions {
@@ -52,7 +61,12 @@ export function connect(opts: ConnectionOptions): Connection {
           else opts.onReady(identity);
         })
         .onError(() => opts.onError('subscribe', 'subscription error'))
-        .subscribe([`SELECT * FROM character WHERE zone_id = ${zoneId}`, 'SELECT * FROM player']);
+        .subscribe([
+          `SELECT * FROM character WHERE zone_id = ${zoneId}`,
+          'SELECT * FROM player',
+          'SELECT * FROM monster_pub',
+          'SELECT * FROM species_row',
+        ]);
     })
     .onConnectError((_ctx, err: Error) => opts.onError('connect', err.message))
     // Clean re-init on a drop: drop stale rows so a reconnect never merges stale
@@ -80,6 +94,32 @@ export function connect(opts: ConnectionOptions): Connection {
   conn.db.player.onUpdate((_ctx, _old, row) => ingestPlayer(row as unknown as SdkPlayerRow));
   conn.db.player.onDelete((_ctx, row) => {
     store.removePlayer((row as unknown as SdkPlayerRow).identity.toHexString());
+    batcher.schedule();
+  });
+
+  const ingestMonster = (row: SdkMonsterPubRow): void => {
+    store.upsertMonster(monsterPubRowToStore(row));
+    batcher.schedule();
+  };
+  conn.db.monster_pub.onInsert((_ctx, row) => ingestMonster(row as unknown as SdkMonsterPubRow));
+  conn.db.monster_pub.onUpdate((_ctx, _old, row) =>
+    ingestMonster(row as unknown as SdkMonsterPubRow),
+  );
+  conn.db.monster_pub.onDelete((_ctx, row) => {
+    store.removeMonster((row as unknown as SdkMonsterPubRow).monsterId);
+    batcher.schedule();
+  });
+
+  const ingestSpecies = (row: SdkSpeciesRowRow): void => {
+    store.upsertSpecies(speciesRowToStore(row));
+    batcher.schedule();
+  };
+  conn.db.species_row.onInsert((_ctx, row) => ingestSpecies(row as unknown as SdkSpeciesRowRow));
+  conn.db.species_row.onUpdate((_ctx, _old, row) =>
+    ingestSpecies(row as unknown as SdkSpeciesRowRow),
+  );
+  conn.db.species_row.onDelete((_ctx, row) => {
+    store.removeSpecies((row as unknown as SdkSpeciesRowRow).id);
     batcher.schedule();
   });
 

@@ -10,9 +10,15 @@
 // remote interpolation buffer) lands with M5b's smoothness assertions. A DEV
 // `window.__game()` snapshot lets the M5 two-window e2e assert on STATE (predicted
 // vs authoritative tiles, presence, the zone map), never pixels.
-import { connect } from './net/connection';
-import { AuthoritativeStore } from './net/store';
-import { Predictor, type ApplyMove } from './prediction/predictor';
+
+// client-wasm (built `wasm-pack build client-wasm --target bundler`; resolved by
+// vite-plugin-wasm + top-level-await — see vite.config.ts / server.fs.allow).
+import {
+  apply_move,
+  move_queue_cap,
+  step_ms,
+  zone_map,
+} from '../../client-wasm/pkg/client_wasm.js';
 import {
   characterToPredictedBaseline,
   moveInputToSdk,
@@ -20,10 +26,12 @@ import {
   type WasmDirection,
   type WasmMoveInput,
 } from './convert/convert';
-import { WorldRenderer, type RenderEntity } from './render/world';
-// client-wasm (built `wasm-pack build client-wasm --target bundler`; resolved by
-// vite-plugin-wasm + top-level-await — see vite.config.ts / server.fs.allow).
-import { apply_move, zone_map, step_ms, move_queue_cap } from '../../client-wasm/pkg/client_wasm.js';
+import { connect } from './net/connection';
+import { AuthoritativeStore } from './net/store';
+import { type ApplyMove, Predictor } from './prediction/predictor';
+import { type RenderEntity, WorldRenderer } from './render/world';
+import { buildBoxViewModel, buildPartyViewModel, nextFreePartySlot } from './ui/boxModel';
+import type { BoxView } from './ui/boxView';
 
 const URI = (import.meta.env.VITE_STDB_URI as string | undefined) ?? 'ws://127.0.0.1:3000';
 const DB = (import.meta.env.VITE_STDB_DB as string | undefined) ?? 'monster-realm';
@@ -41,6 +49,7 @@ let predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
 
 let identity = '';
 let conn: ReturnType<typeof connect> | undefined;
+let boxView: BoxView | undefined;
 
 let resolveReady: () => void = () => {};
 const ready = new Promise<void>((r) => {
@@ -77,16 +86,52 @@ const step = (dir: WasmDirection): void => sendIntent({ Step: dir });
 const jump = (): void => sendIntent('Jump');
 
 const KEY_DIR: Readonly<Record<string, WasmDirection>> = {
-  ArrowUp: 'North', KeyW: 'North',
-  ArrowDown: 'South', KeyS: 'South',
-  ArrowLeft: 'West', KeyA: 'West',
-  ArrowRight: 'East', KeyD: 'East',
+  ArrowUp: 'North',
+  KeyW: 'North',
+  ArrowDown: 'South',
+  KeyS: 'South',
+  ArrowLeft: 'West',
+  KeyA: 'West',
+  ArrowRight: 'East',
+  KeyD: 'East',
 };
 window.addEventListener('keydown', (e) => {
+  if (e.code === 'KeyB') {
+    boxView?.toggle();
+    if (boxView?.visible) refreshBox();
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'Escape' && boxView?.visible) {
+    boxView.hide();
+    e.preventDefault();
+    return;
+  }
+  // Suppress movement input while box overlay is open.
+  if (boxView?.visible) return;
   const dir = KEY_DIR[e.code];
-  if (dir !== undefined) { step(dir); e.preventDefault(); return; }
-  if (e.code === 'Space') { jump(); e.preventDefault(); }
+  if (dir !== undefined) {
+    step(dir);
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'Space') {
+    jump();
+    e.preventDefault();
+  }
 });
+
+// --- box/party view: refresh on batch when visible (M6c, ADR-0014) ---------------
+function refreshBox(): void {
+  if (!boxView?.visible || identity === '') return;
+  const monsters = store.ownMonsters(identity);
+  const speciesMap = store.speciesMap();
+  boxView.refresh(
+    buildPartyViewModel(monsters, speciesMap),
+    buildBoxViewModel(monsters, speciesMap),
+  );
+}
+store.onBatchApplied(() => refreshBox());
 
 // --- DEV introspection hook (e2e asserts on this STATE, never pixels) ------------
 function snapshot() {
@@ -108,6 +153,14 @@ function snapshot() {
       tileY: c.row.tileY,
       facing: c.row.facing,
       action: c.row.action,
+    })),
+    monsterCount: store.monsterCount,
+    ownMonsters: store.ownMonsters(identity).map((m) => ({
+      monsterId: m.monsterId.toString(),
+      speciesId: m.speciesId,
+      nickname: m.nickname,
+      level: m.level,
+      partySlot: m.partySlot,
     })),
     step,
     jump,
@@ -134,9 +187,22 @@ function renderEntities(): RenderEntity[] {
 }
 
 async function main(): Promise<void> {
+  const { BoxView: BoxViewClass } = await import('./ui/boxView');
   const renderer = new WorldRenderer();
   const mount = document.getElementById('app');
-  if (mount !== null) await renderer.init(mount, rawMap);
+  if (mount !== null) {
+    await renderer.init(mount, rawMap);
+    boxView = new BoxViewClass(mount, {
+      onSetNickname: (monsterId, nickname) => {
+        conn?.conn.reducers.setNickname({ monsterId, nickname });
+      },
+      onSetPartySlot: (monsterId, slot) => {
+        const finalSlot =
+          slot === -1 ? (nextFreePartySlot(store.ownMonsters(identity)) ?? 255) : slot;
+        conn?.conn.reducers.setPartySlot({ monsterId, slot: finalSlot });
+      },
+    });
+  }
 
   conn = connect({
     uri: URI,
