@@ -1,0 +1,2 @@
+// Skill registry — DATA, not code (ADR-0006). Stable `id`s are APPEND-ONLY.
+[]

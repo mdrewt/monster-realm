@@ -12,16 +12,21 @@
 #![forbid(unsafe_code)]
 
 pub mod content;
+pub mod monster;
 pub mod types;
 pub mod world;
 
-pub use content::{load_zones, parse_zones, validate_zones, ZoneDef};
-pub use types::{
-    ActionState, CharacterState, Direction, Millis, MoveInput, TileKind, TilePos,
+pub use content::{
+    load_items, load_skills, load_species, load_type_chart, load_zones, parse_items, parse_skills,
+    parse_species, parse_type_chart, parse_zones, validate_content, validate_zones, ItemDef,
+    SkillDef, Species, TypeRelation, ZoneDef,
 };
-pub use world::{
-    apply_move, apply_move_coded, spawn, zone_0, TileMap, MOVE_QUEUE_CAP, STEP_MS,
+pub use monster::{
+    derive_stats, level_bounds, level_for_xp, roll_individuality, roll_starter, xp_for_level,
+    Affinity, Bond, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock, StatKind, Xp,
 };
+pub use types::{ActionState, CharacterState, Direction, Millis, MoveInput, TileKind, TilePos};
+pub use world::{apply_move, apply_move_coded, spawn, zone_0, TileMap, MOVE_QUEUE_CAP, STEP_MS};
 
 /// The trivial M0 proof-rule: a pure, deterministic state transition over an
 /// explicit seed (splitmix64-style mix). It proves the determinism/parity gates
@@ -55,8 +60,12 @@ mod tests {
 
     #[test]
     fn tick_seed_replay_is_byte_identical() {
-        let trace_a: Vec<u64> = (0..1000).map(|i| tick_seed(i, i.wrapping_mul(7), i ^ 0xDEAD)).collect();
-        let trace_b: Vec<u64> = (0..1000).map(|i| tick_seed(i, i.wrapping_mul(7), i ^ 0xDEAD)).collect();
+        let trace_a: Vec<u64> = (0..1000)
+            .map(|i| tick_seed(i, i.wrapping_mul(7), i ^ 0xDEAD))
+            .collect();
+        let trace_b: Vec<u64> = (0..1000)
+            .map(|i| tick_seed(i, i.wrapping_mul(7), i ^ 0xDEAD))
+            .collect();
         assert_eq!(trace_a, trace_b);
     }
 
