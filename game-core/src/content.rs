@@ -187,9 +187,8 @@ const ENCOUNTERS_RON: &str = include_str!("../content/encounters.ron");
 /// # Errors
 /// Returns `Err` with a descriptive message if `ron_str` is not valid.
 pub fn parse_encounters(ron_str: &str) -> Result<Vec<EncounterTable>, String> {
-    Err(format!(
-        "not implemented: parse_encounters received {ron_str:?}"
-    )) // STUB
+    ron::from_str::<Vec<EncounterTable>>(ron_str)
+        .map_err(|e| format!("encounters registry parse error: {e}"))
 }
 
 /// Parse the embedded encounter registry.
@@ -217,8 +216,50 @@ pub fn validate_encounters(
     species: &[Species],
     zones: &[ZoneDef],
 ) -> Result<(), String> {
-    // STUB — accepts everything; tests will catch this
-    let _ = (tables, species, zones);
+    let species_ids: std::collections::BTreeSet<u32> = species.iter().map(|s| s.id).collect();
+    let zone_ids: std::collections::BTreeSet<u32> = zones.iter().map(|z| z.id).collect();
+    let mut seen_zones = std::collections::BTreeSet::new();
+
+    for table in tables {
+        if !seen_zones.insert(table.zone_id) {
+            return Err(format!("duplicate encounter zone_id {}", table.zone_id));
+        }
+        if !zone_ids.contains(&table.zone_id) {
+            return Err(format!(
+                "encounter table references non-existent zone {}",
+                table.zone_id
+            ));
+        }
+        if table.encounter_rate > 1000 {
+            return Err(format!(
+                "encounter_rate {} for zone {} exceeds per-mille max 1000",
+                table.encounter_rate, table.zone_id
+            ));
+        }
+        for entry in &table.entries {
+            if entry.weight == 0 {
+                return Err(format!(
+                    "encounter entry for species {} in zone {} has weight=0",
+                    entry.species_id, table.zone_id
+                ));
+            }
+            if entry.min_level.as_u8() > entry.max_level.as_u8() {
+                return Err(format!(
+                    "encounter entry for species {} in zone {} has inverted level range ({} > {})",
+                    entry.species_id,
+                    table.zone_id,
+                    entry.min_level.as_u8(),
+                    entry.max_level.as_u8()
+                ));
+            }
+            if !species_ids.contains(&entry.species_id) {
+                return Err(format!(
+                    "encounter entry in zone {} references non-existent species {}",
+                    table.zone_id, entry.species_id
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
