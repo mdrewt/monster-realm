@@ -1,0 +1,30 @@
+//! Combat engine — pure, deterministic, integer-only (ADR-0003).
+//!
+//! All battle resolution lives here exactly once (ADR-0006 SSOT). The server
+//! runs it for authority; the client runs the same compiled code for prediction
+//! via `client-wasm`. Re-implementing a battle rule elsewhere is the desync bug.
+//!
+//! # Module layout
+//! - `types`      — value objects (`BattleMonster`, `BattleState`, `BattleEvent`, …)
+//! - `type_chart` — `TypeChart` lookup struct
+//! - `damage`     — damage formula (`calc_damage`) and accuracy check
+//! - `resolve`    — turn resolution (`resolve_turn`, `resolve_enemy_turn`, …)
+//! - `ai`         — enemy AI skill picker (`pick_best_skill`)
+//! - `xp`         — XP reward and level-up (`battle_xp_reward`, `apply_xp_gain`)
+
+pub mod ai;
+pub mod damage;
+pub mod resolve;
+pub mod type_chart;
+pub mod types;
+pub mod xp;
+
+pub use ai::pick_best_skill;
+pub use damage::{accuracy_check, calc_damage};
+pub use resolve::{resolve_enemy_turn, resolve_player_swap, resolve_turn};
+pub use type_chart::TypeChart;
+pub use types::{
+    BattleEvent, BattleMonster, BattleOutcome, BattleSide, BattleState, Effectiveness, SideId,
+    TurnChoice, TurnVariance,
+};
+pub use xp::{apply_xp_gain, battle_xp_reward};
