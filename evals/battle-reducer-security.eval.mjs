@@ -28,13 +28,13 @@ export function stripRustComments(src) {
 // null if the reducer is not found.
 // ---------------------------------------------------------------------------
 export function extractReducerBody(src, reducerName) {
-  // Match the function signature line (may have additional parameters).
-  const sigRe = new RegExp(`pub\\s+fn\\s+${reducerName}\\s*\\(`, 'm');
-  const sigMatch = sigRe.exec(src);
-  if (!sigMatch) return null;
+  // Find `pub fn <name>(` using indexOf to avoid dynamic RegExp (semgrep ReDoS rule).
+  const needle = `pub fn ${reducerName}(`;
+  const idx = src.indexOf(needle);
+  if (idx === -1) return null;
 
   // Walk forward from the signature to find the opening brace.
-  let i = sigMatch.index + sigMatch[0].length;
+  let i = idx + needle.length;
   while (i < src.length && src[i] !== '{') i++;
   if (i >= src.length) return null;
 
