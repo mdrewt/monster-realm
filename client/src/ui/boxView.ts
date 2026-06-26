@@ -11,6 +11,8 @@ export interface BoxViewCallbacks {
   readonly onSetNickname: (monsterId: bigint, nickname: string) => void;
   /** Called when the user moves a monster to a party slot (0–5) or to box (255). */
   readonly onSetPartySlot: (monsterId: bigint, slot: number) => void;
+  /** Called when the user clicks the Heal Party button (M7c). */
+  readonly onHealParty: () => void;
 }
 
 const BOX_SLOT = 255;
@@ -31,10 +33,19 @@ export class BoxView {
       'display:none;flex-direction:column;align-items:center;padding:24px;' +
       'overflow-y:auto;font-family:monospace;color:#e0e0e0;';
 
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;gap:16px;margin-bottom:16px;';
     const title = document.createElement('h2');
     title.textContent = 'Party & Box';
-    title.style.cssText = 'margin:0 0 16px;color:#fff;';
-    this.#root.appendChild(title);
+    title.style.cssText = 'margin:0;color:#fff;';
+    header.appendChild(title);
+    const healBtn = document.createElement('button');
+    healBtn.textContent = 'Heal Party';
+    healBtn.style.cssText =
+      'padding:4px 12px;cursor:pointer;font-family:monospace;background:#2a3a2a;color:#8f8;border:1px solid #4a4;border-radius:3px;';
+    healBtn.addEventListener('click', () => this.#callbacks.onHealParty());
+    header.appendChild(healBtn);
+    this.#root.appendChild(header);
 
     const partyLabel = document.createElement('h3');
     partyLabel.textContent = 'Party';

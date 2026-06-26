@@ -219,7 +219,17 @@ client tests, all green) complete. **M6 (Monsters & individuality) is now fully
 delivered** (M6a + M6b + M6c all merged). **M7a** (game-core combat resolution
 rules — type chart, integer damage formula, speed-ordered turn resolution,
 auto-switch, AI skill picker, XP reward/level-up — 192 tests, all green)
-complete.
+complete. **M7b** (battle table + server reducers — `start_battle`, `submit_attack`,
+`swap_active`, `flee`, `heal_party` with ownership/outcome guards, HP/XP write-back,
+battle-reducer-security + battle-schema-snapshot evals with proof-of-teeth — 15 server
+tests, all green) complete. **M7c** (battle view — client-side subscription-driven
+overlay, `StoreBattle`/`StoreSkillRow` store types, `battleRowToStore`/`skillRowToStore`
+row converters, `buildBattleViewModel` pure view-model with null guards, `BattleView`
+DOM shell (textContent-only), connection wiring for `battle`+`skill_row` in same
+subscribe() call, main.ts integration with Escape priority battle>box>movement,
+auto-hide box during battle, heal_party button in box view — 57 new client tests, all
+green) complete. **M7 (Battle system) is now fully delivered** (M7a + M7b + M7c all
+merged).
 Deferred-with-rationale: the criterion **perf-budget gate** (folded into the M20
 observability capstone — a non-flaky budget needs tuned baselines) and GitHub
 Actions *execution* (the workflow is committed; only local `just ci` is verifiable

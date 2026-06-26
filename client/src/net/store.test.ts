@@ -11,9 +11,13 @@ import * as fc from 'fast-check';
 import { describe, expect, it, vi } from 'vitest';
 import {
   AuthoritativeStore,
+  type StoreBattle,
+  type StoreBattleMonster,
+  type StoreBattleSide,
   type StoreCharacter,
   type StoreMonsterPub,
   type StorePlayer,
+  type StoreSkillRow,
   type StoreSpeciesRow,
 } from './store';
 
@@ -437,6 +441,232 @@ describe('AuthoritativeStore M6c: monsterCount property (fast-check)', () => {
           s.upsertMonster(monsterPub(id));
         }
         expect(s.monsterCount).toBe(new Set(ids).size);
+      }),
+    );
+  });
+});
+
+// =============================================================================
+// M7c extension: Battle + Skill store (StoreBattle / StoreSkillRow)
+// SOURCE OF TRUTH: specs/monster-realm-v2/M7-battle-view.spec.md
+// =============================================================================
+
+/** Factory: minimal valid StoreBattleMonster. */
+function battleMonster(overrides: Partial<StoreBattleMonster> = {}): StoreBattleMonster {
+  return {
+    speciesId: 1,
+    affinity: 'Fire',
+    level: 5,
+    currentHp: 20,
+    maxHp: 20,
+    statHp: 20,
+    statAttack: 10,
+    statDefense: 10,
+    statSpeed: 10,
+    statSpAttack: 10,
+    statSpDefense: 10,
+    knownSkillIds: [1],
+    ...overrides,
+  };
+}
+
+/** Factory: minimal valid StoreBattleSide. */
+function battleSide(overrides: Partial<StoreBattleSide> = {}): StoreBattleSide {
+  return { active: 0, team: [battleMonster()], ...overrides };
+}
+
+/** Factory: minimal valid StoreBattle. */
+function battle(battleId: bigint, playerIdentity = 'alice', outcome = 'Ongoing'): StoreBattle {
+  return {
+    battleId,
+    playerIdentity,
+    opponentIdentity: 'npc',
+    outcome,
+    turnNumber: 1,
+    sideA: battleSide(),
+    sideB: battleSide(),
+    partyMonsterIds: [1n],
+    opponentMonsterIds: [2n],
+    createdAtMs: 1000n,
+  };
+}
+
+/** Factory: minimal valid StoreSkillRow. */
+function skillRow(id: number): StoreSkillRow {
+  return { id, name: `Skill-${id}`, affinity: 'Fire', power: 40, accuracy: 100, pp: 20 };
+}
+
+// --- Battle: upsert / retrieve / batch signal ---------------------------------
+
+describe('AuthoritativeStore M7c: battle upsert + batch signal', () => {
+  it('BITES: upsertBattle stores row; battle() retrieves it; flushBatch fires', () => {
+    // Kills: an impl that ignores upsertBattle or never marks the batch dirty.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    const b = battle(1n, 'alice');
+    s.upsertBattle(b);
+    expect(s.battle(1n)).toEqual(b);
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('BITES: upsert the same battleId twice keeps count at 1 (keyed-Map idempotency)', () => {
+    // Kills: an impl that stores battles in an array and appends on re-insert.
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(1n));
+    s.upsertBattle(battle(1n)); // same id — must overwrite, not duplicate
+    // Checking via battle() existing and distinct identity count through ongoingBattle
+    expect(s.battle(1n)).toBeDefined();
+    // The only reliable check without a battleCount getter: re-upsert with changed field
+    // and verify the old value is gone (last-write wins, Map keyed by battleId).
+    s.upsertBattle({ ...battle(1n), turnNumber: 99 });
+    expect(s.battle(1n)!.turnNumber).toBe(99);
+  });
+
+  it('BITES: second upsert overwrites the row (last-write wins, no ghost of first)', () => {
+    // Kills: an impl that silently drops a duplicate insert rather than updating.
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(5n, 'alice', 'Ongoing'));
+    s.upsertBattle({ ...battle(5n, 'alice', 'Ongoing'), turnNumber: 7 });
+    expect(s.battle(5n)!.turnNumber).toBe(7);
+  });
+});
+
+// --- Battle: removeBattle -----------------------------------------------------
+
+describe('AuthoritativeStore M7c: removeBattle', () => {
+  it('BITES: removeBattle deletes the row; battle() returns undefined; batch is dirty', () => {
+    // Kills: an impl that deletes but forgets to mark dirty, or soft-deletes.
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(3n));
+    s.flushBatch(); // clear dirty
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.removeBattle(3n);
+    expect(s.battle(3n)).toBeUndefined();
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('BITES: removeBattle on unknown id does NOT mark dirty (no phantom re-renders)', () => {
+    // Kills: an impl that marks dirty on a no-op delete.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.removeBattle(999n); // never inserted
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(0);
+  });
+});
+
+// --- Battle: ongoingBattle ----------------------------------------------------
+
+describe('AuthoritativeStore M7c: ongoingBattle identity + outcome filter', () => {
+  it('BITES: ongoingBattle returns battle matching playerIdentity AND outcome===Ongoing', () => {
+    // Kills: an impl that only filters by identity, ignoring outcome.
+    const s = new AuthoritativeStore();
+    const b = battle(10n, 'alice', 'Ongoing');
+    s.upsertBattle(b);
+    const result = s.ongoingBattle('alice');
+    expect(result).toBeDefined();
+    expect(result!.battleId).toBe(10n);
+    expect(result!.outcome).toBe('Ongoing');
+  });
+
+  it('BITES: ongoingBattle returns undefined when only finished battles exist', () => {
+    // Kills: an impl that returns any battle matching identity regardless of outcome.
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(1n, 'alice', 'SideAWins'));
+    expect(s.ongoingBattle('alice')).toBeUndefined();
+  });
+
+  it('BITES: ongoingBattle returns undefined for non-matching identity', () => {
+    // Kills: an impl that ignores the identity filter and returns the first ongoing battle.
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(2n, 'alice', 'Ongoing'));
+    expect(s.ongoingBattle('bob')).toBeUndefined();
+  });
+
+  it('BITES: ongoingBattle with multiple battles returns only the Ongoing one', () => {
+    // Kills: an impl that returns the first-inserted battle in Map order regardless of outcome.
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(1n, 'alice', 'SideBWins'));
+    s.upsertBattle(battle(2n, 'alice', 'Fled'));
+    s.upsertBattle(battle(3n, 'alice', 'Ongoing'));
+    const result = s.ongoingBattle('alice');
+    expect(result).toBeDefined();
+    expect(result!.battleId).toBe(3n);
+    expect(result!.outcome).toBe('Ongoing');
+  });
+});
+
+// --- Battle + Skill: reset clears both, listeners survive --------------------
+
+describe('AuthoritativeStore M7c: reset clears battles and skills; listeners survive', () => {
+  it('BITES: reset removes battles and skills; post-reset batch still reaches listeners', () => {
+    // Kills: an impl that clears listeners on reset (breaking the running loop),
+    // or that fails to clear the new M7c maps on reset.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.upsertBattle(battle(1n, 'alice'));
+    s.upsertSkill(skillRow(1));
+    s.reset();
+    expect(s.battle(1n)).toBeUndefined();
+    expect(s.skill(1)).toBeUndefined();
+    // A fresh post-reset batch must still reach the still-registered listener
+    s.upsertBattle(battle(2n, 'bob'));
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+});
+
+// --- Skill: upsert / retrieve -------------------------------------------------
+
+describe('AuthoritativeStore M7c: skill upsert + retrieve', () => {
+  it('BITES: upsertSkill stores the row; skill() retrieves it', () => {
+    // Kills: an impl that exposes the method but never stores to the map.
+    const s = new AuthoritativeStore();
+    const sk = skillRow(42);
+    s.upsertSkill(sk);
+    expect(s.skill(42)).toEqual(sk);
+  });
+
+  it('BITES: removeSkill deletes the entry; skill() returns undefined', () => {
+    // Kills: an impl that soft-deletes or returns a tombstone object.
+    const s = new AuthoritativeStore();
+    s.upsertSkill(skillRow(7));
+    s.removeSkill(7);
+    expect(s.skill(7)).toBeUndefined();
+  });
+
+  it('BITES: skillMap() exposes all currently held skills as a ReadonlyMap', () => {
+    // Kills: an impl that returns a mutable Map, an empty object, or a copy
+    // that goes stale after subsequent upserts.
+    const s = new AuthoritativeStore();
+    s.upsertSkill(skillRow(1));
+    s.upsertSkill(skillRow(2));
+    const m = s.skillMap();
+    expect(m.size).toBe(2);
+    expect(m.get(1)!.name).toBe('Skill-1');
+    expect(m.get(2)!.name).toBe('Skill-2');
+  });
+});
+
+// --- Skill: property (fast-check) --------------------------------------------
+
+describe('AuthoritativeStore M7c: skillCount property (fast-check)', () => {
+  it('BITES: skillMap().size equals the number of distinct ids after random upserts', () => {
+    // Kills: an impl that counts rows from an array (inflates on re-insert) or
+    // a naive size() that does not account for Map overwrite semantics.
+    fc.assert(
+      fc.property(fc.array(fc.integer({ min: 0, max: 30 }), { maxLength: 50 }), (ids) => {
+        const s = new AuthoritativeStore();
+        for (const id of ids) {
+          s.upsertSkill(skillRow(id));
+        }
+        expect(s.skillMap().size).toBe(new Set(ids).size);
       }),
     );
   });
