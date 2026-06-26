@@ -133,6 +133,7 @@ mod tests {
     }
 
     /// Skill with power 40, Water affinity, 100% accuracy.
+    #[allow(dead_code)]
     fn water_skill_40() -> SkillDef {
         SkillDef {
             id: 3,

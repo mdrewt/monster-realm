@@ -30,6 +30,7 @@ use crate::content::{SkillDef, Species, TypeRelation};
 // Test helpers
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn species_with_stats(base: StatBlock, affinity: Affinity) -> Species {
     Species {
         id: 99,
@@ -40,6 +41,7 @@ fn species_with_stats(base: StatBlock, affinity: Affinity) -> Species {
     }
 }
 
+#[allow(dead_code)]
 fn neutral_nature() -> Nature {
     Nature::new(NatureKind::Hardy)
 }
@@ -53,6 +55,7 @@ fn zero_evs() -> EVs {
     EVs::zero()
 }
 
+#[allow(dead_code)]
 fn max_ivs() -> IVs {
     IVs::new(31, 31, 31, 31, 31, 31).unwrap()
 }
@@ -232,7 +235,8 @@ fn f3_damage_roll_zero_gives_zero_before_clamp() {
     // If the plan intends damage_roll in 85..=100, roll=0 is INVALID INPUT.
     // Without a constructor that validates, any caller can pass roll=0.
     let base: u32 = 100;
-    let damage_with_zero_roll = base * 0 / 100;
+    let zero_roll: u32 = 0;
+    let damage_with_zero_roll = base * zero_roll / 100;
     assert_eq!(
         damage_with_zero_roll, 0,
         "FINDING 3a: damage_roll=0 produces 0 damage before max(1) clamp. \

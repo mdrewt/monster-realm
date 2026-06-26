@@ -278,9 +278,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// Property: `effectiveness` is total for arbitrary pairs — proptest edition.
-    /// Uses block-body form (vitest-fast-check guideline equivalent for proptest).
-    /// Starts red because `effectiveness` is `todo!()`.
+    // Property: `effectiveness` is total for arbitrary pairs — proptest edition.
+    // Uses block-body form (vitest-fast-check guideline equivalent for proptest).
     proptest! {
         #[test]
         fn prop_effectiveness_is_total(
