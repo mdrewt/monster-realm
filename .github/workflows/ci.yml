@@ -77,8 +77,11 @@ jobs:
       # Pinned SpacetimeDB CLI (2.6.0) so publish + `spacetime generate` protocol,
       # the committed TS bindings, and the module all agree (ADR-0009).
       - name: Install SpacetimeDB CLI
+        # `--yes`: the installer prompts to confirm and aborts on a non-tty CI
+        # runner ("IO error: not a terminal") without it. The install also
+        # generates the local identity keypair used to publish.
         run: |
-          curl -sSf https://install.spacetimedb.com | sh
+          curl -sSf https://install.spacetimedb.com | sh -s -- --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Pin spacetime 2.6.0
         run: |
