@@ -43,10 +43,22 @@ impl TilePos {
     #[must_use]
     pub fn step(self, d: Direction) -> TilePos {
         match d {
-            Direction::North => TilePos { x: self.x, y: self.y.saturating_sub(1) },
-            Direction::South => TilePos { x: self.x, y: self.y.saturating_add(1) },
-            Direction::East => TilePos { x: self.x.saturating_add(1), y: self.y },
-            Direction::West => TilePos { x: self.x.saturating_sub(1), y: self.y },
+            Direction::North => TilePos {
+                x: self.x,
+                y: self.y.saturating_sub(1),
+            },
+            Direction::South => TilePos {
+                x: self.x,
+                y: self.y.saturating_add(1),
+            },
+            Direction::East => TilePos {
+                x: self.x.saturating_add(1),
+                y: self.y,
+            },
+            Direction::West => TilePos {
+                x: self.x.saturating_sub(1),
+                y: self.y,
+            },
         }
     }
 }
@@ -176,10 +188,16 @@ mod tests {
 
     #[test]
     fn step_saturates_at_i32_bounds_never_wraps() {
-        let hi = TilePos { x: i32::MAX, y: i32::MAX };
+        let hi = TilePos {
+            x: i32::MAX,
+            y: i32::MAX,
+        };
         assert_eq!(hi.step(Direction::East), hi); // saturates, no wrap/panic
         assert_eq!(hi.step(Direction::South), hi);
-        let lo = TilePos { x: i32::MIN, y: i32::MIN };
+        let lo = TilePos {
+            x: i32::MIN,
+            y: i32::MIN,
+        };
         assert_eq!(lo.step(Direction::West), lo);
         assert_eq!(lo.step(Direction::North), lo);
     }

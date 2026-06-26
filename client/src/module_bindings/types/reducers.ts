@@ -10,11 +10,15 @@ import ClearQueueReducer from "../clear_queue_reducer";
 import EnqueueMoveReducer from "../enqueue_move_reducer";
 import JoinGameReducer from "../join_game_reducer";
 import SetMoveReducer from "../set_move_reducer";
+import SetNicknameReducer from "../set_nickname_reducer";
+import SetPartySlotReducer from "../set_party_slot_reducer";
 import SyncContentReducer from "../sync_content_reducer";
 
 export type ClearQueueParams = __Infer<typeof ClearQueueReducer>;
 export type EnqueueMoveParams = __Infer<typeof EnqueueMoveReducer>;
 export type JoinGameParams = __Infer<typeof JoinGameReducer>;
 export type SetMoveParams = __Infer<typeof SetMoveReducer>;
+export type SetNicknameParams = __Infer<typeof SetNicknameReducer>;
+export type SetPartySlotParams = __Infer<typeof SetPartySlotReducer>;
 export type SyncContentParams = __Infer<typeof SyncContentReducer>;
 

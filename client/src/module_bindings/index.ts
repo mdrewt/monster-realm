@@ -38,6 +38,8 @@ import ClearQueueReducer from "./clear_queue_reducer";
 import EnqueueMoveReducer from "./enqueue_move_reducer";
 import JoinGameReducer from "./join_game_reducer";
 import SetMoveReducer from "./set_move_reducer";
+import SetNicknameReducer from "./set_nickname_reducer";
+import SetPartySlotReducer from "./set_party_slot_reducer";
 import SyncContentReducer from "./sync_content_reducer";
 
 // Import all procedure arg schemas
@@ -45,7 +47,12 @@ import SyncContentReducer from "./sync_content_reducer";
 // Import all table schema definitions
 import CharacterRow from "./character_table";
 import ConfigRow from "./config_table";
+import ItemRowRow from "./item_row_table";
+import MonsterPubRow from "./monster_pub_table";
 import PlayerRow from "./player_table";
+import SkillRowRow from "./skill_row_table";
+import SpeciesRowRow from "./species_row_table";
+import TypeRelationRowRow from "./type_relation_row_table";
 import ZoneDefRow from "./zone_def_table";
 
 /** Type-only namespace exports for generated type groups. */
@@ -77,6 +84,31 @@ const tablesSchema = __schema({
       { name: 'config_id_key', constraint: 'unique', columns: ['id'] },
     ],
   }, ConfigRow),
+  item_row: __table({
+    name: 'item_row',
+    indexes: [
+      { accessor: 'id', name: 'item_row_id_idx_btree', algorithm: 'btree', columns: [
+        'id',
+      ] },
+    ],
+    constraints: [
+      { name: 'item_row_id_key', constraint: 'unique', columns: ['id'] },
+    ],
+  }, ItemRowRow),
+  monster_pub: __table({
+    name: 'monster_pub',
+    indexes: [
+      { accessor: 'monster_id', name: 'monster_pub_monster_id_idx_btree', algorithm: 'btree', columns: [
+        'monsterId',
+      ] },
+      { accessor: 'owner_identity', name: 'monster_pub_owner_identity_idx_btree', algorithm: 'btree', columns: [
+        'ownerIdentity',
+      ] },
+    ],
+    constraints: [
+      { name: 'monster_pub_monster_id_key', constraint: 'unique', columns: ['monsterId'] },
+    ],
+  }, MonsterPubRow),
   player: __table({
     name: 'player',
     indexes: [
@@ -91,6 +123,39 @@ const tablesSchema = __schema({
       { name: 'player_identity_key', constraint: 'unique', columns: ['identity'] },
     ],
   }, PlayerRow),
+  skill_row: __table({
+    name: 'skill_row',
+    indexes: [
+      { accessor: 'id', name: 'skill_row_id_idx_btree', algorithm: 'btree', columns: [
+        'id',
+      ] },
+    ],
+    constraints: [
+      { name: 'skill_row_id_key', constraint: 'unique', columns: ['id'] },
+    ],
+  }, SkillRowRow),
+  species_row: __table({
+    name: 'species_row',
+    indexes: [
+      { accessor: 'id', name: 'species_row_id_idx_btree', algorithm: 'btree', columns: [
+        'id',
+      ] },
+    ],
+    constraints: [
+      { name: 'species_row_id_key', constraint: 'unique', columns: ['id'] },
+    ],
+  }, SpeciesRowRow),
+  type_relation_row: __table({
+    name: 'type_relation_row',
+    indexes: [
+      { accessor: 'id', name: 'type_relation_row_id_idx_btree', algorithm: 'btree', columns: [
+        'id',
+      ] },
+    ],
+    constraints: [
+      { name: 'type_relation_row_id_key', constraint: 'unique', columns: ['id'] },
+    ],
+  }, TypeRelationRowRow),
   zone_def: __table({
     name: 'zone_def',
     indexes: [
@@ -110,6 +175,8 @@ const reducersSchema = __reducers(
   __reducerSchema("enqueue_move", EnqueueMoveReducer),
   __reducerSchema("join_game", JoinGameReducer),
   __reducerSchema("set_move", SetMoveReducer),
+  __reducerSchema("set_nickname", SetNicknameReducer),
+  __reducerSchema("set_party_slot", SetPartySlotReducer),
   __reducerSchema("sync_content", SyncContentReducer),
 );
 

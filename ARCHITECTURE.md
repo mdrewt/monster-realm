@@ -60,7 +60,9 @@ wrapper** (client-wasm marshals, never re-decides the rule) and **js-path-parity
 (the marshaled serde `apply_move` == the native-verified flat path, M3),
 netcode-determinism, zoned-schema (every world table carries an indexed
 `zone_id`, ADR-0007), append-only content ids (ADR-0006), bindings-drift
-(committed bindings == fresh `spacetime generate`, ADR-0009). Each gate has a
+(committed bindings == fresh `spacetime generate`, ADR-0009), **monster-privacy**
+(private monster table, clean public projection, no client accessor — ADR-0040).
+Each gate has a
 known-bad fixture it must reject. The **client TS** is gated too (M3): `tsc` +
 vitest/fast-check over the convert + Predictor property suites (run in `just ci`
 and CI on a Node setup).
@@ -74,8 +76,9 @@ stable id), separate from `init`. Stable ids are append-only.
 ## Decisions
 
 See `docs/adr/` (0002–0034 design ADRs from the spec corpus; 0035 scaffold
-hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest) and
-`docs/validation-findings.md` (empirical Tier-1 results).
+hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest, 0040 RLS
+fallback split-tables) and `docs/validation-findings.md` (empirical Tier-1
+results).
 
 ## Monster subsystem (`game-core/src/monster/`, M6a)
 
@@ -100,6 +103,34 @@ pattern. `validate_content` enforces: unique ids, no zero/over-255 base stats,
 no dangling skill refs, no duplicate type chart pairs. Append-only-ids eval
 extended for all registries.
 
+## Monster server integration (`server-module`, M6b — ADR-0040)
+
+The monster subsystem's server-side integration: content tables, monster storage
+with privacy, starter grant, and management reducers.
+
+- **Content tables** (all `public`): `species_row`, `skill_row`,
+  `type_relation_row`, `item_row` — seeded from game-core RON registries by
+  `sync_content_inner` (upsert by stable id; type chart: clear-and-reinsert).
+  `sync_content` is guarded to module-identity only.
+- **Monster privacy (ADR-0040)**: RLS (`client_visibility_filter`) is confirmed
+  non-functional in STDB crate 1.12. Fallback: **private** `monster` table
+  (hidden genes: IVs, EVs, nature) + **public** `monster_pub` projection (safe
+  fields only). Dual-write discipline enforced by programmer + the
+  `monster-privacy` eval (proof-of-teeth: flags public monster table, flags
+  hidden fields in projection, flags `monster_table.ts` in bindings). Codegen
+  confirms: "Skipping private tables during codegen: monster."
+- **Starter grant** (`join_game`): idempotent — checks `monster.owner_identity`
+  before granting. Seed from `ctx.random()` (server-side entropy, not the
+  predictable Identity hash). Species reconstructed from `species_row` table →
+  `game_core::roll_starter`. Rejects with `Err` if starter species missing
+  (reject-not-clamp).
+- **Management reducers**: `set_nickname` (ownership-checked, `validate_name`,
+  empty clears), `set_party_slot` (ownership-checked, bounds-validated, occupancy
+  conflict rejection). Both dual-write `monster` + `monster_pub`.
+- **Marshaling helpers**: `monster_from_instance` (flattens game-core
+  `MonsterInstance` → flat table columns), `pub_from_monster` (derives safe
+  projection). Thin wrappers, no embedded rules.
+
 ## Status
 
 Phase A spine: M0 (foundation + gates + presence walking skeleton, e2e green),
@@ -117,7 +148,10 @@ run **in CI** against a real version-pinned standalone SpacetimeDB — ADR-0009/
 falsified by a proof-of-teeth desync eval, ADR-0010) complete: a desync,
 stale-bindings, or rubberband regression now turns **CI red**, not just local
 `just e2e`. **M6a** (monster individuality — pure game-core types, rules, rolls,
-content registries — 65 new tests, all green) complete. **M5c/M6b** is next.
+content registries — 65 new tests, all green) complete. **M6b** (server integration
+— content tables, monster privacy via split-table fallback ADR-0040, starter grant,
+set_nickname/set_party_slot reducers, monster-privacy eval with proof-of-teeth)
+complete.
 Deferred-with-rationale: the criterion **perf-budget gate** (folded into the M20
 observability capstone — a non-flaky budget needs tuned baselines) and GitHub
 Actions *execution* (the workflow is committed; only local `just ci` is verifiable
