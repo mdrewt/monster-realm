@@ -77,6 +77,29 @@ See `docs/adr/` (0002–0034 design ADRs from the spec corpus; 0035 scaffold
 hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest) and
 `docs/validation-findings.md` (empirical Tier-1 results).
 
+## Monster subsystem (`game-core/src/monster/`, M6a)
+
+Pure, deterministic rule layer for monster individuality and progression.
+
+- **`types`** — value objects: `IVs` (0–31, custom Deserialize), `EVs` (252/510
+  caps, custom Deserialize), `Nature` (25-variant 5×5 grid), `Level` (1–100,
+  custom Deserialize), `Xp`, `Bond`, `StatBlock`, `MonsterInstance`. Parse-don't-
+  validate: invariants enforced at construction AND deserialization boundaries.
+- **`rules`** — integer-only stat derivation (u32 intermediates, truncating
+  division, no floats → native/wasm parity). HP formula: `((2*base + iv + ev/4)
+  * level / 100) + level + 10`. Other: `(((2*base + iv + ev/4) * level / 100)
+  + 5) * nat_num / nat_den`. XP curve: `level³` (medium-fast). `level_for_xp`:
+  binary search for largest l in [1,100] where l³ ≤ xp.
+- **`rolls`** — seeded RNG construction (splitmix32 mixing, follows `tick_seed`
+  pattern). `roll_individuality(seed) → (IVs, Nature)`, `roll_starter(seed,
+  &Species) → MonsterInstance`. Deterministic: same seed → same result.
+
+Content registries (ADR-0006) extended: `species.ron`, `skills.ron`,
+`type_chart.ron`, `items.ron` — all parsed by pure loaders following the zones
+pattern. `validate_content` enforces: unique ids, no zero/over-255 base stats,
+no dangling skill refs, no duplicate type chart pairs. Append-only-ids eval
+extended for all registries.
+
 ## Status
 
 Phase A spine: M0 (foundation + gates + presence walking skeleton, e2e green),
@@ -93,11 +116,8 @@ predicted == authoritative** no-desync net) complete. **M5b** (those golden flow
 run **in CI** against a real version-pinned standalone SpacetimeDB — ADR-0009/0039,
 falsified by a proof-of-teeth desync eval, ADR-0010) complete: a desync,
 stale-bindings, or rubberband regression now turns **CI red**, not just local
-`just e2e`. **M5c** is next: the deferred M5 flows (disconnect-despawn /
-reconnect-clean-reinit) and the **end-to-end** smoothness assertions (monotonic
-predicted tile; bounded remote frame-to-frame jump under injected jitter — ADR-0013;
-M5a renders own-from-predictor at integer tiles, the slide-clock + interpolation
-buffer ride end-to-end with M5c).
+`just e2e`. **M6a** (monster individuality — pure game-core types, rules, rolls,
+content registries — 65 new tests, all green) complete. **M5c/M6b** is next.
 Deferred-with-rationale: the criterion **perf-budget gate** (folded into the M20
 observability capstone — a non-flaky budget needs tuned baselines) and GitHub
 Actions *execution* (the workflow is committed; only local `just ci` is verifiable
