@@ -13,6 +13,7 @@ use crate::monster::types::{Affinity, StatBlock};
 
 /// A monster projected into battle — only the fields the combat engine needs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub struct BattleMonster {
     pub species_id: u32,
     pub affinity: Affinity,
@@ -33,9 +34,10 @@ impl BattleMonster {
 
 /// One side of the battle: the active slot index and the full team roster.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub struct BattleSide {
-    /// Index into `team` for the currently-active monster.
-    pub active: usize,
+    /// Index into `team` for the currently-active monster (u32 for SpacetimeType).
+    pub active: u32,
     pub team: Vec<BattleMonster>,
 }
 
@@ -43,12 +45,12 @@ impl BattleSide {
     /// Borrow the currently-active monster.
     #[must_use]
     pub fn active_monster(&self) -> &BattleMonster {
-        &self.team[self.active]
+        &self.team[self.active as usize]
     }
 
     /// Mutably borrow the currently-active monster.
     pub fn active_monster_mut(&mut self) -> &mut BattleMonster {
-        &mut self.team[self.active]
+        &mut self.team[self.active as usize]
     }
 
     /// `true` if any team member still has HP > 0.
@@ -59,25 +61,28 @@ impl BattleSide {
 
     /// The index of the first non-fainted member that is NOT the current active.
     #[must_use]
-    pub fn next_conscious_index(&self) -> Option<usize> {
+    pub fn next_conscious_index(&self) -> Option<u32> {
         self.team
             .iter()
             .enumerate()
-            .find(|(i, m)| *i != self.active && !m.is_fainted())
-            .map(|(i, _)| i)
+            .find(|(i, m)| *i as u32 != self.active && !m.is_fainted())
+            .map(|(i, _)| i as u32)
     }
 }
 
 /// High-level outcome of the battle; `Ongoing` until a terminal condition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub enum BattleOutcome {
     Ongoing,
     SideAWins,
     SideBWins,
+    Fled,
 }
 
 /// The full mutable state of a battle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub struct BattleState {
     pub side_a: BattleSide,
     pub side_b: BattleSide,
@@ -89,7 +94,7 @@ pub struct BattleState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TurnChoice {
     Attack { skill_id: u32 },
-    Swap { team_index: usize },
+    Swap { team_index: u32 },
 }
 
 /// A discriminant for which side of the battle we refer to.
@@ -112,6 +117,10 @@ pub enum Effectiveness {
 ///
 /// Marked `#[non_exhaustive]` so M14 can add new variants without breaking
 /// exhaustive matches elsewhere.
+///
+/// DO NOT add `SpacetimeType` here — `BattleEvent` is transient (resolver return
+/// value only, never stored in a table). Adding it would make new variants a
+/// breaking wire-format change for old clients. See ADR-0042.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BattleEvent {
@@ -125,7 +134,7 @@ pub enum BattleEvent {
     },
     Switch {
         side: SideId,
-        new_active: usize,
+        new_active: u32,
     },
     BattleEnd {
         winner: SideId,
@@ -151,6 +160,34 @@ pub struct TurnVariance {
     pub accuracy_roll_b: u8,
     /// Determines A-goes-first on a speed tie (true = A first).
     pub speed_tie_breaker: bool,
+}
+
+impl TurnVariance {
+    /// Derive a deterministic `TurnVariance` from a single u32 seed.
+    ///
+    /// Used by the server to convert a random u32 (from SpacetimeDB's
+    /// `ctx.random()`) into the five rolls the resolver needs. The mapping is
+    /// pure: replaying the same seed reproduces the same battle turn.
+    #[must_use]
+    pub fn from_ctx_random(seed: u32) -> TurnVariance {
+        // Splitmix64-style mixing to derive independent values from one seed.
+        let mut s = seed as u64;
+        let mut next = || -> u32 {
+            s = s.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = s;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            (z ^ (z >> 31)) as u32
+        };
+
+        TurnVariance {
+            damage_roll_a: 85 + (next() % 16) as u8,
+            damage_roll_b: 85 + (next() % 16) as u8,
+            accuracy_roll_a: (next() % 100) as u8,
+            accuracy_roll_b: (next() % 100) as u8,
+            speed_tie_breaker: next() & 1 == 1,
+        }
+    }
 }
 
 // ===========================================================================
