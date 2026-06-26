@@ -22,6 +22,13 @@ export interface BattleSkillVM {
   readonly accuracy: number;
 }
 
+export interface BenchMemberVM {
+  readonly teamIndex: number;
+  readonly speciesName: string;
+  readonly currentHp: number;
+  readonly maxHp: number;
+}
+
 export interface BattleViewModel {
   readonly battleId: bigint;
   readonly turnNumber: number;
@@ -31,6 +38,8 @@ export interface BattleViewModel {
   readonly skills: readonly BattleSkillVM[];
   readonly canFlee: boolean;
   readonly canSwap: boolean;
+  /** Non-active, non-fainted team members the player can swap to. */
+  readonly bench: readonly BenchMemberVM[];
 }
 
 function monsterCard(
@@ -73,7 +82,20 @@ export function buildBattleViewModel(
       });
   }
 
-  const canSwap = ongoing && sideA.team.some((m, i) => i !== sideA.active && m.currentHp > 0);
+  const bench: BenchMemberVM[] = [];
+  if (ongoing) {
+    for (let i = 0; i < sideA.team.length; i++) {
+      const m = sideA.team[i]!;
+      if (i !== sideA.active && m.currentHp > 0) {
+        bench.push({
+          teamIndex: i,
+          speciesName: speciesMap.get(m.speciesId)?.name ?? `Unknown (#${m.speciesId})`,
+          currentHp: m.currentHp,
+          maxHp: m.maxHp,
+        });
+      }
+    }
+  }
 
   return {
     battleId: battle.battleId,
@@ -83,6 +105,7 @@ export function buildBattleViewModel(
     opponentCard: monsterCard(opponentMon, speciesMap),
     skills,
     canFlee: ongoing,
-    canSwap,
+    canSwap: bench.length > 0,
+    bench,
   };
 }

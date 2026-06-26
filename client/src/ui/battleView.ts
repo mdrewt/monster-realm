@@ -163,26 +163,15 @@ export class BattleView {
   }
 
   #renderSwapButtons(vm: BattleViewModel): void {
-    // Swap is handled outside skills — we don't have the full team in the VM,
-    // but the BattleViewModel already computed canSwap. For swap, the player
-    // needs to pick which team index to swap to. We'll show a "Swap" button
-    // that prompts for the team index. In a full UI this would be a sub-menu,
-    // but for the M7c MVP we use a simple prompt.
-    const swapBtn = document.createElement('button');
-    swapBtn.style.cssText =
-      'padding:6px 12px;cursor:pointer;font-family:monospace;background:#2a2a3a;' +
-      'color:#e0e0e0;border:1px solid #448;border-radius:3px;';
-    swapBtn.textContent = 'Swap';
-    swapBtn.addEventListener('click', () => {
-      const input = prompt('Enter team index to swap to (0-based):');
-      if (input !== null) {
-        const idx = parseInt(input, 10);
-        if (!Number.isNaN(idx) && idx >= 0) {
-          this.#callbacks.onSwap(vm.battleId, idx);
-        }
-      }
-    });
-    this.#actionsEl.appendChild(swapBtn);
+    for (const member of vm.bench) {
+      const btn = document.createElement('button');
+      btn.style.cssText =
+        'padding:6px 12px;cursor:pointer;font-family:monospace;background:#2a2a3a;' +
+        'color:#e0e0e0;border:1px solid #448;border-radius:3px;';
+      btn.textContent = `Swap: ${member.speciesName} (${member.currentHp}/${member.maxHp})`;
+      btn.addEventListener('click', () => this.#callbacks.onSwap(vm.battleId, member.teamIndex));
+      this.#actionsEl.appendChild(btn);
+    }
   }
 
   #renderOutcome(vm: BattleViewModel): void {

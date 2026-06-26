@@ -480,7 +480,7 @@ function battle(battleId: bigint, playerIdentity = 'alice', outcome = 'Ongoing')
   return {
     battleId,
     playerIdentity,
-    opponentIdentity: playerIdentity,
+    opponentIdentity: 'npc',
     outcome,
     turnNumber: 1,
     sideA: battleSide(),

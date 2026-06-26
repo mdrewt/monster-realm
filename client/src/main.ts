@@ -150,6 +150,7 @@ function refreshBattle(): void {
     // Auto-hide box when battle is active to prevent overlapping overlays.
     if (boxView?.visible) boxView.hide();
     const vm = buildBattleViewModel(battle, store.skillMap(), store.speciesMap());
+    if (!vm) console.warn('[battle] ongoing battle has corrupt team data; view hidden');
     battleView.refresh(vm);
   } else if (battleView.visible) {
     battleView.hide();
