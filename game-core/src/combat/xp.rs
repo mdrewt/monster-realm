@@ -7,7 +7,7 @@
 //!
 //! # XP reward formula
 //! ```text
-//! reward = (loser_base_stat_total / 5) * (loser_level / winner_level) + 1
+//! reward = loser_base_stat_total * loser_level / (5 * winner_level) + 1
 //! ```
 //! clamped to a minimum of 1 (the `+1` guarantees it). All arithmetic uses
 //! `u32` intermediates.
@@ -32,7 +32,9 @@ pub fn battle_xp_reward(winner_level: Level, loser_base_stat_total: u16, loser_l
     let bst = u32::from(loser_base_stat_total);
     let l_loser = u32::from(loser_level.as_u8());
     let l_winner = u32::from(winner_level.as_u8());
-    let reward = (bst / 5) * (l_loser / l_winner) + 1;
+    // Multiply before dividing to reduce integer-truncation precision loss.
+    // E.g. winner_level=10, loser_level=5: old order gave 5/10=0; new order gives bst*5/(5*10).
+    let reward = bst * l_loser / (5 * l_winner) + 1;
     Xp::new(reward)
 }
 

@@ -13,7 +13,7 @@
 //! where `effectiveness` is the raw value from `TypeChart` (0, 5, 10, or 20).
 //! An immune hit (effectiveness == 0) always deals 0 damage.
 //!
-//! All arithmetic uses `u32` intermediates to avoid overflow.
+//! All arithmetic uses `u64` intermediates to avoid overflow.
 
 use crate::content::SkillDef;
 
@@ -43,12 +43,12 @@ pub fn calc_damage(
         return (0, Effectiveness::Immune);
     }
 
-    let level = u32::from(attacker.level);
-    let power = u32::from(skill.power);
-    let attack = u32::from(attacker.stats.attack);
-    let defense = u32::from(defender.stats.defense);
-    let eff = u32::from(eff_raw);
-    let var = u32::from(variance);
+    let level = u64::from(attacker.level);
+    let power = u64::from(skill.power);
+    let attack = u64::from(attacker.stats.attack);
+    let defense = u64::from(defender.stats.defense);
+    let eff = u64::from(eff_raw);
+    let var = u64::from(variance);
 
     // base = (2 * level / 5 + 2) * power * attack / defense / 50 + 2
     let base = (2 * level / 5 + 2) * power * attack / defense / 50 + 2;
@@ -67,8 +67,8 @@ pub fn calc_damage(
     let variance_mod = type_mod * var / 100;
 
     // floor of 1 for non-immune hits
-    let final_dmg = std::cmp::max(1u32, variance_mod);
-    let clamped = std::cmp::min(final_dmg, u32::from(u16::MAX)) as u16;
+    let final_dmg = std::cmp::max(1u64, variance_mod);
+    let clamped = std::cmp::min(final_dmg, u64::from(u16::MAX)) as u16;
 
     (clamped, effectiveness)
 }
