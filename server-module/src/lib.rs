@@ -905,4 +905,349 @@ mod tests {
             );
         }
     }
+
+    // =========================================================================
+    // M7b gating tests — server-module helper seams
+    //
+    // These tests gate the three pure helper functions that the battle reducers
+    // will depend on. They are RED until the implementer adds these helpers to
+    // server-module/src/lib.rs.
+    //
+    // The helpers being gated:
+    //   1. battle_monster_from_row(monster, skills) -> BattleMonster
+    //      Marshaling seam: Monster table row + species skills -> BattleMonster.
+    //
+    //   2. write_back_hp(monster_row, battle_monster)
+    //      Writes HP from the battle-engine state back to the Monster row.
+    //
+    //   3. loser_base_stat_total(species_row) -> u16
+    //      Sums the six base stats from a SpeciesRow for the XP formula.
+    //
+    // None of these functions touch ReducerContext — they are pure transformers
+    // that can be tested without a SpacetimeDB runtime.
+    // =========================================================================
+
+    // -------------------------------------------------------------------------
+    // Fixture builders for M7b tests
+    // -------------------------------------------------------------------------
+
+    fn m7b_test_monster_row() -> Monster {
+        Monster {
+            monster_id: 42,
+            owner_identity: Identity::from_byte_array([7u8; 32]),
+            species_id: 1,
+            nickname: "Sparky".to_string(),
+            level: 15,
+            xp: 0,
+            bond: 0,
+            iv_hp: 20,
+            iv_attack: 25,
+            iv_defense: 10,
+            iv_speed: 30,
+            iv_sp_attack: 15,
+            iv_sp_defense: 5,
+            nature_kind: game_core::NatureKind::Hardy,
+            ev_hp: 0,
+            ev_attack: 0,
+            ev_defense: 0,
+            ev_speed: 0,
+            ev_sp_attack: 0,
+            ev_sp_defense: 0,
+            // Derived stats (set explicitly for test predictability)
+            stat_hp: 120,
+            stat_attack: 55,
+            stat_defense: 45,
+            stat_speed: 70,
+            stat_sp_attack: 50,
+            stat_sp_defense: 40,
+            current_hp: 90, // damaged — not at max
+            party_slot: 0,
+        }
+    }
+
+    fn m7b_test_skill_rows() -> Vec<SkillRow> {
+        vec![
+            SkillRow {
+                id: 1,
+                name: "Ember".to_string(),
+                affinity: Affinity::Fire,
+                power: 40,
+                accuracy: 100,
+                pp: 25,
+            },
+            SkillRow {
+                id: 2,
+                name: "Scratch".to_string(),
+                affinity: Affinity::Fire,
+                power: 40,
+                accuracy: 100,
+                pp: 35,
+            },
+        ]
+    }
+
+    fn m7b_test_species_row() -> SpeciesRow {
+        SpeciesRow {
+            id: 1,
+            name: "Flameling".to_string(),
+            base_hp: 45,
+            base_attack: 49,
+            base_defense: 49,
+            base_speed: 65,
+            base_sp_attack: 65,
+            base_sp_defense: 45,
+            affinity: Affinity::Fire,
+            learnable_skill_ids: vec![1, 2],
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // TEST M7b-SM-1: battle_monster_from_row marshaling seam
+    //
+    // Kills: an impl that swaps species_id and affinity, maps the wrong HP
+    // column (using stat_hp instead of current_hp or vice-versa), or copies
+    // known_skill_ids from learnable_skill_ids without filtering.
+    // -------------------------------------------------------------------------
+
+    /// The function `battle_monster_from_row` must exist in the server module
+    /// and produce a BattleMonster whose fields correctly reflect the Monster
+    /// table row and the provided skill list.
+    ///
+    /// Kills: maps stat_hp → current_hp (wrong — battle starts with actual HP),
+    /// or maps current_hp → max_hp (wrong — max_hp must equal stat_hp).
+    #[test]
+    fn m7b_battle_monster_from_row_maps_hp_correctly() {
+        let monster = m7b_test_monster_row();
+        let skills = m7b_test_skill_rows();
+
+        // battle_monster_from_row does not exist yet — this test is RED.
+        let bm: game_core::BattleMonster = battle_monster_from_row(&monster, &skills);
+
+        // current_hp in battle = Monster.current_hp (the persisted damage state)
+        assert_eq!(
+            bm.current_hp, monster.current_hp,
+            "BattleMonster.current_hp must equal Monster.current_hp (90), not stat_hp (120)"
+        );
+        // max_hp in battle = Monster.stat_hp (the computed maximum)
+        assert_eq!(
+            bm.max_hp, monster.stat_hp,
+            "BattleMonster.max_hp must equal Monster.stat_hp (120), not current_hp (90)"
+        );
+    }
+
+    /// Kills: an impl that copies all learnable_skill_ids instead of only
+    /// the skill_ids present in the provided skills slice, or that maps the
+    /// wrong species_id / affinity / level.
+    #[test]
+    fn m7b_battle_monster_from_row_maps_identity_fields() {
+        let monster = m7b_test_monster_row();
+        let skills = m7b_test_skill_rows();
+
+        let bm: game_core::BattleMonster = battle_monster_from_row(&monster, &skills);
+
+        assert_eq!(bm.species_id, monster.species_id, "species_id must match");
+        assert_eq!(
+            bm.affinity,
+            Affinity::Fire,
+            "affinity must come from species (Fire)"
+        );
+        assert_eq!(bm.level, monster.level, "level must match monster.level");
+    }
+
+    /// Kills: an impl that uses derived stats from the wrong columns (e.g.
+    /// reads iv_attack instead of stat_attack for the StatBlock).
+    #[test]
+    fn m7b_battle_monster_from_row_maps_derived_stats() {
+        let monster = m7b_test_monster_row();
+        let skills = m7b_test_skill_rows();
+
+        let bm: game_core::BattleMonster = battle_monster_from_row(&monster, &skills);
+
+        // The StatBlock in BattleMonster must come from the derived stat columns,
+        // not from raw IV/EV values or base stats.
+        assert_eq!(bm.stats.hp, monster.stat_hp, "stats.hp must be stat_hp");
+        assert_eq!(
+            bm.stats.attack, monster.stat_attack,
+            "stats.attack must be stat_attack"
+        );
+        assert_eq!(
+            bm.stats.defense, monster.stat_defense,
+            "stats.defense must be stat_defense"
+        );
+        assert_eq!(
+            bm.stats.speed, monster.stat_speed,
+            "stats.speed must be stat_speed"
+        );
+        assert_eq!(
+            bm.stats.sp_attack, monster.stat_sp_attack,
+            "stats.sp_attack must be stat_sp_attack"
+        );
+        assert_eq!(
+            bm.stats.sp_defense, monster.stat_sp_defense,
+            "stats.sp_defense must be stat_sp_defense"
+        );
+    }
+
+    /// Kills: an impl that puts all learnable_skill_ids (from the species) into
+    /// known_skill_ids instead of only the IDs present in the provided skills slice.
+    /// The skill slice represents what the server has loaded for this monster;
+    /// known_skill_ids must reflect exactly those IDs.
+    #[test]
+    fn m7b_battle_monster_from_row_known_skill_ids_match_skills_slice() {
+        let monster = m7b_test_monster_row();
+        // Only provide skill 1 (not skill 2) — simulates the monster only knowing one move.
+        let one_skill = vec![m7b_test_skill_rows().remove(0)];
+
+        let bm: game_core::BattleMonster = battle_monster_from_row(&monster, &one_skill);
+
+        assert_eq!(
+            bm.known_skill_ids,
+            vec![1u32],
+            "known_skill_ids must match the provided skills slice (only skill 1)"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // TEST M7b-SM-2: write_back_hp writes battle HP to the monster row
+    //
+    // Kills: an impl that writes max_hp instead of current_hp, writes to the
+    // wrong Monster field (e.g. stat_hp), or does not write at all.
+    // -------------------------------------------------------------------------
+
+    /// Kills: write_back_hp writes 0 (fainted) back as current_hp.
+    #[test]
+    fn m7b_write_back_hp_writes_fainted_state() {
+        let mut monster = m7b_test_monster_row(); // current_hp = 90
+                                                  // Build a BattleMonster representing the fainted state after combat.
+        let bm = game_core::BattleMonster {
+            species_id: monster.species_id,
+            affinity: Affinity::Fire,
+            level: monster.level,
+            current_hp: 0, // fainted in battle
+            max_hp: monster.stat_hp,
+            stats: game_core::StatBlock {
+                hp: monster.stat_hp,
+                attack: monster.stat_attack,
+                defense: monster.stat_defense,
+                speed: monster.stat_speed,
+                sp_attack: monster.stat_sp_attack,
+                sp_defense: monster.stat_sp_defense,
+            },
+            known_skill_ids: vec![1],
+        };
+
+        // write_back_hp does not exist yet — this test is RED.
+        write_back_hp(&mut monster, &bm);
+
+        assert_eq!(
+            monster.current_hp, 0,
+            "write_back_hp must set Monster.current_hp = 0 (fainted)"
+        );
+        // stat_hp must NOT be modified — it is derived, not a battle value.
+        assert_eq!(monster.stat_hp, 120, "write_back_hp must not touch stat_hp");
+    }
+
+    /// Kills: write_back_hp that caps HP at max_hp (ignoring current_hp).
+    #[test]
+    fn m7b_write_back_hp_writes_partial_damage() {
+        let mut monster = m7b_test_monster_row(); // current_hp = 90 initially
+        let partial_hp: u16 = 37;
+        let bm = game_core::BattleMonster {
+            species_id: monster.species_id,
+            affinity: Affinity::Fire,
+            level: monster.level,
+            current_hp: partial_hp,
+            max_hp: monster.stat_hp,
+            stats: game_core::StatBlock {
+                hp: monster.stat_hp,
+                attack: monster.stat_attack,
+                defense: monster.stat_defense,
+                speed: monster.stat_speed,
+                sp_attack: monster.stat_sp_attack,
+                sp_defense: monster.stat_sp_defense,
+            },
+            known_skill_ids: vec![1],
+        };
+
+        write_back_hp(&mut monster, &bm);
+
+        assert_eq!(
+            monster.current_hp, partial_hp,
+            "write_back_hp must write current_hp = {partial_hp}, not cap or round"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // TEST M7b-SM-3: loser_base_stat_total sums the six base stats correctly
+    //
+    // Kills: an impl that sums derived stats (stat_hp etc.) instead of base
+    // stats, sums only five stats (off-by-one), or wraps on overflow.
+    // -------------------------------------------------------------------------
+
+    /// Kills: an impl that returns the sum of derived stats (monster row's
+    /// stat_hp etc.) instead of the six BASE stat columns from the species row.
+    /// 45 + 49 + 49 + 65 + 65 + 45 = 318 (Flameling base stat total).
+    #[test]
+    fn m7b_loser_base_stat_total_flameling() {
+        let species = m7b_test_species_row();
+
+        // loser_base_stat_total does not exist yet — this test is RED.
+        let bst: u16 = loser_base_stat_total(&species);
+
+        assert_eq!(
+            bst, 318,
+            "loser_base_stat_total must sum the six BASE stats: \
+             45+49+49+65+65+45 = 318, got {bst}"
+        );
+    }
+
+    /// Kills: an impl that only sums five stats (off-by-one on the stat fields).
+    #[test]
+    fn m7b_loser_base_stat_total_high_bst_species() {
+        // A species with high base stats — verifies all six fields are summed.
+        let species = SpeciesRow {
+            id: 99,
+            name: "Apexion".to_string(),
+            base_hp: 100,
+            base_attack: 120,
+            base_defense: 90,
+            base_speed: 100,
+            base_sp_attack: 130,
+            base_sp_defense: 90,
+            affinity: Affinity::Fire,
+            learnable_skill_ids: vec![],
+        };
+        // 100 + 120 + 90 + 100 + 130 + 90 = 630
+        let bst: u16 = loser_base_stat_total(&species);
+        assert_eq!(
+            bst, 630,
+            "loser_base_stat_total must sum all six base stats: \
+             100+120+90+100+130+90 = 630, got {bst}"
+        );
+    }
+
+    /// Kills: an impl that wraps on u16 overflow. All six base stats at 255 = 1530,
+    /// which fits in u16 (max 65535). But if the impl uses u8 intermediates, 255*6=1530
+    /// wraps to 250. This test catches that.
+    #[test]
+    fn m7b_loser_base_stat_total_max_stats_no_overflow() {
+        let species = SpeciesRow {
+            id: 0,
+            name: "MaxStat".to_string(),
+            base_hp: 255,
+            base_attack: 255,
+            base_defense: 255,
+            base_speed: 255,
+            base_sp_attack: 255,
+            base_sp_defense: 255,
+            affinity: Affinity::Fire,
+            learnable_skill_ids: vec![],
+        };
+        // 255 * 6 = 1530, which fits in u16.
+        let bst: u16 = loser_base_stat_total(&species);
+        assert_eq!(
+            bst, 1530,
+            "loser_base_stat_total must not overflow u8; 255*6=1530, got {bst}"
+        );
+    }
 }

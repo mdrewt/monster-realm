@@ -1,0 +1,11 @@
+{
+  "columns": [
+    "battle_id",
+    "player_identity",
+    "opponent_identity",
+    "state",
+    "party_monster_ids",
+    "opponent_monster_ids",
+    "created_at_ms"
+  ]
+}
