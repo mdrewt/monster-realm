@@ -344,6 +344,18 @@ export default async function () {
     };
   }
 
+  // Teeth 7b: hasCiFastRecipe must accept the parameterised form (ci-fast crate:)
+  const goodCiFastParam =
+    'lint:\n    cargo clippy\n\nci-fast crate:\n    cargo nextest run -p {{crate}}\n';
+  if (!hasCiFastRecipe(goodCiFastParam)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'proof-of-teeth #7b: hasCiFastRecipe wrongly rejected a parameterised ci-fast crate: recipe',
+    };
+  }
+
   // Teeth 8: usesInstallActionForAuditAndNextest must reject bare cargo install
   const badBareCargoInstall =
     'steps:\n  - name: SCA\n    run: cargo install cargo-audit --locked\n';
