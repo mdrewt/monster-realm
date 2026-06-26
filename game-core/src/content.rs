@@ -6,6 +6,7 @@
 use serde::Deserialize;
 
 use crate::monster::types::{Affinity, StatBlock};
+use crate::taming::types::EncounterTable;
 
 /// A zone definition — the M0 content registry and the first real schema subject
 /// for the zoned-schema + append-only-ids evals. Mirrors the server `zone_def`
@@ -58,6 +59,10 @@ pub struct ItemDef {
     pub id: u32,
     pub name: String,
     pub description: String,
+    /// Per-mille bonus added to recruit_chance when this item is used as bait.
+    /// Defaults to 0 for items that have no taming function.
+    #[serde(default)]
+    pub recruit_bonus: u16,
 }
 
 /// The embedded zone registry (compiled in via `include_str!`, parsed at load).
@@ -169,6 +174,93 @@ pub fn load_items() -> Result<Vec<ItemDef>, String> {
 /// Returns `Err` if `ron_str` is not a valid item list.
 pub fn parse_items(ron_str: &str) -> Result<Vec<ItemDef>, String> {
     ron::from_str::<Vec<ItemDef>>(ron_str).map_err(|e| format!("items registry parse error: {e}"))
+}
+
+// ===========================================================================
+// M8a content — encounter tables
+// ===========================================================================
+
+const ENCOUNTERS_RON: &str = include_str!("../content/encounters.ron");
+
+/// Parse encounter tables from a RON string (separated for testability).
+///
+/// # Errors
+/// Returns `Err` with a descriptive message if `ron_str` is not valid.
+pub fn parse_encounters(ron_str: &str) -> Result<Vec<EncounterTable>, String> {
+    ron::from_str::<Vec<EncounterTable>>(ron_str)
+        .map_err(|e| format!("encounters registry parse error: {e}"))
+}
+
+/// Parse the embedded encounter registry.
+///
+/// # Errors
+/// Returns `Err` if the embedded RON fails to parse.
+pub fn load_encounters() -> Result<Vec<EncounterTable>, String> {
+    parse_encounters(ENCOUNTERS_RON)
+}
+
+/// Cross-registry validation for encounter tables.
+///
+/// Checks:
+/// - Unique zone ids
+/// - `encounter_rate` in [0, 1000]
+/// - Each entry has `weight > 0`
+/// - Each entry has `min_level <= max_level`
+/// - Each `species_id` exists in `species`
+/// - Each `zone_id` exists in `zones`
+///
+/// # Errors
+/// Returns `Err` with a descriptive message on the first violation found.
+pub fn validate_encounters(
+    tables: &[EncounterTable],
+    species: &[Species],
+    zones: &[ZoneDef],
+) -> Result<(), String> {
+    let species_ids: std::collections::BTreeSet<u32> = species.iter().map(|s| s.id).collect();
+    let zone_ids: std::collections::BTreeSet<u32> = zones.iter().map(|z| z.id).collect();
+    let mut seen_zones = std::collections::BTreeSet::new();
+
+    for table in tables {
+        if !seen_zones.insert(table.zone_id) {
+            return Err(format!("duplicate encounter zone_id {}", table.zone_id));
+        }
+        if !zone_ids.contains(&table.zone_id) {
+            return Err(format!(
+                "encounter table references non-existent zone {}",
+                table.zone_id
+            ));
+        }
+        if table.encounter_rate > 1000 {
+            return Err(format!(
+                "encounter_rate {} for zone {} exceeds per-mille max 1000",
+                table.encounter_rate, table.zone_id
+            ));
+        }
+        for entry in &table.entries {
+            if entry.weight == 0 {
+                return Err(format!(
+                    "encounter entry for species {} in zone {} has weight=0",
+                    entry.species_id, table.zone_id
+                ));
+            }
+            if entry.min_level.as_u8() > entry.max_level.as_u8() {
+                return Err(format!(
+                    "encounter entry for species {} in zone {} has inverted level range ({} > {})",
+                    entry.species_id,
+                    table.zone_id,
+                    entry.min_level.as_u8(),
+                    entry.max_level.as_u8()
+                ));
+            }
+            if !species_ids.contains(&entry.species_id) {
+                return Err(format!(
+                    "encounter entry in zone {} references non-existent species {}",
+                    table.zone_id, entry.species_id
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Cross-registry content validation:
@@ -359,6 +451,7 @@ mod tests {
             id,
             name: format!("Item{id}"),
             description: format!("Description for item {id}"),
+            recruit_bonus: 0,
         }
     }
 

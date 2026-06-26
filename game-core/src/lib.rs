@@ -14,6 +14,7 @@
 pub mod combat;
 pub mod content;
 pub mod monster;
+pub mod taming;
 pub mod types;
 pub mod world;
 
@@ -24,13 +25,18 @@ pub use combat::{
     TypeChart,
 };
 pub use content::{
-    load_items, load_skills, load_species, load_type_chart, load_zones, parse_items, parse_skills,
-    parse_species, parse_type_chart, parse_zones, validate_content, validate_zones, ItemDef,
-    SkillDef, Species, TypeRelation, ZoneDef,
+    load_encounters, load_items, load_skills, load_species, load_type_chart, load_zones,
+    parse_encounters, parse_items, parse_skills, parse_species, parse_type_chart, parse_zones,
+    validate_content, validate_encounters, validate_zones, ItemDef, SkillDef, Species,
+    TypeRelation, ZoneDef,
 };
 pub use monster::{
     derive_stats, level_bounds, level_for_xp, roll_individuality, roll_starter, xp_for_level,
     Affinity, Bond, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock, StatKind, Xp,
+};
+pub use taming::{
+    attempt_recruit, encounter_triggers, recruit_chance, roll_encounter, EncounterEntry,
+    EncounterTable, MISSING_HP_FACTOR,
 };
 pub use types::{ActionState, CharacterState, Direction, Millis, MoveInput, TileKind, TilePos};
 pub use world::{apply_move, apply_move_coded, spawn, zone_0, TileMap, MOVE_QUEUE_CAP, STEP_MS};
