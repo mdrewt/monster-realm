@@ -117,6 +117,10 @@ pub enum Effectiveness {
 ///
 /// Marked `#[non_exhaustive]` so M14 can add new variants without breaking
 /// exhaustive matches elsewhere.
+///
+/// DO NOT add `SpacetimeType` here — `BattleEvent` is transient (resolver return
+/// value only, never stored in a table). Adding it would make new variants a
+/// breaking wire-format change for old clients. See ADR-0042.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BattleEvent {

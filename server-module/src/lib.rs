@@ -374,7 +374,10 @@ fn write_back_hp(monster: &mut Monster, bm: &BattleMonster) {
 }
 
 /// Sum the six base stats of a species (for the XP formula).
+/// Returns u32 to avoid overflow when base stats are stored as u16.
 fn loser_base_stat_total(species: &SpeciesRow) -> u16 {
+    // Each base stat is validated <= 255 by validate_content, so the sum fits u16.
+    // If the validation range ever widens, widen this return type to u32.
     species.base_hp
         + species.base_attack
         + species.base_defense
@@ -866,6 +869,24 @@ pub fn start_battle(
         log_reject("start_battle", me, &e);
         return Err(e);
     }
+    // Reject duplicate monster IDs (prevents double XP write-back).
+    {
+        let mut seen = std::collections::HashSet::new();
+        for &mid in &party_monster_ids {
+            if !seen.insert(mid) {
+                let e = format!("duplicate monster_id {mid} in party_monster_ids");
+                log_reject("start_battle", me, &e);
+                return Err(e);
+            }
+        }
+        for &mid in &opponent_monster_ids {
+            if !seen.insert(mid) {
+                let e = format!("duplicate monster_id {mid} in opponent_monster_ids");
+                log_reject("start_battle", me, &e);
+                return Err(e);
+            }
+        }
+    }
     if opponent_monster_ids.is_empty() {
         let e = "opponent_monster_ids must not be empty".to_string();
         log_reject("start_battle", me, &e);
@@ -1007,6 +1028,14 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
         return Err(e);
     }
 
+    // Validate skill_id is in the active monster's moveset.
+    let active_skills = &battle.state.side_a.active_monster().known_skill_ids;
+    if !active_skills.contains(&skill_id) {
+        let e = format!("skill {skill_id} not in active monster's moveset");
+        log_reject("submit_attack", me, &e);
+        return Err(e);
+    }
+
     // Load skills and type chart for the resolver.
     let skill_rows: Vec<SkillRow> = ctx.db.skill_row().iter().collect();
     let skill_defs = skill_defs_from_rows(&skill_rows);
@@ -1123,16 +1152,8 @@ pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
     }
     battle.state.outcome = BattleOutcome::Fled;
 
-    // Write back current HP (player keeps damage taken so far).
-    for (i, bm) in battle.state.side_a.team.iter().enumerate() {
-        let mid = battle.party_monster_ids[i];
-        if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
-            write_back_hp(&mut m, bm);
-            let pub_row = pub_from_monster(&m);
-            ctx.db.monster().monster_id().update(m);
-            ctx.db.monster_pub().monster_id().update(pub_row);
-        }
-    }
+    // Write back HP via the shared path (no XP on flee — outcome != SideAWins).
+    write_back_battle_results(ctx, &battle)?;
 
     ctx.db.battle().battle_id().update(battle);
     log::info!("{{\"evt\":\"battle_flee\",\"battle_id\":{battle_id},\"sender\":\"{me}\"}}");
@@ -1209,11 +1230,9 @@ fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<()
             }
             let mid = battle.party_monster_ids[i];
             if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
-                let xp_gained = battle_xp_reward(
-                    game_core::Level::new(bm.level).unwrap(),
-                    bst,
-                    game_core::Level::new(loser_active.level).unwrap(),
-                );
+                let winner_lvl = game_core::Level::new(bm.level)?;
+                let loser_lvl = game_core::Level::new(loser_active.level)?;
+                let xp_gained = battle_xp_reward(winner_lvl, bst, loser_lvl);
                 let current_xp = game_core::Xp::new(m.xp);
                 let (new_xp, new_level, leveled_up) = apply_xp_gain(current_xp, xp_gained);
                 m.xp = new_xp.value();
@@ -1237,8 +1256,7 @@ fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<()
                             m.iv_speed,
                             m.iv_sp_attack,
                             m.iv_sp_defense,
-                        )
-                        .unwrap();
+                        )?;
                         let evs = game_core::EVs::new(
                             m.ev_hp,
                             m.ev_attack,
@@ -1246,16 +1264,10 @@ fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<()
                             m.ev_speed,
                             m.ev_sp_attack,
                             m.ev_sp_defense,
-                        )
-                        .unwrap();
+                        )?;
                         let nature = game_core::Nature::new(m.nature_kind);
-                        let derived = game_core::derive_stats(
-                            &base,
-                            &ivs,
-                            &evs,
-                            &nature,
-                            game_core::Level::new(m.level).unwrap(),
-                        );
+                        let lvl = game_core::Level::new(m.level)?;
+                        let derived = game_core::derive_stats(&base, &ivs, &evs, &nature, lvl);
                         m.stat_hp = derived.hp;
                         m.stat_attack = derived.attack;
                         m.stat_defense = derived.defense;

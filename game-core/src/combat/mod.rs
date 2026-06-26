@@ -18,6 +18,8 @@ pub mod damage;
 pub mod m7b_gating_tests;
 #[cfg(test)]
 pub mod m7b_redteam_tests;
+#[cfg(test)]
+pub mod redteam_new_findings;
 pub mod resolve;
 pub mod type_chart;
 pub mod types;
