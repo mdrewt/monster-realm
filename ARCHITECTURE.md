@@ -79,8 +79,8 @@ stable id), separate from `init`. Stable ids are append-only.
 
 See `docs/adr/` (0002–0034 design ADRs from the spec corpus; 0035 scaffold
 hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest, 0040 RLS
-fallback split-tables) and `docs/validation-findings.md` (empirical Tier-1
-results).
+fallback split-tables, 0041 integer damage formula) and
+`docs/validation-findings.md` (empirical Tier-1 results).
 
 ## Monster subsystem (`game-core/src/monster/`, M6a)
 
@@ -160,6 +160,38 @@ from the `AuthoritativeStore`, mutates only via ownership-checked reducers
   `setPartySlot`) routed through the connection. `__game()` snapshot extended
   with monster data.
 
+## Combat subsystem (`game-core/src/combat/`, M7a — ADR-0041)
+
+Pure, deterministic, integer-only combat resolution engine. All battle rules
+live here exactly once (ADR-0003 SSOT). Randomness injected via `TurnVariance`.
+
+- **`types`** — value objects: `BattleMonster` (projected stats for combat),
+  `BattleSide` (active slot + team roster with auto-switch), `BattleState`
+  (symmetric SideA/SideB for PvP readiness, ADR-0017), `TurnChoice`
+  (Attack/Swap), `BattleEvent` (`#[non_exhaustive]` for M14 extensibility),
+  `TurnVariance` (injected damage/accuracy rolls + speed tie-breaker),
+  `Effectiveness` (Immune/NVE/Neutral/SE), `BattleOutcome`, `SideId`.
+- **`type_chart`** — `TypeChart` wraps RON-loaded `TypeRelation` data; 8
+  affinities, raw values in {0, 5, 10, 20}. Unlisted pairs default to 10
+  (neutral). `classify` maps raw → `Effectiveness` discriminant.
+- **`damage`** — integer-only formula (u32 intermediates, truncating division,
+  no floats): `base = (2*level/5+2)*power*attack/defense/50+2`, STAB `*3/2`,
+  type `*eff/10`, variance `*roll/100`, `max(1)`, clamped to `u16::MAX`.
+  `accuracy_check(accuracy, roll) -> bool` — `roll < accuracy`.
+- **`resolve`** — turn resolution: `resolve_turn` (swaps first, then
+  speed-ordered attacks; KO by faster prevents slower from acting;
+  auto-switch on faint or battle end), `resolve_enemy_turn` (AI picks best
+  skill, one-sided attack), `resolve_player_swap` (swap then enemy attacks
+  the new active). All return ordered `Vec<BattleEvent>`.
+- **`ai`** — `pick_best_skill`: scores each known skill by `power * eff * stab`,
+  picks highest. Ignores accuracy (accepted — simple heuristic, M14 can layer).
+- **`xp`** — `battle_xp_reward`: `(bst/5)*(loser_level/winner_level)+1`.
+  `apply_xp_gain`: saturating add, clamped at `xp_for_level(100)`, returns
+  `(new_xp, new_level, did_level_up)`.
+
+Content validation (`validate_content`) extended: skill `power > 0` enforced,
+type chart effectiveness values restricted to {0, 5, 10, 20}.
+
 ## Status
 
 Phase A spine: M0 (foundation + gates + presence walking skeleton, e2e green),
@@ -184,7 +216,10 @@ complete. **M6c** (box/party view — client-side subscription-driven overlay, p
 view-model + DOM shell, connection wiring for monster_pub/species_row, 'B' key
 toggle, reducer integration, box-view-privacy eval with proof-of-teeth — 35 new
 client tests, all green) complete. **M6 (Monsters & individuality) is now fully
-delivered** (M6a + M6b + M6c all merged).
+delivered** (M6a + M6b + M6c all merged). **M7a** (game-core combat resolution
+rules — type chart, integer damage formula, speed-ordered turn resolution,
+auto-switch, AI skill picker, XP reward/level-up — 192 tests, all green)
+complete.
 Deferred-with-rationale: the criterion **perf-budget gate** (folded into the M20
 observability capstone — a non-flaky budget needs tuned baselines) and GitHub
 Actions *execution* (the workflow is committed; only local `just ci` is verifiable
