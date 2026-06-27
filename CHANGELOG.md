@@ -6,6 +6,28 @@ pending a `cliff.toml` body-template fix (tracked for a build/CI-hygiene slice).
 
 ## [Unreleased]
 
+### Verified — M8.6d: loser_base_stat_total doc-comment (subsumed by M8.5b)
+
+- **Subsumed (ADR-0049 §4, "BST — owned by the rule layer") — no behavior change.** The M8.6 residual requiring the
+  `loser_base_stat_total` doc-comment to match its `u16` return type is closed. M8.5b
+  (PR #17, commit `66f7871`) relocated the base-stat-total computation into the pure
+  game-core function `game_core::base_stat_total(base: &StatBlock) -> u16`
+  (`game-core/src/combat/xp.rs`, saturating add) and made the server shell
+  `loser_base_stat_total` (`server-module/src/lib.rs`) a pure marshaling wrapper that
+  delegates to it. The shell's doc-comment now accurately states the `u16` return, the
+  marshaling-only role, and the ADR-0049 SSOT citation; the old "Returns u32" line
+  was deleted by M8.5b. Verified against the tree: no stale `u32` claim remains.
+- **Gating tests confirm the contract (all untouched, still binding):**
+  `m7b_loser_base_stat_total_flameling` (318), `m7b_loser_base_stat_total_high_bst_species`
+  (630), `m7b_loser_base_stat_total_max_stats_no_overflow` (1530, guards u8-overflow) in
+  `server-module/src/lib.rs`; `base_stat_total_known_answer` (Bulbasaur 318) and
+  `base_stat_total_saturates` (all-`u16::MAX` → 65535, kills wrapping add) in
+  `game-core/src/combat/xp.rs`.
+- **Boy Scout:** replaced a stale `// loser_base_stat_total does not exist yet — this test
+  is RED.` TDD-scaffold comment in `m7b_loser_base_stat_total_flameling` with an accurate
+  note that the explicit `u16` binding pins the signature. Inline test-doc comment only;
+  no behavior change.
+
 ### Changed — M8.6c: predictor flow-control + robustness
 
 - **Held-key continuation model (ADR-0013)** — OS key-repeat no longer drives movement. `keydown` ignores `event.repeat`; non-repeat movement keydown does immediate `step(dir)` AND registers dir in a most-recently-pressed held stack (`HeldDirections` in new `client/src/prediction/heldKeys.ts`); rAF frame loop re-issues held dir each frame, **deduped** against `predictor.lastQueuedDir` (pure `reissueDir`), suppressed while overlay visible; `keyup` releases; two-key hold falls back to still-held key; blur + reconnect clear. Preserves continuous held movement deterministically (frame-loop-driven, not OS-repeat-rate-dependent) — one behavior-visible change to valid play, same feel.

@@ -2517,7 +2517,9 @@ mod tests {
     fn m7b_loser_base_stat_total_flameling() {
         let species = m7b_test_species_row();
 
-        // loser_base_stat_total does not exist yet — this test is RED.
+        // The explicit `u16` binding pins the signature: a return-type
+        // regression (or dropping the game_core::base_stat_total delegation
+        // for a wider type) fails to compile here.
         let bst: u16 = loser_base_stat_total(&species);
 
         assert_eq!(
