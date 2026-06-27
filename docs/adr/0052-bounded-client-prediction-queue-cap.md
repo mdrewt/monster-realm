@@ -108,6 +108,20 @@ future refactor does not silently break it.
   exceeds `STEP_MS`, the player can skip a server tick (movement rate halves on a poor
   connection). This is inherent to the small cap, not introduced here; tuning the cap
   (server + client move together via the SSOT) is a future game-feel decision.
+- **Pre-existing residual — unbounded `#pending` under sustained no-ack (flagged, not
+  fixed).** `setMove`/`clearQueue` record a pending op unconditionally (unchanged by
+  this slice), so under a long ack outage (packet loss) with rapid input, `#pending`
+  grows without bound and `reconcile`'s O(n) replay degrades. This slice does not
+  worsen it (the `enqueue` path is now *bounded* — a declined enqueue records nothing),
+  and a reconnect re-seeds a fresh predictor (clearing `#pending`); on a healthy
+  connection acks arrive every batch so `#pending` stays small. A proper bound needs a
+  resync strategy (you cannot simply truncate unacked ops) — deferred to a future
+  netcode-hardening pass. A red-team "double-count" scenario (`setMove` then a
+  follow-up `enqueue`, reconciled before the server processes the enqueue) was triaged
+  as a **false positive**: the follow-up enqueue is a legitimately-unacked in-flight
+  move the server (queue not full) will accept, so predicting both moves is correct
+  prediction-ahead, not an over-prediction — parity is restored when the server
+  processes the enqueue.
 - **Pre-existing residual — reconnect seq race (flagged, not fixed).** On a disconnect
   the server deletes the `player` row and `join_game` re-creates it with
   `last_input_seq = 0`, so the post-reconnect fresh predictor (`#nextSeq = 0`) is in

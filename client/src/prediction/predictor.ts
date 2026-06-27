@@ -153,8 +153,10 @@ export class Predictor {
   /**
    * Apply each DUE queued move via `applyMove`, advancing logical time by `stepMs`
    * per applied move (not snapping to `now`) so a large local time gap catches up as
-   * discrete one-tile steps. Applies at most `queueCap + pendingCount` moves
-   * (bounded prediction, ADR-0013) and is naturally bounded by the queue length.
+   * discrete one-tile steps. Bounded prediction (ADR-0013/0052): `#queue.length <=
+   * #queueCap` holds by construction (enqueue rejects past cap; reconcile clamps), so
+   * a single drain applies at most `#queueCap` moves — the predictor never runs more
+   * than the cap ahead of authority.
    */
   drain(now: number): DrainResult {
     if (this.#predicted === undefined) return { applied: 0, snapped: false };
@@ -164,7 +166,9 @@ export class Predictor {
       this.#lastDrainAt !== undefined && now - this.#lastDrainAt > SNAP_GAP_STEPS * this.#stepMs;
     this.#lastDrainAt = now;
 
-    const maxApply = this.#queueCap + this.#pending.length;
+    // `#queue.length <= #queueCap` is invariant (ADR-0052), so the cap alone is the
+    // tight bound; the `#queue.length > 0` condition below stops earlier in practice.
+    const maxApply = this.#queueCap;
     let applied = 0;
     while (
       applied < maxApply &&

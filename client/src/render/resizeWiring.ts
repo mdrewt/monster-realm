@@ -11,7 +11,7 @@ interface Resizable {
 interface ResizeWindow {
   innerWidth: number;
   innerHeight: number;
-  addEventListener(type: string, cb: () => void): void;
+  addEventListener(type: 'resize', cb: () => void): void;
 }
 
 /**
