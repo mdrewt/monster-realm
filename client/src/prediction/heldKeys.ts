@@ -9,7 +9,8 @@ import type { WasmDirection } from '../convert/convert';
  * two-key hold falls back to the still-held key on release (M8.6c, ADR-0013).
  */
 export class HeldDirections {
-  // Ordered array, last element = most-recently-pressed still-held dir.
+  // Ordered array, last element = most-recently-pressed still-held dir. Bounded
+  // domain (≤4 dirs), so the `includes`/`filter` scans are O(1) in practice.
   #stack: WasmDirection[] = [];
 
   /** Register `dir` as held + make it the active (most-recent). A press of an
