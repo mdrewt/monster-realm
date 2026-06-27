@@ -1076,9 +1076,54 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
 
 // --- Battle reducers (M7b) ---------------------------------------------------
 
+// --- Battle-input validators (M8.5a, ADR-0048) -------------------------------
+// Pure, total predicates over the trust boundary. Extracted so the rejection
+// rules are unit-testable without a ReducerContext and reused by `start_battle`
+// and the write-back path. Every illegal input is an `Err` — reject-not-clamp.
+
+/// Caller party size must be in `1..=MAX_PARTY_SIZE` (empty is invalid; an
+/// oversized list is rejected, never truncated). The SSOT party-size validator.
+fn check_party_size(n: usize) -> Result<(), String> {
+    if n == 0 {
+        return Err("party must contain at least one monster".to_string());
+    }
+    if n > usize::from(MAX_PARTY_SIZE) {
+        return Err(format!(
+            "party size {n} exceeds MAX_PARTY_SIZE ({MAX_PARTY_SIZE})"
+        ));
+    }
+    Ok(())
+}
+
+/// A monster offered to a battle must be party-slotted, not boxed
+/// (`party_slot == PARTY_SLOT_NONE`). Boxed monsters cannot be conscripted.
+fn check_monster_in_party(slot: u8) -> Result<(), String> {
+    if slot == PARTY_SLOT_NONE {
+        return Err("monster is boxed (not party-slotted)".to_string());
+    }
+    Ok(())
+}
+
+/// The positional coupling the write-back path relies on: `side_a.team[i]`
+/// pairs with `party_monster_ids[i]`. A length mismatch is an illegal state —
+/// return `Err` (the caller surfaces it) rather than panic-indexing.
+fn check_team_coupling(team_len: usize, ids_len: usize) -> Result<(), String> {
+    if team_len != ids_len {
+        return Err(format!(
+            "battle invariant violated: side_a.team.len() ({team_len}) != party_monster_ids.len() ({ids_len})"
+        ));
+    }
+    Ok(())
+}
+
 /// Start a PvE battle: build BattleMonsters from the player's party and the
 /// opponent's party (owned by opponent_identity), create a BattleState, insert
 /// the Battle row. Both parties must have at least one conscious party member.
+///
+/// Opponent provenance (ADR-0048): only a self/sandbox opponent
+/// (`opponent_identity == ctx.sender`) or the server/NPC sentinel
+/// (`WILD_IDENTITY`) is accepted. A client may NOT name another player as the
+/// opponent — that would conscript their monsters into the public `battle` row.
 #[spacetimedb::reducer]
 pub fn start_battle(
     ctx: &ReducerContext,
@@ -1088,8 +1133,10 @@ pub fn start_battle(
 ) -> Result<(), String> {
     let me = ctx.sender;
 
-    if party_monster_ids.is_empty() {
-        let e = "party_monster_ids must not be empty".to_string();
+    // Party size in 1..=MAX_PARTY_SIZE (reject empty AND oversized — never
+    // truncate; an unbounded list is N species lookups + N skill scans + N
+    // row writes). M8.5a.
+    if let Err(e) = check_party_size(party_monster_ids.len()) {
         log_reject("start_battle", me, &e);
         return Err(e);
     }
@@ -1113,6 +1160,17 @@ pub fn start_battle(
     }
     if opponent_monster_ids.is_empty() {
         let e = "opponent_monster_ids must not be empty".to_string();
+        log_reject("start_battle", me, &e);
+        return Err(e);
+    }
+
+    // Opponent-provenance authorization (ADR-0048): accept ONLY self/sandbox
+    // (opponent_identity == ctx.sender) or the server/NPC sentinel
+    // (WILD_IDENTITY). Naming another player would conscript their monsters into
+    // the public `battle` row (info-leak / grief / XP farm). Reject before any
+    // side-B DB read so a foreign roster never reaches the row. reject-not-clamp.
+    if opponent_identity != me && opponent_identity != WILD_IDENTITY {
+        let e = "opponent must be self or server-authored (PvP unsupported; ADR-0048)".to_string();
         log_reject("start_battle", me, &e);
         return Err(e);
     }
@@ -1141,6 +1199,12 @@ pub fn start_battle(
             .ok_or_else(|| format!("party monster {mid} not found"))?;
         if m.owner_identity != me {
             let e = format!("monster {mid} not owned by caller");
+            log_reject("start_battle", me, &e);
+            return Err(e);
+        }
+        // Reject boxed monsters — only party-slotted monsters may battle (M8.5a).
+        if let Err(e) = check_monster_in_party(m.party_slot) {
+            let e = format!("monster {mid} {e}");
             log_reject("start_battle", me, &e);
             return Err(e);
         }
@@ -1641,10 +1705,17 @@ pub fn heal_party(ctx: &ReducerContext) -> Result<(), String> {
 /// Write post-battle HP back to every party monster (HP only — NO XP). Shared by
 /// `write_back_battle_results` (the win/loss/flee path) and the M8d recruit
 /// success arm (which grants no XP). Dual-writes the private `monster` row and
-/// its public projection.
-fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) {
+/// its public projection. Returns `Err` on a `side_a.team` / `party_monster_ids`
+/// length mismatch (checked indexing, never panic — M8.5a).
+fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) -> Result<(), String> {
+    check_team_coupling(
+        battle.state.side_a.team.len(),
+        battle.party_monster_ids.len(),
+    )?;
     for (i, bm) in battle.state.side_a.team.iter().enumerate() {
-        let mid = battle.party_monster_ids[i];
+        let &mid = battle.party_monster_ids.get(i).ok_or_else(|| {
+            format!("write_back_party_hp: party_monster_ids index {i} out of range")
+        })?;
         if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
             write_back_hp(&mut m, bm);
             let pub_row = pub_from_monster(&m);
@@ -1652,13 +1723,22 @@ fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) {
             ctx.db.monster_pub().monster_id().update(pub_row);
         }
     }
+    Ok(())
 }
 
 /// After a battle ends (win/loss), write HP back to all party monsters and
 /// grant XP to the winner's team.
 fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<(), String> {
+    // Positional coupling invariant: side_a.team[i] pairs with
+    // party_monster_ids[i]. Assert it up front (Err, never panic) so the XP loop
+    // below can index by position safely — M8.5a.
+    check_team_coupling(
+        battle.state.side_a.team.len(),
+        battle.party_monster_ids.len(),
+    )?;
+
     // Write back HP for player's team (HP-only; the XP block below is separate).
-    write_back_party_hp(ctx, battle);
+    write_back_party_hp(ctx, battle)?;
 
     // GC the private wild-individuality row on ANY terminal outcome (no-op for
     // PvP battles with no `battle_wild` row; cleans wild battles that end via
@@ -1682,7 +1762,9 @@ fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<()
             if bm.is_fainted() {
                 continue;
             }
-            let mid = battle.party_monster_ids[i];
+            let &mid = battle.party_monster_ids.get(i).ok_or_else(|| {
+                format!("write_back_battle_results: party_monster_ids index {i} out of range")
+            })?;
             if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
                 let winner_lvl = game_core::Level::new(bm.level)?;
                 let loser_lvl = game_core::Level::new(loser_active.level)?;
@@ -1902,7 +1984,7 @@ pub fn attempt_recruit(
 
         battle.state.outcome = BattleOutcome::SideAWins;
         // NO XP on recruit (ADR-0047): do NOT swap for write_back_battle_results.
-        write_back_party_hp(ctx, &battle);
+        write_back_party_hp(ctx, &battle)?;
         ctx.db.battle_wild().battle_id().delete(battle_id);
         ctx.db.battle().battle_id().update(battle);
         // Log ONLY public coordinates — NEVER seed/IVs/nature (side-channel).
