@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Monster Realm — HD-2D lighting demo</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #07080d; color: #d7d3e0;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #wrap { display: flex; gap: 18px; align-items: flex-start; padding: 18px; flex-wrap: wrap; }
+  canvas { image-rendering: pixelated; border-radius: 8px; box-shadow: 0 10px 40px #000a;
+    max-width: 100%; height: auto; }
+  #hud { max-width: 300px; }
+  h1 { font-size: 15px; margin: 0 0 8px; color: #f3b07e; }
+  kbd { background: #1c1b29; border: 1px solid #34324a; border-bottom-width: 2px;
+    border-radius: 4px; padding: 1px 6px; color: #c2c0d6; }
+  .row { margin: 6px 0; }
+  .muted { color: #8a87a0; }
+  #status { margin-top: 10px; padding: 8px 10px; background: #14131f; border-radius: 6px;
+    border: 1px solid #2a2840; white-space: pre; }
+  #err { color: #ff8e8e; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage"></div>
+  <div id="hud">
+    <h1>Monster Realm — HD-2D lighting</h1>
+    <div class="muted">A tiny lit tilemap. The hero <em>and</em> a wild Emberkit (wandering
+      the tall-grass corner) are normal-mapped sprites; move under the lights and watch the
+      shading react in real time — albedo + normal maps + a 2-light deferred pass, the pure-2D
+      HD-2D look.</div>
+    <div class="row"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / arrows — walk the hero</div>
+    <div class="row"><span class="muted">move the mouse over the scene</span> — the cool light follows the cursor</div>
+    <div class="row"><kbd>Space</kbd> — toggle day / night ambient</div>
+    <div class="row"><kbd>T</kbd> — torch follows hero on/off</div>
+    <div class="row"><kbd>N</kbd> — flip normal-map Y <span class="muted">(if relief looks inverted)</span></div>
+    <div class="row"><kbd>V</kbd> — flip normal sampling <span class="muted">(if lighting is on the wrong half)</span></div>
+    <div id="status"></div>
+    <div id="err"></div>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": { "pixi.js": "./pixi.min.mjs" } }
+</script>
+
+<script type="module">
+import {
+  Application, Assets, Container, Sprite, Texture, RenderTexture, Filter, GlProgram,
+} from 'pixi.js';
+
+const TILE = 32, MAP_W = 16, MAP_H = 11, ZOOM = 2;
+const CW = MAP_W * TILE * ZOOM, CH = MAP_H * TILE * ZOOM;
+const ASSETS = new URL('../../public/assets/', import.meta.url);  // -> client/public/assets/
+const asset = (n) => new URL(n, ASSETS).href;
+const errEl = document.getElementById('err');
+
+try {
+  // ---- renderer (WebGL: glProgram-only filters are skipped on WebGPU) ----
+  const app = new Application();
+  await app.init({
+    width: CW, height: CH, backgroundColor: 0x0b0d14, resolution: 1,
+    autoDensity: false, antialias: false, preference: 'webgl', roundPixels: true,
+  });
+  document.getElementById('stage').appendChild(app.canvas);
+
+  // ---- load albedo + normal sheets ----
+  const [heroA, heroN, tilesA, tilesN, monA, monN] = await Promise.all([
+    Assets.load(asset('hero.json')),
+    Assets.load(asset('hero-normal.json')),
+    Assets.load(asset('tileset-edge-of-town.json')),
+    Assets.load(asset('tileset-edge-of-town-normal.json')),
+    Assets.load(asset('monster-emberkit.json')),
+    Assets.load(asset('monster-emberkit-normal.json')),
+  ]);
+  const crisp = (sheet) => {
+    for (const t of Object.values(sheet.textures)) t.source.scaleMode = 'nearest';
+  };
+  [heroA, heroN, tilesA, tilesN, monA, monN].forEach(crisp);
+
+  // ---- map data (built once; albedo + normal worlds read the SAME data) ----
+  const rnd = (() => { let s = 1337; return () => (s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff; })();
+  const ground = [];
+  for (let y = 0; y < MAP_H; y++) {
+    const row = [];
+    for (let x = 0; x < MAP_W; x++) {
+      const r = rnd();
+      row.push(r < 0.05 ? 'flowers_red' : r < 0.10 ? 'flowers_gold'
+        : r < 0.20 ? 'grass_tuft' : r < 0.30 ? 'grass_pebbles' : 'grass');
+    }
+    ground.push(row);
+  }
+  const stampRect = (x0, y0, x1, y1, base) => {
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const n = y === y0, s = y === y1, w = x === x0, e = x === x1;
+      const suf = n && w ? '_nw' : n && e ? '_ne' : s && w ? '_sw' : s && e ? '_se'
+        : n ? '_n' : s ? '_s' : w ? '_w' : e ? '_e' : '_c';
+      ground[y][x] = base + suf;
+    }
+  };
+  stampRect(1, 1, 4, 3, 'water');                                   // pond
+  stampRect(5, 7, 9, 9, 'path');                                    // dirt plaza
+  for (let y = 2; y <= 4; y++) for (let x = 11; x <= 13; x++) ground[y][x] = 'tall_grass';
+
+  const objects = [];
+  const tree = (x, y) => { objects.push({ name: 'tree_trunk', x, y }, { name: 'tree_canopy', x, y: y - 1 }); };
+  tree(2, 6); tree(1, 8); tree(8, 3);
+  objects.push({ name: 'bush', x: 10, y: 5 }, { name: 'rock', x: 15, y: 9 });
+  objects.push({ name: 'barrel', x: 6, y: 8 }, { name: 'barrel', x: 7, y: 8 });
+  objects.push({ name: 'sign', x: 5, y: 6 });
+  for (let x = 1; x <= 4; x++) objects.push({ name: 'fence_h', x, y: 10 });
+  objects.push({ name: 'fence_post', x: 0, y: 10 });
+  objects.push({ name: 'roof_l', x: 12, y: 6 }, { name: 'roof_c', x: 13, y: 6 }, { name: 'roof_r', x: 14, y: 6 });
+  objects.push({ name: 'wall_window', x: 12, y: 7 }, { name: 'wall_door', x: 13, y: 7 }, { name: 'wall_brick', x: 14, y: 7 });
+
+  // ---- build the two offscreen worlds (identical geometry) ----
+  const buildWorld = (sheet) => {
+    const world = new Container();
+    world.scale.set(ZOOM);
+    for (let y = 0; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++) {
+      const s = new Sprite(sheet.textures[ground[y][x]]);
+      s.x = x * TILE; s.y = y * TILE; world.addChild(s);
+    }
+    for (const o of objects) {
+      const s = new Sprite(sheet.textures[o.name]);
+      s.x = o.x * TILE; s.y = o.y * TILE; world.addChild(s);
+    }
+    return world;
+  };
+  const worldA = buildWorld(tilesA);
+  const worldN = buildWorld(tilesN);
+
+  // wild Emberkit (added before the hero so the hero can overlap in front)
+  const monSpriteA = new Sprite(monA.textures.mon_down_idle);
+  const monSpriteN = new Sprite(monN.textures.mon_down_idle);
+  for (const m of [monSpriteA, monSpriteN]) m.anchor.set(0.5, 0.65);
+  worldA.addChild(monSpriteA);
+  worldN.addChild(monSpriteN);
+
+  const heroSpriteA = new Sprite(heroA.textures.hero_down_idle);
+  const heroSpriteN = new Sprite(heroN.textures.hero_down_idle);
+  for (const h of [heroSpriteA, heroSpriteN]) h.anchor.set(0.5, 0.6);
+  worldA.addChild(heroSpriteA);
+  worldN.addChild(heroSpriteN);
+
+  // ---- deferred buffers ----
+  const albedoRT = RenderTexture.create({ width: CW, height: CH });
+  const normalRT = RenderTexture.create({ width: CW, height: CH });
+  albedoRT.source.scaleMode = 'nearest';
+  normalRT.source.scaleMode = 'nearest';
+
+  // ---- lighting filter (albedo = filter input uTexture; normals = uNormalMap) ----
+  const vertex = `
+    attribute vec2 aPosition;
+    varying vec2 vTextureCoord;
+    uniform vec4 uInputSize;
+    uniform vec4 uOutputFrame;
+    uniform vec4 uOutputTexture;
+    void main(void) {
+        gl_Position = vec4(aPosition * 2.0 - 1.0, 0.0, 1.0);
+        vTextureCoord = aPosition;
+    }`;
+  const fragment = `
+    varying vec2 vTextureCoord;
+    uniform sampler2D uTexture;     // filter input (unused — we sample the raw buffers)
+    uniform sampler2D uAlbedoMap;   // albedo render-target
+    uniform sampler2D uNormalMap;   // normal  render-target
+    uniform vec2 uResolution;
+    uniform float uNormalY;         // +1 / -1
+    uniform float uFlipV;           // 0 / 1  (shared by albedo + normal + lights)
+    uniform vec3 uAmbient;
+    uniform vec3 uL0; uniform vec3 uC0; uniform float uR0;   // torch
+    uniform vec3 uL1; uniform vec3 uC1; uniform float uR1;   // mouse light
+
+    vec3 shade(vec3 N, vec2 p, vec3 Lp, vec3 Lc, float R) {
+        vec3 d = vec3(Lp.xy - p, Lp.z);
+        float dist = length(d);
+        vec3 L = d / max(dist, 0.0001);
+        float att = clamp(1.0 - dist / R, 0.0, 1.0);
+        att *= att;
+        return Lc * max(dot(N, L), 0.0) * att;
+    }
+    void main(void) {
+        // ONE shared screen UV -> albedo, normal AND the light math stay locked together,
+        // so a single uFlipV fixes the whole scene (no albedo/normal desync possible).
+        vec2 uv = vec2(vTextureCoord.x, mix(vTextureCoord.y, 1.0 - vTextureCoord.y, uFlipV));
+        vec4 albedo = texture2D(uAlbedoMap, uv);
+        vec3 nt = texture2D(uNormalMap, uv).rgb;
+        vec3 N = dot(nt, nt) < 0.02
+            ? vec3(0.0, 0.0, 1.0)
+            : normalize(vec3(nt.r * 2.0 - 1.0, (nt.g * 2.0 - 1.0) * uNormalY, nt.b * 2.0 - 1.0));
+        vec2 p = uv * uResolution;                      // light space == displayed scene space
+        vec3 lit = uAmbient + shade(N, p, uL0, uC0, uR0) + shade(N, p, uL1, uC1, uR1);
+        gl_FragColor = vec4(albedo.rgb * lit, albedo.a);
+    }`;
+
+  const filter = new Filter({
+    glProgram: new GlProgram({ vertex, fragment }),
+    resources: {
+      uAlbedoMap: albedoRT.source,
+      uNormalMap: normalRT.source,
+      light: {
+        uResolution: { value: new Float32Array([CW, CH]), type: 'vec2<f32>' },
+        uNormalY: { value: 1, type: 'f32' },
+        uFlipV: { value: 1, type: 'f32' },
+        uAmbient: { value: new Float32Array([0.18, 0.2, 0.3]), type: 'vec3<f32>' },
+        uL0: { value: new Float32Array([CW / 2, CH / 2, 70]), type: 'vec3<f32>' },
+        uC0: { value: new Float32Array([1.35, 0.92, 0.55]), type: 'vec3<f32>' },
+        uR0: { value: 320, type: 'f32' },
+        uL1: { value: new Float32Array([CW / 2, CH / 2, 95]), type: 'vec3<f32>' },
+        uC1: { value: new Float32Array([0.5, 0.68, 1.2]), type: 'vec3<f32>' },
+        uR1: { value: 360, type: 'f32' },
+      },
+    },
+  });
+
+  const screen = new Sprite(Texture.WHITE);   // full-screen carrier; the filter samples raw RTs
+  screen.width = CW; screen.height = CH;
+  screen.filters = [filter];
+  app.stage.addChild(screen);
+
+  // ---- input ----
+  const keys = {};
+  let day = false, torchOn = true, normalY = 1, flipV = 1;   // verified-correct orientation
+  addEventListener('keydown', (e) => {
+    const k = e.key.toLowerCase();
+    keys[k] = true;
+    if (k === ' ') day = !day;
+    if (k === 't') torchOn = !torchOn;
+    if (k === 'n') normalY = -normalY;
+    if (k === 'v') flipV = flipV ? 0 : 1;
+    if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
+  });
+  addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
+  let mx = CW / 2, my = CH / 2;
+  app.canvas.addEventListener('pointermove', (e) => {
+    const r = app.canvas.getBoundingClientRect();
+    mx = (e.clientX - r.left) * (CW / r.width);
+    my = (e.clientY - r.top) * (CH / r.height);
+  });
+
+  // ---- state ----
+  let hx = 8 * TILE, hy = 6 * TILE, facing = 'down', animT = 0;
+  // Emberkit wander: roams the tall-grass corner, walking then pausing to breathe
+  const ROAM = { x0: 10 * TILE, y0: 2 * TILE, x1: 14 * TILE, y1: 6 * TILE };
+  const pickRoam = () => ({ x: ROAM.x0 + rnd() * (ROAM.x1 - ROAM.x0), y: ROAM.y0 + rnd() * (ROAM.y1 - ROAM.y0) });
+  let monX = 12 * TILE, monY = 3 * TILE, monFacing = 'down', monAnimT = 0;
+  let monState = 'idle', monPause = 0.8, monTarget = { x: monX, y: monY };
+  const statusEl = document.getElementById('status');
+
+  app.ticker.add((ticker) => {
+    const dt = Math.min(ticker.deltaMS / 1000, 0.05);
+    const t = performance.now() / 1000;
+
+    // hero movement + animation
+    let vx = 0, vy = 0;
+    if (keys.a || keys.arrowleft) vx -= 1;
+    if (keys.d || keys.arrowright) vx += 1;
+    if (keys.w || keys.arrowup) vy -= 1;
+    if (keys.s || keys.arrowdown) vy += 1;
+    const moving = vx !== 0 || vy !== 0;
+    if (moving) {
+      const len = Math.hypot(vx, vy) || 1, sp = 78;
+      hx += (vx / len) * sp * dt;
+      hy += (vy / len) * sp * dt;
+      facing = Math.abs(vx) > Math.abs(vy) ? (vx < 0 ? 'left' : 'right') : (vy < 0 ? 'up' : 'down');
+      animT += dt;
+    }
+    hx = Math.max(14, Math.min(MAP_W * TILE - 14, hx));
+    hy = Math.max(18, Math.min(MAP_H * TILE - 8, hy));
+    const seqA = heroA.animations['walk_' + facing];
+    const seqN = heroN.animations['walk_' + facing];
+    const idx = Math.floor(animT * 8) % seqA.length;
+    heroSpriteA.texture = moving ? seqA[idx] : heroA.textures['hero_' + facing + '_idle'];
+    heroSpriteN.texture = moving ? seqN[idx] : heroN.textures['hero_' + facing + '_idle'];
+    heroSpriteA.x = heroSpriteN.x = hx;
+    heroSpriteA.y = heroSpriteN.y = hy;
+
+    // Emberkit wander (lit by the same pass — it lives in the normal world too)
+    monAnimT += dt;
+    if (monState === 'idle') {
+      monPause -= dt;
+      if (monPause <= 0) { monState = 'walk'; monTarget = pickRoam(); }
+    }
+    let monMoving = false;
+    if (monState === 'walk') {
+      const dx = monTarget.x - monX, dy = monTarget.y - monY, d = Math.hypot(dx, dy);
+      if (d < 3) { monState = 'idle'; monPause = 0.6 + rnd() * 1.6; }
+      else {
+        const sp = 42;
+        monX += (dx / d) * sp * dt;
+        monY += (dy / d) * sp * dt;
+        monFacing = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'left' : 'right') : (dy < 0 ? 'up' : 'down');
+        monMoving = true;
+      }
+    }
+    const monBob = monMoving ? 0 : Math.sin(t * 3) * 1.2;       // idle breathing
+    const mSeqA = monA.animations['walk_' + monFacing];
+    const mSeqN = monN.animations['walk_' + monFacing];
+    const mIdx = Math.floor(monAnimT * 6) % mSeqA.length;
+    monSpriteA.texture = monMoving ? mSeqA[mIdx] : monA.textures['mon_' + monFacing + '_idle'];
+    monSpriteN.texture = monMoving ? mSeqN[mIdx] : monN.textures['mon_' + monFacing + '_idle'];
+    monSpriteA.x = monSpriteN.x = monX;
+    monSpriteA.y = monSpriteN.y = monY + monBob;
+
+    // lights (uniforms reassigned so the UniformGroup flags dirty)
+    const u = filter.resources.light.uniforms;
+    const sx = hx * ZOOM + Math.cos(t * 1.6) * 26;
+    const sy = hy * ZOOM - 26 + Math.sin(t * 1.6) * 14;
+    u.uL0 = new Float32Array([sx, sy, 70]);                          // torch (screen coords, y-down)
+    u.uR0 = torchOn ? 320 : 0;
+    u.uL1 = new Float32Array([mx, my, 95]);                          // mouse light
+    u.uAmbient = day ? new Float32Array([0.82, 0.8, 0.74]) : new Float32Array([0.16, 0.18, 0.3]);
+    u.uNormalY = normalY;
+    u.uFlipV = flipV;
+
+    // refresh deferred buffers, then the Application auto-renders the lit screen sprite
+    app.renderer.render({ container: worldA, target: albedoRT, clear: true });
+    app.renderer.render({ container: worldN, target: normalRT, clear: true });
+
+    statusEl.textContent =
+      `ambient  : ${day ? 'DAY' : 'night'}\n` +
+      `torch    : ${torchOn ? 'on (follows hero)' : 'off'}\n` +
+      `normalY  : ${normalY}   flipV : ${flipV}\n` +
+      `hero     : ${facing}${moving ? ' (walking)' : ' (idle)'}\n` +
+      `emberkit : ${monFacing} (${monState})`;
+  });
+} catch (e) {
+  errEl.textContent = 'Demo failed to start:\n' + (e && e.stack ? e.stack : e) +
+    '\n\nIf this is a network/import error, you are likely offline — see demo/README.md for the Vite (local pixi.js) alternative.';
+  throw e;
+}
+</script>
+</body>
+</html>
