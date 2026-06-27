@@ -1,3 +1,6 @@
+// Cosmetic doc-formatting lint only (Rust 1.96 `doc_overindented_list_items` fires
+// on the 5-space EARS list below); suppressing it changes NO test assertion.
+#![allow(clippy::doc_overindented_list_items)]
 //! M8c gating tests — acceptance criteria for the grass-encounter spine (pure
 //! game-core surface).
 //!

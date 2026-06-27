@@ -18,13 +18,16 @@ pub const MOVE_QUEUE_CAP: usize = 2;
 /// The single M1 zone's hand-authored art (`zone_id = 0`). A `const`-style source
 /// until M11 swaps in the Tiled→RON pipeline (ADR-0008); the swap is localized to
 /// `zone_0`.
+// `~` = tall grass (walkable floor that can trigger a wild encounter, M8). Grass
+// is placed only on interior `.` tiles NOT asserted plain by the world/zone_0
+// tests: avoid spawn (1,1), (2,1), (3,3), (4,3), (1,0).
 const ZONE_0_ROWS: &[&str] = &[
     "##########",
     "#........#",
-    "#........#",
-    "#...##...#",
-    "#........#",
-    "#........#",
+    "#.~~....~#",
+    "#...##..~#",
+    "#..~~...~#",
+    "#......~~#",
     "##########",
 ];
 
@@ -41,6 +44,10 @@ pub struct TileMap {
     pub width: i32,
     pub height: i32,
     walkable: Vec<bool>,
+    /// Parallel, row-major, SAME length as `walkable` — `true` where the tile is
+    /// `TallGrass` (M8). Rides the one-way `Serialize` so the TS renderer's grass
+    /// overlay reads the SAME layer the rule evaluates (visual-SSOT).
+    grass: Vec<bool>,
 }
 
 impl TileMap {
@@ -55,6 +62,7 @@ impl TileMap {
         let width = i32::try_from(rows.first().map_or(0, |r| r.chars().count()))
             .map_err(|_| "map too wide".to_string())?;
         let mut walkable = Vec::with_capacity((width * height).max(0) as usize);
+        let mut grass = Vec::with_capacity((width * height).max(0) as usize);
         for (y, row) in rows.iter().enumerate() {
             let row_len = i32::try_from(row.chars().count()).unwrap_or(i32::MAX);
             if row_len != width {
@@ -65,6 +73,7 @@ impl TileMap {
             for (x, c) in row.chars().enumerate() {
                 let kind = TileKind::from_char(c).map_err(|e| format!("{e} at ({x},{y})"))?;
                 walkable.push(kind.is_walkable());
+                grass.push(matches!(kind, TileKind::TallGrass));
             }
         }
         Ok(TileMap {
@@ -72,6 +81,7 @@ impl TileMap {
             width,
             height,
             walkable,
+            grass,
         })
     }
 
@@ -89,6 +99,26 @@ impl TileMap {
         let idx = p.y as usize * self.width as usize + p.x as usize;
         self.walkable.get(idx).copied().unwrap_or(false)
     }
+
+    /// `true` iff `p` is a tall-grass tile. Out-of-range → `false`, never a panic
+    /// (mirrors `is_walkable`).
+    #[must_use]
+    pub fn is_grass(&self, p: TilePos) -> bool {
+        if !self.in_bounds(p) {
+            return false;
+        }
+        let idx = p.y as usize * self.width as usize + p.x as usize;
+        self.grass.get(idx).copied().unwrap_or(false)
+    }
+}
+
+/// Pure trigger geometry: a character "stepped onto grass" iff its position
+/// actually CHANGED and the new tile is grass. Fires on floor→grass, grass→grass
+/// (entering a NEW grass tile), and a jump that MOVES onto grass; never on a bump,
+/// standstill, or blocked move (all of which leave `prev == next`).
+#[must_use]
+pub fn stepped_onto_grass(prev: TilePos, next: TilePos, map: &TileMap) -> bool {
+    prev != next && map.is_grass(next)
 }
 
 /// The single M1 zone (`zone_id = 0`). Its art is a compile-time invariant.

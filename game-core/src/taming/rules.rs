@@ -7,7 +7,18 @@
 
 use crate::monster::types::Level;
 
-use super::types::EncounterTable;
+use super::types::{EncounterTable, WildSpawn};
+
+/// Splitmix32-style mixing function (same algorithm as `monster::rolls::splitmix32`
+/// and `lib::tick_seed`). Used to split ONE encounter seed into independent
+/// sub-rolls so a hit/miss outcome never shifts a later draw.
+fn splitmix32(state: &mut u32) -> u32 {
+    *state = state.wrapping_add(0x9E37_79B9);
+    let mut z = *state;
+    z = (z ^ (z >> 16)).wrapping_mul(0x85EB_CA6B);
+    z = (z ^ (z >> 13)).wrapping_mul(0xC2B2_AE35);
+    z ^ (z >> 16)
+}
 
 /// Returns `true` if a step triggers a wild encounter.
 ///
@@ -58,6 +69,56 @@ pub fn roll_encounter(table: &EncounterTable, roll: u32, player_level: Level) ->
     // Unreachable if weights are positive and total_weight > 0,
     // but return the last eligible entry as a safe fallback.
     eligible.last().map(|e| e.species_id)
+}
+
+/// Resolve a grass step into a wild spawn — the SINGLE place an encounter seed is
+/// split. Pure, total, deterministic. Composes the existing `encounter_triggers`
+/// (cheap-roll-first gate) + `roll_encounter` (weighted, level-ranged species
+/// pick), then picks a level within the chosen entry's band.
+///
+/// The ONE `seed` is splitmix-derived into `(trigger_roll, species_roll,
+/// level_roll, individuality_seed)`:
+/// - `!encounter_triggers(trigger_roll, table.encounter_rate)` → `None` (rate-0 is
+///   always `None`).
+/// - `roll_encounter(table, species_roll, player_level)` → `None` if no eligible
+///   species (e.g. player out of every band) propagates as `None`.
+/// - The spawned `level` lies within the chosen entry's `[min_level, max_level]`.
+/// - `individuality_seed` is a fixed sub-roll of the INPUT seed, independent of the
+///   species/level outcome (M8d "rebuild THAT exact wild" contract).
+#[must_use]
+pub fn resolve_encounter(
+    table: &EncounterTable,
+    seed: u32,
+    player_level: Level,
+) -> Option<WildSpawn> {
+    let mut state = seed;
+    let trigger_roll = splitmix32(&mut state);
+    let species_roll = splitmix32(&mut state);
+    let level_roll = splitmix32(&mut state);
+    let individuality_seed = splitmix32(&mut state);
+
+    if !encounter_triggers(trigger_roll, table.encounter_rate) {
+        return None;
+    }
+
+    let species_id = roll_encounter(table, species_roll, player_level)?;
+
+    // Find the chosen entry for its level band (species_id is unique per zone,
+    // ADR-0044 B1).
+    let entry = table.entries.iter().find(|e| e.species_id == species_id)?;
+    let lo = entry.min_level.as_u8();
+    let hi = entry.max_level.as_u8();
+    // Inclusive band pick. `hi >= lo` for any valid entry (Level::new ordering is
+    // not enforced here, so guard the span to avoid a modulo-by-zero / underflow).
+    let span = u32::from(hi.saturating_sub(lo)) + 1;
+    let level_u8 = lo.saturating_add((level_roll % span) as u8);
+    let level = Level::new(level_u8).ok()?;
+
+    Some(WildSpawn {
+        species_id,
+        level,
+        individuality_seed,
+    })
 }
 
 /// The per-mille bonus applied per unit of missing-HP fraction.

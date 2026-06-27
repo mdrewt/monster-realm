@@ -38,7 +38,10 @@ pub fn predict_move(
     step_dir: u8,
     now_ms: i64,
 ) -> Vec<i32> {
-    game_core::apply_move_coded(x, y, facing, action, started_ms, input_kind, step_dir, now_ms).to_vec()
+    game_core::apply_move_coded(
+        x, y, facing, action, started_ms, input_kind, step_dir, now_ms,
+    )
+    .to_vec()
 }
 
 // --- M3: the JS-consumable marshaling boundary (NO game rules live here) ------
@@ -58,8 +61,12 @@ pub fn predict_move(
 pub fn apply_move(state: JsValue, input: JsValue, now: f64) -> Result<JsValue, JsValue> {
     let state: CharacterState = serde_wasm_bindgen::from_value(state)?;
     let input: MoveInput = serde_wasm_bindgen::from_value(input)?;
-    let next =
-        game_core::apply_move(&state, input, &game_core::zone_0(), Millis(now.floor().max(0.0) as i64));
+    let next = game_core::apply_move(
+        &state,
+        input,
+        &game_core::zone_0(),
+        Millis(now.floor().max(0.0) as i64),
+    );
     Ok(serde_wasm_bindgen::to_value(&next)?)
 }
 
@@ -81,6 +88,10 @@ pub fn move_queue_cap() -> u32 {
 /// The renderer's map source: the SAME `TileMap` the rule evaluates, read ONCE on
 /// init (the map is static at M3 — never per frame, never hard-coded in TS).
 /// `zone_id` is reserved for M11 multi-zone; only `zone_0` exists today.
+///
+/// M8c: the `TileMap`'s new `grass` layer (row-major `bool[]`) serializes along
+/// here automatically (additive serde field) — the TS `RawTileMap.grass` reads it
+/// for the renderer's grass overlay, no extra wiring.
 ///
 /// # Errors
 /// Returns a JS error only if serialization fails (it cannot for the static map).
