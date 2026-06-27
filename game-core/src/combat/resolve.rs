@@ -107,10 +107,16 @@ fn resolve_one_attack(
         };
 
         if let Some(idx) = next {
-            match defender_side {
-                SideId::SideA => state.side_a.active = idx,
-                SideId::SideB => state.side_b.active = idx,
-            }
+            let set = match defender_side {
+                SideId::SideA => state.side_a.set_active(idx),
+                SideId::SideB => state.side_b.set_active(idx),
+            };
+            // idx from next_conscious_index() is always in-bounds, conscious, and != active → infallible.
+            debug_assert!(
+                set.is_ok(),
+                "auto-switch index from next_conscious_index must be settable: {set:?}"
+            );
+            let _ = set; // consumed in release (debug_assert! strips), keeps clippy -D warnings clean
             events.push(BattleEvent::Switch {
                 side: defender_side,
                 new_active: idx,
@@ -163,20 +169,23 @@ pub fn resolve_turn(
 
     state.turn_number += 1;
 
-    // Swaps always happen before attacks
+    // Swaps always happen before attacks. An illegal swap (OOB/fainted) is a
+    // no-op: no `active` mutation, no Switch event; the rest of the turn proceeds.
     if let TurnChoice::Swap { team_index } = &choice_a {
-        state.side_a.active = *team_index;
-        events.push(BattleEvent::Switch {
-            side: SideId::SideA,
-            new_active: *team_index,
-        });
+        if state.side_a.set_active(*team_index).is_ok() {
+            events.push(BattleEvent::Switch {
+                side: SideId::SideA,
+                new_active: *team_index,
+            });
+        }
     }
     if let TurnChoice::Swap { team_index } = &choice_b {
-        state.side_b.active = *team_index;
-        events.push(BattleEvent::Switch {
-            side: SideId::SideB,
-            new_active: *team_index,
-        });
+        if state.side_b.set_active(*team_index).is_ok() {
+            events.push(BattleEvent::Switch {
+                side: SideId::SideB,
+                new_active: *team_index,
+            });
+        }
     }
 
     let a_attacks = matches!(choice_a, TurnChoice::Attack { .. });
@@ -318,9 +327,12 @@ pub fn resolve_player_swap(
 ) -> Vec<BattleEvent> {
     let mut events = Vec::new();
 
-    match swap_side {
-        SideId::SideA => state.side_a.active = new_active,
-        SideId::SideB => state.side_b.active = new_active,
+    let set = match swap_side {
+        SideId::SideA => state.side_a.set_active(new_active),
+        SideId::SideB => state.side_b.set_active(new_active),
+    };
+    if set.is_err() {
+        return events; // illegal swap rejected: no mutation, no Switch, no enemy turn (ADR-0053)
     }
     events.push(BattleEvent::Switch {
         side: swap_side,
@@ -1022,5 +1034,233 @@ mod tests {
         // If we reach here without panic, the test fails because the impl
         // silently swallowed a content-integrity error.
         panic!("should have panicked on unknown skill_id 9999");
+    }
+
+    // -----------------------------------------------------------------------
+    // M8.6a: pure-core swap legality — PROOF-OF-TEETH (ADR-0053)
+    //
+    // The resolver must route every `active = idx` write through the checked
+    // `BattleSide::set_active`, so an out-of-bounds or fainted `team_index`
+    // is REJECTED (no `active` mutation, no `Switch` event, no panic-index)
+    // rather than written raw and later panic-indexed by `active_monster()`.
+    //
+    // Shared setup: side A = [conscious active @0, slot 1], side B = 1 conscious.
+    // -----------------------------------------------------------------------
+
+    /// A's slot 0 is the active conscious monster; `m1` fills slot 1 (its HP
+    /// is set per-test). Side B is a single conscious monster.
+    fn make_swap_legality_state(m1_hp: u16) -> BattleState {
+        let a0 = make_monster(Affinity::Fire, 100, 50);
+        let a1 = make_monster(Affinity::Water, m1_hp, 50);
+        let b0 = make_monster(Affinity::Fire, 100, 30);
+        BattleState {
+            side_a: BattleSide {
+                active: 0,
+                team: vec![a0, a1],
+            },
+            side_b: BattleSide {
+                active: 0,
+                team: vec![b0],
+            },
+            outcome: BattleOutcome::Ongoing,
+            turn_number: 0,
+        }
+    }
+
+    /// Kills: a `resolve_turn` Swap branch that writes `side_a.active = team_index`
+    /// raw — an OOB index would either panic-index in `active_monster()` or leave
+    /// `active` pointing past the team. The checked setter must reject it: no
+    /// panic, `active` unchanged, no `Switch` for SideA.
+    #[test]
+    fn resolve_turn_swap_to_out_of_bounds_is_rejected() {
+        let chart = make_type_chart();
+        let mut state = make_swap_legality_state(100);
+        let pre_active = state.side_a.active; // 0
+        let variance = always_hit_variance(true);
+
+        // &mut BattleState is not UnwindSafe; wrap so we can assert "no panic".
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            resolve_turn(
+                &mut state,
+                TurnChoice::Swap { team_index: 99 },
+                TurnChoice::Attack { skill_id: 1 },
+                &skills_vec(),
+                &chart,
+                &variance,
+            )
+        }));
+
+        let events = result.expect("TEETH: an OOB swap must NOT panic-index");
+        assert_eq!(
+            state.side_a.active, pre_active,
+            "TEETH: active must be unchanged after a rejected OOB swap (a raw \
+             `active = team_index` setter fails this)"
+        );
+        let switched_a = events.iter().any(|e| {
+            matches!(
+                e,
+                BattleEvent::Switch {
+                    side: SideId::SideA,
+                    ..
+                }
+            )
+        });
+        assert!(
+            !switched_a,
+            "no Switch for SideA must be emitted for a rejected OOB swap"
+        );
+    }
+
+    /// Kills: a `resolve_turn` Swap branch reverted to a raw `active = team_index`
+    /// assignment. A raw setter does NOT panic when pointing at a present-but-
+    /// fainted slot, so "no panic" alone is vacuous here — the LOAD-BEARING
+    /// assertions are `active == pre_active` (unchanged) and that the active
+    /// monster is not fainted. Both fail against a raw-assignment setter.
+    #[test]
+    fn resolve_turn_swap_to_fainted_slot_is_rejected() {
+        let chart = make_type_chart();
+        let mut state = make_swap_legality_state(0); // slot 1 fainted (hp 0)
+        let pre_active = state.side_a.active; // 0
+        let variance = always_hit_variance(true);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            resolve_turn(
+                &mut state,
+                TurnChoice::Swap { team_index: 1 },
+                TurnChoice::Attack { skill_id: 1 },
+                &skills_vec(),
+                &chart,
+                &variance,
+            )
+        }));
+
+        let events = result.expect("a fainted-slot swap must not panic");
+        // LOAD-BEARING: this is the assertion that bites a reverted-to-raw setter
+        // (which would silently set active = 1, the fainted slot).
+        assert_eq!(
+            state.side_a.active, pre_active,
+            "TEETH: active must remain at the conscious slot after a rejected \
+             fainted swap; a raw `active = team_index` setter sets it to 1 here"
+        );
+        assert!(
+            !state.side_a.active_monster().is_fainted(),
+            "TEETH: the active monster must still be conscious after a rejected \
+             fainted swap"
+        );
+        let switched_a = events.iter().any(|e| {
+            matches!(
+                e,
+                BattleEvent::Switch {
+                    side: SideId::SideA,
+                    ..
+                }
+            )
+        });
+        assert!(
+            !switched_a,
+            "no Switch for SideA must be emitted for a rejected fainted swap"
+        );
+    }
+
+    /// Kills: a `resolve_player_swap` that writes `active = new_active` raw — an
+    /// OOB index panic-indexes when the enemy turn reads `active_monster()`. The
+    /// checked setter must reject the swap entirely: no panic, empty events (no
+    /// Switch AND no enemy Damage → proving NO enemy turn ran), `active`
+    /// unchanged, and the enemy's HP untouched.
+    #[test]
+    fn resolve_player_swap_to_out_of_bounds_is_rejected() {
+        let chart = make_type_chart();
+        let mut state = make_swap_legality_state(100);
+        let pre_active = state.side_a.active; // 0
+        let pre_enemy_hp = state.side_b.active_monster().current_hp;
+        let variance = always_hit_variance(true);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            resolve_player_swap(
+                &mut state,
+                SideId::SideA,
+                99, // out of bounds
+                &skills_vec(),
+                &chart,
+                &variance,
+            )
+        }));
+
+        let events = result.expect("TEETH: an OOB player swap must NOT panic-index");
+        assert!(
+            events.is_empty(),
+            "rejected OOB swap must emit no events (no Switch, no enemy Damage → \
+             proves no enemy turn ran); got {events:?}"
+        );
+        assert_eq!(
+            state.side_a.active, pre_active,
+            "TEETH: active must be unchanged after a rejected OOB player swap"
+        );
+        assert_eq!(
+            state.side_b.active_monster().current_hp,
+            pre_enemy_hp,
+            "the enemy must not attack when the swap is rejected"
+        );
+    }
+
+    /// Kills: a `resolve_player_swap` reverted to a raw `active = new_active`
+    /// assignment. Targeting a present-but-fainted slot does NOT panic for a raw
+    /// setter, so the LOAD-BEARING assertions are `active == pre_active` and the
+    /// active monster being non-fainted — both fail against a raw setter that
+    /// silently moves active onto the fainted slot.
+    #[test]
+    fn resolve_player_swap_to_fainted_slot_is_rejected() {
+        let chart = make_type_chart();
+        let mut state = make_swap_legality_state(0); // slot 1 fainted (hp 0)
+        let pre_active = state.side_a.active; // 0
+        let pre_enemy_hp = state.side_b.active_monster().current_hp;
+        let variance = always_hit_variance(true);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            resolve_player_swap(
+                &mut state,
+                SideId::SideA,
+                1, // present but fainted
+                &skills_vec(),
+                &chart,
+                &variance,
+            )
+        }));
+
+        let events = result.expect("a fainted-slot player swap must not panic");
+        let switched_a = events.iter().any(|e| {
+            matches!(
+                e,
+                BattleEvent::Switch {
+                    side: SideId::SideA,
+                    ..
+                }
+            )
+        });
+        assert!(
+            !switched_a,
+            "no Switch for SideA for a rejected fainted player swap"
+        );
+        assert!(
+            events.is_empty(),
+            "rejected fainted swap must emit no events (no enemy Damage); got {events:?}"
+        );
+        // LOAD-BEARING: bites a reverted-to-raw-assignment setter, which would
+        // set active = 1 (the fainted slot) without panicking.
+        assert_eq!(
+            state.side_a.active, pre_active,
+            "TEETH: active must remain at the conscious slot after a rejected \
+             fainted player swap; a raw `active = new_active` setter sets it to 1"
+        );
+        assert!(
+            !state.side_a.active_monster().is_fainted(),
+            "TEETH: the active monster must still be conscious after a rejected \
+             fainted player swap"
+        );
+        assert_eq!(
+            state.side_b.active_monster().current_hp,
+            pre_enemy_hp,
+            "the enemy must not attack when the swap is rejected"
+        );
     }
 }

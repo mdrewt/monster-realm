@@ -32,11 +32,22 @@ impl BattleMonster {
     }
 }
 
+/// Why a checked swap was rejected (game-core-internal; never stored/sent — no serde/SpacetimeType). See ADR-0053.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwapError {
+    /// `idx` is past the end of `team` (also covers an empty team).
+    OutOfBounds,
+    /// The target slot's monster has fainted (`current_hp == 0`).
+    Fainted,
+}
+
 /// One side of the battle: the active slot index and the full team roster.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub struct BattleSide {
     /// Index into `team` for the currently-active monster (u32 for SpacetimeType).
+    /// Mutate ONLY via [`BattleSide::set_active`], the sole sanctioned mutator
+    /// (field stays pub this slice; full privatization parked — ADR-0053).
     pub active: u32,
     pub team: Vec<BattleMonster>,
 }
@@ -67,6 +78,24 @@ impl BattleSide {
             .enumerate()
             .find(|(i, m)| *i as u32 != self.active && !m.is_fainted())
             .map(|(i, _)| i as u32)
+    }
+
+    /// Set the active slot to `idx`, rejecting illegal swaps (reject-not-clamp, ADR-0053).
+    /// The ONLY sanctioned mutator of `active`: makes an out-of-range or fainted active
+    /// unreachable via the resolver. Bounds is checked BEFORE the fainted index, so an
+    /// out-of-range index can never panic-index `team[idx]`.
+    /// Returns `Err(SwapError::OutOfBounds)` if `idx as usize >= team.len()`,
+    /// `Err(SwapError::Fainted)` if the target is fainted, else sets `active` and returns `Ok(())`.
+    /// On any `Err`, `active` is left unchanged.
+    pub fn set_active(&mut self, idx: u32) -> Result<(), SwapError> {
+        if idx as usize >= self.team.len() {
+            return Err(SwapError::OutOfBounds);
+        }
+        if self.team[idx as usize].is_fainted() {
+            return Err(SwapError::Fainted);
+        }
+        self.active = idx;
+        Ok(())
     }
 }
 
@@ -322,6 +351,143 @@ mod tests {
             None,
             "solo team has no next conscious member"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // BattleSide::set_active — checked swap legality (M8.6a, ADR-0053)
+    //
+    // Contract (parse-don't-validate, reject-not-clamp):
+    //   - Err(SwapError::OutOfBounds) if `idx as usize >= team.len()` (incl. empty)
+    //   - else Err(SwapError::Fainted) if `team[idx].is_fainted()`
+    //   - else set `active = idx`, return Ok(())
+    //   - bounds is checked BEFORE the fainted index; on ANY Err, `active` is unchanged.
+    // -----------------------------------------------------------------------
+
+    /// Kills: a setter that fails to actually move `active` on the Ok path, or
+    /// that rejects a legal conscious target.
+    #[test]
+    fn set_active_ok_moves_active_to_conscious_member() {
+        let m0 = make_battle_monster(Affinity::Fire, 10, 30);
+        let m1 = make_battle_monster(Affinity::Water, 10, 30);
+        let mut side = BattleSide {
+            active: 0,
+            team: vec![m0, m1],
+        };
+        let res = side.set_active(1);
+        assert_eq!(
+            res,
+            Ok(()),
+            "swapping to a conscious in-range slot must succeed"
+        );
+        assert_eq!(
+            side.active, 1,
+            "active must move to the requested slot on Ok"
+        );
+    }
+
+    /// Kills: a setter using `idx > len` (off-by-one) instead of `idx >= len`, or
+    /// one that mutates `active` before/despite returning an OutOfBounds error.
+    #[test]
+    fn set_active_out_of_bounds_at_len_rejects_and_leaves_active_unchanged() {
+        let m0 = make_battle_monster(Affinity::Fire, 10, 30);
+        let m1 = make_battle_monster(Affinity::Water, 10, 30);
+        let mut side = BattleSide {
+            active: 0,
+            team: vec![m0, m1],
+        };
+        let res = side.set_active(2); // len == 2 → first invalid index
+        assert_eq!(
+            res,
+            Err(SwapError::OutOfBounds),
+            "idx == team.len() must be OutOfBounds (reject, not clamp)"
+        );
+        assert_eq!(
+            side.active, 0,
+            "TEETH: active must be UNCHANGED on an OutOfBounds error"
+        );
+    }
+
+    /// Kills: a setter that panics or wraps on a huge index (e.g. `idx as usize`
+    /// arithmetic) instead of returning OutOfBounds.
+    #[test]
+    fn set_active_u32_max_rejects_without_panic() {
+        let m0 = make_battle_monster(Affinity::Fire, 10, 30);
+        let m1 = make_battle_monster(Affinity::Water, 10, 30);
+        let mut side = BattleSide {
+            active: 0,
+            team: vec![m0, m1],
+        };
+        let res = side.set_active(u32::MAX);
+        assert_eq!(
+            res,
+            Err(SwapError::OutOfBounds),
+            "u32::MAX index must be OutOfBounds, no panic"
+        );
+        assert_eq!(side.active, 0, "active unchanged on OutOfBounds");
+    }
+
+    /// Kills: a setter that indexes the (empty) team before the bounds check, which
+    /// would panic instead of returning OutOfBounds.
+    #[test]
+    fn set_active_empty_team_rejects_without_panic() {
+        let mut side = BattleSide {
+            active: 0,
+            team: vec![],
+        };
+        let res = side.set_active(0);
+        assert_eq!(
+            res,
+            Err(SwapError::OutOfBounds),
+            "set_active(0) on an empty team must be OutOfBounds, not a panic"
+        );
+        assert_eq!(side.active, 0, "active unchanged on OutOfBounds");
+    }
+
+    /// Kills: a setter that ignores the fainted check (or checks the wrong slot),
+    /// or that mutates `active` despite returning Fainted.
+    #[test]
+    fn set_active_fainted_target_rejects_and_leaves_active_unchanged() {
+        let conscious = make_battle_monster(Affinity::Fire, 10, 30);
+        let fainted = make_battle_monster(Affinity::Water, 0, 30); // hp 0 → fainted
+        let mut side = BattleSide {
+            active: 0,
+            team: vec![conscious, fainted],
+        };
+        let res = side.set_active(1); // slot 1 is fainted
+        assert_eq!(
+            res,
+            Err(SwapError::Fainted),
+            "swapping to a fainted member must be rejected as Fainted"
+        );
+        assert_eq!(
+            side.active, 0,
+            "TEETH: active must be UNCHANGED on a Fainted error"
+        );
+    }
+
+    /// Order-pinning: bounds is checked BEFORE the fainted index. With every
+    /// in-range slot fainted, a large OOB index must still return OutOfBounds
+    /// (NOT Fainted, NOT a panic) — proving the bounds check precedes the
+    /// `team[idx]` fainted-index access.
+    ///
+    /// Kills: a setter that checks `team[idx].is_fainted()` before bounds (would
+    /// panic on the OOB index) or that returns Fainted for an out-of-range idx.
+    #[test]
+    fn set_active_bounds_checked_before_fainted_index() {
+        let f0 = make_battle_monster(Affinity::Fire, 0, 30); // fainted
+        let f1 = make_battle_monster(Affinity::Water, 0, 30); // fainted
+        let mut side = BattleSide {
+            active: 0,
+            team: vec![f0, f1],
+        };
+        let res = side.set_active(99); // far out of bounds
+        assert_eq!(
+            res,
+            Err(SwapError::OutOfBounds),
+            "TEETH: bounds must be checked before the fainted index — an OOB idx \
+             yields OutOfBounds, never Fainted, never a panic"
+        );
+        assert_eq!(side.active, 0, "active unchanged on OutOfBounds");
     }
 
     // -----------------------------------------------------------------------
