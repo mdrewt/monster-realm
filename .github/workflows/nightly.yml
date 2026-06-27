@@ -1,0 +1,44 @@
+# Nightly mutation + coverage gates (ADR-0050). These are slow / informational
+# gates kept OFF the per-PR path so `just ci` stays the fast inner loop
+# (ADR-0043). They run on a schedule and on manual dispatch only.
+#
+# NOTE: action major versions are pinned here (e.g. @v4) to match ci.yml's
+# style; M8.5d SHA-pins all workflow actions (this file included). There is
+# deliberately NO `continue-on-error` on the threshold steps — a soft failure
+# would make these gates toothless.
+name: Nightly
+on:
+  schedule:
+    # 07:00 UTC daily.
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  # cargo-mutants scoped to the rule core (game-core). Surviving mutants fail
+  # the job (default cargo-mutants behavior); policy in ADR-0050.
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Distinct prefix-key (v1-nightly) so this cache never collides with the
+      # ci (v1-ci) / e2e (v1-e2e) job caches.
+      - uses: Swatinem/rust-cache@v2
+        with: { prefix-key: v1-nightly }
+      - uses: taiki-e/install-action@v2
+        with: { tool: cargo-mutants }
+      - run: just mutate-core
+
+  # vitest line-coverage threshold (vitest exits non-zero below the threshold).
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.13.1'
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - uses: extractions/setup-just@v2
+      - run: just coverage

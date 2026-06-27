@@ -46,6 +46,21 @@ jobs:
       - uses: taiki-e/install-action@v2
         with: { tool: cargo-nextest }
       - run: just setup
+      # Pinned SpacetimeDB CLI (2.6.0) so `just eval` → bindings-drift runs the
+      # REAL `spacetime generate` + diff in the fast ci job (without the CLI it
+      # SKIPS, so committed-binding drift was catchable only in the slow e2e job
+      # — a correctness hole; see ADR-0050). Mirrors the e2e job's install/pin.
+      - name: Install SpacetimeDB CLI
+        # `--yes`: the installer prompts to confirm and aborts on a non-tty CI
+        # runner ("IO error: not a terminal") without it.
+        run: |
+          curl -sSf https://install.spacetimedb.com | sh -s -- --yes
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Pin spacetime 2.6.0
+        run: |
+          spacetime version install 2.6.0
+          spacetime version use 2.6.0
+          spacetime --version
       - run: just lint
       - run: just typecheck
       - run: just test

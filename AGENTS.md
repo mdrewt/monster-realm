@@ -5,7 +5,7 @@ Project-specific rules. Inherits the workspace `AGENTS.md` and `standards/`.
 - **Stack:** spacetimedb-game
 - **Toolchain (pinned):** Rust `1.96.0` (`rust-toolchain.toml` — rustup auto-selects, incl. `wasm32-unknown-unknown` + clippy/rustfmt) · spacetime `2.6.0` (global `spacetime version use 2.6.0`; no per-project file — verify with `spacetime --version`) · Node `24.13.1` (workspace `.tool-versions`) · wasm-pack `0.15.0` (no per-project pin file — `cargo install wasm-pack --version 0.15.0`; pin the CI install action to `v0.15.0` when the client prediction-WASM build lands at M3; verify with `wasm-pack --version`). Bump deliberately.
 - **Run:** `just setup` · `just test` · `just lint` · `just typecheck` · `just eval` · `just security` · `just ci`
-- **Done =** `just ci` green and meaningful (coverage + mutation + security clean), ADR present for new deps/patterns.
+- **Done =** `just ci` green and meaningful (lint + typecheck + test + eval + security + client checks); the nightly workflow (`.github/workflows/nightly.yml`) enforces mutation + coverage off the PR path; ADR present for new deps/patterns.
 
 ## Notes
 - Spec lives in `docs/specs/`; ADRs in `docs/adr/`.
