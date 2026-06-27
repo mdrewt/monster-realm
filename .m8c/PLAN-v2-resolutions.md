@@ -61,5 +61,15 @@ Clone `encounter-privacy.eval.mjs` (reuse `stripComments`/`parseTables` VERBATIM
 5. Glob `client/src/module_bindings/battle_wild*_table.ts` AND a camelCase variant for a leaked accessor.
 6. Keep green-path + comment-stripping teeth.
 
+## R-J — Pull the trigger's core decision into a PURE game-core fn (maximize testable surface)
+The evals are static/pure-logic (real e2e is Playwright `golden.spec.ts`, a separate remote job not in `just ci`). So the EARS trigger criteria (weighted, level-ranged, deterministic, cheap-roll-first, rate-0, single-seed RNG) must be encoded in **pure game-core code** to be gated by `just ci`. Add to `game-core/src/taming/`:
+```rust
+pub struct WildSpawn { pub species_id: u32, pub level: Level, pub individuality_seed: u32 }
+/// Pure, total, deterministic. Splits ONE seed into sub-rolls (no hit/miss RNG asymmetry),
+/// gates on encounter_rate (cheap-roll-first), then weighted+level-ranged species pick + level pick.
+pub fn resolve_encounter(table: &EncounterTable, seed: u32, player_level: Level) -> Option<WildSpawn>
+```
+Behavior: splitmix32(seed) → `(trigger_roll, species_roll, level_roll, individuality_seed)`; if `!encounter_triggers(trigger_roll, table.encounter_rate)` → `None` (rate-0 ⇒ always None); else `species_id = roll_encounter(table, species_roll, player_level)?` (reuses the SSOT weighting; `None` if no eligible entry); find that entry by `species_id` (unique per zone, ADR-0044 B1) for its `[min_level, max_level]`; pick `level` via `level_roll`; return `Some(WildSpawn{ species_id, level, individuality_seed })`. This is the SINGLE place the seed is split (red-team S2#4 fix) and is fully property-testable. The server tick branch becomes thin glue: `if stepped_onto_grass(prev,next,&map) && has_player_row && !already_ongoing { let seed = ctx.random(); if let Some(w) = resolve_encounter(&row, seed, player_level) { begin_encounter(..., w.species_id, w.level.as_u8(), w.individuality_seed)? } }`. Partial-sync (no `encounter` row for the zone) is handled in the shell: `find(zone)` → `None` ⇒ no `resolve_encounter` call ⇒ no-op. This is NOT a second `encounter_triggers` (it COMPOSES the existing ones) — it pulls the genuinely-new seed-split + level-pick + compose into the testable core.
+
 ## R-I (n1) — exhaustive match + ZONE_0 art
 Adding `TallGrass` forces compile errors at BOTH `from_char` and `is_walkable` (intended). Add `~` only to interior `.` tiles NOT asserted by `world.rs` tests — avoid `(1,1)` spawn, `(2,1)`, `(3,3)`, `(4,3)`, `(1,0)`. Run `cargo test -p game-core` immediately after the tile-layer slice.

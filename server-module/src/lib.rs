@@ -2080,4 +2080,162 @@ mod tests {
             "empty source entries → empty row entries (no panic)"
         );
     }
+
+    // =========================================================================
+    // --- M8c gating tests ---
+    //
+    // Gate the PURE wild-monster build helper the implementer will add:
+    //   fn wild_battle_monster(species: &SpeciesRow, skill_ids: &[u32],
+    //                          level: u8, seed: u32) -> Result<BattleMonster, String>
+    // (full-HP, EVs-zero, IVs/nature from game_core::roll_individuality(seed),
+    //  derived via game_core::derive_stats, Level::new(level)?).
+    //
+    // The helper does NOT exist yet → this block is RED (won't compile until it
+    // is added). Mirrors the M7b `battle_monster_from_row` tests above.
+    //
+    // ASSUMPTION (documented per the handoff): the pure signature is
+    //   wild_battle_monster(&SpeciesRow, &[u32], u8, u32) -> Result<BattleMonster, String>
+    // where `skill_ids` is the set of skill ids the server has loaded; the helper
+    // intersects them with the species' learnable_skill_ids for known_skill_ids
+    // (same contract as battle_monster_from_row's skill handling). If the
+    // implementer picks a slightly different PURE signature it must keep: no ctx,
+    // deterministic in seed, full-HP, EVs-zero, Err (not panic) on bad level.
+    // =========================================================================
+
+    fn m8c_test_species_row() -> SpeciesRow {
+        SpeciesRow {
+            id: 7,
+            name: "Wildling".to_string(),
+            base_hp: 50,
+            base_attack: 55,
+            base_defense: 45,
+            base_speed: 60,
+            base_sp_attack: 65,
+            base_sp_defense: 50,
+            affinity: Affinity::Plant,
+            learnable_skill_ids: vec![1, 2, 3],
+        }
+    }
+
+    /// EARS (R-D / M8d rebuild contract): the wild build is DETERMINISTIC in the
+    /// seed — same seed ⇒ byte-identical BattleMonster.
+    /// Kills: an impl that draws from a non-seed RNG or ignores the seed when
+    /// rolling individuality (so the stored seed could not rebuild the same wild).
+    #[test]
+    fn wild_battle_monster_is_deterministic_in_seed() {
+        let sp = m8c_test_species_row();
+        let skill_ids = [1u32, 2, 3];
+        let a = wild_battle_monster(&sp, &skill_ids, 12, 0xABCD_1234)
+            .expect("valid level builds a wild");
+        let b = wild_battle_monster(&sp, &skill_ids, 12, 0xABCD_1234)
+            .expect("valid level builds a wild");
+        assert_eq!(a, b, "same seed must build an identical BattleMonster");
+    }
+
+    /// EARS: a freshly-spawned wild is at FULL HP — current_hp == max_hp == derived
+    /// HP, and the level/species come through.
+    /// Kills: an impl that starts the wild damaged (current_hp != max_hp), or that
+    /// sets max_hp from the wrong stat.
+    #[test]
+    fn wild_battle_monster_is_full_hp_and_carries_level_species() {
+        let sp = m8c_test_species_row();
+        let bm = wild_battle_monster(&sp, &[1, 2, 3], 18, 42).expect("valid level builds a wild");
+        assert_eq!(
+            bm.current_hp, bm.max_hp,
+            "a fresh wild must be at full HP (current_hp == max_hp)"
+        );
+        assert_eq!(
+            bm.max_hp, bm.stats.hp,
+            "max_hp must equal the derived HP stat"
+        );
+        assert_eq!(bm.level, 18, "level must be the requested wild level");
+        assert_eq!(
+            bm.species_id, sp.id,
+            "species_id must come from the species"
+        );
+        assert_eq!(
+            bm.affinity, sp.affinity,
+            "affinity must come from the species"
+        );
+    }
+
+    /// EARS: known_skill_ids = the species' learnable filtered by the provided
+    /// skill ids (same contract as the owned-monster build).
+    /// Kills: an impl that copies ALL provided skill ids (ignoring learnable), or
+    /// copies ALL learnable (ignoring the provided set).
+    #[test]
+    fn wild_battle_monster_known_skills_are_learnable_intersect_provided() {
+        let sp = m8c_test_species_row(); // learnable = [1,2,3]
+                                         // Provide skill ids 2, 3, and 9 — but 9 is NOT learnable by this species.
+        let bm = wild_battle_monster(&sp, &[2, 3, 9], 10, 5).expect("valid level builds a wild");
+        assert_eq!(
+            bm.known_skill_ids,
+            vec![2u32, 3],
+            "known_skill_ids must be learnable ∩ provided ([1,2,3] ∩ [2,3,9] = [2,3]); \
+             kills copy-all-provided (would include 9) and copy-all-learnable (would include 1)"
+        );
+    }
+
+    /// EARS (R-D): an out-of-range level is a loud `Err`, NEVER a panic (the wild
+    /// build must be total over arbitrary content levels).
+    /// Kills: an impl that calls `Level::new(level).unwrap()` (panics on 0 / 250)
+    /// instead of propagating the error.
+    #[test]
+    fn wild_battle_monster_bad_level_is_err_not_panic() {
+        let sp = m8c_test_species_row();
+        assert!(
+            wild_battle_monster(&sp, &[1, 2, 3], 0, 1).is_err(),
+            "level 0 must be an Err (Level::new rejects 0), not a panic"
+        );
+        assert!(
+            wild_battle_monster(&sp, &[1, 2, 3], 250, 1).is_err(),
+            "level 250 must be an Err (Level::new rejects > 100), not a panic"
+        );
+        // A boundary valid level must still succeed.
+        assert!(
+            wild_battle_monster(&sp, &[1, 2, 3], 100, 1).is_ok(),
+            "level 100 is valid and must build a wild"
+        );
+    }
+
+    /// EARS (M8d rebuild contract — the load-bearing one): the wild's derived stats
+    /// are EXACTLY what `game_core::roll_individuality(seed)` → `derive_stats(...)`
+    /// produces with EVs zero. This is what makes the stored `individuality_seed`
+    /// truly rebuild the same wild in M8d.
+    /// Kills: an impl that rolls individuality from a different seed transform,
+    /// uses non-zero EVs, or derives stats with the wrong inputs — any of which
+    /// would make the persisted seed rebuild a DIFFERENT monster than the one fought.
+    #[test]
+    fn wild_battle_monster_stats_match_roll_individuality_then_derive_stats() {
+        let sp = m8c_test_species_row();
+        let seed = 0x0BAD_F00D;
+        let wild_level = 14u8;
+        let bm = wild_battle_monster(&sp, &[1, 2, 3], wild_level, seed)
+            .expect("valid level builds a wild");
+
+        // Reconstruct the EXACT expected derived stats from the SSOT pure path.
+        let (ivs, nature) = game_core::roll_individuality(seed);
+        let base = StatBlock {
+            hp: sp.base_hp,
+            attack: sp.base_attack,
+            defense: sp.base_defense,
+            speed: sp.base_speed,
+            sp_attack: sp.base_sp_attack,
+            sp_defense: sp.base_sp_defense,
+        };
+        let level = game_core::Level::new(wild_level).expect("valid level");
+        let expected =
+            game_core::derive_stats(&base, &ivs, &game_core::EVs::zero(), &nature, level);
+
+        assert_eq!(
+            bm.stats, expected,
+            "wild stats must equal roll_individuality(seed) → derive_stats(.., EVs::zero, ..); \
+             this is the M8d 'rebuild THAT exact wild' contract"
+        );
+        // And max_hp must equal the derived HP stat (full-HP coupling).
+        assert_eq!(
+            bm.max_hp, expected.hp,
+            "max_hp must equal the derived HP stat from the same roll"
+        );
+    }
 }

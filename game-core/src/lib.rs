@@ -18,6 +18,9 @@ pub mod taming;
 pub mod types;
 pub mod world;
 
+#[cfg(test)]
+mod m8c_gating_tests;
+
 pub use combat::{
     accuracy_check, apply_xp_gain, battle_xp_reward, calc_damage, pick_best_skill,
     resolve_enemy_turn, resolve_player_swap, resolve_turn, BattleEvent, BattleMonster,
