@@ -38,8 +38,12 @@ surfaced **90 errors + 167 warnings across 96 files**. Three problems make a nai
    path `client/node_modules/.bin/biome check .` in `just lint`. No root `package.json` is
    created (YAGNI).
 2. **Exclude generated/vendored/dev-automation** in `biome.json` `files.includes`:
-   `!client/src/module_bindings/**`, `!.claude/**`, `!client/dist/**`. `node_modules` stays
-   covered by `vcs.useIgnoreFile`.
+   `!client/src/module_bindings`, `!.claude`, `!client/dist`. `node_modules` stays
+   covered by `vcs.useIgnoreFile`. (NB: biome 2.5.1 treats a bare directory negation and its
+   `/**` form as equivalent and **canonicalizes `!dir/**` back to `!dir` on every
+   `biome check --write`** — the bare form is the stable/idempotent one and is what is
+   committed. Verified empirically: `biome check client/src/module_bindings/` → "Checked 0
+   files".)
 3. **Enforce formatting + the auto-fixable lint rules now.** A one-time
    `biome check --write` pass auto-fixes `format`, `noUnusedImports`, `useImportType`,
    `useTemplate`, `useOptionalChain`, `useLiteralKeys` across the owned source. These rules
@@ -88,3 +92,9 @@ surfaced **90 errors + 167 warnings across 96 files**. Three problems make a nai
   `rust-toolchain.toml` (spec §6 CI-1 — the action ref was the only residue).
 - **Eval gate code uses literal strings / literal regex only** (no `new RegExp`) — the
   Semgrep `detect-non-literal-regexp` ReDoS rule has bitten the project 3×.
+- **Deferred follow-up — biome `linter.rules.recommended: true` is deprecated** (biome 2.5.1
+  emits an info-level `DEPRECATED` notice; it will be **silently ignored in biome 3.x**,
+  which would disable all lint rules without a CI red). It is left as-is here (it works in
+  2.5.1; migrating to the `preset` form on a guess risks breaking the gate this slice ships).
+  Migrate to the supported preset syntax when biome is next version-bumped — tracked as a
+  named follow-up alongside the deferred test-file `noNonNullAssertion` cleanup.

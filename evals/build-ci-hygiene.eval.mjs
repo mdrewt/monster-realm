@@ -26,8 +26,8 @@ import path from 'node:path';
 // ---------------------------------------------------------------------------
 export function extractRecipeBody(text, recipeName) {
   // Search for the recipe header: either "\n<name>:" or "\n<name> " (parameterised)
-  const exactMarker = '\n' + recipeName + ':';
-  const paramMarker = '\n' + recipeName + ' ';
+  const exactMarker = `\n${recipeName}:`;
+  const paramMarker = `\n${recipeName} `;
   const exactIdx = text.indexOf(exactMarker);
   const paramIdx = text.indexOf(paramMarker);
 
@@ -38,7 +38,7 @@ export function extractRecipeBody(text, recipeName) {
 
   // Also handle recipe at very start of file
   if (headerIdx === -1) {
-    if (text.startsWith(recipeName + ':') || text.startsWith(recipeName + ' ')) {
+    if (text.startsWith(`${recipeName}:`) || text.startsWith(`${recipeName} `)) {
       headerIdx = 0;
     } else {
       return '';
@@ -57,7 +57,7 @@ export function extractRecipeBody(text, recipeName) {
       // Strip comment lines
       const trimmed = line.trimStart();
       if (!trimmed.startsWith('#')) {
-        body += line + '\n';
+        body += `${line}\n`;
       }
       pos = lineEnd === -1 ? text.length : lineEnd + 1;
     } else if (line.length === 0) {
@@ -222,7 +222,7 @@ export function biomeExcludesModuleBindings(biomeJson) {
   } catch {
     return false;
   }
-  const includes = (parsed.files && parsed.files.includes) || [];
+  const includes = parsed.files?.includes ?? [];
   return includes.some((entry) => entry.includes('!client/src/module_bindings'));
 }
 
