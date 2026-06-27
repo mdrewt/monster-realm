@@ -232,3 +232,102 @@ describe('nextFreePartySlot: first unused slot 0–5', () => {
     expect(nextFreePartySlot(monsters)).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// M8.5f / ADR-0052 Criterion C — PARTY SSOT param-threading
+//
+// The fix: delete the hardcoded `PARTY_SIZE = 6` and `BOX_SLOT = 255` module
+// constants; thread them as explicit parameters:
+//   buildPartyViewModel(monsters, speciesMap, partySize: number)
+//   nextFreePartySlot(monsters, partySize: number)
+//   buildBoxViewModel(monsters, speciesMap, partySlotNone: number)
+//
+// RED strategy: JS silently ignores extra positional args, so a 2-arg call with
+// a 3rd arg passes at runtime — the RED must come from behaviour that DIFFERS
+// when the param is live vs hardcoded. Tests use non-canonical param values
+// (partySize=3 ≠ 6; partySize=2 → null; partySlotNone=99 ≠ 255) whose expected
+// outcomes CANNOT be produced by the current hardcoded implementation.
+//
+// Wrong impl killed: an impl that re-hardcodes `6` or `255` instead of using
+// the passed param — the non-canonical-value assertions fail by construction.
+// ---------------------------------------------------------------------------
+
+describe('M8.5f PARTY SSOT: buildPartyViewModel threaded partySize param', () => {
+  it('BITES: buildPartyViewModel with partySize=3 returns exactly 3 slots (param is live)', () => {
+    // RED: current impl hardcodes PARTY_SIZE=6, returns length=6 → toHaveLength(3) fails.
+    // Kills: any impl that ignores the param and uses a hardcoded 6.
+    const monsters = [monster(1n, 1, 0), monster(2n, 2, 1)];
+    const speciesMap = new Map([
+      [1, species(1)],
+      [2, species(2)],
+    ]);
+    const party = buildPartyViewModel(monsters, speciesMap, 3);
+    expect(party).toHaveLength(3); // RED: current impl returns 6
+    expect(party[0]).not.toBeNull();
+    expect(party[1]).not.toBeNull();
+    expect(party[2]).toBeNull();
+  });
+
+  it('BITES: buildPartyViewModel with partySize=6 returns length 6 (canonical value, param-driven)', () => {
+    // GREEN even before fix (hardcoded 6 coincides) — this is the acceptance test.
+    // Kept to confirm the param-driven path returns the right length when set to 6.
+    const monsters = [monster(1n, 1, 0), monster(2n, 2, 1)];
+    const speciesMap = new Map([
+      [1, species(1, 'Flameling')],
+      [2, species(2, 'Aqualing')],
+    ]);
+    const party = buildPartyViewModel(monsters, speciesMap, 6);
+    expect(party).toHaveLength(6);
+    expect(party[0]).not.toBeNull();
+    expect(party[5]).toBeNull();
+  });
+});
+
+describe('M8.5f PARTY SSOT: nextFreePartySlot threaded partySize param', () => {
+  it('BITES: nextFreePartySlot with partySize=2 returns null when both slots filled', () => {
+    // RED: current impl hardcodes PARTY_SIZE=6, so with slots 0,1 taken it returns 2
+    // (slot 2 is free in a 6-slot party). But partySize=2 means those 2 slots are the
+    // entire party → should return null. Current impl returns 2 → toBeNull() fails.
+    // Kills: any impl that ignores the param and uses a hardcoded 6.
+    const monsters = [monster(1n, 1, 0), monster(2n, 1, 1)];
+    const slot = nextFreePartySlot(monsters, 2);
+    expect(slot).toBeNull(); // RED: current impl returns 2
+  });
+
+  it('BITES: nextFreePartySlot with partySize=6 returns 2 when slots 0,1 taken (param-driven)', () => {
+    // Acceptance test: with partySize=6 (canonical), behaviour matches the current impl.
+    // Confirms the param-driven path produces the right answer for the canonical value.
+    const monsters = [monster(1n, 1, 0), monster(2n, 1, 1)];
+    const slot = nextFreePartySlot(monsters, 6);
+    expect(slot).toBe(2);
+  });
+});
+
+describe('M8.5f PARTY SSOT: buildBoxViewModel threaded partySlotNone param', () => {
+  it('BITES: buildBoxViewModel with partySlotNone=99 filters on that sentinel (param is live)', () => {
+    // RED: current impl hardcodes BOX_SLOT=255. With the 99 sentinel, monster(2n,1,99)
+    // should be included, but current impl checks `partySlot === 255` → returns [] (length 0).
+    // toHaveLength(1) fails. Kills: re-hardcoding 255 in the impl.
+    const monsters = [
+      monster(1n, 1, 255), // slot=255, excluded under partySlotNone=99
+      monster(2n, 1, 99), // slot=99, included under partySlotNone=99
+    ];
+    const speciesMap = new Map([[1, species(1)]]);
+    const box = buildBoxViewModel(monsters, speciesMap, 99);
+    expect(box).toHaveLength(1); // RED: current impl returns []
+    expect(box[0].monsterId).toBe(2n);
+  });
+
+  it('BITES: buildBoxViewModel with partySlotNone=255 (canonical) includes only slot-255 monsters', () => {
+    // Acceptance test at the canonical value: confirms the param-driven path still
+    // works correctly for the production sentinel.
+    const monsters = [
+      monster(1n, 1, 0), // party — excluded
+      monster(2n, 1, 255), // box — included
+    ];
+    const speciesMap = new Map([[1, species(1)]]);
+    const box = buildBoxViewModel(monsters, speciesMap, 255);
+    expect(box).toHaveLength(1);
+    expect(box[0].monsterId).toBe(2n);
+  });
+});

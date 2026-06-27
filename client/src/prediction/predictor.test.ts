@@ -479,6 +479,183 @@ describe('Predictor: proof-of-teeth', () => {
 });
 
 // ================================================================================
+// M8.5f NET-1 / ADR-0052 — Bounded prediction queue (cap enforcement)
+// Uses a cap=2 predictor (mkCapped). The file's mkPredictor() uses cap=8.
+//
+// RED EVIDENCE (before fix):
+//   enqueue always pushes → queueDepth=5, returns object on calls 3-5 (not undefined)
+//   reconcile does not clamp → queueDepth can exceed cap after rebuild
+// ================================================================================
+
+/** Small-cap predictor for NET-1 / ADR-0052 tests (cap=2). */
+function mkCapped(cap: number): Predictor {
+  return new Predictor(applyMove, STEP_MS, cap);
+}
+
+describe('NET-1 ADR-0052: enqueue bounded by cap (cap=2)', () => {
+  it('BITES: enqueue drops moves past the cap; only calls 1-2 return a defined intent', () => {
+    // RED reason: current enqueue always pushes → calls 3-5 return an IntentToSend (not
+    // undefined) and queueDepth reaches 5. After fix: drops at cap, returns undefined.
+    // Wrong impl killed: unbounded enqueue (never returns undefined, never gates push).
+    const p = mkCapped(2);
+    // Seed so the predictor is live (the cap check is on #queue.length, not pending).
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+
+    const r1 = p.enqueue(east());
+    const r2 = p.enqueue(east());
+    const r3 = p.enqueue(east());
+    const r4 = p.enqueue(east());
+    const r5 = p.enqueue(east());
+
+    // Calls 1 and 2 succeed (queue was empty / had 1 → length < cap=2).
+    expect(r1).toBeDefined();
+    expect(r2).toBeDefined();
+    // Calls 3-5: queue at cap → must drop (no push, no seq consumed) → undefined.
+    expect(r3).toBeUndefined();
+    expect(r4).toBeUndefined();
+    expect(r5).toBeUndefined();
+    // Queue depth must not exceed cap.
+    expect(p.queueDepth).toBe(2);
+    // Only 2 pending ops recorded (seq not consumed for dropped enqueues).
+    expect(p.pendingCount).toBe(2);
+  });
+
+  it('BITES: dropped enqueues do NOT advance predicted (predicted unchanged by drops)', () => {
+    // Wrong impl killed: an impl that pushes silently and advances predicted on drain
+    // would move the predicted tile beyond cap, creating over-prediction.
+    const p = mkCapped(2);
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+    const seededPos = p.predicted!.pos;
+
+    // Enqueue 5 East moves; only 2 accepted, 3 dropped.
+    for (let i = 0; i < 5; i++) p.enqueue(east());
+
+    // No drain yet — predicted is still at the seeded position.
+    expect(p.predicted!.pos).toEqual(seededPos);
+    expect(p.queueDepth).toBe(2); // cap obeyed
+  });
+
+  it('BITES: burst > cap → after drain+reconcile predicted == authoritative (no over-prediction)', () => {
+    // This is the headline NET-1 regression.
+    // RED reason: without the fix, 5 enqueues are accepted → drain moves predicted to
+    // x=10 (5 steps), but server only accepted 2 (x=7). reconcile cannot close the gap
+    // because the stale pending ops keep replaying → persistent over-prediction.
+    // After fix: only 2 enqueues land; drain moves predicted to x=7 max; reconcile
+    // against the fully-drained server truth (7,5) → predicted == authoritative.
+    const CAP = 2;
+    const p = mkCapped(CAP);
+    // Seed two step_ms ago so the first drain immediately applies both queued moves.
+    const t0 = 10_000;
+    p.reconcile(baseline(5, 5, t0 - 2 * STEP_MS), [], 0, t0);
+
+    // Burst: 5 East enqueues — only 2 should be accepted.
+    for (let i = 0; i < 5; i++) p.enqueue(east());
+    expect(p.queueDepth).toBe(CAP); // cap obeyed pre-drain
+
+    // Drain forward: with a baseline two steps ago both accepted moves become due.
+    p.drain(t0);
+    // predicted should now be at x=7 (5 + 2 accepted steps), not x=10.
+    expect(p.predicted!.pos).toEqual({ x: 7, y: 5 });
+    expect(p.queueDepth).toBe(0); // both drained
+
+    // Server accepted+drained the same 2 moves → authoritative truth is (7,5).
+    // ackedSeq covers both accepted intents (pendingCount was 2, seqs 1 and 2).
+    const ackedSeq = 2; // seq of the 2nd (last accepted) enqueue
+    const diverged = p.reconcile(baseline(7, 5, t0 - 2 * STEP_MS), [], ackedSeq, t0);
+
+    // No divergence: predicted was already at (7,5) and reconcile confirms it.
+    expect(diverged).toBe(false);
+    expect(p.predicted!.pos).toEqual({ x: 7, y: 5 }); // exact parity with authority
+    expect(p.pendingCount).toBe(0); // all pending ops acked
+  });
+
+  it('BITES: reconcile clamps the rebuilt queue to the cap (authQueue surprise)', () => {
+    // RED reason: without the clamp in reconcile, the rebuilt queue is
+    // [West, East, East] (length 3 > cap=2). drain inside reconcile applies W→(4,5)
+    // and E→(5,5) (2 due), leaving 1 move in queue → queueDepth=1 after reconcile.
+    // After fix: #queue = q.slice(0, cap=2) → [West, East]; drain applies both (2 due)
+    // → queueDepth=0.  The assertion on queueDepth==0 BITES the missing clamp.
+    //
+    // Wrong impl killed: reconcile without the q.slice(0, cap) clamp → queueDepth=1.
+    const CAP = 2;
+    const p = mkCapped(CAP);
+    const t0 = 10_000;
+    // Seed at (5,5) with move_started_at two steps ago → internal drain has 2 due slots.
+    p.reconcile(baseline(5, 5, t0 - 2 * STEP_MS), [], 0, t0);
+
+    // Fill #queue to cap with two unacked East enqueues (both fit: queue was empty).
+    p.enqueue(east());
+    p.enqueue(east());
+    expect(p.queueDepth).toBe(CAP); // pre-condition: queue at cap
+
+    // Server surprises us: it has [West] queued and acks nothing (ackedSeq=0).
+    // Unclamped rebuild: [West] + replay(Enqueue(East), Enqueue(East)) = [West, East, East], length 3.
+    // Clamped rebuild:   slice to cap=2 → [West, East], length 2.
+    // With move_started_at two steps ago, reconcile's internal drain applies BOTH due
+    // moves from the cap-2 queue → queue fully emptied → queueDepth=0.
+    p.reconcile(baseline(5, 5, t0 - 2 * STEP_MS), [west()], 0, t0);
+
+    // With fix: 2-move clamped queue, both drained → 0.
+    // Without fix: 3-move unclamped queue, 2 drained → 1 remains. Assertion FAILS.
+    expect(p.queueDepth).toBe(0);
+
+    // Additionally: predicted must not have advanced more than cap=2 tiles.
+    // [W, E] from (5,5) → (4,5) → (5,5): net pos stays (5,5) (wall cancels E→W).
+    // [W, E, E] from (5,5) → (4,5) → (5,5); 3rd E not drained (not due). Also (5,5).
+    // The pos check is the same here, so the queueDepth assertion is the load-bearing bite.
+    expect(p.predicted!.pos).toEqual({ x: 5, y: 5 });
+  });
+});
+
+// ================================================================================
+// M8.5f / ADR-0052 §B — lazy #lastDrainAt regression-guard
+//
+// The spurious first-drain snap (was: #lastDrainAt initialized to 0, so the very
+// first drain would compute now-0 > SNAP_GAP_STEPS*stepMs and set snapped=true)
+// is masked publicly: reconcile's internal drain call runs AFTER seeding
+// #predicted=authBaseline, and drain early-returns while #predicted===undefined.
+// The fix (#lastDrainAt: number | undefined = undefined; guarded by !== undefined)
+// is a correctness-by-construction improvement that makes reconcile's internal
+// first-drain honest and guards future refactors.
+//
+// Because the observable spurious-snap is already masked, a PUBLIC-API test CANNOT
+// go RED for the literal first-drain case. This test is therefore a REGRESSION-GUARD
+// that locks the existing masked semantics (early-return + no snapped on first drain
+// called externally) and DOCUMENTS the invariant. See ADR-0052 §B.
+// ================================================================================
+describe('NET-1 ADR-0052 §B: lazy #lastDrainAt — regression-guard (invariant lock)', () => {
+  it('REGRESSION-GUARD: a fresh predictor with undefined predicted → drain returns {applied:0, snapped:false}', () => {
+    // Invariant: drain early-returns while #predicted===undefined (no snap, no apply).
+    // This guards the existing early-return contract and documents that the
+    // "spurious first-drain snap" is already masked by this early-return.
+    // (ADR-0052 §B: the fix is correctness-by-construction, not a live observable bite.)
+    //
+    // If a future refactor removes the early-return (breaking the invariant), this
+    // test would go RED because drain with a very large `now` would compute
+    // now - 0 > SNAP_GAP_STEPS * stepMs → snapped=true.
+    const p = mkPredictor(); // #predicted still undefined
+    const r = p.drain(999_999); // large `now` that WOULD trigger snapped if lastDrainAt=0
+    expect(r.applied).toBe(0);
+    expect(r.snapped).toBe(false);
+  });
+
+  it('REGRESSION-GUARD: after seeding, a moderate gap from the seeded timestamp does not spuriously snap', () => {
+    // Invariant: the first public drain after reconcile should not snap if the gap
+    // since seed is within normal play (< SNAP_GAP_STEPS * STEP_MS).
+    // This guards that #lastDrainAt is snapped to the seeding reconcile time, not 0.
+    // ADR-0052 §B: the fix initialises #lastDrainAt=undefined so the first internal
+    // drain (inside reconcile) doesn't compute a spurious huge gap from 0.
+    const p = mkPredictor();
+    const seedTime = 10_000;
+    p.reconcile(baseline(5, 5, seedTime - 2 * STEP_MS), [], 0, seedTime);
+    p.enqueue(east());
+    // Drain at seedTime + 1 step (well within snap threshold).
+    const r = p.drain(seedTime + STEP_MS);
+    expect(r.snapped).toBe(false); // must NOT snap on a normal cadence drain
+  });
+});
+
+// ================================================================================
 // ADR-0013 smoothness — MONOTONIC predicted tile (no backward step except a genuine
 // divergence). Closes the M3 smoothness-eval gap at the predictor level.
 // ================================================================================
