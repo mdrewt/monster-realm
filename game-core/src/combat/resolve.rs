@@ -37,10 +37,11 @@ fn resolve_one_attack(
 ) {
     // Panic on a missing skill id is a deliberate content-integrity invariant
     // (ADR-0049): `validate_content` (game-core/src/content.rs) cross-checks at
-    // content-load that every species.learnable_skill_ids resolves, and
-    // battle_monster_from_row populates known_skill_ids only from that validated
-    // set — so in steady state this panic is unreachable. (Residual: a sync_content
-    // that removes a skill mid-battle is not repaired retroactively; see ADR-0049.)
+    // content-load that every species.learnable_skill_ids resolves, and both
+    // battler constructors (server `battle_monster_from_row` and `wild_battle_monster`)
+    // populate known_skill_ids only from that validated set — so in steady state
+    // this panic is unreachable. (Residual: a sync_content that removes a skill
+    // mid-battle is not repaired retroactively; see ADR-0049.)
     let skill = skills
         .iter()
         .find(|s| s.id == skill_id)
@@ -151,7 +152,10 @@ pub fn resolve_turn(
     // Turn-limit terminal (ADR-0049): a u16 turn counter can never reach this in
     // valid play, but advancing past u16::MAX would panic(debug)/wrap(release).
     // Terminate at a defined no-winner terminal (reuse Fled: no XP, no win credit)
-    // BEFORE any mutation, so no partial turn is applied.
+    // BEFORE the increment and any swap/attack resolution, so no partial turn is
+    // applied (setting `outcome` here is the only mutation; the team state is
+    // untouched). NOTE: this guards `resolve_turn` only; the `attempt_recruit`
+    // reducer advances `turn_number` out-of-band (see ADR-0049 residual).
     if state.turn_number == u16::MAX {
         state.outcome = BattleOutcome::Fled;
         return events;

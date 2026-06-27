@@ -185,7 +185,23 @@ steady state and the in-flight-content-mutation window is named, not hidden.
   (by design; structural smart-constructor is future work); (b) in-flight battle rows are
   not repaired when `sync_content` removes a skill mid-battle → the `resolve_one_attack` /
   `pick_best_skill` panic can fire in that window (pre-existing; fix = `Result`-returning
-  battle reducers, a future server-module hardening).
+  battle reducers, a future server-module hardening); (c) **the `turn_number` terminal
+  guard covers `resolve_turn` only.** The `attempt_recruit` reducer
+  (`server-module/src/lib.rs`) advances `turn_number` with a bare `+= 1` *out-of-band*
+  (recruit-failure path, before `resolve_enemy_turn`), which would still panic(debug)/
+  wrap(release) at `u16::MAX`. This is **pre-existing** (landed in M8d), **unreachable in
+  valid play** (a battle never reaches 65 535 turns), and its fix is in `attempt_recruit`
+  — *outside this slice's declared touch-set* (server `lib.rs` was authorized here only for
+  the `battle_monster_from_row` boundary reject), so it is deliberately deferred rather than
+  silently widening the slice. Follow-up: route the recruit-failure wild turn through a
+  guarded path (or replicate the `== u16::MAX` guard before the out-of-band increment).
+  (d) **`wild_battle_monster` has no structural `defense > 0` guard.** It is safe today
+  because `derive_stats` from a `validate_content`-guaranteed base stat `>= 1` yields a
+  non-HP floor `≥ 4` (min nature multiplier `9/10`), but that invariant lives in this ADR's
+  arithmetic, not in code — a future floor-lowering refactor could regress it. The
+  asymmetry with `battle_monster_from_row` (which *does* reject `defense == 0`) is recorded;
+  closing it (a `debug_assert` in `wild_battle_monster`) is a server-module change outside
+  this slice's touch-set.
 - **References:** ADR-0003 (rule SSOT / functional-core), ADR-0006 (additive schema —
   *why* we don't add a stored-enum variant lightly), ADR-0041 (integer damage formula /
   `u64` intermediates), ADR-0042 (battle table public PvE), ADR-0045 (`wild_battle_monster`
