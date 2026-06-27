@@ -274,8 +274,10 @@ export class AuthoritativeStore {
     return this.#species.get(id);
   }
 
+  /** A defensive snapshot copy — a caller mutating it cannot corrupt the store
+   *  (upholds the one-way `server -> store -> render` flow). */
   speciesMap(): ReadonlyMap<number, StoreSpeciesRow> {
-    return this.#species;
+    return new Map(this.#species);
   }
 
   get monsterCount(): number {
@@ -300,7 +302,9 @@ export class AuthoritativeStore {
     return this.#skills.get(id);
   }
 
+  /** A defensive snapshot copy — a caller mutating it cannot corrupt the store
+   *  (upholds the one-way `server -> store -> render` flow). */
   skillMap(): ReadonlyMap<number, StoreSkillRow> {
-    return this.#skills;
+    return new Map(this.#skills);
   }
 }

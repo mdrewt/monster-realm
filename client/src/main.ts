@@ -32,6 +32,7 @@ import {
 import { shouldToggleBox } from './inputGuards';
 import { connect } from './net/connection';
 import { AuthoritativeStore } from './net/store';
+import { HeldDirections, reissueDir } from './prediction/heldKeys';
 import { type ApplyMove, Predictor } from './prediction/predictor';
 import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
@@ -58,6 +59,9 @@ const applyMove = apply_move as unknown as ApplyMove;
 let predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
 // Routes own (slide clock) vs remote (interpolation buffer) renders (M8.6b).
 const resolver = new RenderResolver(STEP_MS);
+// Held movement keys (most-recently-pressed stack) — drives the frame-loop
+// continuation re-issue so a held key keeps walking (M8.6c, ADR-0013).
+const held = new HeldDirections();
 // Sticky DEV latch: set once the own entity renders a fractional sub-tile position
 // (proves the slide clock is wired, not raw integer tiles). Never reset to false
 // except on reconnect. The e2e reads it via window.__game().
@@ -114,6 +118,7 @@ const KEY_DIR: Readonly<Record<string, WasmDirection>> = {
   KeyD: 'East',
 };
 window.addEventListener('keydown', (e) => {
+  if (e.repeat) return; // ignore OS key-repeat (the frame loop re-issues held keys)
   if (e.code === 'KeyB') {
     // Guard: don't open the box over an active battle (ADR-0014/0052 exit ordering).
     if (shouldToggleBox(battleView?.visible ?? false)) {
@@ -138,15 +143,25 @@ window.addEventListener('keydown', (e) => {
   if (battleView?.visible || boxView?.visible) return;
   const dir = KEY_DIR[e.code];
   if (dir !== undefined) {
-    step(dir);
+    step(dir); // immediate first step (latency + deliberate double-tap)
+    held.press(dir); // mark held so the frame loop re-issues it (continuous walk)
     e.preventDefault();
     return;
   }
   if (e.code === 'Space') {
-    jump();
+    jump(); // Jump does not hold-repeat
     e.preventDefault();
   }
 });
+
+// Release a held movement key; a still-held key falls back to the most-recent (M8.6c).
+window.addEventListener('keyup', (e) => {
+  const dir = KEY_DIR[e.code];
+  if (dir !== undefined) held.release(dir);
+});
+
+// Drop all held keys on blur so a key isn't stuck "held" while unfocused.
+window.addEventListener('blur', () => held.clear());
 
 // --- box/party view: refresh on batch when visible (M6c, ADR-0014) ---------------
 function refreshBox(): void {
@@ -273,6 +288,7 @@ async function main(): Promise<void> {
       // drop the own slide clock so the post-reconnect re-seed starts fresh.
       predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
       resolver.reset();
+      held.clear();
       sawFractionalOwnMotion = false;
     },
     onError: (where, message) => console.error(`[net:${where}] ${message}`),
@@ -280,6 +296,14 @@ async function main(): Promise<void> {
 
   const frame = (): void => {
     const now = performance.now();
+    // Re-issue the held dir so a held key keeps walking — but only when no overlay
+    // is visible, so a held key resumes after an overlay closes yet never walks
+    // under one (M8.6c, ADR-0013). sendIntent routes through the backpressured
+    // predictor.enqueue + reducer send, and no-ops if declined.
+    if (!(battleView?.visible || boxView?.visible)) {
+      const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
+      if (heldDir !== undefined) sendIntent({ Step: heldDir });
+    }
     const { snapped } = predictor.drain(now);
     const ownEntityId = store.ownEntityId(identity);
     const predicted = predictor.predicted;

@@ -673,3 +673,126 @@ describe('AuthoritativeStore M7c: skillCount property (fast-check)', () => {
     );
   });
 });
+
+// =============================================================================
+// M8.6c — speciesMap() / skillMap() defensive copy (live-map leak guard)
+// SOURCE OF TRUTH: specs/monster-realm-v2/M8.6-residual-hardening.spec.md
+//
+// RED reason (before impl): speciesMap() returns `this.#species` directly and
+// skillMap() returns `this.#skills` directly. A caller who mutates the returned
+// map corrupts the store's internal state — subsequent reads return the mutated
+// (wrong) data. After fix: both methods return `new Map(this.#species)` / `new
+// Map(this.#skills)` (a snapshot copy), so mutations to the returned map cannot
+// reach the private fields.
+//
+// BITES: `return this.#species` / `return this.#skills` (live map leak).
+// =============================================================================
+
+describe('AuthoritativeStore M8.6c: speciesMap() returns a COPY (no live-map leak)', () => {
+  it('BITES: mutating the returned speciesMap does NOT corrupt the store (live-map leak killed)', () => {
+    // RED reason: `speciesMap()` returns the private Map reference. A caller who
+    // calls `.set(999, ...)` on the returned map would silently mutate internal
+    // state — `store.species(999)` and a subsequent `store.speciesMap().get(999)`
+    // would both show the injected row. After fix (copy returned): the store is
+    // completely unaffected by caller mutations.
+    // Wrong impl killed: `return this.#species` (reference leak).
+    const s = new AuthoritativeStore();
+    const existing = speciesRow(1);
+    s.upsertSpecies(existing);
+
+    const m = s.speciesMap() as Map<number, StoreSpeciesRow>;
+
+    // Inject a spurious entry and delete the legitimate one via the returned map.
+    const fakeRow = speciesRow(999);
+    m.set(999, fakeRow);
+    m.delete(1);
+
+    // Store must be completely unaffected:
+    expect(s.species(999)).toBeUndefined(); // injected row must NOT appear
+    expect(s.speciesMap().get(999)).toBeUndefined(); // fresh copy also clean
+    expect(s.species(1)).toEqual(existing); // original still present
+    expect(s.speciesMap().get(1)).toEqual(existing); // confirmed via fresh copy
+  });
+
+  it('BITES: two successive speciesMap() calls return independent snapshots', () => {
+    // Kills: an impl that caches a mutable reference — both calls would return the
+    // same object, so mutations via one call corrupt the other.
+    const s = new AuthoritativeStore();
+    s.upsertSpecies(speciesRow(1));
+    s.upsertSpecies(speciesRow(2));
+
+    const m1 = s.speciesMap() as Map<number, StoreSpeciesRow>;
+    const m2 = s.speciesMap();
+
+    // Mutate m1; m2 (a separate copy returned by the second call) must be unaffected.
+    m1.set(42, speciesRow(42));
+    expect(m2.get(42)).toBeUndefined(); // m2 is its own copy, not aliased to m1
+    expect(m2.size).toBe(2); // still only the two rows that existed at call time
+  });
+
+  it('BITES: speciesMap() snapshot is stable even after subsequent upserts', () => {
+    // Kills: an impl that returns a live view — a post-call upsert would silently
+    // appear in the already-returned map.
+    const s = new AuthoritativeStore();
+    s.upsertSpecies(speciesRow(10));
+    const snap = s.speciesMap();
+    expect(snap.size).toBe(1);
+
+    // Upsert a second species AFTER the snapshot was taken.
+    s.upsertSpecies(speciesRow(20));
+
+    // The previously returned map must NOT reflect the new upsert.
+    expect(snap.get(20)).toBeUndefined();
+    expect(snap.size).toBe(1); // still 1, not 2
+  });
+});
+
+describe('AuthoritativeStore M8.6c: skillMap() returns a COPY (no live-map leak)', () => {
+  it('BITES: mutating the returned skillMap does NOT corrupt the store (live-map leak killed)', () => {
+    // RED reason: `skillMap()` returns the private Map reference. A caller mutation
+    // silently corrupts internal state. After fix (copy): store is unaffected.
+    // Wrong impl killed: `return this.#skills` (reference leak).
+    const s = new AuthoritativeStore();
+    const existing = skillRow(1);
+    s.upsertSkill(existing);
+
+    const m = s.skillMap() as Map<number, StoreSkillRow>;
+
+    // Inject a spurious entry and delete the legitimate one.
+    m.set(888, skillRow(888));
+    m.delete(1);
+
+    // Store must be completely unaffected:
+    expect(s.skill(888)).toBeUndefined(); // injected row must NOT appear
+    expect(s.skillMap().get(888)).toBeUndefined(); // fresh copy also clean
+    expect(s.skill(1)).toEqual(existing); // original still present
+    expect(s.skillMap().get(1)).toEqual(existing); // confirmed via fresh copy
+  });
+
+  it('BITES: two successive skillMap() calls return independent snapshots', () => {
+    // Kills: a caching impl that returns the same mutable object on both calls.
+    const s = new AuthoritativeStore();
+    s.upsertSkill(skillRow(1));
+    s.upsertSkill(skillRow(2));
+
+    const m1 = s.skillMap() as Map<number, StoreSkillRow>;
+    const m2 = s.skillMap();
+
+    m1.set(77, skillRow(77));
+    expect(m2.get(77)).toBeUndefined();
+    expect(m2.size).toBe(2);
+  });
+
+  it('BITES: skillMap() snapshot is stable even after subsequent upserts', () => {
+    // Kills: a live-view impl — post-call upserts would appear in already-returned map.
+    const s = new AuthoritativeStore();
+    s.upsertSkill(skillRow(5));
+    const snap = s.skillMap();
+    expect(snap.size).toBe(1);
+
+    s.upsertSkill(skillRow(6));
+
+    expect(snap.get(6)).toBeUndefined();
+    expect(snap.size).toBe(1);
+  });
+});

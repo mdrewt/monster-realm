@@ -34,8 +34,8 @@ effectful shells.
   from the server queue + replay ops → reset to truth → `step_ms`-paced `drain`) + a
   divergence return; seeded by the first own-row. **Bounded prediction enforced at both
   mutation points** — `enqueue` rejects moves past `MOVE_QUEUE_CAP`, and `reconcile` clamps
-  the rebuilt queue to the cap (ADR-0052) — so the predictor never runs ahead of authority
-  and a burst can't leave mispredicted tiles. Snap-on-large-gap included (ADR-0013). The
+  the rebuilt queue to the cap (ADR-0052); `enqueue` also rejects on `#pending` at cap (optional 4th ctor `pendingCap`, default 16, ADR-0013.5) — so the predictor never runs ahead of authority
+  and a burst can't leave mispredicted tiles. **M8.6c completed held-key continuation (ADR-0013):** OS key-repeat no longer drives movement; `keydown` queues immediate `step(dir)` + registers in MRU held-key stack (`HeldDirections`); rAF loop re-issues held dir deduped against `lastQueuedDir`, suppressed while overlay open; `keyup`/blur/reconnect release/clear. Snap-on-large-gap included (ADR-0013). The
   movement rule itself never lives here — `apply_move` is the injected client-wasm export
   (proven by the parity + no-logic evals).
   **M4 contract:** the own character animates from a **self-owned slide clock** and
