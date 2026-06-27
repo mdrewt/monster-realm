@@ -88,7 +88,7 @@ stable id), separate from `init`. Stable ids are append-only.
 
 ADRs **0002–0034** are design ADRs that live in the harness spec corpus
 (`../../specs/monster-realm-v2/adr/`); **0001** is mirrored in both locations.
-Implementation ADRs **0001, 0035–0052** live in `docs/adr/` — see
+Implementation ADRs **0001, 0035–0053** live in `docs/adr/` — see
 `docs/adr/README.md` for the navigable catalog. Highlights: 0035 scaffold
 hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest, **0039
 two-window e2e CI gate**, 0040 RLS fallback split-tables, 0041 integer damage
@@ -96,7 +96,7 @@ formula, 0042 battle table public PvE, 0043 CI caching + fast inner loop, 0044
 private encounter table, 0045 private `battle_wild` individuality table, 0046
 player inventory model, 0047 recruit resolution, 0048 `start_battle` opponent
 provenance, 0049 panic-as-content-invariant policy, 0050 nightly mutation/
-coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction. See also
+coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant. See also
 `docs/validation-findings.md` (empirical Tier-1 results).
 
 ## Monster subsystem (`game-core/src/monster/`, M6a)
@@ -199,7 +199,10 @@ live here exactly once (ADR-0003 SSOT). Randomness injected via `TurnVariance`.
   speed-ordered attacks; KO by faster prevents slower from acting;
   auto-switch on faint or battle end), `resolve_enemy_turn` (AI picks best
   skill, one-sided attack), `resolve_player_swap` (swap then enemy attacks
-  the new active). All return ordered `Vec<BattleEvent>`.
+  the new active). All return ordered `Vec<BattleEvent>`. Swap legality is a
+  pure-core invariant: `BattleSide::set_active` is the sole checked mutator
+  (reject-not-clamp; bounds-checked before fainted-index check); illegal swaps
+  are rejected with no mutation, no event, no panic (ADR-0053).
 - **`ai`** — `pick_best_skill`: scores each known skill by `power * eff * stab`,
   picks highest. Ignores accuracy (accepted — simple heuristic, M14 can layer).
 - **`xp`** — `battle_xp_reward`: `bst * loser_level / (5 * winner_level) + 1` (u32 intermediates — small products, well within range, no overflow risk).

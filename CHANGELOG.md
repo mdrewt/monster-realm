@@ -6,6 +6,10 @@ pending a `cliff.toml` body-template fix (tracked for a build/CI-hygiene slice).
 
 ## [Unreleased]
 
+### Fixed — M8.6a: swap-legality hardening
+
+- **Combat core swap validation** — `BattleSide::set_active(idx) -> Result<(), SwapError>` makes illegal monster swaps (out-of-bounds or fainted `team_index`) unrepresentable in the resolver. All six `active =` writes in `resolve.rs` now route through the checked mutator (reject-not-clamp; bounds-checked before fainted index); rejected swaps produce no mutation, no `Switch` event, no panic. `resolve_player_swap` aborts the intent; `resolve_turn`'s Swap branch no-ops. Field privatization parked. Restores the swap-legality invariant into the pure game-core (ADR-0053).
+
 ### Fixed — M8.5f: netcode & client robustness
 
 - **Client over-prediction rubberband** — on a move-input burst beyond `MOVE_QUEUE_CAP`, `Predictor.enqueue` now declines past the cap and `reconcile` clamps the rebuilt queue to the cap (ADR-0052), preventing mispredicted tiles on reconnect.
