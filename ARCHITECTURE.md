@@ -54,6 +54,7 @@ effectful shells.
   normal/material channels are an additive future render mode — ADR-0004). It owns no
   state and reads no store/predictor: the M4c loop feeds it resolved positions
   (own from the slide clock, remote from the interpolation buffer). **Wasm-sourced constants** — `party_size()` and `party_slot_none()` are now single-sourced from `game-core` via `client-wasm` exports, replacing the former TS magic literals.
+  **M8.6b connected the pure-core slide clock and interpolation buffer into the integrated loop via `RenderResolver`** — prior integrated loop fed raw integer tiles; the pure cores were tested-but-unimported. Now own animates from SlideClock (fractional, keyed to snapped tiles) and remotes from the interpolation buffer (now − interpDelay), completing the M4c smoothness design into reality.
 
 ## Mechanical gates (each ships a proof-of-teeth fixture — ADR-0010)
 
@@ -405,7 +406,7 @@ with proof-of-teeth) complete. **M4c/M5a** (the per-frame loop wiring
 `connection → AuthoritativeStore → Predictor(apply_move) → WorldRenderer` with input +
 the `window.__game()` snapshot, plus the two-window Playwright golden flows: see-each-
 other, A↔B movement sync + prediction convergence, and the canonical **wall-bump ⇒
-predicted == authoritative** no-desync net) complete. **M5b** (those golden flows now
+predicted == authoritative** no-desync net; own/remote smoothness via SlideClock/interpolation **connected in M8.6b**) complete. **M5b** (those golden flows now
 run **in CI** against a real version-pinned standalone SpacetimeDB — ADR-0009/0039,
 falsified by a proof-of-teeth desync eval, ADR-0010) complete: a desync,
 stale-bindings, or rubberband regression now turns **CI red**, not just local
@@ -470,11 +471,12 @@ they stay conscious, not forgotten:
   config; the readiness gate landed in **M4** with the live `--target bundler`
   load. Deferral closed.
 - **Renderer smoothness evals** (own slide-clock decoupling from `move_started_at`;
-  remote interpolation-buffer jitter) — **delivered in M4b** as vitest proof-of-teeth
+  remote interpolation-buffer jitter) — **pure cores tested in M4b** as vitest proof-of-teeth
   (`render/slideClock.test.ts`, `render/interpolation.test.ts`: the bad clock that
-  reads `move_started_at` stutters; the no-buffer renderer double-jumps). The
-  standalone `evals/*.eval.mjs` smoothness gates ride with the M4c loop (which
-  resolves own-from-predictor / remote-from-buffer end-to-end).
+  reads `move_started_at` stutters; the no-buffer renderer double-jumps). **Integrated
+  wiring completed in M8.6b** via `RenderResolver` — the M4c loop now resolves own-from-SlideClock /
+  remote-from-buffer end-to-end; proof-of-teeth: `render/renderResolver.test.ts` (12 tests),
+  `sawFractionalOwnMotion` latch in `golden.spec.ts`.
 - **`seq` boundary helper** (`u64` reducer / `bigint` store ↔ the predictor's session
   `number`) — a typed conversion lands with the **M5** connection adapter; both sides
   are internally consistent today.
