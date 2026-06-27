@@ -4,6 +4,41 @@ All notable changes to monster-realm. Generated from Conventional Commits.
 
 ## [Unreleased]
 
+### Added — M8d: recruit-by-weaken with inventory
+
+- **`build_monster(seed, &Species, level: Level)`** — pure generalization of
+  `roll_starter` in `monster/rolls.rs`; parameterized by level for exact wild
+  rebuild at recruit time (ADR-0047).
+- **`RECRUIT_BASE_RATE: u16` const** — tunable per-mille base success rate in
+  `taming/rules.rs`; per-species rates deferred to M9.
+- **Public `inventory` table (ADR-0046)** — owner-scoped additive stack: `(inv_id,
+  owner_identity, item_id, count)`. `ItemRow` gains `recruit_bonus: u16` seeded
+  in `sync_content`; bait classified by data (`recruit_bonus > 0`) on both client
+  and server (SSOT, never a magic id). Helpers: `grant_item` (saturating_add,
+  one-stack discipline), `consume_one` (checked_sub, reject on 0/missing, never
+  wrap). Dev/test `grant_bait` self-scoped reducer (supersede at M9).
+- **`attempt_recruit` reducer** — server-authoritative, injected `ctx.random()`
+  roll. Validates: battle exists, player-owned, wild signal present. Consumes
+  bait before roll (fail still costs it). On success: rebuild exact wild via
+  `build_monster(individuality_seed, &species, wild_level)`, grant to box
+  (`PARTY_SLOT_NONE`) at full HP via dual-write (`monster` + `monster_pub`
+  per ADR-0040), set outcome `SideAWins`, write back party HP only (no XP —
+  extracted `write_back_party_hp` helper closes XP confusion, ADR-0047), delete
+  `battle_wild`, atomic transaction (single grant window, no double-recruit).
+  On failure: enemy strikes back (turn forfeited); if terminal, full battle
+  results write runs; `battle_wild` deleted unconditionally (GC at M8d close).
+- **Client Recruit action** — battle view gains bait selector; classify by
+  `recruit_bonus > 0` from `item_row` bindings (server authority). Module
+  bindings regenerated (`just gen`): new `inventory` table, `attempt_recruit`/
+  `grant_bait` reducers, `item_row.recruit_bonus` field.
+- **Evals & tests** — `recruit-reducer-security` (reject matrix), `inventory-privacy`
+  (owner-isolation, one-stack, no genes), gating tests (`m8d_gating_tests.rs`: HP
+  derivation, exact-wild proof, no-XP gate, recruit odds monotone), e2e
+  (`recruit.spec.ts`), red-team arithmetic tests (`redteam_m8d_tests.rs`).
+- **ADR-0046** — inventory model: additive, public, low-stakes, bait data-driven.
+- **ADR-0047** — recruit resolution: exact wild rebuild, no XP on capture, `SideAWins`
+  terminal, strike-back on fail, unconditional `battle_wild` GC.
+
 ### Added — M7a: game-core combat resolution rules
 
 - **`game-core/src/combat/` module** — pure, deterministic, integer-only
@@ -29,6 +64,12 @@ All notable changes to monster-realm. Generated from Conventional Commits.
 
 ### Previous milestones
 
+- M8c: grass-encounter spine (wild spawn + individuality storage, private battle_wild)
+- M8b: encounter server integration (private table, privacy eval)
+- M8a: taming rules (encounter triggering, recruit odds)
+- M7c: battle view (client subscription overlay)
+- M7b: battle table + server reducers (start, submit, flee, heal, write-back)
+- M7a: game-core combat resolution rules (shipped in this Unreleased section above)
 - M6c: box/party view (client subscription overlay)
 - M6b: server integration (content tables, monster privacy, starter grant)
 - M6a: monster individuality (types, rules, rolls, content)

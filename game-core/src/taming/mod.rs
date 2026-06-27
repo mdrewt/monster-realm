@@ -9,6 +9,6 @@ pub mod m8a_gating_tests;
 
 pub use rules::{
     attempt_recruit, encounter_triggers, recruit_chance, resolve_encounter, roll_encounter,
-    MISSING_HP_FACTOR,
+    MISSING_HP_FACTOR, RECRUIT_BASE_RATE,
 };
 pub use types::{EncounterEntry, EncounterTable, WildSpawn};

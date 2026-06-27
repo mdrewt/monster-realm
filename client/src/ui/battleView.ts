@@ -13,6 +13,11 @@ export interface BattleViewCallbacks {
   readonly onFlee: (battleId: bigint) => void;
   /** Called when the player selects a team member to swap to. */
   readonly onSwap: (battleId: bigint, teamIndex: number) => void;
+  /**
+   * Called when the player clicks Recruit (wild battles only). `baitItemId` is
+   * the selected bait's id, or `undefined` for a bare attempt.
+   */
+  readonly onRecruit: (battleId: bigint, baitItemId: number | undefined) => void;
 }
 
 export class BattleView {
@@ -23,6 +28,8 @@ export class BattleView {
   readonly #actionsEl: HTMLDivElement;
   readonly #outcomeEl: HTMLDivElement;
   readonly #callbacks: BattleViewCallbacks;
+  /** The bait `<select>` for the current recruit render (null when not wild). */
+  #baitSelectEl: HTMLSelectElement | null = null;
   #visible = false;
 
   constructor(parent: HTMLElement, callbacks: BattleViewCallbacks) {
@@ -160,6 +167,52 @@ export class BattleView {
     if (vm.canSwap) {
       this.#renderSwapButtons(vm);
     }
+    // Recruit is wild-only (canRecruit). Render the bait selector first so the
+    // Recruit button can read the current selection at click time.
+    this.#baitSelectEl = null;
+    if (vm.canRecruit) {
+      this.#renderRecruit(vm);
+    }
+  }
+
+  #renderRecruit(vm: BattleViewModel): void {
+    // Bait selector: classify-by-data — each option carries its recruit_bonus on
+    // a data attribute; the first option is "No bait" (a bare attempt).
+    const select = document.createElement('select');
+    select.dataset['testid'] = 'bait-selector';
+    select.setAttribute('data-testid', 'bait-selector');
+    select.style.cssText =
+      'padding:6px 8px;font-family:monospace;font-size:12px;background:#222;' +
+      'color:#e0e0e0;border:1px solid #686;border-radius:3px;';
+
+    const noBait = document.createElement('option');
+    noBait.value = '';
+    noBait.textContent = 'No bait';
+    select.appendChild(noBait);
+
+    for (const bait of vm.baitOptions) {
+      const opt = document.createElement('option');
+      opt.value = String(bait.itemId);
+      opt.textContent = `${bait.name} (+${bait.recruitBonus}‰) ×${bait.count}`;
+      // data-recruit-bonus is the classify-by-data contract surface (ADR-0047).
+      opt.setAttribute('data-recruit-bonus', String(bait.recruitBonus));
+      select.appendChild(opt);
+    }
+    this.#baitSelectEl = select;
+    this.#actionsEl.appendChild(select);
+
+    const recruitBtn = document.createElement('button');
+    recruitBtn.setAttribute('data-testid', 'recruit-action');
+    recruitBtn.style.cssText =
+      'padding:6px 12px;cursor:pointer;font-family:monospace;background:#2a3a2a;' +
+      'color:#e0e0e0;border:1px solid #6a6;border-radius:3px;';
+    recruitBtn.textContent = 'Recruit';
+    recruitBtn.addEventListener('click', () => {
+      const raw = this.#baitSelectEl?.value ?? '';
+      const baitItemId = raw === '' ? undefined : Number(raw);
+      this.#callbacks.onRecruit(vm.battleId, baitItemId);
+    });
+    this.#actionsEl.appendChild(recruitBtn);
   }
 
   #renderSwapButtons(vm: BattleViewModel): void {

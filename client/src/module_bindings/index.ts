@@ -34,9 +34,11 @@ import {
 } from "spacetimedb";
 
 // Import all reducer arg schemas
+import AttemptRecruitReducer from "./attempt_recruit_reducer";
 import ClearQueueReducer from "./clear_queue_reducer";
 import EnqueueMoveReducer from "./enqueue_move_reducer";
 import FleeReducer from "./flee_reducer";
+import GrantBaitReducer from "./grant_bait_reducer";
 import HealPartyReducer from "./heal_party_reducer";
 import JoinGameReducer from "./join_game_reducer";
 import SetMoveReducer from "./set_move_reducer";
@@ -54,6 +56,7 @@ import SyncContentReducer from "./sync_content_reducer";
 import BattleRow from "./battle_table";
 import CharacterRow from "./character_table";
 import ConfigRow from "./config_table";
+import InventoryRow from "./inventory_table";
 import ItemRowRow from "./item_row_table";
 import MonsterPubRow from "./monster_pub_table";
 import PlayerRow from "./player_table";
@@ -105,6 +108,20 @@ const tablesSchema = __schema({
       { name: 'config_id_key', constraint: 'unique', columns: ['id'] },
     ],
   }, ConfigRow),
+  inventory: __table({
+    name: 'inventory',
+    indexes: [
+      { accessor: 'inv_id', name: 'inventory_inv_id_idx_btree', algorithm: 'btree', columns: [
+        'invId',
+      ] },
+      { accessor: 'owner_identity', name: 'inventory_owner_identity_idx_btree', algorithm: 'btree', columns: [
+        'ownerIdentity',
+      ] },
+    ],
+    constraints: [
+      { name: 'inventory_inv_id_key', constraint: 'unique', columns: ['invId'] },
+    ],
+  }, InventoryRow),
   item_row: __table({
     name: 'item_row',
     indexes: [
@@ -192,9 +209,11 @@ const tablesSchema = __schema({
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
 const reducersSchema = __reducers(
+  __reducerSchema("attempt_recruit", AttemptRecruitReducer),
   __reducerSchema("clear_queue", ClearQueueReducer),
   __reducerSchema("enqueue_move", EnqueueMoveReducer),
   __reducerSchema("flee", FleeReducer),
+  __reducerSchema("grant_bait", GrantBaitReducer),
   __reducerSchema("heal_party", HealPartyReducer),
   __reducerSchema("join_game", JoinGameReducer),
   __reducerSchema("set_move", SetMoveReducer),

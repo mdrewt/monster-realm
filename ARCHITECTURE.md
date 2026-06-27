@@ -304,13 +304,70 @@ data).
   `EncounterTable` → `EncounterRow` for server-side storage). Thin wrapper, no
   embedded rules.
 
+## Player inventory & recruit (`game-core/src/taming/` + `server-module` + `client/`, M8d — ADR-0046/0047)
+
+Closes the find→tame loop: consume bait to raise recruit odds, rebuild the exact wild
+from stored individuality, and grant it at full HP with no XP. Inventory is a
+public additive owner-scoped table; bait classified by data.
+
+- **`build_monster(seed, &Species, level: Level) -> MonsterInstance`** — pure, in
+  `monster/rolls.rs`, parameterized generalization of `roll_starter` (M8a). Full HP,
+  EVs zero, bond default, `party_slot: None`, `xp = xp_for_level(level)`. Rebuilds
+  the exact wild at recruit time. Proof-of-teeth: `build_monster(seed, sp, L5) ≡
+  roll_starter`; `current_hp == derived hp`.
+- **`RECRUIT_BASE_RATE: u16` const** — in `taming/rules.rs` (export via mod/lib),
+  tunable per-mille base success rate. Per-species rates deferred to M9. Validated:
+  `recruit_bonus ≤ 1000` (content).
+- **Public `inventory` table (ADR-0046):** additive, owner-scoped: `(inv_id, owner_identity,
+  item_id, count)`. `ItemRow` gains `recruit_bonus: u16` (seeded in `sync_content`;
+  bait = `recruit_bonus > 0`, data-driven both sides, not a magic id). Helpers: `grant_item`
+  (saturating_add on count, find-then-update ensures one stack per `(owner,item_id)`),
+  `consume_one` (checked_sub, reject if 0/missing — never wrap). Dev/test `grant_bait`
+  reducer (self-scoped, bait-only, capped qty; supersede at M9).
+- **`attempt_recruit(ctx, battle_id, bait_item_id: Option<u32>) -> Result<(),String>`** —
+  server-authoritative reducer. Guards (Err + log): battle exists, player-owned, outcome
+  `Ongoing`, wild signal (`battle_wild` exists). Bait: if `Some(id)`, read `recruit_bonus`
+  from live `item_row`, reject if unknown/0/not-bait; `consume_one` **before** roll
+  (fail still costs bait — intended). Roll: `chance = recruit_chance(wild.max_hp,
+  wild.current_hp, RECRUIT_BASE_RATE, bait_bonus)` (server-side, from live battle state);
+  `roll = ctx.random()` (injected, no client arg); `success = attempt_recruit(chance, roll)`.
+  **Success:** `build_monster(bw.individuality_seed, &species, wild_level)` (exact rebuild,
+  SSOT via `roll_individuality(seed)`), grant to box (`PARTY_SLOT_NONE`) via dual-write
+  (`monster` + `monster_pub` — ADR-0040), `outcome := SideAWins`, `write_back_party_hp`
+  (NO XP — extracted helper; battle XP grant stays in `write_back_battle_results` only),
+  delete `battle_wild`, update battle. **Failure:** `turn_number += 1`; if wild has skills,
+  `resolve_enemy_turn(SideB,...)` (enemy acts, player forfeits turn); if that ends the
+  battle, call full `write_back_battle_results` (normal loss); delete `battle_wild` on any
+  terminal (GC). Proof-of-teeth: reject matrix (non-owner / over / non-wild / non-bait /
+  missing-bait); exact wild grant (forced seed success, IVs/nature/species/level match
+  `roll_individuality`); no XP on recruit; strike-back damage + no monster; bait consumed
+  on forced fail; only one recruit per battle.
+- **`battle_wild` GC** (ADR-0047 closes M8c residual (b)): unconditional delete in
+  `write_back_battle_results` (the shared battle-end path), and in the recruit success/
+  strike-back paths. No-op for PvP (no row).
+- **Content:** `items.ron` seeded with one bait item (`recruit_bonus > 0`). Validation
+  extended: `recruit_bonus ≤ 1000`.
+- **Client:** `battleView.ts`/`battleModel.ts` Recruit action + bait selector (classify
+  `recruit_bonus > 0` from generated `item_row` bindings; server is authority). Regenerated
+  module bindings (`just gen`) include new `inventory` table, `attempt_recruit`/`grant_bait`
+  reducers, `item_row.recruit_bonus` field. Proof-of-teeth: `bindings-drift` eval gates
+  codegen freshness.
+- **Security/privacy evals:** `recruit-reducer-security` (reject matrix for `attempt_recruit`);
+  `inventory-privacy` (table carries no genes, owner-isolation, no duplicate stacks);
+  `wild-individuality-privacy` still confirms no IV leak (existing from M8c).
+- **New gating tests:** `monster/m8d_gating_tests.rs` (determinism, build_monster ≡
+  roll_starter, HP derivation, recruit odds monotone, no-XP gate), `client/e2e/recruit.spec.ts`
+  (client recover flow, bait consume, wild grant, strike-back). Supplementary
+  `combat/redteam_m8d_tests.rs` (8 adversarial arithmetic tests, u32/sign edge cases).
+
 ## Known follow-ups / tech-debt
 
 Tracked consciously so they stay visible, not forgotten.
 
-- **(a) `battle`/`battle_wild` row reaping** — neither row is deleted on wild-battle end
-  (`flee`/win) in M8c. M8d's recruit path clears the `battle_wild` row on success; a
-  general terminal-battle GC is needed for the `flee`/win paths (M8d/M9).
+- **(a) `battle`/`battle_wild` row reaping** — M8d closed the `battle_wild` GC (ADR-0047):
+  unconditional delete in `write_back_battle_results` + recruit/strike-back paths. The
+  `battle` row itself (PvP + wild) remains un-reaped; a general terminal-battle GC for
+  the `flee`/win paths is a follow-up (M9+).
 - **(b) `splitmix32` duplication** — the helper is present in both
   `taming/rules.rs` (`resolve_encounter`) and `monster/rolls.rs` (`roll_individuality`).
   Hoist to one `pub(crate)` fn to single-source the determinism contract that ADR-0045
@@ -364,10 +421,19 @@ merged). **M8a** (taming rules — pure encounter triggering, recruit-chance ari
 encounters.ron registry, validation, 24 tests with 5 proof-of-teeth fixtures + 2
 proptest suites, all green) complete. **M8b** (encounter server integration — private
 encounter table, validate-before-write upsert seeding, B1 empty/duplicate validation,
-encounter-privacy eval with 6 proof-of-teeth) complete. **M8 (Taming subsystem
-M8a+M8b) snapshot:** encounter spawn weights are private; M8c defers grass trigger
-(tile-change → wild encounter spawn + start_battle), M8d defers recruit (attempt_recruit
-+ inventory/bait + client battle-view + wild individuality storage). **M-infra-a** (CI caching + fast inner loop
+encounter-privacy eval with 6 proof-of-teeth) complete. **M8c** (grass-encounter
+spine — `TileKind::TallGrass`, pure trigger geometry, `resolve_encounter` splitting
+seed, private `battle_wild` side-table storage, `WILD_IDENTITY` sentinel, `begin_encounter`
+atomic insertion, `movement_tick` integration with rate-0 no-ops, ADR-0045 — 19 tests,
+all green) complete. **M8d** (recruit subsystem — `build_monster` parameterized generalization,
+`RECRUIT_BASE_RATE` const, `attempt_recruit` reducer with server-authoritative roll + exact
+wild rebuild + full-HP no-XP grant + strike-back on fail, public `inventory` table + `grant_item`/
+`consume_one` helpers, `ItemRow.recruit_bonus` data-driven bait classification, `battle_wild`
+unconditional GC, `write_back_party_hp` extracted, client Recruit action + bait selector,
+`recruit-reducer-security` + `inventory-privacy` evals with proof-of-teeth, ADR-0046/0047 —
+gating + e2e + red-team tests, all green) complete. **M8 (Taming subsystem M8a–M8d) fully
+delivered:** encounter spawn weights are private; grass steps trigger wild encounters with
+exact individuality storage; recruit-by-weaken closes the find→tame loop. **M-infra-a** (CI caching + fast inner loop
 — ADR-0043: `Swatinem/rust-cache` per-job, `taiki-e/install-action` for nextest +
 audit, `just test` = nextest + doctest, `ci-fast <crate>` recipe, `cache-on` sccache
 opt-in, cache-freshness eval with 8 criteria + 17 proof-of-teeth fixtures)
