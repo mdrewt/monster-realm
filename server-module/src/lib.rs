@@ -417,7 +417,8 @@ fn write_back_hp(monster: &mut Monster, bm: &BattleMonster) {
 }
 
 /// Sum the six base stats of a species (for the XP formula).
-/// Returns u32 to avoid overflow when base stats are stored as u16.
+/// Returns `u16`: `validate_content` caps each base stat at 255, so the
+/// six-stat sum is at most 1530 and always fits (see the note below).
 fn loser_base_stat_total(species: &SpeciesRow) -> u16 {
     // Each base stat is validated <= 255 by validate_content, so the sum fits u16.
     // If the validation range ever widens, widen this return type to u32.
