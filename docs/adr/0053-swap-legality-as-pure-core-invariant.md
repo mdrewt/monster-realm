@@ -16,8 +16,8 @@
 
 The pure combat core (`game-core/src/combat/`) owns the rules (ADR-0003: functional core,
 single source of truth). `BattleSide` holds `active: u32` — an index into `team:
-Vec<BattleMonster>` — and `active_monster()` (`types.rs:47`) reads `&self.team[self.active
-as usize]`, which **panics** on an out-of-bounds index.
+Vec<BattleMonster>` — and `active_monster()` (`types.rs:58`, post-slice) reads
+`&self.team[self.active as usize]`, which **panics** on an out-of-bounds index.
 
 The resolver wrote caller-supplied team indices straight into `active` with **no bounds
 check and no fainted check** in three places:
@@ -27,8 +27,8 @@ check and no fainted check** in three places:
 - `resolve_player_swap` (`resolve.rs:322` & `:323`): `state.side_x.active = new_active;`
 - `resolve_one_attack` auto-switch on faint (`resolve.rs:111` & `:112`):
   `state.side_x.active = idx;` — here `idx` comes from `next_conscious_index()`, which by
-  construction (`types.rs:64-70`) returns only an in-bounds, conscious, non-active slot, so
-  **this path is already safe**.
+  construction (`types.rs:75-81`, post-slice) returns only an in-bounds, conscious,
+  non-active slot, so **this path is already safe**.
 
 A swap to `team_index >= team.len()` therefore panic-indexes the next `active_monster()`
 read (a SpacetimeDB reducer abort); a swap to a **fainted** but in-bounds slot leaves the
