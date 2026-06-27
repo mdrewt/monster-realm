@@ -30,6 +30,21 @@ security:
 mutate:
     cargo mutants --workspace
 
+# Nightly mutation gate scoped to the rule core (ADR-0050). Narrower than
+# `mutate` (--workspace) so the scheduled run stays tractable; surviving
+# mutants fail the job (default cargo-mutants behavior) — tighten/exclude
+# equivalents as discovered (policy in ADR-0050). Runs in nightly.yml only.
+mutate-core:
+    cargo mutants -p game-core
+
+# Nightly vitest line-coverage gate (ADR-0050). Self-contained: installs the
+# coverage provider via --no-save (matching the pinned vitest 2.x) so it does
+# NOT touch client/package.json, the lockfile, or vite.config.ts (M8.5d domain).
+# vitest exits non-zero if line coverage falls below the threshold. Runs in
+# nightly.yml only — NOT part of `just ci` (preserves the ADR-0043 fast loop).
+coverage:
+    cd client && npm ci && npm i --no-save -D @vitest/coverage-v8@2.1.9 && npx vitest run --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.thresholds.lines=25
+
 build:
     spacetime build --module-path server-module
 

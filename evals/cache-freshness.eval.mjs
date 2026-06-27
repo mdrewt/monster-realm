@@ -83,19 +83,85 @@ export function hasDistinctPrefixKeys(yaml) {
 }
 
 // ---------------------------------------------------------------------------
-// Criterion 4: justfile must set CARGO_INCREMENTAL=0 in the same context as
-// RUSTC_WRAPPER=sccache. Both env vars must appear together (in a cache-on
-// or equivalent recipe / env block).
+// Criterion 4: justfile must set CARGO_INCREMENTAL=0 in the SAME recipe body
+// as RUSTC_WRAPPER=sccache (specifically the cache-on recipe). Co-location-
+// aware: a CARGO_INCREMENTAL=0 in a completely different recipe does NOT
+// satisfy this criterion.
 //
-// Wrong impl killed by this: one that sets RUSTC_WRAPPER=sccache but omits
-// CARGO_INCREMENTAL=0, causing sccache to cache incremental artifacts that
-// are incompatible across machines and blow the remote cache hit rate.
+// Comment lines (lines starting with #) are stripped before checking so a
+// commented-out `# CARGO_INCREMENTAL=0` cannot satisfy the requirement.
+//
+// Wrong impl killed by this: one that places CARGO_INCREMENTAL=0 in a
+// different recipe than sccache, letting sccache cache incremental artifacts
+// that are incompatible across machines. The old whole-file check wrongly
+// passed that layout.
 // ---------------------------------------------------------------------------
+
+// Extract the body of the named recipe (lines indented after the recipe
+// header), stripping comment lines. Reuses the same body-extraction technique
+// as testRecipeHasNextestAndDoctest. Returns '' if recipe not found.
+export function extractRecipeBody(justfile, recipeName) {
+  // Look for `\n<recipeName>:` or `\n<recipeName> ` (parameterised recipe)
+  const exactMarker = '\n' + recipeName + ':';
+  const paramMarker = '\n' + recipeName + ' ';
+  const exactIdx = justfile.indexOf(exactMarker);
+  const paramIdx = justfile.indexOf(paramMarker);
+
+  let headerIdx = -1;
+  if (exactIdx !== -1 && paramIdx !== -1) headerIdx = Math.min(exactIdx, paramIdx);
+  else if (exactIdx !== -1) headerIdx = exactIdx;
+  else if (paramIdx !== -1) headerIdx = paramIdx;
+
+  // Also handle recipe at start of file
+  if (headerIdx === -1) {
+    if (justfile.startsWith(recipeName + ':') || justfile.startsWith(recipeName + ' ')) {
+      headerIdx = -1; // handled specially below (start = 0)
+    } else {
+      return '';
+    }
+  }
+
+  const start = headerIdx !== -1 ? headerIdx : 0;
+  const afterHeader = justfile.indexOf('\n', start + 1);
+  if (afterHeader === -1) return '';
+
+  let body = '';
+  let pos = afterHeader + 1;
+  while (pos < justfile.length) {
+    const lineEnd = justfile.indexOf('\n', pos);
+    const line = lineEnd === -1 ? justfile.slice(pos) : justfile.slice(pos, lineEnd);
+    if (line.length > 0 && (line[0] === ' ' || line[0] === '\t')) {
+      // Strip comment lines: trimmed line starts with '#'
+      const trimmed = line.trimStart();
+      if (!trimmed.startsWith('#')) {
+        body += line + '\n';
+      }
+      pos = lineEnd === -1 ? justfile.length : lineEnd + 1;
+    } else if (line.length === 0) {
+      pos = lineEnd === -1 ? justfile.length : lineEnd + 1;
+    } else {
+      break;
+    }
+  }
+  return body;
+}
+
 export function sccacheHasIncrementalZero(justfile) {
+  // Short-circuit: if sccache is not referenced anywhere, this is a
+  // legitimate non-sccache setup — pass (spec: "pass legitimate non-sccache
+  // justfiles"). The `!hasSccache` short-circuit is preserved here so
+  // contributors without sccache still pass.
   const hasSccache = justfile.includes('RUSTC_WRAPPER') && justfile.includes('sccache');
-  if (!hasSccache) return false;
-  // Both must be present together
-  return justfile.includes('CARGO_INCREMENTAL') && justfile.includes('CARGO_INCREMENTAL=0');
+  if (!hasSccache) return true;
+
+  // Extract the cache-on recipe body (comment-stripped).
+  const body = extractRecipeBody(justfile, 'cache-on');
+  if (!body) return false;
+
+  // Both RUSTC_WRAPPER+sccache AND CARGO_INCREMENTAL=0 must be within that body.
+  const bodyHasSccache = body.includes('RUSTC_WRAPPER') && body.includes('sccache');
+  const bodyHasIncrementalZero = body.includes('CARGO_INCREMENTAL=0');
+  return bodyHasSccache && bodyHasIncrementalZero;
 }
 
 // ---------------------------------------------------------------------------
@@ -270,24 +336,54 @@ export default async function () {
     };
   }
 
-  // Teeth 4: sccacheHasIncrementalZero must reject justfile with sccache but no CARGO_INCREMENTAL=0
-  const badSccacheNoIncremental = 'cache-on:\n    export RUSTC_WRAPPER := "sccache"\n';
+  // Teeth 4: sccacheHasIncrementalZero must reject cache-on recipe with sccache
+  // but no CARGO_INCREMENTAL=0 in that recipe body.
+  const badSccacheNoIncremental =
+    "cache-on:\n    @echo 'export RUSTC_WRAPPER=sccache'\n\nother:\n    cargo build\n";
   if (sccacheHasIncrementalZero(badSccacheNoIncremental)) {
     return {
       name,
       pass: false,
       detail:
-        'proof-of-teeth #4: sccacheHasIncrementalZero failed to reject justfile with sccache but no CARGO_INCREMENTAL=0',
+        'proof-of-teeth #4: sccacheHasIncrementalZero failed to reject cache-on with sccache but no CARGO_INCREMENTAL=0',
     };
   }
-  // Teeth 4b: must reject justfile with CARGO_INCREMENTAL=0 but no sccache
-  const badIncrementalNoSccache = 'env:\n  CARGO_INCREMENTAL=0\n';
-  if (sccacheHasIncrementalZero(badIncrementalNoSccache)) {
+  // Teeth 4b: must pass a justfile with no sccache at all (non-sccache setup).
+  const noSccacheJustfile =
+    'test:\n    cargo nextest run --workspace\n    cargo test --doc --workspace\n';
+  if (!sccacheHasIncrementalZero(noSccacheJustfile)) {
     return {
       name,
       pass: false,
       detail:
-        'proof-of-teeth #4b: sccacheHasIncrementalZero failed to reject justfile with CARGO_INCREMENTAL=0 but no sccache',
+        'proof-of-teeth #4b: sccacheHasIncrementalZero wrongly rejected a legitimate non-sccache justfile',
+    };
+  }
+  // Teeth 4c: cross-recipe bad fixture — CARGO_INCREMENTAL=0 in a DIFFERENT
+  // recipe than the cache-on sccache. The OLD whole-file check wrongly PASSED
+  // this; the NEW co-location-aware check MUST reject it.
+  const crossRecipeBad =
+    "other-recipe:\n    export CARGO_INCREMENTAL=0\n\ncache-on:\n    @echo 'export RUSTC_WRAPPER=sccache'\n";
+  if (sccacheHasIncrementalZero(crossRecipeBad)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'proof-of-teeth #4c: sccacheHasIncrementalZero failed to reject justfile where ' +
+        'CARGO_INCREMENTAL=0 is in a different recipe than the cache-on sccache setting ' +
+        '(cross-recipe bad fixture — old whole-file check would have wrongly passed this)',
+    };
+  }
+  // Teeth 4d: comment-bypass — CARGO_INCREMENTAL=0 in a comment inside cache-on
+  // must NOT satisfy the requirement.
+  const commentBypassBad =
+    "cache-on:\n    @echo 'export RUSTC_WRAPPER=sccache'\n    # export CARGO_INCREMENTAL=0\n";
+  if (sccacheHasIncrementalZero(commentBypassBad)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'proof-of-teeth #4d: sccacheHasIncrementalZero accepted a commented-out CARGO_INCREMENTAL=0 — comment-stripping must exclude comment lines',
     };
   }
 

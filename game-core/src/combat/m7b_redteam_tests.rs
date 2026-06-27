@@ -149,6 +149,7 @@ fn m7b_1_double_battle_double_xp_arithmetic() {
 // ===========================================================================
 
 #[test]
+#[ignore = "spec gap: owner-change-mid-battle write-back unspecified; no trade reducer until M11+"]
 fn m7b_2_owner_change_mid_battle_spec_gap() {
     // Prove that the plan's write-back logic has an unresolved edge case.
     // We prove it with a comment-test (specification anchor) because the
@@ -165,15 +166,15 @@ fn m7b_2_owner_change_mid_battle_spec_gap() {
     //   "If any party monster's owner_identity no longer matches ctx.sender at
     //    write-back time, abort the entire write-back with Err and leave the
     //    battle row with its current outcome (do not re-use it)."
-
-    // This test anchors the spec gap — it passes as documentation:
-    let plan_specifies_transferred_monster_behavior = false;
-    assert!(
-        !plan_specifies_transferred_monster_behavior,
-        "M7b-2 SPEC GAP: The plan does not define what happens when a monster's \
-         owner changes between battle start and HP write-back. \
-         Add: if any party_monster_ids[i].owner_identity != ctx.sender at \
-         write-back time, abort write-back with Err."
+    //
+    // Un-ignore this test when: (a) a trade/transfer reducer lands (M11+) AND
+    // (b) the write-back spec explicitly defines the abort-on-owner-change contract.
+    // Until then this test MUST stay red when run, confirming the gap is open.
+    panic!(
+        "M7b-2 SPEC GAP (OPEN): owner-change-mid-battle write-back behaviour is \
+         unspecified. No trade reducer exists until M11+. \
+         When un-ignored this test must remain RED until the spec is closed and \
+         the server-module write_back_party_hp enforces the abort-on-owner-change contract."
     );
 }
 
@@ -682,12 +683,10 @@ fn m7b_9_all_fainted_party_gives_degenerate_battle_state() {
 
 #[test]
 fn m7b_9b_duplicate_monster_id_in_party_spec_gap() {
-    // Document the spec gap: the plan does not say start_battle checks for
-    // duplicate monster_ids in party_monster_ids.
-    // If monster_id=42 appears twice, the HP write-back writes the final HP
-    // twice (second write overwrites first). This is harmless for HP but
-    // creates a degenerate BattleState where team[0] and team[1] are copies
-    // of the same monster — winning with one grants XP twice.
+    // Gap CLOSED: dedup is now enforced in server-module `start_battle` via a
+    // HashSet rejection (~lib.rs:1180-1194). Covered by the server-module reducer
+    // tests. This test retains the BattleSide shape assertions that document the
+    // degenerate state a duplicate would create at the game-core level.
 
     let monster_a = make_battle_monster(100, 50);
     let monster_b = monster_a.clone(); // exact duplicate (same stats, different slot)
@@ -697,17 +696,16 @@ fn m7b_9b_duplicate_monster_id_in_party_spec_gap() {
         team: vec![monster_a, monster_b],
     };
 
-    // Prove the side looks valid (both copies are alive).
-    assert!(side.has_conscious_member());
-    assert_eq!(side.team.len(), 2);
-
-    // The spec gap: if these two slots map to the SAME monster_id in the DB,
-    // XP write-back runs apply_xp_gain twice on the same monster.
-    let is_spec_gap_documented = true;
+    // Both cloned slots appear alive — this is the degenerate state the
+    // server-side HashSet guard prevents from ever reaching the DB.
     assert!(
-        is_spec_gap_documented,
-        "M7b-9b SPEC GAP: start_battle must validate that party_monster_ids \
-         contains no duplicates. A duplicate monster_id causes double XP write-back."
+        side.has_conscious_member(),
+        "m7b_9b: a duplicate-slot side still has a conscious member (shape check)"
+    );
+    assert_eq!(
+        side.team.len(),
+        2,
+        "m7b_9b: duplicate-slot side has two team entries (shape check)"
     );
 }
 
@@ -735,30 +733,15 @@ fn m7b_9b_duplicate_monster_id_in_party_spec_gap() {
 // that it is schema-stable."
 // ===========================================================================
 
-#[test]
-fn m7b_10_non_exhaustive_plus_spacetimetype_compatibility_spec_gap() {
-    // This is a specification anchor test — it always passes, documenting
-    // the design gap.
-    //
-    // BattleEvent is #[non_exhaustive] + will get SpacetimeType.
-    // SpacetimeType generates a fixed numeric tag per variant.
-    // Adding a new variant in M14 changes the tag space.
-    // Old clients deserializing a new variant tag will panic.
-    //
-    // The plan claims: "Risk: #[non_exhaustive] on BattleEvent."
-    // The ACTUAL risk is: SpacetimeType + non_exhaustive = wire-format breakage.
-    //
-    // Mitigation: Do NOT add SpacetimeType to BattleEvent. Keep BattleEvent
-    // as a transient return value from resolve_turn, never stored in DB.
-
-    let is_documented = true;
-    assert!(
-        is_documented,
-        "M7b-10 SPEC GAP: BattleEvent with both #[non_exhaustive] and SpacetimeType \
-         is wire-format-unsafe. New variants break old clients. Do not derive \
-         SpacetimeType on BattleEvent. Keep it transient (resolver return value only)."
-    );
-}
+// gap closed (type-level): BattleEvent does NOT derive SpacetimeType.
+// The enforced invariant lives at game-core/src/combat/types.rs:121:
+//   "DO NOT add SpacetimeType here — BattleEvent is transient (resolver return
+//    value only, never stored in a table). Adding it would make new variants a
+//    breaking wire-format change for old clients. See ADR-0042."
+// No runtime assertion is possible for a compile-time derivation absence;
+// the type definition is the enforcement. If SpacetimeType is ever added to
+// BattleEvent, the types.rs comment and ADR-0042 will both contradict it.
+// fn m7b_10_non_exhaustive_plus_spacetimetype_compatibility_spec_gap — removed (tautology)
 
 // ===========================================================================
 // FINDING M7b-11 (MEDIUM): XP reward formula uses loser's base_stat_total,
