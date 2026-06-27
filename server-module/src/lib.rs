@@ -2939,10 +2939,9 @@ mod tests {
     }
 
     // =========================================================================
-    // M8.5a gating tests — Battle security & integrity (§3 criteria)
+    // M8.5a tests — Battle security & integrity (§3 criteria)
     //
-    // These tests gate TWO pure helper functions the implementer will add to
-    // server-module/src/lib.rs and call from start_battle / write_back_*:
+    // Tests three pure helper functions called from start_battle / write_back_*:
     //
     //   fn check_party_size(n: usize) -> Result<(), String>
     //     Ok for 1..=MAX_PARTY_SIZE, Err when n == 0 or n > MAX_PARTY_SIZE.
@@ -2953,11 +2952,12 @@ mod tests {
     //     (§3 criterion 3: write_back_battle_results asserts side_a.team.len() ==
     //      party_monster_ids.len() and uses checked get(i), returning Err not panic)
     //
-    // NONE of these functions touch ReducerContext — they are pure validators
-    // that can be tested without a SpacetimeDB runtime.
+    //   fn check_monster_in_party(slot: u8) -> Result<(), String>
+    //     Err iff slot == PARTY_SLOT_NONE, Ok otherwise.
+    //     (§3 criterion 2: start_battle rejects any boxed monster)
     //
-    // The helpers do NOT exist yet → this block is RED (won't compile until
-    // the implementer adds them). That is the intended TDD red state.
+    // None of these functions touch ReducerContext — they are pure validators
+    // that can be tested without a SpacetimeDB runtime.
     // =========================================================================
 
     // -------------------------------------------------------------------------
@@ -2978,7 +2978,6 @@ mod tests {
     /// bound; `1..=MAX_PARTY_SIZE` is the valid range).
     #[test]
     fn party_size_cap_rejects_empty() {
-        // check_party_size does not exist yet — this test is RED.
         assert!(
             check_party_size(0).is_err(),
             "check_party_size(0) must be Err (empty party is not valid; range is 1..=MAX_PARTY_SIZE)"
@@ -2989,7 +2988,6 @@ mod tests {
     /// Kills: an impl that rejects any n < 2 (fencepost).
     #[test]
     fn party_size_cap_accepts_minimum() {
-        // check_party_size does not exist yet — this test is RED.
         assert!(
             check_party_size(1).is_ok(),
             "check_party_size(1) must be Ok (minimum valid party of 1)"
@@ -3046,7 +3044,6 @@ mod tests {
     /// Kills: an impl that always returns Err.
     #[test]
     fn team_coupling_accepts_equal_lengths() {
-        // check_team_coupling does not exist yet — this test is RED.
         assert!(
             check_team_coupling(3, 3).is_ok(),
             "check_team_coupling(3, 3) must be Ok (lengths match)"
@@ -3115,15 +3112,12 @@ mod tests {
     //        treats PARTY_SLOT_NONE as a normal slot index (off-by-one on
     //        the sentinel); an impl that rejects ALL non-zero slots
     //        (would block valid party positions 1..MAX_PARTY_SIZE-1).
-    //
-    // The helpers do NOT exist yet → this block is RED.
     // -------------------------------------------------------------------------
 
     /// §3-criterion-2 (boxed): slot 0 is a valid party position; must be Ok.
     /// Kills: an impl that rejects slot 0 (confuses the first slot with empty).
     #[test]
     fn check_monster_in_party_accepts_first_slot() {
-        // check_monster_in_party does not exist yet — this test is RED.
         assert!(
             check_monster_in_party(0).is_ok(),
             "check_monster_in_party(0) must be Ok (slot 0 is a valid party position)"

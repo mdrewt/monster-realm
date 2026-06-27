@@ -90,23 +90,49 @@ export function hasOutcomeCheck(body) {
 // ---------------------------------------------------------------------------
 // NEW (M8.5a): Check that a start_battle body gates on opponent provenance.
 //
-// Returns true IFF the body compares `opponent_identity` against a sender or
-// sentinel token (me, ctx.sender, or WILD_IDENTITY) using == or !=.
+// Returns true IFF the body contains a provenance comparison of
+// `opponent_identity` against a sender/sentinel token (me, ctx.sender, or
+// WILD_IDENTITY) that appears in a CONDITIONAL context — inside an `if`,
+// or joined by `&&` / `||`.  A bare `let _ = opponent_identity != me;` or
+// `assert!(opponent_identity != me);` (dead code) does NOT satisfy this
+// because neither is preceded by `if`/`&&`/`||`.
 //
 // Implemented with literal regexes only (NO new RegExp — Semgrep
-// detect-non-literal-regexp has bitten 3×). A self-comparison like
-// `opponent_identity == opponent_identity` does NOT satisfy this check
-// because the RHS patterns only match me/ctx.sender/WILD_IDENTITY.
+// detect-non-literal-regexp has bitten 3×).
+//
+// Accepted patterns (LHS-first, all three conditional prefixes):
+//   if opponent_identity (==|!=) me/ctx.sender/WILD_IDENTITY
+//   && opponent_identity (==|!=) me/ctx.sender/WILD_IDENTITY
+//   || opponent_identity (==|!=) me/ctx.sender/WILD_IDENTITY
+//   (and reversed-operand forms with same three prefixes)
+//
+// The real implemented gate is:
+//   if opponent_identity != me && opponent_identity != WILD_IDENTITY { ... }
+// — line 1 matches the `if` LHS-form; line 2 matches the `&&` LHS-form.
 // ---------------------------------------------------------------------------
 export function hasOpponentProvenanceGate(body) {
   const code = stripRustComments(body);
+  // LHS-first forms: (if|&&|||) opponent_identity (==|!=) SENTINEL
   return (
-    /opponent_identity\s*(==|!=)\s*me\b/.test(code) ||
-    /opponent_identity\s*(==|!=)\s*ctx\.sender/.test(code) ||
-    /opponent_identity\s*(==|!=)\s*WILD_IDENTITY/.test(code) ||
-    /me\s*(==|!=)\s*opponent_identity/.test(code) ||
-    /ctx\.sender\s*(==|!=)\s*opponent_identity/.test(code) ||
-    /WILD_IDENTITY\s*(==|!=)\s*opponent_identity/.test(code)
+    /if\s+opponent_identity\s*(==|!=)\s*me\b/.test(code) ||
+    /if\s+opponent_identity\s*(==|!=)\s*ctx\.sender/.test(code) ||
+    /if\s+opponent_identity\s*(==|!=)\s*WILD_IDENTITY/.test(code) ||
+    /&&\s*opponent_identity\s*(==|!=)\s*me\b/.test(code) ||
+    /&&\s*opponent_identity\s*(==|!=)\s*ctx\.sender/.test(code) ||
+    /&&\s*opponent_identity\s*(==|!=)\s*WILD_IDENTITY/.test(code) ||
+    /\|\|\s*opponent_identity\s*(==|!=)\s*me\b/.test(code) ||
+    /\|\|\s*opponent_identity\s*(==|!=)\s*ctx\.sender/.test(code) ||
+    /\|\|\s*opponent_identity\s*(==|!=)\s*WILD_IDENTITY/.test(code) ||
+    // Reversed-operand forms: (if|&&|||) SENTINEL (==|!=) opponent_identity
+    /if\s+me\s*(==|!=)\s*opponent_identity/.test(code) ||
+    /if\s+ctx\.sender\s*(==|!=)\s*opponent_identity/.test(code) ||
+    /if\s+WILD_IDENTITY\s*(==|!=)\s*opponent_identity/.test(code) ||
+    /&&\s*me\s*(==|!=)\s*opponent_identity/.test(code) ||
+    /&&\s*ctx\.sender\s*(==|!=)\s*opponent_identity/.test(code) ||
+    /&&\s*WILD_IDENTITY\s*(==|!=)\s*opponent_identity/.test(code) ||
+    /\|\|\s*me\s*(==|!=)\s*opponent_identity/.test(code) ||
+    /\|\|\s*ctx\.sender\s*(==|!=)\s*opponent_identity/.test(code) ||
+    /\|\|\s*WILD_IDENTITY\s*(==|!=)\s*opponent_identity/.test(code)
   );
 }
 
@@ -421,6 +447,48 @@ export default async function () {
   }
 
   // -------------------------------------------------------------------------
+  // Fixture 7b (M8.5a HARDENED — provenance DEAD-CODE bypass): a body that
+  // compares `opponent_identity != me` but only as a dead let-binding, never
+  // inside an `if`/`&&`/`||` conditional.  The pre-hardening checker accepted
+  // this as a valid gate; the hardened checker must return false.
+  //
+  // Kills: the old bare-comparison checker that only required `opponent_identity
+  // (==|!=) me` anywhere in the body without a conditional prefix.
+  // -------------------------------------------------------------------------
+  const provenanceDeadCodeBody = `
+    pub fn start_battle(
+        ctx: &ReducerContext,
+        opponent_identity: Identity,
+        party_monster_ids: Vec<u64>,
+        opponent_monster_ids: Vec<u64>,
+    ) -> Result<(), String> {
+        let me = ctx.sender;
+        // Dead-code comparison — result is immediately discarded, no rejection.
+        let _ = opponent_identity != me;
+        Ok(())
+    }
+  `;
+  const provenanceDeadCode = extractReducerBody(provenanceDeadCodeBody, 'start_battle');
+  if (!provenanceDeadCode) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED: could not extract start_battle body from dead-code fixture (parser bug)',
+    };
+  }
+  if (hasOpponentProvenanceGate(provenanceDeadCode)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED: provenance checker accepted a dead-code bypass ' +
+        '(`let _ = opponent_identity != me;` with no if/&&/||) as a valid gate — ' +
+        'comparison must appear in a conditional context',
+    };
+  }
+
+  // -------------------------------------------------------------------------
   // Fixture 8 (M8.5a NEW — side-B BAD): a fake write-back body that touches
   // side_b.  writeBackTouchesSideB must return true.
   //
@@ -541,9 +609,8 @@ export default async function () {
   }
 
   // -------------------------------------------------------------------------
-  // M8.5a ADDITION: start_battle must have an opponent-provenance gate.
-  // This check is RED against the current source (no gate exists) and only
-  // turns GREEN once the implementer adds the inline guard.
+  // M8.5a ADDITION: start_battle must have an opponent-provenance gate in a
+  // conditional context (if/&&/||) — not just a dead-code comparison.
   // -------------------------------------------------------------------------
   const startBattleBody = extractReducerBody(src, 'start_battle');
   if (startBattleBody !== null) {
@@ -583,7 +650,7 @@ export default async function () {
     detail:
       `all ${ALL_REDUCERS.length} battle reducers found with ownership checks; ` +
       `outcome guards present in ${OUTCOME_CHECKED_REDUCERS.join(', ')}; ` +
-      `start_battle has opponent-provenance gate; write_back helpers are side_a-only ` +
-      `(teeth verified via 9 fixtures)`,
+      `start_battle has opponent-provenance gate (conditional context, hardened against dead-code bypass); ` +
+      `write_back helpers are side_a-only (teeth verified via 10 fixtures)`,
   };
 }
