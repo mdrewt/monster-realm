@@ -236,7 +236,23 @@ pub fn validate_encounters(
                 table.encounter_rate, table.zone_id
             ));
         }
+        // `encounter_rate == 0` is intentionally valid (a defined-but-never-
+        // triggering "safe" zone): non-empty entries with rate 0 are allowed.
+        // M8c's trigger rolls the rate first, so a 0-rate zone simply never fires.
+        if table.entries.is_empty() {
+            return Err(format!(
+                "encounter table for zone {} has no entries",
+                table.zone_id
+            ));
+        }
+        let mut seen_species = std::collections::BTreeSet::new();
         for entry in &table.entries {
+            if !seen_species.insert(entry.species_id) {
+                return Err(format!(
+                    "duplicate encounter species {} within zone {}",
+                    entry.species_id, table.zone_id
+                ));
+            }
             if entry.weight == 0 {
                 return Err(format!(
                     "encounter entry for species {} in zone {} has weight=0",
@@ -445,16 +461,6 @@ mod tests {
         }
     }
 
-    #[allow(dead_code)]
-    fn fixture_item(id: u32) -> ItemDef {
-        ItemDef {
-            id,
-            name: format!("Item{id}"),
-            description: format!("Description for item {id}"),
-            recruit_bonus: 0,
-        }
-    }
-
     // -----------------------------------------------------------------------
     // #55: Embedded species parse OK
     // -----------------------------------------------------------------------
@@ -487,6 +493,18 @@ mod tests {
     fn embedded_items_parse_and_validate() {
         let items = load_items().expect("embedded items must parse");
         assert!(items.is_empty() || !items.is_empty());
+    }
+
+    /// Embedded encounter registry parses and validates end-to-end against the
+    /// embedded species + zones (parity with the other embedded-registry smoke
+    /// tests; catches a bad `encounters.ron` in game-core's own suite).
+    #[test]
+    fn embedded_encounters_parse_and_validate() {
+        let encounters = load_encounters().expect("embedded encounters must parse");
+        let species = load_species().expect("species parse");
+        let zones = load_zones().expect("zones parse");
+        validate_encounters(&encounters, &species, &zones)
+            .expect("embedded encounters must be valid");
     }
 
     /// #59: validate_content succeeds for all embedded data together.

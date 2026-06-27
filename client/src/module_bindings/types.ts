@@ -124,6 +124,23 @@ export const Direction = __t.enum("Direction", {
 });
 export type Direction = __Infer<typeof Direction>;
 
+export const EncounterEntryRow = __t.object("EncounterEntryRow", {
+  speciesId: __t.u32(),
+  weight: __t.u16(),
+  minLevel: __t.u8(),
+  maxLevel: __t.u8(),
+});
+export type EncounterEntryRow = __Infer<typeof EncounterEntryRow>;
+
+export const EncounterRow = __t.object("EncounterRow", {
+  zoneId: __t.u32(),
+  encounterRate: __t.u16(),
+  get entries() {
+    return __t.array(EncounterEntryRow);
+  },
+});
+export type EncounterRow = __Infer<typeof EncounterRow>;
+
 export const ItemRow = __t.object("ItemRow", {
   id: __t.u32(),
   name: __t.string(),

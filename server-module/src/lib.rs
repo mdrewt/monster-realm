@@ -8,11 +8,12 @@
 //! Time columns are `i64` ms (round-trip `game_core::Millis`). Syntax: crate 1.12.
 
 use game_core::{
-    apply_move, apply_xp_gain, battle_xp_reward, load_items, load_skills, load_species,
-    load_type_chart, resolve_turn, roll_starter, spawn, validate_content, zone_0, ActionState,
-    Affinity, BattleMonster, BattleOutcome, BattleSide, BattleState, CharacterState, Direction,
-    Millis, MonsterInstance, MoveInput, NatureKind, SkillDef, StatBlock, StatKind, TileMap,
-    TilePos, TurnChoice, TurnVariance, TypeChart, MOVE_QUEUE_CAP, STEP_MS,
+    apply_move, apply_xp_gain, battle_xp_reward, load_encounters, load_items, load_skills,
+    load_species, load_type_chart, resolve_turn, roll_starter, spawn, validate_content,
+    validate_encounters, zone_0, ActionState, Affinity, BattleMonster, BattleOutcome, BattleSide,
+    BattleState, CharacterState, Direction, Millis, MonsterInstance, MoveInput, NatureKind,
+    SkillDef, StatBlock, StatKind, TileMap, TilePos, TurnChoice, TurnVariance, TypeChart,
+    MOVE_QUEUE_CAP, STEP_MS,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
@@ -134,6 +135,29 @@ pub struct ItemRow {
     pub id: u32,
     pub name: String,
     pub description: String,
+}
+
+// --- Encounter table (M8b, ADR-0040 second visibility mode: must-never-leak) ----
+
+/// Server-local marshaled encounter entry — flatten-at-boundary (`Level` -> `u8`,
+/// the same pattern as `Millis` -> `i64`). Lives inside the private `EncounterRow`.
+#[derive(spacetimedb::SpacetimeType, Clone, Debug, PartialEq, Eq)]
+pub struct EncounterEntryRow {
+    pub species_id: u32,
+    pub weight: u16,
+    pub min_level: u8,
+    pub max_level: u8,
+}
+
+/// PRIVATE encounter table (no `public`). Spawn weights/level bands are
+/// server-only truth that must NEVER reach any client — there is no public
+/// projection and no RLS filter (ADR-0040: the second visibility mode).
+#[spacetimedb::table(name = encounter)]
+pub struct EncounterRow {
+    #[primary_key]
+    pub zone_id: u32,
+    pub encounter_rate: u16,
+    pub entries: Vec<EncounterEntryRow>,
 }
 
 // --- Monster tables (M6b, ADR-0015 fallback: split private + public projection) --
@@ -321,6 +345,25 @@ fn monster_from_instance(owner: Identity, inst: &MonsterInstance, party_slot: u8
     }
 }
 
+// `convert` seam: flatten `game-core::EncounterTable` -> private `EncounterRow`.
+// No `ctx` — pure marshaling. `Level` flattens to `u8` (like `Millis` -> `i64`).
+fn encounter_rows_from_table(table: &game_core::EncounterTable) -> EncounterRow {
+    EncounterRow {
+        zone_id: table.zone_id,
+        encounter_rate: table.encounter_rate,
+        entries: table
+            .entries
+            .iter()
+            .map(|e| EncounterEntryRow {
+                species_id: e.species_id,
+                weight: e.weight,
+                min_level: e.min_level.as_u8(),
+                max_level: e.max_level.as_u8(),
+            })
+            .collect(),
+    }
+}
+
 /// Derive the public projection from a private monster row. No hidden fields.
 fn pub_from_monster(m: &Monster) -> MonsterPub {
     MonsterPub {
@@ -374,7 +417,8 @@ fn write_back_hp(monster: &mut Monster, bm: &BattleMonster) {
 }
 
 /// Sum the six base stats of a species (for the XP formula).
-/// Returns u32 to avoid overflow when base stats are stored as u16.
+/// Returns `u16`: `validate_content` caps each base stat at 255, so the
+/// six-stat sum is at most 1530 and always fits (see the note below).
 fn loser_base_stat_total(species: &SpeciesRow) -> u16 {
     // Each base stat is validated <= 255 by validate_content, so the sum fits u16.
     // If the validation range ever widens, widen this return type to u32.
@@ -556,6 +600,33 @@ fn sync_content_inner(ctx: &ReducerContext) {
             }
             None => {
                 ctx.db.item_row().insert(row);
+            }
+        }
+    }
+
+    // --- M8b encounter tables (PRIVATE; ADR-0040 must-never-leak) ---
+    // Validate BEFORE any write so a bad registry never wipes/partially seeds.
+    let encounters = match load_encounters() {
+        Ok(e) => e,
+        Err(e) => {
+            log::error!(
+                "{{\"evt\":\"sync_content_error\",\"registry\":\"encounters\",\"reason\":\"{e}\"}}"
+            );
+            return;
+        }
+    };
+    if let Err(e) = validate_encounters(&encounters, &species, &zones) {
+        log::error!("{{\"evt\":\"sync_content_invalid\",\"reason\":\"{e}\"}}");
+        return;
+    }
+    for table in &encounters {
+        let row = encounter_rows_from_table(table);
+        match ctx.db.encounter().zone_id().find(table.zone_id) {
+            Some(_) => {
+                ctx.db.encounter().zone_id().update(row);
+            }
+            None => {
+                ctx.db.encounter().insert(row);
             }
         }
     }
@@ -1782,6 +1853,231 @@ mod tests {
         assert_eq!(
             bst, 1530,
             "loser_base_stat_total must not overflow u8; 255*6=1530, got {bst}"
+        );
+    }
+
+    // =========================================================================
+    // M8b gating tests — encounter_rows_from_table marshaling seam
+    //
+    // These tests gate the pure function `encounter_rows_from_table` that the
+    // implementer will add to server-module/src/lib.rs. The function does NOT
+    // exist yet — this entire block is RED (crate won't compile until added).
+    //
+    // Mirror: monster_from_instance_flattens_correctly (lib.rs ~1359).
+    // Flatten-at-boundary: Level -> u8 (same pattern as Millis -> i64).
+    //
+    // Symbols referenced (not yet defined — intentionally RED):
+    //   encounter_rows_from_table(&game_core::EncounterTable) -> EncounterRow
+    //   struct EncounterRow { zone_id: u32, encounter_rate: u16, entries: Vec<EncounterEntryRow> }
+    //   struct EncounterEntryRow { species_id: u32, weight: u16, min_level: u8, max_level: u8 }
+    // =========================================================================
+
+    // -------------------------------------------------------------------------
+    // Fixture builder for M8b marshaling tests
+    // -------------------------------------------------------------------------
+
+    fn m8b_test_encounter_table() -> game_core::EncounterTable {
+        game_core::EncounterTable {
+            zone_id: 42,
+            encounter_rate: 350,
+            entries: vec![
+                game_core::EncounterEntry {
+                    species_id: 1,
+                    weight: 60,
+                    min_level: game_core::Level::new(3).expect("valid level"),
+                    max_level: game_core::Level::new(7).expect("valid level"),
+                },
+                game_core::EncounterEntry {
+                    species_id: 2,
+                    weight: 30,
+                    min_level: game_core::Level::new(5).expect("valid level"),
+                    max_level: game_core::Level::new(10).expect("valid level"),
+                },
+                game_core::EncounterEntry {
+                    species_id: 3,
+                    weight: 10,
+                    min_level: game_core::Level::new(8).expect("valid level"),
+                    max_level: game_core::Level::new(15).expect("valid level"),
+                },
+            ],
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // TEST M8b-SM-1: encounter_rows_from_table flattens correctly
+    //
+    // Kills: min/max swap; Level-not-flattened (storing a newtypes struct instead
+    // of u8); wrong zone_id or encounter_rate copied; entry count wrong.
+    // -------------------------------------------------------------------------
+
+    /// encounter_rows_from_table must flatten a game_core::EncounterTable into
+    /// an EncounterRow with the correct zone_id, encounter_rate, entry count,
+    /// and correct per-entry species_id/weight/min_level/max_level (as u8).
+    ///
+    /// Kills: an impl that swaps min_level/max_level columns,
+    ///        stores Level newtype instead of u8,
+    ///        or copies the wrong zone_id.
+    #[test]
+    fn encounter_rows_from_table_flattens_correctly() {
+        let table = m8b_test_encounter_table();
+
+        // encounter_rows_from_table does not exist yet — this test is RED.
+        let row: EncounterRow = encounter_rows_from_table(&table);
+
+        // Top-level fields
+        assert_eq!(row.zone_id, 42, "zone_id must be copied from table.zone_id");
+        assert_eq!(
+            row.encounter_rate, 350,
+            "encounter_rate must be copied from table.encounter_rate"
+        );
+        assert_eq!(
+            row.entries.len(),
+            3,
+            "entries.len() must equal source table entries count (3)"
+        );
+
+        // Entry 0: species=1, weight=60, min=3, max=7
+        assert_eq!(
+            row.entries[0].species_id, 1,
+            "entries[0].species_id must be 1"
+        );
+        assert_eq!(row.entries[0].weight, 60, "entries[0].weight must be 60");
+        assert_eq!(
+            row.entries[0].min_level, 3,
+            "entries[0].min_level must be 3 (Level flattened to u8)"
+        );
+        assert_eq!(
+            row.entries[0].max_level, 7,
+            "entries[0].max_level must be 7 (Level flattened to u8)"
+        );
+
+        // Entry 1: species=2, weight=30, min=5, max=10
+        assert_eq!(
+            row.entries[1].species_id, 2,
+            "entries[1].species_id must be 2"
+        );
+        assert_eq!(row.entries[1].weight, 30, "entries[1].weight must be 30");
+        assert_eq!(
+            row.entries[1].min_level, 5,
+            "entries[1].min_level must be 5"
+        );
+        assert_eq!(
+            row.entries[1].max_level, 10,
+            "entries[1].max_level must be 10"
+        );
+
+        // Entry 2: species=3, weight=10, min=8, max=15
+        assert_eq!(
+            row.entries[2].species_id, 3,
+            "entries[2].species_id must be 3"
+        );
+        assert_eq!(row.entries[2].weight, 10, "entries[2].weight must be 10");
+        assert_eq!(
+            row.entries[2].min_level, 8,
+            "entries[2].min_level must be 8"
+        );
+        assert_eq!(
+            row.entries[2].max_level, 15,
+            "entries[2].max_level must be 15"
+        );
+    }
+
+    /// ORDER PRESERVATION: entry[i] in the source maps to entries[i] in the row.
+    /// Kills: an impl that reverses or re-sorts entries.
+    #[test]
+    fn encounter_rows_from_table_preserves_entry_order() {
+        let table = m8b_test_encounter_table();
+        let row: EncounterRow = encounter_rows_from_table(&table);
+
+        // The species_ids in insertion order are [1, 2, 3] — verify the row
+        // preserves this order exactly.
+        let species_order: Vec<u32> = row.entries.iter().map(|e| e.species_id).collect();
+        assert_eq!(
+            species_order,
+            vec![1u32, 2, 3],
+            "entry order must be preserved: [1,2,3] → kills any sorting/reversing impl"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // TEST M8b-SM-2: distinct min/max levels are preserved (not swapped, not const)
+    //
+    // Kills: an impl that writes min into max (or vice-versa), or uses a single
+    // constant level for all entries.
+    // -------------------------------------------------------------------------
+
+    /// Each entry in the fixture has DISTINCT min and max levels (min != max,
+    /// and all three entries have different min/max pairs). This test verifies
+    /// that both fields are individually correct, killing a mutant that copies
+    /// min into max or uses a constant.
+    ///
+    /// Kills: min-into-max copy; max-into-min copy; const(1) for all levels.
+    #[test]
+    fn encounter_rows_from_table_preserves_distinct_levels() {
+        let table = m8b_test_encounter_table();
+        let row: EncounterRow = encounter_rows_from_table(&table);
+
+        // All three entries have distinct min ≠ max — ensures neither field is
+        // aliased to the other.
+        for (i, entry) in row.entries.iter().enumerate() {
+            assert_ne!(
+                entry.min_level, entry.max_level,
+                "entries[{i}]: min_level ({}) must differ from max_level ({}) — \
+                 kills any impl that copies one field into the other",
+                entry.min_level, entry.max_level
+            );
+        }
+
+        // Verify the actual u8 values of all six level fields are distinct enough
+        // to catch a constant-level impl (e.g., always writing 1).
+        // min levels: 3, 5, 8 — all different
+        let min_levels: Vec<u8> = row.entries.iter().map(|e| e.min_level).collect();
+        assert_eq!(
+            min_levels,
+            vec![3u8, 5, 8],
+            "min_levels across entries must be [3,5,8] — kills const-level impl"
+        );
+
+        // max levels: 7, 10, 15 — all different
+        let max_levels: Vec<u8> = row.entries.iter().map(|e| e.max_level).collect();
+        assert_eq!(
+            max_levels,
+            vec![7u8, 10, 15],
+            "max_levels across entries must be [7,10,15] — kills const-level impl"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // TEST M8b-SM-3: empty entries → empty row entries, no panic
+    //
+    // B1 validation prevents empty tables from reaching sync_content_inner, but
+    // encounter_rows_from_table must be total (no panic on empty input).
+    // -------------------------------------------------------------------------
+
+    /// encounter_rows_from_table with empty entries must produce a row with
+    /// entries.is_empty() == true and must not panic.
+    ///
+    /// Kills: any impl that indexes entries[0] unconditionally.
+    #[test]
+    fn encounter_rows_from_table_empty_entries() {
+        let table = game_core::EncounterTable {
+            zone_id: 99,
+            encounter_rate: 100,
+            entries: vec![],
+        };
+
+        // Must not panic — B1 blocks empties before seeding, but the helper
+        // must be total regardless.
+        let row: EncounterRow = encounter_rows_from_table(&table);
+
+        assert_eq!(row.zone_id, 99, "zone_id preserved for empty-entries table");
+        assert_eq!(
+            row.encounter_rate, 100,
+            "encounter_rate preserved for empty-entries table"
+        );
+        assert!(
+            row.entries.is_empty(),
+            "empty source entries → empty row entries (no panic)"
         );
     }
 }

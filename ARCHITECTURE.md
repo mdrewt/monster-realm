@@ -63,7 +63,8 @@ netcode-determinism, zoned-schema (every world table carries an indexed
 (committed bindings == fresh `spacetime generate`, ADR-0009), **monster-privacy**
 (private monster table, clean public projection, no client accessor — ADR-0040),
 **box-view-privacy** (StoreMonsterPub interface contains no hidden IV/EV/nature
-fields — ADR-0015).
+fields — ADR-0015), **encounter-privacy** (private encounter table, no projection,
+no client accessor, spawn weights never leak — ADR-0044).
 **Cache-freshness** (M-infra-a, ADR-0043): no shared `CARGO_TARGET_DIR`, `rust-cache`
 wired without `cache-all-crates`, distinct per-job `prefix-key`, sccache +
 `CARGO_INCREMENTAL=0` co-located, no committed `.cargo` rustc-wrapper, nextest +
@@ -232,6 +233,36 @@ teeth fixtures (bad encounter_rate > 1000, weight == 0, min > max level,
 dangling species, dangling zone). 2 proptest suites (bounded output, monotone
 HP-bonus). All green.
 
+## Encounter server integration (`server-module`, M8b — ADR-0040/0044)
+
+Private encounter table seeding with spawn-data privacy guarantee and B1
+validation hardening. No projection (clients have zero need to read encounter
+data).
+
+- **Private encounter table (ADR-0044):** `encounter` (no `public` attribute,
+  keyed by `zone_id`). Stores one `encounter_rate` per zone (not denormalized
+  per entry) + a `Vec<EncounterEntryRow>` vector. Field types flatten-at-boundary:
+  `Level` newtype serialized as `u8` (validated at deserialization, invalid codec
+  cannot bypass invariants). Codegen emits structural type to `types.ts` (schema
+  metadata, not row data); no table accessor, no subscription path. The cheat-
+  surface values (per-zone weights/rates) never reach a client. Evaluated by
+  `encounter-privacy` proof-of-teeth (6 teeth).
+
+- **Content seeding via validate-before-write upsert:**
+  - `sync_content_inner` parses `encounters.ron` via pure loader `load_encounters()`.
+  - Validates via `validate_encounters()` (from M8a): unique zones, zone exists,
+    rate ≤ 1000, weight > 0, min ≤ max level, species exists.
+  - **B1 hardening:** reject empty `entries` vector; reject duplicate
+    `species_id` within a zone.
+  - Upsert by `zone_id` (no auto_inc, no clear-and-reinsert). Idempotent,
+    consistent. Known residuals: stale-zone rows (same as other content tables),
+    partial-sync window (cross-registry pattern; M8c trigger validates at runtime
+    if needed), schema-shape leak (bindings-drift eval is defense-in-depth).
+
+- **Marshaling helper:** `encounter_rows_from_table` (pure, flattens RON-parsed
+  `EncounterTable` → `EncounterRow` for server-side storage). Thin wrapper, no
+  embedded rules.
+
 ## Status
 
 Phase A spine: M0 (foundation + gates + presence walking skeleton, e2e green),
@@ -271,7 +302,12 @@ auto-hide box during battle, heal_party button in box view — 57 new client tes
 green) complete. **M7 (Battle system) is now fully delivered** (M7a + M7b + M7c all
 merged). **M8a** (taming rules — pure encounter triggering, recruit-chance arithmetic,
 encounters.ron registry, validation, 24 tests with 5 proof-of-teeth fixtures + 2
-proptest suites, all green) complete. **M-infra-a** (CI caching + fast inner loop
+proptest suites, all green) complete. **M8b** (encounter server integration — private
+encounter table, validate-before-write upsert seeding, B1 empty/duplicate validation,
+encounter-privacy eval with 6 proof-of-teeth) complete. **M8 (Taming subsystem
+M8a+M8b) snapshot:** encounter spawn weights are private; M8c defers grass trigger
+(tile-change → wild encounter spawn + start_battle), M8d defers recruit (attempt_recruit
++ inventory/bait + client battle-view + wild individuality storage). **M-infra-a** (CI caching + fast inner loop
 — ADR-0043: `Swatinem/rust-cache` per-job, `taiki-e/install-action` for nextest +
 audit, `just test` = nextest + doctest, `ci-fast <crate>` recipe, `cache-on` sccache
 opt-in, cache-freshness eval with 8 criteria + 17 proof-of-teeth fixtures)
