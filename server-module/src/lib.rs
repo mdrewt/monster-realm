@@ -1133,14 +1133,36 @@ pub fn start_battle(
 ) -> Result<(), String> {
     let me = ctx.sender;
 
-    // Party size in 1..=MAX_PARTY_SIZE (reject empty AND oversized — never
-    // truncate; an unbounded list is N species lookups + N skill scans + N
-    // row writes). M8.5a.
+    // Bound BOTH parties to 1..=MAX_PARTY_SIZE (reject empty AND oversized —
+    // never truncate; an unbounded list is N species lookups + N skill scans +
+    // N row writes, and would yield a side with team.len() > MAX_PARTY_SIZE).
+    // These pure O(1) checks run BEFORE the O(N) dedup scan and any DB read so a
+    // huge list can't exhaust memory pre-rejection. M8.5a.
     if let Err(e) = check_party_size(party_monster_ids.len()) {
         log_reject("start_battle", me, &e);
         return Err(e);
     }
-    // Reject duplicate monster IDs (prevents double XP write-back).
+    if let Err(e) = check_party_size(opponent_monster_ids.len()) {
+        let e = format!("opponent {e}");
+        log_reject("start_battle", me, &e);
+        return Err(e);
+    }
+
+    // Opponent-provenance authorization (ADR-0048): accept ONLY self/sandbox
+    // (opponent_identity == ctx.sender) or the server/NPC sentinel
+    // (WILD_IDENTITY). Naming another player would conscript their monsters into
+    // the public `battle` row (info-leak / grief / XP farm). Reject before the
+    // dedup scan and any side-B DB read so a foreign roster never reaches the
+    // row. reject-not-clamp.
+    if opponent_identity != me && opponent_identity != WILD_IDENTITY {
+        let e = "opponent must be self or server-authored (PvP unsupported; ADR-0048)".to_string();
+        log_reject("start_battle", me, &e);
+        return Err(e);
+    }
+
+    // Reject duplicate monster IDs across both sides (prevents double XP
+    // write-back / a monster fighting itself). Both lists are now bounded by
+    // MAX_PARTY_SIZE, so this scan is O(1)-bounded.
     {
         let mut seen = std::collections::HashSet::new();
         for &mid in &party_monster_ids {
@@ -1157,22 +1179,6 @@ pub fn start_battle(
                 return Err(e);
             }
         }
-    }
-    if opponent_monster_ids.is_empty() {
-        let e = "opponent_monster_ids must not be empty".to_string();
-        log_reject("start_battle", me, &e);
-        return Err(e);
-    }
-
-    // Opponent-provenance authorization (ADR-0048): accept ONLY self/sandbox
-    // (opponent_identity == ctx.sender) or the server/NPC sentinel
-    // (WILD_IDENTITY). Naming another player would conscript their monsters into
-    // the public `battle` row (info-leak / grief / XP farm). Reject before any
-    // side-B DB read so a foreign roster never reaches the row. reject-not-clamp.
-    if opponent_identity != me && opponent_identity != WILD_IDENTITY {
-        let e = "opponent must be self or server-authored (PvP unsupported; ADR-0048)".to_string();
-        log_reject("start_battle", me, &e);
-        return Err(e);
     }
 
     // Check caller is not already in an ongoing battle.
@@ -1234,6 +1240,13 @@ pub fn start_battle(
             .ok_or_else(|| format!("opponent monster {mid} not found"))?;
         if m.owner_identity != opponent_identity {
             let e = format!("monster {mid} not owned by opponent");
+            log_reject("start_battle", me, &e);
+            return Err(e);
+        }
+        // Reject boxed monsters on side-B too — a boxed monster's derived stats
+        // must not be embedded into the public `battle` row (M8.5a).
+        if let Err(e) = check_monster_in_party(m.party_slot) {
+            let e = format!("opponent monster {mid} {e}");
             log_reject("start_battle", me, &e);
             return Err(e);
         }
@@ -1731,7 +1744,10 @@ fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) -> Result<(), Stri
 fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<(), String> {
     // Positional coupling invariant: side_a.team[i] pairs with
     // party_monster_ids[i]. Assert it up front (Err, never panic) so the XP loop
-    // below can index by position safely — M8.5a.
+    // below can index by position safely — the §3 criterion requires this
+    // assertion in write_back_battle_results specifically (M8.5a). The same
+    // assertion also lives in write_back_party_hp, which guards the recruit-success
+    // path that calls that helper WITHOUT going through this function.
     check_team_coupling(
         battle.state.side_a.team.len(),
         battle.party_monster_ids.len(),
