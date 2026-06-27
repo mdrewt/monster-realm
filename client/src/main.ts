@@ -16,6 +16,8 @@
 import {
   apply_move,
   move_queue_cap,
+  party_size,
+  party_slot_none,
   step_ms,
   zone_map,
 } from '../../client-wasm/pkg/client_wasm.js';
@@ -26,9 +28,11 @@ import {
   type WasmDirection,
   type WasmMoveInput,
 } from './convert/convert';
+import { shouldToggleBox } from './inputGuards';
 import { connect } from './net/connection';
 import { AuthoritativeStore } from './net/store';
 import { type ApplyMove, Predictor } from './prediction/predictor';
+import { installResizeHandler } from './render/resizeWiring';
 import { type RenderEntity, WorldRenderer } from './render/world';
 import { buildBattleViewModel } from './ui/battleModel';
 import type { BattleView } from './ui/battleView';
@@ -42,6 +46,8 @@ const ZONE_ID = 0;
 // Content is single-sourced from game-core via the wasm exports (never duplicated).
 const STEP_MS = step_ms();
 const QUEUE_CAP = move_queue_cap();
+const PARTY_SIZE = party_size();
+const PARTY_SLOT_NONE = party_slot_none();
 const rawMap = zone_map(ZONE_ID);
 
 const store = new AuthoritativeStore();
@@ -83,6 +89,7 @@ store.onBatchApplied(() => {
 function sendIntent(input: WasmMoveInput): void {
   if (conn === undefined) return;
   const intent = predictor.enqueue(input);
+  if (intent === undefined) return; // ADR-0052: declined (queue at cap) — predict & send nothing
   conn.conn.reducers.enqueueMove({ input: moveInputToSdk(input), seq: BigInt(intent.seq) });
 }
 const step = (dir: WasmDirection): void => sendIntent({ Step: dir });
@@ -100,8 +107,11 @@ const KEY_DIR: Readonly<Record<string, WasmDirection>> = {
 };
 window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyB') {
-    boxView?.toggle();
-    if (boxView?.visible) refreshBox();
+    // Guard: don't open the box over an active battle (ADR-0014/0052 exit ordering).
+    if (shouldToggleBox(battleView?.visible ?? false)) {
+      boxView?.toggle();
+      if (boxView?.visible) refreshBox();
+    }
     e.preventDefault();
     return;
   }
@@ -136,8 +146,8 @@ function refreshBox(): void {
   const monsters = store.ownMonsters(identity);
   const speciesMap = store.speciesMap();
   boxView.refresh(
-    buildPartyViewModel(monsters, speciesMap),
-    buildBoxViewModel(monsters, speciesMap),
+    buildPartyViewModel(monsters, speciesMap, PARTY_SIZE),
+    buildBoxViewModel(monsters, speciesMap, PARTY_SLOT_NONE),
   );
 }
 store.onBatchApplied(() => refreshBox());
@@ -225,13 +235,16 @@ async function main(): Promise<void> {
   const mount = document.getElementById('app');
   if (mount !== null) {
     await renderer.init(mount, rawMap);
+    installResizeHandler(renderer, window); // fit the stage to the window + on resize
     boxView = new BoxViewClass(mount, {
       onSetNickname: (monsterId, nickname) => {
         conn?.conn.reducers.setNickname({ monsterId, nickname });
       },
       onSetPartySlot: (monsterId, slot) => {
         const finalSlot =
-          slot === -1 ? (nextFreePartySlot(store.ownMonsters(identity)) ?? 255) : slot;
+          slot === -1
+            ? (nextFreePartySlot(store.ownMonsters(identity), PARTY_SIZE) ?? PARTY_SLOT_NONE)
+            : slot;
         conn?.conn.reducers.setPartySlot({ monsterId, slot: finalSlot });
       },
       onHealParty: () => {

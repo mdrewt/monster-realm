@@ -22,7 +22,7 @@ use std::time::Duration;
 const ZONE_0: u32 = 0;
 const SPRITE_PLAYER: u32 = 0;
 const MAX_NAME_LEN: usize = 24;
-const MAX_PARTY_SIZE: u8 = 6;
+const MAX_PARTY_SIZE: u8 = game_core::PARTY_SIZE; // SSOT (ADR-0052)
 const STARTER_SPECIES_ID: u32 = 1;
 
 // --- Tables (additive, ADR-0006; world tables carry an indexed zone_id, ADR-0007) ---
@@ -286,7 +286,7 @@ pub struct Inventory {
 }
 
 /// 255 sentinel = monster is in the box (not in any party slot).
-const PARTY_SLOT_NONE: u8 = 255;
+const PARTY_SLOT_NONE: u8 = game_core::PARTY_SLOT_NONE; // SSOT (ADR-0052)
 
 /// Zero-byte sentinel identity for the unowned wild opponent of a grass encounter
 /// (ADR-0045). No real connection holds this identity, so a wild battle's
@@ -769,6 +769,11 @@ fn authorize_move(ctx: &ReducerContext, reducer: &str, seq: u64) -> Result<Chara
         return Err(e);
     };
     // Accept-time ack: record receipt the moment intent is accepted (not applied).
+    // ADR-0052: this ack is safe to write here even though `enqueue_move` may still
+    // reject an over-cap queue with `Err("queue full")` AFTER this returns Ok — that
+    // Err rolls the WHOLE SpacetimeDB transaction back (including this update), so
+    // "ack only on a successful enqueue" holds by transaction semantics. Do not split
+    // the ack out of `authorize_move` to "fix" this (the rollback already guarantees it).
     player.last_input_seq = seq;
     ctx.db.player().identity().update(player);
     Ok(ch)

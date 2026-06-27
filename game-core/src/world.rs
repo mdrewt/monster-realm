@@ -15,6 +15,12 @@ pub const STEP_MS: i64 = 200;
 /// Bounded move-buffer cap (M2 anti-flood; the tick cadence is the real limit).
 pub const MOVE_QUEUE_CAP: usize = 2;
 
+/// Party size (slots 0..PARTY_SIZE) — single-sourced; the client + server consume it.
+pub const PARTY_SIZE: u8 = 6;
+
+/// The party-slot sentinel meaning "boxed" (not in the party).
+pub const PARTY_SLOT_NONE: u8 = 255;
+
 /// The single M1 zone's hand-authored art (`zone_id = 0`). A `const`-style source
 /// until M11 swaps in the Tiled→RON pipeline (ADR-0008); the swap is localized to
 /// `zone_0`.

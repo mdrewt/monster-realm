@@ -64,7 +64,7 @@ describe('buildPartyViewModel: slot assignment', () => {
       [2, species(2, 'Aqualing')],
       [3, species(3, 'Leaflet')],
     ]);
-    const party = buildPartyViewModel(monsters, speciesMap);
+    const party = buildPartyViewModel(monsters, speciesMap, 6);
 
     expect(party).toHaveLength(6); // always 6 slots
     expect(party[0]).not.toBeNull();
@@ -80,7 +80,7 @@ describe('buildPartyViewModel: slot assignment', () => {
 
   it('BITES: an empty monster list produces 6 null slots', () => {
     // Kills: an impl that returns fewer than 6 entries when input is empty.
-    const party = buildPartyViewModel([], new Map());
+    const party = buildPartyViewModel([], new Map(), 6);
     expect(party).toHaveLength(6);
     expect(party.every((s) => s === null)).toBe(true);
   });
@@ -89,7 +89,7 @@ describe('buildPartyViewModel: slot assignment', () => {
     // Kills: an impl that truncates the array or skips the last slot.
     const monsters = [5, 4, 3, 2, 1, 0].map((slot, i) => monster(BigInt(i + 1), 1, slot));
     const speciesMap = new Map([[1, species(1)]]);
-    const party = buildPartyViewModel(monsters, speciesMap);
+    const party = buildPartyViewModel(monsters, speciesMap, 6);
     expect(party).toHaveLength(6);
     for (let slot = 0; slot < 6; slot++) {
       expect(party[slot]).not.toBeNull();
@@ -102,7 +102,7 @@ describe('buildPartyViewModel: speciesName fallback', () => {
   it('BITES: missing species entry defaults to "Unknown (#speciesId)"', () => {
     // Kills: an impl that throws or returns undefined when speciesId not in map.
     const monsters = [monster(1n, 99, 0)]; // speciesId 99 not in map
-    const party = buildPartyViewModel(monsters, new Map()); // empty species map
+    const party = buildPartyViewModel(monsters, new Map(), 6); // empty species map
     expect(party[0]).not.toBeNull();
     expect(party[0]!.speciesName).toBe('Unknown (#99)');
   });
@@ -111,7 +111,7 @@ describe('buildPartyViewModel: speciesName fallback', () => {
     // Kills: an impl that always returns the fallback string.
     const monsters = [monster(1n, 7, 0)];
     const speciesMap = new Map([[7, species(7, 'Thundercub')]]);
-    const party = buildPartyViewModel(monsters, speciesMap);
+    const party = buildPartyViewModel(monsters, speciesMap, 6);
     expect(party[0]!.speciesName).toBe('Thundercub');
   });
 });
@@ -121,7 +121,7 @@ describe('buildPartyViewModel: hpPercent embedded in view model', () => {
     // Kills: an impl that omits hpPercent from MonsterCardViewModel or sets it to 0.
     const monsters = [monster(1n, 1, 0, { currentHp: 25, statHp: 50 })];
     const speciesMap = new Map([[1, species(1)]]);
-    const party = buildPartyViewModel(monsters, speciesMap);
+    const party = buildPartyViewModel(monsters, speciesMap, 6);
     expect(party[0]!.hpPercent).toBe(50);
   });
 });
@@ -141,7 +141,7 @@ describe('buildBoxViewModel: only partySlot === 255 monsters', () => {
       monster(4n, 1, 255), // in box — must appear
     ];
     const speciesMap = new Map([[1, species(1)]]);
-    const box = buildBoxViewModel(monsters, speciesMap);
+    const box = buildBoxViewModel(monsters, speciesMap, 255);
     expect(box).toHaveLength(2);
     expect(box.map((m) => m.monsterId)).toContain(2n);
     expect(box.map((m) => m.monsterId)).toContain(4n);
@@ -149,7 +149,7 @@ describe('buildBoxViewModel: only partySlot === 255 monsters', () => {
 
   it('BITES: empty monster list produces an empty box', () => {
     // Kills: an impl that pre-fills placeholder entries in the box.
-    const box = buildBoxViewModel([], new Map());
+    const box = buildBoxViewModel([], new Map(), 255);
     expect(box).toHaveLength(0);
   });
 
@@ -157,7 +157,7 @@ describe('buildBoxViewModel: only partySlot === 255 monsters', () => {
     // Kills: an impl that caps the box at 6 entries (confusing party with box).
     const monsters = Array.from({ length: 10 }, (_, i) => monster(BigInt(i + 1), 1, 255));
     const speciesMap = new Map([[1, species(1)]]);
-    const box = buildBoxViewModel(monsters, speciesMap);
+    const box = buildBoxViewModel(monsters, speciesMap, 255);
     expect(box).toHaveLength(10);
   });
 });
@@ -203,33 +203,33 @@ describe('nextFreePartySlot: first unused slot 0–5', () => {
   it('BITES: slots [0,1,2] filled → nextFreePartySlot returns 3', () => {
     // Kills: an impl that always returns 0 or ignores current party state.
     const monsters = [monster(1n, 1, 0), monster(2n, 1, 1), monster(3n, 1, 2)];
-    expect(nextFreePartySlot(monsters)).toBe(3);
+    expect(nextFreePartySlot(monsters, 6)).toBe(3);
   });
 
   it('BITES: no party slots filled → returns 0 (first slot)', () => {
     // Kills: an impl that searches from 1 instead of 0.
     const monsters = [monster(1n, 1, 255)]; // only in box
-    expect(nextFreePartySlot(monsters)).toBe(0);
+    expect(nextFreePartySlot(monsters, 6)).toBe(0);
   });
 
   it('BITES: all 6 party slots (0–5) filled → returns null', () => {
     // Kills: an impl that returns 6 (out-of-bounds slot) instead of null.
     const monsters = [0, 1, 2, 3, 4, 5].map((slot) => monster(BigInt(slot + 1), 1, slot));
-    expect(nextFreePartySlot(monsters)).toBeNull();
+    expect(nextFreePartySlot(monsters, 6)).toBeNull();
   });
 
   it('BITES: gaps in party are honoured — slot 1 free when 0,2 are taken', () => {
     // Kills: an impl that returns the slot AFTER the last occupied rather than
     // scanning for the lowest free index.
     const monsters = [monster(1n, 1, 0), monster(2n, 1, 2)];
-    expect(nextFreePartySlot(monsters)).toBe(1);
+    expect(nextFreePartySlot(monsters, 6)).toBe(1);
   });
 
   it('box monsters (partySlot 255) are ignored when computing the next free slot', () => {
     // Kills: an impl that counts partySlot 255 as an occupied party slot,
     // which would falsely advance the free-slot pointer.
     const monsters = [monster(1n, 1, 255), monster(2n, 1, 255)];
-    expect(nextFreePartySlot(monsters)).toBe(0);
+    expect(nextFreePartySlot(monsters, 6)).toBe(0);
   });
 });
 

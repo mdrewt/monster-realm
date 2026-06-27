@@ -122,8 +122,8 @@ describe('Predictor: seeding & lifecycle', () => {
 describe('Predictor: input mutates the queue, not predicted', () => {
   it('enqueue appends; assigns strictly increasing seq; records an Enqueue op', () => {
     const p = mkPredictor();
-    const a: IntentToSend = p.enqueue(east());
-    const b: IntentToSend = p.enqueue(north());
+    const a: IntentToSend = p.enqueue(east())!;
+    const b: IntentToSend = p.enqueue(north())!;
     expect(p.queueDepth).toBe(2);
     expect(p.pendingCount).toBe(2);
     expect(b.seq).toBeGreaterThan(a.seq); // strictly increasing
@@ -154,7 +154,7 @@ describe('Predictor: input mutates the queue, not predicted', () => {
 
   it('seq is strictly increasing across mixed input ops', () => {
     const p = mkPredictor();
-    const seqs = [p.enqueue(east()), p.setMove(north()), p.clearQueue(), p.enqueue(west())].map(
+    const seqs = [p.enqueue(east())!, p.setMove(north()), p.clearQueue(), p.enqueue(west())!].map(
       (i) => i.seq,
     );
     for (let i = 1; i < seqs.length; i++) {
@@ -282,9 +282,9 @@ describe('Predictor: reconcile four-step (ADR-0012)', () => {
   it('step 1 — drops pending with seq <= ackedSeq', () => {
     const p = mkPredictor();
     p.reconcile(baseline(5, 5, 0), [], 0, 0); // seed
-    const i1 = p.enqueue(east()); // seq s1
-    const i2 = p.enqueue(east()); // seq s2
-    const i3 = p.enqueue(east()); // seq s3
+    const i1 = p.enqueue(east())!; // seq s1
+    const i2 = p.enqueue(east())!; // seq s2
+    const i3 = p.enqueue(east())!; // seq s3
     expect(p.pendingCount).toBe(3);
     // Ack up to i2: i1 and i2 are dropped, only i3 remains pending.
     p.reconcile(baseline(6, 5, 0), [], i2.seq, 0);

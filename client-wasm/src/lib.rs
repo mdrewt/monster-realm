@@ -85,6 +85,21 @@ pub fn move_queue_cap() -> u32 {
     game_core::MOVE_QUEUE_CAP as u32
 }
 
+/// The party size (slot count), single-sourced from `game-core` so TS never
+/// hard-codes it.
+#[wasm_bindgen]
+#[must_use]
+pub fn party_size() -> u32 {
+    game_core::PARTY_SIZE as u32
+}
+
+/// The party-slot "boxed" sentinel, single-sourced from `game-core`.
+#[wasm_bindgen]
+#[must_use]
+pub fn party_slot_none() -> u32 {
+    game_core::PARTY_SLOT_NONE as u32
+}
+
 /// The renderer's map source: the SAME `TileMap` the rule evaluates, read ONCE on
 /// init (the map is static at M3 — never per frame, never hard-coded in TS).
 /// `zone_id` is reserved for M11 multi-zone; only `zone_0` exists today.

@@ -73,7 +73,7 @@ export class Predictor {
   #queue: WasmMoveInput[] = []; //               the LOCAL intent queue
   #pending: PendingOp[] = []; //                  unacked ops, in send order
   #nextSeq = 0;
-  #lastDrainAt = 0;
+  #lastDrainAt: number | undefined = undefined; // ADR-0052 §B: lazy — no spurious first-drain snap
 
   constructor(applyMove: ApplyMove, stepMs: number, queueCap: number) {
     this.#applyMove = applyMove;
@@ -83,7 +83,15 @@ export class Predictor {
 
   // --- input: mutate the QUEUE (+ record the op in pending), never `predicted` ---
 
-  enqueue(input: WasmMoveInput): IntentToSend {
+  /**
+   * Enqueue a move, bounded to the move-queue cap (reject-not-clamp, ADR-0052).
+   * When the local `#queue` is already at `#queueCap`, the move is *declined*: no
+   * push, no pending op recorded (no `seq` consumed), returns `undefined` — exactly
+   * as the server declines an over-cap enqueue. Callers must treat `undefined` as
+   * "declined, do not send". Otherwise records an Enqueue op and returns the intent.
+   */
+  enqueue(input: WasmMoveInput): IntentToSend | undefined {
+    if (this.#queue.length >= this.#queueCap) return undefined; // ADR-0052: reject when full
     this.#queue.push(input);
     return this.#record({ kind: 'Enqueue', input });
   }
@@ -126,7 +134,10 @@ export class Predictor {
     // 2. rebuild the local queue from the server's queue, then replay unacked OPS.
     let q: WasmMoveInput[] = [...authQueue];
     for (const p of this.#pending) q = applyOp(q, p.op);
-    this.#queue = q;
+    // Clamp the rebuilt queue to the cap (keep-head), mirroring the server's
+    // reject-when-full semantics — the over-prediction stays unrepresentable even
+    // when the authoritative queue surprises the client (ADR-0052).
+    this.#queue = q.slice(0, this.#queueCap);
     // 3. reset prediction to the authoritative (rebased) truth.
     this.#predicted = authBaseline;
     // 4. re-drain forward from truth.
@@ -147,7 +158,10 @@ export class Predictor {
    */
   drain(now: number): DrainResult {
     if (this.#predicted === undefined) return { applied: 0, snapped: false };
-    const snapped = now - this.#lastDrainAt > SNAP_GAP_STEPS * this.#stepMs;
+    // ADR-0052 §B: the first drain (lastDrainAt undefined) never snaps — there is no
+    // prior drain to measure a gap against; only a real gap between two drains snaps.
+    const snapped =
+      this.#lastDrainAt !== undefined && now - this.#lastDrainAt > SNAP_GAP_STEPS * this.#stepMs;
     this.#lastDrainAt = now;
 
     const maxApply = this.#queueCap + this.#pending.length;
