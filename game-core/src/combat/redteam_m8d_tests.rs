@@ -5,7 +5,7 @@
 //!
 //! Run: cargo test redteam_m8d -- --nocapture
 
-use crate::taming::rules::{attempt_recruit, recruit_chance, MISSING_HP_FACTOR};
+use crate::taming::rules::{attempt_recruit, recruit_chance};
 
 // ---------------------------------------------------------------------------
 // FINDING 1 (HIGH): TOCTOU — can an already-terminal battle be re-recruited?
@@ -175,53 +175,10 @@ fn inventory_consume_one_on_zero_must_not_underflow() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// FINDING 4 (HIGH): Bait classification drift — server uses `load_items()` from
-// game-core (compiled-in RON) to resolve recruit_bonus, but `item_row` in the DB
-// (seeded by sync_content) drops the `recruit_bonus` field.
-//
-// The ItemRow schema as defined (server-module/src/lib.rs:134-139) has:
-//   pub struct ItemRow { id, name, description }
-// It does NOT carry recruit_bonus.
-//
-// The server's attempt_recruit must call `load_items()` to classify bait.
-// If sync_content seeds a different version of items.ron (e.g. after a hotfix),
-// the compiled-in load_items() and the seeded item_row can disagree:
-//   - DB says item 7 is "Mega Bait"
-//   - Compiled items.ron has item 7 with recruit_bonus=0 (a non-bait item with same id)
-//
-// A player could hold item_id=7 (obtained when it WAS bait), call attempt_recruit,
-// and the server rejects it (load_items says recruit_bonus=0).
-// Or vice versa: server accepts item 7 as bait even though the DB item_row was updated
-// to a non-bait item — the classification is divorced from the live DB state.
-//
-// This is a content-desync exploit surface. The test proves the two sources can disagree.
-// ---------------------------------------------------------------------------
-
-/// FINDING 4: The recruit_bonus field is in game_core::ItemDef but NOT in ItemRow.
-/// This means the server classifies bait from compiled code, not live DB data.
-/// A sync_content update that changes recruit_bonus cannot take effect until restart.
-#[test]
-fn item_def_has_recruit_bonus_but_item_row_cannot_express_it() {
-    // game_core::ItemDef carries recruit_bonus
-    let item_def = crate::content::ItemDef {
-        id: 1,
-        name: "Bait".to_string(),
-        description: "A tasty lure".to_string(),
-        recruit_bonus: 150,
-    };
-    assert_eq!(
-        item_def.recruit_bonus, 150,
-        "ItemDef.recruit_bonus = 150 — but ItemRow in the server module has no such field; \
-         the server classifies bait via load_items() (compiled-in RON), not the live DB; \
-         a content update to recruit_bonus requires a module redeploy, not just sync_content"
-    );
-    // The DESYNC surface: if items.ron is updated between two module versions,
-    // an item_id can be reclassified as bait/non-bait without the DB reflecting it.
-    // A player who acquired item_id=1 before it was reclassified can try to use it
-    // with the old classification. The server-side check uses the COMPILED items.ron,
-    // not the DB row — so the check is version-locked to the compiled binary.
-}
+// NOTE: FINDING 4 (bait-classification drift — "ItemRow can't express recruit_bonus,
+// server uses load_items() at reduce-time") was CUT: it is now FALSE. `ItemRow`
+// carries `recruit_bonus` (seeded from the game-core `ItemDef` in sync_content),
+// and `attempt_recruit` classifies bait from the live DB row — never load_items().
 
 // ---------------------------------------------------------------------------
 // FINDING 5 (HIGH): IV inversion channel via public BattleState.
@@ -377,146 +334,22 @@ fn near_dead_wild_recruit_chance_is_near_max_factor() {
          with ~50% chance each attempt, expected ~2 tries to succeed; \
          but there's NO attempt limit — a player can spam recruit_attempt until it lands"
     );
-    // The key issue: even at 495/1000, a player has 50.5% chance of FAILING each attempt.
-    // With no turn limit, they WILL eventually succeed (or the wild will KO their team).
-    // The exploit: bring a max-HP party vs a 1-HP wild, spam attempt_recruit.
-    // Each failure triggers wild counterattack doing essentially 0 damage to a full-HP team.
-
-    // How many attempts until success? Expected value = 1/0.495 ≈ 2.02 attempts.
-    // But a bad luck player might need 20+ attempts — still no turn limit to stop them.
-    assert_eq!(
-        MISSING_HP_FACTOR, 500,
-        "MISSING_HP_FACTOR=500; at 0 HP the chance is 500/1000=50% plus base+bait; \
-         no per-battle attempt cap means a player can retry indefinitely"
-    );
+    // INVARIANT (grinding residual, accepted for M8d): there is NO per-battle
+    // attempt cap. At MISSING_HP_FACTOR=500 a 0-HP wild sits at 50% + base + bait,
+    // so even ~50% per attempt means a tanky party vs a 1-HP wild WILL eventually
+    // recruit (each failed attempt just advances the turn). A turn/attempt limit is
+    // a future-milestone follow-up; the `chance==495` tooth above pins the formula.
 }
 
-// ---------------------------------------------------------------------------
-// FINDING 8 (MED): battle_wild orphan rows after non-recruit battle end.
-//
-// ADR-0045 explicitly says M8c does NOT delete battle_wild on flee/normal-win:
-//   "M8c does not delete it on battle-end (flee/win) — M8d owns the recruit path"
-// And: "A stale battle_wild row after a wild battle ends is an accepted residual"
-//
-// But this creates an inconsistency: if a player WINS a wild battle (kills the wild),
-// the battle_wild row persists. Then if M8d's attempt_recruit is called on the
-// COMPLETED battle (outcome=SideAWins from winning by combat), the Ongoing guard
-// blocks it — but the battle_wild row is still there.
-//
-// The exploitable question: can attempt_recruit be called on a COMPLETED wild battle
-// where the player won by damage (not recruit), to get a FREE second monster?
-//
-// Answer: NO — the Ongoing guard must reject it. But the battle_wild residual row
-// means there's a dangling "recruit opportunity" row in the DB that never gets cleaned.
-// Over time this creates unbounded table growth (a mild DoS/bloat surface).
-// ---------------------------------------------------------------------------
+// NOTE: FINDING 8 (battle_wild orphan rows on non-recruit battle end) was CUT:
+// it is now FALSE. `write_back_battle_results` unconditionally deletes the
+// battle_wild row (a no-op for PvP), so flee/loss/combat-win all GC the wild row;
+// `attempt_recruit` GCs on its own success/terminal paths. No orphan accumulates.
 
-/// FINDING 8: battle_wild orphan after non-recruit battle end creates unbounded growth.
-/// This documents the residual row lifecycle gap.
-#[test]
-fn battle_wild_orphan_row_is_acknowledged_residual() {
-    // The arithmetic fact: if attempt_recruit is not called (player wins by combat
-    // or flees), the battle_wild row is never deleted in M8c/M8d as planned.
-    // Number of orphan rows = number of wild battles ended without recruit.
-    // With N players each running K wild battles per session, orphan count = N*K.
-    // No cleanup is planned until "M9+" per ADR-0045.
-
-    // Prove the invariant that should exist: after flee or combat-win of a wild battle,
-    // the attempt_recruit Ongoing guard is the ONLY barrier, not row deletion.
-    // So if the guard is ever bypassed (another finding), the orphan row enables
-    // recruiting a wild that is already dead or fled from.
-
-    // We prove attempt_recruit(chance=0, roll=0) fails — the roll gate is sound,
-    // but the ORDERING matters: the server checks outcome BEFORE calling recruit_chance.
-    assert!(!attempt_recruit(0, 0), "chance=0 always fails");
-
-    // The structural finding: orphan battle_wild rows grow without bound.
-    // Each completed wild battle (win by combat or flee) leaves a row.
-    // A player who steps on grass 1000 times and attacks every wild creates
-    // 1000 orphan rows. Over the game's lifetime this is a storage DoS vector.
-    let orphan_rows_per_player_session: u32 = 1000; // conservative estimate
-    let max_players: u32 = 10_000;
-    let total_orphans = orphan_rows_per_player_session.saturating_mul(max_players);
-    assert_eq!(
-        total_orphans, 10_000_000,
-        "10M orphan rows possible with 10K players doing 1K grass steps each; \
-         no cleanup path exists in M8c/M8d for non-recruit battle ends"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// FINDING 9 (MED): start_battle WILD_IDENTITY bypass — can a player call
-// start_battle with opponent_identity == WILD_IDENTITY to get a free battle_wild row?
-//
-// Checking the start_battle code (server-module/src/lib.rs:1063):
-// - It checks opponent_monster_ids is non-empty
-// - It checks each opponent monster is owned by opponent_identity
-// - WILD_IDENTITY = [0u8; 32]
-// - No real connection holds WILD_IDENTITY
-// - So any monster owned by WILD_IDENTITY can't exist (no player has that identity)
-//
-// BUT: what if there are monsters left over in the DB owned by WILD_IDENTITY?
-// Or what if a dev/test reducer (like the bait-grant reducer) accidentally creates
-// monsters under WILD_IDENTITY?
-//
-// More importantly: start_battle does NOT insert a battle_wild row.
-// So even if a player passes opponent_identity=WILD_IDENTITY, they can't recruit
-// because there's no battle_wild row for that battle.
-//
-// BUT: The plan says opponent_identity=WILD_IDENTITY is the signal used by
-// attempt_recruit to verify this is a wild battle. If attempt_recruit doesn't
-// verify this via battle_wild row existence but instead checks
-// battle.opponent_identity == WILD_IDENTITY, a player could call start_battle
-// with a crafted opponent to pass the check.
-//
-// This test proves the soundness depends on HOW the "is wild" check is implemented.
-// ---------------------------------------------------------------------------
-
-/// FINDING 9: The "is wild battle" signal is the battle_wild row, not opponent_identity.
-/// Prove that opponent_identity=WILD_IDENTITY alone is insufficient if battle_wild is missing.
-#[test]
-fn wild_identity_sentinel_is_not_sufficient_alone() {
-    // The WILD_IDENTITY sentinel is [0u8; 32].
-    // The correct "is wild" check: battle_wild row EXISTS for this battle_id.
-    // An INCORRECT check: battle.opponent_identity == WILD_IDENTITY.
-
-    // Scenario: player calls start_battle(opponent_identity=WILD_IDENTITY, ...).
-    // start_battle checks: for each opponent monster, owner == WILD_IDENTITY.
-    // Since no player has WILD_IDENTITY, no monsters are owned by it.
-    // So opponent_monster_ids must be non-empty with monsters owned by WILD_IDENTITY — IMPOSSIBLE.
-    // Therefore start_battle ALREADY rejects this case.
-
-    // The residual risk: if the implementer checks opponent_identity instead of battle_wild row,
-    // and there exists ANY path that creates a battle with opponent_identity=WILD_IDENTITY
-    // WITHOUT a corresponding battle_wild row... the recruit check passes for a non-wild battle.
-
-    // Prove opponent_identity alone is insufficient by showing the structural gap:
-    // attempt_recruit's guard MUST check battle_wild row existence, not just opponent_identity.
-
-    // For now, this is a documentation test — the actual guard enforcement must be
-    // verified in integration tests.
-    let wild_identity_bytes = [0u8; 32];
-    assert_eq!(
-        wild_identity_bytes.len(),
-        32,
-        "WILD_IDENTITY is 32 zero bytes"
-    );
-
-    // The critical invariant: if begin_encounter is the ONLY code path that inserts
-    // a battle_wild row, and begin_encounter correctly sets opponent_identity=WILD_IDENTITY,
-    // then checking battle_wild row existence is equivalent to checking opponent_identity.
-    // But if ANY other code path can set opponent_identity=WILD_IDENTITY without a battle_wild row,
-    // the guard based on opponent_identity would be wrong.
-
-    // The plan's guard says: "a private battle_wild row exists for battle_id (the 'is wild' signal)"
-    // This is the CORRECT approach. Tests must verify the impl uses row existence, not identity.
-    assert!(
-        true,
-        "structural: attempt_recruit MUST check ctx.db.battle_wild().battle_id().find(battle_id).is_some(), \
-         NOT battle.opponent_identity == WILD_IDENTITY; the latter is bypassable if any code path \
-         creates a battle with WILD_IDENTITY but no battle_wild row"
-    );
-}
+// NOTE: FINDING 9 (the `assert!(true, "structural: ...")` tautology about the
+// "is wild" signal) was CUT: it asserted nothing. The real guard is verified by
+// the recruit-reducer-security eval (checkWildBattleGuard scans attempt_recruit
+// for the `battle_wild(` lookup) — a text tooth, not a pure-arithmetic one.
 
 // ---------------------------------------------------------------------------
 // FINDING 10 (MED): recruit_chance integer truncation can produce IDENTICAL
@@ -590,30 +423,10 @@ fn recruit_chance_truncation_can_plateau() {
 // This is rated LOW for M8d (PvE only) but must be flagged for M16 planning.
 // ---------------------------------------------------------------------------
 
-/// FINDING 11: Public inventory exposes item counts to all subscribers.
-/// Documented for M16 PvP planning.
-#[test]
-fn public_inventory_leaks_bait_counts_to_all_clients() {
-    // The inventory table is declared public (no per-row filtering).
-    // Any subscriber can read any player's item counts.
-    // For M8d (PvE) this is deemed acceptable.
-    // For M16 (PvP) this is a cheat surface: observe opponent's bait count.
-
-    // Prove the information leakage is not zero:
-    // An item count of 0 vs N bait reveals whether the opponent can attempt_recruit.
-    let has_bait_count: u32 = 5;
-    let no_bait_count: u32 = 0;
-
-    assert!(
-        has_bait_count > 0,
-        "player with bait is observable as count > 0"
-    );
-    assert_eq!(
-        no_bait_count, 0,
-        "player without bait is observable as count = 0"
-    );
-
-    // In PvP, knowing opponent has 0 bait means they can't recruit during your battle.
-    // This is a low-stakes information leak for M8d but a design debt for M16.
-    // The fix: RLS filter so only owner sees their own inventory rows.
-}
+// INVARIANT (M16 design debt, not an M8d arithmetic tooth): the `inventory` table
+// is public with RLS by owner_identity, so a player sees only their OWN counts for
+// M8d (PvE). The residual to revisit at M16 (PvP): if visibility were ever widened,
+// an item count of 0 vs N would reveal whether an opponent can attempt_recruit — a
+// timing/spying surface. The fix at that point is to keep the owner-only RLS filter.
+// (The original test only asserted `5 > 0` / `0 == 0`, which were tautological, so
+// the prose is preserved here and the empty test fn was removed.)

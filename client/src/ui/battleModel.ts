@@ -32,17 +32,10 @@ export interface BenchMemberVM {
 /**
  * A bait item the player may apply to a recruit attempt. `recruitBonus > 0`
  * (the data-classify rule, ADR-0047) is the ONLY criterion for inclusion — never
- * a hardcoded item id.
+ * a hardcoded item id. Also serves directly as the selectable bait option in the
+ * recruit UI (consumed unchanged — no transformation, so no separate VM type).
  */
 export interface BaitItem {
-  readonly itemId: number;
-  readonly name: string;
-  readonly recruitBonus: number;
-  readonly count: number;
-}
-
-/** A selectable bait option in the recruit UI (already filtered to bait). */
-export interface BaitOptionVM {
   readonly itemId: number;
   readonly name: string;
   readonly recruitBonus: number;
@@ -67,7 +60,7 @@ export interface BattleViewModel {
    */
   readonly canRecruit: boolean;
   /** Bait options (recruit_bonus > 0), classified by data — empty when none. */
-  readonly baitOptions: readonly BaitOptionVM[];
+  readonly baitOptions: readonly BaitItem[];
 }
 
 function monsterCard(
@@ -134,15 +127,8 @@ export function buildBattleViewModel(
   // Bait options: classify by DATA (recruit_bonus > 0), never by item id, and
   // only surface stacks the player actually holds (count > 0). Empty when not
   // recruitable.
-  const baitOptions: BaitOptionVM[] = canRecruit
-    ? baitItems
-        .filter((b) => b.recruitBonus > 0 && b.count > 0)
-        .map((b) => ({
-          itemId: b.itemId,
-          name: b.name,
-          recruitBonus: b.recruitBonus,
-          count: b.count,
-        }))
+  const baitOptions: readonly BaitItem[] = canRecruit
+    ? baitItems.filter((b) => b.recruitBonus > 0 && b.count > 0)
     : [];
 
   return {

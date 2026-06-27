@@ -1857,8 +1857,15 @@ pub fn attempt_recruit(
         bait_bonus = rb;
     }
 
+    // Read every value we need off the wild into OWNED locals BEFORE any
+    // mutation of `battle.state`, so the fail branch never re-borrows across the
+    // `turn_number += 1` write (no borrow-across-mutation trap).
     let wild = battle.state.side_b.active_monster();
-    let chance = recruit_chance(wild.max_hp, wild.current_hp, RECRUIT_BASE_RATE, bait_bonus);
+    let wild_max_hp = wild.max_hp;
+    let wild_current_hp = wild.current_hp;
+    let wild_has_skills = !wild.known_skill_ids.is_empty();
+
+    let chance = recruit_chance(wild_max_hp, wild_current_hp, RECRUIT_BASE_RATE, bait_bonus);
     let roll: u32 = ctx.random();
     let success = game_core::attempt_recruit(chance, roll);
 
@@ -1894,20 +1901,22 @@ pub fn attempt_recruit(
         ctx.db.monster_pub().insert(pub_from_monster(&inserted));
 
         battle.state.outcome = BattleOutcome::SideAWins;
+        // NO XP on recruit (ADR-0047): do NOT swap for write_back_battle_results.
         write_back_party_hp(ctx, &battle);
         ctx.db.battle_wild().battle_id().delete(battle_id);
         ctx.db.battle().battle_id().update(battle);
         // Log ONLY public coordinates — NEVER seed/IVs/nature (side-channel).
         log::info!(
-            "{{\"evt\":\"recruit_success\",\"battle_id\":{battle_id},\"species_id\":{}}}",
-            bw.wild_species_id
+            "{{\"evt\":\"recruit_success\",\"battle_id\":{battle_id},\"species_id\":{},\"monster_id\":{}}}",
+            bw.wild_species_id,
+            inserted.monster_id
         );
         return Ok(());
     }
 
     // Failure: the wild gets a turn. Advance, then let it strike back.
     battle.state.turn_number += 1;
-    if !wild.known_skill_ids.is_empty() {
+    if wild_has_skills {
         let skill_rows: Vec<SkillRow> = ctx.db.skill_row().iter().collect();
         let skill_defs = skill_defs_from_rows(&skill_rows);
         let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter());
@@ -1923,8 +1932,9 @@ pub fn attempt_recruit(
 
     if battle.state.outcome != BattleOutcome::Ongoing {
         // Terminal (e.g. the wild knocked out the player's last monster).
+        // write_back_battle_results owns terminal GC (it deletes battle_wild
+        // unconditionally), so no second explicit delete here.
         write_back_battle_results(ctx, &battle)?;
-        ctx.db.battle_wild().battle_id().delete(battle_id);
     }
     ctx.db.battle().battle_id().update(battle);
     log::info!("{{\"evt\":\"recruit_fail\",\"battle_id\":{battle_id}}}");
@@ -1938,7 +1948,7 @@ pub fn attempt_recruit(
 pub fn grant_bait(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> {
     let me = ctx.sender;
     let Some(item) = ctx.db.item_row().id().find(item_id) else {
-        let e = "not a bait item".to_string();
+        let e = "item not found".to_string();
         log_reject("grant_bait", me, &e);
         return Err(e);
     };
