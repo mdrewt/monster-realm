@@ -785,3 +785,106 @@ fn roll_encounter_teeth_no_panic_on_empty_after_filter() {
         "TEETH: all entries filtered → must return None, not panic"
     );
 }
+
+// ---------------------------------------------------------------------------
+// M8b CRITERION B1 — validate_encounters: empty entries guard
+//
+// The current impl iterates `&table.entries` (zero times when empty) and
+// returns Ok(()) — so a zone with no spawnable species is accepted.
+// The implementer will add: `if table.entries.is_empty() { return Err(...) }`
+// These two tests are RED until that guard is added.
+// ---------------------------------------------------------------------------
+
+/// EARS B1: a table with an empty entries vec is invalid — nothing can spawn.
+/// Kills: any validate_encounters that silently accepts empty entries (iterates
+/// zero times and falls through to Ok(())).
+#[test]
+fn rejects_empty_entries() {
+    // Valid zone + valid species registry — the ONLY flaw is empty entries.
+    let table = make_table(0, 200, vec![]);
+    let species = vec![fixture_species(1)];
+    let zones = vec![fixture_zone(0)];
+    let result = validate_encounters(&[table], &species, &zones);
+    assert!(
+        result.is_err(),
+        "empty entries vec must be rejected; current impl returns Ok(()) — test is RED until guard is added"
+    );
+}
+
+/// Proof-of-teeth for the empty-entries guard.
+/// The CURRENT impl returns Ok(()) for this fixture (iterates zero entries,
+/// no check fires). This test MUST be RED until the guard is implemented.
+/// Wrong impl killed: any validate_encounters that returns Ok on empty entries.
+#[test]
+fn validate_encounters_teeth_empty_entries() {
+    let bad = make_table(0, 100, vec![]); // known-bad: no entries
+    let species = vec![fixture_species(1)];
+    let zones = vec![fixture_zone(0)];
+    let result = validate_encounters(&[bad], &species, &zones);
+    assert!(
+        result.is_err(),
+        "TEETH: empty entries must be rejected, but validate_encounters returned Ok(()) — \
+         this is the known red-state before the B1 guard is added"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M8b CRITERION B1 — validate_encounters: duplicate species_id within a zone
+//
+// The current impl has no intra-zone dedup check. Two entries with the same
+// species_id in one zone are accepted. The implementer will add a per-table
+// seen-species set that errors on the second occurrence.
+// These two tests are RED until that guard is added.
+// ---------------------------------------------------------------------------
+
+/// EARS B1: two entries sharing a species_id in the same zone must be rejected.
+/// Kills: any validate_encounters that skips intra-zone species deduplication.
+#[test]
+fn rejects_duplicate_species_within_zone() {
+    // Same species_id (1) appears twice in zone 0.
+    let e1 = make_entry(1, 10, 1, 5);
+    let e2 = make_entry(1, 20, 6, 10); // same species_id=1, different weight/levels
+    let table = make_table(0, 200, vec![e1, e2]);
+    let species = vec![fixture_species(1)];
+    let zones = vec![fixture_zone(0)];
+    let result = validate_encounters(&[table], &species, &zones);
+    assert!(
+        result.is_err(),
+        "duplicate species_id=1 within zone 0 must be rejected; current impl returns Ok(()) — \
+         test is RED until dup-species guard is added"
+    );
+}
+
+/// Proof-of-teeth for the duplicate-species guard.
+/// The CURRENT impl returns Ok(()) for this fixture (no intra-zone dedup).
+/// This test MUST be RED until the guard is implemented.
+/// Wrong impl killed: any validate_encounters that allows two entries with the
+/// same species_id in one zone.
+#[test]
+fn validate_encounters_teeth_duplicate_species() {
+    let dup1 = make_entry(7, 10, 1, 10);
+    let dup2 = make_entry(7, 5, 1, 10); // species_id=7 duplicated
+    let bad = make_table(0, 150, vec![dup1, dup2]);
+    let species = vec![fixture_species(7)];
+    let zones = vec![fixture_zone(0)];
+    let result = validate_encounters(&[bad], &species, &zones);
+    assert!(
+        result.is_err(),
+        "TEETH: duplicate species_id=7 within zone must be rejected, \
+         but validate_encounters returned Ok(()) — \
+         this is the known red-state before the dup-species guard is added"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M8b REGRESSION — embedded encounters.ron still passes after new guards
+//
+// The test `validate_encounters_passes_for_embedded` already exists above and
+// covers this criterion. It is preserved here as a named regression marker so
+// it is trivially searchable as a regression gate for M8b.
+//
+// If the embedded content violates the new guards (empty entries or duplicate
+// species within a zone), it means the content itself needs to be fixed too.
+// The existing test already acts as this regression; we do NOT duplicate it.
+// ---------------------------------------------------------------------------
+// (regression covered by the existing `validate_encounters_passes_for_embedded` test above)
