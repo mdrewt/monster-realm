@@ -17,8 +17,10 @@ const cell = (s) => (s || '').replace(/\r?\n/g, ' ').replace(/\|/g, '/').trim();
 function fm(txt) {
   const m = txt.match(/^---\s*([\s\S]*?)\n---/);
   const b = m ? m[1] : '';
-  const g = (k) =>
-    (b.match(new RegExp(`^${k}:\\s*(.+)$`, 'm'))?.[1] ?? '').trim().replace(/^["']|["']$/g, '');
+  const g = (k) => {
+    const line = b.split('\n').find((l) => l.startsWith(k + ':'));
+    return (line ? line.slice(k.length + 1) : '').trim().replace(/^["']|["']$/g, '');
+  };
   return {
     slug: g('slug'),
     domain: g('domain'),

@@ -61,7 +61,11 @@ jobs:
       - name: SCA (cargo audit)
         run: cargo audit --file Cargo.lock
       - name: SAST (Semgrep)
-        run: pipx run semgrep scan --config auto --error
+        # `.claude/` is local dev automation (Claude Code hooks/skills/agents),
+        # not shipped product code — exclude it from the product SAST gate so
+        # tooling commits cannot red product CI. --exclude is subtractive only
+        # (unlike a bare .semgrepignore, which replaces Semgrep's defaults).
+        run: pipx run semgrep scan --config auto --error --exclude '.claude'
       - name: SBOM
         uses: anchore/sbom-action@v0
 
