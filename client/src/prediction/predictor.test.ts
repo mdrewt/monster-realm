@@ -788,13 +788,17 @@ describe('M8.6c ADR-0013.5: #pending bound / backpressure (pendingCap)', () => {
     }
 
     // Server accepted 2 East steps (queue cap = 2), authority at x=7.
+    // The 3rd pending op (if accepted.length=3) remains UNACKED and is replayed.
     const ackedSeq = accepted.length >= 2 ? accepted[1]!.seq : (accepted[0]?.seq ?? 0);
-    const authX = 5 + Math.min(accepted.length, 2);
+    const authX = 5 + Math.min(accepted.length, 2); // authoritative baseline: x=7 (2 acked East steps)
     const diverged = p.reconcile(baseline(authX, 5, now - 2 * STEP_MS), [], ackedSeq, now);
 
-    // No divergence (the client predicted correctly within the cap).
+    // No divergence: pre-reconcile predicted == post-reconcile predicted.
+    // predicted = authBaseline (x=7, the acked truth) + 1 unacked pending East replayed = x=8.
+    // This BITES a backpressure impl that DROPS/garbles unacked pending ops: such an impl
+    // would leave predicted.x < 5+accepted.length (falling behind, desync-unsafe).
     expect(diverged).toBe(false);
-    expect(p.predicted!.pos.x).toBe(authX);
+    expect(p.predicted!.pos.x).toBe(5 + accepted.length); // authX(7) + unacked replay = 8
     expect(p.predicted!.pos.y).toBe(5);
     // pendingCount drops because acked ops are pruned.
     expect(p.pendingCount).toBeLessThanOrEqual(PENDING_CAP);

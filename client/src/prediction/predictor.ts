@@ -68,6 +68,7 @@ export class Predictor {
   readonly #applyMove: ApplyMove;
   readonly #stepMs: number;
   readonly #queueCap: number;
+  readonly #pendingCap: number; // ADR-0013.5: unacked-ops backpressure bound
 
   #predicted: WasmCharacterState | undefined; // undefined until the first own-row seeds it
   #queue: WasmMoveInput[] = []; //               the LOCAL intent queue
@@ -75,23 +76,30 @@ export class Predictor {
   #nextSeq = 0;
   #lastDrainAt: number | undefined = undefined; // ADR-0052 §B: lazy — no spurious first-drain snap
 
-  constructor(applyMove: ApplyMove, stepMs: number, queueCap: number) {
+  // ADR-0013.5: `pendingCap` is OPTIONAL; default to a generous degenerate-no-ack
+  // backstop so existing 3-arg construction is unaffected by the new bound.
+  constructor(applyMove: ApplyMove, stepMs: number, queueCap: number, pendingCap = 16) {
     this.#applyMove = applyMove;
     this.#stepMs = stepMs;
     this.#queueCap = queueCap;
+    this.#pendingCap = pendingCap;
   }
 
   // --- input: mutate the QUEUE (+ record the op in pending), never `predicted` ---
 
   /**
-   * Enqueue a move, bounded to the move-queue cap (reject-not-clamp, ADR-0052).
-   * When the local `#queue` is already at `#queueCap`, the move is *declined*: no
-   * push, no pending op recorded (no `seq` consumed), returns `undefined` — exactly
-   * as the server declines an over-cap enqueue. Callers must treat `undefined` as
-   * "declined, do not send". Otherwise records an Enqueue op and returns the intent.
+   * Enqueue a move, bounded to the move-queue cap (reject-not-clamp, ADR-0052) AND
+   * to the unacked-ops pending cap (backpressure, ADR-0013.5). When the local
+   * `#queue` is already at `#queueCap`, OR `#pending` is already at `#pendingCap`,
+   * the move is *declined*: no push, no pending op recorded (no `seq` consumed),
+   * returns `undefined` — exactly as the server declines an over-cap enqueue. The
+   * pending cap is BACKPRESSURE, not eviction: ops already in `#pending` are NEVER
+   * dropped (that would desync the reconcile replay). Callers must treat `undefined`
+   * as "declined, do not send". Otherwise records an Enqueue op and returns the intent.
    */
   enqueue(input: WasmMoveInput): IntentToSend | undefined {
-    if (this.#queue.length >= this.#queueCap) return undefined; // ADR-0052: reject when full
+    if (this.#queue.length >= this.#queueCap || this.#pending.length >= this.#pendingCap)
+      return undefined; // ADR-0052: queue full / ADR-0013.5: pending full
     this.#queue.push(input);
     return this.#record({ kind: 'Enqueue', input });
   }

@@ -84,8 +84,8 @@ export function buildBattleViewModel(
   baitItems: readonly BaitItem[] = [],
 ): BattleViewModel | null {
   const { sideA, sideB } = battle;
-  if (!sideA.team.length || sideA.active >= sideA.team.length) return null;
-  if (!sideB.team.length || sideB.active >= sideB.team.length) return null;
+  if (!sideA.team.length || sideA.active < 0 || sideA.active >= sideA.team.length) return null;
+  if (!sideB.team.length || sideB.active < 0 || sideB.active >= sideB.team.length) return null;
 
   // biome-ignore lint/style/noNonNullAssertion: active index validated by the guard above
   const playerMon = sideA.team[sideA.active]!;
