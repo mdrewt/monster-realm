@@ -27,6 +27,8 @@ use super::types::{BattleMonster, Effectiveness};
 ///
 /// # Contract
 /// - `variance` MUST be in 85..=100 (caller's responsibility; see `TurnVariance`).
+/// - `defender.stats.defense >= 1` (callers/boundary guarantee it; the formula
+///   divides by it — see `battle_monster_from_row` for the trust boundary).
 /// - Returns `(0, Immune)` when effectiveness == 0.
 /// - Returns at least `(1, _)` for any non-immune hit, regardless of stat ratios.
 pub fn calc_damage(
@@ -46,6 +48,10 @@ pub fn calc_damage(
     let level = u64::from(attacker.level);
     let power = u64::from(skill.power);
     let attack = u64::from(attacker.stats.attack);
+    debug_assert!(
+        defender.stats.defense > 0,
+        "calc_damage precondition violated: defender defense must be >= 1 (enforce at battle_monster_from_row boundary)"
+    );
     let defense = u64::from(defender.stats.defense);
     let eff = u64::from(eff_raw);
     let var = u64::from(variance);
@@ -455,6 +461,73 @@ mod tests {
             Just(Affinity::Light),
             Just(Affinity::Dark),
         ]
+    }
+
+    // -----------------------------------------------------------------------
+    // M8.5b-A: calc_damage precondition + boundary tests
+    // -----------------------------------------------------------------------
+
+    /// Kills: an impl that divide-by-zero panics at defense==1, or clamps defense
+    /// to something weird, or requires defense > 1 as a silent precondition.
+    ///
+    /// Defense == 1 is the *boundary* of the documented precondition `defense >= 1`.
+    /// This test proves the formula handles it without panic and returns a
+    /// meaningful damage value (>= 1).
+    ///
+    /// A wrong impl that clamps defense to e.g. min(defense, 2) would change the
+    /// damage value and not necessarily return >= 1 for all stat combos — this
+    /// fixture sets up a non-immune matchup where the floor-of-1 rule guarantees >= 1.
+    #[test]
+    fn calc_damage_with_defense_one_is_valid() {
+        let chart = make_type_chart();
+        // Fire attacker (level 5, attack=40) vs Fire defender (defense=1)
+        // Fire vs Fire: neutral (effectiveness == 10 → Neutral)
+        // base = (2*5/5 + 2) * 40 * 40 / 1 / 50 + 2
+        //      = 4 * 40 * 40 / 1 / 50 + 2
+        //      = 6400 / 50 + 2 = 128 + 2 = 130
+        // stab: Fire skill vs Fire attacker = STAB: 130 * 3 / 2 = 195
+        // type_mod: 195 * 10 / 10 = 195 (neutral)
+        // variance_mod: 195 * 100 / 100 = 195
+        // final: max(1, 195) = 195
+        // Result must be >= 1 and must NOT panic.
+        let attacker = make_monster(Affinity::Fire, 40, 40);
+        let mut defender = make_monster(Affinity::Fire, 40, 40);
+        defender.stats.defense = 1; // boundary: minimum valid defense
+        let skill = fire_skill_40();
+        let (dmg, eff) = calc_damage(&attacker, &defender, &skill, &chart, 100);
+        assert!(
+            dmg >= 1,
+            "defense==1 is valid; damage must be >= 1, got {dmg}"
+        );
+        assert_ne!(
+            eff,
+            Effectiveness::Immune,
+            "Fire vs Fire is not immune; eff must not be Immune"
+        );
+    }
+
+    /// Kills: an impl that silently swallows defense==0 (e.g. by clamping to 1)
+    /// instead of loudly asserting. The debug_assert pins the "fail loud" contract.
+    ///
+    /// In the CURRENT code (pre-fix), defense==0 causes an integer divide-by-zero
+    /// panic in debug mode. After the fix, a debug_assert fires instead — same
+    /// visible behaviour for test purposes, so #[should_panic] passes in both states.
+    ///
+    /// Gated with #[cfg(debug_assertions)] so this test is NOT compiled in
+    /// release-profile test runs where debug_assert becomes a no-op and
+    /// #[should_panic] would wrongly fail on a silent success.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic]
+    fn calc_damage_debug_asserts_on_zero_defense() {
+        let chart = make_type_chart();
+        let attacker = make_monster(Affinity::Fire, 40, 40);
+        let mut defender = make_monster(Affinity::Plant, 40, 40);
+        defender.stats.defense = 0; // precondition violation: defense must be >= 1
+        let skill = fire_skill_40();
+        // Must panic (either via debug_assert!(defense > 0) after the fix,
+        // or via integer divide-by-zero before the fix).
+        let _ = calc_damage(&attacker, &defender, &skill, &chart, 100);
     }
 
     proptest! {

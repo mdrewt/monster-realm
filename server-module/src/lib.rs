@@ -491,12 +491,22 @@ fn pub_from_monster(m: &Monster) -> MonsterPub {
 // --- Battle helpers (M7b, pure marshaling — no ctx) ---------------------------
 
 /// Marshal a Monster row + its species + its known skills into a BattleMonster.
+///
+/// Trust boundary (ADR-0049, reject-not-clamp): a row with `stat_defense == 0`
+/// is rejected with `Err` rather than passed into the pure core, where it would
+/// divide-by-zero in `calc_damage`.
 fn battle_monster_from_row(
     monster: &Monster,
     species: &SpeciesRow,
     skills: &[SkillRow],
-) -> BattleMonster {
-    BattleMonster {
+) -> Result<BattleMonster, String> {
+    if monster.stat_defense == 0 {
+        return Err(format!(
+            "monster {} has stat_defense 0 (illegal: would divide-by-zero in calc_damage)",
+            monster.monster_id
+        ));
+    }
+    Ok(BattleMonster {
         species_id: monster.species_id,
         affinity: species.affinity,
         level: monster.level,
@@ -511,7 +521,7 @@ fn battle_monster_from_row(
             sp_defense: monster.stat_sp_defense,
         },
         known_skill_ids: skills.iter().map(|s| s.id).collect(),
-    }
+    })
 }
 
 /// Write post-battle HP back from a BattleMonster to the persistent Monster row.
@@ -520,17 +530,20 @@ fn write_back_hp(monster: &mut Monster, bm: &BattleMonster) {
 }
 
 /// Sum the six base stats of a species (for the XP formula).
-/// Returns `u16`: `validate_content` caps each base stat at 255, so the
-/// six-stat sum is at most 1530 and always fits (see the note below).
+///
+/// Pure marshaling (ADR-0049): the base-stat-total definition is owned by the
+/// rule layer (`game_core::base_stat_total`, SSOT). This shell only builds a
+/// `StatBlock` from the species row's six `base_*` columns and delegates.
 fn loser_base_stat_total(species: &SpeciesRow) -> u16 {
-    // Each base stat is validated <= 255 by validate_content, so the sum fits u16.
-    // If the validation range ever widens, widen this return type to u32.
-    species.base_hp
-        + species.base_attack
-        + species.base_defense
-        + species.base_speed
-        + species.base_sp_attack
-        + species.base_sp_defense
+    let base = game_core::StatBlock {
+        hp: species.base_hp,
+        attack: species.base_attack,
+        defense: species.base_defense,
+        speed: species.base_speed,
+        sp_attack: species.base_sp_attack,
+        sp_defense: species.base_sp_defense,
+    };
+    game_core::base_stat_total(&base)
 }
 
 /// Build a `Vec<SkillDef>` from the DB skill rows for the resolver.
@@ -1226,7 +1239,7 @@ pub fn start_battle(
             .iter()
             .filter(|s| sp.learnable_skill_ids.contains(&s.id))
             .collect();
-        team_a.push(battle_monster_from_row(&m, &sp, &skills));
+        team_a.push(battle_monster_from_row(&m, &sp, &skills)?);
     }
 
     // Build side B (opponent) team.
@@ -1262,7 +1275,7 @@ pub fn start_battle(
             .iter()
             .filter(|s| sp.learnable_skill_ids.contains(&s.id))
             .collect();
-        team_b.push(battle_monster_from_row(&m, &sp, &skills));
+        team_b.push(battle_monster_from_row(&m, &sp, &skills)?);
     }
 
     // At least one conscious monster per side.
@@ -1389,7 +1402,7 @@ fn begin_encounter(
             .iter()
             .filter(|s| sp.learnable_skill_ids.contains(&s.id))
             .collect();
-        team_a.push(battle_monster_from_row(&m, &sp, &skills));
+        team_a.push(battle_monster_from_row(&m, &sp, &skills)?);
     }
     if !team_a.iter().any(|m| !m.is_fainted()) {
         return Err("party has no conscious monster".to_string());
@@ -2322,7 +2335,8 @@ mod tests {
         let species = m7b_test_species_row();
         let skills = m7b_test_skill_rows();
 
-        let bm: game_core::BattleMonster = battle_monster_from_row(&monster, &species, &skills);
+        let bm: game_core::BattleMonster =
+            battle_monster_from_row(&monster, &species, &skills).expect("valid row builds");
 
         // current_hp in battle = Monster.current_hp (the persisted damage state)
         assert_eq!(
@@ -2345,7 +2359,8 @@ mod tests {
         let species = m7b_test_species_row();
         let skills = m7b_test_skill_rows();
 
-        let bm: game_core::BattleMonster = battle_monster_from_row(&monster, &species, &skills);
+        let bm: game_core::BattleMonster =
+            battle_monster_from_row(&monster, &species, &skills).expect("valid row builds");
 
         assert_eq!(bm.species_id, monster.species_id, "species_id must match");
         assert_eq!(
@@ -2364,7 +2379,8 @@ mod tests {
         let species = m7b_test_species_row();
         let skills = m7b_test_skill_rows();
 
-        let bm: game_core::BattleMonster = battle_monster_from_row(&monster, &species, &skills);
+        let bm: game_core::BattleMonster =
+            battle_monster_from_row(&monster, &species, &skills).expect("valid row builds");
 
         // The StatBlock in BattleMonster must come from the derived stat columns,
         // not from raw IV/EV values or base stats.
@@ -2402,7 +2418,8 @@ mod tests {
         // Only provide skill 1 (not skill 2) — simulates the monster only knowing one move.
         let one_skill = vec![m7b_test_skill_rows().remove(0)];
 
-        let bm: game_core::BattleMonster = battle_monster_from_row(&monster, &species, &one_skill);
+        let bm: game_core::BattleMonster =
+            battle_monster_from_row(&monster, &species, &one_skill).expect("valid row builds");
 
         assert_eq!(
             bm.known_skill_ids,
@@ -2553,6 +2570,77 @@ mod tests {
             bst, 1530,
             "loser_base_stat_total must not overflow u8; 255*6=1530, got {bst}"
         );
+    }
+
+    // =========================================================================
+    // M8.5b gating tests — battle_monster_from_row trust boundary (defense==0)
+    //
+    // These tests gate the signature change for `battle_monster_from_row`:
+    // it must become `-> Result<BattleMonster, String>` and reject rows
+    // where `monster.stat_defense == 0`.
+    //
+    // All tests in this block are compile-RED until the signature changes.
+    // =========================================================================
+
+    // -------------------------------------------------------------------------
+    // TEST M8.5b-A-3: battle_monster_from_row rejects zero defense
+    //
+    // Kills: an impl that passes defense==0 through to BattleMonster (which
+    // would later cause a divide-by-zero in calc_damage).
+    // -------------------------------------------------------------------------
+
+    /// Kills: an impl that silently returns Ok(..) for a zero-defense row instead
+    /// of Err. If battle_monster_from_row doesn't validate stat_defense, a
+    /// defense==0 BattleMonster reaches calc_damage and causes UB/panic there.
+    ///
+    /// PROOF-OF-TEETH: the positive sibling below ensures the implementer can't
+    /// trivially make this pass by returning Err for ALL inputs.
+    ///
+    /// RED state: compile-RED because `battle_monster_from_row` currently returns
+    /// `BattleMonster` (not `Result`), so `.is_err()` does not compile.
+    #[test]
+    fn battle_monster_from_row_rejects_zero_defense() {
+        let mut monster = m7b_test_monster_row();
+        monster.stat_defense = 0; // precondition violation: defense must be >= 1
+
+        let species = m7b_test_species_row();
+        let skills = m7b_test_skill_rows();
+
+        let result: Result<game_core::BattleMonster, String> =
+            battle_monster_from_row(&monster, &species, &skills);
+
+        assert!(
+            result.is_err(),
+            "TEETH: battle_monster_from_row must reject stat_defense==0 with Err; \
+             an impl that passes it through would return Ok(..) and this assertion fails"
+        );
+    }
+
+    /// Sibling positive test: a normal row (defense > 0) must succeed.
+    ///
+    /// Kills: a vacuous always-Err impl. Without this test, an implementer could
+    /// make the reject test pass by unconditionally returning Err("nope"), which
+    /// would break all callers. This test ensures the happy path still works.
+    ///
+    /// RED state: compile-RED (same signature change required).
+    #[test]
+    fn battle_monster_from_row_accepts_nonzero_defense() {
+        let monster = m7b_test_monster_row(); // stat_defense = 45 (non-zero)
+        let species = m7b_test_species_row();
+        let skills = m7b_test_skill_rows();
+
+        let result: Result<game_core::BattleMonster, String> =
+            battle_monster_from_row(&monster, &species, &skills);
+
+        assert!(
+            result.is_ok(),
+            "battle_monster_from_row must return Ok(..) for a valid row with \
+             stat_defense={} (> 0); got Err",
+            monster.stat_defense
+        );
+        // Spot-check that the result still maps correctly (regression guard)
+        let bm = result.unwrap();
+        assert_eq!(bm.stats.defense, monster.stat_defense);
     }
 
     // =========================================================================

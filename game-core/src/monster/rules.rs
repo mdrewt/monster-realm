@@ -32,7 +32,7 @@ pub fn derive_stats(
         let iv = u32::from(ivs.get(StatKind::Hp));
         let ev = u32::from(evs.get(StatKind::Hp));
         let raw = (2 * b + iv + ev / 4) * lv / 100 + lv + 10;
-        raw as u16
+        u16::try_from(raw).unwrap_or(u16::MAX)
     };
 
     let mut stats = StatBlock {
@@ -57,7 +57,7 @@ pub fn derive_stats(
         let ev = u32::from(evs.get(kind));
         let (nat_num, nat_den) = nature.stat_modifier(kind);
         let raw = ((2 * b + iv + ev / 4) * lv / 100 + 5) * u32::from(nat_num) / u32::from(nat_den);
-        stats.set(kind, raw as u16);
+        stats.set(kind, u16::try_from(raw).unwrap_or(u16::MAX));
     }
 
     stats
@@ -365,6 +365,75 @@ mod tests {
         assert_eq!(stats.get(StatKind::SpAttack), 6, "SpAttack at level 1");
         // SpDefense: ((2*45+15)*1/100 + 5) = (105/100 + 5) = (1+5) = 6
         assert_eq!(stats.get(StatKind::SpDefense), 6, "SpDefense at level 1");
+    }
+
+    // =======================================================================
+    // M8.5b-C: derive_stats saturation at u16::MAX (not wrap)
+    // =======================================================================
+
+    /// Kills: an impl that uses `raw as u16` (wrapping cast) instead of
+    /// `u16::try_from(raw).unwrap_or(u16::MAX)` (saturating cast).
+    ///
+    /// With base stats of 65535 (which u16 allows — StatBlock fields are u16
+    /// and there is no validation capping them at 255), at level 100 with
+    /// IVs=31 and EVs=0, the HP raw value is:
+    ///
+    ///   raw = (2*65535 + 31 + 0) * 100 / 100 + 100 + 10
+    ///       = (131070 + 31) * 1 + 110
+    ///       = 131101 + 110 = 131211
+    ///
+    /// 131211 > 65535 (u16::MAX) → wraps to 131211 - 65536 = 65675 with `as u16`.
+    /// But 65675 > 65535, so it wraps again: 65675 - 65536 = 139. So `as u16` gives 139.
+    ///
+    /// With saturation: u16::try_from(131211).unwrap_or(u16::MAX) == u16::MAX == 65535.
+    ///
+    /// For non-HP stats (neutral nature), at level 100 with base=60000, IV=31, EV=0:
+    ///   raw_pre_nature = (2*60000 + 31 + 0) * 100 / 100 + 5 = 120031 + 5 = 120036
+    ///   raw = 120036 * 10 / 10 = 120036 (neutral)
+    ///   120036 > 65535 → wraps to 120036 - 65536 = 54500 with `as u16`.
+    ///   With saturation: u16::MAX.
+    ///
+    /// CRITICAL NON-VACUITY PROOF: 139 != u16::MAX and 54500 != u16::MAX,
+    /// so the test cannot pass with the current wrapping `as u16` cast.
+    /// The wrapped values are completely different from u16::MAX, so no range
+    /// assertion (e.g. >= X) could accidentally pass both the wrapping and saturating
+    /// impls — only `== u16::MAX` pins the correct behaviour.
+    #[test]
+    fn derive_stats_saturates_at_u16_max_not_wrap() {
+        // StatBlock fields are u16; 65535 is a legal value (no range validation).
+        let base = StatBlock {
+            hp: 65535,
+            attack: 60000,
+            defense: 60000,
+            speed: 60000,
+            sp_attack: 60000,
+            sp_defense: 60000,
+        };
+        // IVs all 31 (max) — maximises the intermediate value
+        let ivs = IVs::new(31, 31, 31, 31, 31, 31).unwrap();
+        // EVs all 0 (keep it simple; the overflow is already guaranteed by the base)
+        let evs = EVs::zero();
+        let level = Level::new(100).unwrap();
+
+        let stats = derive_stats(&base, &ivs, &evs, &neutral(), level);
+
+        // HP raw = (2*65535 + 31 + 0) * 100 / 100 + 100 + 10 = 131211 → overflows u16
+        // Saturating: u16::MAX. Wrapping `as u16`: 131211 % 65536 = 139 (≠ u16::MAX).
+        assert_eq!(
+            stats.get(StatKind::Hp),
+            u16::MAX,
+            "HP with base=65535 at level 100 must saturate to u16::MAX (65535), \
+             not wrap to the truncated value 139 — TEETH: wrapping `as u16` gives 139"
+        );
+
+        // Attack raw = (2*60000 + 31 + 0) * 100 / 100 + 5 = 120036 → overflows u16
+        // Saturating: u16::MAX. Wrapping `as u16`: 120036 % 65536 = 54500 (≠ u16::MAX).
+        assert_eq!(
+            stats.get(StatKind::Attack),
+            u16::MAX,
+            "Attack with base=60000 at level 100 must saturate to u16::MAX (65535), \
+             not wrap to 54500 — TEETH: wrapping `as u16` gives 54500"
+        );
     }
 
     // =======================================================================

@@ -35,6 +35,12 @@ fn resolve_one_attack(
     variance: &TurnVariance,
     events: &mut Vec<BattleEvent>,
 ) {
+    // Panic on a missing skill id is a deliberate content-integrity invariant
+    // (ADR-0049): `validate_content` (game-core/src/content.rs) cross-checks at
+    // content-load that every species.learnable_skill_ids resolves, and
+    // battle_monster_from_row populates known_skill_ids only from that validated
+    // set — so in steady state this panic is unreachable. (Residual: a sync_content
+    // that removes a skill mid-battle is not repaired retroactively; see ADR-0049.)
     let skill = skills
         .iter()
         .find(|s| s.id == skill_id)
@@ -139,6 +145,15 @@ pub fn resolve_turn(
     // Guard: reject calls on a terminal battle (server reducer should also
     // check, but defence-in-depth prevents silent corruption).
     if state.outcome != BattleOutcome::Ongoing {
+        return events;
+    }
+
+    // Turn-limit terminal (ADR-0049): a u16 turn counter can never reach this in
+    // valid play, but advancing past u16::MAX would panic(debug)/wrap(release).
+    // Terminate at a defined no-winner terminal (reuse Fled: no XP, no win credit)
+    // BEFORE any mutation, so no partial turn is applied.
+    if state.turn_number == u16::MAX {
+        state.outcome = BattleOutcome::Fled;
         return events;
     }
 
@@ -907,6 +922,73 @@ mod tests {
             prop_assert_eq!(events_1, events_2, "resolve_turn must be deterministic");
             prop_assert_eq!(state_1, state_2, "resulting state must also be identical");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // M8.5b-B: turn_number terminal guard at u16::MAX
+    // -----------------------------------------------------------------------
+
+    /// Kills: an impl that does `turn_number += 1` unconditionally at u16::MAX,
+    /// causing a panic in debug mode (overflow) or a silent wrap to 0 in release.
+    ///
+    /// RED state today: in the debug test profile, `+= 1` on `u16::MAX` panics via
+    /// overflow check → the test function panics → #[should_panic] would pass, but
+    /// the assertions after the call are the real teeth. We instead just call it
+    /// normally and assert the post-conditions, which means:
+    ///   - today (no guard): panics in debug → test FAILS with a panic (runtime-RED)
+    ///   - after the fix: returns cleanly, assertions all pass (GREEN)
+    ///
+    /// Assertion (c) `turn_number == u16::MAX` is the mutation-killing assertion:
+    /// a mutant that increments anyway wraps to 0 → assertion (c) fails.
+    /// A mutant that sets a different outcome (e.g. SideAWins) → assertion (b) fails.
+    #[test]
+    fn resolve_turn_at_u16_max_terminates_without_wrap_or_panic() {
+        let chart = make_type_chart();
+        // Build two healthy monsters that will not KO each other in one turn
+        // (high HP, moderate attack) so the battle stays Ongoing after this turn
+        // IF the guard fires. We explicitly want Ongoing→Fled via the guard,
+        // not Ongoing→SideAWins via combat.
+        let monster_a = make_monster(Affinity::Fire, 500, 50);
+        let monster_b = make_monster(Affinity::Water, 500, 40);
+        let mut state = make_battle_state(monster_a, monster_b);
+
+        // Set turn_number to the maximum possible value to trigger the guard.
+        state.turn_number = u16::MAX;
+
+        let variance = always_hit_variance(true);
+
+        // (a) must return without panic
+        let events = resolve_turn(
+            &mut state,
+            TurnChoice::Attack { skill_id: 1 },
+            TurnChoice::Attack { skill_id: 1 },
+            &skills_vec(),
+            &chart,
+            &variance,
+        );
+
+        // (b) outcome must be Fled — the guard fires and sets this specific outcome
+        assert_eq!(
+            state.outcome,
+            BattleOutcome::Fled,
+            "TEETH(outcome): guard must set outcome=Fled at turn_number==u16::MAX; \
+             a mutant setting SideAWins/SideBWins/Ongoing fails here"
+        );
+
+        // (c) turn_number must NOT have changed — the guard fires BEFORE the increment
+        assert_eq!(
+            state.turn_number,
+            u16::MAX,
+            "TEETH(no-increment): turn_number must remain u16::MAX (guard returned \
+             before += 1); a mutant that still increments wraps to 0 and fails here"
+        );
+
+        // (d) no partial-turn events must have been emitted (no mutation occurred)
+        assert!(
+            events.is_empty(),
+            "TEETH(no-events): guard must return before any attack resolution; \
+             got {events:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
