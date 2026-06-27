@@ -248,6 +248,9 @@ async function main(): Promise<void> {
       onSwap: (battleId, teamIndex) => {
         conn?.conn.reducers.swapActive({ battleId, teamIndex });
       },
+      onRecruit: (battleId, baitItemId) => {
+        conn?.conn.reducers.attemptRecruit({ battleId, baitItemId });
+      },
     });
   }
 

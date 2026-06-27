@@ -34,12 +34,13 @@ pub use content::{
     TypeRelation, ZoneDef,
 };
 pub use monster::{
-    derive_stats, level_bounds, level_for_xp, roll_individuality, roll_starter, xp_for_level,
-    Affinity, Bond, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock, StatKind, Xp,
+    build_monster, derive_stats, level_bounds, level_for_xp, roll_individuality, roll_starter,
+    xp_for_level, Affinity, Bond, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock,
+    StatKind, Xp,
 };
 pub use taming::{
     attempt_recruit, encounter_triggers, recruit_chance, resolve_encounter, roll_encounter,
-    EncounterEntry, EncounterTable, WildSpawn, MISSING_HP_FACTOR,
+    EncounterEntry, EncounterTable, WildSpawn, MISSING_HP_FACTOR, RECRUIT_BASE_RATE,
 };
 pub use types::{ActionState, CharacterState, Direction, Millis, MoveInput, TileKind, TilePos};
 pub use world::{

@@ -36,12 +36,17 @@ pub fn roll_individuality(seed: u32) -> (IVs, Nature) {
     (ivs, nature)
 }
 
-/// Create a level-5 starter monster from a seed and species definition.
-/// EVs are zero, bond is default (70), current_hp equals derived HP.
+/// Build a monster at an arbitrary `level` from a seed and species definition.
+///
+/// The level-parameterized generalization of [`roll_starter`]: IVs+nature come
+/// from [`roll_individuality`] (so the SAME seed always rebuilds the SAME
+/// individual — the M8d "recruit THAT exact wild" trust invariant), EVs are
+/// zero, bond is the species default (70), `current_hp` equals the derived HP
+/// (full HP on grant), and `xp` is `xp_for_level(level)` (the start of the
+/// target level band, not 0).
 #[must_use]
-pub fn roll_starter(seed: u32, species: &Species) -> MonsterInstance {
+pub fn build_monster(seed: u32, species: &Species, level: Level) -> MonsterInstance {
     let (ivs, nature) = roll_individuality(seed);
-    let level = Level::new(5).expect("5 is a valid level");
     let evs = EVs::zero();
     let derived_stats = derive_stats(&species.base_stats, &ivs, &evs, &nature, level);
     let current_hp = derived_stats.get(StatKind::Hp);
@@ -59,6 +64,16 @@ pub fn roll_starter(seed: u32, species: &Species) -> MonsterInstance {
         derived_stats,
         party_slot: None,
     }
+}
+
+/// Create a level-5 starter monster from a seed and species definition.
+/// EVs are zero, bond is default (70), current_hp equals derived HP.
+///
+/// Thin wrapper over [`build_monster`] at the fixed starter level (5) — kept as
+/// a distinct entry point so M7 callers and their tests read intentionally.
+#[must_use]
+pub fn roll_starter(seed: u32, species: &Species) -> MonsterInstance {
+    build_monster(seed, species, Level::new(5).expect("5 is a valid level"))
 }
 
 #[cfg(test)]

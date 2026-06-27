@@ -128,6 +128,12 @@ pub fn resolve_encounter(
 /// — the primary lever for recruiting.
 pub const MISSING_HP_FACTOR: u32 = 500;
 
+/// The species-agnostic baseline recruit rate (per-mille), applied before any
+/// bait or missing-HP bonus. At full HP with no bait this is the only term, so
+/// weakening — not luck — remains the primary lever (`MISSING_HP_FACTOR`
+/// dominates). Tunable; per-species base rates are an M9 follow-up.
+pub const RECRUIT_BASE_RATE: u16 = 80;
+
 /// Compute the per-mille recruit chance.
 ///
 /// Formula (all integer, u32 intermediates):

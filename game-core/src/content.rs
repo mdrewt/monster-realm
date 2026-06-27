@@ -366,6 +366,13 @@ pub fn validate_content(
         if !item_ids.insert(item.id) {
             return Err(format!("duplicate item id {}", item.id));
         }
+        // A bait bonus is per-mille; it can never exceed certainty (1000).
+        if item.recruit_bonus > 1000 {
+            return Err(format!(
+                "item {} has recruit_bonus {} exceeding per-mille max 1000",
+                item.id, item.recruit_bonus
+            ));
+        }
     }
 
     Ok(())

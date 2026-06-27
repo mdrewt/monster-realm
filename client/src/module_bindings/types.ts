@@ -149,10 +149,19 @@ export const EncounterRow = __t.object("EncounterRow", {
 });
 export type EncounterRow = __Infer<typeof EncounterRow>;
 
+export const Inventory = __t.object("Inventory", {
+  invId: __t.u64(),
+  ownerIdentity: __t.identity(),
+  itemId: __t.u32(),
+  count: __t.u32(),
+});
+export type Inventory = __Infer<typeof Inventory>;
+
 export const ItemRow = __t.object("ItemRow", {
   id: __t.u32(),
   name: __t.string(),
   description: __t.string(),
+  recruitBonus: __t.u16(),
 });
 export type ItemRow = __Infer<typeof ItemRow>;
 

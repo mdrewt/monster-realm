@@ -1,2 +1,9 @@
 // Item registry — DATA, not code (ADR-0006). Stable `id`s are APPEND-ONLY.
-[]
+[
+    (
+        id: 1,
+        name: "Lure Berry",
+        description: "Sweet bait that calms a wild monster, easing recruitment.",
+        recruit_bonus: 150,
+    ),
+]

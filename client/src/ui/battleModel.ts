@@ -29,6 +29,26 @@ export interface BenchMemberVM {
   readonly maxHp: number;
 }
 
+/**
+ * A bait item the player may apply to a recruit attempt. `recruitBonus > 0`
+ * (the data-classify rule, ADR-0047) is the ONLY criterion for inclusion — never
+ * a hardcoded item id.
+ */
+export interface BaitItem {
+  readonly itemId: number;
+  readonly name: string;
+  readonly recruitBonus: number;
+  readonly count: number;
+}
+
+/** A selectable bait option in the recruit UI (already filtered to bait). */
+export interface BaitOptionVM {
+  readonly itemId: number;
+  readonly name: string;
+  readonly recruitBonus: number;
+  readonly count: number;
+}
+
 export interface BattleViewModel {
   readonly battleId: bigint;
   readonly turnNumber: number;
@@ -40,6 +60,14 @@ export interface BattleViewModel {
   readonly canSwap: boolean;
   /** Non-active, non-fainted team members the player can swap to. */
   readonly bench: readonly BenchMemberVM[];
+  /**
+   * True only in an ONGOING WILD battle. Wild is detected by the documented
+   * asymmetry (ADR-0045): a wild battle has NO owned opponent monster row, so
+   * `opponentMonsterIds.length === 0` while `sideB.team.length === 1`.
+   */
+  readonly canRecruit: boolean;
+  /** Bait options (recruit_bonus > 0), classified by data — empty when none. */
+  readonly baitOptions: readonly BaitOptionVM[];
 }
 
 function monsterCard(
@@ -60,6 +88,7 @@ export function buildBattleViewModel(
   battle: StoreBattle,
   skillMap: ReadonlyMap<number, StoreSkillRow>,
   speciesMap: ReadonlyMap<number, StoreSpeciesRow>,
+  baitItems: readonly BaitItem[] = [],
 ): BattleViewModel | null {
   const { sideA, sideB } = battle;
   if (!sideA.team.length || sideA.active >= sideA.team.length) return null;
@@ -97,6 +126,25 @@ export function buildBattleViewModel(
     }
   }
 
+  // Wild detection (ADR-0045): the wild opponent is UNOWNED, so it has no entry
+  // in opponentMonsterIds even though sideB.team holds the wild BattleMonster.
+  const isWild = battle.opponentMonsterIds.length === 0;
+  const canRecruit = ongoing && isWild;
+
+  // Bait options: classify by DATA (recruit_bonus > 0), never by item id, and
+  // only surface stacks the player actually holds (count > 0). Empty when not
+  // recruitable.
+  const baitOptions: BaitOptionVM[] = canRecruit
+    ? baitItems
+        .filter((b) => b.recruitBonus > 0 && b.count > 0)
+        .map((b) => ({
+          itemId: b.itemId,
+          name: b.name,
+          recruitBonus: b.recruitBonus,
+          count: b.count,
+        }))
+    : [];
+
   return {
     battleId: battle.battleId,
     turnNumber: battle.turnNumber,
@@ -107,5 +155,7 @@ export function buildBattleViewModel(
     canFlee: ongoing,
     canSwap: bench.length > 0,
     bench,
+    canRecruit,
+    baitOptions,
   };
 }

@@ -225,14 +225,14 @@ test.describe
           recruited = true;
           // ASSERTION: exactly one new monster in box (party_slot == PARTY_SLOT_NONE = 255).
           //   The specialist exposes window.__game().ownedMonsters: MonsterPub[].
-          const newMonsters = await page.evaluate((countBefore: number) => {
+          const newMonsters = await page.evaluate(() => {
             const g = (
               window as unknown as {
                 __game: () => { monsterPubCount: number; ownedMonsters: MonsterPub[] };
               }
             ).__game();
             return g.ownedMonsters.filter((m) => m.party_slot === 255);
-          }, countBefore);
+          });
 
           // The recruited monster must be in the box (party_slot = 255 = PARTY_SLOT_NONE).
           expect(newMonsters.length).toBeGreaterThanOrEqual(1);

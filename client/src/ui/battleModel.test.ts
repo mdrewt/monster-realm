@@ -479,3 +479,67 @@ describe('buildBattleViewModel: battleId passthrough', () => {
     expect(vm!.battleId).toBe(12345678901234567890n);
   });
 });
+
+// ---------------------------------------------------------------------------
+// buildBattleViewModel: canRecruit — ongoing AND wild (M8d, ADR-0045/0047)
+// ---------------------------------------------------------------------------
+
+describe('buildBattleViewModel: canRecruit — wild detection by opponentMonsterIds', () => {
+  it('BITES: canRecruit is true in an ongoing WILD battle (opponentMonsterIds empty)', () => {
+    // Kills: an impl that never surfaces recruit, or that uses opponentIdentity
+    // instead of the documented empty-opponentMonsterIds wild signal.
+    const b = makeBattle({ outcome: 'Ongoing', opponentMonsterIds: [] });
+    const vm = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(vm!.canRecruit).toBe(true);
+  });
+
+  it('BITES: canRecruit is false in a PvP battle (opponentMonsterIds non-empty)', () => {
+    // Kills: an impl that shows Recruit in PvP — the server rejects it, but the
+    // UI must not even offer it (no owned-monster theft surface).
+    const b = makeBattle({ outcome: 'Ongoing', opponentMonsterIds: [2n] });
+    const vm = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(vm!.canRecruit).toBe(false);
+  });
+
+  it('BITES: canRecruit is false once a wild battle has ended (outcome != Ongoing)', () => {
+    // Kills: an impl that gates only on wildness and ignores the outcome.
+    const b = makeBattle({ outcome: 'SideAWins', opponentMonsterIds: [] });
+    const vm = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(vm!.canRecruit).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildBattleViewModel: baitOptions — classify by DATA (recruit_bonus > 0)
+// ---------------------------------------------------------------------------
+
+describe('buildBattleViewModel: baitOptions classify by recruit_bonus, not item id', () => {
+  it('BITES: only items with recruit_bonus > 0 AND count > 0 appear as bait', () => {
+    // Kills: an impl that lists ALL inventory items, or filters by a hardcoded id.
+    const b = makeBattle({ outcome: 'Ongoing', opponentMonsterIds: [] });
+    const vm = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)), [
+      { itemId: 1, name: 'Lure Berry', recruitBonus: 150, count: 3 },
+      { itemId: 2, name: 'Potion', recruitBonus: 0, count: 5 }, // not bait
+      { itemId: 3, name: 'Empty Lure', recruitBonus: 150, count: 0 }, // none held
+    ]);
+    expect(vm!.baitOptions).toHaveLength(1);
+    expect(vm!.baitOptions[0]!.itemId).toBe(1);
+    expect(vm!.baitOptions[0]!.recruitBonus).toBe(150);
+  });
+
+  it('BITES: baitOptions is empty when the battle is not recruitable (PvP)', () => {
+    // Kills: an impl that surfaces bait even when recruit is impossible.
+    const b = makeBattle({ outcome: 'Ongoing', opponentMonsterIds: [2n] });
+    const vm = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)), [
+      { itemId: 1, name: 'Lure Berry', recruitBonus: 150, count: 3 },
+    ]);
+    expect(vm!.baitOptions).toEqual([]);
+  });
+
+  it('BITES: baitOptions defaults to empty when no bait list is provided', () => {
+    // Kills: an impl that crashes or returns undefined when the optional arg is omitted.
+    const b = makeBattle({ outcome: 'Ongoing', opponentMonsterIds: [] });
+    const vm = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(vm!.baitOptions).toEqual([]);
+  });
+});

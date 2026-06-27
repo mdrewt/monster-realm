@@ -8,13 +8,13 @@
 //! Time columns are `i64` ms (round-trip `game_core::Millis`). Syntax: crate 1.12.
 
 use game_core::{
-    apply_move, apply_xp_gain, battle_xp_reward, derive_stats, load_encounters, load_items,
-    load_skills, load_species, load_type_chart, resolve_encounter, resolve_turn,
-    roll_individuality, roll_starter, spawn, stepped_onto_grass, validate_content,
+    apply_move, apply_xp_gain, battle_xp_reward, build_monster, derive_stats, load_encounters,
+    load_items, load_skills, load_species, load_type_chart, recruit_chance, resolve_encounter,
+    resolve_turn, roll_individuality, roll_starter, spawn, stepped_onto_grass, validate_content,
     validate_encounters, zone_0, ActionState, Affinity, BattleMonster, BattleOutcome, BattleSide,
     BattleState, CharacterState, Direction, EVs, EncounterEntry, EncounterTable, Level, Millis,
     MonsterInstance, MoveInput, NatureKind, SkillDef, StatBlock, StatKind, TileMap, TilePos,
-    TurnChoice, TurnVariance, TypeChart, MOVE_QUEUE_CAP, STEP_MS,
+    TurnChoice, TurnVariance, TypeChart, MOVE_QUEUE_CAP, RECRUIT_BASE_RATE, STEP_MS,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
@@ -136,6 +136,10 @@ pub struct ItemRow {
     pub id: u32,
     pub name: String,
     pub description: String,
+    /// Per-mille bonus this item grants to `recruit_chance` when used as bait
+    /// (0 = not bait). Seeded from the `game-core` `ItemDef` (one SSOT), so both
+    /// client and server classify bait by data, never by a hardcoded id.
+    pub recruit_bonus: u16,
 }
 
 // --- Encounter table (M8b, ADR-0040 second visibility mode: must-never-leak) ----
@@ -264,6 +268,21 @@ pub struct BattleWild {
     pub wild_species_id: u32,
     pub wild_level: u8,
     pub individuality_seed: u32,
+}
+
+/// Player item inventory (M8d, ADR-0046). PUBLIC so a client sees its OWN items
+/// (RLS by `owner_identity`). Carries ONLY ownership + count — NO gene/seed
+/// fields; individuality stays in the private `monster` table. Invariant: at
+/// most ONE row per `(owner_identity, item_id)` (always find-then-update).
+#[spacetimedb::table(name = inventory, public)]
+pub struct Inventory {
+    #[primary_key]
+    #[auto_inc]
+    pub inv_id: u64,
+    #[index(btree)]
+    pub owner_identity: Identity,
+    pub item_id: u32,
+    pub count: u32,
 }
 
 /// 255 sentinel = monster is in the box (not in any party slot).
@@ -677,6 +696,7 @@ fn sync_content_inner(ctx: &ReducerContext) {
             id: item.id,
             name: item.name.clone(),
             description: item.description.clone(),
+            recruit_bonus: item.recruit_bonus,
         };
         match ctx.db.item_row().id().find(item.id) {
             Some(_) => {
@@ -1618,10 +1638,11 @@ pub fn heal_party(ctx: &ReducerContext) -> Result<(), String> {
     Ok(())
 }
 
-/// After a battle ends (win/loss), write HP back to all party monsters and
-/// grant XP to the winner's team.
-fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<(), String> {
-    // Write back HP for player's team.
+/// Write post-battle HP back to every party monster (HP only — NO XP). Shared by
+/// `write_back_battle_results` (the win/loss/flee path) and the M8d recruit
+/// success arm (which grants no XP). Dual-writes the private `monster` row and
+/// its public projection.
+fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) {
     for (i, bm) in battle.state.side_a.team.iter().enumerate() {
         let mid = battle.party_monster_ids[i];
         if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
@@ -1631,6 +1652,18 @@ fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<()
             ctx.db.monster_pub().monster_id().update(pub_row);
         }
     }
+}
+
+/// After a battle ends (win/loss), write HP back to all party monsters and
+/// grant XP to the winner's team.
+fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<(), String> {
+    // Write back HP for player's team (HP-only; the XP block below is separate).
+    write_back_party_hp(ctx, battle);
+
+    // GC the private wild-individuality row on ANY terminal outcome (no-op for
+    // PvP battles with no `battle_wild` row; cleans wild battles that end via
+    // loss/flee/win without a recruit attempt).
+    ctx.db.battle_wild().battle_id().delete(battle.battle_id);
 
     // Grant XP if the player won.
     if battle.state.outcome == BattleOutcome::SideAWins {
@@ -1708,6 +1741,214 @@ fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<()
         }
     }
 
+    Ok(())
+}
+
+// --- Inventory helpers (M8d, ADR-0046 — single stack per (owner, item_id)) -----
+
+/// Grant `qty` of `item_id` to `owner`, merging into the owner's existing stack
+/// if present (saturating to avoid overflow) or inserting a new row otherwise.
+/// SINGLE stack per `(owner, item_id)`: always find-then-update.
+fn grant_item(ctx: &ReducerContext, owner: Identity, item_id: u32, qty: u32) {
+    let existing = ctx
+        .db
+        .inventory()
+        .owner_identity()
+        .filter(owner)
+        .find(|r| r.item_id == item_id);
+    match existing {
+        Some(mut row) => {
+            row.count = row.count.saturating_add(qty);
+            ctx.db.inventory().inv_id().update(row);
+        }
+        None => {
+            ctx.db.inventory().insert(Inventory {
+                inv_id: 0, // auto_inc
+                owner_identity: owner,
+                item_id,
+                count: qty,
+            });
+        }
+    }
+}
+
+/// Consume exactly one of `item_id` from `owner`. Rejects (`Err`) when the stack
+/// is absent or already empty. Uses `checked_sub` — NEVER a bare decrement — so
+/// an empty stack can never underflow into a 2^32 windfall.
+fn consume_one(ctx: &ReducerContext, owner: Identity, item_id: u32) -> Result<(), String> {
+    let mut row = ctx
+        .db
+        .inventory()
+        .owner_identity()
+        .filter(owner)
+        .find(|r| r.item_id == item_id)
+        .ok_or_else(|| "item not in inventory".to_string())?;
+    if row.count == 0 {
+        return Err("item count is zero".to_string());
+    }
+    row.count = row
+        .count
+        .checked_sub(1)
+        .ok_or_else(|| "item count is zero".to_string())?;
+    ctx.db.inventory().inv_id().update(row);
+    Ok(())
+}
+
+/// Attempt to recruit the wild monster in a wild battle (M8d, ADR-0047). The
+/// roll is injected (`ctx.random()`), never a client argument. Optional `bait`
+/// is classified by data (the item's `recruit_bonus`), consumed BEFORE the roll.
+///
+/// Success: build the SAME individual from the stored seed (full HP), drop it in
+/// the box, write back party HP (NO XP), GC the wild row, end the battle.
+/// Failure: advance the turn, let the wild strike back; if that ends the battle,
+/// run the full results path (XP/loss handling) + GC.
+#[spacetimedb::reducer]
+pub fn attempt_recruit(
+    ctx: &ReducerContext,
+    battle_id: u64,
+    bait_item_id: Option<u32>,
+) -> Result<(), String> {
+    let me = ctx.sender;
+    let mut battle = match ctx.db.battle().battle_id().find(battle_id) {
+        Some(b) => b,
+        None => {
+            let e = "battle not found".to_string();
+            log_reject("attempt_recruit", me, &e);
+            return Err(e);
+        }
+    };
+    if battle.player_identity != me {
+        let e = "not owner".to_string();
+        log_reject("attempt_recruit", me, &e);
+        return Err(e);
+    }
+    if battle.state.outcome != BattleOutcome::Ongoing {
+        let e = "battle is not ongoing".to_string();
+        log_reject("attempt_recruit", me, &e);
+        return Err(e);
+    }
+    let bw = match ctx.db.battle_wild().battle_id().find(battle_id) {
+        Some(bw) => bw,
+        None => {
+            let e = "not a wild battle".to_string();
+            log_reject("attempt_recruit", me, &e);
+            return Err(e);
+        }
+    };
+
+    // Bait (optional): classify by data (recruit_bonus), consume BEFORE the roll.
+    let mut bait_bonus = 0u16;
+    if let Some(id) = bait_item_id {
+        let item = match ctx.db.item_row().id().find(id) {
+            Some(row) => row,
+            None => {
+                let e = "unknown item".to_string();
+                log_reject("attempt_recruit", me, &e);
+                return Err(e);
+            }
+        };
+        let rb = item.recruit_bonus;
+        if rb == 0 {
+            let e = "item is not bait".to_string();
+            log_reject("attempt_recruit", me, &e);
+            return Err(e);
+        }
+        consume_one(ctx, me, id)?;
+        bait_bonus = rb;
+    }
+
+    let wild = battle.state.side_b.active_monster();
+    let chance = recruit_chance(wild.max_hp, wild.current_hp, RECRUIT_BASE_RATE, bait_bonus);
+    let roll: u32 = ctx.random();
+    let success = game_core::attempt_recruit(chance, roll);
+
+    if success {
+        // Rebuild the EXACT wild from the stored seed at its level (full HP).
+        let species_row = ctx
+            .db
+            .species_row()
+            .id()
+            .find(bw.wild_species_id)
+            .ok_or_else(|| format!("wild species {} not found", bw.wild_species_id))?;
+        let species_core = game_core::Species {
+            id: species_row.id,
+            name: species_row.name.clone(),
+            base_stats: StatBlock {
+                hp: species_row.base_hp,
+                attack: species_row.base_attack,
+                defense: species_row.base_defense,
+                speed: species_row.base_speed,
+                sp_attack: species_row.base_sp_attack,
+                sp_defense: species_row.base_sp_defense,
+            },
+            affinity: species_row.affinity,
+            learnable_skill_ids: species_row.learnable_skill_ids.clone(),
+        };
+        let inst = build_monster(
+            bw.individuality_seed,
+            &species_core,
+            Level::new(bw.wild_level)?,
+        );
+        let row = monster_from_instance(me, &inst, PARTY_SLOT_NONE);
+        let inserted = ctx.db.monster().insert(row);
+        ctx.db.monster_pub().insert(pub_from_monster(&inserted));
+
+        battle.state.outcome = BattleOutcome::SideAWins;
+        write_back_party_hp(ctx, &battle);
+        ctx.db.battle_wild().battle_id().delete(battle_id);
+        ctx.db.battle().battle_id().update(battle);
+        // Log ONLY public coordinates — NEVER seed/IVs/nature (side-channel).
+        log::info!(
+            "{{\"evt\":\"recruit_success\",\"battle_id\":{battle_id},\"species_id\":{}}}",
+            bw.wild_species_id
+        );
+        return Ok(());
+    }
+
+    // Failure: the wild gets a turn. Advance, then let it strike back.
+    battle.state.turn_number += 1;
+    if !wild.known_skill_ids.is_empty() {
+        let skill_rows: Vec<SkillRow> = ctx.db.skill_row().iter().collect();
+        let skill_defs = skill_defs_from_rows(&skill_rows);
+        let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter());
+        let variance = TurnVariance::from_ctx_random(ctx.random());
+        let _events = game_core::resolve_enemy_turn(
+            &mut battle.state,
+            game_core::SideId::SideB,
+            &skill_defs,
+            &type_chart,
+            &variance,
+        );
+    }
+
+    if battle.state.outcome != BattleOutcome::Ongoing {
+        // Terminal (e.g. the wild knocked out the player's last monster).
+        write_back_battle_results(ctx, &battle)?;
+        ctx.db.battle_wild().battle_id().delete(battle_id);
+    }
+    ctx.db.battle().battle_id().update(battle);
+    log::info!("{{\"evt\":\"recruit_fail\",\"battle_id\":{battle_id}}}");
+    Ok(())
+}
+
+/// DEV/TEST: grant bait to the CALLER only (self-scoped to `ctx.sender`; no
+/// arbitrary-recipient parameter). Rejects non-bait items. Superseded by the M9
+/// shop. Capped at 99 per call.
+#[spacetimedb::reducer]
+pub fn grant_bait(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> {
+    let me = ctx.sender;
+    let Some(item) = ctx.db.item_row().id().find(item_id) else {
+        let e = "not a bait item".to_string();
+        log_reject("grant_bait", me, &e);
+        return Err(e);
+    };
+    if item.recruit_bonus == 0 {
+        let e = "not a bait item".to_string();
+        log_reject("grant_bait", me, &e);
+        return Err(e);
+    }
+    let capped = qty.min(99);
+    grant_item(ctx, ctx.sender, item_id, capped);
     Ok(())
 }
 
