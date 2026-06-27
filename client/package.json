@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
-    "gen": "spacetime generate --lang typescript --module-path ../server-module --out-dir src/module_bindings"
+    "gen": "spacetime generate --lang typescript --module-path ../server-module --out-dir src/module_bindings",
+    "postinstall": "node ../scripts/wire-pixijs-skills.mjs"
   },
   "dependencies": {
     "pixi.js": "^8.19.0",
