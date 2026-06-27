@@ -85,6 +85,21 @@ pub fn move_queue_cap() -> u32 {
     game_core::MOVE_QUEUE_CAP as u32
 }
 
+/// The party size (slot count), single-sourced from `game-core` so TS never
+/// hard-codes it.
+#[wasm_bindgen]
+#[must_use]
+pub fn party_size() -> u32 {
+    game_core::PARTY_SIZE as u32
+}
+
+/// The party-slot "boxed" sentinel, single-sourced from `game-core`.
+#[wasm_bindgen]
+#[must_use]
+pub fn party_slot_none() -> u32 {
+    game_core::PARTY_SLOT_NONE as u32
+}
+
 /// The renderer's map source: the SAME `TileMap` the rule evaluates, read ONCE on
 /// init (the map is static at M3 — never per frame, never hard-coded in TS).
 /// `zone_id` is reserved for M11 multi-zone; only `zone_0` exists today.
@@ -120,5 +135,32 @@ mod tests {
             super::predict_move(1, 1, 0, 0, 0, 0, 2, 1000),
             game_core::apply_move_coded(1, 1, 0, 0, 0, 0, 2, 1000).to_vec()
         );
+    }
+
+    // M8.5f / ADR-0052 Criterion C — PARTY SSOT parity
+    //
+    // RED-by-non-compilation: `super::party_size()` and `super::party_slot_none()`
+    // do not exist yet; `game_core::PARTY_SIZE` and `game_core::PARTY_SLOT_NONE`
+    // are not exported yet. The implementer adds:
+    //   - `pub const PARTY_SIZE: u8 = 6;` in game-core/src/world.rs + pub use
+    //   - `pub const PARTY_SLOT_NONE: u8 = 255;` in game-core/src/world.rs + pub use
+    //   - `pub fn party_size() -> u32 { game_core::PARTY_SIZE as u32 }` in lib.rs
+    //   - `pub fn party_slot_none() -> u32 { game_core::PARTY_SLOT_NONE as u32 }` in lib.rs
+    //
+    // Wrong impls killed:
+    //   party_size() returning a literal `6u32` not sourced from game_core::PARTY_SIZE
+    //   → changing game_core::PARTY_SIZE would not propagate (assert_eq fails if they drift)
+    //   party_slot_none() returning a literal `255u32` not sourced from game_core::PARTY_SLOT_NONE
+    //   → same drift risk
+    #[test]
+    fn party_size_matches_game_core_const() {
+        // Fails to compile until `party_size()` export and `game_core::PARTY_SIZE` exist.
+        assert_eq!(super::party_size(), game_core::PARTY_SIZE as u32);
+    }
+
+    #[test]
+    fn party_slot_none_matches_game_core_const() {
+        // Fails to compile until `party_slot_none()` export and `game_core::PARTY_SLOT_NONE` exist.
+        assert_eq!(super::party_slot_none(), game_core::PARTY_SLOT_NONE as u32);
     }
 }

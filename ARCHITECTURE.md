@@ -32,9 +32,12 @@ effectful shells.
   is the **`Predictor`**: a local intent queue + `pending` **queue-ops** (`Enqueue`/
   `SetMove`/`Clear`, not raw moves) + the four-step `reconcile` (drop acked → rebuild
   from the server queue + replay ops → reset to truth → `step_ms`-paced `drain`) + a
-  divergence return; seeded by the first own-row; bounded prediction + snap-on-large-
-  gap (ADR-0013). The movement rule itself never lives here — `apply_move` is the
-  injected client-wasm export (proven by the parity + no-logic evals).
+  divergence return; seeded by the first own-row. **Bounded prediction enforced at both
+  mutation points** — `enqueue` rejects moves past `MOVE_QUEUE_CAP`, and `reconcile` clamps
+  the rebuilt queue to the cap (ADR-0052) — so the predictor never runs ahead of authority
+  and a burst can't leave mispredicted tiles. Snap-on-large-gap included (ADR-0013). The
+  movement rule itself never lives here — `apply_move` is the injected client-wasm export
+  (proven by the parity + no-logic evals).
   **M4 contract:** the own character animates from a **self-owned slide clock** and
   **ignores `move_started_at`** (drain-pacing bookkeeping only); `reconcile` runs on
   one **transaction-consistent** snapshot.
@@ -50,7 +53,7 @@ effectful shells.
   torn down on despawn), behind an **`AssetProvider`** seam (albedo today; HD-2D
   normal/material channels are an additive future render mode — ADR-0004). It owns no
   state and reads no store/predictor: the M4c loop feeds it resolved positions
-  (own from the slide clock, remote from the interpolation buffer).
+  (own from the slide clock, remote from the interpolation buffer). **Wasm-sourced constants** — `party_size()` and `party_slot_none()` are now single-sourced from `game-core` via `client-wasm` exports, replacing the former TS magic literals.
 
 ## Mechanical gates (each ships a proof-of-teeth fixture — ADR-0010)
 
@@ -85,7 +88,7 @@ stable id), separate from `init`. Stable ids are append-only.
 
 ADRs **0002–0034** are design ADRs that live in the harness spec corpus
 (`../../specs/monster-realm-v2/adr/`); **0001** is mirrored in both locations.
-Implementation ADRs **0001, 0035–0051** live in `docs/adr/` — see
+Implementation ADRs **0001, 0035–0052** live in `docs/adr/` — see
 `docs/adr/README.md` for the navigable catalog. Highlights: 0035 scaffold
 hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest, **0039
 two-window e2e CI gate**, 0040 RLS fallback split-tables, 0041 integer damage
@@ -93,7 +96,7 @@ formula, 0042 battle table public PvE, 0043 CI caching + fast inner loop, 0044
 private encounter table, 0045 private `battle_wild` individuality table, 0046
 player inventory model, 0047 recruit resolution, 0048 `start_battle` opponent
 provenance, 0049 panic-as-content-invariant policy, 0050 nightly mutation/
-coverage + bindings-drift-in-ci, 0051 biome lint scope. See also
+coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction. See also
 `docs/validation-findings.md` (empirical Tier-1 results).
 
 ## Monster subsystem (`game-core/src/monster/`, M6a)

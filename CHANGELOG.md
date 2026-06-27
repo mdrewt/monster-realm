@@ -6,6 +6,17 @@ pending a `cliff.toml` body-template fix (tracked for a build/CI-hygiene slice).
 
 ## [Unreleased]
 
+### Fixed — M8.5f: netcode & client robustness
+
+- **Client over-prediction rubberband** — on a move-input burst beyond `MOVE_QUEUE_CAP`, `Predictor.enqueue` now declines past the cap and `reconcile` clamps the rebuilt queue to the cap (ADR-0052), preventing mispredicted tiles on reconnect.
+- **KeyB no longer opens the box over an active battle** — key-priority ordering prevents conflicting overlays.
+- **Renderer responds to window resize** — the render layer correctly recalculates viewport on window-resize events.
+- **No spurious snap on predictor's first drain / reconnect** — fixed edge case in snap-on-large-gap logic on initial state transitions.
+
+### Changed — M8.5f: SSOT consolidation
+
+- **Party constants single-sourced from game-core** — `PARTY_SIZE` and `PARTY_SLOT_NONE` are now exported from `game-core` via `client-wasm` as `party_size()` and `party_slot_none()` functions; TS magic literals deleted. Server's `MAX_PARTY_SIZE` and `PARTY_SLOT_NONE` now re-source from `game_core::` module constants, ensuring parity.
+
 ### Added — M8d: recruit-by-weaken with inventory
 
 - **`build_monster(seed, &Species, level: Level)`** — pure generalization of

@@ -5,12 +5,12 @@ Architecture Decision Records live in **two locations**; check both.
 - **Design ADRs `0002`–`0034`** — in the **harness spec corpus**
   (`../../specs/monster-realm-v2/adr/`). These are the foundational design
   decisions authored alongside the milestone specs.
-- **Implementation ADRs `0001`, `0035`–`0051`** — in **this directory**
+- **Implementation ADRs `0001`, `0035`–`0052`** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0052`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0053`**.
 
 ## ADRs in `docs/adr/`
 
@@ -34,6 +34,7 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 | [0049](./0049-panic-as-content-invariant-policy.md) | Panic-as-content-invariant policy in the pure core (+ rule-core contracts) | M8.5b |
 | [0050](./0050-nightly-mutation-coverage-and-bindings-drift-in-ci.md) | Nightly mutation/coverage gates (not per-PR) + bindings-drift in fast `ci` | M8.5c |
 | [0051](./0051-biome-lint-scope.md) | Biome as the TS/JS style+lint gate: scope, exclusions, deferred lint debt | M8.5d |
+| [0052](./0052-bounded-client-prediction-queue-cap.md) | Bounded client prediction to the move-queue cap (no over-prediction rubberband) | M8.5f |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
