@@ -28,18 +28,20 @@ export function parseTableColumns(src) {
   // Match the full table attribute + struct block.
   const tableRe =
     /#\[spacetimedb::table\(name\s*=\s*(\w+)[^\]]*\)\]\s*pub struct \w+\s*\{([\s\S]*?)\n\s*\}/g;
-  let m;
-  while ((m = tableRe.exec(src)) !== null) {
+  let m = tableRe.exec(src);
+  while (m !== null) {
     const tableName = m[1];
     const body = m[2];
     // Extract field names: lines like `    pub <field>:` (with optional attributes above).
     const fieldRe = /\bpub\s+(\w+)\s*:/g;
     const fields = [];
-    let fm;
-    while ((fm = fieldRe.exec(body)) !== null) {
+    let fm = fieldRe.exec(body);
+    while (fm !== null) {
       fields.push(fm[1]);
+      fm = fieldRe.exec(body);
     }
     tables[tableName] = fields;
+    m = tableRe.exec(src);
   }
   return tables;
 }
@@ -49,7 +51,7 @@ export function parseTableColumns(src) {
  * Returns null on success, or a string error describing the first violation.
  */
 export function checkBattleColumns(tables, expectedColumns) {
-  const battle = tables['battle'];
+  const battle = tables.battle;
   if (!battle) {
     return 'battle table not found in server-module source';
   }
@@ -66,7 +68,7 @@ export function checkBattleColumns(tables, expectedColumns) {
  * Returns null on success, or a string error.
  */
 export function checkBattlePrimaryKey(tables) {
-  const battle = tables['battle'];
+  const battle = tables.battle;
   if (!battle) return 'battle table not found';
   if (!battle.includes('battle_id')) {
     return 'battle table is missing battle_id (primary key must be stable and append-only)';
@@ -185,7 +187,7 @@ export default async function () {
     return { name, pass: false, detail: colErr };
   }
 
-  const battleFields = tables['battle'];
+  const battleFields = tables.battle;
   return {
     name,
     pass: true,

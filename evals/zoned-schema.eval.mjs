@@ -7,9 +7,10 @@ import { readFileSync } from 'node:fs';
 export function parseTables(src) {
   const tables = [];
   const re = /#\[spacetimedb::table\(name = (\w+)[^\]]*\)\]\s*pub struct \w+\s*\{([\s\S]*?)\n\}/g;
-  let m;
-  while ((m = re.exec(src)) !== null) {
+  let m = re.exec(src);
+  while (m !== null) {
     tables.push({ name: m[1], body: m[2] });
+    m = re.exec(src);
   }
   return tables;
 }

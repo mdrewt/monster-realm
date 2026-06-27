@@ -6,8 +6,8 @@
 // enum tag, a swapped field, a lost `bigint`, a missing time floor) that a build-
 // only parity check would miss. Builds the wasm fresh so it tests current source.
 import { execSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
@@ -41,7 +41,14 @@ export default async function () {
   const name = 'js-path-parity (marshaled serde apply_move == flat predict_move == native)';
 
   // Proof-of-teeth: the comparator MUST reject a divergence.
-  if (statesMatch([2, 1, 2, 1], { pos: { x: 9, y: 9 }, facing: 'North', action: 'Idle', move_started_at: 0 })) {
+  if (
+    statesMatch([2, 1, 2, 1], {
+      pos: { x: 9, y: 9 },
+      facing: 'North',
+      action: 'Idle',
+      move_started_at: 0,
+    })
+  ) {
     return { name, pass: false, detail: 'proof-of-teeth: comparator failed to reject a mismatch' };
   }
 
@@ -50,7 +57,11 @@ export default async function () {
       stdio: ['ignore', 'ignore', 'pipe'],
     });
   } catch (e) {
-    return { name, pass: false, detail: `wasm-pack build failed: ${String(e.stderr || e.message).slice(0, 300)}` };
+    return {
+      name,
+      pass: false,
+      detail: `wasm-pack build failed: ${String(e.stderr || e.message).slice(0, 300)}`,
+    };
   }
   const pkgPath = path.resolve('client-wasm/pkg/client_wasm.js');
   if (!existsSync(pkgPath)) {
@@ -68,7 +79,12 @@ export default async function () {
     );
     // Marshaled path: the real serde objects M4 will hand the predictor.
     const input = ik === 0 ? { Step: DIRS[sd] } : 'Jump';
-    const state = { pos: { x, y }, facing: DIRS[fc], action: ACTIONS[ac], move_started_at: started };
+    const state = {
+      pos: { x, y },
+      facing: DIRS[fc],
+      action: ACTIONS[ac],
+      move_started_at: started,
+    };
     const marshaled = wasm.apply_move(state, input, now);
 
     if (!statesMatch(flat, marshaled)) {

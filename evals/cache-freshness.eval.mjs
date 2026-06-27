@@ -102,8 +102,8 @@ export function hasDistinctPrefixKeys(yaml) {
 // as testRecipeHasNextestAndDoctest. Returns '' if recipe not found.
 export function extractRecipeBody(justfile, recipeName) {
   // Look for `\n<recipeName>:` or `\n<recipeName> ` (parameterised recipe)
-  const exactMarker = '\n' + recipeName + ':';
-  const paramMarker = '\n' + recipeName + ' ';
+  const exactMarker = `\n${recipeName}:`;
+  const paramMarker = `\n${recipeName} `;
   const exactIdx = justfile.indexOf(exactMarker);
   const paramIdx = justfile.indexOf(paramMarker);
 
@@ -114,7 +114,7 @@ export function extractRecipeBody(justfile, recipeName) {
 
   // Also handle recipe at start of file
   if (headerIdx === -1) {
-    if (justfile.startsWith(recipeName + ':') || justfile.startsWith(recipeName + ' ')) {
+    if (justfile.startsWith(`${recipeName}:`) || justfile.startsWith(`${recipeName} `)) {
       headerIdx = -1; // handled specially below (start = 0)
     } else {
       return '';
@@ -134,7 +134,7 @@ export function extractRecipeBody(justfile, recipeName) {
       // Strip comment lines: trimmed line starts with '#'
       const trimmed = line.trimStart();
       if (!trimmed.startsWith('#')) {
-        body += line + '\n';
+        body += `${line}\n`;
       }
       pos = lineEnd === -1 ? justfile.length : lineEnd + 1;
     } else if (line.length === 0) {
@@ -214,7 +214,7 @@ export function testRecipeHasNextestAndDoctest(justfile) {
     const line = lineEnd === -1 ? justfile.slice(pos) : justfile.slice(pos, lineEnd);
     // Recipe body lines start with whitespace (tab or spaces)
     if (line.length > 0 && (line[0] === ' ' || line[0] === '\t')) {
-      body += line + '\n';
+      body += `${line}\n`;
       pos = lineEnd === -1 ? justfile.length : lineEnd + 1;
     } else if (line.length === 0) {
       // Blank line — skip it, may still be inside recipe in Just 1.21+

@@ -312,7 +312,7 @@ export default async function () {
     );
     const tables = parseTables(fixture);
     const enc = tables.find((t) => t.name === 'encounter');
-    if (enc && enc.isPublic) {
+    if (enc?.isPublic) {
       return {
         name,
         pass: false,

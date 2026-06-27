@@ -9,19 +9,11 @@
 // reconcile + drain* orchestration). The fake mirrors game-core movement over a
 // tiny map: a west wall at x <= 0, everything else walkable. Screen coords:
 // North = y-1, South = y+1, East = x+1, West = x-1.
-import { describe, expect, it } from 'vitest';
+
 import * as fc from 'fast-check';
-import {
-  Predictor,
-  type ApplyMove,
-  type IntentToSend,
-  type QueueOp,
-} from './predictor';
-import type {
-  WasmCharacterState,
-  WasmDirection,
-  WasmMoveInput,
-} from '../convert/convert';
+import { describe, expect, it } from 'vitest';
+import type { WasmCharacterState, WasmDirection, WasmMoveInput } from '../convert/convert';
+import { type ApplyMove, type IntentToSend, Predictor, type QueueOp } from './predictor';
 
 const STEP_MS = 200;
 const QUEUE_CAP = 8;
@@ -32,10 +24,14 @@ const QUEUE_CAP = 8;
 // blocked). `move_started_at` is stamped to floor(now) on every call.
 function step(dir: WasmDirection, x: number, y: number): { x: number; y: number } {
   switch (dir) {
-    case 'North': return { x, y: y - 1 };
-    case 'South': return { x, y: y + 1 };
-    case 'East': return { x: x + 1, y };
-    case 'West': return { x: x - 1, y };
+    case 'North':
+      return { x, y: y - 1 };
+    case 'South':
+      return { x, y: y + 1 };
+    case 'East':
+      return { x: x + 1, y };
+    case 'West':
+      return { x: x - 1, y };
   }
 }
 function walkable(p: { x: number; y: number }): boolean {
@@ -62,10 +58,18 @@ const applyMove: ApplyMove = (state, input, now): WasmCharacterState => {
 function mkPredictor(): Predictor {
   return new Predictor(applyMove, STEP_MS, QUEUE_CAP);
 }
-function east(): WasmMoveInput { return { Step: 'East' }; }
-function west(): WasmMoveInput { return { Step: 'West' }; }
-function north(): WasmMoveInput { return { Step: 'North' }; }
-function jump(): WasmMoveInput { return 'Jump'; }
+function east(): WasmMoveInput {
+  return { Step: 'East' };
+}
+function west(): WasmMoveInput {
+  return { Step: 'West' };
+}
+function north(): WasmMoveInput {
+  return { Step: 'North' };
+}
+function jump(): WasmMoveInput {
+  return 'Jump';
+}
 
 /** An authoritative baseline already rebased to a local-time stamp (what M4 feeds). */
 function baseline(
@@ -386,7 +390,12 @@ describe('Predictor: fast-check properties', () => {
           const p = mkPredictor();
           p.reconcile(baseline(x, y, 10_000 - 2 * STEP_MS), [], 0, 10_000); // seed
           // First reconcile against a coherent snapshot (no unacked pending).
-          p.reconcile(baseline(x, y, 10_000 - 2 * STEP_MS), authMoves, Number.MAX_SAFE_INTEGER, 10_000);
+          p.reconcile(
+            baseline(x, y, 10_000 - 2 * STEP_MS),
+            authMoves,
+            Number.MAX_SAFE_INTEGER,
+            10_000,
+          );
           const first = p.predicted!;
           // Second identical reconcile must change nothing and report no divergence.
           const diverged = p.reconcile(
@@ -476,20 +485,23 @@ describe('Predictor: proof-of-teeth', () => {
 describe('Predictor: monotonic prediction (ADR-0013 smoothness)', () => {
   it('the predicted East tile never moves backward across interleaved drains', () => {
     fc.assert(
-      fc.property(fc.array(fc.integer({ min: 0, max: 400 }), { minLength: 1, maxLength: 30 }), (gaps) => {
-        const p = mkPredictor();
-        let t = 10_000;
-        p.reconcile(baseline(1, 5, t - 2 * STEP_MS), [], 0, t);
-        let lastX = p.predicted!.pos.x;
-        for (const g of gaps) {
-          p.enqueue(east());
-          t += g;
-          p.drain(t);
-          const x = p.predicted!.pos.x;
-          expect(x).toBeGreaterThanOrEqual(lastX); // never backward along the input path
-          lastX = x;
-        }
-      }),
+      fc.property(
+        fc.array(fc.integer({ min: 0, max: 400 }), { minLength: 1, maxLength: 30 }),
+        (gaps) => {
+          const p = mkPredictor();
+          let t = 10_000;
+          p.reconcile(baseline(1, 5, t - 2 * STEP_MS), [], 0, t);
+          let lastX = p.predicted!.pos.x;
+          for (const g of gaps) {
+            p.enqueue(east());
+            t += g;
+            p.drain(t);
+            const x = p.predicted!.pos.x;
+            expect(x).toBeGreaterThanOrEqual(lastX); // never backward along the input path
+            lastX = x;
+          }
+        },
+      ),
     );
   });
 

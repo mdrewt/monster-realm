@@ -4,8 +4,8 @@
 // it catches feature-flag/target divergence before any real rule (M1) depends
 // on it. Builds the wasm fresh so it always tests the current source.
 import { execSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);

@@ -1,6 +1,6 @@
-import { defineConfig } from 'vitest/config';
 import topLevelAwait from 'vite-plugin-top-level-await';
 import wasm from 'vite-plugin-wasm';
+import { defineConfig } from 'vitest/config';
 
 // The client-prediction wasm (built `--target bundler` from client-wasm via
 // wasm-pack) is consumed through these plugins: `vite-plugin-wasm` resolves the
