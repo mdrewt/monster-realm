@@ -1,6 +1,8 @@
 # Changelog
 
-All notable changes to monster-realm. Generated from Conventional Commits.
+All notable changes to monster-realm. Hand-maintained for now; automated
+regeneration from Conventional Commits via `git cliff` (`just changelog`) is
+pending a `cliff.toml` body-template fix (tracked for a build/CI-hygiene slice).
 
 ## [Unreleased]
 

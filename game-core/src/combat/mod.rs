@@ -1,8 +1,9 @@
 //! Combat engine — pure, deterministic, integer-only (ADR-0003).
 //!
-//! All battle resolution lives here exactly once (ADR-0006 SSOT). The server
-//! runs it for authority; the client runs the same compiled code for prediction
-//! via `client-wasm`. Re-implementing a battle rule elsewhere is the desync bug.
+//! All battle resolution lives here exactly once (ADR-0003 SSOT). The server
+//! resolves battles authoritatively (ADR-0017); the client does NOT predict
+//! battles (client-wasm prediction applies to movement only). Re-implementing a
+//! battle rule in another crate is the desync bug.
 //!
 //! # Module layout
 //! - `types`      — value objects (`BattleMonster`, `BattleState`, `BattleEvent`, …)

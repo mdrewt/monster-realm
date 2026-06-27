@@ -31,3 +31,30 @@ effectiveness, and a variance roll — all without floats.
   float formula on some inputs (accepted — matches Pokemon's approach);
   extreme stat combinations can overflow u32 intermediates only if stats
   exceed u16::MAX, which is structurally prevented by the type system.
+  **(Superseded — see the M8.5e amendment below: the intermediates are `u64`,
+  and this overflow rationale is corrected.)**
+
+## Amendment (M8.5e, 2026-06-27): u64 intermediates — correction
+
+A documentation-accuracy review (M8.5e) found that the original decision text
+above understates the intermediate width and gives an incorrect overflow
+rationale. The implementation was correct; the ADR text lagged it.
+
+- **Intermediate width is `u64`, not `u32`.** The shipped `calc_damage`
+  (`game-core/src/combat/damage.rs`) casts every operand with `u64::from(...)`
+  and computes all intermediates in `u64` (module doc-comment: "All arithmetic
+  uses `u64` intermediates to avoid overflow"). The original "u32 intermediates"
+  was never what the code did.
+- **The original "can't overflow u32" rationale was wrong.** The formula
+  evaluates the product `(2*level/5+2)*power*attack` *before* any division. With
+  the leading factor `(2*level/5+2)` at least 2 for every level, this three-term
+  product exceeds `u32::MAX`: even at the minimum factor of 2, `2 * power *
+  attack` with operands near `u16::MAX` reaches `2 × 65535² ≈ 8.59 × 10⁹`,
+  beyond `u32::MAX` (`4.29 × 10⁹`). For reference, the two-term `power × attack`
+  is `65535² = 4,294,836,225`, sitting just under `u32::MAX` `4,294,967,295`
+  (only ~131k of headroom) — so the leading level factor pushes it past the
+  `u32` ceiling. `u64` intermediates are therefore required, exactly as the code
+  already does.
+- **No code change.** This amendment corrects documentation only; the original
+  "Considered alternatives" and "Decision outcome" sections are preserved as the
+  historical record.
