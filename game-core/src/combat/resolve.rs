@@ -107,10 +107,16 @@ fn resolve_one_attack(
         };
 
         if let Some(idx) = next {
-            match defender_side {
-                SideId::SideA => state.side_a.active = idx,
-                SideId::SideB => state.side_b.active = idx,
-            }
+            let set = match defender_side {
+                SideId::SideA => state.side_a.set_active(idx),
+                SideId::SideB => state.side_b.set_active(idx),
+            };
+            // idx from next_conscious_index() is always in-bounds, conscious, and != active → infallible.
+            debug_assert!(
+                set.is_ok(),
+                "auto-switch index from next_conscious_index must be settable: {set:?}"
+            );
+            let _ = set; // consumed in release (debug_assert! strips), keeps clippy -D warnings clean
             events.push(BattleEvent::Switch {
                 side: defender_side,
                 new_active: idx,
@@ -163,20 +169,23 @@ pub fn resolve_turn(
 
     state.turn_number += 1;
 
-    // Swaps always happen before attacks
+    // Swaps always happen before attacks. An illegal swap (OOB/fainted) is a
+    // no-op: no `active` mutation, no Switch event; the rest of the turn proceeds.
     if let TurnChoice::Swap { team_index } = &choice_a {
-        state.side_a.active = *team_index;
-        events.push(BattleEvent::Switch {
-            side: SideId::SideA,
-            new_active: *team_index,
-        });
+        if state.side_a.set_active(*team_index).is_ok() {
+            events.push(BattleEvent::Switch {
+                side: SideId::SideA,
+                new_active: *team_index,
+            });
+        }
     }
     if let TurnChoice::Swap { team_index } = &choice_b {
-        state.side_b.active = *team_index;
-        events.push(BattleEvent::Switch {
-            side: SideId::SideB,
-            new_active: *team_index,
-        });
+        if state.side_b.set_active(*team_index).is_ok() {
+            events.push(BattleEvent::Switch {
+                side: SideId::SideB,
+                new_active: *team_index,
+            });
+        }
     }
 
     let a_attacks = matches!(choice_a, TurnChoice::Attack { .. });
@@ -318,9 +327,12 @@ pub fn resolve_player_swap(
 ) -> Vec<BattleEvent> {
     let mut events = Vec::new();
 
-    match swap_side {
-        SideId::SideA => state.side_a.active = new_active,
-        SideId::SideB => state.side_b.active = new_active,
+    let set = match swap_side {
+        SideId::SideA => state.side_a.set_active(new_active),
+        SideId::SideB => state.side_b.set_active(new_active),
+    };
+    if set.is_err() {
+        return events; // illegal swap rejected: no mutation, no Switch, no enemy turn (ADR-0053)
     }
     events.push(BattleEvent::Switch {
         side: swap_side,

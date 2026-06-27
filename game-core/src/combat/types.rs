@@ -32,11 +32,22 @@ impl BattleMonster {
     }
 }
 
+/// Why a checked swap was rejected (game-core-internal; never stored/sent — no serde/SpacetimeType). See ADR-0053.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwapError {
+    /// `idx` is past the end of `team` (also covers an empty team).
+    OutOfBounds,
+    /// The target slot's monster has fainted (`current_hp == 0`).
+    Fainted,
+}
+
 /// One side of the battle: the active slot index and the full team roster.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub struct BattleSide {
     /// Index into `team` for the currently-active monster (u32 for SpacetimeType).
+    /// Mutate ONLY via [`BattleSide::set_active`], the sole sanctioned mutator
+    /// (field stays pub this slice; full privatization parked — ADR-0053).
     pub active: u32,
     pub team: Vec<BattleMonster>,
 }
@@ -67,6 +78,24 @@ impl BattleSide {
             .enumerate()
             .find(|(i, m)| *i as u32 != self.active && !m.is_fainted())
             .map(|(i, _)| i as u32)
+    }
+
+    /// Set the active slot to `idx`, rejecting illegal swaps (reject-not-clamp, ADR-0053).
+    /// The ONLY sanctioned mutator of `active`: makes an out-of-range or fainted active
+    /// unreachable via the resolver. Bounds is checked BEFORE the fainted index, so an
+    /// out-of-range index can never panic-index `team[idx]`.
+    /// Returns `Err(SwapError::OutOfBounds)` if `idx as usize >= team.len()`,
+    /// `Err(SwapError::Fainted)` if the target is fainted, else sets `active` and returns `Ok(())`.
+    /// On any `Err`, `active` is left unchanged.
+    pub fn set_active(&mut self, idx: u32) -> Result<(), SwapError> {
+        if idx as usize >= self.team.len() {
+            return Err(SwapError::OutOfBounds);
+        }
+        if self.team[idx as usize].is_fainted() {
+            return Err(SwapError::Fainted);
+        }
+        self.active = idx;
+        Ok(())
     }
 }
 
