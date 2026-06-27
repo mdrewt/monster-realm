@@ -19,7 +19,14 @@ fn main() {
         .iter()
         .map(|v| {
             let r = apply_move_coded(
-                v[0] as i32, v[1] as i32, v[2] as u8, v[3] as u8, v[4], v[5] as u8, v[6] as u8, v[7],
+                v[0] as i32,
+                v[1] as i32,
+                v[2] as u8,
+                v[3] as u8,
+                v[4],
+                v[5] as u8,
+                v[6] as u8,
+                v[7],
             );
             format!(
                 "{{\"in\":[{},{},{},{},{},{},{},{}],\"out\":[{},{},{},{}]}}",

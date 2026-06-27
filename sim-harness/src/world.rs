@@ -60,7 +60,10 @@ impl ServerWorld {
     /// # Errors
     /// `Err` if the id is unknown, `seq` is stale, or the queue is full.
     pub fn enqueue(&mut self, id: u64, input: MoveInput, seq: u64) -> Result<(), String> {
-        let ch = self.chars.get_mut(&id).ok_or_else(|| "not joined".to_string())?;
+        let ch = self
+            .chars
+            .get_mut(&id)
+            .ok_or_else(|| "not joined".to_string())?;
         if seq <= ch.last_seq {
             return Err("stale seq".to_string());
         }
@@ -146,7 +149,10 @@ mod tests {
         // Burst beyond the cap within one "frame": cap accepts 2, the 3rd rejects.
         assert!(w.enqueue(id, step(Direction::East), 1).is_ok());
         assert!(w.enqueue(id, step(Direction::East), 2).is_ok());
-        assert_eq!(w.enqueue(id, step(Direction::East), 3).unwrap_err(), "queue full");
+        assert_eq!(
+            w.enqueue(id, step(Direction::East), 3).unwrap_err(),
+            "queue full"
+        );
         // One tick advances at most one tile.
         w.tick_zone(0, Millis(200), &map);
         assert_eq!(w.pos(id), Some(TilePos { x: 2, y: 1 }));
@@ -158,8 +164,14 @@ mod tests {
         let mut w = ServerWorld::new();
         let id = w.join(0);
         w.enqueue(id, step(Direction::East), 5).unwrap();
-        assert_eq!(w.enqueue(id, step(Direction::East), 5).unwrap_err(), "stale seq");
-        assert_eq!(w.enqueue(id, step(Direction::East), 4).unwrap_err(), "stale seq");
+        assert_eq!(
+            w.enqueue(id, step(Direction::East), 5).unwrap_err(),
+            "stale seq"
+        );
+        assert_eq!(
+            w.enqueue(id, step(Direction::East), 4).unwrap_err(),
+            "stale seq"
+        );
     }
 
     #[test]
@@ -181,7 +193,12 @@ mod tests {
             let mut w = ServerWorld::new();
             let map = zone_0();
             let id = w.join(0);
-            let dirs = [Direction::East, Direction::South, Direction::West, Direction::North];
+            let dirs = [
+                Direction::East,
+                Direction::South,
+                Direction::West,
+                Direction::North,
+            ];
             for (i, d) in dirs.into_iter().enumerate() {
                 let seq = u64::try_from(i).unwrap() + 1;
                 let _ = w.enqueue(id, step(d), seq);

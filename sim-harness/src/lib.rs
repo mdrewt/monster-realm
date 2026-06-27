@@ -88,8 +88,15 @@ impl Link {
             if (r % 100) < u64::from(self.loss_pct) {
                 continue; // dropped (deterministic for this seed)
             }
-            let jit = if self.jitter == 0 { 0 } else { (r >> 8) % (self.jitter + 1) };
-            out.push(Delivered { id: m.id, recv_ms: m.send_ms + self.base_latency + jit });
+            let jit = if self.jitter == 0 {
+                0
+            } else {
+                (r >> 8) % (self.jitter + 1)
+            };
+            out.push(Delivered {
+                id: m.id,
+                recv_ms: m.send_ms + self.base_latency + jit,
+            });
         }
         out.sort_by_key(|d| (d.recv_ms, d.id));
         out
@@ -98,7 +105,7 @@ impl Link {
 
 #[cfg(test)]
 mod tests {
-    use super::{Link, Msg, replay};
+    use super::{replay, Link, Msg};
 
     #[test]
     fn replay_is_deterministic() {
@@ -112,14 +119,30 @@ mod tests {
 
     #[test]
     fn transport_is_deterministic() {
-        let link = Link { base_latency: 50, jitter: 20, loss_pct: 10 };
-        let msgs: Vec<Msg> = (0..200).map(|id| Msg { id, send_ms: id * 16 }).collect();
-        assert_eq!(link.transport(&msgs, 0xC0FFEE), link.transport(&msgs, 0xC0FFEE));
+        let link = Link {
+            base_latency: 50,
+            jitter: 20,
+            loss_pct: 10,
+        };
+        let msgs: Vec<Msg> = (0..200)
+            .map(|id| Msg {
+                id,
+                send_ms: id * 16,
+            })
+            .collect();
+        assert_eq!(
+            link.transport(&msgs, 0xC0FFEE),
+            link.transport(&msgs, 0xC0FFEE)
+        );
     }
 
     #[test]
     fn transport_drops_some_but_not_all_under_loss() {
-        let link = Link { base_latency: 0, jitter: 0, loss_pct: 50 };
+        let link = Link {
+            base_latency: 0,
+            jitter: 0,
+            loss_pct: 50,
+        };
         let msgs: Vec<Msg> = (0..1000).map(|id| Msg { id, send_ms: 0 }).collect();
         let delivered = link.transport(&msgs, 1);
         assert!(delivered.len() < msgs.len());
@@ -128,7 +151,11 @@ mod tests {
 
     #[test]
     fn lossless_link_delivers_all() {
-        let link = Link { base_latency: 10, jitter: 0, loss_pct: 0 };
+        let link = Link {
+            base_latency: 10,
+            jitter: 0,
+            loss_pct: 0,
+        };
         let msgs: Vec<Msg> = (0..50).map(|id| Msg { id, send_ms: id }).collect();
         assert_eq!(link.transport(&msgs, 7).len(), msgs.len());
     }
