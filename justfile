@@ -7,7 +7,9 @@ setup:
     cd client && npm install --include=dev
 
 lint:
+    cargo fmt --all --check
     cargo clippy --workspace --all-targets --all-features -- -D warnings
+    client/node_modules/.bin/biome check .
 
 typecheck:
     cargo check --workspace --all-targets

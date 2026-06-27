@@ -29,3 +29,5 @@ serde = { version = "1", features = ["derive"] }
 ron = "0.8"
 # Property testing for the logic-heavy rules (ADR-0038).
 proptest = "1"
+# Structured logging facade (captured by the SpacetimeDB host) — server-module dep.
+log = "0.4"
