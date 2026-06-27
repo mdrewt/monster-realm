@@ -31,12 +31,29 @@ function fm(txt) {
   };
 }
 
-export function buildAuto(dir) {
-  const rows = readdirSync(dir)
+export function scan(dir) {
+  return readdirSync(dir)
     .filter((f) => f.endsWith('.md') && f !== 'INDEX.md')
-    .map((f) => fm(readFileSync(join(dir, f), 'utf8')))
-    .filter((d) => d.slug)
-    .sort((a, b) => (b.updated || '').localeCompare(a.updated || ''));
+    .map((f) => ({ file: f, ...fm(readFileSync(join(dir, f), 'utf8')) }))
+    .filter((d) => d.slug);
+}
+
+// Files that declare the same frontmatter `slug` — an accidental duplicate that would
+// otherwise yield two index rows for one logical doc (or silently overwrite work).
+export function duplicateSlugs(dir) {
+  const bySlug = new Map();
+  for (const d of scan(dir)) {
+    const list = bySlug.get(d.slug) ?? [];
+    list.push(d.file);
+    bySlug.set(d.slug, list);
+  }
+  return [...bySlug]
+    .filter(([, files]) => files.length > 1)
+    .map(([slug, files]) => ({ slug, files }));
+}
+
+export function buildAuto(dir) {
+  const rows = scan(dir).sort((a, b) => (b.updated || '').localeCompare(a.updated || ''));
   const head = '| slug | domain | status | updated | tags | abstract |\n|---|---|---|---|---|---|';
   const body =
     rows
@@ -76,7 +93,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.error('usage: research-index <researchDir> [--check]');
     process.exit(2);
   }
+  const dups = duplicateSlugs(dir);
   const ok = regenerate(dir, { check });
+  if (dups.length) {
+    for (const d of dups) console.error(`DUPLICATE slug '${d.slug}': ${d.files.join(', ')}`);
+    process.exit(1);
+  }
   if (check && !ok) {
     console.error(`STALE: ${join(dir, 'INDEX.md')} — run: just research-index ${dir}`);
     process.exit(1);
