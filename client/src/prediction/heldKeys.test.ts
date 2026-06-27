@@ -232,7 +232,7 @@ describe('HeldDirections: fast-check property — active() is the most-recent st
 //    + injected applyMove over a fake frame loop with DELAYED acks.
 // ================================================================================
 
-import type { WasmCharacterState, WasmMoveInput } from '../convert/convert';
+import type { WasmCharacterState } from '../convert/convert';
 // Re-declare the applyMove fake here (same logic as predictor.test.ts — node-only,
 // no wasm). A West wall at x<=0; everything else walkable.
 import { type ApplyMove, type IntentToSend, Predictor } from './predictor';
