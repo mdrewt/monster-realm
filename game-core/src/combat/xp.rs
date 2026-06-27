@@ -19,7 +19,21 @@
 //! to `xp_for_level(Level::new(100).unwrap())` and the level is capped at 100.
 
 use crate::monster::rules::{level_for_xp, xp_for_level};
+use crate::monster::types::StatBlock;
 use crate::monster::types::{Level, Xp};
+
+/// Sum of a species' six base stats (the base-stat-total used by the XP reward
+/// rule). The rule layer owns this definition (SSOT); the server shell only
+/// marshals rows into it. Saturating so an out-of-range StatBlock cannot wrap.
+#[must_use]
+pub fn base_stat_total(base: &StatBlock) -> u16 {
+    base.hp
+        .saturating_add(base.attack)
+        .saturating_add(base.defense)
+        .saturating_add(base.speed)
+        .saturating_add(base.sp_attack)
+        .saturating_add(base.sp_defense)
+}
 
 /// Compute the XP reward for defeating the loser.
 ///
@@ -173,6 +187,69 @@ mod tests {
 
     fn arb_level() -> impl Strategy<Value = Level> {
         (1u8..=100).prop_map(|v| Level::new(v).unwrap())
+    }
+
+    // -----------------------------------------------------------------------
+    // M8.5b-D: base_stat_total — new pure function (BST)
+    // -----------------------------------------------------------------------
+
+    /// Kills: an impl that sums with wrapping add instead of saturating add,
+    /// or gets the field order wrong, or drops a field.
+    ///
+    /// Classic Bulbasaur: 45+49+49+65+65+45 = 318.
+    /// This is the same BST used by the xp reward formula's known-answer test,
+    /// so any deviation from 318 would also break that test — the two pin each other.
+    ///
+    /// RED state: compile-RED until `base_stat_total` is declared in `xp.rs`
+    /// and re-exported via `combat/mod.rs` + `game-core/src/lib.rs`.
+    #[test]
+    fn base_stat_total_known_answer() {
+        use crate::monster::types::StatBlock;
+        let bulbasaur = StatBlock {
+            hp: 45,
+            attack: 49,
+            defense: 49,
+            speed: 65,
+            sp_attack: 65,
+            sp_defense: 45,
+        };
+        let bst = base_stat_total(&bulbasaur);
+        assert_eq!(
+            bst, 318,
+            "Bulbasaur BST must be 318 (45+49+49+65+65+45); \
+             got {bst} — wrong field ordering or dropped field"
+        );
+    }
+
+    /// Kills: an impl that uses wrapping addition (overflows past u16::MAX back to 0)
+    /// instead of saturating addition (clamps at u16::MAX).
+    ///
+    /// All six fields == u16::MAX (65535). Saturating sum:
+    ///   65535 + 65535 = 65535 (sat) → +65535 = 65535 → ... = 65535 after all six.
+    ///
+    /// Wrapping sum: 65535*6 = 393210. u16 wraps: 393210 % 65536 = 393210 - 6*65536 = 393210 - 393216 = -6
+    /// Actually: 393210 mod 65536 = 393210 - 5*65536 = 393210 - 327680 = 65530 (≠ 65535).
+    /// So wrapping gives 65530, NOT 65535 — the assertion `== u16::MAX` bites.
+    ///
+    /// RED state: compile-RED until `base_stat_total` exists.
+    #[test]
+    fn base_stat_total_saturates() {
+        use crate::monster::types::StatBlock;
+        let max_block = StatBlock {
+            hp: u16::MAX,
+            attack: u16::MAX,
+            defense: u16::MAX,
+            speed: u16::MAX,
+            sp_attack: u16::MAX,
+            sp_defense: u16::MAX,
+        };
+        let bst = base_stat_total(&max_block);
+        assert_eq!(
+            bst,
+            u16::MAX,
+            "BST of all-u16::MAX stats must saturate to u16::MAX (65535), \
+             not wrap to 65530 — TEETH: wrapping sum gives 65530 ≠ u16::MAX"
+        );
     }
 
     proptest! {
