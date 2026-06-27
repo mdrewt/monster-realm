@@ -26,6 +26,7 @@ interface Snap {
   ownPredictedTile: Tile | null;
   presenceCount: number;
   characters: { entityId: string; tileX: number; tileY: number }[];
+  sawFractionalOwnMotion: boolean;
 }
 
 const OFFSET: Record<string, Tile> = {
@@ -48,6 +49,7 @@ const snap = (p: Page): Promise<Snap> =>
       ownPredictedTile: g.ownPredictedTile,
       presenceCount: g.presenceCount,
       characters: g.characters,
+      sawFractionalOwnMotion: g.sawFractionalOwnMotion,
     };
   });
 
@@ -147,6 +149,22 @@ test.describe
           );
         },
         target,
+        { timeout: 15_000 },
+      );
+      // The own character animates via the slide clock, so during the 200ms slide the
+      // loop latches a fractional own render position; a renderer fed raw integer tiles
+      // never latches it → this assertion fails (the integrated-path bite). This relies
+      // on window.__game() exposing a STICKY `sawFractionalOwnMotion` the implementer
+      // adds to main.ts — it is set to true the first time the own render x or y is
+      // non-integer, and never reset to false within the session.
+      await a.waitForFunction(
+        () =>
+          (
+            window as unknown as {
+              __game: () => { sawFractionalOwnMotion: boolean };
+            }
+          ).__game().sawFractionalOwnMotion === true,
+        null,
         { timeout: 15_000 },
       );
       // B sees A's character at the new authoritative tile (cross-window sync).
