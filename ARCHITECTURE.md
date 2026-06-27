@@ -233,6 +233,47 @@ teeth fixtures (bad encounter_rate > 1000, weight == 0, min > max level,
 dangling species, dangling zone). 2 proptest suites (bounded output, monotone
 HP-bonus). All green.
 
+## Grass-encounter spine (`game-core` + `server-module` + `client/`, M8c — ADR-0045)
+
+Wild-encounter trigger and individuality storage. Defers recruit/bait/inventory to M8d.
+
+- **`TileKind::TallGrass`** — walkable, glyph `~`. `TileMap` gains a `grass` layer
+  + `is_grass`. The M1 exhaustive `match` sites are the compiler-enforced registration
+  points. `RawTileMap.grass` + `isGrass` parsed client-side; grass rendered as an
+  additive overlay (visual-SSOT: one parse, one draw path).
+- **Pure trigger geometry** — `stepped_onto_grass(prev, next, map) -> bool`: fires when
+  `prev != next` (no wall-bump / standstill) AND `map.is_grass(next)`. Pure, unit-tested,
+  the only new predicate.
+- **`resolve_encounter(table, seed, player_level) -> Option<WildSpawn>`** — pure,
+  deterministic, total. Splits ONE `u32` seed via `splitmix32` into four sub-rolls
+  (`trigger_roll`, `species_roll`, `level_roll`, `individuality_seed`) — no hit/miss RNG
+  asymmetry. Gates cheap via `encounter_triggers(trigger_roll, table.encounter_rate)`;
+  then reuses the SSOT `roll_encounter` for weighted+level-ranged species pick; picks
+  `wild_level` in `[min_level, max_level]`. Single place the seed is split (R-J / ADR-0045
+  determinism coupling).
+- **Private `battle_wild` side-table (ADR-0045):** `battle_id` PK (1:1 with the public
+  `battle` row), `wild_species_id`, `wild_level`, `individuality_seed`. Stores the rolled
+  seed, NOT expanded IV/nature columns — `roll_individuality(seed)` is pure/deterministic
+  so the seed is the SSOT. **The `battle` table (ADR-0042, public) carries zero wild-gene
+  columns.** The `wild-individuality-privacy` eval (cloned from the ADR-0044 6-teeth
+  pattern) mechanically enforces: table is private, no projection, no generated accessor,
+  AND no `wild_`/`iv_`/`nature` field on the public `battle` table.
+- **`WILD_IDENTITY` sentinel** — zero-byte `Identity` no connection holds; used as
+  `opponent_identity` on wild `battle` rows. `opponent_monster_ids = vec![]` (wild is
+  unowned); `side_b.team` has exactly one element so `active_monster()` never panics. The
+  `side_b.team.len()==1` vs `opponent_monster_ids.len()==0` asymmetry is intentional and
+  documented at the table to prevent M8d from zipping them.
+- **`begin_encounter`** — one impl, two callers (grass trigger + `start_wild_battle`
+  reducer). Guards: rejects empty/duplicate `party_monster_ids`, rejects if player already
+  `Ongoing`. Inserts `battle` + `battle_wild` atomically. Logs only
+  `{battle_id, wild_species_id, wild_level}` — never the seed/IVs (log side-channel).
+- **`start_wild_battle` reducer** — dev/test entry. Draws `ctx.random()` (no
+  client-supplied seed → no IV-grind cheat surface), rolls from the private `encounter`
+  table, calls `begin_encounter`. Gates or removes at M9+.
+- **`movement_tick` integration** — player-only, steps-onto-grass-only. One
+  `ctx.random()` draw per stepping character (hit or miss), then `resolve_encounter`;
+  partial-sync (no `encounter` row) and rate-0 are no-ops, never panics.
+
 ## Encounter server integration (`server-module`, M8b — ADR-0040/0044)
 
 Private encounter table seeding with spawn-data privacy guarantee and B1
@@ -262,6 +303,25 @@ data).
 - **Marshaling helper:** `encounter_rows_from_table` (pure, flattens RON-parsed
   `EncounterTable` → `EncounterRow` for server-side storage). Thin wrapper, no
   embedded rules.
+
+## Known follow-ups / tech-debt
+
+Tracked consciously so they stay visible, not forgotten.
+
+- **(a) `battle`/`battle_wild` row reaping** — neither row is deleted on wild-battle end
+  (`flee`/win) in M8c. M8d's recruit path clears the `battle_wild` row on success; a
+  general terminal-battle GC is needed for the `flee`/win paths (M8d/M9).
+- **(b) `splitmix32` duplication** — the helper is present in both
+  `taming/rules.rs` (`resolve_encounter`) and `monster/rolls.rs` (`roll_individuality`).
+  Hoist to one `pub(crate)` fn to single-source the determinism contract that ADR-0045
+  relies on (M8d or standalone cleanup).
+- **(c) `lead_party` full-scan** — `movement_tick` scans all owned monsters to find the
+  party lead per stepping character. Bound to party with a covering index before zones
+  become crowded (M9).
+- **(d) Reducer-level integration tests deferred** — `begin_encounter` /
+  `movement_tick` / `start_wild_battle` reducer glue is review-covered and the pure logic
+  (`resolve_encounter`, `stepped_onto_grass`) is unit-tested; full reducer integration
+  tests ride with the M8d Playwright client flow.
 
 ## Status
 

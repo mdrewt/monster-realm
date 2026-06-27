@@ -511,6 +511,43 @@ fn resolve_encounter_weighting_favors_heavier_species() {
     );
 }
 
+/// EARS (R-J): the spawned `level` is rolled ACROSS the chosen entry's inclusive
+/// `[min_level, max_level]` band — a single-species, wide-band table at rate 1000
+/// must yield more than one distinct level over a seed sweep, and every level must
+/// stay inside the band.
+/// Kills: a `level_roll % span` mutated to a constant (e.g. always `min_level`),
+/// which the multi-species seed-sensitivity test cannot catch (species variation
+/// alone satisfies its "≥2 distinct" assertion). Here species is constant, so only
+/// the band pick can produce distinct results.
+#[test]
+fn resolve_encounter_level_varies_across_band() {
+    // ONE species so species_id is constant; a wide band [3,9] so the level pick is
+    // the only source of variation.
+    let table = make_table(0, 1000, vec![make_entry(1, 1, 3, 9)]);
+    let pl = level(9); // eligible for the whole [3,9] band
+    let mut levels = std::collections::BTreeSet::new();
+    const N: u32 = 2000;
+    for seed in 0..N {
+        let w = resolve_encounter(&table, seed, pl)
+            .unwrap_or_else(|| panic!("rate 1000 must always spawn; seed={seed}"));
+        assert_eq!(
+            w.species_id, 1,
+            "only species 1 is in the table; seed={seed}"
+        );
+        let lv = w.level.as_u8();
+        assert!(
+            (3..=9).contains(&lv),
+            "spawned level {lv} must be within [3,9]; seed={seed}"
+        );
+        levels.insert(lv);
+    }
+    assert!(
+        levels.len() >= 2,
+        "the level must vary across the [3,9] band, not be pinned to a constant; \
+         got distinct levels {levels:?}"
+    );
+}
+
 /// EARS (R-J / M8d rebuild contract): the `individuality_seed` in the result is a
 /// deterministic function of the INPUT seed (same input seed ⇒ same
 /// individuality_seed) and is a stable sub-roll regardless of which species/level
