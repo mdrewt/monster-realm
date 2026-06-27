@@ -2839,4 +2839,220 @@ mod tests {
             "max_hp must equal the derived HP stat from the same roll"
         );
     }
+
+    // =========================================================================
+    // M8.5a gating tests — Battle security & integrity (§3 criteria)
+    //
+    // These tests gate TWO pure helper functions the implementer will add to
+    // server-module/src/lib.rs and call from start_battle / write_back_*:
+    //
+    //   fn check_party_size(n: usize) -> Result<(), String>
+    //     Ok for 1..=MAX_PARTY_SIZE, Err when n == 0 or n > MAX_PARTY_SIZE.
+    //     (§3 criterion 2: start_battle rejects if party_monster_ids.len() > MAX_PARTY_SIZE)
+    //
+    //   fn check_team_coupling(team_len: usize, ids_len: usize) -> Result<(), String>
+    //     Ok iff team_len == ids_len, else Err.
+    //     (§3 criterion 3: write_back_battle_results asserts side_a.team.len() ==
+    //      party_monster_ids.len() and uses checked get(i), returning Err not panic)
+    //
+    // NONE of these functions touch ReducerContext — they are pure validators
+    // that can be tested without a SpacetimeDB runtime.
+    //
+    // The helpers do NOT exist yet → this block is RED (won't compile until
+    // the implementer adds them). That is the intended TDD red state.
+    // =========================================================================
+
+    // -------------------------------------------------------------------------
+    // TEST M8.5a-1: check_party_size — §3 criterion 2
+    //
+    // start_battle must reject (Err) if party_monster_ids.len() > MAX_PARTY_SIZE.
+    // The helper is the extracted pure validator for that gate.
+    //
+    // Kills: an impl that clamps instead of rejecting (returns Ok for n=7 with
+    //        MAX_PARTY_SIZE=6, silently truncating the party); an impl that uses
+    //        u8 overflow (n=256 wraps to 0 and incorrectly passes); an impl that
+    //        rejects n=MAX_PARTY_SIZE (off-by-one — the max is inclusive).
+    // -------------------------------------------------------------------------
+
+    /// §3-criterion-2: check_party_size(0) must be Err — an empty party is
+    /// invalid; start_battle with zero monsters must be rejected.
+    /// Kills: an impl that uses `n > MAX_PARTY_SIZE` only (misses the lower
+    /// bound; `1..=MAX_PARTY_SIZE` is the valid range).
+    #[test]
+    fn party_size_cap_rejects_empty() {
+        // check_party_size does not exist yet — this test is RED.
+        assert!(
+            check_party_size(0).is_err(),
+            "check_party_size(0) must be Err (empty party is not valid; range is 1..=MAX_PARTY_SIZE)"
+        );
+    }
+
+    /// §3-criterion-2: check_party_size(1) must be Ok — minimum valid party.
+    /// Kills: an impl that rejects any n < 2 (fencepost).
+    #[test]
+    fn party_size_cap_accepts_minimum() {
+        // check_party_size does not exist yet — this test is RED.
+        assert!(
+            check_party_size(1).is_ok(),
+            "check_party_size(1) must be Ok (minimum valid party of 1)"
+        );
+    }
+
+    /// §3-criterion-2: check_party_size(MAX_PARTY_SIZE) must be Ok — the
+    /// maximum is inclusive.
+    /// Kills: an impl that uses `>= MAX_PARTY_SIZE` instead of `> MAX_PARTY_SIZE`
+    /// (off-by-one that rejects a full but legal party of 6).
+    #[test]
+    fn party_size_cap_accepts_max() {
+        assert!(
+            check_party_size(MAX_PARTY_SIZE as usize).is_ok(),
+            "check_party_size(MAX_PARTY_SIZE) must be Ok (max is inclusive, not exclusive)"
+        );
+    }
+
+    /// §3-criterion-2: check_party_size(MAX_PARTY_SIZE + 1) must be Err —
+    /// one over the cap is rejected.
+    /// Kills: a clamp-not-reject impl that silently truncates to 6 and returns Ok.
+    #[test]
+    fn party_size_cap_rejects_oversized() {
+        assert!(
+            check_party_size(MAX_PARTY_SIZE as usize + 1).is_err(),
+            "check_party_size(MAX_PARTY_SIZE + 1) must be Err (oversized party must be rejected, not clamped)"
+        );
+    }
+
+    /// §3-criterion-2: check_party_size(100) must be Err — far over the cap.
+    /// Kills: an impl that only rejects n exactly equal to MAX_PARTY_SIZE+1
+    /// rather than all n > MAX_PARTY_SIZE.
+    #[test]
+    fn party_size_cap_rejects_large() {
+        assert!(
+            check_party_size(100).is_err(),
+            "check_party_size(100) must be Err (any n > MAX_PARTY_SIZE is rejected)"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // TEST M8.5a-2: check_team_coupling — §3 criterion 3
+    //
+    // write_back_battle_results asserts side_a.team.len() == party_monster_ids.len()
+    // and uses checked get(i), returning Err not panicking on mismatch.
+    // The helper is the extracted pure validator for that assertion.
+    //
+    // Kills: an impl that uses unchecked indexing (panics on mismatch instead
+    //        of returning Err); an impl that always returns Ok regardless of
+    //        lengths; an impl that accepts team_len > ids_len silently.
+    // -------------------------------------------------------------------------
+
+    /// §3-criterion-3: equal lengths must be Ok — the normal post-battle path.
+    /// Kills: an impl that always returns Err.
+    #[test]
+    fn team_coupling_accepts_equal_lengths() {
+        // check_team_coupling does not exist yet — this test is RED.
+        assert!(
+            check_team_coupling(3, 3).is_ok(),
+            "check_team_coupling(3, 3) must be Ok (lengths match)"
+        );
+    }
+
+    /// §3-criterion-3: (1, 1) must be Ok — minimal valid single-monster battle.
+    /// Kills: a "both >= 3" mutation that only accepts larger counts, and an
+    /// impl that has an off-by-one requiring lengths > 1.
+    #[test]
+    fn team_coupling_accepts_minimal_valid() {
+        assert!(
+            check_team_coupling(1, 1).is_ok(),
+            "check_team_coupling(1, 1) must be Ok (single monster on each side)"
+        );
+    }
+
+    /// §3-criterion-3: (6, 6) must be Ok — full party, all coupled.
+    /// Kills: an impl that only accepts small counts.
+    #[test]
+    fn team_coupling_accepts_max_party_equal() {
+        assert!(
+            check_team_coupling(6, 6).is_ok(),
+            "check_team_coupling(6, 6) must be Ok (full party with matching ids)"
+        );
+    }
+
+    /// §3-criterion-3: team_len > ids_len must be Err — the team has MORE
+    /// monsters than recorded ids, so indexed access would panic.
+    /// Kills: an impl that only checks the other direction, or uses unchecked
+    ///        indexing (team[i] where i >= ids.len() would panic).
+    #[test]
+    fn team_coupling_rejects_length_mismatch_team_longer() {
+        assert!(
+            check_team_coupling(3, 2).is_err(),
+            "check_team_coupling(3, 2) must be Err (team has 3 members but only 2 ids — panic path)"
+        );
+    }
+
+    /// §3-criterion-3: team_len < ids_len must be Err — the ids list has MORE
+    /// entries than actual team members, indicating a consistency bug.
+    /// Kills: an impl that silently ignores trailing ids (wrong; an invariant
+    ///        violation must surface as an Err, not a silent truncation).
+    #[test]
+    fn team_coupling_rejects_length_mismatch_ids_longer() {
+        assert!(
+            check_team_coupling(0, 1).is_err(),
+            "check_team_coupling(0, 1) must be Err (0 team members but 1 id — invariant violation)"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // TEST M8.5a-3: check_monster_in_party — §3 criterion 2 (boxed-monster)
+    //
+    // §3 criterion 2 requires start_battle to reject any listed monster that
+    // is boxed (party_slot == PARTY_SLOT_NONE). The helper is the extracted
+    // pure slot validator for that gate.
+    //
+    // Signature: fn check_monster_in_party(slot: u8) -> Result<(), String>
+    //   Returns Err iff slot == PARTY_SLOT_NONE, Ok otherwise.
+    //
+    // This is a SEPARATE concern from check_party_size (size cap): even a
+    // party of 1 is invalid if that 1 monster is boxed.
+    //
+    // Kills: an impl that accepts any slot value (always Ok); an impl that
+    //        treats PARTY_SLOT_NONE as a normal slot index (off-by-one on
+    //        the sentinel); an impl that rejects ALL non-zero slots
+    //        (would block valid party positions 1..MAX_PARTY_SIZE-1).
+    //
+    // The helpers do NOT exist yet → this block is RED.
+    // -------------------------------------------------------------------------
+
+    /// §3-criterion-2 (boxed): slot 0 is a valid party position; must be Ok.
+    /// Kills: an impl that rejects slot 0 (confuses the first slot with empty).
+    #[test]
+    fn check_monster_in_party_accepts_first_slot() {
+        // check_monster_in_party does not exist yet — this test is RED.
+        assert!(
+            check_monster_in_party(0).is_ok(),
+            "check_monster_in_party(0) must be Ok (slot 0 is a valid party position)"
+        );
+    }
+
+    /// §3-criterion-2 (boxed): the last valid party slot (MAX_PARTY_SIZE - 1)
+    /// must be Ok.
+    /// Kills: an impl that rejects any slot >= MAX_PARTY_SIZE - 1.
+    #[test]
+    fn check_monster_in_party_accepts_last_valid_slot() {
+        assert!(
+            check_monster_in_party(MAX_PARTY_SIZE - 1).is_ok(),
+            "check_monster_in_party(MAX_PARTY_SIZE - 1) must be Ok (last valid party slot)"
+        );
+    }
+
+    /// §3-criterion-2 (boxed): PARTY_SLOT_NONE (255) signals a boxed monster
+    /// and must be Err — start_battle must reject boxed monsters.
+    /// Kills: an impl that accepts all u8 values including the sentinel; an
+    ///        impl that only rejects values > MAX_PARTY_SIZE (missing the exact
+    ///        sentinel check); an impl that returns Ok(()) unconditionally.
+    #[test]
+    fn check_monster_in_party_rejects_party_slot_none() {
+        assert!(
+            check_monster_in_party(PARTY_SLOT_NONE).is_err(),
+            "check_monster_in_party(PARTY_SLOT_NONE) must be Err (255 = boxed; must be rejected)"
+        );
+    }
 }

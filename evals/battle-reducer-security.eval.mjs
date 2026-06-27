@@ -1,12 +1,14 @@
-// battle-reducer-security eval (M7b): every battle reducer in server-module
-// must have an ownership check (ctx.sender / player_identity guard) and the
-// three action reducers (submit_attack, swap_active, flee) must check
-// outcome == Ongoing before acting.
+// battle-reducer-security eval (M8.5a): every battle reducer in server-module
+// must have an ownership check (ctx.sender / player_identity guard), the three
+// action reducers (submit_attack, swap_active, flee) must check outcome ==
+// Ongoing before acting, start_battle must have an opponent-provenance gate,
+// and write_back helpers must not touch side_b rows.
 //
-// Proof-of-teeth: a fixture reducer WITHOUT an ownership check must be flagged.
-// A fixture reducer WITH both checks must pass.
+// Proof-of-teeth: fixtures WITHOUT the required pattern are flagged; fixtures
+// WITH them pass. A checker that doesn't bite is reported as TEETH FAILED.
 //
-// This eval starts RED until the implementer adds all five battle reducers.
+// This eval starts RED until the implementer adds the opponent-provenance gate
+// to start_battle.
 import { readFileSync } from 'node:fs';
 
 const SERVER_SRC = 'server-module/src/lib.rs';
@@ -20,21 +22,22 @@ export function stripRustComments(src) {
 }
 
 // ---------------------------------------------------------------------------
-// Extract a single reducer's body from the source.
+// Extract a single function's body from the source.
 //
-// Matches:  pub fn <name>(ctx: &ReducerContext, ...) -> Result<(), String> { ... }
+// Matches:  pub fn <name>( or fn <name>(
 // We use brace-depth counting because the body may be multi-line.
 // Returns the raw text of the function body (between the outer braces), or
-// null if the reducer is not found.
+// null if the function is not found.
 // ---------------------------------------------------------------------------
 export function extractReducerBody(src, reducerName) {
-  // Find `pub fn <name>(` using indexOf to avoid dynamic RegExp (semgrep ReDoS rule).
-  const needle = `pub fn ${reducerName}(`;
-  const idx = src.indexOf(needle);
+  // Find `pub fn <name>(` or `fn <name>(` using indexOf to avoid dynamic
+  // RegExp (semgrep ReDoS rule).
+  let idx = src.indexOf(`pub fn ${reducerName}(`);
+  if (idx === -1) idx = src.indexOf(`fn ${reducerName}(`);
   if (idx === -1) return null;
 
   // Walk forward from the signature to find the opening brace.
-  let i = idx + needle.length;
+  let i = idx;
   while (i < src.length && src[i] !== '{') i++;
   if (i >= src.length) return null;
 
@@ -69,17 +72,72 @@ export function hasOwnershipCheck(body) {
 // ---------------------------------------------------------------------------
 // Check: does the reducer body check outcome == Ongoing before acting?
 //
-// Patterns accepted:
-//   - outcome == BattleOutcome::Ongoing (positive guard: "must be ongoing")
-//   - outcome != BattleOutcome::Ongoing (negative guard: "reject if not ongoing")
-//   - Ongoing (bare variant in a match or if expression)
+// FIXED (M8.5a): the old `/\.outcome/.test(code)` clause was toothless —
+// it matched any read of `.outcome` without requiring a comparison. Now we
+// require an explicit equality/inequality test against BattleOutcome::Ongoing
+// OR a direct outcome== / outcome!= comparison. A bare `.outcome` read (e.g.
+// to log or assign) no longer satisfies this checker.
+//
+// Patterns accepted (after comment-stripping):
+//   - BattleOutcome::Ongoing (must appear in source — used in match or ==)
+//   - outcome == / outcome != (direct comparison)
 // ---------------------------------------------------------------------------
 export function hasOutcomeCheck(body) {
   const code = stripRustComments(body);
+  return /BattleOutcome::Ongoing/.test(code) || /outcome\s*(==|!=)\s*/.test(code);
+}
+
+// ---------------------------------------------------------------------------
+// NEW (M8.5a): Check that a start_battle body gates on opponent provenance.
+//
+// Returns true IFF the body compares `opponent_identity` against a sender or
+// sentinel token (me, ctx.sender, or WILD_IDENTITY) using == or !=.
+//
+// Implemented with literal regexes only (NO new RegExp — Semgrep
+// detect-non-literal-regexp has bitten 3×). A self-comparison like
+// `opponent_identity == opponent_identity` does NOT satisfy this check
+// because the RHS patterns only match me/ctx.sender/WILD_IDENTITY.
+// ---------------------------------------------------------------------------
+export function hasOpponentProvenanceGate(body) {
+  const code = stripRustComments(body);
   return (
-    /BattleOutcome::Ongoing/.test(code) ||
-    /outcome\s*(==|!=)\s*/.test(code) ||
-    /\.outcome/.test(code)
+    /opponent_identity\s*(==|!=)\s*me\b/.test(code) ||
+    /opponent_identity\s*(==|!=)\s*ctx\.sender/.test(code) ||
+    /opponent_identity\s*(==|!=)\s*WILD_IDENTITY/.test(code) ||
+    /me\s*(==|!=)\s*opponent_identity/.test(code) ||
+    /ctx\.sender\s*(==|!=)\s*opponent_identity/.test(code) ||
+    /WILD_IDENTITY\s*(==|!=)\s*opponent_identity/.test(code)
+  );
+}
+
+// ---------------------------------------------------------------------------
+// NEW (M8.5a): Check that write_back helpers do NOT *write* to side_b rows.
+//
+// Extracts the bodies of `write_back_battle_results` AND `write_back_party_hp`
+// from the source and returns true iff EITHER body contains a side-B write
+// loop pattern — meaning it iterates `side_b.team` (symmetric write-back) OR
+// references `opponent_monster_ids` (resolving opponent rows to update).
+//
+// The legitimate read `battle.state.side_b.active_monster()` in
+// write_back_battle_results (for the XP formula — reads the loser's species)
+// contains NEITHER `side_b.team` NOR `opponent_monster_ids`, so it passes.
+//
+// Invariant: side-B rows (monster / monster_pub) must be byte-for-byte
+// unchanged after any battle ends. Only side_a (party) rows are written back.
+// ---------------------------------------------------------------------------
+export function writeBackTouchesSideB(src) {
+  const body1 = extractReducerBody(src, 'write_back_battle_results');
+  const body2 = extractReducerBody(src, 'write_back_party_hp');
+  const code1 = body1 ? stripRustComments(body1) : '';
+  const code2 = body2 ? stripRustComments(body2) : '';
+  // Flag a side-B *write loop*: team iteration over side_b, or resolving
+  // opponent_monster_ids (the backing ids for the opponent's owned monsters).
+  // A bare `side_b.active_monster()` read contains neither pattern.
+  return (
+    /side_b\.team/.test(code1) ||
+    /side_b\.team/.test(code2) ||
+    /opponent_monster_ids/.test(code1) ||
+    /opponent_monster_ids/.test(code2)
   );
 }
 
@@ -88,10 +146,16 @@ export function hasOutcomeCheck(body) {
 // ---------------------------------------------------------------------------
 export default async function () {
   const name =
-    'battle-reducer-security (ownership checks, outcome guards, no battle logic in server module)';
+    'battle-reducer-security (ownership checks, outcome guards, opponent-provenance gate, side-B no-write)';
+
+  // =========================================================================
+  // Biting fixture suite — these run BEFORE the real-source scan so a broken
+  // checker is caught immediately. If any checker does not bite, we short-
+  // circuit with TEETH FAILED.
+  // =========================================================================
 
   // -------------------------------------------------------------------------
-  // Proof-of-teeth #1: a reducer WITHOUT ownership check must be flagged.
+  // Fixture 1 (existing): a reducer WITHOUT ownership check must be flagged.
   // -------------------------------------------------------------------------
   const badReducerNoOwnership = `
     pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
@@ -120,7 +184,7 @@ export default async function () {
   }
 
   // -------------------------------------------------------------------------
-  // Proof-of-teeth #2: a reducer WITHOUT outcome check must be flagged.
+  // Fixture 2 (existing): a reducer WITHOUT outcome check must be flagged.
   // -------------------------------------------------------------------------
   const badReducerNoOutcome = `
     pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Result<(), String> {
@@ -150,7 +214,8 @@ export default async function () {
   }
 
   // -------------------------------------------------------------------------
-  // Proof-of-teeth #3: a reducer WITH both checks must PASS (no false positive).
+  // Fixture 3 (existing): a reducer WITH both ownership + outcome checks must
+  // pass (no false positive).
   // -------------------------------------------------------------------------
   const goodReducer = `
     pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
@@ -192,8 +257,251 @@ export default async function () {
   }
 
   // -------------------------------------------------------------------------
-  // Real check: scan the actual server-module source.
+  // Fixture 4 (M8.5a NEW): hasOutcomeCheck must NOT match a bare `.outcome`
+  // read.  A body that reads `battle.state.outcome` and assigns / logs it but
+  // never compares it must be flagged.
+  //
+  // Kills: the old toothless `/\.outcome/.test(code)` clause.
   // -------------------------------------------------------------------------
+  const bareOutcomeRead = `
+    pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Result<(), String> {
+        let battle = ctx.db.battle().battle_id().find(battle_id)
+            .ok_or_else(|| "battle not found".to_string())?;
+        if battle.player_identity != ctx.sender {
+            return Err("not owner".to_string());
+        }
+        // Only reads .outcome but never compares it — toothless guard.
+        let o = battle.state.outcome;
+        log::info!("outcome is {:?}", o);
+        resolve_turn_and_write_back(ctx, battle, skill_id)
+    }
+  `;
+  const bareOutcomeBody = extractReducerBody(bareOutcomeRead, 'submit_attack');
+  if (!bareOutcomeBody) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED: could not extract submit_attack body from bare-outcome fixture (parser bug)',
+    };
+  }
+  if (hasOutcomeCheck(bareOutcomeBody)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED: outcome checker matched a bare .outcome read without ==|!= comparison ' +
+        '(the old toothless /\\.outcome/ clause was not removed)',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Fixture 5 (M8.5a NEW — provenance BAD): a start_battle body that builds
+  // side-B from opponent_identity but has no ==|!= gate against a sentinel.
+  //
+  // This is the distilled bug: caller provides any Identity they like; server
+  // blindly uses it as the opponent.  Assert hasOpponentProvenanceGate === false.
+  // If it returns true → TEETH FAILED.
+  // -------------------------------------------------------------------------
+  const provenanceBadBody = `
+    pub fn start_battle(
+        ctx: &ReducerContext,
+        opponent_identity: Identity,
+        party_monster_ids: Vec<u64>,
+        opponent_monster_ids: Vec<u64>,
+    ) -> Result<(), String> {
+        let me = ctx.sender;
+        // No provenance gate — accepts any opponent_identity the caller passes.
+        for &mid in &opponent_monster_ids {
+            let m = ctx.db.monster().monster_id().find(mid)
+                .ok_or_else(|| "not found".to_string())?;
+            if m.owner_identity != opponent_identity {
+                return Err("wrong owner".to_string());
+            }
+        }
+        Ok(())
+    }
+  `;
+  const provenanceBad = extractReducerBody(provenanceBadBody, 'start_battle');
+  if (!provenanceBad) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED: could not extract start_battle body from provenance-bad fixture (parser bug)',
+    };
+  }
+  if (hasOpponentProvenanceGate(provenanceBad)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED: provenance checker did not bite a gate-less start_battle — ' +
+        'hasOpponentProvenanceGate returned true for a body with NO ==|!= to me/ctx.sender/WILD_IDENTITY',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Fixture 6 (M8.5a NEW — provenance GOOD): a start_battle body containing
+  // the correct inline guard.  Assert hasOpponentProvenanceGate === true.
+  // -------------------------------------------------------------------------
+  const provenanceGoodBody = `
+    pub fn start_battle(
+        ctx: &ReducerContext,
+        opponent_identity: Identity,
+        party_monster_ids: Vec<u64>,
+        opponent_monster_ids: Vec<u64>,
+    ) -> Result<(), String> {
+        let me = ctx.sender;
+        // Provenance gate: reject if opponent is neither the caller nor the wild sentinel.
+        if opponent_identity != me && opponent_identity != WILD_IDENTITY {
+            return Err("opponent_identity must be self or WILD_IDENTITY".to_string());
+        }
+        Ok(())
+    }
+  `;
+  const provenanceGood = extractReducerBody(provenanceGoodBody, 'start_battle');
+  if (!provenanceGood) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED: could not extract start_battle body from provenance-good fixture (parser bug)',
+    };
+  }
+  if (!hasOpponentProvenanceGate(provenanceGood)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED: provenance checker produced a false negative on a correctly-gated start_battle',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Fixture 7 (M8.5a NEW — provenance TRIVIAL-BYPASS): a body with a
+  // self-comparison `opponent_identity == opponent_identity` and NO real gate.
+  //
+  // A self-compare trivially satisfies nothing — the checker must return false.
+  // This fixture kills any regex that accepts any `opponent_identity ==` pattern
+  // without anchoring the RHS to me/ctx.sender/WILD_IDENTITY.
+  // -------------------------------------------------------------------------
+  const provenanceTrivialBody = `
+    pub fn start_battle(
+        ctx: &ReducerContext,
+        opponent_identity: Identity,
+        party_monster_ids: Vec<u64>,
+        opponent_monster_ids: Vec<u64>,
+    ) -> Result<(), String> {
+        let me = ctx.sender;
+        // Trivial self-compare — not a real gate.
+        if opponent_identity == opponent_identity {
+            // always true, so this is a no-op
+        }
+        Ok(())
+    }
+  `;
+  const provenanceTrivial = extractReducerBody(provenanceTrivialBody, 'start_battle');
+  if (!provenanceTrivial) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED: could not extract start_battle body from trivial-bypass fixture (parser bug)',
+    };
+  }
+  if (hasOpponentProvenanceGate(provenanceTrivial)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED: provenance checker accepted a trivial self-compare (opponent_identity == opponent_identity) ' +
+        'as a valid gate — the RHS anchors must require me/ctx.sender/WILD_IDENTITY',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Fixture 8 (M8.5a NEW — side-B BAD): a fake write-back body that touches
+  // side_b.  writeBackTouchesSideB must return true.
+  //
+  // Kills: an impl that symmetrically writes back both sides.
+  // -------------------------------------------------------------------------
+  const sideBBadSrc = `
+    fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) {
+        for (i, bm) in battle.state.side_a.team.iter().enumerate() {
+            let mid = battle.party_monster_ids[i];
+            if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
+                write_back_hp(&mut m, bm);
+                ctx.db.monster().monster_id().update(m);
+            }
+        }
+        // BUG: also writes back side_b (the opponent's monsters)
+        for (i, bm) in battle.state.side_b.team.iter().enumerate() {
+            let mid = battle.opponent_monster_ids[i];
+            if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
+                write_back_hp(&mut m, bm);
+                ctx.db.monster().monster_id().update(m);
+            }
+        }
+    }
+    fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<(), String> {
+        write_back_party_hp(ctx, battle);
+        Ok(())
+    }
+  `;
+  if (!writeBackTouchesSideB(sideBBadSrc)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED: side-B checker did not flag a write_back_party_hp that iterates side_b.team',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Fixture 9 (M8.5a NEW — side-B GOOD): correct write-back touches only
+  // side_a.  writeBackTouchesSideB must return false.
+  //
+  // Critically, write_back_battle_results legitimately READS side_b via
+  // `battle.state.side_b.active_monster()` (to get the loser's species for
+  // the XP formula). The checker must NOT flag this read — only a write loop
+  // over `side_b.team` or resolution of `opponent_monster_ids` is a violation.
+  // This fixture proves the checker allows the legitimate read pattern.
+  // -------------------------------------------------------------------------
+  const sideBGoodSrc = `
+    fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) {
+        for (i, bm) in battle.state.side_a.team.iter().enumerate() {
+            let mid = battle.party_monster_ids[i];
+            if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
+                write_back_hp(&mut m, bm);
+                ctx.db.monster().monster_id().update(m);
+            }
+        }
+    }
+    fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<(), String> {
+        write_back_party_hp(ctx, battle);
+        // Legitimate read of side_b for XP formula (loser's species) — NOT a write.
+        let loser_active = battle.state.side_b.active_monster();
+        let loser_species = ctx.db.species_row().id().find(loser_active.species_id)
+            .ok_or_else(|| "loser species not found".to_string())?;
+        let _bst = loser_base_stat_total(&loser_species);
+        Ok(())
+    }
+  `;
+  if (writeBackTouchesSideB(sideBGoodSrc)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED: side-B checker produced a false positive on a correct write-back — ' +
+        'the legitimate side_b.active_monster() read (for XP formula) must NOT be flagged; ' +
+        'only side_b.team iteration or opponent_monster_ids resolution is a violation',
+    };
+  }
+
+  // =========================================================================
+  // Real-source scan
+  // =========================================================================
   let src;
   try {
     src = readFileSync(SERVER_SRC, 'utf8');
@@ -232,6 +540,35 @@ export default async function () {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // M8.5a ADDITION: start_battle must have an opponent-provenance gate.
+  // This check is RED against the current source (no gate exists) and only
+  // turns GREEN once the implementer adds the inline guard.
+  // -------------------------------------------------------------------------
+  const startBattleBody = extractReducerBody(src, 'start_battle');
+  if (startBattleBody !== null) {
+    if (!hasOpponentProvenanceGate(startBattleBody)) {
+      failures.push(
+        'start_battle: missing opponent-provenance gate — must reject opponent_identity ' +
+          'that is neither ctx.sender (self-battle) nor WILD_IDENTITY (NPC/server sentinel); ' +
+          'use: if opponent_identity != me && opponent_identity != WILD_IDENTITY { return Err(..) }',
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // M8.5a ADDITION: write_back helpers must NOT write to side_b rows.
+  // A legitimate side_b.active_monster() read (for XP formula) is allowed;
+  // only side_b.team iteration or opponent_monster_ids resolution is flagged.
+  // -------------------------------------------------------------------------
+  if (writeBackTouchesSideB(src)) {
+    failures.push(
+      'write_back_battle_results or write_back_party_hp contains a side-B write loop ' +
+        '(side_b.team iteration or opponent_monster_ids resolution) — ' +
+        'write-back must be one-sided (side_a only); opponent rows must be byte-for-byte unchanged',
+    );
+  }
+
   if (failures.length > 0) {
     return {
       name,
@@ -243,6 +580,10 @@ export default async function () {
   return {
     name,
     pass: true,
-    detail: `all ${ALL_REDUCERS.length} battle reducers found with ownership checks; outcome guards present in ${OUTCOME_CHECKED_REDUCERS.join(', ')} (teeth verified)`,
+    detail:
+      `all ${ALL_REDUCERS.length} battle reducers found with ownership checks; ` +
+      `outcome guards present in ${OUTCOME_CHECKED_REDUCERS.join(', ')}; ` +
+      `start_battle has opponent-provenance gate; write_back helpers are side_a-only ` +
+      `(teeth verified via 9 fixtures)`,
   };
 }
