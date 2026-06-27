@@ -1,0 +1,32 @@
+{
+  "frames": {
+    "mon_down_idle": { "frame": { "x": 0, "y": 0, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "mon_down_walk0": { "frame": { "x": 32, "y": 0, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "mon_down_walk1": { "frame": { "x": 64, "y": 0, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "mon_up_idle": { "frame": { "x": 0, "y": 32, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "mon_up_walk0": { "frame": { "x": 32, "y": 32, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "mon_up_walk1": { "frame": { "x": 64, "y": 32, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "mon_right_idle": { "frame": { "x": 0, "y": 64, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "mon_right_walk0": { "frame": { "x": 32, "y": 64, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "mon_right_walk1": { "frame": { "x": 64, "y": 64, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "mon_left_idle": { "frame": { "x": 0, "y": 96, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "mon_left_walk0": { "frame": { "x": 32, "y": 96, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "mon_left_walk1": { "frame": { "x": 64, "y": 96, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } }
+  },
+  "animations": {
+    "walk_down": ["mon_down_walk0", "mon_down_walk1"],
+    "idle_down": ["mon_down_idle"],
+    "walk_up": ["mon_up_walk0", "mon_up_walk1"],
+    "idle_up": ["mon_up_idle"],
+    "walk_right": ["mon_right_walk0", "mon_right_walk1"],
+    "idle_right": ["mon_right_idle"],
+    "walk_left": ["mon_left_walk0", "mon_left_walk1"],
+    "idle_left": ["mon_left_idle"]
+  },
+  "meta": {
+    "image": "monster-emberkit.png",
+    "format": "RGBA8888",
+    "scale": 1,
+    "size": { "w": 96, "h": 128 }
+  }
+}

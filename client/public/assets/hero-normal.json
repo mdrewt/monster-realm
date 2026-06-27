@@ -1,0 +1,40 @@
+{
+  "frames": {
+    "hero_down_idle": { "frame": { "x": 0, "y": 0, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_down_stepA": { "frame": { "x": 32, "y": 0, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_down_mid": { "frame": { "x": 64, "y": 0, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_down_stepB": { "frame": { "x": 96, "y": 0, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_down_jump": { "frame": { "x": 128, "y": 0, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_up_idle": { "frame": { "x": 0, "y": 32, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_up_stepA": { "frame": { "x": 32, "y": 32, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_up_mid": { "frame": { "x": 64, "y": 32, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_up_stepB": { "frame": { "x": 96, "y": 32, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_up_jump": { "frame": { "x": 128, "y": 32, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_right_idle": { "frame": { "x": 0, "y": 64, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_right_stepA": { "frame": { "x": 32, "y": 64, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_right_mid": { "frame": { "x": 64, "y": 64, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_right_stepB": { "frame": { "x": 96, "y": 64, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_right_jump": { "frame": { "x": 128, "y": 64, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_left_idle": { "frame": { "x": 0, "y": 96, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_left_stepA": { "frame": { "x": 32, "y": 96, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_left_mid": { "frame": { "x": 64, "y": 96, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_left_stepB": { "frame": { "x": 96, "y": 96, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } },
+    "hero_left_jump": { "frame": { "x": 128, "y": 96, "w": 32, "h": 32 }, "sourceSize": { "w": 32, "h": 32 }, "spriteSourceSize": { "x": 0, "y": 0, "w": 32, "h": 32 } }
+  },
+  "animations": {
+    "walk_down": ["hero_down_stepA", "hero_down_idle", "hero_down_stepB", "hero_down_mid"],
+    "idle_down": ["hero_down_idle"],
+    "walk_up": ["hero_up_stepA", "hero_up_idle", "hero_up_stepB", "hero_up_mid"],
+    "idle_up": ["hero_up_idle"],
+    "walk_right": ["hero_right_stepA", "hero_right_idle", "hero_right_stepB", "hero_right_mid"],
+    "idle_right": ["hero_right_idle"],
+    "walk_left": ["hero_left_stepA", "hero_left_idle", "hero_left_stepB", "hero_left_mid"],
+    "idle_left": ["hero_left_idle"]
+  },
+  "meta": {
+    "image": "hero-normal.png",
+    "format": "RGBA8888",
+    "scale": 1,
+    "size": { "w": 160, "h": 128 }
+  }
+}

@@ -8,7 +8,8 @@
       "!**/*.jsonc",
       "!client/src/module_bindings",
       "!.claude",
-      "!client/dist"
+      "!client/dist",
+      "!client/art-src"
     ]
   },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 100 },

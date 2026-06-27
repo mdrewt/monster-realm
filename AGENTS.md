@@ -8,7 +8,14 @@ Project-specific rules. Inherits the workspace `AGENTS.md` and `standards/`.
 - **Done =** `just ci` green and meaningful (lint + typecheck + test + eval + security + client checks); the nightly workflow (`.github/workflows/nightly.yml`) enforces mutation + coverage off the PR path; ADR present for new deps/patterns.
 
 ## Notes
-- Spec lives in `docs/specs/`; ADRs in `docs/adr/`.
+- **Specs & ADRs live in two locations — check both.** The authoritative milestone/spec
+  corpus is the **harness**: `../../specs/monster-realm-v2/` (milestone specs `M0`–`M9`
+  incl. `M8.5`/`M8.6`, `PLAN.md`, `game-design.md`, `security-threat-model.md`,
+  `validation-checklist.md`, and the **design ADRs `0001`–`0034`** under `adr/`).
+  Project-local docs are under **`docs/`**: `docs/specs/` (project-scoped specs +
+  `TEMPLATE.md` — see its `README.md`) and `docs/adr/` (**implementation ADRs `0001`,
+  `0035`+**). Resolving a reference: milestone spec or ADR `0002`–`0034` → harness corpus;
+  ADR `0035`+ → `docs/adr/`. (`0001` is mirrored in both.)
 - Tests are authored from acceptance criteria; the implementer doesn't grade its own tests.
 - **Code knowledge graph (`codebase-memory-mcp`):** a global MCP server (registered in `~/.claude/.mcp.json`) indexes this repo into a queryable graph (per-project index in `~/.cache/codebase-memory-mcp/`). Use it for **impact analysis** — before changing a shared `game-core` signature/type (the workspace rule: report affected callers/tests first), query `trace_path` / `search_graph` / `get_code_snippet` to enumerate callers instead of reading whole files (cheaper, more precise). **Keep the graph current:** re-index at each milestone close — `index_repository` (full) or `detect_changes` (incremental). Read-only query tools + indexing are pre-allowlisted in `.claude/settings.json`; `delete_project` is intentionally not. **Arg nuance:** `index_repository` / `detect_changes` take `repo_path` (absolute path); the query tools (`search_graph`, `trace_path`, `index_status`, …) take `project` — the indexed name from `list_projects` (here `home-mdrewt-projects-ai-apps-claude-harness-projects-monster-realm`).
 
