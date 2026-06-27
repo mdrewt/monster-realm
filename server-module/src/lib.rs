@@ -1076,9 +1076,54 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
 
 // --- Battle reducers (M7b) ---------------------------------------------------
 
+// --- Battle-input validators (M8.5a, ADR-0048) -------------------------------
+// Pure, total predicates over the trust boundary. Extracted so the rejection
+// rules are unit-testable without a ReducerContext and reused by `start_battle`
+// and the write-back path. Every illegal input is an `Err` — reject-not-clamp.
+
+/// Caller party size must be in `1..=MAX_PARTY_SIZE` (empty is invalid; an
+/// oversized list is rejected, never truncated). The SSOT party-size validator.
+fn check_party_size(n: usize) -> Result<(), String> {
+    if n == 0 {
+        return Err("party must contain at least one monster".to_string());
+    }
+    if n > usize::from(MAX_PARTY_SIZE) {
+        return Err(format!(
+            "party size {n} exceeds MAX_PARTY_SIZE ({MAX_PARTY_SIZE})"
+        ));
+    }
+    Ok(())
+}
+
+/// A monster offered to a battle must be party-slotted, not boxed
+/// (`party_slot == PARTY_SLOT_NONE`). Boxed monsters cannot be conscripted.
+fn check_monster_in_party(slot: u8) -> Result<(), String> {
+    if slot == PARTY_SLOT_NONE {
+        return Err("monster is boxed (not party-slotted)".to_string());
+    }
+    Ok(())
+}
+
+/// The positional coupling the write-back path relies on: `side_a.team[i]`
+/// pairs with `party_monster_ids[i]`. A length mismatch is an illegal state —
+/// return `Err` (the caller surfaces it) rather than panic-indexing.
+fn check_team_coupling(team_len: usize, ids_len: usize) -> Result<(), String> {
+    if team_len != ids_len {
+        return Err(format!(
+            "battle invariant violated: side_a.team.len() ({team_len}) != party_monster_ids.len() ({ids_len})"
+        ));
+    }
+    Ok(())
+}
+
 /// Start a PvE battle: build BattleMonsters from the player's party and the
 /// opponent's party (owned by opponent_identity), create a BattleState, insert
 /// the Battle row. Both parties must have at least one conscious party member.
+///
+/// Opponent provenance (ADR-0048): only a self/sandbox opponent
+/// (`opponent_identity == ctx.sender`) or the server/NPC sentinel
+/// (`WILD_IDENTITY`) is accepted. A client may NOT name another player as the
+/// opponent — that would conscript their monsters into the public `battle` row.
 #[spacetimedb::reducer]
 pub fn start_battle(
     ctx: &ReducerContext,
@@ -1088,12 +1133,36 @@ pub fn start_battle(
 ) -> Result<(), String> {
     let me = ctx.sender;
 
-    if party_monster_ids.is_empty() {
-        let e = "party_monster_ids must not be empty".to_string();
+    // Bound BOTH parties to 1..=MAX_PARTY_SIZE (reject empty AND oversized —
+    // never truncate; an unbounded list is N species lookups + N skill scans +
+    // N row writes, and would yield a side with team.len() > MAX_PARTY_SIZE).
+    // These pure O(1) checks run BEFORE the O(N) dedup scan and any DB read so a
+    // huge list can't exhaust memory pre-rejection. M8.5a.
+    if let Err(e) = check_party_size(party_monster_ids.len()) {
         log_reject("start_battle", me, &e);
         return Err(e);
     }
-    // Reject duplicate monster IDs (prevents double XP write-back).
+    if let Err(e) = check_party_size(opponent_monster_ids.len()) {
+        let e = format!("opponent {e}");
+        log_reject("start_battle", me, &e);
+        return Err(e);
+    }
+
+    // Opponent-provenance authorization (ADR-0048): accept ONLY self/sandbox
+    // (opponent_identity == ctx.sender) or the server/NPC sentinel
+    // (WILD_IDENTITY). Naming another player would conscript their monsters into
+    // the public `battle` row (info-leak / grief / XP farm). Reject before the
+    // dedup scan and any side-B DB read so a foreign roster never reaches the
+    // row. reject-not-clamp.
+    if opponent_identity != me && opponent_identity != WILD_IDENTITY {
+        let e = "opponent must be self or server-authored (PvP unsupported; ADR-0048)".to_string();
+        log_reject("start_battle", me, &e);
+        return Err(e);
+    }
+
+    // Reject duplicate monster IDs across both sides (prevents double XP
+    // write-back / a monster fighting itself). Both lists are now bounded by
+    // MAX_PARTY_SIZE, so this scan is O(1)-bounded.
     {
         let mut seen = std::collections::HashSet::new();
         for &mid in &party_monster_ids {
@@ -1110,11 +1179,6 @@ pub fn start_battle(
                 return Err(e);
             }
         }
-    }
-    if opponent_monster_ids.is_empty() {
-        let e = "opponent_monster_ids must not be empty".to_string();
-        log_reject("start_battle", me, &e);
-        return Err(e);
     }
 
     // Check caller is not already in an ongoing battle.
@@ -1144,6 +1208,12 @@ pub fn start_battle(
             log_reject("start_battle", me, &e);
             return Err(e);
         }
+        // Reject boxed monsters — only party-slotted monsters may battle (M8.5a).
+        if let Err(e) = check_monster_in_party(m.party_slot) {
+            let e = format!("monster {mid} {e}");
+            log_reject("start_battle", me, &e);
+            return Err(e);
+        }
         let sp = ctx
             .db
             .species_row()
@@ -1170,6 +1240,13 @@ pub fn start_battle(
             .ok_or_else(|| format!("opponent monster {mid} not found"))?;
         if m.owner_identity != opponent_identity {
             let e = format!("monster {mid} not owned by opponent");
+            log_reject("start_battle", me, &e);
+            return Err(e);
+        }
+        // Reject boxed monsters on side-B too — a boxed monster's derived stats
+        // must not be embedded into the public `battle` row (M8.5a).
+        if let Err(e) = check_monster_in_party(m.party_slot) {
+            let e = format!("opponent monster {mid} {e}");
             log_reject("start_battle", me, &e);
             return Err(e);
         }
@@ -1641,10 +1718,17 @@ pub fn heal_party(ctx: &ReducerContext) -> Result<(), String> {
 /// Write post-battle HP back to every party monster (HP only — NO XP). Shared by
 /// `write_back_battle_results` (the win/loss/flee path) and the M8d recruit
 /// success arm (which grants no XP). Dual-writes the private `monster` row and
-/// its public projection.
-fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) {
+/// its public projection. Returns `Err` on a `side_a.team` / `party_monster_ids`
+/// length mismatch (checked indexing, never panic — M8.5a).
+fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) -> Result<(), String> {
+    check_team_coupling(
+        battle.state.side_a.team.len(),
+        battle.party_monster_ids.len(),
+    )?;
     for (i, bm) in battle.state.side_a.team.iter().enumerate() {
-        let mid = battle.party_monster_ids[i];
+        let &mid = battle.party_monster_ids.get(i).ok_or_else(|| {
+            format!("write_back_party_hp: party_monster_ids index {i} out of range")
+        })?;
         if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
             write_back_hp(&mut m, bm);
             let pub_row = pub_from_monster(&m);
@@ -1652,13 +1736,25 @@ fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) {
             ctx.db.monster_pub().monster_id().update(pub_row);
         }
     }
+    Ok(())
 }
 
 /// After a battle ends (win/loss), write HP back to all party monsters and
 /// grant XP to the winner's team.
 fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<(), String> {
+    // Positional coupling invariant: side_a.team[i] pairs with
+    // party_monster_ids[i]. Assert it up front (Err, never panic) so the XP loop
+    // below can index by position safely — the §3 criterion requires this
+    // assertion in write_back_battle_results specifically (M8.5a). The same
+    // assertion also lives in write_back_party_hp, which guards the recruit-success
+    // path that calls that helper WITHOUT going through this function.
+    check_team_coupling(
+        battle.state.side_a.team.len(),
+        battle.party_monster_ids.len(),
+    )?;
+
     // Write back HP for player's team (HP-only; the XP block below is separate).
-    write_back_party_hp(ctx, battle);
+    write_back_party_hp(ctx, battle)?;
 
     // GC the private wild-individuality row on ANY terminal outcome (no-op for
     // PvP battles with no `battle_wild` row; cleans wild battles that end via
@@ -1682,7 +1778,9 @@ fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<()
             if bm.is_fainted() {
                 continue;
             }
-            let mid = battle.party_monster_ids[i];
+            let &mid = battle.party_monster_ids.get(i).ok_or_else(|| {
+                format!("write_back_battle_results: party_monster_ids index {i} out of range")
+            })?;
             if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
                 let winner_lvl = game_core::Level::new(bm.level)?;
                 let loser_lvl = game_core::Level::new(loser_active.level)?;
@@ -1902,7 +2000,7 @@ pub fn attempt_recruit(
 
         battle.state.outcome = BattleOutcome::SideAWins;
         // NO XP on recruit (ADR-0047): do NOT swap for write_back_battle_results.
-        write_back_party_hp(ctx, &battle);
+        write_back_party_hp(ctx, &battle)?;
         ctx.db.battle_wild().battle_id().delete(battle_id);
         ctx.db.battle().battle_id().update(battle);
         // Log ONLY public coordinates — NEVER seed/IVs/nature (side-channel).
@@ -2837,6 +2935,216 @@ mod tests {
         assert_eq!(
             bm.max_hp, expected.hp,
             "max_hp must equal the derived HP stat from the same roll"
+        );
+    }
+
+    // =========================================================================
+    // M8.5a tests — Battle security & integrity (§3 criteria)
+    //
+    // Tests three pure helper functions called from start_battle / write_back_*:
+    //
+    //   fn check_party_size(n: usize) -> Result<(), String>
+    //     Ok for 1..=MAX_PARTY_SIZE, Err when n == 0 or n > MAX_PARTY_SIZE.
+    //     (§3 criterion 2: start_battle rejects if party_monster_ids.len() > MAX_PARTY_SIZE)
+    //
+    //   fn check_team_coupling(team_len: usize, ids_len: usize) -> Result<(), String>
+    //     Ok iff team_len == ids_len, else Err.
+    //     (§3 criterion 3: write_back_battle_results asserts side_a.team.len() ==
+    //      party_monster_ids.len() and uses checked get(i), returning Err not panic)
+    //
+    //   fn check_monster_in_party(slot: u8) -> Result<(), String>
+    //     Err iff slot == PARTY_SLOT_NONE, Ok otherwise.
+    //     (§3 criterion 2: start_battle rejects any boxed monster)
+    //
+    // None of these functions touch ReducerContext — they are pure validators
+    // that can be tested without a SpacetimeDB runtime.
+    // =========================================================================
+
+    // -------------------------------------------------------------------------
+    // TEST M8.5a-1: check_party_size — §3 criterion 2
+    //
+    // start_battle must reject (Err) if party_monster_ids.len() > MAX_PARTY_SIZE.
+    // The helper is the extracted pure validator for that gate.
+    //
+    // Kills: an impl that clamps instead of rejecting (returns Ok for n=7 with
+    //        MAX_PARTY_SIZE=6, silently truncating the party); an impl that uses
+    //        u8 overflow (n=256 wraps to 0 and incorrectly passes); an impl that
+    //        rejects n=MAX_PARTY_SIZE (off-by-one — the max is inclusive).
+    // -------------------------------------------------------------------------
+
+    /// §3-criterion-2: check_party_size(0) must be Err — an empty party is
+    /// invalid; start_battle with zero monsters must be rejected.
+    /// Kills: an impl that uses `n > MAX_PARTY_SIZE` only (misses the lower
+    /// bound; `1..=MAX_PARTY_SIZE` is the valid range).
+    #[test]
+    fn party_size_cap_rejects_empty() {
+        assert!(
+            check_party_size(0).is_err(),
+            "check_party_size(0) must be Err (empty party is not valid; range is 1..=MAX_PARTY_SIZE)"
+        );
+    }
+
+    /// §3-criterion-2: check_party_size(1) must be Ok — minimum valid party.
+    /// Kills: an impl that rejects any n < 2 (fencepost).
+    #[test]
+    fn party_size_cap_accepts_minimum() {
+        assert!(
+            check_party_size(1).is_ok(),
+            "check_party_size(1) must be Ok (minimum valid party of 1)"
+        );
+    }
+
+    /// §3-criterion-2: check_party_size(MAX_PARTY_SIZE) must be Ok — the
+    /// maximum is inclusive.
+    /// Kills: an impl that uses `>= MAX_PARTY_SIZE` instead of `> MAX_PARTY_SIZE`
+    /// (off-by-one that rejects a full but legal party of 6).
+    #[test]
+    fn party_size_cap_accepts_max() {
+        assert!(
+            check_party_size(MAX_PARTY_SIZE as usize).is_ok(),
+            "check_party_size(MAX_PARTY_SIZE) must be Ok (max is inclusive, not exclusive)"
+        );
+    }
+
+    /// §3-criterion-2: check_party_size(MAX_PARTY_SIZE + 1) must be Err —
+    /// one over the cap is rejected.
+    /// Kills: a clamp-not-reject impl that silently truncates to 6 and returns Ok.
+    #[test]
+    fn party_size_cap_rejects_oversized() {
+        assert!(
+            check_party_size(MAX_PARTY_SIZE as usize + 1).is_err(),
+            "check_party_size(MAX_PARTY_SIZE + 1) must be Err (oversized party must be rejected, not clamped)"
+        );
+    }
+
+    /// §3-criterion-2: check_party_size(100) must be Err — far over the cap.
+    /// Kills: an impl that only rejects n exactly equal to MAX_PARTY_SIZE+1
+    /// rather than all n > MAX_PARTY_SIZE.
+    #[test]
+    fn party_size_cap_rejects_large() {
+        assert!(
+            check_party_size(100).is_err(),
+            "check_party_size(100) must be Err (any n > MAX_PARTY_SIZE is rejected)"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // TEST M8.5a-2: check_team_coupling — §3 criterion 3
+    //
+    // write_back_battle_results asserts side_a.team.len() == party_monster_ids.len()
+    // and uses checked get(i), returning Err not panicking on mismatch.
+    // The helper is the extracted pure validator for that assertion.
+    //
+    // Kills: an impl that uses unchecked indexing (panics on mismatch instead
+    //        of returning Err); an impl that always returns Ok regardless of
+    //        lengths; an impl that accepts team_len > ids_len silently.
+    // -------------------------------------------------------------------------
+
+    /// §3-criterion-3: equal lengths must be Ok — the normal post-battle path.
+    /// Kills: an impl that always returns Err.
+    #[test]
+    fn team_coupling_accepts_equal_lengths() {
+        assert!(
+            check_team_coupling(3, 3).is_ok(),
+            "check_team_coupling(3, 3) must be Ok (lengths match)"
+        );
+    }
+
+    /// §3-criterion-3: (1, 1) must be Ok — minimal valid single-monster battle.
+    /// Kills: a "both >= 3" mutation that only accepts larger counts, and an
+    /// impl that has an off-by-one requiring lengths > 1.
+    #[test]
+    fn team_coupling_accepts_minimal_valid() {
+        assert!(
+            check_team_coupling(1, 1).is_ok(),
+            "check_team_coupling(1, 1) must be Ok (single monster on each side)"
+        );
+    }
+
+    /// §3-criterion-3: (6, 6) must be Ok — full party, all coupled.
+    /// Kills: an impl that only accepts small counts.
+    #[test]
+    fn team_coupling_accepts_max_party_equal() {
+        assert!(
+            check_team_coupling(6, 6).is_ok(),
+            "check_team_coupling(6, 6) must be Ok (full party with matching ids)"
+        );
+    }
+
+    /// §3-criterion-3: team_len > ids_len must be Err — the team has MORE
+    /// monsters than recorded ids, so indexed access would panic.
+    /// Kills: an impl that only checks the other direction, or uses unchecked
+    ///        indexing (team[i] where i >= ids.len() would panic).
+    #[test]
+    fn team_coupling_rejects_length_mismatch_team_longer() {
+        assert!(
+            check_team_coupling(3, 2).is_err(),
+            "check_team_coupling(3, 2) must be Err (team has 3 members but only 2 ids — panic path)"
+        );
+    }
+
+    /// §3-criterion-3: team_len < ids_len must be Err — the ids list has MORE
+    /// entries than actual team members, indicating a consistency bug.
+    /// Kills: an impl that silently ignores trailing ids (wrong; an invariant
+    ///        violation must surface as an Err, not a silent truncation).
+    #[test]
+    fn team_coupling_rejects_length_mismatch_ids_longer() {
+        assert!(
+            check_team_coupling(0, 1).is_err(),
+            "check_team_coupling(0, 1) must be Err (0 team members but 1 id — invariant violation)"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // TEST M8.5a-3: check_monster_in_party — §3 criterion 2 (boxed-monster)
+    //
+    // §3 criterion 2 requires start_battle to reject any listed monster that
+    // is boxed (party_slot == PARTY_SLOT_NONE). The helper is the extracted
+    // pure slot validator for that gate.
+    //
+    // Signature: fn check_monster_in_party(slot: u8) -> Result<(), String>
+    //   Returns Err iff slot == PARTY_SLOT_NONE, Ok otherwise.
+    //
+    // This is a SEPARATE concern from check_party_size (size cap): even a
+    // party of 1 is invalid if that 1 monster is boxed.
+    //
+    // Kills: an impl that accepts any slot value (always Ok); an impl that
+    //        treats PARTY_SLOT_NONE as a normal slot index (off-by-one on
+    //        the sentinel); an impl that rejects ALL non-zero slots
+    //        (would block valid party positions 1..MAX_PARTY_SIZE-1).
+    // -------------------------------------------------------------------------
+
+    /// §3-criterion-2 (boxed): slot 0 is a valid party position; must be Ok.
+    /// Kills: an impl that rejects slot 0 (confuses the first slot with empty).
+    #[test]
+    fn check_monster_in_party_accepts_first_slot() {
+        assert!(
+            check_monster_in_party(0).is_ok(),
+            "check_monster_in_party(0) must be Ok (slot 0 is a valid party position)"
+        );
+    }
+
+    /// §3-criterion-2 (boxed): the last valid party slot (MAX_PARTY_SIZE - 1)
+    /// must be Ok.
+    /// Kills: an impl that rejects any slot >= MAX_PARTY_SIZE - 1.
+    #[test]
+    fn check_monster_in_party_accepts_last_valid_slot() {
+        assert!(
+            check_monster_in_party(MAX_PARTY_SIZE - 1).is_ok(),
+            "check_monster_in_party(MAX_PARTY_SIZE - 1) must be Ok (last valid party slot)"
+        );
+    }
+
+    /// §3-criterion-2 (boxed): PARTY_SLOT_NONE (255) signals a boxed monster
+    /// and must be Err — start_battle must reject boxed monsters.
+    /// Kills: an impl that accepts all u8 values including the sentinel; an
+    ///        impl that only rejects values > MAX_PARTY_SIZE (missing the exact
+    ///        sentinel check); an impl that returns Ok(()) unconditionally.
+    #[test]
+    fn check_monster_in_party_rejects_party_slot_none() {
+        assert!(
+            check_monster_in_party(PARTY_SLOT_NONE).is_err(),
+            "check_monster_in_party(PARTY_SLOT_NONE) must be Err (255 = boxed; must be rejected)"
         );
     }
 }
