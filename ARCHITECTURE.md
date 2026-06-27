@@ -64,6 +64,11 @@ netcode-determinism, zoned-schema (every world table carries an indexed
 (private monster table, clean public projection, no client accessor — ADR-0040),
 **box-view-privacy** (StoreMonsterPub interface contains no hidden IV/EV/nature
 fields — ADR-0015).
+**Cache-freshness** (M-infra-a, ADR-0043): no shared `CARGO_TARGET_DIR`, `rust-cache`
+wired without `cache-all-crates`, distinct per-job `prefix-key`, sccache +
+`CARGO_INCREMENTAL=0` co-located, no committed `.cargo` rustc-wrapper, nextest +
+doctest in `test` recipe, `ci-fast` recipe present, `install-action` for audit +
+nextest.
 Each gate has a
 known-bad fixture it must reject. The **client TS** is gated too (M3): `tsc` +
 vitest/fast-check over the convert + Predictor property suites (run in `just ci`
@@ -79,8 +84,9 @@ stable id), separate from `init`. Stable ids are append-only.
 
 See `docs/adr/` (0002–0034 design ADRs from the spec corpus; 0035 scaffold
 hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest, 0040 RLS
-fallback split-tables, 0041 integer damage formula) and
-`docs/validation-findings.md` (empirical Tier-1 results).
+fallback split-tables, 0041 integer damage formula, 0042 battle table public PvE,
+0043 CI caching + fast inner loop) and `docs/validation-findings.md` (empirical
+Tier-1 results).
 
 ## Monster subsystem (`game-core/src/monster/`, M6a)
 
@@ -265,7 +271,11 @@ auto-hide box during battle, heal_party button in box view — 57 new client tes
 green) complete. **M7 (Battle system) is now fully delivered** (M7a + M7b + M7c all
 merged). **M8a** (taming rules — pure encounter triggering, recruit-chance arithmetic,
 encounters.ron registry, validation, 24 tests with 5 proof-of-teeth fixtures + 2
-proptest suites, all green) complete.
+proptest suites, all green) complete. **M-infra-a** (CI caching + fast inner loop
+— ADR-0043: `Swatinem/rust-cache` per-job, `taiki-e/install-action` for nextest +
+audit, `just test` = nextest + doctest, `ci-fast <crate>` recipe, `cache-on` sccache
+opt-in, cache-freshness eval with 8 criteria + 17 proof-of-teeth fixtures)
+complete.
 Deferred-with-rationale: the criterion **perf-budget gate** (folded into the M20
 observability capstone — a non-flaky budget needs tuned baselines) and GitHub
 Actions *execution* (the workflow is committed; only local `just ci` is verifiable

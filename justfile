@@ -13,7 +13,8 @@ typecheck:
     cargo check --workspace --all-targets
 
 test:
-    cargo test --workspace
+    cargo nextest run --workspace
+    cargo test --doc --workspace
 
 eval:
     node evals/run.mjs
@@ -59,5 +60,21 @@ gen:
 # republishes --delete-data. CI-as-required-gate is M5b (containerized spacetime).
 e2e: wasm
     cd client && npm run e2e
+
+# Fast inner loop: clippy + nextest + doctests scoped to a single crate.
+# Use during red-green iteration instead of the full `just ci`.
+ci-fast crate:
+    cargo clippy -p {{crate}} --all-targets --all-features -- -D warnings
+    cargo nextest run -p {{crate}}
+    cargo test --doc -p {{crate}}
+
+# Print sccache env vars to stdout. Source with: eval "$(just cache-on)"
+# Opt-in for local dev; CI uses Swatinem/rust-cache instead.
+# Contributors without sccache installed are unaffected (not auto-enabled).
+cache-on:
+    @echo 'export RUSTC_WRAPPER=sccache'
+    @echo 'export SCCACHE_DIR=${SCCACHE_DIR:-$HOME/.cache/sccache}'
+    @echo 'export SCCACHE_CACHE_SIZE=${SCCACHE_CACHE_SIZE:-2G}'
+    @echo 'export CARGO_INCREMENTAL=0'
 
 ci: lint typecheck test eval security wasm client-typecheck client-test
