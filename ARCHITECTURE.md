@@ -199,7 +199,7 @@ live here exactly once (ADR-0003 SSOT). Randomness injected via `TurnVariance`.
   the new active). All return ordered `Vec<BattleEvent>`.
 - **`ai`** — `pick_best_skill`: scores each known skill by `power * eff * stab`,
   picks highest. Ignores accuracy (accepted — simple heuristic, M14 can layer).
-- **`xp`** — `battle_xp_reward`: `bst * loser_level / (5 * winner_level) + 1` (u32 intermediates).
+- **`xp`** — `battle_xp_reward`: `bst * loser_level / (5 * winner_level) + 1` (u32 intermediates — small products, well within range, no overflow risk).
   `apply_xp_gain`: saturating add, clamped at `xp_for_level(100)`, returns
   `(new_xp, new_level, did_level_up)`.
 

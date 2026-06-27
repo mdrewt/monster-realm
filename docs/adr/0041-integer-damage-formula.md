@@ -31,6 +31,8 @@ effectiveness, and a variance roll — all without floats.
   float formula on some inputs (accepted — matches Pokemon's approach);
   extreme stat combinations can overflow u32 intermediates only if stats
   exceed u16::MAX, which is structurally prevented by the type system.
+  **(Superseded — see the M8.5e amendment below: the intermediates are `u64`,
+  and this overflow rationale is corrected.)**
 
 ## Amendment (M8.5e, 2026-06-27): u64 intermediates — correction
 
