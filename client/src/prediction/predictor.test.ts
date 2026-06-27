@@ -656,6 +656,176 @@ describe('NET-1 ADR-0052 §B: lazy #lastDrainAt — regression-guard (invariant 
 });
 
 // ================================================================================
+// M8.6c ADR-0013.5 — #pending BOUND / backpressure (pendingCap)
+//
+// The Predictor gains an OPTIONAL 4th constructor param:
+//   new Predictor(applyMove, stepMs, queueCap, pendingCap?)
+// enqueue() ALSO declines (returns undefined, no push, no #record, no seq consumed)
+// when #pending.length >= pendingCap — mirroring the existing #queue cap decline.
+// This is DISTINCT from the M8.5f #queue-cap tests (NET-1 ADR-0052, above):
+//   - Those tests assert queueDepth <= queueCap (the local intent queue bound).
+//   - These tests assert pendingCount <= pendingCap (the unacked-ops bound).
+//
+// RED reason (before impl): Predictor constructor has no 4th param; enqueue()
+// only checks #queue.length, not #pending.length. A 20-iteration no-ack burst
+// accumulates pendingCount=20, far exceeding pendingCap=3 → assertions fail.
+// ================================================================================
+
+/** Small-pendingCap predictor for M8.6c backpressure tests. */
+function mkPendingCapped(queueCap: number, pendingCap: number): Predictor {
+  return new Predictor(applyMove, STEP_MS, queueCap, pendingCap);
+}
+
+describe('M8.6c ADR-0013.5: #pending bound / backpressure (pendingCap)', () => {
+  it('BITES unbounded #pending: enqueue declines when #pending.length >= pendingCap', () => {
+    // RED reason: current enqueue only checks #queue.length → pendingCount reaches
+    // many past pendingCap without returning undefined. After fix: once pendingCount
+    // reaches pendingCap, further enqueues return undefined (no push, no seq consumed).
+    // Wrong impl killed: enqueue that only gate-checks #queue, ignoring #pending.
+    //
+    // We use queueCap=8 (large, not the bottleneck) so the #queue cap is NOT hit first,
+    // isolating the #pending cap check cleanly.
+    const PENDING_CAP = 3;
+    const p = mkPendingCapped(/*queueCap*/ 8, PENDING_CAP);
+    p.reconcile(baseline(5, 5, 0), [], 0, 0); // seed
+
+    // First PENDING_CAP enqueues must succeed (pendingCount goes 1, 2, 3).
+    const r1 = p.enqueue(east());
+    const r2 = p.enqueue(east());
+    const r3 = p.enqueue(east());
+    expect(r1).toBeDefined();
+    expect(r2).toBeDefined();
+    expect(r3).toBeDefined();
+    expect(p.pendingCount).toBe(PENDING_CAP);
+
+    // Further enqueues must be declined: #pending is at cap.
+    const r4 = p.enqueue(east());
+    const r5 = p.enqueue(east());
+    expect(r4).toBeUndefined(); // declined — no push, no seq consumed
+    expect(r5).toBeUndefined();
+    // pendingCount must NOT exceed pendingCap.
+    expect(p.pendingCount).toBe(PENDING_CAP);
+    // queueDepth is NOT at its own cap (8), so the decline came from #pending.
+    expect(p.queueDepth).toBe(PENDING_CAP); // 3 accepted into queue too
+  });
+
+  it('BITES unbounded #pending: burst + no-ack loop keeps pendingCount <= pendingCap', () => {
+    // RED reason: a 20-iteration held-style burst (enqueue + drain to free queue slot)
+    // without any reconcile/ack would reach pendingCount≈20 without the fix.
+    // After fix: pendingCount never exceeds pendingCap=3.
+    // Wrong impl killed: any enqueue that only gates on #queue.length.
+    const QUEUE_CAP = 2;
+    const PENDING_CAP = 3;
+    const p = mkPendingCapped(QUEUE_CAP, PENDING_CAP);
+    const t0 = 10_000;
+    // Seed two steps ago so the first drain immediately applies due moves.
+    p.reconcile(baseline(5, 5, t0 - 2 * STEP_MS), [], 0, t0);
+
+    let now = t0;
+    for (let i = 0; i < 20; i++) {
+      // try to enqueue East — may be declined by either queue-cap or pending-cap
+      p.enqueue(east());
+      // advance time by one full step so a slot in the queue drains (freeing queueDepth),
+      // but WITHOUT any reconcile — so pendingCount only grows (pending is never acked).
+      now += STEP_MS;
+      p.drain(now);
+
+      // The critical assertion: pendingCount must never exceed pendingCap,
+      // even though the queue keeps draining and accepting new entries.
+      expect(p.pendingCount).toBeLessThanOrEqual(PENDING_CAP);
+    }
+  });
+
+  it('BITES: declined enqueue (pending-full) does NOT push to #pending or consume seq', () => {
+    // Wrong impl killed: an impl that records a pending op THEN checks the cap
+    // (pushing before the guard fires), or one that increments #nextSeq on decline.
+    const PENDING_CAP = 2;
+    const p = mkPendingCapped(/*queueCap*/ 8, PENDING_CAP);
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+
+    const r1 = p.enqueue(east()); // seq=1, pendingCount=1
+    const r2 = p.enqueue(east()); // seq=2, pendingCount=2
+    expect(r1).toBeDefined();
+    expect(r2).toBeDefined();
+    expect(p.pendingCount).toBe(2);
+
+    const r3 = p.enqueue(east()); // should be declined
+    expect(r3).toBeUndefined(); // declined
+    expect(p.pendingCount).toBe(2); // unchanged — no push
+
+    // After a reconcile that acks both, a new enqueue should get seq=3 (not seq=4),
+    // proving the declined enqueue did NOT consume a seq number.
+    p.reconcile(baseline(7, 5, 0), [], r2!.seq, 0); // ack both
+    expect(p.pendingCount).toBe(0);
+    const r4 = p.enqueue(north());
+    expect(r4).toBeDefined();
+    // seq must be strictly greater than r2.seq (=2) — not r2.seq+2 (which would mean
+    // the declined enqueue consumed seq=3).
+    expect(r4!.seq).toBe(r2!.seq + 1); // next after last successful seq
+  });
+
+  it('post-reconcile convergence: backpressure does NOT corrupt prediction (desync-safe)', () => {
+    // BITES: an impl where declined enqueues silently corrupt the #pending replay log,
+    // causing reconcile to compute the wrong predicted position.
+    // After bounding #pending and reconciling against the authoritative truth that
+    // reflects moves the server actually accepted, predicted == authoritative.
+    const QUEUE_CAP = 2;
+    const PENDING_CAP = 3;
+    const p = mkPendingCapped(QUEUE_CAP, PENDING_CAP);
+    const t0 = 10_000;
+    p.reconcile(baseline(5, 5, t0 - 2 * STEP_MS), [], 0, t0);
+
+    // Burst of East enqueues — only PENDING_CAP (3) land in pending.
+    // With QUEUE_CAP=2, the queue fills at 2; the 3rd enqueue lands in pending
+    // (via setMove or a subsequent drain). Here we use a drain loop:
+    let now = t0;
+    const accepted: ReturnType<typeof p.enqueue>[] = [];
+    for (let i = 0; i < 8; i++) {
+      const r = p.enqueue(east());
+      if (r !== undefined) accepted.push(r);
+      now += STEP_MS;
+      p.drain(now);
+    }
+
+    // Server accepted 2 East steps (queue cap = 2), authority at x=7.
+    const ackedSeq = accepted.length >= 2 ? accepted[1]!.seq : (accepted[0]?.seq ?? 0);
+    const authX = 5 + Math.min(accepted.length, 2);
+    const diverged = p.reconcile(baseline(authX, 5, now - 2 * STEP_MS), [], ackedSeq, now);
+
+    // No divergence (the client predicted correctly within the cap).
+    expect(diverged).toBe(false);
+    expect(p.predicted!.pos.x).toBe(authX);
+    expect(p.predicted!.pos.y).toBe(5);
+    // pendingCount drops because acked ops are pruned.
+    expect(p.pendingCount).toBeLessThanOrEqual(PENDING_CAP);
+  });
+
+  it('3-arg construction is UNAFFECTED: default pendingCap large enough that existing tests pass', () => {
+    // RED reason if wrong: if the 4th param defaults to something tiny (e.g. 0 or 1),
+    // the existing M8.5f burst tests would break because a handful of enqueues would
+    // be prematurely declined by the pending cap. The default must be >= 16 or similar.
+    // Wrong impl killed: a default pendingCap that is too small (< QUEUE_CAP tests use).
+    //
+    // This test uses the existing 3-arg mkPredictor() and enqueues QUEUE_CAP (8) moves
+    // without triggering the pending cap — proving the default is permissive.
+    const p = mkPredictor(); // 3-arg: new Predictor(applyMove, STEP_MS, QUEUE_CAP=8)
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+
+    // Enqueue up to queueCap=8 moves — NONE should be declined by the pending cap.
+    const results: ReturnType<typeof p.enqueue>[] = [];
+    for (let i = 0; i < QUEUE_CAP; i++) {
+      results.push(p.enqueue(east()));
+    }
+    // All 8 should succeed (not declined).
+    for (const r of results) {
+      expect(r).toBeDefined();
+    }
+    expect(p.pendingCount).toBe(QUEUE_CAP);
+    expect(p.queueDepth).toBe(QUEUE_CAP);
+  });
+});
+
+// ================================================================================
 // ADR-0013 smoothness — MONOTONIC predicted tile (no backward step except a genuine
 // divergence). Closes the M3 smoothness-eval gap at the predictor level.
 // ================================================================================

@@ -543,3 +543,94 @@ describe('buildBattleViewModel: baitOptions classify by recruit_bonus, not item 
     expect(vm!.baitOptions).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// M8.6c — negative active index: fail-soft (returns null, does NOT throw)
+// SOURCE OF TRUTH: specs/monster-realm-v2/M8.6-residual-hardening.spec.md
+//
+// RED reason (before impl): the current guard is `sideX.active >= sideX.team.length`
+// which uses strict `>=`. When active === -1:
+//   -1 >= team.length  →  false  (guard does NOT fire)
+//   team[-1]           →  undefined
+//   monsterCard(undefined, …) → crashes (TypeError: Cannot read properties of undefined)
+//
+// After fix: both side guards add `|| sideX.active < 0`, so a negative active
+// returns null WITHOUT throwing, matching the existing behavior for out-of-bounds.
+//
+// BITES: the `>=`-only guard which lets -1 through, crashing downstream.
+// ---------------------------------------------------------------------------
+
+describe('buildBattleViewModel M8.6c: negative active index → null, no throw', () => {
+  it('BITES: sideA.active = -1 returns null and does NOT throw', () => {
+    // RED reason: current guard `-1 >= 1` is false → team[-1] = undefined → crash.
+    // After fix: `active < 0` check fires before the team access → returns null.
+    // Wrong impl killed: a guard that only checks `active >= team.length` (the
+    // current `>=`-only impl lets negative actives slip through to `team[-1]`).
+    const b = makeBattle({
+      sideA: { active: -1, team: [battleMonster()] },
+    });
+    const act = () => buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(act).not.toThrow();
+    expect(act()).toBeNull();
+  });
+
+  it('BITES: sideB.active = -1 returns null and does NOT throw', () => {
+    // RED reason: sideB guard also only uses `>=` today. -1 for sideB passes the
+    // guard and crashes on `sideB.team[-1]`.
+    // Wrong impl killed: a guard that patches sideA but forgets sideB.
+    const b = makeBattle({
+      sideB: { active: -1, team: [battleMonster()] },
+    });
+    const act = () => buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(act).not.toThrow();
+    expect(act()).toBeNull();
+  });
+
+  it('BITES: both sides negative → still returns null, still does NOT throw', () => {
+    // Kills: a partial-fix that patches one side but not the other, and any order-
+    // dependent crash when both sides simultaneously carry a negative active index.
+    const b = makeBattle({
+      sideA: { active: -1, team: [battleMonster()] },
+      sideB: { active: -2, team: [battleMonster(), battleMonster()] },
+    });
+    const act = () => buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(act).not.toThrow();
+    expect(act()).toBeNull();
+  });
+
+  it('BITES: sideA.active = -1 is rejected even when sideA.team is non-empty', () => {
+    // Kills: an impl that adds `team.length === 0` as the only new guard (misses
+    // the negative-index case for a non-empty team).
+    const b = makeBattle({
+      sideA: {
+        active: -1,
+        team: [battleMonster(), battleMonster(), battleMonster()], // 3 members
+      },
+    });
+    const result = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(result).toBeNull();
+  });
+
+  it('BITES: sideB.active = -1 is rejected even when sideB.team is non-empty', () => {
+    // Symmetric guard check for sideB: a large team must not rescue a negative index.
+    const b = makeBattle({
+      sideB: {
+        active: -1,
+        team: [battleMonster(), battleMonster()],
+      },
+    });
+    const result = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(result).toBeNull();
+  });
+
+  it('valid active=0 on both sides still returns a non-null view-model (guard not over-eager)', () => {
+    // Regression guard: the new `< 0` check must NOT fire for the normal case active=0.
+    // Kills: an over-eager impl that treats active=0 as "falsy" and returns null.
+    const b = makeBattle({
+      sideA: { active: 0, team: [battleMonster()] },
+      sideB: { active: 0, team: [battleMonster()] },
+    });
+    const result = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(result).not.toBeNull();
+  });
+});
