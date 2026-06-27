@@ -60,5 +60,11 @@ process.stdin.on('end', () => {
   } else if (ext === '.rs') {
     if (has('rustfmt')) run(`rustfmt ${q(file)}`, path.dirname(file));
   }
+
+  // Keep the research library's generated index synced: when a research doc is written,
+  // regenerate its sibling INDEX.md (best-effort; never blocks the agent).
+  if (/[\\/]docs[\\/]research[\\/][^\\/]+\.md$/.test(file) && !/INDEX\.md$/.test(file)) {
+    run(`node ${q(path.join(import.meta.dirname, 'research-index.mjs'))} ${q(path.dirname(file))}`);
+  }
   process.exit(0);
 });
