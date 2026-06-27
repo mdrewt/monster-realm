@@ -52,7 +52,12 @@ pub fn roll_encounter(table: &EncounterTable, roll: u32, player_level: Level) ->
         .filter(|e| pl >= e.min_level.as_u8() && pl <= e.max_level.as_u8())
         .collect();
 
-    let total_weight: u32 = eligible.iter().map(|e| u32::from(e.weight)).sum();
+    // Checked sum: a zone with enough max-weight entries could overflow u32.
+    // On overflow, treat the table as unselectable (None) rather than panic
+    // (debug) or silently wrap (release) into a wrong species pick.
+    let total_weight: u32 = eligible
+        .iter()
+        .try_fold(0u32, |acc, e| acc.checked_add(u32::from(e.weight)))?;
     if total_weight == 0 {
         return None;
     }
@@ -149,6 +154,10 @@ pub const RECRUIT_BASE_RATE: u16 = 80;
 /// - Result capped at 1000 (certainty)
 #[must_use]
 pub fn recruit_chance(max_hp: u16, current_hp: u16, base_rate: u16, bait_bonus: u16) -> u16 {
+    debug_assert!(
+        base_rate <= 1000 && bait_bonus <= 1000,
+        "recruit_chance: base_rate ({base_rate}) and bait_bonus ({bait_bonus}) must each be <= 1000 (per-mille)"
+    );
     let base = u32::from(base_rate);
     let bait = u32::from(bait_bonus);
 
