@@ -8,11 +8,12 @@
 //! Time columns are `i64` ms (round-trip `game_core::Millis`). Syntax: crate 1.12.
 
 use game_core::{
-    apply_move, apply_xp_gain, battle_xp_reward, load_items, load_skills, load_species,
-    load_type_chart, resolve_turn, roll_starter, spawn, validate_content, zone_0, ActionState,
-    Affinity, BattleMonster, BattleOutcome, BattleSide, BattleState, CharacterState, Direction,
-    Millis, MonsterInstance, MoveInput, NatureKind, SkillDef, StatBlock, StatKind, TileMap,
-    TilePos, TurnChoice, TurnVariance, TypeChart, MOVE_QUEUE_CAP, STEP_MS,
+    apply_move, apply_xp_gain, battle_xp_reward, load_encounters, load_items, load_skills,
+    load_species, load_type_chart, resolve_turn, roll_starter, spawn, validate_content,
+    validate_encounters, zone_0, ActionState, Affinity, BattleMonster, BattleOutcome, BattleSide,
+    BattleState, CharacterState, Direction, Millis, MonsterInstance, MoveInput, NatureKind,
+    SkillDef, StatBlock, StatKind, TileMap, TilePos, TurnChoice, TurnVariance, TypeChart,
+    MOVE_QUEUE_CAP, STEP_MS,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
@@ -134,6 +135,29 @@ pub struct ItemRow {
     pub id: u32,
     pub name: String,
     pub description: String,
+}
+
+// --- Encounter table (M8b, ADR-0040 second visibility mode: must-never-leak) ----
+
+/// Server-local marshaled encounter entry — flatten-at-boundary (`Level` -> `u8`,
+/// the same pattern as `Millis` -> `i64`). Lives inside the private `EncounterRow`.
+#[derive(spacetimedb::SpacetimeType, Clone, Debug, PartialEq, Eq)]
+pub struct EncounterEntryRow {
+    pub species_id: u32,
+    pub weight: u16,
+    pub min_level: u8,
+    pub max_level: u8,
+}
+
+/// PRIVATE encounter table (no `public`). Spawn weights/level bands are
+/// server-only truth that must NEVER reach any client — there is no public
+/// projection and no RLS filter (ADR-0040: the second visibility mode).
+#[spacetimedb::table(name = encounter)]
+pub struct EncounterRow {
+    #[primary_key]
+    pub zone_id: u32,
+    pub encounter_rate: u16,
+    pub entries: Vec<EncounterEntryRow>,
 }
 
 // --- Monster tables (M6b, ADR-0015 fallback: split private + public projection) --
@@ -318,6 +342,25 @@ fn monster_from_instance(owner: Identity, inst: &MonsterInstance, party_slot: u8
         stat_sp_defense: inst.derived_stats.sp_defense,
         current_hp: inst.current_hp,
         party_slot,
+    }
+}
+
+// `convert` seam: flatten `game-core::EncounterTable` -> private `EncounterRow`.
+// No `ctx` — pure marshaling. `Level` flattens to `u8` (like `Millis` -> `i64`).
+fn encounter_rows_from_table(table: &game_core::EncounterTable) -> EncounterRow {
+    EncounterRow {
+        zone_id: table.zone_id,
+        encounter_rate: table.encounter_rate,
+        entries: table
+            .entries
+            .iter()
+            .map(|e| EncounterEntryRow {
+                species_id: e.species_id,
+                weight: e.weight,
+                min_level: e.min_level.as_u8(),
+                max_level: e.max_level.as_u8(),
+            })
+            .collect(),
     }
 }
 
@@ -556,6 +599,33 @@ fn sync_content_inner(ctx: &ReducerContext) {
             }
             None => {
                 ctx.db.item_row().insert(row);
+            }
+        }
+    }
+
+    // --- M8b encounter tables (PRIVATE; ADR-0040 must-never-leak) ---
+    // Validate BEFORE any write so a bad registry never wipes/partially seeds.
+    let encounters = match load_encounters() {
+        Ok(e) => e,
+        Err(e) => {
+            log::error!(
+                "{{\"evt\":\"sync_content_error\",\"registry\":\"encounters\",\"reason\":\"{e}\"}}"
+            );
+            return;
+        }
+    };
+    if let Err(e) = validate_encounters(&encounters, &species, &zones) {
+        log::error!("{{\"evt\":\"sync_content_invalid\",\"reason\":\"{e}\"}}");
+        return;
+    }
+    for table in &encounters {
+        let row = encounter_rows_from_table(table);
+        match ctx.db.encounter().zone_id().find(table.zone_id) {
+            Some(_) => {
+                ctx.db.encounter().zone_id().update(row);
+            }
+            None => {
+                ctx.db.encounter().insert(row);
             }
         }
     }

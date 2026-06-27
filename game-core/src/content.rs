@@ -236,7 +236,20 @@ pub fn validate_encounters(
                 table.encounter_rate, table.zone_id
             ));
         }
+        if table.entries.is_empty() {
+            return Err(format!(
+                "encounter table for zone {} has no entries",
+                table.zone_id
+            ));
+        }
+        let mut seen_species = std::collections::BTreeSet::new();
         for entry in &table.entries {
+            if !seen_species.insert(entry.species_id) {
+                return Err(format!(
+                    "duplicate encounter species {} within zone {}",
+                    entry.species_id, table.zone_id
+                ));
+            }
             if entry.weight == 0 {
                 return Err(format!(
                     "encounter entry for species {} in zone {} has weight=0",
@@ -442,16 +455,6 @@ mod tests {
             power: 40,
             accuracy: 100,
             pp: 35,
-        }
-    }
-
-    #[allow(dead_code)]
-    fn fixture_item(id: u32) -> ItemDef {
-        ItemDef {
-            id,
-            name: format!("Item{id}"),
-            description: format!("Description for item {id}"),
-            recruit_bonus: 0,
         }
     }
 
