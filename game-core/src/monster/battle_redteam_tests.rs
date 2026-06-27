@@ -21,9 +21,7 @@
 //! The arithmetic-only tests run today and prove the plan's claims are wrong.
 
 use super::rules::{derive_stats, level_for_xp, xp_for_level};
-use super::types::{
-    Affinity, Bond, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock, StatKind, Xp,
-};
+use super::types::{Affinity, EVs, IVs, Level, Nature, NatureKind, StatBlock, StatKind, Xp};
 use crate::content::{SkillDef, Species, TypeRelation};
 
 // ---------------------------------------------------------------------------
@@ -771,38 +769,18 @@ fn f13_multilevel_jump_xp_math() {
 //   The risk is silent logic gaps in game-core's own battle resolution code.
 // ---------------------------------------------------------------------------
 
-#[test]
-fn f14_non_exhaustive_within_crate_gives_no_protection() {
-    // This test documents the semantic gap, not a runtime failure.
-    // In Rust: #[non_exhaustive] only affects EXTERNAL crates.
-    // Within game-core, a `match event { VariantA => ..., VariantB => ... }`
-    // compiles without a wildcard arm -- even after adding VariantC in M14.
-    //
-    // The protection for M14 extensibility must come from EXPLICIT DESIGN:
-    // - All internal matches should include `_ => {}` arms NOW, before M14.
-    // - The #[non_exhaustive] attribute only gates external consumers.
-    //
-    // We can't write a runtime test for a compile-time property, but we
-    // can assert the design intention is understood:
-
-    // If BattleEvent existed and had two variants A and B, and we match
-    // without a wildcard, adding variant C in M14 would:
-    // - Within game-core: COMPILE successfully (bug: C unhandled silently)
-    // - Outside game-core: COMPILE ERROR (must add wildcard -- correct behavior)
-    //
-    // The implication: game-core's own resolve_turn must use explicit wildcard
-    // arms in any BattleEvent match, even though the compiler won't force it.
-
-    // Asserting the design principle is documented (this test always passes --
-    // it's a specification anchor, not a failure-mode detector):
-    let is_documented = true;
-    assert!(
-        is_documented,
-        "FINDING 14: #[non_exhaustive] does not protect within-crate exhaustive \
-         matches. game-core's internal BattleEvent handling must use explicit \
-         wildcard arms from day one to avoid silent logic gaps when M14 adds variants."
-    );
-}
+// FINDING 14 (language property — no runtime test possible, tautology removed):
+// #[non_exhaustive] on BattleEvent only protects EXTERNAL crates. Within
+// game-core, exhaustive matches compile without a wildcard arm even after M14
+// adds new variants — silent logic gap risk.
+//
+// Convention (enforced by code review, not the compiler):
+//   All internal matches on BattleEvent MUST include explicit wildcard arms
+//   (`_ => {}`) from day one to avoid silent gaps when M14 adds variants.
+//   The #[non_exhaustive] attribute gates only external consumers.
+//
+// fn f14_non_exhaustive_within_crate_gives_no_protection — removed (tautology;
+// asserted a Rust-language fact, zero regression value)
 
 // ---------------------------------------------------------------------------
 // FINDING 15 (MEDIUM): resolve_player_swap naming implies asymmetric API.
@@ -814,106 +792,114 @@ fn f14_non_exhaustive_within_crate_gives_no_protection() {
 
 #[test]
 fn f15_pvp_requires_symmetric_swap_api() {
-    // This test serves as a design assertion: the M16 PvP architecture
-    // requires that any swap action can be performed by EITHER side.
+    // Gap CLOSED in-core: resolve_player_swap accepts swap_side: SideId (resolve.rs:311)
+    // and handles both SideId::SideA and SideId::SideB symmetrically.
     //
-    // An asymmetric API creates two problems:
-    // 1. PvP: the "AI side" cannot call resolve_player_swap -- needs special casing.
-    // 2. Replay: if sides are identified as Player/AI rather than A/B, replay
-    //    from either perspective produces different event streams.
-    //
-    // The correct API signature should be:
-    //   fn resolve_swap(side: Side, team: &[BattleMonster], new_active_idx: usize) -> ...
-    // NOT:
-    //   fn resolve_player_swap(team: &[BattleMonster], new_active_idx: usize) -> ...
+    // This test is STRENGTHENED: it calls resolve_player_swap with SideId::SideB
+    // and asserts that state.side_b.active is updated. If the symmetric API is
+    // ever narrowed (e.g., hard-coded to SideA), this assertion turns RED.
+    use crate::combat::type_chart::TypeChart;
+    use crate::combat::{
+        resolve_player_swap,
+        types::{BattleMonster, BattleOutcome, BattleSide, BattleState, SideId, TurnVariance},
+    };
+    use crate::content::{load_type_chart, SkillDef};
+    use crate::monster::types::{Affinity, StatBlock};
 
-    // Assert that the plan's SideA/SideB naming is reflected in the API,
-    // not just the data model:
-    let pvp_requires_symmetric_api = true; // specification anchor
-    assert!(
-        pvp_requires_symmetric_api,
-        "FINDING 15: resolve_player_swap is asymmetric. For M16 PvP, both sides \
-         need equivalent swap capability. The API must accept a Side parameter \
-         (SideA or SideB) rather than implicitly operating on 'the player side'. \
-         Name it resolve_swap(side, ...) from M7a to avoid M16 refactor debt."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// FINDING 16 (HIGH): BattleMonster write-back is unspecified.
-//   BattleMonster is described as a "snapshot" at battle start. But HP is
-//   reduced during battle and XP is gained. After the battle ends, the plan
-//   does not specify how BattleMonster state is written back to MonsterInstance.
-//   In SpacetimeDB: MonsterInstance fields (current_hp, xp, level, derived_stats)
-//   live in the `monster` table. After battle, a reducer must write them back.
-//   The plan does not name this reducer or define its write-back contract.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn f16_no_write_back_spec_for_battle_result() {
-    // Prove that MonsterInstance has fields that need updating after battle.
-    // We construct a MonsterInstance, show that current_hp and xp are mutable
-    // state, and assert the write-back is unspecified.
-
-    let species = Species {
-        id: 1,
-        name: "Flameling".to_string(),
-        base_stats: StatBlock {
-            hp: 45,
-            attack: 49,
-            defense: 49,
-            speed: 65,
-            sp_attack: 65,
-            sp_defense: 45,
-        },
+    let make_monster = |hp: u16| BattleMonster {
+        species_id: 1,
         affinity: Affinity::Fire,
-        learnable_skill_ids: vec![],
+        level: 5,
+        current_hp: hp,
+        max_hp: hp,
+        stats: StatBlock {
+            hp,
+            attack: 50,
+            defense: 50,
+            speed: 50,
+            sp_attack: 50,
+            sp_defense: 50,
+        },
+        known_skill_ids: vec![1],
     };
 
-    let (ivs, nature) = crate::monster::roll_individuality(42);
-    let level = Level::new(5).unwrap();
-    let evs = zero_evs();
-    let derived = derive_stats(&species.base_stats, &ivs, &evs, &nature, level);
-
-    let monster = MonsterInstance {
-        species_id: species.id,
-        nickname: None,
-        level,
-        xp: xp_for_level(level),
-        ivs,
-        nature,
-        evs,
-        bond: Bond::new(70),
-        current_hp: derived.get(StatKind::Hp), // starts full
-        derived_stats: derived,
-        party_slot: None,
+    // Build a battle where SideB has two monsters (active=0) and SideA has one.
+    let mut state = BattleState {
+        side_a: BattleSide {
+            active: 0,
+            team: vec![make_monster(100)],
+        },
+        side_b: BattleSide {
+            active: 0,
+            team: vec![make_monster(100), make_monster(80)],
+        },
+        outcome: BattleOutcome::Ongoing,
+        turn_number: 0,
     };
 
-    // After a battle:
-    // - current_hp may have changed (reduced by damage)
-    // - xp may have increased
-    // - level may have increased (triggering derived_stats recalculation)
-    // - derived_stats must be recalculated if level changed
-    //
-    // None of this is specified in the M7a plan.
-    let has_current_hp = monster.current_hp > 0;
-    let has_xp_field = monster.xp.value() > 0;
+    let skill = SkillDef {
+        id: 1,
+        name: "Ember".to_string(),
+        affinity: Affinity::Fire,
+        power: 40,
+        accuracy: 100,
+        pp: 25,
+    };
+    let skills = vec![skill];
+    let type_chart_data = load_type_chart().expect("type chart must parse");
+    let chart = TypeChart::new(&type_chart_data);
+    let variance = TurnVariance {
+        damage_roll_a: 100,
+        damage_roll_b: 100,
+        accuracy_roll_a: 100, // miss — avoid knock-outs complicating the assertion
+        accuracy_roll_b: 100,
+        speed_tie_breaker: true,
+    };
 
-    assert!(
-        has_current_hp && has_xp_field,
-        "FINDING 16: MonsterInstance has current_hp={} and xp={} that change \
-         during battle. The plan does not specify a write-back reducer that \
-         updates these fields after battle ends. Without write-back, all HP \
-         damage and XP gained in battle are lost when the battle struct is dropped.",
-        monster.current_hp,
-        monster.xp.value()
+    // Swap SideB's active monster from slot 0 to slot 1.
+    let events = resolve_player_swap(&mut state, SideId::SideB, 1, &skills, &chart, &variance);
+
+    // REAL ASSERTION: state.side_b.active must now be 1.
+    // This is RED if the symmetric API is narrowed (e.g., only SideA is handled).
+    assert_eq!(
+        state.side_b.active, 1,
+        "FINDING 15 (CLOSED): resolve_player_swap with SideId::SideB must update \
+         state.side_b.active. Got {}. The API is symmetric (resolve.rs:311 handles \
+         both SideA and SideB). If this fails, the symmetric API has been narrowed.",
+        state.side_b.active
     );
 
-    // The unspecified contract:
-    // After BattleEnd, a reducer must call something like:
-    //   apply_battle_result(winner_side, &battle_state) -> Vec<MonsterInstance>
-    // and write the results back to the monster table.
+    // Also confirm a Switch event was emitted for SideB.
+    use crate::combat::types::BattleEvent;
+    let switch_for_side_b = events.iter().any(|e| {
+        matches!(
+            e,
+            BattleEvent::Switch {
+                side: SideId::SideB,
+                new_active: 1
+            }
+        )
+    });
+    assert!(
+        switch_for_side_b,
+        "FINDING 15: resolve_player_swap with SideId::SideB must emit a Switch event \
+         for SideB with new_active=1"
+    );
 }
+
+// ---------------------------------------------------------------------------
+// FINDING 16 (gap closed — tautological assertion removed):
+//   The M7a plan did not specify a write-back contract for post-battle HP/XP.
+//   This gap is now CLOSED: server-module implements `write_back_battle_results`
+//   and `write_back_party_hp` (~lib.rs:2440+) which write current_hp, xp, level,
+//   and derived_stats back to the `monster` and `monster_pub` tables after battle.
+//   The server-module reducer tests cover these paths.
+//
+//   The original test asserted `has_current_hp && has_xp_field` on a freshly
+//   constructed MonsterInstance — always true on constructed values, zero
+//   regression value. Removed per M8.5c anchor-cleanup (no tautology shall remain).
+//
+// fn f16_no_write_back_spec_for_battle_result — removed (tautology; gap closed server-side)
 
 // ---------------------------------------------------------------------------
 // FINDING 17 (LOW): Damage formula minimum is 2, not 1.
