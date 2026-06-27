@@ -2,8 +2,9 @@
 // SOURCE OF TRUTH: M4-frontend.spec.md §3 — pooled CharacterView per entity
 // (never recreate), and "WHEN a character row is deleted ... tear down its
 // CharacterView ... no leaked views, no ghost sprite."
-import { describe, expect, it } from 'vitest';
+
 import * as fc from 'fast-check';
+import { describe, expect, it } from 'vitest';
 import { ViewRegistry } from './viewRegistry';
 
 describe('ViewRegistry: pool create/teardown diff', () => {

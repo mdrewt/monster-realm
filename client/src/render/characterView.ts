@@ -5,8 +5,9 @@
 // wraps ONE Pixi sprite, mutated in place every frame (never recreated — the v1
 // "recreate-Pixi" pitfall), swapping its texture set ONLY when the (action,facing)
 // animation key actually changes.
-import { Sprite } from 'pixi.js';
+
 import type { Texture } from 'pixi.js';
+import { Sprite } from 'pixi.js';
 import type { WasmAction, WasmDirection } from '../convert/convert';
 import { TILE_PX } from './config';
 

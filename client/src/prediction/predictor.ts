@@ -12,7 +12,11 @@
 import type { WasmCharacterState, WasmDirection, WasmMoveInput } from '../convert/convert';
 
 /** The injected movement rule — identical signature to client-wasm `apply_move`. */
-export type ApplyMove = (state: WasmCharacterState, input: WasmMoveInput, now: number) => WasmCharacterState;
+export type ApplyMove = (
+  state: WasmCharacterState,
+  input: WasmMoveInput,
+  now: number,
+) => WasmCharacterState;
 
 /**
  * A QUEUE operation (not a raw move) recorded in `pending`. Recording ops — not

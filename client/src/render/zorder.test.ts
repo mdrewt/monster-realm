@@ -1,8 +1,9 @@
 // render/zorder.ts behaviour suite (M4b) — vitest + fast-check.
 // SOURCE OF TRUTH: M4-frontend.spec.md §3 — overlapping sprites get a STABLE
 // z-order (by y / entity_id) so they don't flicker.
-import { describe, expect, it } from 'vitest';
+
 import * as fc from 'fast-check';
+import { describe, expect, it } from 'vitest';
 import { compareZ, sortedByZ, type ZItem } from './zorder';
 
 const z = (entityId: bigint, y: number): ZItem => ({ entityId, y });
@@ -35,13 +36,20 @@ describe('compareZ / sortedByZ: stable overlap order', () => {
     fc.assert(
       fc.property(
         fc.array(
-          fc.record({ entityId: fc.bigInt({ min: 0n, max: 20n }), y: fc.integer({ min: 0, max: 5 }) }),
+          fc.record({
+            entityId: fc.bigInt({ min: 0n, max: 20n }),
+            y: fc.integer({ min: 0, max: 5 }),
+          }),
           { maxLength: 30 },
         ),
         (raw) => {
           // unique ids so the order is strict
           const seen = new Set<bigint>();
-          const items = raw.filter((r) => (seen.has(r.entityId) ? false : (seen.add(r.entityId), true)));
+          const items = raw.filter((r) => {
+            if (seen.has(r.entityId)) return false;
+            seen.add(r.entityId);
+            return true;
+          });
           const out = sortedByZ(items);
           expect(out.length).toBe(items.length); // a permutation
           for (let i = 1; i < out.length; i++) {

@@ -179,7 +179,7 @@ export class BattleView {
     // Bait selector: classify-by-data — each option carries its recruit_bonus on
     // a data attribute; the first option is "No bait" (a bare attempt).
     const select = document.createElement('select');
-    select.dataset['testid'] = 'bait-selector';
+    select.dataset.testid = 'bait-selector';
     select.setAttribute('data-testid', 'bait-selector');
     select.style.cssText =
       'padding:6px 8px;font-family:monospace;font-size:12px;background:#222;' +

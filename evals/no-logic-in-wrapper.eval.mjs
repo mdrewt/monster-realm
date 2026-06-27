@@ -44,7 +44,11 @@ export default async function () {
         Ok(to_value(&next)?)
     }`;
   if (!hasMovementLogic(badFixture)) {
-    return { name, pass: false, detail: 'proof-of-teeth: predicate failed to flag a rule-bearing wrapper' };
+    return {
+      name,
+      pass: false,
+      detail: 'proof-of-teeth: predicate failed to flag a rule-bearing wrapper',
+    };
   }
   // And a faithful marshaling wrapper must NOT be flagged (no false positive).
   const goodFixture = `
@@ -55,7 +59,11 @@ export default async function () {
         Ok(to_value(&next)?)
     }`;
   if (hasMovementLogic(goodFixture)) {
-    return { name, pass: false, detail: 'proof-of-teeth: predicate false-flagged a pure marshaling wrapper' };
+    return {
+      name,
+      pass: false,
+      detail: 'proof-of-teeth: predicate false-flagged a pure marshaling wrapper',
+    };
   }
 
   // Real check: the actual wrapper source carries no rule.

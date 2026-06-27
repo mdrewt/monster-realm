@@ -14,9 +14,9 @@ jobs:
     steps:
       # fetch-depth: 0 so gitleaks-action can diff the PR commit range on
       # pull_request events (a shallow clone => "stderr is not empty").
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { fetch-depth: 0 }
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           # gitleaks-action v2 requires a token to scan pull_request events
           # (breaking change). The auto-provided GITHUB_TOKEN suffices.
@@ -27,23 +27,23 @@ jobs:
       - name: Dependency review (SCA on PRs)
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        uses: actions/dependency-review-action@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: clippy, targets: wasm32-unknown-unknown }
-      - uses: Swatinem/rust-cache@v2
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with: { components: clippy, rustfmt, targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with: { prefix-key: v1-ci }
       # wasm-pack builds the client-wasm pkg the prediction/movement-parity evals
       # consume (`just eval`) — the runner has no wasm-pack otherwise.
-      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
         with: { version: 'v0.15.0' }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24.13.1'
           cache: npm
           cache-dependency-path: client/package-lock.json
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
       # Prebuilt binary installs (M-infra-a) — faster than cargo install from source.
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
         with: { tool: cargo-nextest }
       - run: just setup
       # Pinned SpacetimeDB CLI (2.6.0) so `just eval` → bindings-drift runs the
@@ -71,7 +71,7 @@ jobs:
       # Client prediction layer (M3): headless TS typecheck + vitest/fast-check.
       - run: just client-typecheck
       - run: just client-test
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
         with: { tool: cargo-audit }
       - name: SCA (cargo audit)
         run: cargo audit --file Cargo.lock
@@ -82,7 +82,7 @@ jobs:
         # (unlike a bare .semgrepignore, which replaces Semgrep's defaults).
         run: pipx run semgrep scan --config auto --error --exclude '.claude'
       - name: SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
 
   # M5b (ADR-0009): the two-window e2e is now a merge gate run against a REAL
   # version-pinned standalone SpacetimeDB in CI — not local-only. ADR-0039 records
@@ -93,19 +93,19 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with: { targets: wasm32-unknown-unknown }
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with: { prefix-key: v1-e2e }
-      - uses: jetli/wasm-pack-action@v0.4.0
+      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
         with: { version: 'v0.15.0' }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24.13.1'
           cache: npm
           cache-dependency-path: client/package-lock.json
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
       # Pinned SpacetimeDB CLI (2.6.0) so publish + `spacetime generate` protocol,
       # the committed TS bindings, and the module all agree (ADR-0009).
       - name: Install SpacetimeDB CLI

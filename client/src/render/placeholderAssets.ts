@@ -4,10 +4,11 @@
 // stand in behind the AssetProvider seam so the renderer is asset-agnostic and an
 // HD-2D upgrade stays additive + render-only (ADR-0004). One texture per
 // (action,facing) is cached so an animation swap is a cheap reference change.
-import { Graphics } from 'pixi.js';
+
 import type { Renderer, Texture } from 'pixi.js';
+import { Graphics } from 'pixi.js';
 import type { WasmAction, WasmDirection } from '../convert/convert';
-import { animKey, type AnimKey, type AssetProvider } from './characterView';
+import { type AnimKey, type AssetProvider, animKey } from './characterView';
 import { TILE_PX } from './config';
 
 const ACTION_TINT: Record<WasmAction, number> = {

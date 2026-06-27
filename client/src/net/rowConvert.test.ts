@@ -332,7 +332,7 @@ describe('rowConvert M7c: battleRowToStore — SDK row -> StoreBattle', () => {
     expect(mon.statSpAttack).toBe(70);
     expect(mon.statSpDefense).toBe(50);
     // Confirm the raw SDK nested shape is NOT present
-    expect((mon as unknown as Record<string, unknown>)['stats']).toBeUndefined();
+    expect((mon as unknown as Record<string, unknown>).stats).toBeUndefined();
   });
 
   it('BITES: turnNumber, currentHp, maxHp, level, speciesId stay as numbers', () => {

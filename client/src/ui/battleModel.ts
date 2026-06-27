@@ -87,7 +87,9 @@ export function buildBattleViewModel(
   if (!sideA.team.length || sideA.active >= sideA.team.length) return null;
   if (!sideB.team.length || sideB.active >= sideB.team.length) return null;
 
+  // biome-ignore lint/style/noNonNullAssertion: active index validated by the guard above
   const playerMon = sideA.team[sideA.active]!;
+  // biome-ignore lint/style/noNonNullAssertion: active index validated by the guard above
   const opponentMon = sideB.team[sideB.active]!;
   const ongoing = battle.outcome === 'Ongoing';
 
@@ -107,6 +109,7 @@ export function buildBattleViewModel(
   const bench: BenchMemberVM[] = [];
   if (ongoing) {
     for (let i = 0; i < sideA.team.length; i++) {
+      // biome-ignore lint/style/noNonNullAssertion: i is bounded by sideA.team.length
       const m = sideA.team[i]!;
       if (i !== sideA.active && m.currentHp > 0) {
         bench.push({

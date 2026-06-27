@@ -199,7 +199,9 @@ describe('AuthoritativeStore: properties (fast-check)', () => {
         fc.array(fc.integer({ min: 0, max: 9 }), { minLength: 2, maxLength: 30 }),
         (xs) => {
           const s = new AuthoritativeStore();
-          xs.forEach((x, i) => s.upsertCharacter(char(7n, x, 0), 100 + i));
+          xs.forEach((x, i) => {
+            s.upsertCharacter(char(7n, x, 0), 100 + i);
+          });
           const stored = s.character(7n)!;
           expect(stored.latest.tileX).toBe(xs[xs.length - 1]);
           expect(stored.prev!.tileX).toBe(xs[xs.length - 2]);

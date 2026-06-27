@@ -18,8 +18,19 @@ export default async function () {
   const name = 'netcode-determinism (sim-harness replay + seeded link)';
 
   // Proof-of-teeth: predicate MUST reject a non-deterministic report.
-  if (isDeterministic({ replay_deterministic: false, link_deterministic: true, delivered: 1, sent: 2 })) {
-    return { name, pass: false, detail: 'proof-of-teeth: predicate failed to reject non-determinism' };
+  if (
+    isDeterministic({
+      replay_deterministic: false,
+      link_deterministic: true,
+      delivered: 1,
+      sent: 2,
+    })
+  ) {
+    return {
+      name,
+      pass: false,
+      detail: 'proof-of-teeth: predicate failed to reject non-determinism',
+    };
   }
 
   let report;

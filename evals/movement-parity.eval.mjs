@@ -3,8 +3,8 @@
 // byte-identical to the native game-core `apply_move` the server runs. Movement
 // has no RNG, so no seed — just the same inputs through both targets.
 import { execSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
@@ -27,7 +27,11 @@ export default async function () {
       stdio: ['ignore', 'ignore', 'pipe'],
     });
   } catch (e) {
-    return { name, pass: false, detail: `wasm-pack build failed: ${String(e.stderr || e.message).slice(0, 300)}` };
+    return {
+      name,
+      pass: false,
+      detail: `wasm-pack build failed: ${String(e.stderr || e.message).slice(0, 300)}`,
+    };
   }
   const pkgPath = path.resolve('client-wasm/pkg/client_wasm.js');
   if (!existsSync(pkgPath)) {
@@ -36,7 +40,9 @@ export default async function () {
 
   let native;
   try {
-    const out = execSync('cargo run -q -p sim-harness --bin movement_vectors', { encoding: 'utf8' });
+    const out = execSync('cargo run -q -p sim-harness --bin movement_vectors', {
+      encoding: 'utf8',
+    });
     native = JSON.parse(out.trim());
   } catch (e) {
     return { name, pass: false, detail: `native vectors failed: ${e.message}` };
@@ -45,7 +51,16 @@ export default async function () {
   const wasm = require(pkgPath);
   const wasmOuts = native.map((v) =>
     Array.from(
-      wasm.predict_move(v.in[0], v.in[1], v.in[2], v.in[3], BigInt(v.in[4]), v.in[5], v.in[6], BigInt(v.in[7])),
+      wasm.predict_move(
+        v.in[0],
+        v.in[1],
+        v.in[2],
+        v.in[3],
+        BigInt(v.in[4]),
+        v.in[5],
+        v.in[6],
+        BigInt(v.in[7]),
+      ),
     ),
   );
 

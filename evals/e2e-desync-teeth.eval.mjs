@@ -38,10 +38,18 @@ export default async function () {
   const desynced = { ownAuthTile: { x: 4, y: 7 }, ownPredictedTile: { x: 5, y: 7 } };
   const synced = { ownAuthTile: { x: 4, y: 7 }, ownPredictedTile: { x: 4, y: 7 } };
   if (noDesync(desynced)) {
-    return { name, pass: false, detail: 'proof-of-teeth: noDesync failed to reject a desynced snapshot' };
+    return {
+      name,
+      pass: false,
+      detail: 'proof-of-teeth: noDesync failed to reject a desynced snapshot',
+    };
   }
   if (!noDesync(synced)) {
-    return { name, pass: false, detail: 'proof-of-teeth: noDesync wrongly rejected a synced snapshot' };
+    return {
+      name,
+      pass: false,
+      detail: 'proof-of-teeth: noDesync wrongly rejected a synced snapshot',
+    };
   }
 
   // Proof-of-teeth #2: the e2e gate must stay wired in CI (a disabled gate is caught).
@@ -56,9 +64,14 @@ export default async function () {
     return {
       name,
       pass: false,
-      detail: 'e2e gate not wired in ci.yml (need a job `e2e:` running the two-window flow vs spacetime)',
+      detail:
+        'e2e gate not wired in ci.yml (need a job `e2e:` running the two-window flow vs spacetime)',
     };
   }
 
-  return { name, pass: true, detail: 'desync assertion bites on a known-bad fixture; e2e gate wired in CI' };
+  return {
+    name,
+    pass: true,
+    detail: 'desync assertion bites on a known-bad fixture; e2e gate wired in CI',
+  };
 }

@@ -53,7 +53,7 @@ describe('SlideClock proof-of-teeth (ADR-0010): decoupled from move_started_at',
     expect(c.positionAt(200).x).toBeCloseTo(1); // arrives on its OWN clock
   });
 
-  it("the test bites: a move_started_at-keyed clock WOULD stutter here", () => {
+  it('the test bites: a move_started_at-keyed clock WOULD stutter here', () => {
     // Model the BAD renderer (restarts the slide every update, as if reading the
     // ever-changing server stamp). It regresses mid-slide — the symptom the
     // decoupling prevents — proving the no-restart assertion above is meaningful.

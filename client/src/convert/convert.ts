@@ -20,7 +20,9 @@ export interface WasmCharacterState {
 // --- SDK binding shapes (tagged unions; see src/module_bindings/types.ts) --------
 export type SdkDirection = { readonly tag: WasmDirection };
 export type SdkAction = { readonly tag: WasmAction };
-export type SdkMoveInput = { readonly tag: 'Step'; readonly value: SdkDirection } | { readonly tag: 'Jump' };
+export type SdkMoveInput =
+  | { readonly tag: 'Step'; readonly value: SdkDirection }
+  | { readonly tag: 'Jump' };
 
 /**
  * The movement-bearing subset of the generated `character` row that convert reads.

@@ -19,7 +19,11 @@ export default async function () {
   // the gate is meaningless — fail loudly.
   const knownBad = 'game-core v0.1.0\n└── spacetimedb feature "default"';
   if (!leaksSpacetimedb(knownBad)) {
-    return { name, pass: false, detail: 'proof-of-teeth: predicate failed to reject a bad fixture' };
+    return {
+      name,
+      pass: false,
+      detail: 'proof-of-teeth: predicate failed to reject a bad fixture',
+    };
   }
 
   // Real check: resolve client-wasm's feature/dependency tree and assert clean.

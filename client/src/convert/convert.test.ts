@@ -1,8 +1,9 @@
 // convert round-trip + rebasing properties (M3 acceptance criteria, fast-check).
 // The marshaling boundary is dumb and reversible for the faithful conversions, and
 // the predicted-baseline rebasing is a deliberately lossy local-time clamp.
-import { describe, expect, it } from 'vitest';
+
 import * as fc from 'fast-check';
+import { describe, expect, it } from 'vitest';
 import {
   characterFieldsFromWasm,
   characterToPredictedBaseline,
@@ -78,7 +79,13 @@ describe('convert: faithful round-trips (handles tagged unions + bigint)', () =>
     fc.assert(
       fc.property(msArb, (t) => {
         const back = characterFieldsFromWasm(
-          characterToWasm({ tileX: 0, tileY: 0, facing: { tag: 'North' }, action: { tag: 'Idle' }, moveStartedAtMs: BigInt(t) }),
+          characterToWasm({
+            tileX: 0,
+            tileY: 0,
+            facing: { tag: 'North' },
+            action: { tag: 'Idle' },
+            moveStartedAtMs: BigInt(t),
+          }),
         );
         expect(typeof back.moveStartedAtMs).toBe('bigint');
         expect(back.moveStartedAtMs).toBe(BigInt(t));

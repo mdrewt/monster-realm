@@ -17,4 +17,4 @@ game-core = { path = "../game-core", features = ["spacetimedb"] }
 # version != product version; confirmed against the v1 reference).
 spacetimedb = { workspace = true }
 # Structured logging facade (captured by the SpacetimeDB host).
-log = "0.4"
+log.workspace = true
