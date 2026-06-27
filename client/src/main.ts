@@ -6,10 +6,11 @@
 //   batch-applied --> Predictor.reconcile (4-step against a coherent snapshot)
 //   rAF    --> Predictor.drain --> WorldRenderer.render (own=predicted, remote=auth)
 //
-// The renderer paints integer tiles here; the M4b smoothness layer (slide clock +
-// remote interpolation buffer) lands with M5b's smoothness assertions. A DEV
-// `window.__game()` snapshot lets the M5 two-window e2e assert on STATE (predicted
-// vs authoritative tiles, presence, the zone map), never pixels.
+// The own character renders from its self-owned slide clock (fractional sub-tile)
+// and remotes from the interpolation buffer (now − interpDelay), via RenderResolver
+// (M8.6b, ADR-0013). A DEV `window.__game()` snapshot lets the M5 two-window e2e
+// assert on STATE (predicted vs authoritative tiles, presence, the zone map), never
+// pixels.
 
 // client-wasm (built `wasm-pack build client-wasm --target bundler`; resolved by
 // vite-plugin-wasm + top-level-await — see vite.config.ts / server.fs.allow).
@@ -32,8 +33,9 @@ import { shouldToggleBox } from './inputGuards';
 import { connect } from './net/connection';
 import { AuthoritativeStore } from './net/store';
 import { type ApplyMove, Predictor } from './prediction/predictor';
+import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
-import { type RenderEntity, WorldRenderer } from './render/world';
+import { WorldRenderer } from './render/world';
 import { buildBattleViewModel } from './ui/battleModel';
 import type { BattleView } from './ui/battleView';
 import { buildBoxViewModel, buildPartyViewModel, nextFreePartySlot } from './ui/boxModel';
@@ -54,6 +56,12 @@ const store = new AuthoritativeStore();
 // The injected rule IS the client-wasm export (same compiled code as the server).
 const applyMove = apply_move as unknown as ApplyMove;
 let predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
+// Routes own (slide clock) vs remote (interpolation buffer) renders (M8.6b).
+const resolver = new RenderResolver(STEP_MS);
+// Sticky DEV latch: set once the own entity renders a fractional sub-tile position
+// (proves the slide clock is wired, not raw integer tiles). Never reset to false
+// except on reconnect. The e2e reads it via window.__game().
+let sawFractionalOwnMotion = false;
 
 let identity = '';
 let conn: ReturnType<typeof connect> | undefined;
@@ -182,6 +190,7 @@ function snapshot() {
     ownEntityId: store.ownEntityId(identity)?.toString() ?? null,
     ownPredictedTile: pred ? { x: pred.pos.x, y: pred.pos.y } : null,
     ownAuthTile: own ? { x: own.row.tileX, y: own.row.tileY } : null,
+    sawFractionalOwnMotion,
     characters: [...store.characters()].map((c) => ({
       entityId: c.row.entityId.toString(),
       tileX: c.row.tileX,
@@ -207,24 +216,6 @@ function snapshot() {
   };
 }
 (window as unknown as { __game: typeof snapshot }).__game = snapshot;
-
-// --- render loop: own at predicted tile, remote at authoritative tile ------------
-function renderEntities(): RenderEntity[] {
-  const ownEid = store.ownEntityId(identity);
-  const pred = predictor.predicted;
-  const out: RenderEntity[] = [];
-  for (const c of store.characters()) {
-    const isOwn = ownEid !== undefined && c.row.entityId === ownEid;
-    out.push({
-      entityId: c.row.entityId,
-      x: isOwn && pred ? pred.pos.x : c.row.tileX,
-      y: isOwn && pred ? pred.pos.y : c.row.tileY,
-      action: isOwn && pred ? pred.action : c.row.action,
-      facing: isOwn && pred ? pred.facing : c.row.facing,
-    });
-  }
-  return out;
-}
 
 async function main(): Promise<void> {
   const [{ BoxView: BoxViewClass }, { BattleView: BattleViewClass }] = await Promise.all([
@@ -278,15 +269,39 @@ async function main(): Promise<void> {
       resolveReady();
     },
     onReconnect: () => {
-      // Clean re-init: the store already dropped stale rows; rebuild prediction.
+      // Clean re-init: the store already dropped stale rows; rebuild prediction and
+      // drop the own slide clock so the post-reconnect re-seed starts fresh.
       predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
+      resolver.reset();
+      sawFractionalOwnMotion = false;
     },
     onError: (where, message) => console.error(`[net:${where}] ${message}`),
   });
 
   const frame = (): void => {
-    predictor.drain(performance.now());
-    renderer.render(renderEntities());
+    const now = performance.now();
+    const { snapped } = predictor.drain(now);
+    const ownEntityId = store.ownEntityId(identity);
+    const predicted = predictor.predicted;
+    const entities = resolver.resolve({
+      characters: store.characters(),
+      ownEntityId,
+      predicted,
+      snapped,
+      now,
+    });
+    // Sticky latch: count ONLY fractional motion from the slide-clock path — the own
+    // entity WITH a predicted state (same predicate as RenderResolver's `isOwn`), never
+    // the interpolation fallback. This keeps the e2e proving the slide clock specifically,
+    // not remote-interp leaking onto the own entity during the login/reconnect gap. The
+    // sole non-integer source on this path is the slide clock (predicted tiles are integers).
+    if (ownEntityId !== undefined && predicted !== undefined) {
+      const own = entities.find((e) => e.entityId === ownEntityId);
+      if (own !== undefined && (!Number.isInteger(own.x) || !Number.isInteger(own.y))) {
+        sawFractionalOwnMotion = true;
+      }
+    }
+    renderer.render(entities);
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);

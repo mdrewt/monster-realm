@@ -21,6 +21,19 @@ import { RenderResolver, type ResolveInput } from './renderResolver';
 
 const STEP_MS = 200;
 
+/** Build a typed ResolveInput with safe defaults; callers override what they need.
+ *  The explicit return type is the load-bearing use of the ResolveInput interface. */
+function makeInput(overrides: Partial<ResolveInput>): ResolveInput {
+  return {
+    characters: [],
+    ownEntityId: undefined,
+    predicted: undefined,
+    snapped: false,
+    now: 0,
+    ...overrides,
+  };
+}
+
 /** Build a minimal StoredCharacter. The caller fills in what they need. */
 function makeChar(
   entityId: bigint,
@@ -84,31 +97,34 @@ describe('RenderResolver — own entity slide clock: fractional mid-motion', () 
     const char = makeChar(OWN_ID, 0, 0, 0); // authoritative position irrelevant for own path
 
     // Seed at tile (0,0)
-    resolver.resolve({
-      characters: [char],
-      ownEntityId: OWN_ID,
-      predicted: makePredicted(0, 0),
-      snapped: false,
-      now: 0,
-    });
+    resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(0, 0),
+        now: 0,
+      }),
+    );
 
     // Change predicted tile to (1,0) — this starts the slide from 0→1 at t=0
-    resolver.resolve({
-      characters: [char],
-      ownEntityId: OWN_ID,
-      predicted: makePredicted(1, 0),
-      snapped: false,
-      now: 0,
-    });
+    resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(1, 0),
+        now: 0,
+      }),
+    );
 
     // Mid-slide at now=100: should be at x≈0.5
-    const entities = resolver.resolve({
-      characters: [char],
-      ownEntityId: OWN_ID,
-      predicted: makePredicted(1, 0),
-      snapped: false,
-      now: 100,
-    });
+    const entities = resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(1, 0),
+        now: 100,
+      }),
+    );
 
     const own = entities.find((e) => e.entityId === OWN_ID);
     expect(own, 'own entity must be in the output').toBeDefined();
