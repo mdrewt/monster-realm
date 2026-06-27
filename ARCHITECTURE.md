@@ -83,11 +83,18 @@ stable id), separate from `init`. Stable ids are append-only.
 
 ## Decisions
 
-See `docs/adr/` (0002–0034 design ADRs from the spec corpus; 0035 scaffold
-hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest, 0040 RLS
-fallback split-tables, 0041 integer damage formula, 0042 battle table public PvE,
-0043 CI caching + fast inner loop) and `docs/validation-findings.md` (empirical
-Tier-1 results).
+ADRs **0002–0034** are design ADRs that live in the harness spec corpus
+(`../../specs/monster-realm-v2/adr/`); **0001** is mirrored in both locations.
+Implementation ADRs **0001, 0035–0051** live in `docs/adr/` — see
+`docs/adr/README.md` for the navigable catalog. Highlights: 0035 scaffold
+hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest, **0039
+two-window e2e CI gate**, 0040 RLS fallback split-tables, 0041 integer damage
+formula, 0042 battle table public PvE, 0043 CI caching + fast inner loop, 0044
+private encounter table, 0045 private `battle_wild` individuality table, 0046
+player inventory model, 0047 recruit resolution, 0048 `start_battle` opponent
+provenance, 0049 panic-as-content-invariant policy, 0050 nightly mutation/
+coverage + bindings-drift-in-ci, 0051 biome lint scope. See also
+`docs/validation-findings.md` (empirical Tier-1 results).
 
 ## Monster subsystem (`game-core/src/monster/`, M6a)
 
@@ -181,7 +188,7 @@ live here exactly once (ADR-0003 SSOT). Randomness injected via `TurnVariance`.
 - **`type_chart`** — `TypeChart` wraps RON-loaded `TypeRelation` data; 8
   affinities, raw values in {0, 5, 10, 20}. Unlisted pairs default to 10
   (neutral). `classify` maps raw → `Effectiveness` discriminant.
-- **`damage`** — integer-only formula (u32 intermediates, truncating division,
+- **`damage`** — integer-only formula (u64 intermediates, truncating division,
   no floats): `base = (2*level/5+2)*power*attack/defense/50+2`, STAB `*3/2`,
   type `*eff/10`, variance `*roll/100`, `max(1)`, clamped to `u16::MAX`.
   `accuracy_check(accuracy, roll) -> bool` — `roll < accuracy`.
@@ -192,7 +199,7 @@ live here exactly once (ADR-0003 SSOT). Randomness injected via `TurnVariance`.
   the new active). All return ordered `Vec<BattleEvent>`.
 - **`ai`** — `pick_best_skill`: scores each known skill by `power * eff * stab`,
   picks highest. Ignores accuracy (accepted — simple heuristic, M14 can layer).
-- **`xp`** — `battle_xp_reward`: `(bst/5)*(loser_level/winner_level)+1`.
+- **`xp`** — `battle_xp_reward`: `bst * loser_level / (5 * winner_level) + 1` (u32 intermediates).
   `apply_xp_gain`: saturating add, clamped at `xp_for_level(100)`, returns
   `(new_xp, new_level, did_level_up)`.
 
@@ -453,8 +460,9 @@ test pinning the `zone_0` placeholder map within its registry dims, a `drain`
 cleanup, and a predictor-level **monotonic-prediction** smoothness test. Tracked so
 they stay conscious, not forgotten:
 
-- **`isWasmReady()`** — M3 shipped the bridge + Vite plugin config; the readiness
-  gate lands in **M4** with the live `--target bundler` load (the loop awaits it).
+- **`isWasmReady()`** — **RESOLVED (M4).** M3 shipped the bridge + Vite plugin
+  config; the readiness gate landed in **M4** with the live `--target bundler`
+  load. Deferral closed.
 - **Renderer smoothness evals** (own slide-clock decoupling from `move_started_at`;
   remote interpolation-buffer jitter) — **delivered in M4b** as vitest proof-of-teeth
   (`render/slideClock.test.ts`, `render/interpolation.test.ts`: the bad clock that
@@ -464,8 +472,8 @@ they stay conscious, not forgotten:
 - **`seq` boundary helper** (`u64` reducer / `bigint` store ↔ the predictor's session
   `number`) — a typed conversion lands with the **M5** connection adapter; both sides
   are internally consistent today.
-- **Spec path `frontend/` == delivered `client/`** — gates target `client/`; the spec
-  prose is stale (cosmetic).
+- **Spec path `frontend/` == delivered `client/`** — **RESOLVED.** The delivered
+  path is `client/`; the stale spec prose was cosmetic. Deferral closed.
 - **M2 spec items not yet gated** (a `client_connected` reducer, a schema-snapshot /
   migration-smoke eval, soak/load tests) — soak/load is the **M20** capstone; the rest
   carry forward with M2's 9 shipped proof-of-teeth evals as the live gate set.
