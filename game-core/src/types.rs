@@ -90,6 +90,8 @@ pub enum MoveInput {
 pub enum TileKind {
     Floor,
     Wall,
+    /// Walkable floor that can trigger a wild encounter when stepped onto (M8).
+    TallGrass,
 }
 
 impl TileKind {
@@ -102,6 +104,7 @@ impl TileKind {
         match c {
             '.' => Ok(TileKind::Floor),
             '#' => Ok(TileKind::Wall),
+            '~' => Ok(TileKind::TallGrass),
             other => Err(format!("unknown tile char {other:?}")),
         }
     }
@@ -109,7 +112,7 @@ impl TileKind {
     #[must_use]
     pub fn is_walkable(self) -> bool {
         match self {
-            TileKind::Floor => true,
+            TileKind::Floor | TileKind::TallGrass => true,
             TileKind::Wall => false,
         }
     }

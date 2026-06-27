@@ -11,8 +11,8 @@
 // (map / interpolation / slideClock / zorder / viewRegistry).
 import { Application, Container, Graphics } from 'pixi.js';
 import type { WasmAction, WasmDirection } from '../convert/convert';
-import { CharacterView } from './characterView';
 import type { AssetProvider } from './characterView';
+import { CharacterView } from './characterView';
 import { TILE_PX } from './config';
 import { type RawTileMap, TileMap } from './map';
 import { PlaceholderAssets } from './placeholderAssets';
@@ -21,6 +21,10 @@ import { sortedByZ } from './zorder';
 
 const WALL_COLOR = 0x222838;
 const FLOOR_COLOR = 0x10131a;
+// Grass is walkable floor PLUS an additive overlay (M8c) — the tile the wild
+// encounter triggers on. Visual-SSOT: the overlay is driven by `map.isGrass`,
+// never a hard-coded grid.
+const GRASS_COLOR = 0x1f4d2b;
 
 /** A draw-ready entity: a FRACTIONAL tile position already resolved by the loop. */
 export interface RenderEntity {
@@ -61,10 +65,20 @@ export class WorldRenderer {
 
   #drawMap(map: TileMap): void {
     const g = new Graphics();
+    // Floor/wall pass.
     for (let y = 0; y < map.height; y++) {
       for (let x = 0; x < map.width; x++) {
         if (!map.isWalkable(x, y)) {
           g.rect(x * TILE_PX, y * TILE_PX, TILE_PX, TILE_PX).fill(WALL_COLOR);
+        }
+      }
+    }
+    // Grass overlay pass (M8c): additive, AFTER floor/wall. Grass is still
+    // walkable floor; the overlay marks where a wild encounter can trigger.
+    for (let y = 0; y < map.height; y++) {
+      for (let x = 0; x < map.width; x++) {
+        if (map.isGrass(x, y)) {
+          g.rect(x * TILE_PX, y * TILE_PX, TILE_PX, TILE_PX).fill(GRASS_COLOR);
         }
       }
     }
@@ -105,10 +119,7 @@ export class WorldRenderer {
     const app = this.#app;
     const map = this.#map;
     if (app === undefined || map === undefined) return;
-    const scale = Math.min(
-      viewWidth / (map.width * TILE_PX),
-      viewHeight / (map.height * TILE_PX),
-    );
+    const scale = Math.min(viewWidth / (map.width * TILE_PX), viewHeight / (map.height * TILE_PX));
     app.stage.scale.set(scale > 0 ? scale : 1);
   }
 

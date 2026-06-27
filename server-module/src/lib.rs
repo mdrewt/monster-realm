@@ -8,12 +8,13 @@
 //! Time columns are `i64` ms (round-trip `game_core::Millis`). Syntax: crate 1.12.
 
 use game_core::{
-    apply_move, apply_xp_gain, battle_xp_reward, load_encounters, load_items, load_skills,
-    load_species, load_type_chart, resolve_turn, roll_starter, spawn, validate_content,
+    apply_move, apply_xp_gain, battle_xp_reward, derive_stats, load_encounters, load_items,
+    load_skills, load_species, load_type_chart, resolve_encounter, resolve_turn,
+    roll_individuality, roll_starter, spawn, stepped_onto_grass, validate_content,
     validate_encounters, zone_0, ActionState, Affinity, BattleMonster, BattleOutcome, BattleSide,
-    BattleState, CharacterState, Direction, Millis, MonsterInstance, MoveInput, NatureKind,
-    SkillDef, StatBlock, StatKind, TileMap, TilePos, TurnChoice, TurnVariance, TypeChart,
-    MOVE_QUEUE_CAP, STEP_MS,
+    BattleState, CharacterState, Direction, EVs, EncounterEntry, EncounterTable, Level, Millis,
+    MonsterInstance, MoveInput, NatureKind, SkillDef, StatBlock, StatKind, TileMap, TilePos,
+    TurnChoice, TurnVariance, TypeChart, MOVE_QUEUE_CAP, STEP_MS,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
@@ -250,8 +251,28 @@ pub struct Battle {
     pub created_at_ms: i64,
 }
 
+/// PRIVATE wild-individuality side-table (M8c, ADR-0045). Keyed 1:1 by
+/// `battle_id`. Stores the splitmix32 `individuality_seed` that M8d re-feeds to
+/// `roll_individuality` to rebuild the EXACT wild that was fought. NO `public`:
+/// the raw RNG-derived seed must never reach any client (no projection, no RLS
+/// filter, no generated accessor — mirrors the private `encounter` table,
+/// ADR-0044). M8c only WRITES this row; M8d reads/clears it.
+#[spacetimedb::table(name = battle_wild)]
+pub struct BattleWild {
+    #[primary_key]
+    pub battle_id: u64,
+    pub wild_species_id: u32,
+    pub wild_level: u8,
+    pub individuality_seed: u32,
+}
+
 /// 255 sentinel = monster is in the box (not in any party slot).
 const PARTY_SLOT_NONE: u8 = 255;
+
+/// Zero-byte sentinel identity for the unowned wild opponent of a grass encounter
+/// (ADR-0045). No real connection holds this identity, so a wild battle's
+/// `opponent_identity` can never collide with a player's.
+const WILD_IDENTITY: Identity = Identity::from_byte_array([0u8; 32]);
 
 // --- Helpers (no game rules — pure marshaling) --------------------------------
 
@@ -362,6 +383,69 @@ fn encounter_rows_from_table(table: &game_core::EncounterTable) -> EncounterRow 
             })
             .collect(),
     }
+}
+
+// `convert` seam: inverse of `encounter_rows_from_table` — rebuild the pure
+// `game_core::EncounterTable` from the private `EncounterRow` so the grass/manual
+// paths can call `resolve_encounter` (the SSOT trigger decision). Pure, no `ctx`.
+fn table_from_encounter_row(row: &EncounterRow) -> Result<EncounterTable, String> {
+    let mut entries = Vec::with_capacity(row.entries.len());
+    for e in &row.entries {
+        entries.push(EncounterEntry {
+            species_id: e.species_id,
+            weight: e.weight,
+            min_level: Level::new(e.min_level)?,
+            max_level: Level::new(e.max_level)?,
+        });
+    }
+    Ok(EncounterTable {
+        zone_id: row.zone_id,
+        encounter_rate: row.encounter_rate,
+        entries,
+    })
+}
+
+/// Build a wild `BattleMonster` (no owned `monster` row) from a species, the
+/// server-loaded skill ids, a level, and the individuality seed (M8c, ADR-0045).
+/// PURE / deterministic in `seed` — no `ctx`. Full-HP, EVs zero; IVs+nature come
+/// from `roll_individuality(seed)` and stats from `derive_stats`, so the stored
+/// seed rebuilds THIS exact wild in M8d. `known_skill_ids` = the species'
+/// `learnable_skill_ids` intersected with `skill_ids`, iterated in learnable order
+/// (so `[1,2,3] ∩ [2,3,9] == [2,3]`). An out-of-range `level` is a loud `Err`,
+/// never a panic.
+fn wild_battle_monster(
+    species: &SpeciesRow,
+    skill_ids: &[u32],
+    level: u8,
+    seed: u32,
+) -> Result<BattleMonster, String> {
+    let lvl = Level::new(level)?;
+    let (ivs, nature) = roll_individuality(seed);
+    let evs = EVs::zero();
+    let base = StatBlock {
+        hp: species.base_hp,
+        attack: species.base_attack,
+        defense: species.base_defense,
+        speed: species.base_speed,
+        sp_attack: species.base_sp_attack,
+        sp_defense: species.base_sp_defense,
+    };
+    let stats = derive_stats(&base, &ivs, &evs, &nature, lvl);
+    let known_skill_ids: Vec<u32> = species
+        .learnable_skill_ids
+        .iter()
+        .copied()
+        .filter(|id| skill_ids.contains(id))
+        .collect();
+    Ok(BattleMonster {
+        species_id: species.id,
+        affinity: species.affinity,
+        level,
+        current_hp: stats.hp,
+        max_hp: stats.hp,
+        stats,
+        known_skill_ids,
+    })
 }
 
 /// Derive the public projection from a private monster row. No hidden fields.
@@ -841,10 +925,59 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
             continue;
         }
         let input = row.move_queue.remove(0);
+        let prev = char_state(&row).pos; // capture BEFORE apply_move
         let next = apply_move(&char_state(&row), input, &map, now);
         apply_state(&mut row, &next);
         // position + drained move_queue written in ONE update (atomic, ADR-0013 §B).
+        let entity_id = row.entity_id;
         ctx.db.character().entity_id().update(row);
+
+        // M8c grass-encounter trigger (ADR-0045). EVERY failure mode below is a
+        // no-op, never a panic. Draw `ctx.random()` AT MOST once per character —
+        // only after `stepped_onto_grass` + player + not-already-in-battle pass —
+        // so A's hit cannot shift B's roll in the same tick (R-E).
+        if !stepped_onto_grass(prev, next.pos, &map) {
+            continue;
+        }
+        // Player-only: an NPC character has no `player` row → no encounter.
+        let Some(player) = ctx.db.player().entity_id().filter(entity_id).next() else {
+            continue;
+        };
+        let player_identity = player.identity;
+        let already = ctx
+            .db
+            .battle()
+            .player_identity()
+            .filter(player_identity)
+            .any(|b| b.state.outcome == BattleOutcome::Ongoing);
+        if already {
+            continue;
+        }
+        // Lead party level (no party → no-op). begin_encounter's empty-party guard
+        // is the backstop.
+        let Some((party_ids, player_level)) = lead_party(ctx, player_identity) else {
+            continue;
+        };
+        // The zone's PRIVATE encounter table (partial-sync: missing row → no-op).
+        let Some(enc_row) = ctx.db.encounter().zone_id().find(zone) else {
+            continue;
+        };
+        let Ok(table) = table_from_encounter_row(&enc_row) else {
+            continue;
+        };
+        let seed: u32 = ctx.random();
+        if let Some(w) = resolve_encounter(&table, seed, player_level) {
+            // A failed begin_encounter is a no-op (logged inside on the happy path);
+            // swallow the Err so one character's encounter cannot abort the tick.
+            let _ = begin_encounter(
+                ctx,
+                player_identity,
+                party_ids,
+                w.species_id,
+                w.level.as_u8(),
+                w.individuality_seed,
+            );
+        }
     }
     Ok(())
 }
@@ -1074,6 +1207,223 @@ pub fn start_battle(
         "{{\"evt\":\"battle_start\",\"battle_id\":{},\"sender\":\"{me}\"}}",
         battle.battle_id
     );
+    Ok(())
+}
+
+// --- Wild encounter (M8c, ADR-0045) -------------------------------------------
+
+/// The player's lead party monster (lowest `party_slot`) ids + level. Returns
+/// `(party_ids, lead_level)` over ALL party monsters (slot != 255), ordered by
+/// slot. `None` if the player has no party monster (callers treat that as a no-op
+/// / `Err`, and `begin_encounter`'s empty-party guard is the backstop).
+fn lead_party(ctx: &ReducerContext, owner: Identity) -> Option<(Vec<u64>, Level)> {
+    let mut party: Vec<Monster> = ctx
+        .db
+        .monster()
+        .owner_identity()
+        .filter(owner)
+        .filter(|m| m.party_slot != PARTY_SLOT_NONE)
+        .collect();
+    party.sort_by_key(|m| m.party_slot);
+    let lead = party.first()?;
+    let lead_level = Level::new(lead.level).ok()?;
+    let ids = party.iter().map(|m| m.monster_id).collect();
+    Some((ids, lead_level))
+}
+
+/// Begin a wild battle: build side A from the player's owned party and side B from
+/// a single freshly-rolled wild (no owned `monster` row). Builds the `Battle` row
+/// DIRECTLY (NOT via `start_battle`, so `start_battle`'s owned-opponent guards stay
+/// intact) and inserts the private `battle_wild` row (1:1). Returns the new
+/// `battle_id`. Carries ALL of `start_battle`'s guards (R-D). EVERY rejection is an
+/// `Err`, never a panic.
+fn begin_encounter(
+    ctx: &ReducerContext,
+    player_identity: Identity,
+    party_monster_ids: Vec<u64>,
+    wild_species_id: u32,
+    wild_level: u8,
+    individuality_seed: u32,
+) -> Result<u64, String> {
+    if party_monster_ids.is_empty() {
+        return Err("party_monster_ids must not be empty".to_string());
+    }
+    // Reject duplicate party ids (double-XP guard, like start_battle).
+    {
+        let mut seen = std::collections::HashSet::new();
+        for &mid in &party_monster_ids {
+            if !seen.insert(mid) {
+                return Err(format!("duplicate monster_id {mid} in party_monster_ids"));
+            }
+        }
+    }
+    // Reject if the player is already in an ongoing battle.
+    let already_in_battle = ctx
+        .db
+        .battle()
+        .player_identity()
+        .filter(player_identity)
+        .any(|b| b.state.outcome == BattleOutcome::Ongoing);
+    if already_in_battle {
+        return Err("already in an ongoing battle".to_string());
+    }
+
+    // Build side A (player) from the owned party.
+    let mut team_a = Vec::new();
+    for &mid in &party_monster_ids {
+        let m = ctx
+            .db
+            .monster()
+            .monster_id()
+            .find(mid)
+            .ok_or_else(|| format!("party monster {mid} not found"))?;
+        if m.owner_identity != player_identity {
+            return Err(format!("monster {mid} not owned by player"));
+        }
+        let sp = ctx
+            .db
+            .species_row()
+            .id()
+            .find(m.species_id)
+            .ok_or_else(|| format!("species {} not found", m.species_id))?;
+        let skills: Vec<SkillRow> = ctx
+            .db
+            .skill_row()
+            .iter()
+            .filter(|s| sp.learnable_skill_ids.contains(&s.id))
+            .collect();
+        team_a.push(battle_monster_from_row(&m, &sp, &skills));
+    }
+    if !team_a.iter().any(|m| !m.is_fainted()) {
+        return Err("party has no conscious monster".to_string());
+    }
+
+    // Build side B: exactly ONE wild monster (no owned monster row). The species
+    // must exist at creation (R-G): a battle created after `sync_content` cannot
+    // miss it on the M8d win-path lookup.
+    let sp = ctx
+        .db
+        .species_row()
+        .id()
+        .find(wild_species_id)
+        .ok_or_else(|| format!("wild species {wild_species_id} not found"))?;
+    let skill_ids: Vec<u32> = ctx
+        .db
+        .skill_row()
+        .iter()
+        .filter(|s| sp.learnable_skill_ids.contains(&s.id))
+        .map(|s| s.id)
+        .collect();
+    let wild = wild_battle_monster(&sp, &skill_ids, wild_level, individuality_seed)?;
+
+    let state = BattleState {
+        side_a: BattleSide {
+            active: 0,
+            team: team_a,
+        },
+        // ASYMMETRY (documented for M8d): `side_b.team.len() == 1` (the wild, so
+        // `side_b.active_monster()` never indexes an empty team), but
+        // `opponent_monster_ids.len() == 0` (the wild is UNOWNED — no monster row).
+        // Do NOT zip these two: side_b has a BattleMonster but no backing id.
+        side_b: BattleSide {
+            active: 0,
+            team: vec![wild],
+        },
+        outcome: BattleOutcome::Ongoing,
+        turn_number: 0,
+    };
+
+    let battle = ctx.db.battle().insert(Battle {
+        battle_id: 0,
+        player_identity,
+        opponent_identity: WILD_IDENTITY,
+        state,
+        party_monster_ids,
+        opponent_monster_ids: vec![],
+        created_at_ms: now_ms(ctx),
+    });
+
+    ctx.db.battle_wild().insert(BattleWild {
+        battle_id: battle.battle_id,
+        wild_species_id,
+        wild_level,
+        individuality_seed,
+    });
+
+    // Log ONLY the public coordinates — NEVER the seed / IVs / nature (side-channel).
+    log::info!(
+        "{{\"evt\":\"wild_encounter\",\"battle_id\":{},\"wild_species_id\":{wild_species_id},\"wild_level\":{wild_level}}}",
+        battle.battle_id
+    );
+    Ok(battle.battle_id)
+}
+
+/// DEV/TEST entrypoint (gate or remove at M9+): a faithful double of the grass
+/// path, since `movement_tick` is scheduler-only. Validates the sender joined +
+/// has a party + is not already in a battle, draws the encounter seed SERVER-side
+/// (`ctx.random()`, NO client-supplied seed → no IV-grind cheat surface), rolls
+/// species/level from the zone's PRIVATE `encounter` table exactly like the grass
+/// path, and calls `begin_encounter`. A missing encounter row or a no-trigger roll
+/// is a no-op `Err` (never a panic).
+#[spacetimedb::reducer]
+pub fn start_wild_battle(ctx: &ReducerContext, zone_id: u32) -> Result<(), String> {
+    let me = ctx.sender;
+    // Must be joined (has a player + character).
+    let Some(player) = ctx.db.player().identity().find(me) else {
+        let e = "not joined".to_string();
+        log_reject("start_wild_battle", me, &e);
+        return Err(e);
+    };
+    if ctx
+        .db
+        .character()
+        .entity_id()
+        .find(player.entity_id)
+        .is_none()
+    {
+        let e = "no character".to_string();
+        log_reject("start_wild_battle", me, &e);
+        return Err(e);
+    }
+    // Must have a party.
+    let Some((party_ids, player_level)) = lead_party(ctx, me) else {
+        let e = "no party monster".to_string();
+        log_reject("start_wild_battle", me, &e);
+        return Err(e);
+    };
+    // Not already in a battle (begin_encounter re-checks; this gives a clear error).
+    let already = ctx
+        .db
+        .battle()
+        .player_identity()
+        .filter(me)
+        .any(|b| b.state.outcome == BattleOutcome::Ongoing);
+    if already {
+        let e = "already in an ongoing battle".to_string();
+        log_reject("start_wild_battle", me, &e);
+        return Err(e);
+    }
+    // The zone's PRIVATE encounter table (partial-sync: missing row → Err no-op).
+    let Some(row) = ctx.db.encounter().zone_id().find(zone_id) else {
+        let e = format!("no encounter table for zone {zone_id}");
+        log_reject("start_wild_battle", me, &e);
+        return Err(e);
+    };
+    let table = table_from_encounter_row(&row)?;
+    let seed: u32 = ctx.random();
+    let Some(w) = resolve_encounter(&table, seed, player_level) else {
+        let e = "no encounter triggered".to_string();
+        log_reject("start_wild_battle", me, &e);
+        return Err(e);
+    };
+    begin_encounter(
+        ctx,
+        me,
+        party_ids,
+        w.species_id,
+        w.level.as_u8(),
+        w.individuality_seed,
+    )?;
     Ok(())
 }
 
@@ -2078,6 +2428,164 @@ mod tests {
         assert!(
             row.entries.is_empty(),
             "empty source entries → empty row entries (no panic)"
+        );
+    }
+
+    // =========================================================================
+    // --- M8c gating tests ---
+    //
+    // Gate the PURE wild-monster build helper the implementer will add:
+    //   fn wild_battle_monster(species: &SpeciesRow, skill_ids: &[u32],
+    //                          level: u8, seed: u32) -> Result<BattleMonster, String>
+    // (full-HP, EVs-zero, IVs/nature from game_core::roll_individuality(seed),
+    //  derived via game_core::derive_stats, Level::new(level)?).
+    //
+    // The helper does NOT exist yet → this block is RED (won't compile until it
+    // is added). Mirrors the M7b `battle_monster_from_row` tests above.
+    //
+    // ASSUMPTION (documented per the handoff): the pure signature is
+    //   wild_battle_monster(&SpeciesRow, &[u32], u8, u32) -> Result<BattleMonster, String>
+    // where `skill_ids` is the set of skill ids the server has loaded; the helper
+    // intersects them with the species' learnable_skill_ids for known_skill_ids
+    // (same contract as battle_monster_from_row's skill handling). If the
+    // implementer picks a slightly different PURE signature it must keep: no ctx,
+    // deterministic in seed, full-HP, EVs-zero, Err (not panic) on bad level.
+    // =========================================================================
+
+    fn m8c_test_species_row() -> SpeciesRow {
+        SpeciesRow {
+            id: 7,
+            name: "Wildling".to_string(),
+            base_hp: 50,
+            base_attack: 55,
+            base_defense: 45,
+            base_speed: 60,
+            base_sp_attack: 65,
+            base_sp_defense: 50,
+            affinity: Affinity::Plant,
+            learnable_skill_ids: vec![1, 2, 3],
+        }
+    }
+
+    /// EARS (R-D / M8d rebuild contract): the wild build is DETERMINISTIC in the
+    /// seed — same seed ⇒ byte-identical BattleMonster.
+    /// Kills: an impl that draws from a non-seed RNG or ignores the seed when
+    /// rolling individuality (so the stored seed could not rebuild the same wild).
+    #[test]
+    fn wild_battle_monster_is_deterministic_in_seed() {
+        let sp = m8c_test_species_row();
+        let skill_ids = [1u32, 2, 3];
+        let a = wild_battle_monster(&sp, &skill_ids, 12, 0xABCD_1234)
+            .expect("valid level builds a wild");
+        let b = wild_battle_monster(&sp, &skill_ids, 12, 0xABCD_1234)
+            .expect("valid level builds a wild");
+        assert_eq!(a, b, "same seed must build an identical BattleMonster");
+    }
+
+    /// EARS: a freshly-spawned wild is at FULL HP — current_hp == max_hp == derived
+    /// HP, and the level/species come through.
+    /// Kills: an impl that starts the wild damaged (current_hp != max_hp), or that
+    /// sets max_hp from the wrong stat.
+    #[test]
+    fn wild_battle_monster_is_full_hp_and_carries_level_species() {
+        let sp = m8c_test_species_row();
+        let bm = wild_battle_monster(&sp, &[1, 2, 3], 18, 42).expect("valid level builds a wild");
+        assert_eq!(
+            bm.current_hp, bm.max_hp,
+            "a fresh wild must be at full HP (current_hp == max_hp)"
+        );
+        assert_eq!(
+            bm.max_hp, bm.stats.hp,
+            "max_hp must equal the derived HP stat"
+        );
+        assert_eq!(bm.level, 18, "level must be the requested wild level");
+        assert_eq!(
+            bm.species_id, sp.id,
+            "species_id must come from the species"
+        );
+        assert_eq!(
+            bm.affinity, sp.affinity,
+            "affinity must come from the species"
+        );
+    }
+
+    /// EARS: known_skill_ids = the species' learnable filtered by the provided
+    /// skill ids (same contract as the owned-monster build).
+    /// Kills: an impl that copies ALL provided skill ids (ignoring learnable), or
+    /// copies ALL learnable (ignoring the provided set).
+    #[test]
+    fn wild_battle_monster_known_skills_are_learnable_intersect_provided() {
+        let sp = m8c_test_species_row(); // learnable = [1,2,3]
+                                         // Provide skill ids 2, 3, and 9 — but 9 is NOT learnable by this species.
+        let bm = wild_battle_monster(&sp, &[2, 3, 9], 10, 5).expect("valid level builds a wild");
+        assert_eq!(
+            bm.known_skill_ids,
+            vec![2u32, 3],
+            "known_skill_ids must be learnable ∩ provided ([1,2,3] ∩ [2,3,9] = [2,3]); \
+             kills copy-all-provided (would include 9) and copy-all-learnable (would include 1)"
+        );
+    }
+
+    /// EARS (R-D): an out-of-range level is a loud `Err`, NEVER a panic (the wild
+    /// build must be total over arbitrary content levels).
+    /// Kills: an impl that calls `Level::new(level).unwrap()` (panics on 0 / 250)
+    /// instead of propagating the error.
+    #[test]
+    fn wild_battle_monster_bad_level_is_err_not_panic() {
+        let sp = m8c_test_species_row();
+        assert!(
+            wild_battle_monster(&sp, &[1, 2, 3], 0, 1).is_err(),
+            "level 0 must be an Err (Level::new rejects 0), not a panic"
+        );
+        assert!(
+            wild_battle_monster(&sp, &[1, 2, 3], 250, 1).is_err(),
+            "level 250 must be an Err (Level::new rejects > 100), not a panic"
+        );
+        // A boundary valid level must still succeed.
+        assert!(
+            wild_battle_monster(&sp, &[1, 2, 3], 100, 1).is_ok(),
+            "level 100 is valid and must build a wild"
+        );
+    }
+
+    /// EARS (M8d rebuild contract — the load-bearing one): the wild's derived stats
+    /// are EXACTLY what `game_core::roll_individuality(seed)` → `derive_stats(...)`
+    /// produces with EVs zero. This is what makes the stored `individuality_seed`
+    /// truly rebuild the same wild in M8d.
+    /// Kills: an impl that rolls individuality from a different seed transform,
+    /// uses non-zero EVs, or derives stats with the wrong inputs — any of which
+    /// would make the persisted seed rebuild a DIFFERENT monster than the one fought.
+    #[test]
+    fn wild_battle_monster_stats_match_roll_individuality_then_derive_stats() {
+        let sp = m8c_test_species_row();
+        let seed = 0x0BAD_F00D;
+        let wild_level = 14u8;
+        let bm = wild_battle_monster(&sp, &[1, 2, 3], wild_level, seed)
+            .expect("valid level builds a wild");
+
+        // Reconstruct the EXACT expected derived stats from the SSOT pure path.
+        let (ivs, nature) = game_core::roll_individuality(seed);
+        let base = StatBlock {
+            hp: sp.base_hp,
+            attack: sp.base_attack,
+            defense: sp.base_defense,
+            speed: sp.base_speed,
+            sp_attack: sp.base_sp_attack,
+            sp_defense: sp.base_sp_defense,
+        };
+        let level = game_core::Level::new(wild_level).expect("valid level");
+        let expected =
+            game_core::derive_stats(&base, &ivs, &game_core::EVs::zero(), &nature, level);
+
+        assert_eq!(
+            bm.stats, expected,
+            "wild stats must equal roll_individuality(seed) → derive_stats(.., EVs::zero, ..); \
+             this is the M8d 'rebuild THAT exact wild' contract"
+        );
+        // And max_hp must equal the derived HP stat (full-HP coupling).
+        assert_eq!(
+            bm.max_hp, expected.hp,
+            "max_hp must equal the derived HP stat from the same roll"
         );
     }
 }

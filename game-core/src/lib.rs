@@ -18,6 +18,9 @@ pub mod taming;
 pub mod types;
 pub mod world;
 
+#[cfg(test)]
+mod m8c_gating_tests;
+
 pub use combat::{
     accuracy_check, apply_xp_gain, battle_xp_reward, calc_damage, pick_best_skill,
     resolve_enemy_turn, resolve_player_swap, resolve_turn, BattleEvent, BattleMonster,
@@ -35,11 +38,14 @@ pub use monster::{
     Affinity, Bond, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock, StatKind, Xp,
 };
 pub use taming::{
-    attempt_recruit, encounter_triggers, recruit_chance, roll_encounter, EncounterEntry,
-    EncounterTable, MISSING_HP_FACTOR,
+    attempt_recruit, encounter_triggers, recruit_chance, resolve_encounter, roll_encounter,
+    EncounterEntry, EncounterTable, WildSpawn, MISSING_HP_FACTOR,
 };
 pub use types::{ActionState, CharacterState, Direction, Millis, MoveInput, TileKind, TilePos};
-pub use world::{apply_move, apply_move_coded, spawn, zone_0, TileMap, MOVE_QUEUE_CAP, STEP_MS};
+pub use world::{
+    apply_move, apply_move_coded, spawn, stepped_onto_grass, zone_0, TileMap, MOVE_QUEUE_CAP,
+    STEP_MS,
+};
 
 /// The trivial M0 proof-rule: a pure, deterministic state transition over an
 /// explicit seed (splitmix64-style mix). It proves the determinism/parity gates

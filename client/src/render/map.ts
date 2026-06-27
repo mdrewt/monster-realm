@@ -8,12 +8,14 @@
 // `walkable` length is rejected LOUD here, the sole constructor, so every TileMap
 // downstream holds its invariant (matches game-core's `from_rows`).
 
-/** The raw object `client-wasm.zone_map()` returns (serde field names, row-major). */
+/** The raw object `client-wasm.zone_map()` returns (serde field names, row-major).
+ *  `grass` rides along additively (M8c): a row-major `bool[]` parallel to `walkable`. */
 export interface RawTileMap {
   readonly zone_id: number;
   readonly width: number;
   readonly height: number;
   readonly walkable: readonly boolean[];
+  readonly grass: readonly boolean[];
 }
 
 export class TileMap {
@@ -21,18 +23,26 @@ export class TileMap {
   readonly width: number;
   readonly height: number;
   readonly #walkable: readonly boolean[];
+  readonly #grass: readonly boolean[];
 
-  private constructor(zoneId: number, width: number, height: number, walkable: readonly boolean[]) {
+  private constructor(
+    zoneId: number,
+    width: number,
+    height: number,
+    walkable: readonly boolean[],
+    grass: readonly boolean[],
+  ) {
     this.zoneId = zoneId;
     this.width = width;
     this.height = height;
     this.#walkable = walkable;
+    this.#grass = grass;
   }
 
   /** Parse the wasm `zone_map()` value. Throws (parse-don't-validate) on a shape
    *  that violates the grid invariant — never a silent default. */
   static fromRaw(raw: RawTileMap): TileMap {
-    const { zone_id, width, height, walkable } = raw;
+    const { zone_id, width, height, walkable, grass } = raw;
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 0 || height < 0) {
       throw new Error(`render/map: invalid dimensions ${width}x${height}`);
     }
@@ -41,7 +51,14 @@ export class TileMap {
         `render/map: ragged grid — walkable.length ${walkable.length} != ${width}*${height}`,
       );
     }
-    return new TileMap(zone_id, width, height, walkable);
+    // Same ragged-length guard for the grass layer (M8c): the grass list must be
+    // the SAME width*height grid as walkable, else the wire contract is broken.
+    if (grass.length !== width * height) {
+      throw new Error(
+        `render/map: ragged grid — grass.length ${grass.length} != ${width}*${height}`,
+      );
+    }
+    return new TileMap(zone_id, width, height, walkable, grass);
   }
 
   inBounds(x: number, y: number): boolean {
@@ -52,5 +69,11 @@ export class TileMap {
   isWalkable(x: number, y: number): boolean {
     if (!this.inBounds(x, y)) return false;
     return this.#walkable[y * this.width + x] ?? false;
+  }
+
+  /** Out-of-range is NOT grass, never an exception (mirrors game-core's `is_grass`). */
+  isGrass(x: number, y: number): boolean {
+    if (!this.inBounds(x, y)) return false;
+    return this.#grass[y * this.width + x] ?? false;
   }
 }

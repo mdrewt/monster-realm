@@ -24,3 +24,13 @@ pub struct EncounterTable {
     pub encounter_rate: u16,
     pub entries: Vec<EncounterEntry>,
 }
+
+/// The deterministic result of resolving a grass step into a wild spawn. The
+/// `individuality_seed` is a stable sub-roll of the INPUT seed (M8d rebuilds the
+/// exact wild via `roll_individuality(individuality_seed)`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WildSpawn {
+    pub species_id: u32,
+    pub level: Level,
+    pub individuality_seed: u32,
+}

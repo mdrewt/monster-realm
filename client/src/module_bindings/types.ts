@@ -90,6 +90,14 @@ export const BattleState = __t.object("BattleState", {
 });
 export type BattleState = __Infer<typeof BattleState>;
 
+export const BattleWild = __t.object("BattleWild", {
+  battleId: __t.u64(),
+  wildSpeciesId: __t.u32(),
+  wildLevel: __t.u8(),
+  individualitySeed: __t.u32(),
+});
+export type BattleWild = __Infer<typeof BattleWild>;
+
 export const Character = __t.object("Character", {
   entityId: __t.u64(),
   zoneId: __t.u32(),
