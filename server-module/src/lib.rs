@@ -758,10 +758,19 @@ fn sync_content_inner(ctx: &ReducerContext) {
     }
 
     // Stamp the now-current content version so a later redundant sync_content
-    // short-circuits at the top of this function (ADR-0054).
-    if let Some(mut cfg) = ctx.db.config().id().find(0) {
-        cfg.content_version = CONTENT_VERSION;
-        ctx.db.config().id().update(cfg);
+    // short-circuits at the top of this function (ADR-0054). A missing config row
+    // here is an invariant violation (init always inserts it) — fail loud, don't
+    // silently skip, consistent with this function's other error logging.
+    match ctx.db.config().id().find(0) {
+        Some(mut cfg) => {
+            cfg.content_version = CONTENT_VERSION;
+            ctx.db.config().id().update(cfg);
+        }
+        None => {
+            log::error!(
+                "{{\"evt\":\"sync_content_error\",\"reason\":\"config row missing at stamp\"}}"
+            );
+        }
     }
 }
 
@@ -1541,9 +1550,12 @@ pub fn start_wild_battle(ctx: &ReducerContext, zone_id: u32) -> Result<(), Strin
         log_reject("start_wild_battle", me, &e);
         return Err(e);
     }
-    // The zone's PRIVATE encounter table (partial-sync: missing row → Err no-op).
-    let Some(row) = ctx.db.encounter().zone_id().find(zone_id) else {
-        let e = format!("no encounter table for zone {zone_id}");
+    // The zone's PRIVATE encounter table, keyed by the SERVER-authoritative
+    // character.zone_id (not the raw client arg) — defense-in-depth so the lookup
+    // never trusts the client even if the reject check above is later reordered
+    // (MED-1, ADR-0054 §3). (partial-sync: missing row → Err no-op.)
+    let Some(row) = ctx.db.encounter().zone_id().find(character.zone_id) else {
+        let e = format!("no encounter table for zone {}", character.zone_id);
         log_reject("start_wild_battle", me, &e);
         return Err(e);
     };
