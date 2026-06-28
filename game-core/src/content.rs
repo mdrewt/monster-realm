@@ -5,7 +5,7 @@
 
 use serde::Deserialize;
 
-use crate::monster::types::{Affinity, StatBlock};
+use crate::monster::types::{Affinity, StatBlock, StatKind, EV_PER_STAT_CAP};
 use crate::taming::types::EncounterTable;
 
 /// A zone definition — the M0 content registry and the first real schema subject
@@ -63,6 +63,13 @@ pub struct ItemDef {
     /// Defaults to 0 for items that have no taming function.
     #[serde(default)]
     pub recruit_bonus: u16,
+    /// Focus-training target stat (M9b-tail); None for non-training items.
+    #[serde(default)]
+    pub train_stat: Option<StatKind>,
+    /// EVs granted toward `train_stat` per use (top-off bounded by the 252/510
+    /// caps in `focus_train`); 0 for non-training items.
+    #[serde(default)]
+    pub train_amount: u16,
 }
 
 // === M8.9e: glob-loaded content parts ===
@@ -442,6 +449,32 @@ pub fn validate_content(
                 "item {} has recruit_bonus {} exceeding per-mille max 1000",
                 item.id, item.recruit_bonus
             ));
+        }
+        // Training food (M9b-tail): a target stat needs a positive amount within the
+        // per-stat EV cap; a non-training item must carry no stray train_amount.
+        match item.train_stat {
+            Some(_) => {
+                if item.train_amount == 0 {
+                    return Err(format!(
+                        "item {} is a training food but train_amount is 0",
+                        item.id
+                    ));
+                }
+                if item.train_amount > EV_PER_STAT_CAP {
+                    return Err(format!(
+                        "item {} train_amount {} exceeds per-stat EV cap {EV_PER_STAT_CAP}",
+                        item.id, item.train_amount
+                    ));
+                }
+            }
+            None => {
+                if item.train_amount != 0 {
+                    return Err(format!(
+                        "item {} has train_amount {} but no train_stat (incoherent)",
+                        item.id, item.train_amount
+                    ));
+                }
+            }
         }
     }
 
@@ -1585,6 +1618,141 @@ mod tests {
         assert!(
             validate_content(&merged, &[], &[], &[]).is_err(),
             "TEETH: cross-file duplicate species id=42 must be rejected by validate_content"
+        );
+    }
+
+    // =======================================================================
+    // === M9b-tail: training food fields on ItemDef ===
+    //
+    // EARS criteria covered:
+    //   - WHEN train_stat is Some(...) and train_amount in [1, 252] THEN validate_content Ok.
+    //   - WHEN train_amount == 252 (boundary) THEN validate_content Ok.
+    //   - WHEN train_amount == 253 (above cap) THEN validate_content Err.
+    //   - WHEN train_stat is Some and train_amount == 0 THEN validate_content Err.
+    //   - WHEN train_stat is None and train_amount > 0 THEN validate_content Err (incoherent).
+    //   - WHEN train_stat is None and train_amount == 0 (ordinary item) THEN validate_content Ok.
+    //   - Proof-of-teeth: an over-cap training food MUST be rejected.
+    //
+    // NOTE: ItemDef will gain `train_stat: Option<StatKind>` + `train_amount: u16`
+    // (both `#[serde(default)]`) in the impl. Until then these tests DO NOT COMPILE
+    // (the fields do not exist yet) — that is the intended RED state.
+    // =======================================================================
+
+    use crate::monster::types::StatKind;
+
+    /// Build a training-food ItemDef with the M9b-tail fields.
+    /// The caller supplies only the new fields; id/name/description/recruit_bonus
+    /// are fixed noise values so the test focuses on the training fields.
+    fn fixture_training_item(id: u32, train_stat: Option<StatKind>, train_amount: u16) -> ItemDef {
+        ItemDef {
+            id,
+            name: format!("TrainingFood{id}"),
+            description: "A training food.".to_string(),
+            recruit_bonus: 0,
+            // These two fields do not exist yet — the suite is RED until the impl adds them.
+            train_stat,
+            train_amount,
+        }
+    }
+
+    /// M9b-tail: validate_content accepts a valid training food (Some(Attack), amount 10).
+    /// kills: a validate_content that rejects valid training food items outright.
+    #[test]
+    fn validate_content_accepts_training_food() {
+        let item = fixture_training_item(100, Some(StatKind::Attack), 10);
+        let result = validate_content(&[], &[], &[], &[item]);
+        assert!(
+            result.is_ok(),
+            "validate_content must accept a training food with train_stat=Some(Attack), train_amount=10; got: {:?}",
+            result.err()
+        );
+    }
+
+    /// M9b-tail: validate_content accepts training food at the per-stat cap boundary (252).
+    /// kills: an off-by-one upper bound check (>= vs >) that rejects train_amount==252.
+    #[test]
+    fn validate_content_accepts_train_amount_at_cap() {
+        let item = fixture_training_item(101, Some(StatKind::Attack), 252);
+        let result = validate_content(&[], &[], &[], &[item]);
+        assert!(
+            result.is_ok(),
+            "validate_content must accept training food with train_amount=252 (at the per-stat cap boundary); got: {:?}",
+            result.err()
+        );
+    }
+
+    /// M9b-tail: validate_content rejects training food with train_amount above 252 (==253).
+    /// kills: missing upper-bound check (an item granting 253 EVs would exceed the per-stat cap).
+    #[test]
+    fn validate_content_rejects_train_amount_over_cap() {
+        let item = fixture_training_item(102, Some(StatKind::Attack), 253);
+        let result = validate_content(&[], &[], &[], &[item]);
+        assert!(
+            result.is_err(),
+            "validate_content must reject training food with train_amount=253 (above per-stat cap 252)"
+        );
+    }
+
+    /// M9b-tail: validate_content rejects a training food with Some(stat) but train_amount==0.
+    /// Mirrors the accuracy==0 precedent: a food that grants nothing is an unusable no-op,
+    /// rejected at load time rather than silently loaded.
+    /// kills: an impl that allows zero-amount training foods (silent no-op at runtime).
+    #[test]
+    fn validate_content_rejects_training_food_zero_amount() {
+        let item = fixture_training_item(103, Some(StatKind::Attack), 0);
+        let result = validate_content(&[], &[], &[], &[item]);
+        assert!(
+            result.is_err(),
+            "validate_content must reject a training food with train_stat=Some(Attack), train_amount=0 (always a no-op)"
+        );
+    }
+
+    /// M9b-tail: validate_content rejects incoherent items where train_stat is None but
+    /// train_amount > 0 (there is no stat to apply the amount to).
+    /// kills: an impl that allows a phantom amount without a target stat.
+    #[test]
+    fn validate_content_rejects_amount_without_stat() {
+        let item = fixture_training_item(104, None, 5);
+        let result = validate_content(&[], &[], &[], &[item]);
+        assert!(
+            result.is_err(),
+            "validate_content must reject an item with train_stat=None, train_amount=5 (incoherent)"
+        );
+    }
+
+    /// M9b-tail: validate_content accepts an ordinary item (train_stat=None, train_amount=0).
+    /// This is the Lure-Berry shape — a non-training item must still load correctly.
+    /// kills: an over-strict check that rejects all non-training items.
+    #[test]
+    fn validate_content_accepts_non_training_item() {
+        // Mirrors the existing ITEMS_GOLDEN Lure-Berry shape.
+        let item = ItemDef {
+            id: 1,
+            name: "Lure Berry".to_string(),
+            description: "Sweet bait that calms a wild monster, easing recruitment.".to_string(),
+            recruit_bonus: 150,
+            train_stat: None,
+            train_amount: 0,
+        };
+        let result = validate_content(&[], &[], &[], &[item]);
+        assert!(
+            result.is_ok(),
+            "validate_content must accept a non-training item (train_stat=None, train_amount=0); got: {:?}",
+            result.err()
+        );
+    }
+
+    /// M9b-tail: PROOF-OF-TEETH — an over-cap training food (Some(Attack), train_amount=300)
+    /// MUST be rejected. This bites a validator missing the upper-bound check.
+    /// kills: any validate_content that accepts training foods without checking train_amount <= 252.
+    #[test]
+    fn validate_content_teeth_train_amount_over_cap() {
+        let bad_item = fixture_training_item(200, Some(StatKind::Attack), 300);
+        let result = validate_content(&[], &[], &[], &[bad_item]);
+        assert!(
+            result.is_err(),
+            "TEETH: training food with train_amount=300 (>252) MUST be rejected by validate_content; \
+             a validator without the upper-bound check would pass this and load an impossible food"
         );
     }
 }

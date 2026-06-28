@@ -9,18 +9,8 @@ import {
   type AlgebraicTypeType as __AlgebraicTypeType,
   type Infer as __Infer,
 } from "spacetimedb";
-import {
-  StatKind,
-} from "./types";
 
-
-export default __t.row({
-  id: __t.u32().primaryKey(),
-  name: __t.string(),
-  description: __t.string(),
-  recruitBonus: __t.u16().name("recruit_bonus"),
-  get trainStat() {
-    return __t.option(StatKind).name("train_stat");
-  },
-  trainAmount: __t.u16().name("train_amount"),
-});
+export default {
+  monsterId: __t.u64(),
+  foodItemId: __t.u32(),
+};

@@ -63,6 +63,8 @@ fn fixture_item(id: u32, recruit_bonus: u16) -> ItemDef {
         name: format!("Item{id}"),
         description: "Test item".to_string(),
         recruit_bonus,
+        train_stat: None,
+        train_amount: 0,
     }
 }
 

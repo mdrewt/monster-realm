@@ -10,21 +10,17 @@
 //! through the single-source `derive_stats` (ADR-0016 derive-on-write).
 
 use crate::monster::rules::derive_stats;
-use crate::monster::types::{Bond, EVs, IVs, Level, Nature, StatBlock, StatKind};
+use crate::monster::types::{
+    Bond, EVs, IVs, Level, Nature, StatBlock, StatKind, EV_PER_STAT_CAP, EV_TOTAL_CAP,
+};
 
 use super::types::{CareError, FocusTrainError, FocusTrainResult};
 
-/// Per-stat EV cap. Mirrors the threshold `EVs::new` rejects above. Drift from
-/// the real (private) `monster::types` cap is caught BOTH ways by the gating
-/// teeth: a too-HIGH value makes a near-cap grant exceed the constructor limit →
-/// the `EVs::new(...).expect(...)` in `focus_train` panics; a too-LOW value
-/// rejects/underflows at a boundary → `focus_train_cap_const_agrees_with_evs_constructor`
-/// fails. The permanent fix — re-export these caps `pub(crate)` from
-/// `monster::types` and import them — is deferred to M9b (it already edits that
-/// file); see ADR-0058 follow-ups.
-const EV_PER_STAT_CAP: u16 = 252;
-/// Total-EV budget cap. Mirrors `EVs::new`'s total threshold (see above).
-const EV_TOTAL_CAP: u16 = 510;
+// The per-stat (252) and total (510) EV caps are imported from `monster::types`
+// — one SSOT for the caps the `EVs` constructor enforces (ADR-0058 residual (b)
+// resolved). They are NOT re-declared here; a single definition keeps
+// `focus_train`'s top-off in lockstep with `EVs::new`'s rejection thresholds, so
+// neither a too-high nor a too-low local copy can drift them apart.
 
 /// Apply a focus-training food: grant `amount` EVs toward `target`, **topped off**
 /// to the per-stat cap (252) AND the total-EV cap (510) — never overflowing —

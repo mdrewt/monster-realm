@@ -48,6 +48,7 @@ import StartBattleReducer from "./start_battle_reducer";
 import SubmitAttackReducer from "./submit_attack_reducer";
 import SwapActiveReducer from "./swap_active_reducer";
 import SyncContentReducer from "./sync_content_reducer";
+import TrainReducer from "./train_reducer";
 
 // Import all procedure arg schemas
 
@@ -222,6 +223,7 @@ const reducersSchema = __reducers(
   __reducerSchema("submit_attack", SubmitAttackReducer),
   __reducerSchema("swap_active", SwapActiveReducer),
   __reducerSchema("sync_content", SyncContentReducer),
+  __reducerSchema("train", TrainReducer),
 );
 
 /** The schema information for all procedures in this module. This is defined the same way as the procedures would have been defined in the server. */
