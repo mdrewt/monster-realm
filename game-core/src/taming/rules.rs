@@ -52,7 +52,12 @@ pub fn roll_encounter(table: &EncounterTable, roll: u32, player_level: Level) ->
         .filter(|e| pl >= e.min_level.as_u8() && pl <= e.max_level.as_u8())
         .collect();
 
-    let total_weight: u32 = eligible.iter().map(|e| u32::from(e.weight)).sum();
+    // Checked sum: a zone with enough max-weight entries could overflow u32.
+    // On overflow, treat the table as unselectable (None) rather than panic
+    // (debug) or silently wrap (release) into a wrong species pick.
+    let total_weight: u32 = eligible
+        .iter()
+        .try_fold(0u32, |acc, e| acc.checked_add(u32::from(e.weight)))?;
     if total_weight == 0 {
         return None;
     }
@@ -149,6 +154,10 @@ pub const RECRUIT_BASE_RATE: u16 = 80;
 /// - Result capped at 1000 (certainty)
 #[must_use]
 pub fn recruit_chance(max_hp: u16, current_hp: u16, base_rate: u16, bait_bonus: u16) -> u16 {
+    debug_assert!(
+        base_rate <= 1000 && bait_bonus <= 1000,
+        "recruit_chance: base_rate ({base_rate}) and bait_bonus ({bait_bonus}) must each be <= 1000 (per-mille)"
+    );
     let base = u32::from(base_rate);
     let bait = u32::from(bait_bonus);
 
@@ -173,4 +182,150 @@ pub fn recruit_chance(max_hp: u16, current_hp: u16, base_rate: u16, bait_bonus: 
 pub fn attempt_recruit(chance: u16, roll: u32) -> bool {
     debug_assert!(chance <= 1000, "chance should be <= 1000; got {chance}");
     roll % 1000 < u32::from(chance)
+}
+
+#[cfg(test)]
+mod m8_7c_tests {
+    use super::*;
+    use crate::taming::types::{EncounterEntry, EncounterTable};
+
+    /// Helper: construct a Level(1) without repeating the expect string.
+    fn lvl1() -> Level {
+        Level::new(1).expect("level 1 valid")
+    }
+
+    // -----------------------------------------------------------------------
+    // T1 — EARS criterion: "WHEN roll_encounter sums entry weights THE SYSTEM
+    //      SHALL NOT overflow u32 (checked/saturating fold returning None)."
+    //
+    // Kills: an impl that calls `.sum::<u32>()` (or equivalent unchecked fold)
+    // on the eligible weights. In debug mode the unchecked sum panics (test
+    // fails for wrong reason — panic, not assertion); in release mode the sum
+    // wraps to a value < 4,295,032,830, `total_weight` ends up small, and
+    // `roll % total_weight` selects a garbage entry → `Some(wrong_id)`.
+    // Both failure modes are caught: panic collapses the test; a wrapped Some
+    // is != None and the assert fires.
+    //
+    // Arithmetic: 65538 × 65535 = 4,295,032,830 > u32::MAX (4,294,967,295)
+    // → the u32 sum overflows.
+    // -----------------------------------------------------------------------
+
+    /// EARS C (M8.7c): total_weight overflow → None, not a wrapped/garbage species.
+    /// Kills: any roll_encounter that uses `.sum::<u32>()` without overflow checking.
+    #[test]
+    fn roll_encounter_overflow_weight_sum_returns_none() {
+        // 65538 eligible entries, each weight = u16::MAX (65535), same level band.
+        // 65538 × 65535 = 4,295,032,830 which exceeds u32::MAX (4,294,967,295).
+        let entries: Vec<EncounterEntry> = (0u32..65538)
+            .map(|i| EncounterEntry {
+                species_id: i,
+                weight: u16::MAX,
+                min_level: lvl1(),
+                max_level: lvl1(),
+            })
+            .collect();
+
+        let table = EncounterTable {
+            zone_id: 99,
+            encounter_rate: 1000,
+            entries,
+        };
+
+        // roll=0 is deterministic; any roll works since all weights are u16::MAX.
+        // A correct checked fold detects the overflow and returns None.
+        // An unchecked .sum() panics in debug or wraps+selects a wrong species in
+        // release — the assert below catches the release-mode wrong-Some case.
+        assert_eq!(
+            roll_encounter(&table, 0, lvl1()),
+            None,
+            "TEETH: weight sum overflowing u32 must yield None, not a wrapped/garbage species"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // T4 — EARS criterion: same as T1, but the boundary case where the sum is
+    //      EXACTLY u32::MAX (no overflow). The correct checked fold MUST still
+    //      proceed and select a species (non-regression: the fix must not be
+    //      over-aggressive and return None for every large table).
+    //
+    // Arithmetic: 65537 × 65535 = 4,294,967,295 = u32::MAX (exact, no overflow).
+    // A correct checked_add-based fold yields Some(u32::MAX) as total_weight
+    // and continues normally.
+    // -----------------------------------------------------------------------
+
+    /// EARS C (M8.7c): exact-max weight sum (u32::MAX) must still select a species.
+    /// Kills: an over-aggressive fix that returns None whenever total_weight is
+    /// "large" rather than only when it genuinely overflows.
+    #[test]
+    fn roll_encounter_exact_max_weight_sum_returns_some() {
+        // 65537 entries × 65535 weight = 4,294,967,295 = u32::MAX exactly.
+        // A correct checked fold returns Some(u32::MAX) for the total and proceeds.
+        let entries: Vec<EncounterEntry> = (0u32..65537)
+            .map(|i| EncounterEntry {
+                species_id: i,
+                weight: u16::MAX,
+                min_level: lvl1(),
+                max_level: lvl1(),
+            })
+            .collect();
+
+        let table = EncounterTable {
+            zone_id: 98,
+            encounter_rate: 1000,
+            entries,
+        };
+
+        // roll=0 is deterministic; total_weight = u32::MAX, target = 0 % u32::MAX = 0,
+        // so the first entry (species_id=0) is selected. Assert the exact species
+        // (stronger than is_some): kills both a false-None and a wrong-Some mutant.
+        assert_eq!(
+            roll_encounter(&table, 0, lvl1()),
+            Some(0),
+            "weight sum == u32::MAX (no overflow) must still select the first species"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // T2 — EARS criterion: "THE recruit_chance pure fn SHALL debug_assert!(
+    //      base_rate <= 1000 && bait_bonus <= 1000, …)"
+    //
+    // Kills: any recruit_chance that silently clamps or ignores out-of-range
+    // base_rate (e.g. just passes 1001 through the min(1000, …) cap without
+    // asserting). The assert must fire specifically on base_rate=1001.
+    //
+    // This test is debug-only (`#[cfg(debug_assertions)]`) because debug_assert!
+    // compiles out in release — the contract is a dev-time fail-loud, not a
+    // release panic. This mirrors attempt_recruit's existing debug_assert style.
+    // -----------------------------------------------------------------------
+
+    /// EARS C (M8.7c): recruit_chance must debug_assert base_rate <= 1000.
+    /// Kills: any impl that accepts base_rate=1001 without a panic in debug mode.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "recruit_chance")]
+    fn recruit_chance_panics_on_out_of_range_base_rate() {
+        // base_rate=1001 exceeds per-mille range; the impl must assert and panic.
+        // The expected string "recruit_chance" must appear in the panic message.
+        let _ = recruit_chance(100, 100, 1001, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // T3 — EARS criterion: same as T2, but independently for bait_bonus=1001.
+    //      Forces the impl to assert BOTH conditions independently, not just
+    //      short-circuit on base_rate alone.
+    //
+    // Kills: an impl that only asserts base_rate (or uses a combined assert
+    // where base_rate=0 passes and bait_bonus=1001 slips through).
+    // -----------------------------------------------------------------------
+
+    /// EARS C (M8.7c): recruit_chance must debug_assert bait_bonus <= 1000.
+    /// Kills: any impl that only asserts base_rate and ignores bait_bonus.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "recruit_chance")]
+    fn recruit_chance_panics_on_out_of_range_bait_bonus() {
+        // bait_bonus=1001 exceeds per-mille range; base_rate=0 is valid.
+        // The impl must still assert and panic — this arm is independent of T2.
+        let _ = recruit_chance(100, 100, 0, 1001);
+    }
 }
