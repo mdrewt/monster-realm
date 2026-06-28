@@ -363,7 +363,7 @@ describe('buildRaisingViewModel: output structure', () => {
     const defs = new Map([[5, trainItemDef(5, 'Defense')]]);
     const inv = inventoryItem(10n, 5, 4);
     const vm = buildRaisingViewModel([], [inv], defs);
-    const item = vm.items[0]!;
+    const item: InventoryItemViewModel = vm.items[0]!;
     expect(item).toHaveProperty('invId');
     expect(item).toHaveProperty('itemId');
     expect(item).toHaveProperty('name');
@@ -384,7 +384,7 @@ describe('buildRaisingViewModel: output structure', () => {
     // Kills: an impl that omits any of the required RaisingMonsterViewModel fields.
     const m = monster(3n, { nickname: 'Blaze', level: 12, bond: 80 });
     const vm = buildRaisingViewModel([m], [], new Map());
-    const mon = vm.monsters[0]!;
+    const mon: RaisingMonsterViewModel = vm.monsters[0]!;
     expect(mon).toHaveProperty('monsterId');
     expect(mon).toHaveProperty('nickname');
     expect(mon).toHaveProperty('level');

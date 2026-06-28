@@ -11,10 +11,14 @@ import { MicrotaskBatcher } from './batch';
 import {
   battleRowToStore,
   characterRowToStore,
+  inventoryRowToStore,
+  itemRowToStore,
   monsterPubRowToStore,
   playerRowToStore,
   type SdkBattleRow,
   type SdkCharacterRow,
+  type SdkInventoryRow,
+  type SdkItemRowRow,
   type SdkMonsterPubRow,
   type SdkPlayerRow,
   type SdkSkillRowRow,
@@ -72,6 +76,11 @@ export function connect(opts: ConnectionOptions): Connection {
           'SELECT * FROM species_row',
           'SELECT * FROM battle',
           'SELECT * FROM skill_row',
+          // Unfiltered subscribe + client-side owner filter (store.ownInventory) is the
+          // established defense-in-depth pattern (ADR-0015/0046 V1; transport RLS → M16),
+          // same as monster_pub. item_row is public content (no owner).
+          'SELECT * FROM inventory',
+          'SELECT * FROM item_row',
         ]);
     })
     .onConnectError((_ctx, err: Error) => opts.onError('connect', err.message))
@@ -148,6 +157,30 @@ export function connect(opts: ConnectionOptions): Connection {
   conn.db.skill_row.onUpdate((_ctx, _old, row) => ingestSkill(row as unknown as SdkSkillRowRow));
   conn.db.skill_row.onDelete((_ctx, row) => {
     store.removeSkill((row as unknown as SdkSkillRowRow).id);
+    batcher.schedule();
+  });
+
+  const ingestInventory = (row: SdkInventoryRow): void => {
+    store.upsertInventory(inventoryRowToStore(row));
+    batcher.schedule();
+  };
+  conn.db.inventory.onInsert((_ctx, row) => ingestInventory(row as unknown as SdkInventoryRow));
+  conn.db.inventory.onUpdate((_ctx, _old, row) =>
+    ingestInventory(row as unknown as SdkInventoryRow),
+  );
+  conn.db.inventory.onDelete((_ctx, row) => {
+    store.removeInventory((row as unknown as SdkInventoryRow).invId);
+    batcher.schedule();
+  });
+
+  const ingestItemDef = (row: SdkItemRowRow): void => {
+    store.upsertItemDef(itemRowToStore(row));
+    batcher.schedule();
+  };
+  conn.db.item_row.onInsert((_ctx, row) => ingestItemDef(row as unknown as SdkItemRowRow));
+  conn.db.item_row.onUpdate((_ctx, _old, row) => ingestItemDef(row as unknown as SdkItemRowRow));
+  conn.db.item_row.onDelete((_ctx, row) => {
+    store.removeItemDef((row as unknown as SdkItemRowRow).id);
     batcher.schedule();
   });
 

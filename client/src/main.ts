@@ -41,6 +41,8 @@ import { buildBattleViewModel, decideBattleOverlay } from './ui/battleModel';
 import type { BattleView } from './ui/battleView';
 import { buildBoxViewModel, buildPartyViewModel, nextFreePartySlot } from './ui/boxModel';
 import type { BoxView } from './ui/boxView';
+import { buildRaisingViewModel } from './ui/raisingModel';
+import type { RaisingView } from './ui/raisingView';
 
 const URI = (import.meta.env.VITE_STDB_URI as string | undefined) ?? 'ws://127.0.0.1:3000';
 const DB = (import.meta.env.VITE_STDB_DB as string | undefined) ?? 'monster-realm';
@@ -71,6 +73,7 @@ let identity = '';
 let conn: ReturnType<typeof connect> | undefined;
 let boxView: BoxView | undefined;
 let battleView: BattleView | undefined;
+let raisingView: RaisingView | undefined;
 // Outcome-frame lifecycle (M8.7e): the dismissed battle id (so a resolved outcome
 // renders once but never re-pops) + whether any battle has been observed this
 // session (first-sight pre-dismiss of a historical/stale-on-login resolved battle).
@@ -122,7 +125,7 @@ store.onBatchApplied(() => {
   // held key keeps walking from the corrected baseline. Routed through the SAME held-
   // state-guarded dedup as the rAF frame loop (reissueDir) — so it never double-issues
   // nor re-issues a key released during the divergence; the move drains on the next rAF.
-  if (diverged && !(battleView?.visible || boxView?.visible)) {
+  if (diverged && !(battleView?.visible || boxView?.visible || raisingView?.visible)) {
     const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
     if (heldDir !== undefined) sendIntent({ Step: heldDir });
   }
@@ -153,8 +156,19 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyB') {
     // Guard: don't open the box over an active battle (ADR-0014/0052 exit ordering).
     if (shouldToggleBox(battleView?.visible ?? false)) {
+      raisingView?.hide(); // mutual exclusivity: box and raising never co-open
       boxView?.toggle();
       if (boxView?.visible) refreshBox();
+    }
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'KeyI') {
+    // Inventory/raising overlay — same battle guard as the box (reuse shouldToggleBox).
+    if (shouldToggleBox(battleView?.visible ?? false)) {
+      boxView?.hide(); // mutual exclusivity: box and raising never co-open
+      raisingView?.toggle();
+      if (raisingView?.visible) refreshRaising();
     }
     e.preventDefault();
     return;
@@ -174,8 +188,13 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
+  if (e.code === 'Escape' && raisingView?.visible) {
+    raisingView.hide();
+    e.preventDefault();
+    return;
+  }
   // Suppress movement input while an overlay is open.
-  if (battleView?.visible || boxView?.visible) return;
+  if (battleView?.visible || boxView?.visible || raisingView?.visible) return;
   const dir = KEY_DIR[e.code];
   if (dir !== undefined) {
     step(dir); // immediate first step (latency + deliberate double-tap)
@@ -210,6 +229,18 @@ function refreshBox(): void {
 }
 store.onBatchApplied(() => refreshBox());
 
+// --- raising/inventory view: refresh on batch when visible (M9c, ADR-0014) -------
+// MUST be total (never throw): store.flushBatch has no per-listener isolation, so a
+// throw here would starve the sibling reconcile/refreshBox/refreshBattle listeners.
+function refreshRaising(): void {
+  if (!raisingView?.visible || identity === '') return;
+  const monsters = store.ownMonsters(identity);
+  const inventory = store.ownInventory(identity);
+  const itemDefs = store.itemDefs();
+  raisingView.refresh(buildRaisingViewModel(monsters, inventory, itemDefs));
+}
+store.onBatchApplied(() => refreshRaising());
+
 // --- battle view: refresh on batch, auto-show/hide (M7c, ADR-0014/0042) --------
 function refreshBattle(): void {
   if (!battleView || identity === '') return;
@@ -219,6 +250,7 @@ function refreshBattle(): void {
   battleSynced = r.synced;
   if (r.action.kind === 'show') {
     if (boxView?.visible) boxView.hide(); // active/outcome overlay supersedes the box
+    if (raisingView?.visible) raisingView.hide(); // ...and the raising/inventory overlay
     const vm = buildBattleViewModel(r.action.battle, store.skillMap(), store.speciesMap());
     if (!vm) console.warn('[battle] battle has corrupt team data; view hidden');
     battleView.refresh(vm);
@@ -258,6 +290,11 @@ function snapshot() {
       level: m.level,
       partySlot: m.partySlot,
     })),
+    ownInventory: store.ownInventory(identity).map((i) => ({
+      invId: i.invId.toString(),
+      itemId: i.itemId,
+      count: i.count,
+    })),
     ongoingBattle: (() => {
       const b = store.ongoingBattle(identity);
       if (!b) return null;
@@ -270,9 +307,14 @@ function snapshot() {
 (window as unknown as { __game: typeof snapshot }).__game = snapshot;
 
 async function main(): Promise<void> {
-  const [{ BoxView: BoxViewClass }, { BattleView: BattleViewClass }] = await Promise.all([
+  const [
+    { BoxView: BoxViewClass },
+    { BattleView: BattleViewClass },
+    { RaisingView: RaisingViewClass },
+  ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/battleView'),
+    import('./ui/raisingView'),
   ]);
   const renderer = new WorldRenderer();
   const mount = document.getElementById('app');
@@ -308,6 +350,14 @@ async function main(): Promise<void> {
         conn?.conn.reducers.attemptRecruit({ battleId, baitItemId });
       },
     });
+    raisingView = new RaisingViewClass(mount, {
+      onTrain: (monsterId, foodItemId) => {
+        conn?.conn.reducers.train({ monsterId, foodItemId });
+      },
+      onCare: (monsterId) => {
+        conn?.conn.reducers.care({ monsterId });
+      },
+    });
   }
 
   conn = connect({
@@ -341,7 +391,7 @@ async function main(): Promise<void> {
     // is visible, so a held key resumes after an overlay closes yet never walks
     // under one (M8.6c, ADR-0013). sendIntent routes through the backpressured
     // predictor.enqueue + reducer send, and no-ops if declined.
-    if (!(battleView?.visible || boxView?.visible)) {
+    if (!(battleView?.visible || boxView?.visible || raisingView?.visible)) {
       const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
       if (heldDir !== undefined) sendIntent({ Step: heldDir });
     }

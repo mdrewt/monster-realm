@@ -1018,7 +1018,7 @@ describe('AuthoritativeStore M9c S6: no unfiltered inventories() accessor', () =
     // An unfiltered accessor would expose all players' inventory rows to any caller.
     // Kills: an impl that adds a public inventories() method as a shortcut.
     const s = new AuthoritativeStore();
-    expect(typeof (s as unknown as Record<string, unknown>)['inventories']).not.toBe('function');
+    expect(typeof (s as unknown as Record<string, unknown>).inventories).not.toBe('function');
   });
 });
 
@@ -1052,7 +1052,7 @@ describe('AuthoritativeStore M9c S8: ownInventory returns independent snapshot',
 
     const first = s.ownInventory('player');
     // Attempt to mutate the returned object (TypeScript readonly won't stop this at runtime)
-    (first[0] as Record<string, unknown>)['count'] = 999;
+    (first[0] as Record<string, unknown>).count = 999;
 
     // Re-query: the store must return the original count, not the mutated value
     const second = s.ownInventory('player');

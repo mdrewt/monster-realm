@@ -13,6 +13,8 @@ import type {
   StoreBattle,
   StoreBattleMonster,
   StoreCharacter,
+  StoreInventory,
+  StoreItemRow,
   StoreMonsterPub,
   StorePlayer,
   StoreSkillRow,
@@ -226,5 +228,44 @@ export function skillRowToStore(row: SdkSkillRowRow): StoreSkillRow {
     power: row.power,
     accuracy: row.accuracy,
     pp: row.pp,
+  };
+}
+
+// --- M9c: inventory + item_row converters -------------------------------------
+
+export interface SdkInventoryRow {
+  readonly invId: bigint;
+  readonly ownerIdentity: { toHexString(): string };
+  readonly itemId: number;
+  readonly count: number;
+}
+
+export interface SdkItemRowRow {
+  readonly id: number;
+  readonly name: string;
+  readonly description: string;
+  readonly recruitBonus: number;
+  // SpacetimeDB 2.6 decodes Option<StatKind> as {tag} for Some, undefined for None.
+  readonly trainStat: { readonly tag: string } | undefined;
+  readonly trainAmount: number;
+}
+
+export function inventoryRowToStore(row: SdkInventoryRow): StoreInventory {
+  return {
+    invId: row.invId,
+    ownerIdentity: row.ownerIdentity.toHexString(),
+    itemId: row.itemId,
+    count: row.count,
+  };
+}
+
+export function itemRowToStore(row: SdkItemRowRow): StoreItemRow {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    recruitBonus: row.recruitBonus,
+    trainStat: row.trainStat?.tag ?? null,
+    trainAmount: row.trainAmount,
   };
 }
