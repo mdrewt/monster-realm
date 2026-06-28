@@ -276,10 +276,12 @@ mod m8_7c_tests {
         };
 
         // roll=0 is deterministic; total_weight = u32::MAX, target = 0 % u32::MAX = 0,
-        // so the first entry (species_id=0) is selected.
-        assert!(
-            roll_encounter(&table, 0, lvl1()).is_some(),
-            "weight sum == u32::MAX (no overflow) must still select a species"
+        // so the first entry (species_id=0) is selected. Assert the exact species
+        // (stronger than is_some): kills both a false-None and a wrong-Some mutant.
+        assert_eq!(
+            roll_encounter(&table, 0, lvl1()),
+            Some(0),
+            "weight sum == u32::MAX (no overflow) must still select the first species"
         );
     }
 
