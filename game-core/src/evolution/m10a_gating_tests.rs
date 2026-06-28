@@ -453,6 +453,57 @@ proptest! {
     }
 
     // ---------------------------------------------------------------------------
+    // Criterion 20 (supplemental) — evolve carries damage clamped to new max HP
+    //
+    // `evolve_totality_and_hp_clamp_invariant` is VACUOUS against the
+    // "always heal to full" mutation because `arb_monster` pins current_hp ==
+    // derived_stats.hp (full HP). This test generates a DAMAGED monster
+    // (current_hp strictly below full) and asserts the EXACT clamp formula:
+    //   result.current_hp == damaged_hp.min(new_derived.hp)
+    // kills: always-full-heal on evolve; missing clamp; fainted-monster heal
+    // ---------------------------------------------------------------------------
+
+    /// Proptest for evolve's exact clamp semantics on damaged monsters.
+    /// `damage_pct` in [0, 100] scales full HP to produce current_hp in [0, full],
+    /// covering fainted (0), partially damaged, and full-HP boundaries.
+    #[test]
+    fn evolve_preserves_damage_clamped_to_new_max(
+        source in arb_species(1),
+        target in arb_species(2),
+        ivs in arb_ivs(),
+        evs in arb_evs(),
+        nature in arb_nature(),
+        level in arb_level(),
+        damage_pct in 0u32..=100u32,
+    ) {
+        // kills: always-full-heal on evolve; missing clamp; fainted-monster heal
+        let src_derived = derive_stats(&source.base_stats, &ivs, &evs, &nature, level);
+        // damaged HP in [0, full]; include 0 (fainted) and full as boundaries
+        let damaged_hp = (u32::from(src_derived.hp) * damage_pct / 100) as u16;
+        let monster = MonsterInstance {
+            species_id: source.id,
+            nickname: None,
+            level,
+            xp: xp_for_level(level),
+            ivs,
+            nature,
+            evs,
+            bond: Bond::new(70),
+            current_hp: damaged_hp,
+            derived_stats: src_derived,
+            party_slot: None,
+        };
+        let target_derived = derive_stats(&target.base_stats, &ivs, &evs, &nature, level);
+        let result = evolve(&monster, &target);
+        prop_assert_eq!(
+            result.current_hp,
+            damaged_hp.min(target_derived.hp),
+            "evolve must carry damage clamped to the new max (no silent heal, no overflow)"
+        );
+        prop_assert!(result.current_hp <= result.derived_stats.hp);
+    }
+
+    // ---------------------------------------------------------------------------
     // Criterion 21 — Property: fuse output never panics; IVs<=31, level==1,
     // evs.total()==0, current_hp==derived.hp
     // kills: panics on valid inputs; carrying evs/level; current_hp not full

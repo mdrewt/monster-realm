@@ -59,6 +59,12 @@ pub fn evolve(monster: &MonsterInstance, to_species: &Species) -> MonsterInstanc
 /// - `current_hp`: derived HP at level 1 (full)
 /// - `xp`: `xp_for_level(Level::new(1).unwrap())`
 /// - `derived_stats`: `derive_stats(offspring.base_stats, offspring_ivs, zero_evs, nature, L1)`
+///
+/// **Order-independence:** `fuse(a, b, s) == fuse(b, a, s)` for every field EXCEPT
+/// `nature` (and the nature-dependent non-HP `derived_stats`) when the two parents'
+/// bonds are EQUAL — then the first argument's nature wins. Callers that need a
+/// reproducible result regardless of selection order MUST canonicalize parent order
+/// first (the M10b reducer's obligation — ADR-0061 §4).
 #[must_use]
 pub fn fuse(a: &MonsterInstance, b: &MonsterInstance, offspring: &Species) -> MonsterInstance {
     // Per-stat IV max through ONE closure — a field transposition is impossible.
