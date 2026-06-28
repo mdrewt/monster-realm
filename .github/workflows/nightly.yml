@@ -28,6 +28,10 @@ jobs:
         with: { prefix-key: v1-nightly }
       - uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
         with: { tool: cargo-mutants }
+      # `just mutate-core` shells out through `just`; without this the step dies
+      # with `just: command not found` (exit 127). Same SHA-pin as ci.yml + the
+      # coverage job below. cargo-mutants policy is unchanged (ADR-0050).
+      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
       - run: just mutate-core
 
   # vitest line-coverage threshold (vitest exits non-zero below the threshold).
