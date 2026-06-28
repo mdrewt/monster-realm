@@ -331,6 +331,17 @@ pub fn validate_content(
                 sk.id
             ));
         }
+        // accuracy_check is `roll < accuracy` with roll in 0..=99 (a percent chance).
+        //   accuracy == 0  → always miss (no roll is < 0): an unusable skill.
+        //   accuracy > 100 → outside the percent domain; every roll 0..=99 is < it,
+        //                    identical in effect to 100, so reject it as malformed.
+        // accuracy is a u8, so `> 100` covers 101..=255 with no overflow risk.
+        if sk.accuracy == 0 || sk.accuracy > 100 {
+            return Err(format!(
+                "skill {} has accuracy {}; accuracy must be in [1, 100]",
+                sk.id, sk.accuracy
+            ));
+        }
     }
 
     // Cross-check: every learnable_skill_id in species must exist in skills
@@ -652,6 +663,125 @@ mod tests {
         assert!(
             result.is_err(),
             "TEETH: zero base stat must be rejected, but validation passed"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // M8.8c: accuracy range validation — accuracy must be in [1, 100]
+    // Rationale: accuracy_check is `roll < accuracy` with `roll ∈ 0..=99`.
+    //   accuracy == 0   → always miss (no roll is < 0, unusable skill), rejected.
+    //   accuracy > 100  → outside the percent domain; every roll 0..=99 is < it,
+    //                     identical in effect to 100 (always-hit), so it is
+    //                     rejected as malformed.
+    // This is the same illegal-but-representable class as the power == 0 check.
+    // -----------------------------------------------------------------------
+
+    /// M8.8c: validate_content rejects a skill with accuracy == 0 (always-miss).
+    /// Kills: an impl that omits the lower-bound accuracy check entirely.
+    #[test]
+    fn validate_content_rejects_accuracy_zero() {
+        let mut sk = fixture_skill(1);
+        sk.accuracy = 0;
+        let result = validate_content(&[], &[sk], &[], &[]);
+        assert!(
+            result.is_err(),
+            "accuracy=0 means always-miss; validate_content must reject it"
+        );
+    }
+
+    /// M8.8c: validate_content rejects a skill with accuracy == 101 (above 100, always-hit).
+    /// Kills: an impl that omits the upper-bound accuracy check entirely.
+    #[test]
+    fn validate_content_rejects_accuracy_above_100() {
+        let mut sk = fixture_skill(1);
+        sk.accuracy = 101;
+        let result = validate_content(&[], &[sk], &[], &[]);
+        assert!(
+            result.is_err(),
+            "accuracy=101 is above 100 (always-hit/illegal); validate_content must reject it"
+        );
+    }
+
+    /// M8.8c: validate_content rejects accuracy == u8::MAX (255) — the type extreme.
+    /// A defensive boundary test at the top of the u8 domain (the `> 100` check
+    /// spans all of 101..=255); pairs with the just-over-bound test at 101.
+    #[test]
+    fn validate_content_rejects_accuracy_at_u8_max() {
+        let mut sk = fixture_skill(1);
+        sk.accuracy = u8::MAX; // 255 — far above the valid ceiling of 100
+        let result = validate_content(&[], &[sk], &[], &[]);
+        assert!(
+            result.is_err(),
+            "accuracy=255 (u8::MAX) is well above 100; validate_content must reject it"
+        );
+    }
+
+    /// M8.8c: validate_content accepts accuracy == 1 (minimum valid boundary).
+    /// Kills: an over-strict impl that rejects accuracy=1 along with 0.
+    #[test]
+    fn validate_content_accepts_accuracy_at_1() {
+        let mut sk = fixture_skill(1);
+        sk.accuracy = 1;
+        let result = validate_content(&[], &[sk], &[], &[]);
+        assert!(
+            result.is_ok(),
+            "accuracy=1 is the minimum valid value; validate_content must accept it, got: {:?}",
+            result
+        );
+    }
+
+    /// M8.8c: validate_content accepts accuracy == 100 (maximum valid boundary).
+    /// Kills: an over-strict impl that rejects accuracy=100 along with 101.
+    #[test]
+    fn validate_content_accepts_accuracy_at_100() {
+        let mut sk = fixture_skill(1);
+        sk.accuracy = 100;
+        let result = validate_content(&[], &[sk], &[], &[]);
+        assert!(
+            result.is_ok(),
+            "accuracy=100 is the maximum valid value; validate_content must accept it, got: {:?}",
+            result
+        );
+    }
+
+    /// M8.8c: Proof-of-teeth — BOTH accuracy=0 AND accuracy=101 must be rejected.
+    /// TEETH: a fixture_skill with accuracy outside [1, 100] must never load.
+    /// Kills: an impl that checks only one bound, or uses > instead of >= on the
+    /// upper check, or uses < instead of == on the lower check.
+    #[test]
+    fn validate_content_teeth_accuracy_out_of_range() {
+        let mut sk_zero = fixture_skill(1);
+        sk_zero.accuracy = 0;
+        let result_zero = validate_content(&[], &[sk_zero], &[], &[]);
+        assert!(
+            result_zero.is_err(),
+            "TEETH: accuracy=0 (always-miss) must be rejected, but validation passed"
+        );
+
+        let mut sk_over = fixture_skill(2);
+        sk_over.accuracy = 101;
+        let result_over = validate_content(&[], &[sk_over], &[], &[]);
+        assert!(
+            result_over.is_err(),
+            "TEETH: accuracy=101 (above-max, always-hit) must be rejected, but validation passed"
+        );
+    }
+
+    /// M8.8c: parse-don't-validate boundary — a RON skill with accuracy:0 must
+    /// parse successfully (the type accepts it) but validate_content must reject it.
+    /// Kills: an impl that conflates parse-time rejection with validate-time rejection,
+    /// or one that accepts accuracy=0 through validation (the real boundary).
+    #[test]
+    fn validate_content_rejects_parsed_zero_accuracy_skill() {
+        let ron_str =
+            r#"[(id: 1, name: "AlwaysMiss", affinity: Fire, power: 40, accuracy: 0, pp: 25)]"#;
+        let parsed = parse_skills(ron_str).expect("RON with accuracy:0 must parse (u8 accepts 0)");
+        assert_eq!(parsed.len(), 1, "parsed should have exactly one skill");
+        assert_eq!(parsed[0].accuracy, 0, "parsed accuracy must be 0");
+        let result = validate_content(&[], &parsed, &[], &[]);
+        assert!(
+            result.is_err(),
+            "validate_content must reject a parsed skill with accuracy=0; parse succeeded but validation must be the boundary"
         );
     }
 }

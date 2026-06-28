@@ -218,6 +218,8 @@ live here exactly once (ADR-0003 SSOT). Randomness injected via `TurnVariance`.
   ways) — the reducer calls it rather than re-inlining the formula (M8.8b).
 
 Content validation (`validate_content`) extended: skill `power > 0` enforced,
+skill `accuracy ∈ [1, 100]` enforced (M8.8c — `0` = always-miss/unusable, `> 100`
+= out-of-domain/always-hit; same illegal-but-representable class as `power == 0`),
 type chart effectiveness values restricted to {0, 5, 10, 20}.
 
 ## Taming subsystem (`game-core/src/taming/`, M8a)
