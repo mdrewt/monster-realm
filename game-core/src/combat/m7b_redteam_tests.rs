@@ -146,6 +146,9 @@ fn m7b_1_double_battle_double_xp_arithmetic() {
 // monster changes hands during battle (even if that path doesn't exist yet).
 // The spec MUST define what happens: abort with an error, or write-back only
 // monsters that still belong to the caller.
+//
+// NOTE: evals/spec-gap-revival.eval.mjs mechanically force-revives this test —
+// the gate FAILS if a trade/transfer reducer lands while this stays #[ignore].
 // ===========================================================================
 
 #[test]

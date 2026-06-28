@@ -40,13 +40,58 @@ export function ciWiresE2eGate(yaml) {
 
 // True iff the workflow's top-level `on:` fires on `pull_request`.
 export function triggersOnPullRequest(yaml) {
-  throw new Error('M8.8f: implement in specialist phase');
+  const lines = yaml.split('\n');
+  let inOn = false;
+  for (const line of lines) {
+    // A top-level key sits at 0 indent (no leading space) and ends with `:`.
+    const isTopLevelKey = /^\S.*:/.test(line);
+    if (inOn) {
+      // Leaving the `on:` block at the next 0-indent key (e.g. jobs:/permissions:).
+      if (isTopLevelKey && !/^on\b/.test(line)) {
+        inOn = false;
+      } else if (/pull_request/.test(line)) {
+        return true;
+      }
+    }
+    if (/^on:/.test(line)) {
+      inOn = true;
+      // Inline forms: `on: pull_request` or `on: [push, pull_request]`.
+      if (/pull_request/.test(line)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // Returns the text of the named job's block (lines under `  <jobName>:` at deeper
 // indent, up to the next 2-space-indented job key or EOF), or '' if absent.
 export function extractJobBlock(yaml, jobName) {
-  throw new Error('M8.8f: implement in specialist phase');
+  const lines = yaml.split('\n');
+  const keyLine = `  ${jobName}:`;
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i] === keyLine || lines[i].startsWith(`${keyLine} `)) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return '';
+  const block = [lines[start]];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    // Blank lines belong to the block (they may sit between steps).
+    if (line.trim() === '') {
+      block.push(line);
+      continue;
+    }
+    const indent = line.length - line.trimStart().length;
+    // A 0-indent line or a next 2-space-indented job key ends the block.
+    if (indent === 0) break;
+    if (indent === 2) break;
+    block.push(line);
+  }
+  return `${block.join('\n')}\n`;
 }
 
 // Returns { ok: boolean, reason: string }.
@@ -57,7 +102,35 @@ export function extractJobBlock(yaml, jobName) {
 //   (4) the e2e job block has NO job-level `if:`
 // On any failure, reason names which condition failed.
 export function e2eGateIsBlocking(yaml) {
-  throw new Error('M8.8f: implement in specialist phase');
+  if (!triggersOnPullRequest(yaml)) {
+    return {
+      ok: false,
+      reason: 'workflow does not trigger on pull_request (e2e gate not PR-blocking)',
+    };
+  }
+  if (!ciWiresE2eGate(yaml)) {
+    return {
+      ok: false,
+      reason: 'e2e job missing or not running the two-window flow vs spacetime',
+    };
+  }
+  const block = extractJobBlock(yaml, 'e2e');
+  // Job-level keys sit at exactly 4 spaces; step-level keys sit at >=6 spaces.
+  for (const line of block.split('\n')) {
+    if (/^ {4}continue-on-error:\s*true\b/.test(line)) {
+      return {
+        ok: false,
+        reason: 'e2e job has job-level continue-on-error: true (failures non-blocking)',
+      };
+    }
+    if (/^ {4}if:/.test(line)) {
+      return {
+        ok: false,
+        reason: 'e2e job has a job-level if: condition (can disable the gate, e.g. if: false)',
+      };
+    }
+  }
+  return { ok: true, reason: 'e2e gate is PR-blocking, wired, and not neutered' };
 }
 
 export default async function () {

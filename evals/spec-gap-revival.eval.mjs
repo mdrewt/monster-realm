@@ -25,13 +25,60 @@ import path from 'node:path';
 // trade/transfer/gift/exchange/ownership-change patterns. Must NOT match non-reducer
 // helpers or unrelated reducers (e.g. grant_item, lead_party, move_player).
 export function findTradeTransferReducers(rustSrc) {
-  throw new Error('M8.8f: implement in specialist phase');
+  const lines = rustSrc.split('\n');
+  const reducers = [];
+  let pending = false;
+  for (const line of lines) {
+    const t = line.trim();
+    if (t.startsWith('#[spacetimedb::reducer')) {
+      pending = true;
+      continue;
+    }
+    const fnMatch = t.match(/\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+    if (fnMatch) {
+      if (pending) {
+        reducers.push(fnMatch[1]);
+      }
+      pending = false;
+      continue;
+    }
+    // Skip intervening attributes, doc/line comments and blanks without
+    // clearing the pending flag; clear it on any other code line (defensive).
+    if (t === '' || t.startsWith('#[') || t.startsWith('//') || t.startsWith('///')) {
+      continue;
+    }
+    pending = false;
+  }
+  return reducers.filter((name) => {
+    const lower = name.toLowerCase();
+    if (/trade|transfer|gift|exchange/.test(lower)) return true;
+    return /change_owner|owner_change|set_owner|reassign_owner/.test(lower);
+  });
 }
 
 // True iff `fn m7b_2_owner_change_mid_battle_spec_gap` exists AND carries a
 // `#[ignore...]` attribute on a preceding attribute line.
 export function parkedTestIsIgnored(testSrc) {
-  throw new Error('M8.8f: implement in specialist phase');
+  const lines = testSrc.split('\n');
+  let fnIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/\bfn\s+m7b_2_owner_change_mid_battle_spec_gap\b/.test(lines[i])) {
+      fnIdx = i;
+      break;
+    }
+  }
+  if (fnIdx === -1) return false;
+  // Scan upward over this fn's contiguous attribute/comment block only.
+  for (let i = fnIdx - 1; i >= 0; i--) {
+    const t = lines[i].trim();
+    if (t.startsWith('#[') || t.startsWith('//')) {
+      if (/^#\[ignore\b/.test(t)) return true;
+      continue;
+    }
+    if (t === '') continue;
+    break;
+  }
+  return false;
 }
 
 // Returns { violated: boolean, anchorMissing: boolean, reducers: string[], reason: string }.
@@ -46,7 +93,23 @@ export function parkedTestIsIgnored(testSrc) {
 //
 // The eval FAILS if violated || anchorMissing.
 export function specGapStatus({ serverSrc, testSrc }) {
-  throw new Error('M8.8f: implement in specialist phase');
+  const reducers = findTradeTransferReducers(serverSrc);
+  const ignored = parkedTestIsIgnored(testSrc);
+  const anchorPresent = /fn\s+m7b_2_owner_change_mid_battle_spec_gap\b/.test(testSrc);
+  const violated = reducers.length > 0 && ignored;
+  const anchorMissing = reducers.length === 0 && !anchorPresent;
+  let reason;
+  if (violated) {
+    reason = `spec gap closed: trade/transfer reducer(s) [${reducers.join(', ')}] landed but m7b_2_owner_change_mid_battle_spec_gap is still #[ignore] — un-ignore m7b_2_owner_change_mid_battle_spec_gap and close the write-back abort-on-owner-change contract`;
+  } else if (anchorMissing) {
+    reason =
+      'dormant guard deleted: m7b_2_owner_change_mid_battle_spec_gap was removed while no trade/transfer reducer exists — restore the parked test as the spec-gap anchor';
+  } else if (reducers.length === 0) {
+    reason = 'ok (dormant: no trade/transfer reducer; parked test present)';
+  } else {
+    reason = 'ok (feature landed; parked test revived)';
+  }
+  return { violated, anchorMissing, reducers, reason };
 }
 
 export default async function () {
