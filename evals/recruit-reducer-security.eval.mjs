@@ -468,11 +468,24 @@ export function checkBattleWildGcInWriteBack(body) {
  * @returns {string|null}
  */
 export function checkConsumeOneDeleteAtZero(consumeBody) {
-  if (consumeBody.indexOf('.delete(') === -1) {
+  // Require checked_sub to be present (also enforced by checkConsumeOneUsesCheckedSub;
+  // repeated here so this check is self-contained for positioning).
+  const subIdx = consumeBody.indexOf('checked_sub');
+  if (subIdx === -1) {
+    return 'consume_one: missing checked_sub — cannot locate drain-to-zero delete position';
+  }
+  // Require a .delete( that occurs AFTER checked_sub (the drain-to-zero path).
+  // A .delete( that appears ONLY before checked_sub is a zombie-cleanup delete on the
+  // early count==0 guard path — it does NOT satisfy the spec §3 "no lingering empty
+  // stacks" requirement for the decrement-to-zero case.
+  // Kills: an impl that deletes on the zombie path but updates (leaving a count:0 row)
+  // after checked_sub — the pre-checked_sub .delete( would satisfy the old bare check.
+  const deleteAfterSub = consumeBody.indexOf('.delete(', subIdx);
+  if (deleteAfterSub === -1) {
     return (
-      'consume_one: missing .delete( — a zero-count stack must be deleted, not updated ' +
-      '(no lingering empty stacks; a row with count=0 is a zombie that wastes space and ' +
-      'can confuse future grant_item lookups)'
+      'consume_one: missing .delete( after checked_sub — the drain-to-zero path must ' +
+      'delete the row when count reaches 0, not update it ' +
+      '(no lingering empty stacks; spec §3)'
     );
   }
   return null;
@@ -796,6 +809,31 @@ const BAD_CONSUME_NO_DELETE = `
       }
       row.count = row.count.checked_sub(1).ok_or_else(|| "underflow".to_string())?;
       // DELIBERATELY WRONG: updates even when count reaches 0 — zombie stack survives
+      ctx.db.inventory().inv_id().update(row);
+      Ok(())
+  }
+`;
+
+/**
+ * Fixture: consume_one that DOES delete on the early zombie path (count==0 before checked_sub)
+ * but uses update( after checked_sub instead of deleting at zero — the drain-to-zero delete
+ * is missing.
+ * Must be flagged by the STRENGTHENED checkConsumeOneDeleteAtZero (delete after checked_sub).
+ * The old bare .delete( check would have passed this (zombie delete present), proving the
+ * strengthened gate actually bites.
+ */
+const BAD_CONSUME_DRAIN_NO_DELETE = `
+  fn consume_one(ctx: &ReducerContext, owner: Identity, item_id: u32) -> Result<(), String> {
+      let mut row = ctx.db.inventory().owner_identity().filter(owner)
+          .find(|r| r.item_id == item_id)
+          .ok_or_else(|| "item not in inventory".to_string())?;
+      if row.count == 0 {
+          ctx.db.inventory().inv_id().delete(row.inv_id);
+          return Err("item count is zero".to_string());
+      }
+      row.count = row.count.checked_sub(1).ok_or_else(|| "underflow".to_string())?;
+      // DELIBERATELY WRONG: always updates — even when count reaches 0, leaving a zombie stack.
+      // The zombie-cleanup .delete( above is present but does NOT satisfy drain-to-zero.
       ctx.db.inventory().inv_id().update(row);
       Ok(())
   }
@@ -1157,7 +1195,7 @@ export default async function () {
     }
   }
 
-  // --- Tooth F2a: consume_one with no .delete( must be flagged ---------------
+  // --- Tooth F2a: consume_one with no .delete( at all must be flagged --------
   {
     const body = extractReducerBody(stripRustComments(BAD_CONSUME_NO_DELETE), 'consume_one');
     if (!body) {
@@ -1174,6 +1212,30 @@ export default async function () {
         pass: false,
         detail:
           'TEETH: BAD_CONSUME_NO_DELETE fixture (updates instead of deletes at zero) was NOT flagged by checkConsumeOneDeleteAtZero',
+      };
+    }
+  }
+
+  // --- Tooth F2a-drain: consume_one with zombie delete (before checked_sub) but
+  //     update( after checked_sub (no drain-to-zero delete) must be flagged.
+  //     Kills: the old bare .delete( check that would have been satisfied by the
+  //     zombie-path delete, missing the actual drain regression. ---
+  {
+    const body = extractReducerBody(stripRustComments(BAD_CONSUME_DRAIN_NO_DELETE), 'consume_one');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract consume_one body from BAD_CONSUME_DRAIN_NO_DELETE fixture (parser bug)',
+      };
+    }
+    if (!checkConsumeOneDeleteAtZero(body)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_CONSUME_DRAIN_NO_DELETE fixture (zombie delete before checked_sub, update after) was NOT flagged by checkConsumeOneDeleteAtZero — strengthened check must require .delete( AFTER checked_sub',
       };
     }
   }
