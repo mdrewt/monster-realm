@@ -761,5 +761,9 @@ pub(crate) fn write_back_battle_results(
     Ok(())
 }
 
+// `battle.rs` is a file-module (declared `mod battle;` in `lib.rs`), so a plain
+// `mod battle_tests;` would resolve under `src/battle/`; `#[path]` keeps the test
+// file a sibling in `src/` (the game-core `*_tests.rs` convention, ADR-0056 map).
 #[cfg(test)]
+#[path = "battle_tests.rs"]
 mod battle_tests;
