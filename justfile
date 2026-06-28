@@ -1,4 +1,11 @@
 set windows-shell := ["cmd.exe", "/c"]
+
+# Integration-runtime isolation: the published db name is env-driven (default
+# unchanged), aligned with the client's VITE_STDB_DB, so two concurrent local
+# integration/e2e runs can set distinct VITE_STDB_DB (+ MR_E2E_PORT, see
+# client/playwright.config.ts) and not collide on one db/port (one shared
+# SpacetimeDB instance hosts both; distinct db names isolate their data).
+db := env_var_or_default("VITE_STDB_DB", "monster-realm")
 # monster-realm cargo workspace verbs. Pure logic is testable offline;
 # build/publish/e2e need the spacetime CLI + an instance (see README).
 
@@ -51,7 +58,7 @@ build:
     spacetime build --module-path server-module
 
 publish:
-    spacetime publish --module-path server-module monster-realm
+    spacetime publish --module-path server-module {{db}}
 
 changelog:
     git cliff -o CHANGELOG.md

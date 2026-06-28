@@ -11,7 +11,12 @@ export default defineConfig({
   plugins: [wasm(), topLevelAwait()],
   // The wasm pkg lives at <repo>/client-wasm/pkg (one level above the client
   // root); allow the dev/preview server to serve it (M5a integration).
-  server: { port: 5290, strictPort: true, fs: { allow: ['..'] } },
+  // e2e/dev port env-driven (default 5290) for concurrent-run isolation (MR_E2E_PORT).
+  server: {
+    port: Number(process.env.MR_E2E_PORT) || 5290,
+    strictPort: true,
+    fs: { allow: ['..'] },
+  },
   // vitest runs the headless unit/property tests under src only; the e2e/ folder
   // is Playwright's (a different runner, driven by `npm run e2e`).
   test: { include: ['src/**/*.test.ts'] },
