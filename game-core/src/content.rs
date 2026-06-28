@@ -109,9 +109,13 @@ pub enum EvolutionTrigger {
 /// `Level(16)` / `Bond(200)` / `Item(3)` (bare ints). Without it, the `Bond`
 /// newtype's *derived* `Deserialize` would demand the doubly-wrapped `Bond(Bond(200))`
 /// (`Level` is transparent via its own `Deserialize`, `Bond` is not — and `Bond` lives
-/// outside this slice's touch boundary). The `TryFrom` re-applies the newtype
-/// invariants at the parse boundary (`Level::new` rejects 0/>100), keeping an illegal
-/// trigger unrepresentable (parse-don't-validate).
+/// outside this slice's touch boundary).
+///
+/// The conversion re-applies `Level`'s bound at the PARSE boundary (`Level::new`
+/// rejects 0/>100), so an illegal `Level` trigger is unrepresentable. `Bond` has no
+/// such bound: `Bond(0)` parses fine and is rejected *later*, by
+/// `validate_evolution_fusion` (step 4) — not here. A parsed trigger is therefore not
+/// guaranteed sound until validated.
 #[derive(Deserialize)]
 enum RawEvolutionTrigger {
     Level(u8),
@@ -633,6 +637,14 @@ pub fn validate_content(
 ///
 /// (Cross-version species-id append-only stays the `append-only-ids` eval's job;
 /// within-version species-id uniqueness stays [`validate_content`]'s.)
+///
+/// Scope (named deferrals, ADR-0060 §3): step 6 covers `EncounterTable` entries only
+/// — hardcoded server grant paths (the starter in `join_game`, future quest rewards)
+/// are out of scope until they become content-driven. Multi-node evolution cycles
+/// (`A→B→A`) are deferred to the rules layer (M10a-rules), where the `evolves_to`
+/// traversal lives; only self-loops are caught here (step 2). **M10b obligation:** the
+/// server `sync_content` must call this (alongside `validate_content`) so the gate is
+/// live in production, not only in this crate's tests.
 ///
 /// # Errors
 /// Returns `Err` with a descriptive message on the first integrity violation.
@@ -2774,6 +2786,136 @@ mod tests {
         validate_content(&species, &skills, &chart, &items).expect(
             "M10a TEETH: load_species() with 010-derived.ron must still pass validate_content; \
                  any duplicate id or zero base stat in the new file must be caught",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 10. Dangling fusion fields b and to — individual proof-of-teeth
+    //
+    // Gate (c) from the spec requires that ALL THREE fusion fields (a, b, to)
+    // are cross-checked against the species registry. The existing test
+    // m10a_dangling_fusion_recipe_a_rejected only exercises field `a`.
+    // An impl that checks `a` but silently skips `b` or `to` would pass that
+    // test. These two tests close that teeth gap for `b` and `to` individually.
+    //
+    // The validator loop in check 3:
+    //   for (field, id) in [("a", r.a), ("b", r.b), ("to", r.to)] { ... }
+    // is correct for all three fields; these tests permanently protect it.
+    // -----------------------------------------------------------------------
+
+    /// M10a-10a: FusionRecipe.b referencing a species not in the registry → Err.
+    ///
+    /// Kills: an impl that checks `a` but not `b` in the fusion cross-ref loop,
+    /// allowing a recipe whose second parent does not exist.
+    #[test]
+    fn m10a_dangling_fusion_recipe_b_rejected() {
+        let species = vec![fixture_species(1, vec![]), fixture_species(2, vec![])];
+        let evolutions = vec![];
+        // species 77 does NOT exist (field b is dangling)
+        let recipes = vec![fusion_recipe(1, 77, 2)];
+        let encounters = vec![];
+        let items = vec![];
+
+        let result =
+            validate_evolution_fusion(&species, &evolutions, &recipes, &encounters, &items);
+        assert!(
+            result.is_err(),
+            "M10a TEETH: FusionRecipe.b=77 (non-existent) must be rejected; \
+             an impl that only checks field `a` would silently accept this"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("77") || err.contains("non-existent"),
+            "M10a TEETH: error must reference the missing species id 77, got: {err:?}"
+        );
+    }
+
+    /// M10a-10b: FusionRecipe.to referencing a species not in the registry → Err.
+    ///
+    /// Kills: an impl that checks `a` and `b` but not `to` in the fusion
+    /// cross-ref loop, allowing a recipe whose output form does not exist.
+    #[test]
+    fn m10a_dangling_fusion_recipe_to_rejected() {
+        let species = vec![fixture_species(1, vec![]), fixture_species(2, vec![])];
+        let evolutions = vec![];
+        // species 99 does NOT exist (field to is dangling)
+        let recipes = vec![fusion_recipe(1, 2, 99)];
+        let encounters = vec![];
+        let items = vec![];
+
+        let result =
+            validate_evolution_fusion(&species, &evolutions, &recipes, &encounters, &items);
+        assert!(
+            result.is_err(),
+            "M10a TEETH: FusionRecipe.to=99 (non-existent) must be rejected; \
+             an impl that only checks fields `a` and `b` would silently accept this"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("99") || err.contains("non-existent"),
+            "M10a TEETH: error must reference the missing species id 99, got: {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 11. Parse-don't-validate boundary for Level triggers
+    //
+    // EvolutionTrigger uses `#[serde(try_from = "RawEvolutionTrigger")]`.
+    // RawEvolutionTrigger::Level carries a raw u8, but the TryFrom impl calls
+    // Level::new, which rejects 0 and >100. This means an out-of-range Level
+    // trigger is unrepresentable — it is rejected at PARSE time, before any
+    // validator runs.
+    //
+    // These tests pin that boundary as a permanent regression guard.
+    // -----------------------------------------------------------------------
+
+    /// M10a-11: parse_evolutions rejects `Level(0)` and `Level(101)` at PARSE time,
+    /// before any call to validate_evolution_fusion.
+    ///
+    /// The RON `trigger: Level(0)` feeds into RawEvolutionTrigger::Level(0u8), which
+    /// TryFrom converts via Level::new(0) — and Level::new rejects 0 with Err.
+    /// Similarly Level::new(101) rejects values above 100. Both cases surface as a
+    /// parse-time Err from parse_evolutions, not from the validator.
+    ///
+    /// KILLS: a future impl that drops the `try_from = "RawEvolutionTrigger"` mirror
+    /// and instead derives Deserialize directly on EvolutionTrigger (which would let
+    /// an out-of-range Level trigger parse, moving the boundary from parse-time to
+    /// never — the content author would get no error at load time).
+    #[test]
+    fn m10a_parse_evolutions_level_zero_fails() {
+        // Level(0): below the valid [1, 100] range — must be rejected at parse time.
+        let ron_level_zero = r#"[
+            (
+                species_id: 1,
+                evolutions: [
+                    (trigger: Level(0), to_species: 2),
+                ],
+            ),
+        ]"#;
+        assert!(
+            parse_evolutions(ron_level_zero).is_err(),
+            "TEETH: Level(0) is below the valid range [1,100]; parse_evolutions must return Err \
+             at parse time (via Level::new inside TryFrom<RawEvolutionTrigger>). \
+             A future impl that drops the try_from mirror and derives Deserialize directly \
+             would let Level(0) parse successfully — this assertion catches that regression."
+        );
+
+        // Level(101): above the valid [1, 100] range — must also be rejected at parse time.
+        // u8 can represent 101, so this specifically exercises the upper-bound guard in Level::new.
+        let ron_level_out_of_range = r#"[
+            (
+                species_id: 1,
+                evolutions: [
+                    (trigger: Level(101), to_species: 2),
+                ],
+            ),
+        ]"#;
+        assert!(
+            parse_evolutions(ron_level_out_of_range).is_err(),
+            "TEETH: Level(101) exceeds the valid range [1,100]; parse_evolutions must return Err \
+             at parse time (via Level::new inside TryFrom<RawEvolutionTrigger>). \
+             A future impl that drops the try_from mirror and derives Deserialize directly \
+             would let Level(101) parse successfully — this assertion catches that regression."
         );
     }
 }
