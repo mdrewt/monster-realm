@@ -23,6 +23,29 @@ use game_core::combat::{resolve::resolve_recruit_failure, xp::level_up_healed_hp
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
 
+// --- Domain module scaffold (M8.9a, ADR-0056) -------------------------------
+// Cohesive submodules of THIS crate, by domain. They are intentionally EMPTY in
+// M8.9a; M8.9b ("the move") relocates each domain's tables/reducers/helpers out
+// of this file (behavior-preserving — the M8.9a spike proved a `#[table]`/
+// `#[reducer]` registers from a private submodule with byte-identical bindings).
+// This module map is the canonical `touches:` vocabulary fixed by ADR-0056:
+// future server-side slices declare `server-module/src/<domain>.rs` instead of
+// the whole `lib.rs`, so different-domain slices become `touches:`-disjoint.
+mod content;
+mod guards;
+mod marshal;
+mod monster_mgmt;
+mod movement;
+mod schema;
+mod taming;
+// `mod battle;` is intentionally NOT declared yet (the `battle.rs` scaffold file
+// exists, un-wired). The `#[table(name = battle)]` macro generates a crate-root
+// trait `battle` (the `ctx.db.battle()` accessor); a `mod battle;` collides with
+// it in the type namespace (E0428) WHILE that table still lives in `lib.rs`.
+// M8.9b adds `mod battle;` atomically when it relocates the `battle` table into
+// `schema.rs`, which frees the `battle` identifier at the crate root. (A module
+// may NOT share a name with a table — a constraint the M8.9a spike surfaced.)
+
 const ZONE_0: u32 = 0;
 /// SSOT for the seeded-content version; bump when game-core RON content changes (ADR-0054).
 const CONTENT_VERSION: u32 = 1;
