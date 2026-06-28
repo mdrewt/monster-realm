@@ -563,6 +563,22 @@ Deferred-with-rationale: the criterion **perf-budget gate** (folded into the M20
 observability capstone — a non-flaky budget needs tuned baselines) and GitHub
 Actions *execution* (the workflow is committed; only local `just ci` is verifiable
 in this environment).
+**M8.9** (server-module modularization + content-directory glob loading — a pure,
+behavior-preserving reorganization: no schema, rule, or game-design change)
+complete. Workstream A (ADR-0056): the former `server-module/src/lib.rs` monolith
+(~2081 lines) split into 8 cohesive domain submodules + a lifecycle `lib.rs`
+(M8.9a spike+scaffold → M8.9b the move), the per-reducer owner-check preamble
+consolidated into `guards::require_owner`, and each domain's inline tests extracted
+to `*_tests.rs` siblings (M8.9c — marshal/battle/taming/guards). Workstream B
+(ADR-0057, M8.9e): five of the six content registries migrated to glob-loaded
+`content/<registry>/*.ron` directories via a `game-core/build.rs` embed
+(`type_chart` stays a single file). Both module maps are now the canonical
+`touches:` vocabularies that let future server-side and content-adding slices fan
+out (see the two sections above). **Behavior provably unchanged — the milestone
+close gate (verified at M8.9d):** `bindings-drift` = 0 (committed
+`client/src/module_bindings/` byte-identical to a fresh `spacetime generate`),
+`schema-snapshot` unchanged (15 tables), and `content-parity` green (the five
+`m8_9e_*_migration_parity` tests reproduce the pre-migration rows in order).
 
 ### Finalization audit (2026-06-25) — named deferrals
 
