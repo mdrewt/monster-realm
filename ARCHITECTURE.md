@@ -89,7 +89,7 @@ stable id), separate from `init`. Stable ids are append-only.
 
 ADRs **0002–0034** are design ADRs that live in the harness spec corpus
 (`../../specs/monster-realm-v2/adr/`); **0001** is mirrored in both locations.
-Implementation ADRs **0001, 0035–0053** live in `docs/adr/` — see
+Implementation ADRs **0001, 0035–0054** live in `docs/adr/` — see
 `docs/adr/README.md` for the navigable catalog. Highlights: 0035 scaffold
 hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest, **0039
 two-window e2e CI gate**, 0040 RLS fallback split-tables, 0041 integer damage
@@ -336,7 +336,10 @@ public additive owner-scoped table; bait classified by data.
   tunable per-mille base success rate. Per-species rates deferred to M9. Validated:
   `recruit_bonus ≤ 1000` (content).
 - **Public `inventory` table (ADR-0046):** additive, owner-scoped: `(inv_id, owner_identity,
-  item_id, count)`. `ItemRow` gains `recruit_bonus: u16` (seeded in `sync_content`;
+  item_id, count)` — "owner-scoped" is the schema (the `owner_identity` column), NOT transport
+  RLS: the table is public/world-readable (no `client_visibility_filter` in this toolchain),
+  owner-scoping is only a client subscription filter, and per-owner transport RLS is tracked
+  for M16. `ItemRow` gains `recruit_bonus: u16` (seeded in `sync_content`;
   bait = `recruit_bonus > 0`, data-driven both sides, not a magic id). Helpers: `grant_item`
   (saturating_add on count, find-then-update ensures one stack per `(owner,item_id)` — now
   mechanically gated by the `inventory-single-stack` eval since SpacetimeDB 1.12 has no

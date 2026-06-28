@@ -272,10 +272,15 @@ pub struct BattleWild {
     pub individuality_seed: u32,
 }
 
-/// Player item inventory (M8d, ADR-0046). PUBLIC so a client sees its OWN items
-/// (RLS by `owner_identity`). Carries ONLY ownership + count — NO gene/seed
-/// fields; individuality stays in the private `monster` table. Invariant: at
-/// most ONE row per `(owner_identity, item_id)` (always find-then-update).
+/// Player item inventory (M8d, ADR-0046). PUBLIC / world-readable counts: there
+/// is NO transport RLS (no `client_visibility_filter` exists in this toolchain —
+/// ADR-0040/0046), so every client can read every owner's counts. Owner-scoping
+/// is only a CLIENT subscription filter; per-owner transport RLS is tracked for
+/// M16. Carries ONLY ownership + count — NO gene/seed fields; individuality stays
+/// in the private `monster` table. Single-stack invariant: at most ONE row per
+/// `(owner_identity, item_id)`, enforced by routing every insert through
+/// `grant_item` (the `inventory-single-stack` parity eval, ADR-0054) — there is
+/// no DB-level composite unique constraint (unsupported in this toolchain).
 #[spacetimedb::table(name = inventory, public)]
 pub struct Inventory {
     #[primary_key]

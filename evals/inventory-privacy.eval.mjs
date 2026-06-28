@@ -1,19 +1,25 @@
 // inventory-privacy eval (M8d): the `inventory` table carries ONLY
 // (owner, item_id, count) — no gene/seed/individuality fields may appear.
 //
-// Contract (from ADR-0046 + m8d-recruit.md):
-//   The inventory table is public (players see their own items via the client
-//   binding). Its schema must be minimal — it tracks item ownership and count.
-//   It must NOT carry any fields whose names contain `iv_`, `nature`, `seed`,
-//   or `individuality` (which would leak gene data through the item binding).
+// Contract (from ADR-0040/0046 + m8d-recruit.md):
+//   The inventory table is public / world-readable: there is NO transport RLS
+//   (no `client_visibility_filter` exists in this toolchain — ADR-0040/0046), so
+//   every client can read every owner's counts. A client may filter its
+//   subscription to its own `owner_identity`, but owner-scoping is a client
+//   subscription filter ONLY; per-owner transport RLS is tracked for M16. Its
+//   schema must be minimal — it tracks item ownership and count. It must NOT
+//   carry any fields whose names contain `iv_`, `nature`, `seed`, or
+//   `individuality` (which would leak gene data through the item binding).
 //
 // Proof-of-teeth:
 //   A fixture struct with an `iv_hp` field MUST be flagged.
 //   A fixture with only (owner, item_id, count) MUST pass.
+//   A doc comment claiming an `owner_identity` RLS filter MUST be flagged
+//   (checkInventoryDocPosture) — the table has no transport RLS.
 //
-// RED STATE: the `inventory` table does not exist yet in lib.rs.
-//   This eval returns { pass: false } on absence — not a vacuous pass.
-//   Absence is an intentional FAIL so the eval bites until implemented.
+// ABSENCE-IS-FAIL: `checkInventoryExists` treats a missing `inventory` table as
+//   a FAIL (never a vacuous pass), so the eval keeps biting if the table is ever
+//   removed. (The table has existed since M8d.)
 //
 // Implementation note on Semgrep detect-non-literal-regexp:
 //   All scanning uses String.indexOf() or literal /regex/ patterns.
@@ -132,6 +138,78 @@ export function parseTableFields(src, table) {
 }
 
 // ---------------------------------------------------------------------------
+// docCommentBefore — extract the Rust item-doc block immediately preceding a
+// given character index in raw source.  Handles both `///` line-doc runs and
+// `/* ... */` / `/** ... */` block-doc spans.
+//
+// `//!` (inner-doc) is deliberately excluded: it is a module/crate-inner-doc
+// form (it documents the *enclosing* item, not the *following* one), so it
+// would never be the table's own doc comment and including it would cause
+// false-positives on module-level notes.
+// ---------------------------------------------------------------------------
+
+// docCommentBefore(rawSrc, markerIndex) -> string
+// Returns the Rust item-doc text immediately preceding markerIndex in rawSrc.
+// Phase 1: collect contiguous "///" line-doc lines walking backwards from the
+//   line before the marker (trailing blank lines are popped first so the walk
+//   reaches the doc block rather than stopping at the sentinel empty string
+//   that split produces after the final newline).
+// Phase 2: if Phase 1 found nothing and the last non-blank line ends with "*/",
+//   find the matching "/*" opener via lastIndexOf and return the whole span.
+//   This covers block-doc ("/* ... */", "/** ... */") placed directly before
+//   the table attribute.
+// Returns "" if no doc comment is found.
+// Uses only indexOf/lastIndexOf/trim/slice — NO new RegExp.
+export function docCommentBefore(rawSrc, markerIndex) {
+  const before = rawSrc.slice(0, markerIndex);
+  const lines = before.split('\n');
+
+  // rawSrc.slice(0, markerIndex) ends at the newline immediately before the
+  // marker, so split('\n') yields a trailing '' as its last element.  Any blank
+  // lines between the doc block and the table attribute (including that sentinel
+  // '') must be skipped before the backward walk so the walk reaches the `///`
+  // lines rather than breaking on the first empty/non-doc line it sees.
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
+    lines.pop();
+  }
+
+  // Phase 1: collect contiguous `///` line-doc lines walking backwards.
+  const collected = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (line.trimStart().indexOf('///') === 0) {
+      collected.unshift(line);
+    } else {
+      break;
+    }
+  }
+  if (collected.length > 0) {
+    return collected.join('\n');
+  }
+
+  // Phase 2: block-doc fallback — if the last non-blank line ends with `*/`,
+  // scan back in `before` (char by char) to find the matching `/*` opener and
+  // return the whole span.  This captures `/* ... */` and `/** ... */` block
+  // docs placed directly before the table attribute.
+  if (lines.length > 0) {
+    const lastLine = lines[lines.length - 1];
+    if (lastLine.trimEnd().indexOf('*/') === lastLine.trimEnd().length - 2) {
+      // Find the `*/` close in `before`.
+      const closeIdx = before.lastIndexOf('*/');
+      if (closeIdx !== -1) {
+        // Walk backwards from closeIdx to find the matching `/*`.
+        const openIdx = before.lastIndexOf('/*', closeIdx);
+        if (openIdx !== -1) {
+          return before.slice(openIdx, closeIdx + 2);
+        }
+      }
+    }
+  }
+
+  return '';
+}
+
+// ---------------------------------------------------------------------------
 // Named checks (exported for unit-testability).
 // ---------------------------------------------------------------------------
 
@@ -206,12 +284,91 @@ export function checkInventoryHasMinimumFields(src, tables) {
   return null;
 }
 
+/**
+ * Check: the `inventory` table doc comment does NOT falsely claim an
+ * `owner_identity` RLS filter.
+ *
+ * Operates on RAW (un-stripped) source so the claim lives in comments.
+ * Uses only String.prototype.indexOf (NO new RegExp — Semgrep detect-non-literal-regexp).
+ *
+ * Forbidden phrases (lowercased, literal):
+ *   'rls by owner_identity'
+ *   'rls by `owner_identity`'   ← backtick variant — the actual lie in lib.rs
+ *   'owner-only rls'
+ *   'owner_identity rls'
+ *
+ * Returns null when:
+ *   - the inventory table marker is absent (checkInventoryExists handles absence)
+ *   - the doc comment block is empty
+ *   - none of the forbidden phrases appear
+ *
+ * @param {string} rawSrc Raw (un-stripped) Rust source text.
+ * @returns {string|null} Error string, or null on pass.
+ */
+export function checkInventoryDocPosture(rawSrc) {
+  const marker = '#[spacetimedb::table(name = inventory';
+  const idx = rawSrc.indexOf(marker);
+  if (idx === -1) return null; // absence handled by checkInventoryExists
+
+  const doc = docCommentBefore(rawSrc, idx).toLowerCase();
+  if (doc.length === 0) return null; // no doc comment to scan
+
+  // Residual note: this is a doc-lint over natural language — it catches the
+  // realized lie ("RLS by `owner_identity`" in lib.rs) plus common assertion
+  // phrasings a contributor might write when trying to say "owner-scoped RLS".
+  // It is NOT an exhaustive NL claim-detector; the reviewer remains the
+  // backstop for novel phrasings not listed here.
+  const FORBIDDEN_PHRASES = [
+    // Original four — the realized lie and close variants.
+    'rls by owner_identity',
+    'rls by `owner_identity`',
+    'owner-only rls',
+    'owner_identity rls',
+    // Extended coverage — semantically-equivalent assertion phrasings that
+    // bypass the original four but still claim owner-scoped transport RLS.
+    'rls by owner',
+    'rls keyed by owner',
+    'rls keyed to owner',
+    'rls scoped to owner',
+    'rls filter on owner',
+    'owner-scoped rls',
+    'row-level security on owner',
+    'row-level security by owner',
+    'row-level security for owner',
+    'row-level security keyed',
+    'sees only their own',
+    'sees only its own',
+    'see only their own',
+    'see only its own',
+    'owner-only visibility',
+  ];
+
+  for (const phrase of FORBIDDEN_PHRASES) {
+    if (doc.indexOf(phrase) !== -1) {
+      return (
+        'inventory table doc claims an `owner_identity` RLS filter ' +
+        '("' +
+        phrase +
+        '" found in doc comment), but the table is declared ' +
+        'PUBLIC with NO transport RLS — `client_visibility_filter` (the only ' +
+        'SpacetimeDB transport-RLS mechanism) has zero usages in server-module ' +
+        '(ADR-0040/0046). Owner-scoping is a client subscription filter only; ' +
+        'per-owner transport RLS is tracked for M16. Correct the doc comment to ' +
+        'state: public / world-readable counts / no transport RLS.'
+      );
+    }
+  }
+
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Default export: the eval entry point.
 // ---------------------------------------------------------------------------
 
 export default async function () {
-  const name = 'inventory-privacy (inventory table exists, no gene/seed fields, minimum schema)';
+  const name =
+    'inventory-privacy (inventory table exists, no gene/seed fields, minimum schema, correct privacy-posture doc)';
 
   // =========================================================================
   // PROOFS-OF-TEETH — every tooth must bite before we scan real source.
@@ -344,6 +501,119 @@ export default async function () {
     }
   }
 
+  // TOOTH 7 (BAD bites): inventory doc claiming RLS MUST be flagged.
+  // Kills an impl that always returns null from checkInventoryDocPosture.
+  {
+    const badSrc =
+      '/// Player item inventory (M8d, ADR-0046). PUBLIC so a client sees its OWN items\n' +
+      '/// (RLS by `owner_identity`). Carries ONLY ownership + count — NO gene/seed\n' +
+      '/// fields; individuality stays in the private `monster` table.\n' +
+      '#[spacetimedb::table(name = inventory, public)]\n' +
+      'struct Inventory { #[primary_key] #[auto_inc] inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }';
+    const err = checkInventoryDocPosture(badSrc);
+    if (!err) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: inventory doc with "RLS by `owner_identity`" was NOT flagged by checkInventoryDocPosture — the false-RLS claim detector is broken (an impl that always returns null would pass this incorrectly)',
+      };
+    }
+  }
+
+  // TOOTH 8 (GREEN no-false-positive): corrected posture doc MUST pass.
+  // Kills an impl that flags any inventory doc regardless of content.
+  {
+    const goodSrc =
+      '/// PUBLIC / world-readable counts: NO transport RLS (no client_visibility_filter\n' +
+      '/// in this toolchain). Owner-scoping is a client subscription filter only;\n' +
+      '/// per-owner transport RLS is tracked for M16.\n' +
+      '#[spacetimedb::table(name = inventory, public)]\n' +
+      'struct Inventory { #[primary_key] #[auto_inc] inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }';
+    const err = checkInventoryDocPosture(goodSrc);
+    if (err !== null) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: corrected posture doc was incorrectly flagged by checkInventoryDocPosture (false positive): ${err}`,
+      };
+    }
+  }
+
+  // TOOTH 9 (no inventory table → null, no vacuous fail).
+  // Kills an impl that throws or returns an error when the marker is absent.
+  {
+    const noInventorySrc = 'struct Foo { a: u32 }';
+    const err = checkInventoryDocPosture(noInventorySrc);
+    if (err !== null) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: source with no inventory table marker incorrectly returned an error from checkInventoryDocPosture (should return null — checkInventoryExists handles absence): ${err}`,
+      };
+    }
+  }
+
+  // TOOTH 10 (paraphrase bites): semantically-equivalent false claims MUST be
+  // flagged. Each fixture uses one paraphrase that bypassed the original 4
+  // phrases. Kills an impl whose FORBIDDEN_PHRASES list is too narrow.
+  {
+    const paraphrases = [
+      // "row-level security on owner_identity" variant
+      '/// Player item inventory. Row-level security on owner_identity enforced.\n' +
+        '#[spacetimedb::table(name = inventory, public)]\n' +
+        'struct Inventory { inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }',
+      // "RLS keyed by owner" variant
+      '/// Inventory table — RLS keyed by owner so each client sees only its rows.\n' +
+        '#[spacetimedb::table(name = inventory, public)]\n' +
+        'struct Inventory { inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }',
+      // "owner sees only their own items" variant (sees only their own)
+      '/// PUBLIC table. Each owner sees only their own items via RLS.\n' +
+        '#[spacetimedb::table(name = inventory, public)]\n' +
+        'struct Inventory { inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }',
+      // "owner-only visibility" variant
+      '/// Inventory row. Owner-only visibility guaranteed by transport filter.\n' +
+        '#[spacetimedb::table(name = inventory, public)]\n' +
+        'struct Inventory { inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }',
+    ];
+    for (const fixture of paraphrases) {
+      const err = checkInventoryDocPosture(fixture);
+      if (!err) {
+        // Extract the first doc line for the detail message.
+        const firstLine = fixture.slice(0, fixture.indexOf('\n'));
+        return {
+          name,
+          pass: false,
+          detail:
+            'TEETH: paraphrase fixture was NOT flagged by checkInventoryDocPosture — ' +
+            'FORBIDDEN_PHRASES list is too narrow. Bypassing fixture: ' +
+            firstLine,
+        };
+      }
+    }
+  }
+
+  // TOOTH 11 (block-comment bite): a "/* ... */" block-doc claiming RLS
+  // immediately before the inventory attribute MUST be flagged.
+  // Kills an impl whose docCommentBefore only collects "///" lines.
+  {
+    const blockSrc =
+      '/** RLS by `owner_identity` — each client sees only its own inventory rows. */\n' +
+      '#[spacetimedb::table(name = inventory, public)]\n' +
+      'struct Inventory { inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }';
+    const err = checkInventoryDocPosture(blockSrc);
+    if (!err) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: block-comment "/** RLS by `owner_identity` ... */" immediately before ' +
+          'inventory table attr was NOT flagged — docCommentBefore must also capture ' +
+          'block-doc spans, not only "///" line-doc runs',
+      };
+    }
+  }
+
   // =========================================================================
   // REAL CHECKS — scan the actual server-module source files.
   // =========================================================================
@@ -370,11 +640,15 @@ export default async function () {
   }
 
   // Collect all tables + per-file stripped sources for field scanning.
+  // Also retain raw text per file for doc-comment checks (checkInventoryDocPosture
+  // must see the raw source — doc claims live in comments which stripComments blanks).
   const allTables = [];
   const strippedByFile = [];
+  const rawByFile = [];
   for (const f of rsSources) {
     const raw = readFileSync(f, 'utf8');
     const stripped = stripComments(raw);
+    rawByFile.push(raw);
     strippedByFile.push(stripped);
     allTables.push(...parseTables(stripped));
   }
@@ -383,8 +657,11 @@ export default async function () {
   const err1 = checkInventoryExists(allTables);
   if (err1) return { name, pass: false, detail: err1 };
 
-  // Check 2 + 3: scan each file for the inventory struct body.
-  for (const stripped of strippedByFile) {
+  // Check 2 + 3: scan each file for the inventory struct body (comment-stripped).
+  // Check 4: scan each file's RAW source for false owner-RLS claims in the doc.
+  for (let fi = 0; fi < rsSources.length; fi++) {
+    const stripped = strippedByFile[fi];
+    const raw = rawByFile[fi];
     const fileTables = parseTables(stripped);
 
     const err2 = checkInventoryFieldsClean(stripped, fileTables);
@@ -392,11 +669,15 @@ export default async function () {
 
     const err3 = checkInventoryHasMinimumFields(stripped, fileTables);
     if (err3) return { name, pass: false, detail: err3 };
+
+    // Check 4: doc-posture check on RAW source (claims live in comments).
+    const err4 = checkInventoryDocPosture(raw);
+    if (err4) return { name, pass: false, detail: err4 };
   }
 
   return {
     name,
     pass: true,
-    detail: `${rsSources.length} source file(s) scanned, inventory table found with clean schema (no iv_/nature/seed/individuality fields, >= 3 columns) — all 6 teeth verified`,
+    detail: `${rsSources.length} source file(s) scanned, inventory table found with clean schema (no iv_/nature/seed/individuality fields, >= 3 columns) and correct privacy posture doc — all 11 teeth verified`,
   };
 }

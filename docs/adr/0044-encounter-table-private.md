@@ -59,7 +59,10 @@ projection — they are purely server-side.
     - `entries: Vec<EncounterEntryRow>` — serialized vector of encounter options
       for the zone.
     - **`EncounterEntryRow`** (flattened-at-boundary):
-      - `species_id: u16` — references species registry.
+      - `species_id: u32` — references species registry (matches the `species_id`
+        width across `EncounterEntryRow`, the species registry, and the other
+        species-bearing tables; corrected from `u16` in M8.7d — the code has always
+        been `u32`).
       - `weight: u16` — probability weight (arbitrary units, summed during
         weighted selection).
       - `min_level: u8` — `Level` newtype serialized as `u8`; validated at

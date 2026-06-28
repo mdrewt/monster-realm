@@ -452,9 +452,13 @@ fn recruit_chance_truncation_can_plateau() {
 // ---------------------------------------------------------------------------
 
 // INVARIANT (M16 design debt, not an M8d arithmetic tooth): the `inventory` table
-// is public with RLS by owner_identity, so a player sees only their OWN counts for
-// M8d (PvE). The residual to revisit at M16 (PvP): if visibility were ever widened,
-// an item count of 0 vs N would reveal whether an opponent can attempt_recruit — a
-// timing/spying surface. The fix at that point is to keep the owner-only RLS filter.
+// is public with NO transport RLS — `client_visibility_filter` does not exist in
+// this toolchain (ADR-0040/0046), so every client can already read every owner's
+// counts (consistent with FINDING 11 above). Owner-scoping today is only a client
+// subscription filter. The residual to revisit at M16 (PvP): counts are already
+// world-readable, so an item count of 0 vs N reveals whether an opponent can
+// attempt_recruit — a timing/spying surface. The fix at that point is a per-owner
+// transport RLS filter (tracked for M16), not the client subscription filter that
+// exists now.
 // (The original test only asserted `5 > 0` / `0 == 0`, which were tautological, so
 // the prose is preserved here and the empty test fn was removed.)
