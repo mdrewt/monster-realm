@@ -584,14 +584,17 @@ fn focus_train_stat_at_cap_precedes_budget_exhausted() {
 }
 
 // Test 26 — red-team M9a finding #2
-/// Const-drift self-test: the cap used in focus_train's StatAtCap guard (EV_PER_STAT_CAP=252)
-/// must agree with EVs::new's per-stat cap (also 252). This test trains a stat from cur=251
-/// (one below the boundary) and verifies Ok is returned, then trains the same stat from the
-/// resulting cur=252 and verifies StatAtCap. If EV_PER_STAT_CAP in rules.rs drifted to 251,
-/// the first call would return StatAtCap prematurely; if it drifted to 253, the second call
-/// would return Ok and the expect() would panic when EVs::new rejects new_val=253.
-/// kills: an impl where the local EV_PER_STAT_CAP const in rules.rs differs from the real cap
-/// enforced by EVs::new in monster/types.rs.
+/// Single-SSOT cap self-test: `focus_train`'s StatAtCap boundary and `EVs::new`'s
+/// per-stat cap are now ONE shared constant imported from `monster::types`
+/// (ADR-0058 residual (b) resolved — no longer two separate consts that could
+/// drift). This test guards that the shared cap value (252) is consistently
+/// enforced at both sites: training from cur=251 must succeed (StatAtCap not yet
+/// hit), and training from the resulting cur=252 must return StatAtCap (boundary
+/// reached). A wrong shared-cap value (e.g. 251) would cause the first call to
+/// return StatAtCap prematurely; a wrong value (e.g. 253) would cause the second
+/// call to return Ok and then panic when EVs::new rejects new_val=253.
+/// kills: any impl where focus_train's cap boundary disagrees with EVs::new's
+/// per-stat cap — i.e. the single shared constant is used inconsistently.
 #[test]
 fn focus_train_cap_const_agrees_with_evs_constructor() {
     // Confirm the cap boundary: training from cur=251 (one below cap) must succeed.

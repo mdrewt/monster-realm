@@ -446,17 +446,20 @@ export function checkTrainOwnershipGuard(body) {
 }
 
 /**
- * Check T2 — Signature: the train reducer MUST NOT accept a client-supplied stat
- * or amount parameter. The canonical signature is:
+ * Check T2 — Signature (allowlist / exact-param check): the train reducer MUST
+ * have exactly the canonical parameter list and nothing more:
  *   train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32)
- * Any additional parameter naming a stat or amount is forbidden (ADR-0006 content SSOT:
- * the server reads train_stat/train_amount from the item_row content table, never from
- * the client call).
  *
- * Forbidden substrings in the compact signature (after ReducerContext):
- *   `:StatKind`, `amount:`, `stat:`, `stat_kind:`, `train_stat:`, `train_amount:`
+ * Strategy: extract the full signature text, locate the outer parameter region
+ * (from the first `(` to its matching `)` by paren-depth counting), compact
+ * whitespace, drop the `ctx:&ReducerContext` prefix up through the first `,`,
+ * then require the remainder to be EXACTLY `,monster_id:u64,food_item_id:u32`.
+ * Any extra parameter — regardless of its name or type — is rejected. This
+ * closes the denylist evasion gap (e.g. `ev_count: u16`, `delta: u16`, `qty:
+ * u16` would all pass a denylist but are caught here because they appear after
+ * `food_item_id:u32` in the compact tail).
  *
- * Uses only indexOf — NO new RegExp(...).
+ * Uses only indexOf and literal /regex/ — NO new RegExp(...).
  *
  * @param {string} src  Full comment-stripped source (for signature extraction).
  * @returns {string|null}
@@ -468,21 +471,48 @@ export function checkTrainSignature(src) {
     return null;
   }
 
-  const compactSig = sig.replace(/\s+/g, '');
-  // Drop up to and including `ReducerContext` so we do not flag ctx's own type.
-  const ctxEnd = compactSig.indexOf('ReducerContext');
-  const afterCtx = ctxEnd === -1 ? compactSig : compactSig.slice(ctxEnd + 'ReducerContext'.length);
+  // Extract the text between the outermost `(` and its matching `)` using
+  // paren-depth counting (indexOf only — no dynamic RegExp).
+  const openIdx = sig.indexOf('(');
+  if (openIdx === -1) {
+    return 'train: signature has no opening paren (parser error)';
+  }
+  let depth = 1;
+  let i = openIdx + 1;
+  while (i < sig.length && depth > 0) {
+    if (sig[i] === '(') depth++;
+    else if (sig[i] === ')') depth--;
+    i++;
+  }
+  const paramRegion = sig.slice(openIdx + 1, i - 1);
 
-  // Forbidden parameter shapes — the client must NEVER supply stat or amount.
-  const forbidden = [':StatKind', 'amount:', 'stat:', 'stat_kind:', 'train_stat:', 'train_amount:'];
-  for (const f of forbidden) {
-    if (afterCtx.indexOf(f) !== -1) {
-      return (
-        `train: signature contains forbidden client-supplied parameter '${f}' — ` +
-        'train_stat and train_amount must be read from item_row (content SSOT, ADR-0006), ' +
-        'never accepted as client arguments (a client choosing its own stat bypasses content)'
-      );
-    }
+  // Compact the parameter region.
+  const compact = paramRegion.replace(/\s+/g, '');
+
+  // Drop the leading ctx param: everything up to and including the first `,`
+  // that follows `ReducerContext`. If ReducerContext is absent we still fall
+  // through to the tail check (which will fail for a malformed sig).
+  const ctxEnd = compact.indexOf('ReducerContext');
+  let tail;
+  if (ctxEnd === -1) {
+    tail = compact;
+  } else {
+    // Advance past `ReducerContext` and any trailing chars until the first `,`.
+    const commaAfterCtx = compact.indexOf(',', ctxEnd);
+    tail = commaAfterCtx === -1 ? '' : compact.slice(commaAfterCtx);
+  }
+
+  // Allowlist: the ONLY acceptable tail is exactly `,monster_id:u64,food_item_id:u32`.
+  // Any extra param (extra comma + name:type) makes the tail longer than this.
+  const CANONICAL_TAIL = ',monster_id:u64,food_item_id:u32';
+  if (tail !== CANONICAL_TAIL) {
+    return (
+      'train: signature parameter list does not match the canonical ' +
+      '`train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32)` — ' +
+      `got compact tail '${tail}', expected '${CANONICAL_TAIL}'; ` +
+      'train_stat and train_amount must be read from item_row (content SSOT, ADR-0006), ' +
+      'never accepted as client arguments (a client choosing its own stat/amount bypasses content)'
+    );
   }
 
   return null;
@@ -698,6 +728,28 @@ const BAD_TRAIN_CLIENT_STAT_PARAM = `
           .ok_or_else(|| "monster not found".to_string())?;
       require_owner(ctx, "train", m.owner_identity)?;
       let result = evaluate_train(&base, &ivs, &evs, &nature, level, Some(stat), amount)?;
+      consume_one(ctx, ctx.sender, food_item_id)?;
+      ctx.db.monster().monster_id().update(m.clone());
+      ctx.db.monster_pub().monster_id().update(pub_from_monster(&m));
+      Ok(())
+  }
+`;
+
+/** BAD T2b: train signature has a non-denylist extra client param `ev_count: u16`.
+ * Passes the old denylist check but MUST be flagged by the allowlist check.
+ * The body passes ev_count to evaluate_train instead of item.train_amount,
+ * letting the client choose the EV grant — bypasses the content SSOT (ADR-0006). */
+const BAD_TRAIN_EXTRA_CLIENT_PARAM = `
+  pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32, ev_count: u16) -> Result<(), String> {
+      let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+          return Err("monster not found".to_string());
+      };
+      require_owner(ctx, "train", m.owner_identity)?;
+      let Some(item) = ctx.db.item_row().id().find(food_item_id) else {
+          return Err("item not found".to_string());
+      };
+      let result = evaluate_train(&base, &ivs, &evs, &nature, level,
+          item.train_stat, ev_count)?;
       consume_one(ctx, ctx.sender, food_item_id)?;
       ctx.db.monster().monster_id().update(m.clone());
       ctx.db.monster_pub().monster_id().update(pub_from_monster(&m));
@@ -1293,7 +1345,7 @@ export default async function () {
     }
   }
 
-  // --- Train Tooth T2: client-supplied stat param in signature must be flagged ---
+  // --- Train Tooth T2a: client-supplied stat param in signature must be flagged ---
   {
     const stripped = stripRustComments(BAD_TRAIN_CLIENT_STAT_PARAM);
     if (!checkTrainSignature(stripped)) {
@@ -1302,6 +1354,20 @@ export default async function () {
         pass: false,
         detail:
           'TEETH: BAD_TRAIN_CLIENT_STAT_PARAM fixture (stat: StatKind, amount: u16 params) was NOT flagged by checkTrainSignature',
+      };
+    }
+  }
+
+  // --- Train Tooth T2b: extra client param not in denylist must be flagged ---
+  // (ev_count: u16 would evade the old denylist; the allowlist catches it)
+  {
+    const stripped = stripRustComments(BAD_TRAIN_EXTRA_CLIENT_PARAM);
+    if (!checkTrainSignature(stripped)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_TRAIN_EXTRA_CLIENT_PARAM fixture (ev_count: u16 extra param — not in old denylist) was NOT flagged by checkTrainSignature; allowlist check must reject any param beyond monster_id+food_item_id',
       };
     }
   }
