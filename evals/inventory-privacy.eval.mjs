@@ -138,26 +138,32 @@ export function parseTableFields(src, table) {
 }
 
 // ---------------------------------------------------------------------------
-// docCommentBefore — extract the contiguous block of `///` doc-comment lines
-// immediately preceding a given character index in raw Rust source.
+// docCommentBefore — extract the Rust item-doc block immediately preceding a
+// given character index in raw source.  Handles both `///` line-doc runs and
+// `/* ... */` / `/** ... */` block-doc spans.
+//
+// `//!` (inner-doc) is deliberately excluded: it is a module/crate-inner-doc
+// form (it documents the *enclosing* item, not the *following* one), so it
+// would never be the table's own doc comment and including it would cause
+// false-positives on module-level notes.
 // ---------------------------------------------------------------------------
 
-/**
- * Return the contiguous block of leading Rust doc-comment lines (`///`)
- * immediately preceding `markerIndex` in `rawSrc`.
- *
- * Algorithm: take `rawSrc.slice(0, markerIndex)`, split on `\n`, walk from
- * the LAST line backwards collecting lines whose `.trimStart()` starts with
- * `'///'`; stop at the first line that does not.  Returns them joined by `\n`
- * (empty string if none).
- *
- * @param {string} rawSrc   Raw (un-stripped) Rust source text.
- * @param {number} markerIndex  Character offset of the marker in rawSrc.
- * @returns {string}
- */
+// docCommentBefore(rawSrc, markerIndex) -> string
+// Returns the Rust item-doc text immediately preceding markerIndex in rawSrc.
+// Phase 1: collect contiguous "///" line-doc lines walking backwards from the
+//   line before the marker (trailing blank lines are popped first so the walk
+//   reaches the doc block rather than stopping at the sentinel empty string
+//   that split produces after the final newline).
+// Phase 2: if Phase 1 found nothing and the last non-blank line ends with "*/",
+//   find the matching "/*" opener via lastIndexOf and return the whole span.
+//   This covers block-doc ("/* ... */", "/** ... */") placed directly before
+//   the table attribute.
+// Returns "" if no doc comment is found.
+// Uses only indexOf/lastIndexOf/trim/slice — NO new RegExp.
 export function docCommentBefore(rawSrc, markerIndex) {
   const before = rawSrc.slice(0, markerIndex);
   const lines = before.split('\n');
+
   // rawSrc.slice(0, markerIndex) ends at the newline immediately before the
   // marker, so split('\n') yields a trailing '' as its last element.  Any blank
   // lines between the doc block and the table attribute (including that sentinel
@@ -166,6 +172,8 @@ export function docCommentBefore(rawSrc, markerIndex) {
   while (lines.length > 0 && lines[lines.length - 1].trim() === '') {
     lines.pop();
   }
+
+  // Phase 1: collect contiguous `///` line-doc lines walking backwards.
   const collected = [];
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
@@ -175,7 +183,30 @@ export function docCommentBefore(rawSrc, markerIndex) {
       break;
     }
   }
-  return collected.join('\n');
+  if (collected.length > 0) {
+    return collected.join('\n');
+  }
+
+  // Phase 2: block-doc fallback — if the last non-blank line ends with `*/`,
+  // scan back in `before` (char by char) to find the matching `/*` opener and
+  // return the whole span.  This captures `/* ... */` and `/** ... */` block
+  // docs placed directly before the table attribute.
+  if (lines.length > 0) {
+    const lastLine = lines[lines.length - 1];
+    if (lastLine.trimEnd().indexOf('*/') === lastLine.trimEnd().length - 2) {
+      // Find the `*/` close in `before`.
+      const closeIdx = before.lastIndexOf('*/');
+      if (closeIdx !== -1) {
+        // Walk backwards from closeIdx to find the matching `/*`.
+        const openIdx = before.lastIndexOf('/*', closeIdx);
+        if (openIdx !== -1) {
+          return before.slice(openIdx, closeIdx + 2);
+        }
+      }
+    }
+  }
+
+  return '';
 }
 
 // ---------------------------------------------------------------------------
@@ -282,11 +313,34 @@ export function checkInventoryDocPosture(rawSrc) {
   const doc = docCommentBefore(rawSrc, idx).toLowerCase();
   if (doc.length === 0) return null; // no doc comment to scan
 
+  // Residual note: this is a doc-lint over natural language — it catches the
+  // realized lie ("RLS by `owner_identity`" in lib.rs) plus common assertion
+  // phrasings a contributor might write when trying to say "owner-scoped RLS".
+  // It is NOT an exhaustive NL claim-detector; the reviewer remains the
+  // backstop for novel phrasings not listed here.
   const FORBIDDEN_PHRASES = [
+    // Original four — the realized lie and close variants.
     'rls by owner_identity',
     'rls by `owner_identity`',
     'owner-only rls',
     'owner_identity rls',
+    // Extended coverage — semantically-equivalent assertion phrasings that
+    // bypass the original four but still claim owner-scoped transport RLS.
+    'rls by owner',
+    'rls keyed by owner',
+    'rls keyed to owner',
+    'rls scoped to owner',
+    'rls filter on owner',
+    'owner-scoped rls',
+    'row-level security on owner',
+    'row-level security by owner',
+    'row-level security for owner',
+    'row-level security keyed',
+    'sees only their own',
+    'sees only its own',
+    'see only their own',
+    'see only its own',
+    'owner-only visibility',
   ];
 
   for (const phrase of FORBIDDEN_PHRASES) {
@@ -313,7 +367,8 @@ export function checkInventoryDocPosture(rawSrc) {
 // ---------------------------------------------------------------------------
 
 export default async function () {
-  const name = 'inventory-privacy (inventory table exists, no gene/seed fields, minimum schema)';
+  const name =
+    'inventory-privacy (inventory table exists, no gene/seed fields, minimum schema, correct privacy-posture doc)';
 
   // =========================================================================
   // PROOFS-OF-TEETH — every tooth must bite before we scan real source.
@@ -499,6 +554,66 @@ export default async function () {
     }
   }
 
+  // TOOTH 10 (paraphrase bites): semantically-equivalent false claims MUST be
+  // flagged. Each fixture uses one paraphrase that bypassed the original 4
+  // phrases. Kills an impl whose FORBIDDEN_PHRASES list is too narrow.
+  {
+    const paraphrases = [
+      // "row-level security on owner_identity" variant
+      '/// Player item inventory. Row-level security on owner_identity enforced.\n' +
+        '#[spacetimedb::table(name = inventory, public)]\n' +
+        'struct Inventory { inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }',
+      // "RLS keyed by owner" variant
+      '/// Inventory table — RLS keyed by owner so each client sees only its rows.\n' +
+        '#[spacetimedb::table(name = inventory, public)]\n' +
+        'struct Inventory { inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }',
+      // "owner sees only their own items" variant (sees only their own)
+      '/// PUBLIC table. Each owner sees only their own items via RLS.\n' +
+        '#[spacetimedb::table(name = inventory, public)]\n' +
+        'struct Inventory { inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }',
+      // "owner-only visibility" variant
+      '/// Inventory row. Owner-only visibility guaranteed by transport filter.\n' +
+        '#[spacetimedb::table(name = inventory, public)]\n' +
+        'struct Inventory { inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }',
+    ];
+    for (const fixture of paraphrases) {
+      const err = checkInventoryDocPosture(fixture);
+      if (!err) {
+        // Extract the first doc line for the detail message.
+        const firstLine = fixture.slice(0, fixture.indexOf('\n'));
+        return {
+          name,
+          pass: false,
+          detail:
+            'TEETH: paraphrase fixture was NOT flagged by checkInventoryDocPosture — ' +
+            'FORBIDDEN_PHRASES list is too narrow. Bypassing fixture: ' +
+            firstLine,
+        };
+      }
+    }
+  }
+
+  // TOOTH 11 (block-comment bite): a "/* ... */" block-doc claiming RLS
+  // immediately before the inventory attribute MUST be flagged.
+  // Kills an impl whose docCommentBefore only collects "///" lines.
+  {
+    const blockSrc =
+      '/** RLS by `owner_identity` — each client sees only its own inventory rows. */\n' +
+      '#[spacetimedb::table(name = inventory, public)]\n' +
+      'struct Inventory { inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }';
+    const err = checkInventoryDocPosture(blockSrc);
+    if (!err) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: block-comment "/** RLS by `owner_identity` ... */" immediately before ' +
+          'inventory table attr was NOT flagged — docCommentBefore must also capture ' +
+          'block-doc spans, not only "///" line-doc runs',
+      };
+    }
+  }
+
   // =========================================================================
   // REAL CHECKS — scan the actual server-module source files.
   // =========================================================================
@@ -563,6 +678,6 @@ export default async function () {
   return {
     name,
     pass: true,
-    detail: `${rsSources.length} source file(s) scanned, inventory table found with clean schema (no iv_/nature/seed/individuality fields, >= 3 columns) and correct privacy posture doc — all 9 teeth verified`,
+    detail: `${rsSources.length} source file(s) scanned, inventory table found with clean schema (no iv_/nature/seed/individuality fields, >= 3 columns) and correct privacy posture doc — all 11 teeth verified`,
   };
 }
