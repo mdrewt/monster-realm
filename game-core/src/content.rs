@@ -784,4 +784,710 @@ mod tests {
             "validate_content must reject a parsed skill with accuracy=0; parse succeeded but validation must be the boundary"
         );
     }
+
+    // =======================================================================
+    // === M8.9e: content-directory glob loading ===
+    //
+    // These tests encode the EARS acceptance criteria for the fan-out migration:
+    //   - Five registries move from monolithic <reg>.ron to <reg>/*.ron dirs
+    //   - A new build.rs embeds every *.ron in sorted filename order
+    //   - parse_*_parts fns concatenate parsed Vec<T> from each part in slice order
+    //   - load_* delegates to parse_*_parts over the matching *_RON_PARTS static
+    //   - Adding a content file requires NO content.rs edit (fan-out property)
+    //
+    // All tests reference the NOT-YET-EXISTING interface so the suite compiles RED:
+    //   parse_*_parts(&[(&str, &str)]) -> Result<Vec<T>, String>
+    //   *_RON_PARTS: &[(&str, &str)]  (build-generated, sorted filenames)
+    // =======================================================================
+
+    // -----------------------------------------------------------------------
+    // Golden snapshots: frozen inline copies of each pre-migration monolithic
+    // file, captured verbatim before the directory split.
+    //
+    // NOT using include_str! because the implementer DELETES the monolithic
+    // files (content/species.ron → content/species/000-core.ron, etc.), which
+    // would cause include_str! to fail to compile post-migration.
+    //
+    // NOT repointed at the new 000-core.ron because that would be tautological:
+    // the merged loader loads that same file, so a migration that silently
+    // dropped a row would pass (both sides reflect the drop). The frozen inline
+    // literal is an immutable pre-migration record that genuinely bites.
+    //
+    // Parity tests compare PARSED rows (PartialEq), so whitespace and comments
+    // in these snapshots are irrelevant — verbatim copy just guarantees the
+    // data fields are identical.
+    // -----------------------------------------------------------------------
+
+    /// Pre-migration species.ron — frozen inline snapshot (3 species, ids 1–3).
+    /// Kills: a migration that drops, reorders, or alters any of the 3 rows.
+    const SPECIES_GOLDEN: &str = r#"// Species registry — DATA, not code (ADR-0006). Stable `id`s are APPEND-ONLY.
+[
+    (
+        id: 1,
+        name: "Flameling",
+        base_stats: (hp: 45, attack: 49, defense: 49, speed: 65, sp_attack: 65, sp_defense: 45),
+        affinity: Fire,
+        learnable_skill_ids: [1, 2],
+    ),
+    (
+        id: 2,
+        name: "Tidalin",
+        base_stats: (hp: 44, attack: 48, defense: 65, speed: 43, sp_attack: 64, sp_defense: 64),
+        affinity: Water,
+        learnable_skill_ids: [3, 4],
+    ),
+    (
+        id: 3,
+        name: "Sproutlet",
+        base_stats: (hp: 45, attack: 49, defense: 49, speed: 45, sp_attack: 65, sp_defense: 65),
+        affinity: Plant,
+        learnable_skill_ids: [5, 6],
+    ),
+]
+"#;
+
+    /// Pre-migration skills.ron — frozen inline snapshot (6 skills, ids 1–6).
+    /// Kills: a migration that drops, reorders, or alters any of the 6 rows.
+    const SKILLS_GOLDEN: &str = r#"// Skill registry — DATA, not code (ADR-0006). Stable `id`s are APPEND-ONLY.
+[
+    (id: 1, name: "Ember",       affinity: Fire,    power: 40, accuracy: 100, pp: 25),
+    (id: 2, name: "Fire Fang",   affinity: Fire,    power: 65, accuracy: 95,  pp: 15),
+    (id: 3, name: "Water Gun",   affinity: Water,   power: 40, accuracy: 100, pp: 25),
+    (id: 4, name: "Aqua Jet",    affinity: Water,   power: 40, accuracy: 100, pp: 20),
+    (id: 5, name: "Vine Whip",   affinity: Plant,   power: 45, accuracy: 100, pp: 25),
+    (id: 6, name: "Razor Leaf",  affinity: Plant,   power: 55, accuracy: 95,  pp: 25),
+]
+"#;
+
+    /// Pre-migration zones.ron — frozen inline snapshot (2 zones, ids 0–1).
+    /// Kills: a migration that drops, reorders, or alters any of the 2 rows.
+    const ZONES_GOLDEN: &str = r#"// Zone registry — DATA, not code (ADR-0006). Adding a zone is a content edit +
+// a validation test, never a rule change. Stable `id`s are APPEND-ONLY: never
+// reuse or renumber an existing id (the append-only-ids eval enforces it).
+[
+    (id: 0, name: "Verdant Hollow", width: 32, height: 24),
+    (id: 1, name: "Tideglass Cove", width: 40, height: 28),
+]
+"#;
+
+    /// Pre-migration items.ron — frozen inline snapshot (1 item, id 1).
+    /// Kills: a migration that drops, reorders, or alters the row.
+    const ITEMS_GOLDEN: &str = r#"// Item registry — DATA, not code (ADR-0006). Stable `id`s are APPEND-ONLY.
+[
+    (
+        id: 1,
+        name: "Lure Berry",
+        description: "Sweet bait that calms a wild monster, easing recruitment.",
+        recruit_bonus: 150,
+    ),
+]
+"#;
+
+    /// Pre-migration encounters.ron — frozen inline snapshot (1 table, zone_id 0).
+    /// Kills: a migration that drops, reorders, or alters the table or its entries.
+    const ENCOUNTERS_GOLDEN: &str = r#"// Encounter registry — DATA, not code (ADR-0006). Per-zone weighted spawn tables.
+[
+    (
+        zone_id: 0,
+        encounter_rate: 200,
+        entries: [
+            (species_id: 1, weight: 10, min_level: 3, max_level: 7),
+            (species_id: 2, weight: 7, min_level: 3, max_level: 7),
+            (species_id: 3, weight: 5, min_level: 4, max_level: 8),
+        ],
+    ),
+]
+"#;
+
+    // -----------------------------------------------------------------------
+    // Criterion 1 — Merge order (fan-out / file-order property)
+    //
+    // Two synthetic parts are passed in slice order; the merge concatenates
+    // their parsed rows in that exact order, WITHOUT re-sorting rows.
+    // Kills: an impl that re-sorts merged rows, that ignores file ordering, or
+    // that only returns rows from one part.
+    // -----------------------------------------------------------------------
+
+    /// M8.9e-1a: parse_species_parts preserves file order — rows from the
+    /// lexicographically-first filename come first, then the second file's rows,
+    /// all in original declaration order within each file.
+    ///
+    /// Kills: an impl that reverses part order, sorts merged rows by id, or
+    /// otherwise violates the "merge preserves given slice order" contract.
+    #[test]
+    fn m8_9e_species_parts_merge_order() {
+        let part_a = r#"[
+    (
+        id: 10,
+        name: "TestAlpha",
+        base_stats: (hp: 45, attack: 49, defense: 49, speed: 65, sp_attack: 65, sp_defense: 45),
+        affinity: Fire,
+        learnable_skill_ids: [],
+    ),
+]"#;
+        let part_b = r#"[
+    (
+        id: 20,
+        name: "TestBeta",
+        base_stats: (hp: 44, attack: 48, defense: 65, speed: 43, sp_attack: 64, sp_defense: 64),
+        affinity: Water,
+        learnable_skill_ids: [],
+    ),
+]"#;
+
+        let merged = parse_species_parts(&[("000-a.ron", part_a), ("001-b.ron", part_b)])
+            .expect("two valid species parts must merge without error");
+
+        let expected_a = parse_species(part_a).expect("part_a must parse");
+        let expected_b = parse_species(part_b).expect("part_b must parse");
+        let expected: Vec<Species> = expected_a.into_iter().chain(expected_b).collect();
+
+        assert_eq!(
+            merged, expected,
+            "M8.9e: merged species must equal part_a rows followed by part_b rows in order"
+        );
+
+        // Part-order proof: if we reverse the slice, id=20 must come first.
+        // This kills an impl that sorts rows by id or ignores slice order.
+        let reversed = parse_species_parts(&[("001-b.ron", part_b), ("000-a.ron", part_a)])
+            .expect("reversed parts must also merge");
+        assert_eq!(
+            reversed[0].id, 20,
+            "M8.9e TEETH: reversed slice must put id=20 first — merge must respect given slice order"
+        );
+        assert_eq!(
+            reversed[1].id, 10,
+            "M8.9e TEETH: reversed slice must put id=10 second"
+        );
+    }
+
+    /// M8.9e-1b: parse_skills_parts preserves file order — same contract as
+    /// species, applied to SkillDef rows.
+    ///
+    /// Kills: an impl that special-cases species but skips order enforcement for
+    /// other registries.
+    #[test]
+    fn m8_9e_skills_parts_merge_order() {
+        let part_a = r#"[
+    (id: 100, name: "TestSkillA", affinity: Fire,  power: 40, accuracy: 100, pp: 25),
+]"#;
+        let part_b = r#"[
+    (id: 200, name: "TestSkillB", affinity: Water, power: 40, accuracy: 100, pp: 25),
+]"#;
+
+        let merged = parse_skills_parts(&[("000-a.ron", part_a), ("001-b.ron", part_b)])
+            .expect("two valid skill parts must merge without error");
+
+        let expected_a = parse_skills(part_a).expect("part_a parses");
+        let expected_b = parse_skills(part_b).expect("part_b parses");
+        let expected: Vec<SkillDef> = expected_a.into_iter().chain(expected_b).collect();
+
+        assert_eq!(
+            merged, expected,
+            "M8.9e: merged skills must equal part_a rows then part_b rows"
+        );
+
+        // Reversed-slice check: kills any impl that sorts or ignores slice order.
+        let reversed = parse_skills_parts(&[("001-b.ron", part_b), ("000-a.ron", part_a)])
+            .expect("reversed parts must also merge");
+        assert_eq!(
+            reversed[0].id, 200,
+            "M8.9e TEETH: reversed skill slice must put id=200 first"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Criterion 2 — Migration parity (content-parity gate)
+    //
+    // After the directory split, load_*() must return row-identical content to
+    // what parse_* returned against the monolithic files. We assert the merged
+    // result is a PREFIX equal to the golden parse, making the test durable
+    // across future content appends but fatal for reordering or dropping rows.
+    //
+    // Kills: an impl that drops rows, reorders them, or parses the wrong file.
+    // -----------------------------------------------------------------------
+
+    /// M8.9e-2a: load_species() after migration returns the same rows as
+    /// parse_species(SPECIES_GOLDEN) as a prefix.
+    ///
+    /// Kills: an impl that drops species, reverses them, or loads from a
+    /// different file entirely.
+    #[test]
+    fn m8_9e_species_migration_parity() {
+        let merged = load_species().expect("load_species must succeed after migration");
+        let golden = parse_species(SPECIES_GOLDEN).expect("golden species must parse");
+        assert!(
+            merged.len() >= golden.len(),
+            "M8.9e: merged species ({}) must have at least as many rows as golden ({})",
+            merged.len(),
+            golden.len()
+        );
+        assert_eq!(
+            &merged[..golden.len()],
+            &golden[..],
+            "M8.9e TEETH: first {} species rows must be row-identical to pre-migration content",
+            golden.len()
+        );
+    }
+
+    /// M8.9e-2b: load_skills() after migration returns the same rows as
+    /// parse_skills(SKILLS_GOLDEN) as a prefix.
+    ///
+    /// Kills: an impl that drops skills or reorders them.
+    #[test]
+    fn m8_9e_skills_migration_parity() {
+        let merged = load_skills().expect("load_skills must succeed after migration");
+        let golden = parse_skills(SKILLS_GOLDEN).expect("golden skills must parse");
+        assert!(
+            merged.len() >= golden.len(),
+            "M8.9e: merged skills ({}) must have at least as many rows as golden ({})",
+            merged.len(),
+            golden.len()
+        );
+        assert_eq!(
+            &merged[..golden.len()],
+            &golden[..],
+            "M8.9e TEETH: first {} skill rows must be row-identical to pre-migration content",
+            golden.len()
+        );
+    }
+
+    /// M8.9e-2c: load_zones() after migration returns the same rows as
+    /// parse_zones(ZONES_GOLDEN) as a prefix.
+    ///
+    /// Kills: an impl that drops zones or reorders them.
+    #[test]
+    fn m8_9e_zones_migration_parity() {
+        let merged = load_zones().expect("load_zones must succeed after migration");
+        let golden = parse_zones(ZONES_GOLDEN).expect("golden zones must parse");
+        assert!(
+            merged.len() >= golden.len(),
+            "M8.9e: merged zones ({}) must have at least as many rows as golden ({})",
+            merged.len(),
+            golden.len()
+        );
+        assert_eq!(
+            &merged[..golden.len()],
+            &golden[..],
+            "M8.9e TEETH: first {} zone rows must be row-identical to pre-migration content",
+            golden.len()
+        );
+    }
+
+    /// M8.9e-2d: load_items() after migration returns the same rows as
+    /// parse_items(ITEMS_GOLDEN) as a prefix.
+    ///
+    /// Kills: an impl that drops items or reorders them.
+    #[test]
+    fn m8_9e_items_migration_parity() {
+        let merged = load_items().expect("load_items must succeed after migration");
+        let golden = parse_items(ITEMS_GOLDEN).expect("golden items must parse");
+        assert!(
+            merged.len() >= golden.len(),
+            "M8.9e: merged items ({}) must have at least as many rows as golden ({})",
+            merged.len(),
+            golden.len()
+        );
+        assert_eq!(
+            &merged[..golden.len()],
+            &golden[..],
+            "M8.9e TEETH: first {} item rows must be row-identical to pre-migration content",
+            golden.len()
+        );
+    }
+
+    /// M8.9e-2e: load_encounters() after migration returns the same rows as
+    /// parse_encounters(ENCOUNTERS_GOLDEN) as a prefix.
+    ///
+    /// Kills: an impl that drops encounter tables or reorders them.
+    #[test]
+    fn m8_9e_encounters_migration_parity() {
+        let merged = load_encounters().expect("load_encounters must succeed after migration");
+        let golden = parse_encounters(ENCOUNTERS_GOLDEN).expect("golden encounters must parse");
+        assert!(
+            merged.len() >= golden.len(),
+            "M8.9e: merged encounters ({}) must have at least as many rows as golden ({})",
+            merged.len(),
+            golden.len()
+        );
+        assert_eq!(
+            &merged[..golden.len()],
+            &golden[..],
+            "M8.9e TEETH: first {} encounter tables must be row-identical to pre-migration content",
+            golden.len()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Criterion 3 — Malformed file ⇒ loud Err naming the file
+    //
+    // parse_*_parts must NEVER silently skip an unparseable part. It must
+    // return Err, and the error string must include the offending filename.
+    // Kills: an impl that ignores parse errors, uses `?` without filename
+    // context, or wraps errors in a message that drops the filename.
+    // -----------------------------------------------------------------------
+
+    /// M8.9e-3a: parse_species_parts with a malformed second file must return
+    /// Err whose message contains the offending filename "999-malformed.ron".
+    ///
+    /// Kills: an impl that silently skips the bad file, or that returns an
+    /// error without identifying which file caused it.
+    #[test]
+    fn m8_9e_species_parts_malformed_names_file() {
+        let valid_part = r#"[
+    (
+        id: 1,
+        name: "Flameling",
+        base_stats: (hp: 45, attack: 49, defense: 49, speed: 65, sp_attack: 65, sp_defense: 45),
+        affinity: Fire,
+        learnable_skill_ids: [1, 2],
+    ),
+]"#;
+        let bad_part = "this is not ( valid ron {{{";
+
+        let result = parse_species_parts(&[
+            ("000-core.ron", valid_part),
+            ("999-malformed.ron", bad_part),
+        ]);
+
+        assert!(
+            result.is_err(),
+            "M8.9e: a malformed species part must produce Err, not Ok"
+        );
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("999-malformed.ron"),
+            "M8.9e TEETH: error message must name the offending file '999-malformed.ron', got: {err_msg:?}"
+        );
+    }
+
+    /// M8.9e-3b: parse_species_parts with ONLY valid files returns Ok.
+    /// Symmetric proof that the error path only fires on actual bad input.
+    ///
+    /// Kills: an over-eager impl that always returns Err regardless of input.
+    #[test]
+    fn m8_9e_species_parts_all_valid_returns_ok() {
+        let part_a = r#"[
+    (
+        id: 1,
+        name: "Flameling",
+        base_stats: (hp: 45, attack: 49, defense: 49, speed: 65, sp_attack: 65, sp_defense: 45),
+        affinity: Fire,
+        learnable_skill_ids: [],
+    ),
+]"#;
+        let part_b = r#"[
+    (
+        id: 2,
+        name: "Tidalin",
+        base_stats: (hp: 44, attack: 48, defense: 65, speed: 43, sp_attack: 64, sp_defense: 64),
+        affinity: Water,
+        learnable_skill_ids: [],
+    ),
+]"#;
+        let result = parse_species_parts(&[("000-a.ron", part_a), ("001-b.ron", part_b)]);
+        assert!(
+            result.is_ok(),
+            "M8.9e: two valid species parts must produce Ok, got: {:?}",
+            result.err()
+        );
+    }
+
+    /// M8.9e-3c: parse_species_parts with a malformed FIRST file still names it.
+    /// Guards against an impl that only checks the last file, or only propagates
+    /// errors for files after index 0.
+    ///
+    /// Kills: an impl that skips error-propagation for the first part.
+    #[test]
+    fn m8_9e_species_parts_malformed_first_file_named() {
+        let bad_first = "not ron at all <<<";
+        let valid_second = r#"[
+    (
+        id: 99,
+        name: "Valid",
+        base_stats: (hp: 50, attack: 50, defense: 50, speed: 50, sp_attack: 50, sp_defense: 50),
+        affinity: Plant,
+        learnable_skill_ids: [],
+    ),
+]"#;
+        let result = parse_species_parts(&[
+            ("000-broken.ron", bad_first),
+            ("001-fine.ron", valid_second),
+        ]);
+        assert!(
+            result.is_err(),
+            "M8.9e: a malformed first species part must produce Err"
+        );
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("000-broken.ron"),
+            "M8.9e TEETH: error must name the first offending file '000-broken.ron', got: {err_msg:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Criterion 4 — Determinism of the embed (sorted-order statics)
+    //
+    // Each *_RON_PARTS static must be non-empty and have filenames in
+    // non-decreasing sorted order. This guards build.rs from emitting an
+    // unsorted or non-deterministic embed.
+    //
+    // Kills: a build.rs that uses readdir without sorting, or that emits
+    // filenames in OS-dependent traversal order.
+    // -----------------------------------------------------------------------
+
+    /// M8.9e-4a: SPECIES_RON_PARTS is non-empty and filenames are sorted.
+    ///
+    /// Kills: a build.rs that emits species parts in OS-dependent traversal
+    /// order (e.g. readdir on Linux is not guaranteed to be sorted).
+    #[test]
+    fn m8_9e_species_parts_static_sorted() {
+        assert!(
+            !SPECIES_RON_PARTS.is_empty(),
+            "M8.9e: SPECIES_RON_PARTS must be non-empty after migration"
+        );
+        let names: Vec<&str> = SPECIES_RON_PARTS.iter().map(|(n, _)| *n).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(
+            names, sorted,
+            "M8.9e TEETH: SPECIES_RON_PARTS filenames must be in sorted order, got: {names:?}"
+        );
+    }
+
+    /// M8.9e-4b: SKILLS_RON_PARTS is non-empty and filenames are sorted.
+    #[test]
+    fn m8_9e_skills_parts_static_sorted() {
+        assert!(
+            !SKILLS_RON_PARTS.is_empty(),
+            "M8.9e: SKILLS_RON_PARTS must be non-empty after migration"
+        );
+        let names: Vec<&str> = SKILLS_RON_PARTS.iter().map(|(n, _)| *n).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(
+            names, sorted,
+            "M8.9e TEETH: SKILLS_RON_PARTS filenames must be in sorted order, got: {names:?}"
+        );
+    }
+
+    /// M8.9e-4c: ZONES_RON_PARTS is non-empty and filenames are sorted.
+    #[test]
+    fn m8_9e_zones_parts_static_sorted() {
+        assert!(
+            !ZONES_RON_PARTS.is_empty(),
+            "M8.9e: ZONES_RON_PARTS must be non-empty after migration"
+        );
+        let names: Vec<&str> = ZONES_RON_PARTS.iter().map(|(n, _)| *n).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(
+            names, sorted,
+            "M8.9e TEETH: ZONES_RON_PARTS filenames must be in sorted order"
+        );
+    }
+
+    /// M8.9e-4d: ITEMS_RON_PARTS is non-empty and filenames are sorted.
+    #[test]
+    fn m8_9e_items_parts_static_sorted() {
+        assert!(
+            !ITEMS_RON_PARTS.is_empty(),
+            "M8.9e: ITEMS_RON_PARTS must be non-empty after migration"
+        );
+        let names: Vec<&str> = ITEMS_RON_PARTS.iter().map(|(n, _)| *n).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(
+            names, sorted,
+            "M8.9e TEETH: ITEMS_RON_PARTS filenames must be in sorted order"
+        );
+    }
+
+    /// M8.9e-4e: ENCOUNTERS_RON_PARTS is non-empty and filenames are sorted.
+    #[test]
+    fn m8_9e_encounters_parts_static_sorted() {
+        assert!(
+            !ENCOUNTERS_RON_PARTS.is_empty(),
+            "M8.9e: ENCOUNTERS_RON_PARTS must be non-empty after migration"
+        );
+        let names: Vec<&str> = ENCOUNTERS_RON_PARTS.iter().map(|(n, _)| *n).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(
+            names, sorted,
+            "M8.9e TEETH: ENCOUNTERS_RON_PARTS filenames must be in sorted order"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Criterion 5 — End-to-end validation after migration
+    //
+    // The merged registries must pass validate_content and validate_encounters.
+    // Note: validate_content_passes_for_embedded (test #59 above) already covers
+    // validate_content on the embedded data. After the migration, load_* delegates
+    // to parse_*_parts so that test implicitly covers criterion 5 for species/
+    // skills/items. We add explicit post-migration tests here with clear M8.9e
+    // labelling so the criterion is traceable, and we add validate_encounters
+    // which has no equivalent in the pre-existing suite at this level.
+    // -----------------------------------------------------------------------
+
+    /// M8.9e-5a: merged species+skills+items+type_chart pass validate_content.
+    /// After the directory migration, load_* must still produce content that
+    /// is internally consistent (unique ids, valid stats, no dangling refs).
+    ///
+    /// Kills: a migration that introduces duplicate ids or drops skill refs.
+    /// (Complements #59 validate_content_passes_for_embedded; labeled separately
+    /// for M8.9e traceability.)
+    #[test]
+    fn m8_9e_merged_content_validates() {
+        let species = load_species().expect("M8.9e: load_species must succeed");
+        let skills = load_skills().expect("M8.9e: load_skills must succeed");
+        let chart = load_type_chart().expect("M8.9e: load_type_chart must succeed");
+        let items = load_items().expect("M8.9e: load_items must succeed");
+        validate_content(&species, &skills, &chart, &items)
+            .expect("M8.9e: merged content must pass validate_content");
+    }
+
+    /// M8.9e-5b: merged encounters+species+zones pass validate_encounters.
+    /// After the directory migration, encounter tables must still reference
+    /// valid zones and species from the merged registries.
+    ///
+    /// Kills: a migration that reorders zone/species ids breaking cross-registry
+    /// references. (embedded_encounters_parse_and_validate above covers the
+    /// pre-migration baseline; this test ensures it holds POST-migration too.)
+    #[test]
+    fn m8_9e_merged_encounters_validate() {
+        let encounters = load_encounters().expect("M8.9e: load_encounters must succeed");
+        let species = load_species().expect("M8.9e: load_species must succeed");
+        let zones = load_zones().expect("M8.9e: load_zones must succeed");
+        validate_encounters(&encounters, &species, &zones)
+            .expect("M8.9e: merged encounters must pass validate_encounters");
+    }
+
+    // -----------------------------------------------------------------------
+    // Additional parse_*_parts coverage for zones, items, encounters
+    // (ensures the interface is complete, not just species+skills).
+    // -----------------------------------------------------------------------
+
+    /// M8.9e-extra-a: parse_zones_parts merges two zone parts in order.
+    ///
+    /// Kills: an impl that only implements parse_species_parts /
+    /// parse_skills_parts but omits zones, items, or encounters.
+    #[test]
+    fn m8_9e_zones_parts_merge_order() {
+        let part_a = r#"[(id: 90, name: "ZoneA", width: 10, height: 10)]"#;
+        let part_b = r#"[(id: 91, name: "ZoneB", width: 20, height: 20)]"#;
+
+        let merged = parse_zones_parts(&[("000-a.ron", part_a), ("001-b.ron", part_b)])
+            .expect("two valid zone parts must merge without error");
+
+        assert_eq!(merged.len(), 2, "M8.9e: two zone parts must produce 2 rows");
+        assert_eq!(
+            merged[0].id, 90,
+            "M8.9e: first row must come from first part"
+        );
+        assert_eq!(
+            merged[1].id, 91,
+            "M8.9e: second row must come from second part"
+        );
+    }
+
+    /// M8.9e-extra-b: parse_items_parts merges two item parts in order.
+    ///
+    /// Kills: an impl that omits parse_items_parts.
+    #[test]
+    fn m8_9e_items_parts_merge_order() {
+        let part_a = r#"[(id: 50, name: "ItemA", description: "desc a", recruit_bonus: 0)]"#;
+        let part_b = r#"[(id: 51, name: "ItemB", description: "desc b", recruit_bonus: 100)]"#;
+
+        let merged = parse_items_parts(&[("000-a.ron", part_a), ("001-b.ron", part_b)])
+            .expect("two valid item parts must merge without error");
+
+        assert_eq!(merged.len(), 2, "M8.9e: two item parts must produce 2 rows");
+        assert_eq!(
+            merged[0].id, 50,
+            "M8.9e: first item must come from first part"
+        );
+        assert_eq!(
+            merged[1].id, 51,
+            "M8.9e: second item must come from second part"
+        );
+    }
+
+    /// M8.9e-extra-c: parse_encounters_parts merges two encounter parts in order.
+    ///
+    /// Kills: an impl that omits parse_encounters_parts.
+    #[test]
+    fn m8_9e_encounters_parts_merge_order() {
+        let part_a = r#"[
+    (
+        zone_id: 90,
+        encounter_rate: 100,
+        entries: [
+            (species_id: 1, weight: 10, min_level: 3, max_level: 7),
+        ],
+    ),
+]"#;
+        let part_b = r#"[
+    (
+        zone_id: 91,
+        encounter_rate: 200,
+        entries: [
+            (species_id: 2, weight: 5, min_level: 5, max_level: 10),
+        ],
+    ),
+]"#;
+
+        let merged = parse_encounters_parts(&[("000-a.ron", part_a), ("001-b.ron", part_b)])
+            .expect("two valid encounter parts must merge without error");
+
+        assert_eq!(
+            merged.len(),
+            2,
+            "M8.9e: two encounter parts must produce 2 tables"
+        );
+        assert_eq!(
+            merged[0].zone_id, 90,
+            "M8.9e: first encounter table must come from first part"
+        );
+        assert_eq!(
+            merged[1].zone_id, 91,
+            "M8.9e: second encounter table must come from second part"
+        );
+    }
+
+    /// M8.9e-extra-d: parse_zones_parts with a malformed part names the file.
+    ///
+    /// Kills: an impl that provides error propagation for species/skills but
+    /// silently swallows parse errors from zones/items/encounters parts.
+    #[test]
+    fn m8_9e_zones_parts_malformed_names_file() {
+        let bad = "not valid ron <<<";
+        let result = parse_zones_parts(&[("777-bad-zones.ron", bad)]);
+        assert!(
+            result.is_err(),
+            "M8.9e: malformed zone part must return Err"
+        );
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("777-bad-zones.ron"),
+            "M8.9e TEETH: error must name '777-bad-zones.ron', got: {err_msg:?}"
+        );
+    }
+
+    /// M8.9e-extra-e: parse_encounters_parts with a malformed part names the file.
+    #[test]
+    fn m8_9e_encounters_parts_malformed_names_file() {
+        let bad = "not valid ron <<<";
+        let result = parse_encounters_parts(&[("888-bad-enc.ron", bad)]);
+        assert!(
+            result.is_err(),
+            "M8.9e: malformed encounter part must return Err"
+        );
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("888-bad-enc.ron"),
+            "M8.9e TEETH: error must name '888-bad-enc.ron', got: {err_msg:?}"
+        );
+    }
 }
