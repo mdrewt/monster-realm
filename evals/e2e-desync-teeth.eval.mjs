@@ -13,8 +13,10 @@
 //
 // M8.8f additions: structural gate that detects a NEUTERED e2e job (disabled via
 // `if: false`, `continue-on-error: true`, or a workflow that no longer fires on
-// `pull_request`). The detection functions are exported as stubs that throw so this
-// eval is RED until the specialist implements them.
+// `pull_request`). Round-2 teeth (added after specialist implemented the detectors)
+// cover additional bypass vectors found by red-team/reviewer: step-level if/continue,
+// expression-form continue-on-error, YAML boolean alias `yes`, pull_request_target
+// false-positive, commented-out trigger, and a shell-if positive control.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -172,10 +174,9 @@ export default async function () {
   }
 
   // --- M8.8f proof-of-teeth #3: structural gate fixtures ---
-  // These exercise e2eGateIsBlocking via known inline YAML fixtures. Because the
-  // detection functions are stubs, ALL of these assertions will throw — the eval
-  // returns RED. The specialist's job is to implement the three detection fns so
-  // the suite turns GREEN without changing any of the expected values below.
+  // These exercise e2eGateIsBlocking via known inline YAML fixtures. The round-2
+  // bypass fixtures are RED against the current detector; the specialist strengthens
+  // the detectors so they turn GREEN without changing any expected values below.
 
   // A minimal HEALTHY workflow: pull_request trigger, a ci: job, a wired e2e: job.
   // Job-level keys at 4-space indent; step items at 6+ spaces.
@@ -284,14 +285,213 @@ jobs:
       - uses: actions/checkout@v4
 `;
 
-  // Run all structural fixture assertions. Because the stubs throw, the first one
-  // will short-circuit with an error, making the eval RED.
+  // --- M8.8f round-2 bypass fixtures (new teeth from red-team/reviewer) ---
+
+  // E2: a step inside the e2e job carries `if: false` at step level (8-space indent).
+  // Kills: an impl that only checks 4-space (job-level) `if:` and misses step-level disable.
+  const stepLevelIf = `name: CI
+on:
+  push:
+    branches: [master]
+  pull_request:
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start spacetime
+        run: nohup spacetime start --in-memory &
+      - name: Two-window e2e
+        if: false
+        env:
+          VITE_STDB_URI: ws://127.0.0.1:3000
+        run: just e2e
+`;
+
+  // E5: a step inside the e2e job carries `continue-on-error: true` at step level.
+  // Kills: an impl that only checks job-level continue-on-error and misses step-level.
+  const stepLevelContinue = `name: CI
+on:
+  push:
+    branches: [master]
+  pull_request:
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start spacetime
+        run: nohup spacetime start --in-memory &
+      - name: Two-window e2e
+        continue-on-error: true
+        env:
+          VITE_STDB_URI: ws://127.0.0.1:3000
+        run: just e2e
+`;
+
+  // E3a: job-level `continue-on-error: ${{ true }}` (expression form).
+  // Kills: an impl whose regex matches only the literal word `true` and misses expressions.
+  const continueExprTrue = `name: CI
+on:
+  push:
+    branches: [master]
+  pull_request:
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+  e2e:
+    runs-on: ubuntu-latest
+    continue-on-error: \${{ true }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start spacetime
+        run: nohup spacetime start --in-memory &
+      - name: Two-window e2e
+        env:
+          VITE_STDB_URI: ws://127.0.0.1:3000
+        run: just e2e
+`;
+
+  // E3b: job-level `continue-on-error: yes` (YAML boolean alias).
+  // Kills: an impl that only matches `true` and misses the `yes` alias.
+  const continueYes = `name: CI
+on:
+  push:
+    branches: [master]
+  pull_request:
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+  e2e:
+    runs-on: ubuntu-latest
+    continue-on-error: yes
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start spacetime
+        run: nohup spacetime start --in-memory &
+      - name: Two-window e2e
+        env:
+          VITE_STDB_URI: ws://127.0.0.1:3000
+        run: just e2e
+`;
+
+  // E4: `on:` has ONLY `pull_request_target:` — a different trigger that does not
+  // run on the PR diff in untrusted contexts and is not a PR-blocking gate.
+  // Kills: an impl whose pull_request check matches any string containing `pull_request`
+  // (a substring match would wrongly accept `pull_request_target`).
+  const prTargetOnly = `name: CI
+on:
+  push:
+    branches: [master]
+  pull_request_target:
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start spacetime
+        run: nohup spacetime start --in-memory &
+      - name: Two-window e2e
+        env:
+          VITE_STDB_URI: ws://127.0.0.1:3000
+        run: just e2e
+`;
+
+  // H2: `pull_request:` appears only in a YAML comment — trigger not active.
+  // Kills: an impl that scans raw text for the string `pull_request` without
+  // distinguishing comment lines from active YAML keys.
+  const commentedPrTrigger = `name: CI
+on:
+  push:
+    branches: [master]
+  # pull_request:
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start spacetime
+        run: nohup spacetime start --in-memory &
+      - name: Two-window e2e
+        env:
+          VITE_STDB_URI: ws://127.0.0.1:3000
+        run: just e2e
+`;
+
+  // POSITIVE CONTROL: healthy e2e job whose Wait step has a shell `if` inside `run: |`.
+  // The shell `if curl ...; then echo ok; fi` lives inside a multi-line run block and
+  // MUST NOT be mistaken for a YAML job/step-level `if:` key.
+  // expectedOk: TRUE — kills an impl that over-reaches and flags shell `if` inside run blocks.
+  const goodWfShellIf = `name: CI
+on:
+  push:
+    branches: [master]
+  pull_request:
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start spacetime
+        run: nohup spacetime start --in-memory &
+      - name: Wait for SpacetimeDB
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://127.0.0.1:3000/; then
+              echo "ready after \${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "spacetime did not become ready" >&2; exit 1
+      - name: Two-window e2e
+        env:
+          VITE_STDB_URI: ws://127.0.0.1:3000
+        run: just e2e
+`;
+
+  // Run all structural fixture assertions. The new round-2 teeth (stepLevelIf,
+  // stepLevelContinue, continueExprTrue, continueYes, prTargetOnly,
+  // commentedPrTrigger) are expected RED against the current detector; the
+  // specialist must fix the detectors to make them GREEN.
+  // goodWfShellIf is a positive control that must stay GREEN (no over-reach).
   const structuralCases = [
     { label: 'goodWf', wf: goodWf, expectedOk: true },
     { label: 'disabledByIf', wf: disabledByIf, expectedOk: false },
     { label: 'disabledByContinue', wf: disabledByContinue, expectedOk: false },
     { label: 'notPrTriggered', wf: notPrTriggered, expectedOk: false },
     { label: 'e2eRemoved', wf: e2eRemoved, expectedOk: false },
+    // Round-2 bypass teeth:
+    { label: 'stepLevelIf', wf: stepLevelIf, expectedOk: false },
+    { label: 'stepLevelContinue', wf: stepLevelContinue, expectedOk: false },
+    { label: 'continueExprTrue', wf: continueExprTrue, expectedOk: false },
+    { label: 'continueYes', wf: continueYes, expectedOk: false },
+    { label: 'prTargetOnly', wf: prTargetOnly, expectedOk: false },
+    { label: 'commentedPrTrigger', wf: commentedPrTrigger, expectedOk: false },
+    { label: 'goodWfShellIf', wf: goodWfShellIf, expectedOk: true },
   ];
 
   for (const { label, wf, expectedOk } of structuralCases) {
@@ -344,6 +544,6 @@ jobs:
     name,
     pass: true,
     detail:
-      'desync assertion bites on a known-bad fixture; e2e gate wired in CI; structural gate fixtures all pass; real ci.yml is blocking',
+      'desync assertion bites on a known-bad fixture; e2e gate wired in CI; all structural gate fixtures pass (incl. round-2: step-level if/continue, expr continue, yes alias, pr_target, commented trigger, shell-if positive control); real ci.yml is blocking',
   };
 }

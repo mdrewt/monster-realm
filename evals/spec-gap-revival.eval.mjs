@@ -12,9 +12,10 @@
 //       landed), the gate FAILS — the anchor was removed without closure (anchorMissing).
 //   (c) the current state (no reducer, test still parked+ignored) is GREEN (dormant).
 //
-// The detection functions are exported as stubs that throw — this eval is RED until
-// the specialist implements them. The proof-of-teeth fixtures + real-file assertion
-// live in the default export and drive the RED state.
+// Round-2 teeth (added after specialist implemented detectors) cover additional
+// bypass vectors found by red-team/reviewer: swap_active false-positive, give_monster
+// and donate_monster broadened detection, cfg_attr-form ignore, and the matrix case
+// where a trade reducer lands but the anchor fn is deleted instead of revived.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -214,6 +215,175 @@ mod tests {
 }
 `;
 
+  // --- Round-2 fixtures (red-team/reviewer bypass vectors) ---
+
+  // S3-neg: swap_active is a real #[spacetimedb::reducer] in the live codebase.
+  // `swap` must NOT match the trade/transfer filter — it is a battle-slot swap,
+  // not an ownership transfer. This NEGATIVE tooth guards against an impl that
+  // naively broadens the word-list to include `swap`.
+  const serverWithSwapActive = `use spacetimedb::{ReducerContext};
+
+#[spacetimedb::reducer]
+pub fn swap_active(ctx: &ReducerContext, team_index: u8) -> Result<(), String> {
+    // swap which team member is active — NOT an ownership transfer
+    Ok(())
+}
+`;
+
+  // S3-pos-give: `give_monster` is a plausible ownership-transfer reducer name.
+  // The filter must detect `give` as an ownership-change pattern.
+  const serverWithGiveMonster = `use spacetimedb::{ReducerContext};
+
+#[spacetimedb::reducer]
+pub fn give_monster(ctx: &ReducerContext, monster_id: u64, to: spacetimedb::Identity) -> Result<(), String> {
+    // transfer ownership of monster to another player
+    Ok(())
+}
+`;
+
+  // S3-pos-donate: `donate_monster` is another plausible ownership-transfer name.
+  // The filter must detect `donate` as an ownership-change pattern.
+  const serverWithDonate = `use spacetimedb::{ReducerContext};
+
+#[spacetimedb::reducer]
+pub fn donate_monster(ctx: &ReducerContext, monster_id: u64, to: spacetimedb::Identity) -> Result<(), String> {
+    // donate a monster — transfers ownership
+    Ok(())
+}
+`;
+
+  // S4: the parked fn prefixed with `#[cfg_attr(test, ignore = "...")]` instead of
+  // bare `#[ignore = "..."]`. Both forms suppress test execution — the detector must
+  // recognise cfg_attr-form as "still ignored".
+  const testCfgAttrIgnore = `#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn m7b_1_double_battle_double_xp_arithmetic() {
+        // ... test body ...
+    }
+
+    #[test]
+    #[cfg_attr(test, ignore = "spec gap: owner-change-mid-battle write-back unspecified; no trade reducer until M11+")]
+    fn m7b_2_owner_change_mid_battle_spec_gap() {
+        panic!("spec gap open");
+    }
+
+    #[test]
+    fn m7b_3_other_test() {
+        // ... test body ...
+    }
+}
+`;
+
+  // =========================================================================
+  // Round-2 tooth: swap_active NEGATIVE — must NOT appear in results.
+  // Kills: an impl that matches the bare substring `swap` in fn names and would
+  // false-positive on the live codebase's swap_active battle reducer.
+  // =========================================================================
+  {
+    let swapReducers;
+    try {
+      swapReducers = findTradeTransferReducers(serverWithSwapActive);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth swap_active-neg (findTradeTransferReducers on serverWithSwapActive): threw — ${err.message}`,
+      };
+    }
+    if (!Array.isArray(swapReducers)) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth swap_active-neg: must return an array, got ${typeof swapReducers}`,
+      };
+    }
+    if (swapReducers.includes('swap_active')) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth swap_active-neg: findTradeTransferReducers MUST NOT include 'swap_active' (battle-slot swap is not an ownership transfer) — got [${swapReducers.join(', ')}]. Kills: impl that matches bare word 'swap', causing a false-positive on the live codebase.`,
+      };
+    }
+  }
+
+  // =========================================================================
+  // Round-2 tooth: give_monster POSITIVE — must appear in results (S3).
+  // Kills: an impl whose filter only covers trade/transfer/gift/exchange and
+  // misses the `give` ownership-transfer pattern.
+  // =========================================================================
+  {
+    let giveReducers;
+    try {
+      giveReducers = findTradeTransferReducers(serverWithGiveMonster);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth give_monster-pos (findTradeTransferReducers on serverWithGiveMonster): threw — ${err.message}`,
+      };
+    }
+    if (!Array.isArray(giveReducers) || !giveReducers.includes('give_monster')) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth give_monster-pos: findTradeTransferReducers on serverWithGiveMonster MUST include 'give_monster' (ownership-transfer verb 'give'), got [${(giveReducers || []).join(', ')}]. Kills: impl that does not match 'give' as an ownership-change pattern (red-team S3).`,
+      };
+    }
+  }
+
+  // =========================================================================
+  // Round-2 tooth: donate_monster POSITIVE — must appear in results (S3).
+  // Kills: an impl that does not match `donate` as an ownership-transfer verb.
+  // =========================================================================
+  {
+    let donateReducers;
+    try {
+      donateReducers = findTradeTransferReducers(serverWithDonate);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth donate_monster-pos (findTradeTransferReducers on serverWithDonate): threw — ${err.message}`,
+      };
+    }
+    if (!Array.isArray(donateReducers) || !donateReducers.includes('donate_monster')) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth donate_monster-pos: findTradeTransferReducers on serverWithDonate MUST include 'donate_monster' (ownership-transfer verb 'donate'), got [${(donateReducers || []).join(', ')}]. Kills: impl that does not match 'donate' as an ownership-change pattern (red-team S3).`,
+      };
+    }
+  }
+
+  // =========================================================================
+  // Round-2 tooth: cfg_attr-form ignore counts as ignored (S4).
+  // `#[cfg_attr(test, ignore = "...")]` is semantically identical to `#[ignore]`
+  // in test execution — the parkedTestIsIgnored detector must recognise both forms.
+  // Kills: an impl that only checks for bare `#[ignore` and misses cfg_attr.
+  // =========================================================================
+  {
+    let cfgAttrResult;
+    try {
+      cfgAttrResult = parkedTestIsIgnored(testCfgAttrIgnore);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth cfg_attr-ignore (parkedTestIsIgnored on testCfgAttrIgnore): threw — ${err.message}`,
+      };
+    }
+    if (cfgAttrResult !== true) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth cfg_attr-ignore: parkedTestIsIgnored on testCfgAttrIgnore MUST be true (cfg_attr-form ignore suppresses test execution just like bare #[ignore]) — got ${cfgAttrResult}. Kills: impl that only checks '#[ignore' and misses '#[cfg_attr(test, ignore' (red-team S4).`,
+      };
+    }
+  }
+
   // =========================================================================
   // Tooth A: findTradeTransferReducers on serverNoTrade must return []
   // Kills: an impl that matches non-reducer helpers or false-positives on
@@ -410,6 +580,34 @@ mod tests {
     }
   }
 
+  // Matrix case 5: {serverWithTrade, testRemoved} → anchorMissing=true (S1/H1).
+  // A trade reducer landed but the parked test fn was DELETED (not revived).
+  // The gate must FAIL: the anchor vanished without proper revival.
+  // `violated` would be false (ignored=false since fn is absent), but `anchorMissing`
+  // must be true — the spec requires the anchor to either be revived OR remain present;
+  // it cannot silently disappear when a reducer lands.
+  // Kills: an impl that sets anchorMissing=true ONLY when NO reducer exists
+  // (the current impl), but fails to flag the "reducer landed, fn deleted" case.
+  {
+    let status5;
+    try {
+      status5 = specGapStatus({ serverSrc: serverWithTrade, testSrc: testRemoved });
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `specGapStatus matrix 5 {serverWithTrade, testRemoved}: threw — ${err.message}`,
+      };
+    }
+    if (status5.anchorMissing !== true) {
+      return {
+        name,
+        pass: false,
+        detail: `specGapStatus matrix 5 {serverWithTrade, testRemoved}: expected anchorMissing=true (trade reducer landed but parked fn deleted — gate must FAIL; the anchor cannot silently vanish), got anchorMissing=${status5.anchorMissing} violated=${status5.violated} — ${status5.reason}. Kills: impl that only sets anchorMissing when reducers.length===0, missing the case where a reducer lands and the fn is deleted instead of revived (red-team S1 / reviewer H1).`,
+      };
+    }
+  }
+
   // =========================================================================
   // Real-file assertion: current codebase is in the healthy/dormant state.
   // specGapStatus must return violated=false && anchorMissing=false.
@@ -454,6 +652,6 @@ mod tests {
     name,
     pass: true,
     detail:
-      'spec-gap-revival teeth all pass: findTradeTransferReducers correct on no-trade and with-trade fixtures, parkedTestIsIgnored correct on ignored and revived fixtures, specGapStatus matrix all 4 cases correct, real codebase is in healthy/dormant state',
+      'spec-gap-revival teeth all pass: findTradeTransferReducers correct (swap_active not matched, give_monster/donate_monster matched, trade_monster matched, benign reducers clean), parkedTestIsIgnored correct (bare and cfg_attr forms recognised, revived form false), specGapStatus matrix all 5 cases correct (incl. reducer-landed+fn-deleted), real codebase is in healthy/dormant state',
   };
 }
