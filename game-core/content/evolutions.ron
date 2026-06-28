@@ -1,0 +1,17 @@
+// Evolution registry — DATA, not code (ADR-0006/0019/0060). Per-species branch
+// evolution conditions: one `SpeciesEvolutions` block per source species, each with
+// one or more (trigger -> to_species) branches. Triggers: Level(n) (>= level n),
+// Bond(n) (>= bond n; n > 0), Item(id). Every `to_species` is an evolution-only
+// DERIVED form and MUST NEVER appear in an encounter table (validate_evolution_fusion).
+// Stable ids append-only; no self-evolution; no duplicate source block.
+[
+    // Flameling (1, wild-obtainable) branch-evolves: to Pyroleo (4) by level, or to
+    // Embersworn (5) by bond. The source is a wild species, so the chain is reachable.
+    (
+        species_id: 1,
+        evolutions: [
+            (trigger: Level(16), to_species: 4),
+            (trigger: Bond(200), to_species: 5),
+        ],
+    ),
+]

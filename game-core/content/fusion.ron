@@ -1,0 +1,9 @@
+// Fusion recipe registry — DATA, not code (ADR-0006/0019/0060). Each recipe fuses
+// two parent species `a` + `b` into offspring `to`. ORDER-INDEPENDENT: `{a,b}` ==
+// `{b,a}` (validate_evolution_fusion rejects a duplicate pair regardless of order).
+// The `to` species is an evolution/fusion-only DERIVED form and MUST NEVER appear in
+// an encounter table (validate_evolution_fusion enforces it). Stable ids append-only.
+[
+    // Flameling (1) + Tidalin (2) -> Steamveil (6), a fire/water fusion-only form.
+    (a: 1, b: 2, to: 6),
+]
