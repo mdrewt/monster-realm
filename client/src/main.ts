@@ -33,7 +33,7 @@ import { shouldToggleBox } from './inputGuards';
 import { connect } from './net/connection';
 import { AuthoritativeStore } from './net/store';
 import { HeldDirections, reissueDir } from './prediction/heldKeys';
-import { type ApplyMove, Predictor } from './prediction/predictor';
+import { type ApplyMove, boundSeq, Predictor } from './prediction/predictor';
 import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { WorldRenderer } from './render/world';
@@ -99,7 +99,22 @@ store.onBatchApplied(() => {
     moveStartedAtMs: own.row.moveStartedAtMs,
   };
   const baseline = characterToPredictedBaseline(sdkFields, now, STEP_MS);
-  predictor.reconcile(baseline, own.row.moveQueue, Number(player.lastInputSeq), now);
+  // Fail-loud u64→number bound (M8.8e §B) instead of an unbounded downcast.
+  const ackedSeq = boundSeq(player.lastInputSeq);
+  // Reconnect re-seed (M8.8e §A): keep #nextSeq ≥ the server ack at all times — a
+  // no-op in steady state, the fix on reconnect / fresh-login-with-prior-session so
+  // post-reconnect intents clear the ack and survive reconcile's seq filter.
+  predictor.seedSeq(ackedSeq);
+  const diverged = predictor.reconcile(baseline, own.row.moveQueue, ackedSeq, now);
+  // Honor reconcile's documented divergence return (ADR-0013), previously discarded:
+  // on a genuine server pullback, promptly re-commit the held direction so motion
+  // resumes from the corrected baseline instead of waiting for the next rAF frame —
+  // using the SAME held-state-guarded dedup the frame loop uses (a key released during
+  // the divergence is not re-issued; an already-queued held dir is not double-issued).
+  if (diverged && !(battleView?.visible || boxView?.visible)) {
+    const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
+    if (heldDir !== undefined) sendIntent({ Step: heldDir });
+  }
 });
 
 // --- input: predict locally + send the intent to the M2 reducer (seq-tracked) ----
