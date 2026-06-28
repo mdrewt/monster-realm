@@ -65,16 +65,36 @@ pub struct ItemDef {
     pub recruit_bonus: u16,
 }
 
-/// The embedded zone registry (compiled in via `include_str!`, parsed at load).
-const ZONES_RON: &str = include_str!("../content/zones.ron");
+// === M8.9e: glob-loaded content parts ===
+// Each glob registry is a DIRECTORY of `*.ron` files. `build.rs` embeds every
+// part in sorted-filename order into `$OUT_DIR/content_parts.rs`, defining
+// `pub(crate) const <REG>_RON_PARTS: &[(&str, &str)]` (a `(filename, contents)`
+// list). The `load_*` fns concatenate the parsed `Vec<T>` from each part, so
+// adding a content file is a pure content edit — no `content.rs`/loader change
+// (the fan-out property). `type_chart` is NOT migrated (single `include_str!`).
+include!(concat!(env!("OUT_DIR"), "/content_parts.rs"));
 
 /// Parse the embedded zone registry. Pure (no I/O) — safe under the determinism
 /// guard. Parse-don't-validate: returns typed `ZoneDef`s or a descriptive error.
 ///
 /// # Errors
-/// Returns `Err` if the embedded RON fails to parse.
+/// Returns `Err` if any embedded part fails to parse (the message names the file).
 pub fn load_zones() -> Result<Vec<ZoneDef>, String> {
-    parse_zones(ZONES_RON)
+    parse_zones_parts(ZONES_RON_PARTS)
+}
+
+/// Parse + concatenate zone parts in the given slice order (no row re-sorting).
+///
+/// # Errors
+/// Returns `Err` (naming the offending file) if any part is not a valid zone list.
+pub fn parse_zones_parts(parts: &[(&str, &str)]) -> Result<Vec<ZoneDef>, String> {
+    let mut out = Vec::new();
+    for (file, contents) in parts {
+        let rows = ron::from_str::<Vec<ZoneDef>>(contents)
+            .map_err(|e| format!("zone registry parse error in {file}: {e}"))?;
+        out.extend(rows);
+    }
+    Ok(out)
 }
 
 /// Parse zones from a RON string (separated for testability + fixtures).
@@ -106,17 +126,29 @@ pub fn validate_zones(zones: &[ZoneDef]) -> Result<(), String> {
 // M6a embedded content — species, skills, type chart, items
 // ===========================================================================
 
-const SPECIES_RON: &str = include_str!("../content/species.ron");
-const SKILLS_RON: &str = include_str!("../content/skills.ron");
+// `type_chart` is NOT a glob registry — it stays a single embedded file.
 const TYPE_CHART_RON: &str = include_str!("../content/type_chart.ron");
-const ITEMS_RON: &str = include_str!("../content/items.ron");
 
 /// Parse the embedded species registry.
 ///
 /// # Errors
-/// Returns `Err` if the embedded RON fails to parse.
+/// Returns `Err` if any embedded part fails to parse (the message names the file).
 pub fn load_species() -> Result<Vec<Species>, String> {
-    parse_species(SPECIES_RON)
+    parse_species_parts(SPECIES_RON_PARTS)
+}
+
+/// Parse + concatenate species parts in the given slice order (no row re-sorting).
+///
+/// # Errors
+/// Returns `Err` (naming the offending file) if any part is not a valid species list.
+pub fn parse_species_parts(parts: &[(&str, &str)]) -> Result<Vec<Species>, String> {
+    let mut out = Vec::new();
+    for (file, contents) in parts {
+        let rows = ron::from_str::<Vec<Species>>(contents)
+            .map_err(|e| format!("species registry parse error in {file}: {e}"))?;
+        out.extend(rows);
+    }
+    Ok(out)
 }
 
 /// Parse species from a RON string (separated for testability + fixtures).
@@ -130,9 +162,23 @@ pub fn parse_species(ron_str: &str) -> Result<Vec<Species>, String> {
 /// Parse the embedded skills registry.
 ///
 /// # Errors
-/// Returns `Err` if the embedded RON fails to parse.
+/// Returns `Err` if any embedded part fails to parse (the message names the file).
 pub fn load_skills() -> Result<Vec<SkillDef>, String> {
-    parse_skills(SKILLS_RON)
+    parse_skills_parts(SKILLS_RON_PARTS)
+}
+
+/// Parse + concatenate skill parts in the given slice order (no row re-sorting).
+///
+/// # Errors
+/// Returns `Err` (naming the offending file) if any part is not a valid skill list.
+pub fn parse_skills_parts(parts: &[(&str, &str)]) -> Result<Vec<SkillDef>, String> {
+    let mut out = Vec::new();
+    for (file, contents) in parts {
+        let rows = ron::from_str::<Vec<SkillDef>>(contents)
+            .map_err(|e| format!("skills registry parse error in {file}: {e}"))?;
+        out.extend(rows);
+    }
+    Ok(out)
 }
 
 /// Parse skills from a RON string.
@@ -163,9 +209,23 @@ pub fn parse_type_chart(ron_str: &str) -> Result<Vec<TypeRelation>, String> {
 /// Parse the embedded items registry.
 ///
 /// # Errors
-/// Returns `Err` if the embedded RON fails to parse.
+/// Returns `Err` if any embedded part fails to parse (the message names the file).
 pub fn load_items() -> Result<Vec<ItemDef>, String> {
-    parse_items(ITEMS_RON)
+    parse_items_parts(ITEMS_RON_PARTS)
+}
+
+/// Parse + concatenate item parts in the given slice order (no row re-sorting).
+///
+/// # Errors
+/// Returns `Err` (naming the offending file) if any part is not a valid item list.
+pub fn parse_items_parts(parts: &[(&str, &str)]) -> Result<Vec<ItemDef>, String> {
+    let mut out = Vec::new();
+    for (file, contents) in parts {
+        let rows = ron::from_str::<Vec<ItemDef>>(contents)
+            .map_err(|e| format!("items registry parse error in {file}: {e}"))?;
+        out.extend(rows);
+    }
+    Ok(out)
 }
 
 /// Parse items from a RON string.
@@ -180,8 +240,6 @@ pub fn parse_items(ron_str: &str) -> Result<Vec<ItemDef>, String> {
 // M8a content — encounter tables
 // ===========================================================================
 
-const ENCOUNTERS_RON: &str = include_str!("../content/encounters.ron");
-
 /// Parse encounter tables from a RON string (separated for testability).
 ///
 /// # Errors
@@ -191,12 +249,26 @@ pub fn parse_encounters(ron_str: &str) -> Result<Vec<EncounterTable>, String> {
         .map_err(|e| format!("encounters registry parse error: {e}"))
 }
 
+/// Parse + concatenate encounter parts in the given slice order (no row re-sorting).
+///
+/// # Errors
+/// Returns `Err` (naming the offending file) if any part is not a valid encounter list.
+pub fn parse_encounters_parts(parts: &[(&str, &str)]) -> Result<Vec<EncounterTable>, String> {
+    let mut out = Vec::new();
+    for (file, contents) in parts {
+        let rows = ron::from_str::<Vec<EncounterTable>>(contents)
+            .map_err(|e| format!("encounters registry parse error in {file}: {e}"))?;
+        out.extend(rows);
+    }
+    Ok(out)
+}
+
 /// Parse the embedded encounter registry.
 ///
 /// # Errors
-/// Returns `Err` if the embedded RON fails to parse.
+/// Returns `Err` if any embedded part fails to parse (the message names the file).
 pub fn load_encounters() -> Result<Vec<EncounterTable>, String> {
-    parse_encounters(ENCOUNTERS_RON)
+    parse_encounters_parts(ENCOUNTERS_RON_PARTS)
 }
 
 /// Cross-registry validation for encounter tables.
