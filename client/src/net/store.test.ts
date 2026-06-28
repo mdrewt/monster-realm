@@ -15,6 +15,8 @@ import {
   type StoreBattleMonster,
   type StoreBattleSide,
   type StoreCharacter,
+  type StoreInventory,
+  type StoreItemRow,
   type StoreMonsterPub,
   type StorePlayer,
   type StoreSkillRow,
@@ -879,5 +881,346 @@ describe('AuthoritativeStore M8.6c: skillMap() returns a COPY (no live-map leak)
 
     expect(snap.get(6)).toBeUndefined();
     expect(snap.size).toBe(1);
+  });
+});
+
+// =============================================================================
+// M9c extension: Inventory + ItemDef store (StoreInventory / StoreItemRow)
+// SOURCE OF TRUTH: specs/monster-realm-v2/M9-raising.spec.md
+// =============================================================================
+
+/** Factory: minimal valid StoreInventory. */
+function inventoryRow(
+  invId: bigint,
+  ownerIdentity = 'player',
+  itemId = 1,
+  count = 1,
+): StoreInventory {
+  return { invId, ownerIdentity, itemId, count };
+}
+
+/** Factory: minimal valid StoreItemRow. */
+function itemDefRow(id: number, trainStat: string | null = null): StoreItemRow {
+  return {
+    id,
+    name: `Item-${id}`,
+    description: `Description for item ${id}`,
+    recruitBonus: 0,
+    trainStat,
+    trainAmount: trainStat != null ? 10 : 0,
+  };
+}
+
+// --- Inventory: upsert / retrieve / batch signal -------------------------------
+
+describe('AuthoritativeStore M9c: inventory upsert + batch signal', () => {
+  it('BITES: upsertInventory stores the row; ownInventory() retrieves it; flushBatch fires', () => {
+    // Kills: an impl that ignores upsertInventory or never marks the batch dirty.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    const inv = inventoryRow(1n, 'alice', 5, 10);
+    s.upsertInventory(inv);
+    const owned = s.ownInventory('alice');
+    expect(owned).toHaveLength(1);
+    expect(owned[0]).toEqual(inv);
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('BITES: upsert same invId twice keeps count at 1 (keyed-Map idempotency, no array duplication)', () => {
+    // Kills: an impl that stores inventory rows in an array and appends on re-insert.
+    const s = new AuthoritativeStore();
+    s.upsertInventory(inventoryRow(1n, 'alice', 5, 1));
+    s.upsertInventory(inventoryRow(1n, 'alice', 5, 2)); // same invId — must overwrite
+    const owned = s.ownInventory('alice');
+    expect(owned).toHaveLength(1);
+    expect(owned[0]!.count).toBe(2); // last-write wins
+  });
+
+  it('BITES: second upsert overwrites the row (last-write wins, count is updated)', () => {
+    // Kills: an impl that silently drops a duplicate upsert instead of updating.
+    const s = new AuthoritativeStore();
+    s.upsertInventory(inventoryRow(7n, 'bob', 3, 5));
+    s.upsertInventory({ ...inventoryRow(7n, 'bob', 3, 5), count: 99 });
+    expect(s.ownInventory('bob')[0]!.count).toBe(99);
+  });
+});
+
+// --- Inventory: removeInventory ------------------------------------------------
+
+describe('AuthoritativeStore M9c: removeInventory', () => {
+  it('BITES: removeInventory deletes the row; ownInventory() returns empty; batch is dirty', () => {
+    // Kills: an impl that deletes but forgets to mark dirty, or soft-deletes.
+    const s = new AuthoritativeStore();
+    s.upsertInventory(inventoryRow(5n, 'carol'));
+    s.flushBatch();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.removeInventory(5n);
+    expect(s.ownInventory('carol')).toHaveLength(0);
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('BITES: removeInventory on unknown invId does NOT mark dirty (no phantom re-renders)', () => {
+    // Kills: an impl that marks dirty on a no-op delete.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.removeInventory(999n); // never inserted
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(0);
+  });
+});
+
+// --- Inventory: ownInventory identity filter -----------------------------------
+
+describe('AuthoritativeStore M9c: ownInventory identity filter', () => {
+  it('BITES: ownInventory returns ONLY rows matching ownerIdentity (non-owner excluded)', () => {
+    // Kills: an impl that returns ALL inventory rows regardless of owner.
+    const s = new AuthoritativeStore();
+    s.upsertInventory(inventoryRow(1n, 'me', 1, 5));
+    s.upsertInventory(inventoryRow(2n, 'other', 2, 3));
+    s.upsertInventory(inventoryRow(3n, 'me', 3, 1));
+    const mine = s.ownInventory('me');
+    expect(mine).toHaveLength(2);
+    const invIds = mine.map((i) => i.invId);
+    expect(invIds).toContain(1n);
+    expect(invIds).toContain(3n);
+    expect(invIds).not.toContain(2n);
+  });
+
+  it('S2: BITES ownInventory uses exact case-sensitive equality ("DEADBEEF" !== "deadbeef")', () => {
+    // Kills: an impl that normalizes identity to lower/upper case before comparing.
+    const s = new AuthoritativeStore();
+    s.upsertInventory(inventoryRow(1n, 'DEADBEEF'));
+    s.upsertInventory(inventoryRow(2n, 'deadbeef'));
+    expect(s.ownInventory('DEADBEEF')).toHaveLength(1);
+    expect(s.ownInventory('deadbeef')).toHaveLength(1);
+    expect(s.ownInventory('DEADBEEF')[0]!.invId).toBe(1n);
+    expect(s.ownInventory('deadbeef')[0]!.invId).toBe(2n);
+  });
+
+  it('ownInventory returns empty array when identity has no inventory', () => {
+    // Kills: an impl that throws or returns undefined when no match.
+    const s = new AuthoritativeStore();
+    s.upsertInventory(inventoryRow(1n, 'alice'));
+    expect(s.ownInventory('nobody')).toEqual([]);
+  });
+});
+
+// --- Inventory: S6 — no unfiltered inventories() accessor ----------------------
+
+describe('AuthoritativeStore M9c S6: no unfiltered inventories() accessor', () => {
+  it('S6: BITES the store does NOT expose an unfiltered inventories() method', () => {
+    // Privacy contract: callers MUST go through ownInventory(identity).
+    // An unfiltered accessor would expose all players' inventory rows to any caller.
+    // Kills: an impl that adds a public inventories() method as a shortcut.
+    const s = new AuthoritativeStore();
+    expect(typeof (s as unknown as Record<string, unknown>)['inventories']).not.toBe('function');
+  });
+});
+
+// --- Inventory: S8 — ownInventory returns an independent snapshot --------------
+
+describe('AuthoritativeStore M9c S8: ownInventory returns independent snapshot', () => {
+  it('S8: BITES mutating the returned array does NOT corrupt the store (snapshot isolation)', () => {
+    // Kills: an impl that returns a direct reference to the internal array/values.
+    // A caller who pushes/pops/splices the returned array must not affect subsequent reads.
+    const s = new AuthoritativeStore();
+    s.upsertInventory(inventoryRow(1n, 'player', 5, 3));
+
+    const first = s.ownInventory('player');
+    expect(first).toHaveLength(1);
+
+    // Mutate the returned array — splice out the item
+    first.splice(0, 1);
+    expect(first).toHaveLength(0); // local mutation
+
+    // Re-query: the store must still have the original row
+    const second = s.ownInventory('player');
+    expect(second).toHaveLength(1);
+    expect(second[0]!.count).toBe(3);
+  });
+
+  it('S8: BITES the count on a re-queried row is the authoritative stored value (not mutated copy)', () => {
+    // Kills: an impl where the returned objects are live references — mutating
+    // a field on the returned object corrupts the stored row.
+    const s = new AuthoritativeStore();
+    s.upsertInventory(inventoryRow(10n, 'player', 2, 7));
+
+    const first = s.ownInventory('player');
+    // Attempt to mutate the returned object (TypeScript readonly won't stop this at runtime)
+    (first[0] as Record<string, unknown>)['count'] = 999;
+
+    // Re-query: the store must return the original count, not the mutated value
+    const second = s.ownInventory('player');
+    expect(second[0]!.count).toBe(7);
+  });
+});
+
+// --- ItemDef: upsert / retrieve / remove ----------------------------------------
+
+describe('AuthoritativeStore M9c: itemDef upsert + retrieve', () => {
+  it('BITES: upsertItemDef stores the row; itemDef() retrieves it by id', () => {
+    // Kills: an impl that exposes the method but never stores to the map.
+    const s = new AuthoritativeStore();
+    const def = itemDefRow(42, 'Attack');
+    s.upsertItemDef(def);
+    expect(s.itemDef(42)).toEqual(def);
+  });
+
+  it('BITES: upsert same id twice keeps count at 1 (keyed-Map idempotency)', () => {
+    // Kills: an impl that stores item defs in an array and appends on re-insert.
+    const s = new AuthoritativeStore();
+    s.upsertItemDef(itemDefRow(1, null));
+    s.upsertItemDef({ ...itemDefRow(1, null), name: 'Updated Name' }); // same id — overwrite
+    const m = s.itemDefs();
+    expect(m.size).toBe(1);
+    expect(m.get(1)!.name).toBe('Updated Name');
+  });
+
+  it('BITES: itemDef() returns undefined for unknown id (not null, not throw)', () => {
+    // Kills: an impl that throws on a missing key or returns null.
+    const s = new AuthoritativeStore();
+    expect(s.itemDef(999)).toBeUndefined();
+  });
+
+  it('BITES: removeItemDef deletes the entry; itemDef() returns undefined', () => {
+    // Kills: an impl that soft-deletes or returns a tombstone.
+    const s = new AuthoritativeStore();
+    s.upsertItemDef(itemDefRow(5, 'Speed'));
+    s.removeItemDef(5);
+    expect(s.itemDef(5)).toBeUndefined();
+  });
+
+  it('BITES: removeItemDef on unknown id does NOT throw and does NOT mark dirty', () => {
+    // Kills: an impl that throws or marks dirty on a no-op delete.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.removeItemDef(404); // never inserted
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(0);
+  });
+});
+
+// --- ItemDef: itemDefs() defensive copy ----------------------------------------
+
+describe('AuthoritativeStore M9c: itemDefs() returns a COPY (no live-map leak)', () => {
+  it('BITES: itemDefs() exposes all item defs as a ReadonlyMap snapshot', () => {
+    // Kills: an impl that returns an empty map, throws, or returns a live reference.
+    const s = new AuthoritativeStore();
+    s.upsertItemDef(itemDefRow(1, 'Attack'));
+    s.upsertItemDef(itemDefRow(2, null));
+    const m = s.itemDefs();
+    expect(m.size).toBe(2);
+    expect(m.get(1)!.trainStat).toBe('Attack');
+    expect(m.get(2)!.trainStat).toBeNull();
+  });
+
+  it('BITES: mutating the returned itemDefs() map does NOT corrupt the store (defensive copy)', () => {
+    // Kills: an impl that returns `this.#itemDefs` directly (live-map leak).
+    const s = new AuthoritativeStore();
+    const existing = itemDefRow(7, 'Hp');
+    s.upsertItemDef(existing);
+
+    const m = s.itemDefs() as Map<number, StoreItemRow>;
+    m.set(999, itemDefRow(999, 'Speed')); // inject spurious entry
+    m.delete(7); // delete real entry
+
+    // Store must be unaffected
+    expect(s.itemDef(999)).toBeUndefined();
+    expect(s.itemDef(7)).toEqual(existing);
+    expect(s.itemDefs().get(999)).toBeUndefined();
+    expect(s.itemDefs().get(7)).toEqual(existing);
+  });
+
+  it('BITES: itemDefs() snapshot is stable even after subsequent upserts', () => {
+    // Kills: a live-view impl — post-call upserts would appear in already-returned map.
+    const s = new AuthoritativeStore();
+    s.upsertItemDef(itemDefRow(10, null));
+    const snap = s.itemDefs();
+    expect(snap.size).toBe(1);
+
+    s.upsertItemDef(itemDefRow(20, 'Defense')); // upsert AFTER snapshot taken
+
+    expect(snap.get(20)).toBeUndefined(); // snapshot must not reflect the new upsert
+    expect(snap.size).toBe(1);
+  });
+});
+
+// --- S1: reset() clears #inventory + #itemDefs --------------------------------
+
+describe('AuthoritativeStore M9c S1: reset() clears inventory and itemDefs', () => {
+  it('S1: BITES reset() clears #inventory (ownInventory returns empty after reset)', () => {
+    // Kills: an impl whose reset() does not clear the inventory map,
+    // allowing a prior session's items to bleed into a fresh session.
+    const s = new AuthoritativeStore();
+    s.upsertInventory(inventoryRow(1n, 'player', 5, 10));
+    expect(s.ownInventory('player')).toHaveLength(1);
+    s.reset();
+    expect(s.ownInventory('player')).toHaveLength(0);
+  });
+
+  it('S1: BITES reset() clears #itemDefs (itemDef() returns undefined after reset)', () => {
+    // Kills: an impl whose reset() does not clear the itemDefs map.
+    const s = new AuthoritativeStore();
+    s.upsertItemDef(itemDefRow(3, 'Speed'));
+    expect(s.itemDef(3)).toBeDefined();
+    s.reset();
+    expect(s.itemDef(3)).toBeUndefined();
+    expect(s.itemDefs().size).toBe(0);
+  });
+
+  it('S1: BITES upsert->reset->re-query: both maps empty, listeners survive', () => {
+    // Combined gate: prior session cannot bleed after reconnect.
+    // Kills: a reset() that clears only one of the two new maps, or that
+    // clears listeners (breaking the running loop).
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.upsertInventory(inventoryRow(99n, 'oldUser', 1, 3));
+    s.upsertItemDef(itemDefRow(7, 'Attack'));
+    s.reset();
+    // Both maps must be empty
+    expect(s.ownInventory('oldUser')).toHaveLength(0);
+    expect(s.itemDef(7)).toBeUndefined();
+    expect(s.itemDefs().size).toBe(0);
+    // Listeners must survive reset
+    s.upsertInventory(inventoryRow(1n, 'newUser', 2, 1));
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+});
+
+// --- Property: inventory count equals distinct invIds --------------------------
+
+describe('AuthoritativeStore M9c: inventoryCount property (fast-check)', () => {
+  it('BITES: ownInventory size equals distinct invIds for that owner after random upserts', () => {
+    // Kills: an impl that inflates on re-insert (array) or undercounts (wrong key).
+    fc.assert(
+      fc.property(fc.array(fc.bigInt({ min: 0n, max: 30n }), { maxLength: 50 }), (ids) => {
+        const s = new AuthoritativeStore();
+        for (const id of ids) {
+          s.upsertInventory(inventoryRow(id, 'owner'));
+        }
+        expect(s.ownInventory('owner')).toHaveLength(new Set(ids).size);
+      }),
+    );
+  });
+
+  it('BITES: itemDefs().size equals distinct item ids after random upserts', () => {
+    // Kills: an impl that duplicates entries or uses wrong key type.
+    fc.assert(
+      fc.property(fc.array(fc.integer({ min: 0, max: 30 }), { maxLength: 50 }), (ids) => {
+        const s = new AuthoritativeStore();
+        for (const id of ids) {
+          s.upsertItemDef(itemDefRow(id));
+        }
+        expect(s.itemDefs().size).toBe(new Set(ids).size);
+      }),
+    );
   });
 });
