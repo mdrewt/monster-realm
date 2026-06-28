@@ -14,7 +14,7 @@
 // IMPORTANT: No dynamic RegExp (detect-non-literal-regexp Semgrep rule has RED'd
 // master 3×). Use only String.includes / String.indexOf and regex LITERALS.
 // (Same policy as evals/cache-freshness.eval.mjs.)
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 
 // ---------------------------------------------------------------------------
 // Syntax detection helpers (literal patterns only)
@@ -231,7 +231,7 @@ fn well_paired(ctx: &ReducerContext) {
   // -------------------------------------------------------------------------
   let src;
   try {
-    src = readFileSync('server-module/src/lib.rs', 'utf8');
+    src = readServerModuleSources('server-module/src');
   } catch (e) {
     return { name, pass: false, detail: `cannot read server-module/src/lib.rs: ${e.message}` };
   }
@@ -251,4 +251,20 @@ fn well_paired(ctx: &ReducerContext) {
     detail:
       'all monster-mutating functions mirror monster_pub with matching operations and pub_from_monster (teeth verified)',
   };
+}
+
+
+// M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
+// domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a
+// deterministic order) so this static check parses the whole crate, surviving the
+// split. Mirrors the glob pattern already used by encounter-privacy / spec-gap-
+// revival. The set of tables/reducers/fns is unchanged — only their files moved.
+function readServerModuleSources(dir) {
+  const parts = [];
+  for (const entry of readdirSync(dir).sort()) {
+    const full = `${dir}/${entry}`;
+    if (statSync(full).isDirectory()) parts.push(readServerModuleSources(full));
+    else if (entry.endsWith('.rs')) parts.push(readFileSync(full, 'utf8'));
+  }
+  return parts.join('\n');
 }

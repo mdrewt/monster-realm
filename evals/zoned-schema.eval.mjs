@@ -8,7 +8,7 @@
 //
 // Implementation note on Semgrep detect-non-literal-regexp:
 //   All pattern matching uses literal /regex/ — NO new RegExp(...).
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 
 /**
  * Strip Rust block comments and line comments from source so a comment between
@@ -180,7 +180,7 @@ pub struct MovementTickSchedule {
   // -------------------------------------------------------------------------
   // Real source check
   // -------------------------------------------------------------------------
-  const src = readFileSync('server-module/src/lib.rs', 'utf8');
+  const src = readServerModuleSources('server-module/src');
   const tables = parseTables(src);
   const v = zoningViolations(tables);
   return {
@@ -190,4 +190,20 @@ pub struct MovementTickSchedule {
       ? `tables with unindexed zone_id/map_id: ${v.join(', ')}`
       : `${tables.length} tables scanned; all zone_id/map_id fields indexed or PK; scheduler tables exempt; teeth verified`,
   };
+}
+
+
+// M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
+// domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a
+// deterministic order) so this static check parses the whole crate, surviving the
+// split. Mirrors the glob pattern already used by encounter-privacy / spec-gap-
+// revival. The set of tables/reducers/fns is unchanged — only their files moved.
+function readServerModuleSources(dir) {
+  const parts = [];
+  for (const entry of readdirSync(dir).sort()) {
+    const full = `${dir}/${entry}`;
+    if (statSync(full).isDirectory()) parts.push(readServerModuleSources(full));
+    else if (entry.endsWith('.rs')) parts.push(readFileSync(full, 'utf8'));
+  }
+  return parts.join('\n');
 }

@@ -12,10 +12,10 @@
 // Implementation note: ALL pattern matching uses String.indexOf() or literal
 // /regex/ — NO new RegExp(...) with non-literal arguments (Semgrep ReDoS gate).
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
-const SERVER_SRC = path.resolve('server-module/src/lib.rs');
+const SERVER_SRC = path.resolve('server-module/src');
 const BASELINE_PATH = path.resolve('evals/baselines/table-schemas.json');
 
 export default async function () {
@@ -130,7 +130,7 @@ export default async function () {
 
   let realSrc;
   try {
-    realSrc = readFileSync(SERVER_SRC, 'utf8');
+    realSrc = readServerModuleSources(SERVER_SRC);
   } catch (e) {
     return { name, pass: false, detail: `RED: cannot read ${SERVER_SRC}: ${e.message}` };
   }
@@ -1000,4 +1000,20 @@ pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), Strin
     detail:
       'All 20 gate-teeth pass: schema-snapshot (all-tables, EncounterEntryRow excluded, drift-free, drop/PK/type/additive/extra-table all bite), zoned-schema (ghost still flagged, encounter-PK passes, bare-zone_id flagged, scheduler attr-carve-out correct, non-scheduler ScheduleAt-body NOT exempted, real source clean), recruit-security (real code passes strengthened checks, no-rejection bad fixtures bite, two-alias GOOD passes, discarded-lookup BAD flagged, good alias+direct forms pass), baseline contains all 6 spec-required tables',
   };
+}
+
+
+// M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
+// domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a
+// deterministic order) so this static check parses the whole crate, surviving the
+// split. Mirrors the glob pattern already used by encounter-privacy / spec-gap-
+// revival. The set of tables/reducers/fns is unchanged — only their files moved.
+function readServerModuleSources(dir) {
+  const parts = [];
+  for (const entry of readdirSync(dir).sort()) {
+    const full = `${dir}/${entry}`;
+    if (statSync(full).isDirectory()) parts.push(readServerModuleSources(full));
+    else if (entry.endsWith('.rs')) parts.push(readFileSync(full, 'utf8'));
+  }
+  return parts.join('\n');
 }

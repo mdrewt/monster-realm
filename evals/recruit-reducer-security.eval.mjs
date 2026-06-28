@@ -23,7 +23,7 @@
 //   All pattern matching uses String.indexOf() or literal /regex/ patterns.
 //   NO `new RegExp(...)` with a non-literal argument is used anywhere here.
 //   This convention has been bitten 3 times in the codebase; see the eval rule.
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 
 // ---------------------------------------------------------------------------
 // Re-use the battle-reducer-security helpers verbatim (no dynamic RegExp).
@@ -1084,10 +1084,10 @@ export default async function () {
   // REAL CHECKS — scan the actual server-module source.
   // =========================================================================
 
-  const SERVER_SRC = 'server-module/src/lib.rs';
+  const SERVER_SRC = 'server-module/src';
   let rawSrc;
   try {
-    rawSrc = readFileSync(SERVER_SRC, 'utf8');
+    rawSrc = readServerModuleSources(SERVER_SRC);
   } catch (e) {
     return { name, pass: false, detail: `cannot read ${SERVER_SRC}: ${e.message}` };
   }
@@ -1164,4 +1164,20 @@ export default async function () {
     detail:
       'attempt_recruit guard ladder (ownership, outcome, wild-battle, consume-before-roll, no-XP, classify-by-data, GC), consume_one checked_sub, grant_item saturating_add, write_back_battle_results GC, grant_bait self-scoped — all 9 teeth verified',
   };
+}
+
+
+// M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
+// domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a
+// deterministic order) so this static check parses the whole crate, surviving the
+// split. Mirrors the glob pattern already used by encounter-privacy / spec-gap-
+// revival. The set of tables/reducers/fns is unchanged — only their files moved.
+function readServerModuleSources(dir) {
+  const parts = [];
+  for (const entry of readdirSync(dir).sort()) {
+    const full = `${dir}/${entry}`;
+    if (statSync(full).isDirectory()) parts.push(readServerModuleSources(full));
+    else if (entry.endsWith('.rs')) parts.push(readFileSync(full, 'utf8'));
+  }
+  return parts.join('\n');
 }

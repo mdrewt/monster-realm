@@ -38,7 +38,7 @@
 // NO `new RegExp(...)` — all pattern matching uses String.indexOf / .includes
 // (Semgrep detect-non-literal-regexp rule; has bitten master 3×).
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 
 // ============================================================================
 // Helpers
@@ -359,10 +359,10 @@ export default async function () {
   // REAL SOURCE CHECK — expected GREEN (lock-in invariant).
   // ==========================================================================
 
-  const SERVER_SRC = 'server-module/src/lib.rs';
+  const SERVER_SRC = 'server-module/src';
   let rawSrc;
   try {
-    rawSrc = readFileSync(SERVER_SRC, 'utf8');
+    rawSrc = readServerModuleSources(SERVER_SRC);
   } catch (e) {
     return { name, pass: false, detail: `cannot read ${SERVER_SRC}: ${e.message}` };
   }
@@ -420,4 +420,20 @@ export default async function () {
       'Teeth verified: BAD_SECOND_INSERTER flagged (cheat_grant_item), GOOD_ONLY_GRANT_ITEM passed, ' +
       'BAD_SIMILARLY_NAMED_INSERTER flagged (grant_item_debug exact-match guard).',
   };
+}
+
+
+// M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
+// domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a
+// deterministic order) so this static check parses the whole crate, surviving the
+// split. Mirrors the glob pattern already used by encounter-privacy / spec-gap-
+// revival. The set of tables/reducers/fns is unchanged — only their files moved.
+function readServerModuleSources(dir) {
+  const parts = [];
+  for (const entry of readdirSync(dir).sort()) {
+    const full = `${dir}/${entry}`;
+    if (statSync(full).isDirectory()) parts.push(readServerModuleSources(full));
+    else if (entry.endsWith('.rs')) parts.push(readFileSync(full, 'utf8'));
+  }
+  return parts.join('\n');
 }

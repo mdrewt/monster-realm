@@ -38,7 +38,7 @@
 //     Fixture failures stop the eval immediately (a broken predicate cannot gate).
 //   - Exported predicates are pure and independently testable.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 
 // ============================================================================
 // Shared helpers (modelled on recruit-reducer-security.eval.mjs)
@@ -820,12 +820,12 @@ export default async function () {
   //   - sync_content_inner has no CONTENT_VERSION const or content_version branch
   // ==========================================================================
 
-  const SERVER_SRC = 'server-module/src/lib.rs';
+  const SERVER_SRC = 'server-module/src';
   const CARGO_TOML = 'server-module/Cargo.toml';
 
   let rawSrc, rawCargo;
   try {
-    rawSrc = readFileSync(SERVER_SRC, 'utf8');
+    rawSrc = readServerModuleSources(SERVER_SRC);
   } catch (e) {
     return { name, pass: false, detail: `cannot read ${SERVER_SRC}: ${e.message}` };
   }
@@ -899,4 +899,20 @@ export default async function () {
       'sync_content_inner wires CONTENT_VERSION — all 4 criteria pass (5 sub-checks). ' +
       'Teeth verified (13 fixture assertions, all biting correctly).',
   };
+}
+
+
+// M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
+// domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a
+// deterministic order) so this static check parses the whole crate, surviving the
+// split. Mirrors the glob pattern already used by encounter-privacy / spec-gap-
+// revival. The set of tables/reducers/fns is unchanged — only their files moved.
+function readServerModuleSources(dir) {
+  const parts = [];
+  for (const entry of readdirSync(dir).sort()) {
+    const full = `${dir}/${entry}`;
+    if (statSync(full).isDirectory()) parts.push(readServerModuleSources(full));
+    else if (entry.endsWith('.rs')) parts.push(readFileSync(full, 'utf8'));
+  }
+  return parts.join('\n');
 }

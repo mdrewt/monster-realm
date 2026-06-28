@@ -9,9 +9,9 @@
 //
 // This eval starts RED until the implementer adds the opponent-provenance gate
 // to start_battle.
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 
-const SERVER_SRC = 'server-module/src/lib.rs';
+const SERVER_SRC = 'server-module/src';
 
 // ---------------------------------------------------------------------------
 // Strip Rust comments so doc-comment prose doesn't trip the scanner.
@@ -572,7 +572,7 @@ export default async function () {
   // =========================================================================
   let src;
   try {
-    src = readFileSync(SERVER_SRC, 'utf8');
+    src = readServerModuleSources(SERVER_SRC);
   } catch (e) {
     return {
       name,
@@ -653,4 +653,20 @@ export default async function () {
       `start_battle has opponent-provenance gate (conditional context, hardened against dead-code bypass); ` +
       `write_back helpers are side_a-only (teeth verified via 10 fixtures)`,
   };
+}
+
+
+// M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
+// domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a
+// deterministic order) so this static check parses the whole crate, surviving the
+// split. Mirrors the glob pattern already used by encounter-privacy / spec-gap-
+// revival. The set of tables/reducers/fns is unchanged — only their files moved.
+function readServerModuleSources(dir) {
+  const parts = [];
+  for (const entry of readdirSync(dir).sort()) {
+    const full = `${dir}/${entry}`;
+    if (statSync(full).isDirectory()) parts.push(readServerModuleSources(full));
+    else if (entry.endsWith('.rs')) parts.push(readFileSync(full, 'utf8'));
+  }
+  return parts.join('\n');
 }
