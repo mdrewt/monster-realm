@@ -103,6 +103,79 @@ impl Link {
     }
 }
 
+// ===========================================================================
+// Convergence driver (M8.8d) — feeds the lossy/reordering `Link` into the
+// authoritative `ServerWorld`, proving the headline netcode property (ADR-0013):
+// under latency/jitter/loss/reorder the authoritative final state is
+// *delivery-order-invariant* (convergence — no desync). The naive arrival-order
+// apply is order-DEPENDENT under reorder; that is the known-bad fixture the
+// convergence assertion must reject (proof-of-teeth).
+//
+// Deferred to M16-PvP (ADR-0025), NOT claimed here: forfeit-on-disconnect and
+// turn-deadline. This driver asserts convergence + reorder-occurs only.
+// ===========================================================================
+
+use std::collections::BTreeMap;
+
+use game_core::{zone_0, Millis, MoveInput, TilePos};
+
+use crate::world::ServerWorld;
+
+/// One client's single intent: a per-client monotonic `seq`, the move, and its
+/// send time. Each `client` is an independent character in the same zone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientIntent {
+    pub client: u64,
+    pub seq: u64,
+    pub input: MoveInput,
+    pub send_ms: u64,
+}
+
+/// How the server applies the (lossy, reordered) delivered stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyOrder {
+    /// Canonicalize each client's intents by `seq` before applying — the
+    /// reorder-robust policy whose authoritative final state is delivery-order
+    /// invariant (convergence).
+    SeqCanonical,
+    /// Apply in raw arrival (delivery) order — the naive, order-DEPENDENT policy
+    /// (a reordered higher `seq` makes the server reject the later-arriving lower
+    /// `seq` as stale); the known-bad fixture the convergence assertion rejects.
+    Arrival,
+}
+
+/// Transport `intents` over `link` for `seed` (loss + reorder), returning the
+/// surviving delivered intents in link delivery order (by recv time, then id).
+#[must_use]
+pub fn deliver(intents: &[ClientIntent], link: &Link, seed: u64) -> Vec<ClientIntent> {
+    let _ = (intents, link, seed);
+    todo!("M8.8d: convergence driver not yet implemented")
+}
+
+/// Apply a given ORDER of (delivered, surviving) intents to a fresh
+/// `ServerWorld`, returning each client's final authoritative tile.
+#[must_use]
+pub fn apply_stream(ordered: &[ClientIntent], policy: ApplyOrder) -> BTreeMap<u64, TilePos> {
+    let _ = (ordered, policy);
+    todo!("M8.8d: convergence driver not yet implemented")
+}
+
+/// `true` iff `delivered` reorders any client's intents (a higher `seq` arrives
+/// before a lower `seq` for the same client) — so a `jitter: 0` regression is
+/// caught by the reorder-occurs assertion.
+#[must_use]
+pub fn had_reorder(delivered: &[ClientIntent]) -> bool {
+    let _ = delivered;
+    todo!("M8.8d: convergence driver not yet implemented")
+}
+
+/// The canonical ≥2-client scenario: two characters walking distinct paths in
+/// zone 0 with staggered send times, enough intents that loss + reorder bite.
+#[must_use]
+pub fn scenario() -> Vec<ClientIntent> {
+    todo!("M8.8d: convergence driver not yet implemented")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{replay, Link, Msg};
