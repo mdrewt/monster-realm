@@ -38,27 +38,39 @@ export function ciWiresE2eGate(yaml) {
   return hasJob && runsE2e && usesSpacetime;
 }
 
-// --- M8.8f structural gate stubs (specialist implements; bodies throw → RED) ---
+// --- M8.8f structural gate (detectors implemented; round-2-hardened) ---
+//
+// KNOWN OUT-OF-SCOPE residuals this gate does NOT catch (documented, deferred):
+//   - a `needs:`-chain on a disabled prerequisite job (the e2e gate is skipped
+//     when a needed job is itself disabled/skipped);
+//   - an empty `strategy.matrix` (zero matrix entries → zero job runs);
+//   - a `just e2e` string present only in a step `name:` while the `run:` is a no-op;
+//   - a custom proc-macro alias instead of `#[spacetimedb::reducer]`.
 
 // True iff the workflow's top-level `on:` fires on `pull_request`.
 export function triggersOnPullRequest(yaml) {
   const lines = yaml.split('\n');
   let inOn = false;
   for (const line of lines) {
+    // YAML comment lines never activate a trigger (a commented-out trigger
+    // is not live). `\bpull_request\b` deliberately rejects pull_request_target
+    // (the `_` after `request` is a word char, so the boundary does not match).
+    const isComment = line.trim().startsWith('#');
+    const hasPrTrigger = !isComment && /\bpull_request\b/.test(line);
     // A top-level key sits at 0 indent (no leading space) and ends with `:`.
     const isTopLevelKey = /^\S.*:/.test(line);
     if (inOn) {
       // Leaving the `on:` block at the next 0-indent key (e.g. jobs:/permissions:).
       if (isTopLevelKey && !/^on\b/.test(line)) {
         inOn = false;
-      } else if (/pull_request/.test(line)) {
+      } else if (hasPrTrigger) {
         return true;
       }
     }
     if (/^on:/.test(line)) {
       inOn = true;
       // Inline forms: `on: pull_request` or `on: [push, pull_request]`.
-      if (/pull_request/.test(line)) {
+      if (hasPrTrigger) {
         return true;
       }
     }
@@ -100,8 +112,8 @@ export function extractJobBlock(yaml, jobName) {
 // ok is true ONLY when:
 //   (1) triggersOnPullRequest is true
 //   (2) the e2e job exists and is "wired" (ciWiresE2eGate)
-//   (3) the e2e job block has NO job-level `continue-on-error: true`
-//   (4) the e2e job block has NO job-level `if:`
+//   (3) the e2e job block has NO `continue-on-error:` with a truthy value (job OR step)
+//   (4) the e2e job block has NO `if:` key (job OR step)
 // On any failure, reason names which condition failed.
 export function e2eGateIsBlocking(yaml) {
   if (!triggersOnPullRequest(yaml)) {
@@ -117,18 +129,25 @@ export function e2eGateIsBlocking(yaml) {
     };
   }
   const block = extractJobBlock(yaml, 'e2e');
-  // Job-level keys sit at exactly 4 spaces; step-level keys sit at >=6 spaces.
+  // Match a YAML key at ANY indent (job or step) via the trimmed line. A shell
+  // `if curl ...; then` inside a `run: |` block trims to `if curl...`, not `if:`,
+  // so it is NOT mistaken for a YAML `if:` key.
   for (const line of block.split('\n')) {
-    if (/^ {4}continue-on-error:\s*true\b/.test(line)) {
-      return {
-        ok: false,
-        reason: 'e2e job has job-level continue-on-error: true (failures non-blocking)',
-      };
+    const tr = line.trim();
+    if (tr.startsWith('continue-on-error:')) {
+      const value = tr.slice('continue-on-error:'.length).trim();
+      // Truthy YAML booleans/aliases or an expression that evaluates to true.
+      if (/^(true|yes|on|True)\b/.test(value) || /\$\{\{\s*true\s*\}\}/.test(value)) {
+        return {
+          ok: false,
+          reason: 'e2e job/step has a truthy continue-on-error (failures non-blocking)',
+        };
+      }
     }
-    if (/^ {4}if:/.test(line)) {
+    if (tr.startsWith('if:')) {
       return {
         ok: false,
-        reason: 'e2e job has a job-level if: condition (can disable the gate, e.g. if: false)',
+        reason: 'e2e job/step has an if: condition (can disable the gate)',
       };
     }
   }

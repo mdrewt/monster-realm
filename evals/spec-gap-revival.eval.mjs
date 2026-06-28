@@ -16,10 +16,32 @@
 // bypass vectors found by red-team/reviewer: swap_active false-positive, give_monster
 // and donate_monster broadened detection, cfg_attr-form ignore, and the matrix case
 // where a trade reducer lands but the anchor fn is deleted instead of revived.
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
-// --- Stub exports (specialist implements; bodies throw → RED) ---
+// Recursively collect every `.rs` file path under `dir` (subdirs included).
+// A trade/transfer reducer could land in a NEW server file, not just lib.rs —
+// gathering all server sources keeps cross-file reducer coverage (red-team S2).
+function collectRustFiles(dir) {
+  const out = [];
+  let entries = [];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    const full = path.join(dir, entry);
+    if (statSync(full).isDirectory()) {
+      out.push(...collectRustFiles(full));
+    } else if (entry.endsWith('.rs')) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+// --- Detectors (implemented; round-2-hardened) ---
 
 // Returns an array of reducer fn names that are monster trade/transfer/ownership-change
 // reducers. Only #[spacetimedb::reducer...]-annotated fns count; match names against
@@ -45,15 +67,31 @@ export function findTradeTransferReducers(rustSrc) {
     }
     // Skip intervening attributes, doc/line comments and blanks without
     // clearing the pending flag; clear it on any other code line (defensive).
-    if (t === '' || t.startsWith('#[') || t.startsWith('//') || t.startsWith('///')) {
+    // (`///` doc comments are already covered by the `//` prefix test.)
+    if (t === '' || t.startsWith('#[') || t.startsWith('//')) {
       continue;
     }
     pending = false;
   }
   return reducers.filter((name) => {
     const lower = name.toLowerCase();
-    if (/trade|transfer|gift|exchange/.test(lower)) return true;
-    return /change_owner|owner_change|set_owner|reassign_owner/.test(lower);
+    // Unambiguous transfer verbs/nouns — always a trade/transfer reducer.
+    if (/trade|transfer|gift|exchange|donate|bequeath|relinquish|sell|lend/.test(lower)) {
+      return true;
+    }
+    // Explicit owner-change patterns.
+    if (/change_owner|owner_change|set_owner|reassign_owner|new_owner|custody/.test(lower)) {
+      return true;
+    }
+    // Ambiguous verbs (give/send/swap/hand_over/assign) only count when the
+    // name ALSO names an ownership noun — so `swap_active` (battle slot swap)
+    // does NOT match, but `give_monster`/`swap_monster` do. Plain .includes()
+    // keeps this ReDoS-immune and explicit.
+    const ambiguousVerbs = ['give', 'send', 'swap', 'hand_over', 'assign'];
+    const ownershipNouns = ['monster', 'owner', 'pet', 'creature', 'party_member'];
+    const hasAmbiguousVerb = ambiguousVerbs.some((v) => lower.includes(v));
+    const hasOwnershipNoun = ownershipNouns.some((n) => lower.includes(n));
+    return hasAmbiguousVerb && hasOwnershipNoun;
   });
 }
 
@@ -73,7 +111,10 @@ export function parkedTestIsIgnored(testSrc) {
   for (let i = fnIdx - 1; i >= 0; i--) {
     const t = lines[i].trim();
     if (t.startsWith('#[') || t.startsWith('//')) {
+      // Bare `#[ignore]`/`#[ignore = "..."]` OR a cfg_attr that injects ignore,
+      // e.g. `#[cfg_attr(test, ignore = "...")]` — both suppress execution.
       if (/^#\[ignore\b/.test(t)) return true;
+      if (/^#\[cfg_attr\(/.test(t) && /\bignore\b/.test(t)) return true;
       continue;
     }
     if (t === '') continue;
@@ -86,9 +127,11 @@ export function parkedTestIsIgnored(testSrc) {
 //
 // violated  — true iff a trade/transfer reducer exists AND the parked test is still
 //             ignored (the precondition outlived itself — gate must FAIL).
-// anchorMissing — true iff NO trade/transfer reducer exists AND the parked test fn
-//             `m7b_2_owner_change_mid_battle_spec_gap` is absent from testSrc (the
-//             guard was silently deleted while still dormant — gate must FAIL).
+// anchorMissing — true iff the parked test fn `m7b_2_owner_change_mid_battle_spec_gap`
+//             is absent from testSrc, in EITHER reducer state. The anchor must never
+//             silently vanish: deleting/renaming it (whether or not a reducer landed)
+//             is a failure — either it stays parked as the dormant guard, or it is
+//             revived under its same name. (gate must FAIL.)
 // reducers  — the list returned by findTradeTransferReducers(serverSrc).
 // reason    — human-readable explanation of which condition triggered (or 'ok').
 //
@@ -98,13 +141,13 @@ export function specGapStatus({ serverSrc, testSrc }) {
   const ignored = parkedTestIsIgnored(testSrc);
   const anchorPresent = /fn\s+m7b_2_owner_change_mid_battle_spec_gap\b/.test(testSrc);
   const violated = reducers.length > 0 && ignored;
-  const anchorMissing = reducers.length === 0 && !anchorPresent;
+  const anchorMissing = !anchorPresent;
   let reason;
   if (violated) {
     reason = `spec gap closed: trade/transfer reducer(s) [${reducers.join(', ')}] landed but m7b_2_owner_change_mid_battle_spec_gap is still #[ignore] — un-ignore m7b_2_owner_change_mid_battle_spec_gap and close the write-back abort-on-owner-change contract`;
   } else if (anchorMissing) {
     reason =
-      'dormant guard deleted: m7b_2_owner_change_mid_battle_spec_gap was removed while no trade/transfer reducer exists — restore the parked test as the spec-gap anchor';
+      'anchor missing: m7b_2_owner_change_mid_battle_spec_gap was deleted or renamed — the spec-gap anchor must never silently vanish; keep it parked as the dormant guard, or revive it under the same name';
   } else if (reducers.length === 0) {
     reason = 'ok (dormant: no trade/transfer reducer; parked test present)';
   } else {
@@ -612,14 +655,18 @@ mod tests {
   // Real-file assertion: current codebase is in the healthy/dormant state.
   // specGapStatus must return violated=false && anchorMissing=false.
   // =========================================================================
-  const serverSrcPath = path.resolve('server-module/src/lib.rs');
+  const serverSrcDir = path.resolve('server-module/src');
   const testSrcPath = path.resolve('game-core/src/combat/m7b_redteam_tests.rs');
 
-  let realServerSrc;
+  // Concatenate ALL .rs files under server-module/src/ (recursing subdirs) so a
+  // trade reducer landing in a new file is still seen (cross-file coverage — S2).
+  let realServerSrc = '';
   try {
-    realServerSrc = readFileSync(serverSrcPath, 'utf8');
+    for (const file of collectRustFiles(serverSrcDir)) {
+      realServerSrc += `${readFileSync(file, 'utf8')}\n`;
+    }
   } catch (err) {
-    return { name, pass: false, detail: `cannot read ${serverSrcPath}: ${err.message}` };
+    return { name, pass: false, detail: `cannot read ${serverSrcDir}: ${err.message}` };
   }
 
   let realTestSrc;
