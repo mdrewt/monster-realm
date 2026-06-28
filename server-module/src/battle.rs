@@ -766,7 +766,7 @@ mod tests {
     // =========================================================================
     // M8.8b-C: SSOT-wiring source-guard tests
     //
-    // These parse the source text of this file (server-module/src/lib.rs) to
+    // These parse the source text of this file (server-module/src/battle.rs) to
     // verify that `attempt_recruit` routes turn-advance through `advance_turn`
     // (ADR-0003 SSOT) rather than re-implementing it inline, and that the
     // level-up HP heal is delegated to `game_core::level_up_healed_hp` rather
@@ -784,7 +784,7 @@ mod tests {
 
     /// Include the full source of this file at compile time so the guard runs
     /// without any filesystem I/O at test time.
-    const LIB_RS_SOURCE: &str = include_str!("battle.rs");
+    const MODULE_SOURCE: &str = include_str!("battle.rs");
 
     /// Strip Rust block comments (`/* ... */`) and line comments (`// ...`) from
     /// `src`. Returns a new String with those regions replaced by spaces (same
@@ -895,7 +895,7 @@ mod tests {
     /// level_up_healed_hp call.
     #[test]
     fn level_up_heal_is_owned_by_game_core() {
-        let stripped = strip_rust_comments(LIB_RS_SOURCE);
+        let stripped = strip_rust_comments(MODULE_SOURCE);
 
         // Scope both checks to the body of the function that owns the heal.
         // The function name is assembled from parts so the complete literal

@@ -254,7 +254,7 @@ mod tests {
     // =========================================================================
     // M8.8b-C: SSOT-wiring source-guard tests
     //
-    // These parse the source text of this file (server-module/src/lib.rs) to
+    // These parse the source text of this file (server-module/src/taming.rs) to
     // verify that `attempt_recruit` routes turn-advance through `advance_turn`
     // (ADR-0003 SSOT) rather than re-implementing it inline, and that the
     // level-up HP heal is delegated to `game_core::level_up_healed_hp` rather
@@ -272,7 +272,7 @@ mod tests {
 
     /// Include the full source of this file at compile time so the guard runs
     /// without any filesystem I/O at test time.
-    const LIB_RS_SOURCE: &str = include_str!("taming.rs");
+    const MODULE_SOURCE: &str = include_str!("taming.rs");
 
     /// Strip Rust block comments (`/* ... */`) and line comments (`// ...`) from
     /// `src`. Returns a new String with those regions replaced by spaces (same
@@ -382,7 +382,7 @@ mod tests {
     /// and no longer contains a raw `turn_number +=`.
     #[test]
     fn attempt_recruit_routes_turn_advance_through_game_core() {
-        let stripped = strip_rust_comments(LIB_RS_SOURCE);
+        let stripped = strip_rust_comments(MODULE_SOURCE);
         let body = extract_fn_body(&stripped, "attempt_recruit")
             .expect("attempt_recruit function must exist in lib.rs");
 
