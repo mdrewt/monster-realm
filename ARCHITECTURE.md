@@ -227,10 +227,10 @@ injected (no RNG/clock).
   - `encounter_triggers(roll, threshold)` — `roll % 1000 < threshold` (per-mille
     gate)
   - `roll_encounter(table, roll, player_level)` — level-range filter → weighted
-    selection among eligible entries
+    selection among eligible entries; weight sum is a checked fold (`checked_add`→`None` on u32 overflow — total for any caller, M8.7c)
   - `recruit_chance(max_hp, current_hp, base_rate, bait_bonus)` — integer HP-bonus:
     `(max_hp - current_hp) * MISSING_HP_FACTOR / max_hp`, capped at 1000. Guards:
-    max_hp==0 skips, current_hp>=max_hp treats as full HP
+    max_hp==0 skips, current_hp>=max_hp treats as full HP; `debug_assert!(base_rate ≤ 1000 && bait_bonus ≤ 1000)` precondition (fail-loud parity with `attempt_recruit`, M8.7c)
   - `attempt_recruit(chance, roll)` — `roll % 1000 < chance`
   - `MISSING_HP_FACTOR = 500` — per-mille constant (50 percentage points at 0 HP)
 
