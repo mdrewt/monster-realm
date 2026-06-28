@@ -18,7 +18,7 @@
 //
 // Implementation: pure source-scan with indexOf — NO new RegExp.
 
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 
 /**
  * Strip `//` line comments from Rust source.
@@ -240,10 +240,10 @@ export default async function () {
   // Turns GREEN when the encounter lookup is changed to character.zone_id.
   // ==========================================================================
 
-  const SERVER_SRC = 'server-module/src/lib.rs';
+  const SERVER_SRC = 'server-module/src';
   let rawSrc;
   try {
-    rawSrc = readFileSync(SERVER_SRC, 'utf8');
+    rawSrc = readServerModuleSources(SERVER_SRC);
   } catch (e) {
     return { name, pass: false, detail: `cannot read ${SERVER_SRC}: ${e.message}` };
   }
@@ -278,4 +278,19 @@ export default async function () {
       'not the raw zone_id argument — zone-arg-discipline invariant holds. ' +
       'Teeth verified: BAD_USES_ARGUMENT flagged, GOOD_USES_SERVER_FIELD passed.',
   };
+}
+
+// M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
+// domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a
+// deterministic order) so this static check parses the whole crate, surviving the
+// split. Mirrors the glob pattern already used by encounter-privacy / spec-gap-
+// revival. The set of tables/reducers/fns is unchanged — only their files moved.
+function readServerModuleSources(dir) {
+  const parts = [];
+  for (const entry of readdirSync(dir).sort()) {
+    const full = `${dir}/${entry}`;
+    if (statSync(full).isDirectory()) parts.push(readServerModuleSources(full));
+    else if (entry.endsWith('.rs')) parts.push(readFileSync(full, 'utf8'));
+  }
+  return parts.join('\n');
 }

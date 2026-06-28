@@ -1,7 +1,7 @@
 // Monster privacy eval (ADR-0015 fallback): hidden genes (IVs, EVs, nature)
 // live in a PRIVATE table; the public projection contains only safe fields.
 // Proof-of-teeth: a bad fixture (public table with IVs) must be flagged.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 
 const HIDDEN_FIELDS = [
   'iv_hp',
@@ -73,7 +73,7 @@ export default async function () {
   }
 
   // Real check: scan the actual server-module source.
-  const src = readFileSync('server-module/src/lib.rs', 'utf8');
+  const src = readServerModuleSources('server-module/src');
   const tables = parseTables(src);
 
   const err1 = checkMonsterPrivate(tables);
@@ -96,4 +96,19 @@ export default async function () {
     pass: true,
     detail: `${tables.length} tables scanned; monster private, projection clean, no client accessor (teeth verified)`,
   };
+}
+
+// M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
+// domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a
+// deterministic order) so this static check parses the whole crate, surviving the
+// split. Mirrors the glob pattern already used by encounter-privacy / spec-gap-
+// revival. The set of tables/reducers/fns is unchanged — only their files moved.
+function readServerModuleSources(dir) {
+  const parts = [];
+  for (const entry of readdirSync(dir).sort()) {
+    const full = `${dir}/${entry}`;
+    if (statSync(full).isDirectory()) parts.push(readServerModuleSources(full));
+    else if (entry.endsWith('.rs')) parts.push(readFileSync(full, 'utf8'));
+  }
+  return parts.join('\n');
 }

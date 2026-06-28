@@ -9,11 +9,11 @@
 //
 // Implementation note on Semgrep detect-non-literal-regexp:
 //   All pattern matching uses literal /regex/ patterns — NO new RegExp(...).
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 const BASELINE_PATH = path.resolve('evals/baselines/table-schemas.json');
-const SERVER_SRC = path.resolve('server-module/src/lib.rs');
+const SERVER_SRC = path.resolve('server-module/src');
 
 // ---------------------------------------------------------------------------
 // Pure parser helpers (exported for gate-teeth and regeneration)
@@ -199,7 +199,7 @@ pub struct Inventory {
   // -------------------------------------------------------------------------
   let rawSrc;
   try {
-    rawSrc = readFileSync(SERVER_SRC, 'utf8');
+    rawSrc = readServerModuleSources(SERVER_SRC);
   } catch (e) {
     return {
       name,
@@ -224,4 +224,19 @@ pub struct Inventory {
     pass: true,
     detail: `${tableCount} tables parsed; all match baseline exactly (columns, types, PKs); EncounterEntryRow excluded; column-drop tooth verified`,
   };
+}
+
+// M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
+// domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a
+// deterministic order) so this static check parses the whole crate, surviving the
+// split. Mirrors the glob pattern already used by encounter-privacy / spec-gap-
+// revival. The set of tables/reducers/fns is unchanged — only their files moved.
+function readServerModuleSources(dir) {
+  const parts = [];
+  for (const entry of readdirSync(dir).sort()) {
+    const full = `${dir}/${entry}`;
+    if (statSync(full).isDirectory()) parts.push(readServerModuleSources(full));
+    else if (entry.endsWith('.rs')) parts.push(readFileSync(full, 'utf8'));
+  }
+  return parts.join('\n');
 }
