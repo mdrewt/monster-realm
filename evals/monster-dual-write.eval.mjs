@@ -124,6 +124,13 @@ export function checkFnBodyDualWrite(rawBody) {
     if (!body.includes(UPDATE_PUB)) {
       return `fn has ${UPDATE_MONSTER} with no matching ${UPDATE_PUB}`;
     }
+    // F8 (M9b): the UPDATE mirror must also use pub_from_monster — a hand-rolled
+    // partial pub row (e.g. pub_m.bond = ...; update(pub_m)) silently diverges if
+    // the Monster struct gains new fields (e.g. last_care_at_ms). pub_from_monster
+    // is the single projection point (derive-on-write, ADR-0016).
+    if (!body.includes(PUB_FROM_MONSTER)) {
+      return `fn has ${UPDATE_MONSTER} + ${UPDATE_PUB} but missing ${PUB_FROM_MONSTER} — UPDATE mirror must use pub_from_monster (not a hand-rolled partial struct)`;
+    }
   }
 
   if (hasMonsterDelete) {
@@ -198,6 +205,34 @@ fn insert_something(ctx: &ReducerContext) {
       pass: false,
       detail:
         'TEETH B: fn with monster().insert( whose monster_pub insert lacks pub_from_monster( was not flagged',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // PROOF-OF-TEETH C (M9b F8): fn with a monster UPDATE whose monster_pub
+  // mirror is hand-rolled (partial struct, no pub_from_monster).
+  // Kills: impls that accept any monster_pub update regardless of projection.
+  // A care reducer that writes pub_m.bond = ...; update(pub_m) without
+  // pub_from_monster would silently diverge when Monster gains new fields.
+  // -------------------------------------------------------------------------
+  const badUpdateHandRolled = `
+fn update_bond_hand_rolled(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.bond = 100;
+    ctx.db.monster().monster_id().update(m.clone());
+    // BUG: hand-rolled partial pub mirror (no pub_from_monster call)
+    let mut pub_m = ctx.db.monster_pub().monster_id().find(monster_id).unwrap();
+    pub_m.bond = m.bond;
+    ctx.db.monster_pub().monster_id().update(pub_m);
+}
+`;
+  const teethC = findDualWriteViolations(badUpdateHandRolled);
+  if (teethC.length === 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH C: fn with monster().monster_id().update( whose monster_pub update lacks pub_from_monster( was not flagged (M9b F8 — UPDATE path must use pub_from_monster)',
     };
   }
 

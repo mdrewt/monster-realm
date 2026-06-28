@@ -97,7 +97,8 @@
       "stat_sp_attack": "u16",
       "stat_sp_defense": "u16",
       "current_hp": "u16",
-      "party_slot": "u8"
+      "party_slot": "u8",
+      "last_care_at_ms": "i64"
     }
   },
   "monster_pub": {
