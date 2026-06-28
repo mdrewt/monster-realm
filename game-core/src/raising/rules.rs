@@ -14,10 +14,14 @@ use crate::monster::types::{Bond, EVs, IVs, Level, Nature, StatBlock, StatKind};
 
 use super::types::{CareError, FocusTrainError, FocusTrainResult};
 
-/// Per-stat EV cap. Mirrors the threshold `EVs::new` rejects above; the
-/// `EVs::new(...).expect(...)` in `focus_train` mechanically catches any drift
-/// from the real `monster::types` cap (a wrong value here would make a near-cap
-/// grant exceed the constructor's limit → loud panic, pinned by the gating teeth).
+/// Per-stat EV cap. Mirrors the threshold `EVs::new` rejects above. Drift from
+/// the real (private) `monster::types` cap is caught BOTH ways by the gating
+/// teeth: a too-HIGH value makes a near-cap grant exceed the constructor limit →
+/// the `EVs::new(...).expect(...)` in `focus_train` panics; a too-LOW value
+/// rejects/underflows at a boundary → `focus_train_cap_const_agrees_with_evs_constructor`
+/// fails. The permanent fix — re-export these caps `pub(crate)` from
+/// `monster::types` and import them — is deferred to M9b (it already edits that
+/// file); see ADR-0058 follow-ups.
 const EV_PER_STAT_CAP: u16 = 252;
 /// Total-EV budget cap. Mirrors `EVs::new`'s total threshold (see above).
 const EV_TOTAL_CAP: u16 = 510;
@@ -35,6 +39,8 @@ const EV_TOTAL_CAP: u16 = 510;
 ///
 /// # Errors
 /// `FocusTrainError` whenever the application would move zero EVs (see above).
+/// (The returned `Result` — and `FocusTrainResult` — are both `#[must_use]`, so
+/// the M9b reducer cannot silently drop the re-derived stats.)
 pub fn focus_train(
     base: &StatBlock,
     ivs: &IVs,

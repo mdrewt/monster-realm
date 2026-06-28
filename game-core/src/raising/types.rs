@@ -7,6 +7,7 @@ use crate::monster::types::{EVs, StatBlock};
 /// the re-derived stat block. The M9b reducer writes both back
 /// (`MonsterInstance { evs, derived_stats, ..old }`) — see ADR-0058 §1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
 pub struct FocusTrainResult {
     pub evs: EVs,
     pub derived_stats: StatBlock,
