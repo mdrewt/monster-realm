@@ -10,7 +10,7 @@ Architecture Decision Records live in **two locations**; check both.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0060`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0061`**.
 
 ## ADRs in `docs/adr/`
 
@@ -42,6 +42,7 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 | [0057](./0057-content-directory-glob-loading.md) | Content as glob-loaded `content/<registry>/*.ron` directories via a `build.rs` embed | M8.9e |
 | [0058](./0058-raising-ev-training-care.md) | Raising rules — EV focus-training (top-off) and care (bond) as pure-core invariants | M9a |
 | [0059](./0059-raising-server-care-cooldown-inventory-reconcile.md) | M9b server raising — `care` + per-monster cooldown, inventory-backbone reconcile, `train` split | M9b |
+| [0060](./0060-evolution-fusion-content-shape.md) | Evolution/fusion content shape — separate cross-referenced registry + additive `validate_evolution_fusion` integrity checks | M10a |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
