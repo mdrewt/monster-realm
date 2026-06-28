@@ -1,10 +1,12 @@
-// battle-schema-snapshot eval (M8.7a, ADR-0006): ALL table definitions in
-// server-module/src/lib.rs must exactly match the committed baseline in
+// battle-schema-snapshot eval (M8.7a, ADR-0006): ALL table definitions under
+// server-module/src/** must exactly match the committed baseline in
 // evals/baselines/table-schemas.json (columns, declared types, PK, table set).
+// (M8.9b split the former single lib.rs into domain submodules; this eval globs
+// the whole src tree — see readServerModuleSources below.)
 //
 // The baseline is a committed generated artifact. To regenerate after an
 // intentional schema change: run parseTableSchemas (below) over
-// server-module/src/lib.rs, write the sorted result to
+// server-module/src/** (all .rs files, sorted), write the sorted result to
 // evals/baselines/table-schemas.json, and commit the diff for review.
 //
 // Implementation note on Semgrep detect-non-literal-regexp:

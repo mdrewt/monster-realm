@@ -88,11 +88,76 @@ Additive-only schema; content is **data** (RON registries in `game-core/content`
 parsed by pure loaders) seeded by an idempotent `sync_content` reducer (upsert by
 stable id), separate from `init`. Stable ids are append-only.
 
+## Server-module domain modules (M8.9 — ADR-0056)
+
+The `server-module` crate is split by domain into cohesive submodules of the **same**
+crate (not new crates — ADR-0005). `lib.rs` is reduced to module wiring + crate-wide
+constants + the three lifecycle reducers (`init` / `sync_content` / `on_disconnect`).
+**This module map is the canonical `touches:` vocabulary**: every downstream milestone
+(M9, M10, …) declares the *domain module* it edits (`server-module/src/battle.rs`)
+rather than the whole `lib.rs`, so two server-side slices touching different domains
+are `touches:`-disjoint and may fan out per `PLAN.md` §9. Renaming a module later
+invalidates downstream `touches:` declarations — **keep the file names stable.**
+
+| Module | Owns | Inline-test sibling |
+|--------|------|--------------------|
+| `lib.rs` | module wiring + crate constants + lifecycle reducers (`init`/`sync_content`/`on_disconnect`) | — |
+| `schema.rs` | the data `#[table]` structs + row types (14 of the 15 snapshot tables; the `movement_tick_schedule` scheduled table lives in `movement.rs` with its reducer) | — |
+| `guards.rs` | `log_reject`, `validate_name`, `authorize_move`, `check_party_size`, `check_monster_in_party`, `check_team_coupling`, and `require_owner` (the consolidated owner-check preamble) | `guards_tests.rs` |
+| `marshal.rs` | row ↔ game-core marshaling helpers | `marshal_tests.rs` |
+| `content.rs` | `sync_content_inner` + seeding helpers | inline |
+| `movement.rs` | `join_game`, `enqueue_move`, `set_move`, `clear_queue`, `movement_tick` + the `movement_tick_schedule` scheduled table | inline |
+| `monster_mgmt.rs` | `set_nickname`, `set_party_slot` | inline |
+| `battle.rs` | `start_battle`, `start_wild_battle`, `submit_attack`, `swap_active`, `flee`, `heal_party`, `begin_encounter`, `lead_party`, `write_back_*` (the largest module — the battle cluster) | `battle_tests.rs` |
+| `taming.rs` | `attempt_recruit`, `grant_bait`, `grant_item`, `consume_one` | `taming_tests.rs` |
+
+Behavior is provably unchanged because table/reducer **names are explicit**, so
+regenerated TypeScript bindings and the schema snapshot are byte-identical — the
+`bindings-drift` + `schema-snapshot` gates are M8.9's behavior-preservation proof.
+The 10 evals that statically parse the server module now glob
+`server-module/src/**/*.rs` (recursive, sorted) so the split is transparent to them.
+Two mechanical constraints (recorded in ADR-0056, surfaced by the M8.9a spike): a
+cross-module `ctx.db.<table>()` call must import the generated accessor trait
+(`use crate::schema::<table>;`), and a module name must not equal a table name
+(`mod battle;` resolves only once the `battle` table has moved out of the crate root).
+
+## Content directory layout (M8.9 — ADR-0057)
+
+Content registries are **glob-loaded directories**, not monolithic files. A
+`game-core/build.rs` host build-script embeds every `content/<registry>/*.ron` in
+**sorted filename order** as `include_str!` parts (compile-time embed; no runtime
+I/O, no new runtime or build dependency — `std::fs` only), and the pure loaders in
+`content.rs` concatenate the parsed `Vec`s. **This directory layout is the second
+canonical `touches:` vocabulary**: adding content is a new
+`content/<registry>/NNN-name.ron` and nothing else — no `content.rs`, loader, or
+`build.rs` edit — so two content-adding slices become `touches:`-disjoint and fan out.
+
+| Registry | Path | Form |
+|----------|------|------|
+| species | `content/species/*.ron` | directory (currently `000-core.ron`) |
+| skills | `content/skills/*.ron` | directory |
+| items | `content/items/*.ron` | directory |
+| encounters | `content/encounters/*.ron` | directory |
+| zones | `content/zones/*.ron` | directory |
+| type_chart | `content/type_chart.ron` | **single file** (one coherent matrix, rarely appended in parallel) |
+
+- **Numeric prefixes zero-pad to a consistent width** (`000-`, `001-`, `010-`): the
+  embed sorts files **lexicographically** in both `build.rs` and the `append-only-ids`
+  eval, so `10-foo.ron` would sort before `9-foo.ron`. Cross-file row order never
+  affects behavior (every registry is keyed by id / zone_id, and `validate_content`
+  enforces id-uniqueness across the merged `Vec`) — the convention only keeps
+  `000-core.ron` the stable first part.
+- **Loud per-file rejection**: a malformed `*.ron` makes the loader return `Err`
+  naming the offending file — never a silent skip (parse-don't-validate preserved).
+- Content is **data, not schema** — the layout change touches neither `module_bindings`
+  nor the schema snapshot; the **content-parity** proof-of-teeth (merged registry ==
+  pre-migration rows, in order) is its behavior-preservation gate.
+
 ## Decisions
 
 ADRs **0002–0034** are design ADRs that live in the harness spec corpus
 (`../../specs/monster-realm-v2/adr/`); **0001** is mirrored in both locations.
-Implementation ADRs **0001, 0035–0055** live in `docs/adr/` — see
+Implementation ADRs **0001, 0035–0057** live in `docs/adr/` — see
 `docs/adr/README.md` for the navigable catalog. Highlights: 0035 scaffold
 hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest, **0039
 two-window e2e CI gate**, 0040 RLS fallback split-tables, 0041 integer damage
@@ -100,7 +165,7 @@ formula, 0042 battle table public PvE, 0043 CI caching + fast inner loop, 0044
 private encounter table, 0045 private `battle_wild` individuality table, 0046
 player inventory model, 0047 recruit resolution, 0048 `start_battle` opponent
 provenance, 0049 panic-as-content-invariant policy, 0050 nightly mutation/
-coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness. See also
+coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness, 0056 server-module modularization (domain submodules — the canonical `touches:` vocabulary), 0057 content-directory glob loading via `build.rs`. See also
 `docs/validation-findings.md` (empirical Tier-1 results).
 
 ## Monster subsystem (`game-core/src/monster/`, M6a)
@@ -498,6 +563,22 @@ Deferred-with-rationale: the criterion **perf-budget gate** (folded into the M20
 observability capstone — a non-flaky budget needs tuned baselines) and GitHub
 Actions *execution* (the workflow is committed; only local `just ci` is verifiable
 in this environment).
+**M8.9** (server-module modularization + content-directory glob loading — a pure,
+behavior-preserving reorganization: no schema, rule, or game-design change)
+complete. Workstream A (ADR-0056): the former `server-module/src/lib.rs` monolith
+(~2081 lines) split into 8 cohesive domain submodules + a lifecycle `lib.rs`
+(M8.9a spike+scaffold → M8.9b the move), the per-reducer owner-check preamble
+consolidated into `guards::require_owner`, and each domain's inline tests extracted
+to `*_tests.rs` siblings (M8.9c — marshal/battle/taming/guards). Workstream B
+(ADR-0057, M8.9e): five of the six content registries migrated to glob-loaded
+`content/<registry>/*.ron` directories via a `game-core/build.rs` embed
+(`type_chart` stays a single file). Both module maps are now the canonical
+`touches:` vocabularies that let future server-side and content-adding slices fan
+out (see the two sections above). **Behavior provably unchanged — the milestone
+close gate (verified at M8.9d):** `bindings-drift` = 0 (committed
+`client/src/module_bindings/` byte-identical to a fresh `spacetime generate`),
+`schema-snapshot` unchanged (15 tables), and `content-parity` green (the five
+`m8_9e_*_migration_parity` tests reproduce the pre-migration rows in order).
 
 ### Finalization audit (2026-06-25) — named deferrals
 

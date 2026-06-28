@@ -10,7 +10,7 @@ Architecture Decision Records live in **two locations**; check both.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0056`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0058`**.
 
 ## ADRs in `docs/adr/`
 
@@ -38,6 +38,8 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 | [0053](./0053-swap-legality-as-pure-core-invariant.md) | Swap legality as a pure-core invariant (checked `set_active`) | M8.6a |
 | [0054](./0054-dev-reducer-release-gating.md) | Dev/test-reducer release-gating (`#[cfg(feature="dev_reducers")]`) + zone reject-not-clamp + inventory single-stack as a mechanical gate | M8.7b |
 | [0055](./0055-release-fail-loud-determinism-gate.md) | Release fail-loud + determinism-gate completeness (overflow-checks + RNG/clock/OS-entropy sinks) | M8.8a |
+| [0056](./0056-server-module-modularization.md) | server-module internal module boundary (domain submodules) — the canonical `touches:` vocabulary | M8.9a/b |
+| [0057](./0057-content-directory-glob-loading.md) | Content as glob-loaded `content/<registry>/*.ron` directories via a `build.rs` embed | M8.9e |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
