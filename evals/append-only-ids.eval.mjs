@@ -1,8 +1,9 @@
 // Append-only-ids eval (ADR-0006): stable content ids are NEVER removed or
 // renumbered (clients + saved data key on them). New ids are fine; a vanished id
-// fails the gate. Compares game-core/content/*.ron against committed
-// baselines (evals/baselines/*-ids.json).
-import { readFileSync } from 'node:fs';
+// fails the gate. Compares each registry DIRECTORY game-core/content/<reg>/*.ron
+// (M8.9e fan-out: globbed in sorted filename order) against committed baselines
+// (evals/baselines/*-ids.json).
+import { readdirSync, readFileSync } from 'node:fs';
 
 export function parseIds(ron) {
   return [...ron.matchAll(/\bid:\s*(\d+)/g)].map((m) => Number(m[1]));
@@ -14,8 +15,26 @@ export function removedIds(baselineIds, currentIds) {
   return baselineIds.filter((id) => !cur.has(id));
 }
 
-function checkRegistry(ronPath, baselinePath, baselineKey, label) {
-  const ron = readFileSync(ronPath, 'utf8');
+// M8.9e: each registry is now a DIRECTORY of *.ron parts. Read them all in
+// sorted filename order and concatenate the text, then run the same parseIds —
+// preserving the fan-out property (adding a part needs no eval edit).
+function readRegistryDir(dirPath) {
+  const text = readdirSync(dirPath)
+    .filter((name) => name.endsWith('.ron'))
+    .sort()
+    .map((name) => readFileSync(`${dirPath}/${name}`, 'utf8'))
+    .join('\n');
+  // Strip whole-line `//` comments before id-scanning. Every registry part file
+  // carries a header comment, and the migration multiplies that comment surface
+  // (N files per registry), so a bare `id: <n>` written inside a comment must NOT
+  // be counted as a stable content id — that would poison the committed baseline.
+  // Only full-line comments are stripped, never mid-line `//` (it can occur inside
+  // a string value), so real `id:` fields are untouched.
+  return text.replace(/^[ \t]*\/\/.*$/gm, '');
+}
+
+function checkRegistry(ronDir, baselinePath, baselineKey, label) {
+  const ron = readRegistryDir(ronDir);
   const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'))[baselineKey];
   const current = parseIds(ron);
   const missing = removedIds(baseline, current);
@@ -37,25 +56,25 @@ export default async function () {
 
   const registries = [
     {
-      ron: 'game-core/content/zones.ron',
+      ron: 'game-core/content/zones',
       baseline: 'evals/baselines/zone-ids.json',
       key: 'zones',
       label: 'zones',
     },
     {
-      ron: 'game-core/content/species.ron',
+      ron: 'game-core/content/species',
       baseline: 'evals/baselines/species-ids.json',
       key: 'species',
       label: 'species',
     },
     {
-      ron: 'game-core/content/skills.ron',
+      ron: 'game-core/content/skills',
       baseline: 'evals/baselines/skill-ids.json',
       key: 'skills',
       label: 'skills',
     },
     {
-      ron: 'game-core/content/items.ron',
+      ron: 'game-core/content/items',
       baseline: 'evals/baselines/item-ids.json',
       key: 'items',
       label: 'items',
