@@ -291,13 +291,22 @@ export function checkCareCooldownOperator(body) {
 }
 
 /**
- * Check F6 — SSOT: care / evaluate_care must delegate bond arithmetic to
- * apply_care( and must NOT contain inline bond arithmetic (`.saturating_add(`
- * applied to a bond context, or `bond +` arithmetic).
+ * Check F6 — SSOT: a function body must delegate bond arithmetic to either
+ * `apply_care(` directly OR to the pure seam `evaluate_care(` (which itself
+ * calls `apply_care`). Both are SSOT-honoring paths:
+ *   - `care` body: expected to call `evaluate_care(` (seam delegation), but
+ *     calling `apply_care(` directly is also accepted.
+ *   - `evaluate_care` body: expected to call `apply_care(` (real-source check
+ *     g8 enforces this separately on evaluate_care's own body).
  *
- * Heuristic:
- *   REQUIRED: body contains `apply_care(`.
- *   FORBIDDEN: body contains `bond.saturating_add(` or `Bond::new(bond.saturating_add`.
+ * FORBIDDEN in both: inline bond arithmetic `Bond::new(bond.saturating_add(`
+ * which would bypass the game-core pure rule entirely.
+ *
+ * The SSOT chain care → evaluate_care → apply_care is fully enforced because:
+ *   1. This check (g5) requires care to call apply_care OR evaluate_care.
+ *   2. The separate g8 check requires evaluate_care to call apply_care.
+ *   3. The BAD_INLINE_BOND_MATH fixture has neither call AND has inline math
+ *      → must still be flagged (the forbidden check catches it).
  *
  * Uses only indexOf — NO new RegExp(...).
  *
@@ -307,18 +316,24 @@ export function checkCareCooldownOperator(body) {
 export function checkCareSSOT(body) {
   const compact = body.replace(/\s+/g, '');
 
-  if (compact.indexOf('apply_care(') === -1) {
+  // SSOT satisfied by calling either the seam (evaluate_care) or the core rule
+  // directly (apply_care). Both delegation styles are correct.
+  const delegatesToSSOT =
+    compact.indexOf('apply_care(') !== -1 || compact.indexOf('evaluate_care(') !== -1;
+
+  if (!delegatesToSSOT) {
     return (
-      'care: body does not call apply_care( — bond arithmetic must be delegated to ' +
-      'the game-core pure rule (ADR-0003 SSOT); never inline `saturating_add` on bond here'
+      'care: body calls neither apply_care( nor evaluate_care( — bond arithmetic must be ' +
+      'delegated to the game-core pure rule via apply_care( directly or via the evaluate_care( ' +
+      'seam (ADR-0003 SSOT); inline `Bond::new(bond.saturating_add(` is forbidden'
     );
   }
 
-  // Detect inline bond arithmetic that bypasses apply_care.
+  // Detect inline bond arithmetic that bypasses both apply_care and evaluate_care.
   if (compact.indexOf('Bond::new(bond.saturating_add(') !== -1) {
     return (
       'care: body contains inline `Bond::new(bond.saturating_add(` — bond arithmetic ' +
-      'must be delegated to apply_care(, not re-implemented inline'
+      'must be delegated to apply_care( or evaluate_care(, not re-implemented inline'
     );
   }
 
@@ -482,6 +497,28 @@ const GOOD_CARE = `
       }
       let new_bond = apply_care(Bond::new(m.bond), CARE_BOND_AMOUNT)?;
       m.bond = new_bond.value();
+      m.last_care_at_ms = now;
+      ctx.db.monster().monster_id().update(m.clone());
+      ctx.db.monster_pub().monster_id().update(pub_from_monster(&m));
+      Ok(())
+  }
+`;
+
+/** GOOD: a fully-compliant care that delegates to evaluate_care (the real impl style per ADR-0059).
+ * Must pass ALL SIX care checks. This is the canonical delegating style:
+ *   care → evaluate_care (seam) → apply_care (game-core pure rule).
+ * The SSOT chain is enforced: this body calls evaluate_care(, and evaluate_care's
+ * own body (checked separately via g8) calls apply_care(.
+ */
+const GOOD_CARE_DELEGATING = `
+  pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
+      let mut m = ctx.db.monster().monster_id().find(monster_id)
+          .ok_or_else(|| "monster not found".to_string())?;
+      require_owner(ctx, m.owner_identity)?;
+      let now = now_ms(ctx);
+      let new_bond = evaluate_care(m.bond, m.last_care_at_ms, now)
+          .map_err(|e| format!("care rejected: {e}"))?;
+      m.bond = new_bond;
       m.last_care_at_ms = now;
       ctx.db.monster().monster_id().update(m.clone());
       ctx.db.monster_pub().monster_id().update(pub_from_monster(&m));
@@ -661,6 +698,33 @@ export default async function () {
         name,
         pass: false,
         detail: `TEETH: GOOD_CARE was incorrectly flagged: ${errs.join(' | ')}`,
+      };
+    }
+  }
+  // --- Green-path: delegating style (care → evaluate_care) must pass all six checks ---
+  {
+    const stripped = stripRustComments(GOOD_CARE_DELEGATING);
+    const body = extractReducerBody(stripped, 'care');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: could not extract care body from GOOD_CARE_DELEGATING fixture (parser bug)',
+      };
+    }
+    const errs = [
+      checkCareOwnershipGuard(body),
+      checkCareServerClock(stripped, body),
+      checkCareRejectNeverBurns(body),
+      checkCareCooldownOperator(body),
+      checkCareSSOT(body),
+      checkCareDualWrite(body),
+    ].filter((e) => e !== null);
+    if (errs.length > 0) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: GOOD_CARE_DELEGATING (delegates to evaluate_care) was incorrectly flagged: ${errs.join(' | ')}`,
       };
     }
   }
