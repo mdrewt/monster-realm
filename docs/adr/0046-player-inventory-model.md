@@ -3,6 +3,12 @@
 - Status: accepted
 - Date: 2026-06-27
 
+> Reconciled (M8.7d, 2026-06-27): visibility prose tightened to state the real posture
+> unambiguously — the table is **public / world-readable with no transport RLS**; the
+> owner-scoping is only a client *subscription* filter (per-owner transport RLS → M16).
+> The decision (V1: public, no RLS) is unchanged. The single-stack clause is reconciled
+> to the mechanical `inventory-single-stack` parity eval introduced in M8.7b (ADR-0054).
+
 > Spec cross-reference: the M8 spec text calls this "ADR-0018 (inventory model)".
 > The real ADR sequence is non-contiguous (0001, then 0035–0045); this is the next
 > number. Same spec-prose→real-number remap as "0015"→ADR-0040 and "0017"→ADR-0042.
@@ -38,7 +44,10 @@ id drifts", ADR cross-ref spec §6).
   ADR-0015 stakes classification (not the must-never-leak class that IVs/seeds are). A
   public table broadcasts every player's bait counts to all clients; for PvE this is the
   same posture already accepted for `monster_pub` (levels/HP/derived stats are public).
-  The owner reads its own counts via an `owner_identity`-filtered subscription.
+  There is **no transport RLS** — a client may filter its *subscription* to its own
+  `owner_identity` for convenience, but that is a client-side filter only; the table is
+  world-readable at the transport level (every client can read every owner's counts).
+  Per-owner transport RLS is tracked for **M16** (residual (a)).
 - **Option V2 — `#[client_visibility_filter]` per-owner RLS.** Owner-only visibility, but
   a **new, unproven** pattern in this toolchain (zero RLS-filter macros exist today;
   privacy is private-table + public-projection only). Higher risk, needs a validation
@@ -88,9 +97,12 @@ id drifts", ADR cross-ref spec §6).
 
 - **Single-stack discipline.** `grant_item` is the sole insert path and always
   find-then-update, so `(owner, item_id)` stays unique without a schema constraint
-  (SpacetimeDB serializes the find+insert within a reducer transaction). Any future
-  item-granting code MUST route through `grant_item`. Mechanically watched by an inventory
-  helper unit test (per-owner isolation; no duplicate stacks).
+  (SpacetimeDB serializes the find+insert within a reducer transaction; no multi-column
+  unique constraint exists in this toolchain). Any future item-granting code MUST route
+  through `grant_item`. **Reconciled M8.7b/M8.7d (ADR-0054):** this is now a *mechanical*
+  gate, not convention-only — the `inventory-single-stack` parity eval fails CI if any
+  `inventory().insert(` call site lives outside `grant_item` (plus an inventory helper
+  unit test for per-owner isolation / no duplicate stacks).
 
 - **Dev/test seeding.** A `grant_bait` dev reducer (self-scoped: grants only to
   `ctx.sender`, only items whose `recruit_bonus > 0`, capped qty; never touches
@@ -107,9 +119,11 @@ id drifts", ADR cross-ref spec §6).
     single DB point-lookup (no reduce-time RON parse); inventory is additive and
     forward-compatible with the M9 shop / training food (the spec's boundary preview).
   - **Negative (accepted residuals):**
-    (a) **Public bait counts** — every client can read every player's item counts. Benign
-        in PvE; a **PvP information edge at M16** (an attacker can pre-read whether a target
-        can recruit). Flagged for an M16 RLS pass (red-team F11), not improvised then.
+    (a) **Public bait counts** — the table is world-readable; there is no transport RLS
+        (`client_visibility_filter` is absent in this toolchain), so every client can read
+        every player's item counts. Benign in PvE; a **PvP information edge at M16** (an
+        attacker can pre-read whether a target can recruit). Flagged for an M16 **per-owner
+        transport RLS** pass (red-team F11), not improvised then.
     (b) **No per-stack overflow feedback** — `saturating_add` silently caps at `u32::MAX`
         (unreachable in practice).
     (c) **`grant_bait` dev reducer** ships in the module until the M9 shop replaces it

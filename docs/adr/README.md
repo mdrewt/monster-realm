@@ -5,12 +5,12 @@ Architecture Decision Records live in **two locations**; check both.
 - **Design ADRs `0002`–`0034`** — in the **harness spec corpus**
   (`../../specs/monster-realm-v2/adr/`). These are the foundational design
   decisions authored alongside the milestone specs.
-- **Implementation ADRs `0001`, `0035`–`0053`** — in **this directory**
+- **Implementation ADRs `0001`, `0035`–`0054`** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0054`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0055`**.
 
 ## ADRs in `docs/adr/`
 
@@ -36,6 +36,7 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 | [0051](./0051-biome-lint-scope.md) | Biome as the TS/JS style+lint gate: scope, exclusions, deferred lint debt | M8.5d |
 | [0052](./0052-bounded-client-prediction-queue-cap.md) | Bounded client prediction to the move-queue cap (no over-prediction rubberband) | M8.5f |
 | [0053](./0053-swap-legality-as-pure-core-invariant.md) | Swap legality as a pure-core invariant (checked `set_active`) | M8.6a |
+| [0054](./0054-dev-reducer-release-gating.md) | Dev/test-reducer release-gating (`#[cfg(feature="dev_reducers")]`) + zone reject-not-clamp + inventory single-stack as a mechanical gate | M8.7b |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
