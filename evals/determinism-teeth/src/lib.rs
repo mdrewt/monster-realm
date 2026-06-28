@@ -11,7 +11,9 @@ pub fn impure() {
     // std::time wall clocks (already banned pre-M8.8a — kept to mirror the existing teeth)
     let _ = std::time::SystemTime::now();
     let _ = std::time::Instant::now();
-    // chrono wall clocks (M8.8a: new ban)
+    let _ = std::time::SystemTime::UNIX_EPOCH.elapsed(); // exercises std::time::SystemTime::elapsed (no ::now needed)
+    let _ = std::time::Instant::now().elapsed(); // exercises std::time::Instant::elapsed
+                                                 // chrono wall clocks (M8.8a: new ban)
     let _ = chrono::Utc::now();
     let _ = chrono::Local::now();
     // rand unseeded RNG (random/thread_rng already banned; rng is the rand 0.9 alias — new)
@@ -25,5 +27,6 @@ pub fn impure() {
     let mut b = [0u8; 4];
     let _ = getrandom::fill(&mut b);
     let mut c = [0u8; 4];
+    // alias to getrandom 0.2; clippy reports the CANONICAL path getrandom::getrandom (verified: Part A is green)
     let _ = getrandom02::getrandom(&mut c);
 }

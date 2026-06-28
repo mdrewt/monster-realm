@@ -30,6 +30,26 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 // ============================================================================
+// Pure helper: stripTomlComments
+// ============================================================================
+//
+// Removes FULL-LINE TOML comments only — drops every line whose first
+// non-whitespace character is `#`. Does NOT strip inline `#` after a value
+// (a reason = "...#..." string could legitimately contain `#`).
+//
+// Uses a literal /regex/ (not new RegExp) — safe under the Semgrep ReDoS gate.
+//
+// Kills: a clippyBansEverySink / profileFailsLoud that false-GREENs when a
+// required ban or profile key is commented out at the line level.
+
+export function stripTomlComments(text) {
+  return text
+    .split('\n')
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n');
+}
+
+// ============================================================================
 // Pure helper: clippyRejectsAllSinks
 // ============================================================================
 //
@@ -71,23 +91,21 @@ export function clippyRejectsAllSinks(clippyStderr, requiredMethods, requiredTyp
 //
 // Returns { ok: boolean, missing: string[] }.
 // ok is true iff every required path (method or type) appears as a
-// `path = "<p>"` entry in the clippy.toml text.
+// `path = "<p>"` entry in the clippy.toml text (after stripping full-line
+// comments so a commented-out ban is NOT counted as present).
 //
-// This is a static check that the ban DECLARATIONS exist in the config file —
-// distinct from Part A which checks the RUNTIME rejection. Both are needed:
-// a ban missing from the toml will not appear in runtime stderr (Part A would
-// catch it too), but Part C fails fast without requiring a cargo run.
-//
-// Uses indexOf only.
+// Uses indexOf only (after stripTomlComments).
 
 export function clippyBansEverySink(clippyTomlText, requiredMethods, requiredTypes) {
+  // Strip full-line comments first so `# { path = "rand::rng", ... }` is invisible.
+  const stripped = stripTomlComments(clippyTomlText);
   const missing = [];
   const allPaths = [...requiredMethods, ...requiredTypes];
   for (const p of allPaths) {
     // TOML entry looks like: path = "rand::random"  (with varying whitespace)
     // We check for the path string in double-quotes, which is unambiguous.
     const needle = 'path = "' + p + '"';
-    if (clippyTomlText.indexOf(needle) === -1) {
+    if (stripped.indexOf(needle) === -1) {
       missing.push(p);
     }
   }
@@ -103,26 +121,32 @@ export function clippyBansEverySink(clippyTomlText, requiredMethods, requiredTyp
 //   - a [profile.release] section with `overflow-checks = true`
 //   - a [profile.bench]   section with `overflow-checks = true`
 //
-// Algorithm (indexOf only):
-//   1. Find the `[profile.release]` header.
-//   2. Slice from that index to the next `[` header (or end of string).
-//   3. Check that slice contains `overflow-checks = true`.
-//   4. Repeat for `[profile.bench]`.
+// Algorithm (indexOf only, applied to comment-stripped text):
+//   1. Strip full-line TOML comments so a commented-out key is invisible.
+//   2. Find the `[profile.release]` header.
+//   3. Slice from that index to the next `[` header (or end of string).
+//   4. Check that slice contains `overflow-checks = true`.
+//   5. Repeat for `[profile.bench]`.
 //
+// Kills (FIX 2): a Cargo.toml where `overflow-checks = true` is commented out
+// under a real [profile.release] header — the stripped text won't contain the
+// key and the section is correctly flagged missing.
 // Kills: a Cargo.toml that has the profile sections but lacks overflow-checks,
 // or that is missing either section entirely.
 
 export function profileFailsLoud(cargoTomlText) {
+  // Strip full-line comments first so `# overflow-checks = true` is invisible.
+  const stripped = stripTomlComments(cargoTomlText);
   const missing = [];
 
   for (const section of ['[profile.release]', '[profile.bench]']) {
-    const sectionIdx = cargoTomlText.indexOf(section);
+    const sectionIdx = stripped.indexOf(section);
     if (sectionIdx === -1) {
       missing.push(section);
       continue;
     }
     // Slice from just after the section header to the next `[` (next section) or end.
-    const afterHeader = cargoTomlText.slice(sectionIdx + section.length);
+    const afterHeader = stripped.slice(sectionIdx + section.length);
     const nextSection = afterHeader.indexOf('\n[');
     const body = nextSection === -1 ? afterHeader : afterHeader.slice(0, nextSection);
     if (body.indexOf('overflow-checks = true') === -1) {
@@ -134,7 +158,7 @@ export function profileFailsLoud(cargoTomlText) {
 }
 
 // ============================================================================
-// Required sink sets (spec-exact — do not modify)
+// Required sink sets (spec-exact — do not modify contents)
 // ============================================================================
 
 const requiredMethods = [
@@ -153,12 +177,11 @@ const requiredMethods = [
 
 const requiredTypes = ['rand::rngs::OsRng', 'rand::rngs::ThreadRng'];
 
-// rejectMethods: the subset the fixture actually CALLS (excludes the two *::elapsed
-// entries, which are banned in clippy.toml but not invoked in the fixture).
-// clippyRejectsAllSinks for Part A uses this narrower set.
-const rejectMethods = requiredMethods.filter(
-  (m) => m !== 'std::time::SystemTime::elapsed' && m !== 'std::time::Instant::elapsed',
-);
+// FIX 1b: rejectMethods = requiredMethods — ALL 11 method bans are live-proven
+// by the fixture (evals/determinism-teeth/src/lib.rs). The fixture now calls
+// SystemTime::UNIX_EPOCH.elapsed() and Instant::now().elapsed() so both
+// *::elapsed bans are exercised at runtime. No exclusions.
+const rejectMethods = requiredMethods;
 
 // ============================================================================
 // Default export — eval entry point
@@ -213,7 +236,6 @@ export default async function () {
     // Feed a string that has every ban EXCEPT rand::rngs::OsRng and chrono::Utc::now.
     // Assert both are in missing. Kills: a predicate that ignores missing entries.
     {
-      // Build a clippy.toml text that has most bans but deliberately omits two.
       const doctoredToml =
         'disallowed-methods = [\n' +
         '  { path = "std::time::SystemTime::now", reason = "x" },\n' +
@@ -245,7 +267,6 @@ export default async function () {
             'Kills: a predicate that returns ok:true even with missing bans.',
         };
       }
-      // Both omitted paths must appear in missing.
       const missingOsRng = result.missing.indexOf('rand::rngs::OsRng') !== -1;
       const missingUtcNow = result.missing.indexOf('chrono::Utc::now') !== -1;
       if (!missingOsRng || !missingUtcNow) {
@@ -258,6 +279,58 @@ export default async function () {
             JSON.stringify(result.missing) +
             '. Expected rand::rngs::OsRng and chrono::Utc::now both listed. ' +
             'Kills: a predicate that silently skips some paths.',
+        };
+      }
+    }
+
+    // --- Tooth B2 (FIX 2): commented-out ban line must be reported missing ---
+    // A ban present only as `# { path = "rand::rng", ... }` (full-line comment)
+    // must NOT count as present. Kills: clippyBansEverySink that scans raw text
+    // and false-GREENs commented-out entries.
+    {
+      const commentedBanToml =
+        'disallowed-methods = [\n' +
+        '  { path = "std::time::SystemTime::now", reason = "x" },\n' +
+        '  { path = "std::time::Instant::now", reason = "x" },\n' +
+        '  { path = "std::time::SystemTime::elapsed", reason = "x" },\n' +
+        '  { path = "std::time::Instant::elapsed", reason = "x" },\n' +
+        '  { path = "rand::thread_rng", reason = "x" },\n' +
+        '  { path = "rand::random", reason = "x" },\n' +
+        // rand::rng is commented out — must be reported missing
+        '  # { path = "rand::rng", reason = "x" },\n' +
+        '  { path = "getrandom::getrandom", reason = "x" },\n' +
+        '  { path = "getrandom::fill", reason = "x" },\n' +
+        '  { path = "chrono::Utc::now", reason = "x" },\n' +
+        '  { path = "chrono::Local::now", reason = "x" },\n' +
+        ']\n' +
+        'disallowed-types = [\n' +
+        '  { path = "rand::rngs::OsRng", reason = "x" },\n' +
+        '  { path = "rand::rngs::ThreadRng", reason = "x" },\n' +
+        ']\n';
+
+      const result = clippyBansEverySink(commentedBanToml, requiredMethods, requiredTypes);
+      if (result.ok !== false) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'IN-FILE TOOTH B2 FAILED: clippyBansEverySink(commentedBanToml, ...).ok was NOT false — ' +
+            'rand::rng is present only as a commented-out line ' +
+            '(# { path = "rand::rng", ... }) but the predicate treated it as present. ' +
+            'stripTomlComments must be applied before scanning so full-line comments are invisible. ' +
+            'Kills: a predicate that false-GREENs commented-out bans.',
+        };
+      }
+      if (result.missing.indexOf('rand::rng') === -1) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'IN-FILE TOOTH B2 FAILED: clippyBansEverySink(commentedBanToml, ...).missing does not ' +
+            'include rand::rng. missing=' +
+            JSON.stringify(result.missing) +
+            '. ' +
+            'The commented-out ban must appear in missing.',
         };
       }
     }
@@ -283,7 +356,6 @@ export default async function () {
             'Kills: a predicate that returns ok:true when the section is absent.',
         };
       }
-      // profile.release must appear in missing.
       const missingRelease = result.missing.some((m) => m.indexOf('profile.release') !== -1);
       if (!missingRelease) {
         return {
@@ -299,7 +371,81 @@ export default async function () {
       }
     }
 
-    // All in-file teeth passed — proceed to real cargo runs.
+    // --- Tooth C2 (FIX 4): section present but overflow-checks key absent ---
+    // A [profile.release] with other keys but no overflow-checks = true must
+    // yield ok:false with a missing entry mentioning overflow-checks.
+    // Kills: a predicate that only checks for the section header, not the key.
+    {
+      const sectionNoKeyToml = '[profile.release]\ndebug = false\n';
+
+      const result = profileFailsLoud(sectionNoKeyToml);
+      if (result.ok !== false) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'IN-FILE TOOTH C2 FAILED: profileFailsLoud("[profile.release]\\ndebug = false\\n").ok was NOT false — ' +
+            'the section exists but overflow-checks = true is absent; the predicate must return ok:false. ' +
+            'Kills: a predicate that passes when the section header is present but the key is missing.',
+        };
+      }
+      const mentionsOverflow = result.missing.some((m) => m.indexOf('overflow-checks') !== -1);
+      if (!mentionsOverflow) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'IN-FILE TOOTH C2 FAILED: profileFailsLoud(sectionNoKeyToml).missing does not mention ' +
+            '"overflow-checks". missing=' +
+            JSON.stringify(result.missing) +
+            '. ' +
+            'The missing entry must name the absent key so the implementer knows what to add.',
+        };
+      }
+    }
+
+    // --- Tooth C3 (FIX 2): commented-out overflow-checks must be reported missing ---
+    // A [profile.release] section where `overflow-checks = true` is commented out
+    // must yield ok:false. Kills: profileFailsLoud that scans raw text and
+    // false-GREENs a commented-out key (the sole oracle for [profile.bench]).
+    {
+      const commentedOverflowToml =
+        '[profile.release]\n' +
+        'debug = false\n' +
+        '# overflow-checks = true\n' +
+        '\n' +
+        '[profile.bench]\n' +
+        'overflow-checks = true\n';
+
+      const result = profileFailsLoud(commentedOverflowToml);
+      if (result.ok !== false) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'IN-FILE TOOTH C3 FAILED: profileFailsLoud(commentedOverflowToml).ok was NOT false — ' +
+            '[profile.release] has `# overflow-checks = true` (commented out) but the predicate ' +
+            'treated it as present. stripTomlComments must be applied so commented-out keys are invisible. ' +
+            'Kills: a profileFailsLoud that false-GREENs a commented-out overflow-checks key ' +
+            '(critical: [profile.bench] has no live cargo test — Part C is its sole oracle).',
+        };
+      }
+      const mentionsRelease = result.missing.some(
+        (m) => m.indexOf('profile.release') !== -1 && m.indexOf('overflow-checks') !== -1,
+      );
+      if (!mentionsRelease) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'IN-FILE TOOTH C3 FAILED: profileFailsLoud(commentedOverflowToml).missing does not ' +
+            'include an entry for [profile.release] overflow-checks. missing=' +
+            JSON.stringify(result.missing),
+        };
+      }
+    }
+
+    // All in-file teeth passed — proceed to real checks.
 
     // ========================================================================
     // STEP 2 — Part C: static structural checks (cheap, fail-fast)
@@ -345,103 +491,107 @@ export default async function () {
         );
       }
     }
+    try {
+      // We expect this to THROW (non-zero exit) because the fixture is impure.
+      execFileSync(
+        'cargo',
+        [
+          'clippy',
+          '--manifest-path',
+          'evals/determinism-teeth/Cargo.toml',
+          '--quiet',
+          '--',
+          '-D',
+          'warnings',
+        ],
+        {
+          encoding: 'utf8',
+          env: { ...process.env, CLIPPY_CONF_DIR: root },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
+      // If we reach here, clippy exited 0 — the gate did NOT bite.
+      failures.push(
+        'Part A [gate-did-not-bite]: clippy exited 0 on the determinism-teeth fixture — ' +
+          'no disallowed-method/type errors were raised. ' +
+          'The clippy.toml bans are either missing or not being picked up via CLIPPY_CONF_DIR. ' +
+          'Expected: clippy should exit non-zero rejecting every banned sink.',
+      );
+    } catch (e) {
+      // Non-zero exit — read stderr+stdout for diagnostics.
+      const clippyStderr =
+        (typeof e.stderr === 'string' ? e.stderr : '') +
+        (typeof e.stdout === 'string' ? e.stdout : '');
 
-    // ========================================================================
-    // STEP 3 — Part A: real clippy on the detached determinism-teeth fixture.
-    // Expected to EXIT NON-ZERO (clippy found violations) — that is the PASS state.
-    // If clippy exits 0 (no violations found), the gate did NOT bite → FAILURE.
-    // ========================================================================
+      // Distinguish a real gate-bite from an env/toolchain/fixture-compile error.
+      // The RELIABLE discriminator is whether clippy actually emitted disallowed
+      // diagnostics — NOT a substring list. clippy treats disallowed-method/type
+      // lints as errors and then prints "error: could not compile ... due to N
+      // previous errors" on EVERY successful gate-bite, so matching "could not
+      // compile"/"error[E" would misclassify the success case as an env error.
+      // If any `disallowed method`/`disallowed type` diagnostic is present, the
+      // gate bit (verify completeness); a non-zero exit with NONE present is an
+      // env/toolchain/fixture-compile problem (the fix is the environment).
+      const gateBit =
+        clippyStderr.indexOf('disallowed method `') !== -1 ||
+        clippyStderr.indexOf('disallowed type `') !== -1;
 
-    {
-      let clippyBit = false; // true when clippy exited non-zero (expected)
-      let clippyStderr = '';
-
-      try {
-        // We expect this to THROW (non-zero exit) because the fixture is impure.
-        execFileSync(
-          'cargo',
-          [
-            'clippy',
-            '--manifest-path',
-            'evals/determinism-teeth/Cargo.toml',
-            '--quiet',
-            '--',
-            '-D',
-            'warnings',
-          ],
-          {
-            encoding: 'utf8',
-            env: { ...process.env, CLIPPY_CONF_DIR: root },
-            stdio: ['ignore', 'pipe', 'pipe'],
-          },
-        );
-        // If we reach here, clippy exited 0 — the gate did NOT bite.
+      if (!gateBit) {
         failures.push(
-          'Part A [gate-did-not-bite]: clippy exited 0 on the determinism-teeth fixture — ' +
-            'no disallowed-method/type errors were raised. ' +
-            'The clippy.toml bans are either missing or not being picked up via CLIPPY_CONF_DIR. ' +
-            'Expected: clippy should exit non-zero rejecting every banned sink.',
+          'Part A [clippy-could-not-run]: clippy exited non-zero but emitted NO ' +
+            'disallowed-method/type diagnostics — env/toolchain/fixture-compile problem ' +
+            '(not a missing-ban failure). message: ' +
+            (clippyStderr || e.message || '(empty)').slice(0, 400),
         );
-      } catch (e) {
-        // Non-zero exit is the expected (good) path — now check stderr content.
-        clippyStderr =
-          (typeof e.stderr === 'string' ? e.stderr : '') +
-          (typeof e.stdout === 'string' ? e.stdout : '');
-
-        // Guard: distinguish a real clippy rejection from a toolchain/manifest error.
-        if (
-          !clippyStderr ||
-          clippyStderr.indexOf('error: could not find') !== -1 ||
-          clippyStderr.indexOf('failed to load manifest') !== -1 ||
-          clippyStderr.indexOf('no such command') !== -1
-        ) {
+      } else {
+        // Clippy ran and rejected something — verify it rejected EVERY required sink.
+        // FIX 1b: rejectMethods === requiredMethods (all 11, including both *::elapsed).
+        const rejectResult = clippyRejectsAllSinks(clippyStderr, rejectMethods, requiredTypes);
+        if (!rejectResult.ok) {
           failures.push(
-            'Part A [clippy-could-not-run]: clippy could not run on the determinism-teeth fixture — ' +
-              'toolchain error or broken manifest. message: ' +
-              (clippyStderr || e.message || '(empty)').slice(0, 400),
+            'Part A [missing-rejections]: clippy rejected some sinks but NOT all required ones. ' +
+              'Missing rejections: ' +
+              rejectResult.missing.join(', ') +
+              '. ' +
+              'Add the missing bans to workspace clippy.toml (M8.8a). ' +
+              'Kills: a clippy.toml that bans some sinks but not others.',
           );
-        } else {
-          // Clippy ran and rejected something — verify it rejected EVERY required sink.
-          clippyBit = true;
-          const rejectResult = clippyRejectsAllSinks(clippyStderr, rejectMethods, requiredTypes);
-          if (!rejectResult.ok) {
-            failures.push(
-              'Part A [missing-rejections]: clippy rejected some sinks but NOT all required ones. ' +
-                'Missing rejections: ' +
-                rejectResult.missing.join(', ') +
-                '. ' +
-                'Add the missing bans to workspace clippy.toml (M8.8a). ' +
-                'Kills: a clippy.toml that bans some sinks but not others.',
-            );
-          }
         }
       }
     }
     try {
       execFileSync('cargo', ['test', '--release', '-p', 'release-overflow-teeth', '--quiet'], {
         encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
       // Exit 0 → the should_panic test passed → release build aborted on overflow → GOOD.
       // Push nothing — this is the success path.
     } catch (e) {
-      // Non-zero exit → should_panic test FAILED → overflow silently wrapped → MISSING profile.
       const out = (typeof e.stdout === 'string' ? e.stdout : '').trim();
       const err = (typeof e.stderr === 'string' ? e.stderr : '').trim();
-      const tail = (out + '\n' + err).trim().slice(-600);
+      const combined = out + '\n' + err;
+      const tail = combined.trim().slice(-600);
 
-      // Distinguish a cargo/package error from a genuine test failure.
-      if (
-        err.indexOf('did not match') !== -1 ||
-        err.indexOf('package ID specification') !== -1 ||
-        err.indexOf('no such command') !== -1
-      ) {
+      // Positive discriminator (mirrors Part A): did the #[should_panic] test
+      // actually RUN? If cargo got far enough to run it ("test result:" / "did not
+      // panic"), the non-zero exit means the overflow WRAPPED instead of panicking
+      // → the release profile's overflow-checks is missing/ineffective. Otherwise
+      // the crate could not build/run (env/compile/PATH) — a different fix. A real
+      // test failure does NOT print "could not compile", so gating on test-ran is
+      // robust where a substring list is not.
+      const testRan =
+        combined.indexOf('test result:') !== -1 || combined.indexOf('did not panic') !== -1;
+
+      if (!testRan) {
         failures.push(
-          'Part B [cargo-error]: cargo could not run release-overflow-teeth — ' +
-            'crate may not be in workspace members or cargo is not on PATH. ' +
-            'detail: ' +
+          'Part B [cannot-run]: release-overflow-teeth could not build/run (env/compile error, ' +
+            'not a missing profile) — crate may not be in workspace members, cargo is not on PATH, ' +
+            'or the crate failed to compile. detail: ' +
             tail,
         );
       } else {
+        // Genuine test failure: the should_panic test ran but did not panic →
+        // overflow silently wrapped → [profile.release] overflow-checks = true is missing.
         failures.push(
           'Part B [overflow-checks-missing]: release-overflow-teeth did not pass in release — ' +
             '`[profile.release] overflow-checks = true` is missing or ineffective. ' +
