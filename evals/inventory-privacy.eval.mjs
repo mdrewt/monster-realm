@@ -1,19 +1,25 @@
 // inventory-privacy eval (M8d): the `inventory` table carries ONLY
 // (owner, item_id, count) — no gene/seed/individuality fields may appear.
 //
-// Contract (from ADR-0046 + m8d-recruit.md):
-//   The inventory table is public (players see their own items via the client
-//   binding). Its schema must be minimal — it tracks item ownership and count.
-//   It must NOT carry any fields whose names contain `iv_`, `nature`, `seed`,
-//   or `individuality` (which would leak gene data through the item binding).
+// Contract (from ADR-0040/0046 + m8d-recruit.md):
+//   The inventory table is public / world-readable: there is NO transport RLS
+//   (no `client_visibility_filter` exists in this toolchain — ADR-0040/0046), so
+//   every client can read every owner's counts. A client may filter its
+//   subscription to its own `owner_identity`, but owner-scoping is a client
+//   subscription filter ONLY; per-owner transport RLS is tracked for M16. Its
+//   schema must be minimal — it tracks item ownership and count. It must NOT
+//   carry any fields whose names contain `iv_`, `nature`, `seed`, or
+//   `individuality` (which would leak gene data through the item binding).
 //
 // Proof-of-teeth:
 //   A fixture struct with an `iv_hp` field MUST be flagged.
 //   A fixture with only (owner, item_id, count) MUST pass.
+//   A doc comment claiming an `owner_identity` RLS filter MUST be flagged
+//   (checkInventoryDocPosture) — the table has no transport RLS.
 //
-// RED STATE: the `inventory` table does not exist yet in lib.rs.
-//   This eval returns { pass: false } on absence — not a vacuous pass.
-//   Absence is an intentional FAIL so the eval bites until implemented.
+// ABSENCE-IS-FAIL: `checkInventoryExists` treats a missing `inventory` table as
+//   a FAIL (never a vacuous pass), so the eval keeps biting if the table is ever
+//   removed. (The table has existed since M8d.)
 //
 // Implementation note on Semgrep detect-non-literal-regexp:
 //   All scanning uses String.indexOf() or literal /regex/ patterns.
