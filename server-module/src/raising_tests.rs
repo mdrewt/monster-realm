@@ -25,6 +25,353 @@
 use super::*;
 
 // ---------------------------------------------------------------------------
+// M9b-tail: evaluate_train seam unit tests
+//
+// The function under test:
+//   pub(crate) fn evaluate_train(
+//       base: &StatBlock, ivs: &IVs, evs: &EVs, nature: &Nature, level: Level,
+//       train_stat: Option<StatKind>, train_amount: u16,
+//   ) -> Result<FocusTrainResult, String>
+//
+// It does NOT exist yet — these tests are RED until the implementer adds it to
+// server-module/src/raising.rs and declares `use super::*;` pulls it into scope.
+//
+// EARS criteria covered:
+//   - WHEN train_stat is None THEN Err containing "not a training food".
+//   - WHEN train_stat is Some(stat) THEN delegate to focus_train and return
+//     equivalent result (same evs + same derived_stats).
+//   - WHEN focus_train returns StatAtCap THEN evaluate_train returns Err.
+//   - WHEN focus_train returns BudgetExhausted THEN evaluate_train returns Err.
+//   - WHEN focus_train returns NoEffect (amount==0) THEN evaluate_train returns Err.
+//   - Red-team F1: simultaneous per-stat and budget headroom of exactly 1 each —
+//     must not panic (the .expect() in focus_train's top-off).
+//   - Property: seam is a faithful pass-through for all valid (Some(stat), amount) pairs.
+// ---------------------------------------------------------------------------
+
+use game_core::focus_train;
+use game_core::{EVs, FocusTrainResult, IVs, Level, Nature, NatureKind, StatBlock, StatKind};
+use proptest::prelude::*;
+
+/// Bulbasaur-like base stats fixture (matches m9a_gating_tests canonical fixture).
+fn train_base() -> StatBlock {
+    StatBlock {
+        hp: 45,
+        attack: 49,
+        defense: 49,
+        speed: 65,
+        sp_attack: 65,
+        sp_defense: 45,
+    }
+}
+
+fn train_ivs() -> IVs {
+    IVs::new(15, 15, 15, 15, 15, 15).unwrap()
+}
+
+fn train_hardy() -> Nature {
+    Nature::new(NatureKind::Hardy)
+}
+
+fn train_lv50() -> Level {
+    Level::new(50).unwrap()
+}
+
+// ---------------------------------------------------------------------------
+// evaluate_train — example-based
+// ---------------------------------------------------------------------------
+
+/// M9b-tail: evaluate_train with train_stat=None returns Err whose message
+/// contains "not a training food".
+/// kills: an impl that unwraps None / treats a no-stat item as trainable
+///        (would panic or return a misleading error variant).
+#[test]
+fn evaluate_train_rejects_non_training_food() {
+    let base = train_base();
+    let ivs = train_ivs();
+    let evs = EVs::zero();
+    let nature = train_hardy();
+    let level = train_lv50();
+
+    let result = evaluate_train(&base, &ivs, &evs, &nature, level, None, 10);
+    assert!(
+        result.is_err(),
+        "evaluate_train with train_stat=None must return Err (item is not a training food)"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("not a training food"),
+        "error message must contain \"not a training food\"; got: {:?}",
+        msg
+    );
+}
+
+/// M9b-tail: evaluate_train(Some(Attack), amount=10, fresh EVs) must return
+/// a FocusTrainResult equal to calling focus_train directly (delegation parity).
+/// kills: an inline EV/stat computation instead of delegating to focus_train
+///        (any formula divergence surfaces as a value mismatch).
+#[test]
+fn evaluate_train_delegates_to_focus_train() {
+    let base = train_base();
+    let ivs = train_ivs();
+    let evs = EVs::zero();
+    let nature = train_hardy();
+    let level = train_lv50();
+
+    let seam_result = evaluate_train(
+        &base,
+        &ivs,
+        &evs,
+        &nature,
+        level,
+        Some(StatKind::Attack),
+        10,
+    );
+
+    let oracle = focus_train(&base, &ivs, &evs, &nature, level, StatKind::Attack, 10)
+        .expect("direct focus_train must succeed for fresh EVs, Attack, amount=10");
+
+    match seam_result {
+        Ok(r) => {
+            assert_eq!(
+                r, oracle,
+                "evaluate_train(Some(Attack), 10) must return the SAME FocusTrainResult as \
+                 focus_train(Attack, 10) — delegation parity; seam must not fork the math"
+            );
+        }
+        Err(e) => {
+            panic!(
+                "evaluate_train(Some(Attack), 10) must be Ok (fresh EVs, plenty of headroom); \
+                 got Err: {:?}",
+                e
+            );
+        }
+    }
+}
+
+/// M9b-tail: evaluate_train surfaces StatAtCap as Err when Attack EV is already 252.
+/// kills: failure to map FocusTrainError::StatAtCap to Err (would let a maxed stat
+///        consume food — the reducer would burn the item for zero effect).
+#[test]
+fn evaluate_train_maps_stat_at_cap() {
+    let base = train_base();
+    let ivs = train_ivs();
+    // Attack is at 252 (per-stat cap).
+    let evs = EVs::new(0, 252, 0, 0, 0, 0).unwrap();
+    let nature = train_hardy();
+    let level = train_lv50();
+
+    let result = evaluate_train(
+        &base,
+        &ivs,
+        &evs,
+        &nature,
+        level,
+        Some(StatKind::Attack),
+        10,
+    );
+    assert!(
+        result.is_err(),
+        "evaluate_train must return Err when Attack EV is at cap (252); \
+         a passing Ok would let the reducer consume the food for zero EV gain"
+    );
+}
+
+/// M9b-tail: evaluate_train surfaces BudgetExhausted as Err when total EVs == 510
+/// but Attack is below per-stat cap.
+/// kills: failure to map FocusTrainError::BudgetExhausted (would let a budget-
+///        exhausted monster consume food without gaining EVs).
+#[test]
+fn evaluate_train_maps_budget_exhausted() {
+    let base = train_base();
+    let ivs = train_ivs();
+    // total = 252 + 6 + 252 = 510, Attack < 252.
+    let evs = EVs::new(252, 6, 252, 0, 0, 0).unwrap();
+    assert_eq!(evs.total(), 510, "fixture sanity: total must be 510");
+    assert!(
+        evs.get(StatKind::Attack) < 252,
+        "fixture sanity: Attack must be below per-stat cap"
+    );
+    let nature = train_hardy();
+    let level = train_lv50();
+
+    let result = evaluate_train(
+        &base,
+        &ivs,
+        &evs,
+        &nature,
+        level,
+        Some(StatKind::Attack),
+        10,
+    );
+    assert!(
+        result.is_err(),
+        "evaluate_train must return Err when total EVs is 510 (BudgetExhausted); \
+         a passing Ok would let a fully-trained monster consume food without effect"
+    );
+}
+
+/// M9b-tail: evaluate_train surfaces NoEffect as Err when train_amount==0.
+/// kills: a 0-amount that silently succeeds as a no-op (would consume the food
+///        without changing any EV, a silent money-sink for the player).
+#[test]
+fn evaluate_train_maps_no_effect() {
+    let base = train_base();
+    let ivs = train_ivs();
+    let evs = EVs::zero();
+    let nature = train_hardy();
+    let level = train_lv50();
+
+    let result = evaluate_train(&base, &ivs, &evs, &nature, level, Some(StatKind::Attack), 0);
+    assert!(
+        result.is_err(),
+        "evaluate_train(Some(Attack), amount=0) must return Err (NoEffect); \
+         an Ok here would let the reducer consume a food item for literally zero benefit"
+    );
+}
+
+/// M9b-tail: red-team F1 — simultaneous per-stat and budget headroom of exactly 1.
+/// EVs: hp=251 (headroom 1), attack=252 (at cap), defense=6 (total=509, budget headroom 1).
+/// Training Hp with amount=10: grant = min(10, 252-251, 510-509) = min(10, 1, 1) = 1.
+/// After: hp=252, total=510 — both constraints hit simultaneously. Must not panic.
+/// Also asserts: Hp==252, total==510, Attack==252 unchanged, Defense==6 unchanged.
+/// kills: a focus_train .expect("by construction") that panics when BOTH headrooms are
+///        exactly 1 at the same time (the F1 red-team finding from the spec).
+#[test]
+fn evaluate_train_double_cap_simultaneous_topoff() {
+    let base = train_base();
+    let ivs = train_ivs();
+    // hp=251, attack=252, defense=6 → total=509, per-stat Hp headroom=1, budget headroom=1.
+    let evs = EVs::new(251, 252, 6, 0, 0, 0).unwrap();
+    assert_eq!(evs.total(), 509, "fixture sanity: total must be 509");
+    assert_eq!(evs.get(StatKind::Hp), 251, "fixture sanity: Hp must be 251");
+    assert_eq!(
+        evs.get(StatKind::Attack),
+        252,
+        "fixture sanity: Attack must be at cap"
+    );
+    let nature = train_hardy();
+    let level = train_lv50();
+
+    let result = evaluate_train(&base, &ivs, &evs, &nature, level, Some(StatKind::Hp), 10);
+
+    // Must succeed (Hp has headroom of 1, budget has headroom of 1 → grant=1).
+    let r = result.expect(
+        "evaluate_train(Some(Hp), 10) with simultaneous per-stat+budget headroom of 1 \
+         must not panic and must return Ok (grant=1)",
+    );
+
+    // Hp topped off to 252.
+    assert_eq!(
+        r.evs.get(StatKind::Hp),
+        252,
+        "Hp EV must be exactly 252 after top-off (was 251, grant=1)"
+    );
+    // Total at 510.
+    assert_eq!(
+        r.evs.total(),
+        510,
+        "total EVs must be exactly 510 after simultaneous top-off"
+    );
+    // Non-target EVs unchanged.
+    assert_eq!(
+        r.evs.get(StatKind::Attack),
+        252,
+        "Attack EV must be unchanged at 252"
+    );
+    assert_eq!(
+        r.evs.get(StatKind::Defense),
+        6,
+        "Defense EV must be unchanged at 6"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// evaluate_train — property-based (delegation parity)
+// ---------------------------------------------------------------------------
+
+/// Strategy for valid EVs (each ≤ 252, total ≤ 510).
+fn arb_evs_for_train() -> impl Strategy<Value = EVs> {
+    (
+        0u16..=252,
+        0u16..=252,
+        0u16..=252,
+        0u16..=252,
+        0u16..=252,
+        0u16..=252,
+    )
+        .prop_filter("total must be <= 510", |(a, b, c, d, e, f)| {
+            a + b + c + d + e + f <= 510
+        })
+        .prop_map(|(hp, atk, def, spd, spa, spd2)| EVs::new(hp, atk, def, spd, spa, spd2).unwrap())
+}
+
+/// Strategy for any StatKind (all six variants).
+fn arb_statkind_for_train() -> impl Strategy<Value = StatKind> {
+    prop_oneof![
+        Just(StatKind::Hp),
+        Just(StatKind::Attack),
+        Just(StatKind::Defense),
+        Just(StatKind::Speed),
+        Just(StatKind::SpAttack),
+        Just(StatKind::SpDefense),
+    ]
+}
+
+proptest! {
+    /// M9b-tail: evaluate_train(Some(stat), amount) is a faithful pass-through for
+    /// focus_train — for every valid EV state, stat, and amount in 0..=300, the seam
+    /// returns exactly the same Ok/Err as focus_train (with error mapped to String).
+    /// kills: any divergence between evaluate_train and the SSOT rule, including an
+    ///        impl that performs its own EV arithmetic instead of delegating.
+    #[test]
+    fn evaluate_train_delegation_property(
+        evs in arb_evs_for_train(),
+        stat in arb_statkind_for_train(),
+        amount in 0u16..=300u16,
+    ) {
+        let base = train_base();
+        let ivs = train_ivs();
+        let nature = train_hardy();
+        let level = train_lv50();
+
+        let seam = evaluate_train(&base, &ivs, &evs, &nature, level, Some(stat), amount);
+        let oracle = focus_train(&base, &ivs, &evs, &nature, level, stat, amount);
+
+        match (seam, oracle) {
+            (Ok(s), Ok(o)) => {
+                prop_assert_eq!(
+                    s,
+                    o,
+                    "evaluate_train(Some(stat), amount) Ok must equal focus_train Ok — \
+                     seam must be a faithful pass-through, not fork the math"
+                );
+            }
+            (Err(_seam_e), Err(_oracle_e)) => {
+                // Both Err: parity is satisfied (the seam correctly surfaces the focus_train error).
+                // We do NOT compare the string to the FocusTrainError enum repr because the
+                // mapping is impl-defined; we only require that Ok/Err agree.
+            }
+            (Ok(s), Err(e)) => {
+                prop_assert!(
+                    false,
+                    "evaluate_train returned Ok({:?}) but focus_train returned Err({:?}) — seam is too lenient",
+                    s,
+                    e
+                );
+            }
+            (Err(seam_e), Ok(o)) => {
+                prop_assert!(
+                    false,
+                    "evaluate_train returned Err({:?}) but focus_train returned Ok({:?}) — seam is too strict",
+                    seam_e,
+                    o
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Cooldown boundary — spec: `<` not `<=`
 // ---------------------------------------------------------------------------
 

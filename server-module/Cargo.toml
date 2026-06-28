@@ -19,6 +19,10 @@ spacetimedb = { workspace = true }
 # Structured logging facade (captured by the SpacetimeDB host).
 log.workspace = true
 
+[dev-dependencies]
+# Property testing for the evaluate_train seam (M9b-tail, raising_tests.rs).
+proptest = { workspace = true }
+
 [features]
 # Dev/test-only reducers (start_wild_battle, grant_bait), OFF in release/publish
 # (ADR-0054). Enable for the recruit e2e via a pre-built wasm + `spacetime publish

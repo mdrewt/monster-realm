@@ -377,6 +377,484 @@ export function checkCareDualWrite(body) {
 }
 
 // ---------------------------------------------------------------------------
+// M9b-tail: train reducer + evaluate_train seam check functions.
+//
+// Security invariants for `train`:
+//   T1. Ownership guard — train checks require_owner before any item or monster read.
+//   T2. Signature — no client-supplied stat/amount after ReducerContext; the server
+//       reads stat+amount from the item_row content table (ADR-0006 content SSOT).
+//   T3. Consume-after-decision — evaluate_train( appears before consume_one( in body.
+//   T4. Reject-never-burns — no monster update before a return Err(.
+//   T5. current_hp untouched — no `.current_hp=` assignment in the train body.
+//   T6. Dual-write mirror — monster().update + monster_pub().update + pub_from_monster.
+//   T7. SSOT — train body calls evaluate_train(; evaluate_train body calls focus_train(.
+//
+// Implementation note: indexOf / literal /regex/ ONLY — no new RegExp(non-literal).
+// ---------------------------------------------------------------------------
+
+/**
+ * Check T1 — Ownership guard: the train body must contain require_owner(.
+ * OR an owner_identity != ctx.sender comparison followed by Err(.
+ *
+ * Uses only indexOf — NO new RegExp(...).
+ *
+ * @param {string} body  Body of train, comment-stripped.
+ * @returns {string|null}
+ */
+export function checkTrainOwnershipGuard(body) {
+  const compact = body.replace(/\s+/g, '');
+
+  // Short-circuit: canonical guard helper.
+  if (compact.indexOf('require_owner(') !== -1) {
+    return null;
+  }
+
+  // Collect ctx.sender aliases (same algorithm as checkCareOwnershipGuard).
+  const senderTokens = ['ctx.sender'];
+  const aliasRe = /let(\w+)=ctx\.sender;/g;
+  let am = aliasRe.exec(compact);
+  while (am !== null) {
+    senderTokens.push(am[1]);
+    am = aliasRe.exec(compact);
+  }
+
+  let cmpIdx = -1;
+  for (const tok of senderTokens) {
+    const idx = compact.indexOf(`owner_identity!=${tok}`);
+    if (idx !== -1) {
+      cmpIdx = idx;
+      break;
+    }
+  }
+
+  if (cmpIdx === -1) {
+    return (
+      'train: missing ownership guard — require `require_owner(` call OR ' +
+      '`owner_identity != ctx.sender` (or alias) followed by Err('
+    );
+  }
+
+  const window = compact.slice(cmpIdx, cmpIdx + 320);
+  if (window.indexOf('Err(') === -1) {
+    return (
+      'train: ownership comparison found but no Err( within 320 chars — ' +
+      'the comparison must lead to a rejection'
+    );
+  }
+
+  return null;
+}
+
+/**
+ * Check T2 — Signature: the train reducer MUST NOT accept a client-supplied stat
+ * or amount parameter. The canonical signature is:
+ *   train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32)
+ * Any additional parameter naming a stat or amount is forbidden (ADR-0006 content SSOT:
+ * the server reads train_stat/train_amount from the item_row content table, never from
+ * the client call).
+ *
+ * Forbidden substrings in the compact signature (after ReducerContext):
+ *   `:StatKind`, `amount:`, `stat:`, `stat_kind:`, `train_stat:`, `train_amount:`
+ *
+ * Uses only indexOf — NO new RegExp(...).
+ *
+ * @param {string} src  Full comment-stripped source (for signature extraction).
+ * @returns {string|null}
+ */
+export function checkTrainSignature(src) {
+  const sig = extractFnSignature(src, 'train');
+  if (sig === null) {
+    // Missing train fn altogether — the real-source check will handle that.
+    return null;
+  }
+
+  const compactSig = sig.replace(/\s+/g, '');
+  // Drop up to and including `ReducerContext` so we do not flag ctx's own type.
+  const ctxEnd = compactSig.indexOf('ReducerContext');
+  const afterCtx = ctxEnd === -1 ? compactSig : compactSig.slice(ctxEnd + 'ReducerContext'.length);
+
+  // Forbidden parameter shapes — the client must NEVER supply stat or amount.
+  const forbidden = [':StatKind', 'amount:', 'stat:', 'stat_kind:', 'train_stat:', 'train_amount:'];
+  for (const f of forbidden) {
+    if (afterCtx.indexOf(f) !== -1) {
+      return (
+        `train: signature contains forbidden client-supplied parameter '${f}' — ` +
+        'train_stat and train_amount must be read from item_row (content SSOT, ADR-0006), ' +
+        'never accepted as client arguments (a client choosing its own stat bypasses content)'
+      );
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Check T3 — Consume-after-decision: evaluate_train( must appear BEFORE consume_one(
+ * in the compacted train body. Spending before deciding would burn the food on a
+ * rejected train (e.g. stat already at cap, wrong item type).
+ *
+ * Uses only indexOf — NO new RegExp(...).
+ *
+ * @param {string} body  Body of train, comment-stripped.
+ * @returns {string|null}
+ */
+export function checkTrainConsumeAfterDecision(body) {
+  const compact = body.replace(/\s+/g, '');
+
+  const decisionIdx = compact.indexOf('evaluate_train(');
+  const consumeIdx = compact.indexOf('consume_one(');
+
+  if (decisionIdx === -1) {
+    return (
+      'train: body does not call evaluate_train( — the decision seam is missing; ' +
+      'train must delegate to evaluate_train before spending the food'
+    );
+  }
+
+  if (consumeIdx === -1) {
+    return (
+      'train: body does not call consume_one( — the food spend is missing; ' +
+      'a successful train must consume exactly one food item from inventory'
+    );
+  }
+
+  if (consumeIdx < decisionIdx) {
+    return (
+      'train: consume_one( appears BEFORE evaluate_train( — T3 spend-after-decide violated; ' +
+      'a rejected train (stat at cap, wrong item, etc.) would burn the food before the decision'
+    );
+  }
+
+  return null;
+}
+
+/**
+ * Check T4 — Reject-never-burns: no monster().monster_id().update( may appear
+ * BEFORE a `return Err(` in the train body.
+ *
+ * Uses only indexOf — NO new RegExp(...). Uses `returnErr(` (compact form) to
+ * avoid false-positives on string literals containing "Err(".
+ *
+ * @param {string} body  Body of train, comment-stripped.
+ * @returns {string|null}
+ */
+export function checkTrainRejectNeverBurns(body) {
+  const compact = body.replace(/\s+/g, '');
+
+  const updateIdx = compact.indexOf('monster().monster_id().update(');
+  if (updateIdx === -1) {
+    // No monster update in body — checkTrainDualWrite will handle completeness.
+    return null;
+  }
+
+  const returnErrAfterUpdate = compact.indexOf('returnErr(', updateIdx);
+  if (returnErrAfterUpdate !== -1) {
+    return (
+      'train: monster().monster_id().update( appears before a `return Err(` rejection — ' +
+      'T4 reject-never-burns: the monster row must NOT be mutated on any reject path; ' +
+      'all decision logic (evaluate_train, consume_one) must precede the first DB write'
+    );
+  }
+
+  return null;
+}
+
+/**
+ * Check T5 — current_hp untouched: the train body must NOT contain `.current_hp=`
+ * (an assignment to current_hp). Training only modifies EVs and derived stats —
+ * writing current_hp would be a free heal (ADR-0058 residual a).
+ *
+ * Uses only indexOf — NO new RegExp(...).
+ *
+ * @param {string} body  Body of train, comment-stripped.
+ * @returns {string|null}
+ */
+export function checkTrainCurrentHpUntouched(body) {
+  const compact = body.replace(/\s+/g, '');
+
+  if (compact.indexOf('.current_hp=') !== -1) {
+    return (
+      'train: body contains `.current_hp=` assignment — training must NEVER write current_hp; ' +
+      'writing it here would grant a free heal on every train action (ADR-0058 residual a)'
+    );
+  }
+
+  return null;
+}
+
+/**
+ * Check T6 — Dual-write mirror: the train body must contain all three of:
+ *   monster().monster_id().update(
+ *   monster_pub().monster_id().update(
+ *   pub_from_monster(
+ *
+ * Uses only indexOf — NO new RegExp(...).
+ *
+ * @param {string} body  Body of train, comment-stripped.
+ * @returns {string|null}
+ */
+export function checkTrainDualWrite(body) {
+  const compact = body.replace(/\s+/g, '');
+
+  if (compact.indexOf('monster().monster_id().update(') === -1) {
+    return 'train: body does not update the private monster table — success path is incomplete';
+  }
+
+  if (compact.indexOf('monster_pub().monster_id().update(') === -1) {
+    return (
+      'train: body updates monster() but does NOT update monster_pub() — ' +
+      'T6 dual-write discipline: every monster EV/stat mutation must mirror monster_pub'
+    );
+  }
+
+  if (compact.indexOf('pub_from_monster(') === -1) {
+    return (
+      'train: monster_pub update found but pub_from_monster( not called — ' +
+      'the pub mirror must use pub_from_monster to project the private row, ' +
+      'not a hand-rolled partial struct (field parity would silently diverge)'
+    );
+  }
+
+  return null;
+}
+
+/**
+ * Check T7 — SSOT delegation:
+ *   (a) The train body must call evaluate_train( and must NOT call focus_train( or
+ *       derive_stats( directly (those belong inside the seam, not the reducer).
+ *   (b) The evaluate_train body must call focus_train(.
+ *
+ * @param {string} trainBody          Body of train, comment-stripped.
+ * @param {string|null} evalTrainBody Body of evaluate_train, comment-stripped (or null).
+ * @returns {string|null}
+ */
+export function checkTrainSSOT(trainBody, evalTrainBody) {
+  const compactTrain = trainBody.replace(/\s+/g, '');
+
+  // (a) train body must delegate to evaluate_train.
+  if (compactTrain.indexOf('evaluate_train(') === -1) {
+    return (
+      'train: body does not call evaluate_train( — train must delegate to the seam ' +
+      '(SSOT: all EV decision logic belongs in evaluate_train, not inlined in the reducer)'
+    );
+  }
+
+  // (a) train body must NOT inline focus_train or derive_stats directly.
+  if (compactTrain.indexOf('focus_train(') !== -1) {
+    return (
+      'train: body calls focus_train( directly — train must delegate to evaluate_train( only; ' +
+      'focus_train belongs inside the evaluate_train seam'
+    );
+  }
+  if (compactTrain.indexOf('derive_stats(') !== -1) {
+    return (
+      'train: body calls derive_stats( directly — stat derivation must happen inside ' +
+      'evaluate_train (which delegates to focus_train → derive_stats), not in the reducer'
+    );
+  }
+
+  // (b) evaluate_train body must call focus_train.
+  if (evalTrainBody !== null) {
+    const compactEval = evalTrainBody.replace(/\s+/g, '');
+    if (compactEval.indexOf('focus_train(') === -1) {
+      return (
+        'evaluate_train: body does not call focus_train( — the seam must delegate EV arithmetic ' +
+        'to the game-core SSOT focus_train, not re-implement it inline'
+      );
+    }
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// M9b-tail: proof-of-teeth fixture strings for train checks.
+// Each BAD fixture is a deliberately wrong inline Rust snippet.
+// Each GOOD fixture is a fully compliant inline Rust snippet.
+// ---------------------------------------------------------------------------
+
+/** BAD T1: train with no ownership guard. Must be flagged by checkTrainOwnershipGuard. */
+const BAD_TRAIN_NO_OWNERSHIP = `
+  pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result<(), String> {
+      let mut m = ctx.db.monster().monster_id().find(monster_id)
+          .ok_or_else(|| "monster not found".to_string())?;
+      // DELIBERATELY MISSING: no owner check
+      let item = ctx.db.item_row().id().find(food_item_id)
+          .ok_or_else(|| "item not found".to_string())?;
+      let result = evaluate_train(&base, &ivs, &evs, &nature, level,
+          item.train_stat, item.train_amount)?;
+      consume_one(ctx, ctx.sender, food_item_id)?;
+      m.ev_hp = result.evs.get(StatKind::Hp);
+      ctx.db.monster().monster_id().update(m.clone());
+      ctx.db.monster_pub().monster_id().update(pub_from_monster(&m));
+      Ok(())
+  }
+`;
+
+/** BAD T2: train signature has client-supplied stat param. Must be flagged by checkTrainSignature. */
+const BAD_TRAIN_CLIENT_STAT_PARAM = `
+  pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32, stat: StatKind, amount: u16) -> Result<(), String> {
+      let mut m = ctx.db.monster().monster_id().find(monster_id)
+          .ok_or_else(|| "monster not found".to_string())?;
+      require_owner(ctx, "train", m.owner_identity)?;
+      let result = evaluate_train(&base, &ivs, &evs, &nature, level, Some(stat), amount)?;
+      consume_one(ctx, ctx.sender, food_item_id)?;
+      ctx.db.monster().monster_id().update(m.clone());
+      ctx.db.monster_pub().monster_id().update(pub_from_monster(&m));
+      Ok(())
+  }
+`;
+
+/** BAD T3: train calls consume_one BEFORE evaluate_train. Must be flagged by checkTrainConsumeAfterDecision. */
+const BAD_TRAIN_CONSUME_BEFORE_DECISION = `
+  pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result<(), String> {
+      let mut m = ctx.db.monster().monster_id().find(monster_id)
+          .ok_or_else(|| "monster not found".to_string())?;
+      require_owner(ctx, "train", m.owner_identity)?;
+      // DELIBERATELY WRONG: spend before decide
+      consume_one(ctx, ctx.sender, food_item_id)?;
+      let result = evaluate_train(&base, &ivs, &evs, &nature, level,
+          item.train_stat, item.train_amount)?;
+      ctx.db.monster().monster_id().update(m.clone());
+      ctx.db.monster_pub().monster_id().update(pub_from_monster(&m));
+      Ok(())
+  }
+`;
+
+/** BAD T4: train updates monster BEFORE a return Err. Must be flagged by checkTrainRejectNeverBurns. */
+const BAD_TRAIN_UPDATE_BEFORE_ERR = `
+  pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result<(), String> {
+      let mut m = ctx.db.monster().monster_id().find(monster_id)
+          .ok_or_else(|| "monster not found".to_string())?;
+      require_owner(ctx, "train", m.owner_identity)?;
+      // DELIBERATELY WRONG: update before the decision return
+      ctx.db.monster().monster_id().update(m.clone());
+      ctx.db.monster_pub().monster_id().update(pub_from_monster(&m));
+      let result = evaluate_train(&base, &ivs, &evs, &nature, level,
+          item.train_stat, item.train_amount)?;
+      consume_one(ctx, ctx.sender, food_item_id)?;
+      return Err("should not reach here".to_string());
+  }
+`;
+
+/** BAD T5: train assigns to current_hp. Must be flagged by checkTrainCurrentHpUntouched. */
+const BAD_TRAIN_WRITES_CURRENT_HP = `
+  pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result<(), String> {
+      let mut m = ctx.db.monster().monster_id().find(monster_id)
+          .ok_or_else(|| "monster not found".to_string())?;
+      require_owner(ctx, "train", m.owner_identity)?;
+      let result = evaluate_train(&base, &ivs, &evs, &nature, level,
+          item.train_stat, item.train_amount)?;
+      consume_one(ctx, ctx.sender, food_item_id)?;
+      // DELIBERATELY WRONG: writes current_hp (free heal)
+      m.current_hp = result.derived_stats.hp;
+      ctx.db.monster().monster_id().update(m.clone());
+      ctx.db.monster_pub().monster_id().update(pub_from_monster(&m));
+      Ok(())
+  }
+`;
+
+/** BAD T6: train hand-rolls the pub update without pub_from_monster. Must be flagged by checkTrainDualWrite. */
+const BAD_TRAIN_HAND_ROLLED_PUB = `
+  pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result<(), String> {
+      let mut m = ctx.db.monster().monster_id().find(monster_id)
+          .ok_or_else(|| "monster not found".to_string())?;
+      require_owner(ctx, "train", m.owner_identity)?;
+      let result = evaluate_train(&base, &ivs, &evs, &nature, level,
+          item.train_stat, item.train_amount)?;
+      consume_one(ctx, ctx.sender, food_item_id)?;
+      m.ev_attack = result.evs.get(StatKind::Attack);
+      ctx.db.monster().monster_id().update(m.clone());
+      // DELIBERATELY WRONG: hand-rolled pub without pub_from_monster
+      let mut pub_m = ctx.db.monster_pub().monster_id().find(m.monster_id).unwrap();
+      pub_m.stat_attack = result.derived_stats.attack;
+      ctx.db.monster_pub().monster_id().update(pub_m);
+      Ok(())
+  }
+`;
+
+/** BAD T7a: train body inlines focus_train directly instead of calling evaluate_train.
+ * Must be flagged by checkTrainSSOT (no evaluate_train call). */
+const BAD_TRAIN_INLINE_MATH = `
+  pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result<(), String> {
+      let mut m = ctx.db.monster().monster_id().find(monster_id)
+          .ok_or_else(|| "monster not found".to_string())?;
+      require_owner(ctx, "train", m.owner_identity)?;
+      let item = ctx.db.item_row().id().find(food_item_id)
+          .ok_or_else(|| "item not found".to_string())?;
+      // DELIBERATELY WRONG: calls focus_train directly instead of evaluate_train
+      let result = focus_train(&base, &ivs, &evs, &nature, level,
+          item.train_stat.unwrap(), item.train_amount)
+          .map_err(|e| format!("{e:?}"))?;
+      consume_one(ctx, ctx.sender, food_item_id)?;
+      ctx.db.monster().monster_id().update(m.clone());
+      ctx.db.monster_pub().monster_id().update(pub_from_monster(&m));
+      Ok(())
+  }
+`;
+
+/** GOOD: a fully compliant train reducer (delegates to evaluate_train, proper ordering). */
+const GOOD_TRAIN = `
+  pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result<(), String> {
+      let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+          return Err("monster not found".to_string());
+      };
+      require_owner(ctx, "train", m.owner_identity)?;
+      let Some(item) = ctx.db.item_row().id().find(food_item_id) else {
+          return Err("item not found".to_string());
+      };
+      let Some(species) = ctx.db.species_row().id().find(m.species_id) else {
+          return Err("species not found".to_string());
+      };
+      let base = StatBlock { hp: species.base_hp, attack: species.base_attack,
+          defense: species.base_defense, speed: species.base_speed,
+          sp_attack: species.base_sp_attack, sp_defense: species.base_sp_defense };
+      let ivs = game_core::IVs::new(m.iv_hp, m.iv_attack, m.iv_defense,
+          m.iv_speed, m.iv_sp_attack, m.iv_sp_defense)?;
+      let evs = game_core::EVs::new(m.ev_hp, m.ev_attack, m.ev_defense,
+          m.ev_speed, m.ev_sp_attack, m.ev_sp_defense)?;
+      let nature = game_core::Nature::new(m.nature_kind);
+      let level = game_core::Level::new(m.level)?;
+      let result = evaluate_train(&base, &ivs, &evs, &nature, level,
+          item.train_stat, item.train_amount)?;
+      consume_one(ctx, ctx.sender, food_item_id)?;
+      m.ev_hp      = result.evs.get(StatKind::Hp);
+      m.ev_attack  = result.evs.get(StatKind::Attack);
+      m.ev_defense = result.evs.get(StatKind::Defense);
+      m.ev_speed   = result.evs.get(StatKind::Speed);
+      m.ev_sp_attack  = result.evs.get(StatKind::SpAttack);
+      m.ev_sp_defense = result.evs.get(StatKind::SpDefense);
+      m.stat_hp      = result.derived_stats.hp;
+      m.stat_attack  = result.derived_stats.attack;
+      m.stat_defense = result.derived_stats.defense;
+      m.stat_speed   = result.derived_stats.speed;
+      m.stat_sp_attack  = result.derived_stats.sp_attack;
+      m.stat_sp_defense = result.derived_stats.sp_defense;
+      let pub_row = pub_from_monster(&m);
+      ctx.db.monster().monster_id().update(m);
+      ctx.db.monster_pub().monster_id().update(pub_row);
+      Ok(())
+  }
+`;
+
+/** GOOD: a fully compliant evaluate_train seam (calls focus_train). */
+const GOOD_EVALUATE_TRAIN = `
+  pub(crate) fn evaluate_train(
+      base: &StatBlock,
+      ivs: &IVs,
+      evs: &EVs,
+      nature: &Nature,
+      level: Level,
+      train_stat: Option<StatKind>,
+      train_amount: u16,
+  ) -> Result<FocusTrainResult, String> {
+      let stat = train_stat.ok_or_else(|| "item is not a training food".to_string())?;
+      focus_train(base, ivs, evs, nature, level, stat, train_amount)
+          .map_err(|e| format!("train rejected: {e:?}"))
+  }
+`;
+
+// ---------------------------------------------------------------------------
 // Proof-of-teeth fixture strings.
 // Each is a minimal inline Rust snippet. extractReducerBody must parse these.
 // ---------------------------------------------------------------------------
@@ -567,7 +1045,7 @@ const GOOD_EVALUATE_CARE = `
 
 export default async function () {
   const name =
-    'raising-reducer-security (care: ownership, server-clock, reject-never-burns, cooldown-op, SSOT, dual-write)';
+    'raising-reducer-security (care+train: ownership, server-clock, reject-never-burns, cooldown-op, SSOT, dual-write; train: signature, consume-after-decision, hp-untouched)';
 
   // =========================================================================
   // PROOFS-OF-TEETH — every tooth must bite before we scan real source.
@@ -792,6 +1270,200 @@ export default async function () {
   }
 
   // =========================================================================
+  // PROOFS-OF-TEETH (train) — train BAD fixtures must bite; GOOD must pass.
+  // =========================================================================
+
+  // --- Train Tooth T1: missing ownership guard must be flagged ---------------
+  {
+    const body = extractReducerBody(stripRustComments(BAD_TRAIN_NO_OWNERSHIP), 'train');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract train body from BAD_TRAIN_NO_OWNERSHIP fixture (parser bug)',
+      };
+    }
+    if (!checkTrainOwnershipGuard(body)) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: BAD_TRAIN_NO_OWNERSHIP fixture was NOT flagged by checkTrainOwnershipGuard',
+      };
+    }
+  }
+
+  // --- Train Tooth T2: client-supplied stat param in signature must be flagged ---
+  {
+    const stripped = stripRustComments(BAD_TRAIN_CLIENT_STAT_PARAM);
+    if (!checkTrainSignature(stripped)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_TRAIN_CLIENT_STAT_PARAM fixture (stat: StatKind, amount: u16 params) was NOT flagged by checkTrainSignature',
+      };
+    }
+  }
+
+  // --- Train Tooth T3: consume before decision must be flagged ---------------
+  {
+    const body = extractReducerBody(stripRustComments(BAD_TRAIN_CONSUME_BEFORE_DECISION), 'train');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract train body from BAD_TRAIN_CONSUME_BEFORE_DECISION fixture (parser bug)',
+      };
+    }
+    if (!checkTrainConsumeAfterDecision(body)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_TRAIN_CONSUME_BEFORE_DECISION fixture (consume_one before evaluate_train) was NOT flagged by checkTrainConsumeAfterDecision',
+      };
+    }
+  }
+
+  // --- Train Tooth T4: update before return Err must be flagged -------------
+  {
+    const body = extractReducerBody(stripRustComments(BAD_TRAIN_UPDATE_BEFORE_ERR), 'train');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract train body from BAD_TRAIN_UPDATE_BEFORE_ERR fixture (parser bug)',
+      };
+    }
+    if (!checkTrainRejectNeverBurns(body)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_TRAIN_UPDATE_BEFORE_ERR fixture (monster update before return Err) was NOT flagged by checkTrainRejectNeverBurns',
+      };
+    }
+  }
+
+  // --- Train Tooth T5: current_hp assignment must be flagged ----------------
+  {
+    const body = extractReducerBody(stripRustComments(BAD_TRAIN_WRITES_CURRENT_HP), 'train');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract train body from BAD_TRAIN_WRITES_CURRENT_HP fixture (parser bug)',
+      };
+    }
+    if (!checkTrainCurrentHpUntouched(body)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_TRAIN_WRITES_CURRENT_HP fixture (.current_hp= assignment) was NOT flagged by checkTrainCurrentHpUntouched',
+      };
+    }
+  }
+
+  // --- Train Tooth T6: hand-rolled pub update must be flagged ---------------
+  {
+    const body = extractReducerBody(stripRustComments(BAD_TRAIN_HAND_ROLLED_PUB), 'train');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract train body from BAD_TRAIN_HAND_ROLLED_PUB fixture (parser bug)',
+      };
+    }
+    if (!checkTrainDualWrite(body)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_TRAIN_HAND_ROLLED_PUB fixture (no pub_from_monster on update) was NOT flagged by checkTrainDualWrite',
+      };
+    }
+  }
+
+  // --- Train Tooth T7: inline focus_train (no evaluate_train) must be flagged ---
+  {
+    const body = extractReducerBody(stripRustComments(BAD_TRAIN_INLINE_MATH), 'train');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract train body from BAD_TRAIN_INLINE_MATH fixture (parser bug)',
+      };
+    }
+    if (!checkTrainSSOT(body, null)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_TRAIN_INLINE_MATH fixture (focus_train called directly, no evaluate_train) was NOT flagged by checkTrainSSOT',
+      };
+    }
+  }
+
+  // --- Train green-path: GOOD_TRAIN must pass ALL train checks ---------------
+  {
+    const stripped = stripRustComments(GOOD_TRAIN);
+    const body = extractReducerBody(stripped, 'train');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: could not extract train body from GOOD_TRAIN fixture (parser bug)',
+      };
+    }
+    const errs = [
+      checkTrainOwnershipGuard(body),
+      checkTrainSignature(stripped),
+      checkTrainConsumeAfterDecision(body),
+      checkTrainRejectNeverBurns(body),
+      checkTrainCurrentHpUntouched(body),
+      checkTrainDualWrite(body),
+      checkTrainSSOT(body, null),
+    ].filter((e) => e !== null);
+    if (errs.length > 0) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: GOOD_TRAIN was incorrectly flagged: ${errs.join(' | ')}`,
+      };
+    }
+  }
+
+  // --- Train green-path: GOOD_EVALUATE_TRAIN seam must satisfy SSOT check ---
+  {
+    const evalBody = extractReducerBody(stripRustComments(GOOD_EVALUATE_TRAIN), 'evaluate_train');
+    if (!evalBody) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract evaluate_train body from GOOD_EVALUATE_TRAIN fixture (parser bug)',
+      };
+    }
+    // Build a minimal compliant train body so checkTrainSSOT(b) can check (b).
+    const trainBodyForSSOT = `evaluate_train( consume_one( monster().monster_id().update( monster_pub().monster_id().update( pub_from_monster(`;
+    const err = checkTrainSSOT(trainBodyForSSOT, evalBody);
+    if (err) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: GOOD_EVALUATE_TRAIN was incorrectly flagged by checkTrainSSOT: ${err}`,
+      };
+    }
+  }
+
+  // =========================================================================
   // REAL CHECKS — scan the actual server-module source.
   // =========================================================================
 
@@ -840,6 +1512,49 @@ export default async function () {
     if (g8) failures.push(g8);
   }
 
+  // --- Check: train reducer exists and passes all train guard checks --------
+  // This block starts RED (train not yet in source) — the intended state.
+  const trainBody = extractReducerBody(src, 'train');
+  if (!trainBody) {
+    failures.push(
+      'train: reducer not found in server-module source — raising.rs train not yet implemented (expected RED state)',
+    );
+  } else {
+    const t1 = checkTrainOwnershipGuard(trainBody);
+    if (t1) failures.push(t1);
+    const t2 = checkTrainSignature(src);
+    if (t2) failures.push(t2);
+    const t3 = checkTrainConsumeAfterDecision(trainBody);
+    if (t3) failures.push(t3);
+    const t4 = checkTrainRejectNeverBurns(trainBody);
+    if (t4) failures.push(t4);
+    const t5 = checkTrainCurrentHpUntouched(trainBody);
+    if (t5) failures.push(t5);
+    const t6 = checkTrainDualWrite(trainBody);
+    if (t6) failures.push(t6);
+    // evaluate_train body is needed for T7(b); extract it separately.
+    const evaluateTrainBody = extractReducerBody(src, 'evaluate_train');
+    if (!evaluateTrainBody) {
+      failures.push(
+        'evaluate_train: pure seam not found in server-module source — train seam not yet implemented',
+      );
+    }
+    const t7 = checkTrainSSOT(trainBody, evaluateTrainBody ?? null);
+    if (t7) failures.push(t7);
+  }
+
+  // --- Check: evaluate_train seam exists (separate from train body check) ---
+  const evaluateTrainBodyStandalone = extractReducerBody(src, 'evaluate_train');
+  if (!evaluateTrainBodyStandalone) {
+    // Only push if we haven't already reported it inside the train block.
+    if (trainBody) {
+      failures.push(
+        'evaluate_train: pure seam not found in server-module source — train seam not yet implemented',
+      );
+    }
+    // If trainBody is also missing the failure is already recorded above.
+  }
+
   if (failures.length > 0) {
     return { name, pass: false, detail: failures.join('; ') };
   }
@@ -848,7 +1563,8 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'care guard ladder (ownership, server-clock, reject-never-burns, cooldown-op, SSOT, dual-write) + evaluate_care seam — all teeth verified',
+      'care guard ladder (ownership, server-clock, reject-never-burns, cooldown-op, SSOT, dual-write) + evaluate_care seam + ' +
+      'train guard ladder (ownership, signature, consume-after-decision, reject-never-burns, hp-untouched, dual-write, SSOT) + evaluate_train seam — all teeth verified',
   };
 }
 
