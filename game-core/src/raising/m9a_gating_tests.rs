@@ -545,6 +545,178 @@ fn apply_care_noeffect_precedes_at_max_bond() {
     );
 }
 
+// Test 25 — red-team M9a finding #1
+/// Guard-order precedence: StatAtCap PRECEDES BudgetExhausted when BOTH hold simultaneously.
+/// Fixture: attack=252 (per-stat cap hit), total=510 (budget exhausted), amount=1.
+/// Guard order from ADR-0058 §2: (1) NoEffect → (2) StatAtCap → (3) BudgetExhausted.
+/// The simultaneous-double-cap state (cur==252 AND total==510) is the ONLY state where
+/// swapping guards 2 and 3 produces a different observable result.
+/// kills: an impl that checks total==510 (BudgetExhausted) BEFORE cur==252 (StatAtCap),
+/// returning BudgetExhausted where StatAtCap is required.
+#[test]
+fn focus_train_stat_at_cap_precedes_budget_exhausted() {
+    // attack=252, defense=252, speed=6 → total=510, attack is at per-stat cap.
+    let evs = EVs::new(0, 252, 252, 6, 0, 0).unwrap();
+    assert_eq!(evs.total(), 510, "fixture sanity: total must be 510");
+    assert_eq!(
+        evs.get(StatKind::Attack),
+        252,
+        "fixture sanity: Attack must be at per-stat cap"
+    );
+
+    let err = focus_train(
+        &base_bulba(),
+        &ivs_all_15(),
+        &evs,
+        &hardy(),
+        lv50(),
+        StatKind::Attack, // target is AT per-stat cap; total is ALSO at budget cap
+        1,
+    )
+    .expect_err("should fail: Attack is at cap");
+
+    assert_eq!(
+        err,
+        FocusTrainError::StatAtCap,
+        "cur==252 AND total==510 AND amount>0 must produce StatAtCap (second guard), \
+         NOT BudgetExhausted (third guard) — ADR-0058 §2 guard order is load-bearing"
+    );
+}
+
+// Test 26 — red-team M9a finding #2
+/// Const-drift self-test: the cap used in focus_train's StatAtCap guard (EV_PER_STAT_CAP=252)
+/// must agree with EVs::new's per-stat cap (also 252). This test trains a stat from cur=251
+/// (one below the boundary) and verifies Ok is returned, then trains the same stat from the
+/// resulting cur=252 and verifies StatAtCap. If EV_PER_STAT_CAP in rules.rs drifted to 251,
+/// the first call would return StatAtCap prematurely; if it drifted to 253, the second call
+/// would return Ok and the expect() would panic when EVs::new rejects new_val=253.
+/// kills: an impl where the local EV_PER_STAT_CAP const in rules.rs differs from the real cap
+/// enforced by EVs::new in monster/types.rs.
+#[test]
+fn focus_train_cap_const_agrees_with_evs_constructor() {
+    // Confirm the cap boundary: training from cur=251 (one below cap) must succeed.
+    let evs_near_cap = EVs::new(0, 251, 0, 0, 0, 0).unwrap();
+    let result = focus_train(
+        &base_bulba(),
+        &ivs_all_15(),
+        &evs_near_cap,
+        &hardy(),
+        lv50(),
+        StatKind::Attack,
+        1, // exactly fills the last slot
+    )
+    .expect("cur=251 with amount=1 must succeed: exactly one EV gap remains");
+
+    assert_eq!(
+        result.evs.get(StatKind::Attack),
+        252,
+        "attack EV must be exactly 252 after filling the last slot"
+    );
+
+    // Now confirm that training from cur=252 (exactly at cap) returns StatAtCap.
+    let evs_at_cap = result.evs;
+    assert_eq!(
+        evs_at_cap.get(StatKind::Attack),
+        252,
+        "sanity: attack is now at cap"
+    );
+
+    let err = focus_train(
+        &base_bulba(),
+        &ivs_all_15(),
+        &evs_at_cap,
+        &hardy(),
+        lv50(),
+        StatKind::Attack,
+        1,
+    )
+    .expect_err("cur=252 must be rejected: stat is at cap");
+
+    assert_eq!(
+        err,
+        FocusTrainError::StatAtCap,
+        "training a stat already at 252 must return StatAtCap — \
+         const drift between rules.rs EV_PER_STAT_CAP and monster/types.rs would break this"
+    );
+}
+
+// Test 27
+/// EVs field mapping for ALL six StatKind variants — deterministic regression.
+/// Iterates every target stat from a fixed start (EVs 10/20/30/40/50/60, total=210)
+/// and asserts: (a) the target EV increases by exactly the grant (5), and (b) every
+/// OTHER stat's EV is bitwise-identical to its start value.
+///
+/// kills: a field-swap bug in the internal `evs_with(target, new_val)` helper for
+/// ANY specific stat — e.g. Defense and Speed fields transposed would be caught here
+/// but NOT by proptest alone (no pinned seed → no guarantee that exact swap is hit).
+/// Test 5 (`focus_train_nontarget_evs_unchanged`) covers Attack only; this test
+/// closes the gap for Defense, Speed, SpAttack, and SpDefense.
+#[test]
+fn focus_train_all_stat_targets_field_mapping() {
+    // Starting EVs: hp=10 atk=20 def=30 spd=40 spa=50 spd2=60  total=210.
+    // Grant for each target = min(5, 252-start, 510-210) = min(5, ≥192, 300) = 5.
+    let start_evs = EVs::new(10, 20, 30, 40, 50, 60).unwrap();
+    assert_eq!(start_evs.total(), 210, "fixture sanity: total must be 210");
+
+    let all_stats = [
+        StatKind::Hp,
+        StatKind::Attack,
+        StatKind::Defense,
+        StatKind::Speed,
+        StatKind::SpAttack,
+        StatKind::SpDefense,
+    ];
+
+    // Original value for each stat, in the same order as all_stats.
+    let start_vals = [10u16, 20, 30, 40, 50, 60];
+
+    for (i, &target) in all_stats.iter().enumerate() {
+        let result = focus_train(
+            &base_bulba(),
+            &ivs_all_15(),
+            &start_evs,
+            &hardy(),
+            lv50(),
+            target,
+            5,
+        )
+        .unwrap_or_else(|e| {
+            panic!(
+                "focus_train with target={:?} should succeed (budget+per-stat headroom), got {:?}",
+                target, e
+            )
+        });
+
+        // (a) The target EV increased by exactly 5.
+        let expected_target_ev = start_vals[i] + 5;
+        assert_eq!(
+            result.evs.get(target),
+            expected_target_ev,
+            "target={:?}: EV must be {} (was {}+5), field mapping wrong",
+            target,
+            expected_target_ev,
+            start_vals[i]
+        );
+
+        // (b) Every OTHER stat's EV is unchanged.
+        for (j, &other) in all_stats.iter().enumerate() {
+            if j == i {
+                continue;
+            }
+            assert_eq!(
+                result.evs.get(other),
+                start_vals[j],
+                "target={:?}: sibling {:?} EV must be unchanged at {} but got {} — \
+                 field-swap in evs_with?",
+                target,
+                other,
+                start_vals[j],
+                result.evs.get(other)
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CRITERION A+B — Determinism
 // ---------------------------------------------------------------------------
