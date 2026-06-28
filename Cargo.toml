@@ -3,7 +3,7 @@
 # the structural half of feature-isolation (the eval is the proof, ADR-0003).
 [workspace]
 resolver = "2"
-members = ["game-core", "client-wasm", "server-module", "sim-harness"]
+members = ["game-core", "client-wasm", "server-module", "sim-harness", "evals/release-overflow-teeth"]
 
 [workspace.package]
 version = "0.1.0"
@@ -31,3 +31,13 @@ ron = "0.8"
 proptest = "1"
 # Structured logging facade (captured by the SpacetimeDB host) — server-module dep.
 log = "0.4"
+
+# Release/bench fail-loud (ADR-0003 / ADR-0055): shipped release + bench artifacts
+# (the wasm prediction pkg, the SpacetimeDB cdylib, criterion benches) must PANIC on
+# integer overflow rather than silently wrap, so debug/test and release agree on
+# behavior. Profiles are honored only at the workspace root.
+[profile.release]
+overflow-checks = true
+
+[profile.bench]
+overflow-checks = true

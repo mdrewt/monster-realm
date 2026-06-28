@@ -1,0 +1,14 @@
+# Release fail-loud proof-of-teeth fixture (M8.8a, ADR-0055). A WORKSPACE MEMBER
+# (so it inherits the workspace `[profile.release]`) with NO external deps. Its
+# `#[should_panic(expected = "overflow")]` test does a runtime integer overflow:
+#   - debug (`just test`): overflow-checks on by default -> panics -> test PASSES
+#   - release WITHOUT `[profile.release] overflow-checks = true`: wraps -> no panic -> FAILS
+#   - release WITH it: panics -> PASSES
+# `evals/determinism-fail-loud.eval.mjs` runs `cargo test --release -p
+# release-overflow-teeth` and asserts it passes — RED until the implementer adds
+# the profile setting to the workspace Cargo.toml.
+[package]
+name = "release-overflow-teeth"
+version = "0.0.0"
+edition = "2021"
+publish = false

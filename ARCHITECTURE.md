@@ -13,7 +13,10 @@ effectful shells.
   once (ADR-0003 SSOT). The server runs it for truth; the client runs the *same
   compiled code* (via `client-wasm`) for prediction. Re-implementing a rule
   elsewhere is the desync bug. Determinism is mechanically enforced: `clippy.toml`
-  bans wall-clock reads + unseeded RNG workspace-wide; time/RNG are injected.
+  bans wall-clock reads (std::time::*, chrono::*::now) + unseeded RNG (rand::*, getrandom::*,
+  OsRng, ThreadRng) workspace-wide (proven by `evals/determinism-fail-loud.eval.mjs`);
+  time/RNG are injected. Release/bench profiles include `overflow-checks = true`
+  (fail loud on arithmetic overflow, matching debug/test — ADR-0055).
 - **`client-wasm`** — thin `wasm-bindgen` exports wrapping `game-core` for client
   prediction (ADR-0036). Built with `wasm-pack`. Depends on `game-core` **without**
   the `spacetimedb` feature (the feature-isolation eval proves it).
@@ -89,7 +92,7 @@ stable id), separate from `init`. Stable ids are append-only.
 
 ADRs **0002–0034** are design ADRs that live in the harness spec corpus
 (`../../specs/monster-realm-v2/adr/`); **0001** is mirrored in both locations.
-Implementation ADRs **0001, 0035–0054** live in `docs/adr/` — see
+Implementation ADRs **0001, 0035–0055** live in `docs/adr/` — see
 `docs/adr/README.md` for the navigable catalog. Highlights: 0035 scaffold
 hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest, **0039
 two-window e2e CI gate**, 0040 RLS fallback split-tables, 0041 integer damage
@@ -97,7 +100,7 @@ formula, 0042 battle table public PvE, 0043 CI caching + fast inner loop, 0044
 private encounter table, 0045 private `battle_wild` individuality table, 0046
 player inventory model, 0047 recruit resolution, 0048 `start_battle` opponent
 provenance, 0049 panic-as-content-invariant policy, 0050 nightly mutation/
-coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant. See also
+coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness. See also
 `docs/validation-findings.md` (empirical Tier-1 results).
 
 ## Monster subsystem (`game-core/src/monster/`, M6a)
