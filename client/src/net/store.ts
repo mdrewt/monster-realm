@@ -385,8 +385,10 @@ export class AuthoritativeStore {
     return this.#itemDefs.get(id);
   }
 
-  /** A defensive snapshot copy — a caller mutating it cannot corrupt the store
-   *  (upholds the one-way `server -> store -> render` flow). */
+  /** A fresh Map of the item defs — adding/removing entries on the returned map
+   *  cannot corrupt the store (same structure-copy contract as `speciesMap()` /
+   *  `skillMap()`; upholds the one-way `server -> store -> render` flow). The row
+   *  VALUES are shared by reference and `readonly`; consumers only read them. */
   itemDefs(): ReadonlyMap<number, StoreItemRow> {
     return new Map(this.#itemDefs);
   }

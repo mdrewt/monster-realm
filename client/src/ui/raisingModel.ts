@@ -57,6 +57,8 @@ function toItem(
   itemDefs: ReadonlyMap<number, StoreItemRow>,
 ): InventoryItemViewModel {
   const def = itemDefs.get(item.itemId);
+  // `def.trainAmount` is available on StoreItemRow but deliberately not surfaced
+  // here — the Train button shows no "+N to stat" magnitude yet (follow-up UI).
   return {
     invId: item.invId,
     itemId: item.itemId,

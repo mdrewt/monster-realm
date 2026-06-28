@@ -173,7 +173,7 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
-  // Escape priority: battle > box > movement (ADR-0014 exit ordering).
+  // Escape priority: battle > box > raising > movement (ADR-0014 exit ordering).
   if (e.code === 'Escape' && battleView?.visible) {
     const latest = store.latestPlayerBattle(identity);
     // Terminal outcome frame: permanent dismiss (don't re-pop next batch). Ongoing:

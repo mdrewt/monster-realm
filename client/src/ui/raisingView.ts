@@ -19,7 +19,6 @@ export class RaisingView {
   readonly #monsterEl: HTMLDivElement;
   readonly #inventoryEl: HTMLDivElement;
   readonly #callbacks: RaisingViewCallbacks;
-  #items: readonly InventoryItemViewModel[] = [];
   #visible = false;
 
   constructor(parent: HTMLElement, callbacks: RaisingViewCallbacks) {
@@ -78,12 +77,14 @@ export class RaisingView {
   }
 
   refresh(vm: RaisingViewModel): void {
-    this.#items = vm.items;
-    this.#renderMonsters(vm.monsters);
+    this.#renderMonsters(vm.monsters, vm.items);
     this.#renderInventory(vm.items);
   }
 
-  #renderMonsters(monsters: RaisingViewModel['monsters']): void {
+  #renderMonsters(
+    monsters: RaisingViewModel['monsters'],
+    items: readonly InventoryItemViewModel[],
+  ): void {
     this.#monsterEl.replaceChildren();
     if (monsters.length === 0) {
       const empty = document.createElement('div');
@@ -122,7 +123,7 @@ export class RaisingView {
       careBtn.addEventListener('click', () => this.#callbacks.onCare(mon.monsterId));
       actions.appendChild(careBtn);
 
-      for (const item of this.#items) {
+      for (const item of items) {
         if (item.count > 0 && item.canTrain) {
           const trainBtn = document.createElement('button');
           trainBtn.textContent = `Train: ${item.name} (x${item.count})`;
