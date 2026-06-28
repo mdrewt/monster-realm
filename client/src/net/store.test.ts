@@ -747,6 +747,91 @@ describe('AuthoritativeStore M8.6c: speciesMap() returns a COPY (no live-map lea
   });
 });
 
+// =============================================================================
+// M8.7e — latestPlayerBattle selector (AuthoritativeStore)
+// SOURCE OF TRUTH: specs/monster-realm-v2/M8.7-third-review-residuals.spec.md §3
+//   "WHEN a player's battle resolves … THE SYSTEM SHALL render the terminal
+//   outcome frame at least once"
+//
+// latestPlayerBattle(identity) returns the StoreBattle row with the HIGHEST
+// battleId (bigint comparison) among rows whose playerIdentity === identity,
+// regardless of outcome (Ongoing OR terminal). Returns undefined when no row
+// matches. The existing ongoingBattle() selector is UNCHANGED.
+//
+// RED: `latestPlayerBattle` does not exist on AuthoritativeStore yet.
+// =============================================================================
+
+describe('AuthoritativeStore M8.7e: latestPlayerBattle', () => {
+  it('T1a: BITES returns the row with the highest battleId regardless of outcome', () => {
+    // Insert ids 1n (Ongoing), 3n (SideAWins), 2n (Fled) for 'alice'.
+    // latestPlayerBattle must return the 3n row, not the first-inserted or
+    // the Ongoing-only row.
+    // Kills: returning the first match / returning only Ongoing rows.
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(1n, 'alice', 'Ongoing'));
+    s.upsertBattle(battle(3n, 'alice', 'SideAWins'));
+    s.upsertBattle(battle(2n, 'alice', 'Fled'));
+    const result = s.latestPlayerBattle('alice');
+    expect(result).toBeDefined();
+    expect(result!.battleId).toBe(3n);
+    expect(result!.outcome).toBe('SideAWins');
+  });
+
+  it('T1b: BITES returns undefined when the identity has no battle', () => {
+    // Rows exist only for 'bob'. latestPlayerBattle('alice') must return undefined,
+    // not bob's battle and not throw.
+    // Kills: returning another player's battle / throwing on missing identity.
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(5n, 'bob', 'Ongoing'));
+    expect(s.latestPlayerBattle('alice')).toBeUndefined();
+  });
+
+  it('T1c: BITES filters strictly by playerIdentity (alice id 5n, bob id 9n)', () => {
+    // alice has battleId 5n, bob has battleId 9n. latestPlayerBattle('alice')
+    // must return alice's 5n row, NOT bob's higher-id 9n row.
+    // Kills: ignoring the identity filter and returning the global highest-id row.
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(5n, 'alice', 'Ongoing'));
+    s.upsertBattle(battle(9n, 'bob', 'Ongoing'));
+    const result = s.latestPlayerBattle('alice');
+    expect(result).toBeDefined();
+    expect(result!.battleId).toBe(5n);
+    expect(result!.playerIdentity).toBe('alice');
+  });
+
+  it('T1d: BITES bigint comparison is exact across the 2^53 boundary (Number() coercion broken)', () => {
+    // 9007199254740993n (2^53+1) and 9007199254740992n (2^53) both coerce to
+    // the same Number (9007199254740992) via Number(), so Math.max or Number()
+    // coercion picks the wrong/arbitrary winner. bigint `>` comparison correctly
+    // identifies 9007199254740993n as the larger value.
+    // Kills: Number() / Math.max coercion that silently equates the two ids.
+    const lo = 9007199254740992n; // 2^53
+    const hi = 9007199254740993n; // 2^53 + 1
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(lo, 'alice', 'Ongoing'));
+    s.upsertBattle(battle(hi, 'alice', 'SideAWins'));
+    const result = s.latestPlayerBattle('alice');
+    expect(result).toBeDefined();
+    expect(result!.battleId).toBe(hi); // must be 9007199254740993n, not lo
+  });
+
+  it('T1e: REGRESSION — ongoingBattle is unchanged after these inserts (semantics preserved)', () => {
+    // Verify that adding latestPlayerBattle does NOT alter ongoingBattle's filter.
+    // ongoingBattle must still return only the Ongoing row, not the terminal ones.
+    // Kills: an impl that accidentally modifies ongoingBattle to return all outcomes.
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(1n, 'alice', 'Ongoing'));
+    s.upsertBattle(battle(3n, 'alice', 'SideAWins'));
+    s.upsertBattle(battle(2n, 'alice', 'Fled'));
+    const ongoing = s.ongoingBattle('alice');
+    expect(ongoing).toBeDefined();
+    expect(ongoing!.battleId).toBe(1n);
+    expect(ongoing!.outcome).toBe('Ongoing');
+    // latestPlayerBattle returns the highest (3n), ongoingBattle returns the Ongoing (1n)
+    expect(s.latestPlayerBattle('alice')!.battleId).toBe(3n);
+  });
+});
+
 describe('AuthoritativeStore M8.6c: skillMap() returns a COPY (no live-map leak)', () => {
   it('BITES: mutating the returned skillMap does NOT corrupt the store (live-map leak killed)', () => {
     // RED reason: `skillMap()` returns the private Map reference. A caller mutation

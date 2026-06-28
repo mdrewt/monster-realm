@@ -6,6 +6,7 @@
 // These tests start RED because battleModel.ts does not exist yet.
 // Every test has a `// Kills:` comment explaining which wrong impl it catches.
 
+import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type {
   StoreBattle,
@@ -14,7 +15,7 @@ import type {
   StoreSkillRow,
   StoreSpeciesRow,
 } from '../net/store';
-import { buildBattleViewModel } from './battleModel';
+import { buildBattleViewModel, decideBattleOverlay, type OverlayState } from './battleModel';
 import { hpPercent } from './boxModel';
 
 // ---------------------------------------------------------------------------
@@ -632,5 +633,231 @@ describe('buildBattleViewModel M8.6c: negative active index → null, no throw',
     });
     const result = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
     expect(result).not.toBeNull();
+  });
+});
+
+// =============================================================================
+// M8.7e — decideBattleOverlay pure reducer
+// SOURCE OF TRUTH: specs/monster-realm-v2/M8.7-third-review-residuals.spec.md §3
+//   "WHEN a player's battle resolves … THE SYSTEM SHALL render the terminal
+//   outcome frame at least once … explicit dismiss (Escape) … Ongoing auto-show
+//   preserved."
+//
+// decideBattleOverlay(latest, state) → { action, dismissedBattleId, synced }
+//
+// Rules:
+//   1. latest === undefined → hide, state unchanged.
+//   2. state.synced === false (first observation this session):
+//      - result.synced becomes true.
+//      - terminal (outcome !== 'Ongoing'): pre-dismiss → hide, dismissedBattleId=latest.battleId.
+//      - Ongoing: show, dismissedBattleId unchanged.
+//   3. state.synced === true (steady state):
+//      - dismissedBattleId === latest.battleId → hide (no re-pop).
+//      - else → show (Ongoing auto-shows; mid-session terminal shows once).
+//
+// RED: `decideBattleOverlay`, `OverlayState`, `BattleOverlayAction`, `OverlayResult`
+// do not exist in battleModel.ts yet.
+// =============================================================================
+
+/** Local factory: a minimal valid StoreBattle with a configurable battleId + outcome. */
+function overlayBattle(battleId: bigint, outcome: string): StoreBattle {
+  return makeBattle({ battleId, outcome });
+}
+
+describe('battleModel M8.7e: decideBattleOverlay', () => {
+  // ---------------------------------------------------------------------------
+  // T2 — live resolve shows outcome (EARS "render at least once")
+  // ---------------------------------------------------------------------------
+  it('T2: BITES shows a resolved battle that appeared mid-session (the original bug)', () => {
+    // A terminal battle (SideAWins) that is NOT the dismissed id must produce
+    // action { kind:'show', battle: that battle }.
+    // This is the core bug: the old refreshBattle() sourced from ongoingBattle()
+    // (Ongoing filter), so any resolved battle produced {kind:'hide'} — dead code.
+    // Kills: hiding a resolved battle by re-using the ongoingBattle Ongoing-only filter.
+    const b = overlayBattle(10n, 'SideAWins');
+    const state: OverlayState = { dismissedBattleId: null, synced: true };
+    const result = decideBattleOverlay(b, state);
+    expect(result.action.kind).toBe('show');
+    if (result.action.kind === 'show') {
+      expect(result.action.battle.battleId).toBe(10n);
+      expect(result.action.battle.outcome).toBe('SideAWins');
+    }
+    expect(result.synced).toBe(true);
+    expect(result.dismissedBattleId).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // T3 — stale-on-login pre-dismiss (first sight of a terminal = historical)
+  // ---------------------------------------------------------------------------
+  it('T3a: BITES pre-dismisses a terminal battle seen for the first time (synced=false)', () => {
+    // At login, if the first batch already has outcome !== 'Ongoing', the battle
+    // is historical (the player already finished it before this session). It must
+    // be pre-dismissed (hidden immediately) and never popped as a notification.
+    // Kills: popping a historical resolved battle on login (annoying / confusing).
+    const b = overlayBattle(7n, 'SideBWins');
+    const state: OverlayState = { dismissedBattleId: null, synced: false };
+    const result = decideBattleOverlay(b, state);
+    expect(result.action.kind).toBe('hide');
+    expect(result.dismissedBattleId).toBe(7n); // pre-dismissed
+    expect(result.synced).toBe(true); // synced becomes true after first observation
+  });
+
+  it('T3b: BITES pre-dismissed battle stays hidden on the follow-up call (no re-pop)', () => {
+    // After T3a, the next batch fires with the same terminal battle.
+    // dismissedBattleId=7n, synced=true → must still be {kind:'hide'}.
+    // Kills: an impl that pre-dismisses on first sight but re-pops on the next batch.
+    const b = overlayBattle(7n, 'SideBWins');
+    const followUp: OverlayState = { dismissedBattleId: 7n, synced: true };
+    const result = decideBattleOverlay(b, followUp);
+    expect(result.action.kind).toBe('hide');
+  });
+
+  // ---------------------------------------------------------------------------
+  // T4 — no re-pop after explicit dismiss
+  // ---------------------------------------------------------------------------
+  it('T4: BITES does NOT re-pop after the player dismissed (dismissedBattleId === latest.battleId)', () => {
+    // Once dismissedBattleId matches the latest battle's id, every subsequent
+    // batch must keep {kind:'hide'} — no infinite re-pop.
+    // Kills: an impl that shows again after dismiss (e.g. checks dismissedBattleId
+    // only on the first call, or compares by Number() losing bigint identity).
+    const b = overlayBattle(4n, 'SideAWins');
+    const state: OverlayState = { dismissedBattleId: 4n, synced: true };
+    const result = decideBattleOverlay(b, state);
+    expect(result.action.kind).toBe('hide');
+  });
+
+  // ---------------------------------------------------------------------------
+  // T5 — Ongoing auto-show preserved (three sub-cases)
+  // ---------------------------------------------------------------------------
+  it('T5a: BITES Ongoing battle on first session observation auto-shows (synced=false)', () => {
+    // First batch, battle is Ongoing → must show immediately (not pre-dismiss).
+    // synced becomes true; dismissedBattleId stays null.
+    // Kills: pre-dismissing Ongoing battles on login (breaks the always-show-active guarantee).
+    const b = overlayBattle(2n, 'Ongoing');
+    const state: OverlayState = { dismissedBattleId: null, synced: false };
+    const result = decideBattleOverlay(b, state);
+    expect(result.action.kind).toBe('show');
+    expect(result.synced).toBe(true);
+    expect(result.dismissedBattleId).toBeNull();
+  });
+
+  it('T5b: BITES Ongoing battle in steady state auto-shows when not dismissed', () => {
+    // Steady state (synced=true), dismissedBattleId=null: Ongoing must produce show.
+    // Kills: an impl that only shows the first time or requires an explicit event.
+    const b = overlayBattle(2n, 'Ongoing');
+    const state: OverlayState = { dismissedBattleId: null, synced: true };
+    const result = decideBattleOverlay(b, state);
+    expect(result.action.kind).toBe('show');
+  });
+
+  it('T5c: BITES undefined latest hides overlay and leaves all state unchanged', () => {
+    // When the store has no battle for this player, the overlay must hide without
+    // mutating dismissedBattleId or synced.
+    // Kills: clearing dismissedBattleId or resetting synced when latest is undefined
+    // (which would forget a dismiss and re-pop on the next batch).
+    const state: OverlayState = { dismissedBattleId: 9n, synced: true };
+    const result = decideBattleOverlay(undefined, state);
+    expect(result.action.kind).toBe('hide');
+    expect(result.dismissedBattleId).toBe(9n); // unchanged
+    expect(result.synced).toBe(true); // unchanged
+  });
+
+  // ---------------------------------------------------------------------------
+  // T6 — mid-session terminal still shows with a DIFFERENT dismissed id (F1 under-showing)
+  // ---------------------------------------------------------------------------
+  it('T6: BITES shows a freshly-resolved battle even when a DIFFERENT battle was dismissed', () => {
+    // Scenario: player dismissed battle 11 earlier this session. Now the server
+    // sends a NEW terminal battle (id=20). dismissedBattleId=11 !== 20, so the
+    // reducer must show battle 20 — there is no "seen-ongoing" gate in the spec.
+    // Kills: a "seen-ongoing"-gated impl that hides a terminal battle it never saw
+    // as Ongoing (would under-show freshly-resolved battles whose Ongoing frame
+    // was coalesced into the same batch as the terminal frame).
+    const b = overlayBattle(20n, 'SideAWins');
+    const state: OverlayState = { dismissedBattleId: 11n, synced: true };
+    const result = decideBattleOverlay(b, state);
+    expect(result.action.kind).toBe('show');
+    if (result.action.kind === 'show') {
+      expect(result.action.battle.battleId).toBe(20n);
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // T7 — totality + no-throw property (fast-check)
+  // ---------------------------------------------------------------------------
+  it('T7: BITES never throws and always returns a valid action.kind for any input combination', () => {
+    // Tests the totality of the reducer: for every outcome string (including
+    // unknown future variants) × synced × dismissedBattleId, the call returns
+    // 'show'|'hide' and never throws. Also asserts that result.synced === true
+    // whenever latest !== undefined (synced is sticky-on-observe).
+    // Kills: a non-total reducer / NaN/throw on unknown outcome string / accidentally
+    // resetting synced to false when a battle is present.
+    const outcomes = ['Ongoing', 'SideAWins', 'SideBWins', 'Fled', 'Draw', 'Weird'];
+    const syncedValues = [false, true];
+
+    for (const outcome of outcomes) {
+      for (const synced of syncedValues) {
+        for (const dismissedBattleId of [null, 1n, 99n]) {
+          const b = overlayBattle(1n, outcome);
+          const state: OverlayState = { dismissedBattleId, synced };
+          let result: ReturnType<typeof decideBattleOverlay> | undefined;
+          expect(() => {
+            result = decideBattleOverlay(b, state);
+          }).not.toThrow();
+          expect(result!.action.kind === 'show' || result!.action.kind === 'hide').toBe(true);
+          // Synced must be true after observing any battle (sticky-on-observe).
+          expect(result!.synced).toBe(true);
+        }
+      }
+    }
+
+    // Also test undefined latest for completeness.
+    for (const synced of syncedValues) {
+      for (const dismissedBattleId of [null, 1n]) {
+        const state: OverlayState = { dismissedBattleId, synced };
+        let result: ReturnType<typeof decideBattleOverlay> | undefined;
+        expect(() => {
+          result = decideBattleOverlay(undefined, state);
+        }).not.toThrow();
+        expect(result!.action.kind === 'show' || result!.action.kind === 'hide').toBe(true);
+      }
+    }
+  });
+
+  it('T7 fast-check: totality property — no throw, valid kind, synced sticky on any battle', () => {
+    // Property-based version of T7. Covers arbitrary bigint ids and outcome strings
+    // via fast-check's combinatorial generation.
+    // Kills: edge-case throws on large bigints, empty strings, or unexpected outcome tags.
+    fc.assert(
+      fc.property(
+        fc.option(
+          fc.record({
+            battleId: fc.bigInt({ min: 0n, max: 2n ** 64n - 1n }),
+            outcome: fc.oneof(
+              fc.constantFrom('Ongoing', 'SideAWins', 'SideBWins', 'Fled', 'Draw'),
+              fc.string({ minLength: 1, maxLength: 20 }),
+            ),
+          }),
+          { nil: undefined },
+        ),
+        fc.boolean(),
+        fc.option(fc.bigInt({ min: 0n, max: 2n ** 64n - 1n }), { nil: null }),
+        (battleInfo, synced, dismissedBattleId) => {
+          const latest =
+            battleInfo !== undefined
+              ? overlayBattle(battleInfo.battleId, battleInfo.outcome)
+              : undefined;
+          const state: OverlayState = { dismissedBattleId, synced };
+          let result: ReturnType<typeof decideBattleOverlay> | undefined;
+          expect(() => {
+            result = decideBattleOverlay(latest, state);
+          }).not.toThrow();
+          expect(result!.action.kind === 'show' || result!.action.kind === 'hide').toBe(true);
+          // When a battle is present, synced must be true after the call.
+          if (latest !== undefined) {
+            expect(result!.synced).toBe(true);
+          }
+        },
+      ),
+    );
   });
 });
