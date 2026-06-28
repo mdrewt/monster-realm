@@ -41,11 +41,18 @@
 // stripRustComments and extractReducerBody copied VERBATIM from
 // raising-reducer-security.eval.mjs (ReDoS-safe, brace-counting, no dyn RegExp).
 //
-// === KNOWN LIMITATIONS ===
+// === KNOWN LIMITATIONS (documented scope, no impact on today's source) ===
 // - Scans only the canonical `#[spacetimedb::table(... scheduled(...))]` form;
 //   non-canonical attr forms or re-exports are out of scope.
 // - Source is comment-stripped but NOT string-literal-stripped: a `.bond =`
 //   inside a Rust string literal is a theoretical false-positive (none exist today).
+// - Check A matches the enclosing fn by NAME; a trait-impl method sharing an
+//   allowlisted name (e.g. `impl X { fn care() {..} }`) would be treated as
+//   allowlisted. This is out of scope: SpacetimeDB reducers are the real call
+//   boundary (declared via `#[spacetimedb::reducer]`), not trait methods, and
+//   no `impl` blocks write growth fields today.
+// - Compound assignment IS covered (`+= -= *= /= |= &= ^= %=`) — the natural
+//   idle-accrual form `m.bond += 1` is detected, not just `m.bond = ...`.
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 
@@ -166,12 +173,13 @@ export const GROWTH_WRITERS = ['care', 'train', 'write_back_battle_results'];
 
 /**
  * Find all growth-field WRITE occurrences in comment-stripped source.
- * A write is `.<field>` followed by optional whitespace then `=` then a char
- * that is NOT `=` (excluding `==`, `>=`, `<=`, `!=` comparisons).
+ * A write is `.<field>` (whole-word) followed by optional whitespace then EITHER
+ * a plain assignment `=` (but not `==`) OR a compound assignment
+ * (`+= -= *= /= |= &= ^= %=`). Comparisons (`==`, `>=`, `<=`, `!=`) are excluded.
  *
  * Algorithm: for each growth field, scan src for `.<field>` using indexOf,
- * then inspect the chars following to confirm it is an assignment `=` not a
- * comparison. indexOf only — NO new RegExp(non-literal).
+ * then inspect the chars following to classify assignment vs comparison.
+ * indexOf only — NO new RegExp(non-literal).
  *
  * @param {string} src Comment-stripped Rust source.
  * @returns {Array<{field:string, pos:number}>} All growth-write positions.
@@ -197,11 +205,19 @@ export function findGrowthWrites(src) {
           (src[j] === ' ' || src[j] === '\t' || src[j] === '\n' || src[j] === '\r')
         )
           j++;
-        if (j < src.length && src[j] === '=') {
-          // Confirm the char AFTER `=` is not another `=` (so `==` is excluded).
-          const afterEq = j + 1;
-          const nextChar = afterEq < src.length ? src[afterEq] : ' ';
-          if (nextChar !== '=') {
+        if (j < src.length) {
+          const c = src[j];
+          const next = j + 1 < src.length ? src[j + 1] : ' ';
+          // Plain assignment `=` but NOT a comparison `==`.
+          const isPlainAssign = c === '=' && next !== '=';
+          // Compound assignment `+= -= *= /= |= &= ^= %=` — read-modify-write, the
+          // MOST natural way to express idle accrual (e.g. `m.bond += 1`). A
+          // growth-accrual gate that missed `+=` would have a hole exactly where
+          // the threat lives. Compound ops are never comparisons, so `next === '='`
+          // is decisive. `<`/`>` are deliberately EXCLUDED so `>=`/`<=` stay
+          // comparisons (not writes); `!` is excluded so `!=` stays a comparison.
+          const isCompoundAssign = '+-*/|&^%'.indexOf(c) !== -1 && next === '=';
+          if (isPlainAssign || isCompoundAssign) {
             results.push({ field, pos: hit });
           }
         }
@@ -445,6 +461,11 @@ export function checkNoScheduledGrowth(src) {
     }
 
     // (2) The scheduled reducer body must NOT directly call any GROWTH_WRITERS.
+    // If the body can't be located (null), Check B's direct-call scan is skipped
+    // for this reducer — but that is safe: Check A independently scans EVERY
+    // growth write in the full source and resolves its enclosing fn, so any
+    // actual growth write inside (or reachable-by-name from) that reducer is
+    // still caught there. Check B is a belt-and-suspenders direct-call guard.
     const body = extractReducerBody(src, reducerName);
     if (body !== null) {
       const compact = body.replace(/\s+/g, '');
@@ -502,6 +523,28 @@ pub struct BondTickSchedule {
 pub fn tick_accrue_bond(ctx: &ReducerContext, sched: BondTickSchedule) -> Result<(), String> {
     for mut m in ctx.db.monster().iter() {
         m.bond = m.bond.saturating_add(1);
+        ctx.db.monster().monster_id().update(m);
+    }
+    Ok(())
+}
+`;
+
+/**
+ * BAD_SCHEDULED_COMPOUND_BOND: a scheduled reducer that uses COMPOUND assignment
+ * `m.bond += 1` (read-modify-write) inline — the most natural way to express idle
+ * accrual. Check A must flag it: the write is in non-allowlisted fn `creep_tick`.
+ * Kills: "a `+=` accrual evades a scan that only matches the plain `=` form".
+ */
+const BAD_SCHEDULED_COMPOUND_BOND = `
+#[spacetimedb::table(name = creep_schedule, scheduled(creep_tick))]
+pub struct CreepSchedule {
+    #[primary_key] #[auto_inc] pub id: u64,
+    pub scheduled_at: ScheduleAt,
+}
+
+pub fn creep_tick(ctx: &ReducerContext, sched: CreepSchedule) -> Result<(), String> {
+    for mut m in ctx.db.monster().iter() {
+        m.bond += 1;
         ctx.db.monster().monster_id().update(m);
     }
     Ok(())
@@ -642,6 +685,18 @@ function runTeeth() {
     }
   }
 
+  // --- Tooth 1b: BAD_SCHEDULED_COMPOUND_BOND → Check A must flag the `+=` write ---
+  {
+    const src = stripRustComments(BAD_SCHEDULED_COMPOUND_BOND);
+    const err = checkConfinement(src);
+    if (!err) {
+      return 'TEETH tooth-1b: BAD_SCHEDULED_COMPOUND_BOND (creep_tick does `m.bond += 1`) was NOT flagged by checkConfinement — compound-assignment accrual is not detected';
+    }
+    if (err.indexOf('creep_tick') === -1) {
+      return `TEETH tooth-1b: checkConfinement flagged BAD_SCHEDULED_COMPOUND_BOND but did not name 'creep_tick'; got: ${err}`;
+    }
+  }
+
   // --- Tooth 2: BAD_SCHEDULED_HELPER_EV → Check A must flag apply_idle_growth ---
   {
     const src = stripRustComments(BAD_SCHEDULED_HELPER_EV);
@@ -772,6 +827,6 @@ export default async function () {
     detail:
       `${writes.length} growth-field writes all confined to [${GROWTH_WRITERS.join(', ')}]; ` +
       `${scheduled.length} scheduled reducer(s) [${scheduled.join(', ')}] verified: ` +
-      'none is/uses an allowlisted growth writer (teeth: 7 verified)',
+      'none is/uses an allowlisted growth writer (teeth: 8 verified)',
   };
 }
