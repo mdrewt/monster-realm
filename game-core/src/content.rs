@@ -74,6 +74,23 @@ pub struct ItemDef {
 // (the fan-out property). `type_chart` is NOT migrated (single `include_str!`).
 include!(concat!(env!("OUT_DIR"), "/content_parts.rs"));
 
+/// Parse + concatenate RON `Vec<T>` parts in the given slice order (no row
+/// re-sorting); a malformed part is rejected loudly, naming the offending file.
+/// `label` is the registry's error-message prefix, so the message reads
+/// `"<label> parse error in <file>: <e>"`.
+fn parse_parts<T>(parts: &[(&str, &str)], label: &str) -> Result<Vec<T>, String>
+where
+    T: for<'de> serde::Deserialize<'de>,
+{
+    let mut out = Vec::new();
+    for (file, contents) in parts {
+        let rows = ron::from_str::<Vec<T>>(contents)
+            .map_err(|e| format!("{label} parse error in {file}: {e}"))?;
+        out.extend(rows);
+    }
+    Ok(out)
+}
+
 /// Parse the embedded zone registry. Pure (no I/O) — safe under the determinism
 /// guard. Parse-don't-validate: returns typed `ZoneDef`s or a descriptive error.
 ///
@@ -88,13 +105,7 @@ pub fn load_zones() -> Result<Vec<ZoneDef>, String> {
 /// # Errors
 /// Returns `Err` (naming the offending file) if any part is not a valid zone list.
 pub fn parse_zones_parts(parts: &[(&str, &str)]) -> Result<Vec<ZoneDef>, String> {
-    let mut out = Vec::new();
-    for (file, contents) in parts {
-        let rows = ron::from_str::<Vec<ZoneDef>>(contents)
-            .map_err(|e| format!("zone registry parse error in {file}: {e}"))?;
-        out.extend(rows);
-    }
-    Ok(out)
+    parse_parts(parts, "zone registry")
 }
 
 /// Parse zones from a RON string (separated for testability + fixtures).
@@ -142,13 +153,7 @@ pub fn load_species() -> Result<Vec<Species>, String> {
 /// # Errors
 /// Returns `Err` (naming the offending file) if any part is not a valid species list.
 pub fn parse_species_parts(parts: &[(&str, &str)]) -> Result<Vec<Species>, String> {
-    let mut out = Vec::new();
-    for (file, contents) in parts {
-        let rows = ron::from_str::<Vec<Species>>(contents)
-            .map_err(|e| format!("species registry parse error in {file}: {e}"))?;
-        out.extend(rows);
-    }
-    Ok(out)
+    parse_parts(parts, "species registry")
 }
 
 /// Parse species from a RON string (separated for testability + fixtures).
@@ -172,13 +177,7 @@ pub fn load_skills() -> Result<Vec<SkillDef>, String> {
 /// # Errors
 /// Returns `Err` (naming the offending file) if any part is not a valid skill list.
 pub fn parse_skills_parts(parts: &[(&str, &str)]) -> Result<Vec<SkillDef>, String> {
-    let mut out = Vec::new();
-    for (file, contents) in parts {
-        let rows = ron::from_str::<Vec<SkillDef>>(contents)
-            .map_err(|e| format!("skills registry parse error in {file}: {e}"))?;
-        out.extend(rows);
-    }
-    Ok(out)
+    parse_parts(parts, "skills registry")
 }
 
 /// Parse skills from a RON string.
@@ -219,13 +218,7 @@ pub fn load_items() -> Result<Vec<ItemDef>, String> {
 /// # Errors
 /// Returns `Err` (naming the offending file) if any part is not a valid item list.
 pub fn parse_items_parts(parts: &[(&str, &str)]) -> Result<Vec<ItemDef>, String> {
-    let mut out = Vec::new();
-    for (file, contents) in parts {
-        let rows = ron::from_str::<Vec<ItemDef>>(contents)
-            .map_err(|e| format!("items registry parse error in {file}: {e}"))?;
-        out.extend(rows);
-    }
-    Ok(out)
+    parse_parts(parts, "items registry")
 }
 
 /// Parse items from a RON string.
@@ -254,13 +247,7 @@ pub fn parse_encounters(ron_str: &str) -> Result<Vec<EncounterTable>, String> {
 /// # Errors
 /// Returns `Err` (naming the offending file) if any part is not a valid encounter list.
 pub fn parse_encounters_parts(parts: &[(&str, &str)]) -> Result<Vec<EncounterTable>, String> {
-    let mut out = Vec::new();
-    for (file, contents) in parts {
-        let rows = ron::from_str::<Vec<EncounterTable>>(contents)
-            .map_err(|e| format!("encounters registry parse error in {file}: {e}"))?;
-        out.extend(rows);
-    }
-    Ok(out)
+    parse_parts(parts, "encounters registry")
 }
 
 /// Parse the embedded encounter registry.
@@ -1560,6 +1547,44 @@ mod tests {
         assert!(
             err_msg.contains("888-bad-enc.ron"),
             "M8.9e TEETH: error must name '888-bad-enc.ron', got: {err_msg:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Fan-out safety gate: cross-file id collision caught by validate_content
+    //
+    // This is the headline safety boundary for parallel content authoring:
+    // two authors writing SEPARATE part files can each declare the same id,
+    // each file parses clean on its own, but validate_content run on the
+    // concatenated Vec must catch the collision. This is a PERMANENT regression
+    // guard — it passes once the implementation exists and must never be removed.
+    // -----------------------------------------------------------------------
+
+    /// M8.9e-gate: the fan-out safety boundary. Two part FILES in one registry that
+    /// each declare the same id parse cleanly on their own, but the merged registry
+    /// must be rejected by validate_content — this is what makes parallel content
+    /// slices (different files, same registry) safe. Kills a future loader that
+    /// dedups silently, or a validate path that only checks within a single file.
+    #[test]
+    fn m8_9e_cross_file_duplicate_species_id_rejected_by_validate() {
+        let part_a = r#"[(id: 42, name: "A",
+        base_stats: (hp:45,attack:49,defense:49,speed:65,sp_attack:65,sp_defense:45),
+        affinity: Fire, learnable_skill_ids: [])]"#;
+        let part_b = r#"[(id: 42, name: "AClone",
+        base_stats: (hp:45,attack:49,defense:49,speed:65,sp_attack:65,sp_defense:45),
+        affinity: Water, learnable_skill_ids: [])]"#;
+        // Each part is individually valid RON → the concatenating loader returns Ok.
+        let merged = parse_species_parts(&[("000-a.ron", part_a), ("001-b.ron", part_b)])
+            .expect("each part is valid RON, so parse_species_parts must succeed");
+        assert_eq!(
+            merged.len(),
+            2,
+            "the two colliding rows survive parse; the dup is a validate concern"
+        );
+        // TEETH: the cross-file duplicate id MUST be caught by validate_content.
+        assert!(
+            validate_content(&merged, &[], &[], &[]).is_err(),
+            "TEETH: cross-file duplicate species id=42 must be rejected by validate_content"
         );
     }
 }

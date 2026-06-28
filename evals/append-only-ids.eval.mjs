@@ -19,11 +19,18 @@ export function removedIds(baselineIds, currentIds) {
 // sorted filename order and concatenate the text, then run the same parseIds —
 // preserving the fan-out property (adding a part needs no eval edit).
 function readRegistryDir(dirPath) {
-  return readdirSync(dirPath)
+  const text = readdirSync(dirPath)
     .filter((name) => name.endsWith('.ron'))
     .sort()
     .map((name) => readFileSync(`${dirPath}/${name}`, 'utf8'))
     .join('\n');
+  // Strip whole-line `//` comments before id-scanning. Every registry part file
+  // carries a header comment, and the migration multiplies that comment surface
+  // (N files per registry), so a bare `id: <n>` written inside a comment must NOT
+  // be counted as a stable content id — that would poison the committed baseline.
+  // Only full-line comments are stripped, never mid-line `//` (it can occur inside
+  // a string value), so real `id:` fields are untouched.
+  return text.replace(/^[ \t]*\/\/.*$/gm, '');
 }
 
 function checkRegistry(ronDir, baselinePath, baselineKey, label) {

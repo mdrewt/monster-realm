@@ -117,6 +117,15 @@ is therefore **row-identical and order-stable** vs. pre-migration — proven by 
 content-parity proof-of-teeth below; every `id` is preserved (the `append-only-ids` eval
 enforces it cross-version).
 
+> **Foot-gun — zero-pad the numeric prefix to a consistent width.** The embed sorts files
+> **lexicographically** (byte order), in both `build.rs` and the `append-only-ids` eval, so
+> `10-foo.ron` sorts **before** `9-foo.ron`. Always pad to the same width (`009-`, `010-`).
+> Cross-file *row order* does not affect game behavior — every registry is keyed by `id` /
+> `zone_id`, never by position, and `validate_content` enforces id-uniqueness across the
+> merged Vec regardless of order — so this only matters for keeping `000-core.ron` the
+> stable first ("core") part; the convention is documented, not mechanically enforced
+> (a build-time prefix-format check was judged YAGNI vs. the convention + this note).
+
 ### 5. Determinism, schema, bindings — all unchanged
 
 Sorted filename order makes the embed deterministic; the loaders stay pure (compile-time
