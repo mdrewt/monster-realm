@@ -224,17 +224,18 @@ export function checkCareServerClock(src, body) {
 
 /**
  * Check F1 — Reject-never-burns: no monster().monster_id().update( may appear
- * BEFORE a cooldown-reject Err( in the care body. Practical heuristic:
- * whitespace-collapse the body and look for `monster().monster_id().update(` at
- * any position before a `returnErr(` (or `Err(` on the cooldown path).
+ * BEFORE a `return Err(` rejection in the care body.
  *
- * Strategy:
- *   Find any `monster().monster_id().update(` occurrence; find any subsequent
- *   `Err(` or `returnErr(`. If an update occurs BEFORE the LAST Err( in the
- *   body, flag it (a correct impl only writes after all Err paths have been passed).
+ * Strategy: whitespace-collapse the body and scan for
+ * `monster().monster_id().update(` followed by `returnErr(` (the compact form
+ * of `return Err(`). Using `returnErr(` rather than bare `Err(` avoids a
+ * false-positive on string literals that happen to contain the characters
+ * "Err(" — e.g. `log::info!("...Err(cases_handled)...")` after the update.
+ * Only an actual `return Err(...)` control-flow exit is a burn-then-reject.
  *
- * This is a conservative heuristic: it flags a body where update precedes ANY
- * Err branch. A correct impl has all Err branches before any update.
+ * The compensating completeness control is checkCareDualWrite: if the monster
+ * update is absent entirely, that check (g6) fires instead of this one
+ * returning null, so the missing-update return-null here is safe.
  *
  * Uses only indexOf — NO new RegExp(...).
  *
@@ -246,17 +247,17 @@ export function checkCareRejectNeverBurns(body) {
 
   const updateIdx = compact.indexOf('monster().monster_id().update(');
   if (updateIdx === -1) {
-    // No monster update in the body at all — flagged (impl is incomplete) but
-    // this check only gates the reject-never-burns property, not completeness.
+    // No monster update in the body at all — not this check's concern
+    // (checkCareDualWrite gates completeness separately).
     return null;
   }
 
-  // Find any Err( that occurs AFTER the update — that means the update happens
-  // before at least one error path (the reject-before-burn invariant is violated).
-  const errAfterUpdate = compact.indexOf('Err(', updateIdx);
-  if (errAfterUpdate !== -1) {
+  // Find any `return Err(` that occurs AFTER the update — compact form `returnErr(`.
+  // This targets actual control-flow exits, not string literals containing "Err(".
+  const returnErrAfterUpdate = compact.indexOf('returnErr(', updateIdx);
+  if (returnErrAfterUpdate !== -1) {
     return (
-      'care: monster().monster_id().update( appears before an Err( rejection branch — ' +
+      'care: monster().monster_id().update( appears before a `return Err(` rejection branch — ' +
       'F1 reject-never-burns: the monster row must NOT be mutated on a reject path; ' +
       'all validation (ownership + bond-check + cooldown) must precede the first DB write'
     );
@@ -526,6 +527,28 @@ const GOOD_CARE_DELEGATING = `
   }
 `;
 
+/** GOOD: a fully-compliant care that logs after both updates using a string that
+ * contains the characters "Err(" — must NOT be flagged by checkCareRejectNeverBurns.
+ * Kills: a naive bare-Err( scanner that false-positives on log strings.
+ */
+const GOOD_CARE_WITH_LOG = `
+  pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
+      let mut m = ctx.db.monster().monster_id().find(monster_id)
+          .ok_or_else(|| "monster not found".to_string())?;
+      require_owner(ctx, m.owner_identity)?;
+      let now = now_ms(ctx);
+      let new_bond = evaluate_care(m.bond, m.last_care_at_ms, now)
+          .map_err(|e| format!("care rejected: {e}"))?;
+      m.bond = new_bond;
+      m.last_care_at_ms = now;
+      ctx.db.monster().monster_id().update(m.clone());
+      ctx.db.monster_pub().monster_id().update(pub_from_monster(&m));
+      log::info!("{{"evt":"care_ok","monster_id":{monster_id},"bond":{},"note":"Err(cases_handled_above)"}}",
+          m.bond);
+      Ok(())
+  }
+`;
+
 /** GOOD: a fully-compliant evaluate_care seam. Must pass cooldown operator check. */
 const GOOD_EVALUATE_CARE = `
   pub(crate) fn evaluate_care(bond: u8, last_care_at_ms: i64, now_ms: i64) -> Result<u8, String> {
@@ -725,6 +748,27 @@ export default async function () {
         name,
         pass: false,
         detail: `TEETH: GOOD_CARE_DELEGATING (delegates to evaluate_care) was incorrectly flagged: ${errs.join(' | ')}`,
+      };
+    }
+  }
+  // --- Green-path: GOOD_CARE_WITH_LOG — log string contains "Err(" but AFTER updates,
+  //     checkCareRejectNeverBurns must NOT flag it (scanner uses returnErr( not bare Err() ---
+  {
+    const stripped = stripRustComments(GOOD_CARE_WITH_LOG);
+    const body = extractReducerBody(stripped, 'care');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: could not extract care body from GOOD_CARE_WITH_LOG fixture (parser bug)',
+      };
+    }
+    const result = checkCareRejectNeverBurns(body);
+    if (result !== null) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: GOOD_CARE_WITH_LOG was incorrectly flagged by checkCareRejectNeverBurns: ${result} — scanner must use returnErr( not bare Err(`,
       };
     }
   }

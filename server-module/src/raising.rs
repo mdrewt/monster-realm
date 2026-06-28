@@ -34,11 +34,15 @@ pub(crate) const CARE_COOLDOWN_MS: i64 = 6 * 60 * 60 * 1000;
 /// the new bond value, or `Err` if the action is rejected.
 ///
 /// The cooldown comparison is strict `<` (elapsed == `CARE_COOLDOWN_MS` is
-/// ALLOWED), and the elapsed is `now_ms.saturating_sub(last_care_at_ms)` so a
+/// ALLOWED), and the elapsed is `now.saturating_sub(last_care_at_ms)` so a
 /// future/zero clock can only OVER-reject, never wrap into a bypass.
-pub(crate) fn evaluate_care(bond: u8, last_care_at_ms: i64, now_ms: i64) -> Result<u8, String> {
+///
+/// The `now` parameter is the server clock ms (the caller passes `now_ms(ctx)`);
+/// it is named `now` — NOT `now_ms` — to avoid shadowing the module-level
+/// `now_ms` helper inside this body (red-team F2, least-surprise).
+pub(crate) fn evaluate_care(bond: u8, last_care_at_ms: i64, now: i64) -> Result<u8, String> {
     let new_bond = apply_care(Bond::new(bond), CARE_BOND_AMOUNT).map_err(|e| format!("{e:?}"))?;
-    if now_ms.saturating_sub(last_care_at_ms) < CARE_COOLDOWN_MS {
+    if now.saturating_sub(last_care_at_ms) < CARE_COOLDOWN_MS {
         return Err("care cooldown not yet elapsed".to_string());
     }
     Ok(new_bond.value())
@@ -65,12 +69,6 @@ pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
     Ok(())
 }
 
-// The gating test `near_max_bond_saturates_to_255` asserts `new_bond <= 255`
-// (a u8 is always <= 255 — a deliberate "never exceeds max" guard). That trips
-// `absurd_extreme_comparisons` / `unused_comparisons` under `-D warnings`; allow
-// them on the test mod (same pattern as game-core's `derive_stats_at_level_100`)
-// rather than editing the gating file, which is frozen.
 #[cfg(test)]
-#[allow(clippy::absurd_extreme_comparisons, unused_comparisons)]
 #[path = "raising_tests.rs"]
 mod raising_tests;

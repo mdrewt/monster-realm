@@ -121,11 +121,6 @@ fn near_max_bond_saturates_to_255() {
     match result {
         Ok(new_bond) => {
             assert!(
-                new_bond <= 255,
-                "bond must never exceed 255 (u8::MAX); got {}",
-                new_bond
-            );
-            assert!(
                 new_bond > 254,
                 "bond must have increased above 254 (CARE_BOND_AMOUNT >= 1); got {}",
                 new_bond

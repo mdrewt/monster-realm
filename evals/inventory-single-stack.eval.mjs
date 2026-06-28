@@ -62,8 +62,8 @@ export function stripLineComments(src) {
 
 /**
  * Split comment-stripped Rust source into function-body slices.
- * Each slice starts at a `\nfn ` or `\npub fn ` marker and extends to the
- * next such marker (or end of file). This preserves the function header in
+ * Each slice starts at a `\nfn `, `\npub fn `, or `\npub(crate) fn ` marker
+ * and extends to the next such marker (or end of file). This preserves the function header in
  * the slice so we can extract the function name.
  *
  * Modelled on monster-dual-write.eval.mjs splitIntoFnBodies.
@@ -76,18 +76,21 @@ export function splitIntoFnBodies(src) {
   const markers = [];
   const fnMarker = '\nfn ';
   const pubFnMarker = '\npub fn ';
+  const pubCrateFnMarker = '\npub(crate) fn ';
 
   let idx = 0;
   while (idx < src.length) {
     const fnPos = src.indexOf(fnMarker, idx);
     const pubPos = src.indexOf(pubFnMarker, idx);
+    const pubCratePos = src.indexOf(pubCrateFnMarker, idx);
 
-    if (fnPos === -1 && pubPos === -1) break;
+    if (fnPos === -1 && pubPos === -1 && pubCratePos === -1) break;
 
-    let nextPos;
-    if (fnPos === -1) nextPos = pubPos;
-    else if (pubPos === -1) nextPos = fnPos;
-    else nextPos = Math.min(fnPos, pubPos);
+    // Find the earliest of the three markers (ignoring -1 sentinels).
+    let nextPos = -1;
+    for (const p of [fnPos, pubPos, pubCratePos]) {
+      if (p !== -1 && (nextPos === -1 || p < nextPos)) nextPos = p;
+    }
 
     markers.push(nextPos);
     idx = nextPos + 1;

@@ -23,9 +23,10 @@ use crate::schema::Inventory;
 use spacetimedb::Table;
 use spacetimedb::{Identity, ReducerContext};
 
-/// Documented, tunable per-stack cap (ADR-0059). A single `(owner, item_id)` stack
-/// is capped at this count; further grants are no-ops once at/over the cap. Used
-/// only by the dev-gated `grant_item`, so it shares the gate (non-dev hygiene).
+/// Per-stack cap. A single `(owner, item_id)` stack is capped at this count;
+/// further grants are no-ops once at/over the cap. Used only by the dev-gated
+/// `grant_item`, so it shares the gate (non-dev hygiene).
+// 9999: four-digit cap for UI legibility; no game-design constraint — tunable (ADR-0059 residual c).
 #[cfg(feature = "dev_reducers")]
 pub(crate) const MAX_ITEM_STACK: u32 = 9999;
 
@@ -41,12 +42,9 @@ pub(crate) const MAX_ITEM_STACK: u32 = 9999;
 /// shares its `dev_reducers` gate to avoid a dead-code warning in release builds
 /// (ADR-0054). A production grant path (M12 quest / M13 shop / training food) will
 /// introduce a non-dev caller; drop the gate then.
-// `pub fn` (not `pub(crate) fn`): the `inventory-single-stack` eval splits the
-// crate on `\nfn `/`\npub fn ` boundaries to prove every `.inventory().insert(`
-// lives in `grant_item`; a `pub(crate) fn` header is invisible to that splitter.
-// The crate is a cdylib (no `unreachable_pub` lint), so `pub` is harmless here.
+// Crate-internal; the sole inventory inserter (ADR-0018/0046 single-stack surface).
 #[cfg(feature = "dev_reducers")]
-pub fn grant_item(ctx: &ReducerContext, owner: Identity, item_id: u32, qty: u32) {
+pub(crate) fn grant_item(ctx: &ReducerContext, owner: Identity, item_id: u32, qty: u32) {
     if qty == 0 {
         return;
     }
