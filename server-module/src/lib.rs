@@ -20,6 +20,8 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
 
 const ZONE_0: u32 = 0;
+/// SSOT for the seeded-content version; bump when game-core RON content changes (ADR-0054).
+const CONTENT_VERSION: u32 = 1;
 const SPRITE_PLAYER: u32 = 0;
 const MAX_NAME_LEN: usize = 24;
 const MAX_PARTY_SIZE: u8 = game_core::PARTY_SIZE; // SSOT (ADR-0052)
@@ -573,6 +575,13 @@ fn type_chart_from_rows(rows: impl Iterator<Item = TypeRelationRow>) -> TypeChar
 }
 
 fn sync_content_inner(ctx: &ReducerContext) {
+    // Re-derive only when the stored content version is stale (ADR-0054). A
+    // redundant sync_content with a current version is a no-op.
+    if let Some(cfg) = ctx.db.config().id().find(0) {
+        if cfg.content_version == CONTENT_VERSION {
+            return;
+        }
+    }
     let zones = match game_core::load_zones() {
         Ok(z) => z,
         Err(e) => {
@@ -747,6 +756,22 @@ fn sync_content_inner(ctx: &ReducerContext) {
             }
         }
     }
+
+    // Stamp the now-current content version so a later redundant sync_content
+    // short-circuits at the top of this function (ADR-0054). A missing config row
+    // here is an invariant violation (init always inserts it) — fail loud, don't
+    // silently skip, consistent with this function's other error logging.
+    match ctx.db.config().id().find(0) {
+        Some(mut cfg) => {
+            cfg.content_version = CONTENT_VERSION;
+            ctx.db.config().id().update(cfg);
+        }
+        None => {
+            log::error!(
+                "{{\"evt\":\"sync_content_error\",\"reason\":\"config row missing at stamp\"}}"
+            );
+        }
+    }
 }
 
 /// Shared ownership + monotonic-seq guard for the move reducers. Returns the
@@ -785,7 +810,9 @@ fn authorize_move(ctx: &ReducerContext, reducer: &str, seq: u64) -> Result<Chara
 pub fn init(ctx: &ReducerContext) {
     ctx.db.config().insert(Config {
         id: 0,
-        content_version: 1,
+        // Unseeded sentinel (0 != CONTENT_VERSION) so sync_content_inner ALWAYS
+        // seeds on first init; the early-return only fires on a redundant re-sync.
+        content_version: 0,
     });
     sync_content_inner(ctx);
     // One schedule row per initial zone (M2: zone 0).
@@ -1480,6 +1507,7 @@ fn begin_encounter(
 /// species/level from the zone's PRIVATE `encounter` table exactly like the grass
 /// path, and calls `begin_encounter`. A missing encounter row or a no-trigger roll
 /// is a no-op `Err` (never a panic).
+#[cfg(feature = "dev_reducers")]
 #[spacetimedb::reducer]
 pub fn start_wild_battle(ctx: &ReducerContext, zone_id: u32) -> Result<(), String> {
     let me = ctx.sender;
@@ -1489,14 +1517,18 @@ pub fn start_wild_battle(ctx: &ReducerContext, zone_id: u32) -> Result<(), Strin
         log_reject("start_wild_battle", me, &e);
         return Err(e);
     };
-    if ctx
-        .db
-        .character()
-        .entity_id()
-        .find(player.entity_id)
-        .is_none()
-    {
+    let Some(character) = ctx.db.character().entity_id().find(player.entity_id) else {
         let e = "no character".to_string();
+        log_reject("start_wild_battle", me, &e);
+        return Err(e);
+    };
+    // Reject a spoofed zone BEFORE any party DB work: the encounter is rolled from
+    // the caller's OWN zone, never a client-named arbitrary zone (reject-not-clamp).
+    if zone_id != character.zone_id {
+        let e = format!(
+            "zone mismatch: arg {zone_id} != character zone {}",
+            character.zone_id
+        );
         log_reject("start_wild_battle", me, &e);
         return Err(e);
     }
@@ -1518,9 +1550,12 @@ pub fn start_wild_battle(ctx: &ReducerContext, zone_id: u32) -> Result<(), Strin
         log_reject("start_wild_battle", me, &e);
         return Err(e);
     }
-    // The zone's PRIVATE encounter table (partial-sync: missing row → Err no-op).
-    let Some(row) = ctx.db.encounter().zone_id().find(zone_id) else {
-        let e = format!("no encounter table for zone {zone_id}");
+    // The zone's PRIVATE encounter table, keyed by the SERVER-authoritative
+    // character.zone_id (not the raw client arg) — defense-in-depth so the lookup
+    // never trusts the client even if the reject check above is later reordered
+    // (MED-1, ADR-0054 §3). (partial-sync: missing row → Err no-op.)
+    let Some(row) = ctx.db.encounter().zone_id().find(character.zone_id) else {
+        let e = format!("no encounter table for zone {}", character.zone_id);
         log_reject("start_wild_battle", me, &e);
         return Err(e);
     };
@@ -1865,6 +1900,11 @@ fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<()
 /// Grant `qty` of `item_id` to `owner`, merging into the owner's existing stack
 /// if present (saturating to avoid overflow) or inserting a new row otherwise.
 /// SINGLE stack per `(owner, item_id)`: always find-then-update.
+///
+/// Currently the ONLY caller is the dev/test reducer `grant_bait`, so this helper
+/// shares its `dev_reducers` gate to avoid a dead-code warning in release builds
+/// (ADR-0054). The M9 shop will introduce a production caller; drop the gate then.
+#[cfg(feature = "dev_reducers")]
 fn grant_item(ctx: &ReducerContext, owner: Identity, item_id: u32, qty: u32) {
     let existing = ctx
         .db
@@ -2060,6 +2100,7 @@ pub fn attempt_recruit(
 /// DEV/TEST: grant bait to the CALLER only (self-scoped to `ctx.sender`; no
 /// arbitrary-recipient parameter). Rejects non-bait items. Superseded by the M9
 /// shop. Capped at 99 per call.
+#[cfg(feature = "dev_reducers")]
 #[spacetimedb::reducer]
 pub fn grant_bait(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> {
     let me = ctx.sender;

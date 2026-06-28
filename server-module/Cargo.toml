@@ -18,3 +18,9 @@ game-core = { path = "../game-core", features = ["spacetimedb"] }
 spacetimedb = { workspace = true }
 # Structured logging facade (captured by the SpacetimeDB host).
 log.workspace = true
+
+[features]
+# Dev/test-only reducers (start_wild_battle, grant_bait), OFF in release/publish
+# (ADR-0054). Enable for the recruit e2e via a pre-built wasm + `spacetime publish
+# --bin-path` (no CLI feature passthrough exists). Never add to `default`.
+dev_reducers = []
