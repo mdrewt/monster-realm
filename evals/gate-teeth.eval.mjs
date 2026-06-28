@@ -882,6 +882,107 @@ pub struct NotAScheduler {
   }
 
   // =========================================================================
+  // TOOTH 19 — ownership: two-alias GOOD fixture must PASS
+  // =========================================================================
+  // A body that declares TWO `ctx.sender` aliases and guards with the SECOND
+  // must pass checkOwnershipGuard. Kills: a first-alias-only capture that binds
+  // `caller` (the first alias) and then fails to recognise `!= me` (the second).
+  // Currently RED: the current check captures only the first `let <alias> = ctx.sender`
+  // binding, so `player_identity != me` is not recognised when `caller` was first.
+  {
+    const GOOD_TWO_ALIAS = `
+pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
+    let caller = ctx.sender;
+    let me = ctx.sender;
+    let mut battle = ctx.db.battle().battle_id().find(battle_id)
+        .ok_or_else(|| "not found".to_string())?;
+    if battle.player_identity != me {
+        return Err("not owner".to_string());
+    }
+    let bw = ctx.db.battle_wild().battle_id().find(battle_id)
+        .ok_or_else(|| "not wild".to_string())?;
+    let _ = caller;
+    Ok(())
+}
+`;
+    let t19Body, t19Result;
+    try {
+      t19Body = extractReducerBody(stripRustComments(GOOD_TWO_ALIAS), 'attempt_recruit');
+    } catch (e) {
+      failures.push(
+        `TOOTH 19 FAILED: extractReducerBody threw on two-alias GOOD fixture — ${e.message}`,
+      );
+      t19Body = null;
+    }
+    if (t19Body !== null) {
+      try {
+        t19Result = checkOwnershipGuard(t19Body);
+      } catch (e) {
+        failures.push(
+          `TOOTH 19 FAILED: checkOwnershipGuard threw on two-alias GOOD fixture — ${e.message}`,
+        );
+        t19Result = 'threw';
+      }
+      if (t19Result !== null && t19Result !== undefined) {
+        failures.push(
+          `TOOTH 19 FAILED: two-alias GOOD fixture (let caller = ctx.sender; let me = ctx.sender; ... if battle.player_identity != me { return Err }) was INCORRECTLY FLAGGED by checkOwnershipGuard: ${t19Result}. A first-alias-only capture binds 'caller' and then fails to recognise '!= me' — the strengthened check must collect ALL aliases bound to ctx.sender and accept any of them in the != comparison.`,
+        );
+      }
+    }
+  }
+
+  // =========================================================================
+  // TOOTH 20 — wild: discarded battle_wild lookup must be FLAGGED
+  // =========================================================================
+  // A body that calls battle_wild().find() but DISCARDS the result (semicolon,
+  // no binding, no rejection), with an unrelated ok_or_else from a different
+  // lookup nearby, must be FLAGGED by checkWildBattleGuard.
+  // Kills: a check that sees `.find(` after `battle_wild(` and an `ok_or` within
+  // the window and wrongly passes — the rejection must bind to the battle_wild
+  // lookup specifically, not to an unrelated query. A discarded `;` result
+  // (`let _ = ctx.db.battle_wild()...find(...);`) does not reject on not-wild.
+  {
+    const BAD_WILD_DISCARDED = `
+pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
+    let me = ctx.sender;
+    let mut battle = ctx.db.battle().battle_id().find(battle_id)
+        .ok_or_else(|| "battle not found".to_string())?;
+    if battle.player_identity != me {
+        return Err("not owner".to_string());
+    }
+    let _ = ctx.db.battle_wild().battle_id().find(battle_id);
+    let _species = ctx.db.species_row().id().find(99u32).ok_or_else(|| "no species".to_string())?;
+    ctx.db.battle_wild().battle_id().delete(battle_id);
+    Ok(())
+}
+`;
+    let t20Body, t20Result;
+    try {
+      t20Body = extractReducerBody(stripRustComments(BAD_WILD_DISCARDED), 'attempt_recruit');
+    } catch (e) {
+      failures.push(
+        `TOOTH 20 FAILED: extractReducerBody threw on discarded-lookup BAD fixture — ${e.message}`,
+      );
+      t20Body = null;
+    }
+    if (t20Body !== null) {
+      try {
+        t20Result = checkWildBattleGuard(t20Body);
+      } catch (e) {
+        failures.push(
+          `TOOTH 20 FAILED: checkWildBattleGuard threw on discarded-lookup BAD fixture — ${e.message}`,
+        );
+        t20Result = 'threw';
+      }
+      if (t20Result === null || t20Result === undefined) {
+        failures.push(
+          'TOOTH 20 FAILED: discarded battle_wild lookup fixture (let _ = ctx.db.battle_wild()...find(...); result discarded, unrelated ok_or_else nearby) was NOT flagged by checkWildBattleGuard. The current check wrongly passes because it finds .find( after battle_wild( and an ok_or within the window — but that ok_or binds to a different lookup (species_row), not the wild guard. The strengthened check must require the rejection to bind directly to the battle_wild lookup result; a discarded semicolon result must NOT satisfy it.',
+        );
+      }
+    }
+  }
+
+  // =========================================================================
   // RESULT — report ALL failures so the specialist sees every failing tooth
   // =========================================================================
 
@@ -897,6 +998,6 @@ pub struct NotAScheduler {
     name,
     pass: true,
     detail:
-      'All 18 gate-teeth pass: schema-snapshot (all-tables, EncounterEntryRow excluded, drift-free, drop/PK/type/additive/extra-table all bite), zoned-schema (ghost still flagged, encounter-PK passes, bare-zone_id flagged, scheduler attr-carve-out correct, non-scheduler ScheduleAt-body NOT exempted, real source clean), recruit-security (real code passes strengthened checks, no-rejection bad fixtures bite, good alias+direct forms pass), baseline contains all 6 spec-required tables',
+      'All 20 gate-teeth pass: schema-snapshot (all-tables, EncounterEntryRow excluded, drift-free, drop/PK/type/additive/extra-table all bite), zoned-schema (ghost still flagged, encounter-PK passes, bare-zone_id flagged, scheduler attr-carve-out correct, non-scheduler ScheduleAt-body NOT exempted, real source clean), recruit-security (real code passes strengthened checks, no-rejection bad fixtures bite, two-alias GOOD passes, discarded-lookup BAD flagged, good alias+direct forms pass), baseline contains all 6 spec-required tables',
   };
 }
