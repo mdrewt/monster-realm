@@ -298,6 +298,20 @@ export class AuthoritativeStore {
     return undefined;
   }
 
+  /** The player's most-recent battle of ANY outcome (highest battleId among
+   *  playerIdentity === identity). Highest battleId = most recent (server auto-inc,
+   *  monotonic; single current battle per player). Feeds the outcome-frame lifecycle;
+   *  ongoingBattle() (Ongoing-only) is unchanged. (M8.7e, ADR-0014/0042.) */
+  latestPlayerBattle(identity: string): StoreBattle | undefined {
+    let best: StoreBattle | undefined;
+    for (const b of this.#battles.values()) {
+      if (b.playerIdentity !== identity) continue;
+      // bigint `>` (never Number()/Math.max — ids exceed 2^53; T1d).
+      if (best === undefined || b.battleId > best.battleId) best = b;
+    }
+    return best;
+  }
+
   skill(id: number): StoreSkillRow | undefined {
     return this.#skills.get(id);
   }

@@ -148,3 +148,64 @@ export function buildBattleViewModel(
     baitOptions,
   };
 }
+
+// ---------------------------------------------------------------------------
+// M8.7e — battle-overlay decision (pure reducer for the outcome-frame lifecycle)
+// ---------------------------------------------------------------------------
+
+export type BattleOverlayAction =
+  | { readonly kind: 'show'; readonly battle: StoreBattle }
+  | { readonly kind: 'hide' };
+export interface OverlayState {
+  readonly dismissedBattleId: bigint | null;
+  readonly synced: boolean;
+}
+export interface OverlayResult {
+  readonly action: BattleOverlayAction;
+  readonly dismissedBattleId: bigint | null;
+  readonly synced: boolean;
+}
+
+/**
+ * Pure overlay decision (no DOM, store, or timers): a (state, input) → (action,
+ * nextState) reducer that decides whether the battle overlay shows a battle
+ * (Ongoing auto-shows; a resolved battle shows its outcome frame) or hides — and
+ * tracks the dismiss/first-sight lifecycle so a resolved outcome renders once but
+ * never re-pops, and a battle already terminal at first sight (historical/stale on
+ * login) is pre-dismissed rather than popped. (M8.7e, EARS §3; ADR-0014.)
+ */
+export function decideBattleOverlay(
+  latest: StoreBattle | undefined,
+  state: OverlayState,
+): OverlayResult {
+  // 1. No battle for this player → hide, state untouched.
+  if (latest === undefined) {
+    return {
+      action: { kind: 'hide' },
+      dismissedBattleId: state.dismissedBattleId,
+      synced: state.synced,
+    };
+  }
+  // 2. First battle observed this session (synced becomes true).
+  if (!state.synced) {
+    // A row already terminal at first sight is historical → pre-dismiss, don't pop.
+    if (latest.outcome !== 'Ongoing') {
+      return { action: { kind: 'hide' }, dismissedBattleId: latest.battleId, synced: true };
+    }
+    return {
+      action: { kind: 'show', battle: latest },
+      dismissedBattleId: state.dismissedBattleId,
+      synced: true,
+    };
+  }
+  // 3. Steady state: a dismissed (or pre-dismissed) battle stays hidden; anything
+  //    else shows (Ongoing auto-shows; a mid-session terminal shows its outcome).
+  if (state.dismissedBattleId === latest.battleId) {
+    return { action: { kind: 'hide' }, dismissedBattleId: state.dismissedBattleId, synced: true };
+  }
+  return {
+    action: { kind: 'show', battle: latest },
+    dismissedBattleId: state.dismissedBattleId,
+    synced: true,
+  };
+}
