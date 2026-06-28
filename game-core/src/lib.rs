@@ -29,10 +29,12 @@ pub use combat::{
     TypeChart,
 };
 pub use content::{
-    load_encounters, load_items, load_skills, load_species, load_type_chart, load_zones,
-    parse_encounters, parse_items, parse_skills, parse_species, parse_type_chart, parse_zones,
-    validate_content, validate_encounters, validate_zones, ItemDef, SkillDef, Species,
-    TypeRelation, ZoneDef,
+    load_encounters, load_evolutions, load_fusion, load_items, load_skills, load_species,
+    load_type_chart, load_zones, parse_encounters, parse_evolutions, parse_fusion, parse_items,
+    parse_skills, parse_species, parse_type_chart, parse_zones, validate_content,
+    validate_encounters, validate_evolution_fusion, validate_zones, EvolutionCondition,
+    EvolutionTrigger, FusionRecipe, ItemDef, SkillDef, Species, SpeciesEvolutions, TypeRelation,
+    ZoneDef,
 };
 pub use monster::{
     build_monster, derive_stats, level_bounds, level_for_xp, roll_individuality, roll_starter,

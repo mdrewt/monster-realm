@@ -5,7 +5,7 @@
 
 use serde::Deserialize;
 
-use crate::monster::types::{Affinity, StatBlock, StatKind, EV_PER_STAT_CAP};
+use crate::monster::types::{Affinity, Bond, Level, StatBlock, StatKind, EV_PER_STAT_CAP};
 use crate::taming::types::EncounterTable;
 
 /// A zone definition — the M0 content registry and the first real schema subject
@@ -70,6 +70,92 @@ pub struct ItemDef {
     /// caps in `focus_train`); 0 for non-training items.
     #[serde(default)]
     pub train_amount: u16,
+}
+
+// ===========================================================================
+// M10a content types — evolution conditions + fusion recipes (ADR-0019/0060)
+//
+// "species.evolutions" is modeled as a SEPARATE cross-referenced registry
+// (`SpeciesEvolutions`, keyed by `species_id`), NOT a field on `Species` — adding
+// a field to `Species` is an E0063 break across its literal constructors in
+// server-module (outside this slice's touches). The separate-registry shape is
+// idiomatic here: the type chart, encounters, and skills are all separate
+// id-cross-referenced registries (ADR-0060). Integrity (dangling refs,
+// derived-forms-not-wild, dup recipes/blocks, illegal triggers) lives in
+// `validate_evolution_fusion` with proof-of-teeth (ADR-0010).
+// ===========================================================================
+
+/// A single branch-evolution trigger. Exhaustive + illegal-states-unrepresentable:
+/// a new variant must compiler-flag every `match` in the rules layer (M10a-rules) —
+/// so this is deliberately NOT `#[non_exhaustive]` (an OCP inversion).
+///
+/// `Level` re-validates [1, 100] at the RON boundary via its own `Deserialize`
+/// (parse-don't-validate), so an illegal level trigger is unrepresentable. `Bond`
+/// accepts any `u8`, so the always-true `Bond(0)` threshold is rejected by
+/// `validate_evolution_fusion` instead. `Item` references an item id (validated
+/// against the items registry, not dangling).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "RawEvolutionTrigger")]
+pub enum EvolutionTrigger {
+    /// Evolves once the monster reaches at least this level.
+    Level(Level),
+    /// Evolves once the monster's bond reaches at least this threshold.
+    Bond(Bond),
+    /// Evolves when this item is used on the monster.
+    Item(u32),
+}
+
+/// RON-facing mirror with primitive payloads, so a trigger reads naturally as
+/// `Level(16)` / `Bond(200)` / `Item(3)` (bare ints). Without it, the `Bond`
+/// newtype's *derived* `Deserialize` would demand the doubly-wrapped `Bond(Bond(200))`
+/// (`Level` is transparent via its own `Deserialize`, `Bond` is not — and `Bond` lives
+/// outside this slice's touch boundary). The `TryFrom` re-applies the newtype
+/// invariants at the parse boundary (`Level::new` rejects 0/>100), keeping an illegal
+/// trigger unrepresentable (parse-don't-validate).
+#[derive(Deserialize)]
+enum RawEvolutionTrigger {
+    Level(u8),
+    Bond(u8),
+    Item(u32),
+}
+
+impl TryFrom<RawEvolutionTrigger> for EvolutionTrigger {
+    type Error = String;
+    fn try_from(raw: RawEvolutionTrigger) -> Result<Self, Self::Error> {
+        Ok(match raw {
+            RawEvolutionTrigger::Level(n) => EvolutionTrigger::Level(Level::new(n)?),
+            RawEvolutionTrigger::Bond(n) => EvolutionTrigger::Bond(Bond::new(n)),
+            RawEvolutionTrigger::Item(id) => EvolutionTrigger::Item(id),
+        })
+    }
+}
+
+/// One branch of a species' evolution: a trigger and the species it evolves into.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct EvolutionCondition {
+    pub trigger: EvolutionTrigger,
+    /// The species this branch evolves into. Must exist; must differ from the
+    /// source species (no self-evolution). May be a derived-only form.
+    pub to_species: u32,
+}
+
+/// The per-species evolution registry row: a source species and its branch
+/// conditions. `species_id` is the lookup key the rules layer indexes by.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SpeciesEvolutions {
+    pub species_id: u32,
+    pub evolutions: Vec<EvolutionCondition>,
+}
+
+/// A fusion recipe: two parent species `a` + `b` produce offspring species `to`.
+/// ORDER-INDEPENDENT — `{a, b}` == `{b, a}`; the order-independence is enforced by
+/// `validate_evolution_fusion` (canonical `(min, max)` dedup), never relied on as a
+/// struct property.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct FusionRecipe {
+    pub a: u32,
+    pub b: u32,
+    pub to: u32,
 }
 
 // === M8.9e: glob-loaded content parts ===
@@ -234,6 +320,53 @@ pub fn parse_items_parts(parts: &[(&str, &str)]) -> Result<Vec<ItemDef>, String>
 /// Returns `Err` if `ron_str` is not a valid item list.
 pub fn parse_items(ron_str: &str) -> Result<Vec<ItemDef>, String> {
     ron::from_str::<Vec<ItemDef>>(ron_str).map_err(|e| format!("items registry parse error: {e}"))
+}
+
+// ===========================================================================
+// M10a embedded content — fusion recipes + evolution registry (ADR-0060)
+//
+// Single-file `include_str!` (the `type_chart` precedent, content.rs above): a new
+// glob registry would need a `build.rs` edit (outside this slice's touches), and
+// these two registries are small + low-parallel-churn today. A later slice that
+// touches `build.rs` may migrate them to `content/{fusion,evolutions}/` glob dirs
+// when they grow (purely additive, same recipe as M8.9e).
+// ===========================================================================
+
+const FUSION_RON: &str = include_str!("../content/fusion.ron");
+const EVOLUTIONS_RON: &str = include_str!("../content/evolutions.ron");
+
+/// Parse fusion recipes from a RON string (separated for testability + fixtures).
+///
+/// # Errors
+/// Returns `Err` with a descriptive message if `ron_str` is not a valid recipe list.
+pub fn parse_fusion(ron_str: &str) -> Result<Vec<FusionRecipe>, String> {
+    ron::from_str::<Vec<FusionRecipe>>(ron_str)
+        .map_err(|e| format!("fusion registry parse error: {e}"))
+}
+
+/// Parse the embedded fusion registry.
+///
+/// # Errors
+/// Returns `Err` if the embedded RON fails to parse.
+pub fn load_fusion() -> Result<Vec<FusionRecipe>, String> {
+    parse_fusion(FUSION_RON)
+}
+
+/// Parse the evolution registry from a RON string (separated for testability).
+///
+/// # Errors
+/// Returns `Err` with a descriptive message if `ron_str` is not a valid evolution list.
+pub fn parse_evolutions(ron_str: &str) -> Result<Vec<SpeciesEvolutions>, String> {
+    ron::from_str::<Vec<SpeciesEvolutions>>(ron_str)
+        .map_err(|e| format!("evolutions registry parse error: {e}"))
+}
+
+/// Parse the embedded evolution registry.
+///
+/// # Errors
+/// Returns `Err` if the embedded RON fails to parse.
+pub fn load_evolutions() -> Result<Vec<SpeciesEvolutions>, String> {
+    parse_evolutions(EVOLUTIONS_RON)
 }
 
 // ===========================================================================
@@ -475,6 +608,169 @@ pub fn validate_content(
                     ));
                 }
             }
+        }
+    }
+
+    Ok(())
+}
+
+/// Cross-registry content integrity for evolution + fusion (M10, ADR-0019/0060).
+/// Additive sibling of [`validate_content`] (whose signature is fixed by external
+/// callers); pure (errors-as-values, no clock/RNG). Checks run in a deterministic
+/// order so each proof-of-teeth fixture isolates exactly one violation (ADR-0010):
+///
+/// 1. **registry well-formedness** — no empty `evolutions` block, no duplicate
+///    `SpeciesEvolutions.species_id`.
+/// 2. **self-reference** — `to_species != species_id` (a no-op self-evolution).
+/// 3. **dangling refs** — every source/target species, every fusion `a`/`b`/`to`,
+///    and every `Item` trigger id must exist in the species / items registries.
+/// 4. **trigger sanity** — reject the always-true `Bond(0)` threshold (`Level`'s
+///    analogue is already impossible at the parse boundary).
+/// 5. **fusion coherence** — reject `a == b` and `to ∈ {a, b}`.
+/// 6. **derived-forms-not-wild** — evolution targets ∪ fusion results must never
+///    appear in any encounter table (not wild-catchable).
+/// 7. **no duplicate fusion pair** — order-independent (`{a,b}` == `{b,a}`).
+///
+/// (Cross-version species-id append-only stays the `append-only-ids` eval's job;
+/// within-version species-id uniqueness stays [`validate_content`]'s.)
+///
+/// # Errors
+/// Returns `Err` with a descriptive message on the first integrity violation.
+pub fn validate_evolution_fusion(
+    species: &[Species],
+    evolutions: &[SpeciesEvolutions],
+    recipes: &[FusionRecipe],
+    encounters: &[EncounterTable],
+    items: &[ItemDef],
+) -> Result<(), String> {
+    let species_ids: std::collections::BTreeSet<u32> = species.iter().map(|s| s.id).collect();
+    let item_ids: std::collections::BTreeSet<u32> = items.iter().map(|i| i.id).collect();
+
+    // 1. Registry well-formedness: non-empty blocks, no duplicate source species.
+    let mut seen_blocks = std::collections::BTreeSet::new();
+    for se in evolutions {
+        if se.evolutions.is_empty() {
+            return Err(format!(
+                "species {} has an empty evolutions block; omit the row instead of declaring no conditions",
+                se.species_id
+            ));
+        }
+        if !seen_blocks.insert(se.species_id) {
+            return Err(format!(
+                "duplicate evolutions block for species {}",
+                se.species_id
+            ));
+        }
+    }
+
+    // 2. Self-reference: a species cannot evolve into itself.
+    for se in evolutions {
+        for cond in &se.evolutions {
+            if cond.to_species == se.species_id {
+                return Err(format!(
+                    "species {} has a self-evolution (to_species == species_id)",
+                    se.species_id
+                ));
+            }
+        }
+    }
+
+    // 3. Dangling references: every species/item id referenced must exist.
+    for se in evolutions {
+        if !species_ids.contains(&se.species_id) {
+            return Err(format!(
+                "evolutions block references non-existent source species {}",
+                se.species_id
+            ));
+        }
+        for cond in &se.evolutions {
+            if !species_ids.contains(&cond.to_species) {
+                return Err(format!(
+                    "evolution for species {} references non-existent target species {}",
+                    se.species_id, cond.to_species
+                ));
+            }
+            if let EvolutionTrigger::Item(item_id) = &cond.trigger {
+                if !item_ids.contains(item_id) {
+                    return Err(format!(
+                        "evolution for species {} references non-existent item {item_id}",
+                        se.species_id
+                    ));
+                }
+            }
+        }
+    }
+    for r in recipes {
+        for (field, id) in [("a", r.a), ("b", r.b), ("to", r.to)] {
+            if !species_ids.contains(&id) {
+                return Err(format!(
+                    "fusion recipe references non-existent species {id} (field {field})"
+                ));
+            }
+        }
+    }
+
+    // 4. Trigger sanity: Bond(0) is an always-true threshold (default bond > 0).
+    for se in evolutions {
+        for cond in &se.evolutions {
+            if let EvolutionTrigger::Bond(b) = &cond.trigger {
+                if b.value() == 0 {
+                    return Err(format!(
+                        "species {} has a Bond(0) evolution trigger; a zero-bond threshold is always true",
+                        se.species_id
+                    ));
+                }
+            }
+        }
+    }
+
+    // 5. Fusion coherence: distinct parents; the output is a new form.
+    for r in recipes {
+        if r.a == r.b {
+            return Err(format!(
+                "fusion recipe has a == b ({}); self-fusion is not supported",
+                r.a
+            ));
+        }
+        if r.to == r.a || r.to == r.b {
+            return Err(format!(
+                "fusion recipe output {} reproduces an input ({} + {})",
+                r.to, r.a, r.b
+            ));
+        }
+    }
+
+    // 6. Derived-forms-not-wild: evolution targets ∪ fusion results are never
+    //    wild-catchable (the integrity rule v1 left to author discipline).
+    let mut derived: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    for se in evolutions {
+        for cond in &se.evolutions {
+            derived.insert(cond.to_species);
+        }
+    }
+    for r in recipes {
+        derived.insert(r.to);
+    }
+    for table in encounters {
+        for entry in &table.entries {
+            if derived.contains(&entry.species_id) {
+                return Err(format!(
+                    "derived form species {} (evolution/fusion-only) appears in the encounter table for zone {}; derived forms must never be wild-catchable",
+                    entry.species_id, table.zone_id
+                ));
+            }
+        }
+    }
+
+    // 7. No duplicate fusion pair (order-independent via canonical (min, max)).
+    let mut seen_pairs = std::collections::BTreeSet::new();
+    for r in recipes {
+        let key = (r.a.min(r.b), r.a.max(r.b));
+        if !seen_pairs.insert(key) {
+            return Err(format!(
+                "duplicate fusion pair ({}, {}); recipes are order-independent ({{a,b}} == {{b,a}})",
+                key.0, key.1
+            ));
         }
     }
 
@@ -1753,6 +2049,731 @@ mod tests {
             result.is_err(),
             "TEETH: training food with train_amount=300 (>252) MUST be rejected by validate_content; \
              a validator without the upper-bound check would pass this and load an impossible food"
+        );
+    }
+
+    // =======================================================================
+    // === M10a-content: evolution/fusion content types + integrity validator ===
+    //
+    // EARS criteria covered (ADR-0060, M10 spec §3):
+    //   1. parse_fusion / parse_evolutions round-trip all three EvolutionTrigger
+    //      variants (Level/Bond/Item) and return typed Vecs.
+    //   2. Malformed RON → Err (mirrors rejects_malformed_species_ron).
+    //   3. load_fusion() / load_evolutions() parse Ok and are non-empty (live seed).
+    //   4. validate_evolution_fusion on the live embedded seed returns Ok.
+    //   5. Gate (a): no duplicate fusion pair, ORDER-INDEPENDENT — TEETH.
+    //   6. Gate (b): derived-form (evolution target) in encounter table → Err,
+    //      with species present in species slice (not a dangling-ref pass) — TEETH.
+    //   7. Gate (b-sibling): fusion result in encounter table → Err — TEETH.
+    //   8. Gate (c-i): dangling EvolutionCondition.to_species → Err — TEETH.
+    //   9. Gate (c-ii): dangling FusionRecipe.a → Err — TEETH.
+    //  10. Gate (item-ref): EvolutionTrigger::Item(id) not in items → Err — TEETH.
+    //  11. Gate (d-i): duplicate SpeciesEvolutions.species_id block → Err — TEETH.
+    //  12. Gate (d-ii): empty evolutions: [] block → Err — TEETH.
+    //  13. Self-evolution (to_species == species_id) → Err — TEETH.
+    //  14. Bond(0) trigger → Err — TEETH.
+    //  15. Fusion a == b → Err — TEETH.
+    //  16. Fusion to ∈ {a, b} → Err — TEETH.
+    //  17. Regression: load_species() still passes validate_content and grew
+    //      (m8_9e_species_migration_parity prefix gate preserved).
+    //
+    // NOTE: All types/fns referenced below DO NOT EXIST YET — this suite is RED
+    // (compile error) until the implementer adds them to content.rs. That is the
+    // intended TDD red state, mirroring how the M9b-tail tests were added at
+    // content.rs:1636 ("Until then these tests DO NOT COMPILE").
+    //
+    // RON trigger syntax (ADR-0060 §1, derived from Level/Bond custom Deserializes):
+    //   - Level's custom Deserialize calls u8::deserialize → bare integer inside
+    //     the enum variant tuple: `Level(16)` (the `16` is a plain u8, not a struct).
+    //   - Bond derives Deserialize on Bond(u8) newtype → in RON a newtype struct is
+    //     transparent: `Bond(42)` carries the u8 directly.
+    //   - Item wraps a raw u32: `Item(3)`.
+    //   So a RON EvolutionTrigger looks like: `Level(16)`, `Bond(120)`, `Item(3)`.
+    // =======================================================================
+
+    use crate::monster::types::{Bond, Level};
+    use crate::taming::types::{EncounterEntry, EncounterTable};
+
+    // -----------------------------------------------------------------------
+    // M10a fixture builders
+    // -----------------------------------------------------------------------
+
+    /// Build a minimal valid FusionRecipe.
+    fn fusion_recipe(a: u32, b: u32, to: u32) -> FusionRecipe {
+        FusionRecipe { a, b, to }
+    }
+
+    /// Build a SpeciesEvolutions block with one Level-trigger condition.
+    fn species_evos_level(
+        species_id: u32,
+        trigger_level: u8,
+        to_species: u32,
+    ) -> SpeciesEvolutions {
+        SpeciesEvolutions {
+            species_id,
+            evolutions: vec![EvolutionCondition {
+                trigger: EvolutionTrigger::Level(Level::new(trigger_level).expect("valid level")),
+                to_species,
+            }],
+        }
+    }
+
+    /// Build a SpeciesEvolutions block with one Bond-trigger condition.
+    fn species_evos_bond(species_id: u32, bond_val: u8, to_species: u32) -> SpeciesEvolutions {
+        SpeciesEvolutions {
+            species_id,
+            evolutions: vec![EvolutionCondition {
+                trigger: EvolutionTrigger::Bond(Bond::new(bond_val)),
+                to_species,
+            }],
+        }
+    }
+
+    /// Build a SpeciesEvolutions block with one Item-trigger condition.
+    fn species_evos_item(species_id: u32, item_id: u32, to_species: u32) -> SpeciesEvolutions {
+        SpeciesEvolutions {
+            species_id,
+            evolutions: vec![EvolutionCondition {
+                trigger: EvolutionTrigger::Item(item_id),
+                to_species,
+            }],
+        }
+    }
+
+    /// Build a minimal EncounterTable for a zone containing the given species ids.
+    /// Uses min_level=1, max_level=5, weight=10 for each entry.
+    fn fixture_encounter_table(zone_id: u32, species_ids: &[u32]) -> EncounterTable {
+        EncounterTable {
+            zone_id,
+            encounter_rate: 200,
+            entries: species_ids
+                .iter()
+                .map(|&sid| EncounterEntry {
+                    species_id: sid,
+                    weight: 10,
+                    min_level: Level::new(1).unwrap(),
+                    max_level: Level::new(5).unwrap(),
+                })
+                .collect(),
+        }
+    }
+
+    /// A minimal valid set of 4 species (ids 1–4, where 4 is a derived form
+    /// added to the species registry but absent from encounters).
+    /// Species 1,2,3 are "wild-catchable" starters; species 4,5 are derived.
+    fn m10a_base_species() -> Vec<Species> {
+        vec![
+            fixture_species(1, vec![]),
+            fixture_species(2, vec![]),
+            fixture_species(3, vec![]),
+            fixture_species(4, vec![]),
+            fixture_species(5, vec![]),
+            fixture_species(6, vec![]),
+        ]
+    }
+
+    /// A minimal valid item registry (one item, id 3, which the Item-trigger tests use).
+    fn m10a_base_items() -> Vec<ItemDef> {
+        vec![ItemDef {
+            id: 3,
+            name: "Evo Stone".to_string(),
+            description: "Triggers evolution".to_string(),
+            recruit_bonus: 0,
+            train_stat: None,
+            train_amount: 0,
+        }]
+    }
+
+    /// A valid encounter table for zone 0 containing ONLY base species (1,2,3) —
+    /// never any derived form.
+    fn m10a_base_encounters() -> Vec<EncounterTable> {
+        vec![fixture_encounter_table(0, &[1, 2, 3])]
+    }
+
+    // -----------------------------------------------------------------------
+    // 1. Parse round-trip — pins RON syntax for all three trigger variants
+    // -----------------------------------------------------------------------
+
+    /// M10a-1a: parse_fusion returns a typed Vec with the correct fields.
+    /// Kills: a parse_fusion that silently returns empty, misreads field names,
+    /// or swaps a/b/to.
+    #[test]
+    fn m10a_parse_fusion_round_trip() {
+        // RON for two fusion recipes: (1+2→5), (2+3→6)
+        let ron_str = r#"[
+            (a: 1, b: 2, to: 5),
+            (a: 2, b: 3, to: 6),
+        ]"#;
+        let result = parse_fusion(ron_str).expect("valid fusion RON must parse");
+        assert_eq!(
+            result.len(),
+            2,
+            "M10a TEETH: must parse exactly 2 fusion recipes"
+        );
+        assert_eq!(
+            result[0],
+            fusion_recipe(1, 2, 5),
+            "M10a TEETH: first recipe must be (1,2→5)"
+        );
+        assert_eq!(
+            result[1],
+            fusion_recipe(2, 3, 6),
+            "M10a TEETH: second recipe must be (2,3→6)"
+        );
+    }
+
+    /// M10a-1b: parse_evolutions round-trips all three EvolutionTrigger variants.
+    /// Kills: an impl that only handles one variant, or that misreads the Level
+    /// bare-int vs Bond/Item tuple forms.
+    ///
+    /// RON syntax derivation:
+    ///   Level(16) — Level's custom Deserialize calls u8::deserialize on the inner
+    ///               arg; in RON the enum variant tuple wraps a bare u8.
+    ///   Bond(120) — Bond(u8) is a newtype struct; RON newtype is transparent, so
+    ///               the variant arg is the inner u8.
+    ///   Item(3)   — Item(u32) carries a raw u32 directly.
+    #[test]
+    fn m10a_parse_evolutions_all_trigger_variants() {
+        let ron_str = r#"[
+            (
+                species_id: 1,
+                evolutions: [
+                    (trigger: Level(16), to_species: 4),
+                ],
+            ),
+            (
+                species_id: 2,
+                evolutions: [
+                    (trigger: Bond(120), to_species: 5),
+                ],
+            ),
+            (
+                species_id: 3,
+                evolutions: [
+                    (trigger: Item(3), to_species: 6),
+                ],
+            ),
+        ]"#;
+        let result =
+            parse_evolutions(ron_str).expect("RON with all three trigger variants must parse");
+        assert_eq!(
+            result.len(),
+            3,
+            "M10a TEETH: must parse 3 SpeciesEvolutions blocks"
+        );
+
+        // Species 1: Level trigger
+        assert_eq!(result[0].species_id, 1);
+        assert_eq!(result[0].evolutions.len(), 1);
+        assert_eq!(
+            result[0].evolutions[0].to_species, 4,
+            "M10a TEETH: Level-trigger to_species must be 4"
+        );
+        assert_eq!(
+            result[0].evolutions[0].trigger,
+            EvolutionTrigger::Level(Level::new(16).unwrap()),
+            "M10a TEETH: trigger must be Level(16)"
+        );
+
+        // Species 2: Bond trigger
+        assert_eq!(result[1].species_id, 2);
+        assert_eq!(
+            result[1].evolutions[0].trigger,
+            EvolutionTrigger::Bond(Bond::new(120)),
+            "M10a TEETH: trigger must be Bond(120)"
+        );
+        assert_eq!(result[1].evolutions[0].to_species, 5);
+
+        // Species 3: Item trigger
+        assert_eq!(result[2].species_id, 3);
+        assert_eq!(
+            result[2].evolutions[0].trigger,
+            EvolutionTrigger::Item(3),
+            "M10a TEETH: trigger must be Item(3)"
+        );
+        assert_eq!(result[2].evolutions[0].to_species, 6);
+    }
+
+    /// M10a-1c: parse_fusion rejects malformed RON.
+    /// Mirrors rejects_malformed_species_ron; kills a parse_fusion that silently
+    /// returns empty on bad input instead of propagating the error.
+    #[test]
+    fn m10a_parse_fusion_rejects_malformed_ron() {
+        assert!(
+            parse_fusion("not ron at all {{{").is_err(),
+            "M10a TEETH: malformed RON must return Err from parse_fusion"
+        );
+    }
+
+    /// M10a-1d: parse_evolutions rejects malformed RON.
+    #[test]
+    fn m10a_parse_evolutions_rejects_malformed_ron() {
+        assert!(
+            parse_evolutions("not ron at all {{{").is_err(),
+            "M10a TEETH: malformed RON must return Err from parse_evolutions"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 2. Embedded content loads + validates (positive gate, live seed)
+    // -----------------------------------------------------------------------
+
+    /// M10a-2a: load_fusion() parses Ok and the result is non-empty.
+    /// Kills: an impl that fails to wire the include_str! or returns an empty list.
+    #[test]
+    fn m10a_embedded_fusion_parses_nonempty() {
+        let recipes = load_fusion().expect("embedded fusion.ron must parse");
+        assert!(
+            !recipes.is_empty(),
+            "M10a TEETH: load_fusion() must return at least one recipe (seed content required)"
+        );
+    }
+
+    /// M10a-2b: load_evolutions() parses Ok and the result is non-empty.
+    /// Kills: an impl that fails to wire the include_str! or returns an empty list.
+    #[test]
+    fn m10a_embedded_evolutions_parses_nonempty() {
+        let evos = load_evolutions().expect("embedded evolutions.ron must parse");
+        assert!(
+            !evos.is_empty(),
+            "M10a TEETH: load_evolutions() must return at least one entry (seed content required)"
+        );
+    }
+
+    /// M10a-2c: validate_evolution_fusion on the full live embedded seed returns Ok.
+    /// This is the primary positive gate — proves the seed's derived species are
+    /// absent from encounters and all refs are coherent.
+    ///
+    /// Kills: any impl that accidentally flags the live seed as invalid, or an
+    /// impl that wires the wrong registries together.
+    #[test]
+    fn m10a_embedded_evolution_fusion_validates() {
+        let species = load_species().expect("species parse");
+        let evolutions = load_evolutions().expect("evolutions parse");
+        let recipes = load_fusion().expect("fusion parse");
+        let encounters = load_encounters().expect("encounters parse");
+        let items = load_items().expect("items parse");
+        validate_evolution_fusion(&species, &evolutions, &recipes, &encounters, &items).expect(
+            "M10a TEETH: validate_evolution_fusion must return Ok for the embedded seed — \
+                 derived forms must be absent from encounters and all refs must be valid",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 3. Gate (a): no duplicate fusion pair, ORDER-INDEPENDENT — TEETH
+    // -----------------------------------------------------------------------
+
+    /// M10a-3: duplicate fusion pair (reversed) → Err, error mentions duplicate/pair.
+    ///
+    /// The second recipe is the REVERSED pair (a:2,b:1) after (a:1,b:2).
+    /// A literal-duplicate fixture would NOT kill a raw-pair impl that skips
+    /// normalization; the reversal specifically kills any impl that checks
+    /// order-dependent equality instead of normalizing (min,max).
+    ///
+    /// Kills: an impl that checks literal (a,b) equality instead of
+    /// normalizing to (min(a,b), max(a,b)) before dedup.
+    #[test]
+    fn m10a_duplicate_fusion_pair_reversed_order_rejected() {
+        let species = m10a_base_species();
+        let evolutions = vec![];
+        let recipes = vec![
+            fusion_recipe(1, 2, 5), // (1,2)→5
+            fusion_recipe(2, 1, 6), // reversed: (2,1) is the same pair as (1,2)
+        ];
+        let encounters = m10a_base_encounters();
+        let items = m10a_base_items();
+
+        let result =
+            validate_evolution_fusion(&species, &evolutions, &recipes, &encounters, &items);
+        assert!(
+            result.is_err(),
+            "M10a TEETH: a reversed duplicate fusion pair (1,2) and (2,1) must be rejected; \
+             an impl that checks literal equality would pass this and allow ambiguous recipes"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("duplicate") || err.contains("pair"),
+            "M10a TEETH: error must mention 'duplicate' or 'pair', got: {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 4. Gate (b): derived-form in encounter table → Err (isolated)
+    // -----------------------------------------------------------------------
+
+    /// M10a-4a: an evolution target (species 4) appearing in an encounter table → Err.
+    ///
+    /// ISOLATION: species 4 IS in the species slice (so dangling-ref cannot cause
+    /// the pass); the error must reference the wild/encounter violation, NOT "dangling".
+    ///
+    /// Kills: an impl that only checks dangling refs but not derived-form presence
+    /// in encounter tables, or one that passes because species 4 is absent from
+    /// the species registry.
+    #[test]
+    fn m10a_derived_evolution_target_in_encounter_table_rejected() {
+        let species = m10a_base_species(); // includes species 4 — NOT a dangling ref
+                                           // Species 1 evolves to species 4 at level 16
+        let evolutions = vec![species_evos_level(1, 16, 4)];
+        let recipes = vec![];
+        // Encounter table ALSO contains species 4 (the derived form)
+        let encounters = vec![fixture_encounter_table(0, &[1, 2, 3, 4])];
+        let items = m10a_base_items();
+
+        let result =
+            validate_evolution_fusion(&species, &evolutions, &recipes, &encounters, &items);
+        assert!(
+            result.is_err(),
+            "M10a TEETH: evolution target species 4 must not appear in encounter tables; \
+             an impl that only checks dangling refs would pass this (species 4 exists in species slice)"
+        );
+        let err = result.unwrap_err();
+        // Error must reference wild/encounter violation, NOT dangling-ref
+        assert!(
+            err.contains("wild") || err.contains("encounter") || err.contains("derived"),
+            "M10a TEETH: error must mention 'wild', 'encounter', or 'derived', got: {err:?}"
+        );
+        assert!(
+            !err.contains("dangling") && !err.contains("non-existent"),
+            "M10a TEETH: error must NOT be a dangling-ref error (species 4 is in the registry), got: {err:?}"
+        );
+    }
+
+    /// M10a-4b: a fusion result (species 5) appearing in an encounter table → Err.
+    ///
+    /// Sibling of 4a: covers the fusion-result case of Gate (b), not just the
+    /// evolution-target case. Species 5 IS in the species slice.
+    ///
+    /// Kills: an impl that checks only evolution targets in encounters but not
+    /// fusion result species.
+    #[test]
+    fn m10a_fusion_result_in_encounter_table_rejected() {
+        let species = m10a_base_species(); // includes species 5 — NOT a dangling ref
+        let evolutions = vec![];
+        let recipes = vec![fusion_recipe(1, 2, 5)]; // species 5 is a fusion result
+                                                    // Encounter table ALSO contains species 5 (the derived form)
+        let encounters = vec![fixture_encounter_table(0, &[1, 2, 3, 5])];
+        let items = m10a_base_items();
+
+        let result =
+            validate_evolution_fusion(&species, &evolutions, &recipes, &encounters, &items);
+        assert!(
+            result.is_err(),
+            "M10a TEETH: fusion result species 5 must not appear in encounter tables; \
+             an impl that only checks evolution targets would miss fusion results"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("wild") || err.contains("encounter") || err.contains("derived"),
+            "M10a TEETH: error must mention 'wild', 'encounter', or 'derived', got: {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 5. Gate (c): dangling species refs — two focused fixtures
+    // -----------------------------------------------------------------------
+
+    /// M10a-5a: EvolutionCondition.to_species references a species not in the registry → Err.
+    ///
+    /// Kills: an impl that skips the to_species cross-ref check, allowing an
+    /// evolution that would point to a non-existent species at runtime.
+    #[test]
+    fn m10a_dangling_evolution_to_species_rejected() {
+        let species = vec![fixture_species(1, vec![]), fixture_species(2, vec![])];
+        // to_species: 99 does NOT exist in species slice
+        let evolutions = vec![species_evos_level(1, 16, 99)];
+        let recipes = vec![];
+        let encounters = vec![];
+        let items = vec![];
+
+        let result =
+            validate_evolution_fusion(&species, &evolutions, &recipes, &encounters, &items);
+        assert!(
+            result.is_err(),
+            "M10a TEETH: to_species=99 (non-existent) must be rejected; \
+             an impl missing the cross-ref check would silently accept it"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("99") || err.contains("dangling") || err.contains("non-existent"),
+            "M10a TEETH: error must reference the missing species id 99, got: {err:?}"
+        );
+    }
+
+    /// M10a-5b: FusionRecipe.a references a species not in the registry → Err.
+    ///
+    /// Kills: an impl that checks evolution refs but not fusion recipe refs.
+    #[test]
+    fn m10a_dangling_fusion_recipe_a_rejected() {
+        let species = vec![fixture_species(1, vec![]), fixture_species(2, vec![])];
+        let evolutions = vec![];
+        // species 77 does NOT exist
+        let recipes = vec![fusion_recipe(77, 1, 2)];
+        let encounters = vec![];
+        let items = vec![];
+
+        let result =
+            validate_evolution_fusion(&species, &evolutions, &recipes, &encounters, &items);
+        assert!(
+            result.is_err(),
+            "M10a TEETH: FusionRecipe.a=77 (non-existent) must be rejected; \
+             an impl missing the recipe cross-ref check would silently accept it"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("77") || err.contains("dangling") || err.contains("non-existent"),
+            "M10a TEETH: error must reference the missing species id 77, got: {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. Item-ref dangling — TEETH
+    // -----------------------------------------------------------------------
+
+    /// M10a-6: EvolutionTrigger::Item(id) with id not in items → Err.
+    ///
+    /// Kills: an impl that validates species refs but not item refs for Item triggers,
+    /// allowing an item-triggered evolution that references a non-existent item.
+    #[test]
+    fn m10a_dangling_item_trigger_ref_rejected() {
+        let species = vec![fixture_species(1, vec![]), fixture_species(4, vec![])];
+        // item_id 999 does NOT exist in items slice
+        let evolutions = vec![species_evos_item(1, 999, 4)];
+        let recipes = vec![];
+        let encounters = vec![];
+        let items = vec![]; // item 999 is not here
+
+        let result =
+            validate_evolution_fusion(&species, &evolutions, &recipes, &encounters, &items);
+        assert!(
+            result.is_err(),
+            "M10a TEETH: Item-trigger referencing item_id=999 (non-existent) must be rejected; \
+             an impl that skips item cross-ref would load a broken evolution table"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("999") || err.contains("item") || err.contains("dangling"),
+            "M10a TEETH: error must reference the missing item id 999, got: {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 7. Gate (d): registry well-formedness
+    // -----------------------------------------------------------------------
+
+    /// M10a-7a: two SpeciesEvolutions blocks with the same species_id → Err.
+    ///
+    /// The species id IS unique in the species slice (so validate_content dup check
+    /// cannot cause this pass). The evolution registry itself has the duplicate.
+    ///
+    /// Kills: an impl that skips the within-registry duplicate species_id check,
+    /// which would allow the second block to silently shadow or conflict with the first.
+    #[test]
+    fn m10a_duplicate_species_evolutions_block_rejected() {
+        let species = vec![fixture_species(1, vec![]), fixture_species(4, vec![])];
+        let evolutions = vec![
+            species_evos_level(1, 16, 4), // first block for species 1
+            species_evos_level(1, 20, 4), // second block — same species_id=1, duplicate
+        ];
+        let recipes = vec![];
+        let encounters = vec![];
+        let items = vec![];
+
+        let result =
+            validate_evolution_fusion(&species, &evolutions, &recipes, &encounters, &items);
+        assert!(
+            result.is_err(),
+            "M10a TEETH: two SpeciesEvolutions blocks with species_id=1 must be rejected; \
+             an impl missing the duplicate-block check would silently ignore one of them"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("1") || err.contains("duplicate"),
+            "M10a TEETH: error must mention species id 1 or 'duplicate', got: {err:?}"
+        );
+    }
+
+    /// M10a-7b: a SpeciesEvolutions block with an empty evolutions Vec → Err.
+    ///
+    /// An empty block silently occupies a species_id slot, blocking any later
+    /// real entry. ADR-0060 §3 explicitly rejects it.
+    ///
+    /// Kills: an impl that accepts empty evolution blocks, leaving the slot
+    /// permanently blocked and invisible to content authors.
+    #[test]
+    fn m10a_empty_evolutions_block_rejected() {
+        let species = vec![fixture_species(1, vec![])];
+        let evolutions = vec![SpeciesEvolutions {
+            species_id: 1,
+            evolutions: vec![], // explicitly empty — not a valid registry entry
+        }];
+        let recipes = vec![];
+        let encounters = vec![];
+        let items = vec![];
+
+        let result =
+            validate_evolution_fusion(&species, &evolutions, &recipes, &encounters, &items);
+        assert!(
+            result.is_err(),
+            "M10a TEETH: an empty evolutions: [] block must be rejected; \
+             an impl that accepts empty blocks would silently occupy species_id slots"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("empty") || err.contains("1"),
+            "M10a TEETH: error must mention 'empty' or species id 1, got: {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 8. Self-reference / coherence — one focused test each
+    // -----------------------------------------------------------------------
+
+    /// M10a-8a: self-evolution (to_species == species_id) → Err.
+    ///
+    /// A "self-evolution" is a no-op that the reducer would happily re-apply
+    /// indefinitely. ADR-0060 §3 rejects it at the content layer.
+    ///
+    /// Kills: an impl that omits the self-evolution guard, allowing circular
+    /// single-node loops in the evolution graph.
+    #[test]
+    fn m10a_self_evolution_rejected() {
+        let species = vec![fixture_species(1, vec![])];
+        let evolutions = vec![species_evos_level(1, 16, 1)]; // to_species == species_id
+        let recipes = vec![];
+        let encounters = vec![];
+        let items = vec![];
+
+        let result =
+            validate_evolution_fusion(&species, &evolutions, &recipes, &encounters, &items);
+        assert!(
+            result.is_err(),
+            "M10a TEETH: to_species == species_id (self-evolution) must be rejected"
+        );
+    }
+
+    /// M10a-8b: Bond(0) trigger → Err.
+    ///
+    /// Bond(0) is an always-true threshold (every monster's bond >= 0); it is
+    /// analogous to accuracy=0 (always-miss, unrepresentable as a useful skill).
+    /// ADR-0060 §3 rejects it because Bond's derived Deserialize accepts any u8,
+    /// so parse-time rejection is impossible — it must be caught by the validator.
+    ///
+    /// Kills: an impl that omits the Bond(0) guard, allowing an always-true
+    /// evolution trigger that fires for every monster immediately.
+    #[test]
+    fn m10a_bond_zero_trigger_rejected() {
+        let species = vec![fixture_species(1, vec![]), fixture_species(4, vec![])];
+        let evolutions = vec![species_evos_bond(1, 0, 4)]; // Bond(0) — always-true
+        let recipes = vec![];
+        let encounters = vec![];
+        let items = vec![];
+
+        let result =
+            validate_evolution_fusion(&species, &evolutions, &recipes, &encounters, &items);
+        assert!(
+            result.is_err(),
+            "M10a TEETH: Bond(0) trigger must be rejected (always-true threshold); \
+             an impl missing this guard would allow every monster to immediately qualify"
+        );
+    }
+
+    /// M10a-8c: fusion a == b (self-fusion) → Err.
+    ///
+    /// A monster cannot be fused with itself. ADR-0060 §3 rejects a == b.
+    ///
+    /// Kills: an impl that omits the a==b guard, allowing a recipe that would
+    /// consume a monster twice and produce one offspring of itself.
+    #[test]
+    fn m10a_fusion_self_fusion_rejected() {
+        let species = vec![fixture_species(1, vec![]), fixture_species(2, vec![])];
+        let evolutions = vec![];
+        let recipes = vec![fusion_recipe(1, 1, 2)]; // a == b
+        let encounters = vec![];
+        let items = vec![];
+
+        let result =
+            validate_evolution_fusion(&species, &evolutions, &recipes, &encounters, &items);
+        assert!(
+            result.is_err(),
+            "M10a TEETH: fusion recipe with a == b must be rejected (self-fusion)"
+        );
+    }
+
+    /// M10a-8d: fusion to ∈ {a, b} → Err.
+    ///
+    /// A fusion where the output is one of the inputs would reproduce an input
+    /// rather than creating a new form. ADR-0060 §3 rejects it.
+    ///
+    /// Kills: an impl that omits the to∈{a,b} guard.
+    #[test]
+    fn m10a_fusion_to_is_input_rejected() {
+        let species = vec![fixture_species(1, vec![]), fixture_species(2, vec![])];
+        let evolutions = vec![];
+        // to == a: fusing 1+2 would produce 1 (a copy of the input)
+        let recipes = vec![fusion_recipe(1, 2, 1)];
+        let encounters = vec![];
+        let items = vec![];
+
+        let result =
+            validate_evolution_fusion(&species, &evolutions, &recipes, &encounters, &items);
+        assert!(
+            result.is_err(),
+            "M10a TEETH: fusion to ∈ {{a,b}} must be rejected (output reproduces an input)"
+        );
+
+        // Also check to == b
+        let recipes_b = vec![fusion_recipe(1, 2, 2)];
+        let result_b =
+            validate_evolution_fusion(&species, &evolutions, &recipes_b, &encounters, &items);
+        assert!(
+            result_b.is_err(),
+            "M10a TEETH: fusion to == b must also be rejected"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 9. Regression: load_species() still passes validate_content after
+    //    010-derived.ron adds new species
+    // -----------------------------------------------------------------------
+
+    /// M10a-9: load_species() returns MORE rows than SPECIES_GOLDEN (the m8_9e
+    /// prefix gate) AND still passes validate_content (no new id conflicts).
+    ///
+    /// This confirms the 010-derived.ron addition is additive: it sorts after
+    /// 000-core.ron (the m8_9e_species_migration_parity prefix gate stays green)
+    /// and the expanded registry is internally consistent.
+    ///
+    /// Kills: an impl that adds derived species to 000-core.ron (breaking prefix
+    /// parity) or introduces id conflicts.
+    #[test]
+    fn m10a_derived_species_still_pass_validate_content() {
+        let species = load_species().expect("load_species must succeed with 010-derived.ron");
+        let golden = parse_species(SPECIES_GOLDEN).expect("golden species must parse");
+
+        // After 010-derived.ron is added, load_species returns MORE than the 3 golden rows.
+        assert!(
+            species.len() > golden.len(),
+            "M10a: load_species() ({}) must have MORE rows than SPECIES_GOLDEN ({}) after \
+             010-derived.ron adds derived forms — the implementer must create this file",
+            species.len(),
+            golden.len()
+        );
+
+        // The existing m8_9e prefix gate: first 3 rows are still the golden rows.
+        assert_eq!(
+            &species[..golden.len()],
+            &golden[..],
+            "M10a TEETH: 000-core.ron rows must be byte-identical to SPECIES_GOLDEN prefix \
+             (010-derived.ron sorts AFTER 000-core.ron, never before)"
+        );
+
+        // The full merged registry must still pass validate_content (no dup ids, etc.)
+        let skills = load_skills().expect("skills parse");
+        let chart = load_type_chart().expect("type_chart parse");
+        let items = load_items().expect("items parse");
+        validate_content(&species, &skills, &chart, &items).expect(
+            "M10a TEETH: load_species() with 010-derived.ron must still pass validate_content; \
+                 any duplicate id or zero base stat in the new file must be caught",
         );
     }
 }

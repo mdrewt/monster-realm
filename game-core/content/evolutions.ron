@@ -1,0 +1,16 @@
+// Evolution registry — DATA, not code (ADR-0006/0019/0060). Per-species branch
+// evolution conditions: one `SpeciesEvolutions` block per source species, each with
+// one or more (trigger -> to_species) branches. Triggers: Level(n) (>= level n),
+// Bond(n) (>= bond n; n > 0), Item(id). Every `to_species` is an evolution-only
+// DERIVED form and MUST NEVER appear in an encounter table (validate_evolution_fusion).
+// Stable ids append-only; no self-evolution; no duplicate source block.
+[
+    // Cindercub (4) branch-evolves: to Pyroleo (5) by level, or Embersworn (7) by bond.
+    (
+        species_id: 4,
+        evolutions: [
+            (trigger: Level(16), to_species: 5),
+            (trigger: Bond(200), to_species: 7),
+        ],
+    ),
+]
