@@ -1011,6 +1011,126 @@ mod tests {
     // Unknown skill id: documented panic behavior (content integrity)
     // -----------------------------------------------------------------------
 
+    // -----------------------------------------------------------------------
+    // M8.8b-A: advance_turn behavioral tests
+    // -----------------------------------------------------------------------
+
+    /// Kills: a mutant that doesn't increment turn_number, or that returns false
+    /// on a normal (non-MAX) turn, or that changes the outcome away from Ongoing.
+    ///
+    /// `advance_turn` from a mid-range turn_number on an Ongoing battle must:
+    ///   - return true
+    ///   - increment turn_number by exactly 1
+    ///   - leave outcome == BattleOutcome::Ongoing
+    ///
+    /// RED state: compile-RED because `advance_turn` does not exist yet.
+    #[test]
+    fn advance_turn_mid_range_returns_true_and_increments() {
+        let monster_a = make_monster(Affinity::Fire, 200, 50);
+        let monster_b = make_monster(Affinity::Water, 200, 40);
+        let mut state = make_battle_state(monster_a, monster_b);
+        state.turn_number = 5;
+
+        let result = advance_turn(&mut state);
+
+        assert!(
+            result,
+            "TEETH: advance_turn must return true on a non-MAX turn_number; \
+             a mutant returning false fails here"
+        );
+        assert_eq!(
+            state.turn_number, 6,
+            "TEETH: advance_turn must increment turn_number by exactly 1 (5 → 6); \
+             a mutant that doesn't increment or increments by 2 fails here"
+        );
+        assert_eq!(
+            state.outcome,
+            BattleOutcome::Ongoing,
+            "TEETH: advance_turn must not change outcome on a non-MAX turn; \
+             a mutant that sets Fled on every call fails here"
+        );
+    }
+
+    /// Kills THREE mutant classes simultaneously:
+    ///   - Mutant A: still increments at MAX → wraps to 0 → assertion (c) fails
+    ///   - Mutant B: sets a wrong outcome (e.g. SideAWins) → assertion (b) fails
+    ///   - Mutant C: returns true at MAX → assertion (a) fails
+    ///
+    /// This is THE proof-of-teeth for the recruit-path terminal: when turn_number
+    /// is already u16::MAX, advance_turn must terminate the battle without
+    /// overflowing (no panic, no wrap-to-0) and must set the Fled outcome.
+    ///
+    /// RED state: compile-RED because `advance_turn` does not exist yet.
+    #[test]
+    fn advance_turn_at_u16_max_is_terminal_without_wrap_or_panic() {
+        let monster_a = make_monster(Affinity::Fire, 500, 50);
+        let monster_b = make_monster(Affinity::Water, 500, 40);
+        let mut state = make_battle_state(monster_a, monster_b);
+        state.turn_number = u16::MAX;
+
+        // (a) must NOT panic — if this panics, the test fails with a panic message
+        let result = advance_turn(&mut state);
+
+        // (a) return value: must be false at the terminal
+        assert!(
+            !result,
+            "TEETH(return): advance_turn must return false at turn_number==u16::MAX; \
+             a mutant returning true fails here (ADR-0003: terminal signals caller to stop)"
+        );
+
+        // (b) outcome: must be Fled specifically — not SideAWins, SideBWins, or Ongoing
+        assert_eq!(
+            state.outcome,
+            BattleOutcome::Fled,
+            "TEETH(outcome): advance_turn must set outcome=Fled at u16::MAX; \
+             a mutant setting SideAWins/SideBWins/Ongoing fails here"
+        );
+
+        // (c) turn_number: must be UNCHANGED — the guard fires WITHOUT incrementing
+        assert_eq!(
+            state.turn_number,
+            u16::MAX,
+            "TEETH(no-wrap): turn_number must remain u16::MAX after terminal guard; \
+             a mutant that still increments wraps to 0 in release and fails here"
+        );
+    }
+
+    /// Idempotency at the terminal: calling advance_turn TWICE at u16::MAX keeps
+    /// outcome Fled and turn_number u16::MAX on both calls.
+    ///
+    /// Kills: an impl that only guards the first call but allows wrapping on
+    /// subsequent calls (e.g. by checking outcome rather than turn_number).
+    ///
+    /// RED state: compile-RED because `advance_turn` does not exist yet.
+    #[test]
+    fn advance_turn_at_u16_max_is_idempotent() {
+        let monster_a = make_monster(Affinity::Fire, 200, 50);
+        let monster_b = make_monster(Affinity::Water, 200, 40);
+        let mut state = make_battle_state(monster_a, monster_b);
+        state.turn_number = u16::MAX;
+
+        let r1 = advance_turn(&mut state);
+        // Note: the second call sees outcome==Fled, but the contract is on turn_number==MAX
+        let r2 = advance_turn(&mut state);
+
+        assert!(!r1, "first advance_turn at u16::MAX must return false");
+        assert!(
+            !r2,
+            "second advance_turn at u16::MAX must also return false (idempotent)"
+        );
+        assert_eq!(
+            state.turn_number,
+            u16::MAX,
+            "TEETH: turn_number must remain u16::MAX after two calls at the terminal; \
+             a guard that only fires once would wrap to 0 on the second call"
+        );
+        assert_eq!(
+            state.outcome,
+            BattleOutcome::Fled,
+            "outcome must remain Fled after both calls at the terminal"
+        );
+    }
+
     /// Documents that referencing an unknown skill_id panics (content integrity).
     /// Kills: an impl that silently ignores or returns an empty event list instead.
     /// Starts red because `resolve_turn` is `todo!()` (any panic satisfies should_panic).
