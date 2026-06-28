@@ -7,17 +7,27 @@
 //! RNG (the determinism contract; enforced by clippy).
 //!
 //! The convergence driver ([`deliver`] + [`apply_stream`]) feeds that lossy,
-//! reordering `Link` into the authoritative [`world::ServerWorld`] and proves the
-//! headline netcode property (ADR-0013): under latency/jitter/loss/reorder the
-//! authoritative final state is delivery-order-INVARIANT — clients converge, no
-//! desync — gated by a known-bad order-dependent fixture the eval rejects
-//! (proof-of-teeth).
+//! reordering `Link` into the authoritative [`world::ServerWorld`] to prove the
+//! headline netcode property (ADR-0013) **given the monotonic-`seq` ordering
+//! contract** (ADR-0012): when each client's intents are applied in `seq` order
+//! ([`ApplyOrder::SeqCanonical`] — provably the same authoritative result the
+//! online reducer produces once intents reach it ordered, since strictly
+//! increasing seqs are all accepted), the final state is delivery-order-INVARIANT
+//! across every underlying network reorder — clients converge, no desync.
+//!
+//! The proof-of-teeth is the counterfactual [`ApplyOrder::Arrival`]: applying the
+//! raw network-arrival order (ignoring the seq contract) makes the server reject
+//! the later-arriving lower seq as stale and DIVERGES under reorder. So the gate
+//! proves the seq-ordering contract is *load-bearing* — NOT that an unordered
+//! transport would converge. The convergence claim is explicitly conditional on
+//! that contract.
 //!
 //! Scope of the harness's asserted invariants: replay-determinism, link
-//! determinism, convergence, and reorder-occurs. It deliberately does NOT model
-//! `forfeit-on-disconnect` or `turn-deadline` — those PvP-orchestration invariants
-//! are deferred to **M16-PvP** (ADR-0025) and are NOT claimed here (M8.8d
-//! decision), so the harness's stated role matches exactly what it tests.
+//! determinism, convergence (given the seq contract), and reorder-occurs. It
+//! deliberately does NOT model `forfeit-on-disconnect` or `turn-deadline` — those
+//! PvP-orchestration invariants are deferred to **M16-PvP** (ADR-0025) and are NOT
+//! claimed here (M8.8 spec §6 decision), so the harness's stated role matches
+//! exactly what it tests.
 
 #![forbid(unsafe_code)]
 
@@ -158,13 +168,17 @@ pub struct ClientIntent {
 /// How the server applies the (lossy, reordered) delivered stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyOrder {
-    /// Canonicalize each client's intents by `seq` before applying — the
-    /// reorder-robust policy whose authoritative final state is delivery-order
-    /// invariant (convergence).
+    /// Apply each client's intents in `seq` order (the monotonic-`seq` ordering
+    /// contract, ADR-0012). This is the *production* authoritative result: feeding
+    /// the online seq-reject reducer a seq-ordered stream accepts every intent
+    /// (each seq strictly exceeds the last), so a pre-sort is equivalent. Its final
+    /// state is delivery-order-invariant (convergence).
     SeqCanonical,
-    /// Apply in raw arrival (delivery) order — the naive, order-DEPENDENT policy
-    /// (a reordered higher `seq` makes the server reject the later-arriving lower
-    /// `seq` as stale); the known-bad fixture the convergence assertion rejects.
+    /// Apply in raw network-arrival order — the *counterfactual* with the ordering
+    /// contract removed: a reordered higher `seq` makes the server reject the
+    /// later-arriving lower `seq` as stale, so the outcome depends on delivery
+    /// order. The known-bad fixture the convergence gate rejects — present only to
+    /// prove the seq-ordering contract is load-bearing.
     Arrival,
 }
 
@@ -183,9 +197,13 @@ pub fn deliver(intents: &[ClientIntent], link: &Link, seed: u64) -> Vec<ClientIn
             send_ms: it.send_ms,
         })
         .collect();
+    let len = intents.len() as u64;
     link.transport(&msgs, seed)
         .into_iter()
-        .map(|d| intents[d.id as usize]) // id is the index we stamped above
+        .map(|d| {
+            debug_assert!(d.id < len, "delivered id is the index we stamped");
+            intents[d.id as usize]
+        })
         .collect()
 }
 
@@ -200,10 +218,20 @@ pub fn deliver(intents: &[ClientIntent], link: &Link, seed: u64) -> Vec<ClientIn
 /// reordered higher `seq` makes the server reject the later-arriving lower `seq`
 /// as stale (order-dependent — the known-bad fixture).
 ///
-/// Each intent is enqueued (a stale/full `Err` is dropped, exactly as the
-/// authoritative reducer rejects-not-clamps) then the zone is ticked once to drain
-/// it — a 1:1 server model in which every accepted intent applies. The final tile
-/// is therefore a pure function of the *accepted* intent subsequence.
+/// Each intent is enqueued (a stale/full `Err` is dropped, mirroring the
+/// authoritative reducer's reject-not-clamp policy) then the zone is ticked once to
+/// drain it — a 1:1 server model of the **flow-controlled steady state** (the
+/// predictor is bounded to `MOVE_QUEUE_CAP`, ADR-0052, so legitimate play never
+/// floods the queue). The cap's "queue full" *anti-flood* path is deliberately out
+/// of scope here (it guards against a misbehaving client, not a convergence
+/// property; the existing `world::tests::server_paced_*` test covers it). The final
+/// tile is therefore a pure function of the *accepted* intent subsequence.
+///
+/// Granularity: the movement rule (`apply_move`) reads only `(state, input, map)` —
+/// there is no cross-character collision — so each client's final tile is
+/// independent of the others, and per-client order-invariance *is* the convergence
+/// property (two clients share one consistent authoritative world). A future model
+/// with cross-client coupling (e.g. PvP, M16) would re-scope this.
 #[must_use]
 pub fn apply_stream(ordered: &[ClientIntent], policy: ApplyOrder) -> BTreeMap<u64, TilePos> {
     let map = zone_0();
@@ -253,6 +281,11 @@ pub fn apply_stream(ordered: &[ClientIntent], policy: ApplyOrder) -> BTreeMap<u6
 /// delivered *after* a higher `seq` of the same client) — so a `jitter: 0`
 /// regression (which delivers each client strictly in send order) is caught by
 /// the reorder-occurs assertion.
+///
+/// Reorder is measured *per client* by design: each client's `seq` stream is what
+/// the ordering contract sequences, and only intra-client reorder can flip an
+/// accept/stale-reject decision. Inter-client interleaving is irrelevant (clients
+/// are independent), so it is intentionally not counted.
 #[must_use]
 pub fn had_reorder(delivered: &[ClientIntent]) -> bool {
     let mut max_seq_seen: BTreeMap<u64, u64> = BTreeMap::new();
