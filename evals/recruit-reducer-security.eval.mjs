@@ -86,22 +86,68 @@ export function extractReducerBody(src, fnName) {
 // ---------------------------------------------------------------------------
 
 /**
- * Check 1: ownership guard.
- * The attempt_recruit body must contain both `player_identity` and `ctx.sender`
- * (the standard comparison pattern used in all other battle reducers).
+ * Check 1: ownership guard — STRENGTHENED (rejecting-comparison required).
+ *
+ * Requires a `player_identity != <sender>` comparison followed by an Err(
+ * within a bounded window (~200 chars). Accepts both:
+ *   (a) alias form:  let me = ctx.sender; ... player_identity != me ... Err(
+ *   (b) direct form: player_identity != ctx.sender ... Err(
+ *
+ * Algorithm (operates on whitespace-collapsed copy):
+ *   1. Resolve sender tokens: default `ctx.sender`; collect ALL aliases bound by
+ *      `let<alias>=ctx.sender;` (a body may bind ctx.sender to more than one
+ *      local and guard with any of them).
+ *   2. Require `player_identity!=<sender>` present for any accepted sender token.
+ *   3. Require `Err(` within ~320 chars after that comparison.
+ *
+ * Uses only indexOf and literal /regex/ — NO new RegExp(...).
  *
  * @param {string} body  Body of attempt_recruit, comment-stripped.
  * @returns {string|null}
  */
 export function checkOwnershipGuard(body) {
-  // player_identity is the column name on the battle row; ctx.sender is what
-  // we compare against. Both must appear together.
-  if (body.indexOf('player_identity') === -1) {
-    return 'attempt_recruit: missing player_identity reference (ownership guard absent)';
+  const compact = body.replace(/\s+/g, '');
+
+  // Resolve ALL aliases bound to ctx.sender: `let<alias>=ctx.sender;`
+  // (global match — a body may bind ctx.sender to more than one local and guard
+  // with any of them, e.g. `let caller = ...; let me = ...; ... != me`).
+  const senderTokens = ['ctx.sender'];
+  const aliasRe = /let(\w+)=ctx\.sender;/g;
+  let am = aliasRe.exec(compact);
+  while (am !== null) {
+    senderTokens.push(am[1]);
+    am = aliasRe.exec(compact);
   }
-  if (body.indexOf('ctx.sender') === -1) {
-    return 'attempt_recruit: missing ctx.sender reference (ownership guard absent)';
+
+  // Find a `player_identity!=<sender>` comparison for any accepted sender token.
+  let cmpIdx = -1;
+  for (const tok of senderTokens) {
+    const idx = compact.indexOf(`player_identity!=${tok}`);
+    if (idx !== -1) {
+      cmpIdx = idx;
+      break;
+    }
   }
+
+  if (cmpIdx === -1) {
+    return (
+      'attempt_recruit: missing rejecting ownership comparison — ' +
+      'require `player_identity != me` (alias form) or `player_identity != ctx.sender` (direct form) ' +
+      'followed by Err( (pure substring presence of player_identity or ctx.sender is insufficient)'
+    );
+  }
+
+  // Require Err( within ~320 chars after the comparison (a real guard may log
+  // a rejection between the `!=` and the `return Err`, so keep the window
+  // generous but bounded).
+  const window = compact.slice(cmpIdx, cmpIdx + 320);
+  if (window.indexOf('Err(') === -1 && window.indexOf('returnErr') === -1) {
+    return (
+      'attempt_recruit: ownership comparison found but no Err( within 320 chars — ' +
+      'the comparison must lead to a rejection'
+    );
+  }
+
   return null;
 }
 
@@ -138,18 +184,92 @@ export function checkOutcomeGuard(body) {
 }
 
 /**
- * Check 3: wild-battle guard.
- * The attempt_recruit body must read from battle_wild (the "is wild" signal).
- * A non-wild battle must be rejected before any recruit logic executes.
+ * Check 3: wild-battle guard — STRENGTHENED (lookup + rejection required).
+ *
+ * Requires a `battle_wild(` lookup whose not-found path rejects with Err.
+ * Mere presence of `battle_wild(` in e.g. a GC `.delete()` call is NOT sufficient.
+ *
+ * Algorithm (operates on whitespace-collapsed copy). The rejection must BIND to
+ * the battle_wild lookup result — an unrelated ok_or_else from a different query
+ * nearby must NOT satisfy the gate (a discarded `let _ = ...find(...);` is a hole).
+ * Try EACH `battle_wild(` occurrence (a body may use it for both lookup and GC):
+ *   1. For an occurrence, require `.find(` within ~120 chars after it.
+ *   2. Walk to the matching close-paren of that `.find(`.
+ *   3. Inspect what immediately follows the find's `)`:
+ *        - `.ok_or` chained directly on the find result → ACCEPT.
+ *        - `{Some` (match arm) → require a `None=>` with `Err`/`return` shortly
+ *          after within the match window → ACCEPT.
+ *        - otherwise (e.g. a `;` discarding the result) → this occurrence does
+ *          not bind a rejection; try the next `battle_wild(`.
+ *
+ * Uses only indexOf and literal /regex/ — NO new RegExp(...).
  *
  * @param {string} body  Body of attempt_recruit, comment-stripped.
  * @returns {string|null}
  */
 export function checkWildBattleGuard(body) {
-  if (body.indexOf('battle_wild(') === -1) {
+  const compact = body.replace(/\s+/g, '');
+
+  if (compact.indexOf('battle_wild(') === -1) {
     return 'attempt_recruit: missing battle_wild( lookup (wild-battle guard absent — non-wild battles could be targeted)';
   }
-  return null;
+
+  let sawFind = false;
+
+  // Try each battle_wild( occurrence — only one needs to bind a rejection.
+  let wildIdx = compact.indexOf('battle_wild(');
+  while (wildIdx !== -1) {
+    // Require .find( shortly after this battle_wild( (same call chain).
+    const windowAfterWild = compact.slice(wildIdx, wildIdx + 120);
+    const findOffset = windowAfterWild.indexOf('.find(');
+    if (findOffset !== -1) {
+      sawFind = true;
+      // Walk to the matching close-paren of this .find(.
+      // findAbsIdx points at the '.' of `.find(`; the '(' is 5 chars later.
+      const findAbsIdx = wildIdx + findOffset;
+      let i = findAbsIdx + '.find('.length; // first char inside find's parens
+      let depth = 1;
+      while (i < compact.length && depth > 0) {
+        if (compact[i] === '(') depth++;
+        else if (compact[i] === ')') depth--;
+        i++;
+      }
+      // i now points just AFTER the find's matching ')'.
+      const after = compact.slice(i, i + 320);
+
+      // Accept: combinator chained directly on the find result.
+      if (after.startsWith('.ok_or')) {
+        return null;
+      }
+
+      // Accept: match arm — `{Some...` with a rejecting `None=>` shortly after.
+      if (after.startsWith('{Some')) {
+        const noneIdx = after.indexOf('None=>');
+        if (noneIdx !== -1) {
+          const noneWindow = after.slice(noneIdx, noneIdx + 200);
+          if (noneWindow.indexOf('Err') !== -1 || noneWindow.indexOf('return') !== -1) {
+            return null;
+          }
+        }
+      }
+      // Otherwise (e.g. `;` discards the result): this occurrence does not bind
+      // a rejection — fall through to try the next battle_wild(.
+    }
+    wildIdx = compact.indexOf('battle_wild(', wildIdx + 1);
+  }
+
+  if (!sawFind) {
+    return (
+      'attempt_recruit: battle_wild( found but no .find( lookup — ' +
+      'battle_wild( must perform a lookup, not just a delete'
+    );
+  }
+
+  return (
+    'attempt_recruit: battle_wild( .find( found but no rejection bound to it — ' +
+    'require .ok_or/.ok_or_else chained on the find, or a match whose None arm returns Err; ' +
+    'a discarded `let _ = ...find(...);` result does not reject on not-wild'
+  );
 }
 
 /**

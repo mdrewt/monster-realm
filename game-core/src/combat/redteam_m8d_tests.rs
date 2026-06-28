@@ -196,19 +196,47 @@ fn inventory_consume_one_on_zero_must_not_underflow() {
 // ---------------------------------------------------------------------------
 
 /// FINDING 5: IV inversion is feasible from public BattleState data.
-/// A wild monster has EVs=0, public species/level, so IVs can be brute-forced.
+///
+/// ADR-0045: "the wild's derived stats ARE published in the public battle.state
+/// BattleState" and "those derived stats are theoretically invertible to the
+/// underlying IVs/nature." This test proves the inversion is not merely theoretical —
+/// it is exact and trivially fast (32-candidate brute force).
+///
+/// Level 100, base_hp=45, ev=0 makes HP = (2*45 + iv)*100/100 + 110 = 200 + iv,
+/// which is INJECTIVE: each IV in [0,31] maps to a distinct HP value. Therefore the
+/// 32-candidate search ALWAYS narrows to exactly 1 result, proving the channel is
+/// fully determined (not just "a few candidates").
+///
+/// The oracle is INDEPENDENT: public_stat_hp is computed once from the known true
+/// IV (input construction), and the assertion checks the SEARCH RESULT — a Vec
+/// collected by a separate brute-force loop. No branch recomputes the expected
+/// value with the function under test (the old self-oracle fallback is deleted).
+///
+/// ADR-0045 acknowledges this channel but defers mitigation to a future milestone.
+/// The test FAILS if derive_stats collapses IVs (e.g. quantises HP), making the
+/// candidate set larger or smaller than {15}.
 #[test]
 fn wild_iv_recoverable_from_public_derived_stats() {
     use crate::monster::rules::derive_stats;
     use crate::monster::types::{EVs, IVs, Level, Nature, NatureKind, StatBlock, StatKind};
 
-    // Public data an eavesdropper has from the battle table:
-    let public_base_hp: u16 = 45; // from species_row (public)
-    let public_level: u8 = 10; // from battle.state.side_b.team[0].level
-    let public_stat_hp: u16 = 26; // from battle.state.side_b.team[0].stats.hp
+    // -----------------------------------------------------------------------
+    // INPUT CONSTRUCTION (not a self-oracle):
+    // We pick a known true IV and call derive_stats ONCE to get the HP value
+    // an eavesdropper would observe in the public BattleState. The assertion
+    // below is on the SEARCH RESULT of a separate brute-force loop — never on
+    // a recomputation of public_stat_hp inside the assert.
+    // -----------------------------------------------------------------------
 
-    // EVs for a wild are always 0 (documented in wild_battle_monster).
-    let evs = EVs::zero();
+    // Public data an eavesdropper has from battle.state.side_b.team[0]:
+    let public_base_hp: u16 = 45; // from species_row (public)
+    let public_level: u8 = 100; // from battle.state.side_b.team[0].level
+
+    // At level=100, base=45, ev=0:  HP = (2*45 + iv)*100/100 + 100 + 10 = 200 + iv
+    // → injective over [0,31]: iv=15 → HP=215, iv=14 → HP=214, iv=16 → HP=216.
+    let known_true_iv: u8 = 15;
+
+    let evs = EVs::zero(); // wild EVs are always 0 (documented in wild_battle_monster)
     let base = StatBlock {
         hp: public_base_hp,
         attack: 49,
@@ -218,48 +246,48 @@ fn wild_iv_recoverable_from_public_derived_stats() {
         sp_defense: 45,
     };
     let level = Level::new(public_level).unwrap();
-    // Nature Hardy has no modifier — the simplest case for the eavesdropper.
-    let nature = Nature::new(NatureKind::Hardy);
+    let nature = Nature::new(NatureKind::Hardy); // Hardy: no stat modifier
 
-    // Brute-force: try all 32 possible IV values for HP
-    let mut recovered_iv: Option<u8> = None;
+    // Compute the HP the eavesdropper observes — this is input construction only.
+    let true_ivs = IVs::new(known_true_iv, 0, 0, 0, 0, 0).unwrap();
+    let public_stat_hp: u16 =
+        derive_stats(&base, &true_ivs, &evs, &nature, level).get(StatKind::Hp);
+
+    // Sanity-check the math: at level=100, base=45, iv=15, ev=0:
+    // HP = (2*45 + 15) * 100 / 100 + 100 + 10 = 105 + 110 = 215
+    assert_eq!(
+        public_stat_hp, 215,
+        "HP formula sanity: base=45 iv=15 lv=100 ev=0 → (2*45+15)*1 + 110 = 215"
+    );
+
+    // -----------------------------------------------------------------------
+    // BRUTE-FORCE INVERSION — collect ALL matching IVs (no break on first match).
+    // The SET is the proof: {15} means the channel is fully determined.
+    // -----------------------------------------------------------------------
+    // 32 possible IVs narrowed to exactly 1 → the ADR-0045 inversion channel is
+    // real; level 100 makes derive_stats HP injective (200+iv), so any narrowing
+    // failure would balloon the set (duplicate HPs → multiple matches) or shrink
+    // it to 0 (no match → derive_stats is broken).
+    let mut candidates: Vec<u8> = Vec::new();
     for candidate_iv in 0u8..=31 {
         let ivs = IVs::new(candidate_iv, 0, 0, 0, 0, 0).unwrap();
         let derived = derive_stats(&base, &ivs, &evs, &nature, level);
         if derived.get(StatKind::Hp) == public_stat_hp {
-            recovered_iv = Some(candidate_iv);
-            break;
+            candidates.push(candidate_iv);
+            // NO break — collect the full set to prove singleton, not just presence.
         }
     }
 
-    // The inversion must find AT MOST a few candidates (usually exactly 1-2 due to
-    // integer truncation collisions). This proves the channel exists.
-    assert!(
-        recovered_iv.is_some() || {
-            // Tolerance: if our test HP doesn't match any IV, compute what it should be.
-            // The real proof is that the loop above is O(32) — trivially fast for a cheater.
-            // Prove the loop completes and finds candidates for valid data:
-            let real_ivs = IVs::new(15, 0, 0, 0, 0, 0).unwrap();
-            let real_derived = derive_stats(&base, &real_ivs, &evs, &nature, level);
-            let real_hp = real_derived.get(StatKind::Hp);
-            let mut found = false;
-            for candidate_iv in 0u8..=31 {
-                let ivs = IVs::new(candidate_iv, 0, 0, 0, 0, 0).unwrap();
-                let derived = derive_stats(&base, &ivs, &evs, &nature, level);
-                if derived.get(StatKind::Hp) == real_hp {
-                    found = true;
-                    break;
-                }
-            }
-            found
-        },
-        "IV inversion via brute-force over [0,31] must find a candidate for valid public data; \
-         wild EVs=0 + public species/level makes the search space exactly 32 values — trivially \
-         fast for any client; ADR-0045 acknowledges this channel but defers mitigation"
+    assert_eq!(
+        candidates,
+        vec![15u8],
+        "IV inversion brute-force over [0,31] must recover exactly {{15}} for \
+         public_stat_hp={public_stat_hp} (base=45, level=100, ev=0). \
+         HP = 200+iv is injective at level 100, so the candidate set is always a \
+         singleton. A set larger than {{15}} means derive_stats collapsed IVs \
+         (non-injective formula); an empty set means derive_stats is broken. \
+         ADR-0045 acknowledges this inversion channel but defers mitigation."
     );
-    // The exploit: after observing the public BattleState, a client can recover the
-    // wild's approximate IVs before deciding whether to recruit it.
-    // This is acknowledged in ADR-0045 as 'theoretically invertible' but deferred.
 }
 
 // ---------------------------------------------------------------------------
