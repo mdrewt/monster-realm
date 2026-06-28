@@ -9,11 +9,11 @@
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
 
+use crate::marshal::encounter_rows_from_table;
 use crate::schema::{
     config, encounter, item_row, skill_row, species_row, type_relation_row, zone_def, ItemRow,
     SkillRow, SpeciesRow, TypeRelationRow, ZoneDefRow,
 };
-use crate::marshal::encounter_rows_from_table;
 use crate::CONTENT_VERSION;
 use game_core::{
     load_encounters, load_items, load_skills, load_species, load_type_chart, validate_content,

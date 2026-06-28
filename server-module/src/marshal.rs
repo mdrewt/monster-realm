@@ -13,8 +13,9 @@ use crate::schema::{
     TypeRelationRow,
 };
 use game_core::{
-    derive_stats, roll_individuality, BattleMonster, CharacterState, EncounterEntry, EncounterTable,
-    EVs, Level, Millis, MonsterInstance, SkillDef, StatBlock, StatKind, TilePos, TypeChart,
+    derive_stats, roll_individuality, BattleMonster, CharacterState, EVs, EncounterEntry,
+    EncounterTable, Level, Millis, MonsterInstance, SkillDef, StatBlock, StatKind, TilePos,
+    TypeChart,
 };
 use spacetimedb::{Identity, ReducerContext};
 
@@ -47,7 +48,11 @@ pub(crate) fn apply_state(row: &mut Character, next: &CharacterState) {
 
 // `convert` seam: flatten `game-core::MonsterInstance` -> `Monster` table row.
 // Intentionally repetitive — DRY does not cross the marshaling boundary.
-pub(crate) fn monster_from_instance(owner: Identity, inst: &MonsterInstance, party_slot: u8) -> Monster {
+pub(crate) fn monster_from_instance(
+    owner: Identity,
+    inst: &MonsterInstance,
+    party_slot: u8,
+) -> Monster {
     Monster {
         monster_id: 0, // auto_inc
         owner_identity: owner,
