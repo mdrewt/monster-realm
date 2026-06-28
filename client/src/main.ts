@@ -33,7 +33,7 @@ import { shouldToggleBox } from './inputGuards';
 import { connect } from './net/connection';
 import { AuthoritativeStore } from './net/store';
 import { HeldDirections, reissueDir } from './prediction/heldKeys';
-import { type ApplyMove, Predictor } from './prediction/predictor';
+import { type ApplyMove, boundSeq, Predictor } from './prediction/predictor';
 import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { WorldRenderer } from './render/world';
@@ -99,7 +99,33 @@ store.onBatchApplied(() => {
     moveStartedAtMs: own.row.moveStartedAtMs,
   };
   const baseline = characterToPredictedBaseline(sdkFields, now, STEP_MS);
-  predictor.reconcile(baseline, own.row.moveQueue, Number(player.lastInputSeq), now);
+  // Fail-loud u64→number bound (M8.8e §B) replacing the unbounded downcast. Contain
+  // the throw HERE: this is the first store batch-listener and store.flushBatch has no
+  // per-listener isolation, so an uncaught RangeError would starve the sibling
+  // refreshBox/refreshBattle listeners (a UI stall). A last_input_seq past the
+  // safe-integer bound is a corrupt/hostile server field (unreachable for a well-behaved
+  // u64 for ~50k years) — log loudly and skip THIS batch's reconcile, never wedge the UI.
+  let ackedSeq: number;
+  try {
+    ackedSeq = boundSeq(player.lastInputSeq);
+  } catch (err) {
+    console.error(`[reconcile] ${(err as Error).message}; skipping batch`);
+    return;
+  }
+  // Reconnect re-seed (M8.8e §A): keep #nextSeq ≥ the server ack at all times — a
+  // no-op in steady state, the fix on reconnect / fresh-login-with-prior-session so
+  // post-reconnect intents clear the ack and survive reconcile's seq filter.
+  predictor.seedSeq(ackedSeq);
+  const diverged = predictor.reconcile(baseline, own.row.moveQueue, ackedSeq, now);
+  // Honor reconcile's documented divergence return (ADR-0013), previously discarded: on
+  // a genuine server pullback, re-commit the held direction at the divergence point so a
+  // held key keeps walking from the corrected baseline. Routed through the SAME held-
+  // state-guarded dedup as the rAF frame loop (reissueDir) — so it never double-issues
+  // nor re-issues a key released during the divergence; the move drains on the next rAF.
+  if (diverged && !(battleView?.visible || boxView?.visible)) {
+    const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
+    if (heldDir !== undefined) sendIntent({ Step: heldDir });
+  }
 });
 
 // --- input: predict locally + send the intent to the M2 reducer (seq-tracked) ----

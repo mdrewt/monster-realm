@@ -35,7 +35,7 @@ effectful shells.
   divergence return; seeded by the first own-row. **Bounded prediction enforced at both
   mutation points** — `enqueue` rejects moves past `MOVE_QUEUE_CAP`, and `reconcile` clamps
   the rebuilt queue to the cap (ADR-0052); `enqueue` also rejects on `#pending` at cap (optional 4th ctor `pendingCap`, default 16, ADR-0013.5) — so the predictor never runs ahead of authority
-  and a burst can't leave mispredicted tiles. **M8.6c completed held-key continuation (ADR-0013):** OS key-repeat no longer drives movement; `keydown` queues immediate `step(dir)` + registers in MRU held-key stack (`HeldDirections`); rAF loop re-issues held dir deduped against `lastQueuedDir`, suppressed while overlay open; `keyup`/blur/reconnect release/clear. Snap-on-large-gap included (ADR-0013). The
+  and a burst can't leave mispredicted tiles. **M8.6c completed held-key continuation (ADR-0013):** OS key-repeat no longer drives movement; `keydown` queues immediate `step(dir)` + registers in MRU held-key stack (`HeldDirections`); rAF loop re-issues held dir deduped against `lastQueuedDir`, suppressed while overlay open; `keyup`/blur/reconnect release/clear. Snap-on-large-gap included (ADR-0013). **M8.8e hardened reconnect/divergence (ADR-0012/0013):** the batch handler re-seeds `#nextSeq` from the authoritative `last_input_seq` (`seedSeq`, monotonic) so post-reconnect intents clear the server ack and survive `reconcile` (no frozen player); it now *consumes* `reconcile`'s divergence return to re-commit the held dir at the pullback point (deduped via `reissueDir`); and the `u64→number` seq downcast is the fail-loud bounded `boundSeq`, its throw contained at the batch-listener call site. The
   movement rule itself never lives here — `apply_move` is the injected client-wasm export
   (proven by the parity + no-logic evals).
   **M4 contract:** the own character animates from a **self-owned slide clock** and
@@ -517,8 +517,12 @@ they stay conscious, not forgotten:
   remote-from-buffer end-to-end; proof-of-teeth: `render/renderResolver.test.ts` (12 tests),
   `sawFractionalOwnMotion` latch in `golden.spec.ts`.
 - **`seq` boundary helper** (`u64` reducer / `bigint` store ↔ the predictor's session
-  `number`) — a typed conversion lands with the **M5** connection adapter; both sides
-  are internally consistent today.
+  `number`) — **RESOLVED (M8.8e).** `boundSeq(bigint): number` is the fail-loud bounded
+  downcast (throws above `Number.MAX_SAFE_INTEGER` / for negative, rather than silently
+  aliasing a lower seq); paired with `seedSeq` for the reconnect re-seed. *Residual (pre-
+  existing, out of M8.8e scope, flag for follow-up):* `store.flushBatch` has no per-listener
+  isolation, so the `boundSeq` throw is contained at its call site instead — a general
+  per-listener try/catch in `store.ts` would harden every batch listener.
 - **Spec path `frontend/` == delivered `client/`** — **RESOLVED.** The delivered
   path is `client/`; the stale spec prose was cosmetic. Deferral closed.
 - **M2 spec items not yet gated** (a `client_connected` reducer, a schema-snapshot /

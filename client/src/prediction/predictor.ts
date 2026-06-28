@@ -64,6 +64,25 @@ function applyOp(queue: readonly WasmMoveInput[], op: QueueOp): WasmMoveInput[] 
 /** A local time gap (since the last drain) beyond this many steps trips a snap. */
 const SNAP_GAP_STEPS = 4;
 
+/**
+ * Bound the server's authoritative `last_input_seq` (a u64 `bigint`) before it enters
+ * the predictor's number-typed seq space (`reconcile`'s `ackedSeq` and `seedSeq`).
+ *
+ * The seq increments once per accepted intent; at the ADR-0052 step cadence reaching
+ * 2^53 would take tens of thousands of years, so the narrowing is safe in practice —
+ * but we ASSERT it rather than trust it. A u64 above `MAX_SAFE_INTEGER` cannot be
+ * represented exactly as a JS number and would silently alias a LOWER value, which
+ * could resurrect already-acked pending or false-drop in-flight ops; a negative input
+ * means the caller is corrupt/hostile. Fail loud in either case (mirroring convert.ts's
+ * bounded `moveStartedAtMs` downcast precedent) instead of silently wrapping.
+ */
+export function boundSeq(seq: bigint): number {
+  if (seq < 0n || seq > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new RangeError(`last_input_seq ${seq} outside the safe-integer seq bound`);
+  }
+  return Number(seq);
+}
+
 export class Predictor {
   readonly #applyMove: ApplyMove;
   readonly #stepMs: number;
@@ -128,6 +147,23 @@ export class Predictor {
     const seq = ++this.#nextSeq; // strictly increasing
     this.#pending.push({ seq, op });
     return { seq, op };
+  }
+
+  /**
+   * Re-seed the sequence counter to at least `seq` so the next `#record` yields a
+   * seq strictly greater than `seq`. MONOTONIC — only ever raises `#nextSeq`, never
+   * lowers it.
+   *
+   * WHY (ADR-0012 reconnect): a reconnect builds a FRESH `Predictor` whose `#nextSeq`
+   * restarts at 0, while the server has persisted a far-higher `player.last_input_seq`.
+   * Without re-seeding, every post-reconnect intent records a seq ≤ the server's ack,
+   * so `reconcile`'s `seq > ackedSeq` filter drops it on the next snapshot — the player
+   * appears frozen. Seeding `#nextSeq` to the server ack fixes that: the next intent's
+   * seq clears the ack and survives. It is MONOTONIC (`>` guard) so a stale/duplicate
+   * snapshot can never rewind the counter and alias/replay an already-sent seq.
+   */
+  seedSeq(seq: number): void {
+    if (seq > this.#nextSeq) this.#nextSeq = seq;
   }
 
   // --- reconcile: the ADR-0012 four-step against ONE coherent snapshot -----------
