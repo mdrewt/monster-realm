@@ -69,6 +69,21 @@ pub fn apply_xp_gain(current_xp: Xp, gained: Xp) -> (Xp, Level, bool) {
     (new_xp, new_level, did_level_up)
 }
 
+/// Current HP after a level-up's max-HP growth.
+///
+/// On level-up a monster's maximum HP can increase; the engine heals it by
+/// exactly that growth (`new_max_hp - old_max_hp`), so a full-HP monster stays
+/// full and a damaged one preserves its HP deficit across the level boundary.
+/// This is the SSOT for that rule (ADR-0003); the server shell calls it rather
+/// than re-implementing the formula in the reducer.
+///
+/// Saturating in both directions: a (defensively impossible) max-HP *decrease*
+/// yields no heal, and the heal cannot overflow `u16`.
+#[must_use]
+pub fn level_up_healed_hp(current_hp: u16, old_max_hp: u16, new_max_hp: u16) -> u16 {
+    current_hp.saturating_add(new_max_hp.saturating_sub(old_max_hp))
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================

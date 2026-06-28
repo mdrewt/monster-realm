@@ -132,6 +132,33 @@ fn resolve_one_attack(
     }
 }
 
+/// Advance the battle's turn counter by one, honoring the turn-limit terminal.
+///
+/// This is the SINGLE owner (ADR-0003 SSOT) of the `turn_number` advance and its
+/// `u16::MAX -> Fled` terminal. Both `resolve_turn` and the server's
+/// `attempt_recruit` reducer route their turn increment through here, so the
+/// terminal can never drift between the two call sites.
+///
+/// Returns `true` when the turn advanced — the caller should resolve the turn.
+/// Returns `false` when the battle hit the turn-limit terminal: `state.outcome`
+/// is set to `BattleOutcome::Fled` (a no-winner terminal — no XP, no win credit),
+/// `turn_number` is left unchanged (no wrap, no panic), and the caller must NOT
+/// resolve a turn.
+///
+/// A `u16` turn counter cannot reach `u16::MAX` in valid play; the terminal is a
+/// fail-safe so an unbounded battle (e.g. a skill-less wild that never faints,
+/// driven via the recruit path) terminates deterministically instead of
+/// overflowing.
+#[must_use]
+pub fn advance_turn(state: &mut BattleState) -> bool {
+    if state.turn_number == u16::MAX {
+        state.outcome = BattleOutcome::Fled;
+        return false;
+    }
+    state.turn_number += 1;
+    true
+}
+
 /// Resolve a full turn: both sides act according to their choices.
 ///
 /// Mutates `state` in place. Returns the ordered list of events that occurred.
@@ -155,19 +182,14 @@ pub fn resolve_turn(
         return events;
     }
 
-    // Turn-limit terminal (ADR-0049): a u16 turn counter can never reach this in
-    // valid play, but advancing past u16::MAX would panic(debug)/wrap(release).
-    // Terminate at a defined no-winner terminal (reuse Fled: no XP, no win credit)
-    // BEFORE the increment and any swap/attack resolution, so no partial turn is
-    // applied (setting `outcome` here is the only mutation; the team state is
-    // untouched). NOTE: this guards `resolve_turn` only; the `attempt_recruit`
-    // reducer advances `turn_number` out-of-band (see ADR-0049 residual).
-    if state.turn_number == u16::MAX {
-        state.outcome = BattleOutcome::Fled;
+    // Advance the turn through the single SSOT owner of the turn-limit terminal
+    // (ADR-0003). `advance_turn` increments `turn_number` and terminates at
+    // `u16::MAX -> Fled` BEFORE any swap/attack resolution, so no partial turn is
+    // applied when the terminal fires. The recruit path (`attempt_recruit`) routes
+    // its increment through the same helper, so the terminal cannot drift here.
+    if !advance_turn(state) {
         return events;
     }
-
-    state.turn_number += 1;
 
     // Swaps always happen before attacks. An illegal swap (OOB/fainted) is a
     // no-op: no `active` mutation, no Switch event; the rest of the turn proceeds.

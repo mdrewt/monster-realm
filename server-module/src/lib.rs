@@ -16,6 +16,10 @@ use game_core::{
     MonsterInstance, MoveInput, NatureKind, SkillDef, StatBlock, StatKind, TileMap, TilePos,
     TurnChoice, TurnVariance, TypeChart, MOVE_QUEUE_CAP, RECRUIT_BASE_RATE, STEP_MS,
 };
+// SSOT helpers reached via their module path (not re-exported at the crate root
+// in this slice's touch-set): the single turn-advance terminal owner and the
+// level-up HP-heal rule (ADR-0003).
+use game_core::combat::{resolve::advance_turn, xp::level_up_healed_hp};
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
 
@@ -1884,10 +1888,9 @@ fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<()
                         m.stat_speed = derived.speed;
                         m.stat_sp_attack = derived.sp_attack;
                         m.stat_sp_defense = derived.sp_defense;
-                        // Heal HP delta from stat growth.
-                        m.current_hp = m
-                            .current_hp
-                            .saturating_add(derived.hp.saturating_sub(bm.max_hp));
+                        // Heal the HP gained from the max-HP growth on level-up
+                        // (SSOT: game_core owns the heal rule, ADR-0003).
+                        m.current_hp = level_up_healed_hp(m.current_hp, bm.max_hp, derived.hp);
                     }
                 }
                 let pub_row = pub_from_monster(&m);
@@ -2020,7 +2023,7 @@ pub fn attempt_recruit(
 
     // Read every value we need off the wild into OWNED locals BEFORE any
     // mutation of `battle.state`, so the fail branch never re-borrows across the
-    // `turn_number += 1` write (no borrow-across-mutation trap).
+    // `advance_turn` turn-counter write (no borrow-across-mutation trap).
     let wild = battle.state.side_b.active_monster();
     let wild_max_hp = wild.max_hp;
     let wild_current_hp = wild.current_hp;
@@ -2075,9 +2078,14 @@ pub fn attempt_recruit(
         return Ok(());
     }
 
-    // Failure: the wild gets a turn. Advance, then let it strike back.
-    battle.state.turn_number += 1;
-    if wild_has_skills {
+    // Failure: the wild gets a turn. Advance the turn through the SSOT terminal
+    // owner (game_core::advance_turn owns the `u16::MAX -> Fled` terminal — NEVER
+    // a raw in-shell `turn_number += 1`), then let the wild strike back ONLY if
+    // the battle is still ongoing after the advance. If the turn-limit terminal
+    // fired, `advance_turn` set `outcome = Fled` and returned false: the
+    // strike-back is skipped and the terminal write-back below runs (HP + GC, no
+    // XP — Fled is a no-winner terminal).
+    if advance_turn(&mut battle.state) && wild_has_skills {
         let skill_rows: Vec<SkillRow> = ctx.db.skill_row().iter().collect();
         let skill_defs = skill_defs_from_rows(&skill_rows);
         let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter());
@@ -2092,9 +2100,10 @@ pub fn attempt_recruit(
     }
 
     if battle.state.outcome != BattleOutcome::Ongoing {
-        // Terminal (e.g. the wild knocked out the player's last monster).
-        // write_back_battle_results owns terminal GC (it deletes battle_wild
-        // unconditionally), so no second explicit delete here.
+        // Terminal: the wild knocked out the player's last monster, OR the
+        // turn-limit terminal (Fled) fired in advance_turn. write_back_battle_results
+        // owns terminal GC (it deletes battle_wild unconditionally) and grants XP
+        // only on SideAWins, so the Fled terminal writes back HP without XP.
         write_back_battle_results(ctx, &battle)?;
     }
     ctx.db.battle().battle_id().update(battle);
@@ -3457,6 +3466,7 @@ mod tests {
     ///     text in this very test → false green;
     ///   - the negative needle to match the `inline_frag` variable binding in
     ///     this test → assertion never goes green even after a correct impl.
+    ///
     /// Scoping to the production function body eliminates both failure modes.
     ///
     /// RED today: the production body contains the inline formula and no
