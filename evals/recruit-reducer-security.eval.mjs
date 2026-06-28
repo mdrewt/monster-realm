@@ -23,7 +23,7 @@
 //   All pattern matching uses String.indexOf() or literal /regex/ patterns.
 //   NO `new RegExp(...)` with a non-literal argument is used anywhere here.
 //   This convention has been bitten 3 times in the codebase; see the eval rule.
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 
 // ---------------------------------------------------------------------------
 // Re-use the battle-reducer-security helpers verbatim (no dynamic RegExp).
@@ -1165,7 +1165,6 @@ export default async function () {
       'attempt_recruit guard ladder (ownership, outcome, wild-battle, consume-before-roll, no-XP, classify-by-data, GC), consume_one checked_sub, grant_item saturating_add, write_back_battle_results GC, grant_bait self-scoped — all 9 teeth verified',
   };
 }
-
 
 // M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
 // domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a

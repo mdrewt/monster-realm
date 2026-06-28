@@ -9,7 +9,7 @@
 //
 // Implementation note on Semgrep detect-non-literal-regexp:
 //   All pattern matching uses literal /regex/ patterns — NO new RegExp(...).
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 const BASELINE_PATH = path.resolve('evals/baselines/table-schemas.json');
@@ -225,7 +225,6 @@ pub struct Inventory {
     detail: `${tableCount} tables parsed; all match baseline exactly (columns, types, PKs); EncounterEntryRow excluded; column-drop tooth verified`,
   };
 }
-
 
 // M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
 // domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a

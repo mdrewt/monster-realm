@@ -12,7 +12,7 @@
 // Implementation note: ALL pattern matching uses String.indexOf() or literal
 // /regex/ — NO new RegExp(...) with non-literal arguments (Semgrep ReDoS gate).
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
 const SERVER_SRC = path.resolve('server-module/src');
@@ -1001,7 +1001,6 @@ pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), Strin
       'All 20 gate-teeth pass: schema-snapshot (all-tables, EncounterEntryRow excluded, drift-free, drop/PK/type/additive/extra-table all bite), zoned-schema (ghost still flagged, encounter-PK passes, bare-zone_id flagged, scheduler attr-carve-out correct, non-scheduler ScheduleAt-body NOT exempted, real source clean), recruit-security (real code passes strengthened checks, no-rejection bad fixtures bite, two-alias GOOD passes, discarded-lookup BAD flagged, good alias+direct forms pass), baseline contains all 6 spec-required tables',
   };
 }
-
 
 // M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
 // domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a

@@ -8,7 +8,7 @@
 //
 // Implementation note on Semgrep detect-non-literal-regexp:
 //   All pattern matching uses literal /regex/ — NO new RegExp(...).
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 
 /**
  * Strip Rust block comments and line comments from source so a comment between
@@ -191,7 +191,6 @@ pub struct MovementTickSchedule {
       : `${tables.length} tables scanned; all zone_id/map_id fields indexed or PK; scheduler tables exempt; teeth verified`,
   };
 }
-
 
 // M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
 // domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a

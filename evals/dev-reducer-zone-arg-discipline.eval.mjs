@@ -18,7 +18,7 @@
 //
 // Implementation: pure source-scan with indexOf — NO new RegExp.
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 
 /**
  * Strip `//` line comments from Rust source.
@@ -279,7 +279,6 @@ export default async function () {
       'Teeth verified: BAD_USES_ARGUMENT flagged, GOOD_USES_SERVER_FIELD passed.',
   };
 }
-
 
 // M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
 // domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a

@@ -38,7 +38,7 @@
 // NO `new RegExp(...)` — all pattern matching uses String.indexOf / .includes
 // (Semgrep detect-non-literal-regexp rule; has bitten master 3×).
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 
 // ============================================================================
 // Helpers
@@ -421,7 +421,6 @@ export default async function () {
       'BAD_SIMILARLY_NAMED_INSERTER flagged (grant_item_debug exact-match guard).',
   };
 }
-
 
 // M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
 // domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a

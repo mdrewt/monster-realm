@@ -38,7 +38,7 @@
 //     Fixture failures stop the eval immediately (a broken predicate cannot gate).
 //   - Exported predicates are pure and independently testable.
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 
 // ============================================================================
 // Shared helpers (modelled on recruit-reducer-security.eval.mjs)
@@ -900,7 +900,6 @@ export default async function () {
       'Teeth verified (13 fixture assertions, all biting correctly).',
   };
 }
-
 
 // M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
 // domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a

@@ -9,7 +9,7 @@
 //
 // This eval starts RED until the implementer adds the opponent-provenance gate
 // to start_battle.
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 
 const SERVER_SRC = 'server-module/src';
 
@@ -654,7 +654,6 @@ export default async function () {
       `write_back helpers are side_a-only (teeth verified via 10 fixtures)`,
   };
 }
-
 
 // M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
 // domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a

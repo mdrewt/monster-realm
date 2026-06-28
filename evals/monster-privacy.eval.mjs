@@ -1,7 +1,7 @@
 // Monster privacy eval (ADR-0015 fallback): hidden genes (IVs, EVs, nature)
 // live in a PRIVATE table; the public projection contains only safe fields.
 // Proof-of-teeth: a bad fixture (public table with IVs) must be flagged.
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 
 const HIDDEN_FIELDS = [
   'iv_hp',
@@ -97,7 +97,6 @@ export default async function () {
     detail: `${tables.length} tables scanned; monster private, projection clean, no client accessor (teeth verified)`,
   };
 }
-
 
 // M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
 // domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a
