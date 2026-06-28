@@ -1,14 +1,31 @@
-# Determinism gate (ADR-0003): bans wall-clock reads + unseeded RNG
+# Determinism gate (ADR-0003): bans wall-clock reads + unseeded RNG + OS entropy.
 # WORKSPACE-WIDE. `just lint` runs `clippy --workspace --all-targets --all-features
 # -- -D warnings`, so an impurity is a build failure, not a review note. Time is
 # injected (server: ctx.timestamp -> Millis; client: passed in; tests/sim-harness:
 # explicit seed + clock). A known-bad fixture (the proof-of-teeth slice) proves
 # this gate rejects a clock read.
+# Now also covers OS-entropy sources (getrandom, rand::rngs::OsRng/ThreadRng,
+# rand 0.9's rand::rng() alias) and chrono wall-clock reads (Utc/Local::now).
+# The RNG/clock bans use `allow-invalid = true` because the banned path may not be
+# reachable from every crate (clippy would otherwise warn "does not refer to a
+# reachable function/type" on a fresh lint); the determinism-teeth fixture proves
+# each path is valid and actually rejected, so a typo'd/ineffective ban fails that
+# eval instead of warning. std::time::* stays loud (std is always reachable).
 disallowed-methods = [
   { path = "std::time::SystemTime::now", reason = "determinism: inject time (ctx.timestamp / Millis); never read a wall clock" },
   { path = "std::time::Instant::now", reason = "determinism: inject time; never read a wall clock" },
   { path = "std::time::SystemTime::elapsed", reason = "determinism: inject time; never read a wall clock" },
   { path = "std::time::Instant::elapsed", reason = "determinism: inject time; never read a wall clock" },
-  { path = "rand::thread_rng", reason = "determinism: use a seeded RNG (ctx.rng() / injected seed)" },
-  { path = "rand::random", reason = "determinism: use a seeded RNG (ctx.rng() / injected seed)" },
+  { path = "rand::thread_rng", reason = "determinism: use a seeded RNG (ctx.rng() / injected seed)", allow-invalid = true },
+  { path = "rand::random", reason = "determinism: use a seeded RNG (ctx.rng() / injected seed)", allow-invalid = true },
+  { path = "getrandom::getrandom", reason = "determinism: OS entropy; use a seeded RNG (ctx.rng() / injected seed)", allow-invalid = true },
+  { path = "getrandom::fill", reason = "determinism: OS entropy; use a seeded RNG (ctx.rng() / injected seed)", allow-invalid = true },
+  { path = "rand::rng", reason = "determinism: rand 0.9 unseeded-RNG alias; use a seeded RNG (ctx.rng() / injected seed)", allow-invalid = true },
+  { path = "chrono::Utc::now", reason = "determinism: inject time (ctx.timestamp / Millis); never read a wall clock", allow-invalid = true },
+  { path = "chrono::Local::now", reason = "determinism: inject time (ctx.timestamp / Millis); never read a wall clock", allow-invalid = true },
+]
+
+disallowed-types = [
+  { path = "rand::rngs::OsRng", reason = "determinism: OS entropy; use a seeded RNG (ctx.rng() / injected seed)", allow-invalid = true },
+  { path = "rand::rngs::ThreadRng", reason = "determinism: unseeded thread RNG; use a seeded RNG (ctx.rng() / injected seed)", allow-invalid = true },
 ]
