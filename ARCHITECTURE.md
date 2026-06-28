@@ -200,7 +200,12 @@ live here exactly once (ADR-0003 SSOT). Randomness injected via `TurnVariance`.
   speed-ordered attacks; KO by faster prevents slower from acting;
   auto-switch on faint or battle end), `resolve_enemy_turn` (AI picks best
   skill, one-sided attack), `resolve_player_swap` (swap then enemy attacks
-  the new active). All return ordered `Vec<BattleEvent>`. Swap legality is a
+  the new active). All return ordered `Vec<BattleEvent>`. `advance_turn` is the
+  single SSOT owner of the `turn_number` advance + `u16::MAX → Fled` terminal —
+  every turn-advancing path routes through it (the swap path deliberately does
+  not advance the counter); `resolve_recruit_failure` (advance + skilled-wild
+  strike-back) owns the failed-recruit battle transition so the `attempt_recruit`
+  reducer cannot drift from the terminal (M8.8b). Swap legality is a
   pure-core invariant: `BattleSide::set_active` is the sole checked mutator
   (reject-not-clamp; bounds-checked before fainted-index check); illegal swaps
   are rejected with no mutation, no event, no panic (ADR-0053).
@@ -208,7 +213,9 @@ live here exactly once (ADR-0003 SSOT). Randomness injected via `TurnVariance`.
   picks highest. Ignores accuracy (accepted — simple heuristic, M14 can layer).
 - **`xp`** — `battle_xp_reward`: `bst * loser_level / (5 * winner_level) + 1` (u32 intermediates — small products, well within range, no overflow risk).
   `apply_xp_gain`: saturating add, clamped at `xp_for_level(100)`, returns
-  `(new_xp, new_level, did_level_up)`.
+  `(new_xp, new_level, did_level_up)`. `level_up_healed_hp(current, old_max,
+  new_max)` is the SSOT level-up heal (heal by the max-HP growth, saturating both
+  ways) — the reducer calls it rather than re-inlining the formula (M8.8b).
 
 Content validation (`validate_content`) extended: skill `power > 0` enforced,
 type chart effectiveness values restricted to {0, 5, 10, 20}.

@@ -69,6 +69,21 @@ pub fn apply_xp_gain(current_xp: Xp, gained: Xp) -> (Xp, Level, bool) {
     (new_xp, new_level, did_level_up)
 }
 
+/// Current HP after a level-up's max-HP growth.
+///
+/// On level-up a monster's maximum HP can increase; the engine heals it by
+/// exactly that growth (`new_max_hp - old_max_hp`), so a full-HP monster stays
+/// full and a damaged one preserves its HP deficit across the level boundary.
+/// This is the SSOT for that rule (ADR-0003); the server shell calls it rather
+/// than re-implementing the formula in the reducer.
+///
+/// Saturating in both directions: a (defensively impossible) max-HP *decrease*
+/// yields no heal, and the heal cannot overflow `u16`.
+#[must_use]
+pub fn level_up_healed_hp(current_hp: u16, old_max_hp: u16, new_max_hp: u16) -> u16 {
+    current_hp.saturating_add(new_max_hp.saturating_sub(old_max_hp))
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -249,6 +264,100 @@ mod tests {
             u16::MAX,
             "BST of all-u16::MAX stats must saturate to u16::MAX (65535), \
              not wrap to 65530 — TEETH: wrapping sum gives 65530 ≠ u16::MAX"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // M8.8b-B: level_up_healed_hp behavioral tests
+    // -----------------------------------------------------------------------
+
+    /// Damaged monster heals by the max-HP growth delta on level-up.
+    ///
+    /// current_hp=40, old_max_hp=100, new_max_hp=110:
+    ///   delta = 110 - 100 = 10 (saturating_sub)
+    ///   result = 40 + 10 = 50 (saturating_add)
+    ///
+    /// Mirrors the r14_hp_delta_on_level_up_is_correct_for_damaged_monster formula.
+    /// Pin: must equal exactly 50.
+    ///
+    /// Kills: a mutant using wrapping_add (same result here but wrong contract);
+    /// a mutant that doesn't add the delta at all (returns 40); a mutant that
+    /// returns new_max_hp instead of healed current (returns 110).
+    ///
+    /// RED state: compile-RED because `level_up_healed_hp` does not exist yet.
+    #[test]
+    fn level_up_healed_hp_damaged_monster_heals_by_delta() {
+        let result = level_up_healed_hp(40, 100, 110);
+        assert_eq!(
+            result, 50,
+            "TEETH: level_up_healed_hp(40, 100, 110) must return 50 \
+             (current 40 + delta 10 = 50); a mutant returning 40 (no heal) or \
+             110 (new max) or 60 (wrong delta) fails here"
+        );
+    }
+
+    /// No max-HP growth means no heal: current_hp is returned unchanged.
+    ///
+    /// current_hp=40, old_max_hp=100, new_max_hp=100:
+    ///   delta = 100 - 100 = 0
+    ///   result = 40 + 0 = 40
+    ///
+    /// Kills: a mutant that always adds 1 or uses the max_hp directly.
+    ///
+    /// RED state: compile-RED because `level_up_healed_hp` does not exist yet.
+    #[test]
+    fn level_up_healed_hp_no_growth_returns_unchanged() {
+        let result = level_up_healed_hp(40, 100, 100);
+        assert_eq!(
+            result, 40,
+            "TEETH: level_up_healed_hp(40, 100, 100) must return 40 \
+             (no max-HP growth → no heal); a mutant that heals anyway fails here"
+        );
+    }
+
+    /// Defensive max-HP DECREASE yields no heal and no underflow.
+    ///
+    /// current_hp=40, old_max_hp=100, new_max_hp=90:
+    ///   saturating_sub: 90.saturating_sub(100) = 0 (no negative delta)
+    ///   result = 40 + 0 = 40 (hp unchanged; never heals down)
+    ///
+    /// Kills: a mutant using wrapping_sub (100→90 wraps to 65526, healing massively);
+    /// a mutant using signed subtraction (negative delta would subtract from HP).
+    ///
+    /// RED state: compile-RED because `level_up_healed_hp` does not exist yet.
+    #[test]
+    fn level_up_healed_hp_decrease_yields_no_heal_and_no_underflow() {
+        let result = level_up_healed_hp(40, 100, 90);
+        assert_eq!(
+            result, 40,
+            "TEETH: level_up_healed_hp(40, 100, 90) must return 40 \
+             (max-HP decrease → saturating_sub gives 0 delta → no change); \
+             a wrapping_sub mutant would return 40 + (90u16.wrapping_sub(100)) = \
+             40 + 65526 = 65535 (saturating) or wrap entirely — fails here"
+        );
+    }
+
+    /// Saturating add near the u16 ceiling: the result must not overflow.
+    ///
+    /// current_hp = u16::MAX - 5 = 65530
+    /// old_max_hp = 0
+    /// new_max_hp = u16::MAX = 65535
+    ///   delta = 65535.saturating_sub(0) = 65535
+    ///   result = 65530.saturating_add(65535) = u16::MAX (saturates, no wrap)
+    ///
+    /// Kills: a mutant using wrapping_add (65530 + 65535 = 131065, wraps to
+    /// 131065 % 65536 = 65529 ≠ u16::MAX).
+    ///
+    /// RED state: compile-RED because `level_up_healed_hp` does not exist yet.
+    #[test]
+    fn level_up_healed_hp_saturates_at_u16_max() {
+        let result = level_up_healed_hp(u16::MAX - 5, 0, u16::MAX);
+        assert_eq!(
+            result,
+            u16::MAX,
+            "TEETH: level_up_healed_hp(u16::MAX-5, 0, u16::MAX) must return u16::MAX \
+             (saturating_add prevents wrap); a wrapping_add mutant returns \
+             65529 ≠ u16::MAX — fails here"
         );
     }
 

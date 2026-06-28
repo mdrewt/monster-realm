@@ -16,6 +16,10 @@ use game_core::{
     MonsterInstance, MoveInput, NatureKind, SkillDef, StatBlock, StatKind, TileMap, TilePos,
     TurnChoice, TurnVariance, TypeChart, MOVE_QUEUE_CAP, RECRUIT_BASE_RATE, STEP_MS,
 };
+// SSOT helpers reached via their module path (not re-exported at the crate root
+// in this slice's touch-set): the failed-recruit battle transition (which owns
+// the turn-advance terminal) and the level-up HP-heal rule (ADR-0003).
+use game_core::combat::{resolve::resolve_recruit_failure, xp::level_up_healed_hp};
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
 
@@ -1884,10 +1888,9 @@ fn write_back_battle_results(ctx: &ReducerContext, battle: &Battle) -> Result<()
                         m.stat_speed = derived.speed;
                         m.stat_sp_attack = derived.sp_attack;
                         m.stat_sp_defense = derived.sp_defense;
-                        // Heal HP delta from stat growth.
-                        m.current_hp = m
-                            .current_hp
-                            .saturating_add(derived.hp.saturating_sub(bm.max_hp));
+                        // Heal the HP gained from the max-HP growth on level-up
+                        // (SSOT: game_core owns the heal rule, ADR-0003).
+                        m.current_hp = level_up_healed_hp(m.current_hp, bm.max_hp, derived.hp);
                     }
                 }
                 let pub_row = pub_from_monster(&m);
@@ -2020,11 +2023,10 @@ pub fn attempt_recruit(
 
     // Read every value we need off the wild into OWNED locals BEFORE any
     // mutation of `battle.state`, so the fail branch never re-borrows across the
-    // `turn_number += 1` write (no borrow-across-mutation trap).
+    // `resolve_recruit_failure` turn-counter write (no borrow-across-mutation trap).
     let wild = battle.state.side_b.active_monster();
     let wild_max_hp = wild.max_hp;
     let wild_current_hp = wild.current_hp;
-    let wild_has_skills = !wild.known_skill_ids.is_empty();
 
     let chance = recruit_chance(wild_max_hp, wild_current_hp, RECRUIT_BASE_RATE, bait_bonus);
     let roll: u32 = ctx.random();
@@ -2075,26 +2077,24 @@ pub fn attempt_recruit(
         return Ok(());
     }
 
-    // Failure: the wild gets a turn. Advance, then let it strike back.
-    battle.state.turn_number += 1;
-    if wild_has_skills {
-        let skill_rows: Vec<SkillRow> = ctx.db.skill_row().iter().collect();
-        let skill_defs = skill_defs_from_rows(&skill_rows);
-        let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter());
-        let variance = TurnVariance::from_ctx_random(ctx.random());
-        let _events = game_core::resolve_enemy_turn(
-            &mut battle.state,
-            game_core::SideId::SideB,
-            &skill_defs,
-            &type_chart,
-            &variance,
-        );
-    }
+    // Failure: the recruit roll missed. game_core owns the failed-recruit battle
+    // transition (game_core::resolve_recruit_failure): it advances the turn through
+    // the SSOT `u16::MAX -> Fled` terminal — NEVER a raw in-shell `turn_number += 1`
+    // — and then lets the wild (side B) strike back ONLY if it has a skill and the
+    // turn-limit terminal did not fire. The reducer just supplies the skill/type/
+    // variance data and persists; the terminal write-back below handles a Fled (or
+    // KO) outcome (HP + GC, no XP — Fled is a no-winner terminal).
+    let skill_rows: Vec<SkillRow> = ctx.db.skill_row().iter().collect();
+    let skill_defs = skill_defs_from_rows(&skill_rows);
+    let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter());
+    let variance = TurnVariance::from_ctx_random(ctx.random());
+    let _events = resolve_recruit_failure(&mut battle.state, &skill_defs, &type_chart, &variance);
 
     if battle.state.outcome != BattleOutcome::Ongoing {
-        // Terminal (e.g. the wild knocked out the player's last monster).
-        // write_back_battle_results owns terminal GC (it deletes battle_wild
-        // unconditionally), so no second explicit delete here.
+        // Terminal: the wild knocked out the player's last monster, OR the
+        // turn-limit terminal (Fled) fired in advance_turn. write_back_battle_results
+        // owns terminal GC (it deletes battle_wild unconditionally) and grants XP
+        // only on SideAWins, so the Fled terminal writes back HP without XP.
         write_back_battle_results(ctx, &battle)?;
     }
     ctx.db.battle().battle_id().update(battle);
@@ -3286,6 +3286,227 @@ mod tests {
         assert!(
             check_monster_in_party(PARTY_SLOT_NONE).is_err(),
             "check_monster_in_party(PARTY_SLOT_NONE) must be Err (255 = boxed; must be rejected)"
+        );
+    }
+
+    // =========================================================================
+    // M8.8b-C: SSOT-wiring source-guard tests
+    //
+    // These parse the source text of this file (server-module/src/lib.rs) to
+    // verify that `attempt_recruit` routes turn-advance through `advance_turn`
+    // (ADR-0003 SSOT) rather than re-implementing it inline, and that the
+    // level-up HP heal is delegated to `game_core::level_up_healed_hp` rather
+    // than re-inlined here.
+    //
+    // These tests compile on day 1 (they only do string processing) and fail
+    // at RUNTIME — runtime-RED — because today's source has:
+    //   `battle.state.turn_number += 1;`  (raw inline increment)
+    //   `m.current_hp.saturating_add(derived.hp.saturating_sub(bm.max_hp))`
+    //     (inlined heal formula)
+    // and does NOT contain `advance_turn` or `level_up_healed_hp`.
+    //
+    // Mirror: evals/recruit-reducer-security.eval.mjs (extractReducerBody logic).
+    // =========================================================================
+
+    /// Include the full source of this file at compile time so the guard runs
+    /// without any filesystem I/O at test time.
+    const LIB_RS_SOURCE: &str = include_str!("lib.rs");
+
+    /// Strip Rust block comments (`/* ... */`) and line comments (`// ...`) from
+    /// `src`. Returns a new String with those regions replaced by spaces (same
+    /// byte-length, so line numbers are preserved for debugging).
+    ///
+    /// This is a simple linear scanner — no regex crates required.
+    /// Corner-cases handled:
+    ///   - Nested block comments are NOT supported (Rust does support them, but
+    ///     no production code in this file uses them, and the eval does not either).
+    ///   - String literals containing `/*` or `//` are NOT special-cased — this
+    ///     is intentional: we only need to remove comments so the body-search
+    ///     does not accidentally match a commented-out `turn_number +=`.
+    fn strip_rust_comments(src: &str) -> String {
+        let bytes = src.as_bytes();
+        let len = bytes.len();
+        let mut out = vec![b' '; len];
+        let mut i = 0;
+        while i < len {
+            if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                // Block comment: blank everything until the matching `*/`.
+                i += 2;
+                while i + 1 < len {
+                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+                // Line comment: blank everything to the end of the line.
+                while i < len && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            } else {
+                out[i] = bytes[i];
+                i += 1;
+            }
+        }
+        // SAFETY: we only copy ASCII bytes from the original UTF-8 source and
+        // replace with spaces (0x20), which are valid UTF-8. The original source
+        // is valid UTF-8 (Rust source files must be). So `out` is valid UTF-8.
+        String::from_utf8(out).expect("stripped source must be valid UTF-8")
+    }
+
+    /// Extract the body of a named `fn` from `src` (comment-stripped).
+    ///
+    /// Finds `pub fn <name>(` or `fn <name>(`, walks to the first `{`, then
+    /// counts braces to find the matching `}`. Returns the slice BETWEEN the
+    /// outer braces (exclusive), or `None` if the function is not found.
+    ///
+    /// Mirrors `extractReducerBody` in evals/recruit-reducer-security.eval.mjs.
+    fn extract_fn_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+        // Try `pub fn <name>(` first, then `fn <name>(`.
+        let pub_needle = format!("pub fn {}(", name);
+        let priv_needle = format!("fn {}(", name);
+        let fn_start = src
+            .find(pub_needle.as_str())
+            .or_else(|| src.find(priv_needle.as_str()))?;
+
+        // Walk forward from fn_start to find the opening `{`.
+        let after_fn = &src[fn_start..];
+        let brace_offset = after_fn.find('{')?;
+        let body_start = fn_start + brace_offset + 1; // character after '{'
+
+        // Count brace depth to find the matching '}'.
+        // `rel` tracks the byte offset within `src[body_start..]`.
+        let mut depth: usize = 1;
+        let mut rel: usize = 0;
+        let chars: Vec<char> = src[body_start..].chars().collect();
+        let mut char_pos = 0;
+        while char_pos < chars.len() && depth > 0 {
+            match chars[char_pos] {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            rel += chars[char_pos].len_utf8();
+            char_pos += 1;
+        }
+
+        if depth == 0 {
+            Some(&src[body_start..body_start + rel])
+        } else {
+            None // unbalanced braces (should not happen in valid Rust)
+        }
+    }
+
+    /// SSOT wiring: `attempt_recruit` must delegate the entire failed-recruit
+    /// battle transition (turn advance + optional strike-back) to the pure
+    /// game-core fn `resolve_recruit_failure` (ADR-0003). The u16::MAX→Fled
+    /// terminal, the skill-less-wild guard, and the correct operand order are
+    /// all owned by that fn and proven by its game-core behavioral tests.
+    /// Merely calling `advance_turn` directly in the reducer (with the return
+    /// value ignored, inverted, or anded with wild_has_skills) would pass a
+    /// purely textual `advance_turn` guard but be behaviorally wrong — hence
+    /// this guard checks for `resolve_recruit_failure` instead.
+    ///
+    /// RED today: the reducer body contains `battle.state.turn_number += 1;`
+    /// and does NOT mention `resolve_recruit_failure`.
+    ///
+    /// After the implementer's change: body calls `resolve_recruit_failure`
+    /// and no longer contains a raw `turn_number +=`.
+    #[test]
+    fn attempt_recruit_routes_turn_advance_through_game_core() {
+        let stripped = strip_rust_comments(LIB_RS_SOURCE);
+        let body = extract_fn_body(&stripped, "attempt_recruit")
+            .expect("attempt_recruit function must exist in lib.rs");
+
+        // Positive: the body must call the pure game-core transition fn.
+        // This string does NOT appear in this test's own text (the test module
+        // body is outside the extracted attempt_recruit slice), so the check
+        // has genuine teeth.
+        assert!(
+            body.contains("resolve_recruit_failure"),
+            "TEETH(ADR-0003 SSOT): attempt_recruit body must call \
+             `resolve_recruit_failure` (game_core) to handle the failed-recruit \
+             battle transition; calling advance_turn directly in the reducer \
+             cannot be verified for correct operand order or skill-less-wild \
+             handling. Body excerpt (first 400 chars): {:?}",
+            &body[..body.len().min(400)]
+        );
+
+        // Negative: the body must NOT contain a raw inline turn increment.
+        // Constructed from parts so the complete literal does not appear
+        // verbatim in this test's own text.
+        let forbidden = ["turn_number ", "+="].concat();
+        assert!(
+            !body.contains(forbidden.as_str()),
+            "TEETH(ADR-0003 SSOT): attempt_recruit body must NOT contain a raw \
+             `turn_number +=` increment; all turn-advance logic is owned by \
+             game_core::resolve_recruit_failure (ADR-0003 residual). \
+             Body excerpt (first 400 chars): {:?}",
+            &body[..body.len().min(400)]
+        );
+    }
+
+    /// SSOT wiring: the level-up HP heal inside the battle-results write-back
+    /// must be computed by `game_core::level_up_healed_hp`, not re-inlined.
+    ///
+    /// Both checks are scoped to the EXTRACTED body of the function that owns
+    /// the heal so that string literals inside this test module never self-match.
+    /// The test module lives inside the included source (include_str! captures
+    /// the whole file), so searching the full stripped source would cause:
+    ///   - the positive needle (`level_up_healed_hp`) to match the failure-message
+    ///     text in this very test → false green;
+    ///   - the negative needle to match the `inline_frag` variable binding in
+    ///     this test → assertion never goes green even after a correct impl.
+    ///
+    /// Scoping to the production function body eliminates both failure modes.
+    ///
+    /// RED today: the production body contains the inline formula and no
+    /// level_up_healed_hp call.
+    #[test]
+    fn level_up_heal_is_owned_by_game_core() {
+        let stripped = strip_rust_comments(LIB_RS_SOURCE);
+
+        // Scope both checks to the body of the function that owns the heal.
+        // The function name is assembled from parts so the complete literal
+        // `fn write_back_battle_results(` does not appear in this test's own
+        // source text (which is inside the included file) and thereby confuse
+        // a hypothetical future caller of extract_fn_body on this test body.
+        let heal_fn = ["write_back", "_battle", "_results"].concat();
+        let body = extract_fn_body(&stripped, &heal_fn)
+            .expect("the battle-results write-back function must exist in lib.rs");
+
+        // Positive: the production body must delegate to game-core.
+        // `level_up_healed_hp` does NOT appear in this test's own text, so
+        // the assertion has genuine teeth — it only passes when the production
+        // body actually contains that call.
+        assert!(
+            body.contains("level_up_healed_hp"),
+            "TEETH(ADR-0003 residual 7c): the battle-results write-back body must \
+             call `level_up_healed_hp` (game_core SSOT for level-up HP heal); \
+             the heal formula must not be re-inlined. \
+             Replace the inline with `game_core::level_up_healed_hp(m.current_hp, bm.max_hp, derived.hp)`."
+        );
+
+        // Negative: the inline formula fragment must be absent from the body.
+        // Built from parts so the complete literal does not appear verbatim in
+        // this test's text — the body slice is restricted to the production
+        // function so the binding below is outside the searched region, but
+        // constructing from parts keeps the invariant explicit and mirrors the
+        // approach used in the attempt_recruit guard above.
+        let inline_frag = ["saturating_sub", "(bm.max_hp)"].concat();
+        assert!(
+            !body.contains(inline_frag.as_str()),
+            "TEETH(ADR-0003 residual 7c): the inline heal fragment \
+             `saturating_sub(bm.max_hp)` must be removed from the \
+             battle-results write-back body once `level_up_healed_hp` is \
+             introduced; re-inlining duplicates the SSOT and risks diverging \
+             from the game_core rule. Replace with `game_core::level_up_healed_hp(...)`."
         );
     }
 }

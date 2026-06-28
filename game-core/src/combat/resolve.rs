@@ -132,6 +132,43 @@ fn resolve_one_attack(
     }
 }
 
+/// Advance the battle's turn counter by one, honoring the turn-limit terminal.
+///
+/// This is the SINGLE owner (ADR-0003 SSOT) of the `turn_number` advance and its
+/// `u16::MAX -> Fled` terminal. Every turn-advancing path routes its increment
+/// through here — `resolve_turn` (the normal full turn) and the server's
+/// `attempt_recruit` reducer (via `resolve_recruit_failure`) — so the terminal
+/// can never drift between call sites. The player-swap path (`swap_active` ->
+/// `resolve_player_swap`) deliberately does NOT advance the counter: a swap is
+/// not a numbered turn, so it is correctly excluded from this owner.
+///
+/// Returns `true` when the turn advanced — the caller should resolve the turn.
+/// Returns `false` *without advancing* in two cases, so the caller must NOT
+/// resolve a turn:
+/// - the battle is already decided (`outcome != Ongoing`): a no-op that preserves
+///   the existing outcome (total-safety — a stray call can never overwrite a win);
+/// - the turn-limit terminal fires (`turn_number == u16::MAX`): `outcome` is set
+///   to `BattleOutcome::Fled` (a no-winner terminal — no XP, no win credit) and
+///   `turn_number` is left unchanged (no wrap, no panic).
+///
+/// A `u16` turn counter cannot reach `u16::MAX` in valid play; the terminal is a
+/// fail-safe so an unbounded battle (e.g. a skill-less wild that never faints,
+/// driven via the recruit path) terminates deterministically instead of
+/// overflowing.
+#[must_use]
+pub fn advance_turn(state: &mut BattleState) -> bool {
+    // Total-safety: never advance or overwrite a battle that is already decided.
+    if state.outcome != BattleOutcome::Ongoing {
+        return false;
+    }
+    if state.turn_number == u16::MAX {
+        state.outcome = BattleOutcome::Fled;
+        return false;
+    }
+    state.turn_number += 1;
+    true
+}
+
 /// Resolve a full turn: both sides act according to their choices.
 ///
 /// Mutates `state` in place. Returns the ordered list of events that occurred.
@@ -155,19 +192,14 @@ pub fn resolve_turn(
         return events;
     }
 
-    // Turn-limit terminal (ADR-0049): a u16 turn counter can never reach this in
-    // valid play, but advancing past u16::MAX would panic(debug)/wrap(release).
-    // Terminate at a defined no-winner terminal (reuse Fled: no XP, no win credit)
-    // BEFORE the increment and any swap/attack resolution, so no partial turn is
-    // applied (setting `outcome` here is the only mutation; the team state is
-    // untouched). NOTE: this guards `resolve_turn` only; the `attempt_recruit`
-    // reducer advances `turn_number` out-of-band (see ADR-0049 residual).
-    if state.turn_number == u16::MAX {
-        state.outcome = BattleOutcome::Fled;
+    // Advance the turn through the single SSOT owner of the turn-limit terminal
+    // (ADR-0003). `advance_turn` increments `turn_number` and terminates at
+    // `u16::MAX -> Fled` BEFORE any swap/attack resolution, so no partial turn is
+    // applied when the terminal fires. The recruit path (`attempt_recruit`) routes
+    // its increment through the same helper, so the terminal cannot drift here.
+    if !advance_turn(state) {
         return events;
     }
-
-    state.turn_number += 1;
 
     // Swaps always happen before attacks. An illegal swap (OOB/fainted) is a
     // no-op: no `active` mutation, no Switch event; the rest of the turn proceeds.
@@ -311,6 +343,38 @@ pub fn resolve_enemy_turn(
     );
 
     events
+}
+
+/// Apply a FAILED recruit attempt to the battle state (the recruit roll already
+/// missed; the caller owns the roll and the no-XP rebuild on success).
+///
+/// SSOT for the failed-recruit battle transition (ADR-0003) so the server's
+/// `attempt_recruit` reducer cannot drift from this rule:
+/// 1. Advance the turn through `advance_turn` (the single owner of the
+///    `u16::MAX -> Fled` terminal). If it returns `false` — the terminal fired or
+///    the battle was already decided — return with NO strike-back.
+/// 2. Otherwise the wild (side B) strikes back, BUT only if it has at least one
+///    skill: a skill-less wild cannot retaliate, yet the turn it consumed (step 1)
+///    still counts toward the terminal.
+///
+/// Returns the wild's strike-back events (empty when the terminal fired or the
+/// wild is skill-less). Only side B (the wild) ever acts here.
+pub fn resolve_recruit_failure(
+    state: &mut BattleState,
+    skills: &[SkillDef],
+    type_chart: &TypeChart,
+    variance: &TurnVariance,
+) -> Vec<BattleEvent> {
+    if !advance_turn(state) {
+        // Turn-limit terminal fired (outcome now Fled) or battle already decided:
+        // no strike-back.
+        return Vec::new();
+    }
+    // A skill-less wild cannot retaliate; the turn still advanced above.
+    if state.side_b.active_monster().known_skill_ids.is_empty() {
+        return Vec::new();
+    }
+    resolve_enemy_turn(state, SideId::SideB, skills, type_chart, variance)
 }
 
 /// Resolve a player swap: swap first, then the enemy side attacks the new active.
@@ -1010,6 +1074,363 @@ mod tests {
     // -----------------------------------------------------------------------
     // Unknown skill id: documented panic behavior (content integrity)
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // M8.8b-A: advance_turn behavioral tests
+    // -----------------------------------------------------------------------
+
+    /// Kills: a mutant that doesn't increment turn_number, or that returns false
+    /// on a normal (non-MAX) turn, or that changes the outcome away from Ongoing.
+    ///
+    /// `advance_turn` from a mid-range turn_number on an Ongoing battle must:
+    ///   - return true
+    ///   - increment turn_number by exactly 1
+    ///   - leave outcome == BattleOutcome::Ongoing
+    ///
+    /// RED state: compile-RED because `advance_turn` does not exist yet.
+    #[test]
+    fn advance_turn_mid_range_returns_true_and_increments() {
+        let monster_a = make_monster(Affinity::Fire, 200, 50);
+        let monster_b = make_monster(Affinity::Water, 200, 40);
+        let mut state = make_battle_state(monster_a, monster_b);
+        state.turn_number = 5;
+
+        let result = advance_turn(&mut state);
+
+        assert!(
+            result,
+            "TEETH: advance_turn must return true on a non-MAX turn_number; \
+             a mutant returning false fails here"
+        );
+        assert_eq!(
+            state.turn_number, 6,
+            "TEETH: advance_turn must increment turn_number by exactly 1 (5 → 6); \
+             a mutant that doesn't increment or increments by 2 fails here"
+        );
+        assert_eq!(
+            state.outcome,
+            BattleOutcome::Ongoing,
+            "TEETH: advance_turn must not change outcome on a non-MAX turn; \
+             a mutant that sets Fled on every call fails here"
+        );
+    }
+
+    /// Kills THREE mutant classes simultaneously:
+    ///   - Mutant A: still increments at MAX → wraps to 0 → assertion (c) fails
+    ///   - Mutant B: sets a wrong outcome (e.g. SideAWins) → assertion (b) fails
+    ///   - Mutant C: returns true at MAX → assertion (a) fails
+    ///
+    /// This is THE proof-of-teeth for the recruit-path terminal: when turn_number
+    /// is already u16::MAX, advance_turn must terminate the battle without
+    /// overflowing (no panic, no wrap-to-0) and must set the Fled outcome.
+    ///
+    /// RED state: compile-RED because `advance_turn` does not exist yet.
+    #[test]
+    fn advance_turn_at_u16_max_is_terminal_without_wrap_or_panic() {
+        let monster_a = make_monster(Affinity::Fire, 500, 50);
+        let monster_b = make_monster(Affinity::Water, 500, 40);
+        let mut state = make_battle_state(monster_a, monster_b);
+        state.turn_number = u16::MAX;
+
+        // (a) must NOT panic — if this panics, the test fails with a panic message
+        let result = advance_turn(&mut state);
+
+        // (a) return value: must be false at the terminal
+        assert!(
+            !result,
+            "TEETH(return): advance_turn must return false at turn_number==u16::MAX; \
+             a mutant returning true fails here (ADR-0003: terminal signals caller to stop)"
+        );
+
+        // (b) outcome: must be Fled specifically — not SideAWins, SideBWins, or Ongoing
+        assert_eq!(
+            state.outcome,
+            BattleOutcome::Fled,
+            "TEETH(outcome): advance_turn must set outcome=Fled at u16::MAX; \
+             a mutant setting SideAWins/SideBWins/Ongoing fails here"
+        );
+
+        // (c) turn_number: must be UNCHANGED — the guard fires WITHOUT incrementing
+        assert_eq!(
+            state.turn_number,
+            u16::MAX,
+            "TEETH(no-wrap): turn_number must remain u16::MAX after terminal guard; \
+             a mutant that still increments wraps to 0 in release and fails here"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // M8.8b-A2: advance_turn total-safety guard (runtime-RED today)
+    //
+    // advance_turn gains a new early-return: if state.outcome != Ongoing it
+    // must return false WITHOUT touching outcome or turn_number.  Today it
+    // does NOT have this guard, so on a SideAWins battle at u16::MAX it
+    // overwrites outcome to Fled — this test is therefore RUNTIME-RED now.
+    // -----------------------------------------------------------------------
+
+    /// Kills: an impl that overwrites a decided outcome with Fled when
+    /// turn_number == u16::MAX.
+    ///
+    /// Setup: outcome already SideAWins, turn_number u16::MAX.
+    /// After the total-safety guard: advance_turn must return false and leave
+    /// outcome == SideAWins (not Fled), turn_number == u16::MAX.
+    ///
+    /// RED today: current advance_turn hits the u16::MAX branch first, sets
+    /// Fled, and returns false — so the outcome assertion (SideAWins) fails.
+    #[test]
+    fn advance_turn_on_decided_battle_preserves_outcome() {
+        let monster_a = make_monster(Affinity::Fire, 200, 50);
+        let monster_b = make_monster(Affinity::Water, 200, 40);
+        let mut state = make_battle_state(monster_a, monster_b);
+        state.turn_number = u16::MAX;
+        state.outcome = BattleOutcome::SideAWins; // already decided
+
+        let result = advance_turn(&mut state);
+
+        assert!(
+            !result,
+            "TEETH: advance_turn must return false on a decided (non-Ongoing) battle"
+        );
+        assert_eq!(
+            state.outcome,
+            BattleOutcome::SideAWins,
+            "TEETH: advance_turn must NOT overwrite an already-decided outcome; \
+             a missing total-safety guard sets outcome=Fled here, failing this assertion"
+        );
+        assert_eq!(
+            state.turn_number,
+            u16::MAX,
+            "TEETH: turn_number must remain u16::MAX when the total-safety guard fires"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // M8.8b-A3 (optional strengthener): idempotency at the terminal
+    // -----------------------------------------------------------------------
+
+    /// Idempotency at the terminal: calling advance_turn TWICE at u16::MAX keeps
+    /// outcome Fled and turn_number u16::MAX on both calls.
+    ///
+    /// Kills: an impl that only guards the first call but allows wrapping on
+    /// subsequent calls (e.g. by checking outcome rather than turn_number).
+    ///
+    /// RED state: compile-RED because `advance_turn` does not exist yet.
+    #[test]
+    fn advance_turn_at_u16_max_is_idempotent() {
+        let monster_a = make_monster(Affinity::Fire, 200, 50);
+        let monster_b = make_monster(Affinity::Water, 200, 40);
+        let mut state = make_battle_state(monster_a, monster_b);
+        state.turn_number = u16::MAX;
+
+        let r1 = advance_turn(&mut state);
+        // Note: the second call sees outcome==Fled, but the contract is on turn_number==MAX
+        let r2 = advance_turn(&mut state);
+
+        assert!(!r1, "first advance_turn at u16::MAX must return false");
+        assert!(
+            !r2,
+            "second advance_turn at u16::MAX must also return false (idempotent)"
+        );
+        assert_eq!(
+            state.turn_number,
+            u16::MAX,
+            "TEETH: turn_number must remain u16::MAX after two calls at the terminal; \
+             a guard that only fires once would wrap to 0 on the second call"
+        );
+        assert_eq!(
+            state.outcome,
+            BattleOutcome::Fled,
+            "outcome must remain Fled after both calls at the terminal"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // M8.8b-D: resolve_recruit_failure behavioral teeth
+    //
+    // Tests compile-RED today because resolve_recruit_failure does not exist.
+    //
+    // Contract:
+    //   1. Call advance_turn(state).
+    //   2. If advance_turn returned false (terminal fired OR battle already
+    //      decided) → return empty events with NO strike-back.
+    //   3. Otherwise if wild (side_b active) has NO skills → return empty
+    //      events (can't retaliate) but turn STILL advanced (step 1 happened).
+    //   4. Otherwise → call resolve_enemy_turn(SideB) and return its events.
+    // -----------------------------------------------------------------------
+
+    /// Proof-of-teeth for the turn-limit terminal inside resolve_recruit_failure.
+    ///
+    /// Setup: side_b wild HAS skills (so in the normal path it would strike);
+    /// turn_number == u16::MAX. Call with damaging always-hit variance.
+    ///
+    /// Must:
+    ///   - return empty events (terminal fired BEFORE the strike-back)
+    ///   - outcome == BattleOutcome::Fled
+    ///   - turn_number == u16::MAX (no wrap)
+    ///   - side_a active current_hp UNCHANGED (no free strike at terminal)
+    ///
+    /// Kills:
+    ///   - An inverted check (`if advance_turn(...) { /* no-op */ } else { strike }`)
+    ///     would let the wild hit side_a at the terminal → HP decreases → fails.
+    ///   - A missing terminal fires the strike-back → events non-empty → fails.
+    ///   - A wrapping impl → turn_number == 0 → fails.
+    ///
+    /// RED state: compile-RED (resolve_recruit_failure absent).
+    #[test]
+    fn resolve_recruit_failure_at_u16_max_terminates_without_strikeback() {
+        let chart = make_type_chart();
+        // Side A: healthy, survives any hit — we need to detect if it was hit at all
+        let monster_a = make_monster(Affinity::Fire, 500, 50);
+        // Side B wild: HAS skills, so in the normal path it would strike
+        let monster_b = make_monster(Affinity::Water, 200, 40);
+        let mut state = make_battle_state(monster_a, monster_b);
+        state.turn_number = u16::MAX;
+
+        let pre_hp_a = state.side_a.active_monster().current_hp;
+        // Damaging, always-hit variance — any strike-back would reduce side_a HP
+        let variance = always_hit_variance(false); // false → B faster, B hits first if it acts
+
+        let events = resolve_recruit_failure(&mut state, &skills_vec(), &chart, &variance);
+
+        assert!(
+            events.is_empty(),
+            "TEETH: resolve_recruit_failure at u16::MAX must return empty events \
+             (terminal fires before strike-back); \
+             an inverted advance_turn check or missing terminal lets the wild act — \
+             events: {events:?}"
+        );
+        assert_eq!(
+            state.outcome,
+            BattleOutcome::Fled,
+            "TEETH: outcome must be Fled after u16::MAX terminal; \
+             a mutant skipping the terminal leaves outcome Ongoing"
+        );
+        assert_eq!(
+            state.turn_number,
+            u16::MAX,
+            "TEETH: turn_number must remain u16::MAX (no wrap); \
+             a mutant that still increments produces 0"
+        );
+        assert_eq!(
+            state.side_a.active_monster().current_hp,
+            pre_hp_a,
+            "TEETH: side_a HP must be unchanged — no strike-back occurs at the terminal; \
+             an inverted advance_turn check allows the wild to hit side_a here"
+        );
+    }
+
+    /// Skilled wild advances the turn AND strikes back on a normal (non-MAX) turn.
+    ///
+    /// Setup: turn_number = 5; side_b active has skills; side_a has high HP
+    /// so it survives the hit. Always-hit damaging variance.
+    ///
+    /// Must:
+    ///   - turn_number == 6 (incremented)
+    ///   - events NON-empty (wild acted)
+    ///   - side_a active current_hp < pre_hp_a (wild actually dealt damage)
+    ///
+    /// Kills: a mutant that skips the resolve_enemy_turn call (events empty /
+    /// HP unchanged). Also kills a mutant that doesn't advance the turn.
+    ///
+    /// RED state: compile-RED (resolve_recruit_failure absent).
+    #[test]
+    fn resolve_recruit_failure_skilled_wild_advances_and_strikes() {
+        let chart = make_type_chart();
+        // Side A: very high HP, survives any hit from a level-5 Water monster
+        let monster_a = make_monster(Affinity::Fire, 1000, 50);
+        // Side B: skilled Water wild — Fire is weak to Water so damage is guaranteed
+        let monster_b = make_monster(Affinity::Water, 200, 40);
+        let mut state = make_battle_state(monster_a, monster_b);
+        state.turn_number = 5;
+
+        let pre_hp_a = state.side_a.active_monster().current_hp;
+        // B faster (false tie-breaker), always hits
+        let variance = always_hit_variance(false);
+
+        let events = resolve_recruit_failure(&mut state, &skills_vec(), &chart, &variance);
+
+        assert_eq!(
+            state.turn_number, 6,
+            "TEETH: turn_number must increment from 5 to 6 on a normal recruit failure; \
+             a mutant that skips advance_turn leaves turn_number at 5"
+        );
+        assert!(
+            !events.is_empty(),
+            "TEETH: a skilled wild must produce events (at minimum a Damage event); \
+             a mutant that skips resolve_enemy_turn returns empty events"
+        );
+        assert!(
+            state.side_a.active_monster().current_hp < pre_hp_a,
+            "TEETH: side_a HP must decrease after the wild's strike-back \
+             (always-hit damaging variance, Fire vs Water); \
+             a mutant skipping the enemy turn leaves HP unchanged"
+        );
+    }
+
+    /// Skill-less wild STILL advances the turn but does NOT strike back.
+    ///
+    /// This is the key mutation-killing test for operand-order bugs:
+    /// a body like `if wild_has_skills && advance_turn(state) { strike }` would
+    /// short-circuit — advance_turn never called for a skill-less wild — leaving
+    /// turn_number at 5 and outcome Ongoing. This test catches that.
+    ///
+    /// Setup: side_b active has NO known skills; turn_number = 5.
+    ///
+    /// Must:
+    ///   - turn_number == 6 (STILL advances — skill-less wilds still burn turns
+    ///     toward the u16::MAX terminal)
+    ///   - outcome == Ongoing
+    ///   - events EMPTY (can't retaliate without skills)
+    ///   - side_a current_hp UNCHANGED
+    ///
+    /// Kills: `wild_has_skills && advance_turn(...)` short-circuit mutant —
+    /// turn_number stays 5 → assertion fails.
+    ///
+    /// RED state: compile-RED (resolve_recruit_failure absent).
+    #[test]
+    fn resolve_recruit_failure_skillless_wild_advances_no_strike() {
+        let chart = make_type_chart();
+        let monster_a = make_monster(Affinity::Fire, 200, 50);
+        // Build a skill-less wild: BattleMonster with empty known_skill_ids
+        let monster_b = BattleMonster {
+            species_id: 2,
+            affinity: Affinity::Water,
+            level: 5,
+            current_hp: 100,
+            max_hp: 100,
+            stats: make_stat_block_with_speed(40, 40, 40),
+            known_skill_ids: vec![], // NO skills
+        };
+        let mut state = make_battle_state(monster_a, monster_b);
+        state.turn_number = 5;
+
+        let pre_hp_a = state.side_a.active_monster().current_hp;
+        let variance = always_hit_variance(true);
+
+        let events = resolve_recruit_failure(&mut state, &skills_vec(), &chart, &variance);
+
+        assert_eq!(
+            state.turn_number, 6,
+            "TEETH: turn_number must STILL increment for a skill-less wild (5 → 6); \
+             a `wild_has_skills && advance_turn(...)` short-circuit mutant never \
+             calls advance_turn, leaving turn_number at 5 — this assertion fails it"
+        );
+        assert_eq!(
+            state.outcome,
+            BattleOutcome::Ongoing,
+            "outcome must remain Ongoing after a skill-less wild fails to retaliate"
+        );
+        assert!(
+            events.is_empty(),
+            "TEETH: a skill-less wild cannot retaliate — events must be empty; \
+             got {events:?}"
+        );
+        assert_eq!(
+            state.side_a.active_monster().current_hp,
+            pre_hp_a,
+            "side_a HP must be unchanged when the wild has no skills"
+        );
+    }
 
     /// Documents that referencing an unknown skill_id panics (content integrity).
     /// Kills: an impl that silently ignores or returns an empty event list instead.
