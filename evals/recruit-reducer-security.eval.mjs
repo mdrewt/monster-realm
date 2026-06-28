@@ -451,6 +451,114 @@ export function checkBattleWildGcInWriteBack(body) {
 }
 
 /**
+ * Check F2 (M9b): consume_one delete-at-zero — the body must delete the row
+ * when the count reaches zero (no lingering empty stacks).
+ *
+ * Required:
+ *   - `checked_sub` still present (overflow safety, existing check 6a).
+ *   - `.delete(` present in the body (row removed when count hits 0).
+ *
+ * Forbidden indicator:
+ *   - A body that updates the row with `count = 0` or lacks `.delete(` is a
+ *     zombie-stack implementation.
+ *
+ * Uses only indexOf — NO new RegExp(...).
+ *
+ * @param {string} consumeBody  Body of consume_one, comment-stripped.
+ * @returns {string|null}
+ */
+export function checkConsumeOneDeleteAtZero(consumeBody) {
+  // Require checked_sub to be present (also enforced by checkConsumeOneUsesCheckedSub;
+  // repeated here so this check is self-contained for positioning).
+  const subIdx = consumeBody.indexOf('checked_sub');
+  if (subIdx === -1) {
+    return 'consume_one: missing checked_sub — cannot locate drain-to-zero delete position';
+  }
+  // Require a .delete( that occurs AFTER checked_sub (the drain-to-zero path).
+  // A .delete( that appears ONLY before checked_sub is a zombie-cleanup delete on the
+  // early count==0 guard path — it does NOT satisfy the spec §3 "no lingering empty
+  // stacks" requirement for the decrement-to-zero case.
+  // Kills: an impl that deletes on the zombie path but updates (leaving a count:0 row)
+  // after checked_sub — the pre-checked_sub .delete( would satisfy the old bare check.
+  const deleteAfterSub = consumeBody.indexOf('.delete(', subIdx);
+  if (deleteAfterSub === -1) {
+    return (
+      'consume_one: missing .delete( after checked_sub — the drain-to-zero path must ' +
+      'delete the row when count reaches 0, not update it ' +
+      '(no lingering empty stacks; spec §3)'
+    );
+  }
+  return null;
+}
+
+/**
+ * Check F2 (M9b): grant_item qty-0 guard — the body must early-return / reject
+ * when `qty == 0` before performing any DB insert or update. This prevents
+ * `grant_item(ctx, owner, id, 0)` from inserting a count:0 zombie row.
+ *
+ * Required: body contains `qty==0` (whitespace-collapsed) as a guard.
+ * Forbidden: a body where the only qty reference is inside `saturating_add(qty)`.
+ *
+ * Uses only indexOf — NO new RegExp(...).
+ *
+ * @param {string} grantBody  Body of grant_item, comment-stripped.
+ * @returns {string|null}
+ */
+export function checkGrantItemQtyZeroGuard(grantBody) {
+  const compact = grantBody.replace(/\s+/g, '');
+  if (compact.indexOf('qty==0') === -1) {
+    return (
+      'grant_item: missing qty==0 guard — calling grant_item(ctx, owner, id, 0) must ' +
+      'be a no-op (early return), not insert a count:0 zombie row; ' +
+      'require an explicit `if qty == 0 { return; }` (or equivalent) before any DB write'
+    );
+  }
+  return null;
+}
+
+/**
+ * Check F3 (M9b): grant_item monotone cap — the existing-stack branch must
+ * guard growth with `row.count < MAX_ITEM_STACK` before applying
+ * `.saturating_add(qty).min(MAX_ITEM_STACK)`, so a grant never SHRINKS an
+ * already-over-cap stack (monotone non-decrease invariant).
+ *
+ * Required (whitespace-collapsed body):
+ *   - `row.count<MAX_ITEM_STACK` guard is present.
+ *   - `.min(MAX_ITEM_STACK)` is present (applied after saturating_add).
+ *   - `saturating_add` still present (overflow safety, existing check 6b).
+ *
+ * Forbidden: `saturating_add(qty).min(MAX_ITEM_STACK)` with no guard
+ *   `row.count < MAX_ITEM_STACK` — without the guard a stack already above
+ *   MAX_ITEM_STACK would be shrunk to MAX_ITEM_STACK by the .min().
+ *
+ * Uses only indexOf — NO new RegExp(...).
+ *
+ * @param {string} grantBody  Body of grant_item, comment-stripped.
+ * @returns {string|null}
+ */
+export function checkGrantItemMonotoneCap(grantBody) {
+  const compact = grantBody.replace(/\s+/g, '');
+
+  if (compact.indexOf('.min(MAX_ITEM_STACK)') === -1) {
+    return (
+      'grant_item: missing .min(MAX_ITEM_STACK) — the stack must be capped at ' +
+      'MAX_ITEM_STACK; without it a flood of grants can inflate the count arbitrarily'
+    );
+  }
+
+  if (compact.indexOf('row.count<MAX_ITEM_STACK') === -1) {
+    return (
+      'grant_item: missing `row.count < MAX_ITEM_STACK` guard before the saturating_add — ' +
+      'F3 monotone-cap: without this guard a stack already at or above MAX_ITEM_STACK would ' +
+      'be SHRUNK by the .min(MAX_ITEM_STACK) on every subsequent grant (monotone violation); ' +
+      'the guard ensures over-cap stacks are left untouched'
+    );
+  }
+
+  return null;
+}
+
+/**
  * Check 9: grant_bait self-scoped to ctx.sender.
  * The grant_bait reducer must use ctx.sender (no arbitrary Identity param).
  * We check: the function signature does NOT contain `Identity` as a parameter
@@ -690,6 +798,85 @@ const BAD_NO_GC_IN_RECRUIT = `
   }
 `;
 
+/** Fixture: consume_one that updates with count=0 instead of deleting. Must be flagged by checkConsumeOneDeleteAtZero. */
+const BAD_CONSUME_NO_DELETE = `
+  fn consume_one(ctx: &ReducerContext, owner: Identity, item_id: u32) -> Result<(), String> {
+      let mut row = ctx.db.inventory().owner_identity().filter(owner)
+          .find(|r| r.item_id == item_id)
+          .ok_or_else(|| "item not in inventory".to_string())?;
+      if row.count == 0 {
+          return Err("item count is zero".to_string());
+      }
+      row.count = row.count.checked_sub(1).ok_or_else(|| "underflow".to_string())?;
+      // DELIBERATELY WRONG: updates even when count reaches 0 — zombie stack survives
+      ctx.db.inventory().inv_id().update(row);
+      Ok(())
+  }
+`;
+
+/**
+ * Fixture: consume_one that DOES delete on the early zombie path (count==0 before checked_sub)
+ * but uses update( after checked_sub instead of deleting at zero — the drain-to-zero delete
+ * is missing.
+ * Must be flagged by the STRENGTHENED checkConsumeOneDeleteAtZero (delete after checked_sub).
+ * The old bare .delete( check would have passed this (zombie delete present), proving the
+ * strengthened gate actually bites.
+ */
+const BAD_CONSUME_DRAIN_NO_DELETE = `
+  fn consume_one(ctx: &ReducerContext, owner: Identity, item_id: u32) -> Result<(), String> {
+      let mut row = ctx.db.inventory().owner_identity().filter(owner)
+          .find(|r| r.item_id == item_id)
+          .ok_or_else(|| "item not in inventory".to_string())?;
+      if row.count == 0 {
+          ctx.db.inventory().inv_id().delete(row.inv_id);
+          return Err("item count is zero".to_string());
+      }
+      row.count = row.count.checked_sub(1).ok_or_else(|| "underflow".to_string())?;
+      // DELIBERATELY WRONG: always updates — even when count reaches 0, leaving a zombie stack.
+      // The zombie-cleanup .delete( above is present but does NOT satisfy drain-to-zero.
+      ctx.db.inventory().inv_id().update(row);
+      Ok(())
+  }
+`;
+
+/** Fixture: grant_item with no qty==0 guard. Must be flagged by checkGrantItemQtyZeroGuard. */
+const BAD_GRANT_NO_QTY_ZERO_GUARD = `
+  fn grant_item(ctx: &ReducerContext, owner: Identity, item_id: u32, qty: u32) {
+      // DELIBERATELY MISSING: no qty == 0 guard — calling grant_item(_, 0) inserts a zombie row
+      let existing = ctx.db.inventory().owner_identity().filter(owner).find(|r| r.item_id == item_id);
+      match existing {
+          Some(mut row) => {
+              if row.count < MAX_ITEM_STACK {
+                  row.count = row.count.saturating_add(qty).min(MAX_ITEM_STACK);
+                  ctx.db.inventory().inv_id().update(row);
+              }
+          }
+          None => {
+              ctx.db.inventory().insert(Inventory { inv_id: 0, owner_identity: owner, item_id, count: qty });
+          }
+      }
+  }
+`;
+
+/** Fixture: grant_item with no row.count < MAX_ITEM_STACK guard. Must be flagged by checkGrantItemMonotoneCap. */
+const BAD_GRANT_NO_MONOTONE_GUARD = `
+  fn grant_item(ctx: &ReducerContext, owner: Identity, item_id: u32, qty: u32) {
+      if qty == 0 { return; }
+      let existing = ctx.db.inventory().owner_identity().filter(owner).find(|r| r.item_id == item_id);
+      match existing {
+          Some(mut row) => {
+              // DELIBERATELY WRONG: no row.count < MAX_ITEM_STACK guard — a stack already
+              // at/above MAX_ITEM_STACK would be shrunk by .min(MAX_ITEM_STACK) (monotone violation)
+              row.count = row.count.saturating_add(qty).min(MAX_ITEM_STACK);
+              ctx.db.inventory().inv_id().update(row);
+          }
+          None => {
+              ctx.db.inventory().insert(Inventory { inv_id: 0, owner_identity: owner, item_id, count: qty });
+          }
+      }
+  }
+`;
+
 /** Fixture: grant_bait accepts an arbitrary Identity param. Must be flagged by checkGrantBaitSelfScoped. */
 const BAD_GRANT_BAIT_ARBITRARY_IDENTITY = `
   pub fn grant_bait(ctx: &ReducerContext, recipient: Identity, item_id: u32, qty: u32) -> Result<(), String> {
@@ -742,27 +929,40 @@ const GOOD_ATTEMPT_RECRUIT = `
   }
 `;
 
-/** A compliant consume_one. Must pass checkConsumeOneUsesCheckedSub. */
+/** A compliant consume_one. Must pass checkConsumeOneUsesCheckedSub AND checkConsumeOneDeleteAtZero. */
 const GOOD_CONSUME_ONE = `
   fn consume_one(ctx: &ReducerContext, owner: Identity, item_id: u32) -> Result<(), String> {
-      let mut row = ctx.db.inventory().find(owner, item_id)
-          .ok_or_else(|| "item not found".to_string())?;
+      let mut row = ctx.db.inventory().owner_identity().filter(owner)
+          .find(|r| r.item_id == item_id)
+          .ok_or_else(|| "item not in inventory".to_string())?;
+      if row.count == 0 {
+          ctx.db.inventory().inv_id().delete(row.inv_id);
+          return Err("item count is zero".to_string());
+      }
       row.count = row.count.checked_sub(1).ok_or_else(|| "item count is zero".to_string())?;
-      ctx.db.inventory().update(row);
+      if row.count == 0 {
+          ctx.db.inventory().inv_id().delete(row.inv_id);
+      } else {
+          ctx.db.inventory().inv_id().update(row);
+      }
       Ok(())
   }
 `;
 
-/** A compliant grant_item. Must pass checkGrantItemUsesSaturatingAdd. */
+/** A compliant grant_item. Must pass checkGrantItemUsesSaturatingAdd, checkGrantItemQtyZeroGuard, and checkGrantItemMonotoneCap. */
 const GOOD_GRANT_ITEM = `
   fn grant_item(ctx: &ReducerContext, owner: Identity, item_id: u32, qty: u32) {
-      match ctx.db.inventory().find(owner, item_id) {
+      if qty == 0 { return; }
+      let existing = ctx.db.inventory().owner_identity().filter(owner).find(|r| r.item_id == item_id);
+      match existing {
           Some(mut row) => {
-              row.count = row.count.saturating_add(qty);
-              ctx.db.inventory().update(row);
+              if row.count < MAX_ITEM_STACK {
+                  row.count = row.count.saturating_add(qty).min(MAX_ITEM_STACK);
+                  ctx.db.inventory().inv_id().update(row);
+              }
           }
           None => {
-              ctx.db.inventory().insert(InventoryRow { owner, item_id, count: qty });
+              ctx.db.inventory().insert(Inventory { inv_id: 0, owner_identity: owner, item_id, count: qty });
           }
       }
   }
@@ -782,7 +982,7 @@ const GOOD_GRANT_BAIT = `
 
 export default async function () {
   const name =
-    'recruit-reducer-security (attempt_recruit guards, consume-before-roll, no-XP, checked_sub, classify-by-data, battle_wild GC, grant_bait self-scoped)';
+    'recruit-reducer-security (attempt_recruit guards, consume-before-roll, no-XP, checked_sub, classify-by-data, battle_wild GC, grant_bait self-scoped, consume_one delete-at-zero, grant_item qty-0-guard+monotone-cap)';
 
   // =========================================================================
   // PROOFS-OF-TEETH — every tooth must bite before we scan real source.
@@ -995,6 +1195,93 @@ export default async function () {
     }
   }
 
+  // --- Tooth F2a: consume_one with no .delete( at all must be flagged --------
+  {
+    const body = extractReducerBody(stripRustComments(BAD_CONSUME_NO_DELETE), 'consume_one');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract consume_one body from BAD_CONSUME_NO_DELETE fixture (parser bug)',
+      };
+    }
+    if (!checkConsumeOneDeleteAtZero(body)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_CONSUME_NO_DELETE fixture (updates instead of deletes at zero) was NOT flagged by checkConsumeOneDeleteAtZero',
+      };
+    }
+  }
+
+  // --- Tooth F2a-drain: consume_one with zombie delete (before checked_sub) but
+  //     update( after checked_sub (no drain-to-zero delete) must be flagged.
+  //     Kills: the old bare .delete( check that would have been satisfied by the
+  //     zombie-path delete, missing the actual drain regression. ---
+  {
+    const body = extractReducerBody(stripRustComments(BAD_CONSUME_DRAIN_NO_DELETE), 'consume_one');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract consume_one body from BAD_CONSUME_DRAIN_NO_DELETE fixture (parser bug)',
+      };
+    }
+    if (!checkConsumeOneDeleteAtZero(body)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_CONSUME_DRAIN_NO_DELETE fixture (zombie delete before checked_sub, update after) was NOT flagged by checkConsumeOneDeleteAtZero — strengthened check must require .delete( AFTER checked_sub',
+      };
+    }
+  }
+
+  // --- Tooth F2b: grant_item with no qty==0 guard must be flagged -----------
+  {
+    const body = extractReducerBody(stripRustComments(BAD_GRANT_NO_QTY_ZERO_GUARD), 'grant_item');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract grant_item body from BAD_GRANT_NO_QTY_ZERO_GUARD fixture (parser bug)',
+      };
+    }
+    if (!checkGrantItemQtyZeroGuard(body)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_GRANT_NO_QTY_ZERO_GUARD fixture (no qty==0 guard) was NOT flagged by checkGrantItemQtyZeroGuard',
+      };
+    }
+  }
+
+  // --- Tooth F3: grant_item with no row.count < MAX guard must be flagged ---
+  {
+    const body = extractReducerBody(stripRustComments(BAD_GRANT_NO_MONOTONE_GUARD), 'grant_item');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract grant_item body from BAD_GRANT_NO_MONOTONE_GUARD fixture (parser bug)',
+      };
+    }
+    if (!checkGrantItemMonotoneCap(body)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_GRANT_NO_MONOTONE_GUARD fixture (saturating_add.min with no < guard) was NOT flagged by checkGrantItemMonotoneCap',
+      };
+    }
+  }
+
   // --- Green-path teeth: good fixtures must pass ALL checks (no false positives) ---
   {
     const stripped = stripRustComments(GOOD_ATTEMPT_RECRUIT);
@@ -1034,11 +1321,15 @@ export default async function () {
           'TEETH: could not extract consume_one body from GOOD_CONSUME_ONE fixture (parser bug)',
       };
     }
-    if (checkConsumeOneUsesCheckedSub(body)) {
+    const consumeErrs = [
+      checkConsumeOneUsesCheckedSub(body),
+      checkConsumeOneDeleteAtZero(body),
+    ].filter((e) => e !== null);
+    if (consumeErrs.length > 0) {
       return {
         name,
         pass: false,
-        detail: `TEETH: GOOD_CONSUME_ONE (uses checked_sub) was incorrectly flagged: ${checkConsumeOneUsesCheckedSub(body)}`,
+        detail: `TEETH: GOOD_CONSUME_ONE was incorrectly flagged: ${consumeErrs.join(' | ')}`,
       };
     }
   }
@@ -1052,11 +1343,16 @@ export default async function () {
           'TEETH: could not extract grant_item body from GOOD_GRANT_ITEM fixture (parser bug)',
       };
     }
-    if (checkGrantItemUsesSaturatingAdd(body)) {
+    const grantErrs = [
+      checkGrantItemUsesSaturatingAdd(body),
+      checkGrantItemQtyZeroGuard(body),
+      checkGrantItemMonotoneCap(body),
+    ].filter((e) => e !== null);
+    if (grantErrs.length > 0) {
       return {
         name,
         pass: false,
-        detail: `TEETH: GOOD_GRANT_ITEM (uses saturating_add) was incorrectly flagged: ${checkGrantItemUsesSaturatingAdd(body)}`,
+        detail: `TEETH: GOOD_GRANT_ITEM was incorrectly flagged: ${grantErrs.join(' | ')}`,
       };
     }
   }
@@ -1118,22 +1414,31 @@ export default async function () {
     if (g8) failures.push(g8);
   }
 
-  // --- Check: consume_one exists and uses checked_sub -----------------------
+  // --- Check: consume_one exists, uses checked_sub, AND deletes at zero ------
   const consumeBody = extractReducerBody(src, 'consume_one');
   if (!consumeBody) {
     failures.push('consume_one: function not found in server-module source (not yet implemented)');
   } else {
     const g6a = checkConsumeOneUsesCheckedSub(consumeBody);
     if (g6a) failures.push(g6a);
+    // F2: delete-at-zero (M9b hardening)
+    const gF2 = checkConsumeOneDeleteAtZero(consumeBody);
+    if (gF2) failures.push(gF2);
   }
 
-  // --- Check: grant_item exists and uses saturating_add --------------------
+  // --- Check: grant_item exists, uses saturating_add, qty-0 guard, monotone cap ---
   const grantItemBody = extractReducerBody(src, 'grant_item');
   if (!grantItemBody) {
     failures.push('grant_item: function not found in server-module source (not yet implemented)');
   } else {
     const g6b = checkGrantItemUsesSaturatingAdd(grantItemBody);
     if (g6b) failures.push(g6b);
+    // F2: qty-0 guard (M9b hardening)
+    const gF2b = checkGrantItemQtyZeroGuard(grantItemBody);
+    if (gF2b) failures.push(gF2b);
+    // F3: monotone cap (M9b hardening)
+    const gF3 = checkGrantItemMonotoneCap(grantItemBody);
+    if (gF3) failures.push(gF3);
   }
 
   // --- Check: write_back_battle_results GC (check 8b) ----------------------
@@ -1162,7 +1467,7 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'attempt_recruit guard ladder (ownership, outcome, wild-battle, consume-before-roll, no-XP, classify-by-data, GC), consume_one checked_sub, grant_item saturating_add, write_back_battle_results GC, grant_bait self-scoped — all 9 teeth verified',
+      'attempt_recruit guard ladder (ownership, outcome, wild-battle, consume-before-roll, no-XP, classify-by-data, GC), consume_one checked_sub+delete-at-zero, grant_item saturating_add+qty-0-guard+monotone-cap, write_back_battle_results GC, grant_bait self-scoped — all teeth verified',
   };
 }
 

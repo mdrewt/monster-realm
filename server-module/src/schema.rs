@@ -188,6 +188,10 @@ pub struct Monster {
     pub current_hp: u16,
     // Party slot: 255 = in box (not in party), 0..5 = party position
     pub party_slot: u8,
+    // Per-monster care cooldown anchor (M9b, ADR-0059): server clock ms of the
+    // last successful `care`. Additive (ADR-0006). New monsters start at 0 (epoch
+    // ⇒ cooldown elapsed ⇒ first care allowed). Stays OFF monster_pub (YAGNI).
+    pub last_care_at_ms: i64,
 }
 
 /// Public projection of the monster table — NO hidden fields (no IVs, EVs,
