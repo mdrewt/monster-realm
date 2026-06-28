@@ -14,6 +14,7 @@
 pub mod combat;
 pub mod content;
 pub mod monster;
+pub mod raising;
 pub mod taming;
 pub mod types;
 pub mod world;
@@ -38,6 +39,7 @@ pub use monster::{
     xp_for_level, Affinity, Bond, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock,
     StatKind, Xp,
 };
+pub use raising::{apply_care, focus_train, CareError, FocusTrainError, FocusTrainResult};
 pub use taming::{
     attempt_recruit, encounter_triggers, recruit_chance, resolve_encounter, roll_encounter,
     EncounterEntry, EncounterTable, WildSpawn, MISSING_HP_FACTOR, RECRUIT_BASE_RATE,
