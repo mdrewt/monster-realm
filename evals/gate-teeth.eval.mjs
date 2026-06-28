@@ -163,6 +163,15 @@ export default async function () {
     parsed = null;
   }
 
+  // Defensive object guard: a bad impl returning a non-object (string/number/array)
+  // would cause `'x' in parsed` to throw an uncaught TypeError, crashing run.mjs.
+  if (parsed !== null && typeof parsed !== 'object') {
+    failures.push(
+      `TOOTH 1 FAILED: parseTableSchemas returned a non-object (${typeof parsed}) — must return a plain object keyed by table name`,
+    );
+    parsed = null;
+  }
+
   if (parsed !== null) {
     if ('EncounterEntryRow' in parsed) {
       failures.push(
@@ -786,14 +795,101 @@ pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), Strin
   }
 
   // =========================================================================
-  // RESULT
+  // TOOTH 16 — extra-table direction of checkSchemaDrift (table-level exact-match)
+  // =========================================================================
+  // A parsed map with an EXTRA table not in the baseline must be flagged.
+  // Kills: a checkSchemaDrift that only iterates baseline keys (one-directional
+  // at the table level) — it would see every baseline table is present and wrongly
+  // return []. The extra table `ghost_table` is in parsed but absent from baseline.
+  if (parsed !== null && parsed.inventory) {
+    const extraTableParsed = {
+      inventory: parsed.inventory,
+      ghost_table: { pk: 'id', columns: { id: 'u64' } },
+    };
+    let extraDrift;
+    try {
+      const inventoryOnlyBaseline = { inventory: baseline.inventory };
+      extraDrift = checkSchemaDrift(extraTableParsed, inventoryOnlyBaseline);
+    } catch (e) {
+      failures.push(
+        `TOOTH 16 FAILED: checkSchemaDrift threw on extra-table parsed map — ${e.message}`,
+      );
+      extraDrift = null;
+    }
+    if (extraDrift !== null) {
+      if (!Array.isArray(extraDrift) || extraDrift.length === 0) {
+        failures.push(
+          'TOOTH 16 FAILED: parsed map with extra table ghost_table (absent from baseline) was NOT flagged by checkSchemaDrift — table-level exact-match must be bidirectional (checked in both parsed-vs-baseline and baseline-vs-parsed directions); a one-directional impl that only iterates baseline keys wrongly passes this',
+        );
+      }
+    }
+  } else if (parsed !== null) {
+    failures.push('TOOTH 16 FAILED: parsed.inventory absent — cannot run extra-table tooth');
+  }
+
+  // =========================================================================
+  // TOOTH 17 — scheduler carve-out must be ATTRIBUTE-based, not body-based
+  // =========================================================================
+  // A non-scheduler table that has a `ScheduleAt` field type AND a bare zone_id
+  // (no PK/index, NO `scheduled(` in its attribute) MUST be FLAGGED.
+  // Kills: a sloppy carve-out that exempts via t.body.includes('ScheduleAt')
+  // instead of t.attr.includes('scheduled(') — the body-based carve-out would
+  // wrongly pass this fixture because it sees `ScheduleAt` in the struct body.
+  {
+    const notSchedulerFixtureSrc = `
+#[spacetimedb::table(name = not_a_scheduler, public)]
+pub struct NotAScheduler {
+    #[primary_key]
+    #[auto_inc]
+    pub id: u64,
+    pub zone_id: u32,
+    pub when: ScheduleAt,
+}
+`;
+    let nsTables, nsViolations;
+    try {
+      nsTables = parseTables(notSchedulerFixtureSrc);
+      nsViolations = zoningViolations(nsTables);
+    } catch (e) {
+      failures.push(
+        `TOOTH 17 FAILED: parseTables/zoningViolations threw on not-a-scheduler fixture — ${e.message}`,
+      );
+      nsViolations = null;
+    }
+    if (nsViolations !== null) {
+      if (!Array.isArray(nsViolations) || nsViolations.length === 0) {
+        failures.push(
+          "TOOTH 17 FAILED: non-scheduler table with ScheduleAt field type + bare zone_id (no 'scheduled(' in attribute) was NOT flagged by zoningViolations — the scheduler carve-out MUST key on the table's attribute string containing 'scheduled(', NOT on the struct body containing 'ScheduleAt'; a body-based carve-out wrongly exempts this table",
+        );
+      }
+    }
+  }
+
+  // =========================================================================
+  // TOOTH 18 — baseline contains all spec-required tables (EARS lock)
+  // =========================================================================
+  // Spec §3 ("Schema-snapshot gate") requires the baseline to include at minimum:
+  // encounter, battle_wild, inventory, item_row, monster, monster_pub.
+  // This tooth asserts those keys exist in the committed baseline JSON so that
+  // a future baseline-pruning edit cannot silently narrow coverage below the spec
+  // floor without failing this gate.
+  for (const t of ['encounter', 'battle_wild', 'inventory', 'item_row', 'monster', 'monster_pub']) {
+    if (!(t in baseline)) {
+      failures.push(
+        `TOOTH 18 FAILED: baseline missing required table '${t}' (spec §3 requires encounter, battle_wild, inventory, item_row, monster, monster_pub at minimum — a future baseline-pruning edit must not shrink coverage below this floor)`,
+      );
+    }
+  }
+
+  // =========================================================================
+  // RESULT — report ALL failures so the specialist sees every failing tooth
   // =========================================================================
 
   if (failures.length > 0) {
     return {
       name,
       pass: false,
-      detail: failures[0] + (failures.length > 1 ? ` [+${failures.length - 1} more failures]` : ''),
+      detail: failures.join(' | '),
     };
   }
 
@@ -801,6 +897,6 @@ pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), Strin
     name,
     pass: true,
     detail:
-      'All 15 gate-teeth pass: schema-snapshot (all-tables, EncounterEntryRow excluded, drift-free, drop/PK/type/additive all bite), zoned-schema (ghost still flagged, encounter-PK passes, bare-zone_id flagged, scheduler carved out, real source clean), recruit-security (real code passes strengthened checks, no-rejection bad fixtures bite, good alias+direct forms pass)',
+      'All 18 gate-teeth pass: schema-snapshot (all-tables, EncounterEntryRow excluded, drift-free, drop/PK/type/additive/extra-table all bite), zoned-schema (ghost still flagged, encounter-PK passes, bare-zone_id flagged, scheduler attr-carve-out correct, non-scheduler ScheduleAt-body NOT exempted, real source clean), recruit-security (real code passes strengthened checks, no-rejection bad fixtures bite, good alias+direct forms pass), baseline contains all 6 spec-required tables',
   };
 }
