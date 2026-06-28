@@ -13,7 +13,7 @@
 
 use crate::content::Species;
 use crate::monster::rules::{derive_stats, xp_for_level};
-use crate::monster::types::{Bond, EVs, Level, MonsterInstance, StatKind};
+use crate::monster::types::{Bond, EVs, IVs, Level, MonsterInstance, StatKind};
 
 /// Evolve `monster` into `to_species`.
 ///
@@ -26,7 +26,23 @@ use crate::monster::types::{Bond, EVs, Level, MonsterInstance, StatKind};
 /// No re-roll of IVs, nature, or EVs (ADR-0019 carry rule).
 #[must_use]
 pub fn evolve(monster: &MonsterInstance, to_species: &Species) -> MonsterInstance {
-    todo!()
+    // Re-derive from the TARGET base stats via the SSOT, carrying the monster's
+    // individuality (no re-roll — ADR-0019).
+    let derived = derive_stats(
+        &to_species.base_stats,
+        &monster.ivs,
+        &monster.evs,
+        &monster.nature,
+        monster.level,
+    );
+    // Clone carries every other field (nickname/level/xp/ivs/nature/evs/bond/
+    // party_slot) verbatim; only species, stats, and clamped HP change.
+    let mut out = monster.clone();
+    out.species_id = to_species.id;
+    out.derived_stats = derived;
+    // Transformation, not a heal: preserve damage but never exceed the new max.
+    out.current_hp = monster.current_hp.min(derived.hp);
+    out
 }
 
 /// Fuse two parent monsters into a new offspring of `offspring` species.
@@ -45,7 +61,42 @@ pub fn evolve(monster: &MonsterInstance, to_species: &Species) -> MonsterInstanc
 /// - `derived_stats`: `derive_stats(offspring.base_stats, offspring_ivs, zero_evs, nature, L1)`
 #[must_use]
 pub fn fuse(a: &MonsterInstance, b: &MonsterInstance, offspring: &Species) -> MonsterInstance {
-    todo!()
+    // Per-stat IV max through ONE closure — a field transposition is impossible.
+    let iv = |k: StatKind| a.ivs.get(k).max(b.ivs.get(k));
+    let ivs = IVs::new(
+        iv(StatKind::Hp),
+        iv(StatKind::Attack),
+        iv(StatKind::Defense),
+        iv(StatKind::Speed),
+        iv(StatKind::SpAttack),
+        iv(StatKind::SpDefense),
+    )
+    .expect("per-stat max of two <=31 IVs is <=31 by construction");
+
+    // Higher-bond parent's nature; `>=` resolves an equal-bond tie to `a`.
+    let nature = if a.bond >= b.bond { a.nature } else { b.nature };
+
+    let level = Level::new(1).expect("1 is a valid level");
+    let evs = EVs::zero();
+    let derived = derive_stats(&offspring.base_stats, &ivs, &evs, &nature, level);
+
+    // Min of the PRESENT slots; `None` only if both are `None` (an active parent
+    // keeps the offspring active — fusion never silently boxes it).
+    let party_slot = [a.party_slot, b.party_slot].into_iter().flatten().min();
+
+    MonsterInstance {
+        species_id: offspring.id,
+        nickname: None,
+        level,
+        xp: xp_for_level(level),
+        ivs,
+        nature,
+        evs,
+        bond: Bond::default_bond(),
+        current_hp: derived.hp,
+        derived_stats: derived,
+        party_slot,
+    }
 }
 
 // ============================================================================

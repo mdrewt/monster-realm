@@ -57,6 +57,7 @@ fn default_base() -> StatBlock {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_monster(
     species_id: u32,
     ivs: IVs,

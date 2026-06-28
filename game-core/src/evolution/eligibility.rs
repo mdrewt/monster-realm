@@ -32,7 +32,16 @@ pub fn resolve_evolution(
     bond: Bond,
     applied_item: Option<u32>,
 ) -> Option<u32> {
-    todo!()
+    // FIRST-wins, declaration order. The `match` is EXHAUSTIVE with NO wildcard
+    // arm so a future `EvolutionTrigger` variant compiler-flags here (ADR-0061).
+    evolutions.iter().find_map(|cond| {
+        let fires = match cond.trigger {
+            EvolutionTrigger::Level(l) => level >= l,
+            EvolutionTrigger::Bond(b) => bond >= b,
+            EvolutionTrigger::Item(id) => applied_item == Some(id),
+        };
+        fires.then_some(cond.to_species)
+    })
 }
 
 /// Passive convenience wrapper: checks whether `monster` is eligible to evolve
@@ -42,7 +51,7 @@ pub fn resolve_evolution(
 /// Delegates to `resolve_evolution` (single implementation path — SSOT).
 #[must_use]
 pub fn evolves_to(evolutions: &[EvolutionCondition], monster: &MonsterInstance) -> Option<u32> {
-    todo!()
+    resolve_evolution(evolutions, monster.level, monster.bond, None)
 }
 
 // ============================================================================
@@ -55,8 +64,7 @@ mod tests {
     use crate::content::{EvolutionCondition, EvolutionTrigger};
     use crate::monster::rules::derive_stats;
     use crate::monster::types::{
-        Affinity, Bond, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock, StatKind,
-        Xp,
+        Bond, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock, Xp,
     };
 
     // -----------------------------------------------------------------------
