@@ -281,9 +281,12 @@ Wild-encounter trigger and individuality storage. Defers recruit/bait/inventory 
   reducer). Guards: rejects empty/duplicate `party_monster_ids`, rejects if player already
   `Ongoing`. Inserts `battle` + `battle_wild` atomically. Logs only
   `{battle_id, wild_species_id, wild_level}` — never the seed/IVs (log side-channel).
-- **`start_wild_battle` reducer** — dev/test entry. Draws `ctx.random()` (no
-  client-supplied seed → no IV-grind cheat surface), rolls from the private `encounter`
-  table, calls `begin_encounter`. Gates or removes at M9+.
+- **`start_wild_battle` reducer** — dev/test entry, `#[cfg(feature = "dev_reducers")]`
+  (OFF in release/publish — ADR-0054, M8.7b). Draws `ctx.random()` (no client-supplied
+  seed → no IV-grind cheat surface), derives the zone from the caller's `Character.zone_id`
+  and **rejects** a mismatched `zone_id` arg (reject-not-clamp; never rolls an arbitrary
+  client-named zone's private table), rolls from the caller's own private `encounter`
+  table, calls `begin_encounter`.
 - **`movement_tick` integration** — player-only, steps-onto-grass-only. One
   `ctx.random()` draw per stepping character (hit or miss), then `resolve_encounter`;
   partial-sync (no `encounter` row) and rate-0 are no-ops, never panics.
@@ -335,9 +338,13 @@ public additive owner-scoped table; bait classified by data.
 - **Public `inventory` table (ADR-0046):** additive, owner-scoped: `(inv_id, owner_identity,
   item_id, count)`. `ItemRow` gains `recruit_bonus: u16` (seeded in `sync_content`;
   bait = `recruit_bonus > 0`, data-driven both sides, not a magic id). Helpers: `grant_item`
-  (saturating_add on count, find-then-update ensures one stack per `(owner,item_id)`),
+  (saturating_add on count, find-then-update ensures one stack per `(owner,item_id)` — now
+  mechanically gated by the `inventory-single-stack` eval since SpacetimeDB 1.12 has no
+  multi-column unique constraint, ADR-0054/M8.7b; `#[cfg(feature = "dev_reducers")]` as its
+  only caller is the dev `grant_bait`),
   `consume_one` (checked_sub, reject if 0/missing — never wrap). Dev/test `grant_bait`
-  reducer (self-scoped, bait-only, capped qty; supersede at M9).
+  reducer (self-scoped, bait-only, capped qty; `#[cfg(feature = "dev_reducers")]` — OFF in
+  release, ADR-0054; supersede at M9).
 - **`attempt_recruit(ctx, battle_id, bait_item_id: Option<u32>) -> Result<(),String>`** —
   server-authoritative reducer. Guards (Err + log): battle exists, player-owned, outcome
   `Ongoing`, wild signal (`battle_wild` exists). Bait: if `Some(id)`, read `recruit_bonus`
