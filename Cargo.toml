@@ -3,7 +3,7 @@
 # the structural half of feature-isolation (the eval is the proof, ADR-0003).
 [workspace]
 resolver = "2"
-members = ["game-core", "client-wasm", "server-module", "sim-harness"]
+members = ["game-core", "client-wasm", "server-module", "sim-harness", "evals/release-overflow-teeth"]
 
 [workspace.package]
 version = "0.1.0"

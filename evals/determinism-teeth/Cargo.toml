@@ -1,0 +1,25 @@
+# Determinism-gate proof-of-teeth fixture (M8.8a, ADR-0055). DELIBERATELY IMPURE.
+#
+# This crate exists ONLY to be REJECTED by `cargo clippy` under the workspace
+# `clippy.toml` determinism bans. It is DETACHED from the root workspace (own
+# `[workspace]` table) so:
+#   - `just lint` (`cargo clippy --workspace`) never compiles it (it is not a member),
+#   - its rand/chrono/getrandom deps never enter the root `Cargo.lock`.
+# `evals/determinism-fail-loud.eval.mjs` runs clippy on it with CLIPPY_CONF_DIR
+# pointed at the workspace root and asserts the gate bites on every sink.
+# DO NOT add this to the root workspace `members`. DO NOT try to make it lint-clean.
+[package]
+name = "determinism-teeth"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+rand = "=0.9.4"
+chrono = "=0.4.45"
+getrandom = "=0.3.4"
+# 0.2 alias so the fixture can call the 0.2-era `getrandom::getrandom` fn (renamed
+# to `fill` in 0.3+); clippy still reports the canonical path `getrandom::getrandom`.
+getrandom02 = { package = "getrandom", version = "=0.2.17" }
