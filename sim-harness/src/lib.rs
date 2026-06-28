@@ -115,11 +115,22 @@ impl Link {
 // turn-deadline. This driver asserts convergence + reorder-occurs only.
 // ===========================================================================
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use game_core::{zone_0, Millis, MoveInput, TilePos};
+use game_core::{zone_0, Direction, Millis, MoveInput, TilePos};
 
 use crate::world::ServerWorld;
+
+/// The single zone all simulated clients share (zone 0); the per-zone tick drains
+/// every client each step (movement is per-character — there is no cross-character
+/// collision, so a shared zone is the strongest convergence stress).
+const CONVERGE_ZONE: u32 = 0;
+
+/// Monotonic tick spacing for the driver. The authoritative final *tile* is
+/// independent of `now` (apply_move stamps `move_started_at` but derives position
+/// only from the move + map), so this value is cosmetic — it just keeps the
+/// injected clock advancing (never a wall clock).
+const TICK_MS: i64 = 16;
 
 /// One client's single intent: a per-client monotonic `seq`, the move, and its
 /// send time. Each `client` is an independent character in the same zone.
@@ -146,34 +157,122 @@ pub enum ApplyOrder {
 
 /// Transport `intents` over `link` for `seed` (loss + reorder), returning the
 /// surviving delivered intents in link delivery order (by recv time, then id).
+///
+/// Each intent is stamped with a stable msg id (its index) so the delivered
+/// stream can be mapped back to the originating `ClientIntent`.
 #[must_use]
 pub fn deliver(intents: &[ClientIntent], link: &Link, seed: u64) -> Vec<ClientIntent> {
-    let _ = (intents, link, seed);
-    todo!("M8.8d: convergence driver not yet implemented")
+    let msgs: Vec<Msg> = intents
+        .iter()
+        .enumerate()
+        .map(|(i, it)| Msg {
+            id: i as u64,
+            send_ms: it.send_ms,
+        })
+        .collect();
+    link.transport(&msgs, seed)
+        .into_iter()
+        .map(|d| intents[d.id as usize]) // id is the index we stamped above
+        .collect()
 }
 
 /// Apply a given ORDER of (delivered, surviving) intents to a fresh
 /// `ServerWorld`, returning each client's final authoritative tile.
+///
+/// One character is joined per distinct client (in sorted client order, so char
+/// ids are stable regardless of policy). Under [`ApplyOrder::SeqCanonical`] each
+/// client's intents are re-sorted by `seq` before applying — so the authoritative
+/// result is independent of the link's delivery order (convergence). Under
+/// [`ApplyOrder::Arrival`] intents are applied in the given (delivery) order, so a
+/// reordered higher `seq` makes the server reject the later-arriving lower `seq`
+/// as stale (order-dependent — the known-bad fixture).
+///
+/// Each intent is enqueued (a stale/full `Err` is dropped, exactly as the
+/// authoritative reducer rejects-not-clamps) then the zone is ticked once to drain
+/// it — a 1:1 server model in which every accepted intent applies. The final tile
+/// is therefore a pure function of the *accepted* intent subsequence.
 #[must_use]
 pub fn apply_stream(ordered: &[ClientIntent], policy: ApplyOrder) -> BTreeMap<u64, TilePos> {
-    let _ = (ordered, policy);
-    todo!("M8.8d: convergence driver not yet implemented")
+    let map = zone_0();
+    let mut world = ServerWorld::new();
+
+    // Join one character per distinct client, in sorted client order → stable
+    // char ids regardless of apply policy / delivery order.
+    let clients: BTreeSet<u64> = ordered.iter().map(|it| it.client).collect();
+    let char_of: BTreeMap<u64, u64> = clients
+        .iter()
+        .map(|&c| (c, world.join(CONVERGE_ZONE)))
+        .collect();
+
+    // The apply sequence: SeqCanonical canonicalizes per client by seq (reorder-
+    // robust); Arrival keeps the given delivery order (order-dependent).
+    let sequence: Vec<ClientIntent> = match policy {
+        ApplyOrder::Arrival => ordered.to_vec(),
+        ApplyOrder::SeqCanonical => {
+            let mut v = ordered.to_vec();
+            v.sort_by_key(|it| (it.client, it.seq));
+            v
+        }
+    };
+
+    let mut now: i64 = 0;
+    for it in &sequence {
+        now += TICK_MS;
+        // Drop a stale/full Err (the server rejects, never clamps).
+        let _ = world.enqueue(char_of[&it.client], it.input, it.seq);
+        world.tick_zone(CONVERGE_ZONE, Millis(now), &map);
+    }
+
+    clients
+        .iter()
+        .map(|&c| {
+            (
+                c,
+                world
+                    .pos(char_of[&c])
+                    .expect("a joined character always has a position"),
+            )
+        })
+        .collect()
 }
 
-/// `true` iff `delivered` reorders any client's intents (a higher `seq` arrives
-/// before a lower `seq` for the same client) — so a `jitter: 0` regression is
-/// caught by the reorder-occurs assertion.
+/// `true` iff `delivered` reorders any client's intents (a lower `seq` is
+/// delivered *after* a higher `seq` of the same client) — so a `jitter: 0`
+/// regression (which delivers each client strictly in send order) is caught by
+/// the reorder-occurs assertion.
 #[must_use]
 pub fn had_reorder(delivered: &[ClientIntent]) -> bool {
-    let _ = delivered;
-    todo!("M8.8d: convergence driver not yet implemented")
+    let mut max_seq_seen: BTreeMap<u64, u64> = BTreeMap::new();
+    for it in delivered {
+        let m = max_seq_seen.entry(it.client).or_insert(it.seq);
+        if it.seq < *m {
+            return true; // a lower seq arrived after a higher one for this client
+        }
+        *m = it.seq;
+    }
+    false
 }
 
-/// The canonical ≥2-client scenario: two characters walking distinct paths in
-/// zone 0 with staggered send times, enough intents that loss + reorder bite.
+/// The canonical ≥2-client scenario: two characters each walking 6 east steps in
+/// zone 0, send times spaced 16 ms (< the jitter window, so the link can reorder
+/// adjacent steps) and the two clients offset by 8 ms (interleaved delivery).
+/// Twelve intents total — enough that loss (`loss_pct`) drops some and jitter
+/// reorders some across seeds. East is walkable from spawn `(1,1)` to `(7,1)`, so
+/// every client visibly leaves spawn (the convergence claim is non-vacuous).
 #[must_use]
 pub fn scenario() -> Vec<ClientIntent> {
-    todo!("M8.8d: convergence driver not yet implemented")
+    let mut intents = Vec::with_capacity(12);
+    for client in 0..2u64 {
+        for seq in 1..=6u64 {
+            intents.push(ClientIntent {
+                client,
+                seq,
+                input: MoveInput::Step(Direction::East),
+                send_ms: (seq - 1) * 16 + client * 8,
+            });
+        }
+    }
+    intents
 }
 
 // ===========================================================================
