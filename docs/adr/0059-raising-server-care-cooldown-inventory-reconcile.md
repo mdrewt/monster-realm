@@ -57,14 +57,23 @@ home the backbone in the spec's `inventory.rs` module:
 - **`consume_one` gains delete-at-zero** (M9 spec §3: "delete the row at zero — no lingering
   empty stacks"). It keeps `checked_sub(1)` (no bare decrement — the `recruit-reducer-security`
   eval Check 6a still bites) and, when the post-decrement count is 0, **deletes the row**
-  instead of writing a `count: 0` stack.
-- **`grant_item` gains a per-stack cap** `saturating_add(qty).min(MAX_ITEM_STACK)` (M9 spec §3:
-  "saturating single-stack grant"). It keeps `saturating_add` (eval Check 6b still bites) and
-  stays **`#[cfg(feature = "dev_reducers")]`-gated**: its only caller remains the dev reducer
-  `grant_bait` until a *production* grant path lands (the M12 quest reward / M13 shop, or
-  `train`'s food economy). Un-gating now would re-introduce the dead-code warning the gate
-  exists to prevent (ADR-0054). The eval reads source text, so the gate does not affect the
-  single-stack/saturating checks.
+  instead of writing a `count: 0` stack. The early `count == 0` reject path **also deletes** the
+  (zombie) row before returning `Err`, so any pre-existing empty stack is self-cleaning (red-team F5).
+- **`grant_item` is hardened to a monotone, capped, no-empty-stack grant** (red-team F2/F3):
+  - **qty-0 guard:** `if qty == 0 { return; }` first — a zero grant never inserts a `count: 0`
+    zombie row (F2; `grant_bait(_, 0)` reaches `grant_item(_, 0)` via `qty.min(99)`).
+  - **monotone cap:** on the existing-stack branch, only grow when below cap —
+    `if row.count < MAX_ITEM_STACK { row.count = row.count.saturating_add(qty).min(MAX_ITEM_STACK); }`
+    — so a grant can never *shrink* an already-at/over-cap stack (F3), while still capping growth
+    (M9 spec §3 "saturating single-stack grant"). Keeps `saturating_add` (eval Check 6b still bites).
+  - Stays **`#[cfg(feature = "dev_reducers")]`-gated** (its only caller is the dev reducer
+    `grant_bait` until a *production* grant path lands — M12 quest / M13 shop / the M9b-tail
+    training-food economy); un-gating now re-introduces the dead-code warning the gate prevents
+    (ADR-0054). **The `taming.rs` import `use crate::inventory::grant_item;` MUST carry the same
+    `#[cfg(feature = "dev_reducers")]` gate** (else an unused-import warning fails `build-ci-hygiene`
+    in the non-dev build — red-team F6); the `#[cfg(...)] use crate::schema::Inventory;` struct import
+    migrates to `inventory.rs` with the function. `consume_one` stays ungated (always-compiled caller
+    `attempt_recruit`), so `inventory.rs` has a split-compilation profile — by design.
 
 The `inventory` table struct, the `inventory-single-stack` and `recruit-reducer-security`
 evals (both glob `server-module/src/**`), and `attempt_recruit`'s behavior are **unchanged**.
@@ -102,16 +111,33 @@ amount, gated by a per-monster cooldown measured from `ctx.timestamp`:
   world-readable table — YAGNI for a countdown UI, which can request it additively at M9c).
   New monsters get `last_care_at_ms: 0` (epoch ⇒ "cooldown elapsed" ⇒ first care allowed),
   set in `marshal::monster_from_instance` (the single production `Monster` constructor).
-- **Order (mirrors ADR-0058 §3):** `find monster → require_owner →
-  apply_care(Bond, CARE_BOND_AMOUNT)` (maps `Err(AtMaxBond)`/`Err(NoEffect)` to a reject) `→`
-  cooldown check `now − last_care_at_ms < CARE_COOLDOWN_MS → Err` `→` on `Ok`, **dual-write**
-  the new bond to `monster` **and** `monster_pub` (`pub_from_monster`, the `monster-dual-write`
-  eval requires the mirror) and set `last_care_at_ms = now`. **The cooldown is burned
-  (`last_care_at_ms` written) only on success** — so a rejected `care` (max bond, within
-  cooldown, non-owner, missing monster) never advances the cooldown, satisfying the spec's
-  "reject *before* burning the cooldown".
+- **Order (precise — settled after review; mirrors ADR-0058 §3 max-bond-first emphasis):**
+  1. `find monster` → `Err("monster not found")` if absent.
+  2. `require_owner(ctx, "care", m.owner_identity)` → `Err` if not the owner.
+  3. `let new_bond = evaluate_care(m.bond, m.last_care_at_ms, now_ms(ctx))?` — the **pure decision
+     seam** (below) runs `apply_care` (reject `AtMaxBond`/`NoEffect`) **then** the cooldown gate.
+  4. **Only on `Ok`:** `m.bond = new_bond; m.last_care_at_ms = now;` then **dual-write** to `monster`
+     **and** `monster_pub` via `pub_from_monster(&m)` (the `monster-dual-write` eval requires the
+     UPDATE-path mirror use `pub_from_monster`, strengthened this slice — see proof-of-teeth F4).
+  **No DB write occurs before step 4.** SpacetimeDB rolls the whole reducer transaction back on any
+  `Err`, so a rejected `care` (max bond, within cooldown, non-owner, missing monster) can never burn
+  the cooldown or mutate bond — "reject *before* burning the cooldown" holds **structurally**. The
+  `raising-reducer-security` eval adds defense-in-depth: it flags any `monster().monster_id().update(`
+  textually inside an `Err`/reject branch (F1).
+- **Pure decision seam (`evaluate_care`, testable without a DB):**
+  `fn evaluate_care(bond: u8, last_care_at_ms: i64, now_ms: i64) -> Result<u8, String>` lives in
+  `raising.rs`, composes the SSOT `apply_care(Bond::new(bond), CARE_BOND_AMOUNT)` with the cooldown
+  gate, and returns the **new bond** (or `Err`). It is unit-tested in `raising_tests.rs` for: the
+  cooldown boundary uses **`<` not `<=`** (`now − last == CARE_COOLDOWN_MS` ⇒ allowed) (F7); the
+  subtraction is **`now_ms.saturating_sub(last_care_at_ms)`** so a backwards/zero clock can only
+  *over-reject*, never wrap into a bypass (F8 — `last_care_at_ms` is only ever written from
+  `now_ms(ctx)` ∈ `[0, i64::MAX]`); `AtMaxBond`/`NoEffect` map to `Err`; a rejected decision returns
+  `Err` (the caller writes nothing). The reducer is then the thin shell: find → require_owner →
+  `evaluate_care?` → write.
 - **Clock is server-authoritative:** time comes from `now_ms(ctx)` (= `ctx.timestamp`), never a
-  client argument — `care`'s signature has no timestamp param (a reducer-security tooth).
+  client argument — `care`'s signature is `care(ctx, monster_id)` with no timestamp param (a
+  reducer-security tooth). `last_care_at_ms` default `0` (epoch) ⇒ first care allowed because
+  production `now_ms ≫ CARE_COOLDOWN_MS`; the `.max(0)`-clamped `now_ms` only ever over-rejects.
 - **`CARE_BOND_AMOUNT` / `CARE_COOLDOWN_MS`** are documented server-side `raising.rs` consts
   (tunable policy the reducer supplies to the pure rule; ADR-0058 §"residual (c)"). Initial
   tuning is a playtest call (spec §6 "bond curve … tunable"), not a contract.
@@ -137,13 +163,22 @@ example assumed `train` was the simpler half; the delivered code shows the oppos
 `monster::types` — both are train/game-core-bound, so they travel with `train`, not `care`.
 
 **Touch-set note (M9b, SERIAL — structural aggregation, no concurrent sibling):** beyond the
-declared `{schema,inventory,raising,taming}.rs`, M9b also minimally edits `lib.rs` (the
-`mod inventory;` + `mod raising;` wiring — the two modules were never scaffolded), `marshal.rs`
-+ `marshal_tests.rs` (the new `last_care_at_ms` field on the single `Monster` constructor + its
-test fixture), `evals/**` (a new `raising-reducer-security` eval + the regenerated
-`table-schemas.json` baseline), and `client/src/module_bindings/**` (the new `care` reducer).
-All are mechanical consequences of the additive column + new reducer; all are safe because M9b
-runs alone. They are recorded here and in the handoff so the supervisor needs no re-serialize.
+declared `{schema,inventory,raising,taming}.rs`, M9b also minimally edits: `lib.rs` (the
+`mod inventory;` + `mod raising;` wiring — the two modules were never scaffolded); `marshal.rs`
++ `marshal_tests.rs` (the new `last_care_at_ms` field on the single production `Monster`
+constructor `monster_from_instance` + the `m7b_test_monster_row()` fixture — the second and only
+other `Monster {}` literal); the new sibling test files `inventory_tests.rs` + `raising_tests.rs`
+(`#[path]`-declared per the M8.9c convention); `evals/**` (a new `raising-reducer-security` eval,
+the extended `recruit-reducer-security` + `monster-dual-write` evals, and the regenerated
+`evals/baselines/table-schemas.json` baseline); and `client/src/module_bindings/**` (the new
+`care` reducer file). All are mechanical consequences of the additive column + new reducer + the
+module move; all are safe because M9b runs alone. They are recorded here and in the handoff so the
+supervisor needs no re-serialize.
+
+> **ADR cross-reference note.** The M9 spec §3 cites "ADR-0015 (owner RLS)"; in this project's
+> local ADR sequence that design ADR is realized as **ADR-0040** (RLS fallback) + **ADR-0046**
+> (inventory model) — the same non-contiguous spec-prose→real-number remap ADR-0046 documents for
+> "ADR-0018"→inventory. Reads of the spec→ADR chain should follow 0015→{0040,0046}.
 
 ## Considered alternatives
 
@@ -167,18 +202,46 @@ runs alone. They are recorded here and in the handoff so the supervisor needs no
 
 ## Proof-of-teeth (gating tests, authored by the `tester` from the EARS criteria)
 
-- **`raising-reducer-security` eval (new, mirrors `recruit-reducer-security`):** `care` body has a
-  rejecting ownership comparison → `Err`; reads time from `ctx.timestamp`/`now_ms` (no client time
-  arg — signature scan); writes `last_care_at_ms` **only after** the `Ok` path (cooldown not burned
-  on reject); mirrors bond to `monster_pub` (dual-write); calls `apply_care` (SSOT — no inline bond
-  arithmetic / no raw `saturating_add` on bond in the reducer). Each with a BAD fixture that bites
-  and a GOOD fixture that passes.
-- **Inventory hardening teeth:** `consume_one` deletes at zero (a fixture without `.delete(` on the
-  zero path is flagged) while retaining `checked_sub`; `grant_item` caps with `.min(MAX_ITEM_STACK)`
-  while retaining `saturating_add`; `inventory().insert(` stays only in `grant_item`.
-- **Schema:** `table-schemas.json` baseline gains exactly `monster.last_care_at_ms: i64`; the
-  `bindings-drift` eval stays green with the regenerated bindings (only the new `care` reducer added;
-  no table binding changes); schema table count unchanged at 15.
+Each fixture must FAIL a realistic wrong impl (a BAD fixture that bites) and a GOOD fixture must pass.
+**Eval ownership (no split, no duplication):** the `care` reducer checks live in a **new**
+`evals/raising-reducer-security.eval.mjs`; the inventory-helper checks live in (an extension of) the
+existing `evals/recruit-reducer-security.eval.mjs` (which already extracts `grant_item`/`consume_one`);
+the UPDATE-path mirror strengthening lives in `evals/monster-dual-write.eval.mjs`.
+
+- **`raising-reducer-security` (new) — `care` reducer:**
+  - **(ownership)** body has a rejecting ownership comparison / `require_owner` → `Err`; BAD = no owner check.
+  - **(server clock)** body references `now_ms(`/`ctx.timestamp`; the `care` *signature* has no
+    timestamp/`i64` time param (client clock never trusted); BAD = a `now_ms: i64` param.
+  - **(F1 reject-never-burns)** no `monster().monster_id().update(` appears inside an `Err`/cooldown
+    reject branch; BAD = an `update(...)` before a `return Err(` on the cooldown path is flagged.
+  - **(F7 cooldown operator)** the cooldown comparison is `<` (not `<=`); BAD = `<=` flagged (or
+    require the compact `<CARE_COOLDOWN_MS`).
+  - **(SSOT)** body calls `apply_care(` (via `evaluate_care`) and contains no inline bond arithmetic
+    (`saturating_add` on bond / `.bond +`); BAD = inline `bond.saturating_add(`.
+  - **(dual-write mirror)** `monster_pub().monster_id().update(` present with `pub_from_monster(`.
+- **`raising_tests.rs` (Rust unit, pure `evaluate_care`):** cooldown boundary exact (`now-last ==
+  CARE_COOLDOWN_MS` ⇒ Ok; one less ⇒ Err); `saturating_sub` (a future/zero `last_care_at_ms` only
+  over-rejects, never bypasses); `AtMaxBond`/`NoEffect` → Err; a rejected decision yields `Err` and
+  no new state. (The DB-touching reducer shell is gated statically by the eval above; the *logic* is
+  gated here without a DB harness.)
+- **`recruit-reducer-security` (extended) — inventory helpers:** `consume_one` deletes at zero
+  (BAD = a zero path that writes `count:0` without `.delete(`) while retaining `checked_sub`;
+  `grant_item` caps with `.min(MAX_ITEM_STACK)` AND is **monotone** (BAD = anti-monotone cap with
+  no `row.count < MAX_ITEM_STACK` guard — F3) AND rejects `qty == 0` (BAD = no zero guard — F2),
+  while retaining `saturating_add`. The existing `GOOD_GRANT_ITEM`/`GOOD_CONSUME_ONE` fixtures are
+  updated to satisfy the new checks. `inventory().insert(` stays only in `grant_item`
+  (`inventory-single-stack`, unchanged — survives the file move via the `src/**` glob).
+- **`monster-dual-write` (strengthened — F4):** the UPDATE path (not just INSERT) requires
+  `pub_from_monster(` so a hand-rolled partial mirror in `care` (or a future `current_hp`-on-care)
+  cannot diverge `monster_pub`; BAD = a hand-rolled `pub_m.bond = ...; monster_pub().update(pub_m)`.
+  The real source already passes (existing UPDATE sites use `pub_from_monster`).
+- **`marshal_tests` (Rust unit):** `monster_from_instance_flattens_correctly` asserts the new
+  `last_care_at_ms == 0` default; `m7b_test_monster_row()` fixture (the second `Monster {}` literal)
+  sets the field (compiler-enforced).
+- **Schema/bindings:** `evals/baselines/table-schemas.json` gains exactly
+  `monster.last_care_at_ms: "i64"` (table count unchanged at 15; `monster` column count 29→30);
+  `bindings-drift` stays green with regenerated bindings (only the new `care` reducer file added; no
+  table binding changes — `monster` is private).
 
 ## Consequences
 
