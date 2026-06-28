@@ -400,6 +400,26 @@ Tracked consciously so they stay visible, not forgotten.
   `movement_tick` / `start_wild_battle` reducer glue is review-covered and the pure logic
   (`resolve_encounter`, `stepped_onto_grass`) is unit-tested; full reducer integration
   tests ride with the M8d Playwright client flow.
+- **(e) Battle-outcome render wired (M8.7e), with two named residuals.** The terminal
+  outcome frame (`BattleView.#renderOutcome` — "Victory!/Defeat…/Got away safely!") was
+  dead in the integrated build because `refreshBattle()` sourced the overlay from
+  `ongoingBattle()` (Ongoing-only) and hid it the instant `outcome != Ongoing`. M8.7e
+  feeds the overlay from a new `store.latestPlayerBattle(identity)` (most-recent battle,
+  any outcome; bigint-keyed) through a **pure reducer `battleModel.ts::decideBattleOverlay`**
+  (`(latest, {dismissedBattleId, synced}) → (action, nextState)`): Ongoing auto-shows
+  (preserved), a resolved battle renders its outcome **once**, a first-sight terminal row
+  is pre-dismissed (no stale pop on login), and a dismissed battle never re-pops. The
+  resolved `battle` row persisting un-reaped (follow-up (a)) is what holds the frame on
+  screen — the render leverages it deliberately. Residuals: **(i)** dismiss is **Escape-only**
+  (the EARS' "and/or a brief timeout"); a hands-free auto-dismiss timeout + an on-screen /
+  non-keyboard dismiss affordance are deferred to **M23 (client a11y)** — Escape is this
+  client's established overlay-dismiss key. **(ii)** The **bait client surface** (subscribe
+  `inventory`/`item_row` → `BaitItem[]` → 4th `buildBattleViewModel` arg → un-fixme
+  `recruit.spec.ts`) is deferred to **M9c** (M9 raising owns the inventory-subscription /
+  `player_item` backbone; M8.7b release-gated the `start_wild_battle`/`grant_bait` dev
+  reducers out of the default client bindings, so the recruit e2e has no green path from a
+  client-only slice). `decideBattleOverlay` follows ADR-0014's pure-core/shell split — no
+  new ADR.
 
 ## Status
 
