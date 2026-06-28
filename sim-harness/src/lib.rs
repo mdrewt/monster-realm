@@ -1,10 +1,23 @@
-//! `sim-harness` — a headless, deterministic, multi-client driver.
+//! `sim-harness` — a headless, deterministic, multi-client netcode driver.
 //!
 //! It owns an injected clock + seed and replays a fixed rule sequence, asserting
 //! replay-determinism (identical seed => identical final state). The seeded
 //! netcode `Link` (latency / loss / reorder) makes netcode testable in CI without
 //! a browser — every decision derives from a seed, never a wall clock or global
 //! RNG (the determinism contract; enforced by clippy).
+//!
+//! The convergence driver ([`deliver`] + [`apply_stream`]) feeds that lossy,
+//! reordering `Link` into the authoritative [`world::ServerWorld`] and proves the
+//! headline netcode property (ADR-0013): under latency/jitter/loss/reorder the
+//! authoritative final state is delivery-order-INVARIANT — clients converge, no
+//! desync — gated by a known-bad order-dependent fixture the eval rejects
+//! (proof-of-teeth).
+//!
+//! Scope of the harness's asserted invariants: replay-determinism, link
+//! determinism, convergence, and reorder-occurs. It deliberately does NOT model
+//! `forfeit-on-disconnect` or `turn-deadline` — those PvP-orchestration invariants
+//! are deferred to **M16-PvP** (ADR-0025) and are NOT claimed here (M8.8d
+//! decision), so the harness's stated role matches exactly what it tests.
 
 #![forbid(unsafe_code)]
 
