@@ -6,4 +6,11 @@
         description: "Sweet bait that calms a wild monster, easing recruitment.",
         recruit_bonus: 150,
     ),
+    (
+        id: 2,
+        name: "Power Root",
+        description: "A bitter tonic; the grind of training on it builds raw Attack.",
+        train_stat: Some(Attack),
+        train_amount: 10,
+    ),
 ]

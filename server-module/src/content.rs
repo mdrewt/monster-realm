@@ -166,6 +166,8 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) {
             name: item.name.clone(),
             description: item.description.clone(),
             recruit_bonus: item.recruit_bonus,
+            train_stat: item.train_stat,
+            train_amount: item.train_amount,
         };
         match ctx.db.item_row().id().find(item.id) {
             Some(_) => {

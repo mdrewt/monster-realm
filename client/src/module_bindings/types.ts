@@ -162,6 +162,10 @@ export const ItemRow = __t.object("ItemRow", {
   name: __t.string(),
   description: __t.string(),
   recruitBonus: __t.u16(),
+  get trainStat() {
+    return __t.option(StatKind);
+  },
+  trainAmount: __t.u16(),
 });
 export type ItemRow = __Infer<typeof ItemRow>;
 
@@ -311,6 +315,17 @@ export const StatBlock = __t.object("StatBlock", {
   spDefense: __t.u16(),
 });
 export type StatBlock = __Infer<typeof StatBlock>;
+
+// The tagged union or sum type for the algebraic type `StatKind`.
+export const StatKind = __t.enum("StatKind", {
+  Hp: __t.unit(),
+  Attack: __t.unit(),
+  Defense: __t.unit(),
+  Speed: __t.unit(),
+  SpAttack: __t.unit(),
+  SpDefense: __t.unit(),
+});
+export type StatKind = __Infer<typeof StatKind>;
 
 export const TypeRelationRow = __t.object("TypeRelationRow", {
   id: __t.u64(),

@@ -49,7 +49,7 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 use game_core::focus_train;
-use game_core::{EVs, FocusTrainResult, IVs, Level, Nature, NatureKind, StatBlock, StatKind};
+use game_core::{EVs, IVs, Level, Nature, NatureKind, StatBlock, StatKind};
 use proptest::prelude::*;
 
 /// Bulbasaur-like base stats fixture (matches m9a_gating_tests canonical fixture).

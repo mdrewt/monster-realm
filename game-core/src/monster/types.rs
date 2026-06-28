@@ -161,8 +161,8 @@ impl<'de> Deserialize<'de> for IVs {
     }
 }
 
-const EV_PER_STAT_CAP: u16 = 252;
-const EV_TOTAL_CAP: u16 = 510;
+pub(crate) const EV_PER_STAT_CAP: u16 = 252;
+pub(crate) const EV_TOTAL_CAP: u16 = 510;
 
 /// Effort Values — training gains per stat.
 /// Per-stat cap: 252. Total cap: 510.

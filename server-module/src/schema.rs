@@ -13,7 +13,7 @@
 //! accessor trait (e.g. `use crate::schema::config;`). This file name is part of
 //! the canonical `touches:` vocabulary fixed by ADR-0056 — keep it stable.
 
-use game_core::{ActionState, Affinity, BattleState, Direction, MoveInput, NatureKind};
+use game_core::{ActionState, Affinity, BattleState, Direction, MoveInput, NatureKind, StatKind};
 use spacetimedb::Identity;
 
 // --- Tables (additive, ADR-0006; world tables carry an indexed zone_id, ADR-0007) ---
@@ -120,6 +120,11 @@ pub struct ItemRow {
     /// (0 = not bait). Seeded from the `game-core` `ItemDef` (one SSOT), so both
     /// client and server classify bait by data, never by a hardcoded id.
     pub recruit_bonus: u16,
+    /// Focus-training target stat (M9b-tail); None for non-training items.
+    /// Seeded 1:1 from `ItemDef.train_stat` (content SSOT).
+    pub train_stat: Option<StatKind>,
+    /// EVs granted toward `train_stat` per use; 0 for non-training items.
+    pub train_amount: u16,
 }
 
 // --- Encounter table (M8b, ADR-0040 second visibility mode: must-never-leak) ----

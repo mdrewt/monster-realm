@@ -5,7 +5,7 @@
 
 use serde::Deserialize;
 
-use crate::monster::types::{Affinity, StatBlock};
+use crate::monster::types::{Affinity, StatBlock, StatKind, EV_PER_STAT_CAP};
 use crate::taming::types::EncounterTable;
 
 /// A zone definition — the M0 content registry and the first real schema subject
@@ -63,6 +63,13 @@ pub struct ItemDef {
     /// Defaults to 0 for items that have no taming function.
     #[serde(default)]
     pub recruit_bonus: u16,
+    /// Focus-training target stat (M9b-tail); None for non-training items.
+    #[serde(default)]
+    pub train_stat: Option<StatKind>,
+    /// EVs granted toward `train_stat` per use (top-off bounded by the 252/510
+    /// caps in `focus_train`); 0 for non-training items.
+    #[serde(default)]
+    pub train_amount: u16,
 }
 
 // === M8.9e: glob-loaded content parts ===
@@ -442,6 +449,32 @@ pub fn validate_content(
                 "item {} has recruit_bonus {} exceeding per-mille max 1000",
                 item.id, item.recruit_bonus
             ));
+        }
+        // Training food (M9b-tail): a target stat needs a positive amount within the
+        // per-stat EV cap; a non-training item must carry no stray train_amount.
+        match item.train_stat {
+            Some(_) => {
+                if item.train_amount == 0 {
+                    return Err(format!(
+                        "item {} is a training food but train_amount is 0",
+                        item.id
+                    ));
+                }
+                if item.train_amount > EV_PER_STAT_CAP {
+                    return Err(format!(
+                        "item {} train_amount {} exceeds per-stat EV cap {EV_PER_STAT_CAP}",
+                        item.id, item.train_amount
+                    ));
+                }
+            }
+            None => {
+                if item.train_amount != 0 {
+                    return Err(format!(
+                        "item {} has train_amount {} but no train_stat (incoherent)",
+                        item.id, item.train_amount
+                    ));
+                }
+            }
         }
     }
 
