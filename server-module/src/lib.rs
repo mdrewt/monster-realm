@@ -23,9 +23,11 @@ use std::time::Duration;
 mod battle;
 mod content;
 mod guards;
+mod inventory;
 mod marshal;
 mod monster_mgmt;
 mod movement;
+mod raising;
 mod schema;
 mod taming;
 

@@ -1,87 +1,35 @@
 //! `taming` — server-module domain submodule (M8.9, ADR-0056).
 //!
-//! Recruiting wild monsters (ADR-0047) + the inventory helpers it consumes
-//! (ADR-0046, single-stack per (owner, item_id)). The recruit roll is injected
-//! (`ctx.random()`), never a client argument; bait is classified by data
-//! (the item's `recruit_bonus`), consumed BEFORE the roll.
+//! Recruiting wild monsters (ADR-0047). The inventory helpers it consumes
+//! (`grant_item` / `consume_one`) now live in `inventory.rs` (ADR-0059, the
+//! single item-mutation surface). The recruit roll is injected (`ctx.random()`),
+//! never a client argument; bait is classified by data (the item's
+//! `recruit_bonus`), consumed BEFORE the roll.
 //!
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
 
 use crate::battle::{write_back_battle_results, write_back_party_hp};
 use crate::guards::log_reject;
+// `grant_item` is dev-gated (its only caller `grant_bait` is too — an ungated
+// import would be an unused-import warning in the non-dev build, red-team F6);
+// `consume_one` is ungated (its caller `attempt_recruit` always compiles).
+use crate::inventory::consume_one;
+#[cfg(feature = "dev_reducers")]
+use crate::inventory::grant_item;
 use crate::marshal::{
     monster_from_instance, pub_from_monster, skill_defs_from_rows, type_chart_from_rows,
 };
 use crate::schema::{
-    battle, battle_wild, inventory, item_row, monster, monster_pub, skill_row, species_row,
-    type_relation_row, SkillRow,
+    battle, battle_wild, item_row, monster, monster_pub, skill_row, species_row, type_relation_row,
+    SkillRow,
 };
-// `grant_item` (dev-only, ADR-0054) is the sole constructor of an `Inventory` row
-// — gate the struct import so the default (non-dev) build stays warning-clean.
-#[cfg(feature = "dev_reducers")]
-use crate::schema::Inventory;
 use crate::PARTY_SLOT_NONE;
 use game_core::combat::resolve::resolve_recruit_failure;
 use game_core::{
     build_monster, recruit_chance, BattleOutcome, Level, StatBlock, TurnVariance, RECRUIT_BASE_RATE,
 };
-use spacetimedb::{Identity, ReducerContext, Table};
-
-// --- Inventory helpers (M8d, ADR-0046 — single stack per (owner, item_id)) -----
-
-/// Grant `qty` of `item_id` to `owner`, merging into the owner's existing stack
-/// if present (saturating to avoid overflow) or inserting a new row otherwise.
-/// SINGLE stack per `(owner, item_id)`: always find-then-update.
-///
-/// Currently the ONLY caller is the dev/test reducer `grant_bait`, so this helper
-/// shares its `dev_reducers` gate to avoid a dead-code warning in release builds
-/// (ADR-0054). The M9 shop will introduce a production caller; drop the gate then.
-#[cfg(feature = "dev_reducers")]
-fn grant_item(ctx: &ReducerContext, owner: Identity, item_id: u32, qty: u32) {
-    let existing = ctx
-        .db
-        .inventory()
-        .owner_identity()
-        .filter(owner)
-        .find(|r| r.item_id == item_id);
-    match existing {
-        Some(mut row) => {
-            row.count = row.count.saturating_add(qty);
-            ctx.db.inventory().inv_id().update(row);
-        }
-        None => {
-            ctx.db.inventory().insert(Inventory {
-                inv_id: 0, // auto_inc
-                owner_identity: owner,
-                item_id,
-                count: qty,
-            });
-        }
-    }
-}
-
-/// Consume exactly one of `item_id` from `owner`. Rejects (`Err`) when the stack
-/// is absent or already empty. Uses `checked_sub` — NEVER a bare decrement — so
-/// an empty stack can never underflow into a 2^32 windfall.
-fn consume_one(ctx: &ReducerContext, owner: Identity, item_id: u32) -> Result<(), String> {
-    let mut row = ctx
-        .db
-        .inventory()
-        .owner_identity()
-        .filter(owner)
-        .find(|r| r.item_id == item_id)
-        .ok_or_else(|| "item not in inventory".to_string())?;
-    if row.count == 0 {
-        return Err("item count is zero".to_string());
-    }
-    row.count = row
-        .count
-        .checked_sub(1)
-        .ok_or_else(|| "item count is zero".to_string())?;
-    ctx.db.inventory().inv_id().update(row);
-    Ok(())
-}
+use spacetimedb::{ReducerContext, Table};
 
 /// Attempt to recruit the wild monster in a wild battle (M8d, ADR-0047). The
 /// roll is injected (`ctx.random()`), never a client argument. Optional `bait`

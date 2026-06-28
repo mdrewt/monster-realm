@@ -87,6 +87,8 @@ fn monster_from_instance_flattens_correctly() {
     assert_eq!(m.current_hp, inst.current_hp);
     assert_eq!(m.party_slot, 0);
     assert_eq!(m.owner_identity, identity);
+    // A fresh monster starts with the care cooldown elapsed (epoch anchor).
+    assert_eq!(m.last_care_at_ms, 0);
 }
 
 /// pub_from_monster produces a projection with NO hidden fields.
@@ -174,6 +176,7 @@ fn m7b_test_monster_row() -> Monster {
         stat_sp_defense: 40,
         current_hp: 90, // damaged — not at max
         party_slot: 0,
+        last_care_at_ms: 0,
     }
 }
 

@@ -82,6 +82,7 @@ pub(crate) fn monster_from_instance(
         stat_sp_defense: inst.derived_stats.sp_defense,
         current_hp: inst.current_hp,
         party_slot,
+        last_care_at_ms: 0, // epoch ⇒ cooldown elapsed ⇒ first care allowed (ADR-0059)
     }
 }
 

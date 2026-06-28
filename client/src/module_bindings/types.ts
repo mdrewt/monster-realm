@@ -196,6 +196,7 @@ export const Monster = __t.object("Monster", {
   statSpDefense: __t.u16(),
   currentHp: __t.u16(),
   partySlot: __t.u8(),
+  lastCareAtMs: __t.i64(),
 });
 export type Monster = __Infer<typeof Monster>;
 
