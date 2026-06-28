@@ -1,12 +1,17 @@
 // rowConvert — SDK generated row -> normalized store row (M4a + M6c extension).
 // M6c adds monsterPubRowToStore and speciesRowToStore.
+// M9c adds inventoryRowToStore and itemRowToStore.
 import { describe, expect, it } from 'vitest';
 import {
   battleRowToStore,
   characterRowToStore,
+  inventoryRowToStore,
+  itemRowToStore,
   monsterPubRowToStore,
   playerRowToStore,
   type SdkBattleRow,
+  type SdkInventoryRow,
+  type SdkItemRowRow,
   type SdkSkillRowRow,
   skillRowToStore,
   speciesRowToStore,
@@ -455,5 +460,183 @@ describe('rowConvert M7c: skillRowToStore — SDK row -> StoreSkillRow', () => {
       });
       expect(store.affinity).toBe(tag);
     }
+  });
+});
+
+// =============================================================================
+// M9c extension: inventoryRowToStore + itemRowToStore
+// SOURCE OF TRUTH: specs/monster-realm-v2/M9-raising.spec.md
+// =============================================================================
+
+describe('rowConvert M9c: inventoryRowToStore — SDK row -> StoreInventory', () => {
+  it('S2: BITES ownerIdentity is resolved via toHexString() (not stored as object)', () => {
+    // Kills: an impl that stores row.ownerIdentity directly (an SDK Identity object)
+    // instead of calling .toHexString() — downstream equality checks would all fail.
+    const sdk: SdkInventoryRow = {
+      invId: 1n,
+      ownerIdentity: { toHexString: () => 'deadbeef' },
+      itemId: 5,
+      count: 10,
+    };
+    const store = inventoryRowToStore(sdk);
+    expect(typeof store.ownerIdentity).toBe('string');
+    expect(store.ownerIdentity).toBe('deadbeef');
+  });
+
+  it('S2: BITES ownerIdentity equality is case-sensitive (DEADBEEF !== deadbeef)', () => {
+    // Kills: an impl that normalizes the hex string (e.g. toLowercase/toUpperCase);
+    // the store must preserve the exact string returned by toHexString().
+    const lowerSdk: SdkInventoryRow = {
+      invId: 1n,
+      ownerIdentity: { toHexString: () => 'deadbeef' },
+      itemId: 5,
+      count: 1,
+    };
+    const upperSdk: SdkInventoryRow = {
+      invId: 2n,
+      ownerIdentity: { toHexString: () => 'DEADBEEF' },
+      itemId: 5,
+      count: 1,
+    };
+    expect(inventoryRowToStore(lowerSdk).ownerIdentity).toBe('deadbeef');
+    expect(inventoryRowToStore(upperSdk).ownerIdentity).toBe('DEADBEEF');
+    // Must NOT be equal — the store preserves exact case
+    expect(inventoryRowToStore(lowerSdk).ownerIdentity).not.toBe(
+      inventoryRowToStore(upperSdk).ownerIdentity,
+    );
+  });
+
+  it('S5: BITES invId stays bigint across the 2^53 boundary (no Number() downcast)', () => {
+    // 9007199254740993n (2^53+1) cannot be represented exactly as a JS number.
+    // Number(9007199254740993n) === 9007199254740992 (off by one).
+    // Kills: an impl that converts invId via Number() or parseInt().
+    const largeId = 9007199254740993n; // 2^53 + 1
+    const sdk: SdkInventoryRow = {
+      invId: largeId,
+      ownerIdentity: { toHexString: () => 'abc' },
+      itemId: 1,
+      count: 1,
+    };
+    const store = inventoryRowToStore(sdk);
+    expect(typeof store.invId).toBe('bigint');
+    expect(store.invId).toBe(largeId);
+    // Explicit anti-regression: must NOT equal the Number-coerced (wrong) value
+    expect(store.invId).not.toBe(9007199254740992n);
+  });
+
+  it('BITES: itemId is number and count is number (not bigint)', () => {
+    // Kills: an impl that accidentally bigints u32 fields (itemId and count are safe as number).
+    const sdk: SdkInventoryRow = {
+      invId: 42n,
+      ownerIdentity: { toHexString: () => 'ff' },
+      itemId: 7,
+      count: 100,
+    };
+    const store = inventoryRowToStore(sdk);
+    expect(typeof store.itemId).toBe('number');
+    expect(store.itemId).toBe(7);
+    expect(typeof store.count).toBe('number');
+    expect(store.count).toBe(100);
+  });
+
+  it('BITES: all fields are preserved verbatim (no silent field drop)', () => {
+    // Kills: an impl that only maps some fields and drops others.
+    const sdk: SdkInventoryRow = {
+      invId: 99n,
+      ownerIdentity: { toHexString: () => 'cafebabe' },
+      itemId: 3,
+      count: 5,
+    };
+    const store = inventoryRowToStore(sdk);
+    expect(store.invId).toBe(99n);
+    expect(store.ownerIdentity).toBe('cafebabe');
+    expect(store.itemId).toBe(3);
+    expect(store.count).toBe(5);
+  });
+});
+
+describe('rowConvert M9c: itemRowToStore — SDK row -> StoreItemRow', () => {
+  it('S3: BITES trainStat Some({tag:"Speed"}) maps to string "Speed" (not the object)', () => {
+    // VERIFIED SDK shape: SpacetimeDB 2.6 decodes Some(StatKind::Speed) as {tag:"Speed"}.
+    // Kills: an impl that stores the {tag:"Speed"} object or maps it to "" instead of "Speed".
+    const sdk: SdkItemRowRow = {
+      id: 1,
+      name: 'Speed Berry',
+      description: 'Increases speed',
+      recruitBonus: 0,
+      trainStat: { tag: 'Speed' },
+      trainAmount: 10,
+    };
+    const store = itemRowToStore(sdk);
+    expect(typeof store.trainStat).toBe('string');
+    expect(store.trainStat).toBe('Speed');
+  });
+
+  it('S3: BITES trainStat None (undefined) maps to null (not "" or undefined)', () => {
+    // VERIFIED SDK shape: SpacetimeDB 2.6 decodes None as undefined (not null).
+    // The store normalizes undefined->null so callers use strict null checks not undefined checks.
+    // Kills: an impl that passes through undefined, or uses ?? "" instead of ?? null.
+    const sdk: SdkItemRowRow = {
+      id: 2,
+      name: 'Bait',
+      description: 'A simple bait',
+      recruitBonus: 5,
+      trainStat: undefined,
+      trainAmount: 0,
+    };
+    const store = itemRowToStore(sdk);
+    expect(store.trainStat).toBeNull();
+    expect(store.trainStat).not.toBeUndefined();
+    expect(store.trainStat).not.toBe('');
+  });
+
+  it('BITES: all six StatKind tags are mapped correctly (not just Speed)', () => {
+    // Kills: an impl that hard-codes one tag or uses a partial mapping table.
+    const tags = ['Hp', 'Attack', 'Defense', 'Speed', 'SpAttack', 'SpDefense'] as const;
+    for (const tag of tags) {
+      const sdk: SdkItemRowRow = {
+        id: 1,
+        name: 'Item',
+        description: '',
+        recruitBonus: 0,
+        trainStat: { tag },
+        trainAmount: 1,
+      };
+      expect(itemRowToStore(sdk).trainStat).toBe(tag);
+    }
+  });
+
+  it('BITES: id, recruitBonus, trainAmount are number (not bigint or string)', () => {
+    // Kills: an impl that accidentally bigints u32/u16 fields.
+    const sdk: SdkItemRowRow = {
+      id: 42,
+      name: 'Power Root',
+      description: 'Boosts attack',
+      recruitBonus: 3,
+      trainStat: { tag: 'Attack' },
+      trainAmount: 20,
+    };
+    const store = itemRowToStore(sdk);
+    expect(typeof store.id).toBe('number');
+    expect(store.id).toBe(42);
+    expect(typeof store.recruitBonus).toBe('number');
+    expect(store.recruitBonus).toBe(3);
+    expect(typeof store.trainAmount).toBe('number');
+    expect(store.trainAmount).toBe(20);
+  });
+
+  it('BITES: name and description are preserved verbatim as strings', () => {
+    // Kills: an impl that drops or truncates text fields.
+    const sdk: SdkItemRowRow = {
+      id: 1,
+      name: 'Power Root',
+      description: 'Raises the Attack stat when used as food.',
+      recruitBonus: 0,
+      trainStat: undefined,
+      trainAmount: 0,
+    };
+    const store = itemRowToStore(sdk);
+    expect(store.name).toBe('Power Root');
+    expect(store.description).toBe('Raises the Attack stat when used as food.');
   });
 });

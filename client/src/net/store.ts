@@ -99,6 +99,28 @@ export interface StoreBattle {
   readonly createdAtMs: bigint;
 }
 
+// NOTE: these two are `type` aliases (not `interface`s) on purpose — store.test.ts
+// S8 single-casts a StoreInventory to `Record<string, unknown>` to probe snapshot
+// isolation, which TS only permits for an object-literal type (an interface lacks
+// the implicit index-signature overlap). Same fields, drop-in for a consumer.
+/** An inventory row, normalized (identity as its hex key string; M9c). */
+export type StoreInventory = {
+  readonly invId: bigint;
+  readonly ownerIdentity: string;
+  readonly itemId: number;
+  readonly count: number;
+};
+
+/** An item definition row, normalized (trainStat as bare string or null; M9c). */
+export type StoreItemRow = {
+  readonly id: number;
+  readonly name: string;
+  readonly description: string;
+  readonly recruitBonus: number;
+  readonly trainStat: string | null;
+  readonly trainAmount: number;
+};
+
 /** A species row, normalized (affinity as bare string). */
 export interface StoreSpeciesRow {
   readonly id: number;
@@ -136,6 +158,8 @@ export class AuthoritativeStore {
   readonly #species = new Map<number, StoreSpeciesRow>();
   readonly #battles = new Map<bigint, StoreBattle>();
   readonly #skills = new Map<number, StoreSkillRow>();
+  readonly #inventory = new Map<bigint, StoreInventory>();
+  readonly #itemDefs = new Map<number, StoreItemRow>();
   readonly #batchListeners = new Set<() => void>();
   #dirty = false;
 
@@ -197,6 +221,24 @@ export class AuthoritativeStore {
     if (this.#skills.delete(id)) this.#dirty = true;
   }
 
+  upsertInventory(i: StoreInventory): void {
+    this.#inventory.set(i.invId, i);
+    this.#dirty = true;
+  }
+
+  removeInventory(invId: bigint): void {
+    if (this.#inventory.delete(invId)) this.#dirty = true;
+  }
+
+  upsertItemDef(d: StoreItemRow): void {
+    this.#itemDefs.set(d.id, d);
+    this.#dirty = true;
+  }
+
+  removeItemDef(id: number): void {
+    if (this.#itemDefs.delete(id)) this.#dirty = true;
+  }
+
   /** Emit ONE batch-applied signal iff something changed since the last flush.
    *  Called once per coalesced transaction burst by the connection adapter. */
   flushBatch(): void {
@@ -221,6 +263,8 @@ export class AuthoritativeStore {
     this.#species.clear();
     this.#battles.clear();
     this.#skills.clear();
+    this.#inventory.clear();
+    this.#itemDefs.clear();
     this.#dirty = false;
   }
 
@@ -320,5 +364,32 @@ export class AuthoritativeStore {
    *  (upholds the one-way `server -> store -> render` flow). */
   skillMap(): ReadonlyMap<number, StoreSkillRow> {
     return new Map(this.#skills);
+  }
+
+  // --- inventory + itemDef read (M9c raising/inventory view reads truth here) ----
+
+  /** The player's own inventory (ADR-0015/0046 V1: public table, client-side owner
+   *  filter). A FRESH array of FRESH row copies — a caller mutating the array OR a
+   *  returned row's field cannot corrupt the store (one-way `server -> store ->
+   *  render` flow; store.test.ts S8 deep-isolation). There is deliberately NO
+   *  unfiltered `inventories()` accessor. */
+  ownInventory(identity: string): StoreInventory[] {
+    const out: StoreInventory[] = [];
+    for (const i of this.#inventory.values()) {
+      if (i.ownerIdentity === identity) out.push({ ...i });
+    }
+    return out;
+  }
+
+  itemDef(id: number): StoreItemRow | undefined {
+    return this.#itemDefs.get(id);
+  }
+
+  /** A fresh Map of the item defs — adding/removing entries on the returned map
+   *  cannot corrupt the store (same structure-copy contract as `speciesMap()` /
+   *  `skillMap()`; upholds the one-way `server -> store -> render` flow). The row
+   *  VALUES are shared by reference and `readonly`; consumers only read them. */
+  itemDefs(): ReadonlyMap<number, StoreItemRow> {
+    return new Map(this.#itemDefs);
   }
 }
