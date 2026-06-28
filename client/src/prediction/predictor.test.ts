@@ -13,7 +13,8 @@
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { WasmCharacterState, WasmDirection, WasmMoveInput } from '../convert/convert';
-import { type ApplyMove, type IntentToSend, Predictor, type QueueOp } from './predictor';
+import { HeldDirections, reissueDir } from './heldKeys';
+import { type ApplyMove, boundSeq, type IntentToSend, Predictor, type QueueOp } from './predictor';
 
 const STEP_MS = 200;
 const QUEUE_CAP = 8;
@@ -877,5 +878,357 @@ describe('Predictor: monotonic prediction (ADR-0013 smoothness)', () => {
     const diverged = p.reconcile(baseline(4, 5, 10_000 - 2 * STEP_MS), [], 999, 10_000);
     expect(diverged).toBe(true);
     expect(p.predicted!.pos.x).toBe(4);
+  });
+});
+
+// ================================================================================
+// M8.8e §A — Reconnect re-seed (`seedSeq`)
+// EARS: "WHEN the client reconnects THE SYSTEM SHALL seed the new predictor's next
+// sequence from the authoritative last_input_seq so the first post-reconnect intent's
+// seq is strictly greater than the server's last ack and survives reconcile."
+// (spec/monster-realm-v2/M8.8-fourth-review-residuals.spec.md §3)
+//
+// RED REASON: `Predictor.seedSeq` does not exist yet — TS compile error on every
+// `p.seedSeq(...)` call.  After the implementer adds it all three tests below must
+// turn green; removing / no-op-ing seedSeq makes them go red again.
+// ================================================================================
+describe('M8.8e §A: reconnect re-seed (seedSeq)', () => {
+  it('first post-reconnect enqueue seq is > server acked seq and survives reconcile', () => {
+    // Scenario: fresh predictor, reconnect where server's last_input_seq = 500.
+    // seedSeq(500) raises #nextSeq to 500 so the next #record yields seq 501.
+    // reconcile(ackedSeq=500) drops pending with seq <= 500; seq=501 > 500 → survives.
+    //
+    // PROOF-OF-TEETH: this is the load-bearing bite.  A seedSeq that is a no-op (or
+    // absent) leaves #nextSeq=0 → enqueue records seq=1 → reconcile(ackedSeq=500)
+    // drops it (1 <= 500) → pendingCount=0.  The assertion pendingCount >= 1 below
+    // then FAILS, exposing the freeze bug.
+    const p = mkPredictor();
+    // Initial seed reconcile (server baseline, empty queue, nothing acked yet).
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+
+    // Simulate reconnect: server reports last_input_seq = 500.
+    p.seedSeq(500);
+
+    // Enqueue one move post-reconnect.
+    const intent = p.enqueue(east());
+    expect(intent).toBeDefined(); // not dropped by queue/pending cap
+    expect(intent!.seq).toBeGreaterThan(500); // strictly greater than the server's ack
+
+    // Server acks up to 500: this reconcile must NOT drop the post-reconnect intent
+    // because its seq (501+) > ackedSeq (500).
+    p.reconcile(baseline(5, 5, 0), [], 500, 0);
+    // The enqueued East intent survives the ackedSeq filter — pendingCount stays >= 1.
+    expect(p.pendingCount).toBeGreaterThanOrEqual(1);
+    // The queue also retains the East move (not dropped).
+    expect(p.queueDepth).toBeGreaterThanOrEqual(1);
+  });
+
+  it('PROOF-OF-TEETH: WITHOUT seedSeq the same flow drops the intent (documents the freeze bug)', () => {
+    // This is the "wrong impl" fixture — it MUST PASS (green) because seedSeq is
+    // absent in THIS path: it documents what happens without the fix so the suite
+    // remains a meaningful regression anchor.  If seedSeq were accidentally applied
+    // here the assertion would flip and a reviewer would notice the fixture was
+    // mis-authored.
+    //
+    // Wrong impl killed by the §A main test above: any impl where seedSeq is a
+    // no-op or not called leaves #nextSeq=0, the fresh predictor records seq=1,
+    // and reconcile(ackedSeq=500) drops it (1 <= 500) → pendingCount=0.
+    const p = mkPredictor();
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+
+    // NO seedSeq call — this is the bug path.
+    const intent = p.enqueue(east()); // records seq=1 (#nextSeq was 0)
+    expect(intent).toBeDefined();
+    // seq=1 is well below 500 — reconcile(ackedSeq=500) will drop it.
+    expect(intent!.seq).toBeLessThanOrEqual(500);
+
+    p.reconcile(baseline(5, 5, 0), [], 500, 0);
+    // The intent IS dropped: pendingCount=0, queueDepth=0 (the freeze bug).
+    expect(p.pendingCount).toBe(0);
+    // This test is GREEN because it asserts the BUG behaviour (no seedSeq → drop).
+    // The §A test above asserts the FIX behaviour (seedSeq → survive).
+  });
+
+  it('seedSeq is monotonically increasing (never rewinds #nextSeq)', () => {
+    // seedSeq(500) then seedSeq(100): the lower value must be ignored because the
+    // server's ack can only move forward, and rewinding would alias previously-sent
+    // seqs and cause false ack-drops on pending ops already in flight.
+    //
+    // Wrong impl killed: any impl that unconditionally assigns #nextSeq = seq (rather
+    // than #nextSeq = Math.max(#nextSeq, seq)) would rewind to 100, making the next
+    // enqueue record seq=101, which reconcile(ackedSeq=500) would then drop.
+    const p = mkPredictor();
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+
+    p.seedSeq(500);
+    p.seedSeq(100); // must be a no-op: 100 < current #nextSeq (=500)
+
+    const intent = p.enqueue(east());
+    expect(intent).toBeDefined();
+    // seq must be 501 (raised by the first seedSeq, not rewound by the second).
+    expect(intent!.seq).toBe(501);
+
+    // Confirm it survives reconcile(ackedSeq=500) — proof it was not rewound to 101.
+    p.reconcile(baseline(5, 5, 0), [], 500, 0);
+    expect(p.pendingCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('seedSeq is a no-op when #nextSeq is already ahead (steady-state after enqueues)', () => {
+    // In steady state the predictor has already issued several ops and #nextSeq > the
+    // seed value. seedSeq must not rewind in this case either.
+    //
+    // Wrong impl killed: unconditional assignment (#nextSeq = N) rewinds a live
+    // predictor that has already issued ops, breaking seq monotonicity and allowing
+    // aliasing with already-sent intents.
+    const p = mkPredictor();
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+
+    // Advance #nextSeq to 3 via three enqueues.
+    const i1 = p.enqueue(east())!; // seq=1
+    const i2 = p.enqueue(east())!; // seq=2
+    const i3 = p.enqueue(east())!; // seq=3
+    expect(i3.seq).toBe(3);
+
+    // seedSeq(0) with #nextSeq already at 3: must be a no-op.
+    p.seedSeq(0);
+
+    // The predictor is at queue cap now; drain one slot via reconcile, then enqueue.
+    // Ack all three so pending is cleared and queueDepth drops to 0.
+    p.reconcile(baseline(8, 5, 0), [], i3.seq, 0);
+    const i4 = p.enqueue(north())!;
+    // seq must be 4 (strictly next after 3), NOT 1 (which a rewind to 0 would give).
+    expect(i4.seq).toBe(4);
+    void i1;
+    void i2;
+  });
+});
+
+// ================================================================================
+// M8.8e §B — seq downcast bound (`boundSeq`)
+// EARS: "THE last_input_seq u64→number conversion SHALL be documented/bounded ...
+// (comment + assertion ...)."
+// (spec/monster-realm-v2/M8.8-fourth-review-residuals.spec.md §3)
+//
+// RED REASON: `boundSeq` is not yet exported from `./predictor` — the import at the
+// top of this file causes a TS compile error until the implementer adds the export.
+// ================================================================================
+describe('M8.8e §B: boundSeq — fail-loud u64→number downcast', () => {
+  it('boundSeq returns the correct number for values in the safe integer range', () => {
+    // These are the happy-path identity cases: the downcast must be exact (no rounding,
+    // no aliasing) for any seq the server could realistically produce in a session.
+    expect(boundSeq(0n)).toBe(0);
+    expect(boundSeq(9n)).toBe(9);
+    expect(boundSeq(500n)).toBe(500);
+    expect(boundSeq(BigInt(Number.MAX_SAFE_INTEGER))).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  it('boundSeq throws RangeError for a seq above Number.MAX_SAFE_INTEGER (hostile/corrupt)', () => {
+    // A u64 above MAX_SAFE_INTEGER cannot be represented exactly as a JS number and
+    // would silently alias a lower value, potentially matching an already-sent seq and
+    // causing a false ack-drop or replay corruption.  The bound must be fail-loud.
+    //
+    // Wrong impl killed: `return Number(seq)` without a range check would silently
+    // return a wrong value (aliasing) for the over-range input.
+    expect(() => {
+      boundSeq(BigInt(Number.MAX_SAFE_INTEGER) + 1n);
+    }).toThrow(RangeError);
+  });
+
+  it('boundSeq throws RangeError for a negative seq (corrupt/hostile)', () => {
+    // A u64 is inherently unsigned; a negative BigInt means the caller passed a
+    // corrupt / adversarially-crafted value.  Fail loud rather than producing a
+    // negative seq that could underflow comparisons or satisfy `seq > ackedSeq`
+    // spuriously.
+    //
+    // Wrong impl killed: `return Number(seq)` with no negativity check silently
+    // returns a negative number, breaking the `seq > ackedSeq` filter direction.
+    expect(() => {
+      boundSeq(-1n);
+    }).toThrow(RangeError);
+  });
+
+  it('boundSeq never silently wraps: values just outside the boundary both throw', () => {
+    // Belt-and-suspenders: verify the boundary is exactly at MAX_SAFE_INTEGER, not
+    // one off in either direction.  An off-by-one in the guard would pass the
+    // individual boundary tests above but fail here.
+    //
+    // Wrong impl killed: a guard of `seq > BigInt(Number.MAX_SAFE_INTEGER) + 1n`
+    // (strictly less-than-strict) would accept MAX_SAFE_INTEGER+1n without throwing.
+    expect(() => {
+      boundSeq(BigInt(Number.MAX_SAFE_INTEGER) + 1n);
+    }).toThrow();
+    expect(() => {
+      boundSeq(-1n);
+    }).toThrow();
+    // And the values AT the boundary are still fine (not off-by-one the other way).
+    expect(() => {
+      boundSeq(0n);
+    }).not.toThrow();
+    expect(() => {
+      boundSeq(BigInt(Number.MAX_SAFE_INTEGER));
+    }).not.toThrow();
+  });
+});
+
+// ================================================================================
+// M8.8e §C — Divergence re-issue + keyup-not-stuck
+// EARS: "WHEN reconcile returns a genuine divergence THE SYSTEM SHALL re-issue the
+// currently-held movement direction (tracking held keys via a keyup handler), so
+// motion does not stall."
+// (spec/monster-realm-v2/M8.8-fourth-review-residuals.spec.md §3)
+//
+// This is a COMPOSITION test over the real Predictor + HeldDirections + reissueDir
+// that pins the exact contract main.ts relies on.  main.ts is the thin e2e-only
+// wiring; this test proves the three pieces fit together correctly.
+//
+// RED REASON (until M8.8e is implemented):
+//   - `p.seedSeq` call fails TS compilation (no such method yet).
+//   - Additionally `boundSeq` import at the top fails until that export exists.
+// Both errors propagate to this describe block even though §C only calls seedSeq
+// indirectly via the broader module failing to compile.
+// ================================================================================
+describe('M8.8e §C: divergence re-issue + keyup-not-stuck (composition)', () => {
+  it('held key resumes motion after a genuine server pullback (divergence re-issue)', () => {
+    // Scenario:
+    //   1. Predictor seeded at x=5; East is held; one East move enqueued + drained.
+    //      predicted → x=6.
+    //   2. Server pulls the player back to x=3 (divergence): reconcile returns true.
+    //   3. reissueDir(held.active(), predictor.lastQueuedDir) === 'East' (still held,
+    //      queue now empty so lastQueuedDir is undefined → not a dup → re-issue).
+    //   4. enqueue({Step:'East'}) is accepted (returns a defined intent with seq > ackedSeq)
+    //      → motion resumes from the corrected tile.
+    //
+    // Wrong impl killed (§C main bite): if the divergence return is discarded (as in
+    // main.ts:85 before the fix), the re-issue branch is never entered — held motion
+    // stalls until the user re-presses.  This test asserts the reissueDir call would
+    // produce 'East' given the post-divergence state, proving main.ts MUST use it.
+
+    const p = mkPredictor();
+    const now = 10_000;
+
+    // Seed at x=5, two step_ms ago so the first drain applies immediately.
+    p.reconcile(baseline(5, 5, now - 2 * STEP_MS), [], 0, now);
+
+    // User presses East.
+    const held = new HeldDirections();
+    held.press('East');
+
+    // Enqueue + drain: predicted advances to x=6.
+    const intent1 = p.enqueue(east());
+    expect(intent1).toBeDefined();
+    const ackedSeq = intent1!.seq; // seq of the East intent (=1 here)
+    p.drain(now);
+    expect(p.predicted!.pos).toEqual({ x: 6, y: 5 });
+    expect(p.queueDepth).toBe(0); // drained
+
+    // Server pulls back to x=3 and acks the East intent (ackedSeq covers it).
+    // This is a genuine divergence: pre-reconcile predicted x=6, post-reconcile x=3.
+    const diverged = p.reconcile(baseline(3, 5, now - 2 * STEP_MS), [], ackedSeq, now);
+    expect(diverged).toBe(true); // server disagreed — genuine pullback
+    expect(p.predicted!.pos).toEqual({ x: 3, y: 5 }); // reset to server truth
+    expect(p.queueDepth).toBe(0); // queue empty after reconcile
+    // lastQueuedDir undefined because queue is empty (no move in queue to tail-check).
+    expect(p.lastQueuedDir).toBeUndefined();
+
+    // The divergence-driven re-issue decision: key still held, queue tail is different
+    // (undefined ≠ 'East') → reissueDir returns 'East'.
+    const d = reissueDir(held.active(), p.lastQueuedDir);
+    expect(d).toBe('East');
+
+    // Re-issue: enqueue({Step: 'East'}) from the corrected tile.
+    const intent2 = p.enqueue({ Step: d! });
+    expect(intent2).toBeDefined(); // accepted — not dropped by cap
+    // The re-issued seq must be strictly greater than the ackedSeq so it will NOT be
+    // dropped by a subsequent reconcile(ackedSeq, ...).
+    expect(intent2!.seq).toBeGreaterThan(ackedSeq);
+    // Motion resumes from x=3 → intent accepted into queue.
+    expect(p.queueDepth).toBeGreaterThanOrEqual(1);
+  });
+
+  it('keyup-not-stuck: a released key is NOT re-issued after a divergence', () => {
+    // Scenario: same pullback, but the user released East before the divergence
+    // reconcile fires (held.active() === undefined).
+    //
+    // Wrong impl killed: an impl that always re-issues the lastQueuedDir (ignoring
+    // the held-key state) would re-issue East even after keyup, causing ghost motion.
+    // reissueDir(undefined, anything) must return undefined — the released key must
+    // neither be re-committed nor left stuck walking.
+
+    const p = mkPredictor();
+    const now = 10_000;
+    p.reconcile(baseline(5, 5, now - 2 * STEP_MS), [], 0, now);
+
+    const held = new HeldDirections();
+    held.press('East');
+
+    const intent1 = p.enqueue(east());
+    expect(intent1).toBeDefined();
+    const ackedSeq = intent1!.seq;
+    p.drain(now);
+    expect(p.predicted!.pos).toEqual({ x: 6, y: 5 });
+
+    // Key released BEFORE the server divergence arrives.
+    held.release('East');
+    expect(held.active()).toBeUndefined(); // no dirs held
+
+    // Server pulls back (divergence).
+    const diverged = p.reconcile(baseline(3, 5, now - 2 * STEP_MS), [], ackedSeq, now);
+    expect(diverged).toBe(true);
+    expect(p.predicted!.pos).toEqual({ x: 3, y: 5 });
+
+    // Re-issue decision: no key held → reissueDir returns undefined.
+    const d = reissueDir(held.active(), p.lastQueuedDir);
+    expect(d).toBeUndefined(); // released key must NOT be re-issued
+    // Enqueue is not called — queue remains empty (not stuck walking).
+    expect(p.queueDepth).toBe(0);
+  });
+
+  it('no re-issue when held direction matches queue tail (dedup still applies post-divergence)', () => {
+    // Scenario: a divergence reconcile whose authoritative queue still carries East
+    // → the rebuilt queue tail is East → held('East') == lastQueuedDir('East')
+    // → reissueDir returns undefined (dedup suppresses a double-issue).
+    //
+    // Wrong impl killed: an impl that always re-issues `held.active()` regardless of
+    // `lastQueuedDir` would enqueue a duplicate East on top of the already-queued East
+    // that came from the server's authQueue, producing a double-move.
+    //
+    // Rationale for the corrected shape (spec-vs-code): the original test enqueued two
+    // East moves and assumed only one drained (leaving one in queue as the tail).
+    // But baseline(now - 2*STEP_MS) gives a 2-step catch-up budget, so drain(now)
+    // applies BOTH enqueued East moves — the queue empties, lastQueuedDir is undefined,
+    // and the assertion `lastQueuedDir === 'East'` fails (wrong fixture, not wrong impl).
+    // The corrected shape uses a divergence reconcile with a non-empty authQueue to
+    // reliably populate the queue tail, which is the real post-divergence scenario.
+
+    const p = mkPredictor();
+    const now = 10_000;
+    p.reconcile(baseline(5, 5, now - 2 * STEP_MS), [], 0, now);
+
+    const held = new HeldDirections();
+    held.press('East');
+
+    // Enqueue + drain: one East move applied, predicted → x=6, queue empty.
+    const intent1 = p.enqueue(east());
+    expect(intent1).toBeDefined();
+    const ackedSeq = intent1!.seq;
+    p.drain(now);
+    expect(p.predicted!.pos).toEqual({ x: 6, y: 5 });
+    expect(p.queueDepth).toBe(0);
+
+    // Divergence reconcile: server pulls back to x=3 BUT its authQueue still holds
+    // [East] (the server has East queued for this player).  Use move_started_at=now
+    // so the internal drain condition (`move_started_at + stepMs <= now` → `now+200
+    // <= now`) is false — zero moves drain, and the East from authQueue stays in
+    // #queue as the tail.
+    // Rebuilds: #queue = applyOps([east()], []) = [east()] (no unacked pending after
+    // ackedSeq drop), clamp to queueCap (still [east()]), drain 0 → queue intact.
+    const diverged = p.reconcile(baseline(3, 5, now), [east()], ackedSeq, now);
+    expect(diverged).toBe(true); // genuine divergence: pre x=6, post x=3 (no drain)
+    // East from authQueue remains in #queue (not yet due), so lastQueuedDir is 'East'.
+    expect(p.lastQueuedDir).toBe('East');
+
+    // reissueDir: held dir ('East') == queue tail ('East') → dedup → undefined.
+    const d = reissueDir(held.active(), p.lastQueuedDir);
+    expect(d).toBeUndefined();
   });
 });
