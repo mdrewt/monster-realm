@@ -16,6 +16,24 @@ pub(crate) fn log_reject(reducer: &str, sender: Identity, reason: &str) {
     log::warn!("{{\"evt\":\"reject\",\"reducer\":\"{reducer}\",\"sender\":\"{sender}\",\"reason\":\"{reason}\"}}");
 }
 
+/// Shared resource-ownership guard: reject when the caller (`ctx.sender`) does not
+/// own `owner`. Generalizes the repeated `owner != ctx.sender -> log_reject ->
+/// Err("not owner")` preamble that recurs across the ownership-checked reducers
+/// (M8.9b de-dup, ADR-0056). Behavior is identical to the inlined form: same
+/// `"not owner"` `Err` + same `log_reject(reducer, ctx.sender, "not owner")`.
+pub(crate) fn require_owner(
+    ctx: &ReducerContext,
+    reducer: &str,
+    owner: Identity,
+) -> Result<(), String> {
+    if owner != ctx.sender {
+        let e = "not owner".to_string();
+        log_reject(reducer, ctx.sender, &e);
+        return Err(e);
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_name(name: &str) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() {
@@ -32,7 +50,11 @@ pub(crate) fn validate_name(name: &str) -> Result<String, String> {
 
 /// Shared ownership + monotonic-seq guard for the move reducers. Returns the
 /// owned character row on success.
-pub(crate) fn authorize_move(ctx: &ReducerContext, reducer: &str, seq: u64) -> Result<Character, String> {
+pub(crate) fn authorize_move(
+    ctx: &ReducerContext,
+    reducer: &str,
+    seq: u64,
+) -> Result<Character, String> {
     let me = ctx.sender;
     let Some(mut player) = ctx.db.player().identity().find(me) else {
         let e = "not joined".to_string();

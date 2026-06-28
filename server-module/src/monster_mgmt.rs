@@ -7,7 +7,7 @@
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
 
-use crate::guards::{log_reject, validate_name};
+use crate::guards::{log_reject, require_owner, validate_name};
 use crate::marshal::pub_from_monster;
 use crate::schema::{monster, monster_pub};
 use crate::{MAX_PARTY_SIZE, PARTY_SLOT_NONE};
@@ -25,11 +25,7 @@ pub fn set_nickname(ctx: &ReducerContext, monster_id: u64, nickname: String) -> 
         log_reject("set_nickname", me, &e);
         return Err(e);
     };
-    if m.owner_identity != me {
-        let e = "not owner".to_string();
-        log_reject("set_nickname", me, &e);
-        return Err(e);
-    }
+    require_owner(ctx, "set_nickname", m.owner_identity)?;
     let validated = if nickname.trim().is_empty() {
         String::new() // clear nickname
     } else {
@@ -53,11 +49,7 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
         log_reject("set_party_slot", me, &e);
         return Err(e);
     };
-    if m.owner_identity != me {
-        let e = "not owner".to_string();
-        log_reject("set_party_slot", me, &e);
-        return Err(e);
-    }
+    require_owner(ctx, "set_party_slot", m.owner_identity)?;
     if slot != PARTY_SLOT_NONE && slot >= MAX_PARTY_SIZE {
         let e =
             format!("slot {slot} out of range (0..{MAX_PARTY_SIZE} or {PARTY_SLOT_NONE} for box)");

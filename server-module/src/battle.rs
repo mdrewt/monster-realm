@@ -9,7 +9,9 @@
 //! ADR-0056 — keep it stable; it could only be wired once the `battle` table
 //! relocated to `schema.rs` (the M8.9a table-name collision constraint).
 
-use crate::guards::{check_monster_in_party, check_party_size, check_team_coupling, log_reject};
+use crate::guards::{
+    check_monster_in_party, check_party_size, check_team_coupling, log_reject, require_owner,
+};
 use crate::marshal::{
     battle_monster_from_row, loser_base_stat_total, now_ms, pub_from_monster, skill_defs_from_rows,
     type_chart_from_rows, wild_battle_monster, write_back_hp,
@@ -462,11 +464,7 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
         .battle_id()
         .find(battle_id)
         .ok_or_else(|| "battle not found".to_string())?;
-    if battle.player_identity != me {
-        let e = "not owner".to_string();
-        log_reject("submit_attack", me, &e);
-        return Err(e);
-    }
+    require_owner(ctx, "submit_attack", battle.player_identity)?;
     if battle.state.outcome != BattleOutcome::Ongoing {
         let e = "battle is not ongoing".to_string();
         log_reject("submit_attack", me, &e);
@@ -525,11 +523,7 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
         .battle_id()
         .find(battle_id)
         .ok_or_else(|| "battle not found".to_string())?;
-    if battle.player_identity != me {
-        let e = "not owner".to_string();
-        log_reject("swap_active", me, &e);
-        return Err(e);
-    }
+    require_owner(ctx, "swap_active", battle.player_identity)?;
     if battle.state.outcome != BattleOutcome::Ongoing {
         let e = "battle is not ongoing".to_string();
         log_reject("swap_active", me, &e);
@@ -585,11 +579,7 @@ pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
         .battle_id()
         .find(battle_id)
         .ok_or_else(|| "battle not found".to_string())?;
-    if battle.player_identity != me {
-        let e = "not owner".to_string();
-        log_reject("flee", me, &e);
-        return Err(e);
-    }
+    require_owner(ctx, "flee", battle.player_identity)?;
     if battle.state.outcome != BattleOutcome::Ongoing {
         let e = "battle is not ongoing".to_string();
         log_reject("flee", me, &e);
