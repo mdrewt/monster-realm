@@ -2,16 +2,10 @@
 // server-module/src/lib.rs must exactly match the committed baseline in
 // evals/baselines/table-schemas.json (columns, declared types, PK, table set).
 //
-// Regen command (one-shot, then commit the diff):
-//   node -e "
-//     import('./evals/battle-schema-snapshot.eval.mjs').then(m => {
-//       const fs = require('node:fs');
-//       const src = fs.readFileSync('server-module/src/lib.rs', 'utf8');
-//       const parsed = m.parseTableSchemas(src);
-//       const sorted = Object.fromEntries(Object.keys(parsed).sort().map(k => [k, parsed[k]]));
-//       fs.writeFileSync('evals/baselines/table-schemas.json', JSON.stringify(sorted, null, 2) + '\n');
-//     });
-//   "
+// The baseline is a committed generated artifact. To regenerate after an
+// intentional schema change: run parseTableSchemas (below) over
+// server-module/src/lib.rs, write the sorted result to
+// evals/baselines/table-schemas.json, and commit the diff for review.
 //
 // Implementation note on Semgrep detect-non-literal-regexp:
 //   All pattern matching uses literal /regex/ patterns — NO new RegExp(...).
@@ -133,26 +127,22 @@ export function checkSchemaDrift(parsed, baseline) {
     const parsedCols = p.columns || {};
     const baselineCols = b.columns || {};
 
-    // Columns in baseline but not in parsed (removal)
+    // Baseline-side: removal (col absent in parsed) OR type-change (present in
+    // both but type differs).
     for (const col of Object.keys(baselineCols)) {
       if (!(col in parsedCols)) {
         drifts.push(`table '${tableName}': column '${col}' removed (in baseline, not in source)`);
-      }
-    }
-
-    // Columns in parsed but not in baseline (addition)
-    for (const col of Object.keys(parsedCols)) {
-      if (!(col in baselineCols)) {
-        drifts.push(`table '${tableName}': column '${col}' added (in source, not in baseline)`);
-      }
-    }
-
-    // Type changes for columns present in both
-    for (const col of Object.keys(baselineCols)) {
-      if (col in parsedCols && parsedCols[col] !== baselineCols[col]) {
+      } else if (parsedCols[col] !== baselineCols[col]) {
         drifts.push(
           `table '${tableName}': column '${col}' type changed from '${baselineCols[col]}' (baseline) to '${parsedCols[col]}' (source)`,
         );
+      }
+    }
+
+    // Parsed-side: addition (col absent in baseline).
+    for (const col of Object.keys(parsedCols)) {
+      if (!(col in baselineCols)) {
+        drifts.push(`table '${tableName}': column '${col}' added (in source, not in baseline)`);
       }
     }
   }

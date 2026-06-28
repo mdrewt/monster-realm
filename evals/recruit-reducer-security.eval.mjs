@@ -94,10 +94,11 @@ export function extractReducerBody(src, fnName) {
  *   (b) direct form: player_identity != ctx.sender ... Err(
  *
  * Algorithm (operates on whitespace-collapsed copy):
- *   1. Resolve sender token: default `ctx.sender`; if `let<alias>=ctx.sender;`
- *      is found, also accept that alias.
- *   2. Require `player_identity!=<sender>` present.
- *   3. Require `Err(` within ~200 chars after that comparison.
+ *   1. Resolve sender tokens: default `ctx.sender`; collect ALL aliases bound by
+ *      `let<alias>=ctx.sender;` (a body may bind ctx.sender to more than one
+ *      local and guard with any of them).
+ *   2. Require `player_identity!=<sender>` present for any accepted sender token.
+ *   3. Require `Err(` within ~320 chars after that comparison.
  *
  * Uses only indexOf and literal /regex/ — NO new RegExp(...).
  *
@@ -107,18 +108,25 @@ export function extractReducerBody(src, fnName) {
 export function checkOwnershipGuard(body) {
   const compact = body.replace(/\s+/g, '');
 
-  // Resolve alias: look for `let<alias>=ctx.sender;`
-  const aliasMatch = /let(\w+)=ctx\.sender;/.exec(compact);
-  const alias = aliasMatch ? aliasMatch[1] : null;
+  // Resolve ALL aliases bound to ctx.sender: `let<alias>=ctx.sender;`
+  // (global match — a body may bind ctx.sender to more than one local and guard
+  // with any of them, e.g. `let caller = ...; let me = ...; ... != me`).
+  const senderTokens = ['ctx.sender'];
+  const aliasRe = /let(\w+)=ctx\.sender;/g;
+  let am = aliasRe.exec(compact);
+  while (am !== null) {
+    senderTokens.push(am[1]);
+    am = aliasRe.exec(compact);
+  }
 
-  // Build the two candidate comparison tokens
-  const directToken = 'player_identity!=ctx.sender';
-  const aliasToken = alias ? `player_identity!=${alias}` : null;
-
-  // Find the comparison index (whichever form is present)
-  let cmpIdx = compact.indexOf(directToken);
-  if (cmpIdx === -1 && aliasToken !== null) {
-    cmpIdx = compact.indexOf(aliasToken);
+  // Find a `player_identity!=<sender>` comparison for any accepted sender token.
+  let cmpIdx = -1;
+  for (const tok of senderTokens) {
+    const idx = compact.indexOf(`player_identity!=${tok}`);
+    if (idx !== -1) {
+      cmpIdx = idx;
+      break;
+    }
   }
 
   if (cmpIdx === -1) {
@@ -129,11 +137,13 @@ export function checkOwnershipGuard(body) {
     );
   }
 
-  // Require Err( within ~200 chars after the comparison
-  const window = compact.slice(cmpIdx, cmpIdx + 200);
+  // Require Err( within ~320 chars after the comparison (a real guard may log
+  // a rejection between the `!=` and the `return Err`, so keep the window
+  // generous but bounded).
+  const window = compact.slice(cmpIdx, cmpIdx + 320);
   if (window.indexOf('Err(') === -1 && window.indexOf('returnErr') === -1) {
     return (
-      'attempt_recruit: ownership comparison found but no Err( within 200 chars — ' +
+      'attempt_recruit: ownership comparison found but no Err( within 320 chars — ' +
       'the comparison must lead to a rejection'
     );
   }
@@ -179,12 +189,18 @@ export function checkOutcomeGuard(body) {
  * Requires a `battle_wild(` lookup whose not-found path rejects with Err.
  * Mere presence of `battle_wild(` in e.g. a GC `.delete()` call is NOT sufficient.
  *
- * Algorithm (operates on whitespace-collapsed copy):
- *   1. Find `battle_wild(` in compact.
- *   2. Require `.find(` within ~200 chars after it.
- *   3. Require a rejection after that `.find(`: one of
- *        - `ok_or` (the `.ok_or_else(...)?` combinator form), OR
- *        - `None=>` followed by `Err` or `return` within ~200 chars.
+ * Algorithm (operates on whitespace-collapsed copy). The rejection must BIND to
+ * the battle_wild lookup result — an unrelated ok_or_else from a different query
+ * nearby must NOT satisfy the gate (a discarded `let _ = ...find(...);` is a hole).
+ * Try EACH `battle_wild(` occurrence (a body may use it for both lookup and GC):
+ *   1. For an occurrence, require `.find(` within ~120 chars after it.
+ *   2. Walk to the matching close-paren of that `.find(`.
+ *   3. Inspect what immediately follows the find's `)`:
+ *        - `.ok_or` chained directly on the find result → ACCEPT.
+ *        - `{Some` (match arm) → require a `None=>` with `Err`/`return` shortly
+ *          after within the match window → ACCEPT.
+ *        - otherwise (e.g. a `;` discarding the result) → this occurrence does
+ *          not bind a rejection; try the next `battle_wild(`.
  *
  * Uses only indexOf and literal /regex/ — NO new RegExp(...).
  *
@@ -194,42 +210,65 @@ export function checkOutcomeGuard(body) {
 export function checkWildBattleGuard(body) {
   const compact = body.replace(/\s+/g, '');
 
-  const wildIdx = compact.indexOf('battle_wild(');
-  if (wildIdx === -1) {
+  if (compact.indexOf('battle_wild(') === -1) {
     return 'attempt_recruit: missing battle_wild( lookup (wild-battle guard absent — non-wild battles could be targeted)';
   }
 
-  // Require .find( after battle_wild(
-  const windowAfterWild = compact.slice(wildIdx, wildIdx + 200);
-  const findOffset = windowAfterWild.indexOf('.find(');
-  if (findOffset === -1) {
+  let sawFind = false;
+
+  // Try each battle_wild( occurrence — only one needs to bind a rejection.
+  let wildIdx = compact.indexOf('battle_wild(');
+  while (wildIdx !== -1) {
+    // Require .find( shortly after this battle_wild( (same call chain).
+    const windowAfterWild = compact.slice(wildIdx, wildIdx + 120);
+    const findOffset = windowAfterWild.indexOf('.find(');
+    if (findOffset !== -1) {
+      sawFind = true;
+      // Walk to the matching close-paren of this .find(.
+      // findAbsIdx points at the '.' of `.find(`; the '(' is 5 chars later.
+      const findAbsIdx = wildIdx + findOffset;
+      let i = findAbsIdx + '.find('.length; // first char inside find's parens
+      let depth = 1;
+      while (i < compact.length && depth > 0) {
+        if (compact[i] === '(') depth++;
+        else if (compact[i] === ')') depth--;
+        i++;
+      }
+      // i now points just AFTER the find's matching ')'.
+      const after = compact.slice(i, i + 320);
+
+      // Accept: combinator chained directly on the find result.
+      if (after.startsWith('.ok_or')) {
+        return null;
+      }
+
+      // Accept: match arm — `{Some...` with a rejecting `None=>` shortly after.
+      if (after.startsWith('{Some')) {
+        const noneIdx = after.indexOf('None=>');
+        if (noneIdx !== -1) {
+          const noneWindow = after.slice(noneIdx, noneIdx + 200);
+          if (noneWindow.indexOf('Err') !== -1 || noneWindow.indexOf('return') !== -1) {
+            return null;
+          }
+        }
+      }
+      // Otherwise (e.g. `;` discards the result): this occurrence does not bind
+      // a rejection — fall through to try the next battle_wild(.
+    }
+    wildIdx = compact.indexOf('battle_wild(', wildIdx + 1);
+  }
+
+  if (!sawFind) {
     return (
-      'attempt_recruit: battle_wild( found but no .find( within 200 chars — ' +
+      'attempt_recruit: battle_wild( found but no .find( lookup — ' +
       'battle_wild( must perform a lookup, not just a delete'
     );
   }
 
-  // Require rejection after the .find(
-  const findAbsIdx = wildIdx + findOffset;
-  const windowAfterFind = compact.slice(findAbsIdx, findAbsIdx + 300);
-
-  // Accept: ok_or (covers .ok_or_else / .ok_or combinator forms)
-  if (windowAfterFind.indexOf('ok_or') !== -1) {
-    return null;
-  }
-
-  // Accept: None=> arm with Err or return within window
-  const noneIdx = windowAfterFind.indexOf('None=>');
-  if (noneIdx !== -1) {
-    const noneWindow = windowAfterFind.slice(noneIdx, noneIdx + 200);
-    if (noneWindow.indexOf('Err') !== -1 || noneWindow.indexOf('return') !== -1) {
-      return null;
-    }
-  }
-
   return (
-    'attempt_recruit: battle_wild( .find( found but no rejection on not-found path — ' +
-    'require ok_or/ok_or_else combinator or None => { return Err(...) } match arm'
+    'attempt_recruit: battle_wild( .find( found but no rejection bound to it — ' +
+    'require .ok_or/.ok_or_else chained on the find, or a match whose None arm returns Err; ' +
+    'a discarded `let _ = ...find(...);` result does not reject on not-wild'
   );
 }
 

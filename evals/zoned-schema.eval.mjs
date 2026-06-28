@@ -11,19 +11,35 @@
 import { readFileSync } from 'node:fs';
 
 /**
+ * Strip Rust block comments and line comments from source so a comment between
+ * the table attribute and the struct (or inside a body) can't drop a table.
+ * @param {string} src Raw Rust source.
+ * @returns {string}
+ */
+function stripRustComments(src) {
+  let out = src.replace(/\/\*[\s\S]*?\*\//g, '');
+  out = out.replace(/\/\/[^\n]*/g, '');
+  return out;
+}
+
+/**
  * Parse `#[spacetimedb::table(name = X, ...)] pub struct ... { ... }` blocks.
  * Each entry carries:
  *   - name: the table name (X)
  *   - attr: the full attribute text (from `#[spacetimedb::table(` through `)]`)
  *   - body: the struct interior text
  *
- * @param {string} src Raw Rust source.
+ * Comments are stripped first, and the struct-body terminator is `\n\s*\}` so an
+ * indented closing brace is not silently dropped.
+ *
+ * @param {string} rawSrc Raw Rust source (comments stripped internally).
  * @returns {{ name: string, attr: string, body: string }[]}
  */
-export function parseTables(src) {
+export function parseTables(rawSrc) {
+  const src = stripRustComments(rawSrc);
   const tables = [];
   // Capture the full attribute (group 1) and body (group 2).
-  const re = /(#\[spacetimedb::table\([^\]]*\)\])\s*pub struct \w+\s*\{([\s\S]*?)\n\}/g;
+  const re = /(#\[spacetimedb::table\([^\]]*\)\])\s*pub struct \w+\s*\{([\s\S]*?)\n\s*\}/g;
   let m = re.exec(src);
   while (m !== null) {
     const attr = m[1];
