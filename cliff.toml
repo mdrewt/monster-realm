@@ -4,9 +4,10 @@ header = "# Changelog\n\n"
 body = """
 {% for group, commits in commits | group_by(attribute="group") %}
 ### {{ group | upper_first }}
-{% for c in commits %}- {{ c.message | upper_first }}{% endfor %}
-{% endfor %}
-"""
+{% for c in commits %}
+- {{ c.message | upper_first }}
+{%- endfor %}
+{% endfor %}"""
 trim = true
 [git]
 conventional_commits = true
