@@ -404,6 +404,9 @@ mod convergence_tests {
             0xF00D_CAFE,
         ];
 
+        let mut witnessed_nonempty = false;
+        let mut witnessed_reordered = false;
+
         for seed in seeds {
             let survivors = deliver(&intents, &link, seed);
 
@@ -421,7 +424,37 @@ mod convergence_tests {
                  (a SeqCanonical that applies in arrival order instead of seq \
                  would diverge here — this assertion kills it)"
             );
+
+            if !survivors.is_empty() {
+                witnessed_nonempty = true;
+            }
+            if had_reorder(&survivors) {
+                witnessed_reordered = true;
+            }
         }
+
+        // Non-vacuity guard (Finding 1): the multi-seed sweep MUST have witnessed
+        // at least one non-empty survivor set AND at least one reordered delivery.
+        // Without this, a seed that drops every intent produces an empty==empty pass
+        // that proves nothing. With loss_pct=20 over 12 intents an all-loss run is
+        // astronomically unlikely across 6 seeds, but the test must not *rely* on
+        // probability — it must be explicit and loud.
+        // Kill target: a seed suite where every seed happened to drop all intents
+        // (vacuous empty==empty) or a jitter:0 regression (no reorder ever occurs).
+        assert!(
+            witnessed_nonempty,
+            "convergence_seq_canonical multi-seed sweep: all seeds dropped every intent — \
+             the test passed vacuously (empty==empty). Either the seed set is broken or \
+             loss_pct is misconfigured. At least one seed must produce a non-empty survivor set."
+        );
+        assert!(
+            witnessed_reordered,
+            "convergence_seq_canonical multi-seed sweep: no seed produced a reordered delivery — \
+             the convergence test is vacuous (any empty-pass or in-order-only delivery trivially \
+             converges without exercising the seq-ordering contract). \
+             A jitter:0 regression or a had_reorder that always returns false kills this. \
+             Kill target: a deliver that sorts by send_ms ignoring jitter."
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -710,6 +743,78 @@ mod convergence_tests {
              sorted (client,seq) asc or (client,seq) desc — an impl that applies \
              in arrival order and only skips stale seqs (rather than full per-client \
              re-sort) would diverge on these two orderings"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Finding 4 — contract bites on the real scenario (non-vacuity for SeqCanonical)
+    // -----------------------------------------------------------------------
+    // For the jittered scenario(), there must exist at least one seed where
+    // BOTH:
+    //   (a) had_reorder(&survivors) == true  (delivery is genuinely reordered), AND
+    //   (b) apply_stream(&survivors, Arrival) != apply_stream(&survivors, SeqCanonical)
+    //       (the seq-ordering contract changes the outcome — not a sort tautology).
+    //
+    // Without (b), "convergence" could be vacuously true because reorder happens
+    // to never flip an accept/stale decision (e.g., each client's seqs arrive
+    // interleaved but every surviving seq still applies in-order per client).
+    // This test proves the ordering contract is LOAD-BEARING on real scenario data.
+    //
+    // Kill target: an apply_stream(_, Arrival) that secretly re-sorts by seq
+    // (making Arrival == SeqCanonical always) — (b) would never fire and the loop
+    // would end without setting the flag. Also kills a had_reorder that always
+    // returns false (flag never set via path (a)).
+    #[test]
+    fn contract_bites_on_scenario_at_least_one_reordered_seed() {
+        let link = jittered_link();
+        let intents = scenario();
+        let seeds: [u64; 16] = [
+            0xDEAD_BEEF,
+            0xC0FF_EE42,
+            0x1234_5678,
+            0xABCD_EF01,
+            0x9999_0000,
+            0xF00D_CAFE,
+            0x0101_0101,
+            0xBEEF_CAFE,
+            0x5EED_0001,
+            0x5EED_0002,
+            0x5EED_0003,
+            0x5EED_0004,
+            0xA5A5_A5A5,
+            0x3C3C_3C3C,
+            0x7777_7777,
+            0x2468_ACE0,
+        ];
+
+        let mut contract_bites = false;
+        for &seed in &seeds {
+            let survivors = deliver(&intents, &link, seed);
+            if had_reorder(&survivors) {
+                let seq_result = apply_stream(&survivors, ApplyOrder::SeqCanonical);
+                let arr_result = apply_stream(&survivors, ApplyOrder::Arrival);
+                if arr_result != seq_result {
+                    contract_bites = true;
+                    break;
+                }
+            }
+        }
+
+        // Spec rationale (Finding 4 / bin's `contract_bites_on_scenario`): the
+        // seq-ordering contract must be PROVABLY load-bearing on the jittered
+        // scenario — not merely tautologically satisfied. A reordered seed where
+        // Arrival == SeqCanonical is a seed where the contract does no work; we
+        // need at least one where it does.
+        // Kill target: apply_stream(_, Arrival) secretly re-sorts by seq so it
+        // always equals SeqCanonical — this assert fires and exposes it.
+        assert!(
+            contract_bites,
+            "contract_bites_on_scenario: across 16 seeds with jitter=40/loss=20, \
+             NO seed produced a reordered delivery where Arrival != SeqCanonical. \
+             The seq-ordering contract is not demonstrably load-bearing on this scenario. \
+             Kill target: an Arrival impl that secretly re-sorts by seq (making Arrival == \
+             SeqCanonical always), or a had_reorder that always returns false. \
+             Either way, convergence is a vacuous tautology — this assertion kills it."
         );
     }
 }

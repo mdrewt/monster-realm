@@ -137,8 +137,11 @@ export default async function () {
   // -------------------------------------------------------------------------
   let report;
   try {
+    // timeout: 120000 ms guards against a stalled/regressed bin hanging `just ci`
+    // forever (Finding 3). The catch block below returns pass:false on timeout.
     const out = execSync('cargo run -q -p sim-harness --bin netcode_converge', {
       encoding: 'utf8',
+      timeout: 120000,
     });
     report = JSON.parse(out.trim());
   } catch (e) {
