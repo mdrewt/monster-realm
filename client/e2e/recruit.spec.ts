@@ -27,6 +27,15 @@ import {
 // specialist must un-fixme when the UI lands. Each fixme'd block still
 // constitutes a committed, reviewable spec.
 //
+// DEFERRED TO M9c (M8.7e): the bait/recruit e2e remains test.fixme because the
+// bait client surface + dev-reducer wiring (start_wild_battle / grant_bait) is
+// deferred to M9c. M9 raising owns the inventory-subscription work (per
+// M9-raising.spec §4 — M9c is "a pure subscription view"; M9b introduces the
+// canonical player_item table and retrofits the M8 bait grants through
+// grant_item), and M8.7b release-gated the dev reducers out of the default
+// client bindings (#[cfg(feature = "dev_reducers")]), so there is no green path
+// for these from a client-only slice. These stay test.fixme until M9c lands.
+//
 // Mirror: golden.spec.ts setup/globals.
 
 // ---------------------------------------------------------------------------

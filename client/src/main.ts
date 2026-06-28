@@ -37,7 +37,7 @@ import { type ApplyMove, Predictor } from './prediction/predictor';
 import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { WorldRenderer } from './render/world';
-import { buildBattleViewModel } from './ui/battleModel';
+import { buildBattleViewModel, decideBattleOverlay } from './ui/battleModel';
 import type { BattleView } from './ui/battleView';
 import { buildBoxViewModel, buildPartyViewModel, nextFreePartySlot } from './ui/boxModel';
 import type { BoxView } from './ui/boxView';
@@ -71,6 +71,11 @@ let identity = '';
 let conn: ReturnType<typeof connect> | undefined;
 let boxView: BoxView | undefined;
 let battleView: BattleView | undefined;
+// Outcome-frame lifecycle (M8.7e): the dismissed battle id (so a resolved outcome
+// renders once but never re-pops) + whether any battle has been observed this
+// session (first-sight pre-dismiss of a historical/stale-on-login resolved battle).
+let dismissedBattleId: bigint | null = null;
+let battleSynced = false;
 
 let resolveReady: () => void = () => {};
 const ready = new Promise<void>((r) => {
@@ -130,6 +135,10 @@ window.addEventListener('keydown', (e) => {
   }
   // Escape priority: battle > box > movement (ADR-0014 exit ordering).
   if (e.code === 'Escape' && battleView?.visible) {
+    const latest = store.latestPlayerBattle(identity);
+    // Terminal outcome frame: permanent dismiss (don't re-pop next batch). Ongoing:
+    // bare hide — the next batch auto-re-shows the active battle (existing behavior).
+    if (latest !== undefined && latest.outcome !== 'Ongoing') dismissedBattleId = latest.battleId;
     battleView.hide();
     e.preventDefault();
     return;
@@ -178,12 +187,14 @@ store.onBatchApplied(() => refreshBox());
 // --- battle view: refresh on batch, auto-show/hide (M7c, ADR-0014/0042) --------
 function refreshBattle(): void {
   if (!battleView || identity === '') return;
-  const battle = store.ongoingBattle(identity);
-  if (battle) {
-    // Auto-hide box when battle is active to prevent overlapping overlays.
-    if (boxView?.visible) boxView.hide();
-    const vm = buildBattleViewModel(battle, store.skillMap(), store.speciesMap());
-    if (!vm) console.warn('[battle] ongoing battle has corrupt team data; view hidden');
+  const latest = store.latestPlayerBattle(identity);
+  const r = decideBattleOverlay(latest, { dismissedBattleId, synced: battleSynced });
+  dismissedBattleId = r.dismissedBattleId;
+  battleSynced = r.synced;
+  if (r.action.kind === 'show') {
+    if (boxView?.visible) boxView.hide(); // active/outcome overlay supersedes the box
+    const vm = buildBattleViewModel(r.action.battle, store.skillMap(), store.speciesMap());
+    if (!vm) console.warn('[battle] battle has corrupt team data; view hidden');
     battleView.refresh(vm);
   } else if (battleView.visible) {
     battleView.hide();
@@ -290,6 +301,10 @@ async function main(): Promise<void> {
       resolver.reset();
       held.clear();
       sawFractionalOwnMotion = false;
+      // Reset the outcome-frame lifecycle so a re-subscribed historical resolved
+      // battle is pre-dismissed again at first sight (M8.7e).
+      dismissedBattleId = null;
+      battleSynced = false;
     },
     onError: (where, message) => console.error(`[net:${where}] ${message}`),
   });
