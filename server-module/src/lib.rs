@@ -17,9 +17,9 @@ use game_core::{
     TurnChoice, TurnVariance, TypeChart, MOVE_QUEUE_CAP, RECRUIT_BASE_RATE, STEP_MS,
 };
 // SSOT helpers reached via their module path (not re-exported at the crate root
-// in this slice's touch-set): the single turn-advance terminal owner and the
-// level-up HP-heal rule (ADR-0003).
-use game_core::combat::{resolve::advance_turn, xp::level_up_healed_hp};
+// in this slice's touch-set): the failed-recruit battle transition (which owns
+// the turn-advance terminal) and the level-up HP-heal rule (ADR-0003).
+use game_core::combat::{resolve::resolve_recruit_failure, xp::level_up_healed_hp};
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
 
@@ -2023,11 +2023,10 @@ pub fn attempt_recruit(
 
     // Read every value we need off the wild into OWNED locals BEFORE any
     // mutation of `battle.state`, so the fail branch never re-borrows across the
-    // `advance_turn` turn-counter write (no borrow-across-mutation trap).
+    // `resolve_recruit_failure` turn-counter write (no borrow-across-mutation trap).
     let wild = battle.state.side_b.active_monster();
     let wild_max_hp = wild.max_hp;
     let wild_current_hp = wild.current_hp;
-    let wild_has_skills = !wild.known_skill_ids.is_empty();
 
     let chance = recruit_chance(wild_max_hp, wild_current_hp, RECRUIT_BASE_RATE, bait_bonus);
     let roll: u32 = ctx.random();
@@ -2078,26 +2077,18 @@ pub fn attempt_recruit(
         return Ok(());
     }
 
-    // Failure: the wild gets a turn. Advance the turn through the SSOT terminal
-    // owner (game_core::advance_turn owns the `u16::MAX -> Fled` terminal — NEVER
-    // a raw in-shell `turn_number += 1`), then let the wild strike back ONLY if
-    // the battle is still ongoing after the advance. If the turn-limit terminal
-    // fired, `advance_turn` set `outcome = Fled` and returned false: the
-    // strike-back is skipped and the terminal write-back below runs (HP + GC, no
-    // XP — Fled is a no-winner terminal).
-    if advance_turn(&mut battle.state) && wild_has_skills {
-        let skill_rows: Vec<SkillRow> = ctx.db.skill_row().iter().collect();
-        let skill_defs = skill_defs_from_rows(&skill_rows);
-        let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter());
-        let variance = TurnVariance::from_ctx_random(ctx.random());
-        let _events = game_core::resolve_enemy_turn(
-            &mut battle.state,
-            game_core::SideId::SideB,
-            &skill_defs,
-            &type_chart,
-            &variance,
-        );
-    }
+    // Failure: the recruit roll missed. game_core owns the failed-recruit battle
+    // transition (game_core::resolve_recruit_failure): it advances the turn through
+    // the SSOT `u16::MAX -> Fled` terminal — NEVER a raw in-shell `turn_number += 1`
+    // — and then lets the wild (side B) strike back ONLY if it has a skill and the
+    // turn-limit terminal did not fire. The reducer just supplies the skill/type/
+    // variance data and persists; the terminal write-back below handles a Fled (or
+    // KO) outcome (HP + GC, no XP — Fled is a no-winner terminal).
+    let skill_rows: Vec<SkillRow> = ctx.db.skill_row().iter().collect();
+    let skill_defs = skill_defs_from_rows(&skill_rows);
+    let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter());
+    let variance = TurnVariance::from_ctx_random(ctx.random());
+    let _events = resolve_recruit_failure(&mut battle.state, &skill_defs, &type_chart, &variance);
 
     if battle.state.outcome != BattleOutcome::Ongoing {
         // Terminal: the wild knocked out the player's last monster, OR the
@@ -3412,45 +3403,51 @@ mod tests {
         }
     }
 
-    /// SSOT wiring: `attempt_recruit` must route turn-advance through
-    /// `advance_turn` (ADR-0003) — never a raw `turn_number += 1` inline.
+    /// SSOT wiring: `attempt_recruit` must delegate the entire failed-recruit
+    /// battle transition (turn advance + optional strike-back) to the pure
+    /// game-core fn `resolve_recruit_failure` (ADR-0003). The u16::MAX→Fled
+    /// terminal, the skill-less-wild guard, and the correct operand order are
+    /// all owned by that fn and proven by its game-core behavioral tests.
+    /// Merely calling `advance_turn` directly in the reducer (with the return
+    /// value ignored, inverted, or anded with wild_has_skills) would pass a
+    /// purely textual `advance_turn` guard but be behaviorally wrong — hence
+    /// this guard checks for `resolve_recruit_failure` instead.
     ///
-    /// RED today: the source contains `battle.state.turn_number += 1;` and
-    /// does NOT contain `advance_turn`.
+    /// RED today: the reducer body contains `battle.state.turn_number += 1;`
+    /// and does NOT mention `resolve_recruit_failure`.
     ///
-    /// After the implementer's change the source will contain `advance_turn(`
-    /// and will no longer contain the raw inline `turn_number += 1`.
-    ///
-    /// Failure message explains the ADR-0003 requirement so a reader who
-    /// accidentally reverts the change understands why CI is red.
+    /// After the implementer's change: body calls `resolve_recruit_failure`
+    /// and no longer contains a raw `turn_number +=`.
     #[test]
-    fn attempt_recruit_routes_turn_advance_through_advance_turn() {
+    fn attempt_recruit_routes_turn_advance_through_game_core() {
         let stripped = strip_rust_comments(LIB_RS_SOURCE);
         let body = extract_fn_body(&stripped, "attempt_recruit")
             .expect("attempt_recruit function must exist in lib.rs");
 
-        // The body must delegate to advance_turn.
+        // Positive: the body must call the pure game-core transition fn.
+        // This string does NOT appear in this test's own text (the test module
+        // body is outside the extracted attempt_recruit slice), so the check
+        // has genuine teeth.
         assert!(
-            body.contains("advance_turn"),
-            "TEETH(ADR-0003 SSOT): attempt_recruit body must call `advance_turn` \
-             to advance the turn counter; the u16::MAX→Fled terminal guard lives \
-             in game_core::advance_turn and is bypassed by a raw inline increment. \
-             Body excerpt (first 400 chars): {:?}",
+            body.contains("resolve_recruit_failure"),
+            "TEETH(ADR-0003 SSOT): attempt_recruit body must call \
+             `resolve_recruit_failure` (game_core) to handle the failed-recruit \
+             battle transition; calling advance_turn directly in the reducer \
+             cannot be verified for correct operand order or skill-less-wild \
+             handling. Body excerpt (first 400 chars): {:?}",
             &body[..body.len().min(400)]
         );
 
-        // The body must NOT contain a raw inline increment.
-        // Build the forbidden needle from fragments so the literal string
-        // `turn_number += 1` does not appear verbatim in this test's own source
-        // (we are searching the EXTRACTED body, which is a different slice, but
-        // constructing it this way makes the intent explicit).
+        // Negative: the body must NOT contain a raw inline turn increment.
+        // Constructed from parts so the complete literal does not appear
+        // verbatim in this test's own text.
         let forbidden = ["turn_number ", "+="].concat();
         assert!(
             !body.contains(forbidden.as_str()),
             "TEETH(ADR-0003 SSOT): attempt_recruit body must NOT contain a raw \
-             `turn_number +=` increment; such an increment bypasses the \
-             u16::MAX→Fled terminal in game_core::advance_turn (ADR-0003 residual). \
-             Found forbidden pattern in body. Body excerpt (first 400 chars): {:?}",
+             `turn_number +=` increment; all turn-advance logic is owned by \
+             game_core::resolve_recruit_failure (ADR-0003 residual). \
+             Body excerpt (first 400 chars): {:?}",
             &body[..body.len().min(400)]
         );
     }
