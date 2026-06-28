@@ -38,14 +38,12 @@ import AttemptRecruitReducer from "./attempt_recruit_reducer";
 import ClearQueueReducer from "./clear_queue_reducer";
 import EnqueueMoveReducer from "./enqueue_move_reducer";
 import FleeReducer from "./flee_reducer";
-import GrantBaitReducer from "./grant_bait_reducer";
 import HealPartyReducer from "./heal_party_reducer";
 import JoinGameReducer from "./join_game_reducer";
 import SetMoveReducer from "./set_move_reducer";
 import SetNicknameReducer from "./set_nickname_reducer";
 import SetPartySlotReducer from "./set_party_slot_reducer";
 import StartBattleReducer from "./start_battle_reducer";
-import StartWildBattleReducer from "./start_wild_battle_reducer";
 import SubmitAttackReducer from "./submit_attack_reducer";
 import SwapActiveReducer from "./swap_active_reducer";
 import SyncContentReducer from "./sync_content_reducer";
@@ -213,14 +211,12 @@ const reducersSchema = __reducers(
   __reducerSchema("clear_queue", ClearQueueReducer),
   __reducerSchema("enqueue_move", EnqueueMoveReducer),
   __reducerSchema("flee", FleeReducer),
-  __reducerSchema("grant_bait", GrantBaitReducer),
   __reducerSchema("heal_party", HealPartyReducer),
   __reducerSchema("join_game", JoinGameReducer),
   __reducerSchema("set_move", SetMoveReducer),
   __reducerSchema("set_nickname", SetNicknameReducer),
   __reducerSchema("set_party_slot", SetPartySlotReducer),
   __reducerSchema("start_battle", StartBattleReducer),
-  __reducerSchema("start_wild_battle", StartWildBattleReducer),
   __reducerSchema("submit_attack", SubmitAttackReducer),
   __reducerSchema("swap_active", SwapActiveReducer),
   __reducerSchema("sync_content", SyncContentReducer),
