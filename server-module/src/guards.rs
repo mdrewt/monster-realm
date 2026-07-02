@@ -122,6 +122,34 @@ pub(crate) fn check_team_coupling(team_len: usize, ids_len: usize) -> Result<(),
     Ok(())
 }
 
+/// Reject if the monster is in an ongoing battle (escrowed, ADR-0061).
+/// Checks if the player has any ongoing battle rows containing this monster_id
+/// in either party (M10b evolve/fuse guardding).
+pub(crate) fn reject_if_in_battle(
+    ctx: &ReducerContext,
+    owner_identity: Identity,
+    monster_id: u64,
+) -> Result<(), String> {
+    use crate::schema::battle;
+    use game_core::BattleOutcome;
+
+    let in_battle = ctx
+        .db
+        .battle()
+        .player_identity()
+        .filter(owner_identity)
+        .any(|b| {
+            b.state.outcome == BattleOutcome::Ongoing
+                && (b.party_monster_ids_a.contains(&monster_id)
+                    || b.party_monster_ids_b.contains(&monster_id))
+        });
+
+    if in_battle {
+        return Err("monster is in an ongoing battle".to_string());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "guards_tests.rs"]
 mod guards_tests;
