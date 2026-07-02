@@ -54,6 +54,10 @@ pub struct TileMap {
     /// `TallGrass` (M8). Rides the one-way `Serialize` so the TS renderer's grass
     /// overlay reads the SAME layer the rule evaluates (visual-SSOT).
     grass: Vec<bool>,
+    /// M11c: warp overlay list — serializes through zone_map() wasm export
+    /// (intentional ABI so the TS client always sees the warps field).
+    /// `from_rows` produces `warps: vec![]`; `map_for` sets them from ZoneMapDef.
+    pub warps: Vec<crate::content::WarpDef>,
 }
 
 impl TileMap {
@@ -64,31 +68,7 @@ impl TileMap {
     /// # Errors
     /// Returns `Err` if rows are ragged or contain an unknown tile glyph.
     pub fn from_rows(zone_id: u32, rows: &[&str]) -> Result<TileMap, String> {
-        let height = i32::try_from(rows.len()).map_err(|_| "map too tall".to_string())?;
-        let width = i32::try_from(rows.first().map_or(0, |r| r.chars().count()))
-            .map_err(|_| "map too wide".to_string())?;
-        let mut walkable = Vec::with_capacity((width * height).max(0) as usize);
-        let mut grass = Vec::with_capacity((width * height).max(0) as usize);
-        for (y, row) in rows.iter().enumerate() {
-            let row_len = i32::try_from(row.chars().count()).unwrap_or(i32::MAX);
-            if row_len != width {
-                return Err(format!(
-                    "ragged map: row {y} has width {row_len}, expected {width}"
-                ));
-            }
-            for (x, c) in row.chars().enumerate() {
-                let kind = TileKind::from_char(c).map_err(|e| format!("{e} at ({x},{y})"))?;
-                walkable.push(kind.is_walkable());
-                grass.push(matches!(kind, TileKind::TallGrass));
-            }
-        }
-        Ok(TileMap {
-            zone_id,
-            width,
-            height,
-            walkable,
-            grass,
-        })
+        build_grid(zone_id, rows)
     }
 
     #[must_use]
@@ -116,6 +96,13 @@ impl TileMap {
         let idx = p.y as usize * self.width as usize + p.x as usize;
         self.grass.get(idx).copied().unwrap_or(false)
     }
+
+    /// Returns the warp whose `from` tile equals `p`, or `None`.
+    /// Bounds-safe: out-of-range coordinates simply find no match.
+    #[must_use]
+    pub fn warp_at(&self, p: TilePos) -> Option<&crate::content::WarpDef> {
+        self.warps.iter().find(|w| w.from == p)
+    }
 }
 
 /// Pure trigger geometry: a character "stepped onto grass" iff its position
@@ -138,6 +125,172 @@ pub fn zone_0() -> TileMap {
 #[must_use]
 pub fn spawn() -> TilePos {
     TilePos { x: 1, y: 1 }
+}
+
+// ===========================================================================
+// M11a: build_grid (private), map_for, validate_zone_maps
+// ===========================================================================
+
+/// Private grid builder — the body formerly in `from_rows`. Produces a `TileMap`
+/// with `warps: vec![]`; `map_for` sets the warps afterward from the ZoneMapDef.
+fn build_grid(zone_id: u32, rows: &[&str]) -> Result<TileMap, String> {
+    let height = i32::try_from(rows.len()).map_err(|_| "map too tall".to_string())?;
+    let width = i32::try_from(rows.first().map_or(0, |r| r.chars().count()))
+        .map_err(|_| "map too wide".to_string())?;
+    let mut walkable = Vec::with_capacity((width * height).max(0) as usize);
+    let mut grass = Vec::with_capacity((width * height).max(0) as usize);
+    for (y, row) in rows.iter().enumerate() {
+        let row_len = i32::try_from(row.chars().count()).unwrap_or(i32::MAX);
+        if row_len != width {
+            return Err(format!(
+                "ragged map: row {y} has width {row_len}, expected {width}"
+            ));
+        }
+        for (x, c) in row.chars().enumerate() {
+            let kind = TileKind::from_char(c).map_err(|e| format!("{e} at ({x},{y})"))?;
+            walkable.push(kind.is_walkable());
+            grass.push(matches!(kind, TileKind::TallGrass));
+        }
+    }
+    Ok(TileMap {
+        zone_id,
+        width,
+        height,
+        walkable,
+        grass,
+        warps: vec![],
+    })
+}
+
+/// Build a `TileMap` for `zone_id` from the given `zone_maps` slice.
+/// Sets the warp overlay from the matching `ZoneMapDef`.
+///
+/// # Errors
+/// Returns `Err` (naming `zone_id`) if no matching `ZoneMapDef` is found,
+/// or if the rows are ragged / contain an unknown glyph.
+pub fn map_for(zone_id: u32, zone_maps: &[crate::content::ZoneMapDef]) -> Result<TileMap, String> {
+    let def = zone_maps
+        .iter()
+        .find(|m| m.zone_id == zone_id)
+        .ok_or_else(|| format!("no zone map for zone_id {zone_id}"))?;
+    let row_refs: Vec<&str> = def.rows.iter().map(String::as_str).collect();
+    let mut map = build_grid(zone_id, &row_refs)?;
+    map.warps = def.warps.clone();
+    Ok(map)
+}
+
+/// Validate a `zone_maps` slice against the `zones` registry.
+///
+/// Checks (in order):
+///
+/// 1. All rows build valid TileMaps (well-formedness).
+/// 2. zone_ids within zone_maps are unique.
+/// 3. Every zone_id in zone_maps exists in the zones registry.
+/// 4. Map dims ≤ ZoneDef bounds.
+/// 5. Warp source tile is in-bounds and walkable in its own map.
+/// 6. Warp to_zone exists in the zones registry.
+/// 7. (check 6.5) Warp to_zone has a ZoneMapDef entry.
+/// 8. Warp to_tile is walkable in the target map.
+///
+/// # Errors
+/// Returns the first violation found.
+pub fn validate_zone_maps(
+    zone_maps: &[crate::content::ZoneMapDef],
+    zones: &[crate::content::ZoneDef],
+) -> Result<(), String> {
+    let zone_ids: std::collections::HashSet<u32> = zones.iter().map(|z| z.id).collect();
+    let map_zone_ids: std::collections::HashSet<u32> =
+        zone_maps.iter().map(|m| m.zone_id).collect();
+
+    // Check 1: all rows build valid TileMap
+    for m in zone_maps {
+        let row_refs: Vec<&str> = m.rows.iter().map(String::as_str).collect();
+        build_grid(m.zone_id, &row_refs)
+            .map_err(|e| format!("zone_map zone_id {}: {}", m.zone_id, e))?;
+    }
+
+    // Check 2: unique zone_id
+    {
+        let mut seen = std::collections::HashSet::new();
+        for m in zone_maps {
+            if !seen.insert(m.zone_id) {
+                return Err(format!("zone_maps: duplicate zone_id {}", m.zone_id));
+            }
+        }
+    }
+
+    // Check 3: every zone_id in zones registry
+    for m in zone_maps {
+        if !zone_ids.contains(&m.zone_id) {
+            return Err(format!(
+                "zone_map has zone_id {} not found in zones registry",
+                m.zone_id
+            ));
+        }
+    }
+
+    // Check 4: map dims <= ZoneDef bounds
+    for m in zone_maps {
+        if let Some(zone_def) = zones.iter().find(|z| z.id == m.zone_id) {
+            let row_refs: Vec<&str> = m.rows.iter().map(String::as_str).collect();
+            // already validated in check 1 — unwrap is safe
+            let tile_map = build_grid(m.zone_id, &row_refs).unwrap();
+            if tile_map.width > zone_def.width as i32 || tile_map.height > zone_def.height as i32 {
+                return Err(format!(
+                    "zone_map zone_id {}: map {}×{} exceeds ZoneDef bounds {}×{}",
+                    m.zone_id, tile_map.width, tile_map.height, zone_def.width, zone_def.height
+                ));
+            }
+        }
+    }
+
+    // Checks 5–7: warp validation
+    for m in zone_maps {
+        let row_refs: Vec<&str> = m.rows.iter().map(String::as_str).collect();
+        let src_map = build_grid(m.zone_id, &row_refs).unwrap(); // validated in check 1
+
+        for warp in &m.warps {
+            // Check 5: warp source in-bounds + walkable
+            if !src_map.is_walkable(warp.from) {
+                return Err(format!(
+                    "zone_map zone_id {}: warp source {:?} is not walkable",
+                    m.zone_id, warp.from
+                ));
+            }
+
+            // Check 6: warp to_zone in zones registry
+            if !zone_ids.contains(&warp.to_zone) {
+                return Err(format!(
+                    "zone_map zone_id {}: warp to_zone {} not in zones registry",
+                    m.zone_id, warp.to_zone
+                ));
+            }
+
+            // Check 6.5: warp to_zone has a ZoneMapDef
+            if !map_zone_ids.contains(&warp.to_zone) {
+                return Err(format!(
+                    "zone_map zone_id {}: warp to_zone {} exists in zones registry but has no ZoneMapDef",
+                    m.zone_id, warp.to_zone
+                ));
+            }
+
+            // Check 7: warp to_tile walkable in target map
+            let target_def = zone_maps
+                .iter()
+                .find(|x| x.zone_id == warp.to_zone)
+                .unwrap(); // guaranteed by check 6.5
+            let target_rows: Vec<&str> = target_def.rows.iter().map(String::as_str).collect();
+            let target_map = build_grid(warp.to_zone, &target_rows).unwrap(); // validated in check 1
+            if !target_map.is_walkable(warp.to_tile) {
+                return Err(format!(
+                    "zone_map zone_id {}: warp to_tile {:?} in zone {} is not walkable",
+                    m.zone_id, warp.to_tile, warp.to_zone
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// The SOLE movement rule — total, pure, deterministic. A bump (blocked step) or a
