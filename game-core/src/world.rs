@@ -1006,4 +1006,56 @@ mod tests {
         let jump = super::apply_move_coded(1, 1, 0, 0, 0, 1, 2, 1000);
         assert_eq!(jump, [1, 1, 0, 2], "jump: pos (1,1), facing North, Jumping");
     }
+
+    // -----------------------------------------------------------------------
+    // M11b anchor: real content integration tests.
+    //
+    // These tests use the REAL embedded zone-map content via `load_zone_maps()`
+    // to prove the M11b contract: the RON content in
+    // `content/zone_maps/000-core.ron` correctly declares mutual warps between
+    // zone 0 and zone 1 at tile (5,5). The server warp runtime (movement_tick)
+    // delegates to map_for + warp_at over this real content, so these tests
+    // are the integration anchor that proves the data is present before the
+    // server logic can be verified.
+    //
+    // These tests START GREEN (map_for and warp_at already exist from M11a).
+    // They are regression anchors — if content is accidentally removed or the
+    // warp coordinates change, these tests go RED and catch the regression
+    // before the server runtime is affected.
+    // -----------------------------------------------------------------------
+
+    /// Criterion: zone 0 real content has a warp at (5,5) targeting zone 1.
+    /// Kills: any content edit that removes or changes the zone-0→zone-1 warp
+    /// (the movement_tick server runtime reads this warp via map_for + warp_at;
+    /// a missing warp means the server can never execute the warp teleport).
+    #[test]
+    fn zone_0_real_content_has_warp_at_5_5_to_zone_1() {
+        use crate::content::load_zone_maps;
+        let maps = load_zone_maps().expect("zone maps must load");
+        let m = map_for(0, &maps).expect("map_for(0) must succeed");
+        let warp = m
+            .warp_at(TilePos { x: 5, y: 5 })
+            .expect("warp at (5,5) must exist in zone 0");
+        assert_eq!(warp.to_zone, 1, "zone 0 warp must target zone 1");
+        assert_eq!(
+            warp.to_tile,
+            TilePos { x: 5, y: 5 },
+            "warp to_tile must be (5,5)"
+        );
+    }
+
+    /// Criterion: zone 1 real content has a return warp at (5,5) targeting zone 0.
+    /// Kills: any content edit that removes the zone-1→zone-0 return warp
+    /// (mutual warps are required for round-trip zone traversal; a one-way
+    /// warp traps the player in zone 1 with no server path back).
+    #[test]
+    fn zone_1_real_content_has_return_warp_at_5_5_to_zone_0() {
+        use crate::content::load_zone_maps;
+        let maps = load_zone_maps().expect("zone maps must load");
+        let m = map_for(1, &maps).expect("map_for(1) must succeed");
+        let warp = m
+            .warp_at(TilePos { x: 5, y: 5 })
+            .expect("warp at (5,5) must exist in zone 1");
+        assert_eq!(warp.to_zone, 0, "zone 1 warp must target zone 0");
+    }
 }

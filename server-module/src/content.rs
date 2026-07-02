@@ -17,7 +17,8 @@ use crate::schema::{
 use crate::CONTENT_VERSION;
 use game_core::{
     load_encounters, load_evolutions, load_fusion, load_items, load_skills, load_species,
-    load_type_chart, validate_content, validate_encounters, validate_evolution_fusion,
+    load_type_chart, load_zone_maps, validate_content, validate_encounters,
+    validate_evolution_fusion, validate_zone_maps,
 };
 use spacetimedb::{ReducerContext, Table};
 
@@ -38,6 +39,23 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) {
     };
     if let Err(e) = game_core::validate_zones(&zones) {
         log::error!("{{\"evt\":\"sync_content_invalid\",\"reason\":\"{e}\"}}");
+        return;
+    }
+    // Load and validate zone maps BEFORE any zone_def writes (M11b, ADR-0066):
+    // bad content is rejected early so a malformed warp target can never reach the DB.
+    let zone_maps = match load_zone_maps() {
+        Ok(z) => z,
+        Err(e) => {
+            log::error!(
+                "{{\"evt\":\"sync_content_error\",\"registry\":\"zone_maps\",\"reason\":\"{e}\"}}"
+            );
+            return;
+        }
+    };
+    if let Err(e) = validate_zone_maps(&zone_maps, &zones) {
+        log::error!(
+            "{{\"evt\":\"sync_content_invalid\",\"registry\":\"zone_maps\",\"reason\":\"{e}\"}}"
+        );
         return;
     }
     for z in &zones {

@@ -20,8 +20,9 @@ use crate::schema::{
 };
 use crate::{SPRITE_PLAYER, STARTER_SPECIES_ID, ZONE_0};
 use game_core::{
-    apply_move, resolve_encounter, roll_starter, spawn, stepped_onto_grass, zone_0, ActionState,
-    BattleOutcome, Direction, Millis, MoveInput, StatBlock, TileMap, MOVE_QUEUE_CAP,
+    apply_move, load_zone_maps, map_for, resolve_encounter, roll_starter, spawn,
+    stepped_onto_grass, ActionState, BattleOutcome, Direction, Millis, MoveInput, StatBlock,
+    MOVE_QUEUE_CAP,
 };
 use spacetimedb::{ReducerContext, ScheduleAt, Table};
 
@@ -34,16 +35,6 @@ pub struct MovementTickSchedule {
     pub id: u64,
     pub zone_id: u32,
     pub scheduled_at: ScheduleAt,
-}
-
-/// The map for a zone (M2: one authored zone; `map_for(zone_id)` generalizes at M11).
-fn zone_map(_zone_id: u32) -> TileMap {
-    // M2 has exactly one authored zone. A second active zone needs a real
-    // `map_for(zone_id)` (M11); fail loud in dev/CI if a non-zero zone tick ever
-    // reaches here rather than silently moving everyone on zone 0's map.
-    // (`_zone_id`: `debug_assert` is stripped in release, so keep it warning-free.)
-    debug_assert_eq!(_zone_id, ZONE_0, "zone_map: only zone_0 exists until M11");
-    zone_0()
 }
 
 /// Join: one `player` + one `character` at the spawn + one starter `monster`
@@ -166,7 +157,20 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
     }
     let zone = sched.zone_id;
     let now = Millis(now_ms(ctx));
-    let map = zone_map(zone);
+    let zone_maps = match load_zone_maps() {
+        Ok(z) => z,
+        Err(e) => {
+            log::error!("{{\"evt\":\"movement_tick_error\",\"zone\":{zone},\"reason\":\"{e}\"}}");
+            return Ok(()); // logged no-op: a content-load failure must not abort the tick (ADR-0066)
+        }
+    };
+    let map = match map_for(zone, &zone_maps) {
+        Ok(m) => m,
+        Err(e) => {
+            log::error!("{{\"evt\":\"movement_tick_error\",\"zone\":{zone},\"reason\":\"{e}\"}}");
+            return Ok(());
+        }
+    };
     // Snapshot ids BEFORE mutating (never mutate the table mid-iteration).
     let ids: Vec<u64> = ctx
         .db
@@ -190,8 +194,44 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         let prev = char_state(&row).pos; // capture BEFORE apply_move
         let next = apply_move(&char_state(&row), input, &map, now);
         apply_state(&mut row, &next);
-        // position + drained move_queue written in ONE update (atomic, ADR-0013 §B).
-        let entity_id = row.entity_id;
+        let entity_id = row.entity_id; // capture before any move/borrow
+
+        // Server-authoritative warp resolution (ADR-0020/0066).
+        // Guard 1: only fire when the character actually MOVED (bump = no warp).
+        // Guard 2: players in active battles must not be warped (C1 security finding).
+        if prev != next.pos {
+            if let Some(warp) = map.warp_at(next.pos) {
+                // Copy scalars out of the WarpDef borrow BEFORE mutating row.
+                let (to_zone, tx, ty) = (warp.to_zone, warp.to_tile.x, warp.to_tile.y);
+                // Battle guard: skip warp for players currently in an ongoing battle.
+                let in_battle = ctx
+                    .db
+                    .player()
+                    .entity_id()
+                    .filter(entity_id)
+                    .next()
+                    .map(|p| {
+                        ctx.db
+                            .battle()
+                            .player_identity()
+                            .filter(p.identity)
+                            .any(|b| b.state.outcome == BattleOutcome::Ongoing)
+                    })
+                    .unwrap_or(false); // NPCs have no player row → treat as not in battle → warp them
+                if !in_battle {
+                    row.zone_id = to_zone;
+                    row.tile_x = tx;
+                    row.tile_y = ty;
+                    row.move_queue.clear(); // clear queued moves across zone boundary
+                    row.action = ActionState::Idle; // arrive idle in new zone
+                    ctx.db.character().entity_id().update(row);
+                    // skip grass-encounter trigger — a warp step is not a grass step
+                    continue;
+                }
+            }
+        }
+
+        // Normal (non-warp) one-write path — position + drained move_queue (atomic, ADR-0013 §B).
         ctx.db.character().entity_id().update(row);
 
         // M8c grass-encounter trigger (ADR-0045). EVERY failure mode below is a
