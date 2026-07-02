@@ -10,7 +10,7 @@ Architecture Decision Records live in **two locations**; check both.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0067`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0068`**.
 
 ## ADRs in `docs/adr/`
 
@@ -49,6 +49,7 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 | [0064](./0064-m10d-evolution-fusion-content-integrity-evals.md) | Evolution/fusion content-integrity + reducer-security evals (Phase A eval harness completion) | M10d |
 | [0065](./0065-zone-map-warp-data-shape.md) | Zone map + warp data shape — warps-in-TileMap overlay list, content.rs data / world.rs rules split, std-only Tiled importer, standalone validate_zone_maps | M11a |
 | [0066](./0066-server-warp-runtime.md) | Server-authoritative warp runtime — per-zone schedules, warp detection, zone-map validation | M11b |
+| [0067](./0067-follow-camera-and-warp-resubscribe.md) | Client follow-camera + zone warp resubscribe — global character subscription, onUpdate warp detection | M11c |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
