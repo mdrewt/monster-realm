@@ -127,23 +127,25 @@ impl<'a> Parser<'a> {
 
     fn parse_string(&mut self) -> Result<String, String> {
         self.expect_byte(b'"')?;
-        let mut s = String::new();
+        // Accumulate raw bytes; decode as UTF-8 at the end so multi-byte
+        // sequences are handled correctly (avoids Latin-1 mojibake from b as char).
+        let mut buf: Vec<u8> = Vec::new();
         loop {
             match self.advance() {
                 None => return Err("unterminated string".to_string()),
                 Some(b'"') => break,
                 Some(b'\\') => {
                     match self.advance() {
-                        Some(b'"') => s.push('"'),
-                        Some(b'\\') => s.push('\\'),
-                        Some(b'/') => s.push('/'),
-                        Some(b'n') => s.push('\n'),
-                        Some(b't') => s.push('\t'),
-                        Some(b'r') => s.push('\r'),
-                        Some(b'b') => s.push('\x08'),
-                        Some(b'f') => s.push('\x0C'),
+                        Some(b'"') => buf.push(b'"'),
+                        Some(b'\\') => buf.push(b'\\'),
+                        Some(b'/') => buf.push(b'/'),
+                        Some(b'n') => buf.push(b'\n'),
+                        Some(b't') => buf.push(b'\t'),
+                        Some(b'r') => buf.push(b'\r'),
+                        Some(b'b') => buf.push(0x08),
+                        Some(b'f') => buf.push(0x0C),
                         Some(b'u') => {
-                            // Parse 4 hex digits
+                            // Parse 4 hex digits → Unicode scalar → UTF-8
                             let mut hex = [0u8; 4];
                             for h in &mut hex {
                                 *h = self.advance().ok_or("EOF in unicode escape")?;
@@ -154,16 +156,17 @@ impl<'a> Parser<'a> {
                                 .map_err(|_| format!("invalid hex in \\u{hex_str}"))?;
                             let ch = char::from_u32(code)
                                 .ok_or_else(|| format!("invalid unicode codepoint {code}"))?;
-                            s.push(ch);
+                            let mut tmp = [0u8; 4];
+                            buf.extend_from_slice(ch.encode_utf8(&mut tmp).as_bytes());
                         }
                         Some(c) => return Err(format!("unknown escape \\{}", c as char)),
                         None => return Err("EOF after backslash".to_string()),
                     }
                 }
-                Some(b) => s.push(b as char),
+                Some(b) => buf.push(b),
             }
         }
-        Ok(s)
+        String::from_utf8(buf).map_err(|e| format!("invalid UTF-8 in string: {e}"))
     }
 
     fn parse_number(&mut self) -> Result<JsonValue, String> {
@@ -277,7 +280,13 @@ fn obj_get<'a>(obj: &'a [(String, JsonValue)], key: &str) -> Option<&'a JsonValu
 fn as_u32(v: &JsonValue, ctx: &str) -> Result<u32, String> {
     match v {
         JsonValue::Num(n) => {
+            if !n.is_finite() {
+                return Err(format!("{ctx}: non-finite number {n}"));
+            }
             let i = *n as i64;
+            if i as f64 != n.trunc() {
+                return Err(format!("{ctx}: {n} is not an integer"));
+            }
             u32::try_from(i).map_err(|_| format!("{ctx}: value {n} out of u32 range"))
         }
         other => Err(format!("{ctx}: expected number, got {other:?}")),
@@ -287,7 +296,13 @@ fn as_u32(v: &JsonValue, ctx: &str) -> Result<u32, String> {
 fn as_i32(v: &JsonValue, ctx: &str) -> Result<i32, String> {
     match v {
         JsonValue::Num(n) => {
+            if !n.is_finite() {
+                return Err(format!("{ctx}: non-finite number {n}"));
+            }
             let i = *n as i64;
+            if i as f64 != n.trunc() {
+                return Err(format!("{ctx}: {n} is not an integer"));
+            }
             i32::try_from(i).map_err(|_| format!("{ctx}: value {n} out of i32 range"))
         }
         other => Err(format!("{ctx}: expected number, got {other:?}")),
@@ -375,13 +390,7 @@ pub fn parse_tiled_json(json: &str, zone_id: u32) -> Result<ZoneMapDef, String> 
         } else if layer_type == "objectgroup" {
             // Check if this is the "Warps" layer
             let name_val = obj_get(layer, "name");
-            let is_warps = name_val.and_then(|v| {
-                if let JsonValue::Str(s) = v {
-                    Some(s.as_str())
-                } else {
-                    None
-                }
-            }) == Some("Warps");
+            let is_warps = matches!(name_val, Some(JsonValue::Str(s)) if s == "Warps");
 
             if is_warps {
                 let objects_val = obj_get(layer, "objects")
@@ -453,7 +462,9 @@ pub fn parse_tiled_json(json: &str, zone_id: u32) -> Result<ZoneMapDef, String> 
     let tile_data = tile_data.ok_or("no tilelayer found in layers")?;
 
     // Validate data length
-    let expected = width * height;
+    let expected = width
+        .checked_mul(height)
+        .ok_or_else(|| format!("map dimensions {width}×{height} overflow usize"))?;
     if tile_data.len() != expected {
         return Err(format!(
             "data.len()={} != width*height={width}*{height}={}",

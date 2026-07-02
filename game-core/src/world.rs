@@ -202,12 +202,15 @@ pub fn validate_zone_maps(
     let map_zone_ids: std::collections::HashSet<u32> =
         zone_maps.iter().map(|m| m.zone_id).collect();
 
-    // Check 1: all rows build valid TileMap
-    for m in zone_maps {
-        let row_refs: Vec<&str> = m.rows.iter().map(String::as_str).collect();
-        build_grid(m.zone_id, &row_refs)
-            .map_err(|e| format!("zone_map zone_id {}: {}", m.zone_id, e))?;
-    }
+    // Check 1: build (and validate) all grids once; reused by checks 4 and 5–7.
+    let built: Vec<TileMap> = zone_maps
+        .iter()
+        .map(|m| {
+            let row_refs: Vec<&str> = m.rows.iter().map(String::as_str).collect();
+            build_grid(m.zone_id, &row_refs)
+                .map_err(|e| format!("zone_map zone_id {}: {}", m.zone_id, e))
+        })
+        .collect::<Result<_, _>>()?;
 
     // Check 2: unique zone_id
     {
@@ -230,12 +233,21 @@ pub fn validate_zone_maps(
     }
 
     // Check 4: map dims <= ZoneDef bounds
-    for m in zone_maps {
+    for (m, tile_map) in zone_maps.iter().zip(built.iter()) {
         if let Some(zone_def) = zones.iter().find(|z| z.id == m.zone_id) {
-            let row_refs: Vec<&str> = m.rows.iter().map(String::as_str).collect();
-            // already validated in check 1 — unwrap is safe
-            let tile_map = build_grid(m.zone_id, &row_refs).unwrap();
-            if tile_map.width > zone_def.width as i32 || tile_map.height > zone_def.height as i32 {
+            let max_w = i32::try_from(zone_def.width).map_err(|_| {
+                format!(
+                    "zone_def zone_id {}: width {} out of i32 range",
+                    m.zone_id, zone_def.width
+                )
+            })?;
+            let max_h = i32::try_from(zone_def.height).map_err(|_| {
+                format!(
+                    "zone_def zone_id {}: height {} out of i32 range",
+                    m.zone_id, zone_def.height
+                )
+            })?;
+            if tile_map.width > max_w || tile_map.height > max_h {
                 return Err(format!(
                     "zone_map zone_id {}: map {}×{} exceeds ZoneDef bounds {}×{}",
                     m.zone_id, tile_map.width, tile_map.height, zone_def.width, zone_def.height
@@ -245,10 +257,7 @@ pub fn validate_zone_maps(
     }
 
     // Checks 5–7: warp validation
-    for m in zone_maps {
-        let row_refs: Vec<&str> = m.rows.iter().map(String::as_str).collect();
-        let src_map = build_grid(m.zone_id, &row_refs).unwrap(); // validated in check 1
-
+    for (m, src_map) in zone_maps.iter().zip(built.iter()) {
         for warp in &m.warps {
             // Check 5: warp source in-bounds + walkable
             if !src_map.is_walkable(warp.from) {
@@ -275,13 +284,11 @@ pub fn validate_zone_maps(
             }
 
             // Check 7: warp to_tile walkable in target map
-            let target_def = zone_maps
+            let target_idx = zone_maps
                 .iter()
-                .find(|x| x.zone_id == warp.to_zone)
+                .position(|x| x.zone_id == warp.to_zone)
                 .unwrap(); // guaranteed by check 6.5
-            let target_rows: Vec<&str> = target_def.rows.iter().map(String::as_str).collect();
-            let target_map = build_grid(warp.to_zone, &target_rows).unwrap(); // validated in check 1
-            if !target_map.is_walkable(warp.to_tile) {
+            if !built[target_idx].is_walkable(warp.to_tile) {
                 return Err(format!(
                     "zone_map zone_id {}: warp to_tile {:?} in zone {} is not walkable",
                     m.zone_id, warp.to_tile, warp.to_zone
