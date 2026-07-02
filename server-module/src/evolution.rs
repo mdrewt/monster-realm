@@ -9,14 +9,12 @@
 
 use crate::guards::{log_reject, reject_if_in_battle, require_owner};
 use crate::marshal::{monster_to_instance, pub_from_monster, species_from_row};
-use crate::schema::{
-    battle, fusion, monster, monster_pub, species_row, Fusion, Monster, MonsterPub,
-};
+use crate::schema::{battle, fusion, monster, monster_pub, species_row, Fusion, Monster};
 use game_core::{
     evolve as game_core_evolve, evolves_to as game_core_evolves_to, EvolutionCondition,
     MonsterInstance,
 };
-use spacetimedb::ReducerContext;
+use spacetimedb::{ReducerContext, Table};
 
 /// Server-compute the passive evolution target species (if any) for a monster.
 /// Delegates to the pure `game_core::evolves_to`, which checks level+bond against
@@ -79,8 +77,8 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
         monster_id,
     )?;
 
-    // Load source species (for evolutions branches)
-    let Some(src_species_row) = ctx.db.species_row().id().find(m.species_id) else {
+    // Load source species (for evolutions branches) — verify it exists
+    let Some(_src_species_row) = ctx.db.species_row().id().find(m.species_id) else {
         return Err("source species not found".to_string());
     };
 
@@ -149,8 +147,8 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
     m.evolves_to = compute_evolves_to(evolutions_after, &m);
 
     // Dual-write: Monster + MonsterPub
-    ctx.db.monster().monster_id().update(m);
     let pub_row = pub_from_monster(&m);
+    ctx.db.monster().monster_id().update(m);
     ctx.db.monster_pub().monster_id().update(pub_row);
 
     Ok(())
@@ -173,7 +171,12 @@ fn find_fusion_recipe(
         .fusion()
         .iter()
         .find(|r| r.a_species == recipe_a && r.b_species == recipe_b)
-        .cloned()
+        .map(|r| Fusion {
+            fusion_id: r.fusion_id,
+            a_species: r.a_species,
+            b_species: r.b_species,
+            to_species: r.to_species,
+        })
         .ok_or_else(|| "no fusion recipe for these species".to_string())
 }
 
@@ -218,11 +221,11 @@ pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
         b_id,
     )?;
 
-    // Load both species rows
-    let Some(a_species_row) = ctx.db.species_row().id().find(a.species_id) else {
+    // Load both species rows (validation only — the actual species transform is via offspring_species)
+    let Some(_a_species_row) = ctx.db.species_row().id().find(a.species_id) else {
         return Err(format!("species {} not found", a.species_id));
     };
-    let Some(b_species_row) = ctx.db.species_row().id().find(b.species_id) else {
+    let Some(_b_species_row) = ctx.db.species_row().id().find(b.species_id) else {
         return Err(format!("species {} not found", b.species_id));
     };
 

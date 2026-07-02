@@ -139,8 +139,18 @@ fn make_monster_pub(m: &Monster) -> MonsterPub {
 
 /// A Fusion table row: species 1 + species 3 → offspring species 4.
 /// Used for fuse tests.
-fn make_fusion_recipe_row(id: u64, a: u32, b: u32, to: u32) -> Fusion {
-    Fusion { id, a, b, to }
+fn make_fusion_recipe_row(
+    fusion_id: u64,
+    a_species: u32,
+    b_species: u32,
+    to_species: u32,
+) -> Fusion {
+    Fusion {
+        fusion_id,
+        a_species,
+        b_species,
+        to_species,
+    }
 }
 
 /// Build a BattleState where `side_a` has monsters for the given monster ids
