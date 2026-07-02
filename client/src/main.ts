@@ -440,11 +440,17 @@ async function main(): Promise<void> {
       // Zone transition: clear stale-zone character positions, reload the map for the
       // new zone, update the wasm movement predictor's zone, and reset prediction state.
       // The store keeps all non-character tables (players, monsters, species, etc.).
-      store.resetCharacters();
-      rawMap = zone_map(newZoneId);
-      set_active_zone(newZoneId);
-      renderer.setMap(rawMap);
-      resetPredictionState();
+      // try/catch: zone_map() throws on unknown zone ids; onBatchApplied has no per-
+      // listener isolation so an uncaught throw would starve sibling listeners (M8.8e).
+      try {
+        store.resetCharacters();
+        rawMap = zone_map(newZoneId);
+        set_active_zone(newZoneId);
+        renderer.setMap(rawMap);
+        resetPredictionState();
+      } catch (err) {
+        console.error(`[warp] zone transition to ${newZoneId} failed — keeping current zone`, err);
+      }
     },
     onError: (where, message) => console.error(`[net:${where}] ${message}`),
   });
