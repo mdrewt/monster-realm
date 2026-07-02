@@ -45,6 +45,7 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 | [0060](./0060-evolution-fusion-content-shape.md) | Evolution/fusion content shape — separate cross-referenced registry + additive `validate_evolution_fusion` integrity checks | M10a |
 | [0061](./0061-evolution-fusion-transform-rules.md) | Evolution/fusion transform rules — pure, individuality-preserving transforms in `game-core/src/evolution/` | M10a |
 | [0062](./0062-evolution-fusion-server-reducers.md) | Evolution & fusion server reducers — guard ordering, seam placement, growth-writer registration | M10b |
+| [0063](./0063-evolution-fusion-client-overlay.md) | Evolution & fusion client overlay — KeyE EvolutionView, pure view-model seam, fusion recipe display | M10c |
 | [0064](./0064-m10d-evolution-fusion-content-integrity-evals.md) | Evolution/fusion content-integrity + reducer-security evals (Phase A eval harness completion) | M10d |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
