@@ -49,6 +49,34 @@ pub(crate) const PARTY_SLOT_NONE: u8 = game_core::PARTY_SLOT_NONE; // SSOT (ADR-
 /// `opponent_identity` can never collide with a player's.
 pub(crate) const WILD_IDENTITY: Identity = Identity::from_byte_array([0u8; 32]);
 
+// --- Private helpers --------------------------------------------------------
+
+/// Idempotent per-zone schedule management (ADR-0066): inserts a
+/// `MovementTickSchedule` row for every zone that does not yet have one.
+/// Additive-only — never deletes existing rows. Called from both `init` and
+/// `sync_content` so newly-published zones get a tick without wiping live rows.
+fn ensure_zone_schedules(ctx: &ReducerContext) {
+    let scheduled: std::collections::HashSet<u32> = ctx
+        .db
+        .movement_tick_schedule()
+        .iter()
+        .map(|s| s.zone_id)
+        .collect();
+    for z in ctx.db.zone_def().iter() {
+        if !scheduled.contains(&z.zone_id) {
+            ctx.db
+                .movement_tick_schedule()
+                .insert(MovementTickSchedule {
+                    id: 0,
+                    zone_id: z.zone_id,
+                    scheduled_at: ScheduleAt::Interval(
+                        Duration::from_millis(STEP_MS.unsigned_abs()).into(),
+                    ),
+                });
+        }
+    }
+}
+
 // --- Lifecycle reducers -----------------------------------------------------
 #[spacetimedb::reducer(init)]
 pub fn init(ctx: &ReducerContext) {
@@ -59,16 +87,7 @@ pub fn init(ctx: &ReducerContext) {
         content_version: 0,
     });
     sync_content_inner(ctx);
-    // One schedule row per initial zone (M2: zone 0).
-    ctx.db
-        .movement_tick_schedule()
-        .insert(MovementTickSchedule {
-            id: 0,
-            zone_id: ZONE_0,
-            scheduled_at: ScheduleAt::Interval(
-                Duration::from_millis(STEP_MS.unsigned_abs()).into(),
-            ),
-        });
+    ensure_zone_schedules(ctx);
     log::info!(
         "{{\"evt\":\"init\",\"zones\":{}}}",
         ctx.db.zone_def().iter().count()
@@ -81,6 +100,7 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
         return Err("sync_content is module-only".to_string());
     }
     sync_content_inner(ctx);
+    ensure_zone_schedules(ctx); // idempotent schedule management (ADR-0066)
     Ok(())
 }
 

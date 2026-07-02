@@ -634,6 +634,17 @@ content is RON data (additive, append-only, integrity-gated by `validate_content
 integration/e2e test coverage gates every invariant in CI. **Next: Phase B (M11 — authored
 multi-zone world, ADR-0008/0020).**
 
+**M11a** (zone-map data shape — ADR-0065) complete: `WarpDef`, `ZoneMapDef` in `game-core/content.rs`;
+`load_zone_maps()` (embedded RON via `ZONE_MAPS_RON_PARTS`); `map_for(zone_id, zone_maps)` →
+`Result<TileMap, String>`; `TileMap::warp_at(pos)` → `Option<&WarpDef>`; `validate_zone_maps`;
+content: `content/zone_maps/000-core.ron` (zones 0 and 1, mutual warps at (5,5)); all re-exported from `game_core::`.
+
+**M11b** (server warp runtime — ADR-0066) complete: warp resolution in `movement_tick` via
+`warp_at` — fires on actual movement only (`prev != next.pos`), battle-guarded (`BattleOutcome::Ongoing`
+blocks warp, C1 security finding); per-zone schedules managed by `ensure_zone_schedules` (private,
+idempotent, additive, called from both `init` and `sync_content`); `validate_zone_maps` gates
+`sync_content_inner` before any `zone_def` upsert. 36/36 evals pass.
+
 **M10c** (evolution/fusion client overlay — ADR-0063) complete: `evolvesTo?: number` on
 `StoreMonsterPub` (`option(u32)` decodes as primitive `number | undefined`; `canEvolve =
 evolvesTo !== undefined`), `StoreFusionRow` type + `store.fusions()` wired to
