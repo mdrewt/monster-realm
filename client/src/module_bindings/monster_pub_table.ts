@@ -26,4 +26,5 @@ export default __t.row({
   statSpAttack: __t.u16().name("stat_sp_attack"),
   statSpDefense: __t.u16().name("stat_sp_defense"),
   partySlot: __t.u8().name("party_slot"),
+  evolvesTo: __t.option(__t.u32()).name("evolves_to"),
 });

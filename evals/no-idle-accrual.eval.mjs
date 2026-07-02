@@ -164,8 +164,13 @@ export const GROWTH_FIELDS = [
  * The allowlisted growth-writer function names.
  * Adding a NEW growth-writer (e.g. an evolution reducer in M10) MUST consciously
  * update this list — that is the mechanical enforcement gate.
+ *
+ * M10b (ADR-0062): `evolve` rewrites derived_stats from the target species (stat_hp etc.
+ * are recalculated, not grown — they change species, not accrue passively). `fuse`
+ * creates an offspring row with freshly derived stats. Both are intent-path writes
+ * triggered only by explicit player action — not scheduled, not idle accrual.
  */
-export const GROWTH_WRITERS = ['care', 'train', 'write_back_battle_results'];
+export const GROWTH_WRITERS = ['care', 'train', 'write_back_battle_results', 'evolve', 'fuse'];
 
 // ---------------------------------------------------------------------------
 // Core analysis primitives.

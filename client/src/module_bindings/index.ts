@@ -38,7 +38,9 @@ import AttemptRecruitReducer from "./attempt_recruit_reducer";
 import CareReducer from "./care_reducer";
 import ClearQueueReducer from "./clear_queue_reducer";
 import EnqueueMoveReducer from "./enqueue_move_reducer";
+import EvolveReducer from "./evolve_reducer";
 import FleeReducer from "./flee_reducer";
+import FuseReducer from "./fuse_reducer";
 import HealPartyReducer from "./heal_party_reducer";
 import JoinGameReducer from "./join_game_reducer";
 import SetMoveReducer from "./set_move_reducer";
@@ -56,6 +58,7 @@ import TrainReducer from "./train_reducer";
 import BattleRow from "./battle_table";
 import CharacterRow from "./character_table";
 import ConfigRow from "./config_table";
+import FusionRow from "./fusion_table";
 import InventoryRow from "./inventory_table";
 import ItemRowRow from "./item_row_table";
 import MonsterPubRow from "./monster_pub_table";
@@ -108,6 +111,17 @@ const tablesSchema = __schema({
       { name: 'config_id_key', constraint: 'unique', columns: ['id'] },
     ],
   }, ConfigRow),
+  fusion: __table({
+    name: 'fusion',
+    indexes: [
+      { accessor: 'fusion_id', name: 'fusion_fusion_id_idx_btree', algorithm: 'btree', columns: [
+        'fusionId',
+      ] },
+    ],
+    constraints: [
+      { name: 'fusion_fusion_id_key', constraint: 'unique', columns: ['fusionId'] },
+    ],
+  }, FusionRow),
   inventory: __table({
     name: 'inventory',
     indexes: [
@@ -213,7 +227,9 @@ const reducersSchema = __reducers(
   __reducerSchema("care", CareReducer),
   __reducerSchema("clear_queue", ClearQueueReducer),
   __reducerSchema("enqueue_move", EnqueueMoveReducer),
+  __reducerSchema("evolve", EvolveReducer),
   __reducerSchema("flee", FleeReducer),
+  __reducerSchema("fuse", FuseReducer),
   __reducerSchema("heal_party", HealPartyReducer),
   __reducerSchema("join_game", JoinGameReducer),
   __reducerSchema("set_move", SetMoveReducer),

@@ -266,7 +266,7 @@ fn test_reject_if_in_battle_accepts_when_no_battle() {
 fn test_reject_if_in_battle_rejects_when_in_ongoing() {
     let monster_id = 42u64;
     // Battle is ONGOING and includes monster 42 in its party.
-    let battles = vec![make_test_battle(
+    let battles = [make_test_battle(
         1,
         BattleOutcome::Ongoing,
         vec![monster_id],
@@ -297,7 +297,7 @@ fn test_reject_if_in_battle_rejects_when_in_ongoing() {
 fn test_reject_if_in_battle_accepts_when_battle_won() {
     let monster_id = 42u64;
     // Battle references monster 42 in its party BUT outcome is SideAWins (completed).
-    let battles = vec![make_test_battle(
+    let battles = [make_test_battle(
         1,
         BattleOutcome::SideAWins,
         vec![monster_id],
