@@ -38,10 +38,10 @@ pub(crate) fn compute_evolves_to(
         species_id: 0, // unused by evolves_to
         nickname: None,
         level: lv,
-        xp: game_core::Xp::new(0), // unused
+        xp: game_core::Xp::new(0),                           // unused
         ivs: game_core::IVs::new(0, 0, 0, 0, 0, 0).unwrap(), // unused
         nature: game_core::Nature::new(game_core::NatureKind::Hardy), // unused
-        evs: game_core::EVs::zero(), // unused
+        evs: game_core::EVs::zero(),                         // unused
         bond: game_core::Bond::new(bond),
         current_hp: 0, // unused
         derived_stats: game_core::StatBlock {
@@ -73,7 +73,10 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
     };
 
     require_owner(ctx, "evolve", m.owner_identity)?;
-    reject_if_in_battle(ctx, m.owner_identity, monster_id)?;
+    reject_if_in_battle(
+        ctx.db.battle().player_identity().filter(m.owner_identity),
+        monster_id,
+    )?;
 
     // Load source species (for evolutions branches)
     let Some(src_species_row) = ctx.db.species_row().id().find(m.species_id) else {
@@ -84,7 +87,11 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
     let all_evolutions = match game_core::load_evolutions() {
         Ok(ev) => ev,
         Err(e) => {
-            log_reject("evolve", ctx.sender, &format!("load_evolutions failed: {e}"));
+            log_reject(
+                "evolve",
+                ctx.sender,
+                &format!("load_evolutions failed: {e}"),
+            );
             return Err(format!("failed to load evolutions: {e}"));
         }
     };
@@ -138,7 +145,11 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
         .find(|se| se.species_id == transformed.species_id)
         .map(|se| &se.evolutions[..])
         .unwrap_or(&[]);
-    m.evolves_to = compute_evolves_to(evolutions_after, transformed.level.as_u8(), transformed.bond.value());
+    m.evolves_to = compute_evolves_to(
+        evolutions_after,
+        transformed.level.as_u8(),
+        transformed.bond.value(),
+    );
 
     // Dual-write: Monster + MonsterPub
     ctx.db.monster().monster_id().update(m.clone());
@@ -200,8 +211,14 @@ pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
     }
 
     // Neither can be in battle
-    reject_if_in_battle(ctx, a.owner_identity, a_id)?;
-    reject_if_in_battle(ctx, b.owner_identity, b_id)?;
+    reject_if_in_battle(
+        ctx.db.battle().player_identity().filter(a.owner_identity),
+        a_id,
+    )?;
+    reject_if_in_battle(
+        ctx.db.battle().player_identity().filter(b.owner_identity),
+        b_id,
+    )?;
 
     // Load both species rows
     let Some(a_species_row) = ctx.db.species_row().id().find(a.species_id) else {
@@ -215,8 +232,12 @@ pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
     let fusion_recipe = find_fusion_recipe(ctx, a.species_id, b.species_id)?;
 
     // Load offspring species
-    let Some(offspring_species_row) = ctx.db.species_row().id().find(fusion_recipe.to_species) else {
-        return Err(format!("offspring species {} not found", fusion_recipe.to_species));
+    let Some(offspring_species_row) = ctx.db.species_row().id().find(fusion_recipe.to_species)
+    else {
+        return Err(format!(
+            "offspring species {} not found",
+            fusion_recipe.to_species
+        ));
     };
 
     // Marshal both parents to MonsterInstance
@@ -280,9 +301,7 @@ pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
         stat_sp_attack: offspring_inst.derived_stats.sp_attack,
         stat_sp_defense: offspring_inst.derived_stats.sp_defense,
         current_hp: offspring_inst.current_hp,
-        party_slot: offspring_inst
-            .party_slot
-            .unwrap_or(crate::PARTY_SLOT_NONE),
+        party_slot: offspring_inst.party_slot.unwrap_or(crate::PARTY_SLOT_NONE),
         last_care_at_ms: 0, // Fresh monster, no care yet
         evolves_to: offspring_evolves_to,
     };

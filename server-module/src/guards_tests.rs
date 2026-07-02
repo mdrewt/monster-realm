@@ -169,3 +169,148 @@ fn check_monster_in_party_rejects_party_slot_none() {
         "check_monster_in_party(PARTY_SLOT_NONE) must be Err (255 = boxed; must be rejected)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// M10b Slice 2 — `reject_if_in_battle` guard (3 unit tests)
+//
+// The function under test (must be added to guards.rs):
+//   pub(crate) fn reject_if_in_battle(
+//       battles: impl Iterator<Item = &Battle>,
+//       monster_id: u64,
+//   ) -> Result<(), String>
+//
+// Spec (M10 §3): WHEN `evolve` or `fuse` is called for a monster that is part
+// of an ongoing battle THE SYSTEM SHALL reject with Err("monster is in an
+// ongoing battle"). A completed battle (outcome != Ongoing) must NOT block.
+//
+// RED state: compile-RED until `reject_if_in_battle` is added to guards.rs and
+// re-exported through `use super::*;`. That is intentional — tests ARE the contract.
+//
+// PROOF-OF-TEETH per test:
+//   - test_reject_if_in_battle_accepts_when_no_battle: kills "always Err" impl.
+//   - test_reject_if_in_battle_rejects_when_in_ongoing: kills "always Ok" impl /
+//     impl that ignores the BattleOutcome check.
+//   - test_reject_if_in_battle_accepts_when_battle_won: kills an impl that
+//     rejects based solely on battle existence without checking the outcome.
+// ---------------------------------------------------------------------------
+
+use crate::schema::Battle;
+use game_core::{BattleOutcome, BattleSide, BattleState};
+
+/// Build a minimal `Battle` row with the given outcome and `party_monster_ids`.
+fn make_test_battle(battle_id: u64, outcome: BattleOutcome, party_monster_ids: Vec<u64>) -> Battle {
+    let dummy = game_core::BattleMonster {
+        species_id: 1,
+        affinity: game_core::Affinity::Fire,
+        level: 10,
+        current_hp: 50,
+        max_hp: 50,
+        stats: game_core::StatBlock {
+            hp: 50,
+            attack: 40,
+            defense: 40,
+            speed: 40,
+            sp_attack: 40,
+            sp_defense: 40,
+        },
+        known_skill_ids: vec![],
+    };
+    Battle {
+        battle_id,
+        player_identity: spacetimedb::Identity::from_byte_array([1u8; 32]),
+        opponent_identity: spacetimedb::Identity::from_byte_array([0u8; 32]),
+        state: BattleState {
+            side_a: BattleSide {
+                active: 0,
+                team: vec![dummy.clone()],
+            },
+            side_b: BattleSide {
+                active: 0,
+                team: vec![dummy],
+            },
+            outcome,
+            turn_number: 1,
+        },
+        party_monster_ids,
+        opponent_monster_ids: vec![],
+        created_at_ms: 0,
+    }
+}
+
+/// Slice 2 test 1: monster not in any battle → Ok (the guard must not reject).
+/// PROOF-OF-TEETH: kills an impl that always returns Err (vacuous always-reject).
+/// Without a correct happy-path test, an implementer could satisfy
+/// `test_reject_if_in_battle_rejects_when_in_ongoing` with `return Err(...)` unconditionally.
+#[test]
+fn test_reject_if_in_battle_accepts_when_no_battle() {
+    // No battles in the iterator — the monster is free.
+    let battles: Vec<Battle> = vec![];
+    let monster_id = 42u64;
+
+    let result = reject_if_in_battle(battles.iter(), monster_id);
+
+    assert!(
+        result.is_ok(),
+        "TEETH: monster not in any battle must return Ok; \
+         kills: an always-Err impl that would block every evolve/fuse call; \
+         got Err: {:?}",
+        result.err()
+    );
+}
+
+/// Slice 2 test 2: monster is in a battle with outcome=Ongoing → Err containing
+/// "monster is in an ongoing battle".
+/// PROOF-OF-TEETH: kills an impl that returns Ok unconditionally (missing the guard);
+/// this is the core correctness requirement from M10 spec §3.
+#[test]
+fn test_reject_if_in_battle_rejects_when_in_ongoing() {
+    let monster_id = 42u64;
+    // Battle is ONGOING and includes monster 42 in its party.
+    let battles = vec![make_test_battle(
+        1,
+        BattleOutcome::Ongoing,
+        vec![monster_id],
+    )];
+
+    let result = reject_if_in_battle(battles.iter(), monster_id);
+
+    assert!(
+        result.is_err(),
+        "TEETH: monster in an ongoing battle must return Err; \
+         kills: an always-Ok impl (missing the reject_if_in_battle guard entirely); \
+         this is the load-bearing safety check that prevents evolving/fusing an \
+         escrowed monster mid-combat"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("ongoing battle"),
+        "error message must contain \"ongoing battle\"; got: {:?}",
+        msg
+    );
+}
+
+/// Slice 2 test 3: monster is in a battle with outcome=SideAWins (battle is over) → Ok.
+/// PROOF-OF-TEETH: kills an impl that rejects any monster present in ANY battle row,
+/// without checking whether the battle is still ongoing. A completed battle must
+/// never block evolution or fusion.
+#[test]
+fn test_reject_if_in_battle_accepts_when_battle_won() {
+    let monster_id = 42u64;
+    // Battle references monster 42 in its party BUT outcome is SideAWins (completed).
+    let battles = vec![make_test_battle(
+        1,
+        BattleOutcome::SideAWins,
+        vec![monster_id],
+    )];
+
+    let result = reject_if_in_battle(battles.iter(), monster_id);
+
+    assert!(
+        result.is_ok(),
+        "TEETH: monster in a COMPLETED battle (SideAWins) must return Ok; \
+         kills: an impl that rejects based solely on battle-row existence without \
+         checking outcome (would permanently lock the monster after its first battle); \
+         got Err: {:?}",
+        result.err()
+    );
+}
