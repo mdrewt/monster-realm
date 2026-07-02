@@ -603,4 +603,45 @@ mod tests {
             let _ = calc_damage(&attacker, &defender, &skill, &chart, variance);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Nightly mutation hardening.
+    // -----------------------------------------------------------------------
+
+    /// Kills: the final `+ 2` -> `* 2` base-term mutant (60:31).
+    /// Non-STAB, neutral, variance 100: base = (2*5/5+2)*40*40/40/50 + 2
+    /// = 3 + 2 = 5 -> damage 5. The mutant yields 3 * 2 = 6.
+    #[test]
+    fn base_damage_final_term_is_additive() {
+        let attacker = make_monster(Affinity::Water, 40, 40);
+        let defender = make_monster(Affinity::Wind, 40, 40);
+        let (dmg, eff) = calc_damage(
+            &attacker,
+            &defender,
+            &fire_skill_40(),
+            &make_type_chart(),
+            100,
+        );
+        assert_eq!(eff, Effectiveness::Neutral);
+        assert_eq!(dmg, 5);
+    }
+
+    /// Kills: the level-term `+ 2` -> `* 2` mutant (60:31). At level 5 that
+    /// mutant is INVISIBLE (2*5/5 + 2 == 2*5/5 * 2 == 4), so this probe runs
+    /// at level 10 where 6 != 8: damage 6 (correct) vs 8 (mutant).
+    #[test]
+    fn base_damage_level_term_is_additive_at_level_10() {
+        let mut attacker = make_monster(Affinity::Water, 40, 40);
+        attacker.level = 10;
+        let defender = make_monster(Affinity::Wind, 40, 40);
+        let (dmg, eff) = calc_damage(
+            &attacker,
+            &defender,
+            &fire_skill_40(),
+            &make_type_chart(),
+            100,
+        );
+        assert_eq!(eff, Effectiveness::Neutral);
+        assert_eq!(dmg, 6, "(2*10/5 + 2) * 40 * 40 / 40 / 50 + 2 = 6");
+    }
 }

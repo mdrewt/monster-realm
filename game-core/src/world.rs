@@ -352,4 +352,37 @@ mod tests {
             prop_assert!(m.in_bounds(r.pos)); // in-bounds preserved
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Nightly mutation hardening.
+    // -----------------------------------------------------------------------
+
+    /// Kills: `p.x < self.width` -> `<=` (96:57) and the y-axis twin.
+    /// Probes exactly-at-dimension coordinates on a 3x3 map.
+    #[test]
+    fn in_bounds_rejects_exact_width_and_height() {
+        let map = TileMap::from_rows(9, &["...", "...", "..."]).expect("valid 3x3 map");
+        assert!(map.in_bounds(TilePos { x: 2, y: 2 }));
+        assert!(!map.in_bounds(TilePos { x: 3, y: 0 }), "x == width is out");
+        assert!(!map.in_bounds(TilePos { x: 0, y: 3 }), "y == height is out");
+        assert!(!map.in_bounds(TilePos { x: -1, y: 0 }));
+        assert!(!map.in_bounds(TilePos { x: 0, y: -1 }));
+    }
+
+    /// Kills: the `apply_move_coded -> [0;4]/[1;4]/[-1;4]` constant
+    /// replacements (199:5) and the `input_kind == 0` -> `!=` flip (205:31).
+    /// Golden outputs from the current impl: a step East from spawn walks to
+    /// (2,1) facing East; a jump stays at (1,1) facing North in Jumping.
+    /// Step and jump outputs differ, so swapping the branch is observable.
+    #[test]
+    fn apply_move_coded_golden_step_and_jump() {
+        let step = super::apply_move_coded(1, 1, 0, 0, 0, 0, 2, 1000);
+        assert_eq!(
+            step,
+            [2, 1, 2, 1],
+            "step East: pos (2,1), facing East, Walking"
+        );
+        let jump = super::apply_move_coded(1, 1, 0, 0, 0, 1, 2, 1000);
+        assert_eq!(jump, [1, 1, 0, 2], "jump: pos (1,1), facing North, Jumping");
+    }
 }

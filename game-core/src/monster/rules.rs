@@ -89,7 +89,10 @@ pub fn level_for_xp(xp: Xp) -> Level {
         if m * m * m <= x {
             lo = mid;
         } else {
-            hi = mid - 1;
+            // `saturating_sub`, not `- 1`: `mid >= 1` always, and `hi = mid`
+            // is an EQUIVALENT search (the -1 is a mere optimization) -- as a
+            // bare `-` this line bred an unkillable cargo-mutants survivor.
+            hi = mid.saturating_sub(1);
         }
     }
     Level::new(lo).unwrap()

@@ -233,4 +233,39 @@ mod tests {
             prop_assert!((i64::from(q.y) - i64::from(p.y)).abs() <= 1);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Nightly mutation hardening: the flat codes are a total, exact mapping.
+    // -----------------------------------------------------------------------
+
+    /// Kills: `dir_code`/`action_code` constant-replacement mutants and every
+    /// deleted `dir_from_code`/`action_from_code` match arm (9 survivors).
+    #[test]
+    fn flat_codes_are_exact_and_roundtrip() {
+        use super::{
+            action_code, action_from_code, dir_code, dir_from_code, ActionState, Direction,
+        };
+        assert_eq!(dir_code(Direction::North), 0);
+        assert_eq!(dir_code(Direction::South), 1);
+        assert_eq!(dir_code(Direction::East), 2);
+        assert_eq!(dir_code(Direction::West), 3);
+        for d in [
+            Direction::North,
+            Direction::South,
+            Direction::East,
+            Direction::West,
+        ] {
+            assert_eq!(dir_from_code(dir_code(d)), d);
+        }
+        assert_eq!(action_code(ActionState::Idle), 0);
+        assert_eq!(action_code(ActionState::Walking), 1);
+        assert_eq!(action_code(ActionState::Jumping), 2);
+        for a in [
+            ActionState::Idle,
+            ActionState::Walking,
+            ActionState::Jumping,
+        ] {
+            assert_eq!(action_from_code(action_code(a)), a);
+        }
+    }
 }

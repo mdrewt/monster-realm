@@ -1684,4 +1684,93 @@ mod tests {
             "the enemy must not attack when the swap is rejected"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Nightly mutation hardening (4 survivors in `resolve_turn`).
+    // -----------------------------------------------------------------------
+
+    /// Power-65 STAB fire skill under a non-1 id, so a `skill_id_from -> 1`
+    /// mutant is observable as a damage difference.
+    fn fire_skill_65_id7() -> SkillDef {
+        SkillDef {
+            id: 7,
+            name: "Fire Fang".to_string(),
+            affinity: Affinity::Fire,
+            power: 65,
+            accuracy: 100,
+            pp: 15,
+        }
+    }
+
+    /// Kills three survivors at once:
+    /// - 259 `outcome != Ongoing` -> `==` (early-returns after the first
+    ///   attack; only ONE damage event would remain),
+    /// - 267 `delete !` on `!second_had_faint` (second attack skipped),
+    /// - 304 `skill_id_from -> 1` (A's damage becomes 14, not 20).
+    ///
+    /// Exact amounts: A (Fire, skill 7, STAB, SE vs Plant) deals
+    /// (2*5/5+2)*65*40/40/50+2 = 7 -> STAB 10 -> eff 20; B (Plant, skill 1,
+    /// non-STAB Fire, NVE vs Fire) deals 5 -> eff 5/10 -> 2.
+    #[test]
+    fn both_sides_deal_exact_damage_when_no_faint() {
+        let mut a = make_monster(Affinity::Fire, 100, 10);
+        a.known_skill_ids = vec![7];
+        let b = make_monster(Affinity::Plant, 100, 5);
+        let mut state = make_battle_state(a, b);
+        let skills = vec![fire_skill(), fire_skill_65_id7()];
+        let events = resolve_turn(
+            &mut state,
+            TurnChoice::Attack { skill_id: 7 },
+            TurnChoice::Attack { skill_id: 1 },
+            &skills,
+            &make_type_chart(),
+            &always_hit_variance(true),
+        );
+        let damage: Vec<(SideId, u16)> = events
+            .iter()
+            .filter_map(|e| match e {
+                BattleEvent::Damage { side, amount, .. } => Some((*side, *amount)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            damage,
+            vec![(SideId::SideB, 20), (SideId::SideA, 2)],
+            "faster A hits B for exactly 20 with skill 7, then B replies for 2"
+        );
+        assert_eq!(state.outcome, BattleOutcome::Ongoing);
+    }
+
+    /// Kills: `speed_b > speed_a` -> `>=` (232:27). On an exact speed tie the
+    /// breaker must decide BOTH directions; the mutant hardwires B-first.
+    #[test]
+    fn speed_tie_breaker_decides_both_directions() {
+        for a_first in [true, false] {
+            let a = make_monster(Affinity::Fire, 100, 7);
+            let b = make_monster(Affinity::Fire, 100, 7);
+            let mut state = make_battle_state(a, b);
+            let events = resolve_turn(
+                &mut state,
+                TurnChoice::Attack { skill_id: 1 },
+                TurnChoice::Attack { skill_id: 1 },
+                &skills_vec(),
+                &make_type_chart(),
+                &always_hit_variance(a_first),
+            );
+            let first_damage_side = events.iter().find_map(|e| match e {
+                BattleEvent::Damage { side, .. } => Some(*side),
+                _ => None,
+            });
+            let expected = if a_first {
+                SideId::SideB
+            } else {
+                SideId::SideA
+            };
+            assert_eq!(
+                first_damage_side,
+                Some(expected),
+                "tie with breaker a_first={a_first}"
+            );
+        }
+    }
 }

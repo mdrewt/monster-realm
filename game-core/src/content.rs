@@ -2918,4 +2918,69 @@ mod tests {
              would let Level(101) parse successfully — this assertion catches that regression."
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Nightly mutation hardening: exact-boundary probes for the validators.
+    // -----------------------------------------------------------------------
+
+    /// Kills: `encounter_rate > 1000` -> `>=` (436:33) and
+    /// `min_level > max_level` -> `>=` (465:40). Both boundaries are VALID.
+    #[test]
+    fn encounter_validator_accepts_exact_boundaries() {
+        use crate::monster::types::Level;
+        use crate::taming::types::{EncounterEntry, EncounterTable};
+        let species = load_species().expect("embedded species parse");
+        let zones = load_zones().expect("embedded zones parse");
+        let table = EncounterTable {
+            zone_id: zones[0].id,
+            encounter_rate: 1000, // exactly the per-mille max: valid
+            entries: vec![EncounterEntry {
+                species_id: species[0].id,
+                weight: 1,
+                min_level: Level::new(3).expect("valid"),
+                max_level: Level::new(3).expect("valid"), // min == max: valid
+            }],
+        };
+        validate_encounters(&[table], &species, &zones)
+            .expect("rate == 1000 and min_level == max_level must both be valid");
+
+        // And one past each boundary must still be rejected.
+        let mut bad_rate = EncounterTable {
+            zone_id: zones[0].id,
+            encounter_rate: 1001,
+            entries: vec![EncounterEntry {
+                species_id: species[0].id,
+                weight: 1,
+                min_level: Level::new(3).expect("valid"),
+                max_level: Level::new(3).expect("valid"),
+            }],
+        };
+        assert!(validate_encounters(std::slice::from_ref(&bad_rate), &species, &zones).is_err());
+        bad_rate.encounter_rate = 1000;
+        bad_rate.entries[0].min_level = Level::new(4).expect("valid");
+        assert!(
+            validate_encounters(&[bad_rate], &species, &zones).is_err(),
+            "min 4 > max 3 must be rejected"
+        );
+    }
+
+    /// Kills: `s > 255` -> `>=` and `> ` -> `==` (517:18). A base stat of
+    /// exactly 255 is valid; 256 is not.
+    #[test]
+    fn base_stat_255_is_valid_256_is_rejected() {
+        let mut species = load_species().expect("embedded species parse");
+        let skills = load_skills().expect("embedded skills parse");
+        let chart = load_type_chart().expect("embedded type chart parses");
+        let items = load_items().expect("embedded items parse");
+
+        species[0].base_stats.hp = 255;
+        validate_content(&species, &skills, &chart, &items)
+            .expect("base stat exactly 255 must be valid");
+
+        species[0].base_stats.hp = 256;
+        assert!(
+            validate_content(&species, &skills, &chart, &items).is_err(),
+            "base stat 256 must be rejected"
+        );
+    }
 }
