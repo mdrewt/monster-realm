@@ -598,6 +598,40 @@ close gate (verified at M8.9d):** `bindings-drift` = 0 (committed
 `client/src/module_bindings/` byte-identical to a fresh `spacetime generate`),
 `schema-snapshot` unchanged (15 tables), and `content-parity` green (the five
 `m8_9e_*_migration_parity` tests reproduce the pre-migration rows in order).
+**M9b** (raising server — `care` reducer: bond accrual + cooldown via `evaluate_care` seam →
+`apply_care` game-core SSOT; `train` reducer: EV-grant food spend via `evaluate_train` →
+`focus_train`; `last_care_at_ms: i64` additive column on `monster`; consume-after-decision
+ordering; ADR-0058/0059; raising-reducer-security eval extended) complete.
+**M9c** (raising client — pure `raisingModel` subscription view, `canTrain` data-driven from
+`item_row.train_stat`, `raisingView` text overlay, 'I' key overlay mutual-exclusion with
+box/battle per ADR-0014; owner-filtered `ownInventory` deep-copy + `itemDefs` structure-copy;
+no new ADR) complete. **M9 (Raising subsystem — train + care) fully delivered.**
+**M10a-content** (evolution/fusion content + integrity validator — `EvolutionCondition`/
+`EvolutionTrigger`/`FusionRecipe`/`SpeciesEvolutions` types; embedded `fusion.ron` +
+`evolutions.ron` registries + `010-derived.ron` derived species; `parse_fusion`/`parse_evolutions`/
+`load_*` loaders; 7-rule cross-registry `validate_evolution_fusion` with proof-of-teeth; ADR-0060)
+complete. **M10a-rules** (pure `game-core/evolution/` module — `eligibility` (`evolves_to`/
+`resolve_evolution` passive branch check by level/bond/item) + `transform` (`evolve` carries all
+individuality per ADR-0019; `fuse` per-stat-max-IV + higher-bond-nature + fresh-L1 + lower-slot);
+46 unit/property tests; ADR-0061) complete. **M10b** (server evolution + fusion reducers —
+`evolve` + `fuse` reducers in `evolution.rs`; additive `fusion` table + `evolves_to: Option<u32>`
+column on `monster`; `compute_evolves_to` server helper; atomic fuse delete-two-insert-one in one
+transaction; battle/escrow guards reused; `sync_content` calls `validate_evolution_fusion` so the
+integrity gate is live on publish; ADR-0062; 16 server tests) complete.
+**M10d** (evals + Phase A docs — `evolution-fusion-content-integrity` eval: 5 content-integrity
+rules (no-dup-pair, derived-not-wild, dangling-refs, self-evolution, fusion-coherence) + 12
+proof-of-teeth; `evolution-reducer-security` eval: 5 reducer invariants (ownership×2 for fuse,
+battle-guard×2, self-fusion guard, dual-write, SSOT delegation) + 14 proof-of-teeth; ADR-0064)
+complete.
+
+**Phase A (M0–M10) complete.** The single-player core loop — move → find a wild monster →
+tame by weakening + recruit → raise (train/care) → evolve or fuse — is fully built,
+server-authoritative, and content-data-driven. All game rules live once in `game-core` (pure,
+deterministic, property-tested); reducers are thin ownership-gated shells (reject-not-clamp);
+content is RON data (additive, append-only, integrity-gated by `validate_content` +
+`validate_evolution_fusion`). The 29-eval suite (all with proof-of-teeth) + full unit/
+integration/e2e test coverage gates every invariant in CI. **Next: Phase B (M11 — authored
+multi-zone world, ADR-0008/0020).**
 
 ### Finalization audit (2026-06-25) — named deferrals
 
