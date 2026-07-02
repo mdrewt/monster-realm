@@ -173,6 +173,7 @@ fn find_fusion_recipe(
         .fusion()
         .iter()
         .find(|r| r.a_species == recipe_a && r.b_species == recipe_b)
+        .cloned()
         .ok_or_else(|| "no fusion recipe for these species".to_string())
 }
 
