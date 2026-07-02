@@ -100,7 +100,10 @@ fn make_monster_row(monster_id: u64, owner: Identity) -> Monster {
         ev_speed: 0,
         ev_sp_attack: 0,
         ev_sp_defense: 0,
-        stat_hp: 65,
+        // Formula-computed for species 1 (base_hp=45, IV=15, EV=0, level=20, Hardy):
+        // HP = (2*45 + 15) * 20 / 100 + 20 + 10 = 51. Species 2 (base_hp=80) at
+        // the same level/IV gives 65, so the evolution recomputation check works.
+        stat_hp: 51,
         stat_attack: 56,
         stat_defense: 56,
         stat_speed: 72,
