@@ -449,7 +449,7 @@ async function main(): Promise<void> {
         renderer.setMap(rawMap);
         resetPredictionState();
       } catch (err) {
-        console.error(`[warp] zone transition to ${newZoneId} failed — keeping current zone`, err);
+        console.error('[warp] zone transition to %s failed — keeping current zone', newZoneId, err);
       }
     },
     onError: (where, message) => console.error(`[net:${where}] ${message}`),
