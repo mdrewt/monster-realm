@@ -149,6 +149,14 @@ export const EncounterRow = __t.object("EncounterRow", {
 });
 export type EncounterRow = __Infer<typeof EncounterRow>;
 
+export const Fusion = __t.object("Fusion", {
+  fusionId: __t.u64(),
+  aSpecies: __t.u32(),
+  bSpecies: __t.u32(),
+  toSpecies: __t.u32(),
+});
+export type Fusion = __Infer<typeof Fusion>;
+
 export const Inventory = __t.object("Inventory", {
   invId: __t.u64(),
   ownerIdentity: __t.identity(),
@@ -201,6 +209,7 @@ export const Monster = __t.object("Monster", {
   currentHp: __t.u16(),
   partySlot: __t.u8(),
   lastCareAtMs: __t.i64(),
+  evolvesTo: __t.option(__t.u32()),
 });
 export type Monster = __Infer<typeof Monster>;
 
@@ -220,6 +229,7 @@ export const MonsterPub = __t.object("MonsterPub", {
   statSpAttack: __t.u16(),
   statSpDefense: __t.u16(),
   partySlot: __t.u8(),
+  evolvesTo: __t.option(__t.u32()),
 });
 export type MonsterPub = __Infer<typeof MonsterPub>;
 

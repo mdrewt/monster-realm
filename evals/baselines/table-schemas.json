@@ -41,6 +41,15 @@
       "content_version": "u32"
     }
   },
+  "fusion": {
+    "pk": "fusion_id",
+    "columns": {
+      "fusion_id": "u64",
+      "a_species": "u32",
+      "b_species": "u32",
+      "to_species": "u32"
+    }
+  },
   "encounter": {
     "pk": "zone_id",
     "columns": {
@@ -100,7 +109,8 @@
       "stat_sp_defense": "u16",
       "current_hp": "u16",
       "party_slot": "u8",
-      "last_care_at_ms": "i64"
+      "last_care_at_ms": "i64",
+      "evolves_to": "Option<u32>"
     }
   },
   "monster_pub": {
@@ -120,7 +130,8 @@
       "stat_speed": "u16",
       "stat_sp_attack": "u16",
       "stat_sp_defense": "u16",
-      "party_slot": "u8"
+      "party_slot": "u8",
+      "evolves_to": "Option<u32>"
     }
   },
   "movement_tick_schedule": {

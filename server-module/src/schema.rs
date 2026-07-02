@@ -71,6 +71,7 @@ pub struct ZoneDefRow {
 // --- Content tables (M6b, public, world-readable, module-write-only, ADR-0006) --
 
 /// Species definitions seeded from the `game-core` RON registry by `sync_content`.
+#[derive(Clone)]
 #[spacetimedb::table(name = species_row, public)]
 pub struct SpeciesRow {
     #[primary_key]
@@ -155,6 +156,7 @@ pub struct EncounterRow {
 /// The authoritative monster record — PRIVATE (no `public`). Contains hidden
 /// genes (IVs, EVs, nature) that must NEVER reach a non-owner client. Only
 /// server-side reducers read/write this table; no client can subscribe.
+#[derive(Clone)]
 #[spacetimedb::table(name = monster)]
 pub struct Monster {
     #[primary_key]
@@ -197,11 +199,16 @@ pub struct Monster {
     // last successful `care`. Additive (ADR-0006). New monsters start at 0 (epoch
     // ⇒ cooldown elapsed ⇒ first care allowed). Stays OFF monster_pub (YAGNI).
     pub last_care_at_ms: i64,
+    // Evolution eligibility (M10b, ADR-0061): server-computed passive evolves_to.
+    // Additive (ADR-0006). Exposed to client subscription for UI hints. Recomputed
+    // on every evolve, sync_content seeding, and monster creation paths (M10c).
+    pub evolves_to: Option<u32>,
 }
 
 /// Public projection of the monster table — NO hidden fields (no IVs, EVs,
 /// nature). Clients subscribe to this for the box/party view. Server writes
 /// this alongside every `monster` mutation (dual-write discipline).
+#[derive(Clone)]
 #[spacetimedb::table(name = monster_pub, public)]
 pub struct MonsterPub {
     #[primary_key]
@@ -222,6 +229,9 @@ pub struct MonsterPub {
     pub stat_sp_attack: u16,
     pub stat_sp_defense: u16,
     pub party_slot: u8,
+    // Evolution eligibility (M10b, ADR-0061): server-computed passive evolves_to.
+    // Safe to expose (client never computes it, only reads for UI).
+    pub evolves_to: Option<u32>,
 }
 
 // --- Battle table (M7b, public, ADR-0042) ------------------------------------
@@ -277,4 +287,19 @@ pub struct Inventory {
     pub owner_identity: Identity,
     pub item_id: u32,
     pub count: u32,
+}
+
+/// Fusion recipes (M10b, ADR-0061): public content table seeded from game-core.
+/// Each row defines an order-independent recipe `(a, b) → to_species`.
+/// Recipes are looked up by canonical pair (min(a,b), max(a,b)) to enforce
+/// order-independence — see evolution.rs `find_fusion_recipe`.
+#[derive(Clone)]
+#[spacetimedb::table(name = fusion, public)]
+pub struct Fusion {
+    #[primary_key]
+    #[auto_inc]
+    pub fusion_id: u64,
+    pub a_species: u32,
+    pub b_species: u32,
+    pub to_species: u32,
 }

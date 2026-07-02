@@ -83,6 +83,7 @@ pub(crate) fn monster_from_instance(
         current_hp: inst.current_hp,
         party_slot,
         last_care_at_ms: 0, // epoch ⇒ cooldown elapsed ⇒ first care allowed (ADR-0059)
+        evolves_to: None,
     }
 }
 
@@ -186,7 +187,85 @@ pub(crate) fn pub_from_monster(m: &Monster) -> MonsterPub {
         stat_sp_attack: m.stat_sp_attack,
         stat_sp_defense: m.stat_sp_defense,
         party_slot: m.party_slot,
+        evolves_to: m.evolves_to,
     }
+}
+
+/// Marshal a Monster row to a game-core MonsterInstance (M10b evolution/fusion).
+/// Trust boundary: rejects illegal level (0 or >100) per Level::new bounds.
+pub(crate) fn monster_to_instance(m: &Monster) -> Result<game_core::MonsterInstance, String> {
+    let level =
+        game_core::Level::new(m.level).map_err(|_| format!("invalid monster level {}", m.level))?;
+    let xp = game_core::Xp::new(m.xp);
+    let bond = game_core::Bond::new(m.bond);
+    let ivs = game_core::IVs::new(
+        m.iv_hp,
+        m.iv_attack,
+        m.iv_defense,
+        m.iv_speed,
+        m.iv_sp_attack,
+        m.iv_sp_defense,
+    )
+    .map_err(|_| "invalid IVs (not 0..=31)".to_string())?;
+    let evs = game_core::EVs::new(
+        m.ev_hp,
+        m.ev_attack,
+        m.ev_defense,
+        m.ev_speed,
+        m.ev_sp_attack,
+        m.ev_sp_defense,
+    )
+    .map_err(|_| "invalid EVs (not 0..=252, total ≤ 510)".to_string())?;
+    let nature = game_core::Nature::new(m.nature_kind);
+    let derived_stats = game_core::StatBlock {
+        hp: m.stat_hp,
+        attack: m.stat_attack,
+        defense: m.stat_defense,
+        speed: m.stat_speed,
+        sp_attack: m.stat_sp_attack,
+        sp_defense: m.stat_sp_defense,
+    };
+    let party_slot = if m.party_slot == crate::PARTY_SLOT_NONE {
+        None
+    } else {
+        Some(m.party_slot)
+    };
+
+    Ok(game_core::MonsterInstance {
+        species_id: m.species_id,
+        nickname: if m.nickname.is_empty() {
+            None
+        } else {
+            Some(m.nickname.clone())
+        },
+        level,
+        xp,
+        ivs,
+        nature,
+        evs,
+        bond,
+        current_hp: m.current_hp,
+        derived_stats,
+        party_slot,
+    })
+}
+
+/// Marshal a SpeciesRow to a game-core Species (M10b evolution/fusion).
+pub(crate) fn species_from_row(row: &SpeciesRow) -> Result<game_core::Species, String> {
+    Ok(game_core::Species {
+        id: row.id,
+        name: row.name.clone(),
+        base_stats: game_core::StatBlock {
+            hp: row.base_hp,
+            attack: row.base_attack,
+            defense: row.base_defense,
+            speed: row.base_speed,
+            sp_attack: row.base_sp_attack,
+            sp_defense: row.base_sp_defense,
+        },
+        affinity: row.affinity,
+        learnable_skill_ids: row.learnable_skill_ids.clone(),
+    })
 }
 
 // --- Battle helpers (M7b, pure marshaling — no ctx) ---------------------------

@@ -128,6 +128,7 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 | `monster_mgmt.rs` | `set_nickname`, `set_party_slot` | inline |
 | `battle.rs` | `start_battle`, `start_wild_battle`, `submit_attack`, `swap_active`, `flee`, `heal_party`, `begin_encounter`, `lead_party`, `write_back_*` (the largest module — the battle cluster) | `battle_tests.rs` |
 | `taming.rs` | `attempt_recruit`, `grant_bait`, `grant_item`, `consume_one` | `taming_tests.rs` |
+| `evolution.rs` | `evolve`, `fuse`, `compute_evolves_to` (M10b, ADR-0061/0062) | `evolution_tests.rs` |
 
 Behavior is provably unchanged because table/reducer **names are explicit**, so
 regenerated TypeScript bindings and the schema snapshot are byte-identical — the
@@ -183,7 +184,7 @@ formula, 0042 battle table public PvE, 0043 CI caching + fast inner loop, 0044
 private encounter table, 0045 private `battle_wild` individuality table, 0046
 player inventory model, 0047 recruit resolution, 0048 `start_battle` opponent
 provenance, 0049 panic-as-content-invariant policy, 0050 nightly mutation/
-coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness, 0056 server-module modularization (domain submodules — the canonical `touches:` vocabulary), 0057 content-directory glob loading via `build.rs`. See also
+coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness, 0056 server-module modularization (domain submodules — the canonical `touches:` vocabulary), 0057 content-directory glob loading via `build.rs`, 0058–0061 raising/training/evolution content+rules, **0062 evolution/fusion server reducer guard ordering, bond-write omission, and test-seam placement**. See also
 `docs/validation-findings.md` (empirical Tier-1 results).
 
 ## Monster subsystem (`game-core/src/monster/`, M6a)

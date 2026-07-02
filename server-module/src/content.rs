@@ -11,13 +11,13 @@
 
 use crate::marshal::encounter_rows_from_table;
 use crate::schema::{
-    config, encounter, item_row, skill_row, species_row, type_relation_row, zone_def, ItemRow,
-    SkillRow, SpeciesRow, TypeRelationRow, ZoneDefRow,
+    config, encounter, fusion, item_row, skill_row, species_row, type_relation_row, zone_def,
+    Fusion, ItemRow, SkillRow, SpeciesRow, TypeRelationRow, ZoneDefRow,
 };
 use crate::CONTENT_VERSION;
 use game_core::{
-    load_encounters, load_items, load_skills, load_species, load_type_chart, validate_content,
-    validate_encounters,
+    load_encounters, load_evolutions, load_fusion, load_items, load_skills, load_species,
+    load_type_chart, validate_content, validate_encounters, validate_evolution_fusion,
 };
 use spacetimedb::{ReducerContext, Table};
 
@@ -206,6 +206,68 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) {
         }
     }
 
+    // --- M10b evolution/fusion registries (ADR-0060/0062) ---
+    // Load evolutions (used only for cross-validation here; reducers load at call-time)
+    let evolutions = match load_evolutions() {
+        Ok(e) => e,
+        Err(e) => {
+            log::error!(
+                "{{\"evt\":\"sync_content_error\",\"registry\":\"evolutions\",\"reason\":\"{e}\"}}"
+            );
+            return;
+        }
+    };
+    let fusions = match load_fusion() {
+        Ok(f) => f,
+        Err(e) => {
+            log::error!(
+                "{{\"evt\":\"sync_content_error\",\"registry\":\"fusion\",\"reason\":\"{e}\"}}"
+            );
+            return;
+        }
+    };
+    let encounters_for_validate = match load_encounters() {
+        Ok(e) => e,
+        Err(e) => {
+            log::error!(
+                "{{\"evt\":\"sync_content_error\",\"registry\":\"encounters_recheck\",\"reason\":\"{e}\"}}"
+            );
+            return;
+        }
+    };
+    let items_for_validate = match load_items() {
+        Ok(i) => i,
+        Err(e) => {
+            log::error!(
+                "{{\"evt\":\"sync_content_error\",\"registry\":\"items_recheck\",\"reason\":\"{e}\"}}"
+            );
+            return;
+        }
+    };
+    if let Err(e) = validate_evolution_fusion(
+        &species,
+        &evolutions,
+        &fusions,
+        &encounters_for_validate,
+        &items_for_validate,
+    ) {
+        log::error!("{{\"evt\":\"sync_content_invalid\",\"registry\":\"evolution_fusion\",\"reason\":\"{e}\"}}");
+        return;
+    }
+    // Fusion table: clear-and-reinsert (no stable species-pair PK; auto_inc fusion_id).
+    for existing in ctx.db.fusion().iter().collect::<Vec<_>>() {
+        ctx.db.fusion().fusion_id().delete(existing.fusion_id);
+    }
+    for r in &fusions {
+        let (a_species, b_species) = if r.a <= r.b { (r.a, r.b) } else { (r.b, r.a) };
+        ctx.db.fusion().insert(Fusion {
+            fusion_id: 0, // auto_inc
+            a_species,
+            b_species,
+            to_species: r.to,
+        });
+    }
+
     // Stamp the now-current content version so a later redundant sync_content
     // short-circuits at the top of this function (ADR-0054). A missing config row
     // here is an invariant violation (init always inserts it) — fail loud, don't
@@ -240,5 +302,17 @@ mod tests {
             "species registry must have entries for starter"
         );
         assert!(!skills.is_empty(), "skills registry must have entries");
+    }
+
+    /// Fusion registry parses and is non-empty (M10b gate).
+    /// KILLS: an impl of sync_content_inner that omits the fusion seeding block, or a
+    /// fusion.ron that accidentally becomes empty (empty table → fuse always rejects).
+    #[test]
+    fn fusion_registry_parses_and_is_nonempty_for_seeding() {
+        let recipes = game_core::load_fusion().expect("fusion RON must parse");
+        assert!(
+            !recipes.is_empty(),
+            "fusion.ron must contain at least one recipe — an empty registry means fuse() always rejects"
+        );
     }
 }
