@@ -8,7 +8,7 @@
 // fusing — the server rejects invalid recipes (reject-not-clamp, ADR-0019).
 // TOTAL: never throws on empty/unknown/missing input — a throw here starves sibling
 // store batch-listeners (store.ts one-way flow).
-import type { StoreMonsterPub, StoreSpeciesRow } from '../net/store';
+import type { StoreFusionRow, StoreMonsterPub, StoreSpeciesRow } from '../net/store';
 
 export interface EvolutionMonsterViewModel {
   readonly monsterId: bigint;
@@ -22,8 +22,18 @@ export interface EvolutionMonsterViewModel {
   readonly canEvolve: boolean;
 }
 
+/** A fusion recipe pair resolved to display names — raw pass-through from the
+ *  `fusion` content table (ADR-0019: server is SSOT for eligibility). */
+export interface FusionRecipeViewModel {
+  readonly aSpeciesName: string;
+  readonly bSpeciesName: string;
+  readonly toSpeciesName: string;
+}
+
 export interface EvolutionViewModel {
   readonly monsters: readonly EvolutionMonsterViewModel[];
+  /** Fusion recipe pairs for display (from the `fusion` content table, M10c, ADR-0019). */
+  readonly fusionRecipes: readonly FusionRecipeViewModel[];
 }
 
 function toMonster(
@@ -47,11 +57,24 @@ function toMonster(
   };
 }
 
+function toFusionRecipe(
+  f: StoreFusionRow,
+  speciesMap: ReadonlyMap<number, StoreSpeciesRow>,
+): FusionRecipeViewModel {
+  return {
+    aSpeciesName: speciesMap.get(f.aSpecies)?.name ?? `Unknown (#${f.aSpecies})`,
+    bSpeciesName: speciesMap.get(f.bSpecies)?.name ?? `Unknown (#${f.bSpecies})`,
+    toSpeciesName: speciesMap.get(f.toSpecies)?.name ?? `Unknown (#${f.toSpecies})`,
+  };
+}
+
 export function buildEvolutionViewModel(
   monsters: readonly StoreMonsterPub[],
   speciesMap: ReadonlyMap<number, StoreSpeciesRow>,
+  fusions: readonly StoreFusionRow[] = [],
 ): EvolutionViewModel {
   return {
     monsters: monsters.map((m) => toMonster(m, speciesMap)),
+    fusionRecipes: fusions.map((f) => toFusionRecipe(f, speciesMap)),
   };
 }

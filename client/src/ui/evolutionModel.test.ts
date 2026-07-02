@@ -10,11 +10,12 @@
 
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import type { StoreMonsterPub, StoreSpeciesRow } from '../net/store';
+import type { StoreFusionRow, StoreMonsterPub, StoreSpeciesRow } from '../net/store';
 import {
   buildEvolutionViewModel,
   type EvolutionMonsterViewModel,
   type EvolutionViewModel,
+  type FusionRecipeViewModel,
 } from './evolutionModel';
 
 // ---------------------------------------------------------------------------
@@ -287,13 +288,14 @@ describe('buildEvolutionViewModel criterion 4: empty input → empty output', ()
     expect(vm.monsters).toHaveLength(0);
   });
 
-  it('BITES: the returned object has exactly the expected shape (monsters property)', () => {
-    // Kills: an impl that returns a flat array rather than { monsters: [...] }.
+  it('BITES: the returned object has exactly the expected shape (monsters + fusionRecipes)', () => {
+    // Kills: an impl that returns a flat array rather than { monsters: [...] },
+    // or one that omits the fusionRecipes field.
     let vm: EvolutionViewModel;
     expect(() => {
       vm = buildEvolutionViewModel([], new Map());
     }).not.toThrow();
-    expect(vm!).toEqual({ monsters: [] });
+    expect(vm!).toEqual({ monsters: [], fusionRecipes: [] });
   });
 });
 
@@ -464,5 +466,76 @@ describe('buildEvolutionViewModel criterion 6: output order matches input order'
     expect(mon.bond).toBe(80);
     expect(mon.evolvesToSpeciesName).toBe('Pyrodrake');
     expect(mon.canEvolve).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Criterion 7 — Fusion recipes: resolved to display names, raw pass-through
+// ---------------------------------------------------------------------------
+
+function fusionRow(
+  fusionId: bigint,
+  aSpecies: number,
+  bSpecies: number,
+  toSpecies: number,
+): StoreFusionRow {
+  return { fusionId, aSpecies, bSpecies, toSpecies };
+}
+
+describe('buildEvolutionViewModel criterion 7: fusion recipes resolved to display names', () => {
+  it('BITES: no fusions arg → fusionRecipes is []', () => {
+    // Kills: an impl that throws or returns undefined when fusions is omitted.
+    const vm = buildEvolutionViewModel([], new Map());
+    expect(vm.fusionRecipes).toEqual([]);
+  });
+
+  it('BITES: fusions=[] → fusionRecipes is []', () => {
+    const vm = buildEvolutionViewModel([], new Map(), []);
+    expect(vm.fusionRecipes).toEqual([]);
+  });
+
+  it('BITES: recipe with all species in map → all three names resolved', () => {
+    // Kills: an impl that ignores speciesMap for fusion recipes.
+    const speciesMap = new Map([
+      [1, speciesRow(1, 'Flameling')],
+      [2, speciesRow(2, 'Aquazor')],
+      [3, speciesRow(3, 'Steamwing')],
+    ]);
+    const vm = buildEvolutionViewModel([], speciesMap, [fusionRow(1n, 1, 2, 3)]);
+    expect(vm.fusionRecipes).toHaveLength(1);
+    const r: FusionRecipeViewModel = vm.fusionRecipes[0]!;
+    expect(r.aSpeciesName).toBe('Flameling');
+    expect(r.bSpeciesName).toBe('Aquazor');
+    expect(r.toSpeciesName).toBe('Steamwing');
+  });
+
+  it('BITES: missing species in map → "Unknown (#N)" fallback for each missing id', () => {
+    // Kills: an impl that throws on a Map miss for fusion species.
+    const vm = buildEvolutionViewModel([], new Map(), [fusionRow(1n, 10, 20, 30)]);
+    const r = vm.fusionRecipes[0]!;
+    expect(r.aSpeciesName).toBe('Unknown (#10)');
+    expect(r.bSpeciesName).toBe('Unknown (#20)');
+    expect(r.toSpeciesName).toBe('Unknown (#30)');
+  });
+
+  it('BITES: multiple recipes → order preserved', () => {
+    // Kills: an impl that sorts or deduplicates recipes.
+    const speciesMap = new Map([
+      [1, speciesRow(1, 'A')],
+      [2, speciesRow(2, 'B')],
+      [3, speciesRow(3, 'C')],
+    ]);
+    const fusions = [fusionRow(2n, 2, 3, 1), fusionRow(1n, 1, 2, 3)];
+    const vm = buildEvolutionViewModel([], speciesMap, fusions);
+    expect(vm.fusionRecipes).toHaveLength(2);
+    expect(vm.fusionRecipes[0]!.aSpeciesName).toBe('B');
+    expect(vm.fusionRecipes[1]!.aSpeciesName).toBe('A');
+  });
+
+  it('BITES: never throws on any fusion input', () => {
+    // Total function — a throw here would starve batch listeners.
+    expect(() => {
+      buildEvolutionViewModel([], new Map(), [fusionRow(0n, 0, 0, 0)]);
+    }).not.toThrow();
   });
 });

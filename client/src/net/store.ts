@@ -59,13 +59,15 @@ export type StoreMonsterPub = {
   readonly evolvesTo?: number;
 };
 
+// NOTE: StoreFusionRow is a `type` alias (not `interface`) for consistency with the
+// other store row types (StoreMonsterPub, StoreInventory, StoreItemRow).
 /** A fusion recipe row (public content — M10c, ADR-0019). */
-export interface StoreFusionRow {
+export type StoreFusionRow = {
   readonly fusionId: bigint;
   readonly aSpecies: number;
   readonly bSpecies: number;
   readonly toSpecies: number;
-}
+};
 
 /** A skill definition row, normalized (affinity as bare string). */
 export interface StoreSkillRow {

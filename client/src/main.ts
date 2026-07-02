@@ -273,7 +273,7 @@ function refreshEvolution(): void {
   if (!evolutionView?.visible || identity === '') return;
   const monsters = store.ownMonsters(identity);
   const speciesMap = store.speciesMap();
-  evolutionView.refresh(buildEvolutionViewModel(monsters, speciesMap));
+  evolutionView.refresh(buildEvolutionViewModel(monsters, speciesMap, [...store.fusions()]));
 }
 store.onBatchApplied(() => refreshEvolution());
 

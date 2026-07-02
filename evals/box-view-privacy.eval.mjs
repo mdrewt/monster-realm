@@ -109,6 +109,36 @@ export interface StoreMonsterPub {
   }
 
   // ------------------------------------------------------------------
+  // Proof-of-teeth: a `type NAME = {` bad-fixture must also be flagged.
+  // (M10c changed StoreMonsterPub from `interface` to `type`; the gate
+  //  must catch hidden fields in both declaration forms.)
+  // ------------------------------------------------------------------
+  const badTypeFixture = `
+export type StoreMonsterPub = {
+  readonly monsterId: bigint;
+  readonly ivHp: number;
+  readonly statHp: number;
+};
+`;
+  const badTypeBody = extractInterfaceBody(badTypeFixture, 'StoreMonsterPub');
+  if (!badTypeBody) {
+    return {
+      name,
+      pass: false,
+      detail: 'TEETH: extractInterfaceBody failed to find type alias in known-bad type fixture',
+    };
+  }
+  const typeTeethError = checkNoHiddenFields(badTypeBody);
+  if (!typeTeethError) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH: checkNoHiddenFields failed to flag ivHp in known-bad type alias fixture — gate is blind to type aliases',
+    };
+  }
+
+  // ------------------------------------------------------------------
   // Proof-of-teeth: a clean fixture must PASS (no false positives).
   // ------------------------------------------------------------------
   const goodFixture = `

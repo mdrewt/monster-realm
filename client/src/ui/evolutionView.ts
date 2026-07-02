@@ -5,7 +5,11 @@
 // (those live server-side per ADR-0019) — one-way flow only. The loop calls
 // refresh() on batch-applied; the user triggers reducer intents via callbacks passed
 // at construction (never called directly by this module). Coverage-excluded shell.
-import type { EvolutionMonsterViewModel, EvolutionViewModel } from './evolutionModel';
+import type {
+  EvolutionMonsterViewModel,
+  EvolutionViewModel,
+  FusionRecipeViewModel,
+} from './evolutionModel';
 
 export interface EvolutionViewCallbacks {
   /** Called when the user clicks Evolve on an eligible monster. */
@@ -19,7 +23,11 @@ export class EvolutionView {
   readonly #listEl: HTMLDivElement;
   readonly #fuseEl: HTMLDivElement;
   readonly #fuseBtn: HTMLButtonElement;
+  readonly #fuseLabel: HTMLSpanElement;
+  readonly #recipesEl: HTMLDivElement;
   readonly #callbacks: EvolutionViewCallbacks;
+  // Keyed by monsterId for immediate visual refresh on selection (no server-tick wait).
+  readonly #cardEls = new Map<bigint, HTMLDivElement>();
   #visible = false;
   #selected: bigint[] = [];
 
@@ -49,6 +57,9 @@ export class EvolutionView {
 
     this.#fuseEl = document.createElement('div');
     this.#fuseEl.style.cssText = 'display:flex;align-items:center;gap:12px;margin-bottom:8px;';
+    this.#fuseLabel = document.createElement('span');
+    this.#fuseLabel.textContent = 'Select two monsters to fuse (0/2):';
+    this.#fuseLabel.style.color = '#aaa';
     this.#fuseBtn = document.createElement('button');
     this.#fuseBtn.textContent = 'Fuse';
     this.#fuseBtn.style.cssText =
@@ -61,12 +72,13 @@ export class EvolutionView {
         this.#updateFuseStatus();
       }
     });
-    const fuseLabel = document.createElement('span');
-    fuseLabel.textContent = 'Select two monsters to fuse:';
-    fuseLabel.style.color = '#aaa';
-    this.#fuseEl.appendChild(fuseLabel);
+    this.#fuseEl.appendChild(this.#fuseLabel);
     this.#fuseEl.appendChild(this.#fuseBtn);
     this.#root.appendChild(this.#fuseEl);
+
+    this.#recipesEl = document.createElement('div');
+    this.#recipesEl.style.cssText = 'width:100%;max-width:700px;margin-top:8px;';
+    this.#root.appendChild(this.#recipesEl);
 
     parent.appendChild(this.#root);
   }
@@ -93,6 +105,7 @@ export class EvolutionView {
 
   refresh(vm: EvolutionViewModel): void {
     this.#listEl.textContent = '';
+    this.#cardEls.clear();
     if (vm.monsters.length === 0) {
       const empty = document.createElement('p');
       empty.textContent = 'No monsters yet.';
@@ -100,15 +113,18 @@ export class EvolutionView {
       this.#listEl.appendChild(empty);
       this.#selected = [];
       this.#updateFuseStatus();
-      return;
+    } else {
+      for (const mon of vm.monsters) {
+        const card = this.#renderCard(mon);
+        this.#cardEls.set(mon.monsterId, card);
+        this.#listEl.appendChild(card);
+      }
+      // Prune stale selection entries for monsters no longer in vm.
+      const ids = new Set(vm.monsters.map((m) => m.monsterId));
+      this.#selected = this.#selected.filter((id) => ids.has(id));
+      this.#updateFuseStatus();
     }
-    for (const mon of vm.monsters) {
-      this.#listEl.appendChild(this.#renderCard(mon));
-    }
-    // Drop selection entries for monsters no longer in vm
-    const ids = new Set(vm.monsters.map((m) => m.monsterId));
-    this.#selected = this.#selected.filter((id) => ids.has(id));
-    this.#updateFuseStatus();
+    this.#renderRecipes(vm.fusionRecipes);
   }
 
   #renderCard(mon: EvolutionMonsterViewModel): HTMLDivElement {
@@ -119,7 +135,8 @@ export class EvolutionView {
       `border:${isSelected ? '2px solid #7c3aed' : '1px solid #333'};cursor:pointer;`;
 
     const name = document.createElement('div');
-    name.textContent = `${mon.nickname || mon.speciesName} (${mon.speciesName})`;
+    // Explicit check avoids falsy-coercion: empty nickname ("") shows species name.
+    name.textContent = `${mon.nickname !== '' ? mon.nickname : mon.speciesName} (${mon.speciesName})`;
     name.style.cssText = 'font-weight:bold;margin-bottom:4px;';
 
     const stats = document.createElement('div');
@@ -141,6 +158,9 @@ export class EvolutionView {
         'padding:4px 12px;background:#059669;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:0.85em;margin-right:6px;';
       evolveBtn.addEventListener('click', (e) => {
         e.stopPropagation();
+        evolveBtn.disabled = true; // debounce: re-enabled on next server-tick refresh
+        this.#selected = [];
+        this.#updateFuseStatus();
         this.#callbacks.onEvolve(mon.monsterId);
       });
       card.appendChild(evolveBtn);
@@ -153,6 +173,21 @@ export class EvolutionView {
     return card;
   }
 
+  #renderRecipes(recipes: readonly FusionRecipeViewModel[]): void {
+    this.#recipesEl.textContent = '';
+    if (recipes.length === 0) return;
+    const title = document.createElement('p');
+    title.textContent = 'Fusion Recipes:';
+    title.style.cssText = 'margin:0 0 6px;color:#aaa;font-size:0.85em;font-weight:bold;';
+    this.#recipesEl.appendChild(title);
+    for (const r of recipes) {
+      const line = document.createElement('p');
+      line.textContent = `${r.aSpeciesName} + ${r.bSpeciesName} → ${r.toSpeciesName}`;
+      line.style.cssText = 'margin:0 0 4px;font-size:0.8em;color:#888;';
+      this.#recipesEl.appendChild(line);
+    }
+  }
+
   #toggleSelect(monsterId: bigint): void {
     const idx = this.#selected.indexOf(monsterId);
     if (idx !== -1) {
@@ -162,17 +197,20 @@ export class EvolutionView {
     } else {
       this.#selected = [monsterId];
     }
+    // Immediately refresh card visuals — don't wait for next server batch.
+    for (const [id, el] of this.#cardEls) {
+      const sel = this.#selected.includes(id);
+      el.style.background = sel ? '#1e3a5f' : '#1e1e2e';
+      el.style.border = sel ? '2px solid #7c3aed' : '1px solid #333';
+    }
     this.#updateFuseStatus();
   }
 
   #updateFuseStatus(): void {
     this.#fuseBtn.disabled = this.#selected.length !== 2;
-    const label = this.#fuseEl.querySelector('span');
-    if (label) {
-      label.textContent =
-        this.#selected.length === 2
-          ? 'Fuse selected monsters:'
-          : `Select two monsters to fuse (${this.#selected.length}/2):`;
-    }
+    this.#fuseLabel.textContent =
+      this.#selected.length === 2
+        ? 'Fuse selected monsters:'
+        : `Select two monsters to fuse (${this.#selected.length}/2):`;
   }
 }
