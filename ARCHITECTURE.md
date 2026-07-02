@@ -645,6 +645,21 @@ blocks warp, C1 security finding); per-zone schedules managed by `ensure_zone_sc
 idempotent, additive, called from both `init` and `sync_content`); `validate_zone_maps` gates
 `sync_content_inner` before any `zone_def` upsert. 36/36 evals pass.
 
+**M11c** (client follow-camera + warp resubscribe — ADR-0067) complete: `FollowCamera` pure class
+(`offsetFor` clamps `playerPx − viewSize/2` to `[0, mapPx − viewPx]`; map < viewport → `(0,0)`);
+`isOwnZoneChange(oldRow, newRow, ownEntityId)` pure predicate in `warpDetect.ts` (strict bigint
+`===`); `RawWarpDef` + `TileMap.isWarp(x,y)` added (wire-accurate, Set-backed, OOB-safe);
+`store.resetCharacters()` clears `#chars` only (players/monsters/etc. survive zone transitions,
+no phantom re-render on empty); `zone_map(zone_id)` wasm dispatch via `map_for` (Err for unknown
+zones, no silent zone_0 fallback); `ACTIVE_ZONE_ID` atomic + `set_active_zone()` wasm export
+(apply_move reads it — no ApplyMove type-signature change); character subscription global
+(`SELECT * FROM character`, no WHERE; renderer filters by currentZoneId); onOwnWarp handler:
+`resetCharacters → zone_map → set_active_zone → setMap → resetPredictionState` wrapped in
+try/catch (onBatchApplied isolation, M8.8e); `WorldRenderer.resize()` sets viewport-sized canvas
+(no stage scale); `app.stage.position.set(-cx, -cy)` for camera scroll. 450 client tests,
+7 Rust tests. Deferred to future: per-zone subscription cancellation (ADR-0007 goal; blocked on
+SpacetimeDB subscription-group API).
+
 **M10c** (evolution/fusion client overlay — ADR-0063) complete: `evolvesTo?: number` on
 `StoreMonsterPub` (`option(u32)` decodes as primitive `number | undefined`; `canEvolve =
 evolvesTo !== undefined`), `StoreFusionRow` type + `store.fusions()` wired to

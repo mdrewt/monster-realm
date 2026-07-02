@@ -437,15 +437,15 @@ async function main(): Promise<void> {
       resetPredictionState();
     },
     onOwnWarp: (newZoneId) => {
-      // Zone transition: clear stale-zone character positions, reload the map for the
-      // new zone, update the wasm movement predictor's zone, and reset prediction state.
-      // The store keeps all non-character tables (players, monsters, species, etc.).
-      // try/catch: zone_map() throws on unknown zone ids; onBatchApplied has no per-
-      // listener isolation so an uncaught throw would starve sibling listeners (M8.8e).
+      // Zone transition: load the new zone map first so that if it throws (unknown zone)
+      // no state has been mutated (consistent failure). Then set the wasm zone BEFORE
+      // any mutations so stray apply_move calls during this handler use the new zone
+      // (ADR-0067). try/catch: onBatchApplied has no per-listener isolation (M8.8e).
       try {
+        const newRawMap = zone_map(newZoneId); // may throw — must be first
+        set_active_zone(newZoneId); // wasm zone before any mutations
         store.resetCharacters();
-        rawMap = zone_map(newZoneId);
-        set_active_zone(newZoneId);
+        rawMap = newRawMap;
         renderer.setMap(rawMap);
         resetPredictionState();
       } catch (err) {
@@ -476,6 +476,7 @@ async function main(): Promise<void> {
       predicted,
       snapped,
       now,
+      currentZoneId: rawMap.zone_id,
     });
     // Sticky latch: count ONLY fractional motion from the slide-clock path — the own
     // entity WITH a predicted state (same predicate as RenderResolver's `isOwn`), never

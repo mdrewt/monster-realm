@@ -100,21 +100,21 @@ pub fn predict_move(
 /// sane `>= 0` baseline before becoming the integer `Millis` the rule consumes.
 ///
 /// M11c: uses `ACTIVE_ZONE_ID` (set by `set_active_zone`) to load the correct
-/// zone map. Falls back to `zone_0()` if the active zone id is unknown — this
-/// ensures a sensible (if conservative) default on the rare reconnect race where
-/// `set_active_zone` has not yet been called. (ADR-0067)
+/// zone map. Fails loud (returns Err) on unknown zone rather than silently falling
+/// back to zone_0 — a wrong-map fallback would predict through zone N's walls
+/// using zone 0's layout (ADR-0067). In practice this path never fires because
+/// `set_active_zone` is only called after `zone_map(id)` succeeds.
 ///
 /// # Errors
-/// Returns a JS error if `state` or `input` is not a valid serde shape.
+/// Returns a JS error if `state`/`input` is not valid, or if the active zone map
+/// cannot be loaded (unknown zone id or embedded-content parse failure).
 #[wasm_bindgen]
 pub fn apply_move(state: JsValue, input: JsValue, now: f64) -> Result<JsValue, JsValue> {
     let state: CharacterState = serde_wasm_bindgen::from_value(state)?;
     let input: MoveInput = serde_wasm_bindgen::from_value(input)?;
     let zone_id = ACTIVE_ZONE_ID.load(Ordering::Relaxed);
-    let zone_map = game_core::load_zone_maps()
-        .ok()
-        .and_then(|maps| game_core::map_for(zone_id, &maps).ok())
-        .unwrap_or_else(game_core::zone_0);
+    let maps = game_core::load_zone_maps().map_err(zone_map_err)?;
+    let zone_map = game_core::map_for(zone_id, &maps).map_err(zone_map_err)?;
     let next = game_core::apply_move(
         &state,
         input,
