@@ -409,25 +409,16 @@ pub(crate) fn evolve_seam(
     let target_species = species_from_row(target_species_row)?;
     let transformed = game_core_evolve(&m_inst, &target_species);
 
-    // Recalculate derived stats for the new species
-    let new_stats = game_core::derive_stats(
-        &target_species.base_stats,
-        &transformed.ivs,
-        &transformed.evs,
-        &transformed.nature,
-        transformed.level,
-    );
-
-    // Update the monster: species, level, xp, stats, evolves_to
+    // Update the monster: species, level, xp, stats, evolves_to (transformed already has re-derived stats)
     m.species_id = transformed.species_id;
     m.level = transformed.level.as_u8();
     m.xp = transformed.xp.value();
-    m.stat_hp = new_stats.get(game_core::StatKind::Hp);
-    m.stat_attack = new_stats.get(game_core::StatKind::Attack);
-    m.stat_defense = new_stats.get(game_core::StatKind::Defense);
-    m.stat_speed = new_stats.get(game_core::StatKind::Speed);
-    m.stat_sp_attack = new_stats.get(game_core::StatKind::SpAttack);
-    m.stat_sp_defense = new_stats.get(game_core::StatKind::SpDefense);
+    m.stat_hp = transformed.derived_stats.hp;
+    m.stat_attack = transformed.derived_stats.attack;
+    m.stat_defense = transformed.derived_stats.defense;
+    m.stat_speed = transformed.derived_stats.speed;
+    m.stat_sp_attack = transformed.derived_stats.sp_attack;
+    m.stat_sp_defense = transformed.derived_stats.sp_defense;
     m.current_hp = transformed.current_hp;
 
     // Recompute evolves_to on the new species
