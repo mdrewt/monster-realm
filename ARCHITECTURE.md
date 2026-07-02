@@ -158,6 +158,7 @@ canonical `touches:` vocabulary**: adding content is a new
 | items | `content/items/*.ron` | directory |
 | encounters | `content/encounters/*.ron` | directory |
 | zones | `content/zones/*.ron` | directory |
+| zone_maps | `content/zone_maps/*.ron` | directory | (string-art tile rows + warp list; keyed by zone_id) |
 | type_chart | `content/type_chart.ron` | **single file** (one coherent matrix, rarely appended in parallel) |
 
 - **Numeric prefixes zero-pad to a consistent width** (`000-`, `001-`, `010-`): the
