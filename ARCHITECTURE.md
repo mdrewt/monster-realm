@@ -184,7 +184,7 @@ formula, 0042 battle table public PvE, 0043 CI caching + fast inner loop, 0044
 private encounter table, 0045 private `battle_wild` individuality table, 0046
 player inventory model, 0047 recruit resolution, 0048 `start_battle` opponent
 provenance, 0049 panic-as-content-invariant policy, 0050 nightly mutation/
-coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness, 0056 server-module modularization (domain submodules — the canonical `touches:` vocabulary), 0057 content-directory glob loading via `build.rs`, 0058–0061 raising/training/evolution content+rules, **0062 evolution/fusion server reducer guard ordering, bond-write omission, and test-seam placement**. See also
+coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness, 0056 server-module modularization (domain submodules — the canonical `touches:` vocabulary), 0057 content-directory glob loading via `build.rs`, 0058–0061 raising/training/evolution content+rules, **0062 evolution/fusion server reducer guard ordering, bond-write omission, and test-seam placement**, **0063 evolution/fusion client overlay (evolvesTo decode, fusion recipe display, coverage exclusion)**. See also
 `docs/validation-findings.md` (empirical Tier-1 results).
 
 ## Monster subsystem (`game-core/src/monster/`, M6a)
@@ -598,6 +598,16 @@ close gate (verified at M8.9d):** `bindings-drift` = 0 (committed
 `client/src/module_bindings/` byte-identical to a fresh `spacetime generate`),
 `schema-snapshot` unchanged (15 tables), and `content-parity` green (the five
 `m8_9e_*_migration_parity` tests reproduce the pre-migration rows in order).
+
+**M10c** (evolution/fusion client overlay — ADR-0063) complete: `evolvesTo?: number` on
+`StoreMonsterPub` (`option(u32)` decodes as primitive `number | undefined`; `canEvolve =
+evolvesTo !== undefined`), `StoreFusionRow` type + `store.fusions()` wired to
+`buildEvolutionViewModel` via `FusionRecipeViewModel` (display-only, server validates),
+`EvolutionView` DOM shell with KeyE toggle, mutual exclusion (B/I/battle ordering),
+card `#selected` visual-refresh via `#cardEls` map, evolve-button debounce,
+`evolutionView.ts` added to `vite.config.ts coverage.exclude` + gated by new
+`dom-shell-coverage-exclusion` eval; `box-view-privacy` eval hardened with type-alias
+bad-fixture. 401 client tests, 29/29 evals, EXIT:0.
 
 ### Finalization audit (2026-06-25) — named deferrals
 

@@ -41,6 +41,8 @@ import { buildBattleViewModel, decideBattleOverlay } from './ui/battleModel';
 import type { BattleView } from './ui/battleView';
 import { buildBoxViewModel, buildPartyViewModel, nextFreePartySlot } from './ui/boxModel';
 import type { BoxView } from './ui/boxView';
+import { buildEvolutionViewModel } from './ui/evolutionModel';
+import type { EvolutionView } from './ui/evolutionView';
 import { buildRaisingViewModel } from './ui/raisingModel';
 import type { RaisingView } from './ui/raisingView';
 
@@ -74,6 +76,7 @@ let conn: ReturnType<typeof connect> | undefined;
 let boxView: BoxView | undefined;
 let battleView: BattleView | undefined;
 let raisingView: RaisingView | undefined;
+let evolutionView: EvolutionView | undefined;
 // Outcome-frame lifecycle (M8.7e): the dismissed battle id (so a resolved outcome
 // renders once but never re-pops) + whether any battle has been observed this
 // session (first-sight pre-dismiss of a historical/stale-on-login resolved battle).
@@ -125,7 +128,10 @@ store.onBatchApplied(() => {
   // held key keeps walking from the corrected baseline. Routed through the SAME held-
   // state-guarded dedup as the rAF frame loop (reissueDir) — so it never double-issues
   // nor re-issues a key released during the divergence; the move drains on the next rAF.
-  if (diverged && !(battleView?.visible || boxView?.visible || raisingView?.visible)) {
+  if (
+    diverged &&
+    !(battleView?.visible || boxView?.visible || raisingView?.visible || evolutionView?.visible)
+  ) {
     const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
     if (heldDir !== undefined) sendIntent({ Step: heldDir });
   }
@@ -157,6 +163,7 @@ window.addEventListener('keydown', (e) => {
     // Guard: don't open the box over an active battle (ADR-0014/0052 exit ordering).
     if (shouldToggleBox(battleView?.visible ?? false)) {
       raisingView?.hide(); // mutual exclusivity: box and raising never co-open
+      evolutionView?.hide(); // mutual exclusivity: close evolution overlay
       boxView?.toggle();
       if (boxView?.visible) refreshBox();
     }
@@ -167,13 +174,25 @@ window.addEventListener('keydown', (e) => {
     // Inventory/raising overlay — same battle guard as the box (reuse shouldToggleBox).
     if (shouldToggleBox(battleView?.visible ?? false)) {
       boxView?.hide(); // mutual exclusivity: box and raising never co-open
+      evolutionView?.hide(); // mutual exclusivity: close evolution overlay
       raisingView?.toggle();
       if (raisingView?.visible) refreshRaising();
     }
     e.preventDefault();
     return;
   }
-  // Escape priority: battle > box > raising > movement (ADR-0014 exit ordering).
+  if (e.code === 'KeyE') {
+    // Evolution/fusion overlay — same battle guard as box/raising (ADR-0014).
+    if (shouldToggleBox(battleView?.visible ?? false)) {
+      boxView?.hide(); // mutual exclusivity
+      raisingView?.hide(); // mutual exclusivity
+      evolutionView?.toggle();
+      if (evolutionView?.visible) refreshEvolution();
+    }
+    e.preventDefault();
+    return;
+  }
+  // Escape priority: battle > box > raising > evolution > movement (ADR-0014 exit ordering).
   if (e.code === 'Escape' && battleView?.visible) {
     const latest = store.latestPlayerBattle(identity);
     // Terminal outcome frame: permanent dismiss (don't re-pop next batch). Ongoing:
@@ -193,8 +212,14 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
+  if (e.code === 'Escape' && evolutionView?.visible) {
+    evolutionView.hide();
+    e.preventDefault();
+    return;
+  }
   // Suppress movement input while an overlay is open.
-  if (battleView?.visible || boxView?.visible || raisingView?.visible) return;
+  if (battleView?.visible || boxView?.visible || raisingView?.visible || evolutionView?.visible)
+    return;
   const dir = KEY_DIR[e.code];
   if (dir !== undefined) {
     step(dir); // immediate first step (latency + deliberate double-tap)
@@ -241,6 +266,17 @@ function refreshRaising(): void {
 }
 store.onBatchApplied(() => refreshRaising());
 
+// --- evolution/fusion view: refresh on batch when visible (M10c, ADR-0014/0019) --
+// MUST be total (never throw): store.flushBatch has no per-listener isolation, so a
+// throw here would starve the sibling reconcile/refreshBox/refreshBattle listeners.
+function refreshEvolution(): void {
+  if (!evolutionView?.visible || identity === '') return;
+  const monsters = store.ownMonsters(identity);
+  const speciesMap = store.speciesMap();
+  evolutionView.refresh(buildEvolutionViewModel(monsters, speciesMap, [...store.fusions()]));
+}
+store.onBatchApplied(() => refreshEvolution());
+
 // --- battle view: refresh on batch, auto-show/hide (M7c, ADR-0014/0042) --------
 function refreshBattle(): void {
   if (!battleView || identity === '') return;
@@ -251,6 +287,7 @@ function refreshBattle(): void {
   if (r.action.kind === 'show') {
     if (boxView?.visible) boxView.hide(); // active/outcome overlay supersedes the box
     if (raisingView?.visible) raisingView.hide(); // ...and the raising/inventory overlay
+    if (evolutionView?.visible) evolutionView.hide(); // ...and the evolution overlay
     const vm = buildBattleViewModel(r.action.battle, store.skillMap(), store.speciesMap());
     if (!vm) console.warn('[battle] battle has corrupt team data; view hidden');
     battleView.refresh(vm);
@@ -311,10 +348,12 @@ async function main(): Promise<void> {
     { BoxView: BoxViewClass },
     { BattleView: BattleViewClass },
     { RaisingView: RaisingViewClass },
+    { EvolutionView: EvolutionViewClass },
   ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/battleView'),
     import('./ui/raisingView'),
+    import('./ui/evolutionView'),
   ]);
   const renderer = new WorldRenderer();
   const mount = document.getElementById('app');
@@ -358,6 +397,14 @@ async function main(): Promise<void> {
         conn?.conn.reducers.care({ monsterId });
       },
     });
+    evolutionView = new EvolutionViewClass(mount, {
+      onEvolve: (monsterId) => {
+        conn?.conn.reducers.evolve({ monsterId });
+      },
+      onFuse: (aId, bId) => {
+        conn?.conn.reducers.fuse({ aId, bId });
+      },
+    });
   }
 
   conn = connect({
@@ -391,7 +438,9 @@ async function main(): Promise<void> {
     // is visible, so a held key resumes after an overlay closes yet never walks
     // under one (M8.6c, ADR-0013). sendIntent routes through the backpressured
     // predictor.enqueue + reducer send, and no-ops if declined.
-    if (!(battleView?.visible || boxView?.visible || raisingView?.visible)) {
+    if (
+      !(battleView?.visible || boxView?.visible || raisingView?.visible || evolutionView?.visible)
+    ) {
       const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
       if (heldDir !== undefined) sendIntent({ Step: heldDir });
     }

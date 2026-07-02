@@ -1224,3 +1224,182 @@ describe('AuthoritativeStore M9c: inventoryCount property (fast-check)', () => {
     );
   });
 });
+
+// =============================================================================
+// M10c extension: StoreFusionRow — upsert / remove / iterate / reset / batch
+// SOURCE OF TRUTH: specs/monster-realm-v2/M10c (Client evolution/fuse UI)
+//
+// These tests are INTENTIONALLY RED until the fusion map is added to
+// AuthoritativeStore and StoreFusionRow is exported from store.ts.
+// =============================================================================
+
+/** Factory: minimal valid StoreFusionRow. */
+function fusionRow(fusionId: bigint, aSpecies = 1, bSpecies = 2, toSpecies = 3): StoreFusionRow {
+  return { fusionId, aSpecies, bSpecies, toSpecies };
+}
+
+describe('AuthoritativeStore M10c: fusion upsert + fusionCount', () => {
+  it('BITES: upsertFusion stores a StoreFusionRow; fusionCount increments from 0 to 1', () => {
+    // Kills: an impl that ignores upsertFusion or that never initializes the fusion map.
+    // A fusionCount getter that always returns 0 is killed by the second assertion.
+    const s = new AuthoritativeStore();
+    expect(s.fusionCount).toBe(0);
+    s.upsertFusion(fusionRow(1n, 1, 2, 3));
+    expect(s.fusionCount).toBe(1);
+  });
+
+  it('BITES: re-inserting the same fusionId (idempotent reconnect) overwrites; count stays 1', () => {
+    // Reconnect scenario: the subscription may replay the same row. A Map overwrite
+    // must prevent duplication. Count staying at 1 kills any array-based impl.
+    // Kills: an impl that appends on re-insert instead of overwriting.
+    const s = new AuthoritativeStore();
+    s.upsertFusion(fusionRow(1n, 1, 2, 3));
+    s.upsertFusion({ fusionId: 1n, aSpecies: 1, bSpecies: 2, toSpecies: 99 }); // same id, changed toSpecies
+    expect(s.fusionCount).toBe(1);
+    // last-write wins: toSpecies must be 99 from the second upsert
+    const rows = [...s.fusions()];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.toSpecies).toBe(99);
+  });
+
+  it('BITES: two distinct fusionIds → fusionCount is 2', () => {
+    // Kills: a fusionCount that always returns 1 or reads from the wrong map.
+    const s = new AuthoritativeStore();
+    s.upsertFusion(fusionRow(1n, 1, 2, 3));
+    s.upsertFusion(fusionRow(2n, 4, 5, 6));
+    expect(s.fusionCount).toBe(2);
+  });
+});
+
+describe('AuthoritativeStore M10c: removeFusion', () => {
+  it('BITES: removeFusion removes the row; fusionCount goes back to 0', () => {
+    // Kills: an impl where removeFusion is a no-op or removes from the wrong map.
+    const s = new AuthoritativeStore();
+    s.upsertFusion(fusionRow(7n, 1, 2, 3));
+    expect(s.fusionCount).toBe(1);
+    s.removeFusion(7n);
+    expect(s.fusionCount).toBe(0);
+  });
+
+  it('BITES: removeFusion on unknown fusionId does NOT throw and does NOT increase fusionCount', () => {
+    // Safety: a no-op delete must be silent, not an exception.
+    // Kills: an impl that throws on a missing key or increments count on a no-op.
+    const s = new AuthoritativeStore();
+    expect(() => s.removeFusion(999n)).not.toThrow();
+    expect(s.fusionCount).toBe(0);
+  });
+});
+
+describe('AuthoritativeStore M10c: fusions() iterator', () => {
+  it('BITES: fusions() iterates all stored StoreFusionRow values', () => {
+    // Kills: an impl where fusions() returns an empty iterator or a non-iterable.
+    const s = new AuthoritativeStore();
+    const r1 = fusionRow(1n, 10, 11, 12);
+    const r2 = fusionRow(2n, 20, 21, 22);
+    s.upsertFusion(r1);
+    s.upsertFusion(r2);
+    const all = [...s.fusions()];
+    expect(all).toHaveLength(2);
+    // Both rows present (order is Map-insertion order — not contractually required,
+    // but the values must match what was inserted):
+    const fusionIds = all.map((f) => f.fusionId);
+    expect(fusionIds).toContain(1n);
+    expect(fusionIds).toContain(2n);
+    const row1 = all.find((f) => f.fusionId === 1n)!;
+    expect(row1.aSpecies).toBe(10);
+    expect(row1.bSpecies).toBe(11);
+    expect(row1.toSpecies).toBe(12);
+  });
+
+  it('BITES: fusions() on empty store returns an empty iterator (no crash, no undefined)', () => {
+    // Kills: an impl that returns undefined or throws when no fusions exist.
+    const s = new AuthoritativeStore();
+    expect(() => {
+      const result = [...s.fusions()];
+      expect(result).toHaveLength(0);
+    }).not.toThrow();
+  });
+});
+
+describe('AuthoritativeStore M10c: reset() clears the fusion map', () => {
+  it('BITES: reset() clears the fusion map (fusionCount → 0)', () => {
+    // Kills: an impl whose reset() does not clear the fusion map, allowing
+    // stale fusion rows from a prior session to bleed into a fresh session.
+    const s = new AuthoritativeStore();
+    s.upsertFusion(fusionRow(1n, 1, 2, 3));
+    s.upsertFusion(fusionRow(2n, 4, 5, 6));
+    expect(s.fusionCount).toBe(2);
+    s.reset();
+    expect(s.fusionCount).toBe(0);
+    expect([...s.fusions()]).toHaveLength(0);
+  });
+
+  it('BITES: reset() still clears monster rows (existing reset behavior is unchanged)', () => {
+    // Regression: adding the fusion map must NOT break the existing monster clear.
+    // Kills: an impl that only clears fusions and accidentally omits the monster clear.
+    const s = new AuthoritativeStore();
+    s.upsertMonster(monsterPub(1n, 'alice'));
+    s.upsertFusion(fusionRow(10n, 1, 2, 3));
+    s.reset();
+    expect(s.monsterCount).toBe(0); // existing behavior preserved
+    expect(s.fusionCount).toBe(0); // new behavior
+  });
+
+  it('BITES: reset() clears fusions AND monsters AND existing maps; listeners survive', () => {
+    // Combined gate: all maps are clean after reset; the loop listener is retained.
+    // Kills: an impl that clears only some maps, or that removes listeners on reset.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.upsertFusion(fusionRow(5n, 1, 2, 3));
+    s.upsertMonster(monsterPub(1n, 'p'));
+    s.reset();
+    expect(s.fusionCount).toBe(0);
+    expect(s.monsterCount).toBe(0);
+    // Post-reset batch must still reach the still-registered listener
+    s.upsertFusion(fusionRow(6n, 7, 8, 9));
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AuthoritativeStore M10c: upsertFusion/removeFusion mark dirty (flushBatch fires)', () => {
+  it('BITES: upsertFusion marks dirty so flushBatch fires the batch listener', () => {
+    // Kills: an impl that stores the fusion but forgets to set #dirty = true.
+    // A listener that never fires means the render loop never updates after a fusion arrives.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.upsertFusion(fusionRow(1n, 1, 2, 3));
+    expect(cb).toHaveBeenCalledTimes(0); // not yet — flush hasn't been called
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1); // dirty was set → listener fired
+  });
+
+  it('BITES: removeFusion marks dirty so flushBatch fires the batch listener', () => {
+    // Kills: an impl where removeFusion deletes the row but never sets #dirty = true.
+    // The render loop would not know a fusion was removed and would show stale data.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.upsertFusion(fusionRow(2n, 4, 5, 6));
+    s.flushBatch(); // consume the upsert dirty
+    cb.mockClear();
+    s.removeFusion(2n);
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1); // remove also marked dirty
+  });
+
+  it('BITES: removeFusion on unknown id does NOT mark dirty (no phantom re-renders)', () => {
+    // Kills: an impl that marks dirty even on a no-op delete, causing spurious re-renders.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.removeFusion(999n); // never inserted
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(0);
+  });
+});
+
+// Import the new type so TS errors are part of the red state
+import type { StoreFusionRow } from './store';

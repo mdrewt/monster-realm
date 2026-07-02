@@ -13,6 +13,7 @@ import type {
   StoreBattle,
   StoreBattleMonster,
   StoreCharacter,
+  StoreFusionRow,
   StoreInventory,
   StoreItemRow,
   StoreMonsterPub,
@@ -84,6 +85,8 @@ export interface SdkMonsterPubRow {
   readonly statSpAttack: number;
   readonly statSpDefense: number;
   readonly partySlot: number;
+  /** Option<u32> decodes as number | undefined for primitive options (M10c). */
+  readonly evolvesTo?: number;
 }
 
 export interface SdkSpeciesRowRow {
@@ -116,6 +119,7 @@ export function monsterPubRowToStore(row: SdkMonsterPubRow): StoreMonsterPub {
     statSpAttack: row.statSpAttack,
     statSpDefense: row.statSpDefense,
     partySlot: row.partySlot,
+    evolvesTo: row.evolvesTo,
   };
 }
 
@@ -267,5 +271,24 @@ export function itemRowToStore(row: SdkItemRowRow): StoreItemRow {
     recruitBonus: row.recruitBonus,
     trainStat: row.trainStat?.tag ?? null,
     trainAmount: row.trainAmount,
+  };
+}
+
+// --- M10c: fusion converter ---------------------------------------------------
+
+/** Structural view of the generated fusion table row (all primitives — no tagged unions). */
+export interface SdkFusionRow {
+  readonly fusionId: bigint;
+  readonly aSpecies: number;
+  readonly bSpecies: number;
+  readonly toSpecies: number;
+}
+
+export function fusionRowToStore(row: SdkFusionRow): StoreFusionRow {
+  return {
+    fusionId: row.fusionId,
+    aSpecies: row.aSpecies,
+    bSpecies: row.bSpecies,
+    toSpecies: row.toSpecies,
   };
 }

@@ -34,8 +34,12 @@ export interface StorePlayer {
   readonly lastInputSeq: bigint;
 }
 
+// NOTE: StoreMonsterPub is a `type` alias (not `interface`) — store.test.ts and
+// rowConvert.test.ts probe fields via `as Record<string, unknown>`, which TS only
+// permits for object-literal types (an interface lacks the implicit index-signature
+// overlap). Same pattern as StoreInventory/StoreItemRow (M9c comment below).
 /** A monster public projection row, normalized (no hidden IVs/EVs/nature — ADR-0015). */
-export interface StoreMonsterPub {
+export type StoreMonsterPub = {
   readonly monsterId: bigint;
   readonly ownerIdentity: string;
   readonly speciesId: number;
@@ -51,7 +55,19 @@ export interface StoreMonsterPub {
   readonly statSpAttack: number;
   readonly statSpDefense: number;
   readonly partySlot: number;
-}
+  /** Server-computed evolution target species id (M10c, ADR-0019). Undefined = not eligible. */
+  readonly evolvesTo?: number;
+};
+
+// NOTE: StoreFusionRow is a `type` alias (not `interface`) for consistency with the
+// other store row types (StoreMonsterPub, StoreInventory, StoreItemRow).
+/** A fusion recipe row (public content — M10c, ADR-0019). */
+export type StoreFusionRow = {
+  readonly fusionId: bigint;
+  readonly aSpecies: number;
+  readonly bSpecies: number;
+  readonly toSpecies: number;
+};
 
 /** A skill definition row, normalized (affinity as bare string). */
 export interface StoreSkillRow {
@@ -160,6 +176,7 @@ export class AuthoritativeStore {
   readonly #skills = new Map<number, StoreSkillRow>();
   readonly #inventory = new Map<bigint, StoreInventory>();
   readonly #itemDefs = new Map<number, StoreItemRow>();
+  readonly #fusions = new Map<bigint, StoreFusionRow>();
   readonly #batchListeners = new Set<() => void>();
   #dirty = false;
 
@@ -239,6 +256,15 @@ export class AuthoritativeStore {
     if (this.#itemDefs.delete(id)) this.#dirty = true;
   }
 
+  upsertFusion(f: StoreFusionRow): void {
+    this.#fusions.set(f.fusionId, f);
+    this.#dirty = true;
+  }
+
+  removeFusion(fusionId: bigint): void {
+    if (this.#fusions.delete(fusionId)) this.#dirty = true;
+  }
+
   /** Emit ONE batch-applied signal iff something changed since the last flush.
    *  Called once per coalesced transaction burst by the connection adapter. */
   flushBatch(): void {
@@ -265,6 +291,7 @@ export class AuthoritativeStore {
     this.#skills.clear();
     this.#inventory.clear();
     this.#itemDefs.clear();
+    this.#fusions.clear();
     this.#dirty = false;
   }
 
@@ -391,5 +418,15 @@ export class AuthoritativeStore {
    *  VALUES are shared by reference and `readonly`; consumers only read them. */
   itemDefs(): ReadonlyMap<number, StoreItemRow> {
     return new Map(this.#itemDefs);
+  }
+
+  // --- fusion read (M10c evolution view reads truth here) ----------------------
+
+  fusions(): IterableIterator<StoreFusionRow> {
+    return this.#fusions.values();
+  }
+
+  get fusionCount(): number {
+    return this.#fusions.size;
   }
 }
