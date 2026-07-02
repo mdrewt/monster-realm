@@ -66,9 +66,11 @@ Key decisions:
 - **`PlayerDialogueState { flags: BTreeSet<String>, active_quests: BTreeSet<String>, done_quests: BTreeSet<String> }`**:
   the lightweight pure-layer view of per-player state. `BTreeSet` for deterministic iteration order.
   No `pub type FlagId = String` alias exported — a naked alias provides no enforcement; use bare `String`.
-- **`DialogueTree { id: String, nodes: Vec<DialogueNode> }`**: no `root_node_id` field —
-  `find_entry_node` performs a linear scan; the first node with all `entry_conditions` passing is
-  the entry point. A redundant `root_node_id` would create an SSOT split.
+- **`DialogueTree { id: String, root_node_id: String, nodes: Vec<DialogueNode> }`**: `root_node_id`
+  is kept as an informational field for M12b restart/navigation (re-entering dialogue after mid-tree
+  choices). `find_entry_node` performs a linear scan over `nodes` in declaration order regardless —
+  the first node whose `entry_conditions` all pass is the entry point. `root_node_id` is NOT used by
+  any game-core rule; M12c `validate_content` must verify it references a valid node id.
 - **`Condition` in `dialogue::model`, re-exported from `quest`**: single evaluate function
   `evaluate_condition(cond, state) -> bool` is the SSOT for all condition checks.
 - **Currency rewards deferred to M13** per spec §2: `QuestReward` has `xp: u32` + `items: Vec<RewardItem>`;

@@ -4,6 +4,8 @@
 //! The server reducer owns the actual table mutations; these functions
 //! compute *what* should happen given the current state.
 
+use serde::{Deserialize, Serialize};
+
 use crate::dialogue::model::{
     Condition, DialogueChoice, DialogueEffect, DialogueNode, DialogueTree, PlayerDialogueState,
 };
@@ -13,7 +15,7 @@ use crate::dialogue::model::{
 // ---------------------------------------------------------------------------
 
 /// Errors returned by `apply_choice`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DialogueError {
     /// `choice_idx` is out of bounds for `node.choices`.
     InvalidChoice,
@@ -142,10 +144,25 @@ pub fn apply_effects(effects: &[DialogueEffect], state: &mut PlayerDialogueState
                 state.flags.remove(f);
             }
             DialogueEffect::StartQuest(q) => {
-                state.active_quests.insert(q.clone());
+                // Idempotency guard: don't re-open a completed quest
+                if !state.done_quests.contains(q) {
+                    state.active_quests.insert(q.clone());
+                }
             }
             DialogueEffect::GrantXp(_) => {} // server-side only; caller extracts from ChoiceResult
             DialogueEffect::GrantItem(_, _) => {} // server-side only; caller extracts from ChoiceResult
         }
     }
+}
+
+/// Apply the entry auto-effects of a dialogue node to player state.
+///
+/// M12b **must** call this immediately after `find_entry_node` returns `Some(node)`,
+/// before displaying choices. Omitting this call silently discards all `auto_effects`
+/// (flags set on node entry, quests started on approach, etc.).
+///
+/// Quest completion (moving a quest from `active_quests` → `done_quests`) is the
+/// server reducer's (M12b's) responsibility — this function does not do it.
+pub fn apply_node_auto_effects(node: &DialogueNode, state: &mut PlayerDialogueState) {
+    apply_effects(&node.auto_effects, state);
 }

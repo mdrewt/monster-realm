@@ -41,8 +41,9 @@ pub use content::{
     ItemDef, SkillDef, Species, SpeciesEvolutions, TypeRelation, WarpDef, ZoneDef, ZoneMapDef,
 };
 pub use dialogue::{
-    apply_choice, apply_effects, available_choices, evaluate_condition, find_entry_node, Condition,
-    DialogueChoice, DialogueEffect, DialogueError, DialogueNode, DialogueTree, PlayerDialogueState,
+    apply_choice, apply_effects, apply_node_auto_effects, available_choices, evaluate_condition,
+    find_entry_node, Condition, DialogueChoice, DialogueEffect, DialogueError, DialogueNode,
+    DialogueTree, PlayerDialogueState,
 };
 pub use evolution::{evolve, evolves_to, fuse, resolve_evolution};
 pub use monster::{

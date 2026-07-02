@@ -25,9 +25,9 @@
 use std::collections::BTreeSet;
 
 use crate::dialogue::{
-    apply_choice, apply_effects, available_choices, evaluate_condition, find_entry_node,
-    ChoiceResult, Condition, DialogueChoice, DialogueEffect, DialogueError, DialogueNode,
-    DialogueTree, PlayerDialogueState,
+    apply_choice, apply_effects, apply_node_auto_effects, available_choices, evaluate_condition,
+    find_entry_node, ChoiceResult, Condition, DialogueChoice, DialogueEffect, DialogueError,
+    DialogueNode, DialogueTree, PlayerDialogueState,
 };
 
 // ---------------------------------------------------------------------------
@@ -655,7 +655,64 @@ fn apply_effects_grant_effects_preserved_in_choice() {
 // CRITERION: Determinism
 // ---------------------------------------------------------------------------
 
-// Test 24 — Same tree + state → same available_choices output
+// ---------------------------------------------------------------------------
+// CRITERION: apply_node_auto_effects (red-team F1 — M12b silent-drop trap)
+// ---------------------------------------------------------------------------
+
+// Test 24 — apply_node_auto_effects applies the node's auto_effects to state
+/// kills: an M12b impl that calls find_entry_node but never calls apply_node_auto_effects —
+///        all node-entry effects (SetFlag, StartQuest) would be silently discarded.
+///
+/// PROOF-OF-TEETH: any impl that skips apply_effects(&node.auto_effects, state) would leave
+/// state.flags empty after node entry, failing the assert below.
+#[test]
+fn apply_node_auto_effects_applies_entry_effects() {
+    let node = DialogueNode {
+        id: "n1".to_string(),
+        text: "The elder notices you.".to_string(),
+        entry_conditions: vec![],
+        auto_effects: vec![DialogueEffect::SetFlag("met_elder".to_string())],
+        choices: vec![],
+    };
+    let mut state = empty_state();
+    apply_node_auto_effects(&node, &mut state);
+    assert!(
+        state.flags.contains("met_elder"),
+        "apply_node_auto_effects must apply auto_effects: SetFlag(\"met_elder\") must be in flags \
+         — an impl that skips this call would leave flags empty"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// CRITERION: apply_effects idempotency (red-team F2 — completed-quest re-open)
+// ---------------------------------------------------------------------------
+
+// Test 25 — StartQuest on a completed quest is a no-op (idempotency guard)
+/// kills: an impl where apply_effects re-inserts a done quest into active_quests,
+///        allowing quest replay and duplicate reward granting through dialogue effects.
+///
+/// PROOF-OF-TEETH: an impl without the done_quests guard would insert q1 into
+/// active_quests unconditionally, failing the assert!(!state.active_quests.contains) below.
+#[test]
+fn apply_effects_start_quest_no_op_when_already_done() {
+    let mut state = state_with_done_quest("q1"); // q1 is done
+    apply_effects(&[DialogueEffect::StartQuest("q1".to_string())], &mut state);
+    assert!(
+        !state.active_quests.contains("q1"),
+        "StartQuest on a completed quest must be a no-op: \
+         q1 must NOT be re-added to active_quests"
+    );
+    assert!(
+        state.done_quests.contains("q1"),
+        "done_quests must be unchanged after StartQuest on a completed quest"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// CRITERION: Determinism
+// ---------------------------------------------------------------------------
+
+// Test 26 — Same tree + state → same available_choices output
 /// kills: any impl that reads global mutable state (clock, thread-local RNG,
 ///        HashMap with non-deterministic iteration order exposed as indices).
 #[test]

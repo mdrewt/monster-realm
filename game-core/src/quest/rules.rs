@@ -76,12 +76,13 @@ pub fn process_trigger(
     dialogue_state: &PlayerDialogueState,
     event: &TriggerEvent,
 ) -> Option<QuestAdvance> {
-    // Contract 1: bounds-check
-    if progress.step_index as usize >= def.steps.len() {
+    // Contract 1: bounds-check (safe cast; on 16-bit targets u32 may exceed usize::MAX → None)
+    let idx = usize::try_from(progress.step_index).ok()?;
+    if idx >= def.steps.len() {
         return None;
     }
 
-    let step = &def.steps[progress.step_index as usize];
+    let step = &def.steps[idx];
 
     // Contract 2: trigger must match
     if !trigger_matches(&step.trigger, event) {
@@ -98,7 +99,7 @@ pub fn process_trigger(
     }
 
     // Contract 4: advance or complete
-    let is_last = progress.step_index as usize == def.steps.len() - 1;
+    let is_last = idx == def.steps.len() - 1;
     if is_last {
         Some(QuestAdvance::QuestComplete {
             reward: def.reward.clone(),

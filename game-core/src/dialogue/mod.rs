@@ -10,6 +10,6 @@ pub use model::{
     Condition, DialogueChoice, DialogueEffect, DialogueNode, DialogueTree, PlayerDialogueState,
 };
 pub use rules::{
-    apply_choice, apply_effects, available_choices, evaluate_condition, find_entry_node,
-    ChoiceResult, DialogueError,
+    apply_choice, apply_effects, apply_node_auto_effects, available_choices, evaluate_condition,
+    find_entry_node, ChoiceResult, DialogueError,
 };

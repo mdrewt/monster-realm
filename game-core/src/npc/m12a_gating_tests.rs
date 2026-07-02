@@ -259,6 +259,31 @@ fn npc_decide_outside_radius_larger_dy_chooses_y_axis() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 11 — Known-answer within-radius: pins NPC_DECIDE_SALT and splitmix64 constants
+// kills: any change to NPC_DECIDE_SALT or the splitmix64 avalanche constants that
+//        silently alters the wander distribution — property tests won't catch this
+//        because they only check determinism/direction-class invariants, not exact values.
+//
+// Vector derivation:
+//   npc_hash(1, 0):
+//     z = 1 * 0x9E3779B97F4A7C15 + 0 + 0xDEADBEEFCAFE1234 = 0x7CE538A94A488E49... (splitmix64)
+//   Final h = 0x03a6ca87389f2e7 (independently confirmed with JS BigInt)
+//   h % 5 = 4 ≠ 0 → no stay; (h >> 1) % 4 = 3 → West
+// ---------------------------------------------------------------------------
+
+#[test]
+fn npc_decide_known_answer_within_radius() {
+    // home=(5,5), current=(5,5): distance=0 <= radius=5 → wander path applies
+    let result = npc_decide(pos(5, 5), pos(5, 5), 5, 1, 0);
+    assert_eq!(
+        result,
+        Some(Direction::West),
+        "npc_decide at home (npc_id=1, tick=0, radius=5) must return Some(West) — \
+         change indicates NPC_DECIDE_SALT or splitmix64 constants were altered"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // RED-TEAM FINDING RT-NPC-01 (HIGH): tick_seed aliasing — NPC A at tick T
 // produces the same hash as NPC (A+k) at tick (T-k) for any k.
 //
@@ -336,6 +361,19 @@ fn npc_decide_aliasing_distinct_id_tick_pairs_differ() {
          Pairs with the same (npc_id + tick) sum must NOT map to the same hash. \
          Fix: replace additive mixing with a two-input (non-commutative) hash.",
         result_a
+    );
+
+    // Direct pairwise assertion on a fixture where the non-commutative hash
+    // produces DIFFERENT directions. npc_id=1,tick=100 → Some(North);
+    // npc_id=100,tick=1 → Some(South). Both have sum=101.
+    // An additive/commutative hash would make these identical; the multiplicative
+    // non-commutative hash makes them distinct at the 4-way direction level too.
+    let result_x = npc_decide(current, home, radius, 1, 100); // → Some(North)
+    let result_y = npc_decide(current, home, radius, 100, 1); // → Some(South)
+    assert_ne!(
+        result_x, result_y,
+        "RT-NPC-01 direct: npc_id=1,tick=100 vs npc_id=100,tick=1 (same sum 101) \
+         must produce different directions; additive aliasing would make them equal"
     );
 }
 
