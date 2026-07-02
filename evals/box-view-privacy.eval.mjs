@@ -26,34 +26,39 @@ const HIDDEN_FIELDS = [
 ];
 
 /**
- * Extract the body text of a TypeScript `interface NAME { ... }` block.
- * Returns null if the interface is not found.
- * Handles the common single-file case: finds the FIRST occurrence of `interface NAME`.
+ * Extract the body text of a TypeScript `interface NAME { ... }` or
+ * `type NAME = { ... }` block. Returns null if neither form is found.
+ * Handles the common single-file case: finds the FIRST occurrence.
+ * M10c: StoreMonsterPub was changed from `interface` to `type` to allow
+ * `as Record<string, unknown>` casts in tests (same pattern as StoreInventory).
  */
 export function extractInterfaceBody(src, interfaceName) {
-  // Find `interface <name> {` (optionally preceded by `export`) using indexOf
-  // to avoid a dynamic RegExp that Semgrep flags as a ReDoS risk.
-  const needle = `interface ${interfaceName}`;
-  let idx = src.indexOf(needle);
-  while (idx !== -1) {
-    // Skip whitespace after the name, then expect `{`.
-    let j = idx + needle.length;
-    while (j < src.length && ' \t\n\r'.includes(src[j])) j++;
-    if (j < src.length && src[j] === '{') {
-      // Walk forward counting braces to find the closing `}`.
-      let depth = 0;
-      let i = j;
-      while (i < src.length) {
-        if (src[i] === '{') depth++;
-        else if (src[i] === '}') {
-          depth--;
-          if (depth === 0) break;
+  // Try `interface <name> {` first, then `type <name> = {` — both are valid
+  // forms for a named object-type declaration. Use indexOf to avoid a dynamic
+  // RegExp (Semgrep flags dynamic RegExp as ReDoS risk).
+  const needles = [`interface ${interfaceName}`, `type ${interfaceName}`];
+  for (const needle of needles) {
+    let idx = src.indexOf(needle);
+    while (idx !== -1) {
+      // Skip whitespace (and `=` for type aliases) after the name, then expect `{`.
+      let j = idx + needle.length;
+      while (j < src.length && ' \t\n\r='.includes(src[j])) j++;
+      if (j < src.length && src[j] === '{') {
+        // Walk forward counting braces to find the closing `}`.
+        let depth = 0;
+        let i = j;
+        while (i < src.length) {
+          if (src[i] === '{') depth++;
+          else if (src[i] === '}') {
+            depth--;
+            if (depth === 0) break;
+          }
+          i++;
         }
-        i++;
+        return src.slice(j, i + 1); // includes the braces
       }
-      return src.slice(j, i + 1); // includes the braces
+      idx = src.indexOf(needle, idx + 1);
     }
-    idx = src.indexOf(needle, idx + 1);
   }
   return null;
 }
@@ -104,6 +109,36 @@ export interface StoreMonsterPub {
   }
 
   // ------------------------------------------------------------------
+  // Proof-of-teeth: a `type NAME = {` bad-fixture must also be flagged.
+  // (M10c changed StoreMonsterPub from `interface` to `type`; the gate
+  //  must catch hidden fields in both declaration forms.)
+  // ------------------------------------------------------------------
+  const badTypeFixture = `
+export type StoreMonsterPub = {
+  readonly monsterId: bigint;
+  readonly ivHp: number;
+  readonly statHp: number;
+};
+`;
+  const badTypeBody = extractInterfaceBody(badTypeFixture, 'StoreMonsterPub');
+  if (!badTypeBody) {
+    return {
+      name,
+      pass: false,
+      detail: 'TEETH: extractInterfaceBody failed to find type alias in known-bad type fixture',
+    };
+  }
+  const typeTeethError = checkNoHiddenFields(badTypeBody);
+  if (!typeTeethError) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH: checkNoHiddenFields failed to flag ivHp in known-bad type alias fixture — gate is blind to type aliases',
+    };
+  }
+
+  // ------------------------------------------------------------------
   // Proof-of-teeth: a clean fixture must PASS (no false positives).
   // ------------------------------------------------------------------
   const goodFixture = `
@@ -148,12 +183,12 @@ export interface StoreMonsterPub {
 
   const interfaceBody = extractInterfaceBody(src, 'StoreMonsterPub');
   if (!interfaceBody) {
-    // The interface does not exist yet — this is the expected RED state before implementation.
+    // The type declaration does not exist yet — expected RED state before implementation.
     return {
       name,
       pass: false,
       detail:
-        'StoreMonsterPub interface not found in client/src/net/store.ts (not yet implemented)',
+        'StoreMonsterPub type/interface not found in client/src/net/store.ts (not yet implemented)',
     };
   }
 

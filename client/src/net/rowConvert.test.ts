@@ -5,11 +5,13 @@ import { describe, expect, it } from 'vitest';
 import {
   battleRowToStore,
   characterRowToStore,
+  fusionRowToStore,
   inventoryRowToStore,
   itemRowToStore,
   monsterPubRowToStore,
   playerRowToStore,
   type SdkBattleRow,
+  type SdkFusionRow,
   type SdkInventoryRow,
   type SdkItemRowRow,
   type SdkSkillRowRow,
@@ -638,5 +640,184 @@ describe('rowConvert M9c: itemRowToStore — SDK row -> StoreItemRow', () => {
     const store = itemRowToStore(sdk);
     expect(store.name).toBe('Power Root');
     expect(store.description).toBe('Raises the Attack stat when used as food.');
+  });
+});
+
+// =============================================================================
+// M10c extension: monsterPubRowToStore evolvesTo + fusionRowToStore
+// SOURCE OF TRUTH: specs/monster-realm-v2/M10c (Client evolution/fuse UI)
+//
+// These tests are INTENTIONALLY RED until:
+//   - SdkMonsterPubRow gains evolvesTo: number | undefined
+//   - monsterPubRowToStore maps evolvesTo through
+//   - SdkFusionRow and fusionRowToStore are added to rowConvert.ts
+// =============================================================================
+
+describe('rowConvert M10c: monsterPubRowToStore — evolvesTo field', () => {
+  it('BITES: evolvesTo: 5 on SDK row is mapped to evolvesTo: 5 on the store row', () => {
+    // Kills: an impl that ignores the new evolvesTo field and leaves it undefined
+    // even when the SDK row carries a value. Without this field the evolution UI
+    // cannot know which monsters are eligible to evolve.
+    const store = monsterPubRowToStore({
+      monsterId: 1n,
+      ownerIdentity: { toHexString: () => 'abc' },
+      speciesId: 1,
+      nickname: 'Sparky',
+      level: 10,
+      xp: 0,
+      bond: 50,
+      currentHp: 30,
+      statHp: 40,
+      statAttack: 10,
+      statDefense: 10,
+      statSpeed: 10,
+      statSpAttack: 10,
+      statSpDefense: 10,
+      partySlot: 0,
+      evolvesTo: 5,
+    } as Parameters<typeof monsterPubRowToStore>[0]);
+    expect((store as Record<string, unknown>).evolvesTo).toBe(5);
+    expect(typeof (store as Record<string, unknown>).evolvesTo).toBe('number');
+  });
+
+  it('BITES: evolvesTo: undefined on SDK row is mapped to evolvesTo: undefined on the store row', () => {
+    // Kills: an impl that maps undefined to 0 (a valid species id) or drops the field
+    // entirely when undefined — the model must distinguish "no evolution" from "evolves to id 0".
+    const store = monsterPubRowToStore({
+      monsterId: 2n,
+      ownerIdentity: { toHexString: () => 'def' },
+      speciesId: 1,
+      nickname: '',
+      level: 5,
+      xp: 0,
+      bond: 0,
+      currentHp: 20,
+      statHp: 20,
+      statAttack: 10,
+      statDefense: 10,
+      statSpeed: 10,
+      statSpAttack: 10,
+      statSpDefense: 10,
+      partySlot: 255,
+      evolvesTo: undefined,
+    } as Parameters<typeof monsterPubRowToStore>[0]);
+    expect((store as Record<string, unknown>).evolvesTo).toBeUndefined();
+  });
+
+  it('BITES: evolvesTo is not converted to a string or bigint (must remain number | undefined)', () => {
+    // Kills: an impl that accidentally stringifies or bigints the species id.
+    const store = monsterPubRowToStore({
+      monsterId: 3n,
+      ownerIdentity: { toHexString: () => 'ff' },
+      speciesId: 2,
+      nickname: 'Blaze',
+      level: 20,
+      xp: 5000,
+      bond: 100,
+      currentHp: 60,
+      statHp: 70,
+      statAttack: 55,
+      statDefense: 45,
+      statSpeed: 65,
+      statSpAttack: 75,
+      statSpDefense: 55,
+      partySlot: 1,
+      evolvesTo: 7,
+    } as Parameters<typeof monsterPubRowToStore>[0]);
+    const evolvesTo = (store as Record<string, unknown>).evolvesTo;
+    expect(typeof evolvesTo).toBe('number'); // not 'bigint', not 'string'
+    expect(evolvesTo).toBe(7);
+  });
+
+  it('BITES: existing fields are still mapped correctly when evolvesTo is present (no regression)', () => {
+    // Kills: an impl that maps evolvesTo but accidentally breaks existing field mapping
+    // (e.g. by spreading the SDK row instead of picking fields explicitly).
+    const store = monsterPubRowToStore({
+      monsterId: 99n,
+      ownerIdentity: { toHexString: () => 'cafebabe' },
+      speciesId: 3,
+      nickname: 'Tidal',
+      level: 15,
+      xp: 1000,
+      bond: 60,
+      currentHp: 50,
+      statHp: 55,
+      statAttack: 40,
+      statDefense: 45,
+      statSpeed: 50,
+      statSpAttack: 60,
+      statSpDefense: 50,
+      partySlot: 2,
+      evolvesTo: 8,
+    } as Parameters<typeof monsterPubRowToStore>[0]);
+    // Existing fields must be unaffected
+    expect(store.monsterId).toBe(99n);
+    expect(store.ownerIdentity).toBe('cafebabe');
+    expect(store.speciesId).toBe(3);
+    expect(store.nickname).toBe('Tidal');
+    expect(store.level).toBe(15);
+    expect(store.bond).toBe(60);
+    // New field
+    expect((store as Record<string, unknown>).evolvesTo).toBe(8);
+  });
+});
+
+describe('rowConvert M10c: fusionRowToStore — SdkFusionRow -> StoreFusionRow', () => {
+  it('BITES: fusionId stays bigint, aSpecies/bSpecies/toSpecies are numbers', () => {
+    // Kills: an impl that converts fusionId to number (lossy for u64) or that
+    // bigints the species ids (they are u32, safe as number).
+    const sdk: SdkFusionRow = {
+      fusionId: 1234567890123456789n,
+      aSpecies: 10,
+      bSpecies: 20,
+      toSpecies: 30,
+    };
+    const store = fusionRowToStore(sdk);
+    expect(typeof store.fusionId).toBe('bigint');
+    expect(store.fusionId).toBe(1234567890123456789n);
+    expect(typeof store.aSpecies).toBe('number');
+    expect(store.aSpecies).toBe(10);
+    expect(typeof store.bSpecies).toBe('number');
+    expect(store.bSpecies).toBe(20);
+    expect(typeof store.toSpecies).toBe('number');
+    expect(store.toSpecies).toBe(30);
+  });
+
+  it('BITES: fusionId preserves precision across the 2^53 boundary (no Number() coercion)', () => {
+    // 9007199254740993n (2^53 + 1) and 9007199254740992n (2^53) are distinct bigints
+    // but coerce to the same Number. A Number() conversion would silently corrupt the id.
+    // Kills: any impl that converts fusionId via Number() or parseInt().
+    const hi = 9007199254740993n; // 2^53 + 1
+    const sdk: SdkFusionRow = { fusionId: hi, aSpecies: 1, bSpecies: 2, toSpecies: 3 };
+    const store = fusionRowToStore(sdk);
+    expect(store.fusionId).toBe(hi);
+    expect(store.fusionId).not.toBe(9007199254740992n); // the Number-coerced (wrong) value
+  });
+
+  it('BITES: all four fields are present and correct (no silent field drop)', () => {
+    // Kills: an impl that omits one of the four required fields from the output.
+    const sdk: SdkFusionRow = { fusionId: 42n, aSpecies: 5, bSpecies: 6, toSpecies: 7 };
+    const store = fusionRowToStore(sdk);
+    expect(store).toHaveProperty('fusionId', 42n);
+    expect(store).toHaveProperty('aSpecies', 5);
+    expect(store).toHaveProperty('bSpecies', 6);
+    expect(store).toHaveProperty('toSpecies', 7);
+  });
+
+  it('BITES: distinct aSpecies/bSpecies values are not swapped', () => {
+    // Kills: an impl that accidentally swaps aSpecies and bSpecies on output.
+    const sdk: SdkFusionRow = { fusionId: 1n, aSpecies: 100, bSpecies: 200, toSpecies: 300 };
+    const store = fusionRowToStore(sdk);
+    expect(store.aSpecies).toBe(100);
+    expect(store.bSpecies).toBe(200);
+    expect(store.toSpecies).toBe(300);
+  });
+
+  it('BITES: fusionId=0n is preserved as 0n (not treated as falsy/absent)', () => {
+    // Kills: an impl that treats fusionId=0n as "no id" and returns undefined or throws.
+    const sdk: SdkFusionRow = { fusionId: 0n, aSpecies: 1, bSpecies: 2, toSpecies: 3 };
+    const store = fusionRowToStore(sdk);
+    expect(store.fusionId).toBe(0n);
+    expect(typeof store.fusionId).toBe('bigint');
   });
 });

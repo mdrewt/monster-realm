@@ -61,6 +61,7 @@ export default defineConfig({
         'src/ui/battleView.ts', // thin DOM shell for the battle screen
         'src/ui/boxView.ts', // thin DOM shell for the box/party screen
         'src/ui/raisingView.ts', // thin DOM shell for the raising/inventory screen
+        'src/ui/evolutionView.ts', // thin DOM shell for the evolution/fusion screen
       ],
     },
   },

@@ -11,12 +11,14 @@ import { MicrotaskBatcher } from './batch';
 import {
   battleRowToStore,
   characterRowToStore,
+  fusionRowToStore,
   inventoryRowToStore,
   itemRowToStore,
   monsterPubRowToStore,
   playerRowToStore,
   type SdkBattleRow,
   type SdkCharacterRow,
+  type SdkFusionRow,
   type SdkInventoryRow,
   type SdkItemRowRow,
   type SdkMonsterPubRow,
@@ -81,6 +83,8 @@ export function connect(opts: ConnectionOptions): Connection {
           // same as monster_pub. item_row is public content (no owner).
           'SELECT * FROM inventory',
           'SELECT * FROM item_row',
+          // fusion is public content (all recipes visible to all players — M10c).
+          'SELECT * FROM fusion',
         ]);
     })
     .onConnectError((_ctx, err: Error) => opts.onError('connect', err.message))
@@ -181,6 +185,17 @@ export function connect(opts: ConnectionOptions): Connection {
   conn.db.item_row.onUpdate((_ctx, _old, row) => ingestItemDef(row as unknown as SdkItemRowRow));
   conn.db.item_row.onDelete((_ctx, row) => {
     store.removeItemDef((row as unknown as SdkItemRowRow).id);
+    batcher.schedule();
+  });
+
+  const ingestFusion = (row: SdkFusionRow): void => {
+    store.upsertFusion(fusionRowToStore(row));
+    batcher.schedule();
+  };
+  conn.db.fusion.onInsert((_ctx, row) => ingestFusion(row as unknown as SdkFusionRow));
+  conn.db.fusion.onUpdate((_ctx, _old, row) => ingestFusion(row as unknown as SdkFusionRow));
+  conn.db.fusion.onDelete((_ctx, row) => {
+    store.removeFusion((row as unknown as SdkFusionRow).fusionId);
     batcher.schedule();
   });
 
