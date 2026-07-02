@@ -59,11 +59,16 @@ Key decisions:
 ## Decision outcomes
 
 - **`npc_decide(current, home, radius, npc_id, tick) -> Option<Direction>`**: pure, seeded with
-  `tick_seed(npc_id, tick, NPC_DECIDE_SALT)`. "None" means stay this tick (1-in-5 probability from
-  seed modulo 5). Within radius → random direction from seed. Outside radius → deterministic toward-home
-  along whichever axis has larger separation. `apply_move` handles wall collisions (no wallcheck here).
+  `tick_seed(npc_id, tick, NPC_DECIDE_SALT)`. "None" means stay this tick (**1-in-5** probability:
+  seed % 5 == 0). Within Manhattan radius → random direction from seed. Outside radius → deterministic
+  toward-home along whichever axis has larger separation (tie-break: x-axis). `apply_move` handles
+  wall collisions (no wallcheck here). Known-answer vectors pin the SALT constant.
 - **`PlayerDialogueState { flags: BTreeSet<String>, active_quests: BTreeSet<String>, done_quests: BTreeSet<String> }`**:
-  the lightweight pure-layer view of per-player state. `BTreeSet` for deterministic serialization order.
+  the lightweight pure-layer view of per-player state. `BTreeSet` for deterministic iteration order.
+  No `pub type FlagId = String` alias exported — a naked alias provides no enforcement; use bare `String`.
+- **`DialogueTree { id: String, nodes: Vec<DialogueNode> }`**: no `root_node_id` field —
+  `find_entry_node` performs a linear scan; the first node with all `entry_conditions` passing is
+  the entry point. A redundant `root_node_id` would create an SSOT split.
 - **`Condition` in `dialogue::model`, re-exported from `quest`**: single evaluate function
   `evaluate_condition(cond, state) -> bool` is the SSOT for all condition checks.
 - **Currency rewards deferred to M13** per spec §2: `QuestReward` has `xp: u32` + `items: Vec<RewardItem>`;
@@ -71,8 +76,11 @@ Key decisions:
 
 ## Consequences
 
-- M12b (server) imports `npc_decide`, calls it in `movement_tick` for NPC entities, constructs
-  `MoveInput { queued: vec![dir] }`, calls `apply_move` (existing).
+- M12b (server) imports `npc_decide`, calls it in `movement_tick` for NPC entities. When `npc_decide`
+  returns `Some(dir)`, M12b pushes `MoveInput::Step(dir)` onto the NPC's `move_queue` column —
+  the same path as player input, drained one entry per tick by the existing `movement_tick` loop.
+  When `None` is returned, no entry is pushed (NPC stays this tick). `apply_move` is already the
+  single rule; M12b does not call it directly — movement_tick does.
 - M12b can import `DialogueTree`, `PlayerDialogueState`, `find_entry_node`, `available_choices`,
   `apply_choice`, `apply_effects`, `QuestDef`, `PlayerQuestProgress`, `can_start_quest`,
   `process_trigger`, and `TriggerEvent` from `game_core::{dialogue, quest}`.

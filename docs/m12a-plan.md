@@ -42,7 +42,8 @@ Key design:
 - Wall-collision is NOT handled here — `apply_move` handles bumps (consistent with player movement)
 - Manhattan distance for radius check (L1, consistent with tile movement)
 
-NPC stays put with probability 1-in-4: seeded hash mod 5, stay if 0. This avoids robotic constant movement.
+NPC stays put with probability 1-in-5: seeded hash **mod 5**, stay if 0. This avoids robotic constant movement.
+(ADR-0068 is the SSOT; "1-in-5" and "mod 5" must be consistent — a prior "1-in-4" label was a typo.)
 
 ### 2. `game-core/src/dialogue/`
 
@@ -57,8 +58,8 @@ Files:
 Data model:
 
 ```rust
-// Stable string IDs
-pub type FlagId = String;
+// Do NOT export `pub type FlagId = String` — a naked type alias gives false
+// confidence without enforcement. Use bare `String` throughout.
 
 // Conditions evaluated against player state
 pub enum Condition {
@@ -96,9 +97,11 @@ pub struct DialogueNode {
 }
 
 // The complete tree (loaded from RON in M12c, but structurally defined here)
+// No `root_node_id`: find_entry_node does a linear scan over all nodes; the first
+// node with all entry_conditions passing is the entry point. A fixed root_node_id
+// would be redundant with this scan and create an SSOT split.
 pub struct DialogueTree {
     pub id: String,
-    pub root_node_id: String,
     pub nodes: Vec<DialogueNode>,
 }
 ```
@@ -121,7 +124,14 @@ pub fn find_entry_node<'a>(tree: &'a DialogueTree, state: &PlayerDialogueState)
 // Which choice indices are available to the player?
 pub fn available_choices(node: &DialogueNode, state: &PlayerDialogueState) -> Vec<usize>
 
-// Apply a choice: returns effects + next node id
+// Apply a choice: returns effects + next node id.
+// CONTRACT (security-load-bearing): apply_choice checks availability INTERNALLY:
+//   - Err(DialogueError::InvalidChoice) if choice_idx >= node.choices.len()
+//   - Err(DialogueError::ChoiceNotAvailable) if the choice's conditions are not met
+// Does NOT trust the caller to pre-filter via available_choices. This makes it
+// safe to call directly from M12b reducers without a separate pre-check.
+// Proof-of-teeth: an impl that skips condition check bypasses flag gates.
+#[must_use]
 pub fn apply_choice<'a>(
     node: &'a DialogueNode,
     choice_idx: usize,
@@ -136,9 +146,15 @@ pub struct ChoiceResult<'a> {
 pub fn evaluate_condition(cond: &Condition, state: &PlayerDialogueState) -> bool
 
 pub fn apply_effects(effects: &[DialogueEffect], state: &mut PlayerDialogueState)
-// Note: GrantXp + GrantItem effects are NOT applied to PlayerDialogueState here —
-// they are server-side rewards routed through the M9 helpers in M12b. The pure
-// core records them in the result for the server to act on.
+// CONTRACT: apply_effects uses an EXHAUSTIVE match over DialogueEffect variants:
+//   SetFlag → insert into state.flags
+//   ClearFlag → remove from state.flags
+//   StartQuest → insert into state.active_quests
+//   GrantXp | GrantItem → explicit no-op arms (comment: "server-side only")
+// The exhaustive match ensures future effect variants force a deliberate decision.
+// GrantXp + GrantItem reach the server via ChoiceResult.effects (the slice from
+// apply_choice) — the server extracts them and routes through M9 helpers.
+// add test: apply_effects_does_not_mutate_state_for_grant_effects
 ```
 
 ### 3. `game-core/src/quest/`
@@ -155,9 +171,12 @@ Data model:
 
 ```rust
 // How a quest step is completed
+// Collect qty semantics: event.qty >= step.qty (at-least, not exact equality).
+// Rationale: a player collecting 5 herbs satisfies a "collect 3 herbs" step.
+// The M12b reducer sends a Collected event with however many were collected.
 pub enum StepTrigger {
     Talk { npc_id: String },
-    Collect { item_id: u32, qty: u32 },
+    Collect { item_id: u32, qty: u32 },   // step requires >= qty of this item
     Defeat { species_id: u32 },
 }
 
@@ -212,6 +231,15 @@ pub fn can_start_quest(
 ) -> bool
 
 // Does an event complete the current step of an active quest?
+// CONTRACT:
+//   1. Bounds-check: if progress.step_index >= def.steps.len() → None (already done)
+//   2. trigger_matches(current_step.trigger, event) must be true
+//   3. ALL current_step.conditions must pass (evaluate_condition against dialogue_state)
+//      — step conditions are evaluated HERE, not only at can_start_quest
+//   4. If all pass: if this was the last step → QuestAdvance::QuestComplete { reward }
+//      else → QuestAdvance::StepComplete { new_step: progress.step_index + 1 }
+// #[must_use] — a reducer that drops this return value silently skips the advance
+#[must_use]
 pub fn process_trigger(
     def: &QuestDef,
     progress: &PlayerQuestProgress,
