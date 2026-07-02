@@ -13,8 +13,11 @@
 
 pub mod combat;
 pub mod content;
+pub mod dialogue;
 pub mod evolution;
 pub mod monster;
+pub mod npc;
+pub mod quest;
 pub mod raising;
 pub mod taming;
 pub mod types;
@@ -37,11 +40,20 @@ pub use content::{
     validate_evolution_fusion, validate_zones, EvolutionCondition, EvolutionTrigger, FusionRecipe,
     ItemDef, SkillDef, Species, SpeciesEvolutions, TypeRelation, WarpDef, ZoneDef, ZoneMapDef,
 };
+pub use dialogue::{
+    apply_choice, apply_effects, available_choices, evaluate_condition, find_entry_node, Condition,
+    DialogueChoice, DialogueEffect, DialogueError, DialogueNode, DialogueTree, PlayerDialogueState,
+};
 pub use evolution::{evolve, evolves_to, fuse, resolve_evolution};
 pub use monster::{
     build_monster, derive_stats, level_bounds, level_for_xp, roll_individuality, roll_starter,
     xp_for_level, Affinity, Bond, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock,
     StatKind, Xp,
+};
+pub use npc::npc_decide;
+pub use quest::{
+    can_start_quest, process_trigger, trigger_matches, PlayerQuestProgress, QuestAdvance, QuestDef,
+    QuestReward, QuestStep, RewardItem, StepTrigger, TriggerEvent,
 };
 pub use raising::{apply_care, focus_train, CareError, FocusTrainError, FocusTrainResult};
 pub use taming::{

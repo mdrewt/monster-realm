@@ -334,7 +334,8 @@ fn npc_decide_aliasing_distinct_id_tick_pairs_differ() {
         "RT-NPC-01: tick_seed aliasing — npc_id=5,tick=1000 and npc_id=1000,tick=5 \
          and npc_id=502,tick=503 all produced {:?} (identical). \
          Pairs with the same (npc_id + tick) sum must NOT map to the same hash. \
-         Fix: replace additive mixing with a two-input (non-commutative) hash."
+         Fix: replace additive mixing with a two-input (non-commutative) hash.",
+        result_a
     );
 }
 

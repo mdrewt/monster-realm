@@ -17,6 +17,11 @@
 //!
 //! Run: cargo nextest run -p game-core dialogue::m12a_gating_tests -- --nocapture
 
+// ChoiceResult is imported for use in the test module's type-level assertions;
+// clippy sees it as unused because the tests use it only through apply_choice's
+// return type (which is inferred). Allow it so the import documents the API surface.
+#![allow(unused_imports)]
+
 use std::collections::BTreeSet;
 
 use crate::dialogue::{

@@ -15,6 +15,10 @@
 //!
 //! Run: cargo nextest run -p game-core quest::m12a_gating_tests -- --nocapture
 
+// &progress coercion from [T; N] to &[T] is flagged by clippy::needless_borrow
+// in some Rust versions. Allow it so the fixture reads naturally.
+#![allow(clippy::needless_borrow)]
+
 use std::collections::BTreeSet;
 
 use crate::dialogue::{Condition, PlayerDialogueState};
