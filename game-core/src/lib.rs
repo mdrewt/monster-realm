@@ -13,6 +13,7 @@
 
 pub mod combat;
 pub mod content;
+pub mod evolution;
 pub mod monster;
 pub mod raising;
 pub mod taming;
@@ -36,6 +37,7 @@ pub use content::{
     EvolutionTrigger, FusionRecipe, ItemDef, SkillDef, Species, SpeciesEvolutions, TypeRelation,
     ZoneDef,
 };
+pub use evolution::{evolve, evolves_to, fuse, resolve_evolution};
 pub use monster::{
     build_monster, derive_stats, level_bounds, level_for_xp, roll_individuality, roll_starter,
     xp_for_level, Affinity, Bond, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock,
