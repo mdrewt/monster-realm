@@ -626,6 +626,32 @@ fn test_evolve_stats_and_hp_recomputed() {
 // RED state: compile-RED until fuse_seam (or the reducer's pure inner fn) exists.
 // ---------------------------------------------------------------------------
 
+/// Slice 4 test 0: self-fuse guard — fusing a monster with itself is rejected immediately.
+/// PROOF-OF-TEETH: removing the `a_id == b_id` guard in fuse_seam/fuse causes this to return Ok.
+/// kills: missing self-fuse guard in the fuse reducer.
+#[test]
+fn test_fuse_self_fuse_rejects() {
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+
+    db.insert_species(source_species_row()); // id=1 (parent A species)
+    let m = make_monster_row(1, owner);
+    db.insert_monster_pub(make_monster_pub(&m));
+    db.insert_monster(m);
+
+    let result = fuse_seam(&mut db, owner, 1, 1);
+    assert!(
+        result.is_err(),
+        "TEETH(self-fuse guard): fusing a monster with itself must return Err; \
+         kills: missing a_id == b_id check in fuse reducer"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("itself") || msg.contains("cannot fuse"),
+        "error message must mention self-fuse, got: {msg}"
+    );
+}
+
 /// Slice 4 test 1: happy path — both owned ✓, recipe ✓, neither in battle ✓.
 /// After fuse: 2 parents deleted, 1 offspring inserted, offspring in lower party slot.
 /// kills: missing delete of parents; offspring in wrong slot; offspring not inserted.
@@ -1295,8 +1321,12 @@ pub(crate) fn evolve_seam(
         return Err("not owner of this monster".to_string());
     }
 
-    // Battle guard
-    super::reject_if_in_battle(db.get_battles(), monster_id)?;
+    // Battle guard — filter by owner identity to mirror the production path, which uses
+    // ctx.db.battle().player_identity().filter(owner) before passing to reject_if_in_battle.
+    super::reject_if_in_battle(
+        db.get_battles().filter(|b| b.player_identity == sender),
+        monster_id,
+    )?;
 
     // Load source species
     let Some(_src_species_row) = db.get_species(m.species_id) else {
@@ -1381,9 +1411,15 @@ pub(crate) fn fuse_seam(
         return Err("both monsters must be owned by the same player".to_string());
     }
 
-    // Neither can be in battle
-    super::reject_if_in_battle(db.get_battles(), a_id)?;
-    super::reject_if_in_battle(db.get_battles(), b_id)?;
+    // Neither can be in battle — filter by owner identity (same player owns both, mirrors production).
+    super::reject_if_in_battle(
+        db.get_battles().filter(|b| b.player_identity == sender),
+        a_id,
+    )?;
+    super::reject_if_in_battle(
+        db.get_battles().filter(|b| b.player_identity == sender),
+        b_id,
+    )?;
 
     // Load both species rows
     let Some(_a_species_row) = db.get_species(a.species_id) else {
