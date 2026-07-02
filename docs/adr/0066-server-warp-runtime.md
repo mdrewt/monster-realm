@@ -48,11 +48,18 @@ Three problems to solve:
    species, skills, and encounters.
 
 3. **Per-zone schedule management**: `ensure_zone_schedules(ctx)` is a private, non-reducer
-   helper that inserts `MovementTickSchedule` rows for zones that do not yet have one.
-   Idempotent by checking existing zone_ids in a `HashSet`. Called from both `init` (initial
-   boot) and `sync_content` (on republish). Schedules are additive-only — orphaned rows on an
-   empty character set are a minor waste, not a correctness issue. This replaces the hardcoded
+   helper. On every call it (a) removes `MovementTickSchedule` rows for zones no longer in
+   `zone_def` — orphaned rows would fire a `map_for` error on every tick, causing an unbounded
+   log-flood — and (b) inserts rows for zones that do not yet have one. Idempotent; called from
+   both `init` (initial boot) and `sync_content` (on republish). This replaces the hard-coded
    `ZONE_0` insert in `init`.
+
+4. **Warp-tile departure semantics**: `warp_at(next.pos)` checks the **arrival** tile, not the
+   character's current tile. A character already standing at a warp tile and moving away has
+   `next.pos ≠ warp_source`, so no warp fires on departure. The `prev != next.pos` guard
+   prevents triggering on bumps (where `apply_move` returns the same position). The combination
+   means: warp fires on arrival at a warp tile from an adjacent tile, never on bumps or
+   departures.
 
 - Consequences:
   - M11c (client) receives `character.zone_id` changes as authoritative teleports and

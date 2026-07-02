@@ -52,23 +52,30 @@ pub(crate) const WILD_IDENTITY: Identity = Identity::from_byte_array([0u8; 32]);
 // --- Private helpers --------------------------------------------------------
 
 /// Idempotent per-zone schedule management (ADR-0066): inserts a
-/// `MovementTickSchedule` row for every zone that does not yet have one.
-/// Additive-only — never deletes existing rows. Called from both `init` and
-/// `sync_content` so newly-published zones get a tick without wiping live rows.
+/// `MovementTickSchedule` row for every zone that does not yet have one, and
+/// removes orphaned rows for zones that no longer exist in `zone_def` (orphaned
+/// rows fire `map_for` errors every tick — remove them to prevent log-flood).
+/// Called from both `init` and `sync_content`.
 fn ensure_zone_schedules(ctx: &ReducerContext) {
-    let scheduled: std::collections::HashSet<u32> = ctx
-        .db
-        .movement_tick_schedule()
-        .iter()
-        .map(|s| s.zone_id)
-        .collect();
-    for z in ctx.db.zone_def().iter() {
-        if !scheduled.contains(&z.zone_id) {
+    let zone_ids: std::collections::HashSet<u32> =
+        ctx.db.zone_def().iter().map(|z| z.zone_id).collect();
+    let scheduled_rows: Vec<_> = ctx.db.movement_tick_schedule().iter().collect();
+    let scheduled: std::collections::HashSet<u32> =
+        scheduled_rows.iter().map(|s| s.zone_id).collect();
+    // Remove orphaned schedule rows (zone removed from content).
+    for s in &scheduled_rows {
+        if !zone_ids.contains(&s.zone_id) {
+            ctx.db.movement_tick_schedule().id().delete(s.id);
+        }
+    }
+    // Insert missing schedule rows (zone newly added to content).
+    for zone_id in &zone_ids {
+        if !scheduled.contains(zone_id) {
             ctx.db
                 .movement_tick_schedule()
                 .insert(MovementTickSchedule {
                     id: 0,
-                    zone_id: z.zone_id,
+                    zone_id: *zone_id,
                     scheduled_at: ScheduleAt::Interval(
                         Duration::from_millis(STEP_MS.unsigned_abs()).into(),
                     ),
