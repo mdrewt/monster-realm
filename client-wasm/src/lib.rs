@@ -12,9 +12,54 @@
 
 #![forbid(unsafe_code)]
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use wasm_bindgen::prelude::*;
 
 use game_core::{CharacterState, Millis, MoveInput};
+
+/// The active zone id — set by `set_active_zone()` on every zone transition so
+/// that `apply_move` always walks the correct zone's tile map. (M11c, ADR-0067)
+static ACTIVE_ZONE_ID: AtomicU32 = AtomicU32::new(0);
+
+/// Set the active zone id for client-side movement prediction. Must be called
+/// by the client on every zone warp BEFORE the first `apply_move` in that zone.
+#[wasm_bindgen]
+pub fn set_active_zone(zone_id: u32) {
+    ACTIVE_ZONE_ID.store(zone_id, Ordering::Relaxed);
+}
+
+// ---------------------------------------------------------------------------
+// Native-safe serialization helpers (M11c, C6).
+//
+// `serde_wasm_bindgen` and `JsValue::from_str` panic on non-wasm targets (the
+// wasm-bindgen runtime is not available). The native `cargo test` run for C6
+// only needs `Result::is_ok()` / `Result::is_err()` — not the actual JsValue
+// content. We use `JsValue::UNDEFINED` (a const, no runtime call) as a
+// sentinel for both Ok and Err on native, then do real serialization on wasm.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+fn zone_map_ok(map: &game_core::TileMap) -> Result<JsValue, JsValue> {
+    serde_wasm_bindgen::to_value(map).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn zone_map_ok(_map: &game_core::TileMap) -> Result<JsValue, JsValue> {
+    // Native tests only check .is_ok(); no JsValue runtime call needed.
+    Ok(JsValue::UNDEFINED)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn zone_map_err(msg: String) -> JsValue {
+    JsValue::from_str(&msg)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn zone_map_err(_msg: String) -> JsValue {
+    // Native tests only check .is_err(); JsValue::UNDEFINED is a const (no runtime call).
+    JsValue::UNDEFINED
+}
 
 /// The M0 trivial proof-rule across the wasm boundary (`u64` <-> `BigInt`).
 #[wasm_bindgen]
@@ -49,22 +94,31 @@ pub fn predict_move(
 // marshals the result back. The no-logic-in-wrapper eval proves no rule (a `match`
 // on `Direction`, a walkability check, a `.step`) ever lives in this file.
 
-/// Predict one move across `zone_0` from JS: deserialize `state`/`input`, call the
-/// SAME `game_core::apply_move` the server runs, and serialize the next state back.
+/// Predict one move from JS: deserialize `state`/`input`, call the SAME
+/// `game_core::apply_move` the server runs, and serialize the next state back.
 /// `now` is a JS `performance.now()`-style float; it is floored and clamped to a
 /// sane `>= 0` baseline before becoming the integer `Millis` the rule consumes.
 ///
+/// M11c: uses `ACTIVE_ZONE_ID` (set by `set_active_zone`) to load the correct
+/// zone map. Falls back to `zone_0()` if the active zone id is unknown — this
+/// ensures a sensible (if conservative) default on the rare reconnect race where
+/// `set_active_zone` has not yet been called. (ADR-0067)
+///
 /// # Errors
-/// Returns a JS error if `state` or `input` is not a valid serde shape (e.g. a
-/// fractional `move_started_at`, which the integer `Millis` rejects at the boundary).
+/// Returns a JS error if `state` or `input` is not a valid serde shape.
 #[wasm_bindgen]
 pub fn apply_move(state: JsValue, input: JsValue, now: f64) -> Result<JsValue, JsValue> {
     let state: CharacterState = serde_wasm_bindgen::from_value(state)?;
     let input: MoveInput = serde_wasm_bindgen::from_value(input)?;
+    let zone_id = ACTIVE_ZONE_ID.load(Ordering::Relaxed);
+    let zone_map = game_core::load_zone_maps()
+        .ok()
+        .and_then(|maps| game_core::map_for(zone_id, &maps).ok())
+        .unwrap_or_else(game_core::zone_0);
     let next = game_core::apply_move(
         &state,
         input,
-        &game_core::zone_0(),
+        &zone_map,
         Millis(now.floor().max(0.0) as i64),
     );
     Ok(serde_wasm_bindgen::to_value(&next)?)
@@ -100,19 +154,23 @@ pub fn party_slot_none() -> u32 {
     game_core::PARTY_SLOT_NONE as u32
 }
 
-/// The renderer's map source: the SAME `TileMap` the rule evaluates, read ONCE on
-/// init (the map is static at M3 — never per frame, never hard-coded in TS).
-/// `zone_id` is reserved for M11 multi-zone; only `zone_0` exists today.
+/// The renderer's map source: the SAME `TileMap` the rule evaluates.
+/// Dispatches on `zone_id` via the content registry (`load_zone_maps`).
 ///
-/// M8c: the `TileMap`'s new `grass` layer (row-major `bool[]`) serializes along
-/// here automatically (additive serde field) — the TS `RawTileMap.grass` reads it
-/// for the renderer's grass overlay, no extra wiring.
+/// M8c: the `TileMap`'s `grass` layer serializes automatically (additive serde
+/// field) — the TS `RawTileMap.grass` reads it for the grass overlay.
+///
+/// M11c: zone_id is now meaningful — zone 0 returns zone_0's map, zone 1 returns
+/// zone 1's map, and an unknown zone_id returns a JS Error (never silently
+/// falls back to zone_0). (ADR-0067)
 ///
 /// # Errors
-/// Returns a JS error only if serialization fails (it cannot for the static map).
+/// Returns a JS error if `zone_id` is unknown or serialization fails.
 #[wasm_bindgen]
-pub fn zone_map(_zone_id: u32) -> Result<JsValue, JsValue> {
-    Ok(serde_wasm_bindgen::to_value(&game_core::zone_0())?)
+pub fn zone_map(zone_id: u32) -> Result<JsValue, JsValue> {
+    let maps = game_core::load_zone_maps().map_err(zone_map_err)?;
+    let tile_map = game_core::map_for(zone_id, &maps).map_err(zone_map_err)?;
+    zone_map_ok(&tile_map)
 }
 
 /// Install a browser panic hook so a Rust panic surfaces as a readable

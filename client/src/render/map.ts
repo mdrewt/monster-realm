@@ -8,14 +8,25 @@
 // `walkable` length is rejected LOUD here, the sole constructor, so every TileMap
 // downstream holds its invariant (matches game-core's `from_rows`).
 
+/** A warp portal definition in the serde wire shape from game-core `WarpDef`.
+ *  `from` is the source tile in this zone; `to_zone` and `to_tile` are the
+ *  destination zone id and landing tile. (M11c, ADR-0067) */
+export interface RawWarpDef {
+  readonly from: { readonly x: number; readonly y: number };
+  readonly to_zone: number;
+  readonly to_tile: { readonly x: number; readonly y: number };
+}
+
 /** The raw object `client-wasm.zone_map()` returns (serde field names, row-major).
- *  `grass` rides along additively (M8c): a row-major `bool[]` parallel to `walkable`. */
+ *  `grass` rides along additively (M8c): a row-major `bool[]` parallel to `walkable`.
+ *  `warps` carries the warp overlay list (M11c, ADR-0067). Absent ⟹ no warps (backward compat). */
 export interface RawTileMap {
   readonly zone_id: number;
   readonly width: number;
   readonly height: number;
   readonly walkable: readonly boolean[];
   readonly grass: readonly boolean[];
+  readonly warps?: readonly RawWarpDef[];
 }
 
 export class TileMap {
@@ -24,6 +35,8 @@ export class TileMap {
   readonly height: number;
   readonly #walkable: readonly boolean[];
   readonly #grass: readonly boolean[];
+  /** "x,y" string keys for O(1) warp-source lookup. */
+  readonly #warps: ReadonlySet<string>;
 
   private constructor(
     zoneId: number,
@@ -31,12 +44,14 @@ export class TileMap {
     height: number,
     walkable: readonly boolean[],
     grass: readonly boolean[],
+    warps: ReadonlySet<string>,
   ) {
     this.zoneId = zoneId;
     this.width = width;
     this.height = height;
     this.#walkable = walkable;
     this.#grass = grass;
+    this.#warps = warps;
   }
 
   /** Parse the wasm `zone_map()` value. Throws (parse-don't-validate) on a shape
@@ -58,7 +73,10 @@ export class TileMap {
         `render/map: ragged grid — grass.length ${grass.length} != ${width}*${height}`,
       );
     }
-    return new TileMap(zone_id, width, height, walkable, grass);
+    // Build a Set of "x,y" keys for O(1) isWarp lookup. `warps` absent ⟹ empty set
+    // (backward compat: old wire format without the field is treated as no warps).
+    const warpSet = new Set((raw.warps ?? []).map((w) => `${w.from.x},${w.from.y}`));
+    return new TileMap(zone_id, width, height, walkable, grass, warpSet);
   }
 
   inBounds(x: number, y: number): boolean {
@@ -75,5 +93,13 @@ export class TileMap {
   isGrass(x: number, y: number): boolean {
     if (!this.inBounds(x, y)) return false;
     return this.#grass[y * this.width + x] ?? false;
+  }
+
+  /** True iff (x, y) is declared as a warp SOURCE tile in this zone.
+   *  Out-of-range is false, never an exception (mirrors the bounds-safe pattern).
+   *  Note: `to_tile` (the landing spot) is in a DIFFERENT zone and is never a
+   *  warp source here. (M11c, ADR-0067) */
+  isWarp(x: number, y: number): boolean {
+    return this.#warps.has(`${x},${y}`);
   }
 }

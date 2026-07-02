@@ -280,6 +280,16 @@ export class AuthoritativeStore {
     };
   }
 
+  /** Zone-warp character flush: drop ONLY the character map so remote positions
+   *  from the old zone are never interpolated in the new zone. All other tables
+   *  (players, monsters, species, battles, skills, inventory, itemDefs, fusions)
+   *  are untouched — they survive the zone transition. (M11c, ADR-0067 Option C) */
+  resetCharacters(): void {
+    if (this.#chars.size === 0) return; // no-op → no dirty mark (no phantom re-render)
+    this.#chars.clear();
+    this.#dirty = true;
+  }
+
   /** Reconnect clean re-init: drop all stale rows (never merge), keep listeners so
    *  the running loop survives the reconnect. The predictor is reset separately. */
   reset(): void {
