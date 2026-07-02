@@ -17,8 +17,15 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-/// The five glob-loaded registries, each a directory of `*.ron` parts.
-const REGISTRIES: &[&str] = &["zones", "species", "skills", "items", "encounters"];
+/// The six glob-loaded registries, each a directory of `*.ron` parts.
+const REGISTRIES: &[&str] = &[
+    "zones",
+    "species",
+    "skills",
+    "items",
+    "encounters",
+    "zone_maps",
+];
 
 fn main() {
     let manifest_dir =

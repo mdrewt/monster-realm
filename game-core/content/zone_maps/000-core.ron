@@ -1,0 +1,39 @@
+// Zone map registry — DATA, not code (ADR-0006, ADR-0065). String-art tile rows
+// + warp list, keyed by zone_id. Tile glyphs: '.' = floor, '#' = wall, '~' = tall grass.
+// Warps are stored as an overlay list (not a tile glyph) — ADR-0065.
+// zone_id MUST exist in the zones registry (content/zones/). APPEND-ONLY ids.
+[
+    (
+        zone_id: 0,
+        rows: [
+            "##########",
+            "#........#",
+            "#.~~....~#",
+            "#...##..~#",
+            "#..~~...~#",
+            "#......~~#",
+            "##########",
+        ],
+        warps: [
+            // (5,5) in zone 0 is '.' (floor) — walkable warp to Tideglass Cove.
+            (from: (x: 5, y: 5), to_zone: 1, to_tile: (x: 5, y: 5)),
+        ],
+    ),
+    (
+        zone_id: 1,
+        rows: [
+            "##########",
+            "#........#",
+            "#.~~....~#",
+            "#...##..~#",
+            "#..~~...~#",
+            "#......~~#",
+            "##########",
+        ],
+        warps: [
+            // Return warp from Tideglass Cove back to Verdant Hollow.
+            // (5,5) in zone 1 is '.' (floor) — walkable.
+            (from: (x: 5, y: 5), to_zone: 0, to_tile: (x: 5, y: 5)),
+        ],
+    ),
+]

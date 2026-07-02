@@ -31,11 +31,11 @@ pub use combat::{
 };
 pub use content::{
     load_encounters, load_evolutions, load_fusion, load_items, load_skills, load_species,
-    load_type_chart, load_zones, parse_encounters, parse_evolutions, parse_fusion, parse_items,
-    parse_skills, parse_species, parse_type_chart, parse_zones, validate_content,
-    validate_encounters, validate_evolution_fusion, validate_zones, EvolutionCondition,
-    EvolutionTrigger, FusionRecipe, ItemDef, SkillDef, Species, SpeciesEvolutions, TypeRelation,
-    ZoneDef,
+    load_type_chart, load_zone_maps, load_zones, parse_encounters, parse_evolutions, parse_fusion,
+    parse_items, parse_skills, parse_species, parse_type_chart, parse_zone_maps,
+    parse_zone_maps_parts, parse_zones, validate_content, validate_encounters,
+    validate_evolution_fusion, validate_zones, EvolutionCondition, EvolutionTrigger, FusionRecipe,
+    ItemDef, SkillDef, Species, SpeciesEvolutions, TypeRelation, WarpDef, ZoneDef, ZoneMapDef,
 };
 pub use evolution::{evolve, evolves_to, fuse, resolve_evolution};
 pub use monster::{
@@ -50,8 +50,8 @@ pub use taming::{
 };
 pub use types::{ActionState, CharacterState, Direction, Millis, MoveInput, TileKind, TilePos};
 pub use world::{
-    apply_move, apply_move_coded, spawn, stepped_onto_grass, zone_0, TileMap, MOVE_QUEUE_CAP,
-    PARTY_SIZE, PARTY_SLOT_NONE, STEP_MS,
+    apply_move, apply_move_coded, map_for, spawn, stepped_onto_grass, validate_zone_maps, zone_0,
+    TileMap, MOVE_QUEUE_CAP, PARTY_SIZE, PARTY_SLOT_NONE, STEP_MS,
 };
 
 /// The trivial M0 proof-rule: a pure, deterministic state transition over an
