@@ -174,6 +174,17 @@ export function stripRonComments(ron) {
 }
 
 /**
+ * Strip Rust line and block comments from source so gate checks cannot be
+ * fooled by a `validate_evolution_fusion` reference in a comment or dead block.
+ *
+ * @param {string} src Raw Rust source.
+ * @returns {string} Source with comments blanked.
+ */
+export function stripRustComments(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
+/**
  * Read a glob-loaded directory (`content/<registry>/`) and concatenate all
  * `*.ron` files in sorted filename order, stripping comment lines.
  *
@@ -633,10 +644,12 @@ export default async function () {
   // the eval layer is defense-in-depth only (not the authority).
   // ---------------------------------------------------------------------------
   try {
-    const contentSrc = readFileSync('server-module/src/content.rs', 'utf8');
-    if (contentSrc.indexOf('validate_evolution_fusion') === -1) {
+    // Strip comments so a commented-out call or a `use` import does not satisfy this gate.
+    // Look for the call form `validate_evolution_fusion(` (paren), not just the identifier.
+    const contentSrc = stripRustComments(readFileSync('server-module/src/content.rs', 'utf8'));
+    if (contentSrc.indexOf('validate_evolution_fusion(') === -1) {
       failures.push(
-        'server-module/src/content.rs: sync_content does not call validate_evolution_fusion — ' +
+        'server-module/src/content.rs: sync_content does not call validate_evolution_fusion( — ' +
           'the production integrity gate is missing; add the call per ADR-0060 M10b obligation',
       );
     }
