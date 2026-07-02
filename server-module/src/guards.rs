@@ -126,12 +126,13 @@ pub(crate) fn check_team_coupling(team_len: usize, ids_len: usize) -> Result<(),
 /// Pure predicate: checks if any battle row has the monster_id in either party
 /// AND has outcome == Ongoing. Used by evolve/fuse reducers (M10b).
 pub(crate) fn reject_if_in_battle(
-    mut battles: impl Iterator<Item = crate::schema::Battle>,
+    mut battles: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::Battle>>,
     monster_id: u64,
 ) -> Result<(), String> {
     use game_core::BattleOutcome;
 
     let in_battle = battles.any(|b| {
+        let b = b.borrow();
         b.state.outcome == BattleOutcome::Ongoing
             && (b.party_monster_ids.contains(&monster_id)
                 || b.opponent_monster_ids.contains(&monster_id))

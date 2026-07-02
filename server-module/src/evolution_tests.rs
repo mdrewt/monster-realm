@@ -177,7 +177,7 @@ fn make_ongoing_battle(battle_id: u64, owner: Identity, party_monster_ids: Vec<u
     let state = BattleState {
         side_a: BattleSide {
             active: 0,
-            team: vec![dummy_monster],
+            team: vec![dummy_monster.clone()],
         },
         side_b: BattleSide {
             active: 0,
@@ -354,7 +354,7 @@ fn test_evolve_eligible_monster_succeeds() {
     );
 
     let m = make_monster_row(monster_id, owner); // level=20, species_id=1
-    db.insert_monster(m);
+    db.insert_monster(m.clone());
     db.insert_monster_pub(make_monster_pub(&m));
 
     let result = evolve_seam(&mut db, owner, monster_id);
@@ -421,7 +421,7 @@ fn test_evolve_not_owner_rejects() {
         }],
     );
     let m = make_monster_row(monster_id, owner); // owned by `owner`, not `thief`
-    db.insert_monster(m);
+    db.insert_monster(m.clone());
     db.insert_monster_pub(make_monster_pub(&m));
 
     let result = evolve_seam(&mut db, thief, monster_id); // called by thief
@@ -481,7 +481,7 @@ fn test_evolve_species_not_found() {
         }],
     );
     let m = make_monster_row(monster_id, owner);
-    db.insert_monster(m);
+    db.insert_monster(m.clone());
     db.insert_monster_pub(make_monster_pub(&m));
 
     let result = evolve_seam(&mut db, owner, monster_id);
@@ -518,7 +518,7 @@ fn test_evolve_not_eligible() {
         }],
     );
     let m = make_monster_row(monster_id, owner); // level=20, below threshold
-    db.insert_monster(m);
+    db.insert_monster(m.clone());
     db.insert_monster_pub(make_monster_pub(&m));
 
     let result = evolve_seam(&mut db, owner, monster_id);
@@ -556,7 +556,7 @@ fn test_evolve_in_ongoing_battle_rejects() {
         }],
     );
     let m = make_monster_row(monster_id, owner);
-    db.insert_monster(m);
+    db.insert_monster(m.clone());
     db.insert_monster_pub(make_monster_pub(&m));
 
     // Insert an ONGOING battle that contains this monster in its party.
@@ -601,7 +601,7 @@ fn test_evolve_stats_and_hp_recomputed() {
 
     let mut m = make_monster_row(monster_id, owner);
     m.current_hp = 30; // monster is damaged (below stat_hp=65)
-    db.insert_monster(m);
+    db.insert_monster(m.clone());
     db.insert_monster_pub(make_monster_pub(&m));
 
     let result = evolve_seam(&mut db, owner, monster_id);

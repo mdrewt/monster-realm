@@ -16,6 +16,15 @@ use game_core::{
 };
 use spacetimedb::{ReducerContext, Table};
 
+// Result types for seams (test-harness effects)
+#[derive(Debug, Clone)]
+pub(crate) struct EvolutionEffect;
+
+#[derive(Debug, Clone)]
+pub(crate) struct FuseEffect {
+    pub offspring_monster_id: u64,
+}
+
 /// Server-compute the passive evolution target species (if any) for a monster.
 /// Delegates to the pure `game_core::evolves_to`, which checks level+bond against
 /// all evolution branches (no item applied). Used by:
@@ -360,7 +369,7 @@ pub(crate) fn evolve_seam(
     _db: &mut evolution_tests::TestEvolutionDb,
     _sender: spacetimedb::Identity,
     _monster_id: u64,
-) -> Result<(), String> {
+) -> Result<EvolutionEffect, String> {
     Err("seam not yet implemented".to_string())
 }
 
@@ -370,7 +379,7 @@ pub(crate) fn fuse_seam(
     _sender: spacetimedb::Identity,
     _a_id: u64,
     _b_id: u64,
-) -> Result<(), String> {
+) -> Result<FuseEffect, String> {
     Err("seam not yet implemented".to_string())
 }
 

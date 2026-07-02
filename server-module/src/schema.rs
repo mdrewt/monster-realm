@@ -71,6 +71,7 @@ pub struct ZoneDefRow {
 // --- Content tables (M6b, public, world-readable, module-write-only, ADR-0006) --
 
 /// Species definitions seeded from the `game-core` RON registry by `sync_content`.
+#[derive(Clone)]
 #[spacetimedb::table(name = species_row, public)]
 pub struct SpeciesRow {
     #[primary_key]
@@ -155,6 +156,7 @@ pub struct EncounterRow {
 /// The authoritative monster record — PRIVATE (no `public`). Contains hidden
 /// genes (IVs, EVs, nature) that must NEVER reach a non-owner client. Only
 /// server-side reducers read/write this table; no client can subscribe.
+#[derive(Clone)]
 #[spacetimedb::table(name = monster)]
 pub struct Monster {
     #[primary_key]
@@ -206,6 +208,7 @@ pub struct Monster {
 /// Public projection of the monster table — NO hidden fields (no IVs, EVs,
 /// nature). Clients subscribe to this for the box/party view. Server writes
 /// this alongside every `monster` mutation (dual-write discipline).
+#[derive(Clone)]
 #[spacetimedb::table(name = monster_pub, public)]
 pub struct MonsterPub {
     #[primary_key]
@@ -290,6 +293,7 @@ pub struct Inventory {
 /// Each row defines an order-independent recipe `(a, b) → to_species`.
 /// Recipes are looked up by canonical pair (min(a,b), max(a,b)) to enforce
 /// order-independence — see evolution.rs `find_fusion_recipe`.
+#[derive(Clone)]
 #[spacetimedb::table(name = fusion, public)]
 pub struct Fusion {
     #[primary_key]
