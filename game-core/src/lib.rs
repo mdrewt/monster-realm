@@ -106,4 +106,28 @@ mod tests {
         assert_eq!(clamp_position(-1500, 1000), -1000);
         assert_eq!(clamp_position(42, 1000), 42);
     }
+
+    // -----------------------------------------------------------------------
+    // Nightly mutation hardening: known-answer vectors pin the exact
+    // splitmix64 finalizer of `tick_seed`. Any XOR/shift mutation
+    // (`^`->`|`, `^`->`&`, `>>`->`<<`) alters every vector below.
+    // Determinism contract: ADR-0003 (same seed -> same result, forever).
+    // -----------------------------------------------------------------------
+
+    /// Kills: all bit-mixing mutants in `tick_seed` (9 nightly survivors).
+    /// Vectors computed with an independent Python splitmix64 replica;
+    /// `tick_seed(0,0,0)` equals the canonical first splitmix64(0) output.
+    #[test]
+    fn tick_seed_known_answer_vectors() {
+        assert_eq!(tick_seed(0, 0, 0), 0xE220_A839_7B1D_CDAF);
+        assert_eq!(tick_seed(1, 2, 3), 0xBD64_A5D9_ADEF_E000);
+        assert_eq!(
+            tick_seed(0xDEAD_BEEF, 0x1234_5678, 0x9ABC_DEF0),
+            0x3FDF_67C5_BA9F_477A
+        );
+        assert_eq!(
+            tick_seed(u64::MAX, u64::MAX, u64::MAX),
+            0xF75F_04CB_B5A1_A1DD
+        );
+    }
 }

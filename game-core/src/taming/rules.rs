@@ -328,4 +328,53 @@ mod m8_7c_tests {
         // The impl must still assert and panic — this arm is independent of T2.
         let _ = recruit_chance(100, 100, 0, 1001);
     }
+
+    // -----------------------------------------------------------------------
+    // Nightly mutation hardening (see monster/rolls.rs twin): known-answer
+    // vectors for THIS module's private splitmix32 copy, plus the weighted
+    // walk's subtraction step.
+    // -----------------------------------------------------------------------
+
+    /// Kills: all bit-mixing mutants inside this module's `splitmix32`
+    /// (9 survivors). Same vectors as `monster::rolls` — same algorithm.
+    #[test]
+    fn splitmix32_known_answer_sequence() {
+        let mut s: u32 = 0;
+        assert_eq!(splitmix32(&mut s), 0x92CA_2F0E);
+        assert_eq!(
+            s, 0x9E37_79B9,
+            "state advances by the golden-ratio constant"
+        );
+        assert_eq!(splitmix32(&mut s), 0x3CD6_E3F3);
+        assert_eq!(splitmix32(&mut s), 0x1B14_7DCC);
+
+        let mut s2: u32 = 0xDEAD_BEEF;
+        assert_eq!(splitmix32(&mut s2), 0xD3CE_9097);
+        assert_eq!(splitmix32(&mut s2), 0x6211_7CED);
+        assert_eq!(splitmix32(&mut s2), 0xF2C8_0841);
+    }
+
+    /// Kills: the `target -= w` -> `+=`/`/=` mutants in `roll_encounter`
+    /// (2 survivors). With three equal-weight entries, roll=1 lands in the
+    /// SECOND bucket only if the walk subtracts each passed weight; the
+    /// mutants fall through to the last-entry fallback (303) instead.
+    #[test]
+    fn roll_encounter_weighted_walk_subtracts_passed_weights() {
+        let entry = |species_id: u32| EncounterEntry {
+            species_id,
+            weight: 1,
+            min_level: lvl1(),
+            max_level: lvl1(),
+        };
+        let table = EncounterTable {
+            zone_id: 0,
+            encounter_rate: 100,
+            entries: vec![entry(101), entry(202), entry(303)],
+        };
+        assert_eq!(roll_encounter(&table, 0, lvl1()), Some(101));
+        assert_eq!(roll_encounter(&table, 1, lvl1()), Some(202));
+        assert_eq!(roll_encounter(&table, 2, lvl1()), Some(303));
+        // Wrap-around: roll % total_weight
+        assert_eq!(roll_encounter(&table, 4, lvl1()), Some(202));
+    }
 }

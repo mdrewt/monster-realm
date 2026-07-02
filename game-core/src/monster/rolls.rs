@@ -205,4 +205,52 @@ mod tests {
             prop_assert_eq!(m.species_id, sp.id);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Nightly mutation hardening: known-answer vectors pin the exact
+    // splitmix32 mixing chain (ADR-0003 seed-stability: the SAME seed must
+    // rebuild the SAME individual forever — saved-monster compatibility).
+    // -----------------------------------------------------------------------
+
+    /// Kills: all bit-mixing mutants inside `splitmix32` (9 survivors).
+    /// Vectors computed with an independent Python replica.
+    #[test]
+    fn splitmix32_known_answer_sequence() {
+        let mut s: u32 = 0;
+        assert_eq!(splitmix32(&mut s), 0x92CA_2F0E);
+        assert_eq!(
+            s, 0x9E37_79B9,
+            "state advances by the golden-ratio constant"
+        );
+        assert_eq!(splitmix32(&mut s), 0x3CD6_E3F3);
+        assert_eq!(splitmix32(&mut s), 0x1B14_7DCC);
+
+        let mut s2: u32 = 0xDEAD_BEEF;
+        assert_eq!(splitmix32(&mut s2), 0xD3CE_9097);
+        assert_eq!(splitmix32(&mut s2), 0x6211_7CED);
+        assert_eq!(splitmix32(&mut s2), 0xF2C8_0841);
+    }
+
+    /// Kills: the `% 32` -> `/`/`+` mutants in `roll_individuality` (2
+    /// survivors) plus any draw-order regression. Exact (IVs, Nature) per seed.
+    #[test]
+    fn roll_individuality_known_answer_vectors() {
+        use crate::monster::types::Nature;
+        let expect: [(u32, [u8; 6], u8); 3] = [
+            (0, [14, 19, 12, 31, 11, 29], 18),
+            (1, [11, 16, 4, 7, 24, 9], 19),
+            (0xCAFE_BABE, [7, 19, 14, 19, 10, 29], 22),
+        ];
+        for (seed, iv, nature_idx) in expect {
+            let (ivs, nature) = roll_individuality(seed);
+            let want = IVs::new(iv[0], iv[1], iv[2], iv[3], iv[4], iv[5])
+                .expect("expected IVs are all in [0, 31]");
+            assert_eq!(ivs, want, "IVs for seed {seed:#x}");
+            assert_eq!(
+                nature,
+                Nature::from_index(nature_idx),
+                "nature for seed {seed:#x}"
+            );
+        }
+    }
 }

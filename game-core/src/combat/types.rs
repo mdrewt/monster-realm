@@ -597,4 +597,38 @@ mod tests {
             prop_assert_eq!(state, back);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Nightly mutation hardening: known-answer vectors pin the exact
+    // splitmix64-style derivation in `from_ctx_random` (12 survivors:
+    // XOR/shift mixing + the `& 1 == 1` parity gate). Determinism contract:
+    // replaying a stored seed must reproduce the same battle turn forever.
+    // -----------------------------------------------------------------------
+
+    /// Kills: all bit-mixing and parity mutants in `from_ctx_random`.
+    /// Vectors computed with an independent Python replica; both
+    /// `speed_tie_breaker` parities are represented.
+    #[test]
+    fn from_ctx_random_known_answer_vectors() {
+        let expect = [
+            (0u32, (100u8, 89u8, 15u8, 20u8, true)),
+            (1, (86, 92, 70, 51, true)),
+            (0x1234_5678, (100, 92, 7, 85, false)),
+            (u32::MAX, (85, 89, 19, 34, false)),
+        ];
+        for (seed, want) in expect {
+            let v = TurnVariance::from_ctx_random(seed);
+            assert_eq!(
+                (
+                    v.damage_roll_a,
+                    v.damage_roll_b,
+                    v.accuracy_roll_a,
+                    v.accuracy_roll_b,
+                    v.speed_tie_breaker
+                ),
+                want,
+                "seed {seed:#x}"
+            );
+        }
+    }
 }

@@ -74,16 +74,25 @@ pub fn xp_for_level(level: Level) -> Xp {
 #[must_use]
 pub fn level_for_xp(xp: Xp) -> Level {
     let x = xp.value();
-    // Binary search for the largest l in [1, 100] such that l³ ≤ x
+    // Binary search for the largest l in [1, 100] such that l³ ≤ x.
+    // Bounded `for` (7 iterations always converge: 2^7 = 128 > 100) instead of
+    // `while lo < hi`: an arithmetic mutation of the search then terminates
+    // with a wrong answer (caught by the exhaustive roundtrip test) instead of
+    // hanging — pre-refactor this function produced 5 nightly cargo-mutants
+    // TIMEOUTs. `saturating_sub` keeps `mid` stable if `hi` dips below `lo`
+    // (only reachable for xp=0, which floors to level 1 as before).
     let mut lo: u8 = 1;
     let mut hi: u8 = 100;
-    while lo < hi {
-        let mid = lo + (hi - lo).div_ceil(2);
+    for _ in 0..7 {
+        let mid = lo + hi.saturating_sub(lo).div_ceil(2);
         let m = u32::from(mid);
         if m * m * m <= x {
             lo = mid;
         } else {
-            hi = mid - 1;
+            // `saturating_sub`, not `- 1`: `mid >= 1` always, and `hi = mid`
+            // is an EQUIVALENT search (the -1 is a mere optimization) -- as a
+            // bare `-` this line bred an unkillable cargo-mutants survivor.
+            hi = mid.saturating_sub(1);
         }
     }
     Level::new(lo).unwrap()
@@ -595,5 +604,40 @@ mod tests {
             let recovered = level_for_xp(xp);
             prop_assert_eq!(level.as_u8(), recovered.as_u8());
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Nightly mutation hardening.
+    // -----------------------------------------------------------------------
+
+    /// Kills: every arithmetic/comparison mutant in `level_for_xp`'s bounded
+    /// binary search (1 missed + 5 timeout survivors pre-refactor). Exhaustive
+    /// over all 100 levels plus both cube boundaries and the u32 cap.
+    #[test]
+    fn level_for_xp_roundtrips_all_levels_and_boundaries() {
+        for l in 1..=100u8 {
+            let level = Level::new(l).expect("1..=100 valid");
+            let xp = xp_for_level(level);
+            assert_eq!(level_for_xp(xp), level, "exact cube for level {l}");
+            if l > 1 {
+                let below = Xp::new(xp.value() - 1);
+                assert_eq!(
+                    level_for_xp(below),
+                    Level::new(l - 1).expect("valid"),
+                    "cube-1 belongs to level {}",
+                    l - 1
+                );
+            }
+        }
+        assert_eq!(
+            level_for_xp(Xp::new(0)),
+            Level::new(1).expect("valid"),
+            "xp 0 floors to level 1"
+        );
+        assert_eq!(
+            level_for_xp(Xp::new(u32::MAX)),
+            Level::new(100).expect("valid"),
+            "beyond the cap clamps to 100"
+        );
     }
 }
