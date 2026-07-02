@@ -128,15 +128,18 @@ export function parseEncounterSpecies(ron) {
   const results = [];
   // Find every `entries:` vec and extract species_id values from it.
   let search = ron;
-  let base = 0;
   while (true) {
-    const entriesIdx = search.indexOf('entries');
+    const entriesIdx = search.indexOf('entries:');
     if (entriesIdx === -1) break;
     const afterEntries = search.slice(entriesIdx);
     // Walk to `[`
     let i = 0;
     while (i < afterEntries.length && afterEntries[i] !== '[') i++;
-    if (i >= afterEntries.length) break;
+    // If no `[` follows (malformed token), skip past this `entries:` and keep scanning.
+    if (i >= afterEntries.length) {
+      search = search.slice(entriesIdx + 8);
+      continue;
+    }
     // Bracket-count to closing `]`
     let depth = 1;
     const vecStart = i + 1;
@@ -153,7 +156,6 @@ export function parseEncounterSpecies(ron) {
       results.push(Number(spMatch[1]));
       spMatch = spRe.exec(vecContent);
     }
-    base += entriesIdx + i;
     search = search.slice(entriesIdx + i);
   }
   return results;

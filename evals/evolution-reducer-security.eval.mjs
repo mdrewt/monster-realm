@@ -282,6 +282,38 @@ export function checkDualWriteMirror(body, fnName) {
 }
 
 /**
+ * E4 (fuse extension) — Parent pub cleanup: fuse must delete the parent rows from
+ * monster_pub (not just insert the offspring pub row). Stale parent pub rows would leave
+ * ghost public projections for consumed monsters (ADR-0040 dual-write discipline).
+ *
+ * Requires `monster_pub().monster_id().delete(` at least twice (once per parent).
+ *
+ * Uses only indexOf — NO new RegExp(...).
+ *
+ * @param {string} body  Comment-stripped fuse function body.
+ * @returns {string|null}
+ */
+export function checkFuseParentPubDeletes(body) {
+  const compact = body.replace(/\s+/g, '');
+  let count = 0;
+  let i = 0;
+  while (true) {
+    const idx = compact.indexOf('monster_pub().monster_id().delete(', i);
+    if (idx === -1) break;
+    count++;
+    i = idx + 1;
+  }
+  if (count < 2) {
+    return (
+      'fuse: monster_pub().monster_id().delete( appears fewer than 2 times — ' +
+      'fuse consumes both parent monsters; their monster_pub rows must also be deleted ' +
+      'to prevent stale public projections (ADR-0040 dual-write discipline)'
+    );
+  }
+  return null;
+}
+
+/**
  * E5 — SSOT delegation: the body must call the game-core transform function,
  * not inline the species-change or individuality logic.
  *
@@ -512,6 +544,27 @@ const BAD_FUSE_NO_SSOT = `
   }
 `;
 
+// E4 BAD (fuse) — correct guards + offspring dual-write, but drops parent monster_pub deletes.
+const BAD_FUSE_NO_PUB_DELETES = `
+  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
+      if a_id == b_id { return Err("cannot fuse with itself".to_string()); }
+      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
+      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
+      require_owner(ctx, "fuse", a.owner_identity)?;
+      require_owner(ctx, "fuse", b.owner_identity)?;
+      reject_if_in_battle(ctx.db.battle().player_identity().filter(a.owner_identity), a_id)?;
+      reject_if_in_battle(ctx.db.battle().player_identity().filter(b.owner_identity), b_id)?;
+      let offspring_inst = game_core::fuse(&a_inst, &b_inst, &offspring_species);
+      ctx.db.monster().monster_id().delete(a_id);
+      ctx.db.monster().monster_id().delete(b_id);
+      // DELIBERATELY MISSING: monster_pub().monster_id().delete(a_id) and delete(b_id)
+      // leaving stale pub rows for both consumed parents
+      ctx.db.monster().insert(offspring_monster);
+      ctx.db.monster_pub().insert(pub_from_monster(&offspring_monster));
+      Ok(())
+  }
+`;
+
 // ---------------------------------------------------------------------------
 // Concatenate server-module sources (ADR-0056 split: recursive glob).
 // ---------------------------------------------------------------------------
@@ -735,6 +788,26 @@ export default async function () {
     }
   }
 
+  // --- Tooth E4 fuse BAD: missing parent pub deletes must be flagged ---------
+  {
+    const body = extractReducerBody(stripRustComments(BAD_FUSE_NO_PUB_DELETES), 'fuse');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: could not extract fuse body from BAD_FUSE_NO_PUB_DELETES',
+      };
+    }
+    if (!checkFuseParentPubDeletes(body)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_FUSE_NO_PUB_DELETES (missing monster_pub parent deletes) was NOT flagged by checkFuseParentPubDeletes',
+      };
+    }
+  }
+
   // --- Tooth E5: evolve without game_core must be flagged ------------------
   {
     const body = extractReducerBody(stripRustComments(BAD_EVOLVE_NO_SSOT), 'evolve');
@@ -859,6 +932,8 @@ export default async function () {
     if (e3) failures.push(e3);
     const e4 = checkDualWriteMirror(fuseBody, 'fuse');
     if (e4) failures.push(e4);
+    const e4b = checkFuseParentPubDeletes(fuseBody);
+    if (e4b) failures.push(e4b);
     const e5 = checkSSOTDelegation(fuseBody, 'fuse');
     if (e5) failures.push(e5);
   }
@@ -872,7 +947,8 @@ export default async function () {
     pass: true,
     detail:
       'evolve: ownership guard, battle guard, dual-write mirror, SSOT delegation verified; ' +
-      'fuse: ownership guard (×2), battle guard (×2), self-fusion guard, dual-write mirror, SSOT delegation verified ' +
-      '(teeth: 14 fixtures verified)',
+      'fuse: ownership guard (×2), battle guard (×2), self-fusion guard, dual-write mirror, ' +
+      'parent pub deletes (×2), SSOT delegation verified ' +
+      '(teeth: 15 fixtures verified)',
   };
 }

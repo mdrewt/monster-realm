@@ -40,7 +40,7 @@ authors know why.
 
 ### eval 2 — `evolution-reducer-security.eval.mjs`
 
-Five structural invariants (E1–E5) statically checked against the server-module Rust
+Nine structural invariants (E1–E9) statically checked against the server-module Rust
 source (all `*.rs` files under `server-module/src/` concatenated per ADR-0056):
 
 | ID  | Invariant |
@@ -51,7 +51,7 @@ source (all `*.rs` files under `server-module/src/` concatenated per ADR-0056):
 | E4  | `fuse` has battle-escrow guard for **both** parents (≥ 2 occurrences) |
 | E5  | `fuse` has self-fusion guard (`a_id == b_id`) |
 | E6  | `evolve` dual-writes `monster` + `monster_pub` via `pub_from_monster` |
-| E7  | `fuse` dual-writes both tables via `pub_from_monster` |
+| E7  | `fuse` dual-writes both tables via `pub_from_monster` + deletes parent `monster_pub` rows (×2) |
 | E8  | `evolve` delegates to `game_core_evolve` / `game_core::evolve` (SSOT) |
 | E9  | `fuse` delegates to `game_core::fuse` / `game_core_fuse` (SSOT) |
 
@@ -59,7 +59,7 @@ source (all `*.rs` files under `server-module/src/` concatenated per ADR-0056):
 
 Every gate has at least one known-bad fixture that must be rejected:
 - `evolution-fusion-content-integrity.eval.mjs`: 12 fixtures
-- `evolution-reducer-security.eval.mjs`: 14 fixtures
+- `evolution-reducer-security.eval.mjs`: 15 fixtures
 
 The pattern: `const result = checkFn(badFixture); if (result === null)
 throw new Error('TOOTH n FAILED ...')`. This proves the detector has teeth before
