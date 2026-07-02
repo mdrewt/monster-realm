@@ -29,6 +29,7 @@ import {
   speciesRowToStore,
 } from './rowConvert';
 import type { AuthoritativeStore } from './store';
+import { isOwnZoneChange } from './warpDetect';
 
 export interface ConnectionOptions {
   readonly uri: string;
@@ -42,6 +43,9 @@ export interface ConnectionOptions {
   readonly onReconnect: () => void;
   /** A non-movement failure to surface (toast). Movement-reducer rejections stay silent (M2 §3). */
   readonly onError: (where: string, message: string) => void;
+  /** Called when the own entity crosses a zone boundary (M11c, ADR-0067 Option C).
+   *  Receives the new zone id so the caller can reload the map and reset prediction. */
+  readonly onOwnWarp?: (newZoneId: number) => void;
 }
 
 export interface Connection {
@@ -50,7 +54,7 @@ export interface Connection {
 }
 
 export function connect(opts: ConnectionOptions): Connection {
-  const { store, zoneId, name } = opts;
+  const { store, name } = opts;
   // Reconcile once per transaction: each row callback schedules; the batcher fires
   // store.flushBatch() once on the next microtask (no per-transaction SDK hook in 2.6).
   const batcher = new MicrotaskBatcher(() => store.flushBatch());
@@ -72,7 +76,10 @@ export function connect(opts: ConnectionOptions): Connection {
         })
         .onError(() => opts.onError('subscribe', 'subscription error'))
         .subscribe([
-          `SELECT * FROM character WHERE zone_id = ${zoneId}`,
+          // M11c (ADR-0067 Option C): global character subscription — no WHERE zone_id filter.
+          // Warp detection uses character.onUpdate (isOwnZoneChange); stale-zone characters
+          // are cleared by store.resetCharacters() on zone transition, not by the subscription.
+          'SELECT * FROM character',
           'SELECT * FROM player',
           'SELECT * FROM monster_pub',
           'SELECT * FROM species_row',
@@ -99,7 +106,24 @@ export function connect(opts: ConnectionOptions): Connection {
     batcher.schedule();
   };
   conn.db.character.onInsert((_ctx, row) => ingestChar(row as unknown as SdkCharacterRow));
-  conn.db.character.onUpdate((_ctx, _old, row) => ingestChar(row as unknown as SdkCharacterRow));
+  conn.db.character.onUpdate((_ctx, oldRow, row) => {
+    const newSdkRow = row as unknown as SdkCharacterRow;
+    // M11c (ADR-0067 Option C): detect own-entity zone transition on every character update.
+    // We resolve own entity id via the player table (identity -> player -> entityId) at
+    // update time so the check is always current (never stale from a closed-over capture).
+    if (opts.onOwnWarp !== undefined) {
+      const oldSdkRow = oldRow as unknown as SdkCharacterRow;
+      const ownEntityId = store.ownEntityId(identity);
+      if (ownEntityId !== undefined) {
+        const newStoreRow = characterRowToStore(newSdkRow);
+        const oldStoreRow = characterRowToStore(oldSdkRow);
+        if (isOwnZoneChange(oldStoreRow, newStoreRow, ownEntityId)) {
+          opts.onOwnWarp(newStoreRow.zoneId);
+        }
+      }
+    }
+    ingestChar(newSdkRow);
+  });
   conn.db.character.onDelete((_ctx, row) => {
     store.removeCharacter((row as unknown as SdkCharacterRow).entityId);
     batcher.schedule();

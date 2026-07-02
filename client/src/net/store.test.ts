@@ -1403,3 +1403,119 @@ describe('AuthoritativeStore M10c: upsertFusion/removeFusion mark dirty (flushBa
 
 // Import the new type so TS errors are part of the red state
 import type { StoreFusionRow } from './store';
+
+// =============================================================================
+// M11c extension: store.resetCharacters() (C3)
+// SOURCE OF TRUTH: M11c EARS C3 — Store resetCharacters() method.
+//
+// RED REASON: `AuthoritativeStore` has no `resetCharacters()` method yet.
+// All tests below will fail (TypeError: s.resetCharacters is not a function)
+// until the implementer adds the method.
+//
+// Contract:
+//   - resetCharacters() clears ONLY the #chars map.
+//   - It does NOT touch #players, #monsters, #species, #battles, #skills,
+//     #inventory, #itemDefs, or #fusions.
+// =============================================================================
+
+describe('AuthoritativeStore M11c C3: resetCharacters() clears only the character map', () => {
+  it('BITES: after resetCharacters(), characterCount is 0', () => {
+    // Kills: an impl where resetCharacters() is a no-op or clears the wrong map.
+    const s = new AuthoritativeStore();
+    s.upsertCharacter(char(1n, 2, 3), 100);
+    s.upsertCharacter(char(2n, 4, 5), 100);
+    expect(s.characterCount).toBe(2);
+    s.resetCharacters();
+    expect(s.characterCount).toBe(0);
+  });
+
+  it('BITES: after resetCharacters(), character(id) returns undefined', () => {
+    // Kills: an impl that decrements a counter but keeps rows accessible.
+    const s = new AuthoritativeStore();
+    s.upsertCharacter(char(42n, 3, 7), 100);
+    s.resetCharacters();
+    expect(s.character(42n)).toBeUndefined();
+  });
+
+  it('BITES: resetCharacters() does NOT clear players', () => {
+    // Kills: an impl that calls reset() (which clears everything) instead of
+    // targeting only the character map.
+    const s = new AuthoritativeStore();
+    s.upsertPlayer(player('alice', 1n));
+    s.upsertCharacter(char(1n, 0, 0), 100);
+    s.resetCharacters();
+    // Player row must still be present
+    expect(s.player('alice')).toBeDefined();
+    expect(s.player('alice')!.entityId).toBe(1n);
+  });
+
+  it('BITES: resetCharacters() does NOT clear monsters', () => {
+    // Kills: an impl that wipes all maps instead of just #chars.
+    const s = new AuthoritativeStore();
+    s.upsertMonster(monsterPub(7n, 'bob'));
+    s.upsertCharacter(char(1n, 0, 0), 100);
+    s.resetCharacters();
+    expect(s.monster(7n)).toBeDefined();
+    expect(s.monsterCount).toBe(1);
+  });
+
+  it('BITES: resetCharacters() does NOT clear species', () => {
+    // Kills: an impl that routes resetCharacters() through a full reset().
+    const s = new AuthoritativeStore();
+    s.upsertSpecies(speciesRow(3));
+    s.upsertCharacter(char(1n, 0, 0), 100);
+    s.resetCharacters();
+    expect(s.species(3)).toBeDefined();
+    expect(s.speciesMap().size).toBe(1);
+  });
+
+  it('BITES: resetCharacters() does NOT clear battles', () => {
+    // Kills: an impl that resets battles as a side effect.
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(1n, 'alice'));
+    s.upsertCharacter(char(1n, 0, 0), 100);
+    s.resetCharacters();
+    expect(s.battle(1n)).toBeDefined();
+  });
+
+  it('BITES: resetCharacters() does NOT clear skills', () => {
+    // Kills: an impl that resets the skill map as a side effect.
+    const s = new AuthoritativeStore();
+    s.upsertSkill(skillRow(10));
+    s.upsertCharacter(char(1n, 0, 0), 100);
+    s.resetCharacters();
+    expect(s.skill(10)).toBeDefined();
+  });
+
+  it('BITES: characters upserted after resetCharacters() are visible (map is still live)', () => {
+    // Kills: an impl that nulls out the map reference instead of calling .clear().
+    const s = new AuthoritativeStore();
+    s.upsertCharacter(char(1n, 0, 0), 100);
+    s.resetCharacters();
+    s.upsertCharacter(char(2n, 5, 5), 200);
+    expect(s.characterCount).toBe(1);
+    expect(s.character(2n)!.row.tileX).toBe(5);
+  });
+
+  it('BITES: resetCharacters() marks batch dirty so flushBatch fires', () => {
+    // Kills: an impl that clears without marking dirty (render loop misses the warp transition).
+    const s = new AuthoritativeStore();
+    s.upsertCharacter(char(1n, 0, 0), 100);
+    s.flushBatch(); // drain dirty from upsert
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.resetCharacters();
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('BITES: resetCharacters() on already-empty map does NOT mark dirty (no phantom re-render)', () => {
+    // Kills: an impl that unconditionally marks dirty even when nothing changed.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.resetCharacters(); // nothing to clear
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(0);
+  });
+});

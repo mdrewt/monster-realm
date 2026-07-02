@@ -28,6 +28,9 @@ export interface ResolveInput {
   readonly snapped: boolean;
   /** Injected render clock (ms) — never `performance.now()` in here. */
   readonly now: number;
+  /** M11c (ADR-0067): only render characters in this zone. When undefined, all
+   *  characters are rendered (pre-M11c behaviour, used in unit tests). */
+  readonly currentZoneId?: number;
 }
 
 export class RenderResolver {
@@ -40,11 +43,13 @@ export class RenderResolver {
   }
 
   resolve(input: ResolveInput): RenderEntity[] {
-    const { characters, ownEntityId, predicted, snapped, now } = input;
+    const { characters, ownEntityId, predicted, snapped, now, currentZoneId } = input;
     const renderTime = now - interpDelayMs(this.#stepMs);
     const out: RenderEntity[] = [];
 
     for (const c of characters) {
+      // M11c (ADR-0067): global subscription delivers all zones; only render the current zone.
+      if (currentZoneId !== undefined && c.row.zoneId !== currentZoneId) continue;
       const isOwn =
         ownEntityId !== undefined && c.row.entityId === ownEntityId && predicted !== undefined;
 

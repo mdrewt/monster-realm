@@ -11,6 +11,7 @@
 // (map / interpolation / slideClock / zorder / viewRegistry).
 import { Application, Container, Graphics } from 'pixi.js';
 import type { WasmAction, WasmDirection } from '../convert/convert';
+import { FollowCamera } from './camera';
 import type { AssetProvider } from './characterView';
 import { CharacterView } from './characterView';
 import { TILE_PX } from './config';
@@ -43,14 +44,19 @@ export class WorldRenderer {
   readonly #actors = new Container();
   readonly #views = new Map<bigint, CharacterView>();
   readonly #registry = new ViewRegistry();
+  readonly #camera = new FollowCamera();
+  // Viewport dimensions tracked by resize() so render() can compute camera offset.
+  #viewW = 0;
+  #viewH = 0;
 
   /** Create the Pixi app, mount its canvas, and draw the tile map ONCE. */
   async init(mount: HTMLElement, rawMap: RawTileMap): Promise<void> {
     const map = TileMap.fromRaw(rawMap);
     const app = new Application();
+    // M11c: viewport-sized canvas (no full-map scale); camera offset via stage.position.
     await app.init({
-      width: map.width * TILE_PX,
-      height: map.height * TILE_PX,
+      width: window.innerWidth,
+      height: window.innerHeight,
       background: FLOOR_COLOR,
       antialias: false,
     });
@@ -64,6 +70,8 @@ export class WorldRenderer {
   }
 
   #drawMap(map: TileMap): void {
+    // Clear previous map graphics (needed for setMap on zone change).
+    this.#bg.removeChildren();
     const g = new Graphics();
     // Floor/wall pass.
     for (let y = 0; y < map.height; y++) {
@@ -85,9 +93,21 @@ export class WorldRenderer {
     this.#bg.addChild(g);
   }
 
+  /** Zone switch (M11c): replace the tile background with the new zone's map.
+   *  Called by main.ts on every warp AFTER store.resetCharacters() and
+   *  rawMap reassignment so the renderer stays in sync with the new zone. */
+  setMap(rawMap: RawTileMap): void {
+    const map = TileMap.fromRaw(rawMap);
+    this.#map = map;
+    // Drop all pooled character views — they belong to the old zone.
+    this.clear();
+    this.#drawMap(map);
+  }
+
   /** Render one frame: pool create/destroy (teardown on despawn — no ghost),
-   *  mutate each view in place, then apply a stable z-order. */
-  render(entities: readonly RenderEntity[]): void {
+   *  mutate each view in place, apply a stable z-order, and scroll the
+   *  follow-camera to keep the own entity centred. (M11c, ADR-0067) */
+  render(entities: readonly RenderEntity[], ownTileX = 0, ownTileY = 0): void {
     const assets = this.#assets;
     if (assets === undefined) return; // not initialised yet
     const { created, removed } = this.#registry.reconcile(entities.map((e) => e.entityId));
@@ -112,15 +132,30 @@ export class WorldRenderer {
       const view = this.#views.get(it.entityId);
       if (view !== undefined) this.#actors.setChildIndex(view.sprite, i);
     });
+    // M11c follow-camera: translate the stage so the own entity stays centred.
+    const map = this.#map;
+    const app = this.#app;
+    if (app !== undefined && map !== undefined) {
+      const { x: cx, y: cy } = this.#camera.offsetFor(
+        ownTileX,
+        ownTileY,
+        this.#viewW,
+        this.#viewH,
+        map.width,
+        map.height,
+      );
+      app.stage.position.set(-cx, -cy);
+    }
   }
 
-  /** Keep the WHOLE zone visible (no scrolling camera at M4 — follow-camera is M11). */
+  /** M11c: resize to viewport dimensions (no stage scale — follow-camera handles scroll). */
   resize(viewWidth: number, viewHeight: number): void {
+    this.#viewW = viewWidth;
+    this.#viewH = viewHeight;
     const app = this.#app;
-    const map = this.#map;
-    if (app === undefined || map === undefined) return;
-    const scale = Math.min(viewWidth / (map.width * TILE_PX), viewHeight / (map.height * TILE_PX));
-    app.stage.scale.set(scale > 0 ? scale : 1);
+    if (app === undefined) return;
+    app.renderer.resize(viewWidth, viewHeight);
+    app.stage.scale.set(1);
   }
 
   get viewCount(): number {

@@ -19,6 +19,7 @@ import {
   move_queue_cap,
   party_size,
   party_slot_none,
+  set_active_zone,
   step_ms,
   zone_map,
 } from '../../client-wasm/pkg/client_wasm.js';
@@ -55,7 +56,8 @@ const STEP_MS = step_ms();
 const QUEUE_CAP = move_queue_cap();
 const PARTY_SIZE = party_size();
 const PARTY_SLOT_NONE = party_slot_none();
-const rawMap = zone_map(ZONE_ID);
+// M11c: rawMap is `let` — replaced on zone warp (zone_map() re-called for the new zone id).
+let rawMap = zone_map(ZONE_ID);
 
 const store = new AuthoritativeStore();
 // The injected rule IS the client-wasm export (same compiled code as the server).
@@ -407,6 +409,18 @@ async function main(): Promise<void> {
     });
   }
 
+  // M11c: extracted from onReconnect so onOwnWarp can reuse the same body (ADR-0067).
+  // Resets the client prediction state without touching the store (the store is reset
+  // separately by connection.ts on disconnect, or resetCharacters() on zone warp).
+  function resetPredictionState(): void {
+    predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
+    resolver.reset();
+    held.clear();
+    sawFractionalOwnMotion = false;
+    dismissedBattleId = null;
+    battleSynced = false;
+  }
+
   conn = connect({
     uri: URI,
     db: DB,
@@ -420,14 +434,23 @@ async function main(): Promise<void> {
     onReconnect: () => {
       // Clean re-init: the store already dropped stale rows; rebuild prediction and
       // drop the own slide clock so the post-reconnect re-seed starts fresh.
-      predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
-      resolver.reset();
-      held.clear();
-      sawFractionalOwnMotion = false;
-      // Reset the outcome-frame lifecycle so a re-subscribed historical resolved
-      // battle is pre-dismissed again at first sight (M8.7e).
-      dismissedBattleId = null;
-      battleSynced = false;
+      resetPredictionState();
+    },
+    onOwnWarp: (newZoneId) => {
+      // Zone transition: load the new zone map first so that if it throws (unknown zone)
+      // no state has been mutated (consistent failure). Then set the wasm zone BEFORE
+      // any mutations so stray apply_move calls during this handler use the new zone
+      // (ADR-0067). try/catch: onBatchApplied has no per-listener isolation (M8.8e).
+      try {
+        const newRawMap = zone_map(newZoneId); // may throw — must be first
+        set_active_zone(newZoneId); // wasm zone before any mutations
+        store.resetCharacters();
+        rawMap = newRawMap;
+        renderer.setMap(rawMap);
+        resetPredictionState();
+      } catch (err) {
+        console.error('[warp] zone transition to %s failed — keeping current zone', newZoneId, err);
+      }
     },
     onError: (where, message) => console.error(`[net:${where}] ${message}`),
   });
@@ -453,19 +476,28 @@ async function main(): Promise<void> {
       predicted,
       snapped,
       now,
+      currentZoneId: rawMap.zone_id,
     });
     // Sticky latch: count ONLY fractional motion from the slide-clock path — the own
     // entity WITH a predicted state (same predicate as RenderResolver's `isOwn`), never
     // the interpolation fallback. This keeps the e2e proving the slide clock specifically,
     // not remote-interp leaking onto the own entity during the login/reconnect gap. The
     // sole non-integer source on this path is the slide clock (predicted tiles are integers).
+    // Find own entity for fractional-motion latch and follow-camera.
+    const ownEntity =
+      ownEntityId !== undefined ? entities.find((e) => e.entityId === ownEntityId) : undefined;
     if (ownEntityId !== undefined && predicted !== undefined) {
-      const own = entities.find((e) => e.entityId === ownEntityId);
-      if (own !== undefined && (!Number.isInteger(own.x) || !Number.isInteger(own.y))) {
+      if (
+        ownEntity !== undefined &&
+        (!Number.isInteger(ownEntity.x) || !Number.isInteger(ownEntity.y))
+      ) {
         sawFractionalOwnMotion = true;
       }
     }
-    renderer.render(entities);
+    // M11c: pass own tile position for follow-camera (WorldRenderer.render).
+    const ownX = ownEntity?.x ?? 0;
+    const ownY = ownEntity?.y ?? 0;
+    renderer.render(entities, ownX, ownY);
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
