@@ -366,21 +366,245 @@ pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
 
 #[cfg(test)]
 pub(crate) fn evolve_seam(
-    _db: &mut evolution_tests::TestEvolutionDb,
-    _sender: spacetimedb::Identity,
-    _monster_id: u64,
+    db: &mut evolution_tests::TestEvolutionDb,
+    sender: spacetimedb::Identity,
+    monster_id: u64,
 ) -> Result<EvolutionEffect, String> {
-    Err("seam not yet implemented".to_string())
+    let Some(mut m) = db.get_monster(monster_id).cloned() else {
+        return Err("monster not found".to_string());
+    };
+
+    // Ownership check
+    if m.owner_identity != sender {
+        return Err("not owner of this monster".to_string());
+    }
+
+    // Battle guard
+    reject_if_in_battle(db.get_battles(), monster_id)?;
+
+    // Load source species
+    let Some(_src_species_row) = db.get_species(m.species_id) else {
+        return Err(format!("source species {} not found", m.species_id));
+    };
+
+    // Find evolutions for this monster's current species (from test database)
+    let evolutions: Vec<EvolutionCondition> = db
+        .get_evolutions(m.species_id)
+        .map(|v| v.clone())
+        .unwrap_or_default();
+
+    // Check eligibility
+    let target_species_id = match compute_evolves_to(&evolutions, &m) {
+        Some(target) => target,
+        None => return Err("monster is not eligible to evolve".to_string()),
+    };
+
+    // Load target species
+    let Some(target_species_row) = db.get_species(target_species_id) else {
+        return Err(format!("target species {} not found", target_species_id));
+    };
+
+    // Marshal to MonsterInstance and call game_core::evolve
+    let m_inst = monster_to_instance(&m)?;
+    let target_species = species_from_row(target_species_row)?;
+    let transformed = game_core_evolve(&m_inst, &target_species);
+
+    // Recalculate derived stats for the new species
+    let new_stats = game_core::derive_stats(
+        &target_species.base_stats,
+        &transformed.ivs,
+        &transformed.evs,
+        &transformed.nature,
+        transformed.level,
+    );
+
+    // Update the monster: species, level, xp, stats, evolves_to
+    m.species_id = transformed.species_id;
+    m.level = transformed.level.as_u8();
+    m.xp = transformed.xp.value();
+    m.stat_hp = new_stats.get(game_core::StatKind::Hp);
+    m.stat_attack = new_stats.get(game_core::StatKind::Attack);
+    m.stat_defense = new_stats.get(game_core::StatKind::Defense);
+    m.stat_speed = new_stats.get(game_core::StatKind::Speed);
+    m.stat_sp_attack = new_stats.get(game_core::StatKind::SpAttack);
+    m.stat_sp_defense = new_stats.get(game_core::StatKind::SpDefense);
+    m.current_hp = transformed.current_hp;
+
+    // Recompute evolves_to on the new species
+    let evolutions_after = db
+        .get_evolutions(transformed.species_id)
+        .map(|v| v.clone())
+        .unwrap_or_default();
+    m.evolves_to = compute_evolves_to(&evolutions_after, &m);
+
+    // Dual-write: Monster + MonsterPub
+    let pub_row = pub_from_monster(&m);
+    db.update_monster(m);
+    db.update_monster_pub(pub_row);
+
+    Ok(EvolutionEffect)
 }
 
 #[cfg(test)]
 pub(crate) fn fuse_seam(
-    _db: &mut evolution_tests::TestEvolutionDb,
-    _sender: spacetimedb::Identity,
-    _a_id: u64,
-    _b_id: u64,
+    db: &mut evolution_tests::TestEvolutionDb,
+    sender: spacetimedb::Identity,
+    a_id: u64,
+    b_id: u64,
 ) -> Result<FuseEffect, String> {
-    Err("seam not yet implemented".to_string())
+    if a_id == b_id {
+        return Err("cannot fuse a monster with itself".to_string());
+    }
+
+    let Some(a) = db.get_monster(a_id).cloned() else {
+        return Err("monster a not found".to_string());
+    };
+    let Some(b) = db.get_monster(b_id).cloned() else {
+        return Err("monster b not found".to_string());
+    };
+
+    // Ownership checks
+    if a.owner_identity != sender {
+        return Err("not owner of monster a".to_string());
+    }
+    if b.owner_identity != sender {
+        return Err("not owner of monster b".to_string());
+    }
+
+    // Both must be owned by the same player (redundant given above, but explicit)
+    if a.owner_identity != b.owner_identity {
+        return Err("both monsters must be owned by the same player".to_string());
+    }
+
+    // Neither can be in battle
+    reject_if_in_battle(db.get_battles(), a_id)?;
+    reject_if_in_battle(db.get_battles(), b_id)?;
+
+    // Load both species rows
+    let Some(_a_species_row) = db.get_species(a.species_id) else {
+        return Err(format!("species {} not found", a.species_id));
+    };
+    let Some(_b_species_row) = db.get_species(b.species_id) else {
+        return Err(format!("species {} not found", b.species_id));
+    };
+
+    // Find fusion recipe (order-independent)
+    let Some(fusion_recipe) = db.find_fusion_recipe(a.species_id, b.species_id) else {
+        return Err("no fusion recipe for these species".to_string());
+    };
+
+    // Load offspring species
+    let Some(offspring_species_row) = db.get_species(fusion_recipe.to_species) else {
+        return Err(format!(
+            "offspring species {} not found",
+            fusion_recipe.to_species
+        ));
+    };
+
+    // Marshal both parents to MonsterInstance
+    let a_inst = monster_to_instance(&a)?;
+    let b_inst = monster_to_instance(&b)?;
+    let offspring_species = species_from_row(offspring_species_row)?;
+
+    // Call pure transform (order-independent when bonds differ; canonicalize for tie-break)
+    let offspring_inst = if a_id < b_id {
+        game_core::fuse(&a_inst, &b_inst, &offspring_species)
+    } else {
+        game_core::fuse(&b_inst, &a_inst, &offspring_species)
+    };
+
+    // Compute evolves_to for offspring
+    let offspring_evolutions = db
+        .get_evolutions(offspring_inst.species_id)
+        .map(|v| v.clone())
+        .unwrap_or_default();
+
+    // Create a temporary Monster row just for compute_evolves_to lookup
+    let temp_offspring = Monster {
+        monster_id: 0,
+        owner_identity: a.owner_identity,
+        species_id: offspring_inst.species_id,
+        nickname: String::new(),
+        level: offspring_inst.level.as_u8(),
+        xp: offspring_inst.xp.value(),
+        bond: offspring_inst.bond.value(),
+        iv_hp: 0,
+        iv_attack: 0,
+        iv_defense: 0,
+        iv_speed: 0,
+        iv_sp_attack: 0,
+        iv_sp_defense: 0,
+        nature_kind: offspring_inst.nature.kind(),
+        ev_hp: 0,
+        ev_attack: 0,
+        ev_defense: 0,
+        ev_speed: 0,
+        ev_sp_attack: 0,
+        ev_sp_defense: 0,
+        stat_hp: offspring_inst.derived_stats.hp,
+        stat_attack: offspring_inst.derived_stats.attack,
+        stat_defense: offspring_inst.derived_stats.defense,
+        stat_speed: offspring_inst.derived_stats.speed,
+        stat_sp_attack: offspring_inst.derived_stats.sp_attack,
+        stat_sp_defense: offspring_inst.derived_stats.sp_defense,
+        current_hp: offspring_inst.current_hp,
+        party_slot: offspring_inst.party_slot.unwrap_or(crate::PARTY_SLOT_NONE),
+        last_care_at_ms: 0,
+        evolves_to: None,
+    };
+
+    let offspring_evolves_to = compute_evolves_to(&offspring_evolutions, &temp_offspring);
+
+    // Allocate a new monster_id for the offspring
+    let offspring_monster_id = db.alloc_monster_id();
+
+    // Marshal offspring MonsterInstance to Monster row (owner same as parents)
+    let offspring_monster = Monster {
+        monster_id: offspring_monster_id,
+        owner_identity: a.owner_identity,
+        species_id: offspring_inst.species_id,
+        nickname: offspring_inst.nickname.clone().unwrap_or_default(),
+        level: offspring_inst.level.as_u8(),
+        xp: offspring_inst.xp.value(),
+        bond: offspring_inst.bond.value(),
+        iv_hp: offspring_inst.ivs.get(game_core::StatKind::Hp),
+        iv_attack: offspring_inst.ivs.get(game_core::StatKind::Attack),
+        iv_defense: offspring_inst.ivs.get(game_core::StatKind::Defense),
+        iv_speed: offspring_inst.ivs.get(game_core::StatKind::Speed),
+        iv_sp_attack: offspring_inst.ivs.get(game_core::StatKind::SpAttack),
+        iv_sp_defense: offspring_inst.ivs.get(game_core::StatKind::SpDefense),
+        nature_kind: offspring_inst.nature.kind(),
+        ev_hp: offspring_inst.evs.get(game_core::StatKind::Hp),
+        ev_attack: offspring_inst.evs.get(game_core::StatKind::Attack),
+        ev_defense: offspring_inst.evs.get(game_core::StatKind::Defense),
+        ev_speed: offspring_inst.evs.get(game_core::StatKind::Speed),
+        ev_sp_attack: offspring_inst.evs.get(game_core::StatKind::SpAttack),
+        ev_sp_defense: offspring_inst.evs.get(game_core::StatKind::SpDefense),
+        stat_hp: offspring_inst.derived_stats.hp,
+        stat_attack: offspring_inst.derived_stats.attack,
+        stat_defense: offspring_inst.derived_stats.defense,
+        stat_speed: offspring_inst.derived_stats.speed,
+        stat_sp_attack: offspring_inst.derived_stats.sp_attack,
+        stat_sp_defense: offspring_inst.derived_stats.sp_defense,
+        current_hp: offspring_inst.current_hp,
+        party_slot: offspring_inst.party_slot.unwrap_or(crate::PARTY_SLOT_NONE),
+        last_care_at_ms: 0, // Fresh monster, no care yet
+        evolves_to: offspring_evolves_to,
+    };
+
+    // Atomic: delete both parents, insert offspring
+    db.delete_monster(a_id);
+    db.delete_monster(b_id);
+    db.delete_monster_pub(a_id);
+    db.delete_monster_pub(b_id);
+
+    let offspring_pub = pub_from_monster(&offspring_monster);
+    db.insert_monster(offspring_monster);
+    db.insert_monster_pub(offspring_pub);
+
+    Ok(FuseEffect {
+        offspring_monster_id,
+    })
 }
 
 #[cfg(test)]

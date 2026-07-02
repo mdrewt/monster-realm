@@ -1380,4 +1380,43 @@ impl TestEvolutionDb {
         self.next_monster_id += 1;
         id
     }
+
+    pub fn get_species(&self, id: u32) -> Option<&SpeciesRow> {
+        self.species.get(&id)
+    }
+
+    pub fn get_evolutions(&self, species_id: u32) -> Option<&Vec<EvolutionCondition>> {
+        self.evolutions.get(&species_id)
+    }
+
+    pub fn get_battles(&self) -> impl Iterator<Item = &Battle> {
+        self.battles.iter()
+    }
+
+    pub fn find_fusion_recipe(&self, a_species_id: u32, b_species_id: u32) -> Option<&Fusion> {
+        let (recipe_a, recipe_b) = if a_species_id <= b_species_id {
+            (a_species_id, b_species_id)
+        } else {
+            (b_species_id, a_species_id)
+        };
+        self.fusions
+            .iter()
+            .find(|r| r.a_species == recipe_a && r.b_species == recipe_b)
+    }
+
+    pub fn delete_monster(&mut self, id: u64) {
+        self.monsters.remove(&id);
+    }
+
+    pub fn delete_monster_pub(&mut self, id: u64) {
+        self.monster_pubs.remove(&id);
+    }
+
+    pub fn update_monster(&mut self, m: Monster) {
+        self.monsters.insert(m.monster_id, m);
+    }
+
+    pub fn update_monster_pub(&mut self, p: MonsterPub) {
+        self.monster_pubs.insert(p.monster_id, p);
+    }
 }
