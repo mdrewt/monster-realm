@@ -125,8 +125,8 @@ pub(crate) fn check_team_coupling(team_len: usize, ids_len: usize) -> Result<(),
 /// Reject if the monster is in an ongoing battle (escrowed, ADR-0061).
 /// Pure predicate: checks if any battle row has the monster_id in either party
 /// AND has outcome == Ongoing. Used by evolve/fuse reducers (M10b).
-pub(crate) fn reject_if_in_battle(
-    battles: impl Iterator<Item = &'_ crate::schema::Battle>,
+pub(crate) fn reject_if_in_battle<'a>(
+    battles: impl Iterator<Item = &'a crate::schema::Battle>,
     monster_id: u64,
 ) -> Result<(), String> {
     use game_core::BattleOutcome;

@@ -9,9 +9,11 @@
 
 use crate::guards::{log_reject, reject_if_in_battle, require_owner};
 use crate::marshal::{monster_to_instance, pub_from_monster, species_from_row};
-use crate::schema::{Fusion, Monster, MonsterPub};
+use crate::schema::{
+    battle, fusion, monster, monster_pub, species_row, Fusion, Monster, MonsterPub,
+};
 use game_core::{
-    evolve as game_core_evolve, evolves_to as game_core_evolves_to, EvolutionCondition, Level,
+    evolve as game_core_evolve, evolves_to as game_core_evolves_to, EvolutionCondition,
     MonsterInstance,
 };
 use spacetimedb::ReducerContext;
@@ -26,11 +28,10 @@ use spacetimedb::ReducerContext;
 /// Returns None if the monster is not eligible to evolve passively.
 pub(crate) fn compute_evolves_to(
     evolutions: &[EvolutionCondition],
-    level: u8,
-    bond: u8,
+    monster: &Monster,
 ) -> Option<u32> {
     // Build a minimal MonsterInstance for the evolves_to check (only level/bond matter)
-    let Ok(lv) = Level::new(level) else {
+    let Ok(lv) = game_core::Level::new(monster.level) else {
         return None;
     };
 
@@ -42,7 +43,7 @@ pub(crate) fn compute_evolves_to(
         ivs: game_core::IVs::new(0, 0, 0, 0, 0, 0).unwrap(), // unused
         nature: game_core::Nature::new(game_core::NatureKind::Hardy), // unused
         evs: game_core::EVs::zero(),                         // unused
-        bond: game_core::Bond::new(bond),
+        bond: game_core::Bond::new(monster.bond),
         current_hp: 0, // unused
         derived_stats: game_core::StatBlock {
             hp: 0,
@@ -104,7 +105,7 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
         .unwrap_or(&[]);
 
     // Check passive eligibility
-    let to_species_id = match compute_evolves_to(evolutions, m.level, m.bond) {
+    let to_species_id = match compute_evolves_to(evolutions, &m) {
         Some(id) => id,
         None => {
             log_reject("evolve", ctx.sender, "monster is not eligible to evolve");
@@ -145,14 +146,10 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
         .find(|se| se.species_id == transformed.species_id)
         .map(|se| &se.evolutions[..])
         .unwrap_or(&[]);
-    m.evolves_to = compute_evolves_to(
-        evolutions_after,
-        transformed.level.as_u8(),
-        transformed.bond.value(),
-    );
+    m.evolves_to = compute_evolves_to(evolutions_after, &m);
 
     // Dual-write: Monster + MonsterPub
-    ctx.db.monster().monster_id().update(m.clone());
+    ctx.db.monster().monster_id().update(m);
     let pub_row = pub_from_monster(&m);
     ctx.db.monster_pub().monster_id().update(pub_row);
 
@@ -266,11 +263,42 @@ pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
         .find(|se| se.species_id == offspring_inst.species_id)
         .map(|se| &se.evolutions[..])
         .unwrap_or(&[]);
-    let offspring_evolves_to = compute_evolves_to(
-        offspring_evolutions,
-        offspring_inst.level.as_u8(),
-        offspring_inst.bond.value(),
-    );
+
+    // Create a temporary Monster row just for compute_evolves_to lookup
+    let temp_offspring = Monster {
+        monster_id: 0,
+        owner_identity: a.owner_identity,
+        species_id: offspring_inst.species_id,
+        nickname: String::new(),
+        level: offspring_inst.level.as_u8(),
+        xp: offspring_inst.xp.value(),
+        bond: offspring_inst.bond.value(),
+        iv_hp: 0,
+        iv_attack: 0,
+        iv_defense: 0,
+        iv_speed: 0,
+        iv_sp_attack: 0,
+        iv_sp_defense: 0,
+        nature_kind: offspring_inst.nature.kind(),
+        ev_hp: 0,
+        ev_attack: 0,
+        ev_defense: 0,
+        ev_speed: 0,
+        ev_sp_attack: 0,
+        ev_sp_defense: 0,
+        stat_hp: offspring_inst.derived_stats.hp,
+        stat_attack: offspring_inst.derived_stats.attack,
+        stat_defense: offspring_inst.derived_stats.defense,
+        stat_speed: offspring_inst.derived_stats.speed,
+        stat_sp_attack: offspring_inst.derived_stats.sp_attack,
+        stat_sp_defense: offspring_inst.derived_stats.sp_defense,
+        current_hp: offspring_inst.current_hp,
+        party_slot: offspring_inst.party_slot.unwrap_or(crate::PARTY_SLOT_NONE),
+        last_care_at_ms: 0,
+        evolves_to: None,
+    };
+
+    let offspring_evolves_to = compute_evolves_to(offspring_evolutions, &temp_offspring);
 
     // Marshal offspring MonsterInstance to Monster row (owner same as parents)
     let offspring_monster = Monster {
@@ -312,8 +340,8 @@ pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
     ctx.db.monster_pub().monster_id().delete(a_id);
     ctx.db.monster_pub().monster_id().delete(b_id);
 
-    ctx.db.monster().insert(offspring_monster.clone());
     let offspring_pub = pub_from_monster(&offspring_monster);
+    ctx.db.monster().insert(offspring_monster);
     ctx.db.monster_pub().insert(offspring_pub);
 
     Ok(())

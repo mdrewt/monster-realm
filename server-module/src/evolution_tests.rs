@@ -36,7 +36,7 @@ use super::*;
 use crate::schema::{Battle, Fusion, Monster, MonsterPub, SpeciesRow};
 use game_core::{
     BattleOutcome, BattleSide, BattleState, Bond, EvolutionCondition, EvolutionTrigger, Level,
-    NatureKind, StatBlock,
+    NatureKind, Species, StatBlock,
 };
 use spacetimedb::Identity;
 
