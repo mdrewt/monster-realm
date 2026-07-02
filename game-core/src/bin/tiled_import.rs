@@ -32,9 +32,12 @@ enum JsonValue {
 // Recursive-descent parser
 // ===========================================================================
 
+const MAX_DEPTH: usize = 64;
+
 struct Parser<'a> {
     input: &'a [u8],
     pos: usize,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -42,6 +45,7 @@ impl<'a> Parser<'a> {
         Parser {
             input: input.as_bytes(),
             pos: 0,
+            depth: 0,
         }
     }
 
@@ -81,8 +85,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_value(&mut self) -> Result<JsonValue, String> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(format!("JSON nesting exceeds maximum depth {MAX_DEPTH}"));
+        }
         self.skip_whitespace();
-        match self.peek() {
+        let result = match self.peek() {
             Some(b'"') => self.parse_string().map(JsonValue::Str),
             Some(b'{') => self.parse_object(),
             Some(b'[') => self.parse_array(),
@@ -104,7 +112,9 @@ impl<'a> Parser<'a> {
                 c as char, self.pos
             )),
             None => Err(format!("unexpected EOF at pos {}", self.pos)),
-        }
+        };
+        self.depth -= 1;
+        result
     }
 
     fn expect_literal(&mut self, lit: &[u8]) -> Result<(), String> {
@@ -284,7 +294,7 @@ fn as_u32(v: &JsonValue, ctx: &str) -> Result<u32, String> {
                 return Err(format!("{ctx}: non-finite number {n}"));
             }
             let i = *n as i64;
-            if i as f64 != n.trunc() {
+            if *n != i as f64 {
                 return Err(format!("{ctx}: {n} is not an integer"));
             }
             u32::try_from(i).map_err(|_| format!("{ctx}: value {n} out of u32 range"))
@@ -300,7 +310,7 @@ fn as_i32(v: &JsonValue, ctx: &str) -> Result<i32, String> {
                 return Err(format!("{ctx}: non-finite number {n}"));
             }
             let i = *n as i64;
-            if i as f64 != n.trunc() {
+            if *n != i as f64 {
                 return Err(format!("{ctx}: {n} is not an integer"));
             }
             i32::try_from(i).map_err(|_| format!("{ctx}: value {n} out of i32 range"))
@@ -366,6 +376,10 @@ pub fn parse_tiled_json(json: &str, zone_id: u32) -> Result<ZoneMapDef, String> 
 
     let height_val = obj_get(root, "height").ok_or("missing 'height' in root object")?;
     let height = as_u32(height_val, "height")? as usize;
+
+    if width == 0 || height == 0 {
+        return Err(format!("map dimensions {width}×{height} must be non-zero"));
+    }
 
     // Extract layers
     let layers_val = obj_get(root, "layers").ok_or("missing 'layers' in root object")?;
@@ -730,6 +744,90 @@ mod tests {
         assert!(
             result.warps.is_empty(),
             "an empty Warps object layer must produce zero WarpDefs"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Red-team gating tests (M11a hardening)
+    // -----------------------------------------------------------------------
+
+    /// Gate: fractional f64 GID values must be rejected, not silently truncated.
+    ///
+    /// as_u32 casts f64 -> i64 via `as`, which truncates toward zero. GID 1.9
+    /// would silently become GID 1 (floor), and GID 2.7 would become GID 2 (grass),
+    /// hiding authoring errors in Tiled exports. The parser must reject any GID
+    /// that is not an exact integer.
+    ///
+    /// Kills: any impl that accepts fractional GID values without error.
+    #[test]
+    fn parse_tiled_rejects_fractional_gid() {
+        // GID 1.9 must NOT be accepted as GID 1 — it is not a valid tile id.
+        let json =
+            r#"{"width":2,"height":1,"layers":[{"type":"tilelayer","name":"T","data":[1,1.9]}]}"#;
+        assert!(
+            parse_tiled_json(json, 0).is_err(),
+            "fractional GID 1.9 must be rejected (not silently truncated to 1)"
+        );
+    }
+
+    /// Gate: fractional f64 warp coordinates must be rejected, not silently truncated.
+    ///
+    /// as_i32 casts f64 -> i64 via `as` (truncate-toward-zero). A warp at x=1.9
+    /// would silently land at x=1, placing the trigger tile one pixel off from the
+    /// Tiled editor's intent. This is a data-integrity invariant: only exact
+    /// integers are legal tile positions.
+    ///
+    /// Kills: any impl that stores truncated fractional warp coordinates as valid.
+    #[test]
+    fn parse_tiled_rejects_fractional_warp_coordinate() {
+        // Warp object at x=1.9, y=2 — the 'x' field is fractional.
+        let json = r#"{
+          "width": 3, "height": 3,
+          "layers": [
+            {"type": "tilelayer", "name": "Tiles", "data": [1,1,1,1,1,1,1,1,1]},
+            {"type": "objectgroup", "name": "Warps", "objects": [
+              {"x": 1.9, "y": 2, "properties": [
+                {"name": "to_zone", "value": 0},
+                {"name": "to_x", "value": 1},
+                {"name": "to_y", "value": 1}
+              ]}
+            ]}
+          ]
+        }"#;
+        assert!(
+            parse_tiled_json(json, 0).is_err(),
+            "fractional warp x=1.9 must be rejected (not silently truncated to x=1)"
+        );
+    }
+
+    /// Gate: width=0 or height=0 Tiled JSON must be rejected.
+    ///
+    /// A zero-dimension map produces a TileMap where no tile is ever walkable
+    /// (in_bounds always returns false for any coordinate). This is a degenerate
+    /// zone that blocks all movement and should not pass parse. The expected=0
+    /// check currently PASSES for width=0, height=N because the data array is
+    /// also empty — creating a ZoneMapDef with N empty-string rows.
+    ///
+    /// Kills: any impl that silently produces a zero-dimension ZoneMapDef.
+    #[test]
+    fn parse_tiled_rejects_zero_width() {
+        // width=0, height=2, data=[] satisfies data.len()==width*height==0
+        // but produces a ZoneMapDef with 2 empty rows — must be rejected.
+        let json = r#"{"width":0,"height":2,"layers":[{"type":"tilelayer","name":"T","data":[]}]}"#;
+        assert!(
+            parse_tiled_json(json, 0).is_err(),
+            "width=0 must be rejected (degenerate zero-dimension map)"
+        );
+    }
+
+    #[test]
+    fn parse_tiled_rejects_zero_height() {
+        // height=0, width=2, data=[] passes the data.len()==0 check
+        // but produces a ZoneMapDef with zero rows — must be rejected.
+        let json = r#"{"width":2,"height":0,"layers":[{"type":"tilelayer","name":"T","data":[]}]}"#;
+        assert!(
+            parse_tiled_json(json, 0).is_err(),
+            "height=0 must be rejected (degenerate zero-dimension map)"
         );
     }
 

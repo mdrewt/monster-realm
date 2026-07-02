@@ -13,7 +13,7 @@ function readRegistryDir(dirPath) {
     .sort()
     .map((name) => readFileSync(`${dirPath}/${name}`, 'utf8'))
     .join('\n')
-    .replace(/^[ \t]*\/\/.*$/gm, ''); // strip whole-line comments
+    .replace(/\/\/[^\n]*/g, ''); // strip both whole-line and inline // comments
 }
 
 export function parseZoneMapIds(ron) {

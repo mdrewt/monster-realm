@@ -258,8 +258,17 @@ pub fn validate_zone_maps(
 
     // Checks 5–7: warp validation
     for (m, src_map) in zone_maps.iter().zip(built.iter()) {
+        let mut seen_sources = std::collections::HashSet::new();
         for warp in &m.warps {
-            // Check 5: warp source in-bounds + walkable
+            // Check 5a: duplicate warp source positions are unreachable via warp_at (find returns first)
+            if !seen_sources.insert(warp.from) {
+                return Err(format!(
+                    "zone_map zone_id {}: duplicate warp source {:?}",
+                    m.zone_id, warp.from
+                ));
+            }
+
+            // Check 5b: warp source in-bounds + walkable
             if !src_map.is_walkable(warp.from) {
                 return Err(format!(
                     "zone_map zone_id {}: warp source {:?} is not walkable",
@@ -764,6 +773,48 @@ mod tests {
         assert!(
             result.is_err(),
             "TEETH: map 5×2 exceeds zone_def 3×3 — must be rejected, but validation passed"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Red-team gating tests (M11a hardening)
+    // -----------------------------------------------------------------------
+
+    /// Gate: validate_zone_maps must reject two warps with the same 'from' tile.
+    ///
+    /// warp_at uses iter().find() and returns the FIRST match. If two WarpDefs
+    /// share the same `from` position, the second is silently unreachable — the
+    /// player can never trigger it. An authoring error that creates a shadowed warp
+    /// must be caught at validation time, not silently lost at runtime.
+    ///
+    /// Kills: any impl that allows duplicate warp source positions to pass
+    /// validate_zone_maps.
+    #[test]
+    fn validate_zone_maps_rejects_duplicate_warp_source() {
+        let zone_maps = vec![
+            zone_map_def(
+                0,
+                vec!["...", "...", "..."],
+                vec![
+                    WarpDef {
+                        from: TilePos { x: 1, y: 1 },
+                        to_zone: 1,
+                        to_tile: TilePos { x: 1, y: 1 },
+                    },
+                    WarpDef {
+                        from: TilePos { x: 1, y: 1 }, // duplicate source — shadows first
+                        to_zone: 1,
+                        to_tile: TilePos { x: 2, y: 2 },
+                    },
+                ],
+            ),
+            zone_map_def(1, vec!["...", "...", "..."], vec![]),
+        ];
+        let zones = vec![zone_def(0, 10, 10), zone_def(1, 10, 10)];
+        let result = validate_zone_maps(&zone_maps, &zones);
+        assert!(
+            result.is_err(),
+            "duplicate warp source (1,1) in same zone must be rejected (second warp is silently shadowed by warp_at)"
         );
     }
 
