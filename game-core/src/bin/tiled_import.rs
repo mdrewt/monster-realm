@@ -1,36 +1,532 @@
 // tiled_import.rs — M11a: pure Tiled JSON → ZoneMapDef converter.
 //
-// This binary is a STUB. The `parse_tiled_json` function is declared with
-// `todo!()` so the binary compiles (allowing the test suite below to be RED
-// at runtime rather than failing to compile for a missing symbol). The
-// implementation lands in the M11a feature slice.
-//
-// Architecture: std-only (~200-250 lines recursive-descent JSON parser).
-// No serde_json dependency — game-core Cargo.toml must not gain new deps.
+// Architecture: std-only recursive-descent JSON parser. No serde_json —
+// game-core Cargo.toml must not gain new deps (constraint from build plan).
 // GID convention: 0 = wall('#'), 1 = floor('.'), 2 = grass('~').
 // Object layer "Warps": objects with to_zone, to_x, to_y int properties.
 
 use game_core::content::{WarpDef, ZoneMapDef};
 use game_core::types::TilePos;
 
+// ===========================================================================
+// Minimal JSON value tree — covers the Tiled subset we need.
+// ===========================================================================
+
+// JsonValue covers the full JSON grammar so the recursive-descent parser can
+// handle any valid JSON. Not all variants are used in the Tiled output path
+// (e.g. Bool, Null) — allow dead_code rather than removing them, since
+// removing them would make the parser silently fail on JSON with those values.
+#[allow(dead_code)]
+#[derive(Debug)]
+enum JsonValue {
+    Null,
+    Bool(bool),
+    Num(f64),
+    Str(String),
+    Arr(Vec<JsonValue>),
+    /// Object as ordered key-value pairs (avoids HashMap dep).
+    Obj(Vec<(String, JsonValue)>),
+}
+
+// ===========================================================================
+// Recursive-descent parser
+// ===========================================================================
+
+struct Parser<'a> {
+    input: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Parser<'a> {
+    fn new(input: &'a str) -> Self {
+        Parser {
+            input: input.as_bytes(),
+            pos: 0,
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.input.get(self.pos).copied()
+    }
+
+    fn advance(&mut self) -> Option<u8> {
+        let b = self.input.get(self.pos).copied();
+        if b.is_some() {
+            self.pos += 1;
+        }
+        b
+    }
+
+    fn skip_whitespace(&mut self) {
+        while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+            self.pos += 1;
+        }
+    }
+
+    fn expect_byte(&mut self, b: u8) -> Result<(), String> {
+        self.skip_whitespace();
+        match self.advance() {
+            Some(got) if got == b => Ok(()),
+            Some(got) => Err(format!(
+                "expected '{}' at pos {}, got '{}'",
+                b as char,
+                self.pos - 1,
+                got as char
+            )),
+            None => Err(format!(
+                "expected '{}' at pos {}, got EOF",
+                b as char, self.pos
+            )),
+        }
+    }
+
+    fn parse_value(&mut self) -> Result<JsonValue, String> {
+        self.skip_whitespace();
+        match self.peek() {
+            Some(b'"') => self.parse_string().map(JsonValue::Str),
+            Some(b'{') => self.parse_object(),
+            Some(b'[') => self.parse_array(),
+            Some(b't') => {
+                self.expect_literal(b"true")?;
+                Ok(JsonValue::Bool(true))
+            }
+            Some(b'f') => {
+                self.expect_literal(b"false")?;
+                Ok(JsonValue::Bool(false))
+            }
+            Some(b'n') => {
+                self.expect_literal(b"null")?;
+                Ok(JsonValue::Null)
+            }
+            Some(b'-') | Some(b'0'..=b'9') => self.parse_number(),
+            Some(c) => Err(format!(
+                "unexpected char '{}' at pos {}",
+                c as char, self.pos
+            )),
+            None => Err(format!("unexpected EOF at pos {}", self.pos)),
+        }
+    }
+
+    fn expect_literal(&mut self, lit: &[u8]) -> Result<(), String> {
+        for &b in lit {
+            match self.advance() {
+                Some(got) if got == b => {}
+                Some(got) => {
+                    return Err(format!(
+                        "expected '{}', got '{}' at pos {}",
+                        b as char,
+                        got as char,
+                        self.pos - 1
+                    ))
+                }
+                None => return Err("unexpected EOF in literal".to_string()),
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_string(&mut self) -> Result<String, String> {
+        self.expect_byte(b'"')?;
+        let mut s = String::new();
+        loop {
+            match self.advance() {
+                None => return Err("unterminated string".to_string()),
+                Some(b'"') => break,
+                Some(b'\\') => {
+                    match self.advance() {
+                        Some(b'"') => s.push('"'),
+                        Some(b'\\') => s.push('\\'),
+                        Some(b'/') => s.push('/'),
+                        Some(b'n') => s.push('\n'),
+                        Some(b't') => s.push('\t'),
+                        Some(b'r') => s.push('\r'),
+                        Some(b'b') => s.push('\x08'),
+                        Some(b'f') => s.push('\x0C'),
+                        Some(b'u') => {
+                            // Parse 4 hex digits
+                            let mut hex = [0u8; 4];
+                            for h in &mut hex {
+                                *h = self.advance().ok_or("EOF in unicode escape")?;
+                            }
+                            let hex_str =
+                                std::str::from_utf8(&hex).map_err(|_| "invalid unicode escape")?;
+                            let code = u32::from_str_radix(hex_str, 16)
+                                .map_err(|_| format!("invalid hex in \\u{hex_str}"))?;
+                            let ch = char::from_u32(code)
+                                .ok_or_else(|| format!("invalid unicode codepoint {code}"))?;
+                            s.push(ch);
+                        }
+                        Some(c) => return Err(format!("unknown escape \\{}", c as char)),
+                        None => return Err("EOF after backslash".to_string()),
+                    }
+                }
+                Some(b) => s.push(b as char),
+            }
+        }
+        Ok(s)
+    }
+
+    fn parse_number(&mut self) -> Result<JsonValue, String> {
+        let start = self.pos;
+        // optional minus
+        if self.peek() == Some(b'-') {
+            self.pos += 1;
+        }
+        // digits
+        while matches!(self.peek(), Some(b'0'..=b'9')) {
+            self.pos += 1;
+        }
+        // optional fractional
+        if self.peek() == Some(b'.') {
+            self.pos += 1;
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.pos += 1;
+            }
+        }
+        // optional exponent
+        if matches!(self.peek(), Some(b'e' | b'E')) {
+            self.pos += 1;
+            if matches!(self.peek(), Some(b'+' | b'-')) {
+                self.pos += 1;
+            }
+            while matches!(self.peek(), Some(b'0'..=b'9')) {
+                self.pos += 1;
+            }
+        }
+        let s = std::str::from_utf8(&self.input[start..self.pos])
+            .map_err(|_| "non-UTF8 in number".to_string())?;
+        let n: f64 = s.parse().map_err(|e| format!("bad number {s}: {e}"))?;
+        Ok(JsonValue::Num(n))
+    }
+
+    fn parse_array(&mut self) -> Result<JsonValue, String> {
+        self.expect_byte(b'[')?;
+        let mut arr = Vec::new();
+        self.skip_whitespace();
+        if self.peek() == Some(b']') {
+            self.pos += 1;
+            return Ok(JsonValue::Arr(arr));
+        }
+        loop {
+            arr.push(self.parse_value()?);
+            self.skip_whitespace();
+            match self.peek() {
+                Some(b',') => {
+                    self.pos += 1;
+                }
+                Some(b']') => {
+                    self.pos += 1;
+                    break;
+                }
+                other => {
+                    return Err(format!(
+                        "expected ',' or ']' in array at pos {}, got {:?}",
+                        self.pos,
+                        other.map(|b| b as char)
+                    ))
+                }
+            }
+        }
+        Ok(JsonValue::Arr(arr))
+    }
+
+    fn parse_object(&mut self) -> Result<JsonValue, String> {
+        self.expect_byte(b'{')?;
+        let mut pairs = Vec::new();
+        self.skip_whitespace();
+        if self.peek() == Some(b'}') {
+            self.pos += 1;
+            return Ok(JsonValue::Obj(pairs));
+        }
+        loop {
+            self.skip_whitespace();
+            let key = self.parse_string()?;
+            self.expect_byte(b':')?;
+            let val = self.parse_value()?;
+            pairs.push((key, val));
+            self.skip_whitespace();
+            match self.peek() {
+                Some(b',') => {
+                    self.pos += 1;
+                }
+                Some(b'}') => {
+                    self.pos += 1;
+                    break;
+                }
+                other => {
+                    return Err(format!(
+                        "expected ',' or '}}' in object at pos {}, got {:?}",
+                        self.pos,
+                        other.map(|b| b as char)
+                    ))
+                }
+            }
+        }
+        Ok(JsonValue::Obj(pairs))
+    }
+}
+
+// ===========================================================================
+// JSON value helpers
+// ===========================================================================
+
+fn obj_get<'a>(obj: &'a [(String, JsonValue)], key: &str) -> Option<&'a JsonValue> {
+    obj.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+}
+
+fn as_u32(v: &JsonValue, ctx: &str) -> Result<u32, String> {
+    match v {
+        JsonValue::Num(n) => {
+            let i = *n as i64;
+            u32::try_from(i).map_err(|_| format!("{ctx}: value {n} out of u32 range"))
+        }
+        other => Err(format!("{ctx}: expected number, got {other:?}")),
+    }
+}
+
+fn as_i32(v: &JsonValue, ctx: &str) -> Result<i32, String> {
+    match v {
+        JsonValue::Num(n) => {
+            let i = *n as i64;
+            i32::try_from(i).map_err(|_| format!("{ctx}: value {n} out of i32 range"))
+        }
+        other => Err(format!("{ctx}: expected number, got {other:?}")),
+    }
+}
+
+fn as_str<'a>(v: &'a JsonValue, ctx: &str) -> Result<&'a str, String> {
+    match v {
+        JsonValue::Str(s) => Ok(s.as_str()),
+        other => Err(format!("{ctx}: expected string, got {other:?}")),
+    }
+}
+
+fn as_arr<'a>(v: &'a JsonValue, ctx: &str) -> Result<&'a [JsonValue], String> {
+    match v {
+        JsonValue::Arr(a) => Ok(a.as_slice()),
+        other => Err(format!("{ctx}: expected array, got {other:?}")),
+    }
+}
+
+fn as_obj<'a>(v: &'a JsonValue, ctx: &str) -> Result<&'a [(String, JsonValue)], String> {
+    match v {
+        JsonValue::Obj(pairs) => Ok(pairs.as_slice()),
+        other => Err(format!("{ctx}: expected object, got {other:?}")),
+    }
+}
+
+// ===========================================================================
+// parse_tiled_json — the public entry point
+// ===========================================================================
+
 /// Parse a Tiled JSON export (minimal subset) into a `ZoneMapDef`.
 ///
 /// # Errors
 /// Returns `Err` if:
 /// - `json` is not valid JSON in the expected subset
-/// - There is no `tilelayer` named "Tiles" (or any tilelayer)
+/// - There is no `tilelayer` (any name)
 /// - `data.len() != width * height`
 /// - Any GID is not in {0, 1, 2}
 /// - A "Warps" object layer has a malformed object or missing properties
 pub fn parse_tiled_json(json: &str, zone_id: u32) -> Result<ZoneMapDef, String> {
-    todo!("M11a: implement std-only Tiled JSON → ZoneMapDef parser")
+    if json.is_empty() {
+        return Err("empty JSON input".to_string());
+    }
+
+    // Parse JSON
+    let mut parser = Parser::new(json);
+    let root_val = parser
+        .parse_value()
+        .map_err(|e| format!("JSON parse error: {e}"))?;
+    parser.skip_whitespace();
+    if parser.pos < parser.input.len() {
+        return Err(format!("trailing content after JSON at pos {}", parser.pos));
+    }
+
+    let root = as_obj(&root_val, "root")?;
+
+    // Extract width and height
+    let width_val = obj_get(root, "width").ok_or("missing 'width' in root object")?;
+    let width = as_u32(width_val, "width")? as usize;
+
+    let height_val = obj_get(root, "height").ok_or("missing 'height' in root object")?;
+    let height = as_u32(height_val, "height")? as usize;
+
+    // Extract layers
+    let layers_val = obj_get(root, "layers").ok_or("missing 'layers' in root object")?;
+    let layers = as_arr(layers_val, "layers")?;
+
+    // Find the tile layer (any tilelayer)
+    let mut tile_data: Option<&[JsonValue]> = None;
+    let mut warps: Vec<WarpDef> = Vec::new();
+
+    for (i, layer_val) in layers.iter().enumerate() {
+        let layer = as_obj(layer_val, &format!("layers[{i}]"))?;
+
+        let layer_type_val =
+            obj_get(layer, "type").ok_or_else(|| format!("layers[{i}]: missing 'type'"))?;
+        let layer_type = as_str(layer_type_val, &format!("layers[{i}].type"))?;
+
+        if layer_type == "tilelayer" && tile_data.is_none() {
+            let data_val = obj_get(layer, "data")
+                .ok_or_else(|| format!("layers[{i}] (tilelayer): missing 'data'"))?;
+            let data_arr = as_arr(data_val, &format!("layers[{i}].data"))?;
+            tile_data = Some(data_arr);
+        } else if layer_type == "objectgroup" {
+            // Check if this is the "Warps" layer
+            let name_val = obj_get(layer, "name");
+            let is_warps = name_val.and_then(|v| {
+                if let JsonValue::Str(s) = v {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            }) == Some("Warps");
+
+            if is_warps {
+                let objects_val = obj_get(layer, "objects")
+                    .ok_or_else(|| format!("layers[{i}] (Warps): missing 'objects'"))?;
+                let objects = as_arr(objects_val, &format!("layers[{i}].objects"))?;
+
+                for (j, obj_val) in objects.iter().enumerate() {
+                    let obj = as_obj(obj_val, &format!("layers[{i}].objects[{j}]"))?;
+
+                    let from_x_val = obj_get(obj, "x")
+                        .ok_or_else(|| format!("Warps object[{j}]: missing 'x'"))?;
+                    let from_x = as_i32(from_x_val, &format!("Warps object[{j}].x"))?;
+
+                    let from_y_val = obj_get(obj, "y")
+                        .ok_or_else(|| format!("Warps object[{j}]: missing 'y'"))?;
+                    let from_y = as_i32(from_y_val, &format!("Warps object[{j}].y"))?;
+
+                    // Parse custom properties
+                    let props_val = obj_get(obj, "properties")
+                        .ok_or_else(|| format!("Warps object[{j}]: missing 'properties'"))?;
+                    let props = as_arr(props_val, &format!("Warps object[{j}].properties"))?;
+
+                    let mut to_zone: Option<u32> = None;
+                    let mut to_x: Option<i32> = None;
+                    let mut to_y: Option<i32> = None;
+
+                    for (k, prop_val) in props.iter().enumerate() {
+                        let prop = as_obj(prop_val, &format!("properties[{k}]"))?;
+                        let name_v = obj_get(prop, "name")
+                            .ok_or_else(|| format!("properties[{k}]: missing 'name'"))?;
+                        let name = as_str(name_v, &format!("properties[{k}].name"))?;
+                        let value_v = obj_get(prop, "value")
+                            .ok_or_else(|| format!("properties[{k}]: missing 'value'"))?;
+                        match name {
+                            "to_zone" => {
+                                to_zone = Some(as_u32(value_v, "to_zone")?);
+                            }
+                            "to_x" => {
+                                to_x = Some(as_i32(value_v, "to_x")?);
+                            }
+                            "to_y" => {
+                                to_y = Some(as_i32(value_v, "to_y")?);
+                            }
+                            _ => {} // ignore unknown properties
+                        }
+                    }
+
+                    let to_zone = to_zone
+                        .ok_or_else(|| format!("Warps object[{j}]: missing 'to_zone' property"))?;
+                    let to_x =
+                        to_x.ok_or_else(|| format!("Warps object[{j}]: missing 'to_x' property"))?;
+                    let to_y =
+                        to_y.ok_or_else(|| format!("Warps object[{j}]: missing 'to_y' property"))?;
+
+                    warps.push(WarpDef {
+                        from: TilePos {
+                            x: from_x,
+                            y: from_y,
+                        },
+                        to_zone,
+                        to_tile: TilePos { x: to_x, y: to_y },
+                    });
+                }
+            }
+        }
+    }
+
+    // Fail if no tile layer found
+    let tile_data = tile_data.ok_or("no tilelayer found in layers")?;
+
+    // Validate data length
+    let expected = width * height;
+    if tile_data.len() != expected {
+        return Err(format!(
+            "data.len()={} != width*height={width}*{height}={}",
+            tile_data.len(),
+            expected
+        ));
+    }
+
+    // Build rows from GIDs
+    let mut rows: Vec<String> = Vec::with_capacity(height);
+    for row_idx in 0..height {
+        let mut row = String::with_capacity(width);
+        for col_idx in 0..width {
+            let gid_val = &tile_data[row_idx * width + col_idx];
+            let gid = as_u32(gid_val, &format!("data[{}]", row_idx * width + col_idx))?;
+            let ch = match gid {
+                0 => '#',
+                1 => '.',
+                2 => '~',
+                other => {
+                    return Err(format!(
+                        "unknown GID {other} at row={row_idx} col={col_idx} (expected 0, 1, or 2)"
+                    ))
+                }
+            };
+            row.push(ch);
+        }
+        rows.push(row);
+    }
+
+    Ok(ZoneMapDef {
+        zone_id,
+        rows,
+        warps,
+    })
 }
 
 fn main() {
     // Thin wrapper: arg parsing + file I/O + parse_tiled_json + RON output.
     // No logic lives here (no-logic-in-wrapper eval, ADR-0051).
-    eprintln!("tiled_import: not yet implemented (M11a stub)");
-    std::process::exit(1);
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 3 {
+        eprintln!("Usage: tiled_import <input.json> <zone_id>");
+        std::process::exit(1);
+    }
+    let path = &args[1];
+    let zone_id: u32 = match args[2].parse() {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("tiled_import: invalid zone_id '{}': {e}", args[2]);
+            std::process::exit(1);
+        }
+    };
+    let json = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("tiled_import: cannot read '{path}': {e}");
+            std::process::exit(1);
+        }
+    };
+    match parse_tiled_json(&json, zone_id) {
+        Ok(zone_map) => match ron::to_string(&zone_map) {
+            Ok(s) => println!("{s}"),
+            Err(e) => {
+                eprintln!("tiled_import: RON serialization error: {e}");
+                std::process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("tiled_import: parse error: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 #[cfg(test)]
