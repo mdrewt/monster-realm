@@ -351,6 +351,29 @@ pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
     Ok(())
 }
 
+// --- Test seams (isolated, testable, pure-ish logic) ---
+// These are stubs that tests call with a fake database. The full implementation
+// will extract the seam logic from the reducers above.
+
+#[cfg(test)]
+pub(crate) fn evolve_seam(
+    _db: &mut evolution_tests::TestEvolutionDb,
+    _sender: spacetimedb::Identity,
+    _monster_id: u64,
+) -> Result<(), String> {
+    Err("seam not yet implemented".to_string())
+}
+
+#[cfg(test)]
+pub(crate) fn fuse_seam(
+    _db: &mut evolution_tests::TestEvolutionDb,
+    _sender: spacetimedb::Identity,
+    _a_id: u64,
+    _b_id: u64,
+) -> Result<(), String> {
+    Err("seam not yet implemented".to_string())
+}
+
 #[cfg(test)]
 #[path = "evolution_tests.rs"]
 mod evolution_tests;

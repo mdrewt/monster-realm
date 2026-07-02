@@ -177,6 +177,7 @@ fn m7b_test_monster_row() -> Monster {
         current_hp: 90, // damaged — not at max
         party_slot: 0,
         last_care_at_ms: 0,
+        evolves_to: None,
     }
 }
 
