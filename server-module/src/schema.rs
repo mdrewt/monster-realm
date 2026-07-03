@@ -303,3 +303,77 @@ pub struct Fusion {
     pub b_species: u32,
     pub to_species: u32,
 }
+
+// --- M12b tables: NPC, dialogue, quest, healing (ADR-0069) -------------------
+
+/// NPC entity role row. Entity/component: an NPC is a `character` row + this.
+/// `zone_id` mirrors `character.zone_id` (kept in sync on zone crossings, M12c).
+#[spacetimedb::table(name = npc, public)]
+pub struct Npc {
+    #[primary_key]
+    pub entity_id: u64,
+    pub npc_id: String,
+    #[index(btree)]
+    pub zone_id: u32,
+    pub home_x: i32,
+    pub home_y: i32,
+    pub wander_radius: u8,
+    pub dialogue_tree_id: String,
+}
+
+/// PRIVATE per-player dialogue state: flags + done-quest history.
+/// Must-never-leak: flags gate content branches (ADR-0015, ADR-0069).
+/// `active_quests` is NOT stored here — derived from `player_quest` rows.
+#[spacetimedb::table(name = player_dialogue_state)]
+pub struct PlayerDialogueStateRow {
+    #[primary_key]
+    pub owner_identity: Identity,
+    pub flags: Vec<String>,
+    pub done_quests: Vec<String>,
+}
+
+/// Active quest progress. Public (quest log is world-readable like `inventory`).
+/// Per-owner transport RLS deferred to M16.
+#[derive(Clone)]
+#[spacetimedb::table(name = player_quest, public)]
+pub struct PlayerQuestRow {
+    #[primary_key]
+    #[auto_inc]
+    pub pq_id: u64,
+    #[index(btree)]
+    pub owner_identity: Identity,
+    pub quest_id: String,
+    pub step_index: u32,
+}
+
+/// In-progress dialogue node. Single row per player (PK = owner_identity).
+#[spacetimedb::table(name = player_conversation, public)]
+pub struct PlayerConversation {
+    #[primary_key]
+    pub owner_identity: Identity,
+    pub npc_entity_id: u64,
+    pub current_node_id: String,
+}
+
+/// Healing location content seeded by `sync_content`. Public (world-readable).
+#[spacetimedb::table(name = heal_location_row, public)]
+pub struct HealLocationRow {
+    #[primary_key]
+    pub location_id: u32,
+    #[index(btree)]
+    pub zone_id: u32,
+    pub tile_x: i32,
+    pub tile_y: i32,
+    pub cost_item_id: Option<u32>,
+    pub cost_qty: u32,
+    pub cooldown_ms: i64,
+}
+
+/// PRIVATE per-player heal cooldown anchor.
+/// Must-never-leak: timestamp reveals heal timing (ADR-0015, ADR-0069).
+#[spacetimedb::table(name = heal_cooldown)]
+pub struct HealCooldown {
+    #[primary_key]
+    pub owner_identity: Identity,
+    pub last_heal_at_ms: i64,
+}

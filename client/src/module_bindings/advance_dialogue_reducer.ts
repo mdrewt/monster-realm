@@ -11,5 +11,5 @@ import {
 } from "spacetimedb";
 
 export default {
-  locationId: __t.u32(),
+  choiceIdx: __t.u32(),
 };

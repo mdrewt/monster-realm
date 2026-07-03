@@ -10,6 +10,12 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export default {
-  locationId: __t.u32(),
-};
+export default __t.row({
+  entityId: __t.u64().primaryKey().name("entity_id"),
+  npcId: __t.string().name("npc_id"),
+  zoneId: __t.u32().name("zone_id"),
+  homeX: __t.i32().name("home_x"),
+  homeY: __t.i32().name("home_y"),
+  wanderRadius: __t.u8().name("wander_radius"),
+  dialogueTreeId: __t.string().name("dialogue_tree_id"),
+});

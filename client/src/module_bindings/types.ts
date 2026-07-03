@@ -157,6 +157,23 @@ export const Fusion = __t.object("Fusion", {
 });
 export type Fusion = __Infer<typeof Fusion>;
 
+export const HealCooldown = __t.object("HealCooldown", {
+  ownerIdentity: __t.identity(),
+  lastHealAtMs: __t.i64(),
+});
+export type HealCooldown = __Infer<typeof HealCooldown>;
+
+export const HealLocationRow = __t.object("HealLocationRow", {
+  locationId: __t.u32(),
+  zoneId: __t.u32(),
+  tileX: __t.i32(),
+  tileY: __t.i32(),
+  costItemId: __t.option(__t.u32()),
+  costQty: __t.u32(),
+  cooldownMs: __t.i64(),
+});
+export type HealLocationRow = __Infer<typeof HealLocationRow>;
+
 export const Inventory = __t.object("Inventory", {
   invId: __t.u64(),
   ownerIdentity: __t.identity(),
@@ -279,6 +296,17 @@ export const NatureKind = __t.enum("NatureKind", {
 });
 export type NatureKind = __Infer<typeof NatureKind>;
 
+export const Npc = __t.object("Npc", {
+  entityId: __t.u64(),
+  npcId: __t.string(),
+  zoneId: __t.u32(),
+  homeX: __t.i32(),
+  homeY: __t.i32(),
+  wanderRadius: __t.u8(),
+  dialogueTreeId: __t.string(),
+});
+export type Npc = __Infer<typeof Npc>;
+
 export const Player = __t.object("Player", {
   identity: __t.identity(),
   entityId: __t.u64(),
@@ -287,6 +315,28 @@ export const Player = __t.object("Player", {
   lastInputSeq: __t.u64(),
 });
 export type Player = __Infer<typeof Player>;
+
+export const PlayerConversation = __t.object("PlayerConversation", {
+  ownerIdentity: __t.identity(),
+  npcEntityId: __t.u64(),
+  currentNodeId: __t.string(),
+});
+export type PlayerConversation = __Infer<typeof PlayerConversation>;
+
+export const PlayerDialogueStateRow = __t.object("PlayerDialogueStateRow", {
+  ownerIdentity: __t.identity(),
+  flags: __t.array(__t.string()),
+  doneQuests: __t.array(__t.string()),
+});
+export type PlayerDialogueStateRow = __Infer<typeof PlayerDialogueStateRow>;
+
+export const PlayerQuestRow = __t.object("PlayerQuestRow", {
+  pqId: __t.u64(),
+  ownerIdentity: __t.identity(),
+  questId: __t.string(),
+  stepIndex: __t.u32(),
+});
+export type PlayerQuestRow = __Infer<typeof PlayerQuestRow>;
 
 export const SkillRow = __t.object("SkillRow", {
   id: __t.u32(),

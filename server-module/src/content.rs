@@ -11,14 +11,15 @@
 
 use crate::marshal::encounter_rows_from_table;
 use crate::schema::{
-    config, encounter, fusion, item_row, skill_row, species_row, type_relation_row, zone_def,
-    Fusion, ItemRow, SkillRow, SpeciesRow, TypeRelationRow, ZoneDefRow,
+    character, config, encounter, fusion, heal_location_row, item_row, npc, skill_row, species_row,
+    type_relation_row, zone_def, Character, Fusion, HealLocationRow, ItemRow, Npc, SkillRow,
+    SpeciesRow, TypeRelationRow, ZoneDefRow,
 };
 use crate::CONTENT_VERSION;
 use game_core::{
-    load_encounters, load_evolutions, load_fusion, load_items, load_skills, load_species,
-    load_type_chart, load_zone_maps, validate_content, validate_encounters,
-    validate_evolution_fusion, validate_zone_maps,
+    load_encounters, load_evolutions, load_fusion, load_heal_locations, load_items, load_npc_defs,
+    load_skills, load_species, load_type_chart, load_zone_maps, validate_content,
+    validate_encounters, validate_evolution_fusion, validate_zone_maps, ActionState, Direction,
 };
 use spacetimedb::{ReducerContext, Table};
 
@@ -286,6 +287,10 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) {
         });
     }
 
+    // --- M12b NPC entities + heal locations -----------------------------------
+    seed_npc_entities(ctx);
+    seed_heal_locations(ctx);
+
     // Stamp the now-current content version so a later redundant sync_content
     // short-circuits at the top of this function (ADR-0054). A missing config row
     // here is an invariant violation (init always inserts it) — fail loud, don't
@@ -299,6 +304,73 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) {
             log::error!(
                 "{{\"evt\":\"sync_content_error\",\"reason\":\"config row missing at stamp\"}}"
             );
+        }
+    }
+}
+
+fn seed_npc_entities(ctx: &ReducerContext) {
+    let npc_defs = load_npc_defs();
+    for def in &npc_defs {
+        // Idempotent: skip if this npc_id already has a row
+        let already_seeded = ctx.db.npc().iter().any(|n| n.npc_id == def.npc_id);
+        if already_seeded {
+            continue;
+        }
+        let ch = ctx.db.character().insert(Character {
+            entity_id: 0,
+            zone_id: def.zone_id,
+            tile_x: def.spawn_x,
+            tile_y: def.spawn_y,
+            facing: Direction::South,
+            action: ActionState::Idle,
+            move_started_at_ms: 0,
+            sprite_id: def.sprite_id,
+            move_queue: vec![],
+        });
+        ctx.db.npc().insert(Npc {
+            entity_id: ch.entity_id,
+            npc_id: def.npc_id.clone(),
+            zone_id: def.zone_id,
+            home_x: def.home_x,
+            home_y: def.home_y,
+            wander_radius: def.wander_radius,
+            dialogue_tree_id: def.dialogue_tree_id.clone(),
+        });
+    }
+}
+
+fn seed_heal_locations(ctx: &ReducerContext) {
+    let defs = load_heal_locations();
+    for def in &defs {
+        // Content integrity (F4): cost_item_id without cost_qty is a config error
+        if def.cost_item_id.is_some() && def.cost_qty == 0 {
+            log::error!(
+                "{{\"evt\":\"seed_heal_error\",\"location_id\":{},\"reason\":\"cost_item_id set but cost_qty is 0\"}}",
+                def.location_id
+            );
+            continue;
+        }
+        let row = HealLocationRow {
+            location_id: def.location_id,
+            zone_id: def.zone_id,
+            tile_x: def.tile_x,
+            tile_y: def.tile_y,
+            cost_item_id: def.cost_item_id,
+            cost_qty: def.cost_qty,
+            cooldown_ms: def.cooldown_ms,
+        };
+        match ctx
+            .db
+            .heal_location_row()
+            .location_id()
+            .find(def.location_id)
+        {
+            Some(_) => {
+                ctx.db.heal_location_row().location_id().update(row);
+            }
+            None => {
+                ctx.db.heal_location_row().insert(row);
+            }
         }
     }
 }

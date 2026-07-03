@@ -6,9 +6,11 @@
 import { type Infer as __Infer } from "spacetimedb";
 
 // Import all reducer arg schemas
+import AdvanceDialogueReducer from "../advance_dialogue_reducer";
 import AttemptRecruitReducer from "../attempt_recruit_reducer";
 import CareReducer from "../care_reducer";
 import ClearQueueReducer from "../clear_queue_reducer";
+import DismissDialogueReducer from "../dismiss_dialogue_reducer";
 import EnqueueMoveReducer from "../enqueue_move_reducer";
 import EvolveReducer from "../evolve_reducer";
 import FleeReducer from "../flee_reducer";
@@ -22,11 +24,14 @@ import StartBattleReducer from "../start_battle_reducer";
 import SubmitAttackReducer from "../submit_attack_reducer";
 import SwapActiveReducer from "../swap_active_reducer";
 import SyncContentReducer from "../sync_content_reducer";
+import TalkReducer from "../talk_reducer";
 import TrainReducer from "../train_reducer";
 
+export type AdvanceDialogueParams = __Infer<typeof AdvanceDialogueReducer>;
 export type AttemptRecruitParams = __Infer<typeof AttemptRecruitReducer>;
 export type CareParams = __Infer<typeof CareReducer>;
 export type ClearQueueParams = __Infer<typeof ClearQueueReducer>;
+export type DismissDialogueParams = __Infer<typeof DismissDialogueReducer>;
 export type EnqueueMoveParams = __Infer<typeof EnqueueMoveReducer>;
 export type EvolveParams = __Infer<typeof EvolveReducer>;
 export type FleeParams = __Infer<typeof FleeReducer>;
@@ -40,5 +45,6 @@ export type StartBattleParams = __Infer<typeof StartBattleReducer>;
 export type SubmitAttackParams = __Infer<typeof SubmitAttackReducer>;
 export type SwapActiveParams = __Infer<typeof SwapActiveReducer>;
 export type SyncContentParams = __Infer<typeof SyncContentReducer>;
+export type TalkParams = __Infer<typeof TalkReducer>;
 export type TrainParams = __Infer<typeof TrainReducer>;
 

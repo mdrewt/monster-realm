@@ -10,6 +10,12 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export default {
-  locationId: __t.u32(),
-};
+export default __t.row({
+  locationId: __t.u32().primaryKey().name("location_id"),
+  zoneId: __t.u32().name("zone_id"),
+  tileX: __t.i32().name("tile_x"),
+  tileY: __t.i32().name("tile_y"),
+  costItemId: __t.option(__t.u32()).name("cost_item_id"),
+  costQty: __t.u32().name("cost_qty"),
+  cooldownMs: __t.i64().name("cooldown_ms"),
+});

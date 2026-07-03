@@ -34,9 +34,11 @@ import {
 } from "spacetimedb";
 
 // Import all reducer arg schemas
+import AdvanceDialogueReducer from "./advance_dialogue_reducer";
 import AttemptRecruitReducer from "./attempt_recruit_reducer";
 import CareReducer from "./care_reducer";
 import ClearQueueReducer from "./clear_queue_reducer";
+import DismissDialogueReducer from "./dismiss_dialogue_reducer";
 import EnqueueMoveReducer from "./enqueue_move_reducer";
 import EvolveReducer from "./evolve_reducer";
 import FleeReducer from "./flee_reducer";
@@ -50,6 +52,7 @@ import StartBattleReducer from "./start_battle_reducer";
 import SubmitAttackReducer from "./submit_attack_reducer";
 import SwapActiveReducer from "./swap_active_reducer";
 import SyncContentReducer from "./sync_content_reducer";
+import TalkReducer from "./talk_reducer";
 import TrainReducer from "./train_reducer";
 
 // Import all procedure arg schemas
@@ -59,10 +62,14 @@ import BattleRow from "./battle_table";
 import CharacterRow from "./character_table";
 import ConfigRow from "./config_table";
 import FusionRow from "./fusion_table";
+import HealLocationRowRow from "./heal_location_row_table";
 import InventoryRow from "./inventory_table";
 import ItemRowRow from "./item_row_table";
 import MonsterPubRow from "./monster_pub_table";
+import NpcRow from "./npc_table";
 import PlayerRow from "./player_table";
+import PlayerConversationRow from "./player_conversation_table";
+import PlayerQuestRow from "./player_quest_table";
 import SkillRowRow from "./skill_row_table";
 import SpeciesRowRow from "./species_row_table";
 import TypeRelationRowRow from "./type_relation_row_table";
@@ -122,6 +129,20 @@ const tablesSchema = __schema({
       { name: 'fusion_fusion_id_key', constraint: 'unique', columns: ['fusionId'] },
     ],
   }, FusionRow),
+  heal_location_row: __table({
+    name: 'heal_location_row',
+    indexes: [
+      { accessor: 'location_id', name: 'heal_location_row_location_id_idx_btree', algorithm: 'btree', columns: [
+        'locationId',
+      ] },
+      { accessor: 'zone_id', name: 'heal_location_row_zone_id_idx_btree', algorithm: 'btree', columns: [
+        'zoneId',
+      ] },
+    ],
+    constraints: [
+      { name: 'heal_location_row_location_id_key', constraint: 'unique', columns: ['locationId'] },
+    ],
+  }, HealLocationRowRow),
   inventory: __table({
     name: 'inventory',
     indexes: [
@@ -161,6 +182,20 @@ const tablesSchema = __schema({
       { name: 'monster_pub_monster_id_key', constraint: 'unique', columns: ['monsterId'] },
     ],
   }, MonsterPubRow),
+  npc: __table({
+    name: 'npc',
+    indexes: [
+      { accessor: 'entity_id', name: 'npc_entity_id_idx_btree', algorithm: 'btree', columns: [
+        'entityId',
+      ] },
+      { accessor: 'zone_id', name: 'npc_zone_id_idx_btree', algorithm: 'btree', columns: [
+        'zoneId',
+      ] },
+    ],
+    constraints: [
+      { name: 'npc_entity_id_key', constraint: 'unique', columns: ['entityId'] },
+    ],
+  }, NpcRow),
   player: __table({
     name: 'player',
     indexes: [
@@ -175,6 +210,31 @@ const tablesSchema = __schema({
       { name: 'player_identity_key', constraint: 'unique', columns: ['identity'] },
     ],
   }, PlayerRow),
+  player_conversation: __table({
+    name: 'player_conversation',
+    indexes: [
+      { accessor: 'owner_identity', name: 'player_conversation_owner_identity_idx_btree', algorithm: 'btree', columns: [
+        'ownerIdentity',
+      ] },
+    ],
+    constraints: [
+      { name: 'player_conversation_owner_identity_key', constraint: 'unique', columns: ['ownerIdentity'] },
+    ],
+  }, PlayerConversationRow),
+  player_quest: __table({
+    name: 'player_quest',
+    indexes: [
+      { accessor: 'owner_identity', name: 'player_quest_owner_identity_idx_btree', algorithm: 'btree', columns: [
+        'ownerIdentity',
+      ] },
+      { accessor: 'pq_id', name: 'player_quest_pq_id_idx_btree', algorithm: 'btree', columns: [
+        'pqId',
+      ] },
+    ],
+    constraints: [
+      { name: 'player_quest_pq_id_key', constraint: 'unique', columns: ['pqId'] },
+    ],
+  }, PlayerQuestRow),
   skill_row: __table({
     name: 'skill_row',
     indexes: [
@@ -223,9 +283,11 @@ const tablesSchema = __schema({
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
 const reducersSchema = __reducers(
+  __reducerSchema("advance_dialogue", AdvanceDialogueReducer),
   __reducerSchema("attempt_recruit", AttemptRecruitReducer),
   __reducerSchema("care", CareReducer),
   __reducerSchema("clear_queue", ClearQueueReducer),
+  __reducerSchema("dismiss_dialogue", DismissDialogueReducer),
   __reducerSchema("enqueue_move", EnqueueMoveReducer),
   __reducerSchema("evolve", EvolveReducer),
   __reducerSchema("flee", FleeReducer),
@@ -239,6 +301,7 @@ const reducersSchema = __reducers(
   __reducerSchema("submit_attack", SubmitAttackReducer),
   __reducerSchema("swap_active", SwapActiveReducer),
   __reducerSchema("sync_content", SyncContentReducer),
+  __reducerSchema("talk", TalkReducer),
   __reducerSchema("train", TrainReducer),
 );
 

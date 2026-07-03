@@ -33,12 +33,13 @@ pub use combat::{
     TypeChart,
 };
 pub use content::{
-    load_encounters, load_evolutions, load_fusion, load_items, load_skills, load_species,
-    load_type_chart, load_zone_maps, load_zones, parse_encounters, parse_evolutions, parse_fusion,
-    parse_items, parse_skills, parse_species, parse_type_chart, parse_zone_maps,
-    parse_zone_maps_parts, parse_zones, validate_content, validate_encounters,
-    validate_evolution_fusion, validate_zones, EvolutionCondition, EvolutionTrigger, FusionRecipe,
-    ItemDef, SkillDef, Species, SpeciesEvolutions, TypeRelation, WarpDef, ZoneDef, ZoneMapDef,
+    load_dialogue_trees, load_encounters, load_evolutions, load_fusion, load_heal_locations,
+    load_items, load_npc_defs, load_quest_defs, load_skills, load_species, load_type_chart,
+    load_zone_maps, load_zones, parse_encounters, parse_evolutions, parse_fusion, parse_items,
+    parse_skills, parse_species, parse_type_chart, parse_zone_maps, parse_zone_maps_parts,
+    parse_zones, validate_content, validate_encounters, validate_evolution_fusion, validate_zones,
+    EvolutionCondition, EvolutionTrigger, FusionRecipe, HealLocationDef, ItemDef, NpcDef, SkillDef,
+    Species, SpeciesEvolutions, TypeRelation, WarpDef, ZoneDef, ZoneMapDef,
 };
 pub use dialogue::{
     apply_choice, apply_effects, apply_node_auto_effects, available_choices, evaluate_condition,
