@@ -233,33 +233,44 @@ Bump `CONTENT_VERSION` to 4.
 ## 5. `talk` and `advance_dialogue` reducer contracts
 
 ### `talk(ctx, npc_entity_id: u64) -> Result<(), String>`
-1. `require_player(ctx)` → player must be joined
+1. `let me = ctx.sender`; `require_player(ctx)` → player must be joined
 2. Look up `npc` row by `entity_id` → Err("npc not found") if absent
 3. Look up player's `character` row → Err("character not found") if absent
-4. Zone check: `player.character.zone_id == npc.zone_id` → Err("npc not in same zone") if not
-5. Range check: `manhattan_distance(player_pos, npc_pos) <= TALK_RANGE` (TALK_RANGE = 2) → Err("too far away")
-6. Enforce single-conversation: if `player_conversation` row exists for this player, reject or replace (policy: replace — a new talk supersedes old)
-7. Load dialogue tree: `game_core::load_dialogue_trees()` → find by `npc_row.dialogue_tree_id` → Err if not found
-8. Load player dialogue state: `load_player_dialogue_state(ctx, me)`
-9. `find_entry_node(tree, &state)` → Err("no dialogue available") if None
-10. `apply_node_auto_effects(node, &mut state)` — MUST call before writing state (ADR-0068)
-11. Apply effects to DB: `apply_effects_to_db(ctx, me, &node.auto_effects)`
-12. Write/update `player_conversation` row: `{owner_identity: me, npc_entity_id, current_node_id: node.id.clone()}`
-13. Fire quest trigger: `apply_quest_trigger(ctx, me, TriggerEvent::Talked { npc_id: npc_row.npc_id.clone() })`
-14. Log: `{"evt":"talk","sender":me,"npc":npc_entity_id}`
-15. Return Ok(())
+4. **Look up NPC's `character` row** by `npc_row.entity_id` → Err("npc character not found") if absent.  
+   **Use `npc_char.tile_x / npc_char.tile_y` as `npc_pos` for range check.** NEVER use `npc_row.home_x / npc_row.home_y` — those are home coordinates, not current wandered position (F7).
+5. Zone check: `player_char.zone_id == npc_char.zone_id` → Err("npc not in same zone") if not  
+   (use NPC's character zone, which mirrors `npc.zone_id` but is authoritative)
+6. Range check: `manhattan_distance(player_pos, npc_char_pos) <= TALK_RANGE` (TALK_RANGE = 2) → Err("too far away")
+7. Enforce single-conversation: if `player_conversation` row exists for `me`, replace it (new talk supersedes old)
+8. Load dialogue tree: `game_core::load_dialogue_trees()` → find by `npc_row.dialogue_tree_id` → Err if not found
+9. Load player dialogue state: `load_player_dialogue_state(ctx, me)`
+10. `find_entry_node(tree, &state)` → Err("no dialogue available") if None
+11. `apply_node_auto_effects(node, &mut state)` — MUST call before writing state (ADR-0068)
+12. Apply effects to DB: `apply_effects_to_db(ctx, me, &mut state, &node.auto_effects)` — routes SetFlag/ClearFlag (updates `state` flags in-memory), StartQuest → inserts `player_quest` row, GrantItem → `grant_item`
+13. Write/update `player_conversation` row: `{owner_identity: me, npc_entity_id, current_node_id: node.id.clone()}`
+14. Fire quest trigger: `apply_quest_trigger(ctx, me, TriggerEvent::Talked { npc_id: npc_row.npc_id.clone() }, &mut state)`  
+    `apply_quest_trigger` signature MUST accept `state: &mut PlayerDialogueState`. MUST NOT call `load_player_dialogue_state` internally — it uses the caller's in-memory state. On `QuestComplete`: updates `state.done_quests`, removes from `player_quest`, grants reward (F2).
+15. **Write state to DB ONCE**: `write_player_dialogue_state(ctx, me, &state)` — persists flags (from step 11) + done_quests (from any quest completions in step 14). This is the single authoritative write for `player_dialogue_state` per reducer invocation (F2).
+16. Log: `{"evt":"talk","sender":me,"npc":npc_entity_id}`
+17. Return Ok(())
 
 ### `advance_dialogue(ctx, choice_idx: u32) -> Result<(), String>`
-1. Look up active `player_conversation` row → Err("no active conversation")
-2. Load dialogue tree for the NPC (same as talk step 7)
+1. `let me = ctx.sender`; look up `player_conversation` SCOPED TO `me`:  
+   `ctx.db.player_conversation().owner_identity().find(me)` → Err("no active conversation") if absent.  
+   **NEVER look up by npc_entity_id** — the PK is `owner_identity`. Without this explicit scoping, Player A can advance Player B's open conversation (F1).
+2. Load NPC row by `conversation.npc_entity_id`; load dialogue tree by `npc.dialogue_tree_id`
 3. Find current node by `conversation.current_node_id` in tree.nodes → Err("node not found")
-4. Load player dialogue state
-5. **`apply_choice(node, choice_idx as usize, &state)`** — the security gate (re-checks conditions internally) → Err if InvalidChoice or ChoiceUnavailable
-6. Extract server-side effects from `result.effects`
-7. Apply effects to DB: `apply_effects_to_db(ctx, me, result.effects)`
-8. Fire quest trigger for GrantXp/GrantItem extraction
-9. If `result.next_node_id` is Some(next) → update `player_conversation.current_node_id = next`; else → delete `player_conversation` row
+4. Load player dialogue state via `load_player_dialogue_state_full(ctx, me)`
+5. **`apply_choice(node, choice_idx as usize, &state)`** — the security gate (re-checks conditions internally — NEVER bypass this) → Err if InvalidChoice or ChoiceUnavailable
+6. **Mutate in-memory state**: `apply_effects(result.effects, &mut state)` — mutates flags/active_quests/done_quests in-memory; `GrantXp`/`GrantItem` are no-ops here (by design, see dialogue/rules.rs:152-153)
+7. **Persist state to DB BEFORE updating player_conversation** (ordering: state write must precede conversation update to avoid inconsistency on crash): `write_player_dialogue_state(ctx, me, &state)` + `reconcile_active_quests(ctx, me, &state)` (inserts missing player_quest rows for newly-active quests from `StartQuest` effects)
+8. **Extract and route server-side effects** (separately from apply_effects): iterate `result.effects`, collect owned values; for `GrantItem(item_id, qty)` → `grant_item(ctx, me, item_id, qty)`; for `GrantXp(amount)` → deferred per D-4
+9. Update conversation: if `result.next_node_id` is Some(next) → update `player_conversation.current_node_id = next`; if None → delete `player_conversation` row (end of dialogue)
 10. Log: `{"evt":"advance_dialogue","sender":me,"choice":choice_idx}`
+
+**Note (C-1 fix):** Step 6-7 are the critical write-back path. If omitted, flag/StartQuest effects from choices are silently discarded and flag-gated follow-up conversations break. Step 8 routes only server-side effects (`GrantXp`/`GrantItem`) — do NOT call `apply_quest_trigger` from `advance_dialogue` (quest triggers are `TriggerEvent`-based, not effect-type-based; `GrantXp`/`GrantItem` are not `TriggerEvent` variants) (H-4/F8 fix).
+
+**Note (F2 — state integrity):** `write_player_dialogue_state` is called EXACTLY ONCE per reducer (step 7 in advance_dialogue, step 15 in talk). `apply_quest_trigger` receives `state: &mut PlayerDialogueState` and MUST NOT re-load from DB. Two independent state loads would diverge if the first load saw stale done_quests — producing a double-start or missed completion guard.
 
 ### `dismiss_dialogue(ctx) -> Result<(), String>`
 Delete `player_conversation` row for `ctx.sender`. No-op if absent (idempotent).
@@ -280,10 +291,19 @@ Moves to `raising.rs`. Replaces the placeholder in `battle.rs`.
    - Consume `cost_qty` units of `item_id` using `consume_one` (repeated `cost_qty` times or a batch consume)
    - Err("insufficient items for healing") if consume fails
 8. Heal: for each party monster (filter: party_slot != PARTY_SLOT_NONE), set `current_hp = stat_hp`; dual-write monster + monster_pub
-9. Update cooldown: upsert `heal_cooldown` row with `last_heal_at_ms = now_ms`
+9. Update cooldown: upsert `heal_cooldown` row — pattern (F10: bare `.update()` is a silent no-op on absent rows → every heal would be treated as first-use → no cooldown ever applied):
+   ```rust
+   if let Some(existing) = ctx.db.heal_cooldown().owner_identity().find(me) {
+       ctx.db.heal_cooldown().owner_identity().update(HealCooldown { last_heal_at_ms: now_ms, ..existing });
+   } else {
+       ctx.db.heal_cooldown().insert(HealCooldown { owner_identity: me, last_heal_at_ms: now_ms });
+   }
+   ```
 10. Log: `{"evt":"heal_party","sender":me,"location":location_id}`
 
 **Pure seam:** `evaluate_heal(last_heal_at_ms: i64, now: i64, cooldown_ms: i64) -> Result<(), String>` — testable without DB; just checks cooldown.
+
+**Content integrity (F4):** `seed_heal_locations` MUST validate: if `location.cost_item_id.is_some()` then `cost_qty >= 1`. A location with `cost_item_id=Some(x)` and `cost_qty=0` would silently bypass the consume step (heal_party step 7: `if cost_qty > 0`) and give free heals despite a nominal cost item. Log-reject and skip such rows during seeding.
 
 ---
 
@@ -307,11 +327,11 @@ for entity_id in npc_entity_ids {
     // MoveInput is an enum: Step(Direction) | Jump  (NOT a struct)
     let next_state = apply_move(&char_state(&ch), MoveInput::Step(dir), &map, now);
     apply_state(&mut ch, &next_state);
-    // Sync npc.zone_id if character crossed a warp
-    if ch.zone_id != npc_row.zone_id {
-        let updated_npc = Npc { zone_id: ch.zone_id, ..npc_row };
-        ctx.db.npc().entity_id().update(updated_npc);
-    }
+    // NOTE (F5): apply_state writes ONLY pos/facing/action/move_started_at — NOT zone_id.
+    // NPC zone crossings (warp tiles) are NOT handled in M12b; NPCs are confined to their
+    // spawn zone. A zone-sync + warp-handling block (mirroring movement.rs:200-229) is
+    // a named deferral to M12c. DO NOT add `if ch.zone_id != npc_row.zone_id { ... }` —
+    // it would be dead code that never fires (apply_state cannot change zone_id).
     ctx.db.character().entity_id().update(ch);
     // No grass encounter for NPCs (no player row → already handled by the player-loop guard)
 }
@@ -319,15 +339,19 @@ for entity_id in npc_entity_ids {
 
 **Anti-pattern note:** NPCs do NOT use move_queue; wander is applied directly by the tick. The existing player-loop `move_queue.is_empty()` guard correctly skips NPCs (their queue is always empty).
 
+**Deferral — NPC zone crossings (F5):** `apply_state` in marshal.rs only writes `tile_x/tile_y/facing/action/move_started_at` — it does NOT write `zone_id`. If an NPC steps onto a warp tile, the warp is NOT followed in M12b (the NPC stays at the warp tile position in the same zone, effectively bouncing next tick). Full NPC zone-crossing support requires replicating the warp-detection block from the player loop (movement.rs:200-229) and is deferred to M12c.
+
 ---
 
 ## 8. inventory.rs ungating
 
-M12b introduces the first production `grant_item` caller (quest rewards via `apply_effects_to_db`). Drop the `dev_reducers` feature gate from:
-- `MAX_ITEM_STACK` constant
-- `grant_item` function (and its `Inventory` / `Table` imports)
+M12b introduces the first production `grant_item` caller (quest rewards via `apply_effects_to_db`). Drop the `#[cfg(feature = "dev_reducers")]` attribute from **all four** items in the gated block (F6 — dropping only the function/constant while leaving the imports gated causes `unresolved import` compile errors on non-dev builds, which `-D warnings` promotes to E0):
+1. `use crate::schema::Inventory` (import)
+2. `use spacetimedb::Table` (trait import)
+3. `MAX_ITEM_STACK` constant
+4. `grant_item` function
 
-Keep the gate on `grant_bait` REDUCER (the dev-only reducer, not the helper).
+Keep the gate ONLY on the `grant_bait` REDUCER (the dev-only reducer, not the helper).
 
 ---
 
@@ -362,6 +386,8 @@ Keep the gate on `grant_bait` REDUCER (the dev-only reducer, not the helper).
 | Quest reward without completion | `apply_quest_trigger` only grants reward on `QuestAdvance::QuestComplete` |
 | Grant item to wrong owner | `require_owner` in `talk` (player owned dialogue state); `grant_item` uses `owner: Identity` from `ctx.sender` |
 | `advance_dialogue` without active conversation | `player_conversation` lookup → Err if absent |
+| Player A hijacks Player B's conversation in `advance_dialogue` | Lookup MUST be `player_conversation().owner_identity().find(ctx.sender)` — PK enforces per-caller scope (F1) |
+| Quest reward double-grant via stale `done_quests` | `apply_quest_trigger` receives caller's `state: &mut PlayerDialogueState`, never re-loads; `write_player_dialogue_state` called ONCE at end (F2) |
 | Duplicate active quests | `can_start_quest` checks `active_quests` contains check before start |
 
 ---
@@ -376,10 +402,12 @@ Keep the gate on `grant_bait` REDUCER (the dev-only reducer, not the helper).
 - `T-TALK-03`: talk rejects if NPC in different zone
 - `T-TALK-04`: talk rejects if NPC not found
 - `T-TALK-05`: talk rejects if player too far (distance > TALK_RANGE)
+- `T-TALK-06`: NPC has wandered 3 tiles from home — talk rejects when player is within TALK_RANGE of NPC's HOME but NOT within TALK_RANGE of NPC's CURRENT position (F7 regression guard)
 - `T-ADV-01`: advance_dialogue applies effects + moves to next_node
 - `T-ADV-02`: advance_dialogue deletes player_conversation on end (next_node = None)
 - `T-ADV-03`: advance_dialogue REJECTS choice with unmet conditions (proof-of-teeth: `apply_choice` internal gate)
 - `T-ADV-04`: advance_dialogue rejects when no active conversation
+- `T-ADV-05`: Player A calls advance_dialogue while ONLY Player B has an active `player_conversation` — Player A MUST get Err("no active conversation"), NOT apply B's conversation effects (F1 regression guard; PK-scoped lookup proof)
 - `T-QUEST-01`: talk trigger advances quest step
 - `T-QUEST-02`: last step → quest_id removed from player_quest, added to done_quests, reward granted
 - `T-QUEST-03`: quest reward grants XP (future M13 currency deferred)
@@ -403,7 +431,8 @@ Keep the gate on `grant_bait` REDUCER (the dev-only reducer, not the helper).
 - `POT-6`: heal_party has no in-battle check → MUST FAIL T-HEAL-04
 - `POT-7`: heal_party has no cooldown check → MUST FAIL T-HEAL-06
 - `POT-8`: advance_dialogue proceeds without checking player_conversation → MUST FAIL T-ADV-04
-- `POT-9`: `require_owner` absent from talk → MUST FAIL (spoofed identity test)
+- `POT-9`: `advance_dialogue` looks up `player_conversation` by NPC entity_id instead of `ctx.sender` → MUST FAIL T-ADV-05 (Player A advances Player B's conversation; F1 identity guard)
+- `POT-10`: NPC range check uses `npc.home_x/home_y` instead of NPC's character row pos → MUST FAIL T-TALK-06 (F7 position guard)
 
 ---
 
@@ -431,6 +460,8 @@ Each gate must have a fixture that FAILS when the invariant is violated:
 | Currency rewards in quests (QuestReward.currency) | M13 |
 | Batch item consume (cost_qty > 1 requires multiple consume_one calls) | M13 |
 | bait-recruit wiring via quest/talk | M12b residual (needs module_bindings) |
+| NPC zone crossings (warp tile support in wander loop) | M12c — `apply_state` does not write `zone_id`; NPC warp-handling block requires replicating player loop warp logic (F5) |
+| `validate_content` checks for `Collect{qty:0}` quest steps | M12c — runtime guard; gating tests (T18/T19 in m12a_gating_tests.rs) document current behaviour (F9) |
 | Quest XP grant (D-4): applying GrantXp/quest reward XP requires derive-stats + dual-write monster path; defer to M12b-tail or later — seeded quest_001 reward is item-only (xp=0) | M12b-tail |
 
 ## 14. Critical implementation notes (from planner verification)
