@@ -79,6 +79,10 @@ const held = new HeldDirections();
 // M12.5c: renderer is module-scope so switchZone (below) can call setMap without
 // being inside main(). Defined here; assigned once inside main() after async init.
 let renderer: WorldRenderer | undefined;
+// M12.5d-4: camera hold — persists the last resolved tile position so the camera
+// doesn't snap to origin when the own entity is temporarily unresolved (warp / reconnect).
+let lastCamX = 0;
+let lastCamY = 0;
 
 // Sticky DEV latch: set once the own entity renders a fractional sub-tile position
 // (proves the slide clock is wired, not raw integer tiles). Never reset to false
@@ -118,6 +122,10 @@ function resetPredictionState(): void {
   sawFractionalOwnMotion = false;
   dismissedBattleId = null;
   battleSynced = false;
+  // M12.5d-4: reset camera hold so a fresh zone/reconnect starts at origin rather than
+  // holding a position from a prior zone.
+  lastCamX = 0;
+  lastCamY = 0;
 }
 
 // --- M12.5c: idempotent zone-switch (12.5c-1/2/3) --------------------------------
@@ -700,10 +708,13 @@ async function main(): Promise<void> {
           sawFractionalOwnMotion = true;
         }
       }
-      // M11c: pass own tile position for follow-camera (WorldRenderer.render).
-      const ownX = ownEntity?.x ?? 0;
-      const ownY = ownEntity?.y ?? 0;
-      renderer?.render(entities, ownX, ownY);
+      // M12.5d-4: hold last camera position when own entity is unresolved (e.g. warp
+      // gap) so the camera doesn't snap to origin. lastCamX/Y reset on zone switch.
+      if (ownEntity !== undefined) {
+        lastCamX = ownEntity.x;
+        lastCamY = ownEntity.y;
+      }
+      renderer?.render(entities, lastCamX, lastCamY);
     } catch (err) {
       console.error('[frame] uncaught error', err);
     } finally {

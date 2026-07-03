@@ -10,7 +10,9 @@
 /** Pixels per logical tile (the one configurable mapping; default ~32). */
 export const TILE_PX = 32;
 
-/** Remote interpolation delay, in STEP_MS multiples (ADR-0013: ~1.5–2× STEP_MS).
- *  Render remote characters at `now - INTERP_DELAY_STEPS * STEP_MS` so the buffer
- *  absorbs sub-buffer jitter; tunable to measured jitter via the HUD (M4c). */
-export const INTERP_DELAY_STEPS = 1.5;
+/** Remote interpolation delay, in STEP_MS multiples (ADR-0013, M12.5d-1).
+ *  1.0 × STEP_MS aligns the render window exactly with the 2-snapshot store depth:
+ *  renderTime = now - STEP_MS renders remotes at the leading edge of the previous
+ *  segment, eliminating the hold/jump cycle that 1.5 caused with only 2 snapshots
+ *  (renderTime fell before prev.receivedAt for ~100ms → ramp to 50% → jump on update). */
+export const INTERP_DELAY_STEPS = 1.0;

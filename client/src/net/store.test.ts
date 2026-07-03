@@ -195,7 +195,7 @@ describe('AuthoritativeStore: properties (fast-check)', () => {
     );
   });
 
-  it('history never exceeds two snapshots and prev is the second-newest', () => {
+  it('history never exceeds two snapshots and prev is the second-newest (or absent on snap)', () => {
     fc.assert(
       fc.property(
         fc.array(fc.integer({ min: 0, max: 9 }), { minLength: 2, maxLength: 30 }),
@@ -206,7 +206,14 @@ describe('AuthoritativeStore: properties (fast-check)', () => {
           });
           const stored = s.character(7n)!;
           expect(stored.latest.tileX).toBe(xs[xs.length - 1]);
-          expect(stored.prev!.tileX).toBe(xs[xs.length - 2]);
+          // M12.5d-2: large tile delta (>1) triggers snap — prev is dropped.
+          // Only assert prev when the last transition was a normal 1-tile step.
+          const prevX = xs[xs.length - 2];
+          if (Math.abs(xs[xs.length - 1] - prevX) <= 1) {
+            expect(stored.prev?.tileX).toBe(prevX);
+          } else {
+            expect(stored.prev).toBeUndefined();
+          }
         },
       ),
     );
@@ -1517,6 +1524,100 @@ describe('AuthoritativeStore M11c C3: resetCharacters() clears only the characte
     s.resetCharacters(); // nothing to clear
     s.flushBatch();
     expect(cb).toHaveBeenCalledTimes(0);
+  });
+});
+
+// =============================================================================
+// M12.5d-2: upsertCharacter snap-on-teleport
+// SOURCE OF TRUTH: M12.5d spec §2 "Snap-on-zone-change and snap-on-large-tile-delta"
+//
+// RED REASON (before impl): upsertCharacter always sets prev=existing?.latest with no
+// zone-change or tile-delta check. A zone change would carry prev from the old zone
+// (smearing across zone boundary) and a large tile jump (teleport) would carry prev
+// from the old position (smearing across a warp). After fix: zone change or abs(Δtile)>1
+// on either axis causes prev to be dropped (undefined), so the renderer snaps instead.
+// =============================================================================
+
+describe('AuthoritativeStore: upsertCharacter snap-on-teleport (M12.5d-2)', () => {
+  function charWithZone(
+    entityId: bigint,
+    zoneId: number,
+    tileX: number,
+    tileY: number,
+  ): StoreCharacter {
+    return {
+      entityId,
+      zoneId,
+      tileX,
+      tileY,
+      facing: 'East',
+      action: 'Idle',
+      moveStartedAtMs: 0n,
+      moveQueue: [],
+    };
+  }
+
+  it('BITES (M12.5d-2): zone change drops prev — snap, not smear', () => {
+    // Wrong impl killed: upsertCharacter that always sets prev=existing?.latest would
+    // set prev to the zone-0 snapshot when zone changes to 1. The renderer would then
+    // interpolate across the zone boundary, showing the character sliding from zone 0
+    // into zone 1. After fix: zone change → prev=undefined → renderer snaps immediately.
+    const s = new AuthoritativeStore();
+    // First insert at zone 0
+    s.upsertCharacter(charWithZone(1n, 0, 5, 5), 100);
+    // Zone changes to 1: prev must be dropped (would smear across zone boundary)
+    s.upsertCharacter(charWithZone(1n, 1, 5, 5), 300);
+    const stored = s.character(1n)!;
+    expect(stored.prev).toBeUndefined(); // snapped: no prev to interpolate from wrong zone
+    expect(stored.latest.tileX).toBe(5);
+  });
+
+  it('BITES (M12.5d-2): tile delta > 1 drops prev — snap, not smear (teleport)', () => {
+    // Wrong impl killed: upsertCharacter that always carries prev would set prev=(2,2)
+    // when a teleport to (10,2) arrives. The renderer would lerp from (2,2) to (10,2),
+    // showing an 8-tile slide instead of an instant warp. After fix: Δx=8 > 1 → prev=undefined.
+    const s = new AuthoritativeStore();
+    // First insert at (2, 2)
+    s.upsertCharacter(charWithZone(2n, 0, 2, 2), 100);
+    // Teleport to (10, 2): delta = 8 > 1
+    s.upsertCharacter(charWithZone(2n, 0, 10, 2), 300);
+    const stored = s.character(2n)!;
+    expect(stored.prev).toBeUndefined(); // snapped: large delta
+  });
+
+  it('BITES (M12.5d-2): adjacent tile (delta=1) preserves prev — normal movement', () => {
+    // This is the "teeth" inverse: a correct impl MUST preserve prev for normal 1-tile
+    // movement. Wrong impl killed (over-snap): dropping prev for delta=1 would break
+    // smooth interpolation for regular walking.
+    const s = new AuthoritativeStore();
+    s.upsertCharacter(charWithZone(3n, 0, 5, 5), 100);
+    // Move one tile east: delta = 1 in X, 0 in Y
+    s.upsertCharacter(charWithZone(3n, 0, 6, 5), 300);
+    const stored = s.character(3n)!;
+    // prev is preserved (normal walk)
+    expect(stored.prev).toBeDefined();
+    expect(stored.prev!.tileX).toBe(5);
+  });
+
+  it('BITES (M12.5d-2): first insert has no prev (no existing entity)', () => {
+    // Baseline contract: the first upsert for an entity always has prev=undefined
+    // (no prior snapshot to interpolate from). This must remain true after the fix.
+    const s = new AuthoritativeStore();
+    s.upsertCharacter(charWithZone(4n, 0, 3, 3), 100);
+    const stored = s.character(4n)!;
+    expect(stored.prev).toBeUndefined(); // no prior snapshot
+  });
+
+  it('BITES (M12.5d-2): diagonal delta-1 move preserves prev (max(|Δx|,|Δy|)=1)', () => {
+    // Game only allows cardinal moves, but verify our check is correct for each axis.
+    // Delta-1 in both x and y: still within the "adjacent" threshold for each axis independently.
+    // Wrong impl killed: using Euclidean distance (√2 > 1) would snap on diagonal moves.
+    const s = new AuthoritativeStore();
+    s.upsertCharacter(charWithZone(5n, 0, 5, 5), 100);
+    // Move diagonally (5,5) -> (6,6): both axis delta=1
+    s.upsertCharacter(charWithZone(5n, 0, 6, 6), 300);
+    const stored = s.character(5n)!;
+    expect(stored.prev).toBeDefined(); // delta=1 on each axis, not a teleport
   });
 });
 

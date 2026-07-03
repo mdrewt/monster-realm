@@ -280,8 +280,8 @@ describe('RenderResolver — own entity absent / predicted undefined', () => {
 // 5. Remote entity — fractional interpolation + the bite
 // ---------------------------------------------------------------------------
 // Remote entities use the interpolation path (not the slide clock).
-// With prev.receivedAt=0, latest.receivedAt=200, stepMs=200 → interpDelayMs=300,
-// choosing now=400 → renderTime = 400 - 300 = 100, which is between 0 and 200.
+// With prev.receivedAt=0, latest.receivedAt=200, stepMs=200 → interpDelayMs=200,
+// choosing now=300 → renderTime = 300 - 200 = 100, which is between 0 and 200.
 // The result is linearly interpolated to x≈0.5 (FRACTIONAL).
 //
 // BITE: a raw-latest renderer yields integer 1, failing the fractional assertion.
@@ -289,8 +289,8 @@ describe('RenderResolver — own entity absent / predicted undefined', () => {
 
 describe('RenderResolver — remote entity fractional interpolation', () => {
   it('remote x is fractional ≈ 0.5 at renderTime=100 between snapshots', () => {
-    // interpDelayMs(200) === 300   [1.5 × 200]
-    // now=400 → renderTime = 400 - 300 = 100
+    // interpDelayMs(200) === 200   [1.0 × 200]  (M12.5d-1: was 1.5 → 300ms)
+    // now=300 → renderTime = 300 - 200 = 100
     // prev={tileX:0, receivedAt:0}, latest={tileX:1, receivedAt:200}
     // lerp at t=100 between 0 and 200 → alpha=0.5 → x=0.5 (FRACTIONAL)
     const resolver = new RenderResolver(STEP_MS);
@@ -301,7 +301,7 @@ describe('RenderResolver — remote entity fractional interpolation', () => {
       ownEntityId: OWN_ID, // different from REMOTE_ID → remote path
       predicted: makePredicted(0, 0),
       snapped: false,
-      now: 400,
+      now: 300,
     });
 
     const remote = entities.find((e) => e.entityId === REMOTE_ID);
@@ -326,12 +326,12 @@ describe('RenderResolver — remote entity fractional interpolation', () => {
 // 6. Remote entity — hold-not-extrapolate
 // ---------------------------------------------------------------------------
 // Past the latest snapshot, the remote position must HOLD at latest (never
-// extrapolate). With now=600, renderTime = 600-300 = 300 > latest.receivedAt=200
+// extrapolate). With now=600, renderTime = 600-200 = 400 > latest.receivedAt=200
 // → must return x=1 (held at latest), NOT x > 1.
 
 describe('RenderResolver — remote entity hold-not-extrapolate', () => {
   it('remote position holds at latest past the latest snapshot (no overshoot)', () => {
-    // now=600 → renderTime = 600 - 300 = 300 > latest.receivedAt=200 → HOLD at x=1
+    // now=600 → renderTime = 600 - 200 = 400 > latest.receivedAt=200 → HOLD at x=1
     const resolver = new RenderResolver(STEP_MS);
     const char = makeChar(REMOTE_ID, 1, 0, 200, 0, 0, 0);
 

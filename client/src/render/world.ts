@@ -70,8 +70,9 @@ export class WorldRenderer {
   }
 
   #drawMap(map: TileMap): void {
-    // Clear previous map graphics (needed for setMap on zone change).
-    this.#bg.removeChildren();
+    // Destroy removed children to release GPU memory (M12.5d-5: removeChildren without
+    // destroy leaks Pixi Graphics resources on every zone switch).
+    for (const child of this.#bg.removeChildren()) child.destroy();
     const g = new Graphics();
     // Floor/wall pass.
     for (let y = 0; y < map.height; y++) {

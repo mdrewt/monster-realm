@@ -250,18 +250,26 @@ describe('Predictor: drain is step_ms-paced (not teleport)', () => {
   });
 
   it('DrainResult.snapped is false for a small (single-step) gap', () => {
+    // M12.5d-3 semantics: gap is measured from the last FRAME drain.
+    // Establish a prior frame drain before checking the small-gap case.
     const p = mkPredictor();
-    p.reconcile(baseline(5, 5, 10_000 - 2 * STEP_MS), [], 0, 10_000);
+    p.reconcile(baseline(5, 5, 10_000 - 2 * STEP_MS), [], 0, 10_000 - 2 * STEP_MS);
+    p.drain(10_000 - 2 * STEP_MS); // establish #lastFrameDrainAt
     p.enqueue(east());
-    const r = p.drain(10_000); // normal cadence
+    const r = p.drain(10_000); // small gap since last frame drain
     expect(r.snapped).toBe(false);
   });
 
   it('DrainResult.snapped becomes true on a large local time gap (backgrounded tab)', () => {
+    // M12.5d-3 semantics: gap is measured from the last FRAME drain.
+    // Setup: seed predictor, do a frame drain at T=0, simulate 100s gap, then frame drain.
     const p = mkPredictor();
     p.reconcile(baseline(1, 1, 0), [], 0, 0);
+    p.drain(0); // first FRAME drain — establishes #lastFrameDrainAt = 0
     for (let i = 0; i < 6; i++) p.enqueue(east());
-    const r = p.drain(100_000); // gap >> several steps => M4 should jump, not animate
+    // Simulate being foregrounded after 100 seconds (reconcile fires on batch, then frame loop fires)
+    p.reconcile(baseline(1, 1, 0), [], 0, 100_000); // reconcile drain at T=100_000
+    const r = p.drain(100_000); // frame drain: gap = 100_000 - 0 = 100_000 >> SNAP_GAP_STEPS*200
     expect(r.snapped).toBe(true);
   });
 
@@ -1230,5 +1238,94 @@ describe('M8.8e §C: divergence re-issue + keyup-not-stuck (composition)', () =>
     // reissueDir: held dir ('East') == queue tail ('East') → dedup → undefined.
     const d = reissueDir(held.active(), p.lastQueuedDir);
     expect(d).toBeUndefined();
+  });
+});
+
+// ================================================================================
+// M12.5d-3: snapped signal uses last FRAME drain time (not reconcile drain time)
+// SOURCE OF TRUTH: M12.5d spec §3 "Predictor: snap gap timer tracks frame-loop drain"
+//
+// THE BUG: predictor.reconcile() calls an internal drain step (#stepForward) that
+// previously updated the same #lastDrainAt field as the public drain() call. This
+// caused the snap gap timer to reset on every server batch — masking large gaps when
+// the tab was backgrounded (reconcile fires on batch arrival, so #lastDrainAt = now,
+// then the frame drain computes gap = 0 → snapped=false even after 100s gap).
+//
+// THE FIX: separate the timer into:
+//   #lastFrameDrainAt — set ONLY by the public drain() call (frame-loop driven)
+//   reconcile's internal step-forward uses a different private path
+//
+// RED REASON (before fix): all three new tests below will see the wrong behaviour:
+//   - "reconcile resets the timer" test: reconcile at T=100_000, then frame drain
+//     computes gap = 0 (from the reconcile's timer update) → snapped=false (BUG)
+//   - "multiple reconciles" test: last reconcile at T=4000, frame drain at T=1100
+//     computes gap = 1100-4000 < 0 or gap relative to T=4000 → wrong snap verdict
+//   - "first frame drain never snaps" test: this relies on the ADR-0052 §B contract
+//     which must be PRESERVED by the fix (first drain with no prior frame = no snap)
+// ================================================================================
+
+describe('Predictor M12.5d-3: snapped signal uses last FRAME drain time (not reconcile drain time)', () => {
+  it('BITES: reconcile drain between frame drains does NOT reset the snap gap timer', () => {
+    // This is the M12.5d-3 bug: predictor.reconcile() calls an internal step-forward,
+    // which used to set #lastDrainAt = now, masking the gap from the last FRAME drain.
+    // After fix: reconcile uses a private path; only frame-loop drain() sets #lastFrameDrainAt.
+    //
+    // Wrong impl killed (the bug): reconcile at T=100_000 resets the timer to 100_000,
+    // so frame drain at T=100_000 sees gap=0 → snapped=false (incorrectly hides the 100s gap).
+    // Correct impl (fix): #lastFrameDrainAt = 0 still after reconcile, so frame drain
+    // sees gap=100_000 → snapped=true (correctly signals a large time gap).
+    const p = mkPredictor();
+    p.reconcile(baseline(1, 1, 0), [], 0, 0);
+    // Establish last FRAME drain at T=0
+    p.drain(0);
+    // Simulate tab going background for 100 seconds.
+    // A batch arrives and triggers reconcile at T=100_000.
+    p.reconcile(baseline(1, 1, 0), [], 0, 100_000);
+    // Frame loop fires: gap since last FRAME drain = 100_000ms >> SNAP_GAP_STEPS * 200ms
+    // Before fix: reconcile sets timer to 100_000, so frame drain sees gap=0 → snapped=false (BUG)
+    // After fix: #lastFrameDrainAt = 0 still, so frame drain sees gap=100_000 → snapped=true
+    const r = p.drain(100_000);
+    expect(r.snapped).toBe(true);
+  });
+
+  it('BITES: multiple reconcile drains between frame drains still detect the large gap on next frame drain', () => {
+    // Variant of the main M12.5d-3 bug: three reconciles fire between two frame drains.
+    // Last frame drain at T=0; reconciles at T=50_000, T=60_000, T=90_000; then frame
+    // drain at T=90_100 (100ms after the last reconcile).
+    //
+    // Bug (current code): last reconcile sets #lastDrainAt=90_000; frame drain at
+    // T=90_100 computes gap = 90_100 - 90_000 = 100ms → snapped=false (misses 90s gap).
+    // Fix: #lastFrameDrainAt = 0 still; frame drain at T=90_100 computes gap = 90_100ms
+    // → snapped=true (correctly surfaces the large background gap).
+    //
+    // Wrong impl killed: any impl where reconcile's internal step-forward updates the
+    // same timer as the public frame drain (causing the gap to appear small).
+    const p = mkPredictor();
+    p.reconcile(baseline(1, 1, 0), [], 0, 0);
+    // Establish last FRAME drain at T=0
+    p.drain(0);
+    // Three server batches arrive while tab is backgrounded
+    p.reconcile(baseline(1, 1, 0), [], 0, 50_000);
+    p.reconcile(baseline(1, 1, 0), [], 0, 60_000);
+    p.reconcile(baseline(1, 1, 0), [], 0, 90_000);
+    // Frame loop resumes 100ms after the last reconcile (90_100ms total from last frame drain)
+    // Bug: gap = 90_100 - 90_000 = 100ms → snapped=false (WRONG — hides the 90s gap)
+    // Fix: gap = 90_100 - 0 = 90_100ms >> threshold → snapped=true (CORRECT)
+    const r = p.drain(90_100);
+    expect(r.snapped).toBe(true);
+  });
+
+  it('BITES: first frame drain (never drained before) does not snap even on large time', () => {
+    // The existing ADR-0052 §B rule: first drain never snaps (no prior drain to measure gap against).
+    // This must hold even after M12.5d fix — the fix must not change the first-drain contract.
+    //
+    // Wrong impl killed (regression): if the fix accidentally initializes #lastFrameDrainAt=0
+    // instead of undefined, the first drain at T=1_000_000 would compute gap=1_000_000 > threshold
+    // → snapped=true (false positive). After fix: first drain with no prior = no snap (undefined guard).
+    const p = mkPredictor();
+    p.reconcile(baseline(1, 1, 0), [], 0, 0);
+    // No prior frame drain — first call to drain() (even at T=1_000_000) should NOT snap
+    const r = p.drain(1_000_000);
+    expect(r.snapped).toBe(false);
   });
 });
