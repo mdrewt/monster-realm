@@ -378,6 +378,41 @@ export function checkTalkRangeUsesCharacterPos(body) {
   return null;
 }
 
+/**
+ * C11 (M12c RT-ADV-01 fix) — advance_dialogue must contain BOTH a zone_id check
+ * AND a TALK_RANGE check to close the RT-ADV-01 security gap.
+ *
+ * Without this proximity re-check, a player who calls `talk` (which validates
+ * zone + range) and then warps away or walks out of range can still call
+ * `advance_dialogue` to receive GrantItem rewards and StartQuest effects
+ * because the player_conversation row persists until explicitly deleted.
+ *
+ * Uses only indexOf — NO new RegExp(non-literal).
+ *
+ * @param {string} body  Body of advance_dialogue, comment-stripped.
+ * @returns {string|null}
+ */
+export function checkAdvanceDialogueProximityRecheck(body) {
+  const compact = body.replace(/\s+/g, '');
+  if (compact.indexOf('zone_id') === -1) {
+    return (
+      'advance_dialogue: body does not contain a zone_id check — RT-ADV-01 fix requires ' +
+      'a zone membership re-check in advance_dialogue so that a player who warps to ' +
+      'another zone during an active conversation cannot continue advancing dialogue ' +
+      'choices and receiving GrantItem/StartQuest effects from a different zone'
+    );
+  }
+  if (compact.indexOf('TALK_RANGE') === -1) {
+    return (
+      'advance_dialogue: body does not contain a TALK_RANGE check — RT-ADV-01 fix requires ' +
+      'a proximity distance re-check in advance_dialogue so that a player who walks out ' +
+      'of range during an active conversation cannot continue advancing dialogue choices ' +
+      'and receiving rewards from an unreachable distance'
+    );
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Proof-of-teeth fixture strings
 // Each BAD fixture must be flagged; each GOOD fixture must pass.
@@ -710,6 +745,77 @@ const GOOD_ADVANCE_WITH_OWNER_LOOKUP = `
   }
 `;
 
+// --- C11: advance_dialogue missing proximity re-check (RT-ADV-01 fix) ---
+// BAD: no zone_id or TALK_RANGE in the body — the RT-ADV-01 gap is still open.
+const BAD_ADVANCE_NO_PROXIMITY = `
+  pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), String> {
+      let me = ctx.sender;
+      let Some(conv) = ctx.db.player_conversation().owner_identity().find(me) else {
+          return Err("no active conversation".to_string());
+      };
+      let Some(npc_row) = ctx.db.npc().entity_id().find(conv.npc_entity_id) else {
+          return Err("npc not found".to_string());
+      };
+      let trees = load_dialogue_trees()?;
+      let Some(tree) = trees.iter().find(|t| t.id == npc_row.dialogue_tree_id) else {
+          return Err("dialogue tree not found".to_string());
+      };
+      let Some(node) = tree.nodes.iter().find(|n| n.id == conv.current_node_id) else {
+          return Err("node not found".to_string());
+      };
+      let mut state = load_player_dialogue_state(ctx, me);
+      // DELIBERATELY MISSING: no zone_id check, no TALK_RANGE check — RT-ADV-01 gap still open
+      let result = apply_choice(node, choice_idx as usize, &state).map_err(|e| format!("{e:?}"))?;
+      apply_effects(result.effects, &mut state);
+      write_player_dialogue_state(ctx, me, &state);
+      Ok(())
+  }
+`;
+
+// GOOD: has both zone_id and TALK_RANGE — RT-ADV-01 gap is closed.
+const GOOD_ADVANCE_WITH_PROXIMITY = `
+  pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), String> {
+      let me = ctx.sender;
+      let Some(p) = ctx.db.player().identity().find(me) else {
+          return Err("not joined".to_string());
+      };
+      let Some(player_char) = ctx.db.character().entity_id().find(p.entity_id) else {
+          return Err("character not found".to_string());
+      };
+      let Some(conv) = ctx.db.player_conversation().owner_identity().find(me) else {
+          return Err("no active conversation".to_string());
+      };
+      let Some(npc_row) = ctx.db.npc().entity_id().find(conv.npc_entity_id) else {
+          return Err("npc not found".to_string());
+      };
+      let Some(npc_char) = ctx.db.character().entity_id().find(npc_row.entity_id) else {
+          return Err("npc character not found".to_string());
+      };
+      // RT-ADV-01 fix: re-check zone membership
+      if player_char.zone_id != npc_char.zone_id {
+          return Err("npc not in same zone".to_string());
+      }
+      // RT-ADV-01 fix: re-check proximity using TALK_RANGE
+      let dx = (i64::from(player_char.tile_x) - i64::from(npc_char.tile_x)).abs();
+      let dy = (i64::from(player_char.tile_y) - i64::from(npc_char.tile_y)).abs();
+      if dx + dy > TALK_RANGE {
+          return Err("too far away".to_string());
+      }
+      let trees = load_dialogue_trees()?;
+      let Some(tree) = trees.iter().find(|t| t.id == npc_row.dialogue_tree_id) else {
+          return Err("dialogue tree not found".to_string());
+      };
+      let Some(node) = tree.nodes.iter().find(|n| n.id == conv.current_node_id) else {
+          return Err("node not found".to_string());
+      };
+      let mut state = load_player_dialogue_state(ctx, me);
+      let result = apply_choice(node, choice_idx as usize, &state).map_err(|e| format!("{e:?}"))?;
+      apply_effects(result.effects, &mut state);
+      write_player_dialogue_state(ctx, me, &state);
+      Ok(())
+  }
+`;
+
 // --- C10: talk missing character().entity_id().find( ---
 const BAD_TALK_NO_CHARACTER_POS = `
   pub fn talk(ctx: &ReducerContext, npc_id: u64) -> Result<(), String> {
@@ -760,7 +866,7 @@ const GOOD_TALK_WITH_CHARACTER_POS = `
 
 export default async function () {
   const name =
-    'npc-dialogue-quest-security (M12b: advance_dialogue apply_choice gate, talk zone+range, dialogue_state/heal_cooldown private, QuestComplete guard, heal_party battle+cooldown, conversation scope, owner_identity PK lookup)';
+    'npc-dialogue-quest-security (M12b+M12c: advance_dialogue apply_choice gate + RT-ADV-01 proximity recheck C11, talk zone+range, dialogue_state/heal_cooldown private, QuestComplete guard, heal_party battle+cooldown, conversation scope, owner_identity PK lookup)';
 
   // =========================================================================
   // PROOFS-OF-TEETH — every tooth must bite before we scan real source.
@@ -1171,6 +1277,54 @@ export default async function () {
     }
   }
 
+  // --- C11: BAD advance_dialogue (no proximity recheck) must be flagged -----
+  {
+    const body = extractReducerBody(
+      stripRustComments(BAD_ADVANCE_NO_PROXIMITY),
+      'advance_dialogue',
+    );
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH C11: could not extract advance_dialogue body from BAD_ADVANCE_NO_PROXIMITY (parser bug)',
+      };
+    }
+    if (!checkAdvanceDialogueProximityRecheck(body)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH C11: BAD_ADVANCE_NO_PROXIMITY was NOT flagged by checkAdvanceDialogueProximityRecheck — ' +
+          'the check must detect missing zone_id or TALK_RANGE in the advance_dialogue body',
+      };
+    }
+  }
+  // --- C11: GOOD advance_dialogue (has proximity recheck) must pass ---------
+  {
+    const body = extractReducerBody(
+      stripRustComments(GOOD_ADVANCE_WITH_PROXIMITY),
+      'advance_dialogue',
+    );
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH C11: could not extract advance_dialogue body from GOOD_ADVANCE_WITH_PROXIMITY (parser bug)',
+      };
+    }
+    const err = checkAdvanceDialogueProximityRecheck(body);
+    if (err) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH C11: GOOD_ADVANCE_WITH_PROXIMITY was incorrectly flagged: ${err}`,
+      };
+    }
+  }
+
   // =========================================================================
   // REAL CHECKS — scan the actual server-module source.
   // =========================================================================
@@ -1186,7 +1340,7 @@ export default async function () {
 
   const failures = [];
 
-  // --- C1, C8, C9: advance_dialogue body ---
+  // --- C1, C8, C9, C11: advance_dialogue body ---
   const advBody = extractReducerBody(src, 'advance_dialogue');
   if (!advBody) {
     failures.push(
@@ -1199,6 +1353,11 @@ export default async function () {
     if (c8) failures.push(c8);
     const c9 = checkAdvanceDialogueOwnerIdentityLookup(advBody);
     if (c9) failures.push(c9);
+    // C11 (M12c RT-ADV-01 fix): proximity re-check must be present after M12c.
+    // This check is RED before M12c lands: advance_dialogue has no zone_id or
+    // TALK_RANGE in its body yet. It turns GREEN when M12c adds the re-check.
+    const c11 = checkAdvanceDialogueProximityRecheck(advBody);
+    if (c11) failures.push(c11);
   }
 
   // --- C2, C10: talk body ---
@@ -1254,6 +1413,7 @@ export default async function () {
     detail:
       'C1 apply_choice gate + C2 zone check + C3 dialogue_state private + C4 heal_cooldown private + ' +
       'C5 QuestComplete guard + C6 heal_party battle gate + C7 heal_party cooldown + ' +
-      'C8 conversation scope + C9 owner_identity PK lookup + C10 character pos for range — all teeth verified',
+      'C8 conversation scope + C9 owner_identity PK lookup + C10 character pos for range + ' +
+      'C11 advance_dialogue RT-ADV-01 proximity recheck (zone_id + TALK_RANGE) — all teeth verified',
   };
 }

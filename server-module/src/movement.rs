@@ -217,7 +217,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
                             .filter(p.identity)
                             .any(|b| b.state.outcome == BattleOutcome::Ongoing)
                     })
-                    .unwrap_or(false); // NPCs have no player row → treat as not in battle → warp them
+                    .unwrap_or(true); // NPCs have no player row → skip warp (stay in home zone, ADR-0070)
                 if !in_battle {
                     row.zone_id = to_zone;
                     row.tile_x = tx;

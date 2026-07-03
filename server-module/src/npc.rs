@@ -140,7 +140,13 @@ fn apply_quest_trigger(
     event: &TriggerEvent,
     state: &mut PlayerDialogueState,
 ) {
-    let quest_defs = load_quest_defs();
+    let quest_defs = match load_quest_defs() {
+        Ok(q) => q,
+        Err(e) => {
+            log::error!("{{\"evt\":\"quest_defs_load_error\",\"reason\":\"{e}\"}}");
+            return;
+        }
+    };
     let active_rows: Vec<PlayerQuestRow> = ctx
         .db
         .player_quest()
@@ -218,7 +224,7 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
     }
 
     // Step 6: load dialogue tree
-    let trees = load_dialogue_trees();
+    let trees = load_dialogue_trees()?;
     let Some(tree) = trees.iter().find(|t| t.id == npc_row.dialogue_tree_id) else {
         return Err("dialogue tree not found".to_string());
     };
@@ -281,11 +287,40 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
         return Err("no active conversation".to_string());
     };
 
-    // Step 2: load NPC + dialogue tree
+    // Step 1.5: zone + proximity re-check (RT-ADV-01 fix, M12c, ADR-0070)
+    let Some(p) = ctx.db.player().identity().find(me) else {
+        return Err("not joined".to_string());
+    };
+    let Some(player_char) = ctx.db.character().entity_id().find(p.entity_id) else {
+        return Err("character not found".to_string());
+    };
     let Some(npc_row) = ctx.db.npc().entity_id().find(conv.npc_entity_id) else {
+        ctx.db.player_conversation().owner_identity().delete(me);
         return Err("npc not found".to_string());
     };
-    let trees = load_dialogue_trees();
+    let Some(npc_char) = ctx.db.character().entity_id().find(npc_row.entity_id) else {
+        ctx.db.player_conversation().owner_identity().delete(me);
+        return Err("npc character not found".to_string());
+    };
+    if player_char.zone_id != npc_char.zone_id {
+        ctx.db.player_conversation().owner_identity().delete(me);
+        log::warn!(
+            "{{\"evt\":\"advance_dialogue_dismissed\",\"sender\":\"{me}\",\"reason\":\"wrong_zone\"}}"
+        );
+        return Err("no longer in same zone".to_string());
+    }
+    let dx = (i64::from(player_char.tile_x) - i64::from(npc_char.tile_x)).abs();
+    let dy = (i64::from(player_char.tile_y) - i64::from(npc_char.tile_y)).abs();
+    if dx + dy > TALK_RANGE {
+        ctx.db.player_conversation().owner_identity().delete(me);
+        log::warn!(
+            "{{\"evt\":\"advance_dialogue_dismissed\",\"sender\":\"{me}\",\"reason\":\"walked_away\"}}"
+        );
+        return Err("walked too far away".to_string());
+    }
+
+    // Step 2: load NPC + dialogue tree
+    let trees = load_dialogue_trees()?;
     let Some(tree) = trees.iter().find(|t| t.id == npc_row.dialogue_tree_id) else {
         return Err("dialogue tree not found".to_string());
     };
