@@ -118,7 +118,8 @@ export function connect(opts: ConnectionOptions): Connection {
     const newSdkRow = row as unknown as SdkCharacterRow;
     // M11c (ADR-0067 Option C): detect own-entity zone transition via raw SDK scalars
     // (M12.5d-5: avoids characterRowToStore() double-conversion just to compare zoneId).
-    // SdkCharacterRow.zoneId is already a plain number — no conversion needed.
+    // SdkCharacterRow.zoneId is a plain number (u32); entityId is bigint (u64) — both
+    // strict comparisons are type-correct and require no conversion.
     if (opts.onOwnWarp !== undefined) {
       const oldSdkRow = oldRow as unknown as SdkCharacterRow;
       const ownEntityId = store.ownEntityId(identity);

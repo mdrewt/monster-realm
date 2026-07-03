@@ -48,6 +48,13 @@ In `upsertCharacter`, set `prev = undefined` when:
 
 Adjacent (1-tile) moves carry `prev` normally for smooth interpolation.
 
+**Assumption:** server-authoritative movement (both player and NPC) never advances any entity
+more than 1 tile per tick. This holds for the current NPC wander model (single-tile steps from
+`movement_tick`) but should be revisited if NPC wander radius or teleport-on-aggro ever produces
+server-side multi-tile jumps — those would trigger this snap path, producing one frame of
+position-pop instead of a smear. For players this is the correct semantic (warp); for NPCs it
+is a visible but brief artifact.
+
 **12.5d-3 — Separate frame-drain timer from reconcile drain:**  
 Rename `#lastDrainAt` to `#lastFrameDrainAt` and extract the step-apply loop into a private
 `#stepForward(now)` method. `reconcile()` step 4 calls `#stepForward` (does NOT update
@@ -69,6 +76,27 @@ for (const child of this.#bg.removeChildren()) child.destroy();
 In `connection.ts onUpdate`, compare `zoneId` directly on the raw SDK rows without calling
 `characterRowToStore()`. Remove the `isOwnZoneChange` import from `connection.ts` (the function
 remains in `warpDetect.ts` for tests and future callers).
+
+## Considered alternatives
+
+**12.5d-1:** Deepening to a 3-snapshot buffer to restore 1.5× jitter headroom was rejected: it
+adds storage cost and per-update latency without fixing the root cause (2-snapshot depth is the
+correct pairing for 1.0×). Jitter headroom trade-off documented: 1.0× is the minimum viable delay
+for a reliable connection; a jittery network may see 1-frame holds when a packet is even 1 ms
+late. The 200 ms step rate provides generous slack before this is user-visible.
+
+**12.5d-2:** A per-entity snap-whitelist (never snap NPCs) was rejected: the NPC movement model
+uses single-tile server steps, so the `> 1` threshold already never triggers for normal NPC
+walks. A whitelist would add complexity for a case that does not occur in practice today.
+
+**12.5d-3:** Resetting `#lastFrameDrainAt` on reconnect (instead of isolating `#stepForward`)
+was considered but rejected: it only fixes the reconnect path, not the background-tab case where
+reconcile fires mid-session without a matching frame drain.
+
+**12.5d-4:** Encapsulating `lastCamX/Y` in the `WorldRenderer` was considered but rejected:
+the camera hold must survive the frame loop outside the renderer's scope (before `ownEntity`
+resolves from the store); module-scope state in `main.ts` is the natural home for per-session
+render state that precedes renderer init.
 
 ## Consequences
 

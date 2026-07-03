@@ -70,8 +70,8 @@ describe('FollowCamera C1a: follow formula (playerPx - viewW/2)', () => {
   });
 
   it('BITES: player at (1,1) near top-left with small viewport → offset clamped to (0,0)', () => {
-    // rawX = 1*32 - 80 = -48 → clamped to 0
-    // rawY = 1*32 - 56 = -24 → clamped to 0
+    // tile-center: rawX = (1+0.5)*32 - 80 = -32 → clamped to 0
+    // tile-center: rawY = (1+0.5)*32 - 56 = -8  → clamped to 0
     // Kills: an impl that returns negative offsets (scrolling before the map edge).
     const cam = new FollowCamera();
     const off = cam.offsetFor(1, 1, 160, 112, 10, 7);
@@ -80,8 +80,8 @@ describe('FollowCamera C1a: follow formula (playerPx - viewW/2)', () => {
   });
 
   it('BITES: player at bottom-right (9,6) near map edge → offset clamped to max', () => {
-    // rawX = 9*32 - 80 = 288-80 = 208; max = 320-160 = 160 → clamped to 160
-    // rawY = 6*32 - 56 = 192-56 = 136; max = 224-112 = 112 → clamped to 112
+    // tile-center: rawX = (9+0.5)*32 - 80 = 224; max = 320-160 = 160 → clamped to 160
+    // tile-center: rawY = (6+0.5)*32 - 56 = 152; max = 224-112 = 112 → clamped to 112
     // Kills: an impl that shows pixels outside the map (scrolls past the edge).
     const cam = new FollowCamera();
     const off = cam.offsetFor(9, 6, 160, 112, 10, 7);
@@ -126,7 +126,7 @@ describe('FollowCamera C1b: map fits in viewport → offset (0, 0)', () => {
 
 describe('FollowCamera C1c: clamping at map boundaries', () => {
   it('BITES: player at left edge (x=0) → x-offset is 0 (never negative)', () => {
-    // rawX = 0*32 - 80 = -80 → clamped to 0
+    // tile-center: rawX = (0+0.5)*32 - 80 = -64 → clamped to 0
     // Kills: an impl returning negative x (shows world before map origin).
     const cam = new FollowCamera();
     const off = cam.offsetFor(0, 3, 160, 112, 10, 7);
@@ -134,15 +134,15 @@ describe('FollowCamera C1c: clamping at map boundaries', () => {
   });
 
   it('BITES: player at right boundary (x = mapWidth-1) → x-offset clamped to mapPxW - viewW', () => {
-    // rawX = 9*32 - 80 = 208; maxX = 320-160 = 160 → clamped to 160
-    // Kills: an impl that returns 208, showing 48px outside the right map edge.
+    // tile-center: rawX = (9+0.5)*32 - 80 = 224; maxX = 320-160 = 160 → clamped to 160
+    // Kills: an impl that returns 224, showing pixels outside the right map edge.
     const cam = new FollowCamera();
     const off = cam.offsetFor(9, 3, 160, 112, 10, 7);
     expect(off.x).toBe(160);
   });
 
   it('BITES: player at top edge (y=0) → y-offset is 0 (never negative)', () => {
-    // rawY = 0*32 - 56 = -56 → clamped to 0
+    // tile-center: rawY = (0+0.5)*32 - 56 = -40 → clamped to 0
     // Kills: an impl returning negative y (shows world above map origin).
     const cam = new FollowCamera();
     const off = cam.offsetFor(5, 0, 160, 112, 10, 7);
@@ -150,8 +150,8 @@ describe('FollowCamera C1c: clamping at map boundaries', () => {
   });
 
   it('BITES: player at bottom boundary (y = mapHeight-1) → y-offset clamped to mapPxH - viewH', () => {
-    // rawY = 6*32 - 56 = 136; maxY = 224-112 = 112 → clamped to 112
-    // Kills: an impl that returns 136, showing 24px below the bottom map edge.
+    // tile-center: rawY = (6+0.5)*32 - 56 = 152; maxY = 224-112 = 112 → clamped to 112
+    // Kills: an impl that returns 152, showing pixels below the bottom map edge.
     const cam = new FollowCamera();
     const off = cam.offsetFor(5, 6, 160, 112, 10, 7);
     expect(off.y).toBe(112);
@@ -161,7 +161,7 @@ describe('FollowCamera C1c: clamping at map boundaries', () => {
     // Wide viewport 256×64, 8×8 map = 256×256 px.
     // mapW=256 fits in viewW=256, so maxX=0, all x-offsets clamp to 0.
     // mapH=256 > viewH=64, so maxY=256-64=192.
-    // Player at (3, 7): rawX = 3*32-128=-32 → 0; rawY = 7*32-32=192 → min(192,192)=192
+    // tile-center: rawX = (3+0.5)*32-128=-16 → 0; rawY = (7+0.5)*32-32=208; max=192 → 192
     // Kills: an impl that couples x/y clamping or uses wrong axis for each.
     const cam = new FollowCamera();
     const off = cam.offsetFor(3, 7, 256, 64, 8, 8);

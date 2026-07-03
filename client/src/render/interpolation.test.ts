@@ -84,9 +84,9 @@ function maxFrameJump(
 }
 
 describe('interpolation proof-of-teeth (ADR-0010): the buffer is load-bearing', () => {
-  const INTERP_DELAY = 300; // 1.5 * STEP_MS(200)
-  // logical steps x=0,1,2 at t=0,200,400; arrivals jittered but sub-buffer (<300):
-  // x=1 lands late at 290, x=2 on time-ish at 300 — two arrivals inside one 100ms frame.
+  const INTERP_DELAY = interpDelayMs(200); // production delay — 1.0 × STEP_MS(200) = 200ms
+  // logical steps x=0,1,2 at t=0,200,400; arrivals x=1 at 290 and x=2 at 300 arrive in the
+  // same 100ms frame window — the delay buffer pushes renderTime before both at that frame.
   const arrivals: Arrival[] = [
     { tileX: 0, at: 0 },
     { tileX: 1, at: 290 },
