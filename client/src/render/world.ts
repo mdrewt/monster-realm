@@ -93,9 +93,11 @@ export class WorldRenderer {
     this.#bg.addChild(g);
   }
 
-  /** Zone switch (M11c): replace the tile background with the new zone's map.
-   *  Called by main.ts on every warp AFTER store.resetCharacters() and
-   *  rawMap reassignment so the renderer stays in sync with the new zone. */
+  /** Zone switch (M11c/M12.5c): replace the tile background with the new zone's map.
+   *  Called by switchZone() in main.ts BEFORE rawMap reassignment (RT-SZ-01: renderer
+   *  draw is the first real side-effect so a Pixi/GPU throw leaves rawMap unchanged).
+   *  TileMap.fromRaw validation has already succeeded in the caller. Does NOT call
+   *  resetCharacters(). */
   setMap(rawMap: RawTileMap): void {
     const map = TileMap.fromRaw(rawMap);
     this.#map = map;
