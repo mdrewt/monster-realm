@@ -333,6 +333,11 @@ export class AuthoritativeStore {
     return this.#chars.size;
   }
 
+  /** Human player count (excludes NPC characters seeded by M12b+). */
+  get playerCount(): number {
+    return this.#players.size;
+  }
+
   // --- monster + species read (M6c box/party view reads truth here) ----------
 
   monster(monsterId: bigint): StoreMonsterPub | undefined {
