@@ -246,3 +246,187 @@ fn write_back_battle_results_assigns_evolves_to_on_level_up() {
          inside the level-up block."
     );
 }
+
+// =========================================================================
+// M12.5e-1 structural test: write_back_battle_results must GC prior
+// terminal (non-Ongoing) battle rows for the player, keeping only the
+// latest terminal per player.
+//
+// EARS: Terminal battles SHALL be GC'd — at terminal write-back, delete all
+// prior terminal (non-Ongoing) battle rows for this player, keeping the
+// latest terminal per player.
+//
+// RED state: the current write_back_battle_results body only deletes the
+// `battle_wild` side-table row:
+//   ctx.db.battle_wild().battle_id().delete(battle.battle_id);
+// It does NOT contain `ctx.db.battle().battle_id().delete(` at all.
+// The assertion below fails today.
+//
+// KILLS: an impl that orphans old fled/won/lost battle rows indefinitely.
+// =========================================================================
+
+/// 12.5e-1 structural: write_back_battle_results must call
+/// `ctx.db.battle().battle_id().delete(` to GC prior terminal battle rows.
+///
+/// KILLS: any impl that only GCs battle_wild rows and never touches old
+/// terminal `battle` rows — those accumulate indefinitely without this delete.
+///
+/// NOTE: The needle is `ctx.db.battle()` followed by a `.battle_id().delete(`
+/// chain, NOT `ctx.db.battle_wild()` — the latter is the existing wild-row GC
+/// which is already present. We confirm the ABSENCE of the correct call today.
+///
+/// Needles built from parts per the convention in this module. MODULE_SOURCE
+/// = include_str!("battle.rs") — this test file is NOT inside that source,
+/// so self-match is impossible. The split is for consistency only.
+#[test]
+fn write_back_battle_results_gcs_old_terminal_battles() {
+    let stripped = strip_rust_comments(MODULE_SOURCE);
+
+    let fn_name = ["write_back", "_battle", "_results"].concat();
+    let body = extract_fn_body(&stripped, &fn_name)
+        .expect("write_back_battle_results must exist in battle.rs");
+
+    // Build the GC needle in two parts.
+    // NOTE: MODULE_SOURCE = include_str!("battle.rs") — this test file
+    // (battle_tests.rs) is NOT part of that source, so self-match is not a
+    // concern here. We split the needle purely for readability and to keep
+    // the convention consistent with other source-guard tests.
+    //
+    // The production call to detect:
+    //   ctx.db.battle().battle_id().delete(
+    // We look for the `battle()` table accessor (NOT `battle_wild()`) followed
+    // by `.battle_id().delete(` so we require the correct table, correct key,
+    // and correct operation — any of which missing means GC is absent.
+    let table_access = ["ctx.db.", "battle()"].concat();
+    let delete_chain = [".battle_id()", ".delete("].concat();
+
+    // Verify the body contains the correct battle-table accessor followed
+    // by the delete chain somewhere after it. We do a simple presence check
+    // on the combined needle assembled from parts.
+    let full_needle = [table_access.as_str(), delete_chain.as_str()].concat();
+
+    assert!(
+        body.contains(full_needle.as_str()),
+        "TEETH(12.5e-1): write_back_battle_results body must contain \
+         `ctx.db.battle().battle_id().delete(` to GC prior terminal battle \
+         rows for the player; currently only `battle_wild()` rows are GC'd. \
+         Add: iterate ctx.db.battle().player_identity().filter(battle.player_identity) \
+         and delete rows where state.outcome != BattleOutcome::Ongoing (keeping latest). \
+         KILLS: any impl that orphans old terminal battle rows indefinitely."
+    );
+}
+
+// =========================================================================
+// M12.5e-3 structural tests: write_back_battle_results XP loop must
+// log-and-continue per-monster on parse failure, NOT propagate Err.
+//
+// EARS: THE XP write-back loop SHALL log-and-continue per-monster on parse
+// failure, so a single corrupt row cannot make a battle unwinnable.
+//
+// RED state: the current body contains:
+//   .ok_or_else(|| format!("loser species {} not found", loser_active.species_id))?
+//   and
+//   game_core::Level::new(bm.level)?
+// Both propagate failures as Err (via `?`), making a corrupt battle unwinnable.
+// Neither has a `log::error!` fallback.
+//
+// All three assertions below are RED today.
+// =========================================================================
+
+/// 12.5e-3a structural: write_back_battle_results must NOT use `ok_or_else`
+/// on the loser-species lookup (which would propagate the error as `Err` and
+/// make a missing species row render the battle unwinnable).
+///
+/// KILLS: the `.ok_or_else(|| format!("loser species {} not found", ...))?`
+/// pattern — the `?` propagates the Err upward, aborting the reducer.
+///
+/// The needle is the `ok_or_else` closure that produces a "loser species"
+/// error message. Built from parts to avoid self-match within this test source.
+/// (NOTE: MODULE_SOURCE = include_str!("battle.rs"), so only battle.rs is
+/// searched — self-match is not a concern, but we build from parts anyway for
+/// clarity and to match the convention used throughout this module.)
+#[test]
+fn write_back_battle_results_xp_loop_does_not_propagate_loser_species_err() {
+    let stripped = strip_rust_comments(MODULE_SOURCE);
+
+    let fn_name = ["write_back", "_battle", "_results"].concat();
+    let body = extract_fn_body(&stripped, &fn_name)
+        .expect("write_back_battle_results must exist in battle.rs");
+
+    // The forbidden pattern: ok_or_else on the loser species lookup producing a
+    // "loser species" message. The current code is:
+    //   .ok_or_else(|| format!("loser species {} not found", loser_active.species_id))?
+    // Built from two parts so the verbatim complete string does not appear here.
+    let bad_loser_err = ["ok_or_else(|| format!(\"loser", " species"].concat();
+
+    assert!(
+        !body.contains(bad_loser_err.as_str()),
+        "TEETH(12.5e-3): write_back_battle_results must NOT use \
+         `.ok_or_else(|| format!(\"loser species...`))?` on the loser-species lookup — \
+         this propagates Err upward, making a missing species row render the battle \
+         unwinnable. Replace with a `match` / `if let` that logs an error and continues \
+         the XP loop (log-and-continue pattern)."
+    );
+}
+
+/// 12.5e-3b structural: write_back_battle_results must NOT use `?` on
+/// `Level::new(bm.level)` inside the XP loop — a corrupt level value would
+/// abort the whole write-back.
+///
+/// KILLS: the `game_core::Level::new(bm.level)?` pattern in the XP loop.
+///
+/// Needle built from parts to avoid self-match.
+#[test]
+fn write_back_battle_results_xp_loop_does_not_propagate_level_parse_err() {
+    let stripped = strip_rust_comments(MODULE_SOURCE);
+
+    let fn_name = ["write_back", "_battle", "_results"].concat();
+    let body = extract_fn_body(&stripped, &fn_name)
+        .expect("write_back_battle_results must exist in battle.rs");
+
+    // The forbidden pattern: Level::new(bm.level)? in the XP loop.
+    // Built from two parts to avoid verbatim self-appearance.
+    // In the body this looks like: `game_core::Level::new(bm.level)?`
+    // We look for `Level::new(bm.level)` followed by `?`.
+    // Assemble as: ["Level::new(bm.level)", "?"].concat() = "Level::new(bm.level)?"
+    let bad_level_parse = ["Level::new(bm.level)", "?"].concat();
+
+    assert!(
+        !body.contains(bad_level_parse.as_str()),
+        "TEETH(12.5e-3): write_back_battle_results must NOT use `?` on \
+         `Level::new(bm.level)` inside the XP loop — a corrupt level value \
+         in one monster's row aborts write-back for the entire battle, making \
+         it unwinnable. Replace with log::error! + continue so only the \
+         affected monster is skipped."
+    );
+}
+
+/// 12.5e-3c structural: write_back_battle_results must use `log::error!`
+/// inside the XP loop body for the log-and-continue pattern.
+///
+/// KILLS: an impl that silently skips corrupt rows (no log) or that still
+/// propagates errors via `?` (no log::error! at all in the XP section).
+///
+/// Needle built from parts to avoid self-match.
+#[test]
+fn write_back_battle_results_xp_loop_uses_log_error_for_continue() {
+    let stripped = strip_rust_comments(MODULE_SOURCE);
+
+    let fn_name = ["write_back", "_battle", "_results"].concat();
+    let body = extract_fn_body(&stripped, &fn_name)
+        .expect("write_back_battle_results must exist in battle.rs");
+
+    // The required pattern: log::error! somewhere inside the XP-award block.
+    // Built from parts; the body slice is the production function so this
+    // test's own text is not inside the searched region.
+    let log_call = ["log::", "error!"].concat();
+
+    assert!(
+        body.contains(log_call.as_str()),
+        "TEETH(12.5e-3): write_back_battle_results body must contain `log::error!` \
+         for the log-and-continue pattern in the XP loop — currently the body uses `?` \
+         to propagate errors (making a corrupt monster row unwinnable). \
+         Add `log::error!(\"...\"); continue;` in place of `?` propagation so a single \
+         corrupt row is skipped and logged, not fatal."
+    );
+}
