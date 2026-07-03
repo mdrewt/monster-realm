@@ -81,8 +81,8 @@ const held = new HeldDirections();
 let renderer: WorldRenderer | undefined;
 // M12.5d-4: camera hold — persists the last resolved tile position so the camera
 // doesn't snap to origin when the own entity is temporarily unresolved (warp / reconnect).
-const lastCamX = 0;
-const lastCamY = 0;
+let lastCamX = 0;
+let lastCamY = 0;
 
 // Sticky DEV latch: set once the own entity renders a fractional sub-tile position
 // (proves the slide clock is wired, not raw integer tiles). Never reset to false
