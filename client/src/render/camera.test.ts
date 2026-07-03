@@ -56,17 +56,17 @@ describe('FollowCamera.offsetFor: class exists and is callable', () => {
 // ---------------------------------------------------------------------------
 
 describe('FollowCamera C1a: follow formula (playerPx - viewW/2)', () => {
-  it('BITES: player at (5,3) in 10×7 map, 320×224 viewport → raw formula result (fits, must clamp)', () => {
-    // Map is 10×7 tiles = 320×224 px — EXACT match with viewport, so both raw and clamped are (0,0).
-    // Use a smaller viewport to get a non-zero offset.
+  it('BITES: player at (5,3) in 10×7 map, 160×112 viewport → tile-center formula result (M12.5d-4)', () => {
     // Map: 10×7, viewport: 160×112, player at (5,3) (center of map).
-    // rawX = 5*32 - 80 = 160-80 = 80; mapPx=320, maxX=320-160=160 → clamped=80
-    // rawY = 3*32 - 56 = 96-56 = 40;  mapPx=224, maxY=224-112=112 → clamped=40
-    // Kills: an impl that returns (0,0) unconditionally or ignores the player position.
+    // Tile-CENTER formula (M12.5d-4): rawX = (5+0.5)*32 - 80 = 176-80 = 96; clamped=96
+    //                                  rawY = (3+0.5)*32 - 56 = 112-56 = 56; clamped=56
+    // OLD tile-CORNER formula:          rawX = 5*32 - 80 = 80; rawY = 3*32 - 56 = 40
+    // Kills: an impl still using tile-corner formula (returns {x:80, y:40} instead of {x:96, y:56}).
+    // This test is RED until the camera formula changes to (tile + 0.5) * TILE_PX.
     const cam = new FollowCamera();
     const off = cam.offsetFor(5, 3, 160, 112, 10, 7);
-    expect(off.x).toBe(80);
-    expect(off.y).toBe(40);
+    expect(off.x).toBe(96);
+    expect(off.y).toBe(56);
   });
 
   it('BITES: player at (1,1) near top-left with small viewport → offset clamped to (0,0)', () => {
@@ -185,12 +185,14 @@ describe('FollowCamera C1d: pure computation (no side effects)', () => {
 
   it('BITES: interleaved calls with different args do not corrupt each other', () => {
     // Kills: an impl that accumulates state from prior calls.
+    // Values updated for tile-center formula (M12.5d-4):
+    // player (5,3) with 160×112 viewport in 10×7 map → x=96, y=56
+    // ((5+0.5)*32 - 80 = 96; (3+0.5)*32 - 56 = 56)
     const cam = new FollowCamera();
     const _irrelevant = cam.offsetFor(9, 6, 160, 112, 10, 7); // far corner
     const center = cam.offsetFor(5, 3, 160, 112, 10, 7);
-    // player (5,3) with 160×112 viewport in 10×7 map → x=80, y=40 (same as C1a test)
-    expect(center.x).toBe(80);
-    expect(center.y).toBe(40);
+    expect(center.x).toBe(96);
+    expect(center.y).toBe(56);
   });
 
   it('BITES: two independent FollowCamera instances return the same result', () => {
@@ -233,8 +235,11 @@ describe('FollowCamera property: offset always in valid clamp range', () => {
     );
   });
 
-  it('BITES: property — offset matches clamp(playerPx - viewSize/2, 0, max) formula', () => {
-    // Kills: an impl that uses a different formula (e.g., playerPx - viewSize instead of /2).
+  it('BITES: property — offset matches clamp((tile+0.5)*TILE_PX - viewSize/2, 0, max) formula (M12.5d-4)', () => {
+    // Kills: an impl still using tile-corner formula (playerX * TILE_PX - viewW/2).
+    // The tile-center formula (M12.5d-4) uses (playerX + 0.5) * TILE_PX - viewW/2 so
+    // the camera centers on the middle of the player's tile, not its top-left corner.
+    // This test is RED until the camera.ts implementation changes to tile-center math.
     fc.assert(
       fc.property(
         fc.integer({ min: 5, max: 20 }), // mapW
@@ -248,18 +253,93 @@ describe('FollowCamera property: offset always in valid clamp range', () => {
           const playerX = Math.min(rawPX, mapW - 1);
           const playerY = Math.min(rawPY, mapH - 1);
           const off = cam.offsetFor(playerX, playerY, viewW, viewH, mapW, mapH);
+          // Tile-center formula (M12.5d-4):
           const expectedX = clamp(
-            playerX * TILE_PX - viewW / 2,
+            (playerX + 0.5) * TILE_PX - viewW / 2,
             0,
             Math.max(0, mapW * TILE_PX - viewW),
           );
           const expectedY = clamp(
-            playerY * TILE_PX - viewH / 2,
+            (playerY + 0.5) * TILE_PX - viewH / 2,
             0,
             Math.max(0, mapH * TILE_PX - viewH),
           );
-          expect(off.x).toBe(expectedX);
-          expect(off.y).toBe(expectedY);
+          expect(off.x).toBeCloseTo(expectedX, 5);
+          expect(off.y).toBeCloseTo(expectedY, 5);
+        },
+      ),
+    );
+  });
+});
+
+// =============================================================================
+// M12.5d-4: FollowCamera centers on tile CENTER (+0.5 tile offset)
+// SOURCE OF TRUTH: M12.5d spec §4 "Camera: center on tile center not tile corner"
+//
+// RED REASON (before impl): camera.ts currently uses playerTileX * TILE_PX to
+// convert the player tile to pixels (tile corner). After fix: (playerTileX + 0.5)
+// * TILE_PX centers on the tile's midpoint.
+//
+// The concrete difference: player at tile 5, TILE_PX=32:
+//   OLD (corner): rawX = 5*32 - viewW/2 = 160 - 80 = 80
+//   NEW (center): rawX = 5.5*32 - viewW/2 = 176 - 80 = 96
+// Tests below are RED until camera.ts uses the +0.5 formula.
+// =============================================================================
+
+describe('FollowCamera M12.5d-4: centers on tile CENTER (+0.5 tile offset)', () => {
+  it('BITES (M12.5d-4): player at integer tile uses tile CENTER, not tile corner', () => {
+    // With tile-corner: rawX = 5 * 32 - 80 = 80. With tile-center: rawX = 5.5 * 32 - 80 = 96.
+    // This test is RED until camera.ts uses (playerTileX + 0.5) * TILE_PX.
+    // Wrong impl killed: playerTileX * TILE_PX (corner) returns {x:80, y:40} not {x:96, y:56}.
+    const cam = new FollowCamera();
+    const off = cam.offsetFor(5, 3, 160, 112, 10, 7);
+    // tile center: rawX = (5 + 0.5) * 32 - 80 = 176 - 80 = 96; clamped: min(96, 160) = 96
+    // tile center: rawY = (3 + 0.5) * 32 - 56 = 112 - 56 = 56; clamped: min(56, 112) = 56
+    expect(off.x).toBe(96);
+    expect(off.y).toBe(56);
+  });
+
+  it('BITES (M12.5d-4): player at (0,0) with tile center still clamps to (0,0)', () => {
+    // rawX = 0.5 * 32 - 80 = 16 - 80 = -64 → clamped to 0
+    // rawY = 0.5 * 32 - 56 = 16 - 56 = -40 → clamped to 0
+    // (same result as tile-corner for map origin — clamping produces (0,0) in both)
+    // This test passes for BOTH old and new formula (clamped to 0 in both cases),
+    // so it is GREEN for both — it's a stability check that +0.5 doesn't break origin.
+    const cam = new FollowCamera();
+    const off = cam.offsetFor(0, 0, 160, 112, 10, 7);
+    expect(off.x).toBe(0);
+    expect(off.y).toBe(0);
+  });
+
+  it('BITES (M12.5d-4): property — formula uses (tile + 0.5) * TILE_PX - viewSize/2', () => {
+    // Kills: any impl using tile-corner formula (playerX * TILE_PX - viewW/2).
+    // For any player/map/view combination the tile-center formula must match exactly.
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 5, max: 20 }),
+        fc.integer({ min: 5, max: 20 }),
+        fc.integer({ min: 1, max: 640 }),
+        fc.integer({ min: 1, max: 480 }),
+        fc.integer({ min: 0, max: 19 }),
+        fc.integer({ min: 0, max: 19 }),
+        (mapW, mapH, viewW, viewH, rawPX, rawPY) => {
+          const cam = new FollowCamera();
+          const playerX = Math.min(rawPX, mapW - 1);
+          const playerY = Math.min(rawPY, mapH - 1);
+          const off = cam.offsetFor(playerX, playerY, viewW, viewH, mapW, mapH);
+          // Tile-center formula (M12.5d-4):
+          const expectedX = clamp(
+            (playerX + 0.5) * TILE_PX - viewW / 2,
+            0,
+            Math.max(0, mapW * TILE_PX - viewW),
+          );
+          const expectedY = clamp(
+            (playerY + 0.5) * TILE_PX - viewH / 2,
+            0,
+            Math.max(0, mapH * TILE_PX - viewH),
+          );
+          expect(off.x).toBeCloseTo(expectedX, 5);
+          expect(off.y).toBeCloseTo(expectedY, 5);
         },
       ),
     );

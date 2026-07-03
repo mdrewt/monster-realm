@@ -228,7 +228,19 @@ export class AuthoritativeStore {
   upsertCharacter(row: StoreCharacter, now: number): void {
     const existing = this.#chars.get(row.entityId);
     const latest: Snapshot = { tileX: row.tileX, tileY: row.tileY, receivedAt: now };
-    this.#chars.set(row.entityId, { row, receivedAt: now, latest, prev: existing?.latest });
+    // Snap (drop prev) on zone change or large tile delta (M12.5d-2): interpolating
+    // across a zone transition or a >1-tile jump smears the sprite through walls.
+    const shouldSnap =
+      existing !== undefined &&
+      (row.zoneId !== existing.row.zoneId ||
+        Math.abs(row.tileX - existing.row.tileX) > 1 ||
+        Math.abs(row.tileY - existing.row.tileY) > 1);
+    this.#chars.set(row.entityId, {
+      row,
+      receivedAt: now,
+      latest,
+      prev: shouldSnap ? undefined : existing?.latest,
+    });
     this.#dirty = true;
   }
 

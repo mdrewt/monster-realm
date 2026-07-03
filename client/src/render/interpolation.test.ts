@@ -14,9 +14,10 @@ const s = (tileX: number, tileY: number, receivedAt: number): InterpSample => ({
 });
 
 describe('interpDelayMs: the buffer is sized in STEP_MS multiples (ADR-0013)', () => {
-  it('is ~1.5-2x STEP_MS (renders remotes slightly in the past to absorb jitter)', () => {
-    expect(interpDelayMs(200)).toBe(300); // 1.5 * 200
-    expect(interpDelayMs(100)).toBeGreaterThan(100); // strictly behind real time
+  it('renders remotes 1.0 STEP_MS in the past to absorb jitter without hold/jump (ADR-0013, M12.5d-1)', () => {
+    expect(interpDelayMs(200)).toBe(200); // 1.0 * 200 (M12.5d-1 fix: was 1.5)
+    expect(interpDelayMs(100)).toBe(100); // 1.0 * 100
+    expect(interpDelayMs(200)).toBeGreaterThan(0); // strictly in the past
   });
 });
 
@@ -101,5 +102,76 @@ describe('interpolation proof-of-teeth (ADR-0010): the buffer is load-bearing', 
   it('BITES: the no-buffer renderer (latest only) leaps > one tile in a frame', () => {
     const jump = maxFrameJump(arrivals, frames, (_p, l) => l.tileX);
     expect(jump).toBeGreaterThan(1); // 0 -> 2 across one frame: the test bites
+  });
+});
+
+// =============================================================================
+// M12.5d-1: INTERP_DELAY_STEPS=1.0 — monotone positions under steady 200ms cadence
+// SOURCE OF TRUTH: M12.5d spec §1 "Smoothness: remote interpolation hold/jump fix"
+//
+// RED REASON (before impl): INTERP_DELAY_STEPS is currently 1.5, so interpDelayMs(200)
+// returns 300. With a 300ms delay and 200ms cadence, renderTime=now-300 falls BEFORE
+// the prev snapshot for 100ms after each latest arrival → 100ms hold → ramp to 50%
+// → new update → snap to new prev. Result: non-monotone position sequence (hold/jump).
+// After fix: INTERP_DELAY_STEPS=1.0 → delay=200ms matches cadence → monotone.
+// =============================================================================
+
+describe('interpolation D1: INTERP_DELAY_STEPS=1.0 produces monotone positions under steady 200ms cadence', () => {
+  it('BITES (M12.5d-1): with delay=1.0*stepMs and steady 200ms cadence, positions are monotone (no hold/jump)', () => {
+    // Evidence: INTERP_DELAY_STEPS=1.5 with 2 snapshots causes a hold/jump cycle.
+    // Root cause: renderTime=now-300ms falls before prev snapshot for 100ms after
+    // latest arrives → 100ms hold → ramp to 50% → new update → snap to new prev.
+    // Fix: INTERP_DELAY_STEPS=1.0 → renderTime=now-200ms smoothly matches 200ms cadence.
+    //
+    // Setup: remote player moved from (0,0) to (1,0) at T=200, then (2,0) at T=400.
+    // With INTERP_DELAY=200ms, renderTime=now-200.
+    // We sample positions at client-now = 201, 300, 399, 400, 401, 500, 599, 600.
+    // Expected: each sample's x-position >= previous (monotone, no holds or jumps).
+    //
+    // This test will be RED until INTERP_DELAY_STEPS changes to 1.0.
+    // (interpDelayMs(200) currently returns 300; after fix it returns 200.)
+
+    const STEP_MS = 200;
+    const delay = interpDelayMs(STEP_MS); // after fix: 200, currently 300
+
+    // segment 1: from (0,0) at T=0 to (1,0) at T=200
+    const prev1 = s(0, 0, 0);
+    const latest1 = s(1, 0, 200);
+
+    // segment 2: from (1,0) at T=200 to (2,0) at T=400
+    const prev2 = s(1, 0, 200);
+    const latest2 = s(2, 0, 400);
+
+    // Sample at various client-now values using the correct delay
+    function sample(clientNow: number): number {
+      const renderTime = clientNow - delay;
+      // Use segment 1 before T+400 arrives, segment 2 after
+      if (clientNow < 400) {
+        return interpolate(prev1, latest1, renderTime).x;
+      }
+      return interpolate(prev2, latest2, renderTime).x;
+    }
+
+    // Sample sequence: should be monotone increasing
+    const clientNows = [201, 250, 300, 350, 399, 400, 450, 500, 550, 599, 600];
+    const positions = clientNows.map(sample);
+
+    // Monotone check: each position >= previous
+    for (let i = 1; i < positions.length; i++) {
+      expect(positions[i]).toBeGreaterThanOrEqual(positions[i - 1] - 0.001); // tiny epsilon for float
+    }
+
+    // Positions must reach at least 1.0 before segment 2 starts (by T+400)
+    const posAt399 = sample(399);
+    expect(posAt399).toBeGreaterThanOrEqual(0.9); // nearly at tile 1 before transition
+    // After segment 2 starts, positions should advance toward tile 2
+    const posAt600 = sample(600);
+    expect(posAt600).toBeGreaterThanOrEqual(1.5); // well into second segment
+  });
+
+  it('BITES (M12.5d-1): interpDelayMs(200) equals 1.0 * 200 = 200 after the fix', () => {
+    // This test is RED with the current code (returns 300 = 1.5*200).
+    // After fix: returns 200 = 1.0*200.
+    expect(interpDelayMs(200)).toBe(200);
   });
 });

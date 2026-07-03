@@ -93,7 +93,11 @@ export class Predictor {
   #queue: WasmMoveInput[] = []; //               the LOCAL intent queue
   #pending: PendingOp[] = []; //                  unacked ops, in send order
   #nextSeq = 0;
-  #lastDrainAt: number | undefined = undefined; // ADR-0052 §B: lazy — no spurious first-drain snap
+  // ADR-0052 §B / M12.5d-3: only the FRAME-LOOP drain() updates this — reconcile's
+  // internal #stepForward() does NOT. This prevents a reconcile-drain (fired from the
+  // batch listener between rAF frames) from masking a large inter-frame gap; a
+  // backgrounded-tab wake correctly produces snapped=true on the next frame drain.
+  #lastFrameDrainAt: number | undefined = undefined;
 
   // ADR-0013.5: `pendingCap` is OPTIONAL; default 16 ≈ 16·STEP_MS of un-acked
   // prediction — a generous degenerate-no-ack backstop (normal ack cadence keeps
@@ -194,8 +198,9 @@ export class Predictor {
     this.#queue = q.slice(0, this.#queueCap);
     // 3. reset prediction to the authoritative (rebased) truth.
     this.#predicted = authBaseline;
-    // 4. re-drain forward from truth.
-    this.drain(now);
+    // 4. re-drain forward from truth (private: does NOT update #lastFrameDrainAt so
+    //    the frame loop's subsequent drain() still sees the real inter-frame gap).
+    this.#stepForward(now);
 
     if (before === undefined) return false; // seeding reconcile is never a divergence
     const after = this.#predicted.pos;
@@ -205,23 +210,14 @@ export class Predictor {
   // --- drain: step_ms-paced catch-up (discrete tiles, never a teleport) ----------
 
   /**
-   * Apply each DUE queued move via `applyMove`, advancing logical time by `stepMs`
-   * per applied move (not snapping to `now`) so a large local time gap catches up as
-   * discrete one-tile steps. Bounded prediction (ADR-0013/0052): `#queue.length <=
-   * #queueCap` holds by construction (enqueue rejects past cap; reconcile clamps), so
-   * a single drain applies at most `#queueCap` moves — the predictor never runs more
-   * than the cap ahead of authority.
+   * Apply queued moves that are now due: advance logical time by `stepMs` per move
+   * (never snap to `now`) so a large gap catches up as discrete one-tile steps.
+   * Private — called ONLY by drain() and reconcile() step 4. Does NOT touch
+   * `#lastFrameDrainAt` so reconcile drains cannot mask inter-frame gaps.
    */
-  drain(now: number): DrainResult {
-    if (this.#predicted === undefined) return { applied: 0, snapped: false };
-    // ADR-0052 §B: the first drain (lastDrainAt undefined) never snaps — there is no
-    // prior drain to measure a gap against; only a real gap between two drains snaps.
-    const snapped =
-      this.#lastDrainAt !== undefined && now - this.#lastDrainAt > SNAP_GAP_STEPS * this.#stepMs;
-    this.#lastDrainAt = now;
-
-    // `#queue.length <= #queueCap` is invariant (ADR-0052), so the cap alone is the
-    // tight bound; the `#queue.length > 0` condition below stops earlier in practice.
+  #stepForward(now: number): number {
+    if (this.#predicted === undefined) return 0;
+    // `#queue.length <= #queueCap` is invariant (ADR-0052).
     const maxApply = this.#queueCap;
     let applied = 0;
     while (
@@ -234,6 +230,28 @@ export class Predictor {
       this.#predicted = this.#applyMove(this.#predicted, move, logicalT);
       applied += 1;
     }
+    return applied;
+  }
+
+  /**
+   * Frame-loop drain: detect inter-frame gaps, advance prediction by due moves, and
+   * update `#lastFrameDrainAt`. Called ONLY from the rAF frame loop (M4c).
+   *
+   * Bounded prediction (ADR-0013/0052): a single drain applies at most `#queueCap`
+   * moves (the queue invariant holds by construction), so the predictor never runs
+   * more than the cap ahead of authority. `snapped` is true when the gap since the
+   * last FRAME drain (not since the last reconcile drain) exceeds SNAP_GAP_STEPS —
+   * the M4 loop should jump the renderer rather than animate a backlog.
+   */
+  drain(now: number): DrainResult {
+    if (this.#predicted === undefined) return { applied: 0, snapped: false };
+    // ADR-0052 §B / M12.5d-3: gap is measured from the last FRAME drain only.
+    // First frame drain (#lastFrameDrainAt undefined) never snaps — no prior frame.
+    const snapped =
+      this.#lastFrameDrainAt !== undefined &&
+      now - this.#lastFrameDrainAt > SNAP_GAP_STEPS * this.#stepMs;
+    this.#lastFrameDrainAt = now;
+    const applied = this.#stepForward(now);
     return { applied, snapped };
   }
 

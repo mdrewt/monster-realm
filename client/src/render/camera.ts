@@ -16,8 +16,9 @@ export class FollowCamera {
   ): { x: number; y: number } {
     const maxX = Math.max(0, mapWidthTiles * TILE_PX - viewW);
     const maxY = Math.max(0, mapHeightTiles * TILE_PX - viewH);
-    const rawX = playerTileX * TILE_PX - viewW / 2;
-    const rawY = playerTileY * TILE_PX - viewH / 2;
+    // +0.5 shifts anchor to tile center (M12.5d-4: tile-corner was a half-tile visual bias).
+    const rawX = (playerTileX + 0.5) * TILE_PX - viewW / 2;
+    const rawY = (playerTileY + 0.5) * TILE_PX - viewH / 2;
     return {
       x: Math.max(0, Math.min(rawX, maxX)),
       y: Math.max(0, Math.min(rawY, maxY)),
