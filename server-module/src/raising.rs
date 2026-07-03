@@ -71,7 +71,9 @@ pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
     m.bond = new_bond;
     m.last_care_at_ms = now;
     // Recompute evolves_to after bond change from care (12.5b-4, ADR-0073).
-    let all_evolutions = load_evolutions().unwrap_or_default();
+    // fail-loud on parse error — silently zeroing evolves_to would mask content issues.
+    let all_evolutions =
+        load_evolutions().map_err(|e| format!("care: load_evolutions failed: {e}"))?;
     let monster_evolutions = all_evolutions
         .iter()
         .find(|se| se.species_id == m.species_id)

@@ -712,16 +712,21 @@ pub(crate) fn write_back_battle_results(
                         // Heal the HP gained from the max-HP growth on level-up
                         // (SSOT: game_core owns the heal rule, ADR-0003).
                         m.current_hp = level_up_healed_hp(m.current_hp, bm.max_hp, derived.hp);
+                        // Recompute evolves_to after level-up (12.5b-4, ADR-0073).
+                        // Scoped inside `if leveled_up { if let Some(species) }` because:
+                        // (a) only a level change can unlock a new level-based evolution branch;
+                        // (b) a parse failure must fail-loud (not silently zero evolves_to).
+                        let all_evolutions = load_evolutions().map_err(|e| {
+                            format!("write_back_battle_results: load_evolutions failed: {e}")
+                        })?;
+                        let monster_evolutions = all_evolutions
+                            .iter()
+                            .find(|se| se.species_id == m.species_id)
+                            .map(|se| &se.evolutions[..])
+                            .unwrap_or(&[]);
+                        m.evolves_to = crate::evolution::compute_evolves_to(monster_evolutions, &m);
                     }
                 }
-                // Recompute evolves_to after each level-up (12.5b-4, ADR-0073).
-                let all_evolutions = load_evolutions().unwrap_or_default();
-                let monster_evolutions = all_evolutions
-                    .iter()
-                    .find(|se| se.species_id == m.species_id)
-                    .map(|se| &se.evolutions[..])
-                    .unwrap_or(&[]);
-                m.evolves_to = crate::evolution::compute_evolves_to(monster_evolutions, &m);
                 let pub_row = pub_from_monster(&m);
                 ctx.db.monster().monster_id().update(m);
                 ctx.db.monster_pub().monster_id().update(pub_row);

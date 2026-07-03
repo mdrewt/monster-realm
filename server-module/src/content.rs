@@ -231,6 +231,9 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
 /// Pure validation seam (12.5b-2, ADR-0073): verify species + evolutions are
 /// minimally valid before any DB write. Called from sync_content_inner (which
 /// does the real full validation) and unit-testable without a DB context.
+/// Checks: species non-empty; every evolution entry references a known species_id.
+/// Full graph-level validation (cycles, fusion coherence) is done by
+/// `validate_evolution_fusion` in sync_content_inner's validate phase.
 pub(crate) fn sync_content_inner_recheck(
     species: &[Species],
     evolutions: &[SpeciesEvolutions],
@@ -240,7 +243,15 @@ pub(crate) fn sync_content_inner_recheck(
             "species registry must not be empty (would wipe all species on seed)".to_string(),
         );
     }
-    let _ = evolutions; // validated via validate_evolution_fusion in the real path
+    let species_ids: std::collections::HashSet<u32> = species.iter().map(|s| s.id).collect();
+    for ev in evolutions {
+        if !species_ids.contains(&ev.species_id) {
+            return Err(format!(
+                "evolution entry references unknown species_id {}",
+                ev.species_id
+            ));
+        }
+    }
     Ok(())
 }
 

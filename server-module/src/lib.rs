@@ -111,6 +111,15 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
         .id()
         .find(0)
         .ok_or_else(|| "sync_content: config row missing".to_string())?;
+    // Zero-identity means the DB was published before M12.5b (owner_identity was not
+    // yet stored in Config). A re-publish will set it correctly via `init`.
+    if cfg.owner_identity == Identity::from_byte_array([0u8; 32]) {
+        return Err(
+            "sync_content: owner_identity not registered — module was published before \
+             M12.5b; re-publish to register the owner"
+                .to_string(),
+        );
+    }
     if ctx.sender != cfg.owner_identity {
         return Err("sync_content: caller is not the module owner".to_string());
     }
