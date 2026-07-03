@@ -321,16 +321,19 @@ mod tests {
 
         let mut w = ServerWorld::new();
         let id = w.join(0);
-        // Walk to (5,5): East×4 + South×4 (paced).
+        // Walk to (5,5) via the navigable path (same as warp_crossing_moves_character_to_destination_zone):
+        // E,E→(3,1); S,S,S→(3,4); E,E→(5,4); S→(5,5). The direct E×4,S×4 path is BLOCKED
+        // at (5,3) (wall in ZONE_0_ROWS row y=3). Using the navigable path ensures the character
+        // actually lands on (5,5) — making the kill target non-vacuous.
         let moves = [
             Direction::East,
+            Direction::East, // (1,1)→(3,1)
+            Direction::South,
+            Direction::South,
+            Direction::South, // (3,1)→(3,4)
             Direction::East,
-            Direction::East,
-            Direction::East,
-            Direction::South,
-            Direction::South,
-            Direction::South,
-            Direction::South,
+            Direction::East,  // (3,4)→(5,4)
+            Direction::South, // (5,4)→(5,5) — warp-less in zone_0()
         ];
         for (seq, &dir) in moves.iter().enumerate() {
             let seq = u64::try_from(seq).unwrap() + 1;

@@ -20,7 +20,7 @@ M12.5 code review produced five residual action items requiring structural harde
 
 `tick_zone` (in `sim-harness/src/world.rs`) now mirrors `movement_tick` warp resolution: after each `apply_move`, if `prev != ch.state.pos`, call `map.warp_at(pos)` and if `Some(warp)`, update `zone_id`, `to_tile`, clear queue, set Idle. Battle-guard is omitted (harness has no battle tables).
 
-`lib.rs` now loads real content via `load_zone_maps()` / `map_for()` instead of the hardcoded `zone_0()` stub. A `warp_scenario()` helper (East×4 + South×4 from spawn) crosses the warp tile at (5,5) and the convergence test asserts forward vs. reversed delivery order yields the same final `TilePos`.
+`lib.rs` now loads real content via `load_zone_maps()` / `map_for()` instead of the hardcoded `zone_0()` stub. A `warp_scenario()` helper (E×2,S×3,E×2,S from spawn — navigating around the wall pair at (4,3)/(5,3) in the zone 0 RON) crosses the warp tile at (5,5) and the convergence test asserts forward vs. reversed delivery order yields the same final `TilePos`.
 
 `game-core/src/world.rs` gains `zone_0_matches_authored_ron` — a REAL drift test comparing `zone_0()` against the authored RON via `load_zone_maps()`. The existing `map_for_zone_0_matches_zone_0_art` was tautological (it compared `zone_0()` against a constant derived from `zone_0()`'s own row data).
 

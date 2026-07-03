@@ -877,17 +877,17 @@ mod convergence_tests {
     // 12.5f-1 — warp-crossing convergence scenario
     //
     // Asserts that SeqCanonical is delivery-order-invariant even when one of
-    // the steps is the warp step onto (5,5). Geometry: spawn (1,1) →East×4→
-    // (5,1) →South×4→ (5,5) = warp tile → zone 1 landing at (5,5). Final
-    // pos reported by apply_stream is the post-warp tile (5,5); two different
-    // orderings of the same 8 intents must give the same result.
+    // the steps is the warp step onto (5,5). Geometry: spawn (1,1), navigable
+    // path E×2→(3,1), S×3→(3,4), E×2→(5,4), S→(5,5) = warp tile → zone 1
+    // (the direct E×4, S×4 path is blocked by walls at (4,3)/(5,3) in the
+    // zone 0 RON). Final pos from apply_stream is (5,5); two orderings of the
+    // same 8 intents must give the same result.
     //
-    // Kill target: apply_stream using zone_0() (warp-less) — the warp step
-    // would not fire and the character stays in zone 0 at (5,5); or a
-    // tick_zone without warp resolution — zone_id remains 0 but pos is (5,5).
-    // In both cases the final pos happens to be (5,5) but the ZONE is wrong.
-    // The test uses zone_of (exposed via a fresh ServerWorld) to confirm the
-    // zone flip when checking the single-client walk.
+    // Kill target: apply_stream that applies in arrival order (not seq order)
+    // — reordering would produce a different walk path and different final tile.
+    // Zone-flip integrity (warp firing vs. not) is covered by the companion
+    // `warp_crossing_moves_character_to_destination_zone` test (sim-harness
+    // world.rs) which uses zone_of directly.
     // -----------------------------------------------------------------------
 
     #[test]
@@ -917,7 +917,7 @@ mod convergence_tests {
         assert_eq!(
             final_tile,
             game_core::TilePos { x: 5, y: 5 },
-            "warp scenario: client 0 must land at (5,5) after East×4 + South×4 — \
+            "warp scenario: client 0 must land at (5,5) after E×2,S×3,E×2,S navigating to the warp tile — \
              kill target: apply_stream that stops mid-walk (e.g. only 4 of 8 steps applied)"
         );
     }
