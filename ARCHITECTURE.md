@@ -487,9 +487,13 @@ public additive owner-scoped table; bait classified by data.
 Tracked consciously so they stay visible, not forgotten.
 
 - **(a) `battle`/`battle_wild` row reaping** — M8d closed the `battle_wild` GC (ADR-0047):
-  unconditional delete in `write_back_battle_results` + recruit/strike-back paths. The
-  `battle` row itself (PvP + wild) remains un-reaped; a general terminal-battle GC for
-  the `flee`/win paths is a follow-up (M9+).
+  unconditional delete in `write_back_battle_results` + recruit/strike-back paths.
+  **M12.5e (ADR-0077) closed the `battle` row GC**: `write_back_battle_results` now
+  deletes all prior terminal (non-Ongoing) `battle` rows for the player at write-back,
+  keeping at most 1 terminal per player (the current one, committed by the caller's
+  subsequent `update()`). Gap: `attempt_recruit` success path calls `write_back_party_hp`
+  not `write_back_battle_results` — one prior terminal can persist until the next
+  non-recruit terminal battle. Named follow-up, not silently dropped.
 - **(b) `splitmix32` duplication** — the helper is present in both
   `taming/rules.rs` (`resolve_encounter`) and `monster/rolls.rs` (`roll_individuality`).
   Hoist to one `pub(crate)` fn to single-source the determinism contract that ADR-0045
@@ -713,6 +717,8 @@ include new public table accessors + unique npc_id index. 36/36 evals pass.
 **M12c** — Content RON loading for NPC/dialogue/quest/heal (ADR-0070); validate_npc_content (12-point cross-registry integrity); NPC zone policy (skip warp tiles); RT-ADV-01 fix (advance_dialogue zone+proximity re-check, auto-dismiss).
 
 **M12d** (client dialogue/quest/heal UI — ADR-0071) complete: `dialogueContent.ts` static bundle (mirrors 000-core.ron; server remains SSOT for dialogue logic); `dialogueModel.ts` / `questLogModel.ts` / `healModel.ts` pure view-models (unit-tested); `dialogueView.ts` / `questLogView.ts` / `healView.ts` DOM shells (coverage-excluded); store extensions for `StorePlayerConversation`, `StorePlayerQuest`, `StoreHealLocationRow`, `StoreNpcRow`; subscriptions to `player_conversation`, `player_quest`, `heal_location_row`, `npc` (zone-unscoped, deferred optimization to M16); `dismissPending` latch in `main.ts` prevents double-dismiss on Escape; gating tests: `RT-DLG-01` pins dialogue-bundle freshness, `cooldown-bigint-boundary` gates SDK `bigint` precision, `C7-dismissPending-latch` verifies double-send prevention; all green, PR #83.
+
+**M12.5e** (battle lifecycle & rules residuals — ADR-0077) complete: three surgical fixes in `battle.rs`/`marshal.rs`. **(e-1) Terminal `battle` row GC:** `write_back_battle_results` now deletes all prior non-Ongoing `battle` rows for the player before returning — ordering-safe because all callers call `update(battle)` after this function returns, so the current battle's DB row is still Ongoing at scan time (keeping-latest-per-player invariant). **(e-3) XP loop log-and-continue:** per-monster parse failures (`Level::new`, `IVs::new`, `EVs::new`, missing species/evolutions) converted from `?`-propagation to `log::error!` + `continue` / `break 'stat_recompute` — one corrupt monster row can no longer make a battle permanently unwinnable. Structural guards (`check_team_coupling`, `write_back_party_hp`) remain fail-loud. Loser level parsed once pre-loop (loop-invariant) with log+`return Ok(())`. **(e-4) Canonical `known_skill_ids` order:** `battle_monster_from_row` in `marshal.rs` now iterates `species.learnable_skill_ids` and filters to those present in the skills slice, identical to `wild_battle_monster` — AI tie-break is now content-defined for owned monsters. ADR-0077 explicitly records 12.5e-2 (self-battle XP provenance) as Drew's DECISION, deferred with a note. 118 Rust tests, 42 evals, 571 client tests all green.
 
 **M12.5a** (CRITICAL bug fix — fuse offspring `monster_pub` dual-write ordering, ADR-0072): `fuse` reducer in `evolution.rs` was calling `pub_from_monster(&offspring_monster)` before `ctx.db.monster().insert()`, so the pub row landed with `monster_id=0` (SpacetimeDB assigns `auto_inc` at insert time and returns the row). Fix: `let inserted = ctx.db.monster().insert(offspring_monster); ctx.db.monster_pub().insert(pub_from_monster(&inserted))` — mirrors `movement.rs:104-105` and `taming.rs:136-137`. `fuse_seam` test double aligned to start with `monster_id: 0` and use insert-return pattern. New gating invariant: `monster-dual-write` eval's `CAPTURE_INSERT` + `DISCARD_INSERT` checks enforce that every `ctx.db.monster().insert(` must capture the return value (not discard with `let _ =`), enforcing insert-then-pub ordering project-wide (TEETH D + TEETH E).
 
