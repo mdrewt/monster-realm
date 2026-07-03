@@ -35,6 +35,7 @@ import { connect } from './net/connection';
 import { AuthoritativeStore } from './net/store';
 import { HeldDirections, reissueDir } from './prediction/heldKeys';
 import { type ApplyMove, boundSeq, Predictor } from './prediction/predictor';
+import { TileMap } from './render/map';
 import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { WorldRenderer } from './render/world';
@@ -75,6 +76,10 @@ const resolver = new RenderResolver(STEP_MS);
 // Held movement keys (most-recently-pressed stack) — drives the frame-loop
 // continuation re-issue so a held key keeps walking (M8.6c, ADR-0013).
 const held = new HeldDirections();
+// M12.5c: renderer is module-scope so switchZone (below) can call setMap without
+// being inside main(). Defined here; assigned once inside main() after async init.
+let renderer: WorldRenderer | undefined;
+
 // Sticky DEV latch: set once the own entity renders a fractional sub-tile position
 // (proves the slide clock is wired, not raw integer tiles). Never reset to false
 // except on reconnect. The e2e reads it via window.__game().
@@ -103,60 +108,104 @@ const ready = new Promise<void>((r) => {
   resolveReady = r;
 });
 
-// --- reconcile own character on every coherent (batched) authoritative snapshot --
-store.onBatchApplied(() => {
-  if (identity === '') return;
-  const own = store.ownCharacter(identity);
-  const player = store.player(identity);
-  if (own === undefined || player === undefined) return;
-  const now = performance.now();
-  // The store holds wasm-shaped rows; rebuild the SDK movement subset so the
-  // single-sourced rebasing baseline (ADR-0012, convert.ts) stays the one rule.
-  const sdkFields: SdkCharacterFields = {
-    tileX: own.row.tileX,
-    tileY: own.row.tileY,
-    facing: { tag: own.row.facing },
-    action: { tag: own.row.action },
-    moveStartedAtMs: own.row.moveStartedAtMs,
-  };
-  const baseline = characterToPredictedBaseline(sdkFields, now, STEP_MS);
-  // Fail-loud u64→number bound (M8.8e §B) replacing the unbounded downcast. Contain
-  // the throw HERE: this is the first store batch-listener and store.flushBatch has no
-  // per-listener isolation, so an uncaught RangeError would starve the sibling
-  // refreshBox/refreshBattle listeners (a UI stall). A last_input_seq past the
-  // safe-integer bound is a corrupt/hostile server field (unreachable for a well-behaved
-  // u64 for ~50k years) — log loudly and skip THIS batch's reconcile, never wedge the UI.
-  let ackedSeq: number;
+// --- M12.5c: prediction-state reset (moved to module scope for switchZone access) ----
+// Resets the predictor, slide clock, held keys, and sticky latches without touching
+// the store or rawMap. Called from switchZone AND from onReconnect.
+function resetPredictionState(): void {
+  predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
+  resolver.reset();
+  held.clear();
+  sawFractionalOwnMotion = false;
+  dismissedBattleId = null;
+  battleSynced = false;
+}
+
+// --- M12.5c: idempotent zone-switch (12.5c-1/2/3) --------------------------------
+// Validates the new zone's map BEFORE mutating any state (12.5c-3: parse-first).
+// Does NOT call store.resetCharacters(): the render filter (currentZoneId) excludes
+// stale-zone characters, so idle remotes in the destination zone stay visible (12.5c-2).
+// Idempotent: a no-op if newZoneId already matches rawMap (prevents double-switch when
+// both onOwnWarp and the reconcile listener fire on the same live warp).
+function switchZone(newZoneId: number): void {
+  if (newZoneId === rawMap.zone_id) return;
   try {
-    ackedSeq = boundSeq(player.lastInputSeq);
+    const newRawMap = zone_map(newZoneId);
+    TileMap.fromRaw(newRawMap); // validate BEFORE any mutation (12.5c-3) — throws on bad data
+    set_active_zone(newZoneId);
+    rawMap = newRawMap;
+    renderer?.setMap(rawMap); // renderer?.: no-op during pre-init (safe)
+    resetPredictionState();
   } catch (err) {
-    console.error(`[reconcile] ${(err as Error).message}; skipping batch`);
-    return;
+    console.error('[zone-sync] zone switch to %s failed — keeping current zone', newZoneId, err);
   }
-  // Reconnect re-seed (M8.8e §A): keep #nextSeq ≥ the server ack at all times — a
-  // no-op in steady state, the fix on reconnect / fresh-login-with-prior-session so
-  // post-reconnect intents clear the ack and survive reconcile's seq filter.
-  predictor.seedSeq(ackedSeq);
-  const diverged = predictor.reconcile(baseline, own.row.moveQueue, ackedSeq, now);
-  // Honor reconcile's documented divergence return (ADR-0013), previously discarded: on
-  // a genuine server pullback, re-commit the held direction at the divergence point so a
-  // held key keeps walking from the corrected baseline. Routed through the SAME held-
-  // state-guarded dedup as the rAF frame loop (reissueDir) — so it never double-issues
-  // nor re-issues a key released during the divergence; the move drains on the next rAF.
-  if (
-    diverged &&
-    !(
-      battleView?.visible ||
-      boxView?.visible ||
-      raisingView?.visible ||
-      evolutionView?.visible ||
-      dialogueView?.visible ||
-      questLogView?.visible ||
-      healView?.visible
-    )
-  ) {
-    const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
-    if (heldDir !== undefined) sendIntent({ Step: heldDir });
+}
+
+// --- reconcile own character on every coherent (batched) authoritative snapshot --
+// MUST be total (never throw to caller): store.flushBatch has no per-listener
+// isolation, so an uncaught throw starves sibling listeners (UI stall). (12.5c-4)
+store.onBatchApplied(() => {
+  try {
+    if (identity === '') return;
+    const own = store.ownCharacter(identity);
+    const player = store.player(identity);
+    if (own === undefined || player === undefined) return;
+
+    // 12.5c-1: State-based zone sync — catches reconnect-strand (a character
+    // INSERTED at zone 0 after disconnect-in-zone-1 fires no onUpdate, so the
+    // edge-triggered onOwnWarp never fires; but the zone mismatch IS visible here
+    // on every batch). Also subsumes live-warp: switchZone is idempotent so if
+    // onOwnWarp already updated rawMap this is a no-op.
+    if (own.row.zoneId !== rawMap.zone_id) {
+      switchZone(own.row.zoneId);
+      return; // skip prediction reconcile in the same batch as a zone transition
+    }
+
+    const now = performance.now();
+    // The store holds wasm-shaped rows; rebuild the SDK movement subset so the
+    // single-sourced rebasing baseline (ADR-0012, convert.ts) stays the one rule.
+    const sdkFields: SdkCharacterFields = {
+      tileX: own.row.tileX,
+      tileY: own.row.tileY,
+      facing: { tag: own.row.facing },
+      action: { tag: own.row.action },
+      moveStartedAtMs: own.row.moveStartedAtMs,
+    };
+    const baseline = characterToPredictedBaseline(sdkFields, now, STEP_MS);
+    // Fail-loud u64→number bound (M8.8e §B) replacing the unbounded downcast.
+    // A last_input_seq past the safe-integer bound is a corrupt/hostile server
+    // field — log loudly and skip THIS batch's reconcile, never wedge the UI.
+    let ackedSeq: number;
+    try {
+      ackedSeq = boundSeq(player.lastInputSeq);
+    } catch (err) {
+      console.error(`[reconcile] ${(err as Error).message}; skipping batch`);
+      return;
+    }
+    // Reconnect re-seed (M8.8e §A): keep #nextSeq ≥ the server ack at all times.
+    predictor.seedSeq(ackedSeq);
+    // predictor.reconcile is inside the outer try-catch (12.5c-4): a wasm throw
+    // here is contained and never starves sibling batch listeners.
+    const diverged = predictor.reconcile(baseline, own.row.moveQueue, ackedSeq, now);
+    // Honor reconcile's documented divergence return (ADR-0013): on a genuine server
+    // pullback, re-commit the held direction so a held key keeps walking from the
+    // corrected baseline (same held-state-guarded dedup as the rAF frame loop).
+    if (
+      diverged &&
+      !(
+        battleView?.visible ||
+        boxView?.visible ||
+        raisingView?.visible ||
+        evolutionView?.visible ||
+        dialogueView?.visible ||
+        questLogView?.visible ||
+        healView?.visible
+      )
+    ) {
+      const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
+      if (heldDir !== undefined) sendIntent({ Step: heldDir });
+    }
+  } catch (err) {
+    console.error('[reconcile] uncaught error in batch listener', err);
   }
 });
 
@@ -476,6 +525,15 @@ function snapshot() {
     })(),
     step,
     jump,
+    // 12.5c-5 proof-of-teeth hook: forcibly set rawMap to zone_map(zoneId) WITHOUT
+    // the zone-switch protocol. Used by zoneSync.spec.ts to simulate "client kept
+    // zone-1 rawMap after a disconnect, but server re-spawned character at zone 0".
+    // The reconcile listener then sees own.row.zoneId(0) !== rawMap.zone_id(1) and
+    // calls switchZone(0), proving the state-based fix. NOT exposed via onOwnWarp or
+    // switchZone; test-only. Never used in production paths.
+    setRawMapZoneForTest: (zoneId: number) => {
+      rawMap = zone_map(zoneId);
+    },
   };
 }
 (window as unknown as { __game: typeof snapshot }).__game = snapshot;
@@ -498,7 +556,7 @@ async function main(): Promise<void> {
     import('./ui/questLogView'),
     import('./ui/healView'),
   ]);
-  const renderer = new WorldRenderer();
+  renderer = new WorldRenderer();
   const mount = document.getElementById('app');
   if (mount !== null) {
     await renderer.init(mount, rawMap);
@@ -557,18 +615,6 @@ async function main(): Promise<void> {
     healView = new HealViewClass();
   }
 
-  // M11c: extracted from onReconnect so onOwnWarp can reuse the same body (ADR-0067).
-  // Resets the client prediction state without touching the store (the store is reset
-  // separately by connection.ts on disconnect, or resetCharacters() on zone warp).
-  function resetPredictionState(): void {
-    predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
-    resolver.reset();
-    held.clear();
-    sawFractionalOwnMotion = false;
-    dismissedBattleId = null;
-    battleSynced = false;
-  }
-
   conn = connect({
     uri: URI,
     db: DB,
@@ -582,79 +628,81 @@ async function main(): Promise<void> {
     onReconnect: () => {
       // Clean re-init: the store already dropped stale rows; rebuild prediction and
       // drop the own slide clock so the post-reconnect re-seed starts fresh.
+      // Zone state is corrected by the reconcile listener's state-based check on
+      // the first post-reconnect batch (12.5c-1 — no special zone logic needed here).
       resetPredictionState();
     },
+    // 12.5c-1: onOwnWarp delegates to switchZone (idempotent — no-op if rawMap
+    // already matches). Fires on live-warp character onUpdate (lower latency path);
+    // the reconcile listener's state-based check handles reconnect-strand (character
+    // INSERTED at zone 0 with no onUpdate). Both paths are safe to call: switchZone
+    // checks rawMap.zone_id before doing any work.
     onOwnWarp: (newZoneId) => {
-      // Zone transition: load the new zone map first so that if it throws (unknown zone)
-      // no state has been mutated (consistent failure). Then set the wasm zone BEFORE
-      // any mutations so stray apply_move calls during this handler use the new zone
-      // (ADR-0067). try/catch: onBatchApplied has no per-listener isolation (M8.8e).
-      try {
-        const newRawMap = zone_map(newZoneId); // may throw — must be first
-        set_active_zone(newZoneId); // wasm zone before any mutations
-        store.resetCharacters();
-        rawMap = newRawMap;
-        renderer.setMap(rawMap);
-        resetPredictionState();
-      } catch (err) {
-        console.error('[warp] zone transition to %s failed — keeping current zone', newZoneId, err);
-      }
+      switchZone(newZoneId);
     },
     onError: (where, message) => console.error(`[net:${where}] ${message}`),
   });
 
+  // 12.5c-4: frame loop is wrapped in try/catch so a wasm/predictor throw does not
+  // kill the loop permanently. rAF re-arm is in `finally` so it always fires, even
+  // on error. The reconcile call is inside the batch-listener's try-catch (above).
   const frame = (): void => {
-    const now = performance.now();
-    // Re-issue the held dir so a held key keeps walking — but only when no overlay
-    // is visible, so a held key resumes after an overlay closes yet never walks
-    // under one (M8.6c, ADR-0013). sendIntent routes through the backpressured
-    // predictor.enqueue + reducer send, and no-ops if declined.
-    if (
-      !(
-        battleView?.visible ||
-        boxView?.visible ||
-        raisingView?.visible ||
-        evolutionView?.visible ||
-        dialogueView?.visible ||
-        questLogView?.visible ||
-        healView?.visible
-      )
-    ) {
-      const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
-      if (heldDir !== undefined) sendIntent({ Step: heldDir });
-    }
-    const { snapped } = predictor.drain(now);
-    const ownEntityId = store.ownEntityId(identity);
-    const predicted = predictor.predicted;
-    const entities = resolver.resolve({
-      characters: store.characters(),
-      ownEntityId,
-      predicted,
-      snapped,
-      now,
-      currentZoneId: rawMap.zone_id,
-    });
-    // Sticky latch: count ONLY fractional motion from the slide-clock path — the own
-    // entity WITH a predicted state (same predicate as RenderResolver's `isOwn`), never
-    // the interpolation fallback. This keeps the e2e proving the slide clock specifically,
-    // not remote-interp leaking onto the own entity during the login/reconnect gap. The
-    // sole non-integer source on this path is the slide clock (predicted tiles are integers).
-    // Find own entity for fractional-motion latch and follow-camera.
-    const ownEntity =
-      ownEntityId !== undefined ? entities.find((e) => e.entityId === ownEntityId) : undefined;
-    if (ownEntityId !== undefined && predicted !== undefined) {
+    try {
+      const now = performance.now();
+      // Re-issue the held dir so a held key keeps walking — but only when no overlay
+      // is visible, so a held key resumes after an overlay closes yet never walks
+      // under one (M8.6c, ADR-0013). sendIntent routes through the backpressured
+      // predictor.enqueue + reducer send, and no-ops if declined.
       if (
-        ownEntity !== undefined &&
-        (!Number.isInteger(ownEntity.x) || !Number.isInteger(ownEntity.y))
+        !(
+          battleView?.visible ||
+          boxView?.visible ||
+          raisingView?.visible ||
+          evolutionView?.visible ||
+          dialogueView?.visible ||
+          questLogView?.visible ||
+          healView?.visible
+        )
       ) {
-        sawFractionalOwnMotion = true;
+        const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
+        if (heldDir !== undefined) sendIntent({ Step: heldDir });
       }
+      const { snapped } = predictor.drain(now);
+      const ownEntityId = store.ownEntityId(identity);
+      const predicted = predictor.predicted;
+      const entities = resolver.resolve({
+        characters: store.characters(),
+        ownEntityId,
+        predicted,
+        snapped,
+        now,
+        currentZoneId: rawMap.zone_id,
+      });
+      // Sticky latch: count ONLY fractional motion from the slide-clock path — the own
+      // entity WITH a predicted state (same predicate as RenderResolver's `isOwn`), never
+      // the interpolation fallback. This keeps the e2e proving the slide clock specifically,
+      // not remote-interp leaking onto the own entity during the login/reconnect gap. The
+      // sole non-integer source on this path is the slide clock (predicted tiles are integers).
+      // Find own entity for fractional-motion latch and follow-camera.
+      const ownEntity =
+        ownEntityId !== undefined ? entities.find((e) => e.entityId === ownEntityId) : undefined;
+      if (ownEntityId !== undefined && predicted !== undefined) {
+        if (
+          ownEntity !== undefined &&
+          (!Number.isInteger(ownEntity.x) || !Number.isInteger(ownEntity.y))
+        ) {
+          sawFractionalOwnMotion = true;
+        }
+      }
+      // M11c: pass own tile position for follow-camera (WorldRenderer.render).
+      const ownX = ownEntity?.x ?? 0;
+      const ownY = ownEntity?.y ?? 0;
+      renderer?.render(entities, ownX, ownY);
+    } catch (err) {
+      console.error('[frame] uncaught error', err);
+    } finally {
+      requestAnimationFrame(frame); // always re-arm (12.5c-4)
     }
-    // M11c: pass own tile position for follow-camera (WorldRenderer.render).
-    const ownX = ownEntity?.x ?? 0;
-    const ownY = ownEntity?.y ?? 0;
-    renderer.render(entities, ownX, ownY);
-    requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
 }
