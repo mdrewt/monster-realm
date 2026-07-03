@@ -155,9 +155,11 @@ store.onBatchApplied(() => {
     // edge-triggered onOwnWarp never fires; but the zone mismatch IS visible here
     // on every batch). Also subsumes live-warp: switchZone is idempotent so if
     // onOwnWarp already updated rawMap this is a no-op.
+    // After switchZone, fall through to reconcile: this seeds the fresh predictor
+    // from the authoritative baseline so ownPredictedTile is non-null on the same
+    // batch (seeding reconcile returns false → no spurious re-issue).
     if (own.row.zoneId !== rawMap.zone_id) {
       switchZone(own.row.zoneId);
-      return; // skip prediction reconcile in the same batch as a zone transition
     }
 
     const now = performance.now();

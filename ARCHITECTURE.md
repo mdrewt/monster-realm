@@ -661,6 +661,19 @@ try/catch (onBatchApplied isolation, M8.8e); `WorldRenderer.resize()` sets viewp
 7 Rust tests. Deferred to future: per-zone subscription cancellation (ADR-0007 goal; blocked on
 SpacetimeDB subscription-group API).
 
+**M12.5c** (zone-sync robustness — ADR-0074) complete: four bugs fixed via state-based zone
+reconciliation. **Bug 1:** edge-triggered `onOwnWarp` races with `reconcile` (stale `rawMap.zone_id`
+vs. own row). **Fix:** state-based check in reconcile listener: `if (own.row.zoneId !== rawMap.zone_id)`
+→ `switchZone()`. **Bug 2:** `switchZone()` lacked atomicity. **Fix:** idempotent `switchZone(mapData, mapId)`
+with renderer-first ordering (RT-SZ-01 invariant): `TileMap.fromRaw → renderer?.setMap → set_active_zone
+→ rawMap= → resetPredictionState` (renderer throws before WASM zone committed). **Bug 3:** `setMap` had
+stale JSDoc (claimed `resetCharacters`). **Fix:** corrected wording; no behavioral change. **Bug 4:** rAF loop
+error uncaught, breaking renderer. **Fix:** try/catch/finally with `requestAnimationFrame(frame)` in finally
+(re-request on error/success). Module-scope hoists: `renderer`, `resetPredictionState` (enable synchronous
+calls from batch listener). Debug hook: `setRawMapZoneForTest` on `window.__game()` (proof-of-teeth
+fixture). Proof: `switchZoneAtomicity.test.ts` (5 unit tests, RT-SZ-01), `e2e/zoneSync.spec.ts` (4 Playwright
+tests: 12.5c-1/2/3/5). No new tables, no schema change.
+
 **M12a** (pure game-core NPC/dialogue/quest rules — ADR-0068) complete: `npc_decide(current,
 home, wander_radius, npc_id, tick) → Option<Direction>` in `game-core/src/npc/rules.rs` closes
 the M1/M2 deferral — non-commutative splitmix64 hash (`npc_id.wrapping_mul(K)` before
