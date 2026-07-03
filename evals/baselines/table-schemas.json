@@ -38,7 +38,8 @@
     "pk": "id",
     "columns": {
       "id": "u32",
-      "content_version": "u32"
+      "content_version": "u32",
+      "owner_identity": "Identity"
     }
   },
   "encounter": {

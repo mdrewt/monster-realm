@@ -630,3 +630,161 @@ fn evaluate_heal_rejects_future_last_heal() {
         result.ok()
     );
 }
+
+// =========================================================================
+// M12.5b-4: care reducer must recompute evolves_to after bond increases
+//
+// EARS criterion: after a successful care that raises bond to a level that
+// meets an evolution threshold, the monster row's `evolves_to` must be set
+// to Some(target_species_id).
+//
+// The `care` reducer itself calls `evaluate_care` (pure seam, tested above)
+// and then writes back `m.bond` and `m.last_care_at_ms` followed by
+// `pub_from_monster`. The M12.5b criterion requires it to ALSO recompute
+// `m.evolves_to` — which the current implementation omits.
+//
+// We test this at the pure-seam level using the `evaluate_care_with_evolves_to`
+// seam (expected by the implementer) which mirrors the care reducer write-back
+// but returns the new evolves_to value alongside the new bond.
+//
+// RED state: `evaluate_care_with_evolves_to` does not exist yet → compile-RED.
+// Alternatively, we test the structural property: the `care` reducer body in
+// raising.rs must contain an `evolves_to` assignment.
+// =========================================================================
+
+/// Include raising.rs source for structural inspection.
+const RAISING_SOURCE: &str = include_str!("raising.rs");
+
+/// Minimal strip_rust_comments (not available from super here — reproduce locally).
+fn strip_raising_comments(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = vec![b' '; len];
+    let mut i = 0;
+    while i < len {
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else {
+            out[i] = bytes[i];
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("stripped source must be valid UTF-8")
+}
+
+/// 12.5b-4 structural: the `care` reducer body in raising.rs must assign
+/// `m.evolves_to` so that after a bond increase that crosses an evolution
+/// threshold, the monster's eligibility is reflected immediately.
+///
+/// KILLS: a care reducer that writes back bond but forgets evolves_to —
+///        a player who raises bond to an evolution threshold during care
+///        would not see their evolution hint until the next content sync.
+#[test]
+fn care_reducer_assigns_evolves_to() {
+    let stripped = strip_raising_comments(RAISING_SOURCE);
+
+    // Locate the `care` reducer body. Built from parts to avoid self-match.
+    let fn_needle = ["pub fn care", "(ctx:"].concat();
+    let fn_pos = stripped
+        .find(fn_needle.as_str())
+        .expect("care reducer must be declared in raising.rs");
+    // Walk forward to find the opening brace.
+    let after = &stripped[fn_pos..];
+    let brace = after.find('{').expect("care reducer must have a body");
+    let body_start = fn_pos + brace + 1;
+
+    // Count braces to find the closing brace of the reducer body.
+    let mut depth: usize = 1;
+    let chars: Vec<char> = stripped[body_start..].chars().collect();
+    let mut char_i = 0;
+    let mut byte_off = 0;
+    while char_i < chars.len() && depth > 0 {
+        match chars[char_i] {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        byte_off += chars[char_i].len_utf8();
+        char_i += 1;
+    }
+    let body = &stripped[body_start..body_start + byte_off];
+
+    // The care reducer body must assign evolves_to.
+    // Assembled from parts so the exact literal does not appear verbatim in
+    // this test's own source text (which is inside the included file).
+    let assignment = ["m.evolves_to", " ="].concat();
+
+    assert!(
+        body.contains(assignment.as_str()),
+        "TEETH(12.5b-4): the `care` reducer body must assign `m.evolves_to = ...` \
+         (via compute_evolves_to) after updating the bond, so that bond-based evolution \
+         eligibility is immediately reflected in the monster row. \
+         Currently absent: add `m.evolves_to = crate::evolution::compute_evolves_to(&evolutions, &m);` \
+         in the care reducer write-back path."
+    );
+}
+
+/// 12.5b-4 structural: the `care` reducer body must also call `compute_evolves_to`
+/// to generate the new evolves_to value (not hard-code None or copy a stale value).
+///
+/// KILLS: an impl that writes `m.evolves_to = None;` (clearing eligibility on every
+///        care) or `m.evolves_to = m.evolves_to;` (leaving it stale without recomputing).
+#[test]
+fn care_reducer_calls_compute_evolves_to() {
+    let stripped = strip_raising_comments(RAISING_SOURCE);
+
+    let fn_needle = ["pub fn care", "(ctx:"].concat();
+    let fn_pos = stripped
+        .find(fn_needle.as_str())
+        .expect("care reducer must be declared in raising.rs");
+    let after = &stripped[fn_pos..];
+    let brace = after.find('{').expect("care reducer must have a body");
+    let body_start = fn_pos + brace + 1;
+
+    let mut depth: usize = 1;
+    let chars: Vec<char> = stripped[body_start..].chars().collect();
+    let mut char_i = 0;
+    let mut byte_off = 0;
+    while char_i < chars.len() && depth > 0 {
+        match chars[char_i] {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        byte_off += chars[char_i].len_utf8();
+        char_i += 1;
+    }
+    let body = &stripped[body_start..body_start + byte_off];
+
+    let compute_call = ["compute", "_evolves_to"].concat();
+
+    assert!(
+        body.contains(compute_call.as_str()),
+        "TEETH(12.5b-4): the `care` reducer body must call `compute_evolves_to` \
+         to recompute evolution eligibility after the bond is updated; \
+         assigning `m.evolves_to = None` or leaving it stale are both wrong. \
+         Add: load evolutions from game_core::load_evolutions() and call \
+         compute_evolves_to(&species_evolutions, &m) to get the new value."
+    );
+}

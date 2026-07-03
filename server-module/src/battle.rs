@@ -23,8 +23,8 @@ use crate::schema::{
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
 use game_core::{
-    apply_xp_gain, battle_xp_reward, resolve_turn, BattleOutcome, BattleSide, BattleState, Level,
-    StatBlock, TurnChoice, TurnVariance,
+    apply_xp_gain, battle_xp_reward, load_evolutions, resolve_turn, BattleOutcome, BattleSide,
+    BattleState, Level, StatBlock, TurnChoice, TurnVariance,
 };
 use spacetimedb::{Identity, ReducerContext, Table};
 
@@ -714,6 +714,14 @@ pub(crate) fn write_back_battle_results(
                         m.current_hp = level_up_healed_hp(m.current_hp, bm.max_hp, derived.hp);
                     }
                 }
+                // Recompute evolves_to after each level-up (12.5b-4, ADR-0073).
+                let all_evolutions = load_evolutions().unwrap_or_default();
+                let monster_evolutions = all_evolutions
+                    .iter()
+                    .find(|se| se.species_id == m.species_id)
+                    .map(|se| &se.evolutions[..])
+                    .unwrap_or(&[]);
+                m.evolves_to = crate::evolution::compute_evolves_to(monster_evolutions, &m);
                 let pub_row = pub_from_monster(&m);
                 ctx.db.monster().monster_id().update(m);
                 ctx.db.monster_pub().monster_id().update(pub_row);
