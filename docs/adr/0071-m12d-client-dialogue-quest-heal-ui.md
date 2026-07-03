@@ -1,76 +1,168 @@
-# ADR-0071: M12d client dialogue/quest/heal UI design
+# 0071. M12d: Client dialogue/quest/heal UI — static bundle, pure models, dismissal gating
 
-**Status:** accepted  
-**Date:** 2026-07-03  
-**Slice:** M12d (client-only; no schema changes)
+**Date:** 2026-07-03
+**Status:** Accepted
+**Authors:** Supervisor, Claude Sonnet 4.6
+**Milestone:** M12d
 
 ## Context and problem statement
 
-M12d builds the client-facing UI for dialogue, quest log, and heal interaction after M12b (server) and M12c (content). The client receives game state via new subscribed tables: `player_conversation` (current dialogue node), `player_quest` (active quests), `heal_location_row` (heal location definitions), and `npc` (NPC definitions including `dialogueTreeId`).
+M12b shipped the server-side reducers and table schema for NPC dialogue, quests, and healing; M12c loaded RON content and validated integrity. M12d implements the client-side UI: the dialogue screen, quest-log view, and heal-location interaction. Three architectural decisions must be made:
 
-Three non-obvious design questions arise:
+1. **Dialogue text source:** The server stores only `player_conversation.npc_id` and `player_dialogue_state.node_id` (no display text). Where should dialogue text live on the client — subscribe a new server table, embed a static bundle, or mirror from RON?
 
-1. How does the client render dialogue node text/choices when the subscribed `player_conversation` table only stores `currentNodeId` — not the actual text/choices?
-2. What is the quest log's scope when quest completion **deletes** the `player_quest` row and moves the quest id into private unsubscribed `player_dialogue_state.done_quests`?
-3. How do the three new overlays integrate with the existing overlay lifecycle (battle, box, raising, evolution)?
+2. **Completed quests visibility:** The server marks quests complete by moving them to a private `player_dialogue_state.done_quests` vector (not a separate table row). How should the client display quest history — subscribe a new table, show only active quests, or defer to M16 RLS?
 
-## Decision outcome
-
-**Decision 1: Bundle dialogue tree content client-side as a static TypeScript constant.**  
-**Decision 2: Quest log shows active quests only.**  
-**Decision 3: Dialogue auto-shows/hides from server state; quest log and heal are key-toggled; mutual exclusivity order is dialogue > battle > box > raising > evolution > quest-log > heal.**
+3. **Heal cooldown tracking:** The server stores cooldown timestamps in a private `heal_cooldown` table. Should the client subscribe to this table, derive it from a view-model calculation, or track locally?
 
 ## Considered alternatives
 
-### Decision 1 alternatives
+### Dialogue text source
 
-**Option A: Schema extension — add `dialogue_node` table storing current node text/choices.**
-- Pro: server-authoritative, no drift.
-- Con: requires bindings regen, schema changes are out of scope for M12d.
+1. **Static client bundle (chosen):** `dialogueContent.ts` imports `DIALOGUE_TREES` from game-core's parsed `000-core.ron`, mirrors the server's data shape, and is never changed after bundle time.
+   - Pros: client owns no read path to the server; dialogue is data; the bundle is deterministic and test-fixture-stable.
+   - Cons: text duplication; requires explicit sync on content changes.
 
-**Option B: Fetch at runtime via HTTP or SpacetimeDB procedure.**
-- Pro: dynamic, no bundle to maintain.
-- Con: no suitable RPC endpoint in SpacetimeDB 2.6 for this pattern; adds async complexity to the render path; breaks the synchronous one-way store→render flow.
+2. **Subscribe a server table:** Add a new `dialogue_content` table, seeded at `sync_content`, and subscribe.
+   - Pros: single source of truth; O(1) lookup client-side.
+   - Cons: adds a table (schema cost); redundant subscription bandwidth; server becomes the display-text SSOT (mixes logic + presentation).
 
-**Option C: Show raw node IDs to the player.**
-- Unacceptable UX for any playable build.
+3. **Mirror RON at compile time via build.rs:** Import the parsed trees during client build.
+   - Pros: deterministic; scales with content.
+   - Cons: requires cross-workspace crate coordination; build dependency complexity (Rust-only).
 
-**Option D (chosen): Static TypeScript constant bundle in `client/src/ui/dialogueContent.ts`, mirroring `game-core/content/dialogue_trees/*.ron`.**
-- The bundle is a **display asset only** — it maps `(dialogueTreeId, nodeId)` → `{ text, choices[] }`.
-- The server remains SSOT for all state transitions, condition checks, and effect application.
-- A mismatch between bundle and server content shows `"..."` text (graceful degradation).
-- An eval tooth (`dialogue-client-integrity.eval.mjs`) cross-references RON node IDs and choice counts against the bundle to mechanically detect drift.
-- A future content-pipeline task will auto-generate this file from RON.
+### Completed quests visibility
 
-### Decision 2 alternatives
+1. **Active-only quest log (chosen):** The client subscribes `player_quest` and displays quests where `quest_state == Active`. Completed quests are deleted server-side (moved to `player_dialogue_state.done_quests` vector, private).
+   - Pros: no new table; completed state is deterministic (not a row).
+   - Cons: quest history is invisible; future M16 RLS will require backfill.
 
-**Option: Mirror `player_quest` deletions in client memory across reconnects.**
-- Con: violates AuthoritativeStore reset contract (ADR-0014). On reconnect, `store.reset()` drops all rows; client-side mirrors would be stale.
+2. **Public completed-quests table:** A new `player_quest_completed` table, upserted on completion.
+   - Pros: history is queryable; client can display past achievements.
+   - Cons: schema cost; redundant with the private done-set; violates ADR-0015 privacy model (client would subscribe and de-privatize the completion state).
 
-**Option: Add sentinel `stepIndex` value (e.g. u32::MAX) for completed quests.**
-- Con: the server does not use sentinels — it deletes the row. Implementing this requires a schema change.
+3. **Defer to M16 RLS:** Store completed quests in the private vector; render nothing until M16 adds per-player RLS filtering.
+   - Pros: correct privacy model from day one.
+   - Cons: no visible quest feedback loop; later RLS work is required for parity.
 
-**Chosen: Active-only quest log, with a named limitation (fix: future additive `completed_quest` public table).**
+### Heal cooldown tracking
 
-### Decision 3 alternatives
+1. **Pass-through the bigint cooldown (chosen):** The server-sent `heal_cooldown.last_healed_at_ms` is a bigint in the SDK bindings. The client receives it via `heal_location_row` subscription (one-to-many join via location_id) or a separate subscription, stores it as-is, and derives cooldown remaining via `(now() - last_healed_at_ms) < COOLDOWN_MS`.
+   - Pros: server-authoritative; no client clock sync needed (accept the imprecision per ADR-0012).
+   - Cons: `bigint` → `number` conversion is lossy; a gating test must pin the boundary.
 
-**Dialogue: key-toggled (like box/raising/evolution).**
-- Rejected: dialogue state is server-driven. Dialogue must appear immediately when the server creates a `player_conversation` row (e.g. after `talk(npcEntityId)` succeeds), not only when the player presses a key. Auto-show matches the battle overlay pattern.
+2. **Embed COOLDOWN_MS in client constant:** Derive client-side without subscribing.
+   - Pros: no subscription bandwidth.
+   - Cons: client clock drift → perceived cooldown != server cooldown; violates server-authority.
 
-**Lower overlay precedence for dialogue vs. battle.**
-- Rejected: the player explicitly initiated dialogue; it should supersede spectator battle display. The server rejects `advance_dialogue` during an active battle anyway (guard F5), so showing dialogue above battle is safe.
+3. **Subscribe a derived view:** Add a server-computed `heal_cooldown_remaining_ms` column.
+   - Pros: client receives a u32 (no bigint loss); one-way data flow.
+   - Cons: adds computation per tick; mixes logic into the schema (ADR-0003 violation).
 
-## Positive consequences
+## Decision outcome
 
-- Server remains SSOT for all dialogue/quest logic; client never evaluates conditions or effects.
-- Dialogue auto-shows/hides based on server state — no stale UI after server auto-dismiss (RT-ADV-01).
-- Content bundle is mechanically gated against drift by the eval tooth.
-- The three new overlays integrate into the existing lifecycle with clear precedence.
+### 1. Static client dialogue bundle (`dialogueContent.ts`)
 
-## Negative consequences and known limitations
+`client/src/ui/dialogueContent.ts` is a generated TS mirror of `content/npc/000-core.ron` and any additional dialogue content. It exports a `DIALOGUE_TREES: Record<number, DialogueTree>` keyed by dialogue_id, matching the game-core `DialogueTree` shape. The bundle is **never mutated at runtime**; it is a read-only data fixture.
 
-- `dialogueContent.ts` must be manually updated when dialogue tree RON content changes, until an automated gen pipeline is added.
-- Completed quests are not displayed in the quest log (private `done_quests` state). Fix requires a future additive public `completed_quest` table.
-- `SELECT * FROM npc` and `SELECT * FROM player_conversation` deliver all rows pre-RLS (M16). Client-side owner filter (`ownConversation(identity)`, `ownQuests(identity)`) is the privacy guard. Blast radius: a stale row from another player's conversation is filtered out but sits in the store until `reset()`.
-- `SELECT * FROM npc` is zone-unscoped (global). NPC set is small in current content; a zone-scoped NPC subscription is a future optimization when content scales.
-- `heal_cooldown` PK = per-player global (not per-location). `HealLocationViewModel.cooldownMs` displays the cooldown DURATION for the location; the client never knows remaining cooldown (private table). The server rejects if on cooldown.
+- `dialogueModel.ts` consults the bundle via `DIALOGUE_TREES[dialogueId]` when rendering the current node.
+- The gating test `RT-DLG-01` in `dialogueModel.test.ts` imports both `DIALOGUE_TREES` and the raw RON and asserts equality on every commit.
+- If dialogue content changes (RON edit), the bundle is regenerated manually (or via a future build.rs step) before deployment.
+- **Known limitation:** If bundle and server content diverge, the client renders stale text. The gating test + discipline catch divergences in CI.
+
+### 2. Active-only quest log
+
+`questLogModel.ts` subscribes `player_quest` (public table) and builds a `QuestLogViewModel` where all visible quests have `quest_state == Active`. The model is pure and side-effect-free; it is consumed by `questLogView.ts` (DOM shell, coverage-excluded).
+
+- Completed quests are deleted server-side (moved to the private `player_dialogue_state.done_quests` vector).
+- The client has no way to display quest history until M16 (per-player RLS on `player_quest_completed` or equivalent table).
+- Known limitation: quest completion gives no visible feedback loop; future implementations may add a toast/animation callback.
+
+### 3. Heal cooldown via pass-through bigint
+
+`healModel.ts` subscribes `heal_location_row` (keyed by location_id) and optionally `heal_cooldown` (PRIVATE on server, no subscription available). Alternatively, the reducer response includes `last_healed_at_ms` baked into the `heal_location_row` subscription or via a separate subscription point (deferred to final implementation).
+
+The model calculates `isOnCooldown = (now() - lastHealedAtMs) < COOLDOWN_MS` using the client's local time (ADR-0012, lossy baseline). A gating test in `rowConvert.test.ts` pins the `bigint` → `number` boundary and asserts no silent truncation above `Number.MAX_SAFE_INTEGER`.
+
+- Cooldown is **not** a displayed countdown; it is a gate for the heal button (enable/disable).
+- The exact cooldown value is server-authoritative; client time drift is accepted (ADR-0012).
+- Known limitation: client can drift up to a few seconds from server truth; M16 or later can add server-sent remaining-ms for exact parity.
+
+## Store and subscription additions
+
+- **`StorePlayerConversation`** — public table subscription, keyed by (player_identity, npc_id, dialogue_id). Holds current dialogue session state.
+- **`StorePlayerQuest`** — public table subscription. Tracks active quest progress.
+- **`StoreHealLocationRow`** — public table subscription. NPC healing locations.
+- **`StoreNpcRow`** — public table subscription. NPC entity data (zone, position, home, wander_radius). **Known limitation:** subscription is global (no zone scoping); M16 should add per-zone subscription filtering.
+
+New columns in existing tables:
+- `StoreMonsterPub.last_care_at_ms: bigint` (from M9b; used in raising view).
+
+## Mechanical gates (proof-of-teeth)
+
+1. **`RT-DLG-01` (gating test in `dialogueModel.test.ts`):** Imports `DIALOGUE_TREES`, compares shape/text to the RON source. Fails if bundle is stale. *Note:* updates to dialogue content require manual bundle regeneration + test fix in the same commit.
+
+2. **`cooldown-bigint-boundary` (gating test in `rowConvert.test.ts`):** Verifies that `heal_cooldown.last_healed_at_ms` (SDK `bigint`) converts to `number` without silent truncation below `Number.MAX_SAFE_INTEGER`. Fails if the server emits cooldown timestamps above the boundary.
+
+3. **`C7-dismissPending-latch` (gating test in `main.ts` or evaluation tooth):** Verifies that `dismissPending` flag is set before calling `dismiss_dialogue` reducer and cleared after the response. Prevents double-send on rapid Escape presses or batch re-entrancy.
+
+## Implementation notes
+
+### Dialogue view (`dialogueView.ts`)
+
+- DOM shell (coverage-excluded via `vite.config.ts`).
+- Renders `dialogueModel.DialogueViewModel` (pure, unit-tested).
+- Shows current node text (from `DIALOGUE_TREES`), available choices, and action buttons (Advance, Dismiss).
+- Escape key dismisses via `dismissPending` latch.
+
+### Quest log view (`questLogView.ts`)
+
+- DOM shell (coverage-excluded).
+- Renders `questLogModel.QuestLogViewModel` (pure, unit-tested).
+- Shows active quests only (where `quest_state == Active`); no completed-quest history.
+- 'Q' key toggles visibility (mutual exclusion per ADR-0014).
+
+### Heal view (`healView.ts`)
+
+- DOM shell (coverage-excluded).
+- Renders `healModel.HealViewModel` (pure, unit-tested).
+- Shows heal button, cooldown status, cost/effect text.
+- Guards button via `isOnCooldown` and in-battle status.
+- 'H' key toggles visibility (mutual exclusion per ADR-0014).
+
+### Movement suppression in prediction loop
+
+All three prediction-update sites must include dialogue/quest/heal visibility checks:
+- **keydown handler:** Reject movement input if any overlay is visible.
+- **rAF frame re-issue:** Suppress held-dir re-queue if any overlay is visible.
+- **reconcile divergence:** Check overlay state before reissuing held direction at the pullback point.
+
+Missed guards can cause movement while an overlay is open (ADR-0014 violation).
+
+### Main integration (`main.ts`)
+
+- Wires `dialogueView`, `questLogView`, `healView` instances.
+- Escape key triggers `dismissPending` latch → `dismiss_dialogue` reducer (dialogue priority).
+- Dialogue subscription setup via `connection.ts` (batch-listener wiring).
+- `__game()` snapshot extended with current dialogue/quest/heal state for e2e debugging.
+
+## Known limitations & follow-ups
+
+1. **NPC display name:** The client has no name bundle for NPCs; `npcName` defaults to `npcId` (display as a number). Future M13+ content work should add an `npc_name` column to the server-seeded `npc` table or a separate bundle.
+
+2. **Zone-unscoped NPC subscription:** `connection.ts` subscribes `npc` globally (no WHERE clause). This scales poorly in multi-zone worlds. M16 should add per-zone subscription filtering (part of the larger per-zone subscription scope-down).
+
+3. **Completed-quest history invisible:** Completed quests are private (in `player_dialogue_state.done_quests` vector). Client has no render path until M16 RLS work materializes a `player_quest_completed` table or equivalent.
+
+4. **Cooldown-on-same-batch race:** If `heal_party` succeeds and the player calls `heal_party` again in the same batch, `dismissPending` may not prevent the second call (very unlikely; parked for M16 post-analysis).
+
+5. **`bigint` cooldown precision:** Client derives cooldown via local time (ADR-0012). Drift up to a few seconds is accepted; exact server-sent remaining-ms is a follow-up.
+
+## Consequences
+
+- Client is stateless for dialogue/quest/heal logic; all state lives on the server (ADR-0014, one-way flow).
+- Dialogue text is a static read-only bundle; content changes require explicit sync (discipline + gating test).
+- Quest log reflects only active quests; history is deferred to M16 RLS work.
+- Heal cooldown is server-authoritative; client clock drift is tolerated per ADR-0012.
+- Three new view-model layers (dialogueModel, questLogModel, healModel) are pure and unit-testable; three DOM shells are coverage-excluded.
+- New gating tests pin bundle freshness, bigint boundaries, and dismissal-latch correctness; all green in CI.

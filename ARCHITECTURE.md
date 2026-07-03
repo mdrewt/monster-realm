@@ -699,6 +699,8 @@ include new public table accessors + unique npc_id index. 36/36 evals pass.
 
 **M12c** — Content RON loading for NPC/dialogue/quest/heal (ADR-0070); validate_npc_content (12-point cross-registry integrity); NPC zone policy (skip warp tiles); RT-ADV-01 fix (advance_dialogue zone+proximity re-check, auto-dismiss).
 
+**M12d** (client dialogue/quest/heal UI — ADR-0071) complete: `dialogueContent.ts` static bundle (mirrors 000-core.ron; server remains SSOT for dialogue logic); `dialogueModel.ts` / `questLogModel.ts` / `healModel.ts` pure view-models (unit-tested); `dialogueView.ts` / `questLogView.ts` / `healView.ts` DOM shells (coverage-excluded); store extensions for `StorePlayerConversation`, `StorePlayerQuest`, `StoreHealLocationRow`, `StoreNpcRow`; subscriptions to `player_conversation`, `player_quest`, `heal_location_row`, `npc` (zone-unscoped, deferred optimization to M16); `dismissPending` latch in `main.ts` prevents double-dismiss on Escape; gating tests: `RT-DLG-01` pins dialogue-bundle freshness, `cooldown-bigint-boundary` gates SDK `bigint` precision, `C7-dismissPending-latch` verifies double-send prevention; all green, PR #83.
+
 **M10c** (evolution/fusion client overlay — ADR-0063) complete: `evolvesTo?: number` on
 `StoreMonsterPub` (`option(u32)` decodes as primitive `number | undefined`; `canEvolve =
 evolvesTo !== undefined`), `StoreFusionRow` type + `store.fusions()` wired to
