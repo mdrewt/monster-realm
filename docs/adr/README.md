@@ -10,7 +10,7 @@ Architecture Decision Records live in **two locations**; check both.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0073`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0074`**.
 
 ## ADRs in `docs/adr/`
 
@@ -55,6 +55,7 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 | [0070](./0070-m12c-content-ron-npc-rt-adv-01.md) | Content RON loading for NPC/dialogue/quest/heal, NPC zone policy, RT-ADV-01 fix | M12c |
 | [0071](./0071-m12d-client-dialogue-quest-heal-ui.md) | Client dialogue/quest/heal UI — static bundle, pure models, dismissal gating | M12d |
 | [0072](./0072-fuse-dual-write-ordering-fix.md) | Fuse offspring monster_pub dual-write ordering fix (insert-then-pub) | M12.5a |
+| [0073](./0073-content-sync-path-repair.md) | Content-sync path repair | M12.5b |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
