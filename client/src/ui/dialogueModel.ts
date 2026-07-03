@@ -5,7 +5,7 @@ import type { ClientDialogueTree } from './dialogueContent';
 
 export interface DialogueChoiceViewModel {
   text: string;
-  idx: number; // 0-based array index — passed directly to advance_dialogue as choiceIndex
+  idx: number; // 0-based array position — sent to the dialogue-advance reducer as choiceIndex
 }
 
 export interface DialogueViewModel {

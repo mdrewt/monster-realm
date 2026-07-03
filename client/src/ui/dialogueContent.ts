@@ -1,6 +1,6 @@
 // ui/dialogueContent.ts — static client-side dialogue bundle (M12d, ADR-0071).
 // Mirrors game-core/content/dialogue_trees/000-core.ron.
-// No imports from SpacetimeDB. No fetch. No new RegExp().
+// No imports from SpacetimeDB. No fetch. No dynamic RegExp construction.
 
 export interface ClientDialogueNode {
   text: string;
