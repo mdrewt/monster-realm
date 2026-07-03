@@ -26,8 +26,13 @@ Replace the edge-triggered `onOwnWarp` path with a **state-based check** in the 
 ```ts
 if (own.row.zoneId !== rawMap.zone_id) {
   switchZone(own.row.zoneId);
-  return; // skip prediction reconcile in zone-switch batch
 }
+// falls through — seeds the fresh predictor on the same batch so ownPredictedTile
+// is non-null immediately after the zone switch (commit 8c18860). switchZone()
+// calls resetPredictionState() internally, leaving #predicted undefined; the
+// subsequent predictor.reconcile() call then performs a seeding reconcile which
+// returns false (before === undefined → no divergence), so no spurious held-key
+// re-issue fires on the zone-switch batch.
 ```
 
 Every coherent server snapshot is now compared against the client's current zone. A character INSERTED at zone 0 after reconnect is caught on the first post-reconnect batch.

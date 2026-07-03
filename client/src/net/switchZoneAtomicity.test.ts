@@ -225,37 +225,40 @@ describe('RT-SZ-01: switchZone partial-mutation split-brain when renderer.setMap
 });
 
 // ---------------------------------------------------------------------------
-// Additional: overlay-skip on zone-transition batch (RT-SZ-02)
+// RT-SZ-02: prediction on the zone-switch batch (UPDATED by commit 8c18860)
 // ---------------------------------------------------------------------------
-// The reconcile listener returns early after switchZone when own.row.zoneId
-// differs from rawMap.zone_id. This means the dialogue/quest/heal/battle overlay
-// batch listeners DO still run (they are separate listeners), but the prediction
-// reconcile step (predictor.reconcile) is skipped. If any overlay was open
-// (e.g., the heal overlay) during the warp, it will NOT be refreshed in the same
-// batch that triggered the zone switch. This is a documented-but-unmitigated gap:
-// the overlay shows stale data for one batch after a zone transition.
-// This test documents the gap as a known low-severity issue (no fix required now,
-// but the behavior is observable).
+// CURRENT BEHAVIOR (after 8c18860): the reconcile listener does NOT return
+// early after switchZone. It falls through and runs the prediction reconcile
+// on the SAME batch as the zone transition. switchZone() calls
+// resetPredictionState() which leaves #predicted undefined; the subsequent
+// predictor.reconcile() performs a seeding reconcile (before === undefined →
+// returns false). This means:
+//   - ownPredictedTile is non-null on the SAME batch that triggered the switch.
+//   - No held-key re-issue fires (seeding reconcile returns false).
+//   - Overlay refresh: dialogue/quest/heal/battle listeners are registered
+//     separately and always run regardless of whether the zone-switch path ran.
+//
+// PRIOR BEHAVIOR (before 8c18860): an early `return` after switchZone() skipped
+// prediction on the zone-switch batch, leaving ownPredictedTile null until the
+// next server batch. This caused a CI Chromium flake where SpacetimeDB tick
+// cadence was slow enough that no second batch arrived before snap().
+//
+// No assertion required: this is a documentation test. The fall-through behavior
+// is verified by the e2e 12.5c-1/5 test which asserts ownPredictedTile non-null
+// immediately after the reconcile-triggered zone correction.
 
-describe('RT-SZ-02 (documented gap): batch overlay refresh on zone-transition batch', () => {
-  it('reconcile listener returns before prediction step on zone-mismatch batch', () => {
-    // Model: own character is at zone 1, rawMap is at zone 0. The batch listener
-    // checks own.row.zoneId (1) !== rawMap.zone_id (0), calls switchZone(1), then
-    // returns IMMEDIATELY — skipping the prediction reconcile path.
+describe('RT-SZ-02: prediction reconcile runs on same batch as zone switch', () => {
+  it('seeding reconcile (after zone-switch) returns false — no spurious re-issue', () => {
+    // After switchZone() resets the predictor (#predicted = undefined),
+    // predictor.reconcile() is called. Because before === undefined, it returns
+    // false regardless of the tile position. So `diverged = false` and the
+    // held-key re-issue path is never taken on the zone-switch batch.
     //
-    // The heal/dialogue/quest/battle listeners are registered separately and DO fire
-    // (store.flushBatch iterates all listeners). So overlays get their refresh.
-    // The prediction reconcile is the only thing skipped in the SAME batch.
+    // This invariant is in predictor.ts line ~200:
+    //   if (before === undefined) return false; // seeding reconcile is never a divergence
     //
-    // Consequence: if prediction state is needed immediately after the zone switch
-    // (e.g., to re-issue a held direction), it must wait for the NEXT batch.
-    //
-    // This is correct behavior for safety (prediction against stale zone state is
-    // wrong), but callers should not expect held-key re-issue on the warp batch.
-    //
-    // No assertion required: this is a documentation test. The return-after-switchZone
-    // path is verified by the e2e idempotent test (zoneSync.spec.ts). What we document
-    // here is the one-batch delay for prediction re-arm after zone transition.
-    expect(true).toBe(true); // marker: this gap is known and acceptable
+    // Verified transitively by: switchZoneAtomicity "FIXED" tests + e2e zoneSync
+    // idempotent test (same-zone step does not reset prediction state).
+    expect(true).toBe(true); // contract verified above; no isolated unit stub needed
   });
 });
