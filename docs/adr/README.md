@@ -10,7 +10,7 @@ Architecture Decision Records live in **two locations**; check both.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0069`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0070`**.
 
 ## ADRs in `docs/adr/`
 
@@ -51,6 +51,7 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 | [0066](./0066-server-warp-runtime.md) | Server-authoritative warp runtime — per-zone schedules, warp detection, zone-map validation | M11b |
 | [0067](./0067-follow-camera-and-warp-resubscribe.md) | Client follow-camera + zone warp resubscribe — global character subscription, onUpdate warp detection | M11c |
 | [0068](./0068-npc-dialogue-quest-game-core.md) | NPC wander rule, dialogue tree model + evaluation, quest/flag advance rules — pure game-core (non-commutative hash, shared Condition SSOT) | M12a |
+| [0069](./0069-npc-dialogue-quest-server.md) | NPC entity/wander loop, dialogue/quest reducers, heal_party — server-module over game-core rules (M12b) | M12b |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
