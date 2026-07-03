@@ -188,12 +188,16 @@ const tablesSchema = __schema({
       { accessor: 'entity_id', name: 'npc_entity_id_idx_btree', algorithm: 'btree', columns: [
         'entityId',
       ] },
+      { accessor: 'npc_id', name: 'npc_npc_id_idx_btree', algorithm: 'btree', columns: [
+        'npcId',
+      ] },
       { accessor: 'zone_id', name: 'npc_zone_id_idx_btree', algorithm: 'btree', columns: [
         'zoneId',
       ] },
     ],
     constraints: [
       { name: 'npc_entity_id_key', constraint: 'unique', columns: ['entityId'] },
+      { name: 'npc_npc_id_key', constraint: 'unique', columns: ['npcId'] },
     ],
   }, NpcRow),
   player: __table({

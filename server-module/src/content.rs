@@ -311,9 +311,8 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) {
 fn seed_npc_entities(ctx: &ReducerContext) {
     let npc_defs = load_npc_defs();
     for def in &npc_defs {
-        // Idempotent: skip if this npc_id already has a row
-        let already_seeded = ctx.db.npc().iter().any(|n| n.npc_id == def.npc_id);
-        if already_seeded {
+        // Idempotent: O(1) lookup via #[unique] npc_id index
+        if ctx.db.npc().npc_id().find(def.npc_id.clone()).is_some() {
             continue;
         }
         let ch = ctx.db.character().insert(Character {

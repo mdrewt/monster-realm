@@ -312,6 +312,7 @@ pub struct Fusion {
 pub struct Npc {
     #[primary_key]
     pub entity_id: u64,
+    #[unique]
     pub npc_id: String,
     #[index(btree)]
     pub zone_id: u32,

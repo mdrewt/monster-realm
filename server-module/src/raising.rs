@@ -183,7 +183,8 @@ pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result
     Ok(())
 }
 
-/// Minimum ms between heals at a location. Public for tests (raising_tests.rs).
+/// Minimum ms between heals (used by raising_tests.rs; heal_party uses loc.cooldown_ms).
+#[allow(dead_code)]
 pub(crate) const HEAL_COOLDOWN_MS: i64 = 30_000;
 
 /// Pure cooldown seam (testable without DB).
@@ -247,7 +248,9 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
         .unwrap_or(0);
     evaluate_heal(last_heal, now, loc.cooldown_ms)?;
 
-    // Step 7: cost consume (all checks done BEFORE first DB write)
+    // Step 7: cost consume. consume_one is a DB write; if it fails mid-loop the
+    // reducer transaction rolls back (ACID), so no items are permanently lost.
+    // Batch consume (cost_qty > 1) is deferred to M13 — current content has None cost.
     if let Some(item_id) = loc.cost_item_id {
         if loc.cost_qty > 0 {
             for _ in 0..loc.cost_qty {

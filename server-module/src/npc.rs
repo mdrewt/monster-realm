@@ -5,16 +5,14 @@
 //! application, and dialogue state marshal helpers.
 
 use crate::inventory::grant_item;
-use crate::marshal::now_ms;
 use crate::schema::{
-    character, heal_cooldown, heal_location_row, monster, monster_pub, npc, player,
-    player_conversation, player_dialogue_state, player_quest, HealCooldown, PlayerConversation,
-    PlayerDialogueStateRow, PlayerQuestRow,
+    character, npc, player, player_conversation, player_dialogue_state, player_quest,
+    PlayerConversation, PlayerDialogueStateRow, PlayerQuestRow,
 };
 use game_core::{
-    apply_choice, apply_effects, apply_node_auto_effects, can_start_quest, find_entry_node,
-    load_dialogue_trees, load_quest_defs, npc_decide, process_trigger, BattleOutcome,
-    DialogueEffect, PlayerDialogueState, PlayerQuestProgress, QuestAdvance, TilePos, TriggerEvent,
+    apply_choice, apply_effects, apply_node_auto_effects, find_entry_node, load_dialogue_trees,
+    load_quest_defs, process_trigger, DialogueEffect, PlayerDialogueState, PlayerQuestProgress,
+    QuestAdvance, TriggerEvent,
 };
 use spacetimedb::{Identity, ReducerContext, Table};
 
@@ -338,14 +336,6 @@ pub fn dismiss_dialogue(ctx: &ReducerContext) -> Result<(), String> {
         .delete(ctx.sender);
     Ok(())
 }
-
-// Suppress unused-import warnings for items used only indirectly or in evals.
-#[allow(unused_imports)]
-use crate::schema::battle;
-#[allow(unused_imports)]
-use game_core::can_start_quest as _can_start_quest_check;
-#[allow(unused_imports)]
-use game_core::npc_decide as _npc_decide_check;
 
 #[cfg(test)]
 #[path = "npc_tests.rs"]

@@ -12,7 +12,6 @@
 //! (no SpacetimeDB test harness in this project; all unit tests are pure).
 
 use super::*;
-use std::collections::BTreeSet;
 
 // ---------------------------------------------------------------------------
 // A. Dialogue state marshal roundtrip tests
