@@ -28,6 +28,7 @@ mod inventory;
 mod marshal;
 mod monster_mgmt;
 mod movement;
+mod npc;
 mod raising;
 mod schema;
 mod taming;
