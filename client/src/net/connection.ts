@@ -12,9 +12,13 @@ import {
   battleRowToStore,
   characterRowToStore,
   fusionRowToStore,
+  healLocationRowToStore,
   inventoryRowToStore,
   itemRowToStore,
   monsterPubRowToStore,
+  npcRowToStore,
+  playerConversationRowToStore,
+  playerQuestRowToStore,
   playerRowToStore,
   type SdkBattleRow,
   type SdkCharacterRow,
@@ -92,6 +96,11 @@ export function connect(opts: ConnectionOptions): Connection {
           'SELECT * FROM item_row',
           // fusion is public content (all recipes visible to all players — M10c).
           'SELECT * FROM fusion',
+          // M12d: dialogue / quest / heal / npc tables (ADR-0071).
+          'SELECT * FROM player_conversation',
+          'SELECT * FROM player_quest',
+          'SELECT * FROM heal_location_row',
+          'SELECT * FROM npc',
         ]);
     })
     .onConnectError((_ctx, err: Error) => opts.onError('connect', err.message))
@@ -220,6 +229,88 @@ export function connect(opts: ConnectionOptions): Connection {
   conn.db.fusion.onUpdate((_ctx, _old, row) => ingestFusion(row as unknown as SdkFusionRow));
   conn.db.fusion.onDelete((_ctx, row) => {
     store.removeFusion((row as unknown as SdkFusionRow).fusionId);
+    batcher.schedule();
+  });
+
+  // M12d: player_conversation / player_quest / heal_location_row / npc (ADR-0071)
+  type SdkConversationRow = {
+    ownerIdentity: { toHexString(): string };
+    npcEntityId: bigint;
+    currentNodeId: string;
+  };
+  const ingestConversation = (row: SdkConversationRow): void => {
+    store.upsertConversation(playerConversationRowToStore(row));
+    batcher.schedule();
+  };
+  conn.db.player_conversation.onInsert((_ctx, row) =>
+    ingestConversation(row as unknown as SdkConversationRow),
+  );
+  conn.db.player_conversation.onUpdate((_ctx, _old, row) =>
+    ingestConversation(row as unknown as SdkConversationRow),
+  );
+  conn.db.player_conversation.onDelete((_ctx, row) => {
+    store.removeConversation((row as unknown as SdkConversationRow).ownerIdentity.toHexString());
+    batcher.schedule();
+  });
+
+  type SdkQuestRow = {
+    pqId: bigint;
+    ownerIdentity: { toHexString(): string };
+    questId: string;
+    stepIndex: number;
+  };
+  const ingestQuest = (row: SdkQuestRow): void => {
+    store.upsertQuest(playerQuestRowToStore(row));
+    batcher.schedule();
+  };
+  conn.db.player_quest.onInsert((_ctx, row) => ingestQuest(row as unknown as SdkQuestRow));
+  conn.db.player_quest.onUpdate((_ctx, _old, row) => ingestQuest(row as unknown as SdkQuestRow));
+  conn.db.player_quest.onDelete((_ctx, row) => {
+    store.removeQuest((row as unknown as SdkQuestRow).pqId);
+    batcher.schedule();
+  });
+
+  type SdkHealRow = {
+    locationId: number;
+    zoneId: number;
+    tileX: number;
+    tileY: number;
+    costItemId?: number;
+    costQty: number;
+    cooldownMs: number;
+  };
+  const ingestHealLocation = (row: SdkHealRow): void => {
+    store.upsertHealLocation(healLocationRowToStore(row));
+    batcher.schedule();
+  };
+  conn.db.heal_location_row.onInsert((_ctx, row) =>
+    ingestHealLocation(row as unknown as SdkHealRow),
+  );
+  conn.db.heal_location_row.onUpdate((_ctx, _old, row) =>
+    ingestHealLocation(row as unknown as SdkHealRow),
+  );
+  conn.db.heal_location_row.onDelete((_ctx, row) => {
+    store.removeHealLocation((row as unknown as SdkHealRow).locationId);
+    batcher.schedule();
+  });
+
+  type SdkNpcRow = {
+    entityId: bigint;
+    npcId: string;
+    zoneId: number;
+    homeX: number;
+    homeY: number;
+    wanderRadius: number;
+    dialogueTreeId: string;
+  };
+  const ingestNpc = (row: SdkNpcRow): void => {
+    store.upsertNpc(npcRowToStore(row));
+    batcher.schedule();
+  };
+  conn.db.npc.onInsert((_ctx, row) => ingestNpc(row as unknown as SdkNpcRow));
+  conn.db.npc.onUpdate((_ctx, _old, row) => ingestNpc(row as unknown as SdkNpcRow));
+  conn.db.npc.onDelete((_ctx, row) => {
+    store.removeNpc((row as unknown as SdkNpcRow).entityId);
     batcher.schedule();
   });
 
