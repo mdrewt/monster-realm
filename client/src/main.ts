@@ -225,7 +225,11 @@ window.addEventListener('keydown', (e) => {
       !dialogueView?.visible &&
       !healView?.visible
     ) {
-      questLogView?.toggle();
+      if (questLogView?.visible) {
+        questLogView.hide();
+      } else {
+        questLogView?.render(buildQuestLogViewModel(store.ownQuests(identity)));
+      }
     }
     e.preventDefault();
     return;
