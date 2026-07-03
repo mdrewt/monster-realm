@@ -12,22 +12,12 @@
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
 
-use crate::schema::inventory;
-// `grant_item` (dev-only, ADR-0054) is the sole constructor of an `Inventory` row
-// and the only user of the `Table::insert` trait method here — gate both imports
-// so the default (non-dev) build stays warning-clean (red-team F6). `consume_one`
-// (ungated) needs only `Identity` + the generated index/PK accessor traits.
-#[cfg(feature = "dev_reducers")]
-use crate::schema::Inventory;
-#[cfg(feature = "dev_reducers")]
-use spacetimedb::Table;
-use spacetimedb::{Identity, ReducerContext};
+use crate::schema::{inventory, Inventory};
+use spacetimedb::{Identity, ReducerContext, Table};
 
 /// Per-stack cap. A single `(owner, item_id)` stack is capped at this count;
-/// further grants are no-ops once at/over the cap. Used only by the dev-gated
-/// `grant_item`, so it shares the gate (non-dev hygiene).
+/// further grants are no-ops once at/over the cap.
 // 9999: four-digit cap for UI legibility; no game-design constraint — tunable (ADR-0059 residual c).
-#[cfg(feature = "dev_reducers")]
 pub(crate) const MAX_ITEM_STACK: u32 = 9999;
 
 /// Grant `qty` of `item_id` to `owner`, merging into the owner's existing stack
@@ -37,13 +27,7 @@ pub(crate) const MAX_ITEM_STACK: u32 = 9999;
 /// Hardened (ADR-0059 red-team F2/F3): a `qty == 0` grant is a no-op (never an
 /// empty zombie row); the existing-stack branch only grows when below the cap, so
 /// a grant can never SHRINK an already-at/over-cap stack. Keeps `saturating_add`.
-///
-/// Currently the ONLY caller is the dev/test reducer `grant_bait`, so this helper
-/// shares its `dev_reducers` gate to avoid a dead-code warning in release builds
-/// (ADR-0054). A production grant path (M12 quest / M13 shop / training food) will
-/// introduce a non-dev caller; drop the gate then.
 // Crate-internal; the sole inventory inserter (ADR-0018/0046 single-stack surface).
-#[cfg(feature = "dev_reducers")]
 pub(crate) fn grant_item(ctx: &ReducerContext, owner: Identity, item_id: u32, qty: u32) {
     if qty == 0 {
         return;

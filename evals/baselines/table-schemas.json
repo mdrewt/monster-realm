@@ -41,6 +41,14 @@
       "content_version": "u32"
     }
   },
+  "encounter": {
+    "pk": "zone_id",
+    "columns": {
+      "zone_id": "u32",
+      "encounter_rate": "u16",
+      "entries": "Vec<EncounterEntryRow>"
+    }
+  },
   "fusion": {
     "pk": "fusion_id",
     "columns": {
@@ -50,12 +58,23 @@
       "to_species": "u32"
     }
   },
-  "encounter": {
-    "pk": "zone_id",
+  "heal_cooldown": {
+    "pk": "owner_identity",
     "columns": {
+      "owner_identity": "Identity",
+      "last_heal_at_ms": "i64"
+    }
+  },
+  "heal_location_row": {
+    "pk": "location_id",
+    "columns": {
+      "location_id": "u32",
       "zone_id": "u32",
-      "encounter_rate": "u16",
-      "entries": "Vec<EncounterEntryRow>"
+      "tile_x": "i32",
+      "tile_y": "i32",
+      "cost_item_id": "Option<u32>",
+      "cost_qty": "u32",
+      "cooldown_ms": "i64"
     }
   },
   "inventory": {
@@ -142,6 +161,18 @@
       "scheduled_at": "ScheduleAt"
     }
   },
+  "npc": {
+    "pk": "entity_id",
+    "columns": {
+      "entity_id": "u64",
+      "npc_id": "String",
+      "zone_id": "u32",
+      "home_x": "i32",
+      "home_y": "i32",
+      "wander_radius": "u8",
+      "dialogue_tree_id": "String"
+    }
+  },
   "player": {
     "pk": "identity",
     "columns": {
@@ -150,6 +181,31 @@
       "name": "String",
       "online": "bool",
       "last_input_seq": "u64"
+    }
+  },
+  "player_conversation": {
+    "pk": "owner_identity",
+    "columns": {
+      "owner_identity": "Identity",
+      "npc_entity_id": "u64",
+      "current_node_id": "String"
+    }
+  },
+  "player_dialogue_state": {
+    "pk": "owner_identity",
+    "columns": {
+      "owner_identity": "Identity",
+      "flags": "Vec<String>",
+      "done_quests": "Vec<String>"
+    }
+  },
+  "player_quest": {
+    "pk": "pq_id",
+    "columns": {
+      "pq_id": "u64",
+      "owner_identity": "Identity",
+      "quest_id": "String",
+      "step_index": "u32"
     }
   },
   "skill_row": {

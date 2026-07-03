@@ -16,13 +16,13 @@ use crate::marshal::{
     table_from_encounter_row,
 };
 use crate::schema::{
-    battle, character, encounter, monster, monster_pub, player, species_row, Character, Player,
+    battle, character, encounter, monster, monster_pub, npc, player, species_row, Character, Player,
 };
 use crate::{SPRITE_PLAYER, STARTER_SPECIES_ID, ZONE_0};
 use game_core::{
-    apply_move, load_zone_maps, map_for, resolve_encounter, roll_starter, spawn,
+    apply_move, load_zone_maps, map_for, npc_decide, resolve_encounter, roll_starter, spawn,
     stepped_onto_grass, ActionState, BattleOutcome, Direction, Millis, MoveInput, StatBlock,
-    MOVE_QUEUE_CAP,
+    TilePos, MOVE_QUEUE_CAP, STEP_MS,
 };
 use spacetimedb::{ReducerContext, ScheduleAt, Table};
 
@@ -281,5 +281,47 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
             );
         }
     }
+
+    // NPC wander (M12b, ADR-0069): deterministic per-tick wander via game_core::npc_decide.
+    // Tick counter derived from server clock — avoids wall-clock entropy (ADR-0003).
+    let tick_counter: u64 = now.0.unsigned_abs() / (STEP_MS.unsigned_abs().max(1));
+    let npc_entity_ids: Vec<u64> = ctx
+        .db
+        .npc()
+        .zone_id()
+        .filter(zone)
+        .map(|n| n.entity_id)
+        .collect();
+    for entity_id in npc_entity_ids {
+        let Some(npc_row) = ctx.db.npc().entity_id().find(entity_id) else {
+            continue;
+        };
+        let Some(mut ch) = ctx.db.character().entity_id().find(entity_id) else {
+            continue;
+        };
+        let current = TilePos {
+            x: ch.tile_x,
+            y: ch.tile_y,
+        };
+        let home = TilePos {
+            x: npc_row.home_x,
+            y: npc_row.home_y,
+        };
+        let Some(dir) = npc_decide(
+            current,
+            home,
+            npc_row.wander_radius,
+            entity_id,
+            tick_counter,
+        ) else {
+            continue;
+        };
+        let next_state = apply_move(&char_state(&ch), MoveInput::Step(dir), &map, now);
+        apply_state(&mut ch, &next_state);
+        // NOTE (F5): apply_state writes ONLY tile_x/tile_y/facing/action/move_started_at.
+        // It does NOT write zone_id. NPC zone crossings deferred to M12c.
+        ctx.db.character().entity_id().update(ch);
+    }
+
     Ok(())
 }

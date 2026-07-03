@@ -468,7 +468,53 @@ fn process_trigger_step_conditions_block() {
     );
 }
 
-// Test 18 — Quest with multiple reward items: all appear in QuestComplete reward
+// Test 18 — Red-team RT-COLLECT-QTY0: Collect trigger with qty=0 in a step is satisfied
+//           by ANY collection event with qty >= 0 — i.e. a zero-qty collect is always true.
+//           The invariant: `validate_content` (M12c) MUST reject a step with Collect { qty: 0 }.
+//           This test pins the CURRENT behaviour so if `trigger_matches` is ever hardened to
+//           reject qty=0 triggers at the rule layer, the test author must update it deliberately.
+//
+/// kills: a future claim that "Collect{qty:0} is already safe" — it is NOT; the qty>=0 check
+///        is vacuously true for any event, making the step free to complete.
+#[test]
+fn trigger_matches_collect_zero_qty_is_vacuously_true() {
+    // A step requiring 0 items — content authoring error, but currently legal at the rule layer.
+    let trigger = StepTrigger::Collect {
+        item_id: 42,
+        qty: 0,
+    };
+    // A Collected event that also carries qty=0 (player "collected nothing").
+    let event = TriggerEvent::Collected {
+        item_id: 42,
+        qty: 0,
+    };
+    // The rule: eq >= tq ↔ 0 >= 0 = true → step is completed for free.
+    assert!(
+        trigger_matches(&trigger, &event),
+        "trigger_matches(Collect{{qty:0}}, Collected{{qty:0}}) must return true \
+         (0 >= 0 is vacuously true); this confirms M12c validate_content must \
+         reject Collect steps with qty=0 to prevent free step completion"
+    );
+}
+
+// Test 19 — Collect trigger with qty=0 is also satisfied by a non-zero event
+/// kills: a false assumption that only qty=0 events satisfy the zero trigger — ANY
+///        event satisfies it because the condition is `event.qty >= 0` which is always true.
+#[test]
+fn trigger_matches_collect_zero_qty_satisfied_by_any_nonzero_event() {
+    let trigger = StepTrigger::Collect { item_id: 7, qty: 0 };
+    let event = TriggerEvent::Collected {
+        item_id: 7,
+        qty: 100,
+    };
+    assert!(
+        trigger_matches(&trigger, &event),
+        "Collect{{qty:0}} step must be satisfied by any Collected event (100 >= 0 is true); \
+         this is a content-validation gap — M12c MUST guard against qty=0 Collect steps"
+    );
+}
+
+// Test 20 — Quest with multiple reward items: all appear in QuestComplete reward
 /// kills: an impl that only includes the first item in the reward, or one that
 ///        truncates the items Vec during the clone/move into QuestAdvance.
 #[test]

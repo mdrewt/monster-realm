@@ -595,43 +595,6 @@ pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
     Ok(())
 }
 
-/// Heal all party monsters to full HP. Only allowed when the player is NOT in
-/// an ongoing battle.
-#[spacetimedb::reducer]
-pub fn heal_party(ctx: &ReducerContext) -> Result<(), String> {
-    let me = ctx.sender;
-
-    // Reject if player is in an ongoing battle.
-    let in_battle = ctx
-        .db
-        .battle()
-        .player_identity()
-        .filter(me)
-        .any(|b| b.state.outcome == BattleOutcome::Ongoing);
-    if in_battle {
-        let e = "cannot heal during an ongoing battle".to_string();
-        log_reject("heal_party", me, &e);
-        return Err(e);
-    }
-
-    let monsters: Vec<Monster> = ctx
-        .db
-        .monster()
-        .owner_identity()
-        .filter(me)
-        .filter(|m| m.party_slot != PARTY_SLOT_NONE)
-        .collect();
-    for mut m in monsters {
-        m.current_hp = m.stat_hp;
-        let pub_row = pub_from_monster(&m);
-        ctx.db.monster().monster_id().update(m);
-        ctx.db.monster_pub().monster_id().update(pub_row);
-    }
-
-    log::info!("{{\"evt\":\"heal_party\",\"sender\":\"{me}\"}}");
-    Ok(())
-}
-
 /// Write post-battle HP back to every party monster (HP only — NO XP). Shared by
 /// `write_back_battle_results` (the win/loss/flee path) and the M8d recruit
 /// success arm (which grants no XP). Dual-writes the private `monster` row and

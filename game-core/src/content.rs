@@ -846,6 +846,106 @@ pub fn validate_evolution_fusion(
     Ok(())
 }
 
+// ===========================================================================
+// M12b content types — NPC + healing location definitions (M12c replaces
+// hardcoded loaders with RON file loading)
+// ===========================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NpcDef {
+    pub id: u32,
+    pub npc_id: String,
+    pub zone_id: u32,
+    pub spawn_x: i32,
+    pub spawn_y: i32,
+    pub home_x: i32,
+    pub home_y: i32,
+    pub wander_radius: u8,
+    pub dialogue_tree_id: String,
+    pub sprite_id: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HealLocationDef {
+    pub location_id: u32,
+    pub zone_id: u32,
+    pub tile_x: i32,
+    pub tile_y: i32,
+    pub cost_item_id: Option<u32>,
+    pub cost_qty: u32,
+    pub cooldown_ms: i64,
+}
+
+/// Hardcoded NPC definitions (M12b). M12c replaces this with RON loading.
+pub fn load_npc_defs() -> Vec<NpcDef> {
+    vec![NpcDef {
+        id: 1,
+        npc_id: "elder_oak".to_string(),
+        zone_id: 0,
+        spawn_x: 5,
+        spawn_y: 5,
+        home_x: 5,
+        home_y: 5,
+        wander_radius: 2,
+        dialogue_tree_id: "elder_oak_talk".to_string(),
+        sprite_id: 10,
+    }]
+}
+
+/// Hardcoded dialogue trees (M12b). M12c replaces this with RON loading.
+pub fn load_dialogue_trees() -> Vec<crate::dialogue::DialogueTree> {
+    use crate::dialogue::{DialogueChoice, DialogueEffect, DialogueNode, DialogueTree};
+    vec![DialogueTree {
+        id: "elder_oak_talk".to_string(),
+        root_node_id: "greeting".to_string(),
+        nodes: vec![DialogueNode {
+            id: "greeting".to_string(),
+            text: "The ancient oak spirit greets you.".to_string(),
+            entry_conditions: vec![],
+            auto_effects: vec![DialogueEffect::SetFlag("met_elder_oak".to_string())],
+            choices: vec![DialogueChoice {
+                text: "I seek a quest.".to_string(),
+                conditions: vec![],
+                effects: vec![DialogueEffect::StartQuest("quest_001".to_string())],
+                next_node: None,
+            }],
+        }],
+    }]
+}
+
+/// Hardcoded quest definitions (M12b). M12c replaces this with RON loading.
+pub fn load_quest_defs() -> Vec<crate::quest::QuestDef> {
+    use crate::quest::{QuestDef, QuestReward, QuestStep, StepTrigger};
+    vec![QuestDef {
+        id: "quest_001".to_string(),
+        name: "Find the Elder".to_string(),
+        start_conditions: vec![],
+        steps: vec![QuestStep {
+            trigger: StepTrigger::Talk {
+                npc_id: "elder_oak".to_string(),
+            },
+            conditions: vec![],
+        }],
+        reward: QuestReward {
+            xp: 0,
+            items: vec![],
+        },
+    }]
+}
+
+/// Hardcoded healing location definitions (M12b). M12c replaces with RON loading.
+pub fn load_heal_locations() -> Vec<HealLocationDef> {
+    vec![HealLocationDef {
+        location_id: 1,
+        zone_id: 0,
+        tile_x: 8,
+        tile_y: 3,
+        cost_item_id: None,
+        cost_qty: 0,
+        cooldown_ms: 30_000,
+    }]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

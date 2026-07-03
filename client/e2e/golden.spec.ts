@@ -115,8 +115,9 @@ test.describe
     test('both clients see each other (distinct identities)', async () => {
       const ga = await snap(a);
       const gb = await snap(b);
-      expect(ga.characters.length).toBe(2);
-      expect(gb.characters.length).toBe(2);
+      // M12b adds NPC characters (seeded at init), so characters.length >= 2.
+      expect(ga.characters.length).toBeGreaterThanOrEqual(2);
+      expect(gb.characters.length).toBeGreaterThanOrEqual(2);
       expect(ga.identity).not.toBe(gb.identity);
       expect(ga.identity).toBeTruthy();
     });

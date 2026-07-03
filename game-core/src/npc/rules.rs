@@ -89,6 +89,10 @@ pub fn npc_decide(
 
     if dist <= i64::from(wander_radius) {
         // Within (or at) radius → wander path
+        // Special case: radius=0 means "pinned to home" — always stay when AT home.
+        if wander_radius == 0 {
+            return None;
+        }
         let h = npc_hash(npc_id, tick);
         if h.is_multiple_of(5) {
             // 1-in-5 stay probability

@@ -10,6 +10,4 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
-export default {
-  locationId: __t.u32(),
-};
+export default {};

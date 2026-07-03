@@ -18,12 +18,15 @@
 use crate::guards::require_owner;
 use crate::inventory::consume_one;
 use crate::marshal::{now_ms, pub_from_monster};
-use crate::schema::{item_row, monster, monster_pub, species_row};
-use game_core::{
-    apply_care, focus_train, Bond, EVs, FocusTrainError, FocusTrainResult, IVs, Level, Nature,
-    StatBlock, StatKind,
+use crate::schema::{
+    battle, character, heal_cooldown, heal_location_row, item_row, monster, monster_pub, player,
+    species_row, HealCooldown,
 };
-use spacetimedb::ReducerContext;
+use game_core::{
+    apply_care, focus_train, BattleOutcome, Bond, EVs, FocusTrainError, FocusTrainResult, IVs,
+    Level, Nature, StatBlock, StatKind,
+};
+use spacetimedb::{ReducerContext, Table};
 
 /// Fixed bond raise per successful `care` (tunable policy the reducer supplies to
 /// the pure rule; ADR-0058 §residual(c) / ADR-0059 §3). Initial tuning is a
@@ -177,6 +180,122 @@ pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result
     let pub_row = pub_from_monster(&m);
     ctx.db.monster().monster_id().update(m);
     ctx.db.monster_pub().monster_id().update(pub_row);
+    Ok(())
+}
+
+/// Minimum ms between heals (used by raising_tests.rs; heal_party uses loc.cooldown_ms).
+#[cfg(test)]
+pub(crate) const HEAL_COOLDOWN_MS: i64 = 30_000;
+
+/// Pure cooldown seam (testable without DB).
+/// Uses saturating_sub to prevent wrapping subtraction (a future clock can only
+/// over-reject, never bypass the cooldown). Strict `<` (elapsed == cooldown_ms is allowed).
+pub(crate) fn evaluate_heal(
+    last_heal_at_ms: i64,
+    now: i64,
+    cooldown_ms: i64,
+) -> Result<(), String> {
+    if now.saturating_sub(last_heal_at_ms) < cooldown_ms {
+        return Err("heal cooldown not yet elapsed".to_string());
+    }
+    Ok(())
+}
+
+/// Restore all party monsters to full HP at a heal location.
+/// Reject-never-burns: all checks run BEFORE the first DB write.
+/// In-battle + cooldown + zone checked. Cost consumed before heal.
+#[spacetimedb::reducer]
+pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> {
+    let me = ctx.sender;
+
+    // Step 1-2: player must be joined + have a character
+    let Some(p) = ctx.db.player().identity().find(me) else {
+        return Err("not joined".to_string());
+    };
+    let Some(ch) = ctx.db.character().entity_id().find(p.entity_id) else {
+        return Err("character not found".to_string());
+    };
+
+    // Step 3: look up heal location
+    let Some(loc) = ctx.db.heal_location_row().location_id().find(location_id) else {
+        return Err("heal location not found".to_string());
+    };
+
+    // Step 4: zone check
+    if ch.zone_id != loc.zone_id {
+        return Err("not in heal location zone".to_string());
+    }
+
+    // Step 5: in-battle check
+    let in_battle = ctx
+        .db
+        .battle()
+        .player_identity()
+        .filter(me)
+        .any(|b| b.state.outcome == BattleOutcome::Ongoing);
+    if in_battle {
+        return Err("cannot heal during an ongoing battle".to_string());
+    }
+
+    // Step 6: cooldown check (using location's cooldown_ms)
+    let now = now_ms(ctx);
+    let last_heal = ctx
+        .db
+        .heal_cooldown()
+        .owner_identity()
+        .find(me)
+        .map(|r| r.last_heal_at_ms)
+        .unwrap_or(0);
+    evaluate_heal(last_heal, now, loc.cooldown_ms)?;
+
+    // Step 7: cost consume. consume_one is a DB write; if it fails mid-loop the
+    // reducer transaction rolls back (ACID), so no items are permanently lost.
+    // Batch consume (cost_qty > 1) is deferred to M13 — current content has None cost.
+    if let Some(item_id) = loc.cost_item_id {
+        for _ in 0..loc.cost_qty {
+            consume_one(ctx, me, item_id)?;
+        }
+    }
+
+    // Step 8: heal all party monsters (party_slot != PARTY_SLOT_NONE)
+    use crate::PARTY_SLOT_NONE;
+    let monster_ids: Vec<u64> = ctx
+        .db
+        .monster()
+        .owner_identity()
+        .filter(me)
+        .filter(|m| m.party_slot != PARTY_SLOT_NONE)
+        .map(|m| m.monster_id)
+        .collect();
+    for mid in monster_ids {
+        if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
+            m.current_hp = m.stat_hp;
+            let pub_row = pub_from_monster(&m);
+            ctx.db.monster().monster_id().update(m);
+            ctx.db.monster_pub().monster_id().update(pub_row);
+        }
+    }
+
+    // Step 9: upsert heal_cooldown
+    match ctx.db.heal_cooldown().owner_identity().find(me) {
+        Some(existing) => {
+            ctx.db
+                .heal_cooldown()
+                .owner_identity()
+                .update(HealCooldown {
+                    owner_identity: existing.owner_identity,
+                    last_heal_at_ms: now,
+                });
+        }
+        None => {
+            ctx.db.heal_cooldown().insert(HealCooldown {
+                owner_identity: me,
+                last_heal_at_ms: now,
+            });
+        }
+    }
+
+    log::info!("{{\"evt\":\"heal_party\",\"sender\":\"{me}\",\"location\":{location_id}}}");
     Ok(())
 }
 

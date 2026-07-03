@@ -1519,3 +1519,27 @@ describe('AuthoritativeStore M11c C3: resetCharacters() clears only the characte
     expect(cb).toHaveBeenCalledTimes(0);
   });
 });
+
+describe('AuthoritativeStore M12b: playerCount vs characterCount (NPC isolation)', () => {
+  it('BITES: playerCount only counts player rows, not NPC characters', () => {
+    // Kills: an impl that uses characterCount for presenceCount — M12b NPCs inflate it.
+    // Two players each have a character; plus one NPC character (no player row).
+    const s = new AuthoritativeStore();
+    s.upsertPlayer(player('alice', 1n));
+    s.upsertPlayer(player('bob', 2n));
+    s.upsertCharacter(char(1n, 0, 0), 100); // alice
+    s.upsertCharacter(char(2n, 1, 0), 100); // bob
+    s.upsertCharacter(char(99n, 5, 5), 100); // NPC (no player row)
+    expect(s.characterCount).toBe(3); // NPC + 2 players
+    expect(s.playerCount).toBe(2); // only human players
+  });
+
+  it('BITES: playerCount drops when a player leaves', () => {
+    const s = new AuthoritativeStore();
+    s.upsertPlayer(player('alice', 1n));
+    s.upsertPlayer(player('bob', 2n));
+    expect(s.playerCount).toBe(2);
+    s.removePlayer('alice');
+    expect(s.playerCount).toBe(1);
+  });
+});

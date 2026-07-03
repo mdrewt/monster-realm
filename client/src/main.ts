@@ -309,7 +309,7 @@ function snapshot() {
     stepMs: STEP_MS,
     queueCap: QUEUE_CAP,
     map: rawMap,
-    presenceCount: store.characterCount,
+    presenceCount: store.playerCount,
     ownEntityId: store.ownEntityId(identity)?.toString() ?? null,
     ownPredictedTile: pred ? { x: pred.pos.x, y: pred.pos.y } : null,
     ownAuthTile: own ? { x: own.row.tileX, y: own.row.tileY } : null,
@@ -374,7 +374,9 @@ async function main(): Promise<void> {
         conn?.conn.reducers.setPartySlot({ monsterId, slot: finalSlot });
       },
       onHealParty: () => {
-        conn?.conn.reducers.healParty({});
+        // location_id 1 = the only seeded heal location (zone 0, tile 8,3 — M12b content).
+        // Server validates zone/battle/cooldown; M12c will expose location ids via RON content.
+        conn?.conn.reducers.healParty({ locationId: 1 });
       },
     });
     battleView = new BattleViewClass(mount, {

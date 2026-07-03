@@ -14,7 +14,7 @@
 
 use crate::content::sync_content_inner;
 use crate::movement::{movement_tick_schedule, MovementTickSchedule};
-use crate::schema::{character, config, player, zone_def, Config};
+use crate::schema::{character, config, player, player_conversation, zone_def, Config};
 use game_core::STEP_MS;
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
@@ -28,6 +28,7 @@ mod inventory;
 mod marshal;
 mod monster_mgmt;
 mod movement;
+mod npc;
 mod raising;
 mod schema;
 mod taming;
@@ -37,7 +38,7 @@ pub(crate) const ZONE_0: u32 = 0;
 /// SSOT for the seeded-content version; bump when game-core RON content changes (ADR-0054).
 /// v2 (M9b-tail): items registry gained the "Power Root" training food + the
 /// `train_stat`/`train_amount` columns, so deployed DBs must re-seed.
-pub(crate) const CONTENT_VERSION: u32 = 3; // M10b: fusion table seeding added
+pub(crate) const CONTENT_VERSION: u32 = 4; // M12b: NPC + dialogue + quest + heal location seeding
 pub(crate) const SPRITE_PLAYER: u32 = 0;
 pub(crate) const MAX_NAME_LEN: usize = 24;
 pub(crate) const MAX_PARTY_SIZE: u8 = game_core::PARTY_SIZE; // SSOT (ADR-0052)
@@ -114,6 +115,9 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
 #[spacetimedb::reducer(client_disconnected)]
 pub fn on_disconnect(ctx: &ReducerContext) {
     let me = ctx.sender;
+    // Clean up transient conversation row so a reconnecting player cannot
+    // advance a stale dialogue from a different zone/position (RT-ADV-01).
+    ctx.db.player_conversation().owner_identity().delete(me);
     if let Some(p) = ctx.db.player().identity().find(me) {
         ctx.db.character().entity_id().delete(p.entity_id);
         ctx.db.player().identity().delete(me);
