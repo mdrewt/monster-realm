@@ -1,186 +1,253 @@
-# ADR-0069 — M12b Server: NPC Entity/Wander, Dialogue/Quest Reducers, Healing
+# 0069. NPC/dialogue/quest — server reducers and entity management (M12b)
+- Status: accepted
+- Date: 2026-07-02
+- Milestone: M12b
 
-**Date:** 2026-07-03  
-**Status:** Accepted  
-**Deciders:** Build loop (autonomous)  
-**Related:** ADR-0007 (zoned), ADR-0011 (tick), ADR-0015 (RLS), ADR-0021 (dialogue+quest system),
-ADR-0056 (server-module split), ADR-0068 (M12a game-core dialogue/quest rules)
+## Context and problem statement
 
----
+M12b implements the server-side runtime for NPCs, dialogue, and quests: the database tables,
+the reducer endpoints for player interactions, the NPC wander loop integration, and the
+healing subsystem. The M12a pure rules (ADR-0068) are the SSOT; M12b is a thin effectful
+shell that validates input, delegates to game-core, and writes results to tables.
 
-## Context
+Key decisions:
 
-M12a (ADR-0068) delivered the pure game-core rule layer:
-- `npc_decide` — seeded, deterministic NPC wander decision
-- Dialogue evaluation (`find_entry_node`, `apply_choice`, `apply_effects`, `apply_node_auto_effects`)
-- Quest rules (`can_start_quest`, `process_trigger`, `trigger_matches`)
-
-M12b wires these rules into the SpacetimeDB server module, adding:
-- NPC entities (character + npc role row) with per-zone deterministic wander
-- `player_dialogue_state` (PRIVATE) + `player_quest` (public) + `player_conversation` (public) tables
-- `talk` / `advance_dialogue` / `dismiss_dialogue` reducers
-- Quest trigger evaluation on talk/defeat/collect events
-- Real `heal_party(location_id)` replacing the M7 free placeholder
-- `heal_location_row` (public content) + `heal_cooldown` (PRIVATE) tables
-
----
-
-## Decisions
-
-### Decision 1: Entity/component split for NPCs
-
-**Decision:** An NPC is a `character` row (position, zone, sprite, move_queue) PLUS an `npc`
-role row (entity_id FK, npc_id string, home, wander_radius, dialogue_tree_id).
-
-**Rationale:**
-- NPCs reuse all character movement infrastructure (apply_move, warp detection, zone routing)
-- The `npc` role row is additive (ADR-0006 — no change to the `character` table)
-- NPCs are distinguishable from players by the absence of a `player` row (existing guard in
-  movement_tick already skips grass encounters for non-player characters)
-- `npc.zone_id` is denormalized from `character.zone_id` for efficient zone-indexed NPC queries;
-  the wander loop keeps them in sync on warp
-
-**Alternatives considered:**
-- Single NPC table (position + home + dialogue): rejected — would duplicate character position
-  management and break the existing movement infrastructure
-
-### Decision 2: `player_dialogue_state` is PRIVATE (ADR-0015 must-never-leak)
-
-**Decision:** The `player_dialogue_state` table (flags, done_quests) is PRIVATE (no `public`
-attribute). Only the server reads/writes it; no client can subscribe.
-
-**Rationale:**
-- Flags gate content (a flag controls which dialogue branch a player can access) — reading
-  another player's flags reveals which quests/branches they haven't unlocked (minor spoiler)
-- More importantly: flags gate rewards — a malicious client that can read another player's flags
-  could predict/exploit the branch logic
-- ADR-0015 "stakes-classified RLS" → must-never-leak data goes in private tables
-- M12d (client dialogue UI) will derive needed state from `player_conversation` (PUBLIC) and
-  `player_quest` (PUBLIC), not from the private flag table
-
-**Transport RLS note:** SpacetimeDB 2.6 has no per-row transport RLS. Private tables are the
-only guaranteed server-side enforcement (ADR-0015 / ADR-0040).
-
-**Alternatives considered:**
-- Public with client-side filter: rejected — another client can still subscribe and read all flags
-- Private with public projection: deferred — a public "observable" projection (which quests are
-  active) is already provided by `player_quest`; flags do not need a public projection
-
-### Decision 3: `player_quest` is PUBLIC (like `inventory`)
-
-**Decision:** The `player_quest` table (active quest step progress) is PUBLIC. Client subscribes
-for the quest log UI (M12d). Owner filtering is the client's responsibility (same pattern as
-`inventory`, ADR-0046; full transport RLS deferred to M16).
-
-**Rationale:**
-- Step progress (quest_id, step_index) is significantly less sensitive than flags
-- The client needs this data for the quest log without a round-trip
-- Consistent with the inventory precedent
-
-### Decision 4: Dialogue trees are loaded at call-time from game-core, not stored in DB
-
-**Decision:** `game_core::load_dialogue_trees()` is called in-process at request time. Dialogue
-trees are NOT stored as SpacetimeDB rows.
-
-**Rationale:**
-- Dialogue trees contain nested, recursive types (DialogueNode, DialogueChoice, Condition, Effect)
-  that would each require `SpacetimeType` derives — substantial coupling between game-core types
-  and SpacetimeDB macros
-- Trees are immutable content (not player state) — storing them in the DB adds write-path
-  complexity for no query benefit (they're never queried by field, only by tree_id)
-- The server accesses them via a direct function call — same as `load_encounters()` for encounter
-  tables (established pattern, ADR-0040)
-- M12c will add RON file loading for dialogue trees, replacing the hardcoded stubs
-
-**Alternatives considered:**
-- Store DialogueTree in SpacetimeDB table with JSON blob column: rejected — no SpacetimeDB JSON
-  blob type; serialization complexity; unqueryable interior
-- Store as nested SpacetimeType structs: rejected — requires SpacetimeType on all nested types
-  (Condition, DialogueEffect, etc.), coupling game-core types to SpacetimeDB macros (ADR-0003
-  requires game-core to be pure/server-agnostic)
-
-### Decision 5: `heal_party` moves to `raising.rs` from `battle.rs`
-
-**Decision:** The M7 placeholder `heal_party()` (free, no args) in `battle.rs` is removed. The
-real `heal_party(location_id: u32)` is added to `raising.rs`.
-
-**Rationale:**
-- "Heal at a town location" is a raising/care action, not a battle action
-- The M8.9 ADR-0056 module vocabulary assigns `raising.rs` to monster care and recovery
-- The new signature takes a `location_id` (required parameter) — different arity, so it's a
-  clean replacement, not a behavioral breaking change at the schema level
-- The battle-reducer-security eval only checks the reducer NAME exists (which it does, in a
-  different module); the eval passes unchanged
-
-### Decision 6: `grant_item` ungated for production use
-
-**Decision:** Remove the `#[cfg(feature = "dev_reducers")]` gate from `grant_item` and
-`MAX_ITEM_STACK` in `inventory.rs`. The `grant_bait` DEV reducer retains its gate.
-
-**Rationale:**
-- M12b introduces the first production caller: `apply_effects_to_db` routes `GrantItem` effects
-  through `grant_item` as quest rewards
-- The inventory.rs comment explicitly anticipated this: "A production grant path (M12 quest /
-  M13 shop / training food) will introduce a non-dev caller; drop the gate then"
-- `grant_item` has always been a production-ready function (zero-qty guard, cap enforcement,
-  monotone-up behavior) — the gate was only to avoid a dead-code warning
-
-### Decision 7: NPC tick counter = `now_ms / STEP_MS` (stable across ticks)
-
-**Decision:** The `tick` argument to `npc_decide` is computed as `now.0.unsigned_abs() / STEP_MS.unsigned_abs()`, yielding a monotone-increasing integer that increments by 1 per step.
-
-**Rationale:**
-- `npc_decide` is deterministic given `(entity_id, tick)` — using raw ms would produce
-  different outputs within the same tick if clock jitter shifts the call time
-- Integer division gives the same value for all calls within a 200ms STEP_MS window
-- This matches the ADR-0068 spec: "seeded deterministic wander per tick"
-
-### Decision 8: `apply_node_auto_effects` is called in `talk`, before writing player_conversation
-
-**Decision:** `apply_node_auto_effects(node, &mut state)` is called immediately after
-`find_entry_node` returns `Some(node)`, before any DB write.
-
-**Rationale:**
-- ADR-0068 requires this: "M12b MUST call this immediately after find_entry_node returns
-  Some(node), before displaying choices"
-- Omitting this call silently discards all auto_effects (flags set on node entry, quests started)
-- The proof-of-teeth for this is: a talk that has a StartQuest auto_effect MUST create a
-  player_quest row even without the player making a choice
-
-### Decision 9: game-core content type widening (NpcDef, HealLocationDef)
-
-**Decision:** Add `NpcDef` and `HealLocationDef` structs to `game-core/src/content.rs`. Add
-hardcoded `load_npc_defs()`, `load_dialogue_trees()`, `load_quest_defs()`, `load_heal_locations()`
-stubs. Re-export from `game-core/src/lib.rs`.
-
-**Rationale:**
-- These types logically belong in `game-core` alongside `Species`, `ItemDef`, etc.
-- M12b is declared serial (no concurrent siblings) → widening the touches set is safe
-- M12c will replace the hardcoded stubs with RON file loading — the function signatures remain stable
-
----
-
-## Consequences
-
-**Positive:**
-- NPCs wander deterministically; the existing movement infrastructure is reused without duplication
-- Dialogue/quest logic is server-authoritative (clients can't bypass conditions or grant rewards)
-- `player_dialogue_state` is PRIVATE → flags cannot be datamined by other clients
-- `heal_party` now requires a real location (cost + cooldown), resolving the M7 placeholder
-- `grant_item` is production-ready; the dev gate served its purpose
-
-**Negative / risks:**
-- Dialogue trees loaded at call-time from game-core: if the game-core wasm binary is large, this
-  adds latency per `talk`. Acceptable for M12b; RON streaming (M12c) is the long-term path.
-- NpcDef hardcoded inline: "content is data" principle is temporarily violated (M12c resolves it)
-- `player_quest` is PUBLIC: all players can read all quest progress. Acceptable (same as inventory);
-  full transport RLS deferred to M16.
-
----
+1. **Table schema** — what tables do NPC state, dialogue progress, and quest state require?
+2. **Dialogue reducer guards** — how are F1 (identity), F2 (single-write), and F7 (range)
+   enforced in `talk`, `advance_dialogue`, `dismiss_dialogue`?
+3. **Quest integration** — where does `process_trigger` get called from?
+4. **NPC wander loop** — how is `npc_decide` driven from `movement_tick`?
+5. **Healing subsystem** — what are the cooldown rules and in-battle guards for `heal_party`?
 
 ## Considered alternatives
 
-- Store dialogue trees in SpacetimeDB tables → rejected (nested SpacetimeType coupling; see Decision 4)
-- Keep heal_party in battle.rs → rejected (wrong domain module; see Decision 5)
-- Make player_quest PRIVATE → rejected (client can't subscribe for quest log; M12d needs it)
-- Add SpacetimeType to Condition/DialogueEffect for DB storage → rejected (ADR-0003 purity; game-core must stay server-agnostic)
+### 1. Player dialogue state — single table vs. one per dialogue tree
+
+- **Single `player_dialogue_state` table (chosen):** Per-player, per-npc-or-tree keyed.
+  Tracks {flags, active_quests, done_quests} as flat vectors. Deterministic storage
+  for a lightweight game-core `PlayerDialogueState` view.
+- **Separate tables per content id:** Would explode the table count and require per-npc
+  reducer generation. Schema-inflexible. Rejected.
+
+### 2. Dialogue reducer design — is `advance_dialogue` allowed to skip the `apply_choice` security gate?
+
+- **`apply_choice` is the mandatory security gate (chosen):** The reducer calls
+  `apply_choice`, which internally re-checks conditions via `evaluate_condition`.
+  M12b cannot bypass it even by mistake; the pure rule owns the check.
+- **Reducer re-checks conditions itself:** Duplicates the condition logic (ADR-0003
+  violation). Deferred to M12b is a footgun. Rejected.
+
+### 3. NPC wander driving — is it part of the existing `movement_tick`, or a separate scheduled task?
+
+- **Integrated into `movement_tick` (chosen):** For each character, if it's an NPC,
+  call `npc_decide` and push the result onto its `move_queue`. Reuses the existing
+  queue-drain loop. Simple to test with existing movement tests.
+- **Separate `npc_tick` scheduled reducer:** Would require a separate clock + tuning
+  to match player ticks. Adds complexity. Rejected.
+
+### 4. Healing cooldown representation — is it per-npc, per-player, or global?
+
+- **Per-location, per-player (chosen):** `heal_cooldown` table keyed by
+  (location_id, player_identity). One upsert per `heal_party` call. Cooldown value is
+  checked against `ctx.timestamp` with a strict `<` guard (reject if not elapsed).
+- **Global per-player:** Would limit healing to one location per player. Inflexible.
+  Rejected.
+
+### 5. Heal effect on HP — full restore or graduated amounts?
+
+- **Full restore to max HP (chosen):** Per spec §2.7; matching the battle `heal_party`
+  reducer. Simple, deterministic, no arithmetic.
+- **Item-driven heal amounts:** Deferred to M13. Rejected.
+
+## Decision outcomes
+
+### Tables (6 new)
+
+- **`npc` (public):** Entity row for NPC state. Keyed by `npc_id` with `#[unique]`
+  index. Columns: `npc_id: u32`, `home_x: i32`, `home_y: i32`, `wander_radius: i32`,
+  `zone_id: u32`, plus serialized `move_queue: Vec<MoveInput>` (ticked by `movement_tick`).
+  The NPC starts at `home_x/home_y` and wanders within the radius.
+
+- **`player_dialogue_state` (PRIVATE, no `public` attribute):** Per-player, per-dialogue-tree state.
+  Keyed by (player_identity, dialogue_id). Columns: `player_identity`, `dialogue_id`,
+  `node_id: String`, `flags: Vec<String>`, `active_quests: Vec<String>`,
+  `done_quests: Vec<String>`. Marshaled to/from game-core `PlayerDialogueState` by
+  `load_player_dialogue_state` and `write_player_dialogue_state` helpers (ADR-0015,
+  no client accessor for dialogue progress).
+
+- **`player_quest` (public):** Per-player quest state. Keyed by (player_identity,
+  quest_id). Tracks {step_index, quest_state} for integration with dialogue via
+  shared `Condition` (ADR-0068). `quest_state` field discriminant: Active/Done.
+
+- **`player_conversation` (public):** Transient conversation row, keyed by
+  (player_identity, npc_id, dialogue_id). Holds the current NPC dialogue session
+  (player is talking to NPC X, in dialogue tree Y). Used by `talk`/`advance_dialogue`/
+  `dismiss_dialogue` to lock out multi-NPC chatter and track which tree is active.
+
+- **`heal_location_row` (public):** Content-seeded NPC healing locations. Keyed by
+  location_id. Columns: `location_id: u32`, `zone_id: u32`, `tile_x: i32`, `tile_y: i32`.
+  Paired with the existing `npc` table — some NPCs may offer healing at their location.
+
+- **`heal_cooldown` (PRIVATE, no `public` attribute):** Per-player, per-location cooldown
+  state. Keyed by (player_identity, location_id). Tracks `last_healed_at_ms: i64` —
+  checked with strict `<` against `ctx.timestamp` (ADR-0015, cooldown is server-authoritative).
+
+### Reducers in `server-module/src/npc.rs`
+
+- **`talk(ctx, npc_id: u32) -> Result<(), String>`**: Initiates a dialogue with an NPC.
+  Guard F1 (identity): `ctx.sender`. Guard F7 (position): retrieve NPC row, check
+  tile_x/tile_y against player's character zone/position (range TBD by content). Rejects
+  if NPC not found, player not in range, or already in conversation. Creates or reuses
+  `player_conversation` row, calls `find_entry_node` to load the dialogue tree, and
+  calls `apply_node_auto_effects` to apply entry effects (SetFlag, StartQuest on approach).
+
+- **`advance_dialogue(ctx, choice_index: u32) -> Result<(), String>`**: Picks a choice
+  and advances the dialogue tree. Guard F1 (identity): `ctx.sender`. Guard F2 (single-write):
+  reads `player_conversation` PK-scoped, re-loads `player_dialogue_state` and `dialogue_tree`,
+  and updates both tables in a single transaction. Calls `available_choices` → validate
+  choice_index, call `apply_choice` (the security gate re-checks all conditions),
+  call `apply_effects` to process side-effects (StartQuest, SetFlag), call
+  `apply_node_auto_effects` for the new node's entry effects. Writes back
+  `player_dialogue_state` and `player_conversation` (or deletes if dialogue ended).
+
+- **`dismiss_dialogue(ctx) -> Result<(), String>`**: Ends the active conversation.
+  Guard F1 (identity): `ctx.sender`. Guard F2: deletes `player_conversation` row only
+  (leaves `player_dialogue_state` intact for resume on next `talk`).
+
+### Helpers
+
+- **`dialogue_state_from_db(row) -> PlayerDialogueState`**: Deserialize the three `Vec`
+  columns into the lightweight game-core view type. Deterministic iteration.
+
+- **`flags_to_vec(BTreeSet<String>) -> Vec<String>`**: Serialize flags for table storage.
+
+- **`done_to_vec(BTreeSet<String>) -> Vec<String>`**: Serialize done_quests for storage.
+
+- **`load_player_dialogue_state(ctx, player_id, dialogue_id) -> Option<PlayerDialogueState>`**:
+  Query the table, deserialize if found. Used by `talk` (load to re-enter) and
+  `advance_dialogue` (load for choice evaluation).
+
+- **`write_player_dialogue_state(ctx, player_id, dialogue_id, state)`**: Upsert the
+  table row. Deterministic serialization of BTreeSets to Vec.
+
+- **`apply_effects_to_db(ctx, effects, player_id, dialogue_state)`**: Side-effect handler
+  for all dialogue/quest side-effects (SetFlag, StartQuest, GrantItem, QuestProgress).
+  Calls `player_quest` insert/update as needed. Mutates `dialogue_state` in-place and
+  returns it for write-back.
+
+- **`apply_quest_trigger(ctx, event: TriggerEvent, player_id)`**: Dispatch quest step
+  triggers. Iterates all active quests, calls `process_trigger` for each, collects
+  `QuestAdvance::StepComplete` or `::QuestComplete` returns, and updates or deletes
+  `player_quest` rows accordingly. This is where quest steps advance via in-game events
+  (Talk, Collect, Defeat from M12c content).
+
+### NPC wander integration
+
+In `server-module/src/movement.rs` inside `movement_tick`, for each character:
+
+```rust
+if let Some(npc) = ctx.db.npc().read(character.npc_id) {
+  if let Some(dir) = npc_decide(
+    (npc.tile_x, npc.tile_y),
+    (npc.home_x, npc.home_y),
+    npc.wander_radius,
+    npc.npc_id,
+    tick_count
+  ) {
+    // Push MoveInput::Step(dir) onto npc.move_queue
+    let mut npc = npc.clone();
+    npc.move_queue.push(MoveInput::Step(dir));
+    ctx.db.npc().update(npc);
+  }
+}
+```
+
+The existing queue-drain loop processes the move unchanged.
+
+### Healing subsystem
+
+In `server-module/src/raising.rs` (or merged with `battle.rs` where `heal_party` already
+lives — M9b), add `evaluate_heal` pure seam + `heal_party` reducer:
+
+- **`evaluate_heal(ctx, location_id, player_identity) -> Result<(), String>`**: Pure
+  game-core seam for future cooldown/eligibility logic (M13+). Today: only checks
+  `ctx.timestamp > last_healed_at_ms`.
+
+- **`heal_party(ctx, location_id: u32) -> Result<(), String>`**: Reducer. Guard F7
+  (position): check player at heal_location_row tile. Guard in-battle: rejects if
+  `player_battle().outcome != SideAWins && != SideBWins` (must have won, not ongoing).
+  Guard zone: player must be in location's zone_id. Delegate to `evaluate_heal` (game-core
+  seam for eligibility). Consume cost (item or currency — deferred to M13). Call
+  `apply_full_heal` on player's party (in-place, from existing `heal_party` battle
+  logic). Upsert `heal_cooldown` row with `ctx.timestamp`. Rejects with `Err` if any
+  check fails (never clamp).
+
+### Content integration
+
+- **`npc_entity` content in `content/npc/*.ron`:** Seed `npc` table via `seed_npc_entities`
+  helper (idempotent upsert by npc_id). Columns map to table schema.
+
+- **`heal_location_def` content in `content/heal_locations/*.ron`:** Seed `heal_location_row`
+  table via `seed_heal_locations` helper. Same pattern.
+
+- **Dialogue + quest content (M12c):** M12c loads RON, calls loaders, validates,
+  and upserts `dialogue_tree` and `quest_def` tables (awaiting M12c implementation).
+  `sync_content` calls `validate_content` which includes dialogue tree root-node-id
+  validation and quest step-index bounds checking.
+
+### CONTENT_VERSION increment
+
+`CONTENT_VERSION: 3 → 4` (adding 6 new tables, NPC definitions, healing locations).
+
+### Client bindings
+
+Regenerated via `just gen` (M12b branch); new table accessors for `npc`, `player_quest`,
+`player_conversation`, `heal_location_row` (public only). `player_dialogue_state` and
+`heal_cooldown` are private (no codegen entry). The `module_bindings/index.ts` reflects
+the new `#[unique]` npc_id accessor.
+
+### Evals
+
+- **`npc-dialogue-quest-security.eval.mjs`** — 10 checks (C1–C10):
+  - C1: Every `player_dialogue_state` row has a corresponding (valid) `dialogue_id` in content.
+  - C2: Every `player_conversation` (NPC session) row is transient (created/deleted same
+    reduce call, not persisted across session). *(Residual: M12c to define transience.*
+  - C3: `advance_dialogue` rejects out-of-bounds choice_index (no crash).
+  - C4: `talk` rejects already-in-conversation case (no multi-NPC chatter).
+  - C5: `dismiss_dialogue` cleans up `player_conversation` (no stale sessions).
+  - C6: `heal_party` rejects in-battle (Ongoing), rejects out-of-zone, rejects non-owner.
+  - C7: `heal_cooldown` upsert uses `.update()` with find-else-insert, never silent no-op.
+  - C8: NPC wander radius==0 → npc_decide early-returns None (no infinite loop risk).
+  - C9: All `player_quest` rows remain keyed by quest_id (quest deletion doesn't orphan
+    progress rows; follow-up M12c validates).
+  - C10: `apply_effects_to_db` mutates `dialogue_state` in-place (F2 single-write discipline).
+
+### Tests
+
+- **`server-module/src/npc_tests.rs` (5 tests):**
+  - Marshal roundtrips: `dialogue_state_from_db` / `flags_to_vec` / `done_to_vec`
+  - NPC wander: `npc_decide` determinism within radius
+  - Wander radius==0 early return (no move generated)
+
+## Consequences
+
+- M12b is the thin shell for dialogue/quest/NPC runtime. All pure logic lives in
+  ADR-0068 game-core rules; M12b delegates without re-implementing.
+
+- `player_dialogue_state` and `heal_cooldown` are PRIVATE (ADR-0015); clients have
+  no accessor. Dialogue progress is UI-driven via the `talk` / `advance_dialogue` /
+  `dismiss_dialogue` reducers alone.
+
+- Healing is guarded by in-battle status, zone, and position (F7). Future M13 can add
+  item cost + character-specific healing amounts (additive). The `evaluate_heal` seam
+  is ready for parametric extensibility.
+
+- NPC wander is driven by the existing `movement_tick` loop once per server tick,
+  with the same collision/queue semantics as player movement. No separate NPC clock.
+
+- Quest triggers are fired from application code (M12d: battle ends → call `apply_quest_trigger`;
+  item collected → call `apply_quest_trigger`, etc.). The reducer surface (`talk`,
+  `advance_dialogue`) is dialogue-only.
+
+- M12c will load dialogue/quest content, validate tree structure, and call `validate_content`
+  to gate the schema + integrity at publish time.

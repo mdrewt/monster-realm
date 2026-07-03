@@ -120,15 +120,16 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 | Module | Owns | Inline-test sibling |
 |--------|------|--------------------|
 | `lib.rs` | module wiring + crate constants + lifecycle reducers (`init`/`sync_content`/`on_disconnect`) | — |
-| `schema.rs` | the data `#[table]` structs + row types (14 of the 15 snapshot tables; the `movement_tick_schedule` scheduled table lives in `movement.rs` with its reducer) | — |
+| `schema.rs` | the data `#[table]` structs + row types (22 of the 22 snapshot tables; the `movement_tick_schedule` scheduled table lives in `movement.rs` with its reducer) | — |
 | `guards.rs` | `log_reject`, `validate_name`, `authorize_move`, `check_party_size`, `check_monster_in_party`, `check_team_coupling`, and `require_owner` (the consolidated owner-check preamble) | `guards_tests.rs` |
 | `marshal.rs` | row ↔ game-core marshaling helpers | `marshal_tests.rs` |
 | `content.rs` | `sync_content_inner` + seeding helpers | inline |
-| `movement.rs` | `join_game`, `enqueue_move`, `set_move`, `clear_queue`, `movement_tick` + the `movement_tick_schedule` scheduled table | inline |
+| `movement.rs` | `join_game`, `enqueue_move`, `set_move`, `clear_queue`, `movement_tick` (including NPC wander drive via `npc_decide`), npc entity integration + the `movement_tick_schedule` scheduled table | inline |
 | `monster_mgmt.rs` | `set_nickname`, `set_party_slot` | inline |
 | `battle.rs` | `start_battle`, `start_wild_battle`, `submit_attack`, `swap_active`, `flee`, `heal_party`, `begin_encounter`, `lead_party`, `write_back_*` (the largest module — the battle cluster) | `battle_tests.rs` |
 | `taming.rs` | `attempt_recruit`, `grant_bait`, `grant_item`, `consume_one` | `taming_tests.rs` |
 | `evolution.rs` | `evolve`, `fuse`, `compute_evolves_to` (M10b, ADR-0061/0062) | `evolution_tests.rs` |
+| `npc.rs` | `talk`, `advance_dialogue`, `dismiss_dialogue` reducers; dialogue/quest state marshaling + helpers (M12b, ADR-0069) | `npc_tests.rs` |
 
 Behavior is provably unchanged because table/reducer **names are explicit**, so
 regenerated TypeScript bindings and the schema snapshot are byte-identical — the
@@ -676,6 +677,25 @@ must be called after `find_entry_node` to apply entry effects. Quest module
 `process_trigger` bounds-checks step index via `usize::try_from()` (no silent panic on fabricated
 progress); Collect trigger is at-least (`event.qty >= trigger.qty`). 57 gating tests across 3
 modules (13 NPC + 26 dialogue + 18 quest); all `just ci` evals pass.
+
+**M12b** (server NPC entity/wander + dialogue/quest reducers + healing — ADR-0069) complete:
+`server-module/src/npc.rs` new: `talk`, `advance_dialogue`, `dismiss_dialogue` reducers with F1
+(identity) + F2 (single-write) + F7 (position range) guards. Dialogue state marshaling helpers:
+`load_player_dialogue_state`, `write_player_dialogue_state`, `apply_effects_to_db`, `apply_quest_trigger`
+(pure helpers, never reloading from DB mid-transaction). `schema.rs` adds 6 new tables: `npc`
+(public, `#[unique]` npc_id, zone-keyed wander state) + `player_dialogue_state` (PRIVATE,
+per-player/dialogue-tree flags/quest sets per ADR-0015) + `player_quest` (public, quest step
+tracking) + `player_conversation` (public, transient session anchor) + `heal_location_row`
+(public, NPC healing POI) + `heal_cooldown` (PRIVATE, per-location/player cooldown gate per
+ADR-0015). `movement.rs` integrates NPC wander: for each NPC character, `npc_decide` returns
+direction → push to move_queue, existing drain loop processes. `raising.rs` adds `evaluate_heal`
+seam + `heal_party` reducer (guards: in-battle SideA-won-only, zone, position F7; full HP restore;
+upsert cooldown with strict timestamp `<` check). `content.rs` seeds NPC entities + heal locations
+via `sync_content_inner` (idempotent upsert, CONTENT_VERSION 3→4). `npc_tests.rs` (5 tests):
+marshal roundtrips + wander determinism + radius-zero early return. New eval `npc-dialogue-quest-security`
+(10 checks C1–C10: table refs, transience, bounds, identity guards, cooldown upsert pattern,
+wander-radius-zero safety, in-battle gate, state mutation F2 discipline). Regenerated bindings
+include new public table accessors + unique npc_id index. 36/36 evals pass.
 
 **M10c** (evolution/fusion client overlay — ADR-0063) complete: `evolvesTo?: number` on
 `StoreMonsterPub` (`option(u32)` decodes as primitive `number | undefined`; `canEvolve =
