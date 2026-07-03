@@ -304,8 +304,8 @@ for entity_id in npc_entity_ids {
     let home = TilePos { x: npc_row.home_x, y: npc_row.home_y };
     let Some(dir) = npc_decide(current, home, npc_row.wander_radius, entity_id, tick_counter)
     else { continue; };
-    let input = MoveInput { direction: dir, stop_after: true };
-    let next_state = apply_move(&char_state(&ch), input, &map, now);
+    // MoveInput is an enum: Step(Direction) | Jump  (NOT a struct)
+    let next_state = apply_move(&char_state(&ch), MoveInput::Step(dir), &map, now);
     apply_state(&mut ch, &next_state);
     // Sync npc.zone_id if character crossed a warp
     if ch.zone_id != npc_row.zone_id {
@@ -431,6 +431,15 @@ Each gate must have a fixture that FAILS when the invariant is violated:
 | Currency rewards in quests (QuestReward.currency) | M13 |
 | Batch item consume (cost_qty > 1 requires multiple consume_one calls) | M13 |
 | bait-recruit wiring via quest/talk | M12b residual (needs module_bindings) |
+| Quest XP grant (D-4): applying GrantXp/quest reward XP requires derive-stats + dual-write monster path; defer to M12b-tail or later — seeded quest_001 reward is item-only (xp=0) | M12b-tail |
+
+## 14. Critical implementation notes (from planner verification)
+
+1. **`MoveInput` is an ENUM** — `MoveInput::Step(Direction)` NOT `MoveInput { direction, stop_after }`. Using the struct form is a compile error. The NPC wander loop MUST use `MoveInput::Step(dir)`.
+2. **Vec↔BTreeSet marshal** — `game_core::PlayerDialogueState` uses `BTreeSet<String>` for flags/active_quests/done_quests; the `player_dialogue_state` table uses `Vec<String>`. `active_quests` is NOT stored in the table — it is DERIVED from `player_quest` rows at reconstruction time.
+3. **`apply_node_auto_effects` MUST be called** — in `talk`, immediately after `find_entry_node` returns `Some(node)`, before any DB write. Omitting this silently discards all auto_effects.
+4. **Content design for quest_001**: Entry node auto_effects = `[SetFlag("met_elder_oak")]` only. The choice effects = `[StartQuest("quest_001")]`. This makes `talk` → set flag and `advance_dialogue` → start quest two independently testable events.
+5. **`apply_choice` is the security gate** — `advance_dialogue` MUST call `apply_choice`, never `available_choices` + direct index. `apply_choice` re-checks conditions internally (dialogue/rules.rs:104). A reducer bypassing this check is a security vulnerability.
 
 ---
 
