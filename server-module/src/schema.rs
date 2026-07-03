@@ -56,6 +56,8 @@ pub struct Config {
     #[primary_key]
     pub id: u32,
     pub content_version: u32,
+    #[default(Identity::from_byte_array([0u8; 32]))]
+    pub owner_identity: Identity,
 }
 
 /// Zone definitions seeded from the `game-core` RON registry by `sync_content`.
@@ -200,8 +202,9 @@ pub struct Monster {
     // ⇒ cooldown elapsed ⇒ first care allowed). Stays OFF monster_pub (YAGNI).
     pub last_care_at_ms: i64,
     // Evolution eligibility (M10b, ADR-0061): server-computed passive evolves_to.
-    // Additive (ADR-0006). Exposed to client subscription for UI hints. Recomputed
-    // on every evolve, sync_content seeding, and monster creation paths (M10c).
+    // Additive (ADR-0006). Exposed to client subscription for UI hints.
+    // None on creation (taming sets None; sync_content, evolve, battle level-up,
+    // and care recompute via compute_evolves_to; ADR-0073 §12.5b-4).
     pub evolves_to: Option<u32>,
 }
 

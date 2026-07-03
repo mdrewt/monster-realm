@@ -176,3 +176,73 @@ fn level_up_heal_is_owned_by_game_core() {
          from the game_core rule. Replace with `game_core::level_up_healed_hp(...)`."
     );
 }
+
+// =========================================================================
+// M12.5b-4 structural tests: write_back_battle_results must call
+// compute_evolves_to after a level-up so evolves_to is updated in the
+// written-back monster row.
+//
+// EARS criterion: after a level-up in write_back_battle_results, the
+// monster row's `evolves_to` must be recomputed — not left stale.
+//
+// RED state: the current write_back_battle_results body (see battle.rs
+// lines 667-725) does NOT contain any `evolves_to` assignment or call
+// to `compute_evolves_to`. Both assertions below will fail today:
+//   - positive: `compute_evolves_to` is NOT called in the level-up block
+//   - negative: `evolves_to` is NOT written back in the level-up block
+//
+// This test uses the include_str!/extract_fn_body pattern established above.
+// =========================================================================
+
+/// 12.5b-4 structural: write_back_battle_results must call `compute_evolves_to`
+/// inside the level-up block so evolves_to is refreshed after a level-up.
+///
+/// KILLS: a level-up path that recomputes stats but omits the evolves_to
+///        recomputation — a monster that crosses a level threshold during battle
+///        would not show its evolution eligibility until the next sync_content.
+#[test]
+fn write_back_battle_results_calls_compute_evolves_to_on_level_up() {
+    let stripped = strip_rust_comments(MODULE_SOURCE);
+
+    let fn_name = ["write_back", "_battle", "_results"].concat();
+    let body = extract_fn_body(&stripped, &fn_name)
+        .expect("write_back_battle_results must exist in battle.rs");
+
+    // Assemble needle from parts to avoid self-match inside this test file
+    // (which is inside the included source).
+    let compute_call = ["compute", "_evolves_to"].concat();
+
+    assert!(
+        body.contains(compute_call.as_str()),
+        "TEETH(12.5b-4): write_back_battle_results body must call `compute_evolves_to` \
+         after a level-up to refresh the monster's evolution eligibility; \
+         currently absent. Add: `m.evolves_to = crate::evolution::compute_evolves_to(&evolutions, &m);` \
+         inside the level-up block (after the stats are updated)."
+    );
+}
+
+/// 12.5b-4 structural: write_back_battle_results must write `evolves_to` back
+/// to the monster row inside the level-up block.
+///
+/// KILLS: an impl that calls compute_evolves_to but ignores the result
+///        (assigns to a temporary) or forgets to update `m.evolves_to`.
+#[test]
+fn write_back_battle_results_assigns_evolves_to_on_level_up() {
+    let stripped = strip_rust_comments(MODULE_SOURCE);
+
+    let fn_name = ["write_back", "_battle", "_results"].concat();
+    let body = extract_fn_body(&stripped, &fn_name)
+        .expect("write_back_battle_results must exist in battle.rs");
+
+    // The assignment must appear in the body; built from parts to avoid self-match.
+    let assignment = ["m.evolves_to", " ="].concat();
+
+    assert!(
+        body.contains(assignment.as_str()),
+        "TEETH(12.5b-4): write_back_battle_results body must assign `m.evolves_to = ...` \
+         after calling compute_evolves_to; without this assignment the recomputed value \
+         is discarded and the DB row remains stale. \
+         Add: `m.evolves_to = crate::evolution::compute_evolves_to(&evolutions, &m);` \
+         inside the level-up block."
+    );
+}

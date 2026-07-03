@@ -13,4 +13,5 @@ import {
 export default __t.row({
   id: __t.u32().primaryKey(),
   contentVersion: __t.u32().name("content_version"),
+  ownerIdentity: __t.identity().name("owner_identity"),
 });

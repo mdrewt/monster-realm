@@ -120,6 +120,7 @@ export type Character = __Infer<typeof Character>;
 export const Config = __t.object("Config", {
   id: __t.u32(),
   contentVersion: __t.u32(),
+  ownerIdentity: __t.identity(),
 });
 export type Config = __Infer<typeof Config>;
 

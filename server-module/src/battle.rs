@@ -23,8 +23,8 @@ use crate::schema::{
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
 use game_core::{
-    apply_xp_gain, battle_xp_reward, resolve_turn, BattleOutcome, BattleSide, BattleState, Level,
-    StatBlock, TurnChoice, TurnVariance,
+    apply_xp_gain, battle_xp_reward, load_evolutions, resolve_turn, BattleOutcome, BattleSide,
+    BattleState, Level, StatBlock, TurnChoice, TurnVariance,
 };
 use spacetimedb::{Identity, ReducerContext, Table};
 
@@ -712,6 +712,19 @@ pub(crate) fn write_back_battle_results(
                         // Heal the HP gained from the max-HP growth on level-up
                         // (SSOT: game_core owns the heal rule, ADR-0003).
                         m.current_hp = level_up_healed_hp(m.current_hp, bm.max_hp, derived.hp);
+                        // Recompute evolves_to after level-up (12.5b-4, ADR-0073).
+                        // Scoped inside `if leveled_up { if let Some(species) }` because:
+                        // (a) only a level change can unlock a new level-based evolution branch;
+                        // (b) a parse failure must fail-loud (not silently zero evolves_to).
+                        let all_evolutions = load_evolutions().map_err(|e| {
+                            format!("write_back_battle_results: load_evolutions failed: {e}")
+                        })?;
+                        let monster_evolutions = all_evolutions
+                            .iter()
+                            .find(|se| se.species_id == m.species_id)
+                            .map(|se| &se.evolutions[..])
+                            .unwrap_or(&[]);
+                        m.evolves_to = crate::evolution::compute_evolves_to(monster_evolutions, &m);
                     }
                 }
                 let pub_row = pub_from_monster(&m);

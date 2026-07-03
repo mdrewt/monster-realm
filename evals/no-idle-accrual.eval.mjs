@@ -169,8 +169,21 @@ export const GROWTH_FIELDS = [
  * are recalculated, not grown — they change species, not accrue passively). `fuse`
  * creates an offspring row with freshly derived stats. Both are intent-path writes
  * triggered only by explicit player action — not scheduled, not idle accrual.
+ *
+ * M12.5b (ADR-0073 §12.5b-3): `recompute_monster_derived_fields` is the pure
+ * re-derive helper called from `sync_content_inner` during a content-version
+ * upgrade. It rewrites stat columns + current_hp clamp to reflect new base stats
+ * from a content change — not idle accrual. Called only from intent-path reducers
+ * (sync_content / init), never from scheduled reducers.
  */
-export const GROWTH_WRITERS = ['care', 'train', 'write_back_battle_results', 'evolve', 'fuse'];
+export const GROWTH_WRITERS = [
+  'care',
+  'train',
+  'write_back_battle_results',
+  'evolve',
+  'fuse',
+  'recompute_monster_derived_fields',
+];
 
 // ---------------------------------------------------------------------------
 // Core analysis primitives.

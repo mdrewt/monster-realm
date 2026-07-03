@@ -93,8 +93,9 @@ pub fn init(ctx: &ReducerContext) {
         // Unseeded sentinel (0 != CONTENT_VERSION) so sync_content_inner ALWAYS
         // seeds on first init; the early-return only fires on a redundant re-sync.
         content_version: 0,
+        owner_identity: ctx.sender,
     });
-    sync_content_inner(ctx);
+    sync_content_inner(ctx).expect("content seeding failed on init");
     ensure_zone_schedules(ctx);
     log::info!(
         "{{\"evt\":\"init\",\"zones\":{}}}",
@@ -104,11 +105,26 @@ pub fn init(ctx: &ReducerContext) {
 
 #[spacetimedb::reducer]
 pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
-    if ctx.sender != ctx.identity() {
-        return Err("sync_content is module-only".to_string());
+    let cfg = ctx
+        .db
+        .config()
+        .id()
+        .find(0)
+        .ok_or_else(|| "sync_content: config row missing".to_string())?;
+    // Zero-identity means the DB was published before M12.5b (owner_identity was not
+    // yet stored in Config). A re-publish will set it correctly via `init`.
+    if cfg.owner_identity == Identity::from_byte_array([0u8; 32]) {
+        return Err(
+            "sync_content: owner_identity not registered — module was published before \
+             M12.5b; re-publish to register the owner"
+                .to_string(),
+        );
     }
-    sync_content_inner(ctx);
-    ensure_zone_schedules(ctx); // idempotent schedule management (ADR-0066)
+    if ctx.sender != cfg.owner_identity {
+        return Err("sync_content: caller is not the module owner".to_string());
+    }
+    sync_content_inner(ctx)?;
+    ensure_zone_schedules(ctx);
     Ok(())
 }
 
