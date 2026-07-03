@@ -1,0 +1,14 @@
+[
+    (
+        id: 1,
+        npc_id: "elder_oak",
+        zone_id: 0,
+        spawn_x: 5,
+        spawn_y: 5,
+        home_x: 5,
+        home_y: 5,
+        wander_radius: 2,
+        dialogue_tree_id: "elder_oak_talk",
+        sprite_id: 10,
+    ),
+]

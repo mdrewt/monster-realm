@@ -17,9 +17,10 @@ use crate::schema::{
 };
 use crate::CONTENT_VERSION;
 use game_core::{
-    load_encounters, load_evolutions, load_fusion, load_heal_locations, load_items, load_npc_defs,
-    load_skills, load_species, load_type_chart, load_zone_maps, validate_content,
-    validate_encounters, validate_evolution_fusion, validate_zone_maps, ActionState, Direction,
+    load_dialogue_trees, load_encounters, load_evolutions, load_fusion, load_heal_locations,
+    load_items, load_npc_defs, load_quest_defs, load_skills, load_species, load_type_chart,
+    load_zone_maps, validate_content, validate_encounters, validate_evolution_fusion,
+    validate_npc_content, validate_zone_maps, ActionState, Direction,
 };
 use spacetimedb::{ReducerContext, Table};
 
@@ -287,9 +288,58 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) {
         });
     }
 
-    // --- M12b NPC entities + heal locations -----------------------------------
-    seed_npc_entities(ctx);
-    seed_heal_locations(ctx);
+    // --- M12c NPC entities + heal locations (validate BEFORE seed) ---------
+    let npc_defs = match load_npc_defs() {
+        Ok(d) => d,
+        Err(e) => {
+            log::error!(
+                "{{\"evt\":\"sync_content_error\",\"registry\":\"npcs\",\"reason\":\"{e}\"}}"
+            );
+            return;
+        }
+    };
+    let dialogue_trees = match load_dialogue_trees() {
+        Ok(t) => t,
+        Err(e) => {
+            log::error!(
+                "{{\"evt\":\"sync_content_error\",\"registry\":\"dialogue_trees\",\"reason\":\"{e}\"}}"
+            );
+            return;
+        }
+    };
+    let quest_defs = match load_quest_defs() {
+        Ok(q) => q,
+        Err(e) => {
+            log::error!(
+                "{{\"evt\":\"sync_content_error\",\"registry\":\"quests\",\"reason\":\"{e}\"}}"
+            );
+            return;
+        }
+    };
+    let heal_defs = match load_heal_locations() {
+        Ok(h) => h,
+        Err(e) => {
+            log::error!(
+                "{{\"evt\":\"sync_content_error\",\"registry\":\"heal_locations\",\"reason\":\"{e}\"}}"
+            );
+            return;
+        }
+    };
+    if let Err(e) = validate_npc_content(
+        &npc_defs,
+        &dialogue_trees,
+        &quest_defs,
+        &zones,
+        &items,
+        &heal_defs,
+    ) {
+        log::error!(
+            "{{\"evt\":\"sync_content_invalid\",\"registry\":\"npc_content\",\"reason\":\"{e}\"}}"
+        );
+        return;
+    }
+    seed_npc_entities_from(ctx, &npc_defs);
+    seed_heal_locations_from(ctx, &heal_defs);
 
     // Stamp the now-current content version so a later redundant sync_content
     // short-circuits at the top of this function (ADR-0054). A missing config row
@@ -308,9 +358,8 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) {
     }
 }
 
-fn seed_npc_entities(ctx: &ReducerContext) {
-    let npc_defs = load_npc_defs();
-    for def in &npc_defs {
+fn seed_npc_entities_from(ctx: &ReducerContext, npc_defs: &[game_core::NpcDef]) {
+    for def in npc_defs {
         // Idempotent: O(1) lookup via #[unique] npc_id index
         if ctx.db.npc().npc_id().find(def.npc_id.clone()).is_some() {
             continue;
@@ -338,9 +387,8 @@ fn seed_npc_entities(ctx: &ReducerContext) {
     }
 }
 
-fn seed_heal_locations(ctx: &ReducerContext) {
-    let defs = load_heal_locations();
-    for def in &defs {
+fn seed_heal_locations_from(ctx: &ReducerContext, defs: &[game_core::HealLocationDef]) {
+    for def in defs {
         // Content integrity (F4): cost_item_id without cost_qty is a config error
         if def.cost_item_id.is_some() && def.cost_qty == 0 {
             log::error!(

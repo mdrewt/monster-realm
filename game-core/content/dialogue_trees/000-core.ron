@@ -1,0 +1,22 @@
+[
+    (
+        id: "elder_oak_talk",
+        root_node_id: "greeting",
+        nodes: [
+            (
+                id: "greeting",
+                text: "The ancient oak spirit greets you.",
+                entry_conditions: [],
+                auto_effects: [SetFlag("met_elder_oak")],
+                choices: [
+                    (
+                        text: "I seek a quest.",
+                        conditions: [],
+                        effects: [StartQuest("quest_001")],
+                        next_node: None,
+                    ),
+                ],
+            ),
+        ],
+    ),
+]

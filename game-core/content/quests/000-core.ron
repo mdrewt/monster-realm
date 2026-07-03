@@ -1,0 +1,17 @@
+[
+    (
+        id: "quest_001",
+        name: "Find the Elder",
+        start_conditions: [],
+        steps: [
+            (
+                trigger: Talk(npc_id: "elder_oak"),
+                conditions: [],
+            ),
+        ],
+        reward: (
+            xp: 0,
+            items: [],
+        ),
+    ),
+]

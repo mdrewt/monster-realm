@@ -697,6 +697,8 @@ marshal roundtrips + wander determinism + radius-zero early return. New eval `np
 wander-radius-zero safety, in-battle gate, state mutation F2 discipline). Regenerated bindings
 include new public table accessors + unique npc_id index. 36/36 evals pass.
 
+**M12c** — Content RON loading for NPC/dialogue/quest/heal (ADR-0070); validate_npc_content (12-point cross-registry integrity); NPC zone policy (skip warp tiles); RT-ADV-01 fix (advance_dialogue zone+proximity re-check, auto-dismiss).
+
 **M10c** (evolution/fusion client overlay — ADR-0063) complete: `evolvesTo?: number` on
 `StoreMonsterPub` (`option(u32)` decodes as primitive `number | undefined`; `canEvolve =
 evolvesTo !== undefined`), `StoreFusionRow` type + `store.fusions()` wired to
