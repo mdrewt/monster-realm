@@ -974,12 +974,17 @@ pub fn validate_npc_content(
     let tree_ids: BTreeSet<&str> = dialogue_trees.iter().map(|t| t.id.as_str()).collect();
     let quest_ids: BTreeSet<&str> = quests.iter().map(|q| q.id.as_str()).collect();
     let item_ids: BTreeSet<u32> = items.iter().map(|i| i.id).collect();
+    let npc_str_ids: BTreeSet<&str> = npcs.iter().map(|n| n.npc_id.as_str()).collect();
 
-    // 1. Unique NPC ids
+    // 1. Unique NPC ids (u32 numeric) and npc_id strings
     let mut seen_npc_ids: BTreeSet<u32> = BTreeSet::new();
+    let mut seen_npc_str_ids: BTreeSet<&str> = BTreeSet::new();
     for npc in npcs {
         if !seen_npc_ids.insert(npc.id) {
             return Err(format!("duplicate NPC id {}", npc.id));
+        }
+        if !seen_npc_str_ids.insert(npc.npc_id.as_str()) {
+            return Err(format!("duplicate NPC npc_id '{}'", npc.npc_id));
         }
     }
 
@@ -1003,17 +1008,35 @@ pub fn validate_npc_content(
         }
     }
 
-    // 4. Each DialogueTree has ≥1 node AND root_node_id exists in nodes
+    // 4. Each DialogueTree has ≥1 node, unique node ids, root_node_id exists, next_node refs resolve
     for tree in dialogue_trees {
         if tree.nodes.is_empty() {
             return Err(format!("dialogue tree '{}' has no nodes", tree.id));
         }
         let node_ids: BTreeSet<&str> = tree.nodes.iter().map(|n| n.id.as_str()).collect();
+        if node_ids.len() != tree.nodes.len() {
+            return Err(format!(
+                "dialogue tree '{}' has duplicate node ids",
+                tree.id
+            ));
+        }
         if !node_ids.contains(tree.root_node_id.as_str()) {
             return Err(format!(
                 "dialogue tree '{}' root_node_id '{}' not found in nodes",
                 tree.id, tree.root_node_id
             ));
+        }
+        for node in &tree.nodes {
+            for choice in &node.choices {
+                if let Some(next) = &choice.next_node {
+                    if !node_ids.contains(next.as_str()) {
+                        return Err(format!(
+                            "dialogue tree '{}' node '{}' choice next_node '{}' not found in nodes",
+                            tree.id, node.id, next
+                        ));
+                    }
+                }
+            }
         }
     }
 
@@ -1052,15 +1075,28 @@ pub fn validate_npc_content(
         }
     }
 
-    // 8. Quest Collect step item_id cross-ref
+    // 8. Quest step cross-refs: Collect item_id + Talk npc_id
     for quest in quests {
         for step in &quest.steps {
-            if let crate::quest::StepTrigger::Collect { item_id, .. } = &step.trigger {
-                if !item_ids.contains(item_id) {
-                    return Err(format!(
-                        "quest '{}' Collect step references unknown item id {item_id}",
-                        quest.id
-                    ));
+            match &step.trigger {
+                crate::quest::StepTrigger::Collect { item_id, .. } => {
+                    if !item_ids.contains(item_id) {
+                        return Err(format!(
+                            "quest '{}' Collect step references unknown item id {item_id}",
+                            quest.id
+                        ));
+                    }
+                }
+                crate::quest::StepTrigger::Talk { npc_id } => {
+                    if !npc_str_ids.contains(npc_id.as_str()) {
+                        return Err(format!(
+                            "quest '{}' Talk step references unknown npc_id '{npc_id}'",
+                            quest.id
+                        ));
+                    }
+                }
+                crate::quest::StepTrigger::Defeat { .. } => {
+                    // species cross-ref deferred until Defeat quests are added to content
                 }
             }
         }
@@ -1105,6 +1141,16 @@ pub fn validate_npc_content(
                     hl.location_id, cost_id
                 ));
             }
+        }
+    }
+
+    // 13. Heal location cost coherence: cost_item_id with cost_qty == 0 is a config error
+    for hl in heal_locations {
+        if hl.cost_item_id.is_some() && hl.cost_qty == 0 {
+            return Err(format!(
+                "heal location {} has cost_item_id set but cost_qty is 0",
+                hl.location_id
+            ));
         }
     }
 
@@ -3850,25 +3896,6 @@ mod tests {
         }
     }
 
-    fn fixture_minimal_quest_m12c(quest_id: &str) -> crate::quest::QuestDef {
-        use crate::quest::{QuestDef, QuestReward, QuestStep, StepTrigger};
-        QuestDef {
-            id: quest_id.to_string(),
-            name: format!("Quest {quest_id}"),
-            start_conditions: vec![],
-            steps: vec![QuestStep {
-                trigger: StepTrigger::Talk {
-                    npc_id: "elder_oak".to_string(),
-                },
-                conditions: vec![],
-            }],
-            reward: QuestReward {
-                xp: 0,
-                items: vec![],
-            },
-        }
-    }
-
     fn fixture_heal_location_m12c(location_id: u32, zone_id: u32) -> HealLocationDef {
         HealLocationDef {
             location_id,
@@ -4464,7 +4491,7 @@ mod tests {
     /// The `(u32, u32)` tuple variant is a serialization edge case worth explicit coverage.
     #[test]
     fn m12c_dialogue_tree_grant_item_tuple_roundtrip() {
-        use crate::dialogue::{DialogueChoice, DialogueEffect};
+        use crate::dialogue::DialogueEffect;
         let ron = r#"[
     (
         id: "item_grant_tree",
@@ -4495,6 +4522,215 @@ mod tests {
             Some(&DialogueEffect::GrantItem(1, 2)),
             "M12c: GrantItem(1, 2) must round-trip correctly; \
              both item_id=1 and qty=2 must be preserved"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Red-team gating tests (RT-M12C-01 through RT-M12C-04)
+    // Each test documents a confirmed invariant gap found in M12c code review.
+    // They are permanent: they stay GREEN after the fix and guard against
+    // regression.
+    // -----------------------------------------------------------------------
+
+    /// RT-M12C-01: validate_npc_content must reject two NPCs with the same
+    /// string npc_id even if their numeric ids differ.
+    ///
+    /// Severity: MEDIUM.
+    ///
+    /// Attack: add two NpcDef rows with id=1/"alpha" and id=2/"alpha".
+    /// validate_npc_content only checks uniqueness of the u32 `id` field (check
+    /// 1), so both pass. At runtime, seed_npc_entities_from looks up by npc_id
+    /// string and skips the second insert (idempotency guard). The second NPC
+    /// silently disappears from the game without any error — a content author
+    /// typo causes a lost NPC with no diagnostic.
+    ///
+    /// Invariant: two NpcDefs with distinct numeric `id` but identical `npc_id`
+    /// strings must be rejected at content-validation time, not silently dropped
+    /// at seeding time.
+    ///
+    /// Kills: any validate_npc_content impl that only checks numeric-id
+    /// uniqueness and ignores the npc_id string field.
+    #[test]
+    fn rt_m12c_01_validate_npc_content_rejects_dup_npc_id_string() {
+        let zone = fixture_zone_m12c(0);
+        let tree = fixture_minimal_tree_m12c("tree_a");
+        let npcs = vec![
+            fixture_npc_def_m12c(1, "elder_oak", 0, "tree_a"),
+            // Different numeric id, same string npc_id — would be silently skipped in seeding
+            fixture_npc_def_m12c(2, "elder_oak", 0, "tree_a"),
+        ];
+        let result = validate_npc_content(&npcs, &[tree], &[], &[zone], &[], &[]);
+        assert!(
+            result.is_err(),
+            "RT-M12C-01: validate_npc_content must reject two NPCs with the same \
+             npc_id string 'elder_oak' even when their numeric ids differ (1 vs 2). \
+             The seeding guard (find by npc_id string) silently drops the second \
+             NPC without any error — this must be caught at validation time instead."
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("elder_oak") || err.contains("npc_id"),
+            "RT-M12C-01: error message must mention 'elder_oak' or 'npc_id'; got: {err:?}"
+        );
+    }
+
+    /// RT-M12C-02: validate_npc_content must reject a dialogue tree where a
+    /// choice's next_node points to a node id that does not exist in the tree.
+    ///
+    /// Severity: HIGH.
+    ///
+    /// Attack: a choice has `next_node: Some("nonexistent_node")`. This passes
+    /// all 12 validation checks (none scan choice.next_node values). At runtime,
+    /// advance_dialogue calls:
+    ///   tree.nodes.iter().find(|n| n.id == conv.current_node_id)
+    /// which returns None for the dangling next_node after a choice is made,
+    /// causing a runtime Err("node not found") on the NEXT advance_dialogue call.
+    /// The conversation row is left in a permanently broken state (conv row
+    /// pointing to a nonexistent node) and the player cannot dismiss it because
+    /// they've already advanced past the last valid node.
+    ///
+    /// Invariant: every Some(next_node_id) in every choice must resolve to a node
+    /// in the same tree.
+    ///
+    /// Kills: any impl that only validates root_node_id (check 4) but skips
+    /// intra-tree next_node reference validation.
+    #[test]
+    fn rt_m12c_02_validate_npc_content_rejects_dangling_choice_next_node() {
+        use crate::dialogue::{DialogueChoice, DialogueNode, DialogueTree};
+        let zone = fixture_zone_m12c(0);
+        let bad_tree = DialogueTree {
+            id: "broken_next_tree".to_string(),
+            root_node_id: "start".to_string(),
+            nodes: vec![DialogueNode {
+                id: "start".to_string(),
+                text: "Hello.".to_string(),
+                entry_conditions: vec![],
+                auto_effects: vec![],
+                choices: vec![DialogueChoice {
+                    text: "Go to next.".to_string(),
+                    conditions: vec![],
+                    effects: vec![],
+                    // "ghost_node" does not exist in this tree
+                    next_node: Some("ghost_node".to_string()),
+                }],
+            }],
+        };
+        let npc = fixture_npc_def_m12c(1, "ghost_npc", 0, "broken_next_tree");
+        let result = validate_npc_content(&[npc], &[bad_tree], &[], &[zone], &[], &[]);
+        assert!(
+            result.is_err(),
+            "RT-M12C-02: validate_npc_content must reject a dialogue tree where \
+             choice.next_node = Some('ghost_node') but 'ghost_node' is not in the \
+             tree's nodes list. At runtime this leaves the player_conversation row \
+             pointing at a nonexistent node — advance_dialogue will Err on every \
+             subsequent call and dismiss_dialogue is the only escape."
+        );
+    }
+
+    /// RT-M12C-03: validate_npc_content must reject a quest whose Talk step's
+    /// npc_id does not match any NPC in the NPC registry.
+    ///
+    /// Severity: MEDIUM.
+    ///
+    /// Attack: define a quest with `StepTrigger::Talk { npc_id: "typo_npc" }` but
+    /// "typo_npc" is not in the npcs slice. validate_npc_content performs no
+    /// cross-check between quest step npc_id strings and the NPC registry. The
+    /// quest starts normally but can never complete — talk() fires the trigger
+    /// with the actual NPC's npc_id, which never matches "typo_npc". The player
+    /// sees an active quest that is permanently stuck at step 0.
+    ///
+    /// Invariant: every StepTrigger::Talk { npc_id } must reference an npc_id
+    /// string that exists in the provided NPCs slice.
+    ///
+    /// Kills: any validate_npc_content impl that checks Collect and Defeat item/
+    /// species refs but skips Talk npc_id cross-referencing.
+    #[test]
+    fn rt_m12c_03_validate_npc_content_rejects_dangling_talk_npc_id_in_quest_step() {
+        use crate::quest::{QuestDef, QuestReward, QuestStep, StepTrigger};
+        let zone = fixture_zone_m12c(0);
+        let tree = fixture_minimal_tree_m12c("tree_a");
+        let npc = fixture_npc_def_m12c(1, "elder_oak", 0, "tree_a");
+        let bad_quest = QuestDef {
+            id: "broken_quest".to_string(),
+            name: "Broken Quest".to_string(),
+            start_conditions: vec![],
+            steps: vec![QuestStep {
+                // "typo_npc" does not exist — only "elder_oak" is in npcs
+                trigger: StepTrigger::Talk {
+                    npc_id: "typo_npc".to_string(),
+                },
+                conditions: vec![],
+            }],
+            reward: QuestReward {
+                xp: 0,
+                items: vec![],
+            },
+        };
+        let result = validate_npc_content(&[npc], &[tree], &[bad_quest], &[zone], &[], &[]);
+        assert!(
+            result.is_err(),
+            "RT-M12C-03: validate_npc_content must reject a quest with \
+             StepTrigger::Talk {{ npc_id: 'typo_npc' }} when 'typo_npc' is not in the \
+             NPCs registry. The quest can never complete — talk() fires with 'elder_oak' \
+             which does not match 'typo_npc' — leaving the player permanently stuck at step 0."
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("typo_npc") || err.contains("npc_id") || err.contains("Talk"),
+            "RT-M12C-03: error must mention the offending npc_id or Talk trigger; got: {err:?}"
+        );
+    }
+
+    /// RT-M12C-04: validate_npc_content must reject duplicate node ids within
+    /// a single dialogue tree.
+    ///
+    /// Severity: MEDIUM.
+    ///
+    /// Attack: a tree with two nodes sharing the same id. All 12 checks pass —
+    /// check 4 builds a BTreeSet of node ids (deduplicating silently) and checks
+    /// root_node_id resolution, but never asserts the set size == slice size.
+    /// At runtime, `tree.nodes.iter().find(|n| n.id == ...)` always returns the
+    /// FIRST matching node, making the second node permanently unreachable. Content
+    /// authors cannot reach the second node regardless of game state — a branching
+    /// conversation that should fork silently always returns to the first branch.
+    ///
+    /// Invariant: node ids must be unique within a dialogue tree.
+    ///
+    /// Kills: any impl whose BTreeSet dedup in check 4 masks the duplicate rather
+    /// than rejecting it.
+    #[test]
+    fn rt_m12c_04_validate_npc_content_rejects_dup_node_ids_within_tree() {
+        use crate::dialogue::{DialogueNode, DialogueTree};
+        let zone = fixture_zone_m12c(0);
+        let dup_node_tree = DialogueTree {
+            id: "dup_node_tree".to_string(),
+            root_node_id: "start".to_string(),
+            nodes: vec![
+                DialogueNode {
+                    id: "start".to_string(),
+                    text: "First node.".to_string(),
+                    entry_conditions: vec![],
+                    auto_effects: vec![],
+                    choices: vec![],
+                },
+                // Same id "start" — duplicate within one tree
+                DialogueNode {
+                    id: "start".to_string(),
+                    text: "Second node (unreachable).".to_string(),
+                    entry_conditions: vec![],
+                    auto_effects: vec![],
+                    choices: vec![],
+                },
+            ],
+        };
+        let npc = fixture_npc_def_m12c(1, "dup_npc", 0, "dup_node_tree");
+        let result = validate_npc_content(&[npc], &[dup_node_tree], &[], &[zone], &[], &[]);
+        assert!(
+            result.is_err(),
+            "RT-M12C-04: validate_npc_content must reject a dialogue tree with two \
+             nodes sharing id='start'. The second node is permanently unreachable — \
+             find(|n| n.id == ...) always returns the first match, making any branch \
+             that targets the second 'start' node silently broken."
         );
     }
 }

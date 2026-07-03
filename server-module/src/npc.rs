@@ -224,10 +224,7 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
     }
 
     // Step 6: load dialogue tree
-    let trees = match load_dialogue_trees() {
-        Ok(t) => t,
-        Err(e) => return Err(e),
-    };
+    let trees = load_dialogue_trees()?;
     let Some(tree) = trees.iter().find(|t| t.id == npc_row.dialogue_tree_id) else {
         return Err("dialogue tree not found".to_string());
     };
@@ -297,17 +294,17 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
     let Some(player_char) = ctx.db.character().entity_id().find(p.entity_id) else {
         return Err("character not found".to_string());
     };
-    let Some(npc_row_check) = ctx.db.npc().entity_id().find(conv.npc_entity_id) else {
+    let Some(npc_row) = ctx.db.npc().entity_id().find(conv.npc_entity_id) else {
         ctx.db.player_conversation().owner_identity().delete(me);
         return Err("npc not found".to_string());
     };
-    let Some(npc_char) = ctx.db.character().entity_id().find(npc_row_check.entity_id) else {
+    let Some(npc_char) = ctx.db.character().entity_id().find(npc_row.entity_id) else {
         ctx.db.player_conversation().owner_identity().delete(me);
         return Err("npc character not found".to_string());
     };
     if player_char.zone_id != npc_char.zone_id {
         ctx.db.player_conversation().owner_identity().delete(me);
-        log::info!(
+        log::warn!(
             "{{\"evt\":\"advance_dialogue_dismissed\",\"sender\":\"{me}\",\"reason\":\"wrong_zone\"}}"
         );
         return Err("no longer in same zone".to_string());
@@ -316,20 +313,14 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
     let dy = (i64::from(player_char.tile_y) - i64::from(npc_char.tile_y)).abs();
     if dx + dy > TALK_RANGE {
         ctx.db.player_conversation().owner_identity().delete(me);
-        log::info!(
+        log::warn!(
             "{{\"evt\":\"advance_dialogue_dismissed\",\"sender\":\"{me}\",\"reason\":\"walked_away\"}}"
         );
         return Err("walked too far away".to_string());
     }
 
     // Step 2: load NPC + dialogue tree
-    let Some(npc_row) = ctx.db.npc().entity_id().find(conv.npc_entity_id) else {
-        return Err("npc not found".to_string());
-    };
-    let trees = match load_dialogue_trees() {
-        Ok(t) => t,
-        Err(e) => return Err(e),
-    };
+    let trees = load_dialogue_trees()?;
     let Some(tree) = trees.iter().find(|t| t.id == npc_row.dialogue_tree_id) else {
         return Err("dialogue tree not found".to_string());
     };
