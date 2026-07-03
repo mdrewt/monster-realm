@@ -239,47 +239,98 @@ fn talk_range_arithmetic_does_not_overflow_extreme_i32_tiles() {
     );
 }
 
-/// RT-ADV-01 source guard: `advance_dialogue` must NOT contain a zone_id or
-/// TALK_RANGE proximity check (documents that the gap is known and tracked).
+/// RT-ADV-01 FIXED (M12c): advance_dialogue must contain both a zone_id check
+/// AND a TALK_RANGE check (proximity re-check) to close the security gap found
+/// in RT-ADV-01.
 ///
-/// This test goes RED if someone adds a proximity check to advance_dialogue
-/// without also removing this guard — ensuring the fix is reviewed and the
-/// guard text updated to match the new invariant.
+/// This test is RED before M12c implementation: advance_dialogue currently has
+/// NO zone_id or TALK_RANGE in its body (documented by the old guard, now deleted).
+/// When M12c adds the proximity re-check, this test turns GREEN.
 ///
-/// If you are reading this because the test failed: advance_dialogue now
-/// contains a proximity check. Update this guard to assert the check IS present
-/// and remove the "must NOT" wording.
+/// Kills: any impl that adds the check to talk but omits it from advance_dialogue,
+/// leaving the session-persistent player_conversation row exploitable — a player
+/// who talks then warps away can still call advance_dialogue from any zone/range.
+///
+/// Do NOT remove this test unless the invariant is intentionally changed to
+/// UI-managed proximity (with a separate architectural decision recorded).
 #[test]
-fn advance_dialogue_source_has_no_proximity_recheck_rt_adv_01() {
+fn advance_dialogue_has_proximity_recheck_rt_adv_01_fixed() {
     let src = include_str!("npc.rs");
-    // Confirm `talk` contains the range check (the guard is real):
+    // Confirm `talk` still contains the range check (baseline sanity).
     assert!(
         src.contains("TALK_RANGE"),
         "npc.rs must contain TALK_RANGE (talk reducer range check must be present)"
     );
-    // Confirm `advance_dialogue` does NOT re-check zone or range:
-    // We isolate the advance_dialogue function body by finding its start and the
-    // next #[spacetimedb::reducer] boundary.
+    // Isolate advance_dialogue body: from its fn def to the next pub fn.
     let adv_start = src
         .find("pub fn advance_dialogue")
         .expect("advance_dialogue must exist in npc.rs");
-    // The next reducer after advance_dialogue is dismiss_dialogue.
     let adv_end = src[adv_start..]
         .find("pub fn dismiss_dialogue")
         .map(|rel| adv_start + rel)
         .unwrap_or(src.len());
     let adv_body = &src[adv_start..adv_end];
     assert!(
-        !adv_body.contains("zone_id"),
-        "RT-ADV-01: advance_dialogue must NOT contain a zone_id check — \
-         proximity gap is tracked and intentional until M12c adds the re-check. \
-         If you added the check, update this guard to assert the check IS present."
+        adv_body.contains("zone_id"),
+        "RT-ADV-01 FIXED: advance_dialogue must contain a zone_id check — \
+         M12c must add a zone membership re-check to close RT-ADV-01. \
+         Without it, a player who talks then warps to another zone can still \
+         call advance_dialogue and receive GrantItem / StartQuest effects. \
+         This test is RED until M12c adds the check."
     );
     assert!(
-        !adv_body.contains("TALK_RANGE"),
-        "RT-ADV-01: advance_dialogue must NOT contain TALK_RANGE — \
-         proximity re-check gap is tracked (see RT-ADV-01 finding). \
-         If you added the check, update this guard to assert it IS present."
+        adv_body.contains("TALK_RANGE"),
+        "RT-ADV-01 FIXED: advance_dialogue must contain a TALK_RANGE check — \
+         M12c must add a proximity distance re-check to close RT-ADV-01. \
+         Without it, a player who moves out of range during an active conversation \
+         can still advance dialogue choices and receive rewards. \
+         This test is RED until M12c adds the check."
+    );
+    assert!(
+        adv_body.contains("advance_dialogue_dismissed"),
+        "RT-ADV-01 FIXED: advance_dialogue must log 'advance_dialogue_dismissed' \
+         when the conversation is auto-dismissed on walk-away or zone change. \
+         Silent dismissal makes operational debugging impossible. \
+         This test is RED until M12c adds the log event."
+    );
+}
+
+/// M12c NPC zone policy: NPCs must NOT be warped through warp tiles.
+///
+/// `movement_tick` in movement.rs must use `unwrap_or(true)` (not `unwrap_or(false)`)
+/// so that characters WITHOUT a player row (i.e. NPCs) are treated as "in battle"
+/// for warp purposes — meaning they SKIP the warp path and stay in their zone.
+///
+/// The current code at the warp guard reads:
+///   .unwrap_or(false); // NPCs have no player row → treat as not in battle → warp them
+/// M12c must change this to:
+///   .unwrap_or(true);  // NPCs have no player row → skip warp (no player = no warp)
+///
+/// This test goes RED until M12c makes that change: it asserts `unwrap_or(true)`
+/// is present and `unwrap_or(false)` is absent at the warp guard site.
+///
+/// Kills: any impl that keeps unwrap_or(false) causing NPCs to teleport through
+/// warp tiles — an NPC wandering over a warp tile would jump zones and become
+/// permanently unreachable from the player (wrong zone) until a server restart.
+#[test]
+fn npc_warp_guard_skips_warp_for_no_player_row() {
+    let src = include_str!("movement.rs");
+    // The warp guard block contains the unwrap_or call that decides whether NPCs
+    // are warped. We find the warp guard region by locating the battle lookup
+    // pattern. The change from false→true is load-bearing for NPC zone policy.
+    assert!(
+        !src.contains(".unwrap_or(false); // NPCs have no player row"),
+        "M12c NPC zone policy VIOLATED: movement.rs still has `unwrap_or(false)` \
+         at the warp guard — NPCs with no player row are treated as NOT in battle \
+         and therefore WARPED through warp tiles. M12c must change this to \
+         `unwrap_or(true)` so NPCs skip the warp path entirely. \
+         This test is RED until M12c makes that change."
+    );
+    assert!(
+        src.contains(".unwrap_or(true)"),
+        "M12c NPC zone policy: movement.rs must use `unwrap_or(true)` at the warp \
+         guard so that NPCs (no player row) skip warp tiles. \
+         This test is RED until M12c changes unwrap_or(false) to unwrap_or(true)."
     );
 }
 

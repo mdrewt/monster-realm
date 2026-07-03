@@ -66,13 +66,17 @@ pub fn validate_npc_content(
 
 Checks (in deterministic order for proof-of-teeth isolation):
 1. Unique NPC ids (u32)
-2. Each NPC's `dialogue_tree_id` references an existing tree
-3. Unique dialogue tree ids (string)
-4. Each `StartQuest` effect in any tree references an existing quest id
-5. Each quest's `Collect` step's `item_id` references an existing item
-6. Each quest reward's `item_id` references an existing item
-7. Unique heal location ids
-8. Each heal location's `zone_id` references an existing zone
+2. Each NPC's `zone_id` references an existing zone (H2 from review)
+3. Each NPC's `dialogue_tree_id` references an existing tree
+4. Each `DialogueTree` has at least one node AND its `root_node_id` matches an existing node id (H1 from review)
+5. Unique dialogue tree ids (string)
+6. Each `StartQuest` effect in any tree references an existing quest id
+7. Each `QuestDef` has at least one step (H4 from review)
+8. Each quest's `Collect` step's `item_id` references an existing item
+9. Each quest reward's `item_id` references an existing item
+10. Unique heal location ids
+11. Each heal location's `zone_id` references an existing zone
+12. Each heal location's `cost_item_id` (when `Some(id)`) references an existing item id (RT-M12C-03)
 
 ### T5: server-module `sync_content_inner` update
 After seeding NPC entities + heal locations, call `validate_npc_content` with the loaded registries. On Err: log and return (same pattern as other validators).
