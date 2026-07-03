@@ -1300,6 +1300,96 @@ fn test_fuse_order_independence_when_bonds_differ() {
 }
 
 // ---------------------------------------------------------------------------
+// EARS 12.5a-3 — dual-write ordering: offspring monster_pub must have the
+// auto-assigned monster_id (not 0).
+//
+// Bug reference: 12.5a-1 (evolution.rs lines 359-361).  pub_from_monster is
+// called on the pre-insert Monster row (monster_id==0) so the resulting
+// monster_pub.monster_id is 0 instead of the real auto_inc id.
+//
+// This test starts RED because fuse_seam intentionally reproduces the buggy
+// ordering (pub_from_monster before insert).  It turns GREEN when the
+// implementer fixes both the seam AND evolution.rs:
+//   let inserted = ctx.db.monster().insert(offspring_monster);
+//   ctx.db.monster_pub().insert(pub_from_monster(&inserted));
+// ---------------------------------------------------------------------------
+
+/// 12.5a-3: offspring monster_pub.monster_id must equal offspring monster.monster_id.
+///
+/// RED state: fuse_seam calls `pub_from_monster(&offspring_monster)` before
+/// `db.insert_monster(offspring_monster)`.  Because `offspring_monster.monster_id == 0`
+/// at that point, `offspring_pub.monster_id` is 0.  The assertions below catch this.
+///
+/// Kills: any implementation (seam OR production) that calls pub_from_monster on
+/// the pre-insert row (i.e. before the auto_inc id is assigned).
+#[test]
+fn fuse_offspring_pub_id_matches_monster_id() {
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+
+    // Seed species: 1 (parent A), 3 (parent B), 4 (offspring).
+    db.insert_species(source_species_row()); // id=1
+    db.insert_species(make_species_row(3, 60, 70)); // id=3
+    db.insert_species(make_species_row(4, 80, 90)); // id=4 (offspring)
+
+    // Fusion recipe: species 1 + species 3 → species 4.
+    db.insert_fusion(make_fusion_recipe_row(1, 1, 3, 4));
+
+    let mut ma = make_monster_row(1, owner);
+    ma.species_id = 1;
+    let mut mb = make_monster_row(2, owner);
+    mb.species_id = 3;
+
+    db.insert_monster(ma.clone());
+    db.insert_monster_pub(make_monster_pub(&ma));
+    db.insert_monster(mb.clone());
+    db.insert_monster_pub(make_monster_pub(&mb));
+
+    let effect = fuse_seam(&mut db, owner, 1, 2).expect("fuse must succeed with valid setup");
+
+    // ASSERTION 1: no monster_pub row may have monster_id == 0
+    // (kills: calling pub_from_monster on the pre-insert offspring row)
+    for (_key, pub_row) in &db.monster_pubs {
+        assert_ne!(
+            pub_row.monster_id,
+            0,
+            "TEETH(12.5a): monster_pub must not have monster_id=0; \
+             a pub row with id=0 means pub_from_monster was called before insert assigned the auto_inc id"
+        );
+    }
+
+    // ASSERTION 2: HashMap key must match the pub row's monster_id
+    // (kills: pub row keyed under 0 but with a non-zero field, or vice versa)
+    for (key, pub_row) in &db.monster_pubs {
+        assert_eq!(
+            *key, pub_row.monster_id,
+            "TEETH(12.5a): monster_pub HashMap key ({key}) must equal pub_row.monster_id ({}); \
+             mismatch means the pub was inserted under the wrong key",
+            pub_row.monster_id
+        );
+    }
+
+    // ASSERTION 3: a monster_pub row must exist for the real offspring id returned by fuse_seam
+    // (kills: impl that inserts pub under id=0, leaving the real offspring id without a pub row)
+    assert!(
+        db.monster_pubs.contains_key(&effect.offspring_monster_id),
+        "TEETH(12.5a): monster_pub row must exist for offspring id={}; \
+         missing pub means the pub was inserted under a different key (likely 0)",
+        effect.offspring_monster_id
+    );
+
+    // ASSERTION 4: the pub row's monster_id must reference an existing monster row
+    // (kills: pub row with garbage id that has no matching private monster)
+    let offspring_pub = db.monster_pubs.get(&effect.offspring_monster_id).unwrap();
+    assert!(
+        db.monsters.contains_key(&offspring_pub.monster_id),
+        "TEETH(12.5a): monster row must exist for pub_row.monster_id={}; \
+         the pub and private tables must point at the same row",
+        offspring_pub.monster_id
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Test seams — evolve_seam / fuse_seam live HERE (not in evolution.rs) so that
 // the no-idle-accrual eval, which excludes _tests.rs files from its growth-field
 // scan, does not flag them. They are test infrastructure, not production code.
@@ -1496,12 +1586,15 @@ pub(crate) fn fuse_seam(
 
     let offspring_evolves_to = super::compute_evolves_to(&offspring_evolutions, &temp_offspring);
 
-    // Allocate a new monster_id for the offspring
-    let offspring_monster_id = db.alloc_monster_id();
+    // NOTE: monster_id starts at 0 — insert_monster assigns the real auto_inc id at insert time,
+    // mirroring the production SpacetimeDB behaviour (auto_inc column assigned on insert).
+    // The BUGGY ordering below (pub_from_monster before insert) is intentional: this seam
+    // mirrors the production bug (12.5a) so that fuse_offspring_pub_id_matches_monster_id
+    // starts RED.  The implementer must fix both this seam AND evolution.rs lines 359-361.
 
     // Marshal offspring MonsterInstance to Monster row (owner same as parents)
     let offspring_monster = Monster {
-        monster_id: offspring_monster_id,
+        monster_id: 0, // auto_inc — assigned by insert_monster (mirrors production)
         owner_identity: a.owner_identity,
         species_id: offspring_inst.species_id,
         nickname: offspring_inst.nickname.clone().unwrap_or_default(),
@@ -1539,12 +1632,18 @@ pub(crate) fn fuse_seam(
     db.delete_monster_pub(a_id);
     db.delete_monster_pub(b_id);
 
-    let offspring_pub = super::pub_from_monster(&offspring_monster);
-    db.insert_monster(offspring_monster);
-    db.insert_monster_pub(offspring_pub);
+    // BUGGY ORDER (mirrors 12.5a production bug — intentional for proof-of-teeth):
+    // pub_from_monster is called BEFORE insert, so offspring_monster.monster_id == 0 here.
+    // offspring_pub will have monster_id == 0.  The test fuse_offspring_pub_id_matches_monster_id
+    // catches this.  The implementer fixes this by capturing the insert return value:
+    //   let inserted = db.insert_monster(offspring_monster);
+    //   db.insert_monster_pub(super::pub_from_monster(&inserted));
+    let offspring_pub = super::pub_from_monster(&offspring_monster); // monster_id==0 here!
+    let inserted = db.insert_monster(offspring_monster); // assigns real id
+    db.insert_monster_pub(offspring_pub); // BUG: pub still has monster_id==0
 
     Ok(FuseEffect {
-        offspring_monster_id,
+        offspring_monster_id: inserted.monster_id,
     })
 }
 
@@ -1584,8 +1683,22 @@ impl TestEvolutionDb {
         }
     }
 
-    pub fn insert_monster(&mut self, m: Monster) {
-        self.monsters.insert(m.monster_id, m);
+    /// Insert a Monster row.  If `m.monster_id == 0` the id is auto-assigned
+    /// (mirroring SpacetimeDB's auto_inc column behaviour in production).
+    /// Returns the inserted row — callers that ignore the return value still compile.
+    pub fn insert_monster(&mut self, m: Monster) -> Monster {
+        if m.monster_id == 0 {
+            let id = self.alloc_monster_id();
+            let m2 = Monster {
+                monster_id: id,
+                ..m
+            };
+            self.monsters.insert(id, m2.clone());
+            m2
+        } else {
+            self.monsters.insert(m.monster_id, m.clone());
+            m
+        }
     }
 
     pub fn insert_monster_pub(&mut self, p: MonsterPub) {
