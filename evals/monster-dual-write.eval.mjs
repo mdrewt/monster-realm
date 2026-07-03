@@ -111,12 +111,29 @@ export function checkFnBodyDualWrite(rawBody) {
   // No monster writes — nothing to check
   if (!hasMonsterInsert && !hasMonsterUpdate && !hasMonsterDelete) return null;
 
+  // 12.5a ordering check: the return value of monster().insert() must be captured so
+  // that pub_from_monster() receives the row with its auto_inc monster_id already set.
+  // Pattern: `= ctx.db.monster().insert(` (assignment captures the inserted row).
+  // Kills: calling pub_from_monster on the pre-insert value (monster_id==0).
+  //
+  // 12.5a-E discard check: `let _ = ctx.db.monster().insert(` satisfies the substring
+  // match above (it contains '= ctx.db.monster().insert(') but discards the returned
+  // row, so pub_from_monster still sees monster_id==0. We must explicitly reject it.
+  const CAPTURE_INSERT = '= ctx.db.monster().insert(';
+  const DISCARD_INSERT = 'let _ = ctx.db.monster().insert(';
+
   if (hasMonsterInsert) {
     if (!body.includes(INSERT_PUB)) {
       return `fn has ${INSERT_MONSTER} with no matching ${INSERT_PUB}`;
     }
     if (!body.includes(PUB_FROM_MONSTER)) {
       return `fn has ${INSERT_MONSTER} but monster_pub insert does not use ${PUB_FROM_MONSTER}`;
+    }
+    if (!body.includes(CAPTURE_INSERT)) {
+      return `fn has ${INSERT_MONSTER} but does not capture the return value — pub_from_monster will see monster_id=0 (12.5a ordering bug)`;
+    }
+    if (body.includes(DISCARD_INSERT)) {
+      return `fn captures monster().insert() with \`let _ =\` (discards id) — pub_from_monster will still see monster_id=0 (12.5a-E discard bypass)`;
     }
   }
 
@@ -258,6 +275,56 @@ fn well_paired(ctx: &ReducerContext) {
       name,
       pass: false,
       detail: `TEETH sanity: well-paired fn was falsely flagged: ${goodViolations[0]}`,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // PROOF-OF-TEETH E (12.5a-E): fn that captures the insert return value with
+  // `let _ =` — the discard bypass where the id is thrown away and
+  // pub_from_monster still sees the pre-insert value (monster_id==0).
+  // This bypasses TEETH D's check (the `=` is present as a substring) but
+  // TEETH E catches it by also checking for the DISCARD_INSERT pattern.
+  // Kills: any impl that only checks for `= ctx.db.monster().insert(` without
+  // excluding the `let _ =` form.
+  // -------------------------------------------------------------------------
+  const badDiscardCapture = `
+fn fuse_discard_bypass(ctx: &ReducerContext) {
+    let offspring_monster = build_offspring();
+    let offspring_pub = pub_from_monster(&offspring_monster);
+    let _ = ctx.db.monster().insert(offspring_monster);
+    ctx.db.monster_pub().insert(offspring_pub);
+}
+`;
+  const teethE = findDualWriteViolations(badDiscardCapture);
+  if (teethE.length === 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH E: fn capturing monster().insert() with let _ = (discard, pub sees monster_id=0) was not flagged — 12.5a-E discard-bypass check missing',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // PROOF-OF-TEETH D (12.5a): fn that calls pub_from_monster BEFORE capturing
+  // the insert return value — the ordering bug where offspring_pub.monster_id==0.
+  // Kills: any impl that only checks for mirror co-presence but not capture order.
+  // -------------------------------------------------------------------------
+  const badOrderingBug = `
+fn fuse_offspring_pub_wrong_order(ctx: &ReducerContext) {
+    let offspring_monster = build_offspring_monster();
+    let offspring_pub = pub_from_monster(&offspring_monster);
+    ctx.db.monster().insert(offspring_monster);
+    ctx.db.monster_pub().insert(offspring_pub);
+}
+`;
+  const teethD = findDualWriteViolations(badOrderingBug);
+  if (teethD.length === 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH D: fn with pub_from_monster called before monster insert (no = capture) was not flagged — 12.5a ordering-bug check missing from checkFnBodyDualWrite',
     };
   }
 

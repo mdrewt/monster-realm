@@ -356,9 +356,8 @@ pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
     ctx.db.monster_pub().monster_id().delete(a_id);
     ctx.db.monster_pub().monster_id().delete(b_id);
 
-    let offspring_pub = pub_from_monster(&offspring_monster);
-    ctx.db.monster().insert(offspring_monster);
-    ctx.db.monster_pub().insert(offspring_pub);
+    let inserted = ctx.db.monster().insert(offspring_monster);
+    ctx.db.monster_pub().insert(pub_from_monster(&inserted));
 
     Ok(())
 }
