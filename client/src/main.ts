@@ -400,18 +400,22 @@ store.onBatchApplied(() => {
 });
 
 store.onBatchApplied(() => {
+  // Quest log is user-toggled (KeyQ); only refresh when already open (ADR-0014 pattern).
+  if (!questLogView?.visible) return;
   try {
     const quests = store.ownQuests(identity);
-    questLogView?.render(buildQuestLogViewModel(quests));
+    questLogView.render(buildQuestLogViewModel(quests));
   } catch (err) {
     console.error('[M12d] questLog batch listener error', err);
   }
 });
 
 store.onBatchApplied(() => {
+  // Heal overlay is user-toggled (KeyH); only refresh when already open (ADR-0014 pattern).
+  if (!healView?.visible) return;
   try {
     const itemDefs = store.itemDefs();
-    healView?.render(buildHealViewModel(store.healLocations(), itemDefs));
+    healView.render(buildHealViewModel(store.healLocations(), itemDefs));
   } catch (err) {
     console.error('[M12d] heal batch listener error', err);
   }
