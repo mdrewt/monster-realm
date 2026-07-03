@@ -250,6 +250,74 @@ describe('buildDialogueViewModel criterion 5: "..." when node not in bundle', ()
 });
 
 // ---------------------------------------------------------------------------
+// Criterion 5b — choices[n].idx equals n (numeric value assertion)
+// ---------------------------------------------------------------------------
+// WHY THIS BLOCK EXISTS: criteria 7 and 10 already test idx, but they were
+// added AFTER criterion 5. This block is placed directly after criterion 5 so
+// the "missing choices" and "wrong idx" failure modes are co-located and an
+// impl returning `idx: 42` for every choice is killed at criterion 5b level.
+
+describe('buildDialogueViewModel criterion 5b: choices idx matches array position', () => {
+  it('BITES: single choice → choices[0].idx === 0 (not 1, not 42, not undefined)', () => {
+    // Kills: an impl that returns idx: 1 (1-based), idx: 42 (hardcoded), or omits idx.
+    // choice.idx is passed directly to advance_dialogue as choiceIndex on the server;
+    // a wrong value silently routes to the wrong dialogue branch.
+    const conv = makeConv(1n, 'node');
+    const npc = makeNpc(1n);
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+    const content = new Map<string, ClientDialogueTree>([
+      [
+        'elder_oak_talk',
+        makeTree('node', new Map([['node', makeNode('Hello', [{ text: 'OK' }])]])),
+      ],
+    ]);
+    const result = buildDialogueViewModel(conv, npcs, content);
+    expect(result).not.toBeNull();
+    expect(result!.choices[0]!.idx).toBe(0);
+  });
+
+  it('BITES: two choices → choices[0].idx===0, choices[1].idx===1 (0-based, not 1-based)', () => {
+    // Kills: an impl that uses 1-based indexing (idx=1 for first, idx=2 for second).
+    // The server rejects choiceIndex that is out of bounds for the node's choices array.
+    const conv = makeConv(1n, 'node');
+    const npc = makeNpc(1n);
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+    const content = new Map<string, ClientDialogueTree>([
+      [
+        'elder_oak_talk',
+        makeTree(
+          'node',
+          new Map([['node', makeNode('Hello', [{ text: 'First' }, { text: 'Second' }])]]),
+        ),
+      ],
+    ]);
+    const result = buildDialogueViewModel(conv, npcs, content);
+    expect(result).not.toBeNull();
+    expect(result!.choices[0]!.idx).toBe(0);
+    expect(result!.choices[1]!.idx).toBe(1);
+  });
+
+  it('BITES: choices[n].idx equals n (0-based array position, not derived from choice content)', () => {
+    // Kills: an impl that computes idx from choice text content, hash, or any other
+    // source rather than the raw array position.
+    // Three choices: verify each idx matches its position (0, 1, 2).
+    const conv = makeConv(1n, 'node');
+    const npc = makeNpc(1n);
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+    const choices = [{ text: 'Alpha' }, { text: 'Beta' }, { text: 'Gamma' }];
+    const content = new Map<string, ClientDialogueTree>([
+      ['elder_oak_talk', makeTree('node', new Map([['node', makeNode('Text', choices)]]))],
+    ]);
+    const result = buildDialogueViewModel(conv, npcs, content);
+    expect(result).not.toBeNull();
+    expect(result!.choices).toHaveLength(3);
+    expect(result!.choices[0]!.idx).toBe(0);
+    expect(result!.choices[1]!.idx).toBe(1);
+    expect(result!.choices[2]!.idx).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Criterion 6 — Returns "..." when tree not in bundle (no NPC tree found)
 // ---------------------------------------------------------------------------
 
@@ -484,5 +552,25 @@ describe('buildDialogueViewModel criterion 10: idx is array index (0-based)', ()
     expect(result!.nodeText).toBe('The ancient oak greets you.');
     expect(Array.isArray(result!.choices)).toBe(true);
     expect(typeof result!.canDismiss).toBe('boolean');
+  });
+
+  it('BITES: canDismiss is true when conversation is present', () => {
+    // The dismissPending guard lives in main.ts, not in the pure model.
+    // buildDialogueViewModel is a pure function of its inputs; when a conversation
+    // is present (conv !== undefined, NPC found), canDismiss must always be true.
+    // Kills: an impl that hard-codes canDismiss: false, omits the field, or
+    // ties canDismiss to state that the pure model does not receive.
+    const conv = makeConv(1n, 'greeting');
+    const npc = makeNpc(1n, { npcId: 'elder_oak', dialogueTreeId: 'elder_oak_talk' });
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+    const content = new Map<string, ClientDialogueTree>([
+      [
+        'elder_oak_talk',
+        makeTree('greeting', new Map([['greeting', makeNode('Hello', [{ text: 'Goodbye.' }])]])),
+      ],
+    ]);
+    const result = buildDialogueViewModel(conv, npcs, content);
+    expect(result).not.toBeNull();
+    expect(result!.canDismiss).toBe(true);
   });
 });

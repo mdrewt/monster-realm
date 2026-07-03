@@ -94,7 +94,7 @@ Add 4 × 3 row callbacks (onInsert/onUpdate/onDelete) + import new converters.
 - `buildHealViewModel(healLocations, itemDefs): HealViewModel`
 - `HealViewModel { locations: readonly HealLocationViewModel[] }`
 - `HealLocationViewModel { locationId, zoneId, tileX, tileY, costItemName: string | null, costQty: number, cooldownMs: number, isFree: boolean }`
-- Resolves costItemId → item name from itemDefs (or "Unknown item" graceful)
+- Resolves costItemId → item name from itemDefs (or `null` graceful — tests assert `costItemName: null` for unknown costItemId)
 
 ### View Shells (coverage-excluded)
 

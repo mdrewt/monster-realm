@@ -12,6 +12,7 @@
 //   C5. dialogueContent.ts has NO `new RegExp(` and no `fetch(`
 //   C6. RON vs bundle cross-reference: every node id in 000-core.ron appears in
 //       DIALOGUE_TREES export, and choice counts match
+//   C7. main.ts contains dismissPending flag (prevents double dismiss_dialogue on Escape)
 //
 // Implementation note: indexOf and split ONLY — NO `new RegExp(` anywhere.
 // (ReDoS policy: ADR-0055 bans non-literal RegExp; eval tools follow same rule.)
@@ -147,6 +148,29 @@ export function checkNoRegExpOrFetchInContent(src) {
 }
 
 /**
+ * Find the position of a standalone `id: "nodeId"` in src.
+ * Skips occurrences where `id:` is preceded by a word character (e.g. `root_node_id:`).
+ * Returns -1 if not found.
+ * @param {string} src
+ * @param {string} nodeId
+ * @returns {number}
+ */
+function findStandaloneIdPos(src, nodeId) {
+  const needle = `id: "${nodeId}"`;
+  let pos = 0;
+  while (pos < src.length) {
+    const found = src.indexOf(needle, pos);
+    if (found === -1) return -1;
+    const charBefore = found > 0 ? src[found - 1] : '';
+    if ('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_'.indexOf(charBefore) === -1) {
+      return found;
+    }
+    pos = found + needle.length;
+  }
+  return -1;
+}
+
+/**
  * C6a: Extract all node ids from a RON dialogue tree source using indexOf/split.
  * Looks for lines containing `id:` inside nodes blocks.
  * Returns array of node id strings found.
@@ -172,6 +196,14 @@ export function extractRonNodeIds(ronSrc) {
   while (pos < ronSrc.length) {
     const found = ronSrc.indexOf(needle, pos);
     if (found === -1) break;
+    // Skip if this `id: "` is part of a longer field name like `root_node_id: "`.
+    // In that case the character immediately before `id:` is a word char (letter/_).
+    // Standalone `id:` fields are preceded by whitespace or start of string.
+    const charBefore = found > 0 ? ronSrc[found - 1] : '';
+    if ('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_'.indexOf(charBefore) !== -1) {
+      pos = found + needle.length;
+      continue;
+    }
     const start = found + needle.length;
     const end = ronSrc.indexOf('"', start);
     if (end === -1) break;
@@ -199,11 +231,23 @@ export function extractRonChoiceCounts(ronSrc) {
   const counts = [];
   // Find each node block: look for `id: "` occurrences, then find the next
   // `choices: [` within 2000 chars and count `text:` inside it.
+  // Apply the same skip guard as checkRonBundleCrossRef: skip any `id:` occurrence
+  // that appears BEFORE the first `nodes:` block marker (those are tree-level ids,
+  // not node-level ids). This keeps the counts array parallel to the node ids that
+  // checkRonBundleCrossRef actually iterates (which also skips tree-level ids).
+  const nodesBlockStart = ronSrc.indexOf('nodes:');
   const nodeNeedle = 'id: "';
   let pos = 0;
   while (pos < ronSrc.length) {
     const nodeStart = ronSrc.indexOf(nodeNeedle, pos);
     if (nodeStart === -1) break;
+
+    // Skip tree-level id: occurrences that appear before the first `nodes:` block.
+    // These are tree ids (e.g. `id: "elder_oak_talk"`) not node ids inside nodes:[].
+    if (nodesBlockStart !== -1 && nodeStart < nodesBlockStart) {
+      pos = nodeStart + nodeNeedle.length;
+      continue;
+    }
 
     // Find the choices: [ block within 2000 chars after node start
     const searchWindow = ronSrc.slice(nodeStart, nodeStart + 2000);
@@ -449,19 +493,28 @@ export const DIALOGUE_TREES = new Map([
  */
 export function checkRonBundleCrossRef(ronSrc, bundleSrc) {
   const ronNodeIds = extractRonNodeIds(ronSrc);
+  // extractRonChoiceCounts now skips tree-level ids (same guard), so its indices
+  // are parallel to the node-level ids only. We use a separate choiceCountIdx that
+  // increments only for non-skipped (node-level) entries, keeping the two arrays aligned.
   const ronChoiceCounts = extractRonChoiceCounts(ronSrc);
 
   const failures = [];
+  const nodesBlockStart = ronSrc.indexOf('nodes:');
+
+  // choiceCountIdx tracks position in ronChoiceCounts (which skips tree-level ids).
+  // It increments only when we do NOT skip an entry, keeping alignment with
+  // extractRonChoiceCounts which also skips tree-level ids.
+  let choiceCountIdx = 0;
 
   for (let i = 0; i < ronNodeIds.length; i++) {
     const nodeId = ronNodeIds[i];
     // Skip tree-level ids (they appear before `nodes:`) — we want node-level ids only.
-    // Tree ids appear right after `id:` at the top of a tree block, before `root_node_id`.
-    // Node ids appear inside `nodes: [` blocks.
-    // Strategy: only check ids that appear AFTER `nodes:` in the source.
-    const nodesBlockStart = ronSrc.indexOf('nodes:');
-    if (nodesBlockStart !== -1 && ronSrc.indexOf(`id: "${nodeId}"`) < nodesBlockStart) {
-      // This is a tree-level id, not a node-level id — skip
+    // Use findStandaloneIdPos (not bare indexOf) so that `root_node_id: "greeting"`
+    // does not shadow the real `id: "greeting"` node entry via first-occurrence match.
+    const standalonePos = findStandaloneIdPos(ronSrc, nodeId);
+    if (nodesBlockStart !== -1 && (standalonePos === -1 || standalonePos < nodesBlockStart)) {
+      // This is a tree-level id, not a node-level id — skip.
+      // Do NOT increment choiceCountIdx: extractRonChoiceCounts also skipped this entry.
       continue;
     }
 
@@ -474,7 +527,9 @@ export function checkRonBundleCrossRef(ronSrc, bundleSrc) {
     }
 
     // Check that choice count matches (skip if node not in bundle — already flagged above)
-    const ronCount = ronChoiceCounts[i] ?? 0;
+    // Use choiceCountIdx (not i) because extractRonChoiceCounts skips tree-level ids too.
+    const ronCount = ronChoiceCounts[choiceCountIdx] ?? 0;
+    choiceCountIdx++;
     // Count choices in the bundle for this node by finding the node's entry
     // and counting `text:` occurrences within its choices array
     const nodeEntry =
@@ -684,6 +739,47 @@ export default async function () {
     }
   }
 
+  // --- C7: BAD (no dismissPending) must be flagged ---
+  {
+    const badMain = `
+export function initInput(store) {
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Escape') {
+      dismissDialogue();  // no guard — double-sends on repeat keydown
+    }
+  });
+}`;
+    if (badMain.indexOf('dismissPending') !== -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH C7: BAD_MAIN fixture unexpectedly contains dismissPending — fixture is wrong',
+      };
+    }
+  }
+
+  // --- C7: GOOD (has dismissPending) must pass ---
+  {
+    const goodMain = `
+let dismissPending = false;
+export function initInput(store) {
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Escape' && !dismissPending) {
+      dismissPending = true;
+      dismissDialogue();
+    }
+  });
+}`;
+    if (goodMain.indexOf('dismissPending') === -1) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH C7: GOOD_MAIN fixture missing dismissPending — fixture is wrong',
+      };
+    }
+  }
+
   // =========================================================================
   // REAL CHECKS — scan the actual source files.
   // =========================================================================
@@ -693,7 +789,7 @@ export default async function () {
   // --- C1 + C2: dialogueModel.ts ---
   const dialogueModelSrc = readFile('client/src/ui/dialogueModel.ts');
   if (dialogueModelSrc === null) {
-    failures.push('client/src/ui/dialogueModel.ts not found — expected RED until M12d impl lands');
+    failures.push('MISSING REQUIRED FILE — dialogueModel.ts must exist');
   } else {
     const c1 = checkNoSdkImport(dialogueModelSrc);
     if (c1) failures.push(`dialogueModel.ts C1: ${c1}`);
@@ -743,6 +839,17 @@ export default async function () {
   }
   // If contentSrc is null, C5 already flagged it; no duplicate error needed
 
+  // --- C7: main.ts must contain dismissPending flag (structural presence check) ---
+  const mainSrc = readFile('client/src/main.ts');
+  if (mainSrc === null) {
+    failures.push('MISSING REQUIRED FILE — client/src/main.ts must exist');
+  } else if (mainSrc.indexOf('dismissPending') === -1) {
+    failures.push(
+      'C7: main.ts is missing the dismissPending flag — without it, pressing Escape ' +
+        'while a dismiss is in-flight sends duplicate dismiss_dialogue calls to the server',
+    );
+  }
+
   if (failures.length > 0) {
     return { name, pass: false, detail: failures.join('; ') };
   }
@@ -753,7 +860,7 @@ export default async function () {
     detail:
       'C1 no SDK import in dialogueModel + C2 no reducer calls in dialogueModel + ' +
       'C3 no quest logic in questLogModel + C4 no heal_party in healModel + ' +
-      'C5 no RegExp/fetch in dialogueContent + C6 RON/bundle node ids + choice counts match — ' +
-      'all teeth verified',
+      'C5 no RegExp/fetch in dialogueContent + C6 RON/bundle node ids + choice counts match + ' +
+      'C7 dismissPending flag in main.ts — all teeth verified',
   };
 }

@@ -1837,4 +1837,154 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     s.flushBatch();
     expect(cb).toHaveBeenCalledTimes(1);
   });
+
+  // --- Fix 3: removeQuest / removeHealLocation / removeNpc ---
+
+  it('BITES: removeQuest removes the quest from ownQuests', () => {
+    // The connection.ts onDelete handler calls removeQuest; an impl that is a no-op
+    // leaves stale quest rows in the store after server deletion.
+    // Kills: an impl that ignores removeQuest or removes from the wrong map.
+    const s = new AuthoritativeStore();
+    (s as unknown as Record<string, Function>).upsertQuest(questRow(10n, 'alice-hex', 'quest_abc'));
+    (s as unknown as Record<string, Function>).upsertQuest(questRow(11n, 'alice-hex', 'quest_xyz'));
+    // Remove only quest 10n
+    (s as unknown as Record<string, Function>).removeQuest(10n);
+    const remaining = (s as unknown as Record<string, Function>).ownQuests(
+      'alice-hex',
+    ) as StorePlayerQuest[];
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]!.questId).toBe('quest_xyz');
+  });
+
+  it('BITES: removeHealLocation removes the location from healLocations', () => {
+    // The connection.ts onDelete handler calls removeHealLocation; an impl that is a
+    // no-op leaves stale heal location rows visible to the HealView.
+    // Kills: an impl that ignores removeHealLocation or removes from the wrong map.
+    const s = new AuthoritativeStore();
+    (s as unknown as Record<string, Function>).upsertHealLocation(healLocationRow(1, 0));
+    (s as unknown as Record<string, Function>).upsertHealLocation(healLocationRow(2, 1));
+    (s as unknown as Record<string, Function>).removeHealLocation(1);
+    const locs = (
+      s as unknown as Record<string, Function>
+    ).healLocations() as StoreHealLocationRow[];
+    expect(locs).toHaveLength(1);
+    expect(locs[0]!.locationId).toBe(2);
+  });
+
+  it('BITES: removeNpc removes by entityId — npc(entityId) returns undefined', () => {
+    // The connection.ts onDelete handler calls removeNpc; an impl that is a no-op
+    // leaves stale NPC entries that would appear in dialogue lookups.
+    // Kills: an impl that ignores removeNpc or uses the wrong key.
+    const s = new AuthoritativeStore();
+    (s as unknown as Record<string, Function>).upsertNpc(npcRow(42n, 'elder_oak'));
+    (s as unknown as Record<string, Function>).removeNpc(42n);
+    expect((s as unknown as Record<string, Function>).npc(42n)).toBeUndefined();
+  });
+
+  it('BITES: removeNpc also clears npcByNpcId index', () => {
+    // Both lookup paths (#npcs keyed by entityId and the npcId index) must be cleared
+    // on remove. An impl that only removes from one map leaves a dangling secondary
+    // index that returns a stale row for npcByNpcId after the NPC is gone.
+    // Kills: an impl that clears #npcs but forgets to clear the npcId secondary index.
+    const s = new AuthoritativeStore();
+    (s as unknown as Record<string, Function>).upsertNpc(npcRow(42n, 'elder_oak'));
+    (s as unknown as Record<string, Function>).removeNpc(42n);
+    expect((s as unknown as Record<string, Function>).npcByNpcId('elder_oak')).toBeUndefined();
+  });
+
+  // --- Fix 4: flushBatch tests for upsertConversation / upsertQuest / upsertHealLocation ---
+
+  it('BITES: upsertConversation marks batch dirty so flushBatch fires', () => {
+    // Kills: an impl that stores the conversation row but forgets to set #dirty=true,
+    // so the render loop never learns that a conversation has started.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    (s as unknown as Record<string, Function>).upsertConversation(
+      convRow('player-hex', 1n, 'greeting'),
+    );
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('BITES: upsertQuest marks batch dirty so flushBatch fires', () => {
+    // Kills: an impl that stores the quest row but forgets to set #dirty=true,
+    // so the quest log view never refreshes when a new quest is accepted.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    (s as unknown as Record<string, Function>).upsertQuest(questRow(1n, 'player-hex', 'q1'));
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('BITES: upsertHealLocation marks batch dirty so flushBatch fires', () => {
+    // Kills: an impl that stores the heal location row but forgets to set #dirty=true,
+    // so the heal view never renders when location content arrives from the server.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    (s as unknown as Record<string, Function>).upsertHealLocation(healLocationRow(5, 0));
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  // --- remove* dirty-marking tests (RT Finding 4 / Finding 3 follow-up) ---
+
+  it('BITES: removeConversation marks batch dirty so flushBatch fires (overlay hides)', () => {
+    // Server auto-dismisses conversation (RT-ADV-01) by deleting the row.
+    // removeConversation must mark dirty so the render loop hides the dialogue overlay.
+    // Kills: an impl that deletes the row but forgets #dirty=true (overlay stays open).
+    const s = new AuthoritativeStore();
+    (s as unknown as Record<string, Function>).upsertConversation(
+      convRow('alice-hex', 1n, 'greeting'),
+    );
+    s.flushBatch();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    (s as unknown as Record<string, Function>).removeConversation('alice-hex');
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('BITES: removeQuest marks batch dirty so flushBatch fires (quest log refreshes)', () => {
+    // Server deletes player_quest on completion. removeQuest must mark dirty so
+    // the quest log view re-renders and drops the completed quest.
+    // Kills: an impl that no-ops removeQuest or forgets #dirty=true.
+    const s = new AuthoritativeStore();
+    (s as unknown as Record<string, Function>).upsertQuest(questRow(5n, 'alice-hex', 'q'));
+    s.flushBatch();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    (s as unknown as Record<string, Function>).removeQuest(5n);
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('BITES: removeNpc marks batch dirty so flushBatch fires', () => {
+    // Kills: an impl that removes the NPC row but forgets #dirty=true.
+    const s = new AuthoritativeStore();
+    (s as unknown as Record<string, Function>).upsertNpc(npcRow(7n));
+    s.flushBatch();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    (s as unknown as Record<string, Function>).removeNpc(7n);
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  // --- npcByNpcId secondary index consistency on re-upsert (RT Finding 7) ---
+
+  it('BITES: re-upsert with changed npcId updates secondary index (old npcId returns undefined)', () => {
+    // If an impl builds the secondary index with first-insert-only semantics, a re-upsert
+    // that changes npcId leaves the OLD npcId returning the outdated row.
+    // Kills: `if (!this.#npcsByNpcId.has(row.npcId)) { this.#npcsByNpcId.set(...) }`
+    const s = new AuthoritativeStore();
+    (s as unknown as Record<string, Function>).upsertNpc(npcRow(1n, 'old_id', 'tree_a'));
+    // Same entityId, changed npcId (e.g. server corrects the NPC definition)
+    (s as unknown as Record<string, Function>).upsertNpc(npcRow(1n, 'new_id', 'tree_b'));
+    expect((s as unknown as Record<string, Function>).npcByNpcId('new_id')).toBeDefined();
+    expect((s as unknown as Record<string, Function>).npcByNpcId('old_id')).toBeUndefined(); // stale index must be purged on re-upsert
+    expect((s as unknown as Record<string, Function>).npc(1n)).toBeDefined();
+  });
 });
