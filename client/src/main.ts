@@ -42,8 +42,15 @@ import { buildBattleViewModel, decideBattleOverlay } from './ui/battleModel';
 import type { BattleView } from './ui/battleView';
 import { buildBoxViewModel, buildPartyViewModel, nextFreePartySlot } from './ui/boxModel';
 import type { BoxView } from './ui/boxView';
+import { DIALOGUE_TREES } from './ui/dialogueContent';
+import { buildDialogueViewModel } from './ui/dialogueModel';
+import type { DialogueView } from './ui/dialogueView';
 import { buildEvolutionViewModel } from './ui/evolutionModel';
 import type { EvolutionView } from './ui/evolutionView';
+import { buildHealViewModel } from './ui/healModel';
+import type { HealView } from './ui/healView';
+import { buildQuestLogViewModel } from './ui/questLogModel';
+import type { QuestLogView } from './ui/questLogView';
 import { buildRaisingViewModel } from './ui/raisingModel';
 import type { RaisingView } from './ui/raisingView';
 
@@ -79,6 +86,12 @@ let boxView: BoxView | undefined;
 let battleView: BattleView | undefined;
 let raisingView: RaisingView | undefined;
 let evolutionView: EvolutionView | undefined;
+let dialogueView: DialogueView | undefined;
+let questLogView: QuestLogView | undefined;
+let healView: HealView | undefined;
+// dismissPending: prevents double-sending dismiss_dialogue while server processes it (M12d).
+// eslint-disable-next-line prefer-const
+let dismissPending = false;
 // Outcome-frame lifecycle (M8.7e): the dismissed battle id (so a resolved outcome
 // renders once but never re-pops) + whether any battle has been observed this
 // session (first-sight pre-dismiss of a historical/stale-on-login resolved battle).
@@ -132,7 +145,15 @@ store.onBatchApplied(() => {
   // nor re-issues a key released during the divergence; the move drains on the next rAF.
   if (
     diverged &&
-    !(battleView?.visible || boxView?.visible || raisingView?.visible || evolutionView?.visible)
+    !(
+      battleView?.visible ||
+      boxView?.visible ||
+      raisingView?.visible ||
+      evolutionView?.visible ||
+      dialogueView?.visible ||
+      questLogView?.visible ||
+      healView?.visible
+    )
   ) {
     const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
     if (heldDir !== undefined) sendIntent({ Step: heldDir });
@@ -194,7 +215,45 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
-  // Escape priority: battle > box > raising > evolution > movement (ADR-0014 exit ordering).
+  if (e.code === 'KeyQ') {
+    // Quest log overlay — mutual exclusivity with all other overlays (M12d, ADR-0071).
+    if (
+      !battleView?.visible &&
+      !boxView?.visible &&
+      !raisingView?.visible &&
+      !evolutionView?.visible &&
+      !dialogueView?.visible &&
+      !healView?.visible
+    ) {
+      if (questLogView?.visible) {
+        questLogView.hide();
+      } else {
+        questLogView?.render(buildQuestLogViewModel(store.ownQuests(identity)));
+      }
+    }
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'KeyH') {
+    // Heal overlay — mutual exclusivity: only when no other overlay is open (M12d, ADR-0071).
+    if (
+      !battleView?.visible &&
+      !boxView?.visible &&
+      !raisingView?.visible &&
+      !evolutionView?.visible &&
+      !dialogueView?.visible &&
+      !questLogView?.visible
+    ) {
+      if (healView?.visible) {
+        healView.hide();
+      } else {
+        healView?.render(buildHealViewModel(store.healLocations(), store.itemDefs()));
+      }
+    }
+    e.preventDefault();
+    return;
+  }
+  // Escape priority: battle > box > raising > evolution > dialogue > questLog > heal (ADR-0071).
   if (e.code === 'Escape' && battleView?.visible) {
     const latest = store.latestPlayerBattle(identity);
     // Terminal outcome frame: permanent dismiss (don't re-pop next batch). Ongoing:
@@ -219,8 +278,35 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
+  if (e.code === 'Escape' && dialogueView?.visible) {
+    // dismissPending guards against double-send while server processes the dismiss.
+    if (!dismissPending) {
+      dismissPending = true;
+      conn?.conn.reducers.dismissDialogue({});
+    }
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'Escape' && questLogView?.visible) {
+    questLogView.hide();
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'Escape' && healView?.visible) {
+    healView.hide();
+    e.preventDefault();
+    return;
+  }
   // Suppress movement input while an overlay is open.
-  if (battleView?.visible || boxView?.visible || raisingView?.visible || evolutionView?.visible)
+  if (
+    battleView?.visible ||
+    boxView?.visible ||
+    raisingView?.visible ||
+    evolutionView?.visible ||
+    dialogueView?.visible ||
+    questLogView?.visible ||
+    healView?.visible
+  )
     return;
   const dir = KEY_DIR[e.code];
   if (dir !== undefined) {
@@ -299,6 +385,55 @@ function refreshBattle(): void {
 }
 store.onBatchApplied(() => refreshBattle());
 
+// --- M12d: dialogue / quest log / heal views (ADR-0071) --------------------------
+// All 3 MUST be total (never throw): store.flushBatch has no per-listener isolation.
+store.onBatchApplied(() => {
+  try {
+    const npcsMap = new Map(store.allNpcs().map((n) => [n.entityId, n]));
+    const conv = store.ownConversation(identity);
+    const dialogueVm = buildDialogueViewModel(conv, npcsMap, DIALOGUE_TREES);
+    dialogueView?.render(dialogueVm);
+    if (!conv) dismissPending = false; // reset on server-side dismiss
+  } catch (err) {
+    console.error('[M12d] dialogue batch listener error', err);
+  }
+});
+
+store.onBatchApplied(() => {
+  // Quest log is user-toggled (KeyQ); only refresh when already open (ADR-0014 pattern).
+  if (!questLogView?.visible) return;
+  try {
+    const quests = store.ownQuests(identity);
+    questLogView.render(buildQuestLogViewModel(quests));
+  } catch (err) {
+    console.error('[M12d] questLog batch listener error', err);
+  }
+});
+
+store.onBatchApplied(() => {
+  // Heal overlay is user-toggled (KeyH); only refresh when already open (ADR-0014 pattern).
+  if (!healView?.visible) return;
+  try {
+    const itemDefs = store.itemDefs();
+    healView.render(buildHealViewModel(store.healLocations(), itemDefs));
+  } catch (err) {
+    console.error('[M12d] heal batch listener error', err);
+  }
+});
+
+// --- M12d: dialogue choice click handler -----------------------------------------
+// Reads data-choice-idx from the clicked button and calls advance_dialogue.
+document.addEventListener('click', (e) => {
+  const btn = (e.target as HTMLElement).closest('[data-choice-idx]') as HTMLElement | null;
+  if (!btn) return;
+  const raw = btn.dataset['choiceIdx'];
+  if (raw === undefined) return;
+  const choiceIdx = parseInt(raw, 10);
+  if (!Number.isNaN(choiceIdx)) {
+    conn?.conn.reducers.advanceDialogue({ choiceIdx });
+  }
+});
+
 // --- DEV introspection hook (e2e asserts on this STATE, never pixels) ------------
 function snapshot() {
   const own = store.ownCharacter(identity);
@@ -351,11 +486,17 @@ async function main(): Promise<void> {
     { BattleView: BattleViewClass },
     { RaisingView: RaisingViewClass },
     { EvolutionView: EvolutionViewClass },
+    { DialogueView: DialogueViewClass },
+    { QuestLogView: QuestLogViewClass },
+    { HealView: HealViewClass },
   ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/battleView'),
     import('./ui/raisingView'),
     import('./ui/evolutionView'),
+    import('./ui/dialogueView'),
+    import('./ui/questLogView'),
+    import('./ui/healView'),
   ]);
   const renderer = new WorldRenderer();
   const mount = document.getElementById('app');
@@ -374,9 +515,10 @@ async function main(): Promise<void> {
         conn?.conn.reducers.setPartySlot({ monsterId, slot: finalSlot });
       },
       onHealParty: () => {
-        // location_id 1 = the only seeded heal location (zone 0, tile 8,3 — M12b content).
-        // Server validates zone/battle/cooldown; M12c will expose location ids via RON content.
-        conn?.conn.reducers.healParty({ locationId: 1 });
+        // Use the first available heal location from live store data (M12d).
+        // Server validates zone/range/cooldown; falls back to 0 (no-op) when no locations loaded.
+        const locationId = store.healLocations()[0]?.locationId ?? 0;
+        conn?.conn.reducers.healParty({ locationId });
       },
     });
     battleView = new BattleViewClass(mount, {
@@ -409,6 +551,10 @@ async function main(): Promise<void> {
         conn?.conn.reducers.fuse({ aId, bId });
       },
     });
+    // M12d: dialogue / quest log / heal DOM shells (ADR-0071).
+    dialogueView = new DialogueViewClass();
+    questLogView = new QuestLogViewClass();
+    healView = new HealViewClass();
   }
 
   // M11c: extracted from onReconnect so onOwnWarp can reuse the same body (ADR-0067).
@@ -464,7 +610,15 @@ async function main(): Promise<void> {
     // under one (M8.6c, ADR-0013). sendIntent routes through the backpressured
     // predictor.enqueue + reducer send, and no-ops if declined.
     if (
-      !(battleView?.visible || boxView?.visible || raisingView?.visible || evolutionView?.visible)
+      !(
+        battleView?.visible ||
+        boxView?.visible ||
+        raisingView?.visible ||
+        evolutionView?.visible ||
+        dialogueView?.visible ||
+        questLogView?.visible ||
+        healView?.visible
+      )
     ) {
       const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
       if (heldDir !== undefined) sendIntent({ Step: heldDir });

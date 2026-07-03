@@ -14,10 +14,14 @@ import type {
   StoreBattleMonster,
   StoreCharacter,
   StoreFusionRow,
+  StoreHealLocationRow,
   StoreInventory,
   StoreItemRow,
   StoreMonsterPub,
+  StoreNpcRow,
   StorePlayer,
+  StorePlayerConversation,
+  StorePlayerQuest,
   StoreSkillRow,
   StoreSpeciesRow,
 } from './store';
@@ -290,5 +294,81 @@ export function fusionRowToStore(row: SdkFusionRow): StoreFusionRow {
     aSpecies: row.aSpecies,
     bSpecies: row.bSpecies,
     toSpecies: row.toSpecies,
+  };
+}
+
+// --- M12d: player_conversation / player_quest / heal_location_row / npc converters ----
+
+interface SdkPlayerConversation {
+  readonly ownerIdentity: { toHexString(): string };
+  readonly npcEntityId: bigint;
+  readonly currentNodeId: string;
+}
+
+export function playerConversationRowToStore(row: SdkPlayerConversation): StorePlayerConversation {
+  return {
+    ownerIdentity: row.ownerIdentity.toHexString(),
+    npcEntityId: row.npcEntityId,
+    currentNodeId: row.currentNodeId,
+  };
+}
+
+interface SdkPlayerQuest {
+  readonly pqId: bigint;
+  readonly ownerIdentity: { toHexString(): string };
+  readonly questId: string;
+  readonly stepIndex: number;
+}
+
+export function playerQuestRowToStore(row: SdkPlayerQuest): StorePlayerQuest {
+  return {
+    pqId: row.pqId,
+    ownerIdentity: row.ownerIdentity.toHexString(),
+    questId: row.questId,
+    stepIndex: row.stepIndex,
+  };
+}
+
+interface SdkHealLocationRow {
+  readonly locationId: number;
+  readonly zoneId: number;
+  readonly tileX: number;
+  readonly tileY: number;
+  readonly costItemId?: number;
+  readonly costQty: number;
+  readonly cooldownMs: number;
+}
+
+export function healLocationRowToStore(row: SdkHealLocationRow): StoreHealLocationRow {
+  return {
+    locationId: row.locationId,
+    zoneId: row.zoneId,
+    tileX: row.tileX,
+    tileY: row.tileY,
+    costItemId: row.costItemId,
+    costQty: row.costQty,
+    cooldownMs: row.cooldownMs,
+  };
+}
+
+interface SdkNpcRow {
+  readonly entityId: bigint;
+  readonly npcId: string;
+  readonly zoneId: number;
+  readonly homeX: number;
+  readonly homeY: number;
+  readonly wanderRadius: number;
+  readonly dialogueTreeId: string;
+}
+
+export function npcRowToStore(row: SdkNpcRow): StoreNpcRow {
+  return {
+    entityId: row.entityId,
+    npcId: row.npcId,
+    zoneId: row.zoneId,
+    homeX: row.homeX,
+    homeY: row.homeY,
+    wanderRadius: row.wanderRadius,
+    dialogueTreeId: row.dialogueTreeId,
   };
 }

@@ -821,3 +821,260 @@ describe('rowConvert M10c: fusionRowToStore — SdkFusionRow -> StoreFusionRow',
     expect(typeof store.fusionId).toBe('bigint');
   });
 });
+
+// =============================================================================
+// M12d converters: playerConversationRowToStore, playerQuestRowToStore,
+//                  healLocationRowToStore, npcRowToStore
+// SOURCE OF TRUTH: docs/m12d-plan.md + docs/adr/0071-m12d-client-dialogue-quest-heal-ui.md
+//
+// RED REASON: None of these 4 converter functions exist yet in rowConvert.ts.
+// All tests below will fail (... is not a function) until the implementer adds them.
+//
+// Key invariants:
+//   - ownerIdentity SDK objects must be resolved via .toHexString() to a plain string
+//   - pqId must stay bigint (u64, lossy above 2^53 if Number()-ed)
+//   - costItemId: undefined (Option<u32> None) must pass through as undefined
+//   - entityId must stay bigint
+// =============================================================================
+
+import {
+  healLocationRowToStore,
+  npcRowToStore,
+  playerConversationRowToStore,
+  playerQuestRowToStore,
+} from './rowConvert';
+
+describe('M12d converters', () => {
+  // --- playerConversationRowToStore ---
+
+  it('BITES: playerConversationRowToStore — ownerIdentity SDK object → hex string', () => {
+    // The SDK sends Identity objects, not plain strings. A store row must carry
+    // the hex string so identity comparisons work (=== on objects always fails).
+    // Kills: an impl that stores the raw SDK Identity object instead of calling toHexString().
+    const sdkRow = {
+      ownerIdentity: { toHexString: () => 'abc123' },
+      npcEntityId: 5n,
+      currentNodeId: 'greeting',
+    };
+    const store = playerConversationRowToStore(sdkRow);
+    expect(typeof store.ownerIdentity).toBe('string');
+    expect(store.ownerIdentity).toBe('abc123');
+  });
+
+  it('BITES: playerConversationRowToStore — npcEntityId stays bigint', () => {
+    // u64 entity ids exceed Number.MAX_SAFE_INTEGER — must stay bigint.
+    // Kills: an impl that casts npcEntityId via Number().
+    const largeEid = 9007199254740993n; // 2^53 + 1
+    const sdkRow = {
+      ownerIdentity: { toHexString: () => 'ff' },
+      npcEntityId: largeEid,
+      currentNodeId: 'node_1',
+    };
+    const store = playerConversationRowToStore(sdkRow);
+    expect(typeof store.npcEntityId).toBe('bigint');
+    expect(store.npcEntityId).toBe(largeEid);
+  });
+
+  it('BITES: playerConversationRowToStore — currentNodeId passed through as string', () => {
+    // Kills: an impl that drops currentNodeId or substitutes a default.
+    const sdkRow = {
+      ownerIdentity: { toHexString: () => 'aa' },
+      npcEntityId: 1n,
+      currentNodeId: 'quest_branch_2',
+    };
+    const store = playerConversationRowToStore(sdkRow);
+    expect(store.currentNodeId).toBe('quest_branch_2');
+    expect(typeof store.currentNodeId).toBe('string');
+  });
+
+  // --- playerQuestRowToStore ---
+
+  it('BITES: playerQuestRowToStore — ownerIdentity.toHexString() called; pqId is bigint', () => {
+    // Kills: an impl that stores the raw Identity object, or that Number()-casts pqId.
+    const sdkRow = {
+      pqId: 9007199254740993n, // 2^53 + 1 — lossy if converted to Number
+      ownerIdentity: { toHexString: () => 'deadbeef' },
+      questId: 'quest_001',
+      stepIndex: 3,
+    };
+    const store = playerQuestRowToStore(sdkRow);
+    expect(typeof store.ownerIdentity).toBe('string');
+    expect(store.ownerIdentity).toBe('deadbeef');
+    expect(typeof store.pqId).toBe('bigint');
+    expect(store.pqId).toBe(9007199254740993n);
+  });
+
+  it('BITES: playerQuestRowToStore — stepIndex is number (not bigint)', () => {
+    // stepIndex is u32 (safe as number). Kills: an impl that bigints u32 fields.
+    const sdkRow = {
+      pqId: 1n,
+      ownerIdentity: { toHexString: () => 'ff' },
+      questId: 'q',
+      stepIndex: 7,
+    };
+    const store = playerQuestRowToStore(sdkRow);
+    expect(typeof store.stepIndex).toBe('number');
+    expect(store.stepIndex).toBe(7);
+  });
+
+  it('BITES: playerQuestRowToStore — questId passed through verbatim as string', () => {
+    // Kills: an impl that transforms or truncates questId.
+    const sdkRow = {
+      pqId: 1n,
+      ownerIdentity: { toHexString: () => 'ff' },
+      questId: 'some_unique_quest_identifier_v2',
+      stepIndex: 0,
+    };
+    const store = playerQuestRowToStore(sdkRow);
+    expect(store.questId).toBe('some_unique_quest_identifier_v2');
+  });
+
+  // --- healLocationRowToStore ---
+
+  it('BITES: healLocationRowToStore — costItemId: undefined (Option<u32> None) passes through as undefined', () => {
+    // SpacetimeDB 2.6 decodes Option<u32> None as undefined (not null, not 0).
+    // The store contract: undefined means "free heal, no item required".
+    // Kills: an impl that converts undefined→null or undefined→0 (0 is a valid item id!).
+    const sdkRow = {
+      locationId: 1,
+      zoneId: 0,
+      tileX: 10,
+      tileY: 15,
+      costItemId: undefined,
+      costQty: 0,
+      cooldownMs: 30000,
+    };
+    const store = healLocationRowToStore(sdkRow);
+    expect(store.costItemId).toBeUndefined();
+    expect(store.costItemId).not.toBeNull();
+  });
+
+  it('BITES: healLocationRowToStore — costItemId: 2 (Some(2)) passes through as number 2', () => {
+    // Kills: an impl that drops costItemId when it is defined.
+    const sdkRow = {
+      locationId: 5,
+      zoneId: 1,
+      tileX: 20,
+      tileY: 25,
+      costItemId: 2,
+      costQty: 1,
+      cooldownMs: 60000,
+    };
+    const store = healLocationRowToStore(sdkRow);
+    expect(typeof store.costItemId).toBe('number');
+    expect(store.costItemId).toBe(2);
+  });
+
+  it('BITES: healLocationRowToStore — locationId, zoneId, tileX, tileY, costQty, cooldownMs are numbers', () => {
+    // Kills: an impl that accidentally bigints any u32/i64 field other than those
+    // that should stay bigint (none in this row — all numeric fields are u32/i64 safe as number).
+    const sdkRow = {
+      locationId: 7,
+      zoneId: 3,
+      tileX: 42,
+      tileY: 17,
+      costItemId: undefined,
+      costQty: 0,
+      cooldownMs: 45000,
+    };
+    const store = healLocationRowToStore(sdkRow);
+    expect(typeof store.locationId).toBe('number');
+    expect(typeof store.zoneId).toBe('number');
+    expect(typeof store.tileX).toBe('number');
+    expect(typeof store.tileY).toBe('number');
+    expect(typeof store.costQty).toBe('number');
+    expect(typeof store.cooldownMs).toBe('number');
+    expect(store.locationId).toBe(7);
+    expect(store.zoneId).toBe(3);
+    expect(store.tileX).toBe(42);
+    expect(store.tileY).toBe(17);
+    expect(store.cooldownMs).toBe(45000);
+  });
+
+  // --- npcRowToStore ---
+
+  it('BITES: npcRowToStore — entityId is bigint; all other fields pass through correctly', () => {
+    // entityId is u64 (must stay bigint). All other fields are primitive strings/numbers.
+    // Kills: an impl that Number()-casts entityId, or that drops any field.
+    const largeEid = 9007199254740993n; // 2^53 + 1
+    const sdkRow = {
+      entityId: largeEid,
+      npcId: 'elder_oak',
+      zoneId: 0,
+      homeX: 12,
+      homeY: 8,
+      wanderRadius: 3,
+      dialogueTreeId: 'elder_oak_talk',
+    };
+    const store = npcRowToStore(sdkRow);
+    expect(typeof store.entityId).toBe('bigint');
+    expect(store.entityId).toBe(largeEid);
+    expect(store.npcId).toBe('elder_oak');
+    expect(typeof store.zoneId).toBe('number');
+    expect(store.zoneId).toBe(0);
+    expect(store.homeX).toBe(12);
+    expect(store.homeY).toBe(8);
+    expect(store.wanderRadius).toBe(3);
+    expect(store.dialogueTreeId).toBe('elder_oak_talk');
+  });
+
+  it('BITES: npcRowToStore — npcId and dialogueTreeId are passed through verbatim (no case change)', () => {
+    // Kills: an impl that lowercases, trims, or transforms string fields.
+    const sdkRow = {
+      entityId: 1n,
+      npcId: 'Weird_NPC_ID_v2',
+      zoneId: 5,
+      homeX: 0,
+      homeY: 0,
+      wanderRadius: 0,
+      dialogueTreeId: 'MyTree_v2',
+    };
+    const store = npcRowToStore(sdkRow);
+    expect(store.npcId).toBe('Weird_NPC_ID_v2');
+    expect(store.dialogueTreeId).toBe('MyTree_v2');
+  });
+});
+
+// =============================================================================
+// M12d gating: heal_location_row cooldownMs i64 type invariant
+//
+// FINDING: schema.rs declares `cooldown_ms: i64` and the generated binding
+// types it as `__t.i64()`. SpacetimeDB's TS SDK encodes i64 as bigint (same
+// as `move_started_at_ms`, `created_at_ms`, etc.).  However,
+// `SdkHealLocationRow` (rowConvert.ts) and `StoreHealLocationRow` (store.ts)
+// both type `cooldownMs` as `number`.  The SDK delivers a bigint; the code
+// passes it through as-is and types it as number — the type mismatch is
+// invisible at runtime until a heal location has a cooldown > 2^53 ms
+// (≈285 million years) but the *type contract* diverges from every other i64
+// field in the codebase (moveStartedAtMs, createdAtMs — all bigint).
+//
+// The correct fix is `cooldownMs: bigint` in both SdkHealLocationRow and
+// StoreHealLocationRow, matching the pattern established by every other i64.
+//
+// This test locks that invariant: once fixed, `typeof store.cooldownMs`
+// must be 'bigint'. Currently (before fix) it passes number through and the
+// test fails — proving the type bug.
+// =============================================================================
+describe('M12d gating: healLocationRowToStore cooldownMs must be bigint (i64 invariant)', () => {
+  it('GATING: cooldownMs from the SDK (i64) must arrive as bigint, not number', () => {
+    // The SDK delivers i64 as bigint — same contract as moveStartedAtMs and
+    // createdAtMs.  Typing it as number silently truncates values > 2^53 and
+    // diverges from the established i64 → bigint pattern throughout rowConvert.
+    // Kills: a `number`-typed SdkHealLocationRow.cooldownMs that passes
+    // through a bigint SDK value without conversion.
+    const sdkRow = {
+      locationId: 1,
+      zoneId: 0,
+      tileX: 8,
+      tileY: 3,
+      costItemId: undefined,
+      costQty: 0,
+      // Simulate the SDK delivering a bigint for the i64 column:
+      cooldownMs: 30000n as unknown as number,
+    };
+    const store = healLocationRowToStore(sdkRow);
+    // After the fix: SdkHealLocationRow.cooldownMs is bigint and the converter
+    // passes it through as bigint.  StoreHealLocationRow.cooldownMs is bigint.
+    expect(typeof store.cooldownMs).toBe('bigint');
+  });
+});

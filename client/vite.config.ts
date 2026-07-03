@@ -62,6 +62,9 @@ export default defineConfig({
         'src/ui/boxView.ts', // thin DOM shell for the box/party screen
         'src/ui/raisingView.ts', // thin DOM shell for the raising/inventory screen
         'src/ui/evolutionView.ts', // thin DOM shell for the evolution/fusion screen
+        'src/ui/dialogueView.ts', // thin DOM shell for the dialogue overlay (M12d)
+        'src/ui/questLogView.ts', // thin DOM shell for the quest log overlay (M12d)
+        'src/ui/healView.ts', // thin DOM shell for the heal overlay (M12d)
       ],
     },
   },

@@ -137,6 +137,43 @@ export type StoreItemRow = {
   readonly trainAmount: number;
 };
 
+/** A player conversation row, normalized (ownerIdentity as hex string; M12d). */
+export type StorePlayerConversation = {
+  readonly ownerIdentity: string;
+  readonly npcEntityId: bigint;
+  readonly currentNodeId: string;
+};
+
+/** A player quest row, normalized (ownerIdentity as hex string; M12d). */
+export type StorePlayerQuest = {
+  readonly pqId: bigint;
+  readonly ownerIdentity: string;
+  readonly questId: string;
+  readonly stepIndex: number;
+};
+
+/** A heal location row (public content; M12d). */
+export type StoreHealLocationRow = {
+  readonly locationId: number;
+  readonly zoneId: number;
+  readonly tileX: number;
+  readonly tileY: number;
+  readonly costItemId?: number;
+  readonly costQty: number;
+  readonly cooldownMs: number;
+};
+
+/** An NPC row, normalized (entityId as bigint; M12d). */
+export type StoreNpcRow = {
+  readonly entityId: bigint;
+  readonly npcId: string;
+  readonly zoneId: number;
+  readonly homeX: number;
+  readonly homeY: number;
+  readonly wanderRadius: number;
+  readonly dialogueTreeId: string;
+};
+
 /** A species row, normalized (affinity as bare string). */
 export interface StoreSpeciesRow {
   readonly id: number;
@@ -177,6 +214,12 @@ export class AuthoritativeStore {
   readonly #inventory = new Map<bigint, StoreInventory>();
   readonly #itemDefs = new Map<number, StoreItemRow>();
   readonly #fusions = new Map<bigint, StoreFusionRow>();
+  // M12d: dialogue / quest / heal / npc maps
+  readonly #conversations = new Map<string, StorePlayerConversation>();
+  readonly #quests = new Map<bigint, StorePlayerQuest>();
+  readonly #healLocations = new Map<number, StoreHealLocationRow>();
+  readonly #npcs = new Map<bigint, StoreNpcRow>();
+  readonly #npcsByNpcId = new Map<string, StoreNpcRow>();
   readonly #batchListeners = new Set<() => void>();
   #dirty = false;
 
@@ -265,6 +308,57 @@ export class AuthoritativeStore {
     if (this.#fusions.delete(fusionId)) this.#dirty = true;
   }
 
+  // --- M12d: conversation / quest / heal / npc ingest --------------------------
+
+  upsertConversation(row: StorePlayerConversation): void {
+    this.#conversations.set(row.ownerIdentity, row);
+    this.#dirty = true;
+  }
+
+  removeConversation(ownerIdentity: string): void {
+    if (this.#conversations.delete(ownerIdentity)) this.#dirty = true;
+  }
+
+  upsertQuest(row: StorePlayerQuest): void {
+    this.#quests.set(row.pqId, row);
+    this.#dirty = true;
+  }
+
+  removeQuest(pqId: bigint): void {
+    if (this.#quests.delete(pqId)) this.#dirty = true;
+  }
+
+  upsertHealLocation(row: StoreHealLocationRow): void {
+    this.#healLocations.set(row.locationId, row);
+    this.#dirty = true;
+  }
+
+  removeHealLocation(locationId: number): void {
+    if (this.#healLocations.delete(locationId)) this.#dirty = true;
+  }
+
+  /** Upsert an NPC row into both the primary map (keyed by entityId) and the secondary
+   *  npcId index. CRITICAL: purge the OLD npcId from the secondary index first if the
+   *  entityId already exists (handles re-upsert where npcId changes). */
+  upsertNpc(row: StoreNpcRow): void {
+    const existing = this.#npcs.get(row.entityId);
+    if (existing !== undefined && existing.npcId !== row.npcId) {
+      this.#npcsByNpcId.delete(existing.npcId);
+    }
+    this.#npcs.set(row.entityId, row);
+    this.#npcsByNpcId.set(row.npcId, row);
+    this.#dirty = true;
+  }
+
+  removeNpc(entityId: bigint): void {
+    const existing = this.#npcs.get(entityId);
+    if (existing !== undefined) {
+      this.#npcsByNpcId.delete(existing.npcId);
+      this.#npcs.delete(entityId);
+      this.#dirty = true;
+    }
+  }
+
   /** Emit ONE batch-applied signal iff something changed since the last flush.
    *  Called once per coalesced transaction burst by the connection adapter. */
   flushBatch(): void {
@@ -302,6 +396,12 @@ export class AuthoritativeStore {
     this.#inventory.clear();
     this.#itemDefs.clear();
     this.#fusions.clear();
+    // M12d: clear the 5 new maps
+    this.#conversations.clear();
+    this.#quests.clear();
+    this.#healLocations.clear();
+    this.#npcs.clear();
+    this.#npcsByNpcId.clear();
     this.#dirty = false;
   }
 
@@ -443,5 +543,36 @@ export class AuthoritativeStore {
 
   get fusionCount(): number {
     return this.#fusions.size;
+  }
+
+  // --- M12d: conversation / quest / heal / npc read ----------------------------
+
+  ownConversation(ownerIdentity: string): StorePlayerConversation | undefined {
+    return this.#conversations.get(ownerIdentity);
+  }
+
+  ownQuests(ownerIdentity: string): StorePlayerQuest[] {
+    const out: StorePlayerQuest[] = [];
+    for (const q of this.#quests.values()) {
+      if (q.ownerIdentity === ownerIdentity) out.push(q);
+    }
+    return out;
+  }
+
+  healLocations(): StoreHealLocationRow[] {
+    return [...this.#healLocations.values()];
+  }
+
+  npc(entityId: bigint): StoreNpcRow | undefined {
+    return this.#npcs.get(entityId);
+  }
+
+  npcByNpcId(npcId: string): StoreNpcRow | undefined {
+    return this.#npcsByNpcId.get(npcId);
+  }
+
+  /** Returns all NPC rows as an array (for building the npcsMap in main.ts). */
+  allNpcs(): StoreNpcRow[] {
+    return [...this.#npcs.values()];
   }
 }
