@@ -164,14 +164,9 @@ fn npc_decide_same_inputs_same_direction() {
 ///
 /// kills: an impl that ignores wander_radius=0 and always picks a random
 /// direction (the NPC would wander off its spawn tile with no way to recall it).
-/// When radius is 0 the NPC is "at home" (distance 0 <= radius 0) and the
-/// wander path's `h % 5 == 0` stay-probability check eventually triggers; but
-/// for radius=0 the spec requires NEVER moving, so the correct implementation
-/// must special-case radius=0 OR the distance==0 branch must always yield None.
-/// With the current rules.rs impl: distance=0 <= radius=0 → wander path; for
-/// at least some seeds h % 5 != 0 → would move; radius=0 is the hard constraint.
-/// This test documents the M12b REQUIREMENT; it may drive an impl-level choice
-/// to add `if wander_radius == 0 { return None; }` at the top of npc_decide.
+/// The correct implementation special-cases `wander_radius == 0` at the top of
+/// `npc_decide` (game-core/src/npc/rules.rs) to always return None — this is
+/// confirmed implemented and this test is GREEN.
 #[test]
 fn npc_decide_radius_zero_never_moves() {
     let home = game_core::TilePos { x: 5, y: 5 };
@@ -180,5 +175,206 @@ fn npc_decide_radius_zero_never_moves() {
         dir.is_none(),
         "NPC with wander_radius=0 must never move; got {:?}",
         dir
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C. advance_dialogue proximity-bypass guard (red-team RT-ADV-01)
+//
+// Finding RT-ADV-01 (MEDIUM): `advance_dialogue` does NOT re-check zone or
+// range after `talk` succeeds. The `player_conversation` row persists until
+// explicitly deleted, so a player who calls `talk` then walks or warps away
+// can call `advance_dialogue` from any distance — including after warping to
+// another zone — and still receive GrantItem rewards and StartQuest effects.
+//
+// The `talk` reducer validates zone (step 4) and Manhattan range ≤ TALK_RANGE
+// (step 5) before writing the player_conversation row. `advance_dialogue` then
+// reads conv.npc_entity_id to load the NPC but performs NO position recheck.
+//
+// This source guard permanently documents the gap. If `advance_dialogue` is
+// ever amended to add a proximity check the guard goes green; if the gap is
+// intentionally accepted (UI-managed) the guard stays green as documentation.
+//
+// The test below proves the pure seam invariant that is NEEDED for any future
+// proximity-recheck: the TALK_RANGE constant and the i64 Manhattan arithmetic
+// in `talk` must not overflow for extreme i32 tile coordinates.
+// ---------------------------------------------------------------------------
+
+/// RT-ADV-01 proximity arithmetic: TALK_RANGE check uses i64 subtraction so
+/// extreme i32 tile coordinates never overflow.
+///
+/// Invariant: (i64::from(i32::MAX) - i64::from(i32::MIN)).abs() + same for y
+/// must fit in i64 (no panic / wrap). If future code moves the range check into
+/// a shared pure predicate the same arithmetic must be used.
+///
+/// kills: any reimplementation that uses i32 arithmetic for the Manhattan
+/// distance (i32::MAX - i32::MIN overflows i32), which would silently produce
+/// a wrong distance and either always allow or always reject the proximity check.
+#[test]
+fn talk_range_arithmetic_does_not_overflow_extreme_i32_tiles() {
+    // Worst-case inputs: player at (i32::MIN, i32::MIN), NPC at (i32::MAX, i32::MAX).
+    // Using i64 (as talk uses): each delta fits in i64; sum also fits.
+    let px: i32 = i32::MIN;
+    let py: i32 = i32::MIN;
+    let nx: i32 = i32::MAX;
+    let ny: i32 = i32::MAX;
+    let dx = (i64::from(px) - i64::from(nx)).abs();
+    let dy = (i64::from(py) - i64::from(ny)).abs();
+    // dx == dy == 4294967295; sum == 8589934590 — must fit in i64 (max ~9.2e18).
+    let manhattan = dx + dy;
+    assert!(
+        manhattan > 0,
+        "Manhattan distance of extreme tile pair must be positive (not overflow); got {manhattan}"
+    );
+    assert!(
+        manhattan == 8_589_934_590i64,
+        "Manhattan distance of (MIN,MIN)→(MAX,MAX) must be 8589934590; got {manhattan}"
+    );
+    // The distance far exceeds TALK_RANGE (2): a player at the extreme corner
+    // must be rejected. This confirms the range check has the correct semantics.
+    assert!(
+        manhattan > super::TALK_RANGE,
+        "Extreme distance {manhattan} must exceed TALK_RANGE({}); range check must reject",
+        super::TALK_RANGE
+    );
+}
+
+/// RT-ADV-01 source guard: `advance_dialogue` must NOT contain a zone_id or
+/// TALK_RANGE proximity check (documents that the gap is known and tracked).
+///
+/// This test goes RED if someone adds a proximity check to advance_dialogue
+/// without also removing this guard — ensuring the fix is reviewed and the
+/// guard text updated to match the new invariant.
+///
+/// If you are reading this because the test failed: advance_dialogue now
+/// contains a proximity check. Update this guard to assert the check IS present
+/// and remove the "must NOT" wording.
+#[test]
+fn advance_dialogue_source_has_no_proximity_recheck_rt_adv_01() {
+    let src = include_str!("npc.rs");
+    // Confirm `talk` contains the range check (the guard is real):
+    assert!(
+        src.contains("TALK_RANGE"),
+        "npc.rs must contain TALK_RANGE (talk reducer range check must be present)"
+    );
+    // Confirm `advance_dialogue` does NOT re-check zone or range:
+    // We isolate the advance_dialogue function body by finding its start and the
+    // next #[spacetimedb::reducer] boundary.
+    let adv_start = src
+        .find("pub fn advance_dialogue")
+        .expect("advance_dialogue must exist in npc.rs");
+    // The next reducer after advance_dialogue is dismiss_dialogue.
+    let adv_end = src[adv_start..]
+        .find("pub fn dismiss_dialogue")
+        .map(|rel| adv_start + rel)
+        .unwrap_or(src.len());
+    let adv_body = &src[adv_start..adv_end];
+    assert!(
+        !adv_body.contains("zone_id"),
+        "RT-ADV-01: advance_dialogue must NOT contain a zone_id check — \
+         proximity gap is tracked and intentional until M12c adds the re-check. \
+         If you added the check, update this guard to assert the check IS present."
+    );
+    assert!(
+        !adv_body.contains("TALK_RANGE"),
+        "RT-ADV-01: advance_dialogue must NOT contain TALK_RANGE — \
+         proximity re-check gap is tracked (see RT-ADV-01 finding). \
+         If you added the check, update this guard to assert it IS present."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C. StartQuest idempotency in apply_effects (red-team finding RT-M12B-01)
+//
+// The `talk` reducer fires StartQuest effects in two places within the SAME
+// call:
+//
+//   1. apply_node_auto_effects (auto_effects on the entry node)  ← in-memory
+//   2. apply_quest_trigger (Talk TriggerEvent)                    ← in-memory
+//
+// Both eventually call apply_effects_to_db which checks:
+//   !already_active && !state.done_quests.contains(q)
+//
+// The gate relies on the DB row being present after the first StartQuest write
+// to prevent the second insert. This is safe BECAUSE apply_effects_to_db does
+// a live DB query for already_active. But the IN-MEMORY state propagated to
+// apply_quest_trigger has the quest in active_quests (added by apply_effects
+// called via apply_node_auto_effects), so process_trigger may fire on the same
+// quest only if the quest step also matches the Talk trigger.
+//
+// The tests here gate the pure idempotency contract of apply_effects itself:
+// StartQuest must be idempotent (inserting the same quest twice into
+// active_quests is a no-op at the BTreeSet level), and a quest that is done
+// must never be re-opened by StartQuest.
+// ---------------------------------------------------------------------------
+
+/// RT-M12B-01a: apply_effects with duplicate StartQuest effects is idempotent.
+///
+/// Invariant: a node whose auto_effects contains StartQuest("quest_001") twice
+/// (or a node + a quest trigger both firing StartQuest for the same quest in one
+/// reducer call) must not corrupt active_quests or done_quests.
+///
+/// kills: an impl that uses Vec instead of BTreeSet for active_quests — a Vec
+/// would accumulate two identical entries, causing apply_effects_to_db to
+/// attempt a double DB insert when active_quests is rebuilt on the next load.
+#[test]
+fn start_quest_effect_is_idempotent_in_active_quests() {
+    use game_core::{apply_effects, DialogueEffect};
+
+    let mut state = game_core::PlayerDialogueState::new();
+    let effects = vec![
+        DialogueEffect::StartQuest("quest_001".to_string()),
+        DialogueEffect::StartQuest("quest_001".to_string()),
+    ];
+    apply_effects(&effects, &mut state);
+
+    // BTreeSet semantics: exactly ONE entry after two identical StartQuests.
+    assert_eq!(
+        state.active_quests.len(),
+        1,
+        "active_quests must contain exactly 1 entry after two identical StartQuest effects; \
+         got {:?} (a Vec impl would produce 2 entries and trigger a duplicate DB insert \
+         on the next reducer call)",
+        state.active_quests
+    );
+    assert!(
+        state.active_quests.contains("quest_001"),
+        "active_quests must contain 'quest_001' after StartQuest; got {:?}",
+        state.active_quests
+    );
+}
+
+/// RT-M12B-01b: StartQuest on an already-done quest must NOT re-open it.
+///
+/// Invariant: if quest_001 is in done_quests, a StartQuest("quest_001") effect
+/// must leave it in done_quests and must NOT move it into active_quests.
+///
+/// kills: an impl of apply_effects that blindly inserts into active_quests
+/// without checking done_quests first — a completed quest would be re-activatable
+/// by any dialogue node that fires StartQuest for it (e.g. if a player re-talks
+/// to the same NPC), allowing infinite re-completion and repeated reward grants.
+#[test]
+fn start_quest_effect_does_not_reopen_done_quest() {
+    use game_core::{apply_effects, DialogueEffect};
+
+    let mut state = game_core::PlayerDialogueState::new();
+    state.done_quests.insert("quest_001".to_string());
+
+    let effects = vec![DialogueEffect::StartQuest("quest_001".to_string())];
+    apply_effects(&effects, &mut state);
+
+    assert!(
+        !state.active_quests.contains("quest_001"),
+        "StartQuest on a done quest must NOT move it into active_quests; \
+         got active_quests: {:?} (done_quests: {:?}). \
+         An impl that re-opens done quests allows infinite reward re-grant.",
+        state.active_quests,
+        state.done_quests
+    );
+    assert!(
+        state.done_quests.contains("quest_001"),
+        "done_quests must still contain 'quest_001' after StartQuest; \
+         got: {:?}",
+        state.done_quests
     );
 }

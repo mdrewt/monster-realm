@@ -184,7 +184,7 @@ pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result
 }
 
 /// Minimum ms between heals (used by raising_tests.rs; heal_party uses loc.cooldown_ms).
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) const HEAL_COOLDOWN_MS: i64 = 30_000;
 
 /// Pure cooldown seam (testable without DB).
@@ -252,15 +252,12 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
     // reducer transaction rolls back (ACID), so no items are permanently lost.
     // Batch consume (cost_qty > 1) is deferred to M13 — current content has None cost.
     if let Some(item_id) = loc.cost_item_id {
-        if loc.cost_qty > 0 {
-            for _ in 0..loc.cost_qty {
-                consume_one(ctx, me, item_id)?;
-            }
+        for _ in 0..loc.cost_qty {
+            consume_one(ctx, me, item_id)?;
         }
     }
 
     // Step 8: heal all party monsters (party_slot != PARTY_SLOT_NONE)
-    use crate::marshal::pub_from_monster;
     use crate::PARTY_SLOT_NONE;
     let monster_ids: Vec<u64> = ctx
         .db

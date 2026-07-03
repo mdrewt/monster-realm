@@ -14,7 +14,7 @@
 
 use crate::content::sync_content_inner;
 use crate::movement::{movement_tick_schedule, MovementTickSchedule};
-use crate::schema::{character, config, player, zone_def, Config};
+use crate::schema::{character, config, player, player_conversation, zone_def, Config};
 use game_core::STEP_MS;
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
@@ -115,6 +115,9 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
 #[spacetimedb::reducer(client_disconnected)]
 pub fn on_disconnect(ctx: &ReducerContext) {
     let me = ctx.sender;
+    // Clean up transient conversation row so a reconnecting player cannot
+    // advance a stale dialogue from a different zone/position (RT-ADV-01).
+    ctx.db.player_conversation().owner_identity().delete(me);
     if let Some(p) = ctx.db.player().identity().find(me) {
         ctx.db.character().entity_id().delete(p.entity_id);
         ctx.db.player().identity().delete(me);
