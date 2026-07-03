@@ -131,9 +131,9 @@ function switchZone(newZoneId: number): void {
   try {
     const newRawMap = zone_map(newZoneId);
     TileMap.fromRaw(newRawMap); // validate BEFORE any mutation (12.5c-3) — throws on bad data
+    renderer?.setMap(newRawMap); // draw BEFORE committing zone state (RT-SZ-01: atomicity)
     set_active_zone(newZoneId);
     rawMap = newRawMap;
-    renderer?.setMap(rawMap); // renderer?.: no-op during pre-init (safe)
     resetPredictionState();
   } catch (err) {
     console.error('[zone-sync] zone switch to %s failed — keeping current zone', newZoneId, err);
@@ -532,7 +532,11 @@ function snapshot() {
     // calls switchZone(0), proving the state-based fix. NOT exposed via onOwnWarp or
     // switchZone; test-only. Never used in production paths.
     setRawMapZoneForTest: (zoneId: number) => {
-      rawMap = zone_map(zoneId);
+      try {
+        rawMap = zone_map(zoneId);
+      } catch (err) {
+        throw new Error(`[test] zone_map(${zoneId}) not found in content`, { cause: err });
+      }
     },
   };
 }

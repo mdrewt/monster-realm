@@ -32,11 +32,11 @@ if (own.row.zoneId !== rawMap.zone_id) {
 
 Every coherent server snapshot is now compared against the client's current zone. A character INSERTED at zone 0 after reconnect is caught on the first post-reconnect batch.
 
-### Idempotent `switchZone` (prevents double-switch)
+### Idempotent `switchZone` with renderer-first ordering (prevents double-switch and split-brain)
 
 Extract the zone-switch body into a module-level `switchZone(newZoneId)` function:
 - Guards `if (newZoneId === rawMap.zone_id) return` — idempotent, safe to call from both `onOwnWarp` and the reconcile listener.
-- Calls `TileMap.fromRaw(newRawMap)` **before** any state mutation (parse-before-mutate invariant).
+- Mutation order (RT-SZ-01): `zone_map()` → `TileMap.fromRaw()` (parse-validate) → `renderer?.setMap()` (draw FIRST) → `set_active_zone()` → `rawMap = newRawMap` → `resetPredictionState()`. Drawing happens before committing zone state so a Pixi/GPU throw inside `setMap` leaves `rawMap.zone_id` and the WASM zone unchanged — the catch block's "keeping current zone" claim is true.
 - Does **not** call `store.resetCharacters()` — the render filter (`currentZoneId` in `RenderResolver.resolve`) already excludes stale-zone characters. Idle remotes in the destination zone remain in the store and visible immediately.
 
 Keep `onOwnWarp` as a lower-latency live-warp path (fires in the SDK `onUpdate` callback, before the batch). Since `switchZone` is idempotent, the reconcile listener's follow-up check is a no-op.
@@ -67,5 +67,6 @@ Added to `window.__game()` for the e2e test (12.5c-5). Forces `rawMap = zone_map
 - **Reconnect-strand fixed:** Any disconnect scenario now resolves correctly on the first post-reconnect batch, regardless of which zone the player was in.
 - **Idle remote visibility:** Idle remotes are always visible after a zone switch (no `resetCharacters()` call on zone transition).
 - **rAF loop is resilient:** A single wasm throw no longer permanently halts rendering.
-- **Double-parse:** `TileMap.fromRaw` is called twice on a valid zone switch (once for pre-validation in `switchZone`, once inside `renderer.setMap`). Performance impact is negligible for the small zone maps (10×7 tiles).
+- **Zone-switch atomicity (RT-SZ-01):** `renderer?.setMap` is the first real side-effect; if it throws, `rawMap.zone_id` and the WASM zone remain unchanged. Gated by `client/src/net/switchZoneAtomicity.test.ts`.
+- **Double-parse:** `TileMap.fromRaw` is called twice on a valid zone switch (once for pre-validation, once inside `renderer.setMap`). Performance impact is negligible for the small zone maps (10×7 tiles).
 - **`renderer` at module scope:** Required for `switchZone` to call `renderer?.setMap()` without being inside `main()`. Assigned once during async init; `?.` guard is safe before init completes.
