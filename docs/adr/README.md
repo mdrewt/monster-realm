@@ -10,7 +10,7 @@ Architecture Decision Records live in **two locations**; check both.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0075`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0076`**.
 
 ## ADRs in `docs/adr/`
 
@@ -57,6 +57,7 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 | [0072](./0072-fuse-dual-write-ordering-fix.md) | Fuse offspring monster_pub dual-write ordering fix (insert-then-pub) | M12.5a |
 | [0073](./0073-content-sync-path-repair.md) | Content-sync path repair | M12.5b |
 | [0074](./0074-zone-sync-robustness.md) | Client zone-sync robustness — state-based reconcile, switchZone atomicity, rAF containment | M12.5c |
+| [0075](./0075-netcode-smoothness-m125d.md) | Netcode smoothness residuals — interp delay 1.0×STEP_MS, tile-center camera, predictor/render fixes | M12.5d |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
