@@ -22,6 +22,10 @@ const DOM_SHELLS = [
   'src/ui/boxView.ts',
   'src/ui/raisingView.ts',
   'src/ui/evolutionView.ts',
+  // M12d: dialogue/quest/heal DOM shells (ADR-0071)
+  'src/ui/dialogueView.ts',
+  'src/ui/questLogView.ts',
+  'src/ui/healView.ts',
 ];
 
 /**

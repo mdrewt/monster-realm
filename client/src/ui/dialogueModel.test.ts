@@ -1,0 +1,488 @@
+// ui/dialogueModel.test.ts — M12d red-phase tests for buildDialogueViewModel.
+// SOURCE OF TRUTH: docs/m12d-plan.md + docs/adr/0071-m12d-client-dialogue-quest-heal-ui.md
+//
+// Tests are INTENTIONALLY RED until dialogueModel.ts is implemented.
+// Do NOT edit these tests to match a buggy implementation — correct from the spec.
+//
+// Contract: buildDialogueViewModel(conv, npcs, content) -> DialogueViewModel | null
+//   - Returns null when no active conversation (conv undefined)
+//   - Returns null when NPC not found in npcs map
+//   - Returns correct npcName, nodeText, choices when all data present
+//   - Returns "..." when nodeId or treeId not in bundle (graceful degradation — NO throw)
+//   - TOTAL: never throws on any input combination
+//
+// Pattern follows evolutionModel.test.ts: pure function, no DOM, no SDK.
+// All inputs are plain objects; deterministic; node-only.
+
+import * as fc from 'fast-check';
+import { describe, expect, it } from 'vitest';
+import { buildDialogueViewModel } from './dialogueModel';
+
+// ---------------------------------------------------------------------------
+// Local type definitions (mirrors of what store.ts + dialogueContent.ts will export).
+// Defined here so tests start red for the right reason (missing impl, not bad imports).
+// ---------------------------------------------------------------------------
+
+interface StorePlayerConversation {
+  ownerIdentity: string;
+  npcEntityId: bigint;
+  currentNodeId: string;
+}
+
+interface StoreNpcRow {
+  entityId: bigint;
+  npcId: string;
+  zoneId: number;
+  homeX: number;
+  homeY: number;
+  wanderRadius: number;
+  dialogueTreeId: string;
+}
+
+interface ClientDialogueNode {
+  text: string;
+  choices: readonly { text: string }[];
+}
+
+interface ClientDialogueTree {
+  rootNodeId: string;
+  nodes: ReadonlyMap<string, ClientDialogueNode>;
+}
+
+// ---------------------------------------------------------------------------
+// Factories
+// ---------------------------------------------------------------------------
+
+function makeConv(
+  npcEntityId: bigint,
+  currentNodeId = 'greeting',
+  ownerIdentity = 'player-hex',
+): StorePlayerConversation {
+  return { ownerIdentity, npcEntityId, currentNodeId };
+}
+
+function makeNpc(entityId: bigint, overrides: Partial<StoreNpcRow> = {}): StoreNpcRow {
+  return {
+    entityId,
+    npcId: `npc-${entityId}`,
+    zoneId: 0,
+    homeX: 5,
+    homeY: 5,
+    wanderRadius: 2,
+    dialogueTreeId: 'elder_oak_talk',
+    ...overrides,
+  };
+}
+
+function makeTree(
+  rootNodeId: string,
+  nodes: ReadonlyMap<string, ClientDialogueNode>,
+): ClientDialogueTree {
+  return { rootNodeId, nodes };
+}
+
+function makeNode(text: string, choices: readonly { text: string }[] = []): ClientDialogueNode {
+  return { text, choices };
+}
+
+// ---------------------------------------------------------------------------
+// Criterion 1 — Returns null when conv is undefined
+// ---------------------------------------------------------------------------
+
+describe('buildDialogueViewModel criterion 1: returns null when conv is undefined', () => {
+  it('BITES: conv=undefined → null (no conversation active)', () => {
+    // Kills: an impl that throws when conv is undefined or returns a default VM.
+    // Server SSOT: no server row = no conversation = null from model.
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, makeNpc(1n)]]);
+    const content = new Map<string, ClientDialogueTree>([
+      ['elder_oak_talk', makeTree('greeting', new Map([['greeting', makeNode('Hello')]]))],
+    ]);
+    const result = buildDialogueViewModel(undefined, npcs, content);
+    expect(result).toBeNull();
+  });
+
+  it('BITES: conv=undefined with empty maps → null (no throw)', () => {
+    // Kills: an impl that throws when all maps are empty and conv is undefined.
+    expect(() => {
+      const result = buildDialogueViewModel(undefined, new Map(), new Map());
+      expect(result).toBeNull();
+    }).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Criterion 2 — Returns null when NPC not found in npcs map
+// ---------------------------------------------------------------------------
+
+describe('buildDialogueViewModel criterion 2: returns null when NPC not found', () => {
+  it('BITES: conv references npcEntityId=99n but npcs map is empty → null', () => {
+    // Kills: an impl that throws on missing NPC lookup or returns a partial VM.
+    // The conversation row exists but the NPC row hasn't arrived yet (timing race).
+    const conv = makeConv(99n);
+    const result = buildDialogueViewModel(conv, new Map(), new Map());
+    expect(result).toBeNull();
+  });
+
+  it('BITES: conv references npcEntityId=2n but only npcEntityId=1n is in npcs → null', () => {
+    // Kills: an impl that returns the first NPC in the map regardless of entityId match.
+    const conv = makeConv(2n);
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, makeNpc(1n)]]);
+    const result = buildDialogueViewModel(conv, npcs, new Map());
+    expect(result).toBeNull();
+  });
+
+  it('BITES: does NOT throw when NPC is missing (graceful null, not exception)', () => {
+    // A throw here would starve sibling batch listeners (one-way flow rule).
+    expect(() => {
+      buildDialogueViewModel(makeConv(42n), new Map(), new Map());
+    }).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Criterion 3 — Returns correct npcName from NPC's npcId
+// ---------------------------------------------------------------------------
+
+describe('buildDialogueViewModel criterion 3: npcName resolved from npcId', () => {
+  it('BITES: npcId="elder_oak" → npcName="elder_oak" in the VM', () => {
+    // Kills: an impl that uses entityId instead of npcId for the display name,
+    // or that uses dialogueTreeId as the name.
+    const conv = makeConv(1n, 'greeting');
+    const npc = makeNpc(1n, { npcId: 'elder_oak', dialogueTreeId: 'elder_oak_talk' });
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+    const content = new Map<string, ClientDialogueTree>([
+      ['elder_oak_talk', makeTree('greeting', new Map([['greeting', makeNode('Hello')]]))],
+    ]);
+    const result = buildDialogueViewModel(conv, npcs, content);
+    expect(result).not.toBeNull();
+    expect(result!.npcName).toBe('elder_oak');
+  });
+
+  it('BITES: npcId is passed through verbatim (no transformation, no truncation)', () => {
+    // Kills: an impl that transforms the npcId (e.g. capitalizes or splits on underscores).
+    const conv = makeConv(5n);
+    const npc = makeNpc(5n, { npcId: 'weird_npc_name_with_numbers_42' });
+    const npcs = new Map<bigint, StoreNpcRow>([[5n, npc]]);
+    const content = new Map<string, ClientDialogueTree>([
+      ['elder_oak_talk', makeTree('n1', new Map([['n1', makeNode('Hi')]]))],
+    ]);
+    const result = buildDialogueViewModel(conv, npcs, content);
+    expect(result).not.toBeNull();
+    expect(result!.npcName).toBe('weird_npc_name_with_numbers_42');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Criterion 4 — Returns correct nodeText when node is in the content bundle
+// ---------------------------------------------------------------------------
+
+describe('buildDialogueViewModel criterion 4: nodeText from content bundle', () => {
+  it('BITES: currentNodeId="greeting" present in bundle → nodeText="The ancient oak spirit greets you."', () => {
+    // Kills: an impl that ignores the bundle and returns the nodeId as text,
+    // or that always returns "...".
+    const conv = makeConv(1n, 'greeting');
+    const npc = makeNpc(1n, { dialogueTreeId: 'elder_oak_talk' });
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+    const greetingNode = makeNode('The ancient oak spirit greets you.', [
+      { text: 'I seek a quest.' },
+    ]);
+    const content = new Map<string, ClientDialogueTree>([
+      ['elder_oak_talk', makeTree('greeting', new Map([['greeting', greetingNode]]))],
+    ]);
+    const result = buildDialogueViewModel(conv, npcs, content);
+    expect(result).not.toBeNull();
+    expect(result!.nodeText).toBe('The ancient oak spirit greets you.');
+  });
+
+  it('BITES: content bundle uses the dialogueTreeId from the NPC row as lookup key (not npcId)', () => {
+    // Kills: an impl that looks up content by npcId instead of dialogueTreeId.
+    // NPC npcId="village_elder" but dialogueTreeId="intro_tree" — must look up "intro_tree".
+    const conv = makeConv(7n, 'start');
+    const npc = makeNpc(7n, { npcId: 'village_elder', dialogueTreeId: 'intro_tree' });
+    const npcs = new Map<bigint, StoreNpcRow>([[7n, npc]]);
+    const content = new Map<string, ClientDialogueTree>([
+      ['intro_tree', makeTree('start', new Map([['start', makeNode('Welcome, traveller.')]]))],
+      [
+        'village_elder',
+        makeTree('x', new Map([['x', makeNode('WRONG — this is indexed by npcId')]])),
+      ],
+    ]);
+    const result = buildDialogueViewModel(conv, npcs, content);
+    expect(result).not.toBeNull();
+    expect(result!.nodeText).toBe('Welcome, traveller.');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Criterion 5 — Returns "..." when nodeId NOT in bundle (graceful degradation)
+// ---------------------------------------------------------------------------
+
+describe('buildDialogueViewModel criterion 5: "..." when node not in bundle', () => {
+  it('BITES: nodeId="unknown_node" not in tree nodes → nodeText="..."', () => {
+    // This is the ADR-0071 graceful degradation contract: a bundle/server mismatch
+    // shows "..." rather than throwing or showing a raw id.
+    // Kills: an impl that throws on Map.get() returning undefined for nodeId.
+    const conv = makeConv(1n, 'unknown_node');
+    const npc = makeNpc(1n, { dialogueTreeId: 'elder_oak_talk' });
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+    const content = new Map<string, ClientDialogueTree>([
+      ['elder_oak_talk', makeTree('greeting', new Map([['greeting', makeNode('Hello')]]))],
+    ]);
+    const result = buildDialogueViewModel(conv, npcs, content);
+    expect(result).not.toBeNull();
+    expect(result!.nodeText).toBe('...');
+  });
+
+  it('BITES: "..." node returns empty choices array (no crash from partial bundle)', () => {
+    // Kills: an impl that tries to read choices from a missing node and throws.
+    const conv = makeConv(1n, 'missing_node');
+    const npc = makeNpc(1n, { dialogueTreeId: 'elder_oak_talk' });
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+    const content = new Map<string, ClientDialogueTree>([
+      ['elder_oak_talk', makeTree('greeting', new Map([['greeting', makeNode('Hello')]]))],
+    ]);
+    const result = buildDialogueViewModel(conv, npcs, content);
+    expect(result).not.toBeNull();
+    expect(result!.nodeText).toBe('...');
+    expect(Array.isArray(result!.choices)).toBe(true);
+    expect(result!.choices).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Criterion 6 — Returns "..." when tree not in bundle (no NPC tree found)
+// ---------------------------------------------------------------------------
+
+describe('buildDialogueViewModel criterion 6: "..." when tree not in bundle', () => {
+  it('BITES: dialogueTreeId="nonexistent_tree" not in content map → nodeText="..."', () => {
+    // Kills: an impl that throws when content.get(dialogueTreeId) returns undefined.
+    const conv = makeConv(1n, 'greeting');
+    const npc = makeNpc(1n, { dialogueTreeId: 'nonexistent_tree' });
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+    const content = new Map<string, ClientDialogueTree>([
+      ['elder_oak_talk', makeTree('greeting', new Map([['greeting', makeNode('Hello')]]))],
+    ]);
+    const result = buildDialogueViewModel(conv, npcs, content);
+    expect(result).not.toBeNull();
+    expect(result!.nodeText).toBe('...');
+  });
+
+  it('BITES: empty content map → nodeText="..." with no throw', () => {
+    // Kills: an impl that assumes content is always populated.
+    const conv = makeConv(1n, 'greeting');
+    const npc = makeNpc(1n, { dialogueTreeId: 'elder_oak_talk' });
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+    expect(() => {
+      const result = buildDialogueViewModel(conv, npcs, new Map());
+      expect(result).not.toBeNull();
+      expect(result!.nodeText).toBe('...');
+    }).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Criterion 7 — Returns choices with correct text and idx
+// ---------------------------------------------------------------------------
+
+describe('buildDialogueViewModel criterion 7: choices array with correct text and idx', () => {
+  it('BITES: one choice → choices has one entry with text and idx=0', () => {
+    // Kills: an impl that drops choices or uses 1-based indexing.
+    // Choice index 0 is what advance_dialogue sends to the server.
+    const conv = makeConv(1n, 'greeting');
+    const npc = makeNpc(1n, { dialogueTreeId: 'elder_oak_talk' });
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+    const greetingNode = makeNode('Hello', [{ text: 'I seek a quest.' }]);
+    const content = new Map<string, ClientDialogueTree>([
+      ['elder_oak_talk', makeTree('greeting', new Map([['greeting', greetingNode]]))],
+    ]);
+    const result = buildDialogueViewModel(conv, npcs, content);
+    expect(result).not.toBeNull();
+    expect(result!.choices).toHaveLength(1);
+    expect(result!.choices[0]!.text).toBe('I seek a quest.');
+    expect(result!.choices[0]!.idx).toBe(0);
+  });
+
+  it('BITES: two choices → idx=0 for first, idx=1 for second (advance_dialogue sends this)', () => {
+    // Critical: the server validates choice_idx sent by the client. A 1-based
+    // or swapped idx would cause the server to reject or execute the wrong branch.
+    // Kills: an impl that uses 1-based index or reverses choice order.
+    const conv = makeConv(1n, 'greeting');
+    const npc = makeNpc(1n, { dialogueTreeId: 'elder_oak_talk' });
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+    const greetingNode = makeNode('Hello', [{ text: 'First choice' }, { text: 'Second choice' }]);
+    const content = new Map<string, ClientDialogueTree>([
+      ['elder_oak_talk', makeTree('greeting', new Map([['greeting', greetingNode]]))],
+    ]);
+    const result = buildDialogueViewModel(conv, npcs, content);
+    expect(result).not.toBeNull();
+    expect(result!.choices).toHaveLength(2);
+    expect(result!.choices[0]!.text).toBe('First choice');
+    expect(result!.choices[0]!.idx).toBe(0);
+    expect(result!.choices[1]!.text).toBe('Second choice');
+    expect(result!.choices[1]!.idx).toBe(1);
+  });
+
+  it('BITES: three choices → idx values are 0, 1, 2 in order (not reversed, not shuffled)', () => {
+    // Kills: an impl that reverses, sorts, or shuffles choices.
+    const conv = makeConv(1n, 'greeting');
+    const npc = makeNpc(1n);
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+    const choices = [{ text: 'Option A' }, { text: 'Option B' }, { text: 'Option C' }];
+    const content = new Map<string, ClientDialogueTree>([
+      ['elder_oak_talk', makeTree('greeting', new Map([['greeting', makeNode('Hello', choices)]]))],
+    ]);
+    const result = buildDialogueViewModel(conv, npcs, content);
+    expect(result).not.toBeNull();
+    expect(result!.choices).toHaveLength(3);
+    for (let i = 0; i < 3; i++) {
+      expect(result!.choices[i]!.idx).toBe(i);
+      expect(result!.choices[i]!.text).toBe(choices[i]!.text);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Criterion 8 — Empty choices array when node has no choices
+// ---------------------------------------------------------------------------
+
+describe('buildDialogueViewModel criterion 8: empty choices when node has no choices', () => {
+  it('BITES: node with zero choices → choices=[] (not null, not undefined)', () => {
+    // Kills: an impl that returns null instead of [] or that omits the choices field.
+    const conv = makeConv(1n, 'terminal');
+    const npc = makeNpc(1n);
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+    const terminalNode = makeNode('Farewell, traveller.', []);
+    const content = new Map<string, ClientDialogueTree>([
+      ['elder_oak_talk', makeTree('terminal', new Map([['terminal', terminalNode]]))],
+    ]);
+    const result = buildDialogueViewModel(conv, npcs, content);
+    expect(result).not.toBeNull();
+    expect(Array.isArray(result!.choices)).toBe(true);
+    expect(result!.choices).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Criterion 9 — TOTAL: never throws on any input combination
+// ---------------------------------------------------------------------------
+
+describe('buildDialogueViewModel criterion 9: total function — never throws', () => {
+  it('BITES: all-empty inputs with conv defined → no throw', () => {
+    // A throw here would starve batch listeners (store.flushBatch has NO isolation).
+    expect(() => {
+      buildDialogueViewModel(makeConv(1n), new Map(), new Map());
+    }).not.toThrow();
+  });
+
+  it('BITES: npcEntityId=0n (bigint zero treated as falsy in some impls) → no throw', () => {
+    // Kills: an impl that guards `if (!npcEntityId)` and crashes or skips the lookup.
+    const conv = makeConv(0n);
+    const npc = makeNpc(0n);
+    const npcs = new Map<bigint, StoreNpcRow>([[0n, npc]]);
+    const content = new Map<string, ClientDialogueTree>([
+      ['elder_oak_talk', makeTree('g', new Map([['g', makeNode('Hi')]]))],
+    ]);
+    expect(() => {
+      buildDialogueViewModel(conv, npcs, content);
+    }).not.toThrow();
+  });
+
+  it('BITES: currentNodeId="" (empty string) → no throw, returns "..." or node from bundle', () => {
+    // Kills: an impl that throws on empty nodeId.
+    const conv = makeConv(1n, '');
+    const npc = makeNpc(1n);
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+    expect(() => {
+      buildDialogueViewModel(conv, npcs, new Map());
+    }).not.toThrow();
+  });
+
+  it('BITES: conv=undefined + empty maps → null, no throw', () => {
+    expect(() => {
+      const r = buildDialogueViewModel(undefined, new Map(), new Map());
+      expect(r).toBeNull();
+    }).not.toThrow();
+  });
+
+  it('BITES fast-check: never throws for any structurally valid input', () => {
+    // Property: no combination of valid-typed inputs should crash the pure model.
+    // Kills: any impl with uncaught Map.get() access or missing null-check.
+    fc.assert(
+      fc.property(
+        fc.option(
+          fc.record({
+            ownerIdentity: fc.string({ maxLength: 20 }),
+            npcEntityId: fc.bigInt({ min: 0n, max: 999n }),
+            currentNodeId: fc.string({ maxLength: 20 }),
+          }),
+        ),
+        (conv) => {
+          expect(() => {
+            buildDialogueViewModel(conv ?? undefined, new Map(), new Map());
+          }).not.toThrow();
+        },
+      ),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Criterion 10 — Choice indices match bundle array index (0-based)
+// ---------------------------------------------------------------------------
+
+describe('buildDialogueViewModel criterion 10: idx is array index (0-based)', () => {
+  it('BITES fast-check: for N choices, idx[i] === i for all i', () => {
+    // Property: the idx field must be the zero-based array index regardless of choice count.
+    // Kills: any impl that uses 1-based, reverse, or non-sequential idx values.
+    fc.assert(
+      fc.property(fc.integer({ min: 0, max: 10 }), (choiceCount) => {
+        const choices = Array.from({ length: choiceCount }, (_, i) => ({ text: `Option ${i}` }));
+        const conv = makeConv(1n, 'node');
+        const npc = makeNpc(1n);
+        const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+        const content = new Map<string, ClientDialogueTree>([
+          ['elder_oak_talk', makeTree('node', new Map([['node', makeNode('Text', choices)]]))],
+        ]);
+        const result = buildDialogueViewModel(conv, npcs, content);
+        if (result === null) {
+          // should not be null with valid NPC — fail to surface the bug
+          expect(result).not.toBeNull();
+          return;
+        }
+        expect(result.choices).toHaveLength(choiceCount);
+        for (let i = 0; i < choiceCount; i++) {
+          expect(result.choices[i]!.idx).toBe(i);
+        }
+      }),
+    );
+  });
+
+  it('BITES: DialogueViewModel has all required fields (shape contract)', () => {
+    // Kills: an impl that omits npcName, nodeText, choices, or canDismiss.
+    const conv = makeConv(1n, 'greeting');
+    const npc = makeNpc(1n, { npcId: 'elder_oak', dialogueTreeId: 'elder_oak_talk' });
+    const npcs = new Map<bigint, StoreNpcRow>([[1n, npc]]);
+    const content = new Map<string, ClientDialogueTree>([
+      [
+        'elder_oak_talk',
+        makeTree(
+          'greeting',
+          new Map([
+            ['greeting', makeNode('The ancient oak greets you.', [{ text: 'Tell me more.' }])],
+          ]),
+        ),
+      ],
+    ]);
+    const result = buildDialogueViewModel(conv, npcs, content);
+    expect(result).not.toBeNull();
+    expect(result).toHaveProperty('npcName');
+    expect(result).toHaveProperty('nodeText');
+    expect(result).toHaveProperty('choices');
+    expect(result).toHaveProperty('canDismiss');
+    // Spot-check values
+    expect(result!.npcName).toBe('elder_oak');
+    expect(result!.nodeText).toBe('The ancient oak greets you.');
+    expect(Array.isArray(result!.choices)).toBe(true);
+    expect(typeof result!.canDismiss).toBe('boolean');
+  });
+});
