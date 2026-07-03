@@ -32,12 +32,4 @@ export class QuestLogView {
   hide(): void {
     this.overlay.style.display = 'none';
   }
-
-  toggle(): void {
-    if (this.visible) {
-      this.hide();
-    } else {
-      this.overlay.style.display = 'block';
-    }
-  }
 }

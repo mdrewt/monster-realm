@@ -16,6 +16,7 @@
 
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import { DIALOGUE_TREES } from './dialogueContent';
 import { buildDialogueViewModel } from './dialogueModel';
 
 // ---------------------------------------------------------------------------
@@ -572,5 +573,79 @@ describe('buildDialogueViewModel criterion 10: idx is array index (0-based)', ()
     const result = buildDialogueViewModel(conv, npcs, content);
     expect(result).not.toBeNull();
     expect(result!.canDismiss).toBe(true);
+  });
+});
+
+// =============================================================================
+// M12d gating: dialogueContent.ts bundle text must match 000-core.ron
+//
+// FINDING: game-core/content/dialogue_trees/000-core.ron node "greeting" has
+//   text: "The ancient oak spirit greets you."
+// but dialogueContent.ts bundles:
+//   text: 'Welcome, traveler. The forest has been restless of late.'
+// The C6 eval cross-ref checks node IDs and choice *counts* but NOT the actual
+// text. This mismatch is invisible to every passing test and eval because:
+//   - The eval only verifies node id presence and choice count.
+//   - dialogueModel.test.ts Criterion 4 uses inline makeNode() test data, not
+//     the real DIALOGUE_TREES import — it never reads dialogueContent.ts.
+//   - No test imports both the real DIALOGUE_TREES constant and the RON text.
+//
+// A player talking to the Elder Oak NPC will see the wrong greeting. The
+// DIALOGUE_TREES constant used in production is imported from dialogueContent.ts;
+// build the model against it and assert the canonical RON text is rendered.
+// =============================================================================
+
+describe('M12d gating: dialogueContent.ts bundle text matches 000-core.ron (RT-DLG-01)', () => {
+  it('GATING: elder_oak_talk/greeting node text matches the RON source exactly', () => {
+    // The RON source (000-core.ron) text for node "greeting" is:
+    //   "The ancient oak spirit greets you."
+    // dialogueContent.ts currently bundles:
+    //   "Welcome, traveler. The forest has been restless of late."
+    // A player will see the wrong text in production. This test locks the
+    // canonical text so bundle drift is caught by CI.
+    const conv: StorePlayerConversation = {
+      ownerIdentity: 'player-hex',
+      npcEntityId: 1n,
+      currentNodeId: 'greeting',
+    };
+    const npc: StoreNpcRow = {
+      entityId: 1n,
+      npcId: 'elder_oak',
+      zoneId: 0,
+      homeX: 5,
+      homeY: 5,
+      wanderRadius: 2,
+      dialogueTreeId: 'elder_oak_talk',
+    };
+    const npcs = new Map([[1n, npc]]);
+    const result = buildDialogueViewModel(conv, npcs, DIALOGUE_TREES);
+    expect(result).not.toBeNull();
+    // Canonical text from 000-core.ron — fix dialogueContent.ts to match.
+    expect(result!.nodeText).toBe('The ancient oak spirit greets you.');
+  });
+
+  it('GATING: elder_oak_talk has exactly 1 choice with text "I seek a quest." (matches RON)', () => {
+    // The C6 eval already checks choice count (1) but not the choice text.
+    // This pins the exact text so a bundle editor cannot swap choice text silently.
+    const conv: StorePlayerConversation = {
+      ownerIdentity: 'player-hex',
+      npcEntityId: 1n,
+      currentNodeId: 'greeting',
+    };
+    const npc: StoreNpcRow = {
+      entityId: 1n,
+      npcId: 'elder_oak',
+      zoneId: 0,
+      homeX: 5,
+      homeY: 5,
+      wanderRadius: 2,
+      dialogueTreeId: 'elder_oak_talk',
+    };
+    const npcs = new Map([[1n, npc]]);
+    const result = buildDialogueViewModel(conv, npcs, DIALOGUE_TREES);
+    expect(result).not.toBeNull();
+    expect(result!.choices).toHaveLength(1);
+    expect(result!.choices[0]!.text).toBe('I seek a quest.');
+    expect(result!.choices[0]!.idx).toBe(0);
   });
 });

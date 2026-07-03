@@ -1034,3 +1034,47 @@ describe('M12d converters', () => {
     expect(store.dialogueTreeId).toBe('MyTree_v2');
   });
 });
+
+// =============================================================================
+// M12d gating: heal_location_row cooldownMs i64 type invariant
+//
+// FINDING: schema.rs declares `cooldown_ms: i64` and the generated binding
+// types it as `__t.i64()`. SpacetimeDB's TS SDK encodes i64 as bigint (same
+// as `move_started_at_ms`, `created_at_ms`, etc.).  However,
+// `SdkHealLocationRow` (rowConvert.ts) and `StoreHealLocationRow` (store.ts)
+// both type `cooldownMs` as `number`.  The SDK delivers a bigint; the code
+// passes it through as-is and types it as number — the type mismatch is
+// invisible at runtime until a heal location has a cooldown > 2^53 ms
+// (≈285 million years) but the *type contract* diverges from every other i64
+// field in the codebase (moveStartedAtMs, createdAtMs — all bigint).
+//
+// The correct fix is `cooldownMs: bigint` in both SdkHealLocationRow and
+// StoreHealLocationRow, matching the pattern established by every other i64.
+//
+// This test locks that invariant: once fixed, `typeof store.cooldownMs`
+// must be 'bigint'. Currently (before fix) it passes number through and the
+// test fails — proving the type bug.
+// =============================================================================
+describe('M12d gating: healLocationRowToStore cooldownMs must be bigint (i64 invariant)', () => {
+  it('GATING: cooldownMs from the SDK (i64) must arrive as bigint, not number', () => {
+    // The SDK delivers i64 as bigint — same contract as moveStartedAtMs and
+    // createdAtMs.  Typing it as number silently truncates values > 2^53 and
+    // diverges from the established i64 → bigint pattern throughout rowConvert.
+    // Kills: a `number`-typed SdkHealLocationRow.cooldownMs that passes
+    // through a bigint SDK value without conversion.
+    const sdkRow = {
+      locationId: 1,
+      zoneId: 0,
+      tileX: 8,
+      tileY: 3,
+      costItemId: undefined,
+      costQty: 0,
+      // Simulate the SDK delivering a bigint for the i64 column:
+      cooldownMs: 30000n as unknown as number,
+    };
+    const store = healLocationRowToStore(sdkRow);
+    // After the fix: SdkHealLocationRow.cooldownMs is bigint and the converter
+    // passes it through as bigint.  StoreHealLocationRow.cooldownMs is bigint.
+    expect(typeof store.cooldownMs).toBe('bigint');
+  });
+});

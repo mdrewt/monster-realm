@@ -19,7 +19,7 @@ export const DIALOGUE_TREES: ReadonlyMap<string, ClientDialogueTree> = new Map([
         [
           'greeting',
           {
-            text: 'Welcome, traveler. The forest has been restless of late.',
+            text: 'The ancient oak spirit greets you.',
             choices: [{ text: 'I seek a quest.', nextNodeId: null }],
           },
         ],

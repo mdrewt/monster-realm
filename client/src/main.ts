@@ -394,21 +394,27 @@ store.onBatchApplied(() => {
     const dialogueVm = buildDialogueViewModel(conv, npcsMap, DIALOGUE_TREES);
     dialogueView?.render(dialogueVm);
     if (!conv) dismissPending = false; // reset on server-side dismiss
-  } catch (_) {}
+  } catch (err) {
+    console.error('[M12d] dialogue batch listener error', err);
+  }
 });
 
 store.onBatchApplied(() => {
   try {
     const quests = store.ownQuests(identity);
     questLogView?.render(buildQuestLogViewModel(quests));
-  } catch (_) {}
+  } catch (err) {
+    console.error('[M12d] questLog batch listener error', err);
+  }
 });
 
 store.onBatchApplied(() => {
   try {
     const itemDefs = store.itemDefs();
     healView?.render(buildHealViewModel(store.healLocations(), itemDefs));
-  } catch (_) {}
+  } catch (err) {
+    console.error('[M12d] heal batch listener error', err);
+  }
 });
 
 // --- M12d: dialogue choice click handler -----------------------------------------
