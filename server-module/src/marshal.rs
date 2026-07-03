@@ -300,7 +300,15 @@ pub(crate) fn battle_monster_from_row(
             sp_attack: monster.stat_sp_attack,
             sp_defense: monster.stat_sp_defense,
         },
-        known_skill_ids: skills.iter().map(|s| s.id).collect(),
+        // Canonical content order: iterate species.learnable_skill_ids and retain
+        // only those present in the provided skills slice (mirrors wild_battle_monster,
+        // so owned and wild monsters have the same ordering — ADR-0077 12.5e-4).
+        known_skill_ids: species
+            .learnable_skill_ids
+            .iter()
+            .copied()
+            .filter(|id| skills.iter().any(|s| s.id == *id))
+            .collect(),
     })
 }
 

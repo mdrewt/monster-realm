@@ -644,64 +644,142 @@ pub(crate) fn write_back_battle_results(
     // loss/flee/win without a recruit attempt).
     ctx.db.battle_wild().battle_id().delete(battle.battle_id);
 
-    // Grant XP if the player won.
+    // GC prior terminal battles for this player (12.5e-1, ADR-0077).
+    // Ordering invariant: the current battle's DB row is still Ongoing at this
+    // call site — all callers (submit_attack, swap_active, flee) call update()
+    // AFTER write_back_battle_results returns. So filtering outcome != Ongoing
+    // only targets prior terminals, never the in-flight battle. After the
+    // caller's update(), exactly one terminal battle remains per player,
+    // preserving the client's M8.7e outcome frame (keep-latest-per-player).
+    let player = battle.player_identity;
+    let old_terminal_ids: Vec<u64> = ctx
+        .db
+        .battle()
+        .player_identity()
+        .filter(player)
+        .filter(|b| b.state.outcome != BattleOutcome::Ongoing)
+        .map(|b| b.battle_id)
+        .collect();
+    for id in old_terminal_ids {
+        ctx.db.battle().battle_id().delete(id);
+    }
+
+    // Grant XP if the player won (12.5e-3: log-and-continue on parse failures —
+    // one corrupt row must not make a battle unwinnable; mirrors movement_tick
+    // per-character philosophy, ADR-0077).
     if battle.state.outcome == BattleOutcome::SideAWins {
         // Find the loser's species base stat total for the XP formula.
+        // On missing species: log and skip the entire XP section — without the
+        // BST no per-monster XP can be computed. The battle still resolves.
         let loser_active = battle.state.side_b.active_monster();
-        let loser_species = ctx
-            .db
-            .species_row()
-            .id()
-            .find(loser_active.species_id)
-            .ok_or_else(|| format!("loser species {} not found", loser_active.species_id))?;
+        let Some(loser_species) = ctx.db.species_row().id().find(loser_active.species_id) else {
+            log::error!(
+                "{{\"evt\":\"xp_skip_loser_species\",\"battle_id\":{},\"species_id\":{}}}",
+                battle.battle_id,
+                loser_active.species_id
+            );
+            return Ok(());
+        };
         let bst = loser_base_stat_total(&loser_species);
+        // loser_lvl is loop-invariant — parse once here so a corrupt loser level
+        // skips the entire XP section (not N×log once per winner monster).
+        let loser_lvl = match game_core::Level::new(loser_active.level) {
+            Ok(l) => l,
+            Err(e) => {
+                log::error!(
+                    "{{\"evt\":\"xp_skip_loser_level\",\"battle_id\":{},\"loser_species_id\":{},\"reason\":\"{e}\"}}",
+                    battle.battle_id,
+                    loser_active.species_id
+                );
+                return Ok(());
+            }
+        };
 
         // Award XP to each conscious member of the winning team.
         for (i, bm) in battle.state.side_a.team.iter().enumerate() {
             if bm.is_fainted() {
                 continue;
             }
+            // Can't fail: check_team_coupling asserted same lengths above.
             let &mid = battle.party_monster_ids.get(i).ok_or_else(|| {
                 format!("write_back_battle_results: party_monster_ids index {i} out of range")
             })?;
-            if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
-                let winner_lvl = game_core::Level::new(bm.level)?;
-                let loser_lvl = game_core::Level::new(loser_active.level)?;
-                let xp_gained = battle_xp_reward(winner_lvl, bst, loser_lvl);
-                let current_xp = game_core::Xp::new(m.xp);
-                let (new_xp, new_level, leveled_up) = apply_xp_gain(current_xp, xp_gained);
-                m.xp = new_xp.value();
-                m.level = new_level.as_u8();
-                if leveled_up {
-                    // Recompute derived stats on level-up.
-                    let sp = ctx.db.species_row().id().find(m.species_id);
-                    if let Some(species) = sp {
-                        let base = StatBlock {
-                            hp: species.base_hp,
-                            attack: species.base_attack,
-                            defense: species.base_defense,
-                            speed: species.base_speed,
-                            sp_attack: species.base_sp_attack,
-                            sp_defense: species.base_sp_defense,
-                        };
-                        let ivs = game_core::IVs::new(
+            let Some(mut m) = ctx.db.monster().monster_id().find(mid) else {
+                continue;
+            };
+
+            // Parse winner level — log-and-continue on corrupt data.
+            let winner_lvl = match game_core::Level::new(bm.level) {
+                Ok(l) => l,
+                Err(e) => {
+                    log::error!(
+                        "{{\"evt\":\"xp_skip_level\",\"monster_id\":{mid},\"reason\":\"{e}\"}}",
+                    );
+                    continue;
+                }
+            };
+            let xp_gained = battle_xp_reward(winner_lvl, bst, loser_lvl);
+            let current_xp = game_core::Xp::new(m.xp);
+            let (new_xp, new_level, leveled_up) = apply_xp_gain(current_xp, xp_gained);
+            m.xp = new_xp.value();
+            m.level = new_level.as_u8();
+
+            if leveled_up {
+                // Recompute derived stats on level-up. Stat-recompute failures are
+                // logged and skipped (XP/level already written above); `level_up_healed_hp`
+                // and `compute_evolves_to` remain the SSOT (ADR-0003, ADR-0073).
+                if let Some(species) = ctx.db.species_row().id().find(m.species_id) {
+                    let base = StatBlock {
+                        hp: species.base_hp,
+                        attack: species.base_attack,
+                        defense: species.base_defense,
+                        speed: species.base_speed,
+                        sp_attack: species.base_sp_attack,
+                        sp_defense: species.base_sp_defense,
+                    };
+                    'stat_recompute: {
+                        let ivs = match game_core::IVs::new(
                             m.iv_hp,
                             m.iv_attack,
                             m.iv_defense,
                             m.iv_speed,
                             m.iv_sp_attack,
                             m.iv_sp_defense,
-                        )?;
-                        let evs = game_core::EVs::new(
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                log::error!(
+                                    "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"ivs: {e}\"}}",
+                                );
+                                break 'stat_recompute;
+                            }
+                        };
+                        let evs = match game_core::EVs::new(
                             m.ev_hp,
                             m.ev_attack,
                             m.ev_defense,
                             m.ev_speed,
                             m.ev_sp_attack,
                             m.ev_sp_defense,
-                        )?;
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                log::error!(
+                                    "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"evs: {e}\"}}",
+                                );
+                                break 'stat_recompute;
+                            }
+                        };
                         let nature = game_core::Nature::new(m.nature_kind);
-                        let lvl = game_core::Level::new(m.level)?;
+                        let lvl = match game_core::Level::new(m.level) {
+                            Ok(l) => l,
+                            Err(e) => {
+                                log::error!(
+                                    "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"level: {e}\"}}",
+                                );
+                                break 'stat_recompute;
+                            }
+                        };
                         let derived = game_core::derive_stats(&base, &ivs, &evs, &nature, lvl);
                         m.stat_hp = derived.hp;
                         m.stat_attack = derived.attack;
@@ -714,11 +792,16 @@ pub(crate) fn write_back_battle_results(
                         m.current_hp = level_up_healed_hp(m.current_hp, bm.max_hp, derived.hp);
                         // Recompute evolves_to after level-up (12.5b-4, ADR-0073).
                         // Scoped inside `if leveled_up { if let Some(species) }` because:
-                        // (a) only a level change can unlock a new level-based evolution branch;
-                        // (b) a parse failure must fail-loud (not silently zero evolves_to).
-                        let all_evolutions = load_evolutions().map_err(|e| {
-                            format!("write_back_battle_results: load_evolutions failed: {e}")
-                        })?;
+                        // only a level change can unlock a new level-based evolution branch.
+                        let all_evolutions = match load_evolutions() {
+                            Ok(v) => v,
+                            Err(e) => {
+                                log::error!(
+                                    "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"load_evolutions: {e}\"}}",
+                                );
+                                break 'stat_recompute;
+                            }
+                        };
                         let monster_evolutions = all_evolutions
                             .iter()
                             .find(|se| se.species_id == m.species_id)
@@ -727,10 +810,10 @@ pub(crate) fn write_back_battle_results(
                         m.evolves_to = crate::evolution::compute_evolves_to(monster_evolutions, &m);
                     }
                 }
-                let pub_row = pub_from_monster(&m);
-                ctx.db.monster().monster_id().update(m);
-                ctx.db.monster_pub().monster_id().update(pub_row);
             }
+            let pub_row = pub_from_monster(&m);
+            ctx.db.monster().monster_id().update(m);
+            ctx.db.monster_pub().monster_id().update(pub_row);
         }
     }
 

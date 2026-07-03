@@ -928,3 +928,93 @@ fn wild_battle_monster_stats_match_roll_individuality_then_derive_stats() {
         "max_hp must equal the derived HP stat from the same roll"
     );
 }
+
+// =========================================================================
+// M12.5e-4 unit test: battle_monster_from_row must build known_skill_ids
+// in canonical content order (species.learnable_skill_ids order), NOT in
+// DB scan order (skills.iter() order).
+//
+// EARS: The owned-monster path SHALL build `known_skill_ids` in canonical
+// content order (species.learnable_skill_ids order), mirroring
+// wild_battle_monster.
+//
+// RED state: the current implementation does:
+//   known_skill_ids: skills.iter().map(|s| s.id).collect()
+// which returns IDs in whatever order the skills slice was passed in (DB
+// scan order), NOT the canonical species.learnable_skill_ids order.
+//
+// When species.learnable_skill_ids = [3, 1, 2] and the skills slice is
+// provided in scan order [2, 1, 3], the current code returns [2, 1, 3]
+// but the spec requires [3, 1, 2] (canonical order).
+//
+// This assertion is RED today: assert_eq!(bm.known_skill_ids, vec![3, 1, 2])
+// will fail because the current impl returns vec![2, 1, 3].
+// =========================================================================
+
+/// 12.5e-4 unit: owned battle monster known_skill_ids must follow
+/// species.learnable_skill_ids canonical order, not DB scan order.
+///
+/// KILLS: an impl that does `skills.iter().map(|s| s.id).collect()` —
+/// that returns [2, 1, 3] (scan order) when skills are provided in
+/// [2, 1, 3] order but species.learnable_skill_ids is [3, 1, 2].
+/// The correct impl must re-order by iterating learnable_skill_ids and
+/// retaining only those present in the skills slice.
+///
+/// Species has learnable_skill_ids = [3, 1, 2] (non-ascending, intentional).
+/// Skills are provided in scan order [2, 1, 3] (simulating DB not preserving
+/// content order).
+/// Expected known_skill_ids = [3, 1, 2] (canonical = learnable order).
+#[test]
+fn owned_battle_monster_known_skills_respect_canonical_order() {
+    // Species with learnable_skill_ids in non-ascending order [3, 1, 2].
+    // This is the canonical order the client expects (the order skills
+    // appear in the species definition).
+    let mut species = m7b_test_species_row();
+    species.learnable_skill_ids = vec![3, 1, 2];
+
+    let monster = m7b_test_monster_row(); // monster_id=42, stat_defense=45
+
+    // Skills provided in reverse order (simulating non-canonical DB scan order:
+    // the DB returns skill rows in insertion/scan order [2, 1, 3], not the
+    // content-defined learnable order [3, 1, 2]).
+    let skills = vec![
+        SkillRow {
+            id: 2,
+            name: "B".to_string(),
+            affinity: Affinity::Fire,
+            power: 40,
+            accuracy: 100,
+            pp: 20,
+        },
+        SkillRow {
+            id: 1,
+            name: "A".to_string(),
+            affinity: Affinity::Fire,
+            power: 40,
+            accuracy: 100,
+            pp: 20,
+        },
+        SkillRow {
+            id: 3,
+            name: "C".to_string(),
+            affinity: Affinity::Fire,
+            power: 40,
+            accuracy: 100,
+            pp: 20,
+        },
+    ];
+
+    let bm = battle_monster_from_row(&monster, &species, &skills)
+        .expect("valid monster + skills build a BattleMonster");
+
+    assert_eq!(
+        bm.known_skill_ids,
+        vec![3u32, 1, 2],
+        "owned monster known_skill_ids must follow species.learnable_skill_ids \
+         canonical order [3,1,2], not DB scan order [2,1,3]; \
+         KILLS: battle_monster_from_row impl that does \
+         `skills.iter().map(|s| s.id).collect()` (returns [2,1,3], the scan order). \
+         Fix: iterate species.learnable_skill_ids and retain only IDs present in the \
+         skills slice, preserving learnable order."
+    );
+}
