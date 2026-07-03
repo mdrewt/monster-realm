@@ -430,3 +430,112 @@ fn write_back_battle_results_xp_loop_uses_log_error_for_continue() {
          corrupt row is skipped and logged, not fatal."
     );
 }
+
+// =========================================================================
+// RT-WB-01: Monster HP double-write on SideAWins — derived-stat staleness
+//
+// FINDING (red-team M12.5e): On a SideAWins outcome, write_back_battle_results
+// calls write_back_party_hp first (which writes battle-HP to every party
+// monster row from bm.current_hp), and then the XP loop re-reads those same
+// rows, increments XP/level, and writes them back a second time.
+//
+// If the monster leveled up and the stat-recompute 'stat_recompute block is
+// NOT entered (e.g. species_row not found for the winner's species_id, which
+// returns `None` for `ctx.db.species_row().id().find(m.species_id)` but
+// does NOT break early), the monster row is written back with:
+//   - new XP/level (correct)
+//   - STALE stat_hp, stat_attack, etc. (still the pre-level values)
+//   - current_hp from the first write_back_party_hp pass (battle-end HP)
+//     NOT re-healed by the level-up formula
+//   - monster_pub is written from the stale-stat `m` snapshot
+//
+// The concrete staleness scenario:
+//   1. write_back_party_hp writes m.current_hp = bm.current_hp (battle-end HP).
+//   2. XP loop re-reads m from DB (current_hp is now battle-end HP).
+//   3. apply_xp_gain fires leveled_up = true.
+//   4. `if let Some(species) = ctx.db.species_row().id().find(m.species_id)` → None
+//      (winner's species row was deleted by a concurrent sync_content revert,
+//       which can't happen in single-threaded SpacetimeDB, but could happen if
+//       content is corrupted or the species_id column is wrong on a migrated row).
+//   5. The inner `'stat_recompute` block is NEVER entered.
+//   6. m.xp and m.level are written; stat_hp, stat_attack, etc. are stale.
+//   7. level_up_healed_hp is never called, so current_hp is not adjusted.
+//   8. `pub_row = pub_from_monster(&m)` includes the stale derived stats.
+//
+// This test verifies the structural invariant: when a level-up occurs in the
+// XP loop, the code MUST call level_up_healed_hp inside the 'stat_recompute
+// block (protected by the `if let Some(species)` guard). If that block is
+// skipped (species missing), current_hp must NOT reflect a level-up heal.
+// The source-guard below confirms level_up_healed_hp is always inside the
+// species guard, never called on the stale path.
+//
+// GREEN today: the current impl only calls level_up_healed_hp inside
+// `if let Some(species) = ...` → `'stat_recompute:` block. This test passes
+// as a regression guard: if someone moves the heal call outside the species
+// guard (where it could execute with wrong old_max_hp from bm.max_hp which
+// is the BATTLE-ENTRY max_hp, not the pre-level-up DB stat_hp), this test
+// will catch the error string in the right position.
+// =========================================================================
+
+/// RT-WB-01 structural: `level_up_healed_hp` must only appear INSIDE
+/// the `'stat_recompute:` labeled block, which is itself inside the
+/// `if let Some(species)` guard. It must NOT appear outside that guard
+/// where it would execute on the stale path (no species row found).
+///
+/// KILLS: an impl that moves `level_up_healed_hp` outside the species guard,
+/// causing the heal to run with stale `bm.max_hp` (battle-entry max, not the
+/// DB stat_hp before level-up) when the species row lookup fails.
+///
+/// Also kills: an impl that calls `level_up_healed_hp` twice — once before
+/// the species lookup (using wrong inputs) and once inside (correct).
+#[test]
+fn level_up_heal_only_inside_species_guard_not_before_it() {
+    let stripped = strip_rust_comments(MODULE_SOURCE);
+
+    let fn_name = ["write_back", "_battle", "_results"].concat();
+    let body = extract_fn_body(&stripped, &fn_name)
+        .expect("write_back_battle_results must exist in battle.rs");
+
+    // The heal call needle — built from parts as per module convention.
+    let heal_call = ["level_up_healed", "_hp"].concat();
+
+    // Confirm the heal call is present (positive — kills a naive removal).
+    assert!(
+        body.contains(heal_call.as_str()),
+        "RT-WB-01 regression: level_up_healed_hp must be present in \
+         write_back_battle_results (it was removed — re-add inside the \
+         `if let Some(species)` guard, inside `'stat_recompute:`)."
+    );
+
+    // The species guard needle — the `if let Some` that gates stat recompute.
+    // If the heal call appears BEFORE `if let Some(species)` in the body text,
+    // it executes on the stale path.
+    let species_guard = ["if let Some(species)", " = "].concat();
+
+    let guard_pos = body.find(species_guard.as_str());
+    let heal_pos = body.find(heal_call.as_str());
+
+    match (guard_pos, heal_pos) {
+        (Some(g), Some(h)) => {
+            assert!(
+                h > g,
+                "RT-WB-01: `level_up_healed_hp` (pos {h}) appears BEFORE \
+                 the `if let Some(species)` guard (pos {g}) in \
+                 write_back_battle_results. This means the heal runs on the \
+                 stale path when species_row is not found, using bm.max_hp \
+                 (battle-entry) instead of the pre-level-up DB stat_hp. \
+                 Move the heal call INSIDE the `'stat_recompute:` block."
+            );
+        }
+        (None, _) => panic!(
+            "RT-WB-01: `if let Some(species) = ` guard not found in \
+             write_back_battle_results body — stat recompute has no species guard. \
+             The level_up_healed_hp call must be inside an `if let Some(species)` guard."
+        ),
+        (_, None) => panic!(
+            "RT-WB-01: `level_up_healed_hp` not found in write_back_battle_results \
+             body — level-up HP heal is missing (should have been caught by \
+             level_up_heal_is_owned_by_game_core)."
+        ),
+    }
+}

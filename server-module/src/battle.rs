@@ -681,6 +681,19 @@ pub(crate) fn write_back_battle_results(
             return Ok(());
         };
         let bst = loser_base_stat_total(&loser_species);
+        // loser_lvl is loop-invariant — parse once here so a corrupt loser level
+        // skips the entire XP section (not N×log once per winner monster).
+        let loser_lvl = match game_core::Level::new(loser_active.level) {
+            Ok(l) => l,
+            Err(e) => {
+                log::error!(
+                    "{{\"evt\":\"xp_skip_loser_level\",\"battle_id\":{},\"loser_species_id\":{},\"reason\":\"{e}\"}}",
+                    battle.battle_id,
+                    loser_active.species_id
+                );
+                return Ok(());
+            }
+        };
 
         // Award XP to each conscious member of the winning team.
         for (i, bm) in battle.state.side_a.team.iter().enumerate() {
@@ -695,21 +708,12 @@ pub(crate) fn write_back_battle_results(
                 continue;
             };
 
-            // Parse winner/loser levels — log-and-continue on corrupt data.
+            // Parse winner level — log-and-continue on corrupt data.
             let winner_lvl = match game_core::Level::new(bm.level) {
                 Ok(l) => l,
                 Err(e) => {
                     log::error!(
                         "{{\"evt\":\"xp_skip_level\",\"monster_id\":{mid},\"reason\":\"{e}\"}}",
-                    );
-                    continue;
-                }
-            };
-            let loser_lvl = match game_core::Level::new(loser_active.level) {
-                Ok(l) => l,
-                Err(e) => {
-                    log::error!(
-                        "{{\"evt\":\"xp_skip_loser_level\",\"monster_id\":{mid},\"reason\":\"{e}\"}}",
                     );
                     continue;
                 }

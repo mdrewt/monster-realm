@@ -29,7 +29,7 @@ The sixth review (2026-07-02) found four residuals in the battle subsystem:
 - *Immediate delete on terminal write:* delete the current battle row inside `write_back_battle_results` before the caller's `update()`. Rejected: the client reads the terminal state from the row; deleting before `update()` means the client never sees the final outcome.
 - *Archive to a compact private row:* adds schema complexity without adding value for a `public` table where the whole row is client-visible anyway.
 
-**Scope note (follow-up):** The `attempt_recruit` success path calls `write_back_party_hp` (not `write_back_battle_results`) and therefore gets no GC in this slice. A subsequent fled battle followed by a recruit-success battle would leave two terminals temporarily. This is a named follow-up — not silently dropped.
+**Scope note (follow-up):** The `attempt_recruit` success path calls `write_back_party_hp` (not `write_back_battle_results`) and therefore gets no GC in this slice. A prior terminal battle row persists indefinitely after a recruit-success until the player's next non-recruit terminal battle triggers `write_back_battle_results`. This is a named follow-up — not silently dropped.
 
 **No schema change:** The `battle` table has `#[index(btree)]` on `player_identity`, which is sufficient for the per-player scan. No reaper table required.
 
