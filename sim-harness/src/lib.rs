@@ -140,7 +140,7 @@ impl Link {
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use game_core::{zone_0, Direction, Millis, MoveInput, TilePos};
+use game_core::{load_zone_maps, map_for, Direction, Millis, MoveInput, TilePos};
 
 use crate::world::ServerWorld;
 
@@ -232,9 +232,23 @@ pub fn deliver(intents: &[ClientIntent], link: &Link, seed: u64) -> Vec<ClientIn
 /// independent of the others, and per-client order-invariance *is* the convergence
 /// property (two clients share one consistent authoritative world). A future model
 /// with cross-client coupling (e.g. PvP, M16) would re-scope this.
+/// Load zone maps from the embedded RON for use in the convergence driver.
+/// Panics on parse failure (the RON is a compile-embedded invariant — same
+/// posture as `zone_0().expect(...)`).
+fn zone_maps_for_driver() -> Vec<game_core::ZoneMapDef> {
+    load_zone_maps().expect(
+        "embedded zone_maps RON must parse — a parse failure means broken content (12.5f-1)",
+    )
+}
+
 #[must_use]
 pub fn apply_stream(ordered: &[ClientIntent], policy: ApplyOrder) -> BTreeMap<u64, TilePos> {
-    let map = zone_0();
+    // Use real authored content (load_zone_maps + map_for) so the harness exercises
+    // the SAME zone map the server loads — including the warp overlay (12.5f-1).
+    // Previously `zone_0()` was used, which produces warps:vec![] (no warp tile).
+    let zone_maps = zone_maps_for_driver();
+    let map = map_for(CONVERGE_ZONE, &zone_maps)
+        .expect("CONVERGE_ZONE must have a ZoneMapDef in the embedded RON");
     let mut world = ServerWorld::new();
 
     // Join one character per distinct client, in sorted client order → stable
@@ -319,6 +333,47 @@ pub fn scenario() -> Vec<ClientIntent> {
         }
     }
     intents
+}
+
+/// Single-client warp-crossing scenario (12.5f-1): walk client 0 from spawn (1,1)
+/// to the warp tile at (5,5) (zone 0 → zone 1).
+///
+/// Geometry: the wall at x=4,5 on row y=3 blocks a straight south walk from (5,1).
+/// Walkable path: East×2 → (3,1), South×3 → (3,4), East×2 → (5,4), South×1 → (5,5).
+/// (3,2)=TallGrass, (3,3)=floor, (3,4)=TallGrass, (4,4)=TallGrass, (5,4)=floor — all walkable.
+///
+/// 8 intents total, all from a single client with send_ms spaced 16 ms apart
+/// (paced within MOVE_QUEUE_CAP = 2; each step enqueues exactly once and drains
+/// once per call to apply_stream's inner tick loop).
+///
+/// The convergence property for a warp scenario: SeqCanonical is delivery-order-
+/// invariant even when the warp step is reordered — the client ends in zone 1 at
+/// (5,5) regardless of whether seq 8 (the warp step) arrives before seq 7.
+/// The final `pos` from `apply_stream` reports the position within whatever zone
+/// the character reaches, which is the ground-truth geometry assertion.
+#[must_use]
+pub fn warp_scenario() -> Vec<ClientIntent> {
+    // E,E → (3,1); S,S,S → (3,4); E,E → (5,4); S → (5,5) warp tile.
+    // Avoids the wall pair at (4,3)/(5,3) in the zone 0 RON map.
+    let dirs = [
+        Direction::East,
+        Direction::East,
+        Direction::South,
+        Direction::South,
+        Direction::South,
+        Direction::East,
+        Direction::East,
+        Direction::South,
+    ];
+    dirs.iter()
+        .enumerate()
+        .map(|(i, &dir)| ClientIntent {
+            client: 0,
+            seq: u64::try_from(i).unwrap() + 1,
+            input: MoveInput::Step(dir),
+            send_ms: u64::try_from(i).unwrap() * 16,
+        })
+        .collect()
 }
 
 // ===========================================================================
@@ -815,6 +870,55 @@ mod convergence_tests {
              Kill target: an Arrival impl that secretly re-sorts by seq (making Arrival == \
              SeqCanonical always), or a had_reorder that always returns false. \
              Either way, convergence is a vacuous tautology — this assertion kills it."
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 12.5f-1 — warp-crossing convergence scenario
+    //
+    // Asserts that SeqCanonical is delivery-order-invariant even when one of
+    // the steps is the warp step onto (5,5). Geometry: spawn (1,1), navigable
+    // path E×2→(3,1), S×3→(3,4), E×2→(5,4), S→(5,5) = warp tile → zone 1
+    // (the direct E×4, S×4 path is blocked by walls at (4,3)/(5,3) in the
+    // zone 0 RON). Final pos from apply_stream is (5,5); two orderings of the
+    // same 8 intents must give the same result.
+    //
+    // Kill target: apply_stream that applies in arrival order (not seq order)
+    // — reordering would produce a different walk path and different final tile.
+    // Zone-flip integrity (warp firing vs. not) is covered by the companion
+    // `warp_crossing_moves_character_to_destination_zone` test (sim-harness
+    // world.rs) which uses zone_of directly.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn warp_crossing_scenario_seq_canonical_is_delivery_order_invariant() {
+        let intents = super::warp_scenario();
+
+        // Build two orderings: forward (seq 1..8) and reversed (seq 8..1).
+        let reversed: Vec<_> = intents.iter().rev().copied().collect();
+
+        let result_forward = super::apply_stream(&intents, super::ApplyOrder::SeqCanonical);
+        let result_reversed = super::apply_stream(&reversed, super::ApplyOrder::SeqCanonical);
+
+        // SeqCanonical must give the same final position regardless of delivery order.
+        assert_eq!(
+            result_forward, result_reversed,
+            "warp scenario: SeqCanonical must be delivery-order-invariant — \
+             kill target: apply_stream that applies in arrival order (not seq order) \
+             or that uses zone_0() (warp-less) which drops the warp step"
+        );
+
+        // Non-vacuity: the final tile must be (5,5) (the post-warp landing tile),
+        // not spawn (1,1) or any intermediate tile.
+        let final_tile = result_forward
+            .get(&0)
+            .copied()
+            .expect("client 0 must have a final tile");
+        assert_eq!(
+            final_tile,
+            game_core::TilePos { x: 5, y: 5 },
+            "warp scenario: client 0 must land at (5,5) after E×2,S×3,E×2,S navigating to the warp tile — \
+             kill target: apply_stream that stops mid-walk (e.g. only 4 of 8 steps applied)"
         );
     }
 }

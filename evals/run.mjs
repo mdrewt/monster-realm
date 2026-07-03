@@ -12,8 +12,11 @@ try {
 } catch {}
 
 if (files.length === 0) {
-  console.log('eval: no evals defined yet (add evals/*.eval.mjs). Passing.');
-  process.exit(0);
+  console.error(
+    'eval: zero eval files found in evals/ — expected 37+ evals/*.eval.mjs; ' +
+      'empty can only mean a broken cwd or checkout (fail-open is a silent blind-spot).',
+  );
+  process.exit(1);
 }
 
 let failed = 0;

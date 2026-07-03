@@ -19,6 +19,38 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
+// ===========================================================================
+// 12.5f-5: test.fixme condition-expiry guard for client/e2e/
+//
+// Mirrors the Rust #[ignore] anchor logic but for TypeScript e2e specs.
+// A test.fixme whose file references a MERGED milestone token must fail CI,
+// forcing the author to either un-fixme the test or update the condition to
+// the real current blocker.
+//
+// EXPIRED_FIXME_MILESTONES: milestone tokens whose merge means any test.fixme
+// citing them has outlived its stated condition. Still-pending blockers like
+// "dev_reducers" or "M12.5-recruit" are NOT in this list and remain GREEN.
+// ===========================================================================
+export const EXPIRED_FIXME_MILESTONES = [
+  'M9c', // M9c raising client — merged (M12d era); tests citing "until M9c lands" are expired
+  'M8.7e', // M8.7e recruit e2e milestone — merged
+];
+
+/**
+ * Returns true iff the spec source contains BOTH a `test.fixme` call AND a
+ * reference to any of `expiredTokens` — meaning the stated fixme condition
+ * references a merged milestone and has expired.
+ *
+ * Uses indexOf (not RegExp) to stay ReDoS-immune (12.5f-3 discipline).
+ */
+export function hasExpiredFixme(specSrc, expiredTokens) {
+  if (!specSrc.includes('test.fixme')) return false;
+  for (const token of expiredTokens) {
+    if (specSrc.indexOf(token) !== -1) return true;
+  }
+  return false;
+}
+
 // Recursively collect every `.rs` file path under `dir` (subdirs included).
 // A trade/transfer reducer could land in a NEW server file, not just lib.rs —
 // gathering all server sources keeps cross-file reducer coverage (red-team S2).
@@ -695,10 +727,133 @@ mod tests {
     };
   }
 
+  // =========================================================================
+  // 12.5f-5: test.fixme condition-expiry guard for client/e2e/
+  // =========================================================================
+
+  // Proof-of-teeth T-E1: a spec with test.fixme + expired "M9c" token → expired.
+  // Kill target: an impl that always returns false (never detects expired fixme).
+  const expiredFixtureM9c = `
+// DEFERRED TO M9c: stays test.fixme until M9c lands.
+test.fixme('R1: Recruit button visible', async () => {
+  // ...
+});
+`;
+  {
+    let result;
+    try {
+      result = hasExpiredFixme(expiredFixtureM9c, EXPIRED_FIXME_MILESTONES);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth T-E1 (hasExpiredFixme with M9c): threw — ${err.message}`,
+      };
+    }
+    if (result !== true) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T-E1: hasExpiredFixme must return true for a spec with test.fixme + "M9c" (expired milestone) — kill target: impl that always returns false, missing the condition-expiry detection.',
+      };
+    }
+  }
+
+  // Proof-of-teeth T-E2: a spec with test.fixme + still-valid blocker → NOT expired.
+  // Kill target: an impl that returns true for any test.fixme regardless of condition.
+  const stillPendingFixture = `
+// BLOCKED: dev_reducers --bin-path publish not yet CI-wired (M12.5-recruit).
+// The bait UI (dev reducer start_wild_battle / grant_bait) requires the dev
+// feature to be published via --bin-path, which is a separate infra slice.
+test.fixme('R1: Recruit button visible', async () => {
+  // ...
+});
+`;
+  {
+    let result;
+    try {
+      result = hasExpiredFixme(stillPendingFixture, EXPIRED_FIXME_MILESTONES);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth T-E2 (hasExpiredFixme with still-valid blocker): threw — ${err.message}`,
+      };
+    }
+    if (result !== false) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T-E2: hasExpiredFixme must return false for a spec with test.fixme + a still-pending dev_reducers blocker (not in EXPIRED_FIXME_MILESTONES) — kill target: impl that flags any test.fixme regardless of condition.',
+      };
+    }
+  }
+
+  // Proof-of-teeth T-E3: a spec with NO test.fixme → NOT expired (no false positive).
+  const noFixtureSpec = `
+// Normal active tests — no test.fixme blocks.
+test('G1: Golden flow movement', async () => {
+  // ...
+});
+`;
+  {
+    let result;
+    try {
+      result = hasExpiredFixme(noFixtureSpec, EXPIRED_FIXME_MILESTONES);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth T-E3 (hasExpiredFixme with no test.fixme): threw — ${err.message}`,
+      };
+    }
+    if (result !== false) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T-E3: hasExpiredFixme must return false for a spec with no test.fixme — false positive on active tests.',
+      };
+    }
+  }
+
+  // Real-file check: scan all .spec.ts files in client/e2e/.
+  const e2eDir = path.resolve('client/e2e');
+  let e2eFiles = [];
+  try {
+    e2eFiles = readdirSync(e2eDir).filter((f) => f.endsWith('.spec.ts'));
+  } catch (err) {
+    return { name, pass: false, detail: `cannot read client/e2e/: ${err.message}` };
+  }
+
+  for (const f of e2eFiles) {
+    const fPath = path.join(e2eDir, f);
+    let src;
+    try {
+      src = readFileSync(fPath, 'utf8');
+    } catch (err) {
+      return { name, pass: false, detail: `cannot read ${fPath}: ${err.message}` };
+    }
+    if (hasExpiredFixme(src, EXPIRED_FIXME_MILESTONES)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `condition-expiry: ${f} contains test.fixme blocks whose stated condition references ` +
+          `a MERGED milestone (${EXPIRED_FIXME_MILESTONES.join(' or ')}) — the condition has ` +
+          `expired. Either un-fixme the test or update its condition to the real current ` +
+          `blocker (e.g., "M12.5-recruit: dev_reducers --bin-path publish not CI-wired"). ` +
+          `See spec §12.5f-5.`,
+      };
+    }
+  }
+
   return {
     name,
     pass: true,
     detail:
-      'spec-gap-revival teeth all pass: findTradeTransferReducers correct (swap_active not matched, give_monster/donate_monster matched, trade_monster matched, benign reducers clean), parkedTestIsIgnored correct (bare and cfg_attr forms recognised, revived form false), specGapStatus matrix all 5 cases correct (incl. reducer-landed+fn-deleted), real codebase is in healthy/dormant state',
+      'spec-gap-revival teeth all pass: findTradeTransferReducers correct (swap_active not matched, give_monster/donate_monster matched, trade_monster matched, benign reducers clean), parkedTestIsIgnored correct (bare and cfg_attr forms recognised, revived form false), specGapStatus matrix all 5 cases correct (incl. reducer-landed+fn-deleted), real codebase is in healthy/dormant state; test.fixme condition-expiry guard GREEN (T-E1/T-E2/T-E3 teeth pass, no expired conditions in client/e2e/)',
   };
 }
