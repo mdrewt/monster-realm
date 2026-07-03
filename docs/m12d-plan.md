@@ -107,7 +107,7 @@ Add 4 × 3 row callbacks (onInsert/onUpdate/onDelete) + import new converters.
 **`client/src/ui/questLogView.ts`** — DOM shell:
 - Constructor: `(parent)` (no reducer callbacks needed — display only)
 - `show(vm)`, `hide()`, `toggle()`, `visible`, `refresh(vm)`
-- Shows active/completed quest lists with step info
+- Shows ACTIVE quests only (no completed section — completed quests are deleted server-side)
 
 **`client/src/ui/healView.ts`** — DOM shell:
 - Constructor: `(parent, callbacks: { onHeal(locationId) })`
@@ -118,11 +118,18 @@ Add 4 × 3 row callbacks (onInsert/onUpdate/onDelete) + import new converters.
 
 - Import + instantiate the 3 new views in `main()`
 - Add 3 batch-applied listeners: `refreshDialogue()`, `refreshQuestLog()`, `refreshHeal()`
-- `refreshDialogue()`: check `store.ownConversation(identity)` → auto-show/hide + refresh
-- Add KeyQ → toggle questLogView (mutual exclusivity: hide other overlays, guard battle)
+- `refreshDialogue()`: check `store.ownConversation(identity)` → auto-show/hide + refresh; if dialogue auto-shows, explicitly hide any open battle/box/raising/evolution/questLog/healView (dialogue > all per precedence order)
+- All 3 new batch listeners MUST be TOTAL (never throw) — `store.flushBatch` has NO per-listener isolation; a throw starves reconcile + refreshBox + refreshBattle siblings. Wrap in try/catch the same way refreshRaising/refreshEvolution do.
+- Add `dismissPending` flag for dialogue: set when Escape fires (reducer sent), clear when `player_conversation` row is deleted. Guard: if `dismissPending`, Escape does NOT re-send dismiss (prevents double-dismiss + server-side noise).
+- Add KeyQ → toggle questLogView (mutual exclusivity: hide other overlays; guard battle)
 - Add KeyH → toggle healView (mutual exclusivity: guard battle)
-- Add Escape handlers for dialogue (→ conn.reducers.dismissDialogue({})), questLog, healView
-- Guard movement/re-issue when new overlays visible
+- Add Escape chain: dialogue (send dismissDialogue if !dismissPending) > battle > box > raising > evolution > questLog > heal
+- **Two movement suppression sites** — BOTH must include new overlays:
+  1. `keydown` handler line ~223: `battleView?.visible || boxView?.visible || raisingView?.visible || evolutionView?.visible || dialogueView?.visible || questLogView?.visible || healView?.visible`
+  2. `frame()` re-issue guard line ~467: same expression
+- Remove hardcoded `healParty({ locationId: 1 })` from boxView callback; replace with first available location from `store.healLocations()` or `locationId: 0` no-op (the new HealView is the primary heal path)
+- `SELECT * FROM npc` global (no zone filter) — named deferral: NPC set is small now; zone-scoped NPC subscription is a future optimization (when content scales)
+- `heal_cooldown` PK = per-player global (not per-location): `HealLocationViewModel.cooldownMs` shows the DURATION hint; the client never knows remaining cooldown (private table). Server rejects if on cooldown.
 
 ## Test Plan
 
@@ -131,40 +138,43 @@ Add 4 × 3 row callbacks (onInsert/onUpdate/onDelete) + import new converters.
 **`dialogueModel.test.ts`**:
 - Returns null when no conversation
 - Returns null when NPC not found
-- Returns correct text for known node
-- Returns "..." text for unknown node (graceful)
+- Returns correct text for known node from bundle
+- Returns "..." text for unknown node/tree (graceful — no throw)
 - Returns correct choices with indices
-- Never throws on any partial/missing input (TOTAL property)
+- Never throws on ANY partial/missing/null/undefined input (TOTAL property — test with empty maps, undefined NPC, missing node)
 
 **`questLogModel.test.ts`**:
-- Empty quests → empty active + completed lists
-- Active quest appears in active list
-- Completed quest (stepIndex at sentinel) appears in completed list
+- Empty quests → empty active list
+- Active quest appears in active list (no "completed" section — row deletion = completion)
 - Never throws
 
 **`healModel.test.ts`**:
 - Free heal location: isFree = true, costItemName = null
 - Paid heal location: costItemName resolved from itemDefs
-- Unknown item falls back to null/Unknown
+- Unknown item falls back to null/graceful
 - Never throws
 
-### Store tests (extend client/src/net/store.test.ts or new file)
-- Prove `ownConversation` filters by identity
-- Prove `ownQuests` filters by identity
-- Prove `reset()` clears all new maps
+### RowConvert tests (extend client/src/net/rowConvert.test.ts)
+- `playerConversationRowToStore`: `ownerIdentity.toHexString()` is called; result `ownerIdentity` is a hex string (not a raw Identity object) — gating test that this isn't mis-cast
+
+### Store tests (extend client/src/net/store.test.ts)
+- `ownConversation` filters by identity (another player's conversation not returned)
+- `ownQuests` filters by identity
+- `reset()` clears ALL 4 new maps (4 assertions, one per map) — must bite when any map.clear() is removed
 
 ### Evals (new)
 
 **`evals/dialogue-client-integrity.eval.mjs`** — Proof-of-teeth:
-1. dialogueModel.ts imports NO SDK module (purity gate)
-2. dialogueModel.ts does NOT call `advance_dialogue` or reducer logic (server-SSOT gate)
-3. questLogModel.ts has no step-advance logic (no `advance_quest`/`complete_quest` calls)
-4. healModel.ts has no `heal_party` call (view-only)
-5. dialogueContent.ts has NO dynamic RegExp, no `new RegExp(`, no `fetch(` (static-asset gate)
-6. dialogueView.ts, questLogView.ts, healView.ts are excluded from coverage (dom-shell gate)
+1. `dialogueModel.ts` imports NO SDK module (purity gate) → tooth: sabotage by adding `import {} from 'spacetimedb'` → eval fails
+2. `dialogueModel.ts` does NOT call `advance_dialogue`/`talk`/reducer logic (server-SSOT gate) → tooth: add `advanceDialogue` string → eval fails
+3. `questLogModel.ts` has no quest-advance logic (no `advance_quest`/`completeQuest`/`apply_quest_step`)
+4. `healModel.ts` has no `heal_party`/`healParty` call (view-only)
+5. `dialogueContent.ts` has NO `new RegExp(` or `fetch(` (static-asset gate)
+6. **RON vs bundle cross-reference** (C1 + M4 finding): read `game-core/content/dialogue_trees/000-core.ron`, parse nodeIds and choice counts; for each node, assert `DIALOGUE_TREES` bundle has the same nodeId AND the same number of choices → tooth: add an extra choice to RON → eval fails
+7. `dialogueView.ts`, `questLogView.ts`, `healView.ts` excluded from coverage (dom-shell gate)
 
 **Extend `evals/dom-shell-coverage-exclusion.eval.mjs`**:
-Add `dialogueView.ts`, `questLogView.ts`, `healView.ts` to the checked exclusion list.
+Add `dialogueView.ts`, `questLogView.ts`, `healView.ts` to the checked exclusion list (existing tooth bites on removal from the exclusion config).
 
 ## Anti-patterns to Avoid
 

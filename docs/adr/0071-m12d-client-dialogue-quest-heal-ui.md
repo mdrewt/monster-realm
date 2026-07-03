@@ -4,56 +4,73 @@
 **Date:** 2026-07-03  
 **Slice:** M12d (client-only; no schema changes)
 
-## Context
+## Context and problem statement
 
-M12d builds the client-facing UI for dialogue, quest log, and heal interaction after M12b (server) and M12c (content). The client receives game state via three new subscribed tables: `player_conversation` (current dialogue node), `player_quest` (active quests), `heal_location_row` (heal locations). Two additional content tables are subscribed: `npc` (NPC definitions including `dialogueTreeId`) and `heal_location_row` (already listed).
+M12d builds the client-facing UI for dialogue, quest log, and heal interaction after M12b (server) and M12c (content). The client receives game state via new subscribed tables: `player_conversation` (current dialogue node), `player_quest` (active quests), `heal_location_row` (heal location definitions), and `npc` (NPC definitions including `dialogueTreeId`).
 
 Three non-obvious design questions arise:
 
-1. How does the client render dialogue node text/choices when only `currentNodeId` is in the subscribed state?
-2. What is the quest log's scope when completed quests are in a private unsubscribed table?
-3. How should the three new overlays integrate with the existing overlay lifecycle?
+1. How does the client render dialogue node text/choices when the subscribed `player_conversation` table only stores `currentNodeId` — not the actual text/choices?
+2. What is the quest log's scope when quest completion **deletes** the `player_quest` row and moves the quest id into private unsubscribed `player_dialogue_state.done_quests`?
+3. How do the three new overlays integrate with the existing overlay lifecycle (battle, box, raising, evolution)?
 
-## Decision 1: Dialogue tree content bundle
+## Decision outcome
 
-**Decision:** Bundle dialogue tree display content as a static TypeScript constant map in `client/src/ui/dialogueContent.ts`, mirrored from `game-core/content/dialogue_trees/*.ron`.
+**Decision 1: Bundle dialogue tree content client-side as a static TypeScript constant.**  
+**Decision 2: Quest log shows active quests only.**  
+**Decision 3: Dialogue auto-shows/hides from server state; quest log and heal are key-toggled; mutual exclusivity order is dialogue > battle > box > raising > evolution > quest-log > heal.**
 
-**Rationale:** The `player_conversation` table only stores `currentNodeId`. The actual dialogue text/choices are in RON files embedded in the server binary and are not in any subscribed table. Changing schema or adding a subscribed `dialogue_node` table is out of scope for M12d (would require bindings regen within the blocked touches set).
+## Considered alternatives
 
-The content bundle is a **display asset only**: it maps `(dialogueTreeId, nodeId) → { text, choices[] }`. The server remains the SSOT for all state transitions, condition checks, and effect application. The client NEVER evaluates choice conditions or applies effects — it only renders text and sends `advance_dialogue({ choiceIdx })`. A mismatch between bundle and server content shows `"..."` text (graceful degradation). A future content-pipeline task will auto-generate this file from the RON source to prevent drift.
+### Decision 1 alternatives
 
-**Considered alternatives:**
-- *Fetch at runtime*: HTTP endpoint or SpacetimeDB procedure; adds async complexity; no suitable RPC pattern in 2.6.
-- *Schema extension*: Add `dialogue_node` table storing current node text/choices; requires M12e schema+bindings work; M12d is client-only.
-- *Show node IDs*: Acceptable during dev but poor UX for a playable build.
+**Option A: Schema extension — add `dialogue_node` table storing current node text/choices.**
+- Pro: server-authoritative, no drift.
+- Con: requires bindings regen, schema changes are out of scope for M12d.
 
-## Decision 2: Quest log shows active quests only
+**Option B: Fetch at runtime via HTTP or SpacetimeDB procedure.**
+- Pro: dynamic, no bundle to maintain.
+- Con: no suitable RPC endpoint in SpacetimeDB 2.6 for this pattern; adds async complexity to the render path; breaks the synchronous one-way store→render flow.
 
-**Decision:** The quest log renders only active quests from `player_quest`. Completed quests are not displayed.
+**Option C: Show raw node IDs to the player.**
+- Unacceptable UX for any playable build.
 
-**Rationale:** On quest completion, the server DELETES the `player_quest` row and moves the quest id into `player_dialogue_state.done_quests` (a private, unsubscribed table). The client cannot observe completed quests through the current subscription set. Showing active-only is correct and honest.
+**Option D (chosen): Static TypeScript constant bundle in `client/src/ui/dialogueContent.ts`, mirroring `game-core/content/dialogue_trees/*.ron`.**
+- The bundle is a **display asset only** — it maps `(dialogueTreeId, nodeId)` → `{ text, choices[] }`.
+- The server remains SSOT for all state transitions, condition checks, and effect application.
+- A mismatch between bundle and server content shows `"..."` text (graceful degradation).
+- An eval tooth (`dialogue-client-integrity.eval.mjs`) cross-references RON node IDs and choice counts against the bundle to mechanically detect drift.
+- A future content-pipeline task will auto-generate this file from RON.
 
-**Known limitation:** A "Completed" section in the quest log requires either (a) a public `completed_quest` table (future additive schema change), or (b) client-side mirroring of deletions via `player_quest.onDelete` callbacks (lossy across reconnects — reject). The right fix is a future additive table.
+### Decision 2 alternatives
 
-**Considered alternatives:**
-- *Mirror deletes in client memory*: lossy on reconnect; violates the authoritative-store reset contract (ADR-0014).
-- *Sentinel stepIndex*: Not applicable — completion deletes the row.
+**Option: Mirror `player_quest` deletions in client memory across reconnects.**
+- Con: violates AuthoritativeStore reset contract (ADR-0014). On reconnect, `store.reset()` drops all rows; client-side mirrors would be stale.
 
-## Decision 3: Overlay lifecycle integration
+**Option: Add sentinel `stepIndex` value (e.g. u32::MAX) for completed quests.**
+- Con: the server does not use sentinels — it deletes the row. Implementing this requires a schema change.
 
-**Decision:** Follow the existing overlay lifecycle pattern (ADR-0014/0052). Dialogue auto-shows/hides via server state (like battle). Quest log and heal view are KeyQ/KeyH toggled with mutual exclusivity.
+**Chosen: Active-only quest log, with a named limitation (fix: future additive `completed_quest` public table).**
 
-**Mutual exclusivity order (highest to lowest):** dialogue > battle > box > raising > evolution > quest-log > heal
+### Decision 3 alternatives
 
-Dialogue auto-show is triggered by `player_conversation` presence for own identity in `refreshDialogue()` (batch-applied listener, same pattern as `refreshBattle()`). Auto-hide fires when the row is deleted.
+**Dialogue: key-toggled (like box/raising/evolution).**
+- Rejected: dialogue state is server-driven. Dialogue must appear immediately when the server creates a `player_conversation` row (e.g. after `talk(npcEntityId)` succeeds), not only when the player presses a key. Auto-show matches the battle overlay pattern.
 
-Escape key: sends `dismiss_dialogue({})` when dialogue is visible (tells server to clean up state).
+**Lower overlay precedence for dialogue vs. battle.**
+- Rejected: the player explicitly initiated dialogue; it should supersede spectator battle display. The server rejects `advance_dialogue` during an active battle anyway (guard F5), so showing dialogue above battle is safe.
 
-**Why dialogue > battle?** An NPC might be near a battle trigger; the dialogue takes precedence since the player actively initiated it. A battle started while in dialogue is a server-level concern (the server rejects overlapping).
+## Positive consequences
 
-## Implications
+- Server remains SSOT for all dialogue/quest logic; client never evaluates conditions or effects.
+- Dialogue auto-shows/hides based on server state — no stale UI after server auto-dismiss (RT-ADV-01).
+- Content bundle is mechanically gated against drift by the eval tooth.
+- The three new overlays integrate into the existing lifecycle with clear precedence.
 
-- `client/src/ui/dialogueContent.ts` is a new content-bundle file — content changes require updating both the RON and this file until a gen pipeline is added.
-- `player_quest` subscription delivers all player quests (RLS deferred to M16 per ADR-0069); client-side owner filter `ownQuests(identity)` is the privacy guard.
-- `player_conversation` subscription similarly delivers all conversations; `ownConversation(identity)` is the guard.
-- The existing `onHealParty` callback in `boxView` (hardcoded `locationId: 1`) should be replaced/supplemented by the new HealView which reads `heal_location_row` dynamically and passes the correct `locationId`. The boxView callback remains as a fallback until M12d is complete.
+## Negative consequences and known limitations
+
+- `dialogueContent.ts` must be manually updated when dialogue tree RON content changes, until an automated gen pipeline is added.
+- Completed quests are not displayed in the quest log (private `done_quests` state). Fix requires a future additive public `completed_quest` table.
+- `SELECT * FROM npc` and `SELECT * FROM player_conversation` deliver all rows pre-RLS (M16). Client-side owner filter (`ownConversation(identity)`, `ownQuests(identity)`) is the privacy guard. Blast radius: a stale row from another player's conversation is filtered out but sits in the store until `reset()`.
+- `SELECT * FROM npc` is zone-unscoped (global). NPC set is small in current content; a zone-scoped NPC subscription is a future optimization when content scales.
+- `heal_cooldown` PK = per-player global (not per-location). `HealLocationViewModel.cooldownMs` displays the cooldown DURATION for the location; the client never knows remaining cooldown (private table). The server rejects if on cooldown.
