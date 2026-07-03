@@ -1,5 +1,7 @@
 // ui/questLogView.ts — DOM shell for the quest log overlay (M12d, ADR-0071).
 // DOM shell — coverage-excluded
+import type { QuestLogViewModel } from './questLogModel';
+
 export class QuestLogView {
   private overlay: HTMLElement;
   private list: HTMLElement;
@@ -9,7 +11,7 @@ export class QuestLogView {
     this.list = document.getElementById('quest-log-list')!;
   }
 
-  render(vm: import('./questLogModel').QuestLogViewModel | null): void {
+  render(vm: QuestLogViewModel | null): void {
     if (!vm) {
       this.overlay.style.display = 'none';
       return;

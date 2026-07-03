@@ -1,5 +1,7 @@
 // ui/dialogueView.ts — DOM shell for the dialogue overlay (M12d, ADR-0071).
 // DOM shell — coverage-excluded per dom-shell-coverage-exclusion.eval.mjs
+import type { DialogueViewModel } from './dialogueModel';
+
 export class DialogueView {
   private overlay: HTMLElement;
   private npcName: HTMLElement;
@@ -13,7 +15,7 @@ export class DialogueView {
     this.choicesContainer = document.getElementById('dialogue-choices')!;
   }
 
-  render(vm: import('./dialogueModel').DialogueViewModel | null): void {
+  render(vm: DialogueViewModel | null): void {
     if (!vm) {
       this.overlay.style.display = 'none';
       return;

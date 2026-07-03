@@ -1,5 +1,7 @@
 // ui/healView.ts — DOM shell for the heal overlay (M12d, ADR-0071).
 // DOM shell — coverage-excluded
+import type { HealViewModel } from './healModel';
+
 export class HealView {
   private overlay: HTMLElement;
   private list: HTMLElement;
@@ -9,7 +11,7 @@ export class HealView {
     this.list = document.getElementById('heal-list')!;
   }
 
-  render(vm: import('./healModel').HealViewModel | null): void {
+  render(vm: HealViewModel | null): void {
     if (!vm) {
       this.overlay.style.display = 'none';
       return;

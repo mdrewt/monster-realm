@@ -89,9 +89,9 @@ let evolutionView: EvolutionView | undefined;
 let dialogueView: DialogueView | undefined;
 let questLogView: QuestLogView | undefined;
 let healView: HealView | undefined;
-// dismissPending: prevents double-sending dismiss while the server processes it (M12d).
-// Stored on an object so mutation inside closures is visible to the linter/formatter.
-const dismiss = { pending: false };
+// dismissPending: prevents double-sending dismiss_dialogue while server processes it (M12d).
+// eslint-disable-next-line prefer-const
+let dismissPending = false;
 // Outcome-frame lifecycle (M8.7e): the dismissed battle id (so a resolved outcome
 // renders once but never re-pops) + whether any battle has been observed this
 // session (first-sight pre-dismiss of a historical/stale-on-login resolved battle).
@@ -150,7 +150,9 @@ store.onBatchApplied(() => {
       boxView?.visible ||
       raisingView?.visible ||
       evolutionView?.visible ||
-      dialogueView?.visible
+      dialogueView?.visible ||
+      questLogView?.visible ||
+      healView?.visible
     )
   ) {
     const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
@@ -220,14 +222,34 @@ window.addEventListener('keydown', (e) => {
       !boxView?.visible &&
       !raisingView?.visible &&
       !evolutionView?.visible &&
-      !dialogueView?.visible
+      !dialogueView?.visible &&
+      !healView?.visible
     ) {
       questLogView?.toggle();
     }
     e.preventDefault();
     return;
   }
-  // Escape priority: battle > box > raising > evolution > dialogue > movement (ADR-0014 exit ordering).
+  if (e.code === 'KeyH') {
+    // Heal overlay — mutual exclusivity: only when no other overlay is open (M12d, ADR-0071).
+    if (
+      !battleView?.visible &&
+      !boxView?.visible &&
+      !raisingView?.visible &&
+      !evolutionView?.visible &&
+      !dialogueView?.visible &&
+      !questLogView?.visible
+    ) {
+      if (healView?.visible) {
+        healView.hide();
+      } else {
+        healView?.render(buildHealViewModel(store.healLocations(), store.itemDefs()));
+      }
+    }
+    e.preventDefault();
+    return;
+  }
+  // Escape priority: battle > box > raising > evolution > dialogue > questLog > heal (ADR-0071).
   if (e.code === 'Escape' && battleView?.visible) {
     const latest = store.latestPlayerBattle(identity);
     // Terminal outcome frame: permanent dismiss (don't re-pop next batch). Ongoing:
@@ -254,10 +276,20 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'Escape' && dialogueView?.visible) {
     // dismissPending guards against double-send while server processes the dismiss.
-    if (!dismiss.pending) {
-      dismiss.pending = true;
+    if (!dismissPending) {
+      dismissPending = true;
       conn?.conn.reducers.dismissDialogue({});
     }
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'Escape' && questLogView?.visible) {
+    questLogView.hide();
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'Escape' && healView?.visible) {
+    healView.hide();
     e.preventDefault();
     return;
   }
@@ -267,7 +299,9 @@ window.addEventListener('keydown', (e) => {
     boxView?.visible ||
     raisingView?.visible ||
     evolutionView?.visible ||
-    dialogueView?.visible
+    dialogueView?.visible ||
+    questLogView?.visible ||
+    healView?.visible
   )
     return;
   const dir = KEY_DIR[e.code];
@@ -355,7 +389,7 @@ store.onBatchApplied(() => {
     const conv = store.ownConversation(identity);
     const dialogueVm = buildDialogueViewModel(conv, npcsMap, DIALOGUE_TREES);
     dialogueView?.render(dialogueVm);
-    if (!conv) dismiss.pending = false; // reset on server-side dismiss
+    if (!conv) dismissPending = false; // reset on server-side dismiss
   } catch (_) {}
 });
 
@@ -467,9 +501,10 @@ async function main(): Promise<void> {
         conn?.conn.reducers.setPartySlot({ monsterId, slot: finalSlot });
       },
       onHealParty: () => {
-        // location_id 1 = the only seeded heal location (zone 0, tile 8,3 — M12b content).
-        // Server validates zone/battle/cooldown; M12c will expose location ids via RON content.
-        conn?.conn.reducers.healParty({ locationId: 1 });
+        // Use the first available heal location from live store data (M12d).
+        // Server validates zone/range/cooldown; falls back to 0 (no-op) when no locations loaded.
+        const locationId = store.healLocations()[0]?.locationId ?? 0;
+        conn?.conn.reducers.healParty({ locationId });
       },
     });
     battleView = new BattleViewClass(mount, {
@@ -566,7 +601,9 @@ async function main(): Promise<void> {
         boxView?.visible ||
         raisingView?.visible ||
         evolutionView?.visible ||
-        dialogueView?.visible
+        dialogueView?.visible ||
+        questLogView?.visible ||
+        healView?.visible
       )
     ) {
       const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
