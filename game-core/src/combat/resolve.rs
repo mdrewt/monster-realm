@@ -1432,18 +1432,22 @@ mod tests {
         );
     }
 
-    /// Documents that referencing an unknown skill_id panics (content integrity).
-    /// Kills: an impl that silently ignores or returns an empty event list instead.
-    /// Starts red because `resolve_turn` is `todo!()` (any panic satisfies should_panic).
+    /// Documents that referencing an unknown skill_id panics with a content-integrity message.
+    ///
+    /// Kills: an impl that silently ignores or returns an empty event list for an unknown
+    /// skill_id (which violates the ADR-0049 content-integrity invariant). The bare
+    /// `#[should_panic]` was tautological because a trailing `panic!` satisfied it regardless
+    /// of whether `resolve_turn` actually panicked — `expected=` narrows the gate so only
+    /// the real content-lookup panic passes (12.5f-4).
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "skill id 9999 not found in skills registry")]
     fn unknown_skill_id_panics() {
         let chart = make_type_chart();
         let monster_a = make_monster(Affinity::Fire, 200, 50);
         let monster_b = make_monster(Affinity::Water, 200, 40);
         let mut state = make_battle_state(monster_a, monster_b);
         let variance = always_hit_variance(true);
-        // skill_id 9999 does not exist in skills_vec() — must panic
+        // skill_id 9999 does not exist in skills_vec() — must panic with the message above.
         let _ = resolve_turn(
             &mut state,
             TurnChoice::Attack { skill_id: 9999 },
@@ -1452,9 +1456,6 @@ mod tests {
             &chart,
             &variance,
         );
-        // If we reach here without panic, the test fails because the impl
-        // silently swallowed a content-integrity error.
-        panic!("should have panicked on unknown skill_id 9999");
     }
 
     // -----------------------------------------------------------------------

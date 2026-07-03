@@ -1,0 +1,95 @@
+{
+  "Affinity": {
+    "kind": "enum",
+    "variants": ["Fire", "Water", "Plant", "Electric", "Earth", "Wind", "Light", "Dark"]
+  },
+  "ActionState": {
+    "kind": "enum",
+    "variants": ["Idle", "Walking", "Jumping"]
+  },
+  "BattleMonster": {
+    "kind": "struct",
+    "fields": [
+      ["species_id", "u32"],
+      ["affinity", "Affinity"],
+      ["level", "u8"],
+      ["current_hp", "u16"],
+      ["max_hp", "u16"],
+      ["stats", "StatBlock"],
+      ["known_skill_ids", "Vec<u32>"]
+    ]
+  },
+  "BattleOutcome": {
+    "kind": "enum",
+    "variants": ["Ongoing", "SideAWins", "SideBWins", "Fled"]
+  },
+  "BattleSide": {
+    "kind": "struct",
+    "fields": [
+      ["active", "u32"],
+      ["team", "Vec<BattleMonster>"]
+    ]
+  },
+  "BattleState": {
+    "kind": "struct",
+    "fields": [
+      ["side_a", "BattleSide"],
+      ["side_b", "BattleSide"],
+      ["outcome", "BattleOutcome"],
+      ["turn_number", "u16"]
+    ]
+  },
+  "Direction": {
+    "kind": "enum",
+    "variants": ["North", "South", "East", "West"]
+  },
+  "EncounterEntryRow": {
+    "kind": "struct",
+    "fields": [
+      ["species_id", "u32"],
+      ["weight", "u16"],
+      ["min_level", "u8"],
+      ["max_level", "u8"]
+    ]
+  },
+  "MoveInput": {
+    "kind": "enum",
+    "variants": ["Step", "Jump"]
+  },
+  "NatureKind": {
+    "kind": "enum",
+    "variants": [
+      "Hardy", "Lonely", "Brave", "Adamant", "Naughty",
+      "Bold", "Docile", "Relaxed", "Impish", "Lax",
+      "Timid", "Hasty", "Serious", "Jolly", "Naive",
+      "Modest", "Mild", "Quiet", "Bashful", "Rash",
+      "Calm", "Gentle", "Sassy", "Careful", "Quirky"
+    ]
+  },
+  "StatBlock": {
+    "kind": "struct",
+    "fields": [
+      ["hp", "u16"],
+      ["attack", "u16"],
+      ["defense", "u16"],
+      ["speed", "u16"],
+      ["sp_attack", "u16"],
+      ["sp_defense", "u16"]
+    ]
+  },
+  "StatKind": {
+    "kind": "enum",
+    "variants": ["Hp", "Attack", "Defense", "Speed", "SpAttack", "SpDefense"]
+  },
+  "TileKind": {
+    "kind": "enum",
+    "variants": ["Floor", "Wall", "TallGrass"]
+  },
+  "TilePos": {
+    "kind": "struct",
+    "fields": [
+      ["x", "i32"],
+      ["y", "i32"]
+    ]
+  }
+}

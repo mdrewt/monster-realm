@@ -493,6 +493,63 @@ mod tests {
         }
     }
 
+    /// Honest drift gate: zone_0() SSOT (ZONE_0_ROWS in code) MUST match the
+    /// authored RON in `content/zone_maps/000-core.ron` (loaded via load_zone_maps).
+    ///
+    /// The previous test `map_for_zone_0_matches_zone_0_art` is tautological —
+    /// it builds the comparison ZoneMapDef from the SAME in-code ZONE_0_ROWS
+    /// constant that `zone_0()` reads, so it can never detect drift between the
+    /// code constant and the authored content file (12.5f-1).
+    ///
+    /// Kill target: an edit to ZONE_0_ROWS WITHOUT updating the RON (or vice
+    /// versa) — the tautological test passes; THIS test fails loud.
+    #[test]
+    fn zone_0_matches_authored_ron() {
+        let zone_maps = crate::content::load_zone_maps()
+            .expect("embedded zone_maps RON must parse (content/zone_maps/000-core.ron)");
+        let via_ron = map_for(0, &zone_maps).expect(
+            "zone 0 must have a ZoneMapDef in the embedded RON (content/zone_maps/000-core.ron)",
+        );
+        let canonical = zone_0();
+
+        // Grid parity (width / height / every tile walkable + grass flag).
+        assert_eq!(
+            via_ron.width, canonical.width,
+            "zone_0 code width != authored RON width — ZONE_0_ROWS and the RON have drifted"
+        );
+        assert_eq!(
+            via_ron.height, canonical.height,
+            "zone_0 code height != authored RON height — ZONE_0_ROWS and the RON have drifted"
+        );
+        for y in 0..canonical.height {
+            for x in 0..canonical.width {
+                let p = TilePos { x, y };
+                assert_eq!(
+                    via_ron.is_walkable(p),
+                    canonical.is_walkable(p),
+                    "walkability mismatch at ({x},{y}) between ZONE_0_ROWS (code) and the \
+                     authored RON — one was changed without the other (12.5f-1 drift gate)"
+                );
+                assert_eq!(
+                    via_ron.is_grass(p),
+                    canonical.is_grass(p),
+                    "grass mismatch at ({x},{y}) between ZONE_0_ROWS (code) and the \
+                     authored RON — one was changed without the other (12.5f-1 drift gate)"
+                );
+            }
+        }
+
+        // Warp parity: zone_0() has warps:vec![] (code constant); the RON has the
+        // (5,5)→zone1 warp. Assert that the RON-loaded map carries that warp, and
+        // record the known delta (zone_0() intentionally omits warps — it is a
+        // pre-M11 convenience function; map_for is the authoritative path).
+        assert!(
+            via_ron.warp_at(TilePos { x: 5, y: 5 }).is_some(),
+            "the authored RON zone 0 must have a warp at (5,5) — \
+             kill target: RON that silently removed the zone-crossing warp"
+        );
+    }
+
     /// Criterion: map_for(99, …) errors and names "99" in the message.
     /// Kills: an impl that returns a generic error without naming the zone_id.
     #[test]

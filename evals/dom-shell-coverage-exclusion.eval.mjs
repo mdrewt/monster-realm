@@ -29,11 +29,26 @@ const DOM_SHELLS = [
 ];
 
 /**
- * Check that all known DOM-shell paths appear in the coverage exclude list string.
+ * Strip JS/TS line comments (// …) and block comments (/* … *\/) from source.
+ * Prevents a shell path mentioned only in a comment from silently satisfying
+ * the include-check (12.5f-3).
+ */
+export function stripComments(src) {
+  // Strip block comments first (/* … */), then line comments (// …).
+  // Non-greedy block match keeps adjacent blocks distinct.
+  let out = src.replace(/\/\*[\s\S]*?\*\//g, '');
+  out = out.replace(/\/\/[^\n]*/g, '');
+  return out;
+}
+
+/**
+ * Check that all known DOM-shell paths appear in the coverage exclude list string
+ * (comments stripped — a path appearing ONLY in a comment must NOT satisfy the gate).
  * Returns an array of shell paths that are MISSING from the config.
  */
 export function findMissingExclusions(configSrc, shells) {
-  return shells.filter((shell) => !configSrc.includes(shell));
+  const stripped = stripComments(configSrc);
+  return shells.filter((shell) => !stripped.includes(shell));
 }
 
 export default async function () {
@@ -41,7 +56,7 @@ export default async function () {
     'dom-shell-coverage-exclusion (all *View.ts shells in vite.config.ts coverage.exclude)';
 
   // ------------------------------------------------------------------
-  // Proof-of-teeth: a config WITHOUT evolutionView.ts MUST fail.
+  // Proof-of-teeth T1: a config WITHOUT evolutionView.ts MUST fail.
   // ------------------------------------------------------------------
   const missingEvolutionConfig = `
     coverage: {
@@ -58,7 +73,34 @@ export default async function () {
     return {
       name,
       pass: false,
-      detail: 'TEETH: findMissingExclusions failed to detect missing evolutionView.ts',
+      detail: 'TEETH T1: findMissingExclusions failed to detect missing evolutionView.ts',
+    };
+  }
+
+  // ------------------------------------------------------------------
+  // Proof-of-teeth T3 (12.5f-3): a path appearing ONLY in a comment
+  // must NOT satisfy the check — kills an impl that searches raw text
+  // including comments.
+  //
+  // Fixture: healView.ts appears only in a TS line comment, NOT in the
+  // exclude array. An impl that searches raw text would false-pass.
+  // ------------------------------------------------------------------
+  const commentOnlyConfig = `
+    coverage: {
+      exclude: [
+        // src/ui/healView.ts  ← mentioned in a comment only, NOT in the array
+        'src/ui/battleView.ts',
+        'src/ui/boxView.ts',
+      ],
+    },
+  `;
+  const commentOnlyMissing = findMissingExclusions(commentOnlyConfig, ['src/ui/healView.ts']);
+  if (!commentOnlyMissing.includes('src/ui/healView.ts')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH T3 (12.5f-3 comment-strip): healView.ts appears ONLY in a comment but findMissingExclusions reports it as present — impl must strip comments before searching. Kills: an impl that searches raw configSrc.includes() without stripping TS comments first.',
     };
   }
 
@@ -97,6 +139,6 @@ export default async function () {
   return {
     name,
     pass: true,
-    detail: `All ${DOM_SHELLS.length} DOM-shell paths are in coverage.exclude (teeth verified)`,
+    detail: `All ${DOM_SHELLS.length} DOM-shell paths are in coverage.exclude (T1/T2/T3 teeth all pass; comment-stripping active)`,
   };
 }

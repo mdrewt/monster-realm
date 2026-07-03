@@ -39,7 +39,7 @@ import { TileMap } from './render/map';
 import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { WorldRenderer } from './render/world';
-import { buildBattleViewModel, decideBattleOverlay } from './ui/battleModel';
+import { type BaitItem, buildBattleViewModel, decideBattleOverlay } from './ui/battleModel';
 import type { BattleView } from './ui/battleView';
 import { buildBoxViewModel, buildPartyViewModel, nextFreePartySlot } from './ui/boxModel';
 import type { BoxView } from './ui/boxView';
@@ -435,7 +435,22 @@ function refreshBattle(): void {
     if (boxView?.visible) boxView.hide(); // active/outcome overlay supersedes the box
     if (raisingView?.visible) raisingView.hide(); // ...and the raising/inventory overlay
     if (evolutionView?.visible) evolutionView.hide(); // ...and the evolution overlay
-    const vm = buildBattleViewModel(r.action.battle, store.skillMap(), store.speciesMap());
+    // Build baitItems from own inventory × item defs (12.5f-5: wire the 4th arg
+    // that was already present in buildBattleViewModel with default []). The
+    // function classifies by recruitBonus > 0 internally (ADR-0047 classify-by-data).
+    const baitItems: BaitItem[] = store.ownInventory(identity).flatMap((inv) => {
+      const def = store.itemDef(inv.itemId);
+      if (!def) return [];
+      return [
+        { itemId: inv.itemId, name: def.name, recruitBonus: def.recruitBonus, count: inv.count },
+      ];
+    });
+    const vm = buildBattleViewModel(
+      r.action.battle,
+      store.skillMap(),
+      store.speciesMap(),
+      baitItems,
+    );
     if (!vm) console.warn('[battle] battle has corrupt team data; view hidden');
     battleView.refresh(vm);
   } else if (battleView.visible) {
