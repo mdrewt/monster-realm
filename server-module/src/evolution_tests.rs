@@ -1349,7 +1349,7 @@ fn fuse_offspring_pub_id_matches_monster_id() {
 
     // ASSERTION 1: no monster_pub row may have monster_id == 0
     // (kills: calling pub_from_monster on the pre-insert offspring row)
-    for (_key, pub_row) in &db.monster_pubs {
+    for pub_row in db.monster_pubs.values() {
         assert_ne!(
             pub_row.monster_id,
             0,
@@ -1586,11 +1586,8 @@ pub(crate) fn fuse_seam(
 
     let offspring_evolves_to = super::compute_evolves_to(&offspring_evolutions, &temp_offspring);
 
-    // NOTE: monster_id starts at 0 — insert_monster assigns the real auto_inc id at insert time,
-    // mirroring the production SpacetimeDB behaviour (auto_inc column assigned on insert).
-    // The BUGGY ordering below (pub_from_monster before insert) is intentional: this seam
-    // mirrors the production bug (12.5a) so that fuse_offspring_pub_id_matches_monster_id
-    // starts RED.  The implementer must fix both this seam AND evolution.rs lines 359-361.
+    // monster_id starts at 0 — insert_monster assigns the real auto_inc id at insert time,
+    // mirroring SpacetimeDB's auto_inc behaviour (ADR-0072).
 
     // Marshal offspring MonsterInstance to Monster row (owner same as parents)
     let offspring_monster = Monster {
@@ -1632,15 +1629,8 @@ pub(crate) fn fuse_seam(
     db.delete_monster_pub(a_id);
     db.delete_monster_pub(b_id);
 
-    // BUGGY ORDER (mirrors 12.5a production bug — intentional for proof-of-teeth):
-    // pub_from_monster is called BEFORE insert, so offspring_monster.monster_id == 0 here.
-    // offspring_pub will have monster_id == 0.  The test fuse_offspring_pub_id_matches_monster_id
-    // catches this.  The implementer fixes this by capturing the insert return value:
-    //   let inserted = db.insert_monster(offspring_monster);
-    //   db.insert_monster_pub(super::pub_from_monster(&inserted));
-    let offspring_pub = super::pub_from_monster(&offspring_monster); // monster_id==0 here!
-    let inserted = db.insert_monster(offspring_monster); // assigns real id
-    db.insert_monster_pub(offspring_pub); // BUG: pub still has monster_id==0
+    let inserted = db.insert_monster(offspring_monster); // assigns real auto_inc id
+    db.insert_monster_pub(super::pub_from_monster(&inserted)); // pub built from real id
 
     Ok(FuseEffect {
         offspring_monster_id: inserted.monster_id,
