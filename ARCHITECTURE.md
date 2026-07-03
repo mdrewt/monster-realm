@@ -660,6 +660,23 @@ try/catch (onBatchApplied isolation, M8.8e); `WorldRenderer.resize()` sets viewp
 7 Rust tests. Deferred to future: per-zone subscription cancellation (ADR-0007 goal; blocked on
 SpacetimeDB subscription-group API).
 
+**M12a** (pure game-core NPC/dialogue/quest rules — ADR-0068) complete: `npc_decide(current,
+home, wander_radius, npc_id, tick) → Option<Direction>` in `game-core/src/npc/rules.rs` closes
+the M1/M2 deferral — non-commutative splitmix64 hash (`npc_id.wrapping_mul(K)` before
+`wrapping_add(tick)`) prevents tick-aliasing (RT-NPC-01); 1-in-5 stay on wander path only;
+toward-home path is deterministic (no hash). Dialogue tree data model (`DialogueTree`,
+`DialogueNode`, `DialogueChoice`, `PlayerDialogueState`, `Condition`) in
+`game-core/src/dialogue/model.rs` — serde-ready, no `SpacetimeType` derives (M12b's job);
+evaluation rules (`evaluate_condition`, `find_entry_node`, `available_choices`, `apply_choice`,
+`apply_effects`, `apply_node_auto_effects`) in `game-core/src/dialogue/rules.rs` — `apply_choice`
+re-checks conditions internally (security contract: M12b must not bypass); `apply_node_auto_effects`
+must be called after `find_entry_node` to apply entry effects. Quest module
+(`game-core/src/quest/`) — `can_start_quest`, `trigger_matches`, `process_trigger` with shared
+`Condition` enum (SSOT with dialogue); `TriggerEvent` enum (Talk/Collect/Defeat);
+`process_trigger` bounds-checks step index via `usize::try_from()` (no silent panic on fabricated
+progress); Collect trigger is at-least (`event.qty >= trigger.qty`). 57 gating tests across 3
+modules (13 NPC + 26 dialogue + 18 quest); all `just ci` evals pass.
+
 **M10c** (evolution/fusion client overlay — ADR-0063) complete: `evolvesTo?: number` on
 `StoreMonsterPub` (`option(u32)` decodes as primitive `number | undefined`; `canEvolve =
 evolvesTo !== undefined`), `StoreFusionRow` type + `store.fusions()` wired to
