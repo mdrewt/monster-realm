@@ -142,20 +142,29 @@ test.describe
       // STEP 1: Force rawMap.zone_id to 1 using the debug hook.
       // WILL FAIL RED: setRawMapZoneForTest is not yet on window.__game() →
       // page.evaluate throws TypeError, test fails immediately.
-      await page.evaluate(() => {
-        const g = (
+      //
+      // DEFLAKE NOTE (m12.5c1-deflake): the set and the read-back are performed
+      // in a SINGLE page.evaluate call.  Two separate calls are not atomic: the
+      // JS task queue can deliver a WebSocket message between them, causing the
+      // reconcile listener to see the mismatch and call switchZone(0) — resetting
+      // rawMap to zone 0 — before snap() reads it back.  Collapsing into one call
+      // prevents any task from running between the set and the read.
+      const afterForceZoneId = await page.evaluate((): number => {
+        (
           window as unknown as {
             __game: () => { setRawMapZoneForTest: (zoneId: number) => void };
           }
-        ).__game();
-        // This hook mutates the module-level rawMap object's zone_id so the
-        // reconcile listener sees own.row.zoneId (0) !== rawMap.zone_id (1).
-        g.setRawMapZoneForTest(1);
+        )
+          .__game()
+          // This hook mutates the module-level rawMap so the reconcile listener
+          // sees own.row.zoneId (0) !== rawMap.zone_id (1).
+          .setRawMapZoneForTest(1);
+        // Re-invoke __game() so the snapshot captures rawMap AFTER the set.
+        return (window as unknown as { __game: () => ZoneSyncSnap }).__game().map.zone_id;
       });
 
       // Confirm the mismatch is established.
-      const afterForce = await snap(page);
-      expect(afterForce.map.zone_id).toBe(1);
+      expect(afterForceZoneId).toBe(1);
 
       // STEP 2: Trigger a server batch update by sending a movement intent.
       // This causes the reconcile listener to fire.  The listener MUST detect
@@ -361,14 +370,34 @@ test.describe
     // sawFractionalOwnMotion → this assertion fails.
     // ---------------------------------------------------------------------------
     test('12.5c-1 idempotent: same-zone reconcile does not reset prediction state', async () => {
-      // Ensure sawFractionalOwnMotion has been latched (the player moved earlier
-      // in this suite).
+      // Re-latch sawFractionalOwnMotion before the gate step.  Previous tests
+      // reset it via switchZone → resetPredictionState.  A passive wait alone is
+      // unreliable: if drain() immediately applies the queued move (old
+      // move_started_at), the slide clock initialises at the destination tile
+      // (same origin and target → no slide → no fractional output → flag never
+      // set).  Sending an explicit step guarantees a new target-tile change and a
+      // fresh slide within STEP_MS.
+      // DEFLAKE NOTE (m12.5c1-deflake): this step is in the same zone (0 === 0)
+      // so the reconcile listener does NOT call switchZone; sawFractionalOwnMotion
+      // is therefore NOT reset by this step under the correct implementation.  The
+      // BITES assertion at the end of this test still catches an implementation
+      // that unconditionally calls resetPredictionState on every batch, because
+      // that impl would reset the flag on the gate step ('East') below.
+      await page.evaluate(() => {
+        (
+          window as unknown as {
+            __game: () => { step: (dir: string) => void };
+          }
+        )
+          .__game()
+          .step('South');
+      });
       await page.waitForFunction(
         () =>
           (window as unknown as { __game: () => ZoneSyncSnap }).__game().sawFractionalOwnMotion ===
           true,
         null,
-        { timeout: 15_000 },
+        { timeout: 10_000 },
       );
 
       // Take a snapshot while still in zone 0 and confirm sawFractionalOwnMotion.
