@@ -73,6 +73,9 @@
 - Terminal battle GC + XP log-and-continue + canonical skill order (#94)
 - Practice-battle XP multiplier 0.1× (ADR-0078) (#96)
 - Nightly republish-without-delete smoke test (ADR-0079) (#98)
+- OKF knowledge bundle producer + generated docs/knowledge/ (#102)
+- OKF knowledge-bundle conformance + drift eval (M8.95b) (#103)
+- Research-library conformance — type field + type-aware scripts (#104)
 
 ### Fixes
 
@@ -138,3 +141,5 @@
 ### Wip
 
 - Extract taming.rs inline tests to taming_tests.rs (M8.9c) (#53)
+- Monster-realm doc reconciliation phase — README/AGENTS/ARCHITECTURE/ADR-README/ADR-0067/raising.rs/CHANGELOG (#101)
+- ARCHITECTURE.md + ADR-0080 knowledge bundle doc
