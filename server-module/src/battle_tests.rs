@@ -553,6 +553,10 @@ fn level_up_heal_only_inside_species_guard_not_before_it() {
 /// Verifies write_back_battle_results calls `practice_xp_reward(` — the
 /// SSOT delegation gate for the 0.1× practice penalty (ADR-0078).
 ///
+/// Two checks: (1) the bare call-name needle, (2) the call-with-first-arg
+/// pattern to guard against a string-literal bypass where a log message
+/// mentioning `practice_xp_reward(` would satisfy check 1 but not check 2.
+///
 /// Kills: inline `/ 10` or `* 0.1` directly in the server shell
 /// (ADR-0003 violation — the rule must live in game-core, not battle.rs).
 /// RED: fails today because practice_xp_reward is not yet called.
@@ -566,8 +570,17 @@ fn write_back_battle_results_calls_practice_xp_reward() {
         body.contains("practice_xp_reward("),
         "TEETH: write_back_battle_results must call `practice_xp_reward(` \
          (game-core SSOT for the 0.1× practice penalty — ADR-0078 / ADR-0003); \
-         an inline `/ 10` in battle.rs is a SSOT violation. \
-         RED today: the call does not yet exist."
+         an inline `/ 10` in battle.rs is a SSOT violation."
+    );
+    // Secondary needle: guards against a string-literal bypass where a `log!`
+    // call mentioning `practice_xp_reward(` would satisfy the check above but
+    // would not satisfy the actual call pattern `practice_xp_reward(base_xp,`.
+    assert!(
+        body.contains("practice_xp_reward(base_xp,"),
+        "TEETH: write_back_battle_results must call `practice_xp_reward(base_xp, ...)` — \
+         the secondary needle prevents a string-literal bypass (a log message mentioning \
+         practice_xp_reward would satisfy the first check but not this one). \
+         Ensure the call is `game_core::practice_xp_reward(base_xp, is_practice)`."
     );
 }
 

@@ -448,6 +448,72 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // M12.5e2 red-team: minimum pipeline and exact-divisor boundary
+    // -----------------------------------------------------------------------
+
+    /// RT-PX-01: Minimum battle_xp_reward output (1) fed into practice_xp_reward
+    /// yields 0 — the floor truncates the +1 minimum to nothing for practice battles.
+    ///
+    /// Scenario: L100 winner defeats a L1 opponent with the minimum possible BST (1).
+    ///   battle_xp_reward(L100, bst=1, L1) = 1*1/(5*100) + 1 = 0 + 1 = 1
+    ///   practice_xp_reward(1, true)        = floor(1/10) = 0
+    ///
+    /// Kills: any impl that adds a +1 floor inside practice_xp_reward
+    /// (which would return 1 instead of 0 here, violating the spec).
+    /// Also kills: any "minimum-1" practice impl.
+    ///
+    /// This composition test is orthogonal to the component tests: it verifies
+    /// the PIPELINE invariant that the +1 in battle_xp_reward does NOT perturb
+    /// the 0-floor behavior of the practice rule (ADR-0078 §rationale).
+    #[test]
+    fn rt_px_01_min_battle_xp_through_practice_floors_to_zero() {
+        let base = battle_xp_reward(level(100), 1, level(1));
+        assert_eq!(
+            base.value(),
+            1,
+            "RT-PX-01: battle_xp_reward(L100, bst=1, L1) must be 1 (the minimum)"
+        );
+        let practice = practice_xp_reward(base, true);
+        assert_eq!(
+            practice.value(),
+            0,
+            "RT-PX-01: practice_xp_reward(1, true) must be 0 — \
+             floor(1/10)=0; a +1 floor inside practice_xp_reward would return 1 \
+             and violate the spec (ADR-0078: minimum is 0, not 1)"
+        );
+    }
+
+    /// RT-PX-02: Exact divisor boundary — base_xp=10 yields practice_xp=1.
+    ///
+    /// Scenario: L1 winner defeats a L45 opponent with BST=1.
+    ///   battle_xp_reward(L1, bst=1, L45) = 1*45/(5*1) + 1 = 9 + 1 = 10
+    ///   practice_xp_reward(10, true)      = floor(10/10) = 1
+    ///
+    /// Kills: an impl using ceiling instead of floor (ceil(10/10)=1 agrees here,
+    /// but differs at base=11: floor=1 vs ceil=2); combined with practice_xp_floor_truncates_to_zero
+    /// (which pins floor(9/10)=0 vs ceil(9/10)=1) these two tests fully pin the rounding direction.
+    ///
+    /// This is the first base_xp that yields non-zero practice XP. The crossing
+    /// from 0 to 1 is the critical boundary for the "no XP from trivial self-battles"
+    /// design intent (ADR-0078).
+    #[test]
+    fn rt_px_02_exact_divisor_yields_one_practice_xp() {
+        let base = battle_xp_reward(level(1), 1, level(45));
+        assert_eq!(
+            base.value(),
+            10,
+            "RT-PX-02: battle_xp_reward(L1, bst=1, L45) must be 10 (exact divisor)"
+        );
+        let practice = practice_xp_reward(base, true);
+        assert_eq!(
+            practice.value(),
+            1,
+            "RT-PX-02: practice_xp_reward(10, true) must be 1 (floor(10/10)=1); \
+             this is the first base_xp that yields non-zero practice XP (ADR-0078)"
+        );
+    }
+
     proptest! {
         /// Kills: an impl where the formula can produce 0 (missing the +1 floor).
         /// Starts red because `battle_xp_reward` is `todo!()`.

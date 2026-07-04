@@ -42,7 +42,10 @@ function extractFnBody(src, fnName) {
 function hasPracticeXpCall(body) {
   // No self-match risk: this file is under evals/, not server-module/src/,
   // so it is never in the scanned corpus.
-  return body.includes('practice_xp_reward(');
+  // Two-needle check: bare call name + call-with-first-arg to guard against
+  // a string-literal bypass (a log! message mentioning practice_xp_reward(
+  // would satisfy the first needle but not the second).
+  return body.includes('practice_xp_reward(') && body.includes('practice_xp_reward(base_xp,');
 }
 
 function readServerModuleSources(dir) {
