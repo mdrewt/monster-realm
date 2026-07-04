@@ -23,10 +23,11 @@ export function nightlyHasSmokeRepublishJob(yaml) {
 }
 
 // ---------------------------------------------------------------------------
-// Pure predicate: the YAML text references the smoke script file name.
+// Pure predicate: the nightly YAML invokes the smoke test — either directly
+// via the script name or via `just smoke-republish` (the canonical recipe).
 // ---------------------------------------------------------------------------
 export function jobReferencesScript(yaml) {
-  return yaml.indexOf('smoke-republish.sh') !== -1;
+  return yaml.indexOf('smoke-republish.sh') !== -1 || yaml.indexOf('just smoke-republish') !== -1;
 }
 
 // ---------------------------------------------------------------------------

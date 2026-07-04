@@ -101,4 +101,12 @@ cache-on:
     @echo 'export SCCACHE_CACHE_SIZE=${SCCACHE_CACHE_SIZE:-2G}'
     @echo 'export CARGO_INCREMENTAL=0'
 
+# Nightly republish smoke test (ADR-0079 / spec §12.5b-6). Requires a running
+# SpacetimeDB instance and the spacetime CLI on PATH. Temporarily patches
+# CONTENT_VERSION to force a re-seed via sync_content; restores lib.rs on exit.
+# Uses an isolated DB name (MR_SMOKE_DB; default: monster-realm-smoke) so it
+# never collides with the regular dev/e2e database.
+smoke-republish:
+    bash scripts/smoke-republish.sh ${STDB_SERVER:-http://127.0.0.1:3000} ${MR_SMOKE_DB:-monster-realm-smoke}
+
 ci: lint typecheck test eval security wasm client-typecheck client-test
