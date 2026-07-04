@@ -46,3 +46,54 @@ jobs:
           cache-dependency-path: client/package-lock.json
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
       - run: just coverage
+
+  # Publish → edit-content → republish-WITHOUT-delete-data → sync_content →
+  # assert data survives + new content version served (spec §12.5b-6, ADR-0079).
+  # Failure policy: any failure is inserted as the NEXT slice in the milestone
+  # queue (priority: same tier as fix-red-master, below it in ordering).
+  # Uses an isolated per-run DB name so concurrent nightly runs don't collide.
+  smoke-republish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with: { prefix-key: v1-smoke }
+      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+      - name: Install SpacetimeDB CLI
+        # Download-then-execute (not `curl | sh`): satisfies semgrep
+        # gha-curl-pipe-shell and leaves an artifact for inspection.
+        # `--yes`: installer prompts to confirm on a non-tty runner without it.
+        run: |
+          curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
+          sh /tmp/spacetime-install.sh --yes
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Pin spacetime 2.6.0
+        run: |
+          spacetime version install 2.6.0
+          spacetime version use 2.6.0
+          spacetime --version
+      # Ephemeral in-memory SpacetimeDB instance on 127.0.0.1:3000.
+      - name: Start SpacetimeDB
+        run: nohup spacetime start --in-memory --listen-addr 127.0.0.1:3000 > /tmp/stdb-smoke.log 2>&1 &
+      - name: Wait for SpacetimeDB
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://127.0.0.1:3000/; then echo "ready after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "spacetime did not become ready on :3000" >&2
+          cat /tmp/stdb-smoke.log >&2 || true
+          exit 1
+      - name: Run smoke-republish test
+        env:
+          STDB_SERVER: http://127.0.0.1:3000
+          # Per-run isolated DB name: never collides with concurrent nightly runs
+          # or the regular monster-realm dev/e2e database.
+          MR_SMOKE_DB: monster-realm-smoke-${{ github.run_id }}
+        run: just smoke-republish
+      - name: Dump SpacetimeDB logs on failure
+        if: failure()
+        run: cat /tmp/stdb-smoke.log || true
