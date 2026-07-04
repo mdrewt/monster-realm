@@ -10,7 +10,7 @@ Architecture Decision Records live in **two locations**; check both.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0078`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0079`**.
 
 ## ADRs in `docs/adr/`
 
@@ -60,6 +60,7 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 | [0075](./0075-netcode-smoothness-m125d.md) | Netcode smoothness residuals — interp delay 1.0×STEP_MS, tile-center camera, predictor/render fixes | M12.5d |
 | [0076](./0076-gate-simharness-teeth.md) | Gate & sim-harness teeth — proof-of-teeth fixtures, type-drift snapshot, expired-fixme guard | M12.5f |
 | [0077](./0077-battle-lifecycle-gc.md) | Battle lifecycle GC, XP log-and-continue, canonical skill order | M12.5e |
+| [0078](./0078-practice-xp-multiplier.md) | Practice-battle XP multiplier (0.1×) | M12.5e2 |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
