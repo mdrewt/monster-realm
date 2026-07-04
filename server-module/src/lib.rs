@@ -22,6 +22,7 @@ use std::time::Duration;
 // --- Domain modules (the canonical `touches:` vocabulary, ADR-0056) ---------
 mod battle;
 mod content;
+mod economy;
 mod evolution;
 mod guards;
 mod inventory;

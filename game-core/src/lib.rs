@@ -13,6 +13,7 @@
 
 pub mod combat;
 pub mod content;
+pub mod currency;
 pub mod dialogue;
 pub mod evolution;
 pub mod monster;
