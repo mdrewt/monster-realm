@@ -148,12 +148,55 @@ fn economy_has_no_direct_balance_mutations() {
 fn grant_currency_has_zero_amount_guard() {
     // Assemble from parts to avoid false self-match in source scans.
     let guard_pattern = ["amount", " == 0"].concat();
+    let fn_marker = ["fn grant", "_currency"].concat();
 
+    // The guard must appear AFTER the `fn grant_currency` declaration — i.e., inside
+    // the grant_currency body — not merely elsewhere in the file (e.g., spend_currency).
+    let fn_pos = ECONOMY_SOURCE
+        .find(fn_marker.as_str())
+        .expect("TEETH: fn grant_currency not found in economy.rs");
+    let after_fn = &ECONOMY_SOURCE[fn_pos..];
     assert!(
-        ECONOMY_SOURCE.contains(guard_pattern.as_str()),
+        after_fn.contains(guard_pattern.as_str()),
         "TEETH(ADR-0081 §zero-grant): grant_currency must contain an `{}` guard \
          to prevent inserting phantom wallet rows on 0-amount grants. \
          Add: `if amount == 0 {{ return; }}` at the top of grant_currency.",
+        guard_pattern
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: Zero-spend guard — spend_currency must contain the early-return guard
+// ---------------------------------------------------------------------------
+
+/// M13a: `spend_currency` must contain an `if amount == 0` guard that returns
+/// `Ok(())` early, preventing a DB round-trip (find + update) on zero-amount spends.
+///
+/// ADR-0081 states: "with `amount == 0` is also a no-op (returns `Ok(())`);
+/// a zero-amount call on either direction never touches the DB."
+///
+/// kills: an impl that calls `apply_spend(balance, 0)` (which returns `Ok(balance)`)
+///        but still reads and writes the row (wasted DB IO), or one that treats a
+///        zero-amount spend as an error.
+///
+/// Note: structural test — we verify the guard exists inside `spend_currency`.
+/// The exact form (`if amount == 0 { return Ok(()); }`) may vary, so we check for
+/// the condition text after the `fn spend_currency` declaration.
+#[test]
+fn spend_currency_has_zero_amount_guard() {
+    let guard_pattern = ["amount", " == 0"].concat();
+    let fn_marker = ["fn spend", "_currency"].concat();
+
+    // The guard must appear AFTER the `fn spend_currency` declaration.
+    let fn_pos = ECONOMY_SOURCE
+        .find(fn_marker.as_str())
+        .expect("TEETH: fn spend_currency not found in economy.rs");
+    let after_fn = &ECONOMY_SOURCE[fn_pos..];
+    assert!(
+        after_fn.contains(guard_pattern.as_str()),
+        "TEETH(ADR-0081 §zero-spend): spend_currency must contain an `{}` guard \
+         to prevent a wasted DB read+write on 0-amount spends. \
+         Add: `if amount == 0 {{ return Ok(()); }}` at the top of spend_currency.",
         guard_pattern
     );
 }

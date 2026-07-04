@@ -26,18 +26,21 @@ export function stripRustComments(src) {
 
 // ---------------------------------------------------------------------------
 // Criterion 1: SATURATING_CAP
-// grant_currency must use saturating arithmetic and cap at MAX_BALANCE.
-// Bad fixture: direct `+=` on balance.
-// Good fixture: `saturating_add` + `.min(MAX_BALANCE)` pattern (or `apply_grant` delegation).
+// grant_currency must delegate to apply_grant (game-core SSOT pure fn).
+// Bad fixture: direct `+=` on balance, OR inline saturating_add without apply_grant.
+// Good fixture: `apply_grant(` delegation only.
+//
+// RT-C1-01: the previous implementation also accepted `saturating_add + any .min()`
+// without verifying the min argument is MAX_BALANCE.  An implementer could write
+// `.saturating_add(amount).min(u64::MAX)` — caps at u64::MAX, not 999_999_999.
+// Fix: require apply_grant delegation exclusively; the inline-arithmetic path is
+// rejected because it admits an unchecked cap argument.
 // ---------------------------------------------------------------------------
 export function hasSaturatingCap(src) {
   const code = stripRustComments(src);
-  // Accept: calls apply_grant (delegates to game-core pure fn) OR
-  //         uses .saturating_add( with a .min( nearby (within same function call chain)
-  // Reject anything that uses += on balance directly instead.
-  return (
-    /apply_grant\s*\(/.test(code) || (/\.saturating_add\s*\(/.test(code) && /\.min\s*\(/.test(code))
-  );
+  // Accept ONLY: delegation to apply_grant (game-core pure fn is the SSOT for the cap).
+  // Inline saturating_add is rejected because the cap argument cannot be verified here.
+  return /apply_grant\s*\(/.test(code);
 }
 
 export function hasUncheckedBalanceIncrement(src) {
@@ -61,6 +64,18 @@ export function hasBareBalanceSubtraction(src) {
   const code = stripRustComments(src);
   // Flag bare `balance -` (subtraction) or `balance -=` assignment.
   return /balance\s*-[^-=]/.test(code) || /balance\s*-=/.test(code);
+}
+
+/**
+ * RT-C2-01 / RT-C2-02: Flag unsafe balance decrement methods that bypass checked_sub.
+ * `saturating_sub` silently floors at 0 (overdraft becomes free purchase);
+ * `wrapping_sub` underflows to u64::MAX (overdraft becomes astronomical balance).
+ * Neither is caught by hasBareBalanceSubtraction because they use no "-" token.
+ * This helper is the third leg of the C2 check.
+ */
+export function hasUncheckedBalanceDecrement(src) {
+  const code = stripRustComments(src);
+  return /\.saturating_sub\s*\(/.test(code) || /\.wrapping_sub\s*\(/.test(code);
 }
 
 // ---------------------------------------------------------------------------
@@ -89,12 +104,37 @@ export function walletTableIsPrivate(schemaSrc) {
 // ---------------------------------------------------------------------------
 // Criterion 4: ZERO_GUARD
 // grant_currency must early-return on amount == 0 (no phantom row).
-// Bad fixture: missing zero check.
-// Good fixture: `if amount == 0` guard before any DB operation.
+// Bad fixture: missing zero check in grant_currency.
+// Good fixture: `if amount == 0` guard INSIDE the grant_currency function body.
+//
+// RT-C4-01: the guard must be scoped to grant_currency — a guard only in
+// spend_currency satisfies the old file-wide regex but leaves grant_currency
+// unguarded, allowing phantom wallet row insertion on zero-amount grants.
 // ---------------------------------------------------------------------------
 export function hasZeroGuard(src) {
   const code = stripRustComments(src);
-  return /if\s+amount\s*==\s*0/.test(code);
+  // Extract the grant_currency function body: find the function signature,
+  // then walk braces to delimit its body.
+  const fnIdx = code.indexOf('fn grant_currency');
+  if (fnIdx === -1) return false;
+  // Find the opening brace of the function body.
+  const openBrace = code.indexOf('{', fnIdx);
+  if (openBrace === -1) return false;
+  // Walk to find the matching closing brace (depth-based, not regex).
+  let depth = 0;
+  let end = openBrace;
+  for (let i = openBrace; i < code.length; i++) {
+    if (code[i] === '{') depth++;
+    else if (code[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  const grantBody = code.slice(openBrace, end + 1);
+  return /if\s+amount\s*==\s*0/.test(grantBody);
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +213,24 @@ export default async function () {
     };
   }
 
+  // RT-C1-01: saturating_add + wrong min() must NOT pass — bypasses MAX_BALANCE cap.
+  // An implementer who inlines the arithmetic but uses min(u64::MAX) or any constant
+  // other than MAX_BALANCE would silently break the 9-digit cap invariant while
+  // passing hasSaturatingCap (which only checks that BOTH keywords appear, not their
+  // relationship). This fixture gates that class of mutant.
+  const badSatWrongMin =
+    'fn grant_currency(ctx, owner, amount) { row.balance = row.balance.saturating_add(amount).min(u64::MAX); }';
+  if (hasSaturatingCap(badSatWrongMin)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (RT-C1-01): hasSaturatingCap accepted saturating_add.min(u64::MAX) — ' +
+        'the cap arg is unchecked; a wrong constant bypasses the MAX_BALANCE invariant. ' +
+        'Fix: require apply_grant delegation, or tighten the regex to verify the min arg.',
+    };
+  }
+
   const badSpend = 'fn spend_currency(ctx, owner, amount) { row.balance = row.balance - amount; }';
   if (!hasBareBalanceSubtraction(badSpend)) {
     return {
@@ -186,6 +244,46 @@ export default async function () {
       name,
       pass: false,
       detail: 'TEETH FAILED: hasCheckedSub should NOT pass on bare subtraction fixture',
+    };
+  }
+
+  // RT-C2-01: saturating_sub silently zeroes on overdraft instead of returning Err.
+  // hasBareBalanceSubtraction misses it (no "-" token); hasCheckedSub misses it.
+  // hasUncheckedBalanceDecrement must flag it.
+  const badSatSub =
+    'fn spend_currency(ctx, owner, amount) { row.balance = row.balance.saturating_sub(amount); }';
+  if (!hasUncheckedBalanceDecrement(badSatSub)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (RT-C2-01): hasUncheckedBalanceDecrement did not flag saturating_sub fixture — ' +
+        'a silent-overdraft mutant (balance floors at 0, Ok returned) would pass C2 undetected.',
+    };
+  }
+
+  // RT-C2-02: wrapping_sub silently underflows (u64 wrap) — balance wraps to ~u64::MAX.
+  // hasUncheckedBalanceDecrement must flag it.
+  const badWrapSub =
+    'fn spend_currency(ctx, owner, amount) { row.balance = row.balance.wrapping_sub(amount); }';
+  if (!hasUncheckedBalanceDecrement(badWrapSub)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (RT-C2-02): hasUncheckedBalanceDecrement did not flag wrapping_sub fixture — ' +
+        'a u64-underflow mutant (balance wraps to ~u64::MAX) would pass C2 undetected.',
+    };
+  }
+  // Confirm good spend does NOT trigger the decrement check.
+  const goodDecrement =
+    'fn spend_currency(ctx, owner, amount) { row.balance = apply_spend(row.balance, amount)?; }';
+  if (hasUncheckedBalanceDecrement(goodDecrement)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (RT-C2): hasUncheckedBalanceDecrement falsely flagged apply_spend delegation.',
     };
   }
 
@@ -233,6 +331,27 @@ export default async function () {
       name,
       pass: false,
       detail: 'TEETH FAILED: hasZeroGuard did not pass on fixture with zero check',
+    };
+  }
+
+  // RT-C4-01: zero guard in spend_currency must NOT satisfy the grant_currency guard check.
+  // hasZeroGuard scans the entire file for "amount == 0".  If grant_currency loses its
+  // guard but spend_currency keeps its own, the eval passes — a phantom wallet row can
+  // be inserted for zero-amount grants (grant_currency(ctx, owner, 0) with no row
+  // present inserts PlayerWallet{ balance: 0 }).  This fixture forces the evaluator to
+  // distinguish the two functions.
+  const badZeroWrongFn =
+    'fn grant_currency(ctx, owner, amount) { ctx.db.player_wallet().insert(PlayerWallet { owner_identity: owner, balance: apply_grant(0, amount) }); }\n' +
+    'fn spend_currency(ctx, owner, amount) { if amount == 0 { return Ok(()); } }';
+  if (hasZeroGuard(badZeroWrongFn)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (RT-C4-01): hasZeroGuard accepted a fixture where the zero guard is in ' +
+        'spend_currency but grant_currency is unguarded — a phantom wallet row can be inserted ' +
+        'by calling grant_currency(ctx, owner, 0). ' +
+        'Fix: scope the guard search to the grant_currency function body only.',
     };
   }
 
@@ -294,9 +413,18 @@ export default async function () {
   }
 
   // Criterion 2: CHECKED_SUB — economy.rs must not do bare balance subtraction.
+  // Three complementary checks (RT-C2-01, RT-C2-02): bare subtraction, saturating_sub,
+  // and wrapping_sub are all forbidden; only apply_spend / checked_sub are accepted.
   if (hasBareBalanceSubtraction(economySrc)) {
     failures.push(
       'CHECKED_SUB: economy.rs uses bare balance subtraction (must use apply_spend / checked_sub)',
+    );
+  }
+  if (hasUncheckedBalanceDecrement(economySrc)) {
+    failures.push(
+      'CHECKED_SUB (RT-C2-01/02): economy.rs uses saturating_sub or wrapping_sub — ' +
+        'saturating_sub silently overdrafts (balance → 0, Ok returned); ' +
+        'wrapping_sub underflows to u64::MAX. Must use apply_spend / checked_sub.',
     );
   }
   if (!hasCheckedSub(economySrc)) {
@@ -336,8 +464,10 @@ export default async function () {
         base.endsWith('.rs') &&
         base !== 'economy.rs' &&
         base !== 'schema.rs' &&
+        base !== 'economy_tests.rs' &&
         !base.endsWith('/economy.rs') &&
-        !base.endsWith('/schema.rs')
+        !base.endsWith('/schema.rs') &&
+        !base.endsWith('/economy_tests.rs')
       );
     });
   for (const f of srcs) {

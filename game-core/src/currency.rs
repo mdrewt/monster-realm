@@ -8,6 +8,7 @@ pub const MAX_BALANCE: u64 = 999_999_999;
 
 /// Grant `amount` to `balance`. Saturating add, capped at [`MAX_BALANCE`].
 /// Returns `balance` unchanged when `amount` is 0.
+#[must_use]
 pub fn apply_grant(balance: u64, amount: u64) -> u64 {
     balance.saturating_add(amount).min(MAX_BALANCE)
 }

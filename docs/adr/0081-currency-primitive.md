@@ -51,6 +51,11 @@ pure functions in game-core, server wrappers in `economy.rs`.**
   with `amount == 0` is also a no-op (returns `Ok(())`); with `amount > balance` it
   returns `Err("insufficient funds")` and never modifies the row. Both helpers are
   symmetric: a zero-amount call on either direction never touches the DB.
+- `spend_currency` has two distinct `Err` variants: `Err("no wallet")` when the player
+  has never received any currency (no row exists), and `Err("insufficient funds")` when
+  the row exists but the balance is too low. M13b reducers MUST map both to a single
+  opaque user-visible error string (e.g. "not enough currency") to avoid leaking wallet
+  existence state to clients.
 - Every economy path (buy/sell reducers, quest/battle rewards, healing cost) MUST route
   through `grant_currency` / `spend_currency`. A direct `.balance +=` / `.balance -=`
   in any reducer is a review-blocking bypass (enforced by the `currency-integrity` eval).
