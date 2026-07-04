@@ -1,4 +1,5 @@
 ---
+type: Research Note
 title: Top-down 2D art style — direction & technical inspirations
 slug: top-down-2d-art
 domain: art

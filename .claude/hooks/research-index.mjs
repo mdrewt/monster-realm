@@ -22,6 +22,7 @@ function fm(txt) {
     return (line ? line.slice(k.length + 1) : '').trim().replace(/^["']|["']$/g, '');
   };
   return {
+    type: g('type'),
     slug: g('slug'),
     domain: g('domain'),
     status: g('status'),
@@ -54,14 +55,14 @@ export function duplicateSlugs(dir) {
 
 export function buildAuto(dir) {
   const rows = scan(dir).sort((a, b) => (b.updated || '').localeCompare(a.updated || ''));
-  const head = '| slug | domain | status | updated | tags | abstract |\n|---|---|---|---|---|---|';
+  const head = '| type | slug | domain | status | updated | tags | abstract |\n|---|---|---|---|---|---|---|';
   const body =
     rows
       .map(
         (d) =>
-          `| ${cell(d.slug)} | ${cell(d.domain)} | ${cell(d.status)} | ${cell(d.updated)} | ${cell(d.tags)} | ${cell(d.abstract).slice(0, 120)} |`,
+          `| ${cell(d.type)} | ${cell(d.slug)} | ${cell(d.domain)} | ${cell(d.status)} | ${cell(d.updated)} | ${cell(d.tags)} | ${cell(d.abstract).slice(0, 120)} |`,
       )
-      .join('\n') || '| _(none yet)_ |  |  |  |  |  |';
+      .join('\n') || '| _(none yet)_ |  |  |  |  |  |  |';
   return `${BEGIN}\n${head}\n${body}\n${END}`;
 }
 
