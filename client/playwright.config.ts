@@ -11,6 +11,11 @@ const e2eBaseUrl = `http://localhost:${e2ePort}`;
 
 export default defineConfig({
   testDir: './e2e',
+  // A stray `test.only()` must fail CI (never silently skip all other e2e specs).
+  // Left permissive locally (CI env var absent) so devs can focus one spec during
+  // iteration. GitHub Actions sets CI=true by default. M10.5d — verified 2026-07-04:
+  // `CI=1 npx playwright test` exits non-zero when forbidOnly fires.
+  forbidOnly: !!process.env.CI,
   // ADR-0009 preconditions: republish the module with --delete-data (zero players).
   globalSetup: './e2e/global-setup.ts',
   timeout: 45_000,

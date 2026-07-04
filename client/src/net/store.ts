@@ -376,7 +376,16 @@ export class AuthoritativeStore {
   flushBatch(): void {
     if (!this.#dirty) return;
     this.#dirty = false;
-    for (const cb of [...this.#batchListeners]) cb();
+    // M10.5d: per-listener try/catch (closes M8.8e residual). A throwing listener
+    // is caught+logged and the loop continues, so one bad listener cannot starve
+    // siblings (e.g. a crashing dialogueView listener must not freeze the renderer).
+    for (const cb of [...this.#batchListeners]) {
+      try {
+        cb();
+      } catch (err) {
+        console.error('AuthoritativeStore.flushBatch: batch listener threw (continuing)', err);
+      }
+    }
   }
 
   onBatchApplied(cb: () => void): () => void {
