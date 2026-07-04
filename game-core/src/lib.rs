@@ -28,9 +28,9 @@ mod m8c_gating_tests;
 
 pub use combat::{
     accuracy_check, apply_xp_gain, base_stat_total, battle_xp_reward, calc_damage, pick_best_skill,
-    resolve_enemy_turn, resolve_player_swap, resolve_turn, BattleEvent, BattleMonster,
-    BattleOutcome, BattleSide, BattleState, Effectiveness, SideId, TurnChoice, TurnVariance,
-    TypeChart,
+    practice_xp_reward, resolve_enemy_turn, resolve_player_swap, resolve_turn, BattleEvent,
+    BattleMonster, BattleOutcome, BattleSide, BattleState, Effectiveness, SideId, TurnChoice,
+    TurnVariance, TypeChart,
 };
 pub use content::{
     load_dialogue_trees, load_encounters, load_evolutions, load_fusion, load_heal_locations,

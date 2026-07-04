@@ -52,6 +52,26 @@ pub fn battle_xp_reward(winner_level: Level, loser_base_stat_total: u16, loser_l
     Xp::new(reward)
 }
 
+/// Apply the practice-battle XP multiplier to a base XP reward.
+///
+/// `is_practice` is true when the opponent is not WILD_IDENTITY (e.g. a
+/// self-battle or future PvP battle). Wild encounters pass `is_practice=false`
+/// and receive the base reward unchanged.
+///
+/// Rule (ADR-0078): `floor(base / 10)` via integer division; may yield 0 for
+/// small base rewards (1–9 XP → 0 practice XP). The minimum is 0, not 1.
+///
+/// This is the SSOT for the 0.1× practice penalty — the server shell computes
+/// the boolean from battle provenance and delegates all arithmetic here.
+#[must_use]
+pub fn practice_xp_reward(base: Xp, is_practice: bool) -> Xp {
+    if is_practice {
+        Xp::new(base.value() / 10)
+    } else {
+        base
+    }
+}
+
 /// Apply earned XP to a monster's current XP pool.
 ///
 /// Returns `(new_xp, new_level, did_level_up)`.
@@ -361,6 +381,63 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // M12.5e2: practice_xp_reward — gating tests
+    // -----------------------------------------------------------------------
+
+    /// Known-answer: floor(64/10) = 6 (not 6.4).
+    /// Kills: wrong operator (multiply instead of divide), rounding up instead of floor.
+    /// RED: compile-RED until `practice_xp_reward` is declared.
+    #[test]
+    fn practice_xp_known_answer_floor() {
+        assert_eq!(
+            practice_xp_reward(Xp::new(64), true).value(),
+            6,
+            "practice_xp_reward(64, true) must be 6 (floor(64/10)=6)"
+        );
+    }
+
+    /// Floor truncates to zero for small base XP.
+    /// Kills: a min-1 impl that returns Xp::new(1) instead of Xp::new(0).
+    /// RED: compile-RED until `practice_xp_reward` is declared.
+    #[test]
+    fn practice_xp_floor_truncates_to_zero() {
+        assert_eq!(
+            practice_xp_reward(Xp::new(9), true).value(),
+            0,
+            "practice_xp_reward(9, true) must be 0 (floor(9/10)=0, min is 0 not 1)"
+        );
+    }
+
+    /// is_practice=false returns base unchanged (wild-battle passthrough).
+    /// Kills: an impl that always applies the multiplier regardless of the flag.
+    /// RED: compile-RED until `practice_xp_reward` is declared.
+    #[test]
+    fn practice_xp_passthrough_when_not_practice() {
+        assert_eq!(
+            practice_xp_reward(Xp::new(64), false).value(),
+            64,
+            "practice_xp_reward(64, false) must return 64 unchanged (not a practice battle)"
+        );
+    }
+
+    /// Zero base XP stays zero in both modes.
+    /// Edge case: ensures no +1 floor in either code path.
+    /// RED: compile-RED until `practice_xp_reward` is declared.
+    #[test]
+    fn practice_xp_zero_input() {
+        assert_eq!(
+            practice_xp_reward(Xp::new(0), true).value(),
+            0,
+            "practice_xp_reward(0, true) must be 0"
+        );
+        assert_eq!(
+            practice_xp_reward(Xp::new(0), false).value(),
+            0,
+            "practice_xp_reward(0, false) must be 0"
+        );
+    }
+
     proptest! {
         /// Kills: an impl where the formula can produce 0 (missing the +1 floor).
         /// Starts red because `battle_xp_reward` is `todo!()`.
@@ -389,6 +466,22 @@ mod tests {
             prop_assert!(
                 level_small.as_u8() <= level_large.as_u8(),
                 "gaining more XP ({gain_large}) must never yield a lower level than gaining less ({gain_small})"
+            );
+        }
+
+        /// practice XP must never exceed the base reward (the multiplier is a penalty).
+        /// Kills: any impl that inflates XP instead of reducing it.
+        /// RED: compile-RED until `practice_xp_reward` is declared.
+        #[test]
+        fn prop_practice_xp_never_exceeds_base(
+            base in 0u32..u32::MAX/2,
+            is_practice in proptest::bool::ANY,
+        ) {
+            let result = practice_xp_reward(Xp::new(base), is_practice);
+            prop_assert!(
+                result.value() <= base,
+                "practice_xp_reward must never exceed base ({base} → {result_val})",
+                result_val = result.value()
             );
         }
     }

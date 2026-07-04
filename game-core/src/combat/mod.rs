@@ -36,4 +36,4 @@ pub use types::{
     BattleEvent, BattleMonster, BattleOutcome, BattleSide, BattleState, Effectiveness, SideId,
     TurnChoice, TurnVariance,
 };
-pub use xp::{apply_xp_gain, base_stat_total, battle_xp_reward};
+pub use xp::{apply_xp_gain, base_stat_total, battle_xp_reward, practice_xp_reward};

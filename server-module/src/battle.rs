@@ -718,7 +718,9 @@ pub(crate) fn write_back_battle_results(
                     continue;
                 }
             };
-            let xp_gained = battle_xp_reward(winner_lvl, bst, loser_lvl);
+            let base_xp = battle_xp_reward(winner_lvl, bst, loser_lvl);
+            let is_practice = battle.opponent_identity != WILD_IDENTITY;
+            let xp_gained = game_core::practice_xp_reward(base_xp, is_practice);
             let current_xp = game_core::Xp::new(m.xp);
             let (new_xp, new_level, leveled_up) = apply_xp_gain(current_xp, xp_gained);
             m.xp = new_xp.value();
