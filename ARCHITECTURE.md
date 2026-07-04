@@ -193,7 +193,7 @@ any hand edit to `docs/knowledge/**` fails the drift gate in CI.
 
 | Concept type | Count | Source |
 |---|---|---|
-| `SpacetimeDB Table` | 22 | `server-module/src/schema.rs` via `parseTableSchemas()` |
+| `SpacetimeDB Table` | 23 | `server-module/src/schema.rs` via `parseTableSchemas()` |
 | `SpacetimeDB Reducer` | 25 | domain modules `server-module/src/**/*.rs` |
 | `Schema Overview` | 1 | generated; links all tables + privacy classification |
 | root `index.md` | 1 | generated entry point for agent lookup |
@@ -217,7 +217,7 @@ column via `research-index.mjs`).
 
 ADRs **0002–0034** are design ADRs that live in the harness spec corpus
 (`../../specs/monster-realm-v2/adr/`); **0001** is mirrored in both locations.
-Implementation ADRs **0001, 0035–0080** live in `docs/adr/` — see
+Implementation ADRs **0001, 0035–0081** live in `docs/adr/` — see
 `docs/adr/README.md` for the navigable catalog. Highlights: 0035 scaffold
 hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest, **0039
 two-window e2e CI gate**, 0040 RLS fallback split-tables, 0041 integer damage
@@ -225,7 +225,7 @@ formula, 0042 battle table public PvE, 0043 CI caching + fast inner loop, 0044
 private encounter table, 0045 private `battle_wild` individuality table, 0046
 player inventory model, 0047 recruit resolution, 0048 `start_battle` opponent
 provenance, 0049 panic-as-content-invariant policy, 0050 nightly mutation/
-coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness, 0056 server-module modularization (domain submodules — the canonical `touches:` vocabulary), 0057 content-directory glob loading via `build.rs`, 0058–0061 raising/training/evolution content+rules, **0062 evolution/fusion server reducer guard ordering, bond-write omission, and test-seam placement**, **0063 evolution/fusion client overlay (evolvesTo decode, fusion recipe display, coverage exclusion)**, 0064–0067 zone/warp data shape + server runtime + client follow-camera/global-subscription (**ADR-0067 accepted: global character subscription per Option C; per-zone re-subscription deferred to M20**), 0068–0071 NPC/dialogue/quest/heal (game-core rules + server reducers + content + client UI), 0072–0079 M12.5 residual fixes (fuse dual-write fix, content-sync repair, zone-sync robustness, netcode smoothness, gate teeth, battle lifecycle GC, practice-XP multiplier, nightly republish smoke), **0080 generated knowledge bundle** (OKF-conformant `docs/knowledge/` bundle, drift-gated, M8.95). See also
+coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness, 0056 server-module modularization (domain submodules — the canonical `touches:` vocabulary), 0057 content-directory glob loading via `build.rs`, 0058–0061 raising/training/evolution content+rules, **0062 evolution/fusion server reducer guard ordering, bond-write omission, and test-seam placement**, **0063 evolution/fusion client overlay (evolvesTo decode, fusion recipe display, coverage exclusion)**, 0064–0067 zone/warp data shape + server runtime + client follow-camera/global-subscription (**ADR-0067 accepted: global character subscription per Option C; per-zone re-subscription deferred to M20**), 0068–0071 NPC/dialogue/quest/heal (game-core rules + server reducers + content + client UI), 0072–0079 M12.5 residual fixes (fuse dual-write fix, content-sync repair, zone-sync robustness, netcode smoothness, gate teeth, battle lifecycle GC, practice-XP multiplier, nightly republish smoke), **0080 generated knowledge bundle** (OKF-conformant `docs/knowledge/` bundle, drift-gated, M8.95), **0081 currency primitive** (private `player_wallet` table, `apply_grant`/`apply_spend` in game-core, `grant_currency`/`spend_currency` server helpers, M13a). See also
 `docs/validation-findings.md` (empirical Tier-1 results).
 
 ## Monster subsystem (`game-core/src/monster/`, M6a)
@@ -529,6 +529,16 @@ M9 closes the "tame → raise" arc: bond accrual via care, EV training via consu
 - **Server — `raising.rs`:** `care` reducer (ownership-checked → `evaluate_care` → `apply_care`; cooldown from `ctx.timestamp` strict `<`; `last_care_at_ms: i64` additive column on `monster`); `train` reducer (ownership-checked; decision-before-`consume_one` ordering: reject never charges bait; calls `evaluate_train` then `consume_one`); `heal_party` reducer (in-battle SideA-won-only guard, zone + F7 position guards, full HP restore, upsert cooldown with strict `<` check — M12b, ADR-0069). Item definitions extended: `train_stat: Option<StatKind>` + `train_amount` additive columns; item id 2 = "Power Root" (first training food, CONTENT_VERSION 1→2).
 - **Server — `inventory.rs`:** `grant_item`/`consume_one` — the single item-mutation surface (ADR-0059): every grant/consume path for the `inventory` table routes through these two helpers, enforcing the single-stack-per-`(owner, item_id)` discipline and delete-at-zero / capped qty.
 - **Client (M9c):** `raisingModel.ts` (pure subscription view — verbatim server stats, `canTrain` data-driven from `item_row.train_stat`, owner-filtered `ownInventory` deep-copy + `itemDefs` structure-copy); `raisingView.ts` (text overlay, coverage-excluded); 'I' key toggle with mutual exclusion (box/battle supersede per ADR-0014). No new ADR for client (pure subscription pattern, ADR-0016).
+
+## Economy (`game-core/src/currency.rs` + `server-module/src/economy.rs`, M13a — ADR-0081)
+
+Currency primitive: one `u64` balance per player, PRIVATE owner-scoped table, single mutation surface.
+
+- **Pure rules (`game-core/src/currency.rs`):** `MAX_BALANCE = 999_999_999` (9-digit UI cap); `apply_grant(balance, amount) -> u64` — `saturating_add` + `.min(MAX_BALANCE)` (monotone, never wraps); `apply_spend(balance, amount) -> Result<u64, &'static str>` — `checked_sub` reject-not-clamp (never negative, `Err("insufficient funds")` on over-spend). 14 unit + 3 proptest property tests.
+- **Private `player_wallet` table (ADR-0081):** `(owner_identity: Identity [PK], balance: u64)`, **no `public` attribute** — non-owner subscriptions are impossible (SpacetimeDB omits private tables from table accessor codegen; only the type definition is generated for reducer argument serialization). Mirrors ADR-0015 must-never-leak requirement.
+- **Server wrappers (`server-module/src/economy.rs`):** `grant_currency(ctx, owner, amount)` (upsert; 0-amount no-op, no phantom row) and `spend_currency(ctx, owner, amount) -> Result<(), String>` (find-then-update; 0-amount returns `Ok(())`; missing wallet or insufficient balance returns `Err`). Both are `pub(crate)` — no public reducer surface yet (M13b+ adds shops/sinks).
+- **Single-surface discipline:** every economy mutation routes through these two helpers. The `currency-integrity` eval (6 proof-of-teeth criteria) mechanically blocks direct `.balance +=`, unchecked subtract, `PlayerWallet {}` literals, and `player_wallet()` accessor calls outside `economy.rs`/`schema.rs`.
+- **Residuals:** starting balance (0) is content-tunable via `grant_currency` in a quest/join reducer; shops, sinks, and XP→currency conversion come in M13b+; per-owner transport RLS deferred to M16 (same pattern as inventory, ADR-0046).
 
 ## Evolution/Fusion content (`game-core/src/evolution/` + `server-module/src/evolution.rs`, M10a — ADR-0060/0061)
 
