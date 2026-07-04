@@ -5,12 +5,12 @@ Architecture Decision Records live in **two locations**; check both.
 - **Design ADRs `0002`–`0034`** — in the **harness spec corpus**
   (`../../specs/monster-realm-v2/adr/`). These are the foundational design
   decisions authored alongside the milestone specs.
-- **Implementation ADRs `0001`, `0035`–`0080`** — in **this directory**
+- **Implementation ADRs `0001`, `0035`–`0081`** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0081`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0082`**.
 
 ## ADRs in `docs/adr/`
 
@@ -63,6 +63,7 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 | [0078](./0078-practice-xp-multiplier.md) | Practice-battle XP multiplier (0.1×) | M12.5e2 |
 | [0079](./0079-nightly-republish-smoke.md) | Nightly republish-without-delete smoke test | M12.5b6 |
 | [0080](./0080-generated-knowledge-bundle.md) | Generated knowledge bundle (OKF-conformant schema projection) | M8.95d |
+| [0081](./0081-currency-primitive.md) | Currency primitive — player_wallet + grant/spend helpers | M13a |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
