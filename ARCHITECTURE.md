@@ -217,7 +217,7 @@ column via `research-index.mjs`).
 
 ADRs **0002–0034** are design ADRs that live in the harness spec corpus
 (`../../specs/monster-realm-v2/adr/`); **0001** is mirrored in both locations.
-Implementation ADRs **0001, 0035–0082** live in `docs/adr/` — see
+Implementation ADRs **0001, 0035–0083** live in `docs/adr/` — see
 `docs/adr/README.md` for the navigable catalog. Highlights: 0035 scaffold
 hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest, **0039
 two-window e2e CI gate**, 0040 RLS fallback split-tables, 0041 integer damage
@@ -225,7 +225,7 @@ formula, 0042 battle table public PvE, 0043 CI caching + fast inner loop, 0044
 private encounter table, 0045 private `battle_wild` individuality table, 0046
 player inventory model, 0047 recruit resolution, 0048 `start_battle` opponent
 provenance, 0049 panic-as-content-invariant policy, 0050 nightly mutation/
-coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness, 0056 server-module modularization (domain submodules — the canonical `touches:` vocabulary), 0057 content-directory glob loading via `build.rs`, 0058–0061 raising/training/evolution content+rules, **0062 evolution/fusion server reducer guard ordering, bond-write omission, and test-seam placement**, **0063 evolution/fusion client overlay (evolvesTo decode, fusion recipe display, coverage exclusion)**, 0064–0067 zone/warp data shape + server runtime + client follow-camera/global-subscription (**ADR-0067 accepted: global character subscription per Option C; per-zone re-subscription deferred to M20**), 0068–0071 NPC/dialogue/quest/heal (game-core rules + server reducers + content + client UI), 0072–0079 M12.5 residual fixes (fuse dual-write fix, content-sync repair, zone-sync robustness, netcode smoothness, gate teeth, battle lifecycle GC, practice-XP multiplier, nightly republish smoke), **0080 generated knowledge bundle** (OKF-conformant `docs/knowledge/` bundle, drift-gated, M8.95), **0081 currency primitive** (private `player_wallet` table, `apply_grant`/`apply_spend` in game-core, `grant_currency`/`spend_currency` server helpers, M13a), **0082 shops & buy/sell** (shop content + reducers, sell_price field, M13b). See also
+coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness, 0056 server-module modularization (domain submodules — the canonical `touches:` vocabulary), 0057 content-directory glob loading via `build.rs`, 0058–0061 raising/training/evolution content+rules, **0062 evolution/fusion server reducer guard ordering, bond-write omission, and test-seam placement**, **0063 evolution/fusion client overlay (evolvesTo decode, fusion recipe display, coverage exclusion)**, 0064–0067 zone/warp data shape + server runtime + client follow-camera/global-subscription (**ADR-0067 accepted: global character subscription per Option C; per-zone re-subscription deferred to M20**), 0068–0071 NPC/dialogue/quest/heal (game-core rules + server reducers + content + client UI), 0072–0079 M12.5 residual fixes (fuse dual-write fix, content-sync repair, zone-sync robustness, netcode smoothness, gate teeth, battle lifecycle GC, practice-XP multiplier, nightly republish smoke), **0080 generated knowledge bundle** (OKF-conformant `docs/knowledge/` bundle, drift-gated, M8.95), **0081 currency primitive** (private `player_wallet` table, `apply_grant`/`apply_spend` in game-core, `grant_currency`/`spend_currency` server helpers, M13a), **0082 shops & buy/sell** (shop content + reducers, sell_price field, M13b), **0083 economy sinks/sources** (healing cost via `spend_currency`, quest/battle rewards via `grant_currency`, M13c). See also
 `docs/validation-findings.md` (empirical Tier-1 results).
 
 ## Monster subsystem (`game-core/src/monster/`, M6a)
@@ -551,6 +551,14 @@ Shop content and server-validated buy/sell reducers; the first player-facing eco
 - **CONTENT_VERSION 5 → 6:** `sync_content` seeds shop tables + re-derives item sell_price.
 - **Eval:** `evals/shop-reducer-security.eval.mjs` — 5 teeth; spec-gap-revival sell→ambiguous false-positive fix.
 - **Baselines:** `table-schemas.json`, `content-hash.json` updated to version 6.
+
+## Economy sinks/sources (`server-module/src/raising.rs` + `server-module/src/npc.rs` + `server-module/src/battle.rs`, M13c — ADR-0083)
+
+Currency flow wired through economy helpers into three cardinal paths: healing cost (sink), quest completion (source), battle results (source).
+
+- **Sinks:** `heal_party` reducer in `raising.rs` calls `spend_currency(ctx, owner, cost)` before healing, cost sourced from `HealLocationDef.cost_currency` (content-data, zero = free healing; non-zero cost enforced by `validate_heal_locations`).
+- **Sources:** `apply_quest_trigger` (called from `advance_dialogue` reducer in `npc.rs`) grants `reward.currency` on `QuestComplete` via `grant_currency`; `write_back_battle_results` in `battle.rs` grants `battle_currency_reward(bst)` on SideAWins (pure helper in `game-core/src/currency.rs`, returns `u64` reward based on loser battle stats — content-tunable via game-core). All routes through M13a helpers (single-surface discipline, ADR-0081).
+- **Validation:** `validate_heal_locations` added to `validate_content` call in `sync_content_inner`; **next-free ADR = 0084**.
 
 ## Evolution/Fusion content (`game-core/src/evolution/` + `server-module/src/evolution.rs`, M10a — ADR-0060/0061)
 
