@@ -7,6 +7,7 @@
 |------|------|-------|---------|
 | reducers/advance_dialogue | SpacetimeDB Reducer | advance_dialogue | Advance dialogue by selecting a choice. Security gate: `apply_choice` re-checks  |
 | reducers/attempt_recruit | SpacetimeDB Reducer | attempt_recruit | Attempt to recruit the wild monster in a wild battle (M8d, ADR-0047). The roll i |
+| reducers/buy | SpacetimeDB Reducer | buy | Buy `qty` units of `item_id` from shop `shop_id`. Server flow (reject-not-clamp, |
 | reducers/care | SpacetimeDB Reducer | care | Raise a monster's bond, gated by a per-monster cooldown measured from the server |
 | reducers/clear_queue | SpacetimeDB Reducer | clear_queue | Empty the queue (key release). |
 | reducers/dismiss_dialogue | SpacetimeDB Reducer | dismiss_dialogue | Dismiss the current dialogue (no-op if no active conversation). |
@@ -20,6 +21,7 @@
 | reducers/join_game | SpacetimeDB Reducer | join_game | Join: one `player` + one `character` at the spawn + one starter `monster` (idemp |
 | reducers/movement_tick | SpacetimeDB Reducer | movement_tick | Per-zone, server-paced tick: drain ≤1 move per character in THIS zone, compute t |
 | reducers/on_disconnect | SpacetimeDB Reducer | on_disconnect | SpacetimeDB reducer on_disconnect. |
+| reducers/sell | SpacetimeDB Reducer | sell | Sell `qty` units of `item_id` from the caller's inventory. Server flow (reject-n |
 | reducers/set_move | SpacetimeDB Reducer | set_move | Replace the ENTIRE undrained queue with one input (a responsive turn/direction c |
 | reducers/set_nickname | SpacetimeDB Reducer | set_nickname | Set or clear a monster's nickname. Empty string clears the nickname. Ownership-c |
 | reducers/set_party_slot | SpacetimeDB Reducer | set_party_slot | Set or clear a monster's party slot. `slot = 255` moves to box; `slot < 6` assig |

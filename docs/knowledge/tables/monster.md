@@ -5,7 +5,7 @@ slug: tables/monster
 updated: 2026-07-04
 tags: [schema, spacetimedb, private]
 abstract: "The authoritative monster record — PRIVATE (no `public`). Contains hidden genes (IVs, EVs, nature) that must NEVER reac…"
-resource: server-module/src/schema.rs#L162
+resource: server-module/src/schema.rs#L192
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: private
 ---

@@ -95,7 +95,24 @@
       "description": "String",
       "recruit_bonus": "u16",
       "train_stat": "Option<StatKind>",
-      "train_amount": "u16"
+      "train_amount": "u16",
+      "sell_price": "u64"
+    }
+  },
+  "shop_row": {
+    "pk": "shop_id",
+    "columns": {
+      "shop_id": "u32",
+      "name": "String"
+    }
+  },
+  "shop_item_row": {
+    "pk": "shop_item_id",
+    "columns": {
+      "shop_item_id": "u64",
+      "shop_id": "u32",
+      "item_id": "u32",
+      "buy_price": "u64"
     }
   },
   "monster": {

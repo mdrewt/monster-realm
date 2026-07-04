@@ -24,6 +24,8 @@
 | tables/player_dialogue_state | SpacetimeDB Table | player_dialogue_state | PRIVATE per-player dialogue state: flags + done-quest history. Must-never-leak:  |
 | tables/player_quest | SpacetimeDB Table | player_quest | Active quest progress. Public (quest log is world-readable like `inventory`). Pe |
 | tables/player_wallet | SpacetimeDB Table | player_wallet | PRIVATE per-player wallet — one row per player (PK = owner_identity). Balance is |
+| tables/shop_item_row | SpacetimeDB Table | shop_item_row | Shop stock entries seeded from the `game-core` RON registry. One row per (shop,  |
+| tables/shop_row | SpacetimeDB Table | shop_row | Shop definitions seeded from the `game-core` RON registry. Public (world-readabl |
 | tables/skill_row | SpacetimeDB Table | skill_row | Skill definitions seeded from the `game-core` RON registry. |
 | tables/species_row | SpacetimeDB Table | species_row | Species definitions seeded from the `game-core` RON registry by `sync_content`. |
 | tables/type_relation_row | SpacetimeDB Table | type_relation_row | Type effectiveness chart seeded from the `game-core` RON registry. |

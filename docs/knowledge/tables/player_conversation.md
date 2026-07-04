@@ -5,7 +5,7 @@ slug: tables/player_conversation
 updated: 2026-07-04
 tags: [schema, spacetimedb, public]
 abstract: "In-progress dialogue node. Single row per player (PK = owner_identity)."
-resource: server-module/src/schema.rs#L354
+resource: server-module/src/schema.rs#L384
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

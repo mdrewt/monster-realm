@@ -13,16 +13,17 @@ use crate::evolution::compute_evolves_to;
 use crate::marshal::{encounter_rows_from_table, pub_from_monster};
 use crate::schema::{
     character, config, encounter, fusion, heal_location_row, item_row, monster, monster_pub, npc,
-    skill_row, species_row, type_relation_row, zone_def, Character, Fusion, HealLocationRow,
-    ItemRow, Monster, Npc, SkillRow, SpeciesRow, TypeRelationRow, ZoneDefRow,
+    shop_item_row, shop_row, skill_row, species_row, type_relation_row, zone_def, Character,
+    Fusion, HealLocationRow, ItemRow, Monster, Npc, ShopItemRow, ShopRow, SkillRow, SpeciesRow,
+    TypeRelationRow, ZoneDefRow,
 };
 use crate::CONTENT_VERSION;
 use game_core::{
     derive_stats, load_dialogue_trees, load_encounters, load_evolutions, load_fusion,
-    load_heal_locations, load_items, load_npc_defs, load_quest_defs, load_skills, load_species,
-    load_type_chart, load_zone_maps, validate_content, validate_encounters,
-    validate_evolution_fusion, validate_npc_content, validate_zone_maps, ActionState, Direction,
-    EVs, EvolutionCondition, IVs, Level, Nature, StatBlock,
+    load_heal_locations, load_items, load_npc_defs, load_quest_defs, load_shops, load_skills,
+    load_species, load_type_chart, load_zone_maps, validate_content, validate_encounters,
+    validate_evolution_fusion, validate_npc_content, validate_shops, validate_zone_maps,
+    ActionState, Direction, EVs, EvolutionCondition, IVs, Level, Nature, StatBlock,
 };
 // Species and SpeciesEvolutions are only used by the test-only recheck seam.
 #[cfg(test)]
@@ -51,6 +52,7 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
     let dialogue_trees = load_dialogue_trees().map_err(|e| format!("dialogue_trees: {e}"))?;
     let quest_defs = load_quest_defs().map_err(|e| format!("quests: {e}"))?;
     let heal_defs = load_heal_locations().map_err(|e| format!("heal_locations: {e}"))?;
+    let shops = load_shops().map_err(|e| format!("shops: {e}"))?;
 
     // ====== VALIDATE PHASE (all-before-any-write, ADR-0073 §12.5b-2) ======
     game_core::validate_zones(&zones).map_err(|e| format!("zones invalid: {e}"))?;
@@ -71,6 +73,7 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
         &heal_defs,
     )
     .map_err(|e| format!("npc_content invalid: {e}"))?;
+    validate_shops(&shops, &items).map_err(|e| format!("shops invalid: {e}"))?;
 
     // ====== WRITE PHASE ======
     // zone_def upserts (M2: after validate_zone_maps; M3: find+update not delete+insert)
@@ -159,6 +162,7 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
             recruit_bonus: item.recruit_bonus,
             train_stat: item.train_stat,
             train_amount: item.train_amount,
+            sell_price: item.sell_price,
         };
         match ctx.db.item_row().id().find(item.id) {
             Some(_) => {
@@ -167,6 +171,38 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
             None => {
                 ctx.db.item_row().insert(row);
             }
+        }
+    }
+    // Shops: clear-and-reinsert (auto_inc shop_item_id; no stable compound PK).
+    // shop_row uses stable shop_id PK — upsert.
+    for existing in ctx.db.shop_item_row().iter().collect::<Vec<_>>() {
+        ctx.db
+            .shop_item_row()
+            .shop_item_id()
+            .delete(existing.shop_item_id);
+    }
+    for shop in &shops {
+        match ctx.db.shop_row().shop_id().find(shop.id) {
+            Some(_) => {
+                ctx.db.shop_row().shop_id().update(ShopRow {
+                    shop_id: shop.id,
+                    name: shop.name.clone(),
+                });
+            }
+            None => {
+                ctx.db.shop_row().insert(ShopRow {
+                    shop_id: shop.id,
+                    name: shop.name.clone(),
+                });
+            }
+        }
+        for entry in &shop.stock {
+            ctx.db.shop_item_row().insert(ShopItemRow {
+                shop_item_id: 0, // auto_inc
+                shop_id: shop.id,
+                item_id: entry.item_id,
+                buy_price: entry.buy_price,
+            });
         }
     }
     for table in &encounters {
