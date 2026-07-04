@@ -107,6 +107,6 @@ cache-on:
 # Uses an isolated DB name (MR_SMOKE_DB; default: monster-realm-smoke) so it
 # never collides with the regular dev/e2e database.
 smoke-republish:
-    bash scripts/smoke-republish.sh ${STDB_SERVER:-http://127.0.0.1:3000} ${MR_SMOKE_DB:-monster-realm-smoke}
+    bash scripts/smoke-republish.sh "${STDB_SERVER:-http://127.0.0.1:3000}" "${MR_SMOKE_DB:-monster-realm-smoke}"
 
 ci: lint typecheck test eval security wasm client-typecheck client-test

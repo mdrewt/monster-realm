@@ -19,15 +19,22 @@ import path from 'node:path';
 // ---------------------------------------------------------------------------
 export function nightlyHasSmokeRepublishJob(yaml) {
   // Match "  smoke-republish:" at the start of a line (2-space indent = job key).
-  return /\n {2}smoke-republish:\s/.test(yaml) || yaml.indexOf('\n  smoke-republish:\n') !== -1;
+  // \s matches \n so the OR branch is redundant — removed.
+  return /\n {2}smoke-republish:\s/.test(yaml);
 }
 
 // ---------------------------------------------------------------------------
-// Pure predicate: the nightly YAML invokes the smoke test — either directly
-// via the script name or via `just smoke-republish` (the canonical recipe).
+// Pure predicate: the nightly YAML invokes the smoke test via a `run:` step —
+// either `run: just smoke-republish` (canonical recipe) or
+// `run: bash scripts/smoke-republish.sh` (direct invocation).
+// Checking for `run:` prefix prevents a comment mentioning the script from
+// satisfying the predicate.
 // ---------------------------------------------------------------------------
 export function jobReferencesScript(yaml) {
-  return yaml.indexOf('smoke-republish.sh') !== -1 || yaml.indexOf('just smoke-republish') !== -1;
+  return (
+    yaml.indexOf('run: just smoke-republish') !== -1 ||
+    yaml.indexOf('run: bash scripts/smoke-republish.sh') !== -1
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -250,12 +257,21 @@ jobs:
     return { name, pass: false, detail: 'cannot read justfile' };
   }
 
-  // Script existence (binary check — content checked by humans + CI shell tests)
+  // Script existence + non-trivial content check (existsSync alone passes for an empty file).
   if (!existsSync(scriptPath)) {
     return {
       name,
       pass: false,
       detail: 'scripts/smoke-republish.sh does not exist — the smoke script must be committed',
+    };
+  }
+  const scriptContent = readFileSync(scriptPath, 'utf8');
+  if (scriptContent.length < 100 || !scriptContent.startsWith('#!/usr/bin/env bash')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'scripts/smoke-republish.sh is empty or missing #!/usr/bin/env bash shebang — the committed file is not a valid smoke script',
     };
   }
 

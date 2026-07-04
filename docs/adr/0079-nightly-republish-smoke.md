@@ -1,7 +1,7 @@
 # ADR-0079 — Nightly republish smoke test (§12.5b-6)
 
 **Status:** Accepted  
-**Date:** 2026-07-04  
+**Date:** 2026-07-03  
 **Deciders:** Drew Teter  
 **Spec:** `specs/monster-realm-v2/M12.5-sixth-review-residuals.spec.md §12.5b-6`
 
@@ -39,20 +39,24 @@ it up as a priority target on the next supervision tick.
 
 1. **Build + initial publish** (`--delete-data -y`) → fresh DB, `init` runs,
    content seeded at `CONTENT_VERSION = V`.
-2. **Create test data** → `spacetime call join_game "SmokePlayer"`.
-3. **Verify player exists** → `spacetime sql "SELECT name FROM player"` must
-   contain "SmokePlayer".
-4. **Patch `CONTENT_VERSION`** → `sed -i` bumps the constant from `V` to `V+100`
+2. **Create test data** → `spacetime call join_game '["SmokePlayer"]'`.
+   `join_game` creates both a `player`+`character` row (cleared by `on_disconnect`)
+   and a starter `monster` row (session-independent — NOT cleared by `on_disconnect`).
+   We assert on the `monster` table, not `player` (RT-SR-01).
+3. **Verify starter monster exists** → `spacetime sql "SELECT monster_id FROM monster"`
+   must return at least one numeric row.
+4. **Patch `CONTENT_VERSION`** → `sed -i` bumps the constant from `V` to `V+1`
    in `server-module/src/lib.rs`; a `trap … EXIT` restores the file on completion
-   (keeps local runs clean; CI runners are ephemeral).
+   (keeps local runs clean; CI runners are ephemeral). The sed pattern is anchored
+   to the declaration line start so comments and strings in the file are not matched.
 5. **Rebuild + republish WITHOUT `--delete-data`** → module binary now embeds
-   `CONTENT_VERSION = V+100`; existing table rows (incl. the player) are preserved.
+   `CONTENT_VERSION = V+1`; existing table rows (incl. the player) are preserved.
 6. **Call `sync_content`** → `sync_content_inner` detects `cfg.content_version`
    (still `V`) ≠ `CONTENT_VERSION` (`V+100`) and re-seeds all registries.
-7. **Assert data survived** → `spacetime sql "SELECT name FROM player"` still
-   contains "SmokePlayer".
+7. **Assert data survived** → `spacetime sql "SELECT monster_id FROM monster"`
+   still returns at least one numeric row (starter monster persists across republish).
 8. **Assert new content served** → `spacetime sql "SELECT content_version FROM config"`
-   contains `V+100`.
+   contains `V+1`.
 
 ## Isolation
 
@@ -77,8 +81,9 @@ triggered `workflow_dispatch` overlap) never collide.
 - The nightly job takes ~3–4 min (build × 2 + publish × 2 + sync). Acceptable
   for a nightly gate.
 - `spacetime call` invokes reducers as the CLI identity; `join_game` creates a
-  player tied to that identity. The test asserts presence, not identity, so this
-  is correct.
+  starter monster tied to that identity. The `player` and `character` rows are
+  cleared by `on_disconnect` the moment the CLI disconnects (RT-SR-01); the
+  `monster` row persists. We assert on `monster`, not `player`.
 
 ## Alternatives considered
 
