@@ -128,8 +128,10 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 | `content.rs` | `sync_content_inner` + seeding helpers | inline |
 | `movement.rs` | `join_game`, `enqueue_move`, `set_move`, `clear_queue`, `movement_tick` (including NPC wander drive via `npc_decide`), npc entity integration + the `movement_tick_schedule` scheduled table | inline |
 | `monster_mgmt.rs` | `set_nickname`, `set_party_slot` | inline |
-| `battle.rs` | `start_battle`, `start_wild_battle`, `submit_attack`, `swap_active`, `flee`, `heal_party`, `begin_encounter`, `lead_party`, `write_back_*` (the largest module — the battle cluster) | `battle_tests.rs` |
-| `taming.rs` | `attempt_recruit`, `grant_bait`, `grant_item`, `consume_one` | `taming_tests.rs` |
+| `battle.rs` | `start_battle`, `start_wild_battle`, `submit_attack`, `swap_active`, `flee`, `begin_encounter`, `lead_party`, `write_back_*` (the largest module — the battle cluster) | `battle_tests.rs` |
+| `taming.rs` | `attempt_recruit`, `grant_bait` | `taming_tests.rs` |
+| `inventory.rs` | `grant_item`, `consume_one` (single item-mutation surface — ADR-0059) | — |
+| `raising.rs` | `care`, `train`, `evaluate_heal`, `heal_party` (raising + heal cooldown — ADR-0058/0059) | `raising_tests.rs` |
 | `evolution.rs` | `evolve`, `fuse`, `compute_evolves_to` (M10b, ADR-0061/0062) | `evolution_tests.rs` |
 | `npc.rs` | `talk`, `advance_dialogue`, `dismiss_dialogue` reducers; dialogue/quest state marshaling + helpers (M12b, ADR-0069) | `npc_tests.rs` |
 
@@ -156,13 +158,19 @@ canonical `touches:` vocabulary**: adding content is a new
 
 | Registry | Path | Form |
 |----------|------|------|
-| species | `content/species/*.ron` | directory (currently `000-core.ron`) |
+| species | `content/species/*.ron` | directory (`000-core.ron` wild/base species + `010-derived.ron` evolved/fused derived forms) |
 | skills | `content/skills/*.ron` | directory |
 | items | `content/items/*.ron` | directory |
 | encounters | `content/encounters/*.ron` | directory |
 | zones | `content/zones/*.ron` | directory |
-| zone_maps | `content/zone_maps/*.ron` | directory | (string-art tile rows + warp list; keyed by zone_id) |
+| zone_maps | `content/zone_maps/*.ron` | directory (string-art tile rows + warp list; keyed by zone_id) |
 | type_chart | `content/type_chart.ron` | **single file** (one coherent matrix, rarely appended in parallel) |
+| evolutions | `content/evolutions.ron` | **single file** (evolution conditions + triggers per species — ADR-0060) |
+| fusion | `content/fusion.ron` | **single file** (fusion recipes — ADR-0060) |
+| npcs | `content/npcs/*.ron` | directory |
+| dialogue_trees | `content/dialogue_trees/*.ron` | directory |
+| quests | `content/quests/*.ron` | directory |
+| heal_locations | `content/heal_locations/*.ron` | directory |
 
 - **Numeric prefixes zero-pad to a consistent width** (`000-`, `001-`, `010-`): the
   embed sorts files **lexicographically** in both `build.rs` and the `append-only-ids`
@@ -512,6 +520,24 @@ public additive owner-scoped table; bait classified by data.
   roll_starter, HP derivation, recruit odds monotone, no-XP gate), `client/e2e/recruit.spec.ts`
   (client recover flow, bait consume, wild grant, strike-back). Supplementary
   `combat/redteam_m8d_tests.rs` (8 adversarial arithmetic tests, u32/sign edge cases).
+
+## Raising subsystem (`game-core/src/` + `server-module/src/raising.rs` + `client/`, M9 — ADR-0058/0059)
+
+M9 closes the "tame → raise" arc: bond accrual via care, EV training via consumables, and NPC healing.
+
+- **Pure rules (game-core):** `evaluate_care(bond, last_care_at_ms, now) → Result<u8>` (cooldown + bond-cap logic, injected clock); `evaluate_train(monster, item_def) → Result<TrainResult>` (SSOT via `focus_train`: EV-grant capped at 252/510, `current_hp` never written per ADR-0058); `evaluate_heal` seam (HP + status restore).
+- **Server — `raising.rs`:** `care` reducer (ownership-checked → `evaluate_care` → `apply_care`; cooldown from `ctx.timestamp` strict `<`; `last_care_at_ms: i64` additive column on `monster`); `train` reducer (ownership-checked; decision-before-`consume_one` ordering: reject never charges bait; calls `evaluate_train` then `consume_one`); `heal_party` reducer (in-battle SideA-won-only guard, zone + F7 position guards, full HP restore, upsert cooldown with strict `<` check — M12b, ADR-0069). Item definitions extended: `train_stat: Option<StatKind>` + `train_amount` additive columns; item id 2 = "Power Root" (first training food, CONTENT_VERSION 1→2).
+- **Server — `inventory.rs`:** `grant_item`/`consume_one` — the single item-mutation surface (ADR-0059): every grant/consume path for the `inventory` table routes through these two helpers, enforcing the single-stack-per-`(owner, item_id)` discipline and delete-at-zero / capped qty.
+- **Client (M9c):** `raisingModel.ts` (pure subscription view — verbatim server stats, `canTrain` data-driven from `item_row.train_stat`, owner-filtered `ownInventory` deep-copy + `itemDefs` structure-copy); `raisingView.ts` (text overlay, coverage-excluded); 'I' key toggle with mutual exclusion (box/battle supersede per ADR-0014). No new ADR for client (pure subscription pattern, ADR-0016).
+
+## Evolution/Fusion content (`game-core/src/evolution/` + `server-module/src/evolution.rs`, M10a — ADR-0060/0061)
+
+Pure content shape, integrity validator, and pure game-core transform rules for evolution and fusion.
+
+- **Content (M10a-content — ADR-0060):** `EvolutionCondition` / `EvolutionTrigger` / `FusionRecipe` / `SpeciesEvolutions` types; `content/evolutions.ron` (single file, evolution conditions per species) and `content/fusion.ron` (single file, fusion recipes). `validate_evolution_fusion` is a **separate** cross-registry validator (not a `Species` field — avoids E0063 across 8 constructors with RON try_from mirrors for bare-int triggers); 7-rule check: no duplicate pairs, no derived-species in wild encounters, no dangling species/item/skill refs, no self-evolution, fusion-coherence. Derived species live in `content/species/010-derived.ron` (additive; `000-core.ron` stays the wild-encounter source). `sync_content` calls `validate_evolution_fusion` so the integrity gate is live on publish.
+- **Pure rules (M10a-rules — ADR-0061):** `game-core/src/evolution/` — `eligibility` (`evolves_to` passive level/bond check; `resolve_evolution` item-path) + `transform` (`evolve` carries all individuality per ADR-0019, `current_hp` clamped to new max; `fuse` per-stat-max-IV + higher-bond-nature + fresh-L1 + lower-slot). First-match declaration order; Level/Bond triggers inclusive `>=`. 46 unit/property tests.
+- **Server (M10b — ADR-0062):** `evolution.rs` — `evolve` + `fuse` reducers with battle-escrow + ownership guards; `compute_evolves_to` server helper; atomic `fuse` delete-two-insert-one in one transaction; additive `fusion` table + `evolves_to: Option<u32>` column on `monster`. The `monster-dual-write` eval's CAPTURE_INSERT teeth prevent the pre-M12.5a dual-write ordering bug (ADR-0072) from regressing.
+- **Client (M10c — ADR-0063):** `evolvesTo?: number` on `StoreMonsterPub` (`option(u32)` decodes as primitive `number | undefined`); `StoreFusionRow` + `store.fusions()` wired to `buildEvolutionViewModel` via `FusionRecipeViewModel` (display-only; server validates); `EvolutionView` DOM shell (KeyE toggle, mutual exclusion with B/I/battle). Coverage-excluded per ADR-0015 `dom-shell-coverage-exclusion` eval.
 
 ## Known follow-ups / tech-debt
 
