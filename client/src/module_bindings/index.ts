@@ -36,6 +36,7 @@ import {
 // Import all reducer arg schemas
 import AdvanceDialogueReducer from "./advance_dialogue_reducer";
 import AttemptRecruitReducer from "./attempt_recruit_reducer";
+import BuyReducer from "./buy_reducer";
 import CareReducer from "./care_reducer";
 import ClearQueueReducer from "./clear_queue_reducer";
 import DismissDialogueReducer from "./dismiss_dialogue_reducer";
@@ -45,6 +46,7 @@ import FleeReducer from "./flee_reducer";
 import FuseReducer from "./fuse_reducer";
 import HealPartyReducer from "./heal_party_reducer";
 import JoinGameReducer from "./join_game_reducer";
+import SellReducer from "./sell_reducer";
 import SetMoveReducer from "./set_move_reducer";
 import SetNicknameReducer from "./set_nickname_reducer";
 import SetPartySlotReducer from "./set_party_slot_reducer";
@@ -70,6 +72,8 @@ import NpcRow from "./npc_table";
 import PlayerRow from "./player_table";
 import PlayerConversationRow from "./player_conversation_table";
 import PlayerQuestRow from "./player_quest_table";
+import ShopItemRowRow from "./shop_item_row_table";
+import ShopRowRow from "./shop_row_table";
 import SkillRowRow from "./skill_row_table";
 import SpeciesRowRow from "./species_row_table";
 import TypeRelationRowRow from "./type_relation_row_table";
@@ -239,6 +243,31 @@ const tablesSchema = __schema({
       { name: 'player_quest_pq_id_key', constraint: 'unique', columns: ['pqId'] },
     ],
   }, PlayerQuestRow),
+  shop_item_row: __table({
+    name: 'shop_item_row',
+    indexes: [
+      { accessor: 'shop_id', name: 'shop_item_row_shop_id_idx_btree', algorithm: 'btree', columns: [
+        'shopId',
+      ] },
+      { accessor: 'shop_item_id', name: 'shop_item_row_shop_item_id_idx_btree', algorithm: 'btree', columns: [
+        'shopItemId',
+      ] },
+    ],
+    constraints: [
+      { name: 'shop_item_row_shop_item_id_key', constraint: 'unique', columns: ['shopItemId'] },
+    ],
+  }, ShopItemRowRow),
+  shop_row: __table({
+    name: 'shop_row',
+    indexes: [
+      { accessor: 'shop_id', name: 'shop_row_shop_id_idx_btree', algorithm: 'btree', columns: [
+        'shopId',
+      ] },
+    ],
+    constraints: [
+      { name: 'shop_row_shop_id_key', constraint: 'unique', columns: ['shopId'] },
+    ],
+  }, ShopRowRow),
   skill_row: __table({
     name: 'skill_row',
     indexes: [
@@ -289,6 +318,7 @@ const tablesSchema = __schema({
 const reducersSchema = __reducers(
   __reducerSchema("advance_dialogue", AdvanceDialogueReducer),
   __reducerSchema("attempt_recruit", AttemptRecruitReducer),
+  __reducerSchema("buy", BuyReducer),
   __reducerSchema("care", CareReducer),
   __reducerSchema("clear_queue", ClearQueueReducer),
   __reducerSchema("dismiss_dialogue", DismissDialogueReducer),
@@ -298,6 +328,7 @@ const reducersSchema = __reducers(
   __reducerSchema("fuse", FuseReducer),
   __reducerSchema("heal_party", HealPartyReducer),
   __reducerSchema("join_game", JoinGameReducer),
+  __reducerSchema("sell", SellReducer),
   __reducerSchema("set_move", SetMoveReducer),
   __reducerSchema("set_nickname", SetNicknameReducer),
   __reducerSchema("set_party_slot", SetPartySlotReducer),

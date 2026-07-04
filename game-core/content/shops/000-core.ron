@@ -1,0 +1,13 @@
+// Shop registry — DATA, not code (ADR-0006). Stable `id`s are APPEND-ONLY.
+// buy_price: cost in currency to buy the item; 0 = not for sale (item listed but buyable=false).
+// sell_price for items lives on ItemDef (game-core/content/items/000-core.ron), not per-shop.
+[
+    (
+        id: 1,
+        name: "Pebble Town Shop",
+        stock: [
+            ( item_id: 1, buy_price: 200 ),
+            ( item_id: 2, buy_price: 300 ),
+        ],
+    ),
+]

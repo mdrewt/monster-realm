@@ -4,13 +4,13 @@ title: Monster Realm Schema Overview
 slug: schema-overview
 updated: 2026-07-04
 tags: [schema, spacetimedb, overview]
-abstract: "23-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 25 reducers."
+abstract: "25-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 27 reducers."
 source: scripts/okf-export.mjs@server-module/src/
 ---
 
 ## Tables
 
-### Public (16)
+### Public (18)
 
 - [battle](tables/battle.md)
 - [character](tables/character.md)
@@ -24,6 +24,8 @@ source: scripts/okf-export.mjs@server-module/src/
 - [player](tables/player.md)
 - [player_conversation](tables/player_conversation.md)
 - [player_quest](tables/player_quest.md)
+- [shop_item_row](tables/shop_item_row.md)
+- [shop_row](tables/shop_row.md)
 - [skill_row](tables/skill_row.md)
 - [species_row](tables/species_row.md)
 - [type_relation_row](tables/type_relation_row.md)
@@ -39,10 +41,11 @@ source: scripts/okf-export.mjs@server-module/src/
 - [player_dialogue_state](tables/player_dialogue_state.md)
 - [player_wallet](tables/player_wallet.md)
 
-## Reducers (25)
+## Reducers (27)
 
 - [advance_dialogue](reducers/advance_dialogue.md)
 - [attempt_recruit](reducers/attempt_recruit.md)
+- [buy](reducers/buy.md)
 - [care](reducers/care.md)
 - [clear_queue](reducers/clear_queue.md)
 - [dismiss_dialogue](reducers/dismiss_dialogue.md)
@@ -56,6 +59,7 @@ source: scripts/okf-export.mjs@server-module/src/
 - [join_game](reducers/join_game.md)
 - [movement_tick](reducers/movement_tick.md)
 - [on_disconnect](reducers/on_disconnect.md)
+- [sell](reducers/sell.md)
 - [set_move](reducers/set_move.md)
 - [set_nickname](reducers/set_nickname.md)
 - [set_party_slot](reducers/set_party_slot.md)

@@ -108,18 +108,18 @@ export function findTradeTransferReducers(rustSrc) {
   return reducers.filter((name) => {
     const lower = name.toLowerCase();
     // Unambiguous transfer verbs/nouns — always a trade/transfer reducer.
-    if (/trade|transfer|gift|exchange|donate|bequeath|relinquish|sell|lend/.test(lower)) {
+    if (/trade|transfer|gift|exchange|donate|bequeath|relinquish|lend/.test(lower)) {
       return true;
     }
     // Explicit owner-change patterns.
     if (/change_owner|owner_change|set_owner|reassign_owner|new_owner|custody/.test(lower)) {
       return true;
     }
-    // Ambiguous verbs (give/send/swap/hand_over/assign) only count when the
-    // name ALSO names an ownership noun — so `swap_active` (battle slot swap)
-    // does NOT match, but `give_monster`/`swap_monster` do. Plain .includes()
-    // keeps this ReDoS-immune and explicit.
-    const ambiguousVerbs = ['give', 'send', 'swap', 'hand_over', 'assign'];
+    // Ambiguous verbs (give/send/swap/hand_over/assign/sell) only count when the
+    // name ALSO names an ownership noun — so `swap_active` (battle slot swap) and
+    // `sell` (item shop sell) do NOT match, but `give_monster`/`sell_monster` do.
+    // Plain .includes() keeps this ReDoS-immune and explicit.
+    const ambiguousVerbs = ['give', 'send', 'swap', 'hand_over', 'assign', 'sell'];
     const ownershipNouns = ['monster', 'owner', 'pet', 'creature', 'party_member'];
     const hasAmbiguousVerb = ambiguousVerbs.some((v) => lower.includes(v));
     const hasOwnershipNoun = ownershipNouns.some((n) => lower.includes(n));

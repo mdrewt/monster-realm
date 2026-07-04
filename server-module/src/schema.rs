@@ -128,6 +128,36 @@ pub struct ItemRow {
     pub train_stat: Option<StatKind>,
     /// EVs granted toward `train_stat` per use; 0 for non-training items.
     pub train_amount: u16,
+    /// Currency the player receives when selling this item (M13b, ADR-0082).
+    /// 0 = item cannot be sold (`sell` reducer rejects). Seeded 1:1 from
+    /// `ItemDef.sell_price` (content SSOT).
+    pub sell_price: u64,
+}
+
+// --- Shop tables (M13b, ADR-0082): public content, world-readable ---
+
+/// Shop definitions seeded from the `game-core` RON registry.
+/// Public (world-readable content, like `item_row` — shop names are not private).
+#[spacetimedb::table(name = shop_row, public)]
+pub struct ShopRow {
+    #[primary_key]
+    pub shop_id: u32,
+    pub name: String,
+}
+
+/// Shop stock entries seeded from the `game-core` RON registry.
+/// One row per (shop, item) pair. Looked up by shop_id index in the `buy` reducer.
+/// Public (world-readable — shop prices are game content, not sensitive).
+#[spacetimedb::table(name = shop_item_row, public)]
+pub struct ShopItemRow {
+    #[primary_key]
+    #[auto_inc]
+    pub shop_item_id: u64,
+    #[index(btree)]
+    pub shop_id: u32,
+    pub item_id: u32,
+    /// Currency cost to buy one unit of this item from this shop.
+    pub buy_price: u64,
 }
 
 // --- Encounter table (M8b, ADR-0040 second visibility mode: must-never-leak) ----

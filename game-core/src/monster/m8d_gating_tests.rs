@@ -65,6 +65,7 @@ fn fixture_item(id: u32, recruit_bonus: u16) -> ItemDef {
         recruit_bonus,
         train_stat: None,
         train_amount: 0,
+        sell_price: 0,
     }
 }
 

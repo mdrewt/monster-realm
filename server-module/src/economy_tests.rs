@@ -200,3 +200,349 @@ fn spend_currency_has_zero_amount_guard() {
         guard_pattern
     );
 }
+
+// ===========================================================================
+// M13b: shop reducer structural tests (EARS-BUY-1..3, EARS-SELL-1..3,
+//        EARS-SEC-1/2, EARS-PRIVACY-1)
+//
+// These tests use include_str! to inspect economy.rs and schema.rs source.
+// They compile against the existing files but assert that patterns exist which
+// DO NOT YET EXIST — the tests START RED and turn green once the implementer
+// adds the buy/sell reducers, shop tables, and item_row.sell_price.
+//
+// Pattern: each test assembles the search string from parts (["fn buy", "("])
+// so this test file's own source text cannot self-match in future source scans.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Test 6: buy and sell reducers exist in economy.rs
+// ---------------------------------------------------------------------------
+
+/// M13b (EARS-BUY-1 / EARS-SELL-1): economy.rs must contain both `fn buy` and
+/// `fn sell` reducer bodies. This is the minimal existence gate — a missing reducer
+/// causes every downstream structural test to fail with "not found" rather than
+/// a misleading false-pass.
+///
+/// kills: an impl that adds buy/sell to a different file (not economy.rs), or
+///        one that names them `do_buy`/`do_sell` instead of the canonical names.
+#[test]
+fn shop_reducers_exist_in_economy() {
+    let buy_marker = ["fn buy", "("].concat();
+    let sell_marker = ["fn sell", "("].concat();
+
+    assert!(
+        ECONOMY_SOURCE.contains(buy_marker.as_str()),
+        "TEETH(M13b EARS-BUY-1): economy.rs must contain `fn buy(` — \
+         the buy reducer must be defined in economy.rs (ADR-0081 single-surface discipline). \
+         Add: `pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32)`"
+    );
+    assert!(
+        ECONOMY_SOURCE.contains(sell_marker.as_str()),
+        "TEETH(M13b EARS-SELL-1): economy.rs must contain `fn sell(` — \
+         the sell reducer must be defined in economy.rs. \
+         Add: `pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32)`"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: require_owner appears before spend_currency in the buy function body
+// (EARS-SEC-1 for buy)
+// ---------------------------------------------------------------------------
+
+/// M13b (EARS-SEC-1): in the `buy` reducer body, `require_owner` must appear
+/// BEFORE `spend_currency`. The ownership check must gate every wallet operation.
+///
+/// This test walks the buy function body (brace-depth delimited) and asserts
+/// the byte-offset of `require_owner` is less than the byte-offset of
+/// `spend_currency`.
+///
+/// kills: an impl that calls spend_currency before the ownership check, allowing
+///        a rogue caller to drain another player's wallet without being rejected.
+#[test]
+fn buy_reducer_calls_require_owner_before_spend() {
+    // Locate `fn buy(` (or `pub fn buy(`) in the economy source.
+    let buy_fn_marker = ["fn buy", "("].concat();
+    let fn_pos = match ECONOMY_SOURCE.find(buy_fn_marker.as_str()) {
+        Some(p) => p,
+        None => panic!(
+            "TEETH(M13b EARS-SEC-1): fn buy not found in economy.rs — \
+             add the buy reducer before this structural test can pass"
+        ),
+    };
+
+    // Find the opening brace of the buy function body.
+    let open_brace = ECONOMY_SOURCE[fn_pos..]
+        .find('{')
+        .map(|offset| fn_pos + offset)
+        .expect("buy function body opening brace not found");
+
+    // Walk braces to find the matching closing brace.
+    let mut depth: usize = 0;
+    let mut close_brace = open_brace;
+    for (i, ch) in ECONOMY_SOURCE[open_brace..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close_brace = open_brace + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let buy_body = &ECONOMY_SOURCE[open_brace..=close_brace];
+
+    // require_owner must appear BEFORE spend_currency inside the buy body.
+    let require_owner_pat = ["require", "_owner"].concat();
+    let spend_pat = ["spend", "_currency"].concat();
+
+    let ro_pos = buy_body.find(require_owner_pat.as_str()).expect(
+        "TEETH(M13b EARS-SEC-1): require_owner not found inside the buy reducer body — \
+         add `require_owner(ctx, \"buy\", ctx.sender);` as the FIRST call in buy",
+    );
+    let spend_pos = buy_body.find(spend_pat.as_str()).expect(
+        "TEETH(M13b EARS-SEC-1): spend_currency not found inside the buy reducer body — \
+         the buy reducer must call spend_currency to debit the wallet",
+    );
+
+    assert!(
+        ro_pos < spend_pos,
+        "TEETH(M13b EARS-SEC-1): require_owner (at offset {ro_pos}) must appear BEFORE \
+         spend_currency (at offset {spend_pos}) in the buy reducer body — \
+         a rogue caller who bypasses ownership can drain another player's wallet"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 8: require_owner appears before grant_currency in the sell function body
+// (EARS-SEC-1 for sell)
+// ---------------------------------------------------------------------------
+
+/// M13b (EARS-SEC-1): in the `sell` reducer body, `require_owner` must appear
+/// BEFORE `grant_currency`. The ownership check must gate every wallet operation.
+///
+/// kills: an impl that calls grant_currency before the ownership check, allowing
+///        a rogue caller to credit their wallet by "selling" items they don't own.
+#[test]
+fn sell_reducer_calls_require_owner_before_grant() {
+    let sell_fn_marker = ["fn sell", "("].concat();
+    let fn_pos = match ECONOMY_SOURCE.find(sell_fn_marker.as_str()) {
+        Some(p) => p,
+        None => panic!(
+            "TEETH(M13b EARS-SEC-1): fn sell not found in economy.rs — \
+             add the sell reducer before this structural test can pass"
+        ),
+    };
+
+    let open_brace = ECONOMY_SOURCE[fn_pos..]
+        .find('{')
+        .map(|offset| fn_pos + offset)
+        .expect("sell function body opening brace not found");
+
+    let mut depth: usize = 0;
+    let mut close_brace = open_brace;
+    for (i, ch) in ECONOMY_SOURCE[open_brace..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close_brace = open_brace + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let sell_body = &ECONOMY_SOURCE[open_brace..=close_brace];
+
+    let require_owner_pat = ["require", "_owner"].concat();
+    let grant_pat = ["grant", "_currency"].concat();
+
+    let ro_pos = sell_body.find(require_owner_pat.as_str()).expect(
+        "TEETH(M13b EARS-SEC-1): require_owner not found inside the sell reducer body — \
+         add `require_owner(ctx, \"sell\", ctx.sender);` as the FIRST call in sell",
+    );
+    let grant_pos = sell_body.find(grant_pat.as_str()).expect(
+        "TEETH(M13b EARS-SEC-1): grant_currency not found inside the sell reducer body — \
+         the sell reducer must call grant_currency after consuming items",
+    );
+
+    assert!(
+        ro_pos < grant_pos,
+        "TEETH(M13b EARS-SEC-1): require_owner (at offset {ro_pos}) must appear BEFORE \
+         grant_currency (at offset {grant_pos}) in the sell reducer body — \
+         ownership must be verified before any wallet credit"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: buy reducer does NOT accept a price/total parameter (EARS-SEC-2)
+// ---------------------------------------------------------------------------
+
+/// M13b (EARS-SEC-2): the `buy` reducer function signature must NOT contain a
+/// `price` or `total` parameter. The server must compute the price from the
+/// shop_item_row lookup — a client-provided price would allow price manipulation.
+///
+/// This test inspects only the signature text (from `fn buy(` up to the opening
+/// brace `{`), not the full body.
+///
+/// kills: an impl that accepts a `price: u64` or `total: u64` parameter, allowing
+///        a malicious client to submit an artificially low price for any item.
+#[test]
+fn buy_reducer_has_no_price_parameter() {
+    let buy_fn_marker = ["fn buy", "("].concat();
+    let fn_pos = match ECONOMY_SOURCE.find(buy_fn_marker.as_str()) {
+        Some(p) => p,
+        None => panic!(
+            "TEETH(M13b EARS-SEC-2): fn buy not found in economy.rs — \
+             add the buy reducer before this structural test can pass"
+        ),
+    };
+
+    // Extract the signature: from `fn buy(` up to the opening `{`.
+    let after_fn = &ECONOMY_SOURCE[fn_pos..];
+    let brace_pos = after_fn
+        .find('{')
+        .expect("buy function body opening brace not found");
+    let signature = &after_fn[..brace_pos];
+
+    assert!(
+        !signature.contains("price"),
+        "TEETH(M13b EARS-SEC-2): buy reducer signature must NOT contain a `price` parameter — \
+         the server computes price from shop_item_row (not from the caller). \
+         Found `price` in signature: {:?}",
+        signature
+    );
+    assert!(
+        !signature.contains("total"),
+        "TEETH(M13b EARS-SEC-2): buy reducer signature must NOT contain a `total` parameter — \
+         the server computes the total as buy_price * qty server-side. \
+         Found `total` in signature: {:?}",
+        signature
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: #[allow(dead_code)] removed from economy.rs
+// ---------------------------------------------------------------------------
+
+/// M13b: economy.rs must NOT contain `#[allow(dead_code)]` after the buy/sell
+/// reducers are wired up. The temporary M13a allow-until-wired marker must be
+/// removed once grant_currency and spend_currency are called from the reducers.
+///
+/// kills: an impl that adds the buy/sell reducers but forgets to remove the
+///        `#[allow(dead_code)]` attrs from grant_currency/spend_currency (the
+///        attributes become dead suppressions that mask real dead-code warnings
+///        in future slices).
+#[test]
+fn dead_code_allow_removed() {
+    // Assemble from parts to avoid this test file matching itself.
+    let dead_code_attr = ["#[allow(dead", "_code)]"].concat();
+    assert!(
+        !ECONOMY_SOURCE.contains(dead_code_attr.as_str()),
+        "TEETH(M13b): economy.rs must NOT contain `{}` after buy/sell are wired — \
+         the temporary M13a 'allow until wired' markers must be removed once \
+         grant_currency and spend_currency are called from the buy/sell reducers.",
+        dead_code_attr
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: shop_row and shop_item_row are declared public in schema.rs
+// (EARS-PRIVACY-1)
+// ---------------------------------------------------------------------------
+
+/// M13b (EARS-PRIVACY-1): schema.rs must declare `shop_row` and `shop_item_row`
+/// tables with the `public` attribute. Shop definitions are world-readable content
+/// (players need to browse shop inventories without authentication).
+///
+/// This is OPPOSITE to the wallet privacy invariant (test 2): shop tables are
+/// intentionally public, wallet tables are intentionally private.
+///
+/// kills: an impl that declares shop tables as private (no `public` keyword),
+///        preventing clients from subscribing to shop data and rendering the
+///        shop UI empty.
+#[test]
+fn shop_tables_are_public() {
+    // The required pattern for a public SpacetimeDB table:
+    //   #[spacetimedb::table(name = shop_row, public)]
+    // We assemble from parts to avoid self-match in source scans.
+    let shop_row_public = ["name = shop_row", ", public"].concat();
+    let shop_item_row_public = ["name = shop_item_row", ", public"].concat();
+
+    assert!(
+        SCHEMA_SOURCE.contains(shop_row_public.as_str()),
+        "TEETH(M13b EARS-PRIVACY-1): schema.rs must contain `{}` — \
+         shop_row must be public so clients can subscribe to shop definitions. \
+         Add `#[spacetimedb::table(name = shop_row, public)]`.",
+        shop_row_public
+    );
+    assert!(
+        SCHEMA_SOURCE.contains(shop_item_row_public.as_str()),
+        "TEETH(M13b EARS-PRIVACY-1): schema.rs must contain `{}` — \
+         shop_item_row must be public so clients can subscribe to shop stock. \
+         Add `#[spacetimedb::table(name = shop_item_row, public)]`.",
+        shop_item_row_public
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: ItemRow has sell_price field in schema.rs
+// ---------------------------------------------------------------------------
+
+/// M13b: schema.rs `ItemRow` must contain a `sell_price` field. This field is
+/// needed by the sell reducer to look up the sell price server-side.
+///
+/// kills: an impl that adds ItemDef.sell_price to game-core but forgets to add
+///        sell_price to the server-side ItemRow struct (causing a seeding gap
+///        where sell_price is never persisted to the DB and always reads as 0).
+#[test]
+fn item_row_has_sell_price() {
+    // We look for `sell_price` inside the ItemRow struct in schema.rs.
+    // Strategy: find the ItemRow struct declaration and then check for the field
+    // within that struct's body (brace-depth walk).
+    let item_row_marker = ["struct Item", "Row"].concat();
+    let fn_pos = SCHEMA_SOURCE.find(item_row_marker.as_str()).expect(
+        "TEETH(M13b): ItemRow struct not found in schema.rs — \
+             the struct must exist before the sell_price field can be added",
+    );
+
+    // Find the opening brace of the ItemRow struct body.
+    let open_brace = SCHEMA_SOURCE[fn_pos..]
+        .find('{')
+        .map(|offset| fn_pos + offset)
+        .expect("ItemRow struct opening brace not found");
+
+    // Walk braces to find the matching closing brace.
+    let mut depth: usize = 0;
+    let mut close_brace = open_brace;
+    for (i, ch) in SCHEMA_SOURCE[open_brace..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close_brace = open_brace + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let item_row_body = &SCHEMA_SOURCE[open_brace..=close_brace];
+    let sell_price_field = ["sell", "_price"].concat();
+
+    assert!(
+        item_row_body.contains(sell_price_field.as_str()),
+        "TEETH(M13b): ItemRow struct in schema.rs must contain a `{}` field — \
+         the sell reducer looks up the sell price from the ItemRow, not from game-core directly. \
+         Add: `pub sell_price: u64,` to ItemRow.",
+        sell_price_field
+    );
+}

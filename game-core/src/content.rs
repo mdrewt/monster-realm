@@ -127,6 +127,33 @@ pub struct ItemDef {
     /// caps in `focus_train`); 0 for non-training items.
     #[serde(default)]
     pub train_amount: u16,
+    /// Currency the player receives when selling this item (M13b, ADR-0082).
+    /// 0 means the item cannot be sold — the `sell` reducer rejects it.
+    #[serde(default)]
+    pub sell_price: u64,
+}
+
+// ===========================================================================
+// M13b content types — shop definitions (ADR-0082)
+// ===========================================================================
+
+/// One entry in a shop's stock: the item offered and its buy price.
+/// sell_price lives on ItemDef (global per-item, not per-shop — ADR-0082 §D2).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ShopStockEntry {
+    pub item_id: u32,
+    /// Currency cost to buy one unit from this shop. 0 = not for sale.
+    pub buy_price: u64,
+}
+
+/// A shop definition: an id, a display name, and the list of items stocked.
+/// Seeded by `sync_content_inner` into `shop_row`/`shop_item_row` (ADR-0082).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ShopDef {
+    pub id: u32,
+    pub name: String,
+    /// Items offered by this shop. Empty = no stock (valid, but the shop is unusable).
+    pub stock: Vec<ShopStockEntry>,
 }
 
 // ===========================================================================
@@ -381,6 +408,73 @@ pub fn parse_items_parts(parts: &[(&str, &str)]) -> Result<Vec<ItemDef>, String>
 /// Returns `Err` if `ron_str` is not a valid item list.
 pub fn parse_items(ron_str: &str) -> Result<Vec<ItemDef>, String> {
     ron::from_str::<Vec<ItemDef>>(ron_str).map_err(|e| format!("items registry parse error: {e}"))
+}
+
+// ===========================================================================
+// M13b embedded content — shop registry (ADR-0082)
+// ===========================================================================
+
+/// Parse the embedded shops registry.
+///
+/// # Errors
+/// Returns `Err` if any embedded part fails to parse (the message names the file).
+pub fn load_shops() -> Result<Vec<ShopDef>, String> {
+    parse_shops_parts(SHOPS_RON_PARTS)
+}
+
+/// Parse + concatenate shop parts in the given slice order (no row re-sorting).
+///
+/// # Errors
+/// Returns `Err` (naming the offending file) if any part is not a valid shop list.
+pub fn parse_shops_parts(parts: &[(&str, &str)]) -> Result<Vec<ShopDef>, String> {
+    parse_parts(parts, "shops registry")
+}
+
+/// Parse shops from a RON string.
+///
+/// # Errors
+/// Returns `Err` if `ron_str` is not a valid shop list.
+pub fn parse_shops(ron_str: &str) -> Result<Vec<ShopDef>, String> {
+    ron::from_str::<Vec<ShopDef>>(ron_str).map_err(|e| format!("shops registry parse error: {e}"))
+}
+
+/// Cross-registry shop validation:
+/// - Unique shop ids
+/// - No duplicate item_id within a shop
+/// - Every stock entry's `item_id` exists in `items`
+///
+/// # Errors
+/// Returns `Err` with a descriptive message on the first violation found.
+pub fn validate_shops(shops: &[ShopDef], items: &[ItemDef]) -> Result<(), String> {
+    let item_ids: std::collections::BTreeSet<u32> = items.iter().map(|i| i.id).collect();
+    let mut shop_ids = std::collections::BTreeSet::new();
+    for shop in shops {
+        if !shop_ids.insert(shop.id) {
+            return Err(format!("duplicate shop id {}", shop.id));
+        }
+        let mut seen_items = std::collections::BTreeSet::new();
+        for entry in &shop.stock {
+            if !seen_items.insert(entry.item_id) {
+                return Err(format!(
+                    "shop {} has duplicate item_id {}",
+                    shop.id, entry.item_id
+                ));
+            }
+            if entry.buy_price == 0 {
+                return Err(format!(
+                    "shop {} has item_id {} with buy_price 0 (not purchasable)",
+                    shop.id, entry.item_id
+                ));
+            }
+            if !item_ids.contains(&entry.item_id) {
+                return Err(format!(
+                    "shop {} references non-existent item_id {}",
+                    shop.id, entry.item_id
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ===========================================================================
@@ -1656,6 +1750,7 @@ mod tests {
         name: "Lure Berry",
         description: "Sweet bait that calms a wild monster, easing recruitment.",
         recruit_bonus: 150,
+        sell_price: 80,
     ),
 ]
 "#;
@@ -2337,6 +2432,7 @@ mod tests {
             // These two fields do not exist yet — the suite is RED until the impl adds them.
             train_stat,
             train_amount,
+            sell_price: 0,
         }
     }
 
@@ -2418,6 +2514,7 @@ mod tests {
             recruit_bonus: 150,
             train_stat: None,
             train_amount: 0,
+            sell_price: 0,
         };
         let result = validate_content(&[], &[], &[], &[item]);
         assert!(
@@ -2570,6 +2667,7 @@ mod tests {
             recruit_bonus: 0,
             train_stat: None,
             train_amount: 0,
+            sell_price: 0,
         }]
     }
 
@@ -3887,6 +3985,7 @@ mod tests {
             recruit_bonus: 0,
             train_stat: None,
             train_amount: 0,
+            sell_price: 0,
         }
     }
 
@@ -4818,6 +4917,333 @@ mod tests {
             "M10.5a-1-pos: validate_content must accept a species with \
              learnable_skill_ids: [1] when skill 1 exists; got Err: {:?}",
             result.err()
+        );
+    }
+
+    // =======================================================================
+    // === M13b: shop content types + validate_shops (EARS-CONTENT-1/2) ===
+    //
+    // EARS criteria covered:
+    //   EARS-CONTENT-1: IF a shop references a non-existent item_id THEN
+    //     validate_shops fails.
+    //   EARS-CONTENT-2: validate_shops passes on valid content.
+    //
+    // Additional tests:
+    //   - validate_shops_passes_empty  — empty shops slice is valid (no error).
+    //   - embedded_shops_parse_and_validate — load_shops() + validate_shops passes.
+    //
+    // RED state: ShopDef, ShopStockEntry, parse_shops, load_shops, and
+    // validate_shops do NOT EXIST YET. These tests will fail to compile until
+    // the implementer adds them to content.rs and lib.rs (intended TDD red state).
+    //
+    // NOTE: ItemDef.sell_price (#[serde(default)]) is also new in M13b. Tests for
+    // that field are in economy_tests.rs (structural schema check) and in the eval.
+    // =======================================================================
+
+    // -----------------------------------------------------------------------
+    // M13b fixture builder
+    // -----------------------------------------------------------------------
+
+    /// Build a minimal ShopDef with one stock entry.
+    /// Requires ShopDef { id, name, stock: Vec<ShopStockEntry> }
+    /// and ShopStockEntry { item_id, buy_price } to exist.
+    fn fixture_shop(shop_id: u32, item_id: u32, buy_price: u64) -> ShopDef {
+        ShopDef {
+            id: shop_id,
+            name: format!("Shop{shop_id}"),
+            stock: vec![ShopStockEntry { item_id, buy_price }],
+        }
+    }
+
+    /// Build a minimal ItemDef that includes the new sell_price field.
+    /// Kills: an ItemDef that does not have sell_price (compile error is the RED state).
+    fn fixture_item_with_sell_price(id: u32, sell_price: u64) -> ItemDef {
+        ItemDef {
+            id,
+            name: format!("Item{id}"),
+            description: "A shop item.".to_string(),
+            recruit_bonus: 0,
+            train_stat: None,
+            train_amount: 0,
+            // This field does not exist yet — suite is RED until impl adds it.
+            sell_price,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // EARS-CONTENT-2: validate_shops passes on valid content
+    // -----------------------------------------------------------------------
+
+    /// M13b-CONTENT-2: validate_shops passes when all shop item_ids exist in items.
+    ///
+    /// Kills: an impl where validate_shops always returns Err, or one that
+    /// incorrectly cross-checks item ids against the wrong registry.
+    #[test]
+    fn validate_shops_passes_valid_content() {
+        let items = vec![fixture_item_with_sell_price(1, 50)];
+        let shops = vec![fixture_shop(1, 1, 100)];
+        let result = validate_shops(&shops, &items);
+        assert!(
+            result.is_ok(),
+            "EARS-CONTENT-2: validate_shops must return Ok when shop references \
+             an item_id that exists in items; got Err: {:?}",
+            result.err()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // EARS-CONTENT-1: validate_shops rejects a non-existent item_id — TEETH
+    // -----------------------------------------------------------------------
+
+    /// M13b-CONTENT-1 (TEETH): validate_shops must return Err when a shop's stock
+    /// contains an item_id that is not present in the items registry.
+    ///
+    /// The shop references item_id 9999 which is absent from the items slice.
+    /// This is the primary gate that prevents shipping broken shop content.
+    ///
+    /// Kills: an impl of validate_shops that skips the item_id cross-reference
+    /// check entirely (would return Ok and produce a runtime lookup failure when
+    /// a player tries to buy from the shop).
+    #[test]
+    fn validate_shops_rejects_nonexistent_item_id() {
+        let items = vec![fixture_item_with_sell_price(1, 50)]; // only item 1 exists
+        let shops = vec![fixture_shop(1, 9999, 100)]; // item 9999 does NOT exist
+        let result = validate_shops(&shops, &items);
+        assert!(
+            result.is_err(),
+            "EARS-CONTENT-1 TEETH: validate_shops must return Err when shop references \
+             item_id 9999 which is absent from the items registry; \
+             an impl that skips the cross-reference would silently accept broken shop content"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_shops_passes_empty — empty shops slice is valid
+    // -----------------------------------------------------------------------
+
+    /// M13b: validate_shops returns Ok for an empty shops slice (no shops to validate).
+    ///
+    /// Kills: an impl that unconditionally returns Err (e.g. "no shops defined"),
+    /// or one that panics on an empty slice.
+    #[test]
+    fn validate_shops_passes_empty() {
+        let items: Vec<ItemDef> = vec![];
+        let shops: Vec<ShopDef> = vec![];
+        let result = validate_shops(&shops, &items);
+        assert!(
+            result.is_ok(),
+            "M13b: validate_shops must return Ok for empty shops slice; \
+             an empty shop registry is valid (no shops, no cross-refs to check)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Embedded shops smoke test
+    // -----------------------------------------------------------------------
+
+    /// M13b: load_shops() parses the embedded RON without error AND the result
+    /// is coherent with the embedded items registry (validate_shops passes).
+    ///
+    /// This is the primary embedded-content smoke test for the shops registry,
+    /// mirroring embedded_zones_parse_and_validate, embedded_items_parse_and_validate, etc.
+    ///
+    /// Kills: an impl that fails to wire the include_str! or parse call, or one
+    /// where the embedded shop content references item ids that don't exist in
+    /// the items registry.
+    #[test]
+    fn embedded_shops_parse_and_validate() {
+        let shops = load_shops().expect("load_shops() must parse the embedded RON without error");
+        let items = load_items().expect("load_items() must parse for the cross-ref check");
+        validate_shops(&shops, &items).expect(
+            "M13b: embedded shops must pass validate_shops — all shop item_ids \
+             must exist in the embedded items registry",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_shops round-trip
+    // -----------------------------------------------------------------------
+
+    /// M13b: parse_shops returns a typed Vec with the correct ShopDef fields.
+    ///
+    /// Kills: a parse_shops that silently returns empty, or one that swaps
+    /// shop id / item_id / buy_price fields.
+    #[test]
+    fn parse_shops_round_trip() {
+        let ron_str = r#"[
+            (id: 1, name: "General Store", stock: [
+                (item_id: 2, buy_price: 100),
+                (item_id: 3, buy_price: 250),
+            ]),
+        ]"#;
+        let shops = parse_shops(ron_str).expect("valid shop RON must parse");
+        assert_eq!(shops.len(), 1, "M13b TEETH: must parse exactly 1 ShopDef");
+        assert_eq!(shops[0].id, 1, "M13b TEETH: shop id must be 1");
+        assert_eq!(
+            shops[0].name, "General Store",
+            "M13b TEETH: shop name must be 'General Store'"
+        );
+        assert_eq!(
+            shops[0].stock.len(),
+            2,
+            "M13b TEETH: shop must have 2 stock entries"
+        );
+        assert_eq!(
+            shops[0].stock[0].item_id, 2,
+            "M13b TEETH: first stock item_id must be 2"
+        );
+        assert_eq!(
+            shops[0].stock[0].buy_price, 100,
+            "M13b TEETH: first stock buy_price must be 100"
+        );
+        assert_eq!(
+            shops[0].stock[1].item_id, 3,
+            "M13b TEETH: second stock item_id must be 3"
+        );
+        assert_eq!(
+            shops[0].stock[1].buy_price, 250,
+            "M13b TEETH: second stock buy_price must be 250"
+        );
+    }
+
+    /// M13b: parse_shops rejects malformed RON.
+    /// Kills: a parse_shops that silently returns empty on bad input.
+    #[test]
+    fn parse_shops_rejects_malformed_ron() {
+        assert!(
+            parse_shops("not ron at all {{{").is_err(),
+            "M13b TEETH: malformed RON must return Err from parse_shops"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // sell_price field on ItemDef — backward compatibility
+    // -----------------------------------------------------------------------
+
+    /// M13b: ItemDef.sell_price defaults to 0 when absent from RON
+    /// (the #[serde(default)] contract). This ensures existing items.ron files
+    /// continue to parse without adding sell_price to every entry.
+    ///
+    /// Kills: an impl where sell_price does not have #[serde(default)], causing
+    /// old RON files (without sell_price) to fail to parse.
+    #[test]
+    fn item_def_sell_price_defaults_to_zero() {
+        // RON WITHOUT sell_price — valid before M13b. Must still parse.
+        let ron_str =
+            r#"[(id: 1, name: "Lure Berry", description: "Sweet bait.", recruit_bonus: 150)]"#;
+        let items = parse_items(ron_str).expect(
+            "M13b: an ItemDef RON without sell_price must parse \
+             (sell_price must have #[serde(default)])",
+        );
+        assert_eq!(items.len(), 1, "M13b TEETH: must parse exactly 1 item");
+        assert_eq!(
+            items[0].sell_price, 0,
+            "M13b TEETH: sell_price must default to 0 when absent from RON \
+             (backward compatibility: existing content must not break)"
+        );
+    }
+
+    /// M13b: ItemDef.sell_price is stored when explicitly provided in RON.
+    ///
+    /// Kills: an impl where sell_price is hardwired to 0 or ignored during parse.
+    #[test]
+    fn item_def_sell_price_round_trips() {
+        let ron_str =
+            r#"[(id: 5, name: "Herb", description: "A herb.", recruit_bonus: 0, sell_price: 75)]"#;
+        let items = parse_items(ron_str).expect("item RON with sell_price must parse");
+        assert_eq!(items.len(), 1, "M13b TEETH: must parse exactly 1 item");
+        assert_eq!(
+            items[0].sell_price, 75,
+            "M13b TEETH: sell_price must round-trip through RON as 75"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // RT-SHOP-BUY-FREE: validate_shops must reject buy_price == 0
+    //
+    // Finding (RED-TEAM M13b): a ShopStockEntry with buy_price == 0 passes
+    // validate_shops today. The `buy` reducer treats a 0-total as a no-op
+    // spend (`spend_currency` early-returns Ok on amount==0), so the player
+    // receives the item for free with no wallet debit. This is an exploitable
+    // content configuration bug: any content author who sets buy_price=0
+    // accidentally creates a free item (the RON comment warns against it but
+    // the validator does not enforce it).
+    //
+    // Fix: validate_shops must return Err for any stock entry with buy_price == 0.
+    // This test starts RED and turns green only once the guard is added.
+    // -----------------------------------------------------------------------
+
+    /// RT-SHOP-BUY-FREE: validate_shops must reject a stock entry with buy_price == 0.
+    ///
+    /// Invariant: every stocked item must have a positive buy price. A zero price
+    /// causes the `buy` reducer to call `spend_currency(ctx, me, 0)`, which is a
+    /// no-op (the zero-spend guard returns Ok immediately). The item is granted for
+    /// free with no wallet debit.
+    ///
+    /// Kills: an impl of validate_shops that accepts buy_price == 0 (the current bug).
+    #[test]
+    fn validate_shops_rejects_zero_buy_price() {
+        let items = vec![fixture_item_with_sell_price(1, 50)];
+        let shops = vec![ShopDef {
+            id: 1,
+            name: "Exploit Shop".to_string(),
+            stock: vec![ShopStockEntry {
+                item_id: 1,
+                buy_price: 0, // zero price: item is free in the buy reducer
+            }],
+        }];
+        let result = validate_shops(&shops, &items);
+        assert!(
+            result.is_err(),
+            "RT-SHOP-BUY-FREE: validate_shops must return Err for buy_price == 0 — \
+             a zero price causes the buy reducer to skip the wallet debit entirely \
+             (spend_currency no-ops on amount == 0), granting the item for free. \
+             Fix: add `if entry.buy_price == 0 {{ return Err(...) }}` to validate_shops."
+        );
+    }
+
+    /// M13b: validate_shops rejects two shops with the same id.
+    ///
+    /// Kills: an impl that removes the BTreeSet-based duplicate-id check, allowing
+    /// two shops with id=1 to pass validation and produce a schema PK conflict at sync.
+    #[test]
+    fn validate_shops_rejects_duplicate_shop_id() {
+        let items = vec![fixture_item_with_sell_price(1, 50)];
+        let shops = vec![fixture_shop(1, 1, 100), fixture_shop(1, 1, 200)]; // both id=1
+        let result = validate_shops(&shops, &items);
+        assert!(
+            result.is_err(),
+            "M13b: validate_shops must return Err for duplicate shop id=1; \
+             kills: impl that drops the BTreeSet duplicate-id guard"
+        );
+    }
+
+    /// M13b: validate_shops rejects a shop that lists the same item_id twice.
+    ///
+    /// Kills: an impl that removes the per-shop BTreeSet item-dedup check, allowing
+    /// the same item to appear multiple times in a shop's stock.
+    #[test]
+    fn validate_shops_rejects_duplicate_item_in_shop() {
+        let items = vec![fixture_item_with_sell_price(1, 50)];
+        let shop = ShopDef {
+            id: 1,
+            name: "Dup Shop".to_string(),
+            stock: vec![
+                ShopStockEntry {
+                    item_id: 1,
+                    buy_price: 100,
+                },
+                ShopStockEntry {
+                    item_id: 1,
+                    buy_price: 200,
+                }, // same item twice
+            ],
+        };
+        let result = validate_shops(&[shop], &items);
+        assert!(
+            result.is_err(),
+            "M13b: validate_shops must return Err when the same item_id appears \
+             twice in a shop's stock; kills: impl that drops the per-shop item-dedup guard"
         );
     }
 }

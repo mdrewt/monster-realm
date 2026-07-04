@@ -20,3 +20,4 @@ visibility: public
 | `recruit_bonus` | `u16` | — |
 | `train_stat` | `Option<StatKind>` | — |
 | `train_amount` | `u16` | — |
+| `sell_price` | `u64` | — |

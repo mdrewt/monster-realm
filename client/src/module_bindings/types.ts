@@ -192,6 +192,7 @@ export const ItemRow = __t.object("ItemRow", {
     return __t.option(StatKind);
   },
   trainAmount: __t.u16(),
+  sellPrice: __t.u64(),
 });
 export type ItemRow = __Infer<typeof ItemRow>;
 
@@ -344,6 +345,20 @@ export const PlayerWallet = __t.object("PlayerWallet", {
   balance: __t.u64(),
 });
 export type PlayerWallet = __Infer<typeof PlayerWallet>;
+
+export const ShopItemRow = __t.object("ShopItemRow", {
+  shopItemId: __t.u64(),
+  shopId: __t.u32(),
+  itemId: __t.u32(),
+  buyPrice: __t.u64(),
+});
+export type ShopItemRow = __Infer<typeof ShopItemRow>;
+
+export const ShopRow = __t.object("ShopRow", {
+  shopId: __t.u32(),
+  name: __t.string(),
+});
+export type ShopRow = __Infer<typeof ShopRow>;
 
 export const SkillRow = __t.object("SkillRow", {
   id: __t.u32(),
