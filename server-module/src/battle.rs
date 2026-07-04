@@ -682,6 +682,10 @@ pub(crate) fn write_back_battle_results(
             return Ok(());
         };
         let bst = loser_base_stat_total(&loser_species);
+        // Currency reward is independent of the XP formula — grant it as soon as
+        // bst is known so a corrupt loser_level (which only affects XP) does not
+        // silently drop the reward (review finding RT-WB-CURRENCY-01).
+        grant_currency(ctx, player, battle_currency_reward(bst));
         // loser_lvl is loop-invariant — parse once here so a corrupt loser level
         // skips the entire XP section (not N×log once per winner monster).
         let loser_lvl = match game_core::Level::new(loser_active.level) {
@@ -820,7 +824,6 @@ pub(crate) fn write_back_battle_results(
             ctx.db.monster().monster_id().update(m);
             ctx.db.monster_pub().monster_id().update(pub_row);
         }
-        grant_currency(ctx, player, battle_currency_reward(bst));
     }
 
     Ok(())
