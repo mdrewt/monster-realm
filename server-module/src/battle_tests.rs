@@ -539,3 +539,75 @@ fn level_up_heal_only_inside_species_guard_not_before_it() {
         ),
     }
 }
+
+// =========================================================================
+// M12.5e2: practice-XP wiring source-guard tests (ADR-0078)
+//
+// Verify that `write_back_battle_results` delegates the 0.1× practice-battle
+// XP penalty to `game_core::practice_xp_reward` (ADR-0003 SSOT) and guards
+// the call behind a `WILD_IDENTITY` provenance check.
+//
+// Both tests start RED: `practice_xp_reward` is not yet called in battle.rs.
+// =========================================================================
+
+/// Verifies write_back_battle_results calls `practice_xp_reward(` — the
+/// SSOT delegation gate for the 0.1× practice penalty (ADR-0078).
+///
+/// Two checks: (1) the bare call-name needle, (2) the call-with-first-arg
+/// pattern to guard against a string-literal bypass where a log message
+/// mentioning `practice_xp_reward(` would satisfy check 1 but not check 2.
+///
+/// Kills: inline `/ 10` or `* 0.1` directly in the server shell
+/// (ADR-0003 violation — the rule must live in game-core, not battle.rs).
+/// RED: fails today because practice_xp_reward is not yet called.
+#[test]
+fn write_back_battle_results_calls_practice_xp_reward() {
+    let stripped = strip_rust_comments(MODULE_SOURCE);
+    let fn_name = "write_back_battle_results".to_string();
+    let body = extract_fn_body(&stripped, &fn_name)
+        .unwrap_or_else(|| panic!("{fn_name} not found in battle.rs"));
+    assert!(
+        body.contains("practice_xp_reward("),
+        "TEETH: write_back_battle_results must call `practice_xp_reward(` \
+         (game-core SSOT for the 0.1× practice penalty — ADR-0078 / ADR-0003); \
+         an inline `/ 10` in battle.rs is a SSOT violation."
+    );
+    // Secondary needle: guards against a string-literal bypass where a `log!`
+    // call mentioning `practice_xp_reward(` would satisfy the check above but
+    // would not satisfy the actual call pattern `practice_xp_reward(base_xp,`.
+    assert!(
+        body.contains("practice_xp_reward(base_xp,"),
+        "TEETH: write_back_battle_results must call `practice_xp_reward(base_xp, ...)` — \
+         the secondary needle prevents a string-literal bypass (a log message mentioning \
+         practice_xp_reward would satisfy the first check but not this one). \
+         Ensure the call is `game_core::practice_xp_reward(base_xp, is_practice)`."
+    );
+}
+
+/// Verifies write_back_battle_results contains a WILD_IDENTITY provenance check
+/// alongside the practice_xp_reward call — determines which battles are practice.
+///
+/// Kills: an impl that always passes is_practice=true (ignores wild-battle status),
+/// or that applies the penalty to wild battles (wrong provenance).
+/// RED: fails today because the WILD_IDENTITY + practice_xp_reward wiring is absent.
+#[test]
+fn write_back_battle_results_gates_practice_xp_on_wild_identity() {
+    let stripped = strip_rust_comments(MODULE_SOURCE);
+    let fn_name = "write_back_battle_results".to_string();
+    let body = extract_fn_body(&stripped, &fn_name)
+        .unwrap_or_else(|| panic!("{fn_name} not found in battle.rs"));
+    assert!(
+        body.contains("WILD_IDENTITY"),
+        "TEETH: write_back_battle_results must reference WILD_IDENTITY to compute \
+         the is_practice flag — wild battles (opponent == WILD_IDENTITY) receive full XP; \
+         practice battles receive 0.1×. Without this check the multiplier would apply to \
+         wild battles or never apply. RED today: WILD_IDENTITY provenance gate not present \
+         inside write_back_battle_results."
+    );
+    assert!(
+        body.contains("practice_xp_reward("),
+        "TEETH: the WILD_IDENTITY gate must accompany a practice_xp_reward( call — \
+         having the check without the delegation is a wiring gap. \
+         RED today: practice_xp_reward call absent."
+    );
+}

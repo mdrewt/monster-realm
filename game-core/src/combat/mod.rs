@@ -11,7 +11,7 @@
 //! - `damage`     — damage formula (`calc_damage`) and accuracy check
 //! - `resolve`    — turn resolution (`resolve_turn`, `resolve_enemy_turn`, …)
 //! - `ai`         — enemy AI skill picker (`pick_best_skill`)
-//! - `xp`         — XP reward and level-up (`battle_xp_reward`, `apply_xp_gain`)
+//! - `xp`         — XP reward, practice penalty, and level-up (`battle_xp_reward`, `practice_xp_reward`, `apply_xp_gain`)
 
 pub mod ai;
 pub mod damage;
@@ -36,4 +36,4 @@ pub use types::{
     BattleEvent, BattleMonster, BattleOutcome, BattleSide, BattleState, Effectiveness, SideId,
     TurnChoice, TurnVariance,
 };
-pub use xp::{apply_xp_gain, base_stat_total, battle_xp_reward};
+pub use xp::{apply_xp_gain, base_stat_total, battle_xp_reward, practice_xp_reward};
