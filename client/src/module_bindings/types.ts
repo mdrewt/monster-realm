@@ -339,6 +339,12 @@ export const PlayerQuestRow = __t.object("PlayerQuestRow", {
 });
 export type PlayerQuestRow = __Infer<typeof PlayerQuestRow>;
 
+export const PlayerWallet = __t.object("PlayerWallet", {
+  ownerIdentity: __t.identity(),
+  balance: __t.u64(),
+});
+export type PlayerWallet = __Infer<typeof PlayerWallet>;
+
 export const SkillRow = __t.object("SkillRow", {
   id: __t.u32(),
   name: __t.string(),
