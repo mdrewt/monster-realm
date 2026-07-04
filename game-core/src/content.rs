@@ -541,6 +541,7 @@ pub fn validate_encounters(
 
 /// Cross-registry content validation:
 /// - Unique species ids, no zero base stats
+/// - Every species must have at least one `learnable_skill_id` (non-empty moveset)
 /// - Unique skill ids
 /// - Unique type chart pairs (attacker, defender)
 /// - Unique item ids
@@ -1325,10 +1326,10 @@ mod tests {
     #[test]
     fn rejects_duplicate_species_ids() {
         let species = vec![
-            fixture_species(1, vec![]),
-            fixture_species(1, vec![]), // dup id
+            fixture_species(1, vec![1]),
+            fixture_species(1, vec![1]), // dup id
         ];
-        let skills = vec![];
+        let skills = vec![fixture_skill(1)];
         let chart = vec![];
         let items = vec![];
         assert!(
@@ -1381,10 +1382,10 @@ mod tests {
     /// Kills: an impl that does not validate base stat sanity.
     #[test]
     fn rejects_zero_base_stat_species() {
-        let mut bad = fixture_species(1, vec![]);
+        let mut bad = fixture_species(1, vec![1]);
         bad.base_stats.hp = 0;
         let species = vec![bad];
-        let skills = vec![];
+        let skills = vec![fixture_skill(1)];
         let chart = vec![];
         let items = vec![];
         assert!(
@@ -1415,8 +1416,8 @@ mod tests {
     /// #66: Proof-of-teeth — duplicate species id MUST be rejected.
     #[test]
     fn validate_content_teeth_duplicate_id() {
-        let species = vec![fixture_species(5, vec![]), fixture_species(5, vec![])];
-        let skills = vec![];
+        let species = vec![fixture_species(5, vec![1]), fixture_species(5, vec![1])];
+        let skills = vec![fixture_skill(1)];
         let chart = vec![];
         let items = vec![];
         let result = validate_content(&species, &skills, &chart, &items);
@@ -1429,10 +1430,10 @@ mod tests {
     /// #67: Proof-of-teeth — zero base stat MUST be rejected.
     #[test]
     fn validate_content_teeth_zero_base_stat() {
-        let mut bad = fixture_species(1, vec![]);
+        let mut bad = fixture_species(1, vec![1]);
         bad.base_stats.attack = 0; // any zero base stat should fail
         let species = vec![bad];
-        let skills = vec![];
+        let skills = vec![fixture_skill(1)];
         let chart = vec![];
         let items = vec![];
         let result = validate_content(&species, &skills, &chart, &items);

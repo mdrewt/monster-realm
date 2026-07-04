@@ -1106,3 +1106,58 @@ fn m10_5a_wild_battle_monster_accepts_nonempty_known_skills() {
         bm.known_skill_ids
     );
 }
+
+// M10.5a gating tests — battle_monster_from_row empty-known-skills guard
+// (defense-in-depth, ADR-0049, H-1 from review). Mirrors the wild_battle_monster
+// guard above but for owned-monster path.
+
+/// M10.5a-3 TEETH: battle_monster_from_row must return Err when the
+/// learnable_skill_ids ∩ loaded_skills intersection is empty.
+///
+/// Kills: an impl that returns Ok with known_skill_ids: [] (which causes
+/// pick_best_skill to panic when the enemy AI runs).
+///
+/// PROOF-OF-TEETH: removing the empty-known-skills guard in battle_monster_from_row
+/// makes this test RED (returns Ok instead of Err).
+#[test]
+fn m10_5a_battle_monster_from_row_rejects_empty_known_skills() {
+    let species = SpeciesRow {
+        id: 97,
+        name: "EmptyKnownOwned".to_string(),
+        base_hp: 50,
+        base_attack: 55,
+        base_defense: 45,
+        base_speed: 60,
+        base_sp_attack: 65,
+        base_sp_defense: 50,
+        affinity: Affinity::Fire,
+        learnable_skill_ids: vec![1, 2], // species has skills in content
+    };
+    let mut monster = m7b_test_monster_row();
+    monster.species_id = 97;
+    // Empty skills slice: intersection with [1,2] is [] (stale/diverged DB state).
+    let result = battle_monster_from_row(&monster, &species, &[]);
+    assert!(
+        result.is_err(),
+        "M10.5a-3 TEETH: battle_monster_from_row must return Err when \
+         learnable_skill_ids ∩ loaded_skills is empty ([1,2] ∩ [] = []); \
+         got Ok — removing the guard makes this RED"
+    );
+}
+
+/// M10.5a-3-pos: a valid monster+species+skills triple must still return Ok.
+///
+/// Kills: a vacuous always-Err impl.
+#[test]
+fn m10_5a_battle_monster_from_row_accepts_nonempty_known_skills() {
+    let species = m7b_test_species_row(); // learnable_skill_ids: [1, 2]
+    let monster = m7b_test_monster_row(); // stat_defense = 45
+    let skills = m7b_test_skill_rows(); // includes ids 1 and 2
+    let result = battle_monster_from_row(&monster, &species, &skills);
+    assert!(
+        result.is_ok(),
+        "M10.5a-3-pos: battle_monster_from_row must return Ok for a valid row \
+         with non-empty skill intersection; got Err: {:?}",
+        result.err()
+    );
+}
