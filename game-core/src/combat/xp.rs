@@ -52,17 +52,10 @@ pub fn battle_xp_reward(winner_level: Level, loser_base_stat_total: u16, loser_l
     Xp::new(reward)
 }
 
-/// Apply the practice-battle XP multiplier to a base XP reward.
+/// Apply the 0.1× practice-battle XP penalty (ADR-0078).
 ///
-/// `is_practice` is true when the opponent is not WILD_IDENTITY (e.g. a
-/// self-battle or future PvP battle). Wild encounters pass `is_practice=false`
-/// and receive the base reward unchanged.
-///
-/// Rule (ADR-0078): `floor(base / 10)` via integer division; may yield 0 for
-/// small base rewards (1–9 XP → 0 practice XP). The minimum is 0, not 1.
-///
-/// This is the SSOT for the 0.1× practice penalty — the server shell computes
-/// the boolean from battle provenance and delegates all arithmetic here.
+/// `is_practice=true` (opponent != WILD_IDENTITY): `floor(base / 10)`; may yield 0.
+/// `is_practice=false` (wild battle): `base` unchanged.
 #[must_use]
 pub fn practice_xp_reward(base: Xp, is_practice: bool) -> Xp {
     if is_practice {
@@ -76,6 +69,7 @@ pub fn practice_xp_reward(base: Xp, is_practice: bool) -> Xp {
 ///
 /// Returns `(new_xp, new_level, did_level_up)`.
 ///
+/// - `gained = Xp::new(0)` is valid and produces no change (used when practice XP floors to 0).
 /// - If the new XP exceeds what is needed for level 100, clamp to `xp_for_level(100)`.
 /// - `did_level_up` is `true` if and only if `new_level > old_level`.
 pub fn apply_xp_gain(current_xp: Xp, gained: Xp) -> (Xp, Level, bool) {
@@ -435,6 +429,22 @@ mod tests {
             practice_xp_reward(Xp::new(0), false).value(),
             0,
             "practice_xp_reward(0, false) must be 0"
+        );
+    }
+
+    /// Composed: small base XP floored to 0 by practice penalty is a no-op in apply_xp_gain.
+    /// Kills: a future apply_xp_gain mutation that treats zero gain as a level-up trigger.
+    #[test]
+    fn practice_xp_zero_floor_composes_with_apply_xp_gain() {
+        // base=9, practice=true → practice_xp_reward yields 0 (floor(9/10)=0)
+        let floored = practice_xp_reward(Xp::new(9), true);
+        assert_eq!(floored.value(), 0);
+        let start_xp = Xp::new(1); // level 1
+        let (new_xp, _new_level, did_level_up) = apply_xp_gain(start_xp, floored);
+        assert_eq!(new_xp.value(), 1, "zero XP gain must leave XP unchanged");
+        assert!(
+            !did_level_up,
+            "TEETH: zero XP gain must not trigger a level-up"
         );
     }
 

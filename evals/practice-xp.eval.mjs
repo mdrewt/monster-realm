@@ -40,10 +40,9 @@ function extractFnBody(src, fnName) {
 }
 
 function hasPracticeXpCall(body) {
-  // Split needle so this source file never self-matches during an eval
-  // that scans its own content.
-  const needle = 'practice_xp' + '_reward(';
-  return body.includes(needle);
+  // No self-match risk: this file is under evals/, not server-module/src/,
+  // so it is never in the scanned corpus.
+  return body.includes('practice_xp_reward(');
 }
 
 function readServerModuleSources(dir) {

@@ -11,7 +11,7 @@
 //! - `damage`     — damage formula (`calc_damage`) and accuracy check
 //! - `resolve`    — turn resolution (`resolve_turn`, `resolve_enemy_turn`, …)
 //! - `ai`         — enemy AI skill picker (`pick_best_skill`)
-//! - `xp`         — XP reward and level-up (`battle_xp_reward`, `apply_xp_gain`)
+//! - `xp`         — XP reward, practice penalty, and level-up (`battle_xp_reward`, `practice_xp_reward`, `apply_xp_gain`)
 
 pub mod ai;
 pub mod damage;

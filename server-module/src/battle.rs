@@ -695,6 +695,9 @@ pub(crate) fn write_back_battle_results(
             }
         };
 
+        // Loop-invariant: practice flag is the same for every monster in this battle.
+        let is_practice = battle.opponent_identity != WILD_IDENTITY;
+
         // Award XP to each conscious member of the winning team.
         for (i, bm) in battle.state.side_a.team.iter().enumerate() {
             if bm.is_fainted() {
@@ -719,7 +722,6 @@ pub(crate) fn write_back_battle_results(
                 }
             };
             let base_xp = battle_xp_reward(winner_lvl, bst, loser_lvl);
-            let is_practice = battle.opponent_identity != WILD_IDENTITY;
             let xp_gained = game_core::practice_xp_reward(base_xp, is_practice);
             let current_xp = game_core::Xp::new(m.xp);
             let (new_xp, new_level, leveled_up) = apply_xp_gain(current_xp, xp_gained);
