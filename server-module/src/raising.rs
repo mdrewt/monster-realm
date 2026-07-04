@@ -8,9 +8,9 @@
 //! occurs before the success path, so a rejected `care` can never burn the
 //! cooldown or mutate bond (the reducer transaction rolls back on any `Err`).
 //!
-//! `train` (focus-training food spend) is parked as M9b-tail — it forces edits
-//! outside this slice's server touch-set (game-core content + a public `ItemRow`
-//! column). See ADR-0059 §4.
+//! `train` (focus-training food spend) is implemented in the same file (M9b-tail,
+//! ADR-0059): pure `evaluate_train` seam → SSOT `focus_train`; decision-before-
+//! `consume_one` so a rejected train never burns the food item.
 //!
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
