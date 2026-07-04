@@ -72,6 +72,8 @@ netcode-determinism, zoned-schema (every world table carries an indexed
 **box-view-privacy** (StoreMonsterPub interface contains no hidden IV/EV/nature
 fields — ADR-0015), **encounter-privacy** (private encounter table, no projection,
 no client accessor, spawn weights never leak — ADR-0044).
+**Knowledge-bundle drift** (M8.95, ADR-0080): committed `docs/knowledge/` == fresh
+`scripts/okf-export.mjs --check`; a stale or malformed concept fails CI.
 **Cache-freshness** (M-infra-a, ADR-0043): no shared `CARGO_TARGET_DIR`, `rust-cache`
 wired without `cache-all-crates`, distinct per-job `prefix-key`, sccache +
 `CARGO_INCREMENTAL=0` co-located, no committed `.cargo` rustc-wrapper, nextest +
@@ -174,11 +176,40 @@ canonical `touches:` vocabulary**: adding content is a new
   nor the schema snapshot; the **content-parity** proof-of-teeth (merged registry ==
   pre-migration rows, in order) is its behavior-preservation gate.
 
+## Agent knowledge bundle (M8.95 — ADR-0080)
+
+A generated, committed, drift-checked **OKF-conformant knowledge bundle** at
+`docs/knowledge/` gives agents one portable, navigable schema surface without a
+second hand-maintained copy. `scripts/okf-export.mjs` is the **sole writer**;
+any hand edit to `docs/knowledge/**` fails the drift gate in CI.
+
+| Concept type | Count | Source |
+|---|---|---|
+| `SpacetimeDB Table` | 22 | `server-module/src/schema.rs` via `parseTableSchemas()` |
+| `SpacetimeDB Reducer` | 25 | domain modules `server-module/src/**/*.rs` |
+| `Schema Overview` | 1 | generated; links all tables + privacy classification |
+| root `index.md` | 1 | generated entry point for agent lookup |
+
+The producer reuses the **already-exported** `parseTableSchemas()` from
+`evals/battle-schema-snapshot.eval.mjs` — the same parser that gates schema drift
+now feeds the bundle, so they cannot disagree (SSOT, ADR-0003). Private tables
+(`monster`, `encounter`, `battle_wild`) are tagged `visibility: private` and linked
+to their public projections where one exists, making the ADR-0040/0044/0045
+privacy posture machine-checkable. The vendored `.claude/hooks/okf-lint.mjs`
+enforces required frontmatter (`type`, `title`, `slug`, `updated`, `tags`,
+`abstract`) on every concept; the `knowledge-bundle-conformance` eval additionally
+runs the drift check with proof-of-teeth fixtures (ADR-0010). Recipes: `just
+knowledge` regenerates; `just knowledge-check` drift-checks.
+
+Research library (`docs/research/*.md`) carries `type: Research Note` (additive;
+validated by the vendored `research-lint.mjs`; `INDEX.md` regenerated with `type`
+column via `research-index.mjs`).
+
 ## Decisions
 
 ADRs **0002–0034** are design ADRs that live in the harness spec corpus
 (`../../specs/monster-realm-v2/adr/`); **0001** is mirrored in both locations.
-Implementation ADRs **0001, 0035–0079** live in `docs/adr/` — see
+Implementation ADRs **0001, 0035–0080** live in `docs/adr/` — see
 `docs/adr/README.md` for the navigable catalog. Highlights: 0035 scaffold
 hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest, **0039
 two-window e2e CI gate**, 0040 RLS fallback split-tables, 0041 integer damage
@@ -186,7 +217,7 @@ formula, 0042 battle table public PvE, 0043 CI caching + fast inner loop, 0044
 private encounter table, 0045 private `battle_wild` individuality table, 0046
 player inventory model, 0047 recruit resolution, 0048 `start_battle` opponent
 provenance, 0049 panic-as-content-invariant policy, 0050 nightly mutation/
-coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness, 0056 server-module modularization (domain submodules — the canonical `touches:` vocabulary), 0057 content-directory glob loading via `build.rs`, 0058–0061 raising/training/evolution content+rules, **0062 evolution/fusion server reducer guard ordering, bond-write omission, and test-seam placement**, **0063 evolution/fusion client overlay (evolvesTo decode, fusion recipe display, coverage exclusion)**, 0064–0067 zone/warp data shape + server runtime + client follow-camera/global-subscription (**ADR-0067 accepted: global character subscription per Option C; per-zone re-subscription deferred to M20**), 0068–0071 NPC/dialogue/quest/heal (game-core rules + server reducers + content + client UI), 0072–0079 M12.5 residual fixes (fuse dual-write fix, content-sync repair, zone-sync robustness, netcode smoothness, gate teeth, battle lifecycle GC, practice-XP multiplier, nightly republish smoke). See also
+coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness, 0056 server-module modularization (domain submodules — the canonical `touches:` vocabulary), 0057 content-directory glob loading via `build.rs`, 0058–0061 raising/training/evolution content+rules, **0062 evolution/fusion server reducer guard ordering, bond-write omission, and test-seam placement**, **0063 evolution/fusion client overlay (evolvesTo decode, fusion recipe display, coverage exclusion)**, 0064–0067 zone/warp data shape + server runtime + client follow-camera/global-subscription (**ADR-0067 accepted: global character subscription per Option C; per-zone re-subscription deferred to M20**), 0068–0071 NPC/dialogue/quest/heal (game-core rules + server reducers + content + client UI), 0072–0079 M12.5 residual fixes (fuse dual-write fix, content-sync repair, zone-sync robustness, netcode smoothness, gate teeth, battle lifecycle GC, practice-XP multiplier, nightly republish smoke), **0080 generated knowledge bundle** (OKF-conformant `docs/knowledge/` bundle, drift-gated, M8.95). See also
 `docs/validation-findings.md` (empirical Tier-1 results).
 
 ## Monster subsystem (`game-core/src/monster/`, M6a)
