@@ -128,9 +128,10 @@ is unchanged.
 The `resolve_one_attack` panic on skill-not-found is recorded as a deliberate
 content-integrity invariant, in both this ADR and an expanded doc-comment that **names the
 guarantee**: `validate_content` (`game-core/src/content.rs`) cross-checks that every
-`species.learnable_skill_ids` references an existing skill at content-load time, and
-`battle_monster_from_row` populates a battler's `known_skill_ids` only from that validated
-intersection. So in the **steady state** — content validated at sync, battles started
+`species.learnable_skill_ids` references an existing skill at content-load time and that
+every species declares at least one learnable skill (empty-moveset guard, M10.5a), and
+`battle_monster_from_row` / `wild_battle_monster` both reject a monster whose
+`known_skill_ids` intersection with loaded skills is empty (defense-in-depth, M10.5a). So in the **steady state** — content validated at sync, battles started
 against that content — the panic is unreachable.
 
 **Honest residual (red-team — the spec's own red-team note demands the ADR not overstate

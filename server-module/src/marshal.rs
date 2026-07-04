@@ -158,6 +158,13 @@ pub(crate) fn wild_battle_monster(
         .copied()
         .filter(|id| skill_ids.contains(id))
         .collect();
+    if known_skill_ids.is_empty() {
+        return Err(format!(
+            "species {} has no known skills after filtering learnable_skill_ids against loaded skills; \
+             an empty moveset would panic the AI (defense-in-depth, ADR-0049)",
+            species.id
+        ));
+    }
     Ok(BattleMonster {
         species_id: species.id,
         affinity: species.affinity,
@@ -286,6 +293,22 @@ pub(crate) fn battle_monster_from_row(
             monster.monster_id
         ));
     }
+    // Canonical content order: iterate species.learnable_skill_ids and retain
+    // only those present in the provided skills slice (mirrors wild_battle_monster,
+    // so owned and wild monsters have the same ordering — ADR-0077 12.5e-4).
+    let known_skill_ids: Vec<u32> = species
+        .learnable_skill_ids
+        .iter()
+        .copied()
+        .filter(|id| skills.iter().any(|s| s.id == *id))
+        .collect();
+    if known_skill_ids.is_empty() {
+        return Err(format!(
+            "monster {} (species {}) has no known skills after filtering learnable_skill_ids \
+             against loaded skills; an empty moveset would panic the AI (defense-in-depth, ADR-0049)",
+            monster.monster_id, species.id
+        ));
+    }
     Ok(BattleMonster {
         species_id: monster.species_id,
         affinity: species.affinity,
@@ -300,15 +323,7 @@ pub(crate) fn battle_monster_from_row(
             sp_attack: monster.stat_sp_attack,
             sp_defense: monster.stat_sp_defense,
         },
-        // Canonical content order: iterate species.learnable_skill_ids and retain
-        // only those present in the provided skills slice (mirrors wild_battle_monster,
-        // so owned and wild monsters have the same ordering — ADR-0077 12.5e-4).
-        known_skill_ids: species
-            .learnable_skill_ids
-            .iter()
-            .copied()
-            .filter(|id| skills.iter().any(|s| s.id == *id))
-            .collect(),
+        known_skill_ids,
     })
 }
 

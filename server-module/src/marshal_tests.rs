@@ -1018,3 +1018,146 @@ fn owned_battle_monster_known_skills_respect_canonical_order() {
          skills slice, preserving learnable order."
     );
 }
+
+// =========================================================================
+// M10.5a gating tests — wild_battle_monster empty-known-skills guard
+// (defense-in-depth, ADR-0049, 10.5a-2)
+// =========================================================================
+
+/// M10.5a-2 (WHEN): wild_battle_monster must return Err when
+/// learnable_skill_ids ∩ skill_ids = ∅ (the intersection is empty).
+///
+/// Fixture: SpeciesRow id=98 "EmptyMover" has learnable_skill_ids = [1, 2].
+/// We pass skill_ids = [7, 8, 9] — entirely disjoint from [1, 2].
+/// The intersection is empty, so known_skill_ids would be [].
+/// A monster with an empty moveset panics at pick_best_skill's .expect(…).
+///
+/// PROOF-OF-TEETH: removing the guard causes wild_battle_monster to return
+/// Ok(BattleMonster { known_skill_ids: [], … }). The assert!(result.is_err())
+/// then FAILS, turning this test RED — proving the guard has bite.
+///
+/// Kills: any wild_battle_monster that builds and returns BattleMonster even
+/// when the learnable × provided intersection is empty (the current behaviour,
+/// which would reach pick_best_skill's .expect and panic at runtime).
+#[test]
+fn m10_5a_wild_battle_monster_rejects_empty_known_skills() {
+    // Species with learnable_skill_ids [1, 2] — the "EmptyMover" fixture.
+    // Distinct from m8c_test_species_row() to make the fixture self-contained.
+    let sp = SpeciesRow {
+        id: 98,
+        name: "EmptyMover".to_string(),
+        base_hp: 50,
+        base_attack: 55,
+        base_defense: 45,
+        base_speed: 60,
+        base_sp_attack: 65,
+        base_sp_defense: 50,
+        affinity: Affinity::Fire,
+        learnable_skill_ids: vec![1, 2],
+    };
+
+    // Skill ids [7, 8, 9] are entirely disjoint from learnable [1, 2].
+    // The intersection is empty → known_skill_ids would be [].
+    let disjoint_skill_ids = [7u32, 8, 9];
+
+    let result = wild_battle_monster(&sp, &disjoint_skill_ids, 10, 42);
+    assert!(
+        result.is_err(),
+        "M10.5a-2 TEETH: wild_battle_monster must return Err when \
+         learnable_skill_ids ∩ skill_ids = ∅ (intersection is empty); \
+         species learnable=[1,2] ∩ provided=[7,8,9] = []; \
+         current impl returns Ok with known_skill_ids:[] which panics \
+         downstream at pick_best_skill's .expect(…); \
+         removing the guard makes this assertion fail (proof-of-teeth)"
+    );
+}
+
+/// M10.5a-2-pos (no over-rejection): wild_battle_monster must return Ok when
+/// the intersection is non-empty (at least one learnable skill is provided).
+///
+/// Uses m8c_test_species_row() (learnable=[1,2,3]) with skill_ids=[1] —
+/// intersection=[1] (non-empty). Must succeed to prevent a vacuous always-Err
+/// guard from breaking all existing wild encounter builds.
+///
+/// Kills: a vacuous guard that always returns Err regardless of intersection
+/// size, which would reject every valid wild encounter.
+#[test]
+fn m10_5a_wild_battle_monster_accepts_nonempty_known_skills() {
+    let sp = m8c_test_species_row(); // learnable_skill_ids: [1, 2, 3]
+
+    // Provide skill_ids=[1] — intersection=[1,2,3]∩[1]=[1] (non-empty).
+    let skill_ids = [1u32];
+
+    let result = wild_battle_monster(&sp, &skill_ids, 10, 42);
+    assert!(
+        result.is_ok(),
+        "M10.5a-2-pos: wild_battle_monster must return Ok when \
+         learnable_skill_ids ∩ skill_ids is non-empty ([1,2,3] ∩ [1] = [1]); \
+         got Err: {:?}",
+        result.err()
+    );
+    // Spot-check: known_skill_ids must be the non-empty intersection [1].
+    let bm = result.unwrap();
+    assert_eq!(
+        bm.known_skill_ids,
+        vec![1u32],
+        "M10.5a-2-pos: BattleMonster.known_skill_ids must be [1] \
+         (learnable [1,2,3] ∩ provided [1] = [1]); got: {:?}",
+        bm.known_skill_ids
+    );
+}
+
+// M10.5a gating tests — battle_monster_from_row empty-known-skills guard
+// (defense-in-depth, ADR-0049, H-1 from review). Mirrors the wild_battle_monster
+// guard above but for owned-monster path.
+
+/// M10.5a-3 TEETH: battle_monster_from_row must return Err when the
+/// learnable_skill_ids ∩ loaded_skills intersection is empty.
+///
+/// Kills: an impl that returns Ok with known_skill_ids: [] (which causes
+/// pick_best_skill to panic when the enemy AI runs).
+///
+/// PROOF-OF-TEETH: removing the empty-known-skills guard in battle_monster_from_row
+/// makes this test RED (returns Ok instead of Err).
+#[test]
+fn m10_5a_battle_monster_from_row_rejects_empty_known_skills() {
+    let species = SpeciesRow {
+        id: 97,
+        name: "EmptyKnownOwned".to_string(),
+        base_hp: 50,
+        base_attack: 55,
+        base_defense: 45,
+        base_speed: 60,
+        base_sp_attack: 65,
+        base_sp_defense: 50,
+        affinity: Affinity::Fire,
+        learnable_skill_ids: vec![1, 2], // species has skills in content
+    };
+    let mut monster = m7b_test_monster_row();
+    monster.species_id = 97;
+    // Empty skills slice: intersection with [1,2] is [] (stale/diverged DB state).
+    let result = battle_monster_from_row(&monster, &species, &[]);
+    assert!(
+        result.is_err(),
+        "M10.5a-3 TEETH: battle_monster_from_row must return Err when \
+         learnable_skill_ids ∩ loaded_skills is empty ([1,2] ∩ [] = []); \
+         got Ok — removing the guard makes this RED"
+    );
+}
+
+/// M10.5a-3-pos: a valid monster+species+skills triple must still return Ok.
+///
+/// Kills: a vacuous always-Err impl.
+#[test]
+fn m10_5a_battle_monster_from_row_accepts_nonempty_known_skills() {
+    let species = m7b_test_species_row(); // learnable_skill_ids: [1, 2]
+    let monster = m7b_test_monster_row(); // stat_defense = 45
+    let skills = m7b_test_skill_rows(); // includes ids 1 and 2
+    let result = battle_monster_from_row(&monster, &species, &skills);
+    assert!(
+        result.is_ok(),
+        "M10.5a-3-pos: battle_monster_from_row must return Ok for a valid row \
+         with non-empty skill intersection; got Err: {:?}",
+        result.err()
+    );
+}
