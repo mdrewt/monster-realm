@@ -13,15 +13,13 @@ pub const MAX_BALANCE: u64 = 999_999_999;
 /// Grant `amount` to `balance`. Saturating add, capped at [`MAX_BALANCE`].
 /// A 0-amount grant is a no-op (returns `balance` unchanged).
 pub fn apply_grant(balance: u64, amount: u64) -> u64 {
-    // STUB — implementer replaces this body.
-    panic!("apply_grant not yet implemented")
+    balance.saturating_add(amount).min(MAX_BALANCE)
 }
 
 /// Spend `amount` from `balance`. Returns `Ok(new_balance)` on success or
 /// `Err("insufficient funds")` when `amount > balance`.
 pub fn apply_spend(balance: u64, amount: u64) -> Result<u64, &'static str> {
-    // STUB — implementer replaces this body.
-    panic!("apply_spend not yet implemented")
+    balance.checked_sub(amount).ok_or("insufficient funds")
 }
 
 // ---------------------------------------------------------------------------
