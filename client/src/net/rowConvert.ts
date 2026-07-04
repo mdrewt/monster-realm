@@ -22,6 +22,8 @@ import type {
   StorePlayer,
   StorePlayerConversation,
   StorePlayerQuest,
+  StoreShopItemRow,
+  StoreShopRow,
   StoreSkillRow,
   StoreSpeciesRow,
 } from './store';
@@ -256,6 +258,8 @@ export interface SdkItemRowRow {
   // SpacetimeDB 2.6 decodes Option<StatKind> as {tag} for Some, undefined for None.
   readonly trainStat: { readonly tag: string } | undefined;
   readonly trainAmount: number;
+  /** M13b: sell price in currency units (u64 in Rust; bigint in TS). */
+  readonly sellPrice: bigint;
 }
 
 export function inventoryRowToStore(row: SdkInventoryRow): StoreInventory {
@@ -275,6 +279,34 @@ export function itemRowToStore(row: SdkItemRowRow): StoreItemRow {
     recruitBonus: row.recruitBonus,
     trainStat: row.trainStat?.tag ?? null,
     trainAmount: row.trainAmount,
+    sellPrice: row.sellPrice,
+  };
+}
+
+// --- M13d: shop row converters -----------------------------------------------
+
+export interface SdkShopRowRow {
+  readonly shopId: number;
+  readonly name: string;
+}
+
+export interface SdkShopItemRowRow {
+  readonly shopItemId: bigint;
+  readonly shopId: number;
+  readonly itemId: number;
+  readonly buyPrice: bigint;
+}
+
+export function shopRowToStore(row: SdkShopRowRow): StoreShopRow {
+  return { shopId: row.shopId, name: row.name };
+}
+
+export function shopItemRowToStore(row: SdkShopItemRowRow): StoreShopItemRow {
+  return {
+    shopItemId: row.shopItemId,
+    shopId: row.shopId,
+    itemId: row.itemId,
+    buyPrice: row.buyPrice,
   };
 }
 

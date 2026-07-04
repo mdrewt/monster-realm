@@ -1078,3 +1078,212 @@ describe('M12d gating: healLocationRowToStore cooldownMs must be bigint (i64 inv
     expect(typeof store.cooldownMs).toBe('bigint');
   });
 });
+
+// =============================================================================
+// M13d converters: shopRowToStore, shopItemRowToStore
+//                  itemRowToStore gains sellPrice field
+// SOURCE OF TRUTH: specs/monster-realm-v2/M13d (shop client UI slice)
+//
+// RED REASON: shopRowToStore and shopItemRowToStore don't exist yet.
+//   SdkShopRowRow and SdkShopItemRowRow interfaces don't exist yet.
+//   SdkItemRowRow is missing sellPrice field.
+//   All tests below will fail until the implementer adds them.
+//
+// Key invariants:
+//   - shopId and itemId are number (u32, safe as number)
+//   - shopItemId, buyPrice, sellPrice are bigint (u64/u128 – keep bigint)
+//   - sellPrice on itemRowToStore: passes through as-is (0n or positive)
+// =============================================================================
+
+import {
+  type SdkShopItemRowRow,
+  type SdkShopRowRow,
+  shopItemRowToStore,
+  shopRowToStore,
+} from './rowConvert';
+
+// [m13d-8] sellPrice passthrough in itemRowToStore
+describe('rowConvert M13d: itemRowToStore — sellPrice field passthrough [m13d-8]', () => {
+  it('[m13d-8] BITES: sellPrice=100n on SDK row → sellPrice=100n on store row', () => {
+    // Kills: an impl that omits sellPrice from the converter or defaults it to 0n.
+    const sdk: SdkItemRowRow = {
+      id: 3,
+      name: 'Herb',
+      description: 'A healing herb',
+      recruitBonus: 0,
+      trainStat: undefined,
+      trainAmount: 0,
+      sellPrice: 100n,
+    };
+    const store = itemRowToStore(sdk);
+    expect((store as Record<string, unknown>).sellPrice).toBe(100n);
+    expect(typeof (store as Record<string, unknown>).sellPrice).toBe('bigint');
+  });
+
+  it('[m13d-8] BITES: sellPrice=0n on SDK row → sellPrice=0n on store row (not undefined or omitted)', () => {
+    // Kills: an impl that omits sellPrice when it is 0n or treats 0n as falsy/missing.
+    const sdk: SdkItemRowRow = {
+      id: 5,
+      name: 'Quest Key',
+      description: 'Cannot be sold',
+      recruitBonus: 0,
+      trainStat: undefined,
+      trainAmount: 0,
+      sellPrice: 0n,
+    };
+    const store = itemRowToStore(sdk);
+    expect((store as Record<string, unknown>).sellPrice).toBe(0n);
+    expect((store as Record<string, unknown>).sellPrice).not.toBeUndefined();
+    expect((store as Record<string, unknown>).sellPrice).not.toBeNull();
+  });
+
+  it('[m13d-8] BITES: sellPrice stays bigint (not converted to number)', () => {
+    // Kills: an impl that Number()-casts sellPrice (lossy for large values).
+    const largeSellPrice = 9007199254740993n; // 2^53 + 1 — lossy if Number()-cast
+    const sdk: SdkItemRowRow = {
+      id: 1,
+      name: 'Rare Gem',
+      description: 'Very expensive',
+      recruitBonus: 0,
+      trainStat: undefined,
+      trainAmount: 0,
+      sellPrice: largeSellPrice,
+    };
+    const store = itemRowToStore(sdk);
+    expect(typeof (store as Record<string, unknown>).sellPrice).toBe('bigint');
+    expect((store as Record<string, unknown>).sellPrice).toBe(largeSellPrice);
+    // Ensure it's not the Number-coerced (wrong) value
+    expect((store as Record<string, unknown>).sellPrice).not.toBe(9007199254740992n);
+  });
+
+  it('[m13d-8] BITES: existing fields still correct when sellPrice is added (no regression)', () => {
+    // Kills: an impl that adds sellPrice by spreading the SDK row, accidentally
+    // breaking existing field mappings (e.g., trainStat object not flattened).
+    const sdk: SdkItemRowRow = {
+      id: 2,
+      name: 'Power Root',
+      description: 'Boosts attack',
+      recruitBonus: 3,
+      trainStat: { tag: 'Attack' },
+      trainAmount: 10,
+      sellPrice: 50n,
+    };
+    const store = itemRowToStore(sdk);
+    expect(store.id).toBe(2);
+    expect(store.name).toBe('Power Root');
+    expect(store.trainStat).toBe('Attack'); // must still flatten {tag:'Attack'} → 'Attack'
+    expect(store.trainAmount).toBe(10);
+    expect(store.recruitBonus).toBe(3);
+    expect((store as Record<string, unknown>).sellPrice).toBe(50n);
+  });
+});
+
+// [m13d-9] shopRowToStore converts correctly
+describe('rowConvert M13d: shopRowToStore — SdkShopRowRow -> StoreShopRow [m13d-9]', () => {
+  it('[m13d-9] BITES: shopRowToStore({ shopId: 1, name: "General Store" }) → { shopId: 1, name: "General Store" }', () => {
+    // Kills: an impl that doesn't exist yet (RED) or that drops either field.
+    const sdk: SdkShopRowRow = { shopId: 1, name: 'General Store' };
+    const store = shopRowToStore(sdk);
+    expect(store.shopId).toBe(1);
+    expect(store.name).toBe('General Store');
+  });
+
+  it('[m13d-9] BITES: shopId is number (u32, not bigint)', () => {
+    // Kills: an impl that bigints the shopId field.
+    const sdk: SdkShopRowRow = { shopId: 42, name: 'Magic Shop' };
+    const store = shopRowToStore(sdk);
+    expect(typeof store.shopId).toBe('number');
+    expect(store.shopId).toBe(42);
+  });
+
+  it('[m13d-9] BITES: name is preserved verbatim as string (no trimming or case change)', () => {
+    // Kills: an impl that lowercases or trims the shop name.
+    const sdk: SdkShopRowRow = { shopId: 3, name: 'The Grand Bazaar v2' };
+    const store = shopRowToStore(sdk);
+    expect(store.name).toBe('The Grand Bazaar v2');
+    expect(typeof store.name).toBe('string');
+  });
+
+  it('[m13d-9] BITES: both fields are present on output (no silent field drop)', () => {
+    // Kills: an impl that returns only one of the two required fields.
+    const sdk: SdkShopRowRow = { shopId: 7, name: 'Item World' };
+    const store = shopRowToStore(sdk);
+    expect(store).toHaveProperty('shopId', 7);
+    expect(store).toHaveProperty('name', 'Item World');
+  });
+});
+
+// [m13d-10] shopItemRowToStore converts correctly
+describe('rowConvert M13d: shopItemRowToStore — SdkShopItemRowRow -> StoreShopItemRow [m13d-10]', () => {
+  it('[m13d-10] BITES: shopItemRowToStore({ shopItemId:5n, shopId:1, itemId:3, buyPrice:50n }) → exact passthrough', () => {
+    // Kills: an impl that doesn't exist yet (RED) or that converts any field incorrectly.
+    const sdk: SdkShopItemRowRow = { shopItemId: 5n, shopId: 1, itemId: 3, buyPrice: 50n };
+    const store = shopItemRowToStore(sdk);
+    expect(store.shopItemId).toBe(5n);
+    expect(store.shopId).toBe(1);
+    expect(store.itemId).toBe(3);
+    expect(store.buyPrice).toBe(50n);
+  });
+
+  it('[m13d-10] BITES: shopItemId stays bigint (u64 — lossy if Number()-cast)', () => {
+    // shopItemId is u64 — must stay bigint to avoid precision loss above 2^53.
+    // Kills: an impl that Number()-casts shopItemId.
+    const largeId = 9007199254740993n; // 2^53 + 1
+    const sdk: SdkShopItemRowRow = { shopItemId: largeId, shopId: 1, itemId: 2, buyPrice: 10n };
+    const store = shopItemRowToStore(sdk);
+    expect(typeof store.shopItemId).toBe('bigint');
+    expect(store.shopItemId).toBe(largeId);
+    expect(store.shopItemId).not.toBe(9007199254740992n); // the Number-coerced (wrong) value
+  });
+
+  it('[m13d-10] BITES: buyPrice stays bigint (u64 — lossy if Number()-cast)', () => {
+    // buyPrice is u64 — must stay bigint.
+    // Kills: an impl that Number()-casts buyPrice.
+    const largeBuyPrice = 9007199254740994n;
+    const sdk: SdkShopItemRowRow = {
+      shopItemId: 1n,
+      shopId: 1,
+      itemId: 1,
+      buyPrice: largeBuyPrice,
+    };
+    const store = shopItemRowToStore(sdk);
+    expect(typeof store.buyPrice).toBe('bigint');
+    expect(store.buyPrice).toBe(largeBuyPrice);
+  });
+
+  it('[m13d-10] BITES: shopId and itemId are number (u32, safe as number)', () => {
+    // Kills: an impl that bigints shopId or itemId.
+    const sdk: SdkShopItemRowRow = { shopItemId: 1n, shopId: 10, itemId: 20, buyPrice: 5n };
+    const store = shopItemRowToStore(sdk);
+    expect(typeof store.shopId).toBe('number');
+    expect(store.shopId).toBe(10);
+    expect(typeof store.itemId).toBe('number');
+    expect(store.itemId).toBe(20);
+  });
+
+  it('[m13d-10] BITES: all four fields are present on output (no silent field drop)', () => {
+    // Kills: an impl that omits any of the four required fields from the store row.
+    const sdk: SdkShopItemRowRow = { shopItemId: 99n, shopId: 3, itemId: 7, buyPrice: 200n };
+    const store = shopItemRowToStore(sdk);
+    expect(store).toHaveProperty('shopItemId', 99n);
+    expect(store).toHaveProperty('shopId', 3);
+    expect(store).toHaveProperty('itemId', 7);
+    expect(store).toHaveProperty('buyPrice', 200n);
+  });
+
+  it('[m13d-10] BITES: distinct shopId and itemId values are not swapped', () => {
+    // Kills: an impl that accidentally swaps shopId and itemId on output.
+    const sdk: SdkShopItemRowRow = { shopItemId: 1n, shopId: 100, itemId: 200, buyPrice: 1n };
+    const store = shopItemRowToStore(sdk);
+    expect(store.shopId).toBe(100);
+    expect(store.itemId).toBe(200);
+  });
+
+  it('[m13d-10] BITES: shopItemId=0n is preserved as 0n (not treated as falsy/absent)', () => {
+    // Kills: an impl that treats shopItemId=0n as "no id" and returns undefined or throws.
+    const sdk: SdkShopItemRowRow = { shopItemId: 0n, shopId: 1, itemId: 1, buyPrice: 0n };
+    const store = shopItemRowToStore(sdk);
+    expect(store.shopItemId).toBe(0n);
+    expect(typeof store.shopItemId).toBe('bigint');
+  });
+});
