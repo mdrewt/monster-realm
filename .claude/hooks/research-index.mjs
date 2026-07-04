@@ -22,6 +22,7 @@ function fm(txt) {
     return (line ? line.slice(k.length + 1) : '').trim().replace(/^["']|["']$/g, '');
   };
   return {
+    type: g('type'),
     slug: g('slug'),
     domain: g('domain'),
     status: g('status'),
@@ -54,14 +55,15 @@ export function duplicateSlugs(dir) {
 
 export function buildAuto(dir) {
   const rows = scan(dir).sort((a, b) => (b.updated || '').localeCompare(a.updated || ''));
-  const head = '| slug | domain | status | updated | tags | abstract |\n|---|---|---|---|---|---|';
+  const head = '| type | slug | domain | status | updated | tags | abstract |\n|---|---|---|---|---|---|---|';
   const body =
     rows
-      .map(
-        (d) =>
-          `| ${cell(d.slug)} | ${cell(d.domain)} | ${cell(d.status)} | ${cell(d.updated)} | ${cell(d.tags)} | ${cell(d.abstract).slice(0, 120)} |`,
-      )
-      .join('\n') || '| _(none yet)_ |  |  |  |  |  |';
+      .map((d) => {
+        const ab = cell(d.abstract);
+        const abCell = ab.length > 120 ? ab.slice(0, 117) + '...' : ab;
+        return `| ${cell(d.type)} | ${cell(d.slug)} | ${cell(d.domain)} | ${cell(d.status)} | ${cell(d.updated)} | ${cell(d.tags)} | ${abCell} |`;
+      })
+      .join('\n') || '| _(none yet)_ |  |  |  |  |  |  |';
   return `${BEGIN}\n${head}\n${body}\n${END}`;
 }
 
@@ -81,7 +83,7 @@ export function regenerate(dir, { check = false } = {}) {
     spliced != null
       ? spliced
       : `# Research library\n\n> Generated manifest. Prose outside the auto block is preserved.\n\n${auto}\n`;
-  if (check) return cur.trim() === next.trim();
+  if (check) return cur === next;
   if (cur !== next) writeFileSync(idx, next);
   return true;
 }

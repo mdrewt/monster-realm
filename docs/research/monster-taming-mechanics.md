@@ -1,4 +1,5 @@
 ---
+type: Research Note
 title: Monster-taming genre — core mechanics & gameplay inspirations
 slug: monster-taming-mechanics
 domain: gameplay

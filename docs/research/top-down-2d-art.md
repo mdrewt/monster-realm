@@ -1,4 +1,5 @@
 ---
+type: Research Note
 title: Top-down 2D art style — direction & technical inspirations
 slug: top-down-2d-art
 domain: art
@@ -13,7 +14,7 @@ abstract: "Top-down 2D art direction — tile sizing, palette discipline, and re
 ## Scope
 Art-direction and technical conventions for top-down 2D games, and what they imply for
 monster-realm's **PixiJS** client. Pairs with the gameplay research in
-[[monster-taming-mechanics]].
+[monster-taming-mechanics](monster-taming-mechanics.md).
 
 ## Key findings
 - **Perspective:** "top-down" = camera directly above the player; the dominant 2D
