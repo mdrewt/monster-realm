@@ -160,6 +160,9 @@ test.describe
           // sees own.row.zoneId (0) !== rawMap.zone_id (1).
           .setRawMapZoneForTest(1);
         // Re-invoke __game() so the snapshot captures rawMap AFTER the set.
+        // snapshot() is NOT memoised: each call constructs a fresh object literal
+        // that reads module-level rawMap at call time.  After setRawMapZoneForTest
+        // re-assigned rawMap = zone_map(1), this second call reads the new binding.
         return (window as unknown as { __game: () => ZoneSyncSnap }).__game().map.zone_id;
       });
 
@@ -377,20 +380,48 @@ test.describe
       // (same origin and target → no slide → no fractional output → flag never
       // set).  Sending an explicit step guarantees a new target-tile change and a
       // fresh slide within STEP_MS.
-      // DEFLAKE NOTE (m12.5c1-deflake): this step is in the same zone (0 === 0)
-      // so the reconcile listener does NOT call switchZone; sawFractionalOwnMotion
-      // is therefore NOT reset by this step under the correct implementation.  The
-      // BITES assertion at the end of this test still catches an implementation
-      // that unconditionally calls resetPredictionState on every batch, because
-      // that impl would reset the flag on the gate step ('East') below.
-      await page.evaluate(() => {
-        (
+      // DEFLAKE NOTE (m12.5c1-deflake): the direction is chosen from the live map
+      // so the step is guaranteed to be walkable regardless of the character's
+      // position after tests 1–3.  A hardcoded 'South' can wall-bump if the
+      // character migrated to the map boundary, producing no slide and no fractional
+      // output — the same timeout we are trying to prevent.
+      // This step is in the same zone (0 === 0), so the correct implementation does
+      // NOT call switchZone; sawFractionalOwnMotion is therefore NOT reset by this
+      // step.  The BITES assertion at the end still catches an impl that
+      // unconditionally calls resetPredictionState on every batch, because that impl
+      // would reset the flag on the gate step ('East') below.
+      await page.evaluate((): void => {
+        // Read map + step function from a single __game() call so the direction
+        // lookup and the step are atomic within this evaluate task.
+        const g = (
           window as unknown as {
-            __game: () => { step: (dir: string) => void };
+            __game: () => ZoneSyncSnap & { step: (dir: string) => void };
           }
-        )
-          .__game()
-          .step('South');
+        ).__game();
+        const { map, ownAuthTile: tile } = g;
+        // Find the first walkable neighbour: East → West → South → North.
+        const offsets: [string, number, number][] = [
+          ['East', 1, 0],
+          ['West', -1, 0],
+          ['South', 0, 1],
+          ['North', 0, -1],
+        ];
+        for (const [dir, dx, dy] of offsets) {
+          if (!tile) break;
+          const nx = tile.x + dx;
+          const ny = tile.y + dy;
+          if (
+            nx >= 0 &&
+            ny >= 0 &&
+            nx < map.width &&
+            ny < map.height &&
+            map.walkable[ny * map.width + nx]
+          ) {
+            g.step(dir);
+            return;
+          }
+        }
+        g.step('East'); // fallback: character always has at least one walkable neighbour
       });
       await page.waitForFunction(
         () =>
