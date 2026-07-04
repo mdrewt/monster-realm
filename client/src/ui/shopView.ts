@@ -19,6 +19,8 @@ export class ShopView {
   readonly #inventoryList: HTMLElement;
   readonly #feedbackEl: HTMLElement;
   readonly #cbs: ShopCallbacks;
+  // In-flight lock: prevents double-spend when a reducer Promise is pending.
+  #pending = false;
 
   constructor(cbs: ShopCallbacks) {
     const el = document.getElementById('shop-overlay');
@@ -58,6 +60,7 @@ export class ShopView {
   hide(): void {
     this.#overlay.style.display = 'none';
     this.#feedbackEl.textContent = '';
+    this.#pending = false;
   }
 
   toggle(): void {
@@ -103,7 +106,15 @@ export class ShopView {
     const btn = document.createElement('button');
     btn.textContent = 'Buy';
     btn.dataset['itemId'] = String(item.itemId);
-    btn.addEventListener('click', () => this.#cbs.onBuy(shopId, item.itemId));
+    btn.addEventListener('click', () => {
+      if (this.#pending) return;
+      this.#pending = true;
+      btn.disabled = true;
+      void Promise.resolve(this.#cbs.onBuy(shopId, item.itemId)).finally(() => {
+        this.#pending = false;
+        btn.disabled = false;
+      });
+    });
     li.appendChild(btn);
     return li;
   }
@@ -115,7 +126,15 @@ export class ShopView {
       const btn = document.createElement('button');
       btn.textContent = 'Sell';
       btn.dataset['itemId'] = String(item.itemId);
-      btn.addEventListener('click', () => this.#cbs.onSell(item.itemId));
+      btn.addEventListener('click', () => {
+        if (this.#pending) return;
+        this.#pending = true;
+        btn.disabled = true;
+        void Promise.resolve(this.#cbs.onSell(item.itemId)).finally(() => {
+          this.#pending = false;
+          btn.disabled = false;
+        });
+      });
       li.appendChild(btn);
     } else {
       li.textContent = `${item.name} (×${item.count}) — Cannot sell`;

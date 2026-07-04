@@ -10,7 +10,8 @@ Architecture Decision Records live in **two locations**; check both.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0083`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0085`**
+(0083 reserved for M13c sibling slice; 0084 = M13d).
 
 ## ADRs in `docs/adr/`
 
@@ -65,6 +66,7 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 | [0080](./0080-generated-knowledge-bundle.md) | Generated knowledge bundle (OKF-conformant schema projection) | M8.95d |
 | [0081](./0081-currency-primitive.md) | Currency primitive — player_wallet + grant/spend helpers | M13a |
 | [0082](./0082-shop-content-reducers.md) | Shop content, buy/sell reducers | M13b |
+| [0084](./0084-shop-client-view.md) | Shop client view architecture (wallet-private gap, feedback surface) | M13d |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.

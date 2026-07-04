@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-04 · **Status:** Accepted
 **Deciders:** orchestrator
-**ADR-sequence:** follows 0083 (M13c sink/source wiring, sibling slice)
+**ADR-sequence:** follows 0082 (M13b shop content/reducers)
 
 ## Context
 
@@ -50,11 +50,14 @@ This is intentional and correct per ADR-0015/0081. A public balance projection
 (like `monster_pub` for monsters) would require a server-module schema change —
 deferred to a future slice if gameplay data shows it is needed (YAGNI).
 
-**D. Reducer feedback via onBuy / onSell callbacks** — `main.ts` registers
-`conn.reducers.onBuy` and `conn.reducers.onSell` callbacks. On `Failed`, the
-message is forwarded to `ShopView.showFeedback(message)`. On `Committed`, a
-success message is shown. This satisfies the spec requirement to "surface
-reducer-rejection feedback in the UI."
+**D. Reducer feedback via async/await Promise** — `main.ts` issues
+`await conn.reducers.buy(...)` / `await conn.reducers.sell(...)` inside
+async try/catch blocks. The SpacetimeDB 2.6 SDK returns a `Promise<void>`
+that resolves on server commit and rejects with an `Error` on server failure
+(no `conn.reducers.onBuy` event-listener API exists in STDB 2.6). On
+rejection, `(err as Error).message` is forwarded to `ShopView.showFeedback`.
+On success, a "Purchase/Sale complete!" message is shown. This satisfies the
+spec requirement to "surface reducer-rejection feedback in the UI."
 
 **E. Shop screen trigger** — The shop overlay opens via `KeyG` (General store)
 when no other overlay is active. This is an MVP trigger: the real shopkeeper
@@ -89,9 +92,11 @@ other overlays is enforced in `main.ts` (same guard pattern as `boxView`,
 
 ## Compliance
 
+- ADR-0014: functional core / imperative shell — `shopModel.ts` is pure logic; `shopView.ts` is the DOM shell; `main.ts` is the wire. ✓
 - ADR-0015: RLS stakes-classification — shop tables are public (prices are not
   private), wallet is private. ✓
-- ADR-0016: server-authoritative stats, pure subscription view. ✓
+- ADR-0016: pure subscription view — `shopModel.ts` is a pure function over
+  the four subscribable sources; no SDK, no DOM, no side-effects. ✓
 - ADR-0040: private tables produce no client subscription — wallet excluded. ✓
 - ADR-0047: classify by data (sellPrice > 0), never by hardcoded id list. ✓
 - ADR-0081: wallet single-mutation-surface — client never writes balance. ✓

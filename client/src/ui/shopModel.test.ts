@@ -301,13 +301,14 @@ describe('buildShopViewModel [m13d-5]: canSell discriminator — sellPrice > 0n 
 // [m13d-6] First shop selection — when multiple shops exist
 // ---------------------------------------------------------------------------
 
-describe('buildShopViewModel [m13d-6]: first shop selection — multi-shop input', () => {
-  it('[m13d-6] BITES: first shop in array is selected (shopId from index 0)', () => {
-    // Kills: an impl that picks the last shop or sorts by shopId.
+describe('buildShopViewModel [m13d-6]: shop selection — lowest shopId wins', () => {
+  it('[m13d-6] BITES: shop with lowest shopId is selected (deterministic regardless of array order)', () => {
+    // Kills: an impl that picks shops[0] without sorting, which would be
+    // non-deterministic under Map insertion order across reconnects.
     const shops = [makeShop(5, 'Alpha Store'), makeShop(1, 'Beta Store')];
     const result = buildShopViewModel(shops, [], new Map(), []) as ShopViewModel;
-    expect(result.shopId).toBe(5);
-    expect(result.shopName).toBe('Alpha Store');
+    expect(result.shopId).toBe(1); // lowest shopId wins
+    expect(result.shopName).toBe('Beta Store');
   });
 
   it('[m13d-6] BITES: only items for the selected shopId appear in forSale', () => {
@@ -321,10 +322,10 @@ describe('buildShopViewModel [m13d-6]: first shop selection — multi-shop input
     // shopId=2 sells item 10, shopId=1 sells item 20
     const shopItems = [makeShopItem(1n, 2, 10, 100n), makeShopItem(2n, 1, 20, 80n)];
     const result = buildShopViewModel(shops, shopItems, defs, []) as ShopViewModel;
-    // Selected shop is index 0 → shopId=2, so only item 10 appears
+    // Selected shop is shopId=1 (lowest), so only item 20 appears
     expect(result.forSale).toHaveLength(1);
-    expect(result.forSale[0]!.itemId).toBe(10);
-    expect(result.forSale.some((i) => i.itemId === 20)).toBe(false);
+    expect(result.forSale[0]!.itemId).toBe(20);
+    expect(result.forSale.some((i) => i.itemId === 10)).toBe(false);
   });
 });
 
@@ -394,12 +395,13 @@ describe('buildShopViewModel [m13d-11]: property — forSale.length === shopItem
   it('[m13d-11] BITES fast-check property: forSale length = count of shopItems for selected shop', () => {
     // The forSale array must contain exactly one entry per shop_item_row with a matching shopId.
     // Kills: an impl that includes items from other shops or drops items from the correct shop.
+    // selectedShopId is always 1 (lowest); otherShopIds are always > 1 so the sort is deterministic.
     fc.assert(
       fc.property(
-        fc.integer({ min: 1, max: 5 }), // shopId of selected (first) shop
-        fc.array(fc.integer({ min: 1, max: 3 }), { minLength: 0, maxLength: 10 }), // other shopIds
+        fc.array(fc.integer({ min: 2, max: 10 }), { minLength: 0, maxLength: 10 }), // other shopIds (always > 1)
         fc.integer({ min: 0, max: 8 }), // count of items for the selected shop
-        (selectedShopId, otherShopIds, selectedShopItemCount) => {
+        (otherShopIds, selectedShopItemCount) => {
+          const selectedShopId = 1; // always lowest → always selected after sort
           const shops = [
             makeShop(selectedShopId, 'Main'),
             ...otherShopIds.filter((id) => id !== selectedShopId).map((id) => makeShop(id)),
@@ -465,8 +467,8 @@ describe('buildShopViewModel [m13d-12]: property — forSaleByPlayer only contai
 // ---------------------------------------------------------------------------
 
 describe('buildShopViewModel [m13d-13]: BITES — items from wrong shop must not appear in forSale', () => {
-  it('[m13d-13] BITES: shopId=1 items excluded when selected shop is shopId=2', () => {
-    // If the first shop is shopId=2, items from shopId=1 must NOT appear in forSale.
+  it('[m13d-13] BITES: shopId=2 items excluded when selected shop is shopId=1 (lowest wins)', () => {
+    // Selected shop is shopId=1 (lowest shopId). Items from shopId=2 must NOT appear.
     // This directly catches an impl that skips the shopId filter entirely.
     // Wrong implementation: return all shopItems without filtering by shopId.
     const shops = [makeShop(2, 'Second Shop'), makeShop(1, 'First Shop')];
@@ -474,16 +476,16 @@ describe('buildShopViewModel [m13d-13]: BITES — items from wrong shop must not
       [10, makeItemDef(10, { name: 'Potion' })],
       [20, makeItemDef(20, { name: 'Antidote' })],
     ]);
-    // Shop 2 sells Potion (itemId=10), Shop 1 sells Antidote (itemId=20)
+    // Shop 1 sells Antidote (itemId=20), Shop 2 sells Potion (itemId=10)
     const shopItems = [
-      makeShopItem(1n, 2, 10, 50n), // correct shop
-      makeShopItem(2n, 1, 20, 30n), // wrong shop — must NOT appear
+      makeShopItem(1n, 2, 10, 50n), // wrong shop (shopId=2) — must NOT appear
+      makeShopItem(2n, 1, 20, 30n), // correct shop (shopId=1)
     ];
     const result = buildShopViewModel(shops, shopItems, defs, []) as ShopViewModel;
-    // Antidote (from shopId=1) must NOT be in forSale
-    expect(result.forSale.some((i) => i.itemId === 20)).toBe(false);
-    // Potion (from shopId=2) MUST be in forSale
-    expect(result.forSale.some((i) => i.itemId === 10)).toBe(true);
+    // Potion (from shopId=2) must NOT be in forSale (selected shop is shopId=1)
+    expect(result.forSale.some((i) => i.itemId === 10)).toBe(false);
+    // Antidote (from shopId=1) MUST be in forSale
+    expect(result.forSale.some((i) => i.itemId === 20)).toBe(true);
     expect(result.forSale).toHaveLength(1);
   });
 });

@@ -54,7 +54,8 @@ export function buildShopViewModel(
 ): ShopScreenViewModel {
   if (shops.length === 0) return { kind: 'no-shop' };
 
-  const shop = shops[0]!;
+  // Sort by shopId for deterministic first-shop selection regardless of Map insertion order.
+  const shop = [...shops].sort((a, b) => a.shopId - b.shopId)[0]!;
   const { shopId, name: shopName } = shop;
 
   const forSale: ShopItemViewModel[] = shopItems
@@ -69,18 +70,31 @@ export function buildShopViewModel(
       };
     });
 
-  const forSaleByPlayer: ShopInventoryItemViewModel[] = ownInventory.map((inv) => {
-    const def = itemDefs.get(inv.itemId);
-    const sellPrice = def?.sellPrice ?? 0n;
-    return {
-      invId: inv.invId,
-      itemId: inv.itemId,
-      name: def?.name ?? `Unknown (#${inv.itemId})`,
-      count: inv.count,
-      sellPrice,
-      canSell: sellPrice > 0n,
-    };
-  });
+  // Aggregate inventory by itemId: the sell reducer operates on itemId (not invId),
+  // so rendering one row per stack creates a false affordance of per-stack targeting.
+  const byItemId = new Map<number, { invId: bigint; count: number }>();
+  for (const inv of ownInventory) {
+    const existing = byItemId.get(inv.itemId);
+    if (existing === undefined) {
+      byItemId.set(inv.itemId, { invId: inv.invId, count: inv.count });
+    } else {
+      byItemId.set(inv.itemId, { invId: existing.invId, count: existing.count + inv.count });
+    }
+  }
+  const forSaleByPlayer: ShopInventoryItemViewModel[] = [...byItemId.entries()].map(
+    ([itemId, { invId, count }]) => {
+      const def = itemDefs.get(itemId);
+      const sellPrice = def?.sellPrice ?? 0n;
+      return {
+        invId,
+        itemId,
+        name: def?.name ?? `Unknown (#${itemId})`,
+        count,
+        sellPrice,
+        canSell: sellPrice > 0n,
+      };
+    },
+  );
 
   return { kind: 'shop', shopId, shopName, forSale, forSaleByPlayer };
 }

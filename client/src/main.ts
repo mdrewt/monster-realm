@@ -247,7 +247,7 @@ window.addEventListener('keydown', (e) => {
   if (e.repeat) return; // ignore OS key-repeat (the frame loop re-issues held keys)
   if (e.code === 'KeyB') {
     // Guard: don't open the box over an active battle (ADR-0014/0052 exit ordering).
-    if (shouldToggleBox(battleView?.visible ?? false)) {
+    if (shouldToggleBox(battleView?.visible ?? false) && !shopView?.visible) {
       raisingView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
       boxView?.toggle();
@@ -258,7 +258,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyI') {
     // Inventory/raising overlay — same battle guard as the box (reuse shouldToggleBox).
-    if (shouldToggleBox(battleView?.visible ?? false)) {
+    if (shouldToggleBox(battleView?.visible ?? false) && !shopView?.visible) {
       boxView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
       raisingView?.toggle();
@@ -269,7 +269,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyE') {
     // Evolution/fusion overlay — same battle guard as box/raising (ADR-0014).
-    if (shouldToggleBox(battleView?.visible ?? false)) {
+    if (shouldToggleBox(battleView?.visible ?? false) && !shopView?.visible) {
       boxView?.hide(); // mutual exclusivity
       raisingView?.hide(); // mutual exclusivity
       evolutionView?.toggle();
@@ -703,14 +703,29 @@ async function main(): Promise<void> {
     dialogueView = new DialogueViewClass();
     questLogView = new QuestLogViewClass();
     healView = new HealViewClass();
-    // M13d: shop DOM shell (ADR-0084). buy/sell callbacks invoke reducers directly;
-    // onReducerFeedback in connect() forwards success/failure to shopView.showFeedback.
+    // M13d: shop DOM shell (ADR-0084).
+    // buy/sell are awaited: the STDB SDK resolves on server-commit, rejects on server-error
+    // (see #reducerCallbacks in the SDK source). This is the correct surface for rejection
+    // feedback — not conn.reducers.onBuy (which doesn't exist in STDB 2.6).
+    // ADR-0082 D5: single-unit MVP (infinite stock; multi-unit sell → future slice).
+    const SHOP_QTY = 1 as const;
     shopView = new ShopViewClass({
-      onBuy: (shopId, itemId) => {
-        conn?.conn.reducers.buy({ shopId, itemId, qty: 1 });
+      onBuy: async (shopId, itemId) => {
+        try {
+          await conn?.conn.reducers.buy({ shopId, itemId, qty: SHOP_QTY });
+          if (shopView?.visible) shopView.showFeedback('Purchase complete!');
+        } catch (err) {
+          if (shopView?.visible)
+            shopView.showFeedback(`Purchase failed: ${(err as Error).message}`);
+        }
       },
-      onSell: (itemId) => {
-        conn?.conn.reducers.sell({ itemId, qty: 1 });
+      onSell: async (itemId) => {
+        try {
+          await conn?.conn.reducers.sell({ itemId, qty: SHOP_QTY });
+          if (shopView?.visible) shopView.showFeedback('Sale complete!');
+        } catch (err) {
+          if (shopView?.visible) shopView.showFeedback(`Sale failed: ${(err as Error).message}`);
+        }
       },
     });
   }
@@ -741,10 +756,6 @@ async function main(): Promise<void> {
       switchZone(newZoneId);
     },
     onError: (where, message) => console.error(`[net:${where}] ${message}`),
-    // M13d: forward buy/sell reducer outcomes to the shop feedback area (ADR-0084).
-    onReducerFeedback: (_reducer, _success, message) => {
-      if (shopView?.visible) shopView.showFeedback(message);
-    },
   });
 
   // 12.5c-4: frame loop is wrapped in try/catch so a wasm/predictor throw does not

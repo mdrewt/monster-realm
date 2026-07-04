@@ -442,8 +442,8 @@ export class AuthoritativeStore {
     this.#healLocations.clear();
     this.#npcs.clear();
     this.#npcsByNpcId.clear();
-    // M13d: shop content maps (survive reconnect like item_row — they're seeded
-    // by sync_content, not by per-session events; reconnect just re-applies them)
+    // M13d: shop content maps — cleared on disconnect; repopulated from the
+    // initial onInsert burst when the subscription re-applies on reconnect.
     this.#shops.clear();
     this.#shopItems.clear();
     this.#dirty = false;
