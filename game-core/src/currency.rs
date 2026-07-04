@@ -6,6 +6,10 @@
 /// Maximum balance a single wallet may hold (9-digit UI cap, ADR-0081).
 pub const MAX_BALANCE: u64 = 999_999_999;
 
+/// Divisor for the battle currency reward formula (ADR-0083, tunable).
+/// A BST-300 opponent yields 30 gold; u16::MAX yields 6553 gold (well below MAX_BALANCE).
+pub const BATTLE_CURRENCY_BST_DIVISOR: u64 = 10;
+
 /// Grant `amount` to `balance`. Saturating add, capped at [`MAX_BALANCE`].
 /// Returns `balance` unchanged when `amount` is 0.
 #[must_use]
@@ -17,6 +21,14 @@ pub fn apply_grant(balance: u64, amount: u64) -> u64 {
 /// `Err("insufficient funds")` when `amount > balance`.
 pub fn apply_spend(balance: u64, amount: u64) -> Result<u64, &'static str> {
     balance.checked_sub(amount).ok_or("insufficient funds")
+}
+
+/// Currency reward for winning a battle, derived from the loser's base stat total.
+/// Formula: `loser_bst / BATTLE_CURRENCY_BST_DIVISOR` (integer division).
+/// Result is always in range [0, 6553] for valid BST inputs — well below MAX_BALANCE.
+#[must_use]
+pub fn battle_currency_reward(loser_bst: u16) -> u64 {
+    u64::from(loser_bst) / BATTLE_CURRENCY_BST_DIVISOR
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +185,90 @@ mod tests {
     // -----------------------------------------------------------------------
     // Property tests
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // M13c: battle_currency_reward — example-based + property tests
+    //
+    // The function under test (NOT YET IMPLEMENTED — tests are RED):
+    //   pub fn battle_currency_reward(loser_bst: u16) -> u64
+    //
+    // Formula: loser_bst / BATTLE_CURRENCY_BST_DIVISOR (integer division).
+    // Constant: BATTLE_CURRENCY_BST_DIVISOR: u64 = 10.
+    //
+    // These tests start RED because `battle_currency_reward` does not exist yet
+    // in currency.rs. They turn green only once the implementer adds the function
+    // and the named constant (both in this module, so `super::` resolves them).
+    // -----------------------------------------------------------------------
+
+    /// M13c EARS: BST=0 returns 0 (zero-BST never panics, result is 0).
+    ///
+    /// kills: an impl that panics on division-by-zero (wrong — the DIVISOR is
+    ///        the denominator, not loser_bst; loser_bst=0 is simply 0/10=0),
+    ///        or one that returns a non-zero sentinel for BST=0.
+    #[test]
+    fn battle_currency_reward_zero_bst() {
+        assert_eq!(
+            super::battle_currency_reward(0),
+            0,
+            "battle_currency_reward(0) must return 0 — BST=0 is 0/10=0, never panics"
+        );
+    }
+
+    /// M13c EARS: BST=300 returns 30 (verifies the integer-division formula).
+    ///
+    /// kills: an impl that uses floating-point division + rounding (would also
+    ///        return 30, but proves the formula is exact integer division), or
+    ///        one that multiplies instead of divides (would return 3000), or
+    ///        one that uses a different divisor (e.g. 100 → returns 3).
+    #[test]
+    fn battle_currency_reward_typical() {
+        assert_eq!(
+            super::battle_currency_reward(300),
+            30,
+            "battle_currency_reward(300) must return 30 — formula is bst / 10"
+        );
+    }
+
+    /// M13c EARS: BST=u16::MAX (65535) returns a sensible value (no panic, no overflow).
+    ///
+    /// kills: an impl that widens incorrectly and overflows a u32 intermediate,
+    ///        or one that panics at u16::MAX input.
+    ///
+    /// Note: the expected result is 6553 (65535 / 10 = 6553, truncated).
+    #[test]
+    fn battle_currency_reward_max_bst() {
+        let result = super::battle_currency_reward(u16::MAX);
+        assert_eq!(
+            result, 6553,
+            "battle_currency_reward(u16::MAX=65535) must return 6553 (65535/10 truncated) \
+             without panic or overflow"
+        );
+    }
+
+    /// M13c EARS: reward never exceeds MAX_BALANCE for any valid BST input.
+    ///
+    /// Since u16::MAX / 10 = 6553 which is far below MAX_BALANCE=999_999_999,
+    /// this is a static assertion — but we test it explicitly to kill any impl
+    /// that accidentally scales the result by an extra factor (e.g. returns
+    /// bst * some_factor instead of bst / DIVISOR).
+    ///
+    /// kills: an impl that multiplies bst (producing 65535 * 10 = 655350) or
+    ///        one that forgets the divisor and returns bst directly as u64
+    ///        (65535 << MAX_BALANCE, but semantically wrong).
+    #[test]
+    fn battle_currency_reward_capped() {
+        // For every possible BST (all 65536 values), the reward must fit in MAX_BALANCE.
+        // u16::MAX / 10 = 6553 << 999_999_999 = MAX_BALANCE.
+        let max_possible = super::battle_currency_reward(u16::MAX);
+        assert!(
+            max_possible <= MAX_BALANCE,
+            "battle_currency_reward(u16::MAX) = {max_possible} exceeds MAX_BALANCE={MAX_BALANCE}; \
+             the reward formula must produce values well within the wallet cap for all BST inputs"
+        );
+        // Also spot-check the zero and a mid-range value.
+        assert!(super::battle_currency_reward(0) <= MAX_BALANCE);
+        assert!(super::battle_currency_reward(300) <= MAX_BALANCE);
+    }
 
     proptest! {
         /// EARS (property): monotone grant — for any (balance <= MAX_BALANCE, amount),

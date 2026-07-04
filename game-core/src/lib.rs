@@ -46,6 +46,7 @@ pub use content::{
     NpcDef, ShopDef, ShopStockEntry, SkillDef, Species, SpeciesEvolutions, TypeRelation, WarpDef,
     ZoneDef, ZoneMapDef,
 };
+pub use currency::battle_currency_reward;
 pub use dialogue::{
     apply_choice, apply_effects, apply_node_auto_effects, available_choices, evaluate_condition,
     find_entry_node, Condition, DialogueChoice, DialogueEffect, DialogueError, DialogueNode,

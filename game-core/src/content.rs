@@ -977,6 +977,10 @@ pub struct HealLocationDef {
     pub cost_item_id: Option<u32>,
     pub cost_qty: u32,
     pub cooldown_ms: i64,
+    /// Currency cost charged via `spend_currency` before healing (ADR-0083).
+    /// Defaults to 0 so existing heal-location RON files that omit this field remain valid.
+    #[serde(default)]
+    pub cost_currency: u64,
 }
 
 // ===========================================================================
@@ -4013,6 +4017,7 @@ mod tests {
             cost_item_id: None,
             cost_qty: 0,
             cooldown_ms: 30_000,
+            cost_currency: 0,
         }
     }
 
@@ -4136,6 +4141,7 @@ mod tests {
                     item_id: 999,
                     qty: 1,
                 }],
+                currency: 0,
             },
         };
         let tree = fixture_minimal_tree_m12c("elder_oak_talk");
@@ -4174,6 +4180,7 @@ mod tests {
             reward: QuestReward {
                 xp: 0,
                 items: vec![],
+                currency: 0,
             },
         };
         let tree = fixture_minimal_tree_m12c("elder_oak_talk");
@@ -4437,6 +4444,7 @@ mod tests {
             reward: QuestReward {
                 xp: 0,
                 items: vec![],
+                currency: 0,
             },
         };
         let result = validate_npc_content(&[npc], &[tree], &[empty_quest], &[zone], &[], &[]);
@@ -4465,6 +4473,7 @@ mod tests {
             cost_item_id: Some(999),
             cost_qty: 1,
             cooldown_ms: 30_000,
+            cost_currency: 0,
         };
         let result = validate_npc_content(&[], &[], &[], &[zone], &[item], &[heal]);
         assert!(
@@ -4561,6 +4570,7 @@ mod tests {
             reward: QuestReward {
                 xp: 0,
                 items: vec![],
+                currency: 50,
             },
         };
         assert_eq!(
@@ -4584,6 +4594,7 @@ mod tests {
             cost_item_id: None,
             cost_qty: 0,
             cooldown_ms: 30_000,
+            cost_currency: 0,
         };
         assert_eq!(
             locs.first(),
@@ -4772,6 +4783,7 @@ mod tests {
             reward: QuestReward {
                 xp: 0,
                 items: vec![],
+                currency: 0,
             },
         };
         let result = validate_npc_content(&[npc], &[tree], &[bad_quest], &[zone], &[], &[]);
@@ -5244,6 +5256,90 @@ mod tests {
             result.is_err(),
             "M13b: validate_shops must return Err when the same item_id appears \
              twice in a shop's stock; kills: impl that drops the per-shop item-dedup guard"
+        );
+    }
+
+    // =======================================================================
+    // M13c: HealLocationDef.cost_currency tests (ADR-0083)
+    //
+    // These tests are RED until the implementer adds `cost_currency: u64` with
+    // `#[serde(default)]` to `HealLocationDef` in content.rs.
+    //
+    // EARS criteria:
+    //   - EARS-HEAL-CONTENT-1: cost_currency defaults to 0 when absent from RON
+    //     (the field carries `#[serde(default)]` so existing heal locations
+    //     without cost_currency continue to parse correctly — no breakage).
+    //   - EARS-HEAL-CONTENT-2: cost_currency round-trips when present in RON.
+    //
+    // The tests call `parse_heal_locations` which already exists; they use
+    // minimal valid RON for HealLocationDef (all required fields present).
+    // =======================================================================
+
+    /// M13c (EARS-HEAL-CONTENT-1): parsing a RON HealLocationDef without the
+    /// `cost_currency` field must succeed and produce `cost_currency == 0`.
+    ///
+    /// kills: an impl that adds `cost_currency` to `HealLocationDef` WITHOUT
+    ///        `#[serde(default)]`, which would make all existing heal-location
+    ///        RON files fail to parse (breaking deserialization of the entire
+    ///        heal-location registry).
+    #[test]
+    fn heal_location_def_cost_currency_defaults_to_zero() {
+        // Minimal HealLocationDef RON — all existing required fields, NO cost_currency.
+        // This is the shape every existing heal location file uses. If cost_currency
+        // is added without #[serde(default)], this parse will return Err.
+        let ron_str = r#"[
+            (
+                location_id: 1,
+                zone_id: 0,
+                tile_x: 5,
+                tile_y: 5,
+                cost_item_id: None,
+                cost_qty: 0,
+                cooldown_ms: 30000,
+            )
+        ]"#;
+        let locs = parse_heal_locations(ron_str)
+            .expect("HealLocationDef without cost_currency must parse — cost_currency must carry #[serde(default)]");
+        assert_eq!(locs.len(), 1, "expected exactly one heal location");
+        assert_eq!(
+            locs[0].cost_currency,
+            0,
+            "TEETH(M13c EARS-HEAL-CONTENT-1): cost_currency must default to 0 when absent from RON \
+             (#[serde(default)] required on the field). \
+             kills: impl that adds cost_currency without #[serde(default)] (parse would fail), \
+             or one that defaults to a non-zero sentinel."
+        );
+    }
+
+    /// M13c (EARS-HEAL-CONTENT-2): parsing a RON HealLocationDef WITH
+    /// `cost_currency: 50` must produce `cost_currency == 50`.
+    ///
+    /// kills: an impl that ignores the cost_currency field during deserialization
+    ///        (always returning 0), or one that maps the value to a different field.
+    #[test]
+    fn heal_location_def_cost_currency_round_trips() {
+        let ron_str = r#"[
+            (
+                location_id: 2,
+                zone_id: 0,
+                tile_x: 10,
+                tile_y: 10,
+                cost_item_id: None,
+                cost_qty: 0,
+                cooldown_ms: 60000,
+                cost_currency: 50,
+            )
+        ]"#;
+        let locs = parse_heal_locations(ron_str)
+            .expect("HealLocationDef with cost_currency: 50 must parse successfully");
+        assert_eq!(locs.len(), 1, "expected exactly one heal location");
+        assert_eq!(
+            locs[0].cost_currency, 50,
+            "TEETH(M13c EARS-HEAL-CONTENT-2): cost_currency must round-trip through RON serde; \
+             got {} expected 50. \
+             kills: impl that parses cost_currency but writes it to a wrong field, \
+             or one that clamps/ignores the value entirely.",
+            locs[0].cost_currency
         );
     }
 }

@@ -12,6 +12,7 @@
         reward: (
             xp: 0,
             items: [],
+            currency: 50,
         ),
     ),
 ]

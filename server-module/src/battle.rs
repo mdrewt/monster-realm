@@ -9,6 +9,7 @@
 //! ADR-0056 — keep it stable; it could only be wired once the `battle` table
 //! relocated to `schema.rs` (the M8.9a table-name collision constraint).
 
+use crate::economy::grant_currency;
 use crate::guards::{
     check_monster_in_party, check_party_size, check_team_coupling, log_reject, require_owner,
 };
@@ -23,8 +24,8 @@ use crate::schema::{
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
 use game_core::{
-    apply_xp_gain, battle_xp_reward, load_evolutions, resolve_turn, BattleOutcome, BattleSide,
-    BattleState, Level, StatBlock, TurnChoice, TurnVariance,
+    apply_xp_gain, battle_currency_reward, battle_xp_reward, load_evolutions, resolve_turn,
+    BattleOutcome, BattleSide, BattleState, Level, StatBlock, TurnChoice, TurnVariance,
 };
 use spacetimedb::{Identity, ReducerContext, Table};
 
@@ -681,6 +682,10 @@ pub(crate) fn write_back_battle_results(
             return Ok(());
         };
         let bst = loser_base_stat_total(&loser_species);
+        // Currency reward is independent of the XP formula — grant it as soon as
+        // bst is known so a corrupt loser_level (which only affects XP) does not
+        // silently drop the reward (review finding RT-WB-CURRENCY-01).
+        grant_currency(ctx, player, battle_currency_reward(bst));
         // loser_lvl is loop-invariant — parse once here so a corrupt loser level
         // skips the entire XP section (not N×log once per winner monster).
         let loser_lvl = match game_core::Level::new(loser_active.level) {

@@ -15,6 +15,7 @@
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
 
+use crate::economy::spend_currency;
 use crate::guards::require_owner;
 use crate::inventory::consume_one;
 use crate::marshal::{now_ms, pub_from_monster};
@@ -257,6 +258,18 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
         .map(|r| r.last_heal_at_ms)
         .unwrap_or(0);
     evaluate_heal(last_heal, now, loc.cooldown_ms)?;
+
+    // Step 6b: currency cost (ADR-0083). Load cost from content; 0 means free.
+    let currency_cost = game_core::load_heal_locations()
+        .map_err(|e| format!("heal_party: load_heal_locations: {e}"))?
+        .into_iter()
+        .find(|d| d.location_id == location_id)
+        .map(|d| d.cost_currency)
+        .unwrap_or(0);
+    if currency_cost > 0 {
+        require_owner(ctx, "heal_party", me)?;
+        spend_currency(ctx, me, currency_cost)?;
+    }
 
     // Step 7: cost consume. consume_one is a DB write; if it fails mid-loop the
     // reducer transaction rolls back (ACID), so no items are permanently lost.
