@@ -2146,10 +2146,12 @@ describe('AuthoritativeStore: flushBatch per-listener isolation (M10.5d — clos
     s.upsertCharacter(char(2n, 1, 0), 100);
 
     // Current impl: throws propagate — console.error is never called. After fix: logged once.
-    s.flushBatch();
-    expect(errSpy).toHaveBeenCalledTimes(1);
-
-    errSpy.mockRestore();
+    try {
+      s.flushBatch();
+      expect(errSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 
   it('BITES: flushBatch itself does NOT throw when a listener throws (isolation boundary)', () => {

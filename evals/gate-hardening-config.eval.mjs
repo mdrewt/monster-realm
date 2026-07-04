@@ -26,14 +26,19 @@ export function vitestHasAllowOnlyFalse(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Criterion B: client/playwright.config.ts must contain `forbidOnly`
+// Criterion B: client/playwright.config.ts must contain `forbidOnly: !!process.env.CI`
 //
-// Wrong impl killed: the current playwright.config.ts which has no
-// `forbidOnly` key. Without it, `test.only()` in e2e specs silently passes
-// CI while skipping all other e2e tests.
+// Wrong impl killed: the current playwright.config.ts which has no `forbidOnly`
+// key. Without it, `test.only()` in e2e specs silently passes CI while skipping
+// all other e2e tests.
+//
+// The value MUST be `!!process.env.CI` — not `false` (disabled) and not `true`
+// (unconditional, which breaks local dev iteration). Presence-only check is
+// insufficient: `forbidOnly: false` would still accept. GitHub Actions sets
+// CI=true by default.
 // ---------------------------------------------------------------------------
 export function playwrightHasForbidOnly(text) {
-  return text.includes('forbidOnly');
+  return text.includes('forbidOnly: !!process.env.CI');
 }
 
 // ---------------------------------------------------------------------------
@@ -61,18 +66,37 @@ export function runMjsHasEvalIsolation(text) {
 // are never called (starvation). The render loop has multiple listeners and the
 // dialogue/quest/heal overlays would freeze silently.
 //
-// Strategy: confirm that `flushBatch` and `try` and `catch` all appear in the
-// file AND that `try` appears AFTER `flushBatch` (so the try is inside the method,
-// not somewhere unrelated before it).
+// Strategy: anchor on the TypeScript METHOD SIGNATURE `flushBatch(): void` (not
+// the first mention of the string `flushBatch`, which is a JSDoc comment), then
+// walk braces to find the MATCHING closing brace for the method body.
+// A flat char-window would false-positive if a sibling method appearing right
+// after flushBatch has try/catch (red-team finding RT-M2 / RT-M3).
 // ---------------------------------------------------------------------------
 export function storeTsFlushBatchHasIsolation(text) {
-  if (!text.includes('flushBatch')) return false;
-  if (!text.includes('try')) return false;
-  if (!text.includes('catch')) return false;
-  // Confirm the try appears after flushBatch (not some unrelated try before it)
-  const flushBatchIdx = text.indexOf('flushBatch');
-  const tryIdx = text.indexOf('try', flushBatchIdx);
-  return tryIdx !== -1;
+  // Find the TypeScript method definition (not a comment mention of the name)
+  const methodIdx = text.indexOf('flushBatch(): void');
+  if (methodIdx === -1) return false;
+  // Find the opening brace of the method body
+  const openBraceIdx = text.indexOf('{', methodIdx);
+  if (openBraceIdx === -1) return false;
+  // Walk braces to find the MATCHING closing brace (depth counting).
+  // Bounded search of 1000 chars — flushBatch is a short method.
+  let depth = 0;
+  let closeIdx = -1;
+  for (let i = openBraceIdx; i < text.length && i < openBraceIdx + 1000; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        closeIdx = i;
+        break;
+      }
+    }
+  }
+  if (closeIdx === -1) return false;
+  // methodBody is exactly the flushBatch body (opening brace to matching close brace).
+  const methodBody = text.slice(openBraceIdx, closeIdx + 1);
+  return methodBody.includes('try') && methodBody.includes('catch');
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +187,40 @@ export default async function () {
     };
   }
 
+  // Bad: forbidOnly present but hard-disabled (false — same effect as absent)
+  const badPlaywrightForbidOnlyFalse = [
+    'export default defineConfig({',
+    '  testDir: "./e2e",',
+    '  forbidOnly: false,',
+    '  timeout: 45_000,',
+    '});',
+  ].join('\n');
+  if (playwrightHasForbidOnly(badPlaywrightForbidOnlyFalse)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'proof-of-teeth (B)-bad2: playwrightHasForbidOnly failed to reject a playwright config with forbidOnly: false (hard-disabled)',
+    };
+  }
+
+  // Bad: forbidOnly: true — unconditional, breaks local dev iteration
+  const badPlaywrightForbidOnlyTrue = [
+    'export default defineConfig({',
+    '  testDir: "./e2e",',
+    '  forbidOnly: true,',
+    '  timeout: 45_000,',
+    '});',
+  ].join('\n');
+  if (playwrightHasForbidOnly(badPlaywrightForbidOnlyTrue)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'proof-of-teeth (B)-bad3: playwrightHasForbidOnly failed to reject a playwright config with forbidOnly: true (unconditional — breaks local dev)',
+    };
+  }
+
   // Good: forbidOnly: !!process.env.CI present
   const goodPlaywrightForbidOnly = [
     'export default defineConfig({',
@@ -204,7 +262,7 @@ export default async function () {
   }
 
   // Bad: has try/catch but no synthetic pass: false (throwers would be silently ignored)
-  const badRunMjsNoPaseFalse = [
+  const badRunMjsNoPassFalse = [
     'for (const f of files) {',
     '  try {',
     '    const mod = await import(pathToFileURL(path.join(dir, f)).href);',
@@ -217,7 +275,7 @@ export default async function () {
     '  }',
     '}',
   ].join('\n');
-  if (runMjsHasEvalIsolation(badRunMjsNoPaseFalse)) {
+  if (runMjsHasEvalIsolation(badRunMjsNoPassFalse)) {
     return {
       name,
       pass: false,
@@ -285,14 +343,42 @@ export default async function () {
     '  for (const cb of [...this.#batchListeners]) cb();',
     '}',
   ].join('\n');
-  // NOTE: this fixture has try BEFORE flushBatch, so indexOf('try', flushBatchIdx) returns -1
-  // — the predicate correctly returns false for this shape.
+  // NOTE: with brace-depth matching, the predicate anchors on flushBatch's own opening
+  // brace and walks to the matching close brace — the try/catch in someOtherMethod is
+  // entirely outside that range, so methodBody.includes('try') is false → correct rejection.
   if (storeTsFlushBatchHasIsolation(badStoreTsTryCatchBeforeFlushBatch)) {
     return {
       name,
       pass: false,
       detail:
         'proof-of-teeth (D)-bad2: storeTsFlushBatchHasIsolation failed to reject a store where try/catch appears only BEFORE flushBatch (not inside it)',
+    };
+  }
+
+  // Bad: try/catch only in a sibling method appearing AFTER flushBatch (RT-M2/RT-M3).
+  // The old 400-char flat window would have matched the try/catch in `anotherMethod`
+  // because it falls within 400 chars of flushBatch's opening brace. The new brace-depth
+  // predicate correctly excludes it (methodBody ends at flushBatch's closing brace).
+  const badStoreTsTryCatchAfterFlushBatch = [
+    'flushBatch(): void {',
+    '  if (!this.#dirty) return;',
+    '  this.#dirty = false;',
+    '  for (const cb of [...this.#batchListeners]) cb();',
+    '}',
+    'anotherMethod(): void {',
+    '  try {',
+    '    doSomething();',
+    '  } catch (e) {',
+    '    console.error(e);',
+    '  }',
+    '}',
+  ].join('\n');
+  if (storeTsFlushBatchHasIsolation(badStoreTsTryCatchAfterFlushBatch)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'proof-of-teeth (D)-bad3: storeTsFlushBatchHasIsolation failed to reject a store where try/catch appears only in a sibling method AFTER flushBatch (RT-M2/RT-M3 variant)',
     };
   }
 
