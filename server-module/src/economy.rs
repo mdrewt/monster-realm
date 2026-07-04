@@ -5,9 +5,6 @@
 //! here so the single-surface discipline (no direct balance add-assign) is enforced
 //! in one place.
 //!
-//! STUB: function bodies panic. The implementer replaces the panics.
-//! RED STATE: tests in economy_tests.rs are the contract, not this file.
-//!
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0081 — keep it stable.
 
@@ -48,6 +45,9 @@ pub(crate) fn spend_currency(
     owner: Identity,
     amount: u64,
 ) -> Result<(), String> {
+    if amount == 0 {
+        return Ok(());
+    }
     let mut row = ctx
         .db
         .player_wallet()

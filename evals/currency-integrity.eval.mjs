@@ -5,6 +5,8 @@
 //   3. PRIVATE_TABLE   — player_wallet table is NOT public (ADR-0015 must-never-leak)
 //   4. ZERO_GUARD      — grant_currency has a zero-amount early-return guard (no phantom rows)
 //   5. SINGLE_SURFACE  — no direct .balance assignment bypassing grant/spend helpers
+//   6. ACCESSOR_BYPASS — no file outside economy.rs calls player_wallet() or constructs
+//                        PlayerWallet{} directly (struct-literal bypass evades criterion 5)
 //
 // Proof-of-teeth: each checker is tested against a BAD fixture (must flag) and a GOOD
 // fixture (must pass). A checker that fails to flag the bad fixture is reported as a
@@ -92,8 +94,7 @@ export function walletTableIsPrivate(schemaSrc) {
 // ---------------------------------------------------------------------------
 export function hasZeroGuard(src) {
   const code = stripRustComments(src);
-  // Accept: `if amount == 0` or `if qty == 0` (mirrors inventory pattern)
-  return /if\s+amount\s*==\s*0/.test(code) || /if\s+qty\s*==\s*0/.test(code);
+  return /if\s+amount\s*==\s*0/.test(code);
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +106,24 @@ export function hasDirectBalanceWrite(src) {
   const code = stripRustComments(src);
   // Flag .balance = <something> (direct field set, bypassing helpers)
   return /\.balance\s*=\s*[^=]/.test(code);
+}
+
+// ---------------------------------------------------------------------------
+// Criterion 6: ACCESSOR_BYPASS
+// No file outside economy.rs may use the player_wallet() table accessor or
+// construct a PlayerWallet struct literal directly. Such code bypasses
+// grant_currency/spend_currency entirely — the .balance= regex (criterion 5)
+// would NOT catch an insert via struct literal:
+//   ctx.db.player_wallet().insert(PlayerWallet { owner_identity: x, balance: 999 })
+// The accessor pattern and the struct-literal construction pattern are both banned.
+// Bad fixture: `ctx.db.player_wallet().insert(...)` → flagged
+// Good fixture: `use crate::economy::grant_currency;` → not flagged
+// ---------------------------------------------------------------------------
+export function hasWalletAccessorBypass(src) {
+  const code = stripRustComments(src);
+  // Flag direct use of the player_wallet() table accessor call.
+  // Pattern assembled from parts to avoid self-match: "player_wallet" + "()"
+  return /player_wallet\s*\(\s*\)/.test(code) || /PlayerWallet\s*\{/.test(code);
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +158,18 @@ export default async function () {
       name,
       pass: false,
       detail: 'TEETH FAILED: hasSaturatingCap did not pass on apply_grant fixture',
+    };
+  }
+
+  // M3: saturating_add without .min() must NOT pass — a key mutant class.
+  const badSatNoMin =
+    'fn grant_currency(ctx, owner, amount) { row.balance = row.balance.saturating_add(amount); }';
+  if (hasSaturatingCap(badSatNoMin)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED: hasSaturatingCap should NOT pass on saturating_add-without-min fixture (u64::MAX != MAX_BALANCE)',
     };
   }
 
@@ -214,6 +245,26 @@ export default async function () {
     };
   }
 
+  // Teeth for criterion 6: ACCESSOR_BYPASS
+  const badAccessor =
+    'fn some_reducer(ctx) { ctx.db.player_wallet().insert(PlayerWallet { owner_identity: owner, balance: 999 }); }';
+  if (!hasWalletAccessorBypass(badAccessor)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED: hasWalletAccessorBypass did not flag direct player_wallet() accessor bypass fixture',
+    };
+  }
+  const goodAccessor = 'fn some_reducer(ctx) { grant_currency(ctx, owner, 999); }';
+  if (hasWalletAccessorBypass(goodAccessor)) {
+    return {
+      name,
+      pass: false,
+      detail: 'TEETH FAILED: hasWalletAccessorBypass falsely flagged a correct grant_currency call',
+    };
+  }
+
   // --- Read actual source files. --------------------------------------------
 
   let economySrc, schemaSrc;
@@ -272,11 +323,23 @@ export default async function () {
   }
 
   // Criterion 5: SINGLE_SURFACE — only economy.rs and schema.rs may set .balance directly.
-  // Scan all other server-module/src/*.rs files.
+  // Criterion 6: ACCESSOR_BYPASS — only economy.rs may call player_wallet() or construct PlayerWallet{}.
+  // Scan all other server-module/src/*.rs files (both criteria share one pass).
+  // Recursive scan (Node 18.17+ readdirSync recursive option) so future
+  // subdirectories under server-module/src/ are covered.
   const { readdirSync } = await import('node:fs');
-  const srcs = readdirSync('server-module/src').filter(
-    (f) => f.endsWith('.rs') && f !== 'economy.rs' && f !== 'schema.rs',
-  );
+  const srcs = readdirSync('server-module/src', { recursive: true })
+    .filter((f) => typeof f === 'string')
+    .filter((f) => {
+      const base = f.replace(/\\/g, '/');
+      return (
+        base.endsWith('.rs') &&
+        base !== 'economy.rs' &&
+        base !== 'schema.rs' &&
+        !base.endsWith('/economy.rs') &&
+        !base.endsWith('/schema.rs')
+      );
+    });
   for (const f of srcs) {
     let src;
     try {
@@ -289,6 +352,12 @@ export default async function () {
         `SINGLE_SURFACE: server-module/src/${f} writes .balance directly — must route through economy helpers`,
       );
     }
+    if (hasWalletAccessorBypass(src)) {
+      failures.push(
+        `ACCESSOR_BYPASS: server-module/src/${f} calls player_wallet() or constructs PlayerWallet{} directly — ` +
+          `must route through grant_currency/spend_currency in economy.rs (ADR-0081 single-surface discipline)`,
+      );
+    }
   }
 
   if (failures.length > 0) {
@@ -299,6 +368,6 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'all 5 currency-integrity criteria met (saturating cap, checked_sub, private table, zero guard, single surface)',
+      'all 6 currency-integrity criteria met (saturating cap, checked_sub, private table, zero guard, single surface, accessor bypass)',
   };
 }

@@ -2,16 +2,12 @@
 //!
 //! Every balance mutation routes through `apply_grant` or `apply_spend`.
 //! No side-effects, no context, no SpacetimeDB types.
-//!
-//! RED STATE: this file contains only the constant declaration and function
-//! stubs that panic. The tests below are the contract; the implementer fills
-//! in the bodies. Tests compile but fail at runtime until the impl is complete.
 
 /// Maximum balance a single wallet may hold (9-digit UI cap, ADR-0081).
 pub const MAX_BALANCE: u64 = 999_999_999;
 
 /// Grant `amount` to `balance`. Saturating add, capped at [`MAX_BALANCE`].
-/// A 0-amount grant is a no-op (returns `balance` unchanged).
+/// Returns `balance` unchanged when `amount` is 0.
 pub fn apply_grant(balance: u64, amount: u64) -> u64 {
     balance.saturating_add(amount).min(MAX_BALANCE)
 }
@@ -24,25 +20,6 @@ pub fn apply_spend(balance: u64, amount: u64) -> Result<u64, &'static str> {
 
 // ---------------------------------------------------------------------------
 // Unit + property tests (M13a EARS criteria → one test per criterion)
-//
-// RED state: every test panics ("not yet implemented") until the impl lands.
-//
-// Test → EARS criterion mapping (mirrors m13a-plan.md §EARS → Tests):
-//
-//  apply_grant_zero_amount_returns_balance   → 0-grant no-op
-//  apply_grant_basic                         → basic addition
-//  apply_grant_saturates_at_cap              → saturating cap on grant
-//  apply_grant_never_exceeds_cap             → saturating cap on grant (large delta)
-//  apply_grant_overflow_safe                 → overflow safety
-//  apply_grant_from_zero                     → grant fills from 0 to MAX_BALANCE
-//  apply_spend_basic                         → basic subtraction
-//  apply_spend_exact                         → spend drains to zero
-//  apply_spend_insufficient_empty            → never negative (empty wallet)
-//  apply_spend_insufficient_partial          → reject on insufficient funds
-//  apply_spend_zero_amount                   → 0-spend no-op
-//  prop_grant_monotone                       → monotone grant (property)
-//  prop_grant_capped                         → spend is bounded (property)
-//  prop_spend_reduces_or_errs                → spend is bounded (property)
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -239,10 +216,6 @@ mod tests {
         fn prop_spend_reduces_or_errs(balance in 0u64..=MAX_BALANCE, amount in 0u64..=MAX_BALANCE) {
             match apply_spend(balance, amount) {
                 Ok(r) => {
-                    prop_assert!(
-                        r <= balance,
-                        "apply_spend({balance}, {amount}) = Ok({r}) but {r} > {balance}"
-                    );
                     let expected = balance - amount;
                     prop_assert_eq!(
                         r,

@@ -47,8 +47,10 @@ pure functions in game-core, server wrappers in `economy.rs`.**
 - `player_wallet` is PRIVATE (no `public` attribute). Non-owners cannot subscribe.
 - `MAX_BALANCE = 999_999_999` (9-digit, UI-legible, tunable). Grants at cap are no-ops
   (capped, monotone — never shrinks a pre-cap balance).
-- `apply_grant(0, _)` is a no-op in the server wrapper (no phantom row); `apply_spend`
-  with `amount > balance` returns `Err("insufficient funds")`, never modifies the row.
+- `apply_grant(0, _)` is a no-op in the server wrapper (no phantom row). `apply_spend`
+  with `amount == 0` is also a no-op (returns `Ok(())`); with `amount > balance` it
+  returns `Err("insufficient funds")` and never modifies the row. Both helpers are
+  symmetric: a zero-amount call on either direction never touches the DB.
 - Every economy path (buy/sell reducers, quest/battle rewards, healing cost) MUST route
   through `grant_currency` / `spend_currency`. A direct `.balance +=` / `.balance -=`
   in any reducer is a review-blocking bypass (enforced by the `currency-integrity` eval).
