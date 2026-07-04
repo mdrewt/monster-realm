@@ -604,8 +604,16 @@ pub fn validate_content(
         }
     }
 
-    // Cross-check: every learnable_skill_id in species must exist in skills
+    // Cross-check: every learnable_skill_id in species must exist in skills,
+    // and every species must declare at least one learnable skill (an empty moveset
+    // would cause pick_best_skill to panic at battle time — ADR-0049).
     for sp in species {
+        if sp.learnable_skill_ids.is_empty() {
+            return Err(format!(
+                "species {} has no learnable_skill_ids; a species must have at least one learnable skill",
+                sp.id
+            ));
+        }
         for &sid in &sp.learnable_skill_ids {
             if !skill_ids.contains(&sid) {
                 return Err(format!(

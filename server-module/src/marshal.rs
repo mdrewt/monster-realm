@@ -158,6 +158,13 @@ pub(crate) fn wild_battle_monster(
         .copied()
         .filter(|id| skill_ids.contains(id))
         .collect();
+    if known_skill_ids.is_empty() {
+        return Err(format!(
+            "species {} has no known skills after filtering learnable_skill_ids against loaded skills; \
+             an empty moveset would panic the AI (defense-in-depth, ADR-0049)",
+            species.id
+        ));
+    }
     Ok(BattleMonster {
         species_id: species.id,
         affinity: species.affinity,
