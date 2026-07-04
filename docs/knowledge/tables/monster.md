@@ -44,6 +44,7 @@ visibility: private
 | `party_slot` | `u8` | — |
 | `last_care_at_ms` | `i64` | — |
 | `evolves_to` | `Option<u32>` | — |
+
 ## Privacy
 
 Private table — ADR-0015/0040 — hidden genes (IVs/EVs/nature) must never reach non-owner clients.

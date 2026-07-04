@@ -17,6 +17,7 @@ visibility: private
 | `id` | `u64` | yes |
 | `zone_id` | `u32` | — |
 | `scheduled_at` | `ScheduleAt` | — |
+
 ## Privacy
 
 Private table — Server-only scheduled table for per-zone movement tick; no projection.

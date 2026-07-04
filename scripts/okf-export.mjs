@@ -11,16 +11,25 @@
 // No new RegExp() — all patterns are literal (detect-non-literal-regexp safe).
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, '..');
 
 // Import the existing schema parser (SSOT — one parser feeds both eval + bundle).
-const { parseTableSchemas, stripRustComments } = await import(
-  join(PROJECT_ROOT, 'evals', 'battle-schema-snapshot.eval.mjs')
-);
+// Guard the path so a rename of the eval gives a clear diagnostic, not a cryptic
+// dynamic-import error.
+const EVAL_PATH = join(PROJECT_ROOT, 'evals', 'battle-schema-snapshot.eval.mjs');
+if (!existsSync(EVAL_PATH)) {
+  console.error(
+    `okf-export: SSOT eval not found: ${EVAL_PATH}\n` +
+      'The schema parser is imported from the schema-snapshot eval (ADR-0057 SSOT rule).\n' +
+      'If the eval was renamed, update the import path in scripts/okf-export.mjs.',
+  );
+  process.exit(2);
+}
+const { parseTableSchemas } = await import(EVAL_PATH);
 
 const SERVER_SRC = join(PROJECT_ROOT, 'server-module', 'src');
 const BUNDLE_SOURCE_TAG = 'scripts/okf-export.mjs';
@@ -65,16 +74,19 @@ function readAllSources(dir) {
     .join('\n');
 }
 
-/** Get the git date (YYYY-MM-DD) of the last commit touching a file. Falls back to today. */
+/** Get the git date (YYYY-MM-DD) of the last commit touching a file.
+ * Falls back to a fixed sentinel (not wall-clock time) so the bundle stays
+ * deterministic even when git is unavailable (e.g. a stripped container).
+ */
 function gitDate(filePath) {
   try {
     const out = execFileSync('git', ['log', '-1', '--format=%cd', '--date=short', '--', filePath], {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'ignore'],
     }).trim();
-    return out || new Date().toISOString().slice(0, 10);
+    return out || '1970-01-01';
   } catch {
-    return new Date().toISOString().slice(0, 10);
+    return '1970-01-01';
   }
 }
 
@@ -109,7 +121,7 @@ function parseTableMetadata(filePath) {
     const visibility =
       attrRest.indexOf('public') !== -1 ||
       line.indexOf(', public)') !== -1 ||
-      line.indexOf('(name = ' + name + ', public') !== -1
+      line.indexOf(`(name = ${name}, public`) !== -1
         ? 'public'
         : 'private';
 
@@ -149,11 +161,12 @@ function parseReducerMetadata(filePath) {
   const src = readFileSync(filePath, 'utf8');
   const lines = src.split('\n');
   const reducers = [];
-  const reducerAttr = '#[spacetimedb::reducer]';
   const pubFnRe = /^pub fn (\w+)\s*\(/;
 
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim() !== reducerAttr) continue;
+    // Match #[spacetimedb::reducer] AND lifecycle variants like reducer(init),
+    // reducer(client_disconnected) — exact equality would miss those.
+    if (!lines[i].trim().startsWith('#[spacetimedb::reducer')) continue;
 
     // Gather doc comment above this attribute (skip #[...] and blank lines).
     const docLines = [];
@@ -214,7 +227,7 @@ function parseReducerMetadata(filePath) {
 function mkAbstract(text, max = 120) {
   if (!text) return '';
   const t = text.replace(/\s+/g, ' ').trim();
-  return t.length <= max ? t : t.slice(0, max - 1) + '…';
+  return t.length <= max ? t : `${t.slice(0, max - 1)}…`;
 }
 
 /** Double-quote a YAML scalar value. */
@@ -250,10 +263,10 @@ visibility: ${visibility}
   const colTable = `## Columns\n\n| Column | Type | PK |\n|--------|------|----|
 ${colRows}`;
 
-  // Privacy section for private tables
+  // Privacy section for private tables (two newlines = blank line before heading, per CommonMark)
   const privSection = !privNote
     ? ''
-    : `\n## Privacy\n\nPrivate table — ${privNote}${
+    : `\n\n## Privacy\n\nPrivate table — ${privNote}${
         projection ? `\n\nPublic projection: [${projection}](${projection}.md).` : ''
       }`;
 
@@ -266,7 +279,7 @@ ${colRows}`;
 function reducerConceptContent(r, date) {
   const { name, sig, docComment, lineNumber, file } = r;
   const abstract_ = mkAbstract(docComment || `SpacetimeDB reducer ${name}.`);
-  const module = file.slice(file.lastIndexOf('/') + 1).replace('.rs', '');
+  const module = basename(file, '.rs');
   const tags = ['reducer', 'spacetimedb', module];
 
   const fm = `---
@@ -288,7 +301,7 @@ source: ${BUNDLE_SOURCE_TAG}@${relSrc(file)}
 /**
  * Generate the Schema Overview concept file.
  */
-function schemaOverviewContent(tableNames, publicTables, privateTables, reducerNames, date) {
+function schemaOverviewContent(_tableNames, publicTables, privateTables, reducerNames, date) {
   const pubCount = publicTables.length;
   const privCount = privateTables.length;
   const totalTables = pubCount + privCount;
@@ -371,11 +384,13 @@ async function exportBundle(outDir, checkMode) {
 
   // 3. Sort table names deterministically
   const tableNames = Object.keys(schemas).sort();
+  // Fail-secure default: a table not found in per-file metadata defaults to
+  // 'private' (missing metadata should never silently promote a private table public).
   const publicTables = tableNames.filter(
-    (n) => (allTableMeta[n]?.visibility ?? 'public') === 'public',
+    (n) => (allTableMeta[n]?.visibility ?? 'private') === 'public',
   );
   const privateTables = tableNames.filter(
-    (n) => (allTableMeta[n]?.visibility ?? 'public') === 'private',
+    (n) => (allTableMeta[n]?.visibility ?? 'private') === 'private',
   );
 
   // 4. Sort reducers deterministically by name
@@ -385,22 +400,26 @@ async function exportBundle(outDir, checkMode) {
   const schemaFile = join(SERVER_SRC, 'schema.rs');
   const date = gitDate(schemaFile);
 
-  // 6. Generate all concept content (in memory — used for both write and check)
-  const generated = new Map(); // relative-to-out-dir path → content
+  // 6. Generate all concept content (in memory — used for both write and check).
+  // Keys are ALWAYS forward-slash paths (portable; drift check normalises relative()
+  // to '/' too — M-1 fix ensures symmetry on Windows).
+  const generated = new Map(); // posix relative path → content
+  const p = (s) => s.replace(/\\/g, '/'); // normalise to forward slashes
 
   for (const name of tableNames) {
     const schema = schemas[name];
     const meta = allTableMeta[name] ?? {
-      visibility: 'public',
+      // Fail-secure: default private when metadata is missing (M-2 fix).
+      visibility: 'private',
       docComment: '',
       lineNumber: 1,
       file: schemaFile,
     };
-    generated.set(join('tables', `${name}.md`), tableConceptContent(name, schema, meta, date));
+    generated.set(p(join('tables', `${name}.md`)), tableConceptContent(name, schema, meta, date));
   }
 
   for (const r of allReducers) {
-    generated.set(join('reducers', `${r.name}.md`), reducerConceptContent(r, date));
+    generated.set(p(join('reducers', `${r.name}.md`)), reducerConceptContent(r, date));
   }
 
   generated.set(
@@ -414,9 +433,9 @@ async function exportBundle(outDir, checkMode) {
     ),
   );
 
-  // Sub-indices
+  // Sub-indices (keys normalised to forward slashes via p())
   generated.set(
-    join('tables', 'index.md'),
+    p(join('tables', 'index.md')),
     buildIndex(
       'Tables',
       tableNames.map((n) => ({
@@ -428,7 +447,7 @@ async function exportBundle(outDir, checkMode) {
     ),
   );
   generated.set(
-    join('reducers', 'index.md'),
+    p(join('reducers', 'index.md')),
     buildIndex(
       'Reducers',
       allReducers.map((r) => ({

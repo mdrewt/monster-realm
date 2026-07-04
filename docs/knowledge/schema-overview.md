@@ -4,7 +4,7 @@ title: Monster Realm Schema Overview
 slug: schema-overview
 updated: 2026-07-03
 tags: [schema, spacetimedb, overview]
-abstract: "22-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 23 reducers."
+abstract: "22-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 25 reducers."
 source: scripts/okf-export.mjs@server-module/src/
 ---
 
@@ -38,7 +38,7 @@ source: scripts/okf-export.mjs@server-module/src/
 - [movement_tick_schedule](tables/movement_tick_schedule.md)
 - [player_dialogue_state](tables/player_dialogue_state.md)
 
-## Reducers (23)
+## Reducers (25)
 
 - [advance_dialogue](reducers/advance_dialogue.md)
 - [attempt_recruit](reducers/attempt_recruit.md)
@@ -51,8 +51,10 @@ source: scripts/okf-export.mjs@server-module/src/
 - [fuse](reducers/fuse.md)
 - [grant_bait](reducers/grant_bait.md)
 - [heal_party](reducers/heal_party.md)
+- [init](reducers/init.md)
 - [join_game](reducers/join_game.md)
 - [movement_tick](reducers/movement_tick.md)
+- [on_disconnect](reducers/on_disconnect.md)
 - [set_move](reducers/set_move.md)
 - [set_nickname](reducers/set_nickname.md)
 - [set_party_slot](reducers/set_party_slot.md)

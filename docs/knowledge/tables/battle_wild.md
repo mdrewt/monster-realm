@@ -18,6 +18,7 @@ visibility: private
 | `wild_species_id` | `u32` | — |
 | `wild_level` | `u8` | — |
 | `individuality_seed` | `u32` | — |
+
 ## Privacy
 
 Private table — ADR-0045 — RNG individuality seed must never reach any client; no projection.

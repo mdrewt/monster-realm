@@ -16,6 +16,7 @@ visibility: private
 |--------|------|----|
 | `owner_identity` | `Identity` | yes |
 | `last_heal_at_ms` | `i64` | — |
+
 ## Privacy
 
 Private table — ADR-0015/0069 — heal timing is private; must-never-leak.

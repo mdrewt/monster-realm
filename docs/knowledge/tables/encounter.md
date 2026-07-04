@@ -17,6 +17,7 @@ visibility: private
 | `zone_id` | `u32` | yes |
 | `encounter_rate` | `u16` | — |
 | `entries` | `Vec<EncounterEntryRow>` | — |
+
 ## Privacy
 
 Private table — ADR-0040 — spawn weights/level bands are server-only truth; no public projection.

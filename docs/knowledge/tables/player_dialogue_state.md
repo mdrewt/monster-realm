@@ -17,6 +17,7 @@ visibility: private
 | `owner_identity` | `Identity` | yes |
 | `flags` | `Vec<String>` | — |
 | `done_quests` | `Vec<String>` | — |
+
 ## Privacy
 
 Private table — ADR-0015/0069 — dialogue flags gate content branches; must-never-leak.

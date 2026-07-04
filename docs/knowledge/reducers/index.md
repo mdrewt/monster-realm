@@ -16,8 +16,10 @@
 | reducers/fuse | SpacetimeDB Reducer | fuse | Fuse two owned monsters into a new offspring (M10b, ADR-0061). Steps: 1. Look up |
 | reducers/grant_bait | SpacetimeDB Reducer | grant_bait | DEV/TEST: grant bait to the CALLER only (self-scoped to `ctx.sender`; no arbitra |
 | reducers/heal_party | SpacetimeDB Reducer | heal_party | Restore all party monsters to full HP at a heal location. Reject-never-burns: al |
+| reducers/init | SpacetimeDB Reducer | init | SpacetimeDB reducer init. |
 | reducers/join_game | SpacetimeDB Reducer | join_game | Join: one `player` + one `character` at the spawn + one starter `monster` (idemp |
 | reducers/movement_tick | SpacetimeDB Reducer | movement_tick | Per-zone, server-paced tick: drain ≤1 move per character in THIS zone, compute t |
+| reducers/on_disconnect | SpacetimeDB Reducer | on_disconnect | SpacetimeDB reducer on_disconnect. |
 | reducers/set_move | SpacetimeDB Reducer | set_move | Replace the ENTIRE undrained queue with one input (a responsive turn/direction c |
 | reducers/set_nickname | SpacetimeDB Reducer | set_nickname | Set or clear a monster's nickname. Empty string clears the nickname. Ownership-c |
 | reducers/set_party_slot | SpacetimeDB Reducer | set_party_slot | Set or clear a monster's party slot. `slot = 255` moves to box; `slot < 6` assig |
