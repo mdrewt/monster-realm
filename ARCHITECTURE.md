@@ -552,6 +552,18 @@ Shop content and server-validated buy/sell reducers; the first player-facing eco
 - **Eval:** `evals/shop-reducer-security.eval.mjs` — 5 teeth; spec-gap-revival sell→ambiguous false-positive fix.
 - **Baselines:** `table-schemas.json`, `content-hash.json` updated to version 6.
 
+## Economy client (`client/src/`, M13d — ADR-0084)
+
+Shop screen and wallet display client integration.
+
+- **Store extension:** `shop_row` and `shop_item_row` subscriptions ingested into `AuthoritativeStore` via `MicrotaskBatcher` (same pattern as M7c battle tables). `StoreShopRow` and `StoreShopItemRow` interfaces; `store.shops()` and `store.shopItems()` keyed accessors.
+- **Pure view-model (`shopModel.ts`):** `buildShopViewModel(shops, shopItems, inventory, itemDefs) -> ShopScreenViewModel` — pure function (ADR-0016), sorts by lowest `shop_id` (deterministic), aggregates inventory by `item_id` (matches sell reducer contract). No DOM, fully node-testable.
+- **Client store (`shopStore.ts`):** `player_wallet` is **NOT subscribed** — private table (ADR-0081/0040), produces no client binding in SpacetimeDB 2.6. Spec gap "wallet display" replaced by transaction feedback surface: async `buy()`/`sell()` promise rejection messages surface insufficient-funds/out-of-stock errors; successful transactions increment/decrement local inventory view atomically.
+- **DOM shell (`shopView.ts`):** thin overlay rendering inventory grid + buy/sell buttons. KeyG trigger, full mutual-exclusivity with all overlays (B/I/E/dialogue guards check shopView state too per ADR-0014). `#pending` boolean flag + `btn.disabled` in-flight lock prevents double-spend (await completes before next click). `SHOP_QTY = 1` const (ADR-0082 D5 single-unit MVP).
+- **Connection wiring (`net/connection.ts`):** subscribes to `shop_row` and `shop_item_row` tables; wires `onInsert/onUpdate/onDelete` to store via `MicrotaskBatcher` (same pattern as monsters/battles).
+- **Main integration (`main.ts`):** KeyG toggles shop overlay, Escape closes it, movement/action suppressed while open. Reducer calls (`buy`, `sell`) routed through async Promise pattern (ADR-0084); catch block on failure logs and renders error toast (or message-append feedback surface, deferred to M13.5/M23).
+- **ADR-0084 spec gap:** `player_wallet` privacy (ADR-0081/0040) means no client-side balance display; future wallet projection requires a public `player_wallet_pub` table (like `monster_pub` for monsters). This gap is documented in ADR-0084 with recommended follow-up.
+
 ## Evolution/Fusion content (`game-core/src/evolution/` + `server-module/src/evolution.rs`, M10a — ADR-0060/0061)
 
 Pure content shape, integrity validator, and pure game-core transform rules for evolution and fusion.
