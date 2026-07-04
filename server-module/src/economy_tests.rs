@@ -795,3 +795,102 @@ fn write_back_battle_results_calls_grant_currency() {
         grant_pat
     );
 }
+
+// ===========================================================================
+// RT-M13C-01: heal_party require_owner is tautological (never rejects)
+//
+// Finding: `heal_party` calls `require_owner(ctx, "heal_party", me)` where
+// `me = ctx.sender`. Since `require_owner` checks `owner != ctx.sender`,
+// and here `owner = ctx.sender`, this check ALWAYS returns Ok — it tests
+// that the caller is themselves, not that they own any resource.
+//
+// This call is placed inside `if currency_cost > 0 { ... }`, meaning:
+//   (a) When cost == 0 (all current content), the ownership check is skipped.
+//   (b) When cost > 0, the check runs but is vacuous — always passes.
+//
+// The ADR-0081 "require_owner before spend" structural test passes because
+// the call textually precedes `spend_currency`, but it provides zero
+// authorization value. The real authorization is the player lookup at Step 1
+// (`ctx.db.player().identity().find(me)`), which correctly rejects a caller
+// who is not joined. The `require_owner` call inside the conditional is dead
+// security theater.
+//
+// Repro: search for `require_owner(ctx, "heal_party", me)` in raising.rs —
+// `me` is bound to `ctx.sender` on the first line of heal_party. Calling
+// `require_owner` with `ctx.sender` as the `owner` argument always returns
+// Ok(()) because `require_owner` only rejects when `owner != ctx.sender`.
+// ===========================================================================
+
+/// RT-M13C-01: the `require_owner` call inside `heal_party`'s currency-cost
+/// branch uses `me` as the owner argument, where `me = ctx.sender`.
+///
+/// `require_owner(ctx, reducer, owner)` only rejects when `owner != ctx.sender`.
+/// When called as `require_owner(ctx, "heal_party", me)` with `me = ctx.sender`,
+/// the check is `ctx.sender != ctx.sender` which is always false — the guard
+/// always returns Ok and provides no authorization protection.
+///
+/// This test is a permanent record of the finding. It is GREEN in the buggy
+/// state (tautological call present) and turns RED when the call is removed.
+/// The correct fix is to remove the `require_owner` call entirely from the
+/// conditional — Step 1 of heal_party already rejects non-joined callers via
+/// `ctx.db.player().identity().find(me)`.
+///
+/// KILLS: any refactor that silently changes the third argument of the
+/// `require_owner` call to a different variable, causing the tautology to
+/// gain real authorization semantics without this test noticing the change.
+#[test]
+fn rt_m13c_01_heal_party_require_owner_is_tautological() {
+    // Locate the heal_party function body in raising.rs.
+    let fn_marker = ["fn heal", "_party"].concat();
+    let fn_pos = RAISING_SOURCE
+        .find(fn_marker.as_str())
+        .expect("RT-M13C-01: fn heal_party not found in raising.rs");
+
+    // Walk brace-depth to isolate the function body.
+    let after_decl = &RAISING_SOURCE[fn_pos..];
+    let open_offset = after_decl
+        .find('{')
+        .expect("heal_party function body opening brace not found");
+    let open_abs = fn_pos + open_offset;
+
+    let mut depth: usize = 0;
+    let mut close_abs = open_abs;
+    for (i, ch) in RAISING_SOURCE[open_abs..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close_abs = open_abs + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let body = &RAISING_SOURCE[open_abs..=close_abs];
+
+    // The tautological pattern: require_owner called with `me` where `me = ctx.sender`.
+    // Built from parts to avoid self-match in source scans.
+    let tautological_call = ["require_owner(ctx, \"heal_party\"", ", me)"].concat();
+
+    assert!(
+        body.contains(tautological_call.as_str()),
+        "RT-M13C-01 FIXED: the tautological `require_owner(ctx, \"heal_party\", me)` call \
+         is no longer present in the heal_party body. \
+         If the fix was to REMOVE the redundant call (correct), delete this test. \
+         If the argument was changed to something other than `me`, verify the new call \
+         provides real authorization and update or remove this test accordingly.",
+    );
+
+    // Companion assertion: `me` must be bound to `ctx.sender` in the body,
+    // confirming the tautological nature of the ownership check.
+    let me_binding = ["let me = ctx", ".sender"].concat();
+    assert!(
+        body.contains(me_binding.as_str()),
+        "RT-M13C-01: `let me = ctx.sender` not found in heal_party body — \
+         the variable `me` used in require_owner must be bound to ctx.sender \
+         for this finding to apply. Re-evaluate whether require_owner is tautological.",
+    );
+}
