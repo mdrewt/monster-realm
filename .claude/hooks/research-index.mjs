@@ -58,10 +58,11 @@ export function buildAuto(dir) {
   const head = '| type | slug | domain | status | updated | tags | abstract |\n|---|---|---|---|---|---|---|';
   const body =
     rows
-      .map(
-        (d) =>
-          `| ${cell(d.type)} | ${cell(d.slug)} | ${cell(d.domain)} | ${cell(d.status)} | ${cell(d.updated)} | ${cell(d.tags)} | ${cell(d.abstract).slice(0, 120)} |`,
-      )
+      .map((d) => {
+        const ab = cell(d.abstract);
+        const abCell = ab.length > 120 ? ab.slice(0, 117) + '...' : ab;
+        return `| ${cell(d.type)} | ${cell(d.slug)} | ${cell(d.domain)} | ${cell(d.status)} | ${cell(d.updated)} | ${cell(d.tags)} | ${abCell} |`;
+      })
       .join('\n') || '| _(none yet)_ |  |  |  |  |  |  |';
   return `${BEGIN}\n${head}\n${body}\n${END}`;
 }
@@ -82,7 +83,7 @@ export function regenerate(dir, { check = false } = {}) {
     spliced != null
       ? spliced
       : `# Research library\n\n> Generated manifest. Prose outside the auto block is preserved.\n\n${auto}\n`;
-  if (check) return cur.trim() === next.trim();
+  if (check) return cur === next;
   if (cur !== next) writeFileSync(idx, next);
   return true;
 }

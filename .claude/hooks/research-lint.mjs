@@ -110,9 +110,14 @@ function lintFile(dir, file) {
     }
   }
 
-  // `abstract` single-line and ≤ 120 chars
+  // `abstract` single-line and ≤ 120 chars; reject YAML block/folded scalars
   if (fm.abstract !== undefined && fm.abstract !== '') {
-    if (fm.abstract.indexOf('\n') !== -1) {
+    // YAML block scalar indicators (e.g. `abstract: |`) produce a single-char value
+    // that bypasses the multi-line check — detect and reject explicitly.
+    if (fm.abstract === '|' || fm.abstract === '>' || fm.abstract === '|-' ||
+        fm.abstract === '>-' || fm.abstract === '|+' || fm.abstract === '>+') {
+      fails.push('abstract uses a YAML block/folded scalar — must be a single-line inline value');
+    } else if (fm.abstract.indexOf('\n') !== -1) {
       fails.push('abstract must be a single line');
     }
     if (fm.abstract.length > ABSTRACT_MAX) {
