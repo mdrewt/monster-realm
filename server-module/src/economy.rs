@@ -157,16 +157,17 @@ pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> 
         return Err("item cannot be sold".to_string());
     }
 
-    // Consume qty units — each consume_one is checked; an Err rolls back the txn.
-    for _ in 0..qty {
-        consume_one(ctx, me, item_id)?;
-    }
-
     // Server-computed total (never from client). checked_mul prevents overflow.
+    // Validated before any mutation so the reducer rejects cleanly before consuming.
     let total = item
         .sell_price
         .checked_mul(u64::from(qty))
         .ok_or_else(|| "total overflow".to_string())?;
+
+    // Consume qty units — each consume_one is checked; an Err rolls back the txn.
+    for _ in 0..qty {
+        consume_one(ctx, me, item_id)?;
+    }
 
     grant_currency(ctx, me, total);
 

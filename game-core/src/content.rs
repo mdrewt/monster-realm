@@ -460,6 +460,12 @@ pub fn validate_shops(shops: &[ShopDef], items: &[ItemDef]) -> Result<(), String
                     shop.id, entry.item_id
                 ));
             }
+            if entry.buy_price == 0 {
+                return Err(format!(
+                    "shop {} has item_id {} with buy_price 0 (not purchasable)",
+                    shop.id, entry.item_id
+                ));
+            }
             if !item_ids.contains(&entry.item_id) {
                 return Err(format!(
                     "shop {} references non-existent item_id {}",
@@ -5149,6 +5155,95 @@ mod tests {
         assert_eq!(
             items[0].sell_price, 75,
             "M13b TEETH: sell_price must round-trip through RON as 75"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // RT-SHOP-BUY-FREE: validate_shops must reject buy_price == 0
+    //
+    // Finding (RED-TEAM M13b): a ShopStockEntry with buy_price == 0 passes
+    // validate_shops today. The `buy` reducer treats a 0-total as a no-op
+    // spend (`spend_currency` early-returns Ok on amount==0), so the player
+    // receives the item for free with no wallet debit. This is an exploitable
+    // content configuration bug: any content author who sets buy_price=0
+    // accidentally creates a free item (the RON comment warns against it but
+    // the validator does not enforce it).
+    //
+    // Fix: validate_shops must return Err for any stock entry with buy_price == 0.
+    // This test starts RED and turns green only once the guard is added.
+    // -----------------------------------------------------------------------
+
+    /// RT-SHOP-BUY-FREE: validate_shops must reject a stock entry with buy_price == 0.
+    ///
+    /// Invariant: every stocked item must have a positive buy price. A zero price
+    /// causes the `buy` reducer to call `spend_currency(ctx, me, 0)`, which is a
+    /// no-op (the zero-spend guard returns Ok immediately). The item is granted for
+    /// free with no wallet debit.
+    ///
+    /// Kills: an impl of validate_shops that accepts buy_price == 0 (the current bug).
+    #[test]
+    fn validate_shops_rejects_zero_buy_price() {
+        let items = vec![fixture_item_with_sell_price(1, 50)];
+        let shops = vec![ShopDef {
+            id: 1,
+            name: "Exploit Shop".to_string(),
+            stock: vec![ShopStockEntry {
+                item_id: 1,
+                buy_price: 0, // zero price: item is free in the buy reducer
+            }],
+        }];
+        let result = validate_shops(&shops, &items);
+        assert!(
+            result.is_err(),
+            "RT-SHOP-BUY-FREE: validate_shops must return Err for buy_price == 0 — \
+             a zero price causes the buy reducer to skip the wallet debit entirely \
+             (spend_currency no-ops on amount == 0), granting the item for free. \
+             Fix: add `if entry.buy_price == 0 {{ return Err(...) }}` to validate_shops."
+        );
+    }
+
+    /// M13b: validate_shops rejects two shops with the same id.
+    ///
+    /// Kills: an impl that removes the BTreeSet-based duplicate-id check, allowing
+    /// two shops with id=1 to pass validation and produce a schema PK conflict at sync.
+    #[test]
+    fn validate_shops_rejects_duplicate_shop_id() {
+        let items = vec![fixture_item_with_sell_price(1, 50)];
+        let shops = vec![fixture_shop(1, 1, 100), fixture_shop(1, 1, 200)]; // both id=1
+        let result = validate_shops(&shops, &items);
+        assert!(
+            result.is_err(),
+            "M13b: validate_shops must return Err for duplicate shop id=1; \
+             kills: impl that drops the BTreeSet duplicate-id guard"
+        );
+    }
+
+    /// M13b: validate_shops rejects a shop that lists the same item_id twice.
+    ///
+    /// Kills: an impl that removes the per-shop BTreeSet item-dedup check, allowing
+    /// the same item to appear multiple times in a shop's stock.
+    #[test]
+    fn validate_shops_rejects_duplicate_item_in_shop() {
+        let items = vec![fixture_item_with_sell_price(1, 50)];
+        let shop = ShopDef {
+            id: 1,
+            name: "Dup Shop".to_string(),
+            stock: vec![
+                ShopStockEntry {
+                    item_id: 1,
+                    buy_price: 100,
+                },
+                ShopStockEntry {
+                    item_id: 1,
+                    buy_price: 200,
+                }, // same item twice
+            ],
+        };
+        let result = validate_shops(&[shop], &items);
+        assert!(
+            result.is_err(),
+            "M13b: validate_shops must return Err when the same item_id appears \
+             twice in a shop's stock; kills: impl that drops the per-shop item-dedup guard"
         );
     }
 }
