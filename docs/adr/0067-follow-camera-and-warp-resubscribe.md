@@ -1,5 +1,5 @@
 # 0067. Client zone warp — follow-camera, zone subscription, warp reconcile
-- Status: proposed
+- Status: accepted
 - Date: 2026-07-02
 
 ## Context and problem statement

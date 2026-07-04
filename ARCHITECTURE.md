@@ -121,7 +121,7 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 |--------|------|--------------------|
 | `lib.rs` | module wiring + crate constants + lifecycle reducers (`init`/`sync_content`/`on_disconnect`) | — |
 | `schema.rs` | the data `#[table]` structs + row types (22 of the 22 snapshot tables; the `movement_tick_schedule` scheduled table lives in `movement.rs` with its reducer) | — |
-| `guards.rs` | `log_reject`, `validate_name`, `authorize_move`, `check_party_size`, `check_monster_in_party`, `check_team_coupling`, and `require_owner` (the consolidated owner-check preamble) | `guards_tests.rs` |
+| `guards.rs` | `log_reject`, `validate_name`, `authorize_move`, `check_party_size`, `check_monster_in_party`, `check_team_coupling`, `require_owner` (the consolidated owner-check preamble), and `reject_if_in_battle` (battle-escrowed check for evolve/fuse — ADR-0061) | `guards_tests.rs` |
 | `marshal.rs` | row ↔ game-core marshaling helpers | `marshal_tests.rs` |
 | `content.rs` | `sync_content_inner` + seeding helpers | inline |
 | `movement.rs` | `join_game`, `enqueue_move`, `set_move`, `clear_queue`, `movement_tick` (including NPC wander drive via `npc_decide`), npc entity integration + the `movement_tick_schedule` scheduled table | inline |
@@ -178,7 +178,7 @@ canonical `touches:` vocabulary**: adding content is a new
 
 ADRs **0002–0034** are design ADRs that live in the harness spec corpus
 (`../../specs/monster-realm-v2/adr/`); **0001** is mirrored in both locations.
-Implementation ADRs **0001, 0035–0057** live in `docs/adr/` — see
+Implementation ADRs **0001, 0035–0079** live in `docs/adr/` — see
 `docs/adr/README.md` for the navigable catalog. Highlights: 0035 scaffold
 hardening, 0036 wasm boundary, 0037 STDB/content deps, 0038 proptest, **0039
 two-window e2e CI gate**, 0040 RLS fallback split-tables, 0041 integer damage
@@ -186,7 +186,7 @@ formula, 0042 battle table public PvE, 0043 CI caching + fast inner loop, 0044
 private encounter table, 0045 private `battle_wild` individuality table, 0046
 player inventory model, 0047 recruit resolution, 0048 `start_battle` opponent
 provenance, 0049 panic-as-content-invariant policy, 0050 nightly mutation/
-coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness, 0056 server-module modularization (domain submodules — the canonical `touches:` vocabulary), 0057 content-directory glob loading via `build.rs`, 0058–0061 raising/training/evolution content+rules, **0062 evolution/fusion server reducer guard ordering, bond-write omission, and test-seam placement**, **0063 evolution/fusion client overlay (evolvesTo decode, fusion recipe display, coverage exclusion)**. See also
+coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness, 0056 server-module modularization (domain submodules — the canonical `touches:` vocabulary), 0057 content-directory glob loading via `build.rs`, 0058–0061 raising/training/evolution content+rules, **0062 evolution/fusion server reducer guard ordering, bond-write omission, and test-seam placement**, **0063 evolution/fusion client overlay (evolvesTo decode, fusion recipe display, coverage exclusion)**, 0064–0067 zone/warp data shape + server runtime + client follow-camera/global-subscription (**ADR-0067 accepted: global character subscription per Option C; per-zone re-subscription deferred to M20**), 0068–0071 NPC/dialogue/quest/heal (game-core rules + server reducers + content + client UI), 0072–0079 M12.5 residual fixes (fuse dual-write fix, content-sync repair, zone-sync robustness, netcode smoothness, gate teeth, battle lifecycle GC, practice-XP multiplier, nightly republish smoke). See also
 `docs/validation-findings.md` (empirical Tier-1 results).
 
 ## Monster subsystem (`game-core/src/monster/`, M6a)

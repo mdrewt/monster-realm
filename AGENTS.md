@@ -9,8 +9,9 @@ Project-specific rules. Inherits the workspace `AGENTS.md` and `standards/`.
 
 ## Notes
 - **Specs & ADRs live in two locations — check both.** The authoritative milestone/spec
-  corpus is the **harness**: `../../specs/monster-realm-v2/` (milestone specs `M0`–`M9`
-  incl. `M8.5`/`M8.6`, `PLAN.md`, `game-design.md`, `security-threat-model.md`,
+  corpus is the **harness**: `../../specs/monster-realm-v2/` (milestone specs `M0`–`M25`
+  incl. `M8.5`/`M8.6`/`M8.7`/`M8.8`/`M8.9`/`M8.95`, `M10.5`, `M12.5`; `PLAN.md`,
+  `game-design.md`, `security-threat-model.md`,
   `validation-checklist.md`, and the **design ADRs `0001`–`0034`** under `adr/`).
   Project-local docs are under **`docs/`**: `docs/specs/` (project-scoped specs +
   `TEMPLATE.md` — see its `README.md`) and `docs/adr/` (**implementation ADRs `0001`,

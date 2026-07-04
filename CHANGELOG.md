@@ -8,6 +8,12 @@
 - Documentation accuracy sweep — damage u64, XP formula, ADR catalog (M8.5e) (#30)
 - Record M8.6d closure — loser_base_stat_total doc-comment subsumed by M8.5b (M8.6d) (#35)
 - Correct false owner_identity RLS claim + add false-RLS eval gate (M8.7d) (#40)
+- Close M8.9 — record module map + content layout, regen changelog (ADR-0056/0057) (#55)
+- Index ADR-0060 (evolution/fusion content shape); bump next-free 0060->0061 (#63)
+- Index ADR-0061 (evolution/fusion transform rules); bump next-free 0061->0062 (#65)
+- Index ADR-0062 (evolution/fusion server reducers); bump next-free 0062->0063 (#68)
+- Index ADR-0064 (evolution/fusion content-integrity evals); next free 0065 (0063 reserved by in-flight M10c) (#71)
+- Index ADR-0063 (evolution/fusion client overlay) (#72)
 
 ### Features
 
@@ -45,6 +51,28 @@
 - Validate skill accuracy is in [1, 100] (M8.8c) (#44)
 - M8.8e — prediction robustness (reconnect re-seed, divergence re-issue, bounded seq) (#45)
 - Glob-loaded content directories via build.rs (M8.9e) (#49)
+- Add raising rules — focus-training EV top-off + care (M9a)
+- M9b — care reducer + inventory backbone + last_care_at_ms (ADR-0059)
+- M9b-tail — train reducer (focus-training food spend) (#59)
+- M9c raising + inventory view (train/care, server-derived stats) (#61)
+- M10a evolution/fusion content types + integrity validator (#62)
+- M10a-rules — evolution & fusion transforms (pure, individuality-preserving) (#64)
+- Server evolution & fusion reducers (#67)
+- Evolution/fusion content-integrity evals + Phase A complete (#69)
+- Client evolution/fusion overlay (KeyE, EvolutionView) (#70)
+- Tiled→RON importer + multi-zone content + warp overlay (#73)
+- Server-authoritative warp runtime — per-zone schedules, warp detection, zone-map validation (#74)
+- Client follow-camera + zone warp resubscribe (#76)
+- Pure game-core NPC/dialogue/quest rule module (ADR-0068) (#78)
+- Server NPC entity/wander + dialogue/quest reducers + heal_party (#79)
+- RON content loading + validate_npc_content + NPC zone policy + RT-ADV-01 fix (ADR-0070) (#81)
+- Client dialogue/quest/heal UI (#83)
+- Content-sync path repair (ADR-0073) (#86)
+- Netcode smoothness residuals — ADR-0075 (#90)
+- Gate & sim-harness teeth (#92)
+- Terminal battle GC + XP log-and-continue + canonical skill order (#94)
+- Practice-battle XP multiplier 0.1× (ADR-0078) (#96)
+- Nightly republish-without-delete smoke test (ADR-0079) (#98)
 
 ### Fixes
 
@@ -52,6 +80,9 @@
 - Rule-core contracts — divide-by-zero / turn overflow / stat-truncation guards + BST SSOT (M8.5b) (#17)
 - Bound client prediction to move-queue cap; PARTY SSOT; KeyB/resize robustness (M8.5f) (#31)
 - Guard roll_encounter weight-sum u32 overflow + recruit_chance precondition (M8.7c) (#36)
+- Fuse offspring monster_pub dual-write ordering (id=0 bug) (#84)
+- Client zone-sync robustness — state-based reconcile, switchZone atomicity, rAF containment (ADR-0074) (#88)
+- Deflake zoneSync 12.5c-1 Playwright races (master RED) (#100)
 
 ### M8.8b
 
@@ -78,6 +109,19 @@
 - Gate fmt+biome in lint, SHA-pin actions, fix devcontainer & log workspace dep (M8.5d) (#19)
 - Add game art assets, art-gen tooling, and spec-location docs (#29)
 - Release/bench fail-loud + complete the determinism lint gate (M8.8a) (#47)
+- Restore mutation + coverage gates (M-infra-c)
+- ADR index — add 0066, bump next-free to 0067 (#75)
+- Index ADR-0067 in docs/adr/README.md (#77)
+- Index ADR-0069, bump next free to 0070 (#80)
+- Index ADR-0070, bump next free to 0071 (#82)
+- Index ADR-0072, bump next free to 0073 (#85)
+- Index ADR-0073, bump next free to 0074 (#87)
+- Index ADR-0074, bump next free to 0075 (#89)
+- Index ADR-0075, bump next free to 0076 (#91)
+- Index ADR-0076, bump next free to 0077 (#93)
+- Index ADR-0077, bump next free to 0078 (#95)
+- Index ADR-0078, bump next free to 0079 (#97)
+- Index ADR-0079, bump next free to 0080 (#99)
 
 ### Testing
 
@@ -88,6 +132,8 @@
 - Extract marshal.rs inline tests to marshal_tests.rs (M8.9c) (#51)
 - Extract battle.rs inline tests to sibling battle_tests.rs (M8.9c) (#52)
 - Extract guards.rs inline tests to sibling guards_tests.rs (M8.9c) (#54)
+- M9d — no-idle-accrual proof-of-teeth + item-ids baseline (#60)
+- Fix Nightly — kill all 72 mutation survivors + debounce level_for_xp timeouts (#66)
 
 ### Wip
 

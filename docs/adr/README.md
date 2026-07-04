@@ -5,7 +5,7 @@ Architecture Decision Records live in **two locations**; check both.
 - **Design ADRs `0002`–`0034`** — in the **harness spec corpus**
   (`../../specs/monster-realm-v2/adr/`). These are the foundational design
   decisions authored alongside the milestone specs.
-- **Implementation ADRs `0001`, `0035`–`0054`** — in **this directory**
+- **Implementation ADRs `0001`, `0035`–`0079`** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
