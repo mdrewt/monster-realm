@@ -27,8 +27,12 @@ import {
   type SdkItemRowRow,
   type SdkMonsterPubRow,
   type SdkPlayerRow,
+  type SdkShopItemRowRow,
+  type SdkShopRowRow,
   type SdkSkillRowRow,
   type SdkSpeciesRowRow,
+  shopItemRowToStore,
+  shopRowToStore,
   skillRowToStore,
   speciesRowToStore,
 } from './rowConvert';
@@ -49,6 +53,10 @@ export interface ConnectionOptions {
   /** Called when the own entity crosses a zone boundary (M11c, ADR-0067 Option C).
    *  Receives the new zone id so the caller can reload the map and reset prediction. */
   readonly onOwnWarp?: (newZoneId: number) => void;
+  /** Called when a buy or sell reducer completes (M13d, ADR-0084).
+   *  `success` = Committed; message is the server error string on failure.
+   *  Used to surface reducer-rejection feedback in the shop UI. */
+  readonly onReducerFeedback?: (reducer: 'buy' | 'sell', success: boolean, message: string) => void;
 }
 
 export interface Connection {
@@ -100,6 +108,10 @@ export function connect(opts: ConnectionOptions): Connection {
           'SELECT * FROM player_quest',
           'SELECT * FROM heal_location_row',
           'SELECT * FROM npc',
+          // M13d: shop catalog (public content; ADR-0084). player_wallet is PRIVATE
+          // (ADR-0081/0040) and produces no client subscription — excluded.
+          'SELECT * FROM shop_row',
+          'SELECT * FROM shop_item_row',
         ]);
     })
     .onConnectError((_ctx, err: Error) => opts.onError('connect', err.message))
@@ -313,6 +325,53 @@ export function connect(opts: ConnectionOptions): Connection {
     store.removeNpc((row as unknown as SdkNpcRow).entityId);
     batcher.schedule();
   });
+
+  // M13d: shop_row / shop_item_row (ADR-0084) — public content tables.
+  const ingestShop = (row: SdkShopRowRow): void => {
+    store.upsertShop(shopRowToStore(row));
+    batcher.schedule();
+  };
+  conn.db.shop_row.onInsert((_ctx, row) => ingestShop(row as unknown as SdkShopRowRow));
+  conn.db.shop_row.onUpdate((_ctx, _old, row) => ingestShop(row as unknown as SdkShopRowRow));
+  conn.db.shop_row.onDelete((_ctx, row) => {
+    store.removeShop((row as unknown as SdkShopRowRow).shopId);
+    batcher.schedule();
+  });
+
+  const ingestShopItem = (row: SdkShopItemRowRow): void => {
+    store.upsertShopItem(shopItemRowToStore(row));
+    batcher.schedule();
+  };
+  conn.db.shop_item_row.onInsert((_ctx, row) =>
+    ingestShopItem(row as unknown as SdkShopItemRowRow),
+  );
+  conn.db.shop_item_row.onUpdate((_ctx, _old, row) =>
+    ingestShopItem(row as unknown as SdkShopItemRowRow),
+  );
+  conn.db.shop_item_row.onDelete((_ctx, row) => {
+    store.removeShopItem((row as unknown as SdkShopItemRowRow).shopItemId);
+    batcher.schedule();
+  });
+
+  // M13d: buy/sell reducer event callbacks — surface success/failure to the shop UI (ADR-0084).
+  // The wallet balance is NOT available (player_wallet is private); only the event status
+  // and message are forwarded. Movement-reducer silent pattern does NOT apply here (buy/sell
+  // rejections are actionable feedback the player needs to see).
+  if (opts.onReducerFeedback !== undefined) {
+    const fb = opts.onReducerFeedback;
+    conn.reducers.onBuy((ctx) => {
+      const success = ctx.event.tag === 'Committed';
+      fb(
+        'buy',
+        success,
+        success ? 'Purchase complete!' : (ctx.event.message ?? 'Purchase failed.'),
+      );
+    });
+    conn.reducers.onSell((ctx) => {
+      const success = ctx.event.tag === 'Committed';
+      fb('sell', success, success ? 'Sale complete!' : (ctx.event.message ?? 'Sale failed.'));
+    });
+  }
 
   return { conn, identity: () => identity };
 }

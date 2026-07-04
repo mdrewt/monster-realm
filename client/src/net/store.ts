@@ -127,7 +127,7 @@ export type StoreInventory = {
   readonly count: number;
 };
 
-/** An item definition row, normalized (trainStat as bare string or null; M9c). */
+/** An item definition row, normalized (trainStat as bare string or null; M9c/M13d). */
 export type StoreItemRow = {
   readonly id: number;
   readonly name: string;
@@ -135,6 +135,22 @@ export type StoreItemRow = {
   readonly recruitBonus: number;
   readonly trainStat: string | null;
   readonly trainAmount: number;
+  /** Server-set sell price in currency units (M13b). 0 = not sellable. */
+  readonly sellPrice: bigint;
+};
+
+/** A shop definition row (public content; M13b/M13d). */
+export type StoreShopRow = {
+  readonly shopId: number;
+  readonly name: string;
+};
+
+/** A shop stock entry row (public content; M13b/M13d). */
+export type StoreShopItemRow = {
+  readonly shopItemId: bigint;
+  readonly shopId: number;
+  readonly itemId: number;
+  readonly buyPrice: bigint;
 };
 
 /** A player conversation row, normalized (ownerIdentity as hex string; M12d). */
@@ -220,6 +236,9 @@ export class AuthoritativeStore {
   readonly #healLocations = new Map<number, StoreHealLocationRow>();
   readonly #npcs = new Map<bigint, StoreNpcRow>();
   readonly #npcsByNpcId = new Map<string, StoreNpcRow>();
+  // M13d: shop content tables
+  readonly #shops = new Map<number, StoreShopRow>();
+  readonly #shopItems = new Map<bigint, StoreShopItemRow>();
   readonly #batchListeners = new Set<() => void>();
   #dirty = false;
 
@@ -423,6 +442,10 @@ export class AuthoritativeStore {
     this.#healLocations.clear();
     this.#npcs.clear();
     this.#npcsByNpcId.clear();
+    // M13d: shop content maps (survive reconnect like item_row — they're seeded
+    // by sync_content, not by per-session events; reconnect just re-applies them)
+    this.#shops.clear();
+    this.#shopItems.clear();
     this.#dirty = false;
   }
 
@@ -595,5 +618,46 @@ export class AuthoritativeStore {
   /** Returns all NPC rows as an array (for building the npcsMap in main.ts). */
   allNpcs(): StoreNpcRow[] {
     return [...this.#npcs.values()];
+  }
+
+  // --- M13d: shop row ingest (adapter-only) ------------------------------------
+
+  upsertShop(row: StoreShopRow): void {
+    this.#shops.set(row.shopId, row);
+    this.#dirty = true;
+  }
+
+  removeShop(shopId: number): void {
+    if (this.#shops.delete(shopId)) this.#dirty = true;
+  }
+
+  upsertShopItem(row: StoreShopItemRow): void {
+    this.#shopItems.set(row.shopItemId, row);
+    this.#dirty = true;
+  }
+
+  removeShopItem(shopItemId: bigint): void {
+    if (this.#shopItems.delete(shopItemId)) this.#dirty = true;
+  }
+
+  // --- M13d: shop read ---------------------------------------------------------
+
+  /** All shop definitions (public content — all players see all shops). */
+  allShops(): StoreShopRow[] {
+    return [...this.#shops.values()];
+  }
+
+  /** All shop stock entries filtered by shopId. */
+  shopItemsByShopId(shopId: number): StoreShopItemRow[] {
+    const out: StoreShopItemRow[] = [];
+    for (const item of this.#shopItems.values()) {
+      if (item.shopId === shopId) out.push(item);
+    }
+    return out;
+  }
+
+  /** All shop stock entries (for the model to filter by selected shop). */
+  allShopItems(): StoreShopItemRow[] {
+    return [...this.#shopItems.values()];
   }
 }

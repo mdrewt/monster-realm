@@ -54,6 +54,11 @@ function itemDef(id: number, overrides: Partial<StoreItemRow> = {}): StoreItemRo
     recruitBonus: 0,
     trainStat: null,
     trainAmount: 0,
+    // M13d: StoreItemRow gains sellPrice (bigint). Default 0n = not sellable.
+    // Rationale (spec §M13d criterion C): sellPrice > 0n means the shop can buy it;
+    // 0n means unsellable. Existing raising tests don't probe sellPrice at all, so
+    // this default preserves every existing assertion (sell-screen is shopModel's job).
+    sellPrice: 0n,
     ...overrides,
   };
 }

@@ -54,6 +54,8 @@ import { buildQuestLogViewModel } from './ui/questLogModel';
 import type { QuestLogView } from './ui/questLogView';
 import { buildRaisingViewModel } from './ui/raisingModel';
 import type { RaisingView } from './ui/raisingView';
+import { buildShopViewModel } from './ui/shopModel';
+import type { ShopView } from './ui/shopView';
 
 const URI = (import.meta.env.VITE_STDB_URI as string | undefined) ?? 'ws://127.0.0.1:3000';
 const DB = (import.meta.env.VITE_STDB_DB as string | undefined) ?? 'monster-realm';
@@ -98,6 +100,7 @@ let evolutionView: EvolutionView | undefined;
 let dialogueView: DialogueView | undefined;
 let questLogView: QuestLogView | undefined;
 let healView: HealView | undefined;
+let shopView: ShopView | undefined;
 // dismissPending: prevents double-sending dismiss_dialogue while server processes it (M12d).
 // eslint-disable-next-line prefer-const
 let dismissPending = false;
@@ -208,7 +211,8 @@ store.onBatchApplied(() => {
         evolutionView?.visible ||
         dialogueView?.visible ||
         questLogView?.visible ||
-        healView?.visible
+        healView?.visible ||
+        shopView?.visible
       )
     ) {
       const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
@@ -282,7 +286,8 @@ window.addEventListener('keydown', (e) => {
       !raisingView?.visible &&
       !evolutionView?.visible &&
       !dialogueView?.visible &&
-      !healView?.visible
+      !healView?.visible &&
+      !shopView?.visible
     ) {
       if (questLogView?.visible) {
         questLogView.hide();
@@ -301,12 +306,42 @@ window.addEventListener('keydown', (e) => {
       !raisingView?.visible &&
       !evolutionView?.visible &&
       !dialogueView?.visible &&
-      !questLogView?.visible
+      !questLogView?.visible &&
+      !shopView?.visible
     ) {
       if (healView?.visible) {
         healView.hide();
       } else {
         healView?.render(buildHealViewModel(store.healLocations(), store.itemDefs()));
+      }
+    }
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'KeyG') {
+    // Shop overlay — mutual exclusivity with all other overlays (M13d, ADR-0084).
+    // Opens with the first available shop; if no shops loaded shows "No shop available".
+    if (
+      !battleView?.visible &&
+      !boxView?.visible &&
+      !raisingView?.visible &&
+      !evolutionView?.visible &&
+      !dialogueView?.visible &&
+      !questLogView?.visible &&
+      !healView?.visible
+    ) {
+      if (shopView?.visible) {
+        shopView.hide();
+      } else {
+        shopView?.render(
+          buildShopViewModel(
+            store.allShops(),
+            store.allShopItems(),
+            store.itemDefs(),
+            store.ownInventory(identity),
+          ),
+        );
+        shopView?.show();
       }
     }
     e.preventDefault();
@@ -356,6 +391,11 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
+  if (e.code === 'Escape' && shopView?.visible) {
+    shopView.hide();
+    e.preventDefault();
+    return;
+  }
   // Suppress movement input while an overlay is open.
   if (
     battleView?.visible ||
@@ -364,7 +404,8 @@ window.addEventListener('keydown', (e) => {
     evolutionView?.visible ||
     dialogueView?.visible ||
     questLogView?.visible ||
-    healView?.visible
+    healView?.visible ||
+    shopView?.visible
   )
     return;
   const dir = KEY_DIR[e.code];
@@ -495,6 +536,24 @@ store.onBatchApplied(() => {
   }
 });
 
+// --- M13d: shop view batch listener (ADR-0084) -----------------------------------
+// MUST be total (never throw): store.flushBatch has no per-listener isolation.
+store.onBatchApplied(() => {
+  if (!shopView?.visible || identity === '') return;
+  try {
+    shopView.render(
+      buildShopViewModel(
+        store.allShops(),
+        store.allShopItems(),
+        store.itemDefs(),
+        store.ownInventory(identity),
+      ),
+    );
+  } catch (err) {
+    console.error('[M13d] shop batch listener error', err);
+  }
+});
+
 // --- M12d: dialogue choice click handler -----------------------------------------
 // Reads data-choice-idx from the clicked button and calls advance_dialogue.
 document.addEventListener('click', (e) => {
@@ -576,6 +635,7 @@ async function main(): Promise<void> {
     { DialogueView: DialogueViewClass },
     { QuestLogView: QuestLogViewClass },
     { HealView: HealViewClass },
+    { ShopView: ShopViewClass },
   ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/battleView'),
@@ -584,6 +644,7 @@ async function main(): Promise<void> {
     import('./ui/dialogueView'),
     import('./ui/questLogView'),
     import('./ui/healView'),
+    import('./ui/shopView'),
   ]);
   renderer = new WorldRenderer();
   const mount = document.getElementById('app');
@@ -642,6 +703,16 @@ async function main(): Promise<void> {
     dialogueView = new DialogueViewClass();
     questLogView = new QuestLogViewClass();
     healView = new HealViewClass();
+    // M13d: shop DOM shell (ADR-0084). buy/sell callbacks invoke reducers directly;
+    // onReducerFeedback in connect() forwards success/failure to shopView.showFeedback.
+    shopView = new ShopViewClass({
+      onBuy: (shopId, itemId) => {
+        conn?.conn.reducers.buy({ shopId, itemId, qty: 1 });
+      },
+      onSell: (itemId) => {
+        conn?.conn.reducers.sell({ itemId, qty: 1 });
+      },
+    });
   }
 
   conn = connect({
@@ -670,6 +741,10 @@ async function main(): Promise<void> {
       switchZone(newZoneId);
     },
     onError: (where, message) => console.error(`[net:${where}] ${message}`),
+    // M13d: forward buy/sell reducer outcomes to the shop feedback area (ADR-0084).
+    onReducerFeedback: (_reducer, _success, message) => {
+      if (shopView?.visible) shopView.showFeedback(message);
+    },
   });
 
   // 12.5c-4: frame loop is wrapped in try/catch so a wasm/predictor throw does not
@@ -690,7 +765,8 @@ async function main(): Promise<void> {
           evolutionView?.visible ||
           dialogueView?.visible ||
           questLogView?.visible ||
-          healView?.visible
+          healView?.visible ||
+          shopView?.visible
         )
       ) {
         const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
