@@ -19,6 +19,8 @@ import {
   type StoreItemRow,
   type StoreMonsterPub,
   type StorePlayer,
+  type StoreShopItemRow,
+  type StoreShopRow,
   type StoreSkillRow,
   type StoreSpeciesRow,
 } from './store';
@@ -2174,5 +2176,118 @@ describe('AuthoritativeStore: flushBatch per-listener isolation (M10.5d — clos
 
     // Sibling must also have been reached (combined isolation assertion).
     expect(sibling).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M13d shop store gating tests (RT-SHOP-01, RT-SHOP-02)
+// SOURCE OF TRUTH: adversarial review of M13d shop client UI (2026-07-04)
+// ---------------------------------------------------------------------------
+
+function shopRow(shopId: number, name = `Shop-${shopId}`): StoreShopRow {
+  return { shopId, name };
+}
+function shopItemRow(
+  shopItemId: bigint,
+  shopId: number,
+  itemId: number,
+  buyPrice: bigint = 10n,
+): StoreShopItemRow {
+  return { shopItemId, shopId, itemId, buyPrice };
+}
+
+// RT-SHOP-01: reset() clears shop maps and sets dirty=false (no phantom re-render).
+// Finding: store.reset() comments claim shops "survive reconnect" but the implementation
+// DOES clear them. The comment is misleading, but the code is correct — shops ARE cleared
+// and must be re-subscribed after reconnect. This test gates that clear + no dirty race.
+describe('AuthoritativeStore M13d RT-SHOP-01: reset() clears shop maps; dirty is false after reset', () => {
+  it('RT-SHOP-01 BITES: reset() clears #shops and #shopItems (allShops/allShopItems return empty)', () => {
+    // Kills: an impl that omits #shops.clear() or #shopItems.clear() from reset(),
+    // leaving stale shop rows visible after a reconnect cycle.
+    const s = new AuthoritativeStore();
+    s.upsertShop(shopRow(1, 'General Store'));
+    s.upsertShopItem(shopItemRow(1n, 1, 5, 100n));
+    expect(s.allShops()).toHaveLength(1);
+    expect(s.allShopItems()).toHaveLength(1);
+
+    s.reset();
+
+    expect(s.allShops()).toHaveLength(0);
+    expect(s.allShopItems()).toHaveLength(0);
+  });
+
+  it('RT-SHOP-01 BITES: after reset(), batch listeners are NOT fired (dirty=false, no spurious flush)', () => {
+    // Kills: an impl that calls flushBatch() inside reset() or sets dirty=true,
+    // which would trigger a stale re-render of the shop overlay during disconnect handling.
+    // The shop batch listener reading allShops() after reset() would return [], causing
+    // the shop to flash "No shop available." mid-session rather than just going stale.
+    const s = new AuthoritativeStore();
+    const listener = vi.fn();
+    s.onBatchApplied(listener);
+    s.upsertShop(shopRow(2));
+    s.flushBatch(); // consume the dirty from upsert
+    listener.mockClear();
+
+    s.reset(); // must NOT set dirty=true or call flushBatch
+
+    // No additional flushBatch call — listener must NOT fire again
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('RT-SHOP-01 BITES: post-reset upsertShop triggers batch listener (reconnect re-seed path)', () => {
+    // Kills: an impl whose reset() also clears batch listeners (breaking the running loop).
+    const s = new AuthoritativeStore();
+    const listener = vi.fn();
+    s.onBatchApplied(listener);
+
+    s.reset();
+    // Post-reset re-seed: SDK fires onInsert for shop_row after reconnect
+    s.upsertShop(shopRow(3, 'Reconnected Shop'));
+    s.flushBatch();
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(s.allShops()).toHaveLength(1);
+    expect(s.allShops()[0]!.name).toBe('Reconnected Shop');
+  });
+});
+
+// RT-SHOP-02: shopItemsByShopId filters correctly; cross-shop contamination is impossible.
+// Finding: buildShopViewModel relies on the shopId filter in both the store accessor and
+// the model. A broken store accessor (returning all items regardless of shopId) would
+// display items from other shops in the for-sale list, potentially confusing the player
+// about which shop stocks which item. This is not a security issue (server validates on
+// buy) but is a data-integrity invariant the view-model test suite also gates.
+describe('AuthoritativeStore M13d RT-SHOP-02: shopItemsByShopId returns ONLY items for the given shopId', () => {
+  it('RT-SHOP-02 BITES: shopItemsByShopId(1) excludes items for shopId=2', () => {
+    // Kills: an impl that returns allShopItems() without filtering (all items visible for any shopId).
+    const s = new AuthoritativeStore();
+    s.upsertShopItem(shopItemRow(1n, 1, 10, 50n)); // shopId=1, itemId=10
+    s.upsertShopItem(shopItemRow(2n, 2, 20, 80n)); // shopId=2, itemId=20
+    s.upsertShopItem(shopItemRow(3n, 1, 30, 25n)); // shopId=1, itemId=30
+
+    const shop1Items = s.shopItemsByShopId(1);
+    expect(shop1Items).toHaveLength(2);
+    expect(shop1Items.every((i) => i.shopId === 1)).toBe(true);
+    expect(shop1Items.some((i) => i.itemId === 20)).toBe(false); // shopId=2 item must not appear
+  });
+
+  it('RT-SHOP-02 BITES: shopItemsByShopId returns empty array for a shopId with no stock', () => {
+    // Kills: an impl that returns all items when no items match the shopId.
+    const s = new AuthoritativeStore();
+    s.upsertShopItem(shopItemRow(1n, 5, 1, 10n)); // shopId=5
+
+    const result = s.shopItemsByShopId(99); // no items for shopId=99
+    expect(result).toHaveLength(0);
+  });
+
+  it('RT-SHOP-02 BITES: removeShopItem removes from shopItemsByShopId output', () => {
+    // Kills: an impl that removes from an internal map keyed by shopItemId but
+    // leaves a stale reference in a secondary shopId-keyed index.
+    const s = new AuthoritativeStore();
+    s.upsertShopItem(shopItemRow(10n, 1, 5, 100n));
+    expect(s.shopItemsByShopId(1)).toHaveLength(1);
+
+    s.removeShopItem(10n);
+    expect(s.shopItemsByShopId(1)).toHaveLength(0);
   });
 });

@@ -27,8 +27,12 @@ import {
   type SdkItemRowRow,
   type SdkMonsterPubRow,
   type SdkPlayerRow,
+  type SdkShopItemRowRow,
+  type SdkShopRowRow,
   type SdkSkillRowRow,
   type SdkSpeciesRowRow,
+  shopItemRowToStore,
+  shopRowToStore,
   skillRowToStore,
   speciesRowToStore,
 } from './rowConvert';
@@ -100,6 +104,10 @@ export function connect(opts: ConnectionOptions): Connection {
           'SELECT * FROM player_quest',
           'SELECT * FROM heal_location_row',
           'SELECT * FROM npc',
+          // M13d: shop catalog (public content; ADR-0084). player_wallet is PRIVATE
+          // (ADR-0081/0040) and produces no client subscription — excluded.
+          'SELECT * FROM shop_row',
+          'SELECT * FROM shop_item_row',
         ]);
     })
     .onConnectError((_ctx, err: Error) => opts.onError('connect', err.message))
@@ -311,6 +319,33 @@ export function connect(opts: ConnectionOptions): Connection {
   conn.db.npc.onUpdate((_ctx, _old, row) => ingestNpc(row as unknown as SdkNpcRow));
   conn.db.npc.onDelete((_ctx, row) => {
     store.removeNpc((row as unknown as SdkNpcRow).entityId);
+    batcher.schedule();
+  });
+
+  // M13d: shop_row / shop_item_row (ADR-0084) — public content tables.
+  const ingestShop = (row: SdkShopRowRow): void => {
+    store.upsertShop(shopRowToStore(row));
+    batcher.schedule();
+  };
+  conn.db.shop_row.onInsert((_ctx, row) => ingestShop(row as unknown as SdkShopRowRow));
+  conn.db.shop_row.onUpdate((_ctx, _old, row) => ingestShop(row as unknown as SdkShopRowRow));
+  conn.db.shop_row.onDelete((_ctx, row) => {
+    store.removeShop((row as unknown as SdkShopRowRow).shopId);
+    batcher.schedule();
+  });
+
+  const ingestShopItem = (row: SdkShopItemRowRow): void => {
+    store.upsertShopItem(shopItemRowToStore(row));
+    batcher.schedule();
+  };
+  conn.db.shop_item_row.onInsert((_ctx, row) =>
+    ingestShopItem(row as unknown as SdkShopItemRowRow),
+  );
+  conn.db.shop_item_row.onUpdate((_ctx, _old, row) =>
+    ingestShopItem(row as unknown as SdkShopItemRowRow),
+  );
+  conn.db.shop_item_row.onDelete((_ctx, row) => {
+    store.removeShopItem((row as unknown as SdkShopItemRowRow).shopItemId);
     batcher.schedule();
   });
 

@@ -54,6 +54,8 @@ import { buildQuestLogViewModel } from './ui/questLogModel';
 import type { QuestLogView } from './ui/questLogView';
 import { buildRaisingViewModel } from './ui/raisingModel';
 import type { RaisingView } from './ui/raisingView';
+import { buildShopViewModel } from './ui/shopModel';
+import type { ShopView } from './ui/shopView';
 
 const URI = (import.meta.env.VITE_STDB_URI as string | undefined) ?? 'ws://127.0.0.1:3000';
 const DB = (import.meta.env.VITE_STDB_DB as string | undefined) ?? 'monster-realm';
@@ -98,6 +100,7 @@ let evolutionView: EvolutionView | undefined;
 let dialogueView: DialogueView | undefined;
 let questLogView: QuestLogView | undefined;
 let healView: HealView | undefined;
+let shopView: ShopView | undefined;
 // dismissPending: prevents double-sending dismiss_dialogue while server processes it (M12d).
 // eslint-disable-next-line prefer-const
 let dismissPending = false;
@@ -208,7 +211,8 @@ store.onBatchApplied(() => {
         evolutionView?.visible ||
         dialogueView?.visible ||
         questLogView?.visible ||
-        healView?.visible
+        healView?.visible ||
+        shopView?.visible
       )
     ) {
       const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
@@ -243,7 +247,7 @@ window.addEventListener('keydown', (e) => {
   if (e.repeat) return; // ignore OS key-repeat (the frame loop re-issues held keys)
   if (e.code === 'KeyB') {
     // Guard: don't open the box over an active battle (ADR-0014/0052 exit ordering).
-    if (shouldToggleBox(battleView?.visible ?? false)) {
+    if (shouldToggleBox(battleView?.visible ?? false) && !shopView?.visible) {
       raisingView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
       boxView?.toggle();
@@ -254,7 +258,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyI') {
     // Inventory/raising overlay — same battle guard as the box (reuse shouldToggleBox).
-    if (shouldToggleBox(battleView?.visible ?? false)) {
+    if (shouldToggleBox(battleView?.visible ?? false) && !shopView?.visible) {
       boxView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
       raisingView?.toggle();
@@ -265,7 +269,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyE') {
     // Evolution/fusion overlay — same battle guard as box/raising (ADR-0014).
-    if (shouldToggleBox(battleView?.visible ?? false)) {
+    if (shouldToggleBox(battleView?.visible ?? false) && !shopView?.visible) {
       boxView?.hide(); // mutual exclusivity
       raisingView?.hide(); // mutual exclusivity
       evolutionView?.toggle();
@@ -282,7 +286,8 @@ window.addEventListener('keydown', (e) => {
       !raisingView?.visible &&
       !evolutionView?.visible &&
       !dialogueView?.visible &&
-      !healView?.visible
+      !healView?.visible &&
+      !shopView?.visible
     ) {
       if (questLogView?.visible) {
         questLogView.hide();
@@ -301,12 +306,42 @@ window.addEventListener('keydown', (e) => {
       !raisingView?.visible &&
       !evolutionView?.visible &&
       !dialogueView?.visible &&
-      !questLogView?.visible
+      !questLogView?.visible &&
+      !shopView?.visible
     ) {
       if (healView?.visible) {
         healView.hide();
       } else {
         healView?.render(buildHealViewModel(store.healLocations(), store.itemDefs()));
+      }
+    }
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'KeyG') {
+    // Shop overlay — mutual exclusivity with all other overlays (M13d, ADR-0084).
+    // Opens with the first available shop; if no shops loaded shows "No shop available".
+    if (
+      !battleView?.visible &&
+      !boxView?.visible &&
+      !raisingView?.visible &&
+      !evolutionView?.visible &&
+      !dialogueView?.visible &&
+      !questLogView?.visible &&
+      !healView?.visible
+    ) {
+      if (shopView?.visible) {
+        shopView.hide();
+      } else {
+        shopView?.render(
+          buildShopViewModel(
+            store.allShops(),
+            store.allShopItems(),
+            store.itemDefs(),
+            store.ownInventory(identity),
+          ),
+        );
+        shopView?.show();
       }
     }
     e.preventDefault();
@@ -356,6 +391,11 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
+  if (e.code === 'Escape' && shopView?.visible) {
+    shopView.hide();
+    e.preventDefault();
+    return;
+  }
   // Suppress movement input while an overlay is open.
   if (
     battleView?.visible ||
@@ -364,7 +404,8 @@ window.addEventListener('keydown', (e) => {
     evolutionView?.visible ||
     dialogueView?.visible ||
     questLogView?.visible ||
-    healView?.visible
+    healView?.visible ||
+    shopView?.visible
   )
     return;
   const dir = KEY_DIR[e.code];
@@ -495,6 +536,24 @@ store.onBatchApplied(() => {
   }
 });
 
+// --- M13d: shop view batch listener (ADR-0084) -----------------------------------
+// MUST be total (never throw): store.flushBatch has no per-listener isolation.
+store.onBatchApplied(() => {
+  if (!shopView?.visible || identity === '') return;
+  try {
+    shopView.render(
+      buildShopViewModel(
+        store.allShops(),
+        store.allShopItems(),
+        store.itemDefs(),
+        store.ownInventory(identity),
+      ),
+    );
+  } catch (err) {
+    console.error('[M13d] shop batch listener error', err);
+  }
+});
+
 // --- M12d: dialogue choice click handler -----------------------------------------
 // Reads data-choice-idx from the clicked button and calls advance_dialogue.
 document.addEventListener('click', (e) => {
@@ -576,6 +635,7 @@ async function main(): Promise<void> {
     { DialogueView: DialogueViewClass },
     { QuestLogView: QuestLogViewClass },
     { HealView: HealViewClass },
+    { ShopView: ShopViewClass },
   ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/battleView'),
@@ -584,6 +644,7 @@ async function main(): Promise<void> {
     import('./ui/dialogueView'),
     import('./ui/questLogView'),
     import('./ui/healView'),
+    import('./ui/shopView'),
   ]);
   renderer = new WorldRenderer();
   const mount = document.getElementById('app');
@@ -642,6 +703,31 @@ async function main(): Promise<void> {
     dialogueView = new DialogueViewClass();
     questLogView = new QuestLogViewClass();
     healView = new HealViewClass();
+    // M13d: shop DOM shell (ADR-0084).
+    // buy/sell are awaited: the STDB SDK resolves on server-commit, rejects on server-error
+    // (see #reducerCallbacks in the SDK source). This is the correct surface for rejection
+    // feedback — not conn.reducers.onBuy (which doesn't exist in STDB 2.6).
+    // ADR-0082 D5: single-unit MVP (infinite stock; multi-unit sell → future slice).
+    const SHOP_QTY = 1 as const;
+    shopView = new ShopViewClass({
+      onBuy: async (shopId, itemId) => {
+        try {
+          await conn?.conn.reducers.buy({ shopId, itemId, qty: SHOP_QTY });
+          if (shopView?.visible) shopView.showFeedback('Purchase complete!');
+        } catch (err) {
+          if (shopView?.visible)
+            shopView.showFeedback(`Purchase failed: ${(err as Error).message}`);
+        }
+      },
+      onSell: async (itemId) => {
+        try {
+          await conn?.conn.reducers.sell({ itemId, qty: SHOP_QTY });
+          if (shopView?.visible) shopView.showFeedback('Sale complete!');
+        } catch (err) {
+          if (shopView?.visible) shopView.showFeedback(`Sale failed: ${(err as Error).message}`);
+        }
+      },
+    });
   }
 
   conn = connect({
@@ -690,7 +776,8 @@ async function main(): Promise<void> {
           evolutionView?.visible ||
           dialogueView?.visible ||
           questLogView?.visible ||
-          healView?.visible
+          healView?.visible ||
+          shopView?.visible
         )
       ) {
         const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);

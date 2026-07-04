@@ -58,6 +58,8 @@ function makeItemDef(id: number, name = `Item-${id}`): StoreItemRow {
     recruitBonus: 0,
     trainStat: null,
     trainAmount: 0,
+    // M13d: StoreItemRow gains sellPrice (bigint). Default 0n keeps existing heal tests intact.
+    sellPrice: 0n,
   };
 }
 
