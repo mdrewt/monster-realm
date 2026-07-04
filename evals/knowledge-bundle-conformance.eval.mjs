@@ -9,6 +9,7 @@
 // Proof-of-teeth (ADR-0010):
 //   TOOTH A      — lint rejects a concept missing `type` (must bite)
 //   TOOTH A-good — lint accepts a well-formed concept (false-positive guard)
+//   TOOTH C      — lint rejects a concept with a dangling bundle-relative link (must bite)
 //   TOOTH B      — drift check flags a stale committed bundle (must bite)
 //
 // IMPORTANT: NO new RegExp(...) — all patterns use literal regex or String
@@ -79,12 +80,17 @@ export default async function () {
     writeFileSync(badFile, missingTypeContent);
     const { fails: toothAFails } = lintFile(badFile, tmpTeeth);
 
-    if (!toothAFails.some((f) => f.indexOf('type') !== -1)) {
+    // Exact-match the error message produced by Rule 1 for a missing required key.
+    // indexOf('type') is NOT sufficient — a dangling link to ./nonexistent-type-foo.md
+    // also produces a fail containing 'type', making the tooth gameable: a broken
+    // type-missing rule could be masked by adding such a link to the fixture.
+    if (!toothAFails.includes('missing required frontmatter key: type')) {
       return {
         name,
         pass: false,
         detail:
-          'TOOTH A: lintFile did not flag a concept missing the required `type` field ' +
+          'TOOTH A: lintFile did not produce the exact failure "missing required frontmatter ' +
+          'key: type" for a concept missing the required `type` field ' +
           '(false negative — the lint predicate has no bite; a malformed concept would slip through)',
       };
     }
@@ -121,8 +127,45 @@ export default async function () {
           `(false positive — lint is too strict): ${toothAGoodFails.join('; ')}`,
       };
     }
+
+    // TOOTH C — a concept with a dangling bundle-relative link must be rejected (Rule 5).
+    // Tests link-resolution separately from the required-key check (TOOTH A tests Rule 1;
+    // TOOTH C tests Rule 5 — both must have independent bite).
+    const danglingContent = [
+      '---',
+      'type: SpacetimeDB Table',
+      'title: link-test',
+      'slug: link-test',
+      'updated: 2026-01-01',
+      'tags: [schema, spacetimedb, public]',
+      'abstract: "A concept with a dangling bundle-relative link for testing Rule 5."',
+      '---',
+      '',
+      '## See Also',
+      '',
+      '[see other](nonexistent-table.md)',
+    ].join('\n');
+
+    const linkFile = path.join(tmpTeeth, 'link-test.md');
+    writeFileSync(linkFile, danglingContent);
+    const { fails: toothCFails } = lintFile(linkFile, tmpTeeth);
+
+    if (!toothCFails.some((f) => f.indexOf('dangling bundle-relative link') !== -1)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TOOTH C: lintFile did not flag a concept with a dangling bundle-relative link ' +
+          '(false negative — Rule 5 link-resolution check has no bite; a broken link in ' +
+          'the bundle would go undetected)',
+      };
+    }
   } finally {
-    rmSync(tmpTeeth, { recursive: true, force: true });
+    try {
+      rmSync(tmpTeeth, { recursive: true, force: true });
+    } catch (e) {
+      console.warn(`okf-eval: tmpTeeth cleanup warn: ${e.message}`);
+    }
   }
 
   // TOOTH B — the drift check must detect a stale committed concept.
@@ -154,7 +197,7 @@ export default async function () {
       };
     }
     const originalContent = readFileSync(staleTarget, 'utf8');
-    writeFileSync(staleTarget, originalContent + '\n<!-- STALE: source-changed marker -->');
+    writeFileSync(staleTarget, `${originalContent}\n<!-- STALE: source-changed marker -->`);
 
     // Step 3: --check must detect the stale file → exit non-zero.
     const checkResult = runExport([tmpBundle, '--check']);
@@ -168,7 +211,11 @@ export default async function () {
       };
     }
   } finally {
-    rmSync(tmpBundle, { recursive: true, force: true });
+    try {
+      rmSync(tmpBundle, { recursive: true, force: true });
+    } catch (e) {
+      console.warn(`okf-eval: tmpBundle cleanup warn: ${e.message}`);
+    }
   }
 
   // =========================================================================
@@ -218,7 +265,9 @@ export default async function () {
 
   // Check 3 — drift gate: committed bundle must match freshly generated output.
   // Equivalent to `just knowledge-check` (node scripts/okf-export.mjs docs/knowledge --check).
-  const driftResult = runExport(['docs/knowledge', '--check']);
+  // Use the absolute BUNDLE_DIR constant (not a relative path) for robustness against
+  // any future change to the cwd passed to runExport.
+  const driftResult = runExport([BUNDLE_DIR, '--check']);
   if (driftResult.code !== 0) {
     return {
       name,
