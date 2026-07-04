@@ -110,4 +110,14 @@ cache-on:
 smoke-republish:
     bash scripts/smoke-republish.sh "${STDB_SERVER:-http://127.0.0.1:3000}" "${MR_SMOKE_DB:-monster-realm-smoke}"
 
+# Regenerate the committed docs/knowledge/ OKF bundle from server-module source.
+# Run after schema/reducer changes. Bundle is diff-reviewable; drift fails CI via
+# the knowledge-bundle-conformance eval (M8.95b).
+knowledge:
+    node scripts/okf-export.mjs docs/knowledge
+
+# Drift-check the committed bundle against a fresh generation; exit 1 if stale.
+knowledge-check:
+    node scripts/okf-export.mjs docs/knowledge --check
+
 ci: lint typecheck test eval security wasm client-typecheck client-test
