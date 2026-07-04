@@ -491,6 +491,31 @@ fn shop_tables_are_public() {
     );
 }
 
+// ===========================================================================
+// M13c: economy sinks/sources wiring structural tests (ADR-0083)
+//
+// These tests use include_str! to inspect raising.rs, npc.rs, and battle.rs
+// source text, verifying that the three remaining economy sinks/sources are
+// wired through the ADR-0081 currency helpers.
+//
+// Pattern (same as M13b tests 7 and 8): find `fn <name>` in the source text,
+// then look for the required pattern AFTER that marker using `&source[fn_pos..]`.
+// String literals are assembled from parts so this test file cannot self-match
+// in future source scans.
+//
+// RED state: all four tests are red until the implementer:
+//   - Adds `spend_currency` + `require_owner` (before spend) inside `heal_party`
+//     in server-module/src/raising.rs
+//   - Adds `grant_currency` inside `apply_quest_trigger` in server-module/src/npc.rs
+//   - Adds `grant_currency` inside `write_back_battle_results` in server-module/src/battle.rs
+// ===========================================================================
+
+/// Include the source files for structural inspection.
+/// These statics are used by M13c tests 9-12.
+const RAISING_SOURCE: &str = include_str!("raising.rs");
+const NPC_SOURCE: &str = include_str!("npc.rs");
+const BATTLE_SOURCE: &str = include_str!("battle.rs");
+
 // ---------------------------------------------------------------------------
 // Test 12: ItemRow has sell_price field in schema.rs
 // ---------------------------------------------------------------------------
@@ -544,5 +569,229 @@ fn item_row_has_sell_price() {
          the sell reducer looks up the sell price from the ItemRow, not from game-core directly. \
          Add: `pub sell_price: u64,` to ItemRow.",
         sell_price_field
+    );
+}
+
+// ===========================================================================
+// M13c tests 13-16: economy sinks/sources wiring
+// (labeled 13-16 to follow the existing M13a/M13b numbering in this file)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// M13c Test 13: heal_party calls spend_currency
+// (EARS-HEAL-1: heal costs are deducted before healing)
+// ---------------------------------------------------------------------------
+
+/// M13c (EARS-HEAL-1): `raising.rs` must contain `spend_currency` after the
+/// `fn heal_party` declaration — the heal reducer must deduct a currency cost
+/// from the player's wallet before healing (ADR-0083).
+///
+/// TEETH: if `spend_currency` is removed from `heal_party`, this test fails
+/// with "spend_currency not found inside the heal_party body". A heal-for-free
+/// impl that skips the deduction entirely is caught here.
+#[test]
+fn heal_party_calls_spend_currency() {
+    let fn_marker = ["fn heal", "_party"].concat();
+    let fn_pos = RAISING_SOURCE.find(fn_marker.as_str()).expect(
+        "TEETH(M13c EARS-HEAL-1): fn heal_party not found in raising.rs — \
+             the heal_party reducer must exist in raising.rs",
+    );
+
+    let after_fn = &RAISING_SOURCE[fn_pos..];
+    let spend_pat = ["spend", "_currency"].concat();
+
+    assert!(
+        after_fn.contains(spend_pat.as_str()),
+        "TEETH(M13c EARS-HEAL-1): `{}` not found in raising.rs after `fn heal_party` — \
+         heal_party must call spend_currency to deduct the heal cost from the player's wallet \
+         (ADR-0083). Add: `spend_currency(ctx, me, loc.cost_currency)?;` inside heal_party.",
+        spend_pat
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M13c Test 14: require_owner appears before spend_currency in heal_party
+// (EARS-HEAL-SEC-1: ownership check gates every wallet spend)
+// ---------------------------------------------------------------------------
+
+/// M13c (EARS-HEAL-SEC-1): inside `heal_party`, `require_owner` must appear
+/// BEFORE `spend_currency`. The ADR-0081 forward obligation for spend paths
+/// mandates that ownership is verified before any wallet debit.
+///
+/// This test walks the heal_party function body (from `fn heal_party` to the
+/// next fn declaration) and asserts the byte-offset of `require_owner` is less
+/// than the byte-offset of `spend_currency`.
+///
+/// TEETH: swapping the order (spend first, then require_owner) makes this test
+/// fail — a rogue caller could drain the wallet before the ownership check fires.
+/// Also fails if either call is missing from the body.
+#[test]
+fn require_owner_before_spend_in_heal_party() {
+    let fn_marker = ["fn heal", "_party"].concat();
+    let fn_pos = RAISING_SOURCE
+        .find(fn_marker.as_str())
+        .expect("TEETH(M13c EARS-HEAL-SEC-1): fn heal_party not found in raising.rs");
+
+    // Walk brace-depth from the opening `{` of heal_party to find the body.
+    let after_decl = &RAISING_SOURCE[fn_pos..];
+    let open_offset = after_decl
+        .find('{')
+        .expect("heal_party function body opening brace not found");
+    let open_abs = fn_pos + open_offset;
+
+    let mut depth: usize = 0;
+    let mut close_abs = open_abs;
+    for (i, ch) in RAISING_SOURCE[open_abs..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close_abs = open_abs + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let body = &RAISING_SOURCE[open_abs..=close_abs];
+
+    let require_owner_pat = ["require", "_owner"].concat();
+    let spend_pat = ["spend", "_currency"].concat();
+
+    let ro_pos = body.find(require_owner_pat.as_str()).expect(
+        "TEETH(M13c EARS-HEAL-SEC-1): require_owner not found inside the heal_party body — \
+         add `require_owner(ctx, \"heal_party\", ctx.sender);` before spend_currency",
+    );
+    let spend_pos = body.find(spend_pat.as_str()).expect(
+        "TEETH(M13c EARS-HEAL-SEC-1): spend_currency not found inside the heal_party body — \
+         heal_party must call spend_currency to deduct the heal cost",
+    );
+
+    assert!(
+        ro_pos < spend_pos,
+        "TEETH(M13c EARS-HEAL-SEC-1): require_owner (at body-offset {ro_pos}) must appear \
+         BEFORE spend_currency (at body-offset {spend_pos}) in heal_party — \
+         the ownership check must gate the wallet debit (ADR-0081 spend-path obligation). \
+         Swapping the order allows a rogue caller to drain the wallet before rejection."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M13c Test 15: apply_quest_trigger calls grant_currency on quest completion
+// (EARS-QUEST-REWARD-1)
+// ---------------------------------------------------------------------------
+
+/// M13c (EARS-QUEST-REWARD-1): `npc.rs` must contain `grant_currency` after the
+/// `fn apply_quest_trigger` declaration — on `QuestAdvance::QuestComplete`,
+/// `apply_quest_trigger` must call `grant_currency(ctx, owner, reward.currency)`
+/// (ADR-0083).
+///
+/// TEETH: removing the `grant_currency` call from `apply_quest_trigger` means
+/// quest completion never credits the player's wallet. This test fails with
+/// "grant_currency not found inside the apply_quest_trigger body".
+/// A quest that grants XP/items but silently drops the currency reward is caught here.
+#[test]
+fn apply_quest_trigger_calls_grant_currency() {
+    let fn_marker = ["fn apply_quest", "_trigger"].concat();
+    let fn_pos = NPC_SOURCE.find(fn_marker.as_str()).expect(
+        "TEETH(M13c EARS-QUEST-REWARD-1): fn apply_quest_trigger not found in npc.rs — \
+             the function must exist in npc.rs",
+    );
+
+    // Walk brace-depth to isolate the function body.
+    let after_decl = &NPC_SOURCE[fn_pos..];
+    let open_offset = after_decl
+        .find('{')
+        .expect("apply_quest_trigger function body opening brace not found");
+    let open_abs = fn_pos + open_offset;
+
+    let mut depth: usize = 0;
+    let mut close_abs = open_abs;
+    for (i, ch) in NPC_SOURCE[open_abs..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close_abs = open_abs + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let body = &NPC_SOURCE[open_abs..=close_abs];
+    let grant_pat = ["grant", "_currency"].concat();
+
+    assert!(
+        body.contains(grant_pat.as_str()),
+        "TEETH(M13c EARS-QUEST-REWARD-1): `{}` not found inside the apply_quest_trigger body \
+         in npc.rs — on QuestAdvance::QuestComplete, apply_quest_trigger must call \
+         grant_currency(ctx, owner, reward.currency) to credit the player's wallet (ADR-0083). \
+         Add: `grant_currency(ctx, owner, reward.currency);` inside the QuestComplete arm.",
+        grant_pat
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M13c Test 16: write_back_battle_results calls grant_currency on battle win
+// (EARS-BATTLE-REWARD-1)
+// ---------------------------------------------------------------------------
+
+/// M13c (EARS-BATTLE-REWARD-1): `battle.rs` must contain `grant_currency` after
+/// the `fn write_back_battle_results` declaration — on a win (`SideAWins`),
+/// the function must call `grant_currency(ctx, battle.player_identity, reward)`
+/// where `reward = game_core::battle_currency_reward(loser_bst)` (ADR-0083).
+///
+/// TEETH: removing the `grant_currency` call from `write_back_battle_results`
+/// means battle victories never credit the player's wallet. This test fails with
+/// "grant_currency not found inside the write_back_battle_results body".
+/// An XP-only reward impl that silently drops the currency reward is caught here.
+#[test]
+fn write_back_battle_results_calls_grant_currency() {
+    let fn_marker = ["fn write_back_battle", "_results"].concat();
+    let fn_pos = BATTLE_SOURCE.find(fn_marker.as_str()).expect(
+        "TEETH(M13c EARS-BATTLE-REWARD-1): fn write_back_battle_results not found in battle.rs — \
+             the function must exist in battle.rs",
+    );
+
+    // Walk brace-depth to isolate the function body.
+    let after_decl = &BATTLE_SOURCE[fn_pos..];
+    let open_offset = after_decl
+        .find('{')
+        .expect("write_back_battle_results function body opening brace not found");
+    let open_abs = fn_pos + open_offset;
+
+    let mut depth: usize = 0;
+    let mut close_abs = open_abs;
+    for (i, ch) in BATTLE_SOURCE[open_abs..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close_abs = open_abs + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let body = &BATTLE_SOURCE[open_abs..=close_abs];
+    let grant_pat = ["grant", "_currency"].concat();
+
+    assert!(
+        body.contains(grant_pat.as_str()),
+        "TEETH(M13c EARS-BATTLE-REWARD-1): `{}` not found inside the write_back_battle_results \
+         body in battle.rs — on a SideAWins outcome, the function must call \
+         grant_currency(ctx, battle.player_identity, reward) where reward is computed via \
+         game_core::battle_currency_reward(loser_bst) (ADR-0083, once per battle win not per \
+         monster). Add: `grant_currency(ctx, player, game_core::battle_currency_reward(bst));` \
+         inside the SideAWins block.",
+        grant_pat
     );
 }

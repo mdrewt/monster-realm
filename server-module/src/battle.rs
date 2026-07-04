@@ -9,6 +9,7 @@
 //! ADR-0056 — keep it stable; it could only be wired once the `battle` table
 //! relocated to `schema.rs` (the M8.9a table-name collision constraint).
 
+use crate::economy::grant_currency;
 use crate::guards::{
     check_monster_in_party, check_party_size, check_team_coupling, log_reject, require_owner,
 };
@@ -23,8 +24,8 @@ use crate::schema::{
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
 use game_core::{
-    apply_xp_gain, battle_xp_reward, load_evolutions, resolve_turn, BattleOutcome, BattleSide,
-    BattleState, Level, StatBlock, TurnChoice, TurnVariance,
+    apply_xp_gain, battle_currency_reward, battle_xp_reward, load_evolutions, resolve_turn,
+    BattleOutcome, BattleSide, BattleState, Level, StatBlock, TurnChoice, TurnVariance,
 };
 use spacetimedb::{Identity, ReducerContext, Table};
 
@@ -819,6 +820,7 @@ pub(crate) fn write_back_battle_results(
             ctx.db.monster().monster_id().update(m);
             ctx.db.monster_pub().monster_id().update(pub_row);
         }
+        grant_currency(ctx, player, battle_currency_reward(bst));
     }
 
     Ok(())

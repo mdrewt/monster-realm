@@ -4,6 +4,7 @@
 //! reducers (`talk`, `advance_dialogue`, `dismiss_dialogue`), quest trigger
 //! application, and dialogue state marshal helpers.
 
+use crate::economy::grant_currency;
 use crate::inventory::grant_item;
 use crate::schema::{
     character, npc, player, player_conversation, player_dialogue_state, player_quest,
@@ -177,6 +178,7 @@ fn apply_quest_trigger(
                 for item in &reward.items {
                     grant_item(ctx, owner, item.item_id, item.qty);
                 }
+                grant_currency(ctx, owner, reward.currency);
                 // GrantXp deferred to M12b-tail (D-4).
             }
         }

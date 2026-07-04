@@ -71,6 +71,7 @@ fn simple_one_step_quest(quest_id: &str, npc_id: &str) -> QuestDef {
         reward: QuestReward {
             xp: 50,
             items: vec![],
+            currency: 0,
         },
     }
 }
@@ -96,6 +97,7 @@ fn two_step_quest() -> QuestDef {
         reward: QuestReward {
             xp: 100,
             items: vec![RewardItem { item_id: 1, qty: 3 }],
+            currency: 0,
         },
     }
 }
@@ -145,6 +147,7 @@ fn can_start_quest_condition_blocks() {
         reward: QuestReward {
             xp: 0,
             items: vec![],
+            currency: 0,
         },
     };
     let state = empty_state(); // "talked_elder" NOT set
@@ -174,6 +177,7 @@ fn can_start_quest_condition_met() {
         reward: QuestReward {
             xp: 0,
             items: vec![],
+            currency: 0,
         },
     };
     let state = state_with_flag("talked_elder"); // condition is met
@@ -410,6 +414,7 @@ fn process_trigger_reward_correct() {
         reward: QuestReward {
             xp: 100,
             items: vec![RewardItem { item_id: 1, qty: 3 }],
+            currency: 0,
         },
     };
     let progress = on_step("reward_quest", 0);
@@ -454,6 +459,7 @@ fn process_trigger_step_conditions_block() {
         reward: QuestReward {
             xp: 200,
             items: vec![],
+            currency: 0,
         },
     };
     let progress = on_step("gated_step", 0);
@@ -539,6 +545,7 @@ fn quest_complete_reward_items_are_all_present() {
                     qty: 2,
                 },
             ],
+            currency: 0,
         },
     };
     let progress = on_step("multi_reward", 0);
