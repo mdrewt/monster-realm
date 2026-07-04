@@ -21,8 +21,17 @@ if (files.length === 0) {
 
 let failed = 0;
 for (const f of files) {
-  const mod = await import(pathToFileURL(path.join(dir, f)).href);
-  const res = await mod.default();
+  // M10.5d: per-eval try/catch so one throwing eval does not abort the loop and
+  // hide later results. A thrower records a synthetic pass:false and the loop
+  // continues. The non-zero exit at the end still fires because failed > 0.
+  let res;
+  try {
+    const mod = await import(pathToFileURL(path.join(dir, f)).href);
+    res = await mod.default();
+  } catch (err) {
+    console.error(`eval THREW: ${f} — ${err?.stack ?? err}`);
+    res = { name: f, pass: false, detail: `threw: ${err?.message ?? err}` };
+  }
   const ok = res.pass ? 'PASS' : 'FAIL';
   console.log(`eval ${ok}: ${res.name}${res.detail ? ` — ${res.detail}` : ''}`);
   if (!res.pass) failed++;

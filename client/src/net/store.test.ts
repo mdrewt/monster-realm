@@ -2089,3 +2089,88 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     expect((s as unknown as Record<string, Function>).npc(1n)).toBeDefined();
   });
 });
+
+// =============================================================================
+// M10.5d: AuthoritativeStore flushBatch per-listener isolation (closes M8.8e residual)
+// SOURCE OF TRUTH: M10.5d EARS criterion 10.5d-3
+//
+// RED REASON (before impl): flushBatch currently iterates listeners with a bare
+// `for (const cb of [...this.#batchListeners]) cb()`. A throwing listener exits
+// the loop immediately — all subsequent listeners (siblings) are never called.
+// This is the M8.8e residual: "store.flushBatch has NO per-listener isolation
+// (a throwing batch listener starves siblings) → pending store.ts follow-up".
+//
+// After fix: each listener call is wrapped in its own try/catch (log + continue),
+// so a throwing listener is caught and logged, and the loop continues to call
+// all remaining siblings.
+//
+// BITES: the three tests below will FAIL against the current implementation:
+//   Test 1 — sibling is NOT called (starvation proof)
+//   Test 2 — console.error is NOT called (no log proof)
+//   Test 3 — flushBatch DOES throw (propagation proof)
+// =============================================================================
+
+describe('AuthoritativeStore: flushBatch per-listener isolation (M10.5d — closes M8.8e residual)', () => {
+  it('BITES: a throwing first listener does NOT starve the sibling listener', () => {
+    // Wrong impl killed: `for (const cb of [...this.#batchListeners]) cb()`
+    // — when the first cb() throws, the loop exits and the sibling is never called.
+    // After fix (try/catch per listener): the throw is caught and the loop continues,
+    // so the sibling is always called regardless of the first listener's outcome.
+    const s = new AuthoritativeStore();
+    const sibling = vi.fn();
+
+    // Register a throwing listener FIRST, then the sibling.
+    s.onBatchApplied(() => {
+      throw new Error('listener-throws');
+    });
+    s.onBatchApplied(sibling);
+
+    // Mark dirty so flushBatch has work to do (a clean store returns early).
+    s.upsertCharacter(char(1n, 0, 0), 100);
+
+    // Current impl: sibling is NOT called (starvation). After fix: sibling IS called.
+    s.flushBatch();
+    expect(sibling).toHaveBeenCalledTimes(1);
+  });
+
+  it('BITES: a throwing listener causes console.error to be called once', () => {
+    // Wrong impl killed: the throw propagates uncaught — console.error is never reached.
+    // After fix: the catch block logs via console.error before continuing.
+    const s = new AuthoritativeStore();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    s.onBatchApplied(() => {
+      throw new Error('listener-throws-for-log-check');
+    });
+
+    s.upsertCharacter(char(2n, 1, 0), 100);
+
+    // Current impl: throws propagate — console.error is never called. After fix: logged once.
+    s.flushBatch();
+    expect(errSpy).toHaveBeenCalledTimes(1);
+
+    errSpy.mockRestore();
+  });
+
+  it('BITES: flushBatch itself does NOT throw when a listener throws (isolation boundary)', () => {
+    // Wrong impl killed: the throw from cb() propagates out of flushBatch to the caller.
+    // The connection adapter calls flushBatch in every transaction; an uncaught throw
+    // would crash the adapter's event loop and freeze the entire game.
+    // After fix: the try/catch boundary ensures flushBatch always completes normally.
+    const s = new AuthoritativeStore();
+    const sibling = vi.fn();
+
+    s.onBatchApplied(() => {
+      throw new Error('listener-throws-propagation-check');
+    });
+    s.onBatchApplied(sibling);
+
+    s.upsertCharacter(char(3n, 2, 0), 100);
+
+    // Current impl: flushBatch DOES throw (propagates from cb()). After fix: does NOT throw.
+    expect(() => s.flushBatch()).not.toThrow();
+
+    // Sibling must also have been reached (combined isolation assertion).
+    expect(sibling).toHaveBeenCalledTimes(1);
+  });
+});

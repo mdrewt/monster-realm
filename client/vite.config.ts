@@ -21,6 +21,11 @@ export default defineConfig({
   // is Playwright's (a different runner, driven by `npm run e2e`).
   test: {
     include: ['src/**/*.test.ts'],
+    // A stray `.only` / `it.only` / `describe.only` must FAIL the run, never
+    // silently narrow the gate to a single test and produce a false-green build.
+    // M10.5d: Verified 2026-07-04 — adding `it.only(...)` locally causes
+    // `npm test` to exit non-zero with "allowOnly is false" diagnostic.
+    allowOnly: false,
     // Coverage scope for the nightly `just coverage` line-threshold gate (ADR-0050).
     // The gate measures HAND-WRITTEN, UNIT-TESTABLE product LOGIC, so it must scope
     // to that — otherwise it is dominated by code vitest is not responsible for
