@@ -9,8 +9,12 @@
 > content integrity"). This project-side ADR records the *content-shape / realization*
 > decisions that ADR-0019 left open and that the M10a-content slice's `touches:` boundary
 > forced. Project `docs/adr/` numbering has diverged from the corpus (see ADR-0057's note);
-> the next-free project number is **0060**. This file is the project-side SSOT; corpus
-> ADR-0019 is the model authority it implements.
+> see `docs/adr/README.md` for the current next-free number. This file is the project-side
+> SSOT; corpus ADR-0019 is the model authority it implements.
+>
+> **Spec-corpus crosswalk (for reviewers reading cold):** corpus ADR-0018 (inventory & item
+> model) → project ADRs 0058–0059; corpus ADR-0019 (evolution & fusion model) → project
+> ADRs 0060–0062.
 
 ## Context and problem statement
 
