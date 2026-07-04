@@ -4733,4 +4733,82 @@ mod tests {
              that targets the second 'start' node silently broken."
         );
     }
+
+    // =======================================================================
+    // === M10.5a: empty-moveset content invariant ===
+    //
+    // EARS criteria covered:
+    //   10.5a-1 (WHERE): validate_content with a Species having
+    //     learnable_skill_ids: [] → Err.
+    //   10.5a-1-pos: validate_content with a Species having ≥1 learnable skill
+    //     (which exists in the skill registry) → Ok (no over-rejection).
+    //
+    // Upstream panic site: game-core/src/combat/ai.rs `pick_best_skill` calls
+    //   .expect("attacker must have at least one known skill in the skill registry")
+    // The guard in the cross-check loop (section 3 of validate_content) prevents
+    // empty-moveset species from reaching that panic site at runtime.
+    //
+    // RED state: the cross-check loop currently only checks for dangling skill
+    // references. It does NOT check `learnable_skill_ids.is_empty()`. Therefore:
+    //   - m10_5a_validate_content_rejects_empty_learnable_skill_ids:
+    //       assert!(result.is_err()) FAILS because validate_content returns Ok.
+    //   - m10_5a_validate_content_accepts_nonempty_learnable_skill_ids:
+    //       assert!(result.is_ok()) PASSES already (positive test is green).
+    //
+    // GREEN state after the guard is added: both tests pass.
+    // =======================================================================
+
+    /// M10.5a-1 (WHERE): validate_content must return Err for a species whose
+    /// learnable_skill_ids list is empty.
+    ///
+    /// This fixture is carefully constructed to avoid all earlier error paths:
+    ///   - unique species id (99, used nowhere else in this test)
+    ///   - all non-zero base stats (valid_base_stats())
+    ///   - the skills slice contains skill id 1 (so the id-existence cross-check
+    ///     for other species would pass; this species has none to check, which is
+    ///     exactly the bug — the empty list slips through the current loop)
+    ///
+    /// PROOF-OF-TEETH: removing the `learnable_skill_ids.is_empty()` guard causes
+    /// validate_content to return Ok for this fixture. The assert!(result.is_err())
+    /// then FAILS, turning this test RED — proving the guard has bite.
+    ///
+    /// Kills: any validate_content that only cross-checks referenced skill ids
+    /// without also rejecting species with no learnable skills at all.
+    #[test]
+    fn m10_5a_validate_content_rejects_empty_learnable_skill_ids() {
+        // A species with an EMPTY learnable moveset — no other validation error.
+        // unique id=99, valid stats, no learnable_skill_ids: [] (the bug).
+        let sp = fixture_species(99, vec![]);
+        // Provide one real skill so the registry is non-empty — the species
+        // above does not reference it, so dangling-ref is not the trigger.
+        let sk = fixture_skill(1);
+        let result = validate_content(&[sp], &[sk], &[], &[]);
+        assert!(
+            result.is_err(),
+            "M10.5a-1 TEETH: validate_content must return Err for a species with \
+             learnable_skill_ids: [] (empty moveset); current impl returns Ok because \
+             the cross-check loop only validates referenced ids and silently skips \
+             species that reference nothing — this assertion fails without the guard"
+        );
+    }
+
+    /// M10.5a-1-pos (no over-rejection): validate_content must return Ok for a
+    /// species with exactly one learnable skill that exists in the skill registry.
+    ///
+    /// Kills: a vacuous guard that rejects ALL species regardless of moveset size,
+    /// which would make this positive test RED and break the happy path.
+    #[test]
+    fn m10_5a_validate_content_accepts_nonempty_learnable_skill_ids() {
+        // Species with exactly one learnable skill id (1), which is present in the
+        // skill registry. This is the minimal valid moveset shape.
+        let sp = fixture_species(99, vec![1]);
+        let sk = fixture_skill(1);
+        let result = validate_content(&[sp], &[sk], &[], &[]);
+        assert!(
+            result.is_ok(),
+            "M10.5a-1-pos: validate_content must accept a species with \
+             learnable_skill_ids: [1] when skill 1 exists; got Err: {:?}",
+            result.err()
+        );
+    }
 }
