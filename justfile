@@ -106,6 +106,7 @@ cache-on:
 # CONTENT_VERSION to force a re-seed via sync_content; restores lib.rs on exit.
 # Uses an isolated DB name (MR_SMOKE_DB; default: monster-realm-smoke) so it
 # never collides with the regular dev/e2e database.
+# macOS: uses GNU sed (sed -i without suffix); install via: brew install gnu-sed.
 smoke-republish:
     bash scripts/smoke-republish.sh "${STDB_SERVER:-http://127.0.0.1:3000}" "${MR_SMOKE_DB:-monster-realm-smoke}"
 

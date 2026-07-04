@@ -52,7 +52,7 @@ it up as a priority target on the next supervision tick.
 5. **Rebuild + republish WITHOUT `--delete-data`** → module binary now embeds
    `CONTENT_VERSION = V+1`; existing table rows (incl. the player) are preserved.
 6. **Call `sync_content`** → `sync_content_inner` detects `cfg.content_version`
-   (still `V`) ≠ `CONTENT_VERSION` (`V+100`) and re-seeds all registries.
+   (still `V`) ≠ `CONTENT_VERSION` (`V+1`) and re-seeds all registries.
 7. **Assert data survived** → `spacetime sql "SELECT monster_id FROM monster"`
    still returns at least one numeric row (starter monster persists across republish).
 8. **Assert new content served** → `spacetime sql "SELECT content_version FROM config"`

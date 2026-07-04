@@ -274,6 +274,14 @@ jobs:
         'scripts/smoke-republish.sh is empty or missing #!/usr/bin/env bash shebang — the committed file is not a valid smoke script',
     };
   }
+  if (!scriptContent.includes('set -euo pipefail')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'scripts/smoke-republish.sh is missing set -euo pipefail — error-handling posture must be enforced',
+    };
+  }
 
   try {
     adrContent = readFileSync(adrPath, 'utf8');
