@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: species_row
 slug: tables/species_row
-updated: 2026-07-03
+updated: 2026-07-04
 tags: [schema, spacetimedb, public]
 abstract: "Species definitions seeded from the `game-core` RON registry by `sync_content`."
 resource: server-module/src/schema.rs#L77

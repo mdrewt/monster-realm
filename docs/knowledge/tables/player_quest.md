@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: player_quest
 slug: tables/player_quest
-updated: 2026-07-03
+updated: 2026-07-04
 tags: [schema, spacetimedb, public]
 abstract: "Active quest progress. Public (quest log is world-readable like `inventory`). Per-owner transport RLS deferred to M16."
 resource: server-module/src/schema.rs#L342

@@ -381,3 +381,22 @@ pub struct HealCooldown {
     pub owner_identity: Identity,
     pub last_heal_at_ms: i64,
 }
+
+// --- M13a currency table (ADR-0081) ------------------------------------------
+
+/// PRIVATE per-player wallet — one row per player (PK = owner_identity).
+/// Balance is MUST-NEVER-LEAK: no `public`, no projection, no RLS filter
+/// (ADR-0015/ADR-0081). The single-surface discipline (ADR-0081) requires all
+/// balance mutations to route through `economy::grant_currency` /
+/// `economy::spend_currency` → `game_core::currency::apply_grant` /
+/// `game_core::currency::apply_spend`.
+///
+/// STUB: this table declaration is additive (ADR-0006). The implementer must
+/// leave it WITHOUT the `public` attribute (privacy invariant test bites if
+/// `public` is added).
+#[spacetimedb::table(name = player_wallet)]
+pub struct PlayerWallet {
+    #[primary_key]
+    pub owner_identity: Identity,
+    pub balance: u64,
+}

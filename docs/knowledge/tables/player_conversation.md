@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: player_conversation
 slug: tables/player_conversation
-updated: 2026-07-03
+updated: 2026-07-04
 tags: [schema, spacetimedb, public]
 abstract: "In-progress dialogue node. Single row per player (PK = owner_identity)."
 resource: server-module/src/schema.rs#L354

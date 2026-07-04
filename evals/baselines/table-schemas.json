@@ -209,6 +209,13 @@
       "step_index": "u32"
     }
   },
+  "player_wallet": {
+    "pk": "owner_identity",
+    "columns": {
+      "owner_identity": "Identity",
+      "balance": "u64"
+    }
+  },
   "skill_row": {
     "pk": "id",
     "columns": {
