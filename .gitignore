@@ -18,6 +18,9 @@ pkg/
 # regenerate with `npm run gen` (spacetime generate) and commit the diff.
 
 # ── Frontend / bundler ────────────────────────────────
+# Both forms: trailing-slash matches dirs, bare name matches symlinks
+# (worktrees symlink node_modules to the main checkout's copy).
+node_modules
 node_modules/
 dist/
 build/
