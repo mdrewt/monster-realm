@@ -714,9 +714,12 @@ fn m13_5c_sync_content_zero_identity_err_prescribes_delete_data() {
     // excludes the `_inner` name). Same needle shape as the 12.5b-1 guard.
     // Built with concat! so this test file never contains the contiguous
     // substring `fn sync_content(`: zone-warp-server-runtime.eval.mjs
-    // extracts the FIRST such match over sorted-concatenated src/** and
-    // content_tests.rs sorts before lib.rs — a plain literal here would
-    // shadow the real reducer body.
+    // extracts the FIRST such match over the sorted concatenation of the
+    // server sources, and content_tests.rs sorts before lib.rs — a plain
+    // literal here would shadow the real reducer body. (Do not write a
+    // block-comment opener or a double-star glob in comments here: the
+    // eval strippers remove block comments before line comments, so such
+    // a token inside a line comment swallows every later source file.)
     let body = m13_5c_fn_body(&stripped, concat!("pub fn sync_content", "(ctx:"));
 
     assert!(
