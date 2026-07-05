@@ -438,3 +438,344 @@ fn compute_evolves_to_handles_bond_trigger_in_recompute_path() {
          Kills: a recompute impl that only checks level-based triggers."
     );
 }
+
+// ===========================================================================
+// M13.5c gating tests — content lifecycle completion.
+//
+// EARS 13.5c-2: WHEN a zone is removed from the zone RON, sync_content must
+//   delete its zone_def row AND no movement_tick_schedule row for that zone
+//   remains after the sync.
+// EARS 13.5c-4: the zero-owner-identity Err path in `sync_content` (lib.rs)
+//   must prescribe the ONLY working remedy (`spacetime publish --delete-data`)
+//   and must NOT keep the impossible "re-publish to register" prescription
+//   (init only runs at DB creation; a plain re-publish never re-registers).
+//
+// RED state (2026-07-05):
+//   - `super::stale_zone_def_ids` and `crate::plan_schedule_reconcile` do not
+//     exist → this module fails to COMPILE (valid RED per the m7b convention:
+//     compile-fail on a missing seam is red-for-the-right-reason).
+//   - The two source-guards below are assertion-RED once the seams compile:
+//     lib.rs still says "re-publish to register", and sync_content_inner
+//     neither calls stale_zone_def_ids nor deletes zone_def rows.
+//
+// NOTE on the spec's type name: the plan says `loaded: &[Zone]`, but game-core
+// has no `Zone` struct — the type `game_core::load_zones()` returns is
+// `game_core::ZoneDef` (id/name/width/height). These tests target ZoneDef so
+// the seam plugs into sync_content_inner's real load path without an adapter
+// (correction strengthens the bite; a phantom-`Zone` seam could never be wired).
+// ===========================================================================
+
+/// Minimal loaded-zone fixture (shape of what `load_zones()` yields).
+fn m13_5c_zone(id: u32) -> game_core::ZoneDef {
+    game_core::ZoneDef {
+        id,
+        name: format!("TestZone{id}"),
+        width: 8,
+        height: 8,
+    }
+}
+
+/// 13.5c-2: a zone_id present in the DB (`existing`) but absent from the
+/// loaded RON must be reported stale.
+///
+/// KILLS: the current implementation shape (upsert-only seeding loop) — with
+/// no diff seam at all this module does not compile; a seam that returns
+/// only additions (or always-empty) fails the assert_eq.
+#[test]
+fn m13_5c_stale_zone_def_ids_detects_removed_zone() {
+    let existing: Vec<u32> = vec![1, 2, 3];
+    let loaded = vec![m13_5c_zone(1), m13_5c_zone(3)]; // zone 2 removed from RON
+
+    let stale = super::stale_zone_def_ids(&existing, &loaded);
+
+    assert_eq!(
+        stale,
+        vec![2u32],
+        "TEETH(13.5c-2): zone 2 exists in the DB but not in the loaded RON — \
+         stale_zone_def_ids must return exactly [2]; an upsert-only sync \
+         (no set-difference) never reports it and the dead zone_def row \
+         survives forever"
+    );
+}
+
+/// 13.5c-2: identical sets (regardless of order) → nothing is stale.
+///
+/// KILLS: an order-sensitive diff (e.g. positional zip of the two lists) —
+/// `loaded` is deliberately shuffled relative to `existing`, so a positional
+/// comparison reports phantom staleness and deletes a LIVE zone.
+#[test]
+fn m13_5c_stale_zone_def_ids_identical_sets_yield_empty() {
+    let existing: Vec<u32> = vec![1, 2, 3];
+    let loaded = vec![m13_5c_zone(3), m13_5c_zone(1), m13_5c_zone(2)]; // shuffled
+
+    let stale = super::stale_zone_def_ids(&existing, &loaded);
+
+    assert!(
+        stale.is_empty(),
+        "TEETH(13.5c-2): identical id sets (order-independent) must yield an \
+         empty stale list; got {stale:?} — a positional diff would delete a \
+         live zone's row"
+    );
+}
+
+/// 13.5c-2: output is sorted ascending (deterministic reducer behavior —
+/// HashSet iteration order must not leak into the delete sequence).
+///
+/// KILLS: an impl that collects the set difference straight out of a
+/// HashSet iterator (nondeterministic order) or preserves `existing`'s
+/// insertion order (9, 2, 7 here) without sorting.
+#[test]
+fn m13_5c_stale_zone_def_ids_output_sorted_ascending() {
+    let existing: Vec<u32> = vec![9, 2, 7, 5];
+    let loaded = vec![m13_5c_zone(7)]; // only zone 7 survives in RON
+
+    let stale = super::stale_zone_def_ids(&existing, &loaded);
+
+    assert_eq!(
+        stale,
+        vec![2u32, 5, 9],
+        "TEETH(13.5c-2 determinism): stale ids must come back sorted \
+         ascending [2, 5, 9]; unsorted output makes the delete sequence \
+         (and any downstream logging/replay) nondeterministic"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 13.5c-2: plan_schedule_reconcile — pure extraction of ensure_zone_schedules'
+// diff logic (lib.rs) so "no schedule row remains for a removed zone" is an
+// honest behavioral test, not a structural one.
+//
+// Contract: `crate::plan_schedule_reconcile(zone_ids: &[u32],
+//   scheduled: &[(u64, u32)]) -> (Vec<u64>, Vec<u32>)`
+// where `scheduled` is (schedule row id, zone_id) pairs; returns
+// (schedule row ids to remove, zone ids to add).
+// ---------------------------------------------------------------------------
+
+/// 13.5c-2 composed EARS scenario: zone 2's zone_def was removed → its
+/// schedule row (id=11) must be planned for removal, and applying the plan
+/// leaves NO schedule row pointing at zone 2.
+///
+/// KILLS: an insert-only reconcile (to_remove always empty) — row (11, 2)
+/// then survives the sync and fires `map_for` errors every tick forever.
+#[test]
+fn m13_5c_plan_schedule_reconcile_removes_row_for_deleted_zone() {
+    // Post-sync surviving zones: 1 and 3 (zone 2's zone_def was deleted).
+    let zone_ids: Vec<u32> = vec![1, 3];
+    let scheduled: Vec<(u64, u32)> = vec![(10, 1), (11, 2), (12, 3)];
+
+    let (to_remove, to_add) = crate::plan_schedule_reconcile(&zone_ids, &scheduled);
+
+    assert_eq!(
+        to_remove,
+        vec![11u64],
+        "TEETH(13.5c-2): zone 2 is gone from zone_ids while schedule row 11 \
+         targets it — to_remove must be exactly [11]; an insert-only \
+         reconcile leaves the orphan ticking"
+    );
+    assert!(
+        to_add.is_empty(),
+        "no zone is missing a schedule row here; got to_add={to_add:?}"
+    );
+
+    // Derive the EARS postcondition: after applying the plan, no schedule
+    // row for zone 2 remains.
+    let surviving: Vec<&(u64, u32)> = scheduled
+        .iter()
+        .filter(|(row_id, _)| !to_remove.contains(row_id))
+        .collect();
+    assert!(
+        surviving.iter().all(|(_, zone_id)| *zone_id != 2),
+        "TEETH(13.5c-2 postcondition): applying the plan must leave zero \
+         schedule rows for removed zone 2; survivors: {surviving:?}"
+    );
+}
+
+/// 13.5c-2: a zone present in zone_ids but with no schedule row must be
+/// planned for addition.
+///
+/// KILLS: a remove-only (or vacuous empty-plan) reconcile — a newly added
+/// zone would never get a movement tick and its NPCs would freeze.
+#[test]
+fn m13_5c_plan_schedule_reconcile_adds_unscheduled_zone() {
+    let zone_ids: Vec<u32> = vec![1, 2];
+    let scheduled: Vec<(u64, u32)> = vec![(10, 1)]; // zone 2 has no row yet
+
+    let (to_remove, to_add) = crate::plan_schedule_reconcile(&zone_ids, &scheduled);
+
+    assert_eq!(
+        to_add,
+        vec![2u32],
+        "TEETH(13.5c-2): zone 2 exists but is unscheduled — to_add must be \
+         exactly [2] or the new zone never ticks"
+    );
+    assert!(
+        to_remove.is_empty(),
+        "no schedule row is orphaned here; got to_remove={to_remove:?}"
+    );
+}
+
+/// 13.5c-2 idempotence: steady state (every zone scheduled exactly once,
+/// no orphans) → both plan halves empty.
+///
+/// KILLS: a churn reconcile (delete-all + reinsert-all every sync) — that
+/// would mint new schedule row ids and reset every zone's tick interval on
+/// each sync_content call.
+#[test]
+fn m13_5c_plan_schedule_reconcile_steady_state_is_empty() {
+    let zone_ids: Vec<u32> = vec![1, 2];
+    let scheduled: Vec<(u64, u32)> = vec![(10, 1), (11, 2)];
+
+    let (to_remove, to_add) = crate::plan_schedule_reconcile(&zone_ids, &scheduled);
+
+    assert!(
+        to_remove.is_empty() && to_add.is_empty(),
+        "TEETH(13.5c-2 idempotence): steady state must produce an empty plan; \
+         got to_remove={to_remove:?}, to_add={to_add:?} — a non-empty plan \
+         here means delete+reinsert churn on every sync"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M13.5c source-guards (strip + fn-window idiom, mirroring content.rs::tests).
+// Helpers are duplicated locally (same as raising_tests.rs) because the
+// inline `content.rs::tests` module is not importable from here.
+// ---------------------------------------------------------------------------
+
+const M13_5C_LIB_RS_SOURCE: &str = include_str!("lib.rs");
+const M13_5C_CONTENT_RS_SOURCE: &str = include_str!("content.rs");
+
+/// Strip Rust block + line comments, preserving byte positions (spaces).
+/// Local mirror of content.rs::tests::strip_rust_comments.
+fn m13_5c_strip_rust_comments(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = vec![b' '; len];
+    let mut i = 0;
+    while i < len {
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else {
+            out[i] = bytes[i];
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("stripped source must be valid UTF-8")
+}
+
+/// Extract the body of the fn whose declaration starts with `fn_needle`
+/// (fn-find + brace-walk, the content.rs:616 / lib.rs-guard idiom).
+fn m13_5c_fn_body<'a>(stripped: &'a str, fn_needle: &str) -> &'a str {
+    let fn_pos = stripped
+        .find(fn_needle)
+        .unwrap_or_else(|| panic!("fn declaration `{fn_needle}` must exist in the source"));
+    let after = &stripped[fn_pos..];
+    let brace_offset = after.find('{').expect("fn must have a body");
+    let body_start = fn_pos + brace_offset + 1;
+    let mut depth: usize = 1;
+    let mut end = stripped.len();
+    for (i, ch) in stripped[body_start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = body_start + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    &stripped[body_start..end]
+}
+
+/// EARS 13.5c-4: the zero-owner-identity Err path in `sync_content` must
+/// prescribe the working remedy: `spacetime publish --delete-data`.
+///
+/// KILLS: keeping (or rewording) the error without the only actionable
+/// instruction — `init` runs solely at DB creation, so a message lacking
+/// `--delete-data` leaves the operator with no working recovery path.
+/// RED today: lib.rs's Err string has no `--delete-data`.
+#[test]
+fn m13_5c_sync_content_zero_identity_err_prescribes_delete_data() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_LIB_RS_SOURCE);
+    // Needle matches the reducer, not sync_content_inner (the `(ctx:` suffix
+    // excludes the `_inner` name). Same needle shape as the 12.5b-1 guard.
+    let body = m13_5c_fn_body(&stripped, "pub fn sync_content(ctx:");
+
+    assert!(
+        body.contains("--delete-data"),
+        "TEETH(13.5c-4): the zero-owner_identity Err path in sync_content \
+         must name `spacetime publish --delete-data` — the ONLY operation \
+         that re-runs `init` and re-registers the owner; a plain re-publish \
+         never does. The string literal in the fn body must contain \
+         `--delete-data`."
+    );
+}
+
+/// EARS 13.5c-4 (negative): the impossible prescription must be GONE.
+///
+/// KILLS: the current lib.rs Err string ("...re-publish to register the
+/// owner") — following it re-publishes without --delete-data, init never
+/// re-runs, owner_identity stays zero, and sync_content fails identically
+/// forever. RED today: the fragment is present verbatim.
+#[test]
+fn m13_5c_sync_content_zero_identity_err_drops_republish_claim() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_LIB_RS_SOURCE);
+    let body = m13_5c_fn_body(&stripped, "pub fn sync_content(ctx:");
+
+    assert!(
+        !body.contains("re-publish to register"),
+        "TEETH(13.5c-4): sync_content's Err string still claims a plain \
+         re-publish registers the owner — that is false (init only runs at \
+         DB creation). Remove the `re-publish to register` prescription \
+         from the string (and fix the adjacent comment to match)."
+    );
+}
+
+/// EARS 13.5c-2 source-guard: `sync_content_inner`'s write phase must call
+/// the pure `stale_zone_def_ids` seam AND actually delete the stale rows
+/// via `ctx.db.zone_def().zone_id().delete(..)`.
+///
+/// Windowed to the fn body (fn-find + brace-walk) so mentions elsewhere in
+/// content.rs (including the seam's own definition) cannot false-green.
+/// Whitespace is compacted before matching so rustfmt line-wrapping of the
+/// accessor chain cannot false-red.
+///
+/// KILLS (needle 1): an impl that inlines ad-hoc diff logic in the shell
+/// instead of the unit-tested pure seam — the behavioral tests above would
+/// then be testing dead code.
+/// KILLS (needle 2): an impl that computes stale ids but never issues the
+/// delete (call without write), or deletes from the wrong table — the dead
+/// zone_def row would survive and keep the zone joinable.
+/// RED today: neither the seam nor any zone_def delete exists in the body.
+#[test]
+fn m13_5c_sync_content_inner_deletes_stale_zone_defs() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
+    let body = m13_5c_fn_body(&stripped, "fn sync_content_inner(ctx");
+    let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+
+    assert!(
+        compact.contains("stale_zone_def_ids("),
+        "TEETH(13.5c-2): sync_content_inner must compute stale zones via the \
+         pure `stale_zone_def_ids(` seam (production call inside the fn \
+         body) — ad-hoc shell diff logic bypasses the unit-tested rule"
+    );
+    assert!(
+        compact.contains("zone_def().zone_id().delete("),
+        "TEETH(13.5c-2): sync_content_inner must delete stale zone_def rows \
+         (`ctx.db.zone_def().zone_id().delete(..)`); computing the stale set \
+         without the delete leaves removed zones live in the DB"
+    );
+}

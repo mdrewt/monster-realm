@@ -1161,3 +1161,103 @@ fn m10_5a_battle_monster_from_row_accepts_nonempty_known_skills() {
         result.err()
     );
 }
+
+// =========================================================================
+// M13.5c gating tests (EARS 13.5c-3) — write_back_hp clamps to the ROW's
+// stat_hp.
+//
+// Scenario: a mid-battle content nerf (sync_content re-derive) lowered the
+// Monster row's stat_hp while the in-flight BattleMonster still carries the
+// OLD (higher) max_hp/current_hp. Writing bm.current_hp back unclamped
+// produces current_hp > stat_hp — an illegal row the battle engine and the
+// recompute clamp invariant (12.5b-3) both forbid.
+//
+// Clamp target is the ROW's stat_hp, NOT bm.max_hp (bm.max_hp is the stale
+// pre-nerf value). Note the write-back ordering caveat: correctness of the
+// clamp depends on write-back running BEFORE the XP/level-up re-derive
+// (battle.rs), which recomputes from the SSOT afterwards.
+//
+// RED state: marshal.rs:331-333 currently does an unclamped
+// `monster.current_hp = bm.current_hp;` → the first test fails (200 != 120).
+// =========================================================================
+
+/// EARS 13.5c-3: write_back_hp must clamp bm.current_hp to the row's stat_hp.
+///
+/// KILLS: the current unclamped write (`monster.current_hp = bm.current_hp;`)
+/// — it lands current_hp=200 on a stat_hp=120 row (illegal state).
+/// ALSO KILLS: an impl that clamps to `bm.max_hp` instead of the ROW's
+/// stat_hp — bm.max_hp is deliberately set to the stale 200 here, so a
+/// bm.max_hp clamp still writes 200 and this assertion fires.
+#[test]
+fn m13_5c_write_back_hp_clamps_to_row_stat_hp() {
+    let mut monster = m7b_test_monster_row(); // row stat_hp = 120 (post-nerf)
+    let bm = game_core::BattleMonster {
+        species_id: monster.species_id,
+        affinity: Affinity::Fire,
+        level: monster.level,
+        current_hp: 200, // battle HP derived from stale pre-nerf stats
+        max_hp: 200,     // stale pre-nerf max — NOT the clamp target
+        stats: game_core::StatBlock {
+            hp: 200, // stale pre-nerf derived HP
+            attack: monster.stat_attack,
+            defense: monster.stat_defense,
+            speed: monster.stat_speed,
+            sp_attack: monster.stat_sp_attack,
+            sp_defense: monster.stat_sp_defense,
+        },
+        known_skill_ids: vec![1],
+    };
+
+    write_back_hp(&mut monster, &bm);
+
+    assert_eq!(
+        monster.current_hp, 120,
+        "TEETH(13.5c-3): write_back_hp must clamp current_hp to the Monster \
+         ROW's stat_hp (120); an unclamped write lands 200 and violates the \
+         current_hp <= stat_hp invariant, got {}",
+        monster.current_hp
+    );
+    // stat_hp itself must never be modified by write-back (derived, not a
+    // battle value) — same contract as M7b-SM-2.
+    assert_eq!(
+        monster.stat_hp, 120,
+        "write_back_hp must not touch stat_hp while clamping"
+    );
+}
+
+/// EARS 13.5c-3 equality edge: bm.current_hp == row stat_hp passes through
+/// unchanged (clamp is inclusive: min(current_hp, stat_hp)).
+///
+/// KILLS: an off-by-one clamp (e.g. `min(bm.current_hp, stat_hp - 1)` or a
+/// strict `<` guard that rewrites the full-HP value) — either would write
+/// 119 instead of 120 here.
+#[test]
+fn m13_5c_write_back_hp_equality_edge_passes_through() {
+    let mut monster = m7b_test_monster_row(); // row stat_hp = 120
+    let bm = game_core::BattleMonster {
+        species_id: monster.species_id,
+        affinity: Affinity::Fire,
+        level: monster.level,
+        current_hp: 120, // exactly at the row's stat_hp — full HP, legal
+        max_hp: monster.stat_hp,
+        stats: game_core::StatBlock {
+            hp: monster.stat_hp,
+            attack: monster.stat_attack,
+            defense: monster.stat_defense,
+            speed: monster.stat_speed,
+            sp_attack: monster.stat_sp_attack,
+            sp_defense: monster.stat_sp_defense,
+        },
+        known_skill_ids: vec![1],
+    };
+
+    write_back_hp(&mut monster, &bm);
+
+    assert_eq!(
+        monster.current_hp, 120,
+        "TEETH(13.5c-3 equality edge): current_hp == stat_hp is a legal \
+         full-HP state and must pass through unchanged (inclusive clamp); \
+         got {}",
+        monster.current_hp
+    );
+}
