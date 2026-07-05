@@ -5,12 +5,12 @@ Architecture Decision Records live in **two locations**; check both.
 - **Design ADRs `0002`–`0034`** — in the **harness spec corpus**
   (`../../specs/monster-realm-v2/adr/`). These are the foundational design
   decisions authored alongside the milestone specs.
-- **Implementation ADRs `0001`, `0035`–`0084`** — in **this directory**
+- **Implementation ADRs `0001`, `0035`–`0086`** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0085`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0087`** (`0085` reserved by in-flight M13.5b).
 
 ## ADRs in `docs/adr/`
 
@@ -67,6 +67,7 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 | [0082](./0082-shop-content-reducers.md) | Shop content, buy/sell reducers | M13b |
 | [0083](./0083-economy-sinks-sources.md) | Economy sinks/sources — heal cost, quest/battle rewards | M13c |
 | [0084](./0084-shop-client-view.md) | Shop client view architecture (wallet-private gap, feedback surface) | M13d |
+| [0086](./0086-ci-e2e-dev-reducers-publish.md) | CI e2e publishes the dev_reducers module via --bin-path | M13.5h |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
