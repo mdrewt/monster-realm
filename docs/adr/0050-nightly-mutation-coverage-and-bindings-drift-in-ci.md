@@ -112,3 +112,119 @@ Two gaps surfaced while hardening the M8.5 gates:
   decision preserves), ADR-0009 (e2e against a version-pinned standalone
   SpacetimeDB — why the CLI is pinned at 2.6.0), ADR-0010 (every mechanical gate
   ships a known-bad fixture / proof-of-teeth — why bindings-drift must actually run).
+
+---
+
+## Amendment (M13.5a — gate-of-gates): coverage ratchet re-measure, server-module mutation gate, CI-integrity enforcement topology
+
+- Date: 2026-07-04 · Milestone: M13.5a (spec `M13.5-seventh-review-residuals.spec.md` §13.5a; D-13.5-2 decided by Drew 2026-07-04)
+
+### A1. Coverage threshold re-measured post-exclusion; ratchet re-applied (25 → 96)
+
+Decision #1 set `--coverage.thresholds.lines=25` from a **29.65%** measurement whose
+denominator included the ~0%-covered generated `module_bindings/` (see the original
+text above — this ADR's own follow-up said excluding them "would let the threshold be
+raised meaningfully"). The exclusions landed (M-infra-c / vite `coverage.exclude`)
+with the threshold left unchanged, leaving the ratchet slack. Fresh measurement on
+the m13.5a worktree (base `e875af0`, vitest v8, post-exclusion): **99.35% lines**.
+Per the ratchet policy the threshold is re-set to **96** (`justfile` `coverage:`
+recipe) — a few points below actual: green today, bites a real regression. The stale
+`vite.config.ts` "threshold is UNCHANGED" comment is corrected. The measurement's
+denominator is now tamper-gated: `dom-shell-coverage-exclusion.eval.mjs` adds
+`findUnsanctionedExclusions` (exact-set comparison of the `coverage.exclude` literals
+vs the DOM_SHELLS allowlist + `src/module_bindings/**` + the
+`...coverageConfigDefaults.exclude` spread token) and an include-narrowing guard
+(`coverage.include` must stay `['src/**/*.ts']` — narrowing the include shrinks the
+denominator without touching exclude). The `coverage:` recipe body itself is guarded
+(threshold literal ≥ 96) by the nightly wiring eval.
+
+### A2. Server-module mutation gate (D-13.5-2), nightly, gating
+
+New nightly job runs mutation testing over the server module. **Package-name
+nuance:** the `server-module/` directory's cargo package is **`monster-realm-module`**
+(`cargo mutants -p server-module` fails "Package not found in source tree").
+
+- **Baseline** (2026-07-04, `e875af0`, cargo-mutants 27.1.0, `--test-tool nextest`,
+  local 32-core `-j 4`): **253 mutants — 180 missed / 56 caught / 17 unviable —
+  2 min wall-clock.** server-module is an imperative shell: its reducers are covered
+  by evals/integration/e2e, not in-crate units (the rule core, game-core, carries the
+  zero-survivor `mutate-core` gate), so a high survivor count is expected and the
+  gate is a **regression ratchet**, not an aspirational target — same posture as the
+  coverage threshold above.
+- **Threshold mechanism:** cargo-mutants has no built-in survivor-count cap, so the
+  `mutate-server` justfile recipe (shebang) runs
+  `cargo mutants -p monster-realm-module --test-tool nextest`, tolerates exit code 2
+  (mutants missed) but no other non-zero exit, then counts `mutants.out/missed.txt`
+  lines and fails if the count exceeds the cap. **Cap = 180** (the exact baseline,
+  per review: "tighten, don't weaken" — bump only deliberately, with the bump
+  justified in a commit touching this ADR). `--test-tool nextest` is pinned for
+  determinism with the recorded baseline (server-module has zero doctests, so
+  nextest-vs-cargo-test does not change catch results).
+- **Sharding:** NOT needed — 2-min local runtime extrapolates to roughly 15–30 min on
+  a 2-core hosted runner, far inside the nightly window; the spec's "sharded if
+  runtime demands" clause is satisfied by this recorded measurement. Single job, no
+  matrix.
+- **No `continue-on-error`** (same posture as decision #1 — a soft mutation gate is
+  toothless), distinct cache `prefix-key: v1-nightly-server`, SHA-pinned actions
+  matching the file's style. The job is covered from its first commit by the
+  nightly wiring guards below (spec 13.5a-6 mandate).
+
+### A3. Gate-of-gates enforcement topology (13.5a-1/2/5)
+
+**The self-sealing hole (the seventh review's one High):** deleting or neutering
+`run: just eval` / `just test` in ci.yml's `ci:` job tripped nothing — every eval
+runs under the very step being deleted. Nightly `mutation:`/`coverage:` jobs were
+equally unguarded prose.
+
+**Fix — mutual reinforcement across a non-self-sealing anchor:**
+
+- `evals/ci-gate-wiring.eval.mjs` asserts, against a **hardcoded** oracle (NOT
+  derived from the justfile — deriving would let a single commit remove a dep from
+  `ci:` and its ci.yml step simultaneously without tripping): the `ci:` job block
+  contains all 7 `run: just <verb>` steps (lint, typecheck, test, eval, wasm,
+  client-typecheck, client-test), each **step-level** un-neutered — exact run value
+  (rejects `|| true` / `; exit 0` shell neuters), not commented, no step/job `if:`,
+  no truthy `continue-on-error` **scoped per-step** so the legitimate
+  `if:`/`continue-on-error` on the dependency-review step is not flagged; an empty
+  job-block extraction fails loudly (no vacuous pass). It also cross-checks every
+  justfile `ci:` dep appears in ci.yml (13.5a-5) minus the documented substitution
+  `security` → gitleaks-action + `cargo audit` + Semgrep + SBOM; guards the
+  `test:`/`eval:`/`client-test:` recipe **bodies** (canonical command substrings —
+  gutting a recipe while ci.yml stays pristine was the largest bypass found in
+  review); and checks `evals/run.mjs` integrity (zero-eval guard + per-eval
+  try/catch + failure exit path) — run.mjs cannot guard itself from inside `just
+  eval`.
+- **Anchors (where the eval runs):** (1) under `just eval` on every CI run; (2) a
+  dedicated `- run: node evals/ci-gate-wiring.eval.mjs` step in the **e2e job** — a
+  separate PR-blocking job, so deleting the `ci:` job's `just eval` step no longer
+  hides the check (the file is directly runnable via an `import.meta.url`
+  main-guard, exits non-zero on failure); (3) a `lefthook.yml` pre-commit command —
+  wired for environments with lefthook installed. The eval asserts anchors (2) and
+  (3) stay wired, so deleting either trips the runs that remain.
+- `evals/nightly-smoke-wiring.eval.mjs` gains `nightlyHasMutationJob` /
+  `nightlyHasCoverageJob` / `nightlyHasServerMutationJob` + per-job neuter detection
+  (no `if:` / truthy `continue-on-error` inside those three job blocks; schedule +
+  workflow_dispatch triggers live), plus recipe-body guards for `coverage:`
+  (threshold literal ≥ 96) and `mutate-server` (count-compare present; no
+  `--shard`/`--file`/`--exclude-re` narrowing; cap default ≤ 200).
+
+**Accepted gaps (recorded honestly — threat model is honest error / lazy shortcut,
+not an adversary with admin):**
+
+1. A single commit that deletes BOTH the `ci:` job's `just eval` step AND the e2e
+   anchor step defeats both CI-side layers; lefthook is the only remainder and the
+   lefthook binary is not installed on the current dev machine (config-as-
+   documentation until it is). Residual mitigation: PR review of any
+   workflow-touching diff.
+2. The nightly job names (`mutation:`, `coverage:`, and the new server job) are a
+   stable contract — renaming one false-REDs the wiring eval (fails loud, not
+   silent; update the eval deliberately with the rename).
+3. A duplicate `exclude:` key in vite.config.ts could shadow the checked array at
+   runtime (source-text checks can't see object-literal override semantics); Biome's
+   duplicate-key lint covers this class.
+4. run.mjs's zero-eval guard trips only at exactly zero eval files (the "40+" in its
+   message is prose); mass-deletion to one file is caught by eval-count review, not
+   mechanically.
+5. The `mutate-server` cap default is eval-ceiling-checked (≤ 200) rather than
+   pinned exactly, so a deliberate, reviewed bump inside the ceiling doesn't require
+   an eval edit; bumps must update this ADR (see A2).
