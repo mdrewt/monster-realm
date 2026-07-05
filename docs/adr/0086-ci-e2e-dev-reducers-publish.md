@@ -104,7 +104,12 @@ lands because:
   re-anchor to the same real named blocker as R4.
 - The spec-gap-revival eval now RED-flags any future `test.fixme` citing
   dev_reducers anywhere in `client/e2e/*.spec.ts`, since a workflow now publishes
-  it — revival is mechanical, not curated (ADR-0050 gate-of-gates posture).
+  it — revival is mechanical, not curated (ADR-0050 gate-of-gates posture). The
+  workflow-side detector recognises three forms — the `--features dev_reducers`
+  build line, a direct `--bin-path` publish, and the `MR_DEV_MODULE_WASM` env
+  line; the env line is the load-bearing anchor (it must stay in the workflow
+  for global-setup to receive the path, so build-step refactors can't silently
+  disarm the tripwire).
 
 ## ADR references
 
