@@ -60,7 +60,7 @@ interface Tile {
 }
 
 interface OwnMonster {
-  monsterId: string; // bigint serialised as string (main.ts:597)
+  monsterId: string; // bigint serialised as string (main.ts:594)
   speciesId: number;
   nickname: string;
   level: number;
@@ -247,7 +247,9 @@ async function healViaBox(p: Page): Promise<void> {
   let boxOpen = false;
   for (let i = 0; i < MAX_BOX_OPEN_TRIES && !boxOpen; i++) {
     if (!(await healBtn.isVisible().catch(() => false))) {
-      await p.keyboard.press('b');
+      // Physical-key form: main.ts:248 matches e.code === 'KeyB'; press('b') maps
+      // to that code only on US layouts, press('KeyB') always does (reviewer L3).
+      await p.keyboard.press('KeyB');
     }
     boxOpen = await healBtn
       .waitFor({ state: 'visible', timeout: 500 })
@@ -302,16 +304,17 @@ async function healViaBox(p: Page): Promise<void> {
 // suiteScoped variable `winningBattleId` for R3).
 // ---------------------------------------------------------------------------
 
-// Suite-scoped: R2 records the battleId from the winning encounter so R3 can
-// cross-check via spacetime sql.  Null means R2 did not record a winning id
-// (should be unreachable when R2 passes; R3 fails with a clear message).
-let winningBattleId: string | null = null;
-
 test.describe
   .serial('M13.5h — wild recruit flow (gameplay-driven)', () => {
     let browser: Browser;
     let ctx: BrowserContext;
     let page: Page;
+
+    // Suite-scoped (inside the describe — reviewer M4): R2 records the battleId
+    // from the winning encounter so R3 can cross-check via spacetime sql.  Null
+    // means R2 did not record a winning id (unreachable when R2 passes; R3 then
+    // fails with a clear message).
+    let winningBattleId: string | null = null;
 
     test.beforeAll(async () => {
       browser = await chromium.launch();
@@ -489,8 +492,12 @@ test.describe
           // Source: battleView.ts:113 `${label}: ${card.speciesName}` (header) and :135 (hp).
           const allHpTexts = await page.locator('text=/HP \\d+\\/\\d+ · /').allTextContents();
 
-          // allHpTexts[0] is the opponent card (rendered first: #opponentCardEl, battleView.ts:103).
-          // allHpTexts[1] is the player card.
+          // ORDERING ASSUMPTION (structural, tester lens D-1): allHpTexts[0] is the
+          // opponent card, [1] the player card — battleView.ts appends #opponentCardEl
+          // to the root BEFORE #playerCardEl (ctor, :54 vs :61), and allTextContents()
+          // returns DOM order. Only the battle cards can match: the box overlay's HP
+          // format is "HP cur/max (pct%)" (no " · "), and swap buttons have no "HP "
+          // prefix. If battleView ever renders the player card first, this inverts.
           const oppHpInfo = allHpTexts[0] ? parseHpLine(allHpTexts[0]) : null;
           const ownHpInfo = allHpTexts[1] ? parseHpLine(allHpTexts[1]) : null;
 
@@ -556,11 +563,9 @@ test.describe
             // healViaBox waits for the healed-signal in the box DOM (no bare sleeps).
             await healViaBox(page);
           } else {
-            // Ran out of heals — bail out with a useful failure message.
-            expect
-              .soft(false, `R2: exceeded MAX_HEALS (${MAX_HEALS}); party fainted too often`)
-              .toBe(true);
-            break;
+            // Fail loud at the point of detection (reviewer M3): a soft-assert +
+            // break would surface as a misleading "did not recruit" hard-fail later.
+            throw new Error(`R2: exceeded MAX_HEALS (${MAX_HEALS}); party fainted too often`);
           }
           winningBattleId = null;
           continue;
@@ -629,9 +634,9 @@ test.describe
               // healViaBox waits for the healed-signal in the box DOM (no bare sleeps).
               await healViaBox(page);
             } else {
-              expect
-                .soft(false, `R2: exceeded MAX_HEALS (${MAX_HEALS}) during recruit clicks`)
-                .toBe(true);
+              // Fail loud at the point of detection (reviewer M3) — see the
+              // post-weaken KO path above for the rationale.
+              throw new Error(`R2: exceeded MAX_HEALS (${MAX_HEALS}) during recruit clicks`);
             }
             winningBattleId = null;
             break;
@@ -702,6 +707,16 @@ test.describe
       // NEVER use new RegExp(dynamic): use .includes() only (spec-gap-revival discipline).
       const server = process.env.STDB_SERVER ?? 'local';
       const db = process.env.VITE_STDB_DB ?? 'monster-realm';
+      // All three interpolated values are validated before entering the shell
+      // string (red-team F5; literal regexes only — never new RegExp(dynamic)).
+      // battleId is a SpacetimeDB u64 serialised via bigint.toString() — decimal
+      // digits only; anything else means the snapshot shape changed under us.
+      if (!/^[A-Za-z0-9:/._-]+$/.test(server) || !/^[A-Za-z0-9_-]+$/.test(db)) {
+        throw new Error(`R3: STDB_SERVER/VITE_STDB_DB failed charset validation: ${server} ${db}`);
+      }
+      if (!/^[0-9]+$/.test(winningBattleId)) {
+        throw new Error(`R3: winningBattleId is not a decimal u64 string: ${winningBattleId}`);
+      }
       // `outcome` is nested inside the `state` struct column (schema.rs Battle row),
       // so it is not directly projectable — SELECT * prints the whole row incl. the
       // state struct, and the variant name appears only in the outcome field.
@@ -712,9 +727,17 @@ test.describe
           { encoding: 'utf8', timeout: 10_000 },
         );
       } catch (err) {
-        // SQL failure is a non-fatal warning — the DOM assertion above is the primary gate.
-        console.warn(`R3: spacetime sql cross-check failed: ${(err as Error).message}`);
-        return;
+        // HARD failure (tester lens A-1): this cross-check IS the gate for the
+        // attempt_recruit GC-gap invariant (the row must survive with SideAWins);
+        // a warn-and-return here would let a CLI/infra failure vacuously pass it.
+        // Both CI and local e2e runs require the spacetime CLI on PATH already
+        // (global-setup publishes with it), so a throw only fires on real breakage.
+        // Note the row-deleted regression does NOT land here: the query then exits
+        // 0 with an empty result and the includes() assertion below catches it.
+        throw new Error(
+          `R3: spacetime sql cross-check could not run (CLI/infra failure, not a ` +
+            `row-content mismatch): ${(err as Error).message}`,
+        );
       }
 
       // The sql output must include 'SideAWins' (variant name).

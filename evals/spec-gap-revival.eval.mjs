@@ -19,13 +19,18 @@
 //   dev_reducers) is a stale blocker: the claimed infra precondition has been met.
 //   The detector (devReducerRevivalStatus) is RED when both conditions hold simultaneously.
 //
-//   Accepted gaps (documented here per the plan):
-//   - Shell line-continuation (`\` token splitting): a `--features` flag broken across
-//     lines with `\` may not be detected. Accepted: the real ci.yml uses a single `run:`
-//     line for the feature build step; multi-line form is not currently used.
-//   - env-var rename: if the wasm path env var is renamed the --bin-path scan still
-//     matches 'MR_DEV_MODULE_WASM' (the canonical name in ADR-0086); an implementer who
-//     renames the variable must also update this detector.
+//   Accepted gaps (documented here per the plan; scope broadened per red-team F2/F3):
+//   - ANY multiline split of the build line — shell `\` continuation, YAML literal
+//     (`|`) or folded (`>`) block scalars — hides the `--features dev_reducers` pair
+//     from the physical-line scanner. Likewise moving the cargo build into a justfile
+//     recipe (`run: just dev-wasm`) removes that signal from the YAML entirely.
+//     MITIGATION: Form 3 (the 'MR_DEV_MODULE_WASM' env-line scan) is the load-bearing
+//     anchor for these refactors — the env: line must stay in the workflow for
+//     global-setup.ts to receive the path, it is short (never split), and renaming
+//     the var breaks the publish itself before it breaks this detector.
+//   - env-var rename: if the wasm path env var is renamed the Form 2/3 scans still
+//     look for 'MR_DEV_MODULE_WASM' (the canonical name in ADR-0086); an implementer
+//     who renames the variable must also update this detector.
 //
 //   Scan scope (reviewer B4):
 //   - workflows: ALL *.yml and *.yaml files under .github/workflows/ (readdirSync flat).
@@ -84,9 +89,18 @@ export function hasExpiredFixme(specSrc, expiredTokens) {
 
 /**
  * Returns true iff `workflowSrc` contains a line (ignoring comment lines whose
- * trimStart() starts with '#') that satisfies EITHER:
+ * trimStart() starts with '#') that satisfies ANY of:
  *   - form 1: line contains '--features' AND 'dev_reducers'
+ *             (the cargo pre-build step — the real ci.yml fires this)
  *   - form 2: line contains '--bin-path' AND ('MR_DEV_MODULE_WASM' OR 'dev_reducers')
+ *             (a hypothetical direct-YAML publish; the real layout assembles
+ *             --bin-path inside global-setup.ts, so this form never appears in
+ *             today's ci.yml — kept as forward cover for that refactor)
+ *   - form 3: line contains 'MR_DEV_MODULE_WASM'
+ *             (the env-block wiring — the canonical var name per ADR-0086; the
+ *             real ci.yml fires this on the e2e step's env: line. Reviewer H2:
+ *             without this form the actual env-var layout had no signal of its
+ *             own and Form 1's build step was a single point of failure)
  *
  * Uses indexOf only — no new RegExp() (spec-gap-revival discipline).
  * Comment lines (trimStart() starts with '#') are skipped; they document intent
@@ -105,6 +119,8 @@ export function workflowPublishesDevReducers(workflowSrc) {
     ) {
       return true;
     }
+    // Form 3: the canonical dev-wasm env var wired on any active line (env: block)
+    if (line.indexOf('MR_DEV_MODULE_WASM') !== -1) return true;
   }
   return false;
 }
@@ -117,6 +133,11 @@ export function workflowPublishesDevReducers(workflowSrc) {
  * File-level scan mirrors hasExpiredFixme; per-block brace matching rejected as
  * fragile (the reviewer's rewording-loophole critique applies equally to any text
  * matcher; re-anchoring with different words is the spec's own design).
+ * KNOWN FALSE-POSITIVE DIRECTION (red-team F1, accepted): a spec with an
+ * UNRELATED test.fixme plus a mere architectural comment mentioning dev_reducers
+ * trips this. That failure is LOUD (eval goes red, author rewords the comment),
+ * never silent — the safe direction for a tripwire. Spec comments should refer
+ * to the feature via ADR-0086 instead of naming the token.
  * Uses indexOf/includes only — no new RegExp().
  */
 export function fixmeCitesDevReducers(specSrc) {
@@ -880,6 +901,37 @@ test.fixme('R1: Recruit button visible', async () => {
     }
   }
 
+  // Proof-of-teeth T-E1b (red-team F4): the phantom 'M12.5-recruit' token must
+  // stay in EXPIRED_FIXME_MILESTONES. It looks like dead code (no spec cites it
+  // today — that is the point: it closed the 13.5h loophole), so a cleanup pass
+  // could remove it with every other tooth still green. This tooth dies if it does.
+  const expiredFixturePhantom = `
+// BLOCKED until the M12.5-recruit infra slice lands.
+test.fixme('R1: Recruit button visible', async () => {
+  // ...
+});
+`;
+  {
+    let phantomResult;
+    try {
+      phantomResult = hasExpiredFixme(expiredFixturePhantom, EXPIRED_FIXME_MILESTONES);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth T-E1b (hasExpiredFixme with M12.5-recruit): threw — ${err.message}`,
+      };
+    }
+    if (phantomResult !== true) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T-E1b: hasExpiredFixme must return true for a spec with test.fixme citing the phantom "M12.5-recruit" milestone — kill target: removing M12.5-recruit from EXPIRED_FIXME_MILESTONES as apparent dead code (it is the 13.5h loophole-closer).',
+      };
+    }
+  }
+
   // Proof-of-teeth T-E2: a spec with test.fixme + still-valid blocker → NOT expired.
   // Kill target: an impl that returns true for any test.fixme regardless of condition.
   //
@@ -990,11 +1042,21 @@ test('G1: Golden flow movement', async () => {
       - name: Build dev module
         run: cargo build -p monster-realm-module --release --target wasm32-unknown-unknown --features dev_reducers
 `;
+  // Form-2-SPECIFIC fixture: --bin-path + dev_reducers on one run: line, and
+  // deliberately NO 'MR_DEV_MODULE_WASM' anywhere — so this tooth dies if Form 2
+  // is deleted, even with Form 3 (env-var scan) present (tester lens C-1/C-3).
   const workflowWithBinPath = `
+      - name: Publish dev module directly
+        run: spacetime publish -s local --bin-path target/wasm32-unknown-unknown/release/dev_reducers_module.wasm --delete-data -y monster-realm
+`;
+  // Form-3-SPECIFIC fixture mirroring the REAL ci.yml layout (reviewer H2): the
+  // canonical env var wired on an env: line; the run: line is a bare `just e2e`
+  // (no --features, no --bin-path). Form 1 and Form 2 are both silent here.
+  const workflowWithEnvVarOnly = `
       - name: Two-window e2e
         env:
           MR_DEV_MODULE_WASM: \${{ github.workspace }}/target/wasm32-unknown-unknown/release/monster_realm_module.wasm
-        run: npx playwright test --bin-path MR_DEV_MODULE_WASM
+        run: just e2e
 `;
   const workflowCommentOnly = `
       # - run: cargo build --features dev_reducers
@@ -1080,7 +1142,34 @@ test('G1: Golden flow movement', async () => {
         name,
         pass: false,
         detail:
-          'tooth W2: workflowPublishesDevReducers must return true for a workflow line with --bin-path + MR_DEV_MODULE_WASM — kills: impl that only checks --features and misses the --bin-path spacetime publish form.',
+          'tooth W2: workflowPublishesDevReducers must return true for a workflow line with --bin-path + a dev_reducers wasm (and NO MR_DEV_MODULE_WASM in the fixture) — kills: impl that drops Form 2, even one that keeps the Form 3 env-var scan.',
+      };
+    }
+  }
+
+  // =========================================================================
+  // Tooth W5 (workflowPublishesDevReducers — env-var form positive, reviewer H2).
+  // Mirrors the REAL ci.yml layout: MR_DEV_MODULE_WASM on an env: line, bare
+  // `just e2e` run line. Kills: impl without Form 3 — i.e. one that only scans
+  // run-line flags and misses the env-block wiring the repo actually uses.
+  // =========================================================================
+  {
+    let w5result;
+    try {
+      w5result = workflowPublishesDevReducers(workflowWithEnvVarOnly);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth W5 (workflowPublishesDevReducers with env-var-only form): threw — ${err.message}`,
+      };
+    }
+    if (w5result !== true) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'tooth W5: workflowPublishesDevReducers must return true when MR_DEV_MODULE_WASM appears on an active env: line with a bare `just e2e` run line (the REAL ci.yml layout) — kills: impl that only scans run-line flags (--features/--bin-path) and misses the env-block wiring.',
       };
     }
   }
@@ -1269,6 +1358,39 @@ test('G1: Golden flow movement', async () => {
   }
 
   // =========================================================================
+  // Tooth S1b (devReducerRevivalStatus — env-var-form publish + cite → violated).
+  // S1-analog through the Form 3 path (tester lens C-3): the REAL ci.yml layout
+  // (env-block wiring, no --features/--bin-path on any run line) must ALSO arm
+  // the tripwire. Kills: impl whose combined status only honours Form 1.
+  // =========================================================================
+  {
+    let s1bresult;
+    try {
+      s1bresult = devReducerRevivalStatus({
+        specSources: { 'recruit.spec.ts': specWithFixmeCitingDevReducers },
+        workflowSources: { 'ci.yml': workflowWithEnvVarOnly },
+      });
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth S1b (devReducerRevivalStatus env-var publish+cite): threw — ${err.message}`,
+      };
+    }
+    if (!s1bresult.violated) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `tooth S1b: devReducerRevivalStatus must be violated=true when the workflow wires ` +
+          `MR_DEV_MODULE_WASM via an env: block (the real ci.yml layout) AND a spec cites ` +
+          `dev_reducers in test.fixme — got violated=${s1bresult.violated} — ${s1bresult.reason}. ` +
+          `Kills: impl whose combined status only honours the --features run-line form.`,
+      };
+    }
+  }
+
+  // =========================================================================
   // Tooth S2 (devReducerRevivalStatus — no publish + cite → ok, not violated).
   // Kills: impl that fires whenever a spec cites dev_reducers, even without publish.
   // =========================================================================
@@ -1406,6 +1528,6 @@ test('G1: Golden flow movement', async () => {
     name,
     pass: true,
     detail:
-      'spec-gap-revival teeth all pass: findTradeTransferReducers correct (swap_active not matched, give_monster/donate_monster matched, trade_monster matched, benign reducers clean), parkedTestIsIgnored correct (bare and cfg_attr forms recognised, revived form false), specGapStatus matrix all 5 cases correct (incl. reducer-landed+fn-deleted), real codebase is in healthy/dormant state; test.fixme condition-expiry guard GREEN (T-E1/T-E2/T-E3 teeth pass, no expired conditions in client/e2e/); 13.5h-2 dev_reducers fixme tripwire GREEN (W1/W2/W3/W4 workflow detector teeth, F1/F1h/F2/F3 spec-citation teeth, S1/S2/S3 combined-status teeth, R-real on live tree all pass)',
+      'spec-gap-revival teeth all pass: findTradeTransferReducers correct (swap_active not matched, give_monster/donate_monster matched, trade_monster matched, benign reducers clean), parkedTestIsIgnored correct (bare and cfg_attr forms recognised, revived form false), specGapStatus matrix all 5 cases correct (incl. reducer-landed+fn-deleted), real codebase is in healthy/dormant state; test.fixme condition-expiry guard GREEN (T-E1/T-E1b/T-E2/T-E3 teeth pass, no expired conditions in client/e2e/); 13.5h-2 dev_reducers fixme tripwire GREEN (W1/W2/W3/W4/W5 workflow detector teeth incl. env-var form, F1/F1h/F2/F3 spec-citation teeth, S1/S1b/S2/S3 combined-status teeth, R-real on live tree all pass)',
   };
 }
