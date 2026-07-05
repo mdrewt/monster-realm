@@ -133,6 +133,16 @@ jobs:
           spacetime version install 2.6.0
           spacetime version use 2.6.0
           spacetime --version
+      # 13.5h (ADR-0086): pre-build the module wasm WITH dev_reducers, then
+      # global-setup publishes this artifact via `--bin-path` at its publish
+      # point — spacetime 2.6 `publish` has NO cargo-feature passthrough
+      # (ADR-0054), so pre-build-then---bin-path is the only way to publish a
+      # feature-gated module. Committed TS bindings are deliberately NOT
+      # regenerated from this build (dev reducers stay out of the default
+      # client bindings). Package name is `monster-realm-module` —
+      # `-p server-module` fails; the artifact is monster_realm_module.wasm.
+      - name: Build dev_reducers module wasm
+        run: cargo build -p monster-realm-module --release --target wasm32-unknown-unknown --features dev_reducers
       # Ephemeral standalone instance on 127.0.0.1:3000 (the client default
       # VITE_STDB_URI); in-memory, torn down with the runner.
       - name: Start SpacetimeDB
@@ -156,5 +166,6 @@ jobs:
           STDB_SERVER: http://127.0.0.1:3000
           VITE_STDB_URI: ws://127.0.0.1:3000
           VITE_STDB_DB: monster-realm
+          MR_DEV_MODULE_WASM: ${{ github.workspace }}/target/wasm32-unknown-unknown/release/monster_realm_module.wasm
         run: just e2e
         # build/publish/integration require a running SpacetimeDB instance (see README)
