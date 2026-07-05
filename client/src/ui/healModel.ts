@@ -22,7 +22,7 @@ export interface HealViewModel {
  * pre-M13.5b behavior), or `undefined` when none are loaded (M13.5b, ADR-0085 §D).
  *
  * WHY `undefined` and not 0: the old call site did `locations[0]?.locationId ?? 0`
- * — with no locations loaded that sent `healParty({ locationId: 0 })`, a
+ * — with no locations loaded it dispatched the heal reducer with locationId 0, a
  * guaranteed-invisible server `Err` (no location 0 exists). `undefined` is the
  * SKIP signal: the caller must not send at all (and surfaces "no heal location
  * available" instead — ADR-0085 A9). TOTAL: never throws (matching this module's
