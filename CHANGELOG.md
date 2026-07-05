@@ -14,6 +14,8 @@
 - Index ADR-0062 (evolution/fusion server reducers); bump next-free 0062->0063 (#68)
 - Index ADR-0064 (evolution/fusion content-integrity evals); next free 0065 (0063 reserved by in-flight M10c) (#71)
 - Index ADR-0063 (evolution/fusion client overlay) (#72)
+- ARCHITECTURE.md + ADR-0080 + CHANGELOG — closes M8.95 knowledge-bundle milestone (#105)
+- Fix stale next-free self-reference + crosswalk in ADR-0060 (#109)
 
 ### Features
 
@@ -76,6 +78,15 @@
 - OKF knowledge bundle producer + generated docs/knowledge/ (#102)
 - OKF knowledge-bundle conformance + drift eval (M8.95b) (#103)
 - Research-library conformance — type field + type-aware scripts (#104)
+- Empty-moveset content invariant + marshal boundary guards (#107)
+- Mechanical gate hardening (allowOnly / forbidOnly / flushBatch isolation) (#110)
+- Currency primitive — player_wallet + grant/spend helpers (ADR-0081)
+- Shop content + buy/sell reducers (ADR-0082) (#113)
+- Shop client UI — shopModel/View, store/rowConvert wiring, ADR-0084 (#115)
+- Economy sinks/sources — heal cost, quest/battle rewards via ADR-0081 helpers (#116)
+- Gate-of-gates — CI/nightly wiring guards, coverage ratchet 25->96, gating server-module mutation nightly (ADR-0050 amendment) (#118)
+- Recruit e2e revival — gameplay-driven R1-R3, dev_reducers fixme tripwire, CI dev-wasm publish (ADR-0086) (#120)
+- Reducer-rejection feedback + app-level reconnect (ADR-0085) (#119)
 
 ### Fixes
 
@@ -125,6 +136,11 @@
 - Index ADR-0077, bump next free to 0078 (#95)
 - Index ADR-0078, bump next free to 0079 (#97)
 - Index ADR-0079, bump next free to 0080 (#99)
+- ADR index — add 0080, next free 0081 (#106)
+- ADR index — register 0081, next free 0082 (#112)
+- ADR index — register 0082, next free 0083 (#114)
+- ADR index — register 0083, range to 0084, next free 0085 (#117)
+- ADR index — register 0086, range to 0086, next free 0087 (#121)
 
 ### Testing
 
@@ -142,4 +158,4 @@
 
 - Extract taming.rs inline tests to taming_tests.rs (M8.9c) (#53)
 - Monster-realm doc reconciliation phase — README/AGENTS/ARCHITECTURE/ADR-README/ADR-0067/raising.rs/CHANGELOG (#101)
-- ARCHITECTURE.md + ADR-0080 knowledge bundle doc
+- ARCHITECTURE.md — module-map, content-registry, raising+evolution sections (#108)
