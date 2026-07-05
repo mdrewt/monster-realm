@@ -59,13 +59,23 @@ mutate-core:
 mutate-server cap="180":
     #!/usr/bin/env bash
     set -euo pipefail
+    # Fail loud on a non-integer cap BEFORE the (minutes-long) mutants run: a
+    # malformed value would otherwise make `[ -gt ]` error inside the if-condition
+    # and silently skip the ratchet (vacuous green) — caught by the cap bite-proof.
+    case "{{cap}}" in
+        ''|*[!0-9]*) echo "mutate-server: cap '{{cap}}' is not a non-negative integer" >&2; exit 64;;
+    esac
     status=0
     cargo mutants -p monster-realm-module --test-tool nextest || status=$?
     if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
         echo "cargo mutants failed with exit $status (build/config error, not 'mutants missed')" >&2
         exit "$status"
     fi
-    missed=$(wc -l < mutants.out/missed.txt)
+    # missed.txt exists whenever cargo-mutants ran (exit 0 or 2); a missing file
+    # aborts via set -e — the correct fail-loud path. grep -c '' counts lines
+    # regardless of a trailing newline (wc -l undercounts a newline-less last
+    # line); || true keeps the empty-file (0 survivors) case alive under set -e.
+    missed=$(grep -c '' mutants.out/missed.txt || true)
     echo "surviving mutants: $missed (cap {{cap}})"
     if [ "$missed" -gt "{{cap}}" ]; then
         echo "survivor count $missed exceeds cap {{cap}} — mutation ratchet violated (ADR-0050)" >&2

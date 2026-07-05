@@ -122,6 +122,13 @@ export function nightlyHasServerMutationJob(yaml) {
 // Empty block → not-ok. Checks both job-level and step-level if:/continue-on-error:.
 // Applied to mutation, coverage, mutation-server (NOT smoke-republish — its
 // `if: failure()` log-dump step is legitimate; we do not call this on smoke-republish).
+//
+// FLAT-SCAN CONSTRAINT (deliberate, per ADR-0050): this is a flat line scan over
+// the entire job block — it flags ANY `if:` key at any indent, including step-level.
+// Consequence: mutation/coverage/mutation-server jobs must carry NO `if:` steps
+// whatsoever (e.g. no `if: failure()` log-dump steps). If a guarded job ever needs
+// a log-dump step, the step must use a different mechanism (e.g. always-run wrapper
+// script) or this predicate must be extended with a step-scoped carve-out.
 export function jobIsNotNeutered(yaml, jobName) {
   const block = extractJobBlock(yaml, jobName);
   if (!block || block.trim() === '') {
@@ -229,11 +236,15 @@ export function coverageRecipeThresholdIntact(justfileText) {
 // Pure predicate: the justfile has a `mutate-server` recipe whose body:
 //   - contains `monster-realm-module`
 //   - contains `missed.txt` (the count-compare gate — dropping it reverts to exit-2-tolerated theater)
+//   - contains `--test-tool nextest` (measurement methodology per ADR-0050 baseline;
+//     removing it silently changes which test runner cargo-mutants uses)
 //   - does NOT contain `--shard` (scope-narrowing bypass)
 //   - does NOT contain `--file` (scope-narrowing bypass)
 //   - does NOT contain `--exclude-re` (scope-narrowing bypass)
 //   - the `cap=` default in the recipe signature parses as an integer ≤ 200
 //     (catches cap="9999"; deliberate in-ceiling bumps allowed per ADR-0050 A2)
+//   - if `cap=` is present but no digit follows the `=` (after optional quote),
+//     the header is malformed → return false (tightened per reviewer n4)
 export function mutateServerRecipeIntact(justfileText) {
   // Find the recipe header: `mutate-server` at column 0.
   const lines = justfileText.split('\n');
@@ -251,6 +262,7 @@ export function mutateServerRecipeIntact(justfileText) {
   // Parse `cap=` default from the header (e.g. `mutate-server cap="150":` or
   // `mutate-server cap='150':` or `mutate-server cap=150:`).
   // We require a cap= parameter whose value is an integer ≤ 200.
+  // If cap= is present but has no digits (malformed), return false.
   const capMatch = headerLine.indexOf('cap=');
   if (capMatch !== -1) {
     const afterCap = headerLine.slice(capMatch + 4);
@@ -263,11 +275,10 @@ export function mutateServerRecipeIntact(justfileText) {
       if (ch >= '0' && ch <= '9') numStr += ch;
       else break;
     }
-    if (numStr) {
-      const cap = parseInt(numStr, 10);
-      if (cap > 200) return false;
-    }
-    // If no digits found after cap= that's a format issue — not a bypass, allow.
+    // Malformed: cap= present but no digits follow (e.g. `cap=:` or `cap="`).
+    if (!numStr) return false;
+    const cap = parseInt(numStr, 10);
+    if (cap > 200) return false;
   }
   // cap= is optional in the recipe; absence is fine (no cap or handled differently).
 
@@ -288,6 +299,7 @@ export function mutateServerRecipeIntact(justfileText) {
 
   if (body.indexOf('monster-realm-module') === -1) return false;
   if (body.indexOf('missed.txt') === -1) return false;
+  if (body.indexOf('--test-tool nextest') === -1) return false;
   if (body.indexOf('--shard') !== -1) return false;
   if (body.indexOf('--file') !== -1) return false;
   if (body.indexOf('--exclude-re') !== -1) return false;
@@ -819,7 +831,7 @@ jobs:
     };
   }
   // Bad: --file scope-narrowing bypass.
-  const justfileMutServerFile = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --cap {{cap}} --file shop.rs > missed.txt\n`;
+  const justfileMutServerFile = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} --file shop.rs > missed.txt\n`;
   if (mutateServerRecipeIntact(justfileMutServerFile)) {
     return {
       name,
@@ -828,8 +840,31 @@ jobs:
         'TEETH L-file: mutateServerRecipeIntact accepted a mutate-server recipe with --file (scope-narrowing bypass)',
     };
   }
-  // Good: all invariants satisfied.
-  const justfileMutServerGood = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --cap {{cap}} 2>&1 | tee missed.txt\n`;
+  // Bad: --test-tool nextest absent (M3 — removing it silently changes measurement methodology).
+  // Kills: impl that doesn't require the flag.
+  const justfileMutServerNoNextest = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --cap {{cap}} 2>&1 | tee missed.txt\n`;
+  if (mutateServerRecipeIntact(justfileMutServerNoNextest)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH L-no-nextest: mutateServerRecipeIntact accepted a mutate-server recipe without --test-tool nextest — removing it silently changes cargo-mutants measurement methodology vs the ADR-0050 baseline',
+    };
+  }
+  // Bad: cap= present but malformed (no digits after =) — reviewer n4 tightening.
+  // Kills: impl that silently allows malformed cap= headers.
+  const justfileMutServerMalformedCap = `mutate-server cap=:\n    cargo mutants -p monster-realm-module --test-tool nextest 2>&1 | tee missed.txt\n`;
+  if (mutateServerRecipeIntact(justfileMutServerMalformedCap)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH L-malformed-cap: mutateServerRecipeIntact accepted a mutate-server recipe with malformed cap= (no digits) — must return false when cap= has no parseable integer',
+    };
+  }
+  // Good: all invariants satisfied (monster-realm-module, missed.txt, --test-tool nextest,
+  // cap ≤ 200, no scope-narrowing flags).
+  const justfileMutServerGood = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n`;
   if (!mutateServerRecipeIntact(justfileMutServerGood)) {
     return {
       name,
@@ -1010,6 +1045,19 @@ jobs:
     }
   }
 
+  // Check 10.5: mutation-server job is not neutered (B1 — was missing; adding
+  // continue-on-error to the new job would otherwise pass undetected).
+  {
+    const r = jobIsNotNeutered(nightlyYml, 'mutation-server');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `mutation-server job is neutered in nightly.yml: ${r.reason}`,
+      };
+    }
+  }
+
   // Check 11: nightly triggers on schedule + workflow_dispatch
   if (!nightlyTriggersOnScheduleAndDispatch(nightlyYml)) {
     return {
@@ -1039,7 +1087,7 @@ jobs:
       name,
       pass: false,
       detail:
-        'justfile mutate-server recipe is absent or incomplete (EXPECTED RED — implementer must add the recipe: cargo mutants -p monster-realm-module with missed.txt count-compare, cap ≤ 200, no --shard/--file/--exclude-re)',
+        'justfile mutate-server recipe is absent or incomplete (EXPECTED RED — implementer must add the recipe: cargo mutants -p monster-realm-module --test-tool nextest with missed.txt count-compare, cap ≤ 200, no --shard/--file/--exclude-re)',
     };
   }
 

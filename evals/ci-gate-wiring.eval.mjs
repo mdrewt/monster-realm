@@ -46,6 +46,11 @@ function isTruthyCoe(value) {
 // Find the line range of a step that contains `runLine` (exact trimmed match).
 // Returns [startIdx, endIdx] (exclusive) within the lines array, or null if not found.
 // A step begins at a line whose trimmed form starts with `- ` at 6-space indent.
+//
+// LATENT ASSUMPTION: the walk-back to find the step's opening `- ` line relies on
+// all steps in the job using the 6-space `      - ` prefix (standard GitHub Actions
+// YAML indent: jobs at 2-space, job keys at 4-space, step items at 6-space). This
+// holds for all real ci.yml steps and all inline fixtures in this file.
 function findStepRange(lines, runLine) {
   const STEP_PREFIX = '      - '; // 6-space indent step item
   for (let i = 0; i < lines.length; i++) {
@@ -77,23 +82,85 @@ function findStepRange(lines, runLine) {
 }
 
 // ---------------------------------------------------------------------------
+// Duplicate-key guard helpers (F1 / F9).
+//
+// GitHub Actions last-key-wins: if `ci:` appears twice under `jobs:`, the
+// second (possibly neutered) definition is what runners execute. extractJobBlock
+// only sees the FIRST block — so a clean first + neutered second silently passes.
+// We scan the raw yaml for duplicate job-key lines at 2-space indent (F1) and
+// duplicate `jobs:` lines at 0-space indent (F9).
+//
+// LATENT ASSUMPTION: GitHub Actions job keys are at 2-space indent, top-level
+// keys (including `jobs:`) are at 0-indent. This matches the GHA YAML spec.
+// ---------------------------------------------------------------------------
+function checkNoDuplicateJobKey(yaml, jobName) {
+  // A job-key line looks like: `  <name>:` at exactly 2-space indent.
+  const target = `  ${jobName}:`;
+  let count = 0;
+  for (const line of yaml.split('\n')) {
+    if (line === target || line.startsWith(`${target} `)) {
+      count++;
+      if (count > 1) {
+        return {
+          ok: false,
+          reason: `duplicate job key '${jobName}:' detected at 2-space indent — GitHub Actions last-key-wins; the second (possibly neutered) block would execute`,
+        };
+      }
+    }
+  }
+  return { ok: true, reason: `no duplicate '${jobName}:' job key` };
+}
+
+function checkNoDuplicateJobsKey(yaml) {
+  let count = 0;
+  for (const line of yaml.split('\n')) {
+    if (line === 'jobs:' || line.startsWith('jobs: ')) {
+      count++;
+      if (count > 1) {
+        return {
+          ok: false,
+          reason:
+            'duplicate top-level `jobs:` key detected — GitHub Actions last-key-wins; the second jobs block (possibly neutered) would execute',
+        };
+      }
+    }
+  }
+  return { ok: true, reason: 'no duplicate top-level `jobs:` key' };
+}
+
+// ---------------------------------------------------------------------------
 // Predicate 1: ciStepsUnneutered(yaml) → { ok, reason }
 //
 // Rules:
 //  - Empty ci block → { ok:false } (no vacuous pass)
+//  - Duplicate `ci:` job key at 2-space indent → fail (F1, last-key-wins bypass)
+//  - Duplicate top-level `jobs:` key at 0-indent → fail (F9, same class)
 //  - Job-level if:/truthy continue-on-error → fail
 //  - For each required verb: must have a non-comment line whose TRIMMED form is
 //    EXACTLY `- run: just <verb>` (no suffixes like `|| true`, `; exit 0`, `&& …`)
 //  - Within that step's line range: no trimmed `if:` and no truthy `continue-on-error:`
 // ---------------------------------------------------------------------------
 export function ciStepsUnneutered(yaml) {
+  // F9: duplicate `jobs:` key guard.
+  const dupJobs = checkNoDuplicateJobsKey(yaml);
+  if (!dupJobs.ok) return dupJobs;
+
   const block = extractJobBlock(yaml, 'ci');
   if (!block || block.trim() === '') {
     return { ok: false, reason: 'ci job block is empty or absent (no vacuous pass)' };
   }
 
+  // F1: duplicate `ci:` job key guard.
+  const dupCi = checkNoDuplicateJobKey(yaml, 'ci');
+  if (!dupCi.ok) return dupCi;
+
   // Job-level keys sit at 4-space indent (before `steps:`).
   // Check job-level if: and continue-on-error: (keys that appear before the steps: key).
+  // LATENT ASSUMPTION: in GitHub Actions YAML, job-level keys (runs-on, if,
+  // continue-on-error, env, …) always precede the `steps:` key. We scan lines
+  // until we see `steps:` and then stop — this is correct by design because any
+  // `if:` appearing after `steps:` is a step-level condition, caught by the per-step
+  // range inspection below.
   const blockLines = block.split('\n');
   let pastSteps = false;
   for (const line of blockLines) {
@@ -221,18 +288,25 @@ export function justfileCiDepsAppearInCi(justfileText, ciYaml) {
   // Check each dep against ci.yml.
   for (const dep of deps) {
     if (dep === 'security') {
-      // Substitution: all four markers must be present anywhere in ciYaml.
+      // Substitution: all four markers must be present on non-comment lines.
+      // F2: raw indexOf would accept all four markers inside a single `# …` comment
+      // with no actual security steps. We line-scan, skipping lines whose TRIMMED
+      // form starts with `#`.
       const markers = [
         'gitleaks/gitleaks-action',
         'cargo audit',
         'semgrep scan',
         'anchore/sbom-action',
       ];
+      const ciLines = ciYaml.split('\n');
       for (const marker of markers) {
-        if (ciYaml.indexOf(marker) === -1) {
+        const foundOnNonComment = ciLines.some(
+          (ln) => !ln.trim().startsWith('#') && ln.indexOf(marker) !== -1,
+        );
+        if (!foundOnNonComment) {
           return {
             ok: false,
-            reason: `security dep substitution incomplete: marker '${marker}' not found anywhere in ci.yml (all four required: gitleaks/gitleaks-action uses, cargo audit run, semgrep scan run, anchore/sbom-action uses)`,
+            reason: `security dep substitution incomplete: marker '${marker}' not found on any non-comment line in ci.yml (all four required: gitleaks/gitleaks-action uses, cargo audit run, semgrep scan run, anchore/sbom-action uses; markers appearing only in comments do not satisfy the gate)`,
           };
         }
       }
@@ -265,9 +339,12 @@ export function justfileCiDepsAppearInCi(justfileText, ciYaml) {
 //   client-test: must contain `npm test`
 // ---------------------------------------------------------------------------
 
-// Local recipe-body extractor (re-use extractRecipeBody from build-ci-hygiene if
-// exported; it is, so import it — but to keep this file self-contained we inline
-// a compatible version aligned with the build-ci-hygiene export contract).
+// Local recipe-body extractor. extractRecipeBody from ./build-ci-hygiene.eval.mjs
+// exports the same logic and could be imported, but adding a second dynamic-import
+// dependency here would require another try/catch guard at the top of the default
+// export. The duplication is small (~30 lines), semantics are identical, and keeping
+// it local avoids a second cross-eval coupling. If this diverges from build-ci-hygiene
+// in the future, consolidate via a shared utility module.
 function extractRecipeBodyLocal(text, recipeName) {
   const exactMarker = `\n${recipeName}:`;
   const paramMarker = `\n${recipeName} `;
@@ -370,11 +447,18 @@ export function runMjsIsIntact(runMjsText) {
 // exactly `- run: node evals/ci-gate-wiring.eval.mjs`.
 // ---------------------------------------------------------------------------
 export function anchorIsWired(lefthookText, ciYaml) {
-  if (lefthookText.indexOf('node evals/ci-gate-wiring.eval.mjs') === -1) {
+  // F3: the lefthook check was comment-blind (raw indexOf). A line like
+  //   `# run: node evals/ci-gate-wiring.eval.mjs` would satisfy it falsely.
+  // Fix: line-scan, skipping any line whose trimmed form starts with `#`.
+  const ANCHOR_TOKEN = 'node evals/ci-gate-wiring.eval.mjs';
+  const foundInLefthook = lefthookText
+    .split('\n')
+    .some((ln) => !ln.trim().startsWith('#') && ln.indexOf(ANCHOR_TOKEN) !== -1);
+  if (!foundInLefthook) {
     return {
       ok: false,
       reason:
-        'lefthook.yml does not contain `node evals/ci-gate-wiring.eval.mjs` — add it under a pre-push command so the gate runs locally before every push',
+        'lefthook.yml does not contain `node evals/ci-gate-wiring.eval.mjs` on a non-comment line — add it under a pre-commit command so the gate runs locally before every commit',
     };
   }
 

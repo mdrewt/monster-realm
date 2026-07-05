@@ -228,3 +228,14 @@ not an adversary with admin):**
 5. The `mutate-server` cap default is eval-ceiling-checked (≤ 200) rather than
    pinned exactly, so a deliberate, reviewed bump inside the ceiling doesn't require
    an eval edit; bumps must update this ADR (see A2).
+6. `jobIsNotNeutered` is a flat block scan (unlike `ciStepsUnneutered`'s per-step
+   scoping), so the three guarded nightly jobs (`mutation:`, `coverage:`,
+   `mutation-server:`) must never carry a legitimate step-level `if:` (e.g. an
+   `if: failure()` log-dump like smoke-republish's). Adding one will false-RED the
+   wiring eval by design — either keep diagnostics out of the guarded jobs or
+   upgrade the predicate to per-step scoping when the need first arises.
+7. `selfContainsMainGuard` (the ci-gate-wiring eval's check that its own source
+   still carries the standalone main-guard) matches needle tokens with `indexOf` —
+   a gutted file that keeps the tokens in comments would pass it. Low risk: gutting
+   the file also has to survive the e2e-anchor run and PR review of an
+   eval-infrastructure diff; recorded rather than parsed-AST-hardened.
