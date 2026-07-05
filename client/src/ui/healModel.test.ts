@@ -17,7 +17,7 @@
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { StoreItemRow } from '../net/store';
-import { buildHealViewModel } from './healModel';
+import { buildHealViewModel, healTargetLocationId } from './healModel';
 
 // ---------------------------------------------------------------------------
 // Local type definition (mirrors what store.ts will export as StoreHealLocationRow).
@@ -301,5 +301,69 @@ describe('buildHealViewModel criterion 7: total function — never throws', () =
         },
       ),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M13.5b §D / ADR-0085 — healTargetLocationId
+//
+// RED REASON: `healTargetLocationId` is not yet exported from `./healModel` —
+// the named import at the top of this file causes a TS compile error until the
+// implementer adds the export. Every test in this block is red for that reason.
+//
+// API CONTRACT (pinned):
+//   healTargetLocationId(locations: readonly { locationId: number }[]): number | undefined
+//   - []           → undefined  (the SKIP signal — NOT `?? 0`)
+//   - [a]          → a.locationId
+//   - [a, b, ...]  → a.locationId (first wins)
+// ---------------------------------------------------------------------------
+
+describe('healTargetLocationId (M13.5b ADR-0085 §D)', () => {
+  it('empty array → undefined (the SKIP signal, not 0)', () => {
+    // Kills: the `?? 0` doomed-send bug — an impl that returns 0 for an empty
+    // list would cause healParty({ locationId: 0 }) to be sent to the server,
+    // guaranteed to produce an invisible Err (no location with id 0 exists).
+    // The SKIP signal must be `undefined`, not a falsy number.
+    const result = healTargetLocationId([]);
+    expect(result).toBeUndefined();
+    // Extra proof: explicitly not 0 (the exact doomed-send value).
+    expect(result).not.toBe(0);
+  });
+
+  it('single location → returns its locationId', () => {
+    // Kills: an impl that returns undefined for a non-empty array (over-conservative).
+    const result = healTargetLocationId([{ locationId: 7 }]);
+    expect(result).toBe(7);
+  });
+
+  it('single location with locationId=0 → returns 0 (falsy id is valid)', () => {
+    // Kills: an impl that returns undefined for falsy locationId values.
+    // locationId=0 IS a valid id when the array is non-empty.
+    const result = healTargetLocationId([{ locationId: 0 }]);
+    expect(result).toBe(0);
+  });
+
+  it('multiple locations → returns the FIRST locationId (current behavior contract)', () => {
+    // Kills: an impl that returns the last element, the min, the max, or undefined.
+    // The spec says "first, matching current behavior".
+    const result = healTargetLocationId([
+      { locationId: 42 },
+      { locationId: 7 },
+      { locationId: 100 },
+    ]);
+    expect(result).toBe(42); // first wins
+  });
+
+  it('two locations → first wins over second', () => {
+    // Kills: an impl that returns the second element or picks by min/max.
+    expect(healTargetLocationId([{ locationId: 10 }, { locationId: 20 }])).toBe(10);
+    expect(healTargetLocationId([{ locationId: 20 }, { locationId: 10 }])).toBe(20);
+  });
+
+  it('extra properties on location objects are ignored (structural subtype)', () => {
+    // Kills: an impl that requires an exact HealLocationViewModel shape and crashes
+    // on a minimal { locationId } object.
+    const locs = [{ locationId: 55, zoneId: 1, tileX: 5, tileY: 5 }];
+    expect(healTargetLocationId(locs)).toBe(55);
   });
 });

@@ -1242,6 +1242,210 @@ describe('M8.8e §C: divergence re-issue + keyup-not-stuck (composition)', () =>
 });
 
 // ================================================================================
+// M13.5b ADR-0085 — Predictor.dropRejected(seq): evict a known-dead pending op
+//
+// RED REASON: `Predictor.dropRejected` does not exist yet — every call below
+// produces a TS compile error ("Property 'dropRejected' does not exist on type
+// 'Predictor'"). The entire describe block stays red until the implementer adds
+// the method.
+//
+// API CONTRACT (pinned):
+//   dropRejected(seq: number): boolean
+//   - Removes EXACTLY the pending op with that seq (filter !==). Returns true iff
+//     one was removed.
+//   - Does NOT touch #queue (queueDepth unchanged by the call itself).
+//   - Does NOT touch #nextSeq.
+//   - Unknown / already-dropped seq → returns false, no state change (idempotent).
+// ================================================================================
+
+describe('dropRejected (M13.5b ADR-0085)', () => {
+  // ---- helpers reused across the block -----------------------------------------
+  function mkP(): Predictor {
+    return new Predictor(applyMove, STEP_MS, QUEUE_CAP);
+  }
+
+  // ---- exact-removal -----------------------------------------------------------
+  it('removes exactly the targeted seq and returns true; survivors are n1 and n3', () => {
+    // Kills: filter `>= seq` (drops n2+n3), filter `> seq` (drops n3 too),
+    // drop-all (drops everything), or always-false return.
+    const p = mkP();
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+    const i1 = p.enqueue(east())!; // seq n1
+    const i2 = p.enqueue(east())!; // seq n2  ← the one we drop
+    const i3 = p.enqueue(east())!; // seq n3
+
+    const removed = p.dropRejected(i2.seq);
+
+    expect(removed).toBe(true);
+    expect(p.pendingCount).toBe(2); // n1 and n3 survive
+
+    // Confirm n1 and n3 still survive: reconcile at ack n1 → only n3 remains.
+    p.reconcile(baseline(5, 5, 0), [], i1.seq, 0);
+    expect(p.pendingCount).toBe(1); // n3 alone
+
+    // Confirm n3 is also gone after reconcile at n3.
+    p.reconcile(baseline(5, 5, 0), [], i3.seq, 0);
+    expect(p.pendingCount).toBe(0);
+  });
+
+  // ---- unknown seq → idempotent no-op ------------------------------------------
+  it('unknown seq returns false and leaves pendingCount unchanged', () => {
+    // Kills: always-true return / non-idempotent drop that removes the wrong op.
+    const p = mkP();
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+    const i1 = p.enqueue(east())!;
+
+    const neverIssuedSeq = i1.seq + 9999;
+    const removed = p.dropRejected(neverIssuedSeq);
+
+    expect(removed).toBe(false);
+    expect(p.pendingCount).toBe(1); // i1 untouched
+    void i1;
+  });
+
+  // ---- already-dropped → second call is a no-op --------------------------------
+  it('idempotent: second dropRejected on the same seq returns false', () => {
+    // Kills: an impl that mutates state (returns different values or double-drops).
+    const p = mkP();
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+    const i1 = p.enqueue(east())!;
+
+    expect(p.dropRejected(i1.seq)).toBe(true);
+    expect(p.dropRejected(i1.seq)).toBe(false); // second call: already gone
+    expect(p.pendingCount).toBe(0);
+  });
+
+  // ---- queueDepth is NOT touched by dropRejected alone -------------------------
+  it('queueDepth unchanged by the call in isolation (enqueue 2, drop 1 → queueDepth still 2)', () => {
+    // Kills: a #queue-splicing impl that maintains two sources of truth
+    // (#queue and #pending) and splices both on dropRejected.
+    const p = mkP();
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+    const i1 = p.enqueue(east())!;
+    const i2 = p.enqueue(east())!;
+    const depthBefore = p.queueDepth; // 2
+
+    p.dropRejected(i1.seq);
+
+    // #queue must be UNCHANGED — only reconcile rebuilds it.
+    expect(p.queueDepth).toBe(depthBefore);
+    void i2;
+  });
+
+  // ---- #nextSeq not altered by dropRejected ------------------------------------
+  it('does not alter seq numbering: post-drop enqueue gets a seq > all prior seqs', () => {
+    // Kills: an impl that rolls back #nextSeq after eviction, causing seq reuse.
+    const p = mkP();
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+    const i1 = p.enqueue(east())!;
+    const i2 = p.enqueue(east())!;
+
+    p.dropRejected(i2.seq);
+    // free up a queue slot by dropping then reconciling
+    p.reconcile(baseline(5, 5, 0), [], i2.seq, 0); // ack up to i2 (nothing survives)
+
+    const i3 = p.enqueue(north())!;
+    expect(i3.seq).toBeGreaterThan(i2.seq); // never reuses i2's seq
+    void i1;
+  });
+
+  // ---- fast-check property: pendingCount delta and no survivor has dropped seq --
+  it('property: pendingCount delta == (seq present ? 1 : 0) and no survivor has the dropped seq', () => {
+    // Kills: any mutation to wrong ops, over-drop, or under-drop.
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 5 }), // how many ops to enqueue
+        fc.integer({ min: 0, max: 6 }), // index to attempt to drop (may be out of range)
+        (count, dropIndex) => {
+          const p = mkP();
+          p.reconcile(baseline(5, 5, 0), [], 0, 0);
+
+          const intents: IntentToSend[] = [];
+          for (let i = 0; i < count; i++) {
+            // drain before each enqueue to keep queue room available
+            p.reconcile(baseline(5, 5, 0), [], 0, 0);
+            const intent = p.enqueue(east());
+            if (intent !== undefined) intents.push(intent);
+          }
+
+          const countBefore = p.pendingCount;
+
+          const targetSeq = dropIndex < intents.length ? intents[dropIndex]!.seq : 999999; // guaranteed absent
+
+          const wasPresent = intents.some((i) => i.seq === targetSeq);
+          const removed = p.dropRejected(targetSeq);
+
+          expect(removed).toBe(wasPresent);
+          const expectedDelta = wasPresent ? 1 : 0;
+          expect(p.pendingCount).toBe(countBefore - expectedDelta);
+        },
+      ),
+    );
+  });
+
+  // ---- 13.5b-1 CORE REPRODUCTION (the phantom-intent desync class) -------------
+  //
+  // This is the load-bearing proof fixture. It documents and locks the exact bug:
+  //   - Without dropRejected, a pending op with seq N (server never acked, server
+  //     rolled back its seq bump on Err) survives every prune and replays onto the
+  //     authoritative queue at every reconcile → persistent 1-tile offset, diverged=false.
+  //   - With dropRejected(N) + one reconcile, the phantom op is gone and predicted
+  //     converges to authority.
+  //
+  // Kills: any impl where the movement rejection does NOT evict the pending op,
+  // leaving the client 1 tile off the server forever (diverged=false).
+  it('13.5b-1 CORE: silent desync RED-LOCK + dropRejected convergence', () => {
+    const t0 = 10_000;
+    const p = mkP();
+
+    // Seed at (5, 5), two steps ago so a queued East is immediately due.
+    p.reconcile(baseline(5, 5, t0 - 2 * STEP_MS), [], 0, t0);
+
+    // Enqueue East (seq N) and drain → predicted x moves to 6.
+    const intent = p.enqueue(east())!;
+    const seqN = intent.seq;
+    p.drain(t0);
+    expect(p.predicted!.pos.x).toBe(6); // client side-effect: client is at x=6
+
+    // --- RED-LOCK: documents the bug class ---
+    // Server REJECTED the move: last acked seq is still N-1 (= seqN - 1).
+    // The server's authoritative baseline remains at (5, 5).
+    // WITHOUT dropRejected, repeated reconciles at ackedSeq = seqN-1 leave
+    // predicted permanently at x=6 (one tile off authority) with diverged=false.
+    // This is the silent desync: reconcile "agrees" because the phantom op always
+    // replays East onto the auth baseline, pushing predicted to 6 every time.
+    const authBase = baseline(5, 5, t0 - 2 * STEP_MS);
+    const ackedSeqBeforeReject = seqN - 1;
+
+    const d1 = p.reconcile(authBase, [], ackedSeqBeforeReject, t0);
+    expect(d1).toBe(false); // diverged=false: reconcile "agrees" (the BUG)
+    expect(p.predicted!.pos.x).toBe(6); // still off: phantom East replayed
+
+    const d2 = p.reconcile(authBase, [], ackedSeqBeforeReject, t0);
+    expect(d2).toBe(false); // still false, still off
+    expect(p.predicted!.pos.x).toBe(6); // permanently 1-tile off authority
+
+    const d3 = p.reconcile(authBase, [], ackedSeqBeforeReject, t0);
+    expect(d3).toBe(false);
+    expect(p.predicted!.pos.x).toBe(6);
+    // ^^^ This proves dropRejected is load-bearing: without it the loop never converges.
+
+    // --- THE FIX ---
+    // dropRejected(seqN) evicts the phantom op.
+    const dropped = p.dropRejected(seqN);
+    expect(dropped).toBe(true);
+
+    // One more reconcile at the same ackedSeq (server still at x=5, ack still N-1).
+    const dFix = p.reconcile(authBase, [], ackedSeqBeforeReject, t0);
+
+    // NOW predicted must equal the authoritative baseline position (5, 5).
+    expect(dFix).toBe(false); // no divergence: prediction matches authority
+    expect(p.predicted!.pos).toEqual({ x: 5, y: 5 }); // converged
+    expect(p.pendingCount).toBe(0); // phantom op gone
+  });
+});
+
+// ================================================================================
 // M12.5d-3: snapped signal uses last FRAME drain time (not reconcile drain time)
 // SOURCE OF TRUTH: M12.5d spec §3 "Predictor: snap gap timer tracks frame-loop drain"
 //
