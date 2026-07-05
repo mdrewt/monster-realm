@@ -233,22 +233,26 @@ async function waitForBattleCleared(p: Page): Promise<void> {
 //         main.ts:665–669 conn.reducers.healParty({locationId}).
 // ---------------------------------------------------------------------------
 async function healViaBox(p: Page): Promise<void> {
-  // Open the box (KeyB, main.ts:248). TIMING TRAP (observed in run-1): after a KO,
-  // __game().ongoingBattle goes null IMMEDIATELY (Ongoing-filter in the store), but
-  // the battle overlay stays visible showing the outcome frame until the terminal
-  // row is GC'd on the next battle_tick — and KeyB is guarded by battleView.visible
-  // (main.ts:250, ADR-0014 mutual exclusion). A single early press is silently
-  // rejected, so press inside a bounded retry loop. KeyB TOGGLES the box, so check
-  // visibility BEFORE each press (never double-press an open box closed); the
-  // keydown handler runs synchronously, so waitFor's 500 ms doubles as the backoff
-  // while the overlay waits out its GC tick.
+  // Open the box (KeyB, main.ts:248). OVERLAY TRAP (observed in run-1 AND run-d1):
+  // after a KO, __game().ongoingBattle goes null IMMEDIATELY (Ongoing-filter in the
+  // store), but the battle overlay KEEPS showing the terminal outcome frame — the
+  // terminal row is NOT promptly GC'd (write-back sweeps lazily on later battles,
+  // M12.5e), and KeyB is guarded by battleView.visible (main.ts:250, ADR-0014).
+  // The DESIGNED dismissal is the Escape terminal-dismiss latch (main.ts:351-359,
+  // ADR-0071 priority battle > box; terminal outcome ⇒ permanent dismiss via
+  // dismissedBattleId). So: Escape first (dismisses the frame; safe no-op when no
+  // overlay is visible), then KeyB. KeyB TOGGLES the box, so check visibility
+  // BEFORE each press — Escape/KeyB only fire while the box is closed, never
+  // closing an open box. Keydown handlers run synchronously; the retry bound
+  // covers transient races, not a wait for server state.
   const healBtn = p.getByText('Heal Party', { exact: true });
-  const MAX_BOX_OPEN_TRIES = 20; // 20 × 500 ms = 10 s ≫ one battle_tick GC period
+  const MAX_BOX_OPEN_TRIES = 20; // 20 × 500 ms = 10 s of retries for transient races
   let boxOpen = false;
   for (let i = 0; i < MAX_BOX_OPEN_TRIES && !boxOpen; i++) {
     if (!(await healBtn.isVisible().catch(() => false))) {
-      // Physical-key form: main.ts:248 matches e.code === 'KeyB'; press('b') maps
-      // to that code only on US layouts, press('KeyB') always does (reviewer L3).
+      // Physical-key forms: main.ts matches e.code; press('b') maps to code KeyB
+      // only on US layouts, press('KeyB') always does (reviewer L3).
+      await p.keyboard.press('Escape');
       await p.keyboard.press('KeyB');
     }
     boxOpen = await healBtn
@@ -258,8 +262,8 @@ async function healViaBox(p: Page): Promise<void> {
   }
   if (!boxOpen) {
     throw new Error(
-      `healViaBox: box did not open after ${MAX_BOX_OPEN_TRIES} KeyB attempts ` +
-        '(battle overlay still visible? — its terminal row should GC within one battle_tick)',
+      `healViaBox: box did not open after ${MAX_BOX_OPEN_TRIES} Escape+KeyB attempts ` +
+        '(is another overlay latched open, or did a new battle start?)',
     );
   }
 
@@ -556,8 +560,9 @@ test.describe
         const postWeakenSnap = await snap(page);
         if (postWeakenSnap.ongoingBattle === null) {
           // SideBWins (KO) or Fled: check if we need to heal.
-          // On KO the overlay hides (battle row GC'd); fainted party blocks encounters.
-          // Recover via KeyB → "Heal Party" (zone-scoped, currently free, 30s cooldown).
+          // The terminal outcome frame stays visible (lazy GC — see healViaBox);
+          // a fainted party blocks encounters, so recover via Escape-dismiss →
+          // KeyB → "Heal Party" (zone-scoped, currently free, 30s cooldown).
           if (healCount < MAX_HEALS) {
             healCount++;
             // healViaBox waits for the healed-signal in the box DOM (no bare sleeps).
