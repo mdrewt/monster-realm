@@ -267,6 +267,8 @@ describe('subscriptionErrorMessage: T7 — event.message extraction with fallbac
     // The spec says "non-empty string" — whitespace-only is technically non-empty.
     // This documents the boundary: only truly empty ("") triggers the fallback.
     // Kills: an impl that trims/normalizes the message before the emptiness check.
+    // UX boundary: the consumer (main.ts reportError) sets textContent; a whitespace
+    // message renders blank — documented boundary, contract is literal non-empty string.
     expect(subscriptionErrorMessage({ event: { message: '   ' } })).toBe('   ');
   });
 });

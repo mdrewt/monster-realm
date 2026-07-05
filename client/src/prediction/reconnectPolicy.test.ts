@@ -97,8 +97,9 @@ describe('reconnectPolicy: reconnectDelayMs delay table', () => {
   });
 
   it('attempt=-1 → treated as 0 → 1000 (negative attempt → base delay)', () => {
-    // Kills: an impl that throws or produces a negative delay for negative attempts.
-    // The spec says attempt<0 treated as 0.
+    // ADR-0085: negative attempt is defensively clamped to 0 (total function; the
+    // state machine never produces one). Kills: an impl that throws or returns a
+    // negative delay for a negative attempt argument.
     expect(reconnectDelayMs(-1)).toBe(1000);
   });
 });
@@ -423,9 +424,9 @@ describe('reconnectPolicy: T4 op-sequence property', () => {
           // Invariant 1: linkFrozen is definitional (derived, never stored separately).
           expect(linkFrozen(s)).toBe(s.link !== 'connected');
 
-          // Invariant 2: attempt resets ONLY via onConnected.
+          // Invariant 2: attempt never decreases EXCEPT via onConnected (which resets it
+          // to 0) — so for non-connected ops assert monotone non-decreasing.
           if (op !== 'connected') {
-            // attempt must not decrease (except it cannot be lower after non-connect ops)
             expect(s.attempt).toBeGreaterThanOrEqual(prevS.attempt);
           }
 

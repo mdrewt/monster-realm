@@ -100,9 +100,11 @@ truth.
 **D3 — app-level reconnect: rebuild-with-backoff + event-driven input freeze.**
 - Backoff mirrors the SDK's own constants: `reconnectDelayMs(attempt) =
   min(1000 · 2**attempt, 30_000)` (`2 ** attempt`, not bitshift; the
-  `Infinity` overflow at large attempts is capped by `min`). **Attempts are
-  unbounded** (a game client keeps trying; delay cap prevents a storm) — no
-  terminal give-up state (YAGNI).
+  `Infinity` overflow at large attempts is capped by `min`; a negative
+  `attempt` is defensively clamped to 0 — the function is total even though
+  the state machine never produces one). **Attempts are unbounded** (a game
+  client keeps trying; delay cap prevents a storm) — no terminal give-up
+  state (YAGNI).
 - Pure policy (`client/src/prediction/reconnectPolicy.ts`): flat state
   `{ link: 'connected'|'disconnected'|'reconnecting'; attempt: number }`;
   freeze is **derived**, never stored: `linkFrozen(s) ≡ s.link !==

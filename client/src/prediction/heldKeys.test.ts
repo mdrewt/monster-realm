@@ -475,13 +475,10 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
     const authBase = fakeBaseline(5, 5, now - 2 * STEP_MS);
 
     // THE FIX: drop the rejected tail, then force a reconcile.
-    const dropped = predictor.dropRejected(tailSeq);
-    expect(dropped).toBe(true); // the op was present and is now evicted
-
-    // queueDepth unchanged by dropRejected (T3 assertion: #queue not spliced).
-    // We record queueDepth right after the drop, before reconcile rebuilds it.
-    const qDepthAfterDrop = predictor.queueDepth;
-    expect(qDepthAfterDrop).toBeGreaterThanOrEqual(0); // still a valid number
+    // T3: capture queueDepth BEFORE dropRejected — #queue must be unchanged by the call.
+    const qDepthBefore = predictor.queueDepth;
+    expect(predictor.dropRejected(tailSeq)).toBe(true); // the op was present and is now evicted
+    expect(predictor.queueDepth).toBe(qDepthBefore); // T3: #queue not spliced by dropRejected
 
     // One reconcile at ack = tailSeq-1 (server hasn't acked the tail because it
     // rejected it; all prior ops are acked at ackedSeqBeforeReject).
@@ -512,8 +509,8 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
     const intM = predictor.enqueue({ Step: 'East' })!; // seq M
     predictor.drain(t0); // drain so the queue slot is free
 
-    // Need to seed reconcile to clear the queue (drain consumed it) but keep pending M.
-    // Re-seed without acking M: reconcile with ackedSeq = 0 (M not yet acked).
+    // reconcile at ackedSeq=0 (below M's seq, so M stays pending) to clear the
+    // rebuilt queue (drain consumed the prior queue entry) while keeping M unacked.
     predictor.reconcile(fakeBaseline(5, 5, t0 - 2 * STEP_MS), [], 0, t0);
 
     const intN = predictor.enqueue({ Step: 'East' })!; // seq N (> M)
