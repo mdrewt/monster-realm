@@ -36,16 +36,24 @@ function classifyReducerError(err: unknown): ErrorKind {
  *   (no "[object Object]", no raw-string leakage).
  */
 export function reduceErrorMessage(err: unknown, where: string): string {
-  switch (classifyReducerError(err)) {
-    case 'sender': {
-      const message = (err as { message?: unknown }).message;
-      if (typeof message === 'string' && message !== '') return `${where}: ${message}`;
-      return `${where}: rejected`;
+  // try/catch (review RT-05): `.name`/`.message` may be hostile accessors (a
+  // throwing getter, a Proxy trap). This function runs inside promise `.catch`
+  // handlers — a throw here would escape as an unhandled rejection and the user
+  // would see NO feedback at all. Total means total: a probe throw → generic.
+  try {
+    switch (classifyReducerError(err)) {
+      case 'sender': {
+        const message = (err as { message?: unknown }).message;
+        if (typeof message === 'string' && message !== '') return `${where}: ${message}`;
+        return `${where}: rejected`;
+      }
+      case 'internal':
+        return `${where}: server error`;
+      case 'unknown':
+        return `${where}: unexpected error`;
     }
-    case 'internal':
-      return `${where}: server error`;
-    case 'unknown':
-      return `${where}: unexpected error`;
+  } catch {
+    return `${where}: unexpected error`;
   }
 }
 
@@ -57,12 +65,18 @@ export function reduceErrorMessage(err: unknown, where: string): string {
  * non-empty string `event.message` passes through.
  */
 export function subscriptionErrorMessage(ctx: unknown): string {
-  if (typeof ctx === 'object' && ctx !== null) {
-    const event = (ctx as { event?: unknown }).event;
-    if (typeof event === 'object' && event !== null) {
-      const message = (event as { message?: unknown }).message;
-      if (typeof message === 'string' && message !== '') return message;
+  // Same RT-05 totality guard as reduceErrorMessage: `.event`/`.message` may be
+  // hostile accessors, and this runs inside the SDK's onError callback.
+  try {
+    if (typeof ctx === 'object' && ctx !== null) {
+      const event = (ctx as { event?: unknown }).event;
+      if (typeof event === 'object' && event !== null) {
+        const message = (event as { message?: unknown }).message;
+        if (typeof message === 'string' && message !== '') return message;
+      }
     }
+    return 'subscription error';
+  } catch {
+    return 'subscription error';
   }
-  return 'subscription error';
 }

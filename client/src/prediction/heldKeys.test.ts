@@ -425,13 +425,12 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
     // rejection scenario: the server applied none of them, e.g. movement forbidden).
     const authBase = fakeBaseline(5, 5, now - 2 * STEP_MS);
 
-    // The tail intent must still be pending (seq > ackedSeqBeforeReject).
-    const tailStillPending = (): boolean => {
-      // We can't inspect #pending directly, but pendingCount > 0 with the right ack
-      // is sufficient — we verify convergence is the test's real measure.
-      return true; // documented invariant: tail seq > acked, so it survives prune
-    };
-    expect(tailStillPending()).toBe(true);
+    // The tail intent must still be pending (review fix: this was a vacuous
+    // always-true helper). Nothing has been acked since the seed reconcile, so
+    // EVERY sent intent — tail included — survives the prune; seqs are consecutive
+    // (a cap-declined enqueue consumes no seq), so the count is exact.
+    expect(predictor.pendingCount).toBe(sentIntents.length);
+    expect(predictor.pendingCount).toBeGreaterThan(0);
 
     // WITHOUT dropRejected: the first reconcile at ack=tailSeq-1 is a GENUINE PULLBACK
     // (predicted ran ahead during the burst; corrected position still replays the tail
@@ -500,13 +499,14 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
     // rejected it; all prior ops are acked at ackedSeqBeforeReject).
     predictor.reconcile(authBase, [], ackedSeqBeforeReject, now);
 
-    // Convergence: predicted must equal the authoritative (5,5) baseline position
-    // (subject to any surviving unacked ops draining — but since server says (5,5)
-    // and only surviving ops could move us, and authBase has no authQueue, the
-    // tail has been dropped, so predicted converges to (5,5) or stays at (5,5)).
-    // If other ops survived (seqs < tailSeq-1 that weren't acked), they'd also have
-    // moved predicted. The key invariant: pendingCount decreased by at least 1.
-    // We assert the convergence via pendingCount = 0 after full ack path:
+    // IMMEDIATE convergence (review fix: kills a lying always-true no-op
+    // dropRejected, which the full-ack reconcile below would forgive): seqs are
+    // consecutive, so ack tailSeq-1 prunes every survivor and the tail is dropped
+    // — NOTHING replays; predicted equals authority right here, after ONE reconcile.
+    expect(predictor.pendingCount).toBe(0);
+    expect(predictor.predicted!.pos).toEqual({ x: 5, y: 5 });
+
+    // Full-ack path stays converged (belt: the original assertion set).
     predictor.reconcile(authBase, [], tailSeq, now); // ack everything
     expect(predictor.pendingCount).toBe(0);
     expect(predictor.predicted!.pos).toEqual({ x: 5, y: 5 });

@@ -99,6 +99,13 @@ export function connect(opts: ConnectionOptions): Connection {
   let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
   // Teardown guard (ADR-0085 A5): once the page is going away, never rebuild.
   let teardown = false;
+  // Build generation (ADR-0085 review RT-02/RT-04/RT-07): each build() bumps this;
+  // lifecycle callbacks from a SUPERSEDED build (a late onDisconnect the browser
+  // buffered across a bfcache freeze, a slow onConnectError racing a successful
+  // retry) compare their captured generation and no-op — a stale socket's events
+  // must never reset the store, dirty the status line, or clobber identity/state
+  // owned by the current build.
+  let buildGen = 0;
 
   /** Schedule ONE rebuild after the current backoff delay (ADR-0085 D3/A7). */
   function scheduleRebuild(): void {
@@ -107,7 +114,17 @@ export function connect(opts: ConnectionOptions): Connection {
     rebuildTimer = setTimeout(() => {
       rebuildTimer = undefined;
       state = onReconnectAttempt(state);
-      current = build();
+      // RT-01: build() can throw synchronously (malformed URI, SDK version check).
+      // An uncaught throw here would strand state at 'reconnecting' with no timer
+      // and no further attempts — a permanent silent freeze. Treat it exactly like
+      // a failed connect attempt: surface, climb the ladder, reschedule.
+      try {
+        current = build();
+      } catch (err) {
+        opts.onError('connect', err instanceof Error ? err.message : 'rebuild failed');
+        state = onAttemptFailed(state);
+        scheduleRebuild();
+      }
     }, delay);
   }
 
@@ -125,6 +142,12 @@ export function connect(opts: ConnectionOptions): Connection {
     scheduleRebuild();
   }
 
+  // SINGLETON CONSTRAINT (review H1): connect() registers these window listeners
+  // unbalanced (no removeEventListener) and they close over THIS call's state.
+  // connect() is called exactly once per page lifetime (main()); a second call
+  // would double-fire handleDrop and cross the teardown guards — do not add one
+  // without extracting removable named handlers first.
+  //
   // pagehide teardown (ADR-0085 A5): clear any pending reconnect timer and suppress
   // future scheduling — a dying page must not spawn a fresh WebSocket.
   window.addEventListener('pagehide', () => {
@@ -393,14 +416,21 @@ export function connect(opts: ConnectionOptions): Connection {
    * attempt (the SDK has no auto-reconnect on this raw builder path — ADR-0085).
    */
   function build(): DbConnection {
+    // Capture this build's generation; `stale()` is true once a newer build exists.
+    // Number-token (not instance) comparison: callbacks can safely close over `gen`
+    // without any TDZ/ordering dependence on the `current` assignment below.
+    const gen = ++buildGen;
+    const stale = (): boolean => gen !== buildGen;
     const conn = DbConnection.builder()
       .withUri(opts.uri)
       .withDatabaseName(opts.db)
       .onConnect((c, id) => {
+        if (stale()) return; // superseded build: never clobber identity/subscriptions
         identity = id.toHexString();
         const reconnecting = hadSession;
         c.subscriptionBuilder()
           .onApplied(() => {
+            if (stale()) return; // superseded build: never unfreeze/join on a dead link
             // The link is fully usable only once the initial snapshot is applied:
             // unfreeze + reset the backoff ladder here (the ONLY attempt reset).
             // NOTE: the link unfreezes HERE, a few statements before the caller's
@@ -456,6 +486,7 @@ export function connect(opts: ConnectionOptions): Connection {
           ]);
       })
       .onConnectError((_ctx, err: Error) => {
+        if (stale()) return; // a superseded build's late failure must not dirty the status line
         // A failed (re)build attempt: surface, climb the backoff ladder, retry.
         opts.onError('connect', err.message);
         state = onAttemptFailed(state);
@@ -464,8 +495,13 @@ export function connect(opts: ConnectionOptions): Connection {
       // Clean re-init on a drop: drop stale rows so a reconnect never merges stale
       // state (ADR-0014). CONFIRMED (closes the M5 open question): the SDK does NOT
       // auto-reconnect on the raw builder path — the app-level rebuild via
-      // handleDrop() is the reconnect mechanism (ADR-0085 D3).
-      .onDisconnect(() => handleDrop())
+      // handleDrop() is the reconnect mechanism (ADR-0085 D3). Stale-guarded: a
+      // buffered onDisconnect from a superseded build (bfcache) must not wipe rows
+      // the CURRENT build's subscription already delivered (review RT-02).
+      .onDisconnect(() => {
+        if (stale()) return;
+        handleDrop();
+      })
       .build();
     wireTables(conn);
     return conn;

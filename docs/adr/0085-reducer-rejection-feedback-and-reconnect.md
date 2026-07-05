@@ -160,3 +160,35 @@ truth.
   it manually during the gap).
 - Follow-up: a reconnect e2e (two-window drop/rejoin) is out of this slice's
   touch-set (e2e specs are sibling-owned this cycle).
+
+## Amendment (pre-merge review pass, 2026-07-05)
+
+Three hardenings from the paid review pass on PR #119 (reviewer / red-team /
+desync-guard / security / tester lenses):
+
+1. **Rebuild-timer throw containment (RT-01).** `build()` can throw
+   synchronously (malformed URI, SDK bindings version check). The rebuild
+   timer now wraps `current = build()` in try/catch and routes a throw
+   through the failed-attempt path (surface → `onAttemptFailed` →
+   `scheduleRebuild`) — previously a throw stranded the link at
+   `'reconnecting'` forever with no retry and no feedback.
+2. **Stale-build generation guard (RT-02/RT-04/RT-07 class).** Every
+   `build()` captures a `buildGen` token; `onConnect` / `onApplied` /
+   `onConnectError` / `onDisconnect` no-op when a newer build exists. Closes
+   the bfcache-buffered stale `onDisconnect` wiping freshly delivered rows,
+   the late stale `onConnectError` dirtying the status line after a
+   successful reconnect, and stale `identity` clobber.
+3. **A2 invariant corrected (RT-03).** The original claim — "a post-reconnect
+   fresh predictor lacks the stale seq, so `dropRejected` is a safe no-op" —
+   is wrong at the boundary: `seedSeq(N-1)` hands the fresh predictor seq
+   `N`, colliding with a stale rejection of `N`. The actual cross-session
+   safety invariant is ORDERING: rejections settle only on message receipt
+   from the live socket (no settle after a drop), so a stale `.catch` always
+   drains as a microtask against the OLD predictor, ≥1 s before the reconnect
+   timer creates the new one. Comment fixed at the `sendIntent` `.catch`.
+
+Also from review: `reduceErrorMessage` / `subscriptionErrorMessage` gained
+try/catch totality against hostile accessors (RT-05), and the gating tests
+gained exact-name-equality teeth (an `includes()` classifier survived the
+original suite), a real assertion replacing the vacuous `tailStillPending`
+helper, and an immediate-convergence assertion in the 13.5b-4 GREEN test.

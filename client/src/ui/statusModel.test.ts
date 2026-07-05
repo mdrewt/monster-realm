@@ -157,6 +157,45 @@ describe('reduceErrorMessage: unknown errors → generic, no leakage', () => {
     const err = { name: 'OtherError', message: 'some other error' };
     expect(reduceErrorMessage(err, 'evolve')).toBe('evolve: unexpected error');
   });
+
+  // ─── review additions (tester P3): pin EXACT name equality, not substring ─────
+  // A `name.includes('SenderError')` classifier survived every earlier test in this
+  // file; these two kill it. The C9 contract is equality — a superstring name must
+  // fall to the unknown branch, never pass its raw message through (no-leak).
+  it('name "WrappedSenderError" (superstring) → generic — kills an includes()/endsWith classifier', () => {
+    const err = { name: 'WrappedSenderError', message: 'raw server reason must not surface' };
+    expect(reduceErrorMessage(err, 'buy')).toBe('buy: unexpected error');
+  });
+
+  it('name "MyInternalError" (superstring) → "unexpected error", NOT "server error"', () => {
+    // An includes() classifier would route this to the internal branch; equality
+    // routes it to unknown. Either way no detail leaks — the branch itself is pinned.
+    const err = { name: 'MyInternalError', message: 'detail' };
+    expect(reduceErrorMessage(err, 'sell')).toBe('sell: unexpected error');
+  });
+
+  // ─── review additions (RT-05): totality under hostile accessors ───────────────
+  // reduceErrorMessage runs inside promise .catch handlers: a throw would escape as
+  // an unhandled rejection and the user would see NO feedback. TOTAL means total.
+  it('RT-05: throwing `name` getter → generic, does not throw', () => {
+    const err = {};
+    Object.defineProperty(err, 'name', {
+      get() {
+        throw new Error('hostile name getter');
+      },
+    });
+    expect(reduceErrorMessage(err, 'buy')).toBe('buy: unexpected error');
+  });
+
+  it('RT-05: SenderError with throwing `message` getter → generic, does not throw', () => {
+    const err = { name: 'SenderError' };
+    Object.defineProperty(err, 'message', {
+      get() {
+        throw new Error('hostile message getter');
+      },
+    });
+    expect(reduceErrorMessage(err, 'sell')).toBe('sell: unexpected error');
+  });
 });
 
 // ================================================================================
@@ -275,5 +314,16 @@ describe('subscriptionErrorMessage: T7 — event.message extraction with fallbac
     // UX boundary: the consumer (main.ts reportError) sets textContent; a whitespace
     // message renders blank — documented boundary, contract is literal non-empty string.
     expect(subscriptionErrorMessage({ event: { message: '   ' } })).toBe('   ');
+  });
+
+  it('RT-05 (review addition): throwing `event` getter → fallback, does not throw', () => {
+    // Runs inside the SDK's onError callback — totality under hostile accessors.
+    const ctx = {};
+    Object.defineProperty(ctx, 'event', {
+      get() {
+        throw new Error('hostile event getter');
+      },
+    });
+    expect(subscriptionErrorMessage(ctx)).toBe('subscription error');
   });
 });

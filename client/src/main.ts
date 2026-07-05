@@ -293,10 +293,15 @@ function sendIntent(input: WasmMoveInput): void {
   const seq = intent.seq;
   conn.conn.reducers.enqueueMove({ input: moveInputToSdk(input), seq: BigInt(seq) }).catch(() => {
     // Movement rejections stay SILENT to the user (M2 §3) — prediction repair only.
-    // ADR-0085 A2: this closure captures ONLY `seq` (a const) and reads the
-    // module-scope `predictor` at fire time — never capture the predictor instance
-    // at send time: a post-reconnect fresh predictor lacks this seq, so dropRejected
-    // returns false → safe no-op.
+    // ADR-0085 A2 (invariant corrected in review, RT-03): this closure captures ONLY
+    // `seq` (a const) and reads the module-scope `predictor` at fire time — never
+    // capture the predictor instance at send time. Cross-session safety comes from
+    // ORDERING, not seq disjointness: rejections settle only on message receipt from
+    // the live socket (no settle after a drop), so a stale `.catch` always drains as
+    // a microtask against the OLD predictor — the fresh predictor is created ≥1s
+    // later by the reconnect timer. (seedSeq alone would NOT protect the boundary:
+    // seedSeq(N-1) hands the fresh predictor seq N, colliding with a stale reject
+    // of N — reachable only if the drop/reconnect ordering above were violated.)
     // ADR-0085 A3: burst rejections (N rejects → N drop+reconcile microtasks in one
     // turn) are harmless — the microtask checkpoint drains before the next rAF, the
     // renderer reads predictor state only in rAF, and each reconcile is a total
