@@ -746,7 +746,7 @@ fn m13_5c_sync_content_zero_identity_err_drops_republish_claim() {
 
 /// EARS 13.5c-2 source-guard: `sync_content_inner`'s write phase must call
 /// the pure `stale_zone_def_ids` seam AND actually delete the stale rows
-/// via `ctx.db.zone_def().zone_id().delete(..)`.
+/// from the `zone_def` table.
 ///
 /// Windowed to the fn body (fn-find + brace-walk) so mentions elsewhere in
 /// content.rs (including the seam's own definition) cannot false-green.
@@ -759,6 +759,13 @@ fn m13_5c_sync_content_zero_identity_err_drops_republish_claim() {
 /// KILLS (needle 2): an impl that computes stale ids but never issues the
 /// delete (call without write), or deletes from the wrong table — the dead
 /// zone_def row would survive and keep the zone joinable.
+///
+/// NOTE on needle 2 form (Finding 4 / red-team MEDIUM): the original needle
+/// `zone_def().zone_id().delete(` over-couples to the pk-index accessor chain;
+/// the equally-correct row-delete form `zone_def().delete(&row)` would
+/// false-RED it. Two loose needles (`zone_def()` present AND `.delete(`
+/// present in the same compacted window) are sufficient — the behavioral
+/// tests own semantics; this needle only guards wiring existence.
 /// RED today: neither the seam nor any zone_def delete exists in the body.
 #[test]
 fn m13_5c_sync_content_inner_deletes_stale_zone_defs() {
@@ -772,11 +779,22 @@ fn m13_5c_sync_content_inner_deletes_stale_zone_defs() {
          pure `stale_zone_def_ids(` seam (production call inside the fn \
          body) — ad-hoc shell diff logic bypasses the unit-tested rule"
     );
+    // Two-part needle: zone_def() accessor present AND a .delete( call present
+    // within the same fn body. The loose form accepts both the pk-index form
+    // `zone_def().zone_id().delete(..)` AND the row-delete form
+    // `zone_def().delete(&row)` — both are correct; the behavioral tests own
+    // the semantics (the needle only checks that the delete is wired at all).
     assert!(
-        compact.contains("zone_def().zone_id().delete("),
-        "TEETH(13.5c-2): sync_content_inner must delete stale zone_def rows \
-         (`ctx.db.zone_def().zone_id().delete(..)`); computing the stale set \
-         without the delete leaves removed zones live in the DB"
+        compact.contains("zone_def()"),
+        "TEETH(13.5c-2): sync_content_inner must access the zone_def table \
+         (`ctx.db.zone_def()`) to delete stale rows; the accessor is absent \
+         from the fn body — the dead zone_def row would survive after sync"
+    );
+    assert!(
+        compact.contains(".delete("),
+        "TEETH(13.5c-2): sync_content_inner must issue a `.delete(` call \
+         within its body — computing stale ids without deleting leaves removed \
+         zones live in the DB"
     );
 }
 
@@ -1325,6 +1343,15 @@ fn m13_5c_plan_npc_sync_half_orphan_repairs_not_bare_insert() {
 /// Deterministic exhaustive enumeration — no RNG, no new deps (proptest is
 /// already a dev-dep but adds nothing over full enumeration here).
 ///
+/// NOTE on depth (Finding 7): this 512-grid checks the SET-MEMBERSHIP
+/// invariant (exactly the def npc_id set survives) and entity_id agreement
+/// (pair ids match post-fold). It does NOT re-verify original-value
+/// preservation (tile/facing/queue, zone-change reset, Repair fresh-spawn) —
+/// those depth checks are owned by the pointwise tests above
+/// (m13_5c_plan_npc_sync_same_zone_preserves_live_tile,
+///  m13_5c_plan_npc_sync_zone_change_respawns_at_def_spawn,
+///  m13_5c_plan_npc_sync_half_orphan_repairs_not_bare_insert).
+///
 /// KILLS: any planner that drops or duplicates an id in SOME permutation the
 /// pointwise tests above don't reach — e.g. remove-processing skipped when
 /// defs is empty, orphan-with-no-def leaking through the Remove path, or an
@@ -1436,33 +1463,94 @@ fn m13_5c_plan_npc_sync_exhaustive_apply_yields_exact_def_set() {
 ///
 /// KILLS (needle 1): a shell keeping ad-hoc diff logic instead of the
 /// unit-tested `plan_npc_sync(` seam — every behavioral test above would be
-/// exercising dead code. KILLS (needle 2): the insert-only seeding surviving
-/// the rename — `.is_some()` guard immediately followed by `continue`
+/// exercising dead code.
+/// KILLS (needle 2 — residual defense-in-depth): the insert-only seeding
+/// surviving the rename — `.is_some()` guard immediately followed by `continue`
 /// (whitespace-compacted adjacency, the exact current pattern) skips every
-/// existing npc_id, so no Update/Remove ever executes. KILLS (needle 3): a
-/// shell that removes NPC rows without cascading `player_conversation` —
-/// live conversations would dangle on a deleted npc_entity_id.
+/// existing npc_id, so no Update/Remove ever executes. Note: this negative
+/// needle can be evaded by exotic idioms (`if let Some`, `.any(...)`, match),
+/// which is why needles 3–6 also require the exhaustive apply-fold shape.
+/// KILLS (needles 3-6 / Finding 2): a shell that calls `plan_npc_sync(` but
+/// ignores some action variants in the apply loop — the behavioral tests would
+/// pass (they test the pure planner) while the shell silently discards Updates,
+/// Removes, or Repairs. Each variant name must appear in the compacted window.
+/// KILLS (needle 7 / Finding 3): a shell that removes NPC rows without
+/// cascading the `player_conversation` table via its DB accessor — bare
+/// mention of the word "player_conversation" in a comment or log string is NOT
+/// sufficient; the accessor call shape `player_conversation()` is required (a
+/// DB-accessor call cannot appear in a diagnostic string non-maliciously).
+/// Additionally, a `.delete(` call must appear (the accessor call without a
+/// delete writes nothing).
 #[test]
 fn m13_5c_sync_npc_entities_from_uses_planner_and_cascades() {
     let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
     let body = m13_5c_fn_body(&stripped, "fn sync_npc_entities_from(");
     let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
 
+    // Needle 1: planner delegation.
     assert!(
         compact.contains("plan_npc_sync("),
-        "TEETH(13.5c-1): sync_npc_entities_from must delegate the diff to \
-         the pure `plan_npc_sync(` seam (production call inside the fn body)"
+        "TEETH(13.5c-1 needle 1): sync_npc_entities_from must delegate the \
+         diff to the pure `plan_npc_sync(` seam (production call inside the \
+         fn body)"
     );
+
+    // Needle 2: negative — insert-only pattern gone (defense-in-depth; see doc above).
     assert!(
         !compact.contains(".is_some(){continue"),
-        "TEETH(13.5c-1): the insert-only seeding pattern (`.is_some()` \
+        "TEETH(13.5c-1 needle 2): the insert-only seeding pattern (`.is_some()` \
          adjacent to `continue`) must be GONE from the shell body — it \
          silently skips every existing NPC, so changed defs never update \
-         and dropped defs never remove"
+         and dropped defs never remove. Note: exotic evasion idioms are caught \
+         by needles 3–6 which require the exhaustive variant paths."
+    );
+
+    // Needles 3-6: exhaustive apply-fold shape — every NpcSyncAction variant the
+    // planner emits must have a handling arm in the shell (Finding 2: the positive
+    // `plan_npc_sync(` needle alone survives an impl that calls the planner but
+    // continues past Update/Remove/Repair). Names match EXACTLY the enum variants
+    // declared above so RED→green stays coherent.
+    assert!(
+        compact.contains("NpcSyncAction::Insert"),
+        "TEETH(13.5c-1 needle 3): shell body must handle `NpcSyncAction::Insert` \
+         — without this arm, new NPCs are never seeded into the DB"
     );
     assert!(
-        compact.contains("player_conversation"),
-        "TEETH(13.5c-1): NPC removal must cascade `player_conversation` \
-         rows keyed on the removed npc_entity_ids (spec T4 removal cascade)"
+        compact.contains("NpcSyncAction::Update"),
+        "TEETH(13.5c-1 needle 4): shell body must handle `NpcSyncAction::Update` \
+         — without this arm, changed defs never upsert the existing NPC rows \
+         (stale home/dialogue/sprite persist forever)"
+    );
+    assert!(
+        compact.contains("NpcSyncAction::Remove"),
+        "TEETH(13.5c-1 needle 5): shell body must handle `NpcSyncAction::Remove` \
+         — without this arm, dropped defs leave ghost NPCs in the DB forever"
+    );
+    assert!(
+        compact.contains("NpcSyncAction::Repair"),
+        "TEETH(13.5c-1 needle 6): shell body must handle `NpcSyncAction::Repair` \
+         — without this arm, half-orphan npc rows (npc exists, character missing) \
+         are never self-healed (fold M1+RT-6)"
+    );
+
+    // Needle 7 (Finding 3): cascade must use the DB-accessor call shape
+    // `player_conversation()` — a bare mention of the word "player_conversation"
+    // can appear in a comment or log string and would false-green the needle.
+    // A DB-accessor call cannot appear non-maliciously in a diagnostic string,
+    // so this form is comment-stuffing-safe (comments are stripped above).
+    // The additional `.delete(` needle ensures the accessor is used to DELETE,
+    // not just query.
+    assert!(
+        compact.contains("player_conversation()"),
+        "TEETH(13.5c-1 needle 7a): NPC removal must cascade `player_conversation` \
+         rows via the DB accessor call `player_conversation()` (spec T4 removal \
+         cascade); a bare word mention in a comment or log satisfies the \
+         previous weaker form but never wires the actual delete"
+    );
+    assert!(
+        compact.contains(".delete("),
+        "TEETH(13.5c-1 needle 7b): the `player_conversation()` accessor must be \
+         accompanied by a `.delete(` call in the shell body — an accessor \
+         call alone (without delete) writes nothing"
     );
 }

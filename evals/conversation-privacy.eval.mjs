@@ -23,10 +23,16 @@
 //   C checkBindings(fsProbe)            — player_conversation_table.ts ABSENT,
 //     my_conversation_table.ts PRESENT (injected probe → deterministic teeth).
 //   D checkClientSubscription(connSrc)  — POSITIVE needle `FROM my_conversation`
-//     present AND NEGATIVE needle `FROM player_conversation` absent (m2+RT-8:
-//     absence-only is concat-bypassable, so the positive needle is required).
+//     present IN the .subscribe([...]) array window AND NEGATIVE needle
+//     `FROM player_conversation` absent from the same window (windowed per
+//     Finding 5: a dead string constant outside the array cannot satisfy it;
+//     m2+RT-8: absence-only is concat-bypassable).
+//   E checkOnDeleteHandler(connSrc)     — my_conversation.onDelete( handler body
+//     must call shouldRemoveOnViewDelete( (Finding 1 / CRITICAL helper-wiring
+//     gap: T0 spike finding 4 = UPDATE arrives as onInsert(new)+onDelete(old);
+//     a naive handler wipes the conversation on every advance_dialogue).
 //
-// RED STATE TODAY (all against schema.rs:384 / connection.ts:478 / committed bindings):
+// RED STATE TODAY (all against schema.rs:384 / connection.ts / committed bindings):
 //   A RED — table is `#[spacetimedb::table(name = player_conversation, public)]`.
 //   B GREEN-VACUOUS today: no views exist and the table is PUBLIC, so the
 //     required-once-private branch does not fire — the overall eval is RED via
@@ -35,13 +41,16 @@
 //     my_conversation view (or with a decoy stub that never reads the table),
 //     check B goes RED (client dark).
 //   C RED — player_conversation_table.ts exists; my_conversation_table.ts missing.
-//   D RED — connection.ts still subscribes 'SELECT * FROM player_conversation'
+//   D RED — connection.ts subscribe array contains 'FROM player_conversation'
 //     and has no 'FROM my_conversation'.
+//   E RED — connection.ts has no my_conversation.onDelete( registration yet
+//     (the table is still public and uses player_conversation).
 //
 // Proof-of-teeth fixtures run BEFORE the live-tree checks so a broken checker is
 // caught first. GREEN edit for the implementer: drop `public` at schema.rs:384,
 // add the owner-scoped my_conversation view, regen bindings, swap the
-// connection.ts subscription string.
+// connection.ts subscription string, wire the onDelete handler via
+// shouldRemoveOnViewDelete.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { glob } from 'node:fs/promises';
@@ -59,6 +68,12 @@ import { fileURLToPath } from 'node:url';
  * @param {string} src Raw source text.
  * @returns {string} Source with comment content blanked.
  */
+// LIMITATION (Finding 6): the line-comment pass blanks everything from `//`
+// to end-of-line, including the suffix of string literals containing `//`
+// (e.g. URLs like "https://example.com"). No such literals exist in the files
+// scanned today; if one is added, move it to a backtick template or escape
+// the slashes so this stripper does not blank the suffix.
+// The block-comment pass does NOT have this issue (balanced slash-star pairs).
 export function stripComments(src) {
   const blockRe = /\/\*[\s\S]*?\*\//g;
   let out = src.replace(blockRe, (m) => m.replace(/[^\n]/g, ' '));
@@ -321,7 +336,37 @@ export function checkBindings(fsProbe) {
 // positive needle nor trip the negative one). Positive needle required per
 // review fold m2+RT-8 (absence-only is concat-bypassable). \b guards against
 // e.g. `FROM player_conversation_archive` false-tripping.
+//
+// Windowed to the `.subscribe([` array literal (Finding 5): the whole-file
+// positive needle is satisfiable by a dead string constant that is never
+// subscribed. We locate the `.subscribe([` call via indexOf, bracket-walk to
+// the closing `]`, and require `FROM my_conversation` to appear INSIDE that
+// window. Fallback: if no `.subscribe([` bracket is found, the whole-file
+// needle is used with a warning (the dialogue e2e is then the behavioral gate
+// for actual subscription).
 // ---------------------------------------------------------------------------
+
+/**
+ * Walk a bracket pair starting at `openIdx` (the character at `openIdx` is
+ * the opening bracket: `[`, `(`, or `{`). Returns the index of the matching
+ * closing bracket, or -1 if the source ends before it closes.
+ * @param {string} src Source text (comment-stripped).
+ * @param {number} openIdx Index of the opening bracket character.
+ * @returns {number} Index of the matching closing bracket, or -1.
+ */
+function walkBracket(src, openIdx) {
+  const open = src[openIdx];
+  const close = open === '[' ? ']' : open === '(' ? ')' : '}';
+  let depth = 0;
+  for (let i = openIdx; i < src.length; i++) {
+    if (src[i] === open) depth++;
+    else if (src[i] === close) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
 
 /**
  * @param {string} connectionSrc Raw connection.ts source.
@@ -329,10 +374,43 @@ export function checkBindings(fsProbe) {
  */
 export function checkClientSubscription(connectionSrc) {
   const stripped = stripComments(connectionSrc);
-  if (!/FROM\s+my_conversation\b/.test(stripped)) {
+
+  // Windowed positive needle (Finding 5): locate the subscribe array and check
+  // FROM my_conversation within it so a dead constant cannot satisfy the needle.
+  // The `.subscribe([` literal is present in connection.ts exactly once (the
+  // single subscription call site in build()); indexOf is deterministic here.
+  const subscribeMarker = '.subscribe([';
+  const markerIdx = stripped.indexOf(subscribeMarker);
+  if (markerIdx !== -1) {
+    // Walk to the `[` that opens the array (last char of the marker).
+    const arrayOpenIdx = markerIdx + subscribeMarker.length - 1;
+    const arrayCloseIdx = walkBracket(stripped, arrayOpenIdx);
+    if (arrayCloseIdx !== -1) {
+      const arrayWindow = stripped.slice(arrayOpenIdx, arrayCloseIdx + 1);
+      if (arrayWindow.indexOf('FROM my_conversation') === -1) {
+        return (
+          "connection source's .subscribe([...]) array lacks 'FROM my_conversation' — " +
+          'the owner-scoped view is never subscribed (dialogue client dark); ' +
+          'a dead string constant outside the array cannot satisfy this needle'
+        );
+      }
+      if (arrayWindow.indexOf('FROM player_conversation') !== -1) {
+        return (
+          "connection source's .subscribe([...]) array still contains 'FROM player_conversation' — " +
+          'subscribing the now-private table errors the batch and onApplied never ' +
+          'fires (T0 rollout probe: blank world); remove the old subscription string'
+        );
+      }
+      return null;
+    }
+  }
+  // Fallback: bracket-walk failed (unexpected source shape) — use whole-file
+  // needles and document that the dialogue e2e is the behavioral subscription gate.
+  if (stripped.indexOf('FROM my_conversation') === -1) {
     return (
-      "connection source lacks a 'FROM my_conversation' subscription — the " +
-      'owner-scoped view is never subscribed (dialogue client dark)'
+      "connection source lacks 'FROM my_conversation' anywhere (fallback: " +
+      'bracket-walk of .subscribe([...]) failed — check connection.ts structure); ' +
+      'the owner-scoped view is never subscribed (dialogue client dark)'
     );
   }
   if (/FROM\s+player_conversation\b/.test(stripped)) {
@@ -342,6 +420,102 @@ export function checkClientSubscription(connectionSrc) {
       'fires (T0 rollout probe: blank world); remove the old subscription string'
     );
   }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Check E: the my_conversation.onDelete handler in connection.ts must call
+// shouldRemoveOnViewDelete (Finding 1 / CRITICAL helper-wiring gap).
+//
+// The T0 spike finding 4 established that through a view subscription a row
+// UPDATE delivers as onInsert(new)+onDelete(old) — NO onUpdate. A naive
+// onDelete → store.removeConversation(...) wipes the just-updated conversation
+// on every advance_dialogue (overlay closes mid-conversation). The pure helper
+// shouldRemoveOnViewDelete (tested in viewDelete.test.ts) gates the remove;
+// THIS check ensures the handler is actually wired to call it (a lazy
+// implementer could ship the pure helper with 10 tests green and a naive
+// handler that bypasses it — connection.ts is coverage-excluded shell and the
+// dialogue e2e only tests the net behavior after both changes land).
+//
+// Locating strategy: find `my_conversation.onDelete(` via indexOf (literal),
+// then paren-walk the outer call's argument list to reach the callback arrow,
+// then brace-walk the arrow body. The compacted body must contain
+// `shouldRemoveOnViewDelete(`.
+//
+// RED STATE TODAY: `my_conversation.onDelete(` does not yet exist in
+// connection.ts (the table is still public, using `player_conversation`).
+// The check reports a clear RED message for this state.
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {string} connectionSrc Raw connection.ts source.
+ * @returns {string|null} Error string, or null on pass.
+ */
+export function checkOnDeleteHandler(connectionSrc) {
+  const stripped = stripComments(connectionSrc);
+
+  // Locate the my_conversation.onDelete( registration.
+  const handlerMarker = 'my_conversation.onDelete(';
+  const handlerIdx = stripped.indexOf(handlerMarker);
+  if (handlerIdx === -1) {
+    return (
+      'connection.ts has no my_conversation.onDelete( registration — ' +
+      'the delete handler for the owner-scoped view is absent; ' +
+      'view UPDATE arrives as onInsert(new)+onDelete(old) and without the ' +
+      'handler the store is never pruned (conversations accumulate on dismiss)'
+    );
+  }
+
+  // Paren-walk the onDelete(…) call argument list to find the callback arg.
+  const callOpenIdx = handlerIdx + handlerMarker.length - 1; // the `(`
+  const callCloseIdx = walkBracket(stripped, callOpenIdx);
+  if (callCloseIdx === -1) {
+    return 'my_conversation.onDelete( call is not closed — source parse failure';
+  }
+
+  // The callback is inside the paren range. Find the arrow body `{` after `=>`.
+  const callArgs = stripped.slice(callOpenIdx + 1, callCloseIdx);
+  // Walk to the `=>` + `{` within callArgs.
+  const arrowIdx = callArgs.indexOf('=>');
+  if (arrowIdx === -1) {
+    return (
+      'my_conversation.onDelete handler does not appear to be an arrow function ' +
+      '(`=>` not found in the callback arg) — cannot verify shouldRemoveOnViewDelete wiring'
+    );
+  }
+  // Find the `{` after the `=>`.
+  let bodyOpenLocal = arrowIdx + 2;
+  while (
+    bodyOpenLocal < callArgs.length &&
+    (callArgs[bodyOpenLocal] === ' ' ||
+      callArgs[bodyOpenLocal] === '\n' ||
+      callArgs[bodyOpenLocal] === '\r' ||
+      callArgs[bodyOpenLocal] === '\t')
+  )
+    bodyOpenLocal++;
+  if (callArgs[bodyOpenLocal] !== '{') {
+    return (
+      'my_conversation.onDelete handler arrow body does not start with `{` — ' +
+      'expression-body arrow detected; wrap the body in braces so the wiring check can walk it'
+    );
+  }
+  const bodyCloseLocal = walkBracket(callArgs, bodyOpenLocal);
+  if (bodyCloseLocal === -1) {
+    return 'my_conversation.onDelete handler body brace is not closed — source parse failure';
+  }
+
+  const body = callArgs.slice(bodyOpenLocal + 1, bodyCloseLocal);
+  const compact = body.replace(/\s+/g, '');
+
+  if (compact.indexOf('shouldRemoveOnViewDelete(') === -1) {
+    return (
+      'my_conversation.onDelete handler does not call shouldRemoveOnViewDelete( — ' +
+      'a naive handler (e.g. store.removeConversation(owner)) wipes the conversation ' +
+      'on every advance_dialogue advance (T0 spike finding 4: UPDATE arrives as ' +
+      'onInsert(new)+onDelete(old), UNORDERED; the helper gates the remove)'
+    );
+  }
+
   return null;
 }
 
@@ -597,6 +771,65 @@ fn my_conversation(ctx: &ViewContext) -> Option<PlayerConversation> {
     if (errD) {
       return `T12: GOOD connection fixture incorrectly flagged (comment mention of the old SQL must not trip the negative needle): ${errD}`;
     }
+
+    // T12-E: the good onDelete handler fixture (reused from T14) must not be flagged.
+    const connGoodHandler = `
+conn.db.my_conversation.onDelete((_ctx, row) => {
+  const deleted = myConversationRowToStore(row);
+  if (shouldRemoveOnViewDelete(store.ownConversation(identity), deleted)) {
+    store.removeConversation(identity);
+  }
+  batcher.schedule();
+});
+`;
+    const errE = checkOnDeleteHandler(connGoodHandler);
+    if (errE) {
+      return `T12: GOOD onDelete handler fixture incorrectly flagged by checkOnDeleteHandler: ${errE}`;
+    }
+  }
+
+  // T13 — checkOnDeleteHandler BAD fixture: naive onDelete handler that calls
+  // store.removeConversation directly without shouldRemoveOnViewDelete → flagged.
+  // Kills: a lazy impl that ships the pure helper (viewDelete.test.ts green) but
+  // wires a naive handler in connection.ts — 10 unit tests green, eval misses it.
+  // The spec idiom: `conn.db.my_conversation.onDelete((_ctx, row) => { body })`.
+  {
+    const fixture = `
+conn.db.my_conversation.onDelete((_ctx, row) => {
+  store.removeConversation(row.ownerIdentity.toHexString());
+  batcher.schedule();
+});
+`;
+    const err = checkOnDeleteHandler(fixture);
+    if (!err) {
+      return (
+        'T13: naive my_conversation.onDelete handler (direct store.removeConversation ' +
+        'without shouldRemoveOnViewDelete) was NOT flagged — helper-wiring check is broken'
+      );
+    }
+    if (err.indexOf('shouldRemoveOnViewDelete(') === -1) {
+      return `T13: naive handler flagged for the wrong reason (expected shouldRemoveOnViewDelete mention): ${err}`;
+    }
+  }
+
+  // T14 — checkOnDeleteHandler GOOD fixture: handler calling shouldRemoveOnViewDelete
+  // correctly → must NOT flag. Proves the check does not always-red.
+  // Kills: an always-failing checkOnDeleteHandler that would reject the correct impl.
+  {
+    const fixture = `
+conn.db.my_conversation.onDelete((_ctx, row) => {
+  const sdkRow = row;
+  const deleted = myConversationRowToStore(sdkRow);
+  if (shouldRemoveOnViewDelete(store.ownConversation(identity), deleted)) {
+    store.removeConversation(identity);
+  }
+  batcher.schedule();
+});
+`;
+    const err = checkOnDeleteHandler(fixture);
+    if (err) {
+      return `T14: GOOD my_conversation.onDelete handler (calls shouldRemoveOnViewDelete) was incorrectly flagged: ${err}`;
+    }
   }
 
   return null;
@@ -609,7 +842,7 @@ fn my_conversation(ctx: &ViewContext) -> Option<PlayerConversation> {
 
 export default async function conversationPrivacyEval() {
   const name =
-    'conversation-privacy (player_conversation private, owner-scoped my_conversation view, bindings + subscription swapped)';
+    'conversation-privacy (player_conversation private, owner-scoped my_conversation view, bindings + subscription swapped, onDelete handler gated)';
 
   // Teeth BEFORE live checks — a broken checker is caught first.
   const toothErr = runTeeth();
@@ -656,6 +889,12 @@ export default async function conversationPrivacyEval() {
   if (connSrc !== undefined) {
     const errD = checkClientSubscription(connSrc);
     if (errD) failures.push(`[D subscription] ${errD}`);
+
+    // Check E: my_conversation.onDelete handler must call shouldRemoveOnViewDelete
+    // (Finding 1 / CRITICAL helper-wiring gap — staged same as C/D: RED today
+    // because my_conversation.onDelete does not yet exist in connection.ts).
+    const errE = checkOnDeleteHandler(connSrc);
+    if (errE) failures.push(`[E onDelete-handler] ${errE}`);
   }
 
   if (failures.length > 0) {
@@ -665,7 +904,11 @@ export default async function conversationPrivacyEval() {
   return {
     name,
     pass: true,
-    detail: `${rsSources.length} server source file(s) scanned; player_conversation private, all views over it owner-scoped incl. my_conversation, bindings swapped, subscription swapped (12 teeth verified)`,
+    detail:
+      `${rsSources.length} server source file(s) scanned; player_conversation private, ` +
+      'all views over it owner-scoped incl. my_conversation, bindings swapped, ' +
+      'subscription swapped in .subscribe([...]) array, onDelete handler calls ' +
+      'shouldRemoveOnViewDelete (14 teeth verified)',
   };
 }
 
