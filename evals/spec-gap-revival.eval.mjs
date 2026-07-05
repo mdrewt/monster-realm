@@ -1024,7 +1024,7 @@ test.fixme('R2: Recruit success', async () => {
 `;
   const specWithFixmeReanchored = `
 // BLOCKED: __game() test-hook not exposed; owned by a client slice.
-// No milestone token; no dev_reducers reference.
+// No milestone token; no reference to the gated-reducer feature name.
 test.fixme('R4: Bait selector classify-by-data', async () => {
   // ...
 });
