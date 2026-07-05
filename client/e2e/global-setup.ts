@@ -9,7 +9,13 @@ export default function globalSetup(): void {
   // aligned with the client's VITE_STDB_DB, so a concurrent suite targets a
   // distinct db — its --delete-data then resets only that db, not a sibling run's.
   const db = process.env.VITE_STDB_DB ?? 'monster-realm';
-  execSync(`spacetime publish -s ${server} --module-path ../server-module --delete-data -y ${db}`, {
+  // 13.5h dev_reducers publish point (ADR-0086): CI pre-builds the module wasm
+  // with `--features dev_reducers` and points MR_DEV_MODULE_WASM at the artifact;
+  // when set, publish that binary via --bin-path (double-quoted — path-with-spaces
+  // hygiene). Local runs without the var keep the plain --module-path publish.
+  const devWasm = process.env.MR_DEV_MODULE_WASM;
+  const moduleArg = devWasm ? `--bin-path "${devWasm}"` : '--module-path ../server-module';
+  execSync(`spacetime publish -s ${server} ${moduleArg} --delete-data -y ${db}`, {
     stdio: 'inherit',
   });
 }
