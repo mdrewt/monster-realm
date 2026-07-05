@@ -83,6 +83,13 @@ Key decisions:
   (player_identity, npc_id, dialogue_id). Holds the current NPC dialogue session
   (player is talking to NPC X, in dialogue tree Y). Used by `talk`/`advance_dialogue`/
   `dismiss_dialogue` to lock out multi-NPC chatter and track which tree is active.
+  > **AMENDED (M13.5c, D-13.5-3, ADR-0087):** the table is now PRIVATE. A
+  > world-readable `current_node_id` was an inference channel into the private
+  > `player_dialogue_state` flags (nodes are flag-gated, so observing another
+  > player's node id revealed their flags); that channel is closed for client
+  > subscriptions. Owners read their own row via the public owner-scoped
+  > `my_conversation` `#[view]` — mechanism, evidence, and rollout notes in
+  > ADR-0087.
 
 - **`heal_location_row` (public):** Content-seeded NPC healing locations. Keyed by
   location_id. Columns: `location_id: u32`, `zone_id: u32`, `tile_x: i32`, `tile_y: i32`.
