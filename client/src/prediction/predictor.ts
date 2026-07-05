@@ -154,6 +154,31 @@ export class Predictor {
   }
 
   /**
+   * Evict the pending op with exactly this `seq` (M13.5b, ADR-0085). Returns true
+   * iff an op was removed; unknown/already-dropped seq is an idempotent no-op
+   * (false, no state change).
+   *
+   * WHY: this is eviction of a KNOWN-DEAD op — the server rejected the reducer call
+   * (its accept-time ack write rolled back with the transaction on `Err`), so the
+   * seq will NEVER be acked and the op would otherwise survive reconcile's
+   * `seq > ackedSeq` prune forever, replaying a phantom move onto the authoritative
+   * queue at every reconcile (the silent 1-tile desync with diverged=false). That is
+   * categorically different from the `#pendingCap` backpressure (ADR-0013.5), which
+   * NEVER drops recorded ops — it only declines new ones.
+   *
+   * Mutates ONLY `#pending`; never touches `#queue` (reconcile step 2 is the ONLY
+   * `#queue` rebuilder — a single source of truth) and never touches `#nextSeq`
+   * (a rejected seq is consumed, not recycled). Because `#queue` still reflects the
+   * phantom until the next reconcile, the caller MUST follow a `true` return with a
+   * forced reconcile from current store state (main.ts `reconcileFromStore()`).
+   */
+  dropRejected(seq: number): boolean {
+    const before = this.#pending.length;
+    this.#pending = this.#pending.filter((p) => p.seq !== seq);
+    return this.#pending.length !== before;
+  }
+
+  /**
    * Re-seed the sequence counter to at least `seq` so the next `#record` yields a
    * seq strictly greater than `seq`. MONOTONIC — only ever raises `#nextSeq`, never
    * lowers it.
