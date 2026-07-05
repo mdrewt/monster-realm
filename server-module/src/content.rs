@@ -13,9 +13,9 @@ use crate::evolution::compute_evolves_to;
 use crate::marshal::{encounter_rows_from_table, pub_from_monster};
 use crate::schema::{
     character, config, encounter, fusion, heal_location_row, item_row, monster, monster_pub, npc,
-    shop_item_row, shop_row, skill_row, species_row, type_relation_row, zone_def, Character,
-    Fusion, HealLocationRow, ItemRow, Monster, Npc, ShopItemRow, ShopRow, SkillRow, SpeciesRow,
-    TypeRelationRow, ZoneDefRow,
+    player_conversation, shop_item_row, shop_row, skill_row, species_row, type_relation_row,
+    zone_def, Character, Fusion, HealLocationRow, ItemRow, Monster, Npc, ShopItemRow, ShopRow,
+    SkillRow, SpeciesRow, TypeRelationRow, ZoneDefRow,
 };
 use crate::CONTENT_VERSION;
 use game_core::{
@@ -76,6 +76,23 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
     validate_shops(&shops, &items).map_err(|e| format!("shops invalid: {e}"))?;
 
     // ====== WRITE PHASE ======
+    // zone_def deletions (13.5c-2): zones dropped from the RON registry lose
+    // their row so they stop being joinable and ensure_zone_schedules (which
+    // runs after this) reaps their movement_tick_schedule rows. Delete ALWAYS
+    // (RT-M5): characters still standing in the zone only get a warn — the
+    // disconnect-to-recover contract (respawn in zone 0) is documented in the
+    // ADR draft. NPCs of a removed zone leave the registry in the same sync
+    // (validators force it), so the 13.5c-1 path removes them below.
+    let existing_zone_ids: Vec<u32> = ctx.db.zone_def().iter().map(|z| z.zone_id).collect();
+    for stale_id in stale_zone_def_ids(&existing_zone_ids, &zones) {
+        let stranded = ctx.db.character().zone_id().filter(stale_id).count();
+        if stranded > 0 {
+            log::warn!(
+                "{{\"evt\":\"zone_def_removed_with_characters\",\"zone_id\":{stale_id},\"characters\":{stranded}}}"
+            );
+        }
+        ctx.db.zone_def().zone_id().delete(stale_id);
+    }
     // zone_def upserts (M2: after validate_zone_maps; M3: find+update not delete+insert)
     for z in &zones {
         match ctx.db.zone_def().zone_id().find(z.id) {
@@ -229,7 +246,7 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
             to_species: r.to,
         });
     }
-    seed_npc_entities_from(ctx, &npc_defs);
+    sync_npc_entities_from(ctx, &npc_defs);
     seed_heal_locations_from(ctx, &heal_defs);
 
     // ====== RE-DERIVE PASS (12.5b-3): update all monster rows for new content ======
@@ -348,32 +365,270 @@ pub(crate) fn recompute_monster_derived_fields(
     }
 }
 
-fn seed_npc_entities_from(ctx: &ReducerContext, npc_defs: &[game_core::NpcDef]) {
-    for def in npc_defs {
-        // Idempotent: O(1) lookup via #[unique] npc_id index
-        if ctx.db.npc().npc_id().find(def.npc_id.clone()).is_some() {
-            continue;
+/// Pure diff seam (13.5c-2): zone ids present in the DB (`existing`) but absent
+/// from the loaded RON registry, sorted ascending — deterministic delete order
+/// (HashSet iteration order must not leak into the write sequence).
+pub(crate) fn stale_zone_def_ids(existing: &[u32], loaded: &[game_core::ZoneDef]) -> Vec<u32> {
+    let live: std::collections::HashSet<u32> = loaded.iter().map(|z| z.id).collect();
+    let mut stale: Vec<u32> = existing
+        .iter()
+        .copied()
+        .filter(|id| !live.contains(id))
+        .collect();
+    stale.sort_unstable();
+    stale
+}
+
+/// One step of the NPC content-sync plan (13.5c-1). Actions carry COMPLETE
+/// replacement `Npc`/`Character` row values (review fold n1) so the shell is a
+/// pure apply fold — no patch interpretation.
+pub(crate) enum NpcSyncAction {
+    /// Def with no live pair — seed a fresh (character, npc) pair. Row
+    /// `entity_id`s are 0 placeholders; the shell's character insert mints the
+    /// real auto_inc id and stamps it onto the npc row.
+    Insert { npc: Npc, character: Character },
+    /// Def changed for a live pair — replace both rows, PRESERVING `entity_id`
+    /// (NEVER delete+reinsert: auto_inc would orphan
+    /// `player_conversation.npc_entity_id` and break client identity).
+    Update {
+        entity_id: u64,
+        npc: Npc,
+        character: Character,
+    },
+    /// Def dropped — remove the pair (the shell cascades `player_conversation`
+    /// rows anchored to the removed entity).
+    Remove { entity_id: u64, npc_id: String },
+    /// Half-orphan self-heal (fold M1+RT-6): the npc row exists but its paired
+    /// character is missing — delete the orphan npc row, then insert a fresh
+    /// pair (a bare Insert would panic on the `#[unique]` npc_id index).
+    Repair {
+        entity_id: u64,
+        npc: Npc,
+        character: Character,
+    },
+}
+
+pub(crate) type NpcSyncPlan = Vec<NpcSyncAction>;
+
+/// Complete replacement npc row derived from a def (13.5c-1).
+fn npc_row_from_def(def: &game_core::NpcDef, entity_id: u64) -> Npc {
+    Npc {
+        entity_id,
+        npc_id: def.npc_id.clone(),
+        zone_id: def.zone_id,
+        home_x: def.home_x,
+        home_y: def.home_y,
+        wander_radius: def.wander_radius,
+        dialogue_tree_id: def.dialogue_tree_id.clone(),
+    }
+}
+
+/// Fresh spawn-state character row derived from a def (13.5c-1): def spawn
+/// tile, facing South, Idle, empty queue, `move_started_at_ms` 0.
+fn spawn_character_from_def(def: &game_core::NpcDef, entity_id: u64) -> Character {
+    Character {
+        entity_id,
+        zone_id: def.zone_id,
+        tile_x: def.spawn_x,
+        tile_y: def.spawn_y,
+        facing: Direction::South,
+        action: ActionState::Idle,
+        move_started_at_ms: 0,
+        sprite_id: def.sprite_id,
+        move_queue: vec![],
+    }
+}
+
+/// The npc_id an action is keyed on (deterministic plan-order sort key).
+fn npc_sync_action_id(action: &NpcSyncAction) -> &str {
+    match action {
+        NpcSyncAction::Insert { npc, .. } => &npc.npc_id,
+        NpcSyncAction::Update { npc, .. } => &npc.npc_id,
+        NpcSyncAction::Remove { npc_id, .. } => npc_id,
+        NpcSyncAction::Repair { npc, .. } => &npc.npc_id,
+    }
+}
+
+/// Pure NPC sync planner (13.5c-1): diff the live `(Npc, Option<Character>)`
+/// pairs against the loaded defs and emit a deterministic, npc_id-sorted plan.
+///
+/// Rules (ALL diff/preserve/zone logic lives here — the shell is a fold):
+/// - def with no live pair → `Insert`;
+/// - live pair with def-derived drift → `Update` preserving `entity_id`; the
+///   npc row takes def home/wander/dialogue/zone and the character takes the
+///   def sprite_id ALWAYS; zone CHANGED → respawn at the def spawn tile
+///   (cleared queue, facing South, Idle, `move_started_at_ms` 0); zone SAME →
+///   tile/facing/action/queue/timestamps preserved verbatim (a same-zone home
+///   move can leave the live tile outside the new wander radius — convergence
+///   from an out-of-radius start is npc_decide's concern, not sync's; fold n2);
+/// - live wander state is NOT a diff: sync runs on every content-version bump
+///   and NPCs wander constantly, so def-identical pairs plan NOTHING;
+/// - half-orphan (npc, None) with a def → `Repair`; without a def → `Remove`;
+/// - live pair whose def was dropped → `Remove`.
+pub(crate) fn plan_npc_sync(
+    existing: &[(Npc, Option<Character>)],
+    defs: &[game_core::NpcDef],
+) -> NpcSyncPlan {
+    let mut plan: NpcSyncPlan = Vec::new();
+
+    for def in defs {
+        match existing.iter().find(|(n, _)| n.npc_id == def.npc_id) {
+            None => plan.push(NpcSyncAction::Insert {
+                npc: npc_row_from_def(def, 0),
+                character: spawn_character_from_def(def, 0),
+            }),
+            Some((npc, None)) => plan.push(NpcSyncAction::Repair {
+                entity_id: npc.entity_id,
+                npc: npc_row_from_def(def, 0),
+                character: spawn_character_from_def(def, 0),
+            }),
+            Some((npc, Some(ch))) => {
+                // Def-derived fields only — live wander state is NOT a diff.
+                let npc_row_stale = npc.zone_id != def.zone_id
+                    || npc.home_x != def.home_x
+                    || npc.home_y != def.home_y
+                    || npc.wander_radius != def.wander_radius
+                    || npc.dialogue_tree_id != def.dialogue_tree_id;
+                let character_stale = ch.zone_id != def.zone_id || ch.sprite_id != def.sprite_id;
+                if !npc_row_stale && !character_stale {
+                    continue; // idempotence: def-identical pair plans nothing
+                }
+                let character = if ch.zone_id != def.zone_id {
+                    // Zone changed: respawn at the NEW def spawn with reset
+                    // live state (a preserved tile/queue would replay movement
+                    // intents against the wrong zone's collision map).
+                    spawn_character_from_def(def, npc.entity_id)
+                } else {
+                    Character {
+                        entity_id: npc.entity_id,
+                        zone_id: ch.zone_id,
+                        tile_x: ch.tile_x,
+                        tile_y: ch.tile_y,
+                        facing: ch.facing,
+                        action: ch.action,
+                        move_started_at_ms: ch.move_started_at_ms,
+                        sprite_id: def.sprite_id, // sprite ALWAYS takes the def
+                        move_queue: ch.move_queue.clone(),
+                    }
+                };
+                plan.push(NpcSyncAction::Update {
+                    entity_id: npc.entity_id,
+                    npc: npc_row_from_def(def, npc.entity_id),
+                    character,
+                });
+            }
         }
-        let ch = ctx.db.character().insert(Character {
-            entity_id: 0,
-            zone_id: def.zone_id,
-            tile_x: def.spawn_x,
-            tile_y: def.spawn_y,
-            facing: Direction::South,
-            action: ActionState::Idle,
-            move_started_at_ms: 0,
-            sprite_id: def.sprite_id,
-            move_queue: vec![],
-        });
-        ctx.db.npc().insert(Npc {
-            entity_id: ch.entity_id,
-            npc_id: def.npc_id.clone(),
-            zone_id: def.zone_id,
-            home_x: def.home_x,
-            home_y: def.home_y,
-            wander_radius: def.wander_radius,
-            dialogue_tree_id: def.dialogue_tree_id.clone(),
-        });
+    }
+
+    // Dropped defs (and half-orphans with no def) → Remove.
+    for (npc, _) in existing {
+        if !defs.iter().any(|d| d.npc_id == npc.npc_id) {
+            plan.push(NpcSyncAction::Remove {
+                entity_id: npc.entity_id,
+                npc_id: npc.npc_id.clone(),
+            });
+        }
+    }
+
+    // Deterministic plan order (13.5c-1): sorted by npc_id. Each npc_id yields
+    // at most one action (defs and live npc_ids are both unique), so the sort
+    // is a total order.
+    plan.sort_by(|a, b| npc_sync_action_id(a).cmp(npc_sync_action_id(b)));
+    plan
+}
+
+/// Imperative shell for the NPC content sync (13.5c-1): read the live
+/// `(Npc, Option<Character>)` pairs, delegate the diff to the pure
+/// `plan_npc_sync` seam, and apply the plan mechanically (exhaustive fold —
+/// every action variant has an arm; rules live in the planner).
+fn sync_npc_entities_from(ctx: &ReducerContext, npc_defs: &[game_core::NpcDef]) {
+    let existing: Vec<(Npc, Option<Character>)> = ctx
+        .db
+        .npc()
+        .iter()
+        .map(|n| {
+            let ch = ctx.db.character().entity_id().find(n.entity_id);
+            (n, ch)
+        })
+        .collect();
+
+    let plan = plan_npc_sync(&existing, npc_defs);
+
+    // Entity ids whose npc row is deleted this sync (Remove + the Repair
+    // orphan) — conversations anchored to them are cascaded below.
+    let mut removed_entity_ids: Vec<u64> = Vec::new();
+    for action in plan {
+        match action {
+            NpcSyncAction::Insert { npc, character } => {
+                let ch = ctx.db.character().insert(character);
+                ctx.db.npc().insert(Npc {
+                    entity_id: ch.entity_id,
+                    ..npc
+                });
+            }
+            NpcSyncAction::Update {
+                entity_id,
+                npc,
+                character,
+            } => {
+                // Replacement rows carry the preserved entity_id (planner
+                // invariant) — update in place, NEVER delete+reinsert.
+                debug_assert_eq!(
+                    npc.entity_id, entity_id,
+                    "planner invariant: replacement npc row keeps entity_id"
+                );
+                debug_assert_eq!(
+                    character.entity_id, entity_id,
+                    "planner invariant: replacement character row keeps entity_id"
+                );
+                ctx.db.npc().entity_id().update(npc);
+                ctx.db.character().entity_id().update(character);
+            }
+            NpcSyncAction::Remove { entity_id, npc_id } => {
+                ctx.db.npc().entity_id().delete(entity_id);
+                ctx.db.character().entity_id().delete(entity_id);
+                removed_entity_ids.push(entity_id);
+                log::info!(
+                    "{{\"evt\":\"npc_sync_remove\",\"npc_id\":\"{npc_id}\",\"entity_id\":{entity_id}}}"
+                );
+            }
+            NpcSyncAction::Repair {
+                entity_id,
+                npc,
+                character,
+            } => {
+                // Half-orphan self-heal (fold M1+RT-6): drop the orphan npc
+                // row, then seed a fresh pair (mints a new entity_id).
+                ctx.db.npc().entity_id().delete(entity_id);
+                removed_entity_ids.push(entity_id);
+                let ch = ctx.db.character().insert(character);
+                log::warn!(
+                    "{{\"evt\":\"npc_sync_repair\",\"npc_id\":\"{}\",\"orphan_entity_id\":{entity_id},\"new_entity_id\":{}}}",
+                    npc.npc_id,
+                    ch.entity_id,
+                );
+                ctx.db.npc().insert(Npc {
+                    entity_id: ch.entity_id,
+                    ..npc
+                });
+            }
+        }
+    }
+
+    // Cascade (spec T4): player_conversation rows whose npc_entity_id is in
+    // the removal set would dangle — delete them (npc.rs's advance guard
+    // stays as defense-in-depth).
+    if !removed_entity_ids.is_empty() {
+        let stale_owners: Vec<_> = ctx
+            .db
+            .player_conversation()
+            .iter()
+            .filter(|c| removed_entity_ids.contains(&c.npc_entity_id))
+            .map(|c| c.owner_identity)
+            .collect();
+        for owner in stale_owners {
+            ctx.db.player_conversation().owner_identity().delete(owner);
+        }
     }
 }
 

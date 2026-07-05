@@ -327,9 +327,16 @@ pub(crate) fn battle_monster_from_row(
     })
 }
 
-/// Write post-battle HP back from a BattleMonster to the persistent Monster row.
+/// Write post-battle HP back from a BattleMonster to the persistent Monster row,
+/// clamped to the ROW's current `stat_hp` (13.5c-3). A mid-battle `sync_content`
+/// nerf can lower the row's `stat_hp` while the in-flight BattleMonster still
+/// carries the stale pre-nerf `max_hp` — so the clamp target is the ROW's
+/// `stat_hp`, NOT `bm.max_hp`. Ordering caveat: this clamp is correct because
+/// write-back (battle.rs:614) runs BEFORE the XP/level-up recompute — the
+/// level-up heal re-derives stats from the SSOT and uses the post-re-derive
+/// `stat_hp` afterwards.
 pub(crate) fn write_back_hp(monster: &mut Monster, bm: &BattleMonster) {
-    monster.current_hp = bm.current_hp;
+    monster.current_hp = bm.current_hp.min(monster.stat_hp);
 }
 
 /// Sum the six base stats of a species (for the XP formula).
