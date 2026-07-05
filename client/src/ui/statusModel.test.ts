@@ -189,11 +189,16 @@ describe('reduceErrorMessage: TOTAL — never empty string', () => {
 
   it('T6: InternalError message never leaks into output (fast-check)', () => {
     // Kills: any impl that includes internal detail in the InternalError branch.
+    // fc.pre guards against the unsatisfiable case where secretMessage is a substring
+    // of the fixed output template `${where}: server error` (e.g. a single space or 'e')
+    // — no correct impl can satisfy not.toContain for those, so we discard them.
+    // Excluded seeds: -2095410398, 74725497, 426400510 all produce such substrings.
     fc.assert(
       fc.property(
         fc.string({ minLength: 1, maxLength: 40 }),
         fc.string({ minLength: 1 }),
         (secretMessage, where) => {
+          fc.pre(!`${where}: server error`.includes(secretMessage));
           const err = { name: 'InternalError', message: secretMessage };
           const result = reduceErrorMessage(err, where);
           expect(result).not.toContain(secretMessage);

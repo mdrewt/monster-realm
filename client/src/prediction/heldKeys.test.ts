@@ -433,11 +433,27 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
     };
     expect(tailStillPending()).toBe(true);
 
-    // WITHOUT dropRejected: repeated reconciles at ack=tailSeq-1 replay tail East.
-    // predicted x stays > 5 (off authority), diverged=false (the silent bug).
+    // WITHOUT dropRejected: the first reconcile at ack=tailSeq-1 is a GENUINE PULLBACK
+    // (predicted ran ahead during the burst; corrected position still replays the tail
+    // East, so predicted lands 1 ahead of authority). d1 === true (tiles differ).
     const d1 = predictor.reconcile(authBase, [], ackedSeqBeforeReject, now);
-    expect(d1).toBe(false); // diverged=false — the bug: reconcile "agrees"
-    expect(predictor.predicted!.pos.x).toBeGreaterThan(5); // permanently off authority
+    expect(d1).toBe(true); // genuine pullback on first reconcile — tiles differ
+
+    // The SILENT STEADY STATE: subsequent reconciles with the same ack keep replaying
+    // the phantom tail East (it is never acked, never dropped), so predicted stays
+    // 1 ahead of authority at the same tile — pre-reconcile pos equals post-reconcile
+    // pos → diverged=false. This is the bug class: reconcile "agrees" while staying
+    // wrong forever.
+    const posAfterD1 = predictor.predicted!.pos.x;
+    expect(posAfterD1).toBeGreaterThan(5); // off authority (5,5) by the phantom East
+
+    const d2 = predictor.reconcile(authBase, [], ackedSeqBeforeReject, now);
+    expect(d2).toBe(false); // silent desync: same wrong tile → diverged=false
+    expect(predictor.predicted!.pos.x).toBe(posAfterD1); // still off authority
+
+    const d3 = predictor.reconcile(authBase, [], ackedSeqBeforeReject, now);
+    expect(d3).toBe(false); // still locked in silent desync
+    expect(predictor.predicted!.pos.x).toBe(posAfterD1); // permanently off authority
     // Kills: an impl without dropRejected that claims the desync is somehow resolved.
   });
 
@@ -502,7 +518,8 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
     //
     // Two pending ops M < N. dropRejected(N) → pendingCount 1, M survives.
     // Reconcile at ack M-1 replays ONLY M (one East step), pendingCount 1 before.
-    const predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP /* 8 */);
+    const QUEUE_CAP = 8;
+    const predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
     const t0 = 10_000;
     predictor.reconcile(fakeBaseline(5, 5, t0 - 2 * STEP_MS), [], 0, t0);
 

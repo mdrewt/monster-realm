@@ -1439,7 +1439,11 @@ describe('dropRejected (M13.5b ADR-0085)', () => {
     const dFix = p.reconcile(authBase, [], ackedSeqBeforeReject, t0);
 
     // NOW predicted must equal the authoritative baseline position (5, 5).
-    expect(dFix).toBe(false); // no divergence: prediction matches authority
+    // The repair reconcile reports a genuine correction (tile moved back to authority)
+    // — divergence flag true is CORRECT here; the silent-desync bug was the NO-DROP
+    // path returning false while staying wrong (pre-reconcile predicted x=6, authority
+    // x=5, phantom evicted → post-reconcile corrects to x=5 → tiles differ → true).
+    expect(dFix).toBe(true);
     expect(p.predicted!.pos).toEqual({ x: 5, y: 5 }); // converged
     expect(p.pendingCount).toBe(0); // phantom op gone
   });
