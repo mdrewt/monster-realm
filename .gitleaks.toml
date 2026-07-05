@@ -1,0 +1,19 @@
+# Gitleaks config — extends the default ruleset (never replaces it).
+#
+# WHY THIS FILE EXISTS (m13.5b): no-leak gating tests prove InternalError detail
+# never reaches the UI by asserting a distinctive fake-secret marker does NOT
+# appear in the output (client/src/ui/statusModel.test.ts). The default
+# generic-api-key rule flags that marker as a leak (first hit: PR #119, commit
+# 80db822). The allowlist below is SURGICAL: it exempts only the marker naming
+# convention, not test files wholesale — a real credential pasted into a test
+# still trips the scan.
+#
+# CONVENTION: fake secrets in tests MUST use the `INTERNAL_SECRET_` prefix so
+# they are self-documenting and covered by this allowlist.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Deliberate fake-secret markers used by no-leak gating tests (INTERNAL_SECRET_ prefix convention)"
+regexes = ['''INTERNAL_SECRET_[A-Za-z0-9_]+''']
