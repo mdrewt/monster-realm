@@ -712,7 +712,12 @@ fn m13_5c_sync_content_zero_identity_err_prescribes_delete_data() {
     let stripped = m13_5c_strip_rust_comments(M13_5C_LIB_RS_SOURCE);
     // Needle matches the reducer, not sync_content_inner (the `(ctx:` suffix
     // excludes the `_inner` name). Same needle shape as the 12.5b-1 guard.
-    let body = m13_5c_fn_body(&stripped, "pub fn sync_content(ctx:");
+    // Built with concat! so this test file never contains the contiguous
+    // substring `fn sync_content(`: zone-warp-server-runtime.eval.mjs
+    // extracts the FIRST such match over sorted-concatenated src/** and
+    // content_tests.rs sorts before lib.rs — a plain literal here would
+    // shadow the real reducer body.
+    let body = m13_5c_fn_body(&stripped, concat!("pub fn sync_content", "(ctx:"));
 
     assert!(
         body.contains("--delete-data"),
@@ -733,7 +738,9 @@ fn m13_5c_sync_content_zero_identity_err_prescribes_delete_data() {
 #[test]
 fn m13_5c_sync_content_zero_identity_err_drops_republish_claim() {
     let stripped = m13_5c_strip_rust_comments(M13_5C_LIB_RS_SOURCE);
-    let body = m13_5c_fn_body(&stripped, "pub fn sync_content(ctx:");
+    // concat! needle: see the sibling test above for why this file must not
+    // contain the contiguous substring `fn sync_content(`.
+    let body = m13_5c_fn_body(&stripped, concat!("pub fn sync_content", "(ctx:"));
 
     assert!(
         !body.contains("re-publish to register"),
