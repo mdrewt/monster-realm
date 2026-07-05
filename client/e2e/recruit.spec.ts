@@ -90,8 +90,10 @@ interface GameSnap {
 // ---------------------------------------------------------------------------
 // Tunable empirical constants — the executor SHOULD adjust if CI is flaky.
 // ---------------------------------------------------------------------------
-/** Max grass-entry attempts before giving up on triggering any encounter (R1). */
-const MAX_GRASS_ENTRIES_R1 = 40; // P(no encounter in 40 @ 20%) = 0.8^40 ≈ 1.3e-4
+/** Max walk steps per encounter hunt. The (1,2)↔(2,2) shuttle enters grass on
+ *  every 2nd step (only the East step onto (2,2) rolls), so 80 steps ≈ 40 grass
+ *  entries: P(no encounter) = 0.8^40 ≈ 1.3e-4. */
+const MAX_WALK_STEPS = 80;
 /** Max outer encounter-loop iterations in R2 (whole encounter cycles incl. flee/KO). */
 const MAX_ENCOUNTERS = 14; // per plan: at ≥40%/encounter P(fail all 14) < 1e-3
 /** Max recruit clicks per encounter (bounded inner loop). */
@@ -111,17 +113,22 @@ const OWN_HP_FLEE_THRESHOLD_PCT = 30;
 
 // ---------------------------------------------------------------------------
 // Grass tiles in zone 0 (content knowledge from plan §World facts).
-// Spawn is (1,1); row y=1 is all floor x=1..8.
-// Tiles (2,2) and (3,2) are the nearest grass tiles — a (1,2)↔(2,2) shuttle
-// via South + East + West covers them without walking into walls.
+// Spawn is (1,1); row y=1 is all floor x=1..8; (2,2) is the nearest grass tile.
+// shuttleDir is TILE-AWARE (not a fixed cycle): a fixed direction cycle drifts
+// south onto grassless rows and decays the encounter rate; deriving the next
+// direction from the CURRENT authoritative tile keeps the walk pinned to the
+// (1,2)↔(2,2) shuttle and self-corrects any drift (e.g. a stray queued move
+// draining after a battle).  Only the East step onto (2,2) rolls an encounter.
 // ---------------------------------------------------------------------------
-const GRASS_SHUTTLE: Array<string> = [
-  'South', // (1,1)→(1,2) floor→grass border approach
-  'East', // (1,2)→(2,2) grass
-  'West', // (2,2)→(1,2)
-  'East', // →(2,2) again
-  'West', // →(1,2)
-];
+function shuttleDir(tile: Tile): string {
+  if (tile.x === 1 && tile.y === 1) return 'South'; // spawn → (1,2)
+  if (tile.x === 1 && tile.y === 2) return 'East'; // → (2,2) grass (roll)
+  if (tile.x === 2 && tile.y === 2) return 'West'; // → (1,2) floor
+  // Drift recovery: route back toward (1,2).
+  if (tile.y > 2) return 'North';
+  if (tile.x > 2) return 'West';
+  return 'South';
+}
 
 // ---------------------------------------------------------------------------
 // snap: extract the GameSnap-shaped subset from window.__game().
@@ -226,24 +233,46 @@ async function waitForBattleCleared(p: Page): Promise<void> {
 //         main.ts:665–669 conn.reducers.healParty({locationId}).
 // ---------------------------------------------------------------------------
 async function healViaBox(p: Page): Promise<void> {
-  // Open the box (KeyB); guard: only when no other overlay is active.
+  // Open the box (KeyB, main.ts:248); the battle overlay is already hidden here
+  // (KO'd battle row is GC'd), so the mutual-exclusion guard admits the box.
   await p.keyboard.press('b');
-  // Wait for the box overlay to appear (it contains "Heal Party" button text).
-  await p.waitForFunction(
-    () => {
-      // The box creates its button with textContent 'Heal Party' (boxView.ts:43).
-      return !!document.querySelector('button');
-    },
-    null,
-    { timeout: 5_000 },
-  );
-  // Click the "Heal Party" button (boxView.ts:43).
   const healBtn = p.getByText('Heal Party', { exact: true });
-  await healBtn.click({ timeout: 5_000 });
-  // Close the box.
+  await expect(healBtn).toBeVisible({ timeout: 5_000 });
+
+  // Healed-signal: the box lists each monster as "HP cur/max (pct%)" (boxView.ts:152)
+  // and is subscription-driven — healed = no row in the BOX overlay shows "HP 0/".
+  // Scoped to the box root (located via its unique 'Party & Box' title) so the
+  // HIDDEN battle overlay's stale card text (also "HP x/y") can never satisfy it.
+  // Click-retry loop: a heal within the 30 s server cooldown is REJECTED silently,
+  // so one click is not enough — retry up to MAX_HEAL_CLICKS with a bounded
+  // per-attempt wait (worst case ≈ MAX_HEAL_CLICKS × 6 s ≈ 48 s, covering a full
+  // cooldown window). No bare sleeps: every wait polls a DOM condition.
+  const MAX_HEAL_CLICKS = 8;
+  let healed = false;
+  for (let i = 0; i < MAX_HEAL_CLICKS && !healed; i++) {
+    await healBtn.click({ timeout: 5_000 });
+    healed = await p
+      .waitForFunction(
+        () => {
+          const boxTitle = Array.from(document.querySelectorAll('h2')).find(
+            (h) => h.textContent === 'Party & Box',
+          );
+          const root = boxTitle?.parentElement?.parentElement;
+          if (!root || root.style.display === 'none') return false;
+          return !(root.textContent ?? '').includes('HP 0/');
+        },
+        null,
+        { timeout: 6_000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+  }
+  if (!healed) {
+    throw new Error(`healViaBox: party still fainted after ${MAX_HEAL_CLICKS} heal attempts`);
+  }
+  // Close the box (Escape, main.ts:360) and confirm it is gone before stepping.
   await p.keyboard.press('Escape');
-  // Brief wait for the heal reducer to be dispatched and the cooldown to start.
-  await p.waitForTimeout(1_000);
+  await expect(healBtn).toBeHidden({ timeout: 5_000 });
 }
 
 // ---------------------------------------------------------------------------
@@ -287,16 +316,16 @@ test.describe
       test.setTimeout(120_000);
 
       // Walk grass until we get a wild encounter.
-      // P(no encounter in 40 grass entries @ 20%) = 0.8^40 ≈ 1.3e-4.
+      // 80 steps ≈ 40 grass entries; P(no encounter) = 0.8^40 ≈ 1.3e-4.
       let encounterFound = false;
-      for (let i = 0; i < MAX_GRASS_ENTRIES_R1 && !encounterFound; i++) {
+      for (let i = 0; i < MAX_WALK_STEPS && !encounterFound; i++) {
         const g = await snap(page);
         if (g.ongoingBattle !== null) {
           encounterFound = true;
           break;
         }
-        const dir = GRASS_SHUTTLE[i % GRASS_SHUTTLE.length] ?? 'East';
         const tile = g.ownAuthTile ?? { x: 1, y: 1 };
+        const dir = shuttleDir(tile);
         try {
           const outcome = await stepOne(page, dir, tile);
           if (outcome === 'battle') encounterFound = true;
@@ -306,12 +335,14 @@ test.describe
         }
       }
 
-      expect(encounterFound, 'Expected a wild battle within MAX_GRASS_ENTRIES_R1 steps').toBe(true);
+      expect(encounterFound, 'Expected a wild battle within MAX_WALK_STEPS').toBe(true);
 
       // The battle overlay must be visible; outcome must be Ongoing.
       const s = await snap(page);
-      expect(s.ongoingBattle).not.toBeNull();
-      expect(s.ongoingBattle!.outcome).toBe('Ongoing');
+      if (s.ongoingBattle === null) {
+        throw new Error('R1: ongoingBattle is null after encounterFound — snapshot inconsistent');
+      }
+      expect(s.ongoingBattle.outcome).toBe('Ongoing');
 
       // Recruit button must be visible (battleView.ts:205 data-testid="recruit-action").
       const recruitBtn = page.locator('[data-testid="recruit-action"]');
@@ -373,15 +404,15 @@ test.describe
         let encBattleFound = false;
         let currentBattleId: string | null = null;
 
-        for (let step = 0; step < MAX_GRASS_ENTRIES_R1 && !encBattleFound; step++) {
+        for (let step = 0; step < MAX_WALK_STEPS && !encBattleFound; step++) {
           const g = await snap(page);
           if (g.ongoingBattle !== null) {
             encBattleFound = true;
             currentBattleId = g.ongoingBattle.battleId;
             break;
           }
-          const dir = GRASS_SHUTTLE[step % GRASS_SHUTTLE.length] ?? 'East';
           const tile = g.ownAuthTile ?? { x: 1, y: 1 };
+          const dir = shuttleDir(tile);
           try {
             const outcome = await stepOne(page, dir, tile);
             if (outcome === 'battle') {
@@ -497,9 +528,8 @@ test.describe
           // Recover via KeyB → "Heal Party" (zone-scoped, currently free, 30s cooldown).
           if (healCount < MAX_HEALS) {
             healCount++;
+            // healViaBox waits for the healed-signal in the box DOM (no bare sleeps).
             await healViaBox(page);
-            // Cooldown: wait enough for the server to process heal before re-entering grass.
-            await page.waitForTimeout(2_000);
           } else {
             // Ran out of heals — bail out with a useful failure message.
             expect
@@ -570,8 +600,8 @@ test.describe
             // KO'd during a failed recruit counterattack.
             if (healCount < MAX_HEALS) {
               healCount++;
+              // healViaBox waits for the healed-signal in the box DOM (no bare sleeps).
               await healViaBox(page);
-              await page.waitForTimeout(2_000);
             } else {
               expect
                 .soft(false, `R2: exceeded MAX_HEALS (${MAX_HEALS}) during recruit clicks`)
@@ -596,10 +626,12 @@ test.describe
       // Kills: an impl that does not write the monsterId to the snapshot, or uses the wrong
       // field name (snake_case monster_id vs camelCase monsterId) — the Set lookup fails.
       const newMonster = afterSnap.ownMonsters.find((m) => !monsterIdsBefore.has(m.monsterId));
-      expect(newMonster, 'R2: newly recruited monster must appear in ownMonsters').toBeDefined();
+      if (newMonster === undefined) {
+        throw new Error('R2: newly recruited monster must appear in ownMonsters (monsterId diff)');
+      }
       // The recruited monster goes to the box (partySlot === 255 = PARTY_SLOT_NONE).
       // Kills: an impl that inserts the monster into a party slot instead of the box.
-      expect(newMonster!.partySlot).toBe(255);
+      expect(newMonster.partySlot).toBe(255);
     });
 
     // -------------------------------------------------------------------------
@@ -618,12 +650,12 @@ test.describe
       test.setTimeout(30_000);
 
       if (winningBattleId === null) {
-        // R2 did not record a winning battleId — this should be unreachable
-        // when R2 passes, but provide a clear message if it is reached.
-        expect.fail(
+        // R2 did not record a winning battleId — unreachable when R2 passes,
+        // but fail hard with a clear message if it is reached (R3 must never
+        // vacuously pass without a recorded winning battle).
+        throw new Error(
           'R3: winningBattleId is null — R2 did not record a successful recruit battleId',
         );
-        return;
       }
 
       // The Victory! outcome frame must be visible.
