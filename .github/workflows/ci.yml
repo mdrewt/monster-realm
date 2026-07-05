@@ -110,6 +110,11 @@ jobs:
           cache: npm
           cache-dependency-path: client/package-lock.json
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+      # Gate-of-gates anchor (ADR-0050 amendment A3): runs the ci-wiring guard from a
+      # job OUTSIDE the ci job's `just eval` step, so deleting/neutering that step
+      # cannot hide the check (non-self-sealing point, spec 13.5a-1). Must stay a bare
+      # exact `- run:` line — evals/ci-gate-wiring.eval.mjs matches this step form.
+      - run: node evals/ci-gate-wiring.eval.mjs
       # Pinned SpacetimeDB CLI (2.6.0) so publish + `spacetime generate` protocol,
       # the committed TS bindings, and the module all agree (ADR-0009).
       - name: Install SpacetimeDB CLI

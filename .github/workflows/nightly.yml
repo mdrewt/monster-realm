@@ -34,6 +34,30 @@ jobs:
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
       - run: just mutate-core
 
+  # cargo-mutants over the server shell (ADR-0050 amendment A2 / D-13.5-2). The
+  # cargo package is `monster-realm-module` (the server-module/ directory's crate
+  # name — `-p server-module` fails "Package not found"). Survivor-count RATCHET,
+  # not zero-tolerance: the shell's reducers are covered by evals/integration/e2e
+  # rather than in-crate units (game-core above keeps zero-tolerance). Baseline
+  # 180 missed @ e875af0; cap policy in ADR-0050. Deliberately no soft-failure
+  # keys on any step (a soft mutation gate is toothless); wiring + neuter-freedom
+  # are guarded by evals/nightly-smoke-wiring.eval.mjs from this job's first commit.
+  mutation-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      # Distinct prefix-key (v1-nightly-server) so this cache never collides with
+      # the mutation (v1-nightly) / coverage / smoke (v1-smoke) job caches.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with: { prefix-key: v1-nightly-server }
+      # cargo-nextest too: the mutate-server recipe pins --test-tool nextest for
+      # determinism with the ADR-0050 recorded baseline.
+      - uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
+        with: { tool: cargo-mutants,cargo-nextest }
+      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+      - run: just mutate-server
+
   # vitest line-coverage threshold (vitest exits non-zero below the threshold).
   coverage:
     runs-on: ubuntu-latest

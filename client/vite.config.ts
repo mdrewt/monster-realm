@@ -31,8 +31,12 @@ export default defineConfig({
     // to that — otherwise it is dominated by code vitest is not responsible for
     // (vendored `art-src/`, generated bindings, and render/DOM shells whose behavior
     // is a Playwright concern), making the number meaningless. Keeping the gate
-    // meaningful (ADR-0009/0010): the threshold is UNCHANGED; only non-unit-logic
-    // files are excluded — never a logic module.
+    // meaningful (ADR-0009/0010): only non-unit-logic files are excluded — never a
+    // logic module. m13.5a re-measured post-exclusion coverage at 99.35% lines and
+    // ratcheted the justfile threshold 25 -> 96 (ADR-0050 amendment A1); this
+    // include/exclude set is exact-set-guarded by dom-shell-coverage-exclusion
+    // (findUnsanctionedExclusions + include-narrowing tooth) so the denominator
+    // cannot silently drift.
     coverage: {
       // Measure the client source tree only (drops the repo-root `playwright.config.ts`,
       // the Playwright `e2e/` specs, and the vendored `art-src/demo/pixi.min.mjs`).

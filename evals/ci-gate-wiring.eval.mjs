@@ -403,10 +403,13 @@ export function anchorIsWired(lefthookText, ciYaml) {
 // main-guard pattern so the anchor cannot silently become a no-op import.
 // ---------------------------------------------------------------------------
 function selfContainsMainGuard(src) {
-  // Lightweight: require the key tokens that constitute the main-guard.
+  // Require the key tokens that constitute the main-guard.
+  // ciGateWiringEval: proves the named function exists and is called directly
+  // (not via dynamic self-import, which deadlocks on top-level await).
   return (
     src.indexOf('process.argv[1]') !== -1 &&
     src.indexOf('fileURLToPath(import.meta.url)') !== -1 &&
+    src.indexOf('ciGateWiringEval') !== -1 &&
     src.indexOf('process.exit(result.pass ? 0 : 1)') !== -1
   );
 }
@@ -414,7 +417,7 @@ function selfContainsMainGuard(src) {
 // ---------------------------------------------------------------------------
 // Default export: proof-of-teeth fixtures first, then real-file checks.
 // ---------------------------------------------------------------------------
-export default async function () {
+export default async function ciGateWiringEval() {
   const name =
     'ci-gate-wiring (EARS 13.5a-1 + 13.5a-5: ci steps unneutered, justfile parity, recipe bodies, run.mjs, anchor)';
 
@@ -1122,13 +1125,16 @@ jobs:
 // Main-guard: run directly (`node evals/ci-gate-wiring.eval.mjs`) to execute
 // the eval standalone — used by the e2e-job anchor so it runs without being
 // evaluated through `just eval` (breaking the self-sealing circularity).
+// Calls ciGateWiringEval() directly (NOT via dynamic self-import, which
+// deadlocks: the module cannot settle its own top-level await while importing
+// itself during evaluation).
 // Marker tokens checked by selfContainsMainGuard: process.argv[1],
-// fileURLToPath(import.meta.url), process.exit(result.pass ? 0 : 1).
+// fileURLToPath(import.meta.url), ciGateWiringEval, process.exit(result.pass ? 0 : 1).
 // ---------------------------------------------------------------------------
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
   const result = await (async () => {
     try {
-      return await (await import(import.meta.url)).default();
+      return await ciGateWiringEval();
     } catch (e) {
       return { name: 'ci-gate-wiring', pass: false, detail: `threw: ${e?.message ?? String(e)}` };
     }
