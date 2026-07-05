@@ -48,6 +48,7 @@ import {
   type SdkSpeciesRowRow,
   shopItemRowToStore,
   shopRowToStore,
+  shouldRemoveOnViewDelete,
   skillRowToStore,
   speciesRowToStore,
 } from './rowConvert';
@@ -300,24 +301,29 @@ export function connect(opts: ConnectionOptions): Connection {
       batcher.schedule();
     });
 
-    // M12d: player_conversation / player_quest / heal_location_row / npc (ADR-0071)
+    // M12d: conversation / player_quest / heal_location_row / npc (ADR-0071).
+    // M13.5c (ADR-0087): conversations now arrive through the owner-scoped
+    // `my_conversation` VIEW. Delivery shape (T0 spike finding 4): a row UPDATE
+    // propagates as onInsert(new) + onDelete(old) — NO onUpdate (the view table
+    // has no PK for SDK correlation), and the pair is UNORDERED. onDelete is
+    // therefore gated by the pure net-effect helper shouldRemoveOnViewDelete
+    // (viewDelete.test.ts): remove ONLY when the deleted row matches the
+    // currently-stored one — otherwise it is the old-version half of an update
+    // pair and the just-applied new row must survive.
     type SdkConversationRow = {
       ownerIdentity: { toHexString(): string };
       npcEntityId: bigint;
       currentNodeId: string;
     };
-    const ingestConversation = (row: SdkConversationRow): void => {
-      store.upsertConversation(playerConversationRowToStore(row));
+    conn.db.my_conversation.onInsert((_ctx, row) => {
+      store.upsertConversation(playerConversationRowToStore(row as unknown as SdkConversationRow));
       batcher.schedule();
-    };
-    conn.db.player_conversation.onInsert((_ctx, row) =>
-      ingestConversation(row as unknown as SdkConversationRow),
-    );
-    conn.db.player_conversation.onUpdate((_ctx, _old, row) =>
-      ingestConversation(row as unknown as SdkConversationRow),
-    );
-    conn.db.player_conversation.onDelete((_ctx, row) => {
-      store.removeConversation((row as unknown as SdkConversationRow).ownerIdentity.toHexString());
+    });
+    conn.db.my_conversation.onDelete((_ctx, row) => {
+      const deleted = playerConversationRowToStore(row as unknown as SdkConversationRow);
+      if (shouldRemoveOnViewDelete(store.ownConversation(deleted.ownerIdentity), deleted)) {
+        store.removeConversation(deleted.ownerIdentity);
+      }
       batcher.schedule();
     });
 
@@ -475,7 +481,10 @@ export function connect(opts: ConnectionOptions): Connection {
             // fusion is public content (all recipes visible to all players — M10c).
             'SELECT * FROM fusion',
             // M12d: dialogue / quest / heal / npc tables (ADR-0071).
-            'SELECT * FROM player_conversation',
+            // M13.5c (ADR-0087): player_conversation is PRIVATE — subscribe the
+            // owner-scoped my_conversation view instead (subscribing the private
+            // table errors the whole batch and onApplied never fires).
+            'SELECT * FROM my_conversation',
             'SELECT * FROM player_quest',
             'SELECT * FROM heal_location_row',
             'SELECT * FROM npc',
