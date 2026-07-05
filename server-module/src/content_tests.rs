@@ -779,3 +779,690 @@ fn m13_5c_sync_content_inner_deletes_stale_zone_defs() {
          without the delete leaves removed zones live in the DB"
     );
 }
+
+// ---------------------------------------------------------------------------
+// M13.5c T4 — `plan_npc_sync` planner tests (EARS 13.5c-1, tester RED phase).
+//
+// EXPECTED CONTRACT (compile-RED today: E0432 on the import below until
+// content.rs supplies the planner — the repo's accepted red convention):
+//
+//   pub(crate) enum NpcSyncAction {
+//       Insert { npc: Npc, character: Character },
+//       Update { entity_id: u64, npc: Npc, character: Character },
+//       Remove { entity_id: u64, npc_id: String },
+//       Repair { entity_id: u64, npc: Npc, character: Character },
+//   }
+//   pub(crate) type NpcSyncPlan = Vec<NpcSyncAction>;
+//   pub(crate) fn plan_npc_sync(
+//       existing: &[(Npc, Option<Character>)],
+//       defs: &[game_core::NpcDef],
+//   ) -> NpcSyncPlan
+//
+// Semantics bound by docs/specs/m13.5c-plan.md §T4 + the binding review folds:
+//   - deterministic: actions sorted by npc_id;
+//   - actions carry COMPLETE replacement Npc/Character row values (fold n1 —
+//     the shell is a pure apply fold, no patch interpretation);
+//   - Update preserves entity_id (NEVER delete+reinsert: auto_inc would
+//     orphan player_conversation.npc_entity_id + break client identity);
+//   - zone SAME -> tile/facing/action/queue/move_started_at_ms preserved
+//     verbatim; zone CHANGED -> respawn at def spawn, facing South, Idle,
+//     cleared queue, move_started_at_ms 0; character sprite_id = def always;
+//   - half-orphan (Npc, None) -> Repair = delete orphan npc row + fresh
+//     insert (fold M1+RT-6); never a bare Insert (unique npc_id panic),
+//     never silently skipped;
+//   - identical existing<->defs -> EMPTY plan (idempotence). Live wander
+//     state (tile/facing/queue/timestamps) is NOT a diff: sync_content runs
+//     on every content-version bump and NPCs wander constantly, so diffing
+//     live state would churn every sync.
+//
+// Correction log: every expected value below derives from spec section T4 and
+// its review folds; none were fitted to an implementation.
+// ---------------------------------------------------------------------------
+
+use crate::content::{plan_npc_sync, NpcSyncAction, NpcSyncPlan};
+use crate::schema::{Character, Npc};
+use game_core::{ActionState, Direction, MoveInput, NpcDef};
+
+/// Def fixture: spawn == home, radius 3, tree "tree_<npc_id>", sprite 7.
+fn m13_5c_npc_def(id: u32, npc_id: &str, zone_id: u32, spawn: (i32, i32)) -> NpcDef {
+    NpcDef {
+        id,
+        npc_id: npc_id.to_string(),
+        zone_id,
+        spawn_x: spawn.0,
+        spawn_y: spawn.1,
+        home_x: spawn.0,
+        home_y: spawn.1,
+        wander_radius: 3,
+        dialogue_tree_id: format!("tree_{npc_id}"),
+        sprite_id: 7,
+    }
+}
+
+/// The (Npc, Character) pair the production seed derives from a def —
+/// mirrors content.rs seeding: spawn tile, facing South, Idle, empty queue,
+/// move_started_at_ms 0, sprite from def. (Npc/Character have no Clone;
+/// fixtures are constructed fresh.)
+fn m13_5c_pair_from_def(def: &NpcDef, entity_id: u64) -> (Npc, Character) {
+    (
+        Npc {
+            entity_id,
+            npc_id: def.npc_id.clone(),
+            zone_id: def.zone_id,
+            home_x: def.home_x,
+            home_y: def.home_y,
+            wander_radius: def.wander_radius,
+            dialogue_tree_id: def.dialogue_tree_id.clone(),
+        },
+        Character {
+            entity_id,
+            zone_id: def.zone_id,
+            tile_x: def.spawn_x,
+            tile_y: def.spawn_y,
+            facing: Direction::South,
+            action: ActionState::Idle,
+            move_started_at_ms: 0,
+            sprite_id: def.sprite_id,
+            move_queue: vec![],
+        },
+    )
+}
+
+/// Diagnostic tag (also the exhaustive declaration of the expected variants).
+fn m13_5c_action_kind(a: &NpcSyncAction) -> &'static str {
+    match a {
+        NpcSyncAction::Insert { .. } => "Insert",
+        NpcSyncAction::Update { .. } => "Update",
+        NpcSyncAction::Remove { .. } => "Remove",
+        NpcSyncAction::Repair { .. } => "Repair",
+    }
+}
+
+/// npc_id an action is keyed on — used to assert deterministic plan order.
+fn m13_5c_action_npc_id(a: &NpcSyncAction) -> &str {
+    match a {
+        NpcSyncAction::Insert { npc, .. } => &npc.npc_id,
+        NpcSyncAction::Update { npc, .. } => &npc.npc_id,
+        NpcSyncAction::Remove { npc_id, .. } => npc_id,
+        NpcSyncAction::Repair { npc, .. } => &npc.npc_id,
+    }
+}
+
+/// TRIVIAL apply fold (review fold n3: this must never grow logic). It only
+/// mirrors the DB constraints the shell hits:
+///   - insert mints entity_ids sequentially (auto_inc mirror; 1,2,... on an
+///     empty world) and PANICS on a duplicate npc_id (`#[unique]` mirror —
+///     this is the teeth that kills a bare-Insert "repair");
+///   - Update requires a live (Npc, Some(Character)) target (a character
+///     update has no row to hit on a half-orphan);
+///   - Remove drops the pair; Repair drops the orphan then inserts fresh.
+fn m13_5c_apply_npc_plan(
+    mut existing: Vec<(Npc, Option<Character>)>,
+    plan: NpcSyncPlan,
+) -> Vec<(Npc, Option<Character>)> {
+    let mut next_id: u64 = existing.iter().map(|(n, _)| n.entity_id).max().unwrap_or(0) + 1;
+    for action in plan {
+        match action {
+            NpcSyncAction::Insert {
+                mut npc,
+                mut character,
+            } => {
+                assert!(
+                    existing.iter().all(|(n, _)| n.npc_id != npc.npc_id),
+                    "bare Insert of already-present npc_id `{}` — production \
+                     `#[unique]` npc_id index panics here",
+                    npc.npc_id
+                );
+                npc.entity_id = next_id;
+                character.entity_id = next_id;
+                next_id += 1;
+                existing.push((npc, Some(character)));
+            }
+            NpcSyncAction::Update {
+                entity_id,
+                npc,
+                character,
+            } => {
+                let idx = existing
+                    .iter()
+                    .position(|(n, _)| n.entity_id == entity_id)
+                    .unwrap_or_else(|| panic!("Update targets unknown entity_id {entity_id}"));
+                assert!(
+                    existing[idx].1.is_some(),
+                    "Update targets half-orphan entity_id {entity_id} — \
+                     production has no character row to update; the planner \
+                     must emit Repair (or Remove+Insert) instead"
+                );
+                existing[idx] = (npc, Some(character));
+            }
+            NpcSyncAction::Remove {
+                entity_id,
+                npc_id: _,
+            } => {
+                existing.retain(|(n, _)| n.entity_id != entity_id);
+            }
+            NpcSyncAction::Repair {
+                entity_id,
+                mut npc,
+                mut character,
+            } => {
+                existing.retain(|(n, _)| n.entity_id != entity_id);
+                npc.entity_id = next_id;
+                character.entity_id = next_id;
+                next_id += 1;
+                existing.push((npc, Some(character)));
+            }
+        }
+    }
+    existing
+}
+
+/// EARS 13.5c-1 (core): sync twice with changed RON — first plan seeds, the
+/// re-plan upserts changed defs, removes dropped ones, inserts new ones, all
+/// in deterministic npc_id order, with complete replacement rows.
+///
+/// KILLS: the current insert-only seeding (`find(npc_id).is_some() ->
+/// continue`) — under it the changed def "alpha" yields NO Update (stale
+/// home/dialogue/sprite persist forever) and the dropped def "bravo" yields
+/// NO Remove (ghost NPC): the exact 3-action plan asserted here catches
+/// both. Also KILLS delete+reinsert-as-upsert: the Update must carry alpha's
+/// ORIGINAL entity_id (1) and preserve its live tile (20,21)/facing/queue —
+/// a reinsert mints a new entity_id and lands back on the spawn tile.
+#[test]
+fn m13_5c_plan_npc_sync_twice_with_changed_ron_upserts_and_removes() {
+    let def_a = m13_5c_npc_def(1, "alpha", 1, (10, 11));
+    let def_b = m13_5c_npc_def(2, "bravo", 1, (15, 16));
+
+    // Sync #1 from an empty world; defs passed UNSORTED to prove ordering.
+    let plan1: NpcSyncPlan = plan_npc_sync(&[], &[def_b.clone(), def_a.clone()]);
+    let kinds1: Vec<&str> = plan1.iter().map(m13_5c_action_kind).collect();
+    assert_eq!(
+        kinds1,
+        vec!["Insert", "Insert"],
+        "TEETH(13.5c-1): empty world + 2 defs must plan exactly 2 Inserts"
+    );
+    let ids1: Vec<&str> = plan1.iter().map(m13_5c_action_npc_id).collect();
+    assert_eq!(
+        ids1,
+        vec!["alpha", "bravo"],
+        "TEETH(13.5c-1 determinism): plan must be npc_id-sorted even though \
+         defs arrived as [bravo, alpha]"
+    );
+    match &plan1[0] {
+        NpcSyncAction::Insert { npc, character } => {
+            assert_eq!(npc.npc_id, "alpha");
+            assert_eq!((npc.home_x, npc.home_y), (10, 11));
+            assert_eq!(npc.wander_radius, 3);
+            assert_eq!(npc.dialogue_tree_id, "tree_alpha");
+            assert_eq!((character.tile_x, character.tile_y), (10, 11));
+            assert_eq!(character.zone_id, 1);
+            assert_eq!(character.facing, Direction::South);
+            assert_eq!(character.action, ActionState::Idle);
+            assert_eq!(character.move_started_at_ms, 0);
+            assert!(character.move_queue.is_empty());
+            assert_eq!(character.sprite_id, 7);
+        }
+        other => panic!(
+            "plan1[0]: expected Insert, got {}",
+            m13_5c_action_kind(other)
+        ),
+    }
+
+    // Apply: alpha -> entity 1, bravo -> entity 2 (fold mints 1,2,...).
+    let mut world = m13_5c_apply_npc_plan(vec![], plan1);
+    assert_eq!(world.len(), 2);
+    let alpha_idx = world
+        .iter()
+        .position(|(n, _)| n.npc_id == "alpha")
+        .expect("alpha seeded");
+    assert_eq!(world[alpha_idx].0.entity_id, 1, "fold mints 1,2,...");
+
+    // Live wander: alpha's character moved off spawn with in-flight state.
+    {
+        let ch = world[alpha_idx].1.as_mut().expect("alpha has a character");
+        ch.tile_x = 20;
+        ch.tile_y = 21;
+        ch.facing = Direction::East;
+        ch.action = ActionState::Walking;
+        ch.move_started_at_ms = 555;
+        ch.move_queue = vec![MoveInput::Step(Direction::North), MoveInput::Jump];
+    }
+
+    // Changed RON: alpha mutated (dialogue+home+radius+sprite, SAME zone),
+    // bravo dropped, charlie added. Defs again unsorted.
+    let mut def_a2 = def_a;
+    def_a2.dialogue_tree_id = "tree_alpha_v2".to_string();
+    def_a2.home_x = 30;
+    def_a2.home_y = 31;
+    def_a2.wander_radius = 5;
+    def_a2.sprite_id = 9;
+    let def_c = m13_5c_npc_def(3, "charlie", 1, (50, 51));
+
+    let plan2: NpcSyncPlan = plan_npc_sync(&world, &[def_c.clone(), def_a2]);
+    let kinds2: Vec<&str> = plan2.iter().map(m13_5c_action_kind).collect();
+    assert_eq!(
+        kinds2,
+        vec!["Update", "Remove", "Insert"],
+        "TEETH(13.5c-1): changed A / dropped B / new C must plan exactly \
+         [Update(alpha), Remove(bravo), Insert(charlie)] in npc_id order"
+    );
+
+    match &plan2[0] {
+        NpcSyncAction::Update {
+            entity_id,
+            npc,
+            character,
+        } => {
+            assert_eq!(*entity_id, 1, "Update preserves alpha's entity_id");
+            assert_eq!(npc.entity_id, 1, "replacement npc row keeps entity_id");
+            assert_eq!(npc.npc_id, "alpha");
+            // New def-derived values on the npc row.
+            assert_eq!((npc.home_x, npc.home_y), (30, 31));
+            assert_eq!(npc.wander_radius, 5);
+            assert_eq!(npc.dialogue_tree_id, "tree_alpha_v2");
+            assert_eq!(npc.zone_id, 1);
+            // Live character state preserved verbatim (same zone) ...
+            assert_eq!(character.entity_id, 1);
+            assert_eq!((character.tile_x, character.tile_y), (20, 21));
+            assert_eq!(character.facing, Direction::East);
+            assert_eq!(character.action, ActionState::Walking);
+            assert_eq!(character.move_started_at_ms, 555);
+            assert_eq!(
+                character.move_queue,
+                vec![MoveInput::Step(Direction::North), MoveInput::Jump]
+            );
+            // ... except sprite_id, which always takes the def.
+            assert_eq!(character.sprite_id, 9, "sprite_id = NEW def value");
+        }
+        other => panic!(
+            "plan2[0]: expected Update, got {}",
+            m13_5c_action_kind(other)
+        ),
+    }
+    match &plan2[1] {
+        NpcSyncAction::Remove { entity_id, npc_id } => {
+            assert_eq!(*entity_id, 2, "Remove(bravo) carries bravo's entity_id");
+            assert_eq!(npc_id, "bravo");
+        }
+        other => panic!(
+            "plan2[1]: expected Remove, got {}",
+            m13_5c_action_kind(other)
+        ),
+    }
+    match &plan2[2] {
+        NpcSyncAction::Insert { npc, character } => {
+            assert_eq!(npc.npc_id, "charlie");
+            assert_eq!((character.tile_x, character.tile_y), (50, 51));
+        }
+        other => panic!(
+            "plan2[2]: expected Insert, got {}",
+            m13_5c_action_kind(other)
+        ),
+    }
+
+    // Final world: {alpha (live tile kept), charlie}; bravo gone.
+    let world2 = m13_5c_apply_npc_plan(world, plan2);
+    let mut final_ids: Vec<&str> = world2.iter().map(|(n, _)| n.npc_id.as_str()).collect();
+    final_ids.sort_unstable();
+    assert_eq!(final_ids, vec!["alpha", "charlie"]);
+    let (alpha_npc, alpha_ch) = world2
+        .iter()
+        .find(|(n, _)| n.npc_id == "alpha")
+        .expect("alpha survives");
+    let alpha_ch = alpha_ch.as_ref().expect("alpha keeps its character");
+    assert_eq!(alpha_npc.entity_id, 1);
+    assert_eq!((alpha_ch.tile_x, alpha_ch.tile_y), (20, 21));
+    assert_eq!((alpha_npc.home_x, alpha_npc.home_y), (30, 31));
+}
+
+/// EARS 13.5c-1 (zone-change edge): def.zone_id != existing npc.zone_id ->
+/// the Update's replacement character RESPAWNS at the new def's spawn tile
+/// in the new zone with reset live state.
+///
+/// KILLS: a preserve-everything Update on zone change — the character would
+/// keep tile (20,21) from the OLD zone's map (out-of-map/stranded in the new
+/// zone) plus a stale in-flight queue/action that replays movement intents
+/// against the wrong collision map.
+#[test]
+fn m13_5c_plan_npc_sync_zone_change_respawns_at_def_spawn() {
+    let def_old = m13_5c_npc_def(1, "alpha", 1, (10, 11));
+    let (npc, mut ch) = m13_5c_pair_from_def(&def_old, 5);
+    ch.tile_x = 20;
+    ch.tile_y = 21;
+    ch.facing = Direction::East;
+    ch.action = ActionState::Walking;
+    ch.move_started_at_ms = 555;
+    ch.move_queue = vec![MoveInput::Jump];
+    let existing = vec![(npc, Some(ch))];
+
+    let mut def_new = m13_5c_npc_def(1, "alpha", 2, (40, 41));
+    def_new.dialogue_tree_id = "tree_alpha".to_string(); // only zone/spawn moved
+
+    let plan: NpcSyncPlan = plan_npc_sync(&existing, &[def_new]);
+    assert_eq!(plan.len(), 1, "zone move is ONE Update, not Remove+Insert");
+    match &plan[0] {
+        NpcSyncAction::Update {
+            entity_id,
+            npc,
+            character,
+        } => {
+            assert_eq!(*entity_id, 5, "entity_id preserved across zone change");
+            assert_eq!(npc.zone_id, 2, "npc row takes the def zone");
+            assert_eq!(character.zone_id, 2);
+            assert_eq!(
+                (character.tile_x, character.tile_y),
+                (40, 41),
+                "TEETH(13.5c-1 zone edge): respawn at NEW def spawn tile"
+            );
+            assert_eq!(character.facing, Direction::South);
+            assert_eq!(character.action, ActionState::Idle);
+            assert_eq!(character.move_started_at_ms, 0);
+            assert!(
+                character.move_queue.is_empty(),
+                "stale movement intents must not replay in the new zone"
+            );
+        }
+        other => panic!("expected Update, got {}", m13_5c_action_kind(other)),
+    }
+}
+
+/// EARS 13.5c-1 ("preserving live tile position"): def changed but zone SAME
+/// -> tile/facing/action/queue/move_started_at_ms preserved verbatim.
+///
+/// Review fold n2 (documented, by design): the new home (90,91) radius 1
+/// leaves the live tile (20,21) OUTSIDE the wander radius — convergence from
+/// an out-of-radius start is the wander drive's (npc_decide) concern, not
+/// sync's; the planner must still preserve the live tile.
+///
+/// KILLS: a blanket respawn-on-any-def-change planner — every content tweak
+/// (a dialogue typo fix) would teleport every live NPC back to spawn
+/// mid-conversation.
+#[test]
+fn m13_5c_plan_npc_sync_same_zone_preserves_live_tile() {
+    let def_old = m13_5c_npc_def(1, "alpha", 1, (10, 11));
+    let (npc, mut ch) = m13_5c_pair_from_def(&def_old, 5);
+    ch.tile_x = 20;
+    ch.tile_y = 21;
+    ch.facing = Direction::East;
+    ch.action = ActionState::Walking;
+    ch.move_started_at_ms = 555;
+    ch.move_queue = vec![MoveInput::Jump];
+    let existing = vec![(npc, Some(ch))];
+
+    let mut def_new = m13_5c_npc_def(1, "alpha", 1, (10, 11));
+    def_new.home_x = 90;
+    def_new.home_y = 91;
+    def_new.wander_radius = 1;
+    def_new.dialogue_tree_id = "tree_alpha_v2".to_string();
+
+    let plan: NpcSyncPlan = plan_npc_sync(&existing, &[def_new]);
+    assert_eq!(plan.len(), 1, "same-zone def change is ONE Update");
+    match &plan[0] {
+        NpcSyncAction::Update {
+            entity_id,
+            npc,
+            character,
+        } => {
+            assert_eq!(*entity_id, 5);
+            assert_eq!((npc.home_x, npc.home_y), (90, 91));
+            assert_eq!(npc.wander_radius, 1);
+            assert_eq!(npc.dialogue_tree_id, "tree_alpha_v2");
+            assert_eq!(
+                (character.tile_x, character.tile_y),
+                (20, 21),
+                "TEETH(13.5c-1): live tile preserved VERBATIM on same-zone change"
+            );
+            assert_eq!(character.facing, Direction::East);
+            assert_eq!(character.action, ActionState::Walking);
+            assert_eq!(character.move_started_at_ms, 555);
+            assert_eq!(character.move_queue, vec![MoveInput::Jump]);
+            assert_eq!(character.sprite_id, 7, "sprite unchanged in this def");
+        }
+        other => panic!("expected Update, got {}", m13_5c_action_kind(other)),
+    }
+}
+
+/// EARS 13.5c-1 (idempotence): identical existing<->defs -> EMPTY plan, even
+/// when the character has wandered off spawn (live state is not a diff).
+///
+/// KILLS: a churn planner that diffs live character state (tile/facing/
+/// queue/timestamps) or does delete-all+reinsert-all — either would emit a
+/// non-empty plan on EVERY content-version bump, minting entity_ids and/or
+/// rewriting rows for NPCs whose defs never changed.
+#[test]
+fn m13_5c_plan_npc_sync_identical_state_yields_empty_plan() {
+    let def_a = m13_5c_npc_def(1, "alpha", 1, (10, 11));
+    let def_b = m13_5c_npc_def(2, "bravo", 1, (15, 16));
+    let (npc_a, mut ch_a) = m13_5c_pair_from_def(&def_a, 1);
+    // Wandered live state — must NOT count as a diff.
+    ch_a.tile_x = 25;
+    ch_a.tile_y = 26;
+    ch_a.facing = Direction::West;
+    ch_a.action = ActionState::Walking;
+    ch_a.move_started_at_ms = 999;
+    ch_a.move_queue = vec![MoveInput::Jump];
+    let (npc_b, ch_b) = m13_5c_pair_from_def(&def_b, 2);
+    let existing = vec![(npc_a, Some(ch_a)), (npc_b, Some(ch_b))];
+
+    let plan: NpcSyncPlan = plan_npc_sync(&existing, &[def_a, def_b]);
+    assert!(
+        plan.is_empty(),
+        "TEETH(13.5c-1 idempotence): def-identical world must plan ZERO \
+         actions; got {} action(s) [{}] — churn on every version bump",
+        plan.len(),
+        plan.iter()
+            .map(m13_5c_action_kind)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+}
+
+/// EARS 13.5c-1 + review fold M1/RT-6 (half-orphan repair): existing
+/// [(npc X, None)] with X still in defs must plan removal of the orphan npc
+/// row PLUS a fresh insert (Repair, or Remove+Insert semantics) — never a
+/// bare Insert, never a silent skip.
+///
+/// KILLS (bare Insert): inserting X while the orphan npc row survives —
+/// production's `#[unique]` npc_id index panics; the fold mirrors that
+/// panic. KILLS (insert-only skip): `find(npc_id).is_some() -> continue`
+/// leaves X's character missing forever — the post-fold Some(character)
+/// assertion catches it. KILLS (Update-as-repair): an Update against the
+/// orphan has no character row to hit — the removal-of-entity-77 assertion
+/// (and the fold's half-orphan guard) reject it.
+#[test]
+fn m13_5c_plan_npc_sync_half_orphan_repairs_not_bare_insert() {
+    let def_x = m13_5c_npc_def(1, "xray", 1, (10, 11));
+    let (orphan_npc, _dropped) = m13_5c_pair_from_def(&def_x, 77);
+    let existing = vec![(orphan_npc, None)];
+
+    let plan: NpcSyncPlan = plan_npc_sync(&existing, &[def_x]);
+
+    assert!(
+        !plan.is_empty(),
+        "half-orphan must not be a no-op: X is unapplied"
+    );
+    let bare_insert = plan.len() == 1 && matches!(&plan[0], NpcSyncAction::Insert { .. });
+    assert!(
+        !bare_insert,
+        "TEETH(13.5c-1 repair): a BARE Insert alone would hit the live \
+         `#[unique]` npc_id index (panic) — the orphan npc row must be \
+         removed (Repair or Remove+Insert)"
+    );
+    let removes_orphan = plan.iter().any(|a| match a {
+        NpcSyncAction::Remove { entity_id, .. } => *entity_id == 77,
+        NpcSyncAction::Repair { entity_id, .. } => *entity_id == 77,
+        _ => false,
+    });
+    assert!(
+        removes_orphan,
+        "the plan must express deletion of the orphan npc row (entity 77) \
+         via Remove or Repair"
+    );
+
+    let world = m13_5c_apply_npc_plan(existing, plan);
+    assert_eq!(world.len(), 1, "exactly one X pair after repair");
+    let (npc, ch) = &world[0];
+    assert_eq!(npc.npc_id, "xray");
+    let ch = ch
+        .as_ref()
+        .expect("repair must materialize a fresh character for X");
+    assert_eq!(ch.entity_id, npc.entity_id, "pair ids agree after repair");
+    assert_ne!(npc.entity_id, 77, "fresh insert mints a new entity_id");
+    assert_eq!(
+        (ch.tile_x, ch.tile_y),
+        (10, 11),
+        "fresh character at def spawn"
+    );
+    assert_eq!(ch.facing, Direction::South);
+    assert_eq!(ch.action, ActionState::Idle);
+}
+
+/// EARS 13.5c-1 (exhaustive set property): over ALL 8^3 = 512 per-npc
+/// scenario combinations (absent / new / dropped / unchanged / changed-same-
+/// zone / changed-zone / orphan+def / orphan-no-def x 3 npc_ids), folding
+/// the plan over `existing` yields EXACTLY the def npc_id set, each exactly
+/// once, every survivor fully paired, and the plan npc_id-sorted.
+/// Deterministic exhaustive enumeration — no RNG, no new deps (proptest is
+/// already a dev-dep but adds nothing over full enumeration here).
+///
+/// KILLS: any planner that drops or duplicates an id in SOME permutation the
+/// pointwise tests above don't reach — e.g. remove-processing skipped when
+/// defs is empty, orphan-with-no-def leaking through the Remove path, or an
+/// Insert emitted alongside an Update for the same id (duplicate in `got`).
+#[test]
+fn m13_5c_plan_npc_sync_exhaustive_apply_yields_exact_def_set() {
+    const IDS: [&str; 3] = ["n_alpha", "n_bravo", "n_charlie"];
+    let mut combos = 0u32;
+    for sa in 0..8u8 {
+        for sb in 0..8u8 {
+            for sc in 0..8u8 {
+                let scenarios = [sa, sb, sc];
+                let mut existing: Vec<(Npc, Option<Character>)> = Vec::new();
+                let mut defs: Vec<NpcDef> = Vec::new();
+                for (i, (&npc_id, &s)) in IDS.iter().zip(scenarios.iter()).enumerate() {
+                    let base = m13_5c_npc_def(i as u32 + 1, npc_id, 1, (10 + i as i32, 20));
+                    let entity_id = 100 + i as u64;
+                    match s {
+                        0 => {}               // absent everywhere
+                        1 => defs.push(base), // new def -> Insert
+                        2 => {
+                            // dropped def -> Remove
+                            let (n, c) = m13_5c_pair_from_def(&base, entity_id);
+                            existing.push((n, Some(c)));
+                        }
+                        3 => {
+                            // unchanged -> no-op
+                            let (n, c) = m13_5c_pair_from_def(&base, entity_id);
+                            existing.push((n, Some(c)));
+                            defs.push(base);
+                        }
+                        4 => {
+                            // changed, same zone -> Update
+                            let (n, c) = m13_5c_pair_from_def(&base, entity_id);
+                            existing.push((n, Some(c)));
+                            let mut d = base;
+                            d.home_x += 5;
+                            d.sprite_id = 9;
+                            defs.push(d);
+                        }
+                        5 => {
+                            // zone change -> respawn Update
+                            let (n, c) = m13_5c_pair_from_def(&base, entity_id);
+                            existing.push((n, Some(c)));
+                            let mut d = base;
+                            d.zone_id = 2;
+                            d.spawn_x = 40;
+                            d.spawn_y = 41;
+                            defs.push(d);
+                        }
+                        6 => {
+                            // half-orphan + def -> Repair
+                            let (n, _) = m13_5c_pair_from_def(&base, entity_id);
+                            existing.push((n, None));
+                            defs.push(base);
+                        }
+                        7 => {
+                            // half-orphan, no def -> Remove
+                            let (n, _) = m13_5c_pair_from_def(&base, entity_id);
+                            existing.push((n, None));
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+
+                let plan: NpcSyncPlan = plan_npc_sync(&existing, &defs);
+                let ids_in_plan: Vec<&str> = plan.iter().map(m13_5c_action_npc_id).collect();
+                let mut sorted_ids = ids_in_plan.clone();
+                sorted_ids.sort_unstable();
+                assert_eq!(
+                    ids_in_plan, sorted_ids,
+                    "combo ({sa},{sb},{sc}): plan must be npc_id-sorted"
+                );
+
+                let mut expected: Vec<String> = defs.iter().map(|d| d.npc_id.clone()).collect();
+                expected.sort_unstable();
+                let result = m13_5c_apply_npc_plan(existing, plan);
+                let mut got: Vec<String> = result.iter().map(|(n, _)| n.npc_id.clone()).collect();
+                got.sort_unstable();
+                assert_eq!(
+                    got, expected,
+                    "combo ({sa},{sb},{sc}): applied world must be EXACTLY \
+                     the def npc_id set, each exactly once"
+                );
+                for (npc, ch) in &result {
+                    let ch = ch.as_ref().unwrap_or_else(|| {
+                        panic!(
+                            "combo ({sa},{sb},{sc}): `{}` left half-orphaned",
+                            npc.npc_id
+                        )
+                    });
+                    assert_eq!(
+                        ch.entity_id, npc.entity_id,
+                        "combo ({sa},{sb},{sc}): pair ids must agree"
+                    );
+                }
+                combos += 1;
+            }
+        }
+    }
+    assert_eq!(combos, 512, "exhaustive grid covered");
+}
+
+/// EARS 13.5c-1 source-guard, WINDOWED (review fold m1) to the body of the
+/// RENAMED shell `fn sync_npc_entities_from(` via the fn-find + brace-walk
+/// idiom — other `continue`s in content.rs are legitimate and must not
+/// false-red. RED today: the fn only exists as `seed_npc_entities_from`, so
+/// the window lookup itself fails.
+///
+/// KILLS (needle 1): a shell keeping ad-hoc diff logic instead of the
+/// unit-tested `plan_npc_sync(` seam — every behavioral test above would be
+/// exercising dead code. KILLS (needle 2): the insert-only seeding surviving
+/// the rename — `.is_some()` guard immediately followed by `continue`
+/// (whitespace-compacted adjacency, the exact current pattern) skips every
+/// existing npc_id, so no Update/Remove ever executes. KILLS (needle 3): a
+/// shell that removes NPC rows without cascading `player_conversation` —
+/// live conversations would dangle on a deleted npc_entity_id.
+#[test]
+fn m13_5c_sync_npc_entities_from_uses_planner_and_cascades() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
+    let body = m13_5c_fn_body(&stripped, "fn sync_npc_entities_from(");
+    let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+
+    assert!(
+        compact.contains("plan_npc_sync("),
+        "TEETH(13.5c-1): sync_npc_entities_from must delegate the diff to \
+         the pure `plan_npc_sync(` seam (production call inside the fn body)"
+    );
+    assert!(
+        !compact.contains(".is_some(){continue"),
+        "TEETH(13.5c-1): the insert-only seeding pattern (`.is_some()` \
+         adjacent to `continue`) must be GONE from the shell body — it \
+         silently skips every existing NPC, so changed defs never update \
+         and dropped defs never remove"
+    );
+    assert!(
+        compact.contains("player_conversation"),
+        "TEETH(13.5c-1): NPC removal must cascade `player_conversation` \
+         rows keyed on the removed npc_entity_ids (spec T4 removal cascade)"
+    );
+}
