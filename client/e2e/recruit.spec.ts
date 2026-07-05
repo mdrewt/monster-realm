@@ -396,9 +396,12 @@ test.describe
 
       let recruited = false;
       let healCount = 0;
+      let encountersUsed = 0;
+      let recruitClicksUsed = 0;
       winningBattleId = null;
 
       for (let enc = 0; enc < MAX_ENCOUNTERS && !recruited; enc++) {
+        encountersUsed = enc + 1;
         // Walk grass until a battle starts.
         // P(no encounter in 40 entries @ 20%) ≈ 1.3e-4; outer loop re-attempts.
         let encBattleFound = false;
@@ -570,6 +573,7 @@ test.describe
           }
 
           // Click recruit (battleView.ts:205 data-testid="recruit-action").
+          recruitClicksUsed++;
           const recruitBtn = page.locator('[data-testid="recruit-action"]');
           await recruitBtn.click({ timeout: 5_000 });
 
@@ -617,6 +621,11 @@ test.describe
       // -------------------------------------------------------------------------
       // Final assertions
       // -------------------------------------------------------------------------
+      // Diagnostics for CI logs (flake triage without a trace download).
+      console.log(
+        `R2 diagnostics: encounters=${encountersUsed} recruitClicks=${recruitClicksUsed} heals=${healCount} recruited=${recruited}`,
+      );
+
       expect(recruited, `R2: did not recruit within MAX_ENCOUNTERS=${MAX_ENCOUNTERS}`).toBe(true);
 
       const afterSnap = await snap(page);
@@ -671,10 +680,13 @@ test.describe
       // NEVER use new RegExp(dynamic): use .includes() only (spec-gap-revival discipline).
       const server = process.env.STDB_SERVER ?? 'local';
       const db = process.env.VITE_STDB_DB ?? 'monster-realm';
+      // `outcome` is nested inside the `state` struct column (schema.rs Battle row),
+      // so it is not directly projectable — SELECT * prints the whole row incl. the
+      // state struct, and the variant name appears only in the outcome field.
       let sqlOutput = '';
       try {
         sqlOutput = execSync(
-          `spacetime sql -s ${server} ${db} "SELECT outcome FROM battle WHERE battle_id = ${winningBattleId}"`,
+          `spacetime sql -s ${server} ${db} "SELECT * FROM battle WHERE battle_id = ${winningBattleId}"`,
           { encoding: 'utf8', timeout: 10_000 },
         );
       } catch (err) {
