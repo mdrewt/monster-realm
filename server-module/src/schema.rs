@@ -381,12 +381,27 @@ pub struct PlayerQuestRow {
 }
 
 /// In-progress dialogue node. Single row per player (PK = owner_identity).
-#[spacetimedb::table(name = player_conversation, public)]
+/// PRIVATE since M13.5c (ADR-0087): `npc_entity_id` + `current_node_id` leak
+/// private quest/dialogue progress — clients read ONLY through the owner-scoped
+/// `my_conversation` view below.
+#[spacetimedb::table(name = player_conversation)]
 pub struct PlayerConversation {
     #[primary_key]
     pub owner_identity: Identity,
     pub npc_entity_id: u64,
     pub current_node_id: String,
+}
+
+/// Owner-scoped read path for `player_conversation` (ADR-0087): each client's
+/// subscription sees ONLY its own row, via the `owner_identity` unique index —
+/// never a whole-table scan. Lives next to the table it projects (visibility is
+/// a schema artifact, like `monster`/`monster_pub`).
+#[spacetimedb::view(name = my_conversation, public)]
+fn my_conversation(ctx: &spacetimedb::ViewContext) -> Option<PlayerConversation> {
+    ctx.db
+        .player_conversation()
+        .owner_identity()
+        .find(ctx.sender)
 }
 
 /// Healing location content seeded by `sync_content`. Public (world-readable).
