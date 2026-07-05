@@ -2,10 +2,10 @@
 # gates kept OFF the per-PR path so `just ci` stays the fast inner loop
 # (ADR-0043). They run on a schedule and on manual dispatch only.
 #
-# NOTE: action major versions are pinned here (e.g. @v4) to match ci.yml's
-# style; M8.5d SHA-pins all workflow actions (this file included). There is
-# deliberately NO `continue-on-error` on the threshold steps — a soft failure
-# would make these gates toothless.
+# NOTE: all actions are pinned to 40-hex SHAs (M8.5d; the human-readable
+# version tag rides as an inline comment). There is deliberately NO
+# `continue-on-error` on the threshold steps — a soft failure would make
+# these gates toothless.
 name: Nightly
 on:
   schedule:
@@ -33,6 +33,34 @@ jobs:
       # coverage job below. cargo-mutants policy is unchanged (ADR-0050).
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
       - run: just mutate-core
+
+  # cargo-mutants over the server shell (ADR-0050 amendment A2 / D-13.5-2). The
+  # cargo package is `monster-realm-module` (the server-module/ directory's crate
+  # name — `-p server-module` fails "Package not found"). Survivor-count RATCHET,
+  # not zero-tolerance: the shell's reducers are covered by evals/integration/e2e
+  # rather than in-crate units (game-core above keeps zero-tolerance). Baseline
+  # 180 missed @ e875af0; cap policy in ADR-0050. Deliberately no soft-failure
+  # keys on any step (a soft mutation gate is toothless); wiring + neuter-freedom
+  # are guarded by evals/nightly-smoke-wiring.eval.mjs from this job's first commit.
+  mutation-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      # Distinct prefix-key (v1-nightly-server) so this cache never collides with
+      # the mutation (v1-nightly) / coverage / smoke (v1-smoke) job caches.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with: { prefix-key: v1-nightly-server }
+      - uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
+        with: { tool: cargo-mutants }
+      # cargo-nextest as its own step (matching the sibling jobs' single-tool
+      # style): the mutate-server recipe pins --test-tool nextest for determinism
+      # with the ADR-0050 recorded baseline, so a missing nextest must fail the
+      # install step loudly, not fall back to a different test runner.
+      - uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
+        with: { tool: cargo-nextest }
+      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+      - run: just mutate-server
 
   # vitest line-coverage threshold (vitest exits non-zero below the threshold).
   coverage:

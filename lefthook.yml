@@ -5,6 +5,11 @@ pre-commit:
       run: node scripts/check-secrets.mjs .
     lint:
       run: just lint
+    # Gate-of-gates anchor (ADR-0050 amendment A3): runs the ci-wiring guard from a
+    # point outside ci.yml's `just eval` step, so a commit that deletes/neuters a ci
+    # quality-gate step trips here (where lefthook is installed) and in the e2e job.
+    ci-gate:
+      run: node evals/ci-gate-wiring.eval.mjs
 commit-msg:
   commands:
     conventional:

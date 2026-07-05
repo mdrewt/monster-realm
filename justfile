@@ -46,13 +46,51 @@ mutate:
 mutate-core:
     cargo mutants -p game-core
 
+# Nightly server-module mutation gate (ADR-0050 amendment A2, D-13.5-2). The cargo
+# package for server-module/ is `monster-realm-module` (`-p server-module` fails
+# "Package not found in source tree"). Survivor-count RATCHET, not zero-tolerance:
+# the shell's reducers are covered by evals/integration/e2e rather than in-crate
+# units, so surviving mutants are counted against a cap (baseline 180 missed @
+# e875af0, 2026-07-04) instead of failing on any survivor (game-core's mutate-core
+# keeps zero-tolerance). `--test-tool nextest` is pinned for determinism with the
+# recorded baseline (zero doctests in the crate, so catch results are identical).
+# Cap bumps must update ADR-0050. Runs in nightly.yml only (mutation-server job);
+# the recipe body is integrity-guarded by evals/nightly-smoke-wiring.eval.mjs.
+mutate-server cap="180":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Fail loud on a non-integer cap BEFORE the (minutes-long) mutants run: a
+    # malformed value would otherwise make `[ -gt ]` error inside the if-condition
+    # and silently skip the ratchet (vacuous green) — caught by the cap bite-proof.
+    case "{{cap}}" in
+        ''|*[!0-9]*) echo "mutate-server: cap '{{cap}}' is not a non-negative integer" >&2; exit 64;;
+    esac
+    status=0
+    cargo mutants -p monster-realm-module --test-tool nextest || status=$?
+    if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
+        echo "cargo mutants failed with exit $status (build/config error, not 'mutants missed')" >&2
+        exit "$status"
+    fi
+    # missed.txt exists whenever cargo-mutants ran (exit 0 or 2); a missing file
+    # aborts via set -e — the correct fail-loud path. grep -c '' counts lines
+    # regardless of a trailing newline (wc -l undercounts a newline-less last
+    # line); || true keeps the empty-file (0 survivors) case alive under set -e.
+    missed=$(grep -c '' mutants.out/missed.txt || true)
+    echo "surviving mutants: $missed (cap {{cap}})"
+    if [ "$missed" -gt "{{cap}}" ]; then
+        echo "survivor count $missed exceeds cap {{cap}} — mutation ratchet violated (ADR-0050)" >&2
+        exit 1
+    fi
+
 # Nightly vitest line-coverage gate (ADR-0050). Self-contained: installs the
 # coverage provider via --no-save (matching the pinned vitest 2.x) so it does
 # NOT touch client/package.json, the lockfile, or vite.config.ts (M8.5d domain).
 # vitest exits non-zero if line coverage falls below the threshold. Runs in
 # nightly.yml only — NOT part of `just ci` (preserves the ADR-0043 fast loop).
+# Threshold 96: re-measured post-exclusion at 99.35% lines and ratcheted from the
+# stale 25 (set from a 29.65% pre-exclusion denominator) — ADR-0050 amendment A1.
 coverage:
-    cd client && npm ci && npm i --no-save -D @vitest/coverage-v8@2.1.9 && npx vitest run --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.thresholds.lines=25
+    cd client && npm ci && npm i --no-save -D @vitest/coverage-v8@2.1.9 && npx vitest run --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.thresholds.lines=96
 
 build:
     spacetime build --module-path server-module

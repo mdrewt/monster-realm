@@ -94,9 +94,11 @@ imperative shells (`main.ts`, `net/connection.ts`, `render/world.ts`,
 `ui/boxView.ts`) — their substantive decision logic lives in the tested cores, and
 they are validated by the two-window e2e (`e2e/golden.spec.ts`, `e2e/recruit.spec.ts`)
 via `window.__game()`, never by vitest units, so vitest-v8 would always score them
-0% (DOM/Pixi/live-SDK, not unit-runnable). The 25% threshold is **unchanged** and no
+0% (DOM/Pixi/live-SDK, not unit-runnable). The threshold was ratcheted 25 → **96** in
+m13.5a after a post-exclusion re-measure of 99.35% lines (ADR-0050 amendment A1), and no
 unit-coverable logic module is excluded, so the gate stays a real regression backstop
-rather than a number dominated by non-unit code. **Known follow-up:** a little inline
+rather than a number dominated by non-unit code; the exclusion set itself is
+exact-set-guarded by `dom-shell-coverage-exclusion.eval.mjs`. **Known follow-up:** a little inline
 glue logic still lives in the integration shells (`main.ts`'s Escape terminal-dismiss
 latch + party-slot sentinel routing, `battleView`'s bait-id parse, `boxView`'s
 nickname-changed guard) — e2e-validated today; extracting it into pure cores so it is
