@@ -48,7 +48,7 @@ import { buildDialogueViewModel } from './ui/dialogueModel';
 import type { DialogueView } from './ui/dialogueView';
 import { buildEvolutionViewModel } from './ui/evolutionModel';
 import type { EvolutionView } from './ui/evolutionView';
-import { buildHealViewModel } from './ui/healModel';
+import { buildHealViewModel, healTargetLocationId } from './ui/healModel';
 import type { HealView } from './ui/healView';
 import { buildQuestLogViewModel } from './ui/questLogModel';
 import type { QuestLogView } from './ui/questLogView';
@@ -56,6 +56,7 @@ import { buildRaisingViewModel } from './ui/raisingModel';
 import type { RaisingView } from './ui/raisingView';
 import { buildShopViewModel } from './ui/shopModel';
 import type { ShopView } from './ui/shopView';
+import { reduceErrorMessage } from './ui/statusModel';
 
 const URI = (import.meta.env.VITE_STDB_URI as string | undefined) ?? 'ws://127.0.0.1:3000';
 const DB = (import.meta.env.VITE_STDB_DB as string | undefined) ?? 'monster-realm';
@@ -110,6 +111,44 @@ let dismissPending = false;
 let dismissedBattleId: bigint | null = null;
 let battleSynced = false;
 
+// --- M13.5b status surface (ADR-0085 D1) ------------------------------------------
+// A minimal dynamically-created status line (no toast system — recorded ADR-0085
+// consequence). `statusEl` is created in main() BEFORE `conn = connect(...)` is
+// assigned (C8: no lifecycle callback can ever report into the void) but held at
+// module scope because send sites OUTSIDE main() (the Escape-dismiss keydown handler
+// and the dialogue-choice click handler) report through it too.
+let statusEl: HTMLElement | undefined;
+
+/** Surface a user-visible failure: textContent ONLY — server-supplied SenderError
+ *  text must never become markup (never innerHTML) — plus console.error for logs. */
+function reportError(text: string): void {
+  if (statusEl !== undefined) statusEl.textContent = text;
+  console.error('[status]', text);
+}
+
+/** Clear the status line (on reconnect: the frozen-link message is stale, A8). */
+function clearStatus(): void {
+  if (statusEl !== undefined) statusEl.textContent = '';
+}
+
+/**
+ * Non-movement reducer send guard (ADR-0085 D1 + A1). While the link is frozen it
+ * SHORT-CIRCUITS with "disconnected — try again" and NEVER calls the reducer: a call
+ * against a dead conn is silently queued on the dead instance and its promise never
+ * settles (no-settle-on-drop) — the dead-button black hole. Otherwise it attaches
+ * the rejection route: reduceErrorMessage passes SenderError reasons through and
+ * never leaks InternalError detail. Documented exceptions (A10): enqueueMove
+ * (movement — silent prediction repair in sendIntent, M2 §3), joinGame (handled in
+ * connection.ts, A4), buy/sell (shop feedback line — gated inline in main(), A6).
+ */
+function sendGuarded(where: string, call: () => Promise<void> | undefined): void {
+  if (conn === undefined || conn.linkFrozen()) {
+    reportError(`${where}: disconnected — try again`);
+    return;
+  }
+  call()?.catch((err: unknown) => reportError(reduceErrorMessage(err, where)));
+}
+
 let resolveReady: () => void = () => {};
 const ready = new Promise<void>((r) => {
   resolveReady = r;
@@ -152,13 +191,22 @@ function switchZone(newZoneId: number): void {
 }
 
 // --- reconcile own character on every coherent (batched) authoritative snapshot --
-// MUST be total (never throw to caller): store.flushBatch has no per-listener
-// isolation, so an uncaught throw starves sibling listeners (UI stall). (12.5c-4)
-store.onBatchApplied(() => {
+// M13.5b (ADR-0085): extracted to a module-scope TOTAL function so BOTH callers share
+// one body — the batch listener below AND the movement-rejection .catch in sendIntent.
+// The rejection path MUST actively re-reconcile: when the rejected send is a burst
+// tail, NO further authoritative batch arrives (server state unchanged), so waiting
+// for the next batch would leave the phantom op replaying forever.
+function reconcileFromStore(): void {
+  // Internal try/catch is the single totality source (12.5c-4 no-throw contract):
+  // neither caller can be blown up by a wasm/predictor throw in here.
   try {
     if (identity === '') return;
     const own = store.ownCharacter(identity);
     const player = store.player(identity);
+    // Early-exit when own/player are absent (store reset mid-gap): SAFE, but
+    // transient after a mid-gap dropRejected — #pending already dropped, #queue
+    // still reflects the phantom — self-heals on the next batch reconcile
+    // (ADR-0085 C1).
     if (own === undefined || player === undefined) return;
 
     // 12.5c-1: State-based zone sync — catches reconnect-strand (a character
@@ -219,16 +267,47 @@ store.onBatchApplied(() => {
       if (heldDir !== undefined) sendIntent({ Step: heldDir });
     }
   } catch (err) {
+    console.error('[reconcile] uncaught error', err);
+  }
+}
+store.onBatchApplied(() => {
+  // Belt: reconcileFromStore is total by construction (internal catch above); keep
+  // the listener-level catch anyway (12.5c-4) so a future edit inside the body can
+  // never starve sibling batch listeners.
+  try {
+    reconcileFromStore();
+  } catch (err) {
     console.error('[reconcile] uncaught error in batch listener', err);
   }
 });
 
 // --- input: predict locally + send the intent to the M2 reducer (seq-tracked) ----
 function sendIntent(input: WasmMoveInput): void {
-  if (conn === undefined) return;
+  // Single choke point for the movement freeze (ADR-0085 D3): the keydown first
+  // step, the frame-loop held re-issue, AND the reconcile-listener divergence
+  // re-issue all route through here, so this one gate covers every movement path.
+  // No prediction against a dead link either — enqueue is skipped, not just the send.
+  if (conn === undefined || conn.linkFrozen()) return;
   const intent = predictor.enqueue(input);
   if (intent === undefined) return; // ADR-0052: declined (queue at cap) — predict & send nothing
-  conn.conn.reducers.enqueueMove({ input: moveInputToSdk(input), seq: BigInt(intent.seq) });
+  const seq = intent.seq;
+  conn.conn.reducers.enqueueMove({ input: moveInputToSdk(input), seq: BigInt(seq) }).catch(() => {
+    // Movement rejections stay SILENT to the user (M2 §3) — prediction repair only.
+    // ADR-0085 A2 (invariant corrected in review, RT-03): this closure captures ONLY
+    // `seq` (a const) and reads the module-scope `predictor` at fire time — never
+    // capture the predictor instance at send time. Cross-session safety comes from
+    // ORDERING, not seq disjointness: rejections settle only on message receipt from
+    // the live socket (no settle after a drop), so a stale `.catch` always drains as
+    // a microtask against the OLD predictor — the fresh predictor is created ≥1s
+    // later by the reconnect timer. (seedSeq alone would NOT protect the boundary:
+    // seedSeq(N-1) hands the fresh predictor seq N, colliding with a stale reject
+    // of N — reachable only if the drop/reconnect ordering above were violated.)
+    // ADR-0085 A3: burst rejections (N rejects → N drop+reconcile microtasks in one
+    // turn) are harmless — the microtask checkpoint drains before the next rAF, the
+    // renderer reads predictor state only in rAF, and each reconcile is a total
+    // re-derivation from store truth (idempotent, converging). No coalescing needed.
+    if (predictor.dropRejected(seq)) reconcileFromStore();
+  });
 }
 const step = (dir: WasmDirection): void => sendIntent({ Step: dir });
 const jump = (): void => sendIntent('Jump');
@@ -375,8 +454,21 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Escape' && dialogueView?.visible) {
     // dismissPending guards against double-send while server processes the dismiss.
     if (!dismissPending) {
-      dismissPending = true;
-      conn?.conn.reducers.dismissDialogue({});
+      // The flag is set INSIDE the lambda (reviewer M1): sendGuarded's frozen
+      // short-circuit then never sets it, so a frozen-link Escape stays a live
+      // button (status line says "disconnected") instead of leaning on the
+      // next-batch self-heal.
+      // Site-specific catch (ADR-0085 C6): a rejection must RESET dismissPending or
+      // Escape-dismiss is a dead button forever after one rejection (the flag is
+      // otherwise only cleared when the conversation row disappears in a batch).
+      // The rethrow keeps sendGuarded's catch as the single status reporter.
+      sendGuarded('dismiss', () => {
+        dismissPending = true;
+        return conn?.conn.reducers.dismissDialogue({}).catch((err: unknown) => {
+          dismissPending = false;
+          throw err;
+        });
+      });
     }
     e.preventDefault();
     return;
@@ -563,7 +655,7 @@ document.addEventListener('click', (e) => {
   if (raw === undefined) return;
   const choiceIdx = parseInt(raw, 10);
   if (!Number.isNaN(choiceIdx)) {
-    conn?.conn.reducers.advanceDialogue({ choiceIdx });
+    sendGuarded('advance', () => conn?.conn.reducers.advanceDialogue({ choiceIdx }));
   }
 });
 
@@ -653,50 +745,59 @@ async function main(): Promise<void> {
     installResizeHandler(renderer, window); // fit the stage to the window + on resize
     boxView = new BoxViewClass(mount, {
       onSetNickname: (monsterId, nickname) => {
-        conn?.conn.reducers.setNickname({ monsterId, nickname });
+        sendGuarded('nickname', () => conn?.conn.reducers.setNickname({ monsterId, nickname }));
       },
       onSetPartySlot: (monsterId, slot) => {
         const finalSlot =
           slot === -1
             ? (nextFreePartySlot(store.ownMonsters(identity), PARTY_SIZE) ?? PARTY_SLOT_NONE)
             : slot;
-        conn?.conn.reducers.setPartySlot({ monsterId, slot: finalSlot });
+        sendGuarded('party', () =>
+          conn?.conn.reducers.setPartySlot({ monsterId, slot: finalSlot }),
+        );
       },
       onHealParty: () => {
         // Use the first available heal location from live store data (M12d).
-        // Server validates zone/range/cooldown; falls back to 0 (no-op) when no locations loaded.
-        const locationId = store.healLocations()[0]?.locationId ?? 0;
-        conn?.conn.reducers.healParty({ locationId });
+        // M13.5b (ADR-0085 §D + A9): SKIP the send when no location is loaded — the
+        // old `?? 0` fallback sent healParty({locationId: 0}), a guaranteed invisible
+        // server Err. The skip is surfaced, never silent. Server still validates
+        // zone/range/cooldown on the real send.
+        const locationId = healTargetLocationId(store.healLocations());
+        if (locationId === undefined) {
+          reportError('heal: no heal location available');
+        } else {
+          sendGuarded('heal', () => conn?.conn.reducers.healParty({ locationId }));
+        }
       },
     });
     battleView = new BattleViewClass(mount, {
       onAttack: (battleId, skillId) => {
-        conn?.conn.reducers.submitAttack({ battleId, skillId });
+        sendGuarded('attack', () => conn?.conn.reducers.submitAttack({ battleId, skillId }));
       },
       onFlee: (battleId) => {
-        conn?.conn.reducers.flee({ battleId });
+        sendGuarded('flee', () => conn?.conn.reducers.flee({ battleId }));
       },
       onSwap: (battleId, teamIndex) => {
-        conn?.conn.reducers.swapActive({ battleId, teamIndex });
+        sendGuarded('swap', () => conn?.conn.reducers.swapActive({ battleId, teamIndex }));
       },
       onRecruit: (battleId, baitItemId) => {
-        conn?.conn.reducers.attemptRecruit({ battleId, baitItemId });
+        sendGuarded('recruit', () => conn?.conn.reducers.attemptRecruit({ battleId, baitItemId }));
       },
     });
     raisingView = new RaisingViewClass(mount, {
       onTrain: (monsterId, foodItemId) => {
-        conn?.conn.reducers.train({ monsterId, foodItemId });
+        sendGuarded('train', () => conn?.conn.reducers.train({ monsterId, foodItemId }));
       },
       onCare: (monsterId) => {
-        conn?.conn.reducers.care({ monsterId });
+        sendGuarded('care', () => conn?.conn.reducers.care({ monsterId }));
       },
     });
     evolutionView = new EvolutionViewClass(mount, {
       onEvolve: (monsterId) => {
-        conn?.conn.reducers.evolve({ monsterId });
+        sendGuarded('evolve', () => conn?.conn.reducers.evolve({ monsterId }));
       },
       onFuse: (aId, bId) => {
-        conn?.conn.reducers.fuse({ aId, bId });
+        sendGuarded('fuse', () => conn?.conn.reducers.fuse({ aId, bId }));
       },
     });
     // M12d: dialogue / quest log / heal DOM shells (ADR-0071).
@@ -711,29 +812,47 @@ async function main(): Promise<void> {
     const SHOP_QTY = 1 as const;
     shopView = new ShopViewClass({
       onBuy: async (shopId, itemId) => {
+        // ADR-0085 A1: gate on frozen FIRST — a call against a dead conn is silently
+        // queued and its promise never settles (the feedback line would hang forever).
+        if (conn === undefined || conn.linkFrozen()) {
+          if (shopView?.visible) shopView.showFeedback('disconnected — try again');
+          return;
+        }
         try {
-          await conn?.conn.reducers.buy({ shopId, itemId, qty: SHOP_QTY });
+          await conn.conn.reducers.buy({ shopId, itemId, qty: SHOP_QTY });
           if (shopView?.visible) shopView.showFeedback('Purchase complete!');
         } catch (err) {
-          if (shopView?.visible)
-            shopView.showFeedback(`Purchase failed: ${(err as Error).message}`);
+          // ADR-0085 A6: route through reduceErrorMessage — SenderError reasons pass
+          // through, InternalError detail never leaks (was a raw err.message leak).
+          if (shopView?.visible) shopView.showFeedback(reduceErrorMessage(err, 'buy'));
         }
       },
       onSell: async (itemId) => {
+        // Same frozen gate + no-leak rejection routing as onBuy (ADR-0085 A1/A6).
+        if (conn === undefined || conn.linkFrozen()) {
+          if (shopView?.visible) shopView.showFeedback('disconnected — try again');
+          return;
+        }
         try {
-          await conn?.conn.reducers.sell({ itemId, qty: SHOP_QTY });
+          await conn.conn.reducers.sell({ itemId, qty: SHOP_QTY });
           if (shopView?.visible) shopView.showFeedback('Sale complete!');
         } catch (err) {
-          if (shopView?.visible) shopView.showFeedback(`Sale failed: ${(err as Error).message}`);
+          if (shopView?.visible) shopView.showFeedback(reduceErrorMessage(err, 'sell'));
         }
       },
     });
   }
 
+  // M13.5b (ADR-0085 C8): create the status surface BEFORE `conn = connect(...)` is
+  // assigned so no connection lifecycle callback can ever report into the void.
+  const status = document.createElement('div');
+  status.id = 'status';
+  document.body.appendChild(status);
+  statusEl = status;
+
   conn = connect({
     uri: URI,
     db: DB,
-    zoneId: ZONE_ID,
     name: 'Player',
     store,
     onReady: (id) => {
@@ -746,6 +865,14 @@ async function main(): Promise<void> {
       // Zone state is corrected by the reconcile listener's state-based check on
       // the first post-reconnect batch (12.5c-1 — no special zone logic needed here).
       resetPredictionState();
+      // RT-PL-01: a buy/sell in flight at drop time never settles (SDK — no settle
+      // on drop), so the shop's double-spend lock would stay held forever. hide()
+      // resets it (shopView.ts is outside this slice's touch-set; the reset rides
+      // the existing public hide()). Escape/KeyG already recover it manually
+      // during the gap.
+      shopView?.hide();
+      // The "connection lost — reconnecting…" status line is now stale (ADR-0085 A8).
+      clearStatus();
     },
     // 12.5c-1: onOwnWarp delegates to switchZone (idempotent — no-op if rawMap
     // already matches). Fires on live-warp character onUpdate (lower latency path);
@@ -755,7 +882,9 @@ async function main(): Promise<void> {
     onOwnWarp: (newZoneId) => {
       switchZone(newZoneId);
     },
-    onError: (where, message) => console.error(`[net:${where}] ${message}`),
+    // M13.5b (ADR-0085 D1): lifecycle failures become user-visible via the status
+    // line (reportError also console.errors); pre-M13.5b this was console-only.
+    onError: (where, message) => reportError(`${where}: ${message}`),
   });
 
   // 12.5c-4: frame loop is wrapped in try/catch so a wasm/predictor throw does not

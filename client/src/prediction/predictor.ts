@@ -30,7 +30,9 @@ export type QueueOp =
   | { readonly kind: 'SetMove'; readonly input: WasmMoveInput }
   | { readonly kind: 'Clear' };
 
-export interface PendingOp {
+// Internal bookkeeping shape of #pending — deliberately unexported: callers see
+// only IntentToSend out and a bare seq into dropRejected (simplify F2, m13.5b).
+interface PendingOp {
   readonly seq: number;
   readonly op: QueueOp;
 }
@@ -151,6 +153,32 @@ export class Predictor {
     const seq = ++this.#nextSeq; // strictly increasing
     this.#pending.push({ seq, op });
     return { seq, op };
+  }
+
+  /**
+   * Evict the pending op with exactly this `seq` (M13.5b, ADR-0085). Returns true
+   * iff an op was removed; unknown/already-dropped seq is an idempotent no-op
+   * (false, no state change).
+   *
+   * WHY: this is eviction of a KNOWN-DEAD op — the server rejected the reducer call
+   * (its accept-time ack write rolled back with the transaction on `Err`), so the
+   * seq will NEVER be acked and the op would otherwise survive reconcile's
+   * `seq > ackedSeq` prune forever, replaying a phantom move onto the authoritative
+   * queue at every reconcile (the silent 1-tile desync with diverged=false). That is
+   * categorically different from the `#pendingCap` backpressure (ADR-0013.5), which
+   * NEVER drops recorded ops — it only declines new ones.
+   *
+   * Mutates ONLY `#pending`; never touches `#queue` (reconcile step 2 is the ONLY
+   * `#queue` rebuilder — a single source of truth) and never touches `#nextSeq`
+   * (a rejected seq is consumed, not recycled). Because `#queue` still reflects the
+   * phantom until the next reconcile, on a `true` return the caller MUST immediately
+   * force a reconcile from current store state (main.ts `reconcileFromStore()`);
+   * a `false` return needs no forced reconcile — nothing was removed.
+   */
+  dropRejected(seq: number): boolean {
+    const before = this.#pending.length;
+    this.#pending = this.#pending.filter((p) => p.seq !== seq);
+    return this.#pending.length !== before;
   }
 
   /**
