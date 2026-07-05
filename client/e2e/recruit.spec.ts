@@ -233,11 +233,33 @@ async function waitForBattleCleared(p: Page): Promise<void> {
 //         main.ts:665–669 conn.reducers.healParty({locationId}).
 // ---------------------------------------------------------------------------
 async function healViaBox(p: Page): Promise<void> {
-  // Open the box (KeyB, main.ts:248); the battle overlay is already hidden here
-  // (KO'd battle row is GC'd), so the mutual-exclusion guard admits the box.
-  await p.keyboard.press('b');
+  // Open the box (KeyB, main.ts:248). TIMING TRAP (observed in run-1): after a KO,
+  // __game().ongoingBattle goes null IMMEDIATELY (Ongoing-filter in the store), but
+  // the battle overlay stays visible showing the outcome frame until the terminal
+  // row is GC'd on the next battle_tick — and KeyB is guarded by battleView.visible
+  // (main.ts:250, ADR-0014 mutual exclusion). A single early press is silently
+  // rejected, so press inside a bounded retry loop. KeyB TOGGLES the box, so check
+  // visibility BEFORE each press (never double-press an open box closed); the
+  // keydown handler runs synchronously, so waitFor's 500 ms doubles as the backoff
+  // while the overlay waits out its GC tick.
   const healBtn = p.getByText('Heal Party', { exact: true });
-  await expect(healBtn).toBeVisible({ timeout: 5_000 });
+  const MAX_BOX_OPEN_TRIES = 20; // 20 × 500 ms = 10 s ≫ one battle_tick GC period
+  let boxOpen = false;
+  for (let i = 0; i < MAX_BOX_OPEN_TRIES && !boxOpen; i++) {
+    if (!(await healBtn.isVisible().catch(() => false))) {
+      await p.keyboard.press('b');
+    }
+    boxOpen = await healBtn
+      .waitFor({ state: 'visible', timeout: 500 })
+      .then(() => true)
+      .catch(() => false);
+  }
+  if (!boxOpen) {
+    throw new Error(
+      `healViaBox: box did not open after ${MAX_BOX_OPEN_TRIES} KeyB attempts ` +
+        '(battle overlay still visible? — its terminal row should GC within one battle_tick)',
+    );
+  }
 
   // Healed-signal: the box lists each monster as "HP cur/max (pct%)" (boxView.ts:152)
   // and is subscription-driven — healed = no row in the BOX overlay shows "HP 0/".

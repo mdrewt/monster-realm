@@ -20,6 +20,14 @@ export default defineConfig({
   globalSetup: './e2e/global-setup.ts',
   timeout: 45_000,
   fullyParallel: false,
+  // ONE shared world, ONE worker (13.5h). All spec files share a single published
+  // db; golden.spec asserts an EXACT player population (presenceCount === 2), so a
+  // concurrently running spec file that keeps its own player joined (recruit.spec
+  // holds one for minutes) makes that unreachable. `fullyParallel: false` only
+  // serializes tests WITHIN a file — separate files still fan out across workers
+  // (observed: 3 workers locally, 2 on 4-vCPU CI runners). Single-worker completes
+  // the serialization this config always intended.
+  workers: 1,
   use: { baseURL: e2eBaseUrl, headless: true },
   webServer: {
     command: 'npm run dev',

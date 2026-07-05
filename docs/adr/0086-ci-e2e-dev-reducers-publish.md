@@ -89,6 +89,15 @@ lands because:
 - **golden/zoneSync unaffected:** verified — their scripted walk paths never
   enter grass, so publishing dev reducers (which only ADD reducers) changes no
   observed behavior.
+- **e2e is now explicitly single-worker** (`workers: 1` in
+  `client/playwright.config.ts`). All spec files share ONE published db, and
+  golden.spec asserts an exact player population (`presenceCount === 2`);
+  `fullyParallel: false` only serializes within a file, so once recruit.spec
+  (which keeps a player joined for minutes) landed, cross-file worker
+  parallelism made golden unreachable — observed locally as 3 workers; CI's
+  4-vCPU runners would fan out to 2 and hit the same collision. Single-worker
+  completes the serialization the config always intended, at the cost of the
+  formerly overlapped golden+zoneSync wall-time (~40 s).
 - **R2 revival is numerically marginal** (80‰ base recruit rate; the weaken-first
   strategy raises per-encounter odds to ≥40%) and carries a documented decision
   gate: if local ≥3-run validation shows flake or time overrun (>~150 s), R2+R3
