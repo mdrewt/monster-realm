@@ -15,6 +15,47 @@ export interface DialogueViewModel {
   canDismiss: boolean; // always true from model; dismissPending guard lives in main.ts
 }
 
+/** Client-side talk range in Manhattan tiles — mirrors the server's
+ *  `TALK_RANGE: i64 = 2` (server-module/src/npc.rs:20). Latency hygiene ONLY,
+ *  never security: the `talk` reducer re-validates zone + range server-side
+ *  (npc.rs talk Steps 4-5). */
+export const CLIENT_TALK_RANGE = 2;
+
+/** The positional subset of a character row the talk-target selection reads. */
+export interface TalkTile {
+  readonly zoneId: number;
+  readonly tileX: number;
+  readonly tileY: number;
+}
+
+/**
+ * Nearest NPC within CLIENT_TALK_RANGE of the own AUTHORITATIVE tile (M13.5c
+ * KeyT contract — dialogue.spec.ts header). NPC positions come from their
+ * CHARACTER rows (current wander position, not home_x/home_y), joined by
+ * entityId. Same-zone only. Deterministic: minimum Manhattan distance, ties
+ * broken by lowest entityId. Returns undefined when none is in range (KeyT
+ * no-ops). TOTAL: never throws; NPCs without a character row are skipped.
+ */
+export function nearestTalkableNpcId(
+  own: TalkTile,
+  npcs: readonly StoreNpcRow[],
+  characterTiles: ReadonlyMap<bigint, TalkTile>,
+): bigint | undefined {
+  let best: bigint | undefined;
+  let bestDist = CLIENT_TALK_RANGE + 1;
+  for (const npc of npcs) {
+    const c = characterTiles.get(npc.entityId);
+    if (c === undefined || c.zoneId !== own.zoneId) continue;
+    const dist = Math.abs(c.tileX - own.tileX) + Math.abs(c.tileY - own.tileY);
+    if (dist > CLIENT_TALK_RANGE) continue;
+    if (dist < bestDist || (dist === bestDist && best !== undefined && npc.entityId < best)) {
+      best = npc.entityId;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
 export function buildDialogueViewModel(
   conv: StorePlayerConversation | undefined,
   npcs: ReadonlyMap<bigint, StoreNpcRow>,

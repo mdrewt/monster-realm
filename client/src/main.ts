@@ -44,7 +44,7 @@ import type { BattleView } from './ui/battleView';
 import { buildBoxViewModel, buildPartyViewModel, nextFreePartySlot } from './ui/boxModel';
 import type { BoxView } from './ui/boxView';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
-import { buildDialogueViewModel } from './ui/dialogueModel';
+import { buildDialogueViewModel, nearestTalkableNpcId } from './ui/dialogueModel';
 import type { DialogueView } from './ui/dialogueView';
 import { buildEvolutionViewModel } from './ui/evolutionModel';
 import type { EvolutionView } from './ui/evolutionView';
@@ -421,6 +421,41 @@ window.addEventListener('keydown', (e) => {
           ),
         );
         shopView?.show();
+      }
+    }
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'KeyT') {
+    // TALK (M13.5c — implementer contract in client/e2e/dialogue.spec.ts header):
+    // only when NO overlay is visible, target the nearest NPC (store.allNpcs()
+    // joined to character rows, same zone) within CLIENT_TALK_RANGE of the own
+    // AUTHORITATIVE tile and send the talk reducer; no-op when none is in range.
+    // The client-side range check is latency hygiene, NOT security — the server
+    // re-validates zone + range (npc.rs talk Steps 4-5, TALK_RANGE at npc.rs:20).
+    if (
+      !battleView?.visible &&
+      !boxView?.visible &&
+      !raisingView?.visible &&
+      !evolutionView?.visible &&
+      !dialogueView?.visible &&
+      !questLogView?.visible &&
+      !healView?.visible &&
+      !shopView?.visible &&
+      identity !== ''
+    ) {
+      const own = store.ownCharacter(identity);
+      if (own !== undefined) {
+        const characterTiles = new Map(
+          [...store.characters()].map((c) => [
+            c.row.entityId,
+            { zoneId: c.row.zoneId, tileX: c.row.tileX, tileY: c.row.tileY },
+          ]),
+        );
+        const npcEntityId = nearestTalkableNpcId(own.row, store.allNpcs(), characterTiles);
+        if (npcEntityId !== undefined) {
+          sendGuarded('talk', () => conn?.conn.reducers.talk({ npcEntityId }));
+        }
       }
     }
     e.preventDefault();
