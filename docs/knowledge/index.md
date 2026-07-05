@@ -21,7 +21,7 @@
 | tables/movement_tick_schedule | SpacetimeDB Table | movement_tick_schedule | Per-zone movement schedule: one interval-row per active zone makes the scheduler |
 | tables/npc | SpacetimeDB Table | npc | NPC entity role row. Entity/component: an NPC is a `character` row + this. `zone |
 | tables/player | SpacetimeDB Table | player | Links a connection identity to its character. `last_input_seq` is the reconcilia |
-| tables/player_conversation | SpacetimeDB Table | player_conversation | In-progress dialogue node. Single row per player (PK = owner_identity). |
+| tables/player_conversation | SpacetimeDB Table | player_conversation | In-progress dialogue node. Single row per player (PK = owner_identity). PRIVATE  |
 | tables/player_dialogue_state | SpacetimeDB Table | player_dialogue_state | PRIVATE per-player dialogue state: flags + done-quest history. Must-never-leak:  |
 | tables/player_quest | SpacetimeDB Table | player_quest | Active quest progress. Public (quest log is world-readable like `inventory`). Pe |
 | tables/player_wallet | SpacetimeDB Table | player_wallet | PRIVATE per-player wallet — one row per player (PK = owner_identity). Balance is |

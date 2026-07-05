@@ -820,7 +820,8 @@ modules (13 NPC + 26 dialogue + 18 quest); all `just ci` evals pass.
 (pure helpers, never reloading from DB mid-transaction). `schema.rs` adds 6 new tables: `npc`
 (public, `#[unique]` npc_id, zone-keyed wander state) + `player_dialogue_state` (PRIVATE,
 per-player/dialogue-tree flags/quest sets per ADR-0015) + `player_quest` (public, quest step
-tracking) + `player_conversation` (public, transient session anchor) + `heal_location_row`
+tracking) + `player_conversation` (transient session anchor; public at M12b, PRIVATE since
+M13.5c — clients read it only through the owner-scoped `my_conversation` view, ADR-0087) + `heal_location_row`
 (public, NPC healing POI) + `heal_cooldown` (PRIVATE, per-location/player cooldown gate per
 ADR-0015). `movement.rs` integrates NPC wander: for each NPC character, `npc_decide` returns
 direction → push to move_queue, existing drain loop processes. `raising.rs` adds `evaluate_heal`

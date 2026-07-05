@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: set_nickname
 slug: reducers/set_nickname
-updated: 2026-07-04
+updated: 2026-07-05
 tags: [reducer, spacetimedb, monster_mgmt]
 abstract: "Set or clear a monster's nickname. Empty string clears the nickname. Ownership-checked: only the monster's owner may re…"
 resource: server-module/src/monster_mgmt.rs#L21
