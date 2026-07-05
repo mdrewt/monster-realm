@@ -10,6 +10,18 @@
 //
 // Proof-of-teeth: a config WITHOUT evolutionView.ts in exclude MUST fail; one
 // WITH it MUST pass.
+//
+// m13.5a additions (EARS 13.5a-4):
+//   - shopView.ts added to DOM_SHELLS (M13d shell — was stale; real vite.config.ts
+//     already excludes it; findMissingExclusions would otherwise miss regressions on it)
+//   - findUnsanctionedExclusions: detects entries in coverage.exclude that are NOT in
+//     the sanctioned set (DOM_SHELLS ∪ {src/module_bindings/**} ∪ spread token)
+//   - coverageIncludeIsFull: ensures include: ['src/**/*.ts'] is not narrowed
+//
+// EXPECTED REAL-TREE STATE AT RED (m13.5a): this eval is GREEN once shopView.ts is
+// in DOM_SHELLS (the real vite.config.ts already excludes it). Its 13.5a-4 value is
+// fixture-proven; the eval was already green for findMissingExclusions; the two new
+// predicates also pass on the real config.
 import { readFileSync } from 'node:fs';
 
 const DOM_SHELLS = [
@@ -26,18 +38,118 @@ const DOM_SHELLS = [
   'src/ui/dialogueView.ts',
   'src/ui/questLogView.ts',
   'src/ui/healView.ts',
+  // M13d: shop DOM shell (ADR-0084) — added m13.5a; real vite.config.ts already excludes it
+  'src/ui/shopView.ts',
 ];
 
+// Sanctioned exclusion entries for findUnsanctionedExclusions.
+// Any entry in vite.config.ts coverage.exclude that is NOT in this set is unsanctioned.
+const SANCTIONED_EXCLUDES = new Set([...DOM_SHELLS, 'src/module_bindings/**']);
+// The spread token that must be present in the exclude array to preserve vitest defaults.
+const SPREAD_TOKEN = '...coverageConfigDefaults.exclude';
+
 /**
- * Strip JS/TS line comments (// …) and block comments (/* … *\/) from source.
- * Prevents a shell path mentioned only in a comment from silently satisfying
- * the include-check (12.5f-3).
+ * Strip JS/TS line comments (// …) and block comments (/* … *\/) from source,
+ * leaving all string contents UNTOUCHED so glob patterns like `src/**\/*.ts`
+ * and `src/module_bindings/**` survive stripping intact.
+ *
+ * The regex approach (`replace(/\/\*[\s\S]*?\*\//g)`) treats the `/*` inside
+ * a glob string literal as a block-comment opener and mangles the string — that
+ * is why we use a quote-aware single-pass character scanner instead.
+ *
+ * States: normal | line-comment | block-comment |
+ *         in-single-quote | in-double-quote | in-template-literal
+ * In string/template states characters pass through untouched (backslash
+ * escapes are respected so `\'` inside a single-quoted string does not
+ * prematurely close it).
  */
 export function stripComments(src) {
-  // Strip block comments first (/* … */), then line comments (// …).
-  // Non-greedy block match keeps adjacent blocks distinct.
-  let out = src.replace(/\/\*[\s\S]*?\*\//g, '');
-  out = out.replace(/\/\/[^\n]*/g, '');
+  let out = '';
+  let i = 0;
+  const len = src.length;
+  let state = 'normal'; // 'normal' | 'line' | 'block' | 'sq' | 'dq' | 'tl'
+
+  while (i < len) {
+    const ch = src[i];
+    const next = i + 1 < len ? src[i + 1] : '';
+
+    if (state === 'normal') {
+      if (ch === '/' && next === '/') {
+        state = 'line';
+        i += 2;
+      } else if (ch === '/' && next === '*') {
+        state = 'block';
+        i += 2;
+      } else if (ch === "'") {
+        state = 'sq';
+        out += ch;
+        i++;
+      } else if (ch === '"') {
+        state = 'dq';
+        out += ch;
+        i++;
+      } else if (ch === '`') {
+        state = 'tl';
+        out += ch;
+        i++;
+      } else {
+        out += ch;
+        i++;
+      }
+    } else if (state === 'line') {
+      if (ch === '\n') {
+        out += '\n';
+        state = 'normal';
+      }
+      i++;
+    } else if (state === 'block') {
+      if (ch === '*' && next === '/') {
+        state = 'normal';
+        i += 2;
+      } else {
+        i++;
+      }
+    } else if (state === 'sq') {
+      out += ch;
+      if (ch === '\\' && i + 1 < len) {
+        i++;
+        out += src[i];
+        i++;
+      } else if (ch === "'") {
+        state = 'normal';
+        i++;
+      } else {
+        i++;
+      }
+    } else if (state === 'dq') {
+      out += ch;
+      if (ch === '\\' && i + 1 < len) {
+        i++;
+        out += src[i];
+        i++;
+      } else if (ch === '"') {
+        state = 'normal';
+        i++;
+      } else {
+        i++;
+      }
+    } else if (state === 'tl') {
+      out += ch;
+      if (ch === '\\' && i + 1 < len) {
+        i++;
+        out += src[i];
+        i++;
+      } else if (ch === '`') {
+        state = 'normal';
+        i++;
+      } else {
+        i++;
+      }
+    } else {
+      out += ch;
+      i++;
+    }
+  }
   return out;
 }
 
@@ -49,6 +161,78 @@ export function stripComments(src) {
 export function findMissingExclusions(configSrc, shells) {
   const stripped = stripComments(configSrc);
   return shells.filter((shell) => !stripped.includes(shell));
+}
+
+/**
+ * Find exclusion entries in vite.config.ts coverage.exclude that are NOT in the
+ * sanctioned set (DOM_SHELLS ∪ {src/module_bindings/**} ∪ spread token).
+ *
+ * Algorithm (comment-stripped):
+ *   1. Strip comments.
+ *   2. Check that the spread token `...coverageConfigDefaults.exclude` is present
+ *      in the exclude array — its absence is itself unsanctioned (vitest defaults dropped).
+ *   3. Collect single-quoted string literals from the exclude array via literal regex.
+ *   4. Return entries not in SANCTIONED_EXCLUDES.
+ *
+ * Returns an array of unsanctioned entry strings. Empty array = fully sanctioned.
+ * The spread token absence is reported as a synthetic unsanctioned entry
+ * '(missing spread ...coverageConfigDefaults.exclude)'.
+ */
+export function findUnsanctionedExclusions(configSrc) {
+  const stripped = stripComments(configSrc);
+  const unsanctioned = [];
+
+  // Locate the exclude: [ array inside the coverage: object.
+  // The exclude array contains no nested brackets (only string literals and the
+  // spread token), so the first `]` after `exclude: [` closes it.
+  const excludeOpen = stripped.indexOf('exclude: [');
+  if (excludeOpen === -1) {
+    // No exclude array found — the spread is also absent.
+    unsanctioned.push('(missing spread ...coverageConfigDefaults.exclude)');
+    return unsanctioned;
+  }
+  const arrayStart = excludeOpen + 'exclude: ['.length;
+  const arrayEnd = stripped.indexOf(']', arrayStart);
+  // Slice the text that is strictly inside the exclude array brackets.
+  const excludeSlice =
+    arrayEnd !== -1 ? stripped.slice(arrayStart, arrayEnd) : stripped.slice(arrayStart);
+
+  // Require the spread token inside the exclude array slice.
+  if (excludeSlice.indexOf(SPREAD_TOKEN) === -1) {
+    unsanctioned.push('(missing spread ...coverageConfigDefaults.exclude)');
+  }
+
+  // Collect single-quoted string literals from the exclude array slice ONLY.
+  // Split on "'" and iterate pairs: every odd-indexed segment sits between quote pairs.
+  // This avoids picking up import paths, include entries, or any other quoted
+  // strings that live outside the exclude array.
+  const parts = excludeSlice.split("'");
+  for (let i = 1; i < parts.length; i += 2) {
+    const entry = parts[i];
+    // Only consider path-like entries (contain '/' or '*').
+    if (entry && (entry.indexOf('/') !== -1 || entry.indexOf('*') !== -1)) {
+      if (!SANCTIONED_EXCLUDES.has(entry)) {
+        unsanctioned.push(entry);
+      }
+    }
+  }
+
+  return unsanctioned;
+}
+
+/**
+ * Returns true iff the comment-stripped config source contains the full include
+ * directive include: ['src/** /*.ts'] (without the space). Include-narrowing
+ * (e.g. to 'src/models/**') shrinks the coverage denominator without touching
+ * exclude — a coverage bypass the review must catch.
+ */
+export function coverageIncludeIsFull(configSrc) {
+  const stripped = stripComments(configSrc);
+  // Accept either single or double quote form, but the canonical form is single-quoted.
+  return (
+    stripped.indexOf("include: ['src/**/*.ts']") !== -1 ||
+    stripped.indexOf('include: ["src/**/*.ts"]') !== -1
+  );
 }
 
 export default async function () {
@@ -136,9 +320,185 @@ export default async function () {
     };
   }
 
+  // ------------------------------------------------------------------
+  // m13.5a PROOF-OF-TEETH: findUnsanctionedExclusions
+  //
+  // T-unsanctioned-bad: config with src/battle/battleModel.ts in exclude
+  //   → flagged as unsanctioned.
+  //   Kills: impl that doesn't check against the sanctioned set.
+  // ------------------------------------------------------------------
+  const unsanctionedBadConfig = `
+    import { coverageConfigDefaults } from 'vitest/config';
+    coverage: {
+      include: ['src/**/*.ts'],
+      exclude: [
+        ...coverageConfigDefaults.exclude,
+        'src/module_bindings/**',
+        'src/main.ts',
+        'src/net/connection.ts',
+        'src/render/world.ts',
+        'src/render/characterView.ts',
+        'src/render/placeholderAssets.ts',
+        'src/ui/battleView.ts',
+        'src/ui/boxView.ts',
+        'src/ui/raisingView.ts',
+        'src/ui/evolutionView.ts',
+        'src/ui/dialogueView.ts',
+        'src/ui/questLogView.ts',
+        'src/ui/healView.ts',
+        'src/ui/shopView.ts',
+        'src/battle/battleModel.ts',
+      ],
+    },
+  `;
+  {
+    const got = findUnsanctionedExclusions(unsanctionedBadConfig);
+    if (!got.includes('src/battle/battleModel.ts')) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-unsanctioned-bad: findUnsanctionedExclusions did not flag src/battle/battleModel.ts as unsanctioned — kills impl that does not check the sanctioned set',
+      };
+    }
+  }
+
+  // T-unsanctioned-good: exact sanctioned set + spread → zero unsanctioned.
+  //   Kills: impl that false-flags sanctioned entries.
+  const sanctionedGoodConfig = [
+    "import { coverageConfigDefaults } from 'vitest/config';",
+    'coverage: {',
+    "  include: ['src/**/*.ts'],",
+    '  exclude: [',
+    '    ...coverageConfigDefaults.exclude,',
+    "    'src/module_bindings/**',",
+    ...DOM_SHELLS.map((s) => `    '${s}',`),
+    '  ],',
+    '},',
+  ].join('\n');
+  {
+    const got = findUnsanctionedExclusions(sanctionedGoodConfig);
+    if (got.length > 0) {
+      return {
+        name,
+        pass: false,
+        detail: `T-unsanctioned-good: findUnsanctionedExclusions wrongly flagged entries in a fully-sanctioned config: ${got.join(', ')}`,
+      };
+    }
+  }
+
+  // T-unsanctioned-no-spread: config without the spread token → flagged.
+  //   Kills: impl that doesn't require the spread (vitest defaults would be silently dropped).
+  const noSpreadConfig = [
+    'coverage: {',
+    "  include: ['src/**/*.ts'],",
+    '  exclude: [',
+    "    'src/module_bindings/**',",
+    ...DOM_SHELLS.map((s) => `    '${s}',`),
+    '  ],',
+    '},',
+  ].join('\n');
+  {
+    const got = findUnsanctionedExclusions(noSpreadConfig);
+    if (!got.includes('(missing spread ...coverageConfigDefaults.exclude)')) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-unsanctioned-no-spread: findUnsanctionedExclusions did not flag a missing spread token — the spread must be required so vitest defaults are never silently dropped',
+      };
+    }
+  }
+
+  // T-unsanctioned-comment-only: unsanctioned path in a comment must NOT be flagged.
+  //   Kills: impl that collects from raw (non-stripped) source.
+  const commentOnlyUnsanctionedConfig = [
+    "import { coverageConfigDefaults } from 'vitest/config';",
+    'coverage: {',
+    "  include: ['src/**/*.ts'],",
+    '  exclude: [',
+    '    // src/battle/battleModel.ts  <- unsanctioned but only in a comment',
+    '    ...coverageConfigDefaults.exclude,',
+    "    'src/module_bindings/**',",
+    ...DOM_SHELLS.map((s) => `    '${s}',`),
+    '  ],',
+    '},',
+  ].join('\n');
+  {
+    const got = findUnsanctionedExclusions(commentOnlyUnsanctionedConfig);
+    if (got.includes('src/battle/battleModel.ts')) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-unsanctioned-comment-only: findUnsanctionedExclusions flagged a path that only appears in a comment — must strip comments before scanning',
+      };
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // m13.5a PROOF-OF-TEETH: coverageIncludeIsFull
+  //
+  // T-include-narrowed: include narrowed to src/models/**/.ts → false.
+  //   Kills: impl that doesn't check the exact include glob.
+  // ------------------------------------------------------------------
+  const narrowIncludeConfig = `
+    coverage: {
+      include: ['src/models/**/*.ts'],
+      exclude: [...coverageConfigDefaults.exclude],
+    },
+  `;
+  if (coverageIncludeIsFull(narrowIncludeConfig)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "T-include-narrowed: coverageIncludeIsFull accepted a narrowed include: ['src/models/**/*.ts'] — must require exactly src/**/*.ts",
+    };
+  }
+
+  // T-include-full: include: ['src/**/*.ts'] → true.
+  const fullIncludeConfig = `
+    coverage: {
+      include: ['src/**/*.ts'],
+      exclude: [...coverageConfigDefaults.exclude],
+    },
+  `;
+  if (!coverageIncludeIsFull(fullIncludeConfig)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "T-include-full: coverageIncludeIsFull rejected the correct include: ['src/**/*.ts'] (false negative)",
+    };
+  }
+
+  // ------------------------------------------------------------------
+  // m13.5a REAL FILE CHECKS: findUnsanctionedExclusions + coverageIncludeIsFull
+  // EXPECTED REAL-TREE STATE: GREEN (real vite.config.ts is already fully sanctioned
+  // and has include: ['src/**/*.ts']).
+  // ------------------------------------------------------------------
+  const unsanctioned = findUnsanctionedExclusions(src);
+  if (unsanctioned.length > 0) {
+    return {
+      name,
+      pass: false,
+      detail: `coverage.exclude in vite.config.ts contains unsanctioned entries: ${unsanctioned.join(', ')} — only DOM_SHELLS, src/module_bindings/**, and the coverageConfigDefaults.exclude spread are sanctioned`,
+    };
+  }
+
+  if (!coverageIncludeIsFull(src)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "vite.config.ts coverage.include is not exactly ['src/**/*.ts'] — narrowing the include shrinks the coverage denominator without touching exclude (a coverage bypass)",
+    };
+  }
+
   return {
     name,
     pass: true,
-    detail: `All ${DOM_SHELLS.length} DOM-shell paths are in coverage.exclude (T1/T2/T3 teeth all pass; comment-stripping active)`,
+    detail: `All ${DOM_SHELLS.length} DOM-shell paths are in coverage.exclude (T1/T2/T3 teeth all pass; comment-stripping active); m13.5a: shopView.ts in DOM_SHELLS, zero unsanctioned exclusions, include: ['src/**/*.ts'] full`,
   };
 }
