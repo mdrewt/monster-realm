@@ -104,7 +104,11 @@ truth.
   `attempt` is defensively clamped to 0 — the function is total even though
   the state machine never produces one). **Attempts are unbounded** (a game
   client keeps trying; delay cap prevents a storm) — no terminal give-up
-  state (YAGNI).
+  state (YAGNI). `attempt` counts **consecutive failed builds**: a
+  drop-triggered rebuild (no failed build yet) schedules at the 1 s rung,
+  while a failed *cold-start* build's first retry sits on the 2 s rung — the
+  instant initial attempt was rung one. Same formula both ways; the asymmetry
+  is intended (review H2/M2).
 - Pure policy (`client/src/prediction/reconnectPolicy.ts`): flat state
   `{ link: 'connected'|'disconnected'|'reconnecting'; attempt: number }`;
   freeze is **derived**, never stored: `linkFrozen(s) ≡ s.link !==
@@ -124,7 +128,11 @@ truth.
   prediction and `seedSeq` (M8.8e) re-seeds the counter.
 - `connection.ts` shell: one `scheduleRebuild()` guarded by a single timer
   handle; `onDisconnect` and `onConnectError` both route through it;
-  `pagehide` clears the timer and suppresses scheduling (teardown guard). The
+  `pagehide` clears the timer and suppresses scheduling (teardown guard), and
+  `pageshow` with `persisted=true` (a bfcache restore — the browser killed the
+  socket while the page was frozen) is the inverse: reset the teardown guard
+  and force the shared drop path, or Back-navigation leaves the client
+  permanently frozen (RT-PH-01). The
   `MicrotaskBatcher` and `hadSession` live in the OUTER `connect()` scope
   (one batcher across rebuilds — a per-build batcher could flush stale state
   after `store.reset()`); `wireTables(conn)` re-registers all row handlers on
@@ -146,6 +154,9 @@ truth.
   system); richer UX deferred.
 - − Transport-failure feedback for an in-flight call at drop time is
   inherently unavailable (promise never settles) — accepted; the freeze +
-  status line covers the user-visible gap.
+  status line covers the user-visible gap. The shop's double-spend lock is
+  the one piece of state such a never-settling call can strand — released on
+  reconnect via `shopView.hide()` in main.ts (RT-PL-01; Escape/KeyG recover
+  it manually during the gap).
 - Follow-up: a reconnect e2e (two-window drop/rejoin) is out of this slice's
   touch-set (e2e specs are sibling-owned this cycle).

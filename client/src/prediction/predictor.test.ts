@@ -836,6 +836,56 @@ describe('M8.6c ADR-0013.5: #pending bound / backpressure (pendingCap)', () => {
     expect(p.pendingCount).toBe(QUEUE_CAP);
     expect(p.queueDepth).toBe(QUEUE_CAP);
   });
+
+  // ─── ADR-0013.5 §residual: setMove/clearQueue bypass pendingCap ──────────────
+  //
+  // INVARIANT: setMove() and clearQueue() INTENTIONALLY bypass the pendingCap guard.
+  // They are DESTRUCTIVE ops whose pending record SUPERSEDES prior pending in reconcile
+  // replay, making them infrequent. A pendingCap gate on them would be semantically
+  // wrong (they need to record to stay coherent with the server-side queue state).
+  //
+  // These tests BITE any future refactor that accidentally gates setMove/clearQueue by
+  // pendingCap. The return type (IntentToSend, not IntentToSend | undefined) is also
+  // load-bearing: if the gate were added, the type must change too — these tests
+  // additionally protect against a silent undefined return.
+  //
+  // References: predictor.ts §#record comment, spec plan m13.5b-plan.md §2 anti-pattern 1.
+  it('ADR-0013.5 §residual: setMove bypasses pendingCap (DESTRUCTIVE op intentionally unbound)', () => {
+    const PENDING_CAP = 2;
+    const p = mkPendingCapped(/*queueCap*/ 8, PENDING_CAP);
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+
+    // Fill pending to cap with two enqueues.
+    expect(p.enqueue(east())).toBeDefined();
+    expect(p.enqueue(east())).toBeDefined();
+    expect(p.pendingCount).toBe(PENDING_CAP); // at cap
+
+    // setMove MUST still record (bypass the cap) and return a real IntentToSend.
+    const setIntent = p.setMove(north());
+    // Non-undefined return: the type is IntentToSend (not | undefined), proving no gate.
+    expect(setIntent).toBeDefined();
+    expect(typeof setIntent.seq).toBe('number');
+    // pendingCount exceeds pendingCap — intentional bypass documented.
+    expect(p.pendingCount).toBe(PENDING_CAP + 1);
+  });
+
+  it('ADR-0013.5 §residual: clearQueue bypasses pendingCap (DESTRUCTIVE op intentionally unbound)', () => {
+    const PENDING_CAP = 2;
+    const p = mkPendingCapped(/*queueCap*/ 8, PENDING_CAP);
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+
+    // Fill pending to cap.
+    expect(p.enqueue(east())).toBeDefined();
+    expect(p.enqueue(east())).toBeDefined();
+    expect(p.pendingCount).toBe(PENDING_CAP); // at cap
+
+    // clearQueue MUST still record and return a real IntentToSend (not void, not undefined).
+    const clearIntent = p.clearQueue();
+    expect(clearIntent).toBeDefined();
+    expect(typeof clearIntent.seq).toBe('number');
+    // pendingCount exceeds pendingCap — intentional bypass documented.
+    expect(p.pendingCount).toBe(PENDING_CAP + 1);
+  });
 });
 
 // ================================================================================

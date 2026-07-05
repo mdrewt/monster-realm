@@ -449,20 +449,21 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Escape' && dialogueView?.visible) {
     // dismissPending guards against double-send while server processes the dismiss.
     if (!dismissPending) {
-      dismissPending = true;
+      // The flag is set INSIDE the lambda (reviewer M1): sendGuarded's frozen
+      // short-circuit then never sets it, so a frozen-link Escape stays a live
+      // button (status line says "disconnected") instead of leaning on the
+      // next-batch self-heal.
       // Site-specific catch (ADR-0085 C6): a rejection must RESET dismissPending or
       // Escape-dismiss is a dead button forever after one rejection (the flag is
       // otherwise only cleared when the conversation row disappears in a batch).
-      // The rethrow keeps sendGuarded's catch as the single status reporter. If the
-      // frozen short-circuit skips the call, the flag self-heals the same way: a
-      // frozen link means store.reset() ran, so the next batch carries no
-      // conversation row and the dialogue listener clears dismissPending.
-      sendGuarded('dismiss', () =>
-        conn?.conn.reducers.dismissDialogue({}).catch((err: unknown) => {
+      // The rethrow keeps sendGuarded's catch as the single status reporter.
+      sendGuarded('dismiss', () => {
+        dismissPending = true;
+        return conn?.conn.reducers.dismissDialogue({}).catch((err: unknown) => {
           dismissPending = false;
           throw err;
-        }),
-      );
+        });
+      });
     }
     e.preventDefault();
     return;
@@ -847,7 +848,6 @@ async function main(): Promise<void> {
   conn = connect({
     uri: URI,
     db: DB,
-    zoneId: ZONE_ID,
     name: 'Player',
     store,
     onReady: (id) => {
@@ -860,6 +860,12 @@ async function main(): Promise<void> {
       // Zone state is corrected by the reconcile listener's state-based check on
       // the first post-reconnect batch (12.5c-1 — no special zone logic needed here).
       resetPredictionState();
+      // RT-PL-01: a buy/sell in flight at drop time never settles (SDK — no settle
+      // on drop), so the shop's double-spend lock would stay held forever. hide()
+      // resets it (shopView.ts is outside this slice's touch-set; the reset rides
+      // the existing public hide()). Escape/KeyG already recover it manually
+      // during the gap.
+      shopView?.hide();
       // The "connection lost — reconnecting…" status line is now stale (ADR-0085 A8).
       clearStatus();
     },

@@ -56,7 +56,6 @@ import type { AuthoritativeStore } from './store';
 export interface ConnectionOptions {
   readonly uri: string;
   readonly db: string;
-  readonly zoneId: number;
   readonly name: string;
   readonly store: AuthoritativeStore;
   /** Initial subscription applied — the caller starts the loop (gated on wasm + own row). */
@@ -112,6 +111,20 @@ export function connect(opts: ConnectionOptions): Connection {
     }, delay);
   }
 
+  /**
+   * Shared drop path (ADR-0085 D3): wipe stale rows, freeze the link, surface the
+   * loss ONCE (only on the genuine connected→disconnected edge — onDisconnected is
+   * idempotent, so the SDK's onerror-then-onclose double event cannot
+   * double-transition, A7/A8), and schedule the rebuild.
+   */
+  function handleDrop(): void {
+    store.reset();
+    const wasConnected = state.link === 'connected';
+    state = onDisconnected(state);
+    if (wasConnected) opts.onError('link', 'connection lost — reconnecting…');
+    scheduleRebuild();
+  }
+
   // pagehide teardown (ADR-0085 A5): clear any pending reconnect timer and suppress
   // future scheduling — a dying page must not spawn a fresh WebSocket.
   window.addEventListener('pagehide', () => {
@@ -120,6 +133,18 @@ export function connect(opts: ConnectionOptions): Connection {
       clearTimeout(rebuildTimer);
       rebuildTimer = undefined;
     }
+  });
+
+  // pageshow inverse (ADR-0085 A5, RT-PH-01): a bfcache restore resumes JS with the
+  // pre-pagehide state — teardown=true, no timer, and a socket the browser killed
+  // while the page was frozen (the SDK's onclose may have fired into the frozen page
+  // and been lost). Without this, the client is permanently frozen after Back
+  // navigation. persisted=false (a fresh load) never gets here: connect() below is
+  // that path. handleDrop() is safe if the drop was already processed (idempotent).
+  window.addEventListener('pageshow', (e) => {
+    if (!e.persisted) return;
+    teardown = false;
+    handleDrop();
   });
 
   /**
@@ -378,6 +403,10 @@ export function connect(opts: ConnectionOptions): Connection {
           .onApplied(() => {
             // The link is fully usable only once the initial snapshot is applied:
             // unfreeze + reset the backoff ladder here (the ONLY attempt reset).
+            // NOTE: the link unfreezes HERE, a few statements before the caller's
+            // opts.onReconnect() resets the predictor below — safe: this whole
+            // callback is one synchronous JS block, so no input event or microtask
+            // can interleave between the unfreeze and the predictor reset.
             state = onConnected(state);
             // joinGame stays UNCONDITIONAL: server on_disconnect DELETES the player +
             // character rows, so a reconnect MUST re-join (ADR-0085 A4).
@@ -385,8 +414,11 @@ export function connect(opts: ConnectionOptions): Connection {
               const msg = (err as Error)?.message ?? '';
               // "already joined" is benign: the server hasn't processed the old
               // session's drop yet — rows still live; the new subscription
-              // re-hydrates them (ADR-0085 A4). Anything else is surfaced.
-              if (!msg.includes('already joined')) opts.onError('join', msg || 'join failed');
+              // re-hydrates them (ADR-0085 A4). EXACT match (RT-JB-01): the SDK
+              // delivers the reducer's Err string verbatim (SenderError(errorString))
+              // and movement.rs errs exactly this — a substring test would swallow
+              // hypothetical non-benign messages that merely contain the phrase.
+              if (msg !== 'already joined') opts.onError('join', msg || 'join failed');
             });
             hadSession = true;
             if (reconnecting) opts.onReconnect();
@@ -431,23 +463,18 @@ export function connect(opts: ConnectionOptions): Connection {
       })
       // Clean re-init on a drop: drop stale rows so a reconnect never merges stale
       // state (ADR-0014). CONFIRMED (closes the M5 open question): the SDK does NOT
-      // auto-reconnect on the raw builder path — the app-level rebuild scheduled
-      // below is the reconnect mechanism (ADR-0085 D3).
-      .onDisconnect(() => {
-        store.reset();
-        const wasConnected = state.link === 'connected';
-        // onDisconnected is idempotent, so the SDK's onerror-then-onclose double
-        // event cannot double-transition (ADR-0085 A7); the user message fires only
-        // on the genuine connected→disconnected edge (A8).
-        state = onDisconnected(state);
-        if (wasConnected) opts.onError('link', 'connection lost — reconnecting…');
-        scheduleRebuild();
-      })
+      // auto-reconnect on the raw builder path — the app-level rebuild via
+      // handleDrop() is the reconnect mechanism (ADR-0085 D3).
+      .onDisconnect(() => handleDrop())
       .build();
     wireTables(conn);
     return conn;
   }
 
+  // Cold-start note (ADR-0085 D3): `attempt` counts consecutive FAILED builds, so a
+  // failed INITIAL build's first retry sits on the 2 s rung (the instant first
+  // attempt was rung one), while a drop-triggered rebuild — no failed build yet —
+  // schedules at 1 s. Same formula both ways; the asymmetry is intended.
   let current = build();
 
   return {

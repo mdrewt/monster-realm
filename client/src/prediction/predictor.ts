@@ -30,7 +30,9 @@ export type QueueOp =
   | { readonly kind: 'SetMove'; readonly input: WasmMoveInput }
   | { readonly kind: 'Clear' };
 
-export interface PendingOp {
+// Internal bookkeeping shape of #pending — deliberately unexported: callers see
+// only IntentToSend out and a bare seq into dropRejected (simplify F2, m13.5b).
+interface PendingOp {
   readonly seq: number;
   readonly op: QueueOp;
 }
@@ -169,8 +171,9 @@ export class Predictor {
    * Mutates ONLY `#pending`; never touches `#queue` (reconcile step 2 is the ONLY
    * `#queue` rebuilder — a single source of truth) and never touches `#nextSeq`
    * (a rejected seq is consumed, not recycled). Because `#queue` still reflects the
-   * phantom until the next reconcile, the caller MUST follow a `true` return with a
-   * forced reconcile from current store state (main.ts `reconcileFromStore()`).
+   * phantom until the next reconcile, on a `true` return the caller MUST immediately
+   * force a reconcile from current store state (main.ts `reconcileFromStore()`);
+   * a `false` return needs no forced reconcile — nothing was removed.
    */
   dropRejected(seq: number): boolean {
     const before = this.#pending.length;
