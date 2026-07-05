@@ -1072,6 +1072,156 @@ jobs:
     }
   }
 
+  // --- T-dup-ci (F1): first `ci:` job is clean; second has `if: false` → REJECT.
+  //   Kills: impl that only inspects the first block extracted by extractJobBlock.
+  //   GitHub Actions last-key-wins — the runner executes the SECOND (neutered) block.
+  const T_dup_ci = `name: CI
+on:
+  pull_request:
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just lint
+      - run: just typecheck
+      - run: just test
+      - run: just eval
+      - run: just wasm
+      - run: just client-typecheck
+      - run: just client-test
+  ci:
+    runs-on: ubuntu-latest
+    if: false
+    steps:
+      - run: echo "neutered second ci block"
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just e2e
+`;
+  {
+    let r;
+    try {
+      r = ciStepsUnneutered(T_dup_ci);
+    } catch (e) {
+      return { name, pass: false, detail: `T-dup-ci: ciStepsUnneutered threw — ${e.message}` };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-dup-ci (F1): ciStepsUnneutered should reject a yaml with duplicate ci: job keys (first clean, second has if: false) — GitHub Actions last-key-wins executes the neutered block',
+      };
+    }
+  }
+
+  // --- T-dup-jobs (F9): duplicate top-level `jobs:` key → REJECT.
+  //   Same class as F1 but at the top-level. The second jobs block (possibly
+  //   neutered) is what the runner sees.
+  const T_dup_jobs = `name: CI
+on:
+  pull_request:
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just lint
+      - run: just typecheck
+      - run: just test
+      - run: just eval
+      - run: just wasm
+      - run: just client-typecheck
+      - run: just client-test
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    if: false
+    steps:
+      - run: echo "neutered"
+`;
+  {
+    let r;
+    try {
+      r = ciStepsUnneutered(T_dup_jobs);
+    } catch (e) {
+      return { name, pass: false, detail: `T-dup-jobs: ciStepsUnneutered threw — ${e.message}` };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-dup-jobs (F9): ciStepsUnneutered should reject a yaml with duplicate top-level `jobs:` keys (second block wins in GitHub Actions)',
+      };
+    }
+  }
+
+  // --- T-security-comment (F2): all four security markers present ONLY inside
+  //   a single YAML comment line → REJECT.
+  //   Kills: impl that uses raw indexOf (accepts markers in comments).
+  const T_sub_justfile_sec = `ci: lint typecheck test eval security wasm client-typecheck client-test\n\ntest:\n    cargo nextest run --workspace\n    cargo test --doc --workspace\n\neval:\n    node evals/run.mjs\n\nclient-test:\n    cd client && npm test\n`;
+  const T_security_comment_ci = `name: CI
+on:
+  pull_request:
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      # Security note: gitleaks/gitleaks-action cargo audit semgrep scan anchore/sbom-action (all in one comment, no actual steps)
+      - run: just lint
+      - run: just typecheck
+      - run: just test
+      - run: just eval
+      - run: just wasm
+      - run: just client-typecheck
+      - run: just client-test
+`;
+  {
+    let r;
+    try {
+      r = justfileCiDepsAppearInCi(T_sub_justfile_sec, T_security_comment_ci);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-security-comment: justfileCiDepsAppearInCi threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-security-comment (F2): justfileCiDepsAppearInCi should reject when all four security markers appear only inside a YAML comment — raw indexOf bypass; must line-scan skipping #-prefixed lines',
+      };
+    }
+  }
+
+  // --- T-anchor-lefthook-comment (F3): anchor token only in a lefthook.yml comment → REJECT.
+  //   Kills: the old raw-indexOf lefthook side of anchorIsWired.
+  const T_lefthook_comment_anchor = `pre-commit:\n  commands:\n    lint:\n      run: just lint\n# - run: node evals/ci-gate-wiring.eval.mjs  (commented out, must not satisfy)\n`;
+  {
+    let r;
+    try {
+      r = anchorIsWired(T_lefthook_comment_anchor, T_ci_with_anchor);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-anchor-lefthook-comment: anchorIsWired threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          "T-anchor-lefthook-comment (F3): anchorIsWired should reject when 'node evals/ci-gate-wiring.eval.mjs' appears only in a lefthook.yml comment line — must line-scan skipping #-prefixed lines",
+      };
+    }
+  }
+
   // =========================================================================
   // REAL FILE CHECKS
   // =========================================================================

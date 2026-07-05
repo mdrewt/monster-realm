@@ -169,10 +169,13 @@ export function findMissingExclusions(configSrc, shells) {
  *
  * Algorithm (comment-stripped):
  *   1. Strip comments.
- *   2. Check that the spread token `...coverageConfigDefaults.exclude` is present
- *      in the exclude array — its absence is itself unsanctioned (vitest defaults dropped).
- *   3. Collect single-quoted string literals from the exclude array via literal regex.
- *   4. Return entries not in SANCTIONED_EXCLUDES.
+ *   2. Locate `exclude: [` and scan forward to find the FIRST UNQUOTED `]` — the
+ *      array closer. A `]` that appears inside a single-quoted string (e.g. in a
+ *      bracketed glob like `'glob[0-9].ts'`) must NOT terminate the scan early.
+ *      F7: the old `indexOf(']')` did not respect quoting and would terminate on
+ *      any `]` in a glob path, hiding later unsanctioned entries.
+ *   3. Check that the spread token is present in the slice.
+ *   4. Collect single-quoted string literals from the slice and report unsanctioned ones.
  *
  * Returns an array of unsanctioned entry strings. Empty array = fully sanctioned.
  * The spread token absence is reported as a synthetic unsanctioned entry
@@ -183,8 +186,6 @@ export function findUnsanctionedExclusions(configSrc) {
   const unsanctioned = [];
 
   // Locate the exclude: [ array inside the coverage: object.
-  // The exclude array contains no nested brackets (only string literals and the
-  // spread token), so the first `]` after `exclude: [` closes it.
   const excludeOpen = stripped.indexOf('exclude: [');
   if (excludeOpen === -1) {
     // No exclude array found — the spread is also absent.
@@ -192,7 +193,30 @@ export function findUnsanctionedExclusions(configSrc) {
     return unsanctioned;
   }
   const arrayStart = excludeOpen + 'exclude: ['.length;
-  const arrayEnd = stripped.indexOf(']', arrayStart);
+
+  // F7: scan forward from arrayStart to find the first UNQUOTED `]`.
+  // A `]` inside a single-quoted string literal does not close the array.
+  // We track whether we are inside a single-quoted string and respect `\'` escapes.
+  let arrayEnd = -1;
+  let inSq = false;
+  for (let i = arrayStart; i < stripped.length; i++) {
+    const ch = stripped[i];
+    if (inSq) {
+      if (ch === '\\' && i + 1 < stripped.length) {
+        i++; // skip escaped character
+      } else if (ch === "'") {
+        inSq = false;
+      }
+    } else {
+      if (ch === "'") {
+        inSq = true;
+      } else if (ch === ']') {
+        arrayEnd = i;
+        break;
+      }
+    }
+  }
+
   // Slice the text that is strictly inside the exclude array brackets.
   const excludeSlice =
     arrayEnd !== -1 ? stripped.slice(arrayStart, arrayEnd) : stripped.slice(arrayStart);
@@ -432,6 +456,77 @@ export default async function () {
         pass: false,
         detail:
           'T-unsanctioned-comment-only: findUnsanctionedExclusions flagged a path that only appears in a comment — must strip comments before scanning',
+      };
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // m13.5a PROOF-OF-TEETH: F7 — findUnsanctionedExclusions bracket-aware array bounding
+  //
+  // T-F7-bracket-glob: exclude array has a glob with `[0-9]` BEFORE an unsanctioned
+  // entry. The `]` inside the bracketed glob must NOT terminate the array scan.
+  // An impl using `indexOf(']', arrayStart)` would find the `]` from `[0-9]` and
+  // stop there, hiding the later unsanctioned entry.
+  //
+  // Kills: impl that uses raw `indexOf(']')` without quote-aware scanning.
+  // ------------------------------------------------------------------
+  const bracketGlobUnsanctionedConfig = [
+    "import { coverageConfigDefaults } from 'vitest/config';",
+    'coverage: {',
+    "  include: ['src/**/*.ts'],",
+    '  exclude: [',
+    '    ...coverageConfigDefaults.exclude,',
+    "    'src/module_bindings/**',",
+    "    'src/test[0-9]/helper.ts',", // bracket glob: `]` must NOT close the array scan
+    ...DOM_SHELLS.map((s) => `    '${s}',`),
+    "    'src/battle/battleModel.ts',", // unsanctioned — must still be found
+    '  ],',
+    '},',
+  ].join('\n');
+  {
+    const got = findUnsanctionedExclusions(bracketGlobUnsanctionedConfig);
+    if (!got.includes('src/battle/battleModel.ts')) {
+      return {
+        name,
+        pass: false,
+        detail:
+          "T-F7-bracket-glob: findUnsanctionedExclusions did not flag 'src/battle/battleModel.ts' when it appears AFTER a bracketed glob ('src/test[0-9]/helper.ts') in the exclude array — the `]` in the glob must not terminate the array scan; use quote-aware scanning",
+      };
+    }
+  }
+  // Positive control: the bracket-glob entry itself ('src/test[0-9]/helper.ts') is
+  // unsanctioned and must also be reported (it is not in DOM_SHELLS).
+  {
+    const got = findUnsanctionedExclusions(bracketGlobUnsanctionedConfig);
+    if (!got.includes('src/test[0-9]/helper.ts')) {
+      return {
+        name,
+        pass: false,
+        detail:
+          "T-F7-bracket-glob-entry: findUnsanctionedExclusions should also flag 'src/test[0-9]/helper.ts' itself as unsanctioned (it is not in DOM_SHELLS)",
+      };
+    }
+  }
+  // Sanctioned-good-after-bracket-glob: replace the unsanctioned entry with nothing
+  // (just the bracket-glob + all DOM_SHELLS + spread) — must return zero unsanctioned.
+  const bracketGlobSanctionedConfig = [
+    "import { coverageConfigDefaults } from 'vitest/config';",
+    'coverage: {',
+    "  include: ['src/**/*.ts'],",
+    '  exclude: [',
+    '    ...coverageConfigDefaults.exclude,',
+    "    'src/module_bindings/**',",
+    ...DOM_SHELLS.map((s) => `    '${s}',`),
+    '  ],',
+    '},',
+  ].join('\n');
+  {
+    const got = findUnsanctionedExclusions(bracketGlobSanctionedConfig);
+    if (got.length > 0) {
+      return {
+        name,
+        pass: false,
+        detail: `T-F7-bracket-glob-good: findUnsanctionedExclusions wrongly flagged entries in the fully-sanctioned config (no bracket glob in the actual real config): ${got.join(', ')}`,
       };
     }
   }

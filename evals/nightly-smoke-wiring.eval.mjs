@@ -95,26 +95,34 @@ function isTruthyCoeNightly(value) {
   return /^(true|yes|on|True)\b/.test(value) || /\$\{\{\s*true\s*\}\}/.test(value);
 }
 
-// Pure predicate: nightly.yml has a `mutation:` job that runs `just mutate-core`.
-export function nightlyHasMutationJob(yaml) {
-  const block = extractJobBlock(yaml, 'mutation');
+// Helper: check that the job block extracted from yaml for jobName contains
+// EXACTLY `- run: just <verb>` as a trimmed non-comment line.
+// F6: raw indexOf('run: just X') accepts '- run: just X && true' or '- run: just X; exit 0'.
+// Fix: require an EXACT trimmed match (same discipline as ciStepsUnneutered).
+function jobBlockHasExactStep(yaml, jobName, verb) {
+  const block = extractJobBlock(yaml, jobName);
   if (!block || block.trim() === '') return false;
-  return block.indexOf('run: just mutate-core') !== -1;
+  const exactStep = `- run: just ${verb}`;
+  return block.split('\n').some((ln) => {
+    const tr = ln.trim();
+    return tr === exactStep && !tr.startsWith('#');
+  });
 }
 
-// Pure predicate: nightly.yml has a `coverage:` job that runs `just coverage`.
+// Pure predicate: nightly.yml has a `mutation:` job that runs EXACTLY `just mutate-core`.
+export function nightlyHasMutationJob(yaml) {
+  return jobBlockHasExactStep(yaml, 'mutation', 'mutate-core');
+}
+
+// Pure predicate: nightly.yml has a `coverage:` job that runs EXACTLY `just coverage`.
 export function nightlyHasCoverageJob(yaml) {
-  const block = extractJobBlock(yaml, 'coverage');
-  if (!block || block.trim() === '') return false;
-  return block.indexOf('run: just coverage') !== -1;
+  return jobBlockHasExactStep(yaml, 'coverage', 'coverage');
 }
 
 // Pure predicate: nightly.yml has a `mutation-server:` job that runs
-// `just mutate-server`. Job name is a stable contract per ADR-0050 amendment.
+// EXACTLY `just mutate-server`. Job name is a stable contract per ADR-0050 amendment.
 export function nightlyHasServerMutationJob(yaml) {
-  const block = extractJobBlock(yaml, 'mutation-server');
-  if (!block || block.trim() === '') return false;
-  return block.indexOf('run: just mutate-server') !== -1;
+  return jobBlockHasExactStep(yaml, 'mutation-server', 'mutate-server');
 }
 
 // Pure predicate: the named nightly job is not neutered.
@@ -193,6 +201,16 @@ export function nightlyTriggersOnScheduleAndDispatch(yaml) {
 // Pure predicate: the justfile `coverage:` recipe body contains
 // `--coverage.thresholds.lines=` with a value ≥ 96.
 // Rejects: flag absent, value = 0, value = 25.
+//
+// F4: parse the LAST occurrence, not the first — vitest uses the last duplicate
+// flag value. `...lines=96 ...lines=0` would pass a first-occurrence check while
+// the tool actually uses 0.
+//
+// F5: strip inline shell comment tails (` # …` — a `#` preceded by whitespace)
+// from each body line before scanning. A flag appearing ONLY after a ` #` tail is
+// not active code and must not satisfy the gate.
+// Note: we only strip from the first occurrence of ` #` preceded by a space so
+// we never mangle legitimate flag values that contain `#` (none in practice).
 export function coverageRecipeThresholdIntact(justfileText) {
   // Find the coverage: recipe body using a simple line scan.
   const lines = justfileText.split('\n');
@@ -213,24 +231,40 @@ export function coverageRecipeThresholdIntact(justfileText) {
       }
     }
   }
-  const body = bodyLines.join('\n');
-  if (!body) return false;
+  if (!bodyLines.length) return false;
 
   const FLAG = '--coverage.thresholds.lines=';
-  const flagIdx = body.indexOf(FLAG);
-  if (flagIdx === -1) return false;
 
-  // Parse the integer value immediately following the `=`.
-  const afterFlag = body.slice(flagIdx + FLAG.length);
-  // Read digits until a non-digit character (space, newline, etc.)
-  let numStr = '';
-  for (const ch of afterFlag) {
-    if (ch >= '0' && ch <= '9') numStr += ch;
-    else break;
+  // F5: strip inline ` # …` comment tails from each body line.
+  // We split on ` #` (space+hash) and keep the part before the first match.
+  // This correctly handles:
+  //   `npx vitest run --coverage --coverage.thresholds.lines=96`  → unchanged
+  //   `npx vitest run --coverage # --coverage.thresholds.lines=96` → `npx vitest run --coverage`
+  const strippedBody = bodyLines
+    .map((ln) => {
+      const commentIdx = ln.indexOf(' #');
+      return commentIdx !== -1 ? ln.slice(0, commentIdx) : ln;
+    })
+    .join('\n');
+
+  // F4: collect ALL occurrences; use the LAST one (mirrors vitest last-flag-wins).
+  let lastThreshold = -1;
+  let searchFrom = 0;
+  while (true) {
+    const idx = strippedBody.indexOf(FLAG, searchFrom);
+    if (idx === -1) break;
+    const afterFlag = strippedBody.slice(idx + FLAG.length);
+    let numStr = '';
+    for (const ch of afterFlag) {
+      if (ch >= '0' && ch <= '9') numStr += ch;
+      else break;
+    }
+    if (numStr) lastThreshold = parseInt(numStr, 10);
+    searchFrom = idx + FLAG.length;
   }
-  if (!numStr) return false;
-  const threshold = parseInt(numStr, 10);
-  return threshold >= 96;
+
+  if (lastThreshold === -1) return false; // flag absent or no parseable value
+  return lastThreshold >= 96;
 }
 
 // Pure predicate: the justfile has a `mutate-server` recipe whose body:
@@ -241,6 +275,9 @@ export function coverageRecipeThresholdIntact(justfileText) {
 //   - does NOT contain `--shard` (scope-narrowing bypass)
 //   - does NOT contain `--file` (scope-narrowing bypass)
 //   - does NOT contain `--exclude-re` (scope-narrowing bypass)
+//   - does NOT contain ` -o ` (space-delimited, F10: redirecting output to a different
+//     path leaves the recipe reading a stale or wrong missed.txt)
+//   - does NOT contain `--output` (F10 long form)
 //   - the `cap=` default in the recipe signature parses as an integer ≤ 200
 //     (catches cap="9999"; deliberate in-ceiling bumps allowed per ADR-0050 A2)
 //   - if `cap=` is present but no digit follows the `=` (after optional quote),
@@ -303,6 +340,11 @@ export function mutateServerRecipeIntact(justfileText) {
   if (body.indexOf('--shard') !== -1) return false;
   if (body.indexOf('--file') !== -1) return false;
   if (body.indexOf('--exclude-re') !== -1) return false;
+  // F10: ban -o (space-delimited so we don't false-hit inside words like --coverage)
+  // and --output. Both redirect cargo-mutants output, leaving the recipe reading a
+  // stale default-path missed.txt rather than the actual output.
+  if (body.indexOf(' -o ') !== -1) return false;
+  if (body.indexOf('--output') !== -1) return false;
 
   return true;
 }
@@ -870,6 +912,168 @@ jobs:
       name,
       pass: false,
       detail: 'TEETH L-good: mutateServerRecipeIntact rejected a correct mutate-server recipe',
+    };
+  }
+
+  // --- TEETH F4: coverageRecipeThresholdIntact last-occurrence semantics ---
+  // Bad: 96 then 0 — vitest uses the LAST occurrence (=0), gate must reject.
+  // Kills: impl that parses only the first occurrence.
+  const justfileCoverage96then0 = `coverage:\n    cd client && npm ci && npx vitest run --coverage --coverage.thresholds.lines=96 --coverage.thresholds.lines=0\n`;
+  if (coverageRecipeThresholdIntact(justfileCoverage96then0)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH F4: coverageRecipeThresholdIntact accepted --coverage.thresholds.lines=96 followed by =0 — vitest uses the LAST flag occurrence; impl must parse the last, not the first',
+    };
+  }
+  // Good: 0 then 96 → last is 96, must pass.
+  const justfileCoverage0then96 = `coverage:\n    cd client && npm ci && npx vitest run --coverage --coverage.thresholds.lines=0 --coverage.thresholds.lines=96\n`;
+  if (!coverageRecipeThresholdIntact(justfileCoverage0then96)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH F4-good: coverageRecipeThresholdIntact rejected --coverage.thresholds.lines=0 then =96 (last is 96, should pass)',
+    };
+  }
+
+  // --- TEETH F5: coverageRecipeThresholdIntact inline-comment stripping ---
+  // Bad: flag appears only after ` # ` inline comment tail — not active code.
+  // Kills: impl that searches the raw body without stripping inline comment tails.
+  const justfileCoverageInlineComment = `coverage:\n    cd client && npm ci && npx vitest run --coverage # --coverage.thresholds.lines=96\n`;
+  if (coverageRecipeThresholdIntact(justfileCoverageInlineComment)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "TEETH F5: coverageRecipeThresholdIntact accepted a recipe where the threshold flag appears only after an inline ' # ' comment tail — must strip ` # ...` tails before searching",
+    };
+  }
+  // Good: flag before the comment tail → active, must pass.
+  const justfileCoverageBeforeComment = `coverage:\n    cd client && npm ci && npx vitest run --coverage --coverage.thresholds.lines=96 # enforced\n`;
+  if (!coverageRecipeThresholdIntact(justfileCoverageBeforeComment)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH F5-good: coverageRecipeThresholdIntact rejected a recipe where the threshold flag appears BEFORE an inline comment tail (flag is active code)',
+    };
+  }
+
+  // --- TEETH F6: nightlyHas*Job exact-step discipline ---
+  // Bad: `- run: just mutate-core && true` suffix — indexOf would accept, exact must not.
+  // Kills: impl that uses raw indexOf('run: just X') without exact-step check.
+  const nightlyMutationSuffix = `name: Nightly
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core && true
+`;
+  if (nightlyHasMutationJob(nightlyMutationSuffix)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "TEETH F6-mutation: nightlyHasMutationJob accepted '- run: just mutate-core && true' — must require EXACT trimmed step (same discipline as ciStepsUnneutered)",
+    };
+  }
+  // Bad: `- run: just coverage; exit 0` suffix for coverage job.
+  const nightlyCoverageSuffix = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage; exit 0
+`;
+  if (nightlyHasCoverageJob(nightlyCoverageSuffix)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "TEETH F6-coverage: nightlyHasCoverageJob accepted '- run: just coverage; exit 0' — must require EXACT trimmed step",
+    };
+  }
+  // Bad: `- run: just mutate-server || true` suffix for mutation-server job.
+  const nightlyMutServerSuffix = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  mutation-server:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-server || true
+`;
+  if (nightlyHasServerMutationJob(nightlyMutServerSuffix)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "TEETH F6-server: nightlyHasServerMutationJob accepted '- run: just mutate-server || true' — must require EXACT trimmed step",
+    };
+  }
+  // Good: exact forms must still pass (reconfirm nightlyFull positive controls).
+  if (!nightlyHasMutationJob(nightlyFull)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH F6-mutation-good: nightlyHasMutationJob rejected a correct exact-step fixture after F6 fix — good fixture must still pass',
+    };
+  }
+  if (!nightlyHasCoverageJob(nightlyFull)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH F6-coverage-good: nightlyHasCoverageJob rejected a correct exact-step fixture after F6 fix',
+    };
+  }
+  if (!nightlyHasServerMutationJob(nightlyFull)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH F6-server-good: nightlyHasServerMutationJob rejected a correct exact-step fixture after F6 fix',
+    };
+  }
+
+  // --- TEETH F10: mutateServerRecipeIntact -o / --output ban ---
+  // Bad: recipe uses `-o /tmp/x` (short-form redirect) — leaves recipe reading stale missed.txt.
+  // Kills: impl that doesn't ban the -o flag.
+  const justfileMutServerDashO = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} -o /tmp/mutations.txt && wc -l /tmp/mutations.txt > missed.txt\n`;
+  if (mutateServerRecipeIntact(justfileMutServerDashO)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH F10-dash-o: mutateServerRecipeIntact accepted a mutate-server recipe with `-o /tmp/x` (output redirect) — must ban ` -o ` as a space-delimited token; redirecting output leaves the recipe reading a stale missed.txt',
+    };
+  }
+  // Bad: recipe uses `--output`.
+  const justfileMutServerOutput = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} --output /tmp/mutations 2>&1 | tee missed.txt\n`;
+  if (mutateServerRecipeIntact(justfileMutServerOutput)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH F10-output: mutateServerRecipeIntact accepted a mutate-server recipe with --output — must ban this flag',
+    };
+  }
+  // Good: the canonical recipe (no -o / --output) must still pass.
+  if (!mutateServerRecipeIntact(justfileMutServerGood)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH F10-good: mutateServerRecipeIntact rejected the canonical good recipe after F10 ban was added',
     };
   }
 
