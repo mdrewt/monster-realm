@@ -1,0 +1,44 @@
+# fix-nightly authoritative mutant census (scoped local run 2026-07-10, matches CI Jul 9 exactly).
+# Lines 2-39: MISSED (38). Last 4 lines: TIMEOUT (infinite-loop mutants, tolerated by wrapper iff 0 missed).
+game-core/src/bin/tiled_import.rs:73:26: replace match guard got == b with true in Parser<'a>::expect_byte
+game-core/src/bin/tiled_import.rs:89:23: replace > with == in Parser<'a>::parse_value
+game-core/src/bin/tiled_import.rs:89:23: replace > with >= in Parser<'a>::parse_value
+game-core/src/bin/tiled_import.rs:116:20: replace -= with += in Parser<'a>::parse_value
+game-core/src/bin/tiled_import.rs:116:20: replace -= with /= in Parser<'a>::parse_value
+game-core/src/bin/tiled_import.rs:121:9: replace Parser<'a>::expect_literal -> Result<(), String> with Ok(())
+game-core/src/bin/tiled_import.rs:123:30: replace match guard got == b with true in Parser<'a>::expect_literal
+game-core/src/bin/tiled_import.rs:123:30: replace match guard got == b with false in Parser<'a>::expect_literal
+game-core/src/bin/tiled_import.rs:123:34: replace == with != in Parser<'a>::expect_literal
+game-core/src/bin/tiled_import.rs:185:24: replace == with != in Parser<'a>::parse_number
+game-core/src/bin/tiled_import.rs:186:22: replace += with -= in Parser<'a>::parse_number
+game-core/src/bin/tiled_import.rs:186:22: replace += with *= in Parser<'a>::parse_number
+game-core/src/bin/tiled_import.rs:194:22: replace += with -= in Parser<'a>::parse_number
+game-core/src/bin/tiled_import.rs:194:22: replace += with *= in Parser<'a>::parse_number
+game-core/src/bin/tiled_import.rs:196:26: replace += with -= in Parser<'a>::parse_number
+game-core/src/bin/tiled_import.rs:201:22: replace += with -= in Parser<'a>::parse_number
+game-core/src/bin/tiled_import.rs:201:22: replace += with *= in Parser<'a>::parse_number
+game-core/src/bin/tiled_import.rs:203:26: replace += with -= in Parser<'a>::parse_number
+game-core/src/bin/tiled_import.rs:203:26: replace += with *= in Parser<'a>::parse_number
+game-core/src/bin/tiled_import.rs:206:26: replace += with -= in Parser<'a>::parse_number
+game-core/src/bin/tiled_import.rs:206:26: replace += with *= in Parser<'a>::parse_number
+game-core/src/bin/tiled_import.rs:251:22: replace += with -= in Parser<'a>::parse_object
+game-core/src/bin/tiled_import.rs:251:22: replace += with *= in Parser<'a>::parse_object
+game-core/src/bin/tiled_import.rs:367:19: replace < with > in parse_tiled_json
+game-core/src/bin/tiled_import.rs:399:38: replace && with || in parse_tiled_json
+game-core/src/bin/tiled_import.rs:495:46: replace * with / in parse_tiled_json
+game-core/src/bin/tiled_import.rs:522:5: replace main with ()
+game-core/src/bin/tiled_import.rs:523:19: replace != with == in main
+game-core/src/content.rs:432:5: replace load_shops -> Result<Vec<ShopDef>, String> with Ok(vec![])
+game-core/src/content.rs:440:5: replace parse_shops_parts -> Result<Vec<ShopDef>, String> with Ok(vec![])
+game-core/src/content.rs:1266:53: replace == with != in validate_npc_content
+game-core/src/world.rs:250:31: replace > with >= in validate_zone_maps
+game-core/src/world.rs:250:58: replace > with == in validate_zone_maps
+game-core/src/world.rs:250:58: replace > with >= in validate_zone_maps
+game-core/src/npc/rules.rs:53:15: replace > with >= in toward_home
+game-core/src/npc/rules.rs:61:15: replace > with >= in toward_home
+game-core/src/npc/rules.rs:103:13: delete match arm 0 in npc_decide
+game-core/src/npc/rules.rs:105:13: delete match arm 2 in npc_decide
+game-core/src/bin/tiled_import.rs:66:22: replace += with *= in Parser<'a>::skip_whitespace
+game-core/src/bin/tiled_import.rs:190:22: replace += with *= in Parser<'a>::parse_number
+game-core/src/bin/tiled_import.rs:196:26: replace += with *= in Parser<'a>::parse_number
+game-core/src/bin/tiled_import.rs:228:30: replace += with -= in Parser<'a>::parse_array
