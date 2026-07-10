@@ -429,3 +429,285 @@ fn start_quest_effect_does_not_reopen_done_quest() {
         state.done_quests
     );
 }
+
+// ===========================================================================
+// Source-guard tests for `talk` and `advance_dialogue` range-check arithmetic
+// (following the battle_tests.rs / content_tests.rs source-guard pattern).
+//
+// These kill mutants in npc.rs that change arithmetic operators in reducer
+// bodies that cannot be reached by unit tests (require ReducerContext/DB).
+//
+// Killed mutants:
+//   talk:      217:28 (!=→==), 222:45 (-→+), 223:45 (-→+),
+//              224:11 (+→*), 224:16 (>→<), 231:49 (==→!=)
+//   advance:   308:28 (!=→==), 315:45 (-→+), 316:45 (-→+),
+//              317:11 (+→*), 317:16 (>→<), 328:49 (==→!=), 333:54 (==→!=)
+// ===========================================================================
+
+const NPC_SOURCE: &str = include_str!("npc.rs");
+
+/// Strip Rust block comments and line comments (same pattern as battle_tests.rs).
+fn strip_npc_comments(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = vec![b' '; len];
+    let mut i = 0;
+    while i < len {
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else {
+            out[i] = bytes[i];
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("stripped source must be valid UTF-8")
+}
+
+/// Extract the body of a named fn from `src` (comment-stripped).
+fn extract_npc_fn_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+    let pub_needle = format!("pub fn {}(", name);
+    let priv_needle = format!("fn {}(", name);
+    let fn_start = src
+        .find(pub_needle.as_str())
+        .or_else(|| src.find(priv_needle.as_str()))?;
+    let after_fn = &src[fn_start..];
+    let brace_offset = after_fn.find('{')?;
+    let body_start = fn_start + brace_offset + 1;
+    let mut depth: usize = 1;
+    let mut rel: usize = 0;
+    let chars: Vec<char> = src[body_start..].chars().collect();
+    let mut char_pos = 0;
+    while char_pos < chars.len() && depth > 0 {
+        match chars[char_pos] {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        rel += chars[char_pos].len_utf8();
+        char_pos += 1;
+    }
+    if depth == 0 {
+        Some(&src[body_start..body_start + rel])
+    } else {
+        None
+    }
+}
+
+// --- talk source-guard tests ------------------------------------------------
+
+/// Source-guard: `talk` must check zone inequality (!=), not equality (==).
+/// Mutant 217:28 (replace != with ==) would accept players in the WRONG zone.
+/// KILLS: npc.rs:217:28 (zone_id != npc_char.zone_id → zone_id == npc_char.zone_id).
+#[test]
+fn talk_zone_check_uses_ne_not_eq() {
+    let stripped = strip_npc_comments(NPC_SOURCE);
+    let body = extract_npc_fn_body(&stripped, "talk").expect("pub fn talk must exist in npc.rs");
+    // The zone inequality: must reject when player_char.zone_id != npc_char.zone_id.
+    // Build needle from parts to avoid self-match (this test is NOT inside npc.rs).
+    let zone_ne = ["player_char.zone_id", " != npc_char.zone_id"].concat();
+    assert!(
+        body.contains(zone_ne.as_str()),
+        "TEETH(npc.rs:217): `talk` must contain `player_char.zone_id != npc_char.zone_id`; \
+         the mutant replaces != with == causing players in the WRONG zone to pass \
+         and players in the SAME zone to be rejected (completely inverted zone guard)"
+    );
+}
+
+/// Source-guard: `talk` computes dx/dy by SUBTRACTION, not addition.
+/// Mutants 222:45 and 223:45 replace `-` with `+` in the tile-delta arithmetic.
+/// With `+`, dx = (player_x + npc_x).abs() — a large positive distance even for
+/// adjacent tiles — making the range guard always reject (nobody can ever talk).
+/// KILLS: npc.rs:222:45 and npc.rs:223:45.
+#[test]
+fn talk_dx_dy_uses_subtraction_not_addition() {
+    let stripped = strip_npc_comments(NPC_SOURCE);
+    let body = extract_npc_fn_body(&stripped, "talk").expect("pub fn talk must exist in npc.rs");
+    // Check that the dx delta uses subtraction. Assembled from parts.
+    let dx_sub = ["tile_x) - i64", "::from(npc_char.tile_x)"].concat();
+    assert!(
+        body.contains(dx_sub.as_str()),
+        "TEETH(npc.rs:222): `talk` dx computation must use subtraction \
+         (`tile_x) - i64::from(npc_char.tile_x)`); \
+         mutant replaces `-` with `+`, making distance = sum of coordinates \
+         (always huge) so no player is ever close enough to talk"
+    );
+    let dy_sub = ["tile_y) - i64", "::from(npc_char.tile_y)"].concat();
+    assert!(
+        body.contains(dy_sub.as_str()),
+        "TEETH(npc.rs:223): `talk` dy computation must use subtraction; \
+         mutant replaces `-` with `+` making distance wrong (always large)"
+    );
+}
+
+/// Source-guard: `talk` computes Manhattan distance as dx + dy, not dx * dy.
+/// Mutant 224:11 replaces `+` with `*`, turning Manhattan into an area product
+/// (always too large unless on exact axis), breaking range checks for adjacent tiles.
+/// KILLS: npc.rs:224:11 (dx + dy → dx * dy).
+#[test]
+fn talk_manhattan_uses_addition_not_multiplication() {
+    let stripped = strip_npc_comments(NPC_SOURCE);
+    let body = extract_npc_fn_body(&stripped, "talk").expect("pub fn talk must exist in npc.rs");
+    // The Manhattan distance formula. Assembled to avoid self-match.
+    let manhattan = ["dx + dy > ", "TALK_RANGE"].concat();
+    assert!(
+        body.contains(manhattan.as_str()),
+        "TEETH(npc.rs:224): `talk` range check must use `dx + dy > TALK_RANGE` \
+         (Manhattan distance with ADDITION); \
+         mutant replaces `+` with `*` turning it into a product (dx * dy > ...) — \
+         a player at (0,2) from NPC has dx=0,dy=2 → product=0, always passes; \
+         a player at (1,1) from NPC has dx=1,dy=1 → product=1, TALK_RANGE=2 passes \
+         when it shouldn't — wrong distance metric"
+    );
+}
+
+/// Source-guard: `talk` range check uses `>` (greater-than), not `<` (less-than).
+/// Mutant 224:16 replaces `>` with `<` in `if dx + dy > TALK_RANGE`, causing
+/// talk to accept far-away players and reject nearby ones (completely inverted).
+/// KILLS: npc.rs:224:16 (> → <).
+#[test]
+fn talk_range_check_uses_gt_not_lt() {
+    let stripped = strip_npc_comments(NPC_SOURCE);
+    let body = extract_npc_fn_body(&stripped, "talk").expect("pub fn talk must exist in npc.rs");
+    // Positive: `> TALK_RANGE` must be present.
+    let gt_range = "dy > TALK_RANGE";
+    assert!(
+        body.contains(gt_range),
+        "TEETH(npc.rs:224): `talk` range guard must use `> TALK_RANGE`; \
+         mutant replaces `>` with `<`, accepting players far away and rejecting nearby ones"
+    );
+    // Negative: `< TALK_RANGE` must NOT be present in this context.
+    let lt_range = "dy < TALK_RANGE";
+    assert!(
+        !body.contains(lt_range),
+        "TEETH(npc.rs:224): `talk` range guard must NOT use `< TALK_RANGE`; \
+         found `dy < TALK_RANGE` which inverts the proximity check (rejects adjacent tiles)"
+    );
+}
+
+/// Source-guard: `talk` dialogue-tree lookup uses `==` (equality), not `!=`.
+/// Mutant 231:49 replaces `==` with `!=` in `find(|t| t.id == npc_row.dialogue_tree_id)`,
+/// causing talk to pick a tree whose ID does NOT match the NPC's dialogue_tree_id —
+/// wrong NPC conversation or always-None (nothing matches when trees are checked for inequality).
+/// KILLS: npc.rs:231:49 (== → !=).
+#[test]
+fn talk_dialogue_tree_lookup_uses_eq_not_ne() {
+    let stripped = strip_npc_comments(NPC_SOURCE);
+    let body = extract_npc_fn_body(&stripped, "talk").expect("pub fn talk must exist in npc.rs");
+    // The dialogue tree lookup uses ==. Assembled from parts.
+    let tree_eq = ["t.id ==", " npc_row.dialogue_tree_id"].concat();
+    assert!(
+        body.contains(tree_eq.as_str()),
+        "TEETH(npc.rs:231): `talk` dialogue-tree lookup must use `t.id == npc_row.dialogue_tree_id`; \
+         mutant replaces `==` with `!=` causing the wrong tree to be selected \
+         (one whose ID does NOT match the NPC) — garbled dialogue or always-Err('dialogue tree not found')"
+    );
+}
+
+// --- advance_dialogue source-guard tests ------------------------------------
+
+/// Source-guard: `advance_dialogue` zone check uses `!=`, not `==`.
+/// Mutant 308:28 replaces `!=` with `==` in the zone re-check.
+/// With `==`: the reducer would ACCEPT players in the wrong zone (dismissed when same zone!).
+/// The RT-ADV-01 fix added this exact zone re-check; inverting it reopens the vulnerability.
+/// KILLS: npc.rs:308:28 (player_char.zone_id != npc_char.zone_id → ==).
+#[test]
+fn advance_dialogue_zone_check_uses_ne_not_eq() {
+    let stripped = strip_npc_comments(NPC_SOURCE);
+    let body = extract_npc_fn_body(&stripped, "advance_dialogue")
+        .expect("pub fn advance_dialogue must exist in npc.rs");
+    let zone_ne = ["player_char.zone_id", " != npc_char.zone_id"].concat();
+    assert!(
+        body.contains(zone_ne.as_str()),
+        "TEETH(npc.rs:308): `advance_dialogue` must contain `player_char.zone_id != npc_char.zone_id`; \
+         the RT-ADV-01 zone re-check (M12c) must use inequality; mutant replaces != with == \
+         causing dismissal for SAME-zone players and acceptance across zones (inverted guard)"
+    );
+}
+
+/// Source-guard: `advance_dialogue` computes dx/dy by SUBTRACTION, not addition.
+/// Mutants 315:45 and 316:45 replace `-` with `+` in the proximity re-check arithmetic.
+/// KILLS: npc.rs:315:45 and npc.rs:316:45.
+#[test]
+fn advance_dialogue_dx_dy_uses_subtraction_not_addition() {
+    let stripped = strip_npc_comments(NPC_SOURCE);
+    let body = extract_npc_fn_body(&stripped, "advance_dialogue")
+        .expect("pub fn advance_dialogue must exist in npc.rs");
+    let dx_sub = ["tile_x) - i64", "::from(npc_char.tile_x)"].concat();
+    assert!(
+        body.contains(dx_sub.as_str()),
+        "TEETH(npc.rs:315): `advance_dialogue` dx computation must use subtraction; \
+         mutant replaces `-` with `+` making distance wrong (sum not delta)"
+    );
+    let dy_sub = ["tile_y) - i64", "::from(npc_char.tile_y)"].concat();
+    assert!(
+        body.contains(dy_sub.as_str()),
+        "TEETH(npc.rs:316): `advance_dialogue` dy computation must use subtraction; \
+         mutant replaces `-` with `+` making distance wrong"
+    );
+}
+
+/// Source-guard: `advance_dialogue` range check uses `dx + dy > TALK_RANGE`.
+/// Mutant 317:11 replaces `+` with `*`; mutant 317:16 replaces `>` with `<`.
+/// KILLS: npc.rs:317:11 (+→*) and npc.rs:317:16 (>→<).
+#[test]
+fn advance_dialogue_range_check_uses_manhattan_gt_talk_range() {
+    let stripped = strip_npc_comments(NPC_SOURCE);
+    let body = extract_npc_fn_body(&stripped, "advance_dialogue")
+        .expect("pub fn advance_dialogue must exist in npc.rs");
+    let manhattan_gt = ["dx + dy > ", "TALK_RANGE"].concat();
+    assert!(
+        body.contains(manhattan_gt.as_str()),
+        "TEETH(npc.rs:317): `advance_dialogue` range check must use `dx + dy > TALK_RANGE`; \
+         mutant 317:11 replaces `+` with `*` (product vs Manhattan); \
+         mutant 317:16 replaces `>` with `<` (inverted — dismisses nearby players, \
+         accepts far ones). Both must be absent."
+    );
+    // Negative check for inverted operator — scoped to advance_dialogue body only:
+    let lt_range = "dy < TALK_RANGE";
+    assert!(
+        !body.contains(lt_range),
+        "TEETH(npc.rs:317): `advance_dialogue` must NOT use `dy < TALK_RANGE`; \
+         found inverted range guard (accepts far players, rejects nearby ones)"
+    );
+}
+
+/// Source-guard: `advance_dialogue` dialogue-tree and node lookups use `==`, not `!=`.
+/// Mutant 328:49 replaces `==` with `!=` in the tree lookup;
+/// mutant 333:54 replaces `==` with `!=` in the current-node lookup.
+/// KILLS: npc.rs:328:49 and npc.rs:333:54.
+#[test]
+fn advance_dialogue_node_lookups_use_equality_not_inequality() {
+    let stripped = strip_npc_comments(NPC_SOURCE);
+    let body = extract_npc_fn_body(&stripped, "advance_dialogue")
+        .expect("pub fn advance_dialogue must exist in npc.rs");
+    // Dialogue tree lookup.
+    let tree_eq = ["t.id ==", " npc_row.dialogue_tree_id"].concat();
+    assert!(
+        body.contains(tree_eq.as_str()),
+        "TEETH(npc.rs:328): `advance_dialogue` tree lookup must use `t.id == npc_row.dialogue_tree_id`; \
+         mutant replaces == with != selecting the wrong tree for the NPC"
+    );
+    // Current node lookup.
+    let node_eq = ["n.id ==", " conv.current_node_id"].concat();
+    assert!(
+        body.contains(node_eq.as_str()),
+        "TEETH(npc.rs:333): `advance_dialogue` node lookup must use `n.id == conv.current_node_id`; \
+         mutant replaces == with != selecting the wrong node (one that is NOT the current node)"
+    );
+}
