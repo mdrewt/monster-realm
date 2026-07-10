@@ -106,6 +106,12 @@ failure → next slice in the queue) is unchanged.
 - `.cargo/mutants.toml` applies workspace-wide (also to `mutate-server`); the
   single pinned exclusion references a game-core-only path, and the eval pins
   the list so it cannot quietly grow.
+- **Accepted gap (pre-existing class):** `mutate-core` and `mutate-server`
+  both read the default `mutants.out/` output directory (the eval bans
+  `--output`/`-o` redirects as neutering vectors). Parallel LOCAL runs of the
+  two recipes from the same checkout would clobber each other's
+  `missed.txt` before the count-compare; the nightly jobs run on separate
+  runners and are unaffected. Same gap class as ADR-0050's recorded gaps.
 - The smoke-republish Phases 3–6 (republish-without-delete, `sync_content`,
   survival asserts) are now exercised nightly for the first time — the
   ADR-0006/ADR-0037 no-wipe promise finally has its intended teeth.
