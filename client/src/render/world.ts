@@ -130,15 +130,15 @@ export class WorldRenderer {
         this.#views.delete(id);
       }
     }
-    for (const e of entities) {
-      this.#views.get(e.entityId)?.update(e.x, e.y, e.action, e.facing);
-    }
-    // e-4: O(1) per sprite — set zIndex = y so Pixi's sortableChildren auto-sort
-    // handles depth ordering. Replaces the O(n²) setChildIndex-in-a-loop pattern
-    // (setChildIndex is O(n) per call → O(n²) total for n entities per frame).
+    // e-4: update position + set zIndex in the same pass so newly-spawned sprites
+    // (just addChild'd above with default zIndex=0) get their depth assigned before
+    // Pixi's sortableChildren sort fires at the next render tick.
     for (const e of entities) {
       const view = this.#views.get(e.entityId);
-      if (view !== undefined) view.sprite.zIndex = zIndexForEntity(e.y);
+      if (view !== undefined) {
+        view.update(e.x, e.y, e.action, e.facing);
+        view.sprite.zIndex = zIndexForEntity(e.y);
+      }
     }
     // M11c follow-camera: translate the stage so the own entity stays centred.
     const map = this.#map;

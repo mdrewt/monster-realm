@@ -27,7 +27,7 @@
 //   - An impl that ignores the threshold param is killed by the custom-threshold tests.
 
 import { describe, expect, it } from 'vitest';
-import { shouldReportZoneSyncFailure } from '../ui/zoneSyncGuard';
+import { shouldReportZoneSyncFailure } from './zoneSyncGuard';
 
 // ---------------------------------------------------------------------------
 // Default threshold (3 — the spec says "N ≥ 3")

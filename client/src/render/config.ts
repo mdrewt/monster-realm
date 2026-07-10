@@ -6,6 +6,10 @@
 // (the spec rejects a tile/sprite pixel size literal anywhere else). `STEP_MS`
 // and `MOVE_QUEUE_CAP` are NOT duplicated here: they are single-sourced from
 // game-core via the wasm `step_ms()`/`move_queue_cap()` exports and injected.
+//
+// Three ADR-0090 constants (INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH, BURST_EPSILON_MS)
+// are single-sourced from `shared/interpConfig.ts` to avoid a net↔render import cycle.
+export { BURST_EPSILON_MS, INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH } from '../shared/interpConfig';
 
 /** Pixels per logical tile (the one configurable mapping; default ~32). */
 export const TILE_PX = 32;
@@ -22,12 +26,6 @@ export const INTERP_DELAY_STEPS = 1.0;
 // ADR-0090: Adaptive interpolation delay — tuning constants
 // (every constant is commented with WHAT it controls and WHY that value)
 // ---------------------------------------------------------------------------
-
-/** EWMA smoothing factor for the per-character jitter estimator (ADR-0090).
- *  WHAT: α in `ewma = α×|interval−stepMs| + (1−α)×ewma`.
- *  WHY 0.125: ~8-sample effective half-life — slow enough to ignore a single
- *  late packet, fast enough to react to a sustained bursty segment. */
-export const INTERP_JITTER_ALPHA = 0.125;
 
 /** Multiplier applied to the jitter estimate to derive extra delay (ADR-0090).
  *  WHAT: delay = base + JITTER_COEFF × jitterMs.
@@ -47,16 +45,3 @@ export const INTERP_MIN_DELAY_STEPS = 0.5;
  *  WHY 2.5: beyond 2.5×stepMs (500 ms at 200 ms cadence) the remote-entity lag
  *  is user-perceptible; a catastrophically jittery connection shows lag not pops. */
 export const INTERP_MAX_DELAY_STEPS = 2.5;
-
-/** Maximum snapshot history depth per remote character (ADR-0090).
- *  WHAT: ring-buffer cap in AuthoritativeStore.upsertCharacter.
- *  WHY 4: 2.5× max delay / 1.0× step = 2.5 steps back + 1 headroom ≈ 4 snapshots.
- *  Deeper history keeps pre-burst snapshots alive for interpolateHistory bracket. */
-export const INTERP_MAX_DEPTH = 4;
-
-/** Burst-detection epsilon in ms (ADR-0090).
- *  WHAT: if two upsertCharacter calls for the same entity arrive within this
- *  window of each other, they are treated as a single burst flush.
- *  WHY 20: the SDK delivers same-transaction rows synchronously (< 1 ms apart
- *  in practice); 20 ms provides ample margin without catching normal slow packets. */
-export const BURST_EPSILON_MS = 20;

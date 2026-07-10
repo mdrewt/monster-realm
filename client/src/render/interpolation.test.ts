@@ -306,12 +306,15 @@ describe('adaptiveInterpDelayMs e-5: jitter-aware delay budget', () => {
     expect(adaptiveInterpDelayMs(100, 200)).toBeGreaterThan(0);
   });
 
-  it('delay is at least stepMs (never undershoot the base)', () => {
-    // The adaptive delay adds headroom for jitter — it must never be less than stepMs.
+  it('delay >= INTERP_MIN_DELAY_STEPS×stepMs (lower clamp enforced)', () => {
+    // The true lower bound is INTERP_MIN_DELAY_STEPS×stepMs (=0.5×stepMs=100ms, not stepMs).
+    // At zero jitter, raw = 1.0×stepMs = 200, which already exceeds the 100ms lower clamp,
+    // so these assertions happen to also be ≥ stepMs. A test with raw < stepMs would
+    // expose the 0.5× clamp — see the positive jitter tests above for that path.
     // WRONG IMPL KILLED: an impl that subtracts jitter from stepMs (reduces delay on jitter).
-    expect(adaptiveInterpDelayMs(0, 200)).toBeGreaterThanOrEqual(200);
-    expect(adaptiveInterpDelayMs(50, 200)).toBeGreaterThanOrEqual(200);
-    expect(adaptiveInterpDelayMs(200, 200)).toBeGreaterThanOrEqual(200);
+    expect(adaptiveInterpDelayMs(0, 200)).toBeGreaterThanOrEqual(100); // lower clamp = 0.5×200
+    expect(adaptiveInterpDelayMs(50, 200)).toBeGreaterThanOrEqual(100);
+    expect(adaptiveInterpDelayMs(200, 200)).toBeGreaterThanOrEqual(100);
   });
 
   it('delay is bounded (does not grow without limit for extreme jitter)', () => {

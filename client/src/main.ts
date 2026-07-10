@@ -33,6 +33,7 @@ import {
 import { shouldToggleBox } from './inputGuards';
 import { connect } from './net/connection';
 import { AuthoritativeStore } from './net/store';
+import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
 import { HeldDirections, reissueDir } from './prediction/heldKeys';
 import { type ApplyMove, boundSeq, Predictor } from './prediction/predictor';
 import { TileMap } from './render/map';
@@ -57,7 +58,6 @@ import type { RaisingView } from './ui/raisingView';
 import { buildShopViewModel } from './ui/shopModel';
 import type { ShopView } from './ui/shopView';
 import { reduceErrorMessage } from './ui/statusModel';
-import { shouldReportZoneSyncFailure } from './ui/zoneSyncGuard';
 
 const URI = (import.meta.env.VITE_STDB_URI as string | undefined) ?? 'ws://127.0.0.1:3000';
 const DB = (import.meta.env.VITE_STDB_DB as string | undefined) ?? 'monster-realm';
@@ -653,6 +653,9 @@ store.onBatchApplied(() => {
     const conv = store.ownConversation(identity);
     // e-4 guard (M13.5e): build npcsMap only when a conversation is open.
     // allNpcs() is O(n) — doing it on every batch is wasteful during normal play.
+    // Reconnect-ordering assumption: NPC content rows arrive in the same batch as (or
+    // before) the conversation row, so an active conv always finds its NPC in the map.
+    // If ordering regresses, buildDialogueViewModel returns null → view hides safely.
     const allNpcs = conv !== undefined ? store.allNpcs() : [];
     const npcsMap = new Map(allNpcs.map((n) => [n.entityId, n]));
     const dialogueVm = buildDialogueViewModel(conv, npcsMap, DIALOGUE_TREES);

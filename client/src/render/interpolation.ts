@@ -146,10 +146,12 @@ export function adaptiveInterpDelayMs(jitterMs: number, stepMs: number): number 
  * `receivedAt`) is available as the lower bracket — enabling smooth interpolation
  * even when the two burst snapshots share the same `receivedAt`.
  *
- * Same-receivedAt tiebreak: when multiple snapshots have the same receivedAt
- * (burst co-arrivals that weren't given synthetic timestamps), the LAST matching
- * one becomes `prev`, yielding a single-frame hold at the burst position rather
- * than an assertion error or regression. This is the graceful degradation path.
+ * Same-receivedAt tiebreak: when both burst co-arrivals carry `receivedAt ≤ renderTime`,
+ * the HOLD path (`renderTime >= newest`) fires and returns the latest position — this is
+ * the primary graceful degradation for unmitigated bursts. The internal `span ≤ 0` guard
+ * handles the degenerate case where two snapshots share a timestamp that is neither
+ * at/past newest nor at/before oldest (theoretically impossible with a valid sorted ring
+ * but retained as a defensive check against future invariant violations).
  *
  * @param snapshots  - Ordered oldest-first; must have ≥ 1 entry.
  * @param renderTime - Target render clock (ms), typically now − adaptive delay.
@@ -191,8 +193,12 @@ export function interpolateHistory(
   }
 
   const span = next.receivedAt - prev.receivedAt;
-  // Degenerate: same-receivedAt pair (unmitigated burst — synthetic timestamps should
-  // prevent this, but handle gracefully). Hold at `next` (later in logical sequence).
+  // Degenerate guard: span ≤ 0 can only occur when two snapshots in the ring buffer
+  // have identical receivedAt AND that timestamp is strictly between oldest and newest
+  // (i.e. it didn't trigger the HOLD or clamp paths above). In practice this cannot
+  // happen with a valid oldest-first array — the HOLD path (renderTime >= newest) fires
+  // first for same-receivedAt bursts at renderTime. The guard is retained as a defensive
+  // check against future ring-buffer invariant violations. Holds at `next`.
   if (span <= 0) return { x: next.tileX, y: next.tileY };
 
   const a = (renderTime - prev.receivedAt) / span;
