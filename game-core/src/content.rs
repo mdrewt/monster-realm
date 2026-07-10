@@ -5,6 +5,7 @@
 
 use serde::Deserialize;
 
+use crate::combat::ability::AbilityEffect;
 use crate::monster::types::{Affinity, Bond, Level, StatBlock, StatKind, EV_PER_STAT_CAP};
 use crate::taming::types::EncounterTable;
 use crate::types::TilePos;
@@ -88,6 +89,25 @@ pub struct Species {
     pub base_stats: StatBlock,
     pub affinity: Affinity,
     pub learnable_skill_ids: Vec<u32>,
+    /// Passive ability id (optional, additive per ADR-0006).
+    /// References an entry in the abilities registry; `None` means no ability.
+    /// Defaults to `None` so existing RON files parse without this field.
+    #[serde(default)]
+    pub ability: Option<u32>,
+}
+
+// ===========================================================================
+// M14c content types — ability definitions (ADR-0094)
+// ===========================================================================
+
+/// A passive ability definition — an id, a display name, and the runtime effect.
+/// The `effect` field drives content-data-driven ability resolution; no code
+/// changes are needed when a new ability is added to the registry (data, not code).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AbilityDef {
+    pub id: u32,
+    pub name: String,
+    pub effect: AbilityEffect,
 }
 
 /// A skill (move) definition — affinity, power, accuracy, PP.
@@ -484,6 +504,83 @@ pub fn validate_shops(shops: &[ShopDef], items: &[ItemDef]) -> Result<(), String
             }
         }
     }
+    Ok(())
+}
+
+// ===========================================================================
+// M14c embedded content — ability registry (ADR-0094)
+// ===========================================================================
+
+/// Parse the embedded abilities registry.
+///
+/// # Errors
+/// Returns `Err` if any embedded part fails to parse (the message names the file).
+pub fn load_abilities() -> Result<Vec<AbilityDef>, String> {
+    parse_abilities_parts(ABILITIES_RON_PARTS)
+}
+
+/// Parse + concatenate ability parts in the given slice order (no row re-sorting).
+///
+/// # Errors
+/// Returns `Err` (naming the offending file) if any part is not a valid ability list.
+pub fn parse_abilities_parts(parts: &[(&str, &str)]) -> Result<Vec<AbilityDef>, String> {
+    parse_parts(parts, "abilities registry")
+}
+
+/// Parse abilities from a RON string (separated for testability + fixtures).
+///
+/// # Errors
+/// Returns `Err` with a descriptive message if `ron_str` is not a valid ability list.
+pub fn parse_abilities(ron_str: &str) -> Result<Vec<AbilityDef>, String> {
+    ron::from_str::<Vec<AbilityDef>>(ron_str)
+        .map_err(|e| format!("abilities registry parse error: {e}"))
+}
+
+/// Cross-registry ability validation (additive sibling of [`validate_content`],
+/// following the `validate_shops` / `validate_encounters` precedent — never
+/// modifying `validate_content`'s signature so existing server callers are
+/// unaffected).
+///
+/// Checks:
+/// - Unique ability ids
+/// - `EntryHeal.denom >= 2` (denom 0/1 grants a free full-heal — invalid)
+/// - Every `species.ability` (where `Some`) references an existing ability id
+///
+/// # Errors
+/// Returns `Err` with a descriptive message on the first violation found.
+pub fn validate_abilities(abilities: &[AbilityDef], species: &[Species]) -> Result<(), String> {
+    use crate::combat::ability::AbilityEffect;
+
+    let mut ability_ids = std::collections::BTreeSet::new();
+    for ab in abilities {
+        if !ability_ids.insert(ab.id) {
+            return Err(format!("duplicate ability id {}", ab.id));
+        }
+        match &ab.effect {
+            AbilityEffect::EntryHeal { denom } => {
+                if *denom < 2 {
+                    return Err(format!(
+                        "ability {} (EntryHeal) has denom {}; denom must be >= 2 \
+                         (denom 0/1 grants a free full-heal on entry — invalid)",
+                        ab.id, denom
+                    ));
+                }
+            }
+            AbilityEffect::StatusImmunity { .. } => {}
+        }
+    }
+
+    for sp in species {
+        if let Some(ability_id) = sp.ability {
+            if !ability_ids.contains(&ability_id) {
+                return Err(format!(
+                    "species {} references non-existent ability id {}",
+                    sp.id, ability_id
+                ));
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1454,6 +1551,7 @@ mod tests {
             base_stats: valid_base_stats(),
             affinity: Affinity::Fire,
             learnable_skill_ids: skill_ids,
+            ability: None,
         }
     }
 
@@ -1524,6 +1622,16 @@ mod tests {
         let items = load_items().expect("items parse");
         validate_content(&species, &skills, &chart, &items)
             .expect("embedded content must be valid");
+    }
+
+    /// M14c: validate_abilities passes for all embedded ability + species data.
+    /// Kills: an impl where embedded species reference a non-existent ability id,
+    /// or where the ability registry has duplicate ids or invalid denom values.
+    #[test]
+    fn validate_abilities_passes_for_embedded() {
+        let abilities = load_abilities().expect("abilities parse");
+        let species = load_species().expect("species parse");
+        validate_abilities(&abilities, &species).expect("embedded abilities must be valid");
     }
 
     /// #60: parse_species rejects garbage input.

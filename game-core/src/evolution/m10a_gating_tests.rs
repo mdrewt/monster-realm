@@ -43,6 +43,7 @@ fn species(id: u32, hp: u16, other: u16) -> Species {
         },
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![],
+        ability: None,
     }
 }
 
@@ -425,6 +426,7 @@ fn arb_species(id: u32) -> impl Strategy<Value = Species> {
         base_stats,
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![],
+        ability: None,
     })
 }
 

@@ -54,6 +54,7 @@ fn fixture_species(id: u32) -> Species {
         },
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![],
+        ability: None,
     }
 }
 

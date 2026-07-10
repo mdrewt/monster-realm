@@ -141,6 +141,7 @@ mod tests {
             base_stats: stat_block(hp, other),
             affinity: Affinity::Fire,
             learnable_skill_ids: vec![],
+            ability: None,
         }
     }
 

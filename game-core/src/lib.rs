@@ -28,24 +28,25 @@ pub mod world;
 mod m8c_gating_tests;
 
 pub use combat::{
-    accuracy_check, apply_post_turn_effects, apply_pre_turn_effects, apply_xp_gain,
-    base_stat_total, battle_xp_reward, calc_damage, pick_best_skill, practice_xp_reward,
-    resolve_enemy_turn, resolve_full_turn, resolve_player_swap, resolve_turn, tick_status,
-    BattleEvent, BattleMonster, BattleOutcome, BattleSide, BattleState, BattleStatusStore,
-    Effectiveness, SideId, StatusEffect, StatusVariance, TurnChoice, TurnVariance, TypeChart,
+    accuracy_check, apply_ability_modifiers, apply_entry_ability, apply_post_turn_effects,
+    apply_pre_turn_effects, apply_xp_gain, base_stat_total, battle_xp_reward, calc_damage,
+    pick_best_skill, practice_xp_reward, resolve_enemy_turn, resolve_full_turn,
+    resolve_player_swap, resolve_turn, tick_status, AbilityEffect, AbilityStore, BattleEvent,
+    BattleMonster, BattleOutcome, BattleSide, BattleState, BattleStatusStore, Effectiveness,
+    SideId, StatusEffect, StatusKind, StatusVariance, TurnChoice, TurnVariance, TypeChart,
 };
 pub use content::{
-    load_dialogue_trees, load_encounters, load_evolutions, load_fusion, load_heal_locations,
-    load_items, load_npc_defs, load_quest_defs, load_shops, load_skills, load_species,
-    load_type_chart, load_zone_maps, load_zones, parse_dialogue_trees, parse_dialogue_trees_parts,
-    parse_encounters, parse_evolutions, parse_fusion, parse_heal_locations,
-    parse_heal_locations_parts, parse_items, parse_npc_defs, parse_npc_defs_parts,
-    parse_quest_defs, parse_quest_defs_parts, parse_shops, parse_skills, parse_species,
-    parse_type_chart, parse_zone_maps, parse_zone_maps_parts, parse_zones, validate_content,
-    validate_encounters, validate_evolution_fusion, validate_npc_content, validate_shops,
-    validate_zones, EvolutionCondition, EvolutionTrigger, FusionRecipe, HealLocationDef, ItemDef,
-    NpcDef, ShopDef, ShopStockEntry, SkillDef, Species, SpeciesEvolutions, TypeRelation, WarpDef,
-    ZoneDef, ZoneMapDef,
+    load_abilities, load_dialogue_trees, load_encounters, load_evolutions, load_fusion,
+    load_heal_locations, load_items, load_npc_defs, load_quest_defs, load_shops, load_skills,
+    load_species, load_type_chart, load_zone_maps, load_zones, parse_abilities,
+    parse_dialogue_trees, parse_dialogue_trees_parts, parse_encounters, parse_evolutions,
+    parse_fusion, parse_heal_locations, parse_heal_locations_parts, parse_items, parse_npc_defs,
+    parse_npc_defs_parts, parse_quest_defs, parse_quest_defs_parts, parse_shops, parse_skills,
+    parse_species, parse_type_chart, parse_zone_maps, parse_zone_maps_parts, parse_zones,
+    validate_abilities, validate_content, validate_encounters, validate_evolution_fusion,
+    validate_npc_content, validate_shops, validate_zones, AbilityDef, EvolutionCondition,
+    EvolutionTrigger, FusionRecipe, HealLocationDef, ItemDef, NpcDef, ShopDef, ShopStockEntry,
+    SkillDef, Species, SpeciesEvolutions, TypeRelation, WarpDef, ZoneDef, ZoneMapDef,
 };
 pub use currency::battle_currency_reward;
 pub use dialogue::{

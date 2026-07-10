@@ -19,11 +19,12 @@ use crate::schema::{
 };
 use crate::CONTENT_VERSION;
 use game_core::{
-    derive_stats, load_dialogue_trees, load_encounters, load_evolutions, load_fusion,
-    load_heal_locations, load_items, load_npc_defs, load_quest_defs, load_shops, load_skills,
-    load_species, load_type_chart, load_zone_maps, validate_content, validate_encounters,
-    validate_evolution_fusion, validate_npc_content, validate_shops, validate_zone_maps,
-    ActionState, Direction, EVs, EvolutionCondition, IVs, Level, Nature, StatBlock,
+    derive_stats, load_abilities, load_dialogue_trees, load_encounters, load_evolutions,
+    load_fusion, load_heal_locations, load_items, load_npc_defs, load_quest_defs, load_shops,
+    load_skills, load_species, load_type_chart, load_zone_maps, validate_abilities,
+    validate_content, validate_encounters, validate_evolution_fusion, validate_npc_content,
+    validate_shops, validate_zone_maps, ActionState, Direction, EVs, EvolutionCondition, IVs,
+    Level, Nature, StatBlock,
 };
 // Species and SpeciesEvolutions are only used by the test-only recheck seam.
 #[cfg(test)]
@@ -53,6 +54,7 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
     let quest_defs = load_quest_defs().map_err(|e| format!("quests: {e}"))?;
     let heal_defs = load_heal_locations().map_err(|e| format!("heal_locations: {e}"))?;
     let shops = load_shops().map_err(|e| format!("shops: {e}"))?;
+    let abilities = load_abilities().map_err(|e| format!("abilities: {e}"))?;
 
     // ====== VALIDATE PHASE (all-before-any-write, ADR-0073 §12.5b-2) ======
     game_core::validate_zones(&zones).map_err(|e| format!("zones invalid: {e}"))?;
@@ -74,6 +76,7 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
     )
     .map_err(|e| format!("npc_content invalid: {e}"))?;
     validate_shops(&shops, &items).map_err(|e| format!("shops invalid: {e}"))?;
+    validate_abilities(&abilities, &species).map_err(|e| format!("abilities invalid: {e}"))?;
 
     // ====== WRITE PHASE ======
     // zone_def deletions (13.5c-2): zones dropped from the RON registry lose

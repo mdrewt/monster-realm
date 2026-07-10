@@ -36,6 +36,7 @@ fn species_with_stats(base: StatBlock, affinity: Affinity) -> Species {
         base_stats: base,
         affinity,
         learnable_skill_ids: vec![],
+        ability: None,
     }
 }
 
@@ -307,6 +308,7 @@ fn f4_species_has_no_xp_yield_field() {
         },
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![1, 2],
+        ability: None,
     };
 
     // BST = 45+49+49+65+65+45 = 318; /3 = 106

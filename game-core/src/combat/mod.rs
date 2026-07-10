@@ -11,9 +11,11 @@
 //! - `damage`     — damage formula (`calc_damage`) and accuracy check
 //! - `resolve`    — turn resolution (`resolve_turn`, `resolve_full_turn`, `resolve_enemy_turn`, …)
 //! - `status`     — per-monster status conditions, DoT, action-block rules (M14a, ADR-0010 OCP gate)
+//! - `ability`    — passive per-species ability rules (M14c, ADR-0094)
 //! - `ai`         — enemy AI skill picker (`pick_best_skill`)
 //! - `xp`         — XP reward, practice penalty, and level-up (`battle_xp_reward`, `practice_xp_reward`, `apply_xp_gain`)
 
+pub mod ability;
 pub mod ai;
 pub mod damage;
 #[cfg(test)]
@@ -21,11 +23,15 @@ pub mod m14a_tests;
 #[cfg(test)]
 pub mod m14b_tests;
 #[cfg(test)]
+pub mod m14c_tests;
+#[cfg(test)]
 pub mod m7b_gating_tests;
 #[cfg(test)]
 pub mod m7b_redteam_tests;
 #[cfg(test)]
 pub mod redteam_m14a_tests;
+#[cfg(test)]
+pub mod redteam_m14c_tests;
 #[cfg(test)]
 pub mod redteam_m8d_tests;
 #[cfg(test)]
@@ -36,6 +42,9 @@ pub mod type_chart;
 pub mod types;
 pub mod xp;
 
+pub use ability::{
+    apply_ability_modifiers, apply_entry_ability, AbilityEffect, AbilityStore, StatusKind,
+};
 pub use ai::pick_best_skill;
 pub use damage::{accuracy_check, calc_damage};
 pub use resolve::{resolve_enemy_turn, resolve_full_turn, resolve_player_swap, resolve_turn};
