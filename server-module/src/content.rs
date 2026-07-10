@@ -463,8 +463,12 @@ fn npc_sync_action_id(action: &NpcSyncAction) -> &str {
 ///   from an out-of-radius start is npc_decide's concern, not sync's; fold n2);
 /// - live wander state is NOT a diff: sync runs on every content-version bump
 ///   and NPCs wander constantly, so def-identical pairs plan NOTHING;
-/// - half-orphan (npc, None) with a def → `Repair`; without a def → `Remove`;
+/// - half-orphan (npc, None) with a def → `Repair`; without a def → `Remove`.
 /// - live pair whose def was dropped → `Remove`.
+///
+/// Precondition: `npc_id` is unique within `existing` (the `#[unique]` index on
+/// the `npc` table guarantees it for live reads); a duplicate would match only
+/// the first pair on `find` and surface the second as a spurious `Remove`.
 pub(crate) fn plan_npc_sync(
     existing: &[(Npc, Option<Character>)],
     defs: &[game_core::NpcDef],
@@ -626,11 +630,13 @@ fn sync_npc_entities_from(ctx: &ReducerContext, npc_defs: &[game_core::NpcDef]) 
     // the removal set would dangle — delete them (npc.rs's advance guard
     // stays as defense-in-depth).
     if !removed_entity_ids.is_empty() {
+        let removal_set: std::collections::HashSet<u64> =
+            removed_entity_ids.iter().copied().collect();
         let stale_owners: Vec<_> = ctx
             .db
             .player_conversation()
             .iter()
-            .filter(|c| removed_entity_ids.contains(&c.npc_entity_id))
+            .filter(|c| removal_set.contains(&c.npc_entity_id))
             .map(|c| c.owner_identity)
             .collect();
         for owner in stale_owners {

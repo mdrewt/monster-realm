@@ -360,6 +360,13 @@ export function playerConversationRowToStore(row: SdkPlayerConversation): StoreP
  * an end-of-dialogue advance). Returns false when stored is undefined or differs on
  * either field (the delete-of-the-old-version half of an update pair). npcEntityId
  * is compared as bigint (coercion-free: Number() would collapse ids past 2^53).
+ *
+ * KNOWN EDGE (RT-M13.5C-03, ADR-0087): an UPDATE to IDENTICAL values is
+ * indistinguishable from a genuine delete here (insert-first ordering would
+ * remove the live row). Unreachable from this client — KeyT is overlay-guarded,
+ * so `talk` is never sent while a conversation exists, and no current dialogue
+ * tree self-loops — the durable fix is a server-side no-op-skip in the talk /
+ * advance_dialogue upserts (npc.rs, outside this slice's touch-set).
  */
 export function shouldRemoveOnViewDelete(
   stored: StorePlayerConversation | undefined,

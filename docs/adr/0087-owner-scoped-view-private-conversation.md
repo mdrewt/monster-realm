@@ -115,3 +115,14 @@ The toolchain reality (re-verified empirically this slice, pinned spacetime CLI
   because battle write-back precedes the XP/level-up stat re-derive; a future
   reorder would make clamp-to-old-`stat_hp` strip legitimately-healed HP
   (comment recorded at the clamp site).
+- **Identical-value update pair (RT-M13.5C-03):** an UPDATE that leaves the row
+  byte-identical is indistinguishable from a genuine delete under the
+  insert+delete delivery shape — `shouldRemoveOnViewDelete` would remove the
+  live row on insert-first ordering. Unreachable today: KeyT is overlay-guarded
+  (no `talk` while a conversation exists) and `advance_dialogue` always changes
+  `current_node_id` (no current tree self-loops). Durable fix when npc.rs is
+  next in a touch-set: no-op-skip the upsert when the row would not change.
+- **Knowledge-bundle gap (RT-M13.5C-04):** the OKF exporter emits tables only —
+  `my_conversation` has no `docs/knowledge/tables/` entry (the
+  `player_conversation` doc records `visibility: private`). Extending the
+  exporter to `#[view]`s is a follow-up, not this slice.

@@ -177,9 +177,25 @@ export function parseViews(src) {
     const sigMatch = src.slice(fnIdx).match(/^fn\s+(\w+)/);
     const fnName = sigMatch ? sigMatch[1] : '';
 
-    // Brace-walk the fn body (first `{` after the signature; generics/return
-    // types like Option<PlayerConversation> contain no braces).
-    const bodyOpen = src.indexOf('{', fnIdx);
+    // Brace-walk the fn body. The body `{` is the first `{` at ZERO angle/paren
+    // depth after the `fn` keyword — a naive first-`{` scan is blinded by braces
+    // inside the return TYPE (RT-M13.5C-01: `Vec<[PlayerConversation; {1}]>`
+    // const-generic braces get captured as the "body", hiding a leaky view's
+    // real body from check B; tooth T15). `->` is skipped so the arrow's `>`
+    // never underflows the angle depth; a depth-0 `;` is a bodyless declaration.
+    let bodyOpen = -1;
+    for (let k = fnIdx, angle = 0, paren = 0; k < src.length; k++) {
+      const ch = src[k];
+      if (ch === '<') angle++;
+      else if (ch === '>') {
+        if (src[k - 1] !== '-') angle = Math.max(0, angle - 1);
+      } else if (ch === '(') paren++;
+      else if (ch === ')') paren--;
+      else if (ch === '{' && angle === 0 && paren === 0) {
+        bodyOpen = k;
+        break;
+      } else if (ch === ';' && angle === 0 && paren === 0) break;
+    }
     if (bodyOpen === -1) {
       pos = i + 1;
       continue;
@@ -394,7 +410,10 @@ export function checkClientSubscription(connectionSrc) {
           'a dead string constant outside the array cannot satisfy this needle'
         );
       }
-      if (arrayWindow.indexOf('FROM player_conversation') !== -1) {
+      // \b guard (RT-M13.5C-02): match the exact table name, not a prefix — a
+      // future `FROM player_conversation_archive` sibling must not false-red
+      // here (the fallback path below already uses the same literal pattern).
+      if (/FROM\s+player_conversation\b/.test(arrayWindow)) {
         return (
           "connection source's .subscribe([...]) array still contains 'FROM player_conversation' — " +
           'subscribing the now-private table errors the batch and onApplied never ' +
@@ -832,6 +851,38 @@ conn.db.my_conversation.onDelete((_ctx, row) => {
     }
   }
 
+  // T15 (RT-M13.5C-01) — const-generic brace in a leaky view's RETURN TYPE must
+  // not blind the body-walk: a clean my_conversation plus a second view whose
+  // return type is `Vec<[PlayerConversation; {1}]>` and whose body does a
+  // whole-table .iter() read → must be flagged, naming the leaky view.
+  // Kills: a parseViews that takes the FIRST `{` after `fn` as the body opener
+  // (it would capture `{1}` as the body and never scan the real .iter() body).
+  {
+    const fixture = `
+#[spacetimedb::table(name = player_conversation)]
+pub struct PlayerConversation {
+    pub owner_identity: Identity,
+}
+
+#[spacetimedb::view(name = my_conversation, public)]
+fn my_conversation(ctx: &ViewContext) -> Option<PlayerConversation> {
+    ctx.db.player_conversation().owner_identity().find(ctx.sender)
+}
+
+#[spacetimedb::view(name = braced_leak, public)]
+fn braced_leak(ctx: &ViewContext) -> Vec<[PlayerConversation; {1}]> {
+    ctx.db.player_conversation().iter().collect()
+}
+`;
+    const err = checkViewsOwnerScoped(fixture);
+    if (!err) {
+      return 'T15: leaky view hidden behind a const-generic brace in its return type was NOT flagged — parseViews body-walk is taking the first `{` after `fn` (RT-M13.5C-01)';
+    }
+    if (err.indexOf('braced_leak') === -1) {
+      return `T15: braced-return-type leak flagged, but the message does not name braced_leak: ${err}`;
+    }
+  }
+
   return null;
 }
 
@@ -908,7 +959,7 @@ export default async function conversationPrivacyEval() {
       `${rsSources.length} server source file(s) scanned; player_conversation private, ` +
       'all views over it owner-scoped incl. my_conversation, bindings swapped, ' +
       'subscription swapped in .subscribe([...]) array, onDelete handler calls ' +
-      'shouldRemoveOnViewDelete (14 teeth verified)',
+      'shouldRemoveOnViewDelete (15 teeth verified)',
   };
 }
 
