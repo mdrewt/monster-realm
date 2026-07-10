@@ -5374,4 +5374,171 @@ mod tests {
             locs[0].cost_currency
         );
     }
+
+    // =======================================================================
+    // fix-nightly (ADR-0088): mutant-killing tests for load_shops /
+    // parse_shops_parts / validate_npc_content check #13.
+    //
+    // The pre-existing embedded_shops_parse_and_validate test only asserts
+    // load_shops() is Ok — an `Ok(vec![])` body mutant (census 432:5) parses
+    // fine and validate_shops(&[], ...) is Ok, so that test PASSES under the
+    // mutant. These tests assert NON-EMPTY + pin the known M13b content, so the
+    // empty-vec body mutants can no longer survive.
+    // =======================================================================
+
+    /// kills: game-core/src/content.rs:432:5: replace load_shops -> Result<Vec<ShopDef>, String> with Ok(vec![])
+    ///
+    /// load_shops() must return the embedded M13b shop content, NOT an empty vec.
+    /// The content is content/shops/000-core.ron: shop id 1 "Pebble Town Shop"
+    /// with stock item_id 1 @ 200 and item_id 2 @ 300. Asserting the vec is
+    /// non-empty AND pinning shop id 1 + its stock kills the `Ok(vec![])` body
+    /// replacement (which would return an empty registry and disable every shop).
+    #[test]
+    fn load_shops_returns_embedded_pebble_town_shop() {
+        let shops = load_shops().expect("load_shops() must parse the embedded RON");
+        assert!(
+            !shops.is_empty(),
+            "load_shops() must return the embedded shop registry, not an empty vec; \
+             an `Ok(vec![])` body mutant would silently disable all shops"
+        );
+        let pebble = shops
+            .iter()
+            .find(|s| s.id == 1)
+            .expect("embedded shops must include shop id 1 (Pebble Town Shop)");
+        assert_eq!(
+            pebble.name, "Pebble Town Shop",
+            "embedded shop id 1 must be 'Pebble Town Shop'"
+        );
+        assert!(
+            pebble
+                .stock
+                .iter()
+                .any(|e| e.item_id == 1 && e.buy_price == 200),
+            "Pebble Town Shop must stock item_id 1 @ buy_price 200 (content/shops/000-core.ron)"
+        );
+        assert!(
+            pebble
+                .stock
+                .iter()
+                .any(|e| e.item_id == 2 && e.buy_price == 300),
+            "Pebble Town Shop must stock item_id 2 @ buy_price 300 (content/shops/000-core.ron)"
+        );
+    }
+
+    /// kills: game-core/src/content.rs:440:5: replace parse_shops_parts -> Result<Vec<ShopDef>, String> with Ok(vec![])
+    ///
+    /// parse_shops_parts must actually parse + concatenate the RON parts it is
+    /// given, NOT return an empty vec. Feeding a small inline parts slice and
+    /// asserting the parsed ShopDef rows come back kills the `Ok(vec![])` body
+    /// replacement (which would drop all parsed shops on the floor).
+    #[test]
+    fn parse_shops_parts_parses_inline_parts() {
+        let parts: &[(&str, &str)] = &[(
+            "inline-test",
+            r#"[
+                (id: 42, name: "Test Emporium", stock: [
+                    (item_id: 7, buy_price: 999),
+                ]),
+            ]"#,
+        )];
+        let shops = parse_shops_parts(parts).expect("inline shop parts must parse");
+        assert_eq!(
+            shops.len(),
+            1,
+            "parse_shops_parts must return the parsed rows, not an empty vec; \
+             an `Ok(vec![])` body mutant would drop all parsed shops"
+        );
+        assert_eq!(shops[0].id, 42, "parsed shop id must be 42");
+        assert_eq!(
+            shops[0].name, "Test Emporium",
+            "parsed shop name must round-trip"
+        );
+        assert_eq!(
+            shops[0].stock.len(),
+            1,
+            "parsed shop must have 1 stock entry"
+        );
+        assert_eq!(
+            shops[0].stock[0].item_id, 7,
+            "parsed stock item_id must be 7"
+        );
+        assert_eq!(
+            shops[0].stock[0].buy_price, 999,
+            "parsed stock buy_price must be 999"
+        );
+    }
+
+    /// kills: game-core/src/content.rs:1266:53: replace == with != in validate_npc_content
+    ///
+    /// Line 1266 is check #13 (heal-location cost coherence):
+    ///   `if hl.cost_item_id.is_some() && hl.cost_qty == 0 { return Err(...) }`
+    /// A heal location that charges an item MUST specify a non-zero quantity;
+    /// cost_qty == 0 with a cost_item_id set is a config error.
+    ///
+    /// This is the ERRORS half of the pair: cost_item_id = Some(1), cost_qty = 0
+    /// → the real `== 0` fires → Err. The `==`→`!=` flip makes `0 != 0` false →
+    /// no error → Ok, so this is_err assert kills the flip. (All earlier checks
+    /// pass: zone 0 exists, item 1 exists.)
+    #[test]
+    fn validate_npc_content_rejects_zero_cost_qty_with_cost_item() {
+        let zones = vec![ZoneDef {
+            id: 0,
+            name: "Z0".to_string(),
+            width: 10,
+            height: 10,
+        }];
+        let items = vec![fixture_item_with_sell_price(1, 50)];
+        let heal = HealLocationDef {
+            location_id: 1,
+            zone_id: 0,
+            tile_x: 1,
+            tile_y: 1,
+            cost_item_id: Some(1),
+            cost_qty: 0, // config error: charges an item but zero quantity
+            cooldown_ms: 30_000,
+            cost_currency: 0,
+        };
+        let result = validate_npc_content(&[], &[], &[], &zones, &items, &[heal]);
+        assert!(
+            result.is_err(),
+            "check #13: cost_item_id set with cost_qty == 0 must Err; a `==`→`!=` \
+             flip makes `0 != 0` false so the config error slips through"
+        );
+    }
+
+    /// kills: game-core/src/content.rs:1266:53: replace == with != in validate_npc_content
+    ///
+    /// This is the PASSES half of the pair: a heal location with cost_item_id =
+    /// Some(1) and cost_qty = 1 (a coherent cost) must validate Ok. Under the
+    /// `==`→`!=` flip, `1 != 0` is true → check #13 wrongly Errs on valid content,
+    /// so this is_ok assert also kills the flip (bites in the opposite direction
+    /// from the errors-half above).
+    #[test]
+    fn validate_npc_content_accepts_positive_cost_qty_with_cost_item() {
+        let zones = vec![ZoneDef {
+            id: 0,
+            name: "Z0".to_string(),
+            width: 10,
+            height: 10,
+        }];
+        let items = vec![fixture_item_with_sell_price(1, 50)];
+        let heal = HealLocationDef {
+            location_id: 1,
+            zone_id: 0,
+            tile_x: 1,
+            tile_y: 1,
+            cost_item_id: Some(1),
+            cost_qty: 1, // coherent: charges 1 of item 1
+            cooldown_ms: 30_000,
+            cost_currency: 0,
+        };
+        let result = validate_npc_content(&[], &[], &[], &zones, &items, &[heal]);
+        assert!(
+            result.is_ok(),
+            "check #13: cost_item_id set with cost_qty == 1 is coherent and must \
+             validate Ok; a `==`→`!=` flip makes `1 != 0` true → wrongly Errs. \
+             Got: {:?}",
+            result.err()
+        );
+    }
 }

@@ -64,6 +64,12 @@ spacetime.local.json
 # Local Claude Code state (shared .claude/settings.json stays tracked).
 .claude/settings.local.json
 
+# ── cargo-mutants output ──────────────────────────────
+# Regenerated on each nightly run; ~11M artifact — never commit.
+mutants.out/
+mutants.out.old/
+mutants.out.partial/
+
 # ── OS / editor ───────────────────────────────────────
 .DS_Store
 Thumbs.db

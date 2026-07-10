@@ -38,8 +38,11 @@ spacetime publish -s "$SERVER" --module-path server-module --delete-data -y "$DB
 # RT-SR-01: on_disconnect deletes the player row the moment the CLI disconnects,
 # so player-table assertions after a one-shot `spacetime call` are vacuous.
 log "Phase 2: calling join_game to create starter monster"
-# Reducer args are a JSON array per SpacetimeDB 2.x CLI convention.
-spacetime call -s "$SERVER" "$DB" join_game '["SmokePlayer"]'
+# Each reducer arg is its own JSON value on the spacetime 2.6.0 CLI (the CLI
+# assembles the args array itself). Wrapping in a JSON array double-nests and
+# the server rejects with "invalid arguments ... trailing characters" — this
+# exact bug kept the smoke job red from its first nightly run (ADR-0088).
+spacetime call -s "$SERVER" "$DB" join_game '"SmokePlayer"'
 
 # Poll until the starter monster row appears (SQL query may lag one step).
 # Pre-initialize so the log line and [ check after the loop are safe under set -u.

@@ -1,0 +1,6 @@
+# Single blessed exclusion: provably-equivalent mutant (ADR-0088 §Decision 2).
+# The Y-branch of toward_home requires |dx| < |dy| → dy != 0, so `dy > 0` and
+# `dy >= 0` are indistinguishable on the reachable domain. Line-pinned
+# (npc/rules.rs:61:15): drift resurfaces the mutant → nightly red → re-pin
+# consciously. Guarded by evals/mutate-core-recipe-integrity.eval.mjs.
+exclude_re = ["npc/rules\\.rs:61:15: replace > with >= in toward_home"]

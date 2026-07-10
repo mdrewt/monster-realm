@@ -40,11 +40,33 @@ mutate:
     cargo mutants --workspace
 
 # Nightly mutation gate scoped to the rule core (ADR-0050). Narrower than
-# `mutate` (--workspace) so the scheduled run stays tractable; surviving
-# mutants fail the job (default cargo-mutants behavior) — tighten/exclude
-# equivalents as discovered (policy in ADR-0050). Runs in nightly.yml only.
+# `mutate` (--workspace) so the scheduled run stays tractable; the wrapper
+# below provides: fail-closed guard on the missed.txt outcome file (vacuous-
+# green V4 prevention), hard-zero missed count, and timeout tolerance
+# (ADR-0088 §Decision 1-2). Runs in nightly.yml only.
 mutate-core:
-    cargo mutants -p game-core
+    #!/usr/bin/env bash
+    set -euo pipefail
+    status=0
+    cargo mutants -p game-core || status=$?
+    # 0 = clean; 2 = missed mutants; 3 = timeouts (may accompany missed).
+    # Anything else (1 usage, 4 baseline-test failure, ...) = fail loud.
+    if [ "$status" -ne 0 ] && [ "$status" -ne 2 ] && [ "$status" -ne 3 ]; then
+        echo "cargo mutants failed with exit $status (not a mutation verdict)" >&2
+        exit "$status"
+    fi
+    # Fail closed if the outcome file is absent — wc -l would also fail
+    # under set -euo pipefail, but the explicit guard gives a clearer message (V4).
+    if [ ! -f mutants.out/missed.txt ]; then
+        echo "mutants.out/missed.txt absent — cannot verify zero-missed" >&2
+        exit 1
+    fi
+    missed=$(wc -l < mutants.out/missed.txt)
+    echo "mutate-core: missed=$missed (zero-tolerance ADR-0050; timeouts tolerated iff missed=0, ADR-0088)"
+    if [ "$missed" -gt 0 ]; then
+        echo "game-core mutation gate: $missed surviving mutant(s) — zero-tolerance (ADR-0050)" >&2
+        exit 1
+    fi
 
 # Nightly server-module mutation gate (ADR-0050 amendment A2, D-13.5-2). The cargo
 # package for server-module/ is `monster-realm-module` (`-p server-module` fails
