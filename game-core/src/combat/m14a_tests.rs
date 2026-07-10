@@ -6,7 +6,7 @@
 //!   - `apply_pre_turn_effects`, `apply_post_turn_effects`, `tick_status` functions
 //!   - `resolve_full_turn` in `resolve.rs`
 //!   - `TurnChoice::Pass` variant in `types.rs`
-//!   - `BattleEvent::StatusApplied`, `StatusDamage`, `ActionBlocked`, `StatusCured` variants
+//!   - `BattleEvent::StatusDamage`, `ActionBlocked`, `StatusCured` variants
 //!
 //! Criterion → test mapping:
 //!   EARS-1 (regression)        → m14a_plain_attack_unchanged_with_empty_status
@@ -1171,4 +1171,133 @@ fn m14a_both_sides_can_have_independent_status() {
         "TEETH: SideB with Paralysis and roll=0 (< 25) must be blocked; \
          an impl that cross-contaminates or ignores side B's status fails here"
     );
+}
+
+// ---------------------------------------------------------------------------
+// TEST 19 (mutation gate): Poison on SideB emits StatusDamage{side:SideB}
+//
+// Kills: a mutant that hardcodes SideId::SideA in the StatusDamage event
+// regardless of which side the loop is processing.
+// Every DoT test in EARS-3 through EARS-5 and EARS-17 places Poison/Burn only
+// on SideA. A hardcode-SideA mutant passes all 18 EARS tests. This test closes
+// that mutation gap by putting Poison exclusively on SideB and verifying the
+// event targets SideB (not SideA).
+// ---------------------------------------------------------------------------
+
+/// Kills: any mutant that hardcodes SideId::SideA in StatusDamage or in the
+/// side_status lookup — both result in the wrong side being targeted or no
+/// DoT being applied to SideB at all.
+#[test]
+fn m14a_poison_on_side_b_deals_dot_to_side_b() {
+    let m_a = make_monster(Affinity::Water, 100, 100);
+    let mut m_b = make_monster(Affinity::Fire, 160, 50);
+    m_b.max_hp = 160;
+    m_b.current_hp = 160;
+
+    let mut state = make_battle_state(m_a, m_b);
+    state.turn_number = 1;
+
+    let status = BattleStatusStore {
+        side_a: vec![None],
+        side_b: vec![Some(StatusEffect::Poison)],
+    };
+
+    let events = apply_post_turn_effects(&mut state, &status);
+
+    // No DoT must target SideA (SideA has no status).
+    let dot_a = events
+        .iter()
+        .any(|e| matches!(e, BattleEvent::StatusDamage { side, .. } if *side == SideId::SideA));
+    assert!(
+        !dot_a,
+        "TEETH: SideA has no status — must receive no StatusDamage; \
+         a mutant that always targets SideA emits StatusDamage{{side:SideA}} here"
+    );
+
+    // Exactly one DoT event must target SideB.
+    let dot_b_events: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, BattleEvent::StatusDamage { side, .. } if *side == SideId::SideB))
+        .collect();
+    assert_eq!(
+        dot_b_events.len(),
+        1,
+        "TEETH: Poison on SideB must emit exactly 1 StatusDamage{{side:SideB}}; \
+         a hardcode-SideA mutant emits 0 events for SideB — this assertion catches it"
+    );
+
+    match &dot_b_events[0] {
+        BattleEvent::StatusDamage { side, amount } => {
+            assert_eq!(*side, SideId::SideB, "StatusDamage must target SideB");
+            assert_eq!(
+                *amount, 20,
+                "TEETH: Poison DoT for max_hp=160 must be 20 (160/8); \
+                 a /16 impl produces 10, a hardcode-SideA path produces wrong amounts"
+            );
+        }
+        _ => panic!("expected StatusDamage"),
+    }
+
+    assert_eq!(
+        state.side_b.active_monster().current_hp,
+        140,
+        "TEETH: SideB current_hp must decrease from 160 to 140 (160 - 20); \
+         a mutant applying DoT to SideA would leave SideB HP unchanged"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// TEST 20 (mutation gate): Burn minimum damage = 1
+//
+// Parallel to EARS-4 (Poison floor). Kills a mutant that removes `.max(1)` from
+// burn_dot_amount — for max_hp=8, 8/16=0 without the floor, emitting 0 damage.
+// ---------------------------------------------------------------------------
+
+/// Kills: a mutant that removes `.max(1)` from burn_dot_amount.
+/// max_hp=8 → 8/16 = 0 → without the floor, amount=0 and no HP is subtracted.
+#[test]
+fn m14a_burn_deals_at_least_1_damage() {
+    let mut m = make_monster(Affinity::Fire, 8, 50);
+    m.max_hp = 8;
+    m.current_hp = 8;
+
+    let mut state = BattleState {
+        side_a: BattleSide {
+            active: 0,
+            team: vec![m],
+        },
+        side_b: BattleSide {
+            active: 0,
+            team: vec![make_monster(Affinity::Water, 100, 40)],
+        },
+        outcome: BattleOutcome::Ongoing,
+        turn_number: 1,
+    };
+
+    let status = BattleStatusStore {
+        side_a: vec![Some(StatusEffect::Burn)],
+        side_b: vec![None],
+    };
+
+    let events = apply_post_turn_effects(&mut state, &status);
+
+    let dot_events: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, BattleEvent::StatusDamage { .. }))
+        .collect();
+    assert!(
+        !dot_events.is_empty(),
+        "Burn must emit at least one StatusDamage event"
+    );
+
+    match &dot_events[0] {
+        BattleEvent::StatusDamage { amount, .. } => {
+            assert!(
+                *amount >= 1,
+                "TEETH: Burn DoT must be at least 1 even for max_hp=8 (8/16=0 without floor); \
+                 a mutant removing .max(1) from burn_dot_amount emits 0 damage and fails here"
+            );
+        }
+        _ => panic!("expected StatusDamage"),
+    }
 }

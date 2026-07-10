@@ -53,9 +53,12 @@ pub struct StatusVariance {
     pub freeze_thaw_roll_a: u8,
     /// 0–99: Freeze thaws when this value is >= 80 for side B.
     pub freeze_thaw_roll_b: u8,
-    /// Reserved for future wake-chance logic; currently unused.
+    /// Reserved for future wake-chance probability (currently unused — Sleep always wakes by
+    /// turn-count via `tick_status`). M14b MUST wire `StatusVariance::from_ctx_random` (parallel
+    /// to `TurnVariance::from_ctx_random`) that derives ALL six fields from a single seed, so
+    /// these rolls are consistently derived server-side and not silently skipped.
     pub sleep_wake_roll_a: u8,
-    /// Reserved for future wake-chance logic; currently unused.
+    /// See `sleep_wake_roll_a`.
     pub sleep_wake_roll_b: u8,
 }
 
