@@ -36,7 +36,7 @@ static ZONE_MAPS: LazyLock<Result<Vec<game_core::ZoneMapDef>, String>> =
 // zone transition rebuilds for the new zone (ADR-0089). thread_local is idiomatic
 // for WASM (single-threaded execution model).
 thread_local! {
-    static ACTIVE_TILE_MAP: RefCell<Option<game_core::TileMap>> = RefCell::new(None);
+    static ACTIVE_TILE_MAP: RefCell<Option<game_core::TileMap>> = const { RefCell::new(None) };
 }
 
 /// Return a reference to the cached zone-maps registry.

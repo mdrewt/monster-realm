@@ -5,10 +5,12 @@
 //!
 //! RED state: this file does not compile until the implementer creates
 //! `server-module/src/content_cache.rs` exposing:
-//!   - `cached_zone_maps()      -> Result<&'static Vec<game_core::ZoneMapDef>, String>`
-//!   - `cached_evolutions()     -> Result<&'static Vec<game_core::SpeciesEvolutions>, String>`
-//!   - `cached_dialogue_trees() -> Result<&'static Vec<game_core::DialogueTree>, String>`
-//!   - `cached_quest_defs()     -> Result<&'static Vec<game_core::QuestDef>, String>`
+//!
+//! - `cached_zone_maps()      -> Result<&'static Vec<game_core::ZoneMapDef>, String>`
+//! - `cached_evolutions()     -> Result<&'static Vec<game_core::SpeciesEvolutions>, String>`
+//! - `cached_dialogue_trees() -> Result<&'static Vec<game_core::DialogueTree>, String>`
+//! - `cached_quest_defs()     -> Result<&'static Vec<game_core::QuestDef>, String>`
+//!
 //! and adds `mod content_cache;` to `lib.rs`.
 //!
 //! EARS criteria covered:
