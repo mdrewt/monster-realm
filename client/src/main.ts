@@ -446,6 +446,9 @@ window.addEventListener('keydown', (e) => {
     ) {
       const own = store.ownCharacter(identity);
       if (own !== undefined) {
+        // store.characters() is the WHOLE character table (players + NPCs);
+        // entityId is globally unique (one auto_inc sequence), so joining the
+        // NPC registry against this map always lands on the NPC's own row.
         const characterTiles = new Map(
           [...store.characters()].map((c) => [
             c.row.entityId,
@@ -635,7 +638,12 @@ store.onBatchApplied(() => {
     const conv = store.ownConversation(identity);
     const dialogueVm = buildDialogueViewModel(conv, npcsMap, DIALOGUE_TREES);
     dialogueView?.render(dialogueVm);
-    if (!conv) dismissPending = false; // reset on server-side dismiss
+    // Reset on server-side dismiss. This is also the RECONNECT self-heal for
+    // dismissPending: it relies on on_disconnect deleting the sender's
+    // player_conversation row (lib.rs on_disconnect) so the post-reconnect
+    // snapshot has no conversation — removing that server-side delete would
+    // silently strand dismissPending=true across a mid-dismiss drop.
+    if (!conv) dismissPending = false;
   } catch (err) {
     console.error('[M12d] dialogue batch listener error', err);
   }

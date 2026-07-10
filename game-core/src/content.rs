@@ -302,6 +302,16 @@ pub fn parse_zones(ron_str: &str) -> Result<Vec<ZoneDef>, String> {
 /// # Errors
 /// Returns `Err` if any zone has a zero dimension or a duplicate id.
 pub fn validate_zones(zones: &[ZoneDef]) -> Result<(), String> {
+    // RT-ZONE-EMPTY (m13.5c red-team): an empty registry must be Err. Since
+    // 13.5c-2 the server reaps zone_def rows absent from the loaded registry —
+    // an accidentally-empty zones RON would otherwise mark EVERY zone stale
+    // and delete them all (world-destroying; recovery needs --delete-data).
+    if zones.is_empty() {
+        return Err(
+            "zone registry must not be empty (an empty registry would reap every zone_def row)"
+                .to_string(),
+        );
+    }
     let mut seen = std::collections::BTreeSet::new();
     for z in zones {
         if z.width == 0 || z.height == 0 {
@@ -1293,6 +1303,28 @@ mod tests {
         let bad = r#"[(id: 0, name: "Flat", width: 0, height: 5)]"#;
         let zones = parse_zones(bad).expect("parses");
         assert!(validate_zones(&zones).is_err());
+    }
+
+    /// TEETH(RT-ZONE-EMPTY, m13.5c): an empty zones slice must be Err — since
+    /// 13.5c-2 the server reaps zone_def rows absent from the loaded registry,
+    /// so an empty registry would mark every existing zone stale and delete
+    /// them all. KILLS: an impl whose validation loop body simply never runs
+    /// on an empty slice (the pre-m13.5c behavior).
+    #[test]
+    fn validate_zones_rejects_empty_registry() {
+        assert!(
+            validate_zones(&[]).is_err(),
+            "validate_zones must reject an empty zones slice; Ok(()) lets an \
+             empty RON wipe all zone_def rows via the stale-reap path"
+        );
+    }
+
+    /// Companion positive tooth: kills a vacuous always-Err guard.
+    #[test]
+    fn validate_zones_accepts_nonempty_registry() {
+        let ok = r#"[(id: 0, name: "A", width: 1, height: 1)]"#;
+        let zones = parse_zones(ok).expect("parses");
+        assert!(validate_zones(&zones).is_ok());
     }
 
     #[test]

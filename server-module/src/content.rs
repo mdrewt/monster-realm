@@ -599,6 +599,13 @@ fn sync_npc_entities_from(ctx: &ReducerContext, npc_defs: &[game_core::NpcDef]) 
             } => {
                 // Half-orphan self-heal (fold M1+RT-6): drop the orphan npc
                 // row, then seed a fresh pair (mints a new entity_id).
+                // Planner invariant: Repair fires ONLY for (npc, None) pairs —
+                // if a character row exists for this entity_id the planner is
+                // mis-classifying and this arm would leave a zombie character.
+                debug_assert!(
+                    ctx.db.character().entity_id().find(entity_id).is_none(),
+                    "planner invariant: Repair orphan entity_id must have no character row"
+                );
                 ctx.db.npc().entity_id().delete(entity_id);
                 removed_entity_ids.push(entity_id);
                 let ch = ctx.db.character().insert(character);
