@@ -68,9 +68,9 @@ import HealLocationRowRow from "./heal_location_row_table";
 import InventoryRow from "./inventory_table";
 import ItemRowRow from "./item_row_table";
 import MonsterPubRow from "./monster_pub_table";
+import MyConversationRow from "./my_conversation_table";
 import NpcRow from "./npc_table";
 import PlayerRow from "./player_table";
-import PlayerConversationRow from "./player_conversation_table";
 import PlayerQuestRow from "./player_quest_table";
 import ShopItemRowRow from "./shop_item_row_table";
 import ShopRowRow from "./shop_row_table";
@@ -218,17 +218,6 @@ const tablesSchema = __schema({
       { name: 'player_identity_key', constraint: 'unique', columns: ['identity'] },
     ],
   }, PlayerRow),
-  player_conversation: __table({
-    name: 'player_conversation',
-    indexes: [
-      { accessor: 'owner_identity', name: 'player_conversation_owner_identity_idx_btree', algorithm: 'btree', columns: [
-        'ownerIdentity',
-      ] },
-    ],
-    constraints: [
-      { name: 'player_conversation_owner_identity_key', constraint: 'unique', columns: ['ownerIdentity'] },
-    ],
-  }, PlayerConversationRow),
   player_quest: __table({
     name: 'player_quest',
     indexes: [
@@ -312,6 +301,13 @@ const tablesSchema = __schema({
       { name: 'zone_def_zone_id_key', constraint: 'unique', columns: ['zoneId'] },
     ],
   }, ZoneDefRow),
+  my_conversation: __table({
+    name: 'my_conversation',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyConversationRow),
 });
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */

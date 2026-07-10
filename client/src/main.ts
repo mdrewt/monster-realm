@@ -44,7 +44,7 @@ import type { BattleView } from './ui/battleView';
 import { buildBoxViewModel, buildPartyViewModel, nextFreePartySlot } from './ui/boxModel';
 import type { BoxView } from './ui/boxView';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
-import { buildDialogueViewModel } from './ui/dialogueModel';
+import { buildDialogueViewModel, nearestTalkableNpcId } from './ui/dialogueModel';
 import type { DialogueView } from './ui/dialogueView';
 import { buildEvolutionViewModel } from './ui/evolutionModel';
 import type { EvolutionView } from './ui/evolutionView';
@@ -426,6 +426,44 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
+  if (e.code === 'KeyT') {
+    // TALK (M13.5c — implementer contract in client/e2e/dialogue.spec.ts header):
+    // only when NO overlay is visible, target the nearest NPC (store.allNpcs()
+    // joined to character rows, same zone) within CLIENT_TALK_RANGE of the own
+    // AUTHORITATIVE tile and send the talk reducer; no-op when none is in range.
+    // The client-side range check is latency hygiene, NOT security — the server
+    // re-validates zone + range (npc.rs talk Steps 4-5, TALK_RANGE at npc.rs:20).
+    if (
+      !battleView?.visible &&
+      !boxView?.visible &&
+      !raisingView?.visible &&
+      !evolutionView?.visible &&
+      !dialogueView?.visible &&
+      !questLogView?.visible &&
+      !healView?.visible &&
+      !shopView?.visible &&
+      identity !== ''
+    ) {
+      const own = store.ownCharacter(identity);
+      if (own !== undefined) {
+        // store.characters() is the WHOLE character table (players + NPCs);
+        // entityId is globally unique (one auto_inc sequence), so joining the
+        // NPC registry against this map always lands on the NPC's own row.
+        const characterTiles = new Map(
+          [...store.characters()].map((c) => [
+            c.row.entityId,
+            { zoneId: c.row.zoneId, tileX: c.row.tileX, tileY: c.row.tileY },
+          ]),
+        );
+        const npcEntityId = nearestTalkableNpcId(own.row, store.allNpcs(), characterTiles);
+        if (npcEntityId !== undefined) {
+          sendGuarded('talk', () => conn?.conn.reducers.talk({ npcEntityId }));
+        }
+      }
+    }
+    e.preventDefault();
+    return;
+  }
   // Escape priority: battle > box > raising > evolution > dialogue > questLog > heal (ADR-0071).
   if (e.code === 'Escape' && battleView?.visible) {
     const latest = store.latestPlayerBattle(identity);
@@ -600,7 +638,12 @@ store.onBatchApplied(() => {
     const conv = store.ownConversation(identity);
     const dialogueVm = buildDialogueViewModel(conv, npcsMap, DIALOGUE_TREES);
     dialogueView?.render(dialogueVm);
-    if (!conv) dismissPending = false; // reset on server-side dismiss
+    // Reset on server-side dismiss. This is also the RECONNECT self-heal for
+    // dismissPending: it relies on on_disconnect deleting the sender's
+    // player_conversation row (lib.rs on_disconnect) so the post-reconnect
+    // snapshot has no conversation — removing that server-side delete would
+    // silently strand dismissPending=true across a mid-dismiss drop.
+    if (!conv) dismissPending = false;
   } catch (err) {
     console.error('[M12d] dialogue batch listener error', err);
   }

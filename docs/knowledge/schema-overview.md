@@ -2,7 +2,7 @@
 type: Schema Overview
 title: Monster Realm Schema Overview
 slug: schema-overview
-updated: 2026-07-04
+updated: 2026-07-05
 tags: [schema, spacetimedb, overview]
 abstract: "25-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 27 reducers."
 source: scripts/okf-export.mjs@server-module/src/
@@ -10,7 +10,7 @@ source: scripts/okf-export.mjs@server-module/src/
 
 ## Tables
 
-### Public (18)
+### Public (17)
 
 - [battle](tables/battle.md)
 - [character](tables/character.md)
@@ -22,7 +22,6 @@ source: scripts/okf-export.mjs@server-module/src/
 - [monster_pub](tables/monster_pub.md)
 - [npc](tables/npc.md)
 - [player](tables/player.md)
-- [player_conversation](tables/player_conversation.md)
 - [player_quest](tables/player_quest.md)
 - [shop_item_row](tables/shop_item_row.md)
 - [shop_row](tables/shop_row.md)
@@ -31,13 +30,14 @@ source: scripts/okf-export.mjs@server-module/src/
 - [type_relation_row](tables/type_relation_row.md)
 - [zone_def](tables/zone_def.md)
 
-### Private (7)
+### Private (8)
 
 - [battle_wild](tables/battle_wild.md)
 - [encounter](tables/encounter.md)
 - [heal_cooldown](tables/heal_cooldown.md)
 - [monster](tables/monster.md) → public projection: [monster_pub](tables/monster_pub.md)
 - [movement_tick_schedule](tables/movement_tick_schedule.md)
+- [player_conversation](tables/player_conversation.md)
 - [player_dialogue_state](tables/player_dialogue_state.md)
 - [player_wallet](tables/player_wallet.md)
 

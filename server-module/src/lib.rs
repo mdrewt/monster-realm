@@ -53,36 +53,62 @@ pub(crate) const WILD_IDENTITY: Identity = Identity::from_byte_array([0u8; 32]);
 
 // --- Private helpers --------------------------------------------------------
 
+/// Pure reconcile seam (13.5c-2): given the live zone ids and the currently
+/// scheduled `(schedule row id, zone_id)` pairs, plan `(row ids to remove,
+/// zone ids to add)`. Extracted from `ensure_zone_schedules` so "no schedule
+/// row remains for a removed zone" is a behavioral test, not a structural one.
+/// Both halves come back sorted ascending (deterministic apply order — HashSet
+/// iteration order must not leak into row writes).
+pub(crate) fn plan_schedule_reconcile(
+    zone_ids: &[u32],
+    scheduled: &[(u64, u32)],
+) -> (Vec<u64>, Vec<u32>) {
+    let live: std::collections::HashSet<u32> = zone_ids.iter().copied().collect();
+    let scheduled_zones: std::collections::HashSet<u32> =
+        scheduled.iter().map(|&(_, zone_id)| zone_id).collect();
+    let mut to_remove: Vec<u64> = scheduled
+        .iter()
+        .filter(|&&(_, zone_id)| !live.contains(&zone_id))
+        .map(|&(row_id, _)| row_id)
+        .collect();
+    to_remove.sort_unstable();
+    let mut to_add: Vec<u32> = zone_ids
+        .iter()
+        .copied()
+        .filter(|zone_id| !scheduled_zones.contains(zone_id))
+        .collect();
+    to_add.sort_unstable();
+    (to_remove, to_add)
+}
+
 /// Idempotent per-zone schedule management (ADR-0066): inserts a
 /// `MovementTickSchedule` row for every zone that does not yet have one, and
 /// removes orphaned rows for zones that no longer exist in `zone_def` (orphaned
 /// rows fire `map_for` errors every tick — remove them to prevent log-flood).
-/// Called from both `init` and `sync_content`.
+/// Called from both `init` and `sync_content`. Imperative shell: the diff is
+/// owned by the pure `plan_schedule_reconcile` seam above (13.5c-2).
 fn ensure_zone_schedules(ctx: &ReducerContext) {
-    let zone_ids: std::collections::HashSet<u32> =
-        ctx.db.zone_def().iter().map(|z| z.zone_id).collect();
-    let scheduled_rows: Vec<_> = ctx.db.movement_tick_schedule().iter().collect();
-    let scheduled: std::collections::HashSet<u32> =
-        scheduled_rows.iter().map(|s| s.zone_id).collect();
-    // Remove orphaned schedule rows (zone removed from content).
-    for s in &scheduled_rows {
-        if !zone_ids.contains(&s.zone_id) {
-            ctx.db.movement_tick_schedule().id().delete(s.id);
-        }
+    let zone_ids: Vec<u32> = ctx.db.zone_def().iter().map(|z| z.zone_id).collect();
+    let scheduled: Vec<(u64, u32)> = ctx
+        .db
+        .movement_tick_schedule()
+        .iter()
+        .map(|s| (s.id, s.zone_id))
+        .collect();
+    let (to_remove, to_add) = plan_schedule_reconcile(&zone_ids, &scheduled);
+    for row_id in to_remove {
+        ctx.db.movement_tick_schedule().id().delete(row_id);
     }
-    // Insert missing schedule rows (zone newly added to content).
-    for zone_id in &zone_ids {
-        if !scheduled.contains(zone_id) {
-            ctx.db
-                .movement_tick_schedule()
-                .insert(MovementTickSchedule {
-                    id: 0,
-                    zone_id: *zone_id,
-                    scheduled_at: ScheduleAt::Interval(
-                        Duration::from_millis(STEP_MS.unsigned_abs()).into(),
-                    ),
-                });
-        }
+    for zone_id in to_add {
+        ctx.db
+            .movement_tick_schedule()
+            .insert(MovementTickSchedule {
+                id: 0,
+                zone_id,
+                scheduled_at: ScheduleAt::Interval(
+                    Duration::from_millis(STEP_MS.unsigned_abs()).into(),
+                ),
+            });
     }
 }
 
@@ -113,11 +139,15 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
         .find(0)
         .ok_or_else(|| "sync_content: config row missing".to_string())?;
     // Zero-identity means the DB was published before M12.5b (owner_identity was not
-    // yet stored in Config). A re-publish will set it correctly via `init`.
+    // yet stored in Config). `init` runs ONLY at DB creation, so a plain re-publish
+    // never re-registers the owner — the only working remedy is
+    // `spacetime publish --delete-data` (destructive), which re-runs `init` (13.5c-4).
     if cfg.owner_identity == Identity::from_byte_array([0u8; 32]) {
         return Err(
             "sync_content: owner_identity not registered — module was published before \
-             M12.5b; re-publish to register the owner"
+             M12.5b; `init` only runs at DB creation, so recovery requires \
+             `spacetime publish --delete-data` (destructive: wipes all data) to re-run \
+             init and register the owner"
                 .to_string(),
         );
     }

@@ -331,6 +331,9 @@ export function fusionRowToStore(row: SdkFusionRow): StoreFusionRow {
 
 // --- M12d: player_conversation / player_quest / heal_location_row / npc converters ----
 
+// M13.5c (ADR-0087): rows now arrive through the owner-scoped `my_conversation`
+// VIEW binding — structurally identical to the old table row (the view returns
+// Option<PlayerConversation>), so this converter is unchanged.
 interface SdkPlayerConversation {
   readonly ownerIdentity: { toHexString(): string };
   readonly npcEntityId: bigint;
@@ -343,6 +346,36 @@ export function playerConversationRowToStore(row: SdkPlayerConversation): StoreP
     npcEntityId: row.npcEntityId,
     currentNodeId: row.currentNodeId,
   };
+}
+
+/**
+ * Net-effect delete gate for the owner-scoped `my_conversation` VIEW subscription
+ * (M13.5c, ADR-0087 — T0 spike finding 4): through a view, a row UPDATE arrives as
+ * `onInsert(new)` + `onDelete(old)` — NO onUpdate (the view table has no PK for SDK
+ * correlation) — and the pair is UNORDERED. A naive onDelete → remove(owner) would
+ * wipe the just-updated conversation on every advance_dialogue.
+ *
+ * Returns true (remove the stored row) ONLY when `stored` is defined and matches
+ * `deleted` on BOTH npcEntityId AND currentNodeId — a genuine delete (dismiss, or
+ * an end-of-dialogue advance). Returns false when stored is undefined or differs on
+ * either field (the delete-of-the-old-version half of an update pair). npcEntityId
+ * is compared as bigint (coercion-free: Number() would collapse ids past 2^53).
+ *
+ * KNOWN EDGE (RT-M13.5C-03, ADR-0087): an UPDATE to IDENTICAL values is
+ * indistinguishable from a genuine delete here (insert-first ordering would
+ * remove the live row). Unreachable from this client — KeyT is overlay-guarded,
+ * so `talk` is never sent while a conversation exists, and no current dialogue
+ * tree self-loops — the durable fix is a server-side no-op-skip in the talk /
+ * advance_dialogue upserts (npc.rs, outside this slice's touch-set).
+ */
+export function shouldRemoveOnViewDelete(
+  stored: StorePlayerConversation | undefined,
+  deleted: StorePlayerConversation,
+): boolean {
+  if (stored === undefined) return false;
+  return (
+    stored.npcEntityId === deleted.npcEntityId && stored.currentNodeId === deleted.currentNodeId
+  );
 }
 
 interface SdkPlayerQuest {
