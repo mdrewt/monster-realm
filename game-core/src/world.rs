@@ -21,6 +21,54 @@ pub const PARTY_SIZE: u8 = 6;
 /// The party-slot sentinel meaning "boxed" (not in the party).
 pub const PARTY_SLOT_NONE: u8 = 255;
 
+/// Why a party-slot assignment was rejected (pure; never stored or sent on wire).
+///
+/// Mirrors the `SwapError` pattern (`combat/types.rs`, ADR-0053) — a typed error
+/// with `Display` so the reducer can log and convert to `String` without losing
+/// context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotError {
+    /// `slot` is neither a valid party index (`0..PARTY_SIZE`) nor `PARTY_SLOT_NONE`.
+    OutOfRange,
+    /// `slot` is a valid party index but is already occupied by another monster.
+    Occupied,
+}
+
+impl std::fmt::Display for SlotError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SlotError::OutOfRange => write!(
+                f,
+                "slot out of range (0..{PARTY_SIZE} or {PARTY_SLOT_NONE} for box)"
+            ),
+            SlotError::Occupied => write!(f, "party slot already occupied"),
+        }
+    }
+}
+
+/// Legality check for a party-slot assignment (pure; ADR-0053 SwapError pattern).
+///
+/// `PARTY_SLOT_NONE` (255, "box") is always legal. A party index must satisfy
+/// `slot < PARTY_SIZE` and must not appear in `occupied_slots`. The caller must
+/// provide only the PARTY slots (0..PARTY_SIZE) of OTHER monsters — boxed monsters
+/// (`party_slot == PARTY_SLOT_NONE`) must be excluded from the slice.
+///
+/// # Errors
+/// - `SlotError::OutOfRange` if `slot != PARTY_SLOT_NONE && slot >= PARTY_SIZE`.
+/// - `SlotError::Occupied` if `slot` is a valid party index found in `occupied_slots`.
+pub fn check_party_slot(slot: u8, occupied_slots: &[u8]) -> Result<(), SlotError> {
+    if slot == PARTY_SLOT_NONE {
+        return Ok(());
+    }
+    if slot >= PARTY_SIZE {
+        return Err(SlotError::OutOfRange);
+    }
+    if occupied_slots.contains(&slot) {
+        return Err(SlotError::Occupied);
+    }
+    Ok(())
+}
+
 /// The single M1 zone's hand-authored art (`zone_id = 0`). A `const`-style source
 /// until M11 swaps in the Tiled→RON pipeline (ADR-0008); the swap is localized to
 /// `zone_0`.
@@ -353,7 +401,10 @@ pub fn apply_move(
 /// Flat-code parity helper over `zone_0()`: shared by the native bin and the wasm
 /// export so the movement-parity eval compares the SAME `apply_move` compiled for
 /// two targets, not two encodings. Returns `[x, y, facing_code, action_code]`.
-#[must_use]
+///
+/// # Errors
+/// Returns `Err` if any of `facing`, `action`, or `step_dir` (when `input_kind == 0`)
+/// is not a valid code — fail-loud parity with the serde path (`apply_move` wasm export).
 #[allow(clippy::too_many_arguments)]
 pub fn apply_move_coded(
     x: i32,
@@ -364,25 +415,27 @@ pub fn apply_move_coded(
     input_kind: u8,
     step_dir: u8,
     now_ms: i64,
-) -> [i32; 4] {
+) -> Result<[i32; 4], String> {
     let state = CharacterState {
         pos: TilePos { x, y },
-        facing: dir_from_code(facing),
-        action: action_from_code(action),
+        facing: dir_from_code(facing).ok_or_else(|| format!("invalid facing code: {facing}"))?,
+        action: action_from_code(action).ok_or_else(|| format!("invalid action code: {action}"))?,
         move_started_at: Millis(started_ms),
     };
     let input = if input_kind == 0 {
-        MoveInput::Step(dir_from_code(step_dir))
+        MoveInput::Step(
+            dir_from_code(step_dir).ok_or_else(|| format!("invalid step_dir code: {step_dir}"))?,
+        )
     } else {
         MoveInput::Jump
     };
     let out = apply_move(&state, input, &zone_0(), Millis(now_ms));
-    [
+    Ok([
         out.pos.x,
         out.pos.y,
         i32::from(dir_code(out.facing)),
         i32::from(action_code(out.action)),
-    ]
+    ])
 }
 
 #[cfg(test)]
@@ -992,11 +1045,15 @@ mod tests {
             let m = zone_0();
             let s = CharacterState {
                 pos: TilePos { x, y },
-                facing: crate::types::dir_from_code(f),
+                facing: crate::types::dir_from_code(f).expect("f in 0..4 is valid"),
                 action: ActionState::Idle,
                 move_started_at: Millis(0),
             };
-            let input = if ik == 0 { MoveInput::Step(crate::types::dir_from_code(sd)) } else { MoveInput::Jump };
+            let input = if ik == 0 {
+                MoveInput::Step(crate::types::dir_from_code(sd).expect("sd in 0..4 is valid"))
+            } else {
+                MoveInput::Jump
+            };
             let a = apply_move(&s, input, &m, Millis(now));
             let b = apply_move(&s, input, &m, Millis(now));
             prop_assert_eq!(a, b); // determinism
@@ -1017,7 +1074,7 @@ mod tests {
             let s = CharacterState {
                 pos: start, facing: Direction::South, action: ActionState::Idle, move_started_at: Millis(0),
             };
-            let dir = crate::types::dir_from_code(sd);
+            let dir = crate::types::dir_from_code(sd).expect("sd in 0..4 is valid");
             let r = apply_move(&s, MoveInput::Step(dir), &m, Millis(now));
             prop_assert_eq!(r.facing, dir); // always face the input dir
             if r.pos == start {
@@ -1054,14 +1111,182 @@ mod tests {
     /// Step and jump outputs differ, so swapping the branch is observable.
     #[test]
     fn apply_move_coded_golden_step_and_jump() {
-        let step = super::apply_move_coded(1, 1, 0, 0, 0, 0, 2, 1000);
+        let step =
+            super::apply_move_coded(1, 1, 0, 0, 0, 0, 2, 1000).expect("valid codes must not fail");
         assert_eq!(
             step,
             [2, 1, 2, 1],
             "step East: pos (2,1), facing East, Walking"
         );
-        let jump = super::apply_move_coded(1, 1, 0, 0, 0, 1, 2, 1000);
+        let jump =
+            super::apply_move_coded(1, 1, 0, 0, 0, 1, 2, 1000).expect("valid codes must not fail");
         assert_eq!(jump, [1, 1, 0, 2], "jump: pos (1,1), facing North, Jumping");
+    }
+
+    /// Proof-of-teeth: invalid codes surface as Err (fail-loud parity with serde path).
+    /// Kills: any impl that drops the `?` propagation and silently coerces.
+    #[test]
+    fn apply_move_coded_rejects_invalid_codes() {
+        // Invalid facing
+        assert!(
+            super::apply_move_coded(0, 0, 4, 0, 0, 0, 0, 0).is_err(),
+            "facing=4 is out of range"
+        );
+        // Invalid action
+        assert!(
+            super::apply_move_coded(0, 0, 0, 3, 0, 0, 0, 0).is_err(),
+            "action=3 is out of range"
+        );
+        // Invalid step_dir (only checked when input_kind == 0)
+        assert!(
+            super::apply_move_coded(0, 0, 0, 0, 0, 0, 4, 0).is_err(),
+            "step_dir=4 is out of range"
+        );
+        // input_kind != 0 skips step_dir — invalid step_dir is not an error for a jump
+        assert!(
+            super::apply_move_coded(0, 0, 0, 0, 0, 1, 99, 0).is_ok(),
+            "jump ignores step_dir — invalid step_dir code must not error for a jump"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // f-4: check_party_slot proof-of-teeth (ADR-0053 SlotError pattern).
+    // -----------------------------------------------------------------------
+
+    /// Kills: any impl that treats PARTY_SLOT_NONE (255) as out-of-range.
+    #[test]
+    fn check_party_slot_accepts_party_slot_none() {
+        use super::{check_party_slot, PARTY_SLOT_NONE};
+        assert_eq!(
+            check_party_slot(PARTY_SLOT_NONE, &[0, 1, 2, 3, 4, 5]),
+            Ok(()),
+            "boxing (PARTY_SLOT_NONE) is always valid regardless of occupied slots"
+        );
+    }
+
+    /// Kills: an off-by-one on the PARTY_SIZE boundary check.
+    #[test]
+    fn check_party_slot_boundary_at_party_size() {
+        use super::{check_party_slot, SlotError, PARTY_SIZE};
+        // slot == PARTY_SIZE is out of range (valid slots are 0..PARTY_SIZE)
+        assert_eq!(
+            check_party_slot(PARTY_SIZE, &[]),
+            Err(SlotError::OutOfRange),
+            "slot == PARTY_SIZE (6) is out of range"
+        );
+        // slot == PARTY_SIZE - 1 is the last valid party slot
+        assert_eq!(
+            check_party_slot(PARTY_SIZE - 1, &[]),
+            Ok(()),
+            "slot 5 is the last valid party slot"
+        );
+        // slot 254 is also out of range
+        assert_eq!(check_party_slot(254, &[]), Err(SlotError::OutOfRange));
+    }
+
+    /// Kills: any impl that ignores the occupied_slots list.
+    #[test]
+    fn check_party_slot_rejects_occupied_slot() {
+        use super::{check_party_slot, SlotError};
+        assert_eq!(
+            check_party_slot(2, &[0, 2, 5]),
+            Err(SlotError::Occupied),
+            "slot 2 is occupied"
+        );
+        // Slot 3 is NOT occupied — must be Ok
+        assert_eq!(check_party_slot(3, &[0, 2, 5]), Ok(()));
+    }
+
+    /// Kills: swapped Display strings between OutOfRange and Occupied.
+    #[test]
+    fn slot_error_display_is_distinct() {
+        use super::SlotError;
+        let oor = SlotError::OutOfRange.to_string();
+        let occ = SlotError::Occupied.to_string();
+        assert_ne!(
+            oor, occ,
+            "OutOfRange and Occupied must have distinct display strings"
+        );
+        assert!(
+            occ.contains("already occupied"),
+            "Occupied display must mention 'already occupied'"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // RT-PS-01: party-slot uniqueness is read-then-write, not atomic.
+    //
+    // The set_party_slot reducer (monster_mgmt.rs) reads occupied_slots from
+    // the DB and then calls check_party_slot (pure). Two concurrent connections
+    // with the same identity can each read occupied_slots before either write
+    // completes — both pass check_party_slot and both write the same slot,
+    // producing two monsters at the same party index.
+    //
+    // The pure layer (check_party_slot) is correct; the race is in the
+    // reducer's read-check-write gap. Closing it requires either:
+    //   (a) a DB-level unique constraint on (owner_identity, party_slot)
+    //       filtered to slots != PARTY_SLOT_NONE, or
+    //   (b) an optimistic-lock column (e.g. version) with a compare-and-swap
+    //       write that fails if the occupied_slots snapshot is stale.
+    //
+    // This test documents the invariant that must hold post-fix: the pure
+    // function correctly rejects a second assignment to an already-occupied
+    // slot even when both monsters were unslotted at the snapshot time,
+    // proving that the logic is sound — the race is in the reducer's
+    // snapshot timing, not in check_party_slot itself.
+    // -----------------------------------------------------------------------
+
+    /// RT-PS-01: check_party_slot is sound — the race is above the pure layer.
+    ///
+    /// Scenario: two concurrent set_party_slot calls each read the same
+    /// occupied_slots snapshot before either write lands. Both call
+    /// check_party_slot with an empty (or mismatched) occupied list and
+    /// both get Ok — the pure function has no access to the concurrent write.
+    ///
+    /// This test proves the pure layer IS correct (given a correct snapshot),
+    /// and documents that the race must be closed at the reducer/DB level.
+    ///
+    /// Kills: any refactoring of check_party_slot that removes the
+    /// occupied_slots parameter (making the pure function stateful) —
+    /// that would be the wrong fix and break the pure layer's testability.
+    #[test]
+    fn rt_ps_01_concurrent_slot_assignment_requires_db_uniqueness_constraint() {
+        use super::{check_party_slot, SlotError, PARTY_SLOT_NONE};
+
+        // Simulate two concurrent reducer executions, each reading occupied_slots
+        // BEFORE the other's write has completed. Both see the same snapshot:
+        // monster_A and monster_B are both at PARTY_SLOT_NONE (boxed).
+        // Neither snapshot includes the other monster's target slot as occupied.
+        let snapshot_for_monster_a: &[u8] = &[PARTY_SLOT_NONE]; // monster_B not yet written
+        let snapshot_for_monster_b: &[u8] = &[PARTY_SLOT_NONE]; // monster_A not yet written
+
+        // Both reducers check slot=2 against their own snapshot — both pass.
+        assert_eq!(
+            check_party_slot(2, snapshot_for_monster_a),
+            Ok(()),
+            "RT-PS-01: first concurrent reducer sees slot 2 as free — passes pure check"
+        );
+        assert_eq!(
+            check_party_slot(2, snapshot_for_monster_b),
+            Ok(()),
+            "RT-PS-01: second concurrent reducer also sees slot 2 as free — \
+             both pass the pure check and both write slot=2, producing a duplicate. \
+             This is the race: check_party_slot is correct given its snapshot, but \
+             the snapshot is stale. Fix requires a DB uniqueness constraint on \
+             (owner_identity, party_slot) for slots != PARTY_SLOT_NONE so the \
+             second write fails at the DB level regardless of the read order."
+        );
+
+        // The pure function IS correct when given the correct (post-write) snapshot:
+        // after monster_A writes slot=2, monster_B's snapshot includes it.
+        let correct_snapshot_for_b: &[u8] = &[2]; // monster_A already at slot 2
+        assert_eq!(
+            check_party_slot(2, correct_snapshot_for_b),
+            Err(SlotError::Occupied),
+            "RT-PS-01: with a correct post-write snapshot, check_party_slot correctly \
+             rejects the duplicate assignment — the pure logic is sound; \
+             only the reducer's snapshot timing allows the race"
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -482,8 +482,8 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
 
     // Load skills and type chart for the resolver.
     let skill_rows: Vec<SkillRow> = ctx.db.skill_row().iter().collect();
-    let skill_defs = skill_defs_from_rows(&skill_rows);
-    let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter());
+    let skill_defs = skill_defs_from_rows(&skill_rows)?;
+    let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
 
     // AI picks a skill for side B.
@@ -549,8 +549,8 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
 
     // Swap then enemy attacks the new active.
     let skill_rows: Vec<SkillRow> = ctx.db.skill_row().iter().collect();
-    let skill_defs = skill_defs_from_rows(&skill_rows);
-    let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter());
+    let skill_defs = skill_defs_from_rows(&skill_rows)?;
+    let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
 
     let _events = game_core::resolve_player_swap(

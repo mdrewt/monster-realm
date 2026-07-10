@@ -158,8 +158,8 @@ pub fn attempt_recruit(
     // variance data and persists; the terminal write-back below handles a Fled (or
     // KO) outcome (HP + GC, no XP — Fled is a no-winner terminal).
     let skill_rows: Vec<SkillRow> = ctx.db.skill_row().iter().collect();
-    let skill_defs = skill_defs_from_rows(&skill_rows);
-    let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter());
+    let skill_defs = skill_defs_from_rows(&skill_rows)?;
+    let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
     let _events = resolve_recruit_failure(&mut battle.state, &skill_defs, &type_chart, &variance);
 

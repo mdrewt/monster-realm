@@ -36,23 +36,32 @@ pub fn can_start_quest(
 /// - `Talk`: exact `npc_id` match.
 /// - `Collect`: exact `item_id` match AND `event.qty >= trigger.qty` (at-least).
 /// - `Defeat`: exact `species_id` match.
-/// - Mismatched variant types → `false`.
+/// - Mismatched variant pairs → `false`.
+///
+/// The outer match on `trigger` is exhaustive over `StepTrigger`; each inner match
+/// is exhaustive over `TriggerEvent` — no wildcard arms, so adding a new variant to
+/// either enum is a compile error at this site (no-wildcard doctrine, ADR-0003).
 #[must_use]
 pub fn trigger_matches(trigger: &StepTrigger, event: &TriggerEvent) -> bool {
-    match (trigger, event) {
-        (StepTrigger::Talk { npc_id: t }, TriggerEvent::Talked { npc_id: e }) => t == e,
-        (
-            StepTrigger::Collect {
-                item_id: ti,
-                qty: tq,
-            },
+    match trigger {
+        StepTrigger::Talk { npc_id: t } => match event {
+            TriggerEvent::Talked { npc_id: e } => t == e,
+            TriggerEvent::Collected { .. } | TriggerEvent::Defeated { .. } => false,
+        },
+        StepTrigger::Collect {
+            item_id: ti,
+            qty: tq,
+        } => match event {
             TriggerEvent::Collected {
                 item_id: ei,
                 qty: eq,
-            },
-        ) => ti == ei && eq >= tq,
-        (StepTrigger::Defeat { species_id: t }, TriggerEvent::Defeated { species_id: e }) => t == e,
-        _ => false,
+            } => ti == ei && eq >= tq,
+            TriggerEvent::Talked { .. } | TriggerEvent::Defeated { .. } => false,
+        },
+        StepTrigger::Defeat { species_id: t } => match event {
+            TriggerEvent::Defeated { species_id: e } => t == e,
+            TriggerEvent::Talked { .. } | TriggerEvent::Collected { .. } => false,
+        },
     }
 }
 
