@@ -920,17 +920,23 @@ mod tests {
 
     /// kills: game-core/src/bin/tiled_import.rs:73:26: replace match guard got == b with true in Parser<'a>::expect_byte
     ///
-    /// `{"k"9}` is missing the `:` key/value separator. `expect_byte(b':')`
-    /// advances to `9`; the real guard `got == b` is false → Err. If the guard
-    /// is replaced with `true`, expect_byte accepts `9` as the colon and the
-    /// object parses Ok. The is_err assert kills the always-true guard.
+    /// `{"k"01}` is missing the `:` separator: `0` is at the colon position and `1`
+    /// is a valid JSON value. The real guard `got == b` is false for `'0' != ':'` → Err.
+    ///
+    /// If the guard is replaced with `true`, `expect_byte(b':')` accepts `0` (pos
+    /// advances to `1`), then `parse_value` sees `1` → Num(1.0), the object closes
+    /// on `}` → returns Ok. The is_err assert kills the always-true guard.
+    ///
+    /// WHY `{"k"9}` (original) does NOT kill this mutant: after the mutant accepts
+    /// `9`, pos is at `}` which is not a valid JSON value → parse_value Errs anyway,
+    /// so is_err() is true under BOTH the real code and the mutant (false positive).
     #[test]
     fn expect_byte_rejects_wrong_separator() {
-        let mut p = Parser::new(r#"{"k"9}"#);
+        let mut p = Parser::new(r#"{"k"01}"#);
         assert!(
             p.parse_value().is_err(),
-            "a missing `:` separator must Err via expect_byte; an always-true \
-             match guard would accept `9` as the colon and parse Ok"
+            "byte `0` at the colon position must Err; the always-true guard accepts `0`, \
+             then `1` parses as a value and `}}` closes the object → Ok (mutant survives)"
         );
     }
 

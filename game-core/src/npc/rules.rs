@@ -167,8 +167,8 @@ mod tests {
         'outer: for npc_id in 1u64..=100 {
             for tick in 0u64..=100 {
                 match npc_decide(home, home, wander_radius, npc_id, tick) {
-                    Some(d) if d == Direction::North => saw_north = true,
-                    Some(d) if d == Direction::East => saw_east = true,
+                    Some(Direction::North) => saw_north = true,
+                    Some(Direction::East) => saw_east = true,
                     _ => {}
                 }
                 if saw_north && saw_east {
