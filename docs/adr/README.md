@@ -10,7 +10,7 @@ Architecture Decision Records live in **two locations**; check both.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0089`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0090`**.
 
 ## ADRs in `docs/adr/`
 
@@ -71,6 +71,7 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 | [0086](./0086-ci-e2e-dev-reducers-publish.md) | CI e2e publishes the dev_reducers module via --bin-path | M13.5h |
 | [0087](./0087-owner-scoped-view-private-conversation.md) | Owner-scoped `#[view]` over private `player_conversation` | M13.5c |
 | [0088](./0088-nightly-mutate-core-timeout-tolerance.md) | Nightly mutate-core repair: smoke-republish fix, timeout tolerance, 38 missed mutants killed | fix-nightly |
+| [0089](./0089-content-parse-caching.md) | Content parse caching on hot paths | M13.5d |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
