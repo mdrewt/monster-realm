@@ -589,8 +589,8 @@ function refreshBox(): void {
 store.onBatchApplied(() => refreshBox());
 
 // --- raising/inventory view: refresh on batch when visible (M9c, ADR-0014) -------
-// MUST be total (never throw): store.flushBatch has no per-listener isolation, so a
-// throw here would starve the sibling reconcile/refreshBox/refreshBattle listeners.
+// MUST be total (never throw): defense-in-depth — store.flushBatch has per-listener
+// try/catch since M10.5d, but a throwing function here signals a logic bug.
 function refreshRaising(): void {
   if (!raisingView?.visible || identity === '') return;
   const monsters = store.ownMonsters(identity);
@@ -601,8 +601,8 @@ function refreshRaising(): void {
 store.onBatchApplied(() => refreshRaising());
 
 // --- evolution/fusion view: refresh on batch when visible (M10c, ADR-0014/0019) --
-// MUST be total (never throw): store.flushBatch has no per-listener isolation, so a
-// throw here would starve the sibling reconcile/refreshBox/refreshBattle listeners.
+// MUST be total (never throw): defense-in-depth — store.flushBatch has per-listener
+// try/catch since M10.5d, but a throwing function here signals a logic bug.
 function refreshEvolution(): void {
   if (!evolutionView?.visible || identity === '') return;
   const monsters = store.ownMonsters(identity);
@@ -647,7 +647,7 @@ function refreshBattle(): void {
 store.onBatchApplied(() => refreshBattle());
 
 // --- M12d: dialogue / quest log / heal views (ADR-0071) --------------------------
-// All 3 MUST be total (never throw): store.flushBatch has no per-listener isolation.
+// All 3 MUST be total (never throw): defense-in-depth (store.flushBatch has per-listener try/catch since M10.5d).
 store.onBatchApplied(() => {
   try {
     const conv = store.ownConversation(identity);
@@ -694,7 +694,7 @@ store.onBatchApplied(() => {
 });
 
 // --- M13d: shop view batch listener (ADR-0084) -----------------------------------
-// MUST be total (never throw): store.flushBatch has no per-listener isolation.
+// MUST be total (never throw): defense-in-depth (store.flushBatch has per-listener try/catch since M10.5d).
 store.onBatchApplied(() => {
   if (!shopView?.visible || identity === '') return;
   try {

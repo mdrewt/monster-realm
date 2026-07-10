@@ -53,6 +53,7 @@ import {
   speciesRowToStore,
 } from './rowConvert';
 import type { AuthoritativeStore } from './store';
+import { isOwnZoneChange } from './warpDetect';
 
 export interface ConnectionOptions {
   readonly uri: string;
@@ -185,18 +186,13 @@ export function connect(opts: ConnectionOptions): Connection {
     conn.db.character.onInsert((_ctx, row) => ingestChar(row as unknown as SdkCharacterRow));
     conn.db.character.onUpdate((_ctx, oldRow, row) => {
       const newSdkRow = row as unknown as SdkCharacterRow;
-      // M11c (ADR-0067 Option C): detect own-entity zone transition via raw SDK scalars
-      // (M12.5d-5: avoids characterRowToStore() double-conversion just to compare zoneId).
-      // SdkCharacterRow.zoneId is a plain number (u32); entityId is bigint (u64) — both
-      // strict comparisons are type-correct and require no conversion.
+      // M11c (ADR-0067 Option C): detect own-entity zone transition via isOwnZoneChange
+      // (warpDetect.ts — pure predicate, unit-tested independently; M12.5d-5: raw SDK
+      // scalars avoid characterRowToStore() double-conversion just to compare zoneId).
       if (opts.onOwnWarp !== undefined) {
         const oldSdkRow = oldRow as unknown as SdkCharacterRow;
         const ownEntityId = store.ownEntityId(identity);
-        if (
-          ownEntityId !== undefined &&
-          newSdkRow.entityId === ownEntityId &&
-          newSdkRow.zoneId !== oldSdkRow.zoneId
-        ) {
+        if (ownEntityId !== undefined && isOwnZoneChange(oldSdkRow, newSdkRow, ownEntityId)) {
           opts.onOwnWarp(newSdkRow.zoneId);
         }
       }

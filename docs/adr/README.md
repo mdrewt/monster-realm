@@ -5,12 +5,18 @@ Architecture Decision Records live in **two locations**; check both.
 - **Design ADRs `0002`–`0034`** — in the **harness spec corpus**
   (`../../specs/monster-realm-v2/adr/`). These are the foundational design
   decisions authored alongside the milestone specs.
-- **Implementation ADRs `0001`, `0035`–`0088`** — in **this directory**
+- **Implementation ADRs `0001`, `0035`–`0090`** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 `0001` or `0035`+ → `docs/adr/`. Next free number: **`0091`**.
+
+**ADR numbering collision note:** the harness spec corpus also contains design
+ADRs numbered `0055`–`0057` with *different topics* from this project's
+implementation ADRs `0055`–`0057`. A bare `ADR-0055` in this project's context
+always means `docs/adr/0055-release-fail-loud-determinism-gate.md`; use the
+explicit path prefix `harness adr/0055` to cite the harness design ADR.
 
 ## ADRs in `docs/adr/`
 
@@ -72,6 +78,7 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 | [0087](./0087-owner-scoped-view-private-conversation.md) | Owner-scoped `#[view]` over private `player_conversation` | M13.5c |
 | [0088](./0088-nightly-mutate-core-timeout-tolerance.md) | Nightly mutate-core repair: smoke-republish fix, timeout tolerance, 38 missed mutants killed | fix-nightly |
 | [0089](./0089-content-parse-caching.md) | Content parse caching on hot paths | M13.5d |
+| [0090](./0090-client-ux-correctness.md) | Client UX correctness — bait save/restore, zone-switch guard, adaptive interp delay, render perf | M13.5e |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
