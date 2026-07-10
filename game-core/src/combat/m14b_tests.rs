@@ -177,33 +177,54 @@ fn m14b_battle_monster_with_status_serde_round_trip() {
 /// of `None`. An old DB record written before M14b would become unreadable.
 #[test]
 fn m14b_battle_monster_status_field_defaults_to_none() {
-    // Serialize a BattleMonster that has status=None (the default).
-    // We then strip the status field from the serialized form to simulate
-    // an old record written before M14b, and verify it still deserializes.
-    //
-    // RON format: serialize with status=None first to see the key name, then
-    // construct a minimal struct without it.
+    // Round-trip: status=None survives serialize/deserialize.
     let m_with_none = make_monster_with_status(Affinity::Water, 80, 40, None);
     let with_none_str = ron::to_string(&m_with_none).unwrap();
-
-    // The serialized string must contain the `status` key (it's not skip).
-    assert!(
-        with_none_str.contains("status"),
-        "TEETH: `status` must appear in the serialized form (not #[serde(skip)]); \
-         an impl that skips the field entirely would not include it and the \
-         #[serde(default)] contract cannot be verified — this assertion catches it"
-    );
-
-    // Deserialize the minimal form back; must equal the `None`-status original.
     let back: BattleMonster = ron::from_str(&with_none_str).unwrap();
     assert_eq!(
         back.status, None,
-        "TEETH: status=None must survive serde round-trip; \
-         a missing serde derive for Option<StatusEffect> may fail here"
+        "status=None must survive serde round-trip"
     );
     assert_eq!(
         m_with_none, back,
         "full round-trip equality for status=None"
+    );
+}
+
+/// ADR-0006 / ADR-0093: `#[serde(default)]` on `BattleMonster.status` means rows
+/// written BEFORE M14b (which have no `status` field at all) must still deserialize.
+///
+/// Kills: removing `#[serde(default)]`. Without it, RON returns an error on a
+/// struct literal that omits the `status` key, breaking backward compat for old rows.
+#[test]
+fn m14b_serde_default_allows_missing_status_field() {
+    // Hand-crafted RON that intentionally omits the `status` field — this is what
+    // a pre-M14b battle row looks like in the SpacetimeDB store.
+    let old_row_ron = r#"(
+        species_id: 1,
+        affinity: Water,
+        level: 5,
+        current_hp: 80,
+        max_hp: 80,
+        stats: (
+            hp: 100,
+            attack: 40,
+            defense: 40,
+            speed: 40,
+            sp_attack: 50,
+            sp_defense: 50
+        ),
+        known_skill_ids: [1]
+    )"#;
+
+    let back: BattleMonster = ron::from_str(old_row_ron).expect(
+        "TEETH: #[serde(default)] must allow a BattleMonster missing the `status` field; \
+         removing the attribute causes a deserialization error here — this test catches it",
+    );
+    assert_eq!(
+        back.status, None,
+        "TEETH: a BattleMonster deserialized without a `status` field must default to None; \
+         any other value means the default is wrong"
     );
 }
 

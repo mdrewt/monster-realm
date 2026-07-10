@@ -517,23 +517,28 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
     );
 
     // Persist status store back into BattleMonster.status fields.
-    for (m, s) in battle
-        .state
-        .side_a
-        .team
-        .iter_mut()
-        .zip(status.side_a.iter())
-    {
-        m.status = *s;
-    }
-    for (m, s) in battle
-        .state
-        .side_b
-        .team
-        .iter_mut()
-        .zip(status.side_b.iter())
-    {
-        m.status = *s;
+    // Only write when ongoing — terminal rows are immediately GC'd by
+    // write_back_battle_results; writing status to fainted monsters is
+    // semantically meaningless and wasteful (reducer-security-audit finding).
+    if battle.state.outcome == BattleOutcome::Ongoing {
+        for (m, s) in battle
+            .state
+            .side_a
+            .team
+            .iter_mut()
+            .zip(status.side_a.iter())
+        {
+            m.status = *s;
+        }
+        for (m, s) in battle
+            .state
+            .side_b
+            .team
+            .iter_mut()
+            .zip(status.side_b.iter())
+        {
+            m.status = *s;
+        }
     }
 
     // Write back HP + XP if battle ended.
