@@ -66,6 +66,7 @@ fn make_monster(affinity: Affinity, hp: u16, speed: u16) -> BattleMonster {
         max_hp: hp,
         stats: make_stat_block(40, 40, speed),
         known_skill_ids: vec![1],
+        status: None,
     }
 }
 
@@ -746,7 +747,7 @@ fn m14a_sleep_cures_when_turns_reach_zero() {
     // StatusCured event must have been emitted for SideA.
     let cured_for_a = events
         .iter()
-        .any(|e| matches!(e, BattleEvent::StatusCured { side } if *side == SideId::SideA));
+        .any(|e| matches!(e, BattleEvent::StatusCured { side, .. } if *side == SideId::SideA));
     assert!(
         cured_for_a,
         "TEETH: StatusCured{{side:SideA}} must be emitted when Sleep reaches 0; \
@@ -791,7 +792,7 @@ fn m14a_freeze_thaws_when_roll_ge_80() {
 
     let cured_for_a = events
         .iter()
-        .any(|e| matches!(e, BattleEvent::StatusCured { side } if *side == SideId::SideA));
+        .any(|e| matches!(e, BattleEvent::StatusCured { side, .. } if *side == SideId::SideA));
     assert!(
         cured_for_a,
         "TEETH: StatusCured{{side:SideA}} must be emitted on freeze thaw at roll=80; \

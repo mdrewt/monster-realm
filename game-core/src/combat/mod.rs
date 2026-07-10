@@ -19,6 +19,8 @@ pub mod damage;
 #[cfg(test)]
 pub mod m14a_tests;
 #[cfg(test)]
+pub mod m14b_tests;
+#[cfg(test)]
 pub mod m7b_gating_tests;
 #[cfg(test)]
 pub mod m7b_redteam_tests;
@@ -38,12 +40,11 @@ pub use ai::pick_best_skill;
 pub use damage::{accuracy_check, calc_damage};
 pub use resolve::{resolve_enemy_turn, resolve_full_turn, resolve_player_swap, resolve_turn};
 pub use status::{
-    apply_post_turn_effects, apply_pre_turn_effects, tick_status, BattleStatusStore, StatusEffect,
-    StatusVariance,
+    apply_post_turn_effects, apply_pre_turn_effects, tick_status, BattleStatusStore, StatusVariance,
 };
 pub use type_chart::TypeChart;
 pub use types::{
     BattleEvent, BattleMonster, BattleOutcome, BattleSide, BattleState, Effectiveness, SideId,
-    TurnChoice, TurnVariance,
+    StatusEffect, TurnChoice, TurnVariance,
 };
 pub use xp::{apply_xp_gain, base_stat_total, battle_xp_reward, practice_xp_reward};

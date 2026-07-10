@@ -357,6 +357,7 @@ fn m7b_write_back_hp_writes_fainted_state() {
             sp_defense: monster.stat_sp_defense,
         },
         known_skill_ids: vec![1],
+        status: None,
     };
 
     // write_back_hp does not exist yet — this test is RED.
@@ -390,6 +391,7 @@ fn m7b_write_back_hp_writes_partial_damage() {
             sp_defense: monster.stat_sp_defense,
         },
         known_skill_ids: vec![1],
+        status: None,
     };
 
     write_back_hp(&mut monster, &bm);
@@ -1395,6 +1397,7 @@ fn m13_5c_write_back_hp_clamps_to_row_stat_hp() {
             sp_defense: monster.stat_sp_defense,
         },
         known_skill_ids: vec![1],
+        status: None,
     };
 
     write_back_hp(&mut monster, &bm);
@@ -1438,6 +1441,7 @@ fn m13_5c_write_back_hp_equality_edge_passes_through() {
             sp_defense: monster.stat_sp_defense,
         },
         known_skill_ids: vec![1],
+        status: None,
     };
 
     write_back_hp(&mut monster, &bm);

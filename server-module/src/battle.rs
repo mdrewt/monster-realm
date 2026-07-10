@@ -24,8 +24,9 @@ use crate::schema::{
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
 use game_core::{
-    apply_xp_gain, battle_currency_reward, battle_xp_reward, resolve_turn, BattleOutcome,
-    BattleSide, BattleState, Level, StatBlock, TurnChoice, TurnVariance,
+    apply_xp_gain, battle_currency_reward, battle_xp_reward, resolve_full_turn, BattleOutcome,
+    BattleSide, BattleState, BattleStatusStore, Level, StatBlock, StatusVariance, TurnChoice,
+    TurnVariance,
 };
 use spacetimedb::{Identity, ReducerContext, Table};
 
@@ -485,6 +486,7 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
     let skill_defs = skill_defs_from_rows(&skill_rows)?;
     let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
+    let sv = StatusVariance::from_ctx_random(ctx.random());
 
     // AI picks a skill for side B.
     let enemy_skill_id = game_core::pick_best_skill(
@@ -494,7 +496,14 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
         &type_chart,
     );
 
-    let _events = resolve_turn(
+    // Build the per-slot status store from BattleMonster.status fields.
+    // Full-team size (not active-only) so slot indices stay stable after switches.
+    let mut status = BattleStatusStore {
+        side_a: battle.state.side_a.team.iter().map(|m| m.status).collect(),
+        side_b: battle.state.side_b.team.iter().map(|m| m.status).collect(),
+    };
+
+    let _events = resolve_full_turn(
         &mut battle.state,
         TurnChoice::Attack { skill_id },
         TurnChoice::Attack {
@@ -503,7 +512,29 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
         &skill_defs,
         &type_chart,
         &variance,
+        &mut status,
+        &sv,
     );
+
+    // Persist status store back into BattleMonster.status fields.
+    for (m, s) in battle
+        .state
+        .side_a
+        .team
+        .iter_mut()
+        .zip(status.side_a.iter())
+    {
+        m.status = *s;
+    }
+    for (m, s) in battle
+        .state
+        .side_b
+        .team
+        .iter_mut()
+        .zip(status.side_b.iter())
+    {
+        m.status = *s;
+    }
 
     // Write back HP + XP if battle ended.
     if battle.state.outcome != BattleOutcome::Ongoing {

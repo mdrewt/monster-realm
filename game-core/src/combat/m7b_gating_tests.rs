@@ -42,6 +42,7 @@ fn make_battle_monster(hp: u16) -> BattleMonster {
         max_hp: hp,
         stats: make_stat_block(),
         known_skill_ids: vec![1],
+        status: None,
     }
 }
 

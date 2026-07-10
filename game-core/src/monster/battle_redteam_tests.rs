@@ -821,6 +821,7 @@ fn f15_pvp_requires_symmetric_swap_api() {
             sp_defense: 50,
         },
         known_skill_ids: vec![1],
+        status: None,
     };
 
     // Build a battle where SideB has two monsters (active=0) and SideA has one.

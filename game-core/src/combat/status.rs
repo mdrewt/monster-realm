@@ -5,25 +5,9 @@
 //! `resolve_one_attack` so DoT KOs produce the same Faint/Switch/BattleEnd sequence.
 
 use super::types::{BattleEvent, BattleOutcome, BattleState, SideId};
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/// A per-monster status condition, resolved each turn via [`apply_pre_turn_effects`]
-/// and [`apply_post_turn_effects`]. Tick / cure logic lives in [`tick_status`].
-///
-/// An exhaustive `match` on every status at every resolution site is required
-/// (no wildcard). Adding a new variant will cause a compile error at all
-/// existing match sites — the intended OCP guard (ADR-0010).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum StatusEffect {
-    Poison,
-    Burn,
-    Paralysis,
-    Sleep { turns_remaining: u8 },
-    Freeze,
-}
+// StatusEffect is defined in types.rs (to avoid circular import with BattleMonster.status).
+// Re-exported here so callers that import `crate::combat::status::StatusEffect` still resolve.
+pub use super::types::StatusEffect;
 
 /// Tracks the per-slot status for both sides of a battle.
 ///
@@ -53,13 +37,40 @@ pub struct StatusVariance {
     pub freeze_thaw_roll_a: u8,
     /// 0–99: Freeze thaws when this value is >= 80 for side B.
     pub freeze_thaw_roll_b: u8,
-    /// Reserved for future wake-chance probability (currently unused — Sleep always wakes by
-    /// turn-count via `tick_status`). M14b MUST wire `StatusVariance::from_ctx_random` (parallel
-    /// to `TurnVariance::from_ctx_random`) that derives ALL six fields from a single seed, so
-    /// these rolls are consistently derived server-side and not silently skipped.
+    /// Reserved: future probabilistic wake chance. Currently Sleep cures by
+    /// turn-count in `tick_status`; field derived server-side so future wiring
+    /// is deterministic (ADR-0093, parallel to `TurnVariance::from_ctx_random`).
     pub sleep_wake_roll_a: u8,
     /// See `sleep_wake_roll_a`.
     pub sleep_wake_roll_b: u8,
+}
+
+impl StatusVariance {
+    /// Derive a deterministic `StatusVariance` from a single u32 seed.
+    ///
+    /// Uses the same splitmix64-style mixing as `TurnVariance::from_ctx_random`
+    /// so a single `ctx.random()` call deterministically seeds all six rolls.
+    /// All rolls map to 0..=99 via `% 100`.
+    #[must_use]
+    pub fn from_ctx_random(seed: u32) -> StatusVariance {
+        let mut s = seed as u64;
+        let mut next = || -> u32 {
+            s = s.wrapping_add(0x9e37_79b9_7f4a_7c15);
+            let mut z = s;
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+            (z ^ (z >> 31)) as u32
+        };
+
+        StatusVariance {
+            action_skip_roll_a: (next() % 100) as u8,
+            action_skip_roll_b: (next() % 100) as u8,
+            freeze_thaw_roll_a: (next() % 100) as u8,
+            freeze_thaw_roll_b: (next() % 100) as u8,
+            sleep_wake_roll_a: (next() % 100) as u8,
+            sleep_wake_roll_b: (next() % 100) as u8,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -255,13 +266,23 @@ pub fn apply_post_turn_effects(
 pub fn tick_status(status: &mut BattleStatusStore, variance: &StatusVariance) -> Vec<BattleEvent> {
     let mut events = Vec::new();
 
-    for slot in &mut status.side_a {
-        if let Some(ev) = tick_one_slot(slot, SideId::SideA, variance.freeze_thaw_roll_a) {
+    for (slot_idx, slot) in status.side_a.iter_mut().enumerate() {
+        if let Some(ev) = tick_one_slot(
+            slot,
+            SideId::SideA,
+            slot_idx as u32,
+            variance.freeze_thaw_roll_a,
+        ) {
             events.push(ev);
         }
     }
-    for slot in &mut status.side_b {
-        if let Some(ev) = tick_one_slot(slot, SideId::SideB, variance.freeze_thaw_roll_b) {
+    for (slot_idx, slot) in status.side_b.iter_mut().enumerate() {
+        if let Some(ev) = tick_one_slot(
+            slot,
+            SideId::SideB,
+            slot_idx as u32,
+            variance.freeze_thaw_roll_b,
+        ) {
             events.push(ev);
         }
     }
@@ -272,13 +293,17 @@ pub fn tick_status(status: &mut BattleStatusStore, variance: &StatusVariance) ->
 fn tick_one_slot(
     slot: &mut Option<StatusEffect>,
     side: SideId,
+    slot_idx: u32,
     freeze_thaw_roll: u8,
 ) -> Option<BattleEvent> {
     match slot {
         Some(StatusEffect::Sleep { turns_remaining }) => {
             if *turns_remaining <= 1 {
                 *slot = None;
-                Some(BattleEvent::StatusCured { side })
+                Some(BattleEvent::StatusCured {
+                    side,
+                    slot: slot_idx,
+                })
             } else {
                 *turns_remaining -= 1;
                 None
@@ -287,7 +312,10 @@ fn tick_one_slot(
         Some(StatusEffect::Freeze) => {
             if freeze_thaw_roll >= 80 {
                 *slot = None;
-                Some(BattleEvent::StatusCured { side })
+                Some(BattleEvent::StatusCured {
+                    side,
+                    slot: slot_idx,
+                })
             } else {
                 None
             }

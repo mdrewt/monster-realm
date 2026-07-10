@@ -176,6 +176,7 @@ fn make_ongoing_battle(battle_id: u64, owner: Identity, party_monster_ids: Vec<u
             sp_defense: 52,
         },
         known_skill_ids: vec![],
+        status: None,
     };
     let state = BattleState {
         side_a: BattleSide {

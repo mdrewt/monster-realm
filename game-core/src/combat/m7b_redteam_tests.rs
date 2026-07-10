@@ -54,6 +54,7 @@ fn make_battle_monster(hp: u16, speed: u16) -> BattleMonster {
             sp_defense: 50,
         },
         known_skill_ids: vec![1],
+        status: None,
     }
 }
 
@@ -357,6 +358,7 @@ fn m7b_5_swap_to_fainted_monster_makes_active_monster_fainted() {
         max_hp: 100,
         stats: zero_stats(),
         known_skill_ids: vec![1],
+        status: None,
     };
     let alive = BattleMonster {
         species_id: 2,
@@ -366,6 +368,7 @@ fn m7b_5_swap_to_fainted_monster_makes_active_monster_fainted() {
         max_hp: 100,
         stats: zero_stats(),
         known_skill_ids: vec![1],
+        status: None,
     };
 
     let mut side = BattleSide {
@@ -585,6 +588,7 @@ fn m7b_8_turnvariance_out_of_range_damage_roll_produces_wrong_damage() {
             sp_defense: 50,
         },
         known_skill_ids: vec![1],
+        status: None,
     };
     let defender = BattleMonster {
         species_id: 2,
@@ -601,6 +605,7 @@ fn m7b_8_turnvariance_out_of_range_damage_roll_produces_wrong_damage() {
             sp_defense: 50,
         },
         known_skill_ids: vec![1],
+        status: None,
     };
     let skill = SkillDef {
         id: 1,
@@ -667,6 +672,7 @@ fn m7b_9_all_fainted_party_gives_degenerate_battle_state() {
         max_hp: 100,
         stats: zero_stats(),
         known_skill_ids: vec![1],
+        status: None,
     };
 
     let side_with_all_fainted = BattleSide {

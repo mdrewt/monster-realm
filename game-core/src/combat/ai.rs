@@ -87,6 +87,7 @@ mod tests {
                 sp_defense: 50,
             },
             known_skill_ids,
+            status: None,
         }
     }
 

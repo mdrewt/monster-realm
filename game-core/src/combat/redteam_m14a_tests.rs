@@ -49,6 +49,7 @@ fn make_monster(affinity: Affinity, hp: u16, max_hp: u16, speed: u16) -> BattleM
         max_hp,
         stats: make_stat_block(speed),
         known_skill_ids: vec![1],
+        status: None,
     }
 }
 
@@ -83,12 +84,14 @@ fn no_block_variance() -> StatusVariance {
 // ambiguity exists. A correct design would include slot index in StatusCured.
 // ===========================================================================
 
-/// Kills: any future refactor that adds slot information to StatusCured events
-/// (which would be the fix — this test would then need updating to match).
-/// As written it CONFIRMS the ambiguity exists and must remain a tracked finding
-/// until the event schema is updated.
+/// RT-S14-01 FIX (m14b): `StatusCured` now carries `slot: u32` identifying which
+/// team slot was cured. This test verifies the fix: a bench cure on slot 1 must
+/// emit `StatusCured { side: SideA, slot: 1 }`, not an ambiguous side-only event.
+///
+/// Kills: any impl that sets `slot: 0` for all cures (bench cure would fire
+/// slot=0, failing the `assert_eq!(*slot, 1)` assertion).
 #[test]
-fn rt_s14_01_bench_slot_status_cure_emits_ambiguous_event_without_slot_index() {
+fn rt_s14_01_bench_slot_status_cure_carries_correct_slot_index() {
     let mut status = BattleStatusStore {
         // active slot 0: no status
         // bench slot 1: Sleep about to expire
@@ -113,13 +116,13 @@ fn rt_s14_01_bench_slot_status_cure_emits_ambiguous_event_without_slot_index() {
     );
 
     match &cured_events[0] {
-        BattleEvent::StatusCured { side } => {
+        BattleEvent::StatusCured { side, slot } => {
+            assert_eq!(*side, SideId::SideA, "cure must be on SideA");
             assert_eq!(
-                *side,
-                SideId::SideA,
-                "RT-S14-01: StatusCured carries only SideA — no slot index. \
-                 A consumer cannot determine this cure came from bench slot 1 \
-                 rather than the active slot 0."
+                *slot, 1,
+                "RT-S14-01 FIX: StatusCured.slot must be 1 (bench slot index). \
+                 A naive impl setting slot=0 always fails here — the cure was \
+                 for bench slot 1, not active slot 0."
             );
         }
         _ => panic!("expected StatusCured"),
@@ -136,11 +139,6 @@ fn rt_s14_01_bench_slot_status_cure_emits_ambiguous_event_without_slot_index() {
         status.side_a[1].is_none(),
         "RT-S14-01: Bench slot 1 must be cured (set to None) after tick"
     );
-
-    // PROTOCOL AMBIGUITY CONFIRMED: the event does not include a slot index.
-    // A client rendering the active monster's status bar based on StatusCured
-    // will incorrectly clear the active monster's status display even though
-    // the active monster had no status to cure.
 }
 
 // ===========================================================================
@@ -190,7 +188,7 @@ fn rt_s14_02_sleep_zero_turns_remaining_cures_without_underflow() {
     // StatusCured must be emitted.
     let has_cured = events
         .iter()
-        .any(|e| matches!(e, BattleEvent::StatusCured { side } if *side == SideId::SideA));
+        .any(|e| matches!(e, BattleEvent::StatusCured { side, .. } if *side == SideId::SideA));
     assert!(
         has_cured,
         "RT-S14-02: StatusCured{{side:SideA}} must be emitted for Sleep{{0}}; \

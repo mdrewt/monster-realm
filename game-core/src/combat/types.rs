@@ -8,6 +8,26 @@ use serde::{Deserialize, Serialize};
 use crate::monster::types::{Affinity, StatBlock};
 
 // ===========================================================================
+// Status effects (moved here from status.rs to avoid circular import with
+// BattleMonster.status — status.rs re-exports this for backward-compat)
+// ===========================================================================
+
+/// A per-monster status condition. Exhaustive `match` required at every
+/// resolution site — a new variant forces a compile error (ADR-0010 OCP gate).
+///
+/// `SpacetimeType` is cfg-gated: the type is wired into `BattleMonster` which
+/// is nested inside `BattleState` stored in the `battle` table (m14b, ADR-0093).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
+pub enum StatusEffect {
+    Poison,
+    Burn,
+    Paralysis,
+    Sleep { turns_remaining: u8 },
+    Freeze,
+}
+
+// ===========================================================================
 // Core combat types
 // ===========================================================================
 
@@ -22,6 +42,11 @@ pub struct BattleMonster {
     pub max_hp: u16,
     pub stats: StatBlock,
     pub known_skill_ids: Vec<u32>,
+    /// Per-monster status condition persisted across turns (m14b, ADR-0093).
+    /// `#[serde(default)]` ensures additive schema compat: old `battle.state`
+    /// rows deserialize `status = None` (ADR-0006).
+    #[serde(default)]
+    pub status: Option<StatusEffect>,
 }
 
 impl BattleMonster {
@@ -188,8 +213,11 @@ pub enum BattleEvent {
         side: SideId,
     },
     /// A status condition expired naturally (Sleep reached 0 turns, Freeze thawed).
+    /// `slot` is the team-index of the monster whose status was cured (RT-S14-01 fix).
     StatusCured {
         side: SideId,
+        /// Team slot index that was cured — distinguishes bench cures from active-slot cures.
+        slot: u32,
     },
 }
 
@@ -272,6 +300,7 @@ mod tests {
             max_hp: hp,
             stats: make_stat_block(40, 40, speed),
             known_skill_ids: vec![1],
+            status: None,
         }
     }
 
@@ -587,6 +616,7 @@ mod tests {
                 max_hp: hp,
                 stats: make_stat_block(50, 50, 50),
                 known_skill_ids: vec![1, 2],
+                status: None,
             };
             let s = ron::to_string(&m).unwrap();
             let back: BattleMonster = ron::from_str(&s).unwrap();
