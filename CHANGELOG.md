@@ -90,6 +90,10 @@
 - Content-lifecycle completion + player_conversation privacy via owner-scoped view (ADR-0087) (#123)
 - Content parse caching on hot paths (ADR-0089) (#127)
 - Client UX correctness — bait preserve, zone guard, battle scope, render perf, adaptive interp (ADR-0090) (#129)
+- Type-rigor hardening — GrantItem gate, coded decode, party-slot core check, marshal re-checks (#132)
+- StatusEffect enum + per-turn DoT resolution layered on resolve_turn (#134)
+- Server-side status-effect persistence (ADR-0093) (#135)
+- Passive per-species ability system (ADR-0094)
 
 ### Fixes
 
@@ -101,6 +105,8 @@
 - Client zone-sync robustness — state-based reconcile, switchZone atomicity, rAF containment (ADR-0074) (#88)
 - Deflake zoneSync 12.5c-1 Playwright races (master RED) (#100)
 - Repair smoke-republish + kill all 38 missed mutants in game-core (ADR-0088) (#125)
+- CI gate fixes — unused imports, Species literals, CONTENT_VERSION v8
+- Update content-hash baseline for CONTENT_VERSION=8
 
 ### M8.8b
 
@@ -149,6 +155,7 @@
 - ADR index — register 0087, changelog regen (#124)
 - Reconcile ADR index — add 0088, bump next-free to 0089 (#126)
 - Reconcile ADR index — add 0089, bump next-free to 0090 (#128)
+- ADR index — add 0091 row, next-free 0092 (#133)
 
 ### Testing
 
@@ -168,3 +175,4 @@
 - Extract taming.rs inline tests to taming_tests.rs (M8.9c) (#53)
 - Monster-realm doc reconciliation phase — README/AGENTS/ARCHITECTURE/ADR-README/ADR-0067/raising.rs/CHANGELOG (#101)
 - ARCHITECTURE.md — module-map, content-registry, raising+evolution sections (#108)
+- Project-side changes — warpDetect wire-in, @types/node ^24, root lockfile delete, CONTENT_VERSION history, main.ts comments, ARCHITECTURE/AGENTS/ADR fixes (#131)
