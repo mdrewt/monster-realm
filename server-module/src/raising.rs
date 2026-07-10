@@ -24,8 +24,8 @@ use crate::schema::{
     species_row, HealCooldown,
 };
 use game_core::{
-    apply_care, focus_train, load_evolutions, BattleOutcome, Bond, EVs, FocusTrainError,
-    FocusTrainResult, IVs, Level, Nature, StatBlock, StatKind,
+    apply_care, focus_train, BattleOutcome, Bond, EVs, FocusTrainError, FocusTrainResult, IVs,
+    Level, Nature, StatBlock, StatKind,
 };
 use spacetimedb::{ReducerContext, Table};
 
@@ -71,10 +71,10 @@ pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
     let new_bond = evaluate_care(m.bond, m.last_care_at_ms, now)?;
     m.bond = new_bond;
     m.last_care_at_ms = now;
-    // Recompute evolves_to after bond change from care (12.5b-4, ADR-0073).
+    // Recompute evolves_to after bond change from care (12.5b-4, ADR-0073, cached ADR-0089).
     // fail-loud on parse error — silently zeroing evolves_to would mask content issues.
-    let all_evolutions =
-        load_evolutions().map_err(|e| format!("care: load_evolutions failed: {e}"))?;
+    let all_evolutions = crate::content_cache::cached_evolutions()
+        .map_err(|e| format!("care: load_evolutions failed: {e}"))?;
     let monster_evolutions = all_evolutions
         .iter()
         .find(|se| se.species_id == m.species_id)

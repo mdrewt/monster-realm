@@ -16,8 +16,8 @@
 //! EARS criteria covered:
 //!   13.5d-1 transparency: each cached_ fn returns the same data as the
 //!     corresponding game_core::load_*() counterpart.
-//!   13.5d-1 structural (OnceLock proof): two calls to the same cached_ fn
-//!     return the SAME pointer address — proves OnceLock actually caches.
+//!   13.5d-1 structural (LazyLock proof): two calls to the same cached_ fn
+//!     return the SAME pointer address — proves LazyLock actually caches.
 //!   13.5d-1 battle.rs hoist: compute_evolves_to with evolutions from
 //!     cached_evolutions() produces the same result as with load_evolutions().
 //!   13.5d-2 (server side): cached_zone_maps() + map_for(0, …) returns Ok.
@@ -138,14 +138,14 @@ fn cached_quest_defs_matches_load() {
 }
 
 // ---------------------------------------------------------------------------
-// 13.5d-1 structural — OnceLock proof: two calls return the SAME pointer
+// 13.5d-1 structural — LazyLock proof: two calls return the SAME pointer
 // ---------------------------------------------------------------------------
 
 /// CRITERION 13.5d-1 structural (zone maps): two successive calls to
 /// cached_zone_maps() return the SAME Vec pointer.
 ///
 /// `std::ptr::eq` on two `&'static Vec<T>` references proves that the backing
-/// allocation is the same — i.e., the first call initialized the OnceLock and
+/// allocation is the same — i.e., the first call initialized the LazyLock and
 /// the second call returned the cached reference rather than re-parsing.
 ///
 /// Wrong impl killed: any impl that calls load_zone_maps() on every invocation
@@ -162,7 +162,7 @@ fn cached_zone_maps_ptr_eq_second_call() {
 }
 
 /// CRITERION 13.5d-1 structural (evolutions): two successive calls to
-/// cached_evolutions() return the SAME Vec pointer.
+/// cached_evolutions() return the SAME Vec pointer, proving LazyLock caching.
 ///
 /// Wrong impl killed: any impl that calls load_evolutions() on every invocation,
 /// or allocates a new Vec<SpeciesEvolutions> on each call.

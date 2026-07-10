@@ -704,7 +704,7 @@ pub(crate) fn write_back_battle_results(
         let is_practice = battle.opponent_identity != WILD_IDENTITY;
 
         // Hoist evolution registry load above the monster loop: content is compile-time-embedded
-        // and immutable, so the OnceLock cache amortizes the parse across the whole XP loop.
+        // and immutable, so the LazyLock cache amortizes the parse across the whole XP loop.
         // Preserved as a Result so per-monster 'stat_recompute can log-and-break individually
         // (ADR-0077 log-and-continue semantics, ADR-0089 cache).
         let all_evolutions_cache = crate::content_cache::cached_evolutions();
@@ -808,8 +808,8 @@ pub(crate) fn write_back_battle_results(
                         // Recompute evolves_to after level-up (12.5b-4, ADR-0073).
                         // Scoped inside `if leveled_up { if let Some(species) }` because:
                         // only a level change can unlock a new level-based evolution branch.
-                        // Use the pre-loaded (hoisted) evolution cache; borrow via as_ref()
-                        // so the Result can be checked on each loop iteration without moving.
+                        // Use the pre-loaded (hoisted) evolution cache; match on &result so
+                        // the Result is borrowed (not moved) on each loop iteration.
                         let all_evolutions = match &all_evolutions_cache {
                             Ok(v) => *v,
                             Err(e) => {

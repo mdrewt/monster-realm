@@ -31,28 +31,39 @@ pure rule layer). The caches belong in the server-module and client-wasm shells.
 
 ### Server-module (`server-module/src/content_cache.rs`)
 
-Four `OnceLock<Vec<T>>` statics, one per registry, with accessor helpers that
-return `Result<&'static Vec<T>, String>`:
+Four `LazyLock<Result<Vec<T>, String>>` statics, one per registry, with accessor
+helpers that return `Result<&'static Vec<T>, String>`:
 
 ```rust
-static ZONE_MAPS: OnceLock<Vec<ZoneMapDef>> = OnceLock::new();
+static ZONE_MAPS: LazyLock<Result<Vec<ZoneMapDef>, String>> =
+    LazyLock::new(game_core::load_zone_maps);
 // … EVOLUTIONS, DIALOGUE_TREES, QUEST_DEFS
 
 pub(crate) fn cached_zone_maps() -> Result<&'static Vec<ZoneMapDef>, String> {
-    ZONE_MAPS.get_or_try_init(game_core::load_zone_maps)
+    (*ZONE_MAPS).as_ref().map_err(Clone::clone)
 }
 ```
 
-`OnceLock::get_or_try_init` (stable since Rust 1.82, available on the pinned
-1.96 toolchain) parses on the first call and returns the stored reference on
-every subsequent call. Failure leaves the lock uninitialized so the next call
-retries — appropriate since a parse failure on compile-time-embedded content
-either always happens (broken source) or never does.
+**Why `LazyLock<Result<...>>` rather than `OnceLock::get_or_try_init`:**
+`OnceLock::get_or_try_init` is tracked under feature `once_cell_try` (tracking
+issue #109737) and is NOT yet stable as of Rust 1.96 (despite documentation
+suggesting stabilization in 1.82 — that applied to a different subset of the
+`once_cell` surface). Using it would require `#![feature(once_cell_try)]`.
+
+`LazyLock<Result<Vec<T>, String>>` is the fully-stable equivalent:
+- `LazyLock::new(f)` calls `f` on first access and caches the result permanently.
+- `.as_ref().map_err(Clone::clone)` converts `&Result<Vec<T>, String>` to
+  `Result<&'static Vec<T>, String>` at zero allocation cost on the hot path.
+- Errors are cached permanently. For compile-time-embedded content a parse
+  failure is deterministic (the bytes are baked into the binary), so caching
+  the error is correct: no retry would produce a different result.
 
 Call-site changes:
 - `movement.rs`: `load_zone_maps()` → `crate::content_cache::cached_zone_maps()`
 - `battle.rs`: hoist `load_evolutions()` above the per-monster XP loop, replace with `cached_evolutions()`
 - `npc.rs`: `load_dialogue_trees()` → `cached_dialogue_trees()`, `load_quest_defs()` → `cached_quest_defs()`
+- `evolution.rs`: both `evolve` and `fuse` reducers — `game_core::load_evolutions()` → `cached_evolutions()`
+- `raising.rs`: `care` reducer — `load_evolutions()` → `cached_evolutions()`
 
 `game-core` is NOT touched — no caches, no new exports.
 
@@ -60,11 +71,16 @@ Call-site changes:
 
 Two-level cache:
 
-1. `static ZONE_MAPS: OnceLock<Vec<game_core::ZoneMapDef>>` — parses the full
-   registry once per WASM instance lifetime.
+1. `static ZONE_MAPS: LazyLock<Result<Vec<game_core::ZoneMapDef>, String>>` —
+   parses the full registry once per WASM instance lifetime.
 2. `thread_local! { RefCell<Option<game_core::TileMap>> }` — caches the active
    zone's built TileMap; invalidated (set to `None`) in `set_active_zone` so the
    first `apply_move` after a zone transition rebuilds for the new zone.
+
+   **Invariant:** the thread_local always holds the TileMap for the current
+   `ACTIVE_ZONE_ID`, or `None`. `set_active_zone` writes `ACTIVE_ZONE_ID` and
+   immediately clears the thread_local atomically within the same call, ensuring
+   the next `apply_move` always rebuilds for the new zone.
 
 `zone_map(zone_id)` uses the registry cache without the TileMap cache (it serves
 any zone_id, not just the active one).
@@ -82,7 +98,7 @@ needed.
 - **Hot-path parse cost eliminated**: `movement_tick` amortizes the zone-maps
   parse across all ticks in a server process lifetime; `apply_move` on the client
   amortizes across all predicted steps in a session.
-- **Game-core stays pure**: no caches, no `OnceLock`, no change to any function
+- **Game-core stays pure**: no caches, no `LazyLock`, no change to any function
   signatures there.
 - **No schema/bindings change**: caches are shell-only; content tables are
   unchanged.
@@ -92,4 +108,4 @@ needed.
 - **Error semantics for `battle.rs` loop**: `load_evolutions` is hoisted above the
   per-monster loop. If the cache returns `Err`, each monster's `'stat_recompute`
   block logs the error and breaks individually (existing log-and-continue semantics
-  preserved via `.as_ref()` borrow on the pre-loaded result).
+  preserved by `match &result` borrow on the pre-loaded Result).
