@@ -20,6 +20,10 @@ directly on this code. This ADR records the load-bearing decisions; the mechanic
 land in the same slice (`game-core/src/combat/`, `game-core/src/monster/`, and the
 `battle_monster_from_row` trust boundary in `server-module/src/lib.rs`).
 
+> **Location note (M8.9b):** `battle_monster_from_row` moved from `server-module/src/lib.rs`
+> to `server-module/src/marshal.rs` as part of the M8.9 domain-module split (ADR-0056).
+> The trust-boundary semantics are unchanged; find it at `marshal.rs` in HEAD.
+
 The five rule-core contracts (EARS criteria, spec §3):
 
 1. **`calc_damage` divide-by-zero** — the damage formula divides by

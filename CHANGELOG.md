@@ -88,6 +88,8 @@
 - Recruit e2e revival — gameplay-driven R1-R3, dev_reducers fixme tripwire, CI dev-wasm publish (ADR-0086) (#120)
 - Reducer-rejection feedback + app-level reconnect (ADR-0085) (#119)
 - Content-lifecycle completion + player_conversation privacy via owner-scoped view (ADR-0087) (#123)
+- Content parse caching on hot paths (ADR-0089) (#127)
+- Client UX correctness — bait preserve, zone guard, battle scope, render perf, adaptive interp (ADR-0090) (#129)
 
 ### Fixes
 
@@ -98,6 +100,7 @@
 - Fuse offspring monster_pub dual-write ordering (id=0 bug) (#84)
 - Client zone-sync robustness — state-based reconcile, switchZone atomicity, rAF containment (ADR-0074) (#88)
 - Deflake zoneSync 12.5c-1 Playwright races (master RED) (#100)
+- Repair smoke-republish + kill all 38 missed mutants in game-core (ADR-0088) (#125)
 
 ### M8.8b
 
@@ -143,6 +146,9 @@
 - ADR index — register 0083, range to 0084, next free 0085 (#117)
 - ADR index — register 0086, range to 0086, next free 0087 (#121)
 - ADR index — register 0085, drop reservation note; changelog regen (#122)
+- ADR index — register 0087, changelog regen (#124)
+- Reconcile ADR index — add 0088, bump next-free to 0089 (#126)
+- Reconcile ADR index — add 0089, bump next-free to 0090 (#128)
 
 ### Testing
 
@@ -155,6 +161,7 @@
 - Extract guards.rs inline tests to sibling guards_tests.rs (M8.9c) (#54)
 - M9d — no-idle-accrual proof-of-teeth + item-ids baseline (#60)
 - Fix Nightly — kill all 72 mutation survivors + debounce level_for_xp timeouts (#66)
+- Kill 35+ surviving mutants to restore mutation ratchet (#130)
 
 ### Wip
 
