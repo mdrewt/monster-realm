@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: sell
 slug: reducers/sell
-updated: 2026-07-05
+updated: 2026-07-10
 tags: [reducer, spacetimedb, economy]
 abstract: "Sell `qty` units of `item_id` from the caller's inventory. Server flow (reject-not-clamp, server-priced, atomic): 1. Ve…"
 resource: server-module/src/economy.rs#L133
