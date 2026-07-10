@@ -56,6 +56,9 @@ export const BattleMonster = __t.object("BattleMonster", {
     return StatBlock;
   },
   knownSkillIds: __t.array(__t.u32()),
+  get status() {
+    return __t.option(StatusEffect);
+  },
 });
 export type BattleMonster = __Infer<typeof BattleMonster>;
 
@@ -408,6 +411,16 @@ export const StatKind = __t.enum("StatKind", {
   SpDefense: __t.unit(),
 });
 export type StatKind = __Infer<typeof StatKind>;
+
+// The tagged union or sum type for the algebraic type `StatusEffect`.
+export const StatusEffect = __t.enum("StatusEffect", {
+  Poison: __t.unit(),
+  Burn: __t.unit(),
+  Paralysis: __t.unit(),
+  Sleep: __t.u8(),
+  Freeze: __t.unit(),
+});
+export type StatusEffect = __Infer<typeof StatusEffect>;
 
 export const TypeRelationRow = __t.object("TypeRelationRow", {
   id: __t.u64(),
