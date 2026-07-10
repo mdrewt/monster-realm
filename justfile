@@ -55,14 +55,13 @@ mutate-core:
         echo "cargo mutants failed with exit $status (not a mutation verdict)" >&2
         exit "$status"
     fi
-    # Fail closed if the outcome file is absent (grep '' || true would
-    # otherwise yield missed="" and the -gt test degrades to false → vacuous
-    # green; V4).
+    # Fail closed if the outcome file is absent — wc -l would also fail
+    # under set -euo pipefail, but the explicit guard gives a clearer message (V4).
     if [ ! -f mutants.out/missed.txt ]; then
         echo "mutants.out/missed.txt absent — cannot verify zero-missed" >&2
         exit 1
     fi
-    missed=$(grep -c '' mutants.out/missed.txt || true)
+    missed=$(wc -l < mutants.out/missed.txt)
     echo "mutate-core: missed=$missed (zero-tolerance ADR-0050; timeouts tolerated iff missed=0, ADR-0088)"
     if [ "$missed" -gt 0 ]; then
         echo "game-core mutation gate: $missed surviving mutant(s) — zero-tolerance (ADR-0050)" >&2

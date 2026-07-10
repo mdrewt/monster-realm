@@ -14,10 +14,10 @@ causes surfaced in the run logs:
    hand-rolled JSON parser), M11b (`world.rs` `validate_zone_maps`), M12b/M12c
    (`npc/rules.rs`), and M13b (`content.rs` shop loaders) merged without
    mutation-killing tests — the gate is nightly-only, so PR CI never caught it.
-2. **4 TIMEOUT mutants**, all loop-advance mutations in `tiled_import.rs`
-   (`self.pos += 1` → `*=`/`-=` in `skip_whitespace`/`parse_number`/
-   `parse_array`): the mutated parser never reaches EOF, the test suite hangs
-   past cargo-mutants' auto timeout, and cargo-mutants exits 3. A bare
+2. **5 TIMEOUT mutants**, all loop-advance `*=` mutations in `tiled_import.rs`
+   (inner cursor loops for `skip_whitespace`, `parse_number` ×3, `parse_array`):
+   the mutated parser never reaches EOF, the test suite hangs past cargo-mutants'
+   auto timeout, and cargo-mutants exits 3. A bare
    `cargo mutants` invocation treats exit 3 as failure even when **zero
    mutants survived**.
 

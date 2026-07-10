@@ -72,12 +72,10 @@ function extractRecipe(justfileText, recipeName) {
 //     existence guard, and a `-gt 0` count-compare.
 //   BODY must NOT CONTAIN: `--shard`, `--file`, `--exclude-re`, `--exclude`,
 //     ` -o `, `--output` (scope-narrowing / output-redirect bypasses), nor the
-//     shell-neuter forms `mutants || true`, `exit 0`, or `&& true`.
+//     shell-neuter forms `mutants || true`, `exit 0`, `return 0`, or `&& true`.
 //
-// The canonical wrapper legitimately contains `|| status=$?` and
-// `grep -c '' ... || true`, so we ban ONLY the precise neuter substrings that
-// disable the gate — never a blanket `|| true` scan (which would false-hit the
-// canonical body).
+// The canonical wrapper legitimately contains `|| status=$?`, so we ban ONLY
+// the precise neuter substrings that disable the gate.
 // ---------------------------------------------------------------------------
 export function mutateCoreRecipeIntact(justfileText) {
   const recipe = extractRecipe(justfileText, 'mutate-core');
@@ -105,11 +103,11 @@ export function mutateCoreRecipeIntact(justfileText) {
   if (body.indexOf(' -o ') !== -1) return false;
   if (body.indexOf('--output') !== -1) return false;
 
-  // Banned shell-neuter forms (precise — do NOT ban the canonical
-  // `|| status=$?` or `grep -c '' ... || true`).
+  // Banned shell-neuter forms (precise — do NOT ban the canonical `|| status=$?`).
   if (body.indexOf('cargo mutants -p game-core || true') !== -1) return false;
   if (body.indexOf('exit 0') !== -1) return false;
   if (body.indexOf('&& true') !== -1) return false;
+  if (body.indexOf('return 0') !== -1) return false;
 
   return true;
 }
@@ -199,6 +197,13 @@ export function mutantsTomlPinned(tomlText) {
       reason: 'mutants.toml exclude_re entry does not mention toward_home',
     };
   }
+  if (arrayBody.indexOf('replace > with >=') === -1) {
+    return {
+      ok: false,
+      reason:
+        'mutants.toml exclude_re entry is missing the operator text "replace > with >=" — the full canonical exclusion must name the exact operator replacement to prevent silencing non-equivalent sibling mutants at the same line (e.g. > → < is not equivalent and tests WOULD catch it)',
+    };
+  }
 
   return {
     ok: true,
@@ -223,14 +228,13 @@ const CANONICAL_MUTATE_CORE = `mutate-core:
         echo "cargo mutants failed with exit $status (not a mutation verdict)" >&2
         exit "$status"
     fi
-    # Fail closed if the outcome file is absent (grep '' || true would
-    # otherwise yield missed="" and the -gt test degrades to false → vacuous
-    # green; V4).
+    # Fail closed if the outcome file is absent — wc -l would also fail
+    # under set -euo pipefail, but the explicit guard gives a clearer message (V4).
     if [ ! -f mutants.out/missed.txt ]; then
         echo "mutants.out/missed.txt absent — cannot verify zero-missed" >&2
         exit 1
     fi
-    missed=$(grep -c '' mutants.out/missed.txt || true)
+    missed=$(wc -l < mutants.out/missed.txt)
     echo "mutate-core: missed=$missed (zero-tolerance ADR-0050; timeouts tolerated iff missed=0, ADR-0088)"
     if [ "$missed" -gt 0 ]; then
         echo "game-core mutation gate: $missed surviving mutant(s) — zero-tolerance (ADR-0050)" >&2
@@ -401,6 +405,38 @@ export default async function () {
         pass: false,
         detail:
           'TEETH 11 (absent toml): mutantsTomlPinned(null) must return a non-empty reason string alongside ok:false',
+      };
+    }
+  }
+
+  // TEETH 12 — body contains `return 0` shell neuter → must be rejected.
+  // In a top-level `#!/usr/bin/env bash` script, `return 0` exits the script
+  // with status 0 (same effect as `exit 0`), bypassing every gate that follows.
+  const justfileReturnZero =
+    'mutate-core:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    status=0\n    cargo mutants -p game-core || status=$?\n    return 0\n    if [ "$status" -ne 0 ] && [ "$status" -ne 2 ] && [ "$status" -ne 3 ]; then exit "$status"; fi\n    if [ ! -f mutants.out/missed.txt ]; then exit 1; fi\n    missed=$(wc -l < mutants.out/missed.txt)\n    if [ "$missed" -gt 0 ]; then exit 1; fi\n';
+  if (mutateCoreRecipeIntact(justfileReturnZero)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH 12 (return 0 neuter): mutateCoreRecipeIntact accepted a recipe with `return 0` immediately after cargo mutants — in a top-level bash script `return 0` exits with status 0, bypassing all gates. The predicate must ban `return 0` the same way it bans `exit 0`',
+    };
+  }
+
+  // TEETH 13 — mutants.toml with correct line-pin but wrong operator text → reject.
+  // An exclusion of `replace > with <` at the same line is NOT equivalent —
+  // `> → <` would make `toward_home` return North where South is expected and
+  // tests WOULD catch it. Only `replace > with >=` is the provably-equivalent form.
+  const tomlWrongOperator =
+    'exclude_re = ["npc/rules\\\\.rs:61:15: replace > with < in toward_home"]\n';
+  {
+    const r = mutantsTomlPinned(tomlWrongOperator);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH 13 (wrong operator): mutantsTomlPinned accepted an exclusion with the correct line-pin but wrong operator `replace > with <` — this would silence a non-equivalent mutant (> → < makes the NPC head North where South is expected; tests WOULD catch it). The full canonical text including `replace > with >=` must be present',
       };
     }
   }
