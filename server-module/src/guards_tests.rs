@@ -314,3 +314,30 @@ fn test_reject_if_in_battle_accepts_when_battle_won() {
         result.err()
     );
 }
+
+/// validate_name accepts a string of exactly MAX_NAME_LEN characters.
+/// Mutant guards.rs:42 replaces `>` with `>=` in `name.chars().count() > MAX_NAME_LEN`,
+/// which would incorrectly reject a name of exactly MAX_NAME_LEN length.
+/// The spec: names UP TO MAX_NAME_LEN characters are valid (> is the correct operator).
+/// KILLS: guards.rs:42:29 (> → >= in the name-length guard).
+#[test]
+fn validate_name_accepts_exactly_max_name_len_chars() {
+    // MAX_NAME_LEN = 24. A 24-char name is within the limit (> not >=).
+    let name = "a".repeat(MAX_NAME_LEN);
+    assert!(
+        validate_name(&name).is_ok(),
+        "validate_name({MAX_NAME_LEN}-char string) must be Ok; \
+         the length check uses `> MAX_NAME_LEN` (strictly greater than), \
+         so exactly MAX_NAME_LEN chars is allowed. \
+         Mutant replaces `>` with `>=`, making this return Err (off-by-one rejection). \
+         Got Err: {:?}",
+        validate_name(&name).err()
+    );
+    // Verify the one-over boundary is still Err (regression guard).
+    let too_long = "a".repeat(MAX_NAME_LEN + 1);
+    assert!(
+        validate_name(&too_long).is_err(),
+        "validate_name({}-char string) must be Err (one over MAX_NAME_LEN)",
+        MAX_NAME_LEN + 1
+    );
+}

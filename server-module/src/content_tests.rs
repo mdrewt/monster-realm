@@ -1564,3 +1564,193 @@ fn m13_5c_sync_npc_entities_from_uses_planner_and_cascades() {
          call alone (without delete) writes nothing"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Single-field plan_npc_sync mutation-killing tests (M13.5r)
+//
+// The exhaustive test above (m13_5c_plan_npc_sync_exhaustive_apply_yields_exact_def_set)
+// changes MULTIPLE fields simultaneously (home_x += 5 AND sprite_id = 9), so the
+// `||→&&` mutants in content.rs:491–496 survive: `(false && true) || true = true`
+// still reaches the Update branch.
+//
+// These tests change EXACTLY ONE FIELD at a time, so a single `||→&&` mutant
+// can flip the entire condition to false and suppress the Update.
+//
+// Mutants killed:
+//   content.rs:492 (|| → && between zone_id and home_x)
+//   content.rs:493 (|| → && between home_x and home_y)
+//   content.rs:494 (|| → && between home_y and wander_radius)
+//   content.rs:495 (|| → && between wander_radius and dialogue_tree_id)
+//   content.rs:496 (|| → && in character_stale zone_id/sprite_id check)
+// ---------------------------------------------------------------------------
+
+/// plan_npc_sync detects a SINGLE home_x change and emits an Update.
+///
+/// Operator-precedence kill: the mutant at content.rs:492 changes the first `||`
+/// to `&&`, making: `(zone_id!=def.zone_id && home_x!=def.home_x) || home_y!=...`.
+/// With zone SAME (a=false) and ONLY home_x changed (b=true):
+///   mutant → (false && true) || false || false || false = false → no Update (WRONG)
+///   original → false || true || false || false || false = true → Update (correct)
+///
+/// KILLS: mutant content.rs:492 (|| → && between zone_id and home_x terms).
+#[test]
+fn plan_npc_sync_detects_only_home_x_change() {
+    let def_old = m13_5c_npc_def(1, "alpha", 1, (10, 11));
+    let (npc, ch) = m13_5c_pair_from_def(&def_old, 1);
+    let existing = vec![(npc, Some(ch))];
+
+    // Change ONLY home_x — zone, home_y, wander_radius, dialogue_tree_id, sprite_id unchanged.
+    let mut def_new = m13_5c_npc_def(1, "alpha", 1, (10, 11));
+    def_new.home_x = 99; // only home_x changes
+
+    let plan = plan_npc_sync(&existing, &[def_new]);
+    assert_eq!(
+        plan.len(),
+        1,
+        "TEETH(mutant-492): changing ONLY home_x must produce exactly 1 action; \
+         got {:?}",
+        plan.iter().map(m13_5c_action_kind).collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(&plan[0], NpcSyncAction::Update { .. }),
+        "TEETH(mutant-492): single home_x change must yield an Update, not {:?}",
+        m13_5c_action_kind(&plan[0])
+    );
+}
+
+/// plan_npc_sync detects a SINGLE home_y change and emits an Update.
+///
+/// Mutant at content.rs:493 changes `|| home_y!=` to `&& home_y!=`, making:
+///   `zone!=... || (home_x!=... && home_y!=...) || wander!=... || dialogue!=...`
+/// With zone SAME, home_x SAME, ONLY home_y changed:
+///   mutant → false || (false && true) || false || false = false → no Update (WRONG)
+///   original → false || false || true || false || false = true → Update (correct)
+///
+/// KILLS: mutant content.rs:493 (|| → && between home_x and home_y terms).
+#[test]
+fn plan_npc_sync_detects_only_home_y_change() {
+    let def_old = m13_5c_npc_def(1, "alpha", 1, (10, 11));
+    let (npc, ch) = m13_5c_pair_from_def(&def_old, 1);
+    let existing = vec![(npc, Some(ch))];
+
+    // Change ONLY home_y — zone, home_x, wander_radius, dialogue_tree_id, sprite_id unchanged.
+    let mut def_new = m13_5c_npc_def(1, "alpha", 1, (10, 11));
+    def_new.home_y = 99; // only home_y changes
+
+    let plan = plan_npc_sync(&existing, &[def_new]);
+    assert_eq!(
+        plan.len(),
+        1,
+        "TEETH(mutant-493): changing ONLY home_y must produce exactly 1 action; \
+         got {:?}",
+        plan.iter().map(m13_5c_action_kind).collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(&plan[0], NpcSyncAction::Update { .. }),
+        "TEETH(mutant-493): single home_y change must yield an Update, not {:?}",
+        m13_5c_action_kind(&plan[0])
+    );
+}
+
+/// plan_npc_sync detects a SINGLE wander_radius change and emits an Update.
+///
+/// Mutant at content.rs:494 changes `|| wander_radius!=` to `&& wander_radius!=`, making:
+///   `zone!=... || home_x!=... || (home_y!=... && wander_radius!=...) || dialogue!=...`
+/// With zone/home_x/home_y SAME, ONLY wander_radius changed:
+///   mutant → false || false || (false && true) || false = false → no Update (WRONG)
+///   original → false || false || false || true || false = true → Update (correct)
+///
+/// KILLS: mutant content.rs:494 (|| → && between home_y and wander_radius terms).
+#[test]
+fn plan_npc_sync_detects_only_wander_radius_change() {
+    let def_old = m13_5c_npc_def(1, "alpha", 1, (10, 11));
+    let (npc, ch) = m13_5c_pair_from_def(&def_old, 1);
+    let existing = vec![(npc, Some(ch))];
+
+    // Change ONLY wander_radius (was 3 in fixture, bump to 5).
+    let mut def_new = m13_5c_npc_def(1, "alpha", 1, (10, 11));
+    def_new.wander_radius = 5; // only wander_radius changes
+
+    let plan = plan_npc_sync(&existing, &[def_new]);
+    assert_eq!(
+        plan.len(),
+        1,
+        "TEETH(mutant-494): changing ONLY wander_radius must produce exactly 1 action; \
+         got {:?}",
+        plan.iter().map(m13_5c_action_kind).collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(&plan[0], NpcSyncAction::Update { .. }),
+        "TEETH(mutant-494): single wander_radius change must yield an Update, not {:?}",
+        m13_5c_action_kind(&plan[0])
+    );
+}
+
+/// plan_npc_sync detects a SINGLE dialogue_tree_id change and emits an Update.
+///
+/// Mutant at content.rs:495 changes `|| dialogue_tree_id!=` to `&& dialogue_tree_id!=`, making:
+///   `zone!=... || home_x!=... || home_y!=... || (wander_radius!=... && dialogue_tree_id!=...)`
+/// With zone/home_x/home_y/wander_radius SAME, ONLY dialogue_tree_id changed:
+///   mutant → false || false || false || (false && true) = false → no Update (WRONG)
+///   original → false || false || false || false || true = true → Update (correct)
+///
+/// KILLS: mutant content.rs:495 (|| → && between wander_radius and dialogue_tree_id terms).
+#[test]
+fn plan_npc_sync_detects_only_dialogue_tree_id_change() {
+    let def_old = m13_5c_npc_def(1, "alpha", 1, (10, 11));
+    let (npc, ch) = m13_5c_pair_from_def(&def_old, 1);
+    let existing = vec![(npc, Some(ch))];
+
+    // Change ONLY dialogue_tree_id (was "tree_alpha" in fixture).
+    let mut def_new = m13_5c_npc_def(1, "alpha", 1, (10, 11));
+    def_new.dialogue_tree_id = "tree_alpha_v2".to_string(); // only dialogue changes
+
+    let plan = plan_npc_sync(&existing, &[def_new]);
+    assert_eq!(
+        plan.len(),
+        1,
+        "TEETH(mutant-495): changing ONLY dialogue_tree_id must produce exactly 1 action; \
+         got {:?}",
+        plan.iter().map(m13_5c_action_kind).collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(&plan[0], NpcSyncAction::Update { .. }),
+        "TEETH(mutant-495): single dialogue_tree_id change must yield an Update, not {:?}",
+        m13_5c_action_kind(&plan[0])
+    );
+}
+
+/// plan_npc_sync detects a SINGLE sprite_id change (no npc field change) and emits an Update.
+///
+/// Mutant at content.rs:496 changes `|| ch.sprite_id!=` to `&& ch.sprite_id!=` in:
+///   `let character_stale = ch.zone_id != def.zone_id || ch.sprite_id != def.sprite_id;`
+/// With zone SAME (ch.zone_id == def.zone_id → false), ONLY sprite_id changed:
+///   mutant → false && true = false → character_stale = false
+///   If npc_row_stale is also false (no npc fields changed) → no Update (WRONG)
+///   original → false || true = true → character_stale = true → Update (correct)
+///
+/// KILLS: mutant content.rs:496 (|| → && in character_stale zone_id/sprite_id check).
+#[test]
+fn plan_npc_sync_detects_only_sprite_id_change() {
+    let def_old = m13_5c_npc_def(1, "alpha", 1, (10, 11));
+    let (npc, ch) = m13_5c_pair_from_def(&def_old, 1);
+    let existing = vec![(npc, Some(ch))];
+
+    // Change ONLY sprite_id (was 7 in fixture) — all npc fields and zone unchanged.
+    let mut def_new = m13_5c_npc_def(1, "alpha", 1, (10, 11));
+    def_new.sprite_id = 99; // only sprite_id changes; zone/home/wander/dialogue same
+
+    let plan = plan_npc_sync(&existing, &[def_new]);
+    assert_eq!(
+        plan.len(),
+        1,
+        "TEETH(mutant-496): changing ONLY sprite_id must produce exactly 1 action (character_stale); \
+         got {:?}",
+        plan.iter().map(m13_5c_action_kind).collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(&plan[0], NpcSyncAction::Update { .. }),
+        "TEETH(mutant-496): single sprite_id change must yield an Update, not {:?}",
+        m13_5c_action_kind(&plan[0])
+    );
+}
