@@ -222,6 +222,24 @@ Research library (`docs/research/*.md`) carries `type: Research Note` (additive;
 validated by the vendored `research-lint.mjs`; `INDEX.md` regenerated with `type`
 column via `research-index.mjs`).
 
+## Cache (M13.5d — ADR-0089)
+
+Hot-path content registries cached at the shell layer; **game-core stays pure** (zero caches, all functions deterministic). Compile-time embedded RON is immutable → safe to cache static references.
+
+**Server-module hot-path caches** (`server-module/src/content_cache.rs`):
+- `static ZONE_MAPS: LazyLock<Result<Vec<ZoneMapDef>, String>>` — parsed zone-map registry; `movement_tick` calls `(*ZONE_MAPS).as_ref().map_err(Clone::clone)` for per-zone tick lookup (was O(registry) per tick, now O(1))
+- `static EVOLUTIONS: LazyLock<Result<Vec<SpeciesEvolutions>, String>>` — evolution conditions; `battle.rs` hoists `load_evolutions()` out of per-monster loop
+- `static DIALOGUE_TREES: LazyLock<Result<Vec<DialogueTree>, String>>` — dialogue data; `npc.rs` caches for `talk` / `advance_dialogue` reducers
+- `static QUEST_DEFS: LazyLock<Result<Vec<QuestDef>, String>>` — quest registry; placeholder for future quest-lookup optimization
+- **Pattern:** `LazyLock` not `OnceLock::get_or_try_init` (unstable); `Result<&'static Vec<T>, String>` propagates errors via `map_err(Clone::clone)`
+
+**Client-wasm two-level cache:**
+- **Level 1 (registry):** `static ZONE_MAPS_REGISTRY: LazyLock<Result<Vec<ZoneMapDef>, String>>` — one-time parse of full zone-map registry at first `zone_map(zone_id)` call
+- **Level 2 (active zone):** `thread_local! { static ACTIVE_TILE_MAP: RefCell<Option<TileMap>> = const { RefCell::new(None) }; }` — built tile map for currently-active zone. `const { … }` initializer avoids clippy `missing_const_for_thread_local` lint. Invalidated on `set_active_zone` via `RefCell::take` before warp prediction
+- **Parity:** client-wasm and server share deterministic `map_for(zone_id)`, cached tile map returns identical `TileMap`
+
+**Determinism + parity gates (all green):** no wall-clock or unseeded-RNG introduced; `prediction-parity.eval.mjs` confirms `apply_move` unmarked; wrapped parse step, logic stays in game-core; schema/bindings unchanged. Performance: O(registry) → O(1) lookup on hot paths (200ms movement_tick, per-step warp checks).
+
 ## Decisions
 
 ADRs **0002–0034** are design ADRs that live in the harness spec corpus
@@ -234,7 +252,7 @@ formula, 0042 battle table public PvE, 0043 CI caching + fast inner loop, 0044
 private encounter table, 0045 private `battle_wild` individuality table, 0046
 player inventory model, 0047 recruit resolution, 0048 `start_battle` opponent
 provenance, 0049 panic-as-content-invariant policy, 0050 nightly mutation/
-coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness, 0056 server-module modularization (domain submodules — the canonical `touches:` vocabulary), 0057 content-directory glob loading via `build.rs`, 0058–0061 raising/training/evolution content+rules, **0062 evolution/fusion server reducer guard ordering, bond-write omission, and test-seam placement**, **0063 evolution/fusion client overlay (evolvesTo decode, fusion recipe display, coverage exclusion)**, 0064–0067 zone/warp data shape + server runtime + client follow-camera/global-subscription (**ADR-0067 accepted: global character subscription per Option C; per-zone re-subscription deferred to M20**), 0068–0071 NPC/dialogue/quest/heal (game-core rules + server reducers + content + client UI), 0072–0079 M12.5 residual fixes (fuse dual-write fix, content-sync repair, zone-sync robustness, netcode smoothness, gate teeth, battle lifecycle GC, practice-XP multiplier, nightly republish smoke), **0080 generated knowledge bundle** (OKF-conformant `docs/knowledge/` bundle, drift-gated, M8.95), **0081 currency primitive** (private `player_wallet` table, `apply_grant`/`apply_spend` in game-core, `grant_currency`/`spend_currency` server helpers, M13a), **0082 shops & buy/sell** (shop content + reducers, sell_price field, M13b), **0083 economy sinks/sources** (healing cost via `spend_currency`, quest/battle rewards via `grant_currency`, M13c). See also
+coverage + bindings-drift-in-ci, 0051 biome lint scope, 0052 bounded client prediction, 0053 swap-legality pure-core invariant, 0054 dev-reducer release-gating, 0055 release fail-loud + determinism-gate completeness, 0056 server-module modularization (domain submodules — the canonical `touches:` vocabulary), 0057 content-directory glob loading via `build.rs`, 0058–0061 raising/training/evolution content+rules, **0062 evolution/fusion server reducer guard ordering, bond-write omission, and test-seam placement**, **0063 evolution/fusion client overlay (evolvesTo decode, fusion recipe display, coverage exclusion)**, 0064–0067 zone/warp data shape + server runtime + client follow-camera/global-subscription (**ADR-0067 accepted: global character subscription per Option C; per-zone re-subscription deferred to M20**), 0068–0071 NPC/dialogue/quest/heal (game-core rules + server reducers + content + client UI), 0072–0079 M12.5 residual fixes (fuse dual-write fix, content-sync repair, zone-sync robustness, netcode smoothness, gate teeth, battle lifecycle GC, practice-XP multiplier, nightly republish smoke), **0080 generated knowledge bundle** (OKF-conformant `docs/knowledge/` bundle, drift-gated, M8.95), **0081 currency primitive** (private `player_wallet` table, `apply_grant`/`apply_spend` in game-core, `grant_currency`/`spend_currency` server helpers, M13a), **0082 shops & buy/sell** (shop content + reducers, sell_price field, M13b), **0083 economy sinks/sources** (healing cost via `spend_currency`, quest/battle rewards via `grant_currency`, M13c), **0089 content parse caching** (hot-path zone-maps/evolutions/dialogue via `LazyLock` statics; client-wasm two-level cache; game-core stays pure, M13.5d). See also
 `docs/validation-findings.md` (empirical Tier-1 results).
 
 ## Monster subsystem (`game-core/src/monster/`, M6a)

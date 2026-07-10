@@ -93,8 +93,8 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
         return Err("source species not found".to_string());
     };
 
-    // Build the evolutions list from game-core (M10a-content registry)
-    let all_evolutions = match game_core::load_evolutions() {
+    // Build the evolutions list from game-core (M10a-content registry, cached ADR-0089)
+    let all_evolutions = match crate::content_cache::cached_evolutions() {
         Ok(ev) => ev,
         Err(e) => {
             log_reject(
@@ -266,8 +266,8 @@ pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
         game_core::fuse(&b_inst, &a_inst, &offspring_species)
     };
 
-    // Compute evolves_to for offspring
-    let all_evolutions = match game_core::load_evolutions() {
+    // Compute evolves_to for offspring (cached ADR-0089)
+    let all_evolutions = match crate::content_cache::cached_evolutions() {
         Ok(ev) => ev,
         Err(e) => {
             log_reject("fuse", ctx.sender, &format!("load_evolutions failed: {e}"));

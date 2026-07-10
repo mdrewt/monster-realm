@@ -12,7 +12,9 @@
 
 #![forbid(unsafe_code)]
 
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::LazyLock;
 
 use wasm_bindgen::prelude::*;
 
@@ -22,11 +24,39 @@ use game_core::{CharacterState, Millis, MoveInput};
 /// that `apply_move` always walks the correct zone's tile map. (M11c, ADR-0067)
 static ACTIVE_ZONE_ID: AtomicU32 = AtomicU32::new(0);
 
+// Parse the zone registry once per WASM instance lifetime: content is
+// compile-time-embedded (ADR-0057) and immutable between deploys (ADR-0089).
+// LazyLock<Result<...>> caches both successes and failures; deterministic for
+// compile-time-embedded content so caching the error is correct.
+static ZONE_MAPS: LazyLock<Result<Vec<game_core::ZoneMapDef>, String>> =
+    LazyLock::new(game_core::load_zone_maps);
+
+// Active-zone TileMap: cached to avoid re-running build_grid on every apply_move.
+// Invalidated (set to None) in set_active_zone so the first apply_move after a
+// zone transition rebuilds for the new zone (ADR-0089). thread_local is idiomatic
+// for WASM (single-threaded execution model).
+thread_local! {
+    static ACTIVE_TILE_MAP: RefCell<Option<game_core::TileMap>> = const { RefCell::new(None) };
+}
+
+/// Return a reference to the cached zone-maps registry.
+///
+/// On the first call the embedded RON is parsed and the result stored. All
+/// subsequent calls return the cached `&'static` reference (or the cached error).
+fn cached_zone_maps() -> Result<&'static Vec<game_core::ZoneMapDef>, String> {
+    (*ZONE_MAPS).as_ref().map_err(Clone::clone)
+}
+
 /// Set the active zone id for client-side movement prediction. Must be called
 /// by the client on every zone warp BEFORE the first `apply_move` in that zone.
+///
+/// Clears the cached TileMap so the next `apply_move` rebuilds for the new zone
+/// (ADR-0089). (M11c, ADR-0067)
 #[wasm_bindgen]
 pub fn set_active_zone(zone_id: u32) {
     ACTIVE_ZONE_ID.store(zone_id, Ordering::Relaxed);
+    // Invalidate cached TileMap: the new zone has a different layout (ADR-0089).
+    ACTIVE_TILE_MAP.with(|m| *m.borrow_mut() = None);
 }
 
 // ---------------------------------------------------------------------------
@@ -113,8 +143,19 @@ pub fn apply_move(state: JsValue, input: JsValue, now: f64) -> Result<JsValue, J
     let state: CharacterState = serde_wasm_bindgen::from_value(state)?;
     let input: MoveInput = serde_wasm_bindgen::from_value(input)?;
     let zone_id = ACTIVE_ZONE_ID.load(Ordering::Relaxed);
-    let maps = game_core::load_zone_maps().map_err(zone_map_err)?;
-    let zone_map = game_core::map_for(zone_id, &maps).map_err(zone_map_err)?;
+    // Build or reuse the cached TileMap for the active zone (ADR-0089).
+    // Invariant: ACTIVE_TILE_MAP holds a TileMap for exactly the current ACTIVE_ZONE_ID.
+    // set_active_zone() resets it to None on every zone transition, so a non-None
+    // cache here always corresponds to the zone_id read above.
+    let zone_map = ACTIVE_TILE_MAP.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        if cache.is_none() {
+            let maps = cached_zone_maps().map_err(zone_map_err)?;
+            *cache = Some(game_core::map_for(zone_id, maps).map_err(zone_map_err)?);
+        }
+        // Clone is cheap relative to RON parse; TileMap is a few hundred bools.
+        Ok::<game_core::TileMap, JsValue>(cache.as_ref().expect("just set above").clone())
+    })?;
     let next = game_core::apply_move(
         &state,
         input,
@@ -168,8 +209,9 @@ pub fn party_slot_none() -> u32 {
 /// Returns a JS error if `zone_id` is unknown or serialization fails.
 #[wasm_bindgen]
 pub fn zone_map(zone_id: u32) -> Result<JsValue, JsValue> {
-    let maps = game_core::load_zone_maps().map_err(zone_map_err)?;
-    let tile_map = game_core::map_for(zone_id, &maps).map_err(zone_map_err)?;
+    // Cached zone registry: parse-once path (ADR-0089).
+    let maps = cached_zone_maps().map_err(zone_map_err)?;
+    let tile_map = game_core::map_for(zone_id, maps).map_err(zone_map_err)?;
     zone_map_ok(&tile_map)
 }
 
@@ -178,6 +220,32 @@ pub fn zone_map(zone_id: u32) -> Result<JsValue, JsValue> {
 #[wasm_bindgen(start)]
 pub fn start() {
     console_error_panic_hook::set_once();
+}
+
+// ---------------------------------------------------------------------------
+// Test-only seams for 13.5d caching assertions (not compiled in prod WASM).
+// ---------------------------------------------------------------------------
+
+/// Expose the cached zone-maps contents for test assertions (ADR-0089).
+#[cfg(test)]
+pub(crate) fn cached_zone_maps_for_test() -> &'static Vec<game_core::ZoneMapDef> {
+    (*ZONE_MAPS)
+        .as_ref()
+        .expect("zone maps must parse successfully in tests")
+}
+
+/// Return whether the ACTIVE_TILE_MAP thread_local is currently Some (ADR-0089).
+#[cfg(test)]
+pub(crate) fn active_tile_map_is_cached_for_test() -> bool {
+    ACTIVE_TILE_MAP.with(|cell| cell.borrow().is_some())
+}
+
+/// Pre-populate the ACTIVE_TILE_MAP cache with zone 0's TileMap for test setup (ADR-0089).
+#[cfg(test)]
+pub(crate) fn seed_active_tile_map_for_test() {
+    ACTIVE_TILE_MAP.with(|cell| {
+        *cell.borrow_mut() = Some(game_core::zone_0());
+    });
 }
 
 #[cfg(test)]
@@ -297,6 +365,118 @@ mod tests {
         assert!(
             result.is_err(),
             "zone_map(999) must return Err for an unknown zone id, but returned Ok"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // M13.5d — client-wasm LazyLock content cache
+    //
+    // CRITERION 13.5d-2: The client-wasm caches zone maps in a static LazyLock
+    // and caches the active-zone TileMap in a thread_local RefCell<Option<TileMap>>.
+    //
+    // RED REASON (wasm_cached_zone_maps_matches_load): calls
+    // `super::cached_zone_maps_for_test()` which does NOT yet exist.
+    // The implementer must add a #[cfg(test)] accessor that exposes the OnceLock
+    // contents so this test can compare against game_core::load_zone_maps().
+    //
+    // RED REASON (wasm_set_active_zone_invalidates_tile_map_cache): calls
+    // `super::active_tile_map_is_cached_for_test()` which does NOT yet exist.
+    // The implementer must add a #[cfg(test)] accessor that returns whether the
+    // ACTIVE_TILE_MAP thread_local currently holds Some(...) or None, and must
+    // also expose `seed_active_tile_map_for_test` to pre-populate the cache.
+    //
+    // Testing strategy: expose minimal #[cfg(test)] seams rather than making
+    // the statics pub. This follows the existing pattern in this file where
+    // game_core sub-functions are tested through thin shims.
+    // -------------------------------------------------------------------------
+
+    /// CRITERION 13.5d-2 (client-wasm zone map cache transparency):
+    /// The client-wasm cached zone maps match game_core::load_zone_maps().
+    ///
+    /// Calls `super::cached_zone_maps_for_test()` — a #[cfg(test)] helper the
+    /// implementer must expose from lib.rs to give tests access to the LazyLock
+    /// contents without making the static pub.
+    ///
+    /// Wrong impl killed: a client-wasm LazyLock populated from a stale/wrong
+    /// RON snapshot, or one that returns empty even after initialization.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn wasm_cached_zone_maps_matches_load() {
+        // RED: super::cached_zone_maps_for_test() does not exist yet.
+        // The implementer adds:
+        //   #[cfg(test)]
+        //   pub(crate) fn cached_zone_maps_for_test() -> &'static Vec<game_core::ZoneMapDef> {
+        //       (*ZONE_MAPS).as_ref().expect("zone maps must parse successfully in tests")
+        //   }
+        let cached = super::cached_zone_maps_for_test();
+        let loaded = game_core::load_zone_maps().expect("game_core::load_zone_maps must succeed");
+
+        assert_eq!(
+            cached.len(),
+            loaded.len(),
+            "client-wasm cached zone maps has {} entries but load_zone_maps() returned {}",
+            cached.len(),
+            loaded.len()
+        );
+        // Compare the zone_id for each entry — ZoneMapDef has no PartialEq, use field check.
+        for (c, l) in cached.iter().zip(loaded.iter()) {
+            assert_eq!(
+                c.zone_id, l.zone_id,
+                "client-wasm cached zone {} but loaded zone {}",
+                c.zone_id, l.zone_id
+            );
+            assert_eq!(
+                c.rows.len(),
+                l.rows.len(),
+                "zone {} cached {} tile rows but loaded {} tile rows",
+                c.zone_id,
+                c.rows.len(),
+                l.rows.len()
+            );
+        }
+    }
+
+    /// CRITERION 13.5d-2 (set_active_zone invalidates TileMap cache):
+    /// After calling set_active_zone(0), the ACTIVE_TILE_MAP thread_local
+    /// must be None (the old cached TileMap is discarded so the next access
+    /// loads the correct zone's map rather than a stale one from a prior zone).
+    ///
+    /// Calls `super::active_tile_map_is_cached_for_test()` — a #[cfg(test)]
+    /// helper the implementer must expose from lib.rs.
+    ///
+    /// Wrong impl killed: an impl of set_active_zone that updates ACTIVE_ZONE_ID
+    /// but neglects to clear the ACTIVE_TILE_MAP thread_local, causing movement
+    /// prediction to silently use a stale zone map after a zone transition.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn wasm_set_active_zone_invalidates_tile_map_cache() {
+        // RED: super::active_tile_map_is_cached_for_test() does not exist yet.
+        // The implementer adds:
+        //   #[cfg(test)]
+        //   pub(crate) fn active_tile_map_is_cached_for_test() -> bool {
+        //       ACTIVE_TILE_MAP.with(|cell| cell.borrow().is_some())
+        //   }
+        // and updates set_active_zone to clear the thread_local on zone change.
+
+        // Pre-populate the cache so the invalidation has something to clear.
+        // Without this, the test would pass even if set_active_zone never touched
+        // the thread_local (the cache might already be None from test init).
+        super::seed_active_tile_map_for_test();
+        assert!(
+            super::active_tile_map_is_cached_for_test(),
+            "seed_active_tile_map_for_test() must leave ACTIVE_TILE_MAP in Some state"
+        );
+
+        // After set_active_zone, the thread_local TileMap cache must be None.
+        // We call set_active_zone(0) unconditionally — even if the zone id
+        // doesn't change, a zone-switch call must invalidate the cached map.
+        super::set_active_zone(0);
+        let is_cached = super::active_tile_map_is_cached_for_test();
+        assert!(
+            !is_cached,
+            "ACTIVE_TILE_MAP must be None after set_active_zone() is called; \
+             found Some(...) — the cache was not invalidated on zone switch, \
+             which would cause movement prediction to use the wrong zone's tile map"
         );
     }
 }

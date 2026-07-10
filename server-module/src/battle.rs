@@ -24,8 +24,8 @@ use crate::schema::{
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
 use game_core::{
-    apply_xp_gain, battle_currency_reward, battle_xp_reward, load_evolutions, resolve_turn,
-    BattleOutcome, BattleSide, BattleState, Level, StatBlock, TurnChoice, TurnVariance,
+    apply_xp_gain, battle_currency_reward, battle_xp_reward, resolve_turn, BattleOutcome,
+    BattleSide, BattleState, Level, StatBlock, TurnChoice, TurnVariance,
 };
 use spacetimedb::{Identity, ReducerContext, Table};
 
@@ -703,6 +703,12 @@ pub(crate) fn write_back_battle_results(
         // Loop-invariant: practice flag is the same for every monster in this battle.
         let is_practice = battle.opponent_identity != WILD_IDENTITY;
 
+        // Hoist evolution registry load above the monster loop: content is compile-time-embedded
+        // and immutable, so the LazyLock cache amortizes the parse across the whole XP loop.
+        // Preserved as a Result so per-monster 'stat_recompute can log-and-break individually
+        // (ADR-0077 log-and-continue semantics, ADR-0089 cache).
+        let all_evolutions_cache = crate::content_cache::cached_evolutions();
+
         // Award XP to each conscious member of the winning team.
         for (i, bm) in battle.state.side_a.team.iter().enumerate() {
             if bm.is_fainted() {
@@ -802,8 +808,10 @@ pub(crate) fn write_back_battle_results(
                         // Recompute evolves_to after level-up (12.5b-4, ADR-0073).
                         // Scoped inside `if leveled_up { if let Some(species) }` because:
                         // only a level change can unlock a new level-based evolution branch.
-                        let all_evolutions = match load_evolutions() {
-                            Ok(v) => v,
+                        // Use the pre-loaded (hoisted) evolution cache; match on &result so
+                        // the Result is borrowed (not moved) on each loop iteration.
+                        let all_evolutions = match &all_evolutions_cache {
+                            Ok(v) => *v,
                             Err(e) => {
                                 log::error!(
                                     "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"load_evolutions: {e}\"}}",
