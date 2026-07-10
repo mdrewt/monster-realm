@@ -790,13 +790,13 @@ fn care_reducer_calls_compute_evolves_to() {
 }
 
 /// CARE_COOLDOWN_MS must equal exactly 6 hours in milliseconds (21_600_000).
-/// kills: any mutation of the `*` operators in `6 * 60 * 60 * 1000`:
+///
+/// Kills all 6 mutations at line 37 (positions 44, 49, 54):
 ///   - replace `*` with `+`: 6 + 60 * 60 * 1000 = 60066 (wrong)
 ///   - replace `*` with `/`: 6 / 60 * 60 * 1000 = 0 (wrong, int division)
-/// All 6 mutations at line 37 (positions 44, 49, 54) change the numeric value.
-/// This test is a behavioral assertion: the cooldown policy is 6 hours (21_600_000 ms),
-/// not a shorter or longer duration. A wrong constant means players can care every few
-/// milliseconds (if + or / makes it tiny) or effectively never (if it's enormous).
+///
+/// Behavioral assertion: the cooldown policy is exactly 6 hours (21_600_000 ms).
+/// A wrong constant means players can care every few milliseconds or effectively never.
 #[test]
 fn care_cooldown_ms_is_six_hours_in_milliseconds() {
     assert_eq!(
