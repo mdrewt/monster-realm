@@ -27,7 +27,7 @@
 //!                         accidentally introduced.
 
 use crate::combat::ability::{
-    apply_ability_modifiers, apply_entry_ability, AbilityEffect, AbilityStore, StatusKind,
+    apply_ability_modifiers, apply_entry_ability, AbilityEffect, AbilityStore,
 };
 use crate::combat::status::BattleStatusStore;
 use crate::combat::types::{BattleMonster, BattleOutcome, BattleSide, BattleState, SideId};

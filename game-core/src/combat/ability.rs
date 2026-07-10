@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::status::BattleStatusStore;
-use super::types::{BattleEvent, BattleState, SideId, StatusEffect};
+use super::types::{BattleState, SideId, StatusEffect};
 
 // ===========================================================================
 // StatusKind — payload-free discriminant for immunity checks

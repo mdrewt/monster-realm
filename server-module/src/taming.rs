@@ -126,6 +126,7 @@ pub fn attempt_recruit(
             },
             affinity: species_row.affinity,
             learnable_skill_ids: species_row.learnable_skill_ids.clone(),
+            ability: None,
         };
         let inst = build_monster(
             bw.individuality_seed,
