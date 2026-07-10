@@ -147,6 +147,7 @@ pub fn dir_code(d: Direction) -> u8 {
     }
 }
 
+#[must_use]
 pub fn dir_from_code(c: u8) -> Option<Direction> {
     match c {
         0 => Some(Direction::North),
@@ -166,6 +167,7 @@ pub fn action_code(a: ActionState) -> u8 {
     }
 }
 
+#[must_use]
 pub fn action_from_code(c: u8) -> Option<ActionState> {
     match c {
         0 => Some(ActionState::Idle),

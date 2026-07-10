@@ -10,6 +10,7 @@
 use crate::guards::{log_reject, require_owner, validate_name};
 use crate::marshal::pub_from_monster;
 use crate::schema::{monster, monster_pub};
+use crate::PARTY_SLOT_NONE;
 use spacetimedb::ReducerContext;
 
 // --- Monster management reducers (M6b) ----------------------------------------
@@ -49,13 +50,14 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
         return Err(e);
     };
     require_owner(ctx, "set_party_slot", m.owner_identity)?;
-    // Collect party slots of the caller's OTHER monsters (excluding the one being moved).
+    // Collect PARTY slots of the caller's OTHER monsters (excluding the one being moved
+    // and excluding boxed monsters whose party_slot == PARTY_SLOT_NONE = 255).
     let occupied: Vec<u8> = ctx
         .db
         .monster()
         .owner_identity()
         .filter(me)
-        .filter(|other| other.monster_id != monster_id)
+        .filter(|other| other.monster_id != monster_id && other.party_slot != PARTY_SLOT_NONE)
         .map(|other| other.party_slot)
         .collect();
     if let Err(err) = game_core::check_party_slot(slot, &occupied) {

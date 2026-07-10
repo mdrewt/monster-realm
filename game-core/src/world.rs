@@ -49,8 +49,9 @@ impl std::fmt::Display for SlotError {
 /// Legality check for a party-slot assignment (pure; ADR-0053 SwapError pattern).
 ///
 /// `PARTY_SLOT_NONE` (255, "box") is always legal. A party index must satisfy
-/// `slot < PARTY_SIZE` and must not appear in `occupied_slots` (the caller
-/// provides the slots of OTHER monsters — the monster being reassigned is excluded).
+/// `slot < PARTY_SIZE` and must not appear in `occupied_slots`. The caller must
+/// provide only the PARTY slots (0..PARTY_SIZE) of OTHER monsters — boxed monsters
+/// (`party_slot == PARTY_SLOT_NONE`) must be excluded from the slice.
 ///
 /// # Errors
 /// - `SlotError::OutOfRange` if `slot != PARTY_SLOT_NONE && slot >= PARTY_SIZE`.
@@ -414,15 +415,17 @@ pub fn apply_move_coded(
     input_kind: u8,
     step_dir: u8,
     now_ms: i64,
-) -> Result<[i32; 4], &'static str> {
+) -> Result<[i32; 4], String> {
     let state = CharacterState {
         pos: TilePos { x, y },
-        facing: dir_from_code(facing).ok_or("invalid facing code")?,
-        action: action_from_code(action).ok_or("invalid action code")?,
+        facing: dir_from_code(facing).ok_or_else(|| format!("invalid facing code: {facing}"))?,
+        action: action_from_code(action).ok_or_else(|| format!("invalid action code: {action}"))?,
         move_started_at: Millis(started_ms),
     };
     let input = if input_kind == 0 {
-        MoveInput::Step(dir_from_code(step_dir).ok_or("invalid step_dir code")?)
+        MoveInput::Step(
+            dir_from_code(step_dir).ok_or_else(|| format!("invalid step_dir code: {step_dir}"))?,
+        )
     } else {
         MoveInput::Jump
     };
@@ -1207,6 +1210,82 @@ mod tests {
         assert!(
             occ.contains("already occupied"),
             "Occupied display must mention 'already occupied'"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // RT-PS-01: party-slot uniqueness is read-then-write, not atomic.
+    //
+    // The set_party_slot reducer (monster_mgmt.rs) reads occupied_slots from
+    // the DB and then calls check_party_slot (pure). Two concurrent connections
+    // with the same identity can each read occupied_slots before either write
+    // completes — both pass check_party_slot and both write the same slot,
+    // producing two monsters at the same party index.
+    //
+    // The pure layer (check_party_slot) is correct; the race is in the
+    // reducer's read-check-write gap. Closing it requires either:
+    //   (a) a DB-level unique constraint on (owner_identity, party_slot)
+    //       filtered to slots != PARTY_SLOT_NONE, or
+    //   (b) an optimistic-lock column (e.g. version) with a compare-and-swap
+    //       write that fails if the occupied_slots snapshot is stale.
+    //
+    // This test documents the invariant that must hold post-fix: the pure
+    // function correctly rejects a second assignment to an already-occupied
+    // slot even when both monsters were unslotted at the snapshot time,
+    // proving that the logic is sound — the race is in the reducer's
+    // snapshot timing, not in check_party_slot itself.
+    // -----------------------------------------------------------------------
+
+    /// RT-PS-01: check_party_slot is sound — the race is above the pure layer.
+    ///
+    /// Scenario: two concurrent set_party_slot calls each read the same
+    /// occupied_slots snapshot before either write lands. Both call
+    /// check_party_slot with an empty (or mismatched) occupied list and
+    /// both get Ok — the pure function has no access to the concurrent write.
+    ///
+    /// This test proves the pure layer IS correct (given a correct snapshot),
+    /// and documents that the race must be closed at the reducer/DB level.
+    ///
+    /// Kills: any refactoring of check_party_slot that removes the
+    /// occupied_slots parameter (making the pure function stateful) —
+    /// that would be the wrong fix and break the pure layer's testability.
+    #[test]
+    fn rt_ps_01_concurrent_slot_assignment_requires_db_uniqueness_constraint() {
+        use super::{check_party_slot, SlotError, PARTY_SLOT_NONE};
+
+        // Simulate two concurrent reducer executions, each reading occupied_slots
+        // BEFORE the other's write has completed. Both see the same snapshot:
+        // monster_A and monster_B are both at PARTY_SLOT_NONE (boxed).
+        // Neither snapshot includes the other monster's target slot as occupied.
+        let snapshot_for_monster_a: &[u8] = &[PARTY_SLOT_NONE]; // monster_B not yet written
+        let snapshot_for_monster_b: &[u8] = &[PARTY_SLOT_NONE]; // monster_A not yet written
+
+        // Both reducers check slot=2 against their own snapshot — both pass.
+        assert_eq!(
+            check_party_slot(2, snapshot_for_monster_a),
+            Ok(()),
+            "RT-PS-01: first concurrent reducer sees slot 2 as free — passes pure check"
+        );
+        assert_eq!(
+            check_party_slot(2, snapshot_for_monster_b),
+            Ok(()),
+            "RT-PS-01: second concurrent reducer also sees slot 2 as free — \
+             both pass the pure check and both write slot=2, producing a duplicate. \
+             This is the race: check_party_slot is correct given its snapshot, but \
+             the snapshot is stale. Fix requires a DB uniqueness constraint on \
+             (owner_identity, party_slot) for slots != PARTY_SLOT_NONE so the \
+             second write fails at the DB level regardless of the read order."
+        );
+
+        // The pure function IS correct when given the correct (post-write) snapshot:
+        // after monster_A writes slot=2, monster_B's snapshot includes it.
+        let correct_snapshot_for_b: &[u8] = &[2]; // monster_A already at slot 2
+        assert_eq!(
+            check_party_slot(2, correct_snapshot_for_b),
+            Err(SlotError::Occupied),
+            "RT-PS-01: with a correct post-write snapshot, check_party_slot correctly \
+             rejects the duplicate assignment — the pure logic is sound; \
+             only the reducer's snapshot timing allows the race"
         );
     }
 

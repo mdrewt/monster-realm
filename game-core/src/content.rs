@@ -1071,6 +1071,14 @@ pub fn load_heal_locations() -> Result<Vec<HealLocationDef>, String> {
 /// 4. Each DialogueTree has ≥1 node AND root_node_id exists in that tree's nodes
 /// 5. Unique dialogue tree ids
 /// 6. Each StartQuest effect references an existing quest id
+///
+/// 6b. Each GrantItem effect (in auto_effects and choice effects) references an existing item id
+///
+/// 6c. Each GrantItem-bearing node/choice is guarded by a once-only gate: a `NotFlag(f)` in
+///    the same node's `entry_conditions` (or choice's `conditions`) AND a `SetFlag(f)` in
+///    the same node's `auto_effects` (or choice's `effects`) — same flag name required.
+///    This prevents unlimited item farming via `talk()` re-entry (ADR-0068, 13.5f-1).
+///
 /// 7. Each QuestDef has ≥1 step
 /// 8. Each quest Collect step's item_id references an existing item
 /// 9. Each quest reward item_id references an existing item
