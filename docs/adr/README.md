@@ -5,12 +5,12 @@ Architecture Decision Records live in **two locations**; check both.
 - **Design ADRs `0002`–`0034`** — in the **harness spec corpus**
   (`../../specs/monster-realm-v2/adr/`). These are the foundational design
   decisions authored alongside the milestone specs.
-- **Implementation ADRs `0001`, `0035`–`0086`** — in **this directory**
+- **Implementation ADRs `0001`, `0035`–`0087`** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0087`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0088`**.
 
 ## ADRs in `docs/adr/`
 
@@ -69,6 +69,7 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 | [0084](./0084-shop-client-view.md) | Shop client view architecture (wallet-private gap, feedback surface) | M13d |
 | [0085](./0085-reducer-rejection-feedback-and-reconnect.md) | Reducer-rejection feedback, app-level reconnect policy | M13.5b |
 | [0086](./0086-ci-e2e-dev-reducers-publish.md) | CI e2e publishes the dev_reducers module via --bin-path | M13.5h |
+| [0087](./0087-owner-scoped-view-private-conversation.md) | Owner-scoped `#[view]` over private `player_conversation` | M13.5c |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
