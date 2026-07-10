@@ -27,7 +27,8 @@ fn main() {
                 v[5] as u8,
                 v[6] as u8,
                 v[7],
-            );
+            )
+            .expect("movement_vectors uses only valid codes");
             format!(
                 "{{\"in\":[{},{},{},{},{},{},{},{}],\"out\":[{},{},{},{}]}}",
                 v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], r[0], r[1], r[2], r[3]
