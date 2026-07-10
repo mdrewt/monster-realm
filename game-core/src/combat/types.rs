@@ -122,8 +122,15 @@ pub struct BattleState {
 /// What a player chooses to do on their turn.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TurnChoice {
-    Attack { skill_id: u32 },
-    Swap { team_index: u32 },
+    Attack {
+        skill_id: u32,
+    },
+    Swap {
+        team_index: u32,
+    },
+    /// The side takes no action — used by [`resolve_full_turn`] when a status
+    /// effect blocks the side's intended choice (Paralysis, Sleep, Freeze).
+    Pass,
 }
 
 /// A discriminant for which side of the battle we refer to.
@@ -169,6 +176,19 @@ pub enum BattleEvent {
         winner: SideId,
     },
     Miss {
+        side: SideId,
+    },
+    /// Damage applied at end of turn by Poison (`max_hp/8`) or Burn (`max_hp/16`).
+    StatusDamage {
+        side: SideId,
+        amount: u16,
+    },
+    /// A side's action was skipped due to Paralysis, Sleep, or Freeze.
+    ActionBlocked {
+        side: SideId,
+    },
+    /// A status condition expired naturally (Sleep reached 0 turns, Freeze thawed).
+    StatusCured {
         side: SideId,
     },
 }

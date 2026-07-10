@@ -304,7 +304,76 @@ fn skill_id_from(choice: &TurnChoice) -> u32 {
     match choice {
         TurnChoice::Attack { skill_id } => *skill_id,
         TurnChoice::Swap { .. } => unreachable!("expected Attack, got Swap"),
+        TurnChoice::Pass => unreachable!("expected Attack, got Pass"),
     }
+}
+
+/// Resolve a full turn with status-effect pre/post phases layered additively on
+/// [`resolve_turn`]'s existing event pipeline (ADR-0017/0023 — signature unchanged).
+///
+/// Pipeline order:
+/// 1. Pre-turn: action-block checks (Paralysis/Sleep/Freeze) via [`apply_pre_turn_effects`].
+///    A blocked side's choice is replaced with [`TurnChoice::Pass`].
+/// 2. Speed-ordered attacks via [`resolve_turn`] (unmodified plain-attack path).
+/// 3. Post-turn: DoT (Poison/Burn) via [`apply_post_turn_effects`].
+/// 4. Status tick: Sleep decrement, Freeze thaw via [`tick_status`].
+///
+/// With an empty [`BattleStatusStore`] and no blocking variance this is byte-identical
+/// to calling [`resolve_turn`] directly — the M7 regression proof-of-teeth (EARS-1).
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_full_turn(
+    state: &mut BattleState,
+    choice_a: TurnChoice,
+    choice_b: TurnChoice,
+    skills: &[SkillDef],
+    type_chart: &TypeChart,
+    variance: &TurnVariance,
+    status: &mut super::status::BattleStatusStore,
+    sv: &super::status::StatusVariance,
+) -> Vec<BattleEvent> {
+    use super::status::{apply_post_turn_effects, apply_pre_turn_effects, tick_status};
+
+    let mut events = Vec::new();
+
+    // Phase 1: pre-turn action-block.
+    let (a_can_act, b_can_act, pre_events) = apply_pre_turn_effects(status, state, sv);
+    events.extend(pre_events);
+
+    let effective_a = if a_can_act {
+        choice_a
+    } else {
+        TurnChoice::Pass
+    };
+    let effective_b = if b_can_act {
+        choice_b
+    } else {
+        TurnChoice::Pass
+    };
+
+    // Phase 2: resolve the turn (turn-number advance + speed-ordered attacks).
+    let turn_events = resolve_turn(
+        state,
+        effective_a,
+        effective_b,
+        skills,
+        type_chart,
+        variance,
+    );
+    events.extend(turn_events);
+
+    // Phase 3: post-turn DoT (only while the battle is still ongoing).
+    if state.outcome == BattleOutcome::Ongoing {
+        let post_events = apply_post_turn_effects(state, status);
+        events.extend(post_events);
+    }
+
+    // Phase 4: status tick (Sleep/Freeze expire).
+    if state.outcome == BattleOutcome::Ongoing {
+        let tick_events = tick_status(status, sv);
+        events.extend(tick_events);
+    }
+
+    events
 }
 
 /// Resolve a turn where only the enemy side acts (e.g. the player chose to Swap).
