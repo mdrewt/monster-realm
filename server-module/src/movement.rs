@@ -20,9 +20,9 @@ use crate::schema::{
 };
 use crate::{SPRITE_PLAYER, STARTER_SPECIES_ID, ZONE_0};
 use game_core::{
-    apply_move, load_zone_maps, map_for, npc_decide, resolve_encounter, roll_starter, spawn,
-    stepped_onto_grass, ActionState, BattleOutcome, Direction, Millis, MoveInput, StatBlock,
-    TilePos, MOVE_QUEUE_CAP, STEP_MS,
+    apply_move, map_for, npc_decide, resolve_encounter, roll_starter, spawn, stepped_onto_grass,
+    ActionState, BattleOutcome, Direction, Millis, MoveInput, StatBlock, TilePos, MOVE_QUEUE_CAP,
+    STEP_MS,
 };
 use spacetimedb::{ReducerContext, ScheduleAt, Table};
 
@@ -157,14 +157,15 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
     }
     let zone = sched.zone_id;
     let now = Millis(now_ms(ctx));
-    let zone_maps = match load_zone_maps() {
+    // Zone-maps cache: compile-time-embedded RON, parsed once per process (ADR-0089).
+    let zone_maps = match crate::content_cache::cached_zone_maps() {
         Ok(z) => z,
         Err(e) => {
             log::error!("{{\"evt\":\"movement_tick_error\",\"zone\":{zone},\"reason\":\"{e}\"}}");
             return Ok(()); // logged no-op: a content-load failure must not abort the tick (ADR-0066)
         }
     };
-    let map = match map_for(zone, &zone_maps) {
+    let map = match map_for(zone, zone_maps) {
         Ok(m) => m,
         Err(e) => {
             log::error!("{{\"evt\":\"movement_tick_error\",\"zone\":{zone},\"reason\":\"{e}\"}}");

@@ -11,9 +11,8 @@ use crate::schema::{
     PlayerConversation, PlayerDialogueStateRow, PlayerQuestRow,
 };
 use game_core::{
-    apply_choice, apply_effects, apply_node_auto_effects, find_entry_node, load_dialogue_trees,
-    load_quest_defs, process_trigger, DialogueEffect, PlayerDialogueState, PlayerQuestProgress,
-    QuestAdvance, TriggerEvent,
+    apply_choice, apply_effects, apply_node_auto_effects, find_entry_node, process_trigger,
+    DialogueEffect, PlayerDialogueState, PlayerQuestProgress, QuestAdvance, TriggerEvent,
 };
 use spacetimedb::{Identity, ReducerContext, Table};
 
@@ -141,7 +140,8 @@ fn apply_quest_trigger(
     event: &TriggerEvent,
     state: &mut PlayerDialogueState,
 ) {
-    let quest_defs = match load_quest_defs() {
+    // Quest-defs cache: compile-time-embedded RON, parsed once per process (ADR-0089).
+    let quest_defs = match crate::content_cache::cached_quest_defs() {
         Ok(q) => q,
         Err(e) => {
             log::error!("{{\"evt\":\"quest_defs_load_error\",\"reason\":\"{e}\"}}");
@@ -226,7 +226,8 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
     }
 
     // Step 6: load dialogue tree
-    let trees = load_dialogue_trees()?;
+    // Dialogue-trees cache: compile-time-embedded RON, parsed once per process (ADR-0089).
+    let trees = crate::content_cache::cached_dialogue_trees()?;
     let Some(tree) = trees.iter().find(|t| t.id == npc_row.dialogue_tree_id) else {
         return Err("dialogue tree not found".to_string());
     };
@@ -322,7 +323,8 @@ pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), Str
     }
 
     // Step 2: load NPC + dialogue tree
-    let trees = load_dialogue_trees()?;
+    // Dialogue-trees cache: compile-time-embedded RON, parsed once per process (ADR-0089).
+    let trees = crate::content_cache::cached_dialogue_trees()?;
     let Some(tree) = trees.iter().find(|t| t.id == npc_row.dialogue_tree_id) else {
         return Err("dialogue tree not found".to_string());
     };
