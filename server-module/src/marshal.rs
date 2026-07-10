@@ -173,6 +173,7 @@ pub(crate) fn wild_battle_monster(
         max_hp: stats.hp,
         stats,
         known_skill_ids,
+        status: None,
     })
 }
 
@@ -324,6 +325,7 @@ pub(crate) fn battle_monster_from_row(
             sp_defense: monster.stat_sp_defense,
         },
         known_skill_ids,
+        status: None,
     })
 }
 

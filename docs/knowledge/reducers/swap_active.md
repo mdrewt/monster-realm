@@ -5,7 +5,7 @@ slug: reducers/swap_active
 updated: 2026-07-10
 tags: [reducer, spacetimedb, battle]
 abstract: "Swap the player's active monster. Ownership + outcome guards enforced."
-resource: server-module/src/battle.rs#L519
+resource: server-module/src/battle.rs#L555
 source: scripts/okf-export.mjs@server-module/src/battle.rs
 ---
 

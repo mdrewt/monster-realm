@@ -519,6 +519,7 @@ mod tests {
             max_hp: hp,
             stats: make_stat_block_with_speed(40, 40, speed),
             known_skill_ids: vec![1],
+            status: None,
         }
     }
 
@@ -692,6 +693,7 @@ mod tests {
                 sp_defense: 1,
             },
             known_skill_ids: vec![1],
+            status: None,
         };
         let mut state = make_battle_state(monster_a, monster_b);
         let variance = always_hit_variance(true);
@@ -752,6 +754,7 @@ mod tests {
                 sp_defense: 1,
             },
             known_skill_ids: vec![1],
+            status: None,
         };
         let backup = BattleMonster {
             species_id: 3,
@@ -768,6 +771,7 @@ mod tests {
                 sp_defense: 30,
             },
             known_skill_ids: vec![1],
+            status: None,
         };
         let mut state = BattleState {
             side_a: BattleSide {
@@ -834,6 +838,7 @@ mod tests {
                 sp_defense: 1,
             },
             known_skill_ids: vec![1],
+            status: None,
         };
         let mut state = make_battle_state(monster_a, monster_b);
         let variance = always_hit_variance(true);
@@ -1469,6 +1474,7 @@ mod tests {
             max_hp: 100,
             stats: make_stat_block_with_speed(40, 40, 40),
             known_skill_ids: vec![], // NO skills
+            status: None,
         };
         let mut state = make_battle_state(monster_a, monster_b);
         state.turn_number = 5;

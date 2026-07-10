@@ -1,95 +1,241 @@
 {
-  "Affinity": {
-    "kind": "enum",
-    "variants": ["Fire", "Water", "Plant", "Electric", "Earth", "Wind", "Light", "Dark"]
+  "EncounterEntryRow": {
+    "kind": "struct",
+    "fields": [
+      [
+        "species_id",
+        "u32"
+      ],
+      [
+        "weight",
+        "u16"
+      ],
+      [
+        "min_level",
+        "u8"
+      ],
+      [
+        "max_level",
+        "u8"
+      ]
+    ]
   },
-  "ActionState": {
+  "StatusEffect": {
     "kind": "enum",
-    "variants": ["Idle", "Walking", "Jumping"]
+    "variants": [
+      "Poison",
+      "Burn",
+      "Paralysis",
+      "Sleep",
+      "Freeze"
+    ]
   },
   "BattleMonster": {
     "kind": "struct",
     "fields": [
-      ["species_id", "u32"],
-      ["affinity", "Affinity"],
-      ["level", "u8"],
-      ["current_hp", "u16"],
-      ["max_hp", "u16"],
-      ["stats", "StatBlock"],
-      ["known_skill_ids", "Vec<u32>"]
+      [
+        "species_id",
+        "u32"
+      ],
+      [
+        "affinity",
+        "Affinity"
+      ],
+      [
+        "level",
+        "u8"
+      ],
+      [
+        "current_hp",
+        "u16"
+      ],
+      [
+        "max_hp",
+        "u16"
+      ],
+      [
+        "stats",
+        "StatBlock"
+      ],
+      [
+        "known_skill_ids",
+        "Vec<u32>"
+      ],
+      [
+        "status",
+        "Option<StatusEffect>"
+      ]
     ]
-  },
-  "BattleOutcome": {
-    "kind": "enum",
-    "variants": ["Ongoing", "SideAWins", "SideBWins", "Fled"]
   },
   "BattleSide": {
     "kind": "struct",
     "fields": [
-      ["active", "u32"],
-      ["team", "Vec<BattleMonster>"]
+      [
+        "active",
+        "u32"
+      ],
+      [
+        "team",
+        "Vec<BattleMonster>"
+      ]
+    ]
+  },
+  "BattleOutcome": {
+    "kind": "enum",
+    "variants": [
+      "Ongoing",
+      "SideAWins",
+      "SideBWins",
+      "Fled"
     ]
   },
   "BattleState": {
     "kind": "struct",
     "fields": [
-      ["side_a", "BattleSide"],
-      ["side_b", "BattleSide"],
-      ["outcome", "BattleOutcome"],
-      ["turn_number", "u16"]
+      [
+        "side_a",
+        "BattleSide"
+      ],
+      [
+        "side_b",
+        "BattleSide"
+      ],
+      [
+        "outcome",
+        "BattleOutcome"
+      ],
+      [
+        "turn_number",
+        "u16"
+      ]
     ]
   },
-  "Direction": {
-    "kind": "enum",
-    "variants": ["North", "South", "East", "West"]
-  },
-  "EncounterEntryRow": {
-    "kind": "struct",
-    "fields": [
-      ["species_id", "u32"],
-      ["weight", "u16"],
-      ["min_level", "u8"],
-      ["max_level", "u8"]
-    ]
-  },
-  "MoveInput": {
-    "kind": "enum",
-    "variants": ["Step", "Jump"]
-  },
-  "NatureKind": {
+  "Affinity": {
     "kind": "enum",
     "variants": [
-      "Hardy", "Lonely", "Brave", "Adamant", "Naughty",
-      "Bold", "Docile", "Relaxed", "Impish", "Lax",
-      "Timid", "Hasty", "Serious", "Jolly", "Naive",
-      "Modest", "Mild", "Quiet", "Bashful", "Rash",
-      "Calm", "Gentle", "Sassy", "Careful", "Quirky"
+      "Fire",
+      "Water",
+      "Plant",
+      "Electric",
+      "Earth",
+      "Wind",
+      "Light",
+      "Dark"
+    ]
+  },
+  "StatKind": {
+    "kind": "enum",
+    "variants": [
+      "Hp",
+      "Attack",
+      "Defense",
+      "Speed",
+      "SpAttack",
+      "SpDefense"
     ]
   },
   "StatBlock": {
     "kind": "struct",
     "fields": [
-      ["hp", "u16"],
-      ["attack", "u16"],
-      ["defense", "u16"],
-      ["speed", "u16"],
-      ["sp_attack", "u16"],
-      ["sp_defense", "u16"]
+      [
+        "hp",
+        "u16"
+      ],
+      [
+        "attack",
+        "u16"
+      ],
+      [
+        "defense",
+        "u16"
+      ],
+      [
+        "speed",
+        "u16"
+      ],
+      [
+        "sp_attack",
+        "u16"
+      ],
+      [
+        "sp_defense",
+        "u16"
+      ]
     ]
   },
-  "StatKind": {
+  "NatureKind": {
     "kind": "enum",
-    "variants": ["Hp", "Attack", "Defense", "Speed", "SpAttack", "SpDefense"]
+    "variants": [
+      "Hardy",
+      "Lonely",
+      "Brave",
+      "Adamant",
+      "Naughty",
+      "Bold",
+      "Docile",
+      "Relaxed",
+      "Impish",
+      "Lax",
+      "Timid",
+      "Hasty",
+      "Serious",
+      "Jolly",
+      "Naive",
+      "Modest",
+      "Mild",
+      "Quiet",
+      "Bashful",
+      "Rash",
+      "Calm",
+      "Gentle",
+      "Sassy",
+      "Careful",
+      "Quirky"
+    ]
   },
-  "TileKind": {
+  "Direction": {
     "kind": "enum",
-    "variants": ["Floor", "Wall", "TallGrass"]
+    "variants": [
+      "North",
+      "South",
+      "East",
+      "West"
+    ]
   },
   "TilePos": {
     "kind": "struct",
     "fields": [
-      ["x", "i32"],
-      ["y", "i32"]
+      [
+        "x",
+        "i32"
+      ],
+      [
+        "y",
+        "i32"
+      ]
+    ]
+  },
+  "ActionState": {
+    "kind": "enum",
+    "variants": [
+      "Idle",
+      "Walking",
+      "Jumping"
+    ]
+  },
+  "MoveInput": {
+    "kind": "enum",
+    "variants": [
+      "Step",
+      "Jump"
+    ]
+  },
+  "TileKind": {
+    "kind": "enum",
+    "variants": [
+      "Floor",
+      "Wall",
+      "TallGrass"
     ]
   }
 }

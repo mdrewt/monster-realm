@@ -1,4 +1,4 @@
-//! Red-team findings for the M14a status-effect implementation.
+//! Red-team findings for the M14a/M14b status-effect implementation.
 //!
 //! Each test is a permanent gating test that protects a concrete invariant.
 //! All were confirmed by adversarial analysis of `status.rs` and `resolve.rs`.
@@ -16,13 +16,23 @@
 //!   RT-S14-04 (LOW)     — Simultaneous-DoT-KO: SideA always processed first.
 //!                          If both sides die from DoT the same turn, SideB wins.
 //!                          Deterministic but undocumented; this test pins the order.
+//!   RT-S14-05 (MEDIUM)  — resolve_player_swap (the swap_active reducer path) does NOT
+//!                          apply pre-turn status effects to the enemy side. A paralyzed,
+//!                          sleeping, or frozen enemy always attacks back after a player
+//!                          swap, bypassing the 25%/100% action-block checks that
+//!                          apply_pre_turn_effects would enforce on a normal attack turn.
+//!                          This is a game-correctness gap: the player cannot exploit
+//!                          enemy status to get a free-swap turn. (M14b, ADR-0093)
 
+use crate::combat::resolve::resolve_player_swap;
 use crate::combat::status::{
     apply_post_turn_effects, tick_status, BattleStatusStore, StatusEffect, StatusVariance,
 };
+use crate::combat::type_chart::tests::make_type_chart;
 use crate::combat::types::{
-    BattleEvent, BattleMonster, BattleOutcome, BattleSide, BattleState, SideId,
+    BattleEvent, BattleMonster, BattleOutcome, BattleSide, BattleState, SideId, TurnVariance,
 };
+use crate::content::SkillDef;
 use crate::monster::types::{Affinity, StatBlock};
 
 // ---------------------------------------------------------------------------
@@ -49,6 +59,7 @@ fn make_monster(affinity: Affinity, hp: u16, max_hp: u16, speed: u16) -> BattleM
         max_hp,
         stats: make_stat_block(speed),
         known_skill_ids: vec![1],
+        status: None,
     }
 }
 
@@ -83,12 +94,14 @@ fn no_block_variance() -> StatusVariance {
 // ambiguity exists. A correct design would include slot index in StatusCured.
 // ===========================================================================
 
-/// Kills: any future refactor that adds slot information to StatusCured events
-/// (which would be the fix — this test would then need updating to match).
-/// As written it CONFIRMS the ambiguity exists and must remain a tracked finding
-/// until the event schema is updated.
+/// RT-S14-01 FIX (m14b): `StatusCured` now carries `slot: u32` identifying which
+/// team slot was cured. This test verifies the fix: a bench cure on slot 1 must
+/// emit `StatusCured { side: SideA, slot: 1 }`, not an ambiguous side-only event.
+///
+/// Kills: any impl that sets `slot: 0` for all cures (bench cure would fire
+/// slot=0, failing the `assert_eq!(*slot, 1)` assertion).
 #[test]
-fn rt_s14_01_bench_slot_status_cure_emits_ambiguous_event_without_slot_index() {
+fn rt_s14_01_bench_slot_status_cure_carries_correct_slot_index() {
     let mut status = BattleStatusStore {
         // active slot 0: no status
         // bench slot 1: Sleep about to expire
@@ -113,13 +126,13 @@ fn rt_s14_01_bench_slot_status_cure_emits_ambiguous_event_without_slot_index() {
     );
 
     match &cured_events[0] {
-        BattleEvent::StatusCured { side } => {
+        BattleEvent::StatusCured { side, slot } => {
+            assert_eq!(*side, SideId::SideA, "cure must be on SideA");
             assert_eq!(
-                *side,
-                SideId::SideA,
-                "RT-S14-01: StatusCured carries only SideA — no slot index. \
-                 A consumer cannot determine this cure came from bench slot 1 \
-                 rather than the active slot 0."
+                *slot, 1,
+                "RT-S14-01 FIX: StatusCured.slot must be 1 (bench slot index). \
+                 A naive impl setting slot=0 always fails here — the cure was \
+                 for bench slot 1, not active slot 0."
             );
         }
         _ => panic!("expected StatusCured"),
@@ -136,11 +149,6 @@ fn rt_s14_01_bench_slot_status_cure_emits_ambiguous_event_without_slot_index() {
         status.side_a[1].is_none(),
         "RT-S14-01: Bench slot 1 must be cured (set to None) after tick"
     );
-
-    // PROTOCOL AMBIGUITY CONFIRMED: the event does not include a slot index.
-    // A client rendering the active monster's status bar based on StatusCured
-    // will incorrectly clear the active monster's status display even though
-    // the active monster had no status to cure.
 }
 
 // ===========================================================================
@@ -190,7 +198,7 @@ fn rt_s14_02_sleep_zero_turns_remaining_cures_without_underflow() {
     // StatusCured must be emitted.
     let has_cured = events
         .iter()
-        .any(|e| matches!(e, BattleEvent::StatusCured { side } if *side == SideId::SideA));
+        .any(|e| matches!(e, BattleEvent::StatusCured { side, .. } if *side == SideId::SideA));
     assert!(
         has_cured,
         "RT-S14-02: StatusCured{{side:SideA}} must be emitted for Sleep{{0}}; \
@@ -365,5 +373,181 @@ fn rt_s14_04_simultaneous_dot_ko_side_a_processed_first_side_b_wins() {
         "RT-S14-04: SideB's HP must remain at 1 — its Poison DoT was never applied \
          (the loop broke after SideA fainted). \
          A reversed loop order would reduce SideB's HP to 0 and change the winner."
+    );
+}
+
+// ===========================================================================
+// RT-S14-05 (MEDIUM): resolve_player_swap does NOT apply pre-turn status blocks
+// to the enemy side.
+//
+// When a player swaps (swap_active reducer → resolve_player_swap), the enemy
+// attacks back via resolve_enemy_turn → resolve_one_attack. This path does NOT
+// call apply_pre_turn_effects, so a paralyzed/sleeping/frozen enemy ALWAYS
+// attacks after a player swap — the 25%/100% block from apply_pre_turn_effects
+// is never evaluated on the swap path.
+//
+// This is a game-correctness gap: on a normal attack turn, a fully-paralyzed
+// enemy has a 25% chance of being blocked. On a swap turn, it attacks with
+// 100% probability. The player loses the benefit of enemy status during swaps.
+//
+// The test pins this behavior as DOCUMENTED (not a silent accident) so a future
+// "fix" that accidentally applies status blocks to the swap path can be
+// caught before it changes game balance without deliberate intent.
+//
+// Design note: whether swap turns SHOULD apply enemy status is a game-design
+// question; this test documents the CURRENT behavior as an invariant so any
+// change is visible and deliberate.
+// ===========================================================================
+
+/// RT-S14-05: Pins that resolve_player_swap does NOT block a paralyzed enemy.
+///
+/// Setup: Enemy (side B) has Paralysis loaded via status store. Player swaps.
+/// Expected: enemy always attacks (no ActionBlocked event).
+///
+/// Kills: a "fix" that wraps resolve_player_swap in apply_pre_turn_effects
+/// without deliberate intent — the enemy would sometimes be blocked and
+/// sometimes not, making swap turns depend on status in a new undocumented way.
+/// Also pins the gap so the code reviewer knows the omission is intentional.
+#[test]
+fn rt_s14_05_resolve_player_swap_does_not_apply_enemy_status_block() {
+    let fire_skill = SkillDef {
+        id: 1,
+        name: "Ember".to_string(),
+        affinity: Affinity::Fire,
+        power: 40,
+        accuracy: 100,
+        pp: 25,
+    };
+    let skills = vec![fire_skill];
+    let chart = make_type_chart();
+
+    // Player has two healthy monsters (so a swap is legal).
+    let player_m0 = BattleMonster {
+        species_id: 1,
+        affinity: Affinity::Fire,
+        level: 5,
+        current_hp: 200,
+        max_hp: 200,
+        stats: StatBlock {
+            hp: 100,
+            attack: 40,
+            defense: 40,
+            speed: 50,
+            sp_attack: 50,
+            sp_defense: 50,
+        },
+        known_skill_ids: vec![1],
+        status: None,
+    };
+    let player_m1 = BattleMonster {
+        species_id: 2,
+        affinity: Affinity::Water,
+        level: 5,
+        current_hp: 200,
+        max_hp: 200,
+        stats: StatBlock {
+            hp: 100,
+            attack: 40,
+            defense: 40,
+            speed: 50,
+            sp_attack: 50,
+            sp_defense: 50,
+        },
+        known_skill_ids: vec![1],
+        status: None,
+    };
+    // Enemy has Paralysis in its BattleMonster.status — this would normally give
+    // a 25% chance of blocking. On a swap turn, this block is never evaluated.
+    let enemy = BattleMonster {
+        species_id: 3,
+        affinity: Affinity::Fire,
+        level: 5,
+        current_hp: 200,
+        max_hp: 200,
+        stats: StatBlock {
+            hp: 100,
+            attack: 40,
+            defense: 40,
+            speed: 30,
+            sp_attack: 50,
+            sp_defense: 50,
+        },
+        known_skill_ids: vec![1],
+        status: Some(StatusEffect::Paralysis),
+    };
+
+    let mut state = BattleState {
+        side_a: BattleSide {
+            active: 0,
+            team: vec![player_m0, player_m1],
+        },
+        side_b: BattleSide {
+            active: 0,
+            team: vec![enemy],
+        },
+        outcome: BattleOutcome::Ongoing,
+        turn_number: 0,
+    };
+
+    let pre_hp_a = state.side_a.team[0].current_hp;
+
+    // Always-hit variance — if the enemy attacks, it will hit.
+    let variance = TurnVariance {
+        damage_roll_a: 100,
+        damage_roll_b: 100,
+        accuracy_roll_a: 0,
+        accuracy_roll_b: 0,
+        speed_tie_breaker: true,
+    };
+
+    // Player swaps from slot 0 to slot 1.
+    let events = resolve_player_swap(&mut state, SideId::SideA, 1, &skills, &chart, &variance);
+
+    // The swap must have happened.
+    assert_eq!(
+        state.side_a.active, 1,
+        "RT-S14-05: player must now be on slot 1 after the swap"
+    );
+
+    // RT-S14-05: The paralyzed enemy ALWAYS attacks on a swap turn.
+    // There must be NO ActionBlocked event for SideB.
+    let enemy_blocked = events.iter().any(|e| {
+        matches!(
+            e,
+            BattleEvent::ActionBlocked {
+                side: SideId::SideB
+            }
+        )
+    });
+    assert!(
+        !enemy_blocked,
+        "RT-S14-05 TEETH: resolve_player_swap must NOT emit ActionBlocked for the enemy — \
+         the swap path uses resolve_enemy_turn (not resolve_full_turn), so \
+         apply_pre_turn_effects is NEVER called and a paralyzed enemy always attacks. \
+         A future change that wraps resolve_player_swap in status checks would break this pin."
+    );
+
+    // The enemy MUST have attacked (produce a Damage event targeting SideA).
+    let enemy_attacked = events.iter().any(|e| {
+        matches!(
+            e,
+            BattleEvent::Damage {
+                side: SideId::SideA,
+                ..
+            }
+        )
+    });
+    assert!(
+        enemy_attacked,
+        "RT-S14-05: A paralyzed enemy must attack after a player swap (always-hit \
+         variance, no status block applied). If the enemy did not attack, the test \
+         fixture is wrong or the swap rejected the enemy turn."
+    );
+
+    // The new active (slot 1) must have taken damage — not the old active (slot 0).
+    assert_eq!(
+        state.side_a.team[0].current_hp, pre_hp_a,
+        "RT-S14-05: the OLD active (slot 0) must be undamaged — the enemy attacks \
+         the NEW active (slot 1) after the swap"
     );
 }

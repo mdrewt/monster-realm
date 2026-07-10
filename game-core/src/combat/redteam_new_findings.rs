@@ -72,6 +72,7 @@ fn make_monster(hp: u16, speed: u16) -> BattleMonster {
             sp_defense: 50,
         },
         known_skill_ids: vec![1],
+        status: None,
     }
 }
 
@@ -219,6 +220,7 @@ fn r02_active_monster_uses_skill_it_does_not_know() {
             sp_defense: 50,
         },
         known_skill_ids: vec![1], // only knows skill 1
+        status: None,
     };
 
     let mut state = BattleState {
@@ -482,6 +484,7 @@ fn r05_enemy_retaliation_after_swap_can_ko_new_active() {
             sp_defense: 1,
         },
         known_skill_ids: vec![1],
+        status: None,
     };
     // Enemy: high attack to guarantee KO on player_m1
     let enemy = BattleMonster {
@@ -499,6 +502,7 @@ fn r05_enemy_retaliation_after_swap_can_ko_new_active() {
             sp_defense: 50,
         },
         known_skill_ids: vec![1],
+        status: None,
     };
 
     let mut state = BattleState {

@@ -123,6 +123,7 @@ mod tests {
             max_hp: 100,
             stats: make_stat_block(attack, defense, 50),
             known_skill_ids: vec![1],
+            status: None,
         }
     }
 
@@ -365,6 +366,7 @@ mod tests {
                 sp_defense: 10,
             },
             known_skill_ids: vec![1],
+            status: None,
         };
         let defender = BattleMonster {
             species_id: 2,
@@ -381,6 +383,7 @@ mod tests {
                 sp_defense: 255,
             },
             known_skill_ids: vec![],
+            status: None,
         };
         let plant_skill = SkillDef {
             id: 5,
@@ -581,6 +584,7 @@ mod tests {
                 max_hp: 100,
                 stats: make_stat_block(attack, 40, 50),
                 known_skill_ids: vec![],
+                status: None,
             };
             let defender = BattleMonster {
                 species_id: 2,
@@ -590,6 +594,7 @@ mod tests {
                 max_hp: 100,
                 stats: make_stat_block(40, defense, 40),
                 known_skill_ids: vec![],
+                status: None,
             };
             let skill = SkillDef {
                 id: 1,

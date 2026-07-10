@@ -214,6 +214,7 @@ fn make_test_battle(battle_id: u64, outcome: BattleOutcome, party_monster_ids: V
             sp_defense: 40,
         },
         known_skill_ids: vec![],
+        status: None,
     };
     Battle {
         battle_id,
