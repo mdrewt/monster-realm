@@ -144,8 +144,74 @@ Job 2 — smoke-republish:
   East) with `h % 5 != 0` (kills arm deletions). 61:15 → A2 exclusion, not a
   test.
 - **T6** specialist: smoke script arg + comment fix (AC-S1); justfile
-  `mutate-core` wrapper (AC-M2..M5, sketch in ADR-0088); `.cargo/mutants.toml`
-  (A2). nightly.yml expected UNTOUCHED (verify only).
+  `mutate-core` wrapper (AC-M2..M5, canonical text below); `.cargo/mutants.toml`
+  (A2, canonical text below). nightly.yml expected UNTOUCHED (verify only).
+  PLUS one-line hardening of `mutate-server` (see Empirical verifications V4:
+  same missing-missed.txt vacuous-green class) + its wrong comment fixed.
+
+  Canonical `mutate-core` wrapper (the eval's positive-control fixture and the
+  installed recipe must both be this shape):
+
+  ```
+  mutate-core:
+      #!/usr/bin/env bash
+      set -euo pipefail
+      status=0
+      cargo mutants -p game-core || status=$?
+      # 0 = clean; 2 = missed mutants; 3 = timeouts (may accompany missed).
+      # Anything else (1 usage, 4 baseline-test failure, ...) = fail loud.
+      if [ "$status" -ne 0 ] && [ "$status" -ne 2 ] && [ "$status" -ne 3 ]; then
+          echo "cargo mutants failed with exit $status (not a mutation verdict)" >&2
+          exit "$status"
+      fi
+      # Fail closed if the outcome file is absent (grep '' || true would
+      # otherwise yield missed="" and the -gt test degrades to false → vacuous
+      # green; V4).
+      if [ ! -f mutants.out/missed.txt ]; then
+          echo "mutants.out/missed.txt absent — cannot verify zero-missed" >&2
+          exit 1
+      fi
+      missed=$(grep -c '' mutants.out/missed.txt || true)
+      echo "mutate-core: missed=$missed (zero-tolerance ADR-0050; timeouts tolerated iff missed=0, ADR-0088)"
+      if [ "$missed" -gt 0 ]; then
+          echo "game-core mutation gate: $missed surviving mutant(s) — zero-tolerance (ADR-0050)" >&2
+          exit 1
+      fi
+  ```
+
+  Canonical `.cargo/mutants.toml`:
+
+  ```
+  # Single blessed exclusion: provably-equivalent mutant (ADR-0088 §Decision 2).
+  # The Y-branch of toward_home requires |dx| < |dy| → dy != 0, so `dy > 0` and
+  # `dy >= 0` are indistinguishable on the reachable domain. Line-pinned
+  # (npc/rules.rs:61:15): drift resurfaces the mutant → nightly red → re-pin
+  # consciously. Guarded by evals/mutate-core-recipe-integrity.eval.mjs.
+  exclude_re = ["npc/rules\\.rs:61:15: replace > with >= in toward_home"]
+  ```
+
+## Empirical verifications (orchestrator-run, 2026-07-10)
+
+- **V1 exclude_re mechanism**: `.cargo/mutants.toml` at workspace root with the
+  canonical pattern removes EXACTLY `61:15 > → >=` from
+  `cargo mutants --list -p game-core` output; siblings (61:15 `>`→`==`/`<`,
+  all 53:15) remain listed. Spike file removed after verification; T6
+  recreates it.
+- **V2 no line-161 false match**: the `npc/rules\.rs:` prefix prevents the
+  pattern matching a hypothetical `rules.rs:161:15` mutant (probed).
+- **V3 eval blast radius clear**: `no-logic-in-wrapper.eval.mjs` does not
+  reference tiled_import; `evals/run.mjs` auto-discovers any `*.eval.mjs`
+  (readdir filter, no registration).
+- **V4 mutate-server latent vacuous-green**: with `mutants.out/missed.txt`
+  missing, `missed=$(grep -c '' ... || true)` yields `""`; `[ "" -gt cap ]`
+  errors and an if-condition error is falsy — the recipe would exit 0. Its
+  comment ("missing file aborts via set -e") is wrong: `|| true` swallows the
+  abort. Fix: explicit `[ ! -f ... ]` fail-closed guard in BOTH recipes.
+- **V5 lens variance note**: the plan-stage red-team agent was lost twice to
+  host process restarts; its chartered attack surfaces were verified inline
+  (V1–V4) and every T2–T5 test design gets objective empirical proof via the
+  4-minute scoped mutants run before implementation review. The full
+  red-team lens runs at implementation review as required.
 - **T7** specialist: scoped mutants re-run (green proof, ~4 min) → full
   `just smoke-republish` against local instance → `node evals/run.mjs`.
 - **T8** verifier-gated full gate: full `just mutate-core` (expect 0 missed /
