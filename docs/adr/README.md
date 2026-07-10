@@ -10,7 +10,7 @@ Architecture Decision Records live in **two locations**; check both.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0091`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0092`**.
 
 **ADR numbering collision note:** the harness spec corpus also contains design
 ADRs numbered `0055`–`0057` with *different topics* from this project's
@@ -79,6 +79,7 @@ explicit path prefix `harness adr/0055` to cite the harness design ADR.
 | [0088](./0088-nightly-mutate-core-timeout-tolerance.md) | Nightly mutate-core repair: smoke-republish fix, timeout tolerance, 38 missed mutants killed | fix-nightly |
 | [0089](./0089-content-parse-caching.md) | Content parse caching on hot paths | M13.5d |
 | [0090](./0090-client-ux-correctness.md) | Client UX correctness — bait save/restore, zone-switch guard, adaptive interp delay, render perf | M13.5e |
+| [0091](./0091-type-rigor-hardening.md) | Type-rigor hardening — GrantItem gate, quest match, coded decode, party-slot core check, marshal re-checks | M13.5f |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
