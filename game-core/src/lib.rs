@@ -70,8 +70,9 @@ pub use taming::{
 };
 pub use types::{ActionState, CharacterState, Direction, Millis, MoveInput, TileKind, TilePos};
 pub use world::{
-    apply_move, apply_move_coded, map_for, spawn, stepped_onto_grass, validate_zone_maps, zone_0,
-    TileMap, MOVE_QUEUE_CAP, PARTY_SIZE, PARTY_SLOT_NONE, STEP_MS,
+    apply_move, apply_move_coded, check_party_slot, map_for, spawn, stepped_onto_grass,
+    validate_zone_maps, zone_0, SlotError, TileMap, MOVE_QUEUE_CAP, PARTY_SIZE, PARTY_SLOT_NONE,
+    STEP_MS,
 };
 
 /// The trivial M0 proof-rule: a pure, deterministic state transition over an

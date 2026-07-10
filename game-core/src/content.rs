@@ -1185,6 +1185,80 @@ pub fn validate_npc_content(
         }
     }
 
+    // 6b. GrantItem effects must reference items that exist in the items registry.
+    for tree in dialogue_trees {
+        for node in &tree.nodes {
+            for effect in node
+                .auto_effects
+                .iter()
+                .chain(node.choices.iter().flat_map(|c| c.effects.iter()))
+            {
+                if let crate::dialogue::DialogueEffect::GrantItem(item_id, _) = effect {
+                    if !item_ids.contains(item_id) {
+                        return Err(format!(
+                            "dialogue tree '{}' GrantItem effect references unknown item id {}",
+                            tree.id, item_id
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // 6c. Once-only gate: every GrantItem-bearing node/choice must have a
+    // Condition::NotFlag(flag) + DialogueEffect::SetFlag(flag) pair for the SAME flag.
+    //
+    // Rationale: `talk` re-applies auto_effects on EVERY call (find_entry_node
+    // re-runs each time). A GrantItem without this gate is an unlimited item farm.
+    // The pairing must use the SAME flag name — a mismatched (NotFlag("a"),SetFlag("b"))
+    // does NOT close the loop. See ADR-0068 and npc.rs `talk` comment.
+    let once_only_gated = |conditions: &[crate::dialogue::Condition],
+                           effects: &[crate::dialogue::DialogueEffect]|
+     -> bool {
+        let has_grant = effects
+            .iter()
+            .any(|e| matches!(e, crate::dialogue::DialogueEffect::GrantItem(_, _)));
+        if !has_grant {
+            return true;
+        }
+        let not_flags: BTreeSet<&str> = conditions
+            .iter()
+            .filter_map(|c| match c {
+                crate::dialogue::Condition::NotFlag(f) => Some(f.as_str()),
+                _ => None,
+            })
+            .collect();
+        let set_flags: BTreeSet<&str> = effects
+            .iter()
+            .filter_map(|e| match e {
+                crate::dialogue::DialogueEffect::SetFlag(f) => Some(f.as_str()),
+                _ => None,
+            })
+            .collect();
+        not_flags.intersection(&set_flags).next().is_some()
+    };
+    for tree in dialogue_trees {
+        for node in &tree.nodes {
+            if !once_only_gated(&node.entry_conditions, &node.auto_effects) {
+                return Err(format!(
+                    "dialogue tree '{}' node '{}' grants an item via auto_effects without \
+                     a NotFlag+SetFlag once-only gate — talk() re-applies auto_effects \
+                     every call, making this an unlimited item farm",
+                    tree.id, node.id
+                ));
+            }
+            for (ci, choice) in node.choices.iter().enumerate() {
+                if !once_only_gated(&choice.conditions, &choice.effects) {
+                    return Err(format!(
+                        "dialogue tree '{}' node '{}' choice {} grants an item without \
+                         a NotFlag+SetFlag once-only gate on that choice",
+                        tree.id, node.id, ci
+                    ));
+                }
+            }
+        }
+    }
+
     // 7. Each QuestDef has ≥1 step
     for quest in quests {
         if quest.steps.is_empty() {
@@ -5538,6 +5612,188 @@ mod tests {
             "check #13: cost_item_id set with cost_qty == 1 is coherent and must \
              validate Ok; a `==`→`!=` flip makes `1 != 0` true → wrongly Errs. \
              Got: {:?}",
+            result.err()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // 13.5f-1: validate_npc_content GrantItem cross-ref + once-only gate
+    // -----------------------------------------------------------------------
+
+    /// Proof-of-teeth A: GrantItem referencing an unknown item id → Err.
+    /// Kills: any impl that skips the 6b cross-ref loop.
+    #[test]
+    fn validate_npc_content_rejects_grant_item_unknown_item_id() {
+        use crate::dialogue::{Condition, DialogueEffect, DialogueNode, DialogueTree};
+        let zone = fixture_zone_m12c(0);
+        let item = fixture_item_def_m12c(1); // only item id 1 exists
+                                             // Node grants item 999 (does not exist), but IS properly gated (NotFlag+SetFlag)
+                                             // — the test isolates the item-id cross-ref failure.
+        let tree = DialogueTree {
+            id: "tree_a".to_string(),
+            root_node_id: "root".to_string(),
+            nodes: vec![DialogueNode {
+                id: "root".to_string(),
+                text: "Take this!".to_string(),
+                entry_conditions: vec![Condition::NotFlag("got_it".to_string())],
+                auto_effects: vec![
+                    DialogueEffect::GrantItem(999, 1), // item 999 does not exist
+                    DialogueEffect::SetFlag("got_it".to_string()),
+                ],
+                choices: vec![],
+            }],
+        };
+        let npc = fixture_npc_def_m12c(1, "giver", 0, "tree_a");
+        let result = validate_npc_content(&[npc], &[tree], &[], &[zone], &[item], &[]);
+        assert!(
+            result.is_err(),
+            "GrantItem with unknown item id 999 must fail (6b cross-ref). Got Ok."
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("unknown item id") || msg.contains("999"),
+            "error must mention the unknown item id; got: {msg}"
+        );
+    }
+
+    /// Proof-of-teeth B1: GrantItem in auto_effects with NO gate → Err.
+    /// Kills: any impl that skips the 6c once-only check.
+    #[test]
+    fn validate_npc_content_rejects_grant_item_without_gate_in_auto_effects() {
+        use crate::dialogue::{DialogueEffect, DialogueNode, DialogueTree};
+        let zone = fixture_zone_m12c(0);
+        let item = fixture_item_def_m12c(1);
+        let tree = DialogueTree {
+            id: "tree_a".to_string(),
+            root_node_id: "root".to_string(),
+            nodes: vec![DialogueNode {
+                id: "root".to_string(),
+                text: "Free loot!".to_string(),
+                entry_conditions: vec![], // no NotFlag gate
+                auto_effects: vec![DialogueEffect::GrantItem(1, 1)], // no SetFlag either
+                choices: vec![],
+            }],
+        };
+        let npc = fixture_npc_def_m12c(1, "farmer", 0, "tree_a");
+        let result = validate_npc_content(&[npc], &[tree], &[], &[zone], &[item], &[]);
+        assert!(
+            result.is_err(),
+            "GrantItem without once-only gate must fail (6c). Got Ok."
+        );
+    }
+
+    /// Proof-of-teeth B2 (strictness): mismatched flag names do NOT satisfy the gate.
+    /// NotFlag("a") + SetFlag("b") must still Err — kills a lax "any NotFlag AND any SetFlag" impl.
+    #[test]
+    fn validate_npc_content_rejects_grant_item_mismatched_flag_names() {
+        use crate::dialogue::{Condition, DialogueEffect, DialogueNode, DialogueTree};
+        let zone = fixture_zone_m12c(0);
+        let item = fixture_item_def_m12c(1);
+        let tree = DialogueTree {
+            id: "tree_a".to_string(),
+            root_node_id: "root".to_string(),
+            nodes: vec![DialogueNode {
+                id: "root".to_string(),
+                text: "Mismatched gate.".to_string(),
+                entry_conditions: vec![Condition::NotFlag("flag_a".to_string())],
+                auto_effects: vec![
+                    DialogueEffect::GrantItem(1, 1),
+                    DialogueEffect::SetFlag("flag_b".to_string()), // different flag!
+                ],
+                choices: vec![],
+            }],
+        };
+        let npc = fixture_npc_def_m12c(1, "mismatch_npc", 0, "tree_a");
+        let result = validate_npc_content(&[npc], &[tree], &[], &[zone], &[item], &[]);
+        assert!(
+            result.is_err(),
+            "NotFlag(\"flag_a\") + SetFlag(\"flag_b\") is not a valid once-only gate \
+             (flag names differ). Got Ok."
+        );
+    }
+
+    /// Proof-of-teeth B3: GrantItem in choice effects without choice-level gate → Err.
+    #[test]
+    fn validate_npc_content_rejects_grant_item_without_gate_in_choice_effects() {
+        use crate::dialogue::{DialogueChoice, DialogueEffect, DialogueNode, DialogueTree};
+        let zone = fixture_zone_m12c(0);
+        let item = fixture_item_def_m12c(1);
+        let tree = DialogueTree {
+            id: "tree_a".to_string(),
+            root_node_id: "root".to_string(),
+            nodes: vec![DialogueNode {
+                id: "root".to_string(),
+                text: "Pick one.".to_string(),
+                entry_conditions: vec![],
+                auto_effects: vec![],
+                choices: vec![DialogueChoice {
+                    text: "Take reward".to_string(),
+                    conditions: vec![], // no NotFlag on the choice
+                    effects: vec![DialogueEffect::GrantItem(1, 1)], // no SetFlag either
+                    next_node: None,
+                }],
+            }],
+        };
+        let npc = fixture_npc_def_m12c(1, "choice_giver", 0, "tree_a");
+        let result = validate_npc_content(&[npc], &[tree], &[], &[zone], &[item], &[]);
+        assert!(
+            result.is_err(),
+            "GrantItem in choice effects without once-only gate must fail. Got Ok."
+        );
+    }
+
+    /// Positive: well-gated GrantItem in auto_effects passes validation.
+    /// Kills: any over-strict impl that rejects all GrantItem nodes.
+    #[test]
+    fn validate_npc_content_accepts_well_gated_grant_item_in_auto_effects() {
+        use crate::dialogue::{Condition, DialogueEffect, DialogueNode, DialogueTree};
+        let zone = fixture_zone_m12c(0);
+        let item = fixture_item_def_m12c(1);
+        let tree = DialogueTree {
+            id: "tree_a".to_string(),
+            root_node_id: "root".to_string(),
+            nodes: vec![DialogueNode {
+                id: "root".to_string(),
+                text: "Here you go!".to_string(),
+                entry_conditions: vec![Condition::NotFlag("got_potion".to_string())],
+                auto_effects: vec![
+                    DialogueEffect::GrantItem(1, 1),
+                    DialogueEffect::SetFlag("got_potion".to_string()),
+                ],
+                choices: vec![],
+            }],
+        };
+        let npc = fixture_npc_def_m12c(1, "elder", 0, "tree_a");
+        let result = validate_npc_content(&[npc], &[tree], &[], &[zone], &[item], &[]);
+        assert!(
+            result.is_ok(),
+            "Well-gated GrantItem must pass. Got: {:?}",
+            result.err()
+        );
+    }
+
+    /// Positive: a node with no GrantItem and no gate is fine.
+    /// Kills: any impl that demands a gate on every node regardless of GrantItem.
+    #[test]
+    fn validate_npc_content_accepts_node_without_grant_item_and_no_gate() {
+        use crate::dialogue::{DialogueEffect, DialogueNode, DialogueTree};
+        let zone = fixture_zone_m12c(0);
+        let tree = DialogueTree {
+            id: "tree_a".to_string(),
+            root_node_id: "root".to_string(),
+            nodes: vec![DialogueNode {
+                id: "root".to_string(),
+                text: "Hello traveller.".to_string(),
+                entry_conditions: vec![],
+                auto_effects: vec![DialogueEffect::SetFlag("met_npc".to_string())],
+                choices: vec![],
+            }],
+        };
+        let npc = fixture_npc_def_m12c(1, "greeter", 0, "tree_a");
+        let result = validate_npc_content(&[npc], &[tree], &[], &[zone], &[], &[]);
+        assert!(
+            result.is_ok(),
+            "No GrantItem = no gate required. Got: {:?}",
             result.err()
         );
     }

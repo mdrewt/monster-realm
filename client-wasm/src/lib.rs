@@ -101,6 +101,10 @@ pub fn predict_tick(state: u64, input: u64, seed: u64) -> u64 {
 /// the wasm boundary, for the movement-parity eval. Flat codes (see game-core):
 /// facing/dir 0=N,1=S,2=E,3=W; action 0=Idle,1=Walk,2=Jump; input_kind 0=Step,
 /// 1=Jump. Returns `[x, y, facing_code, action_code]` (an `Int32Array` in JS).
+///
+/// # Errors
+/// Throws a JS error if `facing`, `action`, or `step_dir` (when `input_kind == 0`)
+/// is not a valid code — fail-loud parity with the serde `apply_move` path.
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn predict_move(
@@ -112,11 +116,12 @@ pub fn predict_move(
     input_kind: u8,
     step_dir: u8,
     now_ms: i64,
-) -> Vec<i32> {
-    game_core::apply_move_coded(
+) -> Result<Vec<i32>, JsValue> {
+    let out = game_core::apply_move_coded(
         x, y, facing, action, started_ms, input_kind, step_dir, now_ms,
     )
-    .to_vec()
+    .map_err(|e| zone_map_err(e.to_string()))?;
+    Ok(out.to_vec())
 }
 
 // --- M3: the JS-consumable marshaling boundary (NO game rules live here) ------
@@ -258,8 +263,10 @@ mod tests {
     #[test]
     fn move_matches_game_core() {
         assert_eq!(
-            super::predict_move(1, 1, 0, 0, 0, 0, 2, 1000),
-            game_core::apply_move_coded(1, 1, 0, 0, 0, 0, 2, 1000).to_vec()
+            super::predict_move(1, 1, 0, 0, 0, 0, 2, 1000).unwrap(),
+            game_core::apply_move_coded(1, 1, 0, 0, 0, 0, 2, 1000)
+                .unwrap()
+                .to_vec()
         );
     }
 

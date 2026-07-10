@@ -147,13 +147,13 @@ pub fn dir_code(d: Direction) -> u8 {
     }
 }
 
-#[must_use]
-pub fn dir_from_code(c: u8) -> Direction {
+pub fn dir_from_code(c: u8) -> Option<Direction> {
     match c {
-        1 => Direction::South,
-        2 => Direction::East,
-        3 => Direction::West,
-        _ => Direction::North,
+        0 => Some(Direction::North),
+        1 => Some(Direction::South),
+        2 => Some(Direction::East),
+        3 => Some(Direction::West),
+        _ => None,
     }
 }
 
@@ -166,12 +166,12 @@ pub fn action_code(a: ActionState) -> u8 {
     }
 }
 
-#[must_use]
-pub fn action_from_code(c: u8) -> ActionState {
+pub fn action_from_code(c: u8) -> Option<ActionState> {
     match c {
-        1 => ActionState::Walking,
-        2 => ActionState::Jumping,
-        _ => ActionState::Idle,
+        0 => Some(ActionState::Idle),
+        1 => Some(ActionState::Walking),
+        2 => Some(ActionState::Jumping),
+        _ => None,
     }
 }
 
@@ -226,7 +226,7 @@ mod tests {
         // step never changes a coordinate by more than one (saturation included).
         #[test]
         fn step_distance_at_most_one(x in any::<i32>(), y in any::<i32>(), d in 0u8..4) {
-            let dir = super::dir_from_code(d);
+            let dir = super::dir_from_code(d).expect("d in 0..4 is a valid dir code");
             let p = TilePos { x, y };
             let q = p.step(dir);
             prop_assert!((i64::from(q.x) - i64::from(p.x)).abs() <= 1);
@@ -255,7 +255,10 @@ mod tests {
             Direction::East,
             Direction::West,
         ] {
-            assert_eq!(dir_from_code(dir_code(d)), d);
+            assert_eq!(
+                dir_from_code(dir_code(d)).expect("dir_code output is a valid code"),
+                d
+            );
         }
         assert_eq!(action_code(ActionState::Idle), 0);
         assert_eq!(action_code(ActionState::Walking), 1);
@@ -265,7 +268,32 @@ mod tests {
             ActionState::Walking,
             ActionState::Jumping,
         ] {
-            assert_eq!(action_from_code(action_code(a)), a);
+            assert_eq!(
+                action_from_code(action_code(a)).expect("action_code output is a valid code"),
+                a
+            );
         }
+    }
+
+    /// Proof-of-teeth: invalid codes return None (kills any impl that keeps the
+    /// silent default coercion).
+    #[test]
+    fn dir_from_code_rejects_invalid_codes() {
+        use super::{dir_from_code, Direction};
+        assert_eq!(dir_from_code(4), None, "code 4 is out of range");
+        assert_eq!(dir_from_code(255), None, "code 255 is out of range");
+        // Valid boundary
+        assert_eq!(dir_from_code(0), Some(Direction::North));
+        assert_eq!(dir_from_code(3), Some(Direction::West));
+    }
+
+    #[test]
+    fn action_from_code_rejects_invalid_codes() {
+        use super::{action_from_code, ActionState};
+        assert_eq!(action_from_code(3), None, "code 3 is out of range");
+        assert_eq!(action_from_code(255), None, "code 255 is out of range");
+        // Valid boundary
+        assert_eq!(action_from_code(0), Some(ActionState::Idle));
+        assert_eq!(action_from_code(2), Some(ActionState::Jumping));
     }
 }

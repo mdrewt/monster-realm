@@ -10,7 +10,6 @@
 use crate::guards::{log_reject, require_owner, validate_name};
 use crate::marshal::pub_from_monster;
 use crate::schema::{monster, monster_pub};
-use crate::{MAX_PARTY_SIZE, PARTY_SLOT_NONE};
 use spacetimedb::ReducerContext;
 
 // --- Monster management reducers (M6b) ----------------------------------------
@@ -39,8 +38,8 @@ pub fn set_nickname(ctx: &ReducerContext, monster_id: u64, nickname: String) -> 
 }
 
 /// Set or clear a monster's party slot. `slot = 255` moves to box; `slot < 6`
-/// assigns a party position. Ownership-checked; rejects out-of-range slots and
-/// occupied-slot conflicts (caller must clear the existing occupant first).
+/// assigns a party position. Ownership-checked; delegates slot legality to the
+/// pure game-core check (`game_core::check_party_slot`, ADR-0053 SlotError pattern).
 #[spacetimedb::reducer]
 pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result<(), String> {
     let me = ctx.sender;
@@ -50,25 +49,19 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
         return Err(e);
     };
     require_owner(ctx, "set_party_slot", m.owner_identity)?;
-    if slot != PARTY_SLOT_NONE && slot >= MAX_PARTY_SIZE {
-        let e =
-            format!("slot {slot} out of range (0..{MAX_PARTY_SIZE} or {PARTY_SLOT_NONE} for box)");
+    // Collect party slots of the caller's OTHER monsters (excluding the one being moved).
+    let occupied: Vec<u8> = ctx
+        .db
+        .monster()
+        .owner_identity()
+        .filter(me)
+        .filter(|other| other.monster_id != monster_id)
+        .map(|other| other.party_slot)
+        .collect();
+    if let Err(err) = game_core::check_party_slot(slot, &occupied) {
+        let e = err.to_string();
         log_reject("set_party_slot", me, &e);
         return Err(e);
-    }
-    // If assigning to a party slot, check it's not already occupied.
-    if slot != PARTY_SLOT_NONE {
-        let occupied = ctx
-            .db
-            .monster()
-            .owner_identity()
-            .filter(me)
-            .any(|other| other.monster_id != monster_id && other.party_slot == slot);
-        if occupied {
-            let e = format!("party slot {slot} already occupied");
-            log_reject("set_party_slot", me, &e);
-            return Err(e);
-        }
     }
     m.party_slot = slot;
     let pub_row = pub_from_monster(&m);

@@ -357,29 +357,59 @@ pub(crate) fn loser_base_stat_total(species: &SpeciesRow) -> u16 {
 }
 
 /// Build a `Vec<SkillDef>` from the DB skill rows for the resolver.
-pub(crate) fn skill_defs_from_rows(rows: &[SkillRow]) -> Vec<SkillDef> {
+///
+/// Trust boundary (ADR-0049, reject-not-clamp): re-validates the same invariants
+/// that seed-time `validate_content` enforces (`power > 0`, `accuracy ∈ [1, 100]`),
+/// symmetric with `monster_to_instance` — if the DB were ever written outside of
+/// `sync_content`, an invalid skill would silently affect battle damage/accuracy.
+pub(crate) fn skill_defs_from_rows(rows: &[SkillRow]) -> Result<Vec<SkillDef>, String> {
     rows.iter()
-        .map(|r| SkillDef {
-            id: r.id,
-            name: r.name.clone(),
-            affinity: r.affinity,
-            power: r.power,
-            accuracy: r.accuracy,
-            pp: r.pp,
+        .map(|r| {
+            if r.power == 0 {
+                return Err(format!("skill {} has power=0 at marshal boundary", r.id));
+            }
+            if r.accuracy == 0 || r.accuracy > 100 {
+                return Err(format!(
+                    "skill {} has accuracy {} (must be 1..=100) at marshal boundary",
+                    r.id, r.accuracy
+                ));
+            }
+            Ok(SkillDef {
+                id: r.id,
+                name: r.name.clone(),
+                affinity: r.affinity,
+                power: r.power,
+                accuracy: r.accuracy,
+                pp: r.pp,
+            })
         })
         .collect()
 }
 
 /// Build the type chart from DB rows.
-pub(crate) fn type_chart_from_rows(rows: impl Iterator<Item = TypeRelationRow>) -> TypeChart {
-    let rels: Vec<game_core::TypeRelation> = rows
-        .map(|r| game_core::TypeRelation {
+///
+/// Trust boundary (ADR-0049): re-validates `effectiveness ∈ {0, 5, 10, 20}` —
+/// the seed-time constraint from `validate_content`. An out-of-range value would
+/// scale damage by the raw number (`TypeChart::effectiveness` returns it verbatim)
+/// while `classify` silently maps it to `Neutral`.
+pub(crate) fn type_chart_from_rows(
+    rows: impl Iterator<Item = TypeRelationRow>,
+) -> Result<TypeChart, String> {
+    let mut rels: Vec<game_core::TypeRelation> = Vec::new();
+    for r in rows {
+        if !matches!(r.effectiveness, 0 | 5 | 10 | 20) {
+            return Err(format!(
+                "type relation ({:?},{:?}) has illegal effectiveness {} (must be 0, 5, 10, or 20)",
+                r.attacker, r.defender, r.effectiveness
+            ));
+        }
+        rels.push(game_core::TypeRelation {
             attacker: r.attacker,
             defender: r.defender,
             effectiveness: r.effectiveness,
-        })
-        .collect();
-    game_core::TypeChart::new(&rels)
+        });
+    }
+    Ok(game_core::TypeChart::new(&rels))
 }
 
 #[cfg(test)]

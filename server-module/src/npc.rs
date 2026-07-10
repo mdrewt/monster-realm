@@ -243,7 +243,11 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
     // Step 9: apply auto_effects BEFORE writing state (ADR-0068)
     apply_node_auto_effects(node, &mut state);
 
-    // Step 10: route DB-side effects (StartQuest → player_quest row, GrantItem)
+    // Step 10: route DB-side effects (StartQuest → player_quest row, GrantItem).
+    // SECURITY: auto_effects are re-applied on EVERY talk() call because find_entry_node
+    // re-runs each time. A GrantItem in auto_effects without a NotFlag+SetFlag once-only
+    // gate is therefore an unlimited item farm. validate_npc_content (game-core) rejects
+    // such content at seed time (13.5f-1, ADR-0068) — this is the enforcement point.
     apply_effects_to_db(ctx, me, &state, &node.auto_effects);
 
     // Step 11: upsert player_conversation

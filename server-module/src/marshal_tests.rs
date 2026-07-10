@@ -1072,6 +1072,195 @@ fn m10_5a_wild_battle_monster_rejects_empty_known_skills() {
     );
 }
 
+// =========================================================================
+// 13.5f-5 gating tests — skill_defs_from_rows and type_chart_from_rows
+// seed-time range checks (ADR-0049 symmetry with monster_to_instance).
+// =========================================================================
+
+// -------------------------------------------------------------------------
+// skill_defs_from_rows: power > 0 + accuracy ∈ [1, 100]
+// -------------------------------------------------------------------------
+
+fn f5_skill_row_valid() -> SkillRow {
+    SkillRow {
+        id: 1,
+        name: "Ember".to_string(),
+        affinity: Affinity::Fire,
+        power: 40,
+        accuracy: 95,
+        pp: 25,
+    }
+}
+
+/// Positive: a skill row with valid power and accuracy must produce Ok.
+/// Kills: an overly strict impl that rejects all skill rows.
+#[test]
+fn f5_skill_defs_from_rows_accepts_valid_row() {
+    let rows = vec![f5_skill_row_valid()];
+    let result = skill_defs_from_rows(&rows);
+    assert!(
+        result.is_ok(),
+        "13.5f-5 TEETH: valid skill row (power=40, accuracy=95) must produce Ok; \
+         got: {:?}",
+        result.err()
+    );
+}
+
+/// Proof-of-teeth A1: power == 0 → Err.
+/// Kills: an impl that skips the power > 0 check.
+#[test]
+fn f5_skill_defs_from_rows_rejects_zero_power() {
+    let mut row = f5_skill_row_valid();
+    row.power = 0;
+    let result = skill_defs_from_rows(&[row]);
+    assert!(
+        result.is_err(),
+        "13.5f-5 TEETH: skill row with power=0 must produce Err; got Ok"
+    );
+}
+
+/// Proof-of-teeth A2: accuracy == 0 → Err.
+/// Kills: any impl that allows accuracy=0 (a 0% accuracy move is a content error).
+#[test]
+fn f5_skill_defs_from_rows_rejects_zero_accuracy() {
+    let mut row = f5_skill_row_valid();
+    row.accuracy = 0;
+    let result = skill_defs_from_rows(&[row]);
+    assert!(
+        result.is_err(),
+        "13.5f-5 TEETH: skill row with accuracy=0 must produce Err; got Ok"
+    );
+}
+
+/// Proof-of-teeth A3: accuracy > 100 → Err.
+/// Kills: an impl that only lower-bounds accuracy (skips the upper bound).
+#[test]
+fn f5_skill_defs_from_rows_rejects_accuracy_over_100() {
+    let mut row = f5_skill_row_valid();
+    row.accuracy = 101;
+    let result = skill_defs_from_rows(&[row]);
+    assert!(
+        result.is_err(),
+        "13.5f-5 TEETH: skill row with accuracy=101 must produce Err; got Ok"
+    );
+}
+
+/// Boundary: accuracy == 100 is valid (max legal value).
+/// Kills: an off-by-one impl using accuracy > 100 exclusion instead of >= 1 ∩ <= 100.
+#[test]
+fn f5_skill_defs_from_rows_accepts_accuracy_100() {
+    let mut row = f5_skill_row_valid();
+    row.accuracy = 100;
+    let result = skill_defs_from_rows(&[row]);
+    assert!(
+        result.is_ok(),
+        "13.5f-5: accuracy=100 is the legal maximum; must produce Ok. Got: {:?}",
+        result.err()
+    );
+}
+
+// -------------------------------------------------------------------------
+// type_chart_from_rows: effectiveness ∈ {0, 5, 10, 20}
+// -------------------------------------------------------------------------
+
+fn f5_type_relation_rows_valid() -> Vec<crate::schema::TypeRelationRow> {
+    use crate::schema::TypeRelationRow;
+    use game_core::Affinity;
+    vec![
+        TypeRelationRow {
+            id: 1,
+            attacker: Affinity::Fire,
+            defender: Affinity::Plant,
+            effectiveness: 20,
+        },
+        TypeRelationRow {
+            id: 2,
+            attacker: Affinity::Fire,
+            defender: Affinity::Water,
+            effectiveness: 5,
+        },
+        TypeRelationRow {
+            id: 3,
+            attacker: Affinity::Plant,
+            defender: Affinity::Electric,
+            effectiveness: 10,
+        },
+    ]
+}
+
+/// Positive: rows with effectiveness in {0,5,10,20} must produce Ok.
+/// Kills: an overly strict impl that rejects all type-chart rows.
+#[test]
+fn f5_type_chart_from_rows_accepts_valid_effectiveness_values() {
+    let rows = f5_type_relation_rows_valid();
+    let result = type_chart_from_rows(rows.into_iter());
+    assert!(
+        result.is_ok(),
+        "13.5f-5 TEETH: type chart rows with effectiveness ∈ {{0,5,10,20}} must produce Ok; \
+         got: {:?}",
+        result.err()
+    );
+}
+
+/// Proof-of-teeth B1: effectiveness == 3 (not in {0,5,10,20}) → Err.
+/// Kills: an impl that skips the set-membership check.
+#[test]
+fn f5_type_chart_from_rows_rejects_invalid_effectiveness() {
+    use crate::schema::TypeRelationRow;
+    use game_core::Affinity;
+    let rows = vec![TypeRelationRow {
+        id: 1,
+        attacker: Affinity::Fire,
+        defender: Affinity::Water,
+        effectiveness: 3,
+    }];
+    let result = type_chart_from_rows(rows.into_iter());
+    assert!(
+        result.is_err(),
+        "13.5f-5 TEETH: effectiveness=3 is not in {{0,5,10,20}} → must produce Err; got Ok"
+    );
+}
+
+/// Proof-of-teeth B2: effectiveness == 255 (large invalid value) → Err.
+/// Kills: an impl that only checks the lower bound (e.g. effectiveness > 20).
+#[test]
+fn f5_type_chart_from_rows_rejects_effectiveness_255() {
+    use crate::schema::TypeRelationRow;
+    use game_core::Affinity;
+    let rows = vec![TypeRelationRow {
+        id: 1,
+        attacker: Affinity::Plant,
+        defender: Affinity::Fire,
+        effectiveness: 255,
+    }];
+    let result = type_chart_from_rows(rows.into_iter());
+    assert!(
+        result.is_err(),
+        "13.5f-5 TEETH: effectiveness=255 is not in {{0,5,10,20}} → must produce Err; got Ok"
+    );
+}
+
+/// Boundary: effectiveness == 0 (immune) is a valid sentinel value.
+/// Kills: an impl that treats 0 as "unset" and rejects it.
+#[test]
+fn f5_type_chart_from_rows_accepts_zero_effectiveness() {
+    use crate::schema::TypeRelationRow;
+    use game_core::Affinity;
+    let rows = vec![TypeRelationRow {
+        id: 1,
+        attacker: Affinity::Dark,
+        defender: Affinity::Light,
+        effectiveness: 0,
+    }];
+    let result = type_chart_from_rows(rows.into_iter());
+    assert!(
+        result.is_ok(),
+        "13.5f-5: effectiveness=0 (immunity sentinel) is a legal value; must produce Ok. \
+         Got: {:?}",
+        result.err()
+    );
+}
+
 /// M10.5a-2-pos (no over-rejection): wild_battle_monster must return Ok when
 /// the intersection is non-empty (at least one learnable skill is provided).
 ///
