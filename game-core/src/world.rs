@@ -1115,4 +1115,53 @@ mod tests {
             .expect("warp at (5,5) must exist in zone 1");
         assert_eq!(warp.to_zone, 0, "zone 1 warp must target zone 0");
     }
+
+    // -----------------------------------------------------------------------
+    // fix-nightly (ADR-0088): boundary tests for check 4 (map dims <= ZoneDef
+    // bounds). The existing oversize-map test checks width > max_w (already
+    // Errs with both `>` and `>=`) and therefore cannot kill the `>`→`>=`
+    // width flip. These tests use EXACT-FIT inputs that pass the real guard
+    // (`> max` is false) but FAIL under the flip (`>= max` is true → wrongly
+    // Errs). Three census mutants targeted below.
+    // -----------------------------------------------------------------------
+
+    /// kills: game-core/src/world.rs:250:31: replace > with >= in validate_zone_maps
+    ///
+    /// A map whose width equals the ZoneDef bound (exact fit) must PASS check 4.
+    /// The real `tile_map.width > max_w` is false (3 > 3 is false) → Ok.
+    /// `>`→`>=`: `3 >= 3` is true → wrongly Errs.
+    #[test]
+    fn validate_zone_maps_accepts_width_exactly_equal_to_zone_def_bound() {
+        // zone_def 3×10, map 3 wide × 1 tall (exact width fit, well within height).
+        let zone_maps = vec![zone_map_def(0, vec!["..."], vec![])];
+        let zones = vec![zone_def(0, 3, 10)];
+        let result = validate_zone_maps(&zone_maps, &zones);
+        assert!(
+            result.is_ok(),
+            "a map whose width equals the ZoneDef bound must pass check 4; \
+             a `>`→`>=` flip makes `3 >= 3` true and wrongly Errs. Error: {:?}",
+            result.err()
+        );
+    }
+
+    /// kills: game-core/src/world.rs:250:58: replace > with == in validate_zone_maps
+    /// kills: game-core/src/world.rs:250:58: replace > with >= in validate_zone_maps
+    ///
+    /// A map whose height equals the ZoneDef bound (exact fit) must PASS check 4.
+    /// The real `tile_map.height > max_h` is false (2 > 2 is false) → Ok.
+    /// `>`→`==`: `2 == 2` is true → wrongly Errs.
+    /// `>`→`>=`: `2 >= 2` is true → wrongly Errs.
+    #[test]
+    fn validate_zone_maps_accepts_height_exactly_equal_to_zone_def_bound() {
+        // zone_def 10×2, map 1 wide × 2 tall (well within width, exact height fit).
+        let zone_maps = vec![zone_map_def(0, vec![".", "."], vec![])];
+        let zones = vec![zone_def(0, 10, 2)];
+        let result = validate_zone_maps(&zone_maps, &zones);
+        assert!(
+            result.is_ok(),
+            "a map whose height equals the ZoneDef bound must pass check 4; \
+             `>`→`==` and `>`→`>=` both make 2==2 or 2>=2 true and wrongly Err. Error: {:?}",
+            result.err()
+        );
+    }
 }

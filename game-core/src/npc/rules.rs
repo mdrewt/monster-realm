@@ -144,4 +144,47 @@ mod tests {
              West. A `>`→`>=` flip (0 >= 0 true) would wrongly return East."
         );
     }
+
+    /// kills: game-core/src/npc/rules.rs:103:13: delete match arm 0 in npc_decide
+    /// kills: game-core/src/npc/rules.rs:105:13: delete match arm 2 in npc_decide
+    ///
+    /// Scans (npc_id, tick) within-radius inputs to verify that both North (arm 0,
+    /// `(h >> 1) % 4 == 0`) and East (arm 2, `(h >> 1) % 4 == 2`) are reachable
+    /// npc_decide outputs.
+    ///
+    /// If arm 0 is deleted, hash%4==0 falls to `_` → West; North never appears in
+    /// the scan and `assert!(saw_north)` fails. If arm 2 is deleted, East falls to
+    /// `_` → West; `assert!(saw_east)` fails.
+    ///
+    /// Setup: home == current (dist=0 ≤ wander_radius=10) → wander path, not
+    /// toward-home. wander_radius != 0 → not pinned-stay → we reach the hash+match.
+    #[test]
+    fn npc_decide_arms_north_and_east_are_reachable() {
+        let home = TilePos { x: 5, y: 5 };
+        let wander_radius = 10u8;
+        let mut saw_north = false;
+        let mut saw_east = false;
+        'outer: for npc_id in 1u64..=100 {
+            for tick in 0u64..=100 {
+                match npc_decide(home, home, wander_radius, npc_id, tick) {
+                    Some(d) if d == Direction::North => saw_north = true,
+                    Some(d) if d == Direction::East => saw_east = true,
+                    _ => {}
+                }
+                if saw_north && saw_east {
+                    break 'outer;
+                }
+            }
+        }
+        assert!(
+            saw_north,
+            "npc_decide must produce North from some (npc_id, tick) within wander range; \
+             deleting match arm 0 routes hash%4==0 inputs to West instead"
+        );
+        assert!(
+            saw_east,
+            "npc_decide must produce East from some (npc_id, tick) within wander range; \
+             deleting match arm 2 routes hash%4==2 inputs to West instead"
+        );
+    }
 }
