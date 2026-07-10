@@ -44,6 +44,11 @@ function makeChar(
   prevTileY?: number,
   prevReceivedAt?: number,
 ): StoredCharacter {
+  const latestSnap = { tileX: latestTileX, tileY: latestTileY, receivedAt: latestReceivedAt };
+  const prevSnap =
+    prevTileX !== undefined && prevReceivedAt !== undefined
+      ? { tileX: prevTileX, tileY: prevTileY ?? 0, receivedAt: prevReceivedAt }
+      : undefined;
   return {
     row: {
       entityId,
@@ -56,11 +61,12 @@ function makeChar(
       moveQueue: [],
     },
     receivedAt: latestReceivedAt,
-    latest: { tileX: latestTileX, tileY: latestTileY, receivedAt: latestReceivedAt },
-    prev:
-      prevTileX !== undefined && prevReceivedAt !== undefined
-        ? { tileX: prevTileX, tileY: prevTileY ?? 0, receivedAt: prevReceivedAt }
-        : undefined,
+    latest: latestSnap,
+    prev: prevSnap,
+    // Empty snapshots → resolver falls back to interpolate(prev, latest, fixedDelay)
+    // (ADR-0090 backward compat for pre-ADR-0090 fixtures).
+    snapshots: [],
+    jitterEwma: 0,
   };
 }
 
@@ -394,6 +400,8 @@ describe('RenderResolver — action/facing passthrough', () => {
       receivedAt: 0,
       latest: { tileX: 0, tileY: 0, receivedAt: 0 },
       prev: undefined,
+      snapshots: [],
+      jitterEwma: 0,
     };
 
     const resolver = new RenderResolver(STEP_MS);

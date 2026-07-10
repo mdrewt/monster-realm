@@ -154,6 +154,9 @@ export class BattleView {
   }
 
   #renderActions(vm: BattleViewModel): void {
+    // Save the user's bait selection BEFORE tearing down the DOM (e-1: replaceChildren
+    // destroys the <select> element, resetting the value to '' on every server tick).
+    const savedBait = this.#baitSelectEl?.value ?? '';
     this.#actionsEl.replaceChildren();
     if (vm.canFlee) {
       const fleeBtn = document.createElement('button');
@@ -172,6 +175,13 @@ export class BattleView {
     this.#baitSelectEl = null;
     if (vm.canRecruit) {
       this.#renderRecruit(vm);
+      // Restore prior selection so unrelated batch ticks don't reset the user's choice.
+      // Cast breaks TypeScript's narrowing chain (TS tracks #baitSelectEl=null from above
+      // through the method call; the cast re-opens the full union type for the null guard).
+      if (savedBait !== '') {
+        const baitSel = this.#baitSelectEl as HTMLSelectElement | null;
+        if (baitSel !== null) baitSel.value = savedBait;
+      }
     }
   }
 
@@ -179,7 +189,6 @@ export class BattleView {
     // Bait selector: classify-by-data — each option carries its recruit_bonus on
     // a data attribute; the first option is "No bait" (a bare attempt).
     const select = document.createElement('select');
-    select.dataset.testid = 'bait-selector';
     select.setAttribute('data-testid', 'bait-selector');
     select.style.cssText =
       'padding:6px 8px;font-family:monospace;font-size:12px;background:#222;' +

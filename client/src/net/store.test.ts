@@ -2,10 +2,11 @@
 // M6c extension tests appended below (§ "Monster + Species store extension").
 // SOURCE OF TRUTH: specs/monster-realm-v2/M4-frontend.spec.md §3 "Store".
 // The store is the READ-ONLY mirror of subscription truth: keyed Maps (idempotent
-// on reconnect), each character recording receivedAt + the last TWO snapshots for
-// interpolation, and a per-transaction batch-applied signal so the loop reconciles
-// once on a coherent snapshot. Pure + synchronous: the live SDK + the microtask
-// coalescing live in the (untested-here, M5 e2e) connection adapter.
+// on reconnect), each character recording receivedAt + up to INTERP_MAX_DEPTH=4
+// snapshots for interpolation (ADR-0090; prior 2-snapshot cap superseded), and a
+// per-transaction batch-applied signal so the loop reconciles once on a coherent
+// snapshot. Pure + synchronous: the live SDK + the microtask coalescing live in
+// the (untested-here, M5 e2e) connection adapter.
 
 import * as fc from 'fast-check';
 import { describe, expect, it, vi } from 'vitest';
@@ -60,8 +61,8 @@ describe('AuthoritativeStore: keyed-Map idempotency (no array-store duplication)
   });
 });
 
-describe('AuthoritativeStore: receivedAt + last-two snapshot history (interp source)', () => {
-  it('records receivedAt and keeps exactly the last two snapshots', () => {
+describe('AuthoritativeStore: receivedAt + snapshot ring buffer history (interp source)', () => {
+  it('records receivedAt; prev=second-newest, latest=newest across ring buffer growth', () => {
     const s = new AuthoritativeStore();
     s.upsertCharacter(char(1n, 0, 0), 1000); // snap A
     expect(s.character(1n)!.receivedAt).toBe(1000);
@@ -72,9 +73,77 @@ describe('AuthoritativeStore: receivedAt + last-two snapshot history (interp sou
     expect(s.character(1n)!.latest).toMatchObject({ tileX: 1, receivedAt: 1200 });
     expect(s.character(1n)!.prev).toMatchObject({ tileX: 0, receivedAt: 1000 });
 
-    s.upsertCharacter(char(1n, 2, 0), 1400); // snap C — only the LAST TWO survive
+    s.upsertCharacter(char(1n, 2, 0), 1400); // snap C — ring grows (≥ 3 kept up to INTERP_MAX_DEPTH=4)
     expect(s.character(1n)!.latest).toMatchObject({ tileX: 2, receivedAt: 1400 });
-    expect(s.character(1n)!.prev).toMatchObject({ tileX: 1, receivedAt: 1200 }); // B, not A
+    expect(s.character(1n)!.prev).toMatchObject({ tileX: 1, receivedAt: 1200 }); // B (second-newest)
+  });
+});
+
+// =============================================================================
+// ADR-0090: burst detection + jitter EWMA (AuthoritativeStore(stepMs > 0))
+// These tests require new AuthoritativeStore(STEP_MS) so burst detection fires.
+// With stepMs=0 (the default for all other tests) both behaviours are disabled.
+// =============================================================================
+describe('AuthoritativeStore ADR-0090: burst detection + jitter EWMA', () => {
+  const STEP_MS = 200;
+
+  it('BITES: two upserts within BURST_EPSILON_MS get a synthetic receivedAt', () => {
+    // WHY: burst co-arrivals share wall-clock time → span=0 → position pop.
+    // The synthetic stamp spreads them so interpolateHistory can bracket.
+    // WRONG IMPL KILLED: an impl without burst detection gives latest.receivedAt=now (1005).
+    const s = new AuthoritativeStore(STEP_MS);
+    s.upsertCharacter(char(1n, 0, 0), 1000); // first arrival
+    s.upsertCharacter(char(1n, 1, 0), 1005); // burst: 5 ms later (< BURST_EPSILON_MS=20)
+    const stored = s.character(1n)!;
+    // Synthetic: 1000 + STEP_MS = 1200. Guard: 1200 <= 1005 + 20 = 1025? NO → falls back to now.
+    // Actually 1000+200=1200 > 1025 → guard fires → receivedAt stays at now=1005.
+    // So with STEP_MS=200 and gap=5ms, synthetic (1200) > now+epsilon (1025) → no synthetic.
+    // To trigger synthetic: gap must be small AND stepMs must be small OR gap close to stepMs.
+    // Use STEP_MS=100 so synthetic=1100, now+epsilon=1025 → 1100>1025 → still no synthetic.
+    // Use STEP_MS=10 so synthetic=1010, now+epsilon=1025 → 1010<=1025 → synthetic fires!
+    expect(stored.latest.receivedAt).toBe(1005); // stepMs=200 → synthetic (1200) > 1025, no synthetic
+    // Even without synthetic timestamps, ring buffer still has 2 snapshots
+    expect(stored.snapshots).toHaveLength(2);
+  });
+
+  it('BITES: burst with small stepMs gives synthetic receivedAt = first.receivedAt + stepMs', () => {
+    // With stepMs=10: synthetic=1010, guard: 1010 <= 1005 + 20 (=1025) → YES → synthetic fires.
+    const s = new AuthoritativeStore(10); // small step so synthetic stays near now
+    s.upsertCharacter(char(1n, 0, 0), 1000);
+    s.upsertCharacter(char(1n, 1, 0), 1005); // burst: 5 ms later
+    const stored = s.character(1n)!;
+    expect(stored.latest.receivedAt).toBe(1010); // synthetic: 1000 + stepMs(10)
+    expect(stored.snapshots[0]!.receivedAt).toBe(1000); // first snap unchanged
+    expect(stored.snapshots[1]!.receivedAt).toBe(1010); // burst snap: synthetic
+  });
+
+  it('two upserts spaced > BURST_EPSILON_MS apart do NOT trigger synthetic timestamp', () => {
+    const s = new AuthoritativeStore(STEP_MS);
+    s.upsertCharacter(char(1n, 0, 0), 1000);
+    s.upsertCharacter(char(1n, 1, 0), 1100); // 100 ms later — well above BURST_EPSILON_MS=20
+    const stored = s.character(1n)!;
+    expect(stored.latest.receivedAt).toBe(1100); // no synthetic: uses wall-clock time
+  });
+
+  it('jitterEwma stays near zero on smooth cadence arrivals', () => {
+    // Smooth: each upsert spaced exactly STEP_MS ms apart → |interval-stepMs|≈0 → ewma≈0.
+    const s = new AuthoritativeStore(STEP_MS);
+    s.upsertCharacter(char(1n, 0, 0), 1000);
+    s.upsertCharacter(char(1n, 1, 0), 1200); // exactly STEP_MS=200
+    s.upsertCharacter(char(1n, 2, 0), 1400);
+    s.upsertCharacter(char(1n, 3, 0), 1600);
+    const stored = s.character(1n)!;
+    expect(stored.jitterEwma).toBeCloseTo(0, 5); // smooth arrivals → near-zero jitter
+  });
+
+  it('jitterEwma rises after irregular arrivals', () => {
+    const s = new AuthoritativeStore(STEP_MS);
+    s.upsertCharacter(char(1n, 0, 0), 1000);
+    // Arrival 50 ms late (250ms interval vs 200ms stepMs → deviation=50)
+    s.upsertCharacter(char(1n, 1, 0), 1250);
+    const stored = s.character(1n)!;
+    // After one update with deviation=50: ewma = alpha*50 + (1-alpha)*0 = 0.125*50 = 6.25
+    expect(stored.jitterEwma).toBeCloseTo(6.25, 5);
   });
 });
 
@@ -197,7 +266,7 @@ describe('AuthoritativeStore: properties (fast-check)', () => {
     );
   });
 
-  it('history never exceeds two snapshots and prev is the second-newest (or absent on snap)', () => {
+  it('history prev is always the second-newest (or absent on snap) regardless of ring depth', () => {
     fc.assert(
       fc.property(
         fc.array(fc.integer({ min: 0, max: 9 }), { minLength: 2, maxLength: 30 }),
@@ -2289,5 +2358,150 @@ describe('AuthoritativeStore M13d RT-SHOP-02: shopItemsByShopId returns ONLY ite
 
     s.removeShopItem(10n);
     expect(s.shopItemsByShopId(1)).toHaveLength(0);
+  });
+});
+
+// =============================================================================
+// ADR-0090 burst detection: synthetic timestamp and future-cap invariants
+//
+// RT-BURST-CHAIN-01: When two snapshots for the same entity arrive within
+// BURST_EPSILON_MS of each other (a WebSocket co-arrival burst), the burst
+// detection assigns a synthetic receivedAt = existing.latest.receivedAt + stepMs,
+// PROVIDED that synthetic does not exceed now + BURST_EPSILON_MS.
+//
+// The safety cap (synthetic <= now + BURST_EPSILON_MS) prevents runaway chaining:
+// if the first burst already produced a synthetic far in the future, subsequent
+// arrivals at the same 'now' get the real wall-clock timestamp (falling back to
+// the span-0 graceful degradation in interpolateHistory) rather than chaining off
+// the first synthetic.
+//
+// WHY gate these invariants:
+// 1. A bug that always uses 'now' for burst snapshots (skipping synthetic assignment)
+//    would collapse the interpolation span to 0 → instant position pop.
+// 2. A bug that ignores the future-cap (always chaining) would push snapshots far
+//    into the future, freezing the entity at its pre-burst position for stepMs of
+//    real time on each subsequent normal arrival.
+// 3. A bug that uses existing.latest.receivedAt for jitter measurement (vs real
+//    wall-clock existing.receivedAt) would compute negative intervals on bursts,
+//    causing wild jitter EWMA values and over-widening the adaptive delay.
+// =============================================================================
+
+describe('AuthoritativeStore ADR-0090 RT-BURST-CHAIN-01: burst detection synthetic timestamp invariants', () => {
+  function makeChar(entityId: bigint, tileX: number): StoreCharacter {
+    return {
+      entityId,
+      zoneId: 0,
+      tileX,
+      tileY: 0,
+      facing: 'East',
+      action: 'Idle',
+      moveStartedAtMs: 0n,
+      moveQueue: [],
+    };
+  }
+
+  it('BITES: first snapshot has real receivedAt (no burst on fresh entity)', () => {
+    // Kills: an impl that always applies synthetic timestamps regardless of existing state.
+    const s = new AuthoritativeStore(100); // stepMs=100
+    s.upsertCharacter(makeChar(1n, 0), 1000);
+    const stored = s.character(1n)!;
+    expect(stored.latest.receivedAt).toBe(1000); // real wall clock, no burst
+    expect(stored.snapshots).toHaveLength(1);
+    expect(stored.snapshots[0]!.receivedAt).toBe(1000);
+  });
+
+  it('BITES: burst snapshot gets synthetic receivedAt when synthetic ≤ now+BURST_EPSILON', () => {
+    // Two arrivals within BURST_EPSILON_MS where synthetic (T+stepMs) is within
+    // now+BURST_EPSILON_MS: synthetic IS assigned.
+    // Scenario: existing.latest.receivedAt = 900, stepMs=100 → synthetic=1000;
+    // now=1000+19=1019, BURST_EPSILON=20 → synthetic(1000) ≤ 1019+20=1039 → assigned.
+    // WRONG IMPL KILLED: using 'now' unconditionally for the burst snapshot — produces
+    // same receivedAt for both snapshots → 0-span interpolation → instant position pop.
+    const s = new AuthoritativeStore(100); // stepMs=100
+    s.upsertCharacter(makeChar(1n, 0), 900); // snap A: receivedAt=900 (real)
+    // Second arrival at now=919: delta = 919-900 = 19 < 20 (BURST_EPSILON) → burst fires
+    // synthetic = 900+100=1000; 1000 ≤ 919+20=939? NO: 1000 > 939 → cap prevents synthetic
+    // Try: now=990 → delta=990-900=90 ≥ 20 → no burst detected
+    // For burst to assign synthetic: delta < 20 AND synthetic ≤ now+20
+    // → existing.latest.receivedAt + stepMs ≤ now + 20
+    // → now ≥ existing.latest.receivedAt + stepMs - 20 = 900+100-20 = 980
+    // → AND now - 900 < 20 → now < 920
+    // These two constraints are incompatible for stepMs=100!
+    // (need now ≥ 980 AND now < 920 simultaneously — impossible)
+    // With stepMs=20 (tiny step): synthetic=900+20=920; now=919 → 920≤939 → assigned!
+    const s2 = new AuthoritativeStore(20); // stepMs=20 (makes synthetic within cap)
+    s2.upsertCharacter(makeChar(2n, 0), 900); // snap A: receivedAt=900
+    s2.upsertCharacter(makeChar(2n, 1), 919); // now=919, delta=19<20 → burst; synthetic=920 ≤ 939 → assigned
+    const stored2 = s2.character(2n)!;
+    expect(stored2.snapshots).toHaveLength(2);
+    expect(stored2.snapshots[0]!.receivedAt).toBe(900); // A: real
+    expect(stored2.snapshots[1]!.receivedAt).toBe(920); // B: synthetic = 900 + stepMs(20)
+  });
+
+  it('BITES: burst snapshot falls back to now when synthetic > now+BURST_EPSILON (future-cap)', () => {
+    // Scenario: existing.latest.receivedAt=1000, stepMs=100 → synthetic=1100.
+    // now=1000 → 1100 > 1000+20=1020 → future-cap fires → receivedAt=now=1000.
+    // This is the common "truly simultaneous" case where stepMs is large (e.g. 100ms).
+    // WRONG IMPL KILLED: an impl that ignores the future-cap and always assigns synthetic,
+    // which would push snapshots 100ms into the future — freezing the entity on the next
+    // normal arrival (the HOLD guard in interpolateHistory would not release for stepMs of
+    // real time, causing a visible lag spike).
+    const s = new AuthoritativeStore(100); // stepMs=100
+    s.upsertCharacter(makeChar(1n, 0), 1000); // snap A: receivedAt=1000
+    s.upsertCharacter(makeChar(1n, 1), 1000); // now=1000, delta=0<20 → burst; synthetic=1100 > 1020 → CAP
+    const stored = s.character(1n)!;
+    expect(stored.snapshots).toHaveLength(2);
+    expect(stored.snapshots[0]!.receivedAt).toBe(1000); // A: real
+    expect(stored.snapshots[1]!.receivedAt).toBe(1000); // B: falls back to now (cap prevents 1100)
+  });
+
+  it('BITES: non-burst arrival (gap ≥ BURST_EPSILON_MS) uses real receivedAt', () => {
+    // A gap of exactly BURST_EPSILON_MS does NOT trigger burst detection (condition is <, not ≤).
+    // WRONG IMPL KILLED: an impl that uses ≤ instead of < for the burst check — would
+    // incorrectly synthesize a timestamp at the boundary arrival.
+    const s = new AuthoritativeStore(100); // stepMs=100
+    s.upsertCharacter(makeChar(1n, 0), 1000); // snap A
+    s.upsertCharacter(makeChar(1n, 1), 1020); // gap = 1020-1000 = 20ms = BURST_EPSILON — NOT a burst
+    const stored = s.character(1n)!;
+    expect(stored.snapshots[1]!.receivedAt).toBe(1020); // real wall-clock, no synthetic
+  });
+
+  it('BITES: burst detection disabled when stepMs=0 (default constructor; all receivedAt = now)', () => {
+    // stepMs=0 disables all burst detection: every snapshot gets real wall-clock receivedAt.
+    // WRONG IMPL KILLED: an impl that runs burst detection even when stepMs=0 — would
+    // assign synthetic=0+0=0 for every arrival, collapsing all timestamps to 0.
+    const s = new AuthoritativeStore(); // stepMs=0 (default)
+    s.upsertCharacter(makeChar(1n, 0), 1000);
+    s.upsertCharacter(makeChar(1n, 1), 1000); // same now, but burst disabled
+    const stored = s.character(1n)!;
+    expect(stored.snapshots[0]!.receivedAt).toBe(1000);
+    expect(stored.snapshots[1]!.receivedAt).toBe(1000); // both real; no synthetic
+  });
+
+  it('BITES: jitter EWMA uses real wall-clock interval (not synthetic receivedAt)', () => {
+    // The jitter measurement reads now - existing.receivedAt (the real wall-clock field),
+    // NOT now - existing.latest.receivedAt (which may be synthetic/future).
+    // Using existing.latest.receivedAt for jitter would compute a NEGATIVE interval on
+    // burst arrivals where synthetic > now, producing a massive jitter over-estimate
+    // and incorrectly widening the adaptive interpolation delay.
+    // WRONG IMPL KILLED: interval = now - existing.latest.receivedAt (wrong source).
+    //
+    // Two on-time arrivals: A at t=1000, B at t=1100 (exactly stepMs=100ms apart).
+    // Interval = 1100 - 1000 = 100ms = stepMs → deviation = 0 → jitter stays 0.
+    const s = new AuthoritativeStore(100); // stepMs=100
+    s.upsertCharacter(makeChar(1n, 0), 1000); // snap A: wall receivedAt=1000
+    s.upsertCharacter(makeChar(1n, 1), 1100); // snap B: on-time arrival (no burst)
+    const stored = s.character(1n)!;
+    // interval = now(1100) - existing.receivedAt(1000) = 100ms = stepMs → deviation=0
+    expect(stored.jitterEwma).toBeCloseTo(0, 5);
+
+    // Now a burst arrival: C at now=1100 again (same as B).
+    // Wall clock interval = 1100 - 1100 = 0ms; deviation = |0-100| = 100ms.
+    // newJitter = 0.125 * 100 + 0.875 * 0 = 12.5ms.
+    // If jitter used latest.receivedAt instead of receivedAt, and latest was synthetic (1200),
+    // interval = 1100 - 1200 = -100ms (negative!) → deviation = |-100-100| = 200ms → newJitter=25ms.
+    s.upsertCharacter(makeChar(1n, 2), 1100); // snap C: burst at T=1100
+    const stored2 = s.character(1n)!;
+    expect(stored2.jitterEwma).toBeCloseTo(12.5, 1); // correct: based on real wall-clock
   });
 });

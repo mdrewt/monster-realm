@@ -18,7 +18,7 @@ import { TILE_PX } from './config';
 import { type RawTileMap, TileMap } from './map';
 import { PlaceholderAssets } from './placeholderAssets';
 import { ViewRegistry } from './viewRegistry';
-import { sortedByZ } from './zorder';
+import { zIndexForEntity } from './zorder';
 
 const WALL_COLOR = 0x222838;
 const FLOOR_COLOR = 0x10131a;
@@ -63,6 +63,9 @@ export class WorldRenderer {
     mount.appendChild(app.canvas);
     app.stage.addChild(this.#bg);
     app.stage.addChild(this.#actors);
+    // e-4 (ADR-0090): Pixi sorts children by zIndex when sortableChildren is true.
+    // This replaces the O(n²) setChildIndex loop with O(n log n) auto-sort.
+    this.#actors.sortableChildren = true;
     this.#app = app;
     this.#map = map;
     this.#assets = new PlaceholderAssets(app.renderer);
@@ -127,14 +130,16 @@ export class WorldRenderer {
         this.#views.delete(id);
       }
     }
+    // e-4: update position + set zIndex in the same pass so newly-spawned sprites
+    // (just addChild'd above with default zIndex=0) get their depth assigned before
+    // Pixi's sortableChildren sort fires at the next render tick.
     for (const e of entities) {
-      this.#views.get(e.entityId)?.update(e.x, e.y, e.action, e.facing);
+      const view = this.#views.get(e.entityId);
+      if (view !== undefined) {
+        view.update(e.x, e.y, e.action, e.facing);
+        view.sprite.zIndex = zIndexForEntity(e.y);
+      }
     }
-    const order = sortedByZ(entities.map((e) => ({ entityId: e.entityId, y: e.y })));
-    order.forEach((it, i) => {
-      const view = this.#views.get(it.entityId);
-      if (view !== undefined) this.#actors.setChildIndex(view.sprite, i);
-    });
     // M11c follow-camera: translate the stage so the own entity stays centred.
     const map = this.#map;
     const app = this.#app;

@@ -5,13 +5,14 @@
 // normalized shapes first); never by the renderer or the predictor (one-way data
 // flow — `server -> store -> render`). Keyed Maps make a reconnect re-insert
 // idempotent (overwrite, never the v1 array-store duplication). Each character
-// records `receivedAt` + the last TWO authoritative snapshots so the M4b remote
-// interpolation buffer can render between them. A per-transaction **batch-applied**
-// signal (`flushBatch`) lets the loop reconcile once on a coherent snapshot rather
-// than mid-update (the rubberband race) — the live SDK exposes only per-row
-// callbacks, so the adapter coalesces them within a microtask and calls
+// records `receivedAt` + up to INTERP_MAX_DEPTH=4 authoritative snapshots (ADR-0090)
+// so the M4b remote interpolation buffer can render between them. A per-transaction
+// **batch-applied** signal (`flushBatch`) lets the loop reconcile once on a coherent
+// snapshot rather than mid-update (the rubberband race) — the live SDK exposes only
+// per-row callbacks, so the adapter coalesces them within a microtask and calls
 // `flushBatch` once per transaction burst (validation-findings: per-tx fallback).
 import type { WasmAction, WasmDirection, WasmMoveInput } from '../convert/convert';
+import { BURST_EPSILON_MS, INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH } from '../shared/interpConfig';
 
 /** A character row, normalized at the SDK boundary (ids `bigint`, enums as strings). */
 export interface StoreCharacter {
@@ -214,10 +215,19 @@ export interface Snapshot {
 export interface StoredCharacter {
   readonly row: StoreCharacter;
   readonly receivedAt: number;
-  /** Newest authoritative snapshot. */
+  /** Newest authoritative snapshot. Alias for snapshots[last]. */
   readonly latest: Snapshot;
-  /** Second-newest snapshot (the interpolation lower bound); undefined on first sight. */
+  /** Second-newest snapshot; undefined on first sight. Alias for snapshots[last-1].
+   *  Kept for backward compat with RenderResolver (which falls back to interpolate
+   *  when snapshots is absent) and existing test fixtures. */
   readonly prev: Snapshot | undefined;
+  /** Ordered oldest-first; newest = latest; length ≤ INTERP_MAX_DEPTH (ADR-0090).
+   *  Deeper than the former 2-snapshot cap to keep the pre-burst snapshot alive
+   *  for interpolateHistory to bracket against during burst delivery. */
+  readonly snapshots: readonly Snapshot[];
+  /** EWMA of inter-arrival deviation from STEP_MS (ms); 0 = smooth/no history.
+   *  Fed to adaptiveInterpDelayMs in RenderResolver (ADR-0090). */
+  readonly jitterEwma: number;
 }
 
 export class AuthoritativeStore {
@@ -241,12 +251,23 @@ export class AuthoritativeStore {
   readonly #shopItems = new Map<bigint, StoreShopItemRow>();
   readonly #batchListeners = new Set<() => void>();
   #dirty = false;
+  /** Nominal server step interval (ms), used for burst detection + jitter EWMA.
+   *  0 = disabled (tests that don't need adaptive behavior; backward compat). */
+  readonly #stepMs: number;
+
+  /**
+   * @param stepMs - Server tick interval from wasm `step_ms()` export. When 0
+   *   (default), burst detection and jitter estimation are disabled — existing
+   *   tests that construct `new AuthoritativeStore()` are unaffected. */
+  constructor(stepMs = 0) {
+    this.#stepMs = stepMs;
+  }
 
   // --- ingest (adapter-only; truth in) ------------------------------------------
 
   upsertCharacter(row: StoreCharacter, now: number): void {
     const existing = this.#chars.get(row.entityId);
-    const latest: Snapshot = { tileX: row.tileX, tileY: row.tileY, receivedAt: now };
+
     // Snap (drop prev) on zone change or large tile delta (M12.5d-2): interpolating
     // across a zone transition or a >1-tile jump smears the sprite through walls.
     const shouldSnap =
@@ -254,11 +275,73 @@ export class AuthoritativeStore {
       (row.zoneId !== existing.row.zoneId ||
         Math.abs(row.tileX - existing.row.tileX) > 1 ||
         Math.abs(row.tileY - existing.row.tileY) > 1);
+
+    // ADR-0090 burst detection: when two snapshots for the same entity arrive
+    // within BURST_EPSILON_MS of each other (same WebSocket flush), attempt to
+    // assign a synthetic receivedAt one nominal step after the existing latest.
+    // WHY: burst co-arrivals can share the same receivedAt millisecond, collapsing
+    // the interpolation span to zero → instant position pop. A synthetic timestamp
+    // spreads them temporally so interpolateHistory can bracket between them.
+    // NOTE: the B-2 guard below prevents synthetic when stepMs >> BURST_EPSILON_MS
+    // (typical production tick rates). In that case both snapshots keep their real
+    // wall-clock receivedAt values, which are close-but-distinct (differ by the true
+    // burst gap, typically < BURST_EPSILON_MS=20ms). The ring buffer's depth-4 history
+    // handles this via its oldest pre-burst snapshot; the span≤0 guard in
+    // interpolateHistory covers the rare true-zero-span case.
+    let receivedAt = now;
+    if (
+      this.#stepMs > 0 &&
+      existing !== undefined &&
+      !shouldSnap &&
+      now - existing.latest.receivedAt < BURST_EPSILON_MS
+    ) {
+      const synthetic = existing.latest.receivedAt + this.#stepMs;
+      // B-2 guard: synthetic must stay within BURST_EPSILON_MS of wall-clock now.
+      // WHY: if existing.latest.receivedAt is itself a chained synthetic far in the
+      // future, an uncapped synthetic would push further ahead, breaking the ring-buffer
+      // ordering invariant — the next genuine arrival (at wall-clock now) would land
+      // BEFORE the over-extended synthetic, producing an unsorted ring that confuses
+      // interpolateHistory. Trade-off: for large stepMs this guard prevents synthetic
+      // entirely, which is acceptable (see NOTE above).
+      if (synthetic <= now + BURST_EPSILON_MS) {
+        receivedAt = synthetic;
+      }
+    }
+
+    const latest: Snapshot = { tileX: row.tileX, tileY: row.tileY, receivedAt };
+
+    // Build the snapshot ring buffer (oldest-first, max INTERP_MAX_DEPTH).
+    // WHY: keeping more than 2 snapshots preserves the genuine pre-burst snapshot
+    // so interpolateHistory has a real anchor when the render window is widened.
+    let newSnapshots: readonly Snapshot[];
+    if (existing === undefined || shouldSnap) {
+      newSnapshots = [latest];
+    } else {
+      const base =
+        existing.snapshots.length >= INTERP_MAX_DEPTH
+          ? existing.snapshots.slice(1) // evict oldest to make room
+          : existing.snapshots;
+      newSnapshots = [...base, latest];
+    }
+
+    // Update jitter EWMA (ADR-0090).
+    // WHY: the estimate informs adaptiveInterpDelayMs in RenderResolver, which widens
+    // the render window during bursty delivery so the pre-burst snapshot is bracketed.
+    let newJitter = existing?.jitterEwma ?? 0;
+    if (this.#stepMs > 0 && existing !== undefined && !shouldSnap) {
+      // Use wall-clock now (not synthetic receivedAt) for the true interval measure.
+      const interval = now - existing.receivedAt;
+      const deviation = Math.abs(interval - this.#stepMs);
+      newJitter = INTERP_JITTER_ALPHA * deviation + (1 - INTERP_JITTER_ALPHA) * newJitter;
+    }
+
     this.#chars.set(row.entityId, {
       row,
-      receivedAt: now,
+      receivedAt: now, // always real wall-clock time (jitter base for the NEXT update)
       latest,
-      prev: shouldSnap ? undefined : existing?.latest,
+      prev: newSnapshots.length >= 2 ? newSnapshots[newSnapshots.length - 2] : undefined,
+      snapshots: newSnapshots,
+      jitterEwma: newJitter,
     });
     this.#dirty = true;
   }

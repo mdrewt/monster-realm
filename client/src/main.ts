@@ -33,6 +33,7 @@ import {
 import { shouldToggleBox } from './inputGuards';
 import { connect } from './net/connection';
 import { AuthoritativeStore } from './net/store';
+import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
 import { HeldDirections, reissueDir } from './prediction/heldKeys';
 import { type ApplyMove, boundSeq, Predictor } from './prediction/predictor';
 import { TileMap } from './render/map';
@@ -70,7 +71,8 @@ const PARTY_SLOT_NONE = party_slot_none();
 // M11c: rawMap is `let` — replaced on zone warp (zone_map() re-called for the new zone id).
 let rawMap = zone_map(ZONE_ID);
 
-const store = new AuthoritativeStore();
+// ADR-0090: stepMs injected so the store can do burst detection + jitter EWMA.
+const store = new AuthoritativeStore(STEP_MS);
 // The injected rule IS the client-wasm export (same compiled code as the server).
 const applyMove = apply_move as unknown as ApplyMove;
 let predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
@@ -176,6 +178,10 @@ function resetPredictionState(): void {
 // stale-zone characters, so idle remotes in the destination zone stay visible (12.5c-2).
 // Idempotent: a no-op if newZoneId already matches rawMap (prevents double-switch when
 // both onOwnWarp and the reconcile listener fire on the same live warp).
+
+// e-2 (M13.5e): track consecutive zone-switch failures so stale content is surfaced.
+let zoneSyncFailureCount = 0;
+
 function switchZone(newZoneId: number): void {
   if (newZoneId === rawMap.zone_id) return;
   try {
@@ -185,8 +191,13 @@ function switchZone(newZoneId: number): void {
     set_active_zone(newZoneId);
     rawMap = newRawMap;
     resetPredictionState();
+    zoneSyncFailureCount = 0; // success: reset streak
   } catch (err) {
     console.error('[zone-sync] zone switch to %s failed — keeping current zone', newZoneId, err);
+    zoneSyncFailureCount++;
+    if (shouldReportZoneSyncFailure(zoneSyncFailureCount)) {
+      reportError('content out of date — reload');
+    }
   }
 }
 
@@ -219,6 +230,11 @@ function reconcileFromStore(): void {
     // batch (seeding reconcile returns false → no spurious re-issue).
     if (own.row.zoneId !== rawMap.zone_id) {
       switchZone(own.row.zoneId);
+      // e-2 (M13.5e): if the switch failed, rawMap is still the old zone. Reconciling
+      // against the wrong map would seed the predictor with positions from a different
+      // zone and produce ghost movement. Return early — the error is already surfaced
+      // by switchZone via shouldReportZoneSyncFailure / reportError.
+      if (own.row.zoneId !== rawMap.zone_id) return;
     }
 
     const now = performance.now();
@@ -634,8 +650,14 @@ store.onBatchApplied(() => refreshBattle());
 // All 3 MUST be total (never throw): store.flushBatch has no per-listener isolation.
 store.onBatchApplied(() => {
   try {
-    const npcsMap = new Map(store.allNpcs().map((n) => [n.entityId, n]));
     const conv = store.ownConversation(identity);
+    // e-4 guard (M13.5e): build npcsMap only when a conversation is open.
+    // allNpcs() is O(n) — doing it on every batch is wasteful during normal play.
+    // Reconnect-ordering assumption: NPC content rows arrive in the same batch as (or
+    // before) the conversation row, so an active conv always finds its NPC in the map.
+    // If ordering regresses, buildDialogueViewModel returns null → view hides safely.
+    const allNpcs = conv !== undefined ? store.allNpcs() : [];
+    const npcsMap = new Map(allNpcs.map((n) => [n.entityId, n]));
     const dialogueVm = buildDialogueViewModel(conv, npcsMap, DIALOGUE_TREES);
     dialogueView?.render(dialogueVm);
     // Reset on server-side dismiss. This is also the RECONNECT self-heal for

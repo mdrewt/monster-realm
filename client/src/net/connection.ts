@@ -471,6 +471,11 @@ export function connect(opts: ConnectionOptions): Connection {
             'SELECT * FROM player',
             'SELECT * FROM monster_pub',
             'SELECT * FROM species_row',
+            // battle: unfiltered by design. The server only inserts rows for the
+            // participant identities (both sides of the battle); no private fields
+            // are exposed. An owner-scoped view does not exist yet (transport RLS →
+            // M16). The client further gates display to own-identity rows via
+            // store.ongoingBattle(identity) — ADR-0015 V1 defense-in-depth pattern.
             'SELECT * FROM battle',
             'SELECT * FROM skill_row',
             // Unfiltered subscribe + client-side owner filter (store.ownInventory) is the
