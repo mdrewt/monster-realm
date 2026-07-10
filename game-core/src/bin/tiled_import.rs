@@ -855,4 +855,320 @@ mod tests {
         game_core::world::validate_zone_maps(&zone_maps, &zones)
             .expect("parse_tiled_json output must pass validate_zone_maps");
     }
+
+    // =======================================================================
+    // fix-nightly (ADR-0088): Parser-direct mutant-killing tests.
+    //
+    // These drive the private `Parser` methods DIRECTLY (in-file `mod tests`
+    // can reach them) so each census mutant gets a precise, terminating bite.
+    // Number tests assert BOTH the exact f64 AND `parser.pos == input.len()`
+    // (full consumption): a span mutant that decrements/scales the cursor the
+    // wrong way yields a shorter/longer parse and trips the pos assert even
+    // when the f64 happens to coincide.
+    //
+    // The `*=` (identity) variants at 196:26 and 206:26 are digit-loop cursor
+    // mutants that SPIN forever (pos * 1 == pos) rather than terminate-wrong;
+    // they surface as tolerated TIMEOUTs under the mutate-core wrapper (ADR-0088
+    // R5), not as MISSED. Every OTHER census cursor mutant terminates with a
+    // wrong pos/value and is CAUGHT by the asserts below.
+    // =======================================================================
+
+    /// kills: game-core/src/bin/tiled_import.rs:89:23: replace > with == in Parser<'a>::parse_value
+    /// kills: game-core/src/bin/tiled_import.rs:89:23: replace > with >= in Parser<'a>::parse_value
+    ///
+    /// N=64 nested arrays reach depth exactly MAX_DEPTH (64). The guard is
+    /// `depth > MAX_DEPTH`, so `64 > 64` is false → must parse Ok. Both `==`
+    /// (`64 == 64` true → Err) and `>=` (`64 >= 64` true → Err) would wrongly
+    /// reject a legal depth-64 document — this Ok-parse assert kills both.
+    #[test]
+    fn parse_value_depth_64_is_ok_65_errs() {
+        let deep_64 = "[".repeat(64) + &"]".repeat(64);
+        let mut p = Parser::new(&deep_64);
+        assert!(
+            p.parse_value().is_ok(),
+            "depth exactly MAX_DEPTH (64) must parse Ok (guard is `> MAX_DEPTH`); \
+             a `==`/`>=` flip wrongly rejects the boundary"
+        );
+
+        let deep_65 = "[".repeat(65) + &"]".repeat(65);
+        let mut p65 = Parser::new(&deep_65);
+        assert!(
+            p65.parse_value().is_err(),
+            "depth 65 exceeds MAX_DEPTH (64) and must Err"
+        );
+    }
+
+    /// kills: game-core/src/bin/tiled_import.rs:116:20: replace -= with += in Parser<'a>::parse_value
+    /// kills: game-core/src/bin/tiled_import.rs:116:20: replace -= with /= in Parser<'a>::parse_value
+    ///
+    /// One document with two SIBLING 60-deep arrays. With a correct `depth -= 1`
+    /// on exit, each sibling independently reaches depth 61 (≤ 64) and the whole
+    /// document parses Ok. A `+=` (or `/=` no-op) never releases depth, so the
+    /// counter accumulates across the first sibling and the second sibling trips
+    /// the MAX_DEPTH guard → wrongly Err. The Ok-parse assert kills both.
+    #[test]
+    fn parse_value_decrements_depth_between_siblings() {
+        let sib = "[".repeat(60) + &"]".repeat(60);
+        let doc = format!("[{sib},{sib}]");
+        let mut p = Parser::new(&doc);
+        assert!(
+            p.parse_value().is_ok(),
+            "two sibling 60-deep arrays must parse Ok; a non-decrementing depth \
+             counter (`+=`/`/=`) accumulates and wrongly errors on the 2nd sibling"
+        );
+    }
+
+    /// kills: game-core/src/bin/tiled_import.rs:73:26: replace match guard got == b with true in Parser<'a>::expect_byte
+    ///
+    /// `{"k"9}` is missing the `:` key/value separator. `expect_byte(b':')`
+    /// advances to `9`; the real guard `got == b` is false → Err. If the guard
+    /// is replaced with `true`, expect_byte accepts `9` as the colon and the
+    /// object parses Ok. The is_err assert kills the always-true guard.
+    #[test]
+    fn expect_byte_rejects_wrong_separator() {
+        let mut p = Parser::new(r#"{"k"9}"#);
+        assert!(
+            p.parse_value().is_err(),
+            "a missing `:` separator must Err via expect_byte; an always-true \
+             match guard would accept `9` as the colon and parse Ok"
+        );
+    }
+
+    /// kills: game-core/src/bin/tiled_import.rs:121:9: replace Parser<'a>::expect_literal -> Result<(), String> with Ok(())
+    /// kills: game-core/src/bin/tiled_import.rs:123:30: replace match guard got == b with true in Parser<'a>::expect_literal
+    /// kills: game-core/src/bin/tiled_import.rs:123:34: replace == with != in Parser<'a>::expect_literal
+    ///
+    /// Malformed literals `truX` / `falsX` / `nulX` must Err. If expect_literal
+    /// is stubbed to `Ok(())` (121:9) or its guard is forced `true` (123:30),
+    /// the byte mismatch at `X` is ignored and the value parses Ok — the is_err
+    /// asserts kill both. The `!=` flip (123:34) is killed by the companion
+    /// valid-literal test below (a correct `true` would then fail to match).
+    #[test]
+    fn expect_literal_rejects_malformed_keywords() {
+        for bad in ["truX", "falsX", "nulX"] {
+            let mut p = Parser::new(bad);
+            assert!(
+                p.parse_value().is_err(),
+                "malformed keyword {bad:?} must Err; a stubbed-Ok or always-true \
+                 expect_literal would accept it"
+            );
+        }
+    }
+
+    /// kills: game-core/src/bin/tiled_import.rs:123:30: replace match guard got == b with false in Parser<'a>::expect_literal
+    /// kills: game-core/src/bin/tiled_import.rs:123:34: replace == with != in Parser<'a>::expect_literal
+    ///
+    /// Valid `true` / `false` / `null` must parse Ok with full consumption.
+    /// A guard forced to `false` (123:30) or flipped to `!=` (123:34) makes the
+    /// matching byte take the Err arm, so even a correct literal fails — the
+    /// Ok-parse + pos asserts kill both.
+    #[test]
+    fn expect_literal_accepts_valid_keywords() {
+        for good in ["true", "false", "null"] {
+            let mut p = Parser::new(good);
+            assert!(
+                p.parse_value().is_ok(),
+                "valid keyword {good:?} must parse Ok; a `false`/`!=` guard would \
+                 reject the matching bytes"
+            );
+            assert_eq!(
+                p.pos,
+                good.len(),
+                "valid keyword {good:?} must be fully consumed (pos == len)"
+            );
+        }
+    }
+
+    /// kills: game-core/src/bin/tiled_import.rs:185:24: replace == with != in Parser<'a>::parse_number
+    /// kills: game-core/src/bin/tiled_import.rs:186:22: replace += with -= in Parser<'a>::parse_number
+    /// kills: game-core/src/bin/tiled_import.rs:186:22: replace += with *= in Parser<'a>::parse_number
+    ///
+    /// `-12` known-answer. The minus-sign check `peek() == Some(b'-')` and its
+    /// cursor advance are exercised: `!=` skips the advance so the leading `-`
+    /// blocks the digit loop → empty span → Err; `-=` underflows pos (0-1) →
+    /// panic; `*=` (0*1) never advances → empty span → Err. The exact -12.0 +
+    /// full-consumption asserts kill all three.
+    #[test]
+    fn parse_number_negative_integer_known_answer() {
+        let input = "-12";
+        let mut p = Parser::new(input);
+        let v = p.parse_value().expect("`-12` must parse");
+        match v {
+            JsonValue::Num(n) => assert_eq!(n, -12.0_f64, "`-12` must parse to exactly -12.0"),
+            other => panic!("`-12` must be a Num, got {other:?}"),
+        }
+        assert_eq!(
+            p.pos,
+            input.len(),
+            "`-12` must be fully consumed (pos == 3)"
+        );
+    }
+
+    /// kills: game-core/src/bin/tiled_import.rs:194:22: replace += with -= in Parser<'a>::parse_number
+    /// kills: game-core/src/bin/tiled_import.rs:194:22: replace += with *= in Parser<'a>::parse_number
+    /// kills: game-core/src/bin/tiled_import.rs:196:26: replace += with -= in Parser<'a>::parse_number
+    ///
+    /// `1.5` known-answer. The `.`-advance (194:22) and the fractional-digit
+    /// cursor (196:26 `-=`) are exercised: a wrong cursor step consumes fewer
+    /// bytes → n becomes 1.0 and pos < 3. The exact 1.5 + full-consumption
+    /// asserts kill the terminating variants. (196:26 `*=` spins → tolerated
+    /// TIMEOUT, ADR-0088 R5.)
+    #[test]
+    fn parse_number_fraction_known_answer() {
+        let input = "1.5";
+        let mut p = Parser::new(input);
+        let v = p.parse_value().expect("`1.5` must parse");
+        match v {
+            JsonValue::Num(n) => assert_eq!(n, 1.5_f64, "`1.5` must parse to exactly 1.5"),
+            other => panic!("`1.5` must be a Num, got {other:?}"),
+        }
+        assert_eq!(
+            p.pos,
+            input.len(),
+            "`1.5` must be fully consumed (pos == 3)"
+        );
+    }
+
+    /// kills: game-core/src/bin/tiled_import.rs:201:22: replace += with -= in Parser<'a>::parse_number
+    /// kills: game-core/src/bin/tiled_import.rs:201:22: replace += with *= in Parser<'a>::parse_number
+    /// kills: game-core/src/bin/tiled_import.rs:206:26: replace += with -= in Parser<'a>::parse_number
+    ///
+    /// `1e3` known-answer (== 1000.0). The exponent `e`-advance (201:22 both
+    /// variants terminate wrong) and the exp-digit cursor (206:26 `-=`) are
+    /// exercised: a wrong step truncates the exponent → n != 1000.0 and/or pos
+    /// short. Exact 1000.0 + full-consumption asserts kill the terminating
+    /// variants. (206:26 `*=` spins → tolerated TIMEOUT, ADR-0088 R5.)
+    #[test]
+    fn parse_number_exponent_known_answer() {
+        let input = "1e3";
+        let mut p = Parser::new(input);
+        let v = p.parse_value().expect("`1e3` must parse");
+        match v {
+            JsonValue::Num(n) => assert_eq!(n, 1000.0_f64, "`1e3` must parse to exactly 1000.0"),
+            other => panic!("`1e3` must be a Num, got {other:?}"),
+        }
+        assert_eq!(
+            p.pos,
+            input.len(),
+            "`1e3` must be fully consumed (pos == 3)"
+        );
+    }
+
+    /// kills: game-core/src/bin/tiled_import.rs:203:26: replace += with -= in Parser<'a>::parse_number
+    /// kills: game-core/src/bin/tiled_import.rs:203:26: replace += with *= in Parser<'a>::parse_number
+    ///
+    /// `1.5e-2` known-answer (== 0.015). The signed-exponent advance (203:26)
+    /// is exercised: a wrong step over the `-` sign truncates the exponent so
+    /// the number no longer equals 0.015. Both `-=` and `*=` here terminate
+    /// (the sign byte is not a digit, so no loop spins) with a wrong span, so
+    /// the exact-value + full-consumption asserts kill both.
+    #[test]
+    fn parse_number_signed_exponent_known_answer() {
+        let input = "1.5e-2";
+        let mut p = Parser::new(input);
+        let v = p.parse_value().expect("`1.5e-2` must parse");
+        match v {
+            // 1.5e-2 == 0.015; the literal and the parsed value both go through
+            // the same decimal→binary conversion, so exact `==` is deterministic.
+            JsonValue::Num(n) => assert_eq!(n, 1.5e-2_f64, "`1.5e-2` must parse to exactly 0.015"),
+            other => panic!("`1.5e-2` must be a Num, got {other:?}"),
+        }
+        assert_eq!(
+            p.pos,
+            input.len(),
+            "`1.5e-2` must be fully consumed (pos == 6)"
+        );
+    }
+
+    /// kills: game-core/src/bin/tiled_import.rs:251:22: replace += with -= in Parser<'a>::parse_object
+    /// kills: game-core/src/bin/tiled_import.rs:251:22: replace += with *= in Parser<'a>::parse_object
+    ///
+    /// `{}` empty-object early return. After `expect_byte(b'{')` (pos=1) and the
+    /// `}` peek, the real code does `self.pos += 1` (pos=2) then returns an empty
+    /// Obj. `-=` (pos=0) and `*=` (pos=1) both leave the cursor short. Asserting
+    /// pos == 2 kills both (both also terminate — the branch returns immediately).
+    #[test]
+    fn parse_object_empty_advances_past_close_brace() {
+        let input = "{}";
+        let mut p = Parser::new(input);
+        let v = p.parse_value().expect("`{}` must parse");
+        match v {
+            JsonValue::Obj(pairs) => assert!(pairs.is_empty(), "`{{}}` must be an empty Obj"),
+            other => panic!("`{{}}` must be an Obj, got {other:?}"),
+        }
+        assert_eq!(
+            p.pos, 2,
+            "empty-object return must advance past the `}}` (pos == 2); \
+             a `-=`/`*=` cursor mutant leaves pos at 0 or 1"
+        );
+    }
+
+    /// kills: game-core/src/bin/tiled_import.rs:367:19: replace < with > in parse_tiled_json
+    ///
+    /// Trailing garbage after a valid map must Err ("trailing content"). The
+    /// guard is `parser.pos < parser.input.len()`. Flipped to `>`, `pos > len`
+    /// is never true (pos can't exceed len) → the trailing bytes are silently
+    /// ignored and a truncated document parses Ok. The is_err assert on the
+    /// trailing case kills the flip; the clean-map Ok assert is the companion.
+    #[test]
+    fn parse_tiled_rejects_trailing_content() {
+        let clean = minimal_tiled_json(2, 1, &[1, 1]);
+        parse_tiled_json(&clean, 0).expect("a clean map must parse Ok (no trailing content)");
+
+        let trailing = format!("{clean} some trailing garbage");
+        assert!(
+            parse_tiled_json(&trailing, 0).is_err(),
+            "trailing content after a valid map must Err; a `<`→`>` flip in the \
+             trailing-content guard would silently ignore the garbage"
+        );
+    }
+
+    /// kills: game-core/src/bin/tiled_import.rs:399:38: replace && with || in parse_tiled_json
+    ///
+    /// Two tile layers: layer0 is all GID 1 (floor `.`), layer1 is all GID 0
+    /// (wall `#`). The real guard `layer_type == "tilelayer" && tile_data.is_none()`
+    /// takes only the FIRST tile layer, so the rows are all `.`. Flipped to `||`,
+    /// the second tilelayer (`type == "tilelayer"` true → short-circuits `||`)
+    /// overwrites tile_data with layer1 → rows become all `#`. Asserting the rows
+    /// are all `.` kills the `||` flip (distinguishable layer data is the point).
+    #[test]
+    fn parse_tiled_first_tile_layer_wins() {
+        // 2×2 map: layer0 all floor (GID 1), layer1 all wall (GID 0).
+        let json = r#"{
+          "width": 2, "height": 2,
+          "layers": [
+            {"type": "tilelayer", "name": "Floor", "data": [1,1,1,1]},
+            {"type": "tilelayer", "name": "Wall",  "data": [0,0,0,0]}
+          ]
+        }"#;
+        let result = parse_tiled_json(json, 0).expect("two-tilelayer map must parse");
+        assert_eq!(
+            result.rows,
+            vec!["..".to_string(), "..".to_string()],
+            "the FIRST tile layer (all GID 1 → floor) must win; an `&&`→`||` flip \
+             lets the second layer (all GID 0 → wall) overwrite the tile data"
+        );
+    }
+
+    /// kills: game-core/src/bin/tiled_import.rs:495:46: replace * with / in parse_tiled_json
+    ///
+    /// A 3×2 (non-square) map with distinct GIDs per cell pins the row-major
+    /// flatten index `row_idx * width + col_idx`. Row 0 is `.#~`, row 1 is `#~.`.
+    /// Flipped to `row_idx / width + col_idx`, row 1's index collapses onto row
+    /// 0's cells (1/3 == 0) so row 1 wrongly renders as `.#~`. Asserting the exact
+    /// row strings kills the `*`→`/` flip.
+    #[test]
+    fn parse_tiled_row_major_indexing_is_exact() {
+        // width=3, height=2. Row-major GIDs:
+        //   row 0: [1,0,2] → ".#~"
+        //   row 1: [0,2,1] → "#~."
+        let json = minimal_tiled_json(3, 2, &[1, 0, 2, 0, 2, 1]);
+        let result = parse_tiled_json(&json, 0).expect("3x2 non-square map must parse");
+        assert_eq!(
+            result.rows,
+            vec![".#~".to_string(), "#~.".to_string()],
+            "row-major indexing `row*width+col` must place distinct GIDs correctly; \
+             a `*`→`/` flip collapses row 1 onto row 0's cells"
+        );
+    }
 }

@@ -111,3 +111,37 @@ pub fn npc_decide(
         Some(toward_home(current, home))
     }
 }
+
+// ===========================================================================
+// fix-nightly (ADR-0088): in-file tests for the PRIVATE `toward_home` fn.
+//
+// `toward_home` is module-private, so the sibling `m12a_gating_tests` module
+// cannot call it directly. `npc_decide` never routes `current == home` to
+// `toward_home` (distance 0 <= any radius → wander path), so an npc_decide-shaped
+// test CANNOT reach the `dx == 0` case that discriminates census 53:15. This
+// in-file `mod tests { use super::*; }` is the only seam that kills it.
+// ===========================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// kills: game-core/src/npc/rules.rs:53:15: replace > with >= in toward_home
+    ///
+    /// `toward_home(home, home)` has dx == 0 and dy == 0. `|dx| >= |dy|` (0 >= 0)
+    /// takes the X branch; the real `dx > 0` is false → West. The `>`→`>=` flip
+    /// makes `0 >= 0` true → East. Pinning West kills the flip.
+    ///
+    /// (Sibling 61:15 on the Y branch is provably equivalent — the Y branch
+    /// requires |dx| < |dy| → dy != 0, so `dy > 0` and `dy >= 0` are
+    /// indistinguishable — and is excluded via .cargo/mutants.toml, not tested.)
+    #[test]
+    fn toward_home_at_home_returns_west() {
+        let home = TilePos { x: 5, y: 5 };
+        assert_eq!(
+            toward_home(home, home),
+            Direction::West,
+            "toward_home(home, home): dx==0 takes the X branch, `dx > 0` is false → \
+             West. A `>`→`>=` flip (0 >= 0 true) would wrongly return East."
+        );
+    }
+}
