@@ -87,6 +87,7 @@
 - Gate-of-gates — CI/nightly wiring guards, coverage ratchet 25->96, gating server-module mutation nightly (ADR-0050 amendment) (#118)
 - Recruit e2e revival — gameplay-driven R1-R3, dev_reducers fixme tripwire, CI dev-wasm publish (ADR-0086) (#120)
 - Reducer-rejection feedback + app-level reconnect (ADR-0085) (#119)
+- Content-lifecycle completion + player_conversation privacy via owner-scoped view (ADR-0087) (#123)
 
 ### Fixes
 
@@ -141,6 +142,7 @@
 - ADR index — register 0082, next free 0083 (#114)
 - ADR index — register 0083, range to 0084, next free 0085 (#117)
 - ADR index — register 0086, range to 0086, next free 0087 (#121)
+- ADR index — register 0085, drop reservation note; changelog regen (#122)
 
 ### Testing
 
