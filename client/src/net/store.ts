@@ -214,11 +214,27 @@ export interface Snapshot {
 export interface StoredCharacter {
   readonly row: StoreCharacter;
   readonly receivedAt: number;
-  /** Newest authoritative snapshot. */
+  /** Newest authoritative snapshot. Alias for snapshots[last]. */
   readonly latest: Snapshot;
-  /** Second-newest snapshot (the interpolation lower bound); undefined on first sight. */
+  /** Second-newest snapshot; undefined on first sight. Alias for snapshots[last-1].
+   *  Kept for backward compat with RenderResolver (which falls back to interpolate
+   *  when snapshots is absent) and existing test fixtures. */
   readonly prev: Snapshot | undefined;
+  /** Ordered oldest-first; newest = latest; length ≤ INTERP_MAX_DEPTH (ADR-0090).
+   *  Deeper than the former 2-snapshot cap to keep the pre-burst snapshot alive
+   *  for interpolateHistory to bracket against during burst delivery. */
+  readonly snapshots: readonly Snapshot[];
+  /** EWMA of inter-arrival deviation from STEP_MS (ms); 0 = smooth/no history.
+   *  Fed to adaptiveInterpDelayMs in RenderResolver (ADR-0090). */
+  readonly jitterEwma: number;
 }
+
+// Constants used internally by upsertCharacter for adaptive delay support (ADR-0090).
+// Duplicated from render/config.ts to avoid a net→render import cycle.
+// SSOT: render/config.ts — if these values change, update both files.
+const _INTERP_MAX_DEPTH = 4; // max snapshot ring depth
+const _BURST_EPSILON_MS = 20; // burst detection window (ms)
+const _INTERP_JITTER_ALPHA = 0.125; // EWMA smoothing factor
 
 export class AuthoritativeStore {
   readonly #chars = new Map<bigint, StoredCharacter>();
@@ -241,12 +257,23 @@ export class AuthoritativeStore {
   readonly #shopItems = new Map<bigint, StoreShopItemRow>();
   readonly #batchListeners = new Set<() => void>();
   #dirty = false;
+  /** Nominal server step interval (ms), used for burst detection + jitter EWMA.
+   *  0 = disabled (tests that don't need adaptive behavior; backward compat). */
+  readonly #stepMs: number;
+
+  /**
+   * @param stepMs - Server tick interval from wasm `step_ms()` export. When 0
+   *   (default), burst detection and jitter estimation are disabled — existing
+   *   tests that construct `new AuthoritativeStore()` are unaffected. */
+  constructor(stepMs = 0) {
+    this.#stepMs = stepMs;
+  }
 
   // --- ingest (adapter-only; truth in) ------------------------------------------
 
   upsertCharacter(row: StoreCharacter, now: number): void {
     const existing = this.#chars.get(row.entityId);
-    const latest: Snapshot = { tileX: row.tileX, tileY: row.tileY, receivedAt: now };
+
     // Snap (drop prev) on zone change or large tile delta (M12.5d-2): interpolating
     // across a zone transition or a >1-tile jump smears the sprite through walls.
     const shouldSnap =
@@ -254,11 +281,59 @@ export class AuthoritativeStore {
       (row.zoneId !== existing.row.zoneId ||
         Math.abs(row.tileX - existing.row.tileX) > 1 ||
         Math.abs(row.tileY - existing.row.tileY) > 1);
+
+    // ADR-0090 burst detection: when two snapshots for the same entity arrive
+    // within BURST_EPSILON_MS of each other (same WebSocket flush), assign a
+    // synthetic receivedAt one nominal step after the existing latest.
+    // WHY: burst co-arrivals would otherwise share the same receivedAt, collapsing
+    // the interpolation span to zero → instant position pop. The synthetic timestamp
+    // spreads them temporally so interpolateHistory can bracket between them.
+    let receivedAt = now;
+    if (
+      this.#stepMs > 0 &&
+      existing !== undefined &&
+      !shouldSnap &&
+      now - existing.latest.receivedAt < _BURST_EPSILON_MS
+    ) {
+      // Assign one step after the existing latest (never in the future unless the
+      // step genuinely overshot the wall clock — harmless: interpolateHistory HOLDs).
+      receivedAt = existing.latest.receivedAt + this.#stepMs;
+    }
+
+    const latest: Snapshot = { tileX: row.tileX, tileY: row.tileY, receivedAt };
+
+    // Build the snapshot ring buffer (oldest-first, max _INTERP_MAX_DEPTH).
+    // WHY: keeping more than 2 snapshots preserves the genuine pre-burst snapshot
+    // so interpolateHistory has a real anchor when the render window is widened.
+    let newSnapshots: readonly Snapshot[];
+    if (existing === undefined || shouldSnap) {
+      newSnapshots = [latest];
+    } else {
+      const base =
+        existing.snapshots.length >= _INTERP_MAX_DEPTH
+          ? existing.snapshots.slice(1) // evict oldest to make room
+          : existing.snapshots;
+      newSnapshots = [...base, latest];
+    }
+
+    // Update jitter EWMA (ADR-0090).
+    // WHY: the estimate informs adaptiveInterpDelayMs in RenderResolver, which widens
+    // the render window during bursty delivery so the pre-burst snapshot is bracketed.
+    let newJitter = existing?.jitterEwma ?? 0;
+    if (this.#stepMs > 0 && existing !== undefined && !shouldSnap) {
+      // Use wall-clock now (not synthetic receivedAt) for the true interval measure.
+      const interval = now - existing.receivedAt;
+      const deviation = Math.abs(interval - this.#stepMs);
+      newJitter = _INTERP_JITTER_ALPHA * deviation + (1 - _INTERP_JITTER_ALPHA) * newJitter;
+    }
+
     this.#chars.set(row.entityId, {
       row,
-      receivedAt: now,
+      receivedAt: now, // always real wall-clock time (jitter base for the NEXT update)
       latest,
-      prev: shouldSnap ? undefined : existing?.latest,
+      prev: newSnapshots.length >= 2 ? newSnapshots[newSnapshots.length - 2] : undefined,
+      snapshots: newSnapshots,
+      jitterEwma: newJitter,
     });
     this.#dirty = true;
   }

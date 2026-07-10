@@ -60,8 +60,8 @@ describe('AuthoritativeStore: keyed-Map idempotency (no array-store duplication)
   });
 });
 
-describe('AuthoritativeStore: receivedAt + last-two snapshot history (interp source)', () => {
-  it('records receivedAt and keeps exactly the last two snapshots', () => {
+describe('AuthoritativeStore: receivedAt + snapshot ring buffer history (interp source)', () => {
+  it('records receivedAt; prev=second-newest, latest=newest across ring buffer growth', () => {
     const s = new AuthoritativeStore();
     s.upsertCharacter(char(1n, 0, 0), 1000); // snap A
     expect(s.character(1n)!.receivedAt).toBe(1000);
@@ -72,9 +72,9 @@ describe('AuthoritativeStore: receivedAt + last-two snapshot history (interp sou
     expect(s.character(1n)!.latest).toMatchObject({ tileX: 1, receivedAt: 1200 });
     expect(s.character(1n)!.prev).toMatchObject({ tileX: 0, receivedAt: 1000 });
 
-    s.upsertCharacter(char(1n, 2, 0), 1400); // snap C — only the LAST TWO survive
+    s.upsertCharacter(char(1n, 2, 0), 1400); // snap C — ring grows (≥ 3 kept up to INTERP_MAX_DEPTH=4)
     expect(s.character(1n)!.latest).toMatchObject({ tileX: 2, receivedAt: 1400 });
-    expect(s.character(1n)!.prev).toMatchObject({ tileX: 1, receivedAt: 1200 }); // B, not A
+    expect(s.character(1n)!.prev).toMatchObject({ tileX: 1, receivedAt: 1200 }); // B (second-newest)
   });
 });
 
@@ -197,7 +197,7 @@ describe('AuthoritativeStore: properties (fast-check)', () => {
     );
   });
 
-  it('history never exceeds two snapshots and prev is the second-newest (or absent on snap)', () => {
+  it('history prev is always the second-newest (or absent on snap) regardless of ring depth', () => {
     fc.assert(
       fc.property(
         fc.array(fc.integer({ min: 0, max: 9 }), { minLength: 2, maxLength: 30 }),

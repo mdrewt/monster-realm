@@ -14,7 +14,13 @@
 
 import type { WasmCharacterState } from '../convert/convert';
 import type { StoredCharacter } from '../net/store';
-import { interpDelayMs, interpolate } from './interpolation';
+import {
+  adaptiveInterpDelayMs,
+  interpDelayMs,
+  interpolate,
+  interpolateHistory,
+  type RenderPos,
+} from './interpolation';
 import { SlideClock } from './slideClock';
 import type { RenderEntity } from './world';
 
@@ -44,7 +50,6 @@ export class RenderResolver {
 
   resolve(input: ResolveInput): RenderEntity[] {
     const { characters, ownEntityId, predicted, snapped, now, currentZoneId } = input;
-    const renderTime = now - interpDelayMs(this.#stepMs);
     const out: RenderEntity[] = [];
 
     for (const c of characters) {
@@ -72,10 +77,18 @@ export class RenderResolver {
           facing: predicted.facing,
         });
       } else {
-        // Interpolation path: remotes, and the own entity during the login/reconnect
-        // gap (predicted/ownEntityId absent). Holds at latest past it (no overshoot);
-        // sits on latest cleanly when prev is undefined (no throw).
-        const pos = interpolate(c.prev, c.latest, renderTime);
+        // ADR-0090: per-character adaptive render time derived from EWMA jitter.
+        // WHY per-character: NPCs and remote players have different jitter profiles;
+        // a single global renderTime would over-buffer smooth entities.
+        // Backward compat: when snapshots is empty (pre-ADR-0090 fixtures / tests that
+        // only supply prev+latest), fall back to the fixed delay + 2-snapshot interpolate.
+        let pos: RenderPos;
+        if (c.snapshots.length > 0) {
+          const delay = adaptiveInterpDelayMs(c.jitterEwma, this.#stepMs);
+          pos = interpolateHistory(c.snapshots, now - delay);
+        } else {
+          pos = interpolate(c.prev, c.latest, now - interpDelayMs(this.#stepMs));
+        }
         out.push({
           entityId: c.row.entityId,
           x: pos.x,

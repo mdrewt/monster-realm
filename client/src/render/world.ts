@@ -18,7 +18,7 @@ import { TILE_PX } from './config';
 import { type RawTileMap, TileMap } from './map';
 import { PlaceholderAssets } from './placeholderAssets';
 import { ViewRegistry } from './viewRegistry';
-import { sortedByZ } from './zorder';
+import { zIndexForEntity } from './zorder';
 
 const WALL_COLOR = 0x222838;
 const FLOOR_COLOR = 0x10131a;
@@ -63,6 +63,9 @@ export class WorldRenderer {
     mount.appendChild(app.canvas);
     app.stage.addChild(this.#bg);
     app.stage.addChild(this.#actors);
+    // e-4 (ADR-0090): Pixi sorts children by zIndex when sortableChildren is true.
+    // This replaces the O(n²) setChildIndex loop with O(n log n) auto-sort.
+    this.#actors.sortableChildren = true;
     this.#app = app;
     this.#map = map;
     this.#assets = new PlaceholderAssets(app.renderer);
@@ -130,11 +133,13 @@ export class WorldRenderer {
     for (const e of entities) {
       this.#views.get(e.entityId)?.update(e.x, e.y, e.action, e.facing);
     }
-    const order = sortedByZ(entities.map((e) => ({ entityId: e.entityId, y: e.y })));
-    order.forEach((it, i) => {
-      const view = this.#views.get(it.entityId);
-      if (view !== undefined) this.#actors.setChildIndex(view.sprite, i);
-    });
+    // e-4: O(1) per sprite — set zIndex = y so Pixi's sortableChildren auto-sort
+    // handles depth ordering. Replaces the O(n²) setChildIndex-in-a-loop pattern
+    // (setChildIndex is O(n) per call → O(n²) total for n entities per frame).
+    for (const e of entities) {
+      const view = this.#views.get(e.entityId);
+      if (view !== undefined) view.sprite.zIndex = zIndexForEntity(e.y);
+    }
     // M11c follow-camera: translate the stage so the own entity stays centred.
     const map = this.#map;
     const app = this.#app;
