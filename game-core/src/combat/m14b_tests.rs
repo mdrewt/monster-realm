@@ -83,6 +83,7 @@ fn make_battle_state(monster_a: BattleMonster, monster_b: BattleMonster) -> Batt
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 0,
+        weather: None,
     }
 }
 
@@ -94,6 +95,7 @@ fn fire_skill() -> SkillDef {
         power: 40,
         accuracy: 100,
         pp: 25,
+        sets_weather: None,
     }
 }
 
@@ -1111,6 +1113,7 @@ fn m14b_battle_state_with_status_field_serde_round_trip() {
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 3,
+        weather: None,
     };
 
     let s = ron::to_string(&state).unwrap();

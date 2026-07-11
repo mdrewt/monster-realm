@@ -242,6 +242,7 @@ fn rt_s14_03_undersized_status_store_silently_drops_dot_after_slot_change() {
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 1,
+        weather: None,
     };
 
     // Status store has only 1 slot (undersized for a 2-member team).
@@ -315,6 +316,7 @@ fn rt_s14_04_simultaneous_dot_ko_side_a_processed_first_side_b_wins() {
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 1,
+        weather: None,
     };
 
     let status = BattleStatusStore {
@@ -417,6 +419,7 @@ fn rt_s14_05_resolve_player_swap_does_not_apply_enemy_status_block() {
         power: 40,
         accuracy: 100,
         pp: 25,
+        sets_weather: None,
     };
     let skills = vec![fire_skill];
     let chart = make_type_chart();
@@ -487,6 +490,7 @@ fn rt_s14_05_resolve_player_swap_does_not_apply_enemy_status_block() {
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 0,
+        weather: None,
     };
 
     let pre_hp_a = state.side_a.team[0].current_hp;

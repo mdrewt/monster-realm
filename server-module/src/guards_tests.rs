@@ -231,6 +231,7 @@ fn make_test_battle(battle_id: u64, outcome: BattleOutcome, party_monster_ids: V
             },
             outcome,
             turn_number: 1,
+            weather: None,
         },
         party_monster_ids,
         opponent_monster_ids: vec![],

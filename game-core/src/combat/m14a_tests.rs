@@ -82,6 +82,7 @@ fn make_battle_state(monster_a: BattleMonster, monster_b: BattleMonster) -> Batt
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 0,
+        weather: None,
     }
 }
 
@@ -93,6 +94,7 @@ fn fire_skill() -> SkillDef {
         power: 40,
         accuracy: 100,
         pp: 25,
+        sets_weather: None,
     }
 }
 
@@ -261,6 +263,7 @@ fn m14a_poison_deals_max_hp_over_8_damage() {
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 1,
+        weather: None,
     };
 
     let status = BattleStatusStore {
@@ -333,6 +336,7 @@ fn m14a_poison_deals_at_least_1_damage() {
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 1,
+        weather: None,
     };
 
     let status = BattleStatusStore {
@@ -391,6 +395,7 @@ fn m14a_burn_deals_max_hp_over_16_damage() {
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 1,
+        weather: None,
     };
 
     let status = BattleStatusStore {
@@ -1039,6 +1044,7 @@ fn m14a_poison_dot_ko_triggers_faint_and_battle_end() {
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 1,
+        weather: None,
     };
 
     let status = BattleStatusStore {
@@ -1273,6 +1279,7 @@ fn m14a_burn_deals_at_least_1_damage() {
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 1,
+        weather: None,
     };
 
     let status = BattleStatusStore {

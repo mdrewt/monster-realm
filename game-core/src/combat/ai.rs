@@ -99,6 +99,7 @@ mod tests {
             power: 40,
             accuracy: 100,
             pp: 25,
+            sets_weather: None,
         }
     }
 
@@ -110,6 +111,7 @@ mod tests {
             power: 65,
             accuracy: 95,
             pp: 15,
+            sets_weather: None,
         }
     }
 
@@ -121,6 +123,7 @@ mod tests {
             power: 40,
             accuracy: 100,
             pp: 25,
+            sets_weather: None,
         }
     }
 
@@ -235,6 +238,7 @@ mod tests {
             power: 40,
             accuracy: 100,
             pp: 25,
+            sets_weather: None,
         }
     }
 
@@ -246,6 +250,7 @@ mod tests {
             power: 65,
             accuracy: 95,
             pp: 15,
+            sets_weather: None,
         }
     }
 
@@ -257,6 +262,7 @@ mod tests {
             power: 40,
             accuracy: 100,
             pp: 25,
+            sets_weather: None,
         }
     }
 

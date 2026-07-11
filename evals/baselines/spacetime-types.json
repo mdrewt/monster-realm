@@ -30,6 +30,15 @@
       "Freeze"
     ]
   },
+  "WeatherEffect": {
+    "kind": "enum",
+    "variants": [
+      "Rain",
+      "Sun",
+      "Sandstorm",
+      "Hail"
+    ]
+  },
   "BattleMonster": {
     "kind": "struct",
     "fields": [
@@ -107,6 +116,10 @@
       [
         "turn_number",
         "u16"
+      ],
+      [
+        "weather",
+        "Option<WeatherEffect>"
       ]
     ]
   },

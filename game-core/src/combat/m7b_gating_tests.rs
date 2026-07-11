@@ -374,6 +374,7 @@ fn battle_state_serde_round_trip_with_u32_active() {
         },
         outcome: BattleOutcome::Fled,
         turn_number: 3,
+        weather: None,
     };
     let s = ron::to_string(&state).unwrap();
     let back: BattleState = ron::from_str(&s).unwrap();

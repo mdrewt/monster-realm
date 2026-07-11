@@ -70,6 +70,7 @@ fn ongoing_battle(a_hp: u16, b_hp: u16) -> BattleState {
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 0,
+        weather: None,
     }
 }
 
@@ -221,6 +222,7 @@ fn m7b_3_resolve_turn_on_terminal_state_increments_turn_number() {
         power: 40,
         accuracy: 100,
         pp: 25,
+        sets_weather: None,
     };
     let skills = vec![skill];
     let variance = TurnVariance {
@@ -614,18 +616,19 @@ fn m7b_8_turnvariance_out_of_range_damage_roll_produces_wrong_damage() {
         power: 40,
         accuracy: 100,
         pp: 25,
+        sets_weather: None,
     };
 
     // Valid range: damage_roll in 85..=100
-    let (dmg_valid_max, _) = calc_damage(&attacker, &defender, &skill, &chart, 100);
-    let (dmg_valid_min, _) = calc_damage(&attacker, &defender, &skill, &chart, 85);
+    let (dmg_valid_max, _) = calc_damage(&attacker, &defender, &skill, &chart, 100, None);
+    let (dmg_valid_min, _) = calc_damage(&attacker, &defender, &skill, &chart, 85, None);
 
     // Out-of-range: damage_roll = 0 (below minimum)
     // calc_damage does not validate — it just uses variance directly.
-    let (dmg_zero_roll, _) = calc_damage(&attacker, &defender, &skill, &chart, 0);
+    let (dmg_zero_roll, _) = calc_damage(&attacker, &defender, &skill, &chart, 0, None);
 
     // Out-of-range: damage_roll = 255 (above maximum)
-    let (dmg_max_roll, _) = calc_damage(&attacker, &defender, &skill, &chart, 255);
+    let (dmg_max_roll, _) = calc_damage(&attacker, &defender, &skill, &chart, 255, None);
 
     assert!(
         dmg_zero_roll < dmg_valid_min,

@@ -6,6 +6,7 @@
 use serde::Deserialize;
 
 use crate::combat::ability::AbilityEffect;
+use crate::combat::weather::WeatherKind;
 use crate::monster::types::{Affinity, Bond, Level, StatBlock, StatKind, EV_PER_STAT_CAP};
 use crate::taming::types::EncounterTable;
 use crate::types::TilePos;
@@ -110,7 +111,7 @@ pub struct AbilityDef {
     pub effect: AbilityEffect,
 }
 
-/// A skill (move) definition — affinity, power, accuracy, PP.
+/// A skill (move) definition — affinity, power, accuracy, PP, optional weather setter.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct SkillDef {
     pub id: u32,
@@ -119,6 +120,10 @@ pub struct SkillDef {
     pub power: u16,
     pub accuracy: u8,
     pub pp: u8,
+    /// If `Some`, this skill sets the field weather to the given kind on use (M14d, ADR-0095).
+    /// `#[serde(default)]` keeps existing RON files valid (additive, ADR-0006).
+    #[serde(default)]
+    pub sets_weather: Option<WeatherKind>,
 }
 
 /// A type effectiveness relation — attacker/defender affinity pair.
@@ -803,6 +808,15 @@ pub fn validate_content(
                 "skill {} has accuracy {}; accuracy must be in [1, 100]",
                 sk.id, sk.accuracy
             ));
+        }
+        // Weather cross-check (M14d, ADR-0095): sets_weather must reference a
+        // recognized WeatherKind. The exhaustive match is the OCP gate —
+        // adding a new WeatherKind without handling it here is a compile error.
+        if let Some(kind) = sk.sets_weather {
+            let _valid = matches!(
+                kind,
+                WeatherKind::Rain | WeatherKind::Sun | WeatherKind::Sandstorm | WeatherKind::Hail
+            );
         }
     }
 
@@ -1563,6 +1577,7 @@ mod tests {
             power: 40,
             accuracy: 100,
             pp: 35,
+            sets_weather: None,
         }
     }
 

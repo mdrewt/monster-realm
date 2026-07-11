@@ -46,7 +46,8 @@ pub(crate) const ZONE_0: u32 = 0;
 /// v6 (M13b): shop items — `sell_price` added to `ItemDef` (ADR-0082).
 /// v7 (M13c): quest_001 currency reward=50 (ADR-0083).
 /// v8 (M14c): abilities registry added (ADR-0094).
-pub(crate) const CONTENT_VERSION: u32 = 8;
+/// v9 (M14d): weather-setting skills 7-10 added (ADR-0095).
+pub(crate) const CONTENT_VERSION: u32 = 9;
 pub(crate) const SPRITE_PLAYER: u32 = 0;
 pub(crate) const MAX_NAME_LEN: usize = 24;
 pub(crate) const MAX_PARTY_SIZE: u8 = game_core::PARTY_SIZE; // SSOT (ADR-0052)

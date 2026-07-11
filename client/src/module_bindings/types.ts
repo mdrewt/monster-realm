@@ -90,6 +90,9 @@ export const BattleState = __t.object("BattleState", {
     return BattleOutcome;
   },
   turnNumber: __t.u16(),
+  get weather() {
+    return __t.option(WeatherEffect);
+  },
 });
 export type BattleState = __Infer<typeof BattleState>;
 
@@ -433,6 +436,15 @@ export const TypeRelationRow = __t.object("TypeRelationRow", {
   effectiveness: __t.u8(),
 });
 export type TypeRelationRow = __Infer<typeof TypeRelationRow>;
+
+// The tagged union or sum type for the algebraic type `WeatherEffect`.
+export const WeatherEffect = __t.enum("WeatherEffect", {
+  Rain: __t.u8(),
+  Sun: __t.u8(),
+  Sandstorm: __t.u8(),
+  Hail: __t.u8(),
+});
+export type WeatherEffect = __Infer<typeof WeatherEffect>;
 
 export const ZoneDefRow = __t.object("ZoneDefRow", {
   zoneId: __t.u32(),

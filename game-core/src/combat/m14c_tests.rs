@@ -74,6 +74,7 @@ fn make_state(monster_a: BattleMonster, monster_b: BattleMonster) -> BattleState
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 0,
+        weather: None,
     }
 }
 

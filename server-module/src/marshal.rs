@@ -384,6 +384,10 @@ pub(crate) fn skill_defs_from_rows(rows: &[SkillRow]) -> Result<Vec<SkillDef>, S
                 power: r.power,
                 accuracy: r.accuracy,
                 pp: r.pp,
+                // DB SkillRow has no sets_weather column; weather-setting is only
+                // populated via load_skills() (content cache). The DB path is
+                // used only for the boundary validation check, not battle resolution.
+                sets_weather: None,
             })
         })
         .collect()
