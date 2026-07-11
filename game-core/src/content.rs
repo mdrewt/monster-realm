@@ -809,14 +809,16 @@ pub fn validate_content(
                 sk.id, sk.accuracy
             ));
         }
-        // Weather cross-check (M14d, ADR-0095): sets_weather must reference a
-        // recognized WeatherKind. The exhaustive match is the OCP gate —
-        // adding a new WeatherKind without handling it here is a compile error.
+        // Weather cross-check (M14d, ADR-0095): exhaustive match with no wildcard
+        // arm is the compile-time OCP gate — adding a new WeatherKind variant without
+        // updating this site is a compile error (unlike `matches!` which has implicit `_`).
         if let Some(kind) = sk.sets_weather {
-            let _valid = matches!(
-                kind,
-                WeatherKind::Rain | WeatherKind::Sun | WeatherKind::Sandstorm | WeatherKind::Hail
-            );
+            match kind {
+                WeatherKind::Rain
+                | WeatherKind::Sun
+                | WeatherKind::Sandstorm
+                | WeatherKind::Hail => {}
+            }
         }
     }
 

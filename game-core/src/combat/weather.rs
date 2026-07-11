@@ -118,9 +118,9 @@ impl WeatherEffect {
 /// - Sun:  Fire attacks × 3/2, Water attacks × 1/2, others × 1
 /// - Sandstorm, Hail, None: no attack modifier (× 1)
 ///
-/// Integer-only: using `u16` to avoid u16-overflow in `(dmg * 3 / 2)` since
-/// dmg ≤ u16::MAX and `(u16::MAX * 3) > u64::MAX` is NOT an issue because
-/// callers upcast to `u64` before calling this.
+/// Integer-only: the multiplier is applied by callers on a `u64` intermediate
+/// (already upcast from u16), so `variance_mod * 3` cannot overflow u64 in
+/// practice — max game damage values are far below `u64::MAX / 3`.
 #[must_use]
 pub fn weather_attack_modifier(
     weather: Option<&WeatherEffect>,

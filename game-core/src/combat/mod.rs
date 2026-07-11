@@ -37,6 +37,8 @@ pub mod redteam_m14c_tests;
 #[cfg(test)]
 pub mod redteam_m14d_tests;
 #[cfg(test)]
+pub mod redteam_m14d_weather_desync;
+#[cfg(test)]
 pub mod redteam_m8d_tests;
 #[cfg(test)]
 pub mod redteam_new_findings;
