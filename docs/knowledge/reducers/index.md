@@ -32,4 +32,5 @@
 | reducers/sync_content | SpacetimeDB Reducer | sync_content | SpacetimeDB reducer sync_content. |
 | reducers/talk | SpacetimeDB Reducer | talk | Initiate a dialogue with an NPC. Creates/replaces the player_conversation row. Z |
 | reducers/train | SpacetimeDB Reducer | train | Spend a training food to grant EVs toward its target stat and re-derive the mons |
+| reducers/use_battle_item | SpacetimeDB Reducer | use_battle_item | Use a battle item (e.g. Antidote) on the player's active monster during an ongoi |
 <!-- END:auto -->

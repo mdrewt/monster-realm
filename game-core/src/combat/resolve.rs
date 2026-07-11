@@ -401,6 +401,25 @@ pub fn resolve_full_turn(
         TurnChoice::Pass
     };
 
+    // Phase 1.5: sync BattleMonster.status FROM BattleStatusStore.
+    // resolve_one_attack checks `defender.status` (BattleMonster field) for the
+    // "no stacking" guard. The store is the authoritative source; BattleMonster.status
+    // is the persisted-to-DB field (written by the server after resolve_full_turn).
+    // Without this sync, a status that was set in the store by a prior Phase 4.5 call
+    // (test fixture, or future multi-step paths) would be invisible to the guard.
+    // In normal server flow the two are already in sync (server builds the store from
+    // BattleMonster.status before calling us), so this is a no-op in steady state.
+    for (i, s) in status.side_a.iter().enumerate() {
+        if let Some(m) = state.side_a.team.get_mut(i) {
+            m.status = *s;
+        }
+    }
+    for (i, s) in status.side_b.iter().enumerate() {
+        if let Some(m) = state.side_b.team.get_mut(i) {
+            m.status = *s;
+        }
+    }
+
     // Phase 2: resolve the turn (turn-number advance + speed-ordered attacks).
     // Weather modifier is read from state.weather inside resolve_one_attack;
     // sets_weather fires after each hit (ADR-0095 D4 — does not boost own damage).
