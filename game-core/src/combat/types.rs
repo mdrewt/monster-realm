@@ -6,6 +6,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::monster::types::{Affinity, StatBlock};
+// WeatherEffect is defined in weather.rs (sibling module); used in BattleState.weather
+// and BattleEvent::WeatherSet. No circular type dependency: BattleState → WeatherEffect
+// is one-way; WeatherEffect does not contain BattleState.
+use super::weather::WeatherEffect;
 
 // ===========================================================================
 // Status effects (moved here from status.rs to avoid circular import with
@@ -142,6 +146,11 @@ pub struct BattleState {
     pub side_b: BattleSide,
     pub outcome: BattleOutcome,
     pub turn_number: u16,
+    /// Active field weather — ticks down each turn and clears on expiry (M14d,
+    /// ADR-0095). `#[serde(default)]` ensures additive schema compat (ADR-0006):
+    /// old `battle.state` rows deserialise `weather = None`.
+    #[serde(default)]
+    pub weather: Option<WeatherEffect>,
 }
 
 /// What a player chooses to do on their turn.
@@ -219,6 +228,18 @@ pub enum BattleEvent {
         /// Team slot index that was cured — distinguishes bench cures from active-slot cures.
         slot: u32,
     },
+    /// Weather was set by a skill or ability. Carries the new weather state
+    /// (including `turns_remaining`) so the client can display the weather banner.
+    WeatherSet {
+        weather: WeatherEffect,
+    },
+    /// End-of-turn chip damage dealt by Sandstorm or Hail to a non-immune active monster.
+    WeatherDamage {
+        side: SideId,
+        amount: u16,
+    },
+    /// The active weather expired (turns_remaining reached 0 after tick).
+    WeatherExpired,
 }
 
 /// Injected variance for a single turn — deterministic, caller-supplied.
@@ -641,6 +662,7 @@ mod tests {
                 },
                 outcome: BattleOutcome::Ongoing,
                 turn_number: turn,
+                weather: None,
             };
             let s = ron::to_string(&state).unwrap();
             let back: BattleState = ron::from_str(&s).unwrap();

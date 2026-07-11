@@ -53,6 +53,7 @@ fn fire_skill() -> SkillDef {
         power: 40,
         accuracy: 100,
         pp: 25,
+        sets_weather: None,
     }
 }
 
@@ -88,6 +89,7 @@ fn two_sided_state(hp_a: u16, hp_b: u16) -> BattleState {
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 0,
+        weather: None,
     }
 }
 
@@ -234,6 +236,7 @@ fn r02_active_monster_uses_skill_it_does_not_know() {
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 0,
+        weather: None,
     };
 
     // The server loads ALL skills from DB. skill_id=2 is also in the registry
@@ -245,6 +248,7 @@ fn r02_active_monster_uses_skill_it_does_not_know() {
         power: 150, // 3.75x the power of the known skill
         accuracy: 100,
         pp: 5,
+        sets_weather: None,
     };
     let skills = vec![fire_skill(), overpowered_skill];
     let chart = make_chart();
@@ -516,6 +520,7 @@ fn r05_enemy_retaliation_after_swap_can_ko_new_active() {
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 0,
+        weather: None,
     };
 
     // Player swaps to index 1 (the 1-HP Plant monster).

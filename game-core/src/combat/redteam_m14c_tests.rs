@@ -77,6 +77,7 @@ fn make_state(
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 0,
+        weather: None,
     }
 }
 

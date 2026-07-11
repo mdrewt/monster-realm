@@ -70,8 +70,14 @@ fn resolve_one_attack(
         ),
     };
 
-    let (dmg, eff) =
-        super::damage::calc_damage(&attacker, &defender, skill, type_chart, damage_roll);
+    let (dmg, eff) = super::damage::calc_damage(
+        &attacker,
+        &defender,
+        skill,
+        type_chart,
+        damage_roll,
+        state.weather.as_ref(),
+    );
 
     // Apply damage
     let target = match defender_side {
@@ -129,6 +135,16 @@ fn resolve_one_attack(
             };
             events.push(BattleEvent::BattleEnd { winner });
         }
+    }
+
+    // Set weather AFTER damage + faint resolve — weather-setting move does not boost
+    // its own hit (ADR-0095 D4). Fires even if the move KOs (the weather still changes).
+    if let Some(kind) = skill.sets_weather {
+        use super::weather::{WeatherEffect, WEATHER_DEFAULT_TURNS};
+        state.weather = Some(WeatherEffect::from_kind(kind, WEATHER_DEFAULT_TURNS));
+        events.push(BattleEvent::WeatherSet {
+            weather: *state.weather.as_ref().expect("just set above"),
+        });
     }
 }
 
@@ -308,18 +324,24 @@ fn skill_id_from(choice: &TurnChoice) -> u32 {
     }
 }
 
-/// Resolve a full turn with status-effect pre/post phases layered additively on
+/// Resolve a full turn with status-effect and weather phases layered additively on
 /// [`resolve_turn`]'s existing event pipeline (ADR-0017/0023 — signature unchanged).
 ///
 /// Pipeline order:
 /// 1. Pre-turn: action-block checks (Paralysis/Sleep/Freeze) via [`apply_pre_turn_effects`].
 ///    A blocked side's choice is replaced with [`TurnChoice::Pass`].
 /// 2. Speed-ordered attacks via [`resolve_turn`] (unmodified plain-attack path).
+///    Weather is read from `state.weather` inside `resolve_one_attack`; `sets_weather`
+///    fires after each attack's damage resolves (ADR-0095 D4).
 /// 3. Post-turn: DoT (Poison/Burn) via [`apply_post_turn_effects`].
 /// 4. Status tick: Sleep decrement, Freeze thaw via [`tick_status`].
+/// 5. Weather tick: turn decrement + expiry via [`tick_weather`].
 ///
-/// With an empty [`BattleStatusStore`] and no blocking variance this is byte-identical
-/// to calling [`resolve_turn`] directly — the M7 regression proof-of-teeth (EARS-1).
+/// Phase 3.5 (weather chip damage via [`apply_weather_damage`]) runs between phases 3 and 4.
+///
+/// With an empty [`BattleStatusStore`], no blocking variance, and `state.weather = None`
+/// this is byte-identical to calling [`resolve_turn`] directly — the M7 regression
+/// proof-of-teeth (EARS-1).
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_full_turn(
     state: &mut BattleState,
@@ -332,6 +354,7 @@ pub fn resolve_full_turn(
     sv: &super::status::StatusVariance,
 ) -> Vec<BattleEvent> {
     use super::status::{apply_post_turn_effects, apply_pre_turn_effects, tick_status};
+    use super::weather::{apply_weather_damage, tick_weather};
 
     let mut events = Vec::new();
 
@@ -351,6 +374,8 @@ pub fn resolve_full_turn(
     };
 
     // Phase 2: resolve the turn (turn-number advance + speed-ordered attacks).
+    // Weather modifier is read from state.weather inside resolve_one_attack;
+    // sets_weather fires after each hit (ADR-0095 D4 — does not boost own damage).
     let turn_events = resolve_turn(
         state,
         effective_a,
@@ -367,10 +392,20 @@ pub fn resolve_full_turn(
         events.extend(post_events);
     }
 
+    // Phase 3.5: weather chip damage (Sandstorm/Hail end-of-turn DoT).
+    if state.outcome == BattleOutcome::Ongoing {
+        apply_weather_damage(state, &mut events);
+    }
+
     // Phase 4: status tick (Sleep/Freeze expire).
     if state.outcome == BattleOutcome::Ongoing {
         let tick_events = tick_status(status, sv);
         events.extend(tick_events);
+    }
+
+    // Phase 5: weather tick (decrement turns_remaining; emit WeatherExpired at 0).
+    if state.outcome == BattleOutcome::Ongoing {
+        tick_weather(state, &mut events);
     }
 
     events
@@ -535,6 +570,7 @@ mod tests {
             },
             outcome: BattleOutcome::Ongoing,
             turn_number: 0,
+            weather: None,
         }
     }
 
@@ -546,6 +582,7 @@ mod tests {
             power: 40,
             accuracy: 100,
             pp: 25,
+            sets_weather: None,
         }
     }
 
@@ -784,6 +821,7 @@ mod tests {
             },
             outcome: BattleOutcome::Ongoing,
             turn_number: 0,
+            weather: None,
         };
         let variance = always_hit_variance(true);
         let events = resolve_turn(
@@ -893,6 +931,7 @@ mod tests {
             },
             outcome: BattleOutcome::Ongoing,
             turn_number: 0,
+            weather: None,
         };
         let variance = always_hit_variance(true);
         let events = resolve_player_swap(
@@ -1561,6 +1600,7 @@ mod tests {
             },
             outcome: BattleOutcome::Ongoing,
             turn_number: 0,
+            weather: None,
         }
     }
 
@@ -1775,6 +1815,7 @@ mod tests {
             power: 65,
             accuracy: 100,
             pp: 15,
+            sets_weather: None,
         }
     }
 

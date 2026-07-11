@@ -189,6 +189,7 @@ fn make_ongoing_battle(battle_id: u64, owner: Identity, party_monster_ids: Vec<u
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 1,
+        weather: None,
     };
     Battle {
         battle_id,

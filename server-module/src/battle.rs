@@ -14,8 +14,8 @@ use crate::guards::{
     check_monster_in_party, check_party_size, check_team_coupling, log_reject, require_owner,
 };
 use crate::marshal::{
-    battle_monster_from_row, loser_base_stat_total, now_ms, pub_from_monster, skill_defs_from_rows,
-    type_chart_from_rows, wild_battle_monster, write_back_hp,
+    battle_monster_from_row, loser_base_stat_total, now_ms, pub_from_monster, type_chart_from_rows,
+    wild_battle_monster, write_back_hp,
 };
 use crate::schema::{
     battle, battle_wild, monster, monster_pub, skill_row, species_row, type_relation_row, Battle,
@@ -211,6 +211,7 @@ pub fn start_battle(
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 0,
+        weather: None,
     };
 
     let battle = ctx.db.battle().insert(Battle {
@@ -351,6 +352,7 @@ pub(crate) fn begin_encounter(
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 0,
+        weather: None,
     };
 
     let battle = ctx.db.battle().insert(Battle {
@@ -481,9 +483,9 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
         return Err(e);
     }
 
-    // Load skills and type chart for the resolver.
-    let skill_rows: Vec<SkillRow> = ctx.db.skill_row().iter().collect();
-    let skill_defs = skill_defs_from_rows(&skill_rows)?;
+    // Load skills via content cache so sets_weather is populated (M14d, ADR-0095).
+    // load_skills() is cached (M13.5d LazyLock); no DB round-trip for skills.
+    let skill_defs = game_core::load_skills()?;
     let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
     let sv = StatusVariance::from_ctx_random(ctx.random());
@@ -584,8 +586,8 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
     }
 
     // Swap then enemy attacks the new active.
-    let skill_rows: Vec<SkillRow> = ctx.db.skill_row().iter().collect();
-    let skill_defs = skill_defs_from_rows(&skill_rows)?;
+    // Use content cache so the enemy can use weather-setting skills (M14d, ADR-0095).
+    let skill_defs = game_core::load_skills()?;
     let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
 

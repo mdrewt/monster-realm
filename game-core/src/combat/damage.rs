@@ -1,13 +1,14 @@
 //! Damage formula and accuracy check for the combat engine.
 //!
-//! The damage formula is:
+//! The damage formula (extended with weather modifier, M14d, ADR-0095):
 //!
 //! ```text
 //! base = (2 * level / 5 + 2) * power * attack / defense / 50 + 2
 //! stab = if skill.affinity == attacker.affinity { base * 3 / 2 } else { base }
 //! type_mod = stab * effectiveness / 10
 //! variance_mod = type_mod * variance / 100      (variance: 85..=100)
-//! final = max(1, variance_mod)                   (floor of 1 for non-immune hits)
+//! weather_mod = variance_mod * numer / denom     (numer/denom from weather_attack_modifier)
+//! final = max(1, weather_mod)                    (floor of 1 for non-immune hits)
 //! ```
 //!
 //! where `effectiveness` is the raw value from `TypeChart` (0, 5, 10, or 20).
@@ -19,8 +20,10 @@ use crate::content::SkillDef;
 
 use super::type_chart::TypeChart;
 use super::types::{BattleMonster, Effectiveness};
+use super::weather::WeatherEffect;
 
-/// Compute damage dealt by `attacker` using `skill` against `defender`.
+/// Compute damage dealt by `attacker` using `skill` against `defender`,
+/// optionally scaled by the active field weather (M14d, ADR-0095).
 ///
 /// Returns `(damage, effectiveness)` — a pair so the caller can emit
 /// `BattleEvent::Damage` with the correct effectiveness label.
@@ -31,12 +34,15 @@ use super::types::{BattleMonster, Effectiveness};
 ///   divides by it — see `battle_monster_from_row` for the trust boundary).
 /// - Returns `(0, Immune)` when effectiveness == 0.
 /// - Returns at least `(1, _)` for any non-immune hit, regardless of stat ratios.
+/// - `weather = None` produces byte-identical output to the pre-M14d formula
+///   (the M7 regression proof — EARS-1).
 pub fn calc_damage(
     attacker: &BattleMonster,
     defender: &BattleMonster,
     skill: &SkillDef,
     type_chart: &TypeChart,
     variance: u8, // 85..=100
+    weather: Option<&WeatherEffect>,
 ) -> (u16, Effectiveness) {
     let eff_raw = type_chart.effectiveness(skill.affinity, defender.affinity);
     let effectiveness = TypeChart::classify(eff_raw);
@@ -72,8 +78,14 @@ pub fn calc_damage(
     // variance scaling
     let variance_mod = type_mod * var / 100;
 
+    // Weather modifier: Rain boosts Water/nerfs Fire; Sun boosts Fire/nerfs Water.
+    // Uses integer (numer, denom) from weather_attack_modifier so no floats.
+    // With weather=None the multiplier is (1,1) — byte-identical to pre-M14d.
+    let (w_numer, w_denom) = super::weather::weather_attack_modifier(weather, skill.affinity);
+    let weather_mod = variance_mod * w_numer / w_denom;
+
     // floor of 1 for non-immune hits
-    let final_dmg = std::cmp::max(1u64, variance_mod);
+    let final_dmg = std::cmp::max(1u64, weather_mod);
     let clamped = std::cmp::min(final_dmg, u64::from(u16::MAX)) as u16;
 
     (clamped, effectiveness)
@@ -136,6 +148,7 @@ mod tests {
             power: 40,
             accuracy: 100,
             pp: 25,
+            sets_weather: None,
         }
     }
 
@@ -149,6 +162,7 @@ mod tests {
             power: 40,
             accuracy: 100,
             pp: 25,
+            sets_weather: None,
         }
     }
 
@@ -186,7 +200,7 @@ mod tests {
         let attacker = make_monster(Affinity::Fire, 40, 40);
         let defender = make_monster(Affinity::Plant, 40, 40);
         let skill = fire_skill_40();
-        let (dmg, eff) = calc_damage(&attacker, &defender, &skill, &chart, 100);
+        let (dmg, eff) = calc_damage(&attacker, &defender, &skill, &chart, 100, None);
         assert_eq!(dmg, 14, "expected 14 damage");
         assert_eq!(
             eff,
@@ -216,6 +230,7 @@ mod tests {
             power: 45,
             accuracy: 100,
             pp: 25,
+            sets_weather: None,
         };
         let water_skill = SkillDef {
             id: 3,
@@ -224,13 +239,26 @@ mod tests {
             power: 45,
             accuracy: 100,
             pp: 25,
+            sets_weather: None,
         };
         // Plant attacker using Plant skill (STAB) vs Earth (neutral)
-        let (stab_dmg, _) =
-            calc_damage(&plant_attacker, &earth_defender, &plant_skill, &chart, 100);
+        let (stab_dmg, _) = calc_damage(
+            &plant_attacker,
+            &earth_defender,
+            &plant_skill,
+            &chart,
+            100,
+            None,
+        );
         // Plant attacker using Water skill (no STAB) vs Earth (neutral)
-        let (no_stab_dmg, _) =
-            calc_damage(&plant_attacker, &earth_defender, &water_skill, &chart, 100);
+        let (no_stab_dmg, _) = calc_damage(
+            &plant_attacker,
+            &earth_defender,
+            &water_skill,
+            &chart,
+            100,
+            None,
+        );
         assert!(
             stab_dmg > no_stab_dmg,
             "STAB ({stab_dmg}) must exceed non-STAB ({no_stab_dmg}) with same power"
@@ -263,6 +291,7 @@ mod tests {
             power: 40,
             accuracy: 100,
             pp: 15,
+            sets_weather: None,
         };
         let (se_dmg, _) = calc_damage(
             &electric_attacker,
@@ -270,6 +299,7 @@ mod tests {
             &electric_skill,
             &chart,
             100,
+            None,
         );
         let (neutral_dmg, _) = calc_damage(
             &electric_attacker,
@@ -277,6 +307,7 @@ mod tests {
             &electric_skill,
             &chart,
             100,
+            None,
         );
         assert!(
             se_dmg > neutral_dmg,
@@ -306,7 +337,7 @@ mod tests {
         let attacker = make_monster(Affinity::Fire, 200, 40);
         let defender = make_monster(Affinity::Water, 40, 1); // extremely low defense
         let skill = fire_skill_40();
-        let (dmg, eff) = calc_damage(&attacker, &defender, &skill, &chart, 100);
+        let (dmg, eff) = calc_damage(&attacker, &defender, &skill, &chart, 100, None);
         assert_eq!(dmg, 0, "immune hit must deal 0 damage");
         assert_eq!(eff, Effectiveness::Immune);
     }
@@ -392,9 +423,10 @@ mod tests {
             power: 40,
             accuracy: 100,
             pp: 25,
+            sets_weather: None,
         };
         // minimum variance = 85
-        let (dmg, eff) = calc_damage(&attacker, &defender, &plant_skill, &chart, 85);
+        let (dmg, eff) = calc_damage(&attacker, &defender, &plant_skill, &chart, 85, None);
         assert_ne!(eff, Effectiveness::Immune, "Plant vs Water is not immune");
         assert!(
             dmg >= 1,
@@ -415,8 +447,8 @@ mod tests {
         let attacker = make_monster(Affinity::Fire, 80, 40);
         let defender = make_monster(Affinity::Plant, 40, 40);
         let skill = fire_skill_40();
-        let (dmg_85, _) = calc_damage(&attacker, &defender, &skill, &chart, 85);
-        let (dmg_100, _) = calc_damage(&attacker, &defender, &skill, &chart, 100);
+        let (dmg_85, _) = calc_damage(&attacker, &defender, &skill, &chart, 85, None);
+        let (dmg_100, _) = calc_damage(&attacker, &defender, &skill, &chart, 100, None);
         assert!(
             dmg_85 <= dmg_100,
             "variance=85 ({dmg_85}) must be <= variance=100 ({dmg_100})"
@@ -497,7 +529,7 @@ mod tests {
         let mut defender = make_monster(Affinity::Fire, 40, 40);
         defender.stats.defense = 1; // boundary: minimum valid defense
         let skill = fire_skill_40();
-        let (dmg, eff) = calc_damage(&attacker, &defender, &skill, &chart, 100);
+        let (dmg, eff) = calc_damage(&attacker, &defender, &skill, &chart, 100, None);
         assert!(
             dmg >= 1,
             "defense==1 is valid; damage must be >= 1, got {dmg}"
@@ -530,7 +562,7 @@ mod tests {
         let skill = fire_skill_40();
         // Must panic (either via debug_assert!(defense > 0) after the fix,
         // or via integer divide-by-zero before the fix).
-        let _ = calc_damage(&attacker, &defender, &skill, &chart, 100);
+        let _ = calc_damage(&attacker, &defender, &skill, &chart, 100, None);
     }
 
     proptest! {
@@ -556,9 +588,10 @@ mod tests {
                 power,
                 accuracy: 100,
                 pp: 10,
+        sets_weather: None,
             };
-            let result_a = calc_damage(&attacker, &defender, &skill, &chart, variance);
-            let result_b = calc_damage(&attacker, &defender, &skill, &chart, variance);
+            let result_a = calc_damage(&attacker, &defender, &skill, &chart, variance, None);
+            let result_b = calc_damage(&attacker, &defender, &skill, &chart, variance, None);
             prop_assert_eq!(result_a, result_b, "calc_damage must be deterministic");
         }
 
@@ -603,9 +636,10 @@ mod tests {
                 power,
                 accuracy: 100,
                 pp: 10,
+        sets_weather: None,
             };
             // Should not panic
-            let _ = calc_damage(&attacker, &defender, &skill, &chart, variance);
+            let _ = calc_damage(&attacker, &defender, &skill, &chart, variance, None);
         }
     }
 
@@ -626,6 +660,7 @@ mod tests {
             &fire_skill_40(),
             &make_type_chart(),
             100,
+            None,
         );
         assert_eq!(eff, Effectiveness::Neutral);
         assert_eq!(dmg, 5);
@@ -645,6 +680,7 @@ mod tests {
             &fire_skill_40(),
             &make_type_chart(),
             100,
+            None,
         );
         assert_eq!(eff, Effectiveness::Neutral);
         assert_eq!(dmg, 6, "(2*10/5 + 2) * 40 * 40 / 40 / 50 + 2 = 6");

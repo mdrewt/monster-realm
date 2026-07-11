@@ -25,6 +25,8 @@ pub mod m14b_tests;
 #[cfg(test)]
 pub mod m14c_tests;
 #[cfg(test)]
+pub mod m14d_tests;
+#[cfg(test)]
 pub mod m7b_gating_tests;
 #[cfg(test)]
 pub mod m7b_redteam_tests;
@@ -33,6 +35,10 @@ pub mod redteam_m14a_tests;
 #[cfg(test)]
 pub mod redteam_m14c_tests;
 #[cfg(test)]
+pub mod redteam_m14d_tests;
+#[cfg(test)]
+pub mod redteam_m14d_weather_desync;
+#[cfg(test)]
 pub mod redteam_m8d_tests;
 #[cfg(test)]
 pub mod redteam_new_findings;
@@ -40,6 +46,7 @@ pub mod resolve;
 pub mod status;
 pub mod type_chart;
 pub mod types;
+pub mod weather;
 pub mod xp;
 
 pub use ability::{
@@ -56,4 +63,5 @@ pub use types::{
     BattleEvent, BattleMonster, BattleOutcome, BattleSide, BattleState, Effectiveness, SideId,
     StatusEffect, TurnChoice, TurnVariance,
 };
+pub use weather::{WeatherEffect, WeatherKind};
 pub use xp::{apply_xp_gain, base_stat_total, battle_xp_reward, practice_xp_reward};
