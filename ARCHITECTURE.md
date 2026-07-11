@@ -908,3 +908,68 @@ they stay conscious, not forgotten:
 - **M2 spec items not yet gated** (a `client_connected` reducer, a schema-snapshot /
   migration-smoke eval, soak/load tests) — soak/load is the **M20** capstone; the rest
   carry forward with M2's 9 shipped proof-of-teeth evals as the live gate set.
+
+---
+
+## M14 — Deeper Battle Systems (status, abilities, weather)
+
+**M14a** (status-effect rules — ADR-0092, PR #134) complete: `StatusEffect` enum
+(`Burn | Poison | Paralysis | Sleep { turns_remaining: u8 } | Freeze`);
+`BattleStatusStore { side_a, side_b }` pure game-core (no `SpacetimeType` — persistence
+m14b); `StatusVariance` (6 rolls, separate from `TurnVariance` so `resolve_turn` signature
+is unchanged); `TurnChoice::Pass` variant for action-blocked sides; `resolve_full_turn`
+wrapper: pre-turn block → Pass substitution → `resolve_turn` (unchanged) → post-turn DoT
+(Burn/Poison) + faint cascade → status tick; new `BattleEvent` variants
+(`StatusApplied / StatusDamage / ActionBlocked / StatusCured`). Proof-of-teeth: (1)
+M7-regression — `resolve_full_turn` with empty store + plain attack produces byte-identical
+events to `resolve_turn`; (2) exhaustive `match` at every status site flags a new variant
+at compile time. 22 EARS + 4 red-team gating tests.
+
+**M14b** (server status persistence — ADR-0093, PR #135) complete: `StatusEffect` moved
+to `types.rs` (circular-import avoidance; `status.rs` re-exports); `BattleMonster.status:
+Option<StatusEffect>` added as last field with `#[serde(default)]` (ADR-0006 additive —
+old rows deserialize to `None`); `StatusEffect` gains `#[cfg_attr(feature="spacetimedb",
+derive(spacetimedb::SpacetimeType))]`; `BattleEvent::StatusCured` gains `slot: u32` (fixes
+RT-S14-01 — bench-slot cures no longer ambiguous); `StatusVariance::from_ctx_random(seed)`
+(splitmix64, same pattern as `TurnVariance`); `submit_attack` now calls `resolve_full_turn`
+(constructs `BattleStatusStore` from `BattleMonster.status` fields → resolves → writes
+store back, gated on `Ongoing`); bindings regenerated (15 `SpacetimeType`s); battle-schema-
+snapshot baseline updated 14→15 types; `docs/knowledge/` regenerated.
+
+**M14c** (passive per-species ability system — ADR-0094, PR #137) complete: `StatusKind`
+payload-free discriminant (mirrors `StatusEffect` without payloads — RON reads
+`StatusImmunity(immune_to: Sleep)` cleanly); `AbilityEffect` exhaustive enum
+(`StatusImmunity { immune_to: StatusKind }` / `EntryHeal { denom: u16 }`);
+`AbilityStore { side_a, side_b }` (parallel to `BattleStatusStore`); `apply_entry_ability`
+(returns `()`, no event API yet); `apply_ability_modifiers`; `Species.ability: Option<u32>`
+additive field (`#[serde(default)]`); `validate_abilities` additive sibling (preserves
+`validate_content` 4-param signature); `content/abilities/000-core.ron` (3 starters: Flame
+Body, Vital Spirit, Regeneration); `CONTENT_VERSION 7→8`. OCP gate: a new `AbilityEffect`
+variant is a compile error at every unhandled site. 20 EARS + 4 red-team gating tests.
+
+**M14d** (weather / field-state — ADR-0095, PR #139) complete: `WeatherKind` exhaustive
+enum (`Rain | Sun | Sandstorm | Hail`); `WeatherEffect { kind, turns_remaining: u8 }`;
+`FieldState.weather: Option<WeatherEffect>` on `BattleState`; per-turn effectiveness
+modifier (Rain/Sun boost Water/Fire; Sandstorm/Hail apply chip damage per turn 3.5, exempt
+Earth/Water respectively); `sets_weather: Option<WeatherKind>` on `SkillDef` (content cache
+path, no `SkillRow` schema change); `tick_weather` in `resolve_full_turn` Phase 5;
+`validate_content` exhaustive `match` on `WeatherKind` (compile-time OCP gate — B-1 fix
+from mandatory review pass); `CONTENT_VERSION 8→9`. Proof-of-teeth: weather-set move does
+not boost its own hit; WeatherSet event fires after BattleEnd on same-turn KO (ADR-0095 D4).
+
+**M14e** (status-curing items + client event display — ADR-0096, PR #141) complete:
+`applies_status: Option<StatusKind>` additive on `SkillDef`; `cure_status: Option<StatusKind>`
+additive on `ItemDef`; Phase 1.5 store→`BattleMonster` sync in `resolve_full_turn` (ensures
+"no stacking" guard sees authoritative status); Phase 4.5 `BattleStatusStore → BattleMonster`
+write-back (newly-applied status deferred one turn per convention — ADR-0096 D1); `use_battle_item`
+6-guard reducer (owner/Ongoing/load-def/cure_status/match-active-status/consume_one); client
+status badge on active monster's battle card; skill 11 "Toxic Sting" (Power 20, Poison);
+item 3 "Antidote" (cures Poison); `CONTENT_VERSION 9→10`. Residuals: R1 `swap_active`
+status-drop, R2 bench-cure gap, R3 `attempt_recruit` gap — deferred to Phase C.
+
+**Phase B (M11–M14) complete.** The authored-world layer — multi-zone movement + warps,
+NPC/dialogue/quest/heal, economy + shops, and deeper battle depth (status/abilities/weather)
+— is fully built and merged. `resolve_turn` (ADR-0017) remains symmetric and signature-
+stable throughout M14; M16 PvP inherits the full depth for free. **Next: Phase C (M15 —
+trade; M16 — PvP battles; M17 — guilds; M18 — raids; M19 — seasonal/live-ops; M20 —
+soak/load; M21–M25 — polish + launch gate, ADR-0021/0022/0025).**
