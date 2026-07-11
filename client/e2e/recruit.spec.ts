@@ -643,6 +643,9 @@ test.describe
             await fleeBtn.click({ timeout: 5_000 });
             await waitForBattleCleared(page);
             winningBattleId = null;
+            // battleEndedWithPartyAlive not needed: the post-weaken null check (above)
+            // is structurally before this recruit loop; breaking here bypasses it and
+            // re-enters the outer enc loop, which re-initialises the flag to false.
             break;
           }
 
