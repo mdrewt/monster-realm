@@ -149,6 +149,7 @@ mod tests {
             accuracy: 100,
             pp: 25,
             sets_weather: None,
+            applies_status: None,
         }
     }
 
@@ -163,6 +164,7 @@ mod tests {
             accuracy: 100,
             pp: 25,
             sets_weather: None,
+            applies_status: None,
         }
     }
 
@@ -231,6 +233,7 @@ mod tests {
             accuracy: 100,
             pp: 25,
             sets_weather: None,
+            applies_status: None,
         };
         let water_skill = SkillDef {
             id: 3,
@@ -240,6 +243,7 @@ mod tests {
             accuracy: 100,
             pp: 25,
             sets_weather: None,
+            applies_status: None,
         };
         // Plant attacker using Plant skill (STAB) vs Earth (neutral)
         let (stab_dmg, _) = calc_damage(
@@ -292,6 +296,7 @@ mod tests {
             accuracy: 100,
             pp: 15,
             sets_weather: None,
+            applies_status: None,
         };
         let (se_dmg, _) = calc_damage(
             &electric_attacker,
@@ -424,6 +429,7 @@ mod tests {
             accuracy: 100,
             pp: 25,
             sets_weather: None,
+            applies_status: None,
         };
         // minimum variance = 85
         let (dmg, eff) = calc_damage(&attacker, &defender, &plant_skill, &chart, 85, None);
@@ -589,6 +595,7 @@ mod tests {
                 accuracy: 100,
                 pp: 10,
         sets_weather: None,
+                applies_status: None,
             };
             let result_a = calc_damage(&attacker, &defender, &skill, &chart, variance, None);
             let result_b = calc_damage(&attacker, &defender, &skill, &chart, variance, None);
@@ -637,6 +644,7 @@ mod tests {
                 accuracy: 100,
                 pp: 10,
         sets_weather: None,
+                applies_status: None,
             };
             // Should not panic
             let _ = calc_damage(&attacker, &defender, &skill, &chart, variance, None);

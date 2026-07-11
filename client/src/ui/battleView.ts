@@ -134,6 +134,14 @@ export class BattleView {
     hpText.style.cssText = 'font-size:11px;margin-top:2px;color:#aaa;';
     hpText.textContent = `HP ${card.currentHp}/${card.maxHp} · ${card.affinity}`;
     el.appendChild(hpText);
+
+    if (card.status) {
+      const statusEl = document.createElement('div');
+      statusEl.style.cssText =
+        'display:inline-block;margin-top:4px;padding:1px 5px;border-radius:3px;font-size:10px;font-weight:bold;background:#553;color:#ff9;';
+      statusEl.textContent = card.status;
+      el.appendChild(statusEl);
+    }
   }
 
   #renderSkills(vm: BattleViewModel): void {

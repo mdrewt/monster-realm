@@ -212,6 +212,21 @@ pub enum BattleEvent {
     Miss {
         side: SideId,
     },
+    /// A status condition was applied to the active monster on the given side this
+    /// turn (by a skill with `applies_status`). Emitted by the resolver and applied
+    /// to `BattleStatusStore` in `resolve_full_turn` AFTER the turn's DoT step so
+    /// the newly-applied status takes effect the FOLLOWING turn (ADR-0096 §D1).
+    ///
+    /// No `slot` field: the status is always applied to the active monster, which
+    /// cannot have fainted from this attack (the `!fainted` guard in `resolve_one_attack`
+    /// ensures StatusApplied is never emitted for KO'd targets). Since no auto-switch
+    /// can fire for the non-fainted target, `state.side_X.active` is stable between
+    /// the emit (Phase 2) and the application (Phase 4.5). Contrast with `StatusCured`,
+    /// which carries an explicit slot to support bench-aware cure semantics.
+    StatusApplied {
+        side: SideId,
+        status: StatusEffect,
+    },
     /// Damage applied at end of turn by Poison (`max_hp/8`) or Burn (`max_hp/16`).
     StatusDamage {
         side: SideId,

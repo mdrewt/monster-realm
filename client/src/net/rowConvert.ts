@@ -161,6 +161,8 @@ export interface SdkBattleMonster {
     readonly spDefense: number;
   };
   readonly knownSkillIds: readonly number[];
+  // Optional: Sleep carries a `value` (turns_remaining u8); others are unit variants.
+  readonly status?: { readonly tag: string; readonly value?: number } | null;
 }
 
 export interface SdkBattleSide {
@@ -206,6 +208,7 @@ function battleMonsterToStore(m: SdkBattleMonster): StoreBattleMonster {
     statSpAttack: m.stats.spAttack,
     statSpDefense: m.stats.spDefense,
     knownSkillIds: [...m.knownSkillIds],
+    status: m.status ? { tag: m.status.tag, turnsRemaining: m.status.value } : null,
   };
 }
 

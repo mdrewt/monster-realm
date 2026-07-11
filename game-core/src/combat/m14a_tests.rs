@@ -95,6 +95,7 @@ fn fire_skill() -> SkillDef {
         accuracy: 100,
         pp: 25,
         sets_weather: None,
+        applies_status: None,
     }
 }
 

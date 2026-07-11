@@ -13,6 +13,7 @@ use crate::economy::grant_currency;
 use crate::guards::{
     check_monster_in_party, check_party_size, check_team_coupling, log_reject, require_owner,
 };
+use crate::inventory::consume_one;
 use crate::marshal::{
     battle_monster_from_row, loser_base_stat_total, now_ms, pub_from_monster, type_chart_from_rows,
     wild_battle_monster, write_back_hp,
@@ -591,6 +592,15 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
     let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
 
+    // RESIDUAL (ADR-0096 §R1): resolve_player_swap → resolve_enemy_turn →
+    // resolve_one_attack may emit StatusApplied if the wild uses a status-applying
+    // skill during its swap-retaliation. We discard the events here (no
+    // BattleStatusStore build, no write-back). The status is silently lost until
+    // the NEXT submit_attack, which rebuilds the store from BattleMonster.status
+    // (still None) and the player sees no status badge until they take an action.
+    // Fixing this requires threading BattleStatusStore through resolve_player_swap
+    // and persisting it — deferred to m14f (parallels the attempt_recruit gap in
+    // marshal.rs / ADR-0095 residual).
     let _events = game_core::resolve_player_swap(
         &mut battle.state,
         game_core::SideId::SideA,
@@ -631,6 +641,87 @@ pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
 
     ctx.db.battle().battle_id().update(battle);
     log::info!("{{\"evt\":\"battle_flee\",\"battle_id\":{battle_id},\"sender\":\"{me}\"}}");
+    Ok(())
+}
+
+/// Use a battle item (e.g. Antidote) on the player's active monster during an
+/// ongoing battle (m14e, ADR-0096).
+///
+/// Guard order (reject-not-clamp; decision always before irreversible spend):
+/// 1. require_owner — caller must own the battle.
+/// 2. outcome == Ongoing — items cannot be used in terminal battles.
+/// 3. Load `ItemDef` from content (not from `item_row` DB rows — `cure_status`
+///    lives on the game-core content struct, not on the table schema).
+/// 4. Item must have `cure_status` — non-cure items rejected before consume.
+/// 5. Active monster must have a matching status — item not wasted on healthy
+///    or differently-statused monsters.
+/// 6. `consume_one` — irreversible spend happens only if all guards pass.
+/// 7. Clear `BattleMonster.status = None` on the active side-A monster; update
+///    battle row. No turn advance: using an item is a between-turn passive action.
+#[spacetimedb::reducer]
+pub fn use_battle_item(ctx: &ReducerContext, battle_id: u64, item_id: u32) -> Result<(), String> {
+    let me = ctx.sender;
+    let mut battle = ctx
+        .db
+        .battle()
+        .battle_id()
+        .find(battle_id)
+        .ok_or_else(|| "battle not found".to_string())?;
+
+    // Guard 1: ownership.
+    require_owner(ctx, "use_battle_item", battle.player_identity)?;
+
+    // Guard 2: battle must be ongoing.
+    if battle.state.outcome != BattleOutcome::Ongoing {
+        let e = "battle is not ongoing".to_string();
+        log_reject("use_battle_item", me, &e);
+        return Err(e);
+    }
+
+    // Guard 3+4: load content and confirm item cures a status.
+    let items = game_core::load_items().map_err(|e| format!("content error: {e}"))?;
+    let item_def = items
+        .iter()
+        .find(|it| it.id == item_id)
+        .ok_or_else(|| format!("item {item_id} not found"))?;
+    let cure_kind = item_def
+        .cure_status
+        .ok_or_else(|| format!("item {item_id} is not a cure item"))?;
+
+    // Guard 5: active monster must have the matching status (no item waste).
+    let active_slot = battle.state.side_a.active as usize;
+    let active_monster = battle
+        .state
+        .side_a
+        .team
+        .get(active_slot)
+        .ok_or_else(|| "active monster not found".to_string())?;
+    let matches = active_monster
+        .status
+        .map(|s| cure_kind.matches(&s))
+        .unwrap_or(false);
+    if !matches {
+        let e = format!("active monster does not have status cured by item {item_id}");
+        log_reject("use_battle_item", me, &e);
+        return Err(e);
+    }
+
+    // Guard 6: irreversible spend only after all guards pass.
+    consume_one(ctx, me, item_id)?;
+
+    // Clear the status on the active monster.
+    battle
+        .state
+        .side_a
+        .team
+        .get_mut(active_slot)
+        .expect("index was valid above")
+        .status = None;
+
+    ctx.db.battle().battle_id().update(battle);
+    log::info!(
+        "{{\"evt\":\"use_battle_item\",\"battle_id\":{battle_id},\"item_id\":{item_id},\"sender\":\"{me}\"}}"
+    );
     Ok(())
 }
 

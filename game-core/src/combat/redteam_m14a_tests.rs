@@ -420,6 +420,7 @@ fn rt_s14_05_resolve_player_swap_does_not_apply_enemy_status_block() {
         accuracy: 100,
         pp: 25,
         sets_weather: None,
+        applies_status: None,
     };
     let skills = vec![fire_skill];
     let chart = make_type_chart();

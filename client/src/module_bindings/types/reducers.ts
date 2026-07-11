@@ -28,6 +28,7 @@ import SwapActiveReducer from "../swap_active_reducer";
 import SyncContentReducer from "../sync_content_reducer";
 import TalkReducer from "../talk_reducer";
 import TrainReducer from "../train_reducer";
+import UseBattleItemReducer from "../use_battle_item_reducer";
 
 export type AdvanceDialogueParams = __Infer<typeof AdvanceDialogueReducer>;
 export type AttemptRecruitParams = __Infer<typeof AttemptRecruitReducer>;
@@ -51,4 +52,5 @@ export type SwapActiveParams = __Infer<typeof SwapActiveReducer>;
 export type SyncContentParams = __Infer<typeof SyncContentReducer>;
 export type TalkParams = __Infer<typeof TalkReducer>;
 export type TrainParams = __Infer<typeof TrainReducer>;
+export type UseBattleItemParams = __Infer<typeof UseBattleItemReducer>;
 

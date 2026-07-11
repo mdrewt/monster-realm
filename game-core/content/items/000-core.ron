@@ -15,4 +15,11 @@
         train_amount: 10,
         sell_price: 120,
     ),
+    (
+        id: 3,
+        name: "Antidote",
+        description: "Neutralizes the toxins coursing through a monster, curing Poison.",
+        cure_status: Some(Poison),
+        sell_price: 60,
+    ),
 ]

@@ -100,6 +100,7 @@ mod tests {
             accuracy: 100,
             pp: 25,
             sets_weather: None,
+            applies_status: None,
         }
     }
 
@@ -112,6 +113,7 @@ mod tests {
             accuracy: 95,
             pp: 15,
             sets_weather: None,
+            applies_status: None,
         }
     }
 
@@ -124,6 +126,7 @@ mod tests {
             accuracy: 100,
             pp: 25,
             sets_weather: None,
+            applies_status: None,
         }
     }
 
@@ -239,6 +242,7 @@ mod tests {
             accuracy: 100,
             pp: 25,
             sets_weather: None,
+            applies_status: None,
         }
     }
 
@@ -251,6 +255,7 @@ mod tests {
             accuracy: 95,
             pp: 15,
             sets_weather: None,
+            applies_status: None,
         }
     }
 
@@ -263,6 +268,7 @@ mod tests {
             accuracy: 100,
             pp: 25,
             sets_weather: None,
+            applies_status: None,
         }
     }
 

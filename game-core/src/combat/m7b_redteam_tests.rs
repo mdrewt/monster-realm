@@ -223,6 +223,7 @@ fn m7b_3_resolve_turn_on_terminal_state_increments_turn_number() {
         accuracy: 100,
         pp: 25,
         sets_weather: None,
+        applies_status: None,
     };
     let skills = vec![skill];
     let variance = TurnVariance {
@@ -617,6 +618,7 @@ fn m7b_8_turnvariance_out_of_range_damage_roll_produces_wrong_damage() {
         accuracy: 100,
         pp: 25,
         sets_weather: None,
+        applies_status: None,
     };
 
     // Valid range: damage_roll in 85..=100
