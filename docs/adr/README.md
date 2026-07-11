@@ -5,12 +5,12 @@ Architecture Decision Records live in **two locations**; check both.
 - **Design ADRs `0002`–`0034`** — in the **harness spec corpus**
   (`../../specs/monster-realm-v2/adr/`). These are the foundational design
   decisions authored alongside the milestone specs.
-- **Implementation ADRs `0001`, `0035`–`0094`** — in **this directory**
+- **Implementation ADRs `0001`, `0035`–`0095`** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0095`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0096`**.
 
 **ADR numbering collision note:** the harness spec corpus also contains design
 ADRs numbered `0055`–`0057` with *different topics* from this project's
@@ -83,6 +83,7 @@ explicit path prefix `harness adr/0055` to cite the harness design ADR.
 | [0092](./0092-m14a-status-effect-rules.md) | Status-effect rules — layered DoT resolution, separate variance struct, pure game-core model | M14a |
 | [0093](./0093-m14b-server-status-persistence.md) | Server-side status-effect persistence — SpacetimeType StatusEffect, additive BattleMonster.status, resolve_full_turn in submit_attack | M14b |
 | [0094](./0094-m14c-passive-ability-system.md) | Passive per-species ability system — StatusKind payload-free, AbilityEffect exhaustive, validate_abilities sibling, entry/modifier hooks | M14c |
+| [0095](./0095-m14d-weather-field-state.md) | Weather / field-state system — single active weather, WeatherKind exhaustive, phase-3.5 chip ordering, sets_weather content hook | M14d |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
