@@ -491,6 +491,17 @@ test.describe
         // Each skill attack = one exchange (you hit, wild hits back).
         // Stop when opponent HP% <= WEAKEN_STOP_PCT OR own HP% <= OWN_HP_ATTACK_MIN_PCT.
         // MAX_SKILL_ATTACKS bounds the inner loop (safety net).
+        //
+        // PARTY-ALIVE TRACKING (deflake-recruit-r2):
+        // ongoingBattle === null can mean three distinct outcomes:
+        //   (a) Explicit flee (own HP < OWN_HP_FLEE_THRESHOLD_PCT) — party alive.
+        //   (b) Wild KO'd mid-attack (SideAWins, Victory! visible) — party alive.
+        //   (c) Party KO'd by wild (SideBWins) — party fainted, heal required.
+        // The original code treated (a)+(b) the same as (c), consuming healCount
+        // slots for non-faint events and exhausting MAX_HEALS prematurely.
+        // battleEndedWithPartyAlive is set true for (a) and (b) to suppress the
+        // unnecessary heal path — MAX_HEALS is proof-of-teeth and must not change.
+        let battleEndedWithPartyAlive = false;
         for (let atk = 0; atk < MAX_SKILL_ATTACKS; atk++) {
           // Re-read HP from DOM before each attack.
           // Source: battleView.ts:113 `${label}: ${card.speciesName}` (header) and :135 (hp).
@@ -516,6 +527,9 @@ test.describe
             await fleeBtn.click({ timeout: 5_000 });
             await waitForBattleCleared(page);
             winningBattleId = null;
+            // Explicit flee: party HP was > OWN_HP_FLEE_THRESHOLD_PCT before flee click;
+            // the wild had no opportunity to KO us. No heal needed.
+            battleEndedWithPartyAlive = true;
             break;
           }
 
@@ -548,9 +562,18 @@ test.describe
             break;
           }
 
-          // If the battle ended (KO'd) break out of the attack loop.
+          // If the battle ended during the attack, break out of the attack loop.
+          // Determine which side won: SideAWins (we KO'd wild, Victory! visible) means
+          // party is alive; SideBWins (wild KO'd us) means party fainted.
           const midSnap = await snap(page);
           if (midSnap.ongoingBattle === null) {
+            // battleView renders Victory! synchronously in the same subscription callback
+            // that set ongoingBattle to null, so isVisible() is reliable here.
+            const wildKOd = await page
+              .getByText('Victory!', { exact: true })
+              .isVisible({ timeout: 2_000 })
+              .catch(() => false);
+            battleEndedWithPartyAlive = wildKOd;
             winningBattleId = null;
             break;
           }
@@ -559,18 +582,37 @@ test.describe
         // --- Check if the battle ended (KO or fled) before we could recruit. ---
         const postWeakenSnap = await snap(page);
         if (postWeakenSnap.ongoingBattle === null) {
-          // SideBWins (KO) or Fled: check if we need to heal.
-          // The terminal outcome frame stays visible (lazy GC — see healViaBox);
-          // a fainted party blocks encounters, so recover via Escape-dismiss →
-          // KeyB → "Heal Party" (zone-scoped, currently free, 30s cooldown).
-          if (healCount < MAX_HEALS) {
-            healCount++;
-            // healViaBox waits for the healed-signal in the box DOM (no bare sleeps).
-            await healViaBox(page);
-          } else {
-            // Fail loud at the point of detection (reviewer M3): a soft-assert +
-            // break would surface as a misleading "did not recruit" hard-fail later.
-            throw new Error(`R2: exceeded MAX_HEALS (${MAX_HEALS}); party fainted too often`);
+          // Battle ended before recruit phase.  Only heal when the party is fainted
+          // (SideBWins — party KO'd by wild).  Explicit flee and wild-KO (SideAWins)
+          // leave the party alive; charging healCount for those events wastes the
+          // MAX_HEALS budget and causes spurious "exceeded MAX_HEALS" failures.
+          //
+          // battleEndedWithPartyAlive is set by the attack loop for (a) explicit flee
+          // and (b) mid-attack wild-KO detected via midSnap.  For the edge case where
+          // the attack loop exits via "skills not visible → break" (battle may have
+          // just ended), we re-check here with the Victory! text as a fallback.
+          let partyAlive = battleEndedWithPartyAlive;
+          if (!partyAlive) {
+            // battleView.refresh() runs synchronously in the same onBatchApplied
+            // callback that cleared ongoingBattle, so Victory! is DOM-present now.
+            partyAlive = await page
+              .getByText('Victory!', { exact: true })
+              .isVisible({ timeout: 2_000 })
+              .catch(() => false);
+          }
+          if (!partyAlive) {
+            // The terminal outcome frame stays visible (lazy GC — see healViaBox);
+            // a fainted party blocks encounters, so recover via Escape-dismiss →
+            // KeyB → "Heal Party" (zone-scoped, currently free, 30s cooldown).
+            if (healCount < MAX_HEALS) {
+              healCount++;
+              // healViaBox waits for the healed-signal in the box DOM (no bare sleeps).
+              await healViaBox(page);
+            } else {
+              // Fail loud at the point of detection (reviewer M3): a soft-assert +
+              // break would surface as a misleading "did not recruit" hard-fail later.
+              throw new Error(`R2: exceeded MAX_HEALS (${MAX_HEALS}); party fainted too often`);
+            }
           }
           winningBattleId = null;
           continue;
