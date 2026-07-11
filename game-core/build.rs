@@ -17,7 +17,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-/// The eleven glob-loaded registries, each a directory of `*.ron` parts.
+/// The twelve glob-loaded registries, each a directory of `*.ron` parts.
 const REGISTRIES: &[&str] = &[
     "zones",
     "species",
@@ -30,6 +30,7 @@ const REGISTRIES: &[&str] = &[
     "quests",
     "heal_locations",
     "shops",
+    "abilities",
 ];
 
 fn main() {

@@ -97,6 +97,7 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
             },
             affinity: species.affinity,
             learnable_skill_ids: species.learnable_skill_ids.clone(),
+            ability: None,
         };
         let seed: u32 = ctx.random();
         let inst = roll_starter(seed, &species_core);

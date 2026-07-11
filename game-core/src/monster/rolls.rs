@@ -97,6 +97,7 @@ mod tests {
             },
             affinity: Affinity::Fire,
             learnable_skill_ids: vec![1, 2],
+            ability: None,
         }
     }
 

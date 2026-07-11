@@ -1,0 +1,20 @@
+// Ability registry — DATA, not code (ADR-0006). Stable `id`s are APPEND-ONLY.
+// AbilityEffect variants: StatusImmunity(immune_to: <StatusKind>) | EntryHeal(denom: <u16 >= 2>)
+// StatusKind values: Poison | Burn | Paralysis | Sleep | Freeze
+[
+    (
+        id: 1,
+        name: "Flame Body",
+        effect: StatusImmunity(immune_to: Burn),
+    ),
+    (
+        id: 2,
+        name: "Vital Spirit",
+        effect: StatusImmunity(immune_to: Sleep),
+    ),
+    (
+        id: 3,
+        name: "Regeneration",
+        effect: EntryHeal(denom: 4),
+    ),
+]

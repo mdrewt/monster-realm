@@ -59,6 +59,7 @@ fn test_species() -> game_core::Species {
         },
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![1, 2],
+        ability: None,
     }
 }
 

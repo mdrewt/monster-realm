@@ -273,6 +273,7 @@ pub(crate) fn species_from_row(row: &SpeciesRow) -> Result<game_core::Species, S
         },
         affinity: row.affinity,
         learnable_skill_ids: row.learnable_skill_ids.clone(),
+        ability: None,
     })
 }
 
