@@ -592,6 +592,15 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
     let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
 
+    // RESIDUAL (ADR-0096 §R1): resolve_player_swap → resolve_enemy_turn →
+    // resolve_one_attack may emit StatusApplied if the wild uses a status-applying
+    // skill during its swap-retaliation. We discard the events here (no
+    // BattleStatusStore build, no write-back). The status is silently lost until
+    // the NEXT submit_attack, which rebuilds the store from BattleMonster.status
+    // (still None) and the player sees no status badge until they take an action.
+    // Fixing this requires threading BattleStatusStore through resolve_player_swap
+    // and persisting it — deferred to m14f (parallels the attempt_recruit gap in
+    // marshal.rs / ADR-0095 residual).
     let _events = game_core::resolve_player_swap(
         &mut battle.state,
         game_core::SideId::SideA,

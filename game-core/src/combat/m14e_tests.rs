@@ -117,7 +117,9 @@ fn always_miss_skill() -> SkillDef {
         name: "Wild Swing".to_string(),
         affinity: Affinity::Fire,
         power: 60,
-        accuracy: 0,
+        // accuracy: 1 (minimum valid content value); combined with always_miss_variance()
+        // (accuracy_roll_a: 99) guarantees a miss without using content-invalid 0.
+        accuracy: 1,
         pp: 10,
         sets_weather: None,
         applies_status: Some(StatusKind::Burn),
@@ -580,7 +582,7 @@ fn status_applied_not_emitted_when_target_already_statused() {
 /// Kills: an impl that only applies status for the first (faster) attacker —
 /// the slower attacker's status application is silently skipped.
 #[test]
-fn status_applied_not_stacked_same_turn_by_two_attacks() {
+fn status_applied_independently_both_sides_same_turn() {
     let chart = make_type_chart();
     let variance = TurnVariance {
         damage_roll_a: 85, // minimum damage roll to avoid KO

@@ -31,6 +31,11 @@ export function statusBadge(tag: string | null | undefined): string {
     case 'Freeze':
       return 'FRZ';
     default:
+      // New StatusEffect variant added on the Rust side without updating this map.
+      // Warn loudly so the gap is visible at runtime (server bindings regen is needed).
+      console.warn(
+        `statusBadge: unknown status tag "${tag}" — update statusBadge in battleModel.ts`,
+      );
       return '';
   }
 }

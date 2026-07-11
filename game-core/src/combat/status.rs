@@ -263,6 +263,14 @@ pub fn apply_post_turn_effects(
 /// - `Sleep`: decrements `turns_remaining`; cures when it reaches 0.
 /// - `Freeze`: thaws when `freeze_thaw_roll >= 80`.
 /// - Other statuses: no tick action.
+///
+/// **Bench slots tick normally** (all `side_a` / `side_b` store slots are iterated,
+/// not just `active`). A Sleeping bench monster's `turns_remaining` decrements each
+/// turn, so it may wake before being swapped back in. This is intentional: status
+/// expiry is time-based (turn-count), not participation-based. The consequence is
+/// that a player can bench-cycle a Sleeping monster across N turns to cure it without
+/// spending an Antidote-tier item — a design-accepted trade-off documented in
+/// ADR-0096 RT-BS-01 (deferred to a future rebalance slice).
 pub fn tick_status(status: &mut BattleStatusStore, variance: &StatusVariance) -> Vec<BattleEvent> {
     let mut events = Vec::new();
 

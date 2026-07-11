@@ -832,6 +832,18 @@ pub fn validate_content(
                 | WeatherKind::Hail => {}
             }
         }
+        // Status cross-check (M14e, ADR-0096): same OCP gate for applies_status —
+        // a new StatusKind variant without updating this site is a compile error.
+        if let Some(kind) = sk.applies_status {
+            use crate::combat::ability::StatusKind;
+            match kind {
+                StatusKind::Poison
+                | StatusKind::Burn
+                | StatusKind::Paralysis
+                | StatusKind::Sleep
+                | StatusKind::Freeze => {}
+            }
+        }
     }
 
     // Cross-check: every learnable_skill_id in species must exist in skills,
@@ -907,6 +919,15 @@ pub fn validate_content(
                     ));
                 }
             }
+        }
+        // Single-role invariant (M14e, ADR-0096 RT-CV-01): an item that carries
+        // both cure_status and train_stat is accepted by two independent reducers
+        // (use_battle_item + train), making its consumption behaviour non-deterministic.
+        if item.cure_status.is_some() && item.train_stat.is_some() {
+            return Err(format!(
+                "item {} has both cure_status and train_stat set; an item must have a single role",
+                item.id
+            ));
         }
     }
 
@@ -2793,6 +2814,45 @@ mod tests {
             result.is_err(),
             "TEETH: training food with train_amount=300 (>252) MUST be rejected by validate_content; \
              a validator without the upper-bound check would pass this and load an impossible food"
+        );
+    }
+
+    /// M14e RT-CV-01: validate_content MUST reject an ItemDef that carries both
+    /// `cure_status=Some(...)` and `train_stat=Some(...)`.  Such an item is
+    /// semantically incoherent: `use_battle_item` and `train` both accept it,
+    /// so one inventory charge can be burned in either context, making the item
+    /// behave non-deterministically from the player's perspective.
+    ///
+    /// Attack scenario:
+    ///   1. Craft a RON item with `cure_status: Some(Poison)` AND
+    ///      `train_stat: Some(Attack)`, `train_amount: 10`.
+    ///   2. Load it with load_items() — parse succeeds (serde doesn't care about
+    ///      the combination).
+    ///   3. Call `train(monster_id, that_item_id)` → item consumed, EV applied.
+    ///   4. Call `use_battle_item(battle_id, that_item_id)` → item consumed again
+    ///      (if more charges remain), status cleared.
+    ///      Player intended a training food; battle system can silently consume it.
+    ///
+    /// Kills: any validate_content that omits the cure_status + train_stat
+    /// co-occurrence check.
+    #[test]
+    fn validate_content_rejects_item_with_both_cure_status_and_train_stat() {
+        let dual_purpose_item = ItemDef {
+            id: 201,
+            name: "Incoherent Item".to_string(),
+            description: "Both cures and trains — semantically incoherent.".to_string(),
+            recruit_bonus: 0,
+            train_stat: Some(StatKind::Attack),
+            train_amount: 10,
+            sell_price: 0,
+            cure_status: Some(StatusKind::Poison),
+        };
+        let result = validate_content(&[], &[], &[], &[dual_purpose_item]);
+        assert!(
+            result.is_err(),
+            "validate_content must reject an item with both cure_status=Some(Poison) and \
+             train_stat=Some(Attack): such an item is accepted by both use_battle_item and \
+             train, causing non-deterministic item consumption and dual-role exploitation"
         );
     }
 

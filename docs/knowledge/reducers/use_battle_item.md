@@ -5,7 +5,7 @@ slug: reducers/use_battle_item
 updated: 2026-07-10
 tags: [reducer, spacetimedb, battle]
 abstract: "Use a battle item (e.g. Antidote) on the player's active monster during an ongoing battle (m14e, ADR-0096). Guard order…"
-resource: server-module/src/battle.rs#L653
+resource: server-module/src/battle.rs#L662
 source: scripts/okf-export.mjs@server-module/src/battle.rs
 ---
 
