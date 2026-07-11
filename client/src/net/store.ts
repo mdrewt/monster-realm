@@ -80,6 +80,13 @@ export interface StoreSkillRow {
   readonly pp: number;
 }
 
+/** Status condition display shape: tag is the variant name (e.g. "Poison"),
+ *  turnsRemaining is only present for Sleep (m14e, ADR-0096). */
+export interface StoreStatusEffect {
+  readonly tag: string;
+  readonly turnsRemaining?: number;
+}
+
 /** A monster projected into battle — flat stats, normalized affinity. */
 export interface StoreBattleMonster {
   readonly speciesId: number;
@@ -94,6 +101,7 @@ export interface StoreBattleMonster {
   readonly statSpAttack: number;
   readonly statSpDefense: number;
   readonly knownSkillIds: readonly number[];
+  readonly status: StoreStatusEffect | null;
 }
 
 /** One side of the battle: the active slot index and the team roster. */

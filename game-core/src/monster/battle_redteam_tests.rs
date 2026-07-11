@@ -72,6 +72,7 @@ fn make_skill(id: u32, affinity: Affinity, power: u16, accuracy: u8) -> SkillDef
         accuracy,
         pp: 35,
         sets_weather: None,
+        applies_status: None,
     }
 }
 
@@ -580,6 +581,7 @@ fn f9_validate_content_accepts_zero_power_skill() {
         accuracy: 100,
         pp: 10,
         sets_weather: None,
+        applies_status: None,
     };
     let species = vec![];
     let skills = vec![zero_power_skill];
@@ -851,6 +853,7 @@ fn f15_pvp_requires_symmetric_swap_api() {
         accuracy: 100,
         pp: 25,
         sets_weather: None,
+        applies_status: None,
     };
     let skills = vec![skill];
     let type_chart_data = load_type_chart().expect("type chart must parse");

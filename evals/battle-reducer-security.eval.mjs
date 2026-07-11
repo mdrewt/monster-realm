@@ -581,10 +581,17 @@ export default async function () {
     };
   }
 
-  // All five battle reducers must be present.
-  const ALL_REDUCERS = ['start_battle', 'submit_attack', 'swap_active', 'flee', 'heal_party'];
-  // These three must additionally check outcome before acting.
-  const OUTCOME_CHECKED_REDUCERS = ['submit_attack', 'swap_active', 'flee'];
+  // All six battle reducers must be present (use_battle_item added m14e, ADR-0096).
+  const ALL_REDUCERS = [
+    'start_battle',
+    'submit_attack',
+    'swap_active',
+    'flee',
+    'heal_party',
+    'use_battle_item',
+  ];
+  // These must additionally check outcome == Ongoing before acting.
+  const OUTCOME_CHECKED_REDUCERS = ['submit_attack', 'swap_active', 'flee', 'use_battle_item'];
 
   const failures = [];
 

@@ -121,6 +121,7 @@ fn water_skill() -> SkillDef {
         accuracy: 100,
         pp: 25,
         sets_weather: None,
+        applies_status: None,
     }
 }
 
@@ -133,6 +134,7 @@ fn rain_dance_skill() -> SkillDef {
         accuracy: 100,
         pp: 10,
         sets_weather: Some(WeatherKind::Rain),
+        applies_status: None,
     }
 }
 

@@ -27,6 +27,8 @@ pub mod m14c_tests;
 #[cfg(test)]
 pub mod m14d_tests;
 #[cfg(test)]
+pub mod m14e_tests;
+#[cfg(test)]
 pub mod m7b_gating_tests;
 #[cfg(test)]
 pub mod m7b_redteam_tests;
@@ -38,6 +40,8 @@ pub mod redteam_m14c_tests;
 pub mod redteam_m14d_tests;
 #[cfg(test)]
 pub mod redteam_m14d_weather_desync;
+#[cfg(test)]
+pub mod redteam_m14e_tests;
 #[cfg(test)]
 pub mod redteam_m8d_tests;
 #[cfg(test)]

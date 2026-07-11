@@ -99,6 +99,7 @@ fn fire_skill() -> SkillDef {
         accuracy: 100,
         pp: 25,
         sets_weather: None,
+        applies_status: None,
     }
 }
 
@@ -717,6 +718,7 @@ fn rain_boosts_water_damage_known_answer() {
         accuracy: 100,
         pp: 25,
         sets_weather: None,
+        applies_status: None,
     };
 
     let rain = WeatherEffect::Rain { turns_remaining: 3 };
@@ -805,6 +807,7 @@ fn sun_nerfs_water_damage_known_answer() {
         accuracy: 100,
         pp: 25,
         sets_weather: None,
+        applies_status: None,
     };
 
     let sun = WeatherEffect::Sun { turns_remaining: 3 };

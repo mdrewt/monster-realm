@@ -12,6 +12,27 @@ export interface BattleMonsterCardVM {
   readonly maxHp: number;
   readonly hpPercent: number;
   readonly affinity: string;
+  /** Short status badge label ("PSN", "BRN", "PAR", "SLP", "FRZ"), or null. */
+  readonly status: string | null;
+}
+
+/** Map a StatusEffect tag to a short badge label. Pure — unit-testable. */
+export function statusBadge(tag: string | null | undefined): string {
+  if (!tag) return '';
+  switch (tag) {
+    case 'Poison':
+      return 'PSN';
+    case 'Burn':
+      return 'BRN';
+    case 'Paralysis':
+      return 'PAR';
+    case 'Sleep':
+      return 'SLP';
+    case 'Freeze':
+      return 'FRZ';
+    default:
+      return '';
+  }
 }
 
 export interface BattleSkillVM {
@@ -64,7 +85,14 @@ export interface BattleViewModel {
 }
 
 function monsterCard(
-  mon: { speciesId: number; level: number; currentHp: number; maxHp: number; affinity: string },
+  mon: {
+    speciesId: number;
+    level: number;
+    currentHp: number;
+    maxHp: number;
+    affinity: string;
+    status: { tag: string } | null;
+  },
   speciesMap: ReadonlyMap<number, StoreSpeciesRow>,
 ): BattleMonsterCardVM {
   return {
@@ -74,6 +102,7 @@ function monsterCard(
     maxHp: mon.maxHp,
     hpPercent: hpPercent(mon.currentHp, mon.maxHp),
     affinity: mon.affinity,
+    status: statusBadge(mon.status?.tag) || null,
   };
 }
 

@@ -384,12 +384,13 @@ pub(crate) fn skill_defs_from_rows(rows: &[SkillRow]) -> Result<Vec<SkillDef>, S
                 power: r.power,
                 accuracy: r.accuracy,
                 pp: r.pp,
-                // DB SkillRow has no sets_weather column; weather-setting is only
-                // populated via load_skills() (content cache). submit_attack and
+                // DB SkillRow has no sets_weather or applies_status columns; these are
+                // only populated via load_skills() (content cache). submit_attack and
                 // swap_active use load_skills() for battle resolution; taming.rs
-                // (attempt_recruit) still uses this path — sets_weather gap documented
-                // in ADR-0095 residuals, deferred to m14e/m14f.
+                // (attempt_recruit) still uses this path — sets_weather and applies_status
+                // gaps documented in ADR-0095/0096 residuals, deferred to m14f.
                 sets_weather: None,
+                applies_status: None,
             })
         })
         .collect()

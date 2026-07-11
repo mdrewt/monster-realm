@@ -5,7 +5,7 @@
 
 use serde::Deserialize;
 
-use crate::combat::ability::AbilityEffect;
+use crate::combat::ability::{AbilityEffect, StatusKind};
 use crate::combat::weather::WeatherKind;
 use crate::monster::types::{Affinity, Bond, Level, StatBlock, StatKind, EV_PER_STAT_CAP};
 use crate::taming::types::EncounterTable;
@@ -124,6 +124,12 @@ pub struct SkillDef {
     /// `#[serde(default)]` keeps existing RON files valid (additive, ADR-0006).
     #[serde(default)]
     pub sets_weather: Option<WeatherKind>,
+    /// If `Some`, this skill inflicts the named status on a hit target that has no
+    /// current status (m14e, ADR-0096). Status is not applied when: the attack
+    /// misses, hits an immune type, KOs the target, or the target already has a
+    /// status (no stacking). `#[serde(default)]` keeps existing RON files valid.
+    #[serde(default)]
+    pub applies_status: Option<StatusKind>,
 }
 
 /// A type effectiveness relation — attacker/defender affinity pair.
@@ -156,6 +162,12 @@ pub struct ItemDef {
     /// 0 means the item cannot be sold — the `sell` reducer rejects it.
     #[serde(default)]
     pub sell_price: u64,
+    /// Status condition this item cures when used via `use_battle_item` during an
+    /// ongoing battle (m14e, ADR-0096). `None` means not a battle-use item.
+    /// Reject-not-clamp: `use_battle_item` rejects if the active monster does not
+    /// have the matching status (items are not wasted on a healthy monster).
+    #[serde(default)]
+    pub cure_status: Option<StatusKind>,
 }
 
 // ===========================================================================
@@ -1580,6 +1592,7 @@ mod tests {
             accuracy: 100,
             pp: 35,
             sets_weather: None,
+            applies_status: None,
         }
     }
 
@@ -2676,6 +2689,7 @@ mod tests {
             train_stat,
             train_amount,
             sell_price: 0,
+            cure_status: None,
         }
     }
 
@@ -2758,6 +2772,7 @@ mod tests {
             train_stat: None,
             train_amount: 0,
             sell_price: 0,
+            cure_status: None,
         };
         let result = validate_content(&[], &[], &[], &[item]);
         assert!(
@@ -2911,6 +2926,7 @@ mod tests {
             train_stat: None,
             train_amount: 0,
             sell_price: 0,
+            cure_status: None,
         }]
     }
 
@@ -4229,6 +4245,7 @@ mod tests {
             train_stat: None,
             train_amount: 0,
             sell_price: 0,
+            cure_status: None,
         }
     }
 
@@ -5216,8 +5233,8 @@ mod tests {
             recruit_bonus: 0,
             train_stat: None,
             train_amount: 0,
-            // This field does not exist yet — suite is RED until impl adds it.
             sell_price,
+            cure_status: None,
         }
     }
 

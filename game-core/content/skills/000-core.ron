@@ -11,4 +11,6 @@
     (id: 8,  name: "Sunny Slam",  affinity: Fire,    power: 40, accuracy: 100, pp: 10, sets_weather: Some(Sun)),
     (id: 9,  name: "Sandblast",   affinity: Earth,   power: 35, accuracy: 90,  pp: 10, sets_weather: Some(Sandstorm)),
     (id: 10, name: "Hailstrike",  affinity: Wind,    power: 35, accuracy: 90,  pp: 10, sets_weather: Some(Hail)),
+    // Status-applying skills (M14e, ADR-0096) — applies_status fires on hit (non-fainted, unstatused target).
+    (id: 11, name: "Toxic Sting", affinity: Dark,    power: 20, accuracy: 100, pp: 20, applies_status: Some(Poison)),
 ]

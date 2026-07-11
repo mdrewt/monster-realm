@@ -47,7 +47,8 @@ pub(crate) const ZONE_0: u32 = 0;
 /// v7 (M13c): quest_001 currency reward=50 (ADR-0083).
 /// v8 (M14c): abilities registry added (ADR-0094).
 /// v9 (M14d): weather-setting skills 7-10 added (ADR-0095).
-pub(crate) const CONTENT_VERSION: u32 = 9;
+/// v10 (M14e): status skill 11 (Toxic Sting) + Antidote item 3 (ADR-0096).
+pub(crate) const CONTENT_VERSION: u32 = 10;
 pub(crate) const SPRITE_PLAYER: u32 = 0;
 pub(crate) const MAX_NAME_LEN: usize = 24;
 pub(crate) const MAX_PARTY_SIZE: u8 = game_core::PARTY_SIZE; // SSOT (ADR-0052)

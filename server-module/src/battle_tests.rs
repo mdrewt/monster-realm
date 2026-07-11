@@ -611,3 +611,139 @@ fn write_back_battle_results_gates_practice_xp_on_wild_identity() {
          RED today: practice_xp_reward call absent."
     );
 }
+
+// =========================================================================
+// M14e source-guard tests: use_battle_item reducer security invariants
+//
+// `use_battle_item` is a server reducer that needs ReducerContext to execute,
+// making pure unit tests infeasible. Source-guard tests (the established
+// pattern in this module) are the canonical way to verify security invariants
+// in server reducer code. Three invariants are tested:
+//
+//   (1) Ownership guard: `require_owner` must be called — a player must not
+//       be able to use items on another player's battle.
+//   (2) Battle-state guard: the reducer must check the battle outcome for
+//       `Ongoing` before applying the item — items cannot be used in
+//       terminated battles.
+//   (3) Reject-before-consume order: `cure_status` must be checked BEFORE
+//       `consume_one` — an item that doesn't cure any status is rejected
+//       without consuming it (reject-not-clamp, ADR-0053 analog).
+//
+// ALL THREE tests start RED: `use_battle_item` does not exist in battle.rs.
+// When it exists, the extract_fn_body().expect() call will succeed and the
+// body-content assertions will verify the security invariants.
+// =========================================================================
+
+/// M14e source-guard: use_battle_item body must call `require_owner`.
+///
+/// Kills: an impl of use_battle_item that omits the ownership check — any
+/// player could then use items on another player's battle. This is the
+/// primary authorization gate for the reducer.
+///
+/// RED state: use_battle_item does not exist in battle.rs → expect() panics.
+#[test]
+fn use_battle_item_has_ownership_check() {
+    let stripped = strip_rust_comments(MODULE_SOURCE);
+
+    // Assembled from parts so the literal `fn use_battle_item(` does not appear
+    // verbatim in this test's text (convention consistency with the module).
+    let fn_name = ["use", "_battle_item"].concat();
+    let body = extract_fn_body(&stripped, &fn_name).expect(
+        "TEETH (M14e): use_battle_item must exist in server-module/src/battle.rs; \
+         the function is missing — this test is RED until the reducer is implemented",
+    );
+
+    // require_owner is the ownership guard (see guards.rs, used throughout this module).
+    let ownership_check = ["require", "_owner"].concat();
+
+    assert!(
+        body.contains(ownership_check.as_str()),
+        "TEETH (M14e): use_battle_item body must call `require_owner` to verify \
+         the caller owns the battle row. Without this, any player can use items \
+         on another player's active battle — a critical authorization gap. \
+         Add: `require_owner(ctx, battle.player_identity)?;` near the top of the body."
+    );
+}
+
+/// M14e source-guard: use_battle_item body must check battle outcome (Ongoing guard).
+///
+/// Kills: an impl that applies item effects to terminated battles — items must
+/// only be usable in Ongoing battles (same invariant as submit_attack).
+///
+/// RED state: use_battle_item does not exist in battle.rs → expect() panics.
+#[test]
+fn use_battle_item_has_outcome_check() {
+    let stripped = strip_rust_comments(MODULE_SOURCE);
+
+    let fn_name = ["use", "_battle_item"].concat();
+    let body = extract_fn_body(&stripped, &fn_name).expect(
+        "TEETH (M14e): use_battle_item must exist in server-module/src/battle.rs; \
+         the function is missing — this test is RED until the reducer is implemented",
+    );
+
+    // The body must reference `outcome` to check the battle is Ongoing.
+    // We check for `outcome` (the BattleState field) — the specific check
+    // `state.outcome != BattleOutcome::Ongoing` requires this field access.
+    // Built from parts: "outc" + "ome" = "outcome" (no self-match risk here,
+    // but we follow the convention for consistency).
+    let outcome_check = ["outc", "ome"].concat();
+
+    assert!(
+        body.contains(outcome_check.as_str()),
+        "TEETH (M14e): use_battle_item body must check `outcome` to verify the battle \
+         is Ongoing before applying the item. A terminated battle (SideAWins, SideBWins, \
+         Fled) must reject the item use. Add: check `state.outcome != BattleOutcome::Ongoing` \
+         and return Err(\"battle is not ongoing\") if true."
+    );
+}
+
+/// M14e source-guard: use_battle_item checks `cure_status` BEFORE calling `consume_one`.
+///
+/// Kills: an impl that consumes the item before validating it can cure the monster's
+/// current status — an item that has no cure_status (or wrong status) must be rejected
+/// WITHOUT consuming it. This is the reject-before-consume ordering invariant.
+///
+/// RED state: use_battle_item does not exist in battle.rs → expect() panics.
+#[test]
+fn use_battle_item_checks_cure_status_before_consume() {
+    let stripped = strip_rust_comments(MODULE_SOURCE);
+
+    let fn_name = ["use", "_battle_item"].concat();
+    let body = extract_fn_body(&stripped, &fn_name).expect(
+        "TEETH (M14e): use_battle_item must exist in server-module/src/battle.rs; \
+         the function is missing — this test is RED until the reducer is implemented",
+    );
+
+    // Find the position of `cure_status` check and `consume_one` call.
+    // The cure_status check must appear BEFORE consume_one in the body text,
+    // enforcing the reject-before-consume ordering.
+    let cure_check = ["cure", "_status"].concat();
+    let consume_call = ["consume", "_one"].concat();
+
+    let cure_pos = body.find(cure_check.as_str());
+    let consume_pos = body.find(consume_call.as_str());
+
+    match (cure_pos, consume_pos) {
+        (Some(c), Some(k)) => {
+            assert!(
+                c < k,
+                "TEETH (M14e): `cure_status` check (pos {c}) must appear BEFORE \
+                 `consume_one` call (pos {k}) in use_battle_item body. \
+                 An impl that calls consume_one before validating cure_status \
+                 burns the item even on rejection (wrong behavior — reject-not-consume). \
+                 Reorder: validate cure_status first, then consume the item only if valid."
+            );
+        }
+        (None, _) => panic!(
+            "TEETH (M14e): `cure_status` not found in use_battle_item body — \
+             the reducer must check the item's cure_status field before applying it. \
+             An impl without this check cannot reject items that have no cure_status \
+             or that target the wrong status condition."
+        ),
+        (_, None) => panic!(
+            "TEETH (M14e): `consume_one` not found in use_battle_item body — \
+             the reducer must consume the item from inventory after validating it. \
+             Without consume_one, the item is never removed from inventory (infinite use)."
+        ),
+    }
+}

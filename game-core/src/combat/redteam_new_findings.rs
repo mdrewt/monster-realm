@@ -54,6 +54,7 @@ fn fire_skill() -> SkillDef {
         accuracy: 100,
         pp: 25,
         sets_weather: None,
+        applies_status: None,
     }
 }
 
@@ -249,6 +250,7 @@ fn r02_active_monster_uses_skill_it_does_not_know() {
         accuracy: 100,
         pp: 5,
         sets_weather: None,
+        applies_status: None,
     };
     let skills = vec![fire_skill(), overpowered_skill];
     let chart = make_chart();

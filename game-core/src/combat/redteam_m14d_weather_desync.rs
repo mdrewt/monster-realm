@@ -130,6 +130,7 @@ fn rt_w14_desync_01_recruit_failure_weather_strip_via_none_vs_some() {
         accuracy: 100,
         pp: 10,
         sets_weather: None, // <-- what skill_defs_from_rows returns (BUG)
+        applies_status: None,
     };
 
     let mut state_desync = BattleState {
@@ -175,6 +176,7 @@ fn rt_w14_desync_01_recruit_failure_weather_strip_via_none_vs_some() {
         accuracy: 100,
         pp: 10,
         sets_weather: Some(WeatherKind::Rain), // <-- what load_skills() returns (CORRECT)
+        applies_status: None,
     };
 
     // Reset: same initial state, different skill registry.
@@ -364,6 +366,7 @@ fn rt_w14_ordering_01_weather_set_fires_after_battle_end_on_ko_turn() {
         accuracy: 100,
         pp: 10,
         sets_weather: Some(WeatherKind::Sun),
+        applies_status: None,
     };
 
     let strong_attacker = BattleMonster {

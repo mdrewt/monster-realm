@@ -146,6 +146,34 @@ fn resolve_one_attack(
             weather: *state.weather.as_ref().expect("just set above"),
         });
     }
+
+    // Apply status condition from the skill (m14e, ADR-0096). Only when ALL hold:
+    //   1. Not immune (Immune hits return above; eff checked there).
+    //   2. Target did NOT faint from this attack (status on a fainted monster is
+    //      pointless; a switch-in is a new battle state for the next turn).
+    //   3. Defender had NO status before this attack (no stacking; `defender` is
+    //      the pre-attack clone so this reflects the state entering the attack).
+    //
+    // We emit StatusApplied here (event only — no direct store write). `resolve_full_turn`
+    // applies the event to BattleStatusStore AFTER DoT so newly-applied status
+    // takes effect the FOLLOWING turn (ADR-0096 §D1, correct game semantics).
+    if let Some(kind) = skill.applies_status {
+        use super::ability::StatusKind;
+        use super::types::StatusEffect;
+        if !fainted && defender.status.is_none() {
+            let new_status = match kind {
+                StatusKind::Poison => StatusEffect::Poison,
+                StatusKind::Burn => StatusEffect::Burn,
+                StatusKind::Paralysis => StatusEffect::Paralysis,
+                StatusKind::Sleep => StatusEffect::Sleep { turns_remaining: 3 },
+                StatusKind::Freeze => StatusEffect::Freeze,
+            };
+            events.push(BattleEvent::StatusApplied {
+                side: defender_side,
+                status: new_status,
+            });
+        }
+    }
 }
 
 /// Advance the battle's turn counter by one, honoring the turn-limit terminal.
@@ -384,6 +412,25 @@ pub fn resolve_full_turn(
         type_chart,
         variance,
     );
+    // Collect (side, status) pairs from StatusApplied events before move.
+    // StatusEffect: Copy so no heap allocation.
+    // The slot is NOT stored in the event: at phase 4.5 state.side_X.active is still
+    // correct because the target didn't faint (our !fainted guard prevents StatusApplied
+    // on KO'd targets, so no auto-switch can have changed the active index).
+    let status_applied: Vec<(SideId, super::types::StatusEffect)> = turn_events
+        .iter()
+        .filter_map(|e| {
+            if let BattleEvent::StatusApplied {
+                side,
+                status: new_status,
+            } = e
+            {
+                Some((*side, *new_status))
+            } else {
+                None
+            }
+        })
+        .collect();
     events.extend(turn_events);
 
     // Phase 3: post-turn DoT (only while the battle is still ongoing).
@@ -401,6 +448,21 @@ pub fn resolve_full_turn(
     if state.outcome == BattleOutcome::Ongoing {
         let tick_events = tick_status(status, sv);
         events.extend(tick_events);
+    }
+
+    // Phase 4.5: write StatusApplied effects into BattleStatusStore (ADR-0096 §D1).
+    // MUST be after phases 3/4 so newly-inflicted status does NOT cause same-turn
+    // DoT or Sleep/Freeze tick — it takes effect the FOLLOWING turn.
+    if state.outcome == BattleOutcome::Ongoing {
+        for (side, new_status) in status_applied {
+            let (store_vec, active_slot) = match side {
+                SideId::SideA => (&mut status.side_a, state.side_a.active as usize),
+                SideId::SideB => (&mut status.side_b, state.side_b.active as usize),
+            };
+            if let Some(cell) = store_vec.get_mut(active_slot) {
+                *cell = Some(new_status);
+            }
+        }
     }
 
     // Phase 5: weather tick (decrement turns_remaining; emit WeatherExpired at 0).
@@ -583,6 +645,7 @@ mod tests {
             accuracy: 100,
             pp: 25,
             sets_weather: None,
+            applies_status: None,
         }
     }
 
@@ -1816,6 +1879,7 @@ mod tests {
             accuracy: 100,
             pp: 15,
             sets_weather: None,
+            applies_status: None,
         }
     }
 
