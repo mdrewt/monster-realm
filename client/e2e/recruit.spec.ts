@@ -113,6 +113,12 @@ const MAX_WALK_STEPS = 80;
  *
  * The original MAX_ENCOUNTERS=14 gave P(fail) ≈ 0.6^14 ≈ 8e-4 (0.08%), which
  * triggers measurably across many CI pushes.  MAX_ENCOUNTERS=30 is negligible.
+ *
+ * Determinism note: SpacetimeDB ctx.random() is server-side only; injecting a
+ * seed from the test process is not possible within client/e2e/** (ADR-0086
+ * §infra; dev reducers require the browser identity auth token which is
+ * inaccessible from the Node.js test process per the design rationale above).
+ * A budget raise is the correct fix for this touch boundary.
  */
 const MAX_ENCOUNTERS = 30;
 /** Max recruit clicks per encounter (bounded inner loop).
@@ -439,7 +445,10 @@ test.describe
     //   P(fail all 30) ≈ 0.6^30 ≈ 1.2e-7 (pessimistic); 0.7^30 ≈ 2.2e-5 (very pessimistic).
     // -------------------------------------------------------------------------
     test('R2: successful recruit increments ownMonsters by 1 with partySlot 255', async () => {
-      test.setTimeout(600_000); // raised from 300s: 30 encounters × ~15s avg = 450s typical
+      // Timeout budget: 30 enc × ~30s/enc (walk ~5 steps × actual ~2s + battle ~20s) = ~900s.
+      // STEP_WAIT_MS=8_000 is the per-step timeout bound, not actual step duration
+      // (SpacetimeDB drains at ~200ms/step; loaded GHA runners may take 2–3s/step).
+      test.setTimeout(900_000);
 
       const beforeSnap = await snap(page);
       const countBefore = beforeSnap.ownMonsters.length;
