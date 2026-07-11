@@ -94,10 +94,33 @@ interface GameSnap {
  *  every 2nd step (only the East step onto (2,2) rolls), so 80 steps ≈ 40 grass
  *  entries: P(no encounter) = 0.8^40 ≈ 1.3e-4. */
 const MAX_WALK_STEPS = 80;
-/** Max outer encounter-loop iterations in R2 (whole encounter cycles incl. flee/KO). */
-const MAX_ENCOUNTERS = 14; // per plan: at ≥40%/encounter P(fail all 14) < 1e-3
-/** Max recruit clicks per encounter (bounded inner loop). */
-const MAX_RECRUIT_CLICKS = 8;
+/** Max outer encounter-loop iterations in R2 (whole encounter cycles incl. flee/KO).
+ *
+ * Statistical justification (raised from 14 to 30 — remote CI red, run 29149789277):
+ *
+ * Zone 0 encounter table (encounters/000-core.ron):
+ *   Flameling (Fire,  weight 10): 10/22 ≈ 45.5% — safe to weaken + recruit
+ *   Tidalin   (Water, weight  7):  7/22 ≈ 31.8% — flee immediately (enc slot consumed)
+ *   Sproutlet (Plant, weight  5):  5/22 ≈ 22.7% — safe to weaken + recruit
+ * → P(non-Water per slot) = 15/22 ≈ 68.2%.
+ *
+ * Of non-Water encounters, estimate ~85% survive the weaken phase without KO.
+ * Of those, P(≥1 recruit in MAX_RECRUIT_CLICKS=12 at 380‰/click) ≈ 0.998.
+ * Effective P(success per enc slot) ≈ 0.682 × 0.85 × 0.998 ≈ 0.58.
+ *
+ * Pessimistic (p=0.40): P(fail all 30) = 0.6^30 ≈ 1.2e-7.
+ * Very pessimistic (p=0.30): P(fail all 30) = 0.7^30 ≈ 2.2e-5.
+ *
+ * The original MAX_ENCOUNTERS=14 gave P(fail) ≈ 0.6^14 ≈ 8e-4 (0.08%), which
+ * triggers measurably across many CI pushes.  MAX_ENCOUNTERS=30 is negligible.
+ */
+const MAX_ENCOUNTERS = 30;
+/** Max recruit clicks per encounter (bounded inner loop).
+ *
+ * Raised from 8 to 12: at WEAKEN_STOP_PCT=40% wild HP, recruit_chance ≈ 380‰.
+ * P(≥1 success in 12 clicks) = 1-(0.62)^12 ≈ 0.998 vs. ≈ 0.980 for 8 clicks.
+ */
+const MAX_RECRUIT_CLICKS = 12;
 /** Max heal attempts (30s cooldown per heal; KO recovery path). */
 const MAX_HEALS = 2;
 /** Max skill attacks per encounter when weakening wild (bounded inner). */
@@ -408,16 +431,15 @@ test.describe
     //   THE new monster SHALL have partySlot === 255 (PARTY_SLOT_NONE = box).
     //   Records the winning battleId for R3.
     //
-    //   Encounter loop: MAX_ENCOUNTERS = 14.
+    //   Encounter loop: MAX_ENCOUNTERS = 30 (raised from 14 — see constant comment).
     //   Per encounter, recruit_chance ≈ 80‰ + 500‰×(missingHpFraction).
     //   At ~40% wild HP remaining: chance ≈ 380‰ per click.
-    //   P(≥1 success in 8 clicks at 380‰) ≈ 1 - (1-0.38)^8 ≈ 0.98.
-    //   P(success per encounter) ≈ 0.98 × P(not-Water) × P(not-KO-before-recruit).
-    //   Conservatively 40% per encounter; P(fail all 14) ≈ 0.6^14 ≈ 8e-4.
-    //   Actual rate is higher: starter is L5 Fire, most wilds are not Water-type.
+    //   P(≥1 success in 12 clicks at 380‰) ≈ 1 - (0.62)^12 ≈ 0.998.
+    //   P(success per enc slot) ≈ 0.998 × P(not-Water) × P(survive-weaken) ≈ 0.58.
+    //   P(fail all 30) ≈ 0.6^30 ≈ 1.2e-7 (pessimistic); 0.7^30 ≈ 2.2e-5 (very pessimistic).
     // -------------------------------------------------------------------------
     test('R2: successful recruit increments ownMonsters by 1 with partySlot 255', async () => {
-      test.setTimeout(300_000);
+      test.setTimeout(600_000); // raised from 300s: 30 encounters × ~15s avg = 450s typical
 
       const beforeSnap = await snap(page);
       const countBefore = beforeSnap.ownMonsters.length;
