@@ -153,16 +153,21 @@ fn rt_w14_desync_01_recruit_failure_weather_set_by_load_skills_path() {
     );
 
     // FIX PINNED: the wild (faster, B) attacks with Rain Dance (sets_weather=Some(Rain)).
-    // state.weather must be Some(Rain{turns:5}) — the fix is working.
+    // Phase 5 weather tick then decrements turns_remaining from WEATHER_DEFAULT_TURNS to
+    // WEATHER_DEFAULT_TURNS-1. Both D2 (load_skills set the weather) and D1 (post-turn
+    // phases ran the tick) are proven by this assertion. A regression to skill_defs_from_rows
+    // leaves state.weather=None here (sets_weather hardcoded to None in that path).
+    const EXPECTED_TURNS: u8 = WEATHER_DEFAULT_TURNS - 1;
     assert!(
         matches!(
             state.weather,
             Some(WeatherEffect::Rain {
-                turns_remaining: WEATHER_DEFAULT_TURNS
+                turns_remaining: EXPECTED_TURNS
             })
         ),
-        "RT-W14-DESYNC-01 FIX PINNED: state.weather must be Rain{{turns:{WEATHER_DEFAULT_TURNS}}} \
-         after wild's Rain Dance strike-back (load_skills() path, sets_weather=Some(Rain)). \
+        "RT-W14-DESYNC-01 FIX PINNED: state.weather must be Rain{{turns:{EXPECTED_TURNS}}} \
+         after wild's Rain Dance strike-back + weather tick (load_skills() path, \
+         sets_weather=Some(Rain), then phase-5 tick). \
          A regression reverting to skill_defs_from_rows leaves state.weather=None here. \
          Got: {:?}",
         state.weather

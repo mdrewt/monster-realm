@@ -602,6 +602,7 @@ pub fn resolve_recruit_failure(
 /// condition (ADR-0098 D3, D-14.5-1 decision b): this path does not call
 /// `apply_pre_turn_effects`. The swap-on-status-block conversion described in the
 /// original ADR-0092 §D3 is dead code and hereby de-scoped.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_player_swap(
     state: &mut BattleState,
     swap_side: SideId,
@@ -2157,5 +2158,312 @@ mod tests {
                 "tie with breaker a_first={a_first}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // M14.5a gating tests — post-turn phase coverage for the two new paths
+    // (EARS 14.5a-2 and EARS 14.5a-4)
+    // -----------------------------------------------------------------------
+
+    use crate::combat::types::StatusEffect;
+    use crate::combat::weather::WeatherEffect;
+
+    fn make_monster_no_skills(affinity: Affinity, hp: u16, speed: u16) -> BattleMonster {
+        BattleMonster {
+            species_id: 1,
+            affinity,
+            level: 5,
+            current_hp: hp,
+            max_hp: hp,
+            stats: make_stat_block_with_speed(40, 40, speed),
+            known_skill_ids: vec![],
+            status: None,
+        }
+    }
+
+    // EARS 14.5a-2a: weather clock ticks during resolve_recruit_failure
+    //
+    // Kills: an impl that runs the turn advance + enemy strike but omits the
+    // post-turn phase call (run_post_turn_phases), leaving turns_remaining at 3.
+    //
+    // Wild has no skills → no retaliation panic; the turn advance still happens
+    // and post-turn phases (including weather tick) still run.
+    #[test]
+    fn sandstorm_ticks_during_resolve_recruit_failure() {
+        let chart = make_type_chart();
+        let player = make_monster(Affinity::Fire, 200, 50);
+        let wild = make_monster_no_skills(Affinity::Water, 200, 50);
+        let mut state = make_battle_state(player, wild);
+        state.weather = Some(WeatherEffect::Sandstorm { turns_remaining: 3 });
+        let mut status = BattleStatusStore::new(1, 1);
+        let sv = StatusVariance::from_ctx_random(0);
+        let variance = always_hit_variance(true);
+        // Skill-less wild: resolve_recruit_failure guards the enemy turn with
+        // `if !known_skill_ids.is_empty()` so &[] is safe here.
+        resolve_recruit_failure(&mut state, &[], &chart, &variance, &mut status, &sv);
+        assert_eq!(
+            state.weather,
+            Some(WeatherEffect::Sandstorm { turns_remaining: 2 }),
+            "TEETH: turns_remaining must tick 3→2; a missing post-turn phase call \
+             leaves it at 3 — this assertion catches that"
+        );
+    }
+
+    // EARS 14.5a-2b: Poison DoT fires on the swapped-in monster during resolve_player_swap
+    //
+    // Kills: an impl that performs the swap + enemy attack but omits
+    // run_post_turn_phases, leaving the new active's HP unchanged at 400
+    // (minus whatever the enemy deals — but 400 - enemy_dmg > 400 - enemy_dmg - 50,
+    // so the strict < check bites).
+    //
+    // Enemy has skill id=1 and is given skills_vec() so pick_best_skill does not panic.
+    // Player team has 400 HP to survive both enemy attack and Poison DoT.
+    #[test]
+    fn poison_dot_fires_during_resolve_player_swap() {
+        let chart = make_type_chart();
+        // Player slot 0: active, healthy Fire, 400 HP — survives enemy Fire hit + DoT.
+        let active = make_monster(Affinity::Fire, 400, 50);
+        // Player slot 1: bench (to be swapped in), poisoned, 400 HP Fire.
+        // known_skill_ids=[1] so `make_monster` is fine; we override it:
+        let mut bench = make_monster(Affinity::Fire, 400, 50);
+        bench.known_skill_ids = vec![]; // bench doesn't need to fight
+                                        // Enemy: Fire, skill id=1, 400 HP — can attack but won't KO the player.
+        let enemy = make_monster(Affinity::Fire, 400, 30);
+        let mut state = BattleState {
+            side_a: BattleSide {
+                active: 0,
+                team: vec![active, bench],
+            },
+            side_b: BattleSide {
+                active: 0,
+                team: vec![enemy],
+            },
+            outcome: BattleOutcome::Ongoing,
+            turn_number: 0,
+            weather: None,
+        };
+        let mut status = BattleStatusStore::new(2, 1);
+        // slot 1 (the bench monster being swapped IN) is poisoned in the store
+        status.side_a[1] = Some(StatusEffect::Poison);
+        let sv = StatusVariance {
+            action_skip_roll_a: 99,
+            action_skip_roll_b: 99,
+            freeze_thaw_roll_a: 0,
+            freeze_thaw_roll_b: 0,
+            sleep_wake_roll_a: 0,
+            sleep_wake_roll_b: 0,
+        };
+        let variance = always_hit_variance(true);
+        // skills_vec() contains skill id=1 — needed for the enemy's pick_best_skill.
+        resolve_player_swap(
+            &mut state,
+            SideId::SideA,
+            1,
+            &skills_vec(),
+            &chart,
+            &variance,
+            &mut status,
+            &sv,
+        );
+        // After the swap state.side_a.active == 1 (the poisoned monster).
+        // Phase 1.5 syncs team[1].status = Poison from the store.
+        // Phase 3 DoT: Poison deals max_hp/8 = 400/8 = 50.
+        // The enemy also dealt some damage, so current_hp < 400 regardless;
+        // but the key test is that current_hp < (400 - enemy_damage) — i.e. DoT fired.
+        // We verify by checking the DoT specifically: current_hp must be < 400 - 0
+        // (any reduction proves either DoT or enemy hit fired, both require post-turn
+        // phases). We additionally assert outcome is Ongoing (no KO), which proves
+        // phases ran without exploding the battle.
+        assert_eq!(
+            state.side_a.active, 1,
+            "swap must have moved active to slot 1"
+        );
+        assert!(
+            state.side_a.team[1].current_hp < 400,
+            "TEETH: Poison DoT (and/or enemy damage) must fire after the swap (hp {}/400); \
+             a missing post-turn phase call leaves hp at 400 minus only enemy damage",
+            state.side_a.team[1].current_hp
+        );
+        // The Poison DoT is 50 (400/8). The enemy (Fire vs Fire, neutral) at level 5
+        // deals a modest amount. Both together leave the 400-hp monster well above 0.
+        assert_eq!(
+            state.outcome,
+            BattleOutcome::Ongoing,
+            "battle must remain Ongoing — 400-hp monster survives enemy hit + 50 DoT"
+        );
+        // Confirm DoT actually fired: the status store slot 1 still has Poison
+        // (it's not cured by DoT, only Sleep/Freeze tick away) and the HP loss
+        // exceeds what the enemy alone could deal at this level/power.
+        // DoT = max_hp/8 = 400/8 = 50. If DoT fired, hp <= 400 - 50 = 350 regardless
+        // of enemy damage. Without DoT, enemy alone deals <10, leaving hp >= 390.
+        assert!(
+            state.side_a.team[1].current_hp <= 350,
+            "TEETH: DoT of 50 must have fired — hp {}/400 is too high if DoT was skipped \
+             (enemy alone deals ≤10, so without DoT hp would be ≥390)",
+            state.side_a.team[1].current_hp
+        );
+    }
+
+    // EARS 14.5a-4: swap is always permitted regardless of the active monster's status
+    //
+    // Kills: any impl that routes resolve_player_swap through apply_pre_turn_effects
+    // and converts a Sleep/Freeze/Paralysis block into a TurnChoice::Pass, which
+    // would skip the set_active call and leave state.side_a.active == 0.
+    //
+    // Enemy has skill id=1 + skills_vec() so pick_best_skill does not panic.
+    // Player has 400 HP to survive the enemy attack after the swap.
+
+    #[test]
+    fn swap_allowed_when_player_active_has_sleep() {
+        let chart = make_type_chart();
+        let active = make_monster(Affinity::Fire, 400, 50);
+        let mut bench = make_monster(Affinity::Fire, 400, 50);
+        bench.known_skill_ids = vec![];
+        let enemy = make_monster(Affinity::Fire, 400, 30);
+        let mut state = BattleState {
+            side_a: BattleSide {
+                active: 0,
+                team: vec![active, bench],
+            },
+            side_b: BattleSide {
+                active: 0,
+                team: vec![enemy],
+            },
+            outcome: BattleOutcome::Ongoing,
+            turn_number: 0,
+            weather: None,
+        };
+        let mut status = BattleStatusStore::new(2, 1);
+        status.side_a[0] = Some(StatusEffect::Sleep { turns_remaining: 3 });
+        // Sleep always blocks attacks; swap must not consult this at all.
+        let sv = StatusVariance {
+            action_skip_roll_a: 99,
+            action_skip_roll_b: 99,
+            freeze_thaw_roll_a: 0,
+            freeze_thaw_roll_b: 0,
+            sleep_wake_roll_a: 99,
+            sleep_wake_roll_b: 99,
+        };
+        let variance = always_hit_variance(true);
+        resolve_player_swap(
+            &mut state,
+            SideId::SideA,
+            1,
+            &skills_vec(),
+            &chart,
+            &variance,
+            &mut status,
+            &sv,
+        );
+        assert_eq!(
+            state.side_a.active, 1,
+            "TEETH: swap must succeed despite Sleep on the active monster; \
+             an impl that routes through apply_pre_turn_effects would block the \
+             swap and leave active == 0"
+        );
+        assert_eq!(state.outcome, BattleOutcome::Ongoing);
+    }
+
+    #[test]
+    fn swap_allowed_when_player_active_has_freeze() {
+        let chart = make_type_chart();
+        let active = make_monster(Affinity::Fire, 400, 50);
+        let mut bench = make_monster(Affinity::Fire, 400, 50);
+        bench.known_skill_ids = vec![];
+        let enemy = make_monster(Affinity::Fire, 400, 30);
+        let mut state = BattleState {
+            side_a: BattleSide {
+                active: 0,
+                team: vec![active, bench],
+            },
+            side_b: BattleSide {
+                active: 0,
+                team: vec![enemy],
+            },
+            outcome: BattleOutcome::Ongoing,
+            turn_number: 0,
+            weather: None,
+        };
+        let mut status = BattleStatusStore::new(2, 1);
+        status.side_a[0] = Some(StatusEffect::Freeze);
+        // freeze_thaw_roll_a: 0 — does NOT thaw (thaw needs >= 80), so Freeze
+        // persists through the turn; swap must still succeed regardless.
+        let sv = StatusVariance {
+            action_skip_roll_a: 99,
+            action_skip_roll_b: 99,
+            freeze_thaw_roll_a: 0,
+            freeze_thaw_roll_b: 0,
+            sleep_wake_roll_a: 99,
+            sleep_wake_roll_b: 99,
+        };
+        let variance = always_hit_variance(true);
+        resolve_player_swap(
+            &mut state,
+            SideId::SideA,
+            1,
+            &skills_vec(),
+            &chart,
+            &variance,
+            &mut status,
+            &sv,
+        );
+        assert_eq!(
+            state.side_a.active, 1,
+            "TEETH: swap must succeed despite Freeze on the active monster; \
+             an impl routing through apply_pre_turn_effects blocks the swap"
+        );
+        assert_eq!(state.outcome, BattleOutcome::Ongoing);
+    }
+
+    #[test]
+    fn swap_allowed_when_player_active_has_paralysis() {
+        let chart = make_type_chart();
+        let active = make_monster(Affinity::Fire, 400, 50);
+        let mut bench = make_monster(Affinity::Fire, 400, 50);
+        bench.known_skill_ids = vec![];
+        let enemy = make_monster(Affinity::Fire, 400, 30);
+        let mut state = BattleState {
+            side_a: BattleSide {
+                active: 0,
+                team: vec![active, bench],
+            },
+            side_b: BattleSide {
+                active: 0,
+                team: vec![enemy],
+            },
+            outcome: BattleOutcome::Ongoing,
+            turn_number: 0,
+            weather: None,
+        };
+        let mut status = BattleStatusStore::new(2, 1);
+        status.side_a[0] = Some(StatusEffect::Paralysis);
+        // action_skip_roll_a: 0 — would block an attack (0 < 25 = paralysis
+        // threshold); swap must not consult this roll at all.
+        let sv = StatusVariance {
+            action_skip_roll_a: 0,
+            action_skip_roll_b: 99,
+            freeze_thaw_roll_a: 0,
+            freeze_thaw_roll_b: 0,
+            sleep_wake_roll_a: 99,
+            sleep_wake_roll_b: 99,
+        };
+        let variance = always_hit_variance(true);
+        resolve_player_swap(
+            &mut state,
+            SideId::SideA,
+            1,
+            &skills_vec(),
+            &chart,
+            &variance,
+            &mut status,
+            &sv,
+        );
+        assert_eq!(
+            state.side_a.active, 1,
+            "TEETH: swap must succeed despite Paralysis with blocking roll (0 < 25); \
+             an impl routing through apply_pre_turn_effects would block the swap and \
+             leave active == 0"
+        );
+        assert_eq!(state.outcome, BattleOutcome::Ongoing);
     }
 }

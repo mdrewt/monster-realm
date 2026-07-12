@@ -82,17 +82,22 @@ Persistence (serializing to DB) is deferred to m14b. Schema changes would requir
 
 The `FullTurnResult` returned by `resolve_full_turn` includes `statuses: BattleStatusStore`; the server reducer will apply it to the in-memory battle object for the turn. At battle end, statuses are dropped (not persisted). Across-battle persistence is deferred.
 
-### D3 — `TurnChoice::Pass` for blocked actions (blocked-side rule)
+### D3 — Status-blocking applies to attacks only; swap is always permitted (amended M14.5a, ADR-0098)
 
-**Decision:** When a side is blocked (e.g., asleep, stunned), its choice (whether `Attack{skill_id}` or `Swap{index}`) is **converted to `Pass`** before calling `resolve_turn`. `resolve_turn` interprets `Pass` as "do nothing" and returns a `TurnResult` with no damage, no swap.
+**Decision (amended):** Status blocking (Sleep, Paralysis, Freeze) gates `Attack` choices only. `Swap` is always permitted regardless of the active monster's status — a player may always switch out a blocked monster. This is the Pokémon-conventional behavior and was blessed in D-14.5-1 (default (b)). `resolve_player_swap` therefore never calls `check_action_block`.
+
+The original D3 text described a swap-conversion-to-Pass that was never implemented (`swap_active` does not call `check_action_block`). The ADR is amended to match the production behavior rather than an unimplemented design sketch.
+
+**Pinned by:** `swap_allowed_when_player_active_has_{sleep,freeze,paralysis}` tests in `game-core/src/combat/resolve.rs` (M14.5a, ADR-0098 D3).
 
 ```rust
 pub fn resolve_full_turn(c_choice: Choice, a_choice: Choice, ...) -> FullTurnResult {
     let c_active = !is_blocked(c_side);  // Determined from current statuses
     let a_active = !is_blocked(a_side);
 
-    let c_resolved = if c_active { c_choice } else { Choice::Pass };
-    let a_resolved = if a_active { a_choice } else { Choice::Pass };
+    // Attack-only block: Swap is always permitted.
+    let c_resolved = if c_active || matches!(c_choice, Choice::Swap { .. }) { c_choice } else { Choice::Pass };
+    let a_resolved = if a_active || matches!(a_choice, Choice::Swap { .. }) { a_choice } else { Choice::Pass };
 
     let turn_result = resolve_turn(c_resolved, a_resolved, ...)?;
     // ...
