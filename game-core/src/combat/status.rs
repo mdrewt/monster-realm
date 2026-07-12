@@ -339,8 +339,8 @@ fn tick_one_slot(
 // Tests: StatusVariance::from_ctx_random exact known-answer vectors
 // ---------------------------------------------------------------------------
 //
-// AC-M7: these tests kill the following 9 cargo-mutants survivors (line:col as
-// reported by `cargo mutants -p game-core`):
+// AC-M7: these tests kill the following 9 previously-surviving cargo-mutants
+// (line:col as reported by `cargo mutants -p game-core`):
 //
 //   // kills: game-core/src/combat/status.rs:60:20 replace ^ with | in StatusVariance::from_ctx_random
 //   // kills: game-core/src/combat/status.rs:60:20 replace ^ with & in StatusVariance::from_ctx_random
@@ -351,6 +351,11 @@ fn tick_one_slot(
 //   // kills: game-core/src/combat/status.rs:62:16 replace ^ with | in StatusVariance::from_ctx_random
 //   // kills: game-core/src/combat/status.rs:62:16 replace ^ with & in StatusVariance::from_ctx_random
 //   // kills: game-core/src/combat/status.rs:62:21 replace >> with << in StatusVariance::from_ctx_random
+//
+// The function has 21 additional executable mutants (12 modulo mutations:
+// `% → /` and `% → +` at lines 66–71) that were already caught by
+// m14b_tests.rs range/determinism tests. The exact-value tests here also
+// kill those 12 modulo mutations as a side effect.
 //
 // The mutants change XOR→OR, XOR→AND, or >>→<< inside the splitmix64 mixing
 // steps (lines 60–62). Any such mutation changes the avalanche properties of
