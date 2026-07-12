@@ -129,6 +129,21 @@ const MAX_ENCOUNTERS = 30;
 const MAX_RECRUIT_CLICKS = 12;
 /** Max heal attempts (30s cooldown per heal; KO recovery path). */
 const MAX_HEALS = 2;
+/** Max pre-encounter HP-restoration heals (flee-damage recovery, separate from
+ *  KO-recovery heals tracked by MAX_HEALS).
+ *
+ *  ROOT CAUSE (CI red, run 29154350070): write_back_party_hp fires on EVERY
+ *  flee (ADR-0047), persisting depleted HP to the DB.  The NEXT begin_encounter
+ *  builds side_a from the current DB HP, so subsequent battles enter at e.g.
+ *  HP=4/20 (20%) — immediately triggering OWN_HP_FLEE_THRESHOLD_PCT — creating
+ *  an infinite flee loop with only 1 recruit click ever attempted.
+ *
+ *  Fix: before each encounter walk, restore HP via heal_party if below 80%.
+ *  These heals are NOT KO-recovery (party is alive, not fainted), so they use
+ *  a separate counter and do not consume MAX_HEALS budget.
+ *  Bound: at most one pre-encounter heal per outer enc iteration (30 max).
+ */
+const MAX_FLEE_HEALS = 30;
 /** Max skill attacks per encounter when weakening wild (bounded inner). */
 const MAX_SKILL_ATTACKS = 6;
 /** Step-wait timeout per move in ms (200 ms drain + network + margin). */
@@ -333,6 +348,100 @@ async function healViaBox(p: Page): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// restoreHpBeforeEncounter: open the box, check HP, and heal if below 80%.
+// Called at the start of each enc iteration to undo HP depletion that
+// write_back_party_hp persists on flee.  The server-side heal_party has a 30 s
+// cooldown; we retry for up to 35 s (8 clicks × up to 6 s each) so a queued
+// cooldown window is covered without a bare sleep.
+//
+// Detection: box HP format is "HP cur/max (pct%)" (boxView.ts:152).  We wait
+// until the box shows ≥ 80% for all visible HP rows — unlike healViaBox (which
+// only checks for "HP 0/"), this verifies the heal actually fired.
+// ---------------------------------------------------------------------------
+// Returns true if a heal was performed (HP was low and heal clicked), false if
+// HP was already adequate or the box could not be opened.
+async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
+  const healBtn = p.getByText('Heal Party', { exact: true });
+
+  // Open the box (same Escape+KeyB trick as healViaBox to dismiss overlays).
+  const MAX_BOX_OPEN_TRIES = 20;
+  let boxOpen = false;
+  for (let i = 0; i < MAX_BOX_OPEN_TRIES && !boxOpen; i++) {
+    if (!(await healBtn.isVisible().catch(() => false))) {
+      await p.keyboard.press('Escape');
+      await p.keyboard.press('KeyB');
+    }
+    boxOpen = await healBtn
+      .waitFor({ state: 'visible', timeout: 500 })
+      .then(() => true)
+      .catch(() => false);
+  }
+  if (!boxOpen) return false; // another overlay is latched; skip and proceed
+
+  // Determine if HP is below the restoration threshold (80% of max).
+  // If already healthy, close immediately without clicking heal.
+  const needsHeal = await p
+    .waitForFunction(
+      () => {
+        const boxTitle = Array.from(document.querySelectorAll('h2')).find(
+          (h) => h.textContent === 'Party & Box',
+        );
+        const root = boxTitle?.parentElement?.parentElement;
+        if (!root || root.style.display === 'none') return 'no-box';
+        const text = root.textContent ?? '';
+        // Box HP format: "HP cur/max (pct%)"
+        const m = text.match(/HP (\d+)\/(\d+)/);
+        if (!m) return 'no-hp';
+        const cur = parseInt(m[1]!, 10);
+        const max = parseInt(m[2]!, 10);
+        return max > 0 && cur / max < 0.8 ? 'low' : 'ok';
+      },
+      null,
+      { timeout: 2_000 },
+    )
+    .then((h) => h.jsonValue())
+    .catch(() => 'ok');
+
+  if (needsHeal !== 'low') {
+    await p.keyboard.press('Escape');
+    await expect(healBtn).toBeHidden({ timeout: 5_000 });
+    return false;
+  }
+
+  // HP is low — click Heal Party and wait for HP to reach ≥ 80%.
+  // Retry covers the 30 s server cooldown (8 clicks × ≤6 s each = ≤48 s).
+  const MAX_HEAL_CLICKS = 8;
+  let restored = false;
+  for (let i = 0; i < MAX_HEAL_CLICKS && !restored; i++) {
+    await healBtn.click({ timeout: 5_000 });
+    restored = await p
+      .waitForFunction(
+        () => {
+          const boxTitle = Array.from(document.querySelectorAll('h2')).find(
+            (h) => h.textContent === 'Party & Box',
+          );
+          const root = boxTitle?.parentElement?.parentElement;
+          if (!root || root.style.display === 'none') return false;
+          const text = root.textContent ?? '';
+          const m = text.match(/HP (\d+)\/(\d+)/);
+          if (!m) return false;
+          const cur = parseInt(m[1]!, 10);
+          const max = parseInt(m[2]!, 10);
+          return max > 0 && cur / max >= 0.8;
+        },
+        null,
+        { timeout: 6_000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+  }
+
+  await p.keyboard.press('Escape');
+  await expect(healBtn).toBeHidden({ timeout: 5_000 });
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Suite (describe.serial: one page, sequential tests sharing state via the
 // suiteScoped variable `winningBattleId` for R3).
 // ---------------------------------------------------------------------------
@@ -456,12 +565,21 @@ test.describe
 
       let recruited = false;
       let healCount = 0;
+      let fleeHealCount = 0; // pre-encounter HP restoration (flee-damage recovery, not KO)
       let encountersUsed = 0;
       let recruitClicksUsed = 0;
       winningBattleId = null;
 
       for (let enc = 0; enc < MAX_ENCOUNTERS && !recruited; enc++) {
         encountersUsed = enc + 1;
+
+        // Pre-encounter HP restoration (ROOT CAUSE FIX — see MAX_FLEE_HEALS comment).
+        // write_back_party_hp fires on every flee, so the next battle enters at
+        // whatever HP we had when we fled.  Restore HP before walking if possible.
+        if (fleeHealCount < MAX_FLEE_HEALS) {
+          if (await restoreHpBeforeEncounter(page)) fleeHealCount++;
+        }
+
         // Walk grass until a battle starts.
         // P(no encounter in 40 entries @ 20%) ≈ 1.3e-4; outer loop re-attempts.
         let encBattleFound = false;
@@ -508,6 +626,9 @@ test.describe
           .textContent({ timeout: 5_000 })
           .catch(() => '');
         const opponentHp = parseHpLine(opponentCardText ?? '');
+        console.log(
+          `R2 enc ${enc + 1}: type=${opponentHp?.affinity ?? 'unknown'} hp=${opponentHp ? `${opponentHp.cur}/${opponentHp.max}` : '?'}`,
+        );
 
         if (opponentHp && opponentHp.affinity === 'Water') {
           // Flee immediately — Water wipe risk.
@@ -515,6 +636,7 @@ test.describe
           await fleeBtn.click({ timeout: 5_000 });
           await waitForBattleCleared(page);
           winningBattleId = null; // encounter did not proceed to recruit
+          console.log(`R2 enc ${enc + 1}: fled Water type`);
           continue;
         }
 
@@ -731,7 +853,7 @@ test.describe
       // -------------------------------------------------------------------------
       // Diagnostics for CI logs (flake triage without a trace download).
       console.log(
-        `R2 diagnostics: encounters=${encountersUsed} recruitClicks=${recruitClicksUsed} heals=${healCount} recruited=${recruited}`,
+        `R2 diagnostics: encounters=${encountersUsed} recruitClicks=${recruitClicksUsed} heals=${healCount} fleeHeals=${fleeHealCount} recruited=${recruited}`,
       );
 
       expect(recruited, `R2: did not recruit within MAX_ENCOUNTERS=${MAX_ENCOUNTERS}`).toBe(true);
