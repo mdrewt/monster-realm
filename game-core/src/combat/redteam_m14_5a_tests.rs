@@ -42,9 +42,12 @@
 //!   6. Phase 3.5: Sandstorm chip (max_hp/16 >= 1) kills B. Auto-switch to slot 0.
 //!   7. Phase 4.5: `state.side_a.active == 0` → Burn written to slot 0 (A). BUG.
 //!
-//!   Expected: slot 0 (A) has None status, slot 1 (B, fainted) has Burn.
+//!   BUG (pre-m14.5a/pre-m14.5b): slot 0 (A) has Burn, slot 1 (B) has None.
 //!
-//!   Actual:   slot 0 (A) has Burn, slot 1 (B, fainted) has None.
+//!   CORRECT (after m14.5b, ADR-0099 D2 drop-if-not-conscious):
+//!     slot 0 (A, backup switch-in) = None (never targeted)
+//!     slot 1 (B, fainted target)   = None (targeted, but B fainted from chip
+//!                                         before Phase 4.5 → write is dropped)
 
 use crate::combat::ability::StatusKind;
 use crate::combat::resolve::{resolve_player_swap, resolve_recruit_failure};
@@ -143,9 +146,8 @@ fn always_hit_variance() -> TurnVariance {
 // targeted by the Burn skill), not the slot of the monster that auto-switched in
 // after the target fainted from weather chip damage.
 //
-// This test is RED (fails) on the current implementation because phase 4.5 uses
-// `state.side_a.active` (which changed from 1 to 0 after the chip-damage KO)
-// rather than the slot pinned at the time of the attack.
+// This test was RED before m14.5b (ADR-0099). It is GREEN after the slot-capture
+// fix: slot is now carried in the event (D1) and dropped if the target fainted (D2).
 //
 // Kills: any impl that reads `state.side_X.active` in phase 4.5 AFTER DoT/weather
 // phases have possibly changed it via auto-switch, rather than capturing the slot
@@ -316,8 +318,9 @@ fn rt_m14_5a_01_status_applied_written_to_correct_slot_after_weather_chip_ko() {
 
     // Full scenario confirmed. Apply the invariant.
 
-    // CORRECT: slot 1 (B, the Burn target) should have Burn in the store.
-    // CORRECT: slot 0 (A, backup — not targeted) should have None.
+    // CORRECT: slot 0 (A, backup — never targeted by Burn skill) must be None.
+    // CORRECT: slot 1 (B, the Burn target) must also be None — B fainted from
+    //          Sandstorm chip before Phase 4.5, so ADR-0099 D2 drops the write.
     assert_eq!(
         status.side_a[0], None,
         "RT-M14.5A-01 FAILED: slot 0 (backup A, never targeted by Burn skill) \

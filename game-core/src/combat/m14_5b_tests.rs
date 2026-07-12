@@ -350,11 +350,8 @@ fn m14_5b_2_proof_of_teeth_near_lethal_status_hit_sandstorm_chip_faint() {
     let variance = always_hit_variance();
     let sv = no_block_sv();
 
-    // SideA uses the Burn skill. SideB slot 0 also uses the same skill (irrelevant —
-    // B's attack fires after A's, by which point B is still alive when A hits, then
-    // B acts next, but B's attack on A doesn't affect the invariant we're testing).
-    // We use TurnChoice::Pass for SideB so B doesn't attack A at all, keeping the
-    // test focused purely on the Burn-application + Sandstorm-chip sequence.
+    // SideA uses the Burn skill. SideB uses Pass — keeping the scenario focused
+    // purely on the A→B Burn application + Sandstorm chip sequence.
     let events = resolve_full_turn(
         &mut state,
         TurnChoice::Attack { skill_id: 1 }, // SideA uses Burn skill
@@ -480,5 +477,399 @@ fn m14_5b_2_proof_of_teeth_near_lethal_status_hit_sandstorm_chip_faint() {
         state.side_b.active, 1,
         "14.5b-2 sanity: SideB active must be 1 (the switch-in) after slot 0's KO; \
          the auto-switch did not fire if this fails"
+    );
+}
+
+// ===========================================================================
+// TEST 3 (EARS 14.5b-3): Both sides apply status in the same turn.
+//
+// Invariant: when A applies Burn to B (slot 0) AND B applies Poison to A (slot 0)
+// in the SAME turn, BOTH StatusApplied events must be emitted and BOTH statuses
+// must be written to the store at Phase 4.5.
+//
+// The concern: `turn_events` contains both events; `run_post_turn_phases` scans
+// all of them. This exercises the multi-event path in Phase 4.5.
+//
+// Kills: any impl that only processes the FIRST `StatusApplied` event, or that
+// deduplicates by side (two events for different sides should both fire).
+// ===========================================================================
+#[test]
+fn m14_5b_3_both_sides_apply_status_in_same_turn_both_committed() {
+    // SideA (speed=80, faster): uses Burn skill against SideB.
+    // SideB (speed=40, slower): uses Poison skill against SideA.
+    // Both monsters have large HP and defense so neither faints from the attack.
+    // Neither has a prior status, so no-stacking guard does not block.
+
+    fn poison_applying_skill() -> SkillDef {
+        SkillDef {
+            id: 2,
+            name: "Toxic".to_string(),
+            affinity: Affinity::Dark,
+            power: 1, // minimal power
+            accuracy: 100,
+            pp: 10,
+            sets_weather: None,
+            applies_status: Some(crate::combat::ability::StatusKind::Poison),
+        }
+    }
+
+    let side_a_monster = BattleMonster {
+        species_id: 1,
+        affinity: Affinity::Fire,
+        level: 5,
+        current_hp: 400,
+        max_hp: 400,
+        stats: stat_block(40, 200, 80, 400), // speed=80 (faster), high defense
+        known_skill_ids: vec![1],
+        status: None,
+    };
+    let side_b_monster = BattleMonster {
+        species_id: 2,
+        affinity: Affinity::Dark,
+        level: 5,
+        current_hp: 400,
+        max_hp: 400,
+        stats: stat_block(40, 200, 40, 400), // speed=40 (slower), high defense
+        known_skill_ids: vec![2],
+        status: None,
+    };
+
+    let mut state = BattleState {
+        side_a: BattleSide {
+            active: 0,
+            team: vec![side_a_monster],
+        },
+        side_b: BattleSide {
+            active: 0,
+            team: vec![side_b_monster],
+        },
+        outcome: BattleOutcome::Ongoing,
+        turn_number: 0,
+        weather: None,
+    };
+
+    let mut status = BattleStatusStore::new(1, 1);
+    let chart = make_type_chart_neutral();
+    let variance = always_hit_variance();
+    let sv = no_block_sv();
+    let skills = vec![burn_applying_skill(), poison_applying_skill()];
+
+    // A uses Burn (skill 1), B uses Poison (skill 2).
+    let events = resolve_full_turn(
+        &mut state,
+        TurnChoice::Attack { skill_id: 1 }, // A → Burn on B
+        TurnChoice::Attack { skill_id: 2 }, // B → Poison on A
+        &skills,
+        &chart,
+        &variance,
+        &mut status,
+        &sv,
+    );
+
+    // Both StatusApplied events must have been emitted.
+    let burn_applied = events.iter().any(|e| {
+        matches!(
+            e,
+            BattleEvent::StatusApplied {
+                side: SideId::SideB,
+                slot: 0,
+                status: StatusEffect::Burn,
+            }
+        )
+    });
+    let poison_applied = events.iter().any(|e| {
+        matches!(
+            e,
+            BattleEvent::StatusApplied {
+                side: SideId::SideA,
+                slot: 0,
+                status: StatusEffect::Poison,
+            }
+        )
+    });
+    assert!(
+        burn_applied,
+        "14.5b-3 PRECONDITION: StatusApplied(SideB, Burn) must be emitted; \
+         events: {events:?}"
+    );
+    assert!(
+        poison_applied,
+        "14.5b-3 PRECONDITION: StatusApplied(SideA, Poison) must be emitted; \
+         events: {events:?}"
+    );
+
+    // Both statuses must be committed to the store by Phase 4.5.
+    assert_eq!(
+        status.side_b[0],
+        Some(StatusEffect::Burn),
+        "14.5b-3 FAILED: SideB slot 0 must have Burn in the store after both-sides \
+         status turn. Phase 4.5 must process ALL StatusApplied events in turn_events, \
+         not just the first one. Kills: any impl that returns after writing the first event."
+    );
+    assert_eq!(
+        status.side_a[0],
+        Some(StatusEffect::Poison),
+        "14.5b-3 FAILED: SideA slot 0 must have Poison in the store after both-sides \
+         status turn. Phase 4.5 must process the second StatusApplied event even when \
+         the first event (Burn on B) was already committed."
+    );
+
+    // Sanity: both monsters survived (high HP + defense ensures no KO).
+    assert_eq!(
+        state.outcome,
+        BattleOutcome::Ongoing,
+        "14.5b-3 sanity: battle must remain Ongoing — both monsters had 400 HP and \
+         high defense so neither was KO'd by a power=1 hit"
+    );
+}
+
+// ===========================================================================
+// TEST 4 (EARS 14.5b-4): Slot captured from DEFENDER side — not from attacker.
+//
+// Invariant: when A (slot 0 active) applies status to B, the emitted
+// StatusApplied.slot must be B's active slot (state.side_b.active), NOT
+// A's active slot (state.side_a.active).
+//
+// The concern: an impl might erroneously capture `state.side_a.active` (the
+// attacker's slot) instead of `state.side_b.active` (the defender's slot).
+//
+// This test uses a SideB team with active=1 (non-zero active slot) so that
+// confusing attacker vs defender sides produces a detectable wrong value.
+//
+// Kills: any impl that captures the attacker's active slot instead of the
+// defender's active slot for the StatusApplied.slot field.
+// ===========================================================================
+#[test]
+fn m14_5b_4_status_applied_slot_is_defender_slot_not_attacker_slot() {
+    // SideA: slot 0 active (attacker). slot must NOT appear in StatusApplied.slot.
+    let attacker = BattleMonster {
+        species_id: 1,
+        affinity: Affinity::Fire,
+        level: 5,
+        current_hp: 200,
+        max_hp: 200,
+        stats: stat_block(40, 40, 80, 200), // speed=80, goes first
+        known_skill_ids: vec![1],
+        status: None,
+    };
+    // SideB: slot 0 is fainted (0 HP), slot 1 is the active defender.
+    // We set side_b.active = 1, so the status must be applied to slot 1.
+    let sideb_fainted = BattleMonster {
+        species_id: 2,
+        affinity: Affinity::Fire,
+        level: 1,
+        current_hp: 0, // fainted — not active
+        max_hp: 10,
+        stats: stat_block(10, 40, 10, 10),
+        known_skill_ids: vec![1],
+        status: None,
+    };
+    let sideb_active = BattleMonster {
+        species_id: 3,
+        affinity: Affinity::Fire,
+        level: 5,
+        current_hp: 200,
+        max_hp: 200,
+        stats: stat_block(10, 200, 20, 200), // high defense → survives Burn skill
+        known_skill_ids: vec![1],
+        status: None,
+    };
+
+    let mut state = BattleState {
+        side_a: BattleSide {
+            active: 0, // attacker at slot 0
+            team: vec![attacker],
+        },
+        side_b: BattleSide {
+            active: 1, // DEFENDER at slot 1 (non-zero!)
+            team: vec![sideb_fainted, sideb_active],
+        },
+        outcome: BattleOutcome::Ongoing,
+        turn_number: 0,
+        weather: None,
+    };
+
+    let mut status = BattleStatusStore::new(1, 2);
+    let chart = make_type_chart_neutral();
+    let variance = always_hit_variance();
+    let sv = no_block_sv();
+
+    // SideA uses Burn skill. SideB active is at slot 1.
+    let events = resolve_full_turn(
+        &mut state,
+        TurnChoice::Attack { skill_id: 1 },
+        TurnChoice::Pass, // B does nothing
+        &[burn_applying_skill()],
+        &chart,
+        &variance,
+        &mut status,
+        &sv,
+    );
+
+    // StatusApplied event must carry slot=1 (the defender's actual active slot).
+    let applied = events.iter().find(|e| {
+        matches!(
+            e,
+            BattleEvent::StatusApplied {
+                side: SideId::SideB,
+                ..
+            }
+        )
+    });
+    assert!(
+        applied.is_some(),
+        "14.5b-4 PRECONDITION: StatusApplied for SideB must be emitted; events: {events:?}"
+    );
+    match applied.unwrap() {
+        BattleEvent::StatusApplied {
+            side,
+            slot,
+            status: st,
+        } => {
+            assert_eq!(*side, SideId::SideB);
+            assert_eq!(
+                *slot, 1,
+                "14.5b-4 FAILED: StatusApplied.slot must be 1 (SideB's active defender slot), \
+                 not 0 (SideA's active attacker slot). \
+                 An impl that captures state.side_a.active instead of state.side_b.active \
+                 would emit slot=0 here. \
+                 Kills: any impl that confuses attacker slot with defender slot."
+            );
+            assert_eq!(*st, StatusEffect::Burn);
+        }
+        _ => panic!("expected StatusApplied"),
+    }
+
+    // Phase 4.5 must write to slot 1 (the actual target), not slot 0.
+    assert_eq!(
+        status.side_b[0], None,
+        "14.5b-4 FAILED: status.side_b[0] must be None — slot 0 is fainted and was \
+         never targeted by the Burn skill."
+    );
+    assert_eq!(
+        status.side_b[1],
+        Some(StatusEffect::Burn),
+        "14.5b-4 FAILED: status.side_b[1] must be Some(Burn) — slot 1 was the active \
+         defender when A's Burn skill hit. Phase 4.5 must write to the slot captured \
+         in the event (slot=1), not to state.side_b.active after any subsequent auto-switch."
+    );
+}
+
+// ===========================================================================
+// TEST 5 (EARS 14.5b-5): A KOs B in Phase 2 — only ONE StatusApplied event.
+//
+// Invariant: when A applies status to B AND KOs B in the same attack, the
+// `!fainted` guard in resolve_one_attack must suppress the StatusApplied
+// event (applying status to a fainted monster is pointless and should not
+// happen). Exactly ZERO StatusApplied events must be emitted.
+//
+// Also tests: the guard that prevents B from retaliating after being KO'd
+// means B's Burn skill never fires, so there is no StatusApplied from B's side.
+//
+// Kills: any impl that emits StatusApplied even when the target fainted from
+// the same attack (fainted guard removed or inverted).
+// ===========================================================================
+#[test]
+fn m14_5b_5_no_status_applied_when_ko_and_status_in_same_hit() {
+    // SideA: high attack, Burn skill, speed=80 (faster).
+    // SideB: 1 HP — will faint from the Burn hit (even power=1 deals min 1 damage).
+    let attacker = BattleMonster {
+        species_id: 1,
+        affinity: Affinity::Fire,
+        level: 5,
+        current_hp: 200,
+        max_hp: 200,
+        stats: stat_block(40, 40, 80, 200), // speed=80
+        known_skill_ids: vec![1],
+        status: None,
+    };
+    let fragile_target = BattleMonster {
+        species_id: 2,
+        affinity: Affinity::Fire,
+        level: 1,
+        current_hp: 1, // 1 HP — will faint from any hit (min damage = 1)
+        max_hp: 1,
+        stats: stat_block(10, 1, 20, 1), // defense=1 → guaranteed non-zero damage
+        known_skill_ids: vec![1],
+        status: None,
+    };
+
+    let mut state = BattleState {
+        side_a: BattleSide {
+            active: 0,
+            team: vec![attacker],
+        },
+        side_b: BattleSide {
+            active: 0,
+            team: vec![fragile_target],
+        },
+        outcome: BattleOutcome::Ongoing,
+        turn_number: 0,
+        weather: None,
+    };
+
+    let mut status = BattleStatusStore::new(1, 1);
+    let chart = make_type_chart_neutral();
+    let variance = always_hit_variance();
+    let sv = no_block_sv();
+
+    // A uses Burn skill. B has 1 HP and will die from the minimum-damage hit.
+    // B also uses Burn skill but must not get to attack after being KO'd.
+    let events = resolve_full_turn(
+        &mut state,
+        TurnChoice::Attack { skill_id: 1 }, // A → Burn on B (KOs B)
+        TurnChoice::Attack { skill_id: 1 }, // B → Burn on A (must NOT fire — B is KO'd)
+        &[burn_applying_skill()],
+        &chart,
+        &variance,
+        &mut status,
+        &sv,
+    );
+
+    // INVARIANT: No StatusApplied events must be emitted in this turn.
+    // A's !fainted guard prevents StatusApplied when the target is KO'd by the same hit.
+    // B's KO prevents B from retaliating, so B never gets to emit StatusApplied either.
+    let status_applied_count = events
+        .iter()
+        .filter(|e| matches!(e, BattleEvent::StatusApplied { .. }))
+        .count();
+    assert_eq!(
+        status_applied_count, 0,
+        "14.5b-5 FAILED: exactly 0 StatusApplied events must be emitted when A KOs B \
+         in the same hit that would apply status (fainted guard suppresses the event), \
+         and B never gets to retaliate. Got {status_applied_count} events. Events: {events:?}\n\
+         Kills: any impl that emits StatusApplied for a fainted monster, or that lets \
+         the KO'd side still attack."
+    );
+
+    // Both store slots must remain None (the status was never committed).
+    assert_eq!(
+        status.side_b[0], None,
+        "14.5b-5 FAILED: status.side_b[0] must be None — B was KO'd by the same hit \
+         that would have applied Burn. The !fainted guard must prevent the status write."
+    );
+    assert_eq!(
+        status.side_a[0], None,
+        "14.5b-5 FAILED: status.side_a[0] must be None — B never got to attack A \
+         (B was KO'd by A's first strike; the second_had_faint guard prevented B's turn)."
+    );
+
+    // Sanity: SideB must have fainted and the battle must have ended.
+    let b_fainted = events.iter().any(|e| {
+        matches!(
+            e,
+            BattleEvent::Faint {
+                side: SideId::SideB
+            }
+        )
+    });
+    assert!(
+        b_fainted,
+        "14.5b-5 sanity: SideB must have fainted from A's minimum-damage hit on a 1-HP target"
+    );
+    assert_ne!(
+        state.outcome,
+        BattleOutcome::Ongoing,
+        "14.5b-5 sanity: battle must have ended after B's only monster fainted"
     );
 }

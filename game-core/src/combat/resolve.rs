@@ -657,6 +657,14 @@ fn run_post_turn_phases(
     if state.outcome == BattleOutcome::Ongoing {
         for (side, slot, new_status) in status_applied {
             let idx = slot as usize;
+            // slot was captured from state.side_X.active at emission — must be in-bounds.
+            debug_assert!(
+                idx < match side {
+                    SideId::SideA => state.side_a.team.len(),
+                    SideId::SideB => state.side_b.team.len(),
+                },
+                "StatusApplied slot {idx} out of bounds for {side:?} team"
+            );
             let is_conscious = match side {
                 SideId::SideA => state.side_a.team.get(idx).map(|m| !m.is_fainted()),
                 SideId::SideB => state.side_b.team.get(idx).map(|m| !m.is_fainted()),
