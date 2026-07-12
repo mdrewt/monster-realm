@@ -541,31 +541,67 @@ pub fn resolve_enemy_turn(
 /// 2. Otherwise the wild (side B) strikes back, BUT only if it has at least one
 ///    skill: a skill-less wild cannot retaliate, yet the turn it consumed (step 1)
 ///    still counts toward the terminal.
+/// 3. After the wild's strike-back, run the same post-turn phases as
+///    `resolve_full_turn` (DoT, weather chip, status tick, StatusApplied write-back,
+///    weather tick) so status/weather clocks tick every turn, not only on
+///    `submit_attack` turns (ADR-0098 D1, closes R1/R3).
 ///
-/// Returns the wild's strike-back events (empty when the terminal fired or the
-/// wild is skill-less). Only side B (the wild) ever acts here.
+/// Returns all events produced (strike-back + post-turn). Empty when the terminal
+/// fired or the wild is skill-less (post-turn phases still run when the wild is
+/// skill-less, since the turn advanced). Only side B (the wild) ever strikes here.
 pub fn resolve_recruit_failure(
     state: &mut BattleState,
     skills: &[SkillDef],
     type_chart: &TypeChart,
     variance: &TurnVariance,
+    status: &mut super::status::BattleStatusStore,
+    sv: &super::status::StatusVariance,
 ) -> Vec<BattleEvent> {
     if !advance_turn(state) {
         // Turn-limit terminal fired (outcome now Fled) or battle already decided:
-        // no strike-back.
+        // no strike-back, no post-turn phases.
         return Vec::new();
     }
+
+    // Phase 1.5: sync BattleMonster.status FROM BattleStatusStore before the
+    // enemy retaliation so the "no stacking" guard in resolve_one_attack sees
+    // the authoritative status. No-op in normal server flow.
+    for (i, s) in status.side_a.iter().enumerate() {
+        if let Some(m) = state.side_a.team.get_mut(i) {
+            m.status = *s;
+        }
+    }
+    for (i, s) in status.side_b.iter().enumerate() {
+        if let Some(m) = state.side_b.team.get_mut(i) {
+            m.status = *s;
+        }
+    }
+
+    let mut events = Vec::new();
+
     // A skill-less wild cannot retaliate; the turn still advanced above.
-    if state.side_b.active_monster().known_skill_ids.is_empty() {
-        return Vec::new();
+    if !state.side_b.active_monster().known_skill_ids.is_empty() {
+        let strike_events = resolve_enemy_turn(state, SideId::SideB, skills, type_chart, variance);
+        events.extend(strike_events);
     }
-    resolve_enemy_turn(state, SideId::SideB, skills, type_chart, variance)
+
+    // Phases 3–5: post-turn pipeline (same as resolve_full_turn; ADR-0098 D1).
+    // Runs even when the wild is skill-less — the turn advanced, so clocks tick.
+    run_post_turn_phases(state, status, sv, &events.clone(), &mut events);
+
+    events
 }
 
-/// Resolve a player swap: swap first, then the enemy side attacks the new active.
+/// Resolve a player swap: swap first, then the enemy side attacks the new active,
+/// then run the post-turn status/weather phases (ADR-0098 D1, closes R1).
 ///
-/// Emits a `Switch` event for the player side, followed by whatever the enemy
-/// turn produces.
+/// Emits a `Switch` event for the player side, followed by enemy-turn and
+/// post-turn events.
+///
+/// Swapping is always permitted regardless of the player's active monster status
+/// condition (ADR-0098 D3, D-14.5-1 decision b): this path does not call
+/// `apply_pre_turn_effects`. The swap-on-status-block conversion described in the
+/// original ADR-0092 §D3 is dead code and hereby de-scoped.
 pub fn resolve_player_swap(
     state: &mut BattleState,
     swap_side: SideId,
@@ -573,6 +609,8 @@ pub fn resolve_player_swap(
     skills: &[SkillDef],
     type_chart: &TypeChart,
     variance: &TurnVariance,
+    status: &mut super::status::BattleStatusStore,
+    sv: &super::status::StatusVariance,
 ) -> Vec<BattleEvent> {
     let mut events = Vec::new();
 
@@ -588,11 +626,101 @@ pub fn resolve_player_swap(
         new_active,
     });
 
+    // Phase 1.5: sync BattleMonster.status FROM BattleStatusStore before the
+    // enemy retaliation so the "no stacking" guard in resolve_one_attack sees
+    // the authoritative status. No-op in normal server flow.
+    for (i, s) in status.side_a.iter().enumerate() {
+        if let Some(m) = state.side_a.team.get_mut(i) {
+            m.status = *s;
+        }
+    }
+    for (i, s) in status.side_b.iter().enumerate() {
+        if let Some(m) = state.side_b.team.get_mut(i) {
+            m.status = *s;
+        }
+    }
+
     let enemy_side = opposite(swap_side);
     let enemy_events = resolve_enemy_turn(state, enemy_side, skills, type_chart, variance);
-    events.extend(enemy_events);
+    events.extend(enemy_events.iter().cloned());
+
+    // Phases 3–5: post-turn pipeline (same as resolve_full_turn; ADR-0098 D1).
+    run_post_turn_phases(state, status, sv, &enemy_events, &mut events);
 
     events
+}
+
+/// Run post-turn phases 3–5 after the combat action for a turn.
+///
+/// Shared by `resolve_player_swap` and `resolve_recruit_failure` to keep the
+/// post-turn logic in one place (ADR-0003 SSOT, ADR-0098 D1).
+/// `resolve_full_turn` does NOT call this helper — it has the same logic inlined
+/// for readability and to preserve its existing test surface.
+///
+/// `action_events`: the events from the combat action; `StatusApplied` events are
+///   extracted for phase 4.5 write-back.
+/// `out_events`: the Vec to append post-turn events into.
+fn run_post_turn_phases(
+    state: &mut BattleState,
+    status: &mut super::status::BattleStatusStore,
+    sv: &super::status::StatusVariance,
+    action_events: &[BattleEvent],
+    out_events: &mut Vec<BattleEvent>,
+) {
+    use super::status::{apply_post_turn_effects, tick_status};
+    use super::weather::{apply_weather_damage, tick_weather};
+
+    // Collect StatusApplied pairs from the combat action for phase 4.5.
+    let status_applied: Vec<(SideId, super::types::StatusEffect)> = action_events
+        .iter()
+        .filter_map(|e| {
+            if let BattleEvent::StatusApplied {
+                side,
+                status: new_status,
+            } = e
+            {
+                Some((*side, *new_status))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Phase 3: post-turn DoT.
+    if state.outcome == BattleOutcome::Ongoing {
+        let post_events = apply_post_turn_effects(state, status);
+        out_events.extend(post_events);
+    }
+
+    // Phase 3.5: weather chip damage (Sandstorm/Hail end-of-turn DoT).
+    if state.outcome == BattleOutcome::Ongoing {
+        apply_weather_damage(state, out_events);
+    }
+
+    // Phase 4: status tick (Sleep/Freeze expire).
+    if state.outcome == BattleOutcome::Ongoing {
+        let tick_events = tick_status(status, sv);
+        out_events.extend(tick_events);
+    }
+
+    // Phase 4.5: write StatusApplied effects into BattleStatusStore (ADR-0096 §D1).
+    // Newly-inflicted status takes effect the FOLLOWING turn.
+    if state.outcome == BattleOutcome::Ongoing {
+        for (side, new_status) in status_applied {
+            let (store_vec, active_slot) = match side {
+                SideId::SideA => (&mut status.side_a, state.side_a.active as usize),
+                SideId::SideB => (&mut status.side_b, state.side_b.active as usize),
+            };
+            if let Some(cell) = store_vec.get_mut(active_slot) {
+                *cell = Some(new_status);
+            }
+        }
+    }
+
+    // Phase 5: weather tick (decrement turns_remaining; emit WeatherExpired at 0).
+    if state.outcome == BattleOutcome::Ongoing {
+        tick_weather(state, out_events);
+    }
 }
 
 // ===========================================================================
@@ -602,6 +730,7 @@ pub fn resolve_player_swap(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::combat::status::{BattleStatusStore, StatusVariance};
     use crate::combat::type_chart::tests::make_type_chart;
     use crate::combat::types::{
         BattleEvent, BattleMonster, BattleOutcome, BattleSide, BattleState, SideId, TurnChoice,
@@ -610,6 +739,23 @@ mod tests {
     use crate::content::SkillDef;
     use crate::monster::types::{Affinity, StatBlock};
     use proptest::prelude::*;
+
+    /// Empty status store for tests that don't exercise status effects.
+    fn empty_store(a_size: usize, b_size: usize) -> BattleStatusStore {
+        BattleStatusStore::new(a_size, b_size)
+    }
+
+    /// StatusVariance that never blocks (all action_skip_rolls >= 25, never thaw).
+    fn no_block_sv() -> StatusVariance {
+        StatusVariance {
+            action_skip_roll_a: 99,
+            action_skip_roll_b: 99,
+            freeze_thaw_roll_a: 0,
+            freeze_thaw_roll_b: 0,
+            sleep_wake_roll_a: 0,
+            sleep_wake_roll_b: 0,
+        }
+    }
 
     // -----------------------------------------------------------------------
     // Fixture builders
@@ -1016,6 +1162,8 @@ mod tests {
             weather: None,
         };
         let variance = always_hit_variance(true);
+        let mut status = empty_store(2, 1);
+        let sv = no_block_sv();
         let events = resolve_player_swap(
             &mut state,
             SideId::SideA,
@@ -1023,6 +1171,8 @@ mod tests {
             &skills_vec(),
             &chart,
             &variance,
+            &mut status,
+            &sv,
         );
         // Switch event must appear first
         let first_event = events.first().expect("events must not be empty");
@@ -1484,8 +1634,17 @@ mod tests {
         let pre_hp_a = state.side_a.active_monster().current_hp;
         // Damaging, always-hit variance — any strike-back would reduce side_a HP
         let variance = always_hit_variance(false); // false → B faster, B hits first if it acts
+        let mut status = empty_store(1, 1);
+        let sv = no_block_sv();
 
-        let events = resolve_recruit_failure(&mut state, &skills_vec(), &chart, &variance);
+        let events = resolve_recruit_failure(
+            &mut state,
+            &skills_vec(),
+            &chart,
+            &variance,
+            &mut status,
+            &sv,
+        );
 
         assert!(
             events.is_empty(),
@@ -1541,8 +1700,17 @@ mod tests {
         let pre_hp_a = state.side_a.active_monster().current_hp;
         // B faster (false tie-breaker), always hits
         let variance = always_hit_variance(false);
+        let mut status = empty_store(1, 1);
+        let sv = no_block_sv();
 
-        let events = resolve_recruit_failure(&mut state, &skills_vec(), &chart, &variance);
+        let events = resolve_recruit_failure(
+            &mut state,
+            &skills_vec(),
+            &chart,
+            &variance,
+            &mut status,
+            &sv,
+        );
 
         assert_eq!(
             state.turn_number, 6,
@@ -1602,8 +1770,17 @@ mod tests {
 
         let pre_hp_a = state.side_a.active_monster().current_hp;
         let variance = always_hit_variance(true);
+        let mut status = empty_store(1, 1);
+        let sv = no_block_sv();
 
-        let events = resolve_recruit_failure(&mut state, &skills_vec(), &chart, &variance);
+        let events = resolve_recruit_failure(
+            &mut state,
+            &skills_vec(),
+            &chart,
+            &variance,
+            &mut status,
+            &sv,
+        );
 
         assert_eq!(
             state.turn_number, 6,
@@ -1795,6 +1972,8 @@ mod tests {
         let variance = always_hit_variance(true);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut status = empty_store(2, 1);
+            let sv = no_block_sv();
             resolve_player_swap(
                 &mut state,
                 SideId::SideA,
@@ -1802,6 +1981,8 @@ mod tests {
                 &skills_vec(),
                 &chart,
                 &variance,
+                &mut status,
+                &sv,
             )
         }));
 
@@ -1836,6 +2017,8 @@ mod tests {
         let variance = always_hit_variance(true);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut status = empty_store(2, 1);
+            let sv = no_block_sv();
             resolve_player_swap(
                 &mut state,
                 SideId::SideA,
@@ -1843,6 +2026,8 @@ mod tests {
                 &skills_vec(),
                 &chart,
                 &variance,
+                &mut status,
+                &sv,
             )
         }));
 

@@ -17,17 +17,15 @@ use crate::guards::log_reject;
 use crate::inventory::consume_one;
 #[cfg(feature = "dev_reducers")]
 use crate::inventory::grant_item;
-use crate::marshal::{
-    monster_from_instance, pub_from_monster, skill_defs_from_rows, type_chart_from_rows,
-};
+use crate::marshal::{monster_from_instance, pub_from_monster, type_chart_from_rows};
 use crate::schema::{
-    battle, battle_wild, item_row, monster, monster_pub, skill_row, species_row, type_relation_row,
-    SkillRow,
+    battle, battle_wild, item_row, monster, monster_pub, species_row, type_relation_row,
 };
 use crate::PARTY_SLOT_NONE;
 use game_core::combat::resolve::resolve_recruit_failure;
 use game_core::{
-    build_monster, recruit_chance, BattleOutcome, Level, StatBlock, TurnVariance, RECRUIT_BASE_RATE,
+    build_monster, recruit_chance, BattleOutcome, BattleStatusStore, Level, StatBlock,
+    StatusVariance, TurnVariance, RECRUIT_BASE_RATE,
 };
 use spacetimedb::{ReducerContext, Table};
 
@@ -155,14 +153,53 @@ pub fn attempt_recruit(
     // transition (game_core::resolve_recruit_failure): it advances the turn through
     // the SSOT `u16::MAX -> Fled` terminal — NEVER a raw in-shell `turn_number += 1`
     // — and then lets the wild (side B) strike back ONLY if it has a skill and the
-    // turn-limit terminal did not fire. The reducer just supplies the skill/type/
-    // variance data and persists; the terminal write-back below handles a Fled (or
-    // KO) outcome (HP + GC, no XP — Fled is a no-winner terminal).
-    let skill_rows: Vec<SkillRow> = ctx.db.skill_row().iter().collect();
-    let skill_defs = skill_defs_from_rows(&skill_rows)?;
+    // turn-limit terminal did not fire. Post-turn phases (DoT, weather chip, status/
+    // weather tick) now run on every failed-recruit turn (ADR-0098 D1, closes R3).
+    // Use load_skills() — not skill_defs_from_rows — so sets_weather/applies_status
+    // are populated (ADR-0098 D2, closes RT-W14-DESYNC-01).
+    let skill_defs = game_core::load_skills()?;
     let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
-    let _events = resolve_recruit_failure(&mut battle.state, &skill_defs, &type_chart, &variance);
+    let sv = StatusVariance::from_ctx_random(ctx.random());
+
+    // Build the per-slot status store from BattleMonster.status fields (same
+    // pattern as submit_attack; ADR-0098 D4).
+    let mut status = BattleStatusStore {
+        side_a: battle.state.side_a.team.iter().map(|m| m.status).collect(),
+        side_b: battle.state.side_b.team.iter().map(|m| m.status).collect(),
+    };
+
+    let _events = resolve_recruit_failure(
+        &mut battle.state,
+        &skill_defs,
+        &type_chart,
+        &variance,
+        &mut status,
+        &sv,
+    );
+
+    // Persist status store back into BattleMonster.status fields (same pattern as
+    // submit_attack; write only when ongoing — terminal rows are immediately GC'd).
+    if battle.state.outcome == BattleOutcome::Ongoing {
+        for (m, s) in battle
+            .state
+            .side_a
+            .team
+            .iter_mut()
+            .zip(status.side_a.iter())
+        {
+            m.status = *s;
+        }
+        for (m, s) in battle
+            .state
+            .side_b
+            .team
+            .iter_mut()
+            .zip(status.side_b.iter())
+        {
+            m.status = *s;
+        }
+    }
 
     if battle.state.outcome != BattleOutcome::Ongoing {
         // Terminal: the wild knocked out the player's last monster, OR the

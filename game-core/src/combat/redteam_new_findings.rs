@@ -528,7 +528,26 @@ fn r05_enemy_retaliation_after_swap_can_ko_new_active() {
     // Player swaps to index 1 (the 1-HP Plant monster).
     // Enemy then attacks with Fire (SE vs Plant) — almost certain KO.
     let variance = always_hit_variance();
-    let events = resolve_player_swap(&mut state, SideId::SideA, 1, &skills, &chart, &variance);
+    use crate::combat::status::{BattleStatusStore, StatusVariance};
+    let mut status = BattleStatusStore::new(2, 1);
+    let sv = StatusVariance {
+        action_skip_roll_a: 99,
+        action_skip_roll_b: 99,
+        freeze_thaw_roll_a: 0,
+        freeze_thaw_roll_b: 0,
+        sleep_wake_roll_a: 0,
+        sleep_wake_roll_b: 0,
+    };
+    let events = resolve_player_swap(
+        &mut state,
+        SideId::SideA,
+        1,
+        &skills,
+        &chart,
+        &variance,
+        &mut status,
+        &sv,
+    );
 
     // After swap + enemy retaliation, check state.
     // If player_m1 was KO'd, the auto-switch should have fired (switching

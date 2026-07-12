@@ -586,21 +586,21 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
         return Err(e);
     }
 
-    // Swap then enemy attacks the new active.
-    // Use content cache so the enemy can use weather-setting skills (M14d, ADR-0095).
+    // Swap then enemy attacks the new active. Post-turn phases (DoT, weather chip,
+    // status/weather tick) now run on every swap turn (ADR-0098 D1, closes R1).
+    // Use load_skills() so sets_weather/applies_status are populated (ADR-0095).
     let skill_defs = game_core::load_skills()?;
     let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
+    let sv = StatusVariance::from_ctx_random(ctx.random());
 
-    // RESIDUAL (ADR-0096 §R1): resolve_player_swap → resolve_enemy_turn →
-    // resolve_one_attack may emit StatusApplied if the wild uses a status-applying
-    // skill during its swap-retaliation. We discard the events here (no
-    // BattleStatusStore build, no write-back). The status is silently lost until
-    // the NEXT submit_attack, which rebuilds the store from BattleMonster.status
-    // (still None) and the player sees no status badge until they take an action.
-    // Fixing this requires threading BattleStatusStore through resolve_player_swap
-    // and persisting it — deferred to m14f (parallels the attempt_recruit gap in
-    // marshal.rs / ADR-0095 residual).
+    // Build the per-slot status store from BattleMonster.status fields (same
+    // pattern as submit_attack; ADR-0098 D4).
+    let mut status = BattleStatusStore {
+        side_a: battle.state.side_a.team.iter().map(|m| m.status).collect(),
+        side_b: battle.state.side_b.team.iter().map(|m| m.status).collect(),
+    };
+
     let _events = game_core::resolve_player_swap(
         &mut battle.state,
         game_core::SideId::SideA,
@@ -608,7 +608,32 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
         &skill_defs,
         &type_chart,
         &variance,
+        &mut status,
+        &sv,
     );
+
+    // Persist status store back into BattleMonster.status fields.
+    // Write only when ongoing — terminal rows are immediately GC'd.
+    if battle.state.outcome == BattleOutcome::Ongoing {
+        for (m, s) in battle
+            .state
+            .side_a
+            .team
+            .iter_mut()
+            .zip(status.side_a.iter())
+        {
+            m.status = *s;
+        }
+        for (m, s) in battle
+            .state
+            .side_b
+            .team
+            .iter_mut()
+            .zip(status.side_b.iter())
+        {
+            m.status = *s;
+        }
+    }
 
     if battle.state.outcome != BattleOutcome::Ongoing {
         write_back_battle_results(ctx, &battle)?;

@@ -506,7 +506,28 @@ fn rt_s14_05_resolve_player_swap_does_not_apply_enemy_status_block() {
     };
 
     // Player swaps from slot 0 to slot 1.
-    let events = resolve_player_swap(&mut state, SideId::SideA, 1, &skills, &chart, &variance);
+    let mut status = BattleStatusStore {
+        side_a: vec![None, None],
+        side_b: vec![Some(StatusEffect::Paralysis)],
+    };
+    let sv = StatusVariance {
+        action_skip_roll_a: 99,
+        action_skip_roll_b: 99, // would-be no-block; but swap path ignores this anyway
+        freeze_thaw_roll_a: 0,
+        freeze_thaw_roll_b: 0,
+        sleep_wake_roll_a: 0,
+        sleep_wake_roll_b: 0,
+    };
+    let events = resolve_player_swap(
+        &mut state,
+        SideId::SideA,
+        1,
+        &skills,
+        &chart,
+        &variance,
+        &mut status,
+        &sv,
+    );
 
     // The swap must have happened.
     assert_eq!(
