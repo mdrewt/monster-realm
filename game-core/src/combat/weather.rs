@@ -292,9 +292,10 @@ pub fn tick_weather(state: &mut BattleState, events: &mut Vec<BattleEvent>) {
 // Tests: WeatherEffect::turns_remaining exact accessor
 // ---------------------------------------------------------------------------
 //
-// These tests kill both surviving constant-replacement mutants:
-//   - "replace turns_remaining -> u8 with 0"  (line 97 mutant A)
-//   - "replace turns_remaining -> u8 with 1"  (line 97 mutant B)
+// AC-M7: these tests kill the following 2 cargo-mutants survivors:
+//
+//   // kills: game-core/src/combat/weather.rs:97:9 replace WeatherEffect::turns_remaining -> u8 with 0
+//   // kills: game-core/src/combat/weather.rs:97:9 replace WeatherEffect::turns_remaining -> u8 with 1
 //
 // Strategy: test ALL four variants with a stored value of 5 (≠ 0 and ≠ 1).
 // The constant-0 mutant returns 0 when we expect 5 → assertion fails.

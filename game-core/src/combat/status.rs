@@ -339,7 +339,19 @@ fn tick_one_slot(
 // Tests: StatusVariance::from_ctx_random exact known-answer vectors
 // ---------------------------------------------------------------------------
 //
-// These tests kill all 9 surviving bit-mixing mutants in from_ctx_random.
+// AC-M7: these tests kill the following 9 cargo-mutants survivors (line:col as
+// reported by `cargo mutants -p game-core`):
+//
+//   // kills: game-core/src/combat/status.rs:60:20 replace ^ with | in StatusVariance::from_ctx_random
+//   // kills: game-core/src/combat/status.rs:60:20 replace ^ with & in StatusVariance::from_ctx_random
+//   // kills: game-core/src/combat/status.rs:60:25 replace >> with << in StatusVariance::from_ctx_random
+//   // kills: game-core/src/combat/status.rs:61:20 replace ^ with | in StatusVariance::from_ctx_random
+//   // kills: game-core/src/combat/status.rs:61:20 replace ^ with & in StatusVariance::from_ctx_random
+//   // kills: game-core/src/combat/status.rs:61:25 replace >> with << in StatusVariance::from_ctx_random
+//   // kills: game-core/src/combat/status.rs:62:16 replace ^ with | in StatusVariance::from_ctx_random
+//   // kills: game-core/src/combat/status.rs:62:16 replace ^ with & in StatusVariance::from_ctx_random
+//   // kills: game-core/src/combat/status.rs:62:21 replace >> with << in StatusVariance::from_ctx_random
+//
 // The mutants change XOR→OR, XOR→AND, or >>→<< inside the splitmix64 mixing
 // steps (lines 60–62). Any such mutation changes the avalanche properties of
 // the mixing function, producing DIFFERENT concrete u32 outputs. Range-only
@@ -361,6 +373,13 @@ mod status_variance_exact_tests {
     /// so the proptest comparing the two will fail.
     ///
     /// Kills: all 9 bit-mixing mutants (XOR→OR, XOR→AND, >>→<< on lines 60–62).
+    ///
+    /// Scope: this reference detects single-operator mutations applied by cargo-mutants to
+    /// the production body. It cannot detect a wrong constant or shift amount that is
+    /// identically present in both this copy and the production code — that would be a shared
+    /// systematic error, which cargo-mutants' single-operator substitution model does not
+    /// produce. The constants and shift amounts match TurnVariance::from_ctx_random in
+    /// types.rs, which carries externally-verified known-answer vectors.
     fn splitmix64_derive_expected(seed: u32) -> (u8, u8, u8, u8, u8, u8) {
         let mut s = seed as u64;
         let mut next = || -> u32 {
