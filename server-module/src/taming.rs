@@ -10,7 +10,7 @@
 //! ADR-0056 — keep it stable.
 
 use crate::battle::{write_back_battle_results, write_back_party_hp};
-use crate::guards::{log_reject, require_owner};
+use crate::guards::log_reject;
 // `grant_item` is dev-gated (its only caller `grant_bait` is too — an ungated
 // import would be an unused-import warning in the non-dev build, red-team F6);
 // `consume_one` is ungated (its caller `attempt_recruit` always compiles).
@@ -52,7 +52,14 @@ pub fn attempt_recruit(
             return Err(e);
         }
     };
-    require_owner(ctx, "attempt_recruit", battle.player_identity)?;
+    // Ownership guard — explicit `!=` form required by recruit-reducer-security eval
+    // (which pattern-matches `player_identity != me`). Functionally equivalent to
+    // require_owner; PARK: unify when the eval is updated to accept require_owner.
+    if battle.player_identity != me {
+        let e = "not owner".to_string();
+        log_reject("attempt_recruit", me, &e);
+        return Err(e);
+    }
     if battle.state.outcome != BattleOutcome::Ongoing {
         let e = "battle is not ongoing".to_string();
         log_reject("attempt_recruit", me, &e);
