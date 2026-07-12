@@ -287,3 +287,228 @@ pub fn tick_weather(state: &mut BattleState, events: &mut Vec<BattleEvent>) {
         *remaining -= 1;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests: WeatherEffect::turns_remaining exact accessor
+// ---------------------------------------------------------------------------
+//
+// These tests kill both surviving constant-replacement mutants:
+//   - "replace turns_remaining -> u8 with 0"  (line 97 mutant A)
+//   - "replace turns_remaining -> u8 with 1"  (line 97 mutant B)
+//
+// Strategy: test ALL four variants with a stored value of 5 (≠ 0 and ≠ 1).
+// The constant-0 mutant returns 0 when we expect 5 → assertion fails.
+// The constant-1 mutant returns 1 when we expect 5 → assertion fails.
+// We also test values 0 and 1 explicitly to prove the boundaries work on
+// the correct implementation (these won't be needed to kill the mutants,
+// but they confirm the function works across the full u8 range).
+//
+// The proptest sweeps all u8 values × all 4 variants, which guarantees both
+// constant mutants fail for the vast majority of the seed space.
+
+#[cfg(test)]
+mod weather_turns_remaining_tests {
+    use super::WeatherEffect;
+    use proptest::prelude::*;
+
+    // -----------------------------------------------------------------------
+    // Rain variant
+    // -----------------------------------------------------------------------
+
+    /// Kills: "replace turns_remaining → 0" and "replace turns_remaining → 1".
+    /// Value 5 (≠ 0 and ≠ 1) fails both constant mutants.
+    /// Values 0 and 1 confirm boundary correctness on the real impl.
+    #[test]
+    fn rain_turns_remaining_is_stored_value() {
+        // Non-constant values (kills both constant mutants).
+        assert_eq!(
+            WeatherEffect::Rain { turns_remaining: 5 }.turns_remaining(),
+            5,
+            "TEETH: Rain(5).turns_remaining() must return 5; \
+             a constant-0 mutant returns 0, a constant-1 mutant returns 1 — both fail here"
+        );
+        assert_eq!(
+            WeatherEffect::Rain { turns_remaining: 2 }.turns_remaining(),
+            2,
+            "TEETH: Rain(2).turns_remaining() must return 2; constant-0/1 mutants fail"
+        );
+        assert_eq!(
+            WeatherEffect::Rain {
+                turns_remaining: 255
+            }
+            .turns_remaining(),
+            255,
+            "TEETH: Rain(255).turns_remaining() must return 255"
+        );
+        // Boundary values (confirm the real impl handles 0 and 1 correctly).
+        assert_eq!(
+            WeatherEffect::Rain { turns_remaining: 0 }.turns_remaining(),
+            0,
+            "Rain(0).turns_remaining() must return 0 (correct impl, boundary check)"
+        );
+        assert_eq!(
+            WeatherEffect::Rain { turns_remaining: 1 }.turns_remaining(),
+            1,
+            "Rain(1).turns_remaining() must return 1 (correct impl, boundary check)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Sun variant
+    // -----------------------------------------------------------------------
+
+    /// Kills: both constant mutants for the Sun variant arm.
+    #[test]
+    fn sun_turns_remaining_is_stored_value() {
+        assert_eq!(
+            WeatherEffect::Sun { turns_remaining: 5 }.turns_remaining(),
+            5,
+            "TEETH: Sun(5).turns_remaining() must return 5; \
+             constant-0 mutant returns 0, constant-1 mutant returns 1 — both fail here"
+        );
+        assert_eq!(
+            WeatherEffect::Sun { turns_remaining: 2 }.turns_remaining(),
+            2,
+            "TEETH: Sun(2).turns_remaining() must return 2"
+        );
+        assert_eq!(
+            WeatherEffect::Sun {
+                turns_remaining: 255
+            }
+            .turns_remaining(),
+            255,
+            "TEETH: Sun(255).turns_remaining() must return 255"
+        );
+        assert_eq!(
+            WeatherEffect::Sun { turns_remaining: 0 }.turns_remaining(),
+            0,
+            "Sun(0).turns_remaining() boundary check"
+        );
+        assert_eq!(
+            WeatherEffect::Sun { turns_remaining: 1 }.turns_remaining(),
+            1,
+            "Sun(1).turns_remaining() boundary check"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Sandstorm variant
+    // -----------------------------------------------------------------------
+
+    /// Kills: both constant mutants for the Sandstorm variant arm.
+    #[test]
+    fn sandstorm_turns_remaining_is_stored_value() {
+        assert_eq!(
+            WeatherEffect::Sandstorm { turns_remaining: 5 }.turns_remaining(),
+            5,
+            "TEETH: Sandstorm(5).turns_remaining() must return 5; \
+             constant-0 mutant returns 0, constant-1 mutant returns 1 — both fail here"
+        );
+        assert_eq!(
+            WeatherEffect::Sandstorm { turns_remaining: 2 }.turns_remaining(),
+            2,
+            "TEETH: Sandstorm(2).turns_remaining() must return 2"
+        );
+        assert_eq!(
+            WeatherEffect::Sandstorm {
+                turns_remaining: 255
+            }
+            .turns_remaining(),
+            255,
+            "TEETH: Sandstorm(255).turns_remaining() must return 255"
+        );
+        assert_eq!(
+            WeatherEffect::Sandstorm { turns_remaining: 0 }.turns_remaining(),
+            0,
+            "Sandstorm(0).turns_remaining() boundary check"
+        );
+        assert_eq!(
+            WeatherEffect::Sandstorm { turns_remaining: 1 }.turns_remaining(),
+            1,
+            "Sandstorm(1).turns_remaining() boundary check"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Hail variant
+    // -----------------------------------------------------------------------
+
+    /// Kills: both constant mutants for the Hail variant arm.
+    #[test]
+    fn hail_turns_remaining_is_stored_value() {
+        assert_eq!(
+            WeatherEffect::Hail { turns_remaining: 5 }.turns_remaining(),
+            5,
+            "TEETH: Hail(5).turns_remaining() must return 5; \
+             constant-0 mutant returns 0, constant-1 mutant returns 1 — both fail here"
+        );
+        assert_eq!(
+            WeatherEffect::Hail { turns_remaining: 2 }.turns_remaining(),
+            2,
+            "TEETH: Hail(2).turns_remaining() must return 2"
+        );
+        assert_eq!(
+            WeatherEffect::Hail {
+                turns_remaining: 255
+            }
+            .turns_remaining(),
+            255,
+            "TEETH: Hail(255).turns_remaining() must return 255"
+        );
+        assert_eq!(
+            WeatherEffect::Hail { turns_remaining: 0 }.turns_remaining(),
+            0,
+            "Hail(0).turns_remaining() boundary check"
+        );
+        assert_eq!(
+            WeatherEffect::Hail { turns_remaining: 1 }.turns_remaining(),
+            1,
+            "Hail(1).turns_remaining() boundary check"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Property test: turns_remaining identity across all variants and u8 values
+    //
+    // Sweeps the full u8 range × 4 variants. Both constant mutants fail for
+    // every seed except 0 (for the constant-0 mutant) or 1 (for the constant-1
+    // mutant). Since the proptest framework explores hundreds of values, it will
+    // find a counterexample within the first few trials.
+    // -----------------------------------------------------------------------
+
+    proptest! {
+        /// Kills: "replace turns_remaining → 0" and "replace turns_remaining → 1".
+        ///
+        /// For any turns value ≠ 0, the constant-0 mutant returns 0 ≠ turns → fails.
+        /// For any turns value ≠ 1, the constant-1 mutant returns 1 ≠ turns → fails.
+        /// The proptest will quickly find a turns value that is neither 0 nor 1.
+        #[test]
+        fn turns_remaining_identity(turns in any::<u8>()) {
+            prop_assert_eq!(
+                WeatherEffect::Rain { turns_remaining: turns }.turns_remaining(),
+                turns,
+                "TEETH: Rain({}).turns_remaining() must return {}; \
+                 constant-0 mutant fails for turns≠0, constant-1 mutant fails for turns≠1",
+                turns, turns
+            );
+            prop_assert_eq!(
+                WeatherEffect::Sun { turns_remaining: turns }.turns_remaining(),
+                turns,
+                "TEETH: Sun({}).turns_remaining() must return {}",
+                turns, turns
+            );
+            prop_assert_eq!(
+                WeatherEffect::Sandstorm { turns_remaining: turns }.turns_remaining(),
+                turns,
+                "TEETH: Sandstorm({}).turns_remaining() must return {}",
+                turns, turns
+            );
+            prop_assert_eq!(
+                WeatherEffect::Hail { turns_remaining: turns }.turns_remaining(),
+                turns,
+                "TEETH: Hail({}).turns_remaining() must return {}",
+                turns, turns
+            );
+        }
+    }
+}
