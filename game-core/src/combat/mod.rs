@@ -33,6 +33,8 @@ pub mod m7b_gating_tests;
 #[cfg(test)]
 pub mod m7b_redteam_tests;
 #[cfg(test)]
+pub mod redteam_m14_5a_tests;
+#[cfg(test)]
 pub mod redteam_m14a_tests;
 #[cfg(test)]
 pub mod redteam_m14c_tests;

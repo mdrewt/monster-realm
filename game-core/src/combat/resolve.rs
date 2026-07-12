@@ -381,8 +381,7 @@ pub fn resolve_full_turn(
     status: &mut super::status::BattleStatusStore,
     sv: &super::status::StatusVariance,
 ) -> Vec<BattleEvent> {
-    use super::status::{apply_post_turn_effects, apply_pre_turn_effects, tick_status};
-    use super::weather::{apply_weather_damage, tick_weather};
+    use super::status::apply_pre_turn_effects;
 
     let mut events = Vec::new();
 
@@ -402,23 +401,7 @@ pub fn resolve_full_turn(
     };
 
     // Phase 1.5: sync BattleMonster.status FROM BattleStatusStore.
-    // resolve_one_attack checks `defender.status` (BattleMonster field) for the
-    // "no stacking" guard. The store is the authoritative source; BattleMonster.status
-    // is the persisted-to-DB field (written by the server after resolve_full_turn).
-    // Without this sync, a status that was set in the store by a prior Phase 4.5 call
-    // (test fixture, or future multi-step paths) would be invisible to the guard.
-    // In normal server flow the two are already in sync (server builds the store from
-    // BattleMonster.status before calling us), so this is a no-op in steady state.
-    for (i, s) in status.side_a.iter().enumerate() {
-        if let Some(m) = state.side_a.team.get_mut(i) {
-            m.status = *s;
-        }
-    }
-    for (i, s) in status.side_b.iter().enumerate() {
-        if let Some(m) = state.side_b.team.get_mut(i) {
-            m.status = *s;
-        }
-    }
+    sync_status_to_monsters(state, status);
 
     // Phase 2: resolve the turn (turn-number advance + speed-ordered attacks).
     // Weather modifier is read from state.weather inside resolve_one_attack;
@@ -431,63 +414,10 @@ pub fn resolve_full_turn(
         type_chart,
         variance,
     );
-    // Collect (side, status) pairs from StatusApplied events before move.
-    // StatusEffect: Copy so no heap allocation.
-    // The slot is NOT stored in the event: at phase 4.5 state.side_X.active is still
-    // correct because the target didn't faint (our !fainted guard prevents StatusApplied
-    // on KO'd targets, so no auto-switch can have changed the active index).
-    let status_applied: Vec<(SideId, super::types::StatusEffect)> = turn_events
-        .iter()
-        .filter_map(|e| {
-            if let BattleEvent::StatusApplied {
-                side,
-                status: new_status,
-            } = e
-            {
-                Some((*side, *new_status))
-            } else {
-                None
-            }
-        })
-        .collect();
-    events.extend(turn_events);
+    events.extend(turn_events.iter().cloned());
 
-    // Phase 3: post-turn DoT (only while the battle is still ongoing).
-    if state.outcome == BattleOutcome::Ongoing {
-        let post_events = apply_post_turn_effects(state, status);
-        events.extend(post_events);
-    }
-
-    // Phase 3.5: weather chip damage (Sandstorm/Hail end-of-turn DoT).
-    if state.outcome == BattleOutcome::Ongoing {
-        apply_weather_damage(state, &mut events);
-    }
-
-    // Phase 4: status tick (Sleep/Freeze expire).
-    if state.outcome == BattleOutcome::Ongoing {
-        let tick_events = tick_status(status, sv);
-        events.extend(tick_events);
-    }
-
-    // Phase 4.5: write StatusApplied effects into BattleStatusStore (ADR-0096 §D1).
-    // MUST be after phases 3/4 so newly-inflicted status does NOT cause same-turn
-    // DoT or Sleep/Freeze tick — it takes effect the FOLLOWING turn.
-    if state.outcome == BattleOutcome::Ongoing {
-        for (side, new_status) in status_applied {
-            let (store_vec, active_slot) = match side {
-                SideId::SideA => (&mut status.side_a, state.side_a.active as usize),
-                SideId::SideB => (&mut status.side_b, state.side_b.active as usize),
-            };
-            if let Some(cell) = store_vec.get_mut(active_slot) {
-                *cell = Some(new_status);
-            }
-        }
-    }
-
-    // Phase 5: weather tick (decrement turns_remaining; emit WeatherExpired at 0).
-    if state.outcome == BattleOutcome::Ongoing {
-        tick_weather(state, &mut events);
-    }
+    // Phases 3–5: post-turn pipeline, shared with swap/recruit paths (ADR-0098 D1, SSOT ADR-0003).
+    run_post_turn_phases(state, status, sv, &turn_events, &mut events);
 
     events
 }
@@ -563,31 +493,23 @@ pub fn resolve_recruit_failure(
         return Vec::new();
     }
 
-    // Phase 1.5: sync BattleMonster.status FROM BattleStatusStore before the
-    // enemy retaliation so the "no stacking" guard in resolve_one_attack sees
-    // the authoritative status. No-op in normal server flow.
-    for (i, s) in status.side_a.iter().enumerate() {
-        if let Some(m) = state.side_a.team.get_mut(i) {
-            m.status = *s;
-        }
-    }
-    for (i, s) in status.side_b.iter().enumerate() {
-        if let Some(m) = state.side_b.team.get_mut(i) {
-            m.status = *s;
-        }
-    }
+    // Phase 1.5: sync BattleMonster.status FROM BattleStatusStore.
+    sync_status_to_monsters(state, status);
 
     let mut events = Vec::new();
 
     // A skill-less wild cannot retaliate; the turn still advanced above.
+    // Keep strike_events separate so run_post_turn_phases receives only the
+    // action slice (not the accumulator), matching the resolve_player_swap pattern.
+    let mut strike_events = Vec::new();
     if !state.side_b.active_monster().known_skill_ids.is_empty() {
-        let strike_events = resolve_enemy_turn(state, SideId::SideB, skills, type_chart, variance);
-        events.extend(strike_events);
+        strike_events = resolve_enemy_turn(state, SideId::SideB, skills, type_chart, variance);
+        events.extend(strike_events.iter().cloned());
     }
 
     // Phases 3–5: post-turn pipeline (same as resolve_full_turn; ADR-0098 D1).
     // Runs even when the wild is skill-less — the turn advanced, so clocks tick.
-    run_post_turn_phases(state, status, sv, &events.clone(), &mut events);
+    run_post_turn_phases(state, status, sv, &strike_events, &mut events);
 
     events
 }
@@ -602,6 +524,9 @@ pub fn resolve_recruit_failure(
 /// condition (ADR-0098 D3, D-14.5-1 decision b): this path does not call
 /// `apply_pre_turn_effects`. The swap-on-status-block conversion described in the
 /// original ADR-0092 §D3 is dead code and hereby de-scoped.
+///
+/// This function does NOT call `advance_turn`; player swaps are not counted as
+/// numbered turns toward the `u16::MAX` terminal.
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_player_swap(
     state: &mut BattleState,
@@ -627,19 +552,8 @@ pub fn resolve_player_swap(
         new_active,
     });
 
-    // Phase 1.5: sync BattleMonster.status FROM BattleStatusStore before the
-    // enemy retaliation so the "no stacking" guard in resolve_one_attack sees
-    // the authoritative status. No-op in normal server flow.
-    for (i, s) in status.side_a.iter().enumerate() {
-        if let Some(m) = state.side_a.team.get_mut(i) {
-            m.status = *s;
-        }
-    }
-    for (i, s) in status.side_b.iter().enumerate() {
-        if let Some(m) = state.side_b.team.get_mut(i) {
-            m.status = *s;
-        }
-    }
+    // Phase 1.5: sync BattleMonster.status FROM BattleStatusStore.
+    sync_status_to_monsters(state, status);
 
     let enemy_side = opposite(swap_side);
     let enemy_events = resolve_enemy_turn(state, enemy_side, skills, type_chart, variance);
@@ -651,12 +565,30 @@ pub fn resolve_player_swap(
     events
 }
 
+/// Sync `BattleMonster.status` from `BattleStatusStore` for all team slots.
+///
+/// The store is authoritative; `BattleMonster.status` is the persisted-to-DB field.
+/// `resolve_one_attack` reads the field for the "no stacking" guard, so the field
+/// must mirror the store before any attack resolves. In normal server flow the two
+/// are already in sync (the server builds the store from the field before calling any
+/// resolver), so this is a no-op in steady state.
+fn sync_status_to_monsters(state: &mut BattleState, status: &super::status::BattleStatusStore) {
+    for (i, s) in status.side_a.iter().enumerate() {
+        if let Some(m) = state.side_a.team.get_mut(i) {
+            m.status = *s;
+        }
+    }
+    for (i, s) in status.side_b.iter().enumerate() {
+        if let Some(m) = state.side_b.team.get_mut(i) {
+            m.status = *s;
+        }
+    }
+}
+
 /// Run post-turn phases 3–5 after the combat action for a turn.
 ///
-/// Shared by `resolve_player_swap` and `resolve_recruit_failure` to keep the
-/// post-turn logic in one place (ADR-0003 SSOT, ADR-0098 D1).
-/// `resolve_full_turn` does NOT call this helper — it has the same logic inlined
-/// for readability and to preserve its existing test surface.
+/// Shared by `resolve_full_turn`, `resolve_player_swap`, and `resolve_recruit_failure`
+/// (ADR-0003 SSOT, ADR-0098 D1).
 ///
 /// `action_events`: the events from the combat action; `StatusApplied` events are
 ///   extracted for phase 4.5 write-back.
@@ -670,6 +602,18 @@ fn run_post_turn_phases(
 ) {
     use super::status::{apply_post_turn_effects, tick_status};
     use super::weather::{apply_weather_damage, tick_weather};
+
+    // Capture the active slot for each side NOW — before phases 3/3.5 can trigger
+    // a faint + auto-switch and change state.side_X.active. Phase 4.5 must write
+    // StatusApplied to the slot that was ATTACKED, not to whatever slot is active
+    // after a post-turn KO (RT-M14.5A-01, RT-M14.5A-02).
+    //
+    // Slot safety: StatusApplied is only emitted for non-fainted defenders (the
+    // `!fainted` guard in `resolve_one_attack`). A KO'd monster is never the target
+    // of StatusApplied, so the attacked monster was alive when the event was emitted
+    // and active at the start of this function — capturing now is correct.
+    let active_slot_a = state.side_a.active as usize;
+    let active_slot_b = state.side_b.active as usize;
 
     // Collect StatusApplied pairs from the combat action for phase 4.5.
     let status_applied: Vec<(SideId, super::types::StatusEffect)> = action_events
@@ -705,14 +649,17 @@ fn run_post_turn_phases(
     }
 
     // Phase 4.5: write StatusApplied effects into BattleStatusStore (ADR-0096 §D1).
-    // Newly-inflicted status takes effect the FOLLOWING turn.
+    // MUST be after phases 3/4 so newly-inflicted status does NOT cause same-turn
+    // DoT or Sleep/Freeze tick — it takes effect the FOLLOWING turn.
+    // Use the slots captured above (not state.side_X.active) so a weather-chip KO +
+    // auto-switch in phase 3.5 cannot redirect the write to the wrong monster.
     if state.outcome == BattleOutcome::Ongoing {
         for (side, new_status) in status_applied {
-            let (store_vec, active_slot) = match side {
-                SideId::SideA => (&mut status.side_a, state.side_a.active as usize),
-                SideId::SideB => (&mut status.side_b, state.side_b.active as usize),
+            let (store_vec, slot) = match side {
+                SideId::SideA => (&mut status.side_a, active_slot_a),
+                SideId::SideB => (&mut status.side_b, active_slot_b),
             };
-            if let Some(cell) = store_vec.get_mut(active_slot) {
+            if let Some(cell) = store_vec.get_mut(slot) {
                 *cell = Some(new_status);
             }
         }
@@ -2245,14 +2192,7 @@ mod tests {
         let mut status = BattleStatusStore::new(2, 1);
         // slot 1 (the bench monster being swapped IN) is poisoned in the store
         status.side_a[1] = Some(StatusEffect::Poison);
-        let sv = StatusVariance {
-            action_skip_roll_a: 99,
-            action_skip_roll_b: 99,
-            freeze_thaw_roll_a: 0,
-            freeze_thaw_roll_b: 0,
-            sleep_wake_roll_a: 0,
-            sleep_wake_roll_b: 0,
-        };
+        let sv = no_block_sv();
         let variance = always_hit_variance(true);
         // skills_vec() contains skill id=1 — needed for the enemy's pick_best_skill.
         resolve_player_swap(
@@ -2336,14 +2276,7 @@ mod tests {
         let mut status = BattleStatusStore::new(2, 1);
         status.side_a[0] = Some(StatusEffect::Sleep { turns_remaining: 3 });
         // Sleep always blocks attacks; swap must not consult this at all.
-        let sv = StatusVariance {
-            action_skip_roll_a: 99,
-            action_skip_roll_b: 99,
-            freeze_thaw_roll_a: 0,
-            freeze_thaw_roll_b: 0,
-            sleep_wake_roll_a: 99,
-            sleep_wake_roll_b: 99,
-        };
+        let sv = no_block_sv();
         let variance = always_hit_variance(true);
         resolve_player_swap(
             &mut state,
@@ -2388,14 +2321,7 @@ mod tests {
         status.side_a[0] = Some(StatusEffect::Freeze);
         // freeze_thaw_roll_a: 0 — does NOT thaw (thaw needs >= 80), so Freeze
         // persists through the turn; swap must still succeed regardless.
-        let sv = StatusVariance {
-            action_skip_roll_a: 99,
-            action_skip_roll_b: 99,
-            freeze_thaw_roll_a: 0,
-            freeze_thaw_roll_b: 0,
-            sleep_wake_roll_a: 99,
-            sleep_wake_roll_b: 99,
-        };
+        let sv = no_block_sv();
         let variance = always_hit_variance(true);
         resolve_player_swap(
             &mut state,

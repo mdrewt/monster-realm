@@ -485,7 +485,7 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
     }
 
     // Load skills via content cache so sets_weather is populated (M14d, ADR-0095).
-    // load_skills() is cached (M13.5d LazyLock); no DB round-trip for skills.
+    // load_skills() re-parses compile-time-embedded RON; no DB round-trip for skills.
     let skill_defs = game_core::load_skills()?;
     let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
