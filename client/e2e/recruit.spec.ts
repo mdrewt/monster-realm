@@ -144,10 +144,6 @@ const MAX_HEALS = 2;
  *  Bound: at most one pre-encounter heal per outer enc iteration (30 max).
  */
 const MAX_FLEE_HEALS = 30;
-/** Server-side heal_party cooldown guard (ms). Skip the heal attempt window
- *  when a heal fired recently to avoid an 8×6 s=48 s busy-wait on rejection.
- *  1 s over the 30 s cooldown gives margin for server clock drift. */
-const HEAL_COOLDOWN_MS = 31_000;
 /** Max skill attacks per encounter when weakening wild (bounded inner). */
 const MAX_SKILL_ATTACKS = 6;
 /** Step-wait timeout per move in ms (200 ms drain + network + margin). */
@@ -567,10 +563,16 @@ test.describe
     //   P(fail all 30) ≈ 0.6^30 ≈ 1.2e-7 (pessimistic); 0.7^30 ≈ 2.2e-5 (very pessimistic).
     // -------------------------------------------------------------------------
     test('R2: successful recruit increments ownMonsters by 1 with partySlot 255', async () => {
-      // Timeout budget: 30 enc × ~30s/enc (walk ~5 steps × actual ~2s + battle ~20s) = ~900s.
+      // Timeout budget: 30 enc × ~30s/enc base + pre-encounter heal waits.
+      // restoreHpBeforeEncounter: fast-path (~2s) when HP ≥ 80%; slow-path up to
+      // 8×6s = 48s to wait out the server 30s cooldown when HP is low.
+      // Worst-case (all enc hit cooldown): 30 × (48s heal + 5s enc) ≈ 1590s.
+      // Realistic (server cooldown limits heals to 1 per 30s of real time, and
+      // encounters succeed well before all 30 slots are used): ~650s.
+      // Headroom: 1500s (25 min) — covers the worst-case 1590s with ~6% margin.
       // STEP_WAIT_MS=8_000 is the per-step timeout bound, not actual step duration
       // (SpacetimeDB drains at ~200ms/step; loaded GHA runners may take 2–3s/step).
-      test.setTimeout(900_000);
+      test.setTimeout(1_500_000);
 
       const beforeSnap = await snap(page);
       const countBefore = beforeSnap.ownMonsters.length;
@@ -579,7 +581,6 @@ test.describe
       let recruited = false;
       let healCount = 0;
       let fleeHealCount = 0; // pre-encounter HP restoration (flee-damage recovery, not KO)
-      let lastFleeHealAt = 0; // epoch ms of last successful pre-encounter heal (cooldown guard)
       let encountersUsed = 0;
       let recruitClicksUsed = 0;
       winningBattleId = null;
@@ -590,12 +591,19 @@ test.describe
         // Pre-encounter HP restoration (ROOT CAUSE FIX — see MAX_FLEE_HEALS comment).
         // write_back_party_hp fires on every flee, so the next battle enters at
         // whatever HP we had when we fled.  Restore HP before walking if possible.
-        // COOLDOWN GUARD: skip the attempt if we healed recently — otherwise
-        // restoreHpBeforeEncounter would busy-wait 8×6 s=48 s on rejection.
-        if (fleeHealCount < MAX_FLEE_HEALS && Date.now() - lastFleeHealAt >= HEAL_COOLDOWN_MS) {
+        //
+        // NO outer cooldown guard: restoreHpBeforeEncounter handles the 30 s server
+        // cooldown internally (up to 8 clicks × 6 s each = 48 s retry window) and
+        // returns immediately when HP is already adequate (box-check fast-path).
+        // The prior HEAL_COOLDOWN_MS outer guard caused a new flake mode: fast
+        // flee-only encounters (e.g. Water-type or low-HP-flee) consumed enc slots
+        // within the 31 s guard window, leaving the party at depleted HP entering
+        // battles and triggering the ownPct ≤ OWN_HP_FLEE_THRESHOLD_PCT flee check
+        // on the first attack-loop iteration — producing recruitClicks≈1 across
+        // MAX_ENCOUNTERS=30 (CI red on master run after PR #144 merge).
+        if (fleeHealCount < MAX_FLEE_HEALS) {
           if (await restoreHpBeforeEncounter(page)) {
             fleeHealCount++;
-            lastFleeHealAt = Date.now();
           }
         }
 
