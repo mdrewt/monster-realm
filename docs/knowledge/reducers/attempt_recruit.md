@@ -5,7 +5,7 @@ slug: reducers/attempt_recruit
 updated: 2026-07-10
 tags: [reducer, spacetimedb, taming]
 abstract: "Attempt to recruit the wild monster in a wild battle (M8d, ADR-0047). The roll is injected (`ctx.random()`), never a cl…"
-resource: server-module/src/taming.rs#L43
+resource: server-module/src/taming.rs#L41
 source: scripts/okf-export.mjs@server-module/src/taming.rs
 ---
 

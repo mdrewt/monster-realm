@@ -867,7 +867,26 @@ fn f15_pvp_requires_symmetric_swap_api() {
     };
 
     // Swap SideB's active monster from slot 0 to slot 1.
-    let events = resolve_player_swap(&mut state, SideId::SideB, 1, &skills, &chart, &variance);
+    use crate::combat::status::{BattleStatusStore, StatusVariance};
+    let mut status = BattleStatusStore::new(1, 2);
+    let sv = StatusVariance {
+        action_skip_roll_a: 99,
+        action_skip_roll_b: 99,
+        freeze_thaw_roll_a: 0,
+        freeze_thaw_roll_b: 0,
+        sleep_wake_roll_a: 0,
+        sleep_wake_roll_b: 0,
+    };
+    let events = resolve_player_swap(
+        &mut state,
+        SideId::SideB,
+        1,
+        &skills,
+        &chart,
+        &variance,
+        &mut status,
+        &sv,
+    );
 
     // REAL ASSERTION: state.side_b.active must now be 1.
     // This is RED if the symmetric API is narrowed (e.g., only SideA is handled).

@@ -12,10 +12,11 @@ use crate::schema::{
     Character, EncounterEntryRow, EncounterRow, Monster, MonsterPub, SkillRow, SpeciesRow,
     TypeRelationRow,
 };
+#[cfg(test)]
+use game_core::SkillDef;
 use game_core::{
     derive_stats, roll_individuality, BattleMonster, CharacterState, EVs, EncounterEntry,
-    EncounterTable, Level, Millis, MonsterInstance, SkillDef, StatBlock, StatKind, TilePos,
-    TypeChart,
+    EncounterTable, Level, Millis, MonsterInstance, StatBlock, StatKind, TilePos, TypeChart,
 };
 use spacetimedb::{Identity, ReducerContext};
 
@@ -359,12 +360,14 @@ pub(crate) fn loser_base_stat_total(species: &SpeciesRow) -> u16 {
     game_core::base_stat_total(&base)
 }
 
-/// Build a `Vec<SkillDef>` from the DB skill rows for the resolver.
+/// Build a `Vec<SkillDef>` from the DB skill rows.
 ///
-/// Trust boundary (ADR-0049, reject-not-clamp): re-validates the same invariants
-/// that seed-time `validate_content` enforces (`power > 0`, `accuracy ∈ [1, 100]`),
-/// symmetric with `monster_to_instance` — if the DB were ever written outside of
-/// `sync_content`, an invalid skill would silently affect battle damage/accuracy.
+/// Production battle paths (submit_attack, swap_active, attempt_recruit) all use
+/// `load_skills()` (content cache, ADR-0098 D2). This function is retained for
+/// marshal boundary tests (power > 0, accuracy ∈ [1, 100]); it sets
+/// `sets_weather: None, applies_status: None` which is intentional for unit tests
+/// that exercise the validation logic only.
+#[cfg(test)]
 pub(crate) fn skill_defs_from_rows(rows: &[SkillRow]) -> Result<Vec<SkillDef>, String> {
     rows.iter()
         .map(|r| {
@@ -385,10 +388,10 @@ pub(crate) fn skill_defs_from_rows(rows: &[SkillRow]) -> Result<Vec<SkillDef>, S
                 accuracy: r.accuracy,
                 pp: r.pp,
                 // DB SkillRow has no sets_weather or applies_status columns; these are
-                // only populated via load_skills() (content cache). submit_attack and
-                // swap_active use load_skills() for battle resolution; taming.rs
-                // (attempt_recruit) still uses this path — sets_weather and applies_status
-                // gaps documented in ADR-0095/0096 residuals, deferred to m14f.
+                // only populated via load_skills() (content cache). All battle-resolution
+                // paths (submit_attack, swap_active, attempt_recruit) now use load_skills()
+                // directly (ADR-0098 D2). skill_defs_from_rows is used only for schema
+                // validation and marshal tests where sets_weather/applies_status are not needed.
                 sets_weather: None,
                 applies_status: None,
             })

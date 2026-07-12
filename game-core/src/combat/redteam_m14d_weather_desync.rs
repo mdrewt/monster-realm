@@ -1,15 +1,12 @@
 //! Red-team gating tests for M14d weather desync and validate_content findings.
 //!
-//! These tests expose confirmed bugs and gate against regression:
-//!
-//! RT-W14-DESYNC-01 (HIGH): skill_defs_from_rows always returns sets_weather=None,
-//!     so the wild's weather-setting skill is silently treated as a non-weather skill
-//!     during resolve_recruit_failure. This creates a game-core / server-module desync:
-//!     - submit_attack / swap_active use game_core::load_skills() (sets_weather populated)
-//!     - attempt_recruit uses skill_defs_from_rows() (sets_weather always None)
-//!     The gating test proves the desync at the game-core level: a SkillDef with
-//!     sets_weather=None vs sets_weather=Some(Rain) produces different BattleState.weather
-//!     after resolve_recruit_failure. Gap documented in ADR-0095 residuals, deferred m14e.
+//! RT-W14-DESYNC-01 (FIXED — M14.5a, ADR-0098 D2): attempt_recruit now uses
+//!     load_skills() (sets_weather/applies_status populated) instead of
+//!     skill_defs_from_rows() (sets_weather: None for all skills). The desync
+//!     between submit_attack/swap_active and attempt_recruit is closed.
+//!     The gating test now pins the FIX: a wild's weather-setting strike-back
+//!     during resolve_recruit_failure must set state.weather when skills carry
+//!     sets_weather=Some(Rain) (as load_skills() returns).
 //!
 //! RT-W14-VALID-01 (FIXED — B-1): validate_content's weather guard was dead code.
 //!     The original `let _valid = matches!(kind, ...)` discarded the result without
@@ -18,9 +15,10 @@
 //!     still pass validation. This test gates that valid weather skills remain accepted.
 
 use crate::combat::resolve::resolve_recruit_failure;
+use crate::combat::status::{BattleStatusStore, StatusVariance};
 use crate::combat::type_chart::tests::make_type_chart;
 use crate::combat::types::{BattleMonster, BattleOutcome, BattleSide, BattleState, TurnVariance};
-use crate::combat::weather::{WeatherKind, WEATHER_DEFAULT_TURNS};
+use crate::combat::weather::{WeatherEffect, WeatherKind, WEATHER_DEFAULT_TURNS};
 use crate::content::SkillDef;
 use crate::monster::types::{Affinity, StatBlock};
 
@@ -64,44 +62,35 @@ fn always_hit_variance_weather() -> TurnVariance {
 
 // ===========================================================================
 // RT-W14-DESYNC-01 (HIGH): skill_defs_from_rows strips sets_weather, silently
-// breaking weather for resolve_recruit_failure.
+// FIXED (M14.5a, ADR-0098 D2): attempt_recruit now uses load_skills()
+// (sets_weather/applies_status populated). The desync is closed.
 //
-// The server-module taming.rs::attempt_recruit calls:
-//   let skill_defs = skill_defs_from_rows(&skill_rows)?;  // sets_weather: None for ALL
-//   resolve_recruit_failure(&mut battle.state, &skill_defs, ...);
+// Gating test: pin that a wild's weather-setting strike-back during
+// resolve_recruit_failure correctly sets state.weather when skills carry
+// sets_weather=Some(Rain) — as load_skills() returns.
 //
-// But submit_attack and swap_active use:
-//   let skill_defs = game_core::load_skills()?;  // sets_weather: Some(...) populated
-//
-// This means: if the wild has a weather-setting skill and the player fails a
-// recruit attempt, the wild's strike-back does NOT set weather (it uses the
-// skill_defs_from_rows path where sets_weather=None). The battle state weather
-// is unchanged. This is WRONG — the weather should be set by the wild's skill.
-//
-// Gating test: prove that a skill with sets_weather=Some(Rain) vs sets_weather=None
-// produces different state.weather after resolve_recruit_failure. The recruit
-// failure path must fix its caller to use load_skills() like the attack path does.
-//
-// Kills: an impl of attempt_recruit that calls skill_defs_from_rows (which returns
-// sets_weather=None for every skill) instead of load_skills() (which returns
-// the actual sets_weather from the RON content). Once the fix is applied,
-// skill_defs_from_rows is no longer called on the recruit-failure path and this
-// test documents the before/after difference.
+// Kills: a regression that reverts attempt_recruit back to skill_defs_from_rows
+// (sets_weather=None), which would leave state.weather==None after the call and
+// fail the assertion below.
 // ===========================================================================
 
-/// Prove that sets_weather=Some(Rain) causes state.weather to be set after
-/// resolve_recruit_failure, while sets_weather=None does not.
+/// RT-W14-DESYNC-01 (FIXED): pin that the recruit-failure path correctly sets
+/// weather when the wild uses a weather-setting skill.
 ///
-/// This is the load-bearing proof-of-desync: a caller that passes skills with
-/// sets_weather=None (as skill_defs_from_rows does) silently drops the weather
-/// effect. A caller that passes skills with sets_weather=Some(Rain) (as
-/// load_skills() does) correctly sets state.weather.
+/// Before the fix: attempt_recruit used skill_defs_from_rows (sets_weather=None),
+/// so the wild's Rain Dance strike-back silently dropped the weather effect.
+/// After the fix (ADR-0098 D2): attempt_recruit uses load_skills() which returns
+/// sets_weather=Some(Rain), so state.weather is correctly set.
 ///
-/// The test proves the desync is REAL and that the fix (use load_skills() in
-/// attempt_recruit) closes it.
+/// This test pins the FIX: state.weather must be Some(Rain{turns:5}) after a
+/// wild with a Rain Dance skill strikes back during a failed recruit attempt.
+///
+/// Kills: any regression that drops sets_weather (e.g. reverting to
+/// skill_defs_from_rows); state.weather would remain None and the assertion fails.
 #[test]
-fn rt_w14_desync_01_recruit_failure_weather_strip_via_none_vs_some() {
+fn rt_w14_desync_01_recruit_failure_weather_set_by_load_skills_path() {
     let chart = make_type_chart();
+    let variance = always_hit_variance_weather();
 
     // Side A: player with high HP (survive the wild's strike-back).
     let player = BattleMonster {
@@ -118,115 +107,70 @@ fn rt_w14_desync_01_recruit_failure_weather_strip_via_none_vs_some() {
     // Side B: wild that knows skill id 7 (the weather-setting skill).
     let wild = make_monster_weather(Affinity::Water, 200, 80); // faster than player
 
-    // -----------------------------------------------------------------------
-    // Path A (desync): skill_defs_from_rows silently returns sets_weather=None.
-    // This is what the current attempt_recruit reducer does.
-    // -----------------------------------------------------------------------
-    let skill_with_weather_stripped = SkillDef {
+    // Skill with sets_weather=Some(Rain) — what load_skills() returns after the fix.
+    let rain_dance = SkillDef {
         id: 7,
         name: "Rain Dance".to_string(),
         affinity: Affinity::Water,
         power: 40,
         accuracy: 100,
         pp: 10,
-        sets_weather: None, // <-- what skill_defs_from_rows returns (BUG)
+        sets_weather: Some(WeatherKind::Rain),
         applies_status: None,
     };
 
-    let mut state_desync = BattleState {
+    let mut state = BattleState {
         side_a: BattleSide {
             active: 0,
-            team: vec![player.clone()],
+            team: vec![player],
         },
         side_b: BattleSide {
             active: 0,
-            team: vec![wild.clone()],
+            team: vec![wild],
         },
         outcome: BattleOutcome::Ongoing,
         turn_number: 0,
         weather: None,
     };
 
-    let variance = always_hit_variance_weather();
-    let _ = resolve_recruit_failure(
-        &mut state_desync,
-        &[skill_with_weather_stripped],
-        &chart,
-        &variance,
-    );
-
-    // With sets_weather=None: NO weather should be set (the desync path silently drops it).
-    assert!(
-        state_desync.weather.is_none(),
-        "DESYNC PATH: skill_defs_from_rows returns sets_weather=None; \
-         state.weather must remain None (the wild's weather-setting strike is silently dropped). \
-         Got: {:?}",
-        state_desync.weather
-    );
-
-    // -----------------------------------------------------------------------
-    // Path B (correct): load_skills() returns sets_weather=Some(Rain).
-    // This is what submit_attack and swap_active do correctly.
-    // -----------------------------------------------------------------------
-    let skill_with_weather_populated = SkillDef {
-        id: 7,
-        name: "Rain Dance".to_string(),
-        affinity: Affinity::Water,
-        power: 40,
-        accuracy: 100,
-        pp: 10,
-        sets_weather: Some(WeatherKind::Rain), // <-- what load_skills() returns (CORRECT)
-        applies_status: None,
-    };
-
-    // Reset: same initial state, different skill registry.
-    let mut state_correct = BattleState {
-        side_a: BattleSide {
-            active: 0,
-            team: vec![player.clone()],
-        },
-        side_b: BattleSide {
-            active: 0,
-            team: vec![wild.clone()],
-        },
-        outcome: BattleOutcome::Ongoing,
-        turn_number: 0,
-        weather: None,
+    let mut status = BattleStatusStore::new(1, 1);
+    let sv = StatusVariance {
+        action_skip_roll_a: 99,
+        action_skip_roll_b: 99,
+        freeze_thaw_roll_a: 0,
+        freeze_thaw_roll_b: 0,
+        sleep_wake_roll_a: 0,
+        sleep_wake_roll_b: 0,
     };
 
     let _ = resolve_recruit_failure(
-        &mut state_correct,
-        &[skill_with_weather_populated],
+        &mut state,
+        &[rain_dance],
         &chart,
         &variance,
+        &mut status,
+        &sv,
     );
 
-    // With sets_weather=Some(Rain): weather MUST be set after the wild's strike-back.
-    // The wild (side B, faster) attacks and uses skill 7 (Rain Dance).
-    // The sets_weather=Some(Rain) field causes resolve_one_attack to set state.weather.
+    // FIX PINNED: the wild (faster, B) attacks with Rain Dance (sets_weather=Some(Rain)).
+    // Phase 5 weather tick then decrements turns_remaining from WEATHER_DEFAULT_TURNS to
+    // WEATHER_DEFAULT_TURNS-1. Both D2 (load_skills set the weather) and D1 (post-turn
+    // phases ran the tick) are proven by this assertion. A regression to skill_defs_from_rows
+    // leaves state.weather=None here (sets_weather hardcoded to None in that path).
+    const EXPECTED_TURNS: u8 = WEATHER_DEFAULT_TURNS - 1;
     assert!(
-        state_correct.weather.is_some(),
-        "CORRECT PATH: load_skills() returns sets_weather=Some(Rain); \
-         state.weather must be Some(Rain{{turns:{WEATHER_DEFAULT_TURNS}}}) after wild's strike-back. \
-         If this fails, the wild's attack did not fire (check speed/accuracy). \
+        matches!(
+            state.weather,
+            Some(WeatherEffect::Rain {
+                turns_remaining: EXPECTED_TURNS
+            })
+        ),
+        "RT-W14-DESYNC-01 FIX PINNED: state.weather must be Rain{{turns:{EXPECTED_TURNS}}} \
+         after wild's Rain Dance strike-back + weather tick (load_skills() path, \
+         sets_weather=Some(Rain), then phase-5 tick). \
+         A regression reverting to skill_defs_from_rows leaves state.weather=None here. \
          Got: {:?}",
-        state_correct.weather
-    );
-
-    // -----------------------------------------------------------------------
-    // The DESYNC: same battle scenario, same wild skill, different caller path
-    // produces different state.weather. This proves the invariant violation.
-    // -----------------------------------------------------------------------
-    assert_ne!(
-        state_desync.weather, state_correct.weather,
-        "CONFIRMED DESYNC (RT-W14-DESYNC-01): attempt_recruit uses skill_defs_from_rows \
-         (sets_weather=None for all skills), while submit_attack uses load_skills() \
-         (sets_weather=Some(...)). A wild's weather-setting strike-back during recruit failure \
-         silently drops the weather effect. state.weather differs between the two paths: \
-         desync={:?} vs correct={:?}. \
-         Fix: replace skill_defs_from_rows in taming.rs::attempt_recruit with \
-         game_core::load_skills()? to match submit_attack and swap_active.",
-        state_desync.weather, state_correct.weather
+        state.weather
     );
 }
 
