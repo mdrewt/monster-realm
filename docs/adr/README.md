@@ -5,12 +5,12 @@ Architecture Decision Records live in **two locations**; check both.
 - **Design ADRs `0002`–`0034`** — in the **harness spec corpus**
   (`../../specs/monster-realm-v2/adr/`). These are the foundational design
   decisions authored alongside the milestone specs.
-- **Implementation ADRs `0001`, `0035`–`0097`** — in **this directory**
+- **Implementation ADRs `0001`, `0035`–`0098`** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0098`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0099`**.
 
 **ADR numbering collision note:** the harness spec corpus also contains design
 ADRs numbered `0055`–`0057` with *different topics* from this project's
@@ -86,6 +86,7 @@ explicit path prefix `harness adr/0055` to cite the harness design ADR.
 | [0095](./0095-m14d-weather-field-state.md) | Weather / field-state system — single active weather, WeatherKind exhaustive, phase-3.5 chip ordering, sets_weather content hook | M14d |
 | [0096](./0096-m14e-status-cure-items.md) | Status-curing items — applies_status on SkillDef, cure_status on ItemDef, use_battle_item reducer, Phase 1.5/4.5, client status badge | M14e |
 | [0097](./0097-m14-close-phase-b-complete.md) | M14 Close: Phase B Complete — milestone closure record, Phase B scope recap, Phase C queue | M14f |
+| [0098](./0098-m14.5a-swap-recruit-full-pipeline.md) | Swap/recruit paths run the full post-turn status/weather pipeline; skill-source unification | M14.5a |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
