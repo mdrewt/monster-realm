@@ -94,12 +94,60 @@ interface GameSnap {
  *  every 2nd step (only the East step onto (2,2) rolls), so 80 steps ≈ 40 grass
  *  entries: P(no encounter) = 0.8^40 ≈ 1.3e-4. */
 const MAX_WALK_STEPS = 80;
-/** Max outer encounter-loop iterations in R2 (whole encounter cycles incl. flee/KO). */
-const MAX_ENCOUNTERS = 14; // per plan: at ≥40%/encounter P(fail all 14) < 1e-3
-/** Max recruit clicks per encounter (bounded inner loop). */
-const MAX_RECRUIT_CLICKS = 8;
+/** Max outer encounter-loop iterations in R2 (whole encounter cycles incl. flee/KO).
+ *
+ * Statistical justification (raised from 14 to 30 — remote CI red, run 29149789277):
+ *
+ * Zone 0 encounter table (encounters/000-core.ron):
+ *   Flameling (Fire,  weight 10): 10/22 ≈ 45.5% — safe to weaken + recruit
+ *   Tidalin   (Water, weight  7):  7/22 ≈ 31.8% — flee immediately (enc slot consumed)
+ *   Sproutlet (Plant, weight  5):  5/22 ≈ 22.7% — safe to weaken + recruit
+ * → P(non-Water per slot) = 15/22 ≈ 68.2%.
+ *
+ * Of non-Water encounters, estimate ~85% survive the weaken phase without KO.
+ * Of those, P(≥1 recruit in MAX_RECRUIT_CLICKS=12 at 380‰/click) ≈ 0.998.
+ * Effective P(success per enc slot) ≈ 0.682 × 0.85 × 0.998 ≈ 0.58.
+ *
+ * Pessimistic (p=0.40): P(fail all 30) = 0.6^30 ≈ 1.2e-7.
+ * Very pessimistic (p=0.30): P(fail all 30) = 0.7^30 ≈ 2.2e-5.
+ *
+ * The original MAX_ENCOUNTERS=14 gave P(fail) ≈ 0.6^14 ≈ 8e-4 (0.08%), which
+ * triggers measurably across many CI pushes.  MAX_ENCOUNTERS=30 is negligible.
+ *
+ * Determinism note: SpacetimeDB ctx.random() is server-side only; injecting a
+ * seed from the test process is not possible within client/e2e/** (ADR-0086
+ * §infra; dev reducers require the browser identity auth token which is
+ * inaccessible from the Node.js test process per the design rationale above).
+ * A budget raise is the correct fix for this touch boundary.
+ */
+const MAX_ENCOUNTERS = 30;
+/** Max recruit clicks per encounter (bounded inner loop).
+ *
+ * Raised from 8 to 12: at WEAKEN_STOP_PCT=40% wild HP, recruit_chance ≈ 380‰.
+ * P(≥1 success in 12 clicks) = 1-(0.62)^12 ≈ 0.998 vs. ≈ 0.980 for 8 clicks.
+ */
+const MAX_RECRUIT_CLICKS = 12;
 /** Max heal attempts (30s cooldown per heal; KO recovery path). */
 const MAX_HEALS = 2;
+/** Max pre-encounter HP-restoration heals (flee-damage recovery, separate from
+ *  KO-recovery heals tracked by MAX_HEALS).
+ *
+ *  ROOT CAUSE (CI red, run 29154350070): write_back_party_hp fires on EVERY
+ *  flee (ADR-0047), persisting depleted HP to the DB.  The NEXT begin_encounter
+ *  builds side_a from the current DB HP, so subsequent battles enter at e.g.
+ *  HP=4/20 (20%) — immediately triggering OWN_HP_FLEE_THRESHOLD_PCT — creating
+ *  an infinite flee loop with only 1 recruit click ever attempted.
+ *
+ *  Fix: before each encounter walk, restore HP via heal_party if below 80%.
+ *  These heals are NOT KO-recovery (party is alive, not fainted), so they use
+ *  a separate counter and do not consume MAX_HEALS budget.
+ *  Bound: at most one pre-encounter heal per outer enc iteration (30 max).
+ */
+const MAX_FLEE_HEALS = 30;
+/** Server-side heal_party cooldown guard (ms). Skip the heal attempt window
+ *  when a heal fired recently to avoid an 8×6 s=48 s busy-wait on rejection.
+ *  1 s over the 30 s cooldown gives margin for server clock drift. */
+const HEAL_COOLDOWN_MS = 31_000;
 /** Max skill attacks per encounter when weakening wild (bounded inner). */
 const MAX_SKILL_ATTACKS = 6;
 /** Step-wait timeout per move in ms (200 ms drain + network + margin). */
@@ -304,6 +352,109 @@ async function healViaBox(p: Page): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// restoreHpBeforeEncounter: open the box, check HP, and heal if below 80%.
+// Called at the start of each enc iteration to undo HP depletion that
+// write_back_party_hp persists on flee.  The server-side heal_party has a 30 s
+// cooldown; we retry for up to 48 s (8 clicks × up to 6 s each) so a queued
+// cooldown window is covered without a bare sleep.
+//
+// Detection: box HP format is "HP cur/max (pct%)" (boxView.ts:152).  We scan
+// ALL HP pairs in the box text (matchAll) — every visible monster row must
+// satisfy the threshold — unlike healViaBox (which only checks "HP 0/").
+// ---------------------------------------------------------------------------
+// Returns true if a heal was performed (HP was low and heal clicked), false if
+// HP was already adequate or the box could not be opened.
+async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
+  const healBtn = p.getByText('Heal Party', { exact: true });
+
+  // Open the box (same Escape+KeyB trick as healViaBox to dismiss overlays).
+  const MAX_BOX_OPEN_TRIES = 20;
+  let boxOpen = false;
+  for (let i = 0; i < MAX_BOX_OPEN_TRIES && !boxOpen; i++) {
+    if (!(await healBtn.isVisible().catch(() => false))) {
+      await p.keyboard.press('Escape');
+      await p.keyboard.press('KeyB');
+    }
+    boxOpen = await healBtn
+      .waitFor({ state: 'visible', timeout: 500 })
+      .then(() => true)
+      .catch(() => false);
+  }
+  if (!boxOpen) {
+    console.log('restoreHpBeforeEncounter: box did not open after 20 tries, skipping heal');
+    return false; // another overlay is latched; skip and proceed
+  }
+
+  // Determine if HP is below the restoration threshold (80% of max).
+  // If already healthy, close immediately without clicking heal.
+  const needsHeal = await p
+    .waitForFunction(
+      () => {
+        const boxTitle = Array.from(document.querySelectorAll('h2')).find(
+          (h) => h.textContent === 'Party & Box',
+        );
+        const root = boxTitle?.parentElement?.parentElement;
+        if (!root || root.style.display === 'none') return 'no-box';
+        const text = root.textContent ?? '';
+        // Box HP format: "HP cur/max (pct%)" — scan ALL pairs so every monster
+        // row must be healthy before we skip the heal.
+        const ms = [...text.matchAll(/HP (\d+)\/(\d+)/g)];
+        if (!ms.length) return 'no-hp';
+        const anyLow = ms.some((match) => {
+          const cur = parseInt(match[1]!, 10);
+          const max = parseInt(match[2]!, 10);
+          return max > 0 && cur / max < 0.8;
+        });
+        return anyLow ? 'low' : 'ok';
+      },
+      null,
+      { timeout: 5_000 },
+    )
+    .then((h) => h.jsonValue())
+    .catch(() => 'ok');
+
+  if (needsHeal !== 'low') {
+    await p.keyboard.press('Escape');
+    await expect(healBtn).toBeHidden({ timeout: 5_000 });
+    return false;
+  }
+
+  // HP is low — click Heal Party and wait for HP to reach ≥ 80%.
+  // Retry covers the 30 s server cooldown (8 clicks × ≤6 s each = ≤48 s).
+  const MAX_HEAL_CLICKS = 8;
+  let restored = false;
+  for (let i = 0; i < MAX_HEAL_CLICKS && !restored; i++) {
+    await healBtn.click({ timeout: 5_000 });
+    restored = await p
+      .waitForFunction(
+        () => {
+          const boxTitle = Array.from(document.querySelectorAll('h2')).find(
+            (h) => h.textContent === 'Party & Box',
+          );
+          const root = boxTitle?.parentElement?.parentElement;
+          if (!root || root.style.display === 'none') return false;
+          const text = root.textContent ?? '';
+          const ms = [...text.matchAll(/HP (\d+)\/(\d+)/g)];
+          if (!ms.length) return false;
+          return ms.every((match) => {
+            const cur = parseInt(match[1]!, 10);
+            const max = parseInt(match[2]!, 10);
+            return max > 0 && cur / max >= 0.8;
+          });
+        },
+        null,
+        { timeout: 6_000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+  }
+
+  await p.keyboard.press('Escape');
+  await expect(healBtn).toBeHidden({ timeout: 5_000 });
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Suite (describe.serial: one page, sequential tests sharing state via the
 // suiteScoped variable `winningBattleId` for R3).
 // ---------------------------------------------------------------------------
@@ -408,16 +559,18 @@ test.describe
     //   THE new monster SHALL have partySlot === 255 (PARTY_SLOT_NONE = box).
     //   Records the winning battleId for R3.
     //
-    //   Encounter loop: MAX_ENCOUNTERS = 14.
+    //   Encounter loop: MAX_ENCOUNTERS = 30 (raised from 14 — see constant comment).
     //   Per encounter, recruit_chance ≈ 80‰ + 500‰×(missingHpFraction).
     //   At ~40% wild HP remaining: chance ≈ 380‰ per click.
-    //   P(≥1 success in 8 clicks at 380‰) ≈ 1 - (1-0.38)^8 ≈ 0.98.
-    //   P(success per encounter) ≈ 0.98 × P(not-Water) × P(not-KO-before-recruit).
-    //   Conservatively 40% per encounter; P(fail all 14) ≈ 0.6^14 ≈ 8e-4.
-    //   Actual rate is higher: starter is L5 Fire, most wilds are not Water-type.
+    //   P(≥1 success in 12 clicks at 380‰) ≈ 1 - (0.62)^12 ≈ 0.998.
+    //   P(success per enc slot) ≈ 0.998 × P(not-Water) × P(survive-weaken) ≈ 0.58.
+    //   P(fail all 30) ≈ 0.6^30 ≈ 1.2e-7 (pessimistic); 0.7^30 ≈ 2.2e-5 (very pessimistic).
     // -------------------------------------------------------------------------
     test('R2: successful recruit increments ownMonsters by 1 with partySlot 255', async () => {
-      test.setTimeout(300_000);
+      // Timeout budget: 30 enc × ~30s/enc (walk ~5 steps × actual ~2s + battle ~20s) = ~900s.
+      // STEP_WAIT_MS=8_000 is the per-step timeout bound, not actual step duration
+      // (SpacetimeDB drains at ~200ms/step; loaded GHA runners may take 2–3s/step).
+      test.setTimeout(900_000);
 
       const beforeSnap = await snap(page);
       const countBefore = beforeSnap.ownMonsters.length;
@@ -425,12 +578,27 @@ test.describe
 
       let recruited = false;
       let healCount = 0;
+      let fleeHealCount = 0; // pre-encounter HP restoration (flee-damage recovery, not KO)
+      let lastFleeHealAt = 0; // epoch ms of last successful pre-encounter heal (cooldown guard)
       let encountersUsed = 0;
       let recruitClicksUsed = 0;
       winningBattleId = null;
 
       for (let enc = 0; enc < MAX_ENCOUNTERS && !recruited; enc++) {
         encountersUsed = enc + 1;
+
+        // Pre-encounter HP restoration (ROOT CAUSE FIX — see MAX_FLEE_HEALS comment).
+        // write_back_party_hp fires on every flee, so the next battle enters at
+        // whatever HP we had when we fled.  Restore HP before walking if possible.
+        // COOLDOWN GUARD: skip the attempt if we healed recently — otherwise
+        // restoreHpBeforeEncounter would busy-wait 8×6 s=48 s on rejection.
+        if (fleeHealCount < MAX_FLEE_HEALS && Date.now() - lastFleeHealAt >= HEAL_COOLDOWN_MS) {
+          if (await restoreHpBeforeEncounter(page)) {
+            fleeHealCount++;
+            lastFleeHealAt = Date.now();
+          }
+        }
+
         // Walk grass until a battle starts.
         // P(no encounter in 40 entries @ 20%) ≈ 1.3e-4; outer loop re-attempts.
         let encBattleFound = false;
@@ -477,6 +645,9 @@ test.describe
           .textContent({ timeout: 5_000 })
           .catch(() => '');
         const opponentHp = parseHpLine(opponentCardText ?? '');
+        console.log(
+          `R2 enc ${enc + 1}: type=${opponentHp?.affinity ?? 'unknown'} hp=${opponentHp ? `${opponentHp.cur}/${opponentHp.max}` : '?'}`,
+        );
 
         if (opponentHp && opponentHp.affinity === 'Water') {
           // Flee immediately — Water wipe risk.
@@ -484,6 +655,7 @@ test.describe
           await fleeBtn.click({ timeout: 5_000 });
           await waitForBattleCleared(page);
           winningBattleId = null; // encounter did not proceed to recruit
+          console.log(`R2 enc ${enc + 1}: fled Water type`);
           continue;
         }
 
@@ -491,6 +663,17 @@ test.describe
         // Each skill attack = one exchange (you hit, wild hits back).
         // Stop when opponent HP% <= WEAKEN_STOP_PCT OR own HP% <= OWN_HP_ATTACK_MIN_PCT.
         // MAX_SKILL_ATTACKS bounds the inner loop (safety net).
+        //
+        // PARTY-ALIVE TRACKING (deflake-recruit-r2):
+        // ongoingBattle === null can mean three distinct outcomes:
+        //   (a) Explicit flee (own HP < OWN_HP_FLEE_THRESHOLD_PCT) — party alive.
+        //   (b) Wild KO'd mid-attack (SideAWins, Victory! visible) — party alive.
+        //   (c) Party KO'd by wild (SideBWins) — party fainted, heal required.
+        // The original code treated (a)+(b) the same as (c), consuming healCount
+        // slots for non-faint events and exhausting MAX_HEALS prematurely.
+        // battleEndedWithPartyAlive is set true for (a) and (b) to suppress the
+        // unnecessary heal path — MAX_HEALS is proof-of-teeth and must not change.
+        let battleEndedWithPartyAlive = false;
         for (let atk = 0; atk < MAX_SKILL_ATTACKS; atk++) {
           // Re-read HP from DOM before each attack.
           // Source: battleView.ts:113 `${label}: ${card.speciesName}` (header) and :135 (hp).
@@ -516,6 +699,9 @@ test.describe
             await fleeBtn.click({ timeout: 5_000 });
             await waitForBattleCleared(page);
             winningBattleId = null;
+            // Explicit flee: party HP was > OWN_HP_FLEE_THRESHOLD_PCT before flee click;
+            // the wild had no opportunity to KO us. No heal needed.
+            battleEndedWithPartyAlive = true;
             break;
           }
 
@@ -548,9 +734,18 @@ test.describe
             break;
           }
 
-          // If the battle ended (KO'd) break out of the attack loop.
+          // If the battle ended during the attack, break out of the attack loop.
+          // Determine which side won: SideAWins (we KO'd wild, Victory! visible) means
+          // party is alive; SideBWins (wild KO'd us) means party fainted.
           const midSnap = await snap(page);
           if (midSnap.ongoingBattle === null) {
+            // battleView renders Victory! synchronously in the same subscription callback
+            // that set ongoingBattle to null, so isVisible() is reliable here.
+            const wildKOd = await page
+              .getByText('Victory!', { exact: true })
+              .isVisible({ timeout: 2_000 })
+              .catch(() => false);
+            battleEndedWithPartyAlive = wildKOd;
             winningBattleId = null;
             break;
           }
@@ -559,18 +754,37 @@ test.describe
         // --- Check if the battle ended (KO or fled) before we could recruit. ---
         const postWeakenSnap = await snap(page);
         if (postWeakenSnap.ongoingBattle === null) {
-          // SideBWins (KO) or Fled: check if we need to heal.
-          // The terminal outcome frame stays visible (lazy GC — see healViaBox);
-          // a fainted party blocks encounters, so recover via Escape-dismiss →
-          // KeyB → "Heal Party" (zone-scoped, currently free, 30s cooldown).
-          if (healCount < MAX_HEALS) {
-            healCount++;
-            // healViaBox waits for the healed-signal in the box DOM (no bare sleeps).
-            await healViaBox(page);
-          } else {
-            // Fail loud at the point of detection (reviewer M3): a soft-assert +
-            // break would surface as a misleading "did not recruit" hard-fail later.
-            throw new Error(`R2: exceeded MAX_HEALS (${MAX_HEALS}); party fainted too often`);
+          // Battle ended before recruit phase.  Only heal when the party is fainted
+          // (SideBWins — party KO'd by wild).  Explicit flee and wild-KO (SideAWins)
+          // leave the party alive; charging healCount for those events wastes the
+          // MAX_HEALS budget and causes spurious "exceeded MAX_HEALS" failures.
+          //
+          // battleEndedWithPartyAlive is set by the attack loop for (a) explicit flee
+          // and (b) mid-attack wild-KO detected via midSnap.  For the edge case where
+          // the attack loop exits via "skills not visible → break" (battle may have
+          // just ended), we re-check here with the Victory! text as a fallback.
+          let partyAlive = battleEndedWithPartyAlive;
+          if (!partyAlive) {
+            // battleView.refresh() runs synchronously in the same onBatchApplied
+            // callback that cleared ongoingBattle, so Victory! is DOM-present now.
+            partyAlive = await page
+              .getByText('Victory!', { exact: true })
+              .isVisible({ timeout: 2_000 })
+              .catch(() => false);
+          }
+          if (!partyAlive) {
+            // The terminal outcome frame stays visible (lazy GC — see healViaBox);
+            // a fainted party blocks encounters, so recover via Escape-dismiss →
+            // KeyB → "Heal Party" (zone-scoped, currently free, 30s cooldown).
+            if (healCount < MAX_HEALS) {
+              healCount++;
+              // healViaBox waits for the healed-signal in the box DOM (no bare sleeps).
+              await healViaBox(page);
+            } else {
+              // Fail loud at the point of detection (reviewer M3): a soft-assert +
+              // break would surface as a misleading "did not recruit" hard-fail later.
+              throw new Error(`R2: exceeded MAX_HEALS (${MAX_HEALS}); party fainted too often`);
+            }
           }
           winningBattleId = null;
           continue;
@@ -601,6 +815,9 @@ test.describe
             await fleeBtn.click({ timeout: 5_000 });
             await waitForBattleCleared(page);
             winningBattleId = null;
+            // battleEndedWithPartyAlive not needed: the post-weaken null check (above)
+            // is structurally before this recruit loop; breaking here bypasses it and
+            // re-enters the outer enc loop, which re-initialises the flag to false.
             break;
           }
 
@@ -655,7 +872,7 @@ test.describe
       // -------------------------------------------------------------------------
       // Diagnostics for CI logs (flake triage without a trace download).
       console.log(
-        `R2 diagnostics: encounters=${encountersUsed} recruitClicks=${recruitClicksUsed} heals=${healCount} recruited=${recruited}`,
+        `R2 diagnostics: encounters=${encountersUsed} recruitClicks=${recruitClicksUsed} heals=${healCount} fleeHeals=${fleeHealCount} recruited=${recruited}`,
       );
 
       expect(recruited, `R2: did not recruit within MAX_ENCOUNTERS=${MAX_ENCOUNTERS}`).toBe(true);
