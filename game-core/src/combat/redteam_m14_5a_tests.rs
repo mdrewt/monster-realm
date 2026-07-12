@@ -253,8 +253,10 @@ fn rt_m14_5a_01_status_applied_written_to_correct_slot_after_weather_chip_ko() {
     // - Phase 4.5 SHOULD write Burn to slot 1 (B, the attack target).
     //   BUT: current impl writes Burn to state.side_a.active (= slot 0 after auto-switch).
     //
-    // CORRECT invariant: slot 0 (A) has None, slot 1 (B) has Burn.
-    // BUGGY behavior:    slot 0 (A) has Burn, slot 1 (B) has None.
+    // CORRECT invariant (ADR-0099 D2 drop-if-not-conscious):
+    //   slot 0 (A, backup switch-in): None — never targeted
+    //   slot 1 (B, fainted target):   None — dropped because B fainted from chip
+    // Previous (pre-m14.5b) behavior: slot 1 had Some(Burn) (write-even-if-fainted).
 
     // First confirm that StatusApplied was emitted (enemy hit and applied Burn).
     let status_applied = events.iter().any(|e| {
@@ -263,6 +265,7 @@ fn rt_m14_5a_01_status_applied_written_to_correct_slot_after_weather_chip_ko() {
             BattleEvent::StatusApplied {
                 side: SideId::SideA,
                 status: StatusEffect::Burn,
+                ..
             }
         )
     });
@@ -327,15 +330,14 @@ fn rt_m14_5a_01_status_applied_written_to_correct_slot_after_weather_chip_ko() {
         status.side_a[0]
     );
 
-    // The fainted target (B) should carry the Burn that was inflicted on it.
-    // (This is arguably moot — the monster is dead — but the invariant is that
-    // StatusApplied is associated with the attacked monster, not the auto-switch target.)
+    // ADR-0099 D2: if the targeted monster fainted (from Sandstorm chip here), Phase 4.5
+    // drops the StatusApplied write. Slot 1 (B, the Burn target) must be None — applying
+    // status to a fainted monster would be inconsistent with game state.
     assert_eq!(
-        status.side_a[1],
-        Some(StatusEffect::Burn),
-        "RT-M14.5A-01: slot 1 (B, the Burn target) should have Burn in the store \
-         even though B subsequently fainted from weather chip. \
-         The status store reflects what happened BEFORE the chip KO."
+        status.side_a[1], None,
+        "RT-M14.5A-01: slot 1 (B, the Burn target) must be None in the store — \
+         B fainted from Sandstorm chip before Phase 4.5, so the write is dropped \
+         (ADR-0099 D2). An impl that writes to fainted slots fails here."
     );
 }
 
