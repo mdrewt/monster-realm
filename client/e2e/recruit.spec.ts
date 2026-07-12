@@ -144,6 +144,10 @@ const MAX_HEALS = 2;
  *  Bound: at most one pre-encounter heal per outer enc iteration (30 max).
  */
 const MAX_FLEE_HEALS = 30;
+/** Server-side heal_party cooldown guard (ms). Skip the heal attempt window
+ *  when a heal fired recently to avoid an 8×6 s=48 s busy-wait on rejection.
+ *  1 s over the 30 s cooldown gives margin for server clock drift. */
+const HEAL_COOLDOWN_MS = 31_000;
 /** Max skill attacks per encounter when weakening wild (bounded inner). */
 const MAX_SKILL_ATTACKS = 6;
 /** Step-wait timeout per move in ms (200 ms drain + network + margin). */
@@ -351,12 +355,12 @@ async function healViaBox(p: Page): Promise<void> {
 // restoreHpBeforeEncounter: open the box, check HP, and heal if below 80%.
 // Called at the start of each enc iteration to undo HP depletion that
 // write_back_party_hp persists on flee.  The server-side heal_party has a 30 s
-// cooldown; we retry for up to 35 s (8 clicks × up to 6 s each) so a queued
+// cooldown; we retry for up to 48 s (8 clicks × up to 6 s each) so a queued
 // cooldown window is covered without a bare sleep.
 //
-// Detection: box HP format is "HP cur/max (pct%)" (boxView.ts:152).  We wait
-// until the box shows ≥ 80% for all visible HP rows — unlike healViaBox (which
-// only checks for "HP 0/"), this verifies the heal actually fired.
+// Detection: box HP format is "HP cur/max (pct%)" (boxView.ts:152).  We scan
+// ALL HP pairs in the box text (matchAll) — every visible monster row must
+// satisfy the threshold — unlike healViaBox (which only checks "HP 0/").
 // ---------------------------------------------------------------------------
 // Returns true if a heal was performed (HP was low and heal clicked), false if
 // HP was already adequate or the box could not be opened.
@@ -376,7 +380,10 @@ async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
       .then(() => true)
       .catch(() => false);
   }
-  if (!boxOpen) return false; // another overlay is latched; skip and proceed
+  if (!boxOpen) {
+    console.log('restoreHpBeforeEncounter: box did not open after 20 tries, skipping heal');
+    return false; // another overlay is latched; skip and proceed
+  }
 
   // Determine if HP is below the restoration threshold (80% of max).
   // If already healthy, close immediately without clicking heal.
@@ -389,15 +396,19 @@ async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
         const root = boxTitle?.parentElement?.parentElement;
         if (!root || root.style.display === 'none') return 'no-box';
         const text = root.textContent ?? '';
-        // Box HP format: "HP cur/max (pct%)"
-        const m = text.match(/HP (\d+)\/(\d+)/);
-        if (!m) return 'no-hp';
-        const cur = parseInt(m[1]!, 10);
-        const max = parseInt(m[2]!, 10);
-        return max > 0 && cur / max < 0.8 ? 'low' : 'ok';
+        // Box HP format: "HP cur/max (pct%)" — scan ALL pairs so every monster
+        // row must be healthy before we skip the heal.
+        const ms = [...text.matchAll(/HP (\d+)\/(\d+)/g)];
+        if (!ms.length) return 'no-hp';
+        const anyLow = ms.some((match) => {
+          const cur = parseInt(match[1]!, 10);
+          const max = parseInt(match[2]!, 10);
+          return max > 0 && cur / max < 0.8;
+        });
+        return anyLow ? 'low' : 'ok';
       },
       null,
-      { timeout: 2_000 },
+      { timeout: 5_000 },
     )
     .then((h) => h.jsonValue())
     .catch(() => 'ok');
@@ -423,11 +434,13 @@ async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
           const root = boxTitle?.parentElement?.parentElement;
           if (!root || root.style.display === 'none') return false;
           const text = root.textContent ?? '';
-          const m = text.match(/HP (\d+)\/(\d+)/);
-          if (!m) return false;
-          const cur = parseInt(m[1]!, 10);
-          const max = parseInt(m[2]!, 10);
-          return max > 0 && cur / max >= 0.8;
+          const ms = [...text.matchAll(/HP (\d+)\/(\d+)/g)];
+          if (!ms.length) return false;
+          return ms.every((match) => {
+            const cur = parseInt(match[1]!, 10);
+            const max = parseInt(match[2]!, 10);
+            return max > 0 && cur / max >= 0.8;
+          });
         },
         null,
         { timeout: 6_000 },
@@ -566,6 +579,7 @@ test.describe
       let recruited = false;
       let healCount = 0;
       let fleeHealCount = 0; // pre-encounter HP restoration (flee-damage recovery, not KO)
+      let lastFleeHealAt = 0; // epoch ms of last successful pre-encounter heal (cooldown guard)
       let encountersUsed = 0;
       let recruitClicksUsed = 0;
       winningBattleId = null;
@@ -576,8 +590,13 @@ test.describe
         // Pre-encounter HP restoration (ROOT CAUSE FIX — see MAX_FLEE_HEALS comment).
         // write_back_party_hp fires on every flee, so the next battle enters at
         // whatever HP we had when we fled.  Restore HP before walking if possible.
-        if (fleeHealCount < MAX_FLEE_HEALS) {
-          if (await restoreHpBeforeEncounter(page)) fleeHealCount++;
+        // COOLDOWN GUARD: skip the attempt if we healed recently — otherwise
+        // restoreHpBeforeEncounter would busy-wait 8×6 s=48 s on rejection.
+        if (fleeHealCount < MAX_FLEE_HEALS && Date.now() - lastFleeHealAt >= HEAL_COOLDOWN_MS) {
+          if (await restoreHpBeforeEncounter(page)) {
+            fleeHealCount++;
+            lastFleeHealAt = Date.now();
+          }
         }
 
         // Walk grass until a battle starts.
