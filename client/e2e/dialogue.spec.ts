@@ -359,7 +359,9 @@ test.describe
       const overlay = a.locator('#dialogue-overlay');
       await expect(overlay).toBeVisible(); // precondition from the previous test
       await a.keyboard.press('Escape');
-      await expect(overlay).toBeHidden({ timeout: 10_000 });
+      // 20 s: dismiss_dialogue fires a server-side row delete whose subscription
+      // propagation can exceed 10 s under CI load (same mechanism as the advance path).
+      await expect(overlay).toBeHidden({ timeout: 20_000 });
       // Round trip: the dismissal was a server-side row delete, not a local hide —
       // a fresh talk must be able to re-create and re-hydrate the row.
       await talkUntilOpen(a, playerEntityIds);

@@ -563,12 +563,16 @@ test.describe
     //   P(fail all 30) ≈ 0.6^30 ≈ 1.2e-7 (pessimistic); 0.7^30 ≈ 2.2e-5 (very pessimistic).
     // -------------------------------------------------------------------------
     test('R2: successful recruit increments ownMonsters by 1 with partySlot 255', async () => {
-      // Timeout budget: 30 enc × ~30s/enc base + pre-encounter heal waits (up to
-      // 48 s each for the server 30 s cooldown, via restoreHpBeforeEncounter retry
-      // loop).  Realistic: ~650 s; pessimistic headroom → 1200 s (20 min).
+      // Timeout budget: 30 enc × ~30s/enc base + pre-encounter heal waits.
+      // restoreHpBeforeEncounter: fast-path (~2s) when HP ≥ 80%; slow-path up to
+      // 8×6s = 48s to wait out the server 30s cooldown when HP is low.
+      // Worst-case (all enc hit cooldown): 30 × (48s heal + 5s enc) ≈ 1590s.
+      // Realistic (server cooldown limits heals to 1 per 30s of real time, and
+      // encounters succeed well before all 30 slots are used): ~650s.
+      // Headroom: 1500s (25 min) — covers the worst-case 1590s with ~6% margin.
       // STEP_WAIT_MS=8_000 is the per-step timeout bound, not actual step duration
       // (SpacetimeDB drains at ~200ms/step; loaded GHA runners may take 2–3s/step).
-      test.setTimeout(1_200_000);
+      test.setTimeout(1_500_000);
 
       const beforeSnap = await snap(page);
       const countBefore = beforeSnap.ownMonsters.length;
