@@ -398,7 +398,10 @@ test.describe
           .click({ timeout: 5_000 });
         // Both outcomes delete the row (success: next_node None ends the
         // dialogue; reject: walked_away) — the overlay must hide either way.
-        await expect(overlay).toBeHidden({ timeout: 10_000 });
+        // 20 s covers CI-latency: advance_dialogue triggers StartQuest + row-delete
+        // in one transaction; the subscription propagation under CI load can exceed
+        // the original 10 s on a GHA runner while completing well within 20 s.
+        await expect(overlay).toBeHidden({ timeout: 20_000 });
         // Distinguish success via the quest-log UI signal (KeyQ is guarded on
         // "no other overlay visible" — the dialogue overlay is hidden here).
         await a.keyboard.press('KeyQ');
