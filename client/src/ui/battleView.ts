@@ -82,6 +82,7 @@ export class BattleView {
 
     // Outcome banner
     this.#outcomeEl = document.createElement('div');
+    this.#outcomeEl.setAttribute('data-testid', 'outcome-text');
     this.#outcomeEl.style.cssText = 'font-size:18px;font-weight:bold;color:#ffd700;display:none;';
     this.#root.appendChild(this.#outcomeEl);
 
@@ -104,6 +105,8 @@ export class BattleView {
 
   refresh(vm: BattleViewModel | null): void {
     if (!vm) {
+      this.#weatherEl.style.display = 'none';
+      this.#weatherEl.textContent = '';
       this.hide();
       return;
     }
@@ -118,9 +121,7 @@ export class BattleView {
   }
 
   #renderWeather(vm: BattleViewModel): void {
-    // Treat undefined as null: old test fixtures built before m14.5d lack the weather
-    // field entirely; at runtime vitest does not typecheck, so weather may be undefined.
-    const w = (vm as { weather?: BattleViewModel['weather'] }).weather;
+    const w = vm.weather;
     if (w == null) {
       this.#weatherEl.style.display = 'none';
       this.#weatherEl.textContent = '';

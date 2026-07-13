@@ -230,15 +230,10 @@ export function buildBattleViewModel(
     : [];
 
   // Weather: map StoreBattle.weather → VM weather (label + turnsRemaining).
-  // battle.weather may be undefined in old test fixtures (vitest doesn't typecheck
-  // StoreBattle at runtime) — treat undefined as null so the 778-baseline tests
-  // stay green without editing them.
-  const storeWeather = (battle as { weather?: { tag: string; turnsRemaining: number } | null })
-    .weather;
+  // != null tolerates undefined from any untyped runtime input; store guarantees null.
+  const w = battle.weather;
   const weather =
-    storeWeather != null
-      ? { label: weatherBanner(storeWeather.tag), turnsRemaining: storeWeather.turnsRemaining }
-      : null;
+    w != null ? { label: weatherBanner(w.tag), turnsRemaining: w.turnsRemaining } : null;
 
   return {
     battleId: battle.battleId,
@@ -404,11 +399,18 @@ export function battleVMsEqual(a: BattleViewModel, b: BattleViewModel): boolean 
     }
   }
 
-  // Weather: null-ness, then label + turnsRemaining
+  // Weather: null-ness, then label + turnsRemaining.
+  // Use loose equality (== null) so that undefined weather (from test factories that
+  // predate m14.5d or future VM construction that omits the field) is treated as
+  // "no weather" rather than throwing TypeError: Cannot read property 'label' of undefined.
+  // biome's noDoubleEquals exempts `== null` (idiomatic null-or-undefined check), so
+  // no suppression comment is needed.
+  // The production path through buildBattleViewModel always produces null (never undefined),
+  // so this has zero behaviour change in production — it is purely a defensive guard.
   const aw = a.weather;
   const bw = b.weather;
-  if (aw === null && bw === null) return true;
-  if (aw === null || bw === null) return false;
+  if (aw == null && bw == null) return true;
+  if (aw == null || bw == null) return false;
   if (aw.label !== bw.label || aw.turnsRemaining !== bw.turnsRemaining) return false;
 
   return true;

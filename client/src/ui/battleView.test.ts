@@ -48,6 +48,7 @@ function makeRecruitVM(overrides: Partial<BattleViewModel> = {}): BattleViewMode
       maxHp: 20,
       hpPercent: 100,
       affinity: 'Fire',
+      status: null,
     },
     opponentCard: {
       speciesName: 'WildMon',
@@ -56,6 +57,7 @@ function makeRecruitVM(overrides: Partial<BattleViewModel> = {}): BattleViewMode
       maxHp: 15,
       hpPercent: 100,
       affinity: 'Water',
+      status: null,
     },
     skills: [],
     canFlee: true,
@@ -66,6 +68,7 @@ function makeRecruitVM(overrides: Partial<BattleViewModel> = {}): BattleViewMode
       { itemId: 7, name: 'Lure Berry', recruitBonus: 150, count: 3 },
       { itemId: 9, name: 'Sweet Bait', recruitBonus: 250, count: 1 },
     ],
+    weather: null,
     ...overrides,
   };
 }
@@ -355,8 +358,10 @@ function makeTerminalVM(outcome: 'SideAWins' | 'SideBWins' | 'Fled'): BattleView
 }
 
 describe('BattleView m14.5d: outcome DOM parity — all BattleOutcomeTag variants', () => {
-  it('BITES: outcome="SideAWins" → outcome element visible with non-empty text', () => {
+  it('BITES: outcome="SideAWins" → [data-testid="outcome-text"] visible with non-empty text', () => {
     // Kills: an impl where the SideAWins case produces empty text or hides the element.
+    // Precision upgrade: query by data-testid instead of scanning all divs for inline CSS.
+    // The specialist adds data-testid="outcome-text" to the outcome element in battleView.ts.
     const parent = document.createElement('div');
     document.body.appendChild(parent);
 
@@ -364,41 +369,17 @@ describe('BattleView m14.5d: outcome DOM parity — all BattleOutcomeTag variant
     view.refresh(makeTerminalVM('SideAWins'));
     view.show();
 
-    // Find the outcome element — it must be visible (not display:none) with non-empty text.
-    // The outcome element is an internal div; we find it by its content or by
-    // querying the battle root for visible divs with golden text.
-    // We use a broad query since the element has no data-testid currently — the
-    // test relies on the non-empty textContent heuristic.
-    // After implementation the outcome el should have data-testid="outcome-text" or
-    // be findable via style.display !== 'none'. We probe via display style.
-    const allDivs = parent.querySelectorAll('div');
-    let foundOutcome = false;
-    for (const el of allDivs) {
-      const h = el as HTMLElement;
-      if (h.style.display !== 'none' && h.textContent && h.textContent.trim().length > 0) {
-        // Check it's the outcome element: non-empty + not display:none
-        // The current impl uses a #outcomeEl with style.display='block' when terminal.
-        if (h.style.color === 'rgb(255, 215, 0)' || h.style.fontWeight === 'bold') {
-          foundOutcome = true;
-          expect(h.textContent.trim().length).toBeGreaterThan(0);
-          break;
-        }
-      }
-    }
-    // If no styled outcome element found, assert via data-testid (future impl may add it)
-    if (!foundOutcome) {
-      // Fall back: assert any non-empty visible text exists in the root
-      // This is the minimum bar — something visible must convey the outcome.
-      const root = parent.querySelector('div');
-      expect(root).not.toBeNull();
-      // The overall view text must contain something meaningful
-      expect(parent.textContent).not.toBe('');
-    }
+    const outcomeEl = parent.querySelector('[data-testid="outcome-text"]') as HTMLElement | null;
+    // Element must be present (specialist adds the testid).
+    expect(outcomeEl).not.toBeNull();
+    // Must be visible (not display:none) and carry non-empty text.
+    expect(outcomeEl!.style.display).not.toBe('none');
+    expect(outcomeEl!.textContent!.trim().length).toBeGreaterThan(0);
 
     document.body.removeChild(parent);
   });
 
-  it('BITES: outcome="SideBWins" → outcome element visible with non-empty text', () => {
+  it('BITES: outcome="SideBWins" → [data-testid="outcome-text"] visible with non-empty text', () => {
     // Kills: an impl missing the SideBWins case in #renderOutcome.
     const parent = document.createElement('div');
     document.body.appendChild(parent);
@@ -407,22 +388,15 @@ describe('BattleView m14.5d: outcome DOM parity — all BattleOutcomeTag variant
     view.refresh(makeTerminalVM('SideBWins'));
     view.show();
 
-    // The outcome element must exist and have non-empty text when visible.
-    const allDivs = parent.querySelectorAll('div');
-    let outcomeText = '';
-    for (const el of allDivs) {
-      const h = el as HTMLElement;
-      if (h.style.display === 'block' && h.textContent && h.textContent.trim().length > 0) {
-        outcomeText = h.textContent.trim();
-        break;
-      }
-    }
-    expect(outcomeText.length).toBeGreaterThan(0);
+    const outcomeEl = parent.querySelector('[data-testid="outcome-text"]') as HTMLElement | null;
+    expect(outcomeEl).not.toBeNull();
+    expect(outcomeEl!.style.display).not.toBe('none');
+    expect(outcomeEl!.textContent!.trim().length).toBeGreaterThan(0);
 
     document.body.removeChild(parent);
   });
 
-  it('BITES: outcome="Fled" → outcome element visible with non-empty text', () => {
+  it('BITES: outcome="Fled" → [data-testid="outcome-text"] visible with non-empty text', () => {
     // Kills: an impl missing the Fled case in #renderOutcome.
     const parent = document.createElement('div');
     document.body.appendChild(parent);
@@ -431,21 +405,15 @@ describe('BattleView m14.5d: outcome DOM parity — all BattleOutcomeTag variant
     view.refresh(makeTerminalVM('Fled'));
     view.show();
 
-    const allDivs = parent.querySelectorAll('div');
-    let outcomeText = '';
-    for (const el of allDivs) {
-      const h = el as HTMLElement;
-      if (h.style.display === 'block' && h.textContent && h.textContent.trim().length > 0) {
-        outcomeText = h.textContent.trim();
-        break;
-      }
-    }
-    expect(outcomeText.length).toBeGreaterThan(0);
+    const outcomeEl = parent.querySelector('[data-testid="outcome-text"]') as HTMLElement | null;
+    expect(outcomeEl).not.toBeNull();
+    expect(outcomeEl!.style.display).not.toBe('none');
+    expect(outcomeEl!.textContent!.trim().length).toBeGreaterThan(0);
 
     document.body.removeChild(parent);
   });
 
-  it('BITES: outcome="Ongoing" → outcome element hidden (display:none)', () => {
+  it('BITES: outcome="Ongoing" → [data-testid="outcome-text"] hidden (display:none or empty text)', () => {
     // Kills: an impl that shows the outcome banner during an ongoing battle.
     // The outcome banner must be hidden while the battle is in progress.
     const parent = document.createElement('div');
@@ -456,15 +424,15 @@ describe('BattleView m14.5d: outcome DOM parity — all BattleOutcomeTag variant
     view.refresh(makeRecruitVM({ weather: null } as Partial<BattleViewModel>));
     view.show();
 
-    // The #outcomeEl must be display:none for 'Ongoing'.
-    // Current impl: `this.#outcomeEl.style.display = 'none'` in the Ongoing branch.
-    // We find it by locating a div whose display is 'none' (the only hidden div
-    // in a visible battle overlay).
-    const hiddenDivs = Array.from(parent.querySelectorAll('div')).filter(
-      (el) => (el as HTMLElement).style.display === 'none',
-    );
-    // At least one hidden element must exist (the outcome el is hidden for Ongoing).
-    expect(hiddenDivs.length).toBeGreaterThan(0);
+    const outcomeEl = parent.querySelector('[data-testid="outcome-text"]') as HTMLElement | null;
+    // The element must be absent or hidden for 'Ongoing'.
+    if (outcomeEl !== null) {
+      // If present, it must be hidden (display:none) OR carry empty text.
+      const isHidden = outcomeEl.style.display === 'none';
+      const isEmpty = outcomeEl.textContent!.trim().length === 0;
+      expect(isHidden || isEmpty).toBe(true);
+    }
+    // If absent entirely: that also satisfies the "no outcome shown" contract.
 
     document.body.removeChild(parent);
   });

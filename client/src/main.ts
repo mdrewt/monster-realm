@@ -497,6 +497,7 @@ window.addEventListener('keydown', (e) => {
     // bare hide — the next batch auto-re-shows the active battle (existing behavior).
     if (latest !== undefined && latest.outcome !== 'Ongoing') dismissedBattleId = latest.battleId;
     battleView.hide();
+    lastBattleVM = null;
     e.preventDefault();
     return;
   }
@@ -651,8 +652,9 @@ function refreshBattle(): void {
     if (!vm) console.warn('[battle] battle has corrupt team data; view hidden');
     // m14.5d VM-compare guard: skip refresh when the view is visible and the VM is
     // structurally identical to the last rendered VM (suppresses churn on no-op ticks).
-    // The visible guard is critical: while hidden we must never skip — a skip-while-hidden
-    // would drop the re-show render (stale-hidden trap, incl. the Escape bare-hide path).
+    // The visible guard is the primary defense: shouldSkipBattleRefresh returns false
+    // while hidden, so the post-Escape re-show always triggers a full render. The
+    // lastBattleVM = null reset in the Escape handler is invariant hygiene on top.
     if (shouldSkipBattleRefresh(battleView.visible, lastBattleVM, vm)) return;
     battleView.refresh(vm);
     lastBattleVM = vm;

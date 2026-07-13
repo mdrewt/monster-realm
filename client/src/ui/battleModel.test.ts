@@ -71,6 +71,7 @@ function makeBattle(overrides: Partial<StoreBattle> = {}): StoreBattle {
     partyMonsterIds: [1n],
     opponentMonsterIds: [2n],
     createdAtMs: 1000n,
+    weather: null,
     ...overrides,
   };
 }
@@ -1381,6 +1382,15 @@ describe('battleModel m14.5d: battleVMsEqual — each field class flips equality
     expect(battleVMsEqual(a, b)).toBe(false);
   });
 
+  it('BITES: identical non-null weather → equal (non-null-weather branch returns true)', () => {
+    // Kills: a broken final `return true` path for the non-null-weather branch
+    // that mistakenly returns false when both VMs have the same weather object.
+    // Two VMs with the same weather tag and turnsRemaining must be equal.
+    const a = makeFullVM({ weather: { tag: 'Rain', turnsRemaining: 3 } } as Partial<StoreBattle>);
+    const b = makeFullVM({ weather: { tag: 'Rain', turnsRemaining: 3 } } as Partial<StoreBattle>);
+    expect(battleVMsEqual(a, b)).toBe(true);
+  });
+
   it('BITES: differing battleId (bigint) → not equal (no Number() coercion)', () => {
     // Bigint comparison must use === directly; Number() is lossy for u64 values
     // above 2^53. Kills: an impl using Number(battleId) for comparison.
@@ -1470,5 +1480,66 @@ describe('battleModel m14.5d: shouldSkipBattleRefresh — skip conditions', () =
     const vm = makeFullVM();
     // lastVm is null (reset on hide), vm is the new one
     expect(shouldSkipBattleRefresh(true, null, vm)).toBe(false);
+  });
+});
+
+// =============================================================================
+// m14.5d — battleVMsEqual: weather undefined-safety invariant
+// FINDING: battleVMsEqual crashes (TypeError: Cannot read property 'label' of undefined)
+// when BOTH VMs carry weather=undefined. The current strict null-check (=== null) does
+// not match undefined, so both the null-null early-return and the mixed-null guard are
+// bypassed, and `aw.label` throws. The production path through buildBattleViewModel
+// always produces weather=null (not undefined), so the crash is currently unreachable —
+// but it is latent: any test factory that builds a BattleViewModel without the weather
+// field and then passes it to battleVMsEqual will trigger the crash.
+//
+// FIX: replace `=== null` with `== null` (loose equality) in the two weather null-checks
+// at battleVMsEqual lines 410-411. Loose equality treats both null and undefined as
+// "absent weather", which is the correct semantic (both mean no active weather).
+// The fix has zero behavior change for the production path (weather is always null there).
+//
+// This test is GREEN after the fix and acts as a permanent regression guard.
+// =============================================================================
+
+describe('battleModel m14.5d invariant: battleVMsEqual weather=undefined never throws', () => {
+  it('GATING: battleVMsEqual(vmWithUndefinedWeather, vmWithUndefinedWeather) must not throw', () => {
+    // Repro: build two VMs with weather=undefined (simulating a test factory that
+    // omits the weather field), then call battleVMsEqual. Current impl throws TypeError.
+    // Fixed impl: treats undefined as "no weather" (same as null) → returns true.
+    //
+    // WHY IT MATTERS: the production path is safe (buildBattleViewModel always sets
+    // weather=null), but any future test factory or direct VM construction that omits
+    // the weather field will silently crash battleVMsEqual. The loose-equality fix
+    // closes this gap at negligible cost.
+    //
+    // Kills: any impl that uses `=== null` for the weather null-check in battleVMsEqual
+    // (both the early-return and the mixed-null guard).
+    const vmBase = makeFullVM();
+    // Simulate a VM built without the weather field (e.g., from a test factory
+    // that predates m14.5d). We must use `as` to bypass TypeScript's required field.
+    const vmUndefinedWeather = { ...vmBase } as BattleViewModel;
+    // biome-ignore lint/performance/noDelete: testing undefined-field behavior
+    delete (vmUndefinedWeather as Record<string, unknown>).weather;
+
+    // Both VMs have weather=undefined. Must return true (no weather === no weather),
+    // not throw TypeError: Cannot read properties of undefined (reading 'label').
+    expect(() => battleVMsEqual(vmUndefinedWeather, vmUndefinedWeather)).not.toThrow();
+    expect(battleVMsEqual(vmUndefinedWeather, vmUndefinedWeather)).toBe(true);
+  });
+
+  it('GATING: battleVMsEqual(vmWithWeather, vmWithUndefinedWeather) → false, no throw', () => {
+    // If one VM has active weather and the other has undefined weather, they must
+    // NOT compare as equal (weather present ≠ no weather). Must not throw.
+    // Kills: an impl where the mixed null/undefined check silently falls through.
+    const vmWithWeather = makeFullVM({
+      weather: { tag: 'Rain', turnsRemaining: 2 },
+    } as Partial<StoreBattle>);
+    const vmBase = makeFullVM();
+    const vmUndefinedWeather = { ...vmBase } as BattleViewModel;
+    // biome-ignore lint/performance/noDelete: testing undefined-field behavior
+    delete (vmUndefinedWeather as Record<string, unknown>).weather;
+
+    expect(() => battleVMsEqual(vmWithWeather, vmUndefinedWeather)).not.toThrow();
+    expect(battleVMsEqual(vmWithWeather, vmUndefinedWeather)).toBe(false);
   });
 });
