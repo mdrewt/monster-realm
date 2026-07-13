@@ -180,4 +180,14 @@ knowledge:
 knowledge-check:
     node scripts/okf-export.mjs docs/knowledge --check
 
+# Regenerate docs/adr/DIGEST.md from the ADR corpus (ADR-0104).
+# Run after any ADR change and before committing.
+adr-digest:
+    node scripts/adr-digest.mjs
+
+# Drift-check the committed DIGEST.md; exit 1 if stale or header violations found.
+# Invoked by `just ci` via the adr-digest eval.
+adr-digest-check:
+    node scripts/adr-digest.mjs --check
+
 ci: lint typecheck test eval security wasm client-typecheck client-test

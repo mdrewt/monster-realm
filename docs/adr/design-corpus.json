@@ -1,0 +1,299 @@
+{
+  "_banner": "FROZEN SNAPSHOT 2026-07 — harness design ADRs 0002-0034 vendored once for agent use. Project CI never reads the harness repo. H- prefix = harness namespace.",
+  "_collision_note": "Harness numbering collision with project: H-0055=project-0056 (server-module-modularization), H-0056=project-0057 (content-directory-glob-loading), H-0057=project-0080 (generated-knowledge-bundle). See docs/adr/README.md for full explanation.",
+  "collision_map": {
+    "H-0055": "0056",
+    "H-0056": "0057",
+    "H-0057": "0080"
+  },
+  "entries": [
+    {
+      "id": "H-0002",
+      "harness_id": "0002",
+      "project_alias": null,
+      "title": "Server platform & netcode",
+      "status": "Accepted",
+      "decision": "SpacetimeDB as the authoritative server platform with generated TypeScript client bindings and intent-only reducer calls."
+    },
+    {
+      "id": "H-0003",
+      "harness_id": "0003",
+      "project_alias": null,
+      "title": "Shared rule core & client prediction",
+      "status": "Accepted",
+      "decision": "Shared Rust game-core crate holds all game rules; client-wasm runs the same deterministic logic for client-side prediction."
+    },
+    {
+      "id": "H-0004",
+      "harness_id": "0004",
+      "project_alias": null,
+      "title": "Client rendering stack",
+      "status": "Accepted",
+      "decision": "PixiJS canvas renderer with a read-only SDK store, pure view functions, and no UI framework."
+    },
+    {
+      "id": "H-0005",
+      "harness_id": "0005",
+      "project_alias": null,
+      "title": "Single cohesive repo with a cargo workspace",
+      "status": "Accepted",
+      "decision": "Cargo workspace in one repo holds server-module, game-core, client-wasm, and client to eliminate cross-repo drift."
+    },
+    {
+      "id": "H-0006",
+      "harness_id": "0006",
+      "project_alias": null,
+      "title": "Schema evolution & content-sync",
+      "status": "Accepted",
+      "decision": "Additive-only schema migrations; content sync via versioned RON files with build-time validation and a CONTENT_VERSION guard."
+    },
+    {
+      "id": "H-0007",
+      "harness_id": "0007",
+      "project_alias": null,
+      "title": "Spatial / zoned subscriptions & per-zone tick",
+      "status": "Accepted",
+      "decision": "Per-zone spatial subscriptions with a bounded intent queue and a scheduled per-zone movement tick reducer."
+    },
+    {
+      "id": "H-0008",
+      "harness_id": "0008",
+      "project_alias": null,
+      "title": "Map / content authoring pipeline",
+      "status": "Accepted",
+      "decision": "Zone maps as tiled RON files; monsters, items, and dialogue as glob-loaded content-registry directories."
+    },
+    {
+      "id": "H-0009",
+      "harness_id": "0009",
+      "project_alias": null,
+      "title": "CI completeness & merge gates",
+      "status": "Accepted",
+      "decision": "CI gates: lint, typecheck, test, eval, security, mutation, and coverage; every gate has a proof-of-teeth fixture."
+    },
+    {
+      "id": "H-0010",
+      "harness_id": "0010",
+      "project_alias": null,
+      "title": "Falsifiable mechanical gates (proof-of-teeth)",
+      "status": "Accepted",
+      "decision": "Every CI gate must have a fixture that fails the gate when the guarded invariant is violated."
+    },
+    {
+      "id": "H-0011",
+      "harness_id": "0011",
+      "project_alias": null,
+      "title": "Server-paced movement via a bounded queue + scheduled per-zone tick",
+      "status": "Accepted",
+      "decision": "Server resolves movement by draining a bounded per-zone intent queue in a scheduled reducer tick."
+    },
+    {
+      "id": "H-0012",
+      "harness_id": "0012",
+      "project_alias": null,
+      "title": "Client prediction & reconciliation protocol",
+      "status": "Accepted",
+      "decision": "Client applies movement predictions locally and reconciles against server-authoritative state on each tick receipt."
+    },
+    {
+      "id": "H-0013",
+      "harness_id": "0013",
+      "project_alias": null,
+      "title": "Netcode smoothness & feel",
+      "status": "Accepted",
+      "decision": "Netcode targets ≤150ms perceived latency with EWMA interpolation, snap-on-teleport, and a sim-harness convergence gate."
+    },
+    {
+      "id": "H-0014",
+      "harness_id": "0014",
+      "project_alias": null,
+      "title": "Client app architecture (read-only store, one-way flow, no UI framework)",
+      "status": "Accepted",
+      "decision": "Read-only SDK store feeds pure view functions that produce canvas draw calls; no mutable client state or UI framework."
+    },
+    {
+      "id": "H-0015",
+      "harness_id": "0015",
+      "project_alias": null,
+      "title": "Owner-scoped row privacy via RLS (the third visibility mode)",
+      "status": "Accepted",
+      "decision": "Must-never-leak data lives in private tables; owner-scoped rows use RLS; public tables are safe to expose unfiltered."
+    },
+    {
+      "id": "H-0016",
+      "harness_id": "0016",
+      "project_alias": null,
+      "title": "Monster individuality & progression model (IV / EV / nature)",
+      "status": "Accepted",
+      "decision": "Monsters have birth IVs, training EVs, and a nature modifier; all three are private and never reach non-owner clients."
+    },
+    {
+      "id": "H-0017",
+      "harness_id": "0017",
+      "project_alias": null,
+      "title": "Battle data model & server-resolved turn model (PvP-ready)",
+      "status": "Accepted",
+      "decision": "Server resolves every battle turn with game-core and writes results to battle/battle_state tables; PvP-ready from day one."
+    },
+    {
+      "id": "H-0018",
+      "harness_id": "0018",
+      "project_alias": null,
+      "title": "Inventory & item model (one-stack, saturating helpers)",
+      "status": "Accepted",
+      "decision": "One inventory stack per item per player; quantities are capped and quantity helpers saturate rather than overflow."
+    },
+    {
+      "id": "H-0019",
+      "harness_id": "0019",
+      "project_alias": null,
+      "title": "Evolution & fusion model (individuality-preserving + content integrity)",
+      "status": "Accepted",
+      "decision": "Evolution is a pure content-driven transform; fusion preserves individuality stats; both are validated at content load time."
+    },
+    {
+      "id": "H-0020",
+      "harness_id": "0020",
+      "project_alias": null,
+      "title": "Zone transitions (warps) & subscription switching",
+      "status": "Accepted",
+      "decision": "Zone transitions use a server-authoritative warp table; the client switches subscriptions on warp receipt."
+    },
+    {
+      "id": "H-0021",
+      "harness_id": "0021",
+      "project_alias": null,
+      "title": "Dialogue & quest system (data-driven trees + flag-based state)",
+      "status": "Accepted",
+      "decision": "Dialogue trees are data-driven RON; quest state is server-authoritative boolean flags in a private conversation table."
+    },
+    {
+      "id": "H-0022",
+      "harness_id": "0022",
+      "project_alias": null,
+      "title": "Currency & shop economy",
+      "status": "Accepted",
+      "decision": "A single private player_wallet table with explicit grant/spend reducers; shop prices and sellback are content-defined."
+    },
+    {
+      "id": "H-0023",
+      "harness_id": "0023",
+      "project_alias": null,
+      "title": "Additive battle-depth framework (status / abilities / weather)",
+      "status": "Accepted",
+      "decision": "Status effects, passive abilities, and weather are additive layers wired into resolve_full_turn as discrete pipeline phases."
+    },
+    {
+      "id": "H-0024",
+      "harness_id": "0024",
+      "project_alias": null,
+      "title": "Cross-player escrow & dual-consent transactions",
+      "status": "Accepted",
+      "decision": "Cross-player trades use an escrow table with dual-consent reducers; no item moves until both parties commit."
+    },
+    {
+      "id": "H-0025",
+      "harness_id": "0025",
+      "project_alias": null,
+      "title": "PvP orchestration (handshake, secret both-submit, liveness)",
+      "status": "Accepted",
+      "decision": "PvP match handshake uses secret-both-submit intent; a scheduled reducer enforces liveness with a timeout forfeit."
+    },
+    {
+      "id": "H-0026",
+      "harness_id": "0026",
+      "project_alias": null,
+      "title": "Persistent ranked profile (Elo)",
+      "status": "Accepted",
+      "decision": "Persistent Elo ranked profile stored per-player; rating adjustments happen at match end via a post-match reducer."
+    },
+    {
+      "id": "H-0027",
+      "harness_id": "0027",
+      "project_alias": null,
+      "title": "Co-op raid model (additive resolve_coop_turn)",
+      "status": "Accepted",
+      "decision": "Co-op raids use an additive resolve_coop_turn that merges player intents in a single server-resolved turn."
+    },
+    {
+      "id": "H-0028",
+      "harness_id": "0028",
+      "project_alias": null,
+      "title": "Social subsystem (chat, guilds, moderation) — untrusted-content posture",
+      "status": "Accepted",
+      "decision": "Chat is untrusted content sanitized at read time; guilds are flat owner-member tables with explicit moderation reducers."
+    },
+    {
+      "id": "H-0029",
+      "harness_id": "0029",
+      "project_alias": null,
+      "title": "Observability & performance strategy",
+      "status": "Accepted",
+      "decision": "Observability via SpacetimeDB metrics and client performance marks; latency budgets enforced in CI benchmarks."
+    },
+    {
+      "id": "H-0030",
+      "harness_id": "0030",
+      "project_alias": null,
+      "title": "Authentication & account model",
+      "status": "Accepted",
+      "decision": "SpacetimeDB identity is the sole auth primitive; no separate auth service; accounts are identity-keyed tables."
+    },
+    {
+      "id": "H-0031",
+      "harness_id": "0031",
+      "project_alias": null,
+      "title": "Privacy & data lifecycle (deletion, export, retention)",
+      "status": "Accepted",
+      "decision": "Player data deleted within 30 days of request; export on request; retention periods defined per-table with a scheduled purge."
+    },
+    {
+      "id": "H-0032",
+      "harness_id": "0032",
+      "project_alias": null,
+      "title": "Accessibility strategy",
+      "status": "Accepted",
+      "decision": "Keyboard-navigable UI, contrast ≥4.5:1, and screen-reader ARIA labels on all interactive elements."
+    },
+    {
+      "id": "H-0033",
+      "harness_id": "0033",
+      "project_alias": null,
+      "title": "Internationalization (i18n) strategy",
+      "status": "Accepted",
+      "decision": "i18n via a message-key map; locale bundles are data files, not code; the default locale is en-US."
+    },
+    {
+      "id": "H-0034",
+      "harness_id": "0034",
+      "project_alias": null,
+      "title": "Security audit & threat model as a launch gate",
+      "status": "Accepted",
+      "decision": "A full security audit gate (M25) signs off the threat model and Semgrep clean before launch."
+    },
+    {
+      "id": "H-0055",
+      "harness_id": "0055",
+      "project_alias": "0056",
+      "title": "Server-module internal module boundary (modularization for fan-out)",
+      "status": "Accepted",
+      "decision": "Server-module source is split into domain submodules registered via mod.rs declarations; cross-module imports are disallowed."
+    },
+    {
+      "id": "H-0056",
+      "harness_id": "0056",
+      "project_alias": "0057",
+      "title": "Content as glob-loaded directories (build.rs)",
+      "status": "Accepted",
+      "decision": "Content registries are directories glob-loaded at compile time by build.rs; the type_chart stays a single-file exception."
+    },
+    {
+      "id": "H-0057",
+      "harness_id": "0057",
+      "project_alias": "0080",
+      "title": "Generated knowledge bundle — OKF-conformant schema projection for agents",
+      "status": "Accepted",
+      "decision": "Server schema is projected as a generated OKF-conformant knowledge bundle; drift-gated by just knowledge-check in CI."
+    }
+  ]
+}
