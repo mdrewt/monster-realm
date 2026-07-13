@@ -155,7 +155,7 @@ export type StoreItemRow = {
   readonly trainAmount: number;
   /** Server-set sell price in currency units (M13b). 0 = not sellable. */
   readonly sellPrice: bigint;
-  /** StatusKind variant name cured by this item in battle, or null (m14.5d-1b, ADR-0105). */
+  /** StatusKind variant name cured by this item in battle, or null (m14.5d-1a, ADR-0105). */
   readonly cureStatus: string | null;
 };
 

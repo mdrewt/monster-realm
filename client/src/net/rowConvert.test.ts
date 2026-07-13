@@ -1321,7 +1321,6 @@ describe('rowConvert m14.5d-1b: itemRowToStore — cureStatus field [m14.5d-1b]'
       trainStat: undefined,
       trainAmount: 0,
       sellPrice: 50n,
-      // @ts-expect-error -- cureStatus not yet on SdkItemRowRow; RED until impl adds field
       cureStatus: { tag: 'Poison' },
     };
     const store = itemRowToStore(sdk);
@@ -1380,7 +1379,6 @@ describe('rowConvert m14.5d-1b: itemRowToStore — cureStatus field [m14.5d-1b]'
         trainStat: undefined,
         trainAmount: 0,
         sellPrice: 40n,
-        // @ts-expect-error -- cureStatus not yet on SdkItemRowRow; RED until impl adds field
         cureStatus: { tag },
       };
       const store = itemRowToStore(sdk);
@@ -1402,7 +1400,6 @@ describe('rowConvert m14.5d-1b: itemRowToStore — cureStatus field [m14.5d-1b]'
       trainStat: undefined,
       trainAmount: 0,
       sellPrice: 50n,
-      // @ts-expect-error -- cureStatus not yet on SdkItemRowRow; RED until impl adds field
       cureStatus: { tag: 'Poison' },
     };
     const store = itemRowToStore(sdk);

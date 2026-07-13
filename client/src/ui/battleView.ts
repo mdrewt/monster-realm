@@ -228,6 +228,8 @@ export class BattleView {
     if (vm.cureItems.length > 0) {
       this.#renderCureItems(vm);
       // Restore prior selection (same save/restore pattern as bait selector above).
+      // Cast breaks TypeScript's narrowing chain: TS tracks #cureSelectEl=null (line above)
+      // through the method call and narrows the type to null; the cast re-opens the union.
       if (savedCure !== '') {
         const cureSel = this.#cureSelectEl as HTMLSelectElement | null;
         if (cureSel !== null) cureSel.value = savedCure;
@@ -308,8 +310,9 @@ export class BattleView {
     useBtn.addEventListener('click', () => {
       const raw = this.#cureSelectEl?.value ?? '';
       // No bare use — clicking with empty selection is a no-op (no undefined variant).
-      if (raw !== '') {
-        this.#callbacks.onUseItem(vm.battleId, Number(raw));
+      const parsed = parseInt(raw, 10);
+      if (!Number.isNaN(parsed)) {
+        this.#callbacks.onUseItem(vm.battleId, parsed);
       }
     });
     this.#actionsEl.appendChild(useBtn);

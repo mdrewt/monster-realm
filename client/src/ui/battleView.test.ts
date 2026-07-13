@@ -69,10 +69,7 @@ function makeRecruitVM(overrides: Partial<BattleViewModel> = {}): BattleViewMode
       { itemId: 9, name: 'Sweet Bait', recruitBonus: 250, count: 1 },
     ],
     weather: null,
-    // m14.5d-1b: cureItems field added; RED until BattleViewModel gains this field.
-    // Typed as `never` cast below so tests compile even before impl; the factory
-    // override path in cure-item tests supplies a real typed value.
-    // @ts-expect-error -- cureItems not yet on BattleViewModel; RED until impl adds field
+    // m14.5d-1b: cureItems field — empty by default; cure-item tests supply a real value via makeCureItemVM.
     cureItems: [],
     ...overrides,
   };
@@ -84,8 +81,6 @@ function makeCallbacks(): BattleViewCallbacks {
     onFlee: vi.fn(),
     onSwap: vi.fn(),
     onRecruit: vi.fn(),
-    // m14.5d-1b: onUseItem added; RED until BattleViewCallbacks gains this field
-    // @ts-expect-error -- onUseItem not yet on BattleViewCallbacks; RED until impl adds field
     onUseItem: vi.fn(),
   };
 }
@@ -522,6 +517,27 @@ describe('BattleView m14.5d-1b: cure-item selector rendered when cureItems non-e
 
     document.body.removeChild(parent);
   });
+
+  it('BITES: cure-item option carries data-cure-status attribute (ADR-0047 classify-by-data contract surface)', () => {
+    // ADR-0047: classify-by-data requires the contract surface to be present on the DOM
+    // so that future tools/evals can verify the classification without parsing option text.
+    // Kills: an impl that omits setAttribute('data-cure-status', ...) from the option.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    const vm = makeCureItemVM([{ itemId: 5, name: 'Antidote', cureStatus: 'Poison', count: 2 }]);
+    view.refresh(vm);
+    view.show();
+
+    const selector = parent.querySelector('[data-testid="cure-item-selector"]');
+    expect(selector).not.toBeNull();
+    const option = selector!.querySelector('option[value="5"]') as HTMLOptionElement | null;
+    expect(option).not.toBeNull();
+    expect(option!.getAttribute('data-cure-status')).toBe('Poison');
+
+    document.body.removeChild(parent);
+  });
 });
 
 describe('BattleView m14.5d-1b: use-item-action button present when cureItems non-empty', () => {
@@ -566,9 +582,7 @@ describe('BattleView m14.5d-1b: onUseItem called with correct (battleId, itemId)
     expect(btn).not.toBeNull();
     btn!.click();
 
-    // @ts-expect-error -- onUseItem not yet on BattleViewCallbacks; RED until impl adds field
     expect(callbacks.onUseItem).toHaveBeenCalledTimes(1);
-    // @ts-expect-error -- onUseItem not yet on BattleViewCallbacks; RED until impl adds field
     expect(callbacks.onUseItem).toHaveBeenCalledWith(1n, 5);
     // Kills: an impl that passes index (0) instead of itemId (5), or skips the callback
 
