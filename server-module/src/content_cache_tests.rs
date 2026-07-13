@@ -1,10 +1,10 @@
-//! Gating tests for the `content_cache` module (M13.5d).
+//! Gating tests for the `content_cache` module (M13.5d, M14.5e).
 //!
 //! Declared from `content_cache.rs` with:
 //!   `#[cfg(test)] #[path = "content_cache_tests.rs"] mod content_cache_tests;`
 //!
-//! RED state: this file does not compile until the implementer creates
-//! `server-module/src/content_cache.rs` exposing:
+//! RED state (M13.5d block — already resolved): this file does not compile
+//! until the implementer creates `server-module/src/content_cache.rs` exposing:
 //!
 //! - `cached_zone_maps()      -> Result<&'static Vec<game_core::ZoneMapDef>, String>`
 //! - `cached_evolutions()     -> Result<&'static Vec<game_core::SpeciesEvolutions>, String>`
@@ -12,6 +12,19 @@
 //! - `cached_quest_defs()     -> Result<&'static Vec<game_core::QuestDef>, String>`
 //!
 //! and adds `mod content_cache;` to `lib.rs`.
+//!
+//! RED state (M14.5e block — tests 1–4 compile-fail; test 5 assertion-fail):
+//!
+//! Tests 1–4 (`cached_skills_*` / `cached_items_*`) are RED via **compile
+//! failure**: `cached_skills()` and `cached_items()` do not yet exist in
+//! `content_cache.rs`. Because compile failure prevents any test in this crate
+//! from running, test 5's red state (`hot_path_reducers_use_cached_content_not_load`)
+//! is demonstrable only after the implementer adds the two accessors and the two
+//! `LazyLock` statics. At that point test 5 is RED via **assertion failure**:
+//! the reducer bodies in `battle.rs` and `taming.rs` still contain
+//! `game_core::load_skills()` / `game_core::load_items()` direct calls and do
+//! NOT yet contain `cached_skills` / `cached_items`. This layered red state is
+//! the same precedent established by M13.5d (ADR-0089).
 //!
 //! EARS criteria covered:
 //!   13.5d-1 transparency: each cached_ fn returns the same data as the
@@ -21,6 +34,12 @@
 //!   13.5d-1 battle.rs hoist: compute_evolves_to with evolutions from
 //!     cached_evolutions() produces the same result as with load_evolutions().
 //!   13.5d-2 (server side): cached_zone_maps() + map_for(0, …) returns Ok.
+//!   14.5e-1 transparency (skills): cached_skills() == game_core::load_skills().
+//!   14.5e-1 transparency (items): cached_items() == game_core::load_items().
+//!   14.5e-1 structural (skills LazyLock): two calls return the SAME pointer.
+//!   14.5e-1 structural (items LazyLock): two calls return the SAME pointer.
+//!   14.5e-2 call-site switch: submit_attack / swap_active / use_battle_item /
+//!     attempt_recruit bodies use cached_skills/cached_items, NOT load_skills/load_items.
 
 // `super` is the `content_cache` module (declared via #[path]).
 use super::*;
@@ -290,4 +309,362 @@ fn cached_evolves_to_matches_load_evolves_to() {
          result with freshly-loaded evolutions ({:?}) for species {} level {}",
         result_cached, result_loaded, m.species_id, m.level
     );
+}
+
+// ===========================================================================
+// M14.5e — skills + items cache: EARS 14.5e-1 transparency + LazyLock proof
+// ===========================================================================
+//
+// Tests 1–4 below are RED via compile failure until `content_cache.rs` gains:
+//
+//   static SKILLS: LazyLock<Result<Vec<game_core::SkillDef>, String>> =
+//       LazyLock::new(game_core::load_skills);
+//   static ITEMS:  LazyLock<Result<Vec<game_core::ItemDef>,  String>> =
+//       LazyLock::new(game_core::load_items);
+//   pub(crate) fn cached_skills() -> Result<&'static Vec<game_core::SkillDef>, String>
+//   pub(crate) fn cached_items()  -> Result<&'static Vec<game_core::ItemDef>,  String>
+//
+// Test 5 is RED via assertion failure once those symbols exist (the call sites
+// in battle.rs and taming.rs still call load_skills/load_items directly today).
+// ===========================================================================
+
+/// CRITERION 14.5e-1 (skills transparency): `cached_skills()` returns exactly
+/// the same data as `game_core::load_skills()` — same count and same contents.
+///
+/// `SkillDef` derives `PartialEq + Eq` (game-core/src/content.rs, line 115),
+/// so direct `assert_eq!` is safe and produces a precise diff on failure.
+/// Count is checked first for a clearer failure message (house style).
+///
+/// Wrong impl killed: a static that hard-codes a subset of skills, returns an
+/// empty Vec, parses a stale snapshot, or reorders entries. Any of these will
+/// fail the `assert_eq!` on the full Vec.
+#[test]
+fn cached_skills_matches_load() {
+    let cached = cached_skills().expect("cached_skills() must succeed");
+    let loaded = game_core::load_skills().expect("game_core::load_skills() must succeed");
+
+    assert_eq!(
+        cached.len(),
+        loaded.len(),
+        "cached_skills() returned {} entries but game_core::load_skills() returned {}",
+        cached.len(),
+        loaded.len()
+    );
+    assert_eq!(
+        *cached, loaded,
+        "cached_skills() data does not match game_core::load_skills()"
+    );
+}
+
+/// CRITERION 14.5e-1 (items transparency): `cached_items()` returns exactly
+/// the same data as `game_core::load_items()` — same count and same contents.
+///
+/// `ItemDef` derives `PartialEq + Eq` (game-core/src/content.rs, line 145),
+/// so direct `assert_eq!` is safe.
+/// Count is checked first for a clearer failure message (house style).
+///
+/// Wrong impl killed: a static that hard-codes a subset of items, returns an
+/// empty Vec, parses a stale snapshot, or reorders entries.
+#[test]
+fn cached_items_matches_load() {
+    let cached = cached_items().expect("cached_items() must succeed");
+    let loaded = game_core::load_items().expect("game_core::load_items() must succeed");
+
+    assert_eq!(
+        cached.len(),
+        loaded.len(),
+        "cached_items() returned {} entries but game_core::load_items() returned {}",
+        cached.len(),
+        loaded.len()
+    );
+    assert_eq!(
+        *cached, loaded,
+        "cached_items() data does not match game_core::load_items()"
+    );
+}
+
+/// CRITERION 14.5e-1 structural (skills LazyLock): two successive calls to
+/// `cached_skills()` return the SAME `Vec` pointer.
+///
+/// `std::ptr::eq` on two `&'static Vec<SkillDef>` references proves the backing
+/// allocation is identical — i.e., the first call initialized the `LazyLock` and
+/// the second returned the cached reference without re-parsing.
+///
+/// Wrong impl killed: any accessor that calls `game_core::load_skills()` on every
+/// invocation (re-parses compile-time-embedded RON per call), or that allocates a
+/// fresh `Vec<SkillDef>` on each call. Both would yield distinct heap addresses.
+#[test]
+fn cached_skills_ptr_eq_second_call() {
+    let first = cached_skills().expect("first call to cached_skills() must succeed");
+    let second = cached_skills().expect("second call to cached_skills() must succeed");
+    assert!(
+        std::ptr::eq(first as *const _, second as *const _),
+        "cached_skills() returned different pointers on two calls — \
+         LazyLock is not caching (the Vec was re-allocated or re-parsed on the second call)"
+    );
+}
+
+/// CRITERION 14.5e-1 structural (items LazyLock): two successive calls to
+/// `cached_items()` return the SAME `Vec` pointer.
+///
+/// Mirrors `cached_skills_ptr_eq_second_call` for the items registry.
+///
+/// Wrong impl killed: any accessor that calls `game_core::load_items()` on every
+/// invocation, or allocates a fresh `Vec<ItemDef>` on each call.
+#[test]
+fn cached_items_ptr_eq_second_call() {
+    let first = cached_items().expect("first call to cached_items() must succeed");
+    let second = cached_items().expect("second call to cached_items() must succeed");
+    assert!(
+        std::ptr::eq(first as *const _, second as *const _),
+        "cached_items() returned different pointers on two calls — \
+         LazyLock is not caching (the Vec was re-allocated or re-parsed on the second call)"
+    );
+}
+
+// ===========================================================================
+// M14.5e-2 — SOURCE-GUARD: hot-path reducers must use cached_* not load_*
+//
+// This test is RED via assertion failure once cached_skills/cached_items exist
+// (compile failure before that). It pins the call-site switch as a hard
+// invariant: if any of the four reducer bodies still contain a direct
+// game_core::load_skills() or game_core::load_items() call, the assertion fires.
+//
+// INVARIANT (ADR-0089): load_skills() and load_items() re-parse compile-time-
+// embedded RON on every invocation. On a hot path (submit_attack, swap_active,
+// attempt_recruit, use_battle_item are all called every battle turn / recruit
+// attempt) this means redundant RON parsing per-call. The LazyLock caches
+// introduced by M14.5e must be the ONLY entry point inside these reducers.
+//
+// Helper visibility note: strip_rust_comments and extract_fn_body in
+// battle_tests.rs and taming_tests.rs are bare `fn` items inside #[cfg(test)]
+// modules of their respective files, scoped to those modules' `super`. They
+// are NOT reachable from content_cache_tests.rs. This file inlines minimal
+// copies of both helpers (same algorithm, same byte-for-byte logic) following
+// the established precedent in taming_tests.rs which also inlines copies
+// rather than trying to reach battle_tests.rs. This is correct per the Rust
+// module visibility rules — there is no shared test-utility crate.
+// ===========================================================================
+
+/// Strip Rust block comments (`/* ... */`) and line comments (`// ...`) from
+/// `src`. Replaces those regions with spaces (preserving byte length).
+///
+/// Inlined copy of the helper from `battle_tests.rs` / `taming_tests.rs` —
+/// those are bare `fn` items inside `#[cfg(test)]` submodules of their
+/// respective production files and are NOT reachable here. The algorithm is
+/// identical to both existing copies.
+fn strip_rust_comments_local(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = vec![b' '; len];
+    let mut i = 0;
+    while i < len {
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else {
+            out[i] = bytes[i];
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("stripped source must be valid UTF-8")
+}
+
+/// Extract the body of a named `fn` from comment-stripped `src`.
+///
+/// Finds `pub fn <name>(` or `fn <name>(`, walks to the first `{`, then
+/// counts braces to find the matching `}`. Returns the body slice BETWEEN
+/// the outer braces (exclusive), or `None` if the function is not found.
+///
+/// Inlined copy of the helper from `battle_tests.rs` / `taming_tests.rs` —
+/// see visibility note in the block comment above.
+fn extract_fn_body_local<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+    let pub_needle = format!("pub fn {}(", name);
+    let priv_needle = format!("fn {}(", name);
+    let fn_start = src
+        .find(pub_needle.as_str())
+        .or_else(|| src.find(priv_needle.as_str()))?;
+
+    let after_fn = &src[fn_start..];
+    let brace_offset = after_fn.find('{')?;
+    let body_start = fn_start + brace_offset + 1;
+
+    let mut depth: usize = 1;
+    let mut rel: usize = 0;
+    let chars: Vec<char> = src[body_start..].chars().collect();
+    let mut char_pos = 0;
+    while char_pos < chars.len() && depth > 0 {
+        match chars[char_pos] {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        rel += chars[char_pos].len_utf8();
+        char_pos += 1;
+    }
+
+    if depth == 0 {
+        Some(&src[body_start..body_start + rel])
+    } else {
+        None
+    }
+}
+
+/// CRITERION 14.5e-2 (hot-path call-site switch): the four reducer bodies that
+/// were switched from `game_core::load_skills()` / `game_core::load_items()`
+/// to `cached_skills()` / `cached_items()` must use ONLY the cached accessors.
+///
+/// Four reducers are checked:
+///   - `submit_attack`   (battle.rs) — must use `cached_skills`, not `load_skills`
+///   - `swap_active`     (battle.rs) — must use `cached_skills`, not `load_skills`
+///   - `use_battle_item` (battle.rs) — must use `cached_items`, not `load_items`;
+///                                     MUST still contain `content error` (pins the
+///                                     `.map_err(|e| format!("content error: {e}"))`)
+///   - `attempt_recruit` (taming.rs) — must use `cached_skills`, not `load_skills`
+///
+/// Comment-stripping is mandatory: the OLD in-source comments mention
+/// `load_skills()` and `load_items()`; the NEW comments will mention
+/// `cached_skills` and `cached_items`. Without stripping, the guard is fooled
+/// in both directions. Needles built from parts per module convention to avoid
+/// self-match (this test source is NOT inside the included files, so self-match
+/// is not a risk here, but we follow the convention for consistency).
+///
+/// Wrong impl killed: any reducer body that still calls `game_core::load_skills()`
+/// or `game_core::load_items()` directly — re-parses RON on every hot-path call
+/// instead of using the process-lifetime LazyLock cache (ADR-0089 violation).
+#[test]
+fn hot_path_reducers_use_cached_content_not_load() {
+    let battle_raw = include_str!("battle.rs");
+    let taming_raw = include_str!("taming.rs");
+
+    let battle_stripped = strip_rust_comments_local(battle_raw);
+    let taming_stripped = strip_rust_comments_local(taming_raw);
+
+    // --- submit_attack (battle.rs): must use cached_skills, not load_skills ---
+    {
+        // Assembled from parts per convention (no self-match risk; for consistency).
+        let fn_name = ["submit", "_attack"].concat();
+        let body = extract_fn_body_local(&battle_stripped, &fn_name)
+            .unwrap_or_else(|| panic!("INVARIANT (ADR-0089): {} not found in battle.rs", fn_name));
+
+        let cached_needle = ["cached", "_skills"].concat();
+        let banned_needle = ["game_core::load", "_skills"].concat();
+
+        assert!(
+            body.contains(cached_needle.as_str()),
+            "INVARIANT (ADR-0089): {} must use `cached_skills` — \
+             direct `game_core::load_skills()` re-parses RON per call on a hot path. \
+             Switch to `crate::content_cache::cached_skills()?`.",
+            fn_name
+        );
+        assert!(
+            !body.contains(banned_needle.as_str()),
+            "INVARIANT (ADR-0089): {} body must NOT contain `game_core::load_skills` — \
+             that call re-parses RON on every turn. \
+             Replace with `crate::content_cache::cached_skills()?`.",
+            fn_name
+        );
+    }
+
+    // --- swap_active (battle.rs): must use cached_skills, not load_skills ---
+    {
+        let fn_name = ["swap", "_active"].concat();
+        let body = extract_fn_body_local(&battle_stripped, &fn_name)
+            .unwrap_or_else(|| panic!("INVARIANT (ADR-0089): {} not found in battle.rs", fn_name));
+
+        let cached_needle = ["cached", "_skills"].concat();
+        let banned_needle = ["game_core::load", "_skills"].concat();
+
+        assert!(
+            body.contains(cached_needle.as_str()),
+            "INVARIANT (ADR-0089): {} must use `cached_skills` — \
+             direct `game_core::load_skills()` re-parses RON per call on a hot path. \
+             Switch to `crate::content_cache::cached_skills()?`.",
+            fn_name
+        );
+        assert!(
+            !body.contains(banned_needle.as_str()),
+            "INVARIANT (ADR-0089): {} body must NOT contain `game_core::load_skills` — \
+             that call re-parses RON on every turn. \
+             Replace with `crate::content_cache::cached_skills()?`.",
+            fn_name
+        );
+    }
+
+    // --- use_battle_item (battle.rs): must use cached_items, not load_items;
+    //     MUST still contain "content error" (pins the map_err wrapper) ---
+    {
+        let fn_name = ["use", "_battle_item"].concat();
+        let body = extract_fn_body_local(&battle_stripped, &fn_name)
+            .unwrap_or_else(|| panic!("INVARIANT (ADR-0089): {} not found in battle.rs", fn_name));
+
+        let cached_needle = ["cached", "_items"].concat();
+        let banned_needle = ["game_core::load", "_items"].concat();
+        // The map_err wrapper is pinned: use_battle_item is specified to KEEP
+        // `.map_err(|e| format!("content error: {e}"))` after the switch.
+        let map_err_needle = ["content", " error"].concat();
+
+        assert!(
+            body.contains(cached_needle.as_str()),
+            "INVARIANT (ADR-0089): {} must use `cached_items` — \
+             direct `game_core::load_items()` re-parses RON on every item use. \
+             Switch to `crate::content_cache::cached_items().map_err(|e| format!(\"content error: {{e}}\"))?`.",
+            fn_name
+        );
+        assert!(
+            !body.contains(banned_needle.as_str()),
+            "INVARIANT (ADR-0089): {} body must NOT contain `game_core::load_items` — \
+             that call re-parses RON on every item use. \
+             Replace with `crate::content_cache::cached_items()`.",
+            fn_name
+        );
+        assert!(
+            body.contains(map_err_needle.as_str()),
+            "INVARIANT (ADR-0089 / M14.5e spec): {} must retain the \
+             `.map_err(|e| format!(\"content error: {{e}}\"))` wrapper even after \
+             switching to `cached_items` — downstream callers may match on this \
+             error string and the spec pins it explicitly.",
+            fn_name
+        );
+    }
+
+    // --- attempt_recruit (taming.rs): must use cached_skills, not load_skills ---
+    {
+        let fn_name = ["attempt", "_recruit"].concat();
+        let body = extract_fn_body_local(&taming_stripped, &fn_name)
+            .unwrap_or_else(|| panic!("INVARIANT (ADR-0089): {} not found in taming.rs", fn_name));
+
+        let cached_needle = ["cached", "_skills"].concat();
+        let banned_needle = ["game_core::load", "_skills"].concat();
+
+        assert!(
+            body.contains(cached_needle.as_str()),
+            "INVARIANT (ADR-0089): {} must use `cached_skills` — \
+             direct `game_core::load_skills()` re-parses RON on every recruit attempt. \
+             Switch to `crate::content_cache::cached_skills()?`.",
+            fn_name
+        );
+        assert!(
+            !body.contains(banned_needle.as_str()),
+            "INVARIANT (ADR-0089): {} body must NOT contain `game_core::load_skills` — \
+             that call re-parses RON on every failed recruit turn. \
+             Replace with `crate::content_cache::cached_skills()?`.",
+            fn_name
+        );
+    }
 }
