@@ -18,6 +18,7 @@ struct SimChar {
     state: CharacterState,
     queue: Vec<MoveInput>,
     last_seq: u64,
+    battle_locked: bool,
 }
 
 /// The authoritative world model (server side).
@@ -49,6 +50,7 @@ impl ServerWorld {
                 },
                 queue: Vec::new(),
                 last_seq: 0,
+                battle_locked: false,
             },
         );
         id
@@ -81,8 +83,10 @@ impl ServerWorld {
     /// Warp resolution mirrors `movement_tick` (ADR-0020/0066): if a moved
     /// character lands on a warp tile (`map.warp_at`), their `zone_id` and `pos`
     /// are updated to the destination and the queue is cleared (12.5f-1). Delta
-    /// from `movement_tick`: the harness has NO player/battle tables, so the
-    /// battle-guard is omitted — every moved character resolves warps unconditionally.
+    /// from `movement_tick`: the harness has NO player/battle tables, so warps are
+    /// resolved unconditionally. The battle-guard IS now modeled: characters with
+    /// `battle_locked = true` have their move drain skipped each tick (queue remains
+    /// intact) — mirroring the server's battle-lock check in `movement_tick`.
     pub fn tick_zone(&mut self, zone: u32, now: Millis, map: &TileMap) {
         let ids: Vec<u64> = self
             .chars
@@ -94,6 +98,10 @@ impl ServerWorld {
             let Some(ch) = self.chars.get_mut(&id) else {
                 continue;
             };
+            if ch.battle_locked {
+                ch.state.action = ActionState::Idle;
+                continue;
+            }
             if ch.queue.is_empty() {
                 ch.state.action = ActionState::Idle;
                 continue;
@@ -102,7 +110,7 @@ impl ServerWorld {
             let prev = ch.state.pos; // capture BEFORE apply_move (mirrors movement.rs:194)
             ch.state = apply_move(&ch.state, input, map, now);
             // Warp resolution: only when the character actually moved (guard 1: no bump warp).
-            // Battle-guard (movement.rs:207-220) is omitted — harness has no battle tables.
+            // (Battle-guard handled above via the battle_locked early-continue.)
             if prev != ch.state.pos {
                 if let Some(warp) = map.warp_at(ch.state.pos) {
                     ch.zone_id = warp.to_zone;
@@ -133,6 +141,21 @@ impl ServerWorld {
     #[must_use]
     pub fn queue_len(&self, id: u64) -> usize {
         self.chars.get(&id).map_or(0, |c| c.queue.len())
+    }
+
+    /// Lock a character into battle: `tick_zone` will skip move drain for this character
+    /// while it is locked. Enqueue is unaffected — the queue still accepts intents.
+    pub fn lock_battle(&mut self, id: u64) {
+        if let Some(ch) = self.chars.get_mut(&id) {
+            ch.battle_locked = true;
+        }
+    }
+
+    /// Unlock a character from battle: `tick_zone` resumes normal move drain.
+    pub fn unlock_battle(&mut self, id: u64) {
+        if let Some(ch) = self.chars.get_mut(&id) {
+            ch.battle_locked = false;
+        }
     }
 }
 
@@ -405,6 +428,121 @@ mod tests {
             w.pos(id),
             Some(game_core::TilePos { x: 5, y: 5 }),
             "pos must remain (5,5) after a southward bump into the wall at (5,6)"
+        );
+    }
+
+    // ===========================================================================
+    // M14.5f — battle-lock tests (RED until implementer adds lock_battle /
+    // unlock_battle to ServerWorld and the skip-drain guard to tick_zone).
+    //
+    // EARS criteria covered:
+    //   BL-1 — tick_zone skips move drain for battle-locked characters
+    //   BL-2 — unlock_battle re-enables drain
+    //   BL-3 — lock_battle does NOT block enqueue (queue still accepts intents)
+    //
+    // All tests use zone_0() (warp-less map) so they are wall-clock-free and
+    // dependency-free. Millis(200) matches the STEP_MS injected-clock convention.
+    // ===========================================================================
+
+    /// BL-1: A battle-locked character's position must not advance even when it
+    /// has moves in its queue and tick_zone is called.
+    ///
+    /// Kill target: a tick_zone that ignores the battle-locked flag and drains moves
+    /// for all characters unconditionally — the character would move to (2,1), making
+    /// this assertion fail.
+    #[test]
+    fn battle_locked_character_does_not_advance() {
+        let mut w = ServerWorld::new();
+        let map = zone_0();
+        let id = w.join(0);
+
+        // Enqueue a move East (would take char from spawn (1,1) to (2,1)).
+        w.enqueue(id, step(Direction::East), 1).unwrap();
+
+        // Lock the character before ticking.
+        w.lock_battle(id);
+
+        // Tick the zone — the locked character must not have its queue drained.
+        w.tick_zone(0, Millis(200), &map);
+
+        // Position must still be spawn (1,1): the move was NOT applied.
+        assert_eq!(
+            w.pos(id),
+            Some(game_core::spawn()),
+            "battle-locked character must stay at spawn after tick_zone — \
+             kill target: tick_zone that ignores battle_locked and applies the queued East move"
+        );
+
+        // Queue must still hold the un-drained intent (BL-3 is covered separately,
+        // but here we confirm the queue was NOT consumed).
+        assert_eq!(
+            w.queue_len(id),
+            1,
+            "battle-locked character's queue must still hold the un-drained intent after tick — \
+             kill target: tick_zone that drains the queue even under battle_locked"
+        );
+    }
+
+    /// BL-2: After unlock_battle, the character CAN advance (tick drains its queue).
+    ///
+    /// Kill target: an unlock_battle that doesn't actually clear the locked flag —
+    /// the character stays pinned at spawn and never moves.
+    #[test]
+    fn unlocked_character_advances_after_unlock() {
+        let mut w = ServerWorld::new();
+        let map = zone_0();
+        let id = w.join(0);
+
+        w.enqueue(id, step(Direction::East), 1).unwrap();
+
+        // Lock then immediately unlock.
+        w.lock_battle(id);
+        w.unlock_battle(id);
+
+        // Tick: character must now advance East since it is no longer locked.
+        w.tick_zone(0, Millis(200), &map);
+
+        assert_eq!(
+            w.pos(id),
+            Some(TilePos { x: 2, y: 1 }),
+            "after unlock_battle, tick_zone must drain the queued East move → (2,1) — \
+             kill target: unlock_battle that doesn't clear the flag, leaving char pinned at spawn"
+        );
+    }
+
+    /// BL-3: lock_battle must NOT prevent new intents from being enqueued — the
+    /// queue still accepts moves while the character is battle-locked.
+    ///
+    /// Kill target: a lock_battle implementation that also blocks enqueue, making
+    /// the locked character unable to receive moves sent during battle.
+    #[test]
+    fn battle_locked_queue_still_accepts_enqueues() {
+        let mut w = ServerWorld::new();
+        let _map = zone_0();
+        let id = w.join(0);
+
+        // Lock the character before enqueuing any moves.
+        w.lock_battle(id);
+
+        // Enqueue two moves — both must be accepted (within MOVE_QUEUE_CAP = 2).
+        let r1 = w.enqueue(id, step(Direction::East), 1);
+        let r2 = w.enqueue(id, step(Direction::East), 2);
+
+        assert!(
+            r1.is_ok(),
+            "enqueue must succeed while battle-locked (seq 1) — \
+             kill target: lock_battle that makes enqueue return Err for locked chars"
+        );
+        assert!(
+            r2.is_ok(),
+            "enqueue must succeed while battle-locked (seq 2) — \
+             kill target: lock_battle that blocks all enqueues on locked chars"
+        );
+        assert_eq!(
+            w.queue_len(id),
+            2,
+            "queue_len must be 2 after two enqueues while battle-locked — \
+             kill target: lock_battle that silently discards enqueued intents"
         );
     }
 }
