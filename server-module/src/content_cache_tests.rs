@@ -456,9 +456,10 @@ fn cached_items_ptr_eq_second_call() {
 ///   - Nested block comments are NOT supported (Rust does support them, but
 ///     no production code in the searched files uses them, and the eval does
 ///     not either).
-///   - String literals containing `/*` or `//` are NOT special-cased — this
-///     is intentional: we only need to remove comments so the body-search
-///     does not accidentally match a commented-out load_skills call.
+///   - String literals containing comment markers (`/* ... */` pairs or `//`)
+///     are NOT special-cased — this is intentional: we only need to remove
+///     comments so the body-search does not accidentally match a
+///     commented-out load_skills call.
 ///   - Dual caveat: a `//` inside a string literal blanks the rest of that
 ///     line, so a banned call appearing on the SAME line after such a string
 ///     would be hidden from the negative needle. This is acceptable because
