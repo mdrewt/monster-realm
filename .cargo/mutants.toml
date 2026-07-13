@@ -1,6 +1,16 @@
-# Single blessed exclusion: provably-equivalent mutant (ADR-0088 §Decision 2).
-# The Y-branch of toward_home requires |dx| < |dy| → dy != 0, so `dy > 0` and
-# `dy >= 0` are indistinguishable on the reachable domain. Line-pinned
-# (npc/rules.rs:61:15): drift resurfaces the mutant → nightly red → re-pin
-# consciously. Guarded by evals/mutate-core-recipe-integrity.eval.mjs.
-exclude_re = ["npc/rules\\.rs:61:15: replace > with >= in toward_home"]
+# Blessed equivalent-mutant exclusions (ADR-0088 §Decision 2 + M14.5h).
+#
+# 1. toward_home Y-branch (npc/rules.rs:61:15): |dx| < |dy| → dy != 0, so
+#    `dy > 0` and `dy >= 0` are indistinguishable on the reachable domain.
+#    Line-pinned: drift resurfaces the mutant → nightly red → re-pin consciously.
+#    Guarded by evals/mutate-core-recipe-integrity.eval.mjs.
+#
+# 2. apply_entry_ability EntryHeal guard (ability.rs:169:60): `current_hp < max_hp`
+#    vs `current_hp <= max_hp` produce identical output because the branch body
+#    clamps: `current_hp.saturating_add(heal).min(max_hp)`. At current_hp == max_hp
+#    both branches yield max_hp after the clamp; no test can distinguish them.
+#    Proved by EARS-h-1a (boundary_full_hp_no_heal). Line-pinned.
+exclude_re = [
+    "npc/rules\\.rs:61:15: replace > with >= in toward_home",
+    "ability\\.rs:169:60: replace < with <= in apply_entry_ability",
+]

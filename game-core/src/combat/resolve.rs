@@ -127,10 +127,19 @@ fn resolve_one_attack(
                 side: defender_side,
                 new_active: idx,
             });
-            // TODO(ADR-0100 D6): call apply_entry_ability here for the auto-switched-in
-            // monster so EntryHeal fires and StatusImmunity takes effect immediately
-            // instead of one turn later. Requires threading AbilityStore + BattleStatusStore
-            // into resolve_one_attack. Deferred to Phase C.
+            // Adjacency invariant: the last two events are always Faint{defender_side}
+            // then Switch{defender_side} with nothing in between. apply_ko_switch_entry_abilities
+            // in the outer resolvers depends on this to detect KO auto-switches via
+            // windows(2) scanning. If this assert fires, a new event was inserted
+            // between Faint and Switch — update apply_ko_switch_entry_abilities accordingly.
+            debug_assert!(
+                matches!(events.get(events.len().wrapping_sub(2)), Some(BattleEvent::Faint { side }) if *side == defender_side),
+                "Faint→Switch adjacency invariant: expected Faint{{side:{defender_side:?}}} at events[n-2] before Switch (ADR-0100 D6)"
+            );
+            // D6 wiring: apply_entry_ability is called by apply_ko_switch_entry_abilities
+            // in the outer resolver (resolve_full_turn / resolve_player_swap /
+            // resolve_recruit_failure) after this function returns, by scanning the
+            // returned event stream for Faint→Switch pairs (ADR-0100 D6, M14.5h).
         } else {
             let winner = acting_side;
             state.outcome = match winner {
@@ -434,6 +443,10 @@ pub fn resolve_full_turn(
     );
     events.extend(turn_events.iter().cloned());
 
+    // Phase 2.5: apply entry abilities for KO auto-switches (ADR-0100 D6, M14.5h).
+    apply_ko_switch_entry_abilities(state, &turn_events, abilities, status);
+    sync_status_to_monsters(state, status);
+
     // Phases 3–5: post-turn pipeline, shared with swap/recruit paths (ADR-0098 D1, SSOT ADR-0003).
     run_post_turn_phases(state, status, sv, &turn_events, &mut events);
 
@@ -529,6 +542,10 @@ pub fn resolve_recruit_failure(
         events.extend(strike_events.iter().cloned());
     }
 
+    // Phase 2.5: apply entry abilities for KO auto-switches from wild's strike-back (ADR-0100 D6).
+    apply_ko_switch_entry_abilities(state, &strike_events, abilities, status);
+    sync_status_to_monsters(state, status);
+
     // Phases 3–5: post-turn pipeline (same as resolve_full_turn; ADR-0098 D1).
     // Runs even when the wild is skill-less — the turn advanced, so clocks tick.
     run_post_turn_phases(state, status, sv, &strike_events, &mut events);
@@ -587,10 +604,44 @@ pub fn resolve_player_swap(
     let enemy_events = resolve_enemy_turn(state, enemy_side, skills, type_chart, variance);
     events.extend(enemy_events.iter().cloned());
 
+    // Phase 2.5: apply entry abilities for KO auto-switches from enemy's counter-attack (ADR-0100 D6).
+    apply_ko_switch_entry_abilities(state, &enemy_events, abilities, status);
+    sync_status_to_monsters(state, status);
+
     // Phases 3–5: post-turn pipeline (same as resolve_full_turn; ADR-0098 D1).
     run_post_turn_phases(state, status, sv, &enemy_events, &mut events);
 
     events
+}
+
+/// Apply entry abilities for every KO auto-switch encoded in `events`.
+///
+/// `resolve_one_attack` emits adjacent `Faint { side } + Switch { side, .. }` pairs
+/// when a defender is KO'd and the game auto-advances to the next conscious team
+/// member. This function post-processes that event slice and fires
+/// [`super::ability::apply_entry_ability`] for each such pair, closing the ADR-0100
+/// D6 gap without threading `AbilityStore`/`BattleStatusStore` through the
+/// inner `resolve_one_attack` / `resolve_turn` stack.
+///
+/// Called by `resolve_full_turn`, `resolve_player_swap`, and `resolve_recruit_failure`
+/// after the combat action returns and before `sync_status_to_monsters`.
+fn apply_ko_switch_entry_abilities(
+    state: &mut BattleState,
+    events: &[BattleEvent],
+    abilities: &super::ability::AbilityStore,
+    status: &mut super::status::BattleStatusStore,
+) {
+    use super::ability::apply_entry_ability;
+    for pair in events.windows(2) {
+        if let [BattleEvent::Faint { side: faint_side }, BattleEvent::Switch {
+            side: switch_side, ..
+        }] = pair
+        {
+            if faint_side == switch_side {
+                apply_entry_ability(state, *switch_side, abilities, status);
+            }
+        }
+    }
 }
 
 /// Sync `BattleMonster.status` from `BattleStatusStore` for all team slots.

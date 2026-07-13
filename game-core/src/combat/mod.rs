@@ -23,6 +23,8 @@ pub mod m14_5b_tests;
 #[cfg(test)]
 pub mod m14_5c_tests;
 #[cfg(test)]
+pub mod m14_5h_tests;
+#[cfg(test)]
 pub mod m14a_tests;
 #[cfg(test)]
 pub mod m14b_tests;
