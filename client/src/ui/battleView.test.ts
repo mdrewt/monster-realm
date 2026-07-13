@@ -472,11 +472,10 @@ interface CureItemVM {
 /** Build a VM with a populated cureItems list for cure-item DOM tests. */
 function makeCureItemVM(cureItems: CureItemVM[]): BattleViewModel {
   return makeRecruitVM({
-    // @ts-expect-error -- cureItems not yet on BattleViewModel; RED until impl adds field
     cureItems,
     canRecruit: false, // independent of recruit to keep tests focused
     baitOptions: [],
-  } as Partial<BattleViewModel>);
+  });
 }
 
 describe('BattleView m14.5d-1b: cure-item selector rendered when cureItems non-empty (ongoing)', () => {

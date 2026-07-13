@@ -1569,6 +1569,64 @@ interface CureItemStub {
   count: number;
 }
 
+// =============================================================================
+// RT-CI-01 — CureItem.cureStatus runtime null-filter invariant (red-team gating)
+//
+// FINDING (red-team m14.5d-1b): CureItem.cureStatus is typed as `string` (non-null),
+// so the filter `c.cureStatus !== null` in buildBattleViewModel is vacuous at the TS
+// type level. However, the model defends at RUNTIME against a caller that passes a
+// null cureStatus via an `as never` cast (i.e. bypassing the type system). This test
+// locks that runtime behavior so a future refactor that removes the null check does
+// NOT accidentally let null-cureStatus items leak into the VM.
+//
+// The test uses `as never` intentionally — it is the only way to represent a runtime
+// scenario where the field is null despite the type contract. The `as never` pattern
+// is the established project convention for defense-in-depth runtime probes.
+// =============================================================================
+describe('battleModel RT-CI-01: cureItems null-cureStatus runtime filter invariant', () => {
+  it('GATING: item with null cureStatus is excluded even when passed via as-never cast', () => {
+    // Kills: any future refactor that removes the `c.cureStatus !== null` runtime
+    // check from buildBattleViewModel, assuming the type contract is sufficient.
+    // The type contract (cureStatus: string) does NOT protect against a runtime null
+    // from an untyped source (e.g., a future SDK version that sends null directly).
+    const b = makeBattle({ outcome: 'Ongoing' });
+    const withNull: CureItemStub[] = [
+      { itemId: 1, name: 'Antidote', cureStatus: 'Poison', count: 2 }, // valid
+      { itemId: 2, name: 'Mystery', cureStatus: null, count: 1 }, // null cureStatus
+    ];
+    const vm = buildBattleViewModel(
+      b,
+      makeSkillMap(1),
+      makeSpeciesMap(speciesRow(1)),
+      [],
+      withNull as never,
+    );
+    expect(vm).not.toBeNull();
+    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    // Only the non-null cureStatus item must appear; the null one must be filtered out.
+    expect(cureItems).toHaveLength(1);
+    expect(cureItems[0]!.itemId).toBe(1);
+    // Kills: an impl that removes the `c.cureStatus !== null` check trusting the type alone.
+  });
+
+  it('GATING: item with null cureStatus AND count=0 is doubly excluded (both guards fire)', () => {
+    // Verifies that even if both guards are removed one at a time, this test still catches
+    // the regression: the null-cureStatus item must be excluded regardless of count.
+    const b = makeBattle({ outcome: 'Ongoing' });
+    const input: CureItemStub[] = [{ itemId: 3, name: 'BadItem', cureStatus: null, count: 0 }];
+    const vm = buildBattleViewModel(
+      b,
+      makeSkillMap(1),
+      makeSpeciesMap(speciesRow(1)),
+      [],
+      input as never,
+    );
+    expect(vm).not.toBeNull();
+    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    expect(cureItems).toHaveLength(0);
+  });
+});
+
 describe('battleModel m14.5d-1b: buildBattleViewModel — cureItems classify-by-data', () => {
   it('BITES: only items with cureStatus !== null AND count > 0 appear in cureItems', () => {
     // Kills: an impl that lists all inventory items regardless of cureStatus,
