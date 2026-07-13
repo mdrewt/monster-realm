@@ -1,5 +1,14 @@
 # 0063. Evolution & fusion client overlay: subscription shape, overlay key, fusion recipe display
 
+**Status:** Accepted
+**Date:** 2026-07-02
+**Slice:** m10c
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** client-ui, evolution-fusion
+**Decision:** Evolution/fusion client overlay uses KeyE, a pure EvolutionView view-model seam, and fusion recipe display; overlay mutual exclusion with other overlays.
+
+
 - Status: accepted
 - Date: 2026-07-02
 - Milestone: M10c (client evolution/fuse UI)

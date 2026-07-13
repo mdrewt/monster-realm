@@ -1,5 +1,14 @@
 # ADR-0035: Scaffold hardening — robust secret-scan + SpacetimeDB-stack `.gitignore`
 
+**Status:** Accepted
+**Date:** 2026-06-25
+**Slice:** m0
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** tooling-docs, ci-gates
+**Decision:** Harden check-secrets.mjs to skip dangling symlinks and adopt the SpacetimeDB-stack .gitignore so just ci is green from the scaffold baseline.
+
+
 - **Status:** Accepted
 - **Date:** 2026-06-25
 - **Context milestone:** Setup (pre-M0a), one-time scaffold gate

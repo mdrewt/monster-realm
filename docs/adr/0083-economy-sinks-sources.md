@@ -1,5 +1,14 @@
 # ADR-0083: Economy sinks and sources — heal cost, quest rewards, battle rewards
 
+**Status:** Accepted
+**Date:** 2026-07-04
+**Slice:** m13c
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** economy-quests
+**Decision:** Economy sinks (heal_party costs HealLocationDef.cost_currency) and sources (quest reward, battle reward on loser BST/divisor) all routed through apply_grant/spend.
+
+
 **Status:** Accepted  
 **Date:** 2026-07-04  
 **Author:** m13c  

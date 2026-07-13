@@ -1,5 +1,14 @@
 # 0046. Player inventory: additive owner-scoped stack table, public (low-stakes), bait classified by data
 
+**Status:** Accepted
+**Date:** 2026-06-27
+**Slice:** m8d
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** economy-quests, schema-persistence
+**Decision:** Player inventory is a public owner-scoped stack table; bait item-type is classified by data (recruit_bonus > 0), not by a separate enum variant.
+
+
 - Status: accepted
 - Date: 2026-06-27
 

@@ -1,5 +1,14 @@
 # 0056. server-module internal module boundary (domain submodules)
 
+**Status:** Accepted
+**Date:** 2026-06-28
+**Slice:** m8.9a
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** tooling-docs, schema-persistence
+**Decision:** Split server-module/src/lib.rs into 8 domain submodules with a canonical touches: vocabulary for the build loop; spike proved per-module table/reducer registration.
+
+
 - Status: accepted
 - Date: 2026-06-28
 - Milestone: M8.9a (spike + scaffold); executed by M8.9b (the move)

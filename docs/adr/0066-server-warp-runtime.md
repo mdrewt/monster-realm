@@ -1,4 +1,13 @@
 # 0066. Server warp runtime — in-tick warp detection, per-zone scheduling, zone-map validation
+
+**Status:** Accepted
+**Date:** 2026-07-02
+**Slice:** m11b
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** movement-netcode, schema-persistence
+**Decision:** Server-authoritative warp runtime uses in-tick warp detection (map_for + warp_at), idempotent per-zone schedule initialization, and content-validated zone maps.
+
 - Status: accepted
 - Date: 2026-07-02
 

@@ -1,5 +1,14 @@
 # 0081. Currency primitive (M13a)
 
+**Status:** Accepted
+**Date:** 2026-07-04
+**Slice:** m13a
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** economy-quests, schema-persistence
+**Decision:** Currency primitive: private player_wallet table (u64 balance, MAX=999_999_999) with apply_grant/spend_currency helpers as the single mutation surface.
+
+
 - Status: accepted
 - Date: 2026-07-04
 - Surfaced by: M13 implementation, ADR-0022 (currency & shop economy) + ADR-0018 (inventory primitive).

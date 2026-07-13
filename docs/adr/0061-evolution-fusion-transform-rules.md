@@ -1,5 +1,14 @@
 # 0061. Evolution & fusion transform rules: eligibility resolver, individuality carry, fusion combine
 
+**Status:** Accepted
+**Date:** 2026-06-28
+**Slice:** m10a
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** evolution-fusion
+**Decision:** Pure individuality-preserving evolution and fusion transforms in game-core/src/evolution/; resolve_evolution with first-match dispatch; fuse via per-stat-max IVs.
+
+
 - Status: accepted
 - Date: 2026-06-28
 - Milestone: M10a-rules (evolution & fusion — the pure rule layer; delegated to by M10b reducers)

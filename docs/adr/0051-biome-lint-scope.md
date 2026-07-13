@@ -1,5 +1,14 @@
 # 0051. Biome as the TS/JS style+lint gate: scope, exclusions, and deferred lint debt
 
+**Status:** Accepted
+**Date:** 2026-06-27
+**Slice:** m8.5d
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** tooling-docs, ci-gates
+**Decision:** Use Biome for TS/JS lint+format, scoped to client/src with defined exclusions for generated code; disable noNonNullAssertion only in test files.
+
+
 - Status: accepted
 - Date: 2026-06-27
 - Milestone: M8.5d (build/CI/toolchain hygiene)

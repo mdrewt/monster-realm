@@ -1,5 +1,14 @@
 # 0089 — Content parse caching on hot paths (shell-side, determinism-safe)
 
+**Status:** Accepted
+**Date:** 2026-07-10
+**Slice:** m13.5d
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** content, tooling-docs
+**Decision:** Cache RON content parse results using LazyLock<Result<...>> statics in content_cache.rs; all hot-path callers switch to cached_skills/items/evolutions/etc.
+
+
 - Status: accepted
 - Date: 2026-07-10
 - Milestone: M13.5d

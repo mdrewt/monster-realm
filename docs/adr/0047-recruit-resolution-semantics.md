@@ -1,5 +1,14 @@
 # 0047. Recruit resolution: reuse `SideAWins` terminal, grant at full HP with no XP, GC the `battle_wild` row
 
+**Status:** Accepted
+**Date:** 2026-06-27
+**Slice:** m8d
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** battle, economy-quests
+**Decision:** Recruit success reuses the SideAWins terminal, grants the caught monster at full HP with no XP, and garbage-collects the battle_wild row.
+
+
 - Status: accepted
 - Date: 2026-06-27
 

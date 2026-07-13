@@ -1,5 +1,14 @@
 # ADR-0077: Battle lifecycle GC, XP log-and-continue, canonical skill order
 
+**Status:** Accepted
+**Date:** 2026-07-03
+**Slice:** m12.5e
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** battle, schema-persistence
+**Decision:** Battle terminal GC keeps latest terminal per player; XP loop log-and-continues on corrupt rows; canonical skill order follows species.learnable_skill_ids.
+
+
 **Date:** 2026-07-03  
 **Status:** Accepted  
 **Milestone:** M12.5e (sixth-review residuals — battle lifecycle & rules)

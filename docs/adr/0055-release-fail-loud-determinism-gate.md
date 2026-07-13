@@ -1,5 +1,14 @@
 # 0055. Release fail-loud + determinism-gate completeness (overflow-checks + RNG/clock sinks)
 
+**Status:** Accepted
+**Date:** 2026-06-28
+**Slice:** m8.8a
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** ci-gates
+**Decision:** Enable release/bench overflow-checks=true and expand clippy bans to OS-entropy sinks (getrandom, chrono, OsRng, ThreadRng) for fail-loud determinism.
+
+
 - Status: accepted
 - Date: 2026-06-28
 - Milestone: M8.8a (fourth-review residuals)

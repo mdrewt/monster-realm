@@ -1,5 +1,15 @@
 # ADR-0075 — Netcode smoothness residuals (M12.5d)
 
+**Status:** Accepted
+**Date:** 2026-07-03
+**Slice:** m12.5d
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** client-ui, movement-netcode
+**Decision:** Fix five netcode feel bugs: reduce INTERP_DELAY_STEPS to 1.0, add tile-center camera, snap-on-teleport on zone warp, and isolate the rAF frame-drain timer.
+**Amended-by:** ADR-0090
+
+
 **Status:** Accepted  
 **Date:** 2026-07-03  
 **Milestone:** M12.5d

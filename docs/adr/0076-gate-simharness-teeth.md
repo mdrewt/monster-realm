@@ -1,5 +1,14 @@
 # ADR-0076 — Gate & sim-harness teeth (M12.5f)
 
+**Status:** Accepted
+**Date:** 2026-07-03
+**Slice:** m12.5f
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** ci-gates, tooling-docs
+**Decision:** Add proof-of-teeth fixtures for the sim-harness, a SpacetimeType snapshot eval, and an expired-fixme guard; sim-harness loads real content and resolves warps.
+
+
 **Status:** Accepted  
 **Date:** 2026-07-03  
 **Slice:** M12.5f (sixth-review residuals, gate & sim-harness hardening)

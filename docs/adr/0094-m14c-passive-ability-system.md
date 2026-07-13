@@ -1,5 +1,14 @@
 # ADR-0094 — M14c: Passive per-species ability system
 
+**Status:** Accepted
+**Date:** 2026-07-10
+**Slice:** m14c
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** battle, content
+**Decision:** Passive per-species abilities (StatusImmunity, EntryHeal) stored in content; applied via AbilityStore threaded through resolve_full_turn and entry hooks; OCP-gated.
+
+
 **Status:** Accepted  
 **Date:** 2026-07-10  
 **Deciders:** Drew Teter  

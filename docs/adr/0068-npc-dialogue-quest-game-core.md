@@ -1,4 +1,14 @@
 # 0068. NPC/dialogue/quest — pure game-core rule module (M12a)
+
+**Status:** Accepted
+**Date:** 2026-07-02
+**Slice:** m12a
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** economy-quests, content
+**Decision:** NPC wander rule, dialogue tree model + evaluation, and quest/flag advance rules are pure game-core; NPC hash is non-commutative; Condition enum is the SSOT.
+**Amended-by:** ADR-0091
+
 - Status: accepted
 - Date: 2026-07-02
 - Milestone: M12a

@@ -1,5 +1,14 @@
 # 0048. `start_battle` opponent-provenance authorization (reject-not-clamp)
 
+**Status:** Accepted
+**Date:** 2026-06-27
+**Slice:** m8.5a
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** battle, security-authz
+**Decision:** start_battle validates opponent provenance server-side (self or WILD_IDENTITY only) and rejects—never clamps—any authorization violation.
+
+
 - Status: accepted
 - Date: 2026-06-27
 - Milestone: M8.5a (battle security & integrity)

@@ -1,5 +1,14 @@
 # ADR-0084 — Shop client view architecture (M13d)
 
+**Status:** Accepted
+**Date:** 2026-07-04
+**Slice:** m13d
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** client-ui, economy-quests
+**Decision:** Shop client view uses pure shopModel subscription with KeyG toggle, sell eligibility by data (sellPrice > 0), double-spend lock, and reducer rejection feedback.
+
+
 **Date:** 2026-07-04 · **Status:** Accepted
 **Deciders:** orchestrator
 **ADR-sequence:** follows 0082 (M13b shop content/reducers)

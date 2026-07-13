@@ -1,5 +1,14 @@
 # ADR-0080 — Generated knowledge bundle (OKF-conformant schema projection, M8.95)
 
+**Status:** Accepted
+**Date:** 2026-07-04
+**Slice:** m8.95d
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** tooling-docs, ci-gates
+**Decision:** Generate an OKF-conformant knowledge bundle (docs/knowledge/**) from SpacetimeDB schema metadata via okf-export.mjs; gate its drift in CI.
+
+
 **Status:** Accepted  
 **Date:** 2026-07-04  
 **Deciders:** Drew Teter  

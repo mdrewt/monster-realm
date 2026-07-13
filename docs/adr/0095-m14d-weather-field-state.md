@@ -1,5 +1,14 @@
 # ADR-0095 — M14d: Weather / Field State
 
+**Status:** Accepted
+**Date:** 2026-07-10
+**Slice:** m14d
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** battle
+**Decision:** Single active weather (WeatherKind exhaustive enum) with chip damage at Phase 3.5; sets_weather loaded from cached SkillDef; weather ticks in run_post_turn_phases.
+
+
 **Status:** Accepted  
 **Date:** 2026-07-10  
 **Slice:** m14d (serial after m14b + m14c)

@@ -1,5 +1,14 @@
 # ADR-0072: fuse offspring monster_pub dual-write ordering fix
 
+**Status:** Accepted
+**Date:** 2026-07-03
+**Slice:** m12.5a
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** evolution-fusion, ci-gates
+**Decision:** Fix fuse offspring dual-write ordering: capture the insert return value and build MonsterPub from the inserted row, preventing monster ID mismatches.
+
+
 **Status:** accepted  
 **Date:** 2026-07-03  
 **Deciders:** Drew Teter  

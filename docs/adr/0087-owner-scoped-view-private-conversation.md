@@ -1,5 +1,14 @@
 # ADR-0087 — Owner-scoped `#[view]` over the private `player_conversation` table (M13.5c / D-13.5-3)
 
+**Status:** Accepted
+**Date:** 2026-07-05
+**Slice:** m13.5c
+**Supersedes:** —
+**Amends:** ADR-0069
+**Subsystems:** security-authz, schema-persistence
+**Decision:** Scope player_conversation to owner-only via #[view]; onInsert+onDelete delivery model removes the inference channel into private dialogue-state flags.
+
+
 **Date:** 2026-07-05 · **Status:** Accepted
 **Deciders:** Drew (D-13.5-3: "private now"), build-loop
 **ADR-sequence:** 0087 supervisor-assigned; follows 0086 (CI e2e dev_reducers publish)

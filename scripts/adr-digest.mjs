@@ -33,81 +33,11 @@ const SUBSYSTEM_VOCAB = new Set([
 ]);
 
 // ---------------------------------------------------------------------------
-// Legacy tolerance — all project ADRs authored before the canonical header
-// standard (M-infra-d). Missing canonical fields are warnings, not errors.
-// The backfill slice removes entries here until the set is empty.
+// Legacy tolerance — all project ADRs have been backfilled with canonical
+// headers in the m-infra-d2 slice. This set is intentionally empty; the
+// gate is now zero-tolerance.
 // ---------------------------------------------------------------------------
-const LEGACY_TOLERANCE = new Set([
-  '0001',
-  '0035',
-  '0036',
-  '0037',
-  '0038',
-  '0039',
-  '0040',
-  '0041',
-  '0042',
-  '0043',
-  '0044',
-  '0045',
-  '0046',
-  '0047',
-  '0048',
-  '0049',
-  '0050',
-  '0051',
-  '0052',
-  '0053',
-  '0054',
-  '0055',
-  '0056',
-  '0057',
-  '0058',
-  '0059',
-  '0060',
-  '0061',
-  '0062',
-  '0063',
-  '0064',
-  '0065',
-  '0066',
-  '0067',
-  '0068',
-  '0069',
-  '0070',
-  '0071',
-  '0072',
-  '0073',
-  '0074',
-  '0075',
-  '0076',
-  '0077',
-  '0078',
-  '0079',
-  '0080',
-  '0081',
-  '0082',
-  '0083',
-  '0084',
-  '0085',
-  '0086',
-  '0087',
-  '0088',
-  '0089',
-  '0090',
-  '0091',
-  '0092',
-  '0093',
-  '0094',
-  '0095',
-  '0096',
-  '0097',
-  '0098',
-  '0099',
-  '0100',
-  '0101',
-  '0103',
-]);
+const LEGACY_TOLERANCE = new Set([]);
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing

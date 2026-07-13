@@ -1,5 +1,14 @@
 # ADR-0085 — Reducer-rejection feedback & app-level reconnect (M13.5b)
 
+**Status:** Accepted
+**Date:** 2026-07-05
+**Slice:** m13.5b
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** movement-netcode, client-ui
+**Decision:** Reducer rejections surface as UI feedback; enqueue_move drops rejected seq and forces reconcile; app-level reconnect uses exponential backoff capped at 30s.
+
+
 **Date:** 2026-07-05 · **Status:** Accepted
 **Deciders:** orchestrator (m13.5b build loop; ADR number supervisor-assigned)
 **ADR-sequence:** follows 0084 (M13d shop client view)

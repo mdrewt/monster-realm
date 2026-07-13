@@ -1,5 +1,14 @@
 # 0071. M12d: Client dialogue/quest/heal UI — static bundle, pure models, dismissal gating
 
+**Status:** Accepted
+**Date:** 2026-07-03
+**Slice:** m12d
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** client-ui, economy-quests
+**Decision:** Client dialogue/quest/heal UI uses a static bundle, pure models, dismissal gating via keyboard/overlay mutex, and promise-rejection feedback for reducer errors.
+
+
 **Date:** 2026-07-03
 **Status:** Accepted
 **Authors:** Supervisor, Claude Sonnet 4.6

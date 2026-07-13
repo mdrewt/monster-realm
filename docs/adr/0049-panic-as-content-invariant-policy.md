@@ -1,5 +1,15 @@
 # 0049. Panic-as-content-invariant policy in the pure core (+ rule-core contracts)
 
+**Status:** Accepted
+**Date:** 2026-06-27
+**Slice:** m8.5b
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** battle, ci-gates
+**Decision:** Use panic!/unreachable! on content-invariant violations in the pure core and debug_assert for development-time contracts with runtime overhead.
+**Amended-by:** ADR-0091
+
+
 - Status: accepted
 - Date: 2026-06-27
 - Milestone: M8.5b (rule-core contracts)

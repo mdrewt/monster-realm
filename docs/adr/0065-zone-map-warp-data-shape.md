@@ -1,4 +1,13 @@
 # 0065. Zone map + warp data shape (M11a)
+
+**Status:** Accepted
+**Date:** 2026-07-02
+**Slice:** m11a
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** movement-netcode, content
+**Decision:** Warps live as an overlay list on TileMap content (not a tile glyph or side-table); zone data in content.rs, warp rules in world.rs; std-only Tiled importer.
+
 - Status: accepted
 - Date: 2026-07-02
 

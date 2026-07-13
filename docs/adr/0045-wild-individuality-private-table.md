@@ -1,5 +1,14 @@
 # 0045. Wild individuality: private `battle_wild` side-table (seed-keyed), not columns on the public battle row
 
+**Status:** Accepted
+**Date:** 2026-06-27
+**Slice:** m8c
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** battle, security-authz
+**Decision:** Store wild individuality (seed, species, level) in a private battle_wild side-table keyed by battle_id, not as columns on the public battle row.
+
+
 - Status: accepted
 - Date: 2026-06-27
 

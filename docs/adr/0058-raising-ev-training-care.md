@@ -1,5 +1,14 @@
 # 0058. Raising rules — EV focus-training (top-off) and care (bond), as pure-core invariants
 
+**Status:** Accepted
+**Date:** 2026-06-28
+**Slice:** m9a
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** evolution-fusion, content
+**Decision:** Pure focus_train and apply_care functions in game-core: EV top-off with 510-total/252-stat caps and reject-not-clamp on maxed; bond uses saturating_add.
+
+
 - Status: accepted
 - Date: 2026-06-28
 - Milestone: M9a (game-core/raising — critical-path start of M9 raising)
