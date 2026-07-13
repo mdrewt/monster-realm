@@ -1,4 +1,14 @@
 # 0041. Integer-only damage formula with injected variance
+
+**Status:** Accepted
+**Date:** 2026-06-26
+**Slice:** m7a
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** battle
+**Decision:** Integer-only damage formula with u64 intermediates, STAB, type effectiveness, and a seeded ±15% variance roll for cross-platform determinism.
+**Amended-by:** ADR-0092
+
 - Status: accepted
 - Date: 2026-06-26
 

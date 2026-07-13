@@ -1,5 +1,14 @@
 # 0082. Shop content, buy/sell reducers (M13b)
 
+**Status:** Accepted
+**Date:** 2026-07-04
+**Slice:** m13b
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** economy-quests, content
+**Decision:** Add shop content (ShopDef RON registry, sell_price on ItemDef) and buy/sell reducers that use server-computed prices and route through apply_grant/spend_currency.
+
+
 - Status: accepted
 - Date: 2026-07-04
 - Surfaced by: M13-economy.spec.md task 2; reuses ADR-0081 (currency), ADR-0018 (inventory), ADR-0022 (economy), ADR-0006 (additive content).

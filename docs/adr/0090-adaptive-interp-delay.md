@@ -1,5 +1,14 @@
 # ADR-0090 — Adaptive remote-interpolation delay (M13.5e)
 
+**Status:** Accepted
+**Date:** 2026-07-10
+**Slice:** m13.5e
+**Supersedes:** ADR-0075 §12.5d-1
+**Amends:** —
+**Subsystems:** client-ui, movement-netcode
+**Decision:** Replace fixed interpolation delay with an adaptive EWMA jitter estimator per character and variable snapshot depth (max 4) to handle burst delivery without pops.
+
+
 **Status:** Accepted  
 **Date:** 2026-07-10  
 **Milestone:** M13.5e  

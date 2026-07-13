@@ -1,5 +1,14 @@
 # 0057. Content as glob-loaded directories via a `build.rs` embed
 
+**Status:** Accepted
+**Date:** 2026-06-28
+**Slice:** m8.9e
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** content, tooling-docs
+**Decision:** Load content registries from content/<registry>/*.ron directories via a build.rs glob embed; deterministic sorted order enables parallel content-adding slices.
+
+
 - Status: accepted
 - Date: 2026-06-28
 - Milestone: M8.9e (server-module modularization — workstream B, content)

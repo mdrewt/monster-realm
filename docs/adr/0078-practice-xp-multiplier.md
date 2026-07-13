@@ -1,5 +1,14 @@
 # ADR-0078: Practice-battle XP multiplier (0.1×)
 
+**Status:** Accepted
+**Date:** 2026-07-03
+**Slice:** m12.5e2
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** battle, economy-quests
+**Decision:** Practice battles (self vs self) award XP at 0.1× multiplier to incentivize real wild/PvP battles; the multiplier applies before the base formula floor.
+
+
 **Status:** accepted  
 **Date:** 2026-07-03  
 **Decider:** Drew Teter  

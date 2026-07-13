@@ -3,6 +3,10 @@
 **Status:** Accepted
 **Date:** 2026-07-11
 **Slice:** m14f (doc-keeper close; doc-only, no production code)
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** battle, tooling-docs
+**Decision:** Milestone closure record for Phase B (M14 status effects, abilities, weather); verifies integrated correctness and queues residuals for M14.5 Phase C.
 
 ---
 

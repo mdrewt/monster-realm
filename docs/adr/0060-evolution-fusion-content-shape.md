@@ -1,5 +1,14 @@
 # 0060. Evolution/fusion content shape: a separate cross-referenced registry + additive validator
 
+**Status:** Accepted
+**Date:** 2026-06-28
+**Slice:** m10a
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** evolution-fusion, content
+**Decision:** Store evolution/fusion rules in a separate cross-referenced RON registry; additive validate_evolution_fusion (7 integrity rules) runs at sync_content time.
+
+
 - Status: accepted
 - Date: 2026-06-28
 - Milestone: M10a-content (evolution & fusion — content + content-integrity half; gates M10a-rules)

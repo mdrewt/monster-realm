@@ -1,4 +1,13 @@
 # 0067. Client zone warp — follow-camera, zone subscription, warp reconcile
+
+**Status:** Accepted
+**Date:** 2026-07-02
+**Slice:** m11c
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** client-ui, movement-netcode
+**Decision:** Client detects zone warps via global character subscription onDelete/onInsert; follow-camera tracks own character; zone switch triggers predictor reset.
+
 - Status: accepted
 - Date: 2026-07-02
 

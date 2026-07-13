@@ -1,5 +1,14 @@
 # ADR-0070 — M12c: Content RON loading for NPC/dialogue/quest/heal, NPC zone policy, RT-ADV-01 fix
 
+**Status:** Accepted
+**Date:** 2026-07-03
+**Slice:** m12c
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** economy-quests, content
+**Decision:** RON content loading for NPC/dialogue/quest/heal; validate_npc_content 12-point check; NPCs skip warps; RT-ADV-01 fix adds proximity recheck in advance_dialogue.
+
+
 **Date:** 2026-07-03
 **Status:** Accepted
 **Authors:** Supervisor, Claude Sonnet 4.6

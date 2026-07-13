@@ -1,5 +1,14 @@
 # ADR-0093 — M14b: Server-side status-effect persistence
 
+**Status:** Accepted
+**Date:** 2026-07-10
+**Slice:** m14b
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** battle, schema-persistence
+**Decision:** StatusEffect persists via SpacetimeType in BattleMonster.status (additive field, serde default); StatusVariance from ctx.timestamp_us; submit_attack calls resolve_full_turn.
+
+
 **Status:** Accepted  
 **Date:** 2026-07-10  
 **Deciders:** Drew Teter  

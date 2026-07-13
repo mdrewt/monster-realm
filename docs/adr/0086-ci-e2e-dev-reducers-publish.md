@@ -1,5 +1,14 @@
 # ADR-0086 — CI e2e publishes the dev_reducers module via --bin-path (M13.5h)
 
+**Status:** Accepted
+**Date:** 2026-07-04
+**Slice:** m13.5h
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** ci-gates
+**Decision:** CI e2e pre-builds dev_reducers wasm via --bin-path and publishes it; recruit e2e tests R1–R4 are revived using gameplay flows without dev-reducer calls.
+
+
 **Date:** 2026-07-04 · **Status:** Accepted
 **Deciders:** build-loop supervisor
 **ADR-sequence:** 0086 supervisor-assigned; follows 0084 (M13d shop client view)

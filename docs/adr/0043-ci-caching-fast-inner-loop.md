@@ -1,4 +1,13 @@
 # 0043. CI caching + fast inner loop
+
+**Status:** Accepted
+**Date:** 2026-06-26
+**Slice:** m-infra-a
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** ci-gates, tooling-docs
+**Decision:** Add sccache + Swatinem/rust-cache for warm CI builds, cargo-nextest for parallelism; isolate a fast per-PR loop from slow nightly-only gates.
+
 - Status: accepted
 - Date: 2026-06-26
 

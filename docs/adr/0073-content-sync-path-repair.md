@@ -1,5 +1,14 @@
 # ADR-0073: Content-sync path repair (M12.5b)
 
+**Status:** Accepted
+**Date:** 2026-07-03
+**Slice:** m12.5b
+**Supersedes:** —
+**Amends:** ADR-0037
+**Subsystems:** content, schema-persistence
+**Decision:** Repair sync_content: use ctx.identity() for owner check; load-then-validate-then-write atomically; re-derive all monster evolves_to on CONTENT_VERSION bump.
+
+
 - **Status:** Accepted
 - **Date:** 2026-07-03
 - **Context milestone:** M12.5b

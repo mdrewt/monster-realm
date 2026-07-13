@@ -1,5 +1,14 @@
 # ADR-0039: Two-window e2e as a CI gate against a pinned standalone SpacetimeDB
 
+**Status:** Accepted
+**Date:** 2026-06-26
+**Slice:** m5b
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** ci-gates, movement-netcode
+**Decision:** Run two-window Playwright e2e in CI against a pinned standalone spacetime binary, with a proof-of-teeth fixture that rejects a synthetic desync.
+
+
 - **Status:** Accepted
 - **Date:** 2026-06-26
 - **Context milestone:** M5b (the integration capstone — closes v1's largest CI blind spot)

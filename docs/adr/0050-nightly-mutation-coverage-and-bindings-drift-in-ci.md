@@ -1,5 +1,14 @@
 # 0050. Nightly mutation/coverage gates (not per-PR) + bindings-drift in the fast `ci` job
 
+**Status:** Accepted
+**Date:** 2026-06-27
+**Slice:** m8.5c
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** ci-gates
+**Decision:** Run mutation and coverage gates nightly (not per-PR); include bindings-drift check in the fast per-PR ci job to catch schema/code divergence early.
+
+
 - Status: accepted
 - Date: 2026-06-27
 - Milestone: M8.5c (gate teeth & test rigor)

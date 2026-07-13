@@ -5,6 +5,8 @@
 **Slice:** M13.5f
 **Supersedes:** none
 **Amends:** ADR-0068 (once-only gate enforcement), ADR-0049 (marshal trust boundary), ADR-0053 (typed-error pattern)
+**Subsystems:** security-authz, ci-gates
+**Decision:** Harden five latent gaps: GrantItem once-only gate, quest-flag exhaustive match, dir/action fail-loud decode, pure check_party_slot, and marshal double-validate.
 
 ---
 

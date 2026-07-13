@@ -9,75 +9,75 @@ Generated from 70 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 
 | ID | Title | Status | Subsystems | Slice | Decision |
 |----|-------|--------|------------|-------|----------|
-| [0001](./0001-record-architecture-decisions.md) | Record architecture decisions | Accepted | PENDING | PENDING | PENDING |
-| [0035](./0035-scaffold-hardening.md) | Scaffold hardening — robust secret-scan + SpacetimeDB-stack `.gitignore` | Accepted | PENDING | PENDING | PENDING |
-| [0036](./0036-client-wasm-bindgen.md) | `wasm-bindgen` + `wasm-pack` for the client-prediction boundary | Accepted | PENDING | PENDING | PENDING |
-| [0037](./0037-spacetimedb-content-deps.md) | SpacetimeDB module SDK + RON content dependencies | Accepted | PENDING | PENDING | PENDING |
-| [0038](./0038-proptest.md) | `proptest` for property testing the logic-heavy rules | Accepted | PENDING | PENDING | PENDING |
-| [0039](./0039-e2e-in-ci-spacetime.md) | Two-window e2e as a CI gate against a pinned standalone SpacetimeDB | Accepted | PENDING | PENDING | PENDING |
-| [0040](./0040-rls-fallback-split-tables.md) | RLS fallback: private table + public projection for monster privacy | Accepted | PENDING | PENDING | PENDING |
-| [0041](./0041-integer-damage-formula.md) | Integer-only damage formula with injected variance | Accepted | PENDING | PENDING | PENDING |
-| [0042](./0042-battle-table-public-pve.md) | Battle table is public (PvE scope) | Accepted | PENDING | PENDING | PENDING |
-| [0043](./0043-ci-caching-fast-inner-loop.md) | CI caching + fast inner loop | Accepted | PENDING | PENDING | PENDING |
-| [0044](./0044-encounter-table-private.md) | Encounter table: private with no projection | Accepted | PENDING | PENDING | PENDING |
-| [0045](./0045-wild-individuality-private-table.md) | Wild individuality: private `battle_wild` side-table (seed-keyed), not columns on the public battle row | Accepted | PENDING | PENDING | PENDING |
-| [0046](./0046-player-inventory-model.md) | Player inventory: additive owner-scoped stack table, public (low-stakes), bait classified by data | Accepted | PENDING | PENDING | PENDING |
-| [0047](./0047-recruit-resolution-semantics.md) | Recruit resolution: reuse `SideAWins` terminal, grant at full HP with no XP, GC the `battle_wild` row | Accepted | PENDING | PENDING | PENDING |
-| [0048](./0048-start-battle-opponent-provenance.md) | `start_battle` opponent-provenance authorization (reject-not-clamp) | Accepted | PENDING | PENDING | PENDING |
-| [0049](./0049-panic-as-content-invariant-policy.md) | Panic-as-content-invariant policy in the pure core (+ rule-core contracts) | Accepted | PENDING | PENDING | PENDING |
-| [0050](./0050-nightly-mutation-coverage-and-bindings-drift-in-ci.md) | Nightly mutation/coverage gates (not per-PR) + bindings-drift in the fast `ci` job | Accepted | PENDING | PENDING | PENDING |
-| [0051](./0051-biome-lint-scope.md) | Biome as the TS/JS style+lint gate: scope, exclusions, and deferred lint debt | Accepted | PENDING | PENDING | PENDING |
-| [0052](./0052-bounded-client-prediction-queue-cap.md) | Bounded client prediction to the move-queue cap (no over-prediction rubberband) | Accepted | PENDING | PENDING | PENDING |
-| [0053](./0053-swap-legality-as-pure-core-invariant.md) | Swap legality as a pure-core invariant (checked `set_active`) | Accepted | PENDING | PENDING | PENDING |
-| [0054](./0054-dev-reducer-release-gating.md) | Dev/test-reducer release-gating (`#[cfg(feature = "dev_reducers")]`) + zone reject-not-clamp + inventory single-stack as a mechanical gate | Accepted | PENDING | PENDING | PENDING |
-| [0055](./0055-release-fail-loud-determinism-gate.md) | Release fail-loud + determinism-gate completeness (overflow-checks + RNG/clock sinks) | Accepted | PENDING | PENDING | PENDING |
-| [0056](./0056-server-module-modularization.md) | server-module internal module boundary (domain submodules) | Accepted | PENDING | PENDING | PENDING |
-| [0057](./0057-content-directory-glob-loading.md) | Content as glob-loaded directories via a `build.rs` embed | Accepted | PENDING | PENDING | PENDING |
-| [0058](./0058-raising-ev-training-care.md) | Raising rules — EV focus-training (top-off) and care (bond), as pure-core invariants | Accepted | PENDING | PENDING | PENDING |
-| [0059](./0059-raising-server-care-cooldown-inventory-reconcile.md) | M9b server raising — `care` + per-monster cooldown, inventory-backbone reconcile, and the `train` split | Accepted | PENDING | PENDING | PENDING |
-| [0060](./0060-evolution-fusion-content-shape.md) | Evolution/fusion content shape: a separate cross-referenced registry + additive validator | Accepted | PENDING | PENDING | PENDING |
-| [0061](./0061-evolution-fusion-transform-rules.md) | Evolution & fusion transform rules: eligibility resolver, individuality carry, fusion combine | Accepted | PENDING | PENDING | PENDING |
-| [0062](./0062-evolution-fusion-server-reducers.md) | Evolution & fusion server reducers: guard ordering, seam placement, growth-writer registration | Accepted | PENDING | PENDING | PENDING |
-| [0063](./0063-evolution-fusion-client-overlay.md) | Evolution & fusion client overlay: subscription shape, overlay key, fusion recipe display | Accepted | PENDING | PENDING | PENDING |
-| [0064](./0064-m10d-evolution-fusion-content-integrity-evals.md) | M10d: evolution/fusion content-integrity evals and proof-of-teeth discipline | Accepted | PENDING | PENDING | PENDING |
-| [0065](./0065-zone-map-warp-data-shape.md) | Zone map + warp data shape (M11a) | Accepted | PENDING | PENDING | PENDING |
-| [0066](./0066-server-warp-runtime.md) | Server warp runtime — in-tick warp detection, per-zone scheduling, zone-map validation | Accepted | PENDING | PENDING | PENDING |
-| [0067](./0067-follow-camera-and-warp-resubscribe.md) | Client zone warp — follow-camera, zone subscription, warp reconcile | Accepted | PENDING | PENDING | PENDING |
-| [0068](./0068-npc-dialogue-quest-game-core.md) | NPC/dialogue/quest — pure game-core rule module (M12a) | Accepted | PENDING | PENDING | PENDING |
-| [0069](./0069-npc-dialogue-quest-server.md) | NPC/dialogue/quest — server reducers and entity management (M12b) | Accepted | PENDING | PENDING | PENDING |
-| [0070](./0070-m12c-content-ron-npc-rt-adv-01.md) | M12c: Content RON loading for NPC/dialogue/quest/heal, NPC zone policy, RT-ADV-01 fix | Accepted | PENDING | PENDING | PENDING |
-| [0071](./0071-m12d-client-dialogue-quest-heal-ui.md) | M12d: Client dialogue/quest/heal UI — static bundle, pure models, dismissal gating | Accepted | PENDING | PENDING | PENDING |
-| [0072](./0072-fuse-dual-write-ordering-fix.md) | fuse offspring monster_pub dual-write ordering fix | Accepted | PENDING | M12.5a | PENDING |
-| [0073](./0073-content-sync-path-repair.md) | Content-sync path repair (M12.5b) | Accepted | PENDING | PENDING | PENDING |
-| [0074](./0074-zone-sync-robustness.md) | Client zone-sync robustness (M12.5c) | Accepted | PENDING | PENDING | PENDING |
-| [0075](./0075-netcode-smoothness-m125d.md) | Netcode smoothness residuals (M12.5d) | Accepted | PENDING | PENDING | PENDING |
-| [0076](./0076-gate-simharness-teeth.md) | Gate & sim-harness teeth (M12.5f) | Accepted | PENDING | M12.5f (sixth-review residuals, gate & sim-harness hardening) | PENDING |
-| [0077](./0077-battle-lifecycle-gc.md) | Battle lifecycle GC, XP log-and-continue, canonical skill order | Accepted | PENDING | PENDING | PENDING |
-| [0078](./0078-practice-xp-multiplier.md) | Practice-battle XP multiplier (0.1×) | Accepted | PENDING | PENDING | PENDING |
-| [0079](./0079-nightly-republish-smoke.md) | Nightly republish smoke test (§12.5b-6) | Accepted | PENDING | PENDING | PENDING |
-| [0080](./0080-generated-knowledge-bundle.md) | Generated knowledge bundle (OKF-conformant schema projection, M8.95) | Accepted | PENDING | PENDING | PENDING |
-| [0081](./0081-currency-primitive.md) | Currency primitive (M13a) | Accepted | PENDING | PENDING | PENDING |
-| [0082](./0082-shop-content-reducers.md) | Shop content, buy/sell reducers (M13b) | Accepted | PENDING | PENDING | PENDING |
-| [0083](./0083-economy-sinks-sources.md) | Economy sinks and sources — heal cost, quest rewards, battle rewards | Accepted | PENDING | PENDING | PENDING |
-| [0084](./0084-shop-client-view.md) | Shop client view architecture (M13d) | Accepted | PENDING | PENDING | PENDING |
-| [0085](./0085-reducer-rejection-feedback-and-reconnect.md) | Reducer-rejection feedback & app-level reconnect (M13.5b) | Accepted | PENDING | PENDING | PENDING |
-| [0086](./0086-ci-e2e-dev-reducers-publish.md) | CI e2e publishes the dev_reducers module via --bin-path (M13.5h) | Accepted | PENDING | PENDING | PENDING |
-| [0087](./0087-owner-scoped-view-private-conversation.md) | Owner-scoped `#[view]` over the private `player_conversation` table (M13.5c / D-13.5-3) | Accepted | PENDING | PENDING | PENDING |
-| [0088](./0088-nightly-mutate-core-timeout-tolerance.md) | 0088 — Nightly `mutate-core`: timeout tolerance, one proven-equivalent exclusion, zero-tolerance on MISSED preserved | Accepted | PENDING | PENDING | PENDING |
-| [0089](./0089-content-parse-caching.md) | 0089 — Content parse caching on hot paths (shell-side, determinism-safe) | Accepted | PENDING | PENDING | PENDING |
-| [0090](./0090-adaptive-interp-delay.md) | Adaptive remote-interpolation delay (M13.5e) | Accepted | PENDING | PENDING | PENDING |
-| [0091](./0091-type-rigor-hardening.md) | Type-Rigor Hardening: GrantItem Gate, Quest Match, Coded Decode, Party-Slot Core Check, Marshal Re-Checks | Accepted | PENDING | M13.5f | PENDING |
-| [0092](./0092-m14a-status-effect-rules.md) | M14a Status-Effect Rules: Layered DoT Resolution, Separate Variance Struct, Pure Game-Core Persistence Model | Accepted | PENDING | M14a | PENDING |
-| [0093](./0093-m14b-server-status-persistence.md) | M14b: Server-side status-effect persistence | Accepted | PENDING | PENDING | PENDING |
-| [0094](./0094-m14c-passive-ability-system.md) | M14c: Passive per-species ability system | Accepted | PENDING | PENDING | PENDING |
-| [0095](./0095-m14d-weather-field-state.md) | M14d: Weather / Field State | Accepted | PENDING | m14d (serial after m14b + m14c) | PENDING |
-| [0096](./0096-m14e-status-cure-items.md) | M14e: Status-Curing Items + Client Battle-Event Display | Accepted | PENDING | M14e (serial after M14b + M14c + M14d) | PENDING |
-| [0097](./0097-m14-close-phase-b-complete.md) | M14 Close: Phase B Complete | Accepted | PENDING | m14f (doc-keeper close; doc-only, no production code) | PENDING |
-| [0098](./0098-m14.5a-swap-recruit-full-pipeline.md) | M14.5a: swap/recruit paths run the full post-turn status/weather pipeline | Accepted | PENDING | m14.5a (M14.5 eighth-review residuals, closes R1/R3/RT-W14-DESYNC-01) | PENDING |
-| [0099](./0099-m14.5b-status-applied-slot-capture.md) | M14.5b: StatusApplied event carries emission-time slot; drop write if not conscious | Accepted | PENDING | m14.5b (M14.5 eighth-review residuals §2, closes RT-M14.5B-01) | PENDING |
-| [0100](./0100-m14.5c-ability-system-wiring.md) | M14.5c: Wire passive-ability system end-to-end | Accepted | PENDING | m14.5c (M14.5 eighth-review residuals §3; closes D-14.5-2 default a) | PENDING |
-| [0101](./0101-m14.5d-client-battle-ux.md) | M14.5d: Client battle UX completeness (weather banner, parity guards, VM-compare) | Accepted | PENDING | m14.5d (M14.5 eighth-review residuals §14.5d; ships EARS 14.5d-2/3/4) | PENDING |
-| [0103](./0103-m14.5f-gates-convergence.md) | M14.5f — gates: BSATN schema-compat proof + convergence net widening | Accepted | PENDING | PENDING | PENDING |
+| [0001](./0001-record-architecture-decisions.md) | Record architecture decisions | Accepted | tooling-docs | m0 | Use MADR-format ADRs in docs/adr/, authored by the doc-keeper, as the durable rationale record for non-obvious architectural choices. |
+| [0035](./0035-scaffold-hardening.md) | Scaffold hardening — robust secret-scan + SpacetimeDB-stack `.gitignore` | Accepted | tooling-docs, ci-gates | m0 | Harden check-secrets.mjs to skip dangling symlinks and adopt the SpacetimeDB-stack .gitignore so just ci is green from the scaffold baseline. |
+| [0036](./0036-client-wasm-bindgen.md) | `wasm-bindgen` + `wasm-pack` for the client-prediction boundary | Accepted | client-ui, tooling-docs | m3 | Use wasm-bindgen + wasm-pack to compile game-core to wasm for the client-side prediction boundary, with serde-wasm-bindgen for JS interop. |
+| [0037](./0037-spacetimedb-content-deps.md) | SpacetimeDB module SDK + RON content dependencies | Accepted | schema-persistence, content | m0b | Pin SpacetimeDB module SDK + RON (serde-ron) as the server/content dependencies; sync_content reducer updates content without table deletion. |
+| [0038](./0038-proptest.md) | `proptest` for property testing the logic-heavy rules | Accepted | ci-gates, tooling-docs | m1 | Use proptest with seeded strategies for property-testing game-core invariants (totality, determinism, behavioral correctness) across randomized inputs. |
+| [0039](./0039-e2e-in-ci-spacetime.md) | Two-window e2e as a CI gate against a pinned standalone SpacetimeDB | Accepted | ci-gates, movement-netcode | m5b | Run two-window Playwright e2e in CI against a pinned standalone spacetime binary, with a proof-of-teeth fixture that rejects a synthetic desync. |
+| [0040](./0040-rls-fallback-split-tables.md) | RLS fallback: private table + public projection for monster privacy | Accepted | security-authz, schema-persistence | m6b | Use private monster table + public monster_pub projection as the RLS fallback: IV genes stay hidden from clients; derived stats are world-readable. |
+| [0041](./0041-integer-damage-formula.md) | Integer-only damage formula with injected variance | Accepted | battle | m7a | Integer-only damage formula with u64 intermediates, STAB, type effectiveness, and a seeded ±15% variance roll for cross-platform determinism. |
+| [0042](./0042-battle-table-public-pve.md) | Battle table is public (PvE scope) | Accepted | battle, security-authz | m7b | Battle table is public for PvE scope; derived stats are acceptable to expose for NPC opponents; revisit per-side privacy when PvP ships in M16. |
+| [0043](./0043-ci-caching-fast-inner-loop.md) | CI caching + fast inner loop | Accepted | ci-gates, tooling-docs | m-infra-a | Add sccache + Swatinem/rust-cache for warm CI builds, cargo-nextest for parallelism; isolate a fast per-PR loop from slow nightly-only gates. |
+| [0044](./0044-encounter-table-private.md) | Encounter table: private with no projection | Accepted | security-authz, content | m8b | Keep the encounter table private with no public projection to prevent clients from reading spawn weights, level bands, or zone encounter rates. |
+| [0045](./0045-wild-individuality-private-table.md) | Wild individuality: private `battle_wild` side-table (seed-keyed), not columns on the public battle row | Accepted | battle, security-authz | m8c | Store wild individuality (seed, species, level) in a private battle_wild side-table keyed by battle_id, not as columns on the public battle row. |
+| [0046](./0046-player-inventory-model.md) | Player inventory: additive owner-scoped stack table, public (low-stakes), bait classified by data | Accepted | economy-quests, schema-persistence | m8d | Player inventory is a public owner-scoped stack table; bait item-type is classified by data (recruit_bonus > 0), not by a separate enum variant. |
+| [0047](./0047-recruit-resolution-semantics.md) | Recruit resolution: reuse `SideAWins` terminal, grant at full HP with no XP, GC the `battle_wild` row | Accepted | battle, economy-quests | m8d | Recruit success reuses the SideAWins terminal, grants the caught monster at full HP with no XP, and garbage-collects the battle_wild row. |
+| [0048](./0048-start-battle-opponent-provenance.md) | `start_battle` opponent-provenance authorization (reject-not-clamp) | Accepted | battle, security-authz | m8.5a | start_battle validates opponent provenance server-side (self or WILD_IDENTITY only) and rejects—never clamps—any authorization violation. |
+| [0049](./0049-panic-as-content-invariant-policy.md) | Panic-as-content-invariant policy in the pure core (+ rule-core contracts) | Accepted | battle, ci-gates | m8.5b | Use panic!/unreachable! on content-invariant violations in the pure core and debug_assert for development-time contracts with runtime overhead. |
+| [0050](./0050-nightly-mutation-coverage-and-bindings-drift-in-ci.md) | Nightly mutation/coverage gates (not per-PR) + bindings-drift in the fast `ci` job | Accepted | ci-gates | m8.5c | Run mutation and coverage gates nightly (not per-PR); include bindings-drift check in the fast per-PR ci job to catch schema/code divergence early. |
+| [0051](./0051-biome-lint-scope.md) | Biome as the TS/JS style+lint gate: scope, exclusions, and deferred lint debt | Accepted | tooling-docs, ci-gates | m8.5d | Use Biome for TS/JS lint+format, scoped to client/src with defined exclusions for generated code; disable noNonNullAssertion only in test files. |
+| [0052](./0052-bounded-client-prediction-queue-cap.md) | Bounded client prediction to the move-queue cap (no over-prediction rubberband) | Accepted | movement-netcode, client-ui | m8.5f | Bound client-side move prediction to the server MOVE_QUEUE_CAP; reject over-cap enqueues rather than allowing over-prediction rubber-band. |
+| [0053](./0053-swap-legality-as-pure-core-invariant.md) | Swap legality as a pure-core invariant (checked `set_active`) | Accepted | battle, ci-gates | m8.6a | Enforce swap legality as a pure-core invariant via BattleSide::set_active; server returns a typed SwapError and never clamps to a valid slot. |
+| [0054](./0054-dev-reducer-release-gating.md) | Dev/test-reducer release-gating (`#[cfg(feature = "dev_reducers")]`) + zone reject-not-clamp + inventory single-stack as a mechanical gate | Accepted | security-authz, ci-gates | m8.7b | Gate dev/test reducers behind #[cfg(feature="dev_reducers")] so they compile-exclude from release/bench wasm; zone movement uses reject-not-clamp. |
+| [0055](./0055-release-fail-loud-determinism-gate.md) | Release fail-loud + determinism-gate completeness (overflow-checks + RNG/clock sinks) | Accepted | ci-gates | m8.8a | Enable release/bench overflow-checks=true and expand clippy bans to OS-entropy sinks (getrandom, chrono, OsRng, ThreadRng) for fail-loud determinism. |
+| [0056](./0056-server-module-modularization.md) | server-module internal module boundary (domain submodules) | Accepted | tooling-docs, schema-persistence | m8.9a | Split server-module/src/lib.rs into 8 domain submodules with a canonical touches: vocabulary for the build loop; spike proved per-module table/reducer registration. |
+| [0057](./0057-content-directory-glob-loading.md) | Content as glob-loaded directories via a `build.rs` embed | Accepted | content, tooling-docs | m8.9e | Load content registries from content/<registry>/*.ron directories via a build.rs glob embed; deterministic sorted order enables parallel content-adding slices. |
+| [0058](./0058-raising-ev-training-care.md) | Raising rules — EV focus-training (top-off) and care (bond), as pure-core invariants | Accepted | evolution-fusion, content | m9a | Pure focus_train and apply_care functions in game-core: EV top-off with 510-total/252-stat caps and reject-not-clamp on maxed; bond uses saturating_add. |
+| [0059](./0059-raising-server-care-cooldown-inventory-reconcile.md) | M9b server raising — `care` + per-monster cooldown, inventory-backbone reconcile, and the `train` split | Accepted | evolution-fusion, schema-persistence | m9b | M9b server raising: care reducer with per-monster timestamp cooldown in a private table; reuse player inventory as the item backbone; train split from care. |
+| [0060](./0060-evolution-fusion-content-shape.md) | Evolution/fusion content shape: a separate cross-referenced registry + additive validator | Accepted | evolution-fusion, content | m10a | Store evolution/fusion rules in a separate cross-referenced RON registry; additive validate_evolution_fusion (7 integrity rules) runs at sync_content time. |
+| [0061](./0061-evolution-fusion-transform-rules.md) | Evolution & fusion transform rules: eligibility resolver, individuality carry, fusion combine | Accepted | evolution-fusion | m10a | Pure individuality-preserving evolution and fusion transforms in game-core/src/evolution/; resolve_evolution with first-match dispatch; fuse via per-stat-max IVs. |
+| [0062](./0062-evolution-fusion-server-reducers.md) | Evolution & fusion server reducers: guard ordering, seam placement, growth-writer registration | Accepted | evolution-fusion, ci-gates | m10b | Evolution and fusion reducers apply pure game-core transforms with guard ordering (owner→not-in-battle→content/eligibility) and growth-writer registration. |
+| [0063](./0063-evolution-fusion-client-overlay.md) | Evolution & fusion client overlay: subscription shape, overlay key, fusion recipe display | Accepted | client-ui, evolution-fusion | m10c | Evolution/fusion client overlay uses KeyE, a pure EvolutionView view-model seam, and fusion recipe display; overlay mutual exclusion with other overlays. |
+| [0064](./0064-m10d-evolution-fusion-content-integrity-evals.md) | M10d: evolution/fusion content-integrity evals and proof-of-teeth discipline | Accepted | evolution-fusion, ci-gates | m10d | Add evolution/fusion content-integrity eval (5 rules at dev time) and reducer-security eval (9 structural invariants), both with proof-of-teeth fixtures. |
+| [0065](./0065-zone-map-warp-data-shape.md) | Zone map + warp data shape (M11a) | Accepted | movement-netcode, content | m11a | Warps live as an overlay list on TileMap content (not a tile glyph or side-table); zone data in content.rs, warp rules in world.rs; std-only Tiled importer. |
+| [0066](./0066-server-warp-runtime.md) | Server warp runtime — in-tick warp detection, per-zone scheduling, zone-map validation | Accepted | movement-netcode, schema-persistence | m11b | Server-authoritative warp runtime uses in-tick warp detection (map_for + warp_at), idempotent per-zone schedule initialization, and content-validated zone maps. |
+| [0067](./0067-follow-camera-and-warp-resubscribe.md) | Client zone warp — follow-camera, zone subscription, warp reconcile | Accepted | client-ui, movement-netcode | m11c | Client detects zone warps via global character subscription onDelete/onInsert; follow-camera tracks own character; zone switch triggers predictor reset. |
+| [0068](./0068-npc-dialogue-quest-game-core.md) | NPC/dialogue/quest — pure game-core rule module (M12a) | Accepted | economy-quests, content | m12a | NPC wander rule, dialogue tree model + evaluation, and quest/flag advance rules are pure game-core; NPC hash is non-commutative; Condition enum is the SSOT. |
+| [0069](./0069-npc-dialogue-quest-server.md) | NPC/dialogue/quest — server reducers and entity management (M12b) | Accepted | economy-quests, schema-persistence | m12b | NPC entity loop, talk/advance_dialogue/dismiss_dialogue/heal_party reducers, and six new tables (npc, dialogue state, quest, conversation, heal) in server-module. |
+| [0070](./0070-m12c-content-ron-npc-rt-adv-01.md) | M12c: Content RON loading for NPC/dialogue/quest/heal, NPC zone policy, RT-ADV-01 fix | Accepted | economy-quests, content | m12c | RON content loading for NPC/dialogue/quest/heal; validate_npc_content 12-point check; NPCs skip warps; RT-ADV-01 fix adds proximity recheck in advance_dialogue. |
+| [0071](./0071-m12d-client-dialogue-quest-heal-ui.md) | M12d: Client dialogue/quest/heal UI — static bundle, pure models, dismissal gating | Accepted | client-ui, economy-quests | m12d | Client dialogue/quest/heal UI uses a static bundle, pure models, dismissal gating via keyboard/overlay mutex, and promise-rejection feedback for reducer errors. |
+| [0072](./0072-fuse-dual-write-ordering-fix.md) | fuse offspring monster_pub dual-write ordering fix | Accepted | evolution-fusion, ci-gates | m12.5a | Fix fuse offspring dual-write ordering: capture the insert return value and build MonsterPub from the inserted row, preventing monster ID mismatches. |
+| [0073](./0073-content-sync-path-repair.md) | Content-sync path repair (M12.5b) | Accepted | content, schema-persistence | m12.5b | Repair sync_content: use ctx.identity() for owner check; load-then-validate-then-write atomically; re-derive all monster evolves_to on CONTENT_VERSION bump. |
+| [0074](./0074-zone-sync-robustness.md) | Client zone-sync robustness (M12.5c) | Accepted | client-ui, movement-netcode | m12.5c | Client zone-sync is state-based (not edge-triggered); switchZone is renderer-first atomic; rAF loop is self-contained with try/catch and always re-arms. |
+| [0075](./0075-netcode-smoothness-m125d.md) | Netcode smoothness residuals (M12.5d) | Accepted | client-ui, movement-netcode | m12.5d | Fix five netcode feel bugs: reduce INTERP_DELAY_STEPS to 1.0, add tile-center camera, snap-on-teleport on zone warp, and isolate the rAF frame-drain timer. |
+| [0076](./0076-gate-simharness-teeth.md) | Gate & sim-harness teeth (M12.5f) | Accepted | ci-gates, tooling-docs | m12.5f | Add proof-of-teeth fixtures for the sim-harness, a SpacetimeType snapshot eval, and an expired-fixme guard; sim-harness loads real content and resolves warps. |
+| [0077](./0077-battle-lifecycle-gc.md) | Battle lifecycle GC, XP log-and-continue, canonical skill order | Accepted | battle, schema-persistence | m12.5e | Battle terminal GC keeps latest terminal per player; XP loop log-and-continues on corrupt rows; canonical skill order follows species.learnable_skill_ids. |
+| [0078](./0078-practice-xp-multiplier.md) | Practice-battle XP multiplier (0.1×) | Accepted | battle, economy-quests | m12.5e2 | Practice battles (self vs self) award XP at 0.1× multiplier to incentivize real wild/PvP battles; the multiplier applies before the base formula floor. |
+| [0079](./0079-nightly-republish-smoke.md) | Nightly republish smoke test (§12.5b-6) | Accepted | ci-gates, schema-persistence | m12.5b6 | Nightly smoke test republishes the module without --delete-data, calls sync_content, and asserts that player rows survive and CONTENT_VERSION increments. |
+| [0080](./0080-generated-knowledge-bundle.md) | Generated knowledge bundle (OKF-conformant schema projection, M8.95) | Accepted | tooling-docs, ci-gates | m8.95d | Generate an OKF-conformant knowledge bundle (docs/knowledge/**) from SpacetimeDB schema metadata via okf-export.mjs; gate its drift in CI. |
+| [0081](./0081-currency-primitive.md) | Currency primitive (M13a) | Accepted | economy-quests, schema-persistence | m13a | Currency primitive: private player_wallet table (u64 balance, MAX=999_999_999) with apply_grant/spend_currency helpers as the single mutation surface. |
+| [0082](./0082-shop-content-reducers.md) | Shop content, buy/sell reducers (M13b) | Accepted | economy-quests, content | m13b | Add shop content (ShopDef RON registry, sell_price on ItemDef) and buy/sell reducers that use server-computed prices and route through apply_grant/spend_currency. |
+| [0083](./0083-economy-sinks-sources.md) | Economy sinks and sources — heal cost, quest rewards, battle rewards | Accepted | economy-quests | m13c | Economy sinks (heal_party costs HealLocationDef.cost_currency) and sources (quest reward, battle reward on loser BST/divisor) all routed through apply_grant/spend. |
+| [0084](./0084-shop-client-view.md) | Shop client view architecture (M13d) | Accepted | client-ui, economy-quests | m13d | Shop client view uses pure shopModel subscription with KeyG toggle, sell eligibility by data (sellPrice > 0), double-spend lock, and reducer rejection feedback. |
+| [0085](./0085-reducer-rejection-feedback-and-reconnect.md) | Reducer-rejection feedback & app-level reconnect (M13.5b) | Accepted | movement-netcode, client-ui | m13.5b | Reducer rejections surface as UI feedback; enqueue_move drops rejected seq and forces reconcile; app-level reconnect uses exponential backoff capped at 30s. |
+| [0086](./0086-ci-e2e-dev-reducers-publish.md) | CI e2e publishes the dev_reducers module via --bin-path (M13.5h) | Accepted | ci-gates | m13.5h | CI e2e pre-builds dev_reducers wasm via --bin-path and publishes it; recruit e2e tests R1–R4 are revived using gameplay flows without dev-reducer calls. |
+| [0087](./0087-owner-scoped-view-private-conversation.md) | Owner-scoped `#[view]` over the private `player_conversation` table (M13.5c / D-13.5-3) | Accepted | security-authz, schema-persistence | m13.5c | Scope player_conversation to owner-only via #[view]; onInsert+onDelete delivery model removes the inference channel into private dialogue-state flags. |
+| [0088](./0088-nightly-mutate-core-timeout-tolerance.md) | 0088 — Nightly `mutate-core`: timeout tolerance, one proven-equivalent exclusion, zero-tolerance on MISSED preserved | Accepted | ci-gates | fix-nightly-mutants | Repair nightly mutate-core gate: kill 37 missed mutants with tests, exempt one proven-equivalent mutant, and add timeout tolerance via wrap-recipe exit-3 check. |
+| [0089](./0089-content-parse-caching.md) | 0089 — Content parse caching on hot paths (shell-side, determinism-safe) | Accepted | content, tooling-docs | m13.5d | Cache RON content parse results using LazyLock<Result<...>> statics in content_cache.rs; all hot-path callers switch to cached_skills/items/evolutions/etc. |
+| [0090](./0090-adaptive-interp-delay.md) | Adaptive remote-interpolation delay (M13.5e) | Accepted | client-ui, movement-netcode | m13.5e | Replace fixed interpolation delay with an adaptive EWMA jitter estimator per character and variable snapshot depth (max 4) to handle burst delivery without pops. |
+| [0091](./0091-type-rigor-hardening.md) | Type-Rigor Hardening: GrantItem Gate, Quest Match, Coded Decode, Party-Slot Core Check, Marshal Re-Checks | Accepted | security-authz, ci-gates | M13.5f | Harden five latent gaps: GrantItem once-only gate, quest-flag exhaustive match, dir/action fail-loud decode, pure check_party_slot, and marshal double-validate. |
+| [0092](./0092-m14a-status-effect-rules.md) | M14a Status-Effect Rules: Layered DoT Resolution, Separate Variance Struct, Pure Game-Core Persistence Model | Accepted | battle | M14a | StatusEffect enum, separate StatusVariance struct, resolve_full_turn wrapping resolve_turn + apply_post_turn_effects, SideA-first DoT KO tiebreak; pure game-core. |
+| [0093](./0093-m14b-server-status-persistence.md) | M14b: Server-side status-effect persistence | Accepted | battle, schema-persistence | m14b | StatusEffect persists via SpacetimeType in BattleMonster.status (additive field, serde default); StatusVariance from ctx.timestamp_us; submit_attack calls resolve_full_turn. |
+| [0094](./0094-m14c-passive-ability-system.md) | M14c: Passive per-species ability system | Accepted | battle, content | m14c | Passive per-species abilities (StatusImmunity, EntryHeal) stored in content; applied via AbilityStore threaded through resolve_full_turn and entry hooks; OCP-gated. |
+| [0095](./0095-m14d-weather-field-state.md) | M14d: Weather / Field State | Accepted | battle | m14d | Single active weather (WeatherKind exhaustive enum) with chip damage at Phase 3.5; sets_weather loaded from cached SkillDef; weather ticks in run_post_turn_phases. |
+| [0096](./0096-m14e-status-cure-items.md) | M14e: Status-Curing Items + Client Battle-Event Display | Accepted | battle, client-ui | m14e | Status-curing items: applies_status on SkillDef, cure_status on ItemDef, use_battle_item reducer with 6-guard validation; client renders active monster status badge. |
+| [0097](./0097-m14-close-phase-b-complete.md) | M14 Close: Phase B Complete | Accepted | battle, tooling-docs | m14f (doc-keeper close; doc-only, no production code) | Milestone closure record for Phase B (M14 status effects, abilities, weather); verifies integrated correctness and queues residuals for M14.5 Phase C. |
+| [0098](./0098-m14.5a-swap-recruit-full-pipeline.md) | M14.5a: swap/recruit paths run the full post-turn status/weather pipeline | Accepted | battle | m14.5a | swap_active and attempt_recruit failure paths run the full run_post_turn_phases pipeline; load_skills() replaces skill_defs_from_rows as the SSOT for skill loading. |
+| [0099](./0099-m14.5b-status-applied-slot-capture.md) | M14.5b: StatusApplied event carries emission-time slot; drop write if not conscious | Accepted | battle | m14.5b | StatusApplied event carries the emission-time slot; Phase 4.5 skips writes to non-conscious targets (fainted/just-KO'd); debug_assert pins the slot-bounds contract. |
+| [0100](./0100-m14.5c-ability-system-wiring.md) | M14.5c: Wire passive-ability system end-to-end | Accepted | battle | m14.5c | Wire passive-ability system end-to-end: species_row.ability column, build_ability_store SSOT, AbilityStore threaded through 3 resolve functions and 5 reducers. |
+| [0101](./0101-m14.5d-client-battle-ux.md) | M14.5d: Client battle UX completeness (weather banner, parity guards, VM-compare) | Accepted | battle, client-ui | m14.5d | Client battle UX completeness: weather banner pipeline via battleRowToStore, bindings-derived parity guards (never-checks), and VM-compare refresh guard. |
+| [0103](./0103-m14.5f-gates-convergence.md) | M14.5f — gates: BSATN schema-compat proof + convergence net widening | Accepted | battle, ci-gates | m14.5f | BSATN schema-compat proof for M14b/14d optional fields: SpacetimeType handles additive schema; convergence net widened with 128-seed random_scenario and battle-lock. |
 | [0104](./0104-m-infra-d-adr-digest.md) | M-infra-d: ADR digest convention and agent-facing corpus compaction | Accepted | tooling-docs, ci-gates | m-infra-d (infra slice, insertable any time after M14.5) | Canonical header block (Status/Date/Slice/Supersedes/Amends/Subsystems/Decision) + generated drift-gated DIGEST.md compacting the 100+ ADR corpus for agent navigation. |
 
 ## Harness design corpus (H- namespace)
@@ -127,82 +127,159 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 
 ## By subsystem
 
+### battle
+
+- [0041](./0041-integer-damage-formula.md) — m7a — Integer-only damage formula with injected variance (Accepted)
+- [0042](./0042-battle-table-public-pve.md) — m7b — Battle table is public (PvE scope) (Accepted)
+- [0045](./0045-wild-individuality-private-table.md) — m8c — Wild individuality: private `battle_wild` side-table (seed-keyed), not columns on the public battle row (Accepted)
+- [0047](./0047-recruit-resolution-semantics.md) — m8d — Recruit resolution: reuse `SideAWins` terminal, grant at full HP with no XP, GC the `battle_wild` row (Accepted)
+- [0048](./0048-start-battle-opponent-provenance.md) — m8.5a — `start_battle` opponent-provenance authorization (reject-not-clamp) (Accepted)
+- [0049](./0049-panic-as-content-invariant-policy.md) — m8.5b — Panic-as-content-invariant policy in the pure core (+ rule-core contracts) (Accepted)
+- [0053](./0053-swap-legality-as-pure-core-invariant.md) — m8.6a — Swap legality as a pure-core invariant (checked `set_active`) (Accepted)
+- [0077](./0077-battle-lifecycle-gc.md) — m12.5e — Battle lifecycle GC, XP log-and-continue, canonical skill order (Accepted)
+- [0078](./0078-practice-xp-multiplier.md) — m12.5e2 — Practice-battle XP multiplier (0.1×) (Accepted)
+- [0092](./0092-m14a-status-effect-rules.md) — M14a — M14a Status-Effect Rules: Layered DoT Resolution, Separate Variance Struct, Pure Game-Core Persistence Model (Accepted)
+- [0093](./0093-m14b-server-status-persistence.md) — m14b — M14b: Server-side status-effect persistence (Accepted)
+- [0094](./0094-m14c-passive-ability-system.md) — m14c — M14c: Passive per-species ability system (Accepted)
+- [0095](./0095-m14d-weather-field-state.md) — m14d — M14d: Weather / Field State (Accepted)
+- [0096](./0096-m14e-status-cure-items.md) — m14e — M14e: Status-Curing Items + Client Battle-Event Display (Accepted)
+- [0097](./0097-m14-close-phase-b-complete.md) — m14f (doc-keeper close; doc-only, no production code) — M14 Close: Phase B Complete (Accepted)
+- [0098](./0098-m14.5a-swap-recruit-full-pipeline.md) — m14.5a — M14.5a: swap/recruit paths run the full post-turn status/weather pipeline (Accepted)
+- [0099](./0099-m14.5b-status-applied-slot-capture.md) — m14.5b — M14.5b: StatusApplied event carries emission-time slot; drop write if not conscious (Accepted)
+- [0100](./0100-m14.5c-ability-system-wiring.md) — m14.5c — M14.5c: Wire passive-ability system end-to-end (Accepted)
+- [0101](./0101-m14.5d-client-battle-ux.md) — m14.5d — M14.5d: Client battle UX completeness (weather banner, parity guards, VM-compare) (Accepted)
+- [0103](./0103-m14.5f-gates-convergence.md) — m14.5f — M14.5f — gates: BSATN schema-compat proof + convergence net widening (Accepted)
+
+### evolution-fusion
+
+- [0058](./0058-raising-ev-training-care.md) — m9a — Raising rules — EV focus-training (top-off) and care (bond), as pure-core invariants (Accepted)
+- [0059](./0059-raising-server-care-cooldown-inventory-reconcile.md) — m9b — M9b server raising — `care` + per-monster cooldown, inventory-backbone reconcile, and the `train` split (Accepted)
+- [0060](./0060-evolution-fusion-content-shape.md) — m10a — Evolution/fusion content shape: a separate cross-referenced registry + additive validator (Accepted)
+- [0061](./0061-evolution-fusion-transform-rules.md) — m10a — Evolution & fusion transform rules: eligibility resolver, individuality carry, fusion combine (Accepted)
+- [0062](./0062-evolution-fusion-server-reducers.md) — m10b — Evolution & fusion server reducers: guard ordering, seam placement, growth-writer registration (Accepted)
+- [0063](./0063-evolution-fusion-client-overlay.md) — m10c — Evolution & fusion client overlay: subscription shape, overlay key, fusion recipe display (Accepted)
+- [0064](./0064-m10d-evolution-fusion-content-integrity-evals.md) — m10d — M10d: evolution/fusion content-integrity evals and proof-of-teeth discipline (Accepted)
+- [0072](./0072-fuse-dual-write-ordering-fix.md) — m12.5a — fuse offspring monster_pub dual-write ordering fix (Accepted)
+
+### movement-netcode
+
+- [0039](./0039-e2e-in-ci-spacetime.md) — m5b — Two-window e2e as a CI gate against a pinned standalone SpacetimeDB (Accepted)
+- [0052](./0052-bounded-client-prediction-queue-cap.md) — m8.5f — Bounded client prediction to the move-queue cap (no over-prediction rubberband) (Accepted)
+- [0065](./0065-zone-map-warp-data-shape.md) — m11a — Zone map + warp data shape (M11a) (Accepted)
+- [0066](./0066-server-warp-runtime.md) — m11b — Server warp runtime — in-tick warp detection, per-zone scheduling, zone-map validation (Accepted)
+- [0067](./0067-follow-camera-and-warp-resubscribe.md) — m11c — Client zone warp — follow-camera, zone subscription, warp reconcile (Accepted)
+- [0074](./0074-zone-sync-robustness.md) — m12.5c — Client zone-sync robustness (M12.5c) (Accepted)
+- [0075](./0075-netcode-smoothness-m125d.md) — m12.5d — Netcode smoothness residuals (M12.5d) (Accepted)
+- [0085](./0085-reducer-rejection-feedback-and-reconnect.md) — m13.5b — Reducer-rejection feedback & app-level reconnect (M13.5b) (Accepted)
+- [0090](./0090-adaptive-interp-delay.md) — m13.5e — Adaptive remote-interpolation delay (M13.5e) (Accepted)
+
+### content
+
+- [0037](./0037-spacetimedb-content-deps.md) — m0b — SpacetimeDB module SDK + RON content dependencies (Accepted)
+- [0044](./0044-encounter-table-private.md) — m8b — Encounter table: private with no projection (Accepted)
+- [0057](./0057-content-directory-glob-loading.md) — m8.9e — Content as glob-loaded directories via a `build.rs` embed (Accepted)
+- [0058](./0058-raising-ev-training-care.md) — m9a — Raising rules — EV focus-training (top-off) and care (bond), as pure-core invariants (Accepted)
+- [0060](./0060-evolution-fusion-content-shape.md) — m10a — Evolution/fusion content shape: a separate cross-referenced registry + additive validator (Accepted)
+- [0065](./0065-zone-map-warp-data-shape.md) — m11a — Zone map + warp data shape (M11a) (Accepted)
+- [0068](./0068-npc-dialogue-quest-game-core.md) — m12a — NPC/dialogue/quest — pure game-core rule module (M12a) (Accepted)
+- [0070](./0070-m12c-content-ron-npc-rt-adv-01.md) — m12c — M12c: Content RON loading for NPC/dialogue/quest/heal, NPC zone policy, RT-ADV-01 fix (Accepted)
+- [0073](./0073-content-sync-path-repair.md) — m12.5b — Content-sync path repair (M12.5b) (Accepted)
+- [0082](./0082-shop-content-reducers.md) — m13b — Shop content, buy/sell reducers (M13b) (Accepted)
+- [0089](./0089-content-parse-caching.md) — m13.5d — 0089 — Content parse caching on hot paths (shell-side, determinism-safe) (Accepted)
+- [0094](./0094-m14c-passive-ability-system.md) — m14c — M14c: Passive per-species ability system (Accepted)
+
+### schema-persistence
+
+- [0037](./0037-spacetimedb-content-deps.md) — m0b — SpacetimeDB module SDK + RON content dependencies (Accepted)
+- [0040](./0040-rls-fallback-split-tables.md) — m6b — RLS fallback: private table + public projection for monster privacy (Accepted)
+- [0046](./0046-player-inventory-model.md) — m8d — Player inventory: additive owner-scoped stack table, public (low-stakes), bait classified by data (Accepted)
+- [0056](./0056-server-module-modularization.md) — m8.9a — server-module internal module boundary (domain submodules) (Accepted)
+- [0059](./0059-raising-server-care-cooldown-inventory-reconcile.md) — m9b — M9b server raising — `care` + per-monster cooldown, inventory-backbone reconcile, and the `train` split (Accepted)
+- [0066](./0066-server-warp-runtime.md) — m11b — Server warp runtime — in-tick warp detection, per-zone scheduling, zone-map validation (Accepted)
+- [0069](./0069-npc-dialogue-quest-server.md) — m12b — NPC/dialogue/quest — server reducers and entity management (M12b) (Accepted)
+- [0073](./0073-content-sync-path-repair.md) — m12.5b — Content-sync path repair (M12.5b) (Accepted)
+- [0077](./0077-battle-lifecycle-gc.md) — m12.5e — Battle lifecycle GC, XP log-and-continue, canonical skill order (Accepted)
+- [0079](./0079-nightly-republish-smoke.md) — m12.5b6 — Nightly republish smoke test (§12.5b-6) (Accepted)
+- [0081](./0081-currency-primitive.md) — m13a — Currency primitive (M13a) (Accepted)
+- [0087](./0087-owner-scoped-view-private-conversation.md) — m13.5c — Owner-scoped `#[view]` over the private `player_conversation` table (M13.5c / D-13.5-3) (Accepted)
+- [0093](./0093-m14b-server-status-persistence.md) — m14b — M14b: Server-side status-effect persistence (Accepted)
+
+### client-ui
+
+- [0036](./0036-client-wasm-bindgen.md) — m3 — `wasm-bindgen` + `wasm-pack` for the client-prediction boundary (Accepted)
+- [0052](./0052-bounded-client-prediction-queue-cap.md) — m8.5f — Bounded client prediction to the move-queue cap (no over-prediction rubberband) (Accepted)
+- [0063](./0063-evolution-fusion-client-overlay.md) — m10c — Evolution & fusion client overlay: subscription shape, overlay key, fusion recipe display (Accepted)
+- [0067](./0067-follow-camera-and-warp-resubscribe.md) — m11c — Client zone warp — follow-camera, zone subscription, warp reconcile (Accepted)
+- [0071](./0071-m12d-client-dialogue-quest-heal-ui.md) — m12d — M12d: Client dialogue/quest/heal UI — static bundle, pure models, dismissal gating (Accepted)
+- [0074](./0074-zone-sync-robustness.md) — m12.5c — Client zone-sync robustness (M12.5c) (Accepted)
+- [0075](./0075-netcode-smoothness-m125d.md) — m12.5d — Netcode smoothness residuals (M12.5d) (Accepted)
+- [0084](./0084-shop-client-view.md) — m13d — Shop client view architecture (M13d) (Accepted)
+- [0085](./0085-reducer-rejection-feedback-and-reconnect.md) — m13.5b — Reducer-rejection feedback & app-level reconnect (M13.5b) (Accepted)
+- [0090](./0090-adaptive-interp-delay.md) — m13.5e — Adaptive remote-interpolation delay (M13.5e) (Accepted)
+- [0096](./0096-m14e-status-cure-items.md) — m14e — M14e: Status-Curing Items + Client Battle-Event Display (Accepted)
+- [0101](./0101-m14.5d-client-battle-ux.md) — m14.5d — M14.5d: Client battle UX completeness (weather banner, parity guards, VM-compare) (Accepted)
+
 ### ci-gates
 
+- [0035](./0035-scaffold-hardening.md) — m0 — Scaffold hardening — robust secret-scan + SpacetimeDB-stack `.gitignore` (Accepted)
+- [0038](./0038-proptest.md) — m1 — `proptest` for property testing the logic-heavy rules (Accepted)
+- [0039](./0039-e2e-in-ci-spacetime.md) — m5b — Two-window e2e as a CI gate against a pinned standalone SpacetimeDB (Accepted)
+- [0043](./0043-ci-caching-fast-inner-loop.md) — m-infra-a — CI caching + fast inner loop (Accepted)
+- [0049](./0049-panic-as-content-invariant-policy.md) — m8.5b — Panic-as-content-invariant policy in the pure core (+ rule-core contracts) (Accepted)
+- [0050](./0050-nightly-mutation-coverage-and-bindings-drift-in-ci.md) — m8.5c — Nightly mutation/coverage gates (not per-PR) + bindings-drift in the fast `ci` job (Accepted)
+- [0051](./0051-biome-lint-scope.md) — m8.5d — Biome as the TS/JS style+lint gate: scope, exclusions, and deferred lint debt (Accepted)
+- [0053](./0053-swap-legality-as-pure-core-invariant.md) — m8.6a — Swap legality as a pure-core invariant (checked `set_active`) (Accepted)
+- [0054](./0054-dev-reducer-release-gating.md) — m8.7b — Dev/test-reducer release-gating (`#[cfg(feature = "dev_reducers")]`) + zone reject-not-clamp + inventory single-stack as a mechanical gate (Accepted)
+- [0055](./0055-release-fail-loud-determinism-gate.md) — m8.8a — Release fail-loud + determinism-gate completeness (overflow-checks + RNG/clock sinks) (Accepted)
+- [0062](./0062-evolution-fusion-server-reducers.md) — m10b — Evolution & fusion server reducers: guard ordering, seam placement, growth-writer registration (Accepted)
+- [0064](./0064-m10d-evolution-fusion-content-integrity-evals.md) — m10d — M10d: evolution/fusion content-integrity evals and proof-of-teeth discipline (Accepted)
+- [0072](./0072-fuse-dual-write-ordering-fix.md) — m12.5a — fuse offspring monster_pub dual-write ordering fix (Accepted)
+- [0076](./0076-gate-simharness-teeth.md) — m12.5f — Gate & sim-harness teeth (M12.5f) (Accepted)
+- [0079](./0079-nightly-republish-smoke.md) — m12.5b6 — Nightly republish smoke test (§12.5b-6) (Accepted)
+- [0080](./0080-generated-knowledge-bundle.md) — m8.95d — Generated knowledge bundle (OKF-conformant schema projection, M8.95) (Accepted)
+- [0086](./0086-ci-e2e-dev-reducers-publish.md) — m13.5h — CI e2e publishes the dev_reducers module via --bin-path (M13.5h) (Accepted)
+- [0088](./0088-nightly-mutate-core-timeout-tolerance.md) — fix-nightly-mutants — 0088 — Nightly `mutate-core`: timeout tolerance, one proven-equivalent exclusion, zero-tolerance on MISSED preserved (Accepted)
+- [0091](./0091-type-rigor-hardening.md) — M13.5f — Type-Rigor Hardening: GrantItem Gate, Quest Match, Coded Decode, Party-Slot Core Check, Marshal Re-Checks (Accepted)
+- [0103](./0103-m14.5f-gates-convergence.md) — m14.5f — M14.5f — gates: BSATN schema-compat proof + convergence net widening (Accepted)
 - [0104](./0104-m-infra-d-adr-digest.md) — m-infra-d (infra slice, insertable any time after M14.5) — M-infra-d: ADR digest convention and agent-facing corpus compaction (Accepted)
 
 ### tooling-docs
 
+- [0001](./0001-record-architecture-decisions.md) — m0 — Record architecture decisions (Accepted)
+- [0035](./0035-scaffold-hardening.md) — m0 — Scaffold hardening — robust secret-scan + SpacetimeDB-stack `.gitignore` (Accepted)
+- [0036](./0036-client-wasm-bindgen.md) — m3 — `wasm-bindgen` + `wasm-pack` for the client-prediction boundary (Accepted)
+- [0038](./0038-proptest.md) — m1 — `proptest` for property testing the logic-heavy rules (Accepted)
+- [0043](./0043-ci-caching-fast-inner-loop.md) — m-infra-a — CI caching + fast inner loop (Accepted)
+- [0051](./0051-biome-lint-scope.md) — m8.5d — Biome as the TS/JS style+lint gate: scope, exclusions, and deferred lint debt (Accepted)
+- [0056](./0056-server-module-modularization.md) — m8.9a — server-module internal module boundary (domain submodules) (Accepted)
+- [0057](./0057-content-directory-glob-loading.md) — m8.9e — Content as glob-loaded directories via a `build.rs` embed (Accepted)
+- [0076](./0076-gate-simharness-teeth.md) — m12.5f — Gate & sim-harness teeth (M12.5f) (Accepted)
+- [0080](./0080-generated-knowledge-bundle.md) — m8.95d — Generated knowledge bundle (OKF-conformant schema projection, M8.95) (Accepted)
+- [0089](./0089-content-parse-caching.md) — m13.5d — 0089 — Content parse caching on hot paths (shell-side, determinism-safe) (Accepted)
+- [0097](./0097-m14-close-phase-b-complete.md) — m14f (doc-keeper close; doc-only, no production code) — M14 Close: Phase B Complete (Accepted)
 - [0104](./0104-m-infra-d-adr-digest.md) — m-infra-d (infra slice, insertable any time after M14.5) — M-infra-d: ADR digest convention and agent-facing corpus compaction (Accepted)
 
-### (untagged)
+### security-authz
 
-- [0001](./0001-record-architecture-decisions.md) — PENDING — Record architecture decisions (Accepted)
-- [0035](./0035-scaffold-hardening.md) — PENDING — Scaffold hardening — robust secret-scan + SpacetimeDB-stack `.gitignore` (Accepted)
-- [0036](./0036-client-wasm-bindgen.md) — PENDING — `wasm-bindgen` + `wasm-pack` for the client-prediction boundary (Accepted)
-- [0037](./0037-spacetimedb-content-deps.md) — PENDING — SpacetimeDB module SDK + RON content dependencies (Accepted)
-- [0038](./0038-proptest.md) — PENDING — `proptest` for property testing the logic-heavy rules (Accepted)
-- [0039](./0039-e2e-in-ci-spacetime.md) — PENDING — Two-window e2e as a CI gate against a pinned standalone SpacetimeDB (Accepted)
-- [0040](./0040-rls-fallback-split-tables.md) — PENDING — RLS fallback: private table + public projection for monster privacy (Accepted)
-- [0041](./0041-integer-damage-formula.md) — PENDING — Integer-only damage formula with injected variance (Accepted)
-- [0042](./0042-battle-table-public-pve.md) — PENDING — Battle table is public (PvE scope) (Accepted)
-- [0043](./0043-ci-caching-fast-inner-loop.md) — PENDING — CI caching + fast inner loop (Accepted)
-- [0044](./0044-encounter-table-private.md) — PENDING — Encounter table: private with no projection (Accepted)
-- [0045](./0045-wild-individuality-private-table.md) — PENDING — Wild individuality: private `battle_wild` side-table (seed-keyed), not columns on the public battle row (Accepted)
-- [0046](./0046-player-inventory-model.md) — PENDING — Player inventory: additive owner-scoped stack table, public (low-stakes), bait classified by data (Accepted)
-- [0047](./0047-recruit-resolution-semantics.md) — PENDING — Recruit resolution: reuse `SideAWins` terminal, grant at full HP with no XP, GC the `battle_wild` row (Accepted)
-- [0048](./0048-start-battle-opponent-provenance.md) — PENDING — `start_battle` opponent-provenance authorization (reject-not-clamp) (Accepted)
-- [0049](./0049-panic-as-content-invariant-policy.md) — PENDING — Panic-as-content-invariant policy in the pure core (+ rule-core contracts) (Accepted)
-- [0050](./0050-nightly-mutation-coverage-and-bindings-drift-in-ci.md) — PENDING — Nightly mutation/coverage gates (not per-PR) + bindings-drift in the fast `ci` job (Accepted)
-- [0051](./0051-biome-lint-scope.md) — PENDING — Biome as the TS/JS style+lint gate: scope, exclusions, and deferred lint debt (Accepted)
-- [0052](./0052-bounded-client-prediction-queue-cap.md) — PENDING — Bounded client prediction to the move-queue cap (no over-prediction rubberband) (Accepted)
-- [0053](./0053-swap-legality-as-pure-core-invariant.md) — PENDING — Swap legality as a pure-core invariant (checked `set_active`) (Accepted)
-- [0054](./0054-dev-reducer-release-gating.md) — PENDING — Dev/test-reducer release-gating (`#[cfg(feature = "dev_reducers")]`) + zone reject-not-clamp + inventory single-stack as a mechanical gate (Accepted)
-- [0055](./0055-release-fail-loud-determinism-gate.md) — PENDING — Release fail-loud + determinism-gate completeness (overflow-checks + RNG/clock sinks) (Accepted)
-- [0056](./0056-server-module-modularization.md) — PENDING — server-module internal module boundary (domain submodules) (Accepted)
-- [0057](./0057-content-directory-glob-loading.md) — PENDING — Content as glob-loaded directories via a `build.rs` embed (Accepted)
-- [0058](./0058-raising-ev-training-care.md) — PENDING — Raising rules — EV focus-training (top-off) and care (bond), as pure-core invariants (Accepted)
-- [0059](./0059-raising-server-care-cooldown-inventory-reconcile.md) — PENDING — M9b server raising — `care` + per-monster cooldown, inventory-backbone reconcile, and the `train` split (Accepted)
-- [0060](./0060-evolution-fusion-content-shape.md) — PENDING — Evolution/fusion content shape: a separate cross-referenced registry + additive validator (Accepted)
-- [0061](./0061-evolution-fusion-transform-rules.md) — PENDING — Evolution & fusion transform rules: eligibility resolver, individuality carry, fusion combine (Accepted)
-- [0062](./0062-evolution-fusion-server-reducers.md) — PENDING — Evolution & fusion server reducers: guard ordering, seam placement, growth-writer registration (Accepted)
-- [0063](./0063-evolution-fusion-client-overlay.md) — PENDING — Evolution & fusion client overlay: subscription shape, overlay key, fusion recipe display (Accepted)
-- [0064](./0064-m10d-evolution-fusion-content-integrity-evals.md) — PENDING — M10d: evolution/fusion content-integrity evals and proof-of-teeth discipline (Accepted)
-- [0065](./0065-zone-map-warp-data-shape.md) — PENDING — Zone map + warp data shape (M11a) (Accepted)
-- [0066](./0066-server-warp-runtime.md) — PENDING — Server warp runtime — in-tick warp detection, per-zone scheduling, zone-map validation (Accepted)
-- [0067](./0067-follow-camera-and-warp-resubscribe.md) — PENDING — Client zone warp — follow-camera, zone subscription, warp reconcile (Accepted)
-- [0068](./0068-npc-dialogue-quest-game-core.md) — PENDING — NPC/dialogue/quest — pure game-core rule module (M12a) (Accepted)
-- [0069](./0069-npc-dialogue-quest-server.md) — PENDING — NPC/dialogue/quest — server reducers and entity management (M12b) (Accepted)
-- [0070](./0070-m12c-content-ron-npc-rt-adv-01.md) — PENDING — M12c: Content RON loading for NPC/dialogue/quest/heal, NPC zone policy, RT-ADV-01 fix (Accepted)
-- [0071](./0071-m12d-client-dialogue-quest-heal-ui.md) — PENDING — M12d: Client dialogue/quest/heal UI — static bundle, pure models, dismissal gating (Accepted)
-- [0072](./0072-fuse-dual-write-ordering-fix.md) — M12.5a — fuse offspring monster_pub dual-write ordering fix (Accepted)
-- [0073](./0073-content-sync-path-repair.md) — PENDING — Content-sync path repair (M12.5b) (Accepted)
-- [0074](./0074-zone-sync-robustness.md) — PENDING — Client zone-sync robustness (M12.5c) (Accepted)
-- [0075](./0075-netcode-smoothness-m125d.md) — PENDING — Netcode smoothness residuals (M12.5d) (Accepted)
-- [0076](./0076-gate-simharness-teeth.md) — M12.5f (sixth-review residuals, gate & sim-harness hardening) — Gate & sim-harness teeth (M12.5f) (Accepted)
-- [0077](./0077-battle-lifecycle-gc.md) — PENDING — Battle lifecycle GC, XP log-and-continue, canonical skill order (Accepted)
-- [0078](./0078-practice-xp-multiplier.md) — PENDING — Practice-battle XP multiplier (0.1×) (Accepted)
-- [0079](./0079-nightly-republish-smoke.md) — PENDING — Nightly republish smoke test (§12.5b-6) (Accepted)
-- [0080](./0080-generated-knowledge-bundle.md) — PENDING — Generated knowledge bundle (OKF-conformant schema projection, M8.95) (Accepted)
-- [0081](./0081-currency-primitive.md) — PENDING — Currency primitive (M13a) (Accepted)
-- [0082](./0082-shop-content-reducers.md) — PENDING — Shop content, buy/sell reducers (M13b) (Accepted)
-- [0083](./0083-economy-sinks-sources.md) — PENDING — Economy sinks and sources — heal cost, quest rewards, battle rewards (Accepted)
-- [0084](./0084-shop-client-view.md) — PENDING — Shop client view architecture (M13d) (Accepted)
-- [0085](./0085-reducer-rejection-feedback-and-reconnect.md) — PENDING — Reducer-rejection feedback & app-level reconnect (M13.5b) (Accepted)
-- [0086](./0086-ci-e2e-dev-reducers-publish.md) — PENDING — CI e2e publishes the dev_reducers module via --bin-path (M13.5h) (Accepted)
-- [0087](./0087-owner-scoped-view-private-conversation.md) — PENDING — Owner-scoped `#[view]` over the private `player_conversation` table (M13.5c / D-13.5-3) (Accepted)
-- [0088](./0088-nightly-mutate-core-timeout-tolerance.md) — PENDING — 0088 — Nightly `mutate-core`: timeout tolerance, one proven-equivalent exclusion, zero-tolerance on MISSED preserved (Accepted)
-- [0089](./0089-content-parse-caching.md) — PENDING — 0089 — Content parse caching on hot paths (shell-side, determinism-safe) (Accepted)
-- [0090](./0090-adaptive-interp-delay.md) — PENDING — Adaptive remote-interpolation delay (M13.5e) (Accepted)
+- [0040](./0040-rls-fallback-split-tables.md) — m6b — RLS fallback: private table + public projection for monster privacy (Accepted)
+- [0042](./0042-battle-table-public-pve.md) — m7b — Battle table is public (PvE scope) (Accepted)
+- [0044](./0044-encounter-table-private.md) — m8b — Encounter table: private with no projection (Accepted)
+- [0045](./0045-wild-individuality-private-table.md) — m8c — Wild individuality: private `battle_wild` side-table (seed-keyed), not columns on the public battle row (Accepted)
+- [0048](./0048-start-battle-opponent-provenance.md) — m8.5a — `start_battle` opponent-provenance authorization (reject-not-clamp) (Accepted)
+- [0054](./0054-dev-reducer-release-gating.md) — m8.7b — Dev/test-reducer release-gating (`#[cfg(feature = "dev_reducers")]`) + zone reject-not-clamp + inventory single-stack as a mechanical gate (Accepted)
+- [0087](./0087-owner-scoped-view-private-conversation.md) — m13.5c — Owner-scoped `#[view]` over the private `player_conversation` table (M13.5c / D-13.5-3) (Accepted)
 - [0091](./0091-type-rigor-hardening.md) — M13.5f — Type-Rigor Hardening: GrantItem Gate, Quest Match, Coded Decode, Party-Slot Core Check, Marshal Re-Checks (Accepted)
-- [0092](./0092-m14a-status-effect-rules.md) — M14a — M14a Status-Effect Rules: Layered DoT Resolution, Separate Variance Struct, Pure Game-Core Persistence Model (Accepted)
-- [0093](./0093-m14b-server-status-persistence.md) — PENDING — M14b: Server-side status-effect persistence (Accepted)
-- [0094](./0094-m14c-passive-ability-system.md) — PENDING — M14c: Passive per-species ability system (Accepted)
-- [0095](./0095-m14d-weather-field-state.md) — m14d (serial after m14b + m14c) — M14d: Weather / Field State (Accepted)
-- [0096](./0096-m14e-status-cure-items.md) — M14e (serial after M14b + M14c + M14d) — M14e: Status-Curing Items + Client Battle-Event Display (Accepted)
-- [0097](./0097-m14-close-phase-b-complete.md) — m14f (doc-keeper close; doc-only, no production code) — M14 Close: Phase B Complete (Accepted)
-- [0098](./0098-m14.5a-swap-recruit-full-pipeline.md) — m14.5a (M14.5 eighth-review residuals, closes R1/R3/RT-W14-DESYNC-01) — M14.5a: swap/recruit paths run the full post-turn status/weather pipeline (Accepted)
-- [0099](./0099-m14.5b-status-applied-slot-capture.md) — m14.5b (M14.5 eighth-review residuals §2, closes RT-M14.5B-01) — M14.5b: StatusApplied event carries emission-time slot; drop write if not conscious (Accepted)
-- [0100](./0100-m14.5c-ability-system-wiring.md) — m14.5c (M14.5 eighth-review residuals §3; closes D-14.5-2 default a) — M14.5c: Wire passive-ability system end-to-end (Accepted)
-- [0101](./0101-m14.5d-client-battle-ux.md) — m14.5d (M14.5 eighth-review residuals §14.5d; ships EARS 14.5d-2/3/4) — M14.5d: Client battle UX completeness (weather banner, parity guards, VM-compare) (Accepted)
-- [0103](./0103-m14.5f-gates-convergence.md) — PENDING — M14.5f — gates: BSATN schema-compat proof + convergence net widening (Accepted)
+
+### economy-quests
+
+- [0046](./0046-player-inventory-model.md) — m8d — Player inventory: additive owner-scoped stack table, public (low-stakes), bait classified by data (Accepted)
+- [0047](./0047-recruit-resolution-semantics.md) — m8d — Recruit resolution: reuse `SideAWins` terminal, grant at full HP with no XP, GC the `battle_wild` row (Accepted)
+- [0068](./0068-npc-dialogue-quest-game-core.md) — m12a — NPC/dialogue/quest — pure game-core rule module (M12a) (Accepted)
+- [0069](./0069-npc-dialogue-quest-server.md) — m12b — NPC/dialogue/quest — server reducers and entity management (M12b) (Accepted)
+- [0070](./0070-m12c-content-ron-npc-rt-adv-01.md) — m12c — M12c: Content RON loading for NPC/dialogue/quest/heal, NPC zone policy, RT-ADV-01 fix (Accepted)
+- [0071](./0071-m12d-client-dialogue-quest-heal-ui.md) — m12d — M12d: Client dialogue/quest/heal UI — static bundle, pure models, dismissal gating (Accepted)
+- [0078](./0078-practice-xp-multiplier.md) — m12.5e2 — Practice-battle XP multiplier (0.1×) (Accepted)
+- [0081](./0081-currency-primitive.md) — m13a — Currency primitive (M13a) (Accepted)
+- [0082](./0082-shop-content-reducers.md) — m13b — Shop content, buy/sell reducers (M13b) (Accepted)
+- [0083](./0083-economy-sinks-sources.md) — m13c — Economy sinks and sources — heal cost, quest rewards, battle rewards (Accepted)
+- [0084](./0084-shop-client-view.md) — m13d — Shop client view architecture (M13d) (Accepted)

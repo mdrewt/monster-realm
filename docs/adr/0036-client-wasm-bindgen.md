@@ -1,5 +1,14 @@
 # ADR-0036: `wasm-bindgen` + `wasm-pack` for the client-prediction boundary
 
+**Status:** Accepted
+**Date:** 2026-06-25
+**Slice:** m3
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** client-ui, tooling-docs
+**Decision:** Use wasm-bindgen + wasm-pack to compile game-core to wasm for the client-side prediction boundary, with serde-wasm-bindgen for JS interop.
+
+
 - **Status:** Accepted
 - **Date:** 2026-06-25
 - **Context milestone:** M0a (shared-core isolation & prediction parity)

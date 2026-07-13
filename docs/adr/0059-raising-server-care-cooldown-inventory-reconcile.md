@@ -1,5 +1,14 @@
 # 0059. M9b server raising — `care` + per-monster cooldown, inventory-backbone reconcile, and the `train` split
 
+**Status:** Accepted
+**Date:** 2026-06-28
+**Slice:** m9b
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** evolution-fusion, schema-persistence
+**Decision:** M9b server raising: care reducer with per-monster timestamp cooldown in a private table; reuse player inventory as the item backbone; train split from care.
+
+
 - Status: accepted
 - Date: 2026-06-28
 - Milestone: M9b (server-side of M9 raising — item backbone + raising reducers)

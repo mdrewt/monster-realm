@@ -1,5 +1,14 @@
 # 0054. Dev/test-reducer release-gating (`#[cfg(feature = "dev_reducers")]`) + zone reject-not-clamp + inventory single-stack as a mechanical gate
 
+**Status:** Accepted
+**Date:** 2026-06-27
+**Slice:** m8.7b
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** security-authz, ci-gates
+**Decision:** Gate dev/test reducers behind #[cfg(feature="dev_reducers")] so they compile-exclude from release/bench wasm; zone movement uses reject-not-clamp.
+
+
 - Status: accepted
 - Date: 2026-06-27
 - Milestone: M8.7b (server hardening — third-review residuals)

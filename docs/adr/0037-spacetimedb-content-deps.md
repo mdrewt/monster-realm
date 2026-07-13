@@ -1,5 +1,15 @@
 # ADR-0037: SpacetimeDB module SDK + RON content dependencies
 
+**Status:** Accepted
+**Date:** 2026-06-25
+**Slice:** m0b
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** schema-persistence, content
+**Decision:** Pin SpacetimeDB module SDK + RON (serde-ron) as the server/content dependencies; sync_content reducer updates content without table deletion.
+**Amended-by:** ADR-0073
+
+
 - **Status:** Accepted
 - **Date:** 2026-06-25
 - **Context milestone:** M0b (the presence walking-skeleton vertical)

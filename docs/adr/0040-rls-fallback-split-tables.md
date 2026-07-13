@@ -1,4 +1,13 @@
 # 0040. RLS fallback: private table + public projection for monster privacy
+
+**Status:** Accepted
+**Date:** 2026-06-26
+**Slice:** m6b
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** security-authz, schema-persistence
+**Decision:** Use private monster table + public monster_pub projection as the RLS fallback: IV genes stay hidden from clients; derived stats are world-readable.
+
 - Status: accepted
 - Date: 2026-06-26
 

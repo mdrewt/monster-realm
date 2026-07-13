@@ -1,5 +1,15 @@
 # 0053. Swap legality as a pure-core invariant (checked `set_active`)
 
+**Status:** Accepted
+**Date:** 2026-06-27
+**Slice:** m8.6a
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** battle, ci-gates
+**Decision:** Enforce swap legality as a pure-core invariant via BattleSide::set_active; server returns a typed SwapError and never clamps to a valid slot.
+**Amended-by:** ADR-0091
+
+
 - Status: accepted
 - Date: 2026-06-27
 - Milestone: M8.6a (pure-core swap legality)

@@ -1,5 +1,14 @@
 # 0064. M10d: evolution/fusion content-integrity evals and proof-of-teeth discipline
 
+**Status:** Accepted
+**Date:** 2026-07-02
+**Slice:** m10d
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** evolution-fusion, ci-gates
+**Decision:** Add evolution/fusion content-integrity eval (5 rules at dev time) and reducer-security eval (9 structural invariants), both with proof-of-teeth fixtures.
+
+
 - Status: accepted
 - Date: 2026-07-02
 - Milestone: M10d (evals + doc-keeper; closes Phase A)

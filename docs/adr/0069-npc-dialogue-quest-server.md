@@ -1,4 +1,14 @@
 # 0069. NPC/dialogue/quest — server reducers and entity management (M12b)
+
+**Status:** Accepted
+**Date:** 2026-07-02
+**Slice:** m12b
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** economy-quests, schema-persistence
+**Decision:** NPC entity loop, talk/advance_dialogue/dismiss_dialogue/heal_party reducers, and six new tables (npc, dialogue state, quest, conversation, heal) in server-module.
+**Amended-by:** ADR-0087
+
 - Status: accepted
 - Date: 2026-07-02
 - Milestone: M12b

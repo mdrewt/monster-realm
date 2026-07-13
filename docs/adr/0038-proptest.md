@@ -1,5 +1,14 @@
 # ADR-0038: `proptest` for property testing the logic-heavy rules
 
+**Status:** Accepted
+**Date:** 2026-06-25
+**Slice:** m1
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** ci-gates, tooling-docs
+**Decision:** Use proptest with seeded strategies for property-testing game-core invariants (totality, determinism, behavioral correctness) across randomized inputs.
+
+
 - **Status:** Accepted
 - **Date:** 2026-06-25
 - **Context milestone:** M1 (movement core)

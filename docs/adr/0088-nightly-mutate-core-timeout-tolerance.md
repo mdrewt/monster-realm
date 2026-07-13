@@ -1,5 +1,14 @@
 # 0088 — Nightly `mutate-core`: timeout tolerance, one proven-equivalent exclusion, zero-tolerance on MISSED preserved
 
+**Status:** Accepted
+**Date:** 2026-07-10
+**Slice:** fix-nightly-mutants
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** ci-gates
+**Decision:** Repair nightly mutate-core gate: kill 37 missed mutants with tests, exempt one proven-equivalent mutant, and add timeout tolerance via wrap-recipe exit-3 check.
+
+
 - Status: accepted
 - Date: 2026-07-10
 - Milestone: fix-nightly (Nightly RED Jul 3–9: jobs `mutation` + `smoke-republish`)

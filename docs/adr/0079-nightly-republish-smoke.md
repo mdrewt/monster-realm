@@ -1,5 +1,14 @@
 # ADR-0079 — Nightly republish smoke test (§12.5b-6)
 
+**Status:** Accepted
+**Date:** 2026-07-03
+**Slice:** m12.5b6
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** ci-gates, schema-persistence
+**Decision:** Nightly smoke test republishes the module without --delete-data, calls sync_content, and asserts that player rows survive and CONTENT_VERSION increments.
+
+
 **Status:** Accepted  
 **Date:** 2026-07-03  
 **Deciders:** Drew Teter  

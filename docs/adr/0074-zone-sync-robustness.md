@@ -1,5 +1,14 @@
 # ADR-0074: Client zone-sync robustness (M12.5c)
 
+**Status:** Accepted
+**Date:** 2026-07-03
+**Slice:** m12.5c
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** client-ui, movement-netcode
+**Decision:** Client zone-sync is state-based (not edge-triggered); switchZone is renderer-first atomic; rAF loop is self-contained with try/catch and always re-arms.
+
+
 **Status:** accepted  
 **Date:** 2026-07-03  
 **Deciders:** Drew Teter  

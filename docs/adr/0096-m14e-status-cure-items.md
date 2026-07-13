@@ -1,5 +1,14 @@
 # ADR-0096 — M14e: Status-Curing Items + Client Battle-Event Display
 
+**Status:** Accepted
+**Date:** 2026-07-11
+**Slice:** m14e
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** battle, client-ui
+**Decision:** Status-curing items: applies_status on SkillDef, cure_status on ItemDef, use_battle_item reducer with 6-guard validation; client renders active monster status badge.
+
+
 **Status:** Accepted  
 **Deciders:** Drew Teter  
 **Date:** 2026-07-11  

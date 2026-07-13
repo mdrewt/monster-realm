@@ -5,6 +5,9 @@
 **Slice:** M14a
 **Supersedes:** none
 **Amends:** ADR-0017 (resolve_turn signature), ADR-0023 (turn model), ADR-0041 (damage formula)
+**Subsystems:** battle
+**Decision:** StatusEffect enum, separate StatusVariance struct, resolve_full_turn wrapping resolve_turn + apply_post_turn_effects, SideA-first DoT KO tiebreak; pure game-core.
+**Amended-by:** ADR-0098
 
 ---
 

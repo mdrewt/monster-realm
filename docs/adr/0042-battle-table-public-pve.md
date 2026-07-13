@@ -1,4 +1,13 @@
 # 0042. Battle table is public (PvE scope)
+
+**Status:** Accepted
+**Date:** 2026-06-26
+**Slice:** m7b
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** battle, security-authz
+**Decision:** Battle table is public for PvE scope; derived stats are acceptable to expose for NPC opponents; revisit per-side privacy when PvP ships in M16.
+
 - Status: accepted
 - Date: 2026-06-26
 - Milestone: M7b (server reducers + battle table)

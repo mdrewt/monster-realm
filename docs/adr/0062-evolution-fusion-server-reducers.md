@@ -1,5 +1,14 @@
 # 0062. Evolution & fusion server reducers: guard ordering, seam placement, growth-writer registration
 
+**Status:** Accepted
+**Date:** 2026-07-02
+**Slice:** m10b
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** evolution-fusion, ci-gates
+**Decision:** Evolution and fusion reducers apply pure game-core transforms with guard ordering (owner→not-in-battle→content/eligibility) and growth-writer registration.
+
+
 - Status: accepted
 - Date: 2026-07-02
 - Milestone: M10b (server evolution & fusion reducers)

@@ -1,4 +1,13 @@
 # 0044. Encounter table: private with no projection
+
+**Status:** Accepted
+**Date:** 2026-06-26
+**Slice:** m8b
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** security-authz, content
+**Decision:** Keep the encounter table private with no public projection to prevent clients from reading spawn weights, level bands, or zone encounter rates.
+
 - Status: accepted
 - Date: 2026-06-26
 

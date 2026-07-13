@@ -1,5 +1,14 @@
 # 0052. Bounded client prediction to the move-queue cap (no over-prediction rubberband)
 
+**Status:** Accepted
+**Date:** 2026-06-27
+**Slice:** m8.5f
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** movement-netcode, client-ui
+**Decision:** Bound client-side move prediction to the server MOVE_QUEUE_CAP; reject over-cap enqueues rather than allowing over-prediction rubber-band.
+
+
 - Status: accepted
 - Date: 2026-06-27
 - Milestone: M8.5f (netcode & client robustness / SSOT)
