@@ -18,6 +18,7 @@ struct SimChar {
     state: CharacterState,
     queue: Vec<MoveInput>,
     last_seq: u64,
+    battle_locked: bool,
 }
 
 /// The authoritative world model (server side).
@@ -49,6 +50,7 @@ impl ServerWorld {
                 },
                 queue: Vec::new(),
                 last_seq: 0,
+                battle_locked: false,
             },
         );
         id
@@ -81,8 +83,10 @@ impl ServerWorld {
     /// Warp resolution mirrors `movement_tick` (ADR-0020/0066): if a moved
     /// character lands on a warp tile (`map.warp_at`), their `zone_id` and `pos`
     /// are updated to the destination and the queue is cleared (12.5f-1). Delta
-    /// from `movement_tick`: the harness has NO player/battle tables, so the
-    /// battle-guard is omitted — every moved character resolves warps unconditionally.
+    /// from `movement_tick`: the harness has NO player/battle tables, so warps are
+    /// resolved unconditionally. The battle-guard IS now modeled: characters with
+    /// `battle_locked = true` have their move drain skipped each tick (queue remains
+    /// intact) — mirroring the server's battle-lock check in `movement_tick`.
     pub fn tick_zone(&mut self, zone: u32, now: Millis, map: &TileMap) {
         let ids: Vec<u64> = self
             .chars
@@ -94,6 +98,10 @@ impl ServerWorld {
             let Some(ch) = self.chars.get_mut(&id) else {
                 continue;
             };
+            if ch.battle_locked {
+                ch.state.action = ActionState::Idle;
+                continue;
+            }
             if ch.queue.is_empty() {
                 ch.state.action = ActionState::Idle;
                 continue;
@@ -102,7 +110,7 @@ impl ServerWorld {
             let prev = ch.state.pos; // capture BEFORE apply_move (mirrors movement.rs:194)
             ch.state = apply_move(&ch.state, input, map, now);
             // Warp resolution: only when the character actually moved (guard 1: no bump warp).
-            // Battle-guard (movement.rs:207-220) is omitted — harness has no battle tables.
+            // (Battle-guard handled above via the battle_locked early-continue.)
             if prev != ch.state.pos {
                 if let Some(warp) = map.warp_at(ch.state.pos) {
                     ch.zone_id = warp.to_zone;
@@ -133,6 +141,21 @@ impl ServerWorld {
     #[must_use]
     pub fn queue_len(&self, id: u64) -> usize {
         self.chars.get(&id).map_or(0, |c| c.queue.len())
+    }
+
+    /// Lock a character into battle: `tick_zone` will skip move drain for this character
+    /// while it is locked. Enqueue is unaffected — the queue still accepts intents.
+    pub fn lock_battle(&mut self, id: u64) {
+        if let Some(ch) = self.chars.get_mut(&id) {
+            ch.battle_locked = true;
+        }
+    }
+
+    /// Unlock a character from battle: `tick_zone` resumes normal move drain.
+    pub fn unlock_battle(&mut self, id: u64) {
+        if let Some(ch) = self.chars.get_mut(&id) {
+            ch.battle_locked = false;
+        }
     }
 }
 

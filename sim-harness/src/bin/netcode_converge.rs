@@ -1,16 +1,21 @@
-//! Convergence check for the `netcode-convergence` eval (M8.8d): feeds the lossy/
-//! reordering `Link` into the authoritative `ServerWorld` and reports (as JSON)
-//! that the authoritative final state is delivery-order-INVARIANT under the
-//! seq-canonical apply (convergence — ADR-0013), that reorder + loss actually
+//! Convergence check for the `netcode-convergence` eval (M8.8d / M14.5f): feeds
+//! the lossy/reordering `Link` into the authoritative `ServerWorld` and reports
+//! (as JSON) that the authoritative final state is delivery-order-INVARIANT under
+//! the seq-canonical apply (convergence — ADR-0013), that reorder + loss actually
 //! occur on the jittered scenario, and that the naive arrival-order apply DIVERGES
-//! on a known-bad reorder fixture (proof-of-teeth — the convergence property is
-//! only meaningful if the naive policy provably fails). Pure function of seeds —
-//! no wall clock, no global RNG.
+//! on a known-bad reorder fixture (proof-of-teeth). M14.5f extends the gate with:
+//!   - 128-seed randomized convergence check (random_scenario)
+//!   - warp-scenario convergence under link (warp_scenario_under_link)
+//!   - battle-lock mid-stream freeze check (apply_stream_with_battle_lock)
+//! Pure function of seeds — no wall clock, no global RNG.
 
 use std::collections::BTreeMap;
 
-use game_core::{Direction, MoveInput, TilePos};
-use sim_harness::{apply_stream, deliver, had_reorder, scenario, ApplyOrder, ClientIntent, Link};
+use game_core::{tick_seed, Direction, MoveInput, TilePos};
+use sim_harness::{
+    apply_stream, apply_stream_with_battle_lock, battle_lock_scenario, deliver, had_reorder,
+    random_scenario, scenario, warp_scenario_under_link, ApplyOrder, ClientIntent, Link,
+};
 
 /// A fixed spread of seeds — convergence must hold for every one, and reorder +
 /// loss must each occur for at least one.
@@ -112,8 +117,97 @@ fn main() {
     // contract effect — so the convergence gate is never a vacuous sort tautology.
     let naive_diverges_on_teeth = fixture_bites && contract_bites_on_scenario;
 
+    // =========================================================================
+    // 128-seed randomized convergence (M14.5f): random_scenario with varied
+    // seeds exercises the anti-flood burst path and Jump inputs.
+    // =========================================================================
+    const RANDOM_SEED_COUNT: usize = 128;
+    let random_seeds: Vec<u64> = {
+        let mut s = 0x14_5F_0000_CAFEu64;
+        (0..RANDOM_SEED_COUNT as u64)
+            .map(|i| {
+                s = tick_seed(s, i, 0x14_5F_0000_CAFE);
+                s
+            })
+            .collect()
+    };
+    const RANDOM_N_INTENTS: usize = 32;
+    let mut randomized_converges = true;
+    for &seed in &random_seeds {
+        let intents = random_scenario(seed, RANDOM_N_INTENTS);
+        let survivors = deliver(&intents, &link, seed);
+        let mut reversed = survivors.clone();
+        reversed.reverse();
+        let mut inverted = survivors.clone();
+        inverted.sort_by_key(|i| (std::cmp::Reverse(i.client), std::cmp::Reverse(i.seq)));
+        let canonical = apply_stream(&survivors, ApplyOrder::SeqCanonical);
+        let b = apply_stream(&reversed, ApplyOrder::SeqCanonical);
+        let c = apply_stream(&inverted, ApplyOrder::SeqCanonical);
+        if canonical != b || canonical != c {
+            randomized_converges = false;
+        }
+    }
+
+    // =========================================================================
+    // Warp-scenario convergence under link (M14.5f / 12.5f-1):
+    // SeqCanonical is delivery-order-invariant even when the warp step is
+    // reordered. Non-vacuity: at least one seed must produce a reorder
+    // (jitter=40 guarantees this across 8 seeds).
+    // =========================================================================
+    const WARP_SEEDS: [u64; 8] = [
+        0xDEAD_BEEF,
+        0xC0FF_EE42,
+        0x1234_5678,
+        0xABCD_EF01,
+        0x9999_0000,
+        0xF00D_CAFE,
+        0x0101_0101,
+        0xBEEF_CAFE,
+    ];
+    let mut warp_convergence = true;
+    let mut warp_reorder_occurred = false;
+    for &seed in &WARP_SEEDS {
+        let (conv, reordered) = warp_scenario_under_link(&link, seed);
+        if !conv {
+            warp_convergence = false;
+        }
+        if reordered {
+            warp_reorder_occurred = true;
+        }
+    }
+    // Non-vacuity: at least one warp seed must produce a reorder.
+    if !warp_reorder_occurred {
+        warp_convergence = false;
+    }
+
+    // =========================================================================
+    // Battle-lock mid-stream freeze (M14.5f):
+    // Client 0 is locked after 4 ticks (4 East steps from spawn = (5,1)).
+    // Client 1 is never locked; walks 8 East from spawn, hitting wall at (7,1).
+    // =========================================================================
+    let battle_lock_final = apply_stream_with_battle_lock(&battle_lock_scenario(), 0, 4);
+    let locked_pos = battle_lock_final
+        .get(&0)
+        .copied()
+        .unwrap_or(TilePos { x: 0, y: 0 });
+    let unlocked_pos = battle_lock_final
+        .get(&1)
+        .copied()
+        .unwrap_or(TilePos { x: 0, y: 0 });
+    // Client 0: spawn (1,1) + 4 East = (5,1), then frozen.
+    let locked_frozen = locked_pos == TilePos { x: 5, y: 1 };
+    // Client 1: must have advanced further east than the locked client.
+    let other_progressed = unlocked_pos.x > locked_pos.x;
+    let battle_lock_convergence = locked_frozen && other_progressed;
+
     println!(
-        "{{\"seeds_tested\":{},\"seq_canonical_converges\":{seq_canonical_converges},\"reorder_occurred\":{reorder_occurred},\"loss_occurred\":{loss_occurred},\"naive_diverges_on_teeth\":{naive_diverges_on_teeth}}}",
+        "{{\"seeds_tested\":{},\"seq_canonical_converges\":{seq_canonical_converges},\
+\"reorder_occurred\":{reorder_occurred},\"loss_occurred\":{loss_occurred},\
+\"naive_diverges_on_teeth\":{naive_diverges_on_teeth},\
+\"randomized_seeds_tested\":{RANDOM_SEED_COUNT},\
+\"randomized_converges\":{randomized_converges},\
+\"warp_convergence\":{warp_convergence},\
+\"battle_lock_convergence\":{battle_lock_convergence}}}",
         SEEDS.len()
     );
 }

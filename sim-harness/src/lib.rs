@@ -376,6 +376,181 @@ pub fn warp_scenario() -> Vec<ClientIntent> {
         .collect()
 }
 
+/// Generate a randomized 2-client intent stream from `seed`, using only `tick_seed`
+/// (no wall clock, no global RNG — the determinism contract).
+///
+/// Each intent's `input` is drawn from `tick_seed`-derived values: `r % 5` maps to
+/// Step(North)/Step(South)/Step(East)/Step(West)/Jump. Clients alternate via a draw bit.
+/// Occasionally (when `r % 11 == 0`), emits `MOVE_QUEUE_CAP+1` intents for the same
+/// client at closely-spaced `send_ms` to exercise the anti-flood burst path.
+/// Per-client `seq` is 1-based and strictly monotonically increasing.
+#[must_use]
+pub fn random_scenario(seed: u64, n_intents: usize) -> Vec<ClientIntent> {
+    use game_core::MOVE_QUEUE_CAP;
+    let mut intents = Vec::with_capacity(n_intents);
+    let mut rng_state = seed;
+    let mut seqs = [0u64; 2]; // per-client monotonic seq counters
+    let mut send_ms = 0u64;
+    let mut idx = 0usize;
+
+    while idx < n_intents {
+        // Advance RNG deterministically from seed (no wall clock, no global RNG).
+        rng_state = tick_seed(rng_state, idx as u64, seed);
+        let r = rng_state;
+
+        // Choose client (0 or 1) via a draw bit.
+        let client = (r >> 3) & 1;
+
+        // Choose input: 5 options mapped from r % 5.
+        let input = match r % 5 {
+            0 => MoveInput::Step(Direction::North),
+            1 => MoveInput::Step(Direction::South),
+            2 => MoveInput::Step(Direction::East),
+            3 => MoveInput::Step(Direction::West),
+            _ => MoveInput::Jump,
+        };
+
+        // Burst: when draw hits the burst bucket and there is room, emit MOVE_QUEUE_CAP+1
+        // intents for the same client at closely-spaced send_ms (anti-flood path).
+        let is_burst = r % 11 == 0 && idx + MOVE_QUEUE_CAP < n_intents;
+        let count = if is_burst { MOVE_QUEUE_CAP + 1 } else { 1 };
+
+        for b in 0..count {
+            if idx >= n_intents {
+                break;
+            }
+            seqs[client as usize] += 1;
+            intents.push(ClientIntent {
+                client,
+                seq: seqs[client as usize],
+                input,
+                send_ms: send_ms + if is_burst { (b as u64) * 4 } else { 0 },
+            });
+            idx += 1;
+        }
+        send_ms = send_ms.wrapping_add(16);
+    }
+
+    // Ensure both clients appear: if the RNG only chose one, add a minimal intent
+    // for the missing client so the ≥2-clients invariant always holds.
+    let seen_clients: BTreeSet<u64> = intents.iter().map(|i| i.client).collect();
+    if !seen_clients.contains(&0) {
+        seqs[0] += 1;
+        intents.push(ClientIntent {
+            client: 0,
+            seq: seqs[0],
+            input: MoveInput::Step(Direction::East),
+            send_ms: 0,
+        });
+    }
+    if !seen_clients.contains(&1) {
+        seqs[1] += 1;
+        intents.push(ClientIntent {
+            client: 1,
+            seq: seqs[1],
+            input: MoveInput::Step(Direction::East),
+            send_ms: 8,
+        });
+    }
+
+    intents
+}
+
+/// Transport the `warp_scenario()` intents over `link` using `seed`, then assert
+/// SeqCanonical is delivery-order-invariant (convergence). Returns
+/// `(converges, had_reorder)` — both from the delivered survivor set.
+#[must_use]
+pub fn warp_scenario_under_link(link: &Link, seed: u64) -> (bool, bool) {
+    let intents = warp_scenario();
+    let survivors = deliver(&intents, link, seed);
+
+    // Build a reversed ordering of the same survivors.
+    let mut reversed = survivors.clone();
+    reversed.reverse();
+
+    let forward_result = apply_stream(&survivors, ApplyOrder::SeqCanonical);
+    let reversed_result = apply_stream(&reversed, ApplyOrder::SeqCanonical);
+
+    let converges = forward_result == reversed_result;
+    let reordered = had_reorder(&survivors);
+
+    (converges, reordered)
+}
+
+/// Apply `ordered` intents with a mid-stream battle lock on `lock_client` that fires
+/// after `lock_after_ticks` ticks have elapsed. Uses `SeqCanonical` ordering.
+///
+/// Returns each client's final authoritative tile. The locked client's queue drain
+/// is suppressed after the lock fires (via `ServerWorld::lock_battle`), so any
+/// intents received after the lock point have no effect on the client's position.
+#[must_use]
+pub fn apply_stream_with_battle_lock(
+    ordered: &[ClientIntent],
+    lock_client: u64,
+    lock_after_ticks: usize,
+) -> BTreeMap<u64, TilePos> {
+    let zone_maps = zone_maps_for_driver();
+    let map = map_for(CONVERGE_ZONE, &zone_maps)
+        .expect("CONVERGE_ZONE must have a ZoneMapDef in the embedded RON");
+    let mut world = ServerWorld::new();
+
+    let clients: BTreeSet<u64> = ordered.iter().map(|it| it.client).collect();
+    let char_of: BTreeMap<u64, u64> = clients
+        .iter()
+        .map(|&c| (c, world.join(CONVERGE_ZONE)))
+        .collect();
+
+    // SeqCanonical: sort by (client, seq).
+    let mut sequence = ordered.to_vec();
+    sequence.sort_by_key(|it| (it.client, it.seq));
+
+    let mut now: i64 = 0;
+    for (tick, it) in sequence.iter().enumerate() {
+        // Lock the target client after lock_after_ticks ticks have elapsed.
+        if tick == lock_after_ticks {
+            if let Some(&char_id) = char_of.get(&lock_client) {
+                world.lock_battle(char_id);
+            }
+        }
+        now += TICK_MS;
+        let _ = world.enqueue(char_of[&it.client], it.input, it.seq);
+        world.tick_zone(CONVERGE_ZONE, Millis(now), &map);
+    }
+
+    clients
+        .iter()
+        .map(|&c| {
+            (
+                c,
+                world.pos(char_of[&c]).expect("joined char always has pos"),
+            )
+        })
+        .collect()
+}
+
+/// Canonical 2-client battle-lock scenario: both clients step East repeatedly.
+/// Client 0 is intended to be locked mid-stream; client 1 is never locked.
+/// 8 intents per client (16 total), send_ms interleaved.
+#[must_use]
+pub fn battle_lock_scenario() -> Vec<ClientIntent> {
+    let mut intents = Vec::with_capacity(16);
+    for seq in 1u64..=8 {
+        intents.push(ClientIntent {
+            client: 0,
+            seq,
+            input: MoveInput::Step(Direction::East),
+            send_ms: (seq - 1) * 16,
+        });
+        intents.push(ClientIntent {
+            client: 1,
+            seq,
+            input: MoveInput::Step(Direction::East),
+            send_ms: (seq - 1) * 16 + 8,
+        });
+    }
+    intents
+}
+
 // ===========================================================================
 // M8.8d convergence gating tests (written by tester; stubs are todo!())
 //

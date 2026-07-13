@@ -1,4 +1,4 @@
-// netcode-convergence.eval.mjs — M8.8d convergence gate (ADR-0013).
+// netcode-convergence.eval.mjs — M8.8d / M14.5f convergence gate (ADR-0013).
 //
 // The headline netcode property: under latency/jitter/loss/reorder, the
 // authoritative final state is delivery-order-invariant (SeqCanonical policy).
@@ -6,11 +6,16 @@
 // the proof-of-teeth (the convergence property is only meaningful if Arrival
 // provably fails where SeqCanonical converges).
 //
+// M14.5f extensions: 128-seed randomized convergence, warp-scenario under link,
+// and battle-lock mid-stream freeze check.
+//
 // This eval shells out to: cargo run -q -p sim-harness --bin netcode_converge
 // which emits one JSON line:
 //   { "seeds_tested": <int>, "seq_canonical_converges": <bool>,
 //     "reorder_occurred": <bool>, "loss_occurred": <bool>,
-//     "naive_diverges_on_teeth": <bool> }
+//     "naive_diverges_on_teeth": <bool>, "randomized_seeds_tested": 128,
+//     "randomized_converges": <bool>, "warp_convergence": <bool>,
+//     "battle_lock_convergence": <bool> }
 //
 // Contract: default export async () => { name, pass, detail }
 import { execSync } from 'node:child_process';
@@ -28,7 +33,10 @@ export function convergencePasses(r) {
     r.seq_canonical_converges === true &&
     r.reorder_occurred === true &&
     r.loss_occurred === true &&
-    r.naive_diverges_on_teeth === true
+    r.naive_diverges_on_teeth === true &&
+    r.randomized_converges === true &&
+    r.warp_convergence === true &&
+    r.battle_lock_convergence === true
   );
 }
 
@@ -51,6 +59,9 @@ export default async function () {
       reorder_occurred: true,
       loss_occurred: true,
       naive_diverges_on_teeth: true,
+      randomized_converges: true,
+      warp_convergence: true,
+      battle_lock_convergence: true,
     })
   ) {
     return {
@@ -73,6 +84,9 @@ export default async function () {
       reorder_occurred: false,
       loss_occurred: true,
       naive_diverges_on_teeth: true,
+      randomized_converges: true,
+      warp_convergence: true,
+      battle_lock_convergence: true,
     })
   ) {
     return {
@@ -96,6 +110,9 @@ export default async function () {
       reorder_occurred: true,
       loss_occurred: true,
       naive_diverges_on_teeth: false,
+      randomized_converges: true,
+      warp_convergence: true,
+      battle_lock_convergence: true,
     })
   ) {
     return {
@@ -119,6 +136,9 @@ export default async function () {
       reorder_occurred: true,
       loss_occurred: false,
       naive_diverges_on_teeth: true,
+      randomized_converges: true,
+      warp_convergence: true,
+      battle_lock_convergence: true,
     })
   ) {
     return {
@@ -128,6 +148,81 @@ export default async function () {
         'proof-of-teeth D: predicate failed to reject {loss_occurred:false} — ' +
         'a convergencePasses that ignores loss_occurred would pass a driver that ' +
         'delivers every intent regardless of loss_pct (loss simulation broken)',
+    };
+  }
+
+  // Tooth E: randomized_converges:false must be rejected.
+  // Kills: a convergencePasses that ignores randomized_converges, letting a driver
+  // that skips the 128-seed randomized sweep pass the gate.
+  if (
+    convergencePasses({
+      seeds_tested: 16,
+      seq_canonical_converges: true,
+      reorder_occurred: true,
+      loss_occurred: true,
+      naive_diverges_on_teeth: true,
+      randomized_converges: false,
+      warp_convergence: true,
+      battle_lock_convergence: true,
+    })
+  ) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'proof-of-teeth E: predicate failed to reject {randomized_converges:false} — ' +
+        'a convergencePasses that ignores randomized_converges would accept a driver ' +
+        'that skips the 128-seed randomized convergence sweep (M14.5f)',
+    };
+  }
+
+  // Tooth F: warp_convergence:false must be rejected.
+  // Kills: a convergencePasses that ignores warp_convergence, letting a driver
+  // that skips the warp-scenario-under-link check pass the gate.
+  if (
+    convergencePasses({
+      seeds_tested: 16,
+      seq_canonical_converges: true,
+      reorder_occurred: true,
+      loss_occurred: true,
+      naive_diverges_on_teeth: true,
+      randomized_converges: true,
+      warp_convergence: false,
+      battle_lock_convergence: true,
+    })
+  ) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'proof-of-teeth F: predicate failed to reject {warp_convergence:false} — ' +
+        'a convergencePasses that ignores warp_convergence would accept a driver ' +
+        'that skips the warp-scenario convergence under link (M14.5f / 12.5f-1)',
+    };
+  }
+
+  // Tooth G: battle_lock_convergence:false must be rejected.
+  // Kills: a convergencePasses that ignores battle_lock_convergence, letting a driver
+  // that skips the battle-lock mid-stream freeze check pass the gate.
+  if (
+    convergencePasses({
+      seeds_tested: 16,
+      seq_canonical_converges: true,
+      reorder_occurred: true,
+      loss_occurred: true,
+      naive_diverges_on_teeth: true,
+      randomized_converges: true,
+      warp_convergence: true,
+      battle_lock_convergence: false,
+    })
+  ) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'proof-of-teeth G: predicate failed to reject {battle_lock_convergence:false} — ' +
+        'a convergencePasses that ignores battle_lock_convergence would accept a driver ' +
+        'where the battle-lock freeze is not verified (M14.5f BL-A/BL-B)',
     };
   }
 
@@ -157,8 +252,10 @@ export default async function () {
     name,
     pass: ok,
     detail: ok
-      ? `convergence verified across ${report.seeds_tested} seeds — ` +
-        `SeqCanonical converges, reorder occurred, loss occurred, Arrival diverges on teeth`
+      ? `convergence verified across ${report.seeds_tested} seeds + ` +
+        `${report.randomized_seeds_tested ?? 0} randomized seeds — ` +
+        `SeqCanonical converges, reorder occurred, loss occurred, Arrival diverges on teeth, ` +
+        `randomized convergence holds, warp-scenario converges under link, battle-lock freeze verified`
       : `convergence check FAILED: ${JSON.stringify(report)}`,
   };
 }
