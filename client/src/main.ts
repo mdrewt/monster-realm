@@ -44,6 +44,7 @@ import {
   type BaitItem,
   type BattleViewModel,
   buildBattleViewModel,
+  type CureItem,
   decideBattleOverlay,
   shouldSkipBattleRefresh,
 } from './ui/battleModel';
@@ -643,11 +644,19 @@ function refreshBattle(): void {
         { itemId: inv.itemId, name: def.name, recruitBonus: def.recruitBonus, count: inv.count },
       ];
     });
+    // Build cureItems from own inventory × item defs: classify by cureStatus !== null
+    // (ADR-0047 + ADR-0105). Available in any ongoing battle (not wild-only).
+    const cureItems: CureItem[] = store.ownInventory(identity).flatMap((inv) => {
+      const def = store.itemDef(inv.itemId);
+      if (!def || def.cureStatus === null) return [];
+      return [{ itemId: inv.itemId, name: def.name, cureStatus: def.cureStatus, count: inv.count }];
+    });
     const vm = buildBattleViewModel(
       r.action.battle,
       store.skillMap(),
       store.speciesMap(),
       baitItems,
+      cureItems,
     );
     if (!vm) console.warn('[battle] battle has corrupt team data; view hidden');
     // m14.5d VM-compare guard: skip refresh when the view is visible and the VM is
@@ -866,6 +875,9 @@ async function main(): Promise<void> {
       },
       onRecruit: (battleId, baitItemId) => {
         sendGuarded('recruit', () => conn?.conn.reducers.attemptRecruit({ battleId, baitItemId }));
+      },
+      onUseItem: (battleId, itemId) => {
+        sendGuarded('use-item', () => conn?.conn.reducers.useBattleItem({ battleId, itemId }));
       },
     });
     raisingView = new RaisingViewClass(mount, {

@@ -1289,6 +1289,130 @@ describe('rowConvert M13d: shopItemRowToStore — SdkShopItemRowRow -> StoreShop
 });
 
 // =============================================================================
+// m14.5d-1b — cureStatus field in itemRowToStore
+// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-1
+//
+// RED REASON: SdkItemRowRow does not yet have a `cureStatus` field, and
+// itemRowToStore does not yet map it. StoreItemRow does not yet have a
+// `cureStatus` field. All tests below will fail (TypeScript compile error or
+// wrong-value assertion) until the implementer adds:
+//   - `cureStatus?: { readonly tag: string } | undefined` to SdkItemRowRow
+//   - `cureStatus: string | null` to StoreItemRow (store.ts)
+//   - mapping logic in itemRowToStore: Some({tag}) → tag string, None/undefined → null
+//
+// Classify-by-data rule: the client infers cure intent from cureStatus !== null
+// (the data itself), never from a hardcoded item id.
+//
+// ANTI-PATTERN: `row.cureStatus?.tag || null` maps {tag:""} → null (falsy tag trap).
+// Correct: `row.cureStatus != null ? row.cureStatus.tag : null`.
+// =============================================================================
+
+describe('rowConvert m14.5d-1b: itemRowToStore — cureStatus field [m14.5d-1b]', () => {
+  it('[m14.5d-1b] BITES: cureStatus Some({tag:"Poison"}) → string "Poison" (not the object)', () => {
+    // The SDK delivers Option<StatusKind> as {tag:"Poison"} for Some, undefined for None.
+    // The store must carry the bare string tag — not the {tag} object.
+    // Kills: an impl that stores the {tag:"Poison"} object (downstream === checks all fail),
+    // or that maps it to undefined instead of the string.
+    const sdk: SdkItemRowRow = {
+      id: 1,
+      name: 'Antidote',
+      description: 'Cures poison',
+      recruitBonus: 0,
+      trainStat: undefined,
+      trainAmount: 0,
+      sellPrice: 50n,
+      cureStatus: { tag: 'Poison' },
+    };
+    const store = itemRowToStore(sdk);
+    expect((store as Record<string, unknown>).cureStatus).toBe('Poison');
+    expect(typeof (store as Record<string, unknown>).cureStatus).toBe('string');
+  });
+
+  it('[m14.5d-1b] BITES: cureStatus None (undefined) → null (not undefined, not "")', () => {
+    // SpacetimeDB 2.6 decodes Option<StatusKind> None as undefined.
+    // The store normalizes undefined → null so callers use strict null checks,
+    // not undefined checks (matches the trainStat pattern).
+    // Kills: an impl that passes through undefined, or uses ?? "" instead of ?? null.
+    const sdk: SdkItemRowRow = {
+      id: 2,
+      name: 'Potion',
+      description: 'Restores HP',
+      recruitBonus: 0,
+      trainStat: undefined,
+      trainAmount: 0,
+      sellPrice: 30n,
+      // cureStatus field absent/undefined (None)
+    };
+    const store = itemRowToStore(sdk);
+    expect((store as Record<string, unknown>).cureStatus).toBeNull();
+    expect((store as Record<string, unknown>).cureStatus).not.toBeUndefined();
+    expect((store as Record<string, unknown>).cureStatus).not.toBe('');
+  });
+
+  it('[m14.5d-1b] BITES: cureStatus field is present (and null) on rows with no cure_status', () => {
+    // The field must always be present on StoreItemRow — not just when non-null.
+    // Downstream code can use `item.cureStatus !== null` without optional chaining.
+    // Kills: an impl that omits the cureStatus key from the returned object when undefined.
+    const sdk: SdkItemRowRow = {
+      id: 3,
+      name: 'Berry',
+      description: 'A basic item',
+      recruitBonus: 5,
+      trainStat: undefined,
+      trainAmount: 0,
+      sellPrice: 10n,
+    };
+    const store = itemRowToStore(sdk);
+    expect(Object.keys(store as Record<string, unknown>)).toContain('cureStatus');
+    expect((store as Record<string, unknown>).cureStatus).toBeNull();
+  });
+
+  it('[m14.5d-1b] BITES: all 5 StatusKind tags round-trip correctly (not just Poison)', () => {
+    // Kills: an impl that hard-codes "Poison" or only handles one tag in the mapping.
+    const tags = ['Poison', 'Burn', 'Paralysis', 'Sleep', 'Freeze'] as const;
+    for (const tag of tags) {
+      const sdk: SdkItemRowRow = {
+        id: 1,
+        name: `${tag} Cure`,
+        description: `Cures ${tag}`,
+        recruitBonus: 0,
+        trainStat: undefined,
+        trainAmount: 0,
+        sellPrice: 40n,
+        cureStatus: { tag },
+      };
+      const store = itemRowToStore(sdk);
+      expect(
+        (store as Record<string, unknown>).cureStatus,
+        `cureStatus for tag "${tag}" must be the bare string`,
+      ).toBe(tag);
+    }
+  });
+
+  it('[m14.5d-1b] BITES: existing fields are still correct when cureStatus is present (no regression)', () => {
+    // Kills: an impl that adds cureStatus by spreading the SDK row, accidentally
+    // breaking existing field mappings (e.g., trainStat {tag} not flattened).
+    const sdk: SdkItemRowRow = {
+      id: 5,
+      name: 'Antidote',
+      description: 'Cures poison in battle',
+      recruitBonus: 0,
+      trainStat: undefined,
+      trainAmount: 0,
+      sellPrice: 50n,
+      cureStatus: { tag: 'Poison' },
+    };
+    const store = itemRowToStore(sdk);
+    expect(store.id).toBe(5);
+    expect(store.name).toBe('Antidote');
+    expect(store.trainStat).toBeNull(); // must still flatten undefined → null
+    expect(store.trainAmount).toBe(0);
+    expect(store.sellPrice).toBe(50n);
+    expect((store as Record<string, unknown>).cureStatus).toBe('Poison');
+  });
+});
+
+// =============================================================================
 // m14.5d — weather threading: state.weather -> StoreBattle.weather
 // SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-2
 //

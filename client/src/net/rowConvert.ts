@@ -275,6 +275,8 @@ export interface SdkItemRowRow {
   readonly trainAmount: number;
   /** M13b: sell price in currency units (u64 in Rust; bigint in TS). */
   readonly sellPrice: bigint;
+  // SpacetimeDB 2.6 decodes Option<StatusKind> as {tag} for Some, undefined for None.
+  readonly cureStatus: { readonly tag: string } | undefined;
 }
 
 export function inventoryRowToStore(row: SdkInventoryRow): StoreInventory {
@@ -295,6 +297,7 @@ export function itemRowToStore(row: SdkItemRowRow): StoreItemRow {
     trainStat: row.trainStat?.tag ?? null,
     trainAmount: row.trainAmount,
     sellPrice: row.sellPrice,
+    cureStatus: row.cureStatus?.tag ?? null,
   };
 }
 

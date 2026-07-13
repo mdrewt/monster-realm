@@ -18,6 +18,8 @@ export interface BattleViewCallbacks {
    * the selected bait's id, or `undefined` for a bare attempt.
    */
   readonly onRecruit: (battleId: bigint, baitItemId: number | undefined) => void;
+  /** Called when the player selects a cure item and clicks Use Item. */
+  readonly onUseItem: (battleId: bigint, itemId: number) => void;
 }
 
 export class BattleView {
@@ -31,6 +33,8 @@ export class BattleView {
   readonly #callbacks: BattleViewCallbacks;
   /** The bait `<select>` for the current recruit render (null when not wild). */
   #baitSelectEl: HTMLSelectElement | null = null;
+  /** The cure-item `<select>` for the current battle render (null when no cure items). */
+  #cureSelectEl: HTMLSelectElement | null = null;
   #visible = false;
 
   constructor(parent: HTMLElement, callbacks: BattleViewCallbacks) {
@@ -186,11 +190,12 @@ export class BattleView {
   }
 
   #renderActions(vm: BattleViewModel): void {
-    // Save the user's bait selection BEFORE tearing down the DOM (e-1: replaceChildren
-    // destroys the <select> element, resetting the value to '' on every server tick).
-    // The restore runs only on VMs that differ (the shouldSkipBattleRefresh VM-compare
-    // guard suppresses equal-VM refreshes) and remains essential for genuine data changes.
+    // Save user selections BEFORE tearing down the DOM (e-1: replaceChildren
+    // destroys <select> elements, resetting their values on every server tick).
+    // The restore runs only on VMs that differ (shouldSkipBattleRefresh suppresses equal-VM
+    // refreshes) and remains essential for genuine data changes.
     const savedBait = this.#baitSelectEl?.value ?? '';
+    const savedCure = this.#cureSelectEl?.value ?? '';
     this.#actionsEl.replaceChildren();
     if (vm.canFlee) {
       const fleeBtn = document.createElement('button');
@@ -215,6 +220,19 @@ export class BattleView {
       if (savedBait !== '') {
         const baitSel = this.#baitSelectEl as HTMLSelectElement | null;
         if (baitSel !== null) baitSel.value = savedBait;
+      }
+    }
+    // Cure items: available in any ongoing battle (not gated on wild/recruit).
+    // cureItems is [] when not ongoing, so length is the sole render condition.
+    this.#cureSelectEl = null;
+    if (vm.cureItems.length > 0) {
+      this.#renderCureItems(vm);
+      // Restore prior selection (same save/restore pattern as bait selector above).
+      // Cast breaks TypeScript's narrowing chain: TS tracks #cureSelectEl=null (line above)
+      // through the method call and narrows the type to null; the cast re-opens the union.
+      if (savedCure !== '') {
+        const cureSel = this.#cureSelectEl as HTMLSelectElement | null;
+        if (cureSel !== null) cureSel.value = savedCure;
       }
     }
   }
@@ -256,6 +274,48 @@ export class BattleView {
       this.#callbacks.onRecruit(vm.battleId, baitItemId);
     });
     this.#actionsEl.appendChild(recruitBtn);
+  }
+
+  #renderCureItems(vm: BattleViewModel): void {
+    // Cure-item selector: classify-by-data — each option carries data-cure-status so
+    // the DOM exposes the classification contract (ADR-0047). No "bare" option (unlike
+    // bait's "No bait") — clicking Use Item with empty selection is a no-op.
+    const select = document.createElement('select');
+    select.setAttribute('data-testid', 'cure-item-selector');
+    select.style.cssText =
+      'padding:6px 8px;font-family:monospace;font-size:12px;background:#222;' +
+      'color:#e0e0e0;border:1px solid #886;border-radius:3px;';
+
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Select item';
+    select.appendChild(placeholder);
+
+    for (const item of vm.cureItems) {
+      const opt = document.createElement('option');
+      opt.value = String(item.itemId);
+      opt.textContent = `${item.name} (cures ${item.cureStatus}) ×${item.count}`;
+      opt.setAttribute('data-cure-status', item.cureStatus);
+      select.appendChild(opt);
+    }
+    this.#cureSelectEl = select;
+    this.#actionsEl.appendChild(select);
+
+    const useBtn = document.createElement('button');
+    useBtn.setAttribute('data-testid', 'use-item-action');
+    useBtn.style.cssText =
+      'padding:6px 12px;cursor:pointer;font-family:monospace;background:#3a3a2a;' +
+      'color:#e0e0e0;border:1px solid #886;border-radius:3px;';
+    useBtn.textContent = 'Use Item';
+    useBtn.addEventListener('click', () => {
+      const raw = this.#cureSelectEl?.value ?? '';
+      // No bare use — clicking with empty selection is a no-op (no undefined variant).
+      const parsed = parseInt(raw, 10);
+      if (!Number.isNaN(parsed)) {
+        this.#callbacks.onUseItem(vm.battleId, parsed);
+      }
+    });
+    this.#actionsEl.appendChild(useBtn);
   }
 
   #renderSwapButtons(vm: BattleViewModel): void {

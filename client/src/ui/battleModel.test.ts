@@ -1543,3 +1543,232 @@ describe('battleModel m14.5d invariant: battleVMsEqual weather=undefined never t
     expect(battleVMsEqual(vmWithWeather, vmUndefinedWeather)).toBe(false);
   });
 });
+
+// =============================================================================
+// m14.5d-1b — cureItems in BattleViewModel (classify-by-data, bait-selector pattern)
+// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-1
+//
+// RED REASON: BattleViewModel does not yet have a `cureItems` field; buildBattleViewModel
+// does not yet accept a 5th arg; CureItem type does not yet exist in battleModel.ts.
+// All tests below will fail until the implementer adds:
+//   - `interface CureItem { itemId: number; name: string; cureStatus: string; count: number; }`
+//   - `cureItems: readonly CureItem[]` on BattleViewModel
+//   - 5th arg `cureItems: readonly CureItem[] = []` to buildBattleViewModel
+//   - classify-by-data filter: cureStatus !== null && count > 0, only when battle is ongoing
+//   - cureItems comparison in battleVMsEqual
+//
+// Classify-by-data rule (mirroring bait-selector): inclusion is decided by
+// `cureStatus !== null` on the item — never by a hardcoded item id.
+// =============================================================================
+
+/** Minimal CureItem stub used in tests (typed via type assertion below). */
+interface CureItemStub {
+  itemId: number;
+  name: string;
+  cureStatus: string | null;
+  count: number;
+}
+
+// =============================================================================
+// RT-CI-01 — CureItem.cureStatus runtime null-filter invariant (red-team gating)
+//
+// FINDING (red-team m14.5d-1b): CureItem.cureStatus is typed as `string` (non-null),
+// so the filter `c.cureStatus !== null` in buildBattleViewModel is vacuous at the TS
+// type level. However, the model defends at RUNTIME against a caller that passes a
+// null cureStatus via an `as never` cast (i.e. bypassing the type system). This test
+// locks that runtime behavior so a future refactor that removes the null check does
+// NOT accidentally let null-cureStatus items leak into the VM.
+//
+// The test uses `as never` intentionally — it is the only way to represent a runtime
+// scenario where the field is null despite the type contract. The `as never` pattern
+// is the established project convention for defense-in-depth runtime probes.
+// =============================================================================
+describe('battleModel RT-CI-01: cureItems null-cureStatus runtime filter invariant', () => {
+  it('GATING: item with null cureStatus is excluded even when passed via as-never cast', () => {
+    // Kills: any future refactor that removes the `c.cureStatus !== null` runtime
+    // check from buildBattleViewModel, assuming the type contract is sufficient.
+    // The type contract (cureStatus: string) does NOT protect against a runtime null
+    // from an untyped source (e.g., a future SDK version that sends null directly).
+    const b = makeBattle({ outcome: 'Ongoing' });
+    const withNull: CureItemStub[] = [
+      { itemId: 1, name: 'Antidote', cureStatus: 'Poison', count: 2 }, // valid
+      { itemId: 2, name: 'Mystery', cureStatus: null, count: 1 }, // null cureStatus
+    ];
+    const vm = buildBattleViewModel(
+      b,
+      makeSkillMap(1),
+      makeSpeciesMap(speciesRow(1)),
+      [],
+      withNull as never,
+    );
+    expect(vm).not.toBeNull();
+    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    // Only the non-null cureStatus item must appear; the null one must be filtered out.
+    expect(cureItems).toHaveLength(1);
+    expect(cureItems[0]!.itemId).toBe(1);
+    // Kills: an impl that removes the `c.cureStatus !== null` check trusting the type alone.
+  });
+
+  it('GATING: item with null cureStatus AND count=0 is doubly excluded (both guards fire)', () => {
+    // Verifies that even if both guards are removed one at a time, this test still catches
+    // the regression: the null-cureStatus item must be excluded regardless of count.
+    const b = makeBattle({ outcome: 'Ongoing' });
+    const input: CureItemStub[] = [{ itemId: 3, name: 'BadItem', cureStatus: null, count: 0 }];
+    const vm = buildBattleViewModel(
+      b,
+      makeSkillMap(1),
+      makeSpeciesMap(speciesRow(1)),
+      [],
+      input as never,
+    );
+    expect(vm).not.toBeNull();
+    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    expect(cureItems).toHaveLength(0);
+  });
+});
+
+describe('battleModel m14.5d-1b: buildBattleViewModel — cureItems classify-by-data', () => {
+  it('BITES: only items with cureStatus !== null AND count > 0 appear in cureItems', () => {
+    // Kills: an impl that lists all inventory items regardless of cureStatus,
+    // or that includes zero-count items (items the player doesn't own).
+    const b = makeBattle({ outcome: 'Ongoing' });
+    const cureItemsInput: CureItemStub[] = [
+      { itemId: 1, name: 'Antidote', cureStatus: 'Poison', count: 2 },
+      { itemId: 2, name: 'Potion', cureStatus: null, count: 5 }, // not a cure item
+    ];
+    const vm = buildBattleViewModel(
+      b,
+      makeSkillMap(1),
+      makeSpeciesMap(speciesRow(1)),
+      [],
+      cureItemsInput as never,
+    );
+    expect(vm).not.toBeNull();
+    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    expect(cureItems).toHaveLength(1);
+    expect(cureItems[0]!.itemId).toBe(1);
+    // Kills: an impl that lists all items regardless of cureStatus
+  });
+
+  it('BITES: item with cureStatus set but count === 0 is excluded from cureItems', () => {
+    // Kills: an impl that filters by cureStatus but forgets the count > 0 guard
+    // (would show items the player doesn't actually own).
+    const b = makeBattle({ outcome: 'Ongoing' });
+    const cureItemsInput: CureItemStub[] = [
+      { itemId: 1, name: 'Antidote', cureStatus: 'Poison', count: 0 }, // owned: none
+    ];
+    const vm = buildBattleViewModel(
+      b,
+      makeSkillMap(1),
+      makeSpeciesMap(speciesRow(1)),
+      [],
+      cureItemsInput as never,
+    );
+    expect(vm).not.toBeNull();
+    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    expect(cureItems).toHaveLength(0);
+    // Kills: an impl that shows the cure item even when count is 0
+  });
+
+  it('BITES: cureItems is empty when battle is not ongoing (outcome SideAWins)', () => {
+    // Kills: an impl that surfaces cure items on the outcome screen.
+    // The cure-item action is only valid during an ongoing battle.
+    const b = makeBattle({ outcome: 'SideAWins' });
+    const cureItemsInput: CureItemStub[] = [
+      { itemId: 1, name: 'Antidote', cureStatus: 'Poison', count: 3 },
+    ];
+    const vm = buildBattleViewModel(
+      b,
+      makeSkillMap(1),
+      makeSpeciesMap(speciesRow(1)),
+      [],
+      cureItemsInput as never,
+    );
+    expect(vm).not.toBeNull();
+    const cureItems = (vm as Record<string, unknown>).cureItems as CureItemStub[];
+    expect(cureItems).toHaveLength(0);
+    // Kills: an impl that gates only on cureStatus/count but ignores outcome
+  });
+
+  it('BITES: cureItems defaults to empty array when 5th arg is omitted', () => {
+    // Kills: an impl that crashes or returns undefined when the optional 5th arg is absent.
+    // The default must be [] (empty array), not undefined.
+    const b = makeBattle({ outcome: 'Ongoing' });
+    const vm = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(vm).not.toBeNull();
+    const cureItems = (vm as Record<string, unknown>).cureItems;
+    // Must be an empty array — not undefined, not null, not throwing
+    expect(Array.isArray(cureItems)).toBe(true);
+    expect((cureItems as unknown[]).length).toBe(0);
+    // Kills: an impl that omits the default arg or returns undefined for cureItems
+  });
+});
+
+describe('battleModel m14.5d-1b: battleVMsEqual — cureItems comparison', () => {
+  it('BITES: cureItems array presence differs (one empty, one non-empty) → not equal', () => {
+    // Kills: an impl that omits cureItems from the comparison
+    // (a cure item being added/removed from inventory must re-render the selector).
+    const b = makeBattle({
+      battleId: 10n,
+      turnNumber: 2,
+      outcome: 'Ongoing',
+      weather: null,
+      sideA: {
+        active: 0,
+        team: [battleMonster({ speciesId: 1, currentHp: 30, maxHp: 40, knownSkillIds: [1, 2] })],
+      },
+      sideB: { active: 0, team: [battleMonster({ speciesId: 2, currentHp: 20, maxHp: 35 })] },
+      opponentMonsterIds: [],
+    } as Partial<StoreBattle>);
+    const skillMap = new Map([
+      [1, skillRow(1, { name: 'Ember', power: 40 })],
+      [2, skillRow(2, { name: 'Tackle', power: 35 })],
+    ]);
+    const sMap = makeSpeciesMap(speciesRow(1, 'Flameling'), speciesRow(2, 'Aqualing'));
+    // One VM: no cure items; other VM: one cure item
+    const cureItemNone: CureItemStub[] = [];
+    const cureItemOne: CureItemStub[] = [
+      { itemId: 5, name: 'Antidote', cureStatus: 'Poison', count: 1 },
+    ];
+    const vmA = buildBattleViewModel(b, skillMap, sMap, [], cureItemNone as never);
+    const vmB = buildBattleViewModel(b, skillMap, sMap, [], cureItemOne as never);
+    expect(vmA).not.toBeNull();
+    expect(vmB).not.toBeNull();
+    expect(battleVMsEqual(vmA!, vmB!)).toBe(false);
+    // Kills: an impl that omits cureItems from battleVMsEqual
+  });
+
+  it('BITES: cureItems count differs for same itemId → not equal (inventory change must re-render)', () => {
+    // The count must be part of the comparison — the UI shows how many you own.
+    // Kills: an impl that compares itemId but ignores count.
+    const b = makeBattle({
+      battleId: 10n,
+      turnNumber: 2,
+      outcome: 'Ongoing',
+      weather: null,
+      sideA: {
+        active: 0,
+        team: [battleMonster({ speciesId: 1, currentHp: 30, maxHp: 40, knownSkillIds: [1, 2] })],
+      },
+      sideB: { active: 0, team: [battleMonster({ speciesId: 2, currentHp: 20, maxHp: 35 })] },
+      opponentMonsterIds: [],
+    } as Partial<StoreBattle>);
+    const skillMap = new Map([
+      [1, skillRow(1, { name: 'Ember', power: 40 })],
+      [2, skillRow(2, { name: 'Tackle', power: 35 })],
+    ]);
+    const sMap = makeSpeciesMap(speciesRow(1, 'Flameling'), speciesRow(2, 'Aqualing'));
+    const cureItemCountTwo: CureItemStub[] = [
+      { itemId: 5, name: 'Antidote', cureStatus: 'Poison', count: 2 },
+    ];
+    const cureItemCountOne: CureItemStub[] = [
+      { itemId: 5, name: 'Antidote', cureStatus: 'Poison', count: 1 },
+    ];
+    const vmA = buildBattleViewModel(b, skillMap, sMap, [], cureItemCountTwo as never);
+    const vmB = buildBattleViewModel(b, skillMap, sMap, [], cureItemCountOne as never);
+    expect(vmA).not.toBeNull();
+    expect(vmB).not.toBeNull();
+    expect(battleVMsEqual(vmA!, vmB!)).toBe(false);
+    // Kills: an impl that skips the count field in cureItems comparison
+  });
+});
