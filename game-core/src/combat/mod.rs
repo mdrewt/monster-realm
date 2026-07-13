@@ -23,7 +23,6 @@ pub mod m14_5b_tests;
 #[cfg(test)]
 pub mod m14_5c_tests;
 #[cfg(test)]
-#[path = "m14_5h_tests.rs"]
 pub mod m14_5h_tests;
 #[cfg(test)]
 pub mod m14a_tests;
