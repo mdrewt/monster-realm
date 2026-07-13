@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 70 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 71 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -79,6 +79,7 @@ Generated from 70 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0101](./0101-m14.5d-client-battle-ux.md) | M14.5d: Client battle UX completeness (weather banner, parity guards, VM-compare) | Accepted | battle, client-ui | m14.5d | Client battle UX completeness: weather banner pipeline via battleRowToStore, bindings-derived parity guards (never-checks), and VM-compare refresh guard. |
 | [0103](./0103-m14.5f-gates-convergence.md) | M14.5f — gates: BSATN schema-compat proof + convergence net widening | Accepted | battle, ci-gates | m14.5f | BSATN schema-compat proof for M14b/14d optional fields: SpacetimeType handles additive schema; convergence net widened with 128-seed random_scenario and battle-lock. |
 | [0104](./0104-m-infra-d-adr-digest.md) | M-infra-d: ADR digest convention and agent-facing corpus compaction | Accepted | tooling-docs, ci-gates | m-infra-d (infra slice, insertable any time after M14.5) | Canonical header block (Status/Date/Slice/Supersedes/Amends/Subsystems/Decision) + generated drift-gated DIGEST.md compacting the 100+ ADR corpus for agent navigation. |
+| [0105](./0105-m14.5d-1a-item-row-cure-status.md) | M14.5d-1a: additive `cure_status` column on `item_row` | Accepted | schema-persistence, content | m14.5d-1a (server half of re-serialized 14.5d-1 pair) | Additive `cure_status: Option<StatusKind>` column on public `item_row`; seeded from content SSOT; `StatusKind` derives `SpacetimeType` (cfg-gated). Unblocks client classify-by-data for cure items (m14.5d-1b). |
 
 ## Harness design corpus (H- namespace)
 
@@ -187,6 +188,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0082](./0082-shop-content-reducers.md) — m13b — Shop content, buy/sell reducers (M13b) (Accepted)
 - [0089](./0089-content-parse-caching.md) — m13.5d — 0089 — Content parse caching on hot paths (shell-side, determinism-safe) (Accepted)
 - [0094](./0094-m14c-passive-ability-system.md) — m14c — M14c: Passive per-species ability system (Accepted)
+- [0105](./0105-m14.5d-1a-item-row-cure-status.md) — m14.5d-1a (server half of re-serialized 14.5d-1 pair) — M14.5d-1a: additive `cure_status` column on `item_row` (Accepted)
 
 ### schema-persistence
 
@@ -203,6 +205,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0081](./0081-currency-primitive.md) — m13a — Currency primitive (M13a) (Accepted)
 - [0087](./0087-owner-scoped-view-private-conversation.md) — m13.5c — Owner-scoped `#[view]` over the private `player_conversation` table (M13.5c / D-13.5-3) (Accepted)
 - [0093](./0093-m14b-server-status-persistence.md) — m14b — M14b: Server-side status-effect persistence (Accepted)
+- [0105](./0105-m14.5d-1a-item-row-cure-status.md) — m14.5d-1a (server half of re-serialized 14.5d-1 pair) — M14.5d-1a: additive `cure_status` column on `item_row` (Accepted)
 
 ### client-ui
 

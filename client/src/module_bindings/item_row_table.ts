@@ -11,6 +11,7 @@ import {
 } from "spacetimedb";
 import {
   StatKind,
+  StatusKind,
 } from "./types";
 
 
@@ -24,4 +25,7 @@ export default __t.row({
   },
   trainAmount: __t.u16().name("train_amount"),
   sellPrice: __t.u64().name("sell_price"),
+  get cureStatus() {
+    return __t.option(StatusKind).name("cure_status");
+  },
 });

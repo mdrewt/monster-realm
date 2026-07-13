@@ -5,7 +5,7 @@ slug: tables/species_row
 updated: 2026-07-13
 tags: [schema, spacetimedb, public]
 abstract: "Species definitions seeded from the `game-core` RON registry by `sync_content`."
-resource: server-module/src/schema.rs#L77
+resource: server-module/src/schema.rs#L79
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

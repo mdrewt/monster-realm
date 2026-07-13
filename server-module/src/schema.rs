@@ -13,7 +13,9 @@
 //! accessor trait (e.g. `use crate::schema::config;`). This file name is part of
 //! the canonical `touches:` vocabulary fixed by ADR-0056 — keep it stable.
 
-use game_core::{ActionState, Affinity, BattleState, Direction, MoveInput, NatureKind, StatKind};
+use game_core::{
+    ActionState, Affinity, BattleState, Direction, MoveInput, NatureKind, StatKind, StatusKind,
+};
 use spacetimedb::Identity;
 
 // --- Tables (additive, ADR-0006; world tables carry an indexed zone_id, ADR-0007) ---
@@ -133,6 +135,12 @@ pub struct ItemRow {
     /// 0 = item cannot be sold (`sell` reducer rejects). Seeded 1:1 from
     /// `ItemDef.sell_price` (content SSOT).
     pub sell_price: u64,
+    /// Status condition this item cures when used in battle via `use_battle_item`
+    /// (M14e, ADR-0096; exposed to clients here per M14.5d-1a, ADR-0105).
+    /// None for non-cure items. Seeded 1:1 from `ItemDef.cure_status` (content
+    /// SSOT) so the client classifies cure items by data, not by hardcoded id
+    /// (additive, ADR-0006).
+    pub cure_status: Option<StatusKind>,
 }
 
 // --- Shop tables (M13b, ADR-0082): public content, world-readable ---
