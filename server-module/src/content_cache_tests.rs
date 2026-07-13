@@ -298,8 +298,8 @@ fn cached_evolves_to_matches_load_evolves_to() {
         .map(|se| &se.evolutions[..])
         .unwrap_or(&[]);
 
-    let result_cached = crate::evolution::compute_evolves_to(cached_slice, &m);
-    let result_loaded = crate::evolution::compute_evolves_to(loaded_slice, &m);
+    let result_cached = crate::evolution::compute_evolves_to(cached_slice, m.level, m.bond);
+    let result_loaded = crate::evolution::compute_evolves_to(loaded_slice, m.level, m.bond);
 
     assert_eq!(
         result_cached, result_loaded,

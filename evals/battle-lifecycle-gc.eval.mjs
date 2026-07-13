@@ -13,9 +13,9 @@
 // Real check: the actual write_back_battle_results in the codebase must
 // contain the GC pattern `ctx.db.battle().battle_id().delete(`.
 //
-// This eval is RED today: write_back_battle_results currently only GCs the
-// `battle_wild` side-table (`ctx.db.battle_wild().battle_id().delete(...)`)
-// and does NOT delete prior terminal `battle` rows.
+// GC implemented at battle.rs write_back_battle_results (M12.5e, ADR-0077):
+// the battle-row GC (`ctx.db.battle().battle_id().delete(...)`) and the
+// `battle_wild` side-table GC both land in the same function. This eval is GREEN.
 //
 // Implementation note:
 //   All pattern matching uses String.indexOf() or String.includes() ONLY.

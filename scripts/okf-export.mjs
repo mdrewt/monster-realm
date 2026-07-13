@@ -74,17 +74,22 @@ function readAllSources(dir) {
     .join('\n');
 }
 
-/** Get the git date (YYYY-MM-DD) of the last commit touching a file.
- * Falls back to a fixed sentinel (not wall-clock time) so the bundle stays
- * deterministic even when git is unavailable (e.g. a stripped container).
+/** Get the git date (YYYY-MM-DD, UTC-normalised) of the last commit touching a file.
+ * Uses %cI (ISO 8601 strict with timezone offset) then converts to UTC so a
+ * post-midnight squash in any local timezone always produces the same date as CI
+ * (avoids false drift failures when committer and CI clocks straddle midnight).
+ * Falls back to a fixed sentinel so the bundle stays deterministic when git is
+ * unavailable (e.g. a stripped container).
  */
 function gitDate(filePath) {
   try {
-    const out = execFileSync('git', ['log', '-1', '--format=%cd', '--date=short', '--', filePath], {
+    const iso = execFileSync('git', ['log', '-1', '--format=%cI', '--', filePath], {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'ignore'],
     }).trim();
-    return out || '1970-01-01';
+    if (!iso) return '1970-01-01';
+    // Parse the ISO 8601 string (includes tz offset) and normalise to UTC date.
+    return new Date(iso).toISOString().slice(0, 10);
   } catch {
     return '1970-01-01';
   }

@@ -36,7 +36,7 @@ Five latent correctness/security gaps found in the seventh review:
 - If a node carries multiple GrantItems, a single `NotFlag(f)`+`SetFlag(f)` pair covers all of them (they share the gate). Content authors must understand that all items on the node fire together.
 - The `talk` reducer comment documents the re-application semantics: auto_effects fire every `talk()` call because `find_entry_node` re-evaluates each time. The gate is the only enforcement point.
 
-**Security residual (RANK 3 from red-team, RT-PS-DIALOGUE):** A two-connection race on `advance_dialogue` for a GrantItem choice can duplicate the grant within the `write_player_dialogue_state` TOCTOU window. This is a SpacetimeDB architectural limitation (per-connection serialization, not per-identity). The f-1 gate makes the race window narrow (both connections must call `advance_dialogue` for the same GrantItem choice simultaneously), but cannot eliminate it at the application layer. Closed by SpacetimeDB-level per-identity reducer serialization (not available in 1.12.0) or a conditional flag-insert at DB level. Deferred.
+**Security residual (RANK 3 from red-team, RT-PS-DIALOGUE):** A two-connection race on `advance_dialogue` for a GrantItem choice can duplicate the grant within the `write_player_dialogue_state` TOCTOU window. This is a SpacetimeDB architectural limitation (per-connection serialization, not per-identity). The f-1 gate makes the race window narrow (both connections must call `advance_dialogue` for the same GrantItem choice simultaneously), but cannot eliminate it at the application layer. Closed by SpacetimeDB-level per-identity reducer serialization (not available in 2.6.0) or a conditional flag-insert at DB level. Deferred.
 
 ### D2 — Exhaustive quest trigger match (f-2)
 
@@ -54,7 +54,7 @@ The `String` error type (not `&'static str`) is chosen for consistency with all 
 
 **Why exclude PARTY_SLOT_NONE from occupied_slots:** The `check_party_slot` contract specifies "party slots only." Passing the sentinel 255 for boxed monsters does not cause a false positive (255 triggers the `PARTY_SLOT_NONE` early-return before the `contains` check), but it violates the function's documented contract and would break future callers that count or iterate `occupied_slots`.
 
-**Concurrent-write race (RT-PS-01):** Two simultaneous connections can each read `occupied_slots` before the other writes, both passing `check_party_slot` and both writing the same slot. The pure layer is correct given its input; the race is in the reducer's read-check-write gap. Fix requires a DB-level unique constraint on `(owner_identity, party_slot)` filtered to slots `!= PARTY_SLOT_NONE` — not available in SpacetimeDB 1.12.0 (no partial unique constraints). Documented via `rt_ps_01_concurrent_slot_assignment_requires_db_uniqueness_constraint` in `world.rs`. Deferred to infrastructure milestone.
+**Concurrent-write race (RT-PS-01):** Two simultaneous connections can each read `occupied_slots` before the other writes, both passing `check_party_slot` and both writing the same slot. The pure layer is correct given its input; the race is in the reducer's read-check-write gap. Fix requires a DB-level unique constraint on `(owner_identity, party_slot)` filtered to slots `!= PARTY_SLOT_NONE` — not available in SpacetimeDB 2.6.0 (no partial unique constraints). Documented via `rt_ps_01_concurrent_slot_assignment_requires_db_uniqueness_constraint` in `world.rs`. Deferred to infrastructure milestone.
 
 ### D5 — Marshal trust-boundary double-validation (f-5)
 

@@ -16,6 +16,7 @@
 - Index ADR-0063 (evolution/fusion client overlay) (#72)
 - ARCHITECTURE.md + ADR-0080 + CHANGELOG — closes M8.95 knowledge-bundle milestone (#105)
 - Fix stale next-free self-reference + crosswalk in ADR-0060 (#109)
+- Phase B complete — M14 close, ADR-0097, ARCHITECTURE.md M14 section (#142)
 
 ### Features
 
@@ -93,7 +94,15 @@
 - Type-rigor hardening — GrantItem gate, coded decode, party-slot core check, marshal re-checks (#132)
 - StatusEffect enum + per-turn DoT resolution layered on resolve_turn (#134)
 - Server-side status-effect persistence (ADR-0093) (#135)
-- Passive per-species ability system (ADR-0094)
+- Passive per-species ability system (ADR-0094) (#137)
+- Weather/field-state system (ADR-0095) (#139)
+- Status-curing items + client battle-event display (ADR-0096) (#141)
+- Swap/recruit full post-turn pipeline, skill-source unification (ADR-0098) (#147)
+- StatusApplied carries target slot; Phase 4.5 drops fainted writes (ADR-0099) (#149)
+- Wire passive-ability system end-to-end (ADR-0100) (#151)
+- Cache skills/items on battle hot paths (ADR-0089 amended) (#153)
+- Client battle UX — weather banner, outcome/status parity guards, VM-compare refresh guard (ADR-0101) (#154)
+- BSATN codec gap proof + widen convergence net (ADR-0103) (#156)
 
 ### Fixes
 
@@ -105,8 +114,8 @@
 - Client zone-sync robustness — state-based reconcile, switchZone atomicity, rAF containment (ADR-0074) (#88)
 - Deflake zoneSync 12.5c-1 Playwright races (master RED) (#100)
 - Repair smoke-republish + kill all 38 missed mutants in game-core (ADR-0088) (#125)
-- CI gate fixes — unused imports, Species literals, CONTENT_VERSION v8
-- Update content-hash baseline for CONTENT_VERSION=8
+- Deflake R2 heal-budget exhaustion in recruit.spec.ts (#144)
+- Deflake dialogue 13.5c-5 overlay timeout + recruit R2 heal-guard (#146)
 
 ### M8.8b
 
@@ -156,6 +165,14 @@
 - Reconcile ADR index — add 0088, bump next-free to 0089 (#126)
 - Reconcile ADR index — add 0089, bump next-free to 0090 (#128)
 - ADR index — add 0091 row, next-free 0092 (#133)
+- Reconcile ADR index — add 0093, next-free 0094 (#136)
+- Reconcile ADR index — add 0094, next-free 0095; ARCHITECTURE doc-aggregation for 0091–0094 (#138)
+- ADR index — add 0095, next free 0096 (#140)
+- Reconcile ADR index — add 0097 row, next-free 0098 (#143)
+- Reconcile ADR index — add 0098, bump next-free to 0099 (#148)
+- Reconcile ADR index — add 0099, bump next-free to 0100 (#150)
+- Reconcile ADR index — add 0100, bump next-free to 0101 (#152)
+- Reconcile ADR index — add 0101, next-free to 0103 (0102 reserved-unused by m14.5e) (#155)
 
 ### Testing
 
@@ -169,6 +186,7 @@
 - M9d — no-idle-accrual proof-of-teeth + item-ids baseline (#60)
 - Fix Nightly — kill all 72 mutation survivors + debounce level_for_xp timeouts (#66)
 - Kill 35+ surviving mutants to restore mutation ratchet (#130)
+- Kill 11 nightly missed mutants in from_ctx_random and turns_remaining (#145)
 
 ### Wip
 

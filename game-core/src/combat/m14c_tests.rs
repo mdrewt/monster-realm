@@ -750,3 +750,72 @@ fn ears_20_entry_heal_minimum_heal_is_1() {
          HP=1 unchanged — this assertion kills that impl"
     );
 }
+
+// ===========================================================================
+// EARS-21: StatusKind::matches full truth table — all 5 variants, true arms
+//
+// Invariant protected: every StatusKind variant has a DISTINCT true arm in
+// StatusKind::matches that returns true exactly when the paired StatusEffect
+// variant matches. The false-arm exhaustiveness check in the match forces
+// developers to add new variants to the catch-all, but DOES NOT force adding a
+// true arm — a developer can satisfy the compiler by adding only to the false
+// arm, silently breaking StatusImmunity for that variant.
+//
+// This test pins the complete truth table so that omitting the true arm for any
+// variant turns this test RED. When a new StatusKind variant is added (e.g.
+// Confuse), this test must receive the corresponding true-arm assertion:
+//   assert!(StatusKind::Confuse.matches(&StatusEffect::Confuse), ...);
+//
+// Kills: any impl that adds a new StatusKind variant only to the false arm
+// (StatusImmunity for that variant silently never fires).
+// ===========================================================================
+
+#[test]
+fn ears_21_status_kind_matches_full_truth_table() {
+    // True arm: each variant must match its paired StatusEffect.
+    assert!(
+        StatusKind::Poison.matches(&StatusEffect::Poison),
+        "TEETH (EARS-21): StatusKind::Poison.matches(StatusEffect::Poison) must be true; \
+         omitting the Poison true arm and only updating the false arm compiles but silently \
+         breaks PoisonImmunity — this assertion is the gate"
+    );
+    assert!(
+        StatusKind::Burn.matches(&StatusEffect::Burn),
+        "TEETH (EARS-21): StatusKind::Burn.matches(StatusEffect::Burn) must be true"
+    );
+    assert!(
+        StatusKind::Paralysis.matches(&StatusEffect::Paralysis),
+        "TEETH (EARS-21): StatusKind::Paralysis.matches(StatusEffect::Paralysis) must be true"
+    );
+    assert!(
+        StatusKind::Sleep.matches(&StatusEffect::Sleep { turns_remaining: 1 }),
+        "TEETH (EARS-21): StatusKind::Sleep.matches(Sleep{{turns_remaining:1}}) must be true"
+    );
+    assert!(
+        StatusKind::Freeze.matches(&StatusEffect::Freeze),
+        "TEETH (EARS-21): StatusKind::Freeze.matches(StatusEffect::Freeze) must be true"
+    );
+
+    // False arm: each variant must NOT match a different variant's StatusEffect.
+    // (Cross-check that the true arms are discriminating, not always-true.)
+    assert!(
+        !StatusKind::Poison.matches(&StatusEffect::Burn),
+        "TEETH (EARS-21): StatusKind::Poison must NOT match StatusEffect::Burn"
+    );
+    assert!(
+        !StatusKind::Burn.matches(&StatusEffect::Poison),
+        "TEETH (EARS-21): StatusKind::Burn must NOT match StatusEffect::Poison"
+    );
+    assert!(
+        !StatusKind::Paralysis.matches(&StatusEffect::Freeze),
+        "TEETH (EARS-21): StatusKind::Paralysis must NOT match StatusEffect::Freeze"
+    );
+    assert!(
+        !StatusKind::Sleep.matches(&StatusEffect::Paralysis),
+        "TEETH (EARS-21): StatusKind::Sleep must NOT match StatusEffect::Paralysis"
+    );
+    assert!(
+        !StatusKind::Freeze.matches(&StatusEffect::Sleep { turns_remaining: 1 }),
+        "TEETH (EARS-21): StatusKind::Freeze must NOT match StatusEffect::Sleep"
+    );
+}

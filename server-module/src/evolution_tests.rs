@@ -206,7 +206,7 @@ fn make_ongoing_battle(battle_id: u64, owner: Identity, party_monster_ids: Vec<u
 // ---------------------------------------------------------------------------
 // Slice 6 — compute_evolves_to helper (pure unit tests, no DB required)
 //
-// Tests the pure helper `compute_evolves_to(evolutions, monster_row) -> Option<u32>`.
+// Tests the pure helper `compute_evolves_to(evolutions, level, bond) -> Option<u32>`.
 // This is the server-side server-computed evolves_to column logic.
 // RED state: compile-RED until `compute_evolves_to` is added to evolution.rs.
 // ---------------------------------------------------------------------------
@@ -223,7 +223,7 @@ fn test_compute_evolves_to_eligible() {
     }];
     let m = make_monster_row(1, owner_id()); // level=20
 
-    let result = compute_evolves_to(&evolutions, &m);
+    let result = compute_evolves_to(&evolutions, m.level, m.bond);
 
     assert_eq!(
         result,
@@ -245,7 +245,7 @@ fn test_compute_evolves_to_not_eligible() {
     }];
     let m = make_monster_row(1, owner_id()); // level=20
 
-    let result = compute_evolves_to(&evolutions, &m);
+    let result = compute_evolves_to(&evolutions, m.level, m.bond);
 
     assert_eq!(
         result, None,
@@ -273,7 +273,7 @@ fn test_compute_evolves_to_first_match_wins() {
     ];
     let m = make_monster_row(1, owner_id()); // level=20, bond=100 — both fire
 
-    let result = compute_evolves_to(&evolutions, &m);
+    let result = compute_evolves_to(&evolutions, m.level, m.bond);
 
     assert_eq!(
         result,
@@ -1431,7 +1431,7 @@ pub(crate) fn evolve_seam(
         db.get_evolutions(m.species_id).cloned().unwrap_or_default();
 
     // Check eligibility
-    let target_species_id = match super::compute_evolves_to(&evolutions, &m) {
+    let target_species_id = match super::compute_evolves_to(&evolutions, m.level, m.bond) {
         Some(target) => target,
         None => return Err("monster is not eligible to evolve".to_string()),
     };
@@ -1463,7 +1463,7 @@ pub(crate) fn evolve_seam(
         .get_evolutions(transformed.species_id)
         .cloned()
         .unwrap_or_default();
-    m.evolves_to = super::compute_evolves_to(&evolutions_after, &m);
+    m.evolves_to = super::compute_evolves_to(&evolutions_after, m.level, m.bond);
 
     // Dual-write: Monster + MonsterPub
     let pub_row = super::pub_from_monster(&m);
@@ -1553,41 +1553,11 @@ pub(crate) fn fuse_seam(
         .cloned()
         .unwrap_or_default();
 
-    // Create a temporary Monster row for compute_evolves_to lookup
-    let temp_offspring = Monster {
-        monster_id: 0,
-        owner_identity: a.owner_identity,
-        species_id: offspring_inst.species_id,
-        nickname: String::new(),
-        level: offspring_inst.level.as_u8(),
-        xp: offspring_inst.xp.value(),
-        bond: offspring_inst.bond.value(),
-        iv_hp: 0,
-        iv_attack: 0,
-        iv_defense: 0,
-        iv_speed: 0,
-        iv_sp_attack: 0,
-        iv_sp_defense: 0,
-        nature_kind: offspring_inst.nature.kind(),
-        ev_hp: 0,
-        ev_attack: 0,
-        ev_defense: 0,
-        ev_speed: 0,
-        ev_sp_attack: 0,
-        ev_sp_defense: 0,
-        stat_hp: offspring_inst.derived_stats.hp,
-        stat_attack: offspring_inst.derived_stats.attack,
-        stat_defense: offspring_inst.derived_stats.defense,
-        stat_speed: offspring_inst.derived_stats.speed,
-        stat_sp_attack: offspring_inst.derived_stats.sp_attack,
-        stat_sp_defense: offspring_inst.derived_stats.sp_defense,
-        current_hp: offspring_inst.current_hp,
-        party_slot: offspring_inst.party_slot.unwrap_or(crate::PARTY_SLOT_NONE),
-        last_care_at_ms: 0,
-        evolves_to: None,
-    };
-
-    let offspring_evolves_to = super::compute_evolves_to(&offspring_evolutions, &temp_offspring);
+    let offspring_evolves_to = super::compute_evolves_to(
+        &offspring_evolutions,
+        offspring_inst.level.as_u8(),
+        offspring_inst.bond.value(),
+    );
 
     // monster_id starts at 0 — insert_monster assigns the real auto_inc id at insert time,
     // mirroring SpacetimeDB's auto_inc behaviour (ADR-0072).

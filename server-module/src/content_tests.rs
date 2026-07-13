@@ -428,7 +428,7 @@ fn compute_evolves_to_handles_bond_trigger_in_recompute_path() {
         to_species: 3,
     }];
 
-    let result = compute_evolves_to(&evolutions, &monster);
+    let result = compute_evolves_to(&evolutions, monster.level, monster.bond);
 
     assert_eq!(
         result,

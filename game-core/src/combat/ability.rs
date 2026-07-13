@@ -45,8 +45,10 @@ pub enum StatusKind {
 
 impl StatusKind {
     /// Returns `true` when `effect` has the same variant as `self`.
-    /// The explicit arm listing documents the StatusKind→StatusEffect mapping;
-    /// adding a new `StatusKind` variant requires adding a matching arm here.
+    /// Exhaustive gate (ADR-0010): adding a new `StatusKind` variant without listing
+    /// it in the false OR-pattern is a compile error. Adding it only to the false
+    /// arm (forgetting the true arm) compiles but is caught by the truth-table test
+    /// in `m14c_tests::ears_21_status_kind_matches_full_truth_table`.
     #[must_use]
     #[allow(clippy::match_like_matches_macro)]
     pub fn matches(self, effect: &StatusEffect) -> bool {
@@ -56,7 +58,16 @@ impl StatusKind {
             (StatusKind::Paralysis, StatusEffect::Paralysis) => true,
             (StatusKind::Sleep, StatusEffect::Sleep { .. }) => true,
             (StatusKind::Freeze, StatusEffect::Freeze) => true,
-            _ => false,
+            // Exhaustive false arms — adding a new StatusKind variant without
+            // updating this arm list is a compile error (no wildcard `_`).
+            (
+                StatusKind::Poison
+                | StatusKind::Burn
+                | StatusKind::Paralysis
+                | StatusKind::Sleep
+                | StatusKind::Freeze,
+                _,
+            ) => false,
         }
     }
 }
