@@ -5,7 +5,7 @@ slug: tables/player
 updated: 2026-07-13
 tags: [schema, spacetimedb, public]
 abstract: "Links a connection identity to its character. `last_input_seq` is the reconciliation ack (set at accept-time) — NEVER t…"
-resource: server-module/src/schema.rs#L42
+resource: server-module/src/schema.rs#L44
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

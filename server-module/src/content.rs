@@ -184,6 +184,7 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
             train_stat: item.train_stat,
             train_amount: item.train_amount,
             sell_price: item.sell_price,
+            cure_status: item.cure_status,
         };
         match ctx.db.item_row().id().find(item.id) {
             Some(_) => {

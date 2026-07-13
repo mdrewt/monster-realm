@@ -35,6 +35,7 @@ use super::types::{BattleState, SideId, StatusEffect};
 /// `StatusKind` variant AND updating [`StatusKind::matches`] — the dual
 /// exhaustive `match` IS the OCP gate for this type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub enum StatusKind {
     Poison,
     Burn,

@@ -30,6 +30,16 @@
       "Freeze"
     ]
   },
+  "StatusKind": {
+    "kind": "enum",
+    "variants": [
+      "Poison",
+      "Burn",
+      "Paralysis",
+      "Sleep",
+      "Freeze"
+    ]
+  },
   "WeatherEffect": {
     "kind": "enum",
     "variants": [

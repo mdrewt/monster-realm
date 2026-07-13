@@ -35,6 +35,10 @@ mod raising;
 mod schema;
 mod taming;
 
+#[cfg(test)]
+#[path = "m14_5d_1a_tests.rs"]
+mod m14_5d_1a_tests;
+
 // --- Crate-wide constants ---------------------------------------------------
 pub(crate) const ZONE_0: u32 = 0;
 /// SSOT for the seeded-content version; bump when game-core RON content changes (ADR-0054).
@@ -49,7 +53,8 @@ pub(crate) const ZONE_0: u32 = 0;
 /// v9 (M14d): weather-setting skills 7-10 added (ADR-0095).
 /// v10 (M14e): status skill 11 (Toxic Sting) + Antidote item 3 (ADR-0096).
 /// v11 (M14.5c): ability assignments on Flameling/Sproutlet in species content (ADR-0100).
-pub(crate) const CONTENT_VERSION: u32 = 11;
+/// v12 (M14.5d-1a): item_row gains cure_status column; re-seed required (ADR-0105).
+pub(crate) const CONTENT_VERSION: u32 = 12;
 pub(crate) const SPRITE_PLAYER: u32 = 0;
 pub(crate) const MAX_NAME_LEN: usize = 24;
 pub(crate) const MAX_PARTY_SIZE: u8 = game_core::PARTY_SIZE; // SSOT (ADR-0052)

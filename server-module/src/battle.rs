@@ -784,8 +784,9 @@ pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
 /// Guard order (reject-not-clamp; decision always before irreversible spend):
 /// 1. require_owner — caller must own the battle.
 /// 2. outcome == Ongoing — items cannot be used in terminal battles.
-/// 3. Load `ItemDef` from content (not from `item_row` DB rows — `cure_status`
-///    lives on the game-core content struct, not on the table schema).
+/// 3. Load `ItemDef` from content (`cure_status` also lives on `item_row` for
+///    client classification per M14.5d-1a, ADR-0105, but the reducer reads the
+///    content SSOT — the table column is client-facing only).
 /// 4. Item must have `cure_status` — non-cure items rejected before consume.
 /// 5. Active monster must have a matching status — item not wasted on healthy
 ///    or differently-statused monsters.

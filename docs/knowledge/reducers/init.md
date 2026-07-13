@@ -5,7 +5,7 @@ slug: reducers/init
 updated: 2026-07-13
 tags: [reducer, spacetimedb, lib]
 abstract: "SpacetimeDB reducer init."
-resource: server-module/src/lib.rs#L127
+resource: server-module/src/lib.rs#L132
 source: scripts/okf-export.mjs@server-module/src/lib.rs
 ---
 

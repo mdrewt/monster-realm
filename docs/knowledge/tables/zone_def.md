@@ -5,7 +5,7 @@ slug: tables/zone_def
 updated: 2026-07-13
 tags: [schema, spacetimedb, public]
 abstract: "Zone definitions seeded from the `game-core` RON registry by `sync_content`."
-resource: server-module/src/schema.rs#L64
+resource: server-module/src/schema.rs#L66
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

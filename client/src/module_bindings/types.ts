@@ -199,6 +199,9 @@ export const ItemRow = __t.object("ItemRow", {
   },
   trainAmount: __t.u16(),
   sellPrice: __t.u64(),
+  get cureStatus() {
+    return __t.option(StatusKind);
+  },
 });
 export type ItemRow = __Infer<typeof ItemRow>;
 
@@ -425,6 +428,16 @@ export const StatusEffect = __t.enum("StatusEffect", {
   Freeze: __t.unit(),
 });
 export type StatusEffect = __Infer<typeof StatusEffect>;
+
+// The tagged union or sum type for the algebraic type `StatusKind`.
+export const StatusKind = __t.enum("StatusKind", {
+  Poison: __t.unit(),
+  Burn: __t.unit(),
+  Paralysis: __t.unit(),
+  Sleep: __t.unit(),
+  Freeze: __t.unit(),
+});
+export type StatusKind = __Infer<typeof StatusKind>;
 
 export const TypeRelationRow = __t.object("TypeRelationRow", {
   id: __t.u64(),
