@@ -381,7 +381,7 @@ pub fn warp_scenario() -> Vec<ClientIntent> {
 ///
 /// Each intent's `input` is drawn from `tick_seed`-derived values: `r % 5` maps to
 /// Step(North)/Step(South)/Step(East)/Step(West)/Jump. Clients alternate via a draw bit.
-/// Occasionally (when `r % 11 == 0`), emits `MOVE_QUEUE_CAP+1` intents for the same
+/// Occasionally (when `r.is_multiple_of(11)`), emits `MOVE_QUEUE_CAP+1` intents for the same
 /// client at closely-spaced `send_ms` to exercise the anti-flood burst path.
 /// Per-client `seq` is 1-based and strictly monotonically increasing.
 #[must_use]
@@ -1349,12 +1349,16 @@ mod m14f_tests {
                  and reversed delivery orderings give different final tiles"
             );
 
-            at_least_one_non_trivial = true; // any call reaching here is non-panic
+            if _had_reorder {
+                at_least_one_non_trivial = true;
+            }
         }
 
         assert!(
             at_least_one_non_trivial,
-            "warp_scenario_under_link must be callable without panicking across seeds"
+            "warp_scenario_under_link: no seed produced a reordered delivery — \
+             jitter must be non-zero; all-dropped or in-order delivery makes \
+             warp convergence trivially vacuous"
         );
     }
 
