@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: inventory
 slug: tables/inventory
-updated: 2026-07-10
+updated: 2026-07-12
 tags: [schema, spacetimedb, public]
 abstract: "Player item inventory (M8d, ADR-0046). PUBLIC / world-readable counts: there is NO transport RLS (no `client_visibility…"
 resource: server-module/src/schema.rs#L315
