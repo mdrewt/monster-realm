@@ -923,6 +923,392 @@ mod convergence_tests {
     }
 }
 
+// ===========================================================================
+// M14.5f — convergence extensions: random_scenario, warp_scenario_under_link,
+// apply_stream_with_battle_lock (RED until implementer adds these functions).
+//
+// EARS criteria covered:
+//   RS-1 — random_scenario(seed, n) is byte-identical for the same seed (determinism)
+//   RS-2 — random_scenario produces both Step(*) and Jump inputs across seeds
+//   RS-3 — random_scenario per-client seqs are strictly monotonically increasing
+//   WL-1 — warp_scenario_under_link returns (converges=true, had_reorder=…) for warp_scenario
+//   BL-A — apply_stream_with_battle_lock: locked client stays at pre-lock tile
+//   BL-B — apply_stream_with_battle_lock: non-locked client still advances normally
+// ===========================================================================
+#[cfg(test)]
+mod m14f_tests {
+    use std::collections::BTreeMap;
+
+    use game_core::{Direction, MoveInput, TilePos};
+
+    use super::{
+        apply_stream_with_battle_lock, random_scenario, warp_scenario_under_link, ClientIntent,
+        Link,
+    };
+
+    /// Helper: the lossy/jittery link used for warp_scenario_under_link tests
+    /// (same shape as convergence_tests::jittered_link, local to this module).
+    fn jittered_link() -> Link {
+        Link {
+            base_latency: 50,
+            jitter: 40,
+            loss_pct: 20,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // RS-1: random_scenario is byte-identical for the same seed
+    // Kill target: random_scenario that reads a wall clock or global RNG —
+    // running it twice for the same seed would produce different outputs and
+    // the assert_eq! would fire.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn random_scenario_is_deterministic() {
+        let seeds: [u64; 6] = [
+            0xDEAD_BEEF,
+            0xC0FF_EE42,
+            0x1234_5678,
+            0xABCD_EF01,
+            0x5EED_0001,
+            0xF00D_CAFE,
+        ];
+        for seed in seeds {
+            let run_a = random_scenario(seed, 20);
+            let run_b = random_scenario(seed, 20);
+            assert_eq!(
+                run_a, run_b,
+                "seed {seed:#x}: random_scenario must be byte-identical for the same seed — \
+                 kill target: random_scenario that uses wall clock or global RNG (non-deterministic)"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // RS-2: random_scenario produces both Step and Jump inputs across seeds
+    // Kill target: random_scenario that only ever emits Step(…) intents and
+    // never emits Jump — this assertion would never set saw_jump=true and fire.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn random_scenario_includes_multiple_input_types_across_seeds() {
+        let seeds: [u64; 12] = [
+            0xDEAD_BEEF,
+            0xC0FF_EE42,
+            0x1234_5678,
+            0xABCD_EF01,
+            0x9999_0000,
+            0xF00D_CAFE,
+            0x0101_0101,
+            0xBEEF_CAFE,
+            0x5EED_0001,
+            0x5EED_0002,
+            0xA5A5_A5A5,
+            0x3C3C_3C3C,
+        ];
+
+        let mut saw_step = false;
+        let mut saw_jump = false;
+
+        for seed in seeds {
+            let intents = random_scenario(seed, 30);
+            for intent in &intents {
+                match intent.input {
+                    MoveInput::Step(_) => saw_step = true,
+                    MoveInput::Jump => saw_jump = true,
+                }
+            }
+        }
+
+        assert!(
+            saw_step,
+            "random_scenario must produce at least one Step(…) input across seeds — \
+             kill target: an impl that only emits Jump (no directional moves)"
+        );
+        assert!(
+            saw_jump,
+            "random_scenario must produce at least one Jump input across seeds — \
+             kill target: random_scenario that only produces Step intents (no Jump coverage)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // RS-3: random_scenario per-client seqs are strictly monotonically increasing
+    // Kill target: random_scenario that reuses or skips seq numbers for the same
+    // client — a repeated seq would make the seq guard (stale-reject) drop valid
+    // intents, and this assertion would fire on the first duplicate/regression.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn random_scenario_has_monotonic_seqs_per_client() {
+        let seeds: [u64; 4] = [0xDEAD_BEEF, 0xC0FF_EE42, 0x1234_5678, 0xF00D_CAFE];
+        for seed in seeds {
+            let intents = random_scenario(seed, 40);
+
+            // Track the last seq seen per client; assert each new seq is strictly greater.
+            let mut last_seq: BTreeMap<u64, u64> = BTreeMap::new();
+            for intent in &intents {
+                let entry = last_seq.entry(intent.client).or_insert(0);
+                assert!(
+                    intent.seq > *entry,
+                    "seed {seed:#x}: client {} seq {} is not strictly greater than previous seq {} — \
+                     kill target: random_scenario that reuses or skips seq numbers per client",
+                    intent.client, intent.seq, *entry
+                );
+                *entry = intent.seq;
+            }
+
+            // Non-vacuity: the scenario must have at least 2 clients.
+            let clients: std::collections::BTreeSet<u64> =
+                intents.iter().map(|i| i.client).collect();
+            assert!(
+                clients.len() >= 2,
+                "seed {seed:#x}: random_scenario must generate at least 2 distinct clients \
+                 (got {}); the spec says 2 clients — kill target: single-client impl",
+                clients.len()
+            );
+
+            // Non-vacuity: seqs must start at 1 per client.
+            for (&client, _) in &last_seq {
+                let first_seq = intents
+                    .iter()
+                    .filter(|i| i.client == client)
+                    .map(|i| i.seq)
+                    .min()
+                    .unwrap_or(0);
+                assert_eq!(
+                    first_seq, 1,
+                    "seed {seed:#x}: client {client}'s first seq must be 1 (got {first_seq}) — \
+                     kill target: random_scenario that starts seqs at 0 or some arbitrary value"
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // RS-2b: random_scenario includes queue-cap bursts (same client, close send_ms)
+    // Kill target: random_scenario that spreads intents evenly so no two intents
+    // for the same client fall within the jitter window — no burst coverage.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn random_scenario_includes_queue_cap_bursts() {
+        // The jitter window in the Link is 40ms; intents within that window for the
+        // same client form "bursts". We assert at least one seed produces a burst
+        // (two same-client intents with send_ms difference <= 40).
+        let seeds: [u64; 12] = [
+            0xDEAD_BEEF,
+            0xC0FF_EE42,
+            0x1234_5678,
+            0xABCD_EF01,
+            0x9999_0000,
+            0xF00D_CAFE,
+            0x0101_0101,
+            0xBEEF_CAFE,
+            0x5EED_0001,
+            0x5EED_0002,
+            0xA5A5_A5A5,
+            0x3C3C_3C3C,
+        ];
+        const JITTER_WINDOW: u64 = 40;
+
+        let mut saw_burst = false;
+        'outer: for seed in seeds {
+            let intents = random_scenario(seed, 30);
+            // Group by client, compare consecutive send_ms values.
+            let clients: std::collections::BTreeSet<u64> =
+                intents.iter().map(|i| i.client).collect();
+            for client in clients {
+                let client_intents: Vec<_> =
+                    intents.iter().filter(|i| i.client == client).collect();
+                for window in client_intents.windows(2) {
+                    let diff = window[1].send_ms.saturating_sub(window[0].send_ms);
+                    if diff <= JITTER_WINDOW {
+                        saw_burst = true;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_burst,
+            "random_scenario must include at least one burst (two same-client intents \
+             with send_ms difference ≤ {} across 12 seeds with n=30) — \
+             kill target: random_scenario that spaces all intents evenly beyond the jitter window",
+            JITTER_WINDOW
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // WL-1: warp_scenario_under_link — SeqCanonical converges on the warp scenario
+    // Kill target:
+    //   (a) warp_scenario_under_link that ignores the link (delivers without loss/jitter)
+    //       → had_reorder=false always; or
+    //   (b) one that doesn't invert delivery order for the second apply → both
+    //       orderings are identical (no real test of order invariance).
+    // -----------------------------------------------------------------------
+    #[test]
+    fn warp_scenario_converges_under_lossy_link() {
+        // We need a seed that actually delivers some intents (not all dropped).
+        // Sweep a few seeds; at least one must produce a non-trivial result.
+        let seeds: [u64; 8] = [
+            0xDEAD_BEEF,
+            0xC0FF_EE42,
+            0x1234_5678,
+            0xABCD_EF01,
+            0x9999_0000,
+            0xF00D_CAFE,
+            0x0101_0101,
+            0xBEEF_CAFE,
+        ];
+        let link = jittered_link();
+
+        let mut at_least_one_non_trivial = false;
+
+        for seed in seeds {
+            let (converges, _had_reorder) = warp_scenario_under_link(&link, seed);
+
+            // Convergence must hold for every seed (even all-dropped gives trivially equal).
+            assert!(
+                converges,
+                "seed {seed:#x}: warp_scenario_under_link must return converges=true \
+                 (SeqCanonical is delivery-order-invariant) — \
+                 kill target: impl that applies in arrival order (not seq order) so forward \
+                 and reversed delivery orderings give different final tiles"
+            );
+
+            at_least_one_non_trivial = true; // any call reaching here is non-panic
+        }
+
+        assert!(
+            at_least_one_non_trivial,
+            "warp_scenario_under_link must be callable without panicking across seeds"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // WL-2: warp_scenario_under_link returns had_reorder=true for at least one seed
+    // Kill target: warp_scenario_under_link that doesn't actually use the link's
+    // jitter (or had_reorder always returns false) — the reorder flag never fires.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn warp_scenario_under_link_reports_had_reorder_for_at_least_one_seed() {
+        let seeds: [u64; 12] = [
+            0xDEAD_BEEF,
+            0xC0FF_EE42,
+            0x1234_5678,
+            0xABCD_EF01,
+            0x9999_0000,
+            0xF00D_CAFE,
+            0x0101_0101,
+            0xBEEF_CAFE,
+            0x5EED_0001,
+            0x5EED_0002,
+            0xA5A5_A5A5,
+            0x3C3C_3C3C,
+        ];
+        let link = jittered_link();
+
+        let any_reordered = seeds
+            .iter()
+            .any(|&seed| warp_scenario_under_link(&link, seed).1);
+
+        assert!(
+            any_reordered,
+            "warp_scenario_under_link must return had_reorder=true for at least one seed \
+             under jitter=40 — kill target: impl that ignores the link and delivers \
+             in-order, or that passes had_reorder=false unconditionally"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BL-A: apply_stream_with_battle_lock — locked client stays at pre-lock tile
+    // Kill target: apply_stream_with_battle_lock that ignores lock_client, letting
+    // the locked client continue moving — it would end up east of the pre-lock tile.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn battle_locked_client_stays_at_pre_lock_position() {
+        // Build a simple 2-client scenario: both step East repeatedly.
+        // Client 0 will be battle-locked after tick 2.
+        // Client 1 is never locked.
+        //
+        // With lock_after_ticks=2, client 0 moves East twice (spawn (1,1)→(2,1)→(3,1))
+        // then is locked. Further East intents for client 0 are NOT applied.
+        // Client 1 continues advancing.
+
+        let mut intents: Vec<ClientIntent> = Vec::new();
+        for seq in 1u64..=6 {
+            intents.push(ClientIntent {
+                client: 0,
+                seq,
+                input: MoveInput::Step(Direction::East),
+                send_ms: (seq - 1) * 16,
+            });
+            intents.push(ClientIntent {
+                client: 1,
+                seq,
+                input: MoveInput::Step(Direction::East),
+                send_ms: (seq - 1) * 16 + 8,
+            });
+        }
+
+        let final_tiles = apply_stream_with_battle_lock(&intents, 0, 2);
+
+        // Client 0 was locked after 2 ticks: spawn=(1,1), East→(2,1), East→(3,1), then locked.
+        // Post-lock intents (seq 3..6 East) must not advance the position.
+        let client0_pos = final_tiles
+            .get(&0)
+            .copied()
+            .expect("client 0 must have a final tile in apply_stream_with_battle_lock");
+        assert_eq!(
+            client0_pos,
+            TilePos { x: 3, y: 1 },
+            "battle-locked client 0 must stay at (3,1) — the position after 2 pre-lock East steps — \
+             kill target: apply_stream_with_battle_lock that ignores lock_client and lets \
+             client 0 continue moving east to (7,1)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // BL-B: apply_stream_with_battle_lock — non-locked client advances normally
+    // Kill target: apply_stream_with_battle_lock that locks ALL clients (or skips
+    // all ticks after lock_after_ticks) so client 1 also stops moving.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn non_locked_client_advances_normally_under_battle_lock() {
+        // Same scenario as BL-A: 6 East intents per client, lock client 0 after 2 ticks.
+        // Client 1 (not locked) must advance all 6 steps: spawn (1,1) + 6 East = (7,1).
+
+        let mut intents: Vec<ClientIntent> = Vec::new();
+        for seq in 1u64..=6 {
+            intents.push(ClientIntent {
+                client: 0,
+                seq,
+                input: MoveInput::Step(Direction::East),
+                send_ms: (seq - 1) * 16,
+            });
+            intents.push(ClientIntent {
+                client: 1,
+                seq,
+                input: MoveInput::Step(Direction::East),
+                send_ms: (seq - 1) * 16 + 8,
+            });
+        }
+
+        let final_tiles = apply_stream_with_battle_lock(&intents, 0, 2);
+
+        // Client 1 is never locked: all 6 East steps applied → (7,1).
+        let client1_pos = final_tiles
+            .get(&1)
+            .copied()
+            .expect("client 1 must have a final tile in apply_stream_with_battle_lock");
+        assert_eq!(
+            client1_pos,
+            TilePos { x: 7, y: 1 },
+            "non-locked client 1 must advance all 6 East steps to (7,1) — \
+             kill target: apply_stream_with_battle_lock that locks everyone (all clients \
+             stop at tick 2) or skips ticks globally after lock_after_ticks"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{replay, Link, Msg};
