@@ -40,6 +40,31 @@ export function statusBadge(tag: string | null | undefined): string {
   }
 }
 
+/** Map a WeatherEffect tag to a display label. Pure — unit-testable.
+ *  Returns non-empty string for known variants; console.warn + '' for unknown
+ *  (identical contract to statusBadge — a bindings regen that adds a new variant
+ *  fails the parity test, surfacing the gap at development time). */
+export function weatherBanner(tag: string | null | undefined): string {
+  if (!tag) return '';
+  switch (tag) {
+    case 'Rain':
+      return 'Rain';
+    case 'Sun':
+      return 'Harsh Sun';
+    case 'Sandstorm':
+      return 'Sandstorm';
+    case 'Hail':
+      return 'Hail';
+    default:
+      // New WeatherEffect variant added on the Rust side without updating this map.
+      // Warn loudly so the gap is visible at runtime (server bindings regen is needed).
+      console.warn(
+        `weatherBanner: unknown weather tag "${tag}" — update weatherBanner in battleModel.ts`,
+      );
+      return '';
+  }
+}
+
 export interface BattleSkillVM {
   readonly id: number;
   readonly name: string;
@@ -68,10 +93,19 @@ export interface BaitItem {
   readonly count: number;
 }
 
+/**
+ * The valid outcome tags for a battle. Hand-written from the server BattleOutcome enum.
+ * The runtime parity test (battleModel.test.ts) asserts that BattleOutcome bindings
+ * variants ⊆ this union — a bindings regen adding a new variant fails that test,
+ * making this the regen-drift detector. Narrowing from StoreBattle.outcome (string)
+ * lives ONLY in buildBattleViewModel; decideBattleOverlay keeps operating on string.
+ */
+export type BattleOutcomeTag = 'Ongoing' | 'SideAWins' | 'SideBWins' | 'Fled';
+
 export interface BattleViewModel {
   readonly battleId: bigint;
   readonly turnNumber: number;
-  readonly outcome: string;
+  readonly outcome: BattleOutcomeTag;
   readonly playerCard: BattleMonsterCardVM;
   readonly opponentCard: BattleMonsterCardVM;
   readonly skills: readonly BattleSkillVM[];
@@ -87,6 +121,8 @@ export interface BattleViewModel {
   readonly canRecruit: boolean;
   /** Bait options (recruit_bonus > 0), classified by data — empty when none. */
   readonly baitOptions: readonly BaitItem[];
+  /** Active weather display, or null when no weather is in effect. */
+  readonly weather: { readonly label: string; readonly turnsRemaining: number } | null;
 }
 
 function monsterCard(
@@ -111,6 +147,21 @@ function monsterCard(
   };
 }
 
+/** Parse a StoreBattle.outcome string against the BattleOutcomeTag union.
+ *  Returns the narrowed tag or null if the string is not a known variant.
+ *  Narrowing lives ONLY here — decideBattleOverlay keeps operating on string. */
+function parseOutcomeTag(outcome: string): BattleOutcomeTag | null {
+  if (
+    outcome === 'Ongoing' ||
+    outcome === 'SideAWins' ||
+    outcome === 'SideBWins' ||
+    outcome === 'Fled'
+  ) {
+    return outcome;
+  }
+  return null;
+}
+
 export function buildBattleViewModel(
   battle: StoreBattle,
   skillMap: ReadonlyMap<number, StoreSkillRow>,
@@ -121,11 +172,21 @@ export function buildBattleViewModel(
   if (!sideA.team.length || sideA.active < 0 || sideA.active >= sideA.team.length) return null;
   if (!sideB.team.length || sideB.active < 0 || sideB.active >= sideB.team.length) return null;
 
+  // Parse outcome FIRST — unknown tag → warn + null (same null-guard path as corrupt-team).
+  // This means the never-check in battleView.ts #renderOutcome is genuinely unreachable.
+  const outcomeTag = parseOutcomeTag(battle.outcome);
+  if (outcomeTag === null) {
+    console.warn(
+      `buildBattleViewModel: unknown outcome tag "${battle.outcome}" — update BattleOutcomeTag in battleModel.ts`,
+    );
+    return null;
+  }
+
   // biome-ignore lint/style/noNonNullAssertion: active index validated by the guard above
   const playerMon = sideA.team[sideA.active]!;
   // biome-ignore lint/style/noNonNullAssertion: active index validated by the guard above
   const opponentMon = sideB.team[sideB.active]!;
-  const ongoing = battle.outcome === 'Ongoing';
+  const ongoing = outcomeTag === 'Ongoing';
 
   const skills: BattleSkillVM[] = [];
   for (const sid of playerMon.knownSkillIds) {
@@ -168,10 +229,21 @@ export function buildBattleViewModel(
     ? baitItems.filter((b) => b.recruitBonus > 0 && b.count > 0)
     : [];
 
+  // Weather: map StoreBattle.weather → VM weather (label + turnsRemaining).
+  // battle.weather may be undefined in old test fixtures (vitest doesn't typecheck
+  // StoreBattle at runtime) — treat undefined as null so the 778-baseline tests
+  // stay green without editing them.
+  const storeWeather = (battle as { weather?: { tag: string; turnsRemaining: number } | null })
+    .weather;
+  const weather =
+    storeWeather != null
+      ? { label: weatherBanner(storeWeather.tag), turnsRemaining: storeWeather.turnsRemaining }
+      : null;
+
   return {
     battleId: battle.battleId,
     turnNumber: battle.turnNumber,
-    outcome: battle.outcome,
+    outcome: outcomeTag,
     playerCard: monsterCard(playerMon, speciesMap),
     opponentCard: monsterCard(opponentMon, speciesMap),
     skills,
@@ -180,6 +252,7 @@ export function buildBattleViewModel(
     bench,
     canRecruit,
     baitOptions,
+    weather,
   };
 }
 
@@ -242,4 +315,117 @@ export function decideBattleOverlay(
     dismissedBattleId: state.dismissedBattleId,
     synced: true,
   };
+}
+
+// ---------------------------------------------------------------------------
+// m14.5d — VM-compare guard (battleVMsEqual + shouldSkipBattleRefresh)
+// ---------------------------------------------------------------------------
+
+function cardEqual(a: BattleMonsterCardVM, b: BattleMonsterCardVM): boolean {
+  return (
+    a.speciesName === b.speciesName &&
+    a.level === b.level &&
+    a.currentHp === b.currentHp &&
+    a.maxHp === b.maxHp &&
+    a.hpPercent === b.hpPercent &&
+    a.affinity === b.affinity &&
+    a.status === b.status
+  );
+}
+
+/**
+ * Explicit field-by-field equality for BattleViewModels. Arrays are length-checked
+ * first, then compared per-element. bigint battleId uses === directly — NEVER
+ * JSON.stringify (bigint throws) or Number() (lossy above 2^53). Covers outcome,
+ * turnNumber, both cards (all fields incl. status), skills, bench, baitOptions
+ * (itemId + name + recruitBonus + count), canFlee/canSwap/canRecruit, and weather
+ * (null-ness, label, turnsRemaining). Used by shouldSkipBattleRefresh.
+ */
+export function battleVMsEqual(a: BattleViewModel, b: BattleViewModel): boolean {
+  if (a.battleId !== b.battleId) return false;
+  if (a.turnNumber !== b.turnNumber) return false;
+  if (a.outcome !== b.outcome) return false;
+  if (a.canFlee !== b.canFlee) return false;
+  if (a.canSwap !== b.canSwap) return false;
+  if (a.canRecruit !== b.canRecruit) return false;
+
+  if (!cardEqual(a.playerCard, b.playerCard)) return false;
+  if (!cardEqual(a.opponentCard, b.opponentCard)) return false;
+
+  // Skills: length-first, then per-element
+  if (a.skills.length !== b.skills.length) return false;
+  for (let i = 0; i < a.skills.length; i++) {
+    // biome-ignore lint/style/noNonNullAssertion: i is bounded by a.skills.length (length-checked above)
+    const sa = a.skills[i]!;
+    // biome-ignore lint/style/noNonNullAssertion: i is bounded by b.skills.length (length === a.skills.length)
+    const sb = b.skills[i]!;
+    if (
+      sa.id !== sb.id ||
+      sa.name !== sb.name ||
+      sa.affinity !== sb.affinity ||
+      sa.power !== sb.power ||
+      sa.accuracy !== sb.accuracy
+    ) {
+      return false;
+    }
+  }
+
+  // Bench: length-first, then per-element
+  if (a.bench.length !== b.bench.length) return false;
+  for (let i = 0; i < a.bench.length; i++) {
+    // biome-ignore lint/style/noNonNullAssertion: i is bounded by a.bench.length (length-checked above)
+    const ba = a.bench[i]!;
+    // biome-ignore lint/style/noNonNullAssertion: i is bounded by b.bench.length (length === a.bench.length)
+    const bb = b.bench[i]!;
+    if (
+      ba.teamIndex !== bb.teamIndex ||
+      ba.speciesName !== bb.speciesName ||
+      ba.currentHp !== bb.currentHp ||
+      ba.maxHp !== bb.maxHp
+    ) {
+      return false;
+    }
+  }
+
+  // BaitOptions: length-first, then per-element (incl. count — intentional per plan)
+  if (a.baitOptions.length !== b.baitOptions.length) return false;
+  for (let i = 0; i < a.baitOptions.length; i++) {
+    // biome-ignore lint/style/noNonNullAssertion: i is bounded by a.baitOptions.length (length-checked above)
+    const boa = a.baitOptions[i]!;
+    // biome-ignore lint/style/noNonNullAssertion: i is bounded by b.baitOptions.length (length === a.baitOptions.length)
+    const bob = b.baitOptions[i]!;
+    if (
+      boa.itemId !== bob.itemId ||
+      boa.name !== bob.name ||
+      boa.recruitBonus !== bob.recruitBonus ||
+      boa.count !== bob.count
+    ) {
+      return false;
+    }
+  }
+
+  // Weather: null-ness, then label + turnsRemaining
+  const aw = a.weather;
+  const bw = b.weather;
+  if (aw === null && bw === null) return true;
+  if (aw === null || bw === null) return false;
+  if (aw.label !== bw.label || aw.turnsRemaining !== bw.turnsRemaining) return false;
+
+  return true;
+}
+
+/**
+ * Returns true ONLY when the view is visible AND both VMs are non-null AND equal.
+ * All other combinations → false (never skip). The visible guard prevents skipping
+ * while the view is hidden (stale-hidden trap — a skip-while-hidden would drop the
+ * re-show render, including the Escape bare-hide path at main.ts:489 that bypasses
+ * refreshBattle's hide branch). null on either side → never skip (after a hide-branch
+ * reset of lastBattleVM, the same VM must re-render to become visible again).
+ */
+export function shouldSkipBattleRefresh(
+  visible: boolean,
+  lastVm: BattleViewModel | null,
+  vm: BattleViewModel | null,
+): boolean {
+  return visible && vm !== null && lastVm !== null && battleVMsEqual(lastVm, vm);
 }

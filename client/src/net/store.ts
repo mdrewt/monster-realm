@@ -87,6 +87,13 @@ export interface StoreStatusEffect {
   readonly turnsRemaining?: number;
 }
 
+/** Active weather effect shape: tag is the WeatherEffect variant name (e.g. "Rain"),
+ *  turnsRemaining is the remaining turn count (m14d weather + m14.5d threading). */
+export interface StoreWeather {
+  readonly tag: string;
+  readonly turnsRemaining: number;
+}
+
 /** A monster projected into battle — flat stats, normalized affinity. */
 export interface StoreBattleMonster {
   readonly speciesId: number;
@@ -122,6 +129,8 @@ export interface StoreBattle {
   readonly partyMonsterIds: readonly bigint[];
   readonly opponentMonsterIds: readonly bigint[];
   readonly createdAtMs: bigint;
+  /** Active weather effect (m14d weather; m14.5d threading). null = no active weather. */
+  readonly weather: StoreWeather | null;
 }
 
 // NOTE: these two are `type` aliases (not `interface`s) on purpose — store.test.ts
