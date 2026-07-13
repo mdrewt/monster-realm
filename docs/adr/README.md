@@ -10,7 +10,7 @@ Architecture Decision Records live in **two locations**; check both.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0105`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0106`**.
 
 **ADR numbering collision note:** the harness spec corpus also contains design
 ADRs numbered `0055`–`0057`; these cover the *same topics* as this project's
