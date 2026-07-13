@@ -40,7 +40,13 @@ import { TileMap } from './render/map';
 import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { WorldRenderer } from './render/world';
-import { type BaitItem, buildBattleViewModel, decideBattleOverlay } from './ui/battleModel';
+import {
+  type BaitItem,
+  type BattleViewModel,
+  buildBattleViewModel,
+  decideBattleOverlay,
+  shouldSkipBattleRefresh,
+} from './ui/battleModel';
 import type { BattleView } from './ui/battleView';
 import { buildBoxViewModel, buildPartyViewModel, nextFreePartySlot } from './ui/boxModel';
 import type { BoxView } from './ui/boxView';
@@ -112,6 +118,9 @@ let dismissPending = false;
 // session (first-sight pre-dismiss of a historical/stale-on-login resolved battle).
 let dismissedBattleId: bigint | null = null;
 let battleSynced = false;
+// m14.5d VM-compare guard: last rendered BattleViewModel — used by shouldSkipBattleRefresh
+// to suppress equal-VM re-renders (churn prevention). Reset to null on hide + reset.
+let lastBattleVM: BattleViewModel | null = null;
 
 // --- M13.5b status surface (ADR-0085 D1) ------------------------------------------
 // A minimal dynamically-created status line (no toast system — recorded ADR-0085
@@ -166,6 +175,7 @@ function resetPredictionState(): void {
   sawFractionalOwnMotion = false;
   dismissedBattleId = null;
   battleSynced = false;
+  lastBattleVM = null;
   // M12.5d-4: reset camera hold so a fresh zone/reconnect starts at origin rather than
   // holding a position from a prior zone.
   lastCamX = 0;
@@ -487,6 +497,7 @@ window.addEventListener('keydown', (e) => {
     // bare hide — the next batch auto-re-shows the active battle (existing behavior).
     if (latest !== undefined && latest.outcome !== 'Ongoing') dismissedBattleId = latest.battleId;
     battleView.hide();
+    lastBattleVM = null;
     e.preventDefault();
     return;
   }
@@ -639,9 +650,17 @@ function refreshBattle(): void {
       baitItems,
     );
     if (!vm) console.warn('[battle] battle has corrupt team data; view hidden');
+    // m14.5d VM-compare guard: skip refresh when the view is visible and the VM is
+    // structurally identical to the last rendered VM (suppresses churn on no-op ticks).
+    // The visible guard is the primary defense: shouldSkipBattleRefresh returns false
+    // while hidden, so the post-Escape re-show always triggers a full render. The
+    // lastBattleVM = null reset in the Escape handler is invariant hygiene on top.
+    if (shouldSkipBattleRefresh(battleView.visible, lastBattleVM, vm)) return;
     battleView.refresh(vm);
+    lastBattleVM = vm;
   } else if (battleView.visible) {
     battleView.hide();
+    lastBattleVM = null;
   }
 }
 store.onBatchApplied(() => refreshBattle());

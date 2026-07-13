@@ -1287,3 +1287,97 @@ describe('rowConvert M13d: shopItemRowToStore — SdkShopItemRowRow -> StoreShop
     expect(typeof store.shopItemId).toBe('bigint');
   });
 });
+
+// =============================================================================
+// m14.5d — weather threading: state.weather -> StoreBattle.weather
+// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-2
+//
+// RED REASON: SdkBattleRow.state does not yet have a `weather` field, and
+// battleRowToStore does not yet map it. StoreBattle does not yet have a `weather`
+// field either. All four tests below will fail (missing field / undefined access)
+// until the implementer adds:
+//   - `weather?: { readonly tag: string; readonly value: number } | null` to SdkBattleRow.state
+//   - `weather: StoreWeather | null` to StoreBattle (store.ts)
+//   - mapping logic in battleRowToStore: present → { tag, turnsRemaining: value },
+//     absent/undefined/null → null
+//
+// KEY ANTI-PATTERN (reviewer B-1 + red-team 6):
+//   `?.value || null` would map value:0 → null (zero-falsy trap).
+//   The correct mapping is `weather != null ? { tag: weather.tag, turnsRemaining: weather.value } : null`
+//   so that turnsRemaining:0 is preserved exactly as 0.
+// =============================================================================
+
+/** Extends SdkBattleRow.state with the optional weather field for m14.5d tests. */
+type SdkBattleRowWithWeather = Omit<ReturnType<typeof makeSdkBattleRow>, 'state'> & {
+  state: ReturnType<typeof makeSdkBattleRow>['state'] & {
+    weather?: { readonly tag: string; readonly value: number } | null;
+  };
+};
+
+function makeSdkBattleRowWithWeather(
+  weather: { readonly tag: string; readonly value: number } | null | undefined,
+): SdkBattleRowWithWeather {
+  const base = makeSdkBattleRow();
+  return {
+    ...base,
+    state: {
+      ...base.state,
+      ...(weather !== undefined ? { weather } : {}),
+    },
+  } as SdkBattleRowWithWeather;
+}
+
+describe('rowConvert m14.5d: battleRowToStore — weather field threading', () => {
+  it('BITES: state.weather {tag:"Rain", value:3} → StoreBattle.weather {tag:"Rain", turnsRemaining:3}', () => {
+    // Kills: an impl that omits weather from battleRowToStore, or that passes
+    // the raw SDK shape through (leaving .value instead of .turnsRemaining).
+    // Reviewer B-1: explicit value→turnsRemaining rename is required, parallel to
+    // status.value→turnsRemaining at rowConvert.ts line 211.
+    const row = makeSdkBattleRowWithWeather({ tag: 'Rain', value: 3 });
+    const store = battleRowToStore(row as unknown as ReturnType<typeof makeSdkBattleRow>);
+    const weather = (store as Record<string, unknown>).weather as {
+      tag: string;
+      turnsRemaining: number;
+    } | null;
+    expect(weather).not.toBeNull();
+    expect(weather!.tag).toBe('Rain');
+    expect(weather!.turnsRemaining).toBe(3);
+  });
+
+  it('BITES: state.weather {tag:"Rain", value:0} → turnsRemaining === 0 (zero-falsy trap)', () => {
+    // Red-team 6 / reviewer B-1: `?.value || null` would coerce 0 → null.
+    // The correct impl uses explicit null-check: `weather != null ? {...value} : null`.
+    // Kills: any impl that uses `|| null` or `&& { turnsRemaining: value }` patterns
+    // where falsy value (0) gets swallowed.
+    const row = makeSdkBattleRowWithWeather({ tag: 'Rain', value: 0 });
+    const store = battleRowToStore(row as unknown as ReturnType<typeof makeSdkBattleRow>);
+    const weather = (store as Record<string, unknown>).weather as {
+      tag: string;
+      turnsRemaining: number;
+    } | null;
+    expect(weather).not.toBeNull();
+    expect(weather!.turnsRemaining).toBe(0);
+  });
+
+  it('BITES: state.weather null → StoreBattle.weather null', () => {
+    // Kills: an impl that maps null → undefined, or that crashes on null input.
+    const row = makeSdkBattleRowWithWeather(null);
+    const store = battleRowToStore(row as unknown as ReturnType<typeof makeSdkBattleRow>);
+    const weather = (store as Record<string, unknown>).weather;
+    expect(weather).toBeNull();
+  });
+
+  it('BITES: state.weather absent (field not present) → StoreBattle.weather null', () => {
+    // Kills: an impl that leaves weather as undefined when the SDK field is absent.
+    // StoreBattle.weather must be null (not undefined) — null is the typed sentinel
+    // meaning "no active weather"; undefined would escape the strict null check and
+    // silently propagate as an absent field in downstream model/view code.
+    // Backward-compat proof: existing SdkBattleRow factories that omit weather must
+    // still produce a valid StoreBattle where weather===null.
+    const row = makeSdkBattleRowWithWeather(undefined); // field absent from state
+    const store = battleRowToStore(row as unknown as ReturnType<typeof makeSdkBattleRow>);
+    const weather = (store as Record<string, unknown>).weather;
+    // null is the required sentinel; undefined is NOT acceptable.
+    expect(weather).toBeNull();
+  });
+});

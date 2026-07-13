@@ -26,6 +26,7 @@ import type {
   StoreShopRow,
   StoreSkillRow,
   StoreSpeciesRow,
+  StoreWeather,
 } from './store';
 
 // Structural views of the generated rows (just the fields convert reads). Kept
@@ -179,6 +180,9 @@ export interface SdkBattleRow {
     readonly sideB: SdkBattleSide;
     readonly outcome: { readonly tag: string };
     readonly turnNumber: number;
+    // Optional: m14d WeatherEffect carries a value (turns_remaining u8); absent when no weather.
+    // Optional field keeps existing test factories compiling (no weather field required).
+    readonly weather?: { readonly tag: string; readonly value: number } | null;
   };
   readonly partyMonsterIds: readonly bigint[];
   readonly opponentMonsterIds: readonly bigint[];
@@ -213,6 +217,13 @@ function battleMonsterToStore(m: SdkBattleMonster): StoreBattleMonster {
 }
 
 export function battleRowToStore(row: SdkBattleRow): StoreBattle {
+  // m14.5d: map state.weather → StoreBattle.weather.
+  // ANTI-PATTERN: do NOT use `?.value || null` — falsy-value trap when value=0.
+  // Use explicit object-truthiness check so turnsRemaining:0 is preserved as 0
+  // (parallel to status.value→turnsRemaining at line 211).
+  const w = row.state.weather;
+  const weather: StoreWeather | null = w != null ? { tag: w.tag, turnsRemaining: w.value } : null;
+
   return {
     battleId: row.battleId,
     playerIdentity: row.playerIdentity.toHexString(),
@@ -230,6 +241,7 @@ export function battleRowToStore(row: SdkBattleRow): StoreBattle {
     partyMonsterIds: [...row.partyMonsterIds],
     opponentMonsterIds: [...row.opponentMonsterIds],
     createdAtMs: row.createdAtMs,
+    weather,
   };
 }
 

@@ -48,6 +48,7 @@ function makeRecruitVM(overrides: Partial<BattleViewModel> = {}): BattleViewMode
       maxHp: 20,
       hpPercent: 100,
       affinity: 'Fire',
+      status: null,
     },
     opponentCard: {
       speciesName: 'WildMon',
@@ -56,6 +57,7 @@ function makeRecruitVM(overrides: Partial<BattleViewModel> = {}): BattleViewMode
       maxHp: 15,
       hpPercent: 100,
       affinity: 'Water',
+      status: null,
     },
     skills: [],
     canFlee: true,
@@ -66,6 +68,7 @@ function makeRecruitVM(overrides: Partial<BattleViewModel> = {}): BattleViewMode
       { itemId: 7, name: 'Lure Berry', recruitBonus: 150, count: 3 },
       { itemId: 9, name: 'Sweet Bait', recruitBonus: 250, count: 1 },
     ],
+    weather: null,
     ...overrides,
   };
 }
@@ -227,6 +230,209 @@ describe('BattleView e-1: bait-selector data-testid set exactly ONCE via one mec
     const btn = parent.querySelector('[data-testid="recruit-action"]');
     expect(btn).not.toBeNull();
     expect(btn!.textContent).toBe('Recruit');
+
+    document.body.removeChild(parent);
+  });
+});
+
+// =============================================================================
+// m14.5d — weather banner DOM tests (14.5d-2)
+// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-2
+//
+// RED REASON: BattleView does not yet render a weather banner element.
+// `data-testid="weather-banner"` does not exist in the current DOM output.
+//
+// Contract (plan Design Decision C):
+//   - `vm.weather` non-null → element [data-testid="weather-banner"] visible,
+//     textContent contains the label AND the turnsRemaining number.
+//   - `vm.weather` null → element absent or hidden.
+// =============================================================================
+
+/** Minimal VM with weather set — extends makeRecruitVM for all required fields. */
+function makeVMWithWeather(label: string, turnsRemaining: number): BattleViewModel {
+  return makeRecruitVM({
+    // weather field is new in m14.5d; absent in old factory, present via overrides.
+    weather: { label, turnsRemaining },
+  } as Partial<BattleViewModel>);
+}
+
+function makeVMNoWeather(): BattleViewModel {
+  return makeRecruitVM({
+    weather: null,
+  } as Partial<BattleViewModel>);
+}
+
+describe('BattleView m14.5d: weather banner DOM rendering', () => {
+  it('BITES: vm.weather non-null → [data-testid="weather-banner"] present and text contains label and turnsRemaining', () => {
+    // Kills: an impl that adds weatherBanner to the model but forgets to render
+    // the DOM element, or that renders it without the turnsRemaining number.
+    // RED: data-testid="weather-banner" does not exist in current battleView.ts.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    const vm = makeVMWithWeather('Rain', 2);
+    view.refresh(vm);
+    view.show();
+
+    const banner = parent.querySelector('[data-testid="weather-banner"]');
+    expect(banner).not.toBeNull();
+    // Text must contain the label (e.g. "Rain") and the turn count (2).
+    expect(banner!.textContent).toContain('Rain');
+    expect(banner!.textContent).toContain('2');
+
+    document.body.removeChild(parent);
+  });
+
+  it('BITES: vm.weather null → [data-testid="weather-banner"] absent or hidden', () => {
+    // Kills: an impl that always renders the banner regardless of vm.weather.
+    // The banner must not appear when there is no active weather.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    const vm = makeVMNoWeather();
+    view.refresh(vm);
+    view.show();
+
+    const banner = parent.querySelector('[data-testid="weather-banner"]');
+    // Either the element must be absent entirely, or it must have display:none.
+    if (banner !== null) {
+      const style = (banner as HTMLElement).style.display;
+      expect(style).toBe('none');
+    }
+    // If absent: that also satisfies the contract (passes through the if branch).
+
+    document.body.removeChild(parent);
+  });
+
+  it('BITES: weather banner disappears when vm transitions from weather→no-weather', () => {
+    // Kills: an impl that only hides the banner on initial render but forgets
+    // to update it on subsequent refreshes.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+
+    // First render: weather present
+    view.refresh(makeVMWithWeather('Sun', 5));
+    view.show();
+    const bannerAfterWeather = parent.querySelector('[data-testid="weather-banner"]');
+    expect(bannerAfterWeather).not.toBeNull();
+
+    // Second render: no weather
+    view.refresh(makeVMNoWeather());
+    const bannerAfterClear = parent.querySelector('[data-testid="weather-banner"]');
+    if (bannerAfterClear !== null) {
+      expect((bannerAfterClear as HTMLElement).style.display).toBe('none');
+    }
+
+    document.body.removeChild(parent);
+  });
+});
+
+// =============================================================================
+// m14.5d — outcome text DOM parity (14.5d-3)
+// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-3
+//
+// RED REASON: the existing `#renderOutcome` default arm currently renders a
+// generic fallback text for unknown outcomes (e.g. 'Battle ended: Draw').
+// After m14.5d: buildBattleViewModel returns null for unknown outcomes, so the
+// view never receives an unknown outcome VM. The never-check (review refinement 5)
+// replaces the default arm. These tests verify the DOM parity:
+//   - Each of SideAWins/SideBWins/Fled renders a non-empty outcome text.
+//   - 'Ongoing' renders NO outcome banner (display:none or element absent).
+//
+// The outcome type narrowing (BattleOutcomeTag) makes the switch exhaustive.
+// =============================================================================
+
+/** Build a minimal VM with a given terminal outcome. */
+function makeTerminalVM(outcome: 'SideAWins' | 'SideBWins' | 'Fled'): BattleViewModel {
+  return makeRecruitVM({
+    outcome,
+    canFlee: false,
+    canRecruit: false,
+    canSwap: false,
+    weather: null,
+  } as Partial<BattleViewModel>);
+}
+
+describe('BattleView m14.5d: outcome DOM parity — all BattleOutcomeTag variants', () => {
+  it('BITES: outcome="SideAWins" → [data-testid="outcome-text"] visible with non-empty text', () => {
+    // Kills: an impl where the SideAWins case produces empty text or hides the element.
+    // Precision upgrade: query by data-testid instead of scanning all divs for inline CSS.
+    // The specialist adds data-testid="outcome-text" to the outcome element in battleView.ts.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    view.refresh(makeTerminalVM('SideAWins'));
+    view.show();
+
+    const outcomeEl = parent.querySelector('[data-testid="outcome-text"]') as HTMLElement | null;
+    // Element must be present (specialist adds the testid).
+    expect(outcomeEl).not.toBeNull();
+    // Must be visible (not display:none) and carry non-empty text.
+    expect(outcomeEl!.style.display).not.toBe('none');
+    expect(outcomeEl!.textContent!.trim().length).toBeGreaterThan(0);
+
+    document.body.removeChild(parent);
+  });
+
+  it('BITES: outcome="SideBWins" → [data-testid="outcome-text"] visible with non-empty text', () => {
+    // Kills: an impl missing the SideBWins case in #renderOutcome.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    view.refresh(makeTerminalVM('SideBWins'));
+    view.show();
+
+    const outcomeEl = parent.querySelector('[data-testid="outcome-text"]') as HTMLElement | null;
+    expect(outcomeEl).not.toBeNull();
+    expect(outcomeEl!.style.display).not.toBe('none');
+    expect(outcomeEl!.textContent!.trim().length).toBeGreaterThan(0);
+
+    document.body.removeChild(parent);
+  });
+
+  it('BITES: outcome="Fled" → [data-testid="outcome-text"] visible with non-empty text', () => {
+    // Kills: an impl missing the Fled case in #renderOutcome.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    view.refresh(makeTerminalVM('Fled'));
+    view.show();
+
+    const outcomeEl = parent.querySelector('[data-testid="outcome-text"]') as HTMLElement | null;
+    expect(outcomeEl).not.toBeNull();
+    expect(outcomeEl!.style.display).not.toBe('none');
+    expect(outcomeEl!.textContent!.trim().length).toBeGreaterThan(0);
+
+    document.body.removeChild(parent);
+  });
+
+  it('BITES: outcome="Ongoing" → [data-testid="outcome-text"] hidden (display:none or empty text)', () => {
+    // Kills: an impl that shows the outcome banner during an ongoing battle.
+    // The outcome banner must be hidden while the battle is in progress.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    // Use the existing VM with outcome:'Ongoing'
+    view.refresh(makeRecruitVM({ weather: null } as Partial<BattleViewModel>));
+    view.show();
+
+    const outcomeEl = parent.querySelector('[data-testid="outcome-text"]') as HTMLElement | null;
+    // The element must be absent or hidden for 'Ongoing'.
+    if (outcomeEl !== null) {
+      // If present, it must be hidden (display:none) OR carry empty text.
+      const isHidden = outcomeEl.style.display === 'none';
+      const isEmpty = outcomeEl.textContent!.trim().length === 0;
+      expect(isHidden || isEmpty).toBe(true);
+    }
+    // If absent entirely: that also satisfies the "no outcome shown" contract.
 
     document.body.removeChild(parent);
   });

@@ -22,6 +22,7 @@ export interface BattleViewCallbacks {
 
 export class BattleView {
   readonly #root: HTMLDivElement;
+  readonly #weatherEl: HTMLDivElement;
   readonly #playerCardEl: HTMLDivElement;
   readonly #opponentCardEl: HTMLDivElement;
   readonly #skillsEl: HTMLDivElement;
@@ -45,6 +46,14 @@ export class BattleView {
     title.textContent = 'Battle';
     title.style.cssText = 'margin:0 0 16px;color:#fff;';
     this.#root.appendChild(title);
+
+    // Weather banner (field-state banner; hidden by default — shown when weather is active)
+    this.#weatherEl = document.createElement('div');
+    this.#weatherEl.setAttribute('data-testid', 'weather-banner');
+    this.#weatherEl.style.cssText =
+      'width:100%;max-width:320px;text-align:center;padding:4px 8px;margin-bottom:8px;' +
+      'border-radius:3px;background:#334;color:#aaf;font-size:12px;font-weight:bold;display:none;';
+    this.#root.appendChild(this.#weatherEl);
 
     // Opponent card (top)
     this.#opponentCardEl = document.createElement('div');
@@ -73,6 +82,7 @@ export class BattleView {
 
     // Outcome banner
     this.#outcomeEl = document.createElement('div');
+    this.#outcomeEl.setAttribute('data-testid', 'outcome-text');
     this.#outcomeEl.style.cssText = 'font-size:18px;font-weight:bold;color:#ffd700;display:none;';
     this.#root.appendChild(this.#outcomeEl);
 
@@ -95,16 +105,30 @@ export class BattleView {
 
   refresh(vm: BattleViewModel | null): void {
     if (!vm) {
+      this.#weatherEl.style.display = 'none';
+      this.#weatherEl.textContent = '';
       this.hide();
       return;
     }
     if (!this.#visible) this.show();
 
+    this.#renderWeather(vm);
     this.#renderMonsterCard(this.#opponentCardEl, vm.opponentCard, 'Opponent');
     this.#renderMonsterCard(this.#playerCardEl, vm.playerCard, 'You');
     this.#renderSkills(vm);
     this.#renderActions(vm);
     this.#renderOutcome(vm);
+  }
+
+  #renderWeather(vm: BattleViewModel): void {
+    const w = vm.weather;
+    if (w == null) {
+      this.#weatherEl.style.display = 'none';
+      this.#weatherEl.textContent = '';
+      return;
+    }
+    this.#weatherEl.style.display = 'block';
+    this.#weatherEl.textContent = `${w.label} (${w.turnsRemaining} turns)`;
   }
 
   #renderMonsterCard(el: HTMLDivElement, card: BattleMonsterCardVM, label: string): void {
@@ -164,6 +188,8 @@ export class BattleView {
   #renderActions(vm: BattleViewModel): void {
     // Save the user's bait selection BEFORE tearing down the DOM (e-1: replaceChildren
     // destroys the <select> element, resetting the value to '' on every server tick).
+    // The restore runs only on VMs that differ (the shouldSkipBattleRefresh VM-compare
+    // guard suppresses equal-VM refreshes) and remains essential for genuine data changes.
     const savedBait = this.#baitSelectEl?.value ?? '';
     this.#actionsEl.replaceChildren();
     if (vm.canFlee) {
@@ -261,8 +287,14 @@ export class BattleView {
       case 'Fled':
         text = 'Got away safely!';
         break;
-      default:
-        text = `Battle ended: ${vm.outcome}`;
+      default: {
+        // Exhaustiveness check: vm.outcome is BattleOutcomeTag, so the union is
+        // fully covered above. This arm is genuinely unreachable — unknown outcomes
+        // are rejected by buildBattleViewModel (null return) before reaching the view.
+        const _exhaustive: never = vm.outcome;
+        text = '';
+        void _exhaustive;
+      }
     }
     this.#outcomeEl.textContent = text;
   }

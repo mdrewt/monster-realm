@@ -570,6 +570,7 @@ function battle(battleId: bigint, playerIdentity = 'alice', outcome = 'Ongoing')
     partyMonsterIds: [1n],
     opponentMonsterIds: [2n],
     createdAtMs: 1000n,
+    weather: null,
   };
 }
 
