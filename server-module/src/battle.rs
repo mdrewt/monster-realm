@@ -525,7 +525,8 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
 
     // Skills come from the process-wide content cache (cached_skills(), ADR-0089 amended
     // M14.5e): parsed once per process, &'static on every later call. sets_weather and
-    // applies_status (M14d, ADR-0095) are populated by load_skills() inside the LazyLock.
+    // applies_status (M14d, ADR-0095) are populated by game_core::load_skills, which is
+    // the LazyLock initializer and runs only once.
     let skill_defs = crate::content_cache::cached_skills()?;
     let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
@@ -547,6 +548,8 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
     };
 
     // Build AbilityStore from species content for this battle's teams (ADR-0100).
+    // PARK(ADR-0089 amendment, M14.5e): load_abilities() is NOT cached — it re-parses
+    // RON per call. Caching abilities is a named follow-up; skills/items are cached.
     let ability_defs = load_abilities()?;
     let a_ability_ids: Vec<Option<u32>> = battle
         .state
@@ -660,7 +663,8 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
     // Swap then enemy attacks the new active. Post-turn phases (DoT, weather chip,
     // status/weather tick) now run on every swap turn (ADR-0098 D1, closes R1).
     // Skills from process-wide content cache (cached_skills(), ADR-0089/0095):
-    // sets_weather/applies_status populated by load_skills() inside the LazyLock.
+    // sets_weather/applies_status populated by game_core::load_skills, the LazyLock
+    // initializer (runs only once).
     let skill_defs = crate::content_cache::cached_skills()?;
     let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
@@ -674,6 +678,8 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
     };
 
     // Build AbilityStore from species content for this battle's teams (ADR-0100).
+    // PARK(ADR-0089 amendment, M14.5e): load_abilities() is NOT cached — it re-parses
+    // RON per call. Caching abilities is a named follow-up; skills/items are cached.
     let ability_defs = load_abilities()?;
     let a_ability_ids: Vec<Option<u32>> = battle
         .state
