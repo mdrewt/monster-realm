@@ -94,6 +94,19 @@ export interface BaitItem {
 }
 
 /**
+ * A cure item the player may use in battle. `cureStatus !== null`
+ * (classify-by-data, ADR-0047 + ADR-0105) is the ONLY criterion for inclusion.
+ * Available in ANY ongoing battle — not gated on wild/recruit (differs from BaitItem).
+ */
+export interface CureItem {
+  readonly itemId: number;
+  readonly name: string;
+  /** The StatusKind variant name this item cures (e.g. "Poison"). Non-null by classify rule. */
+  readonly cureStatus: string;
+  readonly count: number;
+}
+
+/**
  * The valid outcome tags for a battle. Hand-written from the server BattleOutcome enum.
  * The runtime parity test (battleModel.test.ts) asserts that BattleOutcome bindings
  * variants ⊆ this union — a bindings regen adding a new variant fails that test,
@@ -121,6 +134,8 @@ export interface BattleViewModel {
   readonly canRecruit: boolean;
   /** Bait options (recruit_bonus > 0), classified by data — empty when none. */
   readonly baitOptions: readonly BaitItem[];
+  /** Cure items (cure_status !== null), classified by data — empty when not ongoing. */
+  readonly cureItems: readonly CureItem[];
   /** Active weather display, or null when no weather is in effect. */
   readonly weather: { readonly label: string; readonly turnsRemaining: number } | null;
 }
@@ -167,6 +182,7 @@ export function buildBattleViewModel(
   skillMap: ReadonlyMap<number, StoreSkillRow>,
   speciesMap: ReadonlyMap<number, StoreSpeciesRow>,
   baitItems: readonly BaitItem[] = [],
+  cureItems: readonly CureItem[] = [],
 ): BattleViewModel | null {
   const { sideA, sideB } = battle;
   if (!sideA.team.length || sideA.active < 0 || sideA.active >= sideA.team.length) return null;
@@ -229,6 +245,15 @@ export function buildBattleViewModel(
     ? baitItems.filter((b) => b.recruitBonus > 0 && b.count > 0)
     : [];
 
+  // Cure items: classify by DATA (cure_status !== null), never by item id, and
+  // only surface stacks the player actually holds (count > 0). Available in ANY
+  // ongoing battle (not gated on wild/recruit — differs from baitOptions).
+  // The cureStatus !== null guard enforces classify-by-data at the model layer;
+  // main.ts pre-filters by the same rule but the model defends independently.
+  const cureOptions: readonly CureItem[] = ongoing
+    ? cureItems.filter((c) => c.cureStatus !== null && c.count > 0)
+    : [];
+
   // Weather: map StoreBattle.weather → VM weather (label + turnsRemaining).
   // != null tolerates undefined from any untyped runtime input; store guarantees null.
   const w = battle.weather;
@@ -247,6 +272,7 @@ export function buildBattleViewModel(
     bench,
     canRecruit,
     baitOptions,
+    cureItems: cureOptions,
     weather,
   };
 }
@@ -394,6 +420,23 @@ export function battleVMsEqual(a: BattleViewModel, b: BattleViewModel): boolean 
       boa.name !== bob.name ||
       boa.recruitBonus !== bob.recruitBonus ||
       boa.count !== bob.count
+    ) {
+      return false;
+    }
+  }
+
+  // CureItems: length-first, then per-element (incl. count — inventory change must re-render)
+  if (a.cureItems.length !== b.cureItems.length) return false;
+  for (let i = 0; i < a.cureItems.length; i++) {
+    // biome-ignore lint/style/noNonNullAssertion: i is bounded by a.cureItems.length (length-checked above)
+    const ca = a.cureItems[i]!;
+    // biome-ignore lint/style/noNonNullAssertion: i is bounded by b.cureItems.length (length === a.cureItems.length)
+    const cb = b.cureItems[i]!;
+    if (
+      ca.itemId !== cb.itemId ||
+      ca.name !== cb.name ||
+      ca.cureStatus !== cb.cureStatus ||
+      ca.count !== cb.count
     ) {
       return false;
     }

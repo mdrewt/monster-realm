@@ -69,6 +69,11 @@ function makeRecruitVM(overrides: Partial<BattleViewModel> = {}): BattleViewMode
       { itemId: 9, name: 'Sweet Bait', recruitBonus: 250, count: 1 },
     ],
     weather: null,
+    // m14.5d-1b: cureItems field added; RED until BattleViewModel gains this field.
+    // Typed as `never` cast below so tests compile even before impl; the factory
+    // override path in cure-item tests supplies a real typed value.
+    // @ts-expect-error -- cureItems not yet on BattleViewModel; RED until impl adds field
+    cureItems: [],
     ...overrides,
   };
 }
@@ -79,6 +84,9 @@ function makeCallbacks(): BattleViewCallbacks {
     onFlee: vi.fn(),
     onSwap: vi.fn(),
     onRecruit: vi.fn(),
+    // m14.5d-1b: onUseItem added; RED until BattleViewCallbacks gains this field
+    // @ts-expect-error -- onUseItem not yet on BattleViewCallbacks; RED until impl adds field
+    onUseItem: vi.fn(),
   };
 }
 
@@ -433,6 +441,204 @@ describe('BattleView m14.5d: outcome DOM parity — all BattleOutcomeTag variant
       expect(isHidden || isEmpty).toBe(true);
     }
     // If absent entirely: that also satisfies the "no outcome shown" contract.
+
+    document.body.removeChild(parent);
+  });
+});
+
+// =============================================================================
+// m14.5d-1b — cure-item selector DOM tests
+// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-1
+//
+// RED REASON:
+//   - BattleViewModel.cureItems does not yet exist.
+//   - BattleViewCallbacks.onUseItem does not yet exist.
+//   - BattleView does not yet render a [data-testid="cure-item-selector"] element.
+//   - BattleView does not yet render a [data-testid="use-item-action"] button.
+//
+// Contract (classify-by-data, mirroring bait-selector pattern):
+//   - `vm.cureItems` non-empty + outcome=Ongoing → cure-item selector rendered
+//   - Selector has one <option> per cure item (value=itemId, text includes name)
+//   - [data-testid="use-item-action"] button present when cure items available
+//   - Clicking button calls onUseItem(battleId, selectedItemId)
+//   - `vm.cureItems` empty → selector absent
+//   - Selection preserved across re-renders with the same VM (same class of bug as
+//     bait-selector fix — replaceChildren() destroys user selection on every tick)
+// =============================================================================
+
+/** CureItem shape (as it will exist after the feature is implemented). */
+interface CureItemVM {
+  itemId: number;
+  name: string;
+  cureStatus: string;
+  count: number;
+}
+
+/** Build a VM with a populated cureItems list for cure-item DOM tests. */
+function makeCureItemVM(cureItems: CureItemVM[]): BattleViewModel {
+  return makeRecruitVM({
+    // @ts-expect-error -- cureItems not yet on BattleViewModel; RED until impl adds field
+    cureItems,
+    canRecruit: false, // independent of recruit to keep tests focused
+    baitOptions: [],
+  } as Partial<BattleViewModel>);
+}
+
+describe('BattleView m14.5d-1b: cure-item selector rendered when cureItems non-empty (ongoing)', () => {
+  it('BITES: [data-testid="cure-item-selector"] present when vm.cureItems has entries', () => {
+    // Kills: an impl that adds cureItems to the model but forgets to render the selector.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    const vm = makeCureItemVM([{ itemId: 5, name: 'Antidote', cureStatus: 'Poison', count: 2 }]);
+    view.refresh(vm);
+    view.show();
+
+    const selector = parent.querySelector('[data-testid="cure-item-selector"]');
+    expect(selector).not.toBeNull();
+    // Kills: an impl that doesn't render the selector at all
+
+    document.body.removeChild(parent);
+  });
+
+  it('BITES: cure-item selector has an option with value "5" and text including "Antidote"', () => {
+    // Kills: an impl that renders the selector but populates it with wrong values
+    // (e.g., uses index instead of itemId as option value).
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    const vm = makeCureItemVM([{ itemId: 5, name: 'Antidote', cureStatus: 'Poison', count: 2 }]);
+    view.refresh(vm);
+    view.show();
+
+    const selector = parent.querySelector('[data-testid="cure-item-selector"]');
+    expect(selector).not.toBeNull();
+    const option = selector!.querySelector('option[value="5"]');
+    expect(option).not.toBeNull();
+    expect(option!.textContent).toContain('Antidote');
+    // Kills: an impl that uses index as option value, or forgets the item name
+
+    document.body.removeChild(parent);
+  });
+});
+
+describe('BattleView m14.5d-1b: use-item-action button present when cureItems non-empty', () => {
+  it('BITES: [data-testid="use-item-action"] present when vm.cureItems has entries', () => {
+    // Kills: an impl that renders the selector but omits the action button.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    const vm = makeCureItemVM([{ itemId: 5, name: 'Antidote', cureStatus: 'Poison', count: 2 }]);
+    view.refresh(vm);
+    view.show();
+
+    const btn = parent.querySelector('[data-testid="use-item-action"]');
+    expect(btn).not.toBeNull();
+    // Kills: an impl that renders the selector but forgets the button
+
+    document.body.removeChild(parent);
+  });
+});
+
+describe('BattleView m14.5d-1b: onUseItem called with correct (battleId, itemId) on button click', () => {
+  it('BITES: clicking "Use Item" calls onUseItem(1n, 5) — battleId=1n, itemId=5 (not index)', () => {
+    // Kills: an impl that wires the wrong field (passes the array index instead of itemId)
+    // or that doesn't call the onUseItem callback at all.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const callbacks = makeCallbacks();
+    const view = new BattleView(parent, callbacks);
+    const vm = makeCureItemVM([{ itemId: 5, name: 'Antidote', cureStatus: 'Poison', count: 2 }]);
+    view.refresh(vm);
+    view.show();
+
+    // Select item 5 in the cure-item selector
+    const selector = parent.querySelector<HTMLSelectElement>('[data-testid="cure-item-selector"]');
+    expect(selector).not.toBeNull();
+    selector!.value = '5';
+
+    // Click the Use Item button
+    const btn = parent.querySelector('[data-testid="use-item-action"]') as HTMLElement | null;
+    expect(btn).not.toBeNull();
+    btn!.click();
+
+    // @ts-expect-error -- onUseItem not yet on BattleViewCallbacks; RED until impl adds field
+    expect(callbacks.onUseItem).toHaveBeenCalledTimes(1);
+    // @ts-expect-error -- onUseItem not yet on BattleViewCallbacks; RED until impl adds field
+    expect(callbacks.onUseItem).toHaveBeenCalledWith(1n, 5);
+    // Kills: an impl that passes index (0) instead of itemId (5), or skips the callback
+
+    document.body.removeChild(parent);
+  });
+});
+
+describe('BattleView m14.5d-1b: cure-item selector hidden when cureItems is empty', () => {
+  it('BITES: [data-testid="cure-item-selector"] absent when vm.cureItems is empty', () => {
+    // Kills: an impl that always renders the cure section regardless of cureItems.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    // cureItems: [] (no cure items owned)
+    const vm = makeCureItemVM([]);
+    view.refresh(vm);
+    view.show();
+
+    const selector = parent.querySelector('[data-testid="cure-item-selector"]');
+    expect(selector).toBeNull();
+    // Kills: an impl that always renders the section even when no cure items are owned
+
+    document.body.removeChild(parent);
+  });
+});
+
+describe('BattleView m14.5d-1b: cure-item selection preserved across re-renders (same VM)', () => {
+  it('BITES: user-selected cure item value is still set after calling refresh() again with same vm', () => {
+    // Same class of bug as bait-selector fix (e-1): replaceChildren() on every refresh
+    // destroys the <select> element and resets the user's selection.
+    // After fix: the existing <select> is reused (or selection restored) when cureItems
+    // haven't changed between refreshes.
+    // Kills: an impl that unconditionally replaceChildren() the actions area,
+    // destroying the cure-item selector value on each server tick.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    const vm = makeCureItemVM([
+      { itemId: 5, name: 'Antidote', cureStatus: 'Poison', count: 2 },
+      { itemId: 6, name: 'Paralyze Heal', cureStatus: 'Paralysis', count: 1 },
+    ]);
+
+    // First render
+    view.refresh(vm);
+    view.show();
+
+    const selAfterFirst = parent.querySelector<HTMLSelectElement>(
+      '[data-testid="cure-item-selector"]',
+    );
+    expect(selAfterFirst).not.toBeNull();
+
+    // User selects item 6 (the second option)
+    selAfterFirst!.value = '6';
+    expect(selAfterFirst!.value).toBe('6'); // precondition: selection was applied
+
+    // Second refresh with the SAME vm (same cureItems — no server change)
+    view.refresh(vm);
+
+    const selAfterSecond = parent.querySelector<HTMLSelectElement>(
+      '[data-testid="cure-item-selector"]',
+    );
+    expect(selAfterSecond).not.toBeNull();
+
+    // BITES: a replaceChildren() impl would reset the value to '5' (first option).
+    // After fix: value must still be '6' (the user's prior selection is preserved).
+    expect(selAfterSecond!.value).toBe('6');
+    // Kills: an impl that replaceChildren() without restoring the selection
+    // (same class of bug as the bait-selector fix in e-1)
 
     document.body.removeChild(parent);
   });
