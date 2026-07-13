@@ -1,4 +1,4 @@
-// mutate-core recipe + .cargo/mutants.toml integrity eval (fix-nightly / ADR-0088).
+// mutate-core recipe + .cargo/mutants.toml integrity eval (fix-nightly / ADR-0088 + M14.5h).
 //
 // Guards two files whose contents change mutation semantics for every nightly run:
 //   1. the justfile `mutate-core:` recipe (AC-M5): -p game-core scope, missed.txt
@@ -6,10 +6,12 @@
 //      shell-neuter, and a HARD ZERO — the header must carry NO parameters (a
 //      `cap=` in the header is asymmetric vs mutate-server: game-core is
 //      zero-tolerance, so no cap knob is allowed to leak in).
-//   2. `.cargo/mutants.toml` (AC-M8): EXACTLY ONE exclude_re entry — the
-//      line-pinned, provably-equivalent `npc/rules.rs:61:15 replace > with >=`
-//      mutant — and nothing that shapes scope beyond that single blessed
-//      exclusion (no examine_re/exclude_globs/examine_globs).
+//   2. `.cargo/mutants.toml` (AC-M8): EXACTLY TWO exclude_re entries — both
+//      line-pinned, provably-equivalent mutants:
+//        • `npc/rules.rs:61:15 replace > with >=` in toward_home (ADR-0088)
+//        • `ability.rs:169:60 replace < with <=` in apply_entry_ability (M14.5h)
+//      Nothing that shapes scope beyond those two blessed exclusions
+//      (no examine_re/exclude_globs/examine_globs).
 //
 // EXPECTED REAL-TREE STATE AT RED (fix-nightly branch tip):
 //   mutateCoreRecipeIntact(justfile)  → FALSE (bare `cargo mutants -p game-core`
@@ -113,17 +115,17 @@ export function mutateCoreRecipeIntact(justfileText) {
 }
 
 // ---------------------------------------------------------------------------
-// Pure predicate: `.cargo/mutants.toml` is pinned to exactly the one blessed
-// exclusion (AC-M8). Returns { ok: boolean, reason: string }.
+// Pure predicate: `.cargo/mutants.toml` is pinned to exactly the two blessed
+// exclusions (AC-M8, ADR-0088 + M14.5h). Returns { ok: boolean, reason: string }.
 //
 //   null/absent input → { ok:false } (handled gracefully — never throws).
-//   EXACTLY ONE exclude_re entry (one quoted string inside the array).
-//   That entry must contain BOTH the line-pin `npc/rules\.rs:61:15` AND
-//     `toward_home`.
-//   MORE than one entry → false.
-//   An entry lacking the `:61:15` line-pin → false.
+//   EXACTLY TWO exclude_re entries (two quoted strings inside the array = 4 `"`).
+//     Entry 1: `npc/rules.rs:61:15 replace > with >= in toward_home`
+//     Entry 2: `ability.rs:169:60 replace < with <= in apply_entry_ability`
+//   Fewer or more than two entries → false.
+//   An entry lacking its line-pin → false.
 //   ANY `examine_re` / `exclude_globs` / `examine_globs` key present → false
-//     (scope-shaping beyond the blessed exclusion is banned).
+//     (scope-shaping beyond the blessed exclusions is banned).
 // ---------------------------------------------------------------------------
 export function mutantsTomlPinned(tomlText) {
   if (tomlText === null || tomlText === undefined) {
@@ -134,19 +136,19 @@ export function mutantsTomlPinned(tomlText) {
   if (tomlText.indexOf('examine_re') !== -1) {
     return {
       ok: false,
-      reason: 'mutants.toml contains examine_re (scope-shaping beyond the blessed exclusion)',
+      reason: 'mutants.toml contains examine_re (scope-shaping beyond the blessed exclusions)',
     };
   }
   if (tomlText.indexOf('exclude_globs') !== -1) {
     return {
       ok: false,
-      reason: 'mutants.toml contains exclude_globs (scope-shaping beyond the blessed exclusion)',
+      reason: 'mutants.toml contains exclude_globs (scope-shaping beyond the blessed exclusions)',
     };
   }
   if (tomlText.indexOf('examine_globs') !== -1) {
     return {
       ok: false,
-      reason: 'mutants.toml contains examine_globs (scope-shaping beyond the blessed exclusion)',
+      reason: 'mutants.toml contains examine_globs (scope-shaping beyond the blessed exclusions)',
     };
   }
 
@@ -163,8 +165,8 @@ export function mutantsTomlPinned(tomlText) {
   const arrayBody = tomlText.slice(openIdx + 1, closeIdx);
 
   // Count quoted string entries inside the array (each entry is one `"..."`).
-  // Count opening quotes: a well-formed array has an even number of `"`; one
-  // entry = 2 quotes. More than 2 → more than one entry → reject.
+  // Count opening quotes: a well-formed array has an even number of `"`; two
+  // entries = 4 quotes (we bless exactly two: toward_home + apply_entry_ability).
   let quoteCount = 0;
   for (const ch of arrayBody) {
     if (ch === '"') quoteCount += 1;
@@ -172,23 +174,28 @@ export function mutantsTomlPinned(tomlText) {
   if (quoteCount === 0) {
     return { ok: false, reason: 'mutants.toml exclude_re array is empty (no quoted entry)' };
   }
-  if (quoteCount !== 2) {
+  if (quoteCount === 2) {
     return {
       ok: false,
-      reason: `mutants.toml exclude_re must have EXACTLY ONE entry (found ${quoteCount / 2} entries / ${quoteCount} quotes) — the list is line-pinned to the single blessed exclusion`,
+      reason:
+        'mutants.toml exclude_re has only ONE entry — the second blessed exclusion (ability.rs:169:60 apply_entry_ability equivalent mutant, M14.5h) is missing; EXACTLY TWO entries are required',
+    };
+  }
+  if (quoteCount !== 4) {
+    return {
+      ok: false,
+      reason: `mutants.toml exclude_re must have EXACTLY TWO entries (found ${quoteCount / 2} entries / ${quoteCount} quotes) — the list is pinned to exactly two blessed exclusions (toward_home + apply_entry_ability)`,
     };
   }
 
-  // The single entry must contain BOTH the line-pin and the fn name.
-  // The line-pin appears in the TOML as `npc/rules\\.rs:61:15` (the `\\` is a
-  // regex `\.` escape). We match on the two backslash-independent fragments —
-  // `npc/rules` (path head) and `.rs:61:15` (the file+line pin) — so the check
-  // is robust to whether the TOML author wrote one or two backslashes.
+  // Entry 1: toward_home must be present with its full line-pin.
+  // We match on two backslash-independent fragments — `npc/rules` and `.rs:61:15` —
+  // so the check is robust to whether the TOML author wrote one or two backslashes.
   if (arrayBody.indexOf('npc/rules') === -1 || arrayBody.indexOf('.rs:61:15') === -1) {
     return {
       ok: false,
       reason:
-        'mutants.toml exclude_re entry is missing the npc/rules...:61:15 line-pin (a bare `toward_home` exclusion is too broad and would silence the non-equivalent 53:15 / 61:15-sibling mutants)',
+        'mutants.toml is missing the npc/rules...:61:15 toward_home line-pin (first blessed exclusion, ADR-0088)',
     };
   }
   if (arrayBody.indexOf('toward_home') === -1) {
@@ -201,21 +208,44 @@ export function mutantsTomlPinned(tomlText) {
     return {
       ok: false,
       reason:
-        'mutants.toml exclude_re entry is missing the operator text "replace > with >=" — the full canonical exclusion must name the exact operator replacement to prevent silencing non-equivalent sibling mutants at the same line (e.g. > → < is not equivalent and tests WOULD catch it)',
+        'mutants.toml toward_home entry is missing the operator text "replace > with >=" — the full canonical exclusion must name the exact operator replacement to prevent silencing non-equivalent sibling mutants at the same line (e.g. > → < is not equivalent and tests WOULD catch it)',
+    };
+  }
+
+  // Entry 2: apply_entry_ability must be present with its full line-pin (M14.5h).
+  if (arrayBody.indexOf('ability') === -1 || arrayBody.indexOf('.rs:169:60') === -1) {
+    return {
+      ok: false,
+      reason:
+        'mutants.toml is missing the ability.rs:169:60 apply_entry_ability line-pin (second blessed exclusion, M14.5h — EntryHeal < vs <= equivalent mutant)',
+    };
+  }
+  if (arrayBody.indexOf('apply_entry_ability') === -1) {
+    return {
+      ok: false,
+      reason: 'mutants.toml second exclude_re entry does not mention apply_entry_ability',
+    };
+  }
+  if (arrayBody.indexOf('replace < with <=') === -1) {
+    return {
+      ok: false,
+      reason:
+        'mutants.toml apply_entry_ability entry is missing the operator text "replace < with <=" — the full canonical exclusion must name the exact operator replacement',
     };
   }
 
   return {
     ok: true,
-    reason: 'mutants.toml pins exactly the one blessed 61:15 toward_home exclusion',
+    reason:
+      'mutants.toml pins exactly the two blessed exclusions: 61:15 toward_home (ADR-0088) and 169:60 apply_entry_ability (M14.5h)',
   };
 }
 
 // ---------------------------------------------------------------------------
-// Canonical positive-control fixtures — copied VERBATIM from plan §T6.
-// The installed recipe + toml (T6) and these fixtures must be byte-shape
-// identical; if the T6 specialist changes the wrapper, these controls document
-// the contract the change must still satisfy.
+// Canonical positive-control fixtures — updated to include BOTH blessed
+// exclusions (M14.5h adds the second). The installed recipe + toml (T6) and
+// these fixtures must be byte-shape identical; if the T6 specialist changes
+// the wrapper, these controls document the contract the change must still satisfy.
 // ---------------------------------------------------------------------------
 const CANONICAL_MUTATE_CORE = `mutate-core:
     #!/usr/bin/env bash
@@ -242,12 +272,22 @@ const CANONICAL_MUTATE_CORE = `mutate-core:
     fi
 `;
 
-const CANONICAL_MUTANTS_TOML = `# Single blessed exclusion: provably-equivalent mutant (ADR-0088 §Decision 2).
-# The Y-branch of toward_home requires |dx| < |dy| → dy != 0, so \`dy > 0\` and
-# \`dy >= 0\` are indistinguishable on the reachable domain. Line-pinned
-# (npc/rules.rs:61:15): drift resurfaces the mutant → nightly red → re-pin
-# consciously. Guarded by evals/mutate-core-recipe-integrity.eval.mjs.
-exclude_re = ["npc/rules\\\\.rs:61:15: replace > with >= in toward_home"]
+const CANONICAL_MUTANTS_TOML = `# Blessed equivalent-mutant exclusions (ADR-0088 §Decision 2 + M14.5h).
+#
+# 1. toward_home Y-branch (npc/rules.rs:61:15): |dx| < |dy| → dy != 0, so
+#    \`dy > 0\` and \`dy >= 0\` are indistinguishable on the reachable domain.
+#    Line-pinned: drift resurfaces the mutant → nightly red → re-pin consciously.
+#    Guarded by evals/mutate-core-recipe-integrity.eval.mjs.
+#
+# 2. apply_entry_ability EntryHeal guard (ability.rs:169:60): \`current_hp < max_hp\`
+#    vs \`current_hp <= max_hp\` produce identical output because the branch body
+#    clamps: \`current_hp.saturating_add(heal).min(max_hp)\`. At current_hp == max_hp
+#    both branches yield max_hp after the clamp; no test can distinguish them.
+#    Proved by EARS-h-1a (boundary_full_hp_no_heal). Line-pinned.
+exclude_re = [
+    "npc/rules\\\\.rs:61:15: replace > with >= in toward_home",
+    "ability\\\\.rs:169:60: replace < with <= in apply_entry_ability",
+]
 `;
 
 // ---------------------------------------------------------------------------
@@ -344,17 +384,18 @@ export default async function () {
     };
   }
 
-  // TEETH 8 — mutants.toml with TWO exclude_re entries → must be rejected.
-  const tomlTwoEntries =
-    'exclude_re = ["npc/rules\\\\.rs:61:15: replace > with >= in toward_home", "npc/rules\\\\.rs:53:15: replace > with >= in toward_home"]\n';
+  // TEETH 8 — mutants.toml with THREE exclude_re entries → must be rejected
+  // (unbounded growth: only two blessed exclusions are allowed).
+  const tomlThreeEntries =
+    'exclude_re = ["npc/rules\\\\.rs:61:15: replace > with >= in toward_home", "ability\\\\.rs:169:60: replace < with <= in apply_entry_ability", "npc/rules\\\\.rs:53:15: replace > with >= in toward_home"]\n';
   {
-    const r = mutantsTomlPinned(tomlTwoEntries);
+    const r = mutantsTomlPinned(tomlThreeEntries);
     if (r.ok) {
       return {
         name,
         pass: false,
         detail:
-          'TEETH 8 (two entries): mutantsTomlPinned accepted a mutants.toml with TWO exclude_re entries — the exclusion list is pinned to EXACTLY ONE blessed entry; unbounded growth would silence real surviving mutants (53:15 is NOT equivalent and must get a killing test, not exclusion)',
+          'TEETH 8 (three entries): mutantsTomlPinned accepted a mutants.toml with THREE exclude_re entries — the exclusion list is pinned to EXACTLY TWO blessed entries; unbounded growth would silence real surviving mutants (the third 53:15 entry is NOT equivalent and must get a killing test, not exclusion)',
       };
     }
   }
@@ -383,7 +424,7 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH 10 (examine_re): mutantsTomlPinned accepted a mutants.toml with an examine_re key — examine_re narrows which mutants run AT ALL, changing scope for every nightly. Only the single blessed exclude_re exclusion is permitted; any other scope-shaping key must be rejected',
+          'TEETH 10 (examine_re): mutantsTomlPinned accepted a mutants.toml with an examine_re key — examine_re narrows which mutants run AT ALL, changing scope for every nightly. Only the two blessed exclude_re exclusions are permitted; any other scope-shaping key must be rejected',
       };
     }
   }
@@ -441,6 +482,23 @@ export default async function () {
     }
   }
 
+  // TEETH 14 — mutants.toml with only the toward_home exclusion (missing second
+  // ability.rs entry) → must be rejected. Two blessed entries are required; a
+  // single-entry file misses the M14.5h second exclusion.
+  const tomlOnlyTowardHome =
+    'exclude_re = ["npc/rules\\\\.rs:61:15: replace > with >= in toward_home"]\n';
+  {
+    const r = mutantsTomlPinned(tomlOnlyTowardHome);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH 14 (missing ability.rs exclusion): mutantsTomlPinned accepted a single-entry mutants.toml missing the ability.rs:169:60 apply_entry_ability exclusion — the gate must now require EXACTLY TWO blessed entries (toward_home + apply_entry_ability, M14.5h)',
+      };
+    }
+  }
+
   // POSITIVE CONTROL A — the canonical wrapper (verbatim, plan §T6) must PASS.
   if (!mutateCoreRecipeIntact(CANONICAL_MUTATE_CORE)) {
     return {
@@ -489,14 +547,13 @@ export default async function () {
     };
   }
 
-  // Real check 2: .cargo/mutants.toml pinned to the one blessed exclusion.
-  // EXPECTED RED: the file is absent on the branch tip.
+  // Real check 2: .cargo/mutants.toml pinned to the two blessed exclusions.
   if (!existsSync(tomlPath)) {
     return {
       name,
       pass: false,
       detail:
-        '.cargo/mutants.toml is absent (EXPECTED RED — T6 specialist must add it with exactly the one line-pinned `npc/rules.rs:61:15 replace > with >= in toward_home` exclusion per ADR-0088)',
+        '.cargo/mutants.toml is absent (EXPECTED RED — T6 specialist must add it with the two line-pinned exclusions per ADR-0088 + M14.5h)',
     };
   }
   const tomlText = readFileSync(tomlPath, 'utf8');
@@ -515,6 +572,6 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'mutate-core recipe intact (whole-crate -p game-core, fail-closed missed.txt count-compare, no scope-narrowing / neuter / cap= knob) and .cargo/mutants.toml pins exactly the one blessed 61:15 toward_home equivalent-mutant exclusion (ADR-0088)',
+      'mutate-core recipe intact (whole-crate -p game-core, fail-closed missed.txt count-compare, no scope-narrowing / neuter / cap= knob) and .cargo/mutants.toml pins exactly the two blessed equivalent-mutant exclusions: 61:15 toward_home (ADR-0088) and 169:60 apply_entry_ability (M14.5h)',
   };
 }
