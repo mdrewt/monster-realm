@@ -6009,4 +6009,60 @@ mod tests {
             result.err()
         );
     }
+
+    // =======================================================================
+    // m14.5d-1a EA-4: content integration — Antidote (id=3) has
+    // cure_status == Some(StatusKind::Poison)
+    //
+    // This is a pinning/regression test: the field already exists on ItemDef
+    // and the RON already specifies `cure_status: Some(Poison)` for id=3, so
+    // this test is GREEN today.  It stays in the suite to catch any future
+    // regression where the content RON is changed, the field is accidentally
+    // stripped, or a serde default replaces the explicit value with None.
+    //
+    // What a wrong impl this kills:
+    //   - A sync_content_inner that omits `cure_status` from the ItemRow
+    //     construction (EA-3) would be caught by the server-module tests;
+    //     THIS test pins the content SSOT so the chain is traceable from
+    //     RON → ItemDef → item_row.
+    //   - A future RON edit that accidentally removes `cure_status: Some(Poison)`
+    //     from Antidote would silently set it to None (serde default) and make
+    //     Antidote non-functional; this assertion bites immediately.
+    // =======================================================================
+
+    /// EA-4 (m14.5d-1a): Antidote (id=3) from load_items() must carry
+    /// `cure_status == Some(StatusKind::Poison)`.
+    ///
+    /// GREEN today (content RON already specifies it); kept as a regression pin.
+    #[test]
+    fn ears_d1a_4_antidote_has_cure_status_poison() {
+        use crate::combat::ability::StatusKind;
+
+        let items = load_items().expect("items RON must parse");
+
+        // id=3 is the Antidote — stable append-only id (ADR-0006).
+        let antidote_id: u32 = 3;
+        let antidote = items
+            .iter()
+            .find(|i| i.id == antidote_id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "TEETH(EA-4 m14.5d-1a): item id=3 (Antidote) not found in load_items() — \
+                     the items RON must contain an entry with id=3; \
+                     stable append-only ids must not be removed or renumbered"
+                )
+            });
+
+        assert_eq!(
+            antidote.cure_status,
+            Some(StatusKind::Poison),
+            "TEETH(EA-4 m14.5d-1a): Antidote (id=3) must have \
+             cure_status == Some(StatusKind::Poison). \
+             Got: {:?}. \
+             Kills: a future RON edit that drops `cure_status: Some(Poison)` \
+             (serde default would silently set it to None, making Antidote \
+             non-functional in battle).",
+            antidote.cure_status
+        );
+    }
 }

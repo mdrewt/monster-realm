@@ -35,6 +35,10 @@ mod raising;
 mod schema;
 mod taming;
 
+#[cfg(test)]
+#[path = "m14_5d_1a_tests.rs"]
+mod m14_5d_1a_tests;
+
 // --- Crate-wide constants ---------------------------------------------------
 pub(crate) const ZONE_0: u32 = 0;
 /// SSOT for the seeded-content version; bump when game-core RON content changes (ADR-0054).
