@@ -191,7 +191,7 @@ fn boundary_full_hp_no_heal() {
     );
 }
 
-/// EARS-h-2a: A monster at `current_hp = max_hp - 1` with EntryHeal must be healed.
+/// EARS-h-1b: A monster at `current_hp = max_hp - 1` with EntryHeal must be healed.
 ///
 /// This test PASSES before and after the D6 fix — it exercises the branch
 /// where `current_hp < max_hp` is true (one below full HP). With max_hp=10,

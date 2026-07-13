@@ -295,7 +295,7 @@ exclude_re = [
 // ---------------------------------------------------------------------------
 export default async function () {
   const name =
-    'mutate-core-recipe-integrity (fix-nightly / ADR-0088: mutate-core wrapper + .cargo/mutants.toml pinned to the single blessed exclusion)';
+    'mutate-core-recipe-integrity (fix-nightly / ADR-0088 + M14.5h: mutate-core wrapper + .cargo/mutants.toml pinned to two blessed exclusions)';
 
   // =========================================================================
   // PROOF-OF-TEETH — known-bad fixtures first, then positive controls.

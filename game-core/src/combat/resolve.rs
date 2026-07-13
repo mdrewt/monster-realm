@@ -127,6 +127,15 @@ fn resolve_one_attack(
                 side: defender_side,
                 new_active: idx,
             });
+            // Adjacency invariant: the last two events are always Faint{defender_side}
+            // then Switch{defender_side} with nothing in between. apply_ko_switch_entry_abilities
+            // in the outer resolvers depends on this to detect KO auto-switches via
+            // windows(2) scanning. If this assert fires, a new event was inserted
+            // between Faint and Switch — update apply_ko_switch_entry_abilities accordingly.
+            debug_assert!(
+                matches!(events.get(events.len().wrapping_sub(2)), Some(BattleEvent::Faint { side }) if *side == defender_side),
+                "Faint→Switch adjacency invariant: expected Faint{{side:{defender_side:?}}} at events[n-2] before Switch (ADR-0100 D6)"
+            );
             // D6 wiring: apply_entry_ability is called by apply_ko_switch_entry_abilities
             // in the outer resolver (resolve_full_turn / resolve_player_swap /
             // resolve_recruit_failure) after this function returns, by scanning the
