@@ -19,6 +19,8 @@ pub mod ability;
 pub mod ai;
 pub mod damage;
 #[cfg(test)]
+pub mod m14_5b_tests;
+#[cfg(test)]
 pub mod m14a_tests;
 #[cfg(test)]
 pub mod m14b_tests;

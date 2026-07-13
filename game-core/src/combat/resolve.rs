@@ -170,6 +170,13 @@ fn resolve_one_attack(
             };
             events.push(BattleEvent::StatusApplied {
                 side: defender_side,
+                // Capture slot at emission time. The defender did not faint from this
+                // attack (!fainted guard above), so active has not changed for the
+                // defender side yet (ADR-0099 D1).
+                slot: match defender_side {
+                    SideId::SideA => state.side_a.active,
+                    SideId::SideB => state.side_b.active,
+                },
                 status: new_status,
             });
         }
@@ -603,28 +610,20 @@ fn run_post_turn_phases(
     use super::status::{apply_post_turn_effects, tick_status};
     use super::weather::{apply_weather_damage, tick_weather};
 
-    // Capture the active slot for each side NOW — before phases 3/3.5 can trigger
-    // a faint + auto-switch and change state.side_X.active. Phase 4.5 must write
-    // StatusApplied to the slot that was ATTACKED, not to whatever slot is active
-    // after a post-turn KO (RT-M14.5A-01, RT-M14.5A-02).
-    //
-    // Slot safety: StatusApplied is only emitted for non-fainted defenders (the
-    // `!fainted` guard in `resolve_one_attack`). A KO'd monster is never the target
-    // of StatusApplied, so the attacked monster was alive when the event was emitted
-    // and active at the start of this function — capturing now is correct.
-    let active_slot_a = state.side_a.active as usize;
-    let active_slot_b = state.side_b.active as usize;
-
-    // Collect StatusApplied pairs from the combat action for phase 4.5.
-    let status_applied: Vec<(SideId, super::types::StatusEffect)> = action_events
+    // Collect StatusApplied triples (side, slot, status) from the combat action for
+    // phase 4.5. The slot is encoded in the event at emission time (ADR-0099 D1),
+    // so no active-slot capture is needed here — the event carries the correct target
+    // even if DoT/weather-chip auto-switches fire in phases 3/3.5.
+    let status_applied: Vec<(SideId, u32, super::types::StatusEffect)> = action_events
         .iter()
         .filter_map(|e| {
             if let BattleEvent::StatusApplied {
                 side,
+                slot,
                 status: new_status,
             } = e
             {
-                Some((*side, *new_status))
+                Some((*side, *slot, *new_status))
             } else {
                 None
             }
@@ -651,15 +650,35 @@ fn run_post_turn_phases(
     // Phase 4.5: write StatusApplied effects into BattleStatusStore (ADR-0096 §D1).
     // MUST be after phases 3/4 so newly-inflicted status does NOT cause same-turn
     // DoT or Sleep/Freeze tick — it takes effect the FOLLOWING turn.
-    // Use the slots captured above (not state.side_X.active) so a weather-chip KO +
-    // auto-switch in phase 3.5 cannot redirect the write to the wrong monster.
+    //
+    // Slot comes from the event (ADR-0099 D1), not from state.side_X.active — so a
+    // weather-chip KO + auto-switch in phase 3.5 cannot redirect the write.
+    // Drop the write if the targeted monster fainted in phase 3/3.5 (ADR-0099 D2).
     if state.outcome == BattleOutcome::Ongoing {
-        for (side, new_status) in status_applied {
-            let (store_vec, slot) = match side {
-                SideId::SideA => (&mut status.side_a, active_slot_a),
-                SideId::SideB => (&mut status.side_b, active_slot_b),
+        for (side, slot, new_status) in status_applied {
+            let idx = slot as usize;
+            // slot was captured from state.side_X.active at emission — must be in-bounds.
+            debug_assert!(
+                idx < match side {
+                    SideId::SideA => state.side_a.team.len(),
+                    SideId::SideB => state.side_b.team.len(),
+                },
+                "StatusApplied slot {idx} out of bounds for {side:?} team"
+            );
+            let is_conscious = match side {
+                SideId::SideA => state.side_a.team.get(idx).map(|m| !m.is_fainted()),
+                SideId::SideB => state.side_b.team.get(idx).map(|m| !m.is_fainted()),
+            }
+            .unwrap_or(false);
+            if !is_conscious {
+                // Drop: monster fainted between emission and Phase 4.5 (ADR-0099 D2).
+                continue;
+            }
+            let store_vec = match side {
+                SideId::SideA => &mut status.side_a,
+                SideId::SideB => &mut status.side_b,
             };
-            if let Some(cell) = store_vec.get_mut(slot) {
+            if let Some(cell) = store_vec.get_mut(idx) {
                 *cell = Some(new_status);
             }
         }

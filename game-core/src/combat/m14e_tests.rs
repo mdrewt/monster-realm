@@ -173,23 +173,29 @@ fn empty_status() -> BattleStatusStore {
 // Kills: an impl that ships the slice without adding the StatusApplied variant.
 // ---------------------------------------------------------------------------
 
-/// Kills: any impl that omits `BattleEvent::StatusApplied { side, status }` —
+/// Kills: any impl that omits `BattleEvent::StatusApplied { side, slot, status }` —
 /// the struct literal below fails to compile if the variant or its fields are absent.
 #[test]
 fn status_applied_event_exists() {
-    // Construct the variant — compile-RED if the variant does not exist.
+    // Construct the variant — compile-RED if the variant or any field is absent.
     let ev = BattleEvent::StatusApplied {
         side: SideId::SideA,
+        slot: 0,
         status: StatusEffect::Poison,
     };
 
     // Exhaustive destructuring — NO wildcard. Fails to compile if fields change.
     match &ev {
-        BattleEvent::StatusApplied { side, status } => {
+        BattleEvent::StatusApplied { side, slot, status } => {
             assert_eq!(
                 *side,
                 SideId::SideA,
                 "StatusApplied side must round-trip through construction"
+            );
+            assert_eq!(
+                *slot, 0,
+                "TEETH: StatusApplied.slot must be 0 as constructed; \
+                 a missing or mistyped field means the event cannot carry the target slot"
             );
             assert_eq!(
                 *status,
@@ -201,13 +207,13 @@ fn status_applied_event_exists() {
         _ => panic!("must match StatusApplied variant"),
     }
 
-    // Verify serde round-trip preserves both fields.
+    // Verify serde round-trip preserves all three fields.
     let s = ron::to_string(&ev).unwrap();
     let back: BattleEvent = ron::from_str(&s).unwrap();
     assert_eq!(
         ev, back,
-        "TEETH: StatusApplied must survive serde round-trip with both fields intact; \
-         a field marked #[serde(skip)] would lose the status or side on deserialize"
+        "TEETH: StatusApplied must survive serde round-trip with all three fields intact; \
+         a field marked #[serde(skip)] would lose the status, slot, or side on deserialize"
     );
 }
 
@@ -421,6 +427,7 @@ fn status_applied_emitted_when_skill_hits_unstatused_target() {
             BattleEvent::StatusApplied {
                 side: SideId::SideB,
                 status: StatusEffect::Poison,
+                ..
             }
         )
     });
@@ -620,6 +627,7 @@ fn status_applied_independently_both_sides_same_turn() {
             BattleEvent::StatusApplied {
                 side: SideId::SideB,
                 status: StatusEffect::Poison,
+                ..
             }
         )
     });
@@ -634,6 +642,7 @@ fn status_applied_independently_both_sides_same_turn() {
             BattleEvent::StatusApplied {
                 side: SideId::SideA,
                 status: StatusEffect::Poison,
+                ..
             }
         )
     });
