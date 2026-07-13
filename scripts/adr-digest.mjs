@@ -138,7 +138,6 @@ function extractBoldField(content, fieldName) {
   if (idx === -1) return null;
   const lineEnd = content.indexOf('\n', idx);
   const raw = content.slice(idx + needle.length, lineEnd === -1 ? content.length : lineEnd).trim();
-  // Strip trailing markdown bold closing (e.g. if someone wrote **value**)
   return raw || null;
 }
 
@@ -434,9 +433,7 @@ function generateDigest(adrs, designCorpus) {
   // ── Harness design corpus ────────────────────────────────────────────────
   lines.push('## Harness design corpus (H- namespace)');
   lines.push('');
-  lines.push(
-    `_Frozen snapshot ${designCorpus._banner ? designCorpus._banner.split('—')[0].trim().replace('FROZEN SNAPSHOT ', '') : ''}. Project CI never reads the harness repo._`,
-  );
+  lines.push('_Frozen snapshot 2026-07. Project CI never reads the harness repo._');
   lines.push('');
   lines.push(
     '_Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = project ADR 0080. See `docs/adr/README.md`._',
@@ -547,11 +544,6 @@ function main() {
   for (let n = 2; n <= 34; n++) {
     allIds.add(String(n).padStart(4, '0'));
   }
-  // Also add IDs from design-corpus.json entries (covers collision entries like H-0055→0056)
-  for (const entry of designCorpus.entries) {
-    if (entry.harness_id) allIds.add(entry.harness_id);
-  }
-
   const adrs = adrEntries.map(({ id, file }) => parseAdr(id, file));
 
   // Validate all ADRs; collect errors
@@ -596,8 +588,7 @@ function main() {
     if (committed !== generated) {
       console.error(
         `adr-digest: DIGEST.md is stale — committed digest differs from regenerated output.\n` +
-          `Run \`just adr-digest\` to refresh, then commit the updated DIGEST.md.\n` +
-          `(First difference at char ${firstDiffChar(committed, generated)})`,
+          `Run \`just adr-digest\` to refresh, then commit the updated DIGEST.md.`,
       );
       process.exit(1);
     }
@@ -608,15 +599,6 @@ function main() {
       `adr-digest: wrote ${DIGEST_PATH} (${adrs.length} project ADRs, ${designCorpus.entries.length} H- entries)`,
     );
   }
-}
-
-/** Find the index of the first differing character between two strings. */
-function firstDiffChar(a, b) {
-  const len = Math.min(a.length, b.length);
-  for (let i = 0; i < len; i++) {
-    if (a[i] !== b[i]) return i;
-  }
-  return len;
 }
 
 main();
