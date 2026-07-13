@@ -1,6 +1,6 @@
 //! Content parse caches — `LazyLock` statics for compile-time-embedded registries.
 //!
-//! All four registries are `include_str!`-embedded at build time (ADR-0057) and
+//! All six registries are `include_str!`-embedded at build time (ADR-0057) and
 //! immutable at runtime: content is data, not code, and only changes on a fresh
 //! binary deploy. These helpers parse once per server process and return a
 //! `&'static` reference on every subsequent call. Game-core stays pure (no caches
@@ -24,6 +24,12 @@ static DIALOGUE_TREES: LazyLock<Result<Vec<game_core::DialogueTree>, String>> =
 
 static QUEST_DEFS: LazyLock<Result<Vec<game_core::QuestDef>, String>> =
     LazyLock::new(game_core::load_quest_defs);
+
+static SKILLS: LazyLock<Result<Vec<game_core::SkillDef>, String>> =
+    LazyLock::new(game_core::load_skills);
+
+static ITEMS: LazyLock<Result<Vec<game_core::ItemDef>, String>> =
+    LazyLock::new(game_core::load_items);
 
 /// Zone-maps registry: parsed once, returned as `&'static` on every subsequent call.
 ///
@@ -55,6 +61,22 @@ pub(crate) fn cached_dialogue_trees() -> Result<&'static Vec<game_core::Dialogue
 /// Returns a clone of the cached parse error if the embedded RON was malformed.
 pub(crate) fn cached_quest_defs() -> Result<&'static Vec<game_core::QuestDef>, String> {
     (*QUEST_DEFS).as_ref().map_err(Clone::clone)
+}
+
+/// Skills registry: parsed once per process.
+///
+/// # Errors
+/// Returns a clone of the cached parse error if the embedded RON was malformed.
+pub(crate) fn cached_skills() -> Result<&'static Vec<game_core::SkillDef>, String> {
+    (*SKILLS).as_ref().map_err(Clone::clone)
+}
+
+/// Items registry: parsed once per process.
+///
+/// # Errors
+/// Returns a clone of the cached parse error if the embedded RON was malformed.
+pub(crate) fn cached_items() -> Result<&'static Vec<game_core::ItemDef>, String> {
+    (*ITEMS).as_ref().map_err(Clone::clone)
 }
 
 #[cfg(test)]
