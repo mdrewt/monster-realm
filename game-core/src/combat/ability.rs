@@ -45,9 +45,10 @@ pub enum StatusKind {
 
 impl StatusKind {
     /// Returns `true` when `effect` has the same variant as `self`.
-    /// Exhaustive: a new `StatusKind` variant MUST add both a `true` arm above
-    /// and a matching entry in the `false` catch-all below — omitting either
-    /// causes a compile error (exhaustiveness gate, ADR-0010).
+    /// Exhaustive gate (ADR-0010): adding a new `StatusKind` variant without listing
+    /// it in the false OR-pattern is a compile error. Adding it only to the false
+    /// arm (forgetting the true arm) compiles but is caught by the truth-table test
+    /// in `m14c_tests::ears_21_status_kind_matches_full_truth_table`.
     #[must_use]
     #[allow(clippy::match_like_matches_macro)]
     pub fn matches(self, effect: &StatusEffect) -> bool {

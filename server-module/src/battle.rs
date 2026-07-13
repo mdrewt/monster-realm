@@ -1087,7 +1087,11 @@ pub(crate) fn write_back_battle_results(
                             .find(|se| se.species_id == m.species_id)
                             .map(|se| &se.evolutions[..])
                             .unwrap_or(&[]);
-                        m.evolves_to = crate::evolution::compute_evolves_to(monster_evolutions, &m);
+                        m.evolves_to = crate::evolution::compute_evolves_to(
+                            monster_evolutions,
+                            m.level,
+                            m.bond,
+                        );
                     }
                 }
             }

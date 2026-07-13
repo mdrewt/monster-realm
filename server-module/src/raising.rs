@@ -80,7 +80,7 @@ pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
         .find(|se| se.species_id == m.species_id)
         .map(|se| &se.evolutions[..])
         .unwrap_or(&[]);
-    m.evolves_to = crate::evolution::compute_evolves_to(monster_evolutions, &m);
+    m.evolves_to = crate::evolution::compute_evolves_to(monster_evolutions, m.level, m.bond);
     let pub_row = pub_from_monster(&m);
     ctx.db.monster().monster_id().update(m);
     ctx.db.monster_pub().monster_id().update(pub_row);

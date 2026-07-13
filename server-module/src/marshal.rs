@@ -430,7 +430,7 @@ pub(crate) fn skill_defs_from_rows(rows: &[SkillRow]) -> Result<Vec<SkillDef>, S
 /// Trust boundary (ADR-0049): re-validates `effectiveness ∈ {0, 5, 10, 20}` —
 /// the seed-time constraint from `validate_content`. An out-of-range value would
 /// scale damage by the raw number (`TypeChart::effectiveness` returns it verbatim)
-/// while `classify` silently maps it to `Neutral`.
+/// while `classify` would panic via `unreachable!` (M14.5g hardening, ADR-0010).
 pub(crate) fn type_chart_from_rows(
     rows: impl Iterator<Item = TypeRelationRow>,
 ) -> Result<TypeChart, String> {

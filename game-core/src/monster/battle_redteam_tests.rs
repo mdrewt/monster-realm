@@ -184,7 +184,7 @@ fn f1_damage_chain_order_matters_stab_plus_neutral() {
         Effectiveness::Neutral,
         "Fire vs Electric must be Neutral"
     );
-    // STAB-first sequential: base=5 → stab=7 → type_mod=7 → variance=5
+    // STAB-first sequential: base=5 → stab=7 → type_mod=7 → after_variance=5
     // Deferred: 5*15*10*85/10000=6  — the divergence proves the order matters.
     assert_eq!(
         dmg, 5,

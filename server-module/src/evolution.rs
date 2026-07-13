@@ -32,15 +32,16 @@ pub(crate) struct FuseEffect {
 /// - test fixtures seeding monsters with evolves_to pre-computed
 ///
 /// Returns None if the monster is not eligible to evolve passively, or if
-/// `monster.level` is out of the valid `Level` range (fail-safe).
+/// `level` is out of the valid `Level` range (fail-safe).
 pub(crate) fn compute_evolves_to(
     evolutions: &[EvolutionCondition],
-    monster: &Monster,
+    level: u8,
+    bond: u8,
 ) -> Option<u32> {
-    let Ok(lv) = Level::new(monster.level) else {
+    let Ok(lv) = Level::new(level) else {
         return None;
     };
-    let bond = Bond::new(monster.bond);
+    let bond = Bond::new(bond);
     resolve_evolution(evolutions, lv, bond, None)
 }
 
@@ -91,7 +92,7 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
         .unwrap_or(&[]);
 
     // Check passive eligibility
-    let to_species_id = match compute_evolves_to(evolutions, &m) {
+    let to_species_id = match compute_evolves_to(evolutions, m.level, m.bond) {
         Some(id) => id,
         None => {
             log_reject("evolve", ctx.sender, "monster is not eligible to evolve");
@@ -133,7 +134,7 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
         .find(|se| se.species_id == transformed.species_id)
         .map(|se| &se.evolutions[..])
         .unwrap_or(&[]);
-    m.evolves_to = compute_evolves_to(evolutions_after, &m);
+    m.evolves_to = compute_evolves_to(evolutions_after, m.level, m.bond);
 
     // Dual-write: Monster + MonsterPub
     let pub_row = pub_from_monster(&m);
@@ -257,41 +258,11 @@ pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
         .map(|se| &se.evolutions[..])
         .unwrap_or(&[]);
 
-    // Create a temporary Monster row just for compute_evolves_to lookup
-    let temp_offspring = Monster {
-        monster_id: 0,
-        owner_identity: a.owner_identity,
-        species_id: offspring_inst.species_id,
-        nickname: String::new(),
-        level: offspring_inst.level.as_u8(),
-        xp: offspring_inst.xp.value(),
-        bond: offspring_inst.bond.value(),
-        iv_hp: 0,
-        iv_attack: 0,
-        iv_defense: 0,
-        iv_speed: 0,
-        iv_sp_attack: 0,
-        iv_sp_defense: 0,
-        nature_kind: offspring_inst.nature.kind(),
-        ev_hp: 0,
-        ev_attack: 0,
-        ev_defense: 0,
-        ev_speed: 0,
-        ev_sp_attack: 0,
-        ev_sp_defense: 0,
-        stat_hp: offspring_inst.derived_stats.hp,
-        stat_attack: offspring_inst.derived_stats.attack,
-        stat_defense: offspring_inst.derived_stats.defense,
-        stat_speed: offspring_inst.derived_stats.speed,
-        stat_sp_attack: offspring_inst.derived_stats.sp_attack,
-        stat_sp_defense: offspring_inst.derived_stats.sp_defense,
-        current_hp: offspring_inst.current_hp,
-        party_slot: offspring_inst.party_slot.unwrap_or(crate::PARTY_SLOT_NONE),
-        last_care_at_ms: 0,
-        evolves_to: None,
-    };
-
-    let offspring_evolves_to = compute_evolves_to(offspring_evolutions, &temp_offspring);
+    let offspring_evolves_to = compute_evolves_to(
+        offspring_evolutions,
+        offspring_inst.level.as_u8(),
+        offspring_inst.bond.value(),
+    );
 
     // Marshal offspring MonsterInstance to Monster row (owner same as parents)
     let offspring_monster = Monster {

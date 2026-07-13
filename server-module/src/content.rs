@@ -365,7 +365,7 @@ pub(crate) fn recompute_monster_derived_fields(
         // Clamp current_hp — sync_content is not a heal (no-idle-accrual, ADR-0058).
         monster.current_hp = monster.current_hp.min(derived.hp);
         // Recompute evolves_to with the new content.
-        monster.evolves_to = compute_evolves_to(evolutions, monster);
+        monster.evolves_to = compute_evolves_to(evolutions, monster.level, monster.bond);
     }
 }
 
