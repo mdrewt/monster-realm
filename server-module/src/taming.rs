@@ -18,7 +18,8 @@ use crate::inventory::consume_one;
 #[cfg(feature = "dev_reducers")]
 use crate::inventory::grant_item;
 use crate::marshal::{
-    build_ability_store, monster_from_instance, pub_from_monster, type_chart_from_rows,
+    build_ability_store, monster_from_instance, pub_from_monster, species_from_row,
+    type_chart_from_rows,
 };
 use crate::schema::{
     battle, battle_wild, item_row, monster, monster_pub, species_row, type_relation_row,
@@ -27,7 +28,7 @@ use crate::PARTY_SLOT_NONE;
 use game_core::combat::resolve::resolve_recruit_failure;
 use game_core::{
     build_monster, load_abilities, recruit_chance, BattleOutcome, BattleStatusStore, Level,
-    StatBlock, StatusVariance, TurnVariance, RECRUIT_BASE_RATE,
+    StatusVariance, TurnVariance, RECRUIT_BASE_RATE,
 };
 use spacetimedb::{ReducerContext, Table};
 
@@ -116,21 +117,8 @@ pub fn attempt_recruit(
             .id()
             .find(bw.wild_species_id)
             .ok_or_else(|| format!("wild species {} not found", bw.wild_species_id))?;
-        let species_core = game_core::Species {
-            id: species_row.id,
-            name: species_row.name.clone(),
-            base_stats: StatBlock {
-                hp: species_row.base_hp,
-                attack: species_row.base_attack,
-                defense: species_row.base_defense,
-                speed: species_row.base_speed,
-                sp_attack: species_row.base_sp_attack,
-                sp_defense: species_row.base_sp_defense,
-            },
-            affinity: species_row.affinity,
-            learnable_skill_ids: species_row.learnable_skill_ids.clone(),
-            ability: None,
-        };
+        let species_core = species_from_row(&species_row)
+            .map_err(|e| format!("species_from_row failed for {}: {e}", bw.wild_species_id))?;
         let inst = build_monster(
             bw.individuality_seed,
             &species_core,

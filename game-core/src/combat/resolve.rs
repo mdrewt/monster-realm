@@ -127,6 +127,10 @@ fn resolve_one_attack(
                 side: defender_side,
                 new_active: idx,
             });
+            // TODO(ADR-0100 D6): call apply_entry_ability here for the auto-switched-in
+            // monster so EntryHeal fires and StatusImmunity takes effect immediately
+            // instead of one turn later. Requires threading AbilityStore + BattleStatusStore
+            // into resolve_one_attack. Deferred to Phase C.
         } else {
             let winner = acting_side;
             state.outcome = match winner {
