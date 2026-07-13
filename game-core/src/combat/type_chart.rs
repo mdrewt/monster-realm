@@ -44,12 +44,21 @@ impl TypeChart {
     /// | 5         | `NotVeryEffective`|
     /// | 10        | `Neutral`         |
     /// | 20        | `SuperEffective`  |
+    ///
+    /// # Panics
+    /// Panics on any value outside {0, 5, 10, 20}. The contract is that callers
+    /// only pass values returned by `TypeChart::effectiveness`, which only emits
+    /// these four values (from RON content validated at seed time, ADR-0049).
     pub fn classify(value: u8) -> Effectiveness {
         match value {
             0 => Effectiveness::Immune,
             5 => Effectiveness::NotVeryEffective,
+            10 => Effectiveness::Neutral,
             20 => Effectiveness::SuperEffective,
-            _ => Effectiveness::Neutral,
+            _ => unreachable!(
+                "TypeChart::classify: out-of-contract value {value}; \
+                 only {{0, 5, 10, 20}} are valid (from TypeChart::effectiveness)"
+            ),
         }
     }
 }
@@ -293,5 +302,29 @@ pub(crate) mod tests {
                 "effectiveness value {v} is not one of {{0, 5, 10, 20}}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Proof-of-teeth: classify panics on out-of-contract values (14.5g-2)
+    //
+    // Kills: the old `_ => Effectiveness::Neutral` fallback that silently
+    // accepted corrupt DB rows (e.g. effectiveness=7) as neutral damage.
+    // -----------------------------------------------------------------------
+
+    /// Verifies classify panics on a value not in {0, 5, 10, 20}.
+    /// Proof-of-teeth for the `unreachable!` arm added in M14.5g.
+    #[test]
+    #[should_panic(expected = "out-of-contract value 1")]
+    fn classify_out_of_contract_panics() {
+        TypeChart::classify(1);
+    }
+
+    /// Verifies the full set of valid values still maps correctly.
+    #[test]
+    fn classify_all_valid_values() {
+        assert_eq!(TypeChart::classify(0), Effectiveness::Immune);
+        assert_eq!(TypeChart::classify(5), Effectiveness::NotVeryEffective);
+        assert_eq!(TypeChart::classify(10), Effectiveness::Neutral);
+        assert_eq!(TypeChart::classify(20), Effectiveness::SuperEffective);
     }
 }

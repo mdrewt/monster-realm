@@ -22,6 +22,9 @@
 
 use super::rules::{derive_stats, level_for_xp, xp_for_level};
 use super::types::{Affinity, EVs, IVs, Level, Nature, NatureKind, StatBlock, StatKind, Xp};
+use crate::combat::damage::calc_damage;
+use crate::combat::type_chart::tests::make_type_chart;
+use crate::combat::types::{BattleMonster, Effectiveness};
 use crate::content::{SkillDef, Species, TypeRelation};
 
 // ---------------------------------------------------------------------------
@@ -105,11 +108,16 @@ fn plan_damage_chain_deferred(base: u32, effectiveness: u32, stab: u32, variance
 
 #[test]
 fn f1_damage_chain_order_matters_stab_plus_neutral() {
-    // base=5, neutral effectiveness=10, STAB=15, variance=85
-    // Sequential: (5*10//10)=5, (5*15//10)=7, (7*85//100)=5
-    // Deferred:   5*10*15*85 // 10000 = 63750 // 10000 = 6
-    // FINDING: two implementations of the SAME formula give 5 vs 6.
-    // This is a 1-point divergence on nearly every STAB move at low damage values.
+    // FINDING 1: the plan's three multipliers (STAB, type effectiveness, variance)
+    // give different results depending on the application order under integer division.
+    //
+    // base=5, neutral effectiveness=10, STAB (3/2), variance=85
+    // STAB-first sequential (what calc_damage does):
+    //   stab = 5*3/2 = 7, type_mod = 7*10/10 = 7, result = 7*85/100 = 5
+    // Deferred all-at-once (using 15/10 for STAB):
+    //   5*15*10*85 / (10*10*100) = 63750/10000 = 6
+    //
+    // ACCEPTED DECISION: STAB-first sequential (see also damage.rs:known_answer_*).
     let base = 5u32;
     let effectiveness = 10u32; // neutral
     let stab = 15u32;
@@ -117,13 +125,74 @@ fn f1_damage_chain_order_matters_stab_plus_neutral() {
 
     let sequential = plan_damage_chain_sequential(base, effectiveness, stab, variance);
     let deferred = plan_damage_chain_deferred(base, effectiveness, stab, variance);
-
-    // ACCEPTED DECISION: We chose STAB-first sequential order in calc_damage
-    // (STAB → type → variance), matching the sequential result here.
-    // The divergence is documented; our implementation is deterministic.
     assert_ne!(
         sequential, deferred,
-        "sequential and deferred SHOULD diverge (5 vs 6) — accepted design decision"
+        "sequential and deferred SHOULD diverge (5 vs 6) — documented design decision"
+    );
+
+    // Pin the ACTUAL implementation against a known-answer call to calc_damage.
+    // attacker: Fire lv5 atk=40, defender: Electric def=40 (Fire vs Electric = neutral).
+    // Mirrors the known-answer derivation in damage.rs — base=5, STAB-first gives 5.
+    let chart = make_type_chart();
+    let attacker = BattleMonster {
+        species_id: 1,
+        affinity: Affinity::Fire,
+        level: 5,
+        current_hp: 100,
+        max_hp: 100,
+        stats: StatBlock {
+            hp: 100,
+            attack: 40,
+            defense: 40,
+            speed: 50,
+            sp_attack: 50,
+            sp_defense: 50,
+        },
+        known_skill_ids: vec![],
+        status: None,
+    };
+    let defender = BattleMonster {
+        species_id: 2,
+        affinity: Affinity::Electric, // Fire vs Electric = unlisted = neutral (10)
+        level: 5,
+        current_hp: 100,
+        max_hp: 100,
+        stats: StatBlock {
+            hp: 100,
+            attack: 40,
+            defense: 40,
+            speed: 50,
+            sp_attack: 50,
+            sp_defense: 50,
+        },
+        known_skill_ids: vec![],
+        status: None,
+    };
+    let fire_stab_40 = SkillDef {
+        id: 99,
+        name: "TestFlame".to_string(),
+        affinity: Affinity::Fire,
+        power: 40,
+        accuracy: 100,
+        pp: 35,
+        sets_weather: None,
+        applies_status: None,
+    };
+    let (dmg, eff) = calc_damage(&attacker, &defender, &fire_stab_40, &chart, 85, None);
+    assert_eq!(
+        eff,
+        Effectiveness::Neutral,
+        "Fire vs Electric must be Neutral"
+    );
+    // STAB-first sequential: base=5 → stab=7 → type_mod=7 → variance=5
+    // Deferred: 5*15*10*85/10000=6  — the divergence proves the order matters.
+    assert_eq!(
+        dmg, 5,
+        "calc_damage uses STAB-first sequential (not deferred): 5 not 6"
+    );
+    assert_ne!(
+        dmg as u32, deferred,
+        "implementation chose sequential (5), not deferred (6)"
     );
 }
 

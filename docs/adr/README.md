@@ -13,10 +13,15 @@ Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 `0001` or `0035`+ → `docs/adr/`. Next free number: **`0104`**.
 
 **ADR numbering collision note:** the harness spec corpus also contains design
-ADRs numbered `0055`–`0057` with *different topics* from this project's
-implementation ADRs `0055`–`0057`. A bare `ADR-0055` in this project's context
-always means `docs/adr/0055-release-fail-loud-determinism-gate.md`; use the
-explicit path prefix `harness adr/0055` to cite the harness design ADR.
+ADRs numbered `0055`–`0057`; these cover the *same topics* as this project's
+implementation ADRs but at *offset numbers*: harness 0055 = project 0056
+(server-module-modularization); harness 0056 = project 0057
+(content-directory-glob-loading); harness 0057 = project 0080
+(generated-knowledge-bundle). Project 0055
+(release-fail-loud-determinism-gate) has no harness counterpart. A bare
+`ADR-0055` in this project's context always means
+`docs/adr/0055-release-fail-loud-determinism-gate.md`; use the explicit path
+prefix `harness adr/0055` to cite the harness design ADR.
 
 ## ADRs in `docs/adr/`
 
@@ -78,7 +83,7 @@ explicit path prefix `harness adr/0055` to cite the harness design ADR.
 | [0087](./0087-owner-scoped-view-private-conversation.md) | Owner-scoped `#[view]` over private `player_conversation` | M13.5c |
 | [0088](./0088-nightly-mutate-core-timeout-tolerance.md) | Nightly mutate-core repair: smoke-republish fix, timeout tolerance, 38 missed mutants killed | fix-nightly |
 | [0089](./0089-content-parse-caching.md) | Content parse caching on hot paths | M13.5d |
-| [0090](./0090-client-ux-correctness.md) | Client UX correctness — bait save/restore, zone-switch guard, adaptive interp delay, render perf | M13.5e |
+| [0090](./0090-adaptive-interp-delay.md) | Client UX correctness — bait save/restore, zone-switch guard, adaptive interp delay, render perf | M13.5e |
 | [0091](./0091-type-rigor-hardening.md) | Type-rigor hardening — GrantItem gate, quest match, coded decode, party-slot core check, marshal re-checks | M13.5f |
 | [0092](./0092-m14a-status-effect-rules.md) | Status-effect rules — layered DoT resolution, separate variance struct, pure game-core model | M14a |
 | [0093](./0093-m14b-server-status-persistence.md) | Server-side status-effect persistence — SpacetimeType StatusEffect, additive BattleMonster.status, resolve_full_turn in submit_attack | M14b |

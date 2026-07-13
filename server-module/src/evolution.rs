@@ -10,10 +10,7 @@
 use crate::guards::{log_reject, reject_if_in_battle, require_owner};
 use crate::marshal::{monster_to_instance, pub_from_monster, species_from_row};
 use crate::schema::{battle, fusion, monster, monster_pub, species_row, Fusion, Monster};
-use game_core::{
-    evolve as game_core_evolve, evolves_to as game_core_evolves_to, EvolutionCondition,
-    MonsterInstance,
-};
+use game_core::{evolve as game_core_evolve, resolve_evolution, Bond, EvolutionCondition, Level};
 use spacetimedb::{ReducerContext, Table};
 
 // Result types for seams (test-harness effects) — only used in #[cfg(test)] seam fns.
@@ -28,43 +25,23 @@ pub(crate) struct FuseEffect {
 }
 
 /// Server-compute the passive evolution target species (if any) for a monster.
-/// Delegates to the pure `game_core::evolves_to`, which checks level+bond against
-/// all evolution branches (no item applied). Used by:
+/// Delegates directly to `game_core::resolve_evolution` (the primitive — no item
+/// applied). Used by:
 /// - `evolve` reducer (after species transform)
 /// - `sync_content` seeding (when creating initial party-slotted monsters)
 /// - test fixtures seeding monsters with evolves_to pre-computed
 ///
-/// Returns None if the monster is not eligible to evolve passively.
+/// Returns None if the monster is not eligible to evolve passively, or if
+/// `monster.level` is out of the valid `Level` range (fail-safe).
 pub(crate) fn compute_evolves_to(
     evolutions: &[EvolutionCondition],
     monster: &Monster,
 ) -> Option<u32> {
-    // Build a minimal MonsterInstance for the evolves_to check (only level/bond matter)
-    let Ok(lv) = game_core::Level::new(monster.level) else {
+    let Ok(lv) = Level::new(monster.level) else {
         return None;
     };
-
-    let mi = MonsterInstance {
-        species_id: 0, // unused by evolves_to
-        nickname: None,
-        level: lv,
-        xp: game_core::Xp::new(0),                           // unused
-        ivs: game_core::IVs::new(0, 0, 0, 0, 0, 0).unwrap(), // unused
-        nature: game_core::Nature::new(game_core::NatureKind::Hardy), // unused
-        evs: game_core::EVs::zero(),                         // unused
-        bond: game_core::Bond::new(monster.bond),
-        current_hp: 0, // unused
-        derived_stats: game_core::StatBlock {
-            hp: 0,
-            attack: 0,
-            defense: 0,
-            speed: 0,
-            sp_attack: 0,
-            sp_defense: 0,
-        },
-        party_slot: None, // unused
-    };
-    game_core_evolves_to(evolutions, &mi)
+    let bond = Bond::new(monster.bond);
+    resolve_evolution(evolutions, lv, bond, None)
 }
 
 /// Evolve a monster into its passive-eligible target species (M10b, ADR-0061).

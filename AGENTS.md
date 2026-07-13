@@ -3,7 +3,7 @@
 Project-specific rules. Inherits the workspace `AGENTS.md` and `standards/`.
 
 - **Stack:** spacetimedb-game
-- **Toolchain (pinned):** Rust `1.96.0` (`rust-toolchain.toml` — rustup auto-selects, incl. `wasm32-unknown-unknown` + clippy/rustfmt) · spacetime `2.6.0` (global `spacetime version use 2.6.0`; no per-project file — verify with `spacetime --version`) · Node `24.13.1` (workspace `.tool-versions`) · wasm-pack `0.15.0` (no per-project pin file — `cargo install wasm-pack --version 0.15.0`; CI install action is pinned to `v0.15.0` (M3, ADR-0036); verify with `wasm-pack --version`). Bump deliberately.
+- **Toolchain (pinned):** Rust `1.96.0` (`rust-toolchain.toml` — rustup auto-selects, incl. `wasm32-unknown-unknown` + clippy/rustfmt) · spacetime `2.6.0` (global `spacetime version use 2.6.0`; no per-project file — verify with `spacetime --version`) · Node `24.13.1` (`client/package.json` `engines` — `>=24.13.1 <25`) · wasm-pack `0.15.0` (no per-project pin file — `cargo install wasm-pack --version 0.15.0`; CI install action is pinned to `v0.15.0` (M3, ADR-0036); verify with `wasm-pack --version`). Bump deliberately.
 - **Run:** `just setup` · `just test` · `just lint` · `just typecheck` · `just eval` · `just security` · `just ci`
 - **Done =** `just ci` green and meaningful (lint + typecheck + test + eval + security + client checks); the nightly workflow (`.github/workflows/nightly.yml`) enforces mutation + coverage off the PR path; ADR present for new deps/patterns.
 
@@ -17,8 +17,12 @@ Project-specific rules. Inherits the workspace `AGENTS.md` and `standards/`.
   `TEMPLATE.md` — see its `README.md`) and `docs/adr/` (**implementation ADRs `0001`,
   `0035`+**). Resolving a reference: milestone spec or ADR `0002`–`0034` → harness corpus;
   ADR `0035`+ → `docs/adr/`. (`0001` is mirrored in both.) **Exception:** the harness
-  spec corpus also contains design ADRs numbered `0055`–`0057` (different topics from
-  project ADRs `0055`–`0057`); a bare `ADR-0055` citation in this project's context
+  spec corpus also contains design ADRs numbered `0055`–`0057`; these cover the *same
+  topics* as project ADRs but at *offset numbers* (harness 0055 = project 0056
+  server-module-modularization; harness 0056 = project 0057
+  content-directory-glob-loading; harness 0057 = project 0080
+  generated-knowledge-bundle; project 0055 release-fail-loud-determinism-gate has
+  no harness counterpart). A bare `ADR-0055` citation in this project's context
   always means the project's `docs/adr/0055-*` unless an explicit `harness adr/0055`
   path prefix is used.
 - Tests are authored from acceptance criteria; the implementer doesn't grade its own tests.
