@@ -42,6 +42,13 @@ export function parseSpacetimeTypes(rawSrc) {
   // Regex: "SpacetimeType" inside an attribute, then (no } crossing) leading to
   // pub struct/enum NAME { body }. [^}]* stops before any }, preventing the scan
   // from crossing a preceding type's closing brace.
+  // CONSTRAINT (m14.5d-1a, red-team MINOR-1): the `\n\s*\}` body terminator stops
+  // at the first line that is whitespace+`}`. Multi-line struct-body enum variants
+  // (e.g. `Confuse {\n    turns: u8,\n},`) would cause the parser to terminate at
+  // the variant's own `}`, dropping subsequent variants. All SpacetimeType enum
+  // variants MUST use the inline struct form (`Variant { field: T },` one line) or
+  // unit form — never multi-line struct bodies. Enforce this as a code rule; the
+  // variant-add tooth in this eval still catches silent variant count changes.
   const spRe = /SpacetimeType[^}]*?pub\s+(struct|enum)\s+(\w+)\s*\{([\s\S]*?)\n\s*\}/g;
   let m = spRe.exec(src);
   while (m !== null) {
