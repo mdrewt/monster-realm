@@ -349,7 +349,7 @@ fn sproutlet_regeneration_heals_on_entry() {
 /// ability now fires on KO-auto-switch) — update the assertion direction and
 /// promote to a positive gate.
 #[test]
-fn rt_d6a_kо_auto_switch_does_not_call_entry_ability_status_immunity() {
+fn rt_d6a_ko_auto_switch_does_not_call_entry_ability_status_immunity() {
     use crate::combat::ability::AbilityEffect;
     use crate::combat::status::BattleStatusStore;
     use crate::combat::types::StatusEffect;
@@ -439,7 +439,7 @@ fn rt_d6a_kо_auto_switch_does_not_call_entry_ability_status_immunity() {
 /// Documents that auto-switch via KO does not trigger EntryHeal.
 /// The missing heal matters most when Sproutlet enters at low HP.
 #[test]
-fn rt_d6b_kо_auto_switch_does_not_call_entry_ability_entry_heal() {
+fn rt_d6b_ko_auto_switch_does_not_call_entry_ability_entry_heal() {
     use crate::combat::ability::AbilityEffect;
     use crate::combat::status::BattleStatusStore;
 
