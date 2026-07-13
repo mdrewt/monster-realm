@@ -7,7 +7,12 @@
 // Every test has a `// Kills:` comment explaining which wrong impl it catches.
 
 import * as fc from 'fast-check';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+// Parity guard: import generated enums READ-ONLY to derive variant lists at runtime.
+// These imports are allowed in test files only (not in store/rowConvert which must
+// stay SDK-agnostic). The algebraicType.value.variants path is probe-confirmed
+// (m14.5d plan Design Decision E).
+import { BattleOutcome, StatusEffect, WeatherEffect } from '../module_bindings/types';
 import type {
   StoreBattle,
   StoreBattleMonster,
@@ -15,7 +20,17 @@ import type {
   StoreSkillRow,
   StoreSpeciesRow,
 } from '../net/store';
-import { buildBattleViewModel, decideBattleOverlay, type OverlayState } from './battleModel';
+import {
+  type BattleOutcomeTag,
+  type BattleViewModel,
+  battleVMsEqual,
+  buildBattleViewModel,
+  decideBattleOverlay,
+  type OverlayState,
+  shouldSkipBattleRefresh,
+  statusBadge,
+  weatherBanner,
+} from './battleModel';
 import { hpPercent } from './boxModel';
 
 // ---------------------------------------------------------------------------
@@ -379,12 +394,17 @@ describe('buildBattleViewModel: canFlee follows outcome', () => {
     expect(vm!.canFlee).toBe(false);
   });
 
-  it('BITES: unknown outcome variant is treated as terminal (canFlee=false)', () => {
-    // Kills: an impl that uses a whitelist of terminal states instead of
-    // an exclusive check for 'Ongoing' — a future server variant leaks through.
+  it('BITES: unknown outcome variant returns null (not a VM with canFlee=false)', () => {
+    // CORRECTION (m14.5d, review refinement 5 / red-team 3): prior assertion was
+    // `vm!.canFlee === false`, valid under the old default-arm behaviour. New spec:
+    // unknown outcome tag → console.warn + return null (same as corrupt-team guard).
+    // The bite is STRENGTHENED: an impl returning a non-null VM for 'Draw' now fails
+    // both this test AND the dedicated unknown-outcome describe below.
+    // Rationale: unknown outcome → null is safer than silently producing a partial VM
+    // (the view's null-check hides the overlay rather than showing corrupt state).
     const b = makeBattle({ outcome: 'Draw' }); // hypothetical future variant
-    const vm = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
-    expect(vm!.canFlee).toBe(false);
+    const result = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(result).toBeNull();
   });
 });
 
@@ -452,17 +472,19 @@ describe('buildBattleViewModel: canSwap — ongoing AND valid bench member', () 
     expect(vm!.canSwap).toBe(false);
   });
 
-  it('BITES: unknown outcome variant treated as terminal (canSwap=false)', () => {
-    // Kills: an impl that uses a terminal-state blacklist instead of an exclusive
-    // 'Ongoing' check — a future server outcome variant enables swap on a dead battle.
+  it('BITES: unknown outcome variant returns null (not a VM with canSwap=false)', () => {
+    // CORRECTION (m14.5d, review refinement 5 / red-team 3): prior assertion was
+    // `vm!.canSwap === false`. New spec: unknown outcome → null (same null-guard
+    // path as corrupt-team). Bite is preserved and strengthened — a VM returned for
+    // 'Draw' fails this test and the dedicated unknown-outcome describe below.
     const active = battleMonster({ currentHp: 20, maxHp: 20 });
     const bench = battleMonster({ currentHp: 15, maxHp: 20 });
     const b = makeBattle({
       outcome: 'Draw',
       sideA: { active: 0, team: [active, bench] },
     });
-    const vm = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
-    expect(vm!.canSwap).toBe(false);
+    const result = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(result).toBeNull();
   });
 });
 
@@ -859,5 +881,594 @@ describe('battleModel M8.7e: decideBattleOverlay', () => {
         },
       ),
     );
+  });
+});
+
+// =============================================================================
+// m14.5d — weatherBanner pure function
+// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-2
+//
+// RED REASON: `weatherBanner` does not exist yet in battleModel.ts.
+// =============================================================================
+
+describe('battleModel m14.5d: weatherBanner — tag to label mapping', () => {
+  it('BITES: weatherBanner("Rain") returns non-empty label', () => {
+    // Kills: an impl that returns '' for Rain (treats every tag as unknown).
+    expect(weatherBanner('Rain').length).toBeGreaterThan(0);
+  });
+
+  it('BITES: weatherBanner("Sun") returns non-empty label', () => {
+    // Kills: an impl that only handles Rain and falls through to '' for Sun.
+    expect(weatherBanner('Sun').length).toBeGreaterThan(0);
+  });
+
+  it('BITES: weatherBanner("Sandstorm") returns non-empty label', () => {
+    // Kills: an impl missing the Sandstorm case.
+    expect(weatherBanner('Sandstorm').length).toBeGreaterThan(0);
+  });
+
+  it('BITES: weatherBanner("Hail") returns non-empty label', () => {
+    // Kills: an impl missing the Hail case.
+    expect(weatherBanner('Hail').length).toBeGreaterThan(0);
+  });
+
+  it('BITES: weatherBanner(null) returns empty string (no banner for no weather)', () => {
+    // Kills: an impl that returns a label even when weather is absent.
+    expect(weatherBanner(null)).toBe('');
+  });
+
+  it('BITES: weatherBanner(undefined) returns empty string', () => {
+    // Kills: an impl that crashes on undefined rather than returning ''.
+    expect(weatherBanner(undefined)).toBe('');
+  });
+
+  it('BITES: weatherBanner("UnknownWeather") warns + returns empty string (reviewer m-1)', () => {
+    // Identical contract to statusBadge's default arm: console.warn + ''.
+    // Kills: an impl that throws on unknown tags, or that returns a non-empty string.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = weatherBanner('UnknownWeather');
+    expect(result).toBe('');
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+});
+
+// =============================================================================
+// m14.5d — parity guards (js-path-parity-style; red-team 1/3)
+// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-3
+//
+// RED REASON: weatherBanner / BattleOutcomeTag / shouldSkipBattleRefresh / battleVMsEqual
+// do not yet exist; StatusEffect/WeatherEffect/BattleOutcome are imported from
+// module_bindings/types (already present) — those imports succeed now, but the
+// functions under test do not exist.
+//
+// ANTI-PATTERN: never iterate variants without the length anchor + known-member
+// check. An empty variants array must FAIL, never vacuously pass.
+// =============================================================================
+
+describe('battleModel m14.5d: parity — StatusEffect variants all produce non-empty statusBadge', () => {
+  it('BITES anchor: StatusEffect has exactly 5 variants and contains "Poison"', () => {
+    // Red-team 3 / proof-of-teeth: anchor BEFORE iterating. An empty variants array
+    // must cause this test to fail (length check), not vacuously pass the loop.
+    // Kills: a bindings regen that added/removed a variant without updating statusBadge.
+    const variants = (StatusEffect.algebraicType.value as { variants: Array<{ name: string }> })
+      .variants;
+    expect(variants.length).toBe(5);
+    expect(variants.map((v) => v.name)).toContain('Poison');
+  });
+
+  it('BITES: every StatusEffect variant name produces a non-empty statusBadge', () => {
+    // Kills: an impl where statusBadge has a gap for any current variant (not just
+    // a hypothetical future one). The length anchor in the prior test ensures we
+    // never vacuously pass an empty variants array.
+    // statusBadge is imported at the top of this file from battleModel.
+    const variants = (StatusEffect.algebraicType.value as { variants: Array<{ name: string }> })
+      .variants;
+    for (const v of variants) {
+      const badge = statusBadge(v.name);
+      expect(badge.length, `statusBadge("${v.name}") must be non-empty`).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('battleModel m14.5d: parity — WeatherEffect variants all produce non-empty weatherBanner', () => {
+  it('BITES anchor: WeatherEffect has exactly 4 variants and contains "Rain"', () => {
+    // Proof-of-teeth anchor: an empty/missing variants array must fail, never pass.
+    // Kills: a bindings regen that changed the weather variant set without updating weatherBanner.
+    const variants = (WeatherEffect.algebraicType.value as { variants: Array<{ name: string }> })
+      .variants;
+    expect(variants.length).toBe(4);
+    expect(variants.map((v) => v.name)).toContain('Rain');
+  });
+
+  it('BITES: every WeatherEffect variant name produces a non-empty weatherBanner', () => {
+    // Kills: an impl where weatherBanner is missing any current WeatherEffect variant.
+    // The length anchor ensures we cannot vacuously pass an empty array.
+    const variants = (WeatherEffect.algebraicType.value as { variants: Array<{ name: string }> })
+      .variants;
+    for (const v of variants) {
+      const label = weatherBanner(v.name);
+      expect(label.length, `weatherBanner("${v.name}") must be non-empty`).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('battleModel m14.5d: parity — BattleOutcome variants all accepted by buildBattleViewModel', () => {
+  it('BITES anchor: BattleOutcome has exactly 4 variants and contains "Ongoing"', () => {
+    // Proof-of-teeth anchor: a bindings regen that removed a variant must fail here,
+    // not silently iterate an empty array. An empty variants array must fail this test.
+    // Kills: an impl that hardcodes a 3-variant union and misses a new server variant.
+    const variants = (BattleOutcome.algebraicType.value as { variants: Array<{ name: string }> })
+      .variants;
+    expect(variants.length).toBe(4);
+    expect(variants.map((v) => v.name)).toContain('Ongoing');
+  });
+
+  it('BITES: every BattleOutcome variant name is accepted by buildBattleViewModel (non-null VM, outcome equals name)', () => {
+    // Kills: an impl that returns null for a valid BattleOutcome variant name
+    // (e.g. if buildBattleViewModel treats all non-Ongoing as unknown → null).
+    // The BattleOutcomeTag union must include every variant the server can emit.
+    // Red-team 3: 'Ongoing' → non-null VM, outcome==='Ongoing'; etc.
+    const variants = (BattleOutcome.algebraicType.value as { variants: Array<{ name: string }> })
+      .variants;
+    for (const v of variants) {
+      const b = makeBattle({ outcome: v.name });
+      const vm = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+      expect(
+        vm,
+        `buildBattleViewModel with outcome="${v.name}" must return non-null`,
+      ).not.toBeNull();
+      expect(vm!.outcome, `vm.outcome must equal "${v.name}"`).toBe(v.name as BattleOutcomeTag);
+    }
+  });
+});
+
+// =============================================================================
+// m14.5d — unknown outcome: buildBattleViewModel returns null + warns (red-team 3)
+// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-3
+//
+// RED REASON: current buildBattleViewModel returns a VM with outcome:'Draw' (string)
+// rather than returning null. The new spec requires: unknown outcome tag → console.warn
+// + return null (same as corrupt-team guard). This replaces the `default: text = ...`
+// arm in #renderOutcome.
+// =============================================================================
+
+describe('battleModel m14.5d: unknown outcome → buildBattleViewModel returns null + warns', () => {
+  it('BITES: StoreBattle with outcome:"Draw" → buildBattleViewModel returns null', () => {
+    // Red-team 3 / review refinement 5: unknown outcome tag → null (not a VM with
+    // outcome:'Draw'). This is a BEHAVIOUR CHANGE from the existing default arm.
+    // Wrong impl killed: current impl returns a VM with outcome==='Draw' (string).
+    const b = makeBattle({ outcome: 'Draw' });
+    const result = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(result).toBeNull();
+  });
+
+  it('BITES: buildBattleViewModel warns when outcome is unknown', () => {
+    // Kills: an impl that silently returns null without console.warn (making it
+    // impossible to detect missing union members in development).
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const b = makeBattle({ outcome: 'FutureTournamentDraw' });
+    buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('BITES: unknown outcome guard does NOT fire for valid BattleOutcomeTag values', () => {
+    // Regression guard: the null-on-unknown must NOT fire for the 4 known variants.
+    // Kills: an over-eager impl that rejects all non-'Ongoing' outcomes as unknown.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    for (const outcome of ['Ongoing', 'SideAWins', 'SideBWins', 'Fled'] as const) {
+      const b = makeBattle({ outcome });
+      const vm = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+      expect(vm, `outcome="${outcome}" must produce a non-null VM`).not.toBeNull();
+    }
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+});
+
+// =============================================================================
+// m14.5d — BattleViewModel.weather propagation via buildBattleViewModel
+// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-2
+//
+// RED REASON: BattleViewModel does not yet have a `weather` field; StoreBattle
+// does not yet have a `weather` field; weatherBanner does not yet exist.
+// =============================================================================
+
+describe('battleModel m14.5d: BattleViewModel.weather propagation', () => {
+  it('BITES: battle.weather={tag:"Rain",turnsRemaining:3} → vm.weather non-null with turnsRemaining:3 and non-empty label', () => {
+    // Kills: an impl that ignores StoreBattle.weather when building the VM.
+    // Also kills: an impl that maps weather but produces an empty label.
+    const b = makeBattle({
+      weather: { tag: 'Rain', turnsRemaining: 3 },
+    } as Partial<StoreBattle>);
+    const vm = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(vm).not.toBeNull();
+    expect(vm!.weather).not.toBeNull();
+    expect(vm!.weather!.turnsRemaining).toBe(3);
+    expect(vm!.weather!.label.length).toBeGreaterThan(0);
+  });
+
+  it('BITES: battle.weather=null → vm.weather === null', () => {
+    // Kills: an impl that fabricates a weather VM even when the store says no weather.
+    const b = makeBattle({ weather: null } as Partial<StoreBattle>);
+    const vm = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+    expect(vm).not.toBeNull();
+    expect(vm!.weather).toBeNull();
+  });
+});
+
+// =============================================================================
+// m14.5d — battleVMsEqual field-by-field equality
+// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-4
+//
+// RED REASON: battleVMsEqual does not exist yet in battleModel.ts.
+// =============================================================================
+
+/** Build a full BattleViewModel for equality tests — uses buildBattleViewModel
+ *  with deterministic inputs so two calls with identical args produce identical VMs. */
+function makeFullVM(overrides: Partial<StoreBattle> = {}): BattleViewModel {
+  const b = makeBattle({
+    battleId: 10n,
+    turnNumber: 2,
+    outcome: 'Ongoing',
+    weather: null,
+    sideA: {
+      active: 0,
+      team: [battleMonster({ speciesId: 1, currentHp: 30, maxHp: 40, knownSkillIds: [1, 2] })],
+    },
+    sideB: {
+      active: 0,
+      team: [battleMonster({ speciesId: 2, currentHp: 20, maxHp: 35 })],
+    },
+    opponentMonsterIds: [],
+    ...overrides,
+  } as Partial<StoreBattle>);
+  const vm = buildBattleViewModel(
+    b,
+    new Map([
+      [1, skillRow(1, { name: 'Ember', power: 40 })],
+      [2, skillRow(2, { name: 'Tackle', power: 35 })],
+    ]),
+    makeSpeciesMap(speciesRow(1, 'Flameling'), speciesRow(2, 'Aqualing')),
+    [{ itemId: 7, name: 'Lure Berry', recruitBonus: 150, count: 3 }],
+  );
+  if (vm === null) throw new Error('makeFullVM: buildBattleViewModel returned null');
+  return vm;
+}
+
+describe('battleModel m14.5d: battleVMsEqual — identical VMs → true', () => {
+  it('BITES: two independently built identical VMs are equal', () => {
+    // Kills: an impl that always returns false (reference comparison, not field compare).
+    const a = makeFullVM();
+    const b = makeFullVM();
+    expect(battleVMsEqual(a, b)).toBe(true);
+  });
+});
+
+describe('battleModel m14.5d: battleVMsEqual — each field class flips equality', () => {
+  it('BITES: differing turnNumber → not equal', () => {
+    // Kills: an impl that omits turnNumber from the comparison.
+    const a = makeFullVM({ turnNumber: 1 });
+    const b = makeFullVM({ turnNumber: 2 });
+    expect(battleVMsEqual(a, b)).toBe(false);
+  });
+
+  it('BITES: differing playerCard.currentHp → not equal', () => {
+    // Kills: an impl that skips HP fields in the card comparison.
+    const a = makeFullVM({
+      sideA: {
+        active: 0,
+        team: [battleMonster({ speciesId: 1, currentHp: 30, maxHp: 40, knownSkillIds: [1, 2] })],
+      },
+    } as Partial<StoreBattle>);
+    const b = makeFullVM({
+      sideA: {
+        active: 0,
+        team: [battleMonster({ speciesId: 1, currentHp: 15, maxHp: 40, knownSkillIds: [1, 2] })],
+      },
+    } as Partial<StoreBattle>);
+    expect(battleVMsEqual(a, b)).toBe(false);
+  });
+
+  it('BITES: playerCard.status null vs "PSN" → not equal', () => {
+    // Kills: an impl that ignores status in the card comparison (weather churn fix).
+    const a = makeFullVM({
+      sideA: {
+        active: 0,
+        team: [
+          battleMonster({
+            speciesId: 1,
+            currentHp: 30,
+            maxHp: 40,
+            knownSkillIds: [1, 2],
+            status: null,
+          }),
+        ],
+      },
+    } as Partial<StoreBattle>);
+    const b = makeFullVM({
+      sideA: {
+        active: 0,
+        team: [
+          battleMonster({
+            speciesId: 1,
+            currentHp: 30,
+            maxHp: 40,
+            knownSkillIds: [1, 2],
+            status: { tag: 'Poison' },
+          }),
+        ],
+      },
+    } as Partial<StoreBattle>);
+    expect(battleVMsEqual(a, b)).toBe(false);
+  });
+
+  it('BITES: weather null vs {tag:"Rain",turnsRemaining:3} → not equal (Escape→weather-arrives→re-show path)', () => {
+    // Red-team 4 / review refinement 4: the shouldSkipBattleRefresh visible-guard
+    // test covers the escape path; this test covers the equality predicate that
+    // makes it work. A stale-hidden escape followed by a weather-effect arriving
+    // must re-render — so two VMs differing only on weather must NOT be equal.
+    // Kills: an impl that omits weather from battleVMsEqual.
+    const a = makeFullVM({ weather: null } as Partial<StoreBattle>);
+    const b = makeFullVM({ weather: { tag: 'Rain', turnsRemaining: 3 } } as Partial<StoreBattle>);
+    expect(battleVMsEqual(a, b)).toBe(false);
+  });
+
+  it('BITES: weather same tag but different turnsRemaining → not equal', () => {
+    // Kills: an impl that compares weather.tag but ignores turnsRemaining (the
+    // countdown would freeze on screen; players need to see it tick down).
+    const a = makeFullVM({
+      weather: { tag: 'Rain', turnsRemaining: 3 },
+    } as Partial<StoreBattle>);
+    const b = makeFullVM({
+      weather: { tag: 'Rain', turnsRemaining: 2 },
+    } as Partial<StoreBattle>);
+    expect(battleVMsEqual(a, b)).toBe(false);
+  });
+
+  it('BITES: weather different tag → not equal', () => {
+    // Kills: an impl that ignores weather.tag (compares only turnsRemaining).
+    const a = makeFullVM({
+      weather: { tag: 'Rain', turnsRemaining: 3 },
+    } as Partial<StoreBattle>);
+    const b = makeFullVM({
+      weather: { tag: 'Sun', turnsRemaining: 3 },
+    } as Partial<StoreBattle>);
+    expect(battleVMsEqual(a, b)).toBe(false);
+  });
+
+  it('BITES: skills array length differs → not equal (reviewer B-2: length-first)', () => {
+    // Reviewer B-2: length check FIRST before per-element compare.
+    // Kills: an impl that iterates elements without checking length first (could
+    // produce true when the shorter array is a prefix of the longer one).
+    const a = makeFullVM({
+      sideA: {
+        active: 0,
+        team: [battleMonster({ speciesId: 1, currentHp: 30, maxHp: 40, knownSkillIds: [1] })],
+      },
+    } as Partial<StoreBattle>);
+    const b = makeFullVM({
+      sideA: {
+        active: 0,
+        team: [battleMonster({ speciesId: 1, currentHp: 30, maxHp: 40, knownSkillIds: [1, 2] })],
+      },
+    } as Partial<StoreBattle>);
+    expect(battleVMsEqual(a, b)).toBe(false);
+  });
+
+  it('BITES: bench length differs → not equal (reviewer B-2: length-first)', () => {
+    // Kills: an impl that skips bench in the comparison or checks it without
+    // a length-first guard (a bench addition must re-render swap options).
+    const baseA = makeBattle({
+      battleId: 10n,
+      turnNumber: 2,
+      outcome: 'Ongoing',
+      weather: null,
+      sideA: {
+        active: 0,
+        team: [battleMonster({ speciesId: 1, currentHp: 30, maxHp: 40, knownSkillIds: [1, 2] })],
+      },
+      sideB: { active: 0, team: [battleMonster({ speciesId: 2, currentHp: 20, maxHp: 35 })] },
+      opponentMonsterIds: [],
+    } as Partial<StoreBattle>);
+    const baseB = makeBattle({
+      battleId: 10n,
+      turnNumber: 2,
+      outcome: 'Ongoing',
+      weather: null,
+      sideA: {
+        active: 0,
+        team: [
+          battleMonster({ speciesId: 1, currentHp: 30, maxHp: 40, knownSkillIds: [1, 2] }),
+          battleMonster({ speciesId: 3, currentHp: 25, maxHp: 30, knownSkillIds: [] }), // bench member
+        ],
+      },
+      sideB: { active: 0, team: [battleMonster({ speciesId: 2, currentHp: 20, maxHp: 35 })] },
+      opponentMonsterIds: [],
+    } as Partial<StoreBattle>);
+    const skillMap = new Map([
+      [1, skillRow(1, { name: 'Ember', power: 40 })],
+      [2, skillRow(2, { name: 'Tackle', power: 35 })],
+    ]);
+    const sMap = makeSpeciesMap(
+      speciesRow(1, 'Flameling'),
+      speciesRow(2, 'Aqualing'),
+      speciesRow(3, 'Leafling'),
+    );
+    const vmA = buildBattleViewModel(baseA, skillMap, sMap, []);
+    const vmB = buildBattleViewModel(baseB, skillMap, sMap, []);
+    expect(vmA).not.toBeNull();
+    expect(vmB).not.toBeNull();
+    expect(battleVMsEqual(vmA!, vmB!)).toBe(false);
+  });
+
+  it('BITES: baitOptions length differs → not equal', () => {
+    // Kills: an impl that omits baitOptions from the comparison
+    // (an item being added/removed from inventory must re-render the selector).
+    const bA = makeBattle({
+      battleId: 10n,
+      turnNumber: 2,
+      outcome: 'Ongoing',
+      weather: null,
+      sideA: {
+        active: 0,
+        team: [battleMonster({ speciesId: 1, currentHp: 30, maxHp: 40, knownSkillIds: [1, 2] })],
+      },
+      sideB: { active: 0, team: [battleMonster({ speciesId: 2, currentHp: 20, maxHp: 35 })] },
+      opponentMonsterIds: [],
+    } as Partial<StoreBattle>);
+    const skillMap = new Map([
+      [1, skillRow(1, { name: 'Ember', power: 40 })],
+      [2, skillRow(2, { name: 'Tackle', power: 35 })],
+    ]);
+    const sMap = makeSpeciesMap(speciesRow(1, 'Flameling'), speciesRow(2, 'Aqualing'));
+    const vmA = buildBattleViewModel(bA, skillMap, sMap, [
+      { itemId: 7, name: 'Lure Berry', recruitBonus: 150, count: 3 },
+    ]);
+    const vmB = buildBattleViewModel(bA, skillMap, sMap, [
+      { itemId: 7, name: 'Lure Berry', recruitBonus: 150, count: 3 },
+      { itemId: 9, name: 'Sweet Bait', recruitBonus: 250, count: 1 },
+    ]);
+    expect(vmA).not.toBeNull();
+    expect(vmB).not.toBeNull();
+    expect(battleVMsEqual(vmA!, vmB!)).toBe(false);
+  });
+
+  it('BITES: baitOptions count differs → not equal (inventory change must re-render)', () => {
+    // The plan explicitly calls out baitOptions.count in the compare as intentional:
+    // inventory changes MUST re-render. Kills: an impl that compares itemId but not count.
+    const bBase = makeBattle({
+      battleId: 10n,
+      turnNumber: 2,
+      outcome: 'Ongoing',
+      weather: null,
+      sideA: {
+        active: 0,
+        team: [battleMonster({ speciesId: 1, currentHp: 30, maxHp: 40, knownSkillIds: [1, 2] })],
+      },
+      sideB: { active: 0, team: [battleMonster({ speciesId: 2, currentHp: 20, maxHp: 35 })] },
+      opponentMonsterIds: [],
+    } as Partial<StoreBattle>);
+    const skillMap = new Map([
+      [1, skillRow(1, { name: 'Ember', power: 40 })],
+      [2, skillRow(2, { name: 'Tackle', power: 35 })],
+    ]);
+    const sMap = makeSpeciesMap(speciesRow(1, 'Flameling'), speciesRow(2, 'Aqualing'));
+    const vmA = buildBattleViewModel(bBase, skillMap, sMap, [
+      { itemId: 7, name: 'Lure Berry', recruitBonus: 150, count: 3 },
+    ]);
+    const vmB = buildBattleViewModel(bBase, skillMap, sMap, [
+      { itemId: 7, name: 'Lure Berry', recruitBonus: 150, count: 1 }, // count changed
+    ]);
+    expect(vmA).not.toBeNull();
+    expect(vmB).not.toBeNull();
+    expect(battleVMsEqual(vmA!, vmB!)).toBe(false);
+  });
+
+  it('BITES: differing outcome → not equal', () => {
+    // Kills: an impl that omits outcome from the comparison.
+    const a = makeFullVM({ outcome: 'Ongoing' });
+    const b = makeFullVM({ outcome: 'SideAWins' });
+    expect(battleVMsEqual(a, b)).toBe(false);
+  });
+
+  it('BITES: differing canRecruit → not equal', () => {
+    // Kills: an impl that omits canRecruit from the comparison.
+    // wild: opponentMonsterIds:[] vs pvp: opponentMonsterIds:[2n]
+    const a = makeFullVM({ opponentMonsterIds: [] });
+    const b = makeFullVM({ opponentMonsterIds: [2n] });
+    expect(battleVMsEqual(a, b)).toBe(false);
+  });
+
+  it('BITES: differing battleId (bigint) → not equal (no Number() coercion)', () => {
+    // Bigint comparison must use === directly; Number() is lossy for u64 values
+    // above 2^53. Kills: an impl using Number(battleId) for comparison.
+    const a = makeFullVM({ battleId: 9007199254740993n }); // 2^53 + 1
+    const b = makeFullVM({ battleId: 9007199254740992n }); // 2^53 (same when Number()-cast)
+    expect(battleVMsEqual(a, b)).toBe(false);
+  });
+
+  it('BITES: equal bigint battleIds → no false-negative (bigint === bigint is correct)', () => {
+    // Kills: an impl that uses Object.is(Number(a), Number(b)) which would coerce
+    // both 9007199254740993n and 9007199254740992n to the same number.
+    const a = makeFullVM({ battleId: 9007199254740993n });
+    const b = makeFullVM({ battleId: 9007199254740993n });
+    expect(battleVMsEqual(a, b)).toBe(true);
+  });
+});
+
+// =============================================================================
+// m14.5d — shouldSkipBattleRefresh pure guard (red-team 4 / review refinement 4)
+// SOURCE OF TRUTH: specs/monster-realm-v2/M14.5-eighth-review-residuals.spec.md §14.5d-4
+//
+// RED REASON: shouldSkipBattleRefresh does not exist yet in battleModel.ts.
+//
+// Contract: returns true ONLY when visible && both non-null && battleVMsEqual(lastVm, vm).
+// All other combinations → false (never skip).
+// =============================================================================
+
+describe('battleModel m14.5d: shouldSkipBattleRefresh — skip conditions', () => {
+  it('BITES: (visible=true, equal VMs) → true (the only skip path)', () => {
+    // Kills: an impl that always returns false (disables the optimisation entirely).
+    const vm = makeFullVM();
+    const vmCopy = makeFullVM(); // independently built, structurally identical
+    expect(shouldSkipBattleRefresh(true, vm, vmCopy)).toBe(true);
+  });
+
+  it('BITES: (visible=false, equal VMs) → false (hidden → never skip)', () => {
+    // Review refinement 7: while the view is hidden, the check must never skip.
+    // A skip while hidden causes the re-show render to be dropped (stale-hidden trap).
+    // Kills: an impl that skips based only on VM equality without the visible guard.
+    const vm = makeFullVM();
+    const vmCopy = makeFullVM();
+    expect(shouldSkipBattleRefresh(false, vm, vmCopy)).toBe(false);
+  });
+
+  it('BITES: (visible=true, lastVm=null) → false (after reset, same VM re-renders)', () => {
+    // After the hide-branch resets lastBattleVM=null, the next call must NOT skip.
+    // Kills: an impl that treats null as "equal to anything".
+    const vm = makeFullVM();
+    expect(shouldSkipBattleRefresh(true, null, vm)).toBe(false);
+  });
+
+  it('BITES: (visible=true, vm=null) → false (null VM is not a valid skip)', () => {
+    // Kills: an impl that returns true when vm is null (would prevent the hide render).
+    const vm = makeFullVM();
+    expect(shouldSkipBattleRefresh(true, vm, null)).toBe(false);
+  });
+
+  it('BITES: (visible=true, both null) → false (null,null → never skip)', () => {
+    // Kills: an impl that treats (null === null) as equality and skips.
+    expect(shouldSkipBattleRefresh(true, null, null)).toBe(false);
+  });
+
+  it('BITES: (visible=false, both null) → false', () => {
+    // Symmetric: hidden + both null → false.
+    expect(shouldSkipBattleRefresh(false, null, null)).toBe(false);
+  });
+
+  it('BITES: vmNoWeather vs vmWithWeather → false (Escape→weather-arrives→re-show path)', () => {
+    // Red-team 4 review refinement 4: if the player presses Escape (bare-hide at
+    // main.ts:489) and then a weather effect arrives on the next batch, the next
+    // visible=false call must not skip (already covered), but after re-show the
+    // first call with visible=true must also not skip because the VMs differ.
+    // This test covers the VM-differ case: noWeather vs withWeather.
+    // Kills: an impl that ignores weather in battleVMsEqual or shouldSkipBattleRefresh.
+    const vmNoWeather = makeFullVM({ weather: null } as Partial<StoreBattle>);
+    const vmWithWeather = makeFullVM({
+      weather: { tag: 'Rain', turnsRemaining: 3 },
+    } as Partial<StoreBattle>);
+    expect(shouldSkipBattleRefresh(true, vmNoWeather, vmWithWeather)).toBe(false);
+  });
+
+  it('BITES: after hide-branch reset (lastVm=null), same VM still re-renders → false', () => {
+    // Simulates: hide branch sets lastBattleVM=null, then the next refresh
+    // arrives with the same VM it had before. Must NOT skip — the view needs
+    // to re-render to be visible again.
+    // Kills: an impl that caches the pre-hide VM and re-uses it after hide.
+    const vm = makeFullVM();
+    // lastVm is null (reset on hide), vm is the new one
+    expect(shouldSkipBattleRefresh(true, null, vm)).toBe(false);
   });
 });
