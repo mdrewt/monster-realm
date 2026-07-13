@@ -10,7 +10,7 @@
 //! ADR-0056 — keep it stable.
 
 use crate::battle::{write_back_battle_results, write_back_party_hp};
-use crate::guards::log_reject;
+use crate::guards::{escrowed_item_qty, log_reject};
 // `grant_item` is dev-gated (its only caller `grant_bait` is too — an ungated
 // import would be an unused-import warning in the non-dev build, red-team F6);
 // `consume_one` is ungated (its caller `attempt_recruit` always compiles).
@@ -22,7 +22,8 @@ use crate::marshal::{
     type_chart_from_rows,
 };
 use crate::schema::{
-    battle, battle_wild, item_row, monster, monster_pub, species_row, type_relation_row,
+    battle, battle_wild, inventory, item_row, monster, monster_pub, species_row, trade_offer,
+    type_relation_row,
 };
 use crate::PARTY_SLOT_NONE;
 use game_core::combat::resolve::resolve_recruit_failure;
@@ -91,6 +92,29 @@ pub fn attempt_recruit(
         let rb = item.recruit_bonus;
         if rb == 0 {
             let e = "item is not bait".to_string();
+            log_reject("attempt_recruit", me, &e);
+            return Err(e);
+        }
+        // Trade escrow guard (TR-12, ADR-0106): bait item cannot be from an escrowed stack.
+        let escrowed = escrowed_item_qty(
+            ctx.db
+                .trade_offer()
+                .initiator()
+                .filter(me)
+                .chain(ctx.db.trade_offer().counterparty().filter(me)),
+            me,
+            id,
+        );
+        let current_count = ctx
+            .db
+            .inventory()
+            .owner_identity()
+            .filter(me)
+            .find(|r| r.item_id == id)
+            .map(|r| r.count)
+            .unwrap_or(0);
+        if current_count.saturating_sub(escrowed) == 0 {
+            let e = "item is in an active trade".to_string();
             log_reject("attempt_recruit", me, &e);
             return Err(e);
         }

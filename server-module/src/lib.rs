@@ -34,6 +34,7 @@ mod npc;
 mod raising;
 mod schema;
 mod taming;
+mod trading;
 
 #[cfg(test)]
 #[path = "m14_5d_1a_tests.rs"]
@@ -177,6 +178,10 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
 #[spacetimedb::reducer(client_disconnected)]
 pub fn on_disconnect(ctx: &ReducerContext) {
     let me = ctx.sender;
+    // Cancel any active trade offers (TR-18, ADR-0106). Must run before player row
+    // deletion so the offer lookup still resolves player identity. No assets move —
+    // assets are never physically escrowed (ADR-0106 D3). Uses indexed filters.
+    trading::cancel_trades_on_disconnect(ctx, me);
     // Clean up transient conversation row so a reconnecting player cannot
     // advance a stale dialogue from a different zone/position (RT-ADV-01).
     ctx.db.player_conversation().owner_identity().delete(me);

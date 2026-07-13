@@ -436,6 +436,59 @@ pub struct HealCooldown {
     pub last_heal_at_ms: i64,
 }
 
+// --- M15a trade tables (ADR-0106) --------------------------------------------
+
+/// An active trade offer between two players (M15, ADR-0106).
+///
+/// PUBLIC so both parties can subscribe and see the offer. The display data
+/// (`initiator_cards` / `counterparty_cards`) contains only the public-projection
+/// field set of the offered monsters — no IVs/EVs/nature (ADR-0015 / TR-19).
+/// The currency/item amounts are visible to all clients; this mirrors the existing
+/// `inventory` and `player_wallet` public-leak pattern (both already world-readable
+/// without transport RLS — tracked for M16). No further privacy improvement is
+/// possible in SpacetimeDB 2.6.0 without per-row RLS.
+///
+/// SpacetimeDB reducers execute serially (single-threaded WASM): a `confirm_trade`
+/// read-check-delete is atomic w.r.t. all other reducers — no TOCTOU possible
+/// (ADR-0106 D8). Do NOT add physical escrow rows; the guard-in-place pattern is
+/// the SSOT invariant.
+///
+/// Terminal state: the row is DELETED (not updated to Cancelled) — mirrors battle
+/// terminal GC (M12.5e, ADR-0077). This means no trade history is retained; a
+/// history table is a follow-up concern (M16+).
+#[spacetimedb::table(name = trade_offer, public)]
+pub struct TradeOffer {
+    #[primary_key]
+    #[auto_inc]
+    pub trade_id: u64,
+    /// Trade initiator (the player who called `propose_trade`).
+    #[index(btree)]
+    pub initiator: Identity,
+    /// Designated counterparty.
+    #[index(btree)]
+    pub counterparty: Identity,
+    /// Monster IDs offered by the initiator (escrowed; may be empty).
+    pub initiator_monster_ids: Vec<u64>,
+    /// Items offered by the initiator (escrowed; may be empty).
+    pub initiator_items: Vec<game_core::TradeItem>,
+    /// Currency offered by the initiator (0 = none).
+    pub initiator_currency: u64,
+    /// Monster IDs offered by the counterparty (escrowed; may be empty).
+    pub counterparty_monster_ids: Vec<u64>,
+    /// Items offered by the counterparty (escrowed; may be empty).
+    pub counterparty_items: Vec<game_core::TradeItem>,
+    /// Currency offered by the counterparty (0 = none).
+    pub counterparty_currency: u64,
+    /// Display-only snapshots of the initiator's offered monsters (no hidden genes — ADR-0015 / TR-19).
+    pub initiator_cards: Vec<game_core::MonsterCard>,
+    /// Display-only snapshots of the counterparty's offered monsters (no hidden genes — ADR-0015 / TR-19).
+    pub counterparty_cards: Vec<game_core::MonsterCard>,
+    /// Lifecycle state. Pending → ConfirmedByCounterparty → (deleted on swap or cancel).
+    pub status: game_core::TradeStatus,
+    /// Timestamp (server clock ms) when the offer was created.
+    pub created_at_ms: i64,
+}
+
 // --- M13a currency table (ADR-0081) ------------------------------------------
 
 /// PRIVATE per-player wallet — one row per player (PK = owner_identity).

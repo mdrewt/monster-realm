@@ -21,6 +21,7 @@ pub mod npc;
 pub mod quest;
 pub mod raising;
 pub mod taming;
+pub mod trading;
 pub mod types;
 pub mod world;
 
@@ -69,6 +70,11 @@ pub use raising::{apply_care, focus_train, CareError, FocusTrainError, FocusTrai
 pub use taming::{
     attempt_recruit, encounter_triggers, recruit_chance, resolve_encounter, roll_encounter,
     EncounterEntry, EncounterTable, WildSpawn, MISSING_HP_FACTOR, RECRUIT_BASE_RATE,
+};
+pub use trading::{
+    build_swap_plan, make_monster_card, validate_proposal, CurrencyTransfer, ItemTransfer,
+    LiveMonsterOwner, MonsterCard, MonsterTransfer, ProposalSide, SwapPlan, TradeError, TradeItem,
+    TradeSide, TradeStatus,
 };
 pub use types::{ActionState, CharacterState, Direction, Millis, MoveInput, TileKind, TilePos};
 pub use world::{

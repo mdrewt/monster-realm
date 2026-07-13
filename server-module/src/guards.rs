@@ -122,6 +122,89 @@ pub(crate) fn check_team_coupling(team_len: usize, ids_len: usize) -> Result<(),
     Ok(())
 }
 
+// --- Trade escrow guards (M15a, ADR-0106) ------------------------------------
+//
+// Three focused helpers that mirror `reject_if_in_battle`: pure predicates over
+// iterators of `TradeOffer` rows. Call sites chain initiator-filtered and
+// counterparty-filtered iterators so the guard sees ALL offers for the owner
+// regardless of role. "Active" = Pending OR ConfirmedByCounterparty.
+//
+// SpacetimeDB reducers are single-threaded WASM: read-check-write within one
+// reducer is atomic w.r.t. all other reducers — no TOCTOU possible (ADR-0106 D8).
+
+/// Reject if the monster is in any active trade offer (TR-2..TR-7, TR-11).
+/// Pure predicate; mirrors `reject_if_in_battle` (ADR-0106 D1).
+///
+/// PROOF-OF-TEETH: removing this call from any reducer's escrow check causes the
+/// corresponding `TEETH(reject_if_monster_in_trade)` test to fail (returns Ok
+/// when the guard is absent).
+pub(crate) fn reject_if_monster_in_trade(
+    mut trades: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::TradeOffer>>,
+    monster_id: u64,
+) -> Result<(), String> {
+    let in_trade = trades.any(|t| {
+        let t = t.borrow();
+        t.status.is_active()
+            && (t.initiator_monster_ids.contains(&monster_id)
+                || t.counterparty_monster_ids.contains(&monster_id))
+    });
+    if in_trade {
+        return Err("monster is in an active trade".to_string());
+    }
+    Ok(())
+}
+
+/// Returns the total quantity of `item_id` escrowed in active trade offers for this
+/// player (either as initiator or counterparty — the caller passes an already-filtered
+/// iterator covering both roles). Saturating add prevents overflow on pathological inputs
+/// (MI-2, ADR-0106 D9).
+///
+/// Usage at call site: `available = inventory_count - escrowed_item_qty(iter, item_id)`.
+/// Reject if `requested_qty > available`.
+pub(crate) fn escrowed_item_qty(
+    trades: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::TradeOffer>>,
+    owner: spacetimedb::Identity,
+    item_id: u32,
+) -> u32 {
+    trades
+        .filter(|t| t.borrow().status.is_active())
+        .map(|t| {
+            let t = t.borrow();
+            let items = if t.initiator == owner {
+                &t.initiator_items
+            } else {
+                &t.counterparty_items
+            };
+            items
+                .iter()
+                .filter(|i| i.item_id == item_id)
+                .map(|i| i.qty)
+                .fold(0u32, |acc, q| acc.saturating_add(q))
+        })
+        .fold(0u32, |acc, q| acc.saturating_add(q))
+}
+
+/// Returns the total currency escrowed by `owner` in active trade offers.
+///
+/// Usage at call site: `available = balance - escrowed_currency_amount(iter, owner)`.
+/// Reject if `requested_spend > available`.
+pub(crate) fn escrowed_currency_amount(
+    trades: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::TradeOffer>>,
+    owner: spacetimedb::Identity,
+) -> u64 {
+    trades
+        .filter(|t| t.borrow().status.is_active())
+        .map(|t| {
+            let t = t.borrow();
+            if t.initiator == owner {
+                t.initiator_currency
+            } else {
+                t.counterparty_currency
+            }
+        })
+        .fold(0u64, |acc, c| acc.saturating_add(c))
+}
+
 /// Reject if the monster is in an ongoing battle (escrowed, ADR-0061).
 /// Pure predicate: checks if any battle row has the monster_id in either party
 /// AND has outcome == Ongoing. Used by evolve/fuse reducers (M10b).
