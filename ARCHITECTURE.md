@@ -996,5 +996,10 @@ pass `AbilityStore`; `apply_entry_ability` called at battle start for both sides
 `CONTENT_VERSION 10→11`; eval baselines updated; 7 EARS gating tests; auto-switch-on-KO gap
 (D6) documented for Phase C. ADR next-free = 0101.
 
+**M14.5d-1a** (item-row cure-status column — ADR-0105, PR #162) complete: `item_row.cure_status:
+Option<StatusKind>` additive column (ADR-0006); status cured when used in battle (client classification);
+seeded by `sync_content_inner` from `ItemDef.cure_status`; bindings regenerated (`cureStatus` getter);
+`CONTENT_VERSION 11→12`; EA-1 through EA-6 source-guard tests; baselines updated.
+
 **Next: Phase C (M15 — trade; M16 — PvP battles; M17 — guilds; M18 — raids; M19 — seasonal/live-ops; M20 —
 soak/load; M21–M25 — polish + launch gate, ADR-0021/0022/0025).**
