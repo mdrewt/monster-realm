@@ -5,7 +5,7 @@ slug: tables/heal_cooldown
 updated: 2026-07-10
 tags: [schema, spacetimedb, private]
 abstract: "PRIVATE per-player heal cooldown anchor. Must-never-leak: timestamp reveals heal timing (ADR-0015, ADR-0069)."
-resource: server-module/src/schema.rs#L423
+resource: server-module/src/schema.rs#L424
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: private
 ---

@@ -391,6 +391,7 @@ export const SpeciesRow = __t.object("SpeciesRow", {
     return Affinity;
   },
   learnableSkillIds: __t.array(__t.u32()),
+  ability: __t.option(__t.u32()),
 });
 export type SpeciesRow = __Infer<typeof SpeciesRow>;
 

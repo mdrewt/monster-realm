@@ -24,6 +24,7 @@
 //!                          This is a game-correctness gap: the player cannot exploit
 //!                          enemy status to get a free-swap turn. (M14b, ADR-0093)
 
+use crate::combat::ability::AbilityStore;
 use crate::combat::resolve::resolve_player_swap;
 use crate::combat::status::{
     apply_post_turn_effects, tick_status, BattleStatusStore, StatusEffect, StatusVariance,
@@ -518,6 +519,7 @@ fn rt_s14_05_resolve_player_swap_does_not_apply_enemy_status_block() {
         sleep_wake_roll_a: 0,
         sleep_wake_roll_b: 0,
     };
+    let abilities = AbilityStore::new(2, 1);
     let events = resolve_player_swap(
         &mut state,
         SideId::SideA,
@@ -527,6 +529,7 @@ fn rt_s14_05_resolve_player_swap_does_not_apply_enemy_status_block() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // The swap must have happened.

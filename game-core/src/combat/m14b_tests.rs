@@ -21,6 +21,7 @@
 //!   M14b-5 (M7 regression)          → m14b_resolve_full_turn_empty_status_identical_to_resolve_turn
 //!   RT-S14-01 (slot proof-of-teeth) → m14b_status_cured_slot_nonzero_for_bench_monster
 
+use crate::combat::ability::AbilityStore;
 use crate::combat::resolve::resolve_full_turn;
 use crate::combat::status::{tick_status, BattleStatusStore, StatusEffect, StatusVariance};
 use crate::combat::type_chart::tests::make_type_chart;
@@ -127,6 +128,10 @@ fn no_block_status_variance() -> StatusVariance {
 
 fn empty_status() -> BattleStatusStore {
     BattleStatusStore::new(1, 1)
+}
+
+fn empty_abilities() -> AbilityStore {
+    AbilityStore::new(1, 1)
 }
 
 // ===========================================================================
@@ -856,6 +861,7 @@ fn m14b_resolve_full_turn_reads_battle_monster_status_for_dot() {
         &variance,
         &mut status,
         &sv,
+        &empty_abilities(),
     );
 
     // StatusDamage for SideA must appear (Poison DoT fires post-turn).
@@ -925,6 +931,7 @@ fn m14b_resolve_full_turn_battle_monster_status_unchanged_for_poison() {
         &variance,
         &mut status,
         &sv,
+        &empty_abilities(),
     );
 
     // Simulate the reducer write-back: copy the store back to BattleMonster.status.
@@ -990,6 +997,7 @@ fn m14b_resolve_full_turn_battle_monster_status_cleared_after_sleep_cure() {
         &variance,
         &mut status,
         &sv,
+        &empty_abilities(),
     );
 
     // After resolve_full_turn, tick_status ran and cured Sleep{1→0} → slot is None.
@@ -1061,7 +1069,7 @@ fn m14b_resolve_full_turn_empty_status_identical_to_resolve_turn() {
         &variance,
     );
 
-    // resolve_full_turn with empty status.
+    // resolve_full_turn with empty status and empty abilities.
     let events_full = resolve_full_turn(
         &mut state_full,
         TurnChoice::Attack { skill_id: 1 },
@@ -1071,6 +1079,7 @@ fn m14b_resolve_full_turn_empty_status_identical_to_resolve_turn() {
         &variance,
         &mut status,
         &sv,
+        &empty_abilities(),
     );
 
     assert_eq!(

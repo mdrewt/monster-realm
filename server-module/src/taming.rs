@@ -17,15 +17,17 @@ use crate::guards::log_reject;
 use crate::inventory::consume_one;
 #[cfg(feature = "dev_reducers")]
 use crate::inventory::grant_item;
-use crate::marshal::{monster_from_instance, pub_from_monster, type_chart_from_rows};
+use crate::marshal::{
+    build_ability_store, monster_from_instance, pub_from_monster, type_chart_from_rows,
+};
 use crate::schema::{
     battle, battle_wild, item_row, monster, monster_pub, species_row, type_relation_row,
 };
 use crate::PARTY_SLOT_NONE;
 use game_core::combat::resolve::resolve_recruit_failure;
 use game_core::{
-    build_monster, recruit_chance, BattleOutcome, BattleStatusStore, Level, StatBlock,
-    StatusVariance, TurnVariance, RECRUIT_BASE_RATE,
+    build_monster, load_abilities, recruit_chance, BattleOutcome, BattleStatusStore, Level,
+    StatBlock, StatusVariance, TurnVariance, RECRUIT_BASE_RATE,
 };
 use spacetimedb::{ReducerContext, Table};
 
@@ -172,6 +174,36 @@ pub fn attempt_recruit(
         side_b: battle.state.side_b.team.iter().map(|m| m.status).collect(),
     };
 
+    // Build AbilityStore from species content for this battle's teams (ADR-0100).
+    let ability_defs = load_abilities()?;
+    let a_ability_ids: Vec<Option<u32>> = battle
+        .state
+        .side_a
+        .team
+        .iter()
+        .map(|m| {
+            ctx.db
+                .species_row()
+                .id()
+                .find(m.species_id)
+                .and_then(|sp| sp.ability)
+        })
+        .collect();
+    let b_ability_ids: Vec<Option<u32>> = battle
+        .state
+        .side_b
+        .team
+        .iter()
+        .map(|m| {
+            ctx.db
+                .species_row()
+                .id()
+                .find(m.species_id)
+                .and_then(|sp| sp.ability)
+        })
+        .collect();
+    let abilities = build_ability_store(&a_ability_ids, &b_ability_ids, &ability_defs);
+
     let _events = resolve_recruit_failure(
         &mut battle.state,
         &skill_defs,
@@ -179,6 +211,7 @@ pub fn attempt_recruit(
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // Persist status store back into BattleMonster.status fields (same pattern as

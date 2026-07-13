@@ -26,6 +26,7 @@
 //!   EARS-11 (skill sets weather)      → skill_sets_weather
 //!   EARS-12 (no self-boost)           → weather_does_not_boost_own_hit
 
+use crate::combat::ability::AbilityStore;
 use crate::combat::resolve::resolve_full_turn;
 use crate::combat::status::{BattleStatusStore, StatusVariance};
 use crate::combat::type_chart::tests::make_type_chart;
@@ -641,6 +642,7 @@ fn skill_sets_weather() {
 
     let skills = vec![rain_dance_skill()];
 
+    let abilities = AbilityStore::new(1, 1);
     let events = resolve_full_turn(
         &mut state,
         TurnChoice::Attack { skill_id: 7 },
@@ -650,6 +652,7 @@ fn skill_sets_weather() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // state.weather must be set to Rain
@@ -750,6 +753,7 @@ fn weather_does_not_boost_own_hit() {
         speed_tie_breaker: true,
     };
 
+    let abilities = AbilityStore::new(1, 1);
     let events_no_rain = resolve_full_turn(
         &mut state_no_rain,
         TurnChoice::Attack { skill_id: 7 }, // Rain Dance
@@ -759,6 +763,7 @@ fn weather_does_not_boost_own_hit() {
         &variance_a_first,
         &mut status_no_rain,
         &sv,
+        &abilities,
     );
 
     // Fixture B: Weather=Rain pre-existing, use plain Water skill (same power=40)
@@ -772,6 +777,7 @@ fn weather_does_not_boost_own_hit() {
     state_with_rain.weather = Some(WeatherEffect::Rain { turns_remaining: 5 }); // Rain already active
     let mut status_with_rain = empty_status();
 
+    let abilities2 = AbilityStore::new(1, 1);
     let events_with_rain = resolve_full_turn(
         &mut state_with_rain,
         TurnChoice::Attack { skill_id: 2 }, // plain Water skill
@@ -781,6 +787,7 @@ fn weather_does_not_boost_own_hit() {
         &variance_a_first,
         &mut status_with_rain,
         &sv,
+        &abilities2,
     );
 
     // Extract SideB damage from both scenarios (A attacked B in both)

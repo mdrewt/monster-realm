@@ -27,4 +27,5 @@ export default __t.row({
     return Affinity;
   },
   learnableSkillIds: __t.array(__t.u32()).name("learnable_skill_ids"),
+  ability: __t.option(__t.u32()),
 });

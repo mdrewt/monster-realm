@@ -374,9 +374,9 @@ fn skill_id_from(choice: &TurnChoice) -> u32 {
 ///
 /// Phase 3.5 (weather chip damage via [`apply_weather_damage`]) runs between phases 3 and 4.
 ///
-/// With an empty [`BattleStatusStore`], no blocking variance, and `state.weather = None`
-/// this is byte-identical to calling [`resolve_turn`] directly — the M7 regression
-/// proof-of-teeth (EARS-1).
+/// With an empty [`BattleStatusStore`], no blocking variance, `state.weather = None`,
+/// and an empty [`AbilityStore`], this is byte-identical to calling [`resolve_turn`]
+/// directly — the M7 regression proof-of-teeth (EARS-1).
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_full_turn(
     state: &mut BattleState,
@@ -387,10 +387,17 @@ pub fn resolve_full_turn(
     variance: &TurnVariance,
     status: &mut super::status::BattleStatusStore,
     sv: &super::status::StatusVariance,
+    abilities: &super::ability::AbilityStore,
 ) -> Vec<BattleEvent> {
+    use super::ability::apply_ability_modifiers;
     use super::status::apply_pre_turn_effects;
 
     let mut events = Vec::new();
+
+    // Phase 0: apply per-turn passive modifiers (status immunity, etc.) before
+    // any blocking checks. Clears any status the active monster's ability immunises
+    // against so immunity acts before Paralysis/Sleep/Freeze blocking (ADR-0094).
+    apply_ability_modifiers(state, status, abilities);
 
     // Phase 1: pre-turn action-block.
     let (a_can_act, b_can_act, pre_events) = apply_pre_turn_effects(status, state, sv);
@@ -493,12 +500,16 @@ pub fn resolve_recruit_failure(
     variance: &TurnVariance,
     status: &mut super::status::BattleStatusStore,
     sv: &super::status::StatusVariance,
+    abilities: &super::ability::AbilityStore,
 ) -> Vec<BattleEvent> {
     if !advance_turn(state) {
         // Turn-limit terminal fired (outcome now Fled) or battle already decided:
         // no strike-back, no post-turn phases.
         return Vec::new();
     }
+
+    // Phase 0: apply per-turn passive modifiers before any action resolves (ADR-0094).
+    super::ability::apply_ability_modifiers(state, status, abilities);
 
     // Phase 1.5: sync BattleMonster.status FROM BattleStatusStore.
     sync_status_to_monsters(state, status);
@@ -544,6 +555,7 @@ pub fn resolve_player_swap(
     variance: &TurnVariance,
     status: &mut super::status::BattleStatusStore,
     sv: &super::status::StatusVariance,
+    abilities: &super::ability::AbilityStore,
 ) -> Vec<BattleEvent> {
     let mut events = Vec::new();
 
@@ -558,6 +570,11 @@ pub fn resolve_player_swap(
         side: swap_side,
         new_active,
     });
+
+    // Entry ability: fires when a monster enters the active slot (ADR-0094).
+    // Called before Phase 1.5 so EntryHeal HP and StatusImmunity clears are
+    // captured in BattleMonster.status by the sync below.
+    super::ability::apply_entry_ability(state, swap_side, abilities, status);
 
     // Phase 1.5: sync BattleMonster.status FROM BattleStatusStore.
     sync_status_to_monsters(state, status);
@@ -697,6 +714,7 @@ fn run_post_turn_phases(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::combat::ability::AbilityStore;
     use crate::combat::status::{BattleStatusStore, StatusVariance};
     use crate::combat::type_chart::tests::make_type_chart;
     use crate::combat::types::{
@@ -710,6 +728,11 @@ mod tests {
     /// Empty status store for tests that don't exercise status effects.
     fn empty_store(a_size: usize, b_size: usize) -> BattleStatusStore {
         BattleStatusStore::new(a_size, b_size)
+    }
+
+    /// Empty ability store for tests that don't exercise passive abilities.
+    fn empty_ability_store(a_size: usize, b_size: usize) -> AbilityStore {
+        AbilityStore::new(a_size, b_size)
     }
 
     /// StatusVariance that never blocks (all action_skip_rolls >= 25, never thaw).
@@ -1131,6 +1154,7 @@ mod tests {
         let variance = always_hit_variance(true);
         let mut status = empty_store(2, 1);
         let sv = no_block_sv();
+        let abilities = empty_ability_store(2, 1);
         let events = resolve_player_swap(
             &mut state,
             SideId::SideA,
@@ -1140,6 +1164,7 @@ mod tests {
             &variance,
             &mut status,
             &sv,
+            &abilities,
         );
         // Switch event must appear first
         let first_event = events.first().expect("events must not be empty");
@@ -1603,6 +1628,7 @@ mod tests {
         let variance = always_hit_variance(false); // false → B faster, B hits first if it acts
         let mut status = empty_store(1, 1);
         let sv = no_block_sv();
+        let abilities = empty_ability_store(1, 1);
 
         let events = resolve_recruit_failure(
             &mut state,
@@ -1611,6 +1637,7 @@ mod tests {
             &variance,
             &mut status,
             &sv,
+            &abilities,
         );
 
         assert!(
@@ -1669,6 +1696,7 @@ mod tests {
         let variance = always_hit_variance(false);
         let mut status = empty_store(1, 1);
         let sv = no_block_sv();
+        let abilities = empty_ability_store(1, 1);
 
         let events = resolve_recruit_failure(
             &mut state,
@@ -1677,6 +1705,7 @@ mod tests {
             &variance,
             &mut status,
             &sv,
+            &abilities,
         );
 
         assert_eq!(
@@ -1739,6 +1768,7 @@ mod tests {
         let variance = always_hit_variance(true);
         let mut status = empty_store(1, 1);
         let sv = no_block_sv();
+        let abilities = empty_ability_store(1, 1);
 
         let events = resolve_recruit_failure(
             &mut state,
@@ -1747,6 +1777,7 @@ mod tests {
             &variance,
             &mut status,
             &sv,
+            &abilities,
         );
 
         assert_eq!(
@@ -1941,6 +1972,7 @@ mod tests {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut status = empty_store(2, 1);
             let sv = no_block_sv();
+            let abilities = empty_ability_store(2, 1);
             resolve_player_swap(
                 &mut state,
                 SideId::SideA,
@@ -1950,6 +1982,7 @@ mod tests {
                 &variance,
                 &mut status,
                 &sv,
+                &abilities,
             )
         }));
 
@@ -1986,6 +2019,7 @@ mod tests {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut status = empty_store(2, 1);
             let sv = no_block_sv();
+            let abilities = empty_ability_store(2, 1);
             resolve_player_swap(
                 &mut state,
                 SideId::SideA,
@@ -1995,6 +2029,7 @@ mod tests {
                 &variance,
                 &mut status,
                 &sv,
+                &abilities,
             )
         }));
 
@@ -2166,7 +2201,16 @@ mod tests {
         let variance = always_hit_variance(true);
         // Skill-less wild: resolve_recruit_failure guards the enemy turn with
         // `if !known_skill_ids.is_empty()` so &[] is safe here.
-        resolve_recruit_failure(&mut state, &[], &chart, &variance, &mut status, &sv);
+        let abilities = empty_ability_store(1, 1);
+        resolve_recruit_failure(
+            &mut state,
+            &[],
+            &chart,
+            &variance,
+            &mut status,
+            &sv,
+            &abilities,
+        );
         assert_eq!(
             state.weather,
             Some(WeatherEffect::Sandstorm { turns_remaining: 2 }),
@@ -2213,6 +2257,7 @@ mod tests {
         status.side_a[1] = Some(StatusEffect::Poison);
         let sv = no_block_sv();
         let variance = always_hit_variance(true);
+        let abilities = empty_ability_store(2, 1);
         // skills_vec() contains skill id=1 — needed for the enemy's pick_best_skill.
         resolve_player_swap(
             &mut state,
@@ -2223,6 +2268,7 @@ mod tests {
             &variance,
             &mut status,
             &sv,
+            &abilities,
         );
         // After the swap state.side_a.active == 1 (the poisoned monster).
         // Phase 1.5 syncs team[1].status = Poison from the store.
@@ -2297,6 +2343,7 @@ mod tests {
         // Sleep always blocks attacks; swap must not consult this at all.
         let sv = no_block_sv();
         let variance = always_hit_variance(true);
+        let abilities = empty_ability_store(2, 1);
         resolve_player_swap(
             &mut state,
             SideId::SideA,
@@ -2306,6 +2353,7 @@ mod tests {
             &variance,
             &mut status,
             &sv,
+            &abilities,
         );
         assert_eq!(
             state.side_a.active, 1,
@@ -2342,6 +2390,7 @@ mod tests {
         // persists through the turn; swap must still succeed regardless.
         let sv = no_block_sv();
         let variance = always_hit_variance(true);
+        let abilities = empty_ability_store(2, 1);
         resolve_player_swap(
             &mut state,
             SideId::SideA,
@@ -2351,6 +2400,7 @@ mod tests {
             &variance,
             &mut status,
             &sv,
+            &abilities,
         );
         assert_eq!(
             state.side_a.active, 1,
@@ -2393,6 +2443,7 @@ mod tests {
             sleep_wake_roll_b: 99,
         };
         let variance = always_hit_variance(true);
+        let abilities = empty_ability_store(2, 1);
         resolve_player_swap(
             &mut state,
             SideId::SideA,
@@ -2402,6 +2453,7 @@ mod tests {
             &variance,
             &mut status,
             &sv,
+            &abilities,
         );
         assert_eq!(
             state.side_a.active, 1,

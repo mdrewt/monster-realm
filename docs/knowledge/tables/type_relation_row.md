@@ -5,7 +5,7 @@ slug: tables/type_relation_row
 updated: 2026-07-10
 tags: [schema, spacetimedb, public]
 abstract: "Type effectiveness chart seeded from the `game-core` RON registry."
-resource: server-module/src/schema.rs#L105
+resource: server-module/src/schema.rs#L106
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

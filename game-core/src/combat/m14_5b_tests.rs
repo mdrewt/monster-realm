@@ -35,7 +35,7 @@
 //!     `Some(Burn)` to `status.side_b[0]` regardless of whether the targeted monster
 //!     is still conscious. The test asserts `None`, so it fails.
 
-use crate::combat::ability::StatusKind;
+use crate::combat::ability::{AbilityStore, StatusKind};
 use crate::combat::resolve::resolve_full_turn;
 use crate::combat::status::{BattleStatusStore, StatusVariance};
 use crate::combat::type_chart::TypeChart;
@@ -186,6 +186,7 @@ fn m14_5b_1a_status_applied_event_carries_target_slot() {
 
     // Side A uses Burn skill; Side B uses the same skill (to keep the registry simple).
     // A is faster (speed 80 vs 40) so A attacks first and applies Burn to B slot 0.
+    let abilities = AbilityStore::new(1, 1);
     let events = resolve_full_turn(
         &mut state,
         TurnChoice::Attack { skill_id: 1 },
@@ -195,6 +196,7 @@ fn m14_5b_1a_status_applied_event_carries_target_slot() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // Find the StatusApplied event for SideB.
@@ -352,6 +354,7 @@ fn m14_5b_2_proof_of_teeth_near_lethal_status_hit_sandstorm_chip_faint() {
 
     // SideA uses the Burn skill. SideB uses Pass — keeping the scenario focused
     // purely on the A→B Burn application + Sandstorm chip sequence.
+    let abilities = AbilityStore::new(1, 2);
     let events = resolve_full_turn(
         &mut state,
         TurnChoice::Attack { skill_id: 1 }, // SideA uses Burn skill
@@ -361,6 +364,7 @@ fn m14_5b_2_proof_of_teeth_near_lethal_status_hit_sandstorm_chip_faint() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // -----------------------------------------------------------------------
@@ -555,6 +559,7 @@ fn m14_5b_3_both_sides_apply_status_in_same_turn_both_committed() {
     let skills = vec![burn_applying_skill(), poison_applying_skill()];
 
     // A uses Burn (skill 1), B uses Poison (skill 2).
+    let abilities = AbilityStore::new(1, 1);
     let events = resolve_full_turn(
         &mut state,
         TurnChoice::Attack { skill_id: 1 }, // A → Burn on B
@@ -564,6 +569,7 @@ fn m14_5b_3_both_sides_apply_status_in_same_turn_both_committed() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // Both StatusApplied events must have been emitted.
@@ -695,6 +701,7 @@ fn m14_5b_4_status_applied_slot_is_defender_slot_not_attacker_slot() {
     let sv = no_block_sv();
 
     // SideA uses Burn skill. SideB active is at slot 1.
+    let abilities = AbilityStore::new(1, 2);
     let events = resolve_full_turn(
         &mut state,
         TurnChoice::Attack { skill_id: 1 },
@@ -704,6 +711,7 @@ fn m14_5b_4_status_applied_slot_is_defender_slot_not_attacker_slot() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // StatusApplied event must carry slot=1 (the defender's actual active slot).
@@ -815,6 +823,7 @@ fn m14_5b_5_no_status_applied_when_ko_and_status_in_same_hit() {
 
     // A uses Burn skill. B has 1 HP and will die from the minimum-damage hit.
     // B also uses Burn skill but must not get to attack after being KO'd.
+    let abilities = AbilityStore::new(1, 1);
     let events = resolve_full_turn(
         &mut state,
         TurnChoice::Attack { skill_id: 1 }, // A → Burn on B (KOs B)
@@ -824,6 +833,7 @@ fn m14_5b_5_no_status_applied_when_ko_and_status_in_same_hit() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // INVARIANT: No StatusApplied events must be emitted in this turn.

@@ -10,6 +10,7 @@
 //!   RT-W14-07 (Sun has no chip)                → sun_has_no_chip
 //!   RT-W14-08 (weather tick preserves until 0) → weather_tick_preserves_weather_until_zero
 
+use crate::combat::ability::AbilityStore;
 use crate::combat::resolve::{resolve_full_turn, resolve_turn};
 use crate::combat::status::{BattleStatusStore, StatusVariance};
 use crate::combat::type_chart::tests::make_type_chart;
@@ -160,6 +161,7 @@ fn m7_regression_weather_none_byte_identical() {
     );
 
     // resolve_full_turn with empty status + weather=None (must be identical).
+    let abilities = AbilityStore::new(1, 1);
     let events_full = resolve_full_turn(
         &mut state_full,
         TurnChoice::Attack { skill_id: 1 },
@@ -169,6 +171,7 @@ fn m7_regression_weather_none_byte_identical() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     assert_eq!(

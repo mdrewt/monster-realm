@@ -24,3 +24,4 @@ visibility: public
 | `base_sp_defense` | `u16` | — |
 | `affinity` | `Affinity` | — |
 | `learnable_skill_ids` | `Vec<u32>` | — |
+| `ability` | `Option<u32>` | — |

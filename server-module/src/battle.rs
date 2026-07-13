@@ -15,8 +15,8 @@ use crate::guards::{
 };
 use crate::inventory::consume_one;
 use crate::marshal::{
-    battle_monster_from_row, loser_base_stat_total, now_ms, pub_from_monster, type_chart_from_rows,
-    wild_battle_monster, write_back_hp,
+    battle_monster_from_row, build_ability_store, loser_base_stat_total, now_ms, pub_from_monster,
+    type_chart_from_rows, wild_battle_monster, write_back_hp,
 };
 use crate::schema::{
     battle, battle_wild, monster, monster_pub, skill_row, species_row, type_relation_row, Battle,
@@ -25,9 +25,9 @@ use crate::schema::{
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
 use game_core::{
-    apply_xp_gain, battle_currency_reward, battle_xp_reward, resolve_full_turn, BattleOutcome,
-    BattleSide, BattleState, BattleStatusStore, Level, StatBlock, StatusVariance, TurnChoice,
-    TurnVariance,
+    apply_entry_ability, apply_xp_gain, battle_currency_reward, battle_xp_reward, load_abilities,
+    resolve_full_turn, BattleOutcome, BattleSide, BattleState, BattleStatusStore, Level, SideId,
+    StatBlock, StatusVariance, TurnChoice, TurnVariance,
 };
 use spacetimedb::{Identity, ReducerContext, Table};
 
@@ -120,6 +120,7 @@ pub fn start_battle(
 
     // Build side A (player) team.
     let mut team_a = Vec::new();
+    let mut ability_ids_a: Vec<Option<u32>> = Vec::new();
     for &mid in &party_monster_ids {
         let m = ctx
             .db
@@ -150,11 +151,13 @@ pub fn start_battle(
             .iter()
             .filter(|s| sp.learnable_skill_ids.contains(&s.id))
             .collect();
+        ability_ids_a.push(sp.ability);
         team_a.push(battle_monster_from_row(&m, &sp, &skills)?);
     }
 
     // Build side B (opponent) team.
     let mut team_b = Vec::new();
+    let mut ability_ids_b: Vec<Option<u32>> = Vec::new();
     for &mid in &opponent_monster_ids {
         let m = ctx
             .db
@@ -186,6 +189,7 @@ pub fn start_battle(
             .iter()
             .filter(|s| sp.learnable_skill_ids.contains(&s.id))
             .collect();
+        ability_ids_b.push(sp.ability);
         team_b.push(battle_monster_from_row(&m, &sp, &skills)?);
     }
 
@@ -201,7 +205,7 @@ pub fn start_battle(
         return Err(e);
     }
 
-    let state = BattleState {
+    let mut state = BattleState {
         side_a: BattleSide {
             active: 0,
             team: team_a,
@@ -214,6 +218,22 @@ pub fn start_battle(
         turn_number: 0,
         weather: None,
     };
+
+    // Apply entry abilities for both initial actives (ADR-0100).
+    let ability_defs = load_abilities()?;
+    let abilities = build_ability_store(&ability_ids_a, &ability_ids_b, &ability_defs);
+    let mut status = BattleStatusStore {
+        side_a: state.side_a.team.iter().map(|m| m.status).collect(),
+        side_b: state.side_b.team.iter().map(|m| m.status).collect(),
+    };
+    apply_entry_ability(&mut state, SideId::SideA, &abilities, &mut status);
+    apply_entry_ability(&mut state, SideId::SideB, &abilities, &mut status);
+    for (m, s) in state.side_a.team.iter_mut().zip(status.side_a.iter()) {
+        m.status = *s;
+    }
+    for (m, s) in state.side_b.team.iter_mut().zip(status.side_b.iter()) {
+        m.status = *s;
+    }
 
     let battle = ctx.db.battle().insert(Battle {
         battle_id: 0,
@@ -292,6 +312,7 @@ pub(crate) fn begin_encounter(
 
     // Build side A (player) from the owned party.
     let mut team_a = Vec::new();
+    let mut ability_ids_a: Vec<Option<u32>> = Vec::new();
     for &mid in &party_monster_ids {
         let m = ctx
             .db
@@ -314,6 +335,7 @@ pub(crate) fn begin_encounter(
             .iter()
             .filter(|s| sp.learnable_skill_ids.contains(&s.id))
             .collect();
+        ability_ids_a.push(sp.ability);
         team_a.push(battle_monster_from_row(&m, &sp, &skills)?);
     }
     if !team_a.iter().any(|m| !m.is_fainted()) {
@@ -329,6 +351,7 @@ pub(crate) fn begin_encounter(
         .id()
         .find(wild_species_id)
         .ok_or_else(|| format!("wild species {wild_species_id} not found"))?;
+    let ability_ids_b: Vec<Option<u32>> = vec![sp.ability];
     let skill_ids: Vec<u32> = ctx
         .db
         .skill_row()
@@ -338,7 +361,7 @@ pub(crate) fn begin_encounter(
         .collect();
     let wild = wild_battle_monster(&sp, &skill_ids, wild_level, individuality_seed)?;
 
-    let state = BattleState {
+    let mut state = BattleState {
         side_a: BattleSide {
             active: 0,
             team: team_a,
@@ -355,6 +378,22 @@ pub(crate) fn begin_encounter(
         turn_number: 0,
         weather: None,
     };
+
+    // Apply entry abilities for both initial actives (ADR-0100).
+    let ability_defs = load_abilities()?;
+    let abilities = build_ability_store(&ability_ids_a, &ability_ids_b, &ability_defs);
+    let mut status = BattleStatusStore {
+        side_a: state.side_a.team.iter().map(|m| m.status).collect(),
+        side_b: state.side_b.team.iter().map(|m| m.status).collect(),
+    };
+    apply_entry_ability(&mut state, SideId::SideA, &abilities, &mut status);
+    apply_entry_ability(&mut state, SideId::SideB, &abilities, &mut status);
+    for (m, s) in state.side_a.team.iter_mut().zip(status.side_a.iter()) {
+        m.status = *s;
+    }
+    for (m, s) in state.side_b.team.iter_mut().zip(status.side_b.iter()) {
+        m.status = *s;
+    }
 
     let battle = ctx.db.battle().insert(Battle {
         battle_id: 0,
@@ -506,6 +545,36 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
         side_b: battle.state.side_b.team.iter().map(|m| m.status).collect(),
     };
 
+    // Build AbilityStore from species content for this battle's teams (ADR-0100).
+    let ability_defs = load_abilities()?;
+    let a_ability_ids: Vec<Option<u32>> = battle
+        .state
+        .side_a
+        .team
+        .iter()
+        .map(|m| {
+            ctx.db
+                .species_row()
+                .id()
+                .find(m.species_id)
+                .and_then(|sp| sp.ability)
+        })
+        .collect();
+    let b_ability_ids: Vec<Option<u32>> = battle
+        .state
+        .side_b
+        .team
+        .iter()
+        .map(|m| {
+            ctx.db
+                .species_row()
+                .id()
+                .find(m.species_id)
+                .and_then(|sp| sp.ability)
+        })
+        .collect();
+    let abilities = build_ability_store(&a_ability_ids, &b_ability_ids, &ability_defs);
+
     let _events = resolve_full_turn(
         &mut battle.state,
         TurnChoice::Attack { skill_id },
@@ -517,6 +586,7 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // Persist status store back into BattleMonster.status fields.
@@ -601,15 +671,46 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
         side_b: battle.state.side_b.team.iter().map(|m| m.status).collect(),
     };
 
+    // Build AbilityStore from species content for this battle's teams (ADR-0100).
+    let ability_defs = load_abilities()?;
+    let a_ability_ids: Vec<Option<u32>> = battle
+        .state
+        .side_a
+        .team
+        .iter()
+        .map(|m| {
+            ctx.db
+                .species_row()
+                .id()
+                .find(m.species_id)
+                .and_then(|sp| sp.ability)
+        })
+        .collect();
+    let b_ability_ids: Vec<Option<u32>> = battle
+        .state
+        .side_b
+        .team
+        .iter()
+        .map(|m| {
+            ctx.db
+                .species_row()
+                .id()
+                .find(m.species_id)
+                .and_then(|sp| sp.ability)
+        })
+        .collect();
+    let abilities = build_ability_store(&a_ability_ids, &b_ability_ids, &ability_defs);
+
     let _events = game_core::resolve_player_swap(
         &mut battle.state,
-        game_core::SideId::SideA,
+        SideId::SideA,
         team_index,
         &skill_defs,
         &type_chart,
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // Persist status store back into BattleMonster.status fields.

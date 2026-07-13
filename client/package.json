@@ -29,5 +29,11 @@
     "vite-plugin-top-level-await": "^1.4.4",
     "vite-plugin-wasm": "^3.3.0",
     "vitest": "^2.0.0"
+  },
+  "allowScripts": {
+    "@biomejs/biome@2.5.1": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.21.5": true,
+    "@swc/core@1.15.43": true
   }
 }

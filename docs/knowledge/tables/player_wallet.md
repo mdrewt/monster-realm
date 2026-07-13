@@ -5,7 +5,7 @@ slug: tables/player_wallet
 updated: 2026-07-10
 tags: [schema, spacetimedb, private]
 abstract: "PRIVATE per-player wallet — one row per player (PK = owner_identity). Balance is MUST-NEVER-LEAK: no `public`, no proje…"
-resource: server-module/src/schema.rs#L442
+resource: server-module/src/schema.rs#L443
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: private
 ---
