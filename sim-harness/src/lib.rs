@@ -412,7 +412,7 @@ pub fn random_scenario(seed: u64, n_intents: usize) -> Vec<ClientIntent> {
 
         // Burst: when draw hits the burst bucket and there is room, emit MOVE_QUEUE_CAP+1
         // intents for the same client at closely-spaced send_ms (anti-flood path).
-        let is_burst = r % 11 == 0 && idx + MOVE_QUEUE_CAP < n_intents;
+        let is_burst = r.is_multiple_of(11) && idx + MOVE_QUEUE_CAP < n_intents;
         let count = if is_burst { MOVE_QUEUE_CAP + 1 } else { 1 };
 
         for b in 0..count {
@@ -1241,7 +1241,7 @@ mod m14f_tests {
             );
 
             // Non-vacuity: seqs must start at 1 per client.
-            for (&client, _) in &last_seq {
+            for &client in last_seq.keys() {
                 let first_seq = intents
                     .iter()
                     .filter(|i| i.client == client)

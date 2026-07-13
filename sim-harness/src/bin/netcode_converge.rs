@@ -7,6 +7,7 @@
 //!   - 128-seed randomized convergence check (random_scenario)
 //!   - warp-scenario convergence under link (warp_scenario_under_link)
 //!   - battle-lock mid-stream freeze check (apply_stream_with_battle_lock)
+//!
 //! Pure function of seeds — no wall clock, no global RNG.
 
 use std::collections::BTreeMap;
@@ -123,10 +124,10 @@ fn main() {
     // =========================================================================
     const RANDOM_SEED_COUNT: usize = 128;
     let random_seeds: Vec<u64> = {
-        let mut s = 0x14_5F_0000_CAFEu64;
+        let mut s = 0x145F_0000_CAFE_u64;
         (0..RANDOM_SEED_COUNT as u64)
             .map(|i| {
-                s = tick_seed(s, i, 0x14_5F_0000_CAFE);
+                s = tick_seed(s, i, 0x145F_0000_CAFE);
                 s
             })
             .collect()
