@@ -389,8 +389,8 @@ pub(crate) fn loser_base_stat_total(species: &SpeciesRow) -> u16 {
 /// Build a `Vec<SkillDef>` from the DB skill rows.
 ///
 /// Production battle paths (submit_attack, swap_active, attempt_recruit) all use
-/// `load_skills()` (content cache, ADR-0098 D2). This function is retained for
-/// marshal boundary tests (power > 0, accuracy ∈ [1, 100]); it sets
+/// `cached_skills()` (content cache, ADR-0089/ADR-0098 D2). This function is retained
+/// for marshal boundary tests (power > 0, accuracy ∈ [1, 100]); it sets
 /// `sets_weather: None, applies_status: None` which is intentional for unit tests
 /// that exercise the validation logic only.
 #[cfg(test)]
@@ -414,9 +414,9 @@ pub(crate) fn skill_defs_from_rows(rows: &[SkillRow]) -> Result<Vec<SkillDef>, S
                 accuracy: r.accuracy,
                 pp: r.pp,
                 // DB SkillRow has no sets_weather or applies_status columns; these are
-                // only populated via load_skills() (content cache). All battle-resolution
-                // paths (submit_attack, swap_active, attempt_recruit) now use load_skills()
-                // directly (ADR-0098 D2). skill_defs_from_rows is used only for schema
+                // only populated via cached_skills() (content cache, ADR-0089/ADR-0098 D2).
+                // All battle-resolution paths (submit_attack, swap_active, attempt_recruit)
+                // use cached_skills(). skill_defs_from_rows is used only for schema
                 // validation and marshal tests where sets_weather/applies_status are not needed.
                 sets_weather: None,
                 applies_status: None,

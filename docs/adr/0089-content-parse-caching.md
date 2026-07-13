@@ -20,6 +20,12 @@ Hot-path evidence (located at `15bd08b`, confirmed not fixed before this slice):
 | `battle.rs:805` `write_back_battle_results` | Per leveled-up monster per battle | Full evolutions RON parse |
 | `npc.rs:229/325` `talk`/`advance_dialogue` | Per dialogue interaction | Full dialogue-trees RON parse |
 | `npc.rs:144` `apply_quest_trigger` | Per dialogue interaction | Full quest-defs RON parse |
+| `battle.rs` `submit_attack` | Per battle turn | Full skills RON parse |
+| `battle.rs` `swap_active` | Per swap turn | Full skills RON parse |
+| `battle.rs` `use_battle_item` | Per item use | Full items RON parse |
+| `taming.rs` `attempt_recruit` | Per failed-recruit turn | Full skills RON parse |
+
+The four rows above (submit_attack, swap_active, use_battle_item, attempt_recruit) were introduced by M14 slices (M14d/M14e/M14.5a) after this ADR was first written.
 
 Cost grows super-linearly with authored content; parsing the same static bytes on
 every call is pure waste.
@@ -31,7 +37,7 @@ pure rule layer). The caches belong in the server-module and client-wasm shells.
 
 ### Server-module (`server-module/src/content_cache.rs`)
 
-Four `LazyLock<Result<Vec<T>, String>>` statics, one per registry, with accessor
+Six `LazyLock<Result<Vec<T>, String>>` statics, one per registry, with accessor
 helpers that return `Result<&'static Vec<T>, String>`:
 
 ```rust
@@ -43,6 +49,9 @@ pub(crate) fn cached_zone_maps() -> Result<&'static Vec<ZoneMapDef>, String> {
     (*ZONE_MAPS).as_ref().map_err(Clone::clone)
 }
 ```
+
+The `SKILLS` and `ITEMS` statics follow the identical pattern (see `ZONE_MAPS`
+example above), exposing `cached_skills()` and `cached_items()` accessors.
 
 **Why `LazyLock<Result<...>>` rather than `OnceLock::get_or_try_init`:**
 `OnceLock::get_or_try_init` is tracked under feature `once_cell_try` (tracking
@@ -64,6 +73,10 @@ Call-site changes:
 - `npc.rs`: `load_dialogue_trees()` → `cached_dialogue_trees()`, `load_quest_defs()` → `cached_quest_defs()`
 - `evolution.rs`: both `evolve` and `fuse` reducers — `game_core::load_evolutions()` → `cached_evolutions()`
 - `raising.rs`: `care` reducer — `load_evolutions()` → `cached_evolutions()`
+- `battle.rs` `submit_attack`: `load_skills()` → `cached_skills()`
+- `battle.rs` `swap_active`: `load_skills()` → `cached_skills()`
+- `battle.rs` `use_battle_item`: `load_items()` → `cached_items()`, keeping its `.map_err(|e| format!("content error: {e}"))` wrapper — byte-identical error text preserved
+- `taming.rs` `attempt_recruit`: `load_skills()` → `cached_skills()`
 
 `game-core` is NOT touched — no caches, no new exports.
 
@@ -109,3 +122,39 @@ needed.
   per-monster loop. If the cache returns `Err`, each monster's `'stat_recompute`
   block logs the error and breaks individually (existing log-and-continue semantics
   preserved by `match &result` borrow on the pre-loaded Result).
+
+## Amendment — M14.5e (2026-07-13)
+
+**(a) Skills/items caching completed.** `cached_skills()` and `cached_items()` were
+added to `content_cache.rs` per M14.5 spec slice 14.5e (EARS 14.5e-1 and 14.5e-2).
+The four call-site switches above (submit_attack, swap_active, use_battle_item,
+attempt_recruit) were applied in the same slice. Stale `// load skills each call` /
+`// load items each call` false-"content cache" comments in `battle.rs` and
+`taming.rs` were removed, and stale doc comments in `marshal.rs` that implied
+per-call parsing were corrected, all in the same commit.
+
+**(b) Observational transparency re-verified.** `SkillDef` and `ItemDef` derive
+`PartialEq`, enabling direct-equality transparency tests. The gate for these
+call-site switches includes: direct-equality tests confirming `cached_skills()` /
+`cached_items()` values match `load_skills()` / `load_items()`; `LazyLock`
+pointer-identity tests confirming the same `&'static` reference is returned on
+repeated calls; and a `hot_path_reducers_use_cached_content_not_load` source-guard
+proof-of-teeth that uses `include_str!` + comment-strip + fn-body extraction with
+module-qualified needles to assert each of the four hot-path reducers calls the
+`cached_*` accessor and not the bare `load_*` function. The
+`use_battle_item` pin asserts both `cached_items().map_err` and the literal string
+`"content error: "` are present contiguous on one line (rustfmt must not split
+that expression or the guard fails loud).
+
+**(c) Named residual — `load_abilities()` not yet cached.** `load_abilities()`
+(introduced by ADR-0100, M14.5c) re-parses per call at five sites:
+`battle.rs` `start_battle` and `begin_encounter` (per-battle frequency), and
+`battle.rs` `submit_attack` / `swap_active` plus `taming.rs` `attempt_recruit`
+(per-turn frequency). The three per-turn sites carry
+`// PARK(ADR-0089 amendment, M14.5e)` comments marking them as known hot-path
+parse waste. Adding `cached_abilities()` following the identical `LazyLock` pattern
+is the natural follow-up slice.
+
+**(d) Intentional cold-path exclusions.** `content.rs` `validate_content` and all
+test code deliberately keep direct `load_*()` calls. These are cold paths; caching
+there would mask parse errors that the validation gate is designed to surface.
