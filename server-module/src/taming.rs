@@ -148,9 +148,11 @@ pub fn attempt_recruit(
     // — and then lets the wild (side B) strike back ONLY if it has a skill and the
     // turn-limit terminal did not fire. Post-turn phases (DoT, weather chip, status/
     // weather tick) now run on every failed-recruit turn (ADR-0098 D1, closes R3).
-    // Use load_skills() — not skill_defs_from_rows — so sets_weather/applies_status
-    // are populated (ADR-0098 D2, closes RT-W14-DESYNC-01).
-    let skill_defs = game_core::load_skills()?;
+    // Use cached_skills() — not skill_defs_from_rows — so sets_weather/applies_status
+    // are populated (ADR-0098 D2, closes RT-W14-DESYNC-01). Skills from the process-wide
+    // content cache (crate::content_cache::cached_skills(), ADR-0089 amended M14.5e):
+    // parsed once per process, &'static on every later call.
+    let skill_defs = crate::content_cache::cached_skills()?;
     let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
     let sv = StatusVariance::from_ctx_random(ctx.random());
@@ -194,7 +196,7 @@ pub fn attempt_recruit(
 
     let _events = resolve_recruit_failure(
         &mut battle.state,
-        &skill_defs,
+        skill_defs,
         &type_chart,
         &variance,
         &mut status,

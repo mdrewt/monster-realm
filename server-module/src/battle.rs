@@ -523,9 +523,10 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
         return Err(e);
     }
 
-    // Load skills via content cache so sets_weather is populated (M14d, ADR-0095).
-    // load_skills() re-parses compile-time-embedded RON; no DB round-trip for skills.
-    let skill_defs = game_core::load_skills()?;
+    // Skills come from the process-wide content cache (cached_skills(), ADR-0089 amended
+    // M14.5e): parsed once per process, &'static on every later call. sets_weather and
+    // applies_status (M14d, ADR-0095) are populated by load_skills() inside the LazyLock.
+    let skill_defs = crate::content_cache::cached_skills()?;
     let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
     let sv = StatusVariance::from_ctx_random(ctx.random());
@@ -534,7 +535,7 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
     let enemy_skill_id = game_core::pick_best_skill(
         battle.state.side_b.active_monster(),
         battle.state.side_a.active_monster(),
-        &skill_defs,
+        skill_defs,
         &type_chart,
     );
 
@@ -581,7 +582,7 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
         TurnChoice::Attack {
             skill_id: enemy_skill_id,
         },
-        &skill_defs,
+        skill_defs,
         &type_chart,
         &variance,
         &mut status,
@@ -658,8 +659,9 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
 
     // Swap then enemy attacks the new active. Post-turn phases (DoT, weather chip,
     // status/weather tick) now run on every swap turn (ADR-0098 D1, closes R1).
-    // Use load_skills() so sets_weather/applies_status are populated (ADR-0095).
-    let skill_defs = game_core::load_skills()?;
+    // Skills from process-wide content cache (cached_skills(), ADR-0089/0095):
+    // sets_weather/applies_status populated by load_skills() inside the LazyLock.
+    let skill_defs = crate::content_cache::cached_skills()?;
     let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
     let sv = StatusVariance::from_ctx_random(ctx.random());
@@ -705,7 +707,7 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
         &mut battle.state,
         SideId::SideA,
         team_index,
-        &skill_defs,
+        skill_defs,
         &type_chart,
         &variance,
         &mut status,
@@ -805,7 +807,7 @@ pub fn use_battle_item(ctx: &ReducerContext, battle_id: u64, item_id: u32) -> Re
     }
 
     // Guard 3+4: load content and confirm item cures a status.
-    let items = game_core::load_items().map_err(|e| format!("content error: {e}"))?;
+    let items = crate::content_cache::cached_items().map_err(|e| format!("content error: {e}"))?;
     let item_def = items
         .iter()
         .find(|it| it.id == item_id)
