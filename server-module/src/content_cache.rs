@@ -80,6 +80,5 @@ pub(crate) fn cached_items() -> Result<&'static Vec<game_core::ItemDef>, String>
 }
 
 #[cfg(test)]
-#[allow(clippy::doc_overindented_list_items)]
 #[path = "content_cache_tests.rs"]
 mod content_cache_tests;

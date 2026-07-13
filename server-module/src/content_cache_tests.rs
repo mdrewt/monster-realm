@@ -545,15 +545,14 @@ fn extract_fn_body_local<'a>(src: &'a str, name: &str) -> Option<&'a str> {
 ///
 /// Four reducers are checked:
 ///   - `submit_attack`   (battle.rs) — must use `content_cache::cached_skills`,
-///                                     not `load_skills`
+///     not `load_skills`
 ///   - `swap_active`     (battle.rs) — must use `content_cache::cached_skills`,
-///                                     not `load_skills`
+///     not `load_skills`
 ///   - `use_battle_item` (battle.rs) — must use `content_cache::cached_items`,
-///                                     not `load_items`; MUST contain
-///                                     `cached_items().map_err` AND `content error`
-///                                     (pins accessor + wrapper + message shape)
+///     not `load_items`; MUST contain `cached_items().map_err` AND `content error`
+///     (pins accessor + wrapper + message shape)
 ///   - `attempt_recruit` (taming.rs) — must use `content_cache::cached_skills`,
-///                                     not `load_skills`
+///     not `load_skills`
 ///
 /// The positive needles are module-qualified (`content_cache::cached_*`) to kill
 /// the false-green where a local helper named `load_cached_skills()` satisfies a
