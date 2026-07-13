@@ -79,7 +79,7 @@ Generated from 71 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0101](./0101-m14.5d-client-battle-ux.md) | M14.5d: Client battle UX completeness (weather banner, parity guards, VM-compare) | Accepted | battle, client-ui | m14.5d | Client battle UX completeness: weather banner pipeline via battleRowToStore, bindings-derived parity guards (never-checks), and VM-compare refresh guard. |
 | [0103](./0103-m14.5f-gates-convergence.md) | M14.5f — gates: BSATN schema-compat proof + convergence net widening | Accepted | battle, ci-gates | m14.5f | BSATN schema-compat proof for M14b/14d optional fields: SpacetimeType handles additive schema; convergence net widened with 128-seed random_scenario and battle-lock. |
 | [0104](./0104-m-infra-d-adr-digest.md) | M-infra-d: ADR digest convention and agent-facing corpus compaction | Accepted | tooling-docs, ci-gates | m-infra-d (infra slice, insertable any time after M14.5) | Canonical header block (Status/Date/Slice/Supersedes/Amends/Subsystems/Decision) + generated drift-gated DIGEST.md compacting the 100+ ADR corpus for agent navigation. |
-| [0105](./0105-m14.5d-1a-item-row-cure-status.md) | M14.5d-1a: additive `cure_status` column on `item_row` | Accepted | schema-persistence, content | m14.5d-1a (server half of re-serialized 14.5d-1 pair) | Additive `cure_status: Option<StatusKind>` column on public `item_row`; seeded from content SSOT; `StatusKind` derives `SpacetimeType` (cfg-gated). Unblocks client classify-by-data for cure items (m14.5d-1b). |
+| [0105](./0105-m14.5d-1a-item-row-cure-status.md) | M14.5d-1a: additive `cure_status` column on `item_row` | Accepted | schema-persistence, content, battle | m14.5d-1a (server half of re-serialized 14.5d-1 pair) | Additive `cure_status: Option<StatusKind>` column on public `item_row`; seeded from content SSOT; `StatusKind` derives `SpacetimeType` (cfg-gated). Unblocks client classify-by-data for cure items (m14.5d-1b). |
 
 ## Harness design corpus (H- namespace)
 
@@ -150,6 +150,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0100](./0100-m14.5c-ability-system-wiring.md) — m14.5c — M14.5c: Wire passive-ability system end-to-end (Accepted)
 - [0101](./0101-m14.5d-client-battle-ux.md) — m14.5d — M14.5d: Client battle UX completeness (weather banner, parity guards, VM-compare) (Accepted)
 - [0103](./0103-m14.5f-gates-convergence.md) — m14.5f — M14.5f — gates: BSATN schema-compat proof + convergence net widening (Accepted)
+- [0105](./0105-m14.5d-1a-item-row-cure-status.md) — m14.5d-1a (server half of re-serialized 14.5d-1 pair) — M14.5d-1a: additive `cure_status` column on `item_row` (Accepted)
 
 ### evolution-fusion
 

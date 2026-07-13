@@ -33,6 +33,9 @@ const CONTENT_RS: &str = include_str!("content.rs");
 /// The eval baseline JSON — EA-5.
 const TABLE_SCHEMAS_JSON: &str = include_str!("../../evals/baselines/table-schemas.json");
 
+/// The lib.rs source — EA-6.
+const LIB_RS: &str = include_str!("lib.rs");
+
 // ---------------------------------------------------------------------------
 // Helper: strip Rust block comments and line comments
 // (mirrors the helper in battle_tests.rs / content.rs test block)
@@ -294,5 +297,47 @@ fn ears_d1a_5_baseline_has_cure_status_column() {
          must have value `\"Option<StatusKind>\"`. \
          Found the key but the value type string is wrong — kills an impl that uses \
          `\"Option<StatusEffect>\"` or `\"StatusKind\"` (non-optional) as the type."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EA-6: CONTENT_VERSION in lib.rs is at least 12
+//
+// RED state (before this slice): CONTENT_VERSION was 11.  Without bumping to 12,
+// `sync_content_inner` detects version == DB version and returns early, never
+// running the item_row upsert loop — cure_status stays None for all deployed DBs.
+//
+// What a wrong impl this kills: any impl that adds the column but forgets to
+// bump CONTENT_VERSION (the silent-skip trap documented in ADR-0054).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ears_d1a_6_content_version_is_at_least_12() {
+    // Locate the CONTENT_VERSION constant declaration.
+    let cv_needle = ["CONTENT_VERSION", ": u32 ="].concat();
+    let cv_pos = LIB_RS
+        .find(cv_needle.as_str())
+        .expect("CONTENT_VERSION constant must be declared in lib.rs");
+
+    // Extract the numeric token immediately after the `=`.
+    let after_eq = &LIB_RS[cv_pos..];
+    let eq_offset = after_eq.find('=').expect("CONTENT_VERSION must have `=`");
+    let after_value = after_eq[eq_offset + 1..].trim_start();
+    let end = after_value
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(after_value.len());
+    let value_str = &after_value[..end];
+    let value: u32 = value_str
+        .parse()
+        .expect("CONTENT_VERSION must be a plain integer literal");
+
+    assert!(
+        value >= 12,
+        "TEETH(EA-6 m14.5d-1a): CONTENT_VERSION in server-module/src/lib.rs must be \
+         >= 12 (current: {}). Without this bump, `sync_content_inner` detects that the \
+         DB is already at the stored version and returns early — the item_row upsert \
+         loop never runs, leaving cure_status=None for all items in any deployed DB \
+         (ADR-0054). Kills: an impl that adds the column but forgets to bump the version.",
+        value
     );
 }
