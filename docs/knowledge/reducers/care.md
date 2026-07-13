@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: care
 slug: reducers/care
-updated: 2026-07-12
+updated: 2026-07-13
 tags: [reducer, spacetimedb, raising]
 abstract: "Raise a monster's bond, gated by a per-monster cooldown measured from the server clock (`ctx.timestamp`, never a client…"
 resource: server-module/src/raising.rs#L65
