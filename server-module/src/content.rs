@@ -134,6 +134,7 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
             base_sp_defense: sp.base_stats.sp_defense,
             affinity: sp.affinity,
             learnable_skill_ids: sp.learnable_skill_ids.clone(),
+            ability: sp.ability,
         };
         match ctx.db.species_row().id().find(sp.id) {
             Some(_) => {

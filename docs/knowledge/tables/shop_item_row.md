@@ -2,10 +2,10 @@
 type: SpacetimeDB Table
 title: shop_item_row
 slug: tables/shop_item_row
-updated: 2026-07-10
+updated: 2026-07-12
 tags: [schema, spacetimedb, public]
 abstract: "Shop stock entries seeded from the `game-core` RON registry. One row per (shop, item) pair. Looked up by shop_id index …"
-resource: server-module/src/schema.rs#L151
+resource: server-module/src/schema.rs#L152
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

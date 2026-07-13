@@ -2,10 +2,10 @@
 type: SpacetimeDB Reducer
 title: flee
 slug: reducers/flee
-updated: 2026-07-10
+updated: 2026-07-12
 tags: [reducer, spacetimedb, battle]
 abstract: "Flee from a battle. Sets outcome to `Fled`; no XP awarded."
-resource: server-module/src/battle.rs#L648
+resource: server-module/src/battle.rs#L749
 source: scripts/okf-export.mjs@server-module/src/battle.rs
 ---
 

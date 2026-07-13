@@ -11,10 +11,10 @@
 //! - [`apply_ability_modifiers`] — call once per turn before pre-turn action
 //!   blocking checks (enforces ongoing passives like status immunity).
 //!
-//! These hooks are intentionally NOT wired into [`super::resolve::resolve_full_turn`]
-//! in this slice — the server wiring is a subsequent slice's job (when the server
-//! is ready to construct and pass an [`AbilityStore`]). Exporting them here makes
-//! the contract stable and testable independently.
+//! Both hooks are called from `resolve.rs`: `apply_ability_modifiers` in Phase 0
+//! of `resolve_full_turn`, and `apply_entry_ability` in `resolve_player_swap`
+//! (entry). Server reducers construct `AbilityStore` via `build_ability_store`
+//! in `marshal.rs` (ADR-0100).
 
 use serde::{Deserialize, Serialize};
 

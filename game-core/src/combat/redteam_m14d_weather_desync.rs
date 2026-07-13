@@ -14,6 +14,7 @@
 //!     no wildcard arm, which IS a compile-time OCP gate. Valid WeatherKind values
 //!     still pass validation. This test gates that valid weather skills remain accepted.
 
+use crate::combat::ability::AbilityStore;
 use crate::combat::resolve::resolve_recruit_failure;
 use crate::combat::status::{BattleStatusStore, StatusVariance};
 use crate::combat::type_chart::tests::make_type_chart;
@@ -143,6 +144,7 @@ fn rt_w14_desync_01_recruit_failure_weather_set_by_load_skills_path() {
         sleep_wake_roll_b: 0,
     };
 
+    let abilities = AbilityStore::new(1, 1);
     let _ = resolve_recruit_failure(
         &mut state,
         &[rain_dance],
@@ -150,6 +152,7 @@ fn rt_w14_desync_01_recruit_failure_weather_set_by_load_skills_path() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // FIX PINNED: the wild (faster, B) attacks with Rain Dance (sets_weather=Some(Rain)).

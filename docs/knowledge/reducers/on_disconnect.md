@@ -2,10 +2,10 @@
 type: SpacetimeDB Reducer
 title: on_disconnect
 slug: reducers/on_disconnect
-updated: 2026-07-10
+updated: 2026-07-12
 tags: [reducer, spacetimedb, lib]
 abstract: "SpacetimeDB reducer on_disconnect."
-resource: server-module/src/lib.rs#L172
+resource: server-module/src/lib.rs#L173
 source: scripts/okf-export.mjs@server-module/src/lib.rs
 ---
 

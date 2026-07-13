@@ -15,8 +15,9 @@ use crate::schema::{
 #[cfg(test)]
 use game_core::SkillDef;
 use game_core::{
-    derive_stats, roll_individuality, BattleMonster, CharacterState, EVs, EncounterEntry,
-    EncounterTable, Level, Millis, MonsterInstance, StatBlock, StatKind, TilePos, TypeChart,
+    derive_stats, roll_individuality, AbilityDef, AbilityStore, BattleMonster, CharacterState, EVs,
+    EncounterEntry, EncounterTable, Level, Millis, MonsterInstance, StatBlock, StatKind, TilePos,
+    TypeChart,
 };
 use spacetimedb::{Identity, ReducerContext};
 
@@ -274,8 +275,33 @@ pub(crate) fn species_from_row(row: &SpeciesRow) -> Result<game_core::Species, S
         },
         affinity: row.affinity,
         learnable_skill_ids: row.learnable_skill_ids.clone(),
-        ability: None,
+        ability: row.ability,
     })
+}
+
+/// Build an [`AbilityStore`] for a battle from the ability IDs recorded on each
+/// slot's species row.
+///
+/// `side_a_ability_ids` and `side_b_ability_ids` are parallel slices aligned to
+/// team slots (index 0 = slot 0, etc.). Each element is the `ability: Option<u32>`
+/// column from the matching `SpeciesRow`. Unknown IDs (no matching `AbilityDef`)
+/// silently resolve to `None` so a stale or missing def does not crash battle start.
+pub(crate) fn build_ability_store(
+    side_a_ability_ids: &[Option<u32>],
+    side_b_ability_ids: &[Option<u32>],
+    ability_defs: &[AbilityDef],
+) -> AbilityStore {
+    let resolve = |id: Option<u32>| -> Option<game_core::AbilityEffect> {
+        let id = id?;
+        ability_defs
+            .iter()
+            .find(|d| d.id == id)
+            .map(|d| d.effect.clone())
+    };
+    AbilityStore {
+        side_a: side_a_ability_ids.iter().map(|&id| resolve(id)).collect(),
+        side_b: side_b_ability_ids.iter().map(|&id| resolve(id)).collect(),
+    }
 }
 
 // --- Battle helpers (M7b, pure marshaling — no ctx) ---------------------------

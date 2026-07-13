@@ -23,7 +23,7 @@
 //!   EARS-10 (next-turn DoT only)      → status_applied_next_turn_dot_not_same_turn
 //!   EARS-11 (M7 regression)           → m14e_m7_regression_plain_attack_identical_events
 
-use crate::combat::ability::StatusKind;
+use crate::combat::ability::{AbilityStore, StatusKind};
 use crate::combat::resolve::resolve_full_turn;
 use crate::combat::status::{BattleStatusStore, StatusEffect, StatusVariance};
 use crate::combat::type_chart::tests::make_type_chart;
@@ -408,6 +408,7 @@ fn status_applied_emitted_when_skill_hits_unstatused_target() {
     let mut status = empty_status();
 
     // Side A uses poison skill; Side B uses plain attack (no status application).
+    let abilities = AbilityStore::new(1, 1);
     let events = resolve_full_turn(
         &mut state,
         TurnChoice::Attack { skill_id: 1 },
@@ -417,6 +418,7 @@ fn status_applied_emitted_when_skill_hits_unstatused_target() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // A StatusApplied event for SideB (the target of Side A's poison skill)
@@ -466,6 +468,7 @@ fn status_applied_not_emitted_on_miss() {
 
     // always_miss_skill has applies_status=Some(Burn) AND accuracy=0
     // accuracy_check(0, 99) → false → Miss event, attack never lands.
+    let abilities = AbilityStore::new(1, 1);
     let events = resolve_full_turn(
         &mut state,
         TurnChoice::Attack { skill_id: 1 },
@@ -475,6 +478,7 @@ fn status_applied_not_emitted_on_miss() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // A Miss event must appear for Side A (A goes first per speed_tie_breaker=true).
@@ -533,6 +537,7 @@ fn status_applied_not_emitted_when_target_already_statused() {
     status.side_b[0] = Some(StatusEffect::Burn);
 
     // Side A uses poison skill. B is already Burned — no Poison StatusApplied.
+    let abilities = AbilityStore::new(1, 1);
     let events = resolve_full_turn(
         &mut state,
         TurnChoice::Attack { skill_id: 1 },
@@ -542,6 +547,7 @@ fn status_applied_not_emitted_when_target_already_statused() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // No StatusApplied for SideB (already statused).
@@ -609,6 +615,7 @@ fn status_applied_independently_both_sides_same_turn() {
 
     // Side A uses Poison Sting (applies Poison).
     // Side B also uses Poison Sting (applies Poison to A — we use same skill id).
+    let abilities = AbilityStore::new(1, 1);
     let events = resolve_full_turn(
         &mut state,
         TurnChoice::Attack { skill_id: 1 },
@@ -618,6 +625,7 @@ fn status_applied_independently_both_sides_same_turn() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // A attacks B first (A faster) → StatusApplied { side: SideB, status: Poison }
@@ -690,6 +698,7 @@ fn status_applied_next_turn_dot_not_same_turn() {
     let mut state = make_battle_state(monster_a, monster_b);
     let mut status = empty_status();
 
+    let abilities = AbilityStore::new(1, 1);
     let events = resolve_full_turn(
         &mut state,
         TurnChoice::Attack { skill_id: 1 },
@@ -699,6 +708,7 @@ fn status_applied_next_turn_dot_not_same_turn() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // The StatusApplied event must appear (status was applied this turn).
@@ -788,6 +798,7 @@ fn m14e_m7_regression_plain_attack_identical_events() {
     );
 
     // resolve_full_turn with empty status and plain-attack skill (no applies_status).
+    let abilities = AbilityStore::new(1, 1);
     let events_full = resolve_full_turn(
         &mut state_full,
         TurnChoice::Attack { skill_id: 1 },
@@ -797,6 +808,7 @@ fn m14e_m7_regression_plain_attack_identical_events() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     assert_eq!(

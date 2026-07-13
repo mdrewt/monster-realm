@@ -49,7 +49,7 @@
 //!     slot 1 (B, fainted target)   = None (targeted, but B fainted from chip
 //!                                         before Phase 4.5 → write is dropped)
 
-use crate::combat::ability::StatusKind;
+use crate::combat::ability::{AbilityStore, StatusKind};
 use crate::combat::resolve::{resolve_player_swap, resolve_recruit_failure};
 use crate::combat::status::{BattleStatusStore, StatusVariance};
 use crate::combat::type_chart::TypeChart;
@@ -238,6 +238,7 @@ fn rt_m14_5a_01_status_applied_written_to_correct_slot_after_weather_chip_ko() {
     state.side_a.team[1].current_hp = 3;
     state.side_a.team[1].max_hp = 16;
 
+    let abilities = AbilityStore::new(2, 1);
     let events = resolve_player_swap(
         &mut state,
         SideId::SideA,
@@ -247,6 +248,7 @@ fn rt_m14_5a_01_status_applied_written_to_correct_slot_after_weather_chip_ko() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // After the call:
@@ -416,7 +418,16 @@ fn rt_m14_5a_02_recruit_failure_status_applied_to_correct_slot_after_auto_switch
     let sv = no_block_sv();
     let variance = always_hit_variance();
 
-    let events = resolve_recruit_failure(&mut state, &skills, &chart, &variance, &mut status, &sv);
+    let abilities = AbilityStore::new(2, 1);
+    let events = resolve_recruit_failure(
+        &mut state,
+        &skills,
+        &chart,
+        &variance,
+        &mut status,
+        &sv,
+        &abilities,
+    );
 
     // Check whether the scenario played out as expected.
     let status_applied = events.iter().any(|e| {

@@ -28,6 +28,7 @@
 //!   EARS-17 (DoT KO)           → m14a_poison_dot_ko_triggers_faint_and_battle_end
 //!   EARS-18 (independent)      → m14a_both_sides_can_have_independent_status
 
+use crate::combat::ability::AbilityStore;
 use crate::combat::resolve::resolve_full_turn;
 use crate::combat::status::{
     apply_post_turn_effects, apply_pre_turn_effects, tick_status, BattleStatusStore, StatusEffect,
@@ -170,6 +171,7 @@ fn m14a_plain_attack_unchanged_with_empty_status() {
     );
 
     // Call resolve_full_turn with empty status (must produce identical events).
+    let abilities = AbilityStore::new(1, 1);
     let events_full = resolve_full_turn(
         &mut state_full,
         TurnChoice::Attack { skill_id: 1 },
@@ -179,6 +181,7 @@ fn m14a_plain_attack_unchanged_with_empty_status() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     assert_eq!(
@@ -884,6 +887,7 @@ fn m14a_paralysis_block_prevents_attack_in_resolve_full_turn() {
         side_b: vec![None],
     };
 
+    let abilities = AbilityStore::new(1, 1);
     let events = resolve_full_turn(
         &mut state,
         TurnChoice::Attack { skill_id: 1 },
@@ -893,6 +897,7 @@ fn m14a_paralysis_block_prevents_attack_in_resolve_full_turn() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // ActionBlocked for SideA must appear.
@@ -979,6 +984,7 @@ proptest! {
         let mut state2 = make_battle_state(monster_a.clone(), monster_b.clone());
         let mut status1 = empty_status();
         let mut status2 = empty_status();
+        let abilities = AbilityStore::new(1, 1);
 
         let events1 = resolve_full_turn(
             &mut state1,
@@ -989,6 +995,7 @@ proptest! {
             &variance,
             &mut status1,
             &sv,
+            &abilities,
         );
         let events2 = resolve_full_turn(
             &mut state2,
@@ -999,6 +1006,7 @@ proptest! {
             &variance,
             &mut status2,
             &sv,
+            &abilities,
         );
 
         prop_assert_eq!(

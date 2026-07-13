@@ -20,7 +20,7 @@
 //!                          ownership guard). This is a security invariant — a player
 //!                          must not be able to use an item on someone else's battle.
 
-use crate::combat::ability::StatusKind;
+use crate::combat::ability::{AbilityStore, StatusKind};
 use crate::combat::resolve::resolve_full_turn;
 use crate::combat::status::{BattleStatusStore, StatusVariance};
 use crate::combat::type_chart::TypeChart;
@@ -212,6 +212,7 @@ fn rt_m14e_status_not_applied_to_immune_target() {
     let mut state = make_battle_state(monster_a, monster_b);
     let mut status = BattleStatusStore::new(1, 1);
 
+    let abilities = AbilityStore::new(1, 1);
     let events = resolve_full_turn(
         &mut state,
         TurnChoice::Attack { skill_id: 1 },
@@ -221,6 +222,7 @@ fn rt_m14e_status_not_applied_to_immune_target() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // A Damage event with 0 damage (Immune) should appear, confirming the hit landed.
@@ -316,6 +318,7 @@ fn rt_m14e_status_not_applied_after_faint() {
     let mut state = make_battle_state(monster_a, monster_b);
     let mut status = BattleStatusStore::new(1, 1);
 
+    let abilities = AbilityStore::new(1, 1);
     let events = resolve_full_turn(
         &mut state,
         TurnChoice::Attack { skill_id: 1 },
@@ -325,6 +328,7 @@ fn rt_m14e_status_not_applied_after_faint() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // Faint for SideB must appear (confirming the KO happened).
@@ -433,6 +437,7 @@ fn rt_m14e_no_double_status_same_target() {
     let mut state = make_battle_state(monster_a, monster_b);
     let mut status = BattleStatusStore::new(1, 1);
 
+    let abilities = AbilityStore::new(1, 1);
     let events = resolve_full_turn(
         &mut state,
         TurnChoice::Attack { skill_id: 1 },
@@ -442,6 +447,7 @@ fn rt_m14e_no_double_status_same_target() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // Count StatusApplied events for SideB (target of A's attack).

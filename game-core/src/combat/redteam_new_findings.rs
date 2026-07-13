@@ -14,6 +14,7 @@
 //! Run: cargo test redteam_new -- --nocapture
 
 use crate::combat::{
+    ability::AbilityStore,
     apply_xp_gain, battle_xp_reward,
     resolve::resolve_player_swap,
     resolve_turn,
@@ -538,6 +539,7 @@ fn r05_enemy_retaliation_after_swap_can_ko_new_active() {
         sleep_wake_roll_a: 0,
         sleep_wake_roll_b: 0,
     };
+    let abilities = AbilityStore::new(2, 1);
     let events = resolve_player_swap(
         &mut state,
         SideId::SideA,
@@ -547,6 +549,7 @@ fn r05_enemy_retaliation_after_swap_can_ko_new_active() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // After swap + enemy retaliation, check state.

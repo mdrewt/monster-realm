@@ -6,6 +6,7 @@
         base_stats: (hp: 45, attack: 49, defense: 49, speed: 65, sp_attack: 65, sp_defense: 45),
         affinity: Fire,
         learnable_skill_ids: [1, 2],
+        ability: Some(1), // Flame Body (id=1): immune to Burn (ADR-0100)
     ),
     (
         id: 2,
@@ -20,5 +21,6 @@
         base_stats: (hp: 45, attack: 49, defense: 49, speed: 45, sp_attack: 65, sp_defense: 65),
         affinity: Plant,
         learnable_skill_ids: [5, 6],
+        ability: Some(3), // Regeneration (id=3): heals 1/4 max HP on entry (ADR-0100)
     ),
 ]

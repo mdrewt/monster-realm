@@ -47,6 +47,7 @@ fn make_species_row(id: u32, base_hp: u16, base_other: u16) -> SpeciesRow {
         base_sp_defense: base_other,
         affinity: game_core::Affinity::Fire,
         learnable_skill_ids: vec![],
+        ability: None,
     }
 }
 

@@ -87,6 +87,7 @@ pub struct SpeciesRow {
     pub base_sp_defense: u16,
     pub affinity: Affinity,
     pub learnable_skill_ids: Vec<u32>,
+    pub ability: Option<u32>, // additive (ADR-0006); None = no passive ability
 }
 
 /// Skill definitions seeded from the `game-core` RON registry.

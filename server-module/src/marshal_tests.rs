@@ -215,6 +215,7 @@ fn m7b_test_species_row() -> SpeciesRow {
         base_sp_defense: 45,
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![1, 2],
+        ability: None,
     }
 }
 
@@ -444,6 +445,7 @@ fn m7b_loser_base_stat_total_high_bst_species() {
         base_sp_defense: 90,
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![],
+        ability: None,
     };
     // 100 + 120 + 90 + 100 + 130 + 90 = 630
     let bst: u16 = loser_base_stat_total(&species);
@@ -470,6 +472,7 @@ fn m7b_loser_base_stat_total_max_stats_no_overflow() {
         base_sp_defense: 255,
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![],
+        ability: None,
     };
     // 255 * 6 = 1530, which fits in u16.
     let bst: u16 = loser_base_stat_total(&species);
@@ -808,6 +811,7 @@ fn m8c_test_species_row() -> SpeciesRow {
         base_sp_defense: 50,
         affinity: Affinity::Plant,
         learnable_skill_ids: vec![1, 2, 3],
+        ability: None,
     }
 }
 
@@ -1057,6 +1061,7 @@ fn m10_5a_wild_battle_monster_rejects_empty_known_skills() {
         base_sp_defense: 50,
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![1, 2],
+        ability: None,
     };
 
     // Skill ids [7, 8, 9] are entirely disjoint from learnable [1, 2].
@@ -1324,6 +1329,7 @@ fn m10_5a_battle_monster_from_row_rejects_empty_known_skills() {
         base_sp_defense: 50,
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![1, 2], // species has skills in content
+        ability: None,
     };
     let mut monster = m7b_test_monster_row();
     monster.species_id = 97;

@@ -877,6 +877,8 @@ fn f15_pvp_requires_symmetric_swap_api() {
         sleep_wake_roll_a: 0,
         sleep_wake_roll_b: 0,
     };
+    use crate::combat::ability::AbilityStore;
+    let abilities = AbilityStore::new(1, 2);
     let events = resolve_player_swap(
         &mut state,
         SideId::SideB,
@@ -886,6 +888,7 @@ fn f15_pvp_requires_symmetric_swap_api() {
         &variance,
         &mut status,
         &sv,
+        &abilities,
     );
 
     // REAL ASSERTION: state.side_b.active must now be 1.
