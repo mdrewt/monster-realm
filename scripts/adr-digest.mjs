@@ -10,7 +10,7 @@
 // NO new RegExp() — all patterns use literal /regex/ or String methods.
 // (detect-non-literal-regexp Semgrep rule has bitten this project 3×.)
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -131,23 +131,35 @@ const CORPUS_PATH = join(PROJECT_ROOT, 'docs', 'adr', 'design-corpus.json');
 // Header field extraction helpers (NO new RegExp)
 // ---------------------------------------------------------------------------
 
-/** Extract a bold-field value: **FieldName:** <value> */
+/** Return the header preamble: everything before the first section heading. */
+function headerPreamble(content) {
+  const boundary = content.indexOf('\n## ');
+  return boundary === -1 ? content : content.slice(0, boundary);
+}
+
+/** Extract a bold-field value: **FieldName:** <value> — header block only. */
 function extractBoldField(content, fieldName) {
+  const preamble = headerPreamble(content);
   const needle = `**${fieldName}:**`;
-  const idx = content.indexOf(needle);
+  const idx = preamble.indexOf(needle);
   if (idx === -1) return null;
-  const lineEnd = content.indexOf('\n', idx);
-  const raw = content.slice(idx + needle.length, lineEnd === -1 ? content.length : lineEnd).trim();
+  const lineEnd = preamble.indexOf('\n', idx);
+  const raw = preamble
+    .slice(idx + needle.length, lineEnd === -1 ? preamble.length : lineEnd)
+    .trim();
   return raw || null;
 }
 
-/** Extract a list-field value: - FieldName: <value> */
+/** Extract a list-field value: - FieldName: <value> — header block only. */
 function extractListField(content, fieldName) {
+  const preamble = headerPreamble(content);
   const needle = `- ${fieldName}:`;
-  const idx = content.indexOf(needle);
+  const idx = preamble.indexOf(needle);
   if (idx === -1) return null;
-  const lineEnd = content.indexOf('\n', idx);
-  const raw = content.slice(idx + needle.length, lineEnd === -1 ? content.length : lineEnd).trim();
+  const lineEnd = preamble.indexOf('\n', idx);
+  const raw = preamble
+    .slice(idx + needle.length, lineEnd === -1 ? preamble.length : lineEnd)
+    .trim();
   return raw || null;
 }
 
@@ -246,11 +258,11 @@ function validateAdr(adr, allIds) {
     });
   }
 
-  // Superseded-by must be present if Status = Superseded
-  if (adr.status === 'Superseded' && !adr.supersededBy) {
+  // Superseded-by must be present and non-em-dash if Status = Superseded
+  if (adr.status === 'Superseded' && (!adr.supersededBy || adr.supersededBy === '—')) {
     issues.push({
       level: isLegacy ? 'warn' : 'error',
-      message: `${adr.id}: Status is Superseded but missing **Superseded-by:** field`,
+      message: `${adr.id}: Status is Superseded but missing a real **Superseded-by:** pointer (use an ADR or H- reference, not —)`,
     });
   }
 
@@ -315,9 +327,10 @@ function validateAdr(adr, allIds) {
     if (!fieldValue || fieldValue === '—' || fieldValue.toLowerCase() === 'none') return;
     for (const ref of extractAllAdrIds(fieldValue)) {
       if (!allIds.has(ref)) {
+        const label = ref.startsWith('H-') ? ref : `ADR-${ref}`;
         issues.push({
           level: refLevel,
-          message: `${adr.id}: dangling ${fieldName} reference "${fieldValue}" (ADR-${ref} not found)`,
+          message: `${adr.id}: dangling ${fieldName} reference "${fieldValue}" (${label} not found)`,
         });
       }
     }
@@ -331,18 +344,35 @@ function validateAdr(adr, allIds) {
   return issues;
 }
 
-/** Extract ALL numeric ADR ids from a reference string like "ADR-0017 (desc), ADR-0023". */
+/**
+ * Extract ALL ADR/H- ids from a reference string.
+ * Returns bare numeric strings for ADR-NNNN (e.g. "0017") and
+ * H-prefixed strings for H-NNNN (e.g. "H-0099").
+ */
 function extractAllAdrIds(ref) {
   if (!ref) return [];
   const ids = [];
   let idx = 0;
   while (idx < ref.length) {
     const adrIdx = ref.indexOf('ADR-', idx);
-    if (adrIdx === -1) break;
-    const start = adrIdx + 4;
+    const hIdx = ref.indexOf('H-', idx);
+    // Pick the earlier of the two prefixes
+    let matchIdx, prefixLen, idPrefix;
+    if (adrIdx !== -1 && (hIdx === -1 || adrIdx <= hIdx)) {
+      matchIdx = adrIdx;
+      prefixLen = 4;
+      idPrefix = '';
+    } else if (hIdx !== -1) {
+      matchIdx = hIdx;
+      prefixLen = 2;
+      idPrefix = 'H-';
+    } else {
+      break;
+    }
+    const start = matchIdx + prefixLen;
     let end = start;
     while (end < ref.length && ref[end] >= '0' && ref[end] <= '9') end++;
-    if (end > start) ids.push(ref.slice(start, end));
+    if (end > start) ids.push(idPrefix + ref.slice(start, end));
     idx = end;
   }
   return ids;
@@ -484,8 +514,8 @@ function generateDigest(adrs, designCorpus) {
       const statusStr = renderStatus(adr);
       const titleStr = cleanTitle(adr.title);
       const sliceStr = adr.slice || 'PENDING';
-      const line = `- ${idLink} — ${sliceStr} — ${titleStr} (${statusStr})`;
-      lines.push(isDead ? `- ~~${idLink} — ${sliceStr} — ${titleStr} (${statusStr})~~` : line);
+      const entry = `${idLink} — ${sliceStr} — ${titleStr} (${statusStr})`;
+      lines.push(isDead ? `- ~~${entry}~~` : `- ${entry}`);
     }
     lines.push('');
   }
@@ -495,7 +525,7 @@ function generateDigest(adrs, designCorpus) {
 
 /** Return the basename of an ADR file path for use in markdown links. */
 function filenameBase(filePath) {
-  return filePath.split('/').pop() ?? '';
+  return basename(filePath);
 }
 
 /** Strip common ADR ID prefixes from a title for cleaner digest display. */
@@ -537,12 +567,14 @@ function main() {
 
   // Build the full set of valid ADR IDs for dangling-reference checks:
   // - project ADR IDs (from this repo's docs/adr/)
-  // - harness design ADR numeric IDs (0002-0034) — live in the harness corpus
-  // - harness collision aliases (H-0055 → 0055 range)
-  // This allows legacy ADRs that reference "ADR-0017" (a harness design ADR) to resolve.
+  // - harness design ADR numeric IDs (0002-0034) — legacy refs use bare ADR-NNNN form
+  // - H-prefixed IDs from design-corpus.json — canonical refs use H-NNNN form
   const allIds = new Set(adrEntries.map((e) => e.id));
   for (let n = 2; n <= 34; n++) {
     allIds.add(String(n).padStart(4, '0'));
+  }
+  for (const entry of designCorpus.entries) {
+    allIds.add(entry.id); // "H-0002", "H-0003", ..., "H-0055", "H-0056", "H-0057"
   }
   const adrs = adrEntries.map(({ id, file }) => parseAdr(id, file));
 

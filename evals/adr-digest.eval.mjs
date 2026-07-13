@@ -11,6 +11,9 @@
 //   TOOTH 5 (infra-d-7): dangling **Superseded-by:** reference → fails with dangling message.
 //   TOOTH 6 (infra-d-7): stale DIGEST.md detected by --check → fails with stale/drift message.
 //   TOOTH 7 (infra-d-6): real project corpus is never stale or invalid → passes.
+//   TOOTH 8 (red-team): **Status:** inside a code block must NOT satisfy header validation.
+//   TOOTH 9 (red-team): dangling H- reference in **Supersedes:** must fail (H- blind spot).
+//   TOOTH 10 (red-team): Status=Superseded + **Superseded-by:** — must fail (em-dash bypass).
 //
 // IMPORTANT: NO new RegExp(...) — detect-non-literal-regexp Semgrep rule bites.
 // Only String.includes() / indexOf() and literal /regex/ patterns used here.
@@ -282,6 +285,125 @@ export default async function () {
   }
 
   // =========================================================================
+  // TOOTH 8 — extractBoldField must not match **Status:** inside a code block
+  // or body text; a canonical ADR with Status only in the body must FAIL.
+  //
+  // Invariant: field extraction is header-only — a body occurrence of
+  // "**Status:** Accepted" (e.g. inside a template code block) must NOT satisfy
+  // the Status validation requirement for a non-legacy ADR.
+  //
+  // Kills: any full-document substring scan that falsely accepts a body-embedded
+  // Status field as proof that the header is present, letting a malformed ADR
+  // sneak past the gate with no header Status field at all.
+  // =========================================================================
+  {
+    const dir = makeTmpWithFixture('0905-status-in-body-block.md');
+    try {
+      const out = join(dir, 'DIGEST.md');
+      const r = runDigest(['--adr-dir', dir, '--out', out]);
+      const combined = r.stderr + r.stdout;
+      if (r.code === 0) {
+        failing.push(
+          'TOOTH 8 (body-embedded Status bypass): expected exit non-0 for ADR whose ' +
+            '**Status:** field appears only inside a code block in the body (not the header) ' +
+            'but got exit 0 — extractBoldField scans the full document and a body occurrence ' +
+            'falsely satisfies the Status requirement; a malformed ADR passes the gate',
+        );
+      } else if (combined.indexOf('Status') === -1 && combined.indexOf('status') === -1) {
+        failing.push(
+          'TOOTH 8 (body-embedded Status bypass): exited non-0 but output contains neither ' +
+            '"Status" nor "status" — error message is not actionable. ' +
+            `stderr: ${r.stderr.slice(0, 300)}`,
+        );
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // =========================================================================
+  // TOOTH 9 — dangling H- reference in **Supersedes:** must fail.
+  //
+  // Invariant: extractAllAdrIds only recognises "ADR-NNNN" patterns; it is blind
+  // to "H-NNNN" references.  A canonical ADR that writes
+  // "**Supersedes:** H-0099" (non-existent in design-corpus.json) must fail the
+  // dangling-reference check.
+  //
+  // Kills: any implementation where extractAllAdrIds ignores H- prefixes, letting
+  // a reference to a non-existent harness ADR pass silently without an error.
+  // =========================================================================
+  {
+    const dir = makeTmpWithFixture('0906-h-ref-in-supersedes.md');
+    try {
+      const out = join(dir, 'DIGEST.md');
+      const r = runDigest(['--adr-dir', dir, '--out', out]);
+      const combined = r.stderr + r.stdout;
+      if (r.code === 0) {
+        failing.push(
+          'TOOTH 9 (dangling H- reference): expected exit non-0 for ADR with ' +
+            '**Supersedes:** H-0099 (non-existent harness ADR) but got exit 0 — ' +
+            'extractAllAdrIds is blind to H- prefixes; dangling H- references are ' +
+            'invisible to the gate and pass without error',
+        );
+      } else if (
+        combined.indexOf('dangling') === -1 &&
+        combined.indexOf('H-0099') === -1 &&
+        combined.indexOf('0099') === -1
+      ) {
+        failing.push(
+          'TOOTH 9 (dangling H- reference): exited non-0 but output contains none of ' +
+            '"dangling", "H-0099", or "0099" — error message is not actionable. ' +
+            `stderr: ${r.stderr.slice(0, 300)}`,
+        );
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // =========================================================================
+  // TOOTH 10 — Superseded ADR with Superseded-by set to em-dash must fail.
+  //
+  // Invariant: when Status=Superseded the **Superseded-by:** field must carry a
+  // real ADR reference, not an em-dash sentinel (which means "none").  Writing
+  // "**Superseded-by:** —" on a Superseded ADR produces a semantically broken
+  // record: the ADR claims to be superseded but names no successor.
+  //
+  // Kills: any implementation where checkRefs short-circuits on em-dash before
+  // the "Status=Superseded requires a real Superseded-by" constraint is enforced,
+  // allowing the invalid combination to pass the gate silently.
+  // =========================================================================
+  {
+    const dir = makeTmpWithFixture('0907-superseded-by-em-dash.md');
+    try {
+      const out = join(dir, 'DIGEST.md');
+      const r = runDigest(['--adr-dir', dir, '--out', out]);
+      const combined = r.stderr + r.stdout;
+      if (r.code === 0) {
+        failing.push(
+          'TOOTH 10 (Superseded+em-dash Superseded-by bypass): expected exit non-0 for ' +
+            'ADR with Status=Superseded and **Superseded-by:** — (em-dash) but got exit 0 ' +
+            '— the gate accepts em-dash as a valid Superseded-by value, so a Superseded ADR ' +
+            'can declare no successor and still pass; the "Superseded must have a pointer" ' +
+            'invariant has no bite when the field is present but set to —',
+        );
+      } else if (
+        combined.indexOf('Superseded') === -1 &&
+        combined.indexOf('superseded') === -1 &&
+        combined.indexOf('pointer') === -1
+      ) {
+        failing.push(
+          'TOOTH 10 (Superseded+em-dash Superseded-by bypass): exited non-0 but output ' +
+            'contains none of "Superseded", "superseded", or "pointer" — error message is ' +
+            `not actionable. stderr: ${r.stderr.slice(0, 300)}`,
+        );
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // =========================================================================
   // Final result.
   // =========================================================================
   if (failing.length > 0) {
@@ -295,6 +417,6 @@ export default async function () {
   return {
     name,
     pass: true,
-    detail: '7/7 teeth bite correctly',
+    detail: '10/10 teeth bite correctly',
   };
 }
