@@ -70,14 +70,14 @@ export function clippyRejectsAllSinks(clippyStderr, requiredMethods, requiredTyp
   for (const m of requiredMethods) {
     // clippy emits: `error: use of a disallowed method `rand::random``
     // The needle is the exact substring clippy writes to stderr.
-    const needle = 'disallowed method `' + m + '`';
+    const needle = `disallowed method \`${m}\``;
     if (clippyStderr.indexOf(needle) === -1) {
       missing.push(m);
     }
   }
   for (const t of requiredTypes) {
     // clippy emits: `error: use of a disallowed type `rand::rngs::OsRng``
-    const needle = 'disallowed type `' + t + '`';
+    const needle = `disallowed type \`${t}\``;
     if (clippyStderr.indexOf(needle) === -1) {
       missing.push(t);
     }
@@ -104,7 +104,7 @@ export function clippyBansEverySink(clippyTomlText, requiredMethods, requiredTyp
   for (const p of allPaths) {
     // TOML entry looks like: path = "rand::random"  (with varying whitespace)
     // We check for the path string in double-quotes, which is unambiguous.
-    const needle = 'path = "' + p + '"';
+    const needle = `path = "${p}"`;
     if (stripped.indexOf(needle) === -1) {
       missing.push(p);
     }
@@ -150,7 +150,7 @@ export function profileFailsLoud(cargoTomlText) {
     const nextSection = afterHeader.indexOf('\n[');
     const body = nextSection === -1 ? afterHeader : afterHeader.slice(0, nextSection);
     if (body.indexOf('overflow-checks = true') === -1) {
-      missing.push(section + ' overflow-checks = true');
+      missing.push(`${section} overflow-checks = true`);
     }
   }
 
@@ -460,13 +460,13 @@ export default async function () {
     try {
       clippyTomlText = readFileSync(clippyTomlPath, 'utf8');
     } catch (e) {
-      failures.push('Part C: cannot read clippy.toml — ' + e.message);
+      failures.push(`Part C: cannot read clippy.toml — ${e.message}`);
       clippyTomlText = '';
     }
     try {
       cargoTomlText = readFileSync(cargoTomlPath, 'utf8');
     } catch (e) {
-      failures.push('Part C: cannot read Cargo.toml — ' + e.message);
+      failures.push(`Part C: cannot read Cargo.toml — ${e.message}`);
       cargoTomlText = '';
     }
 
@@ -569,7 +569,7 @@ export default async function () {
     } catch (e) {
       const out = (typeof e.stdout === 'string' ? e.stdout : '').trim();
       const err = (typeof e.stderr === 'string' ? e.stderr : '').trim();
-      const combined = out + '\n' + err;
+      const combined = `${out}\n${err}`;
       const tail = combined.trim().slice(-600);
 
       // Positive discriminator (mirrors Part A): did the #[should_panic] test
@@ -620,7 +620,7 @@ export default async function () {
     return {
       name,
       pass: false,
-      detail: 'unexpected error in determinism-fail-loud eval: ' + outerErr.message,
+      detail: `unexpected error in determinism-fail-loud eval: ${outerErr.message}`,
     };
   }
 }

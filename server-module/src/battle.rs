@@ -934,6 +934,16 @@ pub(crate) fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) -> Resu
             format!("write_back_party_hp: party_monster_ids index {i} out of range")
         })?;
         if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
+            // Abort-on-owner-change contract (M7b-2 spec gap closure, ADR-0106 M15a):
+            // If escrow guards were bypassed and ownership changed mid-battle, abort the
+            // entire write-back rather than writing HP into another player's monster.
+            // In practice the TR-11/ME-1 escrow guards make this unreachable; the check
+            // is defensive depth-of-defence (fail-loud on invariant violation).
+            if m.owner_identity != battle.player_identity {
+                return Err(format!(
+                    "write_back_party_hp: ownership changed mid-battle for monster {mid} — aborted"
+                ));
+            }
             write_back_hp(&mut m, bm);
             let pub_row = pub_from_monster(&m);
             ctx.db.monster().monster_id().update(m);

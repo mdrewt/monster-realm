@@ -7,7 +7,9 @@ export class HealView {
   private list: HTMLElement;
 
   constructor() {
+    // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
     this.overlay = document.getElementById('heal-overlay')!;
+    // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
     this.list = document.getElementById('heal-list')!;
   }
 
@@ -22,7 +24,7 @@ export class HealView {
       const li = document.createElement('li');
       const cost = loc.isFree ? 'Free' : `${loc.costQty}x ${loc.costItemName ?? 'Unknown item'}`;
       li.textContent = `Heal here (${cost})`;
-      li.dataset['locationId'] = String(loc.locationId);
+      li.dataset.locationId = String(loc.locationId);
       this.list.appendChild(li);
     });
   }

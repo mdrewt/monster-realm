@@ -25,7 +25,7 @@
 //
 // Additionally checks that `sync_content` calls `validate_evolution_fusion` in
 // the server-module source — the live gate for production publishes.
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 
 // ---------------------------------------------------------------------------
 // RON parsers

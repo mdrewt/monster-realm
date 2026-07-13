@@ -5,7 +5,7 @@ slug: reducers/heal_party
 updated: 2026-07-13
 tags: [reducer, spacetimedb, raising]
 abstract: "Restore all party monsters to full HP at a heal location. Reject-never-burns: all checks run BEFORE the first DB write.…"
-resource: server-module/src/raising.rs#L219
+resource: server-module/src/raising.rs#L262
 source: scripts/okf-export.mjs@server-module/src/raising.rs
 ---
 

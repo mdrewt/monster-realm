@@ -64,9 +64,7 @@ export default async function () {
   }
 
   const ron = readRegistryDir('game-core/content/zone_maps');
-  const baseline = JSON.parse(readFileSync('evals/baselines/zone-map-ids.json', 'utf8'))[
-    'zone_maps'
-  ];
+  const baseline = JSON.parse(readFileSync('evals/baselines/zone-map-ids.json', 'utf8')).zone_maps;
   const current = parseZoneMapIds(ron);
   const missing = removedIds(baseline, current);
 

@@ -9,9 +9,13 @@ export class DialogueView {
   private choicesContainer: HTMLElement;
 
   constructor() {
+    // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
     this.overlay = document.getElementById('dialogue-overlay')!;
+    // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
     this.npcName = document.getElementById('dialogue-npc-name')!;
+    // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
     this.nodeText = document.getElementById('dialogue-node-text')!;
+    // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
     this.choicesContainer = document.getElementById('dialogue-choices')!;
   }
 
@@ -27,7 +31,7 @@ export class DialogueView {
     vm.choices.forEach((choice) => {
       const btn = document.createElement('button');
       btn.textContent = choice.text;
-      btn.dataset['choiceIdx'] = String(choice.idx);
+      btn.dataset.choiceIdx = String(choice.idx);
       this.choicesContainer.appendChild(btn);
     });
   }

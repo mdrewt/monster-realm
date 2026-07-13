@@ -163,16 +163,19 @@ export function interpolateHistory(
   // Degenerate: no history — no position to render.
   if (snapshots.length === 0) return { x: 0, y: 0 };
   if (snapshots.length === 1) {
-    const only = snapshots[0]!;
+    const only = snapshots[0];
+    if (!only) return { x: 0, y: 0 };
     return { x: only.tileX, y: only.tileY };
   }
 
-  const newest = snapshots[snapshots.length - 1]!;
+  const newest = snapshots[snapshots.length - 1];
+  if (!newest) return { x: 0, y: 0 };
   // HOLD past the newest snapshot (no extrapolation — same contract as interpolate).
   // WHY: extrapolation overshoots and then snaps back when the next snapshot arrives
   // (the v1 rubberband). HOLD is the correct degradation when we're ahead of the buffer.
   if (renderTime >= newest.receivedAt) return { x: newest.tileX, y: newest.tileY };
 
+  // biome-ignore lint/style/noNonNullAssertion: length>=2 checked above (length===0 and ===1 returned early)
   const oldest = snapshots[0]!;
   // Clamp to oldest before the earliest snapshot (no backward extrapolation).
   if (renderTime <= oldest.receivedAt) return { x: oldest.tileX, y: oldest.tileY };
@@ -183,6 +186,7 @@ export function interpolateHistory(
   let prev = oldest;
   let next = newest;
   for (let i = 1; i < snapshots.length; i++) {
+    // biome-ignore lint/style/noNonNullAssertion: i is bounded by snapshots.length in for condition
     const s = snapshots[i]!;
     if (s.receivedAt <= renderTime) {
       prev = s; // still at or before renderTime → advance the lower bound

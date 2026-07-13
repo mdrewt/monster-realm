@@ -248,6 +248,7 @@ export default async function () {
     '  const mod = await import(pathToFileURL(path.join(dir, f)).href);',
     '  const res = await mod.default();',
     '  const ok = res.pass ? "PASS" : "FAIL";',
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: string contains source code with template literals
     '  console.log(`eval ${ok}: ${res.name}`);',
     '  if (!res.pass) failed++;',
     '}',
@@ -268,6 +269,7 @@ export default async function () {
     '    const mod = await import(pathToFileURL(path.join(dir, f)).href);',
     '    const res = await mod.default();',
     '    const ok = res.pass ? "PASS" : "FAIL";',
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: string contains source code with template literals
     '    console.log(`eval ${ok}: ${res.name}`);',
     '    if (!res.pass) failed++;',
     '  } catch (err) {',
@@ -296,6 +298,7 @@ export default async function () {
     '    res = { name: f, pass: false, detail: String(err) };',
     '  }',
     '  const ok = res.pass ? "PASS" : "FAIL";',
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: string contains source code with template literals
     '  console.log(`eval ${ok}: ${res.name}`);',
     '  if (!res.pass) failed++;',
     '}',

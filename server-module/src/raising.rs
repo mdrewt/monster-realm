@@ -15,7 +15,7 @@
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
 
-use crate::economy::spend_currency;
+use crate::economy::{spend_currency, wallet_balance};
 use crate::guards::{
     escrowed_currency_amount, escrowed_item_qty, reject_if_monster_in_trade, require_owner,
 };
@@ -23,7 +23,7 @@ use crate::inventory::consume_one;
 use crate::marshal::{now_ms, pub_from_monster};
 use crate::schema::{
     battle, character, heal_cooldown, heal_location_row, inventory, item_row, monster, monster_pub,
-    player, player_wallet, species_row, trade_offer, HealCooldown,
+    player, species_row, trade_offer, HealCooldown,
 };
 use game_core::{
     apply_care, focus_train, BattleOutcome, Bond, EVs, FocusTrainError, FocusTrainResult, IVs,
@@ -320,13 +320,7 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
                 .chain(ctx.db.trade_offer().counterparty().filter(me)),
             me,
         );
-        let balance = ctx
-            .db
-            .player_wallet()
-            .owner_identity()
-            .find(me)
-            .map(|r| r.balance)
-            .unwrap_or(0);
+        let balance = wallet_balance(ctx, me);
         let available = balance.saturating_sub(escrowed);
         if currency_cost > available {
             return Err("currency is in an active trade".to_string());

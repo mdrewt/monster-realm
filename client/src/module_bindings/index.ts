@@ -37,8 +37,10 @@ import {
 import AdvanceDialogueReducer from "./advance_dialogue_reducer";
 import AttemptRecruitReducer from "./attempt_recruit_reducer";
 import BuyReducer from "./buy_reducer";
+import CancelTradeReducer from "./cancel_trade_reducer";
 import CareReducer from "./care_reducer";
 import ClearQueueReducer from "./clear_queue_reducer";
+import ConfirmTradeReducer from "./confirm_trade_reducer";
 import DismissDialogueReducer from "./dismiss_dialogue_reducer";
 import EnqueueMoveReducer from "./enqueue_move_reducer";
 import EvolveReducer from "./evolve_reducer";
@@ -46,6 +48,8 @@ import FleeReducer from "./flee_reducer";
 import FuseReducer from "./fuse_reducer";
 import HealPartyReducer from "./heal_party_reducer";
 import JoinGameReducer from "./join_game_reducer";
+import ProposeTradeReducer from "./propose_trade_reducer";
+import RespondTradeReducer from "./respond_trade_reducer";
 import SellReducer from "./sell_reducer";
 import SetMoveReducer from "./set_move_reducer";
 import SetNicknameReducer from "./set_nickname_reducer";
@@ -77,6 +81,7 @@ import ShopItemRowRow from "./shop_item_row_table";
 import ShopRowRow from "./shop_row_table";
 import SkillRowRow from "./skill_row_table";
 import SpeciesRowRow from "./species_row_table";
+import TradeOfferRow from "./trade_offer_table";
 import TypeRelationRowRow from "./type_relation_row_table";
 import ZoneDefRow from "./zone_def_table";
 
@@ -280,6 +285,23 @@ const tablesSchema = __schema({
       { name: 'species_row_id_key', constraint: 'unique', columns: ['id'] },
     ],
   }, SpeciesRowRow),
+  trade_offer: __table({
+    name: 'trade_offer',
+    indexes: [
+      { accessor: 'counterparty', name: 'trade_offer_counterparty_idx_btree', algorithm: 'btree', columns: [
+        'counterparty',
+      ] },
+      { accessor: 'initiator', name: 'trade_offer_initiator_idx_btree', algorithm: 'btree', columns: [
+        'initiator',
+      ] },
+      { accessor: 'trade_id', name: 'trade_offer_trade_id_idx_btree', algorithm: 'btree', columns: [
+        'tradeId',
+      ] },
+    ],
+    constraints: [
+      { name: 'trade_offer_trade_id_key', constraint: 'unique', columns: ['tradeId'] },
+    ],
+  }, TradeOfferRow),
   type_relation_row: __table({
     name: 'type_relation_row',
     indexes: [
@@ -316,8 +338,10 @@ const reducersSchema = __reducers(
   __reducerSchema("advance_dialogue", AdvanceDialogueReducer),
   __reducerSchema("attempt_recruit", AttemptRecruitReducer),
   __reducerSchema("buy", BuyReducer),
+  __reducerSchema("cancel_trade", CancelTradeReducer),
   __reducerSchema("care", CareReducer),
   __reducerSchema("clear_queue", ClearQueueReducer),
+  __reducerSchema("confirm_trade", ConfirmTradeReducer),
   __reducerSchema("dismiss_dialogue", DismissDialogueReducer),
   __reducerSchema("enqueue_move", EnqueueMoveReducer),
   __reducerSchema("evolve", EvolveReducer),
@@ -325,6 +349,8 @@ const reducersSchema = __reducers(
   __reducerSchema("fuse", FuseReducer),
   __reducerSchema("heal_party", HealPartyReducer),
   __reducerSchema("join_game", JoinGameReducer),
+  __reducerSchema("propose_trade", ProposeTradeReducer),
+  __reducerSchema("respond_trade", RespondTradeReducer),
   __reducerSchema("sell", SellReducer),
   __reducerSchema("set_move", SetMoveReducer),
   __reducerSchema("set_nickname", SetNicknameReducer),

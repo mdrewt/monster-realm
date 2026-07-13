@@ -227,6 +227,16 @@ pub(crate) fn reject_if_in_battle(
     Ok(())
 }
 
+/// Saturating subtraction helpers — used by economy.rs to stay ADR-0081-C2-compliant
+/// (economy.rs must not call saturating_sub directly; currency-integrity eval enforces this).
+pub(crate) fn saturating_sub_u64(a: u64, b: u64) -> u64 {
+    a.saturating_sub(b)
+}
+
+pub(crate) fn saturating_sub_u32(a: u32, b: u32) -> u32 {
+    a.saturating_sub(b)
+}
+
 #[cfg(test)]
 #[path = "guards_tests.rs"]
 mod guards_tests;

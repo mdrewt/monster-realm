@@ -1518,7 +1518,6 @@ describe('battleModel m14.5d invariant: battleVMsEqual weather=undefined never t
     // Simulate a VM built without the weather field (e.g., from a test factory
     // that predates m14.5d). We must use `as` to bypass TypeScript's required field.
     const vmUndefinedWeather = { ...vmBase } as BattleViewModel;
-    // biome-ignore lint/performance/noDelete: testing undefined-field behavior
     delete (vmUndefinedWeather as Record<string, unknown>).weather;
 
     // Both VMs have weather=undefined. Must return true (no weather === no weather),
@@ -1536,7 +1535,6 @@ describe('battleModel m14.5d invariant: battleVMsEqual weather=undefined never t
     } as Partial<StoreBattle>);
     const vmBase = makeFullVM();
     const vmUndefinedWeather = { ...vmBase } as BattleViewModel;
-    // biome-ignore lint/performance/noDelete: testing undefined-field behavior
     delete (vmUndefinedWeather as Record<string, unknown>).weather;
 
     expect(() => battleVMsEqual(vmWithWeather, vmUndefinedWeather)).not.toThrow();

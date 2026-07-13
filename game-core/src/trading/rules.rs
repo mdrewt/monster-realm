@@ -220,6 +220,7 @@ pub fn build_swap_plan(
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::TradeStatus;
     use super::*;
 
     fn no_item() -> &'static [TradeItem] {

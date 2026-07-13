@@ -241,6 +241,16 @@ export const Monster = __t.object("Monster", {
 });
 export type Monster = __Infer<typeof Monster>;
 
+export const MonsterCard = __t.object("MonsterCard", {
+  monsterId: __t.u64(),
+  speciesId: __t.u32(),
+  nickname: __t.string(),
+  level: __t.u8(),
+  currentHp: __t.u16(),
+  statHp: __t.u16(),
+});
+export type MonsterCard = __Infer<typeof MonsterCard>;
+
 export const MonsterPub = __t.object("MonsterPub", {
   monsterId: __t.u64(),
   ownerIdentity: __t.identity(),
@@ -438,6 +448,46 @@ export const StatusKind = __t.enum("StatusKind", {
   Freeze: __t.unit(),
 });
 export type StatusKind = __Infer<typeof StatusKind>;
+
+export const TradeItem = __t.object("TradeItem", {
+  itemId: __t.u32(),
+  qty: __t.u32(),
+});
+export type TradeItem = __Infer<typeof TradeItem>;
+
+export const TradeOffer = __t.object("TradeOffer", {
+  tradeId: __t.u64(),
+  initiator: __t.identity(),
+  counterparty: __t.identity(),
+  initiatorMonsterIds: __t.array(__t.u64()),
+  get initiatorItems() {
+    return __t.array(TradeItem);
+  },
+  initiatorCurrency: __t.u64(),
+  counterpartyMonsterIds: __t.array(__t.u64()),
+  get counterpartyItems() {
+    return __t.array(TradeItem);
+  },
+  counterpartyCurrency: __t.u64(),
+  get initiatorCards() {
+    return __t.array(MonsterCard);
+  },
+  get counterpartyCards() {
+    return __t.array(MonsterCard);
+  },
+  get status() {
+    return TradeStatus;
+  },
+  createdAtMs: __t.i64(),
+});
+export type TradeOffer = __Infer<typeof TradeOffer>;
+
+// The tagged union or sum type for the algebraic type `TradeStatus`.
+export const TradeStatus = __t.enum("TradeStatus", {
+  Pending: __t.unit(),
+  ConfirmedByCounterparty: __t.unit(),
+});
+export type TradeStatus = __Infer<typeof TradeStatus>;
 
 export const TypeRelationRow = __t.object("TypeRelationRow", {
   id: __t.u64(),

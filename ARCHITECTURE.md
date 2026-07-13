@@ -1003,3 +1003,22 @@ seeded by `sync_content_inner` from `ItemDef.cure_status`; bindings regenerated 
 
 **Next: Phase C (M15 — trade; M16 — PvP battles; M17 — guilds; M18 — raids; M19 — seasonal/live-ops; M20 —
 soak/load; M21–M25 — polish + launch gate, ADR-0021/0022/0025).**
+
+## M15 — Trading (Phase C)
+
+**M15a** (trading spine — ADR-0106, PR TBD) in-progress: `trade_offer` table
+(`public`; btree indexes on `initiator` + `counterparty`; display-only `MonsterCard` snapshots per
+ADR-0015 — no IV/EV/nature); `validate_proposal` + `build_swap_plan` pure rules in
+`game-core/src/trading/`; `reject_if_monster_in_trade` + `escrowed_item_qty` +
+`escrowed_currency_amount` guards in `server-module/src/guards.rs`; four reducers
+(`propose_trade` / `respond_trade` / `confirm_trade` / `cancel_trade`) + `cancel_trades_on_disconnect`
+called from `on_disconnect`; escrow guards wired into all 11 asset-mutating reducers (evolve, fuse,
+set_nickname, set_party_slot, care, train, heal_party, buy, sell, start_battle/begin_encounter,
+use_battle_item/attempt_recruit); atomic swap re-reads live rows at confirm time (no stale-data
+exploit); 20 proof-of-teeth unit tests; no CONTENT_VERSION bump (trade_offer is runtime-created,
+not seeded). ADR next-free = 0107.
+
+**M15b** (trade client UI — PARKED): counterparty browse, offer review, accept/reject buttons.
+
+**M15c** (trade evals tail — PARKED): SpacetimeType snapshot + table-schema eval teeth for
+`MonsterCard` / `TradeItem` / `TradeStatus` / `trade_offer`.

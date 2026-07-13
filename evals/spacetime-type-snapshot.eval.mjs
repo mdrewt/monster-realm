@@ -189,7 +189,7 @@ pub enum BattleOutcome {
 `;
   const doctoredParsed = parseSpacetimeTypes(doctoredSrc);
   const doctoredDrift = checkTypeDrift(doctoredParsed, {
-    BattleOutcome: baseline['BattleOutcome'],
+    BattleOutcome: baseline.BattleOutcome,
   });
   if (!doctoredDrift || doctoredDrift.length === 0) {
     return {
@@ -204,7 +204,7 @@ pub enum BattleOutcome {
   // -------------------------------------------------------------------------
   let rawSrc;
   try {
-    rawSrc = collectRustSrc(SERVER_SRC) + '\n' + collectRustSrc(GAME_CORE_SRC);
+    rawSrc = `${collectRustSrc(SERVER_SRC)}\n${collectRustSrc(GAME_CORE_SRC)}`;
   } catch (e) {
     return {
       name,

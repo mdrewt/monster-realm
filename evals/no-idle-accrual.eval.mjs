@@ -765,7 +765,7 @@ function runTeeth() {
   //     fixtures to give checkConfinement a non-zero growth write count AND
   //     a scheduled reducer. ---
   {
-    const combined = stripRustComments(GOOD_MOVEMENT_TICK + '\n' + GOOD_INTENT_WRITER);
+    const combined = stripRustComments(`${GOOD_MOVEMENT_TICK}\n${GOOD_INTENT_WRITER}`);
     const errA = checkConfinement(combined);
     if (errA) {
       return `TEETH tooth-5: GOOD_INTENT_WRITER (care writes .bond= and .last_care_at_ms=) was incorrectly flagged by checkConfinement: ${errA}`;
@@ -776,7 +776,7 @@ function runTeeth() {
   //     Combine with GOOD_MOVEMENT_TICK + GOOD_INTENT_WRITER for count > 0. ---
   {
     const combined = stripRustComments(
-      GOOD_MOVEMENT_TICK + '\n' + GOOD_INTENT_WRITER + '\n' + GOOD_COMPARISON_NOT_WRITE,
+      `${GOOD_MOVEMENT_TICK}\n${GOOD_INTENT_WRITER}\n${GOOD_COMPARISON_NOT_WRITE}`,
     );
     const errA = checkConfinement(combined);
     if (errA) {

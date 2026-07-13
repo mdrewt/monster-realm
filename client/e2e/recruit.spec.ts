@@ -397,8 +397,8 @@ async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
         const ms = [...text.matchAll(/HP (\d+)\/(\d+)/g)];
         if (!ms.length) return 'no-hp';
         const anyLow = ms.some((match) => {
-          const cur = parseInt(match[1]!, 10);
-          const max = parseInt(match[2]!, 10);
+          const cur = parseInt(match[1] ?? '0', 10);
+          const max = parseInt(match[2] ?? '0', 10);
           return max > 0 && cur / max < 0.8;
         });
         return anyLow ? 'low' : 'ok';
@@ -433,8 +433,8 @@ async function restoreHpBeforeEncounter(p: Page): Promise<boolean> {
           const ms = [...text.matchAll(/HP (\d+)\/(\d+)/g)];
           if (!ms.length) return false;
           return ms.every((match) => {
-            const cur = parseInt(match[1]!, 10);
-            const max = parseInt(match[2]!, 10);
+            const cur = parseInt(match[1] ?? '0', 10);
+            const max = parseInt(match[2] ?? '0', 10);
             return max > 0 && cur / max >= 0.8;
           });
         },
