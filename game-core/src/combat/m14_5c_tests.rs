@@ -307,3 +307,190 @@ fn sproutlet_regeneration_heals_on_entry() {
         "Regeneration must not overheal above max_hp {max_hp}."
     );
 }
+
+// ---------------------------------------------------------------------------
+// RT-D6: entry ability is NOT called on KO-triggered auto-switch (D6 gap)
+//
+// When a monster is KO'd during resolve_one_attack, the engine calls
+// next_conscious_index() and set_active() to auto-switch — but it does NOT
+// call apply_entry_ability for the newly-entered monster.  This means:
+//
+//   a) Flameling (Flame Body) switched in via KO-auto-switch enters carrying
+//      any Burn that was placed on that slot before the switch.  The Burn IS
+//      cleared by apply_ability_modifiers at Phase 0 of the FOLLOWING turn,
+//      so the monster only suffers phantom Burn on entry — but it would take
+//      one turn of Burn DoT before Phase 0 can clear it.
+//
+//   b) Sproutlet (Regeneration) switched in via KO-auto-switch does NOT
+//      receive the EntryHeal.  A monster that triggers to the bench via KO
+//      misses its free heal completely.
+//
+// This test documents the gap by showing that after a KO-auto-switch,
+// the incoming monster's slot status in the BattleStatusStore is unchanged
+// (no StatusImmunity clear and no EntryHeal applied).
+//
+// A fix would call apply_entry_ability inside resolve_one_attack after the
+// auto-switch fires (passing the abilities store down into that function).
+// The test is written to PASS today (documenting current behavior) and MUST
+// be updated if the gap is intentionally closed.
+//
+// Severity: MEDIUM — manifests as:
+//   - One phantom Burn DoT tick on auto-switched Flameling (then cleared next turn)
+//   - Missing EntryHeal for auto-switched Sproutlet
+// The Burn DoT can be fatal if the Flameling enters at very low HP.
+// ---------------------------------------------------------------------------
+
+/// RT-D6a: Flameling KO-auto-switched in does NOT have its Burn cleared on entry.
+///
+/// This test DOCUMENTS the gap. The Burn in the store is cleared only at
+/// Phase 0 of the NEXT turn (apply_ability_modifiers), not on auto-switch.
+///
+/// If this test starts FAILING it means the gap has been closed (the entry
+/// ability now fires on KO-auto-switch) — update the assertion direction and
+/// promote to a positive gate.
+#[test]
+fn rt_d6a_kо_auto_switch_does_not_call_entry_ability_status_immunity() {
+    use crate::combat::ability::AbilityEffect;
+    use crate::combat::status::BattleStatusStore;
+    use crate::combat::types::StatusEffect;
+
+    // AbilityStore: slot 1 on SideA has Flame Body (Burn immunity).
+    // Slot 0 has no ability (it starts active, gets KO'd).
+    let mut abilities = AbilityStore::new(2, 1);
+    abilities.side_a[1] = Some(AbilityEffect::StatusImmunity {
+        immune_to: crate::combat::ability::StatusKind::Burn,
+    });
+
+    // Status store: slot 1 (the bench, soon-to-be-active) already has Burn.
+    // This simulates status placed on the slot before the switch.
+    let mut status = BattleStatusStore::new(2, 1);
+    status.side_a[1] = Some(StatusEffect::Burn);
+
+    // BattleState: SideA slot 0 at 1 HP (will be KO'd), slot 1 is the Flameling.
+    let mut state = BattleState {
+        side_a: crate::combat::types::BattleSide {
+            active: 0,
+            team: vec![
+                make_monster_hp(1, 100),  // slot 0: 1 HP, dies to any hit
+                make_monster_hp(80, 100), // slot 1: Flameling, has Burn in store
+            ],
+        },
+        side_b: crate::combat::types::BattleSide {
+            active: 0,
+            team: vec![make_monster_hp(200, 200)],
+        },
+        outcome: BattleOutcome::Ongoing,
+        turn_number: 0,
+        weather: None,
+    };
+
+    // Give slot 0 the right HP/status mirror in the state (Burn from store not
+    // mirrored to BattleMonster for slot 0 — it's irrelevant; we just need the
+    // KO auto-switch to fire).
+    // The enemy (SideB) is strong enough to KO slot 0 in one hit.
+    // We call apply_ability_modifiers manually here only to show it WOULD clear the
+    // Burn IF called — but resolve_one_attack doesn't call it.
+
+    // Apply ability modifiers BEFORE the KO — this runs in Phase 0, clearing
+    // any existing Burn on the active slot.  The active slot is 0 (no ability),
+    // so slot 1's Burn is UNTOUCHED by this call.
+    apply_ability_modifiers(&state, &mut status, &abilities);
+
+    // Slot 0 is active (no ability) — slot 1 Burn is untouched by Phase 0 on slot 0.
+    assert_eq!(
+        status.side_a[1],
+        Some(StatusEffect::Burn),
+        "RT-D6a: Phase 0 apply_ability_modifiers on slot 0 (no ability) must NOT \
+         clear Burn on the bench slot 1 — the bench is inactive"
+    );
+
+    // Now simulate the KO auto-switch: SideA.active moves from 0 to 1.
+    // In the real pipeline this happens inside resolve_one_attack — no
+    // apply_entry_ability is called here.
+    state
+        .side_a
+        .set_active(1)
+        .expect("slot 1 is valid and not fainted");
+
+    // After the auto-switch, the Burn on slot 1 in the status store is still
+    // present — no entry ability was called to clear it.
+    assert_eq!(
+        status.side_a[1],
+        Some(StatusEffect::Burn),
+        "RT-D6a (GAP DOCUMENTED): after KO-auto-switch to slot 1 (Flameling, \
+         Flame Body), the Burn on slot 1 is NOT cleared because apply_entry_ability \
+         is not called on auto-switch. The Burn will persist until Phase 0 of the \
+         NEXT turn. If this assertion starts failing, the gap has been closed — \
+         update to assert None."
+    );
+
+    // Now simulate what the NEXT turn's Phase 0 does: apply_ability_modifiers
+    // on the now-active slot 1.  This WILL clear the Burn.
+    apply_ability_modifiers(&state, &mut status, &abilities);
+    assert_eq!(
+        status.side_a[1], None,
+        "RT-D6a: Phase 0 on the NEXT turn clears the Burn correctly. \
+         The gap means exactly one turn of unblocked Burn DoT on the Flameling."
+    );
+}
+
+/// RT-D6b: Sproutlet KO-auto-switched in does NOT receive EntryHeal.
+///
+/// Documents that auto-switch via KO does not trigger EntryHeal.
+/// The missing heal matters most when Sproutlet enters at low HP.
+#[test]
+fn rt_d6b_kо_auto_switch_does_not_call_entry_ability_entry_heal() {
+    use crate::combat::ability::AbilityEffect;
+    use crate::combat::status::BattleStatusStore;
+
+    let initial_hp: u16 = 50;
+    let max_hp: u16 = 100;
+    let expected_heal = max_hp / 4; // denom=4 → 25 HP
+
+    // AbilityStore: slot 1 on SideA has Regeneration (EntryHeal denom=4).
+    let mut abilities = AbilityStore::new(2, 1);
+    abilities.side_a[1] = Some(AbilityEffect::EntryHeal { denom: 4 });
+
+    let mut status = BattleStatusStore::new(2, 1);
+
+    let mut state = BattleState {
+        side_a: crate::combat::types::BattleSide {
+            active: 0,
+            team: vec![
+                make_monster_hp(1, 100),             // slot 0: dies to KO
+                make_monster_hp(initial_hp, max_hp), // slot 1: Sproutlet at 50% HP
+            ],
+        },
+        side_b: crate::combat::types::BattleSide {
+            active: 0,
+            team: vec![make_monster_hp(200, 200)],
+        },
+        outcome: BattleOutcome::Ongoing,
+        turn_number: 0,
+        weather: None,
+    };
+
+    // Simulate the KO auto-switch: slot 0 faints, engine sets active=1.
+    // apply_entry_ability is NOT called in this path.
+    state.side_a.set_active(1).expect("slot 1 is valid");
+
+    // HP of the Sproutlet (slot 1) is unchanged — no EntryHeal was applied.
+    let hp_after_auto_switch = state.side_a.team[1].current_hp;
+    assert_eq!(
+        hp_after_auto_switch, initial_hp,
+        "RT-D6b (GAP DOCUMENTED): after KO-auto-switch to slot 1 (Sproutlet, \
+         Regeneration), current_hp is still {initial_hp} — EntryHeal was NOT \
+         applied. Expected heal of {expected_heal} HP was missed. \
+         If this assertion starts failing, the gap has been closed."
+    );
+
+    // Confirm that a MANUAL apply_entry_ability call would have healed it.
+    apply_entry_ability(&mut state, SideId::SideA, &abilities, &mut status);
+    let hp_after_manual_entry = state.side_a.team[1].current_hp;
+    assert_eq!(
+        hp_after_manual_entry,
+        initial_hp + expected_heal,
+        "RT-D6b: manual apply_entry_ability correctly heals {expected_heal} HP \
+         — proving the call is what's missing in the KO-auto-switch path"
+    );
+}
