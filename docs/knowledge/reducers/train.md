@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: train
 slug: reducers/train
-updated: 2026-07-13
+updated: 2026-07-14
 tags: [reducer, spacetimedb, raising]
 abstract: "Spend a training food to grant EVs toward its target stat and re-derive the monster's stats (server-authoritative, reje…"
 resource: server-module/src/raising.rs#L133
