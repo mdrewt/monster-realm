@@ -46,11 +46,13 @@ import {
   type SdkShopRowRow,
   type SdkSkillRowRow,
   type SdkSpeciesRowRow,
+  type SdkTradeOfferRow,
   shopItemRowToStore,
   shopRowToStore,
   shouldRemoveOnViewDelete,
   skillRowToStore,
   speciesRowToStore,
+  tradeOfferRowToStore,
 } from './rowConvert';
 import type { AuthoritativeStore } from './store';
 import { isOwnZoneChange } from './warpDetect';
@@ -410,6 +412,24 @@ export function connect(opts: ConnectionOptions): Connection {
       store.removeShopItem((row as unknown as SdkShopItemRowRow).shopItemId);
       batcher.schedule();
     });
+
+    // m15b: trade_offer (public runtime table — both parties subscribe).
+    // Completed/cancelled offers are deleted server-side (D5: terminal row GC);
+    // no onUpdate expected, but handle it defensively to stay fresh.
+    const ingestTradeOffer = (row: SdkTradeOfferRow): void => {
+      store.upsertTradeOffer(tradeOfferRowToStore(row));
+      batcher.schedule();
+    };
+    conn.db.trade_offer.onInsert((_ctx, row) =>
+      ingestTradeOffer(row as unknown as SdkTradeOfferRow),
+    );
+    conn.db.trade_offer.onUpdate((_ctx, _old, row) =>
+      ingestTradeOffer(row as unknown as SdkTradeOfferRow),
+    );
+    conn.db.trade_offer.onDelete((_ctx, row) => {
+      store.removeTradeOffer((row as unknown as SdkTradeOfferRow).tradeId);
+      batcher.schedule();
+    });
   }
 
   /**
@@ -493,6 +513,10 @@ export function connect(opts: ConnectionOptions): Connection {
             // (ADR-0081/0040) and produces no client subscription — excluded.
             'SELECT * FROM shop_row',
             'SELECT * FROM shop_item_row',
+            // m15b: trade_offer is a PUBLIC runtime table (ADR-0106 D3); both parties
+            // subscribe. Per-row RLS is a M16 future (ADR-0106 W3 INFO); until then the
+            // client sees all offers and filters by own identity in ownTradeOffer().
+            'SELECT * FROM trade_offer',
           ]);
       })
       .onConnectError((_ctx, err: Error) => {

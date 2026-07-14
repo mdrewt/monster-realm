@@ -210,6 +210,40 @@ export type StoreNpcRow = {
   readonly dialogueTreeId: string;
 };
 
+/** A monster card snapshot (public display fields only — no genes, per ADR-0015). */
+export type StoreMonsterCard = {
+  readonly monsterId: bigint;
+  readonly speciesId: number;
+  readonly nickname: string;
+  readonly level: number;
+  readonly currentHp: number;
+  readonly statHp: number;
+};
+
+/** A trade item line (item_id + quantity to trade). */
+export type StoreTradeItem = {
+  readonly itemId: number;
+  readonly qty: number;
+};
+
+/** A trade offer row, normalized (identities as hex strings; m15b). */
+export type StoreTradeOffer = {
+  readonly tradeId: bigint;
+  readonly initiator: string;
+  readonly counterparty: string;
+  readonly initiatorMonsterIds: readonly bigint[];
+  readonly initiatorItems: readonly StoreTradeItem[];
+  readonly initiatorCurrency: bigint;
+  readonly counterpartyMonsterIds: readonly bigint[];
+  readonly counterpartyItems: readonly StoreTradeItem[];
+  readonly counterpartyCurrency: bigint;
+  readonly initiatorCards: readonly StoreMonsterCard[];
+  readonly counterpartyCards: readonly StoreMonsterCard[];
+  /** 'Pending' | 'ConfirmedByCounterparty' */
+  readonly status: string;
+  readonly createdAtMs: bigint;
+};
+
 /** A species row, normalized (affinity as bare string). */
 export interface StoreSpeciesRow {
   readonly id: number;
@@ -268,6 +302,8 @@ export class AuthoritativeStore {
   // M13d: shop content tables
   readonly #shops = new Map<number, StoreShopRow>();
   readonly #shopItems = new Map<bigint, StoreShopItemRow>();
+  // m15b: trade_offer rows (public table — both parties subscribe)
+  readonly #tradeOffers = new Map<bigint, StoreTradeOffer>();
   readonly #batchListeners = new Set<() => void>();
   #dirty = false;
   /** Nominal server step interval (ms), used for burst detection + jitter EWMA.
@@ -548,6 +584,9 @@ export class AuthoritativeStore {
     // initial onInsert burst when the subscription re-applies on reconnect.
     this.#shops.clear();
     this.#shopItems.clear();
+    // m15b: trade_offer rows — cleared on disconnect; no escrow survives a drop
+    // (on_disconnect deletes the player's active offer server-side per TR-18).
+    this.#tradeOffers.clear();
     this.#dirty = false;
   }
 
@@ -761,5 +800,31 @@ export class AuthoritativeStore {
   /** All shop stock entries (for the model to filter by selected shop). */
   allShopItems(): StoreShopItemRow[] {
     return [...this.#shopItems.values()];
+  }
+
+  // --- m15b: trade_offer ingest (adapter-only) ---------------------------------
+
+  upsertTradeOffer(row: StoreTradeOffer): void {
+    this.#tradeOffers.set(row.tradeId, row);
+    this.#dirty = true;
+  }
+
+  removeTradeOffer(tradeId: bigint): void {
+    if (this.#tradeOffers.delete(tradeId)) this.#dirty = true;
+  }
+
+  // --- m15b: trade_offer read --------------------------------------------------
+
+  /** The active trade offer where `identity` is initiator OR counterparty, or undefined. */
+  ownTradeOffer(identity: string): StoreTradeOffer | undefined {
+    for (const offer of this.#tradeOffers.values()) {
+      if (offer.initiator === identity || offer.counterparty === identity) return offer;
+    }
+    return undefined;
+  }
+
+  /** All trade offers (for future browse / multi-offer UIs). */
+  allTradeOffers(): StoreTradeOffer[] {
+    return [...this.#tradeOffers.values()];
   }
 }

@@ -75,6 +75,7 @@ export default defineConfig({
         'src/ui/questLogView.ts', // thin DOM shell for the quest log overlay (M12d)
         'src/ui/healView.ts', // thin DOM shell for the heal overlay (M12d)
         'src/ui/shopView.ts', // thin DOM shell for the shop overlay (M13d)
+        'src/ui/tradeView.ts', // thin DOM shell for the trade overlay (m15b)
       ],
     },
   },

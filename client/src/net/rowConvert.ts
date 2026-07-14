@@ -17,6 +17,7 @@ import type {
   StoreHealLocationRow,
   StoreInventory,
   StoreItemRow,
+  StoreMonsterCard,
   StoreMonsterPub,
   StoreNpcRow,
   StorePlayer,
@@ -26,6 +27,8 @@ import type {
   StoreShopRow,
   StoreSkillRow,
   StoreSpeciesRow,
+  StoreTradeItem,
+  StoreTradeOffer,
   StoreWeather,
 } from './store';
 
@@ -453,5 +456,70 @@ export function npcRowToStore(row: SdkNpcRow): StoreNpcRow {
     homeY: row.homeY,
     wanderRadius: row.wanderRadius,
     dialogueTreeId: row.dialogueTreeId,
+  };
+}
+
+// --- m15b: trade_offer converter ---------------------------------------------
+
+interface SdkMonsterCard {
+  readonly monsterId: bigint;
+  readonly speciesId: number;
+  readonly nickname: string;
+  readonly level: number;
+  readonly currentHp: number;
+  readonly statHp: number;
+}
+
+interface SdkTradeItem {
+  readonly itemId: number;
+  readonly qty: number;
+}
+
+export interface SdkTradeOfferRow {
+  readonly tradeId: bigint;
+  readonly initiator: { toHexString(): string };
+  readonly counterparty: { toHexString(): string };
+  readonly initiatorMonsterIds: readonly bigint[];
+  readonly initiatorItems: readonly SdkTradeItem[];
+  readonly initiatorCurrency: bigint;
+  readonly counterpartyMonsterIds: readonly bigint[];
+  readonly counterpartyItems: readonly SdkTradeItem[];
+  readonly counterpartyCurrency: bigint;
+  readonly initiatorCards: readonly SdkMonsterCard[];
+  readonly counterpartyCards: readonly SdkMonsterCard[];
+  readonly status: { readonly tag: string };
+  readonly createdAtMs: bigint;
+}
+
+function sdkCardToStore(card: SdkMonsterCard): StoreMonsterCard {
+  return {
+    monsterId: card.monsterId,
+    speciesId: card.speciesId,
+    nickname: card.nickname,
+    level: card.level,
+    currentHp: card.currentHp,
+    statHp: card.statHp,
+  };
+}
+
+function sdkTradeItemToStore(item: SdkTradeItem): StoreTradeItem {
+  return { itemId: item.itemId, qty: item.qty };
+}
+
+export function tradeOfferRowToStore(row: SdkTradeOfferRow): StoreTradeOffer {
+  return {
+    tradeId: row.tradeId,
+    initiator: row.initiator.toHexString(),
+    counterparty: row.counterparty.toHexString(),
+    initiatorMonsterIds: [...row.initiatorMonsterIds],
+    initiatorItems: row.initiatorItems.map(sdkTradeItemToStore),
+    initiatorCurrency: row.initiatorCurrency,
+    counterpartyMonsterIds: [...row.counterpartyMonsterIds],
+    counterpartyItems: row.counterpartyItems.map(sdkTradeItemToStore),
+    counterpartyCurrency: row.counterpartyCurrency,
+    initiatorCards: row.initiatorCards.map(sdkCardToStore),
+    counterpartyCards: row.counterpartyCards.map(sdkCardToStore),
+    status: row.status.tag,
+    createdAtMs: row.createdAtMs,
   };
 }
