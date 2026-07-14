@@ -475,6 +475,7 @@ window.addEventListener('keydown', (e) => {
       !dialogueView?.visible &&
       !questLogView?.visible &&
       !healView?.visible &&
+      !tradeView?.visible &&
       !pvpView?.visible
     ) {
       if (shopView?.visible) {
@@ -903,7 +904,7 @@ store.onBatchApplied(() => {
       shopView?.visible ||
       tradeView?.visible;
     const forceVisible =
-      (!anyOverlayVisible && vm.incoming !== null) || (pvpView?.visible ?? false);
+      !anyOverlayVisible && (vm.incoming !== null || (pvpView?.visible ?? false));
     pvpView?.refresh(vm, forceVisible);
   } catch (err) {
     console.error('[m16b] pvpView batch listener error', err);
