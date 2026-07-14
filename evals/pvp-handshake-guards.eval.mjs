@@ -7,7 +7,7 @@
 // done.  Missing any of these enables role-confusion attacks, status races,
 // or orphaned challenge rows that permanently lock the challenge slot.
 //
-// Criteria (10 guard sites):
+// Criteria (11 guard sites):
 //   SELF_CHALLENGE_GUARD  — challenge_pvp checks `target == me` (no self-challenges)
 //   TARGET_BATTLE_GUARD   — challenge_pvp checks is_in_ongoing_battle for the TARGET
 //   ACCEPT_ROLE           — accept_challenge guards `challenge.target != me`
@@ -18,6 +18,7 @@
 //   DECLINE_DELETE        — decline_challenge deletes the challenge row (GC)
 //   CANCEL_INITIATOR      — cancel_challenge guards `challenge.challenger != me`
 //   CANCEL_STATUS         — cancel_challenge checks ChallengeStatus::Pending
+//   CANCEL_DELETE         — cancel_challenge deletes the challenge row (GC)
 //
 // Proof-of-teeth: each checker has a bad fixture (must flag) and a good fixture
 // (must not flag) before the real source is read.
@@ -143,7 +144,7 @@ function hasChallengeInitiatorCheck(body) {
 // ---------------------------------------------------------------------------
 export default async function () {
   const name =
-    'pvp-handshake-guards (M16c, ADR-0109: 10 challenge lifecycle guards — role+status+GC across challenge_pvp/accept/decline/cancel)';
+    'pvp-handshake-guards (M16c, ADR-0109: 11 challenge lifecycle guards — role+status+GC across challenge_pvp/accept/decline/cancel)';
 
   // -------------------------------------------------------------------------
   // Proof-of-teeth: bad fixtures must flag; good fixtures must not flag
@@ -376,7 +377,7 @@ export default async function () {
   }
 
   // -------------------------------------------------------------------------
-  // cancel_challenge: initiator-only + status + GC (implicit from `hasChallengeDelete`)
+  // cancel_challenge: initiator-only + status + GC
   // -------------------------------------------------------------------------
   const cancelBody = extractFunctionBody(pvpSrc, 'cancel_challenge');
   if (!cancelBody) {
@@ -397,6 +398,13 @@ export default async function () {
           'a non-pending challenge can be cancelled after it has already been accepted',
       );
     }
+    if (!hasChallengeDelete(cancelBody)) {
+      failures.push(
+        'CANCEL_DELETE (ADR-0109): `cancel_challenge` does not delete the challenge row — ' +
+          'a cancelled challenge stays in the public battle_challenge table, permanently ' +
+          'blocking the target from receiving new challenges from anyone',
+      );
+    }
   }
 
   if (failures.length > 0) {
@@ -407,7 +415,7 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'all 10 PvP handshake-guard criteria met: self-challenge guard, target-battle guard, ' +
-      'accept role+status+GC, decline role+status+GC, cancel initiator+status (ADR-0109)',
+      'all 11 PvP handshake-guard criteria met: self-challenge guard, target-battle guard, ' +
+      'accept role+status+GC, decline role+status+GC, cancel initiator+status+GC (ADR-0109)',
   };
 }

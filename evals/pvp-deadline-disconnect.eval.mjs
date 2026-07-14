@@ -75,7 +75,7 @@ function hasSchedulerGuard(body) {
 // bad fixture: no stale-turn check → must flag.
 // good fixture: has stale-turn check → must not flag.
 // ---------------------------------------------------------------------------
-function hasStaleSturnCheck(body) {
+function hasStaleTurnCheck(body) {
   const code = stripRustComments(body);
   return (
     /battle\.state\.turn_number\s*!=\s*scheduled_turn/.test(code) ||
@@ -161,22 +161,22 @@ export default async function () {
   // STALE_TURN_CHECK
   const badStale =
     'fn pvp_deadline_reaper(ctx, args) { if ctx.sender != ctx.identity() { return Err(""); } let forfeited = pvp_deadline_forfeit_side(a_sub, b_sub); apply_pvp_forfeit(ctx, battle, forfeited); }';
-  if (hasStaleSturnCheck(badStale)) {
+  if (hasStaleTurnCheck(badStale)) {
     return {
       name,
       pass: false,
       detail:
-        'TEETH FAILED: hasStaleSturnCheck should NOT pass fixture without turn_number stale-schedule check',
+        'TEETH FAILED: hasStaleTurnCheck should NOT pass fixture without turn_number stale-schedule check',
     };
   }
   const goodStale =
     'fn pvp_deadline_reaper(ctx, args) { if battle.state.turn_number != scheduled_turn { return Ok(()); } }';
-  if (!hasStaleSturnCheck(goodStale)) {
+  if (!hasStaleTurnCheck(goodStale)) {
     return {
       name,
       pass: false,
       detail:
-        'TEETH FAILED: hasStaleSturnCheck should detect `battle.state.turn_number != scheduled_turn` in good fixture',
+        'TEETH FAILED: hasStaleTurnCheck should detect `battle.state.turn_number != scheduled_turn` in good fixture',
     };
   }
 
@@ -283,7 +283,7 @@ export default async function () {
           'of the non-calling side without waiting for the real deadline',
       );
     }
-    if (!hasStaleSturnCheck(reaperBody)) {
+    if (!hasStaleTurnCheck(reaperBody)) {
       failures.push(
         'STALE_TURN_CHECK (ADR-0109): `pvp_deadline_reaper` does not check ' +
           '`battle.state.turn_number != scheduled_turn` — a reaper issued for turn N fires ' +

@@ -85,6 +85,7 @@ Generated from 76 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0108](./0108-m15c-trade-evals.md) | Trade evals tail (m15c) | Accepted | ci-gates, security-authz | m15c (test-artifact only — no production code) | Three `evals/trade-*.eval.mjs` files (static-analysis gates) + one Playwright e2e spec covering the trade overlay UI wiring. |
 | [0109](./0109-m16a-pvp-spine.md) | PvP battle spine (m16a) | Accepted | battle, schema-persistence, security-authz | m16a | New `pvp.rs` module: challenge handshake, secret-pick, both-submitted inline resolution via `resolve_full_turn`, turn-deadline reaper, forfeit-on-disconnect. `battle_action` private (must-never-leak). Three tables, two SpacetimeType enums. |
 | [0110](./0110-m16b-pvp-client-ui.md) | PvP client UI (m16b) | Accepted | client-ui | m16b | `pvpModel.ts` + `pvpView.ts` + `main.ts` KeyP flow. `battle_challenge` subscribed; `battle_action` NEVER subscribed (ADR-0015). `pvpPendingTurnNumber` local tracking. `isPvP = !isWild && ids differ`; `canFlee: false` in PvP. |
+| [0111](./0111-m16c-pvp-evals.md) | PvP eval harness (m16c) | Accepted | evals, security-authz | m16c (test-artifact only) | Three `evals/pvp-*.eval.mjs` files: 4 cross-language privacy criteria (schema.rs + connection.ts), 11 challenge lifecycle guard criteria, 5 liveness criteria. Proof-of-teeth fixtures per criterion. M16 PvP CLOSED. |
 
 ## Harness design corpus (H- namespace)
 
