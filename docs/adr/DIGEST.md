@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 76 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 77 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -85,7 +85,7 @@ Generated from 76 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0108](./0108-m15c-trade-evals.md) | Trade evals tail (m15c) | Accepted | ci-gates, security-authz | m15c (test-artifact only — no production code) | Three `evals/trade-*.eval.mjs` files (static-analysis gates) + one Playwright e2e spec covering the trade overlay UI wiring. |
 | [0109](./0109-m16a-pvp-spine.md) | PvP battle spine (m16a) | Accepted | battle, schema-persistence, security-authz | m16a | New `pvp.rs` module: challenge handshake, secret-pick, both-submitted inline resolution via `resolve_full_turn`, turn-deadline reaper, forfeit-on-disconnect. `battle_action` private (must-never-leak). Three tables, two SpacetimeType enums. |
 | [0110](./0110-m16b-pvp-client-ui.md) | PvP client UI (m16b) | Accepted | client-ui | m16b | `pvpModel.ts` + `pvpView.ts` + `main.ts` KeyP flow. `battle_challenge` subscribed; `battle_action` NEVER subscribed (ADR-0015). `pvpPendingTurnNumber` local tracking. `isPvP = !isWild && ids differ`; `canFlee: false` in PvP. |
-| [0111](./0111-m16c-pvp-evals.md) | PvP eval harness (m16c) | Accepted | evals, security-authz | m16c (test-artifact only) | Three `evals/pvp-*.eval.mjs` files: 4 cross-language privacy criteria (schema.rs + connection.ts), 11 challenge lifecycle guard criteria, 5 liveness criteria. Proof-of-teeth fixtures per criterion. M16 PvP CLOSED. |
+| [0111](./0111-m16c-pvp-evals.md) | PvP eval harness (battle_action privacy + handshake guards + liveness) | Accepted | ci-gates, security-authz | m16c | Three `evals/pvp-*.eval.mjs` files: `pvp-action-privacy` (4 criteria), `pvp-handshake-guards` (11 criteria), `pvp-deadline-disconnect` (5 criteria). Proof-of-teeth per criterion. Evals-only; no prod code changes. M16 PvP CLOSED. |
 
 ## Harness design corpus (H- namespace)
 
@@ -259,6 +259,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0103](./0103-m14.5f-gates-convergence.md) — m14.5f — M14.5f — gates: BSATN schema-compat proof + convergence net widening (Accepted)
 - [0104](./0104-m-infra-d-adr-digest.md) — m-infra-d (infra slice, insertable any time after M14.5) — M-infra-d: ADR digest convention and agent-facing corpus compaction (Accepted)
 - [0108](./0108-m15c-trade-evals.md) — m15c (test-artifact only — no production code) — Trade evals tail (m15c) (Accepted)
+- [0111](./0111-m16c-pvp-evals.md) — m16c — PvP eval harness (battle_action privacy + handshake guards + liveness) (Accepted)
 
 ### tooling-docs
 
@@ -288,6 +289,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0091](./0091-type-rigor-hardening.md) — M13.5f — Type-Rigor Hardening: GrantItem Gate, Quest Match, Coded Decode, Party-Slot Core Check, Marshal Re-Checks (Accepted)
 - [0108](./0108-m15c-trade-evals.md) — m15c (test-artifact only — no production code) — Trade evals tail (m15c) (Accepted)
 - [0109](./0109-m16a-pvp-spine.md) — m16a — PvP battle spine (m16a) (Accepted)
+- [0111](./0111-m16c-pvp-evals.md) — m16c — PvP eval harness (battle_action privacy + handshake guards + liveness) (Accepted)
 
 ### economy-quests
 

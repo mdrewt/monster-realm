@@ -1,11 +1,14 @@
-# ADR-0111 — M16c: PvP eval harness (battle_action privacy + handshake guards + liveness)
+# ADR-0111 — PvP eval harness (battle_action privacy + handshake guards + liveness)
 
-| Field | Value |
-|---|---|
-| Status | Accepted |
-| Date | 2026-07-14 |
-| Amends | ADR-0109 (M16a PvP spine) — adds the eval layer for PvP invariants |
-| Subsystems | evals, server-module/pvp, client/connection |
+**Status:** Accepted
+**Date:** 2026-07-14
+**Slice:** m16c
+**Supersedes:** —
+**Amends:** ADR-0109 (M16a PvP spine) — adds the eval layer for PvP invariants
+**Subsystems:** ci-gates, security-authz
+**Decision:** Three `evals/pvp-*.eval.mjs` files: `pvp-action-privacy` (4 criteria), `pvp-handshake-guards` (11 criteria), `pvp-deadline-disconnect` (5 criteria). Proof-of-teeth per criterion. Evals-only; no prod code changes. M16 PvP CLOSED.
+
+---
 
 ## Context
 
@@ -28,7 +31,7 @@ Three defect classes require eval coverage that the Rust pvp_tests.rs does not p
 Ship three JS eval files following the ADR-0108 pattern:
 
 - `evals/pvp-action-privacy.eval.mjs` — 4 cross-language criteria (schema.rs + connection.ts)
-- `evals/pvp-handshake-guards.eval.mjs` — 11 challenge lifecycle guard criteria (includes CANCEL_DELETE after tester review)
+- `evals/pvp-handshake-guards.eval.mjs` — 11 challenge lifecycle guard criteria (includes CANCEL_DELETE after tester adversarial review)
 - `evals/pvp-deadline-disconnect.eval.mjs` — 5 liveness criteria
 
 Each criterion has a bad fixture (checker must flag) and a good fixture (checker must not flag) before the real source is scanned. No `new RegExp()` — all patterns use literal regex literals or `String.indexOf()`.
@@ -48,4 +51,4 @@ No changes to server code, schema, bindings, or `evals/run.mjs` (auto-discovery 
 
 **No separate JS evals (rely only on pvp_tests.rs):** The Rust source-guard tests already cover the structural invariants. Adding JS evals adds maintenance surface. Rejected because: (1) the cross-language `connection.ts` check cannot be done in Rust; (2) defense-in-depth across two independent mechanisms is the established pattern (ADR-0108, ADR-0103); (3) the eval harness runs faster and without Rust compilation in CI.
 
-**Single consolidated `pvp-security.eval.mjs`:** Merge all 19 criteria into one file. Rejected because the three defect classes are genuinely distinct (privacy, lifecycle guards, liveness) and separate files give clearer CI failure attribution.
+**Single consolidated `pvp-security.eval.mjs`:** Merge all 20 criteria into one file. Rejected because the three defect classes are genuinely distinct (privacy, lifecycle guards, liveness) and separate files give clearer CI failure attribution.
