@@ -254,6 +254,16 @@ export default async function () {
         'TEETH FAILED: cancelFiltersByChallenger should detect `.challenger()` in good fixture',
     };
   }
+  // Good-fixture teeth for cancelFiltersByTarget: the good fixture has .challenger() only;
+  // cancelFiltersByTarget must return false (no .target() accessor present).
+  if (cancelFiltersByTarget(goodCancelChallenger)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED: cancelFiltersByTarget should NOT flag good fixture that uses .challenger() (not .target())',
+    };
+  }
 
   // -------------------------------------------------------------------------
   // Read actual source file
