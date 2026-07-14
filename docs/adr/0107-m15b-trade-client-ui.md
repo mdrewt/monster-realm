@@ -1,9 +1,12 @@
 # ADR-0107 — Trade client UI overlay (m15b)
 
-**Date:** 2026-07-14  
-**Status:** Accepted  
-**Slice:** m15b (trade overlay UI)  
-**PR:** TBD
+**Status:** Accepted
+**Date:** 2026-07-14
+**Slice:** m15b (client-only)
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** client-ui
+**Decision:** Trade overlay (KeyU), pure `buildTradeViewModel` model, `TradeView` DOM shell, `trade_offer` store subscription, 4 reducer callbacks, double-spend lock.
 
 ---
 
