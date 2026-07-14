@@ -1301,6 +1301,32 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // resolve_enemy_turn: must return at least one event (kills whole-body stub)
+    // -----------------------------------------------------------------------
+
+    /// Kills: `replace resolve_enemy_turn -> Vec<BattleEvent> with vec![]`
+    ///
+    /// The existing `resolve_enemy_turn_only_enemy_acts` checks *which* side events
+    /// target, but does not assert `!events.is_empty()`. A whole-body stub that
+    /// returns `vec![]` passes those assertions (empty damage_events, no SideB
+    /// damage). This test adds the direct `!events.is_empty()` assertion so the
+    /// mutation is caught here, not only indirectly via `resolve_recruit_failure`.
+    #[test]
+    fn resolve_enemy_turn_returns_events_for_skilled_enemy() {
+        let chart = make_type_chart();
+        let player = make_monster(Affinity::Fire, 200, 50);
+        let enemy = make_monster(Affinity::Water, 200, 30);
+        let mut state = make_battle_state(player, enemy);
+        let variance = always_hit_variance(true);
+        let events =
+            resolve_enemy_turn(&mut state, SideId::SideB, &skills_vec(), &chart, &variance);
+        assert!(
+            !events.is_empty(),
+            "resolve_enemy_turn with a skilled enemy must return at least one event (kills vec![] whole-body stub)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Turn number increments by 1
     // -----------------------------------------------------------------------
 
