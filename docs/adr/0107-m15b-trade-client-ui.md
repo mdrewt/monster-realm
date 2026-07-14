@@ -86,7 +86,7 @@ counterparty) re-renders the initiator's view without a manual UI re-toggle.
 
 ## Consequences
 
-- `store.ts` adds `StoreMonsterCard`, `StoreTradeItem`, `StoreTradeOffer` types; 3 new
+- `store.ts` adds `StoreMonsterCard`, `StoreTradeItem`, `StoreTradeOffer` types; 4 new
   methods (`upsertTradeOffer`, `removeTradeOffer`, `allTradeOffers`, `ownTradeOffer`);
   `reset()` clears `#tradeOffers`.
 - `rowConvert.ts` adds `SdkTradeOfferRow` interface + `tradeOfferRowToStore` converter.

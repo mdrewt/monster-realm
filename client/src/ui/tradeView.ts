@@ -4,10 +4,10 @@
 import type { TradeAction, TradeScreenViewModel, TradeSideViewModel } from './tradeModel';
 
 export interface TradeCallbacks {
-  readonly onAccept: (tradeId: bigint) => void;
-  readonly onReject: (tradeId: bigint) => void;
-  readonly onConfirm: (tradeId: bigint) => void;
-  readonly onCancel: (tradeId: bigint) => void;
+  readonly onAccept: (tradeId: bigint) => Promise<void>;
+  readonly onReject: (tradeId: bigint) => Promise<void>;
+  readonly onConfirm: (tradeId: bigint) => Promise<void>;
+  readonly onCancel: (tradeId: bigint) => Promise<void>;
 }
 
 export class TradeView {
@@ -168,20 +168,16 @@ export class TradeView {
     }
   }
 
-  #dispatch(action: TradeAction, tradeId: bigint): void {
+  #dispatch(action: TradeAction, tradeId: bigint): Promise<void> {
     switch (action) {
       case 'accept':
-        this.#cbs.onAccept(tradeId);
-        break;
+        return this.#cbs.onAccept(tradeId);
       case 'reject':
-        this.#cbs.onReject(tradeId);
-        break;
+        return this.#cbs.onReject(tradeId);
       case 'confirm':
-        this.#cbs.onConfirm(tradeId);
-        break;
+        return this.#cbs.onConfirm(tradeId);
       case 'cancel':
-        this.#cbs.onCancel(tradeId);
-        break;
+        return this.#cbs.onCancel(tradeId);
     }
   }
 }

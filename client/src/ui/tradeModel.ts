@@ -164,7 +164,9 @@ export function buildTradeViewModel(
 
   // Deterministic selection: lowest tradeId wins (TR-20 means only one should exist).
   // biome-ignore lint/style/noNonNullAssertion: length > 0 checked above
-  const offer = ownOffers.sort((a, b) => (a.tradeId < b.tradeId ? -1 : 1))[0]!;
+  const offer = ownOffers.sort((a, b) =>
+    a.tradeId < b.tradeId ? -1 : a.tradeId > b.tradeId ? 1 : 0,
+  )[0]!;
 
   const isInitiator = offer.initiator === identity;
   const { actions, statusLabel } = deriveActionsAndLabel(isInitiator, offer.status);

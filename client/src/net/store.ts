@@ -815,7 +815,12 @@ export class AuthoritativeStore {
 
   // --- m15b: trade_offer read --------------------------------------------------
 
-  /** The active trade offer where `identity` is initiator OR counterparty, or undefined. */
+  /**
+   * The active trade offer where `identity` is initiator OR counterparty, or undefined.
+   * Returns the first match in Map insertion order — not lowest-tradeId. ADR-0106 D4
+   * guarantees at most one active offer per player, so tiebreak never matters in practice.
+   * For tiebreak-deterministic selection use buildTradeViewModel (passes allTradeOffers()).
+   */
   ownTradeOffer(identity: string): StoreTradeOffer | undefined {
     for (const offer of this.#tradeOffers.values()) {
       if (offer.initiator === identity || offer.counterparty === identity) return offer;

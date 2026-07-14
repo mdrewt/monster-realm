@@ -357,9 +357,14 @@ window.addEventListener('keydown', (e) => {
   if (e.repeat) return; // ignore OS key-repeat (the frame loop re-issues held keys)
   if (e.code === 'KeyB') {
     // Guard: don't open the box over an active battle (ADR-0014/0052 exit ordering).
-    if (shouldToggleBox(battleView?.visible ?? false) && !shopView?.visible) {
+    if (
+      shouldToggleBox(battleView?.visible ?? false) &&
+      !shopView?.visible &&
+      !tradeView?.visible
+    ) {
       raisingView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
+      tradeView?.hide(); // mutual exclusivity: close trade overlay
       boxView?.toggle();
       if (boxView?.visible) refreshBox();
     }
@@ -368,9 +373,14 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyI') {
     // Inventory/raising overlay — same battle guard as the box (reuse shouldToggleBox).
-    if (shouldToggleBox(battleView?.visible ?? false) && !shopView?.visible) {
+    if (
+      shouldToggleBox(battleView?.visible ?? false) &&
+      !shopView?.visible &&
+      !tradeView?.visible
+    ) {
       boxView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
+      tradeView?.hide(); // mutual exclusivity: close trade overlay
       raisingView?.toggle();
       if (raisingView?.visible) refreshRaising();
     }
@@ -379,9 +389,14 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyE') {
     // Evolution/fusion overlay — same battle guard as box/raising (ADR-0014).
-    if (shouldToggleBox(battleView?.visible ?? false) && !shopView?.visible) {
+    if (
+      shouldToggleBox(battleView?.visible ?? false) &&
+      !shopView?.visible &&
+      !tradeView?.visible
+    ) {
       boxView?.hide(); // mutual exclusivity
       raisingView?.hide(); // mutual exclusivity
+      tradeView?.hide(); // mutual exclusivity: close trade overlay
       evolutionView?.toggle();
       if (evolutionView?.visible) refreshEvolution();
     }
