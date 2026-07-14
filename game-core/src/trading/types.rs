@@ -67,13 +67,21 @@ pub enum TradeError {
     AlreadyInTrade,
     MonsterNotOwned,
     DuplicateMonster,
+    /// Two TradeItem entries in the same offer side have the same item_id.
+    DuplicateItem {
+        item_id: u32,
+    },
     OwnershipChanged,
     NotInitiator,
     NotCounterparty,
     NotPending,
     NotConfirmedByCounterparty,
-    InsufficientInventory { item_id: u32 },
-    InsufficientCurrency { available: u64 },
+    InsufficientInventory {
+        item_id: u32,
+    },
+    InsufficientCurrency {
+        available: u64,
+    },
 }
 
 impl std::fmt::Display for TradeError {
@@ -84,6 +92,9 @@ impl std::fmt::Display for TradeError {
             TradeError::AlreadyInTrade => write!(f, "already has an active trade"),
             TradeError::MonsterNotOwned => write!(f, "monster is not owned by the trader"),
             TradeError::DuplicateMonster => write!(f, "duplicate monster_id in trade offer"),
+            TradeError::DuplicateItem { item_id } => {
+                write!(f, "duplicate item_id {item_id} in trade offer")
+            }
             TradeError::OwnershipChanged => {
                 write!(f, "asset ownership changed since offer was created")
             }

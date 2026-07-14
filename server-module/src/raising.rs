@@ -18,6 +18,7 @@
 use crate::economy::{spend_currency, wallet_balance};
 use crate::guards::{
     escrowed_currency_amount, escrowed_item_qty, reject_if_monster_in_trade, require_owner,
+    saturating_sub_u64,
 };
 use crate::inventory::consume_one;
 use crate::marshal::{now_ms, pub_from_monster};
@@ -321,7 +322,7 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
             me,
         );
         let balance = wallet_balance(ctx, me);
-        let available = balance.saturating_sub(escrowed);
+        let available = saturating_sub_u64(balance, escrowed);
         if currency_cost > available {
             return Err("currency is in an active trade".to_string());
         }

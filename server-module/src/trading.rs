@@ -11,11 +11,11 @@
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
 
-use crate::economy::{grant_currency, spend_currency};
-use crate::guards::log_reject;
+use crate::economy::{grant_currency, spend_currency, wallet_balance};
+use crate::guards::{escrowed_item_qty, log_reject};
 use crate::inventory::{consume_one, grant_item};
 use crate::marshal::{now_ms, pub_from_monster};
-use crate::schema::{monster, monster_pub, player, trade_offer, TradeOffer};
+use crate::schema::{inventory, monster, monster_pub, player, trade_offer, TradeOffer};
 use game_core::{
     build_swap_plan, make_monster_card, validate_proposal, LiveMonsterOwner, MonsterCard,
     ProposalSide, TradeItem, TradeSide, TradeStatus,
@@ -114,6 +114,13 @@ pub fn propose_trade(
         .find(me)
         .ok_or_else(|| "not joined".to_string())?;
 
+    // Counterparty must be a joined player (prevents phantom-offer DoS, ADR-0106).
+    ctx.db
+        .player()
+        .identity()
+        .find(counterparty)
+        .ok_or_else(|| "counterparty is not a joined player".to_string())?;
+
     // Validate via pure game-core rules.
     validate_proposal(
         has_active_trade(ctx, me),
@@ -135,6 +142,69 @@ pub fn propose_trade(
         log_reject("propose_trade", me, &msg);
         msg
     })?;
+
+    // Currency balance checks: reject offers listing more currency than the party owns.
+    // Prevents the counterparty_currency=MAX DoS that locks all currency-dependent reducers.
+    if initiator_currency > 0 {
+        let bal = wallet_balance(ctx, me);
+        if initiator_currency > bal {
+            let e = "insufficient currency for trade offer".to_string();
+            log_reject("propose_trade", me, &e);
+            return Err(e);
+        }
+    }
+    if counterparty_currency > 0 {
+        let cp_bal = wallet_balance(ctx, counterparty);
+        if counterparty_currency > cp_bal {
+            let e = "counterparty has insufficient currency for this trade".to_string();
+            log_reject("propose_trade", me, &e);
+            return Err(e);
+        }
+    }
+    // Item inventory checks: reject offers listing more items than the party owns.
+    // Prevents stuck-ConfirmedByCounterparty from a phantom item offer.
+    for item in &initiator_items {
+        let count = ctx
+            .db
+            .inventory()
+            .owner_identity()
+            .filter(me)
+            .find(|r| r.item_id == item.item_id)
+            .map(|r| r.count)
+            .unwrap_or(0);
+        let escrowed = escrowed_item_qty(
+            ctx.db
+                .trade_offer()
+                .initiator()
+                .filter(me)
+                .chain(ctx.db.trade_offer().counterparty().filter(me)),
+            me,
+            item.item_id,
+        );
+        if item.qty > count.saturating_sub(escrowed) {
+            let e = format!("insufficient inventory for item {}", item.item_id);
+            log_reject("propose_trade", me, &e);
+            return Err(e);
+        }
+    }
+    for item in &counterparty_items {
+        let count = ctx
+            .db
+            .inventory()
+            .owner_identity()
+            .filter(counterparty)
+            .find(|r| r.item_id == item.item_id)
+            .map(|r| r.count)
+            .unwrap_or(0);
+        if item.qty > count {
+            let e = format!(
+                "counterparty has insufficient inventory for item {}",
+                item.item_id
+            );
+            log_reject("propose_trade", me, &e);
+            return Err(e);
+        }
+    }
 
     // Build display snapshots (also validates ownership).
     let initiator_cards = build_cards(ctx, &initiator_monster_ids, me, "propose_trade")?;

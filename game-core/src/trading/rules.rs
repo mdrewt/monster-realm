@@ -55,6 +55,23 @@ pub fn validate_proposal(
             return Err(TradeError::DuplicateMonster);
         }
     }
+    // No duplicate item_ids within each side.
+    let mut seen_items: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for item in initiator.items {
+        if !seen_items.insert(item.item_id) {
+            return Err(TradeError::DuplicateItem {
+                item_id: item.item_id,
+            });
+        }
+    }
+    seen_items.clear();
+    for item in counterparty.items {
+        if !seen_items.insert(item.item_id) {
+            return Err(TradeError::DuplicateItem {
+                item_id: item.item_id,
+            });
+        }
+    }
     // All items must have qty > 0.
     for item in initiator.items {
         if item.qty == 0 {
@@ -537,6 +554,99 @@ mod tests {
         assert!(
             TradeStatus::ConfirmedByCounterparty.is_active(),
             "ConfirmedByCounterparty must be active"
+        );
+    }
+
+    /// FINDING-1 (HIGH): duplicate item_id within one side of an offer is not rejected
+    /// by validate_proposal. An initiator can list {item_id:5, qty:3} twice, causing
+    /// the escrow guard (escrowed_item_qty) to see only 3 escrowed while 6 will be
+    /// consumed at confirm time — allowing an item-count bypass if the stack has ≥6
+    /// but the guard only holds 3.
+    ///
+    /// This test should FAIL against the current code (no dedup check on item_ids)
+    /// and PASS after validate_proposal rejects duplicate item_ids per side.
+    ///
+    /// kills: impl that allows duplicate item_id entries in initiator_items /
+    ///        counterparty_items without rejecting.
+    #[test]
+    fn validate_proposal_rejects_duplicate_item_ids_same_side() {
+        // Two entries for item_id=5 on the initiator side: 3 + 3 = 6 would be
+        // consumed at swap time, but escrowed_item_qty sums per-offer so the
+        // guard would only see 3 (the per-offer inner fold).
+        // validate_proposal MUST reject this before the row is inserted.
+        let dup_items = vec![
+            TradeItem { item_id: 5, qty: 3 },
+            TradeItem { item_id: 5, qty: 3 },
+        ];
+        let initiator = ProposalSide {
+            monster_ids: &[],
+            items: &dup_items,
+            currency: 0,
+        };
+        let result = validate_proposal(
+            false,
+            false,
+            false,
+            initiator,
+            ProposalSide {
+                monster_ids: &[1],
+                items: no_item(),
+                currency: 0,
+            },
+        );
+        assert!(
+            result.is_err(),
+            "duplicate item_id within one offer side must be rejected — \
+             current code accepts it, allowing escrow-qty bypass at confirm time"
+        );
+    }
+
+    /// FINDING-2 (MEDIUM): counterparty_currency is not balance-checked at propose
+    /// time. The initiator may name any counterparty_currency value regardless of the
+    /// counterparty's actual wallet. The only backstop is spend_currency at confirm
+    /// time, but between propose and confirm the counterparty's currency is not locked
+    /// by an explicit check — only the escrowed_currency_amount guard in spend paths
+    /// prevents double-spend of what the counterparty DOES have.
+    ///
+    /// Concretely: if Bob has 0 currency, Alice can name counterparty_currency=999999
+    /// in the offer. respond_trade(accepted=true) succeeds (no currency check there).
+    /// confirm_trade then calls spend_currency(Bob, 999999) which returns Err —
+    /// rolling back the whole transaction. So assets are NOT stolen, but Alice can
+    /// DoS Bob's slot (Bob's has_active_trade=true blocks Bob from OTHER trades).
+    ///
+    /// This test documents the absence of a propose-time counterparty currency check.
+    /// A fix would validate counterparty_currency <= counterparty's current balance at
+    /// propose time. For now this is a MEDIUM-severity griefing vector.
+    ///
+    /// kills: impl that silently allows inflated counterparty_currency at propose time.
+    #[test]
+    fn validate_proposal_does_not_check_counterparty_currency_balance() {
+        // validate_proposal is pure (no DB access) so it CANNOT check the live wallet.
+        // This test documents that the pure layer accepts arbitrary counterparty_currency.
+        // The fix must be in the server shell (propose_trade reducer), not here.
+        let result = validate_proposal(
+            false,
+            false,
+            false,
+            ProposalSide {
+                monster_ids: &[1],
+                items: no_item(),
+                currency: 0,
+            },
+            ProposalSide {
+                monster_ids: &[],
+                items: no_item(),
+                currency: u64::MAX, // inflated — no wallet check in pure layer
+            },
+        );
+        // Documents the gap: this currently returns Ok (no pure-layer wallet check).
+        // The server shell SHOULD add a wallet balance check before inserting the row.
+        // If this ever becomes Err, that means the pure layer gained a wallet check
+        // (which would require a DB-backed argument — at which point remove this test).
+        assert!(
+            result.is_ok(),
+            "pure validate_proposal cannot check live wallet balance — \
+             this documents the gap; the fix belongs in propose_trade reducer"
         );
     }
 }

@@ -70,7 +70,7 @@ fn validate_proposal_rejects_self_trade() {
 }
 
 #[test]
-// TEETH(validate_proposal): kills:TR-22-empty-offer-rejected
+// TEETH(validate_proposal): kills:TR-1-empty-offer-rejected
 fn validate_proposal_rejects_empty_offer() {
     // Both sides completely empty
     let result = validate_proposal(false, false, false, empty_side(), empty_side());
@@ -140,6 +140,26 @@ fn validate_proposal_accepts_valid_offer() {
     assert!(result.is_ok());
 }
 
+#[test]
+// TEETH(validate_proposal): kills:TR-1-duplicate-item-same-side-accepted
+fn validate_proposal_rejects_duplicate_item_id_same_side() {
+    let dup_items = [
+        game_core::TradeItem { item_id: 5, qty: 3 },
+        game_core::TradeItem { item_id: 5, qty: 3 },
+    ];
+    let side = ProposalSide {
+        monster_ids: &[],
+        items: &dup_items,
+        currency: 0,
+    };
+    let result = validate_proposal(false, false, false, side, empty_side());
+    // Must reject: duplicate item_id within the same offer side causes escrow-qty bypass.
+    assert!(
+        result.is_err(),
+        "duplicate item_id in offer side must be rejected"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // build_swap_plan — TR-15/TR-16
 // ---------------------------------------------------------------------------
@@ -153,6 +173,23 @@ fn build_swap_plan_rejects_if_ownership_changed() {
     }];
     let result = build_swap_plan(&initiator_live, &[], &[], &[], 0, 0);
     assert!(matches!(result, Err(TradeError::OwnershipChanged)));
+}
+
+#[test]
+// TEETH(build_swap_plan): kills:TR-15-counterparty-ownership-change-passes-undetected
+fn build_swap_plan_rejects_if_counterparty_ownership_changed() {
+    // Verify the COUNTERPARTY ownership loop rejects, not just the initiator loop.
+    // A mutation deleting the counterparty check (lines 163-167 of rules.rs) would
+    // pass the initiator check and silently accept a stolen-monster scenario.
+    let counterparty_live = vec![LiveMonsterOwner {
+        monster_id: 99,
+        owner_matches_expected: false, // counterparty monster ownership changed
+    }];
+    let result = build_swap_plan(&[], &counterparty_live, &[], &[], 0, 0);
+    assert!(
+        matches!(result, Err(TradeError::OwnershipChanged)),
+        "counterparty ownership change must also be rejected"
+    );
 }
 
 #[test]
@@ -341,4 +378,52 @@ fn escrowed_currency_amount_sums_active_offers() {
     // As counterparty: escrowed = 100.
     let escrowed_cp = escrowed_currency_amount(std::iter::once(&offer), other);
     assert_eq!(escrowed_cp, 100);
+}
+
+// ---------------------------------------------------------------------------
+// escrowed_item_qty counterparty branch — proof-of-teeth (tester SIGNIFICANT-4)
+// ---------------------------------------------------------------------------
+
+#[test]
+// TEETH(escrowed_item_qty): kills:TR-8-counterparty-item-escrow-uses-wrong-side
+fn escrowed_item_qty_uses_counterparty_items_when_owner_is_counterparty() {
+    use crate::guards::escrowed_item_qty;
+    use crate::schema::TradeOffer;
+    use spacetimedb::Identity;
+
+    let initiator = Identity::from_byte_array([1u8; 32]);
+    let counterparty = Identity::from_byte_array([2u8; 32]);
+
+    // initiator offers item 3 (qty 7), counterparty offers item 3 (qty 4).
+    let offer = TradeOffer {
+        trade_id: 1,
+        initiator,
+        counterparty,
+        initiator_monster_ids: vec![],
+        initiator_items: vec![TradeItem { item_id: 3, qty: 7 }],
+        initiator_currency: 0,
+        counterparty_monster_ids: vec![],
+        counterparty_items: vec![TradeItem { item_id: 3, qty: 4 }],
+        counterparty_currency: 0,
+        initiator_cards: vec![],
+        counterparty_cards: vec![],
+        status: TradeStatus::Pending,
+        created_at_ms: 0,
+    };
+
+    // When called as INITIATOR: should return 7 (from initiator_items), NOT 4.
+    let escrowed_as_initiator = escrowed_item_qty(std::iter::once(&offer), initiator, 3);
+    assert_eq!(
+        escrowed_as_initiator, 7,
+        "initiator escrow for item 3 must be 7, not counterparty's 4"
+    );
+
+    // When called as COUNTERPARTY: should return 4 (from counterparty_items), NOT 7.
+    // A mutation that always uses initiator_items would return 7 here instead of 4,
+    // causing the counterparty's sell/train guard to over-restrict or under-restrict.
+    let escrowed_as_counterparty = escrowed_item_qty(std::iter::once(&offer), counterparty, 3);
+    assert_eq!(
+        escrowed_as_counterparty, 4,
+        "counterparty escrow for item 3 must be 4, not initiator's 7"
+    );
 }
