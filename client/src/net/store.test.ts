@@ -24,6 +24,7 @@ import {
   type StoreShopRow,
   type StoreSkillRow,
   type StoreSpeciesRow,
+  type StoreTradeOffer,
 } from './store';
 
 function char(entityId: bigint, tileX: number, tileY: number): StoreCharacter {
@@ -2580,5 +2581,150 @@ describe('AuthoritativeStore ADR-0090 RT-BURST-CHAIN-01: burst detection synthet
     s.upsertCharacter(makeChar(1n, 2), 1100); // snap C: burst at T=1100
     const stored2 = s.character(1n)!;
     expect(stored2.jitterEwma).toBeCloseTo(12.5, 1); // correct: based on real wall-clock
+  });
+});
+
+// =============================================================================
+// m15b: trade_offer store methods — upsert/remove/allTradeOffers/ownTradeOffer (RT-TO-02)
+//
+// The trade_offer table is PUBLIC (both parties subscribe — ADR-0106 D3).
+// upsertTradeOffer/removeTradeOffer are the only m15b store mutations.
+// allTradeOffers() feeds buildTradeViewModel; ownTradeOffer() is a convenience
+// accessor (documented as first-match, not sorted — ADR-0106 D4 / store.ts comment).
+//
+// TEETH CONTRACT (what is killed):
+//   - An impl that keys the map by identity string instead of tradeId bigint
+//   - An impl that does not filter in ownTradeOffer (returns all offers)
+//   - An impl where reset() forgets to clear tradeOffers (leaks across reconnects)
+//   - An impl where upsert is not idempotent (duplicates on reconnect re-insert)
+//   - An impl where removeTradeOffer uses wrong key type (e.g., Number(tradeId))
+// =============================================================================
+
+function makeTradeOffer(
+  tradeId: bigint,
+  initiator: string,
+  counterparty: string,
+  overrides: Partial<StoreTradeOffer> = {},
+): StoreTradeOffer {
+  return {
+    tradeId,
+    initiator,
+    counterparty,
+    initiatorMonsterIds: [],
+    initiatorItems: [],
+    initiatorCurrency: 0n,
+    counterpartyMonsterIds: [],
+    counterpartyItems: [],
+    counterpartyCurrency: 0n,
+    initiatorCards: [],
+    counterpartyCards: [],
+    status: 'Pending',
+    createdAtMs: 0n,
+    ...overrides,
+  };
+}
+
+describe('AuthoritativeStore m15b: trade_offer upsert/remove/read (RT-TO-02)', () => {
+  it('RT-TO-02a BITES: upsertTradeOffer + allTradeOffers round-trip — row survives store boundary', () => {
+    // Kills: an impl that loses the trade offer on upsert (wrong Map key, missed assignment).
+    const s = new AuthoritativeStore();
+    s.upsertTradeOffer(makeTradeOffer(99n, 'alice', 'bob'));
+    const all = s.allTradeOffers();
+    expect(all).toHaveLength(1);
+    expect(all[0]!.tradeId).toBe(99n);
+    expect(all[0]!.initiator).toBe('alice');
+    expect(all[0]!.counterparty).toBe('bob');
+  });
+
+  it('RT-TO-02b BITES: upsertTradeOffer is idempotent — re-insert overwrites, never duplicates', () => {
+    // Kills: an impl that appends instead of upserting (array-store duplication bug).
+    // This matters on reconnect: the subscription re-delivers all rows as onInsert events.
+    const s = new AuthoritativeStore();
+    s.upsertTradeOffer(makeTradeOffer(5n, 'alice', 'bob', { status: 'Pending' }));
+    s.upsertTradeOffer(makeTradeOffer(5n, 'alice', 'bob', { status: 'ConfirmedByCounterparty' }));
+    const all = s.allTradeOffers();
+    expect(all).toHaveLength(1); // overwritten, not duplicated
+    expect(all[0]!.status).toBe('ConfirmedByCounterparty'); // newest value wins
+  });
+
+  it('RT-TO-02c BITES: removeTradeOffer removes by bigint tradeId — no type-cast corruption', () => {
+    // Kills: an impl that keys the Map by Number(tradeId), which loses precision past 2^53.
+    // With Number() keying, large tradeIds would collide on removal and the wrong offer removed.
+    const largeId = 9007199254740993n; // 2^53 + 1
+    const s = new AuthoritativeStore();
+    s.upsertTradeOffer(makeTradeOffer(largeId, 'alice', 'bob'));
+    s.upsertTradeOffer(makeTradeOffer(1n, 'carol', 'dave')); // decoy
+    s.removeTradeOffer(largeId);
+    const all = s.allTradeOffers();
+    expect(all).toHaveLength(1);
+    expect(all[0]!.tradeId).toBe(1n); // decoy survives; large-id row removed
+  });
+
+  it('RT-TO-02d BITES: ownTradeOffer finds by initiator identity (string equality)', () => {
+    // Kills: an impl that returns undefined for the initiator role,
+    // or that only searches the counterparty field.
+    const s = new AuthoritativeStore();
+    s.upsertTradeOffer(makeTradeOffer(10n, 'alice', 'bob'));
+    s.upsertTradeOffer(makeTradeOffer(20n, 'carol', 'dave')); // unrelated
+    const found = s.ownTradeOffer('alice');
+    expect(found).toBeDefined();
+    expect(found!.tradeId).toBe(10n);
+  });
+
+  it('RT-TO-02e BITES: ownTradeOffer finds by counterparty identity (not just initiator)', () => {
+    // Kills: an impl that only checks o.initiator === identity and ignores counterparty.
+    // A counterparty-role player would see undefined instead of their active offer.
+    const s = new AuthoritativeStore();
+    s.upsertTradeOffer(makeTradeOffer(7n, 'alice', 'bob'));
+    const found = s.ownTradeOffer('bob');
+    expect(found).toBeDefined();
+    expect(found!.tradeId).toBe(7n);
+  });
+
+  it('RT-TO-02f BITES: ownTradeOffer returns undefined when identity is not a party', () => {
+    // Kills: an impl that does not filter and returns the first offer unconditionally.
+    // This would expose trade contents from other players (PUBLIC table data leak).
+    const s = new AuthoritativeStore();
+    s.upsertTradeOffer(makeTradeOffer(3n, 'alice', 'bob'));
+    const found = s.ownTradeOffer('carol'); // carol is not a party
+    expect(found).toBeUndefined();
+  });
+
+  it('RT-TO-02g BITES: reset() clears trade offers — stale rows do not survive reconnect', () => {
+    // Kills: an impl that forgets to clear #tradeOffers in reset().
+    // A stale offer from a prior session would show the previous trade UI after reconnect.
+    // Server deletes the active offer on disconnect (TR-18 / on_disconnect), so this
+    // stale row would never be refreshed — the viewer would see a ghost trade forever.
+    const s = new AuthoritativeStore();
+    s.upsertTradeOffer(makeTradeOffer(1n, 'alice', 'bob'));
+    expect(s.allTradeOffers()).toHaveLength(1);
+    s.reset();
+    expect(s.allTradeOffers()).toHaveLength(0);
+    expect(s.ownTradeOffer('alice')).toBeUndefined();
+  });
+
+  it('RT-TO-02h BITES: upsertTradeOffer marks store dirty (triggers flushBatch)', () => {
+    // Kills: an impl that forgets this.#dirty = true in upsertTradeOffer,
+    // so the trade batch listener never fires when a new offer arrives.
+    const s = new AuthoritativeStore();
+    const listener = vi.fn();
+    s.onBatchApplied(listener);
+    s.upsertTradeOffer(makeTradeOffer(1n, 'alice', 'bob'));
+    s.flushBatch();
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('RT-TO-02i BITES: removeTradeOffer marks store dirty (triggers flushBatch)', () => {
+    // Kills: an impl that forgets this.#dirty = true in removeTradeOffer,
+    // so the UI does not re-render when the server deletes the offer (trade completes/cancels).
+    const s = new AuthoritativeStore();
+    const listener = vi.fn();
+    s.onBatchApplied(listener);
+    s.upsertTradeOffer(makeTradeOffer(1n, 'alice', 'bob'));
+    s.flushBatch(); // consume dirty
+    listener.mockClear();
+    s.removeTradeOffer(1n);
+    s.flushBatch();
+    expect(listener).toHaveBeenCalledTimes(1);
   });
 });

@@ -15,8 +15,10 @@ import {
   type SdkInventoryRow,
   type SdkItemRowRow,
   type SdkSkillRowRow,
+  type SdkTradeOfferRow,
   skillRowToStore,
   speciesRowToStore,
+  tradeOfferRowToStore,
 } from './rowConvert';
 
 describe('rowConvert: character row -> store', () => {
@@ -1503,5 +1505,129 @@ describe('rowConvert m14.5d: battleRowToStore — weather field threading', () =
     const weather = (store as Record<string, unknown>).weather;
     // null is the required sentinel; undefined is NOT acceptable.
     expect(weather).toBeNull();
+  });
+});
+
+// =============================================================================
+// m15b: tradeOfferRowToStore — SDK Identity.toHexString() gate (RT-TO-01)
+//
+// The trade_offer table is PUBLIC (both parties see all rows — ADR-0106 D3).
+// buildTradeViewModel filters by string equality: o.initiator === identity.
+// If toHexString() is NOT called on initiator/counterparty in tradeOfferRowToStore,
+// the store holds raw Identity objects, and the string equality check always fails —
+// the viewer permanently sees "no-trade" even when a live offer involves them.
+//
+// This is the exact class of bug that already bit playerRowToStore (tested above at line 43)
+// and inventoryRowToStore (tested at line S2). These tests exist because toHexString()
+// was confirmed necessary. tradeOfferRowToStore is the only m15b converter without
+// equivalent teeth. These tests close that gap.
+//
+// TEETH CONTRACT (what is killed):
+//   - An impl that stores raw SDK Identity objects → string equality filter always fails
+//   - An impl that calls toString() instead of toHexString() → wrong format
+//   - An impl that omits status.tag extraction → raw {tag:'Pending'} in StoreTradeOffer
+//   - An impl that casts tradeId/currency to Number() → precision loss past 2^53
+// =============================================================================
+
+function makeSdkTradeOfferRow(overrides: Partial<SdkTradeOfferRow> = {}): SdkTradeOfferRow {
+  return {
+    tradeId: 42n,
+    initiator: { toHexString: () => 'aaaa1111' },
+    counterparty: { toHexString: () => 'bbbb2222' },
+    initiatorMonsterIds: [],
+    initiatorItems: [],
+    initiatorCurrency: 0n,
+    counterpartyMonsterIds: [],
+    counterpartyItems: [],
+    counterpartyCurrency: 0n,
+    initiatorCards: [],
+    counterpartyCards: [],
+    status: { tag: 'Pending' },
+    createdAtMs: 0n,
+    ...overrides,
+  };
+}
+
+describe('rowConvert m15b: tradeOfferRowToStore — identity toHexString() gate (RT-TO-01)', () => {
+  it('RT-TO-01a BITES: initiator.toHexString() is called; store field is a string not an object', () => {
+    // Kills: an impl that stores the raw SDK Identity object instead of calling toHexString().
+    // Downstream: buildTradeViewModel filter (o.initiator === identity) uses string equality;
+    // if initiator is an object the filter always fails → viewer always sees no-trade.
+    const sdk = makeSdkTradeOfferRow({
+      initiator: { toHexString: () => 'deadbeef1234' },
+    });
+    const stored = tradeOfferRowToStore(sdk);
+    expect(typeof stored.initiator).toBe('string');
+    expect(stored.initiator).toBe('deadbeef1234');
+  });
+
+  it('RT-TO-01b BITES: counterparty.toHexString() is called; store field is a string not an object', () => {
+    // Kills: an impl that calls toHexString() on initiator but forgets counterparty.
+    // A counterparty-role player would permanently see no-trade.
+    const sdk = makeSdkTradeOfferRow({
+      counterparty: { toHexString: () => 'cafebabe5678' },
+    });
+    const stored = tradeOfferRowToStore(sdk);
+    expect(typeof stored.counterparty).toBe('string');
+    expect(stored.counterparty).toBe('cafebabe5678');
+  });
+
+  it('RT-TO-01c BITES: status.tag is extracted; store field is a bare string not a tagged-union object', () => {
+    // Kills: an impl that passes { tag: 'Pending' } through unchanged.
+    // Downstream: deriveActionsAndLabel compares status === 'ConfirmedByCounterparty' (string equality);
+    // if status is an object, the comparison always fails → wrong actions rendered.
+    const sdk = makeSdkTradeOfferRow({ status: { tag: 'ConfirmedByCounterparty' } });
+    const stored = tradeOfferRowToStore(sdk);
+    expect(typeof stored.status).toBe('string');
+    expect(stored.status).toBe('ConfirmedByCounterparty');
+  });
+
+  it('RT-TO-01d BITES: tradeId stays bigint past 2^53 (no Number() cast)', () => {
+    // Kills: an impl that casts tradeId to Number(), losing precision for large server IDs.
+    // The identity filter in buildTradeViewModel sorts by tradeId using bigint comparison.
+    const largeId = 9007199254740993n; // 2^53 + 1 — lossy as JS number
+    const sdk = makeSdkTradeOfferRow({ tradeId: largeId });
+    const stored = tradeOfferRowToStore(sdk);
+    expect(typeof stored.tradeId).toBe('bigint');
+    expect(stored.tradeId).toBe(largeId);
+  });
+
+  it('RT-TO-01e BITES: initiatorCurrency and counterpartyCurrency stay bigint past 2^53', () => {
+    // Kills: an impl that casts currency fields to Number().
+    // buildTradeViewModel passes currency directly to TradeSideViewModel.currency (bigint).
+    const largeCurrency = 9007199254740994n;
+    const sdk = makeSdkTradeOfferRow({
+      initiatorCurrency: largeCurrency,
+      counterpartyCurrency: largeCurrency + 1n,
+    });
+    const stored = tradeOfferRowToStore(sdk);
+    expect(typeof stored.initiatorCurrency).toBe('bigint');
+    expect(stored.initiatorCurrency).toBe(largeCurrency);
+    expect(typeof stored.counterpartyCurrency).toBe('bigint');
+    expect(stored.counterpartyCurrency).toBe(largeCurrency + 1n);
+  });
+
+  it('RT-TO-01f BITES: initiatorCards and counterpartyCards are mapped (monsterId stays bigint)', () => {
+    // Kills: an impl that passes card arrays through as raw SDK objects without mapping.
+    // StoreMonsterCard.monsterId is bigint; if cards are not mapped the downstream
+    // li.dataset.monsterId = card.monsterId.toString() would produce '[object Object]'.
+    const largeMonsterId = 9007199254740995n;
+    const sdk = makeSdkTradeOfferRow({
+      initiatorCards: [
+        {
+          monsterId: largeMonsterId,
+          speciesId: 3,
+          nickname: 'Sparky',
+          level: 10,
+          currentHp: 20,
+          statHp: 30,
+        },
+      ],
+    });
+    const stored = tradeOfferRowToStore(sdk);
+    expect(stored.initiatorCards).toHaveLength(1);
+    expect(typeof stored.initiatorCards[0]!.monsterId).toBe('bigint');
+    expect(stored.initiatorCards[0]!.monsterId).toBe(largeMonsterId);
+    expect(stored.initiatorCards[0]!.nickname).toBe('Sparky');
   });
 });
