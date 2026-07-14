@@ -115,7 +115,9 @@ function hasCounterpartyJoinCheck(body) {
   const code = stripRustComments(body);
   // The distinctive end of the join chain: .find(counterparty) — unambiguous
   // because the only time we .find(counterparty) in propose_trade is the join check.
-  return /\.find\s*\(\s*counterparty\s*\)/.test(code) && /player\(\)/.test(code);
+  // Checking .find(counterparty) alone is sufficient; player() is also present in
+  // the self-join lookup, so adding &&/player()/ would not add discriminatory power.
+  return /\.find\s*\(\s*counterparty\s*\)/.test(code);
 }
 
 // ---------------------------------------------------------------------------
@@ -202,13 +204,19 @@ function hasConfirmDelete(body) {
 // ---------------------------------------------------------------------------
 function hasCancelPartyCheck(body) {
   const code = stripRustComments(body);
-  // Must contain BOTH offer.initiator != me AND offer.counterparty != me in body.
-  return (
-    /offer\.initiator/.test(code) &&
-    /offer\.counterparty/.test(code) &&
-    // Combined: the check should be an AND of both conditions or use `&&`.
-    /offer\.initiator\s*!=\s*me\b[\s\S]*?offer\.counterparty\s*!=\s*me\b/.test(code)
-  );
+  // Require BOTH initiator and counterparty inequality checks to appear inside an `if`
+  // condition (directly after the `if` keyword). `[^{]*?` prevents matching across a
+  // block-open brace, so both must be in the SAME `if` condition — not split across
+  // nested ifs or macro arguments where the expressions appear but no gate is present.
+  const initiatorFirst =
+    /if\s+(?:offer\.initiator\s*!=\s*me|me\s*!=\s*offer\.initiator)[^{]*?(?:offer\.counterparty\s*!=\s*me|me\s*!=\s*offer\.counterparty)/.test(
+      code,
+    );
+  const counterpartyFirst =
+    /if\s+(?:offer\.counterparty\s*!=\s*me|me\s*!=\s*offer\.counterparty)[^{]*?(?:offer\.initiator\s*!=\s*me|me\s*!=\s*offer\.initiator)/.test(
+      code,
+    );
+  return initiatorFirst || counterpartyFirst;
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +467,21 @@ export default async function () {
       name,
       pass: false,
       detail: 'TEETH FAILED: hasCancelPartyCheck did not detect initiator+counterparty party check',
+    };
+  }
+  // RT-SEC-01: hasCancelPartyCheck must NOT pass a fixture where both expressions appear
+  // only inside a log/format macro and no real authorization guard is present.
+  // A broken cancel_trade that logs both field comparisons without gating on them would
+  // satisfy the three-condition regex (offer.initiator, offer.counterparty, sequential !=)
+  // without actually enforcing the invariant.
+  const logBypassCancelParty =
+    'fn cancel_trade(ctx, trade_id) { log::warn!("{} {}", offer.initiator != me, offer.counterparty != me); ctx.db.trade_offer().trade_id().delete(trade_id); Ok(()) }';
+  if (hasCancelPartyCheck(logBypassCancelParty)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (RT-SEC-01): hasCancelPartyCheck passed a fixture where both expressions appear only in a log macro — authorization guard is absent but checker returned true',
     };
   }
 

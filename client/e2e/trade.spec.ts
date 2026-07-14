@@ -34,21 +34,15 @@ import {
 //   "mutual exclusivity"    — regression in main.ts KeyU 8-view guard; trade overlay
 //                             opens over another overlay (e.g. box)
 
-interface TradeSnap {
+interface GameSnap {
   identity: string;
   ownAuthTile: { x: number; y: number } | null;
 }
 
-const snap = (p: Page): Promise<TradeSnap> =>
-  p.evaluate(() => {
-    const g = (window as unknown as { __game: () => TradeSnap }).__game();
-    return { identity: g.identity, ownAuthTile: g.ownAuthTile };
-  });
-
 async function ready(p: Page): Promise<void> {
   await p.waitForFunction(
     () => {
-      const w = window as unknown as { __game?: () => TradeSnap };
+      const w = window as unknown as { __game?: () => GameSnap };
       if (!w.__game) return false;
       const g = w.__game();
       return g.identity !== '' && g.ownAuthTile !== null;
@@ -134,28 +128,33 @@ test.describe
     // The box overlay opens with KeyB when no battle is active (shouldToggleBox).
     // ---------------------------------------------------------------------------
     test('KeyU does not open trade overlay when box overlay is visible', async () => {
-      // Ensure both overlays start hidden.
+      // Ensure trade overlay starts hidden.
       await expect(page.locator('#trade-overlay')).toBeHidden();
 
       // Open box overlay.  KeyB opens it when no battle is active.
+      // BoxView.show() sets style.display = 'flex' on a child div of #app.
       await page.keyboard.press('b');
 
-      // Box overlay is identified by its data attribute or by id.
-      // Wait a moment for the toggle; the box may be #box-overlay or similar.
-      // We verify the trade overlay did NOT open rather than asserting box is open,
-      // because the box overlay id may vary.  The important assertion is trade stays hidden.
-      await page.waitForTimeout(300); // one frame settle
+      // Wait for the box overlay root to become display:flex (synchronous DOM mutation,
+      // but waitForFunction is deterministic — avoids any residual event-loop lag).
+      await page.waitForFunction(
+        () =>
+          Array.from(document.querySelectorAll('#app > div')).some(
+            (el) => el instanceof HTMLElement && el.style.display === 'flex',
+          ),
+        null,
+        { timeout: 3_000 },
+      );
 
-      // Now press KeyU — with any overlay visible, trade must stay hidden.
+      // Now press KeyU — with a box overlay visible, trade must stay hidden.
       await page.keyboard.press('u');
-      await page.waitForTimeout(300);
+      await page.waitForTimeout(200); // let event loop flush
 
       await expect(page.locator('#trade-overlay')).toBeHidden();
 
-      // Cleanup: close whatever overlay opened (Escape or KeyB closes box).
-      await page.keyboard.press('Escape');
+      // Cleanup: close the box overlay.
       await page.keyboard.press('b');
-      await page.waitForTimeout(300);
+      await page.waitForTimeout(200);
     });
 
     // ---------------------------------------------------------------------------

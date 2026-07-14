@@ -10,7 +10,7 @@
 //   set_party_slot  reject_if_monster_in_trade  >=1  (TR-5)
 //   care            reject_if_monster_in_trade  >=1  (TR-6)
 //   train           reject_if_monster_in_trade  >=1  (TR-7)
-//   start_battle    reject_if_monster_in_trade  >=1  (TR-11)
+//   start_battle    reject_if_monster_in_trade  >=2  (TR-11 — party + opponent loops)
 //   sell            escrowed_item_qty           >=1  (TR-8)
 //   use_battle_item escrowed_item_qty           >=1  (TR-12)
 //   buy             escrowed_currency_amount    >=1  (TR-9)
@@ -102,11 +102,14 @@ function readAllRustSources(dir) {
 // ---------------------------------------------------------------------------
 // Core checker: does the named function have >= minCount calls to guard?
 // Returns { ok: bool, found: number }.
+// Uses `guard + '('` as the search needle so only call sites are counted — a guard
+// name appearing inside a string literal (e.g. format!("...guard...")) does NOT
+// satisfy this check because it is not followed by `(` in that context (RT-SEC-02).
 // ---------------------------------------------------------------------------
 function bodyHasGuard(combinedSrc, fnName, guard, minCount) {
   const body = extractFunctionBody(combinedSrc, fnName);
   if (!body) return { ok: false, found: -1 }; // function not found
-  const count = countOccurrences(body, guard);
+  const count = countOccurrences(body, guard + '(');
   return { ok: count >= minCount, found: count };
 }
 
@@ -120,7 +123,9 @@ const GUARD_SITES = [
   ['set_party_slot', 'reject_if_monster_in_trade', 1, 'TR-5'],
   ['care', 'reject_if_monster_in_trade', 1, 'TR-6'],
   ['train', 'reject_if_monster_in_trade', 1, 'TR-7'],
-  ['start_battle', 'reject_if_monster_in_trade', 1, 'TR-11'],
+  // TR-11: start_battle guards BOTH party monsters AND opponent monsters; minCount=2
+  // kills the mutation class "one loop's guard silently deleted" (analogous to fuse).
+  ['start_battle', 'reject_if_monster_in_trade', 2, 'TR-11 (party + opponent loops)'],
   ['sell', 'escrowed_item_qty', 1, 'TR-8'],
   ['use_battle_item', 'escrowed_item_qty', 1, 'TR-12'],
   ['buy', 'escrowed_currency_amount', 1, 'TR-9'],
@@ -189,6 +194,29 @@ export default async function () {
       detail: 'TEETH FAILED (c-good): fuse minCount=2 should PASS for a body with TWO guard calls',
     };
   }
+  // RT-SEC-02: fuse minCount=2 must NOT be satisfied by ONE real call plus the guard
+  // name appearing in a string literal (e.g. a format! error message or log! macro).
+  // countOccurrences uses indexOf which cannot distinguish call sites from string contents.
+  // A broken fuse that drops the second parent guard and adds a log mentioning the
+  // function name would count as 2 occurrences and pass — missing the b_id escrow check.
+  const fuseOneCallOneString =
+    'fn fuse(ctx, a_id, b_id) { reject_if_monster_in_trade(iter_a, a_id)?; return Err(format!("reject_if_monster_in_trade skipped for b_id {}", b_id)); }';
+  const fuseOneStringResult = bodyHasGuard(
+    fuseOneCallOneString,
+    'fuse',
+    'reject_if_monster_in_trade',
+    2,
+  );
+  if (fuseOneStringResult.ok) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (RT-SEC-02): fuse minCount=2 passed a fixture with ONE real guard call and the ' +
+        'guard name in a string literal — countOccurrences cannot distinguish calls from strings, ' +
+        'allowing the second-parent escrow guard deletion to go undetected',
+    };
+  }
 
   // Tooth for item/currency guards.
   const goodSell =
@@ -251,7 +279,7 @@ export default async function () {
         `${ears}: function \`${fnName}\` not found in server-module/src/ — reducer may have been renamed`,
       );
     } else if (!result.ok) {
-      const countWord = minCount === 2 ? `${result.found} (need ≥2 — both parents)` : '0';
+      const countWord = minCount > 1 ? `${result.found} (need ≥${minCount})` : '0';
       failures.push(
         `${ears}: \`${fnName}\` body has ${countWord} calls to \`${guard}\` — escrowed asset can be mutated during active trade`,
       );
@@ -266,6 +294,6 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'all 11 escrow-guard sites verified (TR-2..TR-12): reject_if_monster_in_trade in 7 reducers (fuse×2), escrowed_item_qty in 2, escrowed_currency_amount in 2',
+      'all 11 escrow-guard sites verified (TR-2..TR-12): reject_if_monster_in_trade in 7 reducers (fuse≥2, start_battle≥2), escrowed_item_qty in 2, escrowed_currency_amount in 2',
   };
 }
