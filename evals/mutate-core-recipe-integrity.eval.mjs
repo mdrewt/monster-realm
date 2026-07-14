@@ -115,14 +115,16 @@ export function mutateCoreRecipeIntact(justfileText) {
 }
 
 // ---------------------------------------------------------------------------
-// Pure predicate: `.cargo/mutants.toml` is pinned to exactly the two blessed
-// exclusions (AC-M8, ADR-0088 + M14.5h). Returns { ok: boolean, reason: string }.
+// Pure predicate: `.cargo/mutants.toml` is pinned to exactly the three blessed
+// exclusions (AC-M8, ADR-0088 + M14.5h + fix-nightly-mutants).
+// Returns { ok: boolean, reason: string }.
 //
 //   null/absent input → { ok:false } (handled gracefully — never throws).
-//   EXACTLY TWO exclude_re entries (two quoted strings inside the array = 4 `"`).
+//   EXACTLY THREE exclude_re entries (three quoted strings inside the array = 6 `"`).
 //     Entry 1: `npc/rules.rs:61:15 replace > with >= in toward_home`
-//     Entry 2: `ability.rs:169:60 replace < with <= in apply_entry_ability`
-//   Fewer or more than two entries → false.
+//     Entry 2: `ability.rs:170:60 replace < with <= in apply_entry_ability`
+//     Entry 3: `trading/types.rs:56:9 replace TradeStatus::is_active -> bool with true`
+//   Fewer or more than three entries → false.
 //   An entry lacking its line-pin → false.
 //   ANY `examine_re` / `exclude_globs` / `examine_globs` key present → false
 //     (scope-shaping beyond the blessed exclusions is banned).
@@ -165,8 +167,9 @@ export function mutantsTomlPinned(tomlText) {
   const arrayBody = tomlText.slice(openIdx + 1, closeIdx);
 
   // Count quoted string entries inside the array (each entry is one `"..."`).
-  // Count opening quotes: a well-formed array has an even number of `"`; two
-  // entries = 4 quotes (we bless exactly two: toward_home + apply_entry_ability).
+  // Count opening quotes: a well-formed array has an even number of `"`; three
+  // entries = 6 quotes (we bless exactly three: toward_home + apply_entry_ability
+  // + is_active).
   let quoteCount = 0;
   for (const ch of arrayBody) {
     if (ch === '"') quoteCount += 1;
@@ -178,13 +181,20 @@ export function mutantsTomlPinned(tomlText) {
     return {
       ok: false,
       reason:
-        'mutants.toml exclude_re has only ONE entry — the second blessed exclusion (ability.rs:169:60 apply_entry_ability equivalent mutant, M14.5h) is missing; EXACTLY TWO entries are required',
+        'mutants.toml exclude_re has only ONE entry — all three blessed exclusions are required: toward_home (npc/rules.rs:61:15), apply_entry_ability (ability.rs:170:60), and is_active (trading/types.rs:56:9)',
     };
   }
-  if (quoteCount !== 4) {
+  if (quoteCount === 4) {
     return {
       ok: false,
-      reason: `mutants.toml exclude_re must have EXACTLY TWO entries (found ${quoteCount / 2} entries / ${quoteCount} quotes) — the list is pinned to exactly two blessed exclusions (toward_home + apply_entry_ability)`,
+      reason:
+        'mutants.toml exclude_re has only TWO entries — the third blessed exclusion (trading/types.rs:56:9 is_active equivalent mutant, fix-nightly-mutants) is missing; EXACTLY THREE entries are required',
+    };
+  }
+  if (quoteCount !== 6) {
+    return {
+      ok: false,
+      reason: `mutants.toml exclude_re must have EXACTLY THREE entries (found ${quoteCount / 2} entries / ${quoteCount} quotes) — the list is pinned to exactly three blessed exclusions (toward_home + apply_entry_ability + is_active)`,
     };
   }
 
@@ -213,11 +223,13 @@ export function mutantsTomlPinned(tomlText) {
   }
 
   // Entry 2: apply_entry_ability must be present with its full line-pin (M14.5h).
-  if (arrayBody.indexOf('ability') === -1 || arrayBody.indexOf('.rs:169:60') === -1) {
+  // Re-pinned from 169:60 to 170:60 (fix-nightly-mutants: one line inserted above
+  // the EntryHeal guard between M14.5h and nightly run 29320384291).
+  if (arrayBody.indexOf('ability') === -1 || arrayBody.indexOf('.rs:170:60') === -1) {
     return {
       ok: false,
       reason:
-        'mutants.toml is missing the ability.rs:169:60 apply_entry_ability line-pin (second blessed exclusion, M14.5h — EntryHeal < vs <= equivalent mutant)',
+        'mutants.toml is missing the ability.rs:170:60 apply_entry_ability line-pin (second blessed exclusion, M14.5h re-pinned — EntryHeal < vs <= equivalent mutant; was 169:60 before fix-nightly-mutants)',
     };
   }
   if (arrayBody.indexOf('apply_entry_ability') === -1) {
@@ -234,10 +246,34 @@ export function mutantsTomlPinned(tomlText) {
     };
   }
 
+  // Entry 3: is_active must be present with its full line-pin (fix-nightly-mutants).
+  // TradeStatus::is_active always returns true (terminal state = deleted row, not an
+  // enum variant). The ->true mutation is equivalent; ->false IS caught by tests.
+  if (arrayBody.indexOf('trading/types') === -1 || arrayBody.indexOf('.rs:56:9') === -1) {
+    return {
+      ok: false,
+      reason:
+        'mutants.toml is missing the trading/types.rs:56:9 is_active line-pin (third blessed exclusion, fix-nightly-mutants — TradeStatus::is_active ->true equivalent mutant)',
+    };
+  }
+  if (arrayBody.indexOf('is_active') === -1) {
+    return {
+      ok: false,
+      reason: 'mutants.toml third exclude_re entry does not mention is_active',
+    };
+  }
+  if (arrayBody.indexOf('with true') === -1) {
+    return {
+      ok: false,
+      reason:
+        'mutants.toml is_active entry is missing the text "with true" — must name the exact mutation to prevent silencing the non-equivalent ->false sibling (which is caught by trade_status_is_active_covers_both_variants)',
+    };
+  }
+
   return {
     ok: true,
     reason:
-      'mutants.toml pins exactly the two blessed exclusions: 61:15 toward_home (ADR-0088) and 169:60 apply_entry_ability (M14.5h)',
+      'mutants.toml pins exactly the three blessed exclusions: 61:15 toward_home (ADR-0088), 170:60 apply_entry_ability (M14.5h re-pinned), and 56:9 is_active (fix-nightly-mutants)',
   };
 }
 
@@ -279,14 +315,23 @@ const CANONICAL_MUTANTS_TOML = `# Blessed equivalent-mutant exclusions (ADR-0088
 #    Line-pinned: drift resurfaces the mutant → nightly red → re-pin consciously.
 #    Guarded by evals/mutate-core-recipe-integrity.eval.mjs.
 #
-# 2. apply_entry_ability EntryHeal guard (ability.rs:169:60): \`current_hp < max_hp\`
+# 2. apply_entry_ability EntryHeal guard (ability.rs:170:60): \`current_hp < max_hp\`
 #    vs \`current_hp <= max_hp\` produce identical output because the branch body
 #    clamps: \`current_hp.saturating_add(heal).min(max_hp)\`. At current_hp == max_hp
 #    both branches yield max_hp after the clamp; no test can distinguish them.
-#    Proved by EARS-h-1a (boundary_full_hp_no_heal). Line-pinned.
+#    Proved by EARS-h-1a (boundary_full_hp_no_heal). Line-pinned;
+#    re-pinned from 169 to 170 (fix-nightly-mutants: one line of code inserted above
+#    the condition between M14.5h and the nightly run 29320384291).
+#
+# 3. TradeStatus::is_active (trading/types.rs:56:9): \`replace TradeStatus::is_active
+#    -> bool with true\` is equivalent. Both Pending and ConfirmedByCounterparty return
+#    true; terminal state is a DELETED ROW not an enum variant, so \`is_active()\` is
+#    correctly always true. No behavioral test can distinguish correct-always-true from
+#    mutation-always-true. Line-pinned.
 exclude_re = [
     "npc/rules\\\\.rs:61:15: replace > with >= in toward_home",
-    "ability\\\\.rs:169:60: replace < with <= in apply_entry_ability",
+    "ability\\\\.rs:170:60: replace < with <= in apply_entry_ability",
+    "trading/types\\\\.rs:56:9: replace TradeStatus::is_active -> bool with true",
 ]
 `;
 
@@ -295,7 +340,7 @@ exclude_re = [
 // ---------------------------------------------------------------------------
 export default async function () {
   const name =
-    'mutate-core-recipe-integrity (fix-nightly / ADR-0088 + M14.5h: mutate-core wrapper + .cargo/mutants.toml pinned to two blessed exclusions)';
+    'mutate-core-recipe-integrity (fix-nightly / ADR-0088 + M14.5h: mutate-core wrapper + .cargo/mutants.toml pinned to two blessed exclusions)'; // name kept for log-stability
 
   // =========================================================================
   // PROOF-OF-TEETH — known-bad fixtures first, then positive controls.
@@ -384,18 +429,18 @@ export default async function () {
     };
   }
 
-  // TEETH 8 — mutants.toml with THREE exclude_re entries → must be rejected
-  // (unbounded growth: only two blessed exclusions are allowed).
-  const tomlThreeEntries =
-    'exclude_re = ["npc/rules\\\\.rs:61:15: replace > with >= in toward_home", "ability\\\\.rs:169:60: replace < with <= in apply_entry_ability", "npc/rules\\\\.rs:53:15: replace > with >= in toward_home"]\n';
+  // TEETH 8 — mutants.toml with FOUR exclude_re entries → must be rejected
+  // (unbounded growth: only three blessed exclusions are allowed).
+  const tomlFourEntries =
+    'exclude_re = ["npc/rules\\\\.rs:61:15: replace > with >= in toward_home", "ability\\\\.rs:170:60: replace < with <= in apply_entry_ability", "trading/types\\\\.rs:56:9: replace TradeStatus::is_active -> bool with true", "npc/rules\\\\.rs:53:15: replace > with >= in toward_home"]\n';
   {
-    const r = mutantsTomlPinned(tomlThreeEntries);
+    const r = mutantsTomlPinned(tomlFourEntries);
     if (r.ok) {
       return {
         name,
         pass: false,
         detail:
-          'TEETH 8 (three entries): mutantsTomlPinned accepted a mutants.toml with THREE exclude_re entries — the exclusion list is pinned to EXACTLY TWO blessed entries; unbounded growth would silence real surviving mutants (the third 53:15 entry is NOT equivalent and must get a killing test, not exclusion)',
+          'TEETH 8 (four entries): mutantsTomlPinned accepted a mutants.toml with FOUR exclude_re entries — the exclusion list is pinned to EXACTLY THREE blessed entries; unbounded growth would silence real surviving mutants (the fourth 53:15 entry is NOT equivalent and must get a killing test, not exclusion)',
       };
     }
   }
@@ -482,9 +527,9 @@ export default async function () {
     }
   }
 
-  // TEETH 14 — mutants.toml with only the toward_home exclusion (missing second
-  // ability.rs entry) → must be rejected. Two blessed entries are required; a
-  // single-entry file misses the M14.5h second exclusion.
+  // TEETH 14 — mutants.toml with only the toward_home exclusion (missing entries 2+3)
+  // → must be rejected. Three blessed entries are required; a single-entry file misses
+  // the ability.rs and is_active exclusions.
   const tomlOnlyTowardHome =
     'exclude_re = ["npc/rules\\\\.rs:61:15: replace > with >= in toward_home"]\n';
   {
@@ -494,7 +539,23 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH 14 (missing ability.rs exclusion): mutantsTomlPinned accepted a single-entry mutants.toml missing the ability.rs:169:60 apply_entry_ability exclusion — the gate must now require EXACTLY TWO blessed entries (toward_home + apply_entry_ability, M14.5h)',
+          'TEETH 14 (missing entries 2+3): mutantsTomlPinned accepted a single-entry mutants.toml missing the ability.rs:170:60 and is_active exclusions — the gate must require EXACTLY THREE blessed entries',
+      };
+    }
+  }
+
+  // TEETH 15 — mutants.toml with toward_home + ability.rs only (missing third: is_active)
+  // → must be rejected. All three blessed entries are required; two is insufficient.
+  const tomlMissingIsActive =
+    'exclude_re = ["npc/rules\\\\.rs:61:15: replace > with >= in toward_home", "ability\\\\.rs:170:60: replace < with <= in apply_entry_ability"]\n';
+  {
+    const r = mutantsTomlPinned(tomlMissingIsActive);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH 15 (missing is_active entry): mutantsTomlPinned accepted a two-entry mutants.toml that is missing the third blessed exclusion (trading/types.rs:56:9 is_active equivalent mutant, fix-nightly-mutants) — three entries are now required',
       };
     }
   }
@@ -572,6 +633,6 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'mutate-core recipe intact (whole-crate -p game-core, fail-closed missed.txt count-compare, no scope-narrowing / neuter / cap= knob) and .cargo/mutants.toml pins exactly the two blessed equivalent-mutant exclusions: 61:15 toward_home (ADR-0088) and 169:60 apply_entry_ability (M14.5h)',
+      'mutate-core recipe intact (whole-crate -p game-core, fail-closed missed.txt count-compare, no scope-narrowing / neuter / cap= knob) and .cargo/mutants.toml pins exactly the three blessed equivalent-mutant exclusions: 61:15 toward_home (ADR-0088), 170:60 apply_entry_ability (M14.5h re-pinned), and 56:9 is_active (fix-nightly-mutants)',
   };
 }
