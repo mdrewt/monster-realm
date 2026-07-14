@@ -5,12 +5,12 @@ Architecture Decision Records live in **two locations**; check both.
 - **Design ADRs `0002`–`0034`** — in the **harness spec corpus**
   (`../../specs/monster-realm-v2/adr/`). These are the foundational design
   decisions authored alongside the milestone specs.
-- **Implementation ADRs `0001`, `0035`–`0104`** — in **this directory**
+- **Implementation ADRs `0001`, `0035`–`0106`** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0106`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0107`**.
 
 **ADR numbering collision note:** the harness spec corpus also contains design
 ADRs numbered `0055`–`0057`; these cover the *same topics* as this project's
@@ -97,6 +97,8 @@ prefix `harness adr/0055` to cite the harness design ADR.
 | [0101](./0101-m14.5d-client-battle-ux.md) | Client battle UX completeness: weather banner, outcome/status parity guards, VM-compare refresh guard | M14.5d |
 | [0103](./0103-m14.5f-gates-convergence.md) | Gates: BSATN schema-compat proof for optional battle fields + convergence net widening | M14.5f |
 | [0104](./0104-m-infra-d-adr-digest.md) | ADR digest convention: canonical header block + generated drift-gated DIGEST.md for agent-facing corpus compaction | M-infra-d |
+| [0105](./0105-m14.5d-1a-item-row-cure-status.md) | Additive `cure_status` column on `item_row` for data-driven cure items | M14.5d-1a |
+| [0106](./0106-m15a-trading-spine.md) | M15a Trading Spine: escrowed dual-consent trade_offer table, guards, atomic swap engine | M15a |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
