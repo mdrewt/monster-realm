@@ -65,6 +65,8 @@ import type { RaisingView } from './ui/raisingView';
 import { buildShopViewModel } from './ui/shopModel';
 import type { ShopView } from './ui/shopView';
 import { reduceErrorMessage } from './ui/statusModel';
+import { buildTradeViewModel } from './ui/tradeModel';
+import type { TradeView } from './ui/tradeView';
 
 const URI = (import.meta.env.VITE_STDB_URI as string | undefined) ?? 'ws://127.0.0.1:3000';
 const DB = (import.meta.env.VITE_STDB_DB as string | undefined) ?? 'monster-realm';
@@ -111,6 +113,7 @@ let dialogueView: DialogueView | undefined;
 let questLogView: QuestLogView | undefined;
 let healView: HealView | undefined;
 let shopView: ShopView | undefined;
+let tradeView: TradeView | undefined;
 // dismissPending: prevents double-sending dismiss_dialogue while server processes it (M12d).
 // eslint-disable-next-line prefer-const
 let dismissPending = false;
@@ -287,7 +290,8 @@ function reconcileFromStore(): void {
         dialogueView?.visible ||
         questLogView?.visible ||
         healView?.visible ||
-        shopView?.visible
+        shopView?.visible ||
+        tradeView?.visible
       )
     ) {
       const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
@@ -353,9 +357,14 @@ window.addEventListener('keydown', (e) => {
   if (e.repeat) return; // ignore OS key-repeat (the frame loop re-issues held keys)
   if (e.code === 'KeyB') {
     // Guard: don't open the box over an active battle (ADR-0014/0052 exit ordering).
-    if (shouldToggleBox(battleView?.visible ?? false) && !shopView?.visible) {
+    if (
+      shouldToggleBox(battleView?.visible ?? false) &&
+      !shopView?.visible &&
+      !tradeView?.visible
+    ) {
       raisingView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
+      tradeView?.hide(); // mutual exclusivity: close trade overlay
       boxView?.toggle();
       if (boxView?.visible) refreshBox();
     }
@@ -364,9 +373,14 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyI') {
     // Inventory/raising overlay — same battle guard as the box (reuse shouldToggleBox).
-    if (shouldToggleBox(battleView?.visible ?? false) && !shopView?.visible) {
+    if (
+      shouldToggleBox(battleView?.visible ?? false) &&
+      !shopView?.visible &&
+      !tradeView?.visible
+    ) {
       boxView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
+      tradeView?.hide(); // mutual exclusivity: close trade overlay
       raisingView?.toggle();
       if (raisingView?.visible) refreshRaising();
     }
@@ -375,9 +389,14 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyE') {
     // Evolution/fusion overlay — same battle guard as box/raising (ADR-0014).
-    if (shouldToggleBox(battleView?.visible ?? false) && !shopView?.visible) {
+    if (
+      shouldToggleBox(battleView?.visible ?? false) &&
+      !shopView?.visible &&
+      !tradeView?.visible
+    ) {
       boxView?.hide(); // mutual exclusivity
       raisingView?.hide(); // mutual exclusivity
+      tradeView?.hide(); // mutual exclusivity: close trade overlay
       evolutionView?.toggle();
       if (evolutionView?.visible) refreshEvolution();
     }
@@ -448,6 +467,36 @@ window.addEventListener('keydown', (e) => {
           ),
         );
         shopView?.show();
+      }
+    }
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'KeyU') {
+    // Trade overlay — mutual exclusivity with all other overlays (m15b, ADR-0107).
+    // Shows the active offer involving this player; "No active trade" when none.
+    if (
+      !battleView?.visible &&
+      !boxView?.visible &&
+      !raisingView?.visible &&
+      !evolutionView?.visible &&
+      !dialogueView?.visible &&
+      !questLogView?.visible &&
+      !healView?.visible &&
+      !shopView?.visible
+    ) {
+      if (tradeView?.visible) {
+        tradeView.hide();
+      } else {
+        tradeView?.render(
+          buildTradeViewModel(
+            store.allTradeOffers(),
+            identity,
+            store.speciesMap(),
+            store.itemDefs(),
+          ),
+        );
+        tradeView?.show();
       }
     }
     e.preventDefault();
@@ -554,6 +603,11 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
+  if (e.code === 'Escape' && tradeView?.visible) {
+    tradeView.hide();
+    e.preventDefault();
+    return;
+  }
   // Suppress movement input while an overlay is open.
   if (
     battleView?.visible ||
@@ -563,7 +617,8 @@ window.addEventListener('keydown', (e) => {
     dialogueView?.visible ||
     questLogView?.visible ||
     healView?.visible ||
-    shopView?.visible
+    shopView?.visible ||
+    tradeView?.visible
   )
     return;
   const dir = KEY_DIR[e.code];
@@ -739,6 +794,21 @@ store.onBatchApplied(() => {
   }
 });
 
+// --- m15b: trade view batch listener (ADR-0107) ----------------------------------
+// Re-renders when visible so the overlay stays live as the offer status changes
+// (e.g. Pending → ConfirmedByCounterparty when counterparty calls respond_trade).
+// MUST be total (never throw): defense-in-depth (store.flushBatch has per-listener try/catch).
+store.onBatchApplied(() => {
+  if (!tradeView?.visible || identity === '') return;
+  try {
+    tradeView.render(
+      buildTradeViewModel(store.allTradeOffers(), identity, store.speciesMap(), store.itemDefs()),
+    );
+  } catch (err) {
+    console.error('[m15b] trade batch listener error', err);
+  }
+});
+
 // --- M12d: dialogue choice click handler -----------------------------------------
 // Reads data-choice-idx from the clicked button and calls advance_dialogue.
 document.addEventListener('click', (e) => {
@@ -821,6 +891,7 @@ async function main(): Promise<void> {
     { QuestLogView: QuestLogViewClass },
     { HealView: HealViewClass },
     { ShopView: ShopViewClass },
+    { TradeView: TradeViewClass },
   ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/battleView'),
@@ -830,6 +901,7 @@ async function main(): Promise<void> {
     import('./ui/questLogView'),
     import('./ui/healView'),
     import('./ui/shopView'),
+    import('./ui/tradeView'),
   ]);
   renderer = new WorldRenderer();
   const mount = document.getElementById('app');
@@ -937,6 +1009,59 @@ async function main(): Promise<void> {
         }
       },
     });
+    // m15b: trade DOM shell (ADR-0107).
+    // respond_trade, confirm_trade, cancel_trade are awaited (SDK resolves on server-commit).
+    // ADR-0085 A1: gate on frozen FIRST — a call against a dead conn never settles.
+    tradeView = new TradeViewClass({
+      onAccept: async (tradeId) => {
+        if (conn === undefined || conn.linkFrozen()) {
+          if (tradeView?.visible) tradeView.showFeedback('disconnected — try again');
+          return;
+        }
+        try {
+          await conn.conn.reducers.respondTrade({ tradeId, accepted: true });
+          if (tradeView?.visible) tradeView.showFeedback('Trade accepted!');
+        } catch (err) {
+          if (tradeView?.visible) tradeView.showFeedback(reduceErrorMessage(err, 'respond-trade'));
+        }
+      },
+      onReject: async (tradeId) => {
+        if (conn === undefined || conn.linkFrozen()) {
+          if (tradeView?.visible) tradeView.showFeedback('disconnected — try again');
+          return;
+        }
+        try {
+          await conn.conn.reducers.respondTrade({ tradeId, accepted: false });
+          if (tradeView?.visible) tradeView.showFeedback('Trade rejected.');
+        } catch (err) {
+          if (tradeView?.visible) tradeView.showFeedback(reduceErrorMessage(err, 'respond-trade'));
+        }
+      },
+      onConfirm: async (tradeId) => {
+        if (conn === undefined || conn.linkFrozen()) {
+          if (tradeView?.visible) tradeView.showFeedback('disconnected — try again');
+          return;
+        }
+        try {
+          await conn.conn.reducers.confirmTrade({ tradeId });
+          if (tradeView?.visible) tradeView.showFeedback('Trade complete!');
+        } catch (err) {
+          if (tradeView?.visible) tradeView.showFeedback(reduceErrorMessage(err, 'confirm-trade'));
+        }
+      },
+      onCancel: async (tradeId) => {
+        if (conn === undefined || conn.linkFrozen()) {
+          if (tradeView?.visible) tradeView.showFeedback('disconnected — try again');
+          return;
+        }
+        try {
+          await conn.conn.reducers.cancelTrade({ tradeId });
+          if (tradeView?.visible) tradeView.showFeedback('Trade cancelled.');
+        } catch (err) {
+          if (tradeView?.visible) tradeView.showFeedback(reduceErrorMessage(err, 'cancel-trade'));
+        }
+      },
+    });
   }
 
   // M13.5b (ADR-0085 C8): create the status surface BEFORE `conn = connect(...)` is
@@ -967,6 +1092,8 @@ async function main(): Promise<void> {
       // the existing public hide()). Escape/KeyG already recover it manually
       // during the gap.
       shopView?.hide();
+      // m15b: trade's double-spend lock must also be reset on reconnect (same reason as shop).
+      tradeView?.hide();
       // The "connection lost — reconnecting…" status line is now stale (ADR-0085 A8).
       clearStatus();
     },
@@ -1002,7 +1129,8 @@ async function main(): Promise<void> {
           dialogueView?.visible ||
           questLogView?.visible ||
           healView?.visible ||
-          shopView?.visible
+          shopView?.visible ||
+          tradeView?.visible
         )
       ) {
         const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);

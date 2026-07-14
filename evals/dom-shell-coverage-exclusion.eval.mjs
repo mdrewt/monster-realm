@@ -40,6 +40,8 @@ const DOM_SHELLS = [
   'src/ui/healView.ts',
   // M13d: shop DOM shell (ADR-0084) — added m13.5a; real vite.config.ts already excludes it
   'src/ui/shopView.ts',
+  // m15b: trade DOM shell (ADR-0107)
+  'src/ui/tradeView.ts',
 ];
 
 // Sanctioned exclusion entries for findUnsanctionedExclusions.
@@ -594,6 +596,6 @@ export default async function () {
   return {
     name,
     pass: true,
-    detail: `All ${DOM_SHELLS.length} DOM-shell paths are in coverage.exclude (T1/T2/T3 teeth all pass; comment-stripping active); m13.5a: shopView.ts in DOM_SHELLS, zero unsanctioned exclusions, include: ['src/**/*.ts'] full`,
+    detail: `All ${DOM_SHELLS.length} DOM-shell paths are in coverage.exclude (T1/T2/T3 teeth all pass; comment-stripping active); m13.5a: shopView.ts in DOM_SHELLS, m15b: tradeView.ts in DOM_SHELLS, zero unsanctioned exclusions, include: ['src/**/*.ts'] full`,
   };
 }

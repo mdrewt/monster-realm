@@ -1006,7 +1006,7 @@ soak/load; M21–M25 — polish + launch gate, ADR-0021/0022/0025).**
 
 ## M15 — Trading (Phase C)
 
-**M15a** (trading spine — ADR-0106, PR TBD) in-progress: `trade_offer` table
+**M15a** (trading spine — ADR-0106, PR #165 merged) complete: `trade_offer` table
 (`public`; btree indexes on `initiator` + `counterparty`; display-only `MonsterCard` snapshots per
 ADR-0015 — no IV/EV/nature); `validate_proposal` + `build_swap_plan` pure rules in
 `game-core/src/trading/`; `reject_if_monster_in_trade` + `escrowed_item_qty` +
@@ -1018,7 +1018,7 @@ use_battle_item/attempt_recruit); atomic swap re-reads live rows at confirm time
 exploit); 20 proof-of-teeth unit tests; no CONTENT_VERSION bump (trade_offer is runtime-created,
 not seeded). ADR next-free = 0107.
 
-**M15b** (trade client UI — PARKED): counterparty browse, offer review, accept/reject buttons.
+**M15b** (trade client UI — ADR-0107, PR #168) complete: `buildTradeViewModel` pure model (4-state action table, mySide/theirSide orientation, 44 Vitest tests including fast-check bigint); `TradeView` DOM shell (KeyU toggle, async `#pending` double-spend lock via `TradeCallbacks → Promise<void>` pattern); store types `StoreMonsterCard` / `StoreTradeItem` / `StoreTradeOffer` + row converters; `trade_offer` table subscription and batch listener in `connection.ts`; main.ts integration with KeyU handler, 4 reducer callbacks, reconnect reset, frame-loop guard, mutual exclusivity check (!tradeView?.visible) on KeyB/KeyI/KeyE opens; `#trade-overlay` DOM block. All gates pass (1142 Rust + 897 JS tests, all evals). ADR next-free = 0108.
 
 **M15c** (trade evals tail — PARKED): SpacetimeType snapshot + table-schema eval teeth for
 `MonsterCard` / `TradeItem` / `TradeStatus` / `trade_offer`.

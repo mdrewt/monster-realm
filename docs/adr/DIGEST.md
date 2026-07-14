@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 72 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 73 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -81,6 +81,7 @@ Generated from 72 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0104](./0104-m-infra-d-adr-digest.md) | M-infra-d: ADR digest convention and agent-facing corpus compaction | Accepted | tooling-docs, ci-gates | m-infra-d (infra slice, insertable any time after M14.5) | Canonical header block (Status/Date/Slice/Supersedes/Amends/Subsystems/Decision) + generated drift-gated DIGEST.md compacting the 100+ ADR corpus for agent navigation. |
 | [0105](./0105-m14.5d-1a-item-row-cure-status.md) | M14.5d-1a: additive `cure_status` column on `item_row` | Accepted | schema-persistence, content, battle | m14.5d-1a (server half of re-serialized 14.5d-1 pair) | Additive `cure_status: Option<StatusKind>` column on public `item_row`; seeded from content SSOT; `StatusKind` derives `SpacetimeType` (cfg-gated). Unblocks client classify-by-data for cure items (m14.5d-1b). |
 | [0106](./0106-m15a-trading-spine.md) | M15a Trading Spine | Accepted | schema-persistence, economy-quests, battle | m15a (SOLO — touches game-core + server-module) | Introduce `trade_offer` table + no-physical-escrow guards across all asset-mutating reducers; pure game-core swap rules; atomic confirm-time re-read; cancel-on-disconnect cleanup. |
+| [0107](./0107-m15b-trade-client-ui.md) | Trade client UI overlay (m15b) | Accepted | client-ui | m15b (client-only) | Trade overlay (KeyU), pure `buildTradeViewModel` model, `TradeView` DOM shell, `trade_offer` store subscription, 4 reducer callbacks, double-spend lock. |
 
 ## Harness design corpus (H- namespace)
 
@@ -225,6 +226,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0090](./0090-adaptive-interp-delay.md) — m13.5e — Adaptive remote-interpolation delay (M13.5e) (Accepted)
 - [0096](./0096-m14e-status-cure-items.md) — m14e — M14e: Status-Curing Items + Client Battle-Event Display (Accepted)
 - [0101](./0101-m14.5d-client-battle-ux.md) — m14.5d — M14.5d: Client battle UX completeness (weather banner, parity guards, VM-compare) (Accepted)
+- [0107](./0107-m15b-trade-client-ui.md) — m15b (client-only) — Trade client UI overlay (m15b) (Accepted)
 
 ### ci-gates
 
