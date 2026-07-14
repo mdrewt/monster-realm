@@ -14,6 +14,7 @@
 //! - `ability`    — passive per-species ability rules (M14c, ADR-0094)
 //! - `ai`         — enemy AI skill picker (`pick_best_skill`)
 //! - `xp`         — XP reward, practice penalty, and level-up (`battle_xp_reward`, `practice_xp_reward`, `apply_xp_gain`)
+//! - `pvp`        — pure PvP orchestration rules: `PvpAction`, forfeit/deadline logic (M16, ADR-0109)
 
 pub mod ability;
 pub mod ai;
@@ -38,6 +39,7 @@ pub mod m14e_tests;
 pub mod m7b_gating_tests;
 #[cfg(test)]
 pub mod m7b_redteam_tests;
+pub mod pvp;
 #[cfg(test)]
 pub mod redteam_m14_5a_tests;
 #[cfg(test)]
@@ -66,6 +68,7 @@ pub use ability::{
 };
 pub use ai::pick_best_skill;
 pub use damage::{accuracy_check, calc_damage};
+pub use pvp::{pvp_deadline_forfeit_side, pvp_forfeit_outcome, PvpAction};
 pub use resolve::{resolve_enemy_turn, resolve_full_turn, resolve_player_swap, resolve_turn};
 pub use status::{
     apply_post_turn_effects, apply_pre_turn_effects, tick_status, BattleStatusStore, StatusVariance,

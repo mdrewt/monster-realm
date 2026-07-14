@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 74 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 75 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -83,6 +83,7 @@ Generated from 74 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0106](./0106-m15a-trading-spine.md) | M15a Trading Spine | Accepted | schema-persistence, economy-quests, battle | m15a (SOLO — touches game-core + server-module) | Introduce `trade_offer` table + no-physical-escrow guards across all asset-mutating reducers; pure game-core swap rules; atomic confirm-time re-read; cancel-on-disconnect cleanup. |
 | [0107](./0107-m15b-trade-client-ui.md) | Trade client UI overlay (m15b) | Accepted | client-ui | m15b (client-only) | Trade overlay (KeyU), pure `buildTradeViewModel` model, `TradeView` DOM shell, `trade_offer` store subscription, 4 reducer callbacks, double-spend lock. |
 | [0108](./0108-m15c-trade-evals.md) | Trade evals tail (m15c) | Accepted | ci-gates, security-authz | m15c (test-artifact only — no production code) | Three `evals/trade-*.eval.mjs` files (static-analysis gates) + one Playwright e2e spec covering the trade overlay UI wiring. |
+| [0109](./0109-m16a-pvp-spine.md) | PvP battle spine (m16a) | Accepted | battle, schema-persistence, security-authz | m16a | New `pvp.rs` module: challenge handshake, secret-pick, both-submitted inline resolution via `resolve_full_turn`, turn-deadline reaper, forfeit-on-disconnect. `battle_action` private (must-never-leak). Three tables, two SpacetimeType enums. |
 
 ## Harness design corpus (H- namespace)
 
@@ -155,6 +156,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0103](./0103-m14.5f-gates-convergence.md) — m14.5f — M14.5f — gates: BSATN schema-compat proof + convergence net widening (Accepted)
 - [0105](./0105-m14.5d-1a-item-row-cure-status.md) — m14.5d-1a (server half of re-serialized 14.5d-1 pair) — M14.5d-1a: additive `cure_status` column on `item_row` (Accepted)
 - [0106](./0106-m15a-trading-spine.md) — m15a (SOLO — touches game-core + server-module) — M15a Trading Spine (Accepted)
+- [0109](./0109-m16a-pvp-spine.md) — m16a — PvP battle spine (m16a) (Accepted)
 
 ### evolution-fusion
 
@@ -212,6 +214,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0093](./0093-m14b-server-status-persistence.md) — m14b — M14b: Server-side status-effect persistence (Accepted)
 - [0105](./0105-m14.5d-1a-item-row-cure-status.md) — m14.5d-1a (server half of re-serialized 14.5d-1 pair) — M14.5d-1a: additive `cure_status` column on `item_row` (Accepted)
 - [0106](./0106-m15a-trading-spine.md) — m15a (SOLO — touches game-core + server-module) — M15a Trading Spine (Accepted)
+- [0109](./0109-m16a-pvp-spine.md) — m16a — PvP battle spine (m16a) (Accepted)
 
 ### client-ui
 
@@ -281,6 +284,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0087](./0087-owner-scoped-view-private-conversation.md) — m13.5c — Owner-scoped `#[view]` over the private `player_conversation` table (M13.5c / D-13.5-3) (Accepted)
 - [0091](./0091-type-rigor-hardening.md) — M13.5f — Type-Rigor Hardening: GrantItem Gate, Quest Match, Coded Decode, Party-Slot Core Check, Marshal Re-Checks (Accepted)
 - [0108](./0108-m15c-trade-evals.md) — m15c (test-artifact only — no production code) — Trade evals tail (m15c) (Accepted)
+- [0109](./0109-m16a-pvp-spine.md) — m16a — PvP battle spine (m16a) (Accepted)
 
 ### economy-quests
 
