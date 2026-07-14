@@ -21,6 +21,12 @@
 //!   EA-PVP-09  `battle_challenge` table in schema.rs is `public` (clients must
 //!              be able to subscribe to incoming challenges).
 //!   EA-PVP-10  `BattleChallenge` and `BattleAction` are declared in schema.rs.
+//!
+//! Red-team finding (fixed in this PR):
+//!   RT-M16-08  `resolve_pvp_turn_if_ready` must call `write_back_battle_results`
+//!              BEFORE updating the battle row to its terminal state, so the GC
+//!              sweep inside `write_back_battle_results` does not delete the
+//!              current battle row before clients see the terminal outcome frame.
 
 // ---------------------------------------------------------------------------
 // Source constants
@@ -583,4 +589,87 @@ fn challenge_status_variants_are_distinct() {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// RT-M16-08: resolve_pvp_turn_if_ready MUST call write_back_battle_results
+// BEFORE updating the battle row to its terminal state.
+//
+// Finding: in `resolve_pvp_turn_if_ready` (pvp.rs), when the battle reaches
+// a terminal outcome, the code:
+//   1. ctx.db.battle().battle_id().update(battle);   ← commits terminal state
+//   2. write_back_battle_results(ctx, &battle_for_wb);
+//
+// Inside `write_back_battle_results` (battle.rs), the GC sweep at the
+// "GC prior terminal battles" block collects ALL terminal battle rows for
+// player_identity where outcome != Ongoing. Since step 1 has already committed
+// the terminal outcome, the CURRENT battle is included in the sweep and deleted.
+// Clients subscribed to the `battle` table see the row disappear rather than
+// transitioning to a terminal outcome frame — the win/loss screen never fires.
+//
+// The fix (mirroring submit_attack / swap_active in battle.rs) is to call
+// write_back_battle_results BEFORE ctx.db.battle().battle_id().update(battle),
+// so the GC sweep only sees prior terminals (the current row is still Ongoing
+// during the sweep, as documented in write_back_battle_results' own invariant
+// comment).
+//
+// Proof-of-teeth: kills any impl where the battle row update (to terminal state)
+// appears BEFORE the write_back_battle_results call in the terminal branch of
+// resolve_pvp_turn_if_ready.
+// After the fix, write_back_battle_results must appear BEFORE the update call.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rt_m16_08_resolve_pvp_turn_if_ready_calls_writeback_before_battle_update() {
+    let stripped = strip_rust_comments(PVP_RS);
+
+    // Locate resolve_pvp_turn_if_ready body.
+    let fn_marker = concat!("fn resolve_pvp_turn", "_if_ready");
+    let fn_pos = stripped
+        .find(fn_marker)
+        .expect("RT-M16-08: `resolve_pvp_turn_if_ready` not found in pvp.rs");
+
+    // Find apply_pvp_forfeit — that's where resolve_pvp ends and forfeit begins.
+    // resolve_pvp_turn_if_ready ends before apply_pvp_forfeit.
+    let next_fn = concat!("fn apply_pvp", "_forfeit");
+    let next_fn_pos = stripped[fn_pos..]
+        .find(next_fn)
+        .map(|p| fn_pos + p)
+        .unwrap_or(stripped.len());
+
+    let fn_body = &stripped[fn_pos..next_fn_pos];
+
+    // In the terminal branch we look for the write_back call and the battle update.
+    let wb_call = concat!("write_back_battle", "_results");
+    let update_call = concat!("battle().battle_id()", ".update");
+
+    let wb_pos = fn_body.find(wb_call).expect(
+        "RT-M16-08: `write_back_battle_results` call not found in resolve_pvp_turn_if_ready",
+    );
+    let update_pos = fn_body.find(update_call).expect(
+        "RT-M16-08: `battle().battle_id().update` call not found in resolve_pvp_turn_if_ready",
+    );
+
+    // After the fix: write_back must come BEFORE the update in the terminal branch.
+    // The invariant from write_back_battle_results' own comment: callers must call
+    // update() AFTER write_back returns so the GC sweep only targets prior terminals.
+    //
+    // Correct assertion: wb_pos < update_pos means "writeback appears earlier (smaller
+    // offset) in the source than the battle row update" — i.e. writeback runs first.
+    // The BROKEN state has update_pos < wb_pos (update runs first, then writeback),
+    // which causes the GC sweep inside writeback to delete the current battle row.
+    assert!(
+        wb_pos < update_pos,
+        "RT-M16-08 FAIL: In `resolve_pvp_turn_if_ready`, `battle().battle_id().update` \
+         (at offset {update_pos}) appears BEFORE `write_back_battle_results` \
+         (at offset {wb_pos}). \
+         This violates write_back_battle_results' own ordering invariant: the battle \
+         row must still be Ongoing during the GC sweep inside write_back_battle_results, \
+         otherwise the current (just-committed-terminal) battle row is included in the \
+         sweep and deleted — clients see the battle disappear rather than a terminal \
+         outcome frame. \
+         Fix: move `write_back_battle_results` call to BEFORE the `update(battle)` call \
+         in the terminal branch of resolve_pvp_turn_if_ready, mirroring the battle.rs \
+         submit_attack / swap_active pattern."
+    );
 }

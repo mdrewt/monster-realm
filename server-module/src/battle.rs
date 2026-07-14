@@ -1016,6 +1016,8 @@ pub(crate) fn write_back_battle_results(
     // Grant XP if the player won (12.5e-3: log-and-continue on parse failures —
     // one corrupt row must not make a battle unwinnable; mirrors movement_tick
     // per-character philosophy, ADR-0077).
+    // NOTE: SideBWins XP/currency for the PvP opponent is deferred to M17
+    // (ADR-0109 D10). Only side-A (challenger/player_identity) wins are handled here.
     if battle.state.outcome == BattleOutcome::SideAWins {
         // Find the loser's species base stat total for the XP formula.
         // On missing species: log and skip the entire XP section — without the

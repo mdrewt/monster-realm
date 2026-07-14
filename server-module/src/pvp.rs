@@ -382,18 +382,22 @@ fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(),
     }
 
     if battle.state.outcome != BattleOutcome::Ongoing {
-        // Persist terminal outcome first — write-back failures must not leave the
-        // battle stuck in Ongoing (ADR-0077 log-and-continue, RT-M16-05).
         let battle_for_wb = battle.clone();
+        // write_back_battle_results must run while the battle row is still Ongoing
+        // in the DB — its GC sweep filters `outcome != Ongoing`, so the current
+        // battle is excluded only before we commit the terminal state (RT-M16-08).
+        if let Err(e) = write_back_battle_results(ctx, &battle_for_wb) {
+            log::error!(
+                "{{\"evt\":\"pvp_turn_writeback_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
+            );
+        }
+        // Commit terminal outcome AFTER write_back_battle_results (RT-M16-08) and
+        // BEFORE write_back_party_hp_pvp_side_b so a side-B HP failure cannot leave
+        // the battle stuck in Ongoing (RT-M16-05).
         ctx.db.battle().battle_id().update(battle);
         if let Err(e) = write_back_party_hp_pvp_side_b(ctx, &battle_for_wb) {
             log::error!(
                 "{{\"evt\":\"pvp_turn_side_b_hp_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
-            );
-        }
-        if let Err(e) = write_back_battle_results(ctx, &battle_for_wb) {
-            log::error!(
-                "{{\"evt\":\"pvp_turn_writeback_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
             );
         }
     } else {
@@ -407,11 +411,13 @@ fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(),
 /// Apply forfeit to an ongoing PvP battle: set outcome, update row, write back HP.
 /// `forfeited_side`: SideA = challenger (player_identity); SideB = opponent.
 ///
-/// Ordering invariant (RT-M16-05): the battle row is updated to its terminal
-/// outcome BEFORE any write-back call. This ensures that a write-back failure
-/// (e.g. ownership changed for a side-B monster) cannot leave the battle row
-/// stuck in `Ongoing`, permanently locking both players. Write-backs use
-/// log-and-continue (ADR-0077) — the terminal outcome is already committed.
+/// Dual ordering invariant:
+/// - `write_back_battle_results` must run while the battle row is still Ongoing in
+///   the DB so its GC sweep targets only prior terminal rows, not the current one
+///   (RT-M16-08).
+/// - The battle row update must precede `write_back_party_hp_pvp_side_b` so that a
+///   side-B HP write-back failure (e.g. ownership changed) cannot leave the battle
+///   stuck in `Ongoing` (RT-M16-05). Write-backs use log-and-continue (ADR-0077).
 fn apply_pvp_forfeit(
     ctx: &ReducerContext,
     mut battle: Battle,
@@ -419,19 +425,24 @@ fn apply_pvp_forfeit(
 ) -> Result<(), String> {
     battle.state.outcome = pvp_forfeit_outcome(forfeited_side);
 
-    // Persist terminal outcome first — write-back failures must not revert this.
     let battle_id = battle.battle_id;
-    ctx.db.battle().battle_id().update(battle.clone());
 
-    // Write back HP for both sides. Log-and-continue (ADR-0077): outcome already committed.
-    if let Err(e) = write_back_party_hp_pvp_side_b(ctx, &battle) {
-        log::error!(
-            "{{\"evt\":\"pvp_forfeit_side_b_hp_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
-        );
-    }
+    // write_back_battle_results first — battle row is still Ongoing in DB so its
+    // GC sweep does not delete the current row (RT-M16-08).
     if let Err(e) = write_back_battle_results(ctx, &battle) {
         log::error!(
             "{{\"evt\":\"pvp_forfeit_writeback_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
+        );
+    }
+
+    // Commit terminal outcome AFTER write_back_battle_results (RT-M16-08) and
+    // BEFORE write_back_party_hp_pvp_side_b (RT-M16-05).
+    ctx.db.battle().battle_id().update(battle.clone());
+
+    // Side-B HP write-back. Log-and-continue (ADR-0077): outcome already committed.
+    if let Err(e) = write_back_party_hp_pvp_side_b(ctx, &battle) {
+        log::error!(
+            "{{\"evt\":\"pvp_forfeit_side_b_hp_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
         );
     }
 
@@ -457,8 +468,12 @@ fn write_back_party_hp_pvp_side_b(ctx: &ReducerContext, battle: &Battle) -> Resu
     let team_b = &battle.state.side_b.team;
     let ids_b = &battle.opponent_monster_ids;
     if team_b.len() != ids_b.len() {
-        // Asymmetry (wild battle) — skip. PvP always has both lists populated.
-        return Ok(());
+        return Err(format!(
+            "write_back_party_hp_pvp_side_b: team/ids length mismatch ({} vs {}) \
+             — invariant violation; PvP battles always populate both lists",
+            team_b.len(),
+            ids_b.len(),
+        ));
     }
     for (bm, &mid) in team_b.iter().zip(ids_b.iter()) {
         if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
