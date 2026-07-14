@@ -24,6 +24,7 @@ import {
 import { subscriptionErrorMessage } from '../ui/statusModel';
 import { MicrotaskBatcher } from './batch';
 import {
+  battleChallengeRowToStore,
   battleRowToStore,
   characterRowToStore,
   fusionRowToStore,
@@ -35,6 +36,7 @@ import {
   playerConversationRowToStore,
   playerQuestRowToStore,
   playerRowToStore,
+  type SdkBattleChallengeRow,
   type SdkBattleRow,
   type SdkCharacterRow,
   type SdkFusionRow,
@@ -430,6 +432,24 @@ export function connect(opts: ConnectionOptions): Connection {
       store.removeTradeOffer((row as unknown as SdkTradeOfferRow).tradeId);
       batcher.schedule();
     });
+
+    // m16b: battle_challenge (public table — challenger + target subscribe).
+    // Challenges are deleted server-side when Accepted/Declined/Cancelled
+    // (pvp.rs — the delete fires onDelete here, removing the stale row).
+    const ingestChallenge = (row: SdkBattleChallengeRow): void => {
+      store.upsertChallenge(battleChallengeRowToStore(row));
+      batcher.schedule();
+    };
+    conn.db.battle_challenge.onInsert((_ctx, row) =>
+      ingestChallenge(row as unknown as SdkBattleChallengeRow),
+    );
+    conn.db.battle_challenge.onUpdate((_ctx, _old, row) =>
+      ingestChallenge(row as unknown as SdkBattleChallengeRow),
+    );
+    conn.db.battle_challenge.onDelete((_ctx, row) => {
+      store.removeChallenge((row as unknown as SdkBattleChallengeRow).challengeId);
+      batcher.schedule();
+    });
   }
 
   /**
@@ -517,6 +537,10 @@ export function connect(opts: ConnectionOptions): Connection {
             // subscribe. Per-row RLS is a M16 future (ADR-0106 W3 INFO); until then the
             // client sees all offers and filters by own identity in ownTradeOffer().
             'SELECT * FROM trade_offer',
+            // m16b: battle_challenge is a PUBLIC runtime table (ADR-0109); challenger
+            // and target subscribe. battle_action is PRIVATE (ADR-0015 must-never-leak)
+            // and MUST NEVER be subscribed here.
+            'SELECT * FROM battle_challenge',
           ]);
       })
       .onConnectError((_ctx, err: Error) => {

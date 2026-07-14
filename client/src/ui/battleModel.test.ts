@@ -62,8 +62,10 @@ function battleSide(overrides: Partial<StoreBattleSide> = {}): StoreBattleSide {
 function makeBattle(overrides: Partial<StoreBattle> = {}): StoreBattle {
   return {
     battleId: 1n,
+    // m16b: PvE/trainer uses playerIdentity===opponentIdentity so isPvP=false.
+    // PvP tests override opponentIdentity explicitly.
     playerIdentity: 'alice',
-    opponentIdentity: 'npc',
+    opponentIdentity: 'alice',
     outcome: 'Ongoing',
     turnNumber: 1,
     sideA: battleSide(),
@@ -1768,5 +1770,152 @@ describe('battleModel m14.5d-1b: battleVMsEqual — cureItems comparison', () =>
     expect(vmB).not.toBeNull();
     expect(battleVMsEqual(vmA!, vmB!)).toBe(false);
     // Kills: an impl that skips the count field in cureItems comparison
+  });
+});
+
+// --- m16b: isPvp / pvpPendingSubmit / pvpOpponentName (ADR-0110) -----------------
+
+describe('buildBattleViewModel: isPvp detection', () => {
+  it('isPvp=false when opponentIdentity equals playerIdentity (wild/PvE: same placeholder)', () => {
+    // Wild battle: server sets opponentIdentity = playerIdentity (ADR-0045).
+    const b = makeBattle({
+      playerIdentity: 'alice',
+      opponentIdentity: 'alice',
+      opponentMonsterIds: [],
+    });
+    const sMap = makeSpeciesMap(speciesRow(1));
+    const vm = buildBattleViewModel(b, makeSkillMap(1), sMap);
+    expect(vm?.isPvp).toBe(false);
+    // Kills: an impl that sets isPvp=true for wild battles
+  });
+
+  it('isPvp=true when playerIdentity !== opponentIdentity and opponentMonsterIds is non-empty', () => {
+    const b = makeBattle({
+      playerIdentity: 'alice',
+      opponentIdentity: 'bob',
+      opponentMonsterIds: [99n],
+    });
+    const sMap = makeSpeciesMap(speciesRow(1));
+    const vm = buildBattleViewModel(b, makeSkillMap(1), sMap);
+    expect(vm?.isPvp).toBe(true);
+    // Kills: an impl that uses opponentMonsterIds.length to detect PvP
+  });
+
+  it('canFlee=false in PvP battles', () => {
+    const b = makeBattle({
+      playerIdentity: 'alice',
+      opponentIdentity: 'bob',
+      outcome: 'Ongoing',
+      opponentMonsterIds: [99n],
+    });
+    const sMap = makeSpeciesMap(speciesRow(1));
+    const vm = buildBattleViewModel(b, makeSkillMap(1), sMap);
+    expect(vm?.canFlee).toBe(false);
+    // Kills: an impl that allows flee in PvP
+  });
+});
+
+describe('buildBattleViewModel: pvpPendingSubmit', () => {
+  it('pvpPendingSubmit=false when isPvp=false regardless of pvpPendingSubmit arg', () => {
+    // Non-PvP battle: pvpPendingSubmit arg is ignored
+    const b = makeBattle({ playerIdentity: 'alice', opponentIdentity: 'alice' });
+    const sMap = makeSpeciesMap(speciesRow(1));
+    const vm = buildBattleViewModel(b, makeSkillMap(1), sMap, [], [], true, null);
+    expect(vm?.pvpPendingSubmit).toBe(false);
+    // Kills: an impl that passes pvpPendingSubmit through even for wild/PvE
+  });
+
+  it('pvpPendingSubmit=true when isPvp=true and pvpPendingSubmit arg is true', () => {
+    const b = makeBattle({
+      playerIdentity: 'alice',
+      opponentIdentity: 'bob',
+      opponentMonsterIds: [99n],
+    });
+    const sMap = makeSpeciesMap(speciesRow(1));
+    const vm = buildBattleViewModel(b, makeSkillMap(1), sMap, [], [], true, null);
+    expect(vm?.pvpPendingSubmit).toBe(true);
+    // Kills: an impl that ignores the pvpPendingSubmit argument
+  });
+
+  it('pvpPendingSubmit=false when isPvp=true but arg is false', () => {
+    const b = makeBattle({
+      playerIdentity: 'alice',
+      opponentIdentity: 'bob',
+      opponentMonsterIds: [99n],
+    });
+    const sMap = makeSpeciesMap(speciesRow(1));
+    const vm = buildBattleViewModel(b, makeSkillMap(1), sMap, [], [], false, null);
+    expect(vm?.pvpPendingSubmit).toBe(false);
+  });
+});
+
+describe('buildBattleViewModel: pvpOpponentName', () => {
+  it('pvpOpponentName=null when not a PvP battle', () => {
+    const b = makeBattle({ playerIdentity: 'alice', opponentIdentity: 'alice' });
+    const sMap = makeSpeciesMap(speciesRow(1));
+    const vm = buildBattleViewModel(b, makeSkillMap(1), sMap, [], [], false, 'SomeName');
+    expect(vm?.pvpOpponentName).toBeNull();
+    // Kills: an impl that leaks opponent name to wild battles
+  });
+
+  it('pvpOpponentName is set when isPvp=true', () => {
+    const b = makeBattle({
+      playerIdentity: 'alice',
+      opponentIdentity: 'bob',
+      opponentMonsterIds: [99n],
+    });
+    const sMap = makeSpeciesMap(speciesRow(1));
+    const vm = buildBattleViewModel(b, makeSkillMap(1), sMap, [], [], false, 'Bob');
+    expect(vm?.pvpOpponentName).toBe('Bob');
+    // Kills: an impl that ignores the pvpOpponentName argument
+  });
+});
+
+describe('battleVMsEqual: PvP fields', () => {
+  function pvpBattle(overrides: Partial<StoreBattle> = {}): StoreBattle {
+    return makeBattle({
+      playerIdentity: 'alice',
+      opponentIdentity: 'bob',
+      opponentMonsterIds: [99n],
+      ...overrides,
+    });
+  }
+
+  it('BITES: isPvp toggle makes VMs unequal', () => {
+    const b = pvpBattle();
+    const sMap = makeSpeciesMap(speciesRow(1));
+    const vmPvp = buildBattleViewModel(b, makeSkillMap(1), sMap);
+    const bPve = makeBattle({
+      playerIdentity: 'alice',
+      opponentIdentity: 'alice',
+      opponentMonsterIds: [],
+    });
+    const vmPve = buildBattleViewModel(bPve, makeSkillMap(1), sMap);
+    expect(vmPvp).not.toBeNull();
+    expect(vmPve).not.toBeNull();
+    expect(battleVMsEqual(vmPvp!, vmPve!)).toBe(false);
+    // Kills: an impl that omits isPvp from battleVMsEqual
+  });
+
+  it('BITES: pvpPendingSubmit toggle makes VMs unequal', () => {
+    const b = pvpBattle();
+    const sMap = makeSpeciesMap(speciesRow(1));
+    const vmA = buildBattleViewModel(b, makeSkillMap(1), sMap, [], [], false, null);
+    const vmB = buildBattleViewModel(b, makeSkillMap(1), sMap, [], [], true, null);
+    expect(vmA).not.toBeNull();
+    expect(vmB).not.toBeNull();
+    expect(battleVMsEqual(vmA!, vmB!)).toBe(false);
+    // Kills: an impl that omits pvpPendingSubmit from battleVMsEqual
+  });
+
+  it('BITES: pvpOpponentName change makes VMs unequal', () => {
+    const b = pvpBattle();
+    const sMap = makeSpeciesMap(speciesRow(1));
+    const vmA = buildBattleViewModel(b, makeSkillMap(1), sMap, [], [], false, 'Bob');
+    const vmB = buildBattleViewModel(b, makeSkillMap(1), sMap, [], [], false, 'Alice');
+    expect(vmA).not.toBeNull();
+    expect(vmB).not.toBeNull();
+    expect(battleVMsEqual(vmA!, vmB!)).toBe(false);
+    // Kills: an impl that omits pvpOpponentName from battleVMsEqual
   });
 });

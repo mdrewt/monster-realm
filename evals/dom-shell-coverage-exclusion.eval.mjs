@@ -42,6 +42,8 @@ const DOM_SHELLS = [
   'src/ui/shopView.ts',
   // m15b: trade DOM shell (ADR-0107)
   'src/ui/tradeView.ts',
+  // m16b: PvP challenge DOM shell (ADR-0110)
+  'src/ui/pvpView.ts',
 ];
 
 // Sanctioned exclusion entries for findUnsanctionedExclusions.
