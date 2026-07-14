@@ -649,4 +649,130 @@ mod tests {
              this documents the gap; the fix belongs in propose_trade reducer"
         );
     }
+
+    /// TR-1: counterparty-monster-only offer (initiator provides nothing) is valid.
+    /// kills: 39:9 replace + with * — mutant: i_items.len() * c_monsters.len() = 0*1 = 0
+    ///        making total_assets = 0 → EmptyOffer; original: 0+0+1+0+0+0 = 1 → Ok.
+    #[test]
+    fn validate_accepts_counterparty_monster_only() {
+        let result = validate_proposal(
+            false,
+            false,
+            false,
+            ProposalSide {
+                monster_ids: &[],
+                items: no_item(),
+                currency: 0,
+            },
+            ProposalSide {
+                monster_ids: &[42],
+                items: no_item(),
+                currency: 0,
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "counterparty-only monster offer must be valid (at least one asset on either side)"
+        );
+    }
+
+    /// TR-1: initiator offers a monster, counterparty offers an item with positive qty → valid.
+    /// kills: 40:9 replace + with — total becomes 1-1=0 → EmptyOffer (original: 2).
+    ///        69:12 delete ! — first counterparty item inserts→true, triggers DuplicateItem.
+    ///        84:21 replace == with != — qty=3 != 0 triggers InsufficientInventory.
+    #[test]
+    fn validate_accepts_initiator_monster_counterparty_item() {
+        let c_items = one_item(5, 3);
+        let result = validate_proposal(
+            false,
+            false,
+            false,
+            ProposalSide {
+                monster_ids: &[1],
+                items: no_item(),
+                currency: 0,
+            },
+            ProposalSide {
+                monster_ids: &[],
+                items: &c_items,
+                currency: 0,
+            },
+        );
+        assert!(result.is_ok(), "monster-for-item trade must be valid");
+    }
+
+    /// TR-1: counterparty-items-only offer (no monsters on either side) is valid.
+    /// kills: 40:9 replace + with * — mutant: c_monsters.len() * c_items.len() = 0*1 = 0
+    ///        making total_assets = 0 → EmptyOffer; original: 0+0+0+1+0+0 = 1 → Ok.
+    #[test]
+    fn validate_accepts_counterparty_items_only() {
+        let c_items = one_item(7, 1);
+        let result = validate_proposal(
+            false,
+            false,
+            false,
+            ProposalSide {
+                monster_ids: &[],
+                items: no_item(),
+                currency: 0,
+            },
+            ProposalSide {
+                monster_ids: &[],
+                items: &c_items,
+                currency: 0,
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "counterparty-items-only offer must be valid (at least one asset on either side)"
+        );
+    }
+
+    /// TR-1: counterparty-currency-only offer (initiator provides nothing) is valid.
+    /// kills: 42:36 replace > with < — u64 < 0 is always false, so counterparty currency
+    ///        never counts toward total_assets; original: 0+0+0+0+0+1 = 1 → Ok.
+    #[test]
+    fn validate_accepts_counterparty_currency_only() {
+        let result = validate_proposal(
+            false,
+            false,
+            false,
+            ProposalSide {
+                monster_ids: &[],
+                items: no_item(),
+                currency: 0,
+            },
+            ProposalSide {
+                monster_ids: &[],
+                items: no_item(),
+                currency: 100,
+            },
+        );
+        assert!(
+            result.is_ok(),
+            "counterparty-currency gift offer must be valid (currency counts as an asset)"
+        );
+    }
+
+    /// TR-16: build_swap_plan includes a CurrencyTransfer for counterparty_currency > 0.
+    /// kills: 220:30 replace > with < — u64 < 0 is always false, counterparty currency
+    ///        transfer is never pushed → plan.currency_transfers is empty;
+    ///        original: counterparty_currency=50 > 0 → pushed with from_initiator=false.
+    #[test]
+    fn swap_plan_includes_counterparty_currency_transfer() {
+        let plan = build_swap_plan(&[], &[], &[], &[], 0, 50).expect("valid ownership");
+        assert_eq!(
+            plan.currency_transfers.len(),
+            1,
+            "counterparty currency > 0 must produce exactly one currency transfer"
+        );
+        assert!(
+            !plan.currency_transfers[0].from_initiator,
+            "counterparty currency transfer must have from_initiator=false"
+        );
+        assert_eq!(
+            plan.currency_transfers[0].amount, 50,
+            "counterparty currency transfer amount must equal the input currency"
+        );
+    }
 }

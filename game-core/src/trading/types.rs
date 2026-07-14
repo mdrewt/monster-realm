@@ -117,3 +117,49 @@ impl std::fmt::Display for TradeError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TradeError variants must display meaningful, non-empty error messages.
+    /// kills: 89:9 replace fmt -> std::fmt::Result with Ok(Default::default()) —
+    ///        the mutation makes ALL Display calls return Ok(()) with no output,
+    ///        so format!("{}", err) returns "" for every variant; the non-empty
+    ///        assertion kills the mutant on the very first variant checked.
+    #[test]
+    fn trade_error_display_is_meaningful() {
+        let cases: Vec<(TradeError, &str)> = vec![
+            (TradeError::SelfTrade, "yourself"),
+            (TradeError::EmptyOffer, "asset"),
+            (TradeError::AlreadyInTrade, "trade"),
+            (TradeError::MonsterNotOwned, "owned"),
+            (TradeError::DuplicateMonster, "duplicate"),
+            (TradeError::DuplicateItem { item_id: 7 }, "duplicate"),
+            (TradeError::OwnershipChanged, "ownership"),
+            (TradeError::NotInitiator, "initiator"),
+            (TradeError::NotCounterparty, "counterparty"),
+            (TradeError::NotPending, "Pending"),
+            (
+                TradeError::NotConfirmedByCounterparty,
+                "ConfirmedByCounterparty",
+            ),
+            (
+                TradeError::InsufficientInventory { item_id: 3 },
+                "inventory",
+            ),
+            (TradeError::InsufficientCurrency { available: 42 }, "42"),
+        ];
+        for (err, expected_substr) in cases {
+            let s = format!("{err}");
+            assert!(
+                !s.is_empty(),
+                "TradeError::{err:?} Display must produce a non-empty string"
+            );
+            assert!(
+                s.contains(expected_substr),
+                "TradeError::{err:?} Display ({s:?}) must contain {expected_substr:?}"
+            );
+        }
+    }
+}

@@ -5,12 +5,22 @@
 #    Line-pinned: drift resurfaces the mutant → nightly red → re-pin consciously.
 #    Guarded by evals/mutate-core-recipe-integrity.eval.mjs.
 #
-# 2. apply_entry_ability EntryHeal guard (ability.rs:169:60): `current_hp < max_hp`
+# 2. apply_entry_ability EntryHeal guard (ability.rs:170:60): `current_hp < max_hp`
 #    vs `current_hp <= max_hp` produce identical output because the branch body
 #    clamps: `current_hp.saturating_add(heal).min(max_hp)`. At current_hp == max_hp
 #    both branches yield max_hp after the clamp; no test can distinguish them.
-#    Proved by EARS-h-1a (boundary_full_hp_no_heal). Line-pinned.
+#    Proved by EARS-h-1a (boundary_full_hp_no_heal) in m14_5h_tests.rs ("no mutation
+#    test can be written here to distinguish the two operators"). Line-pinned;
+#    re-pinned from 169 to 170 (fix-nightly-mutants: one line of code inserted above
+#    the condition between M14.5h and the nightly run 29320384291).
+#
+# 3. TradeStatus::is_active (trading/types.rs:56:9): `replace TradeStatus::is_active
+#    -> bool with true` is equivalent. Both Pending and ConfirmedByCounterparty return
+#    true; terminal state is a DELETED ROW not an enum variant, so `is_active()` is
+#    correctly always true. No behavioral test can distinguish correct-always-true from
+#    mutation-always-true. Line-pinned.
 exclude_re = [
     "npc/rules\\.rs:61:15: replace > with >= in toward_home",
-    "ability\\.rs:169:60: replace < with <= in apply_entry_ability",
+    "ability\\.rs:170:60: replace < with <= in apply_entry_ability",
+    "trading/types\\.rs:56:9: replace TradeStatus::is_active -> bool with true",
 ]
