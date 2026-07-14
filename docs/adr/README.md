@@ -5,12 +5,12 @@ Architecture Decision Records live in **two locations**; check both.
 - **Design ADRs `0002`–`0034`** — in the **harness spec corpus**
   (`../../specs/monster-realm-v2/adr/`). These are the foundational design
   decisions authored alongside the milestone specs.
-- **Implementation ADRs `0001`, `0035`–`0106`** — in **this directory**
+- **Implementation ADRs `0001`, `0035`–`0108`** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0108`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0109`**.
 
 **ADR numbering collision note:** the harness spec corpus also contains design
 ADRs numbered `0055`–`0057`; these cover the *same topics* as this project's
@@ -99,6 +99,8 @@ prefix `harness adr/0055` to cite the harness design ADR.
 | [0104](./0104-m-infra-d-adr-digest.md) | ADR digest convention: canonical header block + generated drift-gated DIGEST.md for agent-facing corpus compaction | M-infra-d |
 | [0105](./0105-m14.5d-1a-item-row-cure-status.md) | Additive `cure_status` column on `item_row` for data-driven cure items | M14.5d-1a |
 | [0106](./0106-m15a-trading-spine.md) | M15a Trading Spine: escrowed dual-consent trade_offer table, guards, atomic swap engine | M15a |
+| [0107](./0107-m15b-trade-client-ui.md) | Trade client UI overlay: T-key overlay, offer lifecycle client flow, escrow slot rendering | M15b |
+| [0108](./0108-m15c-trade-evals.md) | Trade evals tail: escrow/conservation/security static evals + e2e trade overlay wiring | M15c |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
