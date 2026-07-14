@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: encounter
 slug: tables/encounter
-updated: 2026-07-13
+updated: 2026-07-14
 tags: [schema, spacetimedb, private]
 abstract: "PRIVATE encounter table (no `public`). Spawn weights/level bands are server-only truth that must NEVER reach any client…"
 resource: server-module/src/schema.rs#L187
