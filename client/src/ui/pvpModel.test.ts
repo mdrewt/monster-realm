@@ -83,4 +83,40 @@ describe('buildPvpChallengeViewModel', () => {
     // No player row for 'deadbeef1234' → name falls back to first 8 chars
     expect(vm.incoming?.challengerName).toBe('deadbeef');
   });
+
+  // RT-PVP-01: terminal-outgoing auto-show invariant.
+  //
+  // pvpView.refresh treats vm.outgoing !== null as "hasActive" and calls this.show().
+  // If the model returns a non-null outgoing with a terminal status (Declined /
+  // Accepted / Cancelled), the overlay auto-shows with an EMPTY outgoing section and
+  // the challengeable player list visible — a phantom pop-up that the user cannot
+  // explain.  The fix MUST be in the model: only return outgoing when status is
+  // 'Pending' (matching pvpView.#renderOutgoing's own filter).
+  it('RT-PVP-01: outgoing with Declined status must not be returned by the model (phantom-show guard)', () => {
+    const c = makeChallenge(3n, ME, OTHER_A, 'Declined');
+    const vm = buildPvpChallengeViewModel([c], ME, PLAYERS);
+    // A Declined challenge is terminal; the model must treat it as absent so the view
+    // cannot auto-show based on a non-null outgoing field.
+    expect(vm.outgoing).toBeNull();
+  });
+
+  it('RT-PVP-01: outgoing with Cancelled status must not be returned by the model', () => {
+    const c = makeChallenge(3n, ME, OTHER_A, 'Cancelled');
+    const vm = buildPvpChallengeViewModel([c], ME, PLAYERS);
+    expect(vm.outgoing).toBeNull();
+  });
+
+  it('RT-PVP-01: outgoing with Accepted status must not be returned by the model', () => {
+    const c = makeChallenge(3n, ME, OTHER_A, 'Accepted');
+    const vm = buildPvpChallengeViewModel([c], ME, PLAYERS);
+    expect(vm.outgoing).toBeNull();
+  });
+
+  // RT-PVP-01: also verify the counterpart — Pending outgoing IS returned.
+  it('RT-PVP-01: outgoing with Pending status is returned (baseline)', () => {
+    const c = makeChallenge(3n, ME, OTHER_A, 'Pending');
+    const vm = buildPvpChallengeViewModel([c], ME, PLAYERS);
+    expect(vm.outgoing).not.toBeNull();
+    expect(vm.outgoing?.status).toBe('Pending');
+  });
 });

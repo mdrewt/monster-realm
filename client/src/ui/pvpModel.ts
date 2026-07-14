@@ -66,13 +66,14 @@ export function buildPvpChallengeViewModel(
     }
   }
 
-  // Find this player's most-recent outgoing challenge (any non-terminal status).
+  // Find this player's most-recent PENDING outgoing challenge.
   // "Most recent" = highest challengeId (server auto-inc, monotonic).
-  // Only keep Pending outgoing challenges for display — Declined/Cancelled/Accepted
-  // are terminal and the server GCs them, but we still filter client-side for safety.
+  // Declined/Cancelled/Accepted are terminal; the server GCs them, but we filter
+  // client-side too — a non-Pending outgoing must not trigger pvpView auto-show
+  // (pvpView.refresh treats vm.outgoing !== null as hasActive).
   let outgoing: PvpOutgoingChallenge | null = null;
   for (const c of challenges) {
-    if (c.challenger === identity) {
+    if (c.challenger === identity && c.status === 'Pending') {
       if (outgoing === null || c.challengeId > outgoing.challengeId) {
         outgoing = {
           challengeId: c.challengeId,

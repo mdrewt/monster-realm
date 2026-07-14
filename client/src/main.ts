@@ -766,9 +766,13 @@ function refreshBattle(): void {
       return [{ itemId: inv.itemId, name: def.name, cureStatus: def.cureStatus, count: inv.count }];
     });
     // m16b: clear pvpPendingTurnNumber when the server has resolved the turn (turnNumber
-    // advanced past the pending value). battle_action is PRIVATE (ADR-0015) — this
-    // increment is the ONLY observable signal that the opponent's action was received.
-    if (pvpPendingTurnNumber !== null && r.action.battle.turnNumber > pvpPendingTurnNumber) {
+    // advanced past the pending value) OR when the battle is no longer Ongoing (terminal
+    // outcomes include forfeit — apply_pvp_forfeit skips advance_turn so turnNumber stays
+    // at N; the strict > condition would never fire; check outcome as the fallback).
+    if (
+      pvpPendingTurnNumber !== null &&
+      (r.action.battle.turnNumber > pvpPendingTurnNumber || r.action.battle.outcome !== 'Ongoing')
+    ) {
       pvpPendingTurnNumber = null;
     }
     const pvpPendingSubmit = pvpPendingTurnNumber !== null;

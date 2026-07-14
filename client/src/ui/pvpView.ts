@@ -77,13 +77,15 @@ export class PvpView {
   }
 
   /**
-   * Re-render from the latest VM. Auto-shows when there is an incoming or outgoing
-   * challenge; auto-hides when the VM has neither and the overlay is not manually open.
+   * Re-render from the latest VM. The caller (main.ts batch listener or KeyP handler)
+   * is fully responsible for the show/hide decision via `forceVisible` — this method
+   * never auto-shows independently. This prevents pvpView from popping over an active
+   * battle or other overlay when hasActive=true (ADR-0110 D6 mutual-exclusivity).
    */
   refresh(vm: PvpChallengeViewModel | null, forceVisible: boolean): void {
     const hasActive = vm !== null && (vm.incoming !== null || vm.outgoing !== null);
 
-    if (!hasActive && !forceVisible) {
+    if (!forceVisible) {
       if (this.#visible) this.hide();
       return;
     }
