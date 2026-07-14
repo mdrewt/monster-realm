@@ -77,7 +77,8 @@ Added to `guards.rs`. Returns `SideId::SideA` or `SideId::SideB` so `submit_pvp_
 - **Game-core is pure**: `PvpAction`, `pvp_forfeit_outcome`, `pvp_deadline_forfeit_side` live in `game-core/src/combat/pvp.rs` — deterministic, I/O-free, testable without SpacetimeDB context.
 - **ADR-0048 guard preserved**: `start_battle` still rejects external opponents. PvP battles go through `start_pvp_battle`.
 - **BSATN stability preserved**: no new `BattleOutcome` variants in M16. `Forfeited` can be added additively in M17 if ranked Elo tracking requires distinguishing forfeits from natural wins.
-- **Additive**: three new tables, one new btree index on existing `Battle.opponent_identity`. No existing column, PK, or table changed.
+- **Additive**: three new tables, one new btree index on existing `Battle.opponent_identity`. `Battle` gains `#[derive(Clone)]` (needed for update-before-writeback pattern). No column, PK, or table removed.
 - **m16b deferred**: client UI for challenge/accept/submit is m16b. The TypeScript bindings are generated and committed (`battle_challenge_table.ts`, `accept_challenge_reducer.ts`, `submit_pvp_action_reducer.ts`, etc.).
 - **PvP evals deferred**: battle-reducer-security, battle-pvp-guards, and pvp-action-privacy eval additions are m16c.
+- **Opponent GC deferred to M17**: `write_back_battle_results` now sweeps old terminal battles by `opponent_identity` for PvP side-B wins (RT-M16-03), but full side-B GC (XP, M17 ranking) is still deferred.
 - **ADR next-free:** 0110
