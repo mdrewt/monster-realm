@@ -72,15 +72,18 @@ pub fn pvp_forfeit_outcome(forfeited_side: SideId) -> BattleOutcome {
 /// have already submitted (the resolution happens inline when the second pick
 /// lands).  The caller is responsible for this invariant; passing `true, true`
 /// returns `SideA` as a safe no-op (the reaper will find the battle already
-/// terminal and exit).
+/// terminal and exit cleanly).
 #[must_use]
-pub fn pvp_deadline_forfeit_side(a_submitted: bool, _b_submitted: bool) -> SideId {
+pub fn pvp_deadline_forfeit_side(a_submitted: bool, b_submitted: bool) -> SideId {
     if !a_submitted {
         SideId::SideA
-    } else {
-        // a submitted; b did not (the both-submitted case is short-circuited by the
-        // caller before reaching the reaper). Checked via test contract not impl.
+    } else if !b_submitted {
         SideId::SideB
+    } else {
+        // Both submitted: the caller should have resolved inline; reaching here
+        // is a caller-invariant violation. Return SideA as a safe no-op — the
+        // reaper will find the battle already terminal and exit cleanly.
+        SideId::SideA
     }
 }
 
@@ -166,6 +169,55 @@ mod pvp_tests {
         assert_ne!(
             a_result, b_result,
             "TEETH: forfeiting A and forfeiting B must produce different outcomes"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // RT-M16-06: pvp_deadline_forfeit_side ignores b_submitted parameter.
+    //
+    // Finding: the implementation signature is `(a_submitted: bool, _b_submitted: bool)`
+    // — the `_` prefix marks the second parameter intentionally unused. The body
+    // decides purely based on `a_submitted`:
+    //   if !a_submitted → SideA
+    //   else             → SideB
+    //
+    // This works correctly for the three documented cases (A-not-submitted,
+    // B-not-submitted, neither-submitted) because the caller guarantees the
+    // both-submitted case never reaches the reaper. HOWEVER, the function will
+    // silently return SideB for `(true, true)` instead of signalling an error,
+    // and any future call site that passes `b_submitted` expecting it to be read
+    // will silently get wrong results.
+    //
+    // This gating test documents the invariant: the function MUST behave as if
+    // it reads b_submitted (i.e. the outcome for (true, false) must differ from
+    // (true, true)) — once the implementation is corrected to actually inspect
+    // b_submitted. Currently both of these return SideB, which means passing
+    // `true, true` does NOT produce a different result from `true, false` — an
+    // observable bug when the reaper fires on a race where both submitted.
+    //
+    // Proof-of-teeth: after the fix, `pvp_deadline_forfeit_side(true, true)`
+    // should return SideA (safe no-op — neither side should be forfeited when
+    // both submitted; the caller already guards this, but the function should
+    // not silently forfeit B on a both-submitted call).
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn rt_m16_06_both_submitted_returns_side_a_safe_noop() {
+        // (true, true) — both submitted (caller-invariant violation) → SideA safe no-op.
+        // (true, false) — only A submitted → SideB forfeits.
+        // The results must differ: the function reads b_submitted.
+        let both_submitted = pvp_deadline_forfeit_side(true, true);
+        let only_a_submitted = pvp_deadline_forfeit_side(true, false);
+        assert_ne!(
+            both_submitted, only_a_submitted,
+            "RT-M16-06: pvp_deadline_forfeit_side must read b_submitted — \
+             (true, true) must return SideA (safe no-op) while (true, false) \
+             returns SideB. If they are equal, b_submitted is being ignored."
+        );
+        assert_eq!(
+            both_submitted,
+            SideId::SideA,
+            "RT-M16-06: (true, true) must return SideA as the safe no-op sentinel"
         );
     }
 }

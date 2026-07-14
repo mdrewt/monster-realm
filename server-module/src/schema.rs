@@ -287,6 +287,7 @@ pub struct MonsterPub {
 /// lookup in `forfeit_on_disconnect` for the case where the disconnecting player is
 /// the opponent (side B).  Adding an index is additive (ADR-0006): no column or PK
 /// change; the schema-snapshot eval tracks columns+PK only, not index presence.
+#[derive(Clone)]
 #[spacetimedb::table(name = battle, public)]
 pub struct Battle {
     #[primary_key]

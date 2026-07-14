@@ -334,6 +334,230 @@ fn pvp_deadline_schedule_fields_are_correct() {
 }
 
 // ---------------------------------------------------------------------------
+// RT-M16-01: challenge_pvp MUST check that the TARGET is not in an ongoing
+// battle before inserting a BattleChallenge row.
+//
+// Finding: `challenge_pvp` guards the CALLER with `is_in_ongoing_battle`
+// but never calls `is_in_ongoing_battle(ctx, target)`. A player who is busy
+// in an active PvP or PvE battle can still receive challenge rows that pile up
+// in the public `battle_challenge` table. When the target finishes their
+// current battle and calls `accept_challenge`, the battle creates fine — but
+// during the acceptance window the target is simultaneously "in a battle" and
+// "has a pending incoming challenge", violating the mutual-exclusion invariant
+// documented in the guard order comment (guard 4 in accept_challenge re-checks
+// `is_in_ongoing_battle`, so acceptance is correctly blocked, but the
+// INSERTION of the challenge row is not, causing UX clutter and a potential
+// accept race on simultaneous battle-end + accept).
+//
+// Proof-of-teeth: kills any impl that checks the target ONLY inside
+// accept_challenge's guard 4 and not at insertion time in challenge_pvp.
+// After the fix, challenge_pvp must call is_in_ongoing_battle for the target.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rt_m16_01_challenge_pvp_guards_target_not_in_battle() {
+    let stripped = strip_rust_comments(PVP_RS);
+
+    // Locate the challenge_pvp function body.
+    let fn_marker = concat!("fn ", "challenge_pvp");
+    let fn_pos = stripped
+        .find(fn_marker)
+        .expect("RT-M16-01: `challenge_pvp` not found in pvp.rs");
+
+    // Find the closing of challenge_pvp: it ends before `accept_challenge` begins.
+    let accept_marker = concat!("fn ", "accept_challenge");
+    let accept_pos = stripped[fn_pos..]
+        .find(accept_marker)
+        .map(|p| fn_pos + p)
+        .unwrap_or(stripped.len());
+
+    let challenge_pvp_body = &stripped[fn_pos..accept_pos];
+
+    // The fix requires calling is_in_ongoing_battle with the target variable.
+    // We look for the pattern `is_in_ongoing_battle` followed nearby by `target`
+    // anywhere in the challenge_pvp body.
+    let guard_call = concat!("is_in_ongoing", "_battle");
+    assert!(
+        challenge_pvp_body.contains(guard_call),
+        "RT-M16-01 FAIL: `challenge_pvp` in pvp.rs does not call \
+         `is_in_ongoing_battle` at all within its body. \
+         A challenger can send a challenge to a player who is already in an \
+         ongoing battle, bypassing the pre-insertion guard. \
+         Fix: add `is_in_ongoing_battle(ctx, target)` check before inserting \
+         the BattleChallenge row (after guard 3, before guard 8)."
+    );
+
+    // Tighter check: the guard call must appear with `target` as the argument,
+    // not just `me`. We look for the literal two-argument pattern.
+    let target_guard = concat!("is_in_ongoing_battle(ctx, ", "target)");
+    assert!(
+        challenge_pvp_body.contains(target_guard),
+        "RT-M16-01 FAIL: `challenge_pvp` calls `is_in_ongoing_battle` but only \
+         for the caller (`me`), NOT for the `target`. A player in an ongoing \
+         battle can be challenged, cluttering their challenge inbox and creating \
+         an accept race. \
+         Fix: add `is_in_ongoing_battle(ctx, target)` check in challenge_pvp \
+         after the existing `is_in_ongoing_battle(ctx, me)` guard."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// RT-M16-02: write_back_battle_results MUST NOT treat a real PvP opponent as
+// a practice target when awarding XP to the challenger.
+//
+// Finding: `write_back_battle_results` in battle.rs computes:
+//   `let is_practice = battle.opponent_identity != WILD_IDENTITY;`
+// This flag was introduced in M12.5e2 for SELF-vs-SELF sandbox battles
+// (ADR-0078). In PvP battles, `opponent_identity` is a real player (not
+// WILD_IDENTITY), so `is_practice` evaluates to TRUE for every PvP win.
+// Consequently the challenger only earns `floor(base_xp / 10)` even though
+// they beat a real opponent. PvP victory XP must be full-rate, not 1/10.
+//
+// The fix is to distinguish a true practice/sandbox battle
+// (opponent_identity == ctx.sender at start_battle time, where the opponent
+// IS the challenger's own self) from a real PvP battle. One correct expression:
+//   `let is_practice = battle.player_identity == battle.opponent_identity;`
+//
+// Proof-of-teeth: kills any impl that uses `!= WILD_IDENTITY` as the
+// is_practice predicate and thus penalises PvP winners at 1/10 XP.
+// After the fix the source scan must no longer contain the broken expression.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rt_m16_02_pvp_win_is_not_classified_as_practice() {
+    let battle_rs = include_str!("battle.rs");
+    let stripped = strip_rust_comments(battle_rs);
+
+    // The broken expression: using != WILD_IDENTITY as the practice flag.
+    // This is the literal text we expect to disappear after the fix.
+    let broken_expr = concat!(
+        "is_practice = battle.opponent_identity != ",
+        "WILD_IDENTITY"
+    );
+    assert!(
+        !stripped.contains(broken_expr),
+        "RT-M16-02 FAIL: `write_back_battle_results` in battle.rs uses \
+         `opponent_identity != WILD_IDENTITY` as the `is_practice` flag. \
+         This incorrectly marks every PvP battle (where opponent_identity is a \
+         real player, not WILD_IDENTITY) as a practice battle, penalising the \
+         challenger with only 1/10 XP on a PvP win. \
+         Fix: replace with `player_identity == opponent_identity` (self-battle \
+         is the only legitimate practice scenario) so real PvP victories grant \
+         full XP."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// RT-M16-03: write_back_battle_results MUST GC stale terminal battle rows
+// for the OPPONENT (side B) in PvP battles, not only for player_identity.
+//
+// Finding: The `old_terminal_ids` cleanup in `write_back_battle_results`
+// queries `battle().player_identity().filter(player)` — it only sweeps old
+// terminal battles where the CHALLENGER is player_identity (side A). In a PvP
+// battle where side B wins (`SideBWins`), old terminal battles where the
+// OPPONENT was in side B are never GC'd via `opponent_identity` index.
+// Over time this causes an unbounded accumulation of terminal battle rows for
+// the opponent identity, bloating the public `battle` table.
+//
+// Proof-of-teeth: kills any impl that has ONLY a player_identity GC pass
+// inside write_back_battle_results without also GC-ing via opponent_identity.
+// After the fix, write_back_battle_results must contain an opponent_identity
+// GC sweep for PvP terminal outcomes.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rt_m16_03_write_back_battle_results_gcs_opponent_terminal_battles() {
+    let battle_rs = include_str!("battle.rs");
+    let stripped = strip_rust_comments(battle_rs);
+
+    // Find write_back_battle_results body (it ends before write_back_party_hp
+    // which is declared just above it, so we search from its fn declaration).
+    let fn_marker = concat!("fn write_back_battle", "_results");
+    let fn_pos = stripped
+        .find(fn_marker)
+        .expect("RT-M16-03: `write_back_battle_results` not found in battle.rs");
+
+    // We look for opponent_identity filtering in the GC pass — the fix must
+    // add a sweep like: `battle().opponent_identity().filter(opponent)` inside
+    // write_back_battle_results for PvP terminal rows.
+    let opponent_gc_needle = concat!("opponent_identity()", ".filter");
+    let fn_body = &stripped[fn_pos..];
+    assert!(
+        fn_body.contains(opponent_gc_needle),
+        "RT-M16-03 FAIL: `write_back_battle_results` in battle.rs does not GC \
+         old terminal battle rows by `opponent_identity`. \
+         In PvP battles where side B wins, old terminal battles where the \
+         losing player was `opponent_identity` (side B) are never deleted, \
+         causing unbounded `battle` table growth for the opponent identity. \
+         Fix: add a second GC sweep inside write_back_battle_results that \
+         deletes old terminal battle rows indexed by `opponent_identity` for \
+         PvP outcomes (outcome is SideBWins, i.e. the opponent won)."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// RT-M16-05: apply_pvp_forfeit MUST NOT leave a battle stuck in Ongoing
+// state if write_back_party_hp_pvp_side_b returns Err.
+//
+// Finding: `apply_pvp_forfeit` calls `write_back_party_hp_pvp_side_b(…)?`
+// before `ctx.db.battle().battle_id().update(battle)`. If the HP write-back
+// returns Err (e.g. ownership changed for a side-B monster), the `?` causes
+// early return and `update(battle)` never runs, leaving the battle row with
+// outcome=Ongoing in the database. Both players are then permanently locked
+// out of new PvP battles (is_in_ongoing_battle returns true forever), and the
+// stale `battle_action` rows are never cleaned up either.
+//
+// The same issue exists in resolve_pvp_turn_if_ready: if either write-back
+// returns Err, the battle row is never updated to its terminal state.
+//
+// Proof-of-teeth: kills any impl where the write-back Err propagates before
+// the battle row update runs. After the fix, the battle row must be updated
+// to its terminal outcome BEFORE propagating a write-back error (or the
+// error must be logged-and-continued rather than propagated via `?`).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rt_m16_05_apply_pvp_forfeit_updates_battle_before_propagating_writeback_err() {
+    let stripped = strip_rust_comments(PVP_RS);
+
+    // Locate apply_pvp_forfeit body.
+    let fn_marker = concat!("fn apply_pvp", "_forfeit");
+    let fn_pos = stripped
+        .find(fn_marker)
+        .expect("RT-M16-05: `apply_pvp_forfeit` not found in pvp.rs");
+
+    // Find write_back_party_hp_pvp_side_b call site and the battle update site.
+    let side_b_call = concat!("write_back_party_hp_pvp", "_side_b");
+    let battle_update = concat!("battle().battle_id()", ".update");
+
+    let fn_body = &stripped[fn_pos..];
+
+    let side_b_pos = fn_body
+        .find(side_b_call)
+        .expect("RT-M16-05: `write_back_party_hp_pvp_side_b` call not found in apply_pvp_forfeit");
+    let update_pos = fn_body
+        .find(battle_update)
+        .expect("RT-M16-05: `battle().battle_id().update` not found in apply_pvp_forfeit");
+
+    // The battle update must come BEFORE the write-back propagation can abort.
+    // Specifically: if the write-back uses `?` (propagation), the battle update
+    // MUST appear before the `?` suffix on the side_b call.
+    // We detect this by checking whether the update appears BEFORE the side_b call.
+    assert!(
+        update_pos < side_b_pos,
+        "RT-M16-05 FAIL: In `apply_pvp_forfeit`, `write_back_party_hp_pvp_side_b` \
+         is called with `?` BEFORE `battle().battle_id().update(battle)`. \
+         If the HP write-back returns Err (e.g. ownership change for a side-B \
+         monster), the battle row is never updated to its terminal outcome — \
+         both players remain permanently locked in an `Ongoing` battle they \
+         cannot escape. \
+         Fix: update the battle row (set terminal outcome) BEFORE calling \
+         write-back helpers, or log-and-continue on write-back errors instead \
+         of propagating them with `?`."
+    );
+}
+
+// ---------------------------------------------------------------------------
 // ChallengeStatus enum coverage
 //
 // All four variants must be equality-comparable (PartialEq derived).

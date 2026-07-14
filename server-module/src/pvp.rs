@@ -275,6 +275,11 @@ fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(),
     if actions.len() < 2 {
         return Ok(());
     }
+    debug_assert!(
+        actions.len() == 2,
+        "expected exactly 2 actions for turn {current_turn} of battle {battle_id}, got {}",
+        actions.len()
+    );
 
     // Find side A (player_identity) and side B (opponent_identity) actions.
     let action_a = match actions
@@ -351,6 +356,10 @@ fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(),
     );
 
     // Persist status back into BattleMonster.status (ongoing only).
+    // Terminal-turn status is not flushed: HP is on BattleMonster directly (mutated
+    // in-place by resolve_full_turn), so HP write-back is unaffected. End-of-battle
+    // status is semantically irrelevant — the battle row transitions to a terminal
+    // outcome immediately. This mirrors battle.rs (submit_attack / swap_active).
     if battle.state.outcome == BattleOutcome::Ongoing {
         for (m, s) in battle
             .state
@@ -373,22 +382,36 @@ fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(),
     }
 
     if battle.state.outcome != BattleOutcome::Ongoing {
-        // HP + XP write-back: side A (challenger) via write_back_battle_results;
-        // side B (opponent) needs an explicit HP pass since write_back_battle_results
-        // only covers party_monster_ids (side A). PvP XP for side B is deferred to M17.
-        write_back_party_hp_pvp_side_b(ctx, &battle)?;
-        write_back_battle_results(ctx, &battle)?;
+        // Persist terminal outcome first — write-back failures must not leave the
+        // battle stuck in Ongoing (ADR-0077 log-and-continue, RT-M16-05).
+        let battle_for_wb = battle.clone();
+        ctx.db.battle().battle_id().update(battle);
+        if let Err(e) = write_back_party_hp_pvp_side_b(ctx, &battle_for_wb) {
+            log::error!(
+                "{{\"evt\":\"pvp_turn_side_b_hp_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
+            );
+        }
+        if let Err(e) = write_back_battle_results(ctx, &battle_for_wb) {
+            log::error!(
+                "{{\"evt\":\"pvp_turn_writeback_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
+            );
+        }
     } else {
         // Reschedule the deadline for the new turn (turn_number was incremented by resolve_full_turn).
         schedule_deadline(ctx, battle_id, battle.state.turn_number);
+        ctx.db.battle().battle_id().update(battle);
     }
-
-    ctx.db.battle().battle_id().update(battle);
     Ok(())
 }
 
-/// Apply forfeit to an ongoing PvP battle: set outcome, write back HP, update row.
+/// Apply forfeit to an ongoing PvP battle: set outcome, update row, write back HP.
 /// `forfeited_side`: SideA = challenger (player_identity); SideB = opponent.
+///
+/// Ordering invariant (RT-M16-05): the battle row is updated to its terminal
+/// outcome BEFORE any write-back call. This ensures that a write-back failure
+/// (e.g. ownership changed for a side-B monster) cannot leave the battle row
+/// stuck in `Ongoing`, permanently locking both players. Write-backs use
+/// log-and-continue (ADR-0077) — the terminal outcome is already committed.
 fn apply_pvp_forfeit(
     ctx: &ReducerContext,
     mut battle: Battle,
@@ -396,25 +419,34 @@ fn apply_pvp_forfeit(
 ) -> Result<(), String> {
     battle.state.outcome = pvp_forfeit_outcome(forfeited_side);
 
-    // Write back HP for BOTH sides. write_back_battle_results writes back
-    // challenger party (side A) HP + XP. For PvP forfeit, we also need side B HP.
-    // write_back_battle_results covers side A (party_monster_ids). Side B write-back:
-    write_back_party_hp_pvp_side_b(ctx, &battle)?;
-    write_back_battle_results(ctx, &battle)?;
+    // Persist terminal outcome first — write-back failures must not revert this.
+    let battle_id = battle.battle_id;
+    ctx.db.battle().battle_id().update(battle.clone());
+
+    // Write back HP for both sides. Log-and-continue (ADR-0077): outcome already committed.
+    if let Err(e) = write_back_party_hp_pvp_side_b(ctx, &battle) {
+        log::error!(
+            "{{\"evt\":\"pvp_forfeit_side_b_hp_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
+        );
+    }
+    if let Err(e) = write_back_battle_results(ctx, &battle) {
+        log::error!(
+            "{{\"evt\":\"pvp_forfeit_writeback_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
+        );
+    }
 
     // Clean up any stale battle_action rows for this battle.
     let stale_action_ids: Vec<u64> = ctx
         .db
         .battle_action()
         .battle_id()
-        .filter(battle.battle_id)
+        .filter(battle_id)
         .map(|a| a.action_id)
         .collect();
     for id in stale_action_ids {
         ctx.db.battle_action().action_id().delete(id);
     }
 
-    ctx.db.battle().battle_id().update(battle);
     Ok(())
 }
 
@@ -585,6 +617,22 @@ pub fn challenge_pvp(
     // Guard 5: not already in a battle.
     if is_in_ongoing_battle(ctx, me) {
         let e = "already in an ongoing battle".to_string();
+        log_reject("challenge_pvp", me, &e);
+        return Err(e);
+    }
+
+    // Guard 5a: target must not be in an ongoing battle (RT-M16-01).
+    if is_in_ongoing_battle(ctx, target) {
+        let e = "target is already in an ongoing battle".to_string();
+        log_reject("challenge_pvp", me, &e);
+        return Err(e);
+    }
+
+    // Guard 5b: caller must not have a pending incoming challenge (H-2 reviewer).
+    // A player with an unresolved incoming challenge cannot open an outgoing one —
+    // they must accept or decline first.
+    if has_active_incoming_challenge(ctx, me) {
+        let e = "you have a pending incoming challenge — accept or decline it first".to_string();
         log_reject("challenge_pvp", me, &e);
         return Err(e);
     }

@@ -5,7 +5,7 @@ slug: tables/trade_offer
 updated: 2026-07-14
 tags: [schema, spacetimedb, public]
 abstract: "An active trade offer between two players (M15, ADR-0106). PUBLIC so both parties can subscribe and see the offer. The …"
-resource: server-module/src/schema.rs#L465
+resource: server-module/src/schema.rs#L466
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

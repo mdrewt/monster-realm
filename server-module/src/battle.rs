@@ -998,6 +998,21 @@ pub(crate) fn write_back_battle_results(
         ctx.db.battle().battle_id().delete(id);
     }
 
+    // GC prior terminal battles where this player was the OPPONENT (PvP side-B GC,
+    // RT-M16-03). Wild and self-battles have opponent == WILD_IDENTITY or == player;
+    // skip those to avoid double-deleting the row just swept above.
+    let opponent = battle.opponent_identity;
+    if opponent != WILD_IDENTITY && opponent != player {
+        let opp_battles = ctx.db.battle().opponent_identity().filter(opponent);
+        let old_opp_terminal_ids: Vec<u64> = opp_battles
+            .filter(|b| b.state.outcome != BattleOutcome::Ongoing)
+            .map(|b| b.battle_id)
+            .collect();
+        for id in old_opp_terminal_ids {
+            ctx.db.battle().battle_id().delete(id);
+        }
+    }
+
     // Grant XP if the player won (12.5e-3: log-and-continue on parse failures —
     // one corrupt row must not make a battle unwinnable; mirrors movement_tick
     // per-character philosophy, ADR-0077).
@@ -1033,8 +1048,10 @@ pub(crate) fn write_back_battle_results(
             }
         };
 
-        // Loop-invariant: practice flag is the same for every monster in this battle.
-        let is_practice = battle.opponent_identity != WILD_IDENTITY;
+        // Practice = self-vs-self sandbox battle (ADR-0078). A real PvP opponent
+        // is a different identity, so this correctly returns false for PvP wins
+        // (RT-M16-02: opponent_identity != WILD_IDENTITY is wrong for PvP).
+        let is_practice = battle.player_identity == battle.opponent_identity;
 
         // Hoist evolution registry load above the monster loop: content is compile-time-embedded
         // and immutable, so the LazyLock cache amortizes the parse across the whole XP loop.
