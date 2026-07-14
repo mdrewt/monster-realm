@@ -11,6 +11,7 @@ import {
 } from '../convert/convert';
 import type {
   StoreBattle,
+  StoreBattleChallenge,
   StoreBattleMonster,
   StoreCharacter,
   StoreFusionRow,
@@ -519,6 +520,28 @@ export function tradeOfferRowToStore(row: SdkTradeOfferRow): StoreTradeOffer {
     counterpartyCurrency: row.counterpartyCurrency,
     initiatorCards: row.initiatorCards.map(sdkCardToStore),
     counterpartyCards: row.counterpartyCards.map(sdkCardToStore),
+    status: row.status.tag,
+    createdAtMs: row.createdAtMs,
+  };
+}
+
+// --- m16b: battle_challenge conversion -----------------------------------------
+
+export interface SdkBattleChallengeRow {
+  readonly challengeId: bigint;
+  readonly challenger: { toHexString(): string };
+  readonly target: { toHexString(): string };
+  readonly challengerPartyIds: readonly bigint[];
+  readonly status: { readonly tag: string };
+  readonly createdAtMs: bigint;
+}
+
+export function battleChallengeRowToStore(row: SdkBattleChallengeRow): StoreBattleChallenge {
+  return {
+    challengeId: row.challengeId,
+    challenger: row.challenger.toHexString(),
+    target: row.target.toHexString(),
+    challengerPartyIds: [...row.challengerPartyIds],
     status: row.status.tag,
     createdAtMs: row.createdAtMs,
   };

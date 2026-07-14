@@ -7,11 +7,11 @@
 import type { BattleMonsterCardVM, BattleViewModel } from './battleModel';
 
 export interface BattleViewCallbacks {
-  /** Called when the player selects a skill to attack with. */
+  /** Called when the player selects a skill to attack with (PvE). */
   readonly onAttack: (battleId: bigint, skillId: number) => void;
   /** Called when the player clicks the Flee button. */
   readonly onFlee: (battleId: bigint) => void;
-  /** Called when the player selects a team member to swap to. */
+  /** Called when the player selects a team member to swap to (PvE). */
   readonly onSwap: (battleId: bigint, teamIndex: number) => void;
   /**
    * Called when the player clicks Recruit (wild battles only). `baitItemId` is
@@ -20,6 +20,10 @@ export interface BattleViewCallbacks {
   readonly onRecruit: (battleId: bigint, baitItemId: number | undefined) => void;
   /** Called when the player selects a cure item and clicks Use Item. */
   readonly onUseItem: (battleId: bigint, itemId: number) => void;
+  /** Called when the player submits a skill attack in a PvP battle. */
+  readonly onPvpAttack: (battleId: bigint, skillId: number) => void;
+  /** Called when the player submits a swap in a PvP battle. */
+  readonly onPvpSwap: (battleId: bigint, teamIndex: number) => void;
 }
 
 export class BattleView {
@@ -30,6 +34,8 @@ export class BattleView {
   readonly #skillsEl: HTMLDivElement;
   readonly #actionsEl: HTMLDivElement;
   readonly #outcomeEl: HTMLDivElement;
+  /** PvP status banner ("Waiting for opponent…" / ""); hidden when not in PvP (m16b). */
+  readonly #pvpStatusEl: HTMLDivElement;
   readonly #callbacks: BattleViewCallbacks;
   /** The bait `<select>` for the current recruit render (null when not wild). */
   #baitSelectEl: HTMLSelectElement | null = null;
@@ -84,6 +90,14 @@ export class BattleView {
     this.#actionsEl.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;';
     this.#root.appendChild(this.#actionsEl);
 
+    // PvP status banner: "Waiting for opponent…" when pvpPendingSubmit; hidden otherwise.
+    this.#pvpStatusEl = document.createElement('div');
+    this.#pvpStatusEl.setAttribute('data-testid', 'pvp-status');
+    this.#pvpStatusEl.style.cssText =
+      'width:100%;max-width:320px;text-align:center;padding:4px 8px;margin-bottom:8px;' +
+      'border-radius:3px;background:#224;color:#aaf;font-size:13px;display:none;';
+    this.#root.appendChild(this.#pvpStatusEl);
+
     // Outcome banner
     this.#outcomeEl = document.createElement('div');
     this.#outcomeEl.setAttribute('data-testid', 'outcome-text');
@@ -111,17 +125,34 @@ export class BattleView {
     if (!vm) {
       this.#weatherEl.style.display = 'none';
       this.#weatherEl.textContent = '';
+      this.#pvpStatusEl.style.display = 'none';
       this.hide();
       return;
     }
     if (!this.#visible) this.show();
 
     this.#renderWeather(vm);
-    this.#renderMonsterCard(this.#opponentCardEl, vm.opponentCard, 'Opponent');
+    // Show opponent name for PvP battles so the player knows who they are fighting.
+    const opponentLabel = vm.isPvp && vm.pvpOpponentName ? `${vm.pvpOpponentName}` : 'Opponent';
+    this.#renderMonsterCard(this.#opponentCardEl, vm.opponentCard, opponentLabel);
     this.#renderMonsterCard(this.#playerCardEl, vm.playerCard, 'You');
+    this.#renderPvpStatus(vm);
     this.#renderSkills(vm);
     this.#renderActions(vm);
     this.#renderOutcome(vm);
+  }
+
+  #renderPvpStatus(vm: BattleViewModel): void {
+    if (!vm.isPvp || vm.outcome !== 'Ongoing') {
+      this.#pvpStatusEl.style.display = 'none';
+      return;
+    }
+    if (vm.pvpPendingSubmit) {
+      this.#pvpStatusEl.style.display = 'block';
+      this.#pvpStatusEl.textContent = 'Waiting for opponent’s action…';
+    } else {
+      this.#pvpStatusEl.style.display = 'none';
+    }
   }
 
   #renderWeather(vm: BattleViewModel): void {
@@ -175,16 +206,22 @@ export class BattleView {
   #renderSkills(vm: BattleViewModel): void {
     this.#skillsEl.replaceChildren();
     const ongoing = vm.outcome === 'Ongoing';
-    if (!ongoing || vm.skills.length === 0) return;
+    // Hide skill buttons when pending a PvP submission (waiting for opponent — no double-send).
+    if (!ongoing || vm.skills.length === 0 || vm.pvpPendingSubmit) return;
 
     for (const skill of vm.skills) {
       const btn = document.createElement('button');
       btn.style.cssText =
         'padding:6px 8px;cursor:pointer;font-family:monospace;font-size:12px;' +
         'border:1px solid #666;border-radius:3px;background:#2a2a3e;color:#e0e0e0;';
-      btn.textContent = `${skill.name} (${skill.power})`;
+      // PvP: label "Submit: <name>" to distinguish from PvE "use now" semantics.
+      btn.textContent = vm.isPvp ? `Submit: ${skill.name}` : `${skill.name} (${skill.power})`;
       btn.title = `${skill.affinity} · Acc ${skill.accuracy}%`;
-      btn.addEventListener('click', () => this.#callbacks.onAttack(vm.battleId, skill.id));
+      if (vm.isPvp) {
+        btn.addEventListener('click', () => this.#callbacks.onPvpAttack(vm.battleId, skill.id));
+      } else {
+        btn.addEventListener('click', () => this.#callbacks.onAttack(vm.battleId, skill.id));
+      }
       this.#skillsEl.appendChild(btn);
     }
   }
@@ -319,13 +356,23 @@ export class BattleView {
   }
 
   #renderSwapButtons(vm: BattleViewModel): void {
+    // PvP swap: skip when pvpPendingSubmit (waiting for opponent — no double-send).
+    if (vm.isPvp && vm.pvpPendingSubmit) return;
     for (const member of vm.bench) {
       const btn = document.createElement('button');
       btn.style.cssText =
         'padding:6px 12px;cursor:pointer;font-family:monospace;background:#2a2a3a;' +
         'color:#e0e0e0;border:1px solid #448;border-radius:3px;';
-      btn.textContent = `Swap: ${member.speciesName} (${member.currentHp}/${member.maxHp})`;
-      btn.addEventListener('click', () => this.#callbacks.onSwap(vm.battleId, member.teamIndex));
+      btn.textContent = vm.isPvp
+        ? `Submit Swap: ${member.speciesName}`
+        : `Swap: ${member.speciesName} (${member.currentHp}/${member.maxHp})`;
+      if (vm.isPvp) {
+        btn.addEventListener('click', () =>
+          this.#callbacks.onPvpSwap(vm.battleId, member.teamIndex),
+        );
+      } else {
+        btn.addEventListener('click', () => this.#callbacks.onSwap(vm.battleId, member.teamIndex));
+      }
       this.#actionsEl.appendChild(btn);
     }
   }

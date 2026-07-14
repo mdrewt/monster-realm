@@ -12,6 +12,7 @@
 // assert on STATE (predicted vs authoritative tiles, presence, the zone map), never
 // pixels.
 
+import { Identity } from 'spacetimedb';
 // client-wasm (built `wasm-pack build client-wasm --target bundler`; resolved by
 // vite-plugin-wasm + top-level-await — see vite.config.ts / server.fs.allow).
 import {
@@ -58,6 +59,8 @@ import { buildEvolutionViewModel } from './ui/evolutionModel';
 import type { EvolutionView } from './ui/evolutionView';
 import { buildHealViewModel, healTargetLocationId } from './ui/healModel';
 import type { HealView } from './ui/healView';
+import { buildPvpChallengeViewModel } from './ui/pvpModel';
+import type { PvpView } from './ui/pvpView';
 import { buildQuestLogViewModel } from './ui/questLogModel';
 import type { QuestLogView } from './ui/questLogView';
 import { buildRaisingViewModel } from './ui/raisingModel';
@@ -114,6 +117,13 @@ let questLogView: QuestLogView | undefined;
 let healView: HealView | undefined;
 let shopView: ShopView | undefined;
 let tradeView: TradeView | undefined;
+let pvpView: PvpView | undefined;
+// m16b: tracks the turn number at the time the player submitted a PvP action.
+// When the server resolves the turn (battle.turnNumber increments beyond this),
+// pvpPendingTurnNumber is cleared and pvpPendingSubmit becomes false.
+// battle_action is PRIVATE (ADR-0015 must-never-leak) — this is the ONLY signal
+// the client has about its own submission state.
+let pvpPendingTurnNumber: number | null = null;
 // dismissPending: prevents double-sending dismiss_dialogue while server processes it (M12d).
 // eslint-disable-next-line prefer-const
 let dismissPending = false;
@@ -180,6 +190,9 @@ function resetPredictionState(): void {
   dismissedBattleId = null;
   battleSynced = false;
   lastBattleVM = null;
+  // m16b: pending PvP submit state must be cleared on reconnect/zone-switch — the
+  // server will have GC'd the old battle and any pending action is no longer relevant.
+  pvpPendingTurnNumber = null;
   // M12.5d-4: reset camera hold so a fresh zone/reconnect starts at origin rather than
   // holding a position from a prior zone.
   lastCamX = 0;
@@ -291,7 +304,8 @@ function reconcileFromStore(): void {
         questLogView?.visible ||
         healView?.visible ||
         shopView?.visible ||
-        tradeView?.visible
+        tradeView?.visible ||
+        pvpView?.visible
       )
     ) {
       const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
@@ -360,7 +374,8 @@ window.addEventListener('keydown', (e) => {
     if (
       shouldToggleBox(battleView?.visible ?? false) &&
       !shopView?.visible &&
-      !tradeView?.visible
+      !tradeView?.visible &&
+      !pvpView?.visible
     ) {
       raisingView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
@@ -376,7 +391,8 @@ window.addEventListener('keydown', (e) => {
     if (
       shouldToggleBox(battleView?.visible ?? false) &&
       !shopView?.visible &&
-      !tradeView?.visible
+      !tradeView?.visible &&
+      !pvpView?.visible
     ) {
       boxView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
@@ -392,7 +408,8 @@ window.addEventListener('keydown', (e) => {
     if (
       shouldToggleBox(battleView?.visible ?? false) &&
       !shopView?.visible &&
-      !tradeView?.visible
+      !tradeView?.visible &&
+      !pvpView?.visible
     ) {
       boxView?.hide(); // mutual exclusivity
       raisingView?.hide(); // mutual exclusivity
@@ -412,7 +429,9 @@ window.addEventListener('keydown', (e) => {
       !evolutionView?.visible &&
       !dialogueView?.visible &&
       !healView?.visible &&
-      !shopView?.visible
+      !shopView?.visible &&
+      !tradeView?.visible &&
+      !pvpView?.visible
     ) {
       if (questLogView?.visible) {
         questLogView.hide();
@@ -432,7 +451,9 @@ window.addEventListener('keydown', (e) => {
       !evolutionView?.visible &&
       !dialogueView?.visible &&
       !questLogView?.visible &&
-      !shopView?.visible
+      !shopView?.visible &&
+      !tradeView?.visible &&
+      !pvpView?.visible
     ) {
       if (healView?.visible) {
         healView.hide();
@@ -453,7 +474,9 @@ window.addEventListener('keydown', (e) => {
       !evolutionView?.visible &&
       !dialogueView?.visible &&
       !questLogView?.visible &&
-      !healView?.visible
+      !healView?.visible &&
+      !tradeView?.visible &&
+      !pvpView?.visible
     ) {
       if (shopView?.visible) {
         shopView.hide();
@@ -483,7 +506,8 @@ window.addEventListener('keydown', (e) => {
       !dialogueView?.visible &&
       !questLogView?.visible &&
       !healView?.visible &&
-      !shopView?.visible
+      !shopView?.visible &&
+      !pvpView?.visible
     ) {
       if (tradeView?.visible) {
         tradeView.hide();
@@ -497,6 +521,33 @@ window.addEventListener('keydown', (e) => {
           ),
         );
         tradeView?.show();
+      }
+    }
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'KeyP') {
+    // PvP challenge overlay — mutual exclusivity with all other overlays (m16b, ADR-0110).
+    // Not available during an active battle (ADR-0014 exit ordering).
+    if (
+      !battleView?.visible &&
+      !boxView?.visible &&
+      !raisingView?.visible &&
+      !evolutionView?.visible &&
+      !dialogueView?.visible &&
+      !questLogView?.visible &&
+      !healView?.visible &&
+      !shopView?.visible &&
+      !tradeView?.visible
+    ) {
+      if (pvpView?.visible) {
+        pvpView.hide();
+      } else {
+        // forceVisible=true: user explicitly opened — keep visible even with no active challenge
+        pvpView?.refresh(
+          buildPvpChallengeViewModel(store.allChallenges(), identity, store.allPlayers()),
+          true,
+        );
       }
     }
     e.preventDefault();
@@ -518,6 +569,8 @@ window.addEventListener('keydown', (e) => {
       !questLogView?.visible &&
       !healView?.visible &&
       !shopView?.visible &&
+      !tradeView?.visible &&
+      !pvpView?.visible &&
       identity !== ''
     ) {
       const own = store.ownCharacter(identity);
@@ -608,6 +661,11 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
+  if (e.code === 'Escape' && pvpView?.visible) {
+    pvpView.hide();
+    e.preventDefault();
+    return;
+  }
   // Suppress movement input while an overlay is open.
   if (
     battleView?.visible ||
@@ -618,7 +676,8 @@ window.addEventListener('keydown', (e) => {
     questLogView?.visible ||
     healView?.visible ||
     shopView?.visible ||
-    tradeView?.visible
+    tradeView?.visible ||
+    pvpView?.visible
   )
     return;
   const dir = KEY_DIR[e.code];
@@ -706,12 +765,31 @@ function refreshBattle(): void {
       if (!def || def.cureStatus === null) return [];
       return [{ itemId: inv.itemId, name: def.name, cureStatus: def.cureStatus, count: inv.count }];
     });
+    // m16b: clear pvpPendingTurnNumber when the server has resolved the turn (turnNumber
+    // advanced past the pending value) OR when the battle is no longer Ongoing (terminal
+    // outcomes include forfeit — apply_pvp_forfeit skips advance_turn so turnNumber stays
+    // at N; the strict > condition would never fire; check outcome as the fallback).
+    if (
+      pvpPendingTurnNumber !== null &&
+      (r.action.battle.turnNumber > pvpPendingTurnNumber || r.action.battle.outcome !== 'Ongoing')
+    ) {
+      pvpPendingTurnNumber = null;
+    }
+    const pvpPendingSubmit = pvpPendingTurnNumber !== null;
+    // Resolve opponent name for PvP label: find the player row whose identity is not ours.
+    const pvpOpponentIdentity = r.action.battle.opponentIdentity;
+    const pvpOpponentName =
+      pvpOpponentIdentity !== r.action.battle.playerIdentity
+        ? (store.allPlayers().find((p) => p.identity === pvpOpponentIdentity)?.name ?? null)
+        : null;
     const vm = buildBattleViewModel(
       r.action.battle,
       store.skillMap(),
       store.speciesMap(),
       baitItems,
       cureItems,
+      pvpPendingSubmit,
+      pvpOpponentName,
     );
     if (!vm) console.warn('[battle] battle has corrupt team data; view hidden');
     // m14.5d VM-compare guard: skip refresh when the view is visible and the VM is
@@ -809,6 +887,34 @@ store.onBatchApplied(() => {
   }
 });
 
+// --- m16b: PvP challenge overlay batch listener (ADR-0110) -----------------------
+// Auto-shows the overlay when an incoming challenge arrives; refreshes when already
+// open (status/list changes). MUST be total (never throw): defense-in-depth.
+store.onBatchApplied(() => {
+  if (identity === '') return;
+  try {
+    const vm = buildPvpChallengeViewModel(store.allChallenges(), identity, store.allPlayers());
+    // Auto-show on incoming challenge ONLY when no other overlay is visible — never
+    // pop the PvP overlay over an active battle or another overlay (mutual-exclusivity).
+    // Always preserve a manually-opened overlay (pvpView.visible) regardless.
+    const anyOverlayVisible =
+      battleView?.visible ||
+      boxView?.visible ||
+      raisingView?.visible ||
+      evolutionView?.visible ||
+      dialogueView?.visible ||
+      questLogView?.visible ||
+      healView?.visible ||
+      shopView?.visible ||
+      tradeView?.visible;
+    const forceVisible =
+      !anyOverlayVisible && (vm.incoming !== null || (pvpView?.visible ?? false));
+    pvpView?.refresh(vm, forceVisible);
+  } catch (err) {
+    console.error('[m16b] pvpView batch listener error', err);
+  }
+});
+
 // --- M12d: dialogue choice click handler -----------------------------------------
 // Reads data-choice-idx from the clicked button and calls advance_dialogue.
 document.addEventListener('click', (e) => {
@@ -892,6 +998,7 @@ async function main(): Promise<void> {
     { HealView: HealViewClass },
     { ShopView: ShopViewClass },
     { TradeView: TradeViewClass },
+    { PvpView: PvpViewClass },
   ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/battleView'),
@@ -902,6 +1009,7 @@ async function main(): Promise<void> {
     import('./ui/healView'),
     import('./ui/shopView'),
     import('./ui/tradeView'),
+    import('./ui/pvpView'),
   ]);
   renderer = new WorldRenderer();
   const mount = document.getElementById('app');
@@ -950,6 +1058,32 @@ async function main(): Promise<void> {
       },
       onUseItem: (battleId, itemId) => {
         sendGuarded('use-item', () => conn?.conn.reducers.useBattleItem({ battleId, itemId }));
+      },
+      // m16b: PvP action submission. pvpPendingTurnNumber is set INSIDE the lambda
+      // so sendGuarded's frozen-check runs first — a frozen-link click must not
+      // lock pvpPendingSubmit permanently (the turn never advances on a dropped send).
+      // Cleared on rejection (mirroring dismissPending pattern from dialogue dismiss).
+      onPvpAttack: (battleId, skillId) => {
+        sendGuarded('pvp-attack', () => {
+          pvpPendingTurnNumber = store.latestPlayerBattle(identity)?.turnNumber ?? null;
+          return conn?.conn.reducers
+            .submitPvpAction({ battleId, action: { tag: 'Attack', value: skillId } })
+            ?.catch((err: unknown) => {
+              pvpPendingTurnNumber = null;
+              throw err;
+            });
+        });
+      },
+      onPvpSwap: (battleId, teamIndex) => {
+        sendGuarded('pvp-swap', () => {
+          pvpPendingTurnNumber = store.latestPlayerBattle(identity)?.turnNumber ?? null;
+          return conn?.conn.reducers
+            .submitPvpAction({ battleId, action: { tag: 'Swap', value: teamIndex } })
+            ?.catch((err: unknown) => {
+              pvpPendingTurnNumber = null;
+              throw err;
+            });
+        });
       },
     });
     raisingView = new RaisingViewClass(mount, {
@@ -1062,6 +1196,34 @@ async function main(): Promise<void> {
         }
       },
     });
+    // m16b: PvP challenge overlay (ADR-0110).
+    // All action reducers use sendGuarded so a dead link is rejected loudly.
+    pvpView = new PvpViewClass({
+      onChallenge: (targetIdentity) => {
+        const partyIds = store
+          .ownMonsters(identity)
+          .filter((m) => m.partySlot !== PARTY_SLOT_NONE)
+          .map((m) => m.monsterId);
+        sendGuarded('pvp-challenge', () =>
+          conn?.conn.reducers.challengePvp({ target: new Identity(targetIdentity), partyIds }),
+        );
+      },
+      onAccept: (challengeId) => {
+        const partyIds = store
+          .ownMonsters(identity)
+          .filter((m) => m.partySlot !== PARTY_SLOT_NONE)
+          .map((m) => m.monsterId);
+        sendGuarded('pvp-accept', () =>
+          conn?.conn.reducers.acceptChallenge({ challengeId, partyIds }),
+        );
+      },
+      onDecline: (challengeId) => {
+        sendGuarded('pvp-decline', () => conn?.conn.reducers.declineChallenge({ challengeId }));
+      },
+      onCancel: (challengeId) => {
+        sendGuarded('pvp-cancel', () => conn?.conn.reducers.cancelChallenge({ challengeId }));
+      },
+    });
   }
 
   // M13.5b (ADR-0085 C8): create the status surface BEFORE `conn = connect(...)` is
@@ -1094,6 +1256,8 @@ async function main(): Promise<void> {
       shopView?.hide();
       // m15b: trade's double-spend lock must also be reset on reconnect (same reason as shop).
       tradeView?.hide();
+      // m16b: hide the PvP overlay on reconnect — any pending challenge state is stale.
+      pvpView?.hide();
       // The "connection lost — reconnecting…" status line is now stale (ADR-0085 A8).
       clearStatus();
     },
@@ -1130,7 +1294,8 @@ async function main(): Promise<void> {
           questLogView?.visible ||
           healView?.visible ||
           shopView?.visible ||
-          tradeView?.visible
+          tradeView?.visible ||
+          pvpView?.visible
         )
       ) {
         const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);

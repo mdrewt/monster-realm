@@ -226,6 +226,17 @@ export type StoreTradeItem = {
   readonly qty: number;
 };
 
+/** A battle challenge row, normalized (identities as hex strings; m16b). */
+export type StoreBattleChallenge = {
+  readonly challengeId: bigint;
+  readonly challenger: string;
+  readonly target: string;
+  readonly challengerPartyIds: readonly bigint[];
+  /** 'Pending' | 'Accepted' | 'Declined' | 'Cancelled' */
+  readonly status: string;
+  readonly createdAtMs: bigint;
+};
+
 /** A trade offer row, normalized (identities as hex strings; m15b). */
 export type StoreTradeOffer = {
   readonly tradeId: bigint;
@@ -302,6 +313,8 @@ export class AuthoritativeStore {
   // M13d: shop content tables
   readonly #shops = new Map<number, StoreShopRow>();
   readonly #shopItems = new Map<bigint, StoreShopItemRow>();
+  // m16b: battle_challenge rows (public table — challenger + target subscribe)
+  readonly #challenges = new Map<bigint, StoreBattleChallenge>();
   // m15b: trade_offer rows (public table — both parties subscribe)
   readonly #tradeOffers = new Map<bigint, StoreTradeOffer>();
   readonly #batchListeners = new Set<() => void>();
@@ -587,6 +600,9 @@ export class AuthoritativeStore {
     // m15b: trade_offer rows — cleared on disconnect; no escrow survives a drop
     // (on_disconnect deletes the player's active offer server-side per TR-18).
     this.#tradeOffers.clear();
+    // m16b: battle_challenge rows — cleared on disconnect; server cancels/declines
+    // pending challenges via on_disconnect hooks (pvp.rs cancel_challenges_on_disconnect).
+    this.#challenges.clear();
     this.#dirty = false;
   }
 
@@ -800,6 +816,29 @@ export class AuthoritativeStore {
   /** All shop stock entries (for the model to filter by selected shop). */
   allShopItems(): StoreShopItemRow[] {
     return [...this.#shopItems.values()];
+  }
+
+  // --- m16b: battle_challenge ingest (adapter-only) ----------------------------
+
+  upsertChallenge(challenge: StoreBattleChallenge): void {
+    this.#challenges.set(challenge.challengeId, challenge);
+    this.#dirty = true;
+  }
+
+  removeChallenge(challengeId: bigint): void {
+    if (this.#challenges.delete(challengeId)) this.#dirty = true;
+  }
+
+  // --- m16b: battle_challenge read ---------------------------------------------
+
+  /** All challenge rows (challenger + target subscribe to this public table). */
+  allChallenges(): StoreBattleChallenge[] {
+    return [...this.#challenges.values()];
+  }
+
+  /** All online players (for PvP challenge target selection). */
+  allPlayers(): StorePlayer[] {
+    return [...this.#players.values()];
   }
 
   // --- m15b: trade_offer ingest (adapter-only) ---------------------------------

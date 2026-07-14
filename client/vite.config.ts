@@ -76,6 +76,7 @@ export default defineConfig({
         'src/ui/healView.ts', // thin DOM shell for the heal overlay (M12d)
         'src/ui/shopView.ts', // thin DOM shell for the shop overlay (M13d)
         'src/ui/tradeView.ts', // thin DOM shell for the trade overlay (m15b)
+        'src/ui/pvpView.ts', // thin DOM shell for the PvP challenge overlay (m16b)
       ],
     },
   },

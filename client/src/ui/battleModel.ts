@@ -138,6 +138,22 @@ export interface BattleViewModel {
   readonly cureItems: readonly CureItem[];
   /** Active weather display, or null when no weather is in effect. */
   readonly weather: { readonly label: string; readonly turnsRemaining: number } | null;
+  /**
+   * True when both sides are human players (not wild). Detected by the asymmetry
+   * complement of ADR-0045: PvP has opponent monster rows but playerIdentity ≠
+   * opponentIdentity. Drives submit_pvp_action routing in main.ts and the view's
+   * "Waiting for opponent" banner (m16b, ADR-0110).
+   */
+  readonly isPvp: boolean;
+  /**
+   * True after the local player has sent submit_pvp_action but the server has not
+   * yet resolved the turn (turnNumber has not incremented). Tracked client-side in
+   * main.ts (battle_action is PRIVATE — ADR-0015 must-never-leak; the client cannot
+   * observe whether the server received the action).
+   */
+  readonly pvpPendingSubmit: boolean;
+  /** The opponent's display name in a PvP battle, or null for PvE. */
+  readonly pvpOpponentName: string | null;
 }
 
 function monsterCard(
@@ -183,6 +199,8 @@ export function buildBattleViewModel(
   speciesMap: ReadonlyMap<number, StoreSpeciesRow>,
   baitItems: readonly BaitItem[] = [],
   cureItems: readonly CureItem[] = [],
+  pvpPendingSubmit = false,
+  pvpOpponentName: string | null = null,
 ): BattleViewModel | null {
   const { sideA, sideB } = battle;
   if (!sideA.team.length || sideA.active < 0 || sideA.active >= sideA.team.length) return null;
@@ -238,6 +256,11 @@ export function buildBattleViewModel(
   const isWild = battle.opponentMonsterIds.length === 0;
   const canRecruit = ongoing && isWild;
 
+  // PvP detection (ADR-0110 complement of ADR-0045): both sides are human players
+  // when opponentMonsterIds is non-empty (opponent is owned) AND identities differ.
+  // A practice battle has playerIdentity === opponentIdentity (ADR-0109, RT-M16-02 fix).
+  const isPvp = !isWild && battle.playerIdentity !== battle.opponentIdentity;
+
   // Bait options: classify by DATA (recruit_bonus > 0), never by item id, and
   // only surface stacks the player actually holds (count > 0). Empty when not
   // recruitable.
@@ -267,13 +290,18 @@ export function buildBattleViewModel(
     playerCard: monsterCard(playerMon, speciesMap),
     opponentCard: monsterCard(opponentMon, speciesMap),
     skills,
-    canFlee: ongoing,
+    // In PvP the Flee and Recruit actions are not available: Flee is rejected
+    // server-side (pvp.rs guards) and Recruit requires a wild opponent.
+    canFlee: ongoing && !isPvp,
     canSwap: bench.length > 0,
     bench,
     canRecruit,
     baitOptions,
     cureItems: cureOptions,
     weather,
+    isPvp,
+    pvpPendingSubmit: isPvp && pvpPendingSubmit,
+    pvpOpponentName: isPvp ? pvpOpponentName : null,
   };
 }
 
@@ -452,9 +480,20 @@ export function battleVMsEqual(a: BattleViewModel, b: BattleViewModel): boolean 
   // so this has zero behaviour change in production — it is purely a defensive guard.
   const aw = a.weather;
   const bw = b.weather;
-  if (aw == null && bw == null) return true;
-  if (aw == null || bw == null) return false;
-  if (aw.label !== bw.label || aw.turnsRemaining !== bw.turnsRemaining) return false;
+  if (aw == null && bw == null) {
+    // fall through to PvP fields below
+  } else {
+    if (aw == null || bw == null) return false;
+    if (aw.label !== bw.label || aw.turnsRemaining !== bw.turnsRemaining) return false;
+  }
+
+  // m16b PvP fields: isPvp / pvpPendingSubmit / pvpOpponentName.
+  // pvpPendingSubmit drives the "Waiting for opponent" banner — omitting it here
+  // would cause shouldSkipBattleRefresh to suppress the re-render when the pending
+  // state transitions, leaving the banner stuck on screen (silent dropped render).
+  if (a.isPvp !== b.isPvp) return false;
+  if (a.pvpPendingSubmit !== b.pvpPendingSubmit) return false;
+  if (a.pvpOpponentName !== b.pvpOpponentName) return false;
 
   return true;
 }
