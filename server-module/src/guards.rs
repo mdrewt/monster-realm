@@ -8,8 +8,9 @@
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
 
-use crate::schema::{character, player, Character};
+use crate::schema::{character, player, Battle, Character};
 use crate::{MAX_NAME_LEN, MAX_PARTY_SIZE, PARTY_SLOT_NONE};
+use game_core::SideId;
 use spacetimedb::{Identity, ReducerContext};
 
 pub(crate) fn log_reject(reducer: &str, sender: Identity, reason: &str) {
@@ -235,6 +236,30 @@ pub(crate) fn saturating_sub_u64(a: u64, b: u64) -> u64 {
 
 pub(crate) fn saturating_sub_u32(a: u32, b: u32) -> u32 {
     a.saturating_sub(b)
+}
+
+/// PvP participant guard: verify the caller is one of the two sides in `battle`
+/// and return which side they are on. Called from `submit_pvp_action` BEFORE the
+/// `WILD_IDENTITY` / ongoing checks so the error message is accurate.
+///
+/// Returns `SideId::SideA` if `ctx.sender == battle.player_identity` (challenger),
+/// `SideId::SideB` if `ctx.sender == battle.opponent_identity`.
+/// Returns `Err("not a participant in this battle")` otherwise.
+pub(crate) fn require_pvp_participant(
+    ctx: &ReducerContext,
+    reducer: &str,
+    battle: &Battle,
+) -> Result<SideId, String> {
+    let me = ctx.sender;
+    if battle.player_identity == me {
+        Ok(SideId::SideA)
+    } else if battle.opponent_identity == me {
+        Ok(SideId::SideB)
+    } else {
+        let e = "not a participant in this battle".to_string();
+        log_reject(reducer, me, &e);
+        Err(e)
+    }
 }
 
 #[cfg(test)]

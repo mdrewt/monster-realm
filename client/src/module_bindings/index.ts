@@ -34,13 +34,17 @@ import {
 } from "spacetimedb";
 
 // Import all reducer arg schemas
+import AcceptChallengeReducer from "./accept_challenge_reducer";
 import AdvanceDialogueReducer from "./advance_dialogue_reducer";
 import AttemptRecruitReducer from "./attempt_recruit_reducer";
 import BuyReducer from "./buy_reducer";
+import CancelChallengeReducer from "./cancel_challenge_reducer";
 import CancelTradeReducer from "./cancel_trade_reducer";
 import CareReducer from "./care_reducer";
+import ChallengePvpReducer from "./challenge_pvp_reducer";
 import ClearQueueReducer from "./clear_queue_reducer";
 import ConfirmTradeReducer from "./confirm_trade_reducer";
+import DeclineChallengeReducer from "./decline_challenge_reducer";
 import DismissDialogueReducer from "./dismiss_dialogue_reducer";
 import EnqueueMoveReducer from "./enqueue_move_reducer";
 import EvolveReducer from "./evolve_reducer";
@@ -56,6 +60,7 @@ import SetNicknameReducer from "./set_nickname_reducer";
 import SetPartySlotReducer from "./set_party_slot_reducer";
 import StartBattleReducer from "./start_battle_reducer";
 import SubmitAttackReducer from "./submit_attack_reducer";
+import SubmitPvpActionReducer from "./submit_pvp_action_reducer";
 import SwapActiveReducer from "./swap_active_reducer";
 import SyncContentReducer from "./sync_content_reducer";
 import TalkReducer from "./talk_reducer";
@@ -66,6 +71,7 @@ import UseBattleItemReducer from "./use_battle_item_reducer";
 
 // Import all table schema definitions
 import BattleRow from "./battle_table";
+import BattleChallengeRow from "./battle_challenge_table";
 import CharacterRow from "./character_table";
 import ConfigRow from "./config_table";
 import FusionRow from "./fusion_table";
@@ -95,6 +101,9 @@ const tablesSchema = __schema({
       { accessor: 'battle_id', name: 'battle_battle_id_idx_btree', algorithm: 'btree', columns: [
         'battleId',
       ] },
+      { accessor: 'opponent_identity', name: 'battle_opponent_identity_idx_btree', algorithm: 'btree', columns: [
+        'opponentIdentity',
+      ] },
       { accessor: 'player_identity', name: 'battle_player_identity_idx_btree', algorithm: 'btree', columns: [
         'playerIdentity',
       ] },
@@ -103,6 +112,23 @@ const tablesSchema = __schema({
       { name: 'battle_battle_id_key', constraint: 'unique', columns: ['battleId'] },
     ],
   }, BattleRow),
+  battle_challenge: __table({
+    name: 'battle_challenge',
+    indexes: [
+      { accessor: 'challenge_id', name: 'battle_challenge_challenge_id_idx_btree', algorithm: 'btree', columns: [
+        'challengeId',
+      ] },
+      { accessor: 'challenger', name: 'battle_challenge_challenger_idx_btree', algorithm: 'btree', columns: [
+        'challenger',
+      ] },
+      { accessor: 'target', name: 'battle_challenge_target_idx_btree', algorithm: 'btree', columns: [
+        'target',
+      ] },
+    ],
+    constraints: [
+      { name: 'battle_challenge_challenge_id_key', constraint: 'unique', columns: ['challengeId'] },
+    ],
+  }, BattleChallengeRow),
   character: __table({
     name: 'character',
     indexes: [
@@ -335,13 +361,17 @@ const tablesSchema = __schema({
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
 const reducersSchema = __reducers(
+  __reducerSchema("accept_challenge", AcceptChallengeReducer),
   __reducerSchema("advance_dialogue", AdvanceDialogueReducer),
   __reducerSchema("attempt_recruit", AttemptRecruitReducer),
   __reducerSchema("buy", BuyReducer),
+  __reducerSchema("cancel_challenge", CancelChallengeReducer),
   __reducerSchema("cancel_trade", CancelTradeReducer),
   __reducerSchema("care", CareReducer),
+  __reducerSchema("challenge_pvp", ChallengePvpReducer),
   __reducerSchema("clear_queue", ClearQueueReducer),
   __reducerSchema("confirm_trade", ConfirmTradeReducer),
+  __reducerSchema("decline_challenge", DeclineChallengeReducer),
   __reducerSchema("dismiss_dialogue", DismissDialogueReducer),
   __reducerSchema("enqueue_move", EnqueueMoveReducer),
   __reducerSchema("evolve", EvolveReducer),
@@ -357,6 +387,7 @@ const reducersSchema = __reducers(
   __reducerSchema("set_party_slot", SetPartySlotReducer),
   __reducerSchema("start_battle", StartBattleReducer),
   __reducerSchema("submit_attack", SubmitAttackReducer),
+  __reducerSchema("submit_pvp_action", SubmitPvpActionReducer),
   __reducerSchema("swap_active", SwapActiveReducer),
   __reducerSchema("sync_content", SyncContentReducer),
   __reducerSchema("talk", TalkReducer),

@@ -282,6 +282,12 @@ pub struct MonsterPub {
 /// (pure data from `game-core`); the server module is the ONLY writer. Public so
 /// both participants can subscribe; hidden fields (IVs/EVs) are NOT in
 /// `BattleState` — only derived stats appear there (ADR-0015 satisfied).
+///
+/// `opponent_identity` gains a btree index in M16a (ADR-0109) to support O(log n)
+/// lookup in `forfeit_on_disconnect` for the case where the disconnecting player is
+/// the opponent (side B).  Adding an index is additive (ADR-0006): no column or PK
+/// change; the schema-snapshot eval tracks columns+PK only, not index presence.
+#[derive(Clone)]
 #[spacetimedb::table(name = battle, public)]
 pub struct Battle {
     #[primary_key]
@@ -289,6 +295,7 @@ pub struct Battle {
     pub battle_id: u64,
     #[index(btree)]
     pub player_identity: Identity,
+    #[index(btree)]
     pub opponent_identity: Identity,
     pub state: BattleState,
     pub party_monster_ids: Vec<u64>,
@@ -506,4 +513,71 @@ pub struct PlayerWallet {
     #[primary_key]
     pub owner_identity: Identity,
     pub balance: u64,
+}
+
+// --- M16a PvP tables (ADR-0109) ----------------------------------------------
+
+/// Lifecycle state of a PvP challenge (M16a, ADR-0109).
+///
+/// `Pending` → `Accepted` (creates the `battle` row) OR
+/// `Declined` / `Cancelled` (row deleted immediately).
+/// Terminal rows are DELETED (not stored) — mirrors trade/battle GC policy.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, spacetimedb::SpacetimeType)]
+pub enum ChallengeStatus {
+    Pending,
+    Accepted,
+    Declined,
+    Cancelled,
+}
+
+/// A pending PvP challenge from one player to another (M16a, ADR-0109).
+///
+/// PUBLIC so both the challenger and the target can subscribe and display the
+/// incoming/outgoing challenge UI (m16b).  Terminal challenges (Accepted,
+/// Declined, Cancelled) are DELETED immediately after processing — no history
+/// table in M16; follow-up in M17+.
+#[spacetimedb::table(name = battle_challenge, public)]
+pub struct BattleChallenge {
+    #[primary_key]
+    #[auto_inc]
+    pub challenge_id: u64,
+    /// Player who sent the challenge.
+    #[index(btree)]
+    pub challenger: Identity,
+    /// Designated opponent.
+    #[index(btree)]
+    pub target: Identity,
+    /// Challenger's committed party for the PvP battle.
+    pub challenger_party_ids: Vec<u64>,
+    pub status: ChallengeStatus,
+    pub created_at_ms: i64,
+}
+
+/// PRIVATE per-turn secret action submitted by one PvP player (M16a, ADR-0109).
+///
+/// MUST-NEVER-LEAK (ADR-0015, ADR-0109 D2): a leaked pending pick is a
+/// competitively decisive exploit (opponent adapts their choice). No `public`,
+/// no view, no RLS projection. The table is invisible to all clients; they
+/// discover that a turn resolved by watching `battle.state.turn_number`
+/// increment on their public `battle` subscription.
+///
+/// Two rows exist per turn (one per side); both are deleted atomically when
+/// `resolve_pvp_turn_if_ready` fires in the same transaction.
+#[spacetimedb::table(name = battle_action)]
+pub struct BattleAction {
+    #[primary_key]
+    #[auto_inc]
+    pub action_id: u64,
+    /// Links this action to the ongoing PvP battle.
+    #[index(btree)]
+    pub battle_id: u64,
+    /// The submitting player (player_identity = side A; opponent_identity = side B).
+    pub player_identity: Identity,
+    /// The chosen action (Attack or Swap — never Pass, which is server-generated).
+    pub action: game_core::PvpAction,
+    /// Turn this action applies to; must match `battle.state.turn_number` at
+    /// submission time (double-submit / stale-action defense-in-depth).
+    pub turn_number: u16,
+    /// Server clock at submission (ms).  Informational; not used for resolution.
+    pub submitted_at_ms: i64,
 }

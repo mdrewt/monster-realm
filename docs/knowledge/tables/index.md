@@ -6,6 +6,8 @@
 | slug | type | title | abstract |
 |------|------|-------|---------|
 | tables/battle | SpacetimeDB Table | battle | A single PvE or PvP battle. The `state` column holds the full `BattleState` (pur |
+| tables/battle_action | SpacetimeDB Table | battle_action | PRIVATE per-turn secret action submitted by one PvP player (M16a, ADR-0109). MUS |
+| tables/battle_challenge | SpacetimeDB Table | battle_challenge | A pending PvP challenge from one player to another (M16a, ADR-0109). PUBLIC so b |
 | tables/battle_wild | SpacetimeDB Table | battle_wild | PRIVATE wild-individuality side-table (M8c, ADR-0045). Keyed 1:1 by `battle_id`. |
 | tables/character | SpacetimeDB Table | character | One renderable entity. The enum/queue columns are the EXACT M1 `game-core` types |
 | tables/config | SpacetimeDB Table | config | Singleton world config. |
@@ -24,6 +26,7 @@
 | tables/player_dialogue_state | SpacetimeDB Table | player_dialogue_state | PRIVATE per-player dialogue state: flags + done-quest history. Must-never-leak:  |
 | tables/player_quest | SpacetimeDB Table | player_quest | Active quest progress. Public (quest log is world-readable like `inventory`). Pe |
 | tables/player_wallet | SpacetimeDB Table | player_wallet | PRIVATE per-player wallet — one row per player (PK = owner_identity). Balance is |
+| tables/pvp_deadline_schedule | SpacetimeDB Table | pvp_deadline_schedule | One-shot reaper: fires `PVP_TURN_DEADLINE_MS` after a PvP turn starts. PRIVATE ( |
 | tables/shop_item_row | SpacetimeDB Table | shop_item_row | Shop stock entries seeded from the `game-core` RON registry. One row per (shop,  |
 | tables/shop_row | SpacetimeDB Table | shop_row | Shop definitions seeded from the `game-core` RON registry. Public (world-readabl |
 | tables/skill_row | SpacetimeDB Table | skill_row | Skill definitions seeded from the `game-core` RON registry. |

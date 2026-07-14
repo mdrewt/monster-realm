@@ -309,5 +309,21 @@
       "Pending",
       "ConfirmedByCounterparty"
     ]
+  },
+  "ChallengeStatus": {
+    "kind": "enum",
+    "variants": [
+      "Pending",
+      "Accepted",
+      "Declined",
+      "Cancelled"
+    ]
+  },
+  "PvpAction": {
+    "kind": "enum",
+    "variants": [
+      "Attack",
+      "Swap"
+    ]
   }
 }

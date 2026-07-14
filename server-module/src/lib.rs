@@ -31,6 +31,7 @@ mod marshal;
 mod monster_mgmt;
 mod movement;
 mod npc;
+mod pvp;
 mod raising;
 mod schema;
 mod taming;
@@ -182,6 +183,11 @@ pub fn on_disconnect(ctx: &ReducerContext) {
     // deletion so the offer lookup still resolves player identity. No assets move —
     // assets are never physically escrowed (ADR-0106 D3). Uses indexed filters.
     trading::cancel_trades_on_disconnect(ctx, me);
+    // Forfeit any ongoing PvP battle (M16, ADR-0109 D8). Must run before player row
+    // deletion so identity lookups in write_back still resolve.
+    pvp::forfeit_on_disconnect(ctx, me);
+    // Cancel pending outgoing PvP challenges (M16, ADR-0109 D9).
+    pvp::cancel_challenges_on_disconnect(ctx, me);
     // Clean up transient conversation row so a reconnecting player cannot
     // advance a stale dialogue from a different zone/position (RT-ADV-01).
     ctx.db.player_conversation().owner_identity().delete(me);

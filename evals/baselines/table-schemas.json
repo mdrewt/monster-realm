@@ -11,6 +11,28 @@
       "created_at_ms": "i64"
     }
   },
+  "battle_action": {
+    "pk": "action_id",
+    "columns": {
+      "action_id": "u64",
+      "battle_id": "u64",
+      "player_identity": "Identity",
+      "action": "game_core::PvpAction",
+      "turn_number": "u16",
+      "submitted_at_ms": "i64"
+    }
+  },
+  "battle_challenge": {
+    "pk": "challenge_id",
+    "columns": {
+      "challenge_id": "u64",
+      "challenger": "Identity",
+      "target": "Identity",
+      "challenger_party_ids": "Vec<u64>",
+      "status": "ChallengeStatus",
+      "created_at_ms": "i64"
+    }
+  },
   "battle_wild": {
     "pk": "battle_id",
     "columns": {
@@ -232,6 +254,15 @@
     "columns": {
       "owner_identity": "Identity",
       "balance": "u64"
+    }
+  },
+  "pvp_deadline_schedule": {
+    "pk": "scheduled_id",
+    "columns": {
+      "scheduled_id": "u64",
+      "scheduled_at": "ScheduleAt",
+      "battle_id": "u64",
+      "turn_number": "u16"
     }
   },
   "skill_row": {

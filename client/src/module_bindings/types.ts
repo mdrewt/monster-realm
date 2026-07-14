@@ -44,6 +44,30 @@ export const Battle = __t.object("Battle", {
 });
 export type Battle = __Infer<typeof Battle>;
 
+export const BattleAction = __t.object("BattleAction", {
+  actionId: __t.u64(),
+  battleId: __t.u64(),
+  playerIdentity: __t.identity(),
+  get action() {
+    return PvpAction;
+  },
+  turnNumber: __t.u16(),
+  submittedAtMs: __t.i64(),
+});
+export type BattleAction = __Infer<typeof BattleAction>;
+
+export const BattleChallenge = __t.object("BattleChallenge", {
+  challengeId: __t.u64(),
+  challenger: __t.identity(),
+  target: __t.identity(),
+  challengerPartyIds: __t.array(__t.u64()),
+  get status() {
+    return ChallengeStatus;
+  },
+  createdAtMs: __t.i64(),
+});
+export type BattleChallenge = __Infer<typeof BattleChallenge>;
+
 export const BattleMonster = __t.object("BattleMonster", {
   speciesId: __t.u32(),
   get affinity() {
@@ -103,6 +127,15 @@ export const BattleWild = __t.object("BattleWild", {
   individualitySeed: __t.u32(),
 });
 export type BattleWild = __Infer<typeof BattleWild>;
+
+// The tagged union or sum type for the algebraic type `ChallengeStatus`.
+export const ChallengeStatus = __t.enum("ChallengeStatus", {
+  Pending: __t.unit(),
+  Accepted: __t.unit(),
+  Declined: __t.unit(),
+  Cancelled: __t.unit(),
+});
+export type ChallengeStatus = __Infer<typeof ChallengeStatus>;
 
 export const Character = __t.object("Character", {
   entityId: __t.u64(),
@@ -364,6 +397,21 @@ export const PlayerWallet = __t.object("PlayerWallet", {
   balance: __t.u64(),
 });
 export type PlayerWallet = __Infer<typeof PlayerWallet>;
+
+// The tagged union or sum type for the algebraic type `PvpAction`.
+export const PvpAction = __t.enum("PvpAction", {
+  Attack: __t.u32(),
+  Swap: __t.u32(),
+});
+export type PvpAction = __Infer<typeof PvpAction>;
+
+export const PvpDeadlineSchedule = __t.object("PvpDeadlineSchedule", {
+  scheduledId: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+  battleId: __t.u64(),
+  turnNumber: __t.u16(),
+});
+export type PvpDeadlineSchedule = __Infer<typeof PvpDeadlineSchedule>;
 
 export const ShopItemRow = __t.object("ShopItemRow", {
   shopItemId: __t.u64(),
