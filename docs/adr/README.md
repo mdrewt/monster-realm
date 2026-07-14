@@ -5,12 +5,12 @@ Architecture Decision Records live in **two locations**; check both.
 - **Design ADRs `0002`–`0034`** — in the **harness spec corpus**
   (`../../specs/monster-realm-v2/adr/`). These are the foundational design
   decisions authored alongside the milestone specs.
-- **Implementation ADRs `0001`, `0035`–`0109`** — in **this directory**
+- **Implementation ADRs `0001`, `0035`–`0110`** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0110`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0111`**.
 
 **ADR numbering collision note:** the harness spec corpus also contains design
 ADRs numbered `0055`–`0057`; these cover the *same topics* as this project's
@@ -102,6 +102,7 @@ prefix `harness adr/0055` to cite the harness design ADR.
 | [0107](./0107-m15b-trade-client-ui.md) | Trade client UI overlay: T-key overlay, offer lifecycle client flow, escrow slot rendering | M15b |
 | [0108](./0108-m15c-trade-evals.md) | Trade evals tail: escrow/conservation/security static evals + e2e trade overlay wiring | M15c |
 | [0109](./0109-m16a-pvp-spine.md) | M16a PvP battle spine: challenge handshake, secret submit/resolve turns, deadline reaper | M16a |
+| [0110](./0110-m16b-pvp-client-ui.md) | M16b PvP client UI: challenge/accept/turn-submit/forfeit overlay flow | M16b |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
