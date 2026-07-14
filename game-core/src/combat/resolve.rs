@@ -1322,9 +1322,7 @@ mod tests {
             resolve_enemy_turn(&mut state, SideId::SideB, &skills_vec(), &chart, &variance);
         assert!(
             !events.is_empty(),
-            "TEETH: resolve_enemy_turn with a skilled enemy must return at least one event; \
-             a stub returning vec![] passes `resolve_enemy_turn_only_enemy_acts` (no damage-side \
-             assertions fail on an empty list) but fails here — direct kill of the whole-body mutation"
+            "resolve_enemy_turn with a skilled enemy must return at least one event (kills vec![] whole-body stub)"
         );
     }
 
