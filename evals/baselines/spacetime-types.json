@@ -260,5 +260,54 @@
       "Wall",
       "TallGrass"
     ]
+  },
+  "MonsterCard": {
+    "kind": "struct",
+    "fields": [
+      [
+        "monster_id",
+        "u64"
+      ],
+      [
+        "species_id",
+        "u32"
+      ],
+      [
+        "nickname",
+        "String"
+      ],
+      [
+        "level",
+        "u8"
+      ],
+      [
+        "current_hp",
+        "u16"
+      ],
+      [
+        "stat_hp",
+        "u16"
+      ]
+    ]
+  },
+  "TradeItem": {
+    "kind": "struct",
+    "fields": [
+      [
+        "item_id",
+        "u32"
+      ],
+      [
+        "qty",
+        "u32"
+      ]
+    ]
+  },
+  "TradeStatus": {
+    "kind": "enum",
+    "variants": [
+      "Pending",
+      "ConfirmedByCounterparty"
+    ]
   }
 }

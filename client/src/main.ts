@@ -744,7 +744,7 @@ store.onBatchApplied(() => {
 document.addEventListener('click', (e) => {
   const btn = (e.target as HTMLElement).closest('[data-choice-idx]') as HTMLElement | null;
   if (!btn) return;
-  const raw = btn.dataset['choiceIdx'];
+  const raw = btn.dataset.choiceIdx;
   if (raw === undefined) return;
   const choiceIdx = parseInt(raw, 10);
   if (!Number.isNaN(choiceIdx)) {

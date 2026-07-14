@@ -105,7 +105,7 @@ export class ShopView {
     li.textContent = `${item.name} — ${item.buyPrice} gold `;
     const btn = document.createElement('button');
     btn.textContent = 'Buy';
-    btn.dataset['itemId'] = String(item.itemId);
+    btn.dataset.itemId = String(item.itemId);
     btn.addEventListener('click', () => {
       if (this.#pending) return;
       this.#pending = true;
@@ -125,7 +125,7 @@ export class ShopView {
       li.textContent = `${item.name} (×${item.count}) — ${item.sellPrice} gold `;
       const btn = document.createElement('button');
       btn.textContent = 'Sell';
-      btn.dataset['itemId'] = String(item.itemId);
+      btn.dataset.itemId = String(item.itemId);
       btn.addEventListener('click', () => {
         if (this.#pending) return;
         this.#pending = true;

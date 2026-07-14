@@ -7,9 +7,11 @@
 //! This file name is part of the canonical `touches:` vocabulary fixed by ADR-0056
 //! — keep it stable.
 
-use crate::guards::{log_reject, reject_if_in_battle, require_owner};
+use crate::guards::{log_reject, reject_if_in_battle, reject_if_monster_in_trade, require_owner};
 use crate::marshal::{monster_to_instance, pub_from_monster, species_from_row};
-use crate::schema::{battle, fusion, monster, monster_pub, species_row, Fusion, Monster};
+use crate::schema::{
+    battle, fusion, monster, monster_pub, species_row, trade_offer, Fusion, Monster,
+};
 use game_core::{evolve as game_core_evolve, resolve_evolution, Bond, EvolutionCondition, Level};
 use spacetimedb::{ReducerContext, Table};
 
@@ -63,6 +65,15 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
     require_owner(ctx, "evolve", m.owner_identity)?;
     reject_if_in_battle(
         ctx.db.battle().player_identity().filter(m.owner_identity),
+        monster_id,
+    )?;
+    // Trade escrow guard (TR-2, ADR-0106): monster in an active offer cannot be evolved.
+    reject_if_monster_in_trade(
+        ctx.db
+            .trade_offer()
+            .initiator()
+            .filter(m.owner_identity)
+            .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
         monster_id,
     )?;
 
@@ -208,6 +219,23 @@ pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
     )?;
     reject_if_in_battle(
         ctx.db.battle().player_identity().filter(b.owner_identity),
+        b_id,
+    )?;
+    // Trade escrow guard (TR-3, ADR-0106): both parents must be free of active trade offers.
+    reject_if_monster_in_trade(
+        ctx.db
+            .trade_offer()
+            .initiator()
+            .filter(a.owner_identity)
+            .chain(ctx.db.trade_offer().counterparty().filter(a.owner_identity)),
+        a_id,
+    )?;
+    reject_if_monster_in_trade(
+        ctx.db
+            .trade_offer()
+            .initiator()
+            .filter(b.owner_identity)
+            .chain(ctx.db.trade_offer().counterparty().filter(b.owner_identity)),
         b_id,
     )?;
 

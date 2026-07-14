@@ -407,7 +407,7 @@ export default async function () {
     );
     const tables = parseTables(fixture);
     const t = tables.find((x) => x.name === 'battle_wild');
-    if (t && t.isPublic) {
+    if (t?.isPublic) {
       return {
         name,
         pass: false,

@@ -37,6 +37,7 @@ import { reduceErrorMessage, subscriptionErrorMessage } from './statusModel';
 // ================================================================================
 
 describe('reduceErrorMessage: SenderError with message passes through', () => {
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: test description documents literal format
   it('SenderError with non-empty message → "${where}: ${message}"', () => {
     // Kills: an impl that emits a generic message for SenderError,
     // suppressing the user-visible server reason.
@@ -49,8 +50,8 @@ describe('reduceErrorMessage: SenderError with message passes through', () => {
     // Kills: an impl using `instanceof` (cross-realm/bundling unsafe — ADR-0085 C9).
     // A plain object {name:'SenderError', message:'...'} must match.
     const err = Object.create(null) as Record<string, unknown>;
-    err['name'] = 'SenderError';
-    err['message'] = 'already joined';
+    err.name = 'SenderError';
+    err.message = 'already joined';
     expect(reduceErrorMessage(err, 'join')).toBe('join: already joined');
   });
 
@@ -67,18 +68,21 @@ describe('reduceErrorMessage: SenderError with message passes through', () => {
 // ================================================================================
 
 describe('reduceErrorMessage: SenderError with empty/missing message → fallback', () => {
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: test description documents literal format
   it('SenderError with empty string message → "${where}: rejected"', () => {
     // Kills: an impl that emits "${where}: " (empty suffix) — the no-empty contract.
     const err = { name: 'SenderError', message: '' };
     expect(reduceErrorMessage(err, 'sell')).toBe('sell: rejected');
   });
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: test description documents literal format
   it('SenderError with missing message property → "${where}: rejected"', () => {
     // Kills: an impl that crashes on missing message or returns "${where}: undefined".
     const err = { name: 'SenderError' };
     expect(reduceErrorMessage(err, 'dismiss')).toBe('dismiss: rejected');
   });
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: test description documents literal format
   it('SenderError with undefined message → "${where}: rejected"', () => {
     // Kills: an impl that coerces undefined to "undefined" and returns "${where}: undefined".
     const err = { name: 'SenderError', message: undefined };
@@ -91,6 +95,7 @@ describe('reduceErrorMessage: SenderError with empty/missing message → fallbac
 // ================================================================================
 
 describe('reduceErrorMessage: InternalError → generic (no detail leak)', () => {
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: test description documents literal format
   it('InternalError → "${where}: server error" regardless of message content', () => {
     // Kills: an impl that includes err.message (leaking internal detail to the UI).
     const err = { name: 'InternalError', message: 'internal server exception at line 42' };
@@ -108,6 +113,7 @@ describe('reduceErrorMessage: InternalError → generic (no detail leak)', () =>
     expect(result).toBe('fuse: server error');
   });
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: test description documents literal format
   it('InternalError with empty message → still "${where}: server error"', () => {
     // Kills: an impl that checks for non-empty message before applying generic.
     const err = { name: 'InternalError', message: '' };
@@ -120,6 +126,7 @@ describe('reduceErrorMessage: InternalError → generic (no detail leak)', () =>
 // ================================================================================
 
 describe('reduceErrorMessage: unknown errors → generic, no leakage', () => {
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: test description documents literal format
   it('plain Error (name="Error") → "${where}: unexpected error"', () => {
     // Kills: an impl that falls through to String(err) and returns
     // "${where}: Error: something" (leaks the error message class).
@@ -127,26 +134,31 @@ describe('reduceErrorMessage: unknown errors → generic, no leakage', () => {
     expect(reduceErrorMessage(err, 'advance')).toBe('advance: unexpected error');
   });
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: test description documents literal format
   it('plain string → "${where}: unexpected error" (no string leakage)', () => {
     // Kills: an impl that detects typeof err === 'string' and passes it through.
     expect(reduceErrorMessage('some raw string error', 'talk')).toBe('talk: unexpected error');
   });
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: test description documents literal format
   it('null → "${where}: unexpected error" (no crash)', () => {
     // Kills: an impl that does err.name without a null check.
     expect(reduceErrorMessage(null, 'buy')).toBe('buy: unexpected error');
   });
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: test description documents literal format
   it('undefined → "${where}: unexpected error" (no crash)', () => {
     // Kills: an impl that crashes on undefined input.
     expect(reduceErrorMessage(undefined, 'sell')).toBe('sell: unexpected error');
   });
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: test description documents literal format
   it('plain object {} → "${where}: unexpected error" (no "[object Object]" leakage)', () => {
     // Kills: an impl using String(err) which would produce "[object Object]".
     expect(reduceErrorMessage({}, 'heal')).toBe('heal: unexpected error');
   });
 
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: test description documents literal format
   it('number → "${where}: unexpected error"', () => {
     // Kills: an impl that coerces numbers with String().
     expect(reduceErrorMessage(42, 'train')).toBe('train: unexpected error');
@@ -220,7 +232,7 @@ describe('reduceErrorMessage: TOTAL — never empty string', () => {
         (err, where) => {
           const result = reduceErrorMessage(err, where);
           expect(result.length).toBeGreaterThan(0); // never empty
-          expect(result.startsWith(where + ': ')).toBe(true); // always prefixed with where
+          expect(result.startsWith(`${where}: `)).toBe(true); // always prefixed with where
         },
       ),
     );

@@ -55,6 +55,7 @@ export function buildShopViewModel(
   if (shops.length === 0) return { kind: 'no-shop' };
 
   // Sort by shopId for deterministic first-shop selection regardless of Map insertion order.
+  // biome-ignore lint/style/noNonNullAssertion: shops.length===0 returns early on line above
   const shop = [...shops].sort((a, b) => a.shopId - b.shopId)[0]!;
   const { shopId, name: shopName } = shop;
 

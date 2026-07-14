@@ -106,7 +106,7 @@ export function hasRonDefaultTests(testSrc) {
 // 'serde', and 'engine' in the combined name+detail string.
 // ---------------------------------------------------------------------------
 export function documentsBsatnGap(nameStr, detailStr) {
-  const combined = nameStr + ' ' + detailStr;
+  const combined = `${nameStr} ${detailStr}`;
   return combined.includes('BSATN') && combined.includes('serde') && combined.includes('engine');
 }
 

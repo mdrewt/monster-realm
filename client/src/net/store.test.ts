@@ -1833,10 +1833,10 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     // or one that stores to the wrong map key.
     const s = new AuthoritativeStore();
     const row = convRow('alice-hex', 7n, 'greeting');
-    (s as unknown as Record<string, Function>).upsertConversation(row);
-    const result = (s as unknown as Record<string, Function>).ownConversation('alice-hex') as
-      | StorePlayerConversation
-      | undefined;
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertConversation(row);
+    const result = (
+      s as unknown as Record<string, (...args: unknown[]) => unknown>
+    ).ownConversation('alice-hex') as StorePlayerConversation | undefined;
     expect(result).toBeDefined();
     expect(result!.ownerIdentity).toBe('alice-hex');
     expect(result!.npcEntityId).toBe(7n);
@@ -1847,8 +1847,12 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     // Kills: an impl that returns the first conversation regardless of ownerIdentity.
     // Privacy contract: another player's conversation must not be returned.
     const s = new AuthoritativeStore();
-    (s as unknown as Record<string, Function>).upsertConversation(convRow('alice-hex'));
-    const result = (s as unknown as Record<string, Function>).ownConversation('bob-hex');
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertConversation(
+      convRow('alice-hex'),
+    );
+    const result = (
+      s as unknown as Record<string, (...args: unknown[]) => unknown>
+    ).ownConversation('bob-hex');
     expect(result).toBeUndefined();
   });
 
@@ -1857,9 +1861,15 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
   it('BITES: removeConversation deletes the row; ownConversation returns undefined after', () => {
     // Kills: an impl that soft-deletes or retains the row after removal.
     const s = new AuthoritativeStore();
-    (s as unknown as Record<string, Function>).upsertConversation(convRow('alice-hex'));
-    (s as unknown as Record<string, Function>).removeConversation('alice-hex');
-    const result = (s as unknown as Record<string, Function>).ownConversation('alice-hex');
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertConversation(
+      convRow('alice-hex'),
+    );
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).removeConversation(
+      'alice-hex',
+    );
+    const result = (
+      s as unknown as Record<string, (...args: unknown[]) => unknown>
+    ).ownConversation('alice-hex');
     expect(result).toBeUndefined();
   });
 
@@ -1869,10 +1879,16 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     // Kills: an impl that returns ALL quests regardless of owner identity.
     // Privacy contract: another player's quests must not appear.
     const s = new AuthoritativeStore();
-    (s as unknown as Record<string, Function>).upsertQuest(questRow(1n, 'alice-hex', 'q1'));
-    (s as unknown as Record<string, Function>).upsertQuest(questRow(2n, 'bob-hex', 'q2'));
-    (s as unknown as Record<string, Function>).upsertQuest(questRow(3n, 'alice-hex', 'q3'));
-    const aliceQuests = (s as unknown as Record<string, Function>).ownQuests(
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertQuest(
+      questRow(1n, 'alice-hex', 'q1'),
+    );
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertQuest(
+      questRow(2n, 'bob-hex', 'q2'),
+    );
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertQuest(
+      questRow(3n, 'alice-hex', 'q3'),
+    );
+    const aliceQuests = (s as unknown as Record<string, (...args: unknown[]) => unknown>).ownQuests(
       'alice-hex',
     ) as StorePlayerQuest[];
     expect(aliceQuests).toHaveLength(2);
@@ -1893,29 +1909,45 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     s.onBatchApplied(cb);
 
     // Populate all 4 new maps
-    (s as unknown as Record<string, Function>).upsertConversation(convRow('player-hex', 1n));
-    (s as unknown as Record<string, Function>).upsertQuest(questRow(1n, 'player-hex', 'q1'));
-    (s as unknown as Record<string, Function>).upsertHealLocation(healLocationRow(1, 0));
-    (s as unknown as Record<string, Function>).upsertNpc(npcRow(99n, 'elder_oak'));
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertConversation(
+      convRow('player-hex', 1n),
+    );
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertQuest(
+      questRow(1n, 'player-hex', 'q1'),
+    );
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertHealLocation(
+      healLocationRow(1, 0),
+    );
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertNpc(
+      npcRow(99n, 'elder_oak'),
+    );
 
     s.reset();
 
     // Assertion 1: #conversations cleared
     expect(
-      (s as unknown as Record<string, Function>).ownConversation('player-hex'),
+      (s as unknown as Record<string, (...args: unknown[]) => unknown>).ownConversation(
+        'player-hex',
+      ),
     ).toBeUndefined();
 
     // Assertion 2: #quests cleared
-    expect((s as unknown as Record<string, Function>).ownQuests('player-hex')).toHaveLength(0);
+    expect(
+      (s as unknown as Record<string, (...args: unknown[]) => unknown>).ownQuests('player-hex'),
+    ).toHaveLength(0);
 
     // Assertion 3: #healLocations cleared
-    expect((s as unknown as Record<string, Function>).healLocations()).toHaveLength(0);
+    expect(
+      (s as unknown as Record<string, (...args: unknown[]) => unknown>).healLocations(),
+    ).toHaveLength(0);
 
     // Assertion 4: #npcs cleared
-    expect((s as unknown as Record<string, Function>).npc(99n)).toBeUndefined();
+    expect(
+      (s as unknown as Record<string, (...args: unknown[]) => unknown>).npc(99n),
+    ).toBeUndefined();
 
     // Listeners must survive reset (existing contract preserved)
-    (s as unknown as Record<string, Function>).upsertNpc(npcRow(1n));
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertNpc(npcRow(1n));
     s.flushBatch();
     expect(cb).toHaveBeenCalledTimes(1);
   });
@@ -1925,10 +1957,14 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
   it('BITES: upsertHealLocation + healLocations() returns all locations', () => {
     // Kills: an impl that filters healLocations by any identity (it is public content).
     const s = new AuthoritativeStore();
-    (s as unknown as Record<string, Function>).upsertHealLocation(healLocationRow(1, 0));
-    (s as unknown as Record<string, Function>).upsertHealLocation(healLocationRow(2, 1));
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertHealLocation(
+      healLocationRow(1, 0),
+    );
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertHealLocation(
+      healLocationRow(2, 1),
+    );
     const locs = (
-      s as unknown as Record<string, Function>
+      s as unknown as Record<string, (...args: unknown[]) => unknown>
     ).healLocations() as StoreHealLocationRow[];
     expect(locs).toHaveLength(2);
     const locIds = locs.map((l) => l.locationId);
@@ -1940,13 +1976,15 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     // Reconnect scenario: subscription may replay the same row.
     // Kills: an impl that stores heal locations in an array and appends on re-insert.
     const s = new AuthoritativeStore();
-    (s as unknown as Record<string, Function>).upsertHealLocation(healLocationRow(5, 0));
-    (s as unknown as Record<string, Function>).upsertHealLocation({
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertHealLocation(
+      healLocationRow(5, 0),
+    );
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertHealLocation({
       ...healLocationRow(5, 0),
       cooldownMs: 60000,
     });
     const locs = (
-      s as unknown as Record<string, Function>
+      s as unknown as Record<string, (...args: unknown[]) => unknown>
     ).healLocations() as StoreHealLocationRow[];
     expect(locs).toHaveLength(1);
     expect(locs[0]!.cooldownMs).toBe(60000); // last-write wins
@@ -1958,8 +1996,10 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     // Kills: an impl that stores npcs by npcId string instead of entityId bigint.
     const s = new AuthoritativeStore();
     const npc = npcRow(42n, 'elder_oak', 'elder_oak_talk');
-    (s as unknown as Record<string, Function>).upsertNpc(npc);
-    const result = (s as unknown as Record<string, Function>).npc(42n) as StoreNpcRow | undefined;
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertNpc(npc);
+    const result = (s as unknown as Record<string, (...args: unknown[]) => unknown>).npc(42n) as
+      | StoreNpcRow
+      | undefined;
     expect(result).toBeDefined();
     expect(result!.entityId).toBe(42n);
     expect(result!.npcId).toBe('elder_oak');
@@ -1972,13 +2012,13 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     // and npcId (for display/content lookup).
     const s = new AuthoritativeStore();
     const npc = npcRow(42n, 'elder_oak', 'elder_oak_talk');
-    (s as unknown as Record<string, Function>).upsertNpc(npc);
-    const byEntityId = (s as unknown as Record<string, Function>).npc(42n) as
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertNpc(npc);
+    const byEntityId = (s as unknown as Record<string, (...args: unknown[]) => unknown>).npc(42n) as
       | StoreNpcRow
       | undefined;
-    const byNpcId = (s as unknown as Record<string, Function>).npcByNpcId('elder_oak') as
-      | StoreNpcRow
-      | undefined;
+    const byNpcId = (s as unknown as Record<string, (...args: unknown[]) => unknown>).npcByNpcId(
+      'elder_oak',
+    ) as StoreNpcRow | undefined;
     expect(byEntityId).toBeDefined();
     expect(byNpcId).toBeDefined();
     expect(byNpcId!.entityId).toBe(42n);
@@ -1990,14 +2030,18 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
   it('BITES: npc(entityId) returns undefined for unknown entityId (not throw)', () => {
     // Kills: an impl that throws on Map miss.
     const s = new AuthoritativeStore();
-    expect((s as unknown as Record<string, Function>).npc(999n)).toBeUndefined();
+    expect(
+      (s as unknown as Record<string, (...args: unknown[]) => unknown>).npc(999n),
+    ).toBeUndefined();
   });
 
   it('BITES: npcByNpcId(npcId) returns undefined for unknown npcId (not throw)', () => {
     // Kills: an impl that throws when npcId is not in the index.
     const s = new AuthoritativeStore();
     expect(
-      (s as unknown as Record<string, Function>).npcByNpcId('nonexistent_npc'),
+      (s as unknown as Record<string, (...args: unknown[]) => unknown>).npcByNpcId(
+        'nonexistent_npc',
+      ),
     ).toBeUndefined();
   });
 
@@ -2006,7 +2050,7 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     const s = new AuthoritativeStore();
     const cb = vi.fn();
     s.onBatchApplied(cb);
-    (s as unknown as Record<string, Function>).upsertNpc(npcRow(1n));
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertNpc(npcRow(1n));
     s.flushBatch();
     expect(cb).toHaveBeenCalledTimes(1);
   });
@@ -2018,11 +2062,15 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     // leaves stale quest rows in the store after server deletion.
     // Kills: an impl that ignores removeQuest or removes from the wrong map.
     const s = new AuthoritativeStore();
-    (s as unknown as Record<string, Function>).upsertQuest(questRow(10n, 'alice-hex', 'quest_abc'));
-    (s as unknown as Record<string, Function>).upsertQuest(questRow(11n, 'alice-hex', 'quest_xyz'));
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertQuest(
+      questRow(10n, 'alice-hex', 'quest_abc'),
+    );
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertQuest(
+      questRow(11n, 'alice-hex', 'quest_xyz'),
+    );
     // Remove only quest 10n
-    (s as unknown as Record<string, Function>).removeQuest(10n);
-    const remaining = (s as unknown as Record<string, Function>).ownQuests(
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).removeQuest(10n);
+    const remaining = (s as unknown as Record<string, (...args: unknown[]) => unknown>).ownQuests(
       'alice-hex',
     ) as StorePlayerQuest[];
     expect(remaining).toHaveLength(1);
@@ -2034,11 +2082,15 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     // no-op leaves stale heal location rows visible to the HealView.
     // Kills: an impl that ignores removeHealLocation or removes from the wrong map.
     const s = new AuthoritativeStore();
-    (s as unknown as Record<string, Function>).upsertHealLocation(healLocationRow(1, 0));
-    (s as unknown as Record<string, Function>).upsertHealLocation(healLocationRow(2, 1));
-    (s as unknown as Record<string, Function>).removeHealLocation(1);
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertHealLocation(
+      healLocationRow(1, 0),
+    );
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertHealLocation(
+      healLocationRow(2, 1),
+    );
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).removeHealLocation(1);
     const locs = (
-      s as unknown as Record<string, Function>
+      s as unknown as Record<string, (...args: unknown[]) => unknown>
     ).healLocations() as StoreHealLocationRow[];
     expect(locs).toHaveLength(1);
     expect(locs[0]!.locationId).toBe(2);
@@ -2049,9 +2101,13 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     // leaves stale NPC entries that would appear in dialogue lookups.
     // Kills: an impl that ignores removeNpc or uses the wrong key.
     const s = new AuthoritativeStore();
-    (s as unknown as Record<string, Function>).upsertNpc(npcRow(42n, 'elder_oak'));
-    (s as unknown as Record<string, Function>).removeNpc(42n);
-    expect((s as unknown as Record<string, Function>).npc(42n)).toBeUndefined();
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertNpc(
+      npcRow(42n, 'elder_oak'),
+    );
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).removeNpc(42n);
+    expect(
+      (s as unknown as Record<string, (...args: unknown[]) => unknown>).npc(42n),
+    ).toBeUndefined();
   });
 
   it('BITES: removeNpc also clears npcByNpcId index', () => {
@@ -2060,9 +2116,13 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     // index that returns a stale row for npcByNpcId after the NPC is gone.
     // Kills: an impl that clears #npcs but forgets to clear the npcId secondary index.
     const s = new AuthoritativeStore();
-    (s as unknown as Record<string, Function>).upsertNpc(npcRow(42n, 'elder_oak'));
-    (s as unknown as Record<string, Function>).removeNpc(42n);
-    expect((s as unknown as Record<string, Function>).npcByNpcId('elder_oak')).toBeUndefined();
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertNpc(
+      npcRow(42n, 'elder_oak'),
+    );
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).removeNpc(42n);
+    expect(
+      (s as unknown as Record<string, (...args: unknown[]) => unknown>).npcByNpcId('elder_oak'),
+    ).toBeUndefined();
   });
 
   // --- Fix 4: flushBatch tests for upsertConversation / upsertQuest / upsertHealLocation ---
@@ -2073,7 +2133,7 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     const s = new AuthoritativeStore();
     const cb = vi.fn();
     s.onBatchApplied(cb);
-    (s as unknown as Record<string, Function>).upsertConversation(
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertConversation(
       convRow('player-hex', 1n, 'greeting'),
     );
     s.flushBatch();
@@ -2086,7 +2146,9 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     const s = new AuthoritativeStore();
     const cb = vi.fn();
     s.onBatchApplied(cb);
-    (s as unknown as Record<string, Function>).upsertQuest(questRow(1n, 'player-hex', 'q1'));
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertQuest(
+      questRow(1n, 'player-hex', 'q1'),
+    );
     s.flushBatch();
     expect(cb).toHaveBeenCalledTimes(1);
   });
@@ -2097,7 +2159,9 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     const s = new AuthoritativeStore();
     const cb = vi.fn();
     s.onBatchApplied(cb);
-    (s as unknown as Record<string, Function>).upsertHealLocation(healLocationRow(5, 0));
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertHealLocation(
+      healLocationRow(5, 0),
+    );
     s.flushBatch();
     expect(cb).toHaveBeenCalledTimes(1);
   });
@@ -2109,13 +2173,15 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     // removeConversation must mark dirty so the render loop hides the dialogue overlay.
     // Kills: an impl that deletes the row but forgets #dirty=true (overlay stays open).
     const s = new AuthoritativeStore();
-    (s as unknown as Record<string, Function>).upsertConversation(
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertConversation(
       convRow('alice-hex', 1n, 'greeting'),
     );
     s.flushBatch();
     const cb = vi.fn();
     s.onBatchApplied(cb);
-    (s as unknown as Record<string, Function>).removeConversation('alice-hex');
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).removeConversation(
+      'alice-hex',
+    );
     s.flushBatch();
     expect(cb).toHaveBeenCalledTimes(1);
   });
@@ -2125,11 +2191,13 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     // the quest log view re-renders and drops the completed quest.
     // Kills: an impl that no-ops removeQuest or forgets #dirty=true.
     const s = new AuthoritativeStore();
-    (s as unknown as Record<string, Function>).upsertQuest(questRow(5n, 'alice-hex', 'q'));
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertQuest(
+      questRow(5n, 'alice-hex', 'q'),
+    );
     s.flushBatch();
     const cb = vi.fn();
     s.onBatchApplied(cb);
-    (s as unknown as Record<string, Function>).removeQuest(5n);
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).removeQuest(5n);
     s.flushBatch();
     expect(cb).toHaveBeenCalledTimes(1);
   });
@@ -2137,11 +2205,11 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
   it('BITES: removeNpc marks batch dirty so flushBatch fires', () => {
     // Kills: an impl that removes the NPC row but forgets #dirty=true.
     const s = new AuthoritativeStore();
-    (s as unknown as Record<string, Function>).upsertNpc(npcRow(7n));
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertNpc(npcRow(7n));
     s.flushBatch();
     const cb = vi.fn();
     s.onBatchApplied(cb);
-    (s as unknown as Record<string, Function>).removeNpc(7n);
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).removeNpc(7n);
     s.flushBatch();
     expect(cb).toHaveBeenCalledTimes(1);
   });
@@ -2153,12 +2221,20 @@ describe('M12d: conversation / quest / heal / npc maps', () => {
     // that changes npcId leaves the OLD npcId returning the outdated row.
     // Kills: `if (!this.#npcsByNpcId.has(row.npcId)) { this.#npcsByNpcId.set(...) }`
     const s = new AuthoritativeStore();
-    (s as unknown as Record<string, Function>).upsertNpc(npcRow(1n, 'old_id', 'tree_a'));
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertNpc(
+      npcRow(1n, 'old_id', 'tree_a'),
+    );
     // Same entityId, changed npcId (e.g. server corrects the NPC definition)
-    (s as unknown as Record<string, Function>).upsertNpc(npcRow(1n, 'new_id', 'tree_b'));
-    expect((s as unknown as Record<string, Function>).npcByNpcId('new_id')).toBeDefined();
-    expect((s as unknown as Record<string, Function>).npcByNpcId('old_id')).toBeUndefined(); // stale index must be purged on re-upsert
-    expect((s as unknown as Record<string, Function>).npc(1n)).toBeDefined();
+    (s as unknown as Record<string, (...args: unknown[]) => unknown>).upsertNpc(
+      npcRow(1n, 'new_id', 'tree_b'),
+    );
+    expect(
+      (s as unknown as Record<string, (...args: unknown[]) => unknown>).npcByNpcId('new_id'),
+    ).toBeDefined();
+    expect(
+      (s as unknown as Record<string, (...args: unknown[]) => unknown>).npcByNpcId('old_id'),
+    ).toBeUndefined(); // stale index must be purged on re-upsert
+    expect((s as unknown as Record<string, (...args: unknown[]) => unknown>).npc(1n)).toBeDefined();
   });
 });
 

@@ -67,6 +67,7 @@ export class EvolutionView {
     this.#fuseBtn.disabled = true;
     this.#fuseBtn.addEventListener('click', () => {
       if (this.#selected.length === 2) {
+        // biome-ignore lint/style/noNonNullAssertion: length===2 guard above guarantees both indices
         this.#callbacks.onFuse(this.#selected[0]!, this.#selected[1]!);
         this.#selected = [];
         this.#updateFuseStatus();

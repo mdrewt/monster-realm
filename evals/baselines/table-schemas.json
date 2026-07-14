@@ -278,5 +278,23 @@
       "width": "u32",
       "height": "u32"
     }
+  },
+  "trade_offer": {
+    "pk": "trade_id",
+    "columns": {
+      "trade_id": "u64",
+      "initiator": "Identity",
+      "counterparty": "Identity",
+      "initiator_monster_ids": "Vec<u64>",
+      "initiator_items": "Vec<game_core::TradeItem>",
+      "initiator_currency": "u64",
+      "counterparty_monster_ids": "Vec<u64>",
+      "counterparty_items": "Vec<game_core::TradeItem>",
+      "counterparty_currency": "u64",
+      "initiator_cards": "Vec<game_core::MonsterCard>",
+      "counterparty_cards": "Vec<game_core::MonsterCard>",
+      "status": "game_core::TradeStatus",
+      "created_at_ms": "i64"
+    }
   }
 }

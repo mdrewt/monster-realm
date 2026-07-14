@@ -7,9 +7,9 @@
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
 
-use crate::guards::{log_reject, require_owner, validate_name};
+use crate::guards::{log_reject, reject_if_monster_in_trade, require_owner, validate_name};
 use crate::marshal::pub_from_monster;
-use crate::schema::{monster, monster_pub};
+use crate::schema::{monster, monster_pub, trade_offer};
 use crate::PARTY_SLOT_NONE;
 use spacetimedb::ReducerContext;
 
@@ -26,6 +26,15 @@ pub fn set_nickname(ctx: &ReducerContext, monster_id: u64, nickname: String) -> 
         return Err(e);
     };
     require_owner(ctx, "set_nickname", m.owner_identity)?;
+    // Trade escrow guard (TR-4, ADR-0106).
+    reject_if_monster_in_trade(
+        ctx.db
+            .trade_offer()
+            .initiator()
+            .filter(m.owner_identity)
+            .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
+        monster_id,
+    )?;
     let validated = if nickname.trim().is_empty() {
         String::new() // clear nickname
     } else {
@@ -50,6 +59,15 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
         return Err(e);
     };
     require_owner(ctx, "set_party_slot", m.owner_identity)?;
+    // Trade escrow guard (TR-5, ADR-0106).
+    reject_if_monster_in_trade(
+        ctx.db
+            .trade_offer()
+            .initiator()
+            .filter(m.owner_identity)
+            .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
+        monster_id,
+    )?;
     // Collect PARTY slots of the caller's OTHER monsters (excluding the one being moved
     // and excluding boxed monsters whose party_slot == PARTY_SLOT_NONE = 255).
     let occupied: Vec<u8> = ctx

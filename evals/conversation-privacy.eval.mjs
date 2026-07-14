@@ -578,7 +578,7 @@ pub struct PlayerConversation {
     }
     const tables = parseTables(stripComments(fixture));
     const t = tables.find((x) => x.name === 'player_conversation');
-    if (!t || !t.isPublic) {
+    if (!t?.isPublic) {
       return "T2: reversed-args fixture: name not extracted as 'player_conversation' with isPublic=true — name = <ident> extraction is broken";
     }
   }

@@ -181,7 +181,7 @@ export default async function () {
 
     // Check count: 15 expected tables from the baseline
     const expectedTableNames = Object.keys(baseline);
-    const parsedTableNames = Object.keys(parsed);
+    const _parsedTableNames = Object.keys(parsed);
     const missingTables = expectedTableNames.filter((t) => !(t in parsed));
     if (missingTables.length > 0) {
       failures.push(
@@ -197,9 +197,9 @@ export default async function () {
         );
       }
       // inventory.columns.count === 'u32'
-      if (!parsed.inventory.columns || parsed.inventory.columns.count !== 'u32') {
+      if (parsed.inventory.columns?.count !== 'u32') {
         failures.push(
-          `TOOTH 1 FAILED: parsed.inventory.columns.count is '${parsed.inventory && parsed.inventory.columns && parsed.inventory.columns.count}', expected 'u32'`,
+          `TOOTH 1 FAILED: parsed.inventory.columns.count is '${parsed.inventory?.columns?.count}', expected 'u32'`,
         );
       }
     } else {
@@ -214,12 +214,9 @@ export default async function () {
         );
       }
       // encounter.columns.entries === 'Vec<EncounterEntryRow>'
-      if (
-        !parsed.encounter.columns ||
-        parsed.encounter.columns.entries !== 'Vec<EncounterEntryRow>'
-      ) {
+      if (parsed.encounter.columns?.entries !== 'Vec<EncounterEntryRow>') {
         failures.push(
-          `TOOTH 1 FAILED: parsed.encounter.columns.entries is '${parsed.encounter && parsed.encounter.columns && parsed.encounter.columns.entries}', expected 'Vec<EncounterEntryRow>'`,
+          `TOOTH 1 FAILED: parsed.encounter.columns.entries is '${parsed.encounter?.columns?.entries}', expected 'Vec<EncounterEntryRow>'`,
         );
       }
     } else {
@@ -381,7 +378,7 @@ pub struct Inventory {
   // subset checks (only "are expected cols present?") and would WRONGLY pass this.
   // Kills: any implementation that uses subset checking instead of exact-match.
   // Structural clone approach acceptable here per spec: mutate parsed object directly.
-  if (parsed !== null && parsed.inventory) {
+  if (parsed?.inventory) {
     const additiveParsed = {
       inventory: {
         pk: parsed.inventory.pk,
@@ -465,7 +462,7 @@ pub struct EncounterRow {
     if (encViolations !== null) {
       if (!Array.isArray(encViolations) || encViolations.length > 0) {
         failures.push(
-          `TOOTH 8 FAILED: encounter-shaped fixture (zone_id as #[primary_key]) was incorrectly FLAGGED as a violation — PK satisfies the zoning requirement; violations: ${encViolations && encViolations.join(', ')}`,
+          `TOOTH 8 FAILED: encounter-shaped fixture (zone_id as #[primary_key]) was incorrectly FLAGGED as a violation — PK satisfies the zoning requirement; violations: ${encViolations?.join(', ')}`,
         );
       }
     }
@@ -534,7 +531,7 @@ pub struct MovementTickSchedule {
     if (schedViolations !== null) {
       if (!Array.isArray(schedViolations) || schedViolations.length > 0) {
         failures.push(
-          `TOOTH 10 FAILED: scheduler carve-out fixture (scheduled(movement_tick) + bare zone_id) was incorrectly FLAGGED — tables whose attribute contains 'scheduled(' are exempt from the zone_id index requirement (ADR-0007 D5); violations: ${schedViolations && schedViolations.join(', ')}`,
+          `TOOTH 10 FAILED: scheduler carve-out fixture (scheduled(movement_tick) + bare zone_id) was incorrectly FLAGGED — tables whose attribute contains 'scheduled(' are exempt from the zone_id index requirement (ADR-0007 D5); violations: ${schedViolations?.join(', ')}`,
         );
       }
     }
@@ -560,7 +557,7 @@ pub struct MovementTickSchedule {
     if (realViolations !== null) {
       if (!Array.isArray(realViolations) || realViolations.length > 0) {
         failures.push(
-          `TOOTH 11 FAILED: real server source has zoned violations — ${realViolations && realViolations.join(', ')}. Expected 0 violations (character indexed, zone_def/encounter PK, movement_tick_schedule carved out). This failure is expected RED until zoningViolations is broadened correctly by the specialist.`,
+          `TOOTH 11 FAILED: real server source has zoned violations — ${realViolations?.join(', ')}. Expected 0 violations (character indexed, zone_def/encounter PK, movement_tick_schedule carved out). This failure is expected RED until zoningViolations is broadened correctly by the specialist.`,
         );
       }
     }
@@ -801,7 +798,7 @@ pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), Strin
   // Kills: a checkSchemaDrift that only iterates baseline keys (one-directional
   // at the table level) — it would see every baseline table is present and wrongly
   // return []. The extra table `ghost_table` is in parsed but absent from baseline.
-  if (parsed !== null && parsed.inventory) {
+  if (parsed?.inventory) {
     const extraTableParsed = {
       inventory: parsed.inventory,
       ghost_table: { pk: 'id', columns: { id: 'u64' } },

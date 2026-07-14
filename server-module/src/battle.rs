@@ -11,7 +11,8 @@
 
 use crate::economy::grant_currency;
 use crate::guards::{
-    check_monster_in_party, check_party_size, check_team_coupling, log_reject, require_owner,
+    check_monster_in_party, check_party_size, check_team_coupling, escrowed_item_qty, log_reject,
+    reject_if_monster_in_trade, require_owner,
 };
 use crate::inventory::consume_one;
 use crate::marshal::{
@@ -19,8 +20,8 @@ use crate::marshal::{
     type_chart_from_rows, wild_battle_monster, write_back_hp,
 };
 use crate::schema::{
-    battle, battle_wild, monster, monster_pub, skill_row, species_row, type_relation_row, Battle,
-    BattleWild, Monster, SkillRow,
+    battle, battle_wild, inventory, monster, monster_pub, skill_row, species_row, trade_offer,
+    type_relation_row, Battle, BattleWild, Monster, SkillRow,
 };
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
@@ -139,6 +140,16 @@ pub fn start_battle(
             log_reject("start_battle", me, &e);
             return Err(e);
         }
+        // Trade escrow guard (TR-11, ADR-0106): party monster cannot be in an active trade.
+        reject_if_monster_in_trade(
+            ctx.db
+                .trade_offer()
+                .initiator()
+                .filter(me)
+                .chain(ctx.db.trade_offer().counterparty().filter(me)),
+            mid,
+        )
+        .inspect_err(|e| log_reject("start_battle", me, e))?;
         let sp = ctx
             .db
             .species_row()
@@ -177,6 +188,21 @@ pub fn start_battle(
             log_reject("start_battle", me, &e);
             return Err(e);
         }
+        // Trade escrow guard (TR-11, ADR-0106): opponent monster cannot be in an active trade.
+        reject_if_monster_in_trade(
+            ctx.db
+                .trade_offer()
+                .initiator()
+                .filter(opponent_identity)
+                .chain(
+                    ctx.db
+                        .trade_offer()
+                        .counterparty()
+                        .filter(opponent_identity),
+                ),
+            mid,
+        )
+        .inspect_err(|e| log_reject("start_battle", me, e))?;
         let sp = ctx
             .db
             .species_row()
@@ -323,6 +349,15 @@ pub(crate) fn begin_encounter(
         if m.owner_identity != player_identity {
             return Err(format!("monster {mid} not owned by player"));
         }
+        // Trade escrow guard (ME-1, ADR-0106): party monster cannot be in an active trade.
+        reject_if_monster_in_trade(
+            ctx.db
+                .trade_offer()
+                .initiator()
+                .filter(player_identity)
+                .chain(ctx.db.trade_offer().counterparty().filter(player_identity)),
+            mid,
+        )?;
         let sp = ctx
             .db
             .species_row()
@@ -841,6 +876,30 @@ pub fn use_battle_item(ctx: &ReducerContext, battle_id: u64, item_id: u32) -> Re
         return Err(e);
     }
 
+    // Guard 5.5: trade escrow guard (TR-12, ADR-0106): item cannot be from an escrowed stack.
+    let escrowed = escrowed_item_qty(
+        ctx.db
+            .trade_offer()
+            .initiator()
+            .filter(me)
+            .chain(ctx.db.trade_offer().counterparty().filter(me)),
+        me,
+        item_id,
+    );
+    let current_count = ctx
+        .db
+        .inventory()
+        .owner_identity()
+        .filter(me)
+        .find(|r| r.item_id == item_id)
+        .map(|r| r.count)
+        .unwrap_or(0);
+    if current_count.saturating_sub(escrowed) == 0 {
+        let e = "item is in an active trade".to_string();
+        log_reject("use_battle_item", me, &e);
+        return Err(e);
+    }
+
     // Guard 6: irreversible spend only after all guards pass.
     consume_one(ctx, me, item_id)?;
 
@@ -875,6 +934,16 @@ pub(crate) fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) -> Resu
             format!("write_back_party_hp: party_monster_ids index {i} out of range")
         })?;
         if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
+            // Abort-on-owner-change contract (M7b-2 spec gap closure, ADR-0106 M15a):
+            // If escrow guards were bypassed and ownership changed mid-battle, abort the
+            // entire write-back rather than writing HP into another player's monster.
+            // In practice the TR-11/ME-1 escrow guards make this unreachable; the check
+            // is defensive depth-of-defence (fail-loud on invariant violation).
+            if m.owner_identity != battle.player_identity {
+                return Err(format!(
+                    "write_back_party_hp: ownership changed mid-battle for monster {mid} — aborted"
+                ));
+            }
             write_back_hp(&mut m, bm);
             let pub_row = pub_from_monster(&m);
             ctx.db.monster().monster_id().update(m);

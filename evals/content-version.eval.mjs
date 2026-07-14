@@ -32,7 +32,7 @@ export function hashContentDir(contentDir) {
   const files = walkFiles(contentDir, contentDir);
   const h = createHash('sha256');
   for (const { rel, full } of files) {
-    h.update(rel + '\n');
+    h.update(`${rel}\n`);
     h.update(readFileSync(full));
     h.update('\n');
   }

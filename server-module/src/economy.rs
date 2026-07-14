@@ -11,9 +11,14 @@
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0081 — keep it stable.
 
-use crate::guards::require_owner;
+use crate::guards::{
+    escrowed_currency_amount, escrowed_item_qty, require_owner, saturating_sub_u32,
+    saturating_sub_u64,
+};
 use crate::inventory::{consume_one, grant_item};
-use crate::schema::{item_row, player, player_wallet, shop_item_row, PlayerWallet};
+use crate::schema::{
+    inventory, item_row, player, player_wallet, shop_item_row, trade_offer, PlayerWallet,
+};
 use game_core::currency::{apply_grant, apply_spend};
 use spacetimedb::{Identity, ReducerContext, Table};
 
@@ -36,6 +41,18 @@ pub(crate) fn grant_currency(ctx: &ReducerContext, owner: Identity, amount: u64)
             });
         }
     }
+}
+
+/// Read-only balance query — the only sanctioned path to read player_wallet outside
+/// of `grant_currency` / `spend_currency` (ADR-0081 single-surface discipline).
+/// Returns 0 if no wallet row exists.
+pub(crate) fn wallet_balance(ctx: &ReducerContext, owner: Identity) -> u64 {
+    ctx.db
+        .player_wallet()
+        .owner_identity()
+        .find(owner)
+        .map(|r| r.balance)
+        .unwrap_or(0)
 }
 
 /// Debit `amount` from `owner`'s wallet. Returns `Err` when the wallet row is
@@ -108,6 +125,21 @@ pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) -> Result
         .checked_mul(u64::from(qty))
         .ok_or_else(|| "total overflow".to_string())?;
 
+    // Trade escrow guard (TR-9, ADR-0106): reject if currency is locked in an active offer.
+    let escrowed = escrowed_currency_amount(
+        ctx.db
+            .trade_offer()
+            .initiator()
+            .filter(me)
+            .chain(ctx.db.trade_offer().counterparty().filter(me)),
+        me,
+    );
+    let balance = wallet_balance(ctx, me);
+    let available = saturating_sub_u64(balance, escrowed);
+    if total > available {
+        return Err("currency is in an active trade".to_string());
+    }
+
     // Spend first — if this fails the whole reducer transaction rolls back.
     spend_currency(ctx, me, total)?;
 
@@ -163,6 +195,29 @@ pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> 
         .sell_price
         .checked_mul(u64::from(qty))
         .ok_or_else(|| "total overflow".to_string())?;
+
+    // Trade escrow guard (TR-8, ADR-0106): reject if the item is locked in an active offer.
+    let escrowed = escrowed_item_qty(
+        ctx.db
+            .trade_offer()
+            .initiator()
+            .filter(me)
+            .chain(ctx.db.trade_offer().counterparty().filter(me)),
+        me,
+        item_id,
+    );
+    let current_count = ctx
+        .db
+        .inventory()
+        .owner_identity()
+        .filter(me)
+        .find(|r| r.item_id == item_id)
+        .map(|r| r.count)
+        .unwrap_or(0);
+    let available_count = saturating_sub_u32(current_count, escrowed);
+    if qty > available_count {
+        return Err("item is in an active trade".to_string());
+    }
 
     // Consume qty units — each consume_one is checked; an Err rolls back the txn.
     for _ in 0..qty {

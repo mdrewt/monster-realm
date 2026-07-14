@@ -15,13 +15,16 @@
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
 
-use crate::economy::spend_currency;
-use crate::guards::require_owner;
+use crate::economy::{spend_currency, wallet_balance};
+use crate::guards::{
+    escrowed_currency_amount, escrowed_item_qty, reject_if_monster_in_trade, require_owner,
+    saturating_sub_u64,
+};
 use crate::inventory::consume_one;
 use crate::marshal::{now_ms, pub_from_monster};
 use crate::schema::{
-    battle, character, heal_cooldown, heal_location_row, item_row, monster, monster_pub, player,
-    species_row, HealCooldown,
+    battle, character, heal_cooldown, heal_location_row, inventory, item_row, monster, monster_pub,
+    player, species_row, trade_offer, HealCooldown,
 };
 use game_core::{
     apply_care, focus_train, BattleOutcome, Bond, EVs, FocusTrainError, FocusTrainResult, IVs,
@@ -67,6 +70,15 @@ pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
         return Err("monster not found".to_string());
     };
     require_owner(ctx, "care", m.owner_identity)?;
+    // Trade escrow guard (TR-6, ADR-0106).
+    reject_if_monster_in_trade(
+        ctx.db
+            .trade_offer()
+            .initiator()
+            .filter(m.owner_identity)
+            .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
+        monster_id,
+    )?;
     let now = now_ms(ctx);
     let new_bond = evaluate_care(m.bond, m.last_care_at_ms, now)?;
     m.bond = new_bond;
@@ -123,6 +135,38 @@ pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result
         return Err("monster not found".to_string());
     };
     require_owner(ctx, "train", m.owner_identity)?;
+    // Trade escrow guards (TR-7, ADR-0106): monster and food item must be free.
+    reject_if_monster_in_trade(
+        ctx.db
+            .trade_offer()
+            .initiator()
+            .filter(m.owner_identity)
+            .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
+        monster_id,
+    )?;
+    // Item escrow: reject if consuming this item would breach the escrowed reserve.
+    {
+        let escrowed = escrowed_item_qty(
+            ctx.db
+                .trade_offer()
+                .initiator()
+                .filter(m.owner_identity)
+                .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
+            m.owner_identity,
+            food_item_id,
+        );
+        let count = ctx
+            .db
+            .inventory()
+            .owner_identity()
+            .filter(m.owner_identity)
+            .find(|r| r.item_id == food_item_id)
+            .map(|r| r.count)
+            .unwrap_or(0);
+        if escrowed >= count {
+            return Err("item is in an active trade".to_string());
+        }
+    }
 
     let Some(item) = ctx.db.item_row().id().find(food_item_id) else {
         return Err("item not found".to_string());
@@ -268,6 +312,20 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
         .unwrap_or(0);
     if currency_cost > 0 {
         require_owner(ctx, "heal_party", me)?;
+        // Trade escrow guard (TR-10, ADR-0106): reject if currency_cost > available.
+        let escrowed = escrowed_currency_amount(
+            ctx.db
+                .trade_offer()
+                .initiator()
+                .filter(me)
+                .chain(ctx.db.trade_offer().counterparty().filter(me)),
+            me,
+        );
+        let balance = wallet_balance(ctx, me);
+        let available = saturating_sub_u64(balance, escrowed);
+        if currency_cost > available {
+            return Err("currency is in an active trade".to_string());
+        }
         spend_currency(ctx, me, currency_cost)?;
     }
 

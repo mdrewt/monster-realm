@@ -24,7 +24,6 @@ import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
   initialReconnectState,
-  type LinkState,
   linkFrozen,
   onAttemptFailed,
   onConnected,

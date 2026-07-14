@@ -7,7 +7,9 @@ export class QuestLogView {
   private list: HTMLElement;
 
   constructor() {
+    // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
     this.overlay = document.getElementById('quest-log-overlay')!;
+    // biome-ignore lint/style/noNonNullAssertion: elements are required in index.html
     this.list = document.getElementById('quest-log-list')!;
   }
 

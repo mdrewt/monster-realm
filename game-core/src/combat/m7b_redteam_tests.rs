@@ -154,33 +154,25 @@ fn m7b_1_double_battle_double_xp_arithmetic() {
 // ===========================================================================
 
 #[test]
-#[ignore = "spec gap: owner-change-mid-battle write-back unspecified; no trade reducer until M11+"]
 fn m7b_2_owner_change_mid_battle_spec_gap() {
-    // Prove that the plan's write-back logic has an unresolved edge case.
-    // We prove it with a comment-test (specification anchor) because the
-    // SpacetimeDB reducer context cannot be instantiated in unit tests.
-
-    // The plan says:
-    //   "Re-verify owner_identity against current state, not battle-time snapshot."
+    // SPEC GAP CLOSED (M15a, ADR-0106):
     //
-    // Scenario: monster transferred mid-battle.
-    //   - write-back re-verify FAILS → owner gets no HP persistence (silent loss)
-    //   - write-back re-verify PASSES (if skipped) → B's monster gets wrong HP
+    // Condition (a): trade reducers landed (propose_trade / respond_trade /
+    //   confirm_trade / cancel_trade in server-module/src/trading.rs).
     //
-    // Neither outcome is specified. The plan MUST add:
-    //   "If any party monster's owner_identity no longer matches ctx.sender at
-    //    write-back time, abort the entire write-back with Err and leave the
-    //    battle row with its current outcome (do not re-use it)."
+    // Condition (b): write_back_party_hp in server-module/src/battle.rs now
+    //   enforces the abort-on-owner-change contract: if any party monster's
+    //   owner_identity no longer matches battle.player_identity at write-back time,
+    //   the function returns Err(...) and the battle row is left with its current
+    //   outcome (no HP is written into another player's monster).
     //
-    // Un-ignore this test when: (a) a trade/transfer reducer lands (M11+) AND
-    // (b) the write-back spec explicitly defines the abort-on-owner-change contract.
-    // Until then this test MUST stay red when run, confirming the gap is open.
-    panic!(
-        "M7b-2 SPEC GAP (OPEN): owner-change-mid-battle write-back behaviour is \
-         unspecified. No trade reducer exists until M11+. \
-         When un-ignored this test must remain RED until the spec is closed and \
-         the server-module write_back_party_hp enforces the abort-on-owner-change contract."
-    );
+    // The scenario is also prevented by the escrow guards (TR-11 / ME-1, ADR-0106):
+    // reject_if_monster_in_trade in start_battle + begin_encounter ensures a monster
+    // in an active trade offer cannot be placed in battle, making the ownership-change
+    // scenario unreachable in practice. The write_back check is defensive-depth.
+    // Spec gap closed — ownership-change-mid-battle is prevented by TR-11/ME-1 escrow
+    // guards (reject_if_monster_in_trade in start_battle/begin_encounter) and caught
+    // defensively by the abort-on-owner-change check in write_back_party_hp (M15a, ADR-0106).
 }
 
 // ===========================================================================
