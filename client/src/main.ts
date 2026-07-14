@@ -430,6 +430,7 @@ window.addEventListener('keydown', (e) => {
       !dialogueView?.visible &&
       !healView?.visible &&
       !shopView?.visible &&
+      !tradeView?.visible &&
       !pvpView?.visible
     ) {
       if (questLogView?.visible) {
@@ -451,6 +452,7 @@ window.addEventListener('keydown', (e) => {
       !dialogueView?.visible &&
       !questLogView?.visible &&
       !shopView?.visible &&
+      !tradeView?.visible &&
       !pvpView?.visible
     ) {
       if (healView?.visible) {
@@ -566,6 +568,8 @@ window.addEventListener('keydown', (e) => {
       !questLogView?.visible &&
       !healView?.visible &&
       !shopView?.visible &&
+      !tradeView?.visible &&
+      !pvpView?.visible &&
       identity !== ''
     ) {
       const own = store.ownCharacter(identity);
@@ -885,10 +889,21 @@ store.onBatchApplied(() => {
   if (identity === '') return;
   try {
     const vm = buildPvpChallengeViewModel(store.allChallenges(), identity, store.allPlayers());
-    // forceVisible=true when there is an incoming challenge (surface it automatically
-    // so the challenged player doesn't miss it) OR when already visible (preserve a
-    // manually-opened overlay while the player list changes on each batch).
-    const forceVisible = vm.incoming !== null || (pvpView?.visible ?? false);
+    // Auto-show on incoming challenge ONLY when no other overlay is visible — never
+    // pop the PvP overlay over an active battle or another overlay (mutual-exclusivity).
+    // Always preserve a manually-opened overlay (pvpView.visible) regardless.
+    const anyOverlayVisible =
+      battleView?.visible ||
+      boxView?.visible ||
+      raisingView?.visible ||
+      evolutionView?.visible ||
+      dialogueView?.visible ||
+      questLogView?.visible ||
+      healView?.visible ||
+      shopView?.visible ||
+      tradeView?.visible;
+    const forceVisible =
+      (!anyOverlayVisible && vm.incoming !== null) || (pvpView?.visible ?? false);
     pvpView?.refresh(vm, forceVisible);
   } catch (err) {
     console.error('[m16b] pvpView batch listener error', err);
@@ -1039,26 +1054,31 @@ async function main(): Promise<void> {
       onUseItem: (battleId, itemId) => {
         sendGuarded('use-item', () => conn?.conn.reducers.useBattleItem({ battleId, itemId }));
       },
-      // m16b: PvP action submission. Records the current turn number locally so that
-      // when battle.turnNumber advances past it, pvpPendingSubmit becomes false and the
-      // battle UI unlocks. battle_action is PRIVATE (ADR-0015) — this is the only signal.
+      // m16b: PvP action submission. pvpPendingTurnNumber is set INSIDE the lambda
+      // so sendGuarded's frozen-check runs first — a frozen-link click must not
+      // lock pvpPendingSubmit permanently (the turn never advances on a dropped send).
+      // Cleared on rejection (mirroring dismissPending pattern from dialogue dismiss).
       onPvpAttack: (battleId, skillId) => {
-        pvpPendingTurnNumber = store.latestPlayerBattle(identity)?.turnNumber ?? null;
-        sendGuarded('pvp-attack', () =>
-          conn?.conn.reducers.submitPvpAction({
-            battleId,
-            action: { tag: 'Attack', value: skillId },
-          }),
-        );
+        sendGuarded('pvp-attack', () => {
+          pvpPendingTurnNumber = store.latestPlayerBattle(identity)?.turnNumber ?? null;
+          return conn?.conn.reducers
+            .submitPvpAction({ battleId, action: { tag: 'Attack', value: skillId } })
+            ?.catch((err: unknown) => {
+              pvpPendingTurnNumber = null;
+              throw err;
+            });
+        });
       },
       onPvpSwap: (battleId, teamIndex) => {
-        pvpPendingTurnNumber = store.latestPlayerBattle(identity)?.turnNumber ?? null;
-        sendGuarded('pvp-swap', () =>
-          conn?.conn.reducers.submitPvpAction({
-            battleId,
-            action: { tag: 'Swap', value: teamIndex },
-          }),
-        );
+        sendGuarded('pvp-swap', () => {
+          pvpPendingTurnNumber = store.latestPlayerBattle(identity)?.turnNumber ?? null;
+          return conn?.conn.reducers
+            .submitPvpAction({ battleId, action: { tag: 'Swap', value: teamIndex } })
+            ?.catch((err: unknown) => {
+              pvpPendingTurnNumber = null;
+              throw err;
+            });
+        });
       },
     });
     raisingView = new RaisingViewClass(mount, {

@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 75 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 76 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -84,6 +84,7 @@ Generated from 75 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0107](./0107-m15b-trade-client-ui.md) | Trade client UI overlay (m15b) | Accepted | client-ui | m15b (client-only) | Trade overlay (KeyU), pure `buildTradeViewModel` model, `TradeView` DOM shell, `trade_offer` store subscription, 4 reducer callbacks, double-spend lock. |
 | [0108](./0108-m15c-trade-evals.md) | Trade evals tail (m15c) | Accepted | ci-gates, security-authz | m15c (test-artifact only — no production code) | Three `evals/trade-*.eval.mjs` files (static-analysis gates) + one Playwright e2e spec covering the trade overlay UI wiring. |
 | [0109](./0109-m16a-pvp-spine.md) | PvP battle spine (m16a) | Accepted | battle, schema-persistence, security-authz | m16a | New `pvp.rs` module: challenge handshake, secret-pick, both-submitted inline resolution via `resolve_full_turn`, turn-deadline reaper, forfeit-on-disconnect. `battle_action` private (must-never-leak). Three tables, two SpacetimeType enums. |
+| [0110](./0110-m16b-pvp-client-ui.md) | PvP client UI (m16b) | Accepted | client-ui | m16b | `pvpModel.ts` + `pvpView.ts` + `main.ts` KeyP flow. `battle_challenge` subscribed; `battle_action` NEVER subscribed (ADR-0015). `pvpPendingTurnNumber` local tracking. `isPvP = !isWild && ids differ`; `canFlee: false` in PvP. |
 
 ## Harness design corpus (H- namespace)
 
@@ -231,6 +232,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0096](./0096-m14e-status-cure-items.md) — m14e — M14e: Status-Curing Items + Client Battle-Event Display (Accepted)
 - [0101](./0101-m14.5d-client-battle-ux.md) — m14.5d — M14.5d: Client battle UX completeness (weather banner, parity guards, VM-compare) (Accepted)
 - [0107](./0107-m15b-trade-client-ui.md) — m15b (client-only) — Trade client UI overlay (m15b) (Accepted)
+- [0110](./0110-m16b-pvp-client-ui.md) — m16b — PvP client UI (m16b) (Accepted)
 
 ### ci-gates
 

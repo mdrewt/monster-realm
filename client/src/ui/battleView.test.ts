@@ -656,3 +656,195 @@ describe('BattleView m14.5d-1b: cure-item selection preserved across re-renders 
     document.body.removeChild(parent);
   });
 });
+
+// =============================================================================
+// m16b — RT-PVP-DS-01: double-submit suppression invariant
+//
+// INVARIANT: when pvpPendingSubmit=true, NEITHER skill-attack buttons NOR
+// swap buttons are present in the DOM. Both paths must be gated or the player
+// can submit two actions in the same PvP turn before the server resolves it.
+//
+// Protects: the pvpPendingSubmit guard in #renderSkills (vm.pvpPendingSubmit
+// early-return) and in #renderSwapButtons (vm.isPvp && vm.pvpPendingSubmit
+// early-return). A regression on either path breaks this test.
+// =============================================================================
+
+function makePvpPendingVM(): BattleViewModel {
+  const bench = {
+    teamIndex: 1,
+    speciesName: 'BenchMon',
+    currentHp: 15,
+    maxHp: 20,
+  };
+  return {
+    battleId: 42n,
+    turnNumber: 3,
+    outcome: 'Ongoing',
+    playerCard: {
+      speciesName: 'MyMon',
+      level: 10,
+      currentHp: 30,
+      maxHp: 40,
+      hpPercent: 75,
+      affinity: 'Fire',
+      status: null,
+    },
+    opponentCard: {
+      speciesName: 'TheirMon',
+      level: 10,
+      currentHp: 25,
+      maxHp: 40,
+      hpPercent: 62,
+      affinity: 'Water',
+      status: null,
+    },
+    skills: [
+      { id: 1, name: 'Ember', affinity: 'Fire', power: 40, accuracy: 100 },
+      { id: 2, name: 'Tackle', affinity: 'Normal', power: 35, accuracy: 95 },
+    ],
+    canFlee: false,
+    canSwap: true,
+    bench: [bench],
+    canRecruit: false,
+    baitOptions: [],
+    cureItems: [],
+    weather: null,
+    isPvp: true,
+    pvpPendingSubmit: true,
+    pvpOpponentName: 'Opponent',
+  };
+}
+
+describe('BattleView m16b RT-PVP-DS-01: double-submit suppression — no buttons when pvpPendingSubmit=true', () => {
+  it('BITES: skill-attack buttons absent when pvpPendingSubmit=true (no double-send path)', () => {
+    // Kills: an impl that renders skill buttons even when pvpPendingSubmit=true.
+    // The player could click a skill button, setting pvpPendingTurnNumber, then
+    // click again on the stale DOM before the re-render clears it — double submit.
+    // Correct impl: #renderSkills returns early when vm.pvpPendingSubmit is true.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const callbacks: BattleViewCallbacks = {
+      onAttack: vi.fn(),
+      onFlee: vi.fn(),
+      onSwap: vi.fn(),
+      onRecruit: vi.fn(),
+      onUseItem: vi.fn(),
+      onPvpAttack: vi.fn(),
+      onPvpSwap: vi.fn(),
+    };
+    const view = new BattleView(parent, callbacks);
+    view.refresh(makePvpPendingVM());
+    view.show();
+
+    // No skill buttons should be present in the DOM.
+    // Skill buttons are rendered inside #skillsEl — they have no unique testid,
+    // but they are buttons with textContent starting "Submit:".
+    const buttons = [...parent.querySelectorAll('button')].filter((b) =>
+      b.textContent?.startsWith('Submit:'),
+    );
+    expect(buttons).toHaveLength(0);
+
+    document.body.removeChild(parent);
+  });
+
+  it('BITES: swap buttons absent when isPvp=true and pvpPendingSubmit=true (no double-send path)', () => {
+    // Kills: an impl where #renderSwapButtons only checks isPvp but not pvpPendingSubmit,
+    // or only checks pvpPendingSubmit but not isPvp, leaving swap open as a double-submit vector.
+    // Correct impl: #renderSwapButtons returns early when vm.isPvp && vm.pvpPendingSubmit.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const callbacks: BattleViewCallbacks = {
+      onAttack: vi.fn(),
+      onFlee: vi.fn(),
+      onSwap: vi.fn(),
+      onRecruit: vi.fn(),
+      onUseItem: vi.fn(),
+      onPvpAttack: vi.fn(),
+      onPvpSwap: vi.fn(),
+    };
+    const view = new BattleView(parent, callbacks);
+    view.refresh(makePvpPendingVM());
+    view.show();
+
+    // No swap buttons should be present ("Submit Swap: ...").
+    const swapButtons = [...parent.querySelectorAll('button')].filter((b) =>
+      b.textContent?.startsWith('Submit Swap:'),
+    );
+    expect(swapButtons).toHaveLength(0);
+
+    document.body.removeChild(parent);
+  });
+
+  it('BITES: pvp-status banner visible when pvpPendingSubmit=true (player can see they already submitted)', () => {
+    // Kills: an impl that suppresses buttons but forgets to show the status banner,
+    // leaving the player staring at a blank screen with no feedback.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const callbacks: BattleViewCallbacks = {
+      onAttack: vi.fn(),
+      onFlee: vi.fn(),
+      onSwap: vi.fn(),
+      onRecruit: vi.fn(),
+      onUseItem: vi.fn(),
+      onPvpAttack: vi.fn(),
+      onPvpSwap: vi.fn(),
+    };
+    const view = new BattleView(parent, callbacks);
+    view.refresh(makePvpPendingVM());
+    view.show();
+
+    const statusBanner = parent.querySelector('[data-testid="pvp-status"]') as HTMLElement | null;
+    expect(statusBanner).not.toBeNull();
+    expect(statusBanner!.style.display).not.toBe('none');
+    expect(statusBanner!.textContent!.trim().length).toBeGreaterThan(0);
+
+    document.body.removeChild(parent);
+  });
+
+  it('BITES: skill buttons re-appear when pvpPendingSubmit transitions false→true→false', () => {
+    // Regression guard: after the server resolves the turn (pvpPendingSubmit=false),
+    // skill buttons must come back. Kills: an impl that permanently suppresses buttons
+    // once pvpPendingSubmit is ever true (one-way latch bug).
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const callbacks: BattleViewCallbacks = {
+      onAttack: vi.fn(),
+      onFlee: vi.fn(),
+      onSwap: vi.fn(),
+      onRecruit: vi.fn(),
+      onUseItem: vi.fn(),
+      onPvpAttack: vi.fn(),
+      onPvpSwap: vi.fn(),
+    };
+    const view = new BattleView(parent, callbacks);
+
+    // Phase 1: pending=false → buttons shown
+    const vmNotPending: BattleViewModel = { ...makePvpPendingVM(), pvpPendingSubmit: false };
+    view.refresh(vmNotPending);
+    view.show();
+    const buttonsBeforePending = [...parent.querySelectorAll('button')].filter((b) =>
+      b.textContent?.startsWith('Submit:'),
+    );
+    expect(buttonsBeforePending.length).toBeGreaterThan(0);
+
+    // Phase 2: pending=true → buttons suppressed
+    view.refresh(makePvpPendingVM());
+    const buttonsDuringPending = [...parent.querySelectorAll('button')].filter((b) =>
+      b.textContent?.startsWith('Submit:'),
+    );
+    expect(buttonsDuringPending).toHaveLength(0);
+
+    // Phase 3: pending=false again (server resolved turn) → buttons back
+    view.refresh(vmNotPending);
+    const buttonsAfterResolution = [...parent.querySelectorAll('button')].filter((b) =>
+      b.textContent?.startsWith('Submit:'),
+    );
+    expect(buttonsAfterResolution.length).toBeGreaterThan(0);
+
+    document.body.removeChild(parent);
+  });
+});
