@@ -110,6 +110,217 @@ export function documentsBsatnGap(nameStr, detailStr) {
   return combined.includes('BSATN') && combined.includes('serde') && combined.includes('engine');
 }
 
+// ---------------------------------------------------------------------------
+// 16.5e-3 (ADR-0116 D4): additive-content coupling.
+// Every Option<...> column on a content-synced table must have its
+// field-assignment inside a StructName-row-literal block in content.rs —
+// otherwise a future re-seed (e.g. a spread refactor of the row literal)
+// silently drops the column. No new RegExp — literal regexes + indexOf only.
+// ---------------------------------------------------------------------------
+
+// Comments first, then strings (order documented in ADR-0116; a block-comment
+// terminator inside a normal string is an accepted residual). The string
+// escape-branch matches backslash + any char INCLUDING newline: content.rs has
+// a backslash-newline line-continuation string that inverts quote pairing
+// under the newline-excluding form.
+function stripRustCommentsAndStrings(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/"(?:[^"\\]|\\[\s\S])*"/g, '""');
+}
+
+function isWordChar(ch) {
+  return (
+    (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch === '_'
+  );
+}
+
+/**
+ * Parse schema.rs table structs: for each #[spacetimedb::table(name = X ...)]
+ * attribute, capture the following struct and its Option<...> fields.
+ * Returns { [structName]: { tableName, optionFields: string[] } }.
+ */
+export function parseContentTableStructs(schemaSrc) {
+  const src = stripRustCommentsAndStrings(schemaSrc);
+  const out = {};
+  const tableAttrRe = /#\[spacetimedb::table\(\s*name\s*=\s*(\w+)/g;
+  let m;
+  while ((m = tableAttrRe.exec(src)) !== null) {
+    const tableName = m[1];
+    const structIdx = src.indexOf('pub struct ', m.index);
+    if (structIdx === -1) continue;
+    const nameStart = structIdx + 'pub struct '.length;
+    let nameEnd = nameStart;
+    while (nameEnd < src.length && isWordChar(src[nameEnd])) nameEnd++;
+    const structName = src.slice(nameStart, nameEnd);
+    const braceIdx = src.indexOf('{', structIdx);
+    if (braceIdx === -1) continue;
+    let depth = 1;
+    let i = braceIdx + 1;
+    while (i < src.length && depth > 0) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') depth--;
+      i++;
+    }
+    const body = src.slice(braceIdx + 1, i - 1);
+    const optionFields = [];
+    const fieldRe = /pub\s+(\w+)\s*:\s*Option\s*</g;
+    let fm;
+    while ((fm = fieldRe.exec(body)) !== null) optionFields.push(fm[1]);
+    out[structName] = { tableName, optionFields };
+  }
+  return out;
+}
+
+// One literal regex for DB write call sites: ctx.db.<table>() followed by a
+// chain of zero-arg accessors (index accessors like .item_id()) and then
+// .insert( / .update( / .delete(. Multi-line chains tolerated via \s*.
+// Zero-arg chain elements (not a bounded [\s\S] lookahead) so a match can
+// never leak across statement boundaries into a DIFFERENT table's write.
+const DB_WRITE_RE =
+  /ctx\s*\.\s*db\s*\.\s*(\w+)\s*\(\s*\)(?:\s*\.\s*\w+\s*\(\s*\))*\s*\.\s*(insert|update|delete)\s*\(/g;
+
+function scanDbWrites(contentSrc) {
+  const src = stripRustCommentsAndStrings(contentSrc);
+  const writes = [];
+  let m;
+  while ((m = DB_WRITE_RE.exec(src)) !== null) {
+    writes.push({ table: m[1], op: m[2] });
+  }
+  return writes;
+}
+
+/**
+ * Table names written to anywhere in content.rs (whole-file scope, D4 —
+ * captures helper fns like seed_heal_locations_from outside sync_content_inner).
+ * Returns Set<string>.
+ */
+export function parseSyncedTables(contentSrc) {
+  const synced = new Set();
+  for (const w of scanDbWrites(contentSrc)) synced.add(w.table);
+  return synced;
+}
+
+// Row-literal blocks: every word-boundary occurrence of `StructName {` in the
+// stripped source, brace-walked to its matching close.
+function collectRowLiteralBlocks(strippedSrc, structName) {
+  const blocks = [];
+  let pos = 0;
+  while (true) {
+    const idx = strippedSrc.indexOf(structName, pos);
+    if (idx === -1) break;
+    pos = idx + structName.length;
+    if (idx > 0 && isWordChar(strippedSrc[idx - 1])) continue;
+    let j = pos;
+    while (j < strippedSrc.length && ' \t\r\n'.indexOf(strippedSrc[j]) !== -1) j++;
+    if (strippedSrc[j] !== '{') continue;
+    let depth = 1;
+    let k = j + 1;
+    while (k < strippedSrc.length && depth > 0) {
+      if (strippedSrc[k] === '{') depth++;
+      else if (strippedSrc[k] === '}') depth--;
+      k++;
+    }
+    blocks.push(strippedSrc.slice(j + 1, k - 1));
+    pos = k;
+  }
+  return blocks;
+}
+
+// Word-boundary field-assignment check (C-W): `<field>:` where the preceding
+// char is NOT [A-Za-z0-9_] — so `stability:` never satisfies `ability`.
+// indexOf + manual preceding-char check; no dynamic RegExp.
+function hasFieldAssignment(blockText, fieldName) {
+  const needle = fieldName + ':';
+  let pos = 0;
+  while (true) {
+    const idx = blockText.indexOf(needle, pos);
+    if (idx === -1) return false;
+    pos = idx + needle.length;
+    if (idx > 0 && isWordChar(blockText[idx - 1])) continue;
+    return true;
+  }
+}
+
+/**
+ * The 16.5e-3 gate (ADR-0116 D4). [] = clean; one string per violation.
+ * Vacuity guard: zero Option fields discovered across ALL table structs is
+ * itself a violation (parser rot — m16.5a lesson).
+ * Exemption: a synced table with NO row literal in content.rs AND NO insert
+ * call site is an in-place mutation of existing rows (the monster/monster_pub
+ * recompute_monster_derived_fields shape) — updates preserve columns they do
+ * not touch, and nothing is re-seeded from content, so no coupling is owed.
+ * Insert-written tables stay held to the rule even without a local literal
+ * (the encounter shape: its literal lives in marshal.rs — a future Option
+ * column there must surface in content.rs to pass).
+ */
+export function checkAdditiveColumnCoupling(schemaSrc, contentSrc) {
+  const structs = parseContentTableStructs(schemaSrc);
+  const writes = scanDbWrites(contentSrc);
+  const synced = new Set();
+  const inserted = new Set();
+  for (const w of writes) {
+    synced.add(w.table);
+    if (w.op === 'insert') inserted.add(w.table);
+  }
+
+  let totalOptionFields = 0;
+  for (const entry of Object.values(structs)) {
+    totalOptionFields += entry.optionFields.length;
+  }
+  if (totalOptionFields === 0) {
+    return [
+      'vacuity guard (16.5e-3, ADR-0116): zero Option<...> fields discovered across all table structs — parser rot',
+    ];
+  }
+
+  const strippedContent = stripRustCommentsAndStrings(contentSrc);
+  const violations = [];
+  for (const [structName, entry] of Object.entries(structs)) {
+    const { tableName, optionFields } = entry;
+    if (optionFields.length === 0) continue;
+    if (!synced.has(tableName)) continue; // not a content-synced table
+    const blocks = collectRowLiteralBlocks(strippedContent, structName);
+    if (blocks.length === 0) {
+      if (!inserted.has(tableName)) continue; // in-place mutation shape — exempt
+      for (const f of optionFields) {
+        violations.push(
+          "table '" +
+            tableName +
+            "' (struct " +
+            structName +
+            "): Option field '" +
+            f +
+            "' — insert-written by content.rs but no '" +
+            structName +
+            " {' row literal found in content.rs to carry the assignment (16.5e-3, ADR-0116 D4)",
+        );
+      }
+      continue;
+    }
+    const combined = blocks.join('\n');
+    for (const f of optionFields) {
+      if (!hasFieldAssignment(combined, f)) {
+        violations.push(
+          "table '" +
+            tableName +
+            "' (struct " +
+            structName +
+            "): Option field '" +
+            f +
+            "' has no '" +
+            f +
+            ":' assignment in any '" +
+            structName +
+            " {' row literal in content.rs — the re-seed path would drop it (16.5e-3, ADR-0116 D4)",
+        );
+      }
+    }
+  }
+  return violations;
+}
+
 export default async function () {
   const name =
     'bsatn-compat-smoke (14.5f-1: serde(default)+SpacetimeType on battle.state fields; ' +
@@ -737,6 +948,33 @@ export default async function () {
     };
   }
 
+  // Criterion 7 (16.5e-3, ADR-0116 D4): additive-content coupling on the REAL
+  // schema.rs + content.rs. Fail loud if unreadable — these paths are fixed.
+  const schemaPath = path.resolve('server-module/src/schema.rs');
+  const contentPath = path.resolve('server-module/src/content.rs');
+  let schemaSrc = '';
+  try {
+    schemaSrc = readFileSync(schemaPath, 'utf8');
+  } catch {
+    return { name, pass: false, detail: `criterion 7 FAIL: cannot read ${schemaPath}` };
+  }
+  let contentSrc = '';
+  try {
+    contentSrc = readFileSync(contentPath, 'utf8');
+  } catch {
+    return { name, pass: false, detail: `criterion 7 FAIL: cannot read ${contentPath}` };
+  }
+  const couplingViolations = checkAdditiveColumnCoupling(schemaSrc, contentSrc);
+  if (couplingViolations.length > 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'criterion 7 FAIL (16.5e-3 additive-content coupling, ADR-0116 D4): ' +
+        couplingViolations.join('; '),
+    };
+  }
+
   // Criterion 6: BSATN gap finding documented in name+detail (self-check)
   const passingDetail =
     'serde(default) present on BattleMonster.status and BattleState.weather (co-located); ' +
@@ -746,7 +984,10 @@ export default async function () {
     'SpacetimeDB engine migration handles additive columns at the engine level ' +
     '(publish without --delete-data), NOT the BSATN codec. ' +
     'The serde(default) annotation covers the serde serialization path (RON content, JSON wire format) ' +
-    'but is NOT what makes BSATN-persisted rows backward-compatible with new optional fields.';
+    'but is NOT what makes BSATN-persisted rows backward-compatible with new optional fields. ' +
+    '16.5e-3 (ADR-0116 D4): additive-content coupling verified — every Option column on a ' +
+    'content-synced table has its field-assignment in a content.rs re-seed row literal ' +
+    '(anchors: ability, train_stat, cure_status, cost_item_id).';
 
   if (!documentsBsatnGap(name, passingDetail)) {
     return {

@@ -38,11 +38,39 @@ function stripRustComments(src) {
 }
 
 /**
+ * Replace Rust double-quoted string literal CONTENTS with "" (16.5e-2, ADR-0116).
+ * Extends the pattern bodyHasGuard has always used: the escape branch matches
+ * backslash + ANY char INCLUDING newline (JS `.` excludes newline), because
+ * content.rs contains a backslash-newline line-continuation string — with `\\.`
+ * that string fails to match, quote pairing inverts, and whole code regions get
+ * swallowed as "strings". Documented residuals (ADR-0116): raw strings (r#...#)
+ * are not stripped, and a block-comment terminator sequence inside a normal
+ * string can corrupt the comment-then-string strip ordering.
+ */
+export function stripRustStrings(src) {
+  return src.replace(/"(?:[^"\\]|\\[\s\S])*"/g, '""');
+}
+
+/**
+ * Deterministic source ordering (16.5e-2, ADR-0116): keep only *.rs entries,
+ * exclude test files (*_tests.rs — nested paths included), sort lexicographically.
+ * Pure; tolerates non-string entries (readdirSync recursive contract).
+ */
+export function orderAndFilterRustEntries(entries) {
+  return entries
+    .filter((f) => typeof f === 'string' && f.endsWith('.rs') && !f.endsWith('_tests.rs'))
+    .sort();
+}
+
+/**
  * Extract a named function's body (between outer braces), or null if not found.
  * Handles both `pub fn <name>(` and `fn <name>(`.
+ * 16.5e-2 (ADR-0116): strips comments THEN string literals over the WHOLE source
+ * before anchoring, so a string literal containing the fn signature (e.g. an
+ * assert message in a test file) can never become the extraction anchor.
  */
 function extractFunctionBody(rawSrc, fnName) {
-  const src = stripRustComments(rawSrc);
+  const src = stripRustStrings(stripRustComments(rawSrc));
   let idx = src.indexOf(`pub fn ${fnName}(`);
   if (idx === -1) idx = src.indexOf(`fn ${fnName}(`);
   if (idx === -1) return null;
@@ -80,17 +108,18 @@ function countOccurrences(haystack, needle) {
 /**
  * Read all *.rs files under `dir` (recursive) into one concatenated string.
  * Used to find a named function even when it might live in any sub-module.
+ * 16.5e-2 (ADR-0116): entries pass through orderAndFilterRustEntries —
+ * deterministic sorted order, *_tests.rs excluded (no test-source hijack).
  */
 function readAllRustSources(dir) {
-  const parts = [];
   let entries;
   try {
     entries = readdirSync(dir, { recursive: true });
   } catch {
     return '';
   }
-  for (const f of entries) {
-    if (typeof f !== 'string' || !f.endsWith('.rs')) continue;
+  const parts = [];
+  for (const f of orderAndFilterRustEntries(entries)) {
     try {
       parts.push(readFileSync(path.join(dir, f), 'utf8'));
     } catch {
@@ -111,7 +140,9 @@ function readAllRustSources(dir) {
 function bodyHasGuard(combinedSrc, fnName, guard, minCount) {
   const body = extractFunctionBody(combinedSrc, fnName);
   if (!body) return { ok: false, found: -1 }; // function not found
-  const bodyNoStrings = body.replace(/"(?:[^"\\]|\\.)*"/g, '""');
+  // extractFunctionBody already string-strips whole-source (16.5e-2); this
+  // per-body strip is retained as defense in depth (SSOT: stripRustStrings).
+  const bodyNoStrings = stripRustStrings(body);
   const count = countOccurrences(bodyNoStrings, `${guard}(`);
   return { ok: count >= minCount, found: count };
 }
