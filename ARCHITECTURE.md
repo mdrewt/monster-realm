@@ -133,7 +133,7 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 |--------|------|--------------------|
 | `lib.rs` | module wiring + crate constants + lifecycle reducers (`init`/`sync_content`/`on_disconnect`) | — |
 | `schema.rs` | the data `#[table]` structs + row types (the table count is generated — see `docs/knowledge/`; scheduled tables live beside their reducers: `movement_tick_schedule` in `movement.rs`, `trade_offer_reaper_schedule` in `trading.rs`, `pvp_deadline_schedule` in `pvp.rs`) | — |
-| `guards.rs` | `log_reject`, `validate_name`, `authorize_move`, `check_party_size`, `check_monster_in_party`, `check_team_coupling`, `require_owner` (the consolidated owner-check preamble), and `reject_if_in_battle` (battle-escrowed check for evolve/fuse — ADR-0061) | `guards_tests.rs` |
+| `guards.rs` | `log_reject`, `validate_name`, `authorize_move`, `check_party_size`, `check_monster_in_party`, `check_team_coupling`, `require_owner` (the consolidated owner-check preamble), `reject_if_in_battle` (battle-escrowed check for evolve/fuse — ADR-0061), `reject_if_monster_in_trade` / `escrowed_item_qty` / `escrowed_currency_amount` (trade escrow — M15a, ADR-0106), `require_pvp_participant` (M16 — ADR-0109), and the `saturating_sub_u64` / `saturating_sub_u32` helpers | `guards_tests.rs` |
 | `marshal.rs` | row ↔ game-core marshaling helpers | `marshal_tests.rs` |
 | `content.rs` | `sync_content_inner` + seeding helpers | inline |
 | `movement.rs` | `join_game`, `enqueue_move`, `set_move`, `clear_queue`, `movement_tick` (including NPC wander drive via `npc_decide`), npc entity integration + the `movement_tick_schedule` scheduled table | inline |
@@ -144,7 +144,7 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 | `raising.rs` | `care`, `train`, `evaluate_heal`, `heal_party` (raising + heal cooldown — ADR-0058/0059) | `raising_tests.rs` |
 | `evolution.rs` | `evolve`, `fuse`, `compute_evolves_to` (M10b, ADR-0061/0062) | `evolution_tests.rs` |
 | `npc.rs` | `talk`, `advance_dialogue`, `dismiss_dialogue` reducers; dialogue/quest state marshaling + helpers (M12b, ADR-0069) | `npc_tests.rs` |
-| `economy.rs` | `buy`, `sell` reducers + `grant_currency` / `spend_currency` helpers (the single economy-mutation surface — M13, ADR-0081/0082) | `economy_tests.rs` |
+| `economy.rs` | `buy`, `sell` reducers + `grant_currency` / `spend_currency` / `wallet_balance` helpers (the single economy-mutation surface — M13, ADR-0081/0082) | `economy_tests.rs` |
 | `trading.rs` | `propose_trade`, `respond_trade`, `confirm_trade`, `cancel_trade`, `trade_offer_reaper` + the `trade_offer_reaper_schedule` scheduled table (M15a — ADR-0106; TTL reaper M16.5f — ADR-0117) | `trading_tests.rs` |
 | `pvp.rs` | `challenge_pvp`, `accept_challenge`, `decline_challenge`, `cancel_challenge`, `submit_pvp_action`, `pvp_deadline_reaper` + the `pvp_deadline_schedule` scheduled table (M16 — ADR-0109) | `pvp_tests.rs` |
 | `content_cache.rs` | `LazyLock` hot-path content caches (zone maps, evolutions, dialogue trees, quests, skills, items — no reducers; ADR-0089) | `content_cache_tests.rs` |
@@ -992,7 +992,7 @@ all callers updated); Phase 4.5 faint-guard clears pending `BattleStatusStore` e
 slots so Burn/Poison applied in the same hit as a KO cannot fire on a dead monster next turn;
 `debug_assert` on slot bounds; ADR next-free = 0100.
 
-**M14.5c** (ability-system end-to-end wiring — ADR-0100, PR TBD) complete: `species_row.ability:
+**M14.5c** (ability-system end-to-end wiring — ADR-0100, PR #151) complete: `species_row.ability:
 Option<u32>` additive column (ADR-0006); Flameling → ability_id 1 (Flame Body: StatusImmunity
 Burn), Sproutlet → ability_id 3 (Regeneration: EntryHeal denom=4), Tidalin → no ability;
 `build_ability_store` pure helper in `marshal.rs`; `AbilityStore` threaded as last parameter
