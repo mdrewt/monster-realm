@@ -5,6 +5,9 @@
 // (structs) are both snapshotted and compared exactly.
 //
 // Semgrep detect-non-literal-regexp: all patterns use literal /regex/ — NO new RegExp.
+// 16.5e (ADR-0116): git access uses execFileSync('git', [constant-args]) only
+// (precedent scripts/okf-export.mjs) — never a shell string.
+import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
@@ -143,6 +146,97 @@ export function checkTypeDrift(parsed, baseline) {
 }
 
 // ---------------------------------------------------------------------------
+// 16.5e (ADR-0116): append-only directional check — prev-committed baseline vs
+// the working-tree baseline. BSATN tags are positional: any non-tail change
+// (mid-insert, reorder, removal, rename/retype at a prefix position) is a
+// silent wire break for persisted rows. checkTypeDrift (exact-match) above is
+// untouched — this is an ADDITIONAL comparison with different inputs.
+// ---------------------------------------------------------------------------
+
+/**
+ * Append-only (tail-append) directional check between two committed baselines.
+ * Pure; NEVER throws (red-team F1/F2): kind mismatch is checked-and-flagged
+ * BEFORE any variants/fields array access, and malformed entries (non-array
+ * `variants`/`fields`) produce a diagnostic flag string, not a TypeError.
+ *
+ * Rules (ADR-0116 D5):
+ *   enums:   new.variants.slice(0, prev.variants.length) must deep-equal
+ *            prev.variants (tail-append only).
+ *   structs: same positional prefix rule over [name, type] field pairs.
+ *   kind flip enum<->struct  -> flagged.
+ *   type in prev, missing in new -> flagged (removal).
+ *   new-only types           -> allowed.
+ *
+ * @param {{ [name: string]: object }} prevBaseline previous committed baseline
+ * @param {{ [name: string]: object }} newBaseline  working-tree baseline
+ * @returns {string[]} [] = clean; human-readable violation strings otherwise
+ */
+export function checkAppendOnly(prevBaseline, newBaseline) {
+  const flags = [];
+  for (const name of Object.keys(prevBaseline).sort()) {
+    if (!(name in newBaseline)) {
+      flags.push(
+        `'${name}': present in prev baseline but missing in new (type removal — wire break)`,
+      );
+      continue;
+    }
+    const prev = prevBaseline[name];
+    const next = newBaseline[name];
+    // Kind mismatch flagged BEFORE any array access — never throw.
+    if (!prev || !next || prev.kind !== next.kind) {
+      flags.push(
+        `'${name}': kind changed from '${prev && prev.kind}' to '${next && next.kind}' (enum<->struct flip — wire break)`,
+      );
+      continue;
+    }
+    if (prev.kind === 'enum') {
+      if (!Array.isArray(prev.variants) || !Array.isArray(next.variants)) {
+        flags.push(
+          `'${name}': malformed enum entry — 'variants' is not an array (prev=${Array.isArray(prev.variants)}, new=${Array.isArray(next.variants)})`,
+        );
+        continue;
+      }
+      const prefix = next.variants.slice(0, prev.variants.length);
+      if (prefix.length !== prev.variants.length || prefix.some((v, i) => v !== prev.variants[i])) {
+        flags.push(
+          `enum '${name}': prev variants [${prev.variants.join(',')}] are not a positional prefix of new [${next.variants.join(',')}] — only tail-append is allowed (BSATN tags are positional)`,
+        );
+      }
+    } else {
+      if (!Array.isArray(prev.fields) || !Array.isArray(next.fields)) {
+        flags.push(
+          `'${name}': malformed struct entry — 'fields' is not an array (prev=${Array.isArray(prev.fields)}, new=${Array.isArray(next.fields)})`,
+        );
+        continue;
+      }
+      const prefix = next.fields.slice(0, prev.fields.length);
+      if (prefix.length !== prev.fields.length) {
+        flags.push(
+          `struct '${name}': field count shrank from ${prev.fields.length} (prev) to ${next.fields.length} (new) — field removal is a wire break`,
+        );
+        continue;
+      }
+      for (let i = 0; i < prev.fields.length; i++) {
+        const pf = prev.fields[i];
+        const nf = prefix[i];
+        if (!Array.isArray(pf) || !Array.isArray(nf)) {
+          flags.push(
+            `struct '${name}': malformed field entry at index ${i} — expected [name, type] pair`,
+          );
+          continue;
+        }
+        if (pf[0] !== nf[0] || pf[1] !== nf[1]) {
+          flags.push(
+            `struct '${name}': field[${i}] changed from ['${pf[0]}','${pf[1]}'] (prev) to ['${nf[0]}','${nf[1]}'] (new) — in-place edit at a persisted position is a wire break, not an addition`,
+          );
+        }
+      }
+    }
+  }
+  return flags;
+}
+
+// ---------------------------------------------------------------------------
 // File collection (mirrors readServerModuleSources in battle-schema-snapshot)
 // ---------------------------------------------------------------------------
 
@@ -154,6 +248,51 @@ function collectRustSrc(dir) {
     else if (entry.endsWith('.rs')) parts.push(readFileSync(full, 'utf8'));
   }
   return parts.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// 16.5e (ADR-0116 D3): previous-baseline resolution via git — I/O isolated
+// from the pure checkAppendOnly. execFileSync('git', [constant-args]) only
+// (precedent scripts/okf-export.mjs) — NO shell strings, NO new RegExp.
+// ---------------------------------------------------------------------------
+
+const BASELINE_GIT_PATH = 'evals/baselines/spacetime-types.json';
+
+/** `git show <ref>:evals/baselines/spacetime-types.json` parsed as JSON, or null. */
+function gitShowBaselineJson(ref) {
+  try {
+    const out = execFileSync('git', ['show', `${ref}:${BASELINE_GIT_PATH}`], {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    return JSON.parse(out);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the previous committed baseline (ADR-0116 D3 resolution order):
+ *   (1) git merge-base HEAD origin/master -> git show <sha>:<baseline>
+ *   (2) git show origin/master:<baseline>
+ *   (3) give up -> { source: 'none', data: null }  (D2: fail-open-loud)
+ */
+function readPrevBaseline() {
+  try {
+    const sha = execFileSync('git', ['merge-base', 'HEAD', 'origin/master'], {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    }).trim();
+    if (sha) {
+      const data = gitShowBaselineJson(sha);
+      if (data !== null) return { source: `merge-base ${sha.slice(0, 7)}`, data };
+    }
+  } catch {
+    // merge-base unavailable (no origin/master, shallow clone, no git) — fall through
+  }
+  const tip = gitShowBaselineJson('origin/master');
+  if (tip !== null) return { source: 'origin/master', data: tip };
+  return { source: 'none', data: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -614,10 +753,55 @@ pub enum BattleOutcome {
     };
   }
 
+  // -------------------------------------------------------------------------
+  // 16.5e (ADR-0116): append-only directional check — prev committed baseline
+  // (git, D3) vs the working-tree baseline. A bad re-baseline (source+baseline
+  // edited together with a mid-insert/reorder/removal) passes the exact-match
+  // gate above; this comparison catches it. D2: source unavailable -> SKIP
+  // fail-open, but LOUDLY.
+  // -------------------------------------------------------------------------
+  let appendOnlyNote;
+  const prev = readPrevBaseline();
+  if (prev.source === 'none') {
+    appendOnlyNote =
+      'append-only check SKIPPED (source=none) — no prev baseline resolvable via git (ADR-0116 D2 fail-open-loud)';
+  } else if (JSON.stringify(prev.data) !== JSON.stringify(baseline)) {
+    const violations = checkAppendOnly(prev.data, baseline);
+    if (violations.length > 0) {
+      return {
+        name,
+        pass: false,
+        detail: `append-only violation vs prev baseline (${prev.source}): ${violations.join('; ')}`,
+      };
+    }
+    appendOnlyNote = `append-only verified vs prev baseline (${prev.source})`;
+  } else {
+    // Self-identical (ADR-0116 D3 amendment): prev deep-equals the working
+    // baseline (master-push CI: merge-base==HEAD, clean tree — or any clean
+    // checkout on master), so the primary comparison is vacuous. Validate the
+    // LAST transition HEAD~1 -> HEAD instead (closes the direct-push hole).
+    const prevCommitted = gitShowBaselineJson('HEAD~1');
+    const headCommitted = gitShowBaselineJson('HEAD');
+    if (prevCommitted === null || headCommitted === null) {
+      appendOnlyNote =
+        'append-only check SKIPPED on HEAD~1-transition (HEAD~1 baseline unavailable; ADR-0116 D2 fail-open-loud)';
+    } else {
+      const violations = checkAppendOnly(prevCommitted, headCommitted);
+      if (violations.length > 0) {
+        return {
+          name,
+          pass: false,
+          detail: `append-only violation on last transition (HEAD~1-transition): ${violations.join('; ')}`,
+        };
+      }
+      appendOnlyNote = 'append-only verified on last transition (HEAD~1-transition)';
+    }
+  }
+
   const typeCount = Object.keys(parsed).length;
   return {
     name,
     pass: true,
-    detail: `${typeCount} SpacetimeType defs parsed; all match baseline exactly (field+variant order); variant-add tooth verified`,
+    detail: `${typeCount} SpacetimeType defs parsed; all match baseline exactly (field+variant order); variant-add tooth verified; ${appendOnlyNote}`,
   };
 }
