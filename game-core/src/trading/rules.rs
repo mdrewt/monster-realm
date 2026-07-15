@@ -1113,6 +1113,160 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // M16.5b: counterparty accept-boundary tests (nightly-mut-triage gap fill)
+    //
+    // The five tests below target surviving mutants in the counterparty branches
+    // of check_headroom (lines 289–312).  Each test carries a `kills:` annotation
+    // per ADR-0088 convention for line-drift traceability.
+    // -----------------------------------------------------------------------
+
+    /// 16.5b-2 ACCEPT BOUNDARY (counterparty item): counterparty has 9,980 of item_id=4,
+    /// receives exactly 19 items → Ok (9980 + 19 = 9999 = MAX_ITEM_STACK, exactly fills).
+    ///
+    /// Mirror of `check_headroom_accepts_exact_headroom_item` but on the counterparty
+    /// argument slots (args 5–6), with initiator slots empty/zeroed.
+    ///
+    /// kills: rules.rs:295:45 replace > with >= in check_headroom (counterparty item loop
+    ///        overflow check — >= incorrectly rejects a trade that exactly fills to cap)
+    #[test]
+    fn check_headroom_accepts_exact_headroom_item_counterparty() {
+        use crate::currency::MAX_BALANCE;
+        let counterparty_receives_items = [TradeItem {
+            item_id: 4,
+            qty: 19,
+        }];
+        let counterparty_current_stacks = [ItemStack {
+            item_id: 4,
+            current_count: 9980,
+        }];
+        let result = check_headroom(
+            &[],
+            &[],
+            0,
+            0,
+            &counterparty_receives_items,
+            &counterparty_current_stacks,
+            0,
+            MAX_BALANCE,
+        );
+        assert!(
+            result.is_ok(),
+            "counterparty 9980 + 19 = 9999 = MAX_ITEM_STACK: exactly fills stack, must be Ok (not rejected)"
+        );
+    }
+
+    /// 16.5b-1 ACCEPT BOUNDARY (counterparty currency): counterparty_balance = MAX_BALANCE - 49,
+    /// counterparty_receives_currency = 49 → Ok (sum exactly MAX_BALANCE).
+    ///
+    /// Mirror of `check_headroom_accepts_exact_currency_headroom` but on the counterparty
+    /// argument slots (args 7–8), with initiator slots empty/zeroed.
+    ///
+    /// kills: rules.rs:309:80 replace > with >= in check_headroom (counterparty currency
+    ///        cap check — >= incorrectly rejects a trade that exactly fills to MAX_BALANCE)
+    ///
+    /// kills: rules.rs:309:9 replace && with || in check_headroom (counterparty compound:
+    ///        with receives=49>0 true and sum==MAX_BALANCE false, && yields Ok while
+    ///        || would also yield false here; see belt-and-suspenders test below for the
+    ///        decisive kill on the || mutant)
+    #[test]
+    fn check_headroom_accepts_exact_currency_headroom_counterparty() {
+        use crate::currency::MAX_BALANCE;
+        let result = check_headroom(&[], &[], 0, 0, &[], &[], 49, MAX_BALANCE - 49);
+        assert!(
+            result.is_ok(),
+            "counterparty (MAX_BALANCE - 49) + 49 = MAX_BALANCE: exactly fills balance, must be Ok"
+        );
+    }
+
+    /// 16.5b-1 ACCEPT BOUNDARY (counterparty currency, belt-and-suspenders):
+    /// counterparty_receives_currency = 50, counterparty_balance = 0 → Ok
+    /// (well under MAX_BALANCE; receives > 0 so the branch is entered, sum stays under cap).
+    ///
+    /// With the real `&&`: (50 > 0) && (0 + 50 > MAX_BALANCE) → false → Ok.
+    /// With the `||` mutant: (50 > 0) || (...) → true → balance check evaluated →
+    ///   (0 + 50 > MAX_BALANCE) → false → Ok.  Wait — actually || mutant on line 308:9
+    ///   replaces `&&` with `||` in:
+    ///   `if counterparty_receives_currency > 0 || counterparty_balance.saturating_add(...) > MAX_BALANCE`
+    ///   When receives=50>0 (true), the short-circuit makes the whole `if` true, and then
+    ///   the balance check is the second operand: with balance=0, 0+50≤MAX_BALANCE → false,
+    ///   so `||` gives true → Err.  The real `&&` gives true && false → false → Ok.
+    ///   This test therefore decisively kills the 309:9 || mutant.
+    ///
+    /// kills: rules.rs:309:9 replace && with || in check_headroom (counterparty compound
+    ///        — receives=50>0, balance=0, so && gives false → Ok, || gives Err)
+    #[test]
+    fn check_headroom_accepts_counterparty_currency_low_balance() {
+        use crate::currency::MAX_BALANCE;
+        let result = check_headroom(&[], &[], 0, 0, &[], &[], 50, 0);
+        assert!(
+            result.is_ok(),
+            "counterparty_receives_currency=50, counterparty_balance=0: 0+50 << MAX_BALANCE, must be Ok"
+        );
+    }
+
+    /// 16.5b-1 CONTRACT TEST — initiator skip-guard when receives_currency = 0.
+    ///
+    /// Input: initiator_receives_currency = 0, initiator_balance = MAX_BALANCE + 1,
+    /// all other args empty/zero.
+    ///
+    /// The input balance DELIBERATELY violates the wallet invariant
+    /// (`balance ≤ MAX_BALANCE`, enforced by economy.rs apply_grant/spend) —
+    /// production cannot produce this value.  The test pins the CONTRACT of the
+    /// `initiator_receives_currency > 0` skip-guard at line 302: check_headroom
+    /// polices the trade's incoming delta, not pre-existing wallet state, so a
+    /// zero-receive side is exempt from the balance check regardless of its
+    /// absolute balance.  Do NOT "fix" this test by also policing absolute balance
+    /// — if the contract ever changes to do that, revise ADR-0118 first.
+    ///
+    /// Under real `> 0`: 0 > 0 is false → balance check skipped → Ok.
+    /// Under `>= 0` mutant: 0 >= 0 is true → check runs →
+    ///   (MAX_BALANCE+1).saturating_add(0) > MAX_BALANCE → Err.
+    ///
+    /// kills: rules.rs:302:36 replace > with >= in check_headroom (initiator skip-guard
+    ///        — >= makes receives=0 enter the balance check, incorrectly returning Err)
+    #[test]
+    fn check_headroom_zero_receive_initiator_skips_balance_check() {
+        use crate::currency::MAX_BALANCE;
+        // MAX_BALANCE + 1 violates the wallet invariant deliberately — see doc above.
+        let result = check_headroom(&[], &[], 0, MAX_BALANCE + 1, &[], &[], 0, 0);
+        assert!(
+            result.is_ok(),
+            "initiator receives 0 currency: balance check must be skipped entirely regardless of absolute balance"
+        );
+    }
+
+    /// 16.5b-1 CONTRACT TEST — counterparty skip-guard when receives_currency = 0.
+    ///
+    /// Symmetric to `check_headroom_zero_receive_initiator_skips_balance_check`,
+    /// targeting the counterparty skip-guard at line 308.
+    ///
+    /// The input counterparty_balance = MAX_BALANCE + 1 DELIBERATELY violates the
+    /// wallet invariant (`balance ≤ MAX_BALANCE`, enforced by economy.rs apply_grant/spend)
+    /// — production cannot produce this value.  The test pins the CONTRACT of the
+    /// `counterparty_receives_currency > 0` skip-guard: check_headroom polices the
+    /// trade's incoming delta, not pre-existing wallet state, so a zero-receive side
+    /// is exempt from the balance check regardless of its absolute balance.  Do NOT
+    /// "fix" this test by also policing absolute balance — if the contract ever
+    /// changes to do that, revise ADR-0118 first.
+    ///
+    /// Under real `> 0`: 0 > 0 is false → balance check skipped → Ok.
+    /// Under `>= 0` mutant: 0 >= 0 is true → check runs →
+    ///   (MAX_BALANCE+1).saturating_add(0) > MAX_BALANCE → Err.
+    ///
+    /// kills: rules.rs:308:39 replace > with >= in check_headroom (counterparty skip-guard
+    ///        — >= makes receives=0 enter the balance check, incorrectly returning Err)
+    #[test]
+    fn check_headroom_zero_receive_counterparty_skips_balance_check() {
+        use crate::currency::MAX_BALANCE;
+        // MAX_BALANCE + 1 violates the wallet invariant deliberately — see doc above.
+        let result = check_headroom(&[], &[], 0, 0, &[], &[], 0, MAX_BALANCE + 1);
+        assert!(
+            result.is_ok(),
+            "counterparty receives 0 currency: balance check must be skipped entirely regardless of absolute balance"
+        );
+    }
+
     /// FINDING-3 (MEDIUM): check_headroom snapshots current_count BEFORE the
     /// sender's debit for a bidirectional same-item trade. When the same item_id
     /// appears on BOTH initiator_items AND counterparty_items, check_headroom uses
