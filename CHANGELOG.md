@@ -17,6 +17,7 @@
 - ARCHITECTURE.md + ADR-0080 + CHANGELOG — closes M8.95 knowledge-bundle milestone (#105)
 - Fix stale next-free self-reference + crosswalk in ADR-0060 (#109)
 - Phase B complete — M14 close, ADR-0097, ARCHITECTURE.md M14 section (#142)
+- Backfill canonical ADR headers; LEGACY_TOLERANCE → empty (#161)
 
 ### Features
 
@@ -103,6 +104,16 @@
 - Cache skills/items on battle hot paths (ADR-0089 amended) (#153)
 - Client battle UX — weather banner, outcome/status parity guards, VM-compare refresh guard (ADR-0101) (#154)
 - BSATN codec gap proof + widen convergence net (ADR-0103) (#156)
+- Restore nightly mutate-core gate + close ADR-0100 D6 (#158)
+- ADR digest generator + drift gate (ADR-0104) (#159)
+- Additive cure_status column on item_row (ADR-0105) (#162)
+- Battle overlay Use-Item action for cure items (ADR-0047, closes 14.5d-1) (#164)
+- M15 Trading Spine — trade_offer table, escrow guards, swap engine (ADR-0106) (#165)
+- Trade client UI overlay (ADR-0107) (#168)
+- Trade evals tail — escrow/conservation/security + e2e wiring (#170)
+- PvP battle spine — challenge handshake, submit/resolve, deadline reaper (#172)
+- PvP client UI — challenge/accept/turn-submit/forfeit overlay (ADR-0110) (#176)
+- Battle↔trade interlock both directions + vacuous-revival gate (#180)
 
 ### Fixes
 
@@ -116,6 +127,8 @@
 - Repair smoke-republish + kill all 38 missed mutants in game-core (ADR-0088) (#125)
 - Deflake R2 heal-budget exhaustion in recruit.spec.ts (#144)
 - Deflake dialogue 13.5c-5 overlay timeout + recruit R2 heal-guard (#146)
+- Ledger reconciliation + type-rigor micro-fixes (#157)
+- Kill 10 nightly mutants — 6 behavioral tests + 2 equivalent exclusions re-pinned (#174)
 
 ### M8.8b
 
@@ -173,6 +186,15 @@
 - Reconcile ADR index — add 0099, bump next-free to 0100 (#150)
 - Reconcile ADR index — add 0100, bump next-free to 0101 (#152)
 - Reconcile ADR index — add 0101, next-free to 0103 (0102 reserved-unused by m14.5e) (#155)
+- Reconcile ADR index — add 0103, 0104; next free 0105 (#160)
+- ADR index — next free 0106 (#163)
+- ADR index — add 0105/0106 rows, next free 0107 (#167)
+- Bump ADR next-free number to 0108 (#169)
+- ADR index — add 0107/0108 rows, next free 0109 (#171)
+- ADR index — add 0109 row, next free 0110 (#173)
+- Add ADR-0110 to index; bump next-free to 0111 (#177)
+- Add ADR-0111 to index; bump next-free to 0112 (#179)
+- Add ADR-0112 to index; bump next-free to 0113 (#181)
 
 ### Testing
 
@@ -187,6 +209,9 @@
 - Fix Nightly — kill all 72 mutation survivors + debounce level_for_xp timeouts (#66)
 - Kill 35+ surviving mutants to restore mutation ratchet (#130)
 - Kill 11 nightly missed mutants in from_ctx_random and turns_remaining (#145)
+- Direct mutation-kill for resolve_enemy_turn + verify combat mutants at zero (#175)
+- PvP eval harness — pvp-action-privacy + pvp-handshake-guards + pvp-deadline-disconnect (ADR-0111) (#178)
+- Deflake dialogue 13.5c-5 — soft-retry slow row-delete propagation (#182)
 
 ### Wip
 
@@ -194,3 +219,5 @@
 - Monster-realm doc reconciliation phase — README/AGENTS/ARCHITECTURE/ADR-README/ADR-0067/raising.rs/CHANGELOG (#101)
 - ARCHITECTURE.md — module-map, content-registry, raising+evolution sections (#108)
 - Project-side changes — warpDetect wire-in, @types/node ^24, root lockfile delete, CONTENT_VERSION history, main.ts comments, ARCHITECTURE/AGENTS/ADR fixes (#131)
+- Regen knowledge bundle — UTC date rollover (2026-07-13→2026-07-14) (#166)
+- Implementation GREEN — check_headroom + tests + eval + knowledge

@@ -385,11 +385,15 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
     // Prevents silent value destruction via grant_item/grant_currency clamping.
     {
         // Initiator RECEIVES counterparty_items + counterparty_currency.
+        // Subtract any qty the initiator is simultaneously SENDING of the same item_id so
+        // the headroom check uses the post-debit effective count, not the pre-debit raw count.
+        // Without this, a symmetric same-item swap (give 15 of X, receive 20 of X while
+        // holding 9990) falsely rejects: 9990+20>9999 but net 9990-15+20=9995 is fine.
         let i_stacks: Vec<ItemStack> = offer
             .counterparty_items
             .iter()
             .map(|ti| {
-                let current_count = ctx
+                let raw_count = ctx
                     .db
                     .inventory()
                     .owner_identity()
@@ -397,18 +401,25 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
                     .find(|r| r.item_id == ti.item_id)
                     .map(|r| r.count)
                     .unwrap_or(0);
+                let sending_qty = offer
+                    .initiator_items
+                    .iter()
+                    .find(|si| si.item_id == ti.item_id)
+                    .map(|si| si.qty)
+                    .unwrap_or(0);
                 ItemStack {
                     item_id: ti.item_id,
-                    current_count,
+                    current_count: raw_count.saturating_sub(sending_qty),
                 }
             })
             .collect();
         // Counterparty RECEIVES initiator_items + initiator_currency.
+        // Same net-quantity correction applied symmetrically.
         let c_stacks: Vec<ItemStack> = offer
             .initiator_items
             .iter()
             .map(|ti| {
-                let current_count = ctx
+                let raw_count = ctx
                     .db
                     .inventory()
                     .owner_identity()
@@ -416,9 +427,15 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
                     .find(|r| r.item_id == ti.item_id)
                     .map(|r| r.count)
                     .unwrap_or(0);
+                let sending_qty = offer
+                    .counterparty_items
+                    .iter()
+                    .find(|si| si.item_id == ti.item_id)
+                    .map(|si| si.qty)
+                    .unwrap_or(0);
                 ItemStack {
                     item_id: ti.item_id,
-                    current_count,
+                    current_count: raw_count.saturating_sub(sending_qty),
                 }
             })
             .collect();

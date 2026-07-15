@@ -15,6 +15,7 @@ pub const MAX_ITEM_STACK: u32 = 9999;
 
 /// Current item stack snapshot for one (owner, item_id) pair.
 /// Passed to `check_headroom` so it can check receiver headroom without DB access.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ItemStack {
     pub item_id: u32,
     pub current_count: u32,
@@ -1065,6 +1066,85 @@ mod tests {
         assert!(
             result.is_ok(),
             "receiver has 0 of item, receives MAX_ITEM_STACK ({MAX_ITEM_STACK}): must be Ok"
+        );
+    }
+
+    /// FINDING-3 (MEDIUM): check_headroom snapshots current_count BEFORE the
+    /// sender's debit for a bidirectional same-item trade. When the same item_id
+    /// appears on BOTH initiator_items AND counterparty_items, check_headroom uses
+    /// the receiver's pre-debit count to assess headroom, producing a false-reject
+    /// even when the net post-trade balance stays within MAX_ITEM_STACK.
+    ///
+    /// Scenario:
+    ///   initiator has 9990 of item_id=5, gives 15, receives 20 → net 9995 (valid)
+    ///   check_headroom sees current_count=9990, incoming=20 → 10010 > 9999 → Err
+    ///
+    /// This is a correctness bug (over-conservative rejection), NOT a security bypass:
+    /// the check never under-counts headroom, so cap overflow is impossible.
+    /// The fix is to subtract the qty the receiver is also giving away for the same
+    /// item_id before checking: effective_count = current_count.saturating_sub(giving_qty).
+    ///
+    /// This test DOCUMENTS the current behavior (Err on a logically-valid trade) so
+    /// any future fix can be validated by flipping the assertion to is_ok().
+    ///
+    // check_headroom is a pure function: it trusts whatever current_count is passed.
+    // The CALL SITE (confirm_trade in trading.rs) is responsible for computing the
+    // effective (post-debit) count: raw_count.saturating_sub(sending_qty).
+    // These two tests document that contract:
+
+    #[test]
+    fn check_headroom_rejects_with_pre_debit_count_same_item() {
+        use crate::currency::MAX_BALANCE;
+        // Pre-debit raw count = 9990; incoming = 20 → 9990+20=10010 > 9999 → Err.
+        // The CALL SITE must subtract the 15 items the initiator is sending BEFORE
+        // calling check_headroom (effective = 9990-15 = 9975; 9975+20=9995 ≤ 9999 → Ok).
+        let initiator_receives = [TradeItem {
+            item_id: 5,
+            qty: 20,
+        }];
+        let initiator_stacks = [ItemStack {
+            item_id: 5,
+            current_count: 9990,
+        }];
+        let result = check_headroom(
+            &initiator_receives,
+            &initiator_stacks,
+            0,
+            0,
+            &[],
+            &[],
+            0,
+            MAX_BALANCE,
+        );
+        assert!(result.is_err(), "pre-debit 9990+20=10010 must be rejected");
+    }
+
+    #[test]
+    fn check_headroom_accepts_effective_count_same_item() {
+        use crate::currency::MAX_BALANCE;
+        // Effective count after subtracting 15 sent: 9990-15=9975; incoming=20 → 9975+20=9995 ≤ 9999 → Ok.
+        // This is the value confirm_trade passes after the net-quantity fix (ADR-0113).
+        let initiator_receives = [TradeItem {
+            item_id: 5,
+            qty: 20,
+        }];
+        let initiator_stacks = [ItemStack {
+            item_id: 5,
+            current_count: 9975,
+        }];
+        let result = check_headroom(
+            &initiator_receives,
+            &initiator_stacks,
+            0,
+            0,
+            &[],
+            &[],
+            0,
+            MAX_BALANCE,
+        );
+        assert!(
+            result.is_ok(),
+            "effective post-debit 9975+20=9995 must be accepted"
         );
     }
 }

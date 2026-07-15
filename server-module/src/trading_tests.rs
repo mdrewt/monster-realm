@@ -755,3 +755,67 @@ fn ea_conservation_headroom_01_confirm_trade_calls_check_headroom() {
          transaction) if any receiver would exceed their stack or balance cap."
     );
 }
+
+// ===========================================================================
+// EA-CONSERVATION-HEADROOM-02: check_headroom appears BEFORE build_swap_plan
+//                              in confirm_trade (m16.5b, ADR-0113)
+//
+// Source-guard ordering test: the headroom check must precede `build_swap_plan`
+// so the transaction aborts cleanly (no ownership transfer planned) when a
+// receiver would exceed their cap.  If the headroom check fires AFTER
+// build_swap_plan, we have already computed the transfer plan (and applied
+// monster owner-writes before item transfers) before detecting the cap —
+// violating the atomic "reject before any mutation" guarantee of ADR-0113.
+//
+// TEETH: kills any refactor that reorders the headroom block to after the
+// `build_swap_plan` call, e.g. to "validate after planning".
+//
+// Finding: no ordering assertion existed prior to m16.5b red-team pass
+// (ea_conservation_headroom_01 only checks presence, not position).
+// ===========================================================================
+
+#[test]
+fn ea_conservation_headroom_02_check_headroom_before_build_swap_plan() {
+    let stripped = strip_rust_comments_trading(TRADING_RS);
+
+    // Locate confirm_trade body.
+    let confirm_fn = concat!("fn ", "confirm_trade");
+    let cancel_fn = concat!("fn ", "cancel_trade");
+
+    let fn_pos = stripped
+        .find(confirm_fn)
+        .expect("EA-CONSERVATION-HEADROOM-02: `confirm_trade` not found in trading.rs");
+    let next_fn_pos = stripped[fn_pos..]
+        .find(cancel_fn)
+        .map(|p| fn_pos + p)
+        .unwrap_or(stripped.len());
+
+    let confirm_body = &stripped[fn_pos..next_fn_pos];
+
+    let headroom_needle = concat!("check_", "headroom");
+    let plan_needle = concat!("build_swap", "_plan");
+
+    let headroom_pos = confirm_body.find(headroom_needle).unwrap_or_else(|| {
+        panic!(
+            "EA-CONSERVATION-HEADROOM-02 FAIL: `check_headroom` not found in `confirm_trade` body. \
+             Cannot verify ordering relative to `build_swap_plan`."
+        )
+    });
+    let plan_pos = confirm_body.find(plan_needle).unwrap_or_else(|| {
+        panic!(
+            "EA-CONSERVATION-HEADROOM-02 FAIL: `build_swap_plan` not found in `confirm_trade` body. \
+             Cannot verify ordering invariant."
+        )
+    });
+
+    assert!(
+        headroom_pos < plan_pos,
+        "EA-CONSERVATION-HEADROOM-02 FAIL: In `confirm_trade`, `check_headroom` (body offset \
+         {headroom_pos}) appears AFTER `build_swap_plan` (body offset {plan_pos}). \
+         The headroom check MUST precede the swap plan so the transaction aborts cleanly \
+         before any ownership transfer is planned — ADR-0113 mandates reject-not-clamp \
+         with no partial mutations. Moving check_headroom after build_swap_plan means \
+         monster owner-writes may have already been queued before the cap-exceeded Err fires. \
+         Fix: keep the check_headroom block before the build_swap_plan call."
+    );
+}
