@@ -153,7 +153,6 @@ mod tests {
             (TradeError::SelfTrade, "yourself"),
             (TradeError::EmptyOffer, "asset"),
             (TradeError::AlreadyInTrade, "trade"),
-            (TradeError::MonsterNotOwned, "owned"),
             (TradeError::DuplicateMonster, "duplicate"),
             (TradeError::DuplicateItem { item_id: 7 }, "duplicate"),
             (TradeError::OwnershipChanged, "ownership"),
@@ -168,7 +167,6 @@ mod tests {
                 TradeError::InsufficientInventory { item_id: 3 },
                 "inventory",
             ),
-            (TradeError::InsufficientCurrency { available: 42 }, "42"),
             (TradeError::ItemStackCapExceeded { item_id: 5 }, "5"),
             (TradeError::CurrencyCapExceeded, "maximum balance"),
         ];

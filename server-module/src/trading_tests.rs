@@ -985,3 +985,172 @@ fn ea_authorize_confirm_01_confirm_trade_propagates_authorize_result() {
         );
     }
 }
+
+// ===========================================================================
+// EA-REAPER-01: propose_trade arms the reaper AFTER the offer insert
+//               (m16.5f, ADR-0117 — TTL reaper)
+//
+// EARS criterion: propose_trade SHALL call schedule_trade_reaper (or insert a
+// trade_offer_reaper_schedule row) AFTER capturing the inserted trade_offer row.
+// The auto-increment trade_id only exists after the insert; scheduling before
+// the insert would reference an unknown trade_id.
+//
+// This test asserts:
+// (A) trade_offer().insert( appears in propose_trade body.
+// (B) schedule_trade_reaper( (or trade_offer_reaper_schedule().insert() appears
+//     AFTER the offer insert (position check on stripped source).
+//
+// TEETH: kills an impl that omits the reaper schedule entirely, or one that
+//        calls schedule_trade_reaper BEFORE the offer insert (wrong order).
+// ===========================================================================
+
+#[test]
+fn ea_reaper_01_propose_arms_reaper_after_offer_insert() {
+    let stripped = strip_rust_comments_trading(TRADING_RS);
+
+    // Locate propose_trade body (ends where respond_trade begins).
+    let propose_fn = concat!("fn ", "propose_trade");
+    let respond_fn = concat!("fn ", "respond_trade");
+
+    let fn_pos = stripped
+        .find(propose_fn)
+        .expect("EA-REAPER-01: `propose_trade` function not found in trading.rs");
+    let next_fn_pos = stripped[fn_pos..]
+        .find(respond_fn)
+        .map(|p| fn_pos + p)
+        .unwrap_or(stripped.len());
+
+    let propose_body = &stripped[fn_pos..next_fn_pos];
+
+    // (A) The offer insert must be present.
+    // Needle built via concat! to prevent self-match in this test file.
+    let insert_needle = concat!("trade_offer", "().insert(");
+    let insert_pos = propose_body.find(insert_needle).unwrap_or_else(|| {
+        panic!(
+            "EA-REAPER-01 FAIL: `trade_offer().insert(` not found in `propose_trade` body. \
+             The reaper cannot be armed because no offer is inserted. \
+             Fix: ensure propose_trade inserts the TradeOffer row before scheduling the reaper."
+        )
+    });
+
+    // (B) schedule_trade_reaper( OR trade_offer_reaper_schedule().insert( must appear
+    //     AFTER the offer insert (the auto_inc trade_id only exists post-insert).
+    let reaper_needle_fn = concat!("schedule_trade_", "reaper(");
+    let reaper_needle_tbl = concat!("trade_offer_reaper_schedule", "().insert(");
+
+    let reaper_pos_fn = propose_body.find(reaper_needle_fn);
+    let reaper_pos_tbl = propose_body.find(reaper_needle_tbl);
+
+    let reaper_pos = match (reaper_pos_fn, reaper_pos_tbl) {
+        (None, None) => panic!(
+            "EA-REAPER-01 FAIL: neither `schedule_trade_reaper(` nor \
+             `trade_offer_reaper_schedule().insert(` found in `propose_trade` body. \
+             Offers will never expire — a malicious player can flood the counterparty \
+             with stale offers that permanently lock their ability to propose new trades \
+             (one active offer per player per ADR-0106 D4). \
+             Fix: call schedule_trade_reaper(ctx, inserted.trade_id, inserted.created_at_ms) \
+             AFTER the trade_offer insert in propose_trade."
+        ),
+        (Some(p), None) => p,
+        (None, Some(p)) => p,
+        (Some(a), Some(b)) => a.min(b),
+    };
+
+    assert!(
+        reaper_pos > insert_pos,
+        "EA-REAPER-01 FAIL: reaper arm call (body offset {reaper_pos}) appears BEFORE \
+         `trade_offer().insert(` (body offset {insert_pos}) in `propose_trade`. \
+         The auto-increment trade_id only exists after the insert row is returned; \
+         scheduling the reaper before the insert references an unknown trade_id. \
+         Fix: capture the insert return value and call schedule_trade_reaper AFTER the insert."
+    );
+}
+
+// ===========================================================================
+// EA-REAPER-02: disarm_trade_reaper called at ALL four offer-deletion sites
+//               (m16.5f, ADR-0117 — stale-schedule cleanup)
+//
+// EARS criterion: every code path that deletes a trade_offer row SHALL also
+// call disarm_trade_reaper to cancel the scheduled reaper for that offer.
+// Without disarming, the reaper fires after the offer is already gone and
+// attempts to delete a non-existent row (benign but wastes scheduler slots
+// and leaves orphaned schedule rows).
+//
+// The four sites are:
+//   1. respond_trade — reject branch (accepted=false → row deleted)
+//   2. cancel_trade — unconditional delete
+//   3. confirm_trade — post-swap delete (TR-16 terminal GC)
+//   4. cancel_trades_on_disconnect — bulk delete loop
+//
+// TEETH: kills an impl that adds disarm_trade_reaper to only some of the four
+//        sites.  A single missed site leaves an orphaned reaper row that either
+//        fires a no-op (wasting scheduler capacity) or, if the trade_id is
+//        recycled, incorrectly reapers a new offer.
+// ===========================================================================
+
+#[test]
+fn ea_reaper_02_disarm_called_at_all_offer_deletion_sites() {
+    let stripped = strip_rust_comments_trading(TRADING_RS);
+
+    // Helper: extract a named function body using brace-depth matching,
+    // ending at the next function definition (pub fn or fn).
+    // Returns the body slice starting just after the opening brace of the fn.
+    fn extract_fn_body<'a>(stripped: &'a str, fn_name: &str, end_marker: &str) -> &'a str {
+        let fn_needle = concat!("fn ");
+        let search = format!("{fn_needle}{fn_name}(");
+        let fn_pos = stripped.find(&search).unwrap_or_else(|| {
+            panic!("EA-REAPER-02: function `{fn_name}` not found in trading.rs")
+        });
+        let end_pos = stripped[fn_pos..]
+            .find(end_marker)
+            .map(|p| fn_pos + p)
+            .unwrap_or(stripped.len());
+        &stripped[fn_pos..end_pos]
+    }
+
+    // Disarm needle — concat! prevents self-match.
+    let disarm_needle = concat!("disarm_trade_", "reaper(");
+
+    // 1. respond_trade body (ends at confirm_trade).
+    let respond_body = extract_fn_body(&stripped, "respond_trade", "fn confirm_trade(");
+    assert!(
+        respond_body.contains(disarm_needle),
+        "EA-REAPER-02 FAIL: `respond_trade` does not call `disarm_trade_reaper`. \
+         When the counterparty rejects (accepted=false), the offer row is deleted but \
+         the scheduled reaper remains active. The reaper will fire later, attempt to \
+         delete the already-gone row (no-op) and leave an orphaned schedule row. \
+         Fix: call disarm_trade_reaper(ctx, trade_id) before or after the offer delete \
+         in respond_trade's rejection branch."
+    );
+
+    // 2. cancel_trade body (ends at cancel_trades_on_disconnect).
+    let cancel_body = extract_fn_body(&stripped, "cancel_trade", "fn cancel_trades_on_disconnect(");
+    assert!(
+        cancel_body.contains(disarm_needle),
+        "EA-REAPER-02 FAIL: `cancel_trade` does not call `disarm_trade_reaper`. \
+         Cancelling an offer deletes the row but the scheduled reaper survives and fires \
+         later, leaving an orphaned schedule row. \
+         Fix: call disarm_trade_reaper(ctx, trade_id) in cancel_trade."
+    );
+
+    // 3. confirm_trade body (ends at cancel_trade).
+    let confirm_body = extract_fn_body(&stripped, "confirm_trade", "fn cancel_trade(");
+    assert!(
+        confirm_body.contains(disarm_needle),
+        "EA-REAPER-02 FAIL: `confirm_trade` does not call `disarm_trade_reaper`. \
+         After the atomic swap succeeds and the offer row is deleted (TR-16), the \
+         reaper schedule row is left orphaned and will fire later against a non-existent \
+         trade_id. Fix: call disarm_trade_reaper(ctx, trade_id) in confirm_trade."
+    );
+
+    // 4. cancel_trades_on_disconnect body (ends at the #[cfg(test)] block or EOF).
+    let disconnect_body = extract_fn_body(&stripped, "cancel_trades_on_disconnect", "#[cfg(test)]");
+    assert!(
+        disconnect_body.contains(disarm_needle),
+        "EA-REAPER-02 FAIL: `cancel_trades_on_disconnect` does not call `disarm_trade_reaper`. \
+         When a player disconnects and their offers are bulk-deleted, the reaper schedules \
+         for each deleted offer are left orphaned. \
+         Fix: call disarm_trade_reaper(ctx, trade_id) for each trade_id deleted in the \
+         cancel_trades_on_disconnect loop."
+    );
+}

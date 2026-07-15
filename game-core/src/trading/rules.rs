@@ -1147,4 +1147,216 @@ mod tests {
             "effective post-debit 9975+20=9995 must be accepted"
         );
     }
+
+    // ===========================================================================
+    // M16.5f: authorize_* + is_offer_stale (RED until implementation added)
+    //
+    // These tests reference `authorize_respond`, `authorize_confirm`,
+    // `is_offer_stale`, and `TRADE_OFFER_TTL_MS`, which do NOT yet exist in
+    // rules.rs.  They will not compile until the implementer adds them — that is
+    // intentional (RED phase, m16.5f).
+    //
+    // EARS criteria:
+    //   m16.5f-1  authorize_respond checks role BEFORE status (role-first ordering).
+    //   m16.5f-2  authorize_confirm checks role BEFORE status (role-first ordering).
+    //   m16.5f-3  is_offer_stale uses saturating arithmetic and the >= boundary.
+    // ===========================================================================
+
+    /// m16.5f-1 HAPPY PATH: (Pending, is_counterparty=true) → Ok(()).
+    ///
+    /// kills: impl that always returns Err, or that requires a different status.
+    #[test]
+    fn authorize_respond_ok_on_pending_counterparty() {
+        let result = authorize_respond(&TradeStatus::Pending, true);
+        assert_eq!(
+            result,
+            Ok(()),
+            "authorize_respond(Pending, true) must return Ok"
+        );
+    }
+
+    /// m16.5f-1 ROLE CHECK: (Pending, is_counterparty=false) → Err(NotCounterparty).
+    ///
+    /// kills: impl that skips the role check and only checks status — allows the
+    ///        initiator to call respond_trade on their own offer.
+    #[test]
+    fn authorize_respond_err_not_counterparty_on_false() {
+        let result = authorize_respond(&TradeStatus::Pending, false);
+        assert_eq!(
+            result,
+            Err(TradeError::NotCounterparty),
+            "authorize_respond(Pending, false) must return Err(NotCounterparty)"
+        );
+    }
+
+    /// m16.5f-1 STATUS CHECK: (ConfirmedByCounterparty, is_counterparty=true) → Err(NotPending).
+    ///
+    /// kills: impl that skips the status check and returns Ok for any active status —
+    ///        counterparty could re-respond to an already-confirmed offer.
+    #[test]
+    fn authorize_respond_err_not_pending_on_confirmed_status() {
+        let result = authorize_respond(&TradeStatus::ConfirmedByCounterparty, true);
+        assert_eq!(
+            result,
+            Err(TradeError::NotPending),
+            "authorize_respond(ConfirmedByCounterparty, true) must return Err(NotPending)"
+        );
+    }
+
+    /// m16.5f-1 ORDERING TOOTH: (ConfirmedByCounterparty, is_counterparty=false) →
+    /// Err(NotCounterparty), NOT Err(NotPending).
+    ///
+    /// kills: a status-first impl that checks status before role.  If status is checked
+    ///        first, (ConfirmedByCounterparty, false) would return NotPending, leaking
+    ///        the offer status to a non-party caller.  Role-first ordering prevents this
+    ///        information leak and returns NotCounterparty regardless of the status.
+    #[test]
+    fn authorize_respond_ordering_role_first_confirmed_not_counterparty() {
+        let result = authorize_respond(&TradeStatus::ConfirmedByCounterparty, false);
+        assert_eq!(
+            result,
+            Err(TradeError::NotCounterparty),
+            "authorize_respond(ConfirmedByCounterparty, false) must return Err(NotCounterparty) \
+             (role checked first — a status-first impl would return NotPending, which leaks \
+             offer state to a non-party caller)"
+        );
+    }
+
+    /// m16.5f-2 HAPPY PATH: (ConfirmedByCounterparty, is_initiator=true) → Ok(()).
+    ///
+    /// kills: impl that always returns Err, or that requires Pending status.
+    #[test]
+    fn authorize_confirm_ok_on_confirmed_initiator() {
+        let result = authorize_confirm(&TradeStatus::ConfirmedByCounterparty, true);
+        assert_eq!(
+            result,
+            Ok(()),
+            "authorize_confirm(ConfirmedByCounterparty, true) must return Ok"
+        );
+    }
+
+    /// m16.5f-2 ROLE CHECK: (ConfirmedByCounterparty, is_initiator=false) →
+    /// Err(NotInitiator).
+    ///
+    /// kills: impl that skips the role check — allows the counterparty to call
+    ///        confirm_trade and execute the atomic swap without the initiator's consent.
+    #[test]
+    fn authorize_confirm_err_not_initiator_on_false() {
+        let result = authorize_confirm(&TradeStatus::ConfirmedByCounterparty, false);
+        assert_eq!(
+            result,
+            Err(TradeError::NotInitiator),
+            "authorize_confirm(ConfirmedByCounterparty, false) must return Err(NotInitiator)"
+        );
+    }
+
+    /// m16.5f-2 STATUS CHECK: (Pending, is_initiator=true) →
+    /// Err(NotConfirmedByCounterparty).
+    ///
+    /// kills: impl that skips the status check — allows initiator to confirm before
+    ///        the counterparty has accepted, bypassing the two-step confirmation flow.
+    #[test]
+    fn authorize_confirm_err_not_confirmed_on_pending_status() {
+        let result = authorize_confirm(&TradeStatus::Pending, true);
+        assert_eq!(
+            result,
+            Err(TradeError::NotConfirmedByCounterparty),
+            "authorize_confirm(Pending, true) must return Err(NotConfirmedByCounterparty)"
+        );
+    }
+
+    /// m16.5f-2 ORDERING TOOTH: (Pending, is_initiator=false) → Err(NotInitiator),
+    /// NOT Err(NotConfirmedByCounterparty).
+    ///
+    /// kills: a status-first impl.  If status is checked first, (Pending, false) returns
+    ///        NotConfirmedByCounterparty, leaking offer status.  Role-first ordering
+    ///        returns NotInitiator regardless of the current status.
+    #[test]
+    fn authorize_confirm_ordering_role_first_pending_not_initiator() {
+        let result = authorize_confirm(&TradeStatus::Pending, false);
+        assert_eq!(
+            result,
+            Err(TradeError::NotInitiator),
+            "authorize_confirm(Pending, false) must return Err(NotInitiator) \
+             (role checked first — a status-first impl would return NotConfirmedByCounterparty)"
+        );
+    }
+
+    /// m16.5f-3 BOUNDARY: (created=0, now=TRADE_OFFER_TTL_MS - 1) → false (not yet stale).
+    ///
+    /// kills: impl that uses > instead of >= (off-by-one: TTL-1 ms remaining → fresh).
+    /// Uses TRADE_OFFER_TTL_MS by name so a constant-value mutant (changing the const)
+    /// causes this test to fail rather than silently pass with a hardcoded literal.
+    #[test]
+    fn is_offer_stale_false_one_ms_before_ttl() {
+        assert!(
+            !is_offer_stale(0, TRADE_OFFER_TTL_MS - 1),
+            "now = TRADE_OFFER_TTL_MS - 1 ms since creation: offer is fresh, must return false"
+        );
+    }
+
+    /// m16.5f-3 BOUNDARY: (created=0, now=TRADE_OFFER_TTL_MS) → true (exactly at TTL).
+    ///
+    /// kills: impl that uses > instead of >= for the stale check — the spec says
+    ///        elapsed >= TTL is stale, so at exactly TTL the offer IS stale.
+    #[test]
+    fn is_offer_stale_true_at_exact_ttl() {
+        assert!(
+            is_offer_stale(0, TRADE_OFFER_TTL_MS),
+            "now = TRADE_OFFER_TTL_MS ms since creation: offer is stale at exactly TTL boundary \
+             (>= semantics), must return true"
+        );
+    }
+
+    /// m16.5f-3 BOUNDARY: (created=0, now=TRADE_OFFER_TTL_MS + 1) → true (past TTL).
+    ///
+    /// kills: impl that uses = instead of >= (rejects any elapsed time but the exact boundary).
+    #[test]
+    fn is_offer_stale_true_past_ttl() {
+        assert!(
+            is_offer_stale(0, TRADE_OFFER_TTL_MS + 1),
+            "now = TRADE_OFFER_TTL_MS + 1 ms since creation: offer is past TTL, must return true"
+        );
+    }
+
+    /// m16.5f-3 CLOCK SKEW: (created=100, now=50) → false (created_at in the future).
+    ///
+    /// kills: impl that does `now - created` without saturating_sub — would underflow
+    ///        and panic on debug builds (or wrap to a huge value on release), incorrectly
+    ///        marking a just-created offer as stale.
+    #[test]
+    fn is_offer_stale_false_on_clock_skew() {
+        assert!(
+            !is_offer_stale(100, 50),
+            "now (50) < created_at (100): saturating_sub gives 0 < TTL, must return false \
+             (clock skew must never mark a fresh offer as stale)"
+        );
+    }
+
+    /// m16.5f-3 EXTREMES: (i64::MIN, i64::MAX) must not panic (saturating arithmetic).
+    ///
+    /// kills: impl that uses wrapping/checked subtraction rather than saturating_sub —
+    ///        i64::MAX - i64::MIN would overflow on a non-saturating impl.
+    #[test]
+    fn is_offer_stale_no_panic_on_extreme_min_max() {
+        // i64::MAX saturating_sub i64::MIN = i64::MAX (saturates at i64::MAX, not wrapping).
+        // i64::MAX >= TRADE_OFFER_TTL_MS → true; but the key property is: must not panic.
+        let _ = is_offer_stale(i64::MIN, i64::MAX);
+    }
+
+    /// m16.5f-3 EXTREMES: (i64::MAX, i64::MIN) must not panic (saturating arithmetic).
+    ///
+    /// kills: same as above — reversed direction gives saturating_sub = 0 → false,
+    ///        but again the key property is: must not panic.
+    #[test]
+    fn is_offer_stale_no_panic_on_extreme_max_min() {
+        // i64::MIN saturating_sub i64::MAX = i64::MIN (saturates at i64::MIN, gives 0 after
+        // the saturating cast), so result is 0 < TRADE_OFFER_TTL_MS → false.
+        let result = is_offer_stale(i64::MAX, i64::MIN);
+        // Must be false: elapsed saturates to 0, which is < TTL.
+        assert!(
+            !result,
+            "is_offer_stale(i64::MAX, i64::MIN): saturating_sub gives 0 < TTL, must be false"
+        );
+    }
 }
