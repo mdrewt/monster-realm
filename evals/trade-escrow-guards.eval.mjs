@@ -1,9 +1,9 @@
 // trade-escrow-guards eval (M15c, ADR-0108):
 // Verifies that the three escrow guard functions (reject_if_monster_in_trade,
 // escrowed_item_qty, escrowed_currency_amount) are wired into every reducer that
-// mutates an asset that can be offered in a trade (TR-2 through TR-12).
+// mutates an asset that can be offered in a trade (TR-2 through TR-13).
 //
-// Guard sites checked (11 tuples: [fnName, guard, minCount]):
+// Guard sites checked (12 tuples: [fnName, guard, minCount]):
 //   evolve          reject_if_monster_in_trade  >=1  (TR-2)
 //   fuse            reject_if_monster_in_trade  >=2  (TR-3 — BOTH parents)
 //   set_nickname    reject_if_monster_in_trade  >=1  (TR-4)
@@ -13,6 +13,7 @@
 //   start_battle    reject_if_monster_in_trade  >=2  (TR-11 — party + opponent loops)
 //   sell            escrowed_item_qty           >=1  (TR-8)
 //   use_battle_item escrowed_item_qty           >=1  (TR-12)
+//   attempt_recruit escrowed_item_qty           >=1  (TR-13)
 //   buy             escrowed_currency_amount    >=1  (TR-9)
 //   heal_party      escrowed_currency_amount    >=1  (TR-10)
 //
@@ -102,14 +103,16 @@ function readAllRustSources(dir) {
 // ---------------------------------------------------------------------------
 // Core checker: does the named function have >= minCount calls to guard?
 // Returns { ok: bool, found: number }.
-// Uses `guard + '('` as the search needle so only call sites are counted — a guard
-// name appearing inside a string literal (e.g. format!("...guard...")) does NOT
-// satisfy this check because it is not followed by `(` in that context (RT-SEC-02).
+// Strips Rust double-quoted string literal CONTENTS before counting so that a
+// guard name appearing inside a string (e.g. log::info!("reject_if_monster_in_trade(x)"))
+// is NOT counted as a real call site (RT-SEC-02, RT-SEC-02b). Raw string literals
+// (r#"..."#) are not stripped — they are rare in these guard functions.
 // ---------------------------------------------------------------------------
 function bodyHasGuard(combinedSrc, fnName, guard, minCount) {
   const body = extractFunctionBody(combinedSrc, fnName);
   if (!body) return { ok: false, found: -1 }; // function not found
-  const count = countOccurrences(body, guard + '(');
+  const bodyNoStrings = body.replace(/"(?:[^"\\]|\\.)*"/g, '""');
+  const count = countOccurrences(bodyNoStrings, `${guard}(`);
   return { ok: count >= minCount, found: count };
 }
 
@@ -128,6 +131,7 @@ const GUARD_SITES = [
   ['start_battle', 'reject_if_monster_in_trade', 2, 'TR-11 (party + opponent loops)'],
   ['sell', 'escrowed_item_qty', 1, 'TR-8'],
   ['use_battle_item', 'escrowed_item_qty', 1, 'TR-12'],
+  ['attempt_recruit', 'escrowed_item_qty', 1, 'TR-13'],
   ['buy', 'escrowed_currency_amount', 1, 'TR-9'],
   ['heal_party', 'escrowed_currency_amount', 1, 'TR-10'],
 ];
@@ -137,7 +141,7 @@ const GUARD_SITES = [
 // ---------------------------------------------------------------------------
 export default async function () {
   const name =
-    'trade-escrow-guards (M15c, ADR-0108: TR-2..TR-12 reject_if_monster_in_trade + escrowed_item_qty + escrowed_currency_amount wired into every asset-mutating reducer)';
+    'trade-escrow-guards (M15c, ADR-0108: TR-2..TR-13 reject_if_monster_in_trade + escrowed_item_qty + escrowed_currency_amount wired into every asset-mutating reducer)';
 
   // -------------------------------------------------------------------------
   // Proof-of-teeth (three teeth per guard family)
@@ -195,10 +199,9 @@ export default async function () {
     };
   }
   // RT-SEC-02: fuse minCount=2 must NOT be satisfied by ONE real call plus the guard
-  // name appearing in a string literal (e.g. a format! error message or log! macro).
-  // countOccurrences uses indexOf which cannot distinguish call sites from string contents.
-  // A broken fuse that drops the second parent guard and adds a log mentioning the
-  // function name would count as 2 occurrences and pass — missing the b_id escrow check.
+  // name appearing in a string literal without an open paren (e.g. a prose error message).
+  // bodyHasGuard strips string literal contents before counting, so guard names in strings
+  // are excluded regardless of what follows them (RT-SEC-02b covers the paren-in-string case).
   const fuseOneCallOneString =
     'fn fuse(ctx, a_id, b_id) { reject_if_monster_in_trade(iter_a, a_id)?; return Err(format!("reject_if_monster_in_trade skipped for b_id {}", b_id)); }';
   const fuseOneStringResult = bodyHasGuard(
@@ -213,8 +216,31 @@ export default async function () {
       pass: false,
       detail:
         'TEETH FAILED (RT-SEC-02): fuse minCount=2 passed a fixture with ONE real guard call and the ' +
-        'guard name in a string literal — countOccurrences cannot distinguish calls from strings, ' +
-        'allowing the second-parent escrow guard deletion to go undetected',
+        'guard name in a string literal — string stripping did not exclude the literal content',
+    };
+  }
+
+  // RT-SEC-02b: same as RT-SEC-02 but the string literal contains the guard name WITH an
+  // immediate open paren — e.g. log::info!("reject_if_monster_in_trade(b_id) bypassed").
+  // Without string stripping, the needle `reject_if_monster_in_trade(` would match inside
+  // the string, producing a false positive (ok:true). bodyHasGuard strips string literal
+  // contents so the paren-in-string variant is also correctly excluded.
+  const fuseParenInString =
+    'fn fuse(ctx, a_id, b_id) { reject_if_monster_in_trade(iter_a, a_id)?; log::info!("reject_if_monster_in_trade(b_id) was already handled above"); }';
+  const fuseParenInStringResult = bodyHasGuard(
+    fuseParenInString,
+    'fuse',
+    'reject_if_monster_in_trade',
+    2,
+  );
+  // bodyHasGuard must return ok:false (the string literal content does NOT count as a call).
+  if (fuseParenInStringResult.ok) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (RT-SEC-02b): fuse minCount=2 passed a fixture with ONE real guard call and the ' +
+        'guard name WITH open paren inside a string literal — string stripping did not exclude the literal content',
     };
   }
 
@@ -262,6 +288,36 @@ export default async function () {
     };
   }
 
+  // TR-13 teeth: attempt_recruit escrowed_item_qty guard.
+  // Good fixture: body WITH escrowed_item_qty( passes.
+  // Kills: a false-negative in bodyHasGuard that fails to find a real call site.
+  const goodRecruit =
+    'fn attempt_recruit(ctx, battle_id, bait_item_id) { let escrowed = escrowed_item_qty(iter, owner, bait_item_id); Ok(()) }';
+  const goodRecruitResult = bodyHasGuard(goodRecruit, 'attempt_recruit', 'escrowed_item_qty', 1);
+  if (!goodRecruitResult.ok) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (TR-13 good): bodyHasGuard did not pass on attempt_recruit fixture WITH escrowed_item_qty',
+    };
+  }
+  // Bad fixture: body WITHOUT escrowed_item_qty( must fail.
+  // Kills: a future regression in taming.rs that removes the bait-escrow guard —
+  // a body that only checks consume_one without the pre-flight escrowed_item_qty
+  // call would allow recruiting with an escrowed bait item.
+  const badRecruit =
+    'fn attempt_recruit(ctx, battle_id, bait_item_id) { consume_one(ctx, owner, bait_item_id)?; Ok(()) }';
+  const badRecruitResult = bodyHasGuard(badRecruit, 'attempt_recruit', 'escrowed_item_qty', 1);
+  if (badRecruitResult.ok) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (TR-13 bad): bodyHasGuard should NOT pass on attempt_recruit fixture WITHOUT escrowed_item_qty',
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Read actual source files (all *.rs under server-module/src/)
   // -------------------------------------------------------------------------
@@ -294,6 +350,6 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'all 11 escrow-guard sites verified (TR-2..TR-12): reject_if_monster_in_trade in 7 reducers (fuse≥2, start_battle≥2), escrowed_item_qty in 2, escrowed_currency_amount in 2',
+      'all 12 escrow-guard sites verified (TR-2..TR-13): reject_if_monster_in_trade in 7 reducers (fuse≥2, start_battle≥2), escrowed_item_qty in 3 (sell, use_battle_item, attempt_recruit), escrowed_currency_amount in 2',
   };
 }

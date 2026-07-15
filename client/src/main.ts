@@ -987,6 +987,67 @@ function snapshot() {
 }
 (window as unknown as { __game: typeof snapshot }).__game = snapshot;
 
+// m16.5d: test hook exposing trade reducers + subscription queries for two-context e2e.
+// Mirrors window.__game pattern. All BigInt values cross the page.evaluate boundary as
+// strings; the hook converts them back to BigInt internally (BigInt cannot pass the
+// structured-clone boundary used by Playwright evaluate).
+//
+// NOTE: this hook's shape is re-declared as MrTrade in client/e2e/trade-full.spec.ts.
+// Both must be kept in sync manually — page.evaluate() crosses a structured-clone
+// boundary that the type system cannot check across. See that file if you change any
+// method signature or return shape here.
+//
+// NOTE: like window.__game, this hook is included in all builds (no import.meta.env.DEV
+// gate). Server-side identity authz prevents privilege escalation (callers can only act
+// as themselves). A future cleanup should gate both __game and __mrTrade on DEV.
+const mrTradeHook = {
+  proposeTrade(args: {
+    counterparty: string;
+    initiatorMonsterIds: string[];
+    initiatorItems: { itemId: number; qty: number }[];
+    initiatorCurrency: string;
+    counterpartyMonsterIds: string[];
+    counterpartyItems: { itemId: number; qty: number }[];
+    counterpartyCurrency: string;
+  }): Promise<void> | undefined {
+    return conn?.conn.reducers.proposeTrade({
+      counterparty: new Identity(args.counterparty),
+      initiatorMonsterIds: args.initiatorMonsterIds.map(BigInt),
+      initiatorItems: args.initiatorItems,
+      initiatorCurrency: BigInt(args.initiatorCurrency),
+      counterpartyMonsterIds: args.counterpartyMonsterIds.map(BigInt),
+      counterpartyItems: args.counterpartyItems,
+      counterpartyCurrency: BigInt(args.counterpartyCurrency),
+    });
+  },
+  respondTrade(tradeId: string, accepted: boolean): Promise<void> | undefined {
+    return conn?.conn.reducers.respondTrade({ tradeId: BigInt(tradeId), accepted });
+  },
+  confirmTrade(tradeId: string): Promise<void> | undefined {
+    return conn?.conn.reducers.confirmTrade({ tradeId: BigInt(tradeId) });
+  },
+  cancelTrade(tradeId: string): Promise<void> | undefined {
+    return conn?.conn.reducers.cancelTrade({ tradeId: BigInt(tradeId) });
+  },
+  allTradeOffers(): Array<{
+    tradeId: string;
+    initiator: string;
+    counterparty: string;
+    status: string;
+  }> {
+    return store.allTradeOffers().map((o) => ({
+      tradeId: o.tradeId.toString(),
+      initiator: o.initiator,
+      counterparty: o.counterparty,
+      status: o.status,
+    }));
+  },
+  allPlayers(): Array<{ identity: string; name: string }> {
+    return store.allPlayers().map((p) => ({ identity: p.identity, name: p.name }));
+  },
+};
+(window as unknown as { __mrTrade: typeof mrTradeHook }).__mrTrade = mrTradeHook;
+
 async function main(): Promise<void> {
   const [
     { BoxView: BoxViewClass },
