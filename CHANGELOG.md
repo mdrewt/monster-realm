@@ -114,6 +114,7 @@
 - PvP battle spine — challenge handshake, submit/resolve, deadline reaper (#172)
 - PvP client UI — challenge/accept/turn-submit/forfeit overlay (ADR-0110) (#176)
 - Battle↔trade interlock both directions + vacuous-revival gate (#180)
+- Receiver-cap headroom check in confirm_trade — reject, don't destroy (ADR-0113) (#183)
 
 ### Fixes
 
@@ -220,4 +221,3 @@
 - ARCHITECTURE.md — module-map, content-registry, raising+evolution sections (#108)
 - Project-side changes — warpDetect wire-in, @types/node ^24, root lockfile delete, CONTENT_VERSION history, main.ts comments, ARCHITECTURE/AGENTS/ADR fixes (#131)
 - Regen knowledge bundle — UTC date rollover (2026-07-13→2026-07-14) (#166)
-- Implementation GREEN — check_headroom + tests + eval + knowledge

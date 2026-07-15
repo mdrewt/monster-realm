@@ -38,6 +38,13 @@ export interface TradeSideViewModel {
 }
 
 /**
+ * The two server-side TradeStatus variants (m16.5c, ADR-0114).
+ * Typed as a literal union so deriveActionsAndLabel can switch exhaustively —
+ * adding a third server variant is a TypeScript compile error at the switch site.
+ */
+export type TradeStatus = 'Pending' | 'ConfirmedByCounterparty';
+
+/**
  * The reducer action the viewer may take.
  * - 'accept'  → respondTrade(tradeId, accepted:true)
  * - 'reject'  → respondTrade(tradeId, accepted:false)
@@ -81,18 +88,22 @@ export type TradeScreenViewModel = TradeOfferViewModel | NoTradeViewModel;
 
 function deriveActionsAndLabel(
   isInitiator: boolean,
-  status: string,
+  status: TradeStatus,
 ): { actions: readonly TradeAction[]; statusLabel: string } {
   if (isInitiator) {
-    if (status === 'ConfirmedByCounterparty') {
-      return { actions: ['confirm', 'cancel'], statusLabel: 'Accepted — confirm to finalize' };
+    switch (status) {
+      case 'ConfirmedByCounterparty':
+        return { actions: ['confirm', 'cancel'], statusLabel: 'Accepted — confirm to finalize' };
+      case 'Pending':
+        return { actions: ['cancel'], statusLabel: 'Waiting for response' };
     }
-    return { actions: ['cancel'], statusLabel: 'Waiting for response' };
   }
-  if (status === 'ConfirmedByCounterparty') {
-    return { actions: ['cancel'], statusLabel: 'Accepted — awaiting confirmation' };
+  switch (status) {
+    case 'ConfirmedByCounterparty':
+      return { actions: ['cancel'], statusLabel: 'Accepted — awaiting confirmation' };
+    case 'Pending':
+      return { actions: ['accept', 'reject'], statusLabel: 'Offer received' };
   }
-  return { actions: ['accept', 'reject'], statusLabel: 'Offer received' };
 }
 
 // ---------------------------------------------------------------------------

@@ -520,7 +520,8 @@ export function tradeOfferRowToStore(row: SdkTradeOfferRow): StoreTradeOffer {
     counterpartyCurrency: row.counterpartyCurrency,
     initiatorCards: row.initiatorCards.map(sdkCardToStore),
     counterpartyCards: row.counterpartyCards.map(sdkCardToStore),
-    status: row.status.tag,
+    // SDK boundary: trust server sends only valid TradeStatus variants (m16.5c ADR-0114).
+    status: row.status.tag as 'Pending' | 'ConfirmedByCounterparty',
     createdAtMs: row.createdAtMs,
   };
 }

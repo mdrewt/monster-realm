@@ -181,4 +181,49 @@ test.describe
       await page.keyboard.press('u');
       await expect(page.locator('#trade-overlay')).toBeHidden({ timeout: 5_000 });
     });
+
+    // ---------------------------------------------------------------------------
+    // 16.5c-1: overlay guard — G/Q/H keys do NOT open their overlays while trade
+    // is open; trade overlay stays visible throughout.
+    //
+    // WHAT THIS KILLS:
+    //   A regression in the main.ts KeyG/KeyQ/KeyH handlers that removes the
+    //   `!tradeView?.visible` guard — shop/quest/heal overlays would open over
+    //   the trade overlay, violating mutual exclusivity from the trade direction.
+    //   The m16b review fixed these guards (code is green); this test is the
+    //   proof-of-teeth that a regression in those guards would be caught.
+    //
+    // The test is RED today only in the sense that it does not yet exist.
+    // Once written it proves the guards actually bite.
+    // ---------------------------------------------------------------------------
+    test('trade open: G/Q/H keys do not open overlays (16.5c-1)', async () => {
+      // Ensure we start with no overlays open.
+      await expect(page.locator('#trade-overlay')).toBeHidden();
+
+      // Open the trade overlay via KeyU.
+      await page.keyboard.press('u');
+      await expect(page.locator('#trade-overlay')).toBeVisible({ timeout: 5_000 });
+
+      // Press 'g' (KeyG → shop). Trade overlay must stay open; shop must stay hidden.
+      await page.keyboard.press('g');
+      await page.waitForTimeout(200);
+      await expect(page.locator('#shop-overlay')).toBeHidden();
+      await expect(page.locator('#trade-overlay')).toBeVisible();
+
+      // Press 'q' (KeyQ → quest log). Trade overlay must stay open; quest log must stay hidden.
+      await page.keyboard.press('q');
+      await page.waitForTimeout(200);
+      await expect(page.locator('#quest-log-overlay')).toBeHidden();
+      await expect(page.locator('#trade-overlay')).toBeVisible();
+
+      // Press 'h' (KeyH → heal). Trade overlay must stay open; heal overlay must stay hidden.
+      await page.keyboard.press('h');
+      await page.waitForTimeout(200);
+      await expect(page.locator('#heal-overlay')).toBeHidden();
+      await expect(page.locator('#trade-overlay')).toBeVisible();
+
+      // Cleanup: close the trade overlay.
+      await page.keyboard.press('u');
+      await expect(page.locator('#trade-overlay')).toBeHidden({ timeout: 5_000 });
+    });
   });
