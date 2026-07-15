@@ -145,10 +145,15 @@ export function parseContentTableStructs(schemaSrc) {
   const src = stripRustCommentsAndStrings(schemaSrc);
   const out = {};
   const tableAttrRe = /#\[spacetimedb::table\(\s*name\s*=\s*(\w+)/g;
-  for (const m of src.matchAll(tableAttrRe)) {
+  const attrMatches = Array.from(src.matchAll(tableAttrRe));
+  for (let a = 0; a < attrMatches.length; a++) {
+    const m = attrMatches[a];
     const tableName = m[1];
+    // Bound the struct search at the NEXT table attribute: an attr whose
+    // struct is missing/misplaced must not claim a later table's struct.
+    const bound = a + 1 < attrMatches.length ? attrMatches[a + 1].index : src.length;
     const structIdx = src.indexOf('pub struct ', m.index);
-    if (structIdx === -1) continue;
+    if (structIdx === -1 || structIdx >= bound) continue;
     const nameStart = structIdx + 'pub struct '.length;
     let nameEnd = nameStart;
     while (nameEnd < src.length && isWordChar(src[nameEnd])) nameEnd++;
@@ -171,18 +176,18 @@ export function parseContentTableStructs(schemaSrc) {
   return out;
 }
 
-// One literal regex for DB write call sites: ctx.db.<table>() followed by a
-// chain of zero-arg accessors (index accessors like .item_id()) and then
-// .insert( / .update( / .delete(. Multi-line chains tolerated via \s*.
-// Zero-arg chain elements (not a bounded [\s\S] lookahead) so a match can
-// never leak across statement boundaries into a DIFFERENT table's write.
-const DB_WRITE_RE =
-  /ctx\s*\.\s*db\s*\.\s*(\w+)\s*\(\s*\)(?:\s*\.\s*\w+\s*\(\s*\))*\s*\.\s*(insert|update|delete)\s*\(/g;
-
 function scanDbWrites(contentSrc) {
   const src = stripRustCommentsAndStrings(contentSrc);
+  // One literal regex for DB write call sites: ctx.db.<table>() followed by a
+  // chain of zero-arg accessors (index accessors like .item_id()) and then
+  // .insert( / .update( / .delete(. Multi-line chains tolerated via \s*.
+  // Zero-arg chain elements (not a bounded [\s\S] lookahead) so a match can
+  // never leak across statement boundaries into a DIFFERENT table's write.
+  // Function-local so no lastIndex state can ever be shared across calls.
+  const dbWriteRe =
+    /ctx\s*\.\s*db\s*\.\s*(\w+)\s*\(\s*\)(?:\s*\.\s*\w+\s*\(\s*\))*\s*\.\s*(insert|update|delete)\s*\(/g;
   const writes = [];
-  for (const m of src.matchAll(DB_WRITE_RE)) {
+  for (const m of src.matchAll(dbWriteRe)) {
     writes.push({ table: m[1], op: m[2] });
   }
   return writes;

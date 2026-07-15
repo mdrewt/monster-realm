@@ -197,7 +197,13 @@ export function checkAppendOnly(prevBaseline, newBaseline) {
         continue;
       }
       const prefix = next.variants.slice(0, prev.variants.length);
-      if (prefix.length !== prev.variants.length || prefix.some((v, i) => v !== prev.variants[i])) {
+      if (prefix.length !== prev.variants.length) {
+        // Dedicated removal message (mirrors the struct branch) — clearer than
+        // the generic prefix diagnostic when the variant count shrank.
+        flags.push(
+          `enum '${name}': variant count shrank from ${prev.variants.length} (prev) to ${next.variants.length} (new) — variant removal is a wire break`,
+        );
+      } else if (prefix.some((v, i) => v !== prev.variants[i])) {
         flags.push(
           `enum '${name}': prev variants [${prev.variants.join(',')}] are not a positional prefix of new [${next.variants.join(',')}] — only tail-append is allowed (BSATN tags are positional)`,
         );
