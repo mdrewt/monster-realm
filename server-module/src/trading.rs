@@ -7,20 +7,23 @@
 //!
 //! Flow: propose_trade → respond_trade(accept) → confirm_trade → atomic swap.
 //! Cancellation paths: cancel_trade (either party) + on_disconnect (lib.rs).
+//! Liveness: a scheduled TTL reaper deletes offers older than `TRADE_OFFER_TTL_MS`
+//! (16.5f-4, ADR-0117); every offer-deletion path disarms its schedule row.
 //!
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
 
 use crate::economy::{grant_currency, spend_currency, wallet_balance};
-use crate::guards::{escrowed_item_qty, log_reject, reject_if_in_battle};
+use crate::guards::{escrowed_currency_amount, escrowed_item_qty, log_reject, reject_if_in_battle};
 use crate::inventory::{consume_one, grant_item};
 use crate::marshal::{now_ms, pub_from_monster};
 use crate::schema::{battle, inventory, monster, monster_pub, player, trade_offer, TradeOffer};
 use game_core::{
-    build_swap_plan, check_headroom, make_monster_card, validate_proposal, ItemStack,
-    LiveMonsterOwner, MonsterCard, ProposalSide, TradeItem, TradeSide, TradeStatus,
+    authorize_confirm, authorize_respond, build_swap_plan, check_headroom, is_offer_stale,
+    make_monster_card, validate_proposal, ItemStack, LiveMonsterOwner, MonsterCard, ProposalSide,
+    TradeItem, TradeSide, TradeStatus, TRADE_OFFER_TTL_MS,
 };
-use spacetimedb::{Identity, ReducerContext, Table};
+use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -74,6 +77,94 @@ fn build_cards(
         ));
     }
     Ok(cards)
+}
+
+// ---------------------------------------------------------------------------
+// TTL reaper (16.5f-4, ADR-0117)
+// ---------------------------------------------------------------------------
+
+// Scheduled table colocated with its reducer (ADR-0056 exception, mirrors pvp_deadline_schedule).
+// PRIVATE — prevents client schedule manipulation; the underlying facts are already public via trade_offer.
+#[spacetimedb::table(name = trade_offer_reaper_schedule, scheduled(trade_offer_reaper))]
+pub struct TradeOfferReaperSchedule {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    /// The trade offer this schedule guards (auto_inc — never reused, no ABA).
+    #[index(btree)]
+    pub trade_id: u64,
+}
+
+/// Arm the TTL reaper for a newly-inserted offer.
+///
+/// The deadline is computed FROM THE MS-FLOORED `created_at_ms` (not raw micros) —
+/// kills the ms-truncation edge where the schedule could fire fractionally before
+/// `is_offer_stale`'s ms clock reaches the TTL boundary (ADR-0117 D4).
+fn schedule_trade_reaper(ctx: &ReducerContext, trade_id: u64, created_at_ms: i64) {
+    let deadline_micros = created_at_ms
+        .saturating_mul(1_000)
+        .saturating_add(TRADE_OFFER_TTL_MS.saturating_mul(1_000));
+    ctx.db
+        .trade_offer_reaper_schedule()
+        .insert(TradeOfferReaperSchedule {
+            scheduled_id: 0, // auto_inc
+            scheduled_at: ScheduleAt::Time(spacetimedb::Timestamp::from_micros_since_unix_epoch(
+                deadline_micros,
+            )),
+            trade_id,
+        });
+}
+
+/// Disarm the reaper schedule(s) for `trade_id`. Called at every offer-deletion
+/// site so no orphaned schedule row survives its offer. Collect-before-delete
+/// (mirrors `cancel_trades_on_disconnect`): gather the scheduled_ids via the
+/// trade_id btree filter first, then delete each via the primary key.
+fn disarm_trade_reaper(ctx: &ReducerContext, trade_id: u64) {
+    let scheduled_ids: Vec<u64> = ctx
+        .db
+        .trade_offer_reaper_schedule()
+        .trade_id()
+        .filter(trade_id)
+        .map(|s| s.scheduled_id)
+        .collect();
+    for sid in scheduled_ids {
+        ctx.db
+            .trade_offer_reaper_schedule()
+            .scheduled_id()
+            .delete(sid);
+    }
+}
+
+/// Scheduled reaper: delete a trade offer that has outlived `TRADE_OFFER_TTL_MS`.
+///
+/// This is a SCHEDULER-ONLY reducer — clients must never call it directly.
+/// Guard: `ctx.sender != ctx.identity()` (identical to `pvp_deadline_reaper`,
+/// ADR-0056). Staleness is re-checked via `is_offer_stale` so an early fire or
+/// clock skew never reaps a fresh offer.
+///
+/// No self-disarm: one-shot `ScheduleAt::Time` rows are deleted BY THE RUNTIME
+/// after the reducer returns ("Scheduled reducers delete the row after execution"
+/// — SpacetimeDB docs, schedule-tables §Row Lifecycle; ADR-0109 D7 precedent).
+/// A self-delete here would race the runtime's post-execution delete.
+#[spacetimedb::reducer]
+pub fn trade_offer_reaper(
+    ctx: &ReducerContext,
+    args: TradeOfferReaperSchedule,
+) -> Result<(), String> {
+    if ctx.sender != ctx.identity() {
+        return Err("trade_offer_reaper is scheduler-only".to_string());
+    }
+    let Some(offer) = ctx.db.trade_offer().trade_id().find(args.trade_id) else {
+        return Ok(()); // offer completed/cancelled before TTL — no-op (schedule row was consumed on fire)
+    };
+    if !is_offer_stale(offer.created_at_ms, now_ms(ctx)) {
+        return Ok(()); // defensive: fired early/clock skew — never reap a fresh offer
+    }
+    let trade_id = args.trade_id;
+    log::info!("{{\"evt\":\"trade_offer_reaped\",\"trade_id\":{trade_id}}}");
+    ctx.db.trade_offer().trade_id().delete(args.trade_id);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +241,16 @@ pub fn propose_trade(
     // Prevents the counterparty_currency=MAX DoS that locks all currency-dependent reducers.
     if initiator_currency > 0 {
         let bal = wallet_balance(ctx, me);
-        if initiator_currency > bal {
+        // Escrow is provably 0 here under ADR-0106 D4 (one active offer per player — validate_proposal above already rejected active-trade parties); kept symmetric for the auction-house extension (ADR-0117 D3).
+        let escrowed = escrowed_currency_amount(
+            ctx.db
+                .trade_offer()
+                .initiator()
+                .filter(me)
+                .chain(ctx.db.trade_offer().counterparty().filter(me)),
+            me,
+        );
+        if initiator_currency > bal.saturating_sub(escrowed) {
             let e = "insufficient currency for trade offer".to_string();
             log_reject("propose_trade", me, &e);
             return Err(e);
@@ -158,7 +258,16 @@ pub fn propose_trade(
     }
     if counterparty_currency > 0 {
         let cp_bal = wallet_balance(ctx, counterparty);
-        if counterparty_currency > cp_bal {
+        // Escrow is provably 0 here under ADR-0106 D4 (one active offer per player — validate_proposal above already rejected active-trade parties); kept symmetric for the auction-house extension (ADR-0117 D3).
+        let escrowed = escrowed_currency_amount(
+            ctx.db
+                .trade_offer()
+                .initiator()
+                .filter(counterparty)
+                .chain(ctx.db.trade_offer().counterparty().filter(counterparty)),
+            counterparty,
+        );
+        if counterparty_currency > cp_bal.saturating_sub(escrowed) {
             let e = "counterparty has insufficient currency for this trade".to_string();
             log_reject("propose_trade", me, &e);
             return Err(e);
@@ -199,7 +308,17 @@ pub fn propose_trade(
             .find(|r| r.item_id == item.item_id)
             .map(|r| r.count)
             .unwrap_or(0);
-        if item.qty > count {
+        // Escrow is provably 0 here under ADR-0106 D4 (one active offer per player — validate_proposal above already rejected active-trade parties); kept symmetric for the auction-house extension (ADR-0117 D3).
+        let escrowed = escrowed_item_qty(
+            ctx.db
+                .trade_offer()
+                .initiator()
+                .filter(counterparty)
+                .chain(ctx.db.trade_offer().counterparty().filter(counterparty)),
+            counterparty,
+            item.item_id,
+        );
+        if item.qty > count.saturating_sub(escrowed) {
             let e = format!(
                 "counterparty has insufficient inventory for item {}",
                 item.item_id
@@ -241,7 +360,9 @@ pub fn propose_trade(
         "propose_trade",
     )?;
 
-    ctx.db.trade_offer().insert(TradeOffer {
+    // Capture the insert return — the auto_inc trade_id only exists on the returned
+    // row (ADR-0072 capture-insert).
+    let inserted = ctx.db.trade_offer().insert(TradeOffer {
         trade_id: 0, // auto_inc
         initiator: me,
         counterparty,
@@ -256,11 +377,15 @@ pub fn propose_trade(
         status: TradeStatus::Pending,
         created_at_ms: now_ms(ctx),
     });
+    schedule_trade_reaper(ctx, inserted.trade_id, inserted.created_at_ms);
 
     Ok(())
 }
 
 /// Counterparty responds to a Pending offer.
+///
+/// Role + status authorization is delegated to the pure `authorize_respond`
+/// (role FIRST — no status leak to non-parties; 16.5f-1, ADR-0117).
 ///
 /// - `accepted = false` → row deleted (escrow released, no assets moved, TR-13).
 /// - `accepted = true` → status → ConfirmedByCounterparty (TR-14).
@@ -271,20 +396,16 @@ pub fn respond_trade(ctx: &ReducerContext, trade_id: u64, accepted: bool) -> Res
     let Some(offer) = ctx.db.trade_offer().trade_id().find(trade_id) else {
         return Err("trade offer not found".to_string());
     };
-    if offer.counterparty != me {
-        let e = "not the counterparty".to_string();
-        log_reject("respond_trade", me, &e);
-        return Err(e);
-    }
-    if offer.status != TradeStatus::Pending {
-        let e = "offer is not in Pending state".to_string();
-        log_reject("respond_trade", me, &e);
-        return Err(e);
-    }
+    authorize_respond(&offer.status, offer.counterparty == me).map_err(|e| {
+        let msg = e.to_string();
+        log_reject("respond_trade", me, &msg);
+        msg
+    })?;
 
     if !accepted {
         // Rejection: delete the row → guard released, no assets move (TR-13).
         ctx.db.trade_offer().trade_id().delete(trade_id);
+        disarm_trade_reaper(ctx, trade_id);
         return Ok(());
     }
 
@@ -298,6 +419,9 @@ pub fn respond_trade(ctx: &ReducerContext, trade_id: u64, accepted: bool) -> Res
 
 /// Initiator confirms a ConfirmedByCounterparty offer → atomic swap.
 ///
+/// Role + status authorization is delegated to the pure `authorize_confirm`
+/// (role FIRST — no status leak to non-parties; 16.5f-1, ADR-0117).
+///
 /// Re-reads all live rows, verifies ownership still matches the offer, then
 /// executes the ownership/item/currency transfers in one transaction and deletes
 /// the offer row (TR-15/TR-16, ADR-0106 D3).
@@ -308,16 +432,11 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
     let Some(offer) = ctx.db.trade_offer().trade_id().find(trade_id) else {
         return Err("trade offer not found".to_string());
     };
-    if offer.initiator != me {
-        let e = "not the initiator".to_string();
-        log_reject("confirm_trade", me, &e);
-        return Err(e);
-    }
-    if offer.status != TradeStatus::ConfirmedByCounterparty {
-        let e = "offer is not in ConfirmedByCounterparty state".to_string();
-        log_reject("confirm_trade", me, &e);
-        return Err(e);
-    }
+    authorize_confirm(&offer.status, offer.initiator == me).map_err(|e| {
+        let msg = e.to_string();
+        log_reject("confirm_trade", me, &msg);
+        msg
+    })?;
 
     // Re-read live monster rows + verify ownership (TR-15).
     let mut i_live: Vec<LiveMonsterOwner> = Vec::with_capacity(offer.initiator_monster_ids.len());
@@ -523,6 +642,7 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
 
     // Delete the offer row — releases the escrow guard (TR-16).
     ctx.db.trade_offer().trade_id().delete(trade_id);
+    disarm_trade_reaper(ctx, trade_id);
 
     Ok(())
 }
@@ -549,6 +669,7 @@ pub fn cancel_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> {
     }
 
     ctx.db.trade_offer().trade_id().delete(trade_id);
+    disarm_trade_reaper(ctx, trade_id);
     Ok(())
 }
 
@@ -575,6 +696,7 @@ pub(crate) fn cancel_trades_on_disconnect(ctx: &ReducerContext, player: Identity
 
     for trade_id in to_cancel {
         ctx.db.trade_offer().trade_id().delete(trade_id);
+        disarm_trade_reaper(ctx, trade_id);
     }
 }
 

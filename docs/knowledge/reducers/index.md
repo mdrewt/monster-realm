@@ -14,7 +14,7 @@
 | reducers/care | SpacetimeDB Reducer | care | Raise a monster's bond, gated by a per-monster cooldown measured from the server |
 | reducers/challenge_pvp | SpacetimeDB Reducer | challenge_pvp | Send a PvP battle challenge to another online player. Guard order (reject-not-cl |
 | reducers/clear_queue | SpacetimeDB Reducer | clear_queue | Empty the queue (key release). |
-| reducers/confirm_trade | SpacetimeDB Reducer | confirm_trade | Initiator confirms a ConfirmedByCounterparty offer → atomic swap. Re-reads all l |
+| reducers/confirm_trade | SpacetimeDB Reducer | confirm_trade | Initiator confirms a ConfirmedByCounterparty offer → atomic swap. Role + status  |
 | reducers/decline_challenge | SpacetimeDB Reducer | decline_challenge | Decline a pending PvP challenge. Deletes the challenge row. |
 | reducers/dismiss_dialogue | SpacetimeDB Reducer | dismiss_dialogue | Dismiss the current dialogue (no-op if no active conversation). |
 | reducers/enqueue_move | SpacetimeDB Reducer | enqueue_move | Append one intent to the bounded queue (anti-flood: reject when full). Buffers i |
@@ -29,7 +29,7 @@
 | reducers/on_disconnect | SpacetimeDB Reducer | on_disconnect | SpacetimeDB reducer on_disconnect. |
 | reducers/propose_trade | SpacetimeDB Reducer | propose_trade | Propose a trade: escrow the listed assets and await the counterparty's response. |
 | reducers/pvp_deadline_reaper | SpacetimeDB Reducer | pvp_deadline_reaper | Scheduled reaper: forfeit the non-submitting side when the turn deadline fires.  |
-| reducers/respond_trade | SpacetimeDB Reducer | respond_trade | Counterparty responds to a Pending offer. - `accepted = false` → row deleted (es |
+| reducers/respond_trade | SpacetimeDB Reducer | respond_trade | Counterparty responds to a Pending offer. Role + status authorization is delegat |
 | reducers/sell | SpacetimeDB Reducer | sell | Sell `qty` units of `item_id` from the caller's inventory. Server flow (reject-n |
 | reducers/set_move | SpacetimeDB Reducer | set_move | Replace the ENTIRE undrained queue with one input (a responsive turn/direction c |
 | reducers/set_nickname | SpacetimeDB Reducer | set_nickname | Set or clear a monster's nickname. Empty string clears the nickname. Ownership-c |
@@ -41,6 +41,7 @@
 | reducers/swap_active | SpacetimeDB Reducer | swap_active | Swap the player's active monster. Ownership + outcome guards enforced. |
 | reducers/sync_content | SpacetimeDB Reducer | sync_content | SpacetimeDB reducer sync_content. |
 | reducers/talk | SpacetimeDB Reducer | talk | Initiate a dialogue with an NPC. Creates/replaces the player_conversation row. Z |
+| reducers/trade_offer_reaper | SpacetimeDB Reducer | trade_offer_reaper | Scheduled reaper: delete a trade offer that has outlived `TRADE_OFFER_TTL_MS`. T |
 | reducers/train | SpacetimeDB Reducer | train | Spend a training food to grant EVs toward its target stat and re-derive the mons |
 | reducers/use_battle_item | SpacetimeDB Reducer | use_battle_item | Use a battle item (e.g. Antidote) on the player's active monster during an ongoi |
 <!-- END:auto -->

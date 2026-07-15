@@ -481,6 +481,47 @@ fn strip_rust_comments_trading(src: &str) -> String {
     String::from_utf8(out).expect("stripped source must be valid UTF-8")
 }
 
+/// String-literal stripping helper (Finding C, m16.5f review).
+/// Replaces the content of every `"…"` string literal (including escape sequences)
+/// with `""`, so a needle like `schedule_trade_reaper(` cannot be hidden inside a
+/// dead-code string literal such as `let _dead = "schedule_trade_reaper(";`.
+///
+/// IMPORTANT: call AFTER strip_rust_comments_trading so that string literals inside
+/// comments (which are already blanked) do not trip up the byte-walker.
+///
+/// This mirrors the JS `stripRustStrings` helper in trade-reducer-security.eval.mjs
+/// (ADR-0116, Finding C).
+fn strip_rust_strings_trading(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = Vec::with_capacity(len);
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b'"' {
+            // Emit the opening quote, then skip until the closing (unescaped) quote.
+            out.push(b'"');
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' {
+                    // Skip escape sequence (consume both the backslash and the next char).
+                    i += 2;
+                } else if bytes[i] == b'"' {
+                    out.push(b'"');
+                    i += 1;
+                    break;
+                } else {
+                    // Swallow the character — replace with nothing (shrinks the string).
+                    i += 1;
+                }
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("string-stripped source must be valid UTF-8")
+}
+
 const TRADING_RS: &str = include_str!("trading.rs");
 
 // ---------------------------------------------------------------------------
@@ -817,5 +858,381 @@ fn ea_conservation_headroom_02_check_headroom_before_build_swap_plan() {
          with no partial mutations. Moving check_headroom after build_swap_plan means \
          monster owner-writes may have already been queued before the cap-exceeded Err fires. \
          Fix: keep the check_headroom block before the build_swap_plan call."
+    );
+}
+
+// ===========================================================================
+// Shared authorize-check helper (Finding A + B hardening, m16.5f review).
+//
+// check_authorize_call(body, call_name, required_field, forbidden_field):
+//   (A) `call_name` must appear in `body`.
+//   (B) STATEMENT-TERMINATOR SCAN: from the call's opening `(`, walk chars tracking
+//       paren+brace depth; find the first `;` at depth 0 (the production
+//       `.map_err(|e| { ...; msg })?;` has interior `;`s only at depth>0, so they
+//       are skipped); require the last non-whitespace char before that `;` to be `?`.
+//       This kills: `let _ = authorize_respond(...); other()?;` — the depth-0 `;`
+//       immediately after authorize_respond's `)` has last char `)`, not `?`.
+//   (C) ARGUMENT-SPAN FIELD CHECK: extract the span from the opening `(` to its
+//       depth-matched `)`. Require `required_field` IN the span and `forbidden_field`
+//       NOT in the span. This kills: `authorize_respond(&s, offer.initiator == me)`
+//       when `offer.counterparty` appears only in an adjacent unrelated statement.
+//
+// Returns Ok(()) on success; Err(message) describing the first violation.
+// ===========================================================================
+fn check_authorize_call(
+    body: &str,
+    call_name: &str,
+    required_field: &str,
+    forbidden_field: &str,
+) -> Result<(), String> {
+    // (A) Call must exist.
+    let call_idx = body.find(call_name).ok_or_else(|| {
+        format!("no {call_name} call found — role+status delegation missing, any caller can act")
+    })?;
+
+    // Locate the opening paren immediately after the call name.
+    let open_paren = body[call_idx + call_name.len()..]
+        .find('(')
+        .map(|p| call_idx + call_name.len() + p)
+        .ok_or_else(|| format!("{call_name} call has no opening paren"))?;
+
+    // -----------------------------------------------------------------------
+    // (C) ARGUMENT SPAN: from open_paren+1 to depth-matched close paren.
+    // -----------------------------------------------------------------------
+    let bytes = body.as_bytes();
+    let mut depth: i32 = 1;
+    let mut i = open_paren + 1;
+    let arg_start = i;
+    while i < bytes.len() && depth > 0 {
+        match bytes[i] {
+            b'(' | b'{' => depth += 1,
+            b')' | b'}' => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    let arg_end = i - 1; // index of the depth-0 closing paren
+    let arg_span = &body[arg_start..arg_end];
+
+    if !arg_span.contains(required_field) {
+        return Err(format!(
+            "`{required_field}` not found in {call_name}(...) argument span — \
+             wrong-field attack: the is_role boolean is not computed from the correct field"
+        ));
+    }
+    if arg_span.contains(forbidden_field) {
+        return Err(format!(
+            "`{forbidden_field}` found in {call_name}(...) argument span — \
+             wrong-field aliasing: the wrong Identity field is used to compute the role boolean"
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // (B) STATEMENT-TERMINATOR SCAN: from open_paren, track depth to find the
+    // first `;` at depth 0; require last non-ws char before it to be `?`.
+    // -----------------------------------------------------------------------
+    let mut scan_depth: i32 = 1;
+    let mut scan_i = open_paren + 1;
+    loop {
+        if scan_i >= bytes.len() {
+            return Err(format!(
+                "{call_name}(...) statement has no depth-0 `;` terminator — \
+                 cannot verify `?` propagation"
+            ));
+        }
+        match bytes[scan_i] {
+            b'(' | b'{' => scan_depth += 1,
+            b')' | b'}' => {
+                scan_depth -= 1;
+            }
+            b';' if scan_depth == 0 => {
+                // Found depth-0 terminator. Last non-ws char before it must be `?`.
+                let mut j = scan_i.saturating_sub(1);
+                while j > open_paren && matches!(bytes[j], b' ' | b'\n' | b'\r' | b'\t') {
+                    j -= 1;
+                }
+                if bytes[j] != b'?' {
+                    return Err(format!(
+                        "{call_name}(...) statement does not end with `?;` — \
+                         Result not propagated (dropped-result attack). \
+                         Last non-ws char before `;` is `{}`",
+                        bytes[j] as char
+                    ));
+                }
+                break;
+            }
+            _ => {}
+        }
+        scan_i += 1;
+    }
+
+    Ok(())
+}
+
+// ===========================================================================
+// EA-AUTHORIZE-RESPOND-01: respond_trade uses authorize_respond with ? propagation
+//                          and correct argument field (m16.5f, ADR-0117).
+//
+// Hardened (Finding A + B, m16.5f review):
+//   - Statement-terminator scan replaces the 300-char )? window check (Finding A).
+//   - Argument-span field check replaces the heuristic window-contains check (B).
+//
+// TEETH: kills an impl that drops the Result (let _ = authorize_respond(...)) OR
+//        that uses `offer.initiator` as the role boolean OR that has a nearby `?`
+//        from an unrelated statement bypass the old window check.
+// ===========================================================================
+
+#[test]
+fn ea_authorize_respond_01_respond_trade_propagates_authorize_result() {
+    let stripped = strip_rust_comments_trading(TRADING_RS);
+
+    // Locate respond_trade body (ends where confirm_trade begins).
+    let respond_fn = concat!("fn ", "respond_trade");
+    let confirm_fn = concat!("fn ", "confirm_trade");
+
+    let fn_pos = stripped
+        .find(respond_fn)
+        .expect("EA-AUTHORIZE-RESPOND-01: `respond_trade` not found in trading.rs");
+    let next_fn_pos = stripped[fn_pos..]
+        .find(confirm_fn)
+        .map(|p| fn_pos + p)
+        .unwrap_or(stripped.len());
+
+    let respond_body = &stripped[fn_pos..next_fn_pos];
+
+    // required_field = offer.counterparty (is_counterparty boolean must use this)
+    // forbidden_field = offer.initiator (must NOT appear in the arg span)
+    check_authorize_call(
+        respond_body,
+        concat!("authorize_", "respond"),
+        "offer.counterparty",
+        "offer.initiator",
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "EA-AUTHORIZE-RESPOND-01 FAIL: respond_trade authorization shape incorrect — {e}. \
+             Any caller can accept/reject any trade without proper role+status enforcement."
+        )
+    });
+}
+
+// ===========================================================================
+// EA-AUTHORIZE-CONFIRM-01: confirm_trade uses authorize_confirm with ? propagation
+//                          and correct argument field (m16.5f, ADR-0117).
+//
+// Hardened (Finding A + B, m16.5f review):
+//   - Statement-terminator scan replaces the 300-char )? window check.
+//   - Argument-span field check replaces the heuristic window-contains check.
+//
+// TEETH: kills an impl that drops the Result OR uses `offer.counterparty` as the
+//        role boolean (counterparty can execute the atomic swap without initiator
+//        consent) OR bypasses the old window check with a nearby unrelated `?`.
+// ===========================================================================
+
+#[test]
+fn ea_authorize_confirm_01_confirm_trade_propagates_authorize_result() {
+    let stripped = strip_rust_comments_trading(TRADING_RS);
+
+    // Locate confirm_trade body (ends where cancel_trade begins).
+    let confirm_fn = concat!("fn ", "confirm_trade");
+    let cancel_fn = concat!("fn ", "cancel_trade");
+
+    let fn_pos = stripped
+        .find(confirm_fn)
+        .expect("EA-AUTHORIZE-CONFIRM-01: `confirm_trade` not found in trading.rs");
+    let next_fn_pos = stripped[fn_pos..]
+        .find(cancel_fn)
+        .map(|p| fn_pos + p)
+        .unwrap_or(stripped.len());
+
+    let confirm_body = &stripped[fn_pos..next_fn_pos];
+
+    // required_field = offer.initiator (is_initiator boolean must use this)
+    // forbidden_field = offer.counterparty (must NOT appear in the arg span)
+    check_authorize_call(
+        confirm_body,
+        concat!("authorize_", "confirm"),
+        "offer.initiator",
+        "offer.counterparty",
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "EA-AUTHORIZE-CONFIRM-01 FAIL: confirm_trade authorization shape incorrect — {e}. \
+             Any caller can finalize any trade without proper role+status enforcement."
+        )
+    });
+}
+
+// ===========================================================================
+// EA-REAPER-01: propose_trade arms the reaper AFTER the offer insert
+//               (m16.5f, ADR-0117 — TTL reaper)
+//
+// EARS criterion: propose_trade SHALL call schedule_trade_reaper (or insert a
+// trade_offer_reaper_schedule row) AFTER capturing the inserted trade_offer row.
+// The auto-increment trade_id only exists after the insert; scheduling before
+// the insert would reference an unknown trade_id.
+//
+// This test asserts:
+// (A) trade_offer().insert( appears in propose_trade body.
+// (B) schedule_trade_reaper( (or trade_offer_reaper_schedule().insert() appears
+//     AFTER the offer insert (position check on stripped source).
+//
+// TEETH: kills an impl that omits the reaper schedule entirely, or one that
+//        calls schedule_trade_reaper BEFORE the offer insert (wrong order).
+// ===========================================================================
+
+#[test]
+fn ea_reaper_01_propose_arms_reaper_after_offer_insert() {
+    // Strip comments first, then string literals (Finding C: prevents a dead-code
+    // string literal like `let _dead = "schedule_trade_reaper(";` from matching the
+    // reaper needle and making the ordering assertion trivially pass or fail).
+    let stripped = strip_rust_strings_trading(&strip_rust_comments_trading(TRADING_RS));
+
+    // Locate propose_trade body (ends where respond_trade begins).
+    let propose_fn = concat!("fn ", "propose_trade");
+    let respond_fn = concat!("fn ", "respond_trade");
+
+    let fn_pos = stripped
+        .find(propose_fn)
+        .expect("EA-REAPER-01: `propose_trade` function not found in trading.rs");
+    let next_fn_pos = stripped[fn_pos..]
+        .find(respond_fn)
+        .map(|p| fn_pos + p)
+        .unwrap_or(stripped.len());
+
+    let propose_body = &stripped[fn_pos..next_fn_pos];
+
+    // (A) The offer insert must be present.
+    // Needle built via concat! to prevent self-match in this test file.
+    let insert_needle = concat!("trade_offer", "().insert(");
+    let insert_pos = propose_body.find(insert_needle).unwrap_or_else(|| {
+        panic!(
+            "EA-REAPER-01 FAIL: `trade_offer().insert(` not found in `propose_trade` body. \
+             The reaper cannot be armed because no offer is inserted. \
+             Fix: ensure propose_trade inserts the TradeOffer row before scheduling the reaper."
+        )
+    });
+
+    // (B) schedule_trade_reaper( OR trade_offer_reaper_schedule().insert( must appear
+    //     AFTER the offer insert (the auto_inc trade_id only exists post-insert).
+    let reaper_needle_fn = concat!("schedule_trade_", "reaper(");
+    let reaper_needle_tbl = concat!("trade_offer_reaper_schedule", "().insert(");
+
+    let reaper_pos_fn = propose_body.find(reaper_needle_fn);
+    let reaper_pos_tbl = propose_body.find(reaper_needle_tbl);
+
+    let reaper_pos = match (reaper_pos_fn, reaper_pos_tbl) {
+        (None, None) => panic!(
+            "EA-REAPER-01 FAIL: neither `schedule_trade_reaper(` nor \
+             `trade_offer_reaper_schedule().insert(` found in `propose_trade` body. \
+             Offers will never expire — a malicious player can flood the counterparty \
+             with stale offers that permanently lock their ability to propose new trades \
+             (one active offer per player per ADR-0106 D4). \
+             Fix: call schedule_trade_reaper(ctx, inserted.trade_id, inserted.created_at_ms) \
+             AFTER the trade_offer insert in propose_trade."
+        ),
+        (Some(p), None) => p,
+        (None, Some(p)) => p,
+        (Some(a), Some(b)) => a.min(b),
+    };
+
+    assert!(
+        reaper_pos > insert_pos,
+        "EA-REAPER-01 FAIL: reaper arm call (body offset {reaper_pos}) appears BEFORE \
+         `trade_offer().insert(` (body offset {insert_pos}) in `propose_trade`. \
+         The auto-increment trade_id only exists after the insert row is returned; \
+         scheduling the reaper before the insert references an unknown trade_id. \
+         Fix: capture the insert return value and call schedule_trade_reaper AFTER the insert."
+    );
+}
+
+// ===========================================================================
+// EA-REAPER-02: disarm_trade_reaper called at ALL four offer-deletion sites
+//               (m16.5f, ADR-0117 — stale-schedule cleanup)
+//
+// EARS criterion: every code path that deletes a trade_offer row SHALL also
+// call disarm_trade_reaper to cancel the scheduled reaper for that offer.
+// Without disarming, the reaper fires after the offer is already gone and
+// attempts to delete a non-existent row (benign but wastes scheduler slots
+// and leaves orphaned schedule rows).
+//
+// The four sites are:
+//   1. respond_trade — reject branch (accepted=false → row deleted)
+//   2. cancel_trade — unconditional delete
+//   3. confirm_trade — post-swap delete (TR-16 terminal GC)
+//   4. cancel_trades_on_disconnect — bulk delete loop
+//
+// TEETH: kills an impl that adds disarm_trade_reaper to only some of the four
+//        sites.  A single missed site leaves an orphaned reaper row that either
+//        fires a no-op (wasting scheduler capacity) or, if the trade_id is
+//        recycled, incorrectly reapers a new offer.
+// ===========================================================================
+
+#[test]
+fn ea_reaper_02_disarm_called_at_all_offer_deletion_sites() {
+    // Strip comments first, then string literals (Finding C: prevents a dead-code
+    // string literal like `let _dead = "disarm_trade_reaper(";` from satisfying the
+    // disarm_needle check and hiding a missing real call).
+    let stripped = strip_rust_strings_trading(&strip_rust_comments_trading(TRADING_RS));
+
+    // Helper: extract a named function body using brace-depth matching,
+    // ending at the next function definition (pub fn or fn).
+    // Returns the body slice starting just after the opening brace of the fn.
+    fn extract_fn_body<'a>(stripped: &'a str, fn_name: &str, end_marker: &str) -> &'a str {
+        let search = format!("fn {fn_name}(");
+        let fn_pos = stripped.find(&search).unwrap_or_else(|| {
+            panic!("EA-REAPER-02: function `{fn_name}` not found in trading.rs")
+        });
+        let end_pos = stripped[fn_pos..]
+            .find(end_marker)
+            .map(|p| fn_pos + p)
+            .unwrap_or(stripped.len());
+        &stripped[fn_pos..end_pos]
+    }
+
+    // Disarm needle — concat! prevents self-match.
+    let disarm_needle = concat!("disarm_trade_", "reaper(");
+
+    // 1. respond_trade body (ends at confirm_trade).
+    let respond_body = extract_fn_body(&stripped, "respond_trade", "fn confirm_trade(");
+    assert!(
+        respond_body.contains(disarm_needle),
+        "EA-REAPER-02 FAIL: `respond_trade` does not call `disarm_trade_reaper`. \
+         When the counterparty rejects (accepted=false), the offer row is deleted but \
+         the scheduled reaper remains active. The reaper will fire later, attempt to \
+         delete the already-gone row (no-op) and leave an orphaned schedule row. \
+         Fix: call disarm_trade_reaper(ctx, trade_id) before or after the offer delete \
+         in respond_trade's rejection branch."
+    );
+
+    // 2. cancel_trade body (ends at cancel_trades_on_disconnect).
+    let cancel_body = extract_fn_body(&stripped, "cancel_trade", "fn cancel_trades_on_disconnect(");
+    assert!(
+        cancel_body.contains(disarm_needle),
+        "EA-REAPER-02 FAIL: `cancel_trade` does not call `disarm_trade_reaper`. \
+         Cancelling an offer deletes the row but the scheduled reaper survives and fires \
+         later, leaving an orphaned schedule row. \
+         Fix: call disarm_trade_reaper(ctx, trade_id) in cancel_trade."
+    );
+
+    // 3. confirm_trade body (ends at cancel_trade).
+    let confirm_body = extract_fn_body(&stripped, "confirm_trade", "fn cancel_trade(");
+    assert!(
+        confirm_body.contains(disarm_needle),
+        "EA-REAPER-02 FAIL: `confirm_trade` does not call `disarm_trade_reaper`. \
+         After the atomic swap succeeds and the offer row is deleted (TR-16), the \
+         reaper schedule row is left orphaned and will fire later against a non-existent \
+         trade_id. Fix: call disarm_trade_reaper(ctx, trade_id) in confirm_trade."
+    );
+
+    // 4. cancel_trades_on_disconnect body (ends at the #[cfg(test)] block or EOF).
+    let disconnect_body = extract_fn_body(&stripped, "cancel_trades_on_disconnect", "#[cfg(test)]");
+    assert!(
+        disconnect_body.contains(disarm_needle),
+        "EA-REAPER-02 FAIL: `cancel_trades_on_disconnect` does not call `disarm_trade_reaper`. \
+         When a player disconnects and their offers are bulk-deleted, the reaper schedules \
+         for each deleted offer are left orphaned. \
+         Fix: call disarm_trade_reaper(ctx, trade_id) for each trade_id deleted in the \
+         cancel_trades_on_disconnect loop."
     );
 }

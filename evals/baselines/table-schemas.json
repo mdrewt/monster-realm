@@ -327,5 +327,13 @@
       "status": "game_core::TradeStatus",
       "created_at_ms": "i64"
     }
+  },
+  "trade_offer_reaper_schedule": {
+    "pk": "scheduled_id",
+    "columns": {
+      "scheduled_id": "u64",
+      "scheduled_at": "ScheduleAt",
+      "trade_id": "u64"
+    }
   }
 }
