@@ -110,6 +110,219 @@ export function documentsBsatnGap(nameStr, detailStr) {
   return combined.includes('BSATN') && combined.includes('serde') && combined.includes('engine');
 }
 
+// ---------------------------------------------------------------------------
+// 16.5e-3 (ADR-0116 D4): additive-content coupling.
+// Every Option<...> column on a content-synced table must have its
+// field-assignment inside a StructName-row-literal block in content.rs —
+// otherwise a future re-seed (e.g. a spread refactor of the row literal)
+// silently drops the column. No new RegExp — literal regexes + indexOf only.
+// ---------------------------------------------------------------------------
+
+// Comments first, then strings (order documented in ADR-0116; a block-comment
+// terminator inside a normal string is an accepted residual). The string
+// escape-branch matches backslash + any char INCLUDING newline: content.rs has
+// a backslash-newline line-continuation string that inverts quote pairing
+// under the newline-excluding form.
+function stripRustCommentsAndStrings(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/"(?:[^"\\]|\\[\s\S])*"/g, '""');
+}
+
+function isWordChar(ch) {
+  return (
+    (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch === '_'
+  );
+}
+
+/**
+ * Parse schema.rs table structs: for each #[spacetimedb::table(name = X ...)]
+ * attribute, capture the following struct and its Option<...> fields.
+ * Returns { [structName]: { tableName, optionFields: string[] } }.
+ */
+export function parseContentTableStructs(schemaSrc) {
+  const src = stripRustCommentsAndStrings(schemaSrc);
+  const out = {};
+  const tableAttrRe = /#\[spacetimedb::table\(\s*name\s*=\s*(\w+)/g;
+  const attrMatches = Array.from(src.matchAll(tableAttrRe));
+  for (let a = 0; a < attrMatches.length; a++) {
+    const m = attrMatches[a];
+    const tableName = m[1];
+    // Bound the struct search at the NEXT table attribute: an attr whose
+    // struct is missing/misplaced must not claim a later table's struct.
+    const bound = a + 1 < attrMatches.length ? attrMatches[a + 1].index : src.length;
+    const structIdx = src.indexOf('pub struct ', m.index);
+    if (structIdx === -1 || structIdx >= bound) continue;
+    const nameStart = structIdx + 'pub struct '.length;
+    let nameEnd = nameStart;
+    while (nameEnd < src.length && isWordChar(src[nameEnd])) nameEnd++;
+    const structName = src.slice(nameStart, nameEnd);
+    const braceIdx = src.indexOf('{', structIdx);
+    if (braceIdx === -1) continue;
+    let depth = 1;
+    let i = braceIdx + 1;
+    while (i < src.length && depth > 0) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') depth--;
+      i++;
+    }
+    const body = src.slice(braceIdx + 1, i - 1);
+    const optionFields = [];
+    const fieldRe = /pub\s+(\w+)\s*:\s*Option\s*</g;
+    for (const fm of body.matchAll(fieldRe)) optionFields.push(fm[1]);
+    out[structName] = { tableName, optionFields };
+  }
+  return out;
+}
+
+function scanDbWrites(contentSrc) {
+  const src = stripRustCommentsAndStrings(contentSrc);
+  // One literal regex for DB write call sites: ctx.db.<table>() followed by a
+  // chain of zero-arg accessors (index accessors like .item_id()) and then
+  // .insert( / .update( / .delete(. Multi-line chains tolerated via \s*.
+  // Zero-arg chain elements (not a bounded [\s\S] lookahead) so a match can
+  // never leak across statement boundaries into a DIFFERENT table's write.
+  // Function-local so no lastIndex state can ever be shared across calls.
+  const dbWriteRe =
+    /ctx\s*\.\s*db\s*\.\s*(\w+)\s*\(\s*\)(?:\s*\.\s*\w+\s*\(\s*\))*\s*\.\s*(insert|update|delete)\s*\(/g;
+  const writes = [];
+  for (const m of src.matchAll(dbWriteRe)) {
+    writes.push({ table: m[1], op: m[2] });
+  }
+  return writes;
+}
+
+/**
+ * Table names written to anywhere in content.rs (whole-file scope, D4 —
+ * captures helper fns like seed_heal_locations_from outside sync_content_inner).
+ * Returns Set<string>.
+ */
+export function parseSyncedTables(contentSrc) {
+  const synced = new Set();
+  for (const w of scanDbWrites(contentSrc)) synced.add(w.table);
+  return synced;
+}
+
+// Row-literal blocks: every word-boundary occurrence of `StructName {` in the
+// stripped source, brace-walked to its matching close.
+function collectRowLiteralBlocks(strippedSrc, structName) {
+  const blocks = [];
+  let pos = 0;
+  while (true) {
+    const idx = strippedSrc.indexOf(structName, pos);
+    if (idx === -1) break;
+    pos = idx + structName.length;
+    if (idx > 0 && isWordChar(strippedSrc[idx - 1])) continue;
+    let j = pos;
+    while (j < strippedSrc.length && ' \t\r\n'.indexOf(strippedSrc[j]) !== -1) j++;
+    if (strippedSrc[j] !== '{') continue;
+    let depth = 1;
+    let k = j + 1;
+    while (k < strippedSrc.length && depth > 0) {
+      if (strippedSrc[k] === '{') depth++;
+      else if (strippedSrc[k] === '}') depth--;
+      k++;
+    }
+    blocks.push(strippedSrc.slice(j + 1, k - 1));
+    pos = k;
+  }
+  return blocks;
+}
+
+// Word-boundary field-assignment check (C-W): `<field>:` where the preceding
+// char is NOT [A-Za-z0-9_] — so `stability:` never satisfies `ability`.
+// indexOf + manual preceding-char check; no dynamic RegExp.
+function hasFieldAssignment(blockText, fieldName) {
+  const needle = fieldName + ':';
+  let pos = 0;
+  while (true) {
+    const idx = blockText.indexOf(needle, pos);
+    if (idx === -1) return false;
+    pos = idx + needle.length;
+    if (idx > 0 && isWordChar(blockText[idx - 1])) continue;
+    return true;
+  }
+}
+
+/**
+ * The 16.5e-3 gate (ADR-0116 D4). [] = clean; one string per violation.
+ * Vacuity guard: zero Option fields discovered across ALL table structs is
+ * itself a violation (parser rot — m16.5a lesson).
+ * Exemption: a synced table with NO row literal in content.rs AND NO insert
+ * call site is an in-place mutation of existing rows (the monster/monster_pub
+ * recompute_monster_derived_fields shape) — updates preserve columns they do
+ * not touch, and nothing is re-seeded from content, so no coupling is owed.
+ * Insert-written tables stay held to the rule even without a local literal
+ * (the encounter shape: its literal lives in marshal.rs — a future Option
+ * column there must surface in content.rs to pass).
+ */
+export function checkAdditiveColumnCoupling(schemaSrc, contentSrc) {
+  const structs = parseContentTableStructs(schemaSrc);
+  const writes = scanDbWrites(contentSrc);
+  const synced = new Set();
+  const inserted = new Set();
+  for (const w of writes) {
+    synced.add(w.table);
+    if (w.op === 'insert') inserted.add(w.table);
+  }
+
+  let totalOptionFields = 0;
+  for (const entry of Object.values(structs)) {
+    totalOptionFields += entry.optionFields.length;
+  }
+  if (totalOptionFields === 0) {
+    return [
+      'vacuity guard (16.5e-3, ADR-0116): zero Option<...> fields discovered across all table structs — parser rot',
+    ];
+  }
+
+  const strippedContent = stripRustCommentsAndStrings(contentSrc);
+  const violations = [];
+  for (const [structName, entry] of Object.entries(structs)) {
+    const { tableName, optionFields } = entry;
+    if (optionFields.length === 0) continue;
+    if (!synced.has(tableName)) continue; // not a content-synced table
+    const blocks = collectRowLiteralBlocks(strippedContent, structName);
+    if (blocks.length === 0) {
+      if (!inserted.has(tableName)) continue; // in-place mutation shape — exempt
+      for (const f of optionFields) {
+        violations.push(
+          "table '" +
+            tableName +
+            "' (struct " +
+            structName +
+            "): Option field '" +
+            f +
+            "' — insert-written by content.rs but no '" +
+            structName +
+            " {' row literal found in content.rs to carry the assignment (16.5e-3, ADR-0116 D4)",
+        );
+      }
+      continue;
+    }
+    const combined = blocks.join('\n');
+    for (const f of optionFields) {
+      if (!hasFieldAssignment(combined, f)) {
+        violations.push(
+          "table '" +
+            tableName +
+            "' (struct " +
+            structName +
+            "): Option field '" +
+            f +
+            "' has no '" +
+            f +
+            ":' assignment in any '" +
+            structName +
+            " {' row literal in content.rs — the re-seed path would drop it (16.5e-3, ADR-0116 D4)",
+        );
+      }
+    }
+  }
+  return violations;
+}
+
 export default async function () {
   const name =
     'bsatn-compat-smoke (14.5f-1: serde(default)+SpacetimeType on battle.state fields; ' +
@@ -242,6 +455,425 @@ export default async function () {
     };
   }
 
+  // =========================================================================
+  // 16.5e teeth (m16.5e, ADR-0116) — checkAdditiveColumnCoupling teeth C-1..C-6
+  //
+  // Signature chosen (document for implementer):
+  //   checkAdditiveColumnCoupling(
+  //     schemaSrc: string,      // raw schema.rs source
+  //     contentSrc: string,     // raw content.rs source (FULL FILE, not fn body)
+  //   ) -> string[]             // [] = clean; non-empty = violations
+  //
+  // The function:
+  //   1. Calls parseContentTableStructs(schemaSrc) to get:
+  //        { [structName: string]: { tableName: string, optionFields: string[] } }
+  //      for each #[spacetimedb::table(name = <tableName>)] + struct with Option<…> fields.
+  //   2. Calls parseSyncedTables(contentSrc) to get Set<string> of table names
+  //      written to in content.rs (via ctx.db.<tableName>().<op>( pattern).
+  //   3. For each struct where tableName is in the synced set, for each Option field,
+  //      checks that contentSrc contains a field-assignment `<fieldName>:` inside
+  //      a `<StructName> {` row-literal block (word-boundary rule: preceding char
+  //      must NOT be [A-Za-z0-9_]).
+  //   4. Returns [] if all coupling present; one string per missing coupling.
+  //   5. Vacuity guard: if zero Option fields are found across ALL structs, returns
+  //      a non-empty diagnostic array (parser rot guard).
+  //
+  // parseContentTableStructs and parseSyncedTables and checkAdditiveColumnCoupling
+  // do NOT exist yet; calls below are intentionally RED.
+  // =========================================================================
+
+  // C-1: synced table, Option field, row literal OMITS <field>: assignment → flagged.
+  // Simulates the `..existing` spread refactor omission: the row literal for ShopItemRow
+  // uses spread syntax and does NOT include `cure_status:`.
+  {
+    // Schema fixture: shop_item table with a struct containing Option<StatusKind> cure_status.
+    const schemaC1 =
+      '#[spacetimedb::table(name = shop_item, public)]\n' +
+      'pub struct ShopItemRow {\n' +
+      '    pub item_id: u32,\n' +
+      '    pub price: u32,\n' +
+      '    pub cure_status: Option<StatusKind>,\n' +
+      '}\n';
+
+    // Content fixture: shop_item is synced (insert call present), but the row literal
+    // uses ..Default::default() spread and OMITS `cure_status:`.
+    const contentC1 =
+      'fn sync_content_inner(ctx: &ReducerContext) {\n' +
+      '    ctx.db.shop_item().insert(ShopItemRow {\n' +
+      '        item_id: 1,\n' +
+      '        price: 100,\n' +
+      '        ..Default::default()\n' +
+      '    });\n' +
+      '}\n';
+
+    let result;
+    try {
+      result = checkAdditiveColumnCoupling(schemaC1, contentC1);
+    } catch (e) {
+      result = [e.message];
+    }
+    if (!Array.isArray(result) || result.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (C-1): checkAdditiveColumnCoupling must flag missing cure_status: assignment ' +
+          'in ShopItemRow literal (..Default::default() spread omits the field); got: ' +
+          JSON.stringify(result),
+      };
+    }
+    const flagText = result.join(' ');
+    if (flagText.indexOf('cure_status') === -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (C-1): violation message must mention field name "cure_status"; got: ' +
+          flagText,
+      };
+    }
+  }
+
+  // C-2: Option field WITH <field>: assignment in row literal must be clean.
+  // Tests BOTH upsert shape and clear-and-reinsert (delete+insert) shape.
+  {
+    // Upsert shape: one row literal feeds both update and insert paths.
+    const schemaC2Upsert =
+      '#[spacetimedb::table(name = item_def, public)]\n' +
+      'pub struct ItemDefRow {\n' +
+      '    pub item_id: u32,\n' +
+      '    pub train_stat: Option<StatKind>,\n' +
+      '}\n';
+
+    const contentC2Upsert =
+      'fn sync_content_inner(ctx: &ReducerContext) {\n' +
+      '    let row = ItemDefRow {\n' +
+      '        item_id: 1,\n' +
+      '        train_stat: Some(StatKind::Attack),\n' +
+      '    };\n' +
+      '    if let Some(existing) = ctx.db.item_def().item_id().find(1) {\n' +
+      '        ctx.db.item_def().item_id().update(row);\n' +
+      '    } else {\n' +
+      '        ctx.db.item_def().item_id().insert(row);\n' +
+      '    }\n' +
+      '}\n';
+
+    let resultUpsert;
+    try {
+      resultUpsert = checkAdditiveColumnCoupling(schemaC2Upsert, contentC2Upsert);
+    } catch (e) {
+      resultUpsert = [e.message];
+    }
+    if (!Array.isArray(resultUpsert) || resultUpsert.length !== 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (C-2 upsert): checkAdditiveColumnCoupling must return [] when train_stat: ' +
+          'is present in the ItemDefRow row literal (upsert shape); got: ' +
+          JSON.stringify(resultUpsert),
+      };
+    }
+
+    // Clear-and-reinsert shape: delete all then insert fresh rows (no update branch).
+    // This is the shop_item_row/type_relation_row/fusion shape.
+    const schemaC2Clear =
+      '#[spacetimedb::table(name = shop_item, public)]\n' +
+      'pub struct ShopItemRow {\n' +
+      '    pub item_id: u32,\n' +
+      '    pub cure_status: Option<StatusKind>,\n' +
+      '}\n';
+
+    const contentC2Clear =
+      'fn sync_content_inner(ctx: &ReducerContext) {\n' +
+      '    for row in ctx.db.shop_item().iter() {\n' +
+      '        ctx.db.shop_item().item_id().delete(row.item_id);\n' +
+      '    }\n' +
+      '    for entry in &content {\n' +
+      '        ctx.db.shop_item().insert(ShopItemRow {\n' +
+      '            item_id: entry.id,\n' +
+      '            cure_status: entry.cure_status,\n' +
+      '        });\n' +
+      '    }\n' +
+      '}\n';
+
+    let resultClear;
+    try {
+      resultClear = checkAdditiveColumnCoupling(schemaC2Clear, contentC2Clear);
+    } catch (e) {
+      resultClear = [e.message];
+    }
+    if (!Array.isArray(resultClear) || resultClear.length !== 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (C-2 clear-and-reinsert): checkAdditiveColumnCoupling must return [] when cure_status: ' +
+          'is present in the ShopItemRow literal (clear-and-reinsert shape, no update branch); got: ' +
+          JSON.stringify(resultClear),
+      };
+    }
+  }
+
+  // C-3: vacuity guard — zero Option content fields discovered → loud FAIL.
+  // Schema has no Option fields at all; function must not silently return [].
+  // Kills any impl that skips the vacuity guard and returns [] when the parser finds nothing.
+  {
+    const schemaC3NoOptions =
+      '#[spacetimedb::table(name = simple_table, public)]\n' +
+      'pub struct SimpleRow {\n' +
+      '    pub id: u32,\n' +
+      '    pub name: String,\n' +
+      '}\n';
+
+    const contentC3 =
+      'fn sync_content_inner(ctx: &ReducerContext) {\n' +
+      '    ctx.db.simple_table().insert(SimpleRow { id: 1, name: "x".to_string() });\n' +
+      '}\n';
+
+    let result;
+    try {
+      result = checkAdditiveColumnCoupling(schemaC3NoOptions, contentC3);
+    } catch (e) {
+      result = [e.message];
+    }
+    if (!Array.isArray(result) || result.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (C-3): checkAdditiveColumnCoupling must return a non-empty diagnostic when ' +
+          'zero Option fields are discovered (vacuity guard — parser rot); got: ' +
+          JSON.stringify(result),
+      };
+    }
+  }
+
+  // C-4: real files missing an anchor → FAIL (parser rot).
+  // Tests that parseContentTableStructs discovers the four anchors: ability, train_stat,
+  // cure_status, cost_item_id. Uses the real schema.rs and content.rs files.
+  // If any anchor is absent, the real-file coupling check would silently pass a false clean.
+  {
+    const schemaPath = 'server-module/src/schema.rs';
+    const contentPath = 'server-module/src/content.rs';
+    let schemaSrc = '';
+    let contentSrc = '';
+    let readOk = true;
+    try {
+      // Use readFileSync imported at module top level
+      schemaSrc = readFileSync(schemaPath, 'utf8');
+      contentSrc = readFileSync(contentPath, 'utf8');
+    } catch {
+      readOk = false;
+    }
+    if (readOk) {
+      let parsed;
+      try {
+        parsed = parseContentTableStructs(schemaSrc);
+      } catch (e) {
+        parsed = null;
+      }
+      if (parsed !== null) {
+        // Collect all discovered option fields across all structs
+        const allFields = [];
+        for (const entry of Object.values(parsed)) {
+          if (Array.isArray(entry.optionFields)) {
+            for (const f of entry.optionFields) {
+              allFields.push(f);
+            }
+          }
+        }
+        const anchors = ['ability', 'train_stat', 'cure_status', 'cost_item_id'];
+        for (const anchor of anchors) {
+          if (allFields.indexOf(anchor) === -1) {
+            return {
+              name,
+              pass: false,
+              detail:
+                'TEETH FAILED (C-4): parseContentTableStructs on real schema.rs did not discover anchor field "' +
+                anchor +
+                '" — parser rot; discovered fields: ' +
+                JSON.stringify(allFields),
+            };
+          }
+        }
+      }
+    }
+    // If files not readable (CI env issue) or parser not yet implemented, skip gracefully —
+    // the RED state is caused by C-1 calling undefined checkAdditiveColumnCoupling anyway.
+  }
+
+  // C-5: Option field on table NOT written by content.rs must NOT be flagged.
+  // Simulates monster.evolves_to: parseSyncedTables must not include 'monster' if
+  // content.rs does not write to it.
+  {
+    const schemaC5 =
+      '#[spacetimedb::table(name = species, public)]\n' +
+      'pub struct SpeciesRow {\n' +
+      '    pub species_id: u32,\n' +
+      '    pub ability: Option<AbilityKind>,\n' +
+      '}\n' +
+      '#[spacetimedb::table(name = monster, public)]\n' +
+      'pub struct MonsterRow {\n' +
+      '    pub monster_id: u64,\n' +
+      '    pub evolves_to: Option<u32>,\n' +
+      '}\n';
+
+    // content.rs writes to species but NOT to monster.
+    const contentC5 =
+      'fn sync_content_inner(ctx: &ReducerContext) {\n' +
+      '    ctx.db.species().insert(SpeciesRow {\n' +
+      '        species_id: 1,\n' +
+      '        ability: Some(AbilityKind::Blaze),\n' +
+      '    });\n' +
+      '}\n';
+
+    let result;
+    try {
+      result = checkAdditiveColumnCoupling(schemaC5, contentC5);
+    } catch (e) {
+      result = [e.message];
+    }
+    if (!Array.isArray(result)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (C-5): checkAdditiveColumnCoupling did not return an array; got: ' +
+          JSON.stringify(result),
+      };
+    }
+    // Check that monster.evolves_to is NOT flagged (not synced — no monster write in content).
+    const flagText = result.join(' ');
+    if (flagText.indexOf('evolves_to') !== -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (C-5): checkAdditiveColumnCoupling wrongly flagged monster.evolves_to ' +
+          'even though content.rs does NOT write to the monster table — synced-tables-only filter not applied; got: ' +
+          flagText,
+      };
+    }
+  }
+
+  // C-6: heal_location_row written OUTSIDE sync_content_inner body (in a helper fn) →
+  // still discovered + coupled because parseSyncedTables scopes to ALL of content.rs.
+  // Also exercises multi-line chain and intermediate accessor patterns (review m-4).
+  {
+    const schemaC6 =
+      '#[spacetimedb::table(name = heal_location, public)]\n' +
+      'pub struct HealLocationRow {\n' +
+      '    pub location_id: u32,\n' +
+      '    pub cost_item_id: Option<u32>,\n' +
+      '}\n';
+
+    // content.rs: heal_location is written by a HELPER FUNCTION outside sync_content_inner.
+    // Uses multi-line chain pattern (review m-4):
+    //   ctx.db
+    //       .heal_location_row()
+    //       .location_id()
+    //       .delete(...)
+    // and the update form: ctx.db.heal_location_row().location_id().update(row)
+    // parseSyncedTables must capture these (whole-file scope, D4).
+    const contentC6 =
+      'fn sync_content_inner(ctx: &ReducerContext) {\n' +
+      '    sync_species(ctx);\n' +
+      '    seed_heal_locations_from(ctx, &HEAL_LOCATIONS);\n' +
+      '}\n' +
+      '\n' +
+      'fn seed_heal_locations_from(ctx: &ReducerContext, locations: &[HealLocationEntry]) {\n' +
+      '    for row in ctx.db\n' +
+      '        .heal_location_row()\n' +
+      '        .iter() {\n' +
+      '        ctx.db\n' +
+      '            .heal_location_row()\n' +
+      '            .location_id()\n' +
+      '            .delete(row.location_id);\n' +
+      '    }\n' +
+      '    for loc in locations {\n' +
+      '        ctx.db.heal_location_row().insert(HealLocationRow {\n' +
+      '            location_id: loc.id,\n' +
+      '            cost_item_id: loc.cost_item_id,\n' +
+      '        });\n' +
+      '    }\n' +
+      '}\n';
+
+    let result;
+    try {
+      result = checkAdditiveColumnCoupling(schemaC6, contentC6);
+    } catch (e) {
+      result = [e.message];
+    }
+    if (!Array.isArray(result) || result.length !== 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (C-6): checkAdditiveColumnCoupling must return [] for heal_location_row ' +
+          'written by a helper function outside sync_content_inner (whole-file scope D4) ' +
+          'with cost_item_id: present in row literal; got: ' +
+          JSON.stringify(result),
+      };
+    }
+  }
+
+  // C-W: word-boundary tooth — `stability: x.stability` must NOT satisfy required field `ability`.
+  // Uses indexOf + manual preceding-char check (no dynamic RegExp).
+  // Kills any impl that does a naive indexOf('ability:') which matches inside 'stability:'.
+  {
+    const schemaWB =
+      '#[spacetimedb::table(name = species, public)]\n' +
+      'pub struct SpeciesRow {\n' +
+      '    pub species_id: u32,\n' +
+      '    pub ability: Option<AbilityKind>,\n' +
+      '}\n';
+
+    // The row literal has `stability:` (a different field) but NOT `ability:` standalone.
+    // A naive indexOf('ability:') would match inside 'stability:ability:' or if
+    // 'stability:' contains 'ability' as a substring — specifically: 'st' + 'ability' + ':'.
+    // This fixture directly tests the word-boundary rule.
+    const contentWB =
+      'fn sync_content_inner(ctx: &ReducerContext) {\n' +
+      '    ctx.db.species().insert(SpeciesRow {\n' +
+      '        species_id: 1,\n' +
+      '        stability: x.stability,\n' +
+      '    });\n' +
+      '}\n';
+
+    let result;
+    try {
+      result = checkAdditiveColumnCoupling(schemaWB, contentWB);
+    } catch (e) {
+      result = [e.message];
+    }
+    if (!Array.isArray(result) || result.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (C-W word-boundary): checkAdditiveColumnCoupling must flag missing `ability:` ' +
+          'assignment even when `stability:` (which contains "ability" as substring) is present in the ' +
+          'row literal — word-boundary check required (preceding char [A-Za-z0-9_] before "ability:" must reject); got: ' +
+          JSON.stringify(result),
+      };
+    }
+    const flagText = result.join(' ');
+    if (flagText.indexOf('ability') === -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (C-W word-boundary): violation message must mention field "ability"; got: ' +
+          flagText,
+      };
+    }
+  }
+
+  // =========================================================================
+  // END 16.5e teeth (C-1..C-6, C-W)
+  // =========================================================================
+
   // -------------------------------------------------------------------------
   // REAL FILE CHECKS
   // -------------------------------------------------------------------------
@@ -318,6 +950,33 @@ export default async function () {
     };
   }
 
+  // Criterion 7 (16.5e-3, ADR-0116 D4): additive-content coupling on the REAL
+  // schema.rs + content.rs. Fail loud if unreadable — these paths are fixed.
+  const schemaPath = path.resolve('server-module/src/schema.rs');
+  const contentPath = path.resolve('server-module/src/content.rs');
+  let schemaSrc = '';
+  try {
+    schemaSrc = readFileSync(schemaPath, 'utf8');
+  } catch {
+    return { name, pass: false, detail: `criterion 7 FAIL: cannot read ${schemaPath}` };
+  }
+  let contentSrc = '';
+  try {
+    contentSrc = readFileSync(contentPath, 'utf8');
+  } catch {
+    return { name, pass: false, detail: `criterion 7 FAIL: cannot read ${contentPath}` };
+  }
+  const couplingViolations = checkAdditiveColumnCoupling(schemaSrc, contentSrc);
+  if (couplingViolations.length > 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'criterion 7 FAIL (16.5e-3 additive-content coupling, ADR-0116 D4): ' +
+        couplingViolations.join('; '),
+    };
+  }
+
   // Criterion 6: BSATN gap finding documented in name+detail (self-check)
   const passingDetail =
     'serde(default) present on BattleMonster.status and BattleState.weather (co-located); ' +
@@ -327,7 +986,10 @@ export default async function () {
     'SpacetimeDB engine migration handles additive columns at the engine level ' +
     '(publish without --delete-data), NOT the BSATN codec. ' +
     'The serde(default) annotation covers the serde serialization path (RON content, JSON wire format) ' +
-    'but is NOT what makes BSATN-persisted rows backward-compatible with new optional fields.';
+    'but is NOT what makes BSATN-persisted rows backward-compatible with new optional fields. ' +
+    '16.5e-3 (ADR-0116 D4): additive-content coupling verified — every Option column on a ' +
+    'content-synced table has its field-assignment in a content.rs re-seed row literal ' +
+    '(anchors: ability, train_stat, cure_status, cost_item_id).';
 
   if (!documentsBsatnGap(name, passingDetail)) {
     return {
