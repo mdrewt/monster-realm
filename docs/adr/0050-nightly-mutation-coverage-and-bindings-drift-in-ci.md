@@ -160,13 +160,22 @@ nuance:** the `server-module/` directory's cargo package is **`monster-realm-mod
   zero-survivor `mutate-core` gate), so a high survivor count is expected and the
   gate is a **regression ratchet**, not an aspirational target — same posture as the
   coverage threshold above.
+- **Re-baseline (2026-07-15, ADR-0118):** measured on master `908c99b` (cargo-mutants
+  27.1.0, `--test-tool nextest`, local 32-core): **499 mutants — 309 missed / 158
+  caught / 32 unviable — 3 min wall-clock.** The crate roughly doubled from merged
+  M15 trading / M16 PvP / M16.5 reducer work (new files `pvp.rs`, `trading.rs`;
+  survivors verified to sit in `#[reducer]` bodies / ctx-taking helpers, killable
+  in-crate set empty; miss ratio improved 71% → 62%). **Cap = 309** (exact
+  measurement, same convention as the original 180); the wiring-eval cap ceiling
+  raised 200 → 340 in the same commit. Full evidence + procedure: ADR-0118.
 - **Threshold mechanism:** cargo-mutants has no built-in survivor-count cap, so the
   `mutate-server` justfile recipe (shebang) runs
   `cargo mutants -p monster-realm-module --test-tool nextest`, tolerates exit code 2
   (mutants missed) but no other non-zero exit, then counts `mutants.out/missed.txt`
   lines and fails if the count exceeds the cap. **Cap = 180** (the exact baseline,
   per review: "tighten, don't weaken" — bump only deliberately, with the bump
-  justified in a commit touching this ADR). `--test-tool nextest` is pinned for
+  justified in a commit touching this ADR (re-baselined to 309, 2026-07-15 — see
+  the Re-baseline bullet and ADR-0118)). `--test-tool nextest` is pinned for
   determinism with the recorded baseline (server-module has zero doctests, so
   nextest-vs-cargo-test does not change catch results).
 - **Sharding:** NOT needed — 2-min local runtime extrapolates to roughly 15–30 min on
@@ -234,9 +243,9 @@ not an adversary with admin):**
 4. run.mjs's zero-eval guard trips only at exactly zero eval files (the "40+" in its
    message is prose); mass-deletion to one file is caught by eval-count review, not
    mechanically.
-5. The `mutate-server` cap default is eval-ceiling-checked (≤ 200) rather than
-   pinned exactly, so a deliberate, reviewed bump inside the ceiling doesn't require
-   an eval edit; bumps must update this ADR (see A2).
+5. The `mutate-server` cap default is eval-ceiling-checked (≤ 200) (ceiling 340 as
+   of ADR-0118) rather than pinned exactly, so a deliberate, reviewed bump inside
+   the ceiling doesn't require an eval edit; bumps must update this ADR (see A2).
 6. `jobIsNotNeutered` is a flat block scan (unlike `ciStepsUnneutered`'s per-step
    scoping), so the three guarded nightly jobs (`mutation:`, `coverage:`,
    `mutation-server:`) must never carry a legitimate step-level `if:` (e.g. an
