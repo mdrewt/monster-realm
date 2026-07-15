@@ -115,7 +115,10 @@
 - PvP client UI — challenge/accept/turn-submit/forfeit overlay (ADR-0110) (#176)
 - Battle↔trade interlock both directions + vacuous-revival gate (#180)
 - Receiver-cap headroom check in confirm_trade — reject, don't destroy (ADR-0113) (#183)
-- Trade client completion — overlay symmetry e2e, typed TradeStatus, render hygiene (ADR-0114)
+- Trade client completion — overlay symmetry e2e, typed TradeStatus, render hygiene (ADR-0114) (#185)
+- Trade runtime coverage — __mrTrade hook + full-flow e2e + TR-13 + RT-SEC-02b (ADR-0115) (#187)
+- Eval-infra hardening — append-only snapshot direction, extraction anti-hijack, additive-content coupling (ADR-0116) (#189)
+- Trade SSOT polish — authorize delegation, symmetric escrow, privacy-doc fix, offer TTL reaper (ADR-0117) (#191)
 
 ### Fixes
 
@@ -131,7 +134,6 @@
 - Deflake dialogue 13.5c-5 overlay timeout + recruit R2 heal-guard (#146)
 - Ledger reconciliation + type-rigor micro-fixes (#157)
 - Kill 10 nightly mutants — 6 behavioral tests + 2 equivalent exclusions re-pinned (#174)
-- Re-enable live buttons after mid-flight render; robust e2e assertions
 
 ### M8.8b
 
@@ -198,6 +200,11 @@
 - Add ADR-0110 to index; bump next-free to 0111 (#177)
 - Add ADR-0111 to index; bump next-free to 0112 (#179)
 - Add ADR-0112 to index; bump next-free to 0113 (#181)
+- Add ADR-0113 to index; bump next-free to 0114 (#184)
+- Add ADR-0114 to index; bump next-free to 0115 (#186)
+- ADR index — add 0115 row, next-free -> 0116 (#188)
+- Reconcile ADR index — 0116 registered, next free 0117 (#190)
+- Reconcile ADR index — 0117 registered, next free 0118 (#192)
 
 ### Testing
 
