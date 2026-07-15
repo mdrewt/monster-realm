@@ -73,9 +73,9 @@ pub use taming::{
     EncounterEntry, EncounterTable, WildSpawn, MISSING_HP_FACTOR, RECRUIT_BASE_RATE,
 };
 pub use trading::{
-    build_swap_plan, make_monster_card, validate_proposal, CurrencyTransfer, ItemTransfer,
-    LiveMonsterOwner, MonsterCard, MonsterTransfer, ProposalSide, SwapPlan, TradeError, TradeItem,
-    TradeSide, TradeStatus,
+    build_swap_plan, check_headroom, make_monster_card, validate_proposal, CurrencyTransfer,
+    ItemStack, ItemTransfer, LiveMonsterOwner, MonsterCard, MonsterTransfer, ProposalSide,
+    SwapPlan, TradeError, TradeItem, TradeSide, TradeStatus, MAX_ITEM_STACK,
 };
 pub use types::{ActionState, CharacterState, Direction, Millis, MoveInput, TileKind, TilePos};
 pub use world::{

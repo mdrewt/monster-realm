@@ -10,7 +10,8 @@ pub mod rules;
 pub mod types;
 
 pub use rules::{
-    build_swap_plan, make_monster_card, validate_proposal, CurrencyTransfer, ItemTransfer,
-    LiveMonsterOwner, MonsterTransfer, ProposalSide, SwapPlan, TradeSide,
+    build_swap_plan, check_headroom, make_monster_card, validate_proposal, CurrencyTransfer,
+    ItemStack, ItemTransfer, LiveMonsterOwner, MonsterTransfer, ProposalSide, SwapPlan, TradeSide,
+    MAX_ITEM_STACK,
 };
 pub use types::{MonsterCard, TradeError, TradeItem, TradeStatus};

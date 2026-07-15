@@ -82,6 +82,14 @@ pub enum TradeError {
     InsufficientCurrency {
         available: u64,
     },
+    /// Crediting items to the receiver would push their stack above MAX_ITEM_STACK.
+    /// confirm_trade returns Err and rolls back — reject-not-clamp (ADR-0113, 16.5b-1).
+    ItemStackCapExceeded {
+        item_id: u32,
+    },
+    /// Crediting currency to the receiver would push their balance above MAX_BALANCE.
+    /// confirm_trade returns Err and rolls back — reject-not-clamp (ADR-0113, 16.5b-1).
+    CurrencyCapExceeded,
 }
 
 impl std::fmt::Display for TradeError {
@@ -113,6 +121,18 @@ impl std::fmt::Display for TradeError {
             }
             TradeError::InsufficientCurrency { available } => {
                 write!(f, "insufficient currency (available: {available})")
+            }
+            TradeError::ItemStackCapExceeded { item_id } => {
+                write!(
+                    f,
+                    "receiver item stack for item {item_id} would exceed the maximum stack size"
+                )
+            }
+            TradeError::CurrencyCapExceeded => {
+                write!(
+                    f,
+                    "receiver currency balance would exceed the maximum balance"
+                )
             }
         }
     }
@@ -149,6 +169,8 @@ mod tests {
                 "inventory",
             ),
             (TradeError::InsufficientCurrency { available: 42 }, "42"),
+            (TradeError::ItemStackCapExceeded { item_id: 5 }, "5"),
+            (TradeError::CurrencyCapExceeded, "maximum balance"),
         ];
         for (err, expected_substr) in cases {
             let s = format!("{err}");

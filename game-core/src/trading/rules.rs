@@ -1,10 +1,25 @@
-//! Pure trade rule functions (M15, ADR-0106).
+//! Pure trade rule functions (M15, ADR-0106; extended M16.5b, ADR-0113).
 //!
 //! No I/O, no SpacetimeDB context. Validates proposals, drives the state machine,
 //! and produces the `SwapPlan` the server applies atomically. The server module is
 //! the thin imperative shell; these functions are the SSOT rule layer.
 
 use super::types::{MonsterCard, TradeError, TradeItem};
+use crate::currency::MAX_BALANCE;
+
+/// Per-stack item cap (domain constant, ADR-0113). Mirrors `MAX_ITEM_STACK` that
+/// was previously defined locally in `server-module/src/inventory.rs`; moved here
+/// so the pure `check_headroom` rule can reference it without a crate boundary.
+// 9999: four-digit UI cap; no game-design constraint — tunable (ADR-0059 residual c).
+pub const MAX_ITEM_STACK: u32 = 9999;
+
+/// Current item stack snapshot for one (owner, item_id) pair.
+/// Passed to `check_headroom` so it can check receiver headroom without DB access.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ItemStack {
+    pub item_id: u32,
+    pub current_count: u32,
+}
 
 /// Snapshot of one side's escrowed assets (arguments to `validate_proposal`).
 pub struct ProposalSide<'a> {
@@ -229,6 +244,72 @@ pub fn build_swap_plan(
         item_transfers,
         currency_transfers,
     })
+}
+
+/// Check that crediting the negotiated assets to each receiver won't exceed their
+/// stack/balance caps. Called by `confirm_trade` BEFORE applying any transfers so
+/// the transaction aborts cleanly with `Err` if a receiver is at or near their cap —
+/// reject-not-clamp (ADR-0113, 16.5b-1).
+///
+/// Parameters (receiver-centric naming — each side receives the OTHER's assets):
+/// - `initiator_receives_items` / `initiator_current_stacks`: items the initiator
+///   will gain (the counterparty's offered items) + initiator's current counts.
+/// - `initiator_receives_currency` / `initiator_balance`: currency the initiator
+///   will gain (counterparty_currency) + initiator's current balance.
+/// - Same pattern for the counterparty side.
+// 8-argument function is unavoidable: two symmetric sides × four state components
+// (items, item_stacks, currency, balance). Grouping into a struct would add boilerplate
+// with no clarity gain for this single call site.
+#[allow(clippy::too_many_arguments)]
+pub fn check_headroom(
+    initiator_receives_items: &[TradeItem],
+    initiator_current_stacks: &[ItemStack],
+    initiator_receives_currency: u64,
+    initiator_balance: u64,
+    counterparty_receives_items: &[TradeItem],
+    counterparty_current_stacks: &[ItemStack],
+    counterparty_receives_currency: u64,
+    counterparty_balance: u64,
+) -> Result<(), TradeError> {
+    // Item headroom: initiator receives counterparty's items.
+    for item in initiator_receives_items {
+        let current = initiator_current_stacks
+            .iter()
+            .find(|s| s.item_id == item.item_id)
+            .map(|s| s.current_count)
+            .unwrap_or(0);
+        if current.saturating_add(item.qty) > MAX_ITEM_STACK {
+            return Err(TradeError::ItemStackCapExceeded {
+                item_id: item.item_id,
+            });
+        }
+    }
+    // Item headroom: counterparty receives initiator's items.
+    for item in counterparty_receives_items {
+        let current = counterparty_current_stacks
+            .iter()
+            .find(|s| s.item_id == item.item_id)
+            .map(|s| s.current_count)
+            .unwrap_or(0);
+        if current.saturating_add(item.qty) > MAX_ITEM_STACK {
+            return Err(TradeError::ItemStackCapExceeded {
+                item_id: item.item_id,
+            });
+        }
+    }
+    // Currency headroom: initiator receives counterparty_currency.
+    if initiator_receives_currency > 0
+        && initiator_balance.saturating_add(initiator_receives_currency) > MAX_BALANCE
+    {
+        return Err(TradeError::CurrencyCapExceeded);
+    }
+    // Currency headroom: counterparty receives initiator_currency.
+    if counterparty_receives_currency > 0
+        && counterparty_balance.saturating_add(counterparty_receives_currency) > MAX_BALANCE
+    {
+        return Err(TradeError::CurrencyCapExceeded);
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -773,6 +854,297 @@ mod tests {
         assert_eq!(
             plan.currency_transfers[0].amount, 50,
             "counterparty currency transfer amount must equal the input currency"
+        );
+    }
+
+    // ===========================================================================
+    // M16.5b: check_headroom — receiver-cap tests (RED until implementation added)
+    //
+    // These tests reference `check_headroom`, `ItemStack`, `MAX_ITEM_STACK`, and
+    // `TradeError::ItemStackCapExceeded` / `TradeError::CurrencyCapExceeded`, which
+    // do NOT yet exist. They will not compile until the implementer adds them to
+    // rules.rs and types.rs — that is intentional (RED phase, 16.5b-1 / 16.5b-2).
+    //
+    // EARS criteria:
+    //   16.5b-1  confirm_trade SHALL return Err and roll back if any credit would
+    //            exceed MAX_ITEM_STACK or MAX_BALANCE headroom (reject-not-clamp).
+    //   16.5b-2  Boundary tests at the exact spec thresholds:
+    //            - 9980 + 50 = 10030 > 9999 = MAX_ITEM_STACK → Err
+    //            - (MAX_BALANCE - 49) + 50 > MAX_BALANCE → Err
+    // ===========================================================================
+
+    /// 16.5b-2 PRIMARY ITEM BOUNDARY: initiator (receiver) at 9,980 of item_id=1,
+    /// receiving 50 items → Err(ItemStackCapExceeded { item_id: 1 }).
+    /// Spec equation: 9980 + 50 = 10030 > MAX_ITEM_STACK (9999).
+    ///
+    /// kills: impl that uses grant_item's silent clamp instead of rejecting outright —
+    ///        grant_item(9980, 50) would clamp to 9999, destroying 31 items silently;
+    ///        check_headroom MUST detect this and return Err before any mutation happens.
+    #[test]
+    fn check_headroom_rejects_initiator_item_at_cap() {
+        use crate::currency::MAX_BALANCE;
+        let initiator_receives_items = [TradeItem {
+            item_id: 1,
+            qty: 50,
+        }];
+        let initiator_current_stacks = [ItemStack {
+            item_id: 1,
+            current_count: 9980,
+        }];
+        let result = check_headroom(
+            &initiator_receives_items,
+            &initiator_current_stacks,
+            0,
+            0,
+            &[],
+            &[],
+            0,
+            MAX_BALANCE,
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::ItemStackCapExceeded { item_id: 1 },
+            "9980 + 50 = 10030 > MAX_ITEM_STACK (9999): must return Err(ItemStackCapExceeded)"
+        );
+    }
+
+    /// 16.5b-2 PRIMARY CURRENCY BOUNDARY: initiator_balance = MAX_BALANCE - 49,
+    /// receives 50 currency → Err(CurrencyCapExceeded).
+    /// Spec: (MAX_BALANCE - 49) + 50 = MAX_BALANCE + 1 > MAX_BALANCE.
+    ///
+    /// kills: impl that uses grant_currency's silent clamp — grant_currency saturates at
+    ///        MAX_BALANCE, destroying 1 unit; check_headroom must detect the overflow and
+    ///        return Err so confirm_trade rolls back and the sender is not debited.
+    #[test]
+    fn check_headroom_rejects_initiator_currency_at_cap() {
+        use crate::currency::MAX_BALANCE;
+        let result = check_headroom(&[], &[], 50, MAX_BALANCE - 49, &[], &[], 0, 0);
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::CurrencyCapExceeded,
+            "(MAX_BALANCE - 49) + 50 = MAX_BALANCE + 1 > MAX_BALANCE: must return Err(CurrencyCapExceeded)"
+        );
+    }
+
+    /// 16.5b-2: counterparty (receiver) at 9,980 of item_id=3, receiving 50 → Err.
+    ///
+    /// kills: impl that only checks headroom for the initiator side (the initiator is
+    ///        the one calling confirm_trade, so a lazy impl might only verify the
+    ///        initiator's side); both parties must be checked.
+    #[test]
+    fn check_headroom_rejects_counterparty_item_at_cap() {
+        use crate::currency::MAX_BALANCE;
+        let counterparty_receives_items = [TradeItem {
+            item_id: 3,
+            qty: 50,
+        }];
+        let counterparty_current_stacks = [ItemStack {
+            item_id: 3,
+            current_count: 9980,
+        }];
+        let result = check_headroom(
+            &[],
+            &[],
+            0,
+            MAX_BALANCE,
+            &counterparty_receives_items,
+            &counterparty_current_stacks,
+            0,
+            0,
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::ItemStackCapExceeded { item_id: 3 },
+            "counterparty at 9980 + 50 = 10030 > 9999: must return Err(ItemStackCapExceeded)"
+        );
+    }
+
+    /// 16.5b-2: counterparty_balance = MAX_BALANCE, receives 1 → Err(CurrencyCapExceeded).
+    ///
+    /// kills: impl that only checks the initiator currency headroom and skips the
+    ///        counterparty — a counterparty at MAX_BALANCE receiving any currency would
+    ///        silently lose it via grant_currency's clamp without the headroom guard.
+    #[test]
+    fn check_headroom_rejects_counterparty_currency_at_cap() {
+        use crate::currency::MAX_BALANCE;
+        let result = check_headroom(&[], &[], 0, 0, &[], &[], 1, MAX_BALANCE);
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::CurrencyCapExceeded,
+            "counterparty at MAX_BALANCE + 1 must return Err(CurrencyCapExceeded)"
+        );
+    }
+
+    /// 16.5b-2: receiver has exactly MAX_ITEM_STACK items, receives 1 → Err.
+    ///
+    /// kills: impl that uses > instead of >= for the overflow check (off-by-one):
+    ///        current_count + qty == MAX_ITEM_STACK + 1 which is strictly > MAX_ITEM_STACK,
+    ///        but any impl using `current_count + qty > MAX_ITEM_STACK` would catch this;
+    ///        this test specifically verifies the at-cap-already case (0 headroom).
+    #[test]
+    fn check_headroom_rejects_when_no_room_at_exactly_cap() {
+        use crate::currency::MAX_BALANCE;
+        let items_in = [TradeItem { item_id: 7, qty: 1 }];
+        let stacks = [ItemStack {
+            item_id: 7,
+            current_count: MAX_ITEM_STACK,
+        }];
+        let result = check_headroom(&items_in, &stacks, 0, 0, &[], &[], 0, MAX_BALANCE);
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::ItemStackCapExceeded { item_id: 7 },
+            "current_count=MAX_ITEM_STACK + qty=1 exceeds cap: must return Err"
+        );
+    }
+
+    /// 16.5b-1 ACCEPT BOUNDARY (item): receiver at 9,980 receiving exactly 19
+    /// (9980 + 19 = 9999 = MAX_ITEM_STACK) → Ok (exactly fills the stack).
+    ///
+    /// kills: impl that uses >= instead of > for the overflow check, incorrectly
+    ///        rejecting trades that exactly fill to MAX_ITEM_STACK — the boundary
+    ///        is inclusive: headroom = MAX_ITEM_STACK - current_count; qty <= headroom → Ok.
+    #[test]
+    fn check_headroom_accepts_exact_headroom_item() {
+        use crate::currency::MAX_BALANCE;
+        let items_in = [TradeItem {
+            item_id: 2,
+            qty: 19,
+        }];
+        let stacks = [ItemStack {
+            item_id: 2,
+            current_count: 9980,
+        }];
+        let result = check_headroom(&items_in, &stacks, 0, 0, &[], &[], 0, MAX_BALANCE);
+        assert!(
+            result.is_ok(),
+            "9980 + 19 = 9999 = MAX_ITEM_STACK: exactly fills stack, must be Ok (not rejected)"
+        );
+    }
+
+    /// 16.5b-1 ACCEPT BOUNDARY (currency): balance = MAX_BALANCE - 49, receives 49 → Ok.
+    ///
+    /// kills: impl that uses > instead of >= in the headroom check, rejecting a trade
+    ///        that exactly fills to MAX_BALANCE — receiving exactly the headroom must be Ok.
+    #[test]
+    fn check_headroom_accepts_exact_currency_headroom() {
+        use crate::currency::MAX_BALANCE;
+        let result = check_headroom(&[], &[], 49, MAX_BALANCE - 49, &[], &[], 0, 0);
+        assert!(
+            result.is_ok(),
+            "(MAX_BALANCE - 49) + 49 = MAX_BALANCE: exactly fills balance, must be Ok"
+        );
+    }
+
+    /// 16.5b-1: empty trade (no items, no currency) → Ok (vacuous case, no overflow possible).
+    ///
+    /// kills: impl that unconditionally returns Err, or one that panics on empty slices.
+    #[test]
+    fn check_headroom_accepts_empty() {
+        use crate::currency::MAX_BALANCE;
+        let result = check_headroom(&[], &[], 0, MAX_BALANCE, &[], &[], 0, MAX_BALANCE);
+        assert!(
+            result.is_ok(),
+            "no items or currency transferred: check_headroom must return Ok"
+        );
+    }
+
+    /// 16.5b-1: receiver has 0 of item, receives MAX_ITEM_STACK → Ok (full stack from empty).
+    ///
+    /// kills: impl that confuses "receiver has no row" with "at cap" — a missing
+    ///        inventory row means current_count = 0, so headroom = MAX_ITEM_STACK
+    ///        and receiving MAX_ITEM_STACK is exactly at the boundary → Ok.
+    #[test]
+    fn check_headroom_accepts_new_receiver() {
+        use crate::currency::MAX_BALANCE;
+        let items_in = [TradeItem {
+            item_id: 5,
+            qty: MAX_ITEM_STACK,
+        }];
+        // Receiver has no existing stack for item 5 → current_count = 0.
+        let stacks: [ItemStack; 0] = [];
+        let result = check_headroom(&items_in, &stacks, 0, 0, &[], &[], 0, MAX_BALANCE);
+        assert!(
+            result.is_ok(),
+            "receiver has 0 of item, receives MAX_ITEM_STACK ({MAX_ITEM_STACK}): must be Ok"
+        );
+    }
+
+    /// FINDING-3 (MEDIUM): check_headroom snapshots current_count BEFORE the
+    /// sender's debit for a bidirectional same-item trade. When the same item_id
+    /// appears on BOTH initiator_items AND counterparty_items, check_headroom uses
+    /// the receiver's pre-debit count to assess headroom, producing a false-reject
+    /// even when the net post-trade balance stays within MAX_ITEM_STACK.
+    ///
+    /// Scenario:
+    ///   initiator has 9990 of item_id=5, gives 15, receives 20 → net 9995 (valid)
+    ///   check_headroom sees current_count=9990, incoming=20 → 10010 > 9999 → Err
+    ///
+    /// This is a correctness bug (over-conservative rejection), NOT a security bypass:
+    /// the check never under-counts headroom, so cap overflow is impossible.
+    /// The fix is to subtract the qty the receiver is also giving away for the same
+    /// item_id before checking: effective_count = current_count.saturating_sub(giving_qty).
+    ///
+    /// This test DOCUMENTS the current behavior (Err on a logically-valid trade) so
+    /// any future fix can be validated by flipping the assertion to is_ok().
+    ///
+    // check_headroom is a pure function: it trusts whatever current_count is passed.
+    // The CALL SITE (confirm_trade in trading.rs) is responsible for computing the
+    // effective (post-debit) count: raw_count.saturating_sub(sending_qty).
+    // These two tests document that contract:
+
+    #[test]
+    fn check_headroom_rejects_with_pre_debit_count_same_item() {
+        use crate::currency::MAX_BALANCE;
+        // Pre-debit raw count = 9990; incoming = 20 → 9990+20=10010 > 9999 → Err.
+        // The CALL SITE must subtract the 15 items the initiator is sending BEFORE
+        // calling check_headroom (effective = 9990-15 = 9975; 9975+20=9995 ≤ 9999 → Ok).
+        let initiator_receives = [TradeItem {
+            item_id: 5,
+            qty: 20,
+        }];
+        let initiator_stacks = [ItemStack {
+            item_id: 5,
+            current_count: 9990,
+        }];
+        let result = check_headroom(
+            &initiator_receives,
+            &initiator_stacks,
+            0,
+            0,
+            &[],
+            &[],
+            0,
+            MAX_BALANCE,
+        );
+        assert!(result.is_err(), "pre-debit 9990+20=10010 must be rejected");
+    }
+
+    #[test]
+    fn check_headroom_accepts_effective_count_same_item() {
+        use crate::currency::MAX_BALANCE;
+        // Effective count after subtracting 15 sent: 9990-15=9975; incoming=20 → 9975+20=9995 ≤ 9999 → Ok.
+        // This is the value confirm_trade passes after the net-quantity fix (ADR-0113).
+        let initiator_receives = [TradeItem {
+            item_id: 5,
+            qty: 20,
+        }];
+        let initiator_stacks = [ItemStack {
+            item_id: 5,
+            current_count: 9975,
+        }];
+        let result = check_headroom(
+            &initiator_receives,
+            &initiator_stacks,
+            0,
+            0,
+            &[],
+            &[],
+            0,
+            MAX_BALANCE,
+        );
+        assert!(
+            result.is_ok(),
+            "effective post-debit 9975+20=9995 must be accepted"
         );
     }
 }

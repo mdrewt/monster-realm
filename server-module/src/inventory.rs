@@ -13,12 +13,11 @@
 //! ADR-0056 — keep it stable.
 
 use crate::schema::{inventory, Inventory};
+use game_core::MAX_ITEM_STACK;
 use spacetimedb::{Identity, ReducerContext, Table};
 
-/// Per-stack cap. A single `(owner, item_id)` stack is capped at this count;
-/// further grants are no-ops once at/over the cap.
-// 9999: four-digit cap for UI legibility; no game-design constraint — tunable (ADR-0059 residual c).
-pub(crate) const MAX_ITEM_STACK: u32 = 9999;
+// MAX_ITEM_STACK sourced from game_core (ADR-0113): moved to the pure rule layer
+// so check_headroom can reference it without a crate boundary crossing.
 
 /// Grant `qty` of `item_id` to `owner`, merging into the owner's existing stack
 /// if present (capped, monotone) or inserting a new row otherwise. SINGLE stack
