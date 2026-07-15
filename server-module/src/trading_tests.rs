@@ -819,3 +819,169 @@ fn ea_conservation_headroom_02_check_headroom_before_build_swap_plan() {
          Fix: keep the check_headroom block before the build_swap_plan call."
     );
 }
+
+// ===========================================================================
+// EA-AUTHORIZE-RESPOND-01: respond_trade uses authorize_respond with ? propagation
+//                          (m16.5f, ADR-0117 — delegation refactor)
+//
+// CRITICAL security gate: the plan delegates respond_trade role+status checks to
+// authorize_respond(offer.status, is_counterparty). Without `?` propagation, a
+// call like `let _ = authorize_respond(...)` silently discards the Err and allows
+// any caller to accept/reject any trade.
+//
+// This test asserts:
+// (A) `authorize_respond` appears in the respond_trade body.
+// (B) The call is followed by `?` (error propagated, not ignored).
+// (C) The boolean argument is derived from `offer.counterparty == me` (correct
+//     field), not `offer.initiator == me` (wrong-field aliasing attack).
+//
+// TEETH: kills an impl that ignores the Result (let _ = authorize_respond(...))
+//        or that passes the wrong Identity field as the boolean argument.
+// ===========================================================================
+
+#[test]
+fn ea_authorize_respond_01_respond_trade_propagates_authorize_result() {
+    let stripped = strip_rust_comments_trading(TRADING_RS);
+
+    // Locate respond_trade body (ends where confirm_trade begins).
+    let respond_fn = concat!("fn ", "respond_trade");
+    let confirm_fn = concat!("fn ", "confirm_trade");
+
+    let fn_pos = stripped
+        .find(respond_fn)
+        .expect("EA-AUTHORIZE-RESPOND-01: `respond_trade` not found in trading.rs");
+    let next_fn_pos = stripped[fn_pos..]
+        .find(confirm_fn)
+        .map(|p| fn_pos + p)
+        .unwrap_or(stripped.len());
+
+    let respond_body = &stripped[fn_pos..next_fn_pos];
+
+    // (A) Call must exist.
+    let auth_needle = concat!("authorize_", "respond");
+    assert!(
+        respond_body.contains(auth_needle),
+        "EA-AUTHORIZE-RESPOND-01 FAIL: `respond_trade` does not call `authorize_respond`. \
+         The role+status delegation is missing — any caller can accept or reject any trade."
+    );
+
+    // (B) The `?` operator must immediately follow the authorize_respond call.
+    // Pattern: authorize_respond(...) followed by `?` as the next non-whitespace token.
+    // We check that `)?` (closing paren + question mark) appears after `authorize_respond(`
+    // within the next 300 chars (generous window for multi-line args).
+    let auth_pos = respond_body.find(auth_needle).unwrap();
+    let after_call = &respond_body[auth_pos..];
+    let window = &after_call[..after_call.len().min(300)];
+    assert!(
+        window.contains(")?"),
+        "EA-AUTHORIZE-RESPOND-01 FAIL: `authorize_respond(...)` in `respond_trade` is not \
+         followed by `?`. The Result is not propagated — a dropped Result means ANY caller \
+         can respond to any trade regardless of role or status. \
+         Fix: ensure the call is `authorize_respond(...)?;` (with `?` propagation). \
+         Found call at body offset {auth_pos} but no `)?` within 300 chars."
+    );
+
+    // (C) The is_counterparty argument must come from `offer.counterparty == me`,
+    // not `offer.initiator == me` (wrong-field aliasing attack).
+    // We check that `offer.counterparty` appears near the authorize_respond call site.
+    assert!(
+        window.contains("offer.counterparty"),
+        "EA-AUTHORIZE-RESPOND-01 FAIL: `authorize_respond` call in `respond_trade` does not \
+         reference `offer.counterparty` to compute the is_counterparty boolean argument. \
+         Using `offer.initiator == me` instead would allow the initiator to call respond_trade \
+         (wrong role), and the counterparty to call confirm_trade. \
+         Fix: pass `offer.counterparty == me` as the is_counterparty argument."
+    );
+
+    // Ensure `offer.initiator` is NOT used as the boolean arg (wrong-field aliasing).
+    // This is a heuristic check: if the only identity comparison near authorize_respond
+    // uses `offer.initiator`, flag it. We allow `offer.initiator` to appear elsewhere
+    // in respond_trade for other purposes, so we only check the 300-char window.
+    let uses_initiator_for_cp =
+        window.contains("offer.initiator ==") || window.contains("== offer.initiator");
+    let uses_counterparty_for_cp =
+        window.contains("offer.counterparty ==") || window.contains("== offer.counterparty");
+    if uses_initiator_for_cp && !uses_counterparty_for_cp {
+        panic!(
+            "EA-AUTHORIZE-RESPOND-01 FAIL: Near `authorize_respond` in `respond_trade`, \
+             `offer.initiator ==` appears but `offer.counterparty ==` does not. \
+             This is the wrong-field aliasing attack: passing `offer.initiator == me` as \
+             the is_counterparty boolean silently allows the initiator to respond to their \
+             own trade offer, bypassing the counterparty role check."
+        );
+    }
+}
+
+// ===========================================================================
+// EA-AUTHORIZE-CONFIRM-01: confirm_trade uses authorize_confirm with ? propagation
+//                          (m16.5f, ADR-0117 — delegation refactor)
+//
+// Mirrors EA-AUTHORIZE-RESPOND-01 for the confirm path. The is_initiator boolean
+// must come from `offer.initiator == me` (correct field).
+//
+// TEETH: kills an impl that ignores the Result or passes offer.counterparty == me
+//        as the is_initiator argument (wrong-field aliasing — counterparty can
+//        confirm, executing the swap without initiator consent).
+// ===========================================================================
+
+#[test]
+fn ea_authorize_confirm_01_confirm_trade_propagates_authorize_result() {
+    let stripped = strip_rust_comments_trading(TRADING_RS);
+
+    // Locate confirm_trade body (ends where cancel_trade begins).
+    let confirm_fn = concat!("fn ", "confirm_trade");
+    let cancel_fn = concat!("fn ", "cancel_trade");
+
+    let fn_pos = stripped
+        .find(confirm_fn)
+        .expect("EA-AUTHORIZE-CONFIRM-01: `confirm_trade` not found in trading.rs");
+    let next_fn_pos = stripped[fn_pos..]
+        .find(cancel_fn)
+        .map(|p| fn_pos + p)
+        .unwrap_or(stripped.len());
+
+    let confirm_body = &stripped[fn_pos..next_fn_pos];
+
+    // (A) Call must exist.
+    let auth_needle = concat!("authorize_", "confirm");
+    assert!(
+        confirm_body.contains(auth_needle),
+        "EA-AUTHORIZE-CONFIRM-01 FAIL: `confirm_trade` does not call `authorize_confirm`. \
+         The role+status delegation is missing — any caller can finalize any trade."
+    );
+
+    // (B) The `?` operator must follow the call.
+    let auth_pos = confirm_body.find(auth_needle).unwrap();
+    let after_call = &confirm_body[auth_pos..];
+    let window = &after_call[..after_call.len().min(300)];
+    assert!(
+        window.contains(")?"),
+        "EA-AUTHORIZE-CONFIRM-01 FAIL: `authorize_confirm(...)` in `confirm_trade` is not \
+         followed by `?`. The Result is not propagated — any caller can finalize any trade \
+         regardless of role or status. Fix: `authorize_confirm(...)?;`."
+    );
+
+    // (C) The is_initiator argument must come from `offer.initiator == me`.
+    assert!(
+        window.contains("offer.initiator"),
+        "EA-AUTHORIZE-CONFIRM-01 FAIL: `authorize_confirm` call in `confirm_trade` does not \
+         reference `offer.initiator` for the is_initiator argument. \
+         Using `offer.counterparty == me` instead would allow the counterparty to call \
+         confirm_trade and execute the atomic swap without the initiator's consent. \
+         Fix: pass `offer.initiator == me` as the is_initiator argument."
+    );
+
+    // Ensure wrong-field aliasing is not present near the call.
+    let uses_counterparty_for_init =
+        window.contains("offer.counterparty ==") || window.contains("== offer.counterparty");
+    let uses_initiator_for_init =
+        window.contains("offer.initiator ==") || window.contains("== offer.initiator");
+    if uses_counterparty_for_init && !uses_initiator_for_init {
+        panic!(
+            "EA-AUTHORIZE-CONFIRM-01 FAIL: Near `authorize_confirm` in `confirm_trade`, \
+             `offer.counterparty ==` appears but `offer.initiator ==` does not. \
+             This is the wrong-field aliasing attack: the counterparty can call confirm_trade \
+             and execute the atomic swap, transferring assets without the initiator's consent."
+        );
+    }
+}
