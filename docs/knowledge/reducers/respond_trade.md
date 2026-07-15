@@ -2,10 +2,10 @@
 type: SpacetimeDB Reducer
 title: respond_trade
 slug: reducers/respond_trade
-updated: 2026-07-14
+updated: 2026-07-15
 tags: [reducer, spacetimedb, trading]
-abstract: "Counterparty responds to a Pending offer. - `accepted = false` → row deleted (escrow released, no assets moved, TR-13).…"
-resource: server-module/src/trading.rs#L268
+abstract: "Counterparty responds to a Pending offer. Role + status authorization is delegated to the pure `authorize_respond` (rol…"
+resource: server-module/src/trading.rs#L388
 source: scripts/okf-export.mjs@server-module/src/trading.rs
 ---
 

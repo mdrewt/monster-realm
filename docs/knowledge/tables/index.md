@@ -32,6 +32,7 @@
 | tables/skill_row | SpacetimeDB Table | skill_row | Skill definitions seeded from the `game-core` RON registry. |
 | tables/species_row | SpacetimeDB Table | species_row | Species definitions seeded from the `game-core` RON registry by `sync_content`. |
 | tables/trade_offer | SpacetimeDB Table | trade_offer | An active trade offer between two players (M15, ADR-0106). PUBLIC so both partie |
+| tables/trade_offer_reaper_schedule | SpacetimeDB Table | trade_offer_reaper_schedule | SpacetimeDB table trade_offer_reaper_schedule. |
 | tables/type_relation_row | SpacetimeDB Table | type_relation_row | Type effectiveness chart seeded from the `game-core` RON registry. |
 | tables/zone_def | SpacetimeDB Table | zone_def | Zone definitions seeded from the `game-core` RON registry by `sync_content`. |
 <!-- END:auto -->

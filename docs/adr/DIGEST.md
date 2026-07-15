@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 82 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 83 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -91,6 +91,7 @@ Generated from 82 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0114](./0114-m16.5c-trade-client-completion.md) | Trade client completion: overlay symmetry, typed TradeStatus, render hygiene | Accepted | client-ui, ci-gates | m16.5c | Close three M16.5 residuals: e2e test for KeyQ/KeyH/KeyG overlay guards; `StoreTradeOffer.status` narrowed to a literal union with exhaustive switch; `TradeView` clears stale feedback on state change and sets `btn.disabled=this.#pending`. |
 | [0115](./0115-m16.5d-trade-runtime-coverage-hook.md) | Trade runtime coverage: test-hook dispatch + e2e round-trip + escrow-guard tail | Accepted | client-ui, ci-gates | m16.5d | Add `window.__mrTrade` write-side test hook; two-context Playwright e2e for propose→confirm trade flow with monster conservation check; TR-13 guard site for `attempt_recruit` + RT-SEC-02b string-literal stripping in `bodyHasGuard`. |
 | [0116](./0116-m16.5e-eval-infra-hardening.md) | Eval-infra hardening: append-only snapshot direction, extraction anti-hijack, additive-content coupling | Accepted | ci-gates | m16.5e | Snapshot gate gains a git-history append-only directional check; escrow-guard extraction sorts, drops `*_tests.rs`, strips strings; every Option content column must have a field-assignment in content.rs's re-seed path. |
+| [0117](./0117-m16.5f-trade-ssot-polish.md) | Trade SSOT polish: typed authorize rules, symmetric escrow checks, privacy-doc correction, offer TTL reaper | Accepted | economy-quests, security-authz, schema-persistence | m16.5f | Respond/confirm checks move to pure `authorize_respond`/`authorize_confirm`; two dead `TradeError` variants deleted; propose escrow checks made symmetric; privacy doc corrected; stale offers reaped by a one-shot TTL reaper with disarm. |
 
 ## Harness design corpus (H- namespace)
 
@@ -224,6 +225,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0106](./0106-m15a-trading-spine.md) — m15a (SOLO — touches game-core + server-module) — M15a Trading Spine (Accepted)
 - [0109](./0109-m16a-pvp-spine.md) — m16a — PvP battle spine (m16a) (Accepted)
 - [0113](./0113-m16.5b-receiver-cap-headroom.md) — m16.5b — Receiver-cap headroom check in confirm_trade (reject, don't destroy) (Accepted)
+- [0117](./0117-m16.5f-trade-ssot-polish.md) — m16.5f — Trade SSOT polish: typed authorize rules, symmetric escrow checks, privacy-doc correction, offer TTL reaper (Accepted)
 
 ### client-ui
 
@@ -305,6 +307,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0109](./0109-m16a-pvp-spine.md) — m16a — PvP battle spine (m16a) (Accepted)
 - [0111](./0111-m16c-pvp-evals.md) — m16c — PvP eval harness (battle_action privacy + handshake guards + liveness) (Accepted)
 - [0112](./0112-m16.5a-battle-trade-interlock.md) — m16.5a — Battle↔trade interlock (both directions) + vacuous-revival gate (Accepted)
+- [0117](./0117-m16.5f-trade-ssot-polish.md) — m16.5f — Trade SSOT polish: typed authorize rules, symmetric escrow checks, privacy-doc correction, offer TTL reaper (Accepted)
 
 ### economy-quests
 
@@ -321,3 +324,4 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0084](./0084-shop-client-view.md) — m13d — Shop client view architecture (M13d) (Accepted)
 - [0106](./0106-m15a-trading-spine.md) — m15a (SOLO — touches game-core + server-module) — M15a Trading Spine (Accepted)
 - [0113](./0113-m16.5b-receiver-cap-headroom.md) — m16.5b — Receiver-cap headroom check in confirm_trade (reject, don't destroy) (Accepted)
+- [0117](./0117-m16.5f-trade-ssot-polish.md) — m16.5f — Trade SSOT polish: typed authorize rules, symmetric escrow checks, privacy-doc correction, offer TTL reaper (Accepted)

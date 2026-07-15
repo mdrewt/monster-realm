@@ -530,6 +530,13 @@ export const TradeOffer = __t.object("TradeOffer", {
 });
 export type TradeOffer = __Infer<typeof TradeOffer>;
 
+export const TradeOfferReaperSchedule = __t.object("TradeOfferReaperSchedule", {
+  scheduledId: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+  tradeId: __t.u64(),
+});
+export type TradeOfferReaperSchedule = __Infer<typeof TradeOfferReaperSchedule>;
+
 // The tagged union or sum type for the algebraic type `TradeStatus`.
 export const TradeStatus = __t.enum("TradeStatus", {
   Pending: __t.unit(),
