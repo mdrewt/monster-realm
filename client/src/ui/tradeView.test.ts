@@ -289,3 +289,98 @@ describe('TradeView [m16.5c-TV-3]: feedback cleared on kind transition no-trade�
     removeOverlay(overlay);
   });
 });
+
+// ---------------------------------------------------------------------------
+// [m16.5c-TV-4] BITES: buttons re-enabled after Promise resolves post mid-flight render
+//
+// Invariant: after a reducer Promise settles (success or error), ALL currently
+// visible trade action buttons must be enabled (disabled=false) and #pending must
+// be false.  A mid-flight render() between click and Promise settlement replaces
+// the old button DOM elements with fresh ones (innerHTML=''), so the `finally`
+// block's `btn.disabled = false` targets a DETACHED (orphaned) element and has no
+// effect on the newly-rendered buttons — they remain permanently disabled=true
+// even though #pending has been reset to false.
+//
+// Repro path (normal SpacetimeDB flow):
+//   click → server commit → row update batch → store.flushBatch() → render() [mid-flight]
+//   → Promise resolves → finally() → #pending=false + orphaned btn.disabled=false
+//   → newly-rendered buttons permanently stuck at disabled=true → UI deadlock
+//
+// Procedure:
+//   1. Construct TradeView, show(), render() with ['accept','reject'] buttons.
+//   2. Click the first button.  Callback returns a Promise that we resolve manually.
+//   3. BEFORE resolving, call render() again (simulates mid-flight batch update).
+//   4. Verify new buttons are disabled=true (mid-flight guard, also verified by TV-1).
+//   5. Resolve the callback Promise (simulates server response arriving).
+//   6. Await a microtask flush so finally() runs (Promise.resolve().then().then()
+//      requires two microtask ticks: one for the resolution, one for finally).
+//   7. Assert ALL buttons in #trade-actions are disabled=false and #pending=false.
+//
+// BITES: kills any impl where finally() only resets the captured btn reference
+//   (which is now a detached DOM element) without re-enabling the buttons that
+//   are currently live in the DOM.
+// ---------------------------------------------------------------------------
+describe('TradeView [m16.5c-TV-4]: buttons re-enabled after Promise resolves post mid-flight render', () => {
+  it('BITES: after mid-flight render + Promise resolve, live buttons must be disabled=false', async () => {
+    const overlay = mountTradeOverlay();
+
+    // A resolvable Promise: we hold the resolve handle to trigger settlement manually.
+    let resolveCallback!: () => void;
+    const resolvablePromise = new Promise<void>((res) => {
+      resolveCallback = res;
+    });
+
+    const cbs: TradeCallbacks = {
+      onAccept: vi.fn(() => resolvablePromise),
+      onReject: vi.fn(() => resolvablePromise),
+      onConfirm: vi.fn(() => resolvablePromise),
+      onCancel: vi.fn(() => resolvablePromise),
+    };
+
+    const view = new TradeView(cbs);
+    view.show();
+
+    const vm = makePendingTradeVM('Offer received', ['accept', 'reject']);
+
+    // Step 1: initial render — buttons start enabled.
+    view.render(vm);
+
+    const actionsEl = document.getElementById('trade-actions')!;
+    const firstButtons = actionsEl.querySelectorAll('button');
+    expect(firstButtons.length).toBeGreaterThan(0);
+
+    // Step 2: click — sets #pending=true, dispatches resolvablePromise.
+    (firstButtons[0] as HTMLButtonElement).click();
+
+    // Step 3: mid-flight render while Promise is still in-flight.
+    // Simulates a store.flushBatch() triggered by the server's row update
+    // arriving before the reducer Promise resolves.
+    view.render(vm);
+
+    // Step 4: new buttons are disabled (TV-1 guard — confirmed).
+    const midFlightButtons = actionsEl.querySelectorAll('button');
+    expect(midFlightButtons.length).toBeGreaterThan(0);
+    for (const btn of midFlightButtons) {
+      expect((btn as HTMLButtonElement).disabled).toBe(true);
+    }
+
+    // Step 5: resolve the Promise (server responded successfully).
+    resolveCallback();
+
+    // Step 6: flush microtasks so finally() runs.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Step 7: BITES — without fix, buttons remain disabled=true because finally()
+    // targeted the now-detached first-render button reference.
+    // After fix: finally() re-enables the CURRENTLY LIVE buttons (or triggers
+    // a re-render that creates them with disabled=false).
+    const afterResolveButtons = actionsEl.querySelectorAll('button');
+    expect(afterResolveButtons.length).toBeGreaterThan(0);
+    for (const btn of afterResolveButtons) {
+      expect((btn as HTMLButtonElement).disabled).toBe(false);
+    }
+
+    removeOverlay(overlay);
+  });
+});

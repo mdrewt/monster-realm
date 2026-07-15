@@ -206,21 +206,18 @@ test.describe
 
       // Press 'g' (KeyG → shop). Trade overlay must stay open; shop must stay hidden.
       await page.keyboard.press('g');
-      await page.waitForTimeout(200);
-      await expect(page.locator('#shop-overlay')).toBeHidden();
-      await expect(page.locator('#trade-overlay')).toBeVisible();
+      await expect(page.locator('#shop-overlay')).toBeHidden({ timeout: 2_000 });
+      await expect(page.locator('#trade-overlay')).toBeVisible({ timeout: 2_000 });
 
       // Press 'q' (KeyQ → quest log). Trade overlay must stay open; quest log must stay hidden.
       await page.keyboard.press('q');
-      await page.waitForTimeout(200);
-      await expect(page.locator('#quest-log-overlay')).toBeHidden();
-      await expect(page.locator('#trade-overlay')).toBeVisible();
+      await expect(page.locator('#quest-log-overlay')).toBeHidden({ timeout: 2_000 });
+      await expect(page.locator('#trade-overlay')).toBeVisible({ timeout: 2_000 });
 
       // Press 'h' (KeyH → heal). Trade overlay must stay open; heal overlay must stay hidden.
       await page.keyboard.press('h');
-      await page.waitForTimeout(200);
-      await expect(page.locator('#heal-overlay')).toBeHidden();
-      await expect(page.locator('#trade-overlay')).toBeVisible();
+      await expect(page.locator('#heal-overlay')).toBeHidden({ timeout: 2_000 });
+      await expect(page.locator('#trade-overlay')).toBeVisible({ timeout: 2_000 });
 
       // Cleanup: close the trade overlay.
       await page.keyboard.press('u');

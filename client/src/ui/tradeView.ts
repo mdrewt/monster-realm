@@ -165,7 +165,11 @@ export class TradeView {
         btn.disabled = true;
         void Promise.resolve(this.#dispatch(action, tradeId)).finally(() => {
           this.#pending = false;
-          btn.disabled = false;
+          // Re-enable all live buttons — the captured `btn` closure reference may be
+          // orphaned if render() was called mid-flight (innerHTML='' detaches it).
+          for (const b of this.#actionsEl.querySelectorAll<HTMLButtonElement>('button')) {
+            b.disabled = false;
+          }
         });
       });
       this.#actionsEl.appendChild(btn);
