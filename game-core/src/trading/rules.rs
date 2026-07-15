@@ -1197,7 +1197,6 @@ mod tests {
     ///        — receives=50>0, balance=0, so && gives false → Ok, || gives Err)
     #[test]
     fn check_headroom_accepts_counterparty_currency_low_balance() {
-        use crate::currency::MAX_BALANCE;
         let result = check_headroom(&[], &[], 0, 0, &[], &[], 50, 0);
         assert!(
             result.is_ok(),
