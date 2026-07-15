@@ -155,24 +155,84 @@ fn m7b_1_double_battle_double_xp_arithmetic() {
 
 #[test]
 fn m7b_2_owner_change_mid_battle_spec_gap() {
-    // SPEC GAP CLOSED (M15a, ADR-0106):
+    // Spec gap CLOSED (M15a, ADR-0106) + battle↔trade interlock (m16.5a, ADR-0112).
     //
-    // Condition (a): trade reducers landed (propose_trade / respond_trade /
-    //   confirm_trade / cancel_trade in server-module/src/trading.rs).
-    //
-    // Condition (b): write_back_party_hp in server-module/src/battle.rs now
-    //   enforces the abort-on-owner-change contract: if any party monster's
-    //   owner_identity no longer matches battle.player_identity at write-back time,
-    //   the function returns Err(...) and the battle row is left with its current
-    //   outcome (no HP is written into another player's monster).
-    //
-    // The scenario is also prevented by the escrow guards (TR-11 / ME-1, ADR-0106):
-    // reject_if_monster_in_trade in start_battle + begin_encounter ensures a monster
-    // in an active trade offer cannot be placed in battle, making the ownership-change
-    // scenario unreachable in practice. The write_back check is defensive-depth.
-    // Spec gap closed — ownership-change-mid-battle is prevented by TR-11/ME-1 escrow
-    // guards (reject_if_monster_in_trade in start_battle/begin_encounter) and caught
-    // defensively by the abort-on-owner-change check in write_back_party_hp (M15a, ADR-0106).
+    // write_back_party_hp cannot be called from game-core (server-module depends on
+    // game-core, not vice-versa). Source-scan asserts the abort-on-owner-change
+    // contract in write_back_party_hp and the two-direction interlock in trading.rs.
+
+    // --- Criterion 1: write_back_party_hp aborts on owner mismatch (ADR-0106 M15a) ---
+    let battle_src = include_str!("../../../server-module/src/battle.rs");
+    // Strip line-comment lines so commented-out code cannot satisfy assertions.
+    let stripped_battle: String = battle_src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let fn_start = stripped_battle
+        .find("fn write_back_party_hp")
+        .expect("write_back_party_hp must exist in server-module/src/battle.rs");
+    let fn_body = &stripped_battle[fn_start..];
+
+    // The owner-mismatch guard must be present.
+    assert!(
+        fn_body.contains("owner_identity != battle.player_identity"),
+        "write_back_party_hp must check `owner_identity != battle.player_identity` \
+         (ADR-0106 M15a abort-on-owner-change). Without this guard an owner change \
+         mid-battle silently corrupts another player's monster HP."
+    );
+    // The guard must abort via Err (not panic), leaving other player's row untouched.
+    assert!(
+        fn_body.contains("return Err("),
+        "write_back_party_hp must return Err (not panic) on owner mismatch so the \
+         SpacetimeDB transaction rolls back with the other player's monster row untouched."
+    );
+    // The abort must happen BEFORE any monster row update — the other player's row must
+    // remain untouched.
+    let abort_pos = fn_body
+        .find("owner_identity != battle.player_identity")
+        .expect("confirmed above");
+    let first_update_pos = fn_body
+        .find("ctx.db.monster().monster_id().update(")
+        .unwrap_or(usize::MAX);
+    assert!(
+        abort_pos < first_update_pos,
+        "write_back_party_hp must abort BEFORE any `ctx.db.monster().monster_id().update(` \
+         so the other player's monster row is untouched on owner mismatch (ADR-0106 M15a)."
+    );
+
+    // --- Criterion 2: both-direction battle↔trade interlock (m16.5a, ADR-0112) ---
+    let trading_src = include_str!("../../../server-module/src/trading.rs");
+    let stripped_trading: String = trading_src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // propose_trade and confirm_trade must each call reject_if_in_battle (>= 2 sites).
+    let count = stripped_trading.matches("reject_if_in_battle").count();
+    assert!(
+        count >= 2,
+        "trading.rs must call reject_if_in_battle in both propose_trade and confirm_trade \
+         (m16.5a, ADR-0112). Found {count} occurrence(s); need >= 2."
+    );
+
+    // propose_trade must chain opponent_identity to catch PvP side-B participants.
+    let propose_start = stripped_trading
+        .find("fn propose_trade")
+        .expect("propose_trade must exist");
+    let respond_start = stripped_trading[propose_start..]
+        .find("fn respond_trade")
+        .map(|p| propose_start + p)
+        .unwrap_or(stripped_trading.len());
+    let propose_body = &stripped_trading[propose_start..respond_start];
+    assert!(
+        propose_body.contains("opponent_identity()"),
+        "propose_trade must chain `opponent_identity().filter(` to catch PvP side-B \
+         participants (ADR-0109/ADR-0112). Without this, a battling side-B monster can \
+         be freely traded out, creating a zombie battle."
+    );
 }
 
 // ===========================================================================

@@ -427,3 +427,275 @@ fn escrowed_item_qty_uses_counterparty_items_when_owner_is_counterparty() {
         "counterparty escrow for item 3 must be 4, not initiator's 7"
     );
 }
+
+// ===========================================================================
+// Battle↔Trade interlock source-scan tests (m16.5a, ADR-next).
+//
+// Source-guard pattern: read production source via `include_str!`, strip
+// comments, search for assembled needles. Needle strings built with `concat!()`
+// so the test file cannot self-match.
+//
+// EARS criteria covered:
+//   EA-TRADE-BATTLE-01  `propose_trade` calls `reject_if_in_battle` for the
+//                       initiator monster IDs (guards monsters on side A).
+//   EA-TRADE-BATTLE-02  `propose_trade` chains both btree indexes —
+//                       `player_identity().filter(` AND `opponent_identity().filter(` —
+//                       covering PvP battles where the monster is on the OPPONENT
+//                       SIDE (side B, btree added in ADR-0109).
+//   EA-TRADE-BATTLE-03  `confirm_trade` calls `reject_if_in_battle` BEFORE
+//                       `build_swap_plan` (position guard: the escrow check must
+//                       precede the ownership-swap plan to prevent a race where
+//                       a battling monster is traded out mid-combat).
+//   EA-TRADE-BATTLE-04  `reject_if_in_battle` appears in BOTH `propose_trade` AND
+//                       `confirm_trade` — mutation check requiring MIN 2 occurrences
+//                       (kills an impl that only guards one reducer).
+// ===========================================================================
+
+/// Comment-stripping helper (mirrors pvp_tests.rs / m14_5d_1a_tests.rs).
+/// Removes `/* … */` block comments and `//` line comments, replacing removed
+/// bytes with spaces to preserve byte offsets.
+fn strip_rust_comments_trading(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = vec![b' '; len];
+    let mut i = 0;
+    while i < len {
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else {
+            out[i] = bytes[i];
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("stripped source must be valid UTF-8")
+}
+
+const TRADING_RS: &str = include_str!("trading.rs");
+
+// ---------------------------------------------------------------------------
+// EA-TRADE-BATTLE-01: propose_trade calls reject_if_in_battle
+//
+// Proof-of-teeth: kills any impl where propose_trade has ZERO `reject_if_in_battle`
+// calls — a monster in an ongoing PvP battle can then be offered in a trade,
+// causing a permanent zombie battle when the trade executes and the monster is
+// removed from the battle's party list.
+//
+// The needle uses concat! to avoid self-match inside this test file.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_trade_battle_01_propose_trade_calls_reject_if_in_battle() {
+    let stripped = strip_rust_comments_trading(TRADING_RS);
+
+    // Locate propose_trade function body (ends where respond_trade begins).
+    let propose_fn = concat!("fn ", "propose_trade");
+    let respond_fn = concat!("fn ", "respond_trade");
+
+    let fn_pos = stripped
+        .find(propose_fn)
+        .expect("EA-TRADE-BATTLE-01: `propose_trade` function not found in trading.rs");
+
+    let next_fn_pos = stripped[fn_pos..]
+        .find(respond_fn)
+        .map(|p| fn_pos + p)
+        .unwrap_or(stripped.len());
+
+    let propose_body = &stripped[fn_pos..next_fn_pos];
+
+    // The needle: `reject_if_in_battle` assembled via concat! to prevent self-match.
+    let guard_needle = concat!("reject_if_", "in_battle");
+
+    assert!(
+        propose_body.contains(guard_needle),
+        "EA-TRADE-BATTLE-01 FAIL: `propose_trade` in trading.rs does not call \
+         `reject_if_in_battle`. A monster in an ongoing PvP or PvE battle can be \
+         offered in a trade; when the trade executes the monster is transferred out, \
+         leaving the battle with a dangling party reference and creating a permanent \
+         zombie battle that neither player can escape. \
+         Fix: add `reject_if_in_battle` calls for all initiator and counterparty \
+         monster IDs in `propose_trade` (mirrors the escrow guard used in \
+         `start_battle`/`begin_encounter`)."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EA-TRADE-BATTLE-02: propose_trade chains both battle btree indexes
+//
+// The `opponent_identity` btree was added in M16a (ADR-0109) so that side-B
+// battles can be looked up efficiently. Without chaining it, a monster offered by
+// a PvP opponent (side B — `opponent_identity` == trader) would NOT be caught by
+// `reject_if_in_battle`, because that guard only sees the rows passed to it and
+// the caller must chain BOTH indexes.
+//
+// Proof-of-teeth: kills any impl that only passes `player_identity().filter(…)`
+// to `reject_if_in_battle` and omits the `opponent_identity().filter(…)` chain —
+// a side-B participant's monsters are invisible to the guard without both indexes.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_trade_battle_02_propose_trade_chains_both_battle_indexes() {
+    let stripped = strip_rust_comments_trading(TRADING_RS);
+
+    // Locate propose_trade body.
+    let propose_fn = concat!("fn ", "propose_trade");
+    let respond_fn = concat!("fn ", "respond_trade");
+
+    let fn_pos = stripped
+        .find(propose_fn)
+        .expect("EA-TRADE-BATTLE-02: `propose_trade` function not found in trading.rs");
+    let next_fn_pos = stripped[fn_pos..]
+        .find(respond_fn)
+        .map(|p| fn_pos + p)
+        .unwrap_or(stripped.len());
+
+    let propose_body = &stripped[fn_pos..next_fn_pos];
+
+    // Both index-access patterns must appear in propose_trade.
+    // concat! prevents self-match in this test file.
+    // Note: rustfmt splits method chains so we check the method names rather than the
+    // combined `method().filter(` token — the presence of `.filter(` is confirmed
+    // separately by EA-TRADE-BATTLE-01 (reject_if_in_battle call implies filter usage).
+    let player_idx_needle = concat!("player_identity", "()");
+    let opponent_idx_needle = concat!("opponent_identity()", ".filter(");
+
+    assert!(
+        propose_body.contains(player_idx_needle),
+        "EA-TRADE-BATTLE-02 FAIL: `propose_trade` in trading.rs does not call \
+         `player_identity()` to look up battle rows for the initiator. \
+         The battle-interlock guard must query the battle table by player_identity \
+         (side A) to catch battles where the initiator is the challenger."
+    );
+
+    assert!(
+        propose_body.contains(opponent_idx_needle),
+        "EA-TRADE-BATTLE-02 FAIL: `propose_trade` in trading.rs does not use \
+         `opponent_identity().filter(` to look up battle rows. Without chaining this \
+         btree index (added in ADR-0109), a monster held by a PvP opponent (side B, \
+         where `opponent_identity == trader`) is invisible to the battle guard and can \
+         be freely traded out of an ongoing PvP battle. \
+         Fix: chain `ctx.db.battle().opponent_identity().filter(owner)` alongside \
+         `ctx.db.battle().player_identity().filter(owner)` when building the iterator \
+         passed to `reject_if_in_battle` in `propose_trade`."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EA-TRADE-BATTLE-03: confirm_trade calls reject_if_in_battle BEFORE build_swap_plan
+//
+// The confirm_trade reducer re-reads live monster rows and then executes the atomic
+// swap. If `reject_if_in_battle` is called AFTER `build_swap_plan`, the ownership
+// transfer has already been planned (and may have been partially applied by the
+// time a future audit happens) before the battle check fires. Calling it BEFORE
+// ensures the transaction aborts cleanly before any transfer is planned.
+//
+// Proof-of-teeth: kills an impl that adds the guard to confirm_trade but places it
+// AFTER the `build_swap_plan` call — the ordering is observable in source position.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_trade_battle_03_confirm_trade_calls_reject_if_in_battle_before_build_swap_plan() {
+    let stripped = strip_rust_comments_trading(TRADING_RS);
+
+    // Locate confirm_trade body (ends where cancel_trade begins).
+    let confirm_fn = concat!("fn ", "confirm_trade");
+    let cancel_fn = concat!("fn ", "cancel_trade");
+
+    let fn_pos = stripped
+        .find(confirm_fn)
+        .expect("EA-TRADE-BATTLE-03: `confirm_trade` function not found in trading.rs");
+    let next_fn_pos = stripped[fn_pos..]
+        .find(cancel_fn)
+        .map(|p| fn_pos + p)
+        .unwrap_or(stripped.len());
+
+    let confirm_body = &stripped[fn_pos..next_fn_pos];
+
+    let guard_needle = concat!("reject_if_", "in_battle");
+    let plan_needle = concat!("build_swap", "_plan");
+
+    let guard_pos = confirm_body.find(guard_needle).unwrap_or_else(|| {
+        panic!(
+            "EA-TRADE-BATTLE-03 FAIL: `confirm_trade` in trading.rs does not call \
+             `reject_if_in_battle` at all. A monster that entered a battle between \
+             `respond_trade` and `confirm_trade` would be traded out of the battle, \
+             creating a zombie battle. \
+             Fix: add `reject_if_in_battle` for all initiator and counterparty monster \
+             IDs in `confirm_trade`, BEFORE the `build_swap_plan` call."
+        )
+    });
+
+    let plan_pos = confirm_body.find(plan_needle).expect(
+        "EA-TRADE-BATTLE-03: `build_swap_plan` call not found in confirm_trade body — \
+                 trading.rs structure may have changed unexpectedly",
+    );
+
+    assert!(
+        guard_pos < plan_pos,
+        "EA-TRADE-BATTLE-03 FAIL: In `confirm_trade`, `reject_if_in_battle` (at body \
+         offset {guard_pos}) appears AFTER `build_swap_plan` (at body offset {plan_pos}). \
+         The battle-interlock guard MUST precede the swap plan so the transaction aborts \
+         cleanly before any ownership transfer is planned — if the guard fires after the \
+         plan is built, the function has already done expensive work and the guard ordering \
+         invariant documented in ADR-0106 D3 is violated. \
+         Fix: move the `reject_if_in_battle` calls to BEFORE the `build_swap_plan` call \
+         in `confirm_trade`."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EA-TRADE-BATTLE-04: reject_if_in_battle appears in BOTH propose_trade AND
+//                     confirm_trade — mutation count check
+//
+// This is the proof-of-teeth / mutation kill test. It asserts that the TOTAL
+// count of `reject_if_in_battle` call sites in trading.rs is at least
+// MIN_BATTLE_INTERLOCK_CALL_COUNT (= 2), one per reducer. An impl that only adds
+// the guard to `propose_trade` but not `confirm_trade` (or vice versa) leaves a
+// TOCTOU window: a monster can enter a battle between the proposal and confirmation.
+//
+// Proof-of-teeth: kills an impl that adds `reject_if_in_battle` only to one of
+// the two reducers. The TOCTOU window between propose and confirm is real:
+// after `respond_trade` sets status=ConfirmedByCounterparty, a new battle can
+// start with the offered monster; `confirm_trade` must re-check the guard.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_trade_battle_04_reject_if_in_battle_present_in_both_propose_and_confirm() {
+    // MIN count of `reject_if_in_battle` call sites required in trading.rs.
+    // Rationale: at least 1 for propose_trade + at least 1 for confirm_trade.
+    const MIN_BATTLE_INTERLOCK_CALL_COUNT: usize = 2;
+
+    let stripped = strip_rust_comments_trading(TRADING_RS);
+    let guard_needle = concat!("reject_if_", "in_battle");
+
+    // Count occurrences of the guard needle in the stripped source.
+    let mut count = 0usize;
+    let mut search_from = 0usize;
+    while let Some(pos) = stripped[search_from..].find(guard_needle) {
+        count += 1;
+        search_from += pos + guard_needle.len();
+    }
+
+    assert!(
+        count >= MIN_BATTLE_INTERLOCK_CALL_COUNT,
+        "EA-TRADE-BATTLE-04 FAIL: `reject_if_in_battle` appears only {count} time(s) in \
+         trading.rs (after comment stripping), but at least {MIN_BATTLE_INTERLOCK_CALL_COUNT} \
+         call sites are required — one in `propose_trade` and one in `confirm_trade`. \
+         A TOCTOU window exists between proposal acceptance (respond_trade sets status \
+         ConfirmedByCounterparty) and final confirmation (confirm_trade executes the swap): \
+         a new battle can start with a monster that was already offered. Both reducers MUST \
+         independently call `reject_if_in_battle` to close this window. \
+         Found {count} occurrence(s); need >= {MIN_BATTLE_INTERLOCK_CALL_COUNT}. \
+         Kills: impl that guards only one of the two reducers."
+    );
+}
