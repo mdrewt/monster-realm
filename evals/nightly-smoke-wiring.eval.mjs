@@ -869,7 +869,7 @@ jobs:
       name,
       pass: false,
       detail:
-        'TEETH L-bigcap: mutateServerRecipeIntact accepted cap=9999 (must reject cap > 200 per ADR-0050 A2)',
+        'TEETH L-bigcap: mutateServerRecipeIntact accepted cap=9999 (must reject cap > 340 per ADR-0050 A3 / ADR-0118)',
     };
   }
   // Bad: --file scope-narrowing bypass.

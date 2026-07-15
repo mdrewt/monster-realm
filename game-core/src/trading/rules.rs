@@ -1166,9 +1166,9 @@ mod tests {
     ///        cap check — >= incorrectly rejects a trade that exactly fills to MAX_BALANCE)
     ///
     /// kills: rules.rs:309:9 replace && with || in check_headroom (counterparty compound:
-    ///        with receives=49>0 true and sum==MAX_BALANCE false, && yields Ok while
-    ///        || would also yield false here; see belt-and-suspenders test below for the
-    ///        decisive kill on the || mutant)
+    ///        with receives=49>0 true and sum==MAX_BALANCE false, && yields false → Ok,
+    ///        while || short-circuits true on receives>0 → Err; the low_balance test
+    ///        below kills this mutant independently — either test alone suffices)
     #[test]
     fn check_headroom_accepts_exact_currency_headroom_counterparty() {
         use crate::currency::MAX_BALANCE;

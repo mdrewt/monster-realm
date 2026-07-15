@@ -181,7 +181,8 @@ nuance:** the `server-module/` directory's cargo package is **`monster-realm-mod
 - **Sharding:** NOT needed — 2-min local runtime extrapolates to roughly 15–30 min on
   a 2-core hosted runner, far inside the nightly window; the spec's "sharded if
   runtime demands" clause is satisfied by this recorded measurement. Single job, no
-  matrix.
+  matrix. (Re-baseline check 2026-07-15: 43 min observed on the hosted runner at the
+  499-mutant scale — still inside the nightly window; sharding still not needed.)
 - **No `continue-on-error`** (same posture as decision #1 — a soft mutation gate is
   toothless), distinct cache `prefix-key: v1-nightly-server`, SHA-pinned actions
   matching the file's style. The job is covered from its first commit by the
@@ -224,7 +225,8 @@ equally unguarded prose.
   (no `if:` / truthy `continue-on-error` inside those three job blocks; schedule +
   workflow_dispatch triggers live), plus recipe-body guards for `coverage:`
   (threshold literal ≥ 96) and `mutate-server` (count-compare present; no
-  `--shard`/`--file`/`--exclude-re` narrowing; cap default ≤ 200).
+  `--shard`/`--file`/`--exclude-re` narrowing; cap default ≤ 200 — ceiling raised
+  to 340 by ADR-0118, 2026-07-15).
 
 **Accepted gaps (recorded honestly — threat model is honest error / lazy shortcut,
 not an adversary with admin):**
