@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** ADR-0050 (A2 mutate-server survivor cap: 180 → 309; A3 wiring-eval cap ceiling: 200 → 340)
 **Subsystems:** ci-gates
-**Decision:** Kill the five surviving game-core mutants in `check_headroom` with boundary/contract tests (no exclusions, no production edit); re-baseline the mutate-server survivor cap to the exact PR-head measurement (309) with the wiring-eval ceiling raised to 340; record the triage taxonomy so the next nightly-red episode starts from evidence.
+**Decision:** Kill the 5 check_headroom survivors with counterparty accept-boundary + guard-contract tests (no exclusions, no production edits); re-baseline mutate-server cap 180→309 (exact measurement); raise the wiring-eval ceiling 200→340.
 
 ---
 
@@ -74,11 +74,17 @@ Triage classified the two failures differently:
   hard-pins mutants.toml to exactly three line-pinned entries with proof-of-teeth —
   the exclusion route would force a rewrite of that gate for a mutant a 10-line
   test kills.
-- **Raise the mutate-server cap with headroom above the measurement** (e.g. 350).
-  Rejected: A2's ratchet posture is cap = exact measured baseline, so ANY new
-  survivor reds the nightly and forces a conscious decision; headroom in the cap
-  would let survivors accrete silently. Headroom lives in the wiring-eval
-  *ceiling*, not the cap.
+- **Raise the mutate-server cap with headroom above the measurement** (e.g.
+  cap 319 "for CI runner noise", proposed in plan review). Rejected: A2's ratchet
+  posture is cap = exact measured baseline, so ANY new survivor reds the nightly
+  and forces a conscious decision; headroom in the cap would let up to that many
+  real survivors merge silently. The noise scenario it targets does not move the
+  missed count anyway: a timeout on a slow runner makes cargo-mutants exit 3,
+  which the `mutate-server` recipe fails LOUDLY on (it tolerates only exits 0/2)
+  before any count-compare — headroom in the cap cannot absorb it. The server
+  suite's per-mutant test time is ~0s (no timeout margin in play; 0 timeouts in
+  every recorded run), and the exact-cap gate ran stably for 11 nights before
+  the crate grew. Headroom lives in the wiring-eval *ceiling*, not the cap.
 
 ## Decision outcome
 
@@ -102,8 +108,12 @@ Triage classified the two failures differently:
    ADR-recorded ceremony for large cap moves while allowing small deliberate
    in-ceiling bumps; 340 preserves the original ~10% proportion (180/200) at the
    new baseline (309/340) and stays far below the TEETH-L-bigcap fixture (9999),
-   which must keep biting. A positive-control fixture at the new baseline value
-   is added; no existing tooth is removed or weakened.
+   which must keep biting. A ceiling of 500 was rejected: 191 survivors of silent
+   headroom is a full M15+M16-scale growth cycle accreting without ceremony.
+   A positive-control fixture at the new baseline value is added; no existing
+   tooth is removed or weakened. The ceiling edit and the justfile cap edit land
+   together (the ceiling first or same-commit — a cap above a stale ceiling reds
+   `just eval`; the reverse order is safe: cap 180 ≤ ceiling 340).
 
 4. **Re-baseline procedure recorded** (for the next server-growth milestone):
    run `just mutate-server` locally on the slice head (≈3 min on a dev machine);
@@ -125,9 +135,18 @@ Triage classified the two failures differently:
   recurring red episodes when a milestone forgets; the two out-of-invariant tests
   assert behavior on inputs production can't produce (documented in-test so a
   future reader doesn't "fix" the guard away).
-- **Follow-ups:** none blocking. If reducer-body survivor growth becomes noisy,
-  a future ADR may revisit ratio-based ratcheting (miss% ≤ baseline%) — rejected
-  for now as it can mask absolute regressions.
+- **Follow-ups (recorded residuals, deliberately not actioned here):**
+  (1) the `mutate-server` recipe tolerates only cargo-mutants exits 0/2 — a
+  timed-out server mutant would exit 3 and fail the job with a misleading
+  "build/config error" message (fail-LOUD, so no silent hole; 0 timeouts ever
+  observed on this crate; align with `mutate-core`'s ADR-0088 exit-3 shape only
+  if it ever fires). (2) `mutate-server` lacks `mutate-core`'s explicit
+  `[ ! -f missed.txt ]` guard — but a missing file yields empty `grep` stdout
+  and `[ "" -gt ... ]` errors out under `set -e`, so this too fails loud, not
+  vacuous-green. (3) `wc -l` (mutate-core) vs `grep -c ''` (mutate-server)
+  count-idiom inconsistency is pre-existing and out of scope. If reducer-body
+  survivor growth becomes noisy, a future ADR may revisit ratio-based ratcheting
+  (miss% ≤ baseline%) — rejected for now as it can mask absolute regressions.
 - **References:** ADR-0050 (+A2/A3), ADR-0088 (prior triage episode + equivalence
   bar), ADR-0113 (check_headroom semantics), nightly runs 29403450612 (Jul 15) /
   29086209572 (Jul 10, first red of the episode).
