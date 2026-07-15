@@ -5,12 +5,12 @@ Architecture Decision Records live in **two locations**; check both.
 - **Design ADRs `0002`–`0034`** — in the **harness spec corpus**
   (`../../specs/monster-realm-v2/adr/`). These are the foundational design
   decisions authored alongside the milestone specs.
-- **Implementation ADRs `0001`, `0035`–`0112`** — in **this directory**
+- **Implementation ADRs `0001`, `0035`–`0113`** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0113`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0114`**.
 
 **ADR numbering collision note:** the harness spec corpus also contains design
 ADRs numbered `0055`–`0057`; these cover the *same topics* as this project's
@@ -105,6 +105,7 @@ prefix `harness adr/0055` to cite the harness design ADR.
 | [0110](./0110-m16b-pvp-client-ui.md) | M16b PvP client UI: challenge/accept/turn-submit/forfeit overlay flow | M16b |
 | [0111](./0111-m16c-pvp-evals.md) | PvP eval harness: battle_action privacy + handshake guards + deadline/disconnect liveness evals | M16c |
 | [0112](./0112-m16.5a-battle-trade-interlock.md) | Battle↔trade interlock both directions + vacuous-revival gate (m7b_2 real body; eval asserts non-comment assert) | M16.5a |
+| [0113](./0113-m16.5b-receiver-cap-headroom.md) | Receiver-cap headroom check in confirm_trade — reject, don't destroy | M16.5b |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
