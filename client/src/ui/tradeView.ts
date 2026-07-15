@@ -20,6 +20,9 @@ export class TradeView {
   readonly #cbs: TradeCallbacks;
   // In-flight lock: prevents double-send when a reducer Promise is pending.
   #pending = false;
+  // Tracks the last rendered offer key (tradeId + statusLabel) to detect state
+  // changes and clear stale feedback (16.5c-3, ADR-0114).
+  #lastRenderKey: string | null = null;
 
   constructor(cbs: TradeCallbacks) {
     const el = document.getElementById('trade-overlay');
@@ -65,6 +68,7 @@ export class TradeView {
     this.#overlay.style.display = 'none';
     this.#feedbackEl.textContent = '';
     this.#pending = false;
+    this.#lastRenderKey = null;
   }
 
   toggle(): void {
@@ -79,7 +83,17 @@ export class TradeView {
       this.#mySideEl.innerHTML = '';
       this.#theirSideEl.innerHTML = '';
       this.#actionsEl.innerHTML = '';
+      this.#lastRenderKey = null;
       return;
+    }
+
+    // Clear stale feedback on offer-state change (16.5c-3, ADR-0114): a status
+    // transition (Pending → ConfirmedByCounterparty, or a new tradeId) means the
+    // prior "Trade accepted!" / "Trade rejected." is no longer meaningful.
+    const renderKey = `${vm.tradeId}-${vm.statusLabel}`;
+    if (renderKey !== this.#lastRenderKey) {
+      this.#feedbackEl.textContent = '';
+      this.#lastRenderKey = renderKey;
     }
 
     this.#statusEl.textContent = vm.statusLabel;
@@ -142,13 +156,20 @@ export class TradeView {
       const btn = document.createElement('button');
       btn.dataset.action = action;
       btn.textContent = this.#actionLabel(action);
+      // 16.5c-3: render disabled when in-flight so a mid-flight batch re-render
+      // doesn't re-enable buttons while a reducer Promise is still pending.
+      btn.disabled = this.#pending;
       btn.addEventListener('click', () => {
         if (this.#pending) return;
         this.#pending = true;
         btn.disabled = true;
         void Promise.resolve(this.#dispatch(action, tradeId)).finally(() => {
           this.#pending = false;
-          btn.disabled = false;
+          // Re-enable all live buttons — the captured `btn` closure reference may be
+          // orphaned if render() was called mid-flight (innerHTML='' detaches it).
+          for (const b of this.#actionsEl.querySelectorAll<HTMLButtonElement>('button')) {
+            b.disabled = false;
+          }
         });
       });
       this.#actionsEl.appendChild(btn);

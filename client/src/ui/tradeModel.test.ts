@@ -441,11 +441,24 @@ describe('buildTradeViewModel [m15b-TM-6]: total safety — never throws on any 
     }).not.toThrow();
   });
 
-  it('[m15b-TM-6d] BITES: unknown status string → no throw, does not crash action derivation', () => {
-    // Kills: an impl that uses a non-exhaustive switch with a throw-on-default.
-    const offer = makeOffer(1n, ALICE, BOB, { status: 'SomeFutureStatus' });
+  it('[m15b-TM-6d] BITES: both valid statuses are handled without throwing', () => {
+    // Exhaustive switch handles all valid statuses; unknown statuses are now a
+    // TypeScript compile error (StoreTradeOffer.status narrowed to
+    // 'Pending' | 'ConfirmedByCounterparty' per 16.5c-2).
+    // This test verifies the runtime invariant: both known statuses produce a
+    // non-throwing result. Previously tested 'SomeFutureStatus' — that is now
+    // a compile-time error and no longer valid here.
+    //
+    // Kills: an impl that crashes on one of the two valid status values (e.g.
+    // only handles 'Pending' and throws on 'ConfirmedByCounterparty').
+    const offerPending = makeOffer(1n, ALICE, BOB, { status: 'Pending' });
     expect(() => {
-      buildTradeViewModel([offer], ALICE, new Map(), new Map());
+      buildTradeViewModel([offerPending], ALICE, new Map(), new Map());
+    }).not.toThrow();
+
+    const offerConfirmed = makeOffer(2n, ALICE, BOB, { status: 'ConfirmedByCounterparty' });
+    expect(() => {
+      buildTradeViewModel([offerConfirmed], ALICE, new Map(), new Map());
     }).not.toThrow();
   });
 
@@ -690,7 +703,9 @@ describe('buildTradeViewModel [m15b-TM-10]: property — never throws on any val
               }),
               { maxLength: 3 },
             ),
-            status: fc.constantFrom('Pending', 'ConfirmedByCounterparty', 'UnknownFutureStatus'),
+            // 16.5c-2: status narrowed to 'Pending' | 'ConfirmedByCounterparty' — 'UnknownFutureStatus'
+            // removed because it is now a TypeScript compile error at the call site.
+            status: fc.constantFrom('Pending', 'ConfirmedByCounterparty'),
             createdAtMs: fc.bigInt({ min: 0n, max: 999999n }),
           }),
           { maxLength: 10 },
@@ -750,5 +765,91 @@ describe('buildTradeViewModel [m15b-TM-11]: property — initiator role detectio
         },
       ),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [m16.5c-TM-12] Exhaustive switch — type-safe status (16.5c-2)
+//
+// SOURCE OF TRUTH: M16.5-ninth-review-residuals.spec.md §16.5c-2
+//
+// CONTRACT:
+//   - StoreTradeOffer.status is narrowed to 'Pending' | 'ConfirmedByCounterparty'.
+//   - deriveActionsAndLabel (called inside buildTradeViewModel) uses an exhaustive
+//     switch so TypeScript produces a compile error when a new server variant is
+//     added without handling it (the never-check pattern).
+//   - All 4 cells of the action table (role × status) must produce the correct
+//     actions and statusLabel with NO fallthrough or default catch-all that would
+//     mask a missing case.
+//
+// RED REASON:
+//   The current deriveActionsAndLabel uses an if/else chain — not a switch — which
+//   TS cannot verify as exhaustive.  After fix: it becomes a switch on status with
+//   an explicit `default: satisfies never` guard so adding a third status value
+//   without a case arm is a compile-time error.
+//
+// [m16.5c-TM-12a] BITES: all 4 role×status cells produce correct actions and labels
+//   Tests the full 2×2 action table exhaustively in a single test.
+//   Kills:
+//     - An impl with a fallthrough default arm that silently returns a wrong result
+//       for one of the four cells (masked by the catch-all).
+//     - An impl that handles only one role correctly and swaps actions for the other.
+//     - A copy-paste where initiator+ConfirmedByCounterparty accidentally returns
+//       ['confirm'] without 'cancel' (truncated action list).
+//     - A copy-paste where counterparty+ConfirmedByCounterparty returns ['accept','reject']
+//       instead of ['cancel'] (forgot to update for the ConfirmedByCounterparty branch).
+// ---------------------------------------------------------------------------
+
+describe('buildTradeViewModel [m16.5c-TM-12]: exhaustive switch — all 4 role×status cells', () => {
+  it('[m16.5c-TM-12a] BITES: all 4 cells (role × status) return correct actions and statusLabel', () => {
+    // Cell 1: initiator + Pending → ['cancel'] / 'Waiting for response'
+    // Kills: impl that returns ['accept','reject'] for initiator+Pending (role confusion).
+    const cell1 = buildTradeViewModel(
+      [makeOffer(1n, ALICE, BOB, { status: 'Pending' })],
+      ALICE,
+      new Map(),
+      new Map(),
+    ) as TradeOfferViewModel;
+    expect(cell1.actions).toEqual(['cancel']);
+    expect(cell1.statusLabel).toBe('Waiting for response');
+
+    // Cell 2: counterparty + Pending → ['accept','reject'] / 'Offer received'
+    // Kills: impl that returns ['cancel'] for counterparty+Pending (swapped roles).
+    const cell2 = buildTradeViewModel(
+      [makeOffer(2n, ALICE, BOB, { status: 'Pending' })],
+      BOB,
+      new Map(),
+      new Map(),
+    ) as TradeOfferViewModel;
+    expect(cell2.actions).toEqual(['accept', 'reject']);
+    expect(cell2.statusLabel).toBe('Offer received');
+
+    // Cell 3: initiator + ConfirmedByCounterparty → ['confirm','cancel'] / 'Accepted — confirm to finalize'
+    // Kills: impl with a fallthrough default that returns ['cancel'] only (missing 'confirm').
+    // Also kills: an impl that returns ['cancel','confirm'] (wrong order).
+    const cell3 = buildTradeViewModel(
+      [makeOffer(3n, ALICE, BOB, { status: 'ConfirmedByCounterparty' })],
+      ALICE,
+      new Map(),
+      new Map(),
+    ) as TradeOfferViewModel;
+    expect(cell3.actions).toEqual(['confirm', 'cancel']);
+    expect(cell3.statusLabel).toBe('Accepted — confirm to finalize');
+    // Explicit length check: exactly 2 actions, no extras.
+    expect(cell3.actions).toHaveLength(2);
+
+    // Cell 4: counterparty + ConfirmedByCounterparty → ['cancel'] / 'Accepted — awaiting confirmation'
+    // Kills: impl that returns ['accept','reject'] here (forgot the ConfirmedByCounterparty branch
+    // for the counterparty role — the default catch-all masked it).
+    const cell4 = buildTradeViewModel(
+      [makeOffer(4n, ALICE, BOB, { status: 'ConfirmedByCounterparty' })],
+      BOB,
+      new Map(),
+      new Map(),
+    ) as TradeOfferViewModel;
+    expect(cell4.actions).toEqual(['cancel']);
+    expect(cell4.statusLabel).toBe('Accepted — awaiting confirmation');
+    // Explicit length check: exactly 1 action, no extras.
+    expect(cell4.actions).toHaveLength(1);
   });
 });

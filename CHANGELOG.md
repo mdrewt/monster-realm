@@ -114,6 +114,8 @@
 - PvP battle spine — challenge handshake, submit/resolve, deadline reaper (#172)
 - PvP client UI — challenge/accept/turn-submit/forfeit overlay (ADR-0110) (#176)
 - Battle↔trade interlock both directions + vacuous-revival gate (#180)
+- Receiver-cap headroom check in confirm_trade — reject, don't destroy (ADR-0113) (#183)
+- Trade client completion — overlay symmetry e2e, typed TradeStatus, render hygiene (ADR-0114)
 
 ### Fixes
 
@@ -129,6 +131,7 @@
 - Deflake dialogue 13.5c-5 overlay timeout + recruit R2 heal-guard (#146)
 - Ledger reconciliation + type-rigor micro-fixes (#157)
 - Kill 10 nightly mutants — 6 behavioral tests + 2 equivalent exclusions re-pinned (#174)
+- Re-enable live buttons after mid-flight render; robust e2e assertions
 
 ### M8.8b
 
@@ -220,4 +223,3 @@
 - ARCHITECTURE.md — module-map, content-registry, raising+evolution sections (#108)
 - Project-side changes — warpDetect wire-in, @types/node ^24, root lockfile delete, CONTENT_VERSION history, main.ts comments, ARCHITECTURE/AGENTS/ADR fixes (#131)
 - Regen knowledge bundle — UTC date rollover (2026-07-13→2026-07-14) (#166)
-- Implementation GREEN — check_headroom + tests + eval + knowledge

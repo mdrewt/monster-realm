@@ -250,8 +250,7 @@ export type StoreTradeOffer = {
   readonly counterpartyCurrency: bigint;
   readonly initiatorCards: readonly StoreMonsterCard[];
   readonly counterpartyCards: readonly StoreMonsterCard[];
-  /** 'Pending' | 'ConfirmedByCounterparty' */
-  readonly status: string;
+  readonly status: 'Pending' | 'ConfirmedByCounterparty';
   readonly createdAtMs: bigint;
 };
 
