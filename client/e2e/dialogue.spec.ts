@@ -397,13 +397,25 @@ test.describe
         await a
           .locator('#dialogue-choices')
           .getByText('I seek a quest.', { exact: true })
-          .click({ timeout: 5_000 });
+          .click({ timeout: 5_000 })
+          .catch(() => {
+            // The overlay can vanish between the isVisible() check and the click
+            // when a PREVIOUS attempt's slow row-delete finally propagates. That
+            // is not a failure — the hidden-wait below picks the flow back up.
+          });
         // Both outcomes delete the row (success: next_node None ends the
         // dialogue; reject: walked_away) — the overlay must hide either way.
-        // 20 s covers CI-latency: advance_dialogue triggers StartQuest + row-delete
-        // in one transaction; the subscription propagation under CI load can exceed
-        // the original 10 s on a GHA runner while completing well within 20 s.
-        await expect(overlay).toBeHidden({ timeout: 20_000 });
+        // Deflake (2026-07-15, flaked twice at 20 s on GHA): subscription
+        // propagation has a long tail under CI load. A slow attempt is treated as
+        // a FAILED attempt (continue) instead of failing the whole test — the
+        // never-remove-delete tooth is preserved by the post-loop assertions:
+        // `advanced` must become true within MAX_ADVANCE_ATTEMPTS and the overlay
+        // must be hidden at the end, so a genuinely stuck delete still fails.
+        const hidden = await overlay
+          .waitFor({ state: 'hidden', timeout: 20_000 })
+          .then(() => true)
+          .catch(() => false);
+        if (!hidden) continue;
         // Distinguish success via the quest-log UI signal (KeyQ is guarded on
         // "no other overlay visible" — the dialogue overlay is hidden here).
         await a.keyboard.press('KeyQ');
