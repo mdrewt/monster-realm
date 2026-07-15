@@ -115,6 +115,7 @@
 - PvP client UI — challenge/accept/turn-submit/forfeit overlay (ADR-0110) (#176)
 - Battle↔trade interlock both directions + vacuous-revival gate (#180)
 - Receiver-cap headroom check in confirm_trade — reject, don't destroy (ADR-0113) (#183)
+- Trade client completion — overlay symmetry e2e, typed TradeStatus, render hygiene (ADR-0114)
 
 ### Fixes
 
@@ -130,6 +131,7 @@
 - Deflake dialogue 13.5c-5 overlay timeout + recruit R2 heal-guard (#146)
 - Ledger reconciliation + type-rigor micro-fixes (#157)
 - Kill 10 nightly mutants — 6 behavioral tests + 2 equivalent exclusions re-pinned (#174)
+- Re-enable live buttons after mid-flight render; robust e2e assertions
 
 ### M8.8b
 
