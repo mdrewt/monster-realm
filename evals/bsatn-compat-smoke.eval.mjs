@@ -145,8 +145,7 @@ export function parseContentTableStructs(schemaSrc) {
   const src = stripRustCommentsAndStrings(schemaSrc);
   const out = {};
   const tableAttrRe = /#\[spacetimedb::table\(\s*name\s*=\s*(\w+)/g;
-  let m;
-  while ((m = tableAttrRe.exec(src)) !== null) {
+  for (const m of src.matchAll(tableAttrRe)) {
     const tableName = m[1];
     const structIdx = src.indexOf('pub struct ', m.index);
     if (structIdx === -1) continue;
@@ -166,8 +165,7 @@ export function parseContentTableStructs(schemaSrc) {
     const body = src.slice(braceIdx + 1, i - 1);
     const optionFields = [];
     const fieldRe = /pub\s+(\w+)\s*:\s*Option\s*</g;
-    let fm;
-    while ((fm = fieldRe.exec(body)) !== null) optionFields.push(fm[1]);
+    for (const fm of body.matchAll(fieldRe)) optionFields.push(fm[1]);
     out[structName] = { tableName, optionFields };
   }
   return out;
@@ -184,8 +182,7 @@ const DB_WRITE_RE =
 function scanDbWrites(contentSrc) {
   const src = stripRustCommentsAndStrings(contentSrc);
   const writes = [];
-  let m;
-  while ((m = DB_WRITE_RE.exec(src)) !== null) {
+  for (const m of src.matchAll(DB_WRITE_RE)) {
     writes.push({ table: m[1], op: m[2] });
   }
   return writes;
