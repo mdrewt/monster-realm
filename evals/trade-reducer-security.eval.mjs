@@ -33,6 +33,20 @@ function stripRustComments(src) {
 }
 
 /**
+ * Replace Rust double-quoted string literal CONTENTS with spaces (Finding C, m16.5f review).
+ * Copied from trade-escrow-guards.eval.mjs (ADR-0116 hardened version):
+ * the escape branch matches backslash + ANY char INCLUDING newline (JS `.` excludes
+ * newline), so a backslash-newline line-continuation string is handled correctly.
+ * Apply AFTER stripRustComments so a string containing a comment-open sequence
+ * does not corrupt the comment-stripping pass.
+ * Prevents `let _dead = "schedule_trade_reaper(";` from satisfying needle searches.
+ * DOES NOT strip raw strings (r#...#) — not needed for the needles checked here.
+ */
+function stripRustStrings(src) {
+  return src.replace(/"(?:[^"\\]|\\[\s\S])*"/g, '""');
+}
+
+/**
  * Extract a named function's body (between outer braces), or null if missing.
  * Searches for both `pub fn <name>(` and `fn <name>(`.
  */
@@ -126,57 +140,141 @@ function hasCounterpartyJoinCheck(body) {
 }
 
 // ---------------------------------------------------------------------------
+// Shared authorize-call checker helpers (Finding A + B hardening, m16.5f review).
+//
+// checkAuthorizeCall(code, callName, requiredField, forbiddenField):
+//   (i)  Finds `callName` in code — fails if absent.
+//   (ii) STATEMENT-TERMINATOR SCAN (Finding A): from the call's opening paren,
+//        walks chars tracking paren+brace depth; finds the FIRST `;` at depth 0
+//        (the production `.map_err(|e| { ...; ...; msg })?;` has interior `;`s only
+//        at depth > 0, so they are skipped); requires the last non-whitespace char
+//        before that depth-0 `;` to be `?`. This kills the bypass:
+//          `let _ = authorize_respond(...); other_fn()?;`
+//        because the depth-0 `;` immediately after `authorize_respond(...)` has last
+//        non-ws char `)`, not `?`.
+//   (iii) ARGUMENT-SPAN FIELD CHECK (Finding B): extracts the argument span —
+//        the substring from the opening `(` to its depth-matched `)` — and requires
+//        `requiredField` IN the span AND `forbiddenField` NOT in the span. This kills:
+//          `authorize_respond(&offer.status, offer.initiator == me)` with
+//          `offer.counterparty` appearing in a later unrelated statement — the span
+//        `&offer.status, offer.initiator == me` has initiator but not counterparty,
+//        so it is correctly flagged even though counterparty appears nearby.
+//
+// No new RegExp() — pure char-walk.
+// ---------------------------------------------------------------------------
+function checkAuthorizeCall(code, callName, requiredField, forbiddenField) {
+  const callIdx = code.indexOf(callName);
+  if (callIdx === -1) return { ok: false, reason: `no ${callName} call` };
+
+  // Locate the opening paren of this specific call.
+  const openParenIdx = code.indexOf('(', callIdx + callName.length);
+  if (openParenIdx === -1) return { ok: false, reason: `${callName} call has no opening paren` };
+
+  // -----------------------------------------------------------------------
+  // (iii) ARGUMENT SPAN: from openParenIdx+1 to depth-matched close paren.
+  // -----------------------------------------------------------------------
+  let argSpan = '';
+  {
+    let depth = 1;
+    let i = openParenIdx + 1;
+    const spanStart = i;
+    while (i < code.length && depth > 0) {
+      const ch = code[i];
+      if (ch === '(' || ch === '{') depth++;
+      else if (ch === ')' || ch === '}') depth--;
+      i++;
+    }
+    // i is now one past the closing paren (depth==0 triggered decrement then i++).
+    argSpan = code.slice(spanStart, i - 1);
+  }
+  if (argSpan.indexOf(requiredField) === -1)
+    return {
+      ok: false,
+      reason: `${requiredField} not found in ${callName}(...) argument span — wrong-field attack`,
+    };
+  if (argSpan.indexOf(forbiddenField) !== -1)
+    return {
+      ok: false,
+      reason: `${forbiddenField} found in ${callName}(...) argument span — wrong-field in args`,
+    };
+
+  // -----------------------------------------------------------------------
+  // (ii) STATEMENT-TERMINATOR SCAN: from openParenIdx, walk tracking depth,
+  // find the first `;` at depth 0; require last non-ws char before it to be `?`.
+  // -----------------------------------------------------------------------
+  {
+    let depth = 1; // we start inside the opening paren
+    let i = openParenIdx + 1;
+    while (i < code.length) {
+      const ch = code[i];
+      if (ch === '(' || ch === '{') depth++;
+      else if (ch === ')' || ch === '}') {
+        depth--;
+        if (depth === 0 && ch === ')') {
+          // We just closed the outer call paren — continue scanning for `;`
+          // The remaining chain (.map_err(...)? etc.) keeps depth changes.
+        }
+      } else if (ch === ';' && depth === 0) {
+        // Found the depth-0 statement terminator.
+        // Scan backwards for last non-whitespace char.
+        let j = i - 1;
+        while (
+          j >= openParenIdx &&
+          (code[j] === ' ' || code[j] === '\n' || code[j] === '\r' || code[j] === '\t')
+        )
+          j--;
+        if (j < openParenIdx || code[j] !== '?')
+          return {
+            ok: false,
+            reason: `${callName}(...) statement does not end with ?; (Result not propagated — dropped-result attack)`,
+          };
+        break;
+      }
+      i++;
+    }
+  }
+
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
 // Criterion: RESPOND_AUTHORIZE (replaces RESPOND_ROLE + RESPOND_STATUS, m16.5f)
 // respond_trade body must:
 //   (i)  call authorize_respond
-//   (ii) propagate the Result with `)?` within a 300-char window after the call
-//   (iii) reference offer.counterparty in that same window (correct field)
+//   (ii) propagate the Result with `?` as the last non-ws char before the depth-0 `;`
+//        (statement-terminator scan — Finding A hardening)
+//   (iii) `offer.counterparty` IN the argument span AND `offer.initiator` NOT in it
+//        (argument-span field check — Finding B hardening)
 //
-// The inline `offer.counterparty != me` / `TradeStatus::Pending` checks disappear
-// after the delegation refactor — we pin the delegation shape instead.
-//
-// bad-missing-call fixture:   no authorize_respond call → must flag.
-// bad-dropped-result fixture: call present, no )? in window → must flag.
-// bad-wrong-field fixture:    call references offer.initiator but not offer.counterparty → must flag.
-// good-delegating fixture:    call + )? + offer.counterparty all in window → must pass.
+// bad-missing-call fixture:      no authorize_respond call → must flag.
+// bad-dropped-result fixture:    call + dropped result (let _ = ...) → must flag.
+// bad-nearby-question-mark:      let _ = authorize_respond(...); other()?; → must flag.
+// bad-wrong-field fixture:       offer.initiator in args, offer.counterparty not → must flag.
+// bad-wrong-field-nearby fixture: offer.initiator in args, offer.counterparty in adjacent stmt → must flag.
+// good-delegating fixture:       correct delegation shape → must pass.
 // ---------------------------------------------------------------------------
 function checkRespondAuthorize(body) {
   const code = stripRustComments(body);
-  const callIdx = code.indexOf('authorize_respond');
-  if (callIdx === -1) return { ok: false, reason: 'no authorize_respond call' };
-  const window = code.slice(callIdx, callIdx + 300);
-  if (window.indexOf(')?') === -1)
-    return { ok: false, reason: 'Result not propagated (no )? in window)' };
-  if (window.indexOf('offer.counterparty') === -1)
-    return {
-      ok: false,
-      reason: 'offer.counterparty not referenced in window (wrong-field attack)',
-    };
-  return { ok: true };
+  return checkAuthorizeCall(code, 'authorize_respond', 'offer.counterparty', 'offer.initiator');
 }
 
 // ---------------------------------------------------------------------------
 // Criterion: CONFIRM_AUTHORIZE (replaces CONFIRM_ROLE + CONFIRM_STATUS, m16.5f)
 // confirm_trade body must:
 //   (i)  call authorize_confirm
-//   (ii) propagate the Result with `)?` within a 300-char window
-//   (iii) reference offer.initiator in that window (correct field)
+//   (ii) propagate the Result with `?` as the last non-ws char before the depth-0 `;`
+//   (iii) `offer.initiator` IN the argument span AND `offer.counterparty` NOT in it
 //
-// bad-missing-call fixture:   no authorize_confirm call → must flag.
-// bad-dropped-result fixture: call present, no )? in window → must flag.
-// bad-wrong-field fixture:    call references offer.counterparty but not offer.initiator → must flag.
-// good-delegating fixture:    call + )? + offer.initiator all in window → must pass.
+// bad-missing-call fixture:      no authorize_confirm call → must flag.
+// bad-dropped-result fixture:    call + dropped result → must flag.
+// bad-nearby-question-mark:      let _ = authorize_confirm(...); other()?; → must flag.
+// bad-wrong-field fixture:       offer.counterparty in args, offer.initiator not → must flag.
+// bad-wrong-field-nearby fixture: offer.counterparty in args, offer.initiator in adjacent → must flag.
+// good-delegating fixture:       correct delegation shape → must pass.
 // ---------------------------------------------------------------------------
 function checkConfirmAuthorize(body) {
   const code = stripRustComments(body);
-  const callIdx = code.indexOf('authorize_confirm');
-  if (callIdx === -1) return { ok: false, reason: 'no authorize_confirm call' };
-  const window = code.slice(callIdx, callIdx + 300);
-  if (window.indexOf(')?') === -1)
-    return { ok: false, reason: 'Result not propagated (no )? in window)' };
-  if (window.indexOf('offer.initiator') === -1)
-    return { ok: false, reason: 'offer.initiator not referenced in window (wrong-field attack)' };
-  return { ok: true };
+  return checkAuthorizeCall(code, 'authorize_confirm', 'offer.initiator', 'offer.counterparty');
 }
 
 // ---------------------------------------------------------------------------
@@ -285,9 +383,11 @@ function tradeOfferTableIsPublic(schemaSrc) {
 // propose_trade body: index of trade_offer().insert( < index of schedule_trade_reaper(
 // Both must exist; arm call must appear AFTER the offer insert so the auto_inc
 // trade_id is available.
+// Finding C hardening: stripRustStrings applied after stripRustComments so that
+// `let _dead = "schedule_trade_reaper(";` after the insert does not satisfy the check.
 // ---------------------------------------------------------------------------
 function checkReaperArmed(proposeBody) {
-  const code = stripRustComments(proposeBody);
+  const code = stripRustStrings(stripRustComments(proposeBody));
   const insertIdx = code.indexOf('trade_offer().insert(');
   if (insertIdx === -1)
     return { ok: false, reason: 'trade_offer().insert( not found in propose_trade' };
@@ -311,10 +411,13 @@ function checkReaperArmed(proposeBody) {
 // Criterion: REAPER_SCHEDULER_GUARD (m16.5f)
 // trade_offer_reaper body must contain ctx.sender != ctx.identity()
 // (scheduler-only guard: rejects any non-scheduler caller).
+// Finding C: stripRustStrings applied — the production log line
+// `"trade_offer_reaper is scheduler-only"` is stripped to `""` so the token
+// `ctx.sender != ctx.identity()` is still found as a code token, not in a literal.
 // ---------------------------------------------------------------------------
 function checkReaperSchedulerGuard(reaperBody) {
   if (!reaperBody) return { ok: false, reason: 'trade_offer_reaper function not found' };
-  const code = stripRustComments(reaperBody);
+  const code = stripRustStrings(stripRustComments(reaperBody));
   // Accept either ordering of the comparison.
   if (code.indexOf('ctx.sender != ctx.identity()') !== -1) return { ok: true };
   if (code.indexOf('ctx.identity() != ctx.sender') !== -1) return { ok: true };
@@ -327,10 +430,12 @@ function checkReaperSchedulerGuard(reaperBody) {
 // ---------------------------------------------------------------------------
 // Criterion: REAPER_STALE_CHECK (m16.5f)
 // trade_offer_reaper body must call is_offer_stale.
+// Finding C: stripRustStrings applied so `let _s = "is_offer_stale";` does not pass.
 // ---------------------------------------------------------------------------
 function checkReaperStaleCheck(reaperBody) {
   if (!reaperBody) return { ok: false, reason: 'trade_offer_reaper function not found' };
-  if (reaperBody.indexOf('is_offer_stale') === -1)
+  const code = stripRustStrings(stripRustComments(reaperBody));
+  if (code.indexOf('is_offer_stale') === -1)
     return { ok: false, reason: 'trade_offer_reaper body missing is_offer_stale call' };
   return { ok: true };
 }
@@ -338,10 +443,11 @@ function checkReaperStaleCheck(reaperBody) {
 // ---------------------------------------------------------------------------
 // Criterion: REAPER_DELETES (m16.5f)
 // trade_offer_reaper body must delete the offer row via trade_id().delete(.
+// Finding C: stripRustStrings applied.
 // ---------------------------------------------------------------------------
 function checkReaperDeletes(reaperBody) {
   if (!reaperBody) return { ok: false, reason: 'trade_offer_reaper function not found' };
-  const code = stripRustComments(reaperBody);
+  const code = stripRustStrings(stripRustComments(reaperBody));
   if (!/trade_id\(\)\.delete\s*\(/.test(code))
     return { ok: false, reason: 'trade_offer_reaper body missing trade_id().delete( call' };
   return { ok: true };
@@ -351,6 +457,8 @@ function checkReaperDeletes(reaperBody) {
 // Criterion: REAPER_DISARM (m16.5f)
 // disarm_trade_reaper( must appear in each of the four offer-deletion function
 // bodies: respond_trade, cancel_trade, confirm_trade, cancel_trades_on_disconnect.
+// Finding C: extractFunctionBody already uses stripRustStrings (via trade-escrow-guards
+// convention); additionally each body is re-stripped here for the needle search.
 // ---------------------------------------------------------------------------
 function checkReaperDisarm(tradingSrc) {
   const missing = [];
@@ -365,7 +473,8 @@ function checkReaperDisarm(tradingSrc) {
       missing.push(`${fn} (function not found)`);
       continue;
     }
-    if (body.indexOf('disarm_trade_reaper(') === -1) {
+    const code = stripRustStrings(stripRustComments(body));
+    if (code.indexOf('disarm_trade_reaper(') === -1) {
       missing.push(fn);
     }
   }
@@ -491,6 +600,23 @@ export default async function () {
       };
     }
   }
+  // RESPOND_AUTHORIZE: bad-nearby-question-mark fixture (Finding A PoC)
+  // let _ = authorize_respond(...); ctx.db.trade_offer().trade_id().find(0).ok_or_else(|| "".to_string())?;
+  // The second statement's )? is in the 300-char window — old checker passed; new depth-0-scan catches
+  // the depth-0 ; immediately after authorize_respond(...) and sees last-char = ), not ?.
+  const badRespondNearbyQ =
+    'fn respond_trade(ctx, trade_id, accepted) { let _ = authorize_respond(&offer.status, offer.counterparty == me); ctx.db.trade_offer().trade_id().find(0).ok_or_else(|| "".to_string())?; Ok(()) }';
+  {
+    const r = checkRespondAuthorize(badRespondNearbyQ);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (RESPOND_AUTHORIZE bad-nearby-question-mark): checkRespondAuthorize passed fixture where authorize_respond result is dropped and a nearby )? belongs to a different statement (Finding A bypass)',
+      };
+    }
+  }
   // RESPOND_AUTHORIZE: bad-wrong-field fixture (offer.initiator used, not offer.counterparty)
   const badRespondWrongField =
     'fn respond_trade(ctx, trade_id, accepted) { authorize_respond(&offer.status, offer.initiator == me)?; Ok(()) }';
@@ -502,6 +628,21 @@ export default async function () {
         pass: false,
         detail:
           'TEETH FAILED (RESPOND_AUTHORIZE bad-wrong-field): checkRespondAuthorize passed fixture using offer.initiator instead of offer.counterparty',
+      };
+    }
+  }
+  // RESPOND_AUTHORIZE: bad-wrong-field-nearby fixture (Finding B PoC)
+  // offer.initiator in the arg span; offer.counterparty only in an adjacent statement.
+  const badRespondWrongFieldNearby =
+    'fn respond_trade(ctx, trade_id, accepted) { authorize_respond(&offer.status, offer.initiator == me).map_err(|e| e.to_string())?; let _cp = offer.counterparty; Ok(()) }';
+  {
+    const r = checkRespondAuthorize(badRespondWrongFieldNearby);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (RESPOND_AUTHORIZE bad-wrong-field-nearby): checkRespondAuthorize passed fixture where offer.initiator is in the arg span and offer.counterparty appears only in an adjacent statement (Finding B bypass)',
       };
     }
   }
@@ -547,6 +688,20 @@ export default async function () {
       };
     }
   }
+  // CONFIRM_AUTHORIZE: bad-nearby-question-mark fixture (Finding A PoC)
+  const badConfirmNearbyQ =
+    'fn confirm_trade(ctx, trade_id) { let _ = authorize_confirm(&offer.status, offer.initiator == me); ctx.db.trade_offer().trade_id().find(0).ok_or_else(|| "".to_string())?; Ok(()) }';
+  {
+    const r = checkConfirmAuthorize(badConfirmNearbyQ);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (CONFIRM_AUTHORIZE bad-nearby-question-mark): checkConfirmAuthorize passed fixture where authorize_confirm result is dropped and a nearby )? belongs to a different statement (Finding A bypass)',
+      };
+    }
+  }
   // CONFIRM_AUTHORIZE: bad-wrong-field fixture
   const badConfirmWrongField =
     'fn confirm_trade(ctx, trade_id) { authorize_confirm(&offer.status, offer.counterparty == me)?; Ok(()) }';
@@ -558,6 +713,21 @@ export default async function () {
         pass: false,
         detail:
           'TEETH FAILED (CONFIRM_AUTHORIZE bad-wrong-field): checkConfirmAuthorize passed fixture using offer.counterparty instead of offer.initiator',
+      };
+    }
+  }
+  // CONFIRM_AUTHORIZE: bad-wrong-field-nearby fixture (Finding B PoC)
+  // offer.counterparty in the arg span; offer.initiator only in an adjacent statement.
+  const badConfirmWrongFieldNearby =
+    'fn confirm_trade(ctx, trade_id) { authorize_confirm(&offer.status, offer.counterparty == me).map_err(|e| e.to_string())?; let _i = offer.initiator; Ok(()) }';
+  {
+    const r = checkConfirmAuthorize(badConfirmWrongFieldNearby);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (CONFIRM_AUTHORIZE bad-wrong-field-nearby): checkConfirmAuthorize passed fixture where offer.counterparty is in the arg span and offer.initiator appears only in an adjacent statement (Finding B bypass)',
       };
     }
   }
@@ -720,6 +890,23 @@ export default async function () {
         pass: false,
         detail:
           'TEETH FAILED (REAPER_ARMED bad-arm-before-insert): checkReaperArmed passed fixture where arm call precedes offer insert',
+      };
+    }
+  }
+  // REAPER_ARMED: bad-string-literal-bypass fixture (Finding C PoC)
+  // `let _dead = "schedule_trade_reaper(";` after the insert — without string stripping
+  // this would satisfy the arm needle. After stripping, the literal becomes "" and the
+  // needle is not found.
+  const badReaperLiteralBypass =
+    'fn propose_trade(ctx) { let inserted = ctx.db.trade_offer().insert(offer); let _dead = "schedule_trade_reaper("; Ok(()) }';
+  {
+    const r = checkReaperArmed(badReaperLiteralBypass);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (REAPER_ARMED bad-string-literal-bypass): checkReaperArmed passed fixture where schedule_trade_reaper( appears only inside a string literal (Finding C bypass)',
       };
     }
   }

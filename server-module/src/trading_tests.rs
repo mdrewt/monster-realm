@@ -481,6 +481,47 @@ fn strip_rust_comments_trading(src: &str) -> String {
     String::from_utf8(out).expect("stripped source must be valid UTF-8")
 }
 
+/// String-literal stripping helper (Finding C, m16.5f review).
+/// Replaces the content of every `"…"` string literal (including escape sequences)
+/// with `""`, so a needle like `schedule_trade_reaper(` cannot be hidden inside a
+/// dead-code string literal such as `let _dead = "schedule_trade_reaper(";`.
+///
+/// IMPORTANT: call AFTER strip_rust_comments_trading so that string literals inside
+/// comments (which are already blanked) do not trip up the byte-walker.
+///
+/// This mirrors the JS `stripRustStrings` helper in trade-reducer-security.eval.mjs
+/// (ADR-0116, Finding C).
+fn strip_rust_strings_trading(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = Vec::with_capacity(len);
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b'"' {
+            // Emit the opening quote, then skip until the closing (unescaped) quote.
+            out.push(b'"');
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' {
+                    // Skip escape sequence (consume both the backslash and the next char).
+                    i += 2;
+                } else if bytes[i] == b'"' {
+                    out.push(b'"');
+                    i += 1;
+                    break;
+                } else {
+                    // Swallow the character — replace with nothing (shrinks the string).
+                    i += 1;
+                }
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("string-stripped source must be valid UTF-8")
+}
+
 const TRADING_RS: &str = include_str!("trading.rs");
 
 // ---------------------------------------------------------------------------
@@ -821,22 +862,124 @@ fn ea_conservation_headroom_02_check_headroom_before_build_swap_plan() {
 }
 
 // ===========================================================================
+// Shared authorize-check helper (Finding A + B hardening, m16.5f review).
+//
+// check_authorize_call(body, call_name, required_field, forbidden_field):
+//   (A) `call_name` must appear in `body`.
+//   (B) STATEMENT-TERMINATOR SCAN: from the call's opening `(`, walk chars tracking
+//       paren+brace depth; find the first `;` at depth 0 (the production
+//       `.map_err(|e| { ...; msg })?;` has interior `;`s only at depth>0, so they
+//       are skipped); require the last non-whitespace char before that `;` to be `?`.
+//       This kills: `let _ = authorize_respond(...); other()?;` — the depth-0 `;`
+//       immediately after authorize_respond's `)` has last char `)`, not `?`.
+//   (C) ARGUMENT-SPAN FIELD CHECK: extract the span from the opening `(` to its
+//       depth-matched `)`. Require `required_field` IN the span and `forbidden_field`
+//       NOT in the span. This kills: `authorize_respond(&s, offer.initiator == me)`
+//       when `offer.counterparty` appears only in an adjacent unrelated statement.
+//
+// Returns Ok(()) on success; Err(message) describing the first violation.
+// ===========================================================================
+fn check_authorize_call(
+    body: &str,
+    call_name: &str,
+    required_field: &str,
+    forbidden_field: &str,
+) -> Result<(), String> {
+    // (A) Call must exist.
+    let call_idx = body.find(call_name).ok_or_else(|| {
+        format!("no {call_name} call found — role+status delegation missing, any caller can act")
+    })?;
+
+    // Locate the opening paren immediately after the call name.
+    let open_paren = body[call_idx + call_name.len()..]
+        .find('(')
+        .map(|p| call_idx + call_name.len() + p)
+        .ok_or_else(|| format!("{call_name} call has no opening paren"))?;
+
+    // -----------------------------------------------------------------------
+    // (C) ARGUMENT SPAN: from open_paren+1 to depth-matched close paren.
+    // -----------------------------------------------------------------------
+    let bytes = body.as_bytes();
+    let mut depth: i32 = 1;
+    let mut i = open_paren + 1;
+    let arg_start = i;
+    while i < bytes.len() && depth > 0 {
+        match bytes[i] {
+            b'(' | b'{' => depth += 1,
+            b')' | b'}' => depth -= 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    let arg_end = i - 1; // index of the depth-0 closing paren
+    let arg_span = &body[arg_start..arg_end];
+
+    if !arg_span.contains(required_field) {
+        return Err(format!(
+            "`{required_field}` not found in {call_name}(...) argument span — \
+             wrong-field attack: the is_role boolean is not computed from the correct field"
+        ));
+    }
+    if arg_span.contains(forbidden_field) {
+        return Err(format!(
+            "`{forbidden_field}` found in {call_name}(...) argument span — \
+             wrong-field aliasing: the wrong Identity field is used to compute the role boolean"
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // (B) STATEMENT-TERMINATOR SCAN: from open_paren, track depth to find the
+    // first `;` at depth 0; require last non-ws char before it to be `?`.
+    // -----------------------------------------------------------------------
+    let mut scan_depth: i32 = 1;
+    let mut scan_i = open_paren + 1;
+    loop {
+        if scan_i >= bytes.len() {
+            return Err(format!(
+                "{call_name}(...) statement has no depth-0 `;` terminator — \
+                 cannot verify `?` propagation"
+            ));
+        }
+        match bytes[scan_i] {
+            b'(' | b'{' => scan_depth += 1,
+            b')' | b'}' => {
+                scan_depth -= 1;
+            }
+            b';' if scan_depth == 0 => {
+                // Found depth-0 terminator. Last non-ws char before it must be `?`.
+                let mut j = scan_i.saturating_sub(1);
+                while j > open_paren && matches!(bytes[j], b' ' | b'\n' | b'\r' | b'\t') {
+                    j -= 1;
+                }
+                if bytes[j] != b'?' {
+                    return Err(format!(
+                        "{call_name}(...) statement does not end with `?;` — \
+                         Result not propagated (dropped-result attack). \
+                         Last non-ws char before `;` is `{}`",
+                        bytes[j] as char
+                    ));
+                }
+                break;
+            }
+            _ => {}
+        }
+        scan_i += 1;
+    }
+
+    Ok(())
+}
+
+// ===========================================================================
 // EA-AUTHORIZE-RESPOND-01: respond_trade uses authorize_respond with ? propagation
-//                          (m16.5f, ADR-0117 — delegation refactor)
+//                          and correct argument field (m16.5f, ADR-0117).
 //
-// CRITICAL security gate: the plan delegates respond_trade role+status checks to
-// authorize_respond(offer.status, is_counterparty). Without `?` propagation, a
-// call like `let _ = authorize_respond(...)` silently discards the Err and allows
-// any caller to accept/reject any trade.
+// Hardened (Finding A + B, m16.5f review):
+//   - Statement-terminator scan replaces the 300-char )? window check (Finding A).
+//   - Argument-span field check replaces the heuristic window-contains check (B).
 //
-// This test asserts:
-// (A) `authorize_respond` appears in the respond_trade body.
-// (B) The call is followed by `?` (error propagated, not ignored).
-// (C) The boolean argument is derived from `offer.counterparty == me` (correct
-//     field), not `offer.initiator == me` (wrong-field aliasing attack).
-//
-// TEETH: kills an impl that ignores the Result (let _ = authorize_respond(...))
-//        or that passes the wrong Identity field as the boolean argument.
+// TEETH: kills an impl that drops the Result (let _ = authorize_respond(...)) OR
+//        that uses `offer.initiator` as the role boolean OR that has a nearby `?`
+//        from an unrelated statement bypass the old window check.
 // ===========================================================================
 
 #[test]
@@ -857,71 +1000,33 @@ fn ea_authorize_respond_01_respond_trade_propagates_authorize_result() {
 
     let respond_body = &stripped[fn_pos..next_fn_pos];
 
-    // (A) Call must exist.
-    let auth_needle = concat!("authorize_", "respond");
-    assert!(
-        respond_body.contains(auth_needle),
-        "EA-AUTHORIZE-RESPOND-01 FAIL: `respond_trade` does not call `authorize_respond`. \
-         The role+status delegation is missing — any caller can accept or reject any trade."
-    );
-
-    // (B) The `?` operator must immediately follow the authorize_respond call.
-    // Pattern: authorize_respond(...) followed by `?` as the next non-whitespace token.
-    // We check that `)?` (closing paren + question mark) appears after `authorize_respond(`
-    // within the next 300 chars (generous window for multi-line args).
-    let auth_pos = respond_body.find(auth_needle).unwrap();
-    let after_call = &respond_body[auth_pos..];
-    let window = &after_call[..after_call.len().min(300)];
-    assert!(
-        window.contains(")?"),
-        "EA-AUTHORIZE-RESPOND-01 FAIL: `authorize_respond(...)` in `respond_trade` is not \
-         followed by `?`. The Result is not propagated — a dropped Result means ANY caller \
-         can respond to any trade regardless of role or status. \
-         Fix: ensure the call is `authorize_respond(...)?;` (with `?` propagation). \
-         Found call at body offset {auth_pos} but no `)?` within 300 chars."
-    );
-
-    // (C) The is_counterparty argument must come from `offer.counterparty == me`,
-    // not `offer.initiator == me` (wrong-field aliasing attack).
-    // We check that `offer.counterparty` appears near the authorize_respond call site.
-    assert!(
-        window.contains("offer.counterparty"),
-        "EA-AUTHORIZE-RESPOND-01 FAIL: `authorize_respond` call in `respond_trade` does not \
-         reference `offer.counterparty` to compute the is_counterparty boolean argument. \
-         Using `offer.initiator == me` instead would allow the initiator to call respond_trade \
-         (wrong role), and the counterparty to call confirm_trade. \
-         Fix: pass `offer.counterparty == me` as the is_counterparty argument."
-    );
-
-    // Ensure `offer.initiator` is NOT used as the boolean arg (wrong-field aliasing).
-    // This is a heuristic check: if the only identity comparison near authorize_respond
-    // uses `offer.initiator`, flag it. We allow `offer.initiator` to appear elsewhere
-    // in respond_trade for other purposes, so we only check the 300-char window.
-    let uses_initiator_for_cp =
-        window.contains("offer.initiator ==") || window.contains("== offer.initiator");
-    let uses_counterparty_for_cp =
-        window.contains("offer.counterparty ==") || window.contains("== offer.counterparty");
-    if uses_initiator_for_cp && !uses_counterparty_for_cp {
+    // required_field = offer.counterparty (is_counterparty boolean must use this)
+    // forbidden_field = offer.initiator (must NOT appear in the arg span)
+    check_authorize_call(
+        respond_body,
+        concat!("authorize_", "respond"),
+        "offer.counterparty",
+        "offer.initiator",
+    )
+    .unwrap_or_else(|e| {
         panic!(
-            "EA-AUTHORIZE-RESPOND-01 FAIL: Near `authorize_respond` in `respond_trade`, \
-             `offer.initiator ==` appears but `offer.counterparty ==` does not. \
-             This is the wrong-field aliasing attack: passing `offer.initiator == me` as \
-             the is_counterparty boolean silently allows the initiator to respond to their \
-             own trade offer, bypassing the counterparty role check."
-        );
-    }
+            "EA-AUTHORIZE-RESPOND-01 FAIL: respond_trade authorization shape incorrect — {e}. \
+             Any caller can accept/reject any trade without proper role+status enforcement."
+        )
+    });
 }
 
 // ===========================================================================
 // EA-AUTHORIZE-CONFIRM-01: confirm_trade uses authorize_confirm with ? propagation
-//                          (m16.5f, ADR-0117 — delegation refactor)
+//                          and correct argument field (m16.5f, ADR-0117).
 //
-// Mirrors EA-AUTHORIZE-RESPOND-01 for the confirm path. The is_initiator boolean
-// must come from `offer.initiator == me` (correct field).
+// Hardened (Finding A + B, m16.5f review):
+//   - Statement-terminator scan replaces the 300-char )? window check.
+//   - Argument-span field check replaces the heuristic window-contains check.
 //
-// TEETH: kills an impl that ignores the Result or passes offer.counterparty == me
-//        as the is_initiator argument (wrong-field aliasing — counterparty can
-//        confirm, executing the swap without initiator consent).
+// TEETH: kills an impl that drops the Result OR uses `offer.counterparty` as the
+//        role boolean (counterparty can execute the atomic swap without initiator
+//        consent) OR bypasses the old window check with a nearby unrelated `?`.
 // ===========================================================================
 
 #[test]
@@ -942,48 +1047,20 @@ fn ea_authorize_confirm_01_confirm_trade_propagates_authorize_result() {
 
     let confirm_body = &stripped[fn_pos..next_fn_pos];
 
-    // (A) Call must exist.
-    let auth_needle = concat!("authorize_", "confirm");
-    assert!(
-        confirm_body.contains(auth_needle),
-        "EA-AUTHORIZE-CONFIRM-01 FAIL: `confirm_trade` does not call `authorize_confirm`. \
-         The role+status delegation is missing — any caller can finalize any trade."
-    );
-
-    // (B) The `?` operator must follow the call.
-    let auth_pos = confirm_body.find(auth_needle).unwrap();
-    let after_call = &confirm_body[auth_pos..];
-    let window = &after_call[..after_call.len().min(300)];
-    assert!(
-        window.contains(")?"),
-        "EA-AUTHORIZE-CONFIRM-01 FAIL: `authorize_confirm(...)` in `confirm_trade` is not \
-         followed by `?`. The Result is not propagated — any caller can finalize any trade \
-         regardless of role or status. Fix: `authorize_confirm(...)?;`."
-    );
-
-    // (C) The is_initiator argument must come from `offer.initiator == me`.
-    assert!(
-        window.contains("offer.initiator"),
-        "EA-AUTHORIZE-CONFIRM-01 FAIL: `authorize_confirm` call in `confirm_trade` does not \
-         reference `offer.initiator` for the is_initiator argument. \
-         Using `offer.counterparty == me` instead would allow the counterparty to call \
-         confirm_trade and execute the atomic swap without the initiator's consent. \
-         Fix: pass `offer.initiator == me` as the is_initiator argument."
-    );
-
-    // Ensure wrong-field aliasing is not present near the call.
-    let uses_counterparty_for_init =
-        window.contains("offer.counterparty ==") || window.contains("== offer.counterparty");
-    let uses_initiator_for_init =
-        window.contains("offer.initiator ==") || window.contains("== offer.initiator");
-    if uses_counterparty_for_init && !uses_initiator_for_init {
+    // required_field = offer.initiator (is_initiator boolean must use this)
+    // forbidden_field = offer.counterparty (must NOT appear in the arg span)
+    check_authorize_call(
+        confirm_body,
+        concat!("authorize_", "confirm"),
+        "offer.initiator",
+        "offer.counterparty",
+    )
+    .unwrap_or_else(|e| {
         panic!(
-            "EA-AUTHORIZE-CONFIRM-01 FAIL: Near `authorize_confirm` in `confirm_trade`, \
-             `offer.counterparty ==` appears but `offer.initiator ==` does not. \
-             This is the wrong-field aliasing attack: the counterparty can call confirm_trade \
-             and execute the atomic swap, transferring assets without the initiator's consent."
-        );
-    }
+            "EA-AUTHORIZE-CONFIRM-01 FAIL: confirm_trade authorization shape incorrect — {e}. \
+             Any caller can finalize any trade without proper role+status enforcement."
+        )
+    });
 }
 
 // ===========================================================================
@@ -1006,7 +1083,10 @@ fn ea_authorize_confirm_01_confirm_trade_propagates_authorize_result() {
 
 #[test]
 fn ea_reaper_01_propose_arms_reaper_after_offer_insert() {
-    let stripped = strip_rust_comments_trading(TRADING_RS);
+    // Strip comments first, then string literals (Finding C: prevents a dead-code
+    // string literal like `let _dead = "schedule_trade_reaper(";` from matching the
+    // reaper needle and making the ordering assertion trivially pass or fail).
+    let stripped = strip_rust_strings_trading(&strip_rust_comments_trading(TRADING_RS));
 
     // Locate propose_trade body (ends where respond_trade begins).
     let propose_fn = concat!("fn ", "propose_trade");
@@ -1090,7 +1170,10 @@ fn ea_reaper_01_propose_arms_reaper_after_offer_insert() {
 
 #[test]
 fn ea_reaper_02_disarm_called_at_all_offer_deletion_sites() {
-    let stripped = strip_rust_comments_trading(TRADING_RS);
+    // Strip comments first, then string literals (Finding C: prevents a dead-code
+    // string literal like `let _dead = "disarm_trade_reaper(";` from satisfying the
+    // disarm_needle check and hiding a missing real call).
+    let stripped = strip_rust_strings_trading(&strip_rust_comments_trading(TRADING_RS));
 
     // Helper: extract a named function body using brace-depth matching,
     // ending at the next function definition (pub fn or fn).

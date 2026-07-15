@@ -142,6 +142,11 @@ fn disarm_trade_reaper(ctx: &ReducerContext, trade_id: u64) {
 /// Guard: `ctx.sender != ctx.identity()` (identical to `pvp_deadline_reaper`,
 /// ADR-0056). Staleness is re-checked via `is_offer_stale` so an early fire or
 /// clock skew never reaps a fresh offer.
+///
+/// No self-disarm: one-shot `ScheduleAt::Time` rows are deleted BY THE RUNTIME
+/// after the reducer returns ("Scheduled reducers delete the row after execution"
+/// — SpacetimeDB docs, schedule-tables §Row Lifecycle; ADR-0109 D7 precedent).
+/// A self-delete here would race the runtime's post-execution delete.
 #[spacetimedb::reducer]
 pub fn trade_offer_reaper(
     ctx: &ReducerContext,

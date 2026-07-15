@@ -748,7 +748,7 @@ mod tests {
     fn validate_proposal_does_not_check_counterparty_currency_balance() {
         // validate_proposal is pure (no DB access) so it CANNOT check the live wallet.
         // This test documents that the pure layer accepts arbitrary counterparty_currency.
-        // The fix must be in the server shell (propose_trade reducer), not here.
+        // The wallet balance check EXISTS in the propose_trade reducer (server shell), not here.
         let result = validate_proposal(
             false,
             false,
@@ -764,8 +764,8 @@ mod tests {
                 currency: u64::MAX, // inflated — no wallet check in pure layer
             },
         );
-        // Documents the gap: this currently returns Ok (no pure-layer wallet check).
-        // The server shell SHOULD add a wallet balance check before inserting the row.
+        // Documents that validate_proposal returns Ok (no pure-layer wallet check);
+        // the actual balance enforcement is in propose_trade (server shell, ADR-0117).
         // If this ever becomes Err, that means the pure layer gained a wallet check
         // (which would require a DB-backed argument — at which point remove this test).
         assert!(
