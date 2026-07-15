@@ -1,10 +1,11 @@
-//! Pure trade rule functions (M15, ADR-0106; extended M16.5b, ADR-0113).
+//! Pure trade rule functions (M15, ADR-0106; extended M16.5b, ADR-0113; M16.5f, ADR-0117).
 //!
-//! No I/O, no SpacetimeDB context. Validates proposals, drives the state machine,
-//! and produces the `SwapPlan` the server applies atomically. The server module is
-//! the thin imperative shell; these functions are the SSOT rule layer.
+//! No I/O, no SpacetimeDB context. Validates proposals, authorizes the state-machine
+//! transitions (`authorize_respond` / `authorize_confirm`), applies the TTL staleness
+//! rule (`is_offer_stale`), and produces the `SwapPlan` the server applies atomically.
+//! The server module is the thin imperative shell; these functions are the SSOT rule layer.
 
-use super::types::{MonsterCard, TradeError, TradeItem};
+use super::types::{MonsterCard, TradeError, TradeItem, TradeStatus};
 use crate::currency::MAX_BALANCE;
 
 /// Per-stack item cap (domain constant, ADR-0113). Mirrors `MAX_ITEM_STACK` that
@@ -310,6 +311,49 @@ pub fn check_headroom(
         return Err(TradeError::CurrencyCapExceeded);
     }
     Ok(())
+}
+
+/// Authorize a `respond_trade` call (16.5f-1, ADR-0117).
+///
+/// Role is checked BEFORE status: a non-counterparty caller gets `NotCounterparty`
+/// regardless of the offer's state, so the offer status never leaks to a non-party
+/// caller. Only a `Pending` offer can be responded to.
+pub fn authorize_respond(status: &TradeStatus, is_counterparty: bool) -> Result<(), TradeError> {
+    if !is_counterparty {
+        return Err(TradeError::NotCounterparty);
+    }
+    if *status != TradeStatus::Pending {
+        return Err(TradeError::NotPending);
+    }
+    Ok(())
+}
+
+/// Authorize a `confirm_trade` call (16.5f-1, ADR-0117).
+///
+/// Role is checked BEFORE status: a non-initiator caller gets `NotInitiator`
+/// regardless of the offer's state (same no-status-leak ordering as
+/// `authorize_respond`). Only a `ConfirmedByCounterparty` offer can be confirmed.
+pub fn authorize_confirm(status: &TradeStatus, is_initiator: bool) -> Result<(), TradeError> {
+    if !is_initiator {
+        return Err(TradeError::NotInitiator);
+    }
+    if *status != TradeStatus::ConfirmedByCounterparty {
+        return Err(TradeError::NotConfirmedByCounterparty);
+    }
+    Ok(())
+}
+
+/// Trade offer time-to-live (16.5f-4, ADR-0117).
+// 1 h — tunable liveness constant, no game-design constraint.
+pub const TRADE_OFFER_TTL_MS: i64 = 3_600_000;
+
+/// True if the offer has outlived `TRADE_OFFER_TTL_MS` (16.5f-4, ADR-0117).
+///
+/// Saturating subtraction: clock skew (`now_ms` < `created_at_ms`) yields elapsed 0,
+/// so a fresh offer is never marked stale. Boundary is `>=`: at exactly TTL the
+/// offer IS stale.
+pub fn is_offer_stale(created_at_ms: i64, now_ms: i64) -> bool {
+    now_ms.saturating_sub(created_at_ms) >= TRADE_OFFER_TTL_MS
 }
 
 // ---------------------------------------------------------------------------

@@ -450,10 +450,13 @@ pub struct HealCooldown {
 /// PUBLIC so both parties can subscribe and see the offer. The display data
 /// (`initiator_cards` / `counterparty_cards`) contains only the public-projection
 /// field set of the offered monsters — no IVs/EVs/nature (ADR-0015 / TR-19).
-/// The currency/item amounts are visible to all clients; this mirrors the existing
-/// `inventory` and `player_wallet` public-leak pattern (both already world-readable
-/// without transport RLS — tracked for M16). No further privacy improvement is
-/// possible in SpacetimeDB 2.6.0 without per-row RLS.
+/// The public `initiator_currency` / `counterparty_currency` fields leak a LOWER
+/// BOUND on the offering party's private balance to all subscribers — an accepted
+/// bounded exposure (offered amounts only, never the full balance; ADR-0117 D6,
+/// amending ADR-0106 M-2). `inventory` is a genuine precedent (world-readable
+/// pending transport RLS); `player_wallet` is NOT a precedent — it is PRIVATE
+/// must-never-leak (ADR-0015 / ADR-0081). `trade_offer` is flagged for the same
+/// transport-RLS treatment as `inventory` / `player_wallet` when per-row RLS lands.
 ///
 /// SpacetimeDB reducers execute serially (single-threaded WASM): a `confirm_trade`
 /// read-check-delete is atomic w.r.t. all other reducers — no TOCTOU possible

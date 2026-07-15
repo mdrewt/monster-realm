@@ -65,7 +65,6 @@ pub enum TradeError {
     SelfTrade,
     EmptyOffer,
     AlreadyInTrade,
-    MonsterNotOwned,
     DuplicateMonster,
     /// Two TradeItem entries in the same offer side have the same item_id.
     DuplicateItem {
@@ -78,9 +77,6 @@ pub enum TradeError {
     NotConfirmedByCounterparty,
     InsufficientInventory {
         item_id: u32,
-    },
-    InsufficientCurrency {
-        available: u64,
     },
     /// Crediting items to the receiver would push their stack above MAX_ITEM_STACK.
     /// confirm_trade returns Err and rolls back — reject-not-clamp (ADR-0113, 16.5b-1).
@@ -98,7 +94,6 @@ impl std::fmt::Display for TradeError {
             TradeError::SelfTrade => write!(f, "cannot trade with yourself"),
             TradeError::EmptyOffer => write!(f, "trade offer must include at least one asset"),
             TradeError::AlreadyInTrade => write!(f, "already has an active trade"),
-            TradeError::MonsterNotOwned => write!(f, "monster is not owned by the trader"),
             TradeError::DuplicateMonster => write!(f, "duplicate monster_id in trade offer"),
             TradeError::DuplicateItem { item_id } => {
                 write!(f, "duplicate item_id {item_id} in trade offer")
@@ -118,9 +113,6 @@ impl std::fmt::Display for TradeError {
             }
             TradeError::InsufficientInventory { item_id } => {
                 write!(f, "insufficient inventory for item {item_id}")
-            }
-            TradeError::InsufficientCurrency { available } => {
-                write!(f, "insufficient currency (available: {available})")
             }
             TradeError::ItemStackCapExceeded { item_id } => {
                 write!(

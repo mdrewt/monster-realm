@@ -73,7 +73,7 @@ SpacetimeDB reducers execute in a single-threaded WASM environment. Read-check-w
 
 ## Known Residuals
 
-- **M-2 (public table currency leak):** `trade_offer.initiator_currency` / `counterparty_currency` are visible to all clients. This mirrors the existing `player_wallet.balance` leak. Transport RLS is the M16 residual.
+- **M-2 (public table currency leak):** `trade_offer.initiator_currency` / `counterparty_currency` are visible to all clients, leaking a lower bound on the offering party's private balance (offered amounts only, never the full balance) — an accepted bounded exposure per ADR-0117 D6. `player_wallet` is PRIVATE must-never-leak (ADR-0015/ADR-0081) and is NOT a precedent for this exposure; the `inventory` precedent stands, and `trade_offer` is tracked for the same transport-RLS treatment when per-row RLS lands. *(Amended 2026-07-15 by ADR-0117.)*
 - **M-3 (disconnect cancels counterparty offer):** If the counterparty disconnects, the offer is cancelled even if the initiator is still online. This is intentional (no orphan offers).
 - **Header backfill (M-infra-d residual):** DIGEST.md header backfill remains parked.
 

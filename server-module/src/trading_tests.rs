@@ -1096,8 +1096,7 @@ fn ea_reaper_02_disarm_called_at_all_offer_deletion_sites() {
     // ending at the next function definition (pub fn or fn).
     // Returns the body slice starting just after the opening brace of the fn.
     fn extract_fn_body<'a>(stripped: &'a str, fn_name: &str, end_marker: &str) -> &'a str {
-        let fn_needle = concat!("fn ");
-        let search = format!("{fn_needle}{fn_name}(");
+        let search = format!("fn {fn_name}(");
         let fn_pos = stripped.find(&search).unwrap_or_else(|| {
             panic!("EA-REAPER-02: function `{fn_name}` not found in trading.rs")
         });
