@@ -89,6 +89,9 @@ fn build_cards(
 /// 4. validate_proposal (empty offer / duplicate monster IDs / zero-qty items, TR-1/22).
 /// 5. All initiator monsters exist and are owned by caller.
 /// 6. All counterparty monsters exist and are owned by counterparty.
+/// 7. No initiator monster is in an Ongoing battle (`reject_if_in_battle`, chains
+///    both `player_identity()` and `opponent_identity()` indexes — ADR-0112 D1/D2).
+/// 8. No counterparty monster is in an Ongoing battle (same guard, same coverage).
 ///
 /// On success: inserts a `trade_offer` row with `status = Pending`. Assets are
 /// NOT moved — the `reject_if_monster_in_trade` / `escrowed_*` guards enforce

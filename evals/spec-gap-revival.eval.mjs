@@ -330,24 +330,47 @@ export function specGapStatus({ serverSrc, testSrc }) {
 }
 
 // ===========================================================================
-// m16.5a addition: revivedAnchorHasAssert
+// m16.5a addition: stripBlockComments + revivedAnchorHasAssert
 //
-// When the parked test m7b_2_owner_change_mid_battle_spec_gap is "revived"
-// (no longer #[ignore]-ed), its body must contain at least one assert call.
-// A comment-only body is a VACUOUS revival — the test passes trivially (empty
-// body is Ok(()) in Rust) and provides zero coverage of the spec gap.
+// stripBlockComments: removes /* ... */ block comments from src using a linear
+// scan (no RegExp — ReDoS discipline). Does NOT handle nested /* */ comments
+// (Rust does not allow them in test bodies in practice). Returns the source
+// with all block-comment spans replaced by empty string.
 //
-// This function:
+// revivedAnchorHasAssert: when the parked test m7b_2_owner_change_mid_battle_spec_gap
+// is "revived" (no longer #[ignore]-ed), its body must contain at least one
+// assert call outside of comments.
+//
+// Steps:
 //   1. Finds `fn m7b_2_owner_change_mid_battle_spec_gap` in testSrc.
 //   2. Scans forward to find the opening `{` of the function body.
 //   3. Uses brace-counting to extract the complete body.
-//   4. Strips line comments (lines whose trimmed form starts with `//`).
-//   5. Returns true iff the stripped body contains 'assert'.
-//   6. Returns false if the fn is not found, body is empty, or body is
+//   4. Strips /* */ block comments (b-1 fix: catches `/* assert */` vacuous forms).
+//   5. Strips line comments (lines whose trimmed form starts with `//`).
+//   6. Returns true iff the stripped body contains 'assert'.
+//   7. Returns false if the fn is not found, body is empty, or body is
 //      comment-only (no assert calls after stripping).
 //
-// Uses indexOf/includes only — no new RegExp() (ReDoS discipline).
+// Uses indexOf/includes and character-scan only — no new RegExp() (ReDoS discipline).
 // ===========================================================================
+export function stripBlockComments(src) {
+  let result = '';
+  let i = 0;
+  while (i < src.length) {
+    if (src[i] === '/' && i + 1 < src.length && src[i + 1] === '*') {
+      i += 2;
+      while (i + 1 < src.length && !(src[i] === '*' && src[i + 1] === '/')) {
+        i++;
+      }
+      i += 2; // skip closing */
+    } else {
+      result += src[i];
+      i++;
+    }
+  }
+  return result;
+}
+
 export function revivedAnchorHasAssert(testSrc) {
   // Step 1: find the function declaration.
   const fnMarker = 'fn m7b_2_owner_change_mid_battle_spec_gap';
@@ -383,11 +406,16 @@ export function revivedAnchorHasAssert(testSrc) {
   // Extract the body (between the braces, exclusive).
   const body = testSrc.slice(braceStart + 1, bodyEnd);
 
-  // Step 4: strip line comments — remove lines whose trimmed form starts with '//'.
-  const strippedLines = body.split('\n').filter((line) => !line.trimStart().startsWith('//'));
+  // Step 4: strip /* */ block comments first (b-1 fix: /* assert */ must not fool us).
+  const noBlockComments = stripBlockComments(body);
+
+  // Step 5: strip line comments — remove lines whose trimmed form starts with '//'.
+  const strippedLines = noBlockComments
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('//'));
   const strippedBody = strippedLines.join('\n');
 
-  // Step 5: return true iff 'assert' appears in the stripped body.
+  // Step 6: return true iff 'assert' appears in the stripped body.
   return strippedBody.indexOf('assert') !== -1;
 }
 
@@ -1631,6 +1659,20 @@ mod tests {
 }
 `;
 
+  // testVacuousBlockComment — revived fn whose body hides 'assert' inside a
+  // /* */ block comment. The word appears in the source but NOT in real code.
+  // revivedAnchorHasAssert must strip block comments and return false.
+  const testVacuousBlockComment = `#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn m7b_2_owner_change_mid_battle_spec_gap() {
+        /* assert!(true); This is inside a block comment — vacuous revival. */
+    }
+}
+`;
+
   // =========================================================================
   // Tooth V1 (revivedAnchorHasAssert — vacuous revival → false).
   // Kills: impl that returns true for any revived body, even comment-only.
@@ -1722,6 +1764,35 @@ mod tests {
   }
 
   // =========================================================================
+  // Tooth V4 (revivedAnchorHasAssert — block-comment-only assert → false).
+  // Kills: impl that does not strip /* */ block comments before checking for
+  // assert, meaning `/* assert!(...) */` fools it into returning true.
+  // =========================================================================
+  {
+    let v4result;
+    try {
+      v4result = revivedAnchorHasAssert(testVacuousBlockComment);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth V4 (revivedAnchorHasAssert on testVacuousBlockComment): threw — ${err.message}`,
+      };
+    }
+    if (v4result !== false) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `tooth V4: revivedAnchorHasAssert(testVacuousBlockComment) must be false — ` +
+          `the body contains ONLY a block comment (/* assert!(...) */) with no real assert call; ` +
+          `the impl must strip /* */ block comments before checking for 'assert'. Got ${v4result}. ` +
+          `Kills: impl that does not strip block comments and is fooled by /* assert */ into returning true.`,
+      };
+    }
+  }
+
+  // =========================================================================
   // Real-file check: m7b_2 body must NOT be vacuous when the test is revived.
   // The gate: if parkedTestIsIgnored(realTestSrc) === false (test IS revived)
   // AND revivedAnchorHasAssert(realTestSrc) === false (body is vacuous/comment-only),
@@ -1757,6 +1828,6 @@ mod tests {
     name,
     pass: true,
     detail:
-      'spec-gap-revival teeth all pass: findTradeTransferReducers correct (swap_active not matched, give_monster/donate_monster matched, trade_monster matched, benign reducers clean), parkedTestIsIgnored correct (bare and cfg_attr forms recognised, revived form false), specGapStatus matrix all 5 cases correct (incl. reducer-landed+fn-deleted), real codebase is in healthy/dormant state; test.fixme condition-expiry guard GREEN (T-E1/T-E1b/T-E2/T-E3 teeth pass, no expired conditions in client/e2e/); 13.5h-2 dev_reducers fixme tripwire GREEN (W1/W2/W3/W4/W5 workflow detector teeth incl. env-var form, F1/F1h/F2/F3 spec-citation teeth, S1/S1b/S2/S3 combined-status teeth, R-real on live tree all pass); m16.5a vacuous-revival check GREEN (V1/V2/V3 teeth pass, real m7b_2 body has assert when revived)',
+      'spec-gap-revival teeth all pass: findTradeTransferReducers correct (swap_active not matched, give_monster/donate_monster matched, trade_monster matched, benign reducers clean), parkedTestIsIgnored correct (bare and cfg_attr forms recognised, revived form false), specGapStatus matrix all 5 cases correct (incl. reducer-landed+fn-deleted), real codebase is in healthy/dormant state; test.fixme condition-expiry guard GREEN (T-E1/T-E1b/T-E2/T-E3 teeth pass, no expired conditions in client/e2e/); 13.5h-2 dev_reducers fixme tripwire GREEN (W1/W2/W3/W4/W5 workflow detector teeth incl. env-var form, F1/F1h/F2/F3 spec-citation teeth, S1/S1b/S2/S3 combined-status teeth, R-real on live tree all pass); m16.5a vacuous-revival check GREEN (V1/V2/V3/V4 teeth pass: line-comment and block-comment vacuous forms both rejected; real m7b_2 body has assert when revived)',
   };
 }
