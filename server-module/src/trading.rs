@@ -12,10 +12,10 @@
 //! ADR-0056 — keep it stable.
 
 use crate::economy::{grant_currency, spend_currency, wallet_balance};
-use crate::guards::{escrowed_item_qty, log_reject};
+use crate::guards::{escrowed_item_qty, log_reject, reject_if_in_battle};
 use crate::inventory::{consume_one, grant_item};
 use crate::marshal::{now_ms, pub_from_monster};
-use crate::schema::{inventory, monster, monster_pub, player, trade_offer, TradeOffer};
+use crate::schema::{battle, inventory, monster, monster_pub, player, trade_offer, TradeOffer};
 use game_core::{
     build_swap_plan, make_monster_card, validate_proposal, LiveMonsterOwner, MonsterCard,
     ProposalSide, TradeItem, TradeSide, TradeStatus,
@@ -89,6 +89,9 @@ fn build_cards(
 /// 4. validate_proposal (empty offer / duplicate monster IDs / zero-qty items, TR-1/22).
 /// 5. All initiator monsters exist and are owned by caller.
 /// 6. All counterparty monsters exist and are owned by counterparty.
+/// 7. No initiator monster is in an Ongoing battle (`reject_if_in_battle`, chains
+///    both `player_identity()` and `opponent_identity()` indexes — ADR-0112 D1/D2).
+/// 8. No counterparty monster is in an Ongoing battle (same guard, same coverage).
 ///
 /// On success: inserts a `trade_offer` row with `status = Pending`. Assets are
 /// NOT moved — the `reject_if_monster_in_trade` / `escrowed_*` guards enforce
@@ -206,6 +209,29 @@ pub fn propose_trade(
         }
     }
 
+    // Battle interlock guards (16.5a-1, 16.5a-2, ADR-0112): reject if any offered monster
+    // is in an ongoing battle. Both player_identity and opponent_identity btree indexes are
+    // chained so PvP side-B participants (whose battles index under opponent_identity per
+    // ADR-0109) are caught alongside PvE / PvP side-A participants.
+    for &mid in &initiator_monster_ids {
+        let i_battles = ctx
+            .db
+            .battle()
+            .player_identity()
+            .filter(me)
+            .chain(ctx.db.battle().opponent_identity().filter(me));
+        reject_if_in_battle(i_battles, mid).inspect_err(|e| log_reject("propose_trade", me, e))?;
+    }
+    for &mid in &counterparty_monster_ids {
+        let cp_battles = ctx
+            .db
+            .battle()
+            .player_identity()
+            .filter(counterparty)
+            .chain(ctx.db.battle().opponent_identity().filter(counterparty));
+        reject_if_in_battle(cp_battles, mid).inspect_err(|e| log_reject("propose_trade", me, e))?;
+    }
+
     // Build display snapshots (also validates ownership).
     let initiator_cards = build_cards(ctx, &initiator_monster_ids, me, "propose_trade")?;
     let counterparty_cards = build_cards(
@@ -320,6 +346,38 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
             monster_id: mid,
             owner_matches_expected: m.owner_identity == offer.counterparty,
         });
+    }
+
+    // Battle interlock re-assertion (defense-in-depth, 16.5a-1, ADR-0112).
+    // A battle may start between respond_trade (status → ConfirmedByCounterparty) and
+    // confirm_trade. Re-check BEFORE build_swap_plan so the transaction aborts cleanly
+    // without planning any ownership transfer. Covers PvP side-B via opponent_identity.
+    for &mid in &offer.initiator_monster_ids {
+        reject_if_in_battle(
+            ctx.db
+                .battle()
+                .player_identity()
+                .filter(offer.initiator)
+                .chain(ctx.db.battle().opponent_identity().filter(offer.initiator)),
+            mid,
+        )
+        .inspect_err(|e| log_reject("confirm_trade", me, e))?;
+    }
+    for &mid in &offer.counterparty_monster_ids {
+        reject_if_in_battle(
+            ctx.db
+                .battle()
+                .player_identity()
+                .filter(offer.counterparty)
+                .chain(
+                    ctx.db
+                        .battle()
+                        .opponent_identity()
+                        .filter(offer.counterparty),
+                ),
+            mid,
+        )
+        .inspect_err(|e| log_reject("confirm_trade", me, e))?;
     }
 
     // Build the mutation plan (pure, fails if ownership changed).

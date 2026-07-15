@@ -329,6 +329,96 @@ export function specGapStatus({ serverSrc, testSrc }) {
   return { violated, anchorMissing, reducers, reason };
 }
 
+// ===========================================================================
+// m16.5a addition: stripBlockComments + revivedAnchorHasAssert
+//
+// stripBlockComments: removes /* ... */ block comments from src using a linear
+// scan (no RegExp — ReDoS discipline). Does NOT handle nested /* */ comments
+// (Rust does not allow them in test bodies in practice). Returns the source
+// with all block-comment spans replaced by empty string.
+//
+// revivedAnchorHasAssert: when the parked test m7b_2_owner_change_mid_battle_spec_gap
+// is "revived" (no longer #[ignore]-ed), its body must contain at least one
+// assert call outside of comments.
+//
+// Steps:
+//   1. Finds `fn m7b_2_owner_change_mid_battle_spec_gap` in testSrc.
+//   2. Scans forward to find the opening `{` of the function body.
+//   3. Uses brace-counting to extract the complete body.
+//   4. Strips /* */ block comments (b-1 fix: catches `/* assert */` vacuous forms).
+//   5. Strips line comments (lines whose trimmed form starts with `//`).
+//   6. Returns true iff the stripped body contains 'assert'.
+//   7. Returns false if the fn is not found, body is empty, or body is
+//      comment-only (no assert calls after stripping).
+//
+// Uses indexOf/includes and character-scan only — no new RegExp() (ReDoS discipline).
+// ===========================================================================
+export function stripBlockComments(src) {
+  let result = '';
+  let i = 0;
+  while (i < src.length) {
+    if (src[i] === '/' && i + 1 < src.length && src[i + 1] === '*') {
+      i += 2;
+      while (i + 1 < src.length && !(src[i] === '*' && src[i + 1] === '/')) {
+        i++;
+      }
+      i += 2; // skip closing */
+    } else {
+      result += src[i];
+      i++;
+    }
+  }
+  return result;
+}
+
+export function revivedAnchorHasAssert(testSrc) {
+  // Step 1: find the function declaration.
+  const fnMarker = 'fn m7b_2_owner_change_mid_battle_spec_gap';
+  const fnIdx = testSrc.indexOf(fnMarker);
+  if (fnIdx === -1) return false;
+
+  // Step 2: scan forward from fnIdx to find the first '{'.
+  let braceStart = -1;
+  for (let i = fnIdx + fnMarker.length; i < testSrc.length; i++) {
+    if (testSrc[i] === '{') {
+      braceStart = i;
+      break;
+    }
+  }
+  if (braceStart === -1) return false;
+
+  // Step 3: brace-count from braceStart to find the matching closing '}'.
+  let depth = 0;
+  let bodyEnd = -1;
+  for (let i = braceStart; i < testSrc.length; i++) {
+    if (testSrc[i] === '{') {
+      depth++;
+    } else if (testSrc[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        bodyEnd = i;
+        break;
+      }
+    }
+  }
+  if (bodyEnd === -1) return false;
+
+  // Extract the body (between the braces, exclusive).
+  const body = testSrc.slice(braceStart + 1, bodyEnd);
+
+  // Step 4: strip /* */ block comments first (b-1 fix: /* assert */ must not fool us).
+  const noBlockComments = stripBlockComments(body);
+
+  // Step 5: strip line comments — remove lines whose trimmed form starts with '//'.
+  const strippedLines = noBlockComments
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('//'));
+  const strippedBody = strippedLines.join('\n');
+
+  // Step 6: return true iff 'assert' appears in the stripped body.
+  return strippedBody.indexOf('assert') !== -1;
+}
+
 export default async function () {
   const name = 'spec-gap-revival (m7b_2 parked test revived when trade reducer lands)';
 
@@ -1524,10 +1614,220 @@ test('G1: Golden flow movement', async () => {
     }
   }
 
+  // =========================================================================
+  // m16.5a: revivedAnchorHasAssert fixture definitions
+  //
+  // testVacuousRevival — revived fn (no #[ignore]) but body is ONLY comments;
+  //   no assert calls. A vacuous revival: test passes trivially (empty body in
+  //   Rust is Ok(())) and covers nothing. revivedAnchorHasAssert must return false.
+  //
+  // testRevivedWithAssert — revived fn with at least one assert! call in a
+  //   non-comment line. revivedAnchorHasAssert must return true.
+  //
+  // testRevived (already defined above, line ~457) already contains
+  //   `assert!(true);` — revivedAnchorHasAssert must return true for it too.
+  // =========================================================================
+
+  const testVacuousRevival = `#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn m7b_2_owner_change_mid_battle_spec_gap() {
+        // SPEC GAP CLOSED (M15a, ADR-0106):
+        // Condition (a): trade reducers landed.
+        // Condition (b): write_back_party_hp enforces abort-on-owner-change.
+        // Spec gap closed — no assert needed (reviewer comment only).
+    }
+}
+`;
+
+  const testRevivedWithAssert = `#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn m7b_2_owner_change_mid_battle_spec_gap() {
+        // SPEC GAP CLOSED (M15a, ADR-0106):
+        // Escrow guards (TR-11/ME-1) prevent ownership-change-mid-battle.
+        // This test verifies the guard is active in both trade reducers.
+        assert!(
+            true,
+            "reject_if_in_battle must guard propose_trade and confirm_trade"
+        );
+    }
+}
+`;
+
+  // testVacuousBlockComment — revived fn whose body hides 'assert' inside a
+  // /* */ block comment. The word appears in the source but NOT in real code.
+  // revivedAnchorHasAssert must strip block comments and return false.
+  const testVacuousBlockComment = `#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn m7b_2_owner_change_mid_battle_spec_gap() {
+        /* assert!(true); This is inside a block comment — vacuous revival. */
+    }
+}
+`;
+
+  // =========================================================================
+  // Tooth V1 (revivedAnchorHasAssert — vacuous revival → false).
+  // Kills: impl that returns true for any revived body, even comment-only.
+  // A comment-only body means the test was "revived" syntactically (no #[ignore])
+  // but provides zero coverage — the spec gap was not actually tested.
+  // =========================================================================
+  {
+    let v1result;
+    try {
+      v1result = revivedAnchorHasAssert(testVacuousRevival);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth V1 (revivedAnchorHasAssert on testVacuousRevival): threw — ${err.message}`,
+      };
+    }
+    if (v1result !== false) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `tooth V1: revivedAnchorHasAssert(testVacuousRevival) must be false — ` +
+          `the body contains ONLY comments and no assert calls; a comment-only revival ` +
+          `is vacuous (the fn passes trivially in Rust: empty body = Ok(())) and covers ` +
+          `nothing. Got ${v1result}. ` +
+          `Kills: impl that returns true for any revived body without checking for assert.`,
+      };
+    }
+  }
+
+  // =========================================================================
+  // Tooth V2 (revivedAnchorHasAssert — body with assert → true).
+  // Kills: impl that always returns false.
+  // =========================================================================
+  {
+    let v2result;
+    try {
+      v2result = revivedAnchorHasAssert(testRevivedWithAssert);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth V2 (revivedAnchorHasAssert on testRevivedWithAssert): threw — ${err.message}`,
+      };
+    }
+    if (v2result !== true) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `tooth V2: revivedAnchorHasAssert(testRevivedWithAssert) must be true — ` +
+          `the body contains a non-comment assert! call. Got ${v2result}. ` +
+          `Kills: impl that always returns false (never detects a real assert).`,
+      };
+    }
+  }
+
+  // =========================================================================
+  // Tooth V3 (revivedAnchorHasAssert — existing testRevived fixture → true).
+  // testRevived (defined above) already contains `assert!(true);` in a
+  // non-comment line. This tooth ensures the existing fixture is handled correctly
+  // (and locks in the testRevived fixture's assert — it cannot be silently removed).
+  // Kills: impl that only handles assert!( with multiline formatting and misses
+  // the compact single-line form.
+  // =========================================================================
+  {
+    let v3result;
+    try {
+      v3result = revivedAnchorHasAssert(testRevived);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth V3 (revivedAnchorHasAssert on testRevived): threw — ${err.message}`,
+      };
+    }
+    if (v3result !== true) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `tooth V3: revivedAnchorHasAssert(testRevived) must be true — ` +
+          `testRevived contains 'assert!(true);' on a non-comment line. Got ${v3result}. ` +
+          `Kills: impl that misses the compact assert!(true) form or strips non-comment ` +
+          `lines incorrectly.`,
+      };
+    }
+  }
+
+  // =========================================================================
+  // Tooth V4 (revivedAnchorHasAssert — block-comment-only assert → false).
+  // Kills: impl that does not strip /* */ block comments before checking for
+  // assert, meaning `/* assert!(...) */` fools it into returning true.
+  // =========================================================================
+  {
+    let v4result;
+    try {
+      v4result = revivedAnchorHasAssert(testVacuousBlockComment);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth V4 (revivedAnchorHasAssert on testVacuousBlockComment): threw — ${err.message}`,
+      };
+    }
+    if (v4result !== false) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `tooth V4: revivedAnchorHasAssert(testVacuousBlockComment) must be false — ` +
+          `the body contains ONLY a block comment (/* assert!(...) */) with no real assert call; ` +
+          `the impl must strip /* */ block comments before checking for 'assert'. Got ${v4result}. ` +
+          `Kills: impl that does not strip block comments and is fooled by /* assert */ into returning true.`,
+      };
+    }
+  }
+
+  // =========================================================================
+  // Real-file check: m7b_2 body must NOT be vacuous when the test is revived.
+  // The gate: if parkedTestIsIgnored(realTestSrc) === false (test IS revived)
+  // AND revivedAnchorHasAssert(realTestSrc) === false (body is vacuous/comment-only),
+  // then FAIL — the test was un-ignored without adding a real assert.
+  //
+  // Currently (m16.5a branch, before implementation): the real m7b_2 body
+  // contains ONLY comments and no assert calls — so this check fires RED
+  // when the test is not ignored (it IS revived per M15a).
+  // =========================================================================
+  {
+    const isRevived = !parkedTestIsIgnored(realTestSrc);
+    if (isRevived) {
+      const hasAssert = revivedAnchorHasAssert(realTestSrc);
+      if (!hasAssert) {
+        return {
+          name,
+          pass: false,
+          detail:
+            `real-file vacuous-revival check FAIL: m7b_2_owner_change_mid_battle_spec_gap ` +
+            `is revived (no #[ignore]) but its body contains zero assert calls after stripping ` +
+            `line comments. A comment-only body is a vacuous revival — the test passes trivially ` +
+            `without exercising the spec gap closure (ADR-0106, TR-11/ME-1 escrow guards). ` +
+            `Fix: add at least one assert call to m7b_2_owner_change_mid_battle_spec_gap ` +
+            `in game-core/src/combat/m7b_redteam_tests.rs that exercises the ` +
+            `reject_if_in_battle guard in propose_trade and/or confirm_trade ` +
+            `(m16.5a battle-trade interlock, ADR-next).`,
+        };
+      }
+    }
+  }
+
   return {
     name,
     pass: true,
     detail:
-      'spec-gap-revival teeth all pass: findTradeTransferReducers correct (swap_active not matched, give_monster/donate_monster matched, trade_monster matched, benign reducers clean), parkedTestIsIgnored correct (bare and cfg_attr forms recognised, revived form false), specGapStatus matrix all 5 cases correct (incl. reducer-landed+fn-deleted), real codebase is in healthy/dormant state; test.fixme condition-expiry guard GREEN (T-E1/T-E1b/T-E2/T-E3 teeth pass, no expired conditions in client/e2e/); 13.5h-2 dev_reducers fixme tripwire GREEN (W1/W2/W3/W4/W5 workflow detector teeth incl. env-var form, F1/F1h/F2/F3 spec-citation teeth, S1/S1b/S2/S3 combined-status teeth, R-real on live tree all pass)',
+      'spec-gap-revival teeth all pass: findTradeTransferReducers correct (swap_active not matched, give_monster/donate_monster matched, trade_monster matched, benign reducers clean), parkedTestIsIgnored correct (bare and cfg_attr forms recognised, revived form false), specGapStatus matrix all 5 cases correct (incl. reducer-landed+fn-deleted), real codebase is in healthy/dormant state; test.fixme condition-expiry guard GREEN (T-E1/T-E1b/T-E2/T-E3 teeth pass, no expired conditions in client/e2e/); 13.5h-2 dev_reducers fixme tripwire GREEN (W1/W2/W3/W4/W5 workflow detector teeth incl. env-var form, F1/F1h/F2/F3 spec-citation teeth, S1/S1b/S2/S3 combined-status teeth, R-real on live tree all pass); m16.5a vacuous-revival check GREEN (V1/V2/V3/V4 teeth pass: line-comment and block-comment vacuous forms both rejected; real m7b_2 body has assert when revived)',
   };
 }
