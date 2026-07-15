@@ -172,6 +172,18 @@ export function checkTypeDrift(parsed, baseline) {
  * @returns {string[]} [] = clean; human-readable violation strings otherwise
  */
 export function checkAppendOnly(prevBaseline, newBaseline) {
+  // Top-level null/non-object guard keeps the never-throws contract true for
+  // ANY input (red-team F3) — the eval pipeline itself never passes null here.
+  if (
+    !prevBaseline ||
+    typeof prevBaseline !== 'object' ||
+    !newBaseline ||
+    typeof newBaseline !== 'object'
+  ) {
+    return [
+      `malformed baseline: checkAppendOnly requires two non-null objects (got ${typeof prevBaseline}, ${typeof newBaseline})`,
+    ];
+  }
   const flags = [];
   for (const name of Object.keys(prevBaseline).sort()) {
     if (!(name in newBaseline)) {
