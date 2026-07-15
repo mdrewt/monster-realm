@@ -105,11 +105,25 @@ function hasRowDeletion(body) {
 }
 
 // ---------------------------------------------------------------------------
+// Criterion: HEADROOM_CHECK (16.5b-1, ADR-0113)
+// confirm_trade must call check_headroom before build_swap_plan to reject any
+// trade where a receiver's item stack would exceed MAX_ITEM_STACK or their
+// currency balance would exceed MAX_BALANCE. Without this call, grant_item /
+// grant_currency clamp silently, destroying excess value with no Err returned.
+// bad fixture: omits check_headroom → must flag.
+// good fixture: includes check_headroom call → must pass.
+// ---------------------------------------------------------------------------
+function hasHeadroomCheck(body) {
+  const code = stripRustComments(body);
+  return /check_headroom\s*\(/.test(code);
+}
+
+// ---------------------------------------------------------------------------
 // Main eval
 // ---------------------------------------------------------------------------
 export default async function () {
   const name =
-    'trade-conservation (M15c, ADR-0108: TR-16 dual-write + item consume+grant + currency spend+grant + row deletion in confirm_trade)';
+    'trade-conservation (M15c+M16.5b, ADR-0108/0113: TR-16 dual-write + item consume+grant + currency spend+grant + row deletion + headroom check in confirm_trade)';
 
   // -------------------------------------------------------------------------
   // Proof-of-teeth: conservation-break fixtures (adversarial scenarios)
@@ -265,6 +279,27 @@ export default async function () {
     };
   }
 
+  // HEADROOM_CHECK: omitting check_headroom = silent cap-clamping value destruction.
+  const badNoHeadroom =
+    'fn confirm_trade(ctx, trade_id) { consume_one(ctx, from, item_id)?; grant_item(ctx, to, item_id, qty); Ok(()) }';
+  if (hasHeadroomCheck(badNoHeadroom)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED: hasHeadroomCheck should NOT pass on fixture without check_headroom call',
+    };
+  }
+  const goodHeadroom =
+    'fn confirm_trade(ctx, trade_id) { check_headroom(&items, &stacks, cur, bal, &[], &[], 0, 0)?; Ok(()) }';
+  if (!hasHeadroomCheck(goodHeadroom)) {
+    return {
+      name,
+      pass: false,
+      detail: 'TEETH FAILED: hasHeadroomCheck did not detect check_headroom( in fixture',
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Read actual source
   // -------------------------------------------------------------------------
@@ -329,6 +364,15 @@ export default async function () {
     );
   }
 
+  // HEADROOM_CHECK (16.5b-1, ADR-0113)
+  if (!hasHeadroomCheck(confirmBody)) {
+    failures.push(
+      'HEADROOM_CHECK (16.5b-1/ADR-0113): confirm_trade does not call check_headroom — ' +
+        'trading 50 potions to a receiver holding 9,980 silently destroys 31 (grant_item clamps ' +
+        'at MAX_ITEM_STACK=9999 with no error), violating the reject-not-clamp invariant',
+    );
+  }
+
   if (failures.length > 0) {
     return { name, pass: false, detail: failures.join('; ') };
   }
@@ -337,6 +381,6 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'all 6 TR-16 conservation criteria met in confirm_trade (dual-write monster+pub, item consume+grant, currency spend+grant, row deletion)',
+      'all 7 conservation criteria met in confirm_trade (dual-write monster+pub, item consume+grant, currency spend+grant, row deletion, headroom check — ADR-0108/0113)',
   };
 }

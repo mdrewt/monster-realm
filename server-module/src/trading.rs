@@ -17,8 +17,8 @@ use crate::inventory::{consume_one, grant_item};
 use crate::marshal::{now_ms, pub_from_monster};
 use crate::schema::{battle, inventory, monster, monster_pub, player, trade_offer, TradeOffer};
 use game_core::{
-    build_swap_plan, make_monster_card, validate_proposal, LiveMonsterOwner, MonsterCard,
-    ProposalSide, TradeItem, TradeSide, TradeStatus,
+    build_swap_plan, check_headroom, make_monster_card, validate_proposal, ItemStack,
+    LiveMonsterOwner, MonsterCard, ProposalSide, TradeItem, TradeSide, TradeStatus,
 };
 use spacetimedb::{Identity, ReducerContext, Table};
 
@@ -378,6 +378,67 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
             mid,
         )
         .inspect_err(|e| log_reject("confirm_trade", me, e))?;
+    }
+
+    // Receiver cap headroom check (16.5b-1, ADR-0113): reject BEFORE any transfer if
+    // crediting items/currency to the receiver would exceed MAX_ITEM_STACK or MAX_BALANCE.
+    // Prevents silent value destruction via grant_item/grant_currency clamping.
+    {
+        // Initiator RECEIVES counterparty_items + counterparty_currency.
+        let i_stacks: Vec<ItemStack> = offer
+            .counterparty_items
+            .iter()
+            .map(|ti| {
+                let current_count = ctx
+                    .db
+                    .inventory()
+                    .owner_identity()
+                    .filter(offer.initiator)
+                    .find(|r| r.item_id == ti.item_id)
+                    .map(|r| r.count)
+                    .unwrap_or(0);
+                ItemStack {
+                    item_id: ti.item_id,
+                    current_count,
+                }
+            })
+            .collect();
+        // Counterparty RECEIVES initiator_items + initiator_currency.
+        let c_stacks: Vec<ItemStack> = offer
+            .initiator_items
+            .iter()
+            .map(|ti| {
+                let current_count = ctx
+                    .db
+                    .inventory()
+                    .owner_identity()
+                    .filter(offer.counterparty)
+                    .find(|r| r.item_id == ti.item_id)
+                    .map(|r| r.count)
+                    .unwrap_or(0);
+                ItemStack {
+                    item_id: ti.item_id,
+                    current_count,
+                }
+            })
+            .collect();
+        let i_balance = wallet_balance(ctx, offer.initiator);
+        let c_balance = wallet_balance(ctx, offer.counterparty);
+        check_headroom(
+            &offer.counterparty_items,
+            &i_stacks,
+            offer.counterparty_currency,
+            i_balance,
+            &offer.initiator_items,
+            &c_stacks,
+            offer.initiator_currency,
+            c_balance,
+        )
+        .map_err(|e| {
+            let msg = e.to_string();
+            log_reject("confirm_trade", me, &msg);
+            msg
+        })?;
     }
 
     // Build the mutation plan (pure, fails if ownership changed).
