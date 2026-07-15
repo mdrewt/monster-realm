@@ -199,6 +199,397 @@ pub enum BattleOutcome {
     };
   }
 
+  // =========================================================================
+  // 16.5e teeth (m16.5e, ADR-0116) — checkAppendOnly gating teeth A-1..A-12
+  // checkAppendOnly does NOT exist yet; calls below are intentionally RED.
+  // =========================================================================
+
+  // A-1: enum tail-append (prev [A,B] → new [A,B,C]) must be clean.
+  {
+    const prev = { Alpha: { kind: 'enum', variants: ['A', 'B'] } };
+    const next = { Alpha: { kind: 'enum', variants: ['A', 'B', 'C'] } };
+    let result;
+    try {
+      result = checkAppendOnly(prev, next);
+    } catch (e) {
+      result = [e.message];
+    }
+    if (!Array.isArray(result) || result.length !== 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-1): checkAppendOnly([A,B],[A,B,C]) should return [] for valid tail-append; got: ' +
+          JSON.stringify(result),
+      };
+    }
+  }
+
+  // A-2: mid-insert (prev [A,B,C] → new [A,X,B,C]) must be flagged.
+  {
+    const prev = { Alpha: { kind: 'enum', variants: ['A', 'B', 'C'] } };
+    const next = { Alpha: { kind: 'enum', variants: ['A', 'X', 'B', 'C'] } };
+    let result;
+    try {
+      result = checkAppendOnly(prev, next);
+    } catch (e) {
+      result = [e.message];
+    }
+    if (!Array.isArray(result) || result.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-2): checkAppendOnly should flag mid-insert [A,X,B,C] vs prev [A,B,C]; got: ' +
+          JSON.stringify(result),
+      };
+    }
+    const flagText = result.join(' ');
+    if (flagText.indexOf('Alpha') === -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-2): drift message must mention offending type name "Alpha"; got: ' +
+          flagText,
+      };
+    }
+  }
+
+  // A-3: reorder (prev [A,B] → new [B,A]) must be flagged.
+  {
+    const prev = { Beta: { kind: 'enum', variants: ['A', 'B'] } };
+    const next = { Beta: { kind: 'enum', variants: ['B', 'A'] } };
+    let result;
+    try {
+      result = checkAppendOnly(prev, next);
+    } catch (e) {
+      result = [e.message];
+    }
+    if (!Array.isArray(result) || result.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-3): checkAppendOnly should flag reorder [B,A] vs prev [A,B]; got: ' +
+          JSON.stringify(result),
+      };
+    }
+    const flagText = result.join(' ');
+    if (flagText.indexOf('Beta') === -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-3): drift message must mention offending type name "Beta"; got: ' +
+          flagText,
+      };
+    }
+  }
+
+  // A-4: removal (prev [A,B,C] → new [A,C]) must be flagged.
+  {
+    const prev = { Gamma: { kind: 'enum', variants: ['A', 'B', 'C'] } };
+    const next = { Gamma: { kind: 'enum', variants: ['A', 'C'] } };
+    let result;
+    try {
+      result = checkAppendOnly(prev, next);
+    } catch (e) {
+      result = [e.message];
+    }
+    if (!Array.isArray(result) || result.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-4): checkAppendOnly should flag removal [A,C] vs prev [A,B,C]; got: ' +
+          JSON.stringify(result),
+      };
+    }
+    const flagText = result.join(' ');
+    if (flagText.indexOf('Gamma') === -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-4): drift message must mention offending type name "Gamma"; got: ' +
+          flagText,
+      };
+    }
+  }
+
+  // A-5: struct tail-append of fields must be clean.
+  {
+    const prev = {
+      MyStruct: {
+        kind: 'struct',
+        fields: [
+          ['x', 'u32'],
+          ['y', 'u32'],
+        ],
+      },
+    };
+    const next = {
+      MyStruct: {
+        kind: 'struct',
+        fields: [
+          ['x', 'u32'],
+          ['y', 'u32'],
+          ['z', 'u32'],
+        ],
+      },
+    };
+    let result;
+    try {
+      result = checkAppendOnly(prev, next);
+    } catch (e) {
+      result = [e.message];
+    }
+    if (!Array.isArray(result) || result.length !== 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-5): struct tail-append of field z should be clean ([]); got: ' +
+          JSON.stringify(result),
+      };
+    }
+  }
+
+  // A-6: struct fields mid-insert must be flagged.
+  {
+    const prev = {
+      MyStruct: {
+        kind: 'struct',
+        fields: [
+          ['x', 'u32'],
+          ['y', 'u32'],
+        ],
+      },
+    };
+    const next = {
+      MyStruct: {
+        kind: 'struct',
+        fields: [
+          ['x', 'u32'],
+          ['injected', 'u8'],
+          ['y', 'u32'],
+        ],
+      },
+    };
+    let result;
+    try {
+      result = checkAppendOnly(prev, next);
+    } catch (e) {
+      result = [e.message];
+    }
+    if (!Array.isArray(result) || result.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-6): struct mid-insert of field "injected" should be flagged; got: ' +
+          JSON.stringify(result),
+      };
+    }
+    const flagText = result.join(' ');
+    if (flagText.indexOf('MyStruct') === -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-6): drift message must mention offending type name "MyStruct"; got: ' +
+          flagText,
+      };
+    }
+  }
+
+  // A-7: new type present only in new baseline must not be flagged (allowed).
+  {
+    const prev = { OldType: { kind: 'enum', variants: ['X'] } };
+    const next = {
+      OldType: { kind: 'enum', variants: ['X'] },
+      NewType: { kind: 'enum', variants: ['A', 'B'] },
+    };
+    let result;
+    try {
+      result = checkAppendOnly(prev, next);
+    } catch (e) {
+      result = [e.message];
+    }
+    if (!Array.isArray(result) || result.length !== 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-7): new type in new-only baseline should be allowed ([]); got: ' +
+          JSON.stringify(result),
+      };
+    }
+  }
+
+  // A-8: inline self-proof — doctored mid-insert on REAL BattleOutcome baseline.
+  // Real variants: [Ongoing, SideAWins, SideBWins, Fled].
+  // Doctored: [Ongoing, Doctored, SideAWins, SideBWins, Fled] (mid-insert at position 1).
+  // checkAppendOnly MUST flag this — kills any impl that only checks length or tail.
+  {
+    const realBattleOutcome = { BattleOutcome: baseline.BattleOutcome };
+    const doctoredMidInsert = {
+      BattleOutcome: {
+        kind: 'enum',
+        variants: ['Ongoing', 'Doctored', 'SideAWins', 'SideBWins', 'Fled'],
+      },
+    };
+    let result;
+    try {
+      result = checkAppendOnly(realBattleOutcome, doctoredMidInsert);
+    } catch (e) {
+      result = [e.message];
+    }
+    if (!Array.isArray(result) || result.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-8): checkAppendOnly did not flag mid-insert "Doctored" at position 1 in real BattleOutcome [Ongoing,SideAWins,SideBWins,Fled] vs doctored [Ongoing,Doctored,SideAWins,SideBWins,Fled]',
+      };
+    }
+    const flagText = result.join(' ');
+    if (flagText.indexOf('BattleOutcome') === -1) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH FAILED (A-8): drift message must mention "BattleOutcome"; got: ' + flagText,
+      };
+    }
+  }
+
+  // A-9: kind flip (prev enum → new struct same name) must be flagged and NOT throw.
+  {
+    const prev = { FlipMe: { kind: 'enum', variants: ['A', 'B'] } };
+    const next = { FlipMe: { kind: 'struct', fields: [['a', 'u32']] } };
+    let threw = false;
+    let result;
+    try {
+      result = checkAppendOnly(prev, next);
+    } catch (e) {
+      threw = true;
+      result = [e.message];
+    }
+    if (threw) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-9): kind flip enum→struct must NOT throw; checkAppendOnly threw instead of returning a diagnostic string',
+      };
+    }
+    if (!Array.isArray(result) || result.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-9): kind flip enum→struct must be flagged (non-empty array); got: ' +
+          JSON.stringify(result),
+      };
+    }
+    const flagText = result.join(' ');
+    if (flagText.indexOf('FlipMe') === -1) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH FAILED (A-9): kind-flip message must mention "FlipMe"; got: ' + flagText,
+      };
+    }
+  }
+
+  // A-10: tail rename (prev [A,B] → new [A,C], counts equal) must be flagged.
+  // Kills any impl that only compares lengths without comparing prefix content.
+  {
+    const prev = { Delta: { kind: 'enum', variants: ['A', 'B'] } };
+    const next = { Delta: { kind: 'enum', variants: ['A', 'C'] } };
+    let result;
+    try {
+      result = checkAppendOnly(prev, next);
+    } catch (e) {
+      result = [e.message];
+    }
+    if (!Array.isArray(result) || result.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-10): tail rename [A,C] vs prev [A,B] (same length) must be flagged; got: ' +
+          JSON.stringify(result),
+      };
+    }
+    const flagText = result.join(' ');
+    if (flagText.indexOf('Delta') === -1) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH FAILED (A-10): drift message must mention "Delta"; got: ' + flagText,
+      };
+    }
+  }
+
+  // A-11: malformed entry {kind:'enum'} with no variants array must produce
+  // a diagnostic flag string, NOT throw a TypeError.
+  // Kills any impl that blindly does .slice() on a missing variants property.
+  {
+    const prev = { Malformed: { kind: 'enum', variants: ['A'] } };
+    const next = { Malformed: { kind: 'enum' } }; // no variants array
+    let threw = false;
+    let result;
+    try {
+      result = checkAppendOnly(prev, next);
+    } catch (e) {
+      threw = true;
+      result = [e.message];
+    }
+    if (threw) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-11): malformed entry with no variants array caused checkAppendOnly to THROW instead of returning a diagnostic string',
+      };
+    }
+    if (!Array.isArray(result) || result.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-11): malformed entry with no variants array must produce a non-empty diagnostic array; got: ' +
+          JSON.stringify(result),
+      };
+    }
+  }
+
+  // A-12: symmetric check — checkAppendOnly(realBaseline, realBaseline) must be [].
+  // Kills any impl that spuriously flags identical inputs.
+  {
+    let result;
+    try {
+      result = checkAppendOnly(baseline, baseline);
+    } catch (e) {
+      result = [e.message];
+    }
+    if (!Array.isArray(result) || result.length !== 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (A-12): checkAppendOnly(realBaseline, realBaseline) must return [] (symmetric identity); got: ' +
+          JSON.stringify(result),
+      };
+    }
+  }
+
+  // =========================================================================
+  // END 16.5e teeth (A-1..A-12)
+  // =========================================================================
+
   // -------------------------------------------------------------------------
   // Real source must be drift-free against baseline.
   // -------------------------------------------------------------------------

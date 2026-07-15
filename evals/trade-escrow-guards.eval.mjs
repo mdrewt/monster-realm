@@ -318,6 +318,208 @@ export default async function () {
     };
   }
 
+  // =========================================================================
+  // 16.5e teeth (m16.5e, ADR-0116) — orderAndFilterRustEntries teeth B-0..B-3
+  // orderAndFilterRustEntries does NOT exist yet; calls below are intentionally RED.
+  // extractFunctionBody is module-private above; used directly in B-3.
+  // =========================================================================
+
+  // B-0: empty input → [] (no throw).
+  {
+    let result;
+    let threw = false;
+    try {
+      result = orderAndFilterRustEntries([]);
+    } catch (e) {
+      threw = true;
+      result = [e.message];
+    }
+    if (threw) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH FAILED (B-0): orderAndFilterRustEntries([]) threw instead of returning []',
+      };
+    }
+    if (!Array.isArray(result) || result.length !== 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (B-0): orderAndFilterRustEntries([]) must return []; got: ' +
+          JSON.stringify(result),
+      };
+    }
+  }
+
+  // B-1: ['b.rs','a.rs','c.txt'] → ['a.rs','b.rs'] (sorted, .rs-only, c.txt excluded).
+  {
+    let result;
+    try {
+      result = orderAndFilterRustEntries(['b.rs', 'a.rs', 'c.txt']);
+    } catch (e) {
+      result = [e.message];
+    }
+    const expected = ['a.rs', 'b.rs'];
+    if (
+      !Array.isArray(result) ||
+      result.length !== expected.length ||
+      result[0] !== expected[0] ||
+      result[1] !== expected[1]
+    ) {
+      return {
+        name,
+        pass: false,
+        detail:
+          "TEETH FAILED (B-1): orderAndFilterRustEntries(['b.rs','a.rs','c.txt']) must return ['a.rs','b.rs']; got: " +
+          JSON.stringify(result),
+      };
+    }
+  }
+
+  // B-2: test files excluded; nested non-test .rs retained.
+  // 'economy_tests.rs' and 'combat/m14b_tests.rs' must be excluded.
+  // 'combat/resolve.rs' (nested non-test) must be retained.
+  // Kills any impl that only excludes top-level *_tests.rs and misses nested paths.
+  {
+    const input = ['economy_tests.rs', 'combat/m14b_tests.rs', 'combat/resolve.rs', 'main.rs'];
+    let result;
+    try {
+      result = orderAndFilterRustEntries(input);
+    } catch (e) {
+      result = [e.message];
+    }
+    if (!Array.isArray(result)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (B-2): orderAndFilterRustEntries did not return an array; got: ' +
+          JSON.stringify(result),
+      };
+    }
+    // economy_tests.rs must be excluded
+    if (result.indexOf('economy_tests.rs') !== -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (B-2): economy_tests.rs must be excluded from orderAndFilterRustEntries output; got: ' +
+          JSON.stringify(result),
+      };
+    }
+    // nested combat/m14b_tests.rs must be excluded
+    if (result.indexOf('combat/m14b_tests.rs') !== -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (B-2): nested combat/m14b_tests.rs must be excluded from orderAndFilterRustEntries output; got: ' +
+          JSON.stringify(result),
+      };
+    }
+    // nested non-test combat/resolve.rs must be retained
+    if (result.indexOf('combat/resolve.rs') === -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (B-2): nested non-test combat/resolve.rs must be RETAINED in orderAndFilterRustEntries output; got: ' +
+          JSON.stringify(result),
+      };
+    }
+  }
+
+  // B-3: extraction-hijack fixture.
+  //
+  // The FIRST textual occurrence of `pub fn sell(` in the combined source (when
+  // files are read in sorted order) must NOT be the extraction anchor when it
+  // appears inside a Rust string literal. The real `pub fn sell(` body must be
+  // extracted.
+  //
+  // Kills: an impl of extractFunctionBody that skips the whole-source string-strip
+  // and anchors on the first textual `pub fn sell(` regardless of context.
+  //
+  // Fixture layout (sorted file order):
+  //   "a_economy_tests_stub.rs" (sorts first): contains a string literal that
+  //     textually includes `pub fn sell(` inside an assert macro — matching the
+  //     real economy_tests.rs pattern the spec cites.
+  //   "b_sell_impl.rs" (sorts second): contains the real `pub fn sell(` body
+  //     with `escrowed_item_qty(` in it.
+  //
+  // After string-stripping the combined source, the anchor in the test stub's
+  // string literal is erased and extractFunctionBody finds the real body.
+  // bodyHasGuard then checks the real body for escrowed_item_qty(, returns ok:true.
+  //
+  // A variant fixture where the real sell body LACKS escrowed_item_qty( must
+  // return ok:false — proving the guard check isn't vacuous.
+  {
+    // The test stub: the assert string contains `pub fn sell(` textually.
+    // This simulates economy_tests.rs containing the pattern in an assert message.
+    const testStubChunk =
+      'fn test_sell_guard() {\n' +
+      '    assert!(false, "pub fn sell( must call escrowed_item_qty");\n' +
+      '}\n';
+
+    // The real sell implementation WITH the guard.
+    const realSellWithGuard =
+      'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> {\n' +
+      '    let escrowed = escrowed_item_qty(ctx, owner, item_id);\n' +
+      '    if escrowed > 0 { return Err("item is escrowed".to_string()); }\n' +
+      '    do_sell();\n' +
+      '    Ok(())\n' +
+      '}\n';
+
+    // Combined source: test stub first (textual `pub fn sell(` appears in string first),
+    // then the real implementation. Without string-stripping, extractFunctionBody would
+    // anchor on the occurrence inside the string literal in the test stub and extract
+    // garbage. With string-stripping, the literal content is erased and the real body
+    // is found.
+    const combinedWithGuard = testStubChunk + '\n' + realSellWithGuard;
+    const goodResult = bodyHasGuard(combinedWithGuard, 'sell', 'escrowed_item_qty', 1);
+    if (!goodResult.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (B-3 good): bodyHasGuard returned ok:false on fixture where real sell body ' +
+          'HAS escrowed_item_qty but a string literal in an earlier chunk contains "pub fn sell(" — ' +
+          'string-stripping in extractFunctionBody did not prevent the literal from hijacking the anchor',
+      };
+    }
+
+    // Variant: real sell body LACKS the guard but the string literal MENTIONS escrowed_item_qty(.
+    // This must return ok:false — the string literal content must not count as a call site.
+    const realSellWithoutGuardButStringMentionsIt =
+      'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> {\n' +
+      '    // missing guard — this body does NOT call escrowed_item_qty(\n' +
+      '    do_sell();\n' +
+      '    Ok(())\n' +
+      '}\n';
+    // Test stub that mentions the guard with paren inside a string literal.
+    const testStubWithGuardInString =
+      'fn test_sell_missing_guard() {\n' +
+      '    assert!(false, "expected escrowed_item_qty( to be called but it was not");\n' +
+      '}\n';
+    const combinedWithoutGuard =
+      testStubWithGuardInString + '\n' + realSellWithoutGuardButStringMentionsIt;
+    const badResult = bodyHasGuard(combinedWithoutGuard, 'sell', 'escrowed_item_qty', 1);
+    if (badResult.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (B-3 bad): bodyHasGuard returned ok:true on fixture where real sell body ' +
+          'LACKS escrowed_item_qty but a string literal in an earlier chunk contains "escrowed_item_qty(" — ' +
+          'string-stripping inside bodyHasGuard did not exclude the literal content from the guard count',
+      };
+    }
+  }
+
+  // =========================================================================
+  // END 16.5e teeth (B-0..B-3)
+  // =========================================================================
+
   // -------------------------------------------------------------------------
   // Read actual source files (all *.rs under server-module/src/)
   // -------------------------------------------------------------------------
