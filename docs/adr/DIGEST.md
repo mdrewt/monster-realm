@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 81 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 82 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -90,6 +90,7 @@ Generated from 81 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0113](./0113-m16.5b-receiver-cap-headroom.md) | Receiver-cap headroom check in confirm_trade (reject, don't destroy) | Accepted | economy-quests, schema-persistence, ci-gates | m16.5b | `confirm_trade` calls new pure `check_headroom` (game-core/trading/rules.rs) before any mutation. Item credit exceeding `MAX_ITEM_STACK` or currency credit exceeding `MAX_BALANCE` → `Err`, full rollback. `MAX_ITEM_STACK` moved to game-core. |
 | [0114](./0114-m16.5c-trade-client-completion.md) | Trade client completion: overlay symmetry, typed TradeStatus, render hygiene | Accepted | client-ui, ci-gates | m16.5c | Close three M16.5 residuals: e2e test for KeyQ/KeyH/KeyG overlay guards; `StoreTradeOffer.status` narrowed to a literal union with exhaustive switch; `TradeView` clears stale feedback on state change and sets `btn.disabled=this.#pending`. |
 | [0115](./0115-m16.5d-trade-runtime-coverage-hook.md) | Trade runtime coverage: test-hook dispatch + e2e round-trip + escrow-guard tail | Accepted | client-ui, ci-gates | m16.5d | Add `window.__mrTrade` write-side test hook; two-context Playwright e2e for propose→confirm trade flow with monster conservation check; TR-13 guard site for `attempt_recruit` + RT-SEC-02b string-literal stripping in `bodyHasGuard`. |
+| [0116](./0116-m16.5e-eval-infra-hardening.md) | Eval-infra hardening: append-only snapshot direction, extraction anti-hijack, additive-content coupling | Accepted | ci-gates | m16.5e | Snapshot gate gains a git-history append-only directional check; escrow-guard extraction sorts, drops `*_tests.rs`, strips strings; every Option content column must have a field-assignment in content.rs's re-seed path. |
 
 ## Harness design corpus (H- namespace)
 
@@ -272,6 +273,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0113](./0113-m16.5b-receiver-cap-headroom.md) — m16.5b — Receiver-cap headroom check in confirm_trade (reject, don't destroy) (Accepted)
 - [0114](./0114-m16.5c-trade-client-completion.md) — m16.5c — Trade client completion: overlay symmetry, typed TradeStatus, render hygiene (Accepted)
 - [0115](./0115-m16.5d-trade-runtime-coverage-hook.md) — m16.5d — Trade runtime coverage: test-hook dispatch + e2e round-trip + escrow-guard tail (Accepted)
+- [0116](./0116-m16.5e-eval-infra-hardening.md) — m16.5e — Eval-infra hardening: append-only snapshot direction, extraction anti-hijack, additive-content coupling (Accepted)
 
 ### tooling-docs
 
