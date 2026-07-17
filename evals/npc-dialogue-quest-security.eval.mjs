@@ -11,6 +11,7 @@
 //   C4. heal_cooldown table is PRIVATE (no `public` attribute).
 //   C5. apply_quest_trigger body checks QuestComplete — rewards not granted on every step.
 //   C6. heal_party references the battle table — healing mid-battle is gated.
+//       Accepted: battle() | Ongoing | BattleOutcome | is_in_ongoing_battle( (ADR-0122 SSOT).
 //   C7. heal_party calls heal_cooldown() AND evaluate_heal( — cooldown enforced.
 //   C8. advance_dialogue checks player_conversation() — conversation scoped to ongoing.
 //   C9. advance_dialogue scopes to ctx.sender via owner_identity().find( PK lookup.
@@ -262,7 +263,11 @@ export function checkQuestCompleteGuard(body) {
 
 /**
  * C6 — heal_party must reference the battle table to gate healing mid-battle.
- * Accepts: `battle()` OR `Ongoing` OR `BattleOutcome`.
+ * Accepts: `battle()` OR `Ongoing` OR `BattleOutcome` OR `is_in_ongoing_battle(` (ADR-0122 SSOT).
+ *
+ * The fourth form is the current SSOT wrapper introduced in ADR-0122: heal_party now
+ * delegates the check to `is_in_ongoing_battle(ctx, me)` instead of inlining the
+ * battle-table query; both-role semantics are preserved by that helper.
  *
  * Uses only indexOf — NO dynamic RegExp.
  *
@@ -274,12 +279,13 @@ export function checkHealPartyBattleCheck(body) {
   const hasBattleRef =
     compact.indexOf('battle()') !== -1 ||
     compact.indexOf('Ongoing') !== -1 ||
-    compact.indexOf('BattleOutcome') !== -1;
+    compact.indexOf('BattleOutcome') !== -1 ||
+    compact.indexOf('is_in_ongoing_battle(') !== -1;
   if (!hasBattleRef) {
     return (
-      'heal_party: body does not reference battle(), Ongoing, or BattleOutcome — ' +
-      'healing mid-battle must be rejected; without a battle table check a player ' +
-      'could top up their party HP while in combat'
+      'heal_party: body does not reference battle(), Ongoing, BattleOutcome, or is_in_ongoing_battle( — ' +
+      'healing mid-battle must be rejected; without a battle gate (inline or via SSOT helper) ' +
+      'a player could top up their party HP while in combat'
     );
   }
   return null;
@@ -614,6 +620,33 @@ const GOOD_HEAL_PARTY_WITH_BATTLE_CHECK = `
       );
       if in_battle {
           return Err("cannot heal party while in battle".to_string());
+      }
+      let Some(cooldown) = ctx.db.heal_cooldown().owner_identity().find(me) else {
+          return Err("no cooldown row".to_string());
+      };
+      let now = now_ms(ctx);
+      evaluate_heal(cooldown.last_heal_at_ms, now, HEAL_COOLDOWN_MS)?;
+      for monster_id in party_monster_ids(ctx, me) {
+          let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else { continue; };
+          m.current_hp = m.stat_hp;
+          let pub_row = pub_from_monster(&m);
+          ctx.db.monster().monster_id().update(m);
+          ctx.db.monster_pub().monster_id().update(pub_row);
+      }
+      Ok(())
+  }
+`;
+
+// --- C6 (SSOT form, ADR-0122): heal_party using is_in_ongoing_battle( wrapper ---
+// Kills the wrong implementation: a checker that only accepts the inline battle()
+// form would incorrectly flag this real SSOT-form fixture (returning a non-null error).
+// Adding is_in_ongoing_battle( to the accept-set makes the checker return null for
+// this fixture while still flagging BAD_HEAL_PARTY_NO_BATTLE_CHECK (no such call).
+const GOOD_HEAL_PARTY_WITH_SSOT_GUARD = `
+  pub fn heal_party(ctx: &ReducerContext) -> Result<(), String> {
+      let me = ctx.sender;
+      if is_in_ongoing_battle(ctx, me) {
+          return Err("cannot heal during an ongoing battle".to_string());
       }
       let Some(cooldown) = ctx.db.heal_cooldown().owner_identity().find(me) else {
           return Err("no cooldown row".to_string());
@@ -1097,6 +1130,31 @@ export default async function () {
         name,
         pass: false,
         detail: `TEETH C6: GOOD_HEAL_PARTY_WITH_BATTLE_CHECK was incorrectly flagged: ${err}`,
+      };
+    }
+  }
+  // --- C6 (SSOT form, ADR-0122): GOOD heal_party using is_in_ongoing_battle( must pass ---
+  // A checker that only accepted battle()/Ongoing/BattleOutcome would wrongly flag
+  // this fixture; adding is_in_ongoing_battle( to the accept-set must make it return null.
+  {
+    const body = extractReducerBody(
+      stripRustComments(GOOD_HEAL_PARTY_WITH_SSOT_GUARD),
+      'heal_party',
+    );
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH C6: could not extract heal_party body from GOOD_HEAL_PARTY_WITH_SSOT_GUARD (parser bug)',
+      };
+    }
+    const err = checkHealPartyBattleCheck(body);
+    if (err) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH C6: GOOD_HEAL_PARTY_WITH_SSOT_GUARD was incorrectly flagged: ${err}`,
       };
     }
   }
