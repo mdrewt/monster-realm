@@ -2,15 +2,15 @@
 type: Schema Overview
 title: Monster Realm Schema Overview
 slug: schema-overview
-updated: 2026-07-15
+updated: 2026-07-17
 tags: [schema, spacetimedb, overview]
-abstract: "30-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 39 reducers."
+abstract: "31-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 39 reducers."
 source: scripts/okf-export.mjs@server-module/src/
 ---
 
 ## Tables
 
-### Public (19)
+### Public (20)
 
 - [battle](tables/battle.md)
 - [battle_challenge](tables/battle_challenge.md)
@@ -24,6 +24,7 @@ source: scripts/okf-export.mjs@server-module/src/
 - [npc](tables/npc.md)
 - [player](tables/player.md)
 - [player_quest](tables/player_quest.md)
+- [profile](tables/profile.md)
 - [shop_item_row](tables/shop_item_row.md)
 - [shop_row](tables/shop_row.md)
 - [skill_row](tables/skill_row.md)

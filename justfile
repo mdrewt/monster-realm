@@ -79,7 +79,7 @@ mutate-core:
 # recorded baseline (zero doctests in the crate, so catch results are identical).
 # Cap bumps must update ADR-0050. Runs in nightly.yml only (mutation-server job);
 # the recipe body is integrity-guarded by evals/nightly-smoke-wiring.eval.mjs.
-mutate-server cap="309":
+mutate-server cap="308":
     #!/usr/bin/env bash
     set -euo pipefail
     # Fail loud on a non-integer cap BEFORE the (minutes-long) mutants run: a

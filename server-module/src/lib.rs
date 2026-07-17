@@ -33,6 +33,7 @@ mod movement;
 mod npc;
 mod pvp;
 mod raising;
+mod ranking;
 mod schema;
 mod taming;
 mod trading;

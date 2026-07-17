@@ -83,6 +83,7 @@ import MyConversationRow from "./my_conversation_table";
 import NpcRow from "./npc_table";
 import PlayerRow from "./player_table";
 import PlayerQuestRow from "./player_quest_table";
+import ProfileRow from "./profile_table";
 import ShopItemRowRow from "./shop_item_row_table";
 import ShopRowRow from "./shop_row_table";
 import SkillRowRow from "./skill_row_table";
@@ -264,6 +265,17 @@ const tablesSchema = __schema({
       { name: 'player_quest_pq_id_key', constraint: 'unique', columns: ['pqId'] },
     ],
   }, PlayerQuestRow),
+  profile: __table({
+    name: 'profile',
+    indexes: [
+      { accessor: 'identity', name: 'profile_identity_idx_btree', algorithm: 'btree', columns: [
+        'identity',
+      ] },
+    ],
+    constraints: [
+      { name: 'profile_identity_key', constraint: 'unique', columns: ['identity'] },
+    ],
+  }, ProfileRow),
   shop_item_row: __table({
     name: 'shop_item_row',
     indexes: [

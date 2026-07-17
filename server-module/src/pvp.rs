@@ -15,6 +15,10 @@
 //! - `PvpDeadlineSchedule` is colocated here (not in schema.rs) per the
 //!   `scheduled(pvp_deadline_reaper)` cohabitation rule (ADR-0056 exception,
 //!   same discipline as `movement_tick_schedule` in movement.rs).
+//! - `settle_pvp_battle` is the single decisive-commit funnel: every terminal
+//!   PvP outcome (both-submit, deadline forfeit, disconnect forfeit) commits
+//!   through it, and it is the ONLY caller of `ranking::apply_pvp_rating`
+//!   (ADR-0119 D3, amends ADR-0109 — exactly-once rating by construction).
 //!
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
@@ -28,6 +32,7 @@ use crate::guards::{
 use crate::marshal::{
     battle_monster_from_row, build_ability_store, now_ms, pub_from_monster, type_chart_from_rows,
 };
+use crate::ranking;
 use crate::schema::{
     battle, battle_action, battle_challenge, monster, monster_pub, player, skill_row, species_row,
     trade_offer, type_relation_row, Battle, BattleAction, BattleChallenge, ChallengeStatus,
@@ -248,6 +253,20 @@ pub(crate) fn start_pvp_battle(
     Ok(battle.battle_id)
 }
 
+/// Apply forfeit to an ongoing PvP battle: set the forfeit outcome, then
+/// delegate the entire terminal-commit sequence to `settle_pvp_battle`
+/// (ADR-0119 D3) — the write-back/update/rating/side-B/sweep ordering
+/// invariants live on the funnel, not here.
+/// `forfeited_side`: SideA = challenger (player_identity); SideB = opponent.
+fn apply_pvp_forfeit(
+    ctx: &ReducerContext,
+    mut battle: Battle,
+    forfeited_side: SideId,
+) -> Result<(), String> {
+    battle.state.outcome = pvp_forfeit_outcome(forfeited_side);
+    settle_pvp_battle(ctx, battle)
+}
+
 /// Check if both PvP participants have submitted actions for the current turn.
 /// If so, collect the actions, delete them, resolve the turn, and reschedule
 /// the deadline for the next turn. No-op if only one (or neither) has submitted.
@@ -382,80 +401,76 @@ fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(),
     }
 
     if battle.state.outcome != BattleOutcome::Ongoing {
-        let battle_for_wb = battle.clone();
-        // write_back_battle_results must run while the battle row is still Ongoing
-        // in the DB — its GC sweep filters `outcome != Ongoing`, so the current
-        // battle is excluded only before we commit the terminal state (RT-M16-08).
-        if let Err(e) = write_back_battle_results(ctx, &battle_for_wb) {
-            log::error!(
-                "{{\"evt\":\"pvp_turn_writeback_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
-            );
-        }
-        // Commit terminal outcome AFTER write_back_battle_results (RT-M16-08) and
-        // BEFORE write_back_party_hp_pvp_side_b so a side-B HP failure cannot leave
-        // the battle stuck in Ongoing (RT-M16-05).
-        ctx.db.battle().battle_id().update(battle);
-        if let Err(e) = write_back_party_hp_pvp_side_b(ctx, &battle_for_wb) {
-            log::error!(
-                "{{\"evt\":\"pvp_turn_side_b_hp_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
-            );
-        }
+        // Terminal: delegate the entire commit sequence to the settle funnel
+        // (ADR-0119 D3) — the ordering invariants live there.
+        settle_pvp_battle(ctx, battle)?;
     } else {
         // Reschedule the deadline for the new turn (turn_number was incremented by resolve_full_turn).
         schedule_deadline(ctx, battle_id, battle.state.turn_number);
-        ctx.db.battle().battle_id().update(battle);
+        // Persist the advanced (still-Ongoing) state. Deliberately NOT the
+        // chained `battle().battle_id().update(...)` form: the RT-M16-08 source
+        // scan pins that needle to the TERMINAL commit ordering inside
+        // settle_pvp_battle below; this ongoing-path persist is not a terminal
+        // commit and must not shadow that needle.
+        let battles = ctx.db.battle();
+        battles.battle_id().update(battle);
     }
     Ok(())
 }
 
-/// Apply forfeit to an ongoing PvP battle: set outcome, update row, write back HP.
-/// `forfeited_side`: SideA = challenger (player_identity); SideB = opponent.
+/// Settle a PvP battle that has reached a terminal outcome — the ONE funnel
+/// through which every decisive PvP result (both-submit resolution, deadline
+/// forfeit, disconnect forfeit) commits (ADR-0119 D3, RL-10). Sole caller of
+/// `ranking::apply_pvp_rating`, which makes rating application exactly-once
+/// by construction.
 ///
-/// Dual ordering invariant:
-/// - `write_back_battle_results` must run while the battle row is still Ongoing in
-///   the DB so its GC sweep targets only prior terminal rows, not the current one
-///   (RT-M16-08).
-/// - The battle row update must precede `write_back_party_hp_pvp_side_b` so that a
-///   side-B HP write-back failure (e.g. ownership changed) cannot leave the battle
-///   stuck in `Ongoing` (RT-M16-05). Write-backs use log-and-continue (ADR-0077).
-fn apply_pvp_forfeit(
-    ctx: &ReducerContext,
-    mut battle: Battle,
-    forfeited_side: SideId,
-) -> Result<(), String> {
-    battle.state.outcome = pvp_forfeit_outcome(forfeited_side);
-
+/// Invariant commit order (unified verbatim from the two pre-M17 sites):
+/// - `write_back_battle_results` runs while the battle row is still Ongoing in
+///   the DB so its GC sweep targets only prior terminal rows, not the current
+///   one (RT-M16-08). Log-and-continue (ADR-0077): cosmetic HP staleness only.
+/// - The battle row update commits the terminal outcome and must precede
+///   `write_back_party_hp_pvp_side_b` so that a side-B HP write-back failure
+///   (e.g. ownership changed) cannot leave the battle stuck in `Ongoing`
+///   (RT-M16-05). Write-backs use log-and-continue (ADR-0077).
+/// - The rating rides the just-committed outcome (ADR-0119 D3 step 3) and is
+///   infallible by construction (D6) — no error posture needed.
+/// - The stale `battle_action` sweep runs last (hoisted from the forfeit path).
+fn settle_pvp_battle(ctx: &ReducerContext, battle: Battle) -> Result<(), String> {
     let battle_id = battle.battle_id;
 
     // write_back_battle_results first — battle row is still Ongoing in DB so its
     // GC sweep does not delete the current row (RT-M16-08).
     if let Err(e) = write_back_battle_results(ctx, &battle) {
         log::error!(
-            "{{\"evt\":\"pvp_forfeit_writeback_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
+            "{{\"evt\":\"pvp_settle_writeback_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
         );
     }
 
     // Commit terminal outcome AFTER write_back_battle_results (RT-M16-08) and
-    // BEFORE write_back_party_hp_pvp_side_b (RT-M16-05).
+    // BEFORE write_back_party_hp_pvp_side_b (RT-M16-05). The clone is
+    // load-bearing: `update` consumes a row by value, and `battle` is still
+    // borrowed afterwards by apply_pvp_rating and write_back_party_hp_pvp_side_b.
     ctx.db.battle().battle_id().update(battle.clone());
+
+    // Ranked-ladder rating on the just-committed outcome (ADR-0119 D3 step 3;
+    // no-op for wild/practice battles and non-decisive outcomes).
+    ranking::apply_pvp_rating(ctx, &battle);
 
     // Side-B HP write-back. Log-and-continue (ADR-0077): outcome already committed.
     if let Err(e) = write_back_party_hp_pvp_side_b(ctx, &battle) {
         log::error!(
-            "{{\"evt\":\"pvp_forfeit_side_b_hp_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
+            "{{\"evt\":\"pvp_settle_side_b_hp_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
         );
     }
 
-    // Clean up any stale battle_action rows for this battle.
-    let stale_action_ids: Vec<u64> = ctx
-        .db
-        .battle_action()
-        .battle_id()
-        .filter(battle_id)
-        .map(|a| a.action_id)
-        .collect();
-    for id in stale_action_ids {
-        ctx.db.battle_action().action_id().delete(id);
+    // Sweep any stale battle_action rows for this battle (collect-then-mutate).
+    // No-op on the resolve path: the current turn's actions were deleted before
+    // resolution, and SpacetimeDB within-transaction deletes are immediately
+    // visible, so this re-reads an empty set.
+    let stale_actions = ctx.db.battle_action().battle_id().filter(battle_id);
+    let stale_actions: Vec<BattleAction> = stale_actions.collect();
+    for action in stale_actions {
+        ctx.db.battle_action().delete(action);
     }
 
     Ok(())

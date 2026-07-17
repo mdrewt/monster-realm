@@ -26,6 +26,7 @@
 | tables/player_dialogue_state | SpacetimeDB Table | player_dialogue_state | PRIVATE per-player dialogue state: flags + done-quest history. Must-never-leak:  |
 | tables/player_quest | SpacetimeDB Table | player_quest | Active quest progress. Public (quest log is world-readable like `inventory`). Pe |
 | tables/player_wallet | SpacetimeDB Table | player_wallet | PRIVATE per-player wallet — one row per player (PK = owner_identity). Balance is |
+| tables/profile | SpacetimeDB Table | profile | Persistent per-player ranked-ladder record (M17, ADR-0119 D1) — the progression  |
 | tables/pvp_deadline_schedule | SpacetimeDB Table | pvp_deadline_schedule | One-shot reaper: fires `PVP_TURN_DEADLINE_MS` after a PvP turn starts. PRIVATE ( |
 | tables/shop_item_row | SpacetimeDB Table | shop_item_row | Shop stock entries seeded from the `game-core` RON registry. One row per (shop,  |
 | tables/shop_row | SpacetimeDB Table | shop_row | Shop definitions seeded from the `game-core` RON registry. Public (world-readabl |
