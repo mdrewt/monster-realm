@@ -499,9 +499,9 @@ fn m17a_is_ranked_pvp_wild_battle_is_false() {
 //       as_opponent: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::Battle>>,
 //   ) -> bool
 //
-// RED STATE: ALL SEVEN TESTS ARE COMPILE-RED until the implementer adds
-// `is_in_ongoing_battle_either_role` to guards.rs.  That is intentional —
-// these tests ARE the contract (m17a precedent, guards_tests.rs:394 block).
+// TDD marker: all seven tests below were authored COMPILE-RED before
+// `is_in_ongoing_battle_either_role` existed in guards.rs (m17a precedent,
+// guards_tests.rs:394 block); implementation has since landed and all are green.
 //
 // Fixture discipline (plan-review N-1 / red-team F6, BINDING):
 //   `make_test_battle`'s hardcoded `opponent_identity = [0u8;32]` IS WILD_IDENTITY.
@@ -523,7 +523,6 @@ fn m17a_is_ranked_pvp_wild_battle_is_false() {
 
 /// m17.5a-1: empty / empty → false.
 /// Kills: an always-true implementation.
-/// COMPILE-RED: is_in_ongoing_battle_either_role does not yet exist in guards.rs.
 #[test]
 fn either_role_no_battle_false() {
     let result = is_in_ongoing_battle_either_role(
@@ -541,7 +540,6 @@ fn either_role_no_battle_false() {
 /// The opponent arm is empty so only the player arm can produce the result.
 /// Kills: an impl that drops the player arm (returns false unconditionally or
 /// only checks the opponent arm).
-/// COMPILE-RED: is_in_ongoing_battle_either_role does not yet exist in guards.rs.
 #[test]
 fn either_role_player_ongoing_true() {
     // make_test_battle uses player_identity=[1;32], opponent_identity=[0;32]=WILD.
@@ -561,7 +559,6 @@ fn either_role_player_ongoing_true() {
 /// A broken opponent arm (arm dropped) cannot be masked by the player arm (empty here).
 /// Non-WILD opponent: player=[1;32], opponent=[2;32].
 /// Kills: an impl that drops the opponent arm entirely (the central gap this slice closes).
-/// COMPILE-RED: is_in_ongoing_battle_either_role does not yet exist in guards.rs.
 #[test]
 fn either_role_opponent_ongoing_true() {
     // Fixture: real side-A identity [1;32], real side-B identity [2;32] (non-WILD).
@@ -592,7 +589,6 @@ fn either_role_opponent_ongoing_true() {
 /// Note: the wild battle's REAL side-A owner is still caught by the player arm (separate arm),
 /// but here the player arm is empty and the opponent-arm row has opponent == WILD_IDENTITY.
 /// Kills: an impl that drops the `!= WILD_IDENTITY` refinement (would return true).
-/// COMPILE-RED: is_in_ongoing_battle_either_role does not yet exist in guards.rs.
 #[test]
 fn either_role_opponent_wild_sentinel_false() {
     // A battle whose opponent_identity IS WILD_IDENTITY — using make_test_battle's
@@ -622,7 +618,6 @@ fn either_role_opponent_wild_sentinel_false() {
 /// m17.5a-5: both arms non-Ongoing → false.
 /// Battle exists in both arms but it is completed (SideAWins) — must not block.
 /// Kills: an impl that checks row presence without checking the outcome (would return true).
-/// COMPILE-RED: is_in_ongoing_battle_either_role does not yet exist in guards.rs.
 #[test]
 fn either_role_won_battle_false() {
     let player_id = spacetimedb::Identity::from_byte_array([1u8; 32]);
@@ -650,8 +645,7 @@ fn either_role_won_battle_false() {
 /// caller's own identity, NOT WILD_IDENTITY — so the opponent arm's
 /// `!= WILD_IDENTITY` check passes and the opponent arm contributes too).
 /// No unique mutant claim: row 2 (`either_role_player_ongoing_true`) already kills
-/// the dropped-player-arm mutant; this test documents the double-fire behavior.
-/// COMPILE-RED: is_in_ongoing_battle_either_role does not yet exist in guards.rs.
+/// the dropped-player-arm mutant; this test documents the short-circuit behavior.
 #[test]
 fn either_role_practice_self_both_arms() {
     // Self-battle: player_identity == opponent_identity == [3;32] (non-WILD).
@@ -659,8 +653,9 @@ fn either_role_practice_self_both_arms() {
     let self_battle = make_pvp_test_battle(self_id, self_id);
 
     // Both arms receive this same Ongoing self-battle row.
-    // The player arm fires (Ongoing). The opponent arm also fires (Ongoing +
-    // opponent != WILD_IDENTITY — self_id != WILD).
+    // The player arm fires (Ongoing) and short-circuits via `||`; the opponent
+    // arm is NOT evaluated for this fixture.  Documents: a practice self-battle
+    // is caught by the player arm alone; the opponent arm need not fire.
     let result = is_in_ongoing_battle_either_role(
         std::iter::once(self_battle.clone()),
         std::iter::once(self_battle),
@@ -688,7 +683,6 @@ fn either_role_practice_self_both_arms() {
 ///
 /// Kills: the whole ADR-0122 gap (an impl that only checks the player arm would
 /// return false for scenario B, failing this test).
-/// COMPILE-RED: is_in_ongoing_battle_either_role does not yet exist in guards.rs.
 #[test]
 fn laundering_two_ongoing_rows() {
     // pvp_side_a=[4;32] is side-A of the PvP battle (player_identity).

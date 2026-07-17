@@ -241,20 +241,10 @@ pub(crate) fn reject_if_in_battle(
 }
 
 /// Pure core (ADR-0122 D1): is `identity` in an `Ongoing` battle in EITHER role?
-///
-/// - Player arm (`as_player` = battle rows where `player_identity == identity`):
-///   any `Ongoing` row means the identity is busy as side A.
-/// - Opponent arm (`as_opponent` = battle rows where `opponent_identity == identity`):
-///   an `Ongoing` row counts ONLY when `opponent_identity != WILD_IDENTITY` — the
-///   WILD refinement, hoisted verbatim from the former pvp.rs private copy. A
-///   wild/practice battle stores the `WILD_IDENTITY` sentinel as its opponent;
-///   that sentinel row must never spuriously match a real caller who happens to
-///   equal the sentinel, and that battle's real side-A owner is still caught by
-///   the player arm.
-///
-/// Shape: pure iterators (mirrors `reject_if_in_battle`) so the full both-role
-/// matrix — including the WILD-sentinel row and the two-Ongoing-rows laundering
-/// precondition — is unit-testable without a `ReducerContext`.
+/// The opponent arm counts a row only when `opponent_identity != WILD_IDENTITY`
+/// (hoisted verbatim from the former pvp.rs copy): a wild battle's sentinel
+/// opponent must never match, while that battle's real side-A owner is still
+/// caught by the player arm. Pure iterators mirror `reject_if_in_battle`.
 pub(crate) fn is_in_ongoing_battle_either_role(
     mut as_player: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::Battle>>,
     mut as_opponent: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::Battle>>,
@@ -269,10 +259,8 @@ pub(crate) fn is_in_ongoing_battle_either_role(
 }
 
 /// Thin context wrapper (ADR-0122 D1): the single SSOT ongoing-battle predicate
-/// for every reducer, PvE and PvP alike. Replaces the former private copy in
-/// pvp.rs. Delegates to `is_in_ongoing_battle_either_role` with the player-role
-/// iterator FIRST and the opponent-role iterator SECOND (arg order is
-/// semantically significant: as_player, then as_opponent).
+/// for every reducer, PvE and PvP alike (replaces the former pvp.rs private
+/// copy). Arg order is semantically significant: as_player, then as_opponent.
 pub(crate) fn is_in_ongoing_battle(ctx: &ReducerContext, identity: Identity) -> bool {
     is_in_ongoing_battle_either_role(
         ctx.db.battle().player_identity().filter(identity),

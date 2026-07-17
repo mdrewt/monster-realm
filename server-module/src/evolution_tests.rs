@@ -1789,7 +1789,7 @@ pub(crate) fn evolve_seam(
 
     // Ownership check
     if m.owner_identity != sender {
-        return Err("not owner of this monster".to_string());
+        return Err("not owner".to_string());
     }
 
     // Battle guard — chain BOTH roles (player_identity and opponent_identity) to mirror the
