@@ -240,6 +240,7 @@ pub fn advance_turn(state: &mut BattleState) -> bool {
 /// # Panics
 /// Panics if a skill id referenced by `TurnChoice::Attack` is not found in
 /// `skills` — this is a content-integrity failure, not a player error.
+#[must_use = "the returned events are the authoritative turn record; dropping them loses it"]
 pub fn resolve_turn(
     state: &mut BattleState,
     choice_a: TurnChoice,
@@ -457,6 +458,12 @@ pub fn resolve_full_turn(
 ///
 /// The enemy uses its best skill (via `pick_best_skill`) against the active
 /// player monster.
+///
+/// Returns an empty `Vec` without mutating `state` when the battle is already
+/// decided (`outcome != Ongoing`) — total-safety, mirrors `resolve_turn`'s
+/// guard so a stray call on a finished battle can never resolve an action
+/// (red-team R-01).
+#[must_use = "the returned events are the authoritative turn record; dropping them loses it"]
 pub fn resolve_enemy_turn(
     state: &mut BattleState,
     enemy_side: SideId,
@@ -464,6 +471,10 @@ pub fn resolve_enemy_turn(
     type_chart: &TypeChart,
     variance: &TurnVariance,
 ) -> Vec<BattleEvent> {
+    // Total-safety: never act on a decided battle (see doc above).
+    if state.outcome != BattleOutcome::Ongoing {
+        return Vec::new();
+    }
     let mut events = Vec::new();
 
     let (attacker, defender) = match enemy_side {
@@ -510,6 +521,7 @@ pub fn resolve_enemy_turn(
 /// Returns all events produced (strike-back + post-turn). Empty when the terminal
 /// fired or the wild is skill-less (post-turn phases still run when the wild is
 /// skill-less, since the turn advanced). Only side B (the wild) ever strikes here.
+#[must_use = "the returned events are the authoritative turn record; dropping them loses it"]
 pub fn resolve_recruit_failure(
     state: &mut BattleState,
     skills: &[SkillDef],
@@ -566,6 +578,11 @@ pub fn resolve_recruit_failure(
 ///
 /// This function does NOT call `advance_turn`; player swaps are not counted as
 /// numbered turns toward the `u16::MAX` terminal.
+/// Returns an empty `Vec` without mutating `state` when the battle is already
+/// decided (`outcome != Ongoing`) — total-safety, mirrors `resolve_turn`'s
+/// guard so a stray call on a finished battle can never switch monsters or
+/// grant the enemy a free turn (red-team R-01).
+#[must_use = "the returned events are the authoritative turn record; dropping them loses it"]
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_player_swap(
     state: &mut BattleState,
@@ -578,6 +595,10 @@ pub fn resolve_player_swap(
     sv: &super::status::StatusVariance,
     abilities: &super::ability::AbilityStore,
 ) -> Vec<BattleEvent> {
+    // Total-safety: never act on a decided battle (see doc above).
+    if state.outcome != BattleOutcome::Ongoing {
+        return Vec::new();
+    }
     let mut events = Vec::new();
 
     let set = match swap_side {
@@ -2152,6 +2173,74 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Terminal-state guards (#26b): enemy-turn and player-swap on a DECIDED
+    // battle must be total no-ops (red-team R-01).
+    // -----------------------------------------------------------------------
+
+    /// Kills: an impl of `resolve_enemy_turn` without the `outcome != Ongoing`
+    /// early-return — the enemy would attack into a finished battle, mutating
+    /// player HP and emitting Damage events after the authoritative end.
+    #[test]
+    fn resolve_enemy_turn_on_decided_battle_is_a_no_op() {
+        let chart = make_type_chart();
+        let player = make_monster(Affinity::Fire, 200, 50);
+        let enemy = make_monster(Affinity::Water, 200, 30);
+        let mut state = make_battle_state(player, enemy);
+        state.outcome = BattleOutcome::SideAWins; // battle already decided
+        let pre = state.clone();
+        let variance = always_hit_variance(true);
+
+        let events =
+            resolve_enemy_turn(&mut state, SideId::SideB, &skills_vec(), &chart, &variance);
+
+        assert!(
+            events.is_empty(),
+            "a decided battle must resolve NO enemy action; got {events:?}"
+        );
+        assert_eq!(
+            state, pre,
+            "TEETH: resolve_enemy_turn on a decided battle must not mutate state"
+        );
+    }
+
+    /// Kills: an impl of `resolve_player_swap` without the guard — the swap
+    /// would succeed on a finished battle (Switch event + a free enemy turn
+    /// damaging the player after the authoritative end).
+    #[test]
+    fn resolve_player_swap_on_decided_battle_is_a_no_op() {
+        let chart = make_type_chart();
+        let mut state = make_swap_legality_state(100);
+        state.outcome = BattleOutcome::SideBWins; // battle already decided
+        let pre = state.clone();
+        let variance = always_hit_variance(true);
+        let mut status = empty_store(2, 1);
+        let sv = no_block_sv();
+        let abilities = empty_ability_store(2, 1);
+
+        let events = resolve_player_swap(
+            &mut state,
+            SideId::SideA,
+            1, // a swap that WOULD be legal in an ongoing battle
+            &skills_vec(),
+            &chart,
+            &variance,
+            &mut status,
+            &sv,
+            &abilities,
+        );
+
+        assert!(
+            events.is_empty(),
+            "a decided battle must emit no Switch and grant no enemy turn; got {events:?}"
+        );
+        assert_eq!(
+            state, pre,
+            "TEETH: resolve_player_swap on a decided battle must not mutate state \
+             (active slot, HP, and outcome all preserved)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Nightly mutation hardening (4 survivors in `resolve_turn`).
     // -----------------------------------------------------------------------
 
@@ -2283,7 +2372,7 @@ mod tests {
         // Skill-less wild: resolve_recruit_failure guards the enemy turn with
         // `if !known_skill_ids.is_empty()` so &[] is safe here.
         let abilities = empty_ability_store(1, 1);
-        resolve_recruit_failure(
+        let _events = resolve_recruit_failure(
             &mut state,
             &[],
             &chart,
@@ -2340,7 +2429,7 @@ mod tests {
         let variance = always_hit_variance(true);
         let abilities = empty_ability_store(2, 1);
         // skills_vec() contains skill id=1 — needed for the enemy's pick_best_skill.
-        resolve_player_swap(
+        let _events = resolve_player_swap(
             &mut state,
             SideId::SideA,
             1,
@@ -2425,7 +2514,7 @@ mod tests {
         let sv = no_block_sv();
         let variance = always_hit_variance(true);
         let abilities = empty_ability_store(2, 1);
-        resolve_player_swap(
+        let _events = resolve_player_swap(
             &mut state,
             SideId::SideA,
             1,
@@ -2472,7 +2561,7 @@ mod tests {
         let sv = no_block_sv();
         let variance = always_hit_variance(true);
         let abilities = empty_ability_store(2, 1);
-        resolve_player_swap(
+        let _events = resolve_player_swap(
             &mut state,
             SideId::SideA,
             1,
@@ -2525,7 +2614,7 @@ mod tests {
         };
         let variance = always_hit_variance(true);
         let abilities = empty_ability_store(2, 1);
-        resolve_player_swap(
+        let _events = resolve_player_swap(
             &mut state,
             SideId::SideA,
             1,

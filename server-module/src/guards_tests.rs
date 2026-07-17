@@ -14,6 +14,39 @@ fn validate_name_rejects_bad() {
     assert_eq!(validate_name("  Ash ").as_deref(), Ok("Ash"));
 }
 
+/// #27c: allowlist (letters/numbers/spaces on the NFC form) rejects the
+/// spoofing classes the old control-char blocklist missed.
+/// Kills: an impl that only rejects `char::is_control` (bidi overrides and
+/// zero-width chars are Cf, NOT control — they passed the old check).
+#[test]
+fn validate_name_rejects_spoofing_characters() {
+    // bidi override (RLO) — display-order spoof
+    assert!(validate_name("Ash\u{202E}hsA").is_err());
+    // bidi isolate
+    assert!(validate_name("Ash\u{2066}x").is_err());
+    // zero-width space / zero-width joiner — invisible-name impersonation
+    assert!(validate_name("A\u{200B}sh").is_err());
+    assert!(validate_name("A\u{200D}sh").is_err());
+    // punctuation is outside the letters/numbers/spaces allowlist
+    assert!(validate_name("Ash_K").is_err());
+    // interior spaces stay allowed
+    assert_eq!(validate_name("Ash Ketchum").as_deref(), Ok("Ash Ketchum"));
+}
+
+/// #27c: NFC — decomposed input canonicalizes to the composed spelling, so
+/// two visually-identical names cannot coexist as distinct byte strings.
+/// Kills: an impl that skips normalization (decomposed `e``\u{301}` would
+/// either be stored raw or rejected, breaking the equality below).
+#[test]
+fn validate_name_nfc_normalizes() {
+    let decomposed = "Pok\u{0065}\u{0301}mon"; // e + COMBINING ACUTE ACCENT
+    let composed = "Pok\u{00E9}mon"; // precomposed é
+    assert_eq!(validate_name(decomposed).as_deref(), Ok(composed));
+    assert_eq!(validate_name(composed).as_deref(), Ok(composed));
+    // non-Latin letters remain allowed (is_alphanumeric is Unicode-aware)
+    assert!(validate_name("\u{30B5}\u{30C8}\u{30B7}").is_ok()); // katakana
+}
+
 /// The party-slot sentinel does not collide with any valid slot.
 #[test]
 fn party_slot_sentinel_outside_valid_range() {

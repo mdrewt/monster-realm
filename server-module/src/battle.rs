@@ -313,9 +313,12 @@ pub(crate) fn begin_encounter(
     wild_level: u8,
     individuality_seed: u32,
 ) -> Result<u64, String> {
-    if party_monster_ids.is_empty() {
-        return Err("party_monster_ids must not be empty".to_string());
-    }
+    // Bound the party to 1..=MAX_PARTY_SIZE — covers empty AND oversized
+    // (#27a, parity with start_battle's guard). Both callers pass
+    // server-derived ids today (`lead_party`); this is the defense-in-depth
+    // backstop so a future caller cannot reach write-back with an oversized
+    // side A.
+    check_party_size(party_monster_ids.len())?;
     // Reject duplicate party ids (double-XP guard, like start_battle).
     {
         let mut seen = std::collections::HashSet::new();

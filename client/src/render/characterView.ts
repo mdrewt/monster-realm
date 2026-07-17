@@ -26,6 +26,9 @@ export function animKey(action: WasmAction, facing: WasmDirection): AnimKey {
  */
 export interface AssetProvider {
   texture(action: WasmAction, facing: WasmDirection): Texture;
+  /** Release provider-owned GPU resources (#28c). Optional: a provider that
+   *  owns no textures (e.g. an atlas managed elsewhere) may omit it. */
+  destroy?(): void;
 }
 
 export class CharacterView {
