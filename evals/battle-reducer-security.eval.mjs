@@ -882,6 +882,590 @@ export default async function () {
     };
   }
 
+  // =========================================================================
+  // m17.5a (ADR-0122): side-B battle-guard criteria C1–C4
+  //
+  // C1 — shared-guard call sites (EARS 17.5a-1): 4 PvE reducer bodies must
+  //      contain `is_in_ongoing_battle(ctx,` replacing their player-only inlines.
+  // C2 — evolve/fuse both-role chain (EARS 17.5a-2): bodies must contain
+  //      `.opponent_identity().filter(` chained into reject_if_in_battle.
+  // C3 — SSOT single-definition + wrapper-body integrity: exactly one
+  //      `fn is_in_ongoing_battle(` across all sources; it is in guards.rs;
+  //      pvp.rs has none; wrapper body references both player_identity() and
+  //      opponent_identity() (kills a wrapper passing the player iterator twice).
+  // C4 — classification / insert-site provenance (EARS 17.5a-5): exactly 3
+  //      battle insert sites; each has an allowlisted (file, enclosing-fn, form);
+  //      is_ranked_pvp body is the two-clause sentinel form.
+  //
+  // All four start RED (real-source scans fail today).
+  // Bad/good fixture teeth run first — TEETH FAILED short-circuits immediately.
+  // Failures accumulate into sideBFailures[]; merged into final pass/detail.
+  // =========================================================================
+
+  // =========================================================================
+  // C1 fixture teeth — hasBothRoleBattleGuard checker
+  // =========================================================================
+
+  // C1 bad fixture: heal_party-shaped body with only player_identity().filter inline.
+  // hasBothRoleBattleGuard must return FALSE (the checker bites).
+  const c1BadFixture = `
+    pub fn heal_party(ctx: &ReducerContext) -> Result<(), String> {
+        let me = ctx.sender;
+        // Old player-only inline — the gap this slice closes.
+        let already = ctx.db.battle().player_identity().filter(me)
+            .any(|b| b.state.outcome == BattleOutcome::Ongoing);
+        if already {
+            return Err("cannot heal during an ongoing battle".to_string());
+        }
+        do_heal(ctx, me)
+    }
+  `;
+  const c1BadBody = extractReducerBody(c1BadFixture, 'heal_party');
+  if (!c1BadBody) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C1 bad fixture): could not extract heal_party body from ' +
+        'c1BadFixture — extractReducerBody parser bug',
+    };
+  }
+  if (hasBothRoleBattleGuard(c1BadBody)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C1 bad fixture): hasBothRoleBattleGuard returned true for a ' +
+        'body containing only player_identity().filter inline (no is_in_ongoing_battle call) — ' +
+        'checker does not bite a player-only body',
+    };
+  }
+
+  // C1 good fixture A: body with `if is_in_ongoing_battle(ctx, me)`.
+  const c1GoodFixtureA = `
+    pub fn heal_party(ctx: &ReducerContext) -> Result<(), String> {
+        let me = ctx.sender;
+        if is_in_ongoing_battle(ctx, me) {
+            return Err("cannot heal during an ongoing battle".to_string());
+        }
+        do_heal(ctx, me)
+    }
+  `;
+  const c1GoodBodyA = extractReducerBody(c1GoodFixtureA, 'heal_party');
+  if (!c1GoodBodyA) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C1 good fixture A): could not extract heal_party body — parser bug',
+    };
+  }
+  if (!hasBothRoleBattleGuard(c1GoodBodyA)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C1 good fixture A): hasBothRoleBattleGuard returned false for ' +
+        'a body containing `is_in_ongoing_battle(ctx, me)` — false negative',
+    };
+  }
+
+  // C1 good fixture B (plan W-1): pub(crate) fn begin_encounter shape.
+  // Proves the body EXTRACTION handles the `pub(crate) fn` form — a TEETH FAILED
+  // result if extraction returns null (the fn is present but not extracted).
+  const c1GoodFixtureB = `
+    pub(crate) fn begin_encounter(
+        ctx: &ReducerContext,
+        player_identity: Identity,
+        party_monster_ids: Vec<u64>,
+        wild_species_id: u32,
+        wild_level: u8,
+        individuality_seed: u32,
+    ) -> Result<u64, String> {
+        if is_in_ongoing_battle(ctx, player_identity) {
+            return Err("already in an ongoing battle".to_string());
+        }
+        do_begin_encounter_work(ctx, player_identity, party_monster_ids)
+    }
+  `;
+  const c1GoodBodyB = extractReducerBody(c1GoodFixtureB, 'begin_encounter');
+  if (!c1GoodBodyB) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C1 good fixture B — plan W-1): extractReducerBody returned null ' +
+        'for a `pub(crate) fn begin_encounter(` signature — the `fn <name>(` fallback must ' +
+        'match pub(crate) fn forms; parser does not handle this shape',
+    };
+  }
+  if (!hasBothRoleBattleGuard(c1GoodBodyB)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C1 good fixture B): hasBothRoleBattleGuard returned false for ' +
+        'begin_encounter body containing `is_in_ongoing_battle(ctx, player_identity)` — false negative',
+    };
+  }
+
+  // =========================================================================
+  // C2 fixture teeth — hasBothRoleChain checker
+  // =========================================================================
+
+  // C2 bad fixture: evolve-shaped body with only player_identity().filter.
+  const c2BadFixture = `
+    pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
+        let m = get_monster(ctx, monster_id)?;
+        // Old player-only chain — does not catch side-B monsters.
+        reject_if_in_battle(
+            ctx.db.battle().player_identity().filter(m.owner_identity),
+            monster_id,
+        )?;
+        do_evolve(ctx, m)
+    }
+  `;
+  const c2BadBody = extractReducerBody(c2BadFixture, 'evolve');
+  if (!c2BadBody) {
+    return {
+      name,
+      pass: false,
+      detail: 'TEETH FAILED (m17.5a C2 bad fixture): could not extract evolve body — parser bug',
+    };
+  }
+  if (hasBothRoleChain(c2BadBody)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C2 bad fixture): hasBothRoleChain returned true for a body ' +
+        'with only player_identity().filter (no opponent_identity chain) — checker does not bite',
+    };
+  }
+
+  // C2 good fixture: evolve body with opponent_identity chain.
+  const c2GoodFixture = `
+    pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
+        let m = get_monster(ctx, monster_id)?;
+        reject_if_in_battle(
+            ctx.db.battle().player_identity().filter(m.owner_identity)
+                .chain(ctx.db.battle().opponent_identity().filter(m.owner_identity)),
+            monster_id,
+        )?;
+        do_evolve(ctx, m)
+    }
+  `;
+  const c2GoodBody = extractReducerBody(c2GoodFixture, 'evolve');
+  if (!c2GoodBody) {
+    return {
+      name,
+      pass: false,
+      detail: 'TEETH FAILED (m17.5a C2 good fixture): could not extract evolve body — parser bug',
+    };
+  }
+  if (!hasBothRoleChain(c2GoodBody)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C2 good fixture): hasBothRoleChain returned false for a body ' +
+        'with .opponent_identity().filter( chained — false negative',
+    };
+  }
+
+  // =========================================================================
+  // C3 fixture teeth — SSOT single-definition + wrapper-body integrity
+  // =========================================================================
+
+  // C3 bad fixture A: two concatenated sources each defining is_in_ongoing_battle.
+  const c3BadTwoDefsSrc =
+    'pub(crate) fn is_in_ongoing_battle(ctx: &ReducerContext, identity: Identity) -> bool { true }\n' +
+    'pub(crate) fn is_in_ongoing_battle(ctx: &ReducerContext, identity: Identity) -> bool { false }\n';
+  if (countFnDefinitions(c3BadTwoDefsSrc, 'is_in_ongoing_battle') < 2) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C3 bad fixture A): countFnDefinitions did not count 2 definitions ' +
+        'from a source with two fn is_in_ongoing_battle definitions — counter broken',
+    };
+  }
+
+  // C3 bad fixture B: wrapper body using player_identity() twice, no opponent_identity().
+  const c3BadWrapperBody = `
+    is_in_ongoing_battle_either_role(
+        ctx.db.battle().player_identity().filter(identity),
+        ctx.db.battle().player_identity().filter(identity),
+    )
+  `;
+  if (wrapperBodyHasBothIndexes(c3BadWrapperBody)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C3 bad fixture B — red-team F7): wrapperBodyHasBothIndexes ' +
+        'returned true for a wrapper body that passes player_identity() twice with no ' +
+        'opponent_identity() reference — checker does not bite the doubled-player-arm evasion',
+    };
+  }
+
+  // C3 good fixture: wrapper body with both player_identity() and opponent_identity().
+  const c3GoodWrapperBody = `
+    is_in_ongoing_battle_either_role(
+        ctx.db.battle().player_identity().filter(identity),
+        ctx.db.battle().opponent_identity().filter(identity),
+    )
+  `;
+  if (!wrapperBodyHasBothIndexes(c3GoodWrapperBody)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C3 good fixture): wrapperBodyHasBothIndexes returned false for ' +
+        'a correct wrapper body referencing both player_identity() and opponent_identity() — ' +
+        'false negative',
+    };
+  }
+
+  // =========================================================================
+  // C4 fixture teeth — insert-site provenance allowlist
+  // =========================================================================
+
+  // C4 bad fixture A (red-team F5 alias bypass): insert in novel function
+  // `start_npc_trainer_battle` with `opponent_identity: opponent` (aliased name).
+  // resolveInsertEnclosingFn must return a fn name NOT in the allowlist.
+  const c4AliasBypassSrc = `
+    pub(crate) fn start_npc_trainer_battle(
+        ctx: &ReducerContext,
+        trainer_id: u32,
+        opponent: Identity,
+    ) -> Result<(), String> {
+        let battle = ctx.db.battle().insert(Battle {
+            battle_id: 0,
+            player_identity: ctx.sender,
+            opponent_identity: opponent,
+            state: make_state(),
+            party_monster_ids: vec![],
+            opponent_monster_ids: vec![],
+            created_at_ms: 0,
+        });
+        Ok(())
+    }
+  `;
+  const aliasSites = findBattleInsertSites(c4AliasBypassSrc);
+  if (aliasSites.length === 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C4 alias bypass fixture): findBattleInsertSites found 0 sites ' +
+        'in a source with one ctx.db.battle().insert call — site detector broken',
+    };
+  }
+  // The enclosing fn must NOT be an allowlisted fn — the alias bypass should fail the allowlist.
+  const aliasFn = aliasSites[0].enclosingFn;
+  if (
+    aliasFn === 'start_battle' ||
+    aliasFn === 'begin_encounter' ||
+    aliasFn === 'start_pvp_battle'
+  ) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C4 alias bypass fixture): enclosing fn was resolved as an ' +
+        `allowlisted name (${aliasFn}) for a source with fn start_npc_trainer_battle — ` +
+        'enclosing-fn resolver is matching the wrong function name',
+    };
+  }
+
+  // C4 bad fixture B: is_ranked_pvp weakened to a single clause (only != WILD_IDENTITY).
+  const c4BadRankedSrc = `
+    pub(crate) fn is_ranked_pvp(battle: &Battle) -> bool {
+        battle.opponent_identity != WILD_IDENTITY
+    }
+  `;
+  if (isRankedPvpIsTwoClause(c4BadRankedSrc)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C4 bad ranked fixture B): isRankedPvpIsTwoClause returned true ' +
+        'for a single-clause is_ranked_pvp body (only != WILD_IDENTITY, missing player != opponent) — ' +
+        'two-clause checker does not bite a weakened body',
+    };
+  }
+
+  // C4 bad fixture C: start_battle body whose provenance gate was deleted but keeps
+  // shorthand insert — hasOpponentProvenanceGate must fail on this body.
+  const c4BadNoGateBody = `
+    pub fn start_battle(ctx: &ReducerContext, opponent_identity: Identity) -> Result<(), String> {
+        let me = ctx.sender;
+        // provenance gate deleted — no check here
+        let battle = ctx.db.battle().insert(Battle {
+            opponent_identity,
+            ..defaults()
+        });
+        Ok(())
+    }
+  `;
+  const c4BadNoGateExtracted = extractReducerBody(c4BadNoGateBody, 'start_battle');
+  if (!c4BadNoGateExtracted) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C4 bad fixture C): could not extract start_battle body from ' +
+        'no-gate fixture — parser bug',
+    };
+  }
+  if (hasOpponentProvenanceGate(c4BadNoGateExtracted)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C4 bad fixture C): hasOpponentProvenanceGate returned true for ' +
+        'a start_battle body with the provenance gate deleted — false positive; ' +
+        'C4 requires the gate to still exist when the shorthand insert is present',
+    };
+  }
+
+  // C4 good fixture: is_ranked_pvp with the correct two-clause sentinel form.
+  const c4GoodRankedSrc = `
+    pub(crate) fn is_ranked_pvp(battle: &Battle) -> bool {
+        battle.player_identity != battle.opponent_identity
+            && battle.opponent_identity != WILD_IDENTITY
+    }
+  `;
+  if (!isRankedPvpIsTwoClause(c4GoodRankedSrc)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C4 good ranked fixture): isRankedPvpIsTwoClause returned false ' +
+        'for the correct two-clause sentinel body — false negative',
+    };
+  }
+
+  // =========================================================================
+  // Real-source scan — C1, C2, C3, C4
+  // =========================================================================
+  const sideBFailures = [];
+
+  // -------------------------------------------------------------------------
+  // C1: 4 PvE reducer bodies must call is_in_ongoing_battle(ctx,
+  // RED now: all four still use player_identity().filter inline.
+  // -------------------------------------------------------------------------
+  const BOTH_ROLE_GUARD_REDUCERS = [
+    'start_battle',
+    'begin_encounter',
+    'heal_party',
+    'start_wild_battle',
+  ];
+  for (const reducerName of BOTH_ROLE_GUARD_REDUCERS) {
+    const body = extractReducerBody(src, reducerName);
+    if (!body) {
+      sideBFailures.push(`C1/${reducerName}: reducer body not found in server-module source`);
+      continue;
+    }
+    if (!hasBothRoleBattleGuard(body)) {
+      sideBFailures.push(
+        `C1/${reducerName}: missing is_in_ongoing_battle(ctx, call — body still uses ` +
+          `player_identity().filter inline (ADR-0122 17.5a-1); RED until implementer replaces inline`,
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // C2: evolve and fuse bodies must contain .opponent_identity().filter( chain.
+  // RED now: both use player_identity().filter only.
+  // -------------------------------------------------------------------------
+  const CHAIN_GUARD_REDUCERS = ['evolve', 'fuse'];
+  for (const reducerName of CHAIN_GUARD_REDUCERS) {
+    const body = extractReducerBody(src, reducerName);
+    if (!body) {
+      sideBFailures.push(`C2/${reducerName}: reducer body not found in server-module source`);
+      continue;
+    }
+    if (!hasBothRoleChain(body)) {
+      sideBFailures.push(
+        `C2/${reducerName}: missing .opponent_identity().filter( chain in reject_if_in_battle call — ` +
+          `body still uses player-only filter (ADR-0122 17.5a-2); RED until implementer adds chain`,
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // C3: exactly one fn is_in_ongoing_battle( across all sources; it is NOT in pvp.rs;
+  // wrapper body references both player_identity() and opponent_identity().
+  // RED now: pvp.rs still defines its own local copy.
+  // -------------------------------------------------------------------------
+  const totalDefs = countFnDefinitions(src, 'is_in_ongoing_battle');
+  if (totalDefs !== 1) {
+    sideBFailures.push(
+      `C3/SSOT: found ${totalDefs} definitions of fn is_in_ongoing_battle( across server-module ` +
+        `(expected exactly 1 in guards.rs); ` +
+        (totalDefs === 0
+          ? 'guards.rs does not yet define it — RED until implementer adds the fn'
+          : 'pvp.rs still defines its own copy — delete it and import guards::is_in_ongoing_battle'),
+    );
+  }
+
+  // C3 wrapper-body integrity: the guards.rs fn body must reference both indexes.
+  // Extract guards.rs source only (not the whole crate) to isolate the wrapper.
+  let guardsRsSrc = null;
+  try {
+    guardsRsSrc = readFileSync(`${SERVER_SRC}/guards.rs`, 'utf8');
+  } catch (_) {
+    sideBFailures.push('C3/wrapper-body: cannot read guards.rs — file missing or renamed');
+  }
+  if (guardsRsSrc !== null) {
+    const wrapperBody = extractReducerBody(guardsRsSrc, 'is_in_ongoing_battle');
+    if (!wrapperBody) {
+      sideBFailures.push(
+        'C3/wrapper-body: fn is_in_ongoing_battle( not found in guards.rs — ' +
+          'RED until implementer adds the thin ctx wrapper',
+      );
+    } else {
+      if (!wrapperBodyHasBothIndexes(wrapperBody)) {
+        sideBFailures.push(
+          'C3/wrapper-body: guards.rs fn is_in_ongoing_battle body does not reference BOTH ' +
+            'player_identity() and opponent_identity() — ' +
+            'a wrapper passing player_identity() twice cannot enforce both-role semantics ' +
+            '(red-team F7; kills: doubled-player-arm evasion)',
+        );
+      }
+    }
+    // pvp.rs must NOT define a local fn is_in_ongoing_battle.
+    let pvpRsSrc = null;
+    try {
+      pvpRsSrc = readFileSync(`${SERVER_SRC}/pvp.rs`, 'utf8');
+    } catch (_) {
+      sideBFailures.push('C3/pvp-no-local: cannot read pvp.rs — file missing or renamed');
+    }
+    if (pvpRsSrc !== null && countFnDefinitions(pvpRsSrc, 'is_in_ongoing_battle') > 0) {
+      sideBFailures.push(
+        'C3/pvp-no-local: pvp.rs still defines fn is_in_ongoing_battle — ' +
+          'delete the private copy and import guards::is_in_ongoing_battle (ADR-0122 §1.1 anti-pattern)',
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // C4: exactly 3 battle insert sites; each allowlisted; is_ranked_pvp two-clause.
+  // Vacuous-pass guard: fail loud if 0 sites found (missing/renamed file).
+  // Per-file scan so site.file is accurate for the allowlist (file, enclosing-fn) check.
+  // RED now: will pass once the implementer confirms the 3 allowlisted sites
+  // are byte-stable (likely no code change, but the eval verifies them).
+  // -------------------------------------------------------------------------
+  // Scan the two files that contain battle inserts (battle.rs + pvp.rs).
+  const insertSites = [
+    ...findBattleInsertSitesInFile(`${SERVER_SRC}/battle.rs`),
+    ...findBattleInsertSitesInFile(`${SERVER_SRC}/pvp.rs`),
+  ];
+  if (insertSites.length === 0) {
+    sideBFailures.push(
+      'C4/insert-sites: no ctx.db.battle().insert(Battle { sites found — ' +
+        'scanned files missing or battle insert was removed/renamed; ' +
+        'vacuous-pass guard: exactly 3 sites required (ADR-0122 §1.5)',
+    );
+  } else if (insertSites.length !== 3) {
+    sideBFailures.push(
+      `C4/insert-sites: expected exactly 3 battle insert sites, found ${insertSites.length}; ` +
+        'any new site requires updating this eval + is_ranked_pvp (ADR-0122 D5); ' +
+        'sites found: ' +
+        insertSites.map((s) => `${s.file}::${s.enclosingFn}`).join(', '),
+    );
+  } else {
+    // Verify allowlisted triples: (file, enclosing-fn, form-check).
+    // Triple 1: battle.rs / start_battle / shorthand `opponent_identity,` + provenance gate present.
+    // Triple 2: battle.rs / begin_encounter / literal `WILD_IDENTITY`.
+    // Triple 3: pvp.rs / start_pvp_battle / RHS is `opponent` (third-identity var, not WILD/me).
+    const ALLOWLIST = [
+      { file: 'battle.rs', fn: 'start_battle' },
+      { file: 'battle.rs', fn: 'begin_encounter' },
+      { file: 'pvp.rs', fn: 'start_pvp_battle' },
+    ];
+    for (const site of insertSites) {
+      const allowed = ALLOWLIST.find(
+        (a) => site.file.endsWith(a.file) && site.enclosingFn === a.fn,
+      );
+      if (!allowed) {
+        sideBFailures.push(
+          `C4/allowlist: insert site in ${site.file}::${site.enclosingFn} is NOT allowlisted — ` +
+            'any new battle-creation path must be consciously reviewed and added to this allowlist ' +
+            '(ADR-0122 §1.5); this kills the alias bypass (red-team F5)',
+        );
+      }
+    }
+
+    // Additional form checks on the allowlisted sites.
+    // start_battle: enclosing body must contain the provenance gate (battle.rs:82 form).
+    const startBattleSite = insertSites.find(
+      (s) => s.file.endsWith('battle.rs') && s.enclosingFn === 'start_battle',
+    );
+    if (startBattleSite && !hasOpponentProvenanceGate(startBattleSite.enclosingBody)) {
+      sideBFailures.push(
+        'C4/start_battle-gate: start_battle has shorthand opponent_identity insert but ' +
+          'the provenance gate (battle.rs:82 — opponent_identity != me && != WILD_IDENTITY check) ' +
+          'is missing from its body — shorthand is only safe WITH the gate',
+      );
+    }
+
+    // begin_encounter: insert must use literal WILD_IDENTITY.
+    const beginEncSite = insertSites.find(
+      (s) => s.file.endsWith('battle.rs') && s.enclosingFn === 'begin_encounter',
+    );
+    if (beginEncSite) {
+      const insertRegion = beginEncSite.insertText;
+      if (insertRegion.indexOf('WILD_IDENTITY') === -1) {
+        sideBFailures.push(
+          'C4/begin_encounter: begin_encounter insert site does not contain WILD_IDENTITY — ' +
+            'expected `opponent_identity: WILD_IDENTITY` in the insert struct (ADR-0122 §1.5)',
+        );
+      }
+    }
+
+    // start_pvp_battle: opponent_identity RHS must be `opponent` (third-identity var),
+    // not WILD_IDENTITY and not me/ctx.sender.
+    // Real code (pvp.rs:242): `opponent_identity: opponent,`
+    const pvpSite = insertSites.find(
+      (s) => s.file.endsWith('pvp.rs') && s.enclosingFn === 'start_pvp_battle',
+    );
+    if (pvpSite) {
+      const insertText = pvpSite.insertText;
+      // The opponent_identity field must NOT be WILD_IDENTITY or me.
+      if (
+        insertText.indexOf('opponent_identity: WILD' + '_IDENTITY') !== -1 ||
+        insertText.indexOf('opponent_identity: me') !== -1 ||
+        insertText.indexOf('opponent_identity: ctx.sender') !== -1
+      ) {
+        sideBFailures.push(
+          'C4/start_pvp_battle: opponent_identity in start_pvp_battle insert is WILD_IDENTITY ' +
+            'or me/ctx.sender — expected a real third-identity variable (e.g. `opponent`) ' +
+            '(ADR-0122 §1.5)',
+        );
+      }
+    }
+  }
+
+  // C4 is_ranked_pvp two-clause check.
+  if (!isRankedPvpIsTwoClause(src)) {
+    sideBFailures.push(
+      'C4/is_ranked_pvp: body is not the two-clause sentinel form ' +
+        '(player_identity != opponent_identity && opponent_identity != WILD_IDENTITY); ' +
+        'a single-clause body lets future battle sources silently rate as ranked (ADR-0122 §1.5)',
+    );
+  }
+
+  if (sideBFailures.length > 0) {
+    return {
+      name,
+      pass: false,
+      detail: sideBFailures.join('; '),
+    };
+  }
+
   return {
     name,
     pass: true,
@@ -890,7 +1474,10 @@ export default async function () {
       `outcome guards present in ${OUTCOME_CHECKED_REDUCERS.join(', ')}; ` +
       `start_battle has opponent-provenance gate; write_back helpers side_a-only; ` +
       `m17a: all ${PVP_REJECT_REDUCERS.length} PvE reducers have if is_ranked_pvp(&battle) guard ` +
-      `after Ongoing check (RL-8/9, ADR-0119 D5; teeth: 4 fixtures A/B/C/D — F1 hardened)`,
+      `after Ongoing check (RL-8/9, ADR-0119 D5; teeth: 4 fixtures A/B/C/D — F1 hardened); ` +
+      `m17.5a (ADR-0122): C1 both-role guard in 4 PvE reducers; C2 opponent-chain in evolve/fuse; ` +
+      `C3 SSOT single-def + both-indexes wrapper; C4 exactly 3 insert sites allowlisted + ` +
+      `is_ranked_pvp two-clause (EARS 17.5a-1/2/5; teeth: C1×3/C2×2/C3×3/C4×3 fixtures)`,
   };
 }
 
@@ -985,4 +1572,232 @@ function readServerModuleSources(dir) {
     else if (entry.endsWith('.rs')) parts.push(readFileSync(full, 'utf8'));
   }
   return parts.join('\n');
+}
+
+// ===========================================================================
+// m17.5a (ADR-0122): new helper functions for C1–C4 criteria.
+//
+// All helpers use indexOf only — no dynamic `new RegExp(...)`.
+// (Semgrep detect-non-literal-regexp has bitten 3×; see eval header.)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// C1: hasBothRoleBattleGuard(body) — does the body call is_in_ongoing_battle(ctx,?
+//
+// Returns true iff the body (after comment + string stripping) contains
+// `is_in_ongoing_battle(ctx,` — the shared guard wrapper call (ADR-0122 §1.1).
+//
+// Bad fixture: body with only player_identity().filter inline → false.
+// Good fixture: body with `if is_in_ongoing_battle(ctx, me)` → true.
+// ---------------------------------------------------------------------------
+export function hasBothRoleBattleGuard(body) {
+  const code = stripRustStrings(stripRustComments(body));
+  // Split needle to avoid matching a comment/string that describes the old pattern.
+  return code.indexOf('is_in_ongoing' + '_battle(ctx,') !== -1;
+}
+
+// ---------------------------------------------------------------------------
+// C2: hasBothRoleChain(body) — does the body chain the opponent_identity arm?
+//
+// Returns true iff the body (after comment + string stripping) contains
+// `.opponent_identity().filter(` — the both-role chain required by ADR-0122 §1.3.
+//
+// Bad fixture: body with only player_identity().filter → false.
+// Good fixture: body chaining opponent_identity().filter → true.
+// ---------------------------------------------------------------------------
+export function hasBothRoleChain(body) {
+  const code = stripRustStrings(stripRustComments(body));
+  return code.indexOf('.opponent_identity().filter(') !== -1;
+}
+
+// ---------------------------------------------------------------------------
+// C3: countFnDefinitions(src, fnName) — count `fn <fnName>(` definitions.
+//
+// Returns the number of times `fn <fnName>(` appears in src (after comment
+// stripping).  Used to assert exactly-1 definition of is_in_ongoing_battle.
+//
+// Bad fixture: two definitions → 2 (triggers the SSOT failure).
+// Good fixture: one definition → 1.
+// ---------------------------------------------------------------------------
+export function countFnDefinitions(src, fnName) {
+  const code = stripRustComments(src);
+  const needle = 'fn ' + fnName + '(';
+  let count = 0;
+  let idx = 0;
+  while (true) {
+    idx = code.indexOf(needle, idx);
+    if (idx === -1) break;
+    count++;
+    idx += needle.length;
+  }
+  return count;
+}
+
+// ---------------------------------------------------------------------------
+// C3: wrapperBodyHasBothIndexes(body) — does the wrapper body reference BOTH
+// player_identity() AND opponent_identity()?
+//
+// The thin ctx wrapper must delegate to is_in_ongoing_battle_either_role with
+// BOTH the player_identity and opponent_identity iterators (ADR-0122 D9).
+// A wrapper that passes player_identity() twice would pass unit tests but silently
+// break the both-role invariant (red-team F7).
+//
+// Bad fixture: body using player_identity() twice → false.
+// Good fixture: body using both player_identity() and opponent_identity() → true.
+// ---------------------------------------------------------------------------
+export function wrapperBodyHasBothIndexes(body) {
+  const code = stripRustStrings(stripRustComments(body));
+  return code.indexOf('player_identity()') !== -1 && code.indexOf('opponent_identity()') !== -1;
+}
+
+// ---------------------------------------------------------------------------
+// C4: findBattleInsertSites(src) — enumerate all ctx.db.battle().insert(Battle {
+// sites with their enclosing function name and insert struct text.
+//
+// Returns an array of { file, enclosingFn, enclosingBody, insertText } objects.
+// `file` is set to 'unknown' when called on concatenated sources (the caller
+// must pass per-file sources or use the file field from the scan context).
+//
+// Algorithm:
+//   1. Strip comments so the needle cannot match inside doc-comments.
+//   2. Search for `ctx.db.battle().insert(Battle {` using indexOf.
+//   3. For each hit, walk BACKWARDS from the hit to find the nearest
+//      `fn <name>(` preceding it — that is the enclosing function.
+//   4. Extract the enclosing function's full body (brace-depth counting).
+//   5. Extract the Battle { ... } struct literal (brace-depth from the insert).
+//
+// Enclosing-fn resolution is left-scan to the nearest `fn ` token — sufficient
+// because Rust does not allow nested named functions in reducers.
+//
+// Proof-of-teeth: the C4 alias bypass fixture (start_npc_trainer_battle) must
+// resolve as a NON-allowlisted enclosing fn — if it resolves as an allowlisted
+// name the C4 bad-fixture TEETH check fails immediately.
+// ---------------------------------------------------------------------------
+export function findBattleInsertSites(src) {
+  const code = stripRustComments(src);
+  const INSERT_NEEDLE = 'ctx.db.battle().insert(Battle {';
+  const sites = [];
+  let searchFrom = 0;
+
+  while (true) {
+    const insertIdx = code.indexOf(INSERT_NEEDLE, searchFrom);
+    if (insertIdx === -1) break;
+
+    // Walk backwards from insertIdx to find the nearest `fn <name>(`.
+    // Scan for `fn ` in the text before insertIdx.
+    let enclosingFn = 'unknown';
+    let enclosingFnStart = -1;
+    // Search backwards: find the last `fn ` before insertIdx.
+    let scanBack = insertIdx;
+    while (scanBack > 0) {
+      // Find `fn ` ending before scanBack.
+      const candidate = code.lastIndexOf('fn ', scanBack - 1);
+      if (candidate === -1) break;
+      // Extract the function name: text between `fn ` and the next `(`.
+      const afterFn = candidate + 3; // skip 'fn '
+      let nameEnd = afterFn;
+      while (nameEnd < code.length && code[nameEnd] !== '(' && code[nameEnd] !== '\n') {
+        nameEnd++;
+      }
+      if (code[nameEnd] === '(') {
+        const candidateName = code.slice(afterFn, nameEnd).trim();
+        // Reject if the name contains spaces (e.g. `fn ` inside a string or comment remnant)
+        // or if it is empty.
+        if (candidateName.length > 0 && !/\s/.test(candidateName)) {
+          enclosingFn = candidateName;
+          enclosingFnStart = candidate;
+          break;
+        }
+      }
+      scanBack = candidate;
+    }
+
+    // Extract the enclosing function body (from its opening brace to matching close).
+    let enclosingBody = '';
+    if (enclosingFnStart !== -1) {
+      let bi = enclosingFnStart;
+      while (bi < code.length && code[bi] !== '{') bi++;
+      if (bi < code.length) {
+        let depth = 1;
+        const bodyStart = bi + 1;
+        bi++;
+        while (bi < code.length && depth > 0) {
+          if (code[bi] === '{') depth++;
+          else if (code[bi] === '}') depth--;
+          bi++;
+        }
+        enclosingBody = code.slice(bodyStart, bi - 1);
+      }
+    }
+
+    // Extract the Battle { ... } struct literal from the insert call.
+    // Start after `ctx.db.battle().insert(`.
+    let structStart = insertIdx + 'ctx.db.battle().insert('.length;
+    // structStart now points at `Battle {`. Walk to find the matching `}`.
+    while (structStart < code.length && code[structStart] !== '{') structStart++;
+    let structEnd = structStart;
+    let depth2 = 0;
+    while (structEnd < code.length) {
+      if (code[structEnd] === '{') depth2++;
+      else if (code[structEnd] === '}') {
+        depth2--;
+        if (depth2 === 0) {
+          structEnd++;
+          break;
+        }
+      }
+      structEnd++;
+    }
+    const insertText = code.slice(structStart, structEnd);
+
+    sites.push({
+      file: 'unknown', // caller resolves per-file context
+      enclosingFn,
+      enclosingBody,
+      insertText,
+    });
+
+    searchFrom = insertIdx + INSERT_NEEDLE.length;
+  }
+
+  return sites;
+}
+
+// ---------------------------------------------------------------------------
+// C4: findBattleInsertSitesInFile(filePath) — per-file wrapper for findBattleInsertSites.
+// Reads the file and tags each site with the real filename.
+// ---------------------------------------------------------------------------
+export function findBattleInsertSitesInFile(filePath) {
+  let src;
+  try {
+    src = readFileSync(filePath, 'utf8');
+  } catch (_) {
+    return [];
+  }
+  return findBattleInsertSites(src).map((s) => ({ ...s, file: filePath }));
+}
+
+// ---------------------------------------------------------------------------
+// C4: isRankedPvpIsTwoClause(src) — is is_ranked_pvp the two-clause sentinel form?
+//
+// Returns true iff the is_ranked_pvp function body (after comment + string
+// stripping) contains BOTH:
+//   - a comparison involving `player_identity` != `opponent_identity`  (clause 1)
+//   - a comparison involving `opponent_identity` != WILD_IDENTITY       (clause 2)
+//
+// Bad fixture: body with only `opponent_identity != WILD_IDENTITY` → false.
+// Good fixture: body with both clauses → true.
+//
+// Uses indexOf only (no dynamic RegExp).
+// ---------------------------------------------------------------------------
+export function isRankedPvpIsTwoClause(src) {
+  const body = extractReducerBody(src, 'is_ranked_pvp');
+  if (!body) return false;
+  const code = stripRustStrings(stripRustComments(body));
+  // Clause 1: player_identity and opponent_identity compared (either order).
+  const hasPlayerOpponentClause =
+    code.indexOf('player_identity') !== -1 && code.indexOf('opponent_identity') !== -1;
+  // Clause 2: opponent_identity compared against WILD_IDENTITY.
+  const hasWildClause = code.indexOf('WILD_IDENTITY') !== -1;
+  return hasPlayerOpponentClause && hasWildClause;
 }
