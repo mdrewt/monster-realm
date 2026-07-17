@@ -72,13 +72,14 @@ mutate-core:
 # package for server-module/ is `monster-realm-module` (`-p server-module` fails
 # "Package not found in source tree"). Survivor-count RATCHET, not zero-tolerance:
 # the shell's reducers are covered by evals/integration/e2e rather than in-crate
-# units, so surviving mutants are counted against a cap (baseline 180 missed @
-# e875af0, 2026-07-04) instead of failing on any survivor (game-core's mutate-core
+# units, so surviving mutants are counted against a cap (baseline 309 missed @
+# 908c99b, 2026-07-15, per ADR-0118; prior baseline 180 missed @ e875af0,
+# 2026-07-04) instead of failing on any survivor (game-core's mutate-core
 # keeps zero-tolerance). `--test-tool nextest` is pinned for determinism with the
 # recorded baseline (zero doctests in the crate, so catch results are identical).
 # Cap bumps must update ADR-0050. Runs in nightly.yml only (mutation-server job);
 # the recipe body is integrity-guarded by evals/nightly-smoke-wiring.eval.mjs.
-mutate-server cap="180":
+mutate-server cap="309":
     #!/usr/bin/env bash
     set -euo pipefail
     # Fail loud on a non-integer cap BEFORE the (minutes-long) mutants run: a

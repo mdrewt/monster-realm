@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 83 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 84 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -92,6 +92,7 @@ Generated from 83 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0115](./0115-m16.5d-trade-runtime-coverage-hook.md) | Trade runtime coverage: test-hook dispatch + e2e round-trip + escrow-guard tail | Accepted | client-ui, ci-gates | m16.5d | Add `window.__mrTrade` write-side test hook; two-context Playwright e2e for propose→confirm trade flow with monster conservation check; TR-13 guard site for `attempt_recruit` + RT-SEC-02b string-literal stripping in `bodyHasGuard`. |
 | [0116](./0116-m16.5e-eval-infra-hardening.md) | Eval-infra hardening: append-only snapshot direction, extraction anti-hijack, additive-content coupling | Accepted | ci-gates | m16.5e | Snapshot gate gains a git-history append-only directional check; escrow-guard extraction sorts, drops `*_tests.rs`, strips strings; every Option content column must have a field-assignment in content.rs's re-seed path. |
 | [0117](./0117-m16.5f-trade-ssot-polish.md) | Trade SSOT polish: typed authorize rules, symmetric escrow checks, privacy-doc correction, offer TTL reaper | Accepted | economy-quests, security-authz, schema-persistence | m16.5f | Respond/confirm checks move to pure `authorize_respond`/`authorize_confirm`; two dead `TradeError` variants deleted; propose escrow checks made symmetric; privacy doc corrected; stale offers reaped by a one-shot TTL reaper with disarm. |
+| [0118](./0118-nightly-mutation-gate-triage-and-server-cap-rebaseline.md) | Nightly mutation-gate triage: check_headroom kill set, mutate-server cap re-baseline, wiring-eval ceiling raise | Accepted | ci-gates | nightly-mut-triage | Kill the 5 check_headroom survivors with counterparty accept-boundary + guard-contract tests (no exclusions, no production edits); re-baseline mutate-server cap 180→309 (exact measurement); raise the wiring-eval ceiling 200→340. |
 
 ## Harness design corpus (H- namespace)
 
@@ -276,6 +277,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0114](./0114-m16.5c-trade-client-completion.md) — m16.5c — Trade client completion: overlay symmetry, typed TradeStatus, render hygiene (Accepted)
 - [0115](./0115-m16.5d-trade-runtime-coverage-hook.md) — m16.5d — Trade runtime coverage: test-hook dispatch + e2e round-trip + escrow-guard tail (Accepted)
 - [0116](./0116-m16.5e-eval-infra-hardening.md) — m16.5e — Eval-infra hardening: append-only snapshot direction, extraction anti-hijack, additive-content coupling (Accepted)
+- [0118](./0118-nightly-mutation-gate-triage-and-server-cap-rebaseline.md) — nightly-mut-triage — Nightly mutation-gate triage: check_headroom kill set, mutate-server cap re-baseline, wiring-eval ceiling raise (Accepted)
 
 ### tooling-docs
 
