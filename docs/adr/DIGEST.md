@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 85 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 86 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -94,6 +94,7 @@ Generated from 85 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0117](./0117-m16.5f-trade-ssot-polish.md) | Trade SSOT polish: typed authorize rules, symmetric escrow checks, privacy-doc correction, offer TTL reaper | Accepted | economy-quests, security-authz, schema-persistence | m16.5f | Respond/confirm checks move to pure `authorize_respond`/`authorize_confirm`; two dead `TradeError` variants deleted; propose escrow checks made symmetric; privacy doc corrected; stale offers reaped by a one-shot TTL reaper with disarm. |
 | [0118](./0118-nightly-mutation-gate-triage-and-server-cap-rebaseline.md) | Nightly mutation-gate triage: check_headroom kill set, mutate-server cap re-baseline, wiring-eval ceiling raise | Accepted | ci-gates | nightly-mut-triage | Kill the 5 check_headroom survivors with counterparty accept-boundary + guard-contract tests (no exclusions, no production edits); re-baseline mutate-server cap 180→309 (exact measurement); raise the wiring-eval ceiling 200→340. |
 | [0119](./0119-ranked-ladder-spine.md) | Ranked ladder spine: persistent profile, integer Elo, once-only rating funnel, PvE-path PvP closure | Accepted | battle, security-authz, schema-persistence | m17a | Persistent world-readable `profile` table + pure integer-Elo `game-core::ranking` + a single `settle_pvp_battle` funnel (sole `apply_pvp_rating` caller) + PvP-reject guards on the four PvE battle reducers, eval-pinned in-slice. |
+| [0120](./0120-m17b-leaderboard-client-ui.md) | Ranked leaderboard client UI: pure-subscription profile mirror, deterministic comparator, fully-covered DOM shell | Accepted | client-ui | m17b | Pure-subscription leaderboard: `profile` mirrored into the store with no remove path, a strict-total-order comparator in a pure model, and a zero-callback KeyL DOM shell kept under coverage so the m17c-owned eval set is untouched. |
 
 ## Harness design corpus (H- namespace)
 
@@ -249,6 +250,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0110](./0110-m16b-pvp-client-ui.md) — m16b — PvP client UI (m16b) (Accepted)
 - [0114](./0114-m16.5c-trade-client-completion.md) — m16.5c — Trade client completion: overlay symmetry, typed TradeStatus, render hygiene (Accepted)
 - [0115](./0115-m16.5d-trade-runtime-coverage-hook.md) — m16.5d — Trade runtime coverage: test-hook dispatch + e2e round-trip + escrow-guard tail (Accepted)
+- [0120](./0120-m17b-leaderboard-client-ui.md) — m17b — Ranked leaderboard client UI: pure-subscription profile mirror, deterministic comparator, fully-covered DOM shell (Accepted)
 
 ### ci-gates
 
