@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 87 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 88 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -96,6 +96,7 @@ Generated from 87 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0119](./0119-ranked-ladder-spine.md) | Ranked ladder spine: persistent profile, integer Elo, once-only rating funnel, PvE-path PvP closure | Accepted | battle, security-authz, schema-persistence | m17a | Persistent world-readable `profile` table + pure integer-Elo `game-core::ranking` + a single `settle_pvp_battle` funnel (sole `apply_pvp_rating` caller) + PvP-reject guards on the four PvE battle reducers, eval-pinned in-slice. |
 | [0120](./0120-m17b-leaderboard-client-ui.md) | Ranked leaderboard client UI: pure-subscription profile mirror, deterministic comparator, fully-covered DOM shell | Accepted | client-ui | m17b | Pure-subscription leaderboard: `profile` mirrored into the store with no remove path, a strict-total-order comparator in a pure model, and a zero-callback KeyL DOM shell kept under coverage so the m17c-owned eval set is untouched. |
 | [0121](./0121-m17c-ranked-evals-tail.md) | 0121 — m17c ranked evals tail: sql-based server-truth e2e, checker-import reuse, no-op-body hardening | Accepted | ci-gates, security-authz | m17c (M17 ranked ladder — evals tail, RL-16/17/18) | RL-18 e2e reads rating truth via `spacetime sql` (no client hook; decoupled from m17b); RL-17 re-pinned by importing the frozen eval's checkers plus a guard-block-body hardening that kills the no-op-body evasion. |
+| [0122](./0122-both-role-ongoing-battle-guard-ssot.md) | 0122 — m17.5a both-role ongoing-battle guard SSOT: side-B PvP damage-laundering exploit closure | Accepted | battle, security-authz | m17.5a (M17.5 tenth-review residuals — side-B PvP exploit closure, EARS 17.5a-1..5) | Hoist the both-role ongoing-battle guard into guards.rs (pure core + ctx wrapper) as the SSOT for all PvE/PvP callers; chain the opponent index in evolve/fuse; classification pinned by eval, not a BattleKind column. |
 
 ## Harness design corpus (H- namespace)
 
@@ -171,6 +172,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0109](./0109-m16a-pvp-spine.md) — m16a — PvP battle spine (m16a) (Accepted)
 - [0112](./0112-m16.5a-battle-trade-interlock.md) — m16.5a — Battle↔trade interlock (both directions) + vacuous-revival gate (Accepted)
 - [0119](./0119-ranked-ladder-spine.md) — m17a — Ranked ladder spine: persistent profile, integer Elo, once-only rating funnel, PvE-path PvP closure (Accepted)
+- [0122](./0122-both-role-ongoing-battle-guard-ssot.md) — m17.5a (M17.5 tenth-review residuals — side-B PvP exploit closure, EARS 17.5a-1..5) — 0122 — m17.5a both-role ongoing-battle guard SSOT: side-B PvP damage-laundering exploit closure (Accepted)
 
 ### evolution-fusion
 
@@ -319,6 +321,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0117](./0117-m16.5f-trade-ssot-polish.md) — m16.5f — Trade SSOT polish: typed authorize rules, symmetric escrow checks, privacy-doc correction, offer TTL reaper (Accepted)
 - [0119](./0119-ranked-ladder-spine.md) — m17a — Ranked ladder spine: persistent profile, integer Elo, once-only rating funnel, PvE-path PvP closure (Accepted)
 - [0121](./0121-m17c-ranked-evals-tail.md) — m17c (M17 ranked ladder — evals tail, RL-16/17/18) — 0121 — m17c ranked evals tail: sql-based server-truth e2e, checker-import reuse, no-op-body hardening (Accepted)
+- [0122](./0122-both-role-ongoing-battle-guard-ssot.md) — m17.5a (M17.5 tenth-review residuals — side-B PvP exploit closure, EARS 17.5a-1..5) — 0122 — m17.5a both-role ongoing-battle guard SSOT: side-B PvP damage-laundering exploit closure (Accepted)
 
 ### economy-quests
 

@@ -5,7 +5,7 @@ slug: reducers/pvp_deadline_reaper
 updated: 2026-07-17
 tags: [reducer, spacetimedb, pvp]
 abstract: "Scheduled reaper: forfeit the non-submitting side when the turn deadline fires. This is a SCHEDULER-ONLY reducer — clie…"
-resource: server-module/src/pvp.rs#L1023
+resource: server-module/src/pvp.rs#L1005
 source: scripts/okf-export.mjs@server-module/src/pvp.rs
 ---
 
