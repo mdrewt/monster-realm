@@ -200,3 +200,37 @@ amending this ADR when m17b lands.
   reflected in the harness spec in the same slice.
 - The `trade_offer`-style privacy analysis is trivial here: `profile` exposes only
   name/rating/W/L, all intentionally public (leaderboard).
+
+## Residuals & implementation notes (review-fan record)
+
+- A red-team implementation pass added two additive winner/loser-mapping teeth
+  (`rt_m17_01_*` in `pvp_tests.rs`) closing the `SideBWins` tuple-swap mutant class that the
+  RL-5 needles alone could not catch (verifier bite-check (iii) confirms they bite).
+- Legacy RT-M16-05/RT-M16-08 tests were rewritten (tester) post-funnel: they now pin
+  delegation-absence in `apply_pvp_forfeit`/`resolve_pvp_turn_if_ready`; the positive commit
+  ordering lives in `m17a_rl10_settle_pvp_battle_ordering`. Their old body-slicing assumed the
+  pre-M17 function order and silently scanned the wrong function after the pvp.rs reorder
+  (the reorder itself was forced by those same slice assumptions).
+- pvp.rs layout note: `apply_pvp_forfeit` now precedes `resolve_pvp_turn_if_ready`; resolve's
+  ongoing-path persist deliberately uses a bound-handle form
+  (`let battles = ctx.db.battle(); battles.battle_id().update(...)`) so the chained
+  `battle().battle_id().update` needle pins ONLY the funnel's terminal commit — do not
+  "simplify" it back to the chained form (the rewritten RT-M16-08 forbids it).
+- W/L counters use `saturating_add(1)` (red-team F4) — panic-free, mirrors the rating
+  saturating policy; saturation unreachable (u32::MAX games).
+- mutate-server re-baselined DOWN 309→308 in this PR (ADR-0118 §4 exact-cap): final state
+  512 mutants / 308 missed / EXIT 0; all m17a mutants killed (targeted `cargo mutants` on
+  `game-core/src/ranking.rs`: 20/20 caught, 0 missed); the 308 survivors are pre-existing
+  (`trading.rs` et al.).
+- **RESIDUAL (pre-existing M16, NOT fixed here — candidate follow-up slice
+  `m17-fix-sideb-guards`):** the ongoing-battle guards in `start_battle`/`begin_encounter`
+  (`battle.rs`), `movement_tick` (`movement.rs`), and `heal_party` (`raising.rs`) check only
+  the `player_identity` role — a PvP SIDE-B player can open a second concurrent battle or
+  heal mid-PvP (HP write-back last-write-wins inconsistency; a heal is silently reversed at
+  PvP settle). Red-team verified this does NOT break rating exactly-once and is NOT a
+  rating-dodge; `movement.rs`/`raising.rs` are outside m17a `touches:`. Fix shape: extend
+  those guards with the `opponent_identity` index check (pvp.rs `is_in_ongoing_battle`
+  already covers both roles).
+- RESIDUAL (pre-existing M14e): `use_battle_item`'s `.expect("index was valid above")`
+  (`battle.rs` ~944) — style inconsistency, unreachable panic; left untouched to keep the
+  diff scoped.
