@@ -1725,6 +1725,18 @@ describe('rowConvert m17b: profileRowToStore — numbers stay numbers (RC-PR-02)
     expect(stored.wins).toBe(7);
     expect(stored.losses).toBe(4);
   });
+
+  it('RC-PR-02c BITES: output has exactly the five expected keys (kills spread-the-SDK-row impl)', () => {
+    // An impl that spreads the raw SDK row (e.g. `{ ...row, identity: row.identity.toHexString() }`)
+    // would leak the SDK Identity object as a second key (the original `identity` before
+    // the spread override is processed — or any other extra SDK-only fields the SDK adds
+    // in future). The exact key set proves the converter performs explicit field mapping.
+    // Kills: `return { ...row, identity: row.identity.toHexString() }` spread impls.
+    const sdk = makeSdkProfileRow('deadbeef', 'Alice', 1100, 3, 1);
+    const stored = profileRowToStore(sdk);
+    const keys = Object.keys(stored as Record<string, unknown>).sort();
+    expect(keys).toEqual(['identity', 'losses', 'name', 'rating', 'wins']);
+  });
 });
 
 describe('rowConvert m17b: profileRowToStore — edge cases (RC-PR-03 / RC-PR-04 / RC-PR-05)', () => {

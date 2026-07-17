@@ -116,6 +116,9 @@ Empty-name display fallback `'#' + identityHex.slice(0, 8)` (display-only; tie-b
 name). No row cap (YAGNI — ranked population bounded by decisive-ranked-battle players).
 Own-row: `identityHex === identity`; `identity === ''` ⇒ none. Empty board is a real state
 (profiles exist only after a decisive ranked battle) → "No ranked players yet".
+**Pinned display contract (test-review W-3):** each row's textContent contains the displayName,
+the rating as a decimal string, and the exact fragments `W<wins>` and `L<losses>` — the compact
+`W10`/`L2` form is contractual, not incidental.
 
 ## Anti-patterns pinned
 

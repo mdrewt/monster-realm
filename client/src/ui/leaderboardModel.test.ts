@@ -24,6 +24,7 @@
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { StoreProfile } from '../net/store';
 import {
@@ -73,40 +74,59 @@ describe('RL13-sort: buildLeaderboardViewModel sorts by rating descending', () =
 });
 
 describe('RL13-tiebreak-name: equal rating → tie-break by raw name ascending, code-unit, case-sensitive', () => {
-  it('RL13-name-01 BITES: "Bob" (B=66) < "alice" (a=97) at equal rating — kills localeCompare or toLower', () => {
+  it('RL13-name-01 BITES: "Bob" (B=66) < "alice" (a=97) at equal rating — kills localeCompare, toLower, or comparator-on-displayName', () => {
     // Spec: raw name asc, code-unit, case-sensitive; localeCompare('Bob','alice') gives
     // locale-dependent result that varies by platform and treats 'B' > 'a' in en-US.
-    // Code-unit comparison: 'B'.charCodeAt(0)=66 < 'a'.charCodeAt(0)=97 → "Bob" first.
-    // Kills: localeCompare / Intl / toLowerCase normalization before compare.
+    // Code-unit comparison: 'B'.charCodeAt(0)=66 < 'a'.charCodeAt(0)=97 → 'bbb' row first.
+    // Assert identityHex (not displayName) so a comparator-on-displayName mutant is killed:
+    // displayName equals raw name for non-empty names, so a displayName-comparator produces
+    // the same displayName order but the identityHex assertion proves which profile won
+    // the tiebreak regardless of how the comparator is expressed.
+    // Kills: localeCompare / Intl / toLowerCase / comparator-on-displayName.
     const profiles: StoreProfile[] = [
       makeProfile('aaa', 1000, 'alice'),
       makeProfile('bbb', 1000, 'Bob'),
     ];
     const vm = buildLeaderboardViewModel(profiles, '');
-    expect(vm.rows[0]!.displayName).toBe('Bob'); // 'B'(66) < 'a'(97) code-unit
+    // 'Bob' (B=66) sorts before 'alice' (a=97) by code-unit → 'bbb' identity first
+    expect(vm.rows[0]!.identityHex).toBe('bbb');
+    expect(vm.rows[1]!.identityHex).toBe('aaa');
+    // Confirm displayName matches raw name (non-empty names never use fallback)
+    expect(vm.rows[0]!.displayName).toBe('Bob');
     expect(vm.rows[1]!.displayName).toBe('alice');
   });
 
-  it('RL13-name-02 BITES: "Alice" < "alice" at equal rating (uppercase before lower, code-unit)', () => {
-    // 'A'(65) < 'a'(97): "Alice" must sort before "alice".
-    // Kills: case-insensitive comparison.
+  it('RL13-name-02 BITES: "Alice" < "alice" at equal rating (uppercase before lower, code-unit) — kills comparator-on-displayName', () => {
+    // 'A'(65) < 'a'(97): profile 'bbb' (name='Alice') must sort before 'aaa' (name='alice').
+    // Assert identityHex: a comparator-on-displayName mutant produces the same displayName
+    // ordering here (displayName === name), so only identityHex independently kills it.
+    // Kills: case-insensitive comparison, comparator-on-displayName.
     const profiles: StoreProfile[] = [
       makeProfile('aaa', 1000, 'alice'),
       makeProfile('bbb', 1000, 'Alice'),
     ];
     const vm = buildLeaderboardViewModel(profiles, '');
+    // 'Alice' (A=65) < 'alice' (a=97) → 'bbb' identity first
+    expect(vm.rows[0]!.identityHex).toBe('bbb');
+    expect(vm.rows[1]!.identityHex).toBe('aaa');
     expect(vm.rows[0]!.displayName).toBe('Alice');
     expect(vm.rows[1]!.displayName).toBe('alice');
   });
 
-  it('RL13-name-03 BITES: "Z" < "a" code-unit (Z=90 < a=97) — all uppercase before all lowercase', () => {
-    // Kills: localeCompare which puts 'Z' after 'a' in some locales.
+  it('RL13-name-03 BITES: "Z" < "a" code-unit (Z=90 < a=97) — all uppercase before all lowercase; kills comparator-on-displayName', () => {
+    // 'Z'(90) < 'z'(122): profile 'bbb' (name='Zulu') must sort before 'aaa' (name='zebra').
+    // localeCompare puts 'Z' after 'a' in many locales. identityHex assertion kills it AND
+    // the comparator-on-displayName mutant.
+    // Kills: localeCompare, comparator-on-displayName.
     const profiles: StoreProfile[] = [
       makeProfile('aaa', 500, 'zebra'),
       makeProfile('bbb', 500, 'Zulu'),
     ];
     const vm = buildLeaderboardViewModel(profiles, '');
-    expect(vm.rows[0]!.displayName).toBe('Zulu'); // 'Z'(90) < 'z'(122)
+    // 'Zulu' (Z=90) < 'zebra' (z=122) by first code-unit → 'bbb' first
+    expect(vm.rows[0]!.identityHex).toBe('bbb');
+    expect(vm.rows[1]!.identityHex).toBe('aaa');
+    expect(vm.rows[0]!.displayName).toBe('Zulu');
     expect(vm.rows[1]!.displayName).toBe('zebra');
   });
 });
@@ -322,20 +342,33 @@ describe('RL15-structural: leaderboardModel.ts source contains no server write p
     // ranking-security eval. A leaderboardModel.ts that imports from module_bindings
     // or calls reducers violates ADR-0014 (pure subscription view) and RL-15.
     // Uses .includes() — no dynamic RegExp (eslint ReDoS ban).
+    // fileURLToPath: robust against percent-encoding in import.meta.url (m17b req #5).
     const modelPath = path.join(
-      path.dirname(new URL(import.meta.url).pathname),
+      path.dirname(fileURLToPath(import.meta.url)),
       'leaderboardModel.ts',
     );
     let src: string;
     try {
       src = readFileSync(modelPath, 'utf8');
-    } catch {
-      // File does not exist yet — test will pass trivially (file is missing = no
-      // forbidden imports).  The module-not-found error in the import above is the
-      // red signal; once the impl ships, this test re-runs against the real source.
-      return;
+    } catch (err) {
+      // File must exist post-impl. Throw so the test is RED (not vacuously-green)
+      // until the implementer ships leaderboardModel.ts (m16.5a vacuous-revival-gate
+      // precedent: catch { return; } is a vacuous-pass hole).
+      throw new Error(
+        'leaderboard source could not be read — post-impl the file must exist: ' + String(err),
+      );
     }
-    const forbidden = ['module_bindings', '.reducers', 'reducers.', 'conn.conn', 'DbConnection'];
+    const forbidden = [
+      'module_bindings',
+      '.reducers',
+      'reducers.',
+      'conn.conn',
+      'DbConnection',
+      // set_profile_name is the only profile-write reducer the spec acknowledges
+      // (ADR-0119 D6). Transitive-import indirection is out of scope for this scan
+      // (review-caught), but a direct reference here is a clear RL-15 violation.
+      'set_profile_name',
+    ];
     for (const needle of forbidden) {
       expect(
         src.includes(needle),

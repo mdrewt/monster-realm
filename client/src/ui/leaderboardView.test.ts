@@ -26,7 +26,8 @@
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { LeaderboardViewModel } from './leaderboardModel';
 import { LeaderboardView } from './leaderboardView';
 
@@ -131,11 +132,14 @@ describe('RL13-view-visibility: show / hide / toggle / visible', () => {
     mountLeaderboardOverlay();
   });
 
+  afterEach(() => {
+    teardown();
+  });
+
   it('RL13-vis-01 BITES: visible is false initially (display:none) — kills visible=true-at-construction impl', () => {
     // Kills: an impl that sets display:block in the constructor or returns visible=true initially.
     const view = new LeaderboardView();
     expect(view.visible).toBe(false);
-    teardown();
   });
 
   it('RL13-vis-02 BITES: show() makes visible=true — kills no-op show impl', () => {
@@ -143,7 +147,6 @@ describe('RL13-view-visibility: show / hide / toggle / visible', () => {
     const view = new LeaderboardView();
     view.show();
     expect(view.visible).toBe(true);
-    teardown();
   });
 
   it('RL13-vis-03 BITES: hide() makes visible=false — kills no-op hide impl', () => {
@@ -153,7 +156,6 @@ describe('RL13-view-visibility: show / hide / toggle / visible', () => {
     expect(view.visible).toBe(true);
     view.hide();
     expect(view.visible).toBe(false);
-    teardown();
   });
 
   it('RL13-vis-04 BITES: toggle() flips from false to true — kills toggle that always hides', () => {
@@ -162,7 +164,6 @@ describe('RL13-view-visibility: show / hide / toggle / visible', () => {
     expect(view.visible).toBe(false);
     view.toggle();
     expect(view.visible).toBe(true);
-    teardown();
   });
 
   it('RL13-vis-05 BITES: toggle() flips from true to false — kills toggle that always shows', () => {
@@ -172,7 +173,6 @@ describe('RL13-view-visibility: show / hide / toggle / visible', () => {
     expect(view.visible).toBe(true);
     view.toggle();
     expect(view.visible).toBe(false);
-    teardown();
   });
 });
 
@@ -185,6 +185,10 @@ describe('RL13-render-empty: isEmpty:true → "No ranked players yet" message', 
     mountLeaderboardOverlay();
   });
 
+  afterEach(() => {
+    teardown();
+  });
+
   it('RL13-empty-01 BITES: empty VM shows exactly one <li> with "No ranked players yet" — kills blank-render impl', () => {
     // Kills: an impl that renders nothing for isEmpty:true, or renders multiple items.
     const view = new LeaderboardView();
@@ -195,7 +199,6 @@ describe('RL13-render-empty: isEmpty:true → "No ranked players yet" message', 
     const items = list.querySelectorAll('li');
     expect(items).toHaveLength(1);
     expect(items[0]!.textContent).toBe('No ranked players yet');
-    teardown();
   });
 });
 
@@ -208,13 +211,20 @@ describe('RL13-render-rows: row render — identity/rating/W/L text/own-row mark
     mountLeaderboardOverlay();
   });
 
+  afterEach(() => {
+    teardown();
+  });
+
   it('RL13-rows-01 BITES: one <li> per VM row in VM order — kills row-count mismatch or re-sort impl', () => {
     // The VIEW must not re-sort; it renders in the order the VM provides.
-    // Kills: an impl that re-sorts in render() or skips rows.
+    // Fixture rows are in NON-rating order (Bob/1000 first, then Alice/1200, then Carol/800)
+    // so a view that re-sorts by rating descending would produce ['aaa','bbb','ccc'] instead
+    // of the expected VM order ['bbb','aaa','ccc']. This kills a re-sort-in-render impl.
+    // Kills: an impl that re-sorts in render(), skips rows, or reorders by rating.
     const rows = [
-      makeRow('aaa', 'Alice', 1200, 10, 2, true),
-      makeRow('bbb', 'Bob', 1000, 5, 5, false),
-      makeRow('ccc', 'Carol', 800, 3, 8, false),
+      makeRow('bbb', 'Bob', 1000, 5, 5, false), // index 0 in VM — NOT highest rating
+      makeRow('aaa', 'Alice', 1200, 10, 2, true), // index 1 in VM — highest rating
+      makeRow('ccc', 'Carol', 800, 3, 8, false), // index 2 in VM
     ];
     const view = new LeaderboardView();
     view.show();
@@ -224,14 +234,13 @@ describe('RL13-render-rows: row render — identity/rating/W/L text/own-row mark
     const items = list.querySelectorAll('li');
     expect(items).toHaveLength(3);
 
-    // VM order (Alice→Bob→Carol) must be preserved exactly.
+    // VM order (Bob→Alice→Carol) must be preserved exactly — NOT rating order.
     const identities = Array.from(items).map((li) => (li as HTMLElement).dataset.identity);
-    expect(identities).toEqual(['aaa', 'bbb', 'ccc']);
-    teardown();
+    expect(identities).toEqual(['bbb', 'aaa', 'ccc']);
   });
 
   it('RL13-rows-02 BITES: each li textContent contains displayName, rating, "W<wins>", "L<losses>" — kills missing field impl', () => {
-    // RL-13 spec: "shows rating/W/L" per row.
+    // RL-13 spec: "shows rating/W/L" per row (contractual per docs/specs/m17b-plan.md).
     // Kills: an impl that shows name but omits rating, or shows rating but omits W/L.
     const view = new LeaderboardView();
     view.show();
@@ -244,7 +253,6 @@ describe('RL13-render-rows: row render — identity/rating/W/L text/own-row mark
     expect(text).toContain('1200');
     expect(text).toContain('W10');
     expect(text).toContain('L2');
-    teardown();
   });
 
   it('RL13-rows-03 BITES: own row has dataset.own === "true" — kills missing own-row marker impl', () => {
@@ -268,7 +276,6 @@ describe('RL13-render-rows: row render — identity/rating/W/L text/own-row mark
     // Non-own rows must NOT have dataset.own set (undefined, not 'false').
     // This avoids a CSS :not([data-own]) selector breaking.
     expect(bobLi.dataset.own).toBeUndefined();
-    teardown();
   });
 
   it('RL13-rows-04 BITES: re-render replaces content — kills append-instead-of-replace impl', () => {
@@ -290,7 +297,6 @@ describe('RL13-render-rows: row render — identity/rating/W/L text/own-row mark
     const items = list.querySelectorAll('li');
     expect(items).toHaveLength(1);
     expect((items[0] as HTMLElement).dataset.identity).toBe('ccc');
-    teardown();
   });
 });
 
@@ -301,6 +307,10 @@ describe('RL13-render-rows: row render — identity/rating/W/L text/own-row mark
 describe('RL13-xss: XSS tooth — displayName injected as literal text, never innerHTML', () => {
   beforeEach(() => {
     mountLeaderboardOverlay();
+  });
+
+  afterEach(() => {
+    teardown();
   });
 
   it('RL13-xss-01 BITES: <script> and <img onerror> in displayName do not inject elements — kills innerHTML-with-data impl', () => {
@@ -327,7 +337,6 @@ describe('RL13-xss: XSS tooth — displayName injected as literal text, never in
     // because the img/script would be parsed as elements (textContent skips elements).
     // With textContent assignment, the string is literal and textContent reflects it.
     expect(li.textContent).toContain(maliciousName);
-    teardown();
   });
 });
 
@@ -341,26 +350,69 @@ describe('RL15-structural: leaderboardView.ts source contains no server write pa
     // This is the client-side RL-15 mirror for the VIEW layer; the server-side
     // teeth live in m17c's ranking-security eval.
     // Uses .includes() — no dynamic RegExp (eslint ReDoS ban).
-    const viewPath = path.join(
-      path.dirname(new URL(import.meta.url).pathname),
-      'leaderboardView.ts',
-    );
+    // fileURLToPath: robust against percent-encoding in import.meta.url (m17b req #5).
+    const viewPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'leaderboardView.ts');
     let src: string;
     try {
       src = readFileSync(viewPath, 'utf8');
-    } catch {
-      // File does not exist yet — test will pass trivially (file missing = no
-      // forbidden imports). The module-not-found error in the top-level import
-      // is the red signal; once the impl ships, this test re-runs against the
-      // real source.
-      return;
+    } catch (err) {
+      // File must exist post-impl. Throw so the test is RED (not vacuously-green)
+      // until the implementer ships leaderboardView.ts (m16.5a vacuous-revival-gate
+      // precedent: catch { return; } is a vacuous-pass hole).
+      throw new Error(
+        'leaderboard source could not be read — post-impl the file must exist: ' + String(err),
+      );
     }
-    const forbidden = ['module_bindings', '.reducers', 'reducers.', 'conn.conn', 'DbConnection'];
+    const forbidden = [
+      'module_bindings',
+      '.reducers',
+      'reducers.',
+      'conn.conn',
+      'DbConnection',
+      // set_profile_name is the only profile-write reducer the spec acknowledges
+      // (ADR-0119 D6). Transitive-import indirection is out of scope for this scan
+      // (review-caught), but a direct reference is a clear RL-15 violation.
+      'set_profile_name',
+    ];
     for (const needle of forbidden) {
       expect(
         src.includes(needle),
         `leaderboardView.ts must not contain "${needle}" (RL-15: pure subscription view, no write path)`,
       ).toBe(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RL-13 subscription wiring tooth: connection.ts must subscribe to 'profile'
+// ---------------------------------------------------------------------------
+
+describe('RL13-conn-subscription: connection.ts must wire the profile subscription', () => {
+  it('RL13-conn-sub-01 BITES: connection.ts contains "SELECT * FROM profile" — kills missing-subscription impl', () => {
+    // RL-13: the leaderboard overlay subscribes to `profile`. If connection.ts does
+    // not include the subscription line, the store never receives profile rows and
+    // the leaderboard is always empty even when profiles exist on the server.
+    // This test is RED now (connection.ts exists but the subscription is not yet wired)
+    // and becomes GREEN when the implementer adds the profile subscription line.
+    // Fails loudly (throw) if the file can't be read — no vacuous-pass.
+    // Uses .includes() — no dynamic RegExp (eslint ReDoS ban).
+    const connPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '../../net/connection.ts',
+    );
+    let src: string;
+    try {
+      src = readFileSync(connPath, 'utf8');
+    } catch (err) {
+      throw new Error(
+        'connection.ts could not be read — the file must exist for the subscription tooth: ' +
+          String(err),
+      );
+    }
+    // The exact subscription line that connection.ts must contain.
+    expect(
+      src.includes("'SELECT * FROM profile'"),
+      'connection.ts must contain "\'SELECT * FROM profile\'" — the profile subscription wires the leaderboard store (RL-13)',
+    ).toBe(true);
   });
 });
