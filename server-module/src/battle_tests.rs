@@ -747,3 +747,238 @@ fn use_battle_item_checks_cure_status_before_consume() {
         ),
     }
 }
+
+// ===========================================================================
+// m17a (ADR-0119): PvP-reject guard source-scan tests (RL-8/9, D5)
+//
+// The four PvE battle reducers (submit_attack, swap_active, flee,
+// use_battle_item) must each contain a PvP-reject guard — `is_ranked_pvp(&battle)`
+// — IMMEDIATELY AFTER the `outcome == Ongoing` check, before any reducer-specific
+// side-effects.
+//
+// This guarantees (RL-8): flee cannot dodge a rating loss on a PvP battle.
+// This guarantees (RL-9): submit_attack/swap_active/use_battle_item cannot drive
+//   PvP turns through the PvE path (which would let server AI play side B, or
+//   produce a decisive outcome outside the settle_pvp_battle funnel).
+//
+// All four tests below are RED now — the needle is absent from every reducer body.
+//
+// Additionally: a GREEN pinned-precondition test verifies that attempt_recruit
+// is structurally safe (requires the wild-only `battle_wild` row lookup, which
+// errors before any outcome write on a PvP battle). This test is GREEN today by
+// design and must REMAIN GREEN — it pins an existing invariant m17a relies upon.
+//
+// Needle strategy (self-match avoidance): `is_ranked_pvp(&battle)` is assembled
+// via concat!() so the complete literal does not appear verbatim in this test
+// file, which is inside MODULE_SOURCE = include_str!("battle.rs"). However,
+// MODULE_SOURCE includes battle.rs NOT battle_tests.rs, so self-match is not
+// actually a risk here. We still use concat!() for convention consistency and to
+// explicitly document the evasion.
+// ===========================================================================
+
+/// m17a-RL-8 source-guard: `flee` body must contain `is_ranked_pvp(&battle)`.
+///
+/// Also asserts the guard appears AFTER the `outcome != BattleOutcome::Ongoing`
+/// check — position ordering guarantees the guard runs only on ongoing battles
+/// (the Ongoing check exits early on terminated battles, so the PvP guard is
+/// never reached for those).
+///
+/// Kills: any impl of `flee` that omits the PvP reject, allowing a player to
+/// flee a PvP battle and dodge a rating loss (the client `canFlee=false` is
+/// not authoritative — ADR-0119 D5).
+/// RED now: needle absent from current flee body.
+#[test]
+fn m17a_flee_has_pvp_reject_guard() {
+    let stripped = strip_rust_comments(MODULE_SOURCE);
+    let pvp_needle = concat!("is_ranked", "_pvp(&battle)");
+    let ongoing_needle = concat!("BattleOutcome::", "Ongoing");
+
+    let body = extract_fn_body(&stripped, "flee")
+        .expect("m17a-RL-8: `flee` reducer must exist in battle.rs");
+
+    assert!(
+        body.contains(pvp_needle),
+        "m17a-RL-8 FAIL: `flee` body is missing the PvP-reject guard `{}`. \
+         Without it, a player can flee a PvP battle and dodge a rating loss. \
+         Add: `if is_ranked_pvp(&battle) {{ log_reject(...); return Err(...); }}` \
+         immediately after the outcome != Ongoing check. RED: needle absent. (ADR-0119 D5)",
+        pvp_needle
+    );
+
+    // Order: ongoing check must precede pvp guard in the source.
+    let ongoing_pos = body
+        .find(ongoing_needle)
+        .expect("m17a-RL-8: `flee` body must contain a BattleOutcome::Ongoing check");
+    let pvp_pos = body.find(pvp_needle).expect("already confirmed above");
+
+    assert!(
+        pvp_pos > ongoing_pos,
+        "m17a-RL-8 ORDER FAIL: `is_ranked_pvp(&battle)` (pos {pvp_pos}) must appear AFTER \
+         `BattleOutcome::Ongoing` check (pos {ongoing_pos}) in `flee` body. \
+         Place the PvP guard immediately after the Ongoing reject (ADR-0119 D5)."
+    );
+}
+
+/// m17a-RL-9 source-guard: `submit_attack` body must contain `is_ranked_pvp(&battle)`.
+///
+/// Also asserts the guard appears AFTER the `BattleOutcome::Ongoing` check.
+///
+/// Kills: any impl that allows side A to drive PvP turns via submit_attack, letting
+/// the server AI resolve side B's moves — a ranked-farming exploit and an
+/// exactly-once violation (decisive outcome produced outside the settle funnel).
+/// RED now: needle absent from current submit_attack body.
+#[test]
+fn m17a_submit_attack_has_pvp_reject_guard() {
+    let stripped = strip_rust_comments(MODULE_SOURCE);
+    let pvp_needle = concat!("is_ranked", "_pvp(&battle)");
+    let ongoing_needle = concat!("BattleOutcome::", "Ongoing");
+
+    let body = extract_fn_body(&stripped, "submit_attack")
+        .expect("m17a-RL-9: `submit_attack` reducer must exist in battle.rs");
+
+    assert!(
+        body.contains(pvp_needle),
+        "m17a-RL-9 FAIL: `submit_attack` body is missing the PvP-reject guard `{}`. \
+         Without it, side A can drive PvP turns via the PvE path (server AI resolves \
+         side B — farming exploit + exactly-once violation). \
+         Add the guard immediately after the outcome != Ongoing check (ADR-0119 D5).",
+        pvp_needle
+    );
+
+    let ongoing_pos = body
+        .find(ongoing_needle)
+        .expect("m17a-RL-9: `submit_attack` body must contain a BattleOutcome::Ongoing check");
+    let pvp_pos = body.find(pvp_needle).expect("already confirmed above");
+
+    assert!(
+        pvp_pos > ongoing_pos,
+        "m17a-RL-9 ORDER FAIL: `is_ranked_pvp(&battle)` (pos {pvp_pos}) must appear AFTER \
+         `BattleOutcome::Ongoing` check (pos {ongoing_pos}) in `submit_attack` body (ADR-0119 D5)."
+    );
+}
+
+/// m17a-RL-9 source-guard: `swap_active` body must contain `is_ranked_pvp(&battle)`.
+///
+/// Also asserts the guard appears AFTER the `BattleOutcome::Ongoing` check.
+///
+/// Kills: an impl where swap_active can be used on a PvP battle, letting a player
+/// manipulate team composition outside the both-submit protocol.
+/// RED now: needle absent from current swap_active body.
+#[test]
+fn m17a_swap_active_has_pvp_reject_guard() {
+    let stripped = strip_rust_comments(MODULE_SOURCE);
+    let pvp_needle = concat!("is_ranked", "_pvp(&battle)");
+    let ongoing_needle = concat!("BattleOutcome::", "Ongoing");
+
+    let body = extract_fn_body(&stripped, "swap_active")
+        .expect("m17a-RL-9: `swap_active` reducer must exist in battle.rs");
+
+    assert!(
+        body.contains(pvp_needle),
+        "m17a-RL-9 FAIL: `swap_active` body is missing the PvP-reject guard `{}`. \
+         Without it, a player can manipulate PvP team composition outside the \
+         both-submit protocol. Add the guard after the Ongoing check (ADR-0119 D5).",
+        pvp_needle
+    );
+
+    let ongoing_pos = body
+        .find(ongoing_needle)
+        .expect("m17a-RL-9: `swap_active` body must contain a BattleOutcome::Ongoing check");
+    let pvp_pos = body.find(pvp_needle).expect("already confirmed above");
+
+    assert!(
+        pvp_pos > ongoing_pos,
+        "m17a-RL-9 ORDER FAIL: `is_ranked_pvp(&battle)` (pos {pvp_pos}) must appear AFTER \
+         `BattleOutcome::Ongoing` check (pos {ongoing_pos}) in `swap_active` body (ADR-0119 D5)."
+    );
+}
+
+/// m17a-RL-9 source-guard: `use_battle_item` body must contain `is_ranked_pvp(&battle)`.
+///
+/// Also asserts the guard appears AFTER the `BattleOutcome::Ongoing` check.
+///
+/// Kills: an impl where items can be used in PvP battles — state mutation outside
+/// the both-submit secret-pick protocol (PvP item use is deferred; reject now,
+/// lift deliberately later — ADR-0119 D5).
+/// RED now: needle absent from current use_battle_item body.
+#[test]
+fn m17a_use_battle_item_has_pvp_reject_guard() {
+    let stripped = strip_rust_comments(MODULE_SOURCE);
+    let pvp_needle = concat!("is_ranked", "_pvp(&battle)");
+    let ongoing_needle = concat!("BattleOutcome::", "Ongoing");
+
+    let body = extract_fn_body(&stripped, "use_battle_item")
+        .expect("m17a-RL-9: `use_battle_item` reducer must exist in battle.rs");
+
+    assert!(
+        body.contains(pvp_needle),
+        "m17a-RL-9 FAIL: `use_battle_item` body is missing the PvP-reject guard `{}`. \
+         PvP item use is rejected in m17a (deferred feature; lift deliberately later). \
+         Add the guard after the Ongoing check (ADR-0119 D5).",
+        pvp_needle
+    );
+
+    let ongoing_pos = body
+        .find(ongoing_needle)
+        .expect("m17a-RL-9: `use_battle_item` body must contain a BattleOutcome::Ongoing check");
+    let pvp_pos = body.find(pvp_needle).expect("already confirmed above");
+
+    assert!(
+        pvp_pos > ongoing_pos,
+        "m17a-RL-9 ORDER FAIL: `is_ranked_pvp(&battle)` (pos {pvp_pos}) must appear AFTER \
+         `BattleOutcome::Ongoing` check (pos {ongoing_pos}) in `use_battle_item` body (ADR-0119 D5)."
+    );
+}
+
+/// m17a PINNED PRECONDITION (GREEN today): `attempt_recruit` is structurally safe
+/// — it requires a `battle_wild` row lookup and returns Err("not a wild battle")
+/// before any outcome write, so it cannot be used to drive PvP battles.
+///
+/// This is NOT a new behavior test — it pins an EXISTING invariant that m17a
+/// relies on to justify NOT adding a PvP guard to attempt_recruit (ADR-0119 D5,
+/// "attempt_recruit needs no guard (wild-only battle_wild row requirement)").
+///
+/// If this test goes RED, the structural safety assumption has broken and a PvP
+/// guard MUST be added to attempt_recruit — it is NOT a signal to remove the test.
+///
+/// Kills (if ever broken): a refactor that removes the battle_wild lookup, which
+/// would allow attempt_recruit to fire on a PvP battle.
+/// GREEN today by design.
+#[test]
+fn m17a_attempt_recruit_is_structurally_safe_precondition() {
+    let taming_src = include_str!("taming.rs");
+    let stripped_taming = strip_rust_comments(taming_src);
+
+    // Pinned needle 1: attempt_recruit body must look up battle_wild().
+    // This is the structural gate that makes it safe for PvP battles: a PvP battle
+    // has no battle_wild row, so the lookup returns None and the function returns Err
+    // before any outcome mutation.
+    let battle_wild_needle = concat!("battle_wild()", ".battle_id()");
+
+    let body = extract_fn_body(&stripped_taming, "attempt_recruit")
+        .expect("m17a PRECONDITION: `attempt_recruit` must exist in taming.rs");
+
+    assert!(
+        body.contains(battle_wild_needle),
+        "m17a PRECONDITION BROKEN: `attempt_recruit` no longer contains `{}`. \
+         The structural safety guarantee that protects PvP battles relies on this \
+         lookup returning None (and Err) for non-wild battles. \
+         If this lookup was removed, a PvP guard MUST be added to attempt_recruit. \
+         (ADR-0119 D5 documents this invariant.)",
+        battle_wild_needle
+    );
+
+    // Pinned needle 2: the not-a-wild-battle error string must be present.
+    // This confirms the battle_wild lookup is used as a gate (not just for reads).
+    let not_wild_needle = concat!("not a wild", " battle");
+
+    assert!(
+        body.contains(not_wild_needle),
+        "m17a PRECONDITION BROKEN: `attempt_recruit` body no longer contains the \
+         \"not a wild battle\" error string (assembled: `{}`). \
+         This error is returned when the battle_wild row is absent — the path that \
+         protects PvP battles from attempt_recruit. \
+         Restore or add an equivalent guard that rejects non-wild battles. (ADR-0119 D5)",
+        not_wild_needle
+    );
+}

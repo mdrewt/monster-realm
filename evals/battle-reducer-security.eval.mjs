@@ -651,15 +651,234 @@ export default async function () {
     };
   }
 
+  // =========================================================================
+  // m17a (ADR-0119, RL-8/9/17): PvP-reject guard criterion
+  //
+  // Fixtures A/B/C run first (proof-of-teeth), then the real-source scan for
+  // the four PvE reducers. Failures accumulate into pvpFailures[].
+  // RED now: is_ranked_pvp(&battle) absent from all four reducer bodies.
+  // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // Fixture A (BAD — missing pvp guard): flee body with outcome check but NO
+  // is_ranked_pvp. hasPvpRejectGuard must return false.
+  // Kills: a checker that accepts any body containing BattleOutcome::Ongoing.
+  // -------------------------------------------------------------------------
+  const badNoPvpGuard = `
+    pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
+        let me = ctx.sender;
+        let mut battle = ctx.db.battle().battle_id().find(battle_id)
+            .ok_or_else(|| "battle not found".to_string())?;
+        if battle.player_identity != ctx.sender {
+            return Err("not owner".to_string());
+        }
+        if battle.state.outcome != BattleOutcome::Ongoing {
+            return Err("battle is not ongoing".to_string());
+        }
+        battle.state.outcome = BattleOutcome::Fled;
+        ctx.db.battle().battle_id().update(battle);
+        Ok(())
+    }
+  `;
+  const badBodyA = extractReducerBody(badNoPvpGuard, 'flee');
+  if (!badBodyA) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17a fixture A): could not extract flee body from bad-no-pvp-guard fixture',
+    };
+  }
+  if (hasPvpRejectGuard(badBodyA)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17a fixture A): hasPvpRejectGuard returned true for a body ' +
+        'without is_ranked_pvp — checker does not bite a missing guard',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Fixture B (GOOD — outcome check and pvp guard in correct order):
+  // hasPvpRejectGuard must return true; pvpGuardAfterOngoingCheck must return true.
+  // Kills: a checker with a false negative on a correctly-guarded reducer.
+  // -------------------------------------------------------------------------
+  const goodWithPvpGuard = `
+    pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
+        let me = ctx.sender;
+        let mut battle = ctx.db.battle().battle_id().find(battle_id)
+            .ok_or_else(|| "battle not found".to_string())?;
+        if battle.player_identity != ctx.sender {
+            return Err("not owner".to_string());
+        }
+        if battle.state.outcome != BattleOutcome::Ongoing {
+            return Err("battle is not ongoing".to_string());
+        }
+        if is_ranked_pvp(&battle) {
+            log_reject("flee", me, "pvp battle");
+            return Err("cannot flee a ranked PvP battle".to_string());
+        }
+        battle.state.outcome = BattleOutcome::Fled;
+        ctx.db.battle().battle_id().update(battle);
+        Ok(())
+    }
+  `;
+  const goodBodyB = extractReducerBody(goodWithPvpGuard, 'flee');
+  if (!goodBodyB) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17a fixture B): could not extract flee body from good-with-pvp-guard fixture',
+    };
+  }
+  if (!hasPvpRejectGuard(goodBodyB)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17a fixture B): hasPvpRejectGuard returned false for a ' +
+        'correctly-guarded body — checker has a false negative',
+    };
+  }
+  if (!pvpGuardAfterOngoingCheck(goodBodyB)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17a fixture B): pvpGuardAfterOngoingCheck returned false for a ' +
+        'correctly-ordered body (is_ranked_pvp after BattleOutcome::Ongoing) — ' +
+        'order checker has a false negative',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Fixture C (BAD ORDER — pvp guard BEFORE outcome check):
+  // pvpGuardAfterOngoingCheck must return false.
+  // Kills: an order checker that ignores position and just checks presence.
+  // -------------------------------------------------------------------------
+  const badWrongOrder = `
+    pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Result<(), String> {
+        let me = ctx.sender;
+        let battle = ctx.db.battle().battle_id().find(battle_id)
+            .ok_or_else(|| "battle not found".to_string())?;
+        if battle.player_identity != ctx.sender {
+            return Err("not owner".to_string());
+        }
+        if is_ranked_pvp(&battle) {
+            return Err("ranked pvp: use submit_pvp_action".to_string());
+        }
+        if battle.state.outcome != BattleOutcome::Ongoing {
+            return Err("battle is not ongoing".to_string());
+        }
+        Ok(())
+    }
+  `;
+  const badBodyC = extractReducerBody(badWrongOrder, 'submit_attack');
+  if (!badBodyC) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17a fixture C): could not extract submit_attack body from bad-wrong-order fixture',
+    };
+  }
+  if (!hasPvpRejectGuard(badBodyC)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17a fixture C): hasPvpRejectGuard returned false even though guard is present — ' +
+        'presence check broken',
+    };
+  }
+  if (pvpGuardAfterOngoingCheck(badBodyC)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17a fixture C): pvpGuardAfterOngoingCheck returned true for a body ' +
+        'where is_ranked_pvp appears BEFORE BattleOutcome::Ongoing — ' +
+        'order checker does not bite wrong ordering',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Real-source scan: four PvE reducers must carry the PvP-reject guard.
+  // RED now: is_ranked_pvp(&battle) absent from all four bodies.
+  // -------------------------------------------------------------------------
+  const PVP_REJECT_REDUCERS = ['submit_attack', 'swap_active', 'flee', 'use_battle_item'];
+  const pvpFailures = [];
+
+  for (const reducerName of PVP_REJECT_REDUCERS) {
+    const body = extractReducerBody(src, reducerName);
+    if (!body) {
+      pvpFailures.push(`${reducerName}: reducer not found in server-module source`);
+      continue;
+    }
+    if (!hasPvpRejectGuard(body)) {
+      pvpFailures.push(
+        `${reducerName}: missing PvP-reject guard (is_ranked_pvp(&battle)) — ` +
+          `RL-8/9: PvP battles must be rejected from PvE reducers (ADR-0119 D5)`,
+      );
+    } else if (!pvpGuardAfterOngoingCheck(body)) {
+      pvpFailures.push(
+        `${reducerName}: is_ranked_pvp(&battle) appears BEFORE BattleOutcome::Ongoing check — ` +
+          `must be placed immediately AFTER the Ongoing check (ADR-0119 D5)`,
+      );
+    }
+  }
+
+  if (pvpFailures.length > 0) {
+    return {
+      name,
+      pass: false,
+      detail: pvpFailures.join('; '),
+    };
+  }
+
   return {
     name,
     pass: true,
     detail:
       `all ${ALL_REDUCERS.length} battle reducers found with ownership checks; ` +
       `outcome guards present in ${OUTCOME_CHECKED_REDUCERS.join(', ')}; ` +
-      `start_battle has opponent-provenance gate (conditional context, hardened against dead-code bypass); ` +
-      `write_back helpers are side_a-only (teeth verified via 10 fixtures)`,
+      `start_battle has opponent-provenance gate; write_back helpers side_a-only; ` +
+      `m17a: all ${PVP_REJECT_REDUCERS.length} PvE reducers have is_ranked_pvp(&battle) guard ` +
+      `after Ongoing check (RL-8/9, ADR-0119 D5; teeth: 3 fixtures A/B/C)`,
   };
+}
+
+// ===========================================================================
+// m17a (ADR-0119, RL-8/9/17): PvP-reject guard checkers (module-level exports)
+//
+// These are exported for reuse by future m17c evals. They are NOT a second
+// default export — the single default export above integrates their logic.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Checker: does the reducer body contain the PvP-reject guard?
+// Uses indexOf only — no dynamic RegExp (semgrep detect-non-literal-regexp).
+// The needle is assembled from two parts so it does not appear verbatim as a
+// complete string in this file (convention consistency).
+// ---------------------------------------------------------------------------
+export function hasPvpRejectGuard(body) {
+  const code = stripRustComments(body);
+  // needle: 'is_ranked' + '_pvp(&battle)' = 'is_ranked_pvp(&battle)'
+  return code.indexOf('is_ranked' + '_pvp(&battle)') !== -1;
+}
+
+// ---------------------------------------------------------------------------
+// Checker: does the PvP guard appear AFTER the Ongoing check in the body?
+// Returns true iff both are present and pvpGuard offset > ongoingCheck offset.
+// ---------------------------------------------------------------------------
+export function pvpGuardAfterOngoingCheck(body) {
+  const code = stripRustComments(body);
+  const ongoingIdx = code.indexOf('BattleOutcome::' + 'Ongoing');
+  const pvpIdx = code.indexOf('is_ranked' + '_pvp(&battle)');
+  if (ongoingIdx === -1 || pvpIdx === -1) return false;
+  return pvpIdx > ongoingIdx;
 }
 
 // M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive

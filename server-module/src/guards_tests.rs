@@ -343,3 +343,111 @@ fn validate_name_accepts_exactly_max_name_len_chars() {
         MAX_NAME_LEN + 1
     );
 }
+
+// ===========================================================================
+// m17a (ADR-0119): is_ranked_pvp unit tests (RL-6, D4)
+//
+// `is_ranked_pvp(&Battle) -> bool` is defined as:
+//   player_identity != opponent_identity && opponent_identity != WILD_IDENTITY
+//
+// Home: guards.rs (the battle-authz guard family SSOT — require_owner,
+// require_pvp_participant live here; ADR-0119 D4).
+//
+// Three cases:
+//   1. Distinct players, non-wild opponent → true  (ranked PvP battle)
+//   2. Self-battle (player == opponent)    → false (practice/friendly battle)
+//   3. Wild battle (opponent == WILD)      → false (PvE wild encounter)
+//
+// ALL THREE tests are COMPILE-RED until `is_ranked_pvp` is added to guards.rs
+// and becomes visible via `use super::*;` at the top of this file.
+// ===========================================================================
+
+/// Build a minimal Battle fixture for is_ranked_pvp tests.
+/// Reuses the `make_test_battle` constructor already in this module and
+/// injects custom player_identity / opponent_identity.
+fn make_pvp_test_battle(
+    player_identity: spacetimedb::Identity,
+    opponent_identity: spacetimedb::Identity,
+) -> Battle {
+    // Reuse the existing helper with an Ongoing outcome and empty party.
+    let mut b = make_test_battle(999, game_core::BattleOutcome::Ongoing, vec![]);
+    b.player_identity = player_identity;
+    b.opponent_identity = opponent_identity;
+    b
+}
+
+/// m17a-RL-6 / D4: distinct non-wild players → is_ranked_pvp returns true.
+///
+/// This is the core ranked-PvP classification: two different real players.
+///
+/// Kills: an impl that always returns false (missing the feature), or one that
+/// uses `==` instead of `!=` (inverts both conditions), or one that only checks
+/// one of the two conditions.
+/// COMPILE-RED: is_ranked_pvp does not yet exist in guards.rs.
+#[test]
+fn m17a_is_ranked_pvp_distinct_players_non_wild_is_true() {
+    let player = spacetimedb::Identity::from_byte_array([1u8; 32]);
+    // Opponent: different from player AND different from WILD (all-zeros).
+    let opponent = spacetimedb::Identity::from_byte_array([2u8; 32]);
+
+    let battle = make_pvp_test_battle(player, opponent);
+
+    assert!(
+        is_ranked_pvp(&battle),
+        "m17a-RL-6 FAIL: is_ranked_pvp must return true when player_identity ({:?}) \
+         != opponent_identity ({:?}) AND opponent_identity != WILD_IDENTITY. \
+         This is the ranked PvP classification (ADR-0119 D4). \
+         Kills: always-false impl, inverted conditions, or single-condition check.",
+        player,
+        opponent
+    );
+}
+
+/// m17a-RL-6 / D4: self-battle (player == opponent) → is_ranked_pvp returns false.
+///
+/// Practice / sandbox battles use the caller's own identity as opponent.
+/// They must never rate — RL-6 "friendly battles shall never rate".
+///
+/// Kills: an impl that returns true for self-battles (would charge ratings for
+/// practice grinding), or one that only checks the wild condition.
+/// COMPILE-RED: is_ranked_pvp does not yet exist in guards.rs.
+#[test]
+fn m17a_is_ranked_pvp_self_battle_is_false() {
+    let player = spacetimedb::Identity::from_byte_array([3u8; 32]);
+    // opponent == player: practice/sandbox self-battle.
+    let battle = make_pvp_test_battle(player, player);
+
+    assert!(
+        !is_ranked_pvp(&battle),
+        "m17a-RL-6 FAIL: is_ranked_pvp must return false for a self-battle \
+         (player_identity == opponent_identity — practice/sandbox). \
+         Friendly battles must never rate (RL-6, ADR-0119 D4). \
+         Kills: an impl that only checks opponent != WILD_IDENTITY and misses the \
+         player == opponent short-circuit."
+    );
+}
+
+/// m17a-RL-6 / D4: wild battle (opponent == WILD_IDENTITY) → is_ranked_pvp returns false.
+///
+/// Wild encounters use the zero-byte sentinel as opponent_identity (ADR-0045).
+/// They must never rate — RL-6 "friendly battles shall never rate".
+///
+/// Kills: an impl that returns true for wild battles (would charge ratings for
+/// every wild encounter), or one that only checks player != opponent.
+/// COMPILE-RED: is_ranked_pvp does not yet exist in guards.rs.
+#[test]
+fn m17a_is_ranked_pvp_wild_battle_is_false() {
+    let player = spacetimedb::Identity::from_byte_array([4u8; 32]);
+    // WILD_IDENTITY = all-zero bytes (crate constant).
+    let wild = crate::WILD_IDENTITY;
+
+    let battle = make_pvp_test_battle(player, wild);
+
+    assert!(
+        !is_ranked_pvp(&battle),
+        "m17a-RL-6 FAIL: is_ranked_pvp must return false when opponent_identity is \
+         WILD_IDENTITY (zero-byte sentinel for wild encounters, ADR-0045). \
+         Wild battles must never rate (RL-6, ADR-0119 D4). \
+         Kills: an impl that only checks player != opponent and misses the wild check."
+    );
+}

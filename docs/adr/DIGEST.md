@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 84 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 85 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -93,6 +93,7 @@ Generated from 84 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0116](./0116-m16.5e-eval-infra-hardening.md) | Eval-infra hardening: append-only snapshot direction, extraction anti-hijack, additive-content coupling | Accepted | ci-gates | m16.5e | Snapshot gate gains a git-history append-only directional check; escrow-guard extraction sorts, drops `*_tests.rs`, strips strings; every Option content column must have a field-assignment in content.rs's re-seed path. |
 | [0117](./0117-m16.5f-trade-ssot-polish.md) | Trade SSOT polish: typed authorize rules, symmetric escrow checks, privacy-doc correction, offer TTL reaper | Accepted | economy-quests, security-authz, schema-persistence | m16.5f | Respond/confirm checks move to pure `authorize_respond`/`authorize_confirm`; two dead `TradeError` variants deleted; propose escrow checks made symmetric; privacy doc corrected; stale offers reaped by a one-shot TTL reaper with disarm. |
 | [0118](./0118-nightly-mutation-gate-triage-and-server-cap-rebaseline.md) | Nightly mutation-gate triage: check_headroom kill set, mutate-server cap re-baseline, wiring-eval ceiling raise | Accepted | ci-gates | nightly-mut-triage | Kill the 5 check_headroom survivors with counterparty accept-boundary + guard-contract tests (no exclusions, no production edits); re-baseline mutate-server cap 180→309 (exact measurement); raise the wiring-eval ceiling 200→340. |
+| [0119](./0119-ranked-ladder-spine.md) | Ranked ladder spine: persistent profile, integer Elo, once-only rating funnel, PvE-path PvP closure | Accepted | battle, security-authz, schema-persistence | m17a | Persistent world-readable `profile` table + pure integer-Elo `game-core::ranking` + a single `settle_pvp_battle` funnel (sole `apply_pvp_rating` caller) + PvP-reject guards on the four PvE battle reducers, eval-pinned in-slice. |
 
 ## Harness design corpus (H- namespace)
 
@@ -167,6 +168,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0106](./0106-m15a-trading-spine.md) — m15a (SOLO — touches game-core + server-module) — M15a Trading Spine (Accepted)
 - [0109](./0109-m16a-pvp-spine.md) — m16a — PvP battle spine (m16a) (Accepted)
 - [0112](./0112-m16.5a-battle-trade-interlock.md) — m16.5a — Battle↔trade interlock (both directions) + vacuous-revival gate (Accepted)
+- [0119](./0119-ranked-ladder-spine.md) — m17a — Ranked ladder spine: persistent profile, integer Elo, once-only rating funnel, PvE-path PvP closure (Accepted)
 
 ### evolution-fusion
 
@@ -227,6 +229,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0109](./0109-m16a-pvp-spine.md) — m16a — PvP battle spine (m16a) (Accepted)
 - [0113](./0113-m16.5b-receiver-cap-headroom.md) — m16.5b — Receiver-cap headroom check in confirm_trade (reject, don't destroy) (Accepted)
 - [0117](./0117-m16.5f-trade-ssot-polish.md) — m16.5f — Trade SSOT polish: typed authorize rules, symmetric escrow checks, privacy-doc correction, offer TTL reaper (Accepted)
+- [0119](./0119-ranked-ladder-spine.md) — m17a — Ranked ladder spine: persistent profile, integer Elo, once-only rating funnel, PvE-path PvP closure (Accepted)
 
 ### client-ui
 
@@ -310,6 +313,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0111](./0111-m16c-pvp-evals.md) — m16c — PvP eval harness (battle_action privacy + handshake guards + liveness) (Accepted)
 - [0112](./0112-m16.5a-battle-trade-interlock.md) — m16.5a — Battle↔trade interlock (both directions) + vacuous-revival gate (Accepted)
 - [0117](./0117-m16.5f-trade-ssot-polish.md) — m16.5f — Trade SSOT polish: typed authorize rules, symmetric escrow checks, privacy-doc correction, offer TTL reaper (Accepted)
+- [0119](./0119-ranked-ladder-spine.md) — m17a — Ranked ladder spine: persistent profile, integer Elo, once-only rating funnel, PvE-path PvP closure (Accepted)
 
 ### economy-quests
 

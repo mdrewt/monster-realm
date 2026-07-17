@@ -20,6 +20,7 @@ pub mod monster;
 pub mod npc;
 pub mod quest;
 pub mod raising;
+pub mod ranking;
 pub mod taming;
 pub mod trading;
 pub mod types;
