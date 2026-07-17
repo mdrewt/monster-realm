@@ -346,7 +346,8 @@ test.describe
       await browserB.close();
 
       // Step 8: A waits for terminal state — ongoingBattle null (battle GC'd) or
-      // outcome changed from Ongoing. 20s timeout (ADR-0119 disconnect latency).
+      // outcome changed from Ongoing. 20s headroom: local disconnect→forfeit settle
+      // is sub-second; CI containerized spacetime adds latency.
       // WHAT THIS KILLS: a forfeit_on_disconnect impl that does not settle the battle,
       // leaving A stuck in an ongoing battle forever.
       await pageA.waitForFunction(
@@ -416,6 +417,18 @@ test.describe
             `Raw sql output: ${sqlOutput}`,
         );
       }
+
+      // Guard: winnerRow and loserRow must be distinct objects.
+      // Pathological case: a single row has both wins===1 and losses===1 (a bug
+      // where the same row satisfies both predicates — e.g. an identity that won
+      // and lost in the same transaction). This assertion catches it before the
+      // identity checks below would silently pass on the same row twice.
+      expect(
+        winnerRow,
+        `RL-18: winnerRow and loserRow must be different rows — ` +
+          `same row satisfying both wins===1 and losses===1 indicates a rating-application bug. ` +
+          `winnerRow=${JSON.stringify(winnerRow)}`,
+      ).not.toBe(loserRow);
 
       // Winner must be A (the surviving player; B disconnected = B forfeited).
       // WHAT THIS KILLS: a forfeit path that inverts winner/loser, crediting B.

@@ -516,6 +516,8 @@ export default async function () {
   // -------------------------------------------------------------------------
   // Criterion B2: bare `apply_pvp_rating` in every other non-test domain file == 0
   // Read individually (AM-1); filenames ending _tests.rs excluded (AM-9 F-8).
+  // flat scan — server-module/src has no subdirectories (M8.9b); if a subdir is
+  // ever added, make this recursive (A2's scan already recurses).
   // -------------------------------------------------------------------------
   const bareNeedleB2 = 'apply_pvp_rating';
   for (const { name: fileName, src } of domainFiles) {
@@ -568,10 +570,15 @@ export default async function () {
   // -------------------------------------------------------------------------
   // Criterion C1b: split-binding `= ctx.db.profile()` absent OUTSIDE ranking.rs
   // (AM-4 — mirrors pvp_tests.rs:1206 split-binding needle)
+  //
+  // Scan set = domainFiles (all non-test files except ranking.rs and pvp.rs)
+  // PLUS pvp.rs explicitly (pvp.rs is excluded from domainFiles for B1/B2 reasons
+  // but must still be checked for the split-binding needle).
+  // Together this covers every non-test .rs file except ranking.rs, each exactly once.
   // -------------------------------------------------------------------------
   const splitBindingNeedle = '= ctx.db.profile()';
-  for (const { name: fileName, src } of domainFiles) {
-    // domainFiles already excludes ranking.rs and _tests.rs
+  const c1bFiles = [...domainFiles, { name: 'pvp.rs', src: pvpSrc }];
+  for (const { name: fileName, src } of c1bFiles) {
     if (stripBoth(src).indexOf(splitBindingNeedle) !== -1) {
       failures.push(
         `C1b NEVER_DELETED (RL-2): found \`${splitBindingNeedle}\` in ${fileName} — ` +
@@ -579,15 +586,6 @@ export default async function () {
           'Use inline chained access: `ctx.db.profile().identity().find(id)` in ranking.rs only (AM-4, ADR-0119 D1).',
       );
     }
-  }
-  // Also check lib.rs explicitly (not in domainFiles because pvp.rs was excluded from that filter
-  // and lib.rs is in the list, but double-check lib.rs here for split-binding since it holds on_disconnect)
-  if (stripBoth(libSrc).indexOf(splitBindingNeedle) !== -1) {
-    failures.push(
-      `C1b NEVER_DELETED (RL-2): found \`${splitBindingNeedle}\` in lib.rs — ` +
-        'profile table accessor binding in lib.rs risks a .delete() path in on_disconnect. ' +
-        'Profile access belongs in ranking.rs only (AM-4, ADR-0119 D1).',
-    );
   }
 
   // -------------------------------------------------------------------------
