@@ -5,12 +5,12 @@ Architecture Decision Records live in **two locations**; check both.
 - **Design ADRs `0002`–`0034`** — in the **harness spec corpus**
   (`../../specs/monster-realm-v2/adr/`). These are the foundational design
   decisions authored alongside the milestone specs.
-- **Implementation ADRs `0001`, `0035`–`0118`** — in **this directory**
+- **Implementation ADRs `0001`, `0035`–`0119`** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0119`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0120`**.
 
 **ADR numbering collision note:** the harness spec corpus also contains design
 ADRs numbered `0055`–`0057`; these cover the *same topics* as this project's
@@ -111,6 +111,7 @@ prefix `harness adr/0055` to cite the harness design ADR.
 | [0116](./0116-m16.5e-eval-infra-hardening.md) | Eval-infra hardening: append-only snapshot direction, extraction anti-hijack, additive-content coupling | M16.5e |
 | [0117](./0117-m16.5f-trade-ssot-polish.md) | Trade SSOT polish: authorize delegation, symmetric escrow, privacy-doc fix, offer TTL reaper | M16.5f |
 | [0118](./0118-nightly-mutation-gate-triage-and-server-cap-rebaseline.md) | Nightly mutation-gate triage: check_headroom kill set, mutate-server cap re-baseline, wiring-eval ceiling raise | nightly-triage |
+| [0119](./0119-ranked-ladder-spine.md) | Ranked ladder spine: persistent profile, integer Elo, once-only rating funnel, PvE-path PvP closure | m17a |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
