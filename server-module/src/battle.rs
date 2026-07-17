@@ -11,8 +11,8 @@
 
 use crate::economy::grant_currency;
 use crate::guards::{
-    check_monster_in_party, check_party_size, check_team_coupling, escrowed_item_qty, log_reject,
-    reject_if_monster_in_trade, require_owner,
+    check_monster_in_party, check_party_size, check_team_coupling, escrowed_item_qty,
+    is_ranked_pvp, log_reject, reject_if_monster_in_trade, require_owner,
 };
 use crate::inventory::consume_one;
 use crate::marshal::{
@@ -549,6 +549,14 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
         log_reject("submit_attack", me, &e);
         return Err(e);
     }
+    // PvP-reject guard (ADR-0119 D5, RL-9): the PvE path would let the server
+    // AI play the human opponent's side — every PvP turn goes through
+    // submit_pvp_action and the pvp.rs funnel.
+    if is_ranked_pvp(&battle) {
+        let e = "not available in PvP battles".to_string();
+        log_reject("submit_attack", me, &e);
+        return Err(e);
+    }
 
     // Validate skill_id is in the active monster's moveset.
     let active_skills = &battle.state.side_a.active_monster().known_skill_ids;
@@ -678,6 +686,13 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
         log_reject("swap_active", me, &e);
         return Err(e);
     }
+    // PvP-reject guard (ADR-0119 D5, RL-9): swaps in PvP go through the
+    // both-submit secret-pick protocol (submit_pvp_action), never this path.
+    if is_ranked_pvp(&battle) {
+        let e = "not available in PvP battles".to_string();
+        log_reject("swap_active", me, &e);
+        return Err(e);
+    }
     let idx = team_index as usize;
     if idx >= battle.state.side_a.team.len() {
         let e = format!("team_index {team_index} out of bounds");
@@ -803,6 +818,14 @@ pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
         log_reject("flee", me, &e);
         return Err(e);
     }
+    // PvP-reject guard (ADR-0119 D5, RL-8): `Fled` is non-decisive — fleeing a
+    // ranked battle would dodge the rating loss. PvP exit paths are forfeit
+    // only (deadline/disconnect); the client's canFlee=false is not authoritative.
+    if is_ranked_pvp(&battle) {
+        let e = "not available in PvP battles".to_string();
+        log_reject("flee", me, &e);
+        return Err(e);
+    }
     battle.state.outcome = BattleOutcome::Fled;
 
     // Write back HP via the shared path (no XP on flee — outcome != SideAWins).
@@ -844,6 +867,15 @@ pub fn use_battle_item(ctx: &ReducerContext, battle_id: u64, item_id: u32) -> Re
     // Guard 2: battle must be ongoing.
     if battle.state.outcome != BattleOutcome::Ongoing {
         let e = "battle is not ongoing".to_string();
+        log_reject("use_battle_item", me, &e);
+        return Err(e);
+    }
+
+    // Guard 2.5 — PvP-reject (ADR-0119 D5, RL-9): item use is state mutation
+    // outside the both-submit secret-pick protocol. PvP items are a deferred
+    // feature: reject now, lift deliberately later.
+    if is_ranked_pvp(&battle) {
+        let e = "not available in PvP battles".to_string();
         log_reject("use_battle_item", me, &e);
         return Err(e);
     }

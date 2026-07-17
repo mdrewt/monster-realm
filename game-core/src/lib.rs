@@ -69,6 +69,7 @@ pub use quest::{
     QuestReward, QuestStep, RewardItem, StepTrigger, TriggerEvent,
 };
 pub use raising::{apply_care, focus_train, CareError, FocusTrainError, FocusTrainResult};
+pub use ranking::{apply_elo, compute_rating_update, INITIAL_RATING};
 pub use taming::{
     attempt_recruit, encounter_triggers, recruit_chance, resolve_encounter, roll_encounter,
     EncounterEntry, EncounterTable, WildSpawn, MISSING_HP_FACTOR, RECRUIT_BASE_RATE,

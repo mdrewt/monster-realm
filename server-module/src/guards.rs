@@ -262,6 +262,18 @@ pub(crate) fn require_pvp_participant(
     }
 }
 
+/// Battle-kind classifier (M17, ADR-0119 D4): a battle is RANKED PvP iff its
+/// two sides are distinct real players. `player_identity != opponent_identity`
+/// rules out practice self-battles (M12.5e2) and `opponent_identity !=
+/// WILD_IDENTITY` rules out wild encounters (ADR-0045). Wild and practice
+/// self-battles are the "friendly" class: they never touch `profile`, even
+/// when routed through the forfeit paths (RL-6). The single classifying
+/// predicate — rating is gated by battle classification, never by call path.
+pub(crate) fn is_ranked_pvp(battle: &Battle) -> bool {
+    battle.player_identity != battle.opponent_identity
+        && battle.opponent_identity != crate::WILD_IDENTITY
+}
+
 #[cfg(test)]
 #[path = "guards_tests.rs"]
 mod guards_tests;

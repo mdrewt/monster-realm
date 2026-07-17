@@ -398,6 +398,15 @@ export const PlayerWallet = __t.object("PlayerWallet", {
 });
 export type PlayerWallet = __Infer<typeof PlayerWallet>;
 
+export const Profile = __t.object("Profile", {
+  identity: __t.identity(),
+  name: __t.string(),
+  rating: __t.i32(),
+  wins: __t.u32(),
+  losses: __t.u32(),
+});
+export type Profile = __Infer<typeof Profile>;
+
 // The tagged union or sum type for the algebraic type `PvpAction`.
 export const PvpAction = __t.enum("PvpAction", {
   Attack: __t.u32(),

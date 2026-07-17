@@ -518,6 +518,31 @@ pub struct PlayerWallet {
     pub balance: u64,
 }
 
+// --- M17a ranked-ladder table (ADR-0119) ---------------------------------------
+
+/// Persistent per-player ranked-ladder record (M17, ADR-0119 D1) — the
+/// progression counterpart to the ephemeral `player` presence row.
+///
+/// PUBLIC = world-readable leaderboard record (ADR-0015 stakes classification:
+/// public-low-stakes — the name is already public on `player`; rating/W/L are
+/// the leaderboard's whole point). NEVER deleted (ADR-0119 D1): no code path
+/// removes a `profile` row — `on_disconnect` does not touch it (structural
+/// never-deleted scan). Runtime table, not seeded content → NO CONTENT_VERSION
+/// bump (ADR-0106 D7 precedent, mirrors `trade_offer`). No `#[index(btree)]`
+/// on `rating` in m17a — the m17b leaderboard sorts client-side over a full
+/// `profile` subscription; add an index if/when server-side range queries land.
+#[spacetimedb::table(name = profile, public)]
+pub struct Profile {
+    #[primary_key]
+    pub identity: Identity,
+    /// Display name, seeded from the `player` row at first rating application.
+    pub name: String,
+    /// Integer Elo rating; may legitimately go negative (no floor, ADR-0119 D2).
+    pub rating: i32,
+    pub wins: u32,
+    pub losses: u32,
+}
+
 // --- M16a PvP tables (ADR-0109) ----------------------------------------------
 
 /// Lifecycle state of a PvP challenge (M16a, ADR-0109).

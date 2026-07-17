@@ -1,13 +1,73 @@
-//! Ranked-ladder rating rules (M17, ADR-0119). Implementation added by the m17a implementer.
+//! Ranked-ladder rating rules (M17, ADR-0119 D2): a pure, deterministic
+//! integer linear approximation of Elo. No floats (determinism, ADR-0055),
+//! no ambient entropy, no clock — identical inputs always yield identical
+//! deltas (RL-12). `compute_rating_update` is the SSOT for applying a delta
+//! to a winner/loser rating pair; the server shell never does rating
+//! arithmetic (functional-core discipline).
+
+/// Starting rating for every new profile (RL-4). The SSOT: the server's
+/// `get_or_init_profile` seeds from this constant, never the bare literal.
+pub const INITIAL_RATING: i32 = 1000;
+
+/// Elo K-factor. Private by design (ADR-0119 D2): tuning it is an ADR-level
+/// decision, and exposing it would invite callers to couple to `K / 2`
+/// instead of to the function contracts. Equal ratings swing `K / 2`; the
+/// delta is always within `[1, K - 1]`.
+const K: i32 = 32;
+
+/// Rating-difference units per point of delta in the linear approximation.
+/// Private for the same reason as `K`.
+const ELO_DIVISOR: i32 = 25;
+
+/// Rating delta awarded to the winner and taken from the loser (RL-3).
+///
+/// Linear integer approximation of the Elo expected-score curve:
+/// `raw = K/2 - (winner - loser).div_euclid(ELO_DIVISOR)`, clamped to
+/// `[1, K - 1]`. `div_euclid` (never truncating `/`) keeps the rounding
+/// direction consistent across negative diffs — truncating division would
+/// break the upset/mirror asymmetry by one unit around odd sub-divisor
+/// diffs (e.g. diff = -13 must yield 17, not 16).
+///
+/// Computed internally in `i64`: the subtraction of two i32-ranged values
+/// cannot overflow there, killing the `i32` subtraction-overflow class.
+#[must_use]
+pub fn apply_elo(winner_rating: i32, loser_rating: i32) -> i32 {
+    let raw = i64::from(K) / 2
+        - (i64::from(winner_rating) - i64::from(loser_rating)).div_euclid(i64::from(ELO_DIVISOR));
+    // Delta is clamped to [1, K-1] = [1, 31], so the value provably fits in
+    // i32 — the cast back is lossless by construction.
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        raw.clamp(1, i64::from(K) - 1) as i32
+    }
+}
+
+/// Apply the Elo delta to both sides: `(winner + delta, loser - delta)`.
+///
+/// The SSOT for applying a delta (RL-11): one `apply_elo` call, applied with
+/// opposite signs, so the update is zero-sum on the practical domain
+/// (|rating| well below the i32 extremes). Saturating arithmetic at the i32
+/// extremes is the documented tolerated boundary (ADR-0119 D2): the pinned
+/// side stops moving while the other still moves, intentionally violating
+/// conservation there — reaching that boundary would take on the order of
+/// 69 million consecutive decided games, so it is tolerated as unreachable
+/// and pinned by boundary spot tests to keep the semantics deliberate.
+#[must_use]
+pub fn compute_rating_update(winner_rating: i32, loser_rating: i32) -> (i32, i32) {
+    let d = apply_elo(winner_rating, loser_rating);
+    (
+        winner_rating.saturating_add(d),
+        loser_rating.saturating_sub(d),
+    )
+}
 
 // ===========================================================================
 // Unit + property tests (m17a EARS criteria → one test per criterion)
 // ===========================================================================
 //
-// This file is intentionally IMPLEMENTATION-FREE. The #[cfg(test)] block below
-// encodes every acceptance criterion from ADR-0119 D2 / spec RL-3..RL-4/RL-11/RL-12.
-// It is COMPILE-RED until `pub const INITIAL_RATING`, `pub fn apply_elo`, and
-// `pub fn compute_rating_update` are added to this module by the implementer.
+// The #[cfg(test)] block below encodes every acceptance criterion from
+// ADR-0119 D2 / spec RL-3..RL-4/RL-11/RL-12 against `INITIAL_RATING`,
+// `apply_elo`, and `compute_rating_update` above.
 
 #[cfg(test)]
 mod tests {
@@ -302,7 +362,7 @@ mod tests {
         ) {
             let delta = apply_elo(winner, loser);
             prop_assert!(
-                delta >= 1 && delta <= 31,
+                (1..=31).contains(&delta),
                 "apply_elo({}, {}) = {} is outside [1, 31] — \
                  must always be clamped to [1, K-1]",
                 winner, loser, delta

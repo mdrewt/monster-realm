@@ -256,6 +256,16 @@
       "balance": "u64"
     }
   },
+  "profile": {
+    "pk": "identity",
+    "columns": {
+      "identity": "Identity",
+      "name": "String",
+      "rating": "i32",
+      "wins": "u32",
+      "losses": "u32"
+    }
+  },
   "pvp_deadline_schedule": {
     "pk": "scheduled_id",
     "columns": {

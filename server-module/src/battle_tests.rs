@@ -828,6 +828,7 @@ fn use_battle_item_checks_cure_status_before_consume() {
 /// not just presence of the identifier. This kills guard-fakery evasions:
 ///   - `let _ = is_ranked_pvp(&battle);`       — dead-code call, does nothing
 ///   - `// if is_ranked_pvp(&battle) { ... }`  — commented-out (stripped by scan)
+///
 /// The `if` prefix ensures the guard is in a reachable conditional branch.
 /// Residual documented evasion: `if is_ranked_pvp(&battle) {}` (no-op body) still
 /// passes this scan — that is caught by mutation testing coverage, not a needle scan.
@@ -858,7 +859,7 @@ fn m17a_flee_has_pvp_reject_guard() {
 
     // Strip string literals from the body before needle search (F1: guard-fakery hardening).
     // This ensures a log string like `log("if is_ranked_pvp(&battle) ...")` is not matched.
-    let body_no_strings = strip_rust_strings(&body);
+    let body_no_strings = strip_rust_strings(body);
 
     assert!(
         body_no_strings.contains(pvp_needle),
@@ -903,7 +904,7 @@ fn m17a_submit_attack_has_pvp_reject_guard() {
     let body = extract_fn_body(&stripped, "submit_attack")
         .expect("m17a-RL-9: `submit_attack` reducer must exist in battle.rs");
 
-    let body_no_strings = strip_rust_strings(&body);
+    let body_no_strings = strip_rust_strings(body);
 
     assert!(
         body_no_strings.contains(pvp_needle),
@@ -950,7 +951,7 @@ fn m17a_swap_active_has_pvp_reject_guard() {
     let body = extract_fn_body(&stripped, "swap_active")
         .expect("m17a-RL-9: `swap_active` reducer must exist in battle.rs");
 
-    let body_no_strings = strip_rust_strings(&body);
+    let body_no_strings = strip_rust_strings(body);
 
     assert!(
         body_no_strings.contains(pvp_needle),
@@ -997,7 +998,7 @@ fn m17a_use_battle_item_has_pvp_reject_guard() {
     let body = extract_fn_body(&stripped, "use_battle_item")
         .expect("m17a-RL-9: `use_battle_item` reducer must exist in battle.rs");
 
-    let body_no_strings = strip_rust_strings(&body);
+    let body_no_strings = strip_rust_strings(body);
 
     assert!(
         body_no_strings.contains(pvp_needle),
