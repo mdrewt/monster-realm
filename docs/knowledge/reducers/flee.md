@@ -5,7 +5,7 @@ slug: reducers/flee
 updated: 2026-07-17
 tags: [reducer, spacetimedb, battle]
 abstract: "Flee from a battle. Sets outcome to `Fled`; no XP awarded."
-resource: server-module/src/battle.rs#L807
+resource: server-module/src/battle.rs#L810
 source: scripts/okf-export.mjs@server-module/src/battle.rs
 ---
 

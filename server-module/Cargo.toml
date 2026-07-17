@@ -18,6 +18,8 @@ game-core = { path = "../game-core", features = ["spacetimedb"] }
 spacetimedb = { workspace = true }
 # Structured logging facade (captured by the SpacetimeDB host).
 log.workspace = true
+# NFC canonicalization for player/monster names (#27c, guards::validate_name).
+unicode-normalization = { workspace = true }
 
 [dev-dependencies]
 # Property testing for the evaluate_train seam (M9b-tail, raising_tests.rs).

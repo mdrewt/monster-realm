@@ -10,6 +10,7 @@ import { Graphics } from 'pixi.js';
 import type { WasmAction, WasmDirection } from '../convert/convert';
 import { type AnimKey, type AssetProvider, animKey } from './characterView';
 import { TILE_PX } from './config';
+import { destroyAllTextures } from './textureCache';
 
 const ACTION_TINT: Record<WasmAction, number> = {
   Idle: 0x6fd3a0,
@@ -31,6 +32,16 @@ export class PlaceholderAssets implements AssetProvider {
 
   constructor(renderer: Renderer) {
     this.#renderer = renderer;
+  }
+
+  /**
+   * Destroy every cached `generateTexture` result (GPU + base) and empty the
+   * cache (#28c). Generated textures are not owned by the stage tree, so
+   * `app.destroy(true)` never frees them — the renderer must call this on
+   * teardown (and a future real-asset provider swap must, too).
+   */
+  destroy(): void {
+    destroyAllTextures(this.#cache);
   }
 
   texture(action: WasmAction, facing: WasmDirection): Texture {
