@@ -40,8 +40,8 @@ mod tests {
     // Upset (winner rated below loser by 100) → 20 (strictly more than mirror).
     // Mirror (winner rated above loser by 100) → 12.
     // div_euclid pin at diff = −13 / +13 (truncating `/` would give 16/16, not 17/16).
-    // Clamp activation exact boundary: diff = +375 → 1, diff = −375 → 31.
-    // Clamped beyond boundary: diff = +400 → 1, diff = −400 → 31.
+    // Exact boundary (raw == bound, clamp is no-op): diff = +375 → 1, diff = −375 → 31.
+    // Clamped beyond boundary (raw changes value): diff = +400 → 1, diff = −400 → 31.
     // -----------------------------------------------------------------------
 
     /// RL-3: equal ratings (1000 vs 1000) yield delta = K/2 = 16.
@@ -121,40 +121,53 @@ mod tests {
         );
     }
 
-    /// RL-3: clamp activation — exactly diff = +375 → delta = 1 (lower bound activated).
+    /// RL-3: exact boundary — diff = +375 → delta = 1 (raw equals lower bound, clamp is no-op).
     ///
-    /// raw = 16 − 375/25 = 16 − 15 = 1; this is the last unclamped point at the
-    /// lower bound (1 == K-1 clamp lower, but happens to equal the raw value).
-    /// Verified: 376 → raw = 16 − 15 = 1 still; 375 is the activation threshold.
+    /// raw = K/2 − diff.div_euclid(ELO_DIVISOR)
+    ///     = 16 − (375).div_euclid(25) = 16 − 15 = 1
     ///
-    /// Actually: raw = K/2 − diff.div_euclid(ELO_DIVISOR)
-    ///           = 16 − (375).div_euclid(25) = 16 − 15 = 1
-    /// Clamp [1, 31] → 1. This is the exact boundary.
+    /// The clamp [1, 31] does NOT change the value here — raw is already 1.
+    /// This is a boundary pin, not a clamp-activation test. The first diff where
+    /// the clamp actually changes the value (raw 0 → clamped to 1) is diff = +400
+    /// (tested by `clamp_lower_saturated_beyond_boundary`).
     ///
-    /// Kills: an impl with a different divisor or K that places the boundary elsewhere.
+    /// Rationale (spec correction vs previous name): the old name "clamp_activation"
+    /// was misleading — the clamp is present at this boundary but has no effect on
+    /// the output value. The test value (1) is correct against the spec; only the name
+    /// and comment were inaccurate. (ADR-0119 D2, hardening 12)
+    ///
+    /// Kills: an impl with a different divisor or K that produces a different value at
+    /// diff = +375, or one that returns 0 (missing the raw==1 boundary).
     #[test]
-    fn clamp_activation_lower_bound_exact_boundary() {
+    fn delta_boundary_exact_at_plus_375() {
         assert_eq!(
             apply_elo(1375, 1000),
             1,
-            "apply_elo(1375, 1000) must be 1 (clamp lower-bound activation: \
-             diff = +375, raw = 16 − 15 = 1 exactly, clamped to 1)"
+            "apply_elo(1375, 1000) must be 1 (diff = +375, raw = 16 − 15 = 1; \
+             clamp [1,31] is a no-op here — raw already equals the lower bound)"
         );
     }
 
-    /// RL-3: clamp activation — exactly diff = −375 → delta = 31 (upper bound activated).
+    /// RL-3: exact boundary — diff = −375 → delta = 31 (raw equals upper bound, clamp is no-op).
     ///
-    /// raw = 16 − (−375).div_euclid(25) = 16 − (−15) = 31.
-    /// Clamp [1, 31] → 31. Exact upper-bound activation threshold.
+    /// raw = K/2 − (−375).div_euclid(25) = 16 − (−15) = 31
+    ///
+    /// The clamp [1, 31] does NOT change the value here — raw is already 31.
+    /// The first diff where the clamp actually changes the value (raw 32 → clamped to 31)
+    /// is diff = −400 (tested by `clamp_upper_saturated_beyond_boundary`).
+    ///
+    /// Rationale (spec correction vs previous name): same as `delta_boundary_exact_at_plus_375` —
+    /// the old name was misleading; the assertion value (31) is correct against the spec.
+    /// (ADR-0119 D2, hardening 12)
     ///
     /// Kills: an impl where the upper bound fires at a different diff magnitude.
     #[test]
-    fn clamp_activation_upper_bound_exact_boundary() {
+    fn delta_boundary_exact_at_minus_375() {
         assert_eq!(
             apply_elo(1000, 1375),
             31,
-            "apply_elo(1000, 1375) must be 31 (clamp upper-bound activation: \
-             diff = −375, raw = 16 − (−15) = 31 exactly, clamped to 31)"
+            "apply_elo(1000, 1375) must be 31 (diff = −375, raw = 16 − (−15) = 31; \
+             clamp [1,31] is a no-op here — raw already equals the upper bound)"
         );
     }
 

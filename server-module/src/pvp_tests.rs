@@ -708,6 +708,11 @@ const RAISING_RS: &str = include_str!("raising.rs");
 const NPC_RS: &str = include_str!("npc.rs");
 const MOVEMENT_RS: &str = include_str!("movement.rs");
 const CONTENT_RS: &str = include_str!("content.rs");
+// F2/M-2: additional domain files for single-callsite scope widening.
+const CONTENT_CACHE_RS: &str = include_str!("content_cache.rs");
+const MARSHAL_RS: &str = include_str!("marshal.rs");
+const GUARDS_RS: &str = include_str!("guards.rs");
+const INVENTORY_RS: &str = include_str!("inventory.rs");
 
 // ---------------------------------------------------------------------------
 // Helper: extract a function body from a source string (mirrors battle_tests.rs).
@@ -802,22 +807,20 @@ fn m17a_rl10_settle_pvp_battle_exists() {
 /// RED now: 0 occurrences.
 #[test]
 fn m17a_rl10_apply_pvp_rating_single_callsite() {
-    let stripped_pvp = strip_rust_comments(PVP_RS);
-    let stripped_battle = strip_rust_comments(BATTLE_RS);
-    let stripped_lib = strip_rust_comments(LIB_RS);
+    // F2/M-2 hardening: count the bare needle across ALL non-test domain files,
+    // not just pvp.rs + battle.rs + lib.rs. An implementer could introduce a
+    // second call site in any module (economy, trading, raising, guards, etc.).
+    // Expected total across ALL non-pvp files: 0.
+    // Expected count in pvp.rs with path-qualifier: exactly 1.
 
-    // Needle: the path-qualified call form (one and only acceptable form).
+    // Needle: the path-qualified call form (one and only acceptable form in pvp.rs).
     let call_needle = concat!("ranking::apply_pvp", "_rating(");
-    // Bare identifier needle (for battle.rs and lib.rs — must be 0 there).
+    // Bare identifier needle (must not appear in any non-pvp domain file).
     let bare_needle = concat!("apply_pvp", "_rating");
 
     // Count path-qualified calls in pvp.rs — expect exactly 1.
+    let stripped_pvp = strip_rust_comments(PVP_RS);
     let pvp_call_count = stripped_pvp.matches(call_needle).count();
-
-    // Count bare identifier in battle.rs and lib.rs — expect 0 each.
-    let battle_bare_count = stripped_battle.matches(bare_needle).count();
-    let lib_bare_count = stripped_lib.matches(bare_needle).count();
-
     assert_eq!(
         pvp_call_count, 1,
         "m17a-RL-10 FAIL: expected exactly 1 path-qualified call `{}` in pvp.rs, \
@@ -826,20 +829,38 @@ fn m17a_rl10_apply_pvp_rating_single_callsite() {
         call_needle, pvp_call_count
     );
 
-    assert_eq!(
-        battle_bare_count, 0,
-        "m17a-RL-10 FAIL: found {} occurrence(s) of `{}` in battle.rs — \
-         battle.rs must NOT call apply_pvp_rating directly; all rating application \
-         flows through the settle_pvp_battle funnel in pvp.rs.",
-        battle_bare_count, bare_needle
-    );
-
-    assert_eq!(
-        lib_bare_count, 0,
-        "m17a-RL-10 FAIL: found {} occurrence(s) of `{}` in lib.rs — \
-         lib.rs must NOT call apply_pvp_rating; rating application is pvp.rs-internal.",
-        lib_bare_count, bare_needle
-    );
+    // Count bare identifier across ALL other non-test domain files — expect 0 each.
+    // F2: widened from battle.rs+lib.rs to the full domain set.
+    let non_pvp_domain: &[(&str, &str)] = &[
+        ("battle.rs", BATTLE_RS),
+        ("lib.rs", LIB_RS),
+        ("schema.rs", SCHEMA_RS),
+        ("taming.rs", TAMING_RS),
+        ("trading.rs", TRADING_RS),
+        ("economy.rs", ECONOMY_RS),
+        ("monster_mgmt.rs", MONSTER_MGMT_RS),
+        ("evolution.rs", EVOLUTION_RS),
+        ("raising.rs", RAISING_RS),
+        ("npc.rs", NPC_RS),
+        ("movement.rs", MOVEMENT_RS),
+        ("content.rs", CONTENT_RS),
+        ("content_cache.rs", CONTENT_CACHE_RS),
+        ("marshal.rs", MARSHAL_RS),
+        ("guards.rs", GUARDS_RS),
+        ("inventory.rs", INVENTORY_RS),
+    ];
+    for (filename, src) in non_pvp_domain {
+        let stripped = strip_rust_comments(src);
+        let count = stripped.matches(bare_needle).count();
+        assert_eq!(
+            count, 0,
+            "m17a-RL-10 FAIL: found {} occurrence(s) of `{}` in {} — \
+             only pvp.rs may reference apply_pvp_rating; all other domain files \
+             must never call it (rating application funnels through settle_pvp_battle \
+             in pvp.rs, ADR-0119 D3). F2: full domain sweep.",
+            count, bare_needle, filename
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -938,12 +959,21 @@ fn m17a_rl10_forfeit_no_direct_write_back_results() {
 // RED now: settle_pvp_battle does not exist.
 // ---------------------------------------------------------------------------
 
-/// RL-10 (d): commit order inside settle_pvp_battle is write_back → update → rating → side_b_hp.
+/// RL-10 (d): commit order inside settle_pvp_battle is write_back → update → rating →
+/// side_b_hp → battle_action sweep (step 5).
 ///
-/// All four call offsets must be in strictly ascending order.
+/// Five steps must be in strictly ascending text-offset order:
+///   1. write_back_battle_results  (while battle row still Ongoing — RT-M16-08)
+///   2. battle().battle_id().update  (commit terminal outcome)
+///   3. ranking::apply_pvp_rating  (rating on just-committed outcome)
+///   4. write_back_party_hp_pvp_side_b  (side-B HP write-back)
+///   5. battle_action sweep: battle_action().battle_id().iter() + .delete()
+///      (GC of submitted actions — must come AFTER side-B HP, ADR-0119 D3 step 5)
 ///
-/// Kills: an impl with the wrong ordering (e.g. rating before update, or side-B HP
-/// before rating — violating RT-M16-05 or the ADR-0119 D3 step sequence).
+/// m-4 hardening: step 5 sweep pin added (battle_action GC after side_b_hp).
+///
+/// Kills: an impl with the wrong ordering (e.g. rating before update, side-B HP
+/// before rating, or battle_action GC before side-B HP write-back).
 /// RED now: settle_pvp_battle does not exist.
 #[test]
 fn m17a_rl10_settle_pvp_battle_ordering() {
@@ -953,9 +983,12 @@ fn m17a_rl10_settle_pvp_battle_ordering() {
         .expect("m17a-RL-10 (d): `settle_pvp_battle` must exist in pvp.rs (RED: absent)");
 
     let wb_needle = concat!("write_back_battle", "_results(");
-    let update_needle = concat!("battle_id()", ".update");
+    let update_needle = concat!("battle().battle_id()", ".update");
     let rating_needle = concat!("ranking::apply_pvp", "_rating(");
     let side_b_needle = concat!("write_back_party_hp_pvp", "_side_b(");
+    // Step 5: battle_action GC sweep — iter() over actions by battle_id then delete.
+    let sweep_iter_needle = concat!("battle_action()", ".battle_id()");
+    let sweep_delete_needle = concat!("battle_action()", ".delete");
 
     let wb_pos = settle_body.find(wb_needle).unwrap_or_else(|| {
         panic!(
@@ -985,24 +1018,61 @@ fn m17a_rl10_settle_pvp_battle_ordering() {
             side_b_needle
         )
     });
+    // Step 5: battle_action sweep (m-4 hardening).
+    let sweep_iter_pos = settle_body.find(sweep_iter_needle).unwrap_or_else(|| {
+        panic!(
+            "m17a-RL-10 (d): `{}` not found in settle_pvp_battle body — \
+             step 5 (battle_action GC sweep iter) must be present (ADR-0119 D3 step 5)",
+            sweep_iter_needle
+        )
+    });
+    let sweep_delete_pos = settle_body.find(sweep_delete_needle).unwrap_or_else(|| {
+        panic!(
+            "m17a-RL-10 (d): `{}` not found in settle_pvp_battle body — \
+             step 5 (battle_action GC sweep delete) must be present (ADR-0119 D3 step 5)",
+            sweep_delete_needle
+        )
+    });
 
     assert!(
         wb_pos < update_pos,
-        "m17a-RL-10 (d) ORDER FAIL: write_back_battle_results (pos {wb_pos}) must come \
-         BEFORE battle().battle_id().update (pos {update_pos}) — RT-M16-08 ordering \
-         (GC sweep must not see the current row as terminal)."
+        "m17a-RL-10 (d) ORDER FAIL: write_back_battle_results (pos {}) must come \
+         BEFORE battle().battle_id().update (pos {}) — RT-M16-08 ordering \
+         (GC sweep must not see the current row as terminal).",
+        wb_pos,
+        update_pos
     );
     assert!(
         update_pos < rating_pos,
-        "m17a-RL-10 (d) ORDER FAIL: battle().battle_id().update (pos {update_pos}) must \
-         come BEFORE ranking::apply_pvp_rating (pos {rating_pos}) — rating is applied \
-         to the just-committed outcome (ADR-0119 D3 step 3)."
+        "m17a-RL-10 (d) ORDER FAIL: battle().battle_id().update (pos {}) must \
+         come BEFORE ranking::apply_pvp_rating (pos {}) — rating is applied \
+         to the just-committed outcome (ADR-0119 D3 step 3).",
+        update_pos,
+        rating_pos
     );
     assert!(
         rating_pos < side_b_pos,
-        "m17a-RL-10 (d) ORDER FAIL: ranking::apply_pvp_rating (pos {rating_pos}) must \
-         come BEFORE write_back_party_hp_pvp_side_b (pos {side_b_pos}) — \
-         side-B HP is the last step; rating is applied first (ADR-0119 D3 steps 3→4)."
+        "m17a-RL-10 (d) ORDER FAIL: ranking::apply_pvp_rating (pos {}) must \
+         come BEFORE write_back_party_hp_pvp_side_b (pos {}) — \
+         side-B HP is the last step; rating is applied first (ADR-0119 D3 steps 3→4).",
+        rating_pos,
+        side_b_pos
+    );
+    // m-4: step-5 sweep must come AFTER side-B HP write-back.
+    assert!(
+        side_b_pos < sweep_iter_pos,
+        "m17a-RL-10 (d) ORDER FAIL (m-4): write_back_party_hp_pvp_side_b (pos {}) must come \
+         BEFORE the battle_action GC sweep iter (pos {}) — the sweep is the final cleanup \
+         step after all writes are committed (ADR-0119 D3 step 5).",
+        side_b_pos,
+        sweep_iter_pos
+    );
+    assert!(
+        sweep_iter_pos <= sweep_delete_pos,
+        "m17a-RL-10 (d) ORDER FAIL (m-4): battle_action sweep iter (pos {}) must not come \
+         AFTER the delete call (pos {}) — iter precedes delete in the sweep loop.",
+        sweep_iter_pos,
+        sweep_delete_pos
     );
 }
 
@@ -1103,14 +1173,119 @@ fn m17a_rl7_server_ranking_module_invariants() {
          (SSOT), not the bare literal — a future tuning change would silently diverge."
     );
 
-    // (iv) is_ranked_pvp( gate present.
+    // (iv-F10) is_ranked_pvp( gate present INSIDE apply_pvp_rating body.
+    // Hardening F10: check against the body slice, not the whole file, so a
+    // reference to is_ranked_pvp in a comment or a different function does not
+    // satisfy this assertion.
     let ranked_gate = concat!("is_ranked", "_pvp(");
+    let apply_body = extract_pvp_fn_body(&stripped, "apply_pvp_rating").unwrap_or_else(|| {
+        panic!(
+            "m17a-RL-7 (iv): `apply_pvp_rating` function not found in ranking.rs — \
+             the function must exist for gate-placement checks to be meaningful (ADR-0119 D6)."
+        )
+    });
     assert!(
-        stripped.contains(ranked_gate),
-        "m17a-RL-7 (iv) FAIL: server-module/src/ranking.rs must contain `{}` — \
-         apply_pvp_rating must early-return unless the battle is a ranked PvP battle \
-         (ADR-0119 D6: no-op unless is_ranked_pvp && outcome decisive).",
+        apply_body.contains(ranked_gate),
+        "m17a-RL-7 (iv) FAIL: the body of `apply_pvp_rating` in ranking.rs must contain \
+         `{}` — apply_pvp_rating must early-return unless the battle is a ranked PvP battle \
+         (ADR-0119 D6: no-op unless is_ranked_pvp && outcome decisive). \
+         F10: checked against the function body, not the whole file.",
         ranked_gate
+    );
+
+    // (v-B1) RL-5: apply_pvp_rating body must increment wins and losses counters.
+    // Kills: an impl that updates rating but forgets to track win/loss counts
+    // (leaderboard would show ratings but no W/L record — spec RL-5 violation).
+    let wins_needle = concat!(".wins", " + 1");
+    assert!(
+        apply_body.contains(wins_needle),
+        "m17a-RL-5 (v) FAIL: `apply_pvp_rating` body must contain `{}` — \
+         the profile wins counter must be incremented on a win (ADR-0119 D1, RL-5). \
+         Without this, the leaderboard shows only ratings, not W/L counts.",
+        wins_needle
+    );
+    let losses_needle = concat!(".losses", " + 1");
+    assert!(
+        apply_body.contains(losses_needle),
+        "m17a-RL-5 (v) FAIL: `apply_pvp_rating` body must contain `{}` — \
+         the profile losses counter must be incremented on a loss (ADR-0119 D1, RL-5). \
+         Without this, the leaderboard shows only ratings, not W/L counts.",
+        losses_needle
+    );
+
+    // (vi-F3) RL-2: apply_pvp_rating body must NOT delete profile rows.
+    // Kills: an impl that deletes the loser's profile row on a loss (would violate
+    // the persistent-leaderboard invariant — ADR-0119 D1).
+    let delete_needle = concat!("profile().identity()", ".delete");
+    assert!(
+        !apply_body.contains(delete_needle),
+        "m17a-RL-2 (vi) FAIL: `apply_pvp_rating` body contains `{}` — \
+         profile rows must NEVER be deleted (persistent leaderboard, ADR-0119 D1). \
+         Remove the delete call from apply_pvp_rating.",
+        delete_needle
+    );
+    // Also check for the split-binding evasion inside the function body.
+    let binding_needle = concat!("= ctx.db.", "profile()");
+    assert!(
+        !apply_body.contains(binding_needle),
+        "m17a-RL-2 (vi) FAIL: `apply_pvp_rating` body contains `{}` — \
+         assigning the profile accessor to a binding risks a .delete() call. \
+         Use inline chained access: `ctx.db.profile().identity().find(id)` (ADR-0119 D1).",
+        binding_needle
+    );
+
+    // (vii-F5) Dormancy gate: ranking.rs must declare its test module.
+    // This ensures the dormant ranking_tests.rs file is wired in and executed
+    // when the server-module tests run. Without this declaration the tests in
+    // ranking_tests.rs are silently dropped.
+    let mod_decl = concat!("mod ranking", "_tests");
+    assert!(
+        stripped.contains(mod_decl),
+        "m17a-RL-7 (vii) FAIL: server-module/src/ranking.rs must contain `{}` — \
+         the test module declaration that wires ranking_tests.rs into the test suite. \
+         Add: `#[cfg(test)] #[path = \"ranking_tests.rs\"] mod ranking_tests;` \
+         at the bottom of ranking.rs (ADR-0119 D6, dormancy gate).",
+        mod_decl
+    );
+
+    // (viii-F9) Compute-before-write: compute_rating_update must appear BEFORE
+    // any profile row write (insert or update) in apply_pvp_rating.
+    // This guarantees zero-sum-breaking partial writes are unrepresentable:
+    // if compute_rating_update panics, no profile row has been written yet.
+    let compute_pos = apply_body
+        .find(concat!("compute_rating", "_update("))
+        .unwrap_or_else(|| {
+            panic!(
+                "m17a-RL-7 (viii): `compute_rating_update(` not found in apply_pvp_rating body — \
+                 required for compute-before-write ordering check (ADR-0119 D6)."
+            )
+        });
+
+    // First profile row write: either .update( or .insert(
+    let update_needle = concat!("profile().identity().", "update(");
+    let insert_needle = concat!("profile().", "insert(");
+    let first_write_pos = match (
+        apply_body.find(update_needle),
+        apply_body.find(insert_needle),
+    ) {
+        (Some(u), Some(i)) => u.min(i),
+        (Some(u), None) => u,
+        (None, Some(i)) => i,
+        (None, None) => panic!(
+            "m17a-RL-7 (viii): no profile write (`{}` or `{}`) found in apply_pvp_rating body — \
+             the function must write at least one profile row (ADR-0119 D6).",
+            update_needle, insert_needle
+        ),
+    };
+
+    assert!(
+        compute_pos < first_write_pos,
+        "m17a-RL-7 (viii) ORDER FAIL: `compute_rating_update(` (pos {}) must appear BEFORE \
+         the first profile row write (pos {}) in `apply_pvp_rating`. \
+         Compute the new ratings first, then write both rows atomically — \
+         if the compute panics, no partial write occurs (ADR-0119 D6 F9).",
+        compute_pos,
+        first_write_pos
     );
 }
 
@@ -1197,27 +1372,63 @@ fn m17a_rl2_profile_never_deleted_scan() {
 
 /// RL-1/RL-2 (g1): schema.rs must declare `profile` table as public with correct fields.
 ///
-/// Checks:
-///   - `name = profile` and `public` on the same attribute line.
-///   - `rating: i32` field present.
-///   - `wins: u32` field present.
-///   - `losses: u32` field present.
+/// F4+F8/M-3 hardening — two-step pattern:
+///   Step 1: find the line containing `name = profile` and verify it also contains `public`.
+///           This is a robustness improvement over a single `name = profile, public` needle:
+///           it catches orderings like `public, name = profile` and avoids a brittle
+///           attribute-argument-order dependency.
+///   Step 2: verify field needles `identity: Identity`, `name: String`, `rating: i32`,
+///           `wins: u32`, `losses: u32` are present in the schema.
+///   Step 3: verify `#[primary_key]` appears before the `identity` field text in the
+///           schema (PK ordering — the first annotated field must be the primary key).
 ///
 /// Kills: an impl that makes profile private (leaderboard clients cannot subscribe),
-/// or uses wrong field types (e.g. rating: u32 would break negative-rating semantics).
+/// or uses wrong field types (e.g. rating: u32 would break negative-rating semantics),
+/// or omits required fields, or reorders PK annotation incorrectly.
 /// RED now: profile table absent from schema.rs.
 #[test]
 fn m17a_rl1_profile_table_exists_public_correct_fields() {
     let stripped = strip_rust_comments(SCHEMA_RS);
 
-    // Table attribute: `name = profile` AND `public` on the same line.
-    let table_name_needle = concat!("name = profile", ", public");
+    // Step 1 (F4): find the line containing `name = profile` and assert it also
+    // contains `public`. This tolerates attribute argument reordering.
+    let name_needle = concat!("name = ", "profile");
+    let profile_line = stripped
+        .lines()
+        .find(|line| line.contains(name_needle))
+        .unwrap_or_else(|| {
+            panic!(
+                "m17a-RL-1 FAIL: schema.rs has no line containing `{}` — \
+                 the profile table declaration is absent (ADR-0119 D1). RED.",
+                name_needle
+            )
+        });
     assert!(
-        stripped.contains(table_name_needle),
-        "m17a-RL-1 FAIL: schema.rs must contain `{}` — the profile table must be \
-         declared as world-readable (public) for leaderboard subscriptions (ADR-0119 D1). \
-         RED: table absent.",
-        table_name_needle
+        profile_line.contains("public"),
+        "m17a-RL-1 FAIL: the profile table attribute line `{}` does not contain `public` — \
+         the table must be world-readable for leaderboard subscriptions (ADR-0119 D1). \
+         Add `public` to the #[spacetimedb::table(...)] attribute.",
+        profile_line.trim()
+    );
+
+    // Step 2 (F8): required struct fields.
+
+    // Field: identity: Identity (the PK field — SpacetimeDB identity type)
+    let identity_field = concat!("identity", ": Identity");
+    assert!(
+        stripped.contains(identity_field),
+        "m17a-RL-1 FAIL: Profile struct must have `{}` — the owner identity \
+         (primary key for the profile table, ADR-0119 D1).",
+        identity_field
+    );
+
+    // Field: name: String (display name — RL-1)
+    let name_field = concat!("name", ": String");
+    assert!(
+        stripped.contains(name_field),
+        "m17a-RL-1 FAIL: Profile struct must have `{}` — the player display name \
+         (ADR-0119 D1, RL-1).",
+        name_field
     );
 
     // Field: rating: i32
@@ -1244,6 +1455,30 @@ fn m17a_rl1_profile_table_exists_public_correct_fields() {
         "m17a-RL-1 FAIL: Profile must have `{}` (loss counter, ADR-0119 D1).",
         losses_field
     );
+
+    // Step 3 (F8): `#[primary_key]` must appear BEFORE `identity: Identity` in the schema.
+    // Kills: a struct where identity is declared without a primary_key annotation, or
+    // where the annotation appears on a different field.
+    let pk_needle = concat!("#[primary", "_key]");
+    let pk_pos = stripped.find(pk_needle).unwrap_or_else(|| {
+        panic!(
+            "m17a-RL-1 FAIL: schema.rs has no `{}` annotation — the profile table \
+             must declare a primary key on the identity field (ADR-0119 D1).",
+            pk_needle
+        )
+    });
+    let identity_pos = stripped.find(identity_field).expect("confirmed above");
+    assert!(
+        pk_pos < identity_pos,
+        "m17a-RL-1 FAIL: `{}` (pos {}) must appear BEFORE `{}` (pos {}) in schema.rs — \
+         the primary_key annotation must precede the identity field declaration. \
+         An impl where #[primary_key] is on a different field, or after identity, \
+         violates the ADR-0119 D1 schema contract.",
+        pk_needle,
+        pk_pos,
+        identity_field,
+        identity_pos
+    );
 }
 
 /// RL-2 (g2): on_disconnect body must NOT reference the profile table accessor.
@@ -1263,14 +1498,18 @@ fn m17a_rl2_on_disconnect_does_not_touch_profile() {
     let disconnect_body = extract_pvp_fn_body(&stripped, "on_disconnect")
         .expect("m17a-RL-2 (g2): `on_disconnect` must exist in lib.rs");
 
-    // The profile table accessor: `profile(` in a method-call position.
-    let profile_accessor = concat!("profile", "(");
+    // m-2 hardening: require the db-accessor form `ctx.db.profile(` rather than
+    // the bare `profile(` — the bare form would also match function names containing
+    // "profile" (e.g. `get_or_init_profile(`) and produce a false positive.
+    // Only a `ctx.db.profile(` call in on_disconnect would actually touch the table.
+    let profile_accessor = concat!("ctx.db.", "profile(");
 
     assert!(
         !disconnect_body.contains(profile_accessor),
-        "m17a-RL-2 (g2) FAIL: `on_disconnect` body contains `{}` — profile rows \
-         must never be touched on disconnect (ADR-0119 D1: persistent leaderboard \
-         record, never deleted). Remove any profile reference from on_disconnect.",
+        "m17a-RL-2 (g2) FAIL: `on_disconnect` body contains `{}` — this accesses the \
+         profile table on disconnect, which risks deleting or mutating profile rows \
+         (ADR-0119 D1: persistent leaderboard record, never deleted). \
+         Remove any ctx.db.profile() access from on_disconnect. (m-2 needle hardening)",
         profile_accessor
     );
 }

@@ -805,8 +805,52 @@ export default async function () {
   }
 
   // -------------------------------------------------------------------------
+  // Fixture D (BAD — dead-code call, no conditional branch):
+  // `let _ = is_ranked_pvp(&battle);` after the Ongoing check.
+  // hasPvpRejectGuard must return false (the identifier is present but not
+  // in an `if` — the F1 hardening kills this evasion).
+  // Kills: a checker that only tests identifier presence, not the `if` form.
+  // -------------------------------------------------------------------------
+  const deadCodeCall = `
+    pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
+        let me = ctx.sender;
+        let mut battle = ctx.db.battle().battle_id().find(battle_id)
+            .ok_or_else(|| "battle not found".to_string())?;
+        if battle.player_identity != ctx.sender {
+            return Err("not owner".to_string());
+        }
+        if battle.state.outcome != BattleOutcome::Ongoing {
+            return Err("battle is not ongoing".to_string());
+        }
+        let _ = is_ranked_pvp(&battle);
+        battle.state.outcome = BattleOutcome::Fled;
+        ctx.db.battle().battle_id().update(battle);
+        Ok(())
+    }
+  `;
+  const deadBodyD = extractReducerBody(deadCodeCall, 'flee');
+  if (!deadBodyD) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17a fixture D): could not extract flee body from dead-code-call fixture',
+    };
+  }
+  if (hasPvpRejectGuard(deadBodyD)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17a fixture D): hasPvpRejectGuard returned true for a body with ' +
+        'only `let _ = is_ranked_pvp(&battle)` (dead-code call, no conditional branch) — ' +
+        'F1 hardening failed: checker must require the `if is_ranked_pvp(&battle)` form',
+    };
+  }
+
+  // -------------------------------------------------------------------------
   // Real-source scan: four PvE reducers must carry the PvP-reject guard.
-  // RED now: is_ranked_pvp(&battle) absent from all four bodies.
+  // RED now: if is_ranked_pvp(&battle) absent from all four bodies.
   // -------------------------------------------------------------------------
   const PVP_REJECT_REDUCERS = ['submit_attack', 'swap_active', 'flee', 'use_battle_item'];
   const pvpFailures = [];
@@ -819,12 +863,12 @@ export default async function () {
     }
     if (!hasPvpRejectGuard(body)) {
       pvpFailures.push(
-        `${reducerName}: missing PvP-reject guard (is_ranked_pvp(&battle)) — ` +
-          `RL-8/9: PvP battles must be rejected from PvE reducers (ADR-0119 D5)`,
+        `${reducerName}: missing conditional PvP-reject guard (if is_ranked_pvp(&battle)) — ` +
+          `RL-8/9: PvP battles must be rejected from PvE reducers via an if-branch (ADR-0119 D5, F1)`,
       );
     } else if (!pvpGuardAfterOngoingCheck(body)) {
       pvpFailures.push(
-        `${reducerName}: is_ranked_pvp(&battle) appears BEFORE BattleOutcome::Ongoing check — ` +
+        `${reducerName}: if is_ranked_pvp(&battle) appears BEFORE BattleOutcome::Ongoing check — ` +
           `must be placed immediately AFTER the Ongoing check (ADR-0119 D5)`,
       );
     }
@@ -845,8 +889,8 @@ export default async function () {
       `all ${ALL_REDUCERS.length} battle reducers found with ownership checks; ` +
       `outcome guards present in ${OUTCOME_CHECKED_REDUCERS.join(', ')}; ` +
       `start_battle has opponent-provenance gate; write_back helpers side_a-only; ` +
-      `m17a: all ${PVP_REJECT_REDUCERS.length} PvE reducers have is_ranked_pvp(&battle) guard ` +
-      `after Ongoing check (RL-8/9, ADR-0119 D5; teeth: 3 fixtures A/B/C)`,
+      `m17a: all ${PVP_REJECT_REDUCERS.length} PvE reducers have if is_ranked_pvp(&battle) guard ` +
+      `after Ongoing check (RL-8/9, ADR-0119 D5; teeth: 4 fixtures A/B/C/D — F1 hardened)`,
   };
 }
 
@@ -855,28 +899,75 @@ export default async function () {
 //
 // These are exported for reuse by future m17c evals. They are NOT a second
 // default export — the single default export above integrates their logic.
+//
+// F1 hardening (guard-fakery): needles require the CONDITIONAL form
+// `if is_ranked_pvp(&battle)` — not just identifier presence. This kills:
+//   - `let _ = is_ranked_pvp(&battle);`  (dead-code call, no branch)
+//   - the identifier inside a string literal (stripped by stripRustStrings)
+// Residual documented evasion: `if is_ranked_pvp(&battle) {}` (no-op body)
+// still passes — caught by mutation testing, not a static needle scan.
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// Checker: does the reducer body contain the PvP-reject guard?
+// Strip Rust double-quoted string literals from `src` (F1 hardening).
+// Replaces each "..." with spaces so log-message text embedding the guard
+// pattern does not produce false positives. Handles \" escapes inside strings.
+// Raw strings (r"...", r#"..."#) are NOT handled — no production reducers use
+// raw strings for the patterns we scan.
+// ---------------------------------------------------------------------------
+export function stripRustStrings(src) {
+  let out = '';
+  let i = 0;
+  while (i < src.length) {
+    if (src[i] === '"') {
+      out += ' ';
+      i++;
+      while (i < src.length) {
+        if (src[i] === '\\' && i + 1 < src.length) {
+          // Escaped character — skip both bytes.
+          out += '  ';
+          i += 2;
+        } else if (src[i] === '"') {
+          out += ' ';
+          i++;
+          break;
+        } else {
+          out += ' ';
+          i++;
+        }
+      }
+    } else {
+      out += src[i];
+      i++;
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Checker: does the reducer body contain the PvP-reject guard in conditional form?
+//
+// F1 hardened: needle is 'if is_ranked' + '_pvp(&battle)' (conditional form).
+// String literals are stripped before matching to prevent false positives.
 // Uses indexOf only — no dynamic RegExp (semgrep detect-non-literal-regexp).
-// The needle is assembled from two parts so it does not appear verbatim as a
-// complete string in this file (convention consistency).
 // ---------------------------------------------------------------------------
 export function hasPvpRejectGuard(body) {
-  const code = stripRustComments(body);
-  // needle: 'is_ranked' + '_pvp(&battle)' = 'is_ranked_pvp(&battle)'
-  return code.indexOf('is_ranked' + '_pvp(&battle)') !== -1;
+  const code = stripRustStrings(stripRustComments(body));
+  // needle: 'if is_ranked' + '_pvp(&battle)' = 'if is_ranked_pvp(&battle)'
+  // F1: requires the `if` prefix — dead-code `let _ = is_ranked_pvp(&battle)` returns false.
+  return code.indexOf('if is_ranked' + '_pvp(&battle)') !== -1;
 }
 
 // ---------------------------------------------------------------------------
 // Checker: does the PvP guard appear AFTER the Ongoing check in the body?
 // Returns true iff both are present and pvpGuard offset > ongoingCheck offset.
+// F1 hardened: uses the same `if`-prefixed needle as hasPvpRejectGuard.
 // ---------------------------------------------------------------------------
 export function pvpGuardAfterOngoingCheck(body) {
-  const code = stripRustComments(body);
+  const code = stripRustStrings(stripRustComments(body));
   const ongoingIdx = code.indexOf('BattleOutcome::' + 'Ongoing');
-  const pvpIdx = code.indexOf('is_ranked' + '_pvp(&battle)');
+  // F1: same conditional-form needle.
+  const pvpIdx = code.indexOf('if is_ranked' + '_pvp(&battle)');
   if (ongoingIdx === -1 || pvpIdx === -1) return false;
   return pvpIdx > ongoingIdx;
 }

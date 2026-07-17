@@ -71,6 +71,52 @@ fn strip_rust_comments(src: &str) -> String {
     String::from_utf8(out).expect("stripped source must be valid UTF-8")
 }
 
+/// Strip Rust double-quoted string literals from `src`.
+///
+/// Replaces the contents of each `"..."` literal (including the quotes) with
+/// spaces so that source-guard needles do not match text embedded in log
+/// strings or error messages. Handles:
+///   - Escaped quotes `\"` inside a literal (does not end the literal)
+///   - Raw strings `r"..."` and `r#"..."#` are NOT handled (no production
+///     code in battle.rs uses raw strings for the patterns we scan; if that
+///     changes this function must be extended)
+///
+/// Used by m17a F1 guard-fakery hardening: `if is_ranked_pvp(&battle)` inside
+/// an error string must not satisfy the conditional-guard needle.
+fn strip_rust_strings(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = bytes.to_vec();
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b'"' {
+            // Replace the opening quote with a space.
+            out[i] = b' ';
+            i += 1;
+            // Replace content until unescaped closing quote.
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    // Escaped character — blank both bytes and skip.
+                    out[i] = b' ';
+                    out[i + 1] = b' ';
+                    i += 2;
+                } else if bytes[i] == b'"' {
+                    // Closing quote — blank it and stop.
+                    out[i] = b' ';
+                    i += 1;
+                    break;
+                } else {
+                    out[i] = b' ';
+                    i += 1;
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("stripped source must be valid UTF-8")
+}
+
 /// Extract the body of a named `fn` from `src` (comment-stripped).
 ///
 /// Finds `pub fn <name>(` or `fn <name>(`, walks to the first `{`, then
@@ -776,44 +822,64 @@ fn use_battle_item_checks_cure_status_before_consume() {
 // explicitly document the evasion.
 // ===========================================================================
 
-/// m17a-RL-8 source-guard: `flee` body must contain `is_ranked_pvp(&battle)`.
+/// m17a-RL-8 source-guard: `flee` body must contain `if is_ranked_pvp(&battle)`.
+///
+/// Needle hardened (F1): requires the CONDITIONAL form `if is_ranked_pvp(&battle)`
+/// not just presence of the identifier. This kills guard-fakery evasions:
+///   - `let _ = is_ranked_pvp(&battle);`       — dead-code call, does nothing
+///   - `// if is_ranked_pvp(&battle) { ... }`  — commented-out (stripped by scan)
+/// The `if` prefix ensures the guard is in a reachable conditional branch.
+/// Residual documented evasion: `if is_ranked_pvp(&battle) {}` (no-op body) still
+/// passes this scan — that is caught by mutation testing coverage, not a needle scan.
 ///
 /// Also asserts the guard appears AFTER the `outcome != BattleOutcome::Ongoing`
 /// check — position ordering guarantees the guard runs only on ongoing battles
 /// (the Ongoing check exits early on terminated battles, so the PvP guard is
 /// never reached for those).
 ///
+/// Also strips string literals before matching (F1) so a log string containing
+/// `"if is_ranked_pvp(&battle)"` does not produce a false-positive.
+///
 /// Kills: any impl of `flee` that omits the PvP reject, allowing a player to
 /// flee a PvP battle and dodge a rating loss (the client `canFlee=false` is
 /// not authoritative — ADR-0119 D5).
+/// Kills: dead-code call `let _ = is_ranked_pvp(&battle)` with no branch.
 /// RED now: needle absent from current flee body.
 #[test]
 fn m17a_flee_has_pvp_reject_guard() {
     let stripped = strip_rust_comments(MODULE_SOURCE);
-    let pvp_needle = concat!("is_ranked", "_pvp(&battle)");
+    // F1: require the conditional form; strip string literals to avoid false positives
+    // from log messages containing the pattern verbatim.
+    let pvp_needle = concat!("if is_ranked", "_pvp(&battle)");
     let ongoing_needle = concat!("BattleOutcome::", "Ongoing");
 
     let body = extract_fn_body(&stripped, "flee")
         .expect("m17a-RL-8: `flee` reducer must exist in battle.rs");
 
+    // Strip string literals from the body before needle search (F1: guard-fakery hardening).
+    // This ensures a log string like `log("if is_ranked_pvp(&battle) ...")` is not matched.
+    let body_no_strings = strip_rust_strings(&body);
+
     assert!(
-        body.contains(pvp_needle),
-        "m17a-RL-8 FAIL: `flee` body is missing the PvP-reject guard `{}`. \
+        body_no_strings.contains(pvp_needle),
+        "m17a-RL-8 FAIL: `flee` body is missing the conditional PvP-reject guard `{}`. \
          Without it, a player can flee a PvP battle and dodge a rating loss. \
          Add: `if is_ranked_pvp(&battle) {{ log_reject(...); return Err(...); }}` \
-         immediately after the outcome != Ongoing check. RED: needle absent. (ADR-0119 D5)",
+         immediately after the outcome != Ongoing check. RED: needle absent. (ADR-0119 D5, F1 hardening)",
         pvp_needle
     );
 
     // Order: ongoing check must precede pvp guard in the source.
-    let ongoing_pos = body
+    let ongoing_pos = body_no_strings
         .find(ongoing_needle)
         .expect("m17a-RL-8: `flee` body must contain a BattleOutcome::Ongoing check");
-    let pvp_pos = body.find(pvp_needle).expect("already confirmed above");
+    let pvp_pos = body_no_strings
+        .find(pvp_needle)
+        .expect("already confirmed above");
 
     assert!(
         pvp_pos > ongoing_pos,
-        "m17a-RL-8 ORDER FAIL: `is_ranked_pvp(&battle)` (pos {pvp_pos}) must appear AFTER \
+        "m17a-RL-8 ORDER FAIL: `if is_ranked_pvp(&battle)` (pos {pvp_pos}) must appear AFTER \
          `BattleOutcome::Ongoing` check (pos {ongoing_pos}) in `flee` body. \
          Place the PvP guard immediately after the Ongoing reject (ADR-0119 D5)."
     );
@@ -830,102 +896,127 @@ fn m17a_flee_has_pvp_reject_guard() {
 #[test]
 fn m17a_submit_attack_has_pvp_reject_guard() {
     let stripped = strip_rust_comments(MODULE_SOURCE);
-    let pvp_needle = concat!("is_ranked", "_pvp(&battle)");
+    // F1: require conditional form; strip string literals to prevent false positives.
+    let pvp_needle = concat!("if is_ranked", "_pvp(&battle)");
     let ongoing_needle = concat!("BattleOutcome::", "Ongoing");
 
     let body = extract_fn_body(&stripped, "submit_attack")
         .expect("m17a-RL-9: `submit_attack` reducer must exist in battle.rs");
 
+    let body_no_strings = strip_rust_strings(&body);
+
     assert!(
-        body.contains(pvp_needle),
-        "m17a-RL-9 FAIL: `submit_attack` body is missing the PvP-reject guard `{}`. \
+        body_no_strings.contains(pvp_needle),
+        "m17a-RL-9 FAIL: `submit_attack` body is missing the conditional PvP-reject guard `{}`. \
          Without it, side A can drive PvP turns via the PvE path (server AI resolves \
          side B — farming exploit + exactly-once violation). \
-         Add the guard immediately after the outcome != Ongoing check (ADR-0119 D5).",
+         Add: `if is_ranked_pvp(&battle) {{ return Err(...); }}` after the Ongoing check (ADR-0119 D5, F1).",
         pvp_needle
     );
 
-    let ongoing_pos = body
+    let ongoing_pos = body_no_strings
         .find(ongoing_needle)
         .expect("m17a-RL-9: `submit_attack` body must contain a BattleOutcome::Ongoing check");
-    let pvp_pos = body.find(pvp_needle).expect("already confirmed above");
+    let pvp_pos = body_no_strings
+        .find(pvp_needle)
+        .expect("already confirmed above");
 
     assert!(
         pvp_pos > ongoing_pos,
-        "m17a-RL-9 ORDER FAIL: `is_ranked_pvp(&battle)` (pos {pvp_pos}) must appear AFTER \
+        "m17a-RL-9 ORDER FAIL: `if is_ranked_pvp(&battle)` (pos {pvp_pos}) must appear AFTER \
          `BattleOutcome::Ongoing` check (pos {ongoing_pos}) in `submit_attack` body (ADR-0119 D5)."
     );
 }
 
-/// m17a-RL-9 source-guard: `swap_active` body must contain `is_ranked_pvp(&battle)`.
+/// m17a-RL-9 source-guard: `swap_active` body must contain `if is_ranked_pvp(&battle)`.
+///
+/// Needle hardened (F1): requires the conditional form `if is_ranked_pvp(&battle)`.
+/// Also strips string literals before matching to prevent false positives from
+/// log messages embedding the pattern text.
 ///
 /// Also asserts the guard appears AFTER the `BattleOutcome::Ongoing` check.
 ///
 /// Kills: an impl where swap_active can be used on a PvP battle, letting a player
 /// manipulate team composition outside the both-submit protocol.
+/// Kills: dead-code `let _ = is_ranked_pvp(&battle)` evasion.
 /// RED now: needle absent from current swap_active body.
 #[test]
 fn m17a_swap_active_has_pvp_reject_guard() {
     let stripped = strip_rust_comments(MODULE_SOURCE);
-    let pvp_needle = concat!("is_ranked", "_pvp(&battle)");
+    // F1: require conditional form; strip string literals to prevent false positives.
+    let pvp_needle = concat!("if is_ranked", "_pvp(&battle)");
     let ongoing_needle = concat!("BattleOutcome::", "Ongoing");
 
     let body = extract_fn_body(&stripped, "swap_active")
         .expect("m17a-RL-9: `swap_active` reducer must exist in battle.rs");
 
+    let body_no_strings = strip_rust_strings(&body);
+
     assert!(
-        body.contains(pvp_needle),
-        "m17a-RL-9 FAIL: `swap_active` body is missing the PvP-reject guard `{}`. \
+        body_no_strings.contains(pvp_needle),
+        "m17a-RL-9 FAIL: `swap_active` body is missing the conditional PvP-reject guard `{}`. \
          Without it, a player can manipulate PvP team composition outside the \
-         both-submit protocol. Add the guard after the Ongoing check (ADR-0119 D5).",
+         both-submit protocol. Add: `if is_ranked_pvp(&battle) {{ return Err(...); }}` \
+         after the Ongoing check (ADR-0119 D5, F1).",
         pvp_needle
     );
 
-    let ongoing_pos = body
+    let ongoing_pos = body_no_strings
         .find(ongoing_needle)
         .expect("m17a-RL-9: `swap_active` body must contain a BattleOutcome::Ongoing check");
-    let pvp_pos = body.find(pvp_needle).expect("already confirmed above");
+    let pvp_pos = body_no_strings
+        .find(pvp_needle)
+        .expect("already confirmed above");
 
     assert!(
         pvp_pos > ongoing_pos,
-        "m17a-RL-9 ORDER FAIL: `is_ranked_pvp(&battle)` (pos {pvp_pos}) must appear AFTER \
+        "m17a-RL-9 ORDER FAIL: `if is_ranked_pvp(&battle)` (pos {pvp_pos}) must appear AFTER \
          `BattleOutcome::Ongoing` check (pos {ongoing_pos}) in `swap_active` body (ADR-0119 D5)."
     );
 }
 
-/// m17a-RL-9 source-guard: `use_battle_item` body must contain `is_ranked_pvp(&battle)`.
+/// m17a-RL-9 source-guard: `use_battle_item` body must contain `if is_ranked_pvp(&battle)`.
+///
+/// Needle hardened (F1): requires the conditional form `if is_ranked_pvp(&battle)`.
+/// Also strips string literals before matching.
 ///
 /// Also asserts the guard appears AFTER the `BattleOutcome::Ongoing` check.
 ///
 /// Kills: an impl where items can be used in PvP battles — state mutation outside
 /// the both-submit secret-pick protocol (PvP item use is deferred; reject now,
 /// lift deliberately later — ADR-0119 D5).
+/// Kills: dead-code `let _ = is_ranked_pvp(&battle)` evasion.
 /// RED now: needle absent from current use_battle_item body.
 #[test]
 fn m17a_use_battle_item_has_pvp_reject_guard() {
     let stripped = strip_rust_comments(MODULE_SOURCE);
-    let pvp_needle = concat!("is_ranked", "_pvp(&battle)");
+    // F1: require conditional form; strip string literals to prevent false positives.
+    let pvp_needle = concat!("if is_ranked", "_pvp(&battle)");
     let ongoing_needle = concat!("BattleOutcome::", "Ongoing");
 
     let body = extract_fn_body(&stripped, "use_battle_item")
         .expect("m17a-RL-9: `use_battle_item` reducer must exist in battle.rs");
 
+    let body_no_strings = strip_rust_strings(&body);
+
     assert!(
-        body.contains(pvp_needle),
-        "m17a-RL-9 FAIL: `use_battle_item` body is missing the PvP-reject guard `{}`. \
+        body_no_strings.contains(pvp_needle),
+        "m17a-RL-9 FAIL: `use_battle_item` body is missing the conditional PvP-reject guard `{}`. \
          PvP item use is rejected in m17a (deferred feature; lift deliberately later). \
-         Add the guard after the Ongoing check (ADR-0119 D5).",
+         Add: `if is_ranked_pvp(&battle) {{ return Err(...); }}` after the Ongoing check (ADR-0119 D5, F1).",
         pvp_needle
     );
 
-    let ongoing_pos = body
+    let ongoing_pos = body_no_strings
         .find(ongoing_needle)
         .expect("m17a-RL-9: `use_battle_item` body must contain a BattleOutcome::Ongoing check");
-    let pvp_pos = body.find(pvp_needle).expect("already confirmed above");
+    let pvp_pos = body_no_strings
+        .find(pvp_needle)
+        .expect("already confirmed above");
 
     assert!(
         pvp_pos > ongoing_pos,
-        "m17a-RL-9 ORDER FAIL: `is_ranked_pvp(&battle)` (pos {pvp_pos}) must appear AFTER \
+        "m17a-RL-9 ORDER FAIL: `if is_ranked_pvp(&battle)` (pos {pvp_pos}) must appear AFTER \
          `BattleOutcome::Ongoing` check (pos {ongoing_pos}) in `use_battle_item` body (ADR-0119 D5)."
     );
 }
