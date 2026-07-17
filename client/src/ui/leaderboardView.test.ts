@@ -398,7 +398,7 @@ describe('RL13-conn-subscription: connection.ts must wire the profile subscripti
     // Uses .includes() — no dynamic RegExp (eslint ReDoS ban).
     const connPath = path.join(
       path.dirname(fileURLToPath(import.meta.url)),
-      '../../net/connection.ts',
+      '../net/connection.ts',
     );
     let src: string;
     try {
