@@ -5,7 +5,7 @@ Architecture Decision Records live in **two locations**; check both.
 - **Design ADRs `0002`–`0034`** — in the **harness spec corpus**
   (`../../specs/monster-realm-v2/adr/`). These are the foundational design
   decisions authored alongside the milestone specs.
-- **Implementation ADRs `0001`, `0035`–`0120`** — in **this directory**
+- **Implementation ADRs `0001`, `0035`–`0121`** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
@@ -113,6 +113,7 @@ prefix `harness adr/0055` to cite the harness design ADR.
 | [0118](./0118-nightly-mutation-gate-triage-and-server-cap-rebaseline.md) | Nightly mutation-gate triage: check_headroom kill set, mutate-server cap re-baseline, wiring-eval ceiling raise | nightly-triage |
 | [0119](./0119-ranked-ladder-spine.md) | Ranked ladder spine: persistent profile, integer Elo, once-only rating funnel, PvE-path PvP closure | m17a |
 | [0120](./0120-m17b-leaderboard-client-ui.md) | Ranked leaderboard client UI: pure-subscription profile mirror, deterministic comparator, fully-covered DOM shell | m17b |
+| [0121](./0121-m17c-ranked-evals-tail.md) | m17c ranked evals tail: sql-based server-truth e2e, checker-import reuse, no-op-body hardening | m17c |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
