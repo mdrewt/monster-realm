@@ -107,19 +107,6 @@ function countOccurrences(haystack, needle) {
 }
 
 // ---------------------------------------------------------------------------
-// readServerModuleSources: recursive concatenation of all .rs files.
-// ---------------------------------------------------------------------------
-function readServerModuleSources(dir) {
-  const parts = [];
-  for (const entry of readdirSync(dir).sort()) {
-    const full = `${dir}/${entry}`;
-    if (statSync(full).isDirectory()) parts.push(readServerModuleSources(full));
-    else if (entry.endsWith('.rs')) parts.push(readFileSync(full, 'utf8'));
-  }
-  return parts.join('\n');
-}
-
-// ---------------------------------------------------------------------------
 // CHECKER A1: ranking.rs must NOT contain `#[spacetimedb::reducer`
 // ---------------------------------------------------------------------------
 function checkNoReducerAttr(rankingSrc) {

@@ -303,14 +303,14 @@ export default async function () {
   // GUARDED IMPORT of battle-reducer-security.eval.mjs checkers (plan §3)
   // Returns RED (not throw) if any required export is missing.
   // =========================================================================
-  let stripRustComments,
-    extractReducerBody,
-    stripRustStrings,
-    hasPvpRejectGuard,
-    pvpGuardAfterOngoingCheck;
+  let extractReducerBody, hasPvpRejectGuard, pvpGuardAfterOngoingCheck;
   try {
     const mod = await import(BATTLE_SECURITY_EVAL_PATH);
-    // Validate all required exports are present and callable.
+    // Validate ALL FIVE required exports are present and callable — including
+    // stripRustComments and stripRustStrings which are used internally by the
+    // imported checkers (hasPvpRejectGuard / pvpGuardAfterOngoingCheck call them).
+    // Validation is over mod[k] so no unused bindings are created for the two
+    // strip fns; only the three bindings this file directly calls are assigned.
     const required = [
       'stripRustComments',
       'extractReducerBody',
@@ -328,9 +328,7 @@ export default async function () {
           'This eval depends on those checkers — it cannot proceed without them (plan §3).',
       };
     }
-    stripRustComments = mod.stripRustComments;
     extractReducerBody = mod.extractReducerBody;
-    stripRustStrings = mod.stripRustStrings;
     hasPvpRejectGuard = mod.hasPvpRejectGuard;
     pvpGuardAfterOngoingCheck = mod.pvpGuardAfterOngoingCheck;
   } catch (e) {
