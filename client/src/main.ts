@@ -59,6 +59,8 @@ import { buildEvolutionViewModel } from './ui/evolutionModel';
 import type { EvolutionView } from './ui/evolutionView';
 import { buildHealViewModel, healTargetLocationId } from './ui/healModel';
 import type { HealView } from './ui/healView';
+import { buildLeaderboardViewModel } from './ui/leaderboardModel';
+import type { LeaderboardView } from './ui/leaderboardView';
 import { buildPvpChallengeViewModel } from './ui/pvpModel';
 import type { PvpView } from './ui/pvpView';
 import { buildQuestLogViewModel } from './ui/questLogModel';
@@ -118,6 +120,8 @@ let healView: HealView | undefined;
 let shopView: ShopView | undefined;
 let tradeView: TradeView | undefined;
 let pvpView: PvpView | undefined;
+// m17b: ranked leaderboard overlay (ADR-0120) — pure subscription view (RL-15).
+let leaderboardView: LeaderboardView | undefined;
 // m16b: tracks the turn number at the time the player submitted a PvP action.
 // When the server resolves the turn (battle.turnNumber increments beyond this),
 // pvpPendingTurnNumber is cleared and pvpPendingSubmit becomes false.
@@ -305,7 +309,8 @@ function reconcileFromStore(): void {
         healView?.visible ||
         shopView?.visible ||
         tradeView?.visible ||
-        pvpView?.visible
+        pvpView?.visible ||
+        leaderboardView?.visible
       )
     ) {
       const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
@@ -375,7 +380,8 @@ window.addEventListener('keydown', (e) => {
       shouldToggleBox(battleView?.visible ?? false) &&
       !shopView?.visible &&
       !tradeView?.visible &&
-      !pvpView?.visible
+      !pvpView?.visible &&
+      !leaderboardView?.visible
     ) {
       raisingView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
@@ -392,7 +398,8 @@ window.addEventListener('keydown', (e) => {
       shouldToggleBox(battleView?.visible ?? false) &&
       !shopView?.visible &&
       !tradeView?.visible &&
-      !pvpView?.visible
+      !pvpView?.visible &&
+      !leaderboardView?.visible
     ) {
       boxView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
@@ -409,7 +416,8 @@ window.addEventListener('keydown', (e) => {
       shouldToggleBox(battleView?.visible ?? false) &&
       !shopView?.visible &&
       !tradeView?.visible &&
-      !pvpView?.visible
+      !pvpView?.visible &&
+      !leaderboardView?.visible
     ) {
       boxView?.hide(); // mutual exclusivity
       raisingView?.hide(); // mutual exclusivity
@@ -431,7 +439,8 @@ window.addEventListener('keydown', (e) => {
       !healView?.visible &&
       !shopView?.visible &&
       !tradeView?.visible &&
-      !pvpView?.visible
+      !pvpView?.visible &&
+      !leaderboardView?.visible
     ) {
       if (questLogView?.visible) {
         questLogView.hide();
@@ -453,7 +462,8 @@ window.addEventListener('keydown', (e) => {
       !questLogView?.visible &&
       !shopView?.visible &&
       !tradeView?.visible &&
-      !pvpView?.visible
+      !pvpView?.visible &&
+      !leaderboardView?.visible
     ) {
       if (healView?.visible) {
         healView.hide();
@@ -476,7 +486,8 @@ window.addEventListener('keydown', (e) => {
       !questLogView?.visible &&
       !healView?.visible &&
       !tradeView?.visible &&
-      !pvpView?.visible
+      !pvpView?.visible &&
+      !leaderboardView?.visible
     ) {
       if (shopView?.visible) {
         shopView.hide();
@@ -507,7 +518,8 @@ window.addEventListener('keydown', (e) => {
       !questLogView?.visible &&
       !healView?.visible &&
       !shopView?.visible &&
-      !pvpView?.visible
+      !pvpView?.visible &&
+      !leaderboardView?.visible
     ) {
       if (tradeView?.visible) {
         tradeView.hide();
@@ -538,7 +550,8 @@ window.addEventListener('keydown', (e) => {
       !questLogView?.visible &&
       !healView?.visible &&
       !shopView?.visible &&
-      !tradeView?.visible
+      !tradeView?.visible &&
+      !leaderboardView?.visible
     ) {
       if (pvpView?.visible) {
         pvpView.hide();
@@ -548,6 +561,32 @@ window.addEventListener('keydown', (e) => {
           buildPvpChallengeViewModel(store.allChallenges(), identity, store.allPlayers()),
           true,
         );
+      }
+    }
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'KeyL') {
+    // Leaderboard overlay — mutual exclusivity with all other overlays (m17b, ADR-0120).
+    // Renders once on open from store.allProfiles(); the batch listener below keeps
+    // it live while visible. Pure subscription view — no write path (RL-15).
+    if (
+      !battleView?.visible &&
+      !boxView?.visible &&
+      !raisingView?.visible &&
+      !evolutionView?.visible &&
+      !dialogueView?.visible &&
+      !questLogView?.visible &&
+      !healView?.visible &&
+      !shopView?.visible &&
+      !tradeView?.visible &&
+      !pvpView?.visible
+    ) {
+      if (leaderboardView?.visible) {
+        leaderboardView.hide();
+      } else {
+        leaderboardView?.render(buildLeaderboardViewModel(store.allProfiles(), identity));
+        leaderboardView?.show();
       }
     }
     e.preventDefault();
@@ -571,6 +610,7 @@ window.addEventListener('keydown', (e) => {
       !shopView?.visible &&
       !tradeView?.visible &&
       !pvpView?.visible &&
+      !leaderboardView?.visible &&
       identity !== ''
     ) {
       const own = store.ownCharacter(identity);
@@ -666,6 +706,11 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
+  if (e.code === 'Escape' && leaderboardView?.visible) {
+    leaderboardView.hide();
+    e.preventDefault();
+    return;
+  }
   // Suppress movement input while an overlay is open.
   if (
     battleView?.visible ||
@@ -677,7 +722,8 @@ window.addEventListener('keydown', (e) => {
     healView?.visible ||
     shopView?.visible ||
     tradeView?.visible ||
-    pvpView?.visible
+    pvpView?.visible ||
+    leaderboardView?.visible
   )
     return;
   const dir = KEY_DIR[e.code];
@@ -748,6 +794,10 @@ function refreshBattle(): void {
     if (boxView?.visible) boxView.hide(); // active/outcome overlay supersedes the box
     if (raisingView?.visible) raisingView.hide(); // ...and the raising/inventory overlay
     if (evolutionView?.visible) evolutionView.hide(); // ...and the evolution overlay
+    // m17b (ADR-0120): ...and the leaderboard — a PvP accept auto-shows the battle
+    // overlay while the challenger may have the board open (anyOverlayVisible gates
+    // only the pvp listener, not this battle auto-show).
+    if (leaderboardView?.visible) leaderboardView.hide();
     // Build baitItems from own inventory × item defs (12.5f-5: wire the 4th arg
     // that was already present in buildBattleViewModel with default []). The
     // function classifies by recruitBonus > 0 internally (ADR-0047 classify-by-data).
@@ -906,12 +956,26 @@ store.onBatchApplied(() => {
       questLogView?.visible ||
       healView?.visible ||
       shopView?.visible ||
-      tradeView?.visible;
+      tradeView?.visible ||
+      leaderboardView?.visible;
     const forceVisible =
       !anyOverlayVisible && (vm.incoming !== null || (pvpView?.visible ?? false));
     pvpView?.refresh(vm, forceVisible);
   } catch (err) {
     console.error('[m16b] pvpView batch listener error', err);
+  }
+});
+
+// --- m17b: leaderboard batch listener (ADR-0120) -----------------------------------
+// Refresh-only-when-visible (ADR-0014 pattern): ratings/W/L stay live while the
+// board is open as profile rows update. MUST be total (never throw): defense-in-depth
+// (store.flushBatch has per-listener try/catch since M10.5d).
+store.onBatchApplied(() => {
+  if (!leaderboardView?.visible || identity === '') return;
+  try {
+    leaderboardView.render(buildLeaderboardViewModel(store.allProfiles(), identity));
+  } catch (err) {
+    console.error('[m17b] leaderboard batch listener error', err);
   }
 });
 
@@ -1060,6 +1124,7 @@ async function main(): Promise<void> {
     { ShopView: ShopViewClass },
     { TradeView: TradeViewClass },
     { PvpView: PvpViewClass },
+    { LeaderboardView: LeaderboardViewClass },
   ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/battleView'),
@@ -1071,6 +1136,7 @@ async function main(): Promise<void> {
     import('./ui/shopView'),
     import('./ui/tradeView'),
     import('./ui/pvpView'),
+    import('./ui/leaderboardView'),
   ]);
   renderer = new WorldRenderer();
   const mount = document.getElementById('app');
@@ -1285,6 +1351,9 @@ async function main(): Promise<void> {
         sendGuarded('pvp-cancel', () => conn?.conn.reducers.cancelChallenge({ challengeId }));
       },
     });
+    // m17b: leaderboard DOM shell (ADR-0120). ZERO-arg construction — RL-15: the
+    // leaderboard is a pure subscription view; there is no client write path to profile.
+    leaderboardView = new LeaderboardViewClass();
   }
 
   // M13.5b (ADR-0085 C8): create the status surface BEFORE `conn = connect(...)` is
@@ -1319,6 +1388,9 @@ async function main(): Promise<void> {
       tradeView?.hide();
       // m16b: hide the PvP overlay on reconnect — any pending challenge state is stale.
       pvpView?.hide();
+      // m17b: hide the leaderboard on reconnect — the store was reset, so a stale/empty
+      // board must not linger (no lock to reset; re-renders on the next open/batch).
+      leaderboardView?.hide();
       // The "connection lost — reconnecting…" status line is now stale (ADR-0085 A8).
       clearStatus();
     },
@@ -1356,7 +1428,8 @@ async function main(): Promise<void> {
           healView?.visible ||
           shopView?.visible ||
           tradeView?.visible ||
-          pvpView?.visible
+          pvpView?.visible ||
+          leaderboardView?.visible
         )
       ) {
         const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
