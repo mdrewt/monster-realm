@@ -17,18 +17,18 @@
 
 use crate::economy::{spend_currency, wallet_balance};
 use crate::guards::{
-    escrowed_currency_amount, escrowed_item_qty, reject_if_monster_in_trade, require_owner,
-    saturating_sub_u64,
+    escrowed_currency_amount, escrowed_item_qty, is_in_ongoing_battle, reject_if_monster_in_trade,
+    require_owner, saturating_sub_u64,
 };
 use crate::inventory::consume_one;
 use crate::marshal::{now_ms, pub_from_monster};
 use crate::schema::{
-    battle, character, heal_cooldown, heal_location_row, inventory, item_row, monster, monster_pub,
-    player, species_row, trade_offer, HealCooldown,
+    character, heal_cooldown, heal_location_row, inventory, item_row, monster, monster_pub, player,
+    species_row, trade_offer, HealCooldown,
 };
 use game_core::{
-    apply_care, focus_train, BattleOutcome, Bond, EVs, FocusTrainError, FocusTrainResult, IVs,
-    Level, Nature, StatBlock, StatKind,
+    apply_care, focus_train, Bond, EVs, FocusTrainError, FocusTrainResult, IVs, Level, Nature,
+    StatBlock, StatKind,
 };
 use spacetimedb::{ReducerContext, Table};
 
@@ -281,14 +281,9 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
         return Err("not in heal location zone".to_string());
     }
 
-    // Step 5: in-battle check
-    let in_battle = ctx
-        .db
-        .battle()
-        .player_identity()
-        .filter(me)
-        .any(|b| b.state.outcome == BattleOutcome::Ongoing);
-    if in_battle {
+    // Step 5: in-battle check — EITHER role (ADR-0122): side-B of an ongoing
+    // PvP battle cannot heal mid-battle.
+    if is_in_ongoing_battle(ctx, me) {
         return Err("cannot heal during an ongoing battle".to_string());
     }
 

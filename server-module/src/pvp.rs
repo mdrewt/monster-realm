@@ -26,8 +26,8 @@
 use crate::battle::write_back_battle_results;
 use crate::content_cache::cached_skills;
 use crate::guards::{
-    check_monster_in_party, check_party_size, log_reject, reject_if_monster_in_trade,
-    require_pvp_participant,
+    check_monster_in_party, check_party_size, is_in_ongoing_battle, log_reject,
+    reject_if_monster_in_trade, require_pvp_participant,
 };
 use crate::marshal::{
     battle_monster_from_row, build_ability_store, now_ms, pub_from_monster, type_chart_from_rows,
@@ -89,24 +89,6 @@ fn schedule_deadline(ctx: &ReducerContext, battle_id: u64, turn_number: u16) {
         battle_id,
         turn_number,
     });
-}
-
-/// Returns true if `identity` is currently in an ongoing battle (either as
-/// player_identity OR opponent_identity — both roles must be checked for PvP).
-fn is_in_ongoing_battle(ctx: &ReducerContext, identity: Identity) -> bool {
-    ctx.db
-        .battle()
-        .player_identity()
-        .filter(identity)
-        .any(|b| b.state.outcome == BattleOutcome::Ongoing)
-        || ctx
-            .db
-            .battle()
-            .opponent_identity()
-            .filter(identity)
-            .any(|b| {
-                b.state.outcome == BattleOutcome::Ongoing && b.opponent_identity != WILD_IDENTITY
-            })
 }
 
 /// Returns true if `identity` has any active (Pending) challenge as challenger.

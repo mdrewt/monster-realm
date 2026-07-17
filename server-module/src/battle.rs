@@ -12,7 +12,7 @@
 use crate::economy::grant_currency;
 use crate::guards::{
     check_monster_in_party, check_party_size, check_team_coupling, escrowed_item_qty,
-    is_ranked_pvp, log_reject, reject_if_monster_in_trade, require_owner,
+    is_in_ongoing_battle, is_ranked_pvp, log_reject, reject_if_monster_in_trade, require_owner,
 };
 use crate::inventory::consume_one;
 use crate::marshal::{
@@ -106,14 +106,9 @@ pub fn start_battle(
         }
     }
 
-    // Check caller is not already in an ongoing battle.
-    let already_in_battle = ctx
-        .db
-        .battle()
-        .player_identity()
-        .filter(me)
-        .any(|b| b.state.outcome == BattleOutcome::Ongoing);
-    if already_in_battle {
+    // Check caller is not already in an ongoing battle — EITHER role (ADR-0122):
+    // side-B of an ongoing PvP battle must not open a second battle.
+    if is_in_ongoing_battle(ctx, me) {
         let e = "already in an ongoing battle".to_string();
         log_reject("start_battle", me, &e);
         return Err(e);
@@ -328,14 +323,9 @@ pub(crate) fn begin_encounter(
             }
         }
     }
-    // Reject if the player is already in an ongoing battle.
-    let already_in_battle = ctx
-        .db
-        .battle()
-        .player_identity()
-        .filter(player_identity)
-        .any(|b| b.state.outcome == BattleOutcome::Ongoing);
-    if already_in_battle {
+    // Reject if the player is already in an ongoing battle — EITHER role
+    // (ADR-0122): a side-B PvP participant must not spawn a wild encounter.
+    if is_in_ongoing_battle(ctx, player_identity) {
         return Err("already in an ongoing battle".to_string());
     }
 
@@ -496,14 +486,9 @@ pub fn start_wild_battle(ctx: &ReducerContext, zone_id: u32) -> Result<(), Strin
         log_reject("start_wild_battle", me, &e);
         return Err(e);
     };
-    // Not already in a battle (begin_encounter re-checks; this gives a clear error).
-    let already = ctx
-        .db
-        .battle()
-        .player_identity()
-        .filter(me)
-        .any(|b| b.state.outcome == BattleOutcome::Ongoing);
-    if already {
+    // Not already in a battle — EITHER role (ADR-0122 D3; begin_encounter
+    // re-checks, this gives a clear error).
+    if is_in_ongoing_battle(ctx, me) {
         let e = "already in an ongoing battle".to_string();
         log_reject("start_wild_battle", me, &e);
         return Err(e);
