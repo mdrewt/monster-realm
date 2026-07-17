@@ -36,6 +36,7 @@ import {
   playerConversationRowToStore,
   playerQuestRowToStore,
   playerRowToStore,
+  profileRowToStore,
   type SdkBattleChallengeRow,
   type SdkBattleRow,
   type SdkCharacterRow,
@@ -44,6 +45,7 @@ import {
   type SdkItemRowRow,
   type SdkMonsterPubRow,
   type SdkPlayerRow,
+  type SdkProfileRow,
   type SdkShopItemRowRow,
   type SdkShopRowRow,
   type SdkSkillRowRow,
@@ -450,6 +452,20 @@ export function connect(opts: ConnectionOptions): Connection {
       store.removeChallenge((row as unknown as SdkBattleChallengeRow).challengeId);
       batcher.schedule();
     });
+
+    // m17b: profile (PUBLIC table — world-readable ranked leaderboard, ADR-0119/0120).
+    // profile is a REGULAR table (not a view), so onUpdate fires normally — the
+    // my_conversation view-delete gating above does NOT apply here.
+    // TRIPWIRE — deliberately NO onDelete: profile rows are never deleted
+    // server-side (RL-2, ADR-0119 D1 — Elo losses update the row, never remove it).
+    // If the server ever starts deleting profile rows, this missing handler is the
+    // review tripwire: wire onDelete + a store removal in the same change.
+    const ingestProfile = (row: SdkProfileRow): void => {
+      store.upsertProfile(profileRowToStore(row));
+      batcher.schedule();
+    };
+    conn.db.profile.onInsert((_ctx, row) => ingestProfile(row as unknown as SdkProfileRow));
+    conn.db.profile.onUpdate((_ctx, _old, row) => ingestProfile(row as unknown as SdkProfileRow));
   }
 
   /**
@@ -541,6 +557,9 @@ export function connect(opts: ConnectionOptions): Connection {
             // and target subscribe. battle_action is PRIVATE (ADR-0015 must-never-leak)
             // and MUST NEVER be subscribed here.
             'SELECT * FROM battle_challenge',
+            // m17b: profile is a PUBLIC regular table (world-readable leaderboard —
+            // RL-13/ADR-0119); onUpdate fires normally (unlike the my_conversation view).
+            'SELECT * FROM profile',
           ]);
       })
       .onConnectError((_ctx, err: Error) => {

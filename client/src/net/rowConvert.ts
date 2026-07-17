@@ -24,6 +24,7 @@ import type {
   StorePlayer,
   StorePlayerConversation,
   StorePlayerQuest,
+  StoreProfile,
   StoreShopItemRow,
   StoreShopRow,
   StoreSkillRow,
@@ -545,5 +546,31 @@ export function battleChallengeRowToStore(row: SdkBattleChallengeRow): StoreBatt
     challengerPartyIds: [...row.challengerPartyIds],
     status: row.status.tag,
     createdAtMs: row.createdAtMs,
+  };
+}
+
+// --- m17b: profile conversion ---------------------------------------------------
+
+// `type` alias (not `interface`) to match the StoreProfile probe-cast convention
+// (store.ts NOTE at StoreMonsterPub). rating is i32, wins/losses are u32 — all
+// decode as plain JS numbers, never bigint.
+/** Structural view of the generated profile row (PUBLIC table — RL-13 leaderboard). */
+export type SdkProfileRow = {
+  readonly identity: { toHexString(): string };
+  readonly name: string;
+  readonly rating: number;
+  readonly wins: number;
+  readonly losses: number;
+};
+
+/** Explicit field-by-field mapping — NEVER spread the SDK row (a spread would leak
+ *  SDK-only fields into the store; the exact five-key set is test-pinned). */
+export function profileRowToStore(row: SdkProfileRow): StoreProfile {
+  return {
+    identity: row.identity.toHexString(),
+    name: row.name,
+    rating: row.rating,
+    wins: row.wins,
+    losses: row.losses,
   };
 }

@@ -344,6 +344,42 @@ const ALL_NATURES: [NatureKind; 25] = [
     NatureKind::Quirky,
 ];
 
+/// Exhaustive `NatureKind -> 5x5 grid index` map (#26c).
+///
+/// A `match` (not a linear search over `ALL_NATURES`) so adding a `NatureKind`
+/// variant without placing it in the grid is a COMPILE error, never a runtime
+/// panic. `nature_grid_agrees_with_all_natures` pins this map to the
+/// `ALL_NATURES` layout, so the two cannot drift.
+const fn nature_grid_index(kind: NatureKind) -> usize {
+    match kind {
+        NatureKind::Hardy => 0,
+        NatureKind::Lonely => 1,
+        NatureKind::Brave => 2,
+        NatureKind::Adamant => 3,
+        NatureKind::Naughty => 4,
+        NatureKind::Bold => 5,
+        NatureKind::Docile => 6,
+        NatureKind::Relaxed => 7,
+        NatureKind::Impish => 8,
+        NatureKind::Lax => 9,
+        NatureKind::Timid => 10,
+        NatureKind::Hasty => 11,
+        NatureKind::Serious => 12,
+        NatureKind::Jolly => 13,
+        NatureKind::Naive => 14,
+        NatureKind::Modest => 15,
+        NatureKind::Mild => 16,
+        NatureKind::Quiet => 17,
+        NatureKind::Bashful => 18,
+        NatureKind::Rash => 19,
+        NatureKind::Calm => 20,
+        NatureKind::Gentle => 21,
+        NatureKind::Sassy => 22,
+        NatureKind::Careful => 23,
+        NatureKind::Quirky => 24,
+    }
+}
+
 /// The five non-HP stats in nature-grid order (row = raised, col = lowered).
 const NATURE_STATS: [StatKind; 5] = [
     StatKind::Attack,
@@ -370,12 +406,10 @@ impl Nature {
         self.kind
     }
 
-    /// Index of this nature in the 5×5 grid (0..25).
+    /// Index of this nature in the 5×5 grid (0..25). Total — backed by the
+    /// exhaustive `nature_grid_index` match, so it can never panic (#26c).
     fn grid_index(&self) -> usize {
-        ALL_NATURES
-            .iter()
-            .position(|n| *n == self.kind)
-            .expect("NatureKind must be in ALL_NATURES")
+        nature_grid_index(self.kind)
     }
 
     /// Which stat this nature raises, or `None` for neutral natures.
@@ -636,6 +670,27 @@ mod tests {
     }
 
     // --- Nature ------------------------------------------------------------
+
+    /// #26c: the exhaustive `nature_grid_index` match must agree with the
+    /// `ALL_NATURES` 5x5 layout at every position, and `from_index` must
+    /// round-trip through it.
+    /// Kills: a match arm mapped to the wrong grid cell (stat modifiers would
+    /// silently swap raised/lowered stats for that nature).
+    #[test]
+    fn nature_grid_agrees_with_all_natures() {
+        for (i, kind) in ALL_NATURES.iter().enumerate() {
+            assert_eq!(
+                nature_grid_index(*kind),
+                i,
+                "nature_grid_index({kind:?}) must equal its ALL_NATURES position {i}"
+            );
+            assert_eq!(
+                Nature::from_index(i as u8).kind(),
+                *kind,
+                "from_index({i}) must round-trip to {kind:?}"
+            );
+        }
+    }
 
     /// #11: Neutral natures return None for raised/lowered.
     /// Kills: an impl that returns Some for neutral natures.

@@ -35,18 +35,30 @@ pub(crate) fn require_owner(
     Ok(())
 }
 
+/// Validate + canonicalize a player-visible name (#27c Unicode hardening).
+///
+/// Order matters: trim -> NFC-normalize -> length -> charset, so length and
+/// charset are judged on the CANONICAL form (composed/decomposed spellings of
+/// the same glyphs collapse to one stored representation).
+///
+/// Charset is an ALLOWLIST (letters/numbers/spaces via the Unicode-aware
+/// `char::is_alphanumeric`), not a blocklist: this rejects control chars (the
+/// pre-#27c check), zero-width characters (U+200B/ZWJ/ZWNJ), and the bidi
+/// overrides/isolates (U+202A–202E, U+2066–2069) used for display-order name
+/// spoofing — none of which are alphanumeric.
 pub(crate) fn validate_name(name: &str) -> Result<String, String> {
-    let name = name.trim();
+    use unicode_normalization::UnicodeNormalization;
+    let name: String = name.trim().nfc().collect();
     if name.is_empty() {
         return Err("name must not be empty".to_string());
     }
     if name.chars().count() > MAX_NAME_LEN {
         return Err(format!("name must be at most {MAX_NAME_LEN} characters"));
     }
-    if name.chars().any(char::is_control) {
+    if !name.chars().all(|c| c.is_alphanumeric() || c == ' ') {
         return Err("name contains invalid characters".to_string());
     }
-    Ok(name.to_string())
+    Ok(name)
 }
 
 /// Shared ownership + monotonic-seq guard for the move reducers. Returns the

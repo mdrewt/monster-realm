@@ -179,6 +179,10 @@ export class WorldRenderer {
 
   destroy(): void {
     this.clear();
+    // #28c: generated placeholder textures are not in the stage tree, so
+    // app.destroy(true) alone leaks them — release them explicitly first.
+    this.#assets?.destroy?.();
+    this.#assets = undefined;
     this.#app?.destroy(true);
     this.#app = undefined;
   }

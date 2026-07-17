@@ -254,6 +254,18 @@ export type StoreTradeOffer = {
   readonly createdAtMs: bigint;
 };
 
+// NOTE: StoreProfile is a `type` alias (not `interface`) — the m17b tests probe
+// fields via `as Record<string, unknown>`, which TS only permits for object-literal
+// types (same pattern as StoreMonsterPub/StoreInventory above).
+/** A ranked profile row, normalized (identity as its hex key string; m17b, ADR-0119). */
+export type StoreProfile = {
+  readonly identity: string;
+  readonly name: string;
+  readonly rating: number;
+  readonly wins: number;
+  readonly losses: number;
+};
+
 /** A species row, normalized (affinity as bare string). */
 export interface StoreSpeciesRow {
   readonly id: number;
@@ -316,6 +328,10 @@ export class AuthoritativeStore {
   readonly #challenges = new Map<bigint, StoreBattleChallenge>();
   // m15b: trade_offer rows (public table — both parties subscribe)
   readonly #tradeOffers = new Map<bigint, StoreTradeOffer>();
+  // m17b: profile rows keyed by identity hex (public table — world-readable
+  // leaderboard). Deliberately NO removeProfile: profile rows are never deleted
+  // server-side (RL-2, ADR-0119 D1), so a remove path would be unreachable dead code.
+  readonly #profiles = new Map<string, StoreProfile>();
   readonly #batchListeners = new Set<() => void>();
   #dirty = false;
   /** Nominal server step interval (ms), used for burst detection + jitter EWMA.
@@ -602,6 +618,9 @@ export class AuthoritativeStore {
     // m16b: battle_challenge rows — cleared on disconnect; server cancels/declines
     // pending challenges via on_disconnect hooks (pvp.rs cancel_challenges_on_disconnect).
     this.#challenges.clear();
+    // m17b: profile rows — cleared on disconnect; repopulated from the initial
+    // onInsert burst when the subscription re-applies on reconnect.
+    this.#profiles.clear();
     this.#dirty = false;
   }
 
@@ -869,5 +888,25 @@ export class AuthoritativeStore {
   /** All trade offers (for future browse / multi-offer UIs). */
   allTradeOffers(): StoreTradeOffer[] {
     return [...this.#tradeOffers.values()];
+  }
+
+  // --- m17b: profile ingest/read (RL-13 leaderboard; adapter writes, view reads) --
+
+  /** Upsert keyed by identity hex — reconnect re-inserts overwrite, never duplicate.
+   *  Deliberately NO removeProfile counterpart: profile rows are never deleted
+   *  server-side (RL-2, ADR-0119 D1). */
+  upsertProfile(row: StoreProfile): void {
+    this.#profiles.set(row.identity, row);
+    this.#dirty = true;
+  }
+
+  profile(identity: string): StoreProfile | undefined {
+    return this.#profiles.get(identity);
+  }
+
+  /** All profile rows as a FRESH array each call — a caller mutating it cannot
+   *  corrupt the store (one-way `server -> store -> render` flow). */
+  allProfiles(): StoreProfile[] {
+    return [...this.#profiles.values()];
   }
 }

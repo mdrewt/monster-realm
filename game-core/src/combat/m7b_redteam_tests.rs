@@ -939,7 +939,7 @@ fn m7b_13_unknown_skill_id_panics_in_resolver() {
     // This WILL panic — proving that submit_attack must validate skill ownership first.
     // We use AssertUnwindSafe because &mut BattleState is not UnwindSafe by default.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        resolve_turn(
+        let _events = resolve_turn(
             &mut state,
             TurnChoice::Attack { skill_id: 9999 }, // unknown skill
             TurnChoice::Attack { skill_id: 1 },
