@@ -1672,6 +1672,104 @@ fn test_fuse_sideb_pvp_battle_rejects_a() {
     );
 }
 
+/// m17.5a — fuse rejected when monster B's owner is side-B (opponent_identity) of
+/// an Ongoing PvP battle (monster B (id=2) appears in opponent_monster_ids, monster A
+/// is NOT in any battle).
+///
+/// Mirrors test_fuse_sideb_pvp_battle_rejects_a but pins the SECOND reject_if_in_battle
+/// call in fuse_seam independently: if only the first call (parent A) is chained but the
+/// second call (parent B) is player-only, this test catches the partial-fuse bypass.
+///
+/// GREEN-by-construction (seam executes reject_if_in_battle directly with the
+/// both-role chain); the RED gate for production code is the C2 eval criterion.
+///
+/// Kills: a fuse seam/production code where only parent-A's reject_if_in_battle call
+/// has the both-role chain and parent-B's call is player-only (partial-fuse bypass).
+#[test]
+fn test_fuse_sideb_pvp_battle_rejects_b() {
+    let owner = owner_id(); // [1u8;32]
+    let pvp_challenger = other_owner_id(); // [2u8;32]
+    let mut db = TestEvolutionDb::new();
+
+    db.insert_species(source_species_row()); // id=1
+    db.insert_species(make_species_row(3, 60, 70)); // id=3
+    db.insert_species(make_species_row(4, 80, 90)); // id=4 (offspring)
+    db.insert_fusion(make_fusion_recipe_row(1, 1, 3, 4));
+
+    let mut ma = make_monster_row(1, owner);
+    ma.species_id = 1;
+    let mut mb = make_monster_row(2, owner);
+    mb.species_id = 3;
+
+    db.insert_monster(ma.clone());
+    db.insert_monster_pub(make_monster_pub(&ma));
+    db.insert_monster(mb.clone());
+    db.insert_monster_pub(make_monster_pub(&mb));
+
+    // PvP battle where owner is side-B and monster B (id=2) is in opponent_monster_ids.
+    // Monster A (id=1) is NOT present in any battle — the first reject_if_in_battle
+    // call (for parent A) should pass; only the second (for parent B) must reject.
+    let pvp_battle = Battle {
+        battle_id: 203,
+        player_identity: pvp_challenger,
+        opponent_identity: owner,
+        state: {
+            let dummy = game_core::BattleMonster {
+                species_id: 1,
+                affinity: game_core::Affinity::Fire,
+                level: 20,
+                current_hp: 50,
+                max_hp: 50,
+                stats: game_core::StatBlock {
+                    hp: 50,
+                    attack: 40,
+                    defense: 40,
+                    speed: 40,
+                    sp_attack: 40,
+                    sp_defense: 40,
+                },
+                known_skill_ids: vec![],
+                status: None,
+            };
+            game_core::BattleState {
+                side_a: game_core::BattleSide {
+                    active: 0,
+                    team: vec![dummy.clone()],
+                },
+                side_b: game_core::BattleSide {
+                    active: 0,
+                    team: vec![dummy],
+                },
+                outcome: game_core::BattleOutcome::Ongoing,
+                turn_number: 1,
+                weather: None,
+            }
+        },
+        party_monster_ids: vec![999u64],
+        opponent_monster_ids: vec![2u64], // monster B (id=2) is in side-B slot; A (id=1) is NOT
+        created_at_ms: 0,
+    };
+    db.insert_battle(pvp_battle);
+
+    let result = fuse_seam(&mut db, owner, 1, 2);
+
+    assert!(
+        result.is_err(),
+        "m17.5a TEETH (fuse side-B, parent B): monster B as opponent_identity side-B \
+         of an Ongoing PvP battle must be rejected; \
+         kills: partial-fuse bypass where only parent-A's reject_if_in_battle has the \
+         both-role chain and parent-B's call is player-only (pre-fix would return Ok \
+         because monster A is not in any battle, so the first call passes, and the \
+         player-only second call misses monster B in the opponent_identity slot)"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("ongoing battle"),
+        "error must mention \"ongoing battle\"; got: {:?}",
+        msg
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Test seams — evolve_seam / fuse_seam live HERE (not in evolution.rs) so that
 // the no-idle-accrual eval, which excludes _tests.rs files from its growth-field
@@ -1698,6 +1796,10 @@ pub(crate) fn evolve_seam(
     // production path after ADR-0122: ctx.db.battle().player_identity().filter(owner).chain(
     //     ctx.db.battle().opponent_identity().filter(owner)) passed to reject_if_in_battle.
     // The chain catches monsters that are side-B of a PvP battle (opponent_identity role).
+    // NOTE: reject_if_in_battle needs no != WILD_IDENTITY refinement here because it keys
+    // on monster_id ∈ opponent_monster_ids, and wild battles have empty opponent_monster_ids
+    // (plan §1.3) — so an owned monster can never appear in a wild opponent slot. The chain
+    // is deliberate to catch side-B PvP monsters, not an omission of the WILD refinement.
     // GREEN-by-construction once this seam update is applied (it exercises reject_if_in_battle
     // directly); the RED gate forcing the production change is the C2 eval criterion.
     super::reject_if_in_battle(
@@ -1793,6 +1895,11 @@ pub(crate) fn fuse_seam(
     // Neither can be in battle — chain BOTH roles (player_identity and opponent_identity) to
     // mirror the production path after ADR-0122.  The chain catches a monster that is side-B
     // of a PvP battle (opponent_identity role) — the exact gap this slice closes.
+    // NOTE: reject_if_in_battle needs no != WILD_IDENTITY refinement here because it keys
+    // on monster_id ∈ opponent_monster_ids, and wild battles have empty opponent_monster_ids
+    // (plan §1.3) — so an owned monster can never appear in a wild opponent slot. The chain
+    // shape mirrors the production CHAIN SHAPE; the identity-only filter is deliberate, not
+    // an omission of the WILD refinement.
     // GREEN-by-construction once this seam update is applied (it exercises reject_if_in_battle
     // directly); the RED gate forcing the production change is the C2 eval criterion.
     super::reject_if_in_battle(

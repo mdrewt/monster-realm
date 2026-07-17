@@ -907,7 +907,7 @@ export default async function () {
   // =========================================================================
 
   // C1 bad fixture: heal_party-shaped body with only player_identity().filter inline.
-  // hasBothRoleBattleGuard must return FALSE (the checker bites).
+  // hasBothRoleBattleGuard(body, 'me') must return FALSE (the checker bites).
   const c1BadFixture = `
     pub fn heal_party(ctx: &ReducerContext) -> Result<(), String> {
         let me = ctx.sender;
@@ -930,7 +930,7 @@ export default async function () {
         'c1BadFixture — extractReducerBody parser bug',
     };
   }
-  if (hasBothRoleBattleGuard(c1BadBody)) {
+  if (hasBothRoleBattleGuard(c1BadBody, 'me')) {
     return {
       name,
       pass: false,
@@ -941,7 +941,76 @@ export default async function () {
     };
   }
 
-  // C1 good fixture A: body with `if is_in_ongoing_battle(ctx, me)`.
+  // C1 bad fixture B2 (E2 NEW — dead-code call, non-if form):
+  // `let _ = is_in_ongoing_battle(ctx, me);` — the guard is present but not in a
+  // conditional branch. hasBothRoleBattleGuard(body, 'me') must return false.
+  // Kills: a checker that only tests call-site presence, not the `if` form.
+  const c1BadFixtureDeadCode = `
+    pub fn heal_party(ctx: &ReducerContext) -> Result<(), String> {
+        let me = ctx.sender;
+        // Dead-code call — result discarded, no conditional branch.
+        let _ = is_in_ongoing_battle(ctx, me);
+        do_heal(ctx, me)
+    }
+  `;
+  const c1BadBodyDeadCode = extractReducerBody(c1BadFixtureDeadCode, 'heal_party');
+  if (!c1BadBodyDeadCode) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C1 bad fixture B2 — E2 dead-code): could not extract heal_party body — ' +
+        'parser bug',
+    };
+  }
+  if (hasBothRoleBattleGuard(c1BadBodyDeadCode, 'me')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C1 bad fixture B2 — E2 dead-code call): hasBothRoleBattleGuard ' +
+        'returned true for a body with only `let _ = is_in_ongoing_battle(ctx, me);` ' +
+        '(dead-code call, non-if form) — the checker must require the `if` form (E2)',
+    };
+  }
+
+  // C1 bad fixture B3 (E2 NEW — wrong-identity evasion):
+  // `if is_in_ongoing_battle(ctx, opponent_identity)` when identTok='me'.
+  // hasBothRoleBattleGuard(body, 'me') must return false.
+  // Kills: a checker that accepts any identity token in the `if` form without
+  // verifying it matches the expected per-reducer token.
+  const c1BadFixtureWrongIdent = `
+    pub fn heal_party(ctx: &ReducerContext) -> Result<(), String> {
+        let me = ctx.sender;
+        // Wrong identity token — checks opponent_identity instead of me.
+        if is_in_ongoing_battle(ctx, opponent_identity) {
+            return Err("cannot heal during an ongoing battle".to_string());
+        }
+        do_heal(ctx, me)
+    }
+  `;
+  const c1BadBodyWrongIdent = extractReducerBody(c1BadFixtureWrongIdent, 'heal_party');
+  if (!c1BadBodyWrongIdent) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C1 bad fixture B3 — E2 wrong-identity): could not extract ' +
+        'heal_party body — parser bug',
+    };
+  }
+  if (hasBothRoleBattleGuard(c1BadBodyWrongIdent, 'me')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C1 bad fixture B3 — E2 wrong-identity evasion): hasBothRoleBattleGuard ' +
+        'returned true for a body with `if is_in_ongoing_battle(ctx, opponent_identity)` ' +
+        "when identTok='me' — the checker must require the exact per-reducer identity token (E2)",
+    };
+  }
+
+  // C1 good fixture A: body with `if is_in_ongoing_battle(ctx, me)`, identTok='me'.
   const c1GoodFixtureA = `
     pub fn heal_party(ctx: &ReducerContext) -> Result<(), String> {
         let me = ctx.sender;
@@ -960,19 +1029,21 @@ export default async function () {
         'TEETH FAILED (m17.5a C1 good fixture A): could not extract heal_party body — parser bug',
     };
   }
-  if (!hasBothRoleBattleGuard(c1GoodBodyA)) {
+  if (!hasBothRoleBattleGuard(c1GoodBodyA, 'me')) {
     return {
       name,
       pass: false,
       detail:
         'TEETH FAILED (m17.5a C1 good fixture A): hasBothRoleBattleGuard returned false for ' +
-        'a body containing `is_in_ongoing_battle(ctx, me)` — false negative',
+        "a body containing `if is_in_ongoing_battle(ctx, me)` with identTok='me' — false negative",
     };
   }
 
-  // C1 good fixture B (plan W-1): pub(crate) fn begin_encounter shape.
+  // C1 good fixture B (plan W-1 / E2): pub(crate) fn begin_encounter shape,
+  // identTok='player_identity' (the per-reducer token for begin_encounter, ADR-0122 §1.2).
   // Proves the body EXTRACTION handles the `pub(crate) fn` form — a TEETH FAILED
   // result if extraction returns null (the fn is present but not extracted).
+  // Also proves the if-form check works with player_identity as the identTok.
   const c1GoodFixtureB = `
     pub(crate) fn begin_encounter(
         ctx: &ReducerContext,
@@ -994,26 +1065,28 @@ export default async function () {
       name,
       pass: false,
       detail:
-        'TEETH FAILED (m17.5a C1 good fixture B — plan W-1): extractReducerBody returned null ' +
+        'TEETH FAILED (m17.5a C1 good fixture B — plan W-1 / E2): extractReducerBody returned null ' +
         'for a `pub(crate) fn begin_encounter(` signature — the `fn <name>(` fallback must ' +
         'match pub(crate) fn forms; parser does not handle this shape',
     };
   }
-  if (!hasBothRoleBattleGuard(c1GoodBodyB)) {
+  if (!hasBothRoleBattleGuard(c1GoodBodyB, 'player_identity')) {
     return {
       name,
       pass: false,
       detail:
         'TEETH FAILED (m17.5a C1 good fixture B): hasBothRoleBattleGuard returned false for ' +
-        'begin_encounter body containing `is_in_ongoing_battle(ctx, player_identity)` — false negative',
+        'begin_encounter body containing `if is_in_ongoing_battle(ctx, player_identity)` ' +
+        "with identTok='player_identity' — false negative",
     };
   }
 
   // =========================================================================
-  // C2 fixture teeth — hasBothRoleChain checker
+  // C2 fixture teeth — countBothRoleChains / hasBothRoleChain checker (E3)
   // =========================================================================
 
-  // C2 bad fixture: evolve-shaped body with only player_identity().filter.
+  // C2 bad fixture A: evolve-shaped body with only player_identity().filter (player-only).
+  // countBothRoleChains must return 0 (the checker bites — no structural chain).
   const c2BadFixture = `
     pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
         let m = get_monster(ctx, monster_id)?;
@@ -1030,20 +1103,106 @@ export default async function () {
     return {
       name,
       pass: false,
-      detail: 'TEETH FAILED (m17.5a C2 bad fixture): could not extract evolve body — parser bug',
+      detail: 'TEETH FAILED (m17.5a C2 bad fixture A): could not extract evolve body — parser bug',
     };
   }
-  if (hasBothRoleChain(c2BadBody)) {
+  if (countBothRoleChains(c2BadBody) > 0) {
     return {
       name,
       pass: false,
       detail:
-        'TEETH FAILED (m17.5a C2 bad fixture): hasBothRoleChain returned true for a body ' +
-        'with only player_identity().filter (no opponent_identity chain) — checker does not bite',
+        'TEETH FAILED (m17.5a C2 bad fixture A): countBothRoleChains returned > 0 for a body ' +
+        'with only player_identity().filter (no structural .chain( call) — checker does not bite',
     };
   }
 
-  // C2 good fixture: evolve body with opponent_identity chain.
+  // C2 bad fixture B (E3 NEW — logging bypass): player-only reject_if_in_battle call
+  // plus a stray `let _ = ctx.db.battle().opponent_identity().filter(owner).count();`
+  // (a logging/diagnostic bypass that uses the opponent index but is NOT in the chain).
+  // countBothRoleChains must return 0 — the structural .chain( token is absent.
+  // Kills: a checker that only tests bare opponent_identity().filter( presence anywhere.
+  const c2BadFixtureLoggingBypass = `
+    pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
+        let m = get_monster(ctx, monster_id)?;
+        // Diagnostic log — NOT a structural chain into reject_if_in_battle.
+        let _ = ctx.db.battle().opponent_identity().filter(m.owner_identity).count();
+        // Guard uses only the player arm (the bypass).
+        reject_if_in_battle(
+            ctx.db.battle().player_identity().filter(m.owner_identity),
+            monster_id,
+        )?;
+        do_evolve(ctx, m)
+    }
+  `;
+  const c2BadBodyLogging = extractReducerBody(c2BadFixtureLoggingBypass, 'evolve');
+  if (!c2BadBodyLogging) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C2 bad fixture B — E3 logging bypass): could not extract evolve body — ' +
+        'parser bug',
+    };
+  }
+  if (countBothRoleChains(c2BadBodyLogging) > 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C2 bad fixture B — E3 logging bypass): countBothRoleChains returned > 0 ' +
+        'for a body with a stray `let _ = ctx.db.battle().opponent_identity().filter(owner).count()` ' +
+        'but player-only reject_if_in_battle — the structural .chain( check must NOT be fooled by ' +
+        'a bystander use of opponent_identity outside the chain call',
+    };
+  }
+
+  // C2 bad fixture C (E3 NEW — partial-fuse bypass): fuse-shaped body where only ONE
+  // of the two reject_if_in_battle calls has the structural chain.
+  // countBothRoleChains must return 1 (< 2 = fails the ≥2 fuse requirement).
+  // Kills: a fuse implementation that only chains the first reject call but leaves
+  // the second (parent B) as player-only.
+  const c2BadFixturePartialFuse = `
+    pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
+        let a = get_monster(ctx, a_id)?;
+        let b = get_monster(ctx, b_id)?;
+        // First call: CORRECTLY chained (catches parent A in side-B).
+        reject_if_in_battle(
+            ctx.db.battle().player_identity().filter(a.owner_identity)
+                .chain(ctx.db.battle().opponent_identity().filter(a.owner_identity)),
+            a_id,
+        )?;
+        // Second call: player-only (partial-fuse bypass — parent B in side-B not caught).
+        reject_if_in_battle(
+            ctx.db.battle().player_identity().filter(b.owner_identity),
+            b_id,
+        )?;
+        do_fuse(ctx, a, b)
+    }
+  `;
+  const c2BadBodyPartialFuse = extractReducerBody(c2BadFixturePartialFuse, 'fuse');
+  if (!c2BadBodyPartialFuse) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C2 bad fixture C — E3 partial-fuse bypass): could not extract fuse body — ' +
+        'parser bug',
+    };
+  }
+  const partialFuseCount = countBothRoleChains(c2BadBodyPartialFuse);
+  if (partialFuseCount >= 2) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `TEETH FAILED (m17.5a C2 bad fixture C — E3 partial-fuse bypass): countBothRoleChains ` +
+        `returned ${partialFuseCount} (>= 2) for a fuse body where only ONE of two reject calls ` +
+        'is structurally chained — the ≥2 count requirement for fuse must reject this partial fix',
+    };
+  }
+
+  // C2 good fixture A: evolve body with one structurally chained call (single-line).
+  // countBothRoleChains must return ≥ 1.
   const c2GoodFixture = `
     pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
         let m = get_monster(ctx, monster_id)?;
@@ -1060,16 +1219,99 @@ export default async function () {
     return {
       name,
       pass: false,
-      detail: 'TEETH FAILED (m17.5a C2 good fixture): could not extract evolve body — parser bug',
+      detail: 'TEETH FAILED (m17.5a C2 good fixture A): could not extract evolve body — parser bug',
     };
   }
-  if (!hasBothRoleChain(c2GoodBody)) {
+  if (countBothRoleChains(c2GoodBody) < 1) {
     return {
       name,
       pass: false,
       detail:
-        'TEETH FAILED (m17.5a C2 good fixture): hasBothRoleChain returned false for a body ' +
-        'with .opponent_identity().filter( chained — false negative',
+        'TEETH FAILED (m17.5a C2 good fixture A): countBothRoleChains returned < 1 for a body ' +
+        'with .chain(ctx.db.battle().opponent_identity().filter( — false negative (E3)',
+    };
+  }
+
+  // C2 good fixture A2 (E3 NEW — rustfmt multi-line format): evolve body where rustfmt
+  // has split the chain across lines. The whitespace-collapse must make this identical
+  // to the single-line form. countBothRoleChains must return ≥ 1.
+  // Proves: a correctly formatted multi-line chain is never falsely rejected.
+  const c2GoodFixtureMultiLine = `
+    pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
+        let m = get_monster(ctx, monster_id)?;
+        reject_if_in_battle(
+            ctx.db
+                .battle()
+                .player_identity()
+                .filter(m.owner_identity)
+                .chain(
+                    ctx.db
+                        .battle()
+                        .opponent_identity()
+                        .filter(m.owner_identity),
+                ),
+            monster_id,
+        )?;
+        do_evolve(ctx, m)
+    }
+  `;
+  const c2GoodBodyMultiLine = extractReducerBody(c2GoodFixtureMultiLine, 'evolve');
+  if (!c2GoodBodyMultiLine) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C2 good fixture A2 — E3 multi-line): could not extract evolve body — ' +
+        'parser bug',
+    };
+  }
+  if (countBothRoleChains(c2GoodBodyMultiLine) < 1) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C2 good fixture A2 — E3 multi-line rustfmt): countBothRoleChains ' +
+        'returned < 1 for a rustfmt-style multi-line chain body — whitespace-collapse must make ' +
+        'this equivalent to the single-line form; false negative on correctly formatted code (E3)',
+    };
+  }
+
+  // C2 good fixture B (E3 NEW — fuse body with both chains): two structurally chained
+  // reject_if_in_battle calls (one per parent). countBothRoleChains must return ≥ 2.
+  const c2GoodFixtureFuse = `
+    pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
+        let a = get_monster(ctx, a_id)?;
+        let b = get_monster(ctx, b_id)?;
+        reject_if_in_battle(
+            ctx.db.battle().player_identity().filter(a.owner_identity)
+                .chain(ctx.db.battle().opponent_identity().filter(a.owner_identity)),
+            a_id,
+        )?;
+        reject_if_in_battle(
+            ctx.db.battle().player_identity().filter(b.owner_identity)
+                .chain(ctx.db.battle().opponent_identity().filter(b.owner_identity)),
+            b_id,
+        )?;
+        do_fuse(ctx, a, b)
+    }
+  `;
+  const c2GoodBodyFuse = extractReducerBody(c2GoodFixtureFuse, 'fuse');
+  if (!c2GoodBodyFuse) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C2 good fixture B — E3 fuse): could not extract fuse body — parser bug',
+    };
+  }
+  if (countBothRoleChains(c2GoodBodyFuse) < 2) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C2 good fixture B — E3 fuse): countBothRoleChains returned < 2 ' +
+        'for a fuse body with two .chain(ctx.db.battle().opponent_identity().filter( calls — ' +
+        'false negative; fuse requires ≥ 2 structural chains (E3)',
     };
   }
 
@@ -1091,7 +1333,9 @@ export default async function () {
     };
   }
 
-  // C3 bad fixture B: wrapper body using player_identity() twice, no opponent_identity().
+  // C3 bad fixture B (E1): wrapper body using player_identity() twice (no opponent_identity()).
+  // Old checker accepted this; new checker requires the call-site args region to contain both.
+  // Kills: a doubled-player-arm wrapper that passes player_identity() as both args.
   const c3BadWrapperBody = `
     is_in_ongoing_battle_either_role(
         ctx.db.battle().player_identity().filter(identity),
@@ -1103,13 +1347,63 @@ export default async function () {
       name,
       pass: false,
       detail:
-        'TEETH FAILED (m17.5a C3 bad fixture B — red-team F7): wrapperBodyHasBothIndexes ' +
+        'TEETH FAILED (m17.5a C3 bad fixture B — red-team F7 / E1): wrapperBodyHasBothIndexes ' +
         'returned true for a wrapper body that passes player_identity() twice with no ' +
         'opponent_identity() reference — checker does not bite the doubled-player-arm evasion',
     };
   }
 
-  // C3 good fixture: wrapper body with both player_identity() and opponent_identity().
+  // C3 bad fixture B2 (E1 NEW): wrapper body that has a stray opponent_identity() in a
+  // dead let-binding (NOT in the is_in_ongoing_battle_either_role args), then passes the
+  // player iterator twice as both args.  The old bare-presence check accepted this because
+  // opponent_identity() was present anywhere in the body; the new args-region check rejects
+  // it because opponent_identity() does not appear in the args region after the call.
+  // Kills: a wrapper that logs/stashes the opponent iterator but passes player twice.
+  const c3BadWrapperBodyDeadLet = `
+    let _ = ctx.db.battle().opponent_identity().filter(identity);
+    is_in_ongoing_battle_either_role(
+        ctx.db.battle().player_identity().filter(identity),
+        ctx.db.battle().player_identity().filter(identity),
+    )
+  `;
+  if (wrapperBodyHasBothIndexes(c3BadWrapperBodyDeadLet)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C3 bad fixture B2 — E1 dead-let evasion): ' +
+        'wrapperBodyHasBothIndexes returned true for a wrapper body that has a stray ' +
+        '`let _ = ctx.db.battle().opponent_identity().filter(identity)` before the call, ' +
+        'then passes player_identity() as BOTH args to is_in_ongoing_battle_either_role — ' +
+        'the args-region check must restrict to the token that appears AFTER the call, ' +
+        'not anywhere in the body',
+    };
+  }
+
+  // C3 bad fixture B3 (E1 NEW): wrapper body calling the core with swapped args
+  // (opponent iterator first, player iterator second).  Arg-order is semantically
+  // significant: as_player must be first, as_opponent second (ADR-0122 §1.1).
+  // Kills: a wrapper with reversed arg order (opponent first, player second).
+  const c3BadWrapperBodySwapped = `
+    is_in_ongoing_battle_either_role(
+        ctx.db.battle().opponent_identity().filter(identity),
+        ctx.db.battle().player_identity().filter(identity),
+    )
+  `;
+  if (wrapperBodyHasBothIndexes(c3BadWrapperBodySwapped)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (m17.5a C3 bad fixture B3 — E1 swapped-args evasion): ' +
+        'wrapperBodyHasBothIndexes returned true for a wrapper body that passes the ' +
+        'opponent iterator FIRST and the player iterator SECOND — ' +
+        'the order check must require player_identity() < opponent_identity() in the args region ' +
+        '(as_player first, as_opponent second — ADR-0122 §1.1)',
+    };
+  }
+
+  // C3 good fixture: wrapper body with player_identity() first, opponent_identity() second.
   const c3GoodWrapperBody = `
     is_in_ongoing_battle_either_role(
         ctx.db.battle().player_identity().filter(identity),
@@ -1122,7 +1416,7 @@ export default async function () {
       pass: false,
       detail:
         'TEETH FAILED (m17.5a C3 good fixture): wrapperBodyHasBothIndexes returned false for ' +
-        'a correct wrapper body referencing both player_identity() and opponent_identity() — ' +
+        'a correct wrapper body referencing player_identity() first and opponent_identity() second — ' +
         'false negative',
     };
   }
@@ -1253,44 +1547,60 @@ export default async function () {
   const sideBFailures = [];
 
   // -------------------------------------------------------------------------
-  // C1: 4 PvE reducer bodies must call is_in_ongoing_battle(ctx,
+  // C1: 4 PvE reducer bodies must contain `if is_in_ongoing_battle(ctx, <identTok>)`
+  // (conditional form, correct per-reducer identity token — E2 strengthening).
   // RED now: all four still use player_identity().filter inline.
+  // Per-reducer identTok values (ADR-0122 §1.2):
+  //   start_battle / heal_party / start_wild_battle → 'me'
+  //   begin_encounter → 'player_identity'
   // -------------------------------------------------------------------------
   const BOTH_ROLE_GUARD_REDUCERS = [
-    'start_battle',
-    'begin_encounter',
-    'heal_party',
-    'start_wild_battle',
+    { name: 'start_battle', identTok: 'me' },
+    { name: 'begin_encounter', identTok: 'player_identity' },
+    { name: 'heal_party', identTok: 'me' },
+    { name: 'start_wild_battle', identTok: 'me' },
   ];
-  for (const reducerName of BOTH_ROLE_GUARD_REDUCERS) {
+  for (const { name: reducerName, identTok } of BOTH_ROLE_GUARD_REDUCERS) {
     const body = extractReducerBody(src, reducerName);
     if (!body) {
       sideBFailures.push(`C1/${reducerName}: reducer body not found in server-module source`);
       continue;
     }
-    if (!hasBothRoleBattleGuard(body)) {
+    if (!hasBothRoleBattleGuard(body, identTok)) {
       sideBFailures.push(
-        `C1/${reducerName}: missing is_in_ongoing_battle(ctx, call — body still uses ` +
-          `player_identity().filter inline (ADR-0122 17.5a-1); RED until implementer replaces inline`,
+        `C1/${reducerName}: missing conditional if is_in_ongoing_battle(ctx, ${identTok}) — ` +
+          `body still uses player_identity().filter inline or lacks the if-form (ADR-0122 17.5a-1); ` +
+          `RED until implementer replaces inline with the shared wrapper in conditional form`,
       );
     }
   }
 
   // -------------------------------------------------------------------------
-  // C2: evolve and fuse bodies must contain .opponent_identity().filter( chain.
-  // RED now: both use player_identity().filter only.
+  // C2: evolve/fuse bodies must contain the structural .chain(ctx.db.battle()
+  // .opponent_identity().filter( token (E3 strengthening — whitespace-collapsed
+  // combined-token check, not a bare presence check).
+  // Per-reducer chain count requirements (ADR-0122 §1.3):
+  //   evolve → ≥ 1 chain occurrence (one reject_if_in_battle call)
+  //   fuse   → ≥ 2 chain occurrences (two calls: parent a and parent b)
+  // RED now: both use player_identity().filter only (countBothRoleChains returns 0).
   // -------------------------------------------------------------------------
-  const CHAIN_GUARD_REDUCERS = ['evolve', 'fuse'];
-  for (const reducerName of CHAIN_GUARD_REDUCERS) {
+  const CHAIN_GUARD_REDUCERS = [
+    { name: 'evolve', minChains: 1 },
+    { name: 'fuse', minChains: 2 },
+  ];
+  for (const { name: reducerName, minChains } of CHAIN_GUARD_REDUCERS) {
     const body = extractReducerBody(src, reducerName);
     if (!body) {
       sideBFailures.push(`C2/${reducerName}: reducer body not found in server-module source`);
       continue;
     }
-    if (!hasBothRoleChain(body)) {
+    const chainCount = countBothRoleChains(body);
+    if (chainCount < minChains) {
       sideBFailures.push(
-        `C2/${reducerName}: missing .opponent_identity().filter( chain in reject_if_in_battle call — ` +
-          `body still uses player-only filter (ADR-0122 17.5a-2); RED until implementer adds chain`,
+        `C2/${reducerName}: structural chain count ${chainCount} < required ${minChains} — ` +
+          `body must contain .chain(ctx.db.battle().opponent_identity().filter( ` +
+          `${minChains === 1 ? 'once' : 'twice (once per reject_if_in_battle call)'} ` +
+          `(ADR-0122 17.5a-2 E3); RED until implementer adds both-role chain`,
       );
     }
   }
@@ -1475,9 +1785,10 @@ export default async function () {
       `start_battle has opponent-provenance gate; write_back helpers side_a-only; ` +
       `m17a: all ${PVP_REJECT_REDUCERS.length} PvE reducers have if is_ranked_pvp(&battle) guard ` +
       `after Ongoing check (RL-8/9, ADR-0119 D5; teeth: 4 fixtures A/B/C/D — F1 hardened); ` +
-      `m17.5a (ADR-0122): C1 both-role guard in 4 PvE reducers; C2 opponent-chain in evolve/fuse; ` +
-      `C3 SSOT single-def + both-indexes wrapper; C4 exactly 3 insert sites allowlisted + ` +
-      `is_ranked_pvp two-clause (EARS 17.5a-1/2/5; teeth: C1×3/C2×2/C3×3/C4×3 fixtures)`,
+      `m17.5a (ADR-0122): C1 if-form+identTok guard in 4 PvE reducers; C2 structural chain ` +
+      `count (>=1 evolve, >=2 fuse); C3 SSOT single-def + arg-order wrapper; C4 exactly 3 ` +
+      `insert sites allowlisted + is_ranked_pvp two-clause ` +
+      `(EARS 17.5a-1/2/5; teeth: C1x5/C2x5/C3x5/C4x3 fixtures; E1/E2/E3/E4 hardened)`,
   };
 }
 
@@ -1582,32 +1893,105 @@ function readServerModuleSources(dir) {
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// C1: hasBothRoleBattleGuard(body) — does the body call is_in_ongoing_battle(ctx,?
+// C1: hasBothRoleBattleGuard(body, identTok) — does the body contain the
+// conditional form `if is_in_ongoing_battle(ctx, <identTok>)`?
 //
-// Returns true iff the body (after comment + string stripping) contains
-// `is_in_ongoing_battle(ctx,` — the shared guard wrapper call (ADR-0122 §1.1).
+// E2 (BLOCKER): strengthened from bare call-presence to conditional-form check
+// with per-reducer identity token.  The needle is:
+//   `ifis_in_ongoing_battle(ctx,<identTok>)` (whitespace-collapsed)
+// searched in a whitespace-collapsed stripped body so rustfmt multi-line
+// formatting can never produce a false RED on a correctly implemented reducer.
 //
-// Bad fixture: body with only player_identity().filter inline → false.
-// Good fixture: body with `if is_in_ongoing_battle(ctx, me)` → true.
+// Per-reducer identTok values (ADR-0122 §1.2):
+//   start_battle      → 'me'
+//   heal_party        → 'me'
+//   start_wild_battle → 'me'
+//   begin_encounter   → 'player_identity'
+//
+// Whitespace robustness: rustfmt may split long expressions across lines, e.g.:
+//   if is_in_ongoing_battle(
+//       ctx,
+//       me,
+//   )
+// Both the stripped body and the needle are whitespace-collapsed before matching
+// (all whitespace runs → single space, then all spaces removed from the needle
+// and body for the comparison) so line splits never cause a false mismatch.
+//
+// Bad fixtures:
+//   (a) `let _ = is_in_ongoing_battle(ctx, me);` — dead-code call, non-if form → false.
+//   (b) `if is_in_ongoing_battle(ctx, opponent_identity)` when identTok='me' → false.
+// Good fixtures:
+//   (a) `if is_in_ongoing_battle(ctx, me)` when identTok='me' → true.
+//   (b) pub(crate) fn begin_encounter shape with identTok='player_identity' → true.
 // ---------------------------------------------------------------------------
-export function hasBothRoleBattleGuard(body) {
-  const code = stripRustStrings(stripRustComments(body));
-  // Split needle to avoid matching a comment/string that describes the old pattern.
-  return code.indexOf('is_in_ongoing' + '_battle(ctx,') !== -1;
+export function hasBothRoleBattleGuard(body, identTok) {
+  const stripped = stripRustStrings(stripRustComments(body));
+  // Collapse ALL whitespace (spaces, tabs, newlines) to nothing — rustfmt-safe comparison.
+  const collapsed = stripped.replace(/\s+/g, '');
+  // Needle: 'ifis_in_ongoing_battle(ctx,<identTok>)' — no spaces, all whitespace removed.
+  // Split the static prefix to avoid matching it in comments that were already stripped.
+  const needle = 'ifis_in_ongoing' + '_battle(ctx,' + identTok + ')';
+  return collapsed.indexOf(needle) !== -1;
 }
 
 // ---------------------------------------------------------------------------
-// C2: hasBothRoleChain(body) — does the body chain the opponent_identity arm?
+// C2: countBothRoleChains(body) — count structurally-chained opponent_identity
+// occurrences in the body.
 //
-// Returns true iff the body (after comment + string stripping) contains
-// `.opponent_identity().filter(` — the both-role chain required by ADR-0122 §1.3.
+// E3 (BLOCKER): replaced the bare `.opponent_identity().filter(` presence check
+// with a whitespace-collapsed combined-token count that requires the opponent
+// iterator to be STRUCTURALLY CHAINED (not a bystander use or logging bypass):
 //
-// Bad fixture: body with only player_identity().filter → false.
-// Good fixture: body chaining opponent_identity().filter → true.
+//   needle (whitespace-collapsed): `.chain(ctx.db.battle().opponent_identity().filter(`
+//
+// This proves the opponent iterator is fed into reject_if_in_battle via .chain(),
+// not merely present in a dead let-binding alongside the real call.
+//
+// Return value: the number of times the chain token appears (after strip + collapse).
+//   evolve: requires ≥ 1 occurrence (one reject_if_in_battle call, one chain).
+//   fuse:   requires ≥ 2 occurrences (two calls, one for parent a, one for parent b).
+//
+// Whitespace robustness: rustfmt may split long chains across lines, e.g.:
+//   .chain(
+//       ctx.db.battle().opponent_identity().filter(m.owner_identity),
+//   )
+// Both the body and the needle are whitespace-collapsed before matching so
+// a correctly formatted multi-line chain is never falsely rejected.
+//
+// Bad fixtures:
+//   (a) player-only reject_if_in_battle + stray `let _ = ctx.db.battle()
+//       .opponent_identity().filter(owner).count();` (logging bypass) → 0.
+//   (b) fuse body where only ONE of two reject calls has the chain → count=1
+//       (fails the ≥2 requirement for fuse).
+// Good fixtures:
+//   (a) evolve body with one chained call (also with multi-line rustfmt style) → ≥1.
+//   (b) fuse body with two chained calls → ≥2.
+// ---------------------------------------------------------------------------
+export function countBothRoleChains(body) {
+  const stripped = stripRustStrings(stripRustComments(body));
+  // Collapse ALL whitespace to nothing — rustfmt multi-line safe.
+  const collapsed = stripped.replace(/\s+/g, '');
+  // Combined-token needle: .chain( + ctx.db.battle().opponent_identity().filter(
+  // Split to avoid any static analysis that might match the needle inside this file.
+  const needle = '.chain(ctx.db.battle().opponent' + '_identity().filter(';
+  let count = 0;
+  let idx = 0;
+  while (true) {
+    idx = collapsed.indexOf(needle, idx);
+    if (idx === -1) break;
+    count++;
+    idx += needle.length;
+  }
+  return count;
+}
+
+// ---------------------------------------------------------------------------
+// C2: hasBothRoleChain(body) — convenience wrapper for evolve (requires ≥ 1 chain).
+// Kept for callers that don't need the count; the real-source scan uses
+// countBothRoleChains directly with per-reducer thresholds.
 // ---------------------------------------------------------------------------
 export function hasBothRoleChain(body) {
-  const code = stripRustStrings(stripRustComments(body));
-  return code.indexOf('.opponent_identity().filter(') !== -1;
+  return countBothRoleChains(body) >= 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -1620,7 +2004,10 @@ export function hasBothRoleChain(body) {
 // Good fixture: one definition → 1.
 // ---------------------------------------------------------------------------
 export function countFnDefinitions(src, fnName) {
-  const code = stripRustComments(src);
+  // E4 (reviewer W-6): apply stripRustStrings in addition to stripRustComments so
+  // a fn-name that appears inside a string literal (e.g. a log message like
+  // "calling fn is_in_ongoing_battle(ctx,...") does not produce a false count.
+  const code = stripRustStrings(stripRustComments(src));
   const needle = 'fn ' + fnName + '(';
   let count = 0;
   let idx = 0;
@@ -1634,20 +2021,42 @@ export function countFnDefinitions(src, fnName) {
 }
 
 // ---------------------------------------------------------------------------
-// C3: wrapperBodyHasBothIndexes(body) — does the wrapper body reference BOTH
-// player_identity() AND opponent_identity()?
+// C3: wrapperBodyHasBothIndexes(body) — does the wrapper body call
+// is_in_ongoing_battle_either_role( with player_identity() BEFORE opponent_identity()?
 //
-// The thin ctx wrapper must delegate to is_in_ongoing_battle_either_role with
-// BOTH the player_identity and opponent_identity iterators (ADR-0122 D9).
-// A wrapper that passes player_identity() twice would pass unit tests but silently
-// break the both-role invariant (red-team F7).
+// E1 (BLOCKER): strengthened from a bare presence check to a structural check:
+//   1. Strip comments + strings.
+//   2. Find `is_in_ongoing_battle_either_role(` in the wrapper body — if absent → false.
+//   3. Slice the code from that call position onward (the args region).
+//   4. Require BOTH `player_identity()` and `opponent_identity()` appear in the args region.
+//   5. Require `player_identity()` appears BEFORE `opponent_identity()` — pins the
+//      correct arg mapping: as_player first, as_opponent second (ADR-0122 §1.1).
 //
-// Bad fixture: body using player_identity() twice → false.
-// Good fixture: body using both player_identity() and opponent_identity() → true.
+// The old bare-presence check accepted:
+//   (a) a wrapper that stashes `ctx.db.battle().opponent_identity().filter(identity)`
+//       in a dead let-binding, then passes player_identity() as both args — the call
+//       uses the opponent index but discards the result. Now rejected (args region check).
+//   (b) a wrapper passing opponent iterator first, player iterator second (swapped args) —
+//       would silently invert the as_player/as_opponent roles. Now rejected (order check).
+//
+// Bad fixtures: (a) player iterator twice + stray opponent let-binding → false.
+//              (b) swapped args (opponent first, player second) → false.
+// Good fixture: correct body (player first, opponent second) → true.
 // ---------------------------------------------------------------------------
 export function wrapperBodyHasBothIndexes(body) {
   const code = stripRustStrings(stripRustComments(body));
-  return code.indexOf('player_identity()') !== -1 && code.indexOf('opponent_identity()') !== -1;
+  // Step 1: find the call to the pure core.
+  const callNeedle = 'is_in_ongoing_battle_either_role(';
+  const callIdx = code.indexOf(callNeedle);
+  if (callIdx === -1) return false;
+  // Step 2: slice the args region (from the opening paren of the call onward).
+  const argsRegion = code.slice(callIdx + callNeedle.length);
+  // Step 3: find both index tokens in the args region.
+  const playerIdx = argsRegion.indexOf('player_identity()');
+  const opponentIdx = argsRegion.indexOf('opponent_identity()');
+  if (playerIdx === -1 || opponentIdx === -1) return false;
+  // Step 4: player_identity() must appear BEFORE opponent_identity() (arg-order pin).
+  return playerIdx < opponentIdx;
 }
 
 // ---------------------------------------------------------------------------

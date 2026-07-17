@@ -691,37 +691,45 @@ fn either_role_practice_self_both_arms() {
 /// COMPILE-RED: is_in_ongoing_battle_either_role does not yet exist in guards.rs.
 #[test]
 fn laundering_two_ongoing_rows() {
-    let side_a_caller = spacetimedb::Identity::from_byte_array([4u8; 32]);
-    let side_b_caller = spacetimedb::Identity::from_byte_array([5u8; 32]);
+    // pvp_side_a=[4;32] is side-A of the PvP battle (player_identity).
+    // subject=[5;32] is the subject under test: they are side-B (opponent_identity)
+    // of the PvP battle, and also side-A (player_identity) of their own wild battle.
+    let pvp_side_a = spacetimedb::Identity::from_byte_array([4u8; 32]);
+    let subject = spacetimedb::Identity::from_byte_array([5u8; 32]);
 
-    // Wild battle: caller [4;32] is player_identity (side A).
-    // make_test_battle gives player=[1;32] — we need side_a_caller as player.
+    // Wild battle: subject [5;32] is player_identity (side A of their own wild battle).
     // Use make_pvp_test_battle with WILD_IDENTITY as opponent.
-    let wild_battle = make_pvp_test_battle(side_b_caller, crate::WILD_IDENTITY);
-    // PvP battle: side_b_caller=[5;32] is opponent_identity (side B).
-    let pvp_battle = make_pvp_test_battle(side_a_caller, side_b_caller);
+    let wild_battle = make_pvp_test_battle(subject, crate::WILD_IDENTITY);
+    // PvP battle: subject=[5;32] is opponent_identity (side B); pvp_side_a is side-A.
+    let pvp_battle = make_pvp_test_battle(pvp_side_a, subject);
 
     // SCENARIO A: two rows, one per arm.
-    // Player arm: wild_battle (side_b_caller as player_identity — their own wild battle).
-    // Opponent arm: pvp_battle (side_b_caller as opponent_identity — their PvP slot).
+    // Player arm: wild_battle (subject as player_identity — their own wild battle).
+    // Opponent arm: pvp_battle (subject as opponent_identity — their PvP side-B slot).
+    // Kills: an impl missing BOTH arms; scenario B (empty player arm) independently
+    // kills the dropped-opponent-arm mutant, and either_role_player_ongoing_true kills
+    // the dropped-player-arm mutant — scenario A's contribution is documenting the
+    // combined two-row laundering precondition.
     let result_a = is_in_ongoing_battle_either_role(
         std::iter::once(wild_battle),
         std::iter::once(pvp_battle.clone()),
     );
     assert!(
         result_a,
-        "m17.5a FAIL (scenario A): side-A wild + side-B PvP in respective arms → must be true; \
-         kills: any impl that misses either arm"
+        "m17.5a FAIL (scenario A): subject as side-A wild + side-B PvP in respective arms → must be true; \
+         kills: any impl that misses BOTH arms simultaneously"
     );
 
     // SCENARIO B: empty player arm, only the PvP row in the opponent arm.
-    // This is the exploit's core: the accepting player appears ONLY as opponent_identity.
+    // This is the exploit's core: the accepting player (subject) appears ONLY as
+    // opponent_identity — the pre-fix player-only guard missed them entirely.
+    // Kills: an impl that only checks the player arm (dropped-opponent-arm mutant).
     let result_b =
         is_in_ongoing_battle_either_role(std::iter::empty::<Battle>(), std::iter::once(pvp_battle));
     assert!(
         result_b,
         "m17.5a FAIL (scenario B — the exploit precondition executed): \
-         empty player arm + PvP row in opponent arm (side-B caller, non-WILD) → must be true; \
+         empty player arm + PvP row in opponent arm (subject as side-B, non-WILD) → must be true; \
          kills: an impl that only checks the player arm (the pre-fix behavior — would return false \
          because the player arm is empty, missing the PvP side-B slot entirely)"
     );
