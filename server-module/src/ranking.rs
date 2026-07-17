@@ -64,6 +64,9 @@ pub(crate) fn apply_pvp_rating(ctx: &ReducerContext, battle: &Battle) {
     let (winner_id, loser_id) = match battle.state.outcome {
         BattleOutcome::SideAWins => (battle.player_identity, battle.opponent_identity),
         BattleOutcome::SideBWins => (battle.opponent_identity, battle.player_identity),
+        // Ongoing is unreachable via settle_pvp_battle (called only after a
+        // decisive outcome commits) but safe to no-op; Fled is a legitimate
+        // non-decisive terminal that never rates (RL-8).
         BattleOutcome::Ongoing | BattleOutcome::Fled => return,
     };
     let winner = get_or_init_profile(ctx, winner_id);
@@ -71,14 +74,16 @@ pub(crate) fn apply_pvp_rating(ctx: &ReducerContext, battle: &Battle) {
     // ONE compute for both rows, before any write (compute-before-write, D6).
     let (new_winner_rating, new_loser_rating) =
         game_core::compute_rating_update(winner.rating, loser.rating);
+    // Saturating counters: the cap is unreachable (u32::MAX games) but keeps
+    // the increment panic-free, mirroring the rating field's saturating policy.
     ctx.db.profile().identity().update(Profile {
         rating: new_winner_rating,
-        wins: winner.wins + 1,
+        wins: winner.wins.saturating_add(1),
         ..winner
     });
     ctx.db.profile().identity().update(Profile {
         rating: new_loser_rating,
-        losses: loser.losses + 1,
+        losses: loser.losses.saturating_add(1),
         ..loser
     });
 }

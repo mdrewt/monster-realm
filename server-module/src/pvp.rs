@@ -15,6 +15,10 @@
 //! - `PvpDeadlineSchedule` is colocated here (not in schema.rs) per the
 //!   `scheduled(pvp_deadline_reaper)` cohabitation rule (ADR-0056 exception,
 //!   same discipline as `movement_tick_schedule` in movement.rs).
+//! - `settle_pvp_battle` is the single decisive-commit funnel: every terminal
+//!   PvP outcome (both-submit, deadline forfeit, disconnect forfeit) commits
+//!   through it, and it is the ONLY caller of `ranking::apply_pvp_rating`
+//!   (ADR-0119 D3, amends ADR-0109 — exactly-once rating by construction).
 //!
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
@@ -443,7 +447,9 @@ fn settle_pvp_battle(ctx: &ReducerContext, battle: Battle) -> Result<(), String>
     }
 
     // Commit terminal outcome AFTER write_back_battle_results (RT-M16-08) and
-    // BEFORE write_back_party_hp_pvp_side_b (RT-M16-05).
+    // BEFORE write_back_party_hp_pvp_side_b (RT-M16-05). The clone is
+    // load-bearing: `update` consumes a row by value, and `battle` is still
+    // borrowed afterwards by apply_pvp_rating and write_back_party_hp_pvp_side_b.
     ctx.db.battle().battle_id().update(battle.clone());
 
     // Ranked-ladder rating on the just-committed outcome (ADR-0119 D3 step 3;

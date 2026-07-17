@@ -502,64 +502,64 @@ fn rt_m16_03_write_back_battle_results_gcs_opponent_terminal_battles() {
 }
 
 // ---------------------------------------------------------------------------
-// RT-M16-05: apply_pvp_forfeit MUST NOT leave a battle stuck in Ongoing
-// state if write_back_party_hp_pvp_side_b returns Err.
+// RT-M16-05: apply_pvp_forfeit must delegate to settle_pvp_battle (M17 rewrite).
 //
-// Finding: `apply_pvp_forfeit` calls `write_back_party_hp_pvp_side_b(…)?`
-// before `ctx.db.battle().battle_id().update(battle)`. If the HP write-back
-// returns Err (e.g. ownership changed for a side-B monster), the `?` causes
-// early return and `update(battle)` never runs, leaving the battle row with
-// outcome=Ongoing in the database. Both players are then permanently locked
-// out of new PvP battles (is_in_ongoing_battle returns true forever), and the
-// stale `battle_action` rows are never cleaned up either.
+// Pre-M17 finding (now resolved by the settle_pvp_battle funnel):
+//   `apply_pvp_forfeit` used to call `write_back_party_hp_pvp_side_b(…)?`
+//   before `ctx.db.battle().battle_id().update(battle)`, risking a stuck-Ongoing
+//   battle if the HP write-back returned Err.
 //
-// The same issue exists in resolve_pvp_turn_if_ready: if either write-back
-// returns Err, the battle row is never updated to its terminal state.
+// Post-M17 invariant (ADR-0119 D3):
+//   apply_pvp_forfeit must NOT contain the direct `write_back_party_hp_pvp_side_b`
+//   call or the `battle().battle_id().update` call — both now live inside
+//   settle_pvp_battle. apply_pvp_forfeit must delegate via `settle_pvp_battle(`.
+//   The ordering contract (write_back → update → rating → side_b) is pinned by
+//   m17a_rl10_settle_pvp_battle_ordering.
 //
-// Proof-of-teeth: kills any impl where the write-back Err propagates before
-// the battle row update runs. After the fix, the battle row must be updated
-// to its terminal outcome BEFORE propagating a write-back error (or the
-// error must be logged-and-continued rather than propagated via `?`).
+// NOTE (B-1): The pre-M17 version used an unbounded slice from `fn_pos` that,
+// after the M17 pvp.rs reorder (forfeit now above resolve), swept into
+// settle_pvp_battle's body and matched the wrong positions. Rewritten to use
+// extract_pvp_fn_body for an exact body slice.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn rt_m16_05_apply_pvp_forfeit_updates_battle_before_propagating_writeback_err() {
     let stripped = strip_rust_comments(PVP_RS);
 
-    // Locate apply_pvp_forfeit body.
-    let fn_marker = concat!("fn apply_pvp", "_forfeit");
-    let fn_pos = stripped
-        .find(fn_marker)
-        .expect("RT-M16-05: `apply_pvp_forfeit` not found in pvp.rs");
+    // Use extract_pvp_fn_body for an exact, bounded body slice (B-1 fix).
+    let forfeit_body = extract_pvp_fn_body(&stripped, "apply_pvp_forfeit")
+        .expect("RT-M16-05: `apply_pvp_forfeit` must exist in pvp.rs");
 
-    // Find write_back_party_hp_pvp_side_b call site and the battle update site.
-    let side_b_call = concat!("write_back_party_hp_pvp", "_side_b");
-    let battle_update = concat!("battle().battle_id()", ".update");
-
-    let fn_body = &stripped[fn_pos..];
-
-    let side_b_pos = fn_body
-        .find(side_b_call)
-        .expect("RT-M16-05: `write_back_party_hp_pvp_side_b` call not found in apply_pvp_forfeit");
-    let update_pos = fn_body
-        .find(battle_update)
-        .expect("RT-M16-05: `battle().battle_id().update` not found in apply_pvp_forfeit");
-
-    // The battle update must come BEFORE the write-back propagation can abort.
-    // Specifically: if the write-back uses `?` (propagation), the battle update
-    // MUST appear before the `?` suffix on the side_b call.
-    // We detect this by checking whether the update appears BEFORE the side_b call.
+    // Post-M17: apply_pvp_forfeit must delegate to settle_pvp_battle.
+    let settle_needle = concat!("settle_pvp", "_battle(");
     assert!(
-        update_pos < side_b_pos,
-        "RT-M16-05 FAIL: In `apply_pvp_forfeit`, `write_back_party_hp_pvp_side_b` \
-         is called with `?` BEFORE `battle().battle_id().update(battle)`. \
-         If the HP write-back returns Err (e.g. ownership change for a side-B \
-         monster), the battle row is never updated to its terminal outcome — \
-         both players remain permanently locked in an `Ongoing` battle they \
-         cannot escape. \
-         Fix: update the battle row (set terminal outcome) BEFORE calling \
-         write-back helpers, or log-and-continue on write-back errors instead \
-         of propagating them with `?`."
+        forfeit_body.contains(settle_needle),
+        "RT-M16-05 FAIL: `apply_pvp_forfeit` body must contain `{}` — delegation to \
+         the single funnel is required post-M17 (ADR-0119 D3). Without it the \
+         RT-M16-05 stuck-Ongoing risk is not resolved.",
+        settle_needle
+    );
+
+    // Post-M17: direct write_back_party_hp_pvp_side_b must NOT appear in forfeit body
+    // (it now lives inside settle_pvp_battle — a direct call here would double-run it).
+    let side_b_needle = concat!("write_back_party_hp_pvp", "_side_b");
+    assert!(
+        !forfeit_body.contains(side_b_needle),
+        "RT-M16-05 FAIL: `apply_pvp_forfeit` body still contains a direct `{}` call — \
+         this was moved into settle_pvp_battle (ADR-0119 D3). A direct call here \
+         reintroduces the stuck-Ongoing risk and causes double write-back.",
+        side_b_needle
+    );
+
+    // Post-M17: direct battle().battle_id().update must NOT appear in forfeit body
+    // (also moved into settle_pvp_battle).
+    let update_needle = concat!("battle().battle_id()", ".update");
+    assert!(
+        !forfeit_body.contains(update_needle),
+        "RT-M16-05 FAIL: `apply_pvp_forfeit` body still contains a direct `{}` call — \
+         the battle row update was moved into settle_pvp_battle (ADR-0119 D3). \
+         A direct call here bypasses the funnel ordering guarantee.",
+        update_needle
     );
 }
 
@@ -592,85 +592,58 @@ fn challenge_status_variants_are_distinct() {
 }
 
 // ---------------------------------------------------------------------------
-// RT-M16-08: resolve_pvp_turn_if_ready MUST call write_back_battle_results
-// BEFORE updating the battle row to its terminal state.
+// RT-M16-08: resolve_pvp_turn_if_ready must delegate to settle_pvp_battle (M17 rewrite).
 //
-// Finding: in `resolve_pvp_turn_if_ready` (pvp.rs), when the battle reaches
-// a terminal outcome, the code:
-//   1. ctx.db.battle().battle_id().update(battle);   ← commits terminal state
-//   2. write_back_battle_results(ctx, &battle_for_wb);
+// Pre-M17 finding (now resolved by the settle_pvp_battle funnel):
+//   `resolve_pvp_turn_if_ready` called `ctx.db.battle().battle_id().update(battle)`
+//   BEFORE `write_back_battle_results`, causing the GC sweep inside write_back to
+//   include the current (now-terminal) battle row and delete it — clients saw the
+//   battle disappear rather than a terminal outcome frame.
 //
-// Inside `write_back_battle_results` (battle.rs), the GC sweep at the
-// "GC prior terminal battles" block collects ALL terminal battle rows for
-// player_identity where outcome != Ongoing. Since step 1 has already committed
-// the terminal outcome, the CURRENT battle is included in the sweep and deleted.
-// Clients subscribed to the `battle` table see the row disappear rather than
-// transitioning to a terminal outcome frame — the win/loss screen never fires.
+// Post-M17 invariant (ADR-0119 D3):
+//   resolve_pvp_turn_if_ready must NOT contain direct calls to
+//   `write_back_battle_results(` or `battle().battle_id().update` — both now
+//   live inside settle_pvp_battle. resolve_pvp_turn_if_ready must delegate via
+//   `settle_pvp_battle(`. The correct ordering (write_back → update → rating →
+//   side_b) is pinned by m17a_rl10_settle_pvp_battle_ordering.
 //
-// The fix (mirroring submit_attack / swap_active in battle.rs) is to call
-// write_back_battle_results BEFORE ctx.db.battle().battle_id().update(battle),
-// so the GC sweep only sees prior terminals (the current row is still Ongoing
-// during the sweep, as documented in write_back_battle_results' own invariant
-// comment).
-//
-// Proof-of-teeth: kills any impl where the battle row update (to terminal state)
-// appears BEFORE the write_back_battle_results call in the terminal branch of
-// resolve_pvp_turn_if_ready.
-// After the fix, write_back_battle_results must appear BEFORE the update call.
+// NOTE (B-2): The pre-M17 version used a bounded slice resolved by finding
+// `fn apply_pvp_forfeit` after fn_pos — after the M17 pvp.rs reorder (forfeit
+// is now ABOVE resolve in the file), the forward search found no `apply_pvp_forfeit`
+// after resolve's start, so next_fn_pos fell back to stripped.len() and the slice
+// swept to EOF (into settle_pvp_battle's body), producing wrong offset comparisons.
+// Rewritten to use extract_pvp_fn_body for an exact body slice.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn rt_m16_08_resolve_pvp_turn_if_ready_calls_writeback_before_battle_update() {
     let stripped = strip_rust_comments(PVP_RS);
 
-    // Locate resolve_pvp_turn_if_ready body.
-    let fn_marker = concat!("fn resolve_pvp_turn", "_if_ready");
-    let fn_pos = stripped
-        .find(fn_marker)
-        .expect("RT-M16-08: `resolve_pvp_turn_if_ready` not found in pvp.rs");
+    // Use extract_pvp_fn_body for an exact, bounded body slice (B-2 fix).
+    let resolve_body = extract_pvp_fn_body(&stripped, "resolve_pvp_turn_if_ready")
+        .expect("RT-M16-08: `resolve_pvp_turn_if_ready` must exist in pvp.rs");
 
-    // Find apply_pvp_forfeit — that's where resolve_pvp ends and forfeit begins.
-    // resolve_pvp_turn_if_ready ends before apply_pvp_forfeit.
-    let next_fn = concat!("fn apply_pvp", "_forfeit");
-    let next_fn_pos = stripped[fn_pos..]
-        .find(next_fn)
-        .map(|p| fn_pos + p)
-        .unwrap_or(stripped.len());
-
-    let fn_body = &stripped[fn_pos..next_fn_pos];
-
-    // In the terminal branch we look for the write_back call and the battle update.
-    let wb_call = concat!("write_back_battle", "_results");
-    let update_call = concat!("battle().battle_id()", ".update");
-
-    let wb_pos = fn_body.find(wb_call).expect(
-        "RT-M16-08: `write_back_battle_results` call not found in resolve_pvp_turn_if_ready",
-    );
-    let update_pos = fn_body.find(update_call).expect(
-        "RT-M16-08: `battle().battle_id().update` call not found in resolve_pvp_turn_if_ready",
-    );
-
-    // After the fix: write_back must come BEFORE the update in the terminal branch.
-    // The invariant from write_back_battle_results' own comment: callers must call
-    // update() AFTER write_back returns so the GC sweep only targets prior terminals.
-    //
-    // Correct assertion: wb_pos < update_pos means "writeback appears earlier (smaller
-    // offset) in the source than the battle row update" — i.e. writeback runs first.
-    // The BROKEN state has update_pos < wb_pos (update runs first, then writeback),
-    // which causes the GC sweep inside writeback to delete the current battle row.
+    // Post-M17: resolve_pvp_turn_if_ready must NOT contain a direct write_back_battle_results
+    // call (now inside settle_pvp_battle — a direct call here bypasses the funnel ordering).
+    let wb_needle = concat!("write_back_battle", "_results(");
     assert!(
-        wb_pos < update_pos,
-        "RT-M16-08 FAIL: In `resolve_pvp_turn_if_ready`, `battle().battle_id().update` \
-         (at offset {update_pos}) appears BEFORE `write_back_battle_results` \
-         (at offset {wb_pos}). \
-         This violates write_back_battle_results' own ordering invariant: the battle \
-         row must still be Ongoing during the GC sweep inside write_back_battle_results, \
-         otherwise the current (just-committed-terminal) battle row is included in the \
-         sweep and deleted — clients see the battle disappear rather than a terminal \
-         outcome frame. \
-         Fix: move `write_back_battle_results` call to BEFORE the `update(battle)` call \
-         in the terminal branch of resolve_pvp_turn_if_ready, mirroring the battle.rs \
-         submit_attack / swap_active pattern."
+        !resolve_body.contains(wb_needle),
+        "RT-M16-08 FAIL: `resolve_pvp_turn_if_ready` body still contains a direct `{}` call — \
+         this was moved into settle_pvp_battle (ADR-0119 D3). A direct call here reintroduces \
+         the RT-M16-08 GC-sweep ordering violation (battle row committed terminal before \
+         write_back GC sweep runs, deleting the current row).",
+        wb_needle
+    );
+
+    // Post-M17: resolve_pvp_turn_if_ready must NOT contain a direct battle row update
+    // (also moved into settle_pvp_battle).
+    let update_needle = concat!("battle().battle_id()", ".update");
+    assert!(
+        !resolve_body.contains(update_needle),
+        "RT-M16-08 FAIL: `resolve_pvp_turn_if_ready` body still contains a direct `{}` call — \
+         the battle row update was moved into settle_pvp_battle (ADR-0119 D3). \
+         A direct call here bypasses the funnel and reintroduces the ordering violation.",
+        update_needle
     );
 }
 
@@ -1193,22 +1166,27 @@ fn m17a_rl7_server_ranking_module_invariants() {
         ranked_gate
     );
 
-    // (v-B1) RL-5: apply_pvp_rating body must increment wins and losses counters.
+    // (v-B1/F4) RL-5: apply_pvp_rating body must increment wins and losses counters
+    // using saturating_add (panic-proof, consistent with saturating rating arithmetic).
     // Kills: an impl that updates rating but forgets to track win/loss counts
     // (leaderboard would show ratings but no W/L record — spec RL-5 violation).
-    let wins_needle = concat!(".wins", " + 1");
+    // Needle updated (F4): `.wins + 1` → `.wins.saturating_add(1)` to match the
+    // implementer's panic-proof counter increment (consistent with rating handling).
+    let wins_needle = concat!(".wins.saturating_", "add(1)");
     assert!(
         apply_body.contains(wins_needle),
         "m17a-RL-5 (v) FAIL: `apply_pvp_rating` body must contain `{}` — \
-         the profile wins counter must be incremented on a win (ADR-0119 D1, RL-5). \
+         the profile wins counter must be incremented with saturating_add on a win \
+         (ADR-0119 D1, RL-5; panic-proof, consistent with rating arithmetic). \
          Without this, the leaderboard shows only ratings, not W/L counts.",
         wins_needle
     );
-    let losses_needle = concat!(".losses", " + 1");
+    let losses_needle = concat!(".losses.saturating_", "add(1)");
     assert!(
         apply_body.contains(losses_needle),
         "m17a-RL-5 (v) FAIL: `apply_pvp_rating` body must contain `{}` — \
-         the profile losses counter must be incremented on a loss (ADR-0119 D1, RL-5). \
+         the profile losses counter must be incremented with saturating_add on a loss \
+         (ADR-0119 D1, RL-5; panic-proof, consistent with rating arithmetic). \
          Without this, the leaderboard shows only ratings, not W/L counts.",
         losses_needle
     );
@@ -1585,5 +1563,96 @@ fn m17a_rl6_forfeit_on_disconnect_routing_invariant() {
          a battle resolved in a concurrent transaction could be double-forfeited.",
         recheck_count,
         ongoing_recheck
+    );
+}
+
+// ---------------------------------------------------------------------------
+// RT-M17-01: apply_pvp_rating winner/loser identity mapping is correct for both
+// SideAWins and SideBWins.
+//
+// Finding: the existing tests for apply_pvp_rating only assert TEXT patterns
+// (`.wins + 1` and `.losses + 1` present in the function body). They do NOT verify
+// WHICH identity variable receives wins vs losses. A swap of the two arms:
+//   SideBWins => (battle.player_identity, battle.opponent_identity)  // WRONG
+// would make the challenger "win" every time the opponent wins, silently
+// mis-attributing ratings and W/L counts. The text-scan tests would still pass.
+//
+// This test pins the EXACT identity-to-side mapping in the apply_pvp_rating body:
+//   SideAWins => winner = player_identity, loser = opponent_identity
+//   SideBWins => winner = opponent_identity, loser = player_identity
+//
+// Two complementary needle checks:
+//   (i)  SideAWins arm assigns player_identity to the winner variable (tuple position 0).
+//   (ii) SideBWins arm assigns opponent_identity to the winner variable (tuple position 0).
+//
+// Kills: any impl that swaps the tuple fields in either arm, giving the challenger's
+// profile a win when the opponent wins (or the reverse).
+// ---------------------------------------------------------------------------
+
+/// RT-M17-01: apply_pvp_rating winner/loser identity mapping — SideAWins arm.
+///
+/// The SideAWins arm must assign `battle.player_identity` (the challenger, side A)
+/// as the winner and `battle.opponent_identity` as the loser.
+/// Needle: `SideAWins => (battle.player_identity, battle.opponent_identity)`
+///
+/// Kills: an impl where both arms use player_identity as winner (would never credit the
+/// opponent's profile when they win), or where the tuple fields are reversed in this arm.
+#[test]
+fn rt_m17_01_apply_pvp_rating_side_a_wins_maps_player_to_winner() {
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ranking.rs"))
+        .expect("RT-M17-01: server-module/src/ranking.rs must exist");
+    let stripped = strip_rust_comments(&src);
+
+    let apply_body = extract_pvp_fn_body(&stripped, "apply_pvp_rating")
+        .expect("RT-M17-01: `apply_pvp_rating` must exist in ranking.rs");
+
+    // Needle: the SideAWins arm must list player_identity FIRST (winner) and
+    // opponent_identity SECOND (loser) in the tuple. Built with concat! so this file
+    // does not self-match when apply_pvp_rating is later inlined or moved.
+    let side_a_needle = concat!(
+        "SideAWins => (battle.player_identity, battle.",
+        "opponent_identity)"
+    );
+    assert!(
+        apply_body.contains(side_a_needle),
+        "RT-M17-01 FAIL: `apply_pvp_rating` body does not contain the expected SideAWins arm \
+         `{}`. The SideAWins arm must map player_identity to winner and opponent_identity to \
+         loser: challenger (side A) won, so challenger's profile gains wins+1 and opponent's \
+         gains losses+1. A swapped arm credits the wrong profile. (ADR-0119 D6, RL-5)",
+        side_a_needle
+    );
+}
+
+/// RT-M17-01: apply_pvp_rating winner/loser identity mapping — SideBWins arm.
+///
+/// The SideBWins arm must assign `battle.opponent_identity` (the opponent, side B)
+/// as the winner and `battle.player_identity` as the loser.
+/// Needle: `SideBWins => (battle.opponent_identity, battle.player_identity)`
+///
+/// Kills: an impl that keeps both arms using player_identity as winner (the common
+/// copy-paste mistake), or one where the SideBWins arm reverses the tuple.
+#[test]
+fn rt_m17_01_apply_pvp_rating_side_b_wins_maps_opponent_to_winner() {
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ranking.rs"))
+        .expect("RT-M17-01: server-module/src/ranking.rs must exist");
+    let stripped = strip_rust_comments(&src);
+
+    let apply_body = extract_pvp_fn_body(&stripped, "apply_pvp_rating")
+        .expect("RT-M17-01: `apply_pvp_rating` must exist in ranking.rs");
+
+    // Needle: the SideBWins arm must list opponent_identity FIRST (winner) and
+    // player_identity SECOND (loser).
+    let side_b_needle = concat!(
+        "SideBWins => (battle.opponent_identity, battle.",
+        "player_identity)"
+    );
+    assert!(
+        apply_body.contains(side_b_needle),
+        "RT-M17-01 FAIL: `apply_pvp_rating` body does not contain the expected SideBWins arm \
+         `{}`. The SideBWins arm must map opponent_identity to winner and player_identity to \
+         loser: the opponent (side B) won, so their profile gains wins+1 and the challenger \
+         gains losses+1. A swapped arm would give the challenger a win credit when they lost. \
+         (ADR-0119 D6, RL-5)",
+        side_b_needle
     );
 }

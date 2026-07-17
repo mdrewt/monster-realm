@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: shop_row
 slug: tables/shop_row
-updated: 2026-07-15
+updated: 2026-07-17
 tags: [schema, spacetimedb, public]
 abstract: "Shop definitions seeded from the `game-core` RON registry. Public (world-readable content, like `item_row` — shop names…"
 resource: server-module/src/schema.rs#L150
