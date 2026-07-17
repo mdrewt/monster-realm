@@ -63,8 +63,15 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
     };
 
     require_owner(ctx, "evolve", m.owner_identity)?;
+    // Both-role battle guard (ADR-0122): chain the opponent_identity iterator so
+    // a monster whose owner sits on side B of an ongoing PvP battle is caught —
+    // mirrors the m16.5a trading.rs chain shape (ADR-0112 D1/D2).
     reject_if_in_battle(
-        ctx.db.battle().player_identity().filter(m.owner_identity),
+        ctx.db
+            .battle()
+            .player_identity()
+            .filter(m.owner_identity)
+            .chain(ctx.db.battle().opponent_identity().filter(m.owner_identity)),
         monster_id,
     )?;
     // Trade escrow guard (TR-2, ADR-0106): monster in an active offer cannot be evolved.
@@ -212,13 +219,24 @@ pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
         return Err("both monsters must be owned by the same player".to_string());
     }
 
-    // Neither can be in battle
+    // Neither can be in battle — both roles (ADR-0122): chain the
+    // opponent_identity iterator per parent, mirroring the m16.5a trading.rs
+    // chain shape (ADR-0112 D1/D2), so a parent on side B of an ongoing PvP
+    // battle is caught too.
     reject_if_in_battle(
-        ctx.db.battle().player_identity().filter(a.owner_identity),
+        ctx.db
+            .battle()
+            .player_identity()
+            .filter(a.owner_identity)
+            .chain(ctx.db.battle().opponent_identity().filter(a.owner_identity)),
         a_id,
     )?;
     reject_if_in_battle(
-        ctx.db.battle().player_identity().filter(b.owner_identity),
+        ctx.db
+            .battle()
+            .player_identity()
+            .filter(b.owner_identity)
+            .chain(ctx.db.battle().opponent_identity().filter(b.owner_identity)),
         b_id,
     )?;
     // Trade escrow guard (TR-3, ADR-0106): both parents must be free of active trade offers.

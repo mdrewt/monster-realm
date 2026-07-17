@@ -484,3 +484,247 @@ fn m17a_is_ranked_pvp_wild_battle_is_false() {
          Kills: an impl that only checks player != opponent and misses the wild check."
     );
 }
+
+// ===========================================================================
+// m17.5a (ADR-0122): is_in_ongoing_battle_either_role unit tests
+//
+// `is_in_ongoing_battle_either_role(as_player, as_opponent) -> bool` is the
+// PURE CORE of the both-role ongoing-battle guard (ADR-0122 D1).  The thin
+// ctx wrapper `is_in_ongoing_battle(ctx, identity)` delegates to this core
+// and is pinned by source-scan only (no branch logic to mutate).
+//
+// Signature under test (to be added to guards.rs):
+//   pub(crate) fn is_in_ongoing_battle_either_role(
+//       as_player:   impl Iterator<Item = impl std::borrow::Borrow<crate::schema::Battle>>,
+//       as_opponent: impl Iterator<Item = impl std::borrow::Borrow<crate::schema::Battle>>,
+//   ) -> bool
+//
+// TDD marker: all seven tests below were authored COMPILE-RED before
+// `is_in_ongoing_battle_either_role` existed in guards.rs (m17a precedent,
+// guards_tests.rs:394 block); implementation has since landed and all are green.
+//
+// Fixture discipline (plan-review N-1 / red-team F6, BINDING):
+//   `make_test_battle`'s hardcoded `opponent_identity = [0u8;32]` IS WILD_IDENTITY.
+//   The opponent-arm tests (`either_role_opponent_ongoing_true` and
+//   `either_role_opponent_wild_sentinel_false`) therefore MUST NOT reuse that
+//   helper unmodified for the battle carrying the non-WILD opponent: they call
+//   `make_pvp_test_battle` (already defined above at line ~401) with explicit
+//   non-WILD identities.  Both opponent-arm tests also pass an EMPTY player-arm
+//   iterator so the opponent arm is the ONLY possible signal source — a broken
+//   opponent arm cannot be masked by a player-arm hit.
+//
+// Mutation bite mapping (for ADR-0118 §4):
+//   - Deleting the opponent arm from the core  →  flips `either_role_opponent_ongoing_true`
+//     and `laundering_two_ongoing_rows` RED (unit gate bites).
+//   - Deleting the `!= WILD_IDENTITY` clause   →  flips
+//     `either_role_opponent_wild_sentinel_false` RED.
+//   - Removing the call from any reducer       →  flips its eval criterion RED.
+// ===========================================================================
+
+/// m17.5a-1: empty / empty → false.
+/// Kills: an always-true implementation.
+#[test]
+fn either_role_no_battle_false() {
+    let result = is_in_ongoing_battle_either_role(
+        std::iter::empty::<Battle>(),
+        std::iter::empty::<Battle>(),
+    );
+    assert!(
+        !result,
+        "m17.5a FAIL: is_in_ongoing_battle_either_role(empty, empty) must be false; \
+         kills: an always-true impl (would return true with no battles)"
+    );
+}
+
+/// m17.5a-2: player arm has one Ongoing battle → true.
+/// The opponent arm is empty so only the player arm can produce the result.
+/// Kills: an impl that drops the player arm (returns false unconditionally or
+/// only checks the opponent arm).
+#[test]
+fn either_role_player_ongoing_true() {
+    // make_test_battle uses player_identity=[1;32], opponent_identity=[0;32]=WILD.
+    // The player arm receives this Ongoing row; the opponent arm is empty.
+    let ongoing = make_test_battle(1, game_core::BattleOutcome::Ongoing, vec![]);
+    let result =
+        is_in_ongoing_battle_either_role(std::iter::once(ongoing), std::iter::empty::<Battle>());
+    assert!(
+        result,
+        "m17.5a FAIL: player arm has Ongoing battle → must be true; \
+         kills: dropped-player-arm impl (would return false)"
+    );
+}
+
+/// m17.5a-3: EMPTY player arm + opponent arm has Ongoing with non-WILD opponent → true.
+/// This is the core bite: the opponent arm is the ONLY possible source of the result.
+/// A broken opponent arm (arm dropped) cannot be masked by the player arm (empty here).
+/// Non-WILD opponent: player=[1;32], opponent=[2;32].
+/// Kills: an impl that drops the opponent arm entirely (the central gap this slice closes).
+#[test]
+fn either_role_opponent_ongoing_true() {
+    // Fixture: real side-A identity [1;32], real side-B identity [2;32] (non-WILD).
+    // player_identity=[1;32] means the PLAYER-ROLE (side A) is [1;32].
+    // We supply this as the opponent-arm battle with opponent_identity=[2;32].
+    // We want to test: identity [2;32] is the *opponent* → they appear only in
+    // the opponent arm. So the battle has player_identity=[1;32] and
+    // opponent_identity=[2;32]; the caller querying for [2;32] gets this row
+    // ONLY from the opponent arm.
+    let player_id = spacetimedb::Identity::from_byte_array([1u8; 32]);
+    let opponent_id = spacetimedb::Identity::from_byte_array([2u8; 32]);
+    // make_pvp_test_battle creates an Ongoing battle with the given player/opponent.
+    let pvp_battle = make_pvp_test_battle(player_id, opponent_id);
+
+    // CRITICAL: player arm is EMPTY — the opponent arm is the only signal source.
+    let result =
+        is_in_ongoing_battle_either_role(std::iter::empty::<Battle>(), std::iter::once(pvp_battle));
+    assert!(
+        result,
+        "m17.5a FAIL: empty player arm + opponent arm has Ongoing(non-WILD) → must be true; \
+         kills: impl that drops the opponent arm (the ADR-0122 core gap)"
+    );
+}
+
+/// m17.5a-4: EMPTY player arm + opponent arm row has opponent_identity == WILD_IDENTITY → false.
+/// The WILD_IDENTITY refinement MUST be preserved: a wild/practice battle's sentinel
+/// opponent must NOT match a caller who merely happens to be querying the opponent arm.
+/// Note: the wild battle's REAL side-A owner is still caught by the player arm (separate arm),
+/// but here the player arm is empty and the opponent-arm row has opponent == WILD_IDENTITY.
+/// Kills: an impl that drops the `!= WILD_IDENTITY` refinement (would return true).
+#[test]
+fn either_role_opponent_wild_sentinel_false() {
+    // A battle whose opponent_identity IS WILD_IDENTITY — using make_test_battle's
+    // built-in [0;32] opponent (which IS WILD_IDENTITY).
+    let wild_battle = make_test_battle(1, game_core::BattleOutcome::Ongoing, vec![]);
+    // Verify the fixture's opponent IS WILD_IDENTITY (documents intent and guards regression).
+    assert_eq!(
+        wild_battle.opponent_identity,
+        crate::WILD_IDENTITY,
+        "fixture invariant: make_test_battle's opponent_identity must be WILD_IDENTITY ([0;32])"
+    );
+
+    // CRITICAL: player arm is EMPTY — only the opponent arm supplies rows.
+    let result = is_in_ongoing_battle_either_role(
+        std::iter::empty::<Battle>(),
+        std::iter::once(wild_battle),
+    );
+    assert!(
+        !result,
+        "m17.5a FAIL: empty player arm + opponent-arm row with opponent==WILD_IDENTITY → must be false; \
+         the WILD_IDENTITY refinement (ADR-0122 D1) must be preserved so wild battles \
+         do not spuriously match a caller via the opponent arm. \
+         Kills: impl that drops the != WILD_IDENTITY clause (would return true)"
+    );
+}
+
+/// m17.5a-5: both arms non-Ongoing → false.
+/// Battle exists in both arms but it is completed (SideAWins) — must not block.
+/// Kills: an impl that checks row presence without checking the outcome (would return true).
+#[test]
+fn either_role_won_battle_false() {
+    let player_id = spacetimedb::Identity::from_byte_array([1u8; 32]);
+    let opponent_id = spacetimedb::Identity::from_byte_array([2u8; 32]);
+    // Completed battle (SideAWins) — not Ongoing.
+    let mut won_battle = make_pvp_test_battle(player_id, opponent_id);
+    won_battle.state.outcome = game_core::BattleOutcome::SideAWins;
+
+    let result = is_in_ongoing_battle_either_role(
+        std::iter::once(won_battle.clone()),
+        std::iter::once(won_battle),
+    );
+    assert!(
+        !result,
+        "m17.5a FAIL: both arms have a completed (SideAWins) battle → must be false; \
+         kills: impl that checks battle presence without checking outcome (would return true)"
+    );
+}
+
+/// m17.5a-6: caller is BOTH player_identity AND opponent_identity of one Ongoing
+/// self/practice battle (same row in both iterators) → true.
+///
+/// Documentation fixture: BOTH arms fire here because caller != WILD_IDENTITY.
+/// This is the practice/self-battle shape (ADR-0045 self-battle sentinel is the
+/// caller's own identity, NOT WILD_IDENTITY — so the opponent arm's
+/// `!= WILD_IDENTITY` check passes and the opponent arm contributes too).
+/// No unique mutant claim: row 2 (`either_role_player_ongoing_true`) already kills
+/// the dropped-player-arm mutant; this test documents the short-circuit behavior.
+#[test]
+fn either_role_practice_self_both_arms() {
+    // Self-battle: player_identity == opponent_identity == [3;32] (non-WILD).
+    let self_id = spacetimedb::Identity::from_byte_array([3u8; 32]);
+    let self_battle = make_pvp_test_battle(self_id, self_id);
+
+    // Both arms receive this same Ongoing self-battle row.
+    // The player arm fires (Ongoing) and short-circuits via `||`; the opponent
+    // arm is NOT evaluated for this fixture.  Documents: a practice self-battle
+    // is caught by the player arm alone; the opponent arm need not fire.
+    let result = is_in_ongoing_battle_either_role(
+        std::iter::once(self_battle.clone()),
+        std::iter::once(self_battle),
+    );
+    assert!(
+        result,
+        "m17.5a FAIL: self/practice Ongoing battle in both arms → must be true; \
+         documents: both arms fire because the caller's identity is not WILD_IDENTITY; \
+         no unique mutant claim (either_role_player_ongoing_true kills that mutant)"
+    );
+}
+
+/// m17.5a-7: laundering exploit closed — two scenarios:
+///
+/// SCENARIO A (two_row_both_arms): caller is side-A of an Ongoing wild battle
+/// (player arm) AND side-B (opponent, non-WILD) of a distinct Ongoing PvP battle
+/// (opponent arm) → true.  This is the laundering precondition: before the fix,
+/// the side-B PvP check was missing, so the wild battle's guard only checked the
+/// player arm.
+///
+/// SCENARIO B (pvp_row_only): empty player arm, opponent arm has only the PvP
+/// row → true.  This is the exploit's core: the accepting player (side-B) can
+/// open a second battle because the player-only guard misses them.  The opponent
+/// arm alone is sufficient to block this.
+///
+/// Kills: the whole ADR-0122 gap (an impl that only checks the player arm would
+/// return false for scenario B, failing this test).
+#[test]
+fn laundering_two_ongoing_rows() {
+    // pvp_side_a=[4;32] is side-A of the PvP battle (player_identity).
+    // subject=[5;32] is the subject under test: they are side-B (opponent_identity)
+    // of the PvP battle, and also side-A (player_identity) of their own wild battle.
+    let pvp_side_a = spacetimedb::Identity::from_byte_array([4u8; 32]);
+    let subject = spacetimedb::Identity::from_byte_array([5u8; 32]);
+
+    // Wild battle: subject [5;32] is player_identity (side A of their own wild battle).
+    // Use make_pvp_test_battle with WILD_IDENTITY as opponent.
+    let wild_battle = make_pvp_test_battle(subject, crate::WILD_IDENTITY);
+    // PvP battle: subject=[5;32] is opponent_identity (side B); pvp_side_a is side-A.
+    let pvp_battle = make_pvp_test_battle(pvp_side_a, subject);
+
+    // SCENARIO A: two rows, one per arm.
+    // Player arm: wild_battle (subject as player_identity — their own wild battle).
+    // Opponent arm: pvp_battle (subject as opponent_identity — their PvP side-B slot).
+    // Kills: an impl missing BOTH arms; scenario B (empty player arm) independently
+    // kills the dropped-opponent-arm mutant, and either_role_player_ongoing_true kills
+    // the dropped-player-arm mutant — scenario A's contribution is documenting the
+    // combined two-row laundering precondition.
+    let result_a = is_in_ongoing_battle_either_role(
+        std::iter::once(wild_battle),
+        std::iter::once(pvp_battle.clone()),
+    );
+    assert!(
+        result_a,
+        "m17.5a FAIL (scenario A): subject as side-A wild + side-B PvP in respective arms → must be true; \
+         kills: any impl that misses BOTH arms simultaneously"
+    );
+
+    // SCENARIO B: empty player arm, only the PvP row in the opponent arm.
+    // This is the exploit's core: the accepting player (subject) appears ONLY as
+    // opponent_identity — the pre-fix player-only guard missed them entirely.
+    // Kills: an impl that only checks the player arm (dropped-opponent-arm mutant).
+    let result_b =
+        is_in_ongoing_battle_either_role(std::iter::empty::<Battle>(), std::iter::once(pvp_battle));
+    assert!(
+        result_b,
+        "m17.5a FAIL (scenario B — the exploit precondition executed): \
+         empty player arm + PvP row in opponent arm (subject as side-B, non-WILD) → must be true; \
+         kills: an impl that only checks the player arm (the pre-fix behavior — would return false \
+         because the player arm is empty, missing the PvP side-B slot entirely)"
+    );
+}
