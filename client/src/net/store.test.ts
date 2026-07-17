@@ -20,6 +20,7 @@ import {
   type StoreItemRow,
   type StoreMonsterPub,
   type StorePlayer,
+  type StoreProfile,
   type StoreShopItemRow,
   type StoreShopRow,
   type StoreSkillRow,
@@ -2726,5 +2727,202 @@ describe('AuthoritativeStore m15b: trade_offer upsert/remove/read (RT-TO-02)', (
     s.removeTradeOffer(1n);
     s.flushBatch();
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+});
+
+// =============================================================================
+// m17b — StoreProfile + upsertProfile / profile / allProfiles (RL-13 store layer)
+// SOURCE OF TRUTH: specs/monster-realm-v2/M17-ranked-ladder.spec.md §RL-13 / §RL-15
+//
+// RED REASON: StoreProfile type and the four new store methods do not exist yet.
+// All tests will fail with TypeScript import errors / missing-property errors
+// until the implementer adds StoreProfile + upsertProfile/profile/allProfiles to
+// store.ts, and wires #profiles.clear() into reset().
+//
+// Contract:
+//   StoreProfile = { identity: string; name: string; rating: number; wins: number; losses: number }
+//   (type alias, NOT interface — probe-cast convention from store.ts:39 comment)
+//   upsertProfile(p: StoreProfile): void  — keyed by identity; idempotent re-insert
+//   profile(identity: string): StoreProfile | undefined
+//   allProfiles(): StoreProfile[]  — fresh array each call (mutating it must not corrupt the store)
+//   reset() clears profiles  (pattern: store.ts:597-604)
+//   NO removeProfile — RL-2/ADR-0119 D1: profile rows are never deleted
+//
+// WRONG-IMPL-KILLED list:
+//   - "array store instead of Map"       → idempotency test (RT-PR-01b)
+//   - "allProfiles returns live reference" → isolation test (RT-PR-03)
+//   - "reset does not clear profiles"    → reset test (RT-PR-04)
+//   - "upsertProfile not dirty"          → dirty-flag test (RT-PR-05)
+//   - "profile() case-normalizes identity" → identity equality test (RT-PR-02)
+//   - "removeProfile exists"             → absence test (RT-PR-06)
+// =============================================================================
+
+/** Factory for StoreProfile test fixtures. */
+function makeProfile(
+  identity: string,
+  name: string,
+  rating: number,
+  wins = 0,
+  losses = 0,
+): StoreProfile {
+  return { identity, name, rating, wins, losses };
+}
+
+describe('AuthoritativeStore m17b: StoreProfile upsert + lookup (RL-13)', () => {
+  it('RT-PR-01a BITES: upsertProfile stores row; profile() retrieves it — kills no-op upsert impl', () => {
+    // Kills: an impl that exposes upsertProfile but never writes to the internal Map.
+    const s = new AuthoritativeStore();
+    s.upsertProfile(makeProfile('aabbcc', 'Alice', 1200, 5, 2));
+    const p = s.profile('aabbcc');
+    expect(p).toBeDefined();
+    expect(p!.identity).toBe('aabbcc');
+    expect(p!.name).toBe('Alice');
+    expect(p!.rating).toBe(1200);
+    expect(p!.wins).toBe(5);
+    expect(p!.losses).toBe(2);
+  });
+
+  it('RT-PR-01b BITES: upsert same identity twice overwrites (keyed-Map idempotency, not array append)', () => {
+    // Kills: an impl that stores profiles in an array and appends on re-insert,
+    // causing allProfiles() to return duplicates on reconnect.
+    const s = new AuthoritativeStore();
+    s.upsertProfile(makeProfile('aabbcc', 'Alice', 1000));
+    s.upsertProfile(makeProfile('aabbcc', 'Alice', 1050, 1, 0)); // same identity, updated rating
+    const all = s.allProfiles();
+    expect(all).toHaveLength(1);
+    expect(all[0]!.rating).toBe(1050); // last-write wins
+  });
+
+  it('RT-PR-02 BITES: profile() uses exact case-sensitive identity equality — kills case-normalizing impl', () => {
+    // Kills: an impl that lowercases/uppercases identity before storing or looking up.
+    const s = new AuthoritativeStore();
+    s.upsertProfile(makeProfile('DEADBEEF', 'Upper', 1100));
+    expect(s.profile('DEADBEEF')).toBeDefined();
+    expect(s.profile('deadbeef')).toBeUndefined(); // different case → not found
+  });
+
+  it('RT-PR-01c BITES: profile() returns undefined for an unknown identity — kills throw impl', () => {
+    // Kills: an impl that throws instead of returning undefined for missing identity.
+    const s = new AuthoritativeStore();
+    expect(s.profile('nobody')).toBeUndefined();
+  });
+
+  it('RT-PR-01d BITES: distinct identities coexist (two profiles, each retrieved independently)', () => {
+    // Kills: an impl that uses a single-slot store instead of a Map.
+    const s = new AuthoritativeStore();
+    s.upsertProfile(makeProfile('aaa', 'Alice', 1200));
+    s.upsertProfile(makeProfile('bbb', 'Bob', 900));
+    expect(s.profile('aaa')!.name).toBe('Alice');
+    expect(s.profile('bbb')!.name).toBe('Bob');
+  });
+});
+
+describe('AuthoritativeStore m17b: allProfiles() fresh-array isolation (RL-13)', () => {
+  it('RT-PR-03 BITES: mutating the returned array does NOT corrupt the store — kills live-reference impl', () => {
+    // Kills: an impl that returns the internal array/map values array directly.
+    // After mutation the store must still contain the original profiles.
+    const s = new AuthoritativeStore();
+    s.upsertProfile(makeProfile('aaa', 'Alice', 1200));
+    s.upsertProfile(makeProfile('bbb', 'Bob', 900));
+
+    const first = s.allProfiles();
+    expect(first).toHaveLength(2);
+
+    // Mutate the returned array — splice out all items.
+    first.splice(0, first.length);
+    expect(first).toHaveLength(0); // local mutation
+
+    // Re-query: store must still have both profiles.
+    const second = s.allProfiles();
+    expect(second).toHaveLength(2);
+  });
+
+  it('RT-PR-03b BITES: two successive allProfiles() calls return independent arrays — kills cached-ref impl', () => {
+    // Kills: an impl that caches and returns the same array object on both calls.
+    const s = new AuthoritativeStore();
+    s.upsertProfile(makeProfile('aaa', 'Alice', 1000));
+
+    const a = s.allProfiles();
+    const b = s.allProfiles();
+
+    // Must be distinct array objects (not the same reference).
+    expect(a).not.toBe(b);
+    // Both must contain the profile.
+    expect(a).toHaveLength(1);
+    expect(b).toHaveLength(1);
+  });
+});
+
+describe('AuthoritativeStore m17b: reset() clears profiles (RL-13)', () => {
+  it('RT-PR-04 BITES: reset() clears profiles; allProfiles() empty; profile() undefined — kills no-clear impl', () => {
+    // Kills: an impl that omits this.#profiles.clear() from reset() (the explicit
+    // pattern from store.ts:597-604 requires each map to be cleared).
+    const s = new AuthoritativeStore();
+    s.upsertProfile(makeProfile('aaa', 'Alice', 1200));
+    expect(s.allProfiles()).toHaveLength(1);
+
+    s.reset();
+
+    expect(s.allProfiles()).toHaveLength(0);
+    expect(s.profile('aaa')).toBeUndefined();
+  });
+
+  it('RT-PR-04b BITES: reset keeps batch listeners alive; post-reset upsertProfile reaches listeners', () => {
+    // Kills: an impl that clears listeners on reset (breaking the running loop).
+    // Mirror of the existing "reset clears ... listeners survive" pattern throughout this file.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.upsertProfile(makeProfile('aaa', 'Alice', 1000));
+    s.flushBatch();
+
+    s.reset();
+    expect(s.allProfiles()).toHaveLength(0);
+
+    // Post-reset upsert must still reach the listener.
+    s.upsertProfile(makeProfile('bbb', 'Bob', 1100));
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(2); // once pre-reset, once post-reset
+  });
+});
+
+describe('AuthoritativeStore m17b: upsertProfile dirty flag (RL-13)', () => {
+  it('RT-PR-05 BITES: upsertProfile marks dirty; flushBatch fires onBatchApplied — kills no-dirty impl', () => {
+    // Kills: an impl that upserts the row but forgets this.#dirty = true, so the
+    // leaderboard batch listener never fires when a new profile arrives.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+
+    s.upsertProfile(makeProfile('aaa', 'Alice', 1200));
+    expect(cb).toHaveBeenCalledTimes(0); // not mid-batch
+
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1); // exactly one coherent batch signal
+  });
+
+  it('RT-PR-05b BITES: second upsert with same identity marks dirty again — kills no-dirty-on-update impl', () => {
+    // Kills: an impl that only marks dirty on INSERT but not on UPDATE (i.e. when the
+    // Map already has the key). The leaderboard needs to re-render on rating updates.
+    const s = new AuthoritativeStore();
+    s.upsertProfile(makeProfile('aaa', 'Alice', 1000));
+    s.flushBatch(); // consume dirty
+
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+
+    s.upsertProfile(makeProfile('aaa', 'Alice', 1050, 1, 0)); // update existing
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AuthoritativeStore m17b: no removeProfile method (RL-2 structural guarantee)', () => {
+  it('RT-PR-06 BITES: AuthoritativeStore does NOT expose a removeProfile method — kills RL-2 violation impl', () => {
+    // RL-2 / ADR-0119 D1: profile rows are NEVER deleted. Wiring a removeProfile
+    // would be unreachable dead code and create a silent violation risk.
+    // Kills: an impl that adds removeProfile "just in case" (violates ADR-0119 D1).
+    const s = new AuthoritativeStore();
+    expect(typeof (s as unknown as Record<string, unknown>).removeProfile).not.toBe('function');
   });
 });

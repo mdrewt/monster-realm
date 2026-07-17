@@ -1631,3 +1631,133 @@ describe('rowConvert m15b: tradeOfferRowToStore — identity toHexString() gate 
     expect(stored.initiatorCards[0]!.nickname).toBe('Sparky');
   });
 });
+
+// =============================================================================
+// m17b — profileRowToStore: SdkProfileRow -> StoreProfile (RL-13 boundary ingest)
+// SOURCE OF TRUTH: specs/monster-realm-v2/M17-ranked-ladder.spec.md §RL-13 / §RL-15
+//
+// RED REASON: SdkProfileRow type and profileRowToStore do not exist yet in
+// rowConvert.ts. All tests will fail with import errors until the implementer adds:
+//   export type SdkProfileRow = {
+//     identity: { toHexString(): string };
+//     name: string; rating: number; wins: number; losses: number;
+//   }
+//   export function profileRowToStore(row: SdkProfileRow): StoreProfile
+//
+// Contract:
+//   - identity resolved via .toHexString() to a plain string (never stored as object)
+//   - name/rating/wins/losses passed through as-is
+//   - rating/wins/losses are typeof 'number' (i32 → number, NOT bigint)
+//   - empty name passes through as '' (never normalized to a fallback string)
+//   - negative rating passes through (i32 can be negative after rating loss)
+//
+// WRONG-IMPL-KILLED list:
+//   - "identity stored as SDK object"        → toHexString test (RC-PR-01)
+//   - "rating biginted"                      → typeof number tests (RC-PR-02/03)
+//   - "empty name replaced with fallback"    → empty-name test (RC-PR-04)
+//   - "negative rating clamped to 0"         → negative-rating test (RC-PR-05)
+//   - "wins/losses dropped or defaulted"     → passthrough test (RC-PR-02)
+// =============================================================================
+
+import { profileRowToStore, type SdkProfileRow } from './rowConvert';
+
+/** Factory: minimal valid SdkProfileRow with a mock identity object. */
+function makeSdkProfileRow(
+  identityHex: string,
+  name: string,
+  rating: number,
+  wins = 0,
+  losses = 0,
+): SdkProfileRow {
+  return {
+    identity: { toHexString: () => identityHex },
+    name,
+    rating,
+    wins,
+    losses,
+  };
+}
+
+describe('rowConvert m17b: profileRowToStore — identity via toHexString() (RC-PR-01)', () => {
+  it('RC-PR-01a BITES: identity.toHexString() is called; store field is a plain string — kills raw-object impl', () => {
+    // Kills: an impl that stores row.identity directly (an SDK Identity object).
+    // Downstream: store.profile(identity) uses Map.get() with string keys;
+    // if identity is an object, Map.get() always misses (object !== object by reference).
+    const sdk = makeSdkProfileRow('deadbeef1234abcd', 'Alice', 1200, 5, 2);
+    const stored = profileRowToStore(sdk);
+    expect(typeof stored.identity).toBe('string');
+    expect(stored.identity).toBe('deadbeef1234abcd');
+  });
+
+  it('RC-PR-01b BITES: identity is preserved verbatim (case-sensitive, no normalization)', () => {
+    // Kills: an impl that lowercases or uppercases the hex string from toHexString().
+    // SpacetimeDB identity hex strings are lowercase; the store must preserve exactly
+    // what toHexString() returns.
+    const lowerSdk = makeSdkProfileRow('aabbccdd', 'Lower', 1000);
+    const upperSdk = makeSdkProfileRow('AABBCCDD', 'Upper', 1000);
+    expect(profileRowToStore(lowerSdk).identity).toBe('aabbccdd');
+    expect(profileRowToStore(upperSdk).identity).toBe('AABBCCDD');
+    expect(profileRowToStore(lowerSdk).identity).not.toBe(profileRowToStore(upperSdk).identity);
+  });
+});
+
+describe('rowConvert m17b: profileRowToStore — numbers stay numbers (RC-PR-02)', () => {
+  it('RC-PR-02a BITES: rating, wins, losses are typeof "number" (i32 → number, NOT bigint)', () => {
+    // profile table: rating is i32, wins/losses are u32 — all map to JS number.
+    // Kills: an impl that bigints i32/u32 fields by accident (wrong SDK column type).
+    const sdk = makeSdkProfileRow('aaa', 'Alice', 1200, 10, 3);
+    const stored = profileRowToStore(sdk);
+    expect(typeof stored.rating).toBe('number');
+    expect(stored.rating).toBe(1200);
+    expect(typeof stored.wins).toBe('number');
+    expect(stored.wins).toBe(10);
+    expect(typeof stored.losses).toBe('number');
+    expect(stored.losses).toBe(3);
+  });
+
+  it('RC-PR-02b BITES: all five fields are present with correct values (no silent field drop)', () => {
+    // Kills: an impl that maps identity + name but forgets wins or losses.
+    const sdk = makeSdkProfileRow('cafebabe', 'Bob', 950, 7, 4);
+    const stored = profileRowToStore(sdk);
+    expect(stored.identity).toBe('cafebabe');
+    expect(stored.name).toBe('Bob');
+    expect(stored.rating).toBe(950);
+    expect(stored.wins).toBe(7);
+    expect(stored.losses).toBe(4);
+  });
+});
+
+describe('rowConvert m17b: profileRowToStore — edge cases (RC-PR-03 / RC-PR-04 / RC-PR-05)', () => {
+  it('RC-PR-03 BITES: zero wins and zero losses are preserved (not treated as absent/falsy)', () => {
+    // Kills: an impl that defaults wins/losses to undefined when 0, or uses `|| 0`
+    // which would hide the correct 0 if the field was already 0 from a different default.
+    const sdk = makeSdkProfileRow('aaa', 'Alice', 1000, 0, 0);
+    const stored = profileRowToStore(sdk);
+    expect(stored.wins).toBe(0);
+    expect(stored.losses).toBe(0);
+    expect(typeof stored.wins).toBe('number');
+    expect(typeof stored.losses).toBe('number');
+  });
+
+  it('RC-PR-04 BITES: empty name passes through as "" (not replaced with fallback string)', () => {
+    // The server seeds profile.name from player.name at get_or_init_profile.
+    // A player with an empty name (rare but valid) must be passed through literally.
+    // The display fallback '#<hex8>' is a VIEW-layer concern (leaderboardModel.ts).
+    // Kills: an impl that replaces '' with a default string in the converter.
+    const sdk = makeSdkProfileRow('abc123', '', 1000);
+    const stored = profileRowToStore(sdk);
+    expect(stored.name).toBe('');
+    expect(typeof stored.name).toBe('string');
+  });
+
+  it('RC-PR-05 BITES: negative rating passes through unchanged (i32 can be negative)', () => {
+    // After a rating loss from INITIAL_RATING=1000 with a long losing streak,
+    // rating could theoretically go below 0 (i32 permits negative values).
+    // Kills: an impl that clamps rating to >= 0 in the converter (clamping is a
+    // game-rule concern for apply_elo, not a wire-format concern for the converter).
+    const sdk = makeSdkProfileRow('bbb', 'Loser', -42, 0, 10);
+    const stored = profileRowToStore(sdk);
+    expect(stored.rating).toBe(-42);
+    expect(typeof stored.rating).toBe('number');
+  });
+});
