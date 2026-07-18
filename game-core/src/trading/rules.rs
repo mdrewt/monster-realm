@@ -336,10 +336,60 @@ pub fn build_swap_plan(
     })
 }
 
+/// Single-receiver item-stack headroom check (m17.5c, ADR-0124).
+///
+/// Rejects with `ItemStackCapExceeded` when crediting `incoming_qty` to a stack
+/// currently holding `current_count` would exceed `MAX_ITEM_STACK` — strict `>`,
+/// so an exact fill to the cap is `Ok`. Shared by `check_headroom` (trade
+/// receiver-cap, per item, per side) and the shop `buy` path
+/// (server-module economy.rs), so the cap comparison lives exactly once (SSOT).
+///
+/// The `item_id` parameter is intentional (N-1): the `ItemStackCapExceeded`
+/// error payload is constructed HERE, so callers never rebuild the variant.
+pub fn check_item_headroom(
+    current_count: u32,
+    incoming_qty: u32,
+    item_id: u32,
+) -> Result<(), TradeError> {
+    if current_count.saturating_add(incoming_qty) > MAX_ITEM_STACK {
+        return Err(TradeError::ItemStackCapExceeded { item_id });
+    }
+    Ok(())
+}
+
+/// Single-receiver currency-balance headroom check (m17.5c, ADR-0124).
+///
+/// The `incoming > 0` gate is the FIRST line: a zero-incoming call ALWAYS
+/// returns `Ok`, even when `balance` already exceeds `MAX_BALANCE`.
+/// Absolute-balance policing is NOT this primitive's contract — it polices the
+/// incoming credit delta only, and callers must pass the balance through
+/// EXACTLY (no normalization such as clamping to `MAX_BALANCE`); this is pinned
+/// by the zero-incoming over-cap test (B-1/F11).
+///
+/// Rejects with `CurrencyCapExceeded` when crediting `incoming` to `balance`
+/// would exceed `MAX_BALANCE` — strict `>`, so an exact fill to the cap is
+/// `Ok`. Shared by `check_headroom` (trade receiver-cap, per side) and the shop
+/// `sell` path (proceeds cap, server-module economy.rs).
+pub fn check_currency_headroom(balance: u64, incoming: u64) -> Result<(), TradeError> {
+    if incoming == 0 {
+        return Ok(());
+    }
+    if balance.saturating_add(incoming) > MAX_BALANCE {
+        return Err(TradeError::CurrencyCapExceeded);
+    }
+    Ok(())
+}
+
 /// Check that crediting the negotiated assets to each receiver won't exceed their
 /// stack/balance caps. Called by `confirm_trade` BEFORE applying any transfers so
 /// the transaction aborts cleanly with `Err` if a receiver is at or near their cap —
 /// reject-not-clamp (ADR-0113, 16.5b-1).
+///
+/// m17.5c (ADR-0124): the per-axis cap comparisons are DELEGATED to the
+/// single-receiver primitives `check_item_headroom` / `check_currency_headroom`
+/// (also used by the shop buy/sell paths). Currency delegation is
+/// UNCONDITIONAL — the primitive owns the `incoming > 0` skip-guard, and each
+/// balance is passed through exactly (no normalization).
 ///
 /// Parameters (receiver-centric naming — each side receives the OTHER's assets):
 /// - `initiator_receives_items` / `initiator_current_stacks`: items the initiator
@@ -368,11 +418,7 @@ pub fn check_headroom(
             .find(|s| s.item_id == item.item_id)
             .map(|s| s.current_count)
             .unwrap_or(0);
-        if current.saturating_add(item.qty) > MAX_ITEM_STACK {
-            return Err(TradeError::ItemStackCapExceeded {
-                item_id: item.item_id,
-            });
-        }
+        check_item_headroom(current, item.qty, item.item_id)?;
     }
     // Item headroom: counterparty receives initiator's items.
     for item in counterparty_receives_items {
@@ -381,24 +427,12 @@ pub fn check_headroom(
             .find(|s| s.item_id == item.item_id)
             .map(|s| s.current_count)
             .unwrap_or(0);
-        if current.saturating_add(item.qty) > MAX_ITEM_STACK {
-            return Err(TradeError::ItemStackCapExceeded {
-                item_id: item.item_id,
-            });
-        }
+        check_item_headroom(current, item.qty, item.item_id)?;
     }
-    // Currency headroom: initiator receives counterparty_currency.
-    if initiator_receives_currency > 0
-        && initiator_balance.saturating_add(initiator_receives_currency) > MAX_BALANCE
-    {
-        return Err(TradeError::CurrencyCapExceeded);
-    }
-    // Currency headroom: counterparty receives initiator_currency.
-    if counterparty_receives_currency > 0
-        && counterparty_balance.saturating_add(counterparty_receives_currency) > MAX_BALANCE
-    {
-        return Err(TradeError::CurrencyCapExceeded);
-    }
+    // Currency headroom, both sides: delegated UNCONDITIONALLY — the primitive
+    // owns the incoming > 0 skip-guard; balances pass through exactly.
+    check_currency_headroom(initiator_balance, initiator_receives_currency)?;
+    check_currency_headroom(counterparty_balance, counterparty_receives_currency)?;
     Ok(())
 }
 
