@@ -1,4 +1,4 @@
-// shop-reducer-security eval (M13b):
+// shop-reducer-security eval (M13b / m17.5c):
 // Verifies the shop buy/sell reducer security invariants in the server-module source:
 //   1. BUY_REQUIRE_OWNER  — buy function body contains require_owner before spend_currency
 //   2. SELL_REQUIRE_OWNER — sell function body contains require_owner before grant_currency
@@ -6,12 +6,16 @@
 //   4. SERVER_COMPUTED_TOTAL — buy body looks up buy_price from shop_item_row (not from a
 //                              client-supplied parameter); checks for DB lookup pattern
 //   5. SHOP_TABLES_PUBLIC — schema.rs has shop_row and shop_item_row with `public`
+//   6. BUY_HEADROOM       — buy body calls check_item_headroom before spend_currency, with
+//                           Result propagated (`?`) and item_id argument present (17.5c-1)
+//   7. SELL_HEADROOM      — sell body calls check_currency_headroom before consume_one, with
+//                           Result propagated (`?`) and total argument present (17.5c-2)
 //
-// Proof-of-teeth: each checker is tested against a BAD fixture (must flag) and a GOOD
-// fixture (must pass). A checker that fails to flag the bad fixture is reported as a
+// Proof-of-teeth: each checker is tested against BAD fixtures (must flag) and a GOOD
+// fixture (must pass). A checker that fails to flag a bad fixture is reported as a
 // TEETH FAILURE, which fails the whole eval.
 //
-// No new RegExp() — all patterns are literal regex literals (Semgrep detect-non-literal-regexp).
+// No new RegExp() — all patterns are indexOf / literal regex only (Semgrep detect-non-literal-regexp).
 import { readFileSync } from 'node:fs';
 
 // ---------------------------------------------------------------------------
@@ -195,6 +199,79 @@ function checkTableIsPublic(schemaSrc, tableName) {
   const attr = schemaSrc.slice(attrStart, attrEnd + 1);
   const clean = stripRustComments(attr);
   return /\bpublic\b/.test(clean);
+}
+
+// ---------------------------------------------------------------------------
+// Criterion 6: BUY_HEADROOM (m17.5c-1)
+// check_item_headroom must appear before spend_currency in the buy body.
+// The statement containing the call must propagate the Result with `?`
+// and must pass `item_id` as an argument.
+//
+// Bad fixture A: check_item_headroom absent entirely.
+// Bad fixture B: check_item_headroom AFTER spend_currency (wrong order).
+// Bad fixture C: check_item_headroom present but discarded (no `?`).
+// Good fixture:  check_item_headroom before spend_currency, with `?` and item_id.
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true if check_item_headroom appears before spend_currency in the buy
+ * body, with the Result propagated (`?`) and `item_id` in the statement window.
+ * Returns false on any violation or if either call is absent.
+ */
+export function buyHasHeadroomBeforeSpend(src) {
+  const body = extractFunctionBody(src, 'buy');
+  if (!body) return false;
+  const headroomIdx = body.indexOf('check_item_headroom');
+  const spendIdx = body.indexOf('spend_currency');
+  if (headroomIdx === -1 || spendIdx === -1) return false;
+  if (headroomIdx >= spendIdx) return false;
+  // Statement-window: from the headroom call to the first `;` after it.
+  const afterHeadroom = body.slice(headroomIdx);
+  const semiPos = afterHeadroom.indexOf(';');
+  if (semiPos === -1) return false;
+  const window = afterHeadroom.slice(0, semiPos + 1);
+  if (window.indexOf('?') === -1) return false;
+  if (window.indexOf('item_id') === -1) return false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Criterion 7: SELL_HEADROOM (m17.5c-2)
+// check_currency_headroom must appear before consume_one in the sell body.
+// The statement containing the call must propagate the Result with `?`
+// and must pass `total` as an argument.
+// Additionally, checked_mul must appear before check_currency_headroom
+// (W-6: the `total` product must exist before the headroom call).
+//
+// Bad fixture A: check_currency_headroom absent entirely.
+// Bad fixture B: check_currency_headroom AFTER consume_one (wrong order).
+// Bad fixture C: check_currency_headroom present but discarded (no `?`).
+// Good fixture:  checked_mul → check_currency_headroom → consume_one, `?` and total.
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true if check_currency_headroom appears before consume_one in the sell
+ * body (and checked_mul appears before check_currency_headroom), with the Result
+ * propagated (`?`) and `total` in the statement window.
+ * Returns false on any violation or if any required call is absent.
+ */
+export function sellHasHeadroomBeforeConsume(src) {
+  const body = extractFunctionBody(src, 'sell');
+  if (!body) return false;
+  const checkedMulIdx = body.indexOf('checked_mul');
+  const headroomIdx = body.indexOf('check_currency_headroom');
+  const consumeIdx = body.indexOf('consume_one');
+  if (checkedMulIdx === -1 || headroomIdx === -1 || consumeIdx === -1) return false;
+  if (checkedMulIdx >= headroomIdx) return false;
+  if (headroomIdx >= consumeIdx) return false;
+  // Statement-window: from the headroom call to the first `;` after it.
+  const afterHeadroom = body.slice(headroomIdx);
+  const semiPos = afterHeadroom.indexOf(';');
+  if (semiPos === -1) return false;
+  const window = afterHeadroom.slice(0, semiPos + 1);
+  if (window.indexOf('?') === -1) return false;
+  if (window.indexOf('total') === -1) return false;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -442,6 +519,178 @@ export default async function () {
     };
   }
 
+  // --- Criterion 6: BUY_HEADROOM teeth ---
+
+  // Bad A: check_item_headroom absent entirely from buy — must flag.
+  const badBuyHeadroomAbsent =
+    'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
+    'require_owner(ctx, "buy", ctx.sender); ' +
+    'let row = ctx.db.shop_item_row().filter(item_id).unwrap(); ' +
+    'let total = row.buy_price.checked_mul(qty as u64).ok_or("overflow")?; ' +
+    'spend_currency(ctx, ctx.sender, total).map_err(|e| e.to_string())?; ' +
+    'grant_item(ctx, ctx.sender, item_id, qty); }';
+  if (buyHasHeadroomBeforeSpend(badBuyHeadroomAbsent)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (BUY_HEADROOM-A): buyHasHeadroomBeforeSpend passed on a fixture ' +
+        'where check_item_headroom is entirely absent — a buyer at MAX_ITEM_STACK ' +
+        'pays currency but the grant_item call is silently clamped (value destruction, ADR-0124).',
+    };
+  }
+
+  // Bad B: check_item_headroom AFTER spend_currency — must flag (wrong order).
+  const badBuyHeadroomAfterSpend =
+    'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
+    'require_owner(ctx, "buy", ctx.sender); ' +
+    'let row = ctx.db.shop_item_row().filter(item_id).unwrap(); ' +
+    'let total = row.buy_price.checked_mul(qty as u64).ok_or("overflow")?; ' +
+    'spend_currency(ctx, ctx.sender, total).map_err(|e| e.to_string())?; ' +
+    'let current = ctx.db.item_stack().filter(item_id).map(|s| s.count).unwrap_or(0); ' +
+    'check_item_headroom(current, qty, item_id).map_err(|e| e.to_string())?; ' +
+    'grant_item(ctx, ctx.sender, item_id, qty); }';
+  if (buyHasHeadroomBeforeSpend(badBuyHeadroomAfterSpend)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (BUY_HEADROOM-B): buyHasHeadroomBeforeSpend passed on a fixture ' +
+        'where check_item_headroom appears AFTER spend_currency — the headroom check must ' +
+        'precede the irreversible spend (reject-not-destroy, ADR-0113/ADR-0124).',
+    };
+  }
+
+  // Bad C: check_item_headroom present BEFORE spend_currency but discarded (no `?`) — must flag.
+  const badBuyHeadroomDiscarded =
+    'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
+    'require_owner(ctx, "buy", ctx.sender); ' +
+    'let row = ctx.db.shop_item_row().filter(item_id).unwrap(); ' +
+    'let total = row.buy_price.checked_mul(qty as u64).ok_or("overflow")?; ' +
+    'let current = ctx.db.item_stack().filter(item_id).map(|s| s.count).unwrap_or(0); ' +
+    'let _ = check_item_headroom(current, qty, item_id); ' +
+    'spend_currency(ctx, ctx.sender, total).map_err(|e| e.to_string())?; ' +
+    'grant_item(ctx, ctx.sender, item_id, qty); }';
+  if (buyHasHeadroomBeforeSpend(badBuyHeadroomDiscarded)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (BUY_HEADROOM-C): buyHasHeadroomBeforeSpend passed on a fixture ' +
+        'where check_item_headroom is called before spend_currency but its Result is ' +
+        'discarded with `let _ = ...` — a discard silently ignores the cap-exceeded error ' +
+        'and allows value destruction to proceed (F4/F12, ADR-0124).',
+    };
+  }
+
+  // Good: check_item_headroom before spend_currency, with `?` and item_id — must pass.
+  const goodBuyHeadroom =
+    'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
+    'require_owner(ctx, "buy", ctx.sender); ' +
+    'let row = ctx.db.shop_item_row().filter(item_id).unwrap(); ' +
+    'let total = row.buy_price.checked_mul(qty as u64).ok_or("overflow")?; ' +
+    'let current = ctx.db.item_stack().filter(item_id).map(|s| s.count).unwrap_or(0); ' +
+    'check_item_headroom(current, qty, item_id).map_err(|e| e.to_string())?; ' +
+    'spend_currency(ctx, ctx.sender, total).map_err(|e| e.to_string())?; ' +
+    'grant_item(ctx, ctx.sender, item_id, qty); }';
+  if (!buyHasHeadroomBeforeSpend(goodBuyHeadroom)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (BUY_HEADROOM-GOOD): buyHasHeadroomBeforeSpend did not pass on a ' +
+        'correct fixture where check_item_headroom appears before spend_currency with `?` ' +
+        'and item_id — the checker is too strict and rejects a correct implementation.',
+    };
+  }
+
+  // --- Criterion 7: SELL_HEADROOM teeth ---
+
+  // Bad A: check_currency_headroom absent entirely from sell — must flag.
+  const badSellHeadroomAbsent =
+    'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
+    'require_owner(ctx, "sell", ctx.sender); ' +
+    'let row = ctx.db.item_row().filter(item_id).unwrap(); ' +
+    'let total = row.sell_price.checked_mul(qty as u64).ok_or("overflow")?; ' +
+    'for _ in 0..qty { consume_one(ctx, ctx.sender, item_id); } ' +
+    'grant_currency(ctx, ctx.sender, total); }';
+  if (sellHasHeadroomBeforeConsume(badSellHeadroomAbsent)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (SELL_HEADROOM-A): sellHasHeadroomBeforeConsume passed on a fixture ' +
+        'where check_currency_headroom is entirely absent — items are destroyed by consume_one ' +
+        'and grant_currency silently clamps the proceeds (sell-side value destruction, ADR-0124).',
+    };
+  }
+
+  // Bad B: check_currency_headroom AFTER consume_one — must flag (wrong order).
+  const badSellHeadroomAfterConsume =
+    'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
+    'require_owner(ctx, "sell", ctx.sender); ' +
+    'let row = ctx.db.item_row().filter(item_id).unwrap(); ' +
+    'let total = row.sell_price.checked_mul(qty as u64).ok_or("overflow")?; ' +
+    'for _ in 0..qty { consume_one(ctx, ctx.sender, item_id); } ' +
+    'let balance = wallet_balance(ctx, ctx.sender); ' +
+    'check_currency_headroom(balance, total).map_err(|e| e.to_string())?; ' +
+    'grant_currency(ctx, ctx.sender, total); }';
+  if (sellHasHeadroomBeforeConsume(badSellHeadroomAfterConsume)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (SELL_HEADROOM-B): sellHasHeadroomBeforeConsume passed on a fixture ' +
+        'where check_currency_headroom appears AFTER consume_one — the headroom guard must ' +
+        'precede item consumption so items are not destroyed before the cap is checked ' +
+        '(reject-not-destroy, no rollback backstop on sell side, ADR-0124).',
+    };
+  }
+
+  // Bad C: check_currency_headroom present BEFORE consume_one but discarded (no `?`) — must flag.
+  const badSellHeadroomDiscarded =
+    'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
+    'require_owner(ctx, "sell", ctx.sender); ' +
+    'let row = ctx.db.item_row().filter(item_id).unwrap(); ' +
+    'let total = row.sell_price.checked_mul(qty as u64).ok_or("overflow")?; ' +
+    'let balance = wallet_balance(ctx, ctx.sender); ' +
+    'let _ = check_currency_headroom(balance, total); ' +
+    'for _ in 0..qty { consume_one(ctx, ctx.sender, item_id); } ' +
+    'grant_currency(ctx, ctx.sender, total); }';
+  if (sellHasHeadroomBeforeConsume(badSellHeadroomDiscarded)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (SELL_HEADROOM-C): sellHasHeadroomBeforeConsume passed on a fixture ' +
+        'where check_currency_headroom is called before consume_one but its Result is ' +
+        'discarded with `let _ = ...` — the cap-exceeded error is silently ignored, ' +
+        'items are consumed, and proceeds are clamped (value destruction, F4/F12, ADR-0124).',
+    };
+  }
+
+  // Good: checked_mul → check_currency_headroom → consume_one, with `?` and total — must pass.
+  const goodSellHeadroom =
+    'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
+    'require_owner(ctx, "sell", ctx.sender); ' +
+    'let row = ctx.db.item_row().filter(item_id).unwrap(); ' +
+    'let total = row.sell_price.checked_mul(qty as u64).ok_or("overflow")?; ' +
+    'let balance = wallet_balance(ctx, ctx.sender); ' +
+    'check_currency_headroom(balance, total).map_err(|e| e.to_string())?; ' +
+    'for _ in 0..qty { consume_one(ctx, ctx.sender, item_id); } ' +
+    'grant_currency(ctx, ctx.sender, total); }';
+  if (!sellHasHeadroomBeforeConsume(goodSellHeadroom)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (SELL_HEADROOM-GOOD): sellHasHeadroomBeforeConsume did not pass on a ' +
+        'correct fixture where checked_mul precedes check_currency_headroom which precedes ' +
+        'consume_one, with `?` and total — the checker is too strict and rejects a correct ' +
+        'implementation.',
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Read actual source files.
   // -------------------------------------------------------------------------
@@ -562,6 +811,124 @@ export default async function () {
     }
   }
 
+  // Criterion 6: BUY_HEADROOM (m17.5c-1)
+  if (!buyHasHeadroomBeforeSpend(economySrc)) {
+    const body = extractFunctionBody(economySrc, 'buy');
+    if (!body) {
+      failures.push('BUY_HEADROOM (17.5c-1): fn buy not found in economy.rs — add the buy reducer');
+    } else if (body.indexOf('check_item_headroom') === -1) {
+      failures.push(
+        'BUY_HEADROOM (17.5c-1): check_item_headroom not found in the buy reducer body — ' +
+          'add `check_item_headroom(current, qty, item_id).map_err(|e| e.to_string())?` ' +
+          'BEFORE spend_currency in buy (ADR-0124: reject-not-destroy at receiver item cap; ' +
+          'without this guard a buyer at MAX_ITEM_STACK pays but the grant_item is silently clamped)',
+      );
+    } else if (body.indexOf('spend_currency') === -1) {
+      failures.push(
+        'BUY_HEADROOM (17.5c-1): spend_currency not found in the buy reducer body — ' +
+          'the buy reducer must call spend_currency to debit the wallet',
+      );
+    } else {
+      // Both calls present; check ordering and statement window.
+      const headroomIdx = body.indexOf('check_item_headroom');
+      const spendIdx = body.indexOf('spend_currency');
+      if (headroomIdx >= spendIdx) {
+        failures.push(
+          'BUY_HEADROOM (17.5c-1): check_item_headroom (offset ' +
+            headroomIdx +
+            ') appears AFTER spend_currency (offset ' +
+            spendIdx +
+            ') in buy — move the headroom check BEFORE spend_currency ' +
+            '(reject-not-destroy: the spend is irreversible, ADR-0124)',
+        );
+      } else {
+        const afterHeadroom = body.slice(headroomIdx);
+        const semiPos = afterHeadroom.indexOf(';');
+        const window = semiPos !== -1 ? afterHeadroom.slice(0, semiPos + 1) : afterHeadroom;
+        if (window.indexOf('?') === -1) {
+          failures.push(
+            'BUY_HEADROOM (17.5c-1): check_item_headroom statement in buy does not propagate ' +
+              'the Result with `?` — add `.map_err(|e| e.to_string())?` so a cap-exceeded ' +
+              'error is returned to the caller (kills silent discard, F4/F12)',
+          );
+        } else if (window.indexOf('item_id') === -1) {
+          failures.push(
+            'BUY_HEADROOM (17.5c-1): check_item_headroom statement in buy does not contain ' +
+              '`item_id` — pass the actual item_id variable so the error payload identifies ' +
+              'the correct item (not a hardcoded sentinel)',
+          );
+        }
+      }
+    }
+  }
+
+  // Criterion 7: SELL_HEADROOM (m17.5c-2)
+  if (!sellHasHeadroomBeforeConsume(economySrc)) {
+    const body = extractFunctionBody(economySrc, 'sell');
+    if (!body) {
+      failures.push(
+        'SELL_HEADROOM (17.5c-2): fn sell not found in economy.rs — add the sell reducer',
+      );
+    } else if (body.indexOf('check_currency_headroom') === -1) {
+      failures.push(
+        'SELL_HEADROOM (17.5c-2): check_currency_headroom not found in the sell reducer body — ' +
+          'add `check_currency_headroom(balance, total).map_err(|e| e.to_string())?` ' +
+          'BEFORE consume_one in sell (ADR-0124: reject-not-destroy; sell-side is value-DESTRUCTION ' +
+          'with no rollback backstop — grant_currency is infallible and silently clamps)',
+      );
+    } else if (body.indexOf('consume_one') === -1) {
+      failures.push(
+        'SELL_HEADROOM (17.5c-2): consume_one not found in the sell reducer body — ' +
+          'the sell reducer must call consume_one to remove items from inventory',
+      );
+    } else if (body.indexOf('checked_mul') === -1) {
+      failures.push(
+        'SELL_HEADROOM (17.5c-2): checked_mul not found in the sell reducer body — ' +
+          '`total` must be computed via checked_mul before the headroom call (W-6 chain: ' +
+          'overflow is rejected first as defense-in-depth, F10)',
+      );
+    } else {
+      const checkedMulIdx = body.indexOf('checked_mul');
+      const headroomIdx = body.indexOf('check_currency_headroom');
+      const consumeIdx = body.indexOf('consume_one');
+      if (checkedMulIdx >= headroomIdx) {
+        failures.push(
+          'SELL_HEADROOM (17.5c-2): checked_mul (offset ' +
+            checkedMulIdx +
+            ') must appear BEFORE check_currency_headroom (offset ' +
+            headroomIdx +
+            ') — `total` must exist before the headroom call (W-6)',
+        );
+      } else if (headroomIdx >= consumeIdx) {
+        failures.push(
+          'SELL_HEADROOM (17.5c-2): check_currency_headroom (offset ' +
+            headroomIdx +
+            ') appears AFTER consume_one (offset ' +
+            consumeIdx +
+            ') in sell — move the headroom check BEFORE consume_one ' +
+            '(without this guard items are destroyed before the cap is checked, ADR-0124)',
+        );
+      } else {
+        const afterHeadroom = body.slice(headroomIdx);
+        const semiPos = afterHeadroom.indexOf(';');
+        const window = semiPos !== -1 ? afterHeadroom.slice(0, semiPos + 1) : afterHeadroom;
+        if (window.indexOf('?') === -1) {
+          failures.push(
+            'SELL_HEADROOM (17.5c-2): check_currency_headroom statement in sell does not ' +
+              'propagate the Result with `?` — add `.map_err(|e| e.to_string())?` so a ' +
+              'cap-exceeded error is returned before items are consumed (F4/F12, ADR-0124)',
+          );
+        } else if (window.indexOf('total') === -1) {
+          failures.push(
+            'SELL_HEADROOM (17.5c-2): check_currency_headroom statement in sell does not ' +
+              'contain `total` — pass the checked_mul product as the `incoming` argument ' +
+              '(not a literal 0 or other sentinel)',
+          );
+        }
+      }
+    }
+  }
+
   if (failures.length > 0) {
     return { name, pass: false, detail: failures.join('; ') };
   }
@@ -570,8 +937,10 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'all 5 shop-reducer-security criteria met ' +
+      'all 7 shop-reducer-security criteria met ' +
       '(buy require_owner before spend, sell require_owner before grant, ' +
-      'no client price param, server DB lookup, shop tables public)',
+      'no client price param, server DB lookup, shop tables public, ' +
+      'buy check_item_headroom before spend with ?+item_id, ' +
+      'sell check_currency_headroom before consume_one with ?+total)',
   };
 }

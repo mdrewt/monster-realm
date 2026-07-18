@@ -2603,4 +2603,225 @@ mod tests {
         // Doc-comment: the division of labor is intentional and unchanged by this slice.
         // spend_currency Err causes whole-reducer rollback → both inventories unchanged.
     }
+
+    // ===========================================================================
+    // m17.5c — check_item_headroom / check_currency_headroom boundary tests
+    //
+    // These tests reference `check_item_headroom` and `check_currency_headroom`,
+    // which do NOT yet exist in rules.rs.  They will not compile until the
+    // implementer adds them — that is intentional (RED phase, EARS 17.5c-1/-2).
+    //
+    // EARS criteria:
+    //   17.5c-1  buy SHALL return Err and refund (reject-not-destroy) if granting
+    //            qty items would exceed MAX_ITEM_STACK for the buyer.
+    //   17.5c-2  sell SHALL return Err (reject-not-destroy) if granting the
+    //            currency proceeds would exceed MAX_BALANCE for the seller.
+    //
+    // Primitive contracts (plan §Design, gate ownership B-1/F11):
+    //   check_item_headroom(current_count, incoming_qty, item_id) → Result<(), TradeError>
+    //     Err(ItemStackCapExceeded { item_id }) iff
+    //       current_count.saturating_add(incoming_qty) > MAX_ITEM_STACK.
+    //     Exact-fill to cap is Ok.
+    //
+    //   check_currency_headroom(balance, incoming) → Result<(), TradeError>
+    //     The `incoming > 0` gate is the FIRST line.
+    //     Err(CurrencyCapExceeded) iff
+    //       incoming > 0 && balance.saturating_add(incoming) > MAX_BALANCE.
+    //     Exact-fill to cap is Ok.
+    //     incoming == 0 is ALWAYS Ok, even when balance > MAX_BALANCE (absolute-balance
+    //     policing is NOT the contract of this primitive — the caller passes balance
+    //     through exactly, no .min(MAX_BALANCE) normalization).
+    // ===========================================================================
+
+    // ---------------------------------------------------------------------------
+    // check_item_headroom — item stack receiver-cap
+    // ---------------------------------------------------------------------------
+
+    /// 17.5c-1 REJECT: 9980 + 50 = 10030 > MAX_ITEM_STACK (9999) → Err.
+    /// Asserts both the exact variant AND the item_id payload (not just is_err()).
+    ///
+    /// kills: impl that clamps via grant_item instead of rejecting — a clamp would
+    ///        return Ok here, allowing the buyer to pay for 50 items but receive only
+    ///        19 (silent value destruction).
+    #[test]
+    fn check_item_headroom_rejects_over_cap() {
+        let result = check_item_headroom(9980, 50, 1);
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::ItemStackCapExceeded { item_id: 1 },
+            "9980 + 50 = 10030 > MAX_ITEM_STACK (9999): must return \
+             Err(ItemStackCapExceeded {{ item_id: 1 }})"
+        );
+    }
+
+    /// 17.5c-1 REJECT AT CAP: current_count = MAX_ITEM_STACK, incoming = 1 → Err.
+    /// The item_id payload must be 7 (the passed argument).
+    ///
+    /// kills: impl using >= for the cap comparison (would accept this and reject
+    ///        the exact-fill case check_item_headroom_accepts_exact_fill instead).
+    #[test]
+    fn check_item_headroom_rejects_at_cap_plus_one() {
+        let result = check_item_headroom(MAX_ITEM_STACK, 1, 7);
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::ItemStackCapExceeded { item_id: 7 },
+            "current=MAX_ITEM_STACK, incoming=1: sum > MAX_ITEM_STACK, must return \
+             Err(ItemStackCapExceeded {{ item_id: 7 }})"
+        );
+    }
+
+    /// 17.5c-1 ACCEPT EXACT-FILL: 9980 + 19 = 9999 = MAX_ITEM_STACK → Ok.
+    ///
+    /// kills: impl using >= for the cap comparison (would incorrectly reject a trade
+    ///        that exactly fills the receiver's stack to the cap).
+    #[test]
+    fn check_item_headroom_accepts_exact_fill() {
+        let result = check_item_headroom(9980, 19, 2);
+        assert!(
+            result.is_ok(),
+            "9980 + 19 = 9999 = MAX_ITEM_STACK: exact-fill must be Ok (not rejected)"
+        );
+    }
+
+    /// 17.5c-1 ACCEPT NEW RECEIVER: 0 + MAX_ITEM_STACK → Ok.
+    ///
+    /// kills: impl that treats a missing inventory row as an error, or that defaults
+    ///        current_count to something other than 0 (full stack from empty is valid).
+    #[test]
+    fn check_item_headroom_accepts_new_receiver_full_stack() {
+        let result = check_item_headroom(0, MAX_ITEM_STACK, 5);
+        assert!(
+            result.is_ok(),
+            "0 + MAX_ITEM_STACK = MAX_ITEM_STACK: exact cap from zero must be Ok"
+        );
+    }
+
+    /// 17.5c-1 REJECT NEW RECEIVER OVER CAP: 0 + 10_000 > MAX_ITEM_STACK → Err.
+    ///
+    /// kills: unwrap_or-style bypass where an impl skips the check when
+    ///        current_count == 0 (zero-default early-return), or where the comparison
+    ///        uses the current_count as the left operand rather than the sum.
+    #[test]
+    fn check_item_headroom_rejects_new_receiver_over_cap() {
+        let result = check_item_headroom(0, 10_000, 3);
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::ItemStackCapExceeded { item_id: 3 },
+            "0 + 10000 = 10000 > MAX_ITEM_STACK (9999): even a zero-count receiver \
+             must be rejected when incoming_qty exceeds cap"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // check_currency_headroom — currency balance receiver-cap
+    // ---------------------------------------------------------------------------
+
+    /// 17.5c-2 REJECT: (MAX_BALANCE - 49) + 50 = MAX_BALANCE + 1 > MAX_BALANCE → Err.
+    ///
+    /// kills: impl that clamps via grant_currency's saturating add instead of
+    ///        rejecting — a clamp would return Ok, silently destroying 1 unit of
+    ///        currency that the player sold items to earn.
+    #[test]
+    fn check_currency_headroom_rejects_over_cap() {
+        use crate::currency::MAX_BALANCE;
+        let result = check_currency_headroom(MAX_BALANCE - 49, 50);
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::CurrencyCapExceeded,
+            "(MAX_BALANCE - 49) + 50 = MAX_BALANCE + 1 > MAX_BALANCE: must return \
+             Err(CurrencyCapExceeded)"
+        );
+    }
+
+    /// 17.5c-2 REJECT AT CAP: balance = MAX_BALANCE, incoming = 1 → Err.
+    ///
+    /// kills: impl using >= for the cap comparison (would accept this and reject
+    ///        the exact-fill case instead).
+    #[test]
+    fn check_currency_headroom_rejects_at_max_balance_plus_one() {
+        use crate::currency::MAX_BALANCE;
+        let result = check_currency_headroom(MAX_BALANCE, 1);
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::CurrencyCapExceeded,
+            "balance=MAX_BALANCE, incoming=1: sum > MAX_BALANCE, must return \
+             Err(CurrencyCapExceeded)"
+        );
+    }
+
+    /// 17.5c-2 ACCEPT EXACT-FILL: (MAX_BALANCE - 49) + 49 = MAX_BALANCE → Ok.
+    ///
+    /// kills: impl using >= for the cap comparison (would incorrectly reject a sell
+    ///        that exactly fills the seller's wallet to the cap).
+    #[test]
+    fn check_currency_headroom_accepts_exact_fill() {
+        use crate::currency::MAX_BALANCE;
+        let result = check_currency_headroom(MAX_BALANCE - 49, 49);
+        assert!(
+            result.is_ok(),
+            "(MAX_BALANCE - 49) + 49 = MAX_BALANCE: exact-fill must be Ok (not rejected)"
+        );
+    }
+
+    /// 17.5c-2 GATE: incoming = 0 → Ok unconditionally (skip-guard).
+    /// The `incoming > 0` gate is the FIRST line of check_currency_headroom.
+    ///
+    /// kills: impl that deletes the `incoming > 0` guard — without the gate, a
+    ///        zero-incoming call with balance > MAX_BALANCE would incorrectly return
+    ///        Err (balance.saturating_add(0) = balance > MAX_BALANCE → Err).
+    #[test]
+    fn check_currency_headroom_zero_incoming_is_ok() {
+        use crate::currency::MAX_BALANCE;
+        let result = check_currency_headroom(MAX_BALANCE, 0);
+        assert!(
+            result.is_ok(),
+            "incoming=0: check_currency_headroom must return Ok unconditionally \
+             (gate kills the GATE-DELETION mutant on the `incoming > 0` guard)"
+        );
+    }
+
+    /// 17.5c-2 GATE PIN (B-1/F11, anti-normalization): incoming = 0, balance = MAX_BALANCE + 1
+    /// (deliberately over-cap balance) → Ok.
+    ///
+    /// The input balance DELIBERATELY exceeds MAX_BALANCE — production cannot produce
+    /// this value (economy.rs enforces the invariant).  The test pins the CONTRACT of
+    /// the `incoming > 0` skip-guard: check_currency_headroom polices the shop's
+    /// incoming credit delta, NOT pre-existing wallet state.  A delegating caller must
+    /// pass the balance through EXACTLY — no `.min(MAX_BALANCE)` normalization — so
+    /// that the skip-guard of an already-over-cap wallet receiving zero still returns Ok.
+    /// Do NOT "fix" this test by policing absolute balance; if the contract ever
+    /// changes to do that, revise ADR-0124 first.
+    ///
+    /// kills: an impl that normalizes the balance argument with `.min(MAX_BALANCE)` before
+    ///        delegating — such normalization is invisible when balance ≤ MAX_BALANCE but
+    ///        changes the observable contract when balance > MAX_BALANCE, incoming = 0.
+    #[test]
+    fn check_currency_headroom_zero_incoming_skips_over_cap_balance() {
+        use crate::currency::MAX_BALANCE;
+        // MAX_BALANCE + 1 violates the wallet invariant deliberately — see doc above.
+        // Do NOT "fix" by policing absolute balance; that changes the API contract.
+        let result = check_currency_headroom(MAX_BALANCE + 1, 0);
+        assert!(
+            result.is_ok(),
+            "incoming=0, balance=MAX_BALANCE+1 (deliberately over-cap): \
+             check_currency_headroom must return Ok — the `incoming > 0` skip-guard \
+             must fire BEFORE any balance check, passing balance through unchanged. \
+             A normalizing delegation would break this contract (B-1/F11, ADR-0124)."
+        );
+    }
+
+    /// 17.5c-2 EXTREME: u64::MAX balance, incoming = 1 → Err (saturating_add must not wrap).
+    ///
+    /// kills: impl that uses wrapping_add instead of saturating_add — wrapping gives
+    ///        0, which is ≤ MAX_BALANCE, incorrectly returning Ok.
+    #[test]
+    fn check_currency_headroom_u64_max_balance_rejects() {
+        let result = check_currency_headroom(u64::MAX, 1);
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::CurrencyCapExceeded,
+            "balance=u64::MAX, incoming=1: saturating_add must not wrap; \
+             u64::MAX + 1 saturates to u64::MAX > MAX_BALANCE → Err(CurrencyCapExceeded)"
+        );
+    }
 }
