@@ -175,6 +175,88 @@ pub struct SwapPlan {
     pub currency_transfers: Vec<CurrencyTransfer>,
 }
 
+/// One primitive item/currency mutation in the published apply order for a trade
+/// swap (17.5b-1, ADR-0123).
+///
+/// Debit variants carry `from_initiator` (the SENDING party); credit variants
+/// carry `to_initiator` (the RECEIVING party). `ordered_steps()` performs the
+/// `to_initiator = !from_initiator` inversion at emission, so a consumer reads
+/// each flag directly — no inversion at any dispatch site.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ApplyStep {
+    /// Remove `qty` of `item_id` from the sending party's stack.
+    ItemDebit {
+        from_initiator: bool,
+        item_id: u32,
+        qty: u32,
+    },
+    /// Remove `amount` from the sending party's wallet.
+    CurrencyDebit { from_initiator: bool, amount: u64 },
+    /// Add `qty` of `item_id` to the receiving party's stack.
+    ItemCredit {
+        to_initiator: bool,
+        item_id: u32,
+        qty: u32,
+    },
+    /// Add `amount` to the receiving party's wallet.
+    CurrencyCredit { to_initiator: bool, amount: u64 },
+}
+
+impl SwapPlan {
+    /// Emit this plan's item/currency mutations as a debits-before-credits
+    /// sequence — the first-class published ordering contract consumed by
+    /// `confirm_trade` (17.5b-1, ADR-0123; same SSOT standing as `check_headroom`).
+    ///
+    /// ALL `ItemDebit`/`CurrencyDebit` steps strictly precede ANY `ItemCredit`/
+    /// `CurrencyCredit` step. Every transfer in the plan yields exactly one debit
+    /// and one credit with identical `item_id`/`qty` (or `amount`); the credit's
+    /// `to_initiator` is the inverted `from_initiator` (the other party receives).
+    ///
+    /// Why this order: crediting a stack or wallet that has not yet been debited
+    /// can transiently exceed `MAX_ITEM_STACK`/`MAX_BALANCE` on a same-item (or
+    /// bilateral-currency) swap, and the clamping grant primitives would silently
+    /// destroy the excess. Debits-first makes the NETTED headroom check exact:
+    /// `check_headroom` over post-debit effective counts/balances preserves
+    /// reject-not-clamp (ADR-0113) — any plan that passes the check applies
+    /// without ever touching a cap. Monster transfers are ownership flips with no
+    /// cap and are NOT part of this sequence.
+    #[must_use]
+    pub fn ordered_steps(&self) -> Vec<ApplyStep> {
+        let mut steps =
+            Vec::with_capacity(2 * (self.item_transfers.len() + self.currency_transfers.len()));
+        // Phase 1 — ALL debits (items, then currency).
+        for xfer in &self.item_transfers {
+            steps.push(ApplyStep::ItemDebit {
+                from_initiator: xfer.from_initiator,
+                item_id: xfer.item_id,
+                qty: xfer.qty,
+            });
+        }
+        for xfer in &self.currency_transfers {
+            steps.push(ApplyStep::CurrencyDebit {
+                from_initiator: xfer.from_initiator,
+                amount: xfer.amount,
+            });
+        }
+        // Phase 2 — ALL credits; receiver is the other party (inversion happens
+        // HERE, at emission, never at a dispatch site).
+        for xfer in &self.item_transfers {
+            steps.push(ApplyStep::ItemCredit {
+                to_initiator: !xfer.from_initiator,
+                item_id: xfer.item_id,
+                qty: xfer.qty,
+            });
+        }
+        for xfer in &self.currency_transfers {
+            steps.push(ApplyStep::CurrencyCredit {
+                to_initiator: !xfer.from_initiator,
+                amount: xfer.amount,
+            });
+        }
+        steps
+    }
+}
+
 /// Validate ownership at swap time and produce a `SwapPlan`.
 ///
 /// Called by `confirm_trade` after re-reading live rows. Fails if any monster

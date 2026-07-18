@@ -1312,10 +1312,13 @@ fn ea_conservation_order_01_confirm_trade_uses_ordered_steps_loop() {
     let neg_item_plain = concat!("in", "plan.item_transfers");
     let neg_currency_ref = concat!("in", "&plan.currency_transfers");
     let neg_currency_plain = concat!("in", "plan.currency_transfers");
-    let netting_initiator =
-        concat!("wallet_balance(ctx,offer.initiator).saturating_sub(offer.initiator_currency)");
+    let netting_initiator = concat!(
+        "wallet_balance(ctx,offer.initiator)",
+        ".saturating_sub(offer.initiator_currency)"
+    );
     let netting_counterparty = concat!(
-        "wallet_balance(ctx,offer.counterparty).saturating_sub(offer.counterparty_currency)"
+        "wallet_balance(ctx,offer.counterparty)",
+        ".saturating_sub(offer.counterparty_currency)"
     );
 
     // --- BAD FIXTURE (i): discard + old item loop ---

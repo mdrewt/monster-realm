@@ -20,8 +20,8 @@ use crate::marshal::{now_ms, pub_from_monster};
 use crate::schema::{battle, inventory, monster, monster_pub, player, trade_offer, TradeOffer};
 use game_core::{
     authorize_confirm, authorize_respond, build_swap_plan, check_headroom, is_offer_stale,
-    make_monster_card, validate_proposal, ItemStack, LiveMonsterOwner, MonsterCard, ProposalSide,
-    TradeItem, TradeSide, TradeStatus, TRADE_OFFER_TTL_MS,
+    make_monster_card, validate_proposal, ApplyStep, ItemStack, LiveMonsterOwner, MonsterCard,
+    ProposalSide, TradeItem, TradeSide, TradeStatus, TRADE_OFFER_TTL_MS,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 
@@ -424,7 +424,10 @@ pub fn respond_trade(ctx: &ReducerContext, trade_id: u64, accepted: bool) -> Res
 ///
 /// Re-reads all live rows, verifies ownership still matches the offer, then
 /// executes the ownership/item/currency transfers in one transaction and deletes
-/// the offer row (TR-15/TR-16, ADR-0106 D3).
+/// the offer row (TR-15/TR-16, ADR-0106 D3). Item/currency mutations follow the
+/// debits-before-credits order published by `SwapPlan::ordered_steps()`
+/// (17.5b-1, ADR-0123), so no credit ever lands on a not-yet-debited stack or
+/// wallet.
 #[spacetimedb::reducer]
 pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> {
     let me = ctx.sender;
@@ -558,17 +561,20 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
                 }
             })
             .collect();
-        let i_balance = wallet_balance(ctx, offer.initiator);
-        let c_balance = wallet_balance(ctx, offer.counterparty);
+        // Currency balances are netted (17.5b-2, ADR-0123): each party's OWN outgoing
+        // currency is subtracted from their OWN live balance, so the cap check sees the
+        // post-debit effective balance (symmetric with the item netting above). Netting
+        // is cap-headroom-only: a broke sender still rejects at spend_currency in the
+        // apply loop, with whole-transaction rollback (ADR-0123).
         check_headroom(
             &offer.counterparty_items,
             &i_stacks,
             offer.counterparty_currency,
-            i_balance,
+            wallet_balance(ctx, offer.initiator).saturating_sub(offer.initiator_currency),
             &offer.initiator_items,
             &c_stacks,
             offer.initiator_currency,
-            c_balance,
+            wallet_balance(ctx, offer.counterparty).saturating_sub(offer.counterparty_currency),
         )
         .map_err(|e| {
             let msg = e.to_string();
@@ -615,29 +621,67 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
         ctx.db.monster_pub().monster_id().update(mp);
     }
 
-    // Apply item transfers.
-    for xfer in &plan.item_transfers {
-        let (from, to) = if xfer.from_initiator {
-            (offer.initiator, offer.counterparty)
-        } else {
-            (offer.counterparty, offer.initiator)
-        };
-        // consume_one returns Err if insufficient — the whole transaction rolls back.
-        for _ in 0..xfer.qty {
-            consume_one(ctx, from, xfer.item_id)?;
+    // Apply item + currency transfers in the debits-before-credits order published
+    // by game-core (17.5b-1, ADR-0123): ALL debits land before ANY credit, so a
+    // same-item bilateral swap near a cap credits into an already-debited stack —
+    // the netted headroom check above is exact and no clamping grant ever engages
+    // (reject-not-clamp, ADR-0113). Debit arms read from_initiator (sender); credit
+    // arms read to_initiator (receiver) — game-core inverted at emission, so there
+    // is NO inversion here.
+    for step in plan.ordered_steps() {
+        match step {
+            ApplyStep::ItemDebit {
+                from_initiator,
+                item_id,
+                qty,
+            } => {
+                let from = if from_initiator {
+                    offer.initiator
+                } else {
+                    offer.counterparty
+                };
+                // consume_one returns Err if insufficient — the whole transaction rolls back.
+                for _ in 0..qty {
+                    consume_one(ctx, from, item_id)?;
+                }
+            }
+            ApplyStep::CurrencyDebit {
+                from_initiator,
+                amount,
+            } => {
+                let from = if from_initiator {
+                    offer.initiator
+                } else {
+                    offer.counterparty
+                };
+                // spend_currency returns Err if insufficient (broke-sender rejection
+                // site, ADR-0123) — the whole transaction rolls back.
+                spend_currency(ctx, from, amount)?;
+            }
+            ApplyStep::ItemCredit {
+                to_initiator,
+                item_id,
+                qty,
+            } => {
+                let to = if to_initiator {
+                    offer.initiator
+                } else {
+                    offer.counterparty
+                };
+                grant_item(ctx, to, item_id, qty);
+            }
+            ApplyStep::CurrencyCredit {
+                to_initiator,
+                amount,
+            } => {
+                let to = if to_initiator {
+                    offer.initiator
+                } else {
+                    offer.counterparty
+                };
+                grant_currency(ctx, to, amount);
+            }
         }
-        grant_item(ctx, to, xfer.item_id, xfer.qty);
-    }
-
-    // Apply currency transfers.
-    for xfer in &plan.currency_transfers {
-        let (from, to) = if xfer.from_initiator {
-            (offer.initiator, offer.counterparty)
-        } else {
-            (offer.counterparty, offer.initiator)
-        };
-        spend_currency(ctx, from, xfer.amount)?;
-        grant_currency(ctx, to, xfer.amount);
     }
 
     // Delete the offer row — releases the escrow guard (TR-16).
