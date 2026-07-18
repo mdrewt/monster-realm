@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** ADR-0119
 **Subsystems:** battle
-**Decision:** Refresh `profile.name` from the live `player` row (when present) inside `get_or_init_profile`'s `Some` arm — in-memory only, no extra write — so `apply_pvp_rating`'s existing `..winner`/`..loser` spreads persist the current name on every rated game.
+**Decision:** Refresh `profile.name` from the live `player` row (when present) in `get_or_init_profile`'s `Some` arm — in-memory, no extra write; `apply_pvp_rating`'s existing update spreads persist the fresh name for both players each rated game.
 
 ## Context
 
