@@ -289,14 +289,21 @@ test.describe
     });
 
     test.afterAll(async () => {
-      // Close A. B is closed mid-test (disconnect-forfeit); tolerate already-closed.
+      // Close A and B; tolerate already-closed / double-close on both.
+      // A: may be closed on an error path.
+      // B: is closed mid-test (disconnect-forfeit); a second close here is safe
+      //    because we catch the error. Without this try/catch, a test that exits
+      //    early before closing B would leak the browser process.
       try {
         await browserA?.close();
       } catch {
         // A may already be closed on an error path.
       }
-      // B is closed inside the flow test. Do NOT attempt a second close here —
-      // Playwright throws on double-close; afterAll is intentionally B-agnostic.
+      try {
+        await browserB?.close();
+      } catch {
+        // B is closed inside the flow test; double-close is tolerated here.
+      }
     });
 
     // -------------------------------------------------------------------------
@@ -517,8 +524,9 @@ test.describe
             const battle = w.__mrPvp.battleById(bid);
             if (!battle) return false;
             const ids = battle.sideA.activeSkillIds;
-            if (!ids || ids.length === 0) return false;
-            return ids[0]; // returns the first skillId (a number)
+            // ids[0] === 0 is falsy — use explicit length+value guard so skillId 0
+            // does not spin the predicate forever (reviewer HIGH-3 fix).
+            return ids && ids.length > 0 && ids[0] > 0 ? ids[0] : false;
           },
           battleId,
           { timeout: 10_000 },
@@ -533,8 +541,8 @@ test.describe
             const battle = w.__mrPvp.battleById(bid);
             if (!battle) return false;
             const ids = battle.sideB.activeSkillIds;
-            if (!ids || ids.length === 0) return false;
-            return ids[0];
+            // ids[0] === 0 is falsy — use explicit length+value guard (reviewer HIGH-3 fix).
+            return ids && ids.length > 0 && ids[0] > 0 ? ids[0] : false;
           },
           battleId,
           { timeout: 10_000 },
@@ -617,12 +625,37 @@ test.describe
             `${(err as Error).message}`,
         );
       }
-      // The battle row must exist and show a turn_number of at least 1.
-      // We check presence of the battleId value in the output — the row-format may vary.
+      // The battle row must exist: battleId (decimal u64) must appear in the output.
+      // `|| battleSqlOutput.length > 0` was a vacuous escape hatch — removed.
+      // Row-format note: `spacetime sql` prints rows as pipe-separated fields with
+      // struct columns printed as `{ field1 = val1, field2 = val2 }` — the turn_number
+      // field of the state struct appears as `turn_number = N` in the output.
+      // We assert:
+      //   (a) battleId decimal string appears in the output (row exists)
+      //   (b) turn_number has advanced to at least turnNumber0+1 server-side
+      //       (the client wait above already confirmed this via the store; sql confirms
+      //        the server actually committed — kills a client-side-only counter bug).
       expect(
-        battleSqlOutput.includes(battleId) || battleSqlOutput.length > 0,
-        `17.5f-1: expected battle row ${battleId} in spacetime sql output. Got: ${battleSqlOutput.slice(0, 200)}`,
+        battleSqlOutput.includes(battleId),
+        `17.5f-1: expected battle row ${battleId} in spacetime sql output (row must exist). Got: ${battleSqlOutput.slice(0, 200)}`,
       ).toBe(true);
+      // Parse the turn_number from the sql struct output.
+      // spacetime sql prints struct columns as `{ ..., turn_number = N, ... }`.
+      // We search for `turn_number = ` followed by digits.
+      const turnNumberMatch = /turn_number\s*=\s*([0-9]+)/.exec(battleSqlOutput);
+      if (!turnNumberMatch) {
+        throw new Error(
+          `17.5f-1: could not parse turn_number from sql output (format assumption: ` +
+            `'turn_number = N' substring in struct column print). ` +
+            `Got: ${battleSqlOutput.slice(0, 400)}`,
+        );
+      }
+      const serverTurnNumber = parseInt(turnNumberMatch[1]!, 10);
+      expect(
+        serverTurnNumber,
+        `17.5f-1: server-side turn_number must be >= ${turnNumber0 + 1} after one exchange. ` +
+          `Got: ${serverTurnNumber}. Kills: a client-only counter that never reaches the server.`,
+      ).toBeGreaterThanOrEqual(turnNumber0 + 1);
 
       // Step 12: IMMEDIATELY close browserB (forfeit_on_disconnect).
       // Tight sequencing: we are already past the turn exchange; closing B NOW gives

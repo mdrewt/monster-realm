@@ -28,7 +28,12 @@ import {
 //   G3. validate_proposal (TR-1)   — monsters must be non-empty per side
 //   G4. currency guard             — must have sufficient currency
 //   G5. items guard                — must own offered items
-//   G6. reject_if_in_battle        — initiator must not be in a wild battle
+//   G6. reject_if_in_battle        — checks BOTH initiator's monsters against
+//                                    initiator's battles AND counterparty's monsters
+//                                    against counterparty's battles. In THIS test,
+//                                    it is the COUNTERPARTY (A) check that fires:
+//                                    A's starter is in counterpartyMonsterIds and
+//                                    A is currently in a wild battle.
 //
 // Paired positive-control design (red-team F1/F2):
 //   Step (b): B successfully proposes a trade (G1-G6 all pass) and it appears.
@@ -439,32 +444,48 @@ test.describe
       }
 
       // Assert the offer row appears (both pages subscribe to public trade_offer table).
+      // Scoped to the (initiator===identityB, counterparty===identityA) pair so that
+      // offers from other concurrent test runs (or leftover rows) do not produce a
+      // false-positive here. Identities are passed as Playwright's second arg (not
+      // captured via closure over page-side values — reviewer HIGH-4 fix).
+      const pairArg = { initiator: identityB, counterparty: identityA };
       await Promise.all([
         pageA.waitForFunction(
-          () => {
+          (pair: { initiator: string; counterparty: string }) => {
             const w = window as unknown as { __mrTrade?: MrTrade };
             if (!w.__mrTrade) return false;
-            return w.__mrTrade.allTradeOffers().length > 0;
+            return w.__mrTrade
+              .allTradeOffers()
+              .some((o) => o.initiator === pair.initiator && o.counterparty === pair.counterparty);
           },
-          null,
+          pairArg,
           { timeout: 10_000 },
         ),
         pageB.waitForFunction(
-          () => {
+          (pair: { initiator: string; counterparty: string }) => {
             const w = window as unknown as { __mrTrade?: MrTrade };
             if (!w.__mrTrade) return false;
-            return w.__mrTrade.allTradeOffers().length > 0;
+            return w.__mrTrade
+              .allTradeOffers()
+              .some((o) => o.initiator === pair.initiator && o.counterparty === pair.counterparty);
           },
-          null,
+          pairArg,
           { timeout: 10_000 },
         ),
       ]);
 
-      // Confirm the offer is Pending.
-      const controlOfferStatus = await pageB.evaluate(() => {
-        const w = window as unknown as { __mrTrade: MrTrade };
-        return w.__mrTrade.allTradeOffers()[0]?.status ?? '';
-      });
+      // Confirm the offer is Pending — scoped to the (B initiator, A counterparty) pair.
+      // Status is read on pageB; identities passed as Playwright arg (not closure).
+      const controlOfferStatus = await pageB.evaluate(
+        (pair: { initiator: string; counterparty: string }) => {
+          const w = window as unknown as { __mrTrade: MrTrade };
+          const offer = w.__mrTrade
+            .allTradeOffers()
+            .find((o) => o.initiator === pair.initiator && o.counterparty === pair.counterparty);
+          return offer?.status ?? '';
+        },
+        pairArg,
+      );
       expect(
         controlOfferStatus,
         '17.5f-2: POSITIVE CONTROL: offer must be Pending after pre-battle proposeTrade',
@@ -475,10 +496,18 @@ test.describe
       //     Without this cancel, step (c)'s failure would be attributable to G2
       //     (B already has an active offer) rather than G6 (A is in battle).
       // -----------------------------------------------------------------------
-      const tradeIdForCancel = await pageB.evaluate(() => {
-        const w = window as unknown as { __mrTrade: MrTrade };
-        return w.__mrTrade.allTradeOffers()[0]?.tradeId ?? '';
-      });
+      // Retrieve the tradeId scoped to the (B initiator, A counterparty) pair
+      // (not the global [0] index — that would pick the wrong offer in concurrent runs).
+      const tradeIdForCancel = await pageB.evaluate(
+        (pair: { initiator: string; counterparty: string }) => {
+          const w = window as unknown as { __mrTrade: MrTrade };
+          const offer = w.__mrTrade
+            .allTradeOffers()
+            .find((o) => o.initiator === pair.initiator && o.counterparty === pair.counterparty);
+          return offer?.tradeId ?? '';
+        },
+        pairArg,
+      );
       expect(tradeIdForCancel, 'tradeIdForCancel must be non-empty').not.toBe('');
 
       await pageB.evaluate((tid: string) => {
@@ -488,24 +517,30 @@ test.describe
         return p;
       }, tradeIdForCancel);
 
-      // Wait for the offer row to disappear from BOTH pages.
+      // Wait for the (B initiator, A counterparty) offer row to disappear from BOTH pages.
+      // Scoped to the pair so unrelated offers from other concurrent runs do not block us.
+      // Identities passed as Playwright second arg (reviewer HIGH-4 fix).
       await Promise.all([
         pageA.waitForFunction(
-          () => {
+          (pair: { initiator: string; counterparty: string }) => {
             const w = window as unknown as { __mrTrade?: MrTrade };
             if (!w.__mrTrade) return false;
-            return w.__mrTrade.allTradeOffers().length === 0;
+            return !w.__mrTrade
+              .allTradeOffers()
+              .some((o) => o.initiator === pair.initiator && o.counterparty === pair.counterparty);
           },
-          null,
+          pairArg,
           { timeout: 10_000 },
         ),
         pageB.waitForFunction(
-          () => {
+          (pair: { initiator: string; counterparty: string }) => {
             const w = window as unknown as { __mrTrade?: MrTrade };
             if (!w.__mrTrade) return false;
-            return w.__mrTrade.allTradeOffers().length === 0;
+            return !w.__mrTrade
+              .allTradeOffers()
+              .some((o) => o.initiator === pair.initiator && o.counterparty === pair.counterparty);
           },
-          null,
+          pairArg,
           { timeout: 10_000 },
         ),
       ]);
@@ -602,20 +637,29 @@ test.describe
       //       A genuine reject (correct behaviour) also fires in <200ms, so the
       //       consecutive-zero window will close quickly for correct impls.
       // -----------------------------------------------------------------------
+      // Settle window: count only offers for the (B initiator, A counterparty) pair.
+      // A global allTradeOffers().length would be polluted by unrelated concurrent offers.
+      // Identities are captured in pairArg above; passed as Playwright arg (HIGH-4 fix).
       let consecutiveZeroPollCount = 0;
       for (let i = 0; i < MAX_SETTLE_POLLS; i++) {
         await pageB.waitForTimeout(SETTLE_POLL_INTERVAL_MS);
-        const offerCount = await pageB.evaluate(() => {
-          const w = window as unknown as { __mrTrade?: MrTrade };
-          if (!w.__mrTrade) return 0;
-          return w.__mrTrade.allTradeOffers().length;
-        });
-        if (offerCount === 0) {
+        const pairOfferCount = await pageB.evaluate(
+          (pair: { initiator: string; counterparty: string }) => {
+            const w = window as unknown as { __mrTrade?: MrTrade };
+            if (!w.__mrTrade) return 0;
+            return w.__mrTrade
+              .allTradeOffers()
+              .filter((o) => o.initiator === pair.initiator && o.counterparty === pair.counterparty)
+              .length;
+          },
+          pairArg,
+        );
+        if (pairOfferCount === 0) {
           consecutiveZeroPollCount++;
         } else {
-          // An offer appeared — break immediately; the sql assertion will catch it.
+          // A pair-scoped offer appeared — break immediately; the sql assertion will catch it.
           console.warn(
-            `17.5f-2: allTradeOffers().length=${offerCount} during settle window (poll ${i + 1}/${MAX_SETTLE_POLLS}) — reject_if_in_battle may be missing.`,
+            `17.5f-2: pair-scoped allTradeOffers() count=${pairOfferCount} during settle window (poll ${i + 1}/${MAX_SETTLE_POLLS}) — reject_if_in_battle may be missing.`,
           );
           break;
         }

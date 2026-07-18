@@ -13,17 +13,27 @@
 //   2. Parse rowConvert.ts for the HANDLED_ENUM_VARIANTS registry:
 //      - Strip line comments, block comments (false-positive bait suppression).
 //      - Do NOT strip string literals from the registry block itself — the
-//        variant names ARE string literals. Strip comments only.
+//        variant names ARE string literals ('Pending', 'Fire', etc.). Stripping
+//        them would destroy the very data we are trying to read. False-positive
+//        bait (a comment near the registry that contains variant names) is
+//        neutralized instead by comment-stripping + the brace-matched anchor
+//        scope: only quoted strings INSIDE the `export const HANDLED_ENUM_VARIANTS
+//        = { ... }` brace extent are extracted, so comments above/below the block
+//        cannot inject false variant names.
 //      - Anchor on `export const HANDLED_ENUM_VARIANTS = {` and brace-match extent.
 //      - Extract quoted variant names from within that block.
-//      - Separately verify the narrowTag call-site coupling (F8 coupling pin).
+//      - Separately verify the narrowTag call-site adjacency coupling (F8+C4 pin).
 //   3. Criteria:
-//      C1: registry block exists and is parseable.
+//      C1: registry block exists and is parseable (includes minimum-key gate >= 8).
 //      C2: for each registry enum, every types.ts variant is in the registry
 //          (unhandled server addition → RED, naming the enum+variant).
 //      C3: every registry variant exists in types.ts (stale entry → RED).
-//      C4: coupling pin — narrowTag(...HANDLED_ENUM_VARIANTS.TradeStatus...) present
-//          in the TradeStatus conversion site (comment-stripped scan of rowConvert.ts).
+//      C4: ADJACENCY coupling pin — a narrowTag( call is immediately followed by
+//          HANDLED_ENUM_VARIANTS.TradeStatus within ~120 squashed characters
+//          (in comment-stripped source). A stray reference to
+//          HANDLED_ENUM_VARIANTS.TradeStatus far from any narrowTag call does NOT
+//          pass (stronger than mere presence — prevents a raw `as` cast with a
+//          stray const reference from satisfying the gate).
 //
 // Proof-of-teeth (inline doctored fixtures run through the REAL checker functions):
 //   - extra-variant fixture: types.ts has a variant not in the registry → must flag (C2).
@@ -297,26 +307,65 @@ export function checkC3NoStaleEntries(typesVariants, registryVariants) {
 }
 
 // ---------------------------------------------------------------------------
-// checkC4: coupling pin — narrowTag call site references HANDLED_ENUM_VARIANTS.TradeStatus.
-//   The :525 cast in tradeOfferRowToStore must use the registry, not a raw array.
+// checkC4: coupling pin — narrowTag call site is ADJACENT to HANDLED_ENUM_VARIANTS.TradeStatus.
+//   The :525 cast in tradeOfferRowToStore must use the registry via narrowTag.
 //   This ensures the registry→narrowTag coupling cannot be silently severed.
 //   Search in comment-stripped source only (F8: comments are false-positive bait).
+//
+//   ADJACENCY REQUIREMENT (strengthened from mere presence — reviewer MEDIUM finding):
+//   A stray `const x = HANDLED_ENUM_VARIANTS.TradeStatus;` far from any narrowTag call
+//   would pass a simple presence check but NOT the adjacency check.
+//   We require: at least one `narrowTag(` occurrence in the squashed source is followed
+//   by `HANDLED_ENUM_VARIANTS.TradeStatus` within the next ~120 squashed characters.
+//   120 chars covers `(row.status.tag,HANDLED_ENUM_VARIANTS.TradeStatus,"TradeStatus")` comfortably.
+//
+//   Bad impl killed: a raw cast (`as 'Pending'|'ConfirmedByCounterparty'`) plus a stray
+//   `const x = HANDLED_ENUM_VARIANTS.TradeStatus;` elsewhere → no narrowTag+TradeStatus
+//   adjacency → FAILS (correct).
+//   Good impl passes: `narrowTag(row.status.tag, HANDLED_ENUM_VARIANTS.TradeStatus, 'TradeStatus')`
+//   → adjacency satisfied → PASSES (correct).
+//
+//   Literal indexOf + position arithmetic only — no new RegExp() (Semgrep ReDoS ban).
 // ---------------------------------------------------------------------------
 export function checkC4CouplingPin(rawSrc) {
   const src = stripComments(rawSrc);
-  // The needle: narrowTag call must reference HANDLED_ENUM_VARIANTS.TradeStatus.
-  // Squash all whitespace so rustfmt-style splits across lines still match.
+  // Squash all whitespace so line-split narrowTag(...) calls still match.
   const squashed = src.replace(/\s+/g, '');
-  const needle = 'HANDLED_ENUM_VARIANTS.TradeStatus';
-  const needleSquashed = needle.replace(/\s+/g, '');
 
-  if (squashed.indexOf(needleSquashed) === -1) {
+  const narrowTagNeedle = 'narrowTag(';
+  const tradeStatusNeedle = 'HANDLED_ENUM_VARIANTS.TradeStatus';
+  // ~120 squashed characters covers the full narrowTag(...TradeStatus...) call shape.
+  const ADJACENCY_WINDOW = 120;
+
+  // Scan all `narrowTag(` occurrences and check if any is followed by
+  // HANDLED_ENUM_VARIANTS.TradeStatus within ADJACENCY_WINDOW characters.
+  let searchFrom = 0;
+  let foundAdjacency = false;
+  while (true) {
+    const narrowTagIdx = squashed.indexOf(narrowTagNeedle, searchFrom);
+    if (narrowTagIdx === -1) break;
+
+    // Look for HANDLED_ENUM_VARIANTS.TradeStatus in the window AFTER narrowTag(.
+    const windowStart = narrowTagIdx + narrowTagNeedle.length;
+    const windowEnd = windowStart + ADJACENCY_WINDOW;
+    const windowSrc = squashed.slice(windowStart, windowEnd);
+    if (windowSrc.indexOf(tradeStatusNeedle) !== -1) {
+      foundAdjacency = true;
+      break;
+    }
+    searchFrom = narrowTagIdx + narrowTagNeedle.length;
+  }
+
+  if (!foundAdjacency) {
     return {
       ok: false,
       reason:
-        'C4: narrowTag call site does not reference HANDLED_ENUM_VARIANTS.TradeStatus ' +
-        '(coupling pin: the :525 status tag conversion must use the registry constant, ' +
-        'not a raw inline array — so registry + narrowTag cannot be silently decoupled)',
+        'C4: no narrowTag( call is immediately followed by HANDLED_ENUM_VARIANTS.TradeStatus ' +
+        `within ${ADJACENCY_WINDOW} squashed characters. ` +
+        'Coupling pin: the tradeOfferRowToStore status tag conversion must call ' +
+        'narrowTag(..., HANDLED_ENUM_VARIANTS.TradeStatus, ...) — a stray reference to ' +
+        'HANDLED_ENUM_VARIANTS.TradeStatus far from a narrowTag call does NOT satisfy this. ' +
+        'Kills: a raw `as` cast that decouples the registry from the narrowTag call site.',
     };
   }
   return { ok: true };
@@ -552,29 +601,46 @@ export type WeatherEffect = __Infer<typeof WeatherEffect>;
   }
 
   // -------------------------------------------------------------------------
-  // Tooth 7 (BAD — C4 coupling): narrowTag call without HANDLED_ENUM_VARIANTS.TradeStatus
-  //   must fail the coupling pin. Kills: impl that does not check the coupling.
+  // Tooth 7 (BAD — C4 adjacency coupling): raw cast + stray HANDLED_ENUM_VARIANTS.TradeStatus
+  //   far from any narrowTag call must fail. The old presence-only check would have
+  //   passed this fixture; the new adjacency check must REJECT it.
+  //
+  //   Bad impl anatomy: the raw `as` cast is retained AND there is a stray reference
+  //   `const x = HANDLED_ENUM_VARIANTS.TradeStatus;` elsewhere in the file (but NOT
+  //   inside a narrowTag call). Adjacency requires `narrowTag(` to be immediately
+  //   followed by HANDLED_ENUM_VARIANTS.TradeStatus within ~120 chars — a stray
+  //   const far from any narrowTag does NOT satisfy this.
+  //
+  //   WHAT THIS KILLS: an impl of checkC4 that only checks for presence of
+  //   HANDLED_ENUM_VARIANTS.TradeStatus (without verifying adjacency to narrowTag).
   // -------------------------------------------------------------------------
   {
+    // Stray HANDLED_ENUM_VARIANTS.TradeStatus far from any narrowTag call,
+    // plus the raw cast (the actual bug the coupling pin guards against).
     const badCouplingsSrc =
       "status: row.status.tag as 'Pending' | 'ConfirmedByCounterparty',\n" +
-      '// HANDLED_ENUM_VARIANTS.TradeStatus appears only in a comment\n';
+      '// HANDLED_ENUM_VARIANTS.TradeStatus in comment only — stripped\n' +
+      'const x = HANDLED_ENUM_VARIANTS.TradeStatus;\n' +
+      'export function someOtherFn() { return 42; }\n';
     const result = checkC4CouplingPin(badCouplingsSrc);
     if (result.ok) {
       return {
         name,
         pass: false,
         detail:
-          'TEETH FAILED (bad-C4-coupling): checkC4 passed a fixture where ' +
-          'HANDLED_ENUM_VARIANTS.TradeStatus appears only in a comment (not in live code). ' +
-          'Kills: impl that does not strip comments before the coupling pin check.',
+          'TEETH FAILED (bad-C4-adjacency): checkC4 passed a fixture where ' +
+          'HANDLED_ENUM_VARIANTS.TradeStatus appears in live code but NOT adjacent to ' +
+          'any narrowTag( call (stray const reference only, raw as-cast retained). ' +
+          'The adjacency check must require narrowTag( immediately before TradeStatus ' +
+          'within ~120 squashed chars. Kills: presence-only impl that misses the decoupling.',
       };
     }
   }
 
   // -------------------------------------------------------------------------
-  // Tooth 8 (GOOD — C4 coupling): narrowTag referencing HANDLED_ENUM_VARIANTS.TradeStatus
-  //   in live code must pass. Kills: impl that spuriously rejects a correct coupling.
+  // Tooth 8 (GOOD — C4 adjacency coupling): narrowTag( call with
+  //   HANDLED_ENUM_VARIANTS.TradeStatus as the second arg must pass.
+  //   Kills: impl that spuriously rejects a correct adjacency coupling.
   // -------------------------------------------------------------------------
   {
     const goodCouplingSrc =
@@ -585,7 +651,9 @@ export type WeatherEffect = __Infer<typeof WeatherEffect>;
         name,
         pass: false,
         detail:
-          'TEETH FAILED (good-C4-coupling): checkC4 rejected a valid narrowTag coupling. ' +
+          'TEETH FAILED (good-C4-adjacency): checkC4 rejected a valid narrowTag coupling ' +
+          'where narrowTag( is directly followed by HANDLED_ENUM_VARIANTS.TradeStatus ' +
+          'within the adjacency window. ' +
           `Reason: ${result.reason}`,
       };
     }
@@ -660,6 +728,24 @@ export type WeatherEffect = __Infer<typeof WeatherEffect>;
     };
   }
 
+  // C1-min-key: independent minimum-key gate (MEDIUM strengthening — reviewer finding).
+  // T4-6 in rowConvert.test.ts pins the EXACT count (=== 8); this gate is independent
+  // and catches a partially-implemented registry with fewer than 8 keys early (before
+  // C2/C3 would surface each missing enum one at a time). The two gates are complementary:
+  //   - C1-min-key: fast fail if the registry is obviously incomplete (< 8 keys)
+  //   - T4-6 unit test: exact-count pin (both directions — too few OR too many)
+  if (registryKeyCount < 8) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `C1: HANDLED_ENUM_VARIANTS registry has ${registryKeyCount} key(s) but requires at least 8 ` +
+        `(TradeStatus, ChallengeStatus, BattleOutcome, Affinity, StatusKind, WeatherEffect, ` +
+        `ActionState, Direction — the full set of boundary-read enums in rowConvert.ts). ` +
+        `Found keys: ${Object.keys(registry).sort().join(', ')}`,
+    };
+  }
+
   // =========================================================================
   // C2: For each registry enum, every types.ts variant must be listed.
   // =========================================================================
@@ -707,7 +793,7 @@ export type WeatherEffect = __Infer<typeof WeatherEffect>;
       `C1: registry found with ${registryKeyCount} enums (${registryKeys}); ` +
       `C2: all types.ts variants covered in registry; ` +
       `C3: no stale registry entries; ` +
-      `C4: narrowTag coupling pin verified (HANDLED_ENUM_VARIANTS.TradeStatus at :525 site); ` +
+      `C4: narrowTag adjacency coupling pin verified (narrowTag(+HANDLED_ENUM_VARIANTS.TradeStatus within 120 squashed chars at :525 site); ` +
       `${typesEnumCount} total enums parsed from types.ts; ` +
       `8 proof-of-teeth fixtures verified (payload-carrying, extra-variant, stale-entry, ` +
       `comment-strip, good-registry, bad/good-coupling).`,

@@ -2083,6 +2083,24 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
     ).toBe(false);
   });
 
+  it('BITES: registry has EXACTLY 8 keys — no extra keys allowed (T4-6 exact-count pin)', () => {
+    // Exact-count gate: the required set is exactly the 8 boundary-read enums listed
+    // in the T4-6 comment above. No more, no less. This kills:
+    //   - An impl that adds extra enums (e.g. StatKind, PvpAction, MoveInput) that
+    //     are NOT boundary-read enums in rowConvert.ts — the eval would silently
+    //     check them against types.ts, masking gaps in the real required set.
+    //   - An impl that correctly includes the 8 required keys but also adds extras,
+    //     making the registry a superset rather than the exact required set.
+    // The presence test above confirms the 8 required keys exist; this test pins
+    // that no additional keys were added.
+    expect(
+      Object.keys(HANDLED_ENUM_VARIANTS).length,
+      'HANDLED_ENUM_VARIANTS must have EXACTLY 8 keys: TradeStatus, ChallengeStatus, ' +
+        'BattleOutcome, Affinity, StatusKind, WeatherEffect, ActionState, Direction. ' +
+        `Got ${Object.keys(HANDLED_ENUM_VARIANTS).length} keys: ${Object.keys(HANDLED_ENUM_VARIANTS).sort().join(', ')}`,
+    ).toBe(8);
+  });
+
   it('BITES: ChallengeStatus registry matches types.ts variants', () => {
     // Verified against types.ts: ChallengeStatus = {Pending, Accepted, Declined, Cancelled}
     expect(HANDLED_ENUM_VARIANTS.ChallengeStatus).toEqual([
