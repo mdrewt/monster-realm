@@ -345,5 +345,13 @@
       "scheduled_at": "ScheduleAt",
       "trade_id": "u64"
     }
+  },
+  "battle_challenge_reaper_schedule": {
+    "pk": "scheduled_id",
+    "columns": {
+      "scheduled_id": "u64",
+      "scheduled_at": "ScheduleAt",
+      "challenge_id": "u64"
+    }
   }
 }

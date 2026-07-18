@@ -88,6 +88,29 @@ pub fn pvp_deadline_forfeit_side(a_submitted: bool, b_submitted: bool) -> SideId
 }
 
 // ===========================================================================
+// Challenge TTL — liveness bound for Pending battle challenges (m17.5e)
+// ===========================================================================
+
+/// Pending battle-challenge time-to-live (17.5e-1, ADR-0126).
+// 2 min — a challenge is an interactive prompt to a player who was online at
+// send time, and a Pending row locks BOTH parties out of new challenges
+// (challenge_pvp guards 5b/6): the TTL directly bounds that lockout window
+// for AFK/disconnected challengers. Trade's 1 h TTL is for offers that
+// survive sessions; challenges must not. Tunable liveness constant, `>=` boundary.
+pub const CHALLENGE_TTL_MS: i64 = 120_000;
+
+/// True if the challenge has outlived `CHALLENGE_TTL_MS` (17.5e-1, ADR-0126).
+///
+/// Saturating subtraction: on clock skew (`now_ms` < `created_at_ms`) the
+/// difference goes NEGATIVE — i64 subtraction saturates only at the type
+/// extremes, never at 0 — and a negative elapsed simply compares fresh
+/// (< TTL). Boundary is `>=`: at exactly TTL the challenge IS stale.
+#[must_use]
+pub fn is_challenge_stale(created_at_ms: i64, now_ms: i64) -> bool {
+    now_ms.saturating_sub(created_at_ms) >= CHALLENGE_TTL_MS
+}
+
+// ===========================================================================
 // Tests
 // ===========================================================================
 
@@ -218,6 +241,133 @@ mod pvp_tests {
             both_submitted,
             SideId::SideA,
             "RT-M16-06: (true, true) must return SideA as the safe no-op sentinel"
+        );
+    }
+}
+
+// ===========================================================================
+// m17.5e (ADR-0126): CHALLENGE_TTL_MS + is_challenge_stale boundary suite
+// (RED until the implementation is added ABOVE this test module)
+//
+// These tests reference `CHALLENGE_TTL_MS` and `is_challenge_stale`, which do
+// NOT yet exist in this module.  The TEST BINARY will not compile until the
+// implementer adds them — that is intentional (RED phase, m17.5e; the m16.5f
+// trading/rules.rs precedent).  `cargo build` stays green: this module is
+// #[cfg(test)]-gated and nothing outside it references the new symbols.
+//
+// EARS criterion 17.5e-1: a Pending battle_challenge whose age reaches
+// CHALLENGE_TTL_MS SHALL be considered stale (>= boundary, saturating
+// arithmetic — mirrors the is_offer_stale suite in trading/rules.rs).
+//
+// N2 (deliberate): these tests are VALUE-INVARIANT — they reference
+// CHALLENGE_TTL_MS by name and never assert its numeric value.  Retuning the
+// TTL (plan D1: tunable) must not break this suite; a constant-value mutant is
+// therefore NOT killed here, by design.
+// ===========================================================================
+
+#[cfg(test)]
+mod challenge_ttl_tests {
+    use super::{is_challenge_stale, CHALLENGE_TTL_MS};
+
+    /// 17.5e-1 BOUNDARY: (created=0, now=CHALLENGE_TTL_MS - 1) → false (fresh).
+    ///
+    /// kills: impl that uses > instead of >= flipped the other way (off-by-one
+    ///        marking a challenge stale 1 ms early), or one that hardcodes a
+    ///        different literal than the named constant.
+    #[test]
+    fn is_challenge_stale_false_one_ms_before_ttl() {
+        assert!(
+            !is_challenge_stale(0, CHALLENGE_TTL_MS - 1),
+            "now = CHALLENGE_TTL_MS - 1 ms since creation: challenge is fresh, must return false"
+        );
+    }
+
+    /// 17.5e-1 BOUNDARY: (created=0, now=CHALLENGE_TTL_MS) → true (exactly at TTL).
+    ///
+    /// kills: impl that uses > instead of >= — the spec says elapsed >= TTL is
+    ///        stale, so at exactly TTL the challenge IS stale (plan D1).
+    #[test]
+    fn is_challenge_stale_true_at_exact_ttl() {
+        assert!(
+            is_challenge_stale(0, CHALLENGE_TTL_MS),
+            "now = CHALLENGE_TTL_MS ms since creation: challenge is stale at exactly the TTL \
+             boundary (>= semantics), must return true"
+        );
+    }
+
+    /// 17.5e-1 BOUNDARY: (created=0, now=CHALLENGE_TTL_MS + 1) → true (past TTL).
+    ///
+    /// kills: impl that uses == instead of >= (accepts only the exact boundary).
+    #[test]
+    fn is_challenge_stale_true_past_ttl() {
+        assert!(
+            is_challenge_stale(0, CHALLENGE_TTL_MS + 1),
+            "now = CHALLENGE_TTL_MS + 1 ms since creation: challenge is past TTL, must return true"
+        );
+    }
+
+    /// 17.5e-1 CLOCK SKEW: (created=100, now=50) → false (created_at in the future).
+    ///
+    /// kills: impl that subtracts in the wrong direction (created - now would be
+    ///        +50 here — still fresh, but the extremes tests below separate the
+    ///        direction mutant), or one that treats a negative elapsed as stale.
+    ///        For i64, `now.saturating_sub(created)` = -50 (NOT saturated to 0 —
+    ///        i64 subtraction only saturates at the type extremes; plan F10);
+    ///        a negative elapsed simply compares fresh (-50 < TTL).
+    #[test]
+    fn is_challenge_stale_false_on_clock_skew() {
+        assert!(
+            !is_challenge_stale(100, 50),
+            "now (50) < created_at (100): elapsed is negative (-50), which is < TTL — \
+             clock skew must never mark a fresh challenge as stale"
+        );
+    }
+
+    /// 17.5e-1 EXTREMES: (i64::MIN, i64::MAX) must not panic (saturating arithmetic).
+    ///
+    /// kills: impl that uses unchecked `now - created` — i64::MAX - i64::MIN
+    ///        overflows and panics in debug builds. With saturating_sub the
+    ///        elapsed saturates at i64::MAX (>= TTL → true), but the property
+    ///        pinned here is: MUST NOT PANIC.
+    #[test]
+    fn is_challenge_stale_no_panic_on_extreme_min_max() {
+        let _ = is_challenge_stale(i64::MIN, i64::MAX);
+    }
+
+    /// 17.5e-1 EXTREMES: (i64::MAX, i64::MIN) must not panic AND must be false.
+    ///
+    /// kills: impl with unchecked raw subtraction (`now - created` without any
+    ///        saturation or wrapping annotation) — in a debug build this panics on
+    ///        overflow; in a release build it produces undefined behaviour.
+    ///        Note: `i64::MIN.wrapping_sub(i64::MAX) == 1` (wrapping arithmetic
+    ///        gives 1, a small positive value, not the "large positive" one might
+    ///        expect), so a `wrapping_sub` impl passes this assertion and that is
+    ///        ACCEPTABLE — wrapping_sub is functionally equivalent to saturating_sub
+    ///        for all realistic timestamps; the raw-unchecked subtraction is the
+    ///        only dangerous case and a `#[test]` env panic is what this fixture
+    ///        kills (plan F10).  With saturating_sub, elapsed saturates at i64::MIN
+    ///        (a huge NEGATIVE, not 0 — plan F10), which is < TTL → false.
+    #[test]
+    fn is_challenge_stale_no_panic_on_extreme_max_min() {
+        let result = is_challenge_stale(i64::MAX, i64::MIN);
+        assert!(
+            !result,
+            "is_challenge_stale(i64::MAX, i64::MIN): elapsed saturates at i64::MIN (negative), \
+             which is < CHALLENGE_TTL_MS, must be false"
+        );
+    }
+
+    /// 17.5e-1 TEETH: staleness is monotone across the boundary — the three
+    /// boundary probes must not all agree (kills a constant-true / constant-false
+    /// body replacement in one assertion).
+    #[test]
+    fn teeth_boundary_is_a_real_transition() {
+        let before = is_challenge_stale(0, CHALLENGE_TTL_MS - 1);
+        let at = is_challenge_stale(0, CHALLENGE_TTL_MS);
+        assert_ne!(
+            before, at,
+            "TEETH: crossing the TTL boundary must flip the result (fresh→stale); \
+             a constant-body impl returns the same value on both sides"
         );
     }
 }

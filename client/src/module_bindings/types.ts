@@ -68,6 +68,13 @@ export const BattleChallenge = __t.object("BattleChallenge", {
 });
 export type BattleChallenge = __Infer<typeof BattleChallenge>;
 
+export const BattleChallengeReaperSchedule = __t.object("BattleChallengeReaperSchedule", {
+  scheduledId: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+  challengeId: __t.u64(),
+});
+export type BattleChallengeReaperSchedule = __Infer<typeof BattleChallengeReaperSchedule>;
+
 export const BattleMonster = __t.object("BattleMonster", {
   speciesId: __t.u32(),
   get affinity() {

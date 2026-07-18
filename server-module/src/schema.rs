@@ -564,6 +564,7 @@ pub enum ChallengeStatus {
 /// incoming/outgoing challenge UI (m16b).  Terminal challenges (Accepted,
 /// Declined, Cancelled) are DELETED immediately after processing — no history
 /// table in M16; follow-up in M17+.
+/// Pending rows expire via the challenge TTL reaper (pvp.rs, ADR-0126).
 #[spacetimedb::table(name = battle_challenge, public)]
 pub struct BattleChallenge {
     #[primary_key]

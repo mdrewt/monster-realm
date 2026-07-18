@@ -22,6 +22,25 @@
 //!              be able to subscribe to incoming challenges).
 //!   EA-PVP-10  `BattleChallenge` and `BattleAction` are declared in schema.rs.
 //!
+//! m17.5e (ADR-0126) — battle_challenge TTL reaper criteria (tests at the
+//! bottom of this file; RED until the reaper is implemented):
+//!   EA-CHR-01  `challenge_pvp` arms the TTL reaper AFTER the challenge insert,
+//!              with the exact args `(ctx, challenge.challenge_id,
+//!              challenge.created_at_ms)` (F1 arg-identity pin).
+//!   EA-CHR-02  `disarm_challenge_reaper` is called at ALL FOUR
+//!              challenge-deletion sites (accept / decline / cancel /
+//!              cancel_challenges_on_disconnect).
+//!   EA-CHR-03  `battle_challenge_reaper` has the scheduler-only identity guard
+//!              (brace-bounded body scan).
+//!   EA-CHR-04  `battle_challenge_reaper` re-checks staleness via the
+//!              negation-guard shape and deletes via `challenge_id().delete(`
+//!              (body-scoped).
+//!   EA-CHR-05  `battle_challenge_reaper_schedule` is baselined in
+//!              table-schemas.json and its table attribute is PRIVATE.
+//!   EA-CHR-06  `schedule_challenge_reaper` computes the deadline from the
+//!              ms-floored `created_at_ms` (ADR-0117 D4) and inserts the
+//!              schedule row (survivor-pin).
+//!
 //! Red-team finding (fixed in this PR):
 //!   RT-M16-08  `resolve_pvp_turn_if_ready` must call `write_back_battle_results`
 //!              BEFORE updating the battle row to its terminal state, so the GC
@@ -114,20 +133,29 @@ fn ea_pvp_01_battle_action_is_not_public() {
 // Proof-of-teeth: kills an impl that forgets the scheduler-only guard,
 // allowing any client to call pvp_deadline_reaper and trigger forfeits.
 // The guard pattern: `ctx.sender != ctx.identity()`.
+//
+// m17.5e T0 (plan B1/F3 — STRENGTHENING edit by the tester): the scan is
+// re-bounded from the former unbounded suffix slice (`&stripped[fn_pos..]`)
+// to the brace-bounded `extract_pvp_fn_body`.  m17.5e introduces a SECOND
+// reducer (battle_challenge_reaper) carrying the same guard token; with the
+// old suffix scan, a guard in ANY later fn could satisfy this check even if
+// pvp_deadline_reaper itself lost its guard.  Narrower scan region only —
+// test name, criterion, and assertion message unchanged.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn ea_pvp_02_deadline_reaper_has_scheduler_guard() {
-    let stripped = strip_rust_comments(PVP_RS);
-    // The guard must appear in pvp_deadline_reaper.
-    let reaper_fn = concat!("fn ", "pvp_deadline_reaper");
+    // T0 LOW fix (m17.5e red-team): string-strip AFTER comment-strip for
+    // consistency with the EA-CHR pipeline (a guard token inside a dead-code
+    // string literal cannot satisfy the search).  The brace-bounded body
+    // extraction operates on the comment+string-stripped text; the guard token
+    // `ctx.sender != ctx.identity()` is not inside any string in pvp.rs so
+    // this does not change the match — only closes the pipeline gap.
+    let stripped = strip_rust_strings(&strip_rust_comments(PVP_RS));
+    // The guard must appear in pvp_deadline_reaper (exact body slice, T0).
     let guard_pattern = concat!("ctx.sender", " != ", "ctx.identity()");
-    let fn_pos = stripped
-        .find(reaper_fn)
+    let fn_body = extract_pvp_fn_body(&stripped, "pvp_deadline_reaper")
         .expect("EA-PVP-02: `pvp_deadline_reaper` function not found in pvp.rs");
-    // Find the next closing brace after the function (heuristic: scan forward
-    // until we see the guard pattern).
-    let fn_body = &stripped[fn_pos..];
     assert!(
         fn_body.contains(guard_pattern),
         "EA-PVP-02 FAIL: `pvp_deadline_reaper` in pvp.rs is missing the \
@@ -1654,5 +1682,524 @@ fn rt_m17_01_apply_pvp_rating_side_b_wins_maps_opponent_to_winner() {
          gains losses+1. A swapped arm would give the challenger a win credit when they lost. \
          (ADR-0119 D6, RL-5)",
         side_b_needle
+    );
+}
+
+// ===========================================================================
+// m17.5e (ADR-0126): battle_challenge TTL reaper — EA-CHR-01..06
+//
+// A Pending battle_challenge row locks BOTH parties out of new challenges
+// (challenge_pvp guards 5b/6); an AFK or disconnected challenger would leave
+// that lock in place forever.  The TTL reaper (clone of the m16.5f
+// trade_offer_reaper, ADR-0117) bounds that window.
+//
+// Machinery: `strip_rust_strings` (ADR-0116-hardened shape cloned from
+// trading_tests.rs, incl. the backslash-escape branch that also consumes a
+// backslash-newline line continuation) + `squash_ws` (m17.5d mandatory,
+// ADR-0125) + the existing brace-bounded `extract_pvp_fn_body`.
+//
+// Scan pipeline for EVERY test below (plan T2): strip comments → strip
+// strings → extract the fn body (brace-bounded, NEVER a suffix scan) →
+// squash_ws for composite needles.  All needles are concat!-split so this
+// file can never satisfy a scan by matching itself.
+//
+// RED now (m17.5e tester phase): `schedule_challenge_reaper`,
+// `disarm_challenge_reaper`, `battle_challenge_reaper`, and
+// `battle_challenge_reaper_schedule` do not exist in pvp.rs — every EA-CHR
+// test below panics with a named FAIL message.
+// ===========================================================================
+
+/// String-literal stripping helper (Finding C, ADR-0116-hardened shape cloned
+/// from `strip_rust_strings_trading` in trading_tests.rs).  Replaces the
+/// CONTENT of every `"…"` string literal (keeping the quotes) so a needle like
+/// `schedule_challenge_reaper(` cannot be hidden inside a dead-code string
+/// literal such as `let _dead = "schedule_challenge_reaper(";`.
+///
+/// The escape branch consumes the backslash AND the byte after it — including
+/// a backslash-newline line continuation (the m16.5e string-strip trap) — so a
+/// continuation string cannot desynchronise the byte-walker.
+///
+/// IMPORTANT: call AFTER `strip_rust_comments` so string literals inside
+/// comments (already blanked) do not trip the walker.  Raw strings (`r#"…"#`)
+/// are NOT handled — acceptable: production pvp.rs contains none.
+fn strip_rust_strings(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = Vec::with_capacity(len);
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b'"' {
+            // Emit the opening quote, then swallow until the closing (unescaped) quote.
+            out.push(b'"');
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' {
+                    // Escape sequence: consume both the backslash and the next
+                    // byte (incl. a backslash-newline line continuation).
+                    i += 2;
+                } else if bytes[i] == b'"' {
+                    out.push(b'"');
+                    i += 1;
+                    break;
+                } else {
+                    // Swallow the character (shrinks the string).
+                    i += 1;
+                }
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("string-stripped source must be valid UTF-8")
+}
+
+/// Remove ALL whitespace characters (m17.5d mandatory third pipeline stage,
+/// ADR-0125 red-team F1): makes composite-needle matching rustfmt-proof — a
+/// call split across lines by rustfmt still matches a squashed needle.
+fn squash_ws(src: &str) -> String {
+    src.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// m17.5e scan input: pvp.rs with comments stripped THEN strings stripped
+/// (plan T2 pipeline order).  Body extraction happens on this text (braces and
+/// `fn ` tokens still have their whitespace); `squash_ws` is applied to the
+/// EXTRACTED body for composite needles.
+fn stripped_pvp_for_scan() -> String {
+    strip_rust_strings(&strip_rust_comments(PVP_RS))
+}
+
+// ---------------------------------------------------------------------------
+// EA-CHR-01: challenge_pvp arms the TTL reaper AFTER the challenge insert,
+//            with the EXACT argument shape (plan F1 arg-identity pin)
+//
+// EARS 17.5e-1: challenge_pvp SHALL call
+//   schedule_challenge_reaper(ctx, challenge.challenge_id, challenge.created_at_ms)
+// AFTER capturing the inserted battle_challenge row — the auto_inc
+// challenge_id only exists once the insert returns (EA-REAPER-01 precedent).
+//
+// TEETH: kills an impl that (a) omits the arm entirely, (b) arms BEFORE the
+//        insert (unknown challenge_id), or (c) arms with the wrong args —
+//        a literal `0` id arms a reaper that reaps nothing, and a
+//        `now_ms(ctx)` time silently shifts the deadline off the row's own
+//        created_at_ms (staleness must never be computable from anything a
+//        client could supply — plan D6 structural invariant).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_chr_01_challenge_pvp_arms_reaper_after_insert_with_exact_args() {
+    let stripped = stripped_pvp_for_scan();
+    let body = extract_pvp_fn_body(&stripped, "challenge_pvp")
+        .expect("EA-CHR-01: `challenge_pvp` function not found in pvp.rs");
+    let squashed = squash_ws(body);
+
+    let insert_needle = concat!("battle_challenge", "().insert(");
+    let insert_pos = squashed.find(insert_needle).unwrap_or_else(|| {
+        panic!(
+            "EA-CHR-01 FAIL: `battle_challenge().insert(` not found in `challenge_pvp` body. \
+             The reaper cannot be armed because no challenge row is inserted."
+        )
+    });
+
+    // Arg-identity pin (plan F1): nothing may sit between the third argument
+    // and the close paren.  Both closing forms are accepted — `)` (single-line
+    // call) and `,)` (rustfmt adds a trailing comma when it splits a call
+    // across lines; squash_ws collapses that split to the `,)` form).
+    let arm_needle = concat!(
+        "schedule_challenge_",
+        "reaper(ctx,challenge.challenge_id,challenge.created_at_ms)"
+    );
+    let arm_needle_trailing_comma = concat!(
+        "schedule_challenge_",
+        "reaper(ctx,challenge.challenge_id,challenge.created_at_ms,)"
+    );
+    let arm_pos = squashed
+        .find(arm_needle)
+        .or_else(|| squashed.find(arm_needle_trailing_comma))
+        .unwrap_or_else(|| {
+            panic!(
+                "EA-CHR-01 FAIL: the arm call `schedule_challenge_reaper(ctx, \
+                 challenge.challenge_id, challenge.created_at_ms)` (squash_ws'd \
+                 arg-identity pin) was not found in `challenge_pvp` body. Without the \
+                 arm, a Pending challenge from an AFK/disconnected challenger locks \
+                 BOTH parties out of new challenges (guards 5b/6) forever. A wrong-id \
+                 arm (literal 0) or a wrong-time arm (now_ms(ctx)) also fails this pin \
+                 (plan F1). RED: reaper arm absent (m17.5e)."
+            )
+        });
+
+    assert!(
+        arm_pos > insert_pos,
+        "EA-CHR-01 FAIL: the reaper arm (squashed offset {arm_pos}) appears BEFORE \
+         `battle_challenge().insert(` (squashed offset {insert_pos}) in `challenge_pvp`. \
+         The auto_inc challenge_id only exists after the insert returns; arming first \
+         references an unknown id."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EA-CHR-02: disarm_challenge_reaper called at ALL FOUR challenge-deletion
+//            sites (plan D4; mirrors EA-REAPER-02) AND the helper body is
+//            non-trivial (survivor-pin against no-op body mutant)
+//
+// The four sites are EXACTLY the deletion set (plan F8 whole-tree grep):
+//   1. accept_challenge   — post-battle-creation delete
+//   2. decline_challenge  — target rejects
+//   3. cancel_challenge   — challenger withdraws
+//   4. cancel_challenges_on_disconnect — bulk delete loop
+//
+// BODY PINS (m17.5d survivor-pin technique — mutation-testing found a missed
+// mutant: `replace disarm_challenge_reaper with ()`): a no-op body passes all
+// call-site checks above but leaves orphaned schedule rows that then fire as
+// no-ops.  Two shape-based needles pin the collect-before-delete pattern
+// (mirrors disarm_trade_reaper, ADR-0117):
+//   (a) `.challenge_id().filter(` — the btree filter that gathers scheduled_ids
+//   (b) `.scheduled_id().delete(` — the per-pk delete that removes each row
+// Variable-name-agnostic: matches any local binding.
+//
+// TEETH: kills (i) an impl that adds the disarm to only SOME of the four sites;
+//        (ii) a no-op / empty-body disarm that passes the call-site check but
+//        never actually deletes the schedule row; (iii) a body that deletes by
+//        challenge_id directly (if the API changes, this would silent-fail on
+//        0 rows and not enforce the per-pk contract).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_chr_02_disarm_called_at_all_challenge_deletion_sites() {
+    let stripped = stripped_pvp_for_scan();
+
+    // Per-site arg-identity pins (LOW gate-hole, red-team finding):
+    // `disarm_challenge_reaper(ctx, 0)` passes a presence-only check but arms
+    // the disarm for a non-existent id, leaving the real schedule row orphaned.
+    // Three reducers pass `challenge_id` (the row's own id); the disconnect
+    // bulk loop passes `id` (the loop variable over collected pending_ids).
+    // Both `)` and rustfmt trailing-comma `,)` closing forms are accepted.
+    //
+    // Structure: (fn_name, squashed_call_needle, squashed_call_needle_trailing)
+    let sites: &[(&str, &str, &str)] = &[
+        (
+            "accept_challenge",
+            concat!("disarm_challenge_", "reaper(ctx,challenge_id)"),
+            concat!("disarm_challenge_", "reaper(ctx,challenge_id,)"),
+        ),
+        (
+            "decline_challenge",
+            concat!("disarm_challenge_", "reaper(ctx,challenge_id)"),
+            concat!("disarm_challenge_", "reaper(ctx,challenge_id,)"),
+        ),
+        (
+            "cancel_challenge",
+            concat!("disarm_challenge_", "reaper(ctx,challenge_id)"),
+            concat!("disarm_challenge_", "reaper(ctx,challenge_id,)"),
+        ),
+        (
+            "cancel_challenges_on_disconnect",
+            concat!("disarm_challenge_", "reaper(ctx,id)"),
+            concat!("disarm_challenge_", "reaper(ctx,id,)"),
+        ),
+    ];
+
+    for (fn_name, call_needle, call_needle_trailing) in sites {
+        let body = extract_pvp_fn_body(&stripped, fn_name)
+            .unwrap_or_else(|| panic!("EA-CHR-02: `{fn_name}` function not found in pvp.rs"));
+        let squashed = squash_ws(body);
+        let found = squashed.contains(call_needle) || squashed.contains(call_needle_trailing);
+        assert!(
+            found,
+            "EA-CHR-02 FAIL: `{fn_name}` is missing the arg-identity disarm call \
+             `{call_needle}` (squash_ws'd). A literal-0 call `disarm_challenge_reaper(ctx, 0)` \
+             passes a presence-only check but disarms the wrong (non-existent) schedule row — \
+             the real schedule row survives and fires as an orphaned no-op later. \
+             Plan D4: EVERY deletion site must disarm with the ACTUAL challenge id \
+             (EA-REAPER-02 parity). RED: disarm with correct arg absent (m17.5e)."
+        );
+    }
+
+    // Body survivor-pins: extract disarm_challenge_reaper itself and verify
+    // the collect-before-delete shape is present (kills no-op body mutant).
+    let disarm_body =
+        extract_pvp_fn_body(&stripped, "disarm_challenge_reaper").unwrap_or_else(|| {
+            panic!(
+                "EA-CHR-02 FAIL: `disarm_challenge_reaper` function not found in pvp.rs — \
+                 the helper does not exist yet. RED: m17.5e disarm helper absent."
+            )
+        });
+    let disarm_squashed = squash_ws(disarm_body);
+
+    // (a) btree filter collect: gathers scheduled_ids by challenge_id index.
+    let filter_needle = concat!(".challenge_id()", ".filter(");
+    assert!(
+        disarm_squashed.contains(filter_needle),
+        "EA-CHR-02 FAIL: `disarm_challenge_reaper` body is missing `.challenge_id().filter(` \
+         (squash_ws'd) — the helper must gather schedule rows via the btree index before \
+         deleting them (collect-before-delete pattern, mirrors disarm_trade_reaper ADR-0117). \
+         A no-op or empty body fails this pin (survivor-pin against body-replacement mutant)."
+    );
+
+    // (b) per-pk delete: removes each row by scheduled_id primary key.
+    let delete_needle = concat!(".scheduled_id()", ".delete(");
+    assert!(
+        disarm_squashed.contains(delete_needle),
+        "EA-CHR-02 FAIL: `disarm_challenge_reaper` body is missing `.scheduled_id().delete(` \
+         (squash_ws'd) — the helper must delete each schedule row via its primary key. \
+         A no-op body or one that only filters without deleting fails this pin."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EA-CHR-03: battle_challenge_reaper has the scheduler-only identity guard
+//            (plan F3 — brace-bounded body scan, never a suffix scan)
+//
+// TEETH: kills an impl that forgets `ctx.sender != ctx.identity()` — any
+//        client could then call the reaper directly and delete other players'
+//        pending challenges at will.  Body-scoped so the guard in
+//        pvp_deadline_reaper (same token, same file) cannot satisfy it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_chr_03_challenge_reaper_has_scheduler_guard() {
+    let stripped = stripped_pvp_for_scan();
+    let body = extract_pvp_fn_body(&stripped, "battle_challenge_reaper").unwrap_or_else(|| {
+        panic!(
+            "EA-CHR-03 FAIL: `battle_challenge_reaper` reducer not found in pvp.rs — \
+             the TTL reaper does not exist yet. RED: m17.5e reaper absent."
+        )
+    });
+    let squashed = squash_ws(body);
+    let guard_needle = concat!("ctx.sender", "!=", "ctx.identity()");
+    assert!(
+        squashed.contains(guard_needle),
+        "EA-CHR-03 FAIL: `battle_challenge_reaper` body is missing the scheduler-only \
+         identity guard `ctx.sender != ctx.identity()` (squash_ws'd, brace-bounded scan). \
+         Without it any client can invoke the reaper and delete other players' pending \
+         challenges (ADR-0109 pvp_deadline_reaper / ADR-0117 trade_offer_reaper pattern)."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EA-CHR-04: battle_challenge_reaper re-checks staleness via the NEGATION
+//            GUARD SHAPE and deletes the row (plan F4 — shape-pinned, bounded)
+//
+// Required shape (squash_ws'd, trade_offer_reaper clone):
+//   `if !is_challenge_stale(`                       — negation guard
+//   `<row>.created_at_ms, now_ms(ctx))`             — CORRECT arg order
+//   `){ return Ok(()) }`                            — block opens with early-return
+//   `challenge_id().delete(`                        — the reap itself
+// and the guard must precede the delete (decision-before-irreversible).
+//
+// TEETH: kills (a) an impl with no stale re-check (early fire — plan D7 —
+//        reaps a FRESH challenge), (b) the ignored-result evasion
+//        `let _ = is_challenge_stale(...)` (no `if !…` shape), (c) an impl
+//        that deletes before checking, (d) TRANSPOSED args
+//        `is_challenge_stale(now_ms(ctx), row.created_at_ms)` which computes a
+//        negative elapsed and causes the reaper to permanently no-op (HIGH
+//        gate-hole, red-team finding), and (e) an empty guard block
+//        `if !is_challenge_stale(...) { }` followed by an unconditional delete
+//        — the `){ return Ok(()) }` immediate-open shape kills that (MEDIUM
+//        gate-hole, red-team finding).
+// Body-scoped so the three lifecycle delete sites (accept/decline/cancel)
+// cannot satisfy the delete pin.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_chr_04_challenge_reaper_stale_recheck_guards_the_delete() {
+    let stripped = stripped_pvp_for_scan();
+    let body = extract_pvp_fn_body(&stripped, "battle_challenge_reaper").unwrap_or_else(|| {
+        panic!(
+            "EA-CHR-04 FAIL: `battle_challenge_reaper` reducer not found in pvp.rs — \
+             the TTL reaper does not exist yet. RED: m17.5e reaper absent."
+        )
+    });
+    let squashed = squash_ws(body);
+
+    let neg_needle = concat!("if!", "is_challenge_stale(");
+    let neg_pos = squashed.find(neg_needle).unwrap_or_else(|| {
+        panic!(
+            "EA-CHR-04 FAIL: the negation guard `if !is_challenge_stale(` was not found \
+             in `battle_challenge_reaper` body (squash_ws'd shape pin, plan F4). An \
+             ignored-result call (`let _ = is_challenge_stale(...)`) does NOT satisfy \
+             this — the staleness result must gate the delete."
+        )
+    });
+
+    // Arg-order pin (HIGH gate-hole, red-team finding): the squashed arg-tail
+    // after `if !is_challenge_stale(` must be `<row>.created_at_ms,now_ms(ctx))`.
+    // A transposed call `is_challenge_stale(now_ms(ctx), row.created_at_ms)`
+    // computes a *negative* elapsed and the negation always evaluates to false,
+    // so the delete is never reached → the reaper permanently no-ops.
+    // Both `)` and rustfmt-trailing-comma `,)` closing forms are accepted.
+    let arg_tail_needle = concat!(".created_at_ms,", "now_ms(ctx))");
+    let arg_tail_needle_trailing = concat!(".created_at_ms,", "now_ms(ctx),)");
+    let arg_tail_pos = squashed[neg_pos..]
+        .find(arg_tail_needle)
+        .or_else(|| squashed[neg_pos..].find(arg_tail_needle_trailing))
+        .map(|p| neg_pos + p)
+        .unwrap_or_else(|| {
+            panic!(
+                "EA-CHR-04 FAIL: arg-order pin `.created_at_ms,now_ms(ctx))` not found after \
+                 `if !is_challenge_stale(` in `battle_challenge_reaper` (squash_ws'd). A \
+                 transposed call `is_challenge_stale(now_ms(ctx), row.created_at_ms)` computes \
+                 a negative elapsed and the reaper permanently no-ops (HIGH gate-hole)."
+            )
+        });
+
+    // Immediate-open shape (MEDIUM gate-hole, red-team finding): the block
+    // following the condition must OPEN with `return Ok(())` — squashed form
+    // `){returnOk(())`.  An empty guard block `{ }` followed by an
+    // unconditional delete satisfies the `if !…` + `return Ok(())` pins but
+    // fires the reaper on every invocation regardless of staleness.
+    let block_open_needle = concat!(")", "{return", "Ok(())");
+    assert!(
+        squashed[arg_tail_pos..].contains(block_open_needle),
+        "EA-CHR-04 FAIL: the guard block does not immediately open with `return Ok(())` — \
+         squashed shape `)<open-brace>returnOk(())` not found after the arg-tail. An empty guard \
+         block `if !is_challenge_stale(...) <open-brace><close-brace>` followed by an unconditional \
+         delete would fire the reaper on every invocation regardless of staleness (MEDIUM gate-hole)."
+    );
+
+    let return_ok_needle = concat!("return", "Ok(())");
+    assert!(
+        squashed[neg_pos..].contains(return_ok_needle),
+        "EA-CHR-04 FAIL: no `return Ok(())` after the `if !is_challenge_stale(` guard in \
+         `battle_challenge_reaper` — an early fire (clock skew) must no-op, never reap a \
+         fresh challenge (plan D7; trade_offer_reaper parity)."
+    );
+
+    // Delete arg-identity pin (MEDIUM gate-hole, red-team finding):
+    // `.delete(args.challenge_id)` — kills `.delete(0)` (decorative reaper that
+    // ships green with only the open-paren needle).  Both `)` and rustfmt
+    // trailing-comma `,)` closing forms are accepted.
+    let delete_needle = concat!("challenge_id()", ".delete(args.challenge_id)");
+    let delete_needle_trailing = concat!("challenge_id()", ".delete(args.challenge_id,)");
+    let delete_pos = squashed
+        .find(delete_needle)
+        .or_else(|| squashed.find(delete_needle_trailing))
+        .unwrap_or_else(|| {
+            panic!(
+                "EA-CHR-04 FAIL: `challenge_id().delete(args.challenge_id)` not found in \
+                 `battle_challenge_reaper` body (squash_ws'd arg-identity pin). A decorative \
+                 `.delete(0)` passes the open-paren needle but reaps the wrong (or no) row — \
+                 the reaper must delete by the scheduled challenge's own id."
+            )
+        });
+
+    assert!(
+        neg_pos < delete_pos,
+        "EA-CHR-04 FAIL: the stale-recheck guard (squashed offset {neg_pos}) must come \
+         BEFORE `challenge_id().delete(args.challenge_id)` (squashed offset {delete_pos}) — \
+         decision-before-irreversible."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EA-CHR-05: battle_challenge_reaper_schedule is baselined AND private
+//
+// (a) The table must appear in evals/baselines/table-schemas.json (append-only
+//     regen, ADR-0116) — otherwise the schema-snapshot eval fires next run.
+// (b) The real table attribute in pvp.rs must NOT contain `public` — clients
+//     must never see or manipulate reaper schedule rows (plan D6;
+//     trade_offer_reaper_schedule precedent).
+//
+// F7 RULE (load-bearing for this file): NO fixture string here may contain an
+// unbroken table-macro attribute prefix — the schema-snapshot eval
+// concatenates ALL .rs files under server-module/src/ INCLUDING this test file, and its
+// parser would treat a fixture as a real table.  This test therefore scans
+// only the REAL attribute (needle-based); macro-shaped fixtures live solely in
+// evals/pvp-challenge-reaper.eval.mjs (never scanned by the snapshot eval).
+//
+// TEETH: kills an impl that forgets the baseline entry (a) or marks the
+//        schedule table `public` (b) — a public schedule table would leak
+//        reap deadlines and invite client-side schedule manipulation.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_chr_05_reaper_schedule_table_baselined_and_private() {
+    // (a) Baseline presence.
+    let table_name = concat!("battle_challenge_", "reaper_schedule");
+    assert!(
+        TABLE_SCHEMAS_JSON.contains(table_name),
+        "EA-CHR-05 FAIL: `{}` not found in evals/baselines/table-schemas.json. \
+         Append the new schedule-table entry to the baseline (append-only, ADR-0116). \
+         RED: table + baseline entry absent (m17.5e).",
+        table_name
+    );
+
+    // (b) The real attribute in pvp.rs has no `public`.
+    let stripped = stripped_pvp_for_scan();
+    let name_needle = concat!("name = ", "battle_challenge_reaper_schedule");
+    let pos = stripped.find(name_needle).unwrap_or_else(|| {
+        panic!(
+            "EA-CHR-05 FAIL: `name = battle_challenge_reaper_schedule` not found in pvp.rs — \
+             the schedule table must be declared there, colocated with its reducer \
+             (trade_offer_reaper_schedule precedent, ADR-0056 exception). \
+             RED: table absent (m17.5e)."
+        )
+    });
+    let attr_start = stripped[..pos]
+        .rfind("#[")
+        .expect("EA-CHR-05: malformed table attribute — no `#[` before the name argument");
+    let attr_end = stripped[pos..]
+        .find(']')
+        .map(|p| pos + p)
+        .expect("EA-CHR-05: malformed table attribute — no closing `]` after the name argument");
+    let attr = &stripped[attr_start..=attr_end];
+    assert!(
+        !attr.contains("public"),
+        "EA-CHR-05 FAIL: the battle_challenge_reaper_schedule table attribute contains \
+         `public` — the schedule table MUST be private (plan D6). Clients must never \
+         see or manipulate reaper schedule rows. Found attribute: {:?}",
+        attr
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EA-CHR-06: schedule_challenge_reaper deadline is ms-floored (plan F2/N5)
+//
+// The deadline MUST be computed from the ms-floored created_at_ms
+// (ADR-0117 D4): created_at_ms×1000 + CHALLENGE_TTL_MS×1000, saturating.
+// The ADJACENT `schedule_deadline` helper in pvp.rs computes from raw
+// now-micros and is the WRONG template (plan §7 copy-risk callout) — the
+// correct clone source is trading.rs `schedule_trade_reaper`.
+//
+// TEETH: kills (a) a units bug — a missing ×1000 fires the reaper ~2 minutes
+//        early, the `!is_challenge_stale` branch no-ops, the runtime consumes
+//        the one-shot row, and the Pending challenge LEAKS FOREVER (plan D7);
+//        (b) a whole-body-replacement mutant that keeps the signature but
+//        drops the schedule insert (survivor-pin, N5).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_chr_06_schedule_challenge_reaper_deadline_ms_floored() {
+    let stripped = stripped_pvp_for_scan();
+    let body = extract_pvp_fn_body(&stripped, "schedule_challenge_reaper").unwrap_or_else(|| {
+        panic!(
+            "EA-CHR-06 FAIL: `schedule_challenge_reaper` helper not found in pvp.rs — \
+             the arm helper does not exist yet. RED: m17.5e helper absent."
+        )
+    });
+    let squashed = squash_ws(body);
+
+    // (a) ms-floored deadline expression (squash_ws'd; rustfmt-proof).
+    let deadline_needle = concat!(
+        "created_at_ms.saturating_mul(1_000)",
+        ".saturating_add(CHALLENGE_TTL_MS.saturating_mul(1_000))"
+    );
+    assert!(
+        squashed.contains(deadline_needle),
+        "EA-CHR-06 FAIL: the ms-floored deadline expression \
+         created_at_ms×1000 + CHALLENGE_TTL_MS×1000 (both saturating, ADR-0117 D4) was \
+         not found in `schedule_challenge_reaper` body. A missing ×1000 fires the reaper \
+         early → the stale re-check no-ops → the one-shot schedule row is consumed → the \
+         Pending challenge leaks forever (plan D7). Do NOT clone the adjacent \
+         `schedule_deadline` (now-based); clone trading.rs `schedule_trade_reaper`."
+    );
+
+    // (b) Survivor-pin: the schedule-row insert must be present.
+    let insert_needle = concat!("battle_challenge_reaper_schedule", "().insert(");
+    assert!(
+        squashed.contains(insert_needle),
+        "EA-CHR-06 FAIL: `battle_challenge_reaper_schedule().insert(` not found in \
+         `schedule_challenge_reaper` body — the arm helper must insert the one-shot \
+         schedule row (survivor-pin, plan N5: kills body-replacement mutants)."
     );
 }

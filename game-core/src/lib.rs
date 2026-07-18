@@ -32,11 +32,11 @@ mod m8c_gating_tests;
 pub use combat::{
     accuracy_check, apply_ability_modifiers, apply_entry_ability, apply_post_turn_effects,
     apply_pre_turn_effects, apply_xp_gain, base_stat_total, battle_xp_reward, calc_damage,
-    pick_best_skill, practice_xp_reward, pvp_deadline_forfeit_side, pvp_forfeit_outcome,
-    resolve_enemy_turn, resolve_full_turn, resolve_player_swap, resolve_turn, tick_status,
-    AbilityEffect, AbilityStore, BattleEvent, BattleMonster, BattleOutcome, BattleSide,
-    BattleState, BattleStatusStore, Effectiveness, PvpAction, SideId, StatusEffect, StatusKind,
-    StatusVariance, TurnChoice, TurnVariance, TypeChart,
+    is_challenge_stale, pick_best_skill, practice_xp_reward, pvp_deadline_forfeit_side,
+    pvp_forfeit_outcome, resolve_enemy_turn, resolve_full_turn, resolve_player_swap, resolve_turn,
+    tick_status, AbilityEffect, AbilityStore, BattleEvent, BattleMonster, BattleOutcome,
+    BattleSide, BattleState, BattleStatusStore, Effectiveness, PvpAction, SideId, StatusEffect,
+    StatusKind, StatusVariance, TurnChoice, TurnVariance, TypeChart, CHALLENGE_TTL_MS,
 };
 pub use content::{
     load_abilities, load_dialogue_trees, load_encounters, load_evolutions, load_fusion,

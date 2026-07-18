@@ -3,6 +3,9 @@
 //! PvP battle orchestration: challenge handshake, secret-pick submission,
 //! both-submit resolution via the existing symmetric `resolve_full_turn`, and
 //! liveness (turn-deadline scheduled reaper + forfeit-on-disconnect).
+//! Challenge liveness: a scheduled TTL reaper deletes Pending challenges older
+//! than `CHALLENGE_TTL_MS` (17.5e-1, ADR-0126); every challenge-deletion path
+//! disarms its schedule row.
 //!
 //! Design invariants (ADR-0109):
 //! - `battle_action` is PRIVATE (must-never-leak). Clients detect turn resolution
@@ -40,9 +43,9 @@ use crate::schema::{
 };
 use crate::WILD_IDENTITY;
 use game_core::{
-    apply_entry_ability, load_abilities, pvp_deadline_forfeit_side, pvp_forfeit_outcome,
-    resolve_full_turn, BattleMonster, BattleOutcome, BattleSide, BattleState, BattleStatusStore,
-    PvpAction, SideId, StatusVariance, TurnVariance,
+    apply_entry_ability, is_challenge_stale, load_abilities, pvp_deadline_forfeit_side,
+    pvp_forfeit_outcome, resolve_full_turn, BattleMonster, BattleOutcome, BattleSide, BattleState,
+    BattleStatusStore, PvpAction, SideId, StatusVariance, TurnVariance, CHALLENGE_TTL_MS,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 
@@ -90,6 +93,71 @@ fn schedule_deadline(ctx: &ReducerContext, battle_id: u64, turn_number: u16) {
         turn_number,
     });
 }
+
+// ===========================================================================
+// Challenge TTL reaper (17.5e-1, ADR-0126) — clone of the trade_offer_reaper
+// (16.5f-4, ADR-0117)
+// ===========================================================================
+
+// Scheduled table colocated with its reducer (ADR-0056 exception, mirrors pvp_deadline_schedule).
+// PRIVATE — prevents client schedule manipulation; the underlying facts are already public via battle_challenge.
+#[spacetimedb::table(name = battle_challenge_reaper_schedule, scheduled(battle_challenge_reaper))]
+pub struct BattleChallengeReaperSchedule {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    /// The battle challenge this schedule guards (auto_inc — never reused, no ABA).
+    #[index(btree)]
+    pub challenge_id: u64,
+}
+
+/// Arm the TTL reaper for a newly-inserted challenge.
+///
+/// The deadline is computed FROM THE MS-FLOORED `created_at_ms` (not raw micros) —
+/// kills the ms-truncation edge where the schedule could fire fractionally before
+/// `is_challenge_stale`'s ms clock reaches the TTL boundary (ADR-0117 D4). The
+/// adjacent `schedule_deadline` computes from raw now-micros and is NOT the
+/// template here — this is a clone of trading.rs `schedule_trade_reaper`.
+fn schedule_challenge_reaper(ctx: &ReducerContext, challenge_id: u64, created_at_ms: i64) {
+    let deadline_micros = created_at_ms
+        .saturating_mul(1_000)
+        .saturating_add(CHALLENGE_TTL_MS.saturating_mul(1_000));
+    ctx.db
+        .battle_challenge_reaper_schedule()
+        .insert(BattleChallengeReaperSchedule {
+            scheduled_id: 0, // auto_inc
+            scheduled_at: ScheduleAt::Time(spacetimedb::Timestamp::from_micros_since_unix_epoch(
+                deadline_micros,
+            )),
+            challenge_id,
+        });
+}
+
+/// Disarm the reaper schedule(s) for `challenge_id`. Called at every
+/// challenge-deletion site so no orphaned schedule row survives its challenge
+/// (ADR-0126). Collect-before-delete (mirrors `disarm_trade_reaper`): gather
+/// the scheduled_ids via the challenge_id btree filter first, then delete each
+/// via the primary key.
+fn disarm_challenge_reaper(ctx: &ReducerContext, challenge_id: u64) {
+    let scheduled_ids: Vec<u64> = ctx
+        .db
+        .battle_challenge_reaper_schedule()
+        .challenge_id()
+        .filter(challenge_id)
+        .map(|s| s.scheduled_id)
+        .collect();
+    for sid in scheduled_ids {
+        ctx.db
+            .battle_challenge_reaper_schedule()
+            .scheduled_id()
+            .delete(sid);
+    }
+}
+
+// ===========================================================================
+// Internal helpers (continued)
+// ===========================================================================
 
 /// Returns true if `identity` has any active (Pending) challenge as challenger.
 fn has_active_outgoing_challenge(ctx: &ReducerContext, identity: Identity) -> bool {
@@ -564,6 +632,7 @@ pub(crate) fn cancel_challenges_on_disconnect(ctx: &ReducerContext, player: Iden
         .collect();
     for id in pending_ids {
         ctx.db.battle_challenge().challenge_id().delete(id);
+        disarm_challenge_reaper(ctx, id);
     }
 }
 
@@ -582,6 +651,7 @@ pub(crate) fn cancel_challenges_on_disconnect(ctx: &ReducerContext, player: Iden
 /// 6. Caller has no active outgoing challenge; target has no active incoming challenge targeting caller.
 /// 7. Each party monster: exists, owned, party-slotted, not in trade.
 /// 8. Insert BattleChallenge (the only irreversible effect).
+/// 9. Arm TTL reaper (post-insert).
 #[spacetimedb::reducer]
 pub fn challenge_pvp(
     ctx: &ReducerContext,
@@ -710,6 +780,10 @@ pub fn challenge_pvp(
         created_at_ms: now_ms(ctx),
     });
 
+    // Guard 9: arm the TTL reaper (post-insert — the auto_inc challenge_id only
+    // exists once the insert returns; ADR-0126).
+    schedule_challenge_reaper(ctx, challenge.challenge_id, challenge.created_at_ms);
+
     log::info!(
         "{{\"evt\":\"pvp_challenge\",\"challenge_id\":{},\"challenger\":\"{me}\",\"target\":\"{target}\"}}",
         challenge.challenge_id
@@ -811,6 +885,7 @@ pub fn accept_challenge(
         .battle_challenge()
         .challenge_id()
         .delete(challenge_id);
+    disarm_challenge_reaper(ctx, challenge_id);
 
     log::info!(
         "{{\"evt\":\"pvp_accept\",\"challenge_id\":{challenge_id},\"battle_id\":{battle_id},\"target\":\"{me}\"}}"
@@ -848,6 +923,7 @@ pub fn decline_challenge(ctx: &ReducerContext, challenge_id: u64) -> Result<(), 
         .battle_challenge()
         .challenge_id()
         .delete(challenge_id);
+    disarm_challenge_reaper(ctx, challenge_id);
     log::info!("{{\"evt\":\"pvp_decline\",\"challenge_id\":{challenge_id},\"decliner\":\"{me}\"}}");
     Ok(())
 }
@@ -882,6 +958,7 @@ pub fn cancel_challenge(ctx: &ReducerContext, challenge_id: u64) -> Result<(), S
         .battle_challenge()
         .challenge_id()
         .delete(challenge_id);
+    disarm_challenge_reaper(ctx, challenge_id);
     log::info!("{{\"evt\":\"pvp_cancel\",\"challenge_id\":{challenge_id},\"canceller\":\"{me}\"}}");
     Ok(())
 }
@@ -994,6 +1071,48 @@ pub fn submit_pvp_action(
 
     // Guard 8: resolve the turn if both sides have now submitted.
     resolve_pvp_turn_if_ready(ctx, battle_id)
+}
+
+/// Scheduled reaper: delete a Pending battle challenge that has outlived
+/// `CHALLENGE_TTL_MS` (17.5e-1, ADR-0126).
+///
+/// This is a SCHEDULER-ONLY reducer — clients must never call it directly.
+/// Guard: `ctx.sender != ctx.identity()` (identical to `pvp_deadline_reaper`,
+/// ADR-0056). Staleness is re-checked via `is_challenge_stale` so an early
+/// fire or clock skew never reaps a fresh challenge. No status re-check:
+/// non-Pending rows never persist (ADR-0109 D6), so the existence check is
+/// the only row-state defense needed.
+///
+/// No self-disarm: one-shot `ScheduleAt::Time` rows are deleted BY THE RUNTIME
+/// after the reducer returns ("Scheduled reducers delete the row after execution"
+/// — SpacetimeDB docs, schedule-tables §Row Lifecycle; ADR-0109 D7 precedent).
+/// A self-delete here would race the runtime's post-execution delete.
+#[spacetimedb::reducer]
+pub fn battle_challenge_reaper(
+    ctx: &ReducerContext,
+    args: BattleChallengeReaperSchedule,
+) -> Result<(), String> {
+    if ctx.sender != ctx.identity() {
+        return Err("battle_challenge_reaper is scheduler-only".to_string());
+    }
+    let Some(challenge) = ctx
+        .db
+        .battle_challenge()
+        .challenge_id()
+        .find(args.challenge_id)
+    else {
+        return Ok(()); // challenge accepted/declined/cancelled before TTL — no-op (schedule row was consumed on fire)
+    };
+    if !is_challenge_stale(challenge.created_at_ms, now_ms(ctx)) {
+        return Ok(()); // defensive: fired early/clock skew — never reap a fresh challenge
+    }
+    let challenge_id = args.challenge_id;
+    log::info!("{{\"evt\":\"battle_challenge_reaped\",\"challenge_id\":{challenge_id}}}");
+    ctx.db
+        .battle_challenge()
+        .challenge_id()
+        .delete(args.challenge_id);
+    Ok(())
 }
 
 /// Scheduled reaper: forfeit the non-submitting side when the turn deadline fires.

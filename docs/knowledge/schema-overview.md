@@ -2,9 +2,9 @@
 type: Schema Overview
 title: Monster Realm Schema Overview
 slug: schema-overview
-updated: 2026-07-17
+updated: 2026-07-18
 tags: [schema, spacetimedb, overview]
-abstract: "31-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 39 reducers."
+abstract: "32-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 40 reducers."
 source: scripts/okf-export.mjs@server-module/src/
 ---
 
@@ -33,9 +33,10 @@ source: scripts/okf-export.mjs@server-module/src/
 - [type_relation_row](tables/type_relation_row.md)
 - [zone_def](tables/zone_def.md)
 
-### Private (11)
+### Private (12)
 
 - [battle_action](tables/battle_action.md)
+- [battle_challenge_reaper_schedule](tables/battle_challenge_reaper_schedule.md)
 - [battle_wild](tables/battle_wild.md)
 - [encounter](tables/encounter.md)
 - [heal_cooldown](tables/heal_cooldown.md)
@@ -47,11 +48,12 @@ source: scripts/okf-export.mjs@server-module/src/
 - [pvp_deadline_schedule](tables/pvp_deadline_schedule.md)
 - [trade_offer_reaper_schedule](tables/trade_offer_reaper_schedule.md)
 
-## Reducers (39)
+## Reducers (40)
 
 - [accept_challenge](reducers/accept_challenge.md)
 - [advance_dialogue](reducers/advance_dialogue.md)
 - [attempt_recruit](reducers/attempt_recruit.md)
+- [battle_challenge_reaper](reducers/battle_challenge_reaper.md)
 - [buy](reducers/buy.md)
 - [cancel_challenge](reducers/cancel_challenge.md)
 - [cancel_trade](reducers/cancel_trade.md)
