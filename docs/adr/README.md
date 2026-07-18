@@ -10,7 +10,7 @@ Architecture Decision Records live in **two locations**; check both.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0124`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0125`**.
 
 **ADR numbering collision note:** the harness spec corpus also contains design
 ADRs numbered `0055`–`0057`; these cover the *same topics* as this project's
@@ -116,6 +116,7 @@ prefix `harness adr/0055` to cite the harness design ADR.
 | [0121](./0121-m17c-ranked-evals-tail.md) | m17c ranked evals tail: sql-based server-truth e2e, checker-import reuse, no-op-body hardening | m17c |
 | [0122](./0122-both-role-ongoing-battle-guard-ssot.md) | m17.5a both-role ongoing-battle guard SSOT — close side-B PvP damage-laundering exploit | m17.5a |
 | [0123](./0123-trade-swap-debits-before-credits-ordering.md) | m17.5b trade swap debits-before-credits ordering: apply-order contract + netted currency headroom | m17.5b |
+| [0124](./0124-shop-receiver-cap-headroom.md) | m17.5c shop receiver-cap headroom: reject-not-destroy on buy/sell — factor check_item_headroom/check_currency_headroom out of check_headroom (SSOT per axis), enforce before spend/consume | m17.5c |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
