@@ -1839,7 +1839,8 @@ fn ea_chr_01_challenge_pvp_arms_reaper_after_insert_with_exact_args() {
 
 // ---------------------------------------------------------------------------
 // EA-CHR-02: disarm_challenge_reaper called at ALL FOUR challenge-deletion
-//            sites (plan D4; mirrors EA-REAPER-02)
+//            sites (plan D4; mirrors EA-REAPER-02) AND the helper body is
+//            non-trivial (survivor-pin against no-op body mutant)
 //
 // The four sites are EXACTLY the deletion set (plan F8 whole-tree grep):
 //   1. accept_challenge   — post-battle-creation delete
@@ -1847,35 +1848,102 @@ fn ea_chr_01_challenge_pvp_arms_reaper_after_insert_with_exact_args() {
 //   3. cancel_challenge   — challenger withdraws
 //   4. cancel_challenges_on_disconnect — bulk delete loop
 //
-// TEETH: kills an impl that adds the disarm to only SOME of the four sites.
-//        A missed site leaves an orphaned schedule row whose reaper fires a
-//        no-op later (wasted scheduler slot; challenge_id is auto_inc so no
-//        ABA, but the invariant "every deletion site disarms" keeps this gate
-//        un-gameable).
+// BODY PINS (m17.5d survivor-pin technique — mutation-testing found a missed
+// mutant: `replace disarm_challenge_reaper with ()`): a no-op body passes all
+// call-site checks above but leaves orphaned schedule rows that then fire as
+// no-ops.  Two shape-based needles pin the collect-before-delete pattern
+// (mirrors disarm_trade_reaper, ADR-0117):
+//   (a) `.challenge_id().filter(` — the btree filter that gathers scheduled_ids
+//   (b) `.scheduled_id().delete(` — the per-pk delete that removes each row
+// Variable-name-agnostic: matches any local binding.
+//
+// TEETH: kills (i) an impl that adds the disarm to only SOME of the four sites;
+//        (ii) a no-op / empty-body disarm that passes the call-site check but
+//        never actually deletes the schedule row; (iii) a body that deletes by
+//        challenge_id directly (if the API changes, this would silent-fail on
+//        0 rows and not enforce the per-pk contract).
 // ---------------------------------------------------------------------------
 
 #[test]
 fn ea_chr_02_disarm_called_at_all_challenge_deletion_sites() {
     let stripped = stripped_pvp_for_scan();
-    let disarm_needle = concat!("disarm_challenge_", "reaper(");
 
-    for fn_name in [
-        "accept_challenge",
-        "decline_challenge",
-        "cancel_challenge",
-        "cancel_challenges_on_disconnect",
-    ] {
+    // Per-site arg-identity pins (LOW gate-hole, red-team finding):
+    // `disarm_challenge_reaper(ctx, 0)` passes a presence-only check but arms
+    // the disarm for a non-existent id, leaving the real schedule row orphaned.
+    // Three reducers pass `challenge_id` (the row's own id); the disconnect
+    // bulk loop passes `id` (the loop variable over collected pending_ids).
+    // Both `)` and rustfmt trailing-comma `,)` closing forms are accepted.
+    //
+    // Structure: (fn_name, squashed_call_needle, squashed_call_needle_trailing)
+    let sites: &[(&str, &str, &str)] = &[
+        (
+            "accept_challenge",
+            concat!("disarm_challenge_", "reaper(ctx,challenge_id)"),
+            concat!("disarm_challenge_", "reaper(ctx,challenge_id,)"),
+        ),
+        (
+            "decline_challenge",
+            concat!("disarm_challenge_", "reaper(ctx,challenge_id)"),
+            concat!("disarm_challenge_", "reaper(ctx,challenge_id,)"),
+        ),
+        (
+            "cancel_challenge",
+            concat!("disarm_challenge_", "reaper(ctx,challenge_id)"),
+            concat!("disarm_challenge_", "reaper(ctx,challenge_id,)"),
+        ),
+        (
+            "cancel_challenges_on_disconnect",
+            concat!("disarm_challenge_", "reaper(ctx,id)"),
+            concat!("disarm_challenge_", "reaper(ctx,id,)"),
+        ),
+    ];
+
+    for (fn_name, call_needle, call_needle_trailing) in sites {
         let body = extract_pvp_fn_body(&stripped, fn_name)
             .unwrap_or_else(|| panic!("EA-CHR-02: `{fn_name}` function not found in pvp.rs"));
+        let squashed = squash_ws(body);
+        let found = squashed.contains(call_needle) || squashed.contains(call_needle_trailing);
         assert!(
-            body.contains(disarm_needle),
-            "EA-CHR-02 FAIL: `{fn_name}` deletes the battle_challenge row but does not \
-             call `disarm_challenge_reaper`. The scheduled reaper row survives its \
-             challenge and fires a no-op later, leaving an orphaned schedule row \
-             (plan D4: EVERY deletion site disarms — EA-REAPER-02 parity). \
-             RED: disarm helper absent (m17.5e)."
+            found,
+            "EA-CHR-02 FAIL: `{fn_name}` is missing the arg-identity disarm call \
+             `{call_needle}` (squash_ws'd). A literal-0 call `disarm_challenge_reaper(ctx, 0)` \
+             passes a presence-only check but disarms the wrong (non-existent) schedule row — \
+             the real schedule row survives and fires as an orphaned no-op later. \
+             Plan D4: EVERY deletion site must disarm with the ACTUAL challenge id \
+             (EA-REAPER-02 parity). RED: disarm with correct arg absent (m17.5e)."
         );
     }
+
+    // Body survivor-pins: extract disarm_challenge_reaper itself and verify
+    // the collect-before-delete shape is present (kills no-op body mutant).
+    let disarm_body =
+        extract_pvp_fn_body(&stripped, "disarm_challenge_reaper").unwrap_or_else(|| {
+            panic!(
+                "EA-CHR-02 FAIL: `disarm_challenge_reaper` function not found in pvp.rs — \
+                 the helper does not exist yet. RED: m17.5e disarm helper absent."
+            )
+        });
+    let disarm_squashed = squash_ws(disarm_body);
+
+    // (a) btree filter collect: gathers scheduled_ids by challenge_id index.
+    let filter_needle = concat!(".challenge_id()", ".filter(");
+    assert!(
+        disarm_squashed.contains(filter_needle),
+        "EA-CHR-02 FAIL: `disarm_challenge_reaper` body is missing `.challenge_id().filter(` \
+         (squash_ws'd) — the helper must gather schedule rows via the btree index before \
+         deleting them (collect-before-delete pattern, mirrors disarm_trade_reaper ADR-0117). \
+         A no-op or empty body fails this pin (survivor-pin against body-replacement mutant)."
+    );
+
+    // (b) per-pk delete: removes each row by scheduled_id primary key.
+    let delete_needle = concat!(".scheduled_id()", ".delete(");
+    assert!(
+        disarm_squashed.contains(delete_needle),
+        "EA-CHR-02 FAIL: `disarm_challenge_reaper` body is missing `.scheduled_id().delete(` \
+         (squash_ws'd) — the helper must delete each schedule row via its primary key. \
+         A no-op body or one that only filters without deleting fails this pin."
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1997,19 +2065,28 @@ fn ea_chr_04_challenge_reaper_stale_recheck_guards_the_delete() {
          fresh challenge (plan D7; trade_offer_reaper parity)."
     );
 
-    let delete_needle = concat!("challenge_id()", ".delete(");
-    let delete_pos = squashed.find(delete_needle).unwrap_or_else(|| {
-        panic!(
-            "EA-CHR-04 FAIL: `challenge_id().delete(` not found in `battle_challenge_reaper` \
-             body — the reaper never deletes the stale challenge row. Body-scoped: the \
-             accept/decline/cancel delete sites cannot satisfy this pin."
-        )
-    });
+    // Delete arg-identity pin (MEDIUM gate-hole, red-team finding):
+    // `.delete(args.challenge_id)` — kills `.delete(0)` (decorative reaper that
+    // ships green with only the open-paren needle).  Both `)` and rustfmt
+    // trailing-comma `,)` closing forms are accepted.
+    let delete_needle = concat!("challenge_id()", ".delete(args.challenge_id)");
+    let delete_needle_trailing = concat!("challenge_id()", ".delete(args.challenge_id,)");
+    let delete_pos = squashed
+        .find(delete_needle)
+        .or_else(|| squashed.find(delete_needle_trailing))
+        .unwrap_or_else(|| {
+            panic!(
+                "EA-CHR-04 FAIL: `challenge_id().delete(args.challenge_id)` not found in \
+                 `battle_challenge_reaper` body (squash_ws'd arg-identity pin). A decorative \
+                 `.delete(0)` passes the open-paren needle but reaps the wrong (or no) row — \
+                 the reaper must delete by the scheduled challenge's own id."
+            )
+        });
 
     assert!(
         neg_pos < delete_pos,
         "EA-CHR-04 FAIL: the stale-recheck guard (squashed offset {neg_pos}) must come \
-         BEFORE `challenge_id().delete(` (squashed offset {delete_pos}) — \
+         BEFORE `challenge_id().delete(args.challenge_id)` (squashed offset {delete_pos}) — \
          decision-before-irreversible."
     );
 }

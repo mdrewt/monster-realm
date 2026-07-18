@@ -212,48 +212,109 @@ function checkChalReaperStaleCheck(reaperBody) {
 // ---------------------------------------------------------------------------
 // Criterion: CHAL_REAPER_DELETES
 // battle_challenge_reaper body must delete the challenge row via
-// challenge_id().delete( — body-scoped, so the accept/decline/cancel delete
-// sites cannot satisfy it.
-// bad fixture: no delete → must flag.  good fixture: delete present.
+// challenge_id().delete(args.challenge_id) — arg-identity pin (MEDIUM gate-hole
+// red-team finding): `.delete(0)` passes an open-paren-only needle but reaps
+// the wrong row and ships as a decorative green reaper.  Both `)` and rustfmt
+// trailing-comma `,)` closing forms are accepted.
+// bad fixtures: no delete / .delete(0) → must flag.  good fixture: delete present.
 // ---------------------------------------------------------------------------
 function checkChalReaperDeletes(reaperBody) {
   if (!reaperBody) return { ok: false, reason: 'battle_challenge_reaper function not found' };
   const code = scanCode(reaperBody);
-  if (code.indexOf('challenge_id().delete(') === -1)
+  const deletePin = 'challenge_id().delete(args.challenge_id)';
+  const deletePinTrailing = 'challenge_id().delete(args.challenge_id,)';
+  if (code.indexOf(deletePin) === -1 && code.indexOf(deletePinTrailing) === -1)
     return {
       ok: false,
-      reason: 'battle_challenge_reaper body missing challenge_id().delete( call',
+      reason:
+        'battle_challenge_reaper body missing challenge_id().delete(args.challenge_id) — ' +
+        'arg-identity pin: .delete(0) or any wrong-id delete passes the open-paren needle ' +
+        'but reaps the wrong row (MEDIUM gate-hole)',
     };
   return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
 // Criterion: CHAL_REAPER_DISARM
-// disarm_challenge_reaper( must appear in each of the four challenge-deletion
-// function bodies (plan D4 — every deletion site disarms, EA-REAPER-02 parity):
-// accept_challenge, decline_challenge, cancel_challenge,
-// cancel_challenges_on_disconnect.
-// bad fixture: one site missing the disarm → must flag.  good fixture: all four.
+// disarm_challenge_reaper must appear at all four deletion sites with the ACTUAL
+// challenge id as the second arg — a literal-0 call passes a presence-only check
+// but disarms the wrong (non-existent) schedule row (LOW gate-hole, red-team
+// finding).  Per-site arg-identity pins (squash_ws'd, `,)` form accepted):
+//   accept_challenge / decline_challenge / cancel_challenge → (ctx, challenge_id)
+//   cancel_challenges_on_disconnect loop                    → (ctx, id)
+// The helper body must also be non-trivial (m17.5d survivor-pin technique —
+// mutation-testing found `replace disarm_challenge_reaper with ()` missed):
+//   (a) .challenge_id().filter( — btree collect of scheduled_ids
+//   (b) .scheduled_id().delete( — per-pk delete of each row
+// bad fixtures: missing site / literal-0 arg / empty-body.
+// good fixture: all four sites with correct args + real body.
 // ---------------------------------------------------------------------------
 function checkChalReaperDisarm(pvpSrc) {
   const missing = [];
-  for (const fn of [
-    'accept_challenge',
-    'decline_challenge',
-    'cancel_challenge',
-    'cancel_challenges_on_disconnect',
-  ]) {
+  // Per-site arg-identity checks: (fn_name, squashed needle, trailing-comma form).
+  const sites = [
+    [
+      'accept_challenge',
+      'disarm_challenge_reaper(ctx,challenge_id)',
+      'disarm_challenge_reaper(ctx,challenge_id,)',
+    ],
+    [
+      'decline_challenge',
+      'disarm_challenge_reaper(ctx,challenge_id)',
+      'disarm_challenge_reaper(ctx,challenge_id,)',
+    ],
+    [
+      'cancel_challenge',
+      'disarm_challenge_reaper(ctx,challenge_id)',
+      'disarm_challenge_reaper(ctx,challenge_id,)',
+    ],
+    [
+      'cancel_challenges_on_disconnect',
+      'disarm_challenge_reaper(ctx,id)',
+      'disarm_challenge_reaper(ctx,id,)',
+    ],
+  ];
+  for (const [fn, needle, needleTrailing] of sites) {
     const body = extractFunctionBody(pvpSrc, fn);
     if (!body) {
       missing.push(`${fn} (function not found)`);
       continue;
     }
     const code = scanCode(body);
-    if (code.indexOf('disarm_challenge_reaper(') === -1) {
-      missing.push(fn);
+    if (code.indexOf(needle) === -1 && code.indexOf(needleTrailing) === -1) {
+      missing.push(`${fn} (arg-identity pin failed: expected ${needle})`);
     }
   }
   if (missing.length > 0) return { ok: false, missing };
+
+  // Body survivor-pins: verify the disarm helper is non-trivial.
+  const disarmBody = extractFunctionBody(pvpSrc, 'disarm_challenge_reaper');
+  if (!disarmBody)
+    return {
+      ok: false,
+      missing: [],
+      reason: 'disarm_challenge_reaper function not found',
+    };
+  const disarmCode = scanCode(disarmBody);
+  // (a) btree filter collect.
+  if (disarmCode.indexOf('.challenge_id().filter(') === -1)
+    return {
+      ok: false,
+      missing: [],
+      reason:
+        'disarm_challenge_reaper body missing .challenge_id().filter( ' +
+        '(collect-before-delete btree gather — no-op body survivor-pin)',
+    };
+  // (b) per-pk delete.
+  if (disarmCode.indexOf('.scheduled_id().delete(') === -1)
+    return {
+      ok: false,
+      missing: [],
+      reason:
+        'disarm_challenge_reaper body missing .scheduled_id().delete( ' +
+        '(collect-before-delete per-pk remove — no-op body survivor-pin)',
+    };
+
   return { ok: true, missing: [] };
 }
 
@@ -563,6 +624,23 @@ export default async function () {
       };
     }
   }
+  // CHAL_REAPER_DELETES: bad — decorative .delete(0) (MEDIUM gate-hole fix).
+  // A literal-0 delete passes the open-paren needle but reaps a non-existent row.
+  const badDeleteLiteralZero =
+    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender != ctx.identity() { return Err("".to_string()); } if !is_challenge_stale(row.created_at_ms, now_ms(ctx)) { return Ok(()); } ctx.db.battle_challenge().challenge_id().delete(0); Ok(()) }';
+  {
+    const r = checkChalReaperDeletes(badDeleteLiteralZero);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (CHAL_REAPER_DELETES bad-literal-zero): checker passed fixture with ' +
+          '.delete(0) — a decorative reaper that reaps a non-existent row ships green without ' +
+          'the arg-identity pin (MEDIUM gate-hole)',
+      };
+    }
+  }
   // CHAL_REAPER_DELETES: good fixture.
   {
     const r = checkChalReaperDeletes(goodStale);
@@ -593,19 +671,71 @@ export default async function () {
       };
     }
   }
-  // CHAL_REAPER_DISARM: good fixture — all four sites disarm.
-  const goodDisarmSrc =
+  // CHAL_REAPER_DISARM: bad — all four call sites present with correct args but
+  // the helper body is a no-op (survivor-pin: `replace disarm_challenge_reaper
+  // with ()` mutant).  Orphaned schedule rows survive and fire as no-ops later.
+  // Disconnect loop uses `id` (the loop variable) — the correct arg.
+  const badDisarmNoopBody =
+    'fn disarm_challenge_reaper(ctx: &ReducerContext, challenge_id: u64) { } ' +
     'fn accept_challenge(ctx: &ReducerContext, challenge_id: u64) { disarm_challenge_reaper(ctx, challenge_id); ctx.db.battle_challenge().challenge_id().delete(challenge_id); Ok(()) } ' +
     'fn decline_challenge(ctx: &ReducerContext, challenge_id: u64) { disarm_challenge_reaper(ctx, challenge_id); ctx.db.battle_challenge().challenge_id().delete(challenge_id); Ok(()) } ' +
     'fn cancel_challenge(ctx: &ReducerContext, challenge_id: u64) { disarm_challenge_reaper(ctx, challenge_id); ctx.db.battle_challenge().challenge_id().delete(challenge_id); Ok(()) } ' +
-    'fn cancel_challenges_on_disconnect(ctx: &ReducerContext, player: Identity) { disarm_challenge_reaper(ctx, 0); ctx.db.battle_challenge().challenge_id().delete(0); }';
+    'fn cancel_challenges_on_disconnect(ctx: &ReducerContext, player: Identity) { for id in pending_ids { disarm_challenge_reaper(ctx, id); ctx.db.battle_challenge().challenge_id().delete(id); } }';
+  {
+    const r = checkChalReaperDisarm(badDisarmNoopBody);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (CHAL_REAPER_DISARM bad-noop-body): checker passed fixture where ' +
+          'disarm_challenge_reaper has an empty body — no-op disarm leaves orphaned schedule ' +
+          'rows (survivor-pin body check has no teeth)',
+      };
+    }
+  }
+  // CHAL_REAPER_DISARM: bad — literal-0 arg at accept_challenge (LOW gate-hole fix).
+  // disarm_challenge_reaper(ctx, 0) passes a presence-only check but disarms the
+  // wrong (non-existent) schedule row; the real schedule row survives orphaned.
+  const badDisarmLiteralZero =
+    'fn disarm_challenge_reaper(ctx: &ReducerContext, challenge_id: u64) { ' +
+    'let ids: Vec<u64> = ctx.db.battle_challenge_reaper_schedule().challenge_id().filter(challenge_id).map(|s| s.scheduled_id).collect(); ' +
+    'for sid in ids { ctx.db.battle_challenge_reaper_schedule().scheduled_id().delete(sid); } } ' +
+    'fn accept_challenge(ctx: &ReducerContext, challenge_id: u64) { disarm_challenge_reaper(ctx, 0); ctx.db.battle_challenge().challenge_id().delete(challenge_id); Ok(()) } ' +
+    'fn decline_challenge(ctx: &ReducerContext, challenge_id: u64) { disarm_challenge_reaper(ctx, challenge_id); ctx.db.battle_challenge().challenge_id().delete(challenge_id); Ok(()) } ' +
+    'fn cancel_challenge(ctx: &ReducerContext, challenge_id: u64) { disarm_challenge_reaper(ctx, challenge_id); ctx.db.battle_challenge().challenge_id().delete(challenge_id); Ok(()) } ' +
+    'fn cancel_challenges_on_disconnect(ctx: &ReducerContext, player: Identity) { for id in pending_ids { disarm_challenge_reaper(ctx, id); ctx.db.battle_challenge().challenge_id().delete(id); } }';
+  {
+    const r = checkChalReaperDisarm(badDisarmLiteralZero);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (CHAL_REAPER_DISARM bad-literal-zero): checker passed fixture where ' +
+          'accept_challenge calls disarm_challenge_reaper(ctx, 0) — literal-0 disarms the wrong ' +
+          'row and leaves the real schedule row orphaned (LOW gate-hole arg-identity pin)',
+      };
+    }
+  }
+  // CHAL_REAPER_DISARM: good fixture — all four sites with correct args, and
+  // the helper body contains both collect-before-delete shape pins.
+  // Disconnect loop uses `id` (the loop variable), matching the real implementation.
+  const goodDisarmSrc =
+    'fn disarm_challenge_reaper(ctx: &ReducerContext, challenge_id: u64) { ' +
+    'let ids: Vec<u64> = ctx.db.battle_challenge_reaper_schedule().challenge_id().filter(challenge_id).map(|s| s.scheduled_id).collect(); ' +
+    'for sid in ids { ctx.db.battle_challenge_reaper_schedule().scheduled_id().delete(sid); } } ' +
+    'fn accept_challenge(ctx: &ReducerContext, challenge_id: u64) { disarm_challenge_reaper(ctx, challenge_id); ctx.db.battle_challenge().challenge_id().delete(challenge_id); Ok(()) } ' +
+    'fn decline_challenge(ctx: &ReducerContext, challenge_id: u64) { disarm_challenge_reaper(ctx, challenge_id); ctx.db.battle_challenge().challenge_id().delete(challenge_id); Ok(()) } ' +
+    'fn cancel_challenge(ctx: &ReducerContext, challenge_id: u64) { disarm_challenge_reaper(ctx, challenge_id); ctx.db.battle_challenge().challenge_id().delete(challenge_id); Ok(()) } ' +
+    'fn cancel_challenges_on_disconnect(ctx: &ReducerContext, player: Identity) { for id in pending_ids { disarm_challenge_reaper(ctx, id); ctx.db.battle_challenge().challenge_id().delete(id); } }';
   {
     const r = checkChalReaperDisarm(goodDisarmSrc);
     if (!r.ok) {
       return {
         name,
         pass: false,
-        detail: `TEETH FAILED (CHAL_REAPER_DISARM good): checker rejected valid fixture (missing: ${r.missing.join(', ')})`,
+        detail: `TEETH FAILED (CHAL_REAPER_DISARM good): checker rejected valid fixture: ${JSON.stringify(r)}`,
       };
     }
   }
