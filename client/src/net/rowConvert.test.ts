@@ -1,7 +1,7 @@
 // rowConvert — SDK generated row -> normalized store row (M4a + M6c extension).
 // M6c adds monsterPubRowToStore and speciesRowToStore.
 // M9c adds inventoryRowToStore and itemRowToStore.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   battleRowToStore,
   characterRowToStore,
@@ -1771,5 +1771,355 @@ describe('rowConvert m17b: profileRowToStore — edge cases (RC-PR-03 / RC-PR-04
     const stored = profileRowToStore(sdk);
     expect(stored.rating).toBe(-42);
     expect(typeof stored.rating).toBe('number');
+  });
+});
+
+// =============================================================================
+// m17.5f — narrowTag + HANDLED_ENUM_VARIANTS (EARS 17.5f-3, T4)
+// SOURCE OF TRUTH: docs/specs/m17.5f-plan.md §C T4
+//
+// RED REASON: narrowTag and HANDLED_ENUM_VARIANTS do not exist yet in
+// rowConvert.ts. All imports below fail at runtime until the implementer adds:
+//
+//   export function narrowTag<T extends string>(
+//     raw: string,
+//     known: readonly T[],
+//     enumName: string,
+//   ): T
+//
+//   export const HANDLED_ENUM_VARIANTS = {
+//     TradeStatus:     ['Pending', 'ConfirmedByCounterparty'] as const,
+//     ChallengeStatus: ['Pending', 'Accepted', 'Declined', 'Cancelled'] as const,
+//     BattleOutcome:   ['Ongoing', 'SideAWins', 'SideBWins', 'Fled'] as const,
+//     Affinity:        ['Fire','Water','Plant','Electric','Earth','Wind','Light','Dark'] as const,
+//     StatusKind:      ['Poison','Burn','Paralysis','Sleep','Freeze'] as const,
+//     WeatherEffect:   ['Rain','Sun','Sandstorm','Hail'] as const,
+//     ActionState:     ['Idle','Walking','Jumping'] as const,
+//     Direction:       ['North','South','East','West'] as const,
+//   } as const;
+//
+// SCOPE: narrowTag is applied at ONE site only — rowConvert.ts:525 (the
+//   `as 'Pending' | 'ConfirmedByCounterparty'` cast on row.status.tag).
+//   Other .tag reads feed bare-string store fields where narrowing is a type
+//   no-op (reviewer W-1/W-5 YAGNI; plan §C T4 §narrowTag applies at ONE site).
+//
+// PvpAction is EXCLUDED from the registry because rowConvert never READS it
+//   (PvpAction is a write-direction enum: the client writes it in submitPvpAction
+//   via the hook; the store never ingests a PvpAction .tag field from a row).
+//
+// WHAT THESE TESTS KILL
+// =====================
+//   "narrowTag identity miss"  — unknown tag silently assigned as typed union →
+//                                consumer compares with valid variant and always
+//                                mismatches; the warn test catches the missing log.
+//   "narrowTag throws on unknown" — a throw kills the whole flushBatch (no
+//                                per-listener isolation; plan B §3); never-throw test.
+//   "registry wrong variants"  — a registry that lists stale or wrong variants
+//                                would let the eval pass for the wrong types.
+//   "registry missing enum key" — the eval cannot check an enum that is not in
+//                                the registry; the key-set test enforces coverage.
+//   "tradeOfferRowToStore crash on future variant" — if rowConvert.ts throws on
+//                                an unknown tag, live subscription batches would
+//                                be disrupted; the fail-soft test catches this.
+// =============================================================================
+
+import { HANDLED_ENUM_VARIANTS, narrowTag } from './rowConvert';
+
+// ---------------------------------------------------------------------------
+// T4-1: narrowTag returns typed value for a known tag (identity for known input)
+// ---------------------------------------------------------------------------
+describe('rowConvert m17.5f: narrowTag — known tag passes through typed (T4-1)', () => {
+  it('BITES: narrowTag("Pending", [...], "TradeStatus") returns "Pending" typed', () => {
+    // Kills: an impl that returns undefined or throws for a known tag.
+    // A SetMove replayed as a raw append would land on wrong tile — this assertion
+    // catches a narrowTag that coerces known tags to something else.
+    const result = narrowTag(
+      'Pending',
+      ['Pending', 'ConfirmedByCounterparty'] as const,
+      'TradeStatus',
+    );
+    expect(result).toBe('Pending');
+    expect(typeof result).toBe('string');
+  });
+
+  it('BITES: narrowTag("ConfirmedByCounterparty", [...], "TradeStatus") returns the same string', () => {
+    // Kills: an impl that only handles the first element of the known array.
+    const result = narrowTag(
+      'ConfirmedByCounterparty',
+      ['Pending', 'ConfirmedByCounterparty'] as const,
+      'TradeStatus',
+    );
+    expect(result).toBe('ConfirmedByCounterparty');
+  });
+
+  it('BITES: narrowTag works for each Affinity variant (not just TradeStatus)', () => {
+    // Kills: an impl hard-coded only for TradeStatus.
+    const affinities = [
+      'Fire',
+      'Water',
+      'Plant',
+      'Electric',
+      'Earth',
+      'Wind',
+      'Light',
+      'Dark',
+    ] as const;
+    for (const tag of affinities) {
+      const result = narrowTag(tag, affinities, 'Affinity');
+      expect(result).toBe(tag);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T4-2: narrowTag returns raw string AND logs exactly once for unknown tag
+// ---------------------------------------------------------------------------
+describe('rowConvert m17.5f: narrowTag — unknown tag returns raw string AND logs (T4-2)', () => {
+  it('BITES: unknown tag returns the raw string (fail-soft — no throw)', () => {
+    // Kills: an impl that returns undefined, null, or the first known variant
+    // when encountering an unknown tag (future server addition).
+    const result = narrowTag(
+      'FutureVariant',
+      ['Pending', 'ConfirmedByCounterparty'] as const,
+      'TradeStatus',
+    );
+    // The raw string must be returned — fail-soft passthrough.
+    expect(result).toBe('FutureVariant');
+  });
+
+  it('BITES: unknown tag logs via console.warn exactly once, message contains enum name and tag', () => {
+    // Kills: an impl that silently ignores unknown tags (logging is the audit trail
+    // that lets operators detect new server variants after a server-side enum addition).
+    // The message must contain both the enum name and the unknown tag so log grep works.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      narrowTag('NewServerVariant', ['Pending', 'ConfirmedByCounterparty'] as const, 'TradeStatus');
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const message = String(warnSpy.mock.calls[0]?.[0] ?? '');
+      // The log must contain the enum name so operators know WHICH enum has a new variant.
+      expect(message).toContain('TradeStatus');
+      // The log must contain the raw tag so operators know WHICH variant is unhandled.
+      expect(message).toContain('NewServerVariant');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('BITES: known tag does NOT trigger console.warn (no spurious log noise)', () => {
+    // Kills: an impl that logs for every call regardless of whether the tag is known.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      narrowTag('Pending', ['Pending', 'ConfirmedByCounterparty'] as const, 'TradeStatus');
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T4-3: narrowTag NEVER throws (fail-soft for any input — flushBatch isolation)
+// ---------------------------------------------------------------------------
+describe('rowConvert m17.5f: narrowTag — never throws for any input (T4-3)', () => {
+  it('BITES: narrowTag does not throw for an unknown tag (flushBatch has no per-listener isolation)', () => {
+    // A throw inside a subscription callback kills the entire flushBatch burst
+    // (ADR-0085 A6; rowConvert.ts:1-5 design rationale). narrowTag must NEVER throw.
+    // Kills: an impl that throws when the tag is not in the known array.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(() => {
+        narrowTag('AbsolutelyUnknown', ['Pending'] as const, 'SomeEnum');
+      }).not.toThrow();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('BITES: narrowTag does not throw for an empty known array', () => {
+    // Edge case: an empty known array means every tag is unknown; must still not throw.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(() => {
+        narrowTag('AnyTag', [] as const, 'EmptyEnum');
+      }).not.toThrow();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T4-4: tradeOfferRowToStore with {tag:'FutureVariant'} does NOT throw and
+//        produces status 'FutureVariant' (fail-soft passthrough via narrowTag)
+// ---------------------------------------------------------------------------
+describe('rowConvert m17.5f: tradeOfferRowToStore — fail-soft on unknown status tag (T4-4)', () => {
+  it('BITES: {tag:"FutureVariant"} does not throw AND produces status "FutureVariant"', () => {
+    // A new server-side TradeStatus variant (e.g. 'Expired') must not crash the client.
+    // Without narrowTag, the existing `as 'Pending' | 'ConfirmedByCounterparty'` cast
+    // would silently assign the wrong type. With narrowTag, the raw value is returned
+    // and logged — callers see 'FutureVariant' in status and can handle unknown variants.
+    //
+    // WHAT THIS KILLS:
+    //   - An impl that throws on unknown tag (crashes the subscription batch).
+    //   - An impl that returns undefined instead of the raw string (downstream
+    //     status === 'Pending' check never matches AND status is undefined — double bug).
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const sdk: SdkTradeOfferRow = {
+        tradeId: 99n,
+        initiator: { toHexString: () => 'aaa' },
+        counterparty: { toHexString: () => 'bbb' },
+        initiatorMonsterIds: [],
+        initiatorItems: [],
+        initiatorCurrency: 0n,
+        counterpartyMonsterIds: [],
+        counterpartyItems: [],
+        counterpartyCurrency: 0n,
+        initiatorCards: [],
+        counterpartyCards: [],
+        status: { tag: 'FutureVariant' },
+        createdAtMs: 0n,
+      };
+
+      let stored: ReturnType<typeof tradeOfferRowToStore> | undefined;
+      expect(() => {
+        stored = tradeOfferRowToStore(sdk);
+      }).not.toThrow();
+
+      // The status must be the raw string 'FutureVariant' (fail-soft passthrough).
+      // A type assertion is required because StoreTradeOffer.status is typed as
+      // 'Pending' | 'ConfirmedByCounterparty'; the raw passthrough widens it at runtime.
+      expect((stored as unknown as { status: string }).status).toBe('FutureVariant');
+
+      // The warn was emitted (logged once for the unknown tag).
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T4-5: HANDLED_ENUM_VARIANTS.TradeStatus deep-equals the current generated variants
+// ---------------------------------------------------------------------------
+describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS.TradeStatus — registry matches types.ts (T4-5)', () => {
+  it('BITES: TradeStatus registry deep-equals [Pending, ConfirmedByCounterparty]', () => {
+    // Verified against client/src/module_bindings/types.ts:
+    //   export const TradeStatus = __t.enum("TradeStatus", {
+    //     Pending: __t.unit(),
+    //     ConfirmedByCounterparty: __t.unit(),
+    //   });
+    //
+    // Kills: an impl that lists stale/extra variants (the eval would flag them,
+    // but the unit test catches it immediately in the vitest run).
+    expect(HANDLED_ENUM_VARIANTS.TradeStatus).toEqual(['Pending', 'ConfirmedByCounterparty']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T4-6: HANDLED_ENUM_VARIANTS registry keys cover exactly the row-read boundary enums
+//
+// REGISTRY KEY DETERMINATION:
+//   Enums that rowConvert reads as .tag fields from SDK rows (boundary reads):
+//     ActionState    — characterRowToStore: row.action.tag (SdkCharacterRow.action)
+//     Direction      — characterRowToStore: row.facing.tag (SdkCharacterRow.facing)
+//     Affinity       — speciesRowToStore: row.affinity.tag; skillRowToStore; battleMonsterToStore
+//     BattleOutcome  — battleRowToStore: row.state.outcome.tag
+//     StatusKind     — itemRowToStore: row.cureStatus?.tag (SdkItemRowRow.cureStatus)
+//     WeatherEffect  — battleRowToStore: row.state.weather?.tag
+//     TradeStatus    — tradeOfferRowToStore: row.status.tag (the narrowTag site)
+//     ChallengeStatus — battleChallengeRowToStore: row.status.tag
+//
+//   Excluded (write-direction or non-.tag reads):
+//     PvpAction      — the client WRITES this via submitPvpAction; rowConvert never
+//                      reads a PvpAction .tag from an incoming row
+//     StatKind       — itemRowToStore reads row.trainStat?.tag (a write-direction
+//                      enum; the store field trainStat is string|null, not StatKind)
+//                      INCLUDED only as a boundary read — verify actual read sites
+//     MoveInput      — moveInputToWasm in convert.ts (not rowConvert.ts boundary)
+//     StatusEffect   — battleMonsterToStore: row.status?.tag read as bare string
+//                      (store.StoreStatusEffect.tag: string — no narrowTag needed)
+//
+// NOTE: StatKind is read in itemRowToStore as row.trainStat?.tag → bare string
+//   (store field is `string | null`). It is a boundary read but the store field
+//   is string-typed, not a union — narrowTag is YAGNI here (plan W-1/W-5).
+//   So StatKind is NOT in the required set per plan §C T4.
+//
+// The exact required registry keys are:
+//   TradeStatus, ChallengeStatus, BattleOutcome, Affinity,
+//   StatusKind, WeatherEffect, ActionState, Direction
+// ---------------------------------------------------------------------------
+describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)', () => {
+  it('BITES: registry contains all eight required boundary enum keys', () => {
+    // These are the enums whose .tag values cross the SDK→store boundary in rowConvert.ts.
+    // Verified by reading each .tag access site in rowConvert.ts.
+    // Kills: an impl that omits any boundary enum (eval cannot check an unregistered enum).
+    const requiredKeys = [
+      'TradeStatus',
+      'ChallengeStatus',
+      'BattleOutcome',
+      'Affinity',
+      'StatusKind',
+      'WeatherEffect',
+      'ActionState',
+      'Direction',
+    ] as const;
+    for (const key of requiredKeys) {
+      expect(
+        Object.hasOwn(HANDLED_ENUM_VARIANTS, key),
+        `HANDLED_ENUM_VARIANTS must contain key '${key}' (boundary read enum)`,
+      ).toBe(true);
+    }
+  });
+
+  it('BITES: registry does NOT contain PvpAction (write-direction, never read by rowConvert)', () => {
+    // PvpAction is written by the client (submitPvpAction hook) but never read
+    // from an incoming SDK row by rowConvert. Including it would be misleading.
+    // Kills: an impl that accidentally registers PvpAction (the eval would then
+    // check it against types.ts, but it should never be in the read-boundary set).
+    expect(
+      Object.hasOwn(HANDLED_ENUM_VARIANTS, 'PvpAction'),
+      'HANDLED_ENUM_VARIANTS must NOT contain PvpAction (write-direction enum, not a row-read boundary)',
+    ).toBe(false);
+  });
+
+  it('BITES: ChallengeStatus registry matches types.ts variants', () => {
+    // Verified against types.ts: ChallengeStatus = {Pending, Accepted, Declined, Cancelled}
+    expect(HANDLED_ENUM_VARIANTS.ChallengeStatus).toEqual([
+      'Pending',
+      'Accepted',
+      'Declined',
+      'Cancelled',
+    ]);
+  });
+
+  it('BITES: BattleOutcome registry matches types.ts variants', () => {
+    // Verified against types.ts: BattleOutcome = {Ongoing, SideAWins, SideBWins, Fled}
+    expect(HANDLED_ENUM_VARIANTS.BattleOutcome).toEqual([
+      'Ongoing',
+      'SideAWins',
+      'SideBWins',
+      'Fled',
+    ]);
+  });
+
+  it('BITES: Affinity registry matches types.ts variants (all 8)', () => {
+    // Verified against types.ts: Affinity = {Fire, Water, Plant, Electric, Earth, Wind, Light, Dark}
+    expect(HANDLED_ENUM_VARIANTS.Affinity).toEqual([
+      'Fire',
+      'Water',
+      'Plant',
+      'Electric',
+      'Earth',
+      'Wind',
+      'Light',
+      'Dark',
+    ]);
+  });
+
+  it('BITES: WeatherEffect registry matches types.ts variants (all payload-carrying)', () => {
+    // Verified against types.ts: WeatherEffect = {Rain: __t.u8(), Sun: __t.u8(), Sandstorm: __t.u8(), Hail: __t.u8()}
+    // These are payload-carrying variants (__t.u8()) — the KEY names are what matter for tag matching.
+    expect(HANDLED_ENUM_VARIANTS.WeatherEffect).toEqual(['Rain', 'Sun', 'Sandstorm', 'Hail']);
   });
 });
