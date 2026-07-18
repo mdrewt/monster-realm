@@ -313,10 +313,17 @@ mod challenge_ttl_tests {
 
     /// 17.5e-1 EXTREMES: (i64::MAX, i64::MIN) must not panic AND must be false.
     ///
-    /// kills: impl with wrapping subtraction — i64::MIN - i64::MAX would wrap to
-    ///        a large POSITIVE value and incorrectly report stale.  With
-    ///        saturating_sub the elapsed saturates at i64::MIN (a huge NEGATIVE
-    ///        — not 0; plan F10), which is < TTL → false.
+    /// kills: impl with unchecked raw subtraction (`now - created` without any
+    ///        saturation or wrapping annotation) — in a debug build this panics on
+    ///        overflow; in a release build it produces undefined behaviour.
+    ///        Note: `i64::MIN.wrapping_sub(i64::MAX) == 1` (wrapping arithmetic
+    ///        gives 1, a small positive value, not the "large positive" one might
+    ///        expect), so a `wrapping_sub` impl passes this assertion and that is
+    ///        ACCEPTABLE — wrapping_sub is functionally equivalent to saturating_sub
+    ///        for all realistic timestamps; the raw-unchecked subtraction is the
+    ///        only dangerous case and a `#[test]` env panic is what this fixture
+    ///        kills (plan F10).  With saturating_sub, elapsed saturates at i64::MIN
+    ///        (a huge NEGATIVE, not 0 — plan F10), which is < TTL → false.
     #[test]
     fn is_challenge_stale_no_panic_on_extreme_max_min() {
         let result = is_challenge_stale(i64::MAX, i64::MIN);

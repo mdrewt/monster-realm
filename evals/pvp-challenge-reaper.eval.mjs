@@ -144,13 +144,20 @@ function checkChalReaperSchedulerGuard(reaperBody) {
 }
 
 // ---------------------------------------------------------------------------
-// Criterion: CHAL_REAPER_STALE_CHECK (F4 negation shape)
+// Criterion: CHAL_REAPER_STALE_CHECK (F4 negation shape + arg order)
 // battle_challenge_reaper body must contain the negation-guard shape
-// `if !is_challenge_stale(` followed (later in the body) by `return Ok(())` —
-// the early-fire no-op branch (plan D7).  An ignored-result call
-// (`let _ = is_challenge_stale(...)`) does NOT satisfy the shape.
-// bad fixtures: no stale call at all / ignored-result call.  good fixture:
-// the trade_offer_reaper-shaped guard.
+// `if !is_challenge_stale(` with the CORRECT argument order
+// `<row>.created_at_ms, now_ms(ctx)` — a transposed call
+// `is_challenge_stale(now_ms(ctx), row.created_at_ms)` computes a negative
+// elapsed and the reaper permanently no-ops (the exact bug class this slice
+// exists to fix).  The guard block must also OPEN with `return Ok(())` (the
+// `){returnOk(())` immediate-open shape): an empty guard block + unconditional
+// delete + trailing return Ok(()) passes the old check but fires the reaper on
+// every invocation regardless of staleness.
+// An ignored-result call (`let _ = is_challenge_stale(...)`) does NOT satisfy
+// the `if!is_challenge_stale(` shape.
+// bad fixtures: no stale call / ignored-result / transposed args / empty block.
+// good fixture: the trade_offer_reaper-shaped guard.
 // ---------------------------------------------------------------------------
 function checkChalReaperStaleCheck(reaperBody) {
   if (!reaperBody) return { ok: false, reason: 'battle_challenge_reaper function not found' };
@@ -162,6 +169,35 @@ function checkChalReaperStaleCheck(reaperBody) {
       reason:
         'negation guard `if !is_challenge_stale(` not found in battle_challenge_reaper ' +
         '(an ignored-result `let _ = is_challenge_stale(...)` does not count — F4 shape pin)',
+    };
+  // Arg-order pin: the squashed arg-tail after `if!is_challenge_stale(`
+  // must be `.created_at_ms,now_ms(ctx))` — kills transposed calls where
+  // now_ms comes first and elapsed is always negative.  Both `)` and `,)`
+  // closing forms are accepted (rustfmt trailing-comma parity).
+  const argTail = '.created_at_ms,now_ms(ctx))';
+  const argTailTrailing = '.created_at_ms,now_ms(ctx),)';
+  let argTailIdx = code.indexOf(argTail, negIdx);
+  if (argTailIdx === -1) argTailIdx = code.indexOf(argTailTrailing, negIdx);
+  if (argTailIdx === -1)
+    return {
+      ok: false,
+      reason:
+        'arg-order pin `.created_at_ms,now_ms(ctx))` not found after `if!is_challenge_stale(` ' +
+        'in battle_challenge_reaper — a transposed call `is_challenge_stale(now_ms(ctx), ' +
+        'row.created_at_ms)` computes a negative elapsed and the reaper permanently no-ops',
+    };
+  // Immediate-open shape: the block following the condition must open with
+  // `return Ok(())` — i.e. `){returnOk(())` immediately after the arg-tail
+  // (the `)` closes the condition, `{` opens the block, `returnOk(())` is the
+  // early-return).  An empty guard `){ }` followed by unconditional delete
+  // does not satisfy this and must flag.
+  if (code.indexOf('){returnOk(())', argTailIdx) === -1)
+    return {
+      ok: false,
+      reason:
+        'guard block-open shape `){returnOk(())` not found immediately after the arg-tail — ' +
+        'the staleness guard block must OPEN with `return Ok(())` (empty-block evasion: ' +
+        'an empty block + unconditional delete fires the reaper on every invocation)',
     };
   if (code.indexOf('returnOk(())', negIdx) === -1)
     return {
@@ -456,6 +492,44 @@ export default async function () {
         pass: false,
         detail:
           'TEETH FAILED (CHAL_REAPER_STALE_CHECK bad-ignored-result): checker passed fixture where is_challenge_stale result is discarded (`let _ =`) — F4 negation-shape pin has no teeth',
+      };
+    }
+  }
+  // CHAL_REAPER_STALE_CHECK: bad — transposed argument order (HIGH gate-hole fix).
+  // is_challenge_stale(now_ms(ctx), row.created_at_ms) computes a negative
+  // elapsed → the reaper permanently no-ops (the exact bug class this slice
+  // exists to fix — the negation flips, the delete is never reached).
+  const badStaleTransposed =
+    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender != ctx.identity() { return Err("".to_string()); } let Some(row) = ctx.db.battle_challenge().challenge_id().find(args.challenge_id) else { return Ok(()); }; if !is_challenge_stale(now_ms(ctx), row.created_at_ms) { return Ok(()); } ctx.db.battle_challenge().challenge_id().delete(args.challenge_id); Ok(()) }';
+  {
+    const r = checkChalReaperStaleCheck(badStaleTransposed);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (CHAL_REAPER_STALE_CHECK bad-transposed-args): checker passed fixture with ' +
+          'transposed args `is_challenge_stale(now_ms(ctx), row.created_at_ms)` — this computes a ' +
+          'negative elapsed and the reaper permanently no-ops (HIGH gate-hole)',
+      };
+    }
+  }
+  // CHAL_REAPER_STALE_CHECK: bad — empty guard block (MEDIUM gate-hole fix).
+  // `if !is_challenge_stale(...) { }` + unconditional delete + trailing
+  // `return Ok(())` looks correct but fires the reaper on every invocation
+  // regardless of staleness.
+  const badStaleEmptyBlock =
+    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender != ctx.identity() { return Err("".to_string()); } let Some(row) = ctx.db.battle_challenge().challenge_id().find(args.challenge_id) else { return Ok(()); }; if !is_challenge_stale(row.created_at_ms, now_ms(ctx)) { } ctx.db.battle_challenge().challenge_id().delete(args.challenge_id); return Ok(()); }';
+  {
+    const r = checkChalReaperStaleCheck(badStaleEmptyBlock);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (CHAL_REAPER_STALE_CHECK bad-empty-block): checker passed fixture with ' +
+          'empty guard block `if !is_challenge_stale(...) { }` — an empty block does not prevent ' +
+          'the delete from executing on every invocation (MEDIUM gate-hole)',
       };
     }
   }

@@ -145,7 +145,13 @@ fn ea_pvp_01_battle_action_is_not_public() {
 
 #[test]
 fn ea_pvp_02_deadline_reaper_has_scheduler_guard() {
-    let stripped = strip_rust_comments(PVP_RS);
+    // T0 LOW fix (m17.5e red-team): string-strip AFTER comment-strip for
+    // consistency with the EA-CHR pipeline (a guard token inside a dead-code
+    // string literal cannot satisfy the search).  The brace-bounded body
+    // extraction operates on the comment+string-stripped text; the guard token
+    // `ctx.sender != ctx.identity()` is not inside any string in pvp.rs so
+    // this does not change the match — only closes the pipeline gap.
+    let stripped = strip_rust_strings(&strip_rust_comments(PVP_RS));
     // The guard must appear in pvp_deadline_reaper (exact body slice, T0).
     let guard_pattern = concat!("ctx.sender", " != ", "ctx.identity()");
     let fn_body = extract_pvp_fn_body(&stripped, "pvp_deadline_reaper")
@@ -1907,15 +1913,24 @@ fn ea_chr_03_challenge_reaper_has_scheduler_guard() {
 //            GUARD SHAPE and deletes the row (plan F4 — shape-pinned, bounded)
 //
 // Required shape (squash_ws'd, trade_offer_reaper clone):
-//   `if !is_challenge_stale(` … `return Ok(())`   — early fire must NO-OP
-//   `challenge_id().delete(`                       — the reap itself
+//   `if !is_challenge_stale(`                       — negation guard
+//   `<row>.created_at_ms, now_ms(ctx))`             — CORRECT arg order
+//   `){ return Ok(()) }`                            — block opens with early-return
+//   `challenge_id().delete(`                        — the reap itself
 // and the guard must precede the delete (decision-before-irreversible).
 //
-// TEETH: kills (a) an impl with no stale re-check (an early fire — plan D7 —
-//        would reap a FRESH challenge), (b) the ignored-result evasion
-//        `let _ = is_challenge_stale(...)` (no `if !…` shape), and (c) an impl
-//        that deletes before checking.  Body-scoped so the three lifecycle
-//        delete sites (accept/decline/cancel) cannot satisfy the delete pin.
+// TEETH: kills (a) an impl with no stale re-check (early fire — plan D7 —
+//        reaps a FRESH challenge), (b) the ignored-result evasion
+//        `let _ = is_challenge_stale(...)` (no `if !…` shape), (c) an impl
+//        that deletes before checking, (d) TRANSPOSED args
+//        `is_challenge_stale(now_ms(ctx), row.created_at_ms)` which computes a
+//        negative elapsed and causes the reaper to permanently no-op (HIGH
+//        gate-hole, red-team finding), and (e) an empty guard block
+//        `if !is_challenge_stale(...) { }` followed by an unconditional delete
+//        — the `){ return Ok(()) }` immediate-open shape kills that (MEDIUM
+//        gate-hole, red-team finding).
+// Body-scoped so the three lifecycle delete sites (accept/decline/cancel)
+// cannot satisfy the delete pin.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1938,6 +1953,41 @@ fn ea_chr_04_challenge_reaper_stale_recheck_guards_the_delete() {
              this — the staleness result must gate the delete."
         )
     });
+
+    // Arg-order pin (HIGH gate-hole, red-team finding): the squashed arg-tail
+    // after `if !is_challenge_stale(` must be `<row>.created_at_ms,now_ms(ctx))`.
+    // A transposed call `is_challenge_stale(now_ms(ctx), row.created_at_ms)`
+    // computes a *negative* elapsed and the negation always evaluates to false,
+    // so the delete is never reached → the reaper permanently no-ops.
+    // Both `)` and rustfmt-trailing-comma `,)` closing forms are accepted.
+    let arg_tail_needle = concat!(".created_at_ms,", "now_ms(ctx))");
+    let arg_tail_needle_trailing = concat!(".created_at_ms,", "now_ms(ctx),)");
+    let arg_tail_pos = squashed[neg_pos..]
+        .find(arg_tail_needle)
+        .or_else(|| squashed[neg_pos..].find(arg_tail_needle_trailing))
+        .map(|p| neg_pos + p)
+        .unwrap_or_else(|| {
+            panic!(
+                "EA-CHR-04 FAIL: arg-order pin `.created_at_ms,now_ms(ctx))` not found after \
+                 `if !is_challenge_stale(` in `battle_challenge_reaper` (squash_ws'd). A \
+                 transposed call `is_challenge_stale(now_ms(ctx), row.created_at_ms)` computes \
+                 a negative elapsed and the reaper permanently no-ops (HIGH gate-hole)."
+            )
+        });
+
+    // Immediate-open shape (MEDIUM gate-hole, red-team finding): the block
+    // following the condition must OPEN with `return Ok(())` — squashed form
+    // `){returnOk(())`.  An empty guard block `{ }` followed by an
+    // unconditional delete satisfies the `if !…` + `return Ok(())` pins but
+    // fires the reaper on every invocation regardless of staleness.
+    let block_open_needle = concat!(")", "{return", "Ok(())");
+    assert!(
+        squashed[arg_tail_pos..].contains(block_open_needle),
+        "EA-CHR-04 FAIL: the guard block does not immediately open with `return Ok(())` — \
+         squashed shape `)<open-brace>returnOk(())` not found after the arg-tail. An empty guard \
+         block `if !is_challenge_stale(...) <open-brace><close-brace>` followed by an unconditional \
+         delete would fire the reaper on every invocation regardless of staleness (MEDIUM gate-hole)."
+    );
 
     let return_ok_needle = concat!("return", "Ok(())");
     assert!(
