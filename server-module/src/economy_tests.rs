@@ -906,41 +906,138 @@ fn rt_m13c_01_heal_party_require_owner_is_tautological() {
 // headroom check before consume_one DESTROYS items for clamped proceeds with
 // no rollback backstop.
 //
-// Pattern: brace-depth body extraction (mirrors tests 7 and 8 above), then
-// split-literal needle pair for byte-offset ordering, then a statement-window
-// slice (needle → first ';') checking Result propagation + argument pins.
+// Pattern:
+//   1. Strip comments then string literals from ECONOMY_SOURCE (in that order,
+//      mirroring RT-SEC-02b in trading_tests.rs).
+//   2. Brace-depth body extraction on the stripped source.
+//   3. Paren-anchored split-literal needles (`check_item_headroom(` with the
+//      open paren — prevents substring-prefix bypass, red-team F3).
+//   4. Provenance pins: for buy, require `inventory(` BEFORE headroom; for sell,
+//      require `wallet_balance` BEFORE headroom (red-team F1/F2).
+//   5. cfg-forbidden: assert the body contains neither `cfg!(` nor `#[cfg` —
+//      shop reducer guards must never be conditionally compiled (red-team F4).
+//   6. Statement-window slice (needle → first ';'): check `?` + argument pin.
+//
+// String-stripping note: strips comments first, then string literal contents.
+// This makes brace-depth extraction robust against format-string braces (e.g.
+// `format!("{shop_id}")`) and prevents a planted literal like
+// `let _hint = "check_item_headroom(...)";` from satisfying the needle search.
+//
+// Mirrors RT-SEC-02b from trading_tests.rs (credited below).
 //
 // RED state: both tests are red until the implementer wires check_item_headroom
 // and check_currency_headroom into buy and sell respectively (m17.5c Task 4).
 // ===========================================================================
 
+/// Comment-stripping helper for economy.rs source scans.
+/// Removes `/* … */` block comments and `//` line comments, replacing removed
+/// bytes with spaces to preserve byte offsets.
+/// Mirrors trading_tests.rs::strip_rust_comments_trading.
+fn strip_rust_comments_economy(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = vec![b' '; len];
+    let mut i = 0;
+    while i < len {
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            // Block comment: scan for `*/`.
+            i += 2;
+            while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i += 2; // consume the closing `*/`
+        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            // Line comment: scan to end of line.
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else {
+            out[i] = bytes[i];
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("comment-stripped source must be valid UTF-8")
+}
+
+/// String-literal stripping helper for economy.rs source scans (red-team F5).
+/// Replaces the CONTENT of every `"…"` string literal (including escape sequences)
+/// with empty bytes, so a planted literal like
+/// `let _hint = "check_item_headroom(...)?;";`
+/// cannot satisfy needle searches on the stripped source.
+///
+/// IMPORTANT: call AFTER strip_rust_comments_economy so that string literals
+/// inside comments (already blanked) do not confuse the byte walker.
+///
+/// NOTE: raw strings (`r#"…"#`) are not handled — acceptable because production
+/// economy.rs contains none, and comment-strip runs first.
+///
+/// Credits: mirrors RT-SEC-02b (trading_tests.rs::strip_rust_strings_trading,
+/// m16.5d/m16.5e, ADR-0116).
+fn strip_rust_strings_economy(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = Vec::with_capacity(len);
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b'"' {
+            // Emit the opening quote, then skip until the closing (unescaped) quote.
+            out.push(b'"');
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' {
+                    // Skip escape sequence (consume both backslash and the next char).
+                    i += 2;
+                } else if bytes[i] == b'"' {
+                    out.push(b'"');
+                    i += 1;
+                    break;
+                } else {
+                    // Swallow the character (replace with nothing — shrinks the string).
+                    i += 1;
+                }
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("string-stripped source must be valid UTF-8")
+}
+
 // ---------------------------------------------------------------------------
-// m17.5c Test 17: check_item_headroom called and propagated before spend_currency
-// in the buy reducer (EARS 17.5c-1)
+// m17.5c Test 17: check_item_headroom( called and propagated before
+// spend_currency in the buy reducer (EARS 17.5c-1)
 // ---------------------------------------------------------------------------
 
-/// m17.5c (EARS 17.5c-1): in the `buy` reducer body,
-/// `check_item_headroom` must appear BEFORE `spend_currency`, and the call
-/// must propagate its Result with `?` (not be discarded with `let _ = ...`),
-/// and must pass `item_id` as an argument (not a hardcoded sentinel).
+/// m17.5c (EARS 17.5c-1): in the `buy` reducer body (after comment+string
+/// stripping), `check_item_headroom(` (paren-anchored, F3) must appear BEFORE
+/// `spend_currency(`, the call must propagate its Result with `?`, must pass
+/// `item_id` as an argument, and must be preceded by `inventory(` and
+/// `unwrap_or(0)` (provenance pins, F1/F2).  Additionally, the body must
+/// contain neither `cfg!(` nor `#[cfg` (cfg-forbidden, F4).
 ///
 /// Without this guard, buy calls spend_currency then infallible grant_item —
 /// at MAX_ITEM_STACK the grant is silently dropped (inventory.rs monotone clamp)
 /// while the player has already paid.  The headroom check must reject BEFORE
 /// the irreversible spend (reject-not-destroy, ADR-0113 propagated to shop).
 ///
-/// Statement-window pin (F4/F6/F12): substring from the headroom needle to the
-/// first `;` after it must contain `?` (kills `let _ = check_item_headroom(...)`)
-/// and `item_id` (kills a hardcoded-sentinel call that passes the wrong item).
-///
 /// kills: impl that calls spend_currency before check_item_headroom;
 ///        impl that discards the headroom Result with `let _ = ...`;
-///        impl that passes a hardcoded item_id sentinel instead of the actual value.
+///        impl that passes a hardcoded 0 as first argument and no inventory() read
+///          (F1/F2 provenance bypass — hardcoded-zero voids the invariant);
+///        impl that hides the headroom call inside a string literal (F5);
+///        impl that cfg-gates the check so it is test-only (F4).
 #[test]
 fn buy_reducer_calls_headroom_before_spend() {
-    // Locate `fn buy(` in economy.rs using split-literal (W-3: avoids self-match).
+    // Strip comments then string literals from ECONOMY_SOURCE before all searches.
+    // Order: comments first (so strings inside comments are blanked safely), then
+    // string contents (so planted string literals cannot satisfy needle searches).
+    let economy_stripped = strip_rust_strings_economy(&strip_rust_comments_economy(ECONOMY_SOURCE));
+
+    // Locate `fn buy(` in the stripped source using split-literal (W-3: avoids
+    // self-match if economy_tests.rs is ever scanned alongside economy.rs).
     let buy_fn_marker = ["fn buy", "("].concat();
-    let fn_pos = match ECONOMY_SOURCE.find(buy_fn_marker.as_str()) {
+    let fn_pos = match economy_stripped.find(buy_fn_marker.as_str()) {
         Some(p) => p,
         None => panic!(
             "TEETH(m17.5c EARS-17.5c-1): fn buy not found in economy.rs — \
@@ -948,16 +1045,17 @@ fn buy_reducer_calls_headroom_before_spend() {
         ),
     };
 
-    // Find the opening brace of the buy function body.
-    let open_brace = ECONOMY_SOURCE[fn_pos..]
+    // Find the opening brace of the buy function body on the stripped source.
+    let open_brace = economy_stripped[fn_pos..]
         .find('{')
         .map(|offset| fn_pos + offset)
         .expect("buy function body opening brace not found");
 
     // Brace-depth walk to find the matching close brace.
+    // Stripping format-string braces (e.g. `format!("{item_id}")`) makes this robust.
     let mut depth: usize = 0;
     let mut close_brace = open_brace;
-    for (i, ch) in ECONOMY_SOURCE[open_brace..].char_indices() {
+    for (i, ch) in economy_stripped[open_brace..].char_indices() {
         match ch {
             '{' => depth += 1,
             '}' => {
@@ -971,44 +1069,123 @@ fn buy_reducer_calls_headroom_before_spend() {
         }
     }
 
-    let buy_body = &ECONOMY_SOURCE[open_brace..=close_brace];
+    let buy_body = &economy_stripped[open_brace..=close_brace];
 
-    // Split-literal needles (W-3): avoids this test file self-matching if economy_tests.rs
-    // is ever included in an economy.rs inline module scan.
-    let headroom_pat = ["check", "_item_headroom"].concat();
-    let spend_pat = ["spend", "_currency"].concat();
+    // --- cfg-forbidden (red-team F4) ---
+    // Shop reducer guards must never be conditionally compiled.
+    // `if cfg!(test) { check_item_headroom(...)?; }` makes the guard test-only
+    // and the release build silently skips the cap check.
+    let cfg_attr_pat = ["#[", "cfg"].concat();
+    let cfg_macro_pat = ["cfg", "!("].concat();
+    assert!(
+        !buy_body.contains(cfg_attr_pat.as_str()),
+        "TEETH(m17.5c F4 CFG-FORBIDDEN): buy reducer body contains `#[cfg` — \
+         shop reducer guards must NEVER be conditionally compiled; \
+         a cfg-gated check_item_headroom is skipped in release builds, \
+         allowing value destruction at MAX_ITEM_STACK (ADR-0124)"
+    );
+    assert!(
+        !buy_body.contains(cfg_macro_pat.as_str()),
+        "TEETH(m17.5c F4 CFG-FORBIDDEN): buy reducer body contains `cfg!(` — \
+         shop reducer guards must NEVER be conditionally compiled; \
+         a cfg-gated check_item_headroom is skipped in release builds (ADR-0124)"
+    );
+
+    // --- Paren-anchored split-literal needles (W-3 + red-team F3) ---
+    // Include the open paren so `check_item_headroom_always_ok(` (a differently-named
+    // function with the needle as a prefix substring) does not satisfy this search.
+    let headroom_pat = ["check", "_item_headroom("].concat();
+    let spend_pat = ["spend", "_currency("].concat();
+    // Provenance needle: `inventory(` — the DB accessor that reads the current stack.
+    // Split at the boundary to avoid self-match on column comments.
+    let inventory_pat = ["inven", "tory()"].concat();
+    // Provenance needle: `unwrap_or(0)` — the default for a missing inventory row.
+    // These two together prove the real current_count is read, not a hardcoded 0.
+    let unwrap_or_pat = ["unwrap", "_or(0)"].concat();
+    // Existing W-3 needles also paren-anchored (reviewer MINOR-3/4):
+    let consume_pat = ["consume", "_one("].concat();
+    let checked_mul_pat = ["checked", "_mul("].concat();
+
+    // --- Provenance pins (red-team F1/F2): inventory() and unwrap_or(0) before headroom ---
+    // Without these pins, an impl can pass 0 as `current_count` (hardcoded zero),
+    // voiding the invariant: check_item_headroom(0, qty, item_id) always succeeds
+    // even when the player already has MAX_ITEM_STACK items.
+    let inventory_pos = buy_body.find(inventory_pat.as_str()).expect(
+        "TEETH(m17.5c F1 PROVENANCE-BUY-INVENTORY): `inventory()` not found in buy body — \
+         the current item count must be read from `ctx.db.inventory()` before calling \
+         check_item_headroom; without this read, an impl can hardcode 0 as current_count, \
+         making check_item_headroom always succeed even at MAX_ITEM_STACK (ADR-0124)",
+    );
+    let unwrap_or_pos = buy_body.find(unwrap_or_pat.as_str()).expect(
+        "TEETH(m17.5c F2 PROVENANCE-BUY-UNWRAP): `unwrap_or(0)` not found in buy body — \
+         a missing inventory row (new receiver) must default to 0 via `.unwrap_or(0)` before \
+         check_item_headroom; without this, an impl can hardcode 0 directly as current_count \
+         (both bypass the real read — a hardcoded 0 always passes the cap check, ADR-0124)",
+    );
 
     let headroom_pos = buy_body.find(headroom_pat.as_str()).expect(
-        "TEETH(m17.5c EARS-17.5c-1): check_item_headroom not found in the buy reducer body — \
+        "TEETH(m17.5c EARS-17.5c-1): check_item_headroom( not found in the buy reducer body — \
          add `check_item_headroom(current, qty, item_id).map_err(|e| e.to_string())?;` \
-         BEFORE spend_currency in buy (ADR-0124: reject-not-destroy at receiver cap)",
+         BEFORE spend_currency in buy (ADR-0124: reject-not-destroy at receiver cap). \
+         Note: paren-anchored needle `check_item_headroom(` — a differently-named function \
+         with this as a prefix does NOT satisfy this requirement (red-team F3)",
     );
+
+    // Assert provenance pins precede the headroom call.
+    assert!(
+        inventory_pos < headroom_pos,
+        "TEETH(m17.5c F1 PROVENANCE-BUY-INVENTORY): `inventory()` (at offset {inventory_pos}) \
+         must appear BEFORE `check_item_headroom(` (at offset {headroom_pos}) in buy — \
+         the current stack count must be read from the DB before the headroom call; \
+         a hardcoded 0 as first arg voids the invariant (always passes, ADR-0124)"
+    );
+    assert!(
+        unwrap_or_pos < headroom_pos,
+        "TEETH(m17.5c F2 PROVENANCE-BUY-UNWRAP): `unwrap_or(0)` (at offset {unwrap_or_pos}) \
+         must appear BEFORE `check_item_headroom(` (at offset {headroom_pos}) in buy — \
+         the missing-row default must be applied before calling the headroom check; \
+         a hardcoded 0 passed directly as current_count voids the invariant (ADR-0124)"
+    );
+
     let spend_pos = buy_body.find(spend_pat.as_str()).expect(
-        "TEETH(m17.5c EARS-17.5c-1): spend_currency not found in the buy reducer body — \
+        "TEETH(m17.5c EARS-17.5c-1): spend_currency( not found in the buy reducer body — \
          the buy reducer must call spend_currency to debit the wallet",
     );
 
     assert!(
         headroom_pos < spend_pos,
-        "TEETH(m17.5c EARS-17.5c-1): check_item_headroom (at offset {headroom_pos}) must appear \
-         BEFORE spend_currency (at offset {spend_pos}) in the buy reducer body — \
+        "TEETH(m17.5c EARS-17.5c-1): check_item_headroom( (at offset {headroom_pos}) must appear \
+         BEFORE spend_currency( (at offset {spend_pos}) in the buy reducer body — \
          without the headroom guard first, a buyer at MAX_ITEM_STACK pays currency \
          but the grant_item call is silently clamped (value destruction, ADR-0113/ADR-0124)"
     );
 
+    // Verify paren-anchored consume_one( and checked_mul( appear in the body
+    // (reviewer MINOR-3/4: bare needles could match comment prose in the sell body).
+    // Note: these two needles exist in the sell body, not the buy body; however,
+    // the brace-depth extraction isolates the buy body, so this is a guard that
+    // the right body was extracted.  The buy body contains neither consume_one( nor
+    // checked_mul(; their absence here is expected (buy uses grant_item, not consume_one).
+    // We just verify the headroom and spend needles do NOT appear inside a comment
+    // (already handled by stripping) and the body is well-formed (has a closing brace).
+    assert!(
+        buy_body.contains('}'),
+        "TEETH(m17.5c): buy body extraction produced an unclosed body — \
+         brace-depth walk may have failed (check format-string brace stripping)"
+    );
+
     // Statement-window pin (F4/F6/F12): substring from the headroom call to the first `;`
     // after it must propagate the Result with `?` and pass the `item_id` argument.
-    let window_start = open_brace + headroom_pos;
-    let after_headroom = &ECONOMY_SOURCE[window_start..];
+    let after_headroom = &buy_body[headroom_pos..];
     let semi_pos = after_headroom.find(';').expect(
-        "TEETH(m17.5c EARS-17.5c-1): no `;` found after check_item_headroom in buy body — \
+        "TEETH(m17.5c EARS-17.5c-1): no `;` found after check_item_headroom( in buy body — \
          the call must be a complete statement ending with `;`",
     );
     let statement_window = &after_headroom[..semi_pos + 1];
 
     assert!(
         statement_window.contains('?'),
-        "TEETH(m17.5c EARS-17.5c-1): the check_item_headroom statement in buy does not \
+        "TEETH(m17.5c EARS-17.5c-1): the check_item_headroom( statement in buy does not \
          contain `?` — the Result must be propagated (kills `let _ = check_item_headroom(...)` \
          which silently discards the error and destroys value on cap-exceeded). \
          Statement window: {:?}",
@@ -1016,23 +1193,30 @@ fn buy_reducer_calls_headroom_before_spend() {
     );
     assert!(
         statement_window.contains("item_id"),
-        "TEETH(m17.5c EARS-17.5c-1): the check_item_headroom statement in buy does not \
+        "TEETH(m17.5c EARS-17.5c-1): the check_item_headroom( statement in buy does not \
          contain `item_id` — the actual item_id variable must be passed (not a hardcoded \
          sentinel), so the error payload identifies the correct item. \
          Statement window: {:?}",
         statement_window
     );
+
+    // Suppress unused-variable warnings for paren-anchored needles defined above
+    // but not used in ordering assertions within this test.
+    let _ = consume_pat;
+    let _ = checked_mul_pat;
 }
 
 // ---------------------------------------------------------------------------
-// m17.5c Test 18: check_currency_headroom called and propagated before
+// m17.5c Test 18: check_currency_headroom( called and propagated before
 // consume_one in the sell reducer (EARS 17.5c-2), with checked_mul before it
 // ---------------------------------------------------------------------------
 
-/// m17.5c (EARS 17.5c-2): in the `sell` reducer body, `checked_mul` must appear
-/// BEFORE `check_currency_headroom`, which must appear BEFORE `consume_one`.
+/// m17.5c (EARS 17.5c-2): in the `sell` reducer body (after comment+string
+/// stripping), `checked_mul(` must appear BEFORE `check_currency_headroom(`,
+/// which must appear BEFORE `consume_one(` (all paren-anchored, F3).
 /// The headroom call must propagate its Result with `?` and pass `total` as an
-/// argument (the qty × sell_price product from checked_mul).
+/// argument, and must be preceded by `wallet_balance` (provenance pin, F1/F2).
+/// The body must contain neither `cfg!(` nor `#[cfg` (cfg-forbidden, F4).
 ///
 /// On the sell side, grant_currency is infallible — it saturates silently.
 /// Without the headroom check before consume_one, the loop destroys items for
@@ -1046,12 +1230,17 @@ fn buy_reducer_calls_headroom_before_spend() {
 /// kills: impl that calls consume_one before check_currency_headroom;
 ///        impl that discards the headroom Result with `let _ = ...`;
 ///        impl that passes a literal 0 instead of `total` (wrong argument pin);
-///        impl that checks headroom before checked_mul (total undefined).
+///        impl that reads 0 as the balance without calling wallet_balance (F1/F2);
+///        impl that hides the headroom call inside a string literal (F5);
+///        impl that cfg-gates the check so it is test-only (F4).
 #[test]
 fn sell_reducer_calls_headroom_before_consume() {
-    // Locate `fn sell(` in economy.rs using split-literal (W-3).
+    // Strip comments then string literals from ECONOMY_SOURCE.
+    let economy_stripped = strip_rust_strings_economy(&strip_rust_comments_economy(ECONOMY_SOURCE));
+
+    // Locate `fn sell(` in the stripped source using split-literal (W-3).
     let sell_fn_marker = ["fn sell", "("].concat();
-    let fn_pos = match ECONOMY_SOURCE.find(sell_fn_marker.as_str()) {
+    let fn_pos = match economy_stripped.find(sell_fn_marker.as_str()) {
         Some(p) => p,
         None => panic!(
             "TEETH(m17.5c EARS-17.5c-2): fn sell not found in economy.rs — \
@@ -1060,7 +1249,7 @@ fn sell_reducer_calls_headroom_before_consume() {
     };
 
     // Find the opening brace of the sell function body.
-    let open_brace = ECONOMY_SOURCE[fn_pos..]
+    let open_brace = economy_stripped[fn_pos..]
         .find('{')
         .map(|offset| fn_pos + offset)
         .expect("sell function body opening brace not found");
@@ -1068,7 +1257,7 @@ fn sell_reducer_calls_headroom_before_consume() {
     // Brace-depth walk to find the matching close brace.
     let mut depth: usize = 0;
     let mut close_brace = open_brace;
-    for (i, ch) in ECONOMY_SOURCE[open_brace..].char_indices() {
+    for (i, ch) in economy_stripped[open_brace..].char_indices() {
         match ch {
             '{' => depth += 1,
             '}' => {
@@ -1082,59 +1271,101 @@ fn sell_reducer_calls_headroom_before_consume() {
         }
     }
 
-    let sell_body = &ECONOMY_SOURCE[open_brace..=close_brace];
+    let sell_body = &economy_stripped[open_brace..=close_brace];
 
-    // Split-literal needles (W-3).
-    let checked_mul_pat = ["checked", "_mul"].concat();
-    let headroom_pat = ["check", "_currency_headroom"].concat();
-    let consume_pat = ["consume", "_one"].concat();
+    // --- cfg-forbidden (red-team F4) ---
+    let cfg_attr_pat = ["#[", "cfg"].concat();
+    let cfg_macro_pat = ["cfg", "!("].concat();
+    assert!(
+        !sell_body.contains(cfg_attr_pat.as_str()),
+        "TEETH(m17.5c F4 CFG-FORBIDDEN): sell reducer body contains `#[cfg` — \
+         shop reducer guards must NEVER be conditionally compiled; \
+         a cfg-gated check_currency_headroom is skipped in release builds, \
+         allowing value destruction when the seller's wallet is at cap (ADR-0124)"
+    );
+    assert!(
+        !sell_body.contains(cfg_macro_pat.as_str()),
+        "TEETH(m17.5c F4 CFG-FORBIDDEN): sell reducer body contains `cfg!(` — \
+         shop reducer guards must NEVER be conditionally compiled (ADR-0124)"
+    );
+
+    // --- Paren-anchored split-literal needles (W-3 + red-team F3) ---
+    let checked_mul_pat = ["checked", "_mul("].concat();
+    let headroom_pat = ["check", "_currency_headroom("].concat();
+    let consume_pat = ["consume", "_one("].concat();
+    // Provenance needle: wallet_balance is the sole sanctioned balance read (ADR-0081).
+    // Split-literal to avoid self-match on comments referencing the function name.
+    let wallet_balance_pat = ["wallet", "_balance"].concat();
+
+    // --- Provenance pin (red-team F1/F2): wallet_balance before headroom ---
+    // Without this pin, an impl can pass 0 as `balance` (hardcoded zero),
+    // meaning check_currency_headroom(0, total) always succeeds even when the
+    // seller's wallet is already at MAX_BALANCE, silently destroying items.
+    let wallet_balance_pos = sell_body.find(wallet_balance_pat.as_str()).expect(
+        "TEETH(m17.5c F1 PROVENANCE-SELL-WALLET): `wallet_balance` not found in sell body — \
+         the seller's current balance must be read via wallet_balance() before calling \
+         check_currency_headroom; without this read, an impl can hardcode 0 as balance, \
+         making check_currency_headroom always succeed even at MAX_BALANCE (ADR-0124). \
+         wallet_balance is the sole sanctioned balance read (ADR-0081)",
+    );
 
     let checked_mul_pos = sell_body.find(checked_mul_pat.as_str()).expect(
-        "TEETH(m17.5c EARS-17.5c-2): checked_mul not found in the sell reducer body — \
+        "TEETH(m17.5c EARS-17.5c-2): checked_mul( not found in the sell reducer body — \
          total = sell_price.checked_mul(qty as u64) must exist before check_currency_headroom \
-         so that `total` is defined when the headroom call is made (W-6 chain completeness, F10)",
+         so that `total` is defined when the headroom call is made (W-6 chain completeness, F10). \
+         Note: paren-anchored needle `checked_mul(` (red-team F3)",
     );
     let headroom_pos = sell_body.find(headroom_pat.as_str()).expect(
-        "TEETH(m17.5c EARS-17.5c-2): check_currency_headroom not found in the sell reducer body — \
-         add `check_currency_headroom(balance, total).map_err(|e| e.to_string())?;` \
+        "TEETH(m17.5c EARS-17.5c-2): check_currency_headroom( not found in the sell reducer body \
+         — add `check_currency_headroom(balance, total).map_err(|e| e.to_string())?;` \
          BEFORE consume_one in sell (ADR-0124: reject-not-destroy, sell-side is value-DESTRUCTION \
-         with no rollback backstop — grant_currency is infallible)",
+         with no rollback backstop — grant_currency is infallible). \
+         Note: paren-anchored needle `check_currency_headroom(` (red-team F3)",
     );
     let consume_pos = sell_body.find(consume_pat.as_str()).expect(
-        "TEETH(m17.5c EARS-17.5c-2): consume_one not found in the sell reducer body — \
-         the sell reducer must call consume_one to remove items from the player's inventory",
+        "TEETH(m17.5c EARS-17.5c-2): consume_one( not found in the sell reducer body — \
+         the sell reducer must call consume_one to remove items from the player's inventory. \
+         Note: paren-anchored needle `consume_one(` (red-team F3)",
+    );
+
+    // Assert wallet_balance precedes headroom call.
+    assert!(
+        wallet_balance_pos < headroom_pos,
+        "TEETH(m17.5c F1 PROVENANCE-SELL-WALLET): `wallet_balance` (at offset {wallet_balance_pos}) \
+         must appear BEFORE `check_currency_headroom(` (at offset {headroom_pos}) in sell — \
+         the current balance must be read before the headroom call; \
+         a hardcoded 0 as balance voids the invariant (always passes, ADR-0124)"
     );
 
     // W-6 chain: checked_mul before check_currency_headroom (total must exist).
     assert!(
         checked_mul_pos < headroom_pos,
-        "TEETH(m17.5c EARS-17.5c-2): checked_mul (at offset {checked_mul_pos}) must appear \
-         BEFORE check_currency_headroom (at offset {headroom_pos}) in the sell reducer body — \
+        "TEETH(m17.5c EARS-17.5c-2): checked_mul( (at offset {checked_mul_pos}) must appear \
+         BEFORE check_currency_headroom( (at offset {headroom_pos}) in the sell reducer body — \
          `total` (the qty × sell_price product) must be defined before the headroom call (W-6)"
     );
 
     // Primary ordering: headroom before consume_one.
     assert!(
         headroom_pos < consume_pos,
-        "TEETH(m17.5c EARS-17.5c-2): check_currency_headroom (at offset {headroom_pos}) must \
-         appear BEFORE consume_one (at offset {consume_pos}) in the sell reducer body — \
+        "TEETH(m17.5c EARS-17.5c-2): check_currency_headroom( (at offset {headroom_pos}) must \
+         appear BEFORE consume_one( (at offset {consume_pos}) in the sell reducer body — \
          without the headroom guard first, items are destroyed by consume_one and grant_currency \
          silently clamps; there is no rollback backstop (sell-side value destruction, ADR-0124)"
     );
 
     // Statement-window pin (F4/F6/F12): substring from the headroom call to the first `;`
     // after it must propagate the Result with `?` and pass `total`.
-    let window_start = open_brace + headroom_pos;
-    let after_headroom = &ECONOMY_SOURCE[window_start..];
+    let after_headroom = &sell_body[headroom_pos..];
     let semi_pos = after_headroom.find(';').expect(
-        "TEETH(m17.5c EARS-17.5c-2): no `;` found after check_currency_headroom in sell body — \
+        "TEETH(m17.5c EARS-17.5c-2): no `;` found after check_currency_headroom( in sell body — \
          the call must be a complete statement ending with `;`",
     );
     let statement_window = &after_headroom[..semi_pos + 1];
 
     assert!(
         statement_window.contains('?'),
-        "TEETH(m17.5c EARS-17.5c-2): the check_currency_headroom statement in sell does not \
+        "TEETH(m17.5c EARS-17.5c-2): the check_currency_headroom( statement in sell does not \
          contain `?` — the Result must be propagated (kills `let _ = check_currency_headroom(...)` \
          which silently discards the error; on the sell side this is a value-DESTRUCTION path \
          with no rollback backstop). Statement window: {:?}",
@@ -1142,7 +1373,7 @@ fn sell_reducer_calls_headroom_before_consume() {
     );
     assert!(
         statement_window.contains("total"),
-        "TEETH(m17.5c EARS-17.5c-2): the check_currency_headroom statement in sell does not \
+        "TEETH(m17.5c EARS-17.5c-2): the check_currency_headroom( statement in sell does not \
          contain `total` — the qty × sell_price product computed by checked_mul must be passed \
          as the `incoming` argument (not a literal 0 or other sentinel). \
          Statement window: {:?}",

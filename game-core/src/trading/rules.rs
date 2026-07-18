@@ -2766,17 +2766,20 @@ mod tests {
     /// 17.5c-2 GATE: incoming = 0 → Ok unconditionally (skip-guard).
     /// The `incoming > 0` gate is the FIRST line of check_currency_headroom.
     ///
-    /// kills: impl that deletes the `incoming > 0` guard — without the gate, a
-    ///        zero-incoming call with balance > MAX_BALANCE would incorrectly return
-    ///        Err (balance.saturating_add(0) = balance > MAX_BALANCE → Err).
+    /// This is the plain zero-incoming accept case (balance exactly at cap,
+    /// incoming = 0 → no increase → Ok).  The gate-deletion and normalization
+    /// mutants are killed by `check_currency_headroom_zero_incoming_skips_over_cap_balance`,
+    /// which uses a deliberately over-cap balance (MAX_BALANCE + 1) that a
+    /// gate-deleted impl would incorrectly reject.  This test alone does NOT kill
+    /// the gate-deletion mutant: MAX_BALANCE + 0 is not > MAX_BALANCE either way.
     #[test]
     fn check_currency_headroom_zero_incoming_is_ok() {
         use crate::currency::MAX_BALANCE;
         let result = check_currency_headroom(MAX_BALANCE, 0);
         assert!(
             result.is_ok(),
-            "incoming=0: check_currency_headroom must return Ok unconditionally \
-             (gate kills the GATE-DELETION mutant on the `incoming > 0` guard)"
+            "incoming=0, balance=MAX_BALANCE: check_currency_headroom must return Ok \
+             (zero incoming adds nothing; the skip-guard covers this case)"
         );
     }
 
@@ -2822,6 +2825,97 @@ mod tests {
             TradeError::CurrencyCapExceeded,
             "balance=u64::MAX, incoming=1: saturating_add must not wrap; \
              u64::MAX + 1 saturates to u64::MAX > MAX_BALANCE → Err(CurrencyCapExceeded)"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // m17.5c: check_headroom delegates to the single-responsibility primitives
+    // (red-team F6 — delegation SSOT pin)
+    //
+    // EARS: check_headroom must DELEGATE its per-party cap comparisons to
+    // check_item_headroom and check_currency_headroom rather than duplicating the
+    // comparison logic inline.  Duplication creates two diverging copies of the
+    // cap constants and comparison operators; delegation is the SSOT.
+    //
+    // Strategy: include_str! the rules.rs source itself, then extract the
+    // `fn check_headroom` body via a brace-depth walk (split-literal needle so
+    // this test does not self-match on the marker string), and assert both
+    // primitive call-sites appear inside that body.
+    //
+    // RED state: this test is RED until the implementer refactors check_headroom
+    // to call check_item_headroom and check_currency_headroom (m17.5c Task 4).
+    // ---------------------------------------------------------------------------
+
+    /// m17.5c (red-team F6): `check_headroom` must DELEGATE to
+    /// `check_item_headroom` and `check_currency_headroom` rather than
+    /// re-implementing the cap comparisons inline.  The cap constants and
+    /// comparison operators must live once (ADR-0124 SSOT principle).
+    ///
+    /// Implementation note: the needle strings are built via concat! / split-literal
+    /// so that searching rules.rs for the pattern does not self-match on the text
+    /// inside THIS test's string arguments.
+    ///
+    /// TEETH: kills an impl that inlines `current + incoming > MAX_ITEM_STACK`
+    ///        directly in check_headroom instead of calling check_item_headroom —
+    ///        such an impl is an invisible divergence risk if the cap ever changes.
+    ///        Same for a duplicated currency comparison vs. check_currency_headroom.
+    #[test]
+    fn check_headroom_delegates_to_single_receiver_primitives() {
+        // include_str! of the file that contains this very test.
+        // The needle is split so this test file does not self-match.
+        let rules_src = include_str!("rules.rs");
+
+        // Locate `fn check_headroom(` body via brace-depth walk.
+        // Split-literal so the source-scan needle does not match the literal here.
+        let fn_marker = ["fn check", "_headroom("].concat();
+        let fn_pos = rules_src.find(fn_marker.as_str()).expect(
+            "TEETH(m17.5c F6): fn check_headroom not found in rules.rs — \
+                     add check_headroom or rename it consistently (ADR-0124)",
+        );
+
+        let open_brace_offset = rules_src[fn_pos..]
+            .find('{')
+            .expect("TEETH(m17.5c F6): no opening brace found after fn check_headroom");
+        let open_brace = fn_pos + open_brace_offset;
+
+        let mut depth: usize = 0;
+        let mut close_brace = open_brace;
+        for (i, ch) in rules_src[open_brace..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close_brace = open_brace + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let headroom_body = &rules_src[open_brace..=close_brace];
+
+        // Assert delegation to check_item_headroom (split-literal needle, W-3).
+        let item_needle = ["check_item", "_headroom("].concat();
+        assert!(
+            headroom_body.contains(item_needle.as_str()),
+            "TEETH(m17.5c F6 DELEGATION-SSOT): check_headroom body does not contain \
+             `check_item_headroom(` — the per-item cap comparison must be DELEGATED to \
+             check_item_headroom (ADR-0124 SSOT: one copy of the cap constant and \
+             comparison operator; inline duplication is an invisible divergence risk). \
+             RED until m17.5c Task 4 refactor is complete."
+        );
+
+        // Assert delegation to check_currency_headroom (split-literal needle, W-3).
+        let currency_needle = ["check_currency", "_headroom("].concat();
+        assert!(
+            headroom_body.contains(currency_needle.as_str()),
+            "TEETH(m17.5c F6 DELEGATION-SSOT): check_headroom body does not contain \
+             `check_currency_headroom(` — the per-currency cap comparison must be DELEGATED \
+             to check_currency_headroom (ADR-0124 SSOT: one copy of the cap constant and \
+             comparison operator; inline duplication is an invisible divergence risk). \
+             RED until m17.5c Task 4 refactor is complete."
         );
     }
 }
