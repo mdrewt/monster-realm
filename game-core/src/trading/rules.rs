@@ -336,10 +336,60 @@ pub fn build_swap_plan(
     })
 }
 
+/// Single-receiver item-stack headroom check (m17.5c, ADR-0124).
+///
+/// Rejects with `ItemStackCapExceeded` when crediting `incoming_qty` to a stack
+/// currently holding `current_count` would exceed `MAX_ITEM_STACK` — strict `>`,
+/// so an exact fill to the cap is `Ok`. Shared by `check_headroom` (trade
+/// receiver-cap, per item, per side) and the shop `buy` path
+/// (server-module economy.rs), so the cap comparison lives exactly once (SSOT).
+///
+/// The `item_id` parameter is intentional (N-1): the `ItemStackCapExceeded`
+/// error payload is constructed HERE, so callers never rebuild the variant.
+pub fn check_item_headroom(
+    current_count: u32,
+    incoming_qty: u32,
+    item_id: u32,
+) -> Result<(), TradeError> {
+    if current_count.saturating_add(incoming_qty) > MAX_ITEM_STACK {
+        return Err(TradeError::ItemStackCapExceeded { item_id });
+    }
+    Ok(())
+}
+
+/// Single-receiver currency-balance headroom check (m17.5c, ADR-0124).
+///
+/// The `incoming > 0` gate is the FIRST line: a zero-incoming call ALWAYS
+/// returns `Ok`, even when `balance` already exceeds `MAX_BALANCE`.
+/// Absolute-balance policing is NOT this primitive's contract — it polices the
+/// incoming credit delta only, and callers must pass the balance through
+/// EXACTLY (no normalization such as clamping to `MAX_BALANCE`); this is pinned
+/// by the zero-incoming over-cap test (B-1/F11).
+///
+/// Rejects with `CurrencyCapExceeded` when crediting `incoming` to `balance`
+/// would exceed `MAX_BALANCE` — strict `>`, so an exact fill to the cap is
+/// `Ok`. Shared by `check_headroom` (trade receiver-cap, per side) and the shop
+/// `sell` path (proceeds cap, server-module economy.rs).
+pub fn check_currency_headroom(balance: u64, incoming: u64) -> Result<(), TradeError> {
+    if incoming == 0 {
+        return Ok(());
+    }
+    if balance.saturating_add(incoming) > MAX_BALANCE {
+        return Err(TradeError::CurrencyCapExceeded);
+    }
+    Ok(())
+}
+
 /// Check that crediting the negotiated assets to each receiver won't exceed their
 /// stack/balance caps. Called by `confirm_trade` BEFORE applying any transfers so
 /// the transaction aborts cleanly with `Err` if a receiver is at or near their cap —
 /// reject-not-clamp (ADR-0113, 16.5b-1).
+///
+/// m17.5c (ADR-0124): the per-axis cap comparisons are DELEGATED to the
+/// single-receiver primitives `check_item_headroom` / `check_currency_headroom`
+/// (also used by the shop buy/sell paths). Currency delegation is
+/// UNCONDITIONAL — the primitive owns the `incoming > 0` skip-guard, and each
+/// balance is passed through exactly (no normalization).
 ///
 /// Parameters (receiver-centric naming — each side receives the OTHER's assets):
 /// - `initiator_receives_items` / `initiator_current_stacks`: items the initiator
@@ -368,11 +418,7 @@ pub fn check_headroom(
             .find(|s| s.item_id == item.item_id)
             .map(|s| s.current_count)
             .unwrap_or(0);
-        if current.saturating_add(item.qty) > MAX_ITEM_STACK {
-            return Err(TradeError::ItemStackCapExceeded {
-                item_id: item.item_id,
-            });
-        }
+        check_item_headroom(current, item.qty, item.item_id)?;
     }
     // Item headroom: counterparty receives initiator's items.
     for item in counterparty_receives_items {
@@ -381,24 +427,12 @@ pub fn check_headroom(
             .find(|s| s.item_id == item.item_id)
             .map(|s| s.current_count)
             .unwrap_or(0);
-        if current.saturating_add(item.qty) > MAX_ITEM_STACK {
-            return Err(TradeError::ItemStackCapExceeded {
-                item_id: item.item_id,
-            });
-        }
+        check_item_headroom(current, item.qty, item.item_id)?;
     }
-    // Currency headroom: initiator receives counterparty_currency.
-    if initiator_receives_currency > 0
-        && initiator_balance.saturating_add(initiator_receives_currency) > MAX_BALANCE
-    {
-        return Err(TradeError::CurrencyCapExceeded);
-    }
-    // Currency headroom: counterparty receives initiator_currency.
-    if counterparty_receives_currency > 0
-        && counterparty_balance.saturating_add(counterparty_receives_currency) > MAX_BALANCE
-    {
-        return Err(TradeError::CurrencyCapExceeded);
-    }
+    // Currency headroom, both sides: delegated UNCONDITIONALLY — the primitive
+    // owns the incoming > 0 skip-guard; balances pass through exactly.
+    check_currency_headroom(initiator_balance, initiator_receives_currency)?;
+    check_currency_headroom(counterparty_balance, counterparty_receives_currency)?;
     Ok(())
 }
 
@@ -1216,8 +1250,8 @@ mod tests {
     /// Mirror of `check_headroom_accepts_exact_headroom_item` but on the counterparty
     /// argument slots (args 5–6), with initiator slots empty/zeroed.
     ///
-    /// kills: rules.rs:295:45 replace > with >= in check_headroom (counterparty item loop
-    ///        overflow check — >= incorrectly rejects a trade that exactly fills to cap)
+    /// kills: replace > with >= in check_item_headroom (delegated from check_headroom,
+    ///        counterparty item loop) — >= incorrectly rejects a trade that exactly fills to cap
     #[test]
     fn check_headroom_accepts_exact_headroom_item_counterparty() {
         use crate::currency::MAX_BALANCE;
@@ -1251,13 +1285,14 @@ mod tests {
     /// Mirror of `check_headroom_accepts_exact_currency_headroom` but on the counterparty
     /// argument slots (args 7–8), with initiator slots empty/zeroed.
     ///
-    /// kills: rules.rs:309:80 replace > with >= in check_headroom (counterparty currency
-    ///        cap check — >= incorrectly rejects a trade that exactly fills to MAX_BALANCE)
+    /// kills: replace > with >= in check_currency_headroom (delegated from check_headroom,
+    ///        counterparty currency cap check) — >= incorrectly rejects a trade that exactly
+    ///        fills to MAX_BALANCE
     ///
-    /// kills: rules.rs:309:9 replace && with || in check_headroom (counterparty compound:
-    ///        with receives=49>0 true and sum==MAX_BALANCE false, && yields false → Ok,
-    ///        while || short-circuits true on receives>0 → Err; the low_balance test
-    ///        below kills this mutant independently — either test alone suffices)
+    /// kills: replace > with || (incoming > 0 guard) in check_currency_headroom (delegated
+    ///        from check_headroom, counterparty side) — with receives=49>0 true and
+    ///        sum==MAX_BALANCE false, the real guard returns Ok; the low_balance test below
+    ///        kills this mutant independently — either test alone suffices
     #[test]
     fn check_headroom_accepts_exact_currency_headroom_counterparty() {
         use crate::currency::MAX_BALANCE;
@@ -1282,8 +1317,9 @@ mod tests {
     ///   so `||` gives true → Err.  The real `&&` gives true && false → false → Ok.
     ///   This test therefore decisively kills the 309:9 || mutant.
     ///
-    /// kills: rules.rs:309:9 replace && with || in check_headroom (counterparty compound
-    ///        — receives=50>0, balance=0, so && gives false → Ok, || gives Err)
+    /// kills: replace && with || (incoming > 0 guard) in check_currency_headroom (delegated
+    ///        from check_headroom, counterparty side) — receives=50>0, balance=0,
+    ///        so real guard (&&) gives false → Ok; || short-circuit gives Err
     #[test]
     fn check_headroom_accepts_counterparty_currency_low_balance() {
         let result = check_headroom(&[], &[], 0, 0, &[], &[], 50, 0);
@@ -1311,8 +1347,9 @@ mod tests {
     /// Under `>= 0` mutant: 0 >= 0 is true → check runs →
     ///   (MAX_BALANCE+1).saturating_add(0) > MAX_BALANCE → Err.
     ///
-    /// kills: rules.rs:302:36 replace > with >= in check_headroom (initiator skip-guard
-    ///        — >= makes receives=0 enter the balance check, incorrectly returning Err)
+    /// kills: replace > with >= in check_currency_headroom (delegated from check_headroom,
+    ///        initiator skip-guard) — >= makes receives=0 enter the balance check,
+    ///        incorrectly returning Err
     #[test]
     fn check_headroom_zero_receive_initiator_skips_balance_check() {
         use crate::currency::MAX_BALANCE;
@@ -1342,8 +1379,9 @@ mod tests {
     /// Under `>= 0` mutant: 0 >= 0 is true → check runs →
     ///   (MAX_BALANCE+1).saturating_add(0) > MAX_BALANCE → Err.
     ///
-    /// kills: rules.rs:308:39 replace > with >= in check_headroom (counterparty skip-guard
-    ///        — >= makes receives=0 enter the balance check, incorrectly returning Err)
+    /// kills: replace > with >= in check_currency_headroom (delegated from check_headroom,
+    ///        counterparty skip-guard) — >= makes receives=0 enter the balance check,
+    ///        incorrectly returning Err
     #[test]
     fn check_headroom_zero_receive_counterparty_skips_balance_check() {
         use crate::currency::MAX_BALANCE;
@@ -2602,5 +2640,320 @@ mod tests {
         );
         // Doc-comment: the division of labor is intentional and unchanged by this slice.
         // spend_currency Err causes whole-reducer rollback → both inventories unchanged.
+    }
+
+    // ===========================================================================
+    // m17.5c — check_item_headroom / check_currency_headroom boundary tests
+    //
+    // These tests reference `check_item_headroom` and `check_currency_headroom`,
+    // which do NOT yet exist in rules.rs.  They will not compile until the
+    // implementer adds them — that is intentional (RED phase, EARS 17.5c-1/-2).
+    //
+    // EARS criteria:
+    //   17.5c-1  buy SHALL return Err and refund (reject-not-destroy) if granting
+    //            qty items would exceed MAX_ITEM_STACK for the buyer.
+    //   17.5c-2  sell SHALL return Err (reject-not-destroy) if granting the
+    //            currency proceeds would exceed MAX_BALANCE for the seller.
+    //
+    // Primitive contracts (plan §Design, gate ownership B-1/F11):
+    //   check_item_headroom(current_count, incoming_qty, item_id) → Result<(), TradeError>
+    //     Err(ItemStackCapExceeded { item_id }) iff
+    //       current_count.saturating_add(incoming_qty) > MAX_ITEM_STACK.
+    //     Exact-fill to cap is Ok.
+    //
+    //   check_currency_headroom(balance, incoming) → Result<(), TradeError>
+    //     The `incoming > 0` gate is the FIRST line.
+    //     Err(CurrencyCapExceeded) iff
+    //       incoming > 0 && balance.saturating_add(incoming) > MAX_BALANCE.
+    //     Exact-fill to cap is Ok.
+    //     incoming == 0 is ALWAYS Ok, even when balance > MAX_BALANCE (absolute-balance
+    //     policing is NOT the contract of this primitive — the caller passes balance
+    //     through exactly, no .min(MAX_BALANCE) normalization).
+    // ===========================================================================
+
+    // ---------------------------------------------------------------------------
+    // check_item_headroom — item stack receiver-cap
+    // ---------------------------------------------------------------------------
+
+    /// 17.5c-1 REJECT: 9980 + 50 = 10030 > MAX_ITEM_STACK (9999) → Err.
+    /// Asserts both the exact variant AND the item_id payload (not just is_err()).
+    ///
+    /// kills: impl that clamps via grant_item instead of rejecting — a clamp would
+    ///        return Ok here, allowing the buyer to pay for 50 items but receive only
+    ///        19 (silent value destruction).
+    #[test]
+    fn check_item_headroom_rejects_over_cap() {
+        let result = check_item_headroom(9980, 50, 1);
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::ItemStackCapExceeded { item_id: 1 },
+            "9980 + 50 = 10030 > MAX_ITEM_STACK (9999): must return \
+             Err(ItemStackCapExceeded {{ item_id: 1 }})"
+        );
+    }
+
+    /// 17.5c-1 REJECT AT CAP: current_count = MAX_ITEM_STACK, incoming = 1 → Err.
+    /// The item_id payload must be 7 (the passed argument).
+    ///
+    /// kills: impl using >= for the cap comparison (would accept this and reject
+    ///        the exact-fill case check_item_headroom_accepts_exact_fill instead).
+    #[test]
+    fn check_item_headroom_rejects_at_cap_plus_one() {
+        let result = check_item_headroom(MAX_ITEM_STACK, 1, 7);
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::ItemStackCapExceeded { item_id: 7 },
+            "current=MAX_ITEM_STACK, incoming=1: sum > MAX_ITEM_STACK, must return \
+             Err(ItemStackCapExceeded {{ item_id: 7 }})"
+        );
+    }
+
+    /// 17.5c-1 ACCEPT EXACT-FILL: 9980 + 19 = 9999 = MAX_ITEM_STACK → Ok.
+    ///
+    /// kills: impl using >= for the cap comparison (would incorrectly reject a trade
+    ///        that exactly fills the receiver's stack to the cap).
+    #[test]
+    fn check_item_headroom_accepts_exact_fill() {
+        let result = check_item_headroom(9980, 19, 2);
+        assert!(
+            result.is_ok(),
+            "9980 + 19 = 9999 = MAX_ITEM_STACK: exact-fill must be Ok (not rejected)"
+        );
+    }
+
+    /// 17.5c-1 ACCEPT NEW RECEIVER: 0 + MAX_ITEM_STACK → Ok.
+    ///
+    /// kills: impl that treats a missing inventory row as an error, or that defaults
+    ///        current_count to something other than 0 (full stack from empty is valid).
+    #[test]
+    fn check_item_headroom_accepts_new_receiver_full_stack() {
+        let result = check_item_headroom(0, MAX_ITEM_STACK, 5);
+        assert!(
+            result.is_ok(),
+            "0 + MAX_ITEM_STACK = MAX_ITEM_STACK: exact cap from zero must be Ok"
+        );
+    }
+
+    /// 17.5c-1 REJECT NEW RECEIVER OVER CAP: 0 + 10_000 > MAX_ITEM_STACK → Err.
+    ///
+    /// kills: unwrap_or-style bypass where an impl skips the check when
+    ///        current_count == 0 (zero-default early-return), or where the comparison
+    ///        uses the current_count as the left operand rather than the sum.
+    #[test]
+    fn check_item_headroom_rejects_new_receiver_over_cap() {
+        let result = check_item_headroom(0, 10_000, 3);
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::ItemStackCapExceeded { item_id: 3 },
+            "0 + 10000 = 10000 > MAX_ITEM_STACK (9999): even a zero-count receiver \
+             must be rejected when incoming_qty exceeds cap"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // check_currency_headroom — currency balance receiver-cap
+    // ---------------------------------------------------------------------------
+
+    /// 17.5c-2 REJECT: (MAX_BALANCE - 49) + 50 = MAX_BALANCE + 1 > MAX_BALANCE → Err.
+    ///
+    /// kills: impl that clamps via grant_currency's saturating add instead of
+    ///        rejecting — a clamp would return Ok, silently destroying 1 unit of
+    ///        currency that the player sold items to earn.
+    #[test]
+    fn check_currency_headroom_rejects_over_cap() {
+        use crate::currency::MAX_BALANCE;
+        let result = check_currency_headroom(MAX_BALANCE - 49, 50);
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::CurrencyCapExceeded,
+            "(MAX_BALANCE - 49) + 50 = MAX_BALANCE + 1 > MAX_BALANCE: must return \
+             Err(CurrencyCapExceeded)"
+        );
+    }
+
+    /// 17.5c-2 REJECT AT CAP: balance = MAX_BALANCE, incoming = 1 → Err.
+    ///
+    /// kills: impl using >= for the cap comparison (would accept this and reject
+    ///        the exact-fill case instead).
+    #[test]
+    fn check_currency_headroom_rejects_at_max_balance_plus_one() {
+        use crate::currency::MAX_BALANCE;
+        let result = check_currency_headroom(MAX_BALANCE, 1);
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::CurrencyCapExceeded,
+            "balance=MAX_BALANCE, incoming=1: sum > MAX_BALANCE, must return \
+             Err(CurrencyCapExceeded)"
+        );
+    }
+
+    /// 17.5c-2 ACCEPT EXACT-FILL: (MAX_BALANCE - 49) + 49 = MAX_BALANCE → Ok.
+    ///
+    /// kills: impl using >= for the cap comparison (would incorrectly reject a sell
+    ///        that exactly fills the seller's wallet to the cap).
+    #[test]
+    fn check_currency_headroom_accepts_exact_fill() {
+        use crate::currency::MAX_BALANCE;
+        let result = check_currency_headroom(MAX_BALANCE - 49, 49);
+        assert!(
+            result.is_ok(),
+            "(MAX_BALANCE - 49) + 49 = MAX_BALANCE: exact-fill must be Ok (not rejected)"
+        );
+    }
+
+    /// 17.5c-2 GATE: incoming = 0 → Ok unconditionally (skip-guard).
+    /// The `incoming > 0` gate is the FIRST line of check_currency_headroom.
+    ///
+    /// This is the plain zero-incoming accept case (balance exactly at cap,
+    /// incoming = 0 → no increase → Ok).  The gate-deletion and normalization
+    /// mutants are killed by `check_currency_headroom_zero_incoming_skips_over_cap_balance`,
+    /// which uses a deliberately over-cap balance (MAX_BALANCE + 1) that a
+    /// gate-deleted impl would incorrectly reject.  This test alone does NOT kill
+    /// the gate-deletion mutant: MAX_BALANCE + 0 is not > MAX_BALANCE either way.
+    #[test]
+    fn check_currency_headroom_zero_incoming_is_ok() {
+        use crate::currency::MAX_BALANCE;
+        let result = check_currency_headroom(MAX_BALANCE, 0);
+        assert!(
+            result.is_ok(),
+            "incoming=0, balance=MAX_BALANCE: check_currency_headroom must return Ok \
+             (zero incoming adds nothing; the skip-guard covers this case)"
+        );
+    }
+
+    /// 17.5c-2 GATE PIN (B-1/F11, anti-normalization): incoming = 0, balance = MAX_BALANCE + 1
+    /// (deliberately over-cap balance) → Ok.
+    ///
+    /// The input balance DELIBERATELY exceeds MAX_BALANCE — production cannot produce
+    /// this value (economy.rs enforces the invariant).  The test pins the CONTRACT of
+    /// the `incoming > 0` skip-guard: check_currency_headroom polices the shop's
+    /// incoming credit delta, NOT pre-existing wallet state.  A delegating caller must
+    /// pass the balance through EXACTLY — no `.min(MAX_BALANCE)` normalization — so
+    /// that the skip-guard of an already-over-cap wallet receiving zero still returns Ok.
+    /// Do NOT "fix" this test by policing absolute balance; if the contract ever
+    /// changes to do that, revise ADR-0124 first.
+    ///
+    /// kills: an impl that normalizes the balance argument with `.min(MAX_BALANCE)` before
+    ///        delegating — such normalization is invisible when balance ≤ MAX_BALANCE but
+    ///        changes the observable contract when balance > MAX_BALANCE, incoming = 0.
+    #[test]
+    fn check_currency_headroom_zero_incoming_skips_over_cap_balance() {
+        use crate::currency::MAX_BALANCE;
+        // MAX_BALANCE + 1 violates the wallet invariant deliberately — see doc above.
+        // Do NOT "fix" by policing absolute balance; that changes the API contract.
+        let result = check_currency_headroom(MAX_BALANCE + 1, 0);
+        assert!(
+            result.is_ok(),
+            "incoming=0, balance=MAX_BALANCE+1 (deliberately over-cap): \
+             check_currency_headroom must return Ok — the `incoming > 0` skip-guard \
+             must fire BEFORE any balance check, passing balance through unchanged. \
+             A normalizing delegation would break this contract (B-1/F11, ADR-0124)."
+        );
+    }
+
+    /// 17.5c-2 EXTREME: u64::MAX balance, incoming = 1 → Err (saturating_add must not wrap).
+    ///
+    /// kills: impl that uses wrapping_add instead of saturating_add — wrapping gives
+    ///        0, which is ≤ MAX_BALANCE, incorrectly returning Ok.
+    #[test]
+    fn check_currency_headroom_u64_max_balance_rejects() {
+        let result = check_currency_headroom(u64::MAX, 1);
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::CurrencyCapExceeded,
+            "balance=u64::MAX, incoming=1: saturating_add must not wrap; \
+             u64::MAX + 1 saturates to u64::MAX > MAX_BALANCE → Err(CurrencyCapExceeded)"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // m17.5c: check_headroom delegates to the single-responsibility primitives
+    // (red-team F6 — delegation SSOT pin)
+    //
+    // EARS: check_headroom must DELEGATE its per-party cap comparisons to
+    // check_item_headroom and check_currency_headroom rather than duplicating the
+    // comparison logic inline.  Duplication creates two diverging copies of the
+    // cap constants and comparison operators; delegation is the SSOT.
+    //
+    // Strategy: include_str! the rules.rs source itself, then extract the
+    // `fn check_headroom` body via a brace-depth walk (split-literal needle so
+    // this test does not self-match on the marker string), and assert both
+    // primitive call-sites appear inside that body.
+    //
+    // RED state: this test is RED until the implementer refactors check_headroom
+    // to call check_item_headroom and check_currency_headroom (m17.5c Task 4).
+    // ---------------------------------------------------------------------------
+
+    /// m17.5c (red-team F6): `check_headroom` must DELEGATE to
+    /// `check_item_headroom` and `check_currency_headroom` rather than
+    /// re-implementing the cap comparisons inline.  The cap constants and
+    /// comparison operators must live once (ADR-0124 SSOT principle).
+    ///
+    /// Implementation note: the needle strings are built via concat! / split-literal
+    /// so that searching rules.rs for the pattern does not self-match on the text
+    /// inside THIS test's string arguments.
+    ///
+    /// TEETH: kills an impl that inlines `current + incoming > MAX_ITEM_STACK`
+    ///        directly in check_headroom instead of calling check_item_headroom —
+    ///        such an impl is an invisible divergence risk if the cap ever changes.
+    ///        Same for a duplicated currency comparison vs. check_currency_headroom.
+    #[test]
+    fn check_headroom_delegates_to_single_receiver_primitives() {
+        // include_str! of the file that contains this very test.
+        // The needle is split so this test file does not self-match.
+        let rules_src = include_str!("rules.rs");
+
+        // Locate `fn check_headroom(` body via brace-depth walk.
+        // Split-literal so the source-scan needle does not match the literal here.
+        let fn_marker = ["fn check", "_headroom("].concat();
+        let fn_pos = rules_src.find(fn_marker.as_str()).expect(
+            "TEETH(m17.5c F6): fn check_headroom not found in rules.rs — \
+                     add check_headroom or rename it consistently (ADR-0124)",
+        );
+
+        let open_brace_offset = rules_src[fn_pos..]
+            .find('{')
+            .expect("TEETH(m17.5c F6): no opening brace found after fn check_headroom");
+        let open_brace = fn_pos + open_brace_offset;
+
+        let mut depth: usize = 0;
+        let mut close_brace = open_brace;
+        for (i, ch) in rules_src[open_brace..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close_brace = open_brace + i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let headroom_body = &rules_src[open_brace..=close_brace];
+
+        // Assert delegation to check_item_headroom (split-literal needle, W-3).
+        let item_needle = ["check_item", "_headroom("].concat();
+        assert!(
+            headroom_body.contains(item_needle.as_str()),
+            "TEETH(m17.5c F6 DELEGATION-SSOT): check_headroom body does not contain \
+             `check_item_headroom(` — the per-item cap comparison must be DELEGATED to \
+             check_item_headroom (ADR-0124 SSOT: one copy of the cap constant and \
+             comparison operator; inline duplication is an invisible divergence risk). \
+             RED until m17.5c Task 4 refactor is complete."
+        );
+
+        // Assert delegation to check_currency_headroom (split-literal needle, W-3).
+        let currency_needle = ["check_currency", "_headroom("].concat();
+        assert!(
+            headroom_body.contains(currency_needle.as_str()),
+            "TEETH(m17.5c F6 DELEGATION-SSOT): check_headroom body does not contain \
+             `check_currency_headroom(` — the per-currency cap comparison must be DELEGATED \
+             to check_currency_headroom (ADR-0124 SSOT: one copy of the cap constant and \
+             comparison operator; inline duplication is an invisible divergence risk). \
+             RED until m17.5c Task 4 refactor is complete."
+        );
     }
 }

@@ -20,6 +20,7 @@ use crate::schema::{
     inventory, item_row, player, player_wallet, shop_item_row, trade_offer, PlayerWallet,
 };
 use game_core::currency::{apply_grant, apply_spend};
+use game_core::{check_currency_headroom, check_item_headroom};
 use spacetimedb::{Identity, ReducerContext, Table};
 
 /// Grant `amount` of currency to `owner`. 0-amount is a no-op (never inserts
@@ -87,8 +88,12 @@ pub(crate) fn spend_currency(
 /// 1. Verify caller is a joined player (`require_owner` before any spend).
 /// 2. Look up the `shop_item_row` for `(shop_id, item_id)` — reject if not stocked.
 /// 3. Compute total = `buy_price × qty` (server-side, checked_mul — no overflow).
-/// 4. `spend_currency` — reject if insufficient funds or no wallet.
-/// 5. `grant_item` — credit the purchased items.
+/// 4. Trade-escrow guard (TR-9, ADR-0106) — reject if the currency is locked in
+///    an active offer.
+/// 5. Receiver-cap headroom (m17.5c, ADR-0124) — `check_item_headroom` on the
+///    RAW stack count, reject-not-destroy BEFORE the spend.
+/// 6. `spend_currency` — reject if insufficient funds or no wallet.
+/// 7. `grant_item` — credit the purchased items.
 ///
 /// Prices come from the `shop_item_row` content table; the client never provides
 /// a price or total (classic economy exploit blocked at the reducer boundary,
@@ -140,6 +145,19 @@ pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) -> Result
         return Err("currency is in an active trade".to_string());
     }
 
+    // m17.5c (ADR-0124 reject-not-destroy): receiver-cap reject BEFORE the spend.
+    // RAW stack count, not escrow-netted — grant_item credits the raw stack;
+    // escrow is a spend-lock, not a receive-lock.
+    let current_count = ctx
+        .db
+        .inventory()
+        .owner_identity()
+        .filter(me)
+        .find(|r| r.item_id == item_id)
+        .map(|r| r.count)
+        .unwrap_or(0);
+    check_item_headroom(current_count, qty, item_id).map_err(|e| e.to_string())?;
+
     // Spend first — if this fails the whole reducer transaction rolls back.
     spend_currency(ctx, me, total)?;
 
@@ -154,10 +172,16 @@ pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) -> Result
 /// Server flow (reject-not-clamp, server-priced, atomic):
 /// 1. Verify caller is a joined player (`require_owner` before any consume/grant).
 /// 2. Look up `sell_price` from `item_row` — reject if 0 ("item cannot be sold").
-/// 3. `consume_one × qty` — reject if any call fails (insufficient items).
+/// 3. Compute total = `sell_price × qty` (server-side, checked_mul) — an
+///    overflow rejects here, pre-filtering the headroom check in step 5
+///    (defense-in-depth, F10).
+/// 4. Trade-escrow guard (TR-8, ADR-0106) — reject if the item is locked in an
+///    active offer.
+/// 5. Proceeds-cap headroom (m17.5c, ADR-0124) — `check_currency_headroom` on
+///    the RAW balance, reject-not-destroy BEFORE any consume.
+/// 6. `consume_one × qty` — reject if any call fails (insufficient items).
 ///    Transaction atomicity: a partial-loop `Err` rolls back ALL prior consume_ones.
-/// 4. Compute total = `sell_price × qty` (server-side, checked_mul).
-/// 5. `grant_currency` — credit the proceeds.
+/// 7. `grant_currency` — credit the proceeds.
 ///
 /// sell_price comes from the `item_row` content table; the client never provides
 /// a price (ADR-0082 §D2 / §D1).
@@ -218,6 +242,14 @@ pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> 
     if qty > available_count {
         return Err("item is in an active trade".to_string());
     }
+
+    // m17.5c (ADR-0124 reject-not-destroy): proceeds-cap reject BEFORE consuming —
+    // the sell side is value-destruction with no rollback backstop, because
+    // grant_currency is infallible and saturates. RAW balance, not escrow-netted —
+    // escrow is a spend-lock, not a receive-lock. The checked_mul above pre-filters
+    // this check for overflow (defense-in-depth, F10).
+    let balance = wallet_balance(ctx, me);
+    check_currency_headroom(balance, total).map_err(|e| e.to_string())?;
 
     // Consume qty units — each consume_one is checked; an Err rolls back the txn.
     for _ in 0..qty {
