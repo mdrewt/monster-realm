@@ -12,7 +12,7 @@ pub mod types;
 
 pub use rules::{
     authorize_confirm, authorize_respond, build_swap_plan, check_headroom, is_offer_stale,
-    make_monster_card, validate_proposal, CurrencyTransfer, ItemStack, ItemTransfer,
+    make_monster_card, validate_proposal, ApplyStep, CurrencyTransfer, ItemStack, ItemTransfer,
     LiveMonsterOwner, MonsterTransfer, ProposalSide, SwapPlan, TradeSide, MAX_ITEM_STACK,
     TRADE_OFFER_TTL_MS,
 };
