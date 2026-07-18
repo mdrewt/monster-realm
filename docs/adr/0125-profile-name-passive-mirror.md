@@ -49,9 +49,23 @@ profile, which the decisive-path ordering already prevents (ADR-0119).
 ### D3 — Shared lookup helper
 
 Both arms read the live name through one private helper,
-`live_player_name(ctx, identity) = ctx.db.player().identity().find(identity).map(|p| p.name)`,
-using inline chained access (the `= ctx.db.<table>()` split-binding form is banned repo-wide by
-the RL-2 never-deleted scan's evasion heuristic). One lookup shape, two call sites, zero drift.
+`live_player_name(ctx, identity) = ctx.db.player().identity().find(identity).map(|p| p.name)`.
+The inline chained `.map` form is load-bearing twice over: it is None-safe when the player row is
+absent (a simultaneous-disconnect race can settle a rating after BOTH rows are gone — an `.unwrap()`
+form would panic there), and it avoids the `= ctx.db.<table>()` split-binding shape. For the
+`profile` table that shape is a safety invariant (RL-2 never-deleted evasion heuristic); for the
+`player` table it is a style convention kept for uniformity. The helper's exact body, its use by
+both arms, and the absence of split-bindings in ranking.rs are pinned by this slice's
+ranking_tests.rs source-scans (the pre-existing repo-wide scans deliberately exclude ranking.rs
+internals). One lookup shape, two call sites, zero drift.
+
+### D4 — No new attack surface (red-team confirmed)
+
+The mirror propagates only data that is already validated and already public: `player.name` passes
+`validate_name` (trim + NFC, non-empty, ≤ 24 chars, alphanumeric/space allowlist — no markup, bidi,
+or zero-width injection) at its single write boundary, and the `player` row is world-readable
+today. Name non-uniqueness (two players choosing the same display name) and per-rated-game name
+churn were both already possible under first-write-wins seeding; the mirror changes neither.
 
 ## Consequences
 
