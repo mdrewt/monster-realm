@@ -489,6 +489,10 @@ fn strip_rust_comments_trading(src: &str) -> String {
 /// IMPORTANT: call AFTER strip_rust_comments_trading so that string literals inside
 /// comments (which are already blanked) do not trip up the byte-walker.
 ///
+/// NOTE: raw strings (r#"…"#) are NOT handled — acceptable because production
+/// trading.rs contains none and comment-strip runs first so blanked-comment
+/// content cannot confuse the byte walker.
+///
 /// This mirrors the JS `stripRustStrings` helper in trade-reducer-security.eval.mjs
 /// (ADR-0116, Finding C).
 fn strip_rust_strings_trading(src: &str) -> String {
@@ -1337,6 +1341,16 @@ fn ea_conservation_order_01_confirm_trade_uses_ordered_steps_loop() {
          '{}' after normalization — the discard pattern must FAIL the positive check",
         pos_needle
     );
+    // AMENDMENT 5: also assert the discard fixture CONTAINS a legacy item-loop needle,
+    // so the negative check has something to bite (without this the negative check is vacuous
+    // against a fixture that lacks legacy loops — only relevant when the negative check runs).
+    assert!(
+        discard_norm.contains(neg_item_ref) || discard_norm.contains(neg_item_plain),
+        "TEETH FAILED: discard fixture must contain a legacy item-loop needle ('{}' or '{}') \
+         so the negative check has something to bite against this fixture",
+        neg_item_ref,
+        neg_item_plain
+    );
 
     // --- BAD FIXTURE (ii): split debit-loop / credit-loop (no unified ordered_steps) ---
     // Two separate loops (debits-first reorder but NOT using ordered_steps).
@@ -1392,6 +1406,76 @@ fn ea_conservation_order_01_confirm_trade_uses_ordered_steps_loop() {
         !swapped_norm.contains(netting_counterparty),
         "TEETH FAILED: swapped netting fixture should NOT contain the correct \
          counterparty netting needle '{}' — field swap must FAIL the netting check",
+        netting_counterparty
+    );
+
+    // --- BAD FIXTURE (iv): dead-variable netting + swapped fields inside check_headroom ---
+    // AMENDMENT 2 (BLOCKER): a dead `let _pin_i = wallet_balance(...).saturating_sub(...)`
+    // satisfies a body-wide `contains` check while check_headroom receives the SWAPPED values.
+    // This fixture has correct netting expressions as dead variables but SWAPPED inside
+    // check_headroom — the body-wide check would PASS, but the argument-span check must FAIL.
+    //
+    // We verify:
+    //   (a) the body-wide check WOULD PASS (so the body-wide approach is insufficient)
+    //   (b) the span check DOES FAIL (so our argument-span approach catches the bypass)
+    let dead_var_fixture = r#"
+        fn confirm_trade(ctx, trade_id) {
+            let _pin_i = wallet_balance(ctx, offer.initiator).saturating_sub(offer.initiator_currency);
+            let _pin_c = wallet_balance(ctx, offer.counterparty).saturating_sub(offer.counterparty_currency);
+            check_headroom(&[], &[], 0, wallet_balance(ctx, offer.initiator).saturating_sub(offer.counterparty_currency), &[], &[], 0, wallet_balance(ctx, offer.counterparty).saturating_sub(offer.initiator_currency))?;
+            for step in plan.ordered_steps() { match step { _ => {} } }
+            Ok(())
+        }
+        fn cancel_trade() {}
+    "#;
+    let dead_body = extract_confirm_body(dead_var_fixture);
+    let dead_norm = normalize_whitespace(&dead_body);
+
+    // (a) Body-wide check passes (proving the old approach is bypassable):
+    assert!(
+        dead_norm.contains(netting_initiator),
+        "TEETH SETUP: dead-var fixture body must contain '{}' at body-level \
+         (so the body-wide approach is satisfied — this proves the bypass exists)",
+        netting_initiator
+    );
+    assert!(
+        dead_norm.contains(netting_counterparty),
+        "TEETH SETUP: dead-var fixture body must contain '{}' at body-level \
+         (so the body-wide approach is satisfied — this proves the bypass exists)",
+        netting_counterparty
+    );
+
+    // (b) Argument-span check FAILS (proving the span approach catches the bypass).
+    // Extract the check_headroom argument span from the dead-var fixture.
+    let check_hroom_call = concat!("check_", "headroom(");
+    let hroom_idx_dv = dead_norm
+        .find(check_hroom_call)
+        .expect("TEETH SETUP: dead-var fixture must contain check_headroom( call");
+    let hroom_args_start_dv = hroom_idx_dv + check_hroom_call.len();
+    let dv_bytes = dead_norm.as_bytes();
+    let mut dv_depth: i32 = 1;
+    let mut dv_i = hroom_args_start_dv;
+    while dv_i < dv_bytes.len() && dv_depth > 0 {
+        match dv_bytes[dv_i] {
+            b'(' => dv_depth += 1,
+            b')' => dv_depth -= 1,
+            _ => {}
+        }
+        dv_i += 1;
+    }
+    let dv_arg_span = &dead_norm[hroom_args_start_dv..dv_i.saturating_sub(1)];
+    assert!(
+        !dv_arg_span.contains(netting_initiator),
+        "TEETH FAILED: dead-var fixture's check_headroom arg span should NOT contain \
+         the correct initiator netting needle '{}' — the swapped fields inside check_headroom \
+         must fail the span check (this proves the span approach catches the dead-var bypass)",
+        netting_initiator
+    );
+    assert!(
+        !dv_arg_span.contains(netting_counterparty),
+        "TEETH FAILED: dead-var fixture's check_headroom arg span should NOT contain \
+         the correct counterparty netting needle '{}' — the swapped fields inside check_headroom \
+         must fail the span check (this proves the span approach catches the dead-var bypass)",
         netting_counterparty
     );
 
@@ -1503,25 +1587,59 @@ fn ea_conservation_order_01_confirm_trade_uses_ordered_steps_loop() {
         neg_currency_plain
     );
 
-    // --- NETTING PAIRING: both wallet_balance().saturating_sub() calls present ---
+    // --- NETTING PAIRING: both wallet_balance().saturating_sub() calls inside check_headroom ---
+    // AMENDMENT 2 (BLOCKER): verify both netting needles appear WITHIN the check_headroom(...)
+    // argument span, not just anywhere in the body.  A dead-variable bypass
+    //   `let _pin_i = wallet_balance(ctx, offer.initiator).saturating_sub(offer.initiator_currency);`
+    // would satisfy a body-wide check while check_headroom receives the swapped fields.
+    // The argument-span extraction below mirrors `check_authorize_call` (lines ~882-969).
+    //
+    // EARS 17.5b-1 AND 17.5b-2 are both covered here:
+    //   17.5b-1: the loop-consumption needle (above) covers debits-before-credits.
+    //   17.5b-2: the netting span needles (below) cover symmetric currency netting.
+    let check_hroom_call = concat!("check_", "headroom(");
+    let hroom_idx = real_norm.find(check_hroom_call).unwrap_or_else(|| {
+        panic!(
+            "EA-CONSERVATION-ORDER-01 FAIL (NETTING): check_headroom( not found in \
+             whitespace-normalized confirm_trade body — cannot extract argument span for \
+             netting needle check (EARS 17.5b-2)"
+        )
+    });
+    let hroom_args_start = hroom_idx + check_hroom_call.len();
+    let real_bytes = real_norm.as_bytes();
+    let mut hroom_depth: i32 = 1;
+    let mut hroom_i = hroom_args_start;
+    while hroom_i < real_bytes.len() && hroom_depth > 0 {
+        match real_bytes[hroom_i] {
+            b'(' => hroom_depth += 1,
+            b')' => hroom_depth -= 1,
+            _ => {}
+        }
+        hroom_i += 1;
+    }
+    let hroom_arg_span = &real_norm[hroom_args_start..hroom_i.saturating_sub(1)];
+
     assert!(
-        real_norm.contains(netting_initiator),
-        "EA-CONSERVATION-ORDER-01 FAIL (NETTING): `confirm_trade` does not contain the \
-         initiator netting needle '{}' (whitespace-normalized). \
-         The currency headroom inputs must be netted: \
-         `wallet_balance(ctx, offer.initiator).saturating_sub(offer.initiator_currency)` \
-         (EARS 17.5b-2 — symmetric with item netting, ADR-0113/ADR-0123). \
-         Kills: netting field-swap (using counterparty_currency for initiator) and netting removal.",
+        hroom_arg_span.contains(netting_initiator),
+        "EA-CONSERVATION-ORDER-01 FAIL (NETTING/SPAN, EARS 17.5b-2): the initiator netting \
+         needle '{}' is not found WITHIN the check_headroom(...) argument span \
+         (whitespace-normalized). The currency headroom inputs must be netted inside \
+         the check_headroom call: `wallet_balance(ctx, offer.initiator).saturating_sub(\
+         offer.initiator_currency)` passed as the initiator balance argument. \
+         Kills: netting field-swap (using counterparty_currency for initiator) and netting removal. \
+         Also kills the dead-variable bypass (correct expression as dead let-binding while \
+         check_headroom receives swapped values).",
         netting_initiator
     );
     assert!(
-        real_norm.contains(netting_counterparty),
-        "EA-CONSERVATION-ORDER-01 FAIL (NETTING): `confirm_trade` does not contain the \
-         counterparty netting needle '{}' (whitespace-normalized). \
-         The currency headroom inputs must be netted: \
-         `wallet_balance(ctx, offer.counterparty).saturating_sub(offer.counterparty_currency)` \
-         (EARS 17.5b-2 — symmetric with item netting, ADR-0113/ADR-0123). \
-         Kills: netting field-swap and netting removal.",
+        hroom_arg_span.contains(netting_counterparty),
+        "EA-CONSERVATION-ORDER-01 FAIL (NETTING/SPAN, EARS 17.5b-2): the counterparty netting \
+         needle '{}' is not found WITHIN the check_headroom(...) argument span \
+         (whitespace-normalized). The currency headroom inputs must be netted inside \
+         the check_headroom call: `wallet_balance(ctx, offer.counterparty).saturating_sub(\
+         offer.counterparty_currency)` passed as the counterparty balance argument. \
+         Kills: netting field-swap and netting removal. \
+         Also kills the dead-variable bypass.",
         netting_counterparty
     );
 }

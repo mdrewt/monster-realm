@@ -1659,6 +1659,8 @@ mod tests {
                     // A credit-before-debit scenario leaves the old count pre-debit, so
                     // `old + qty` hits the cap here.  Debits-first ensures the count is
                     // already reduced before this assertion is evaluated.
+                    // saturating_add guards a hypothetical u32 overflow in the assert expression
+                    // itself: it caps at u32::MAX rather than wrapping, so the comparison is safe.
                     assert!(
                         old.saturating_add(*qty) <= MAX_ITEM_STACK,
                         "tripwire: credit would exceed cap — debits-first was violated \
@@ -1676,7 +1678,21 @@ mod tests {
                     amount,
                 } => {
                     let w = &mut self.wallets[if *to_initiator { 0 } else { 1 }];
-                    *w = w.saturating_add(*amount); // currency uses saturating (no tripwire needed — check_headroom guards this)
+                    // TRIPWIRE — mirrors item tripwire; fires BEFORE the saturating_add (debits-first
+                    // must prevent this from triggering in a correct implementation).
+                    // The saturating_add in the assert expression itself is guarded against a
+                    // hypothetical u64 overflow: saturating_add caps at u64::MAX rather than wrapping,
+                    // so the comparison is safe even at extreme values.
+                    assert!(
+                        w.saturating_add(*amount) <= MAX_BALANCE,
+                        "tripwire: currency credit would exceed MAX_BALANCE — debits-first violated \
+                         (to_initiator={}, wallet_before={}, incoming={}, cap={})",
+                        to_initiator,
+                        w,
+                        amount,
+                        MAX_BALANCE
+                    );
+                    *w = w.saturating_add(*amount);
                 }
             }
         }
@@ -1722,13 +1738,16 @@ mod tests {
         // Headroom check with netted counts (initiator and counterparty both send same item).
         // Initiator receives 20 of ITEM_X; initiator's effective count = 100 − 15 = 85.
         // Counterparty receives 15 of ITEM_X; counterparty's effective count = 9999 − 20 = 9979.
+        // Pre-netted stack values derive from plan quantities:
+        //   i_stacks[0].current_count = initiator_start(100) − i_items[0].qty(15) = 85
+        //   c_stacks[0].current_count = counterparty_start(9999) − c_items[0].qty(20) = 9979
         let i_stacks = vec![ItemStack {
             item_id: ITEM_X,
-            current_count: 85, // pre-netted (100 − 15)
+            current_count: 85, // pre-netted: 100 − i_items[0].qty(15) = 85
         }];
         let c_stacks = vec![ItemStack {
             item_id: ITEM_X,
-            current_count: 9979, // pre-netted (9999 − 20)
+            current_count: 9979, // pre-netted: 9999 − c_items[0].qty(20) = 9979
         }];
         check_headroom(
             &plan
@@ -1808,25 +1827,28 @@ mod tests {
         let plan =
             build_swap_plan(&[], &[], &i_items, &c_items, 0, 0).expect("ownership check passes");
 
+        // Pre-netted stack values derive from plan quantities:
+        //   i_current_count = initiator_start(100) − i_items[0].qty(15) = 85
+        //   c_current_count = counterparty_start(9998) − c_items[0].qty(20) = 9978
         check_headroom(
             &[TradeItem {
                 item_id: ITEM_X,
-                qty: 20,
+                qty: 20, // counterparty sends c_items[0].qty = 20; initiator receives this
             }],
             &[ItemStack {
                 item_id: ITEM_X,
-                current_count: 85,
+                current_count: 85, // pre-netted: 100 − i_items[0].qty(15) = 85
             }],
             0,
             MAX_BALANCE,
             &[TradeItem {
                 item_id: ITEM_X,
-                qty: 15,
+                qty: 15, // initiator sends i_items[0].qty = 15; counterparty receives this
             }],
             &[ItemStack {
                 item_id: ITEM_X,
-                current_count: 9978,
-            }], // 9998 − 20
+                current_count: 9978, // pre-netted: 9998 − c_items[0].qty(20) = 9978
+            }],
             0,
             MAX_BALANCE,
         )
@@ -1939,27 +1961,48 @@ mod tests {
             use crate::currency::MAX_BALANCE;
             const ITEM_ID: u32 = 1;
 
-            // Clamp sends to available stock.
-            let i_send = i_send.min(i_start);
-            let c_send = c_send.min(c_start);
+            // AMENDMENT 1 (BLOCKER): build plan quantities constructively so that
+            // check_headroom, the model walk, and the expected-delta assertions are
+            // all consistent with each other.  No prop_assume!
+            //
+            // Variables (all u32, no wrap risk):
+            //   i_offer  = how many items initiator sends TO counterparty (≤ i_start)
+            //   c_offer  = how many items counterparty sends TO initiator (≤ c_start)
+            //   After applying the plan:
+            //     initiator  = i_start − i_offer + c_offer
+            //     counterparty = c_start − c_offer + i_offer
+            //
+            // Constructive bound for c_offer (how many counterparty sends to initiator):
+            //   initiator's effective stack after its own debit = i_start − i_offer.
+            //   Headroom available for incoming items = MAX_ITEM_STACK − (i_start − i_offer).
+            //   c_offer ≤ min(c_start, i_headroom)  →  check_headroom guaranteed to pass.
+            //
+            // Clamp to available stock first.
+            let i_offer = i_send.min(i_start); // initiator sends i_offer items to counterparty
+            let c_offer_raw = c_send.min(c_start); // counterparty intends to send c_offer_raw items
 
-            // Receive qty bounded by remaining headroom after own send.
-            // initiator receives counterparty's items; max receive = cap − (i_start − i_send).
-            let i_headroom = MAX_ITEM_STACK.saturating_sub(i_start.saturating_sub(i_send));
-            let c_headroom = MAX_ITEM_STACK.saturating_sub(c_start.saturating_sub(c_send));
-            // i_recv = how much counterparty sends; must fit in initiator headroom AND ≤ c_send.
-            let i_recv = c_send.min(i_headroom); // counterparty sends c_send, initiator receives c_send
-            let c_recv = i_send.min(c_headroom); // initiator sends i_send, counterparty receives i_send
+            // Initiator's effective post-debit stack, and remaining headroom for incoming items.
+            let i_eff = i_start - i_offer; // safe: i_offer ≤ i_start
+            let i_headroom = MAX_ITEM_STACK.saturating_sub(i_eff); // space for counterparty's items
+
+            // Counterparty's effective post-debit stack, and remaining headroom.
+            let c_offer = c_offer_raw.min(i_headroom); // bound c_offer to initiator's headroom
+            let c_eff = c_start - c_offer; // safe: c_offer ≤ c_offer_raw ≤ c_start
+            let c_headroom = MAX_ITEM_STACK.saturating_sub(c_eff); // space for initiator's items
+            // Also bound i_offer to counterparty's headroom (they receive i_offer items).
+            let i_offer = i_offer.min(c_headroom);
+            // Recompute i_eff after the second clamp (may be tighter now).
+            let i_eff = i_start - i_offer;
 
             // For a bilateral same-item swap the plan's item_transfers has one entry per side.
-            // We only add transfers when qty > 0.
-            let mut i_items_vec: Vec<TradeItem> = Vec::new();
-            let mut c_items_vec: Vec<TradeItem> = Vec::new();
-            if i_send > 0 {
-                i_items_vec.push(TradeItem { item_id: ITEM_ID, qty: i_send });
+            // We only add transfers when qty > 0 (mirrors build_swap_plan's >0 filter).
+            let mut i_items_vec: Vec<TradeItem> = Vec::new(); // initiator offers i_offer to counterparty
+            let mut c_items_vec: Vec<TradeItem> = Vec::new(); // counterparty offers c_offer to initiator
+            if i_offer > 0 {
+                i_items_vec.push(TradeItem { item_id: ITEM_ID, qty: i_offer });
             }
-            if c_send > 0 {
-                c_items_vec.push(TradeItem { item_id: ITEM_ID, qty: c_send });
+            if c_offer > 0 {
+                c_items_vec.push(TradeItem { item_id: ITEM_ID, qty: c_offer });
             }
 
             // Skip vacuous cases — no transfers means no steps to test.
@@ -1970,32 +2013,25 @@ mod tests {
             let plan = build_swap_plan(&[], &[], &i_items_vec, &c_items_vec, 0, 0)
                 .expect("ownership always valid in constructive test");
 
-            // Verify check_headroom passes with netted counts.
-            // initiator receives c_send items: effective stack = i_start − i_send.
-            // counterparty receives i_send items: effective stack = c_start − c_send.
-            let i_eff = i_start.saturating_sub(i_send);
-            let c_eff = c_start.saturating_sub(c_send);
-
+            // Verify check_headroom passes with effective stacks and plan quantities.
+            // initiator receives c_offer items; effective stack = i_eff (after sending i_offer).
+            // counterparty receives i_offer items; effective stack = c_eff (after sending c_offer).
+            // Guarantee: i_eff + c_offer ≤ MAX_ITEM_STACK (c_offer ≤ i_headroom = MAX−i_eff).
+            //            c_eff + i_offer ≤ MAX_ITEM_STACK (i_offer ≤ c_headroom = MAX−c_eff).
             let mut i_recv_items: Vec<TradeItem> = Vec::new();
             let mut c_recv_items: Vec<TradeItem> = Vec::new();
             let mut i_recv_stacks: Vec<ItemStack> = Vec::new();
             let mut c_recv_stacks: Vec<ItemStack> = Vec::new();
 
-            if c_send > 0 {
-                // initiator receives c_send of ITEM_ID
-                let actual_i_recv = c_send.min(i_headroom);
-                if actual_i_recv > 0 {
-                    i_recv_items.push(TradeItem { item_id: ITEM_ID, qty: actual_i_recv });
-                    i_recv_stacks.push(ItemStack { item_id: ITEM_ID, current_count: i_eff });
-                }
+            if c_offer > 0 {
+                // initiator receives c_offer items
+                i_recv_items.push(TradeItem { item_id: ITEM_ID, qty: c_offer });
+                i_recv_stacks.push(ItemStack { item_id: ITEM_ID, current_count: i_eff });
             }
-            if i_send > 0 {
-                // counterparty receives i_send of ITEM_ID
-                let actual_c_recv = i_send.min(c_headroom);
-                if actual_c_recv > 0 {
-                    c_recv_items.push(TradeItem { item_id: ITEM_ID, qty: actual_c_recv });
-                    c_recv_stacks.push(ItemStack { item_id: ITEM_ID, current_count: c_eff });
-                }
+            if i_offer > 0 {
+                // counterparty receives i_offer items
+                c_recv_items.push(TradeItem { item_id: ITEM_ID, qty: i_offer });
+                c_recv_stacks.push(ItemStack { item_id: ITEM_ID, current_count: c_eff });
             }
 
             let hr = check_headroom(
@@ -2010,8 +2046,8 @@ mod tests {
             );
             prop_assert!(
                 hr.is_ok(),
-                "constructive headroom check failed: i_start={} i_send={} c_start={} c_send={}",
-                i_start, i_send, c_start, c_send
+                "constructive headroom check failed: i_start={} i_offer={} c_start={} c_offer={}",
+                i_start, i_offer, c_start, c_offer
             );
 
             let mut model = ModelState::new(
@@ -2028,26 +2064,28 @@ mod tests {
 
             let i_final = *model.items.get(&(true, ITEM_ID)).unwrap_or(&0);
             let c_final = *model.items.get(&(false, ITEM_ID)).unwrap_or(&0);
-            let expected_i = i_start - i_send + i_recv;
-            let expected_c = c_start - c_send + c_recv;
+            // Expected: initiator loses i_offer, gains c_offer (counterparty's send).
+            // counterparty loses c_offer, gains i_offer.
+            let expected_i = i_start - i_offer + c_offer;
+            let expected_c = c_start - c_offer + i_offer;
 
             prop_assert_eq!(
                 i_final, expected_i,
-                "initiator final={} expected={}: start={} send={} recv={}",
-                i_final, expected_i, i_start, i_send, i_recv
+                "initiator final={} expected={}: start={} offers={} receives={}",
+                i_final, expected_i, i_start, i_offer, c_offer
             );
             prop_assert_eq!(
                 c_final, expected_c,
-                "counterparty final={} expected={}: start={} send={} recv={}",
-                c_final, expected_c, c_start, c_send, c_recv
+                "counterparty final={} expected={}: start={} offers={} receives={}",
+                c_final, expected_c, c_start, c_offer, i_offer
             );
 
-            // Aggregate conservation.
+            // Aggregate conservation: total items in system = i_start + c_start (transfers cancel).
             prop_assert_eq!(
                 i_final + c_final,
-                i_start + c_start - i_send - c_send + i_recv + c_recv,
-                "aggregate conservation violated: i_final={} c_final={} i_start={} c_start={} i_send={} c_send={} i_recv={} c_recv={}",
-                i_final, c_final, i_start, c_start, i_send, c_send, i_recv, c_recv
+                i_start + c_start,
+                "aggregate conservation violated: i_final={} c_final={} i_start={} c_start={}",
+                i_final, c_final, i_start, c_start
             );
         }
     }
@@ -2060,8 +2098,10 @@ mod tests {
     /// EARS 17.5b-1: strict partition — ALL ItemDebit/CurrencyDebit strictly before
     /// ANY ItemCredit/CurrencyCredit in ordered_steps().
     ///
-    /// kills: phase-swap (credits emitted first); interleave (debit between credits);
-    ///        dropped arm (one debit or credit variant missing entirely).
+    /// kills: phase-swap (credits emitted first); interleave (debit between credits).
+    /// NOTE: "dropped arm" (a debit or credit variant missing entirely) is NOT killed
+    /// by this partition test — a debits-only or credits-only sequence passes it.
+    /// The dropped-arm kill is covered by ordered_steps_step_content_parity below.
     #[test]
     fn ordered_steps_partition_debits_strictly_before_credits() {
         let i_items = vec![TradeItem { item_id: 1, qty: 5 }];
@@ -2108,7 +2148,8 @@ mod tests {
     ///
     /// kills: qty-divergence value-printing mutant (debit 5 but credit 4);
     ///        emission-side identity-swap (debit from wrong party, credit to wrong party);
-    ///        dropped arm (ItemDebit emitted but no corresponding ItemCredit).
+    ///        dropped arm (ItemDebit emitted but no corresponding ItemCredit, or vice versa —
+    ///        the exact-count assertions catch both a debits-only and a credits-only impl).
     #[test]
     fn ordered_steps_step_content_parity() {
         let i_items = vec![TradeItem {
@@ -2121,6 +2162,19 @@ mod tests {
         }];
         let plan = build_swap_plan(&[], &[], &i_items, &c_items, 100, 250).expect("valid plan");
         let steps = plan.ordered_steps();
+
+        // Gross-count guard: total steps must equal 2 × (item_transfers + currency_transfers).
+        // Each transfer produces exactly one debit and one credit step.
+        // Fails an impl that emits extra phantom steps or collapses debit+credit into one step.
+        assert_eq!(
+            steps.len(),
+            2 * (plan.item_transfers.len() + plan.currency_transfers.len()),
+            "gross step count wrong: expected 2 × ({} items + {} currencies) = {}; got {}",
+            plan.item_transfers.len(),
+            plan.currency_transfers.len(),
+            2 * (plan.item_transfers.len() + plan.currency_transfers.len()),
+            steps.len()
+        );
 
         // --- item parity for initiator's transfer (item_id=10, qty=7, from_initiator=true) ---
         let item10_debits: Vec<_> = steps
@@ -2329,51 +2383,20 @@ mod tests {
 
     /// EARS 17.5b-2: currency netting asymmetric sensitivity (F7).
     ///
-    /// Scenario: initiator sends 100 gold, counterparty sends 200 gold.
-    /// Balances chosen so the check_headroom outcome FLIPS if the two outgoing
-    /// subtrahends are swapped (i.e. if initiator_outgoing is passed where
-    /// counterparty_outgoing is expected, or vice versa).
-    ///
-    /// Correct netting:
-    ///   initiator_balance = 50;   receives 200; passes: saturating_sub(50, 100) = 0 effective → 0 + 200 = 200 ≤ MAX_BALANCE.
-    ///   counterparty_balance = 150; receives 100; passes: saturating_sub(150, 200) = 0 effective → 0 + 100 = 100 ≤ MAX_BALANCE.
-    ///   (saturating_sub avoids negative; broke-sender is caught by spend_currency, not here.)
-    ///
-    /// Swapped netting (wrong: pass counterparty's outgoing for initiator and vice versa):
-    ///   initiator effective = 50 − 200 = 0 (saturating); 0 + 200 = 200 ≤ MAX_BALANCE → still Ok.
-    ///   counterparty effective = 150 − 100 = 50; 50 + 100 = 150 ≤ MAX_BALANCE → still Ok.
-    ///
-    /// We need a case where swapping actually flips the result. Use near-MAX_BALANCE balances:
-    ///   initiator_balance = MAX_BALANCE − 150; initiator sends 100; receives 200.
-    ///   Correct: effective = (MAX_BALANCE − 150) − 100 = MAX_BALANCE − 250; + 200 = MAX_BALANCE − 50 ≤ MAX_BALANCE → Ok.
-    ///   Swapped (use counterparty's outgoing=200): effective = (MAX_BALANCE − 150) − 200 = MAX_BALANCE − 350 (saturating ok); + 200 = MAX_BALANCE − 150 → still Ok.
-    ///
-    /// We need a tighter construction. Use:
-    ///   initiator_balance = MAX_BALANCE − 50; initiator sends 100; receives 200.
-    ///   Correct netting: effective_i = (MAX_BALANCE − 50) sat_sub 100 = MAX_BALANCE − 150; + 200 = MAX_BALANCE + 50 → OVER CAP → Err.
-    ///   Hmm, that Errs with correct netting too.
-    ///
-    /// Correct construction:
-    ///   initiator_balance = MAX_BALANCE − 150; initiator sends 100; receives 200.
-    ///   counterparty_balance = MAX_BALANCE − 50; counterparty sends 200; receives 100.
-    ///   Correct netting:
-    ///     i_effective = (MAX_BALANCE − 150) sat_sub 100 = MAX_BALANCE − 250; + 200 = MAX_BALANCE − 50 → Ok.
-    ///     c_effective = (MAX_BALANCE − 50) sat_sub 200 = MAX_BALANCE − 250; + 100 = MAX_BALANCE − 150 → Ok.
-    ///   Swapped netting (use c_outgoing=200 for i_effective, i_outgoing=100 for c_effective):
-    ///     i_effective_swapped = (MAX_BALANCE − 150) sat_sub 200 = MAX_BALANCE − 350; + 200 = MAX_BALANCE − 150 → Ok.
-    ///     c_effective_swapped = (MAX_BALANCE − 50) sat_sub 100 = MAX_BALANCE − 150; + 100 = MAX_BALANCE − 50 → Ok.
-    ///   Still Ok — need to push counterparty closer to the cap on receives.
-    ///
-    /// Use a case where swapped netting causes a PASS → FAIL flip:
+    /// Chosen scenario (correct→Err, swapped→Ok flip):
     ///   initiator_balance = MAX_BALANCE − 50; initiator sends 200; receives 100.
     ///   counterparty_balance = MAX_BALANCE − 50; counterparty sends 100; receives 200.
+    ///
     ///   Correct netting:
-    ///     i_effective = (MAX_BALANCE − 50) sat_sub 200 = MAX_BALANCE − 250; + 100 = MAX_BALANCE − 150 → Ok.
-    ///     c_effective = (MAX_BALANCE − 50) sat_sub 100 = MAX_BALANCE − 150; + 200 = MAX_BALANCE + 50 → OVER → Err.
-    ///   With correct netting → Err (counterparty). With swapped netting:
-    ///     i_effective_swapped = (MAX_BALANCE − 50) sat_sub 100 = MAX_BALANCE − 150; + 100 = MAX_BALANCE − 50 → Ok.
-    ///     c_effective_swapped = (MAX_BALANCE − 50) sat_sub 200 = MAX_BALANCE − 250; + 200 = MAX_BALANCE − 50 → Ok.
-    ///   Swapped → Ok. FLIP!
+    ///     i_effective = (MAX_BALANCE−50) sat_sub 200 = MAX_BALANCE−250; +100 = MAX_BALANCE−150 → Ok.
+    ///     c_effective = (MAX_BALANCE−50) sat_sub 100 = MAX_BALANCE−150; +200 = MAX_BALANCE+50 → Err.
+    ///   → correct result: Err.
+    ///
+    ///   Swapped netting (counterparty's outgoing used for initiator and vice versa):
+    ///     i_eff_swapped = (MAX_BALANCE−50) sat_sub 100 = MAX_BALANCE−150; +100 = MAX_BALANCE−50 → Ok.
+    ///     c_eff_swapped = (MAX_BALANCE−50) sat_sub 200 = MAX_BALANCE−250; +200 = MAX_BALANCE−50 → Ok.
+    ///   → swapped result: Ok.
+    ///   FLIP: correct=Err, swapped=Ok — the two subtrahends are NOT interchangeable.
     ///
     /// kills: impl that swaps initiator_outgoing / counterparty_outgoing subtrahends (F7).
     #[test]

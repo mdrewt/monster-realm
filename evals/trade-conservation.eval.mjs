@@ -28,7 +28,16 @@ function stripRustComments(src) {
 }
 
 function extractFunctionBody(rawSrc, fnName) {
-  const src = stripRustComments(rawSrc);
+  // Strip comments first, then strip string literals before brace counting.
+  // Without string stripping, an unbalanced brace inside a string literal
+  // (e.g. an error message "missing {") would truncate the body prematurely,
+  // breaking the 7 existing criteria that call extractFunctionBody.
+  //
+  // NOTE: raw strings (r#"…"#) are not handled by stripRustStrings — acceptable
+  // because production trading.rs contains none, and comment-strip runs first so
+  // string-like content in blanked comments cannot confuse the byte walker.
+  const noComments = stripRustComments(rawSrc);
+  const src = stripRustStrings(noComments);
   let idx = src.indexOf(`pub fn ${fnName}(`);
   if (idx === -1) idx = src.indexOf(`fn ${fnName}(`);
   if (idx === -1) return null;
@@ -137,6 +146,10 @@ function hasHeadroomCheck(body) {
 // is swallowed correctly and does not leave a dangling `"` to confuse the
 // outer loop.
 //
+// NOTE: raw strings (r#"…"#) are NOT handled — acceptable because production
+// trading.rs contains none and comment-strip runs first so blanked-comment
+// content cannot confuse the byte walker.
+//
 // No new RegExp() — this is a character-by-character byte walker.
 // ---------------------------------------------------------------------------
 function stripRustStrings(src) {
@@ -184,6 +197,11 @@ function normalizeWs(s) {
  *            `in&plan.item_transfers` / `inplan.item_transfers` /
  *            `in&plan.currency_transfers` / `inplan.currency_transfers`
  *            — kills a shadow or split legacy loop kept alongside ordered_steps.
+ * NETTING:   both netting needles appear WITHIN the check_headroom(...) argument span
+ *            (paren-depth walk), not just anywhere in the body — kills the dead-variable
+ *            bypass where correct expressions are dead let-bindings while check_headroom
+ *            receives swapped values.
+ *            Covers EARS 17.5b-1 (debits-before-credits) AND 17.5b-2 (netted currency).
  *
  * All needles are literal string indexOf checks — no new RegExp().
  */
@@ -194,6 +212,13 @@ function checkApplyOrder(tradingSrc) {
   const NEG_ITEM_PLAIN = 'in' + 'plan.item_transfers';
   const NEG_CURRENCY_REF = 'in' + '&plan.currency_transfers';
   const NEG_CURRENCY_PLAIN = 'in' + 'plan.currency_transfers';
+  // Netting needles: verified WITHIN the check_headroom(...) argument span.
+  // Built with concatenation to prevent self-match.
+  const NETTING_I =
+    'wallet_balance(ctx,offer.initiator)' + '.saturating_sub(offer.initiator_currency)';
+  const NETTING_C =
+    'wallet_balance(ctx,offer.counterparty)' + '.saturating_sub(offer.counterparty_currency)';
+  const CHECK_HEADROOM_CALL = 'check_' + 'headroom(';
 
   // -------------------------------------------------------------------------
   // Proof-of-teeth: bad fixtures must fail; good fixture must pass.
@@ -268,10 +293,130 @@ function checkApplyOrder(tradingSrc) {
     };
   }
 
-  // GOOD FIXTURE: single `for step in plan.ordered_steps()` match loop, no legacy loops.
+  // BAD FIXTURE (iii): swapped netting fields — netting expressions swapped inside check_headroom.
+  // Positive check passes (ordered_steps loop present), but netting span check must FAIL.
+  const swappedNettingFixture = [
+    'fn confirm_trade(ctx, trade_id) {',
+    '    check_headroom(&[], &[], 0, wallet_balance(ctx, offer.initiator).saturating_sub(offer.counterparty_currency), &[], &[], 0, wallet_balance(ctx, offer.counterparty).saturating_sub(offer.initiator_currency))?;',
+    '    for step in plan.ordered_steps() { match step { _ => {} } }',
+    '    Ok(())',
+    '}',
+    'fn cancel_trade() {}',
+  ].join('\n');
+  const swappedNettingNorm = normalizeWs(
+    stripRustStrings(stripRustComments(swappedNettingFixture)),
+  );
+  // Extract check_headroom arg span from swapped fixture.
+  const swapHrIdx = swappedNettingNorm.indexOf(CHECK_HEADROOM_CALL);
+  if (swapHrIdx === -1) {
+    return {
+      pass: false,
+      detail: 'TEETH FAILED: swapped-netting fixture must contain check_headroom( call',
+    };
+  }
+  {
+    const argStart = swapHrIdx + CHECK_HEADROOM_CALL.length;
+    let depth = 1;
+    let si = argStart;
+    while (si < swappedNettingNorm.length && depth > 0) {
+      if (swappedNettingNorm[si] === '(') depth++;
+      else if (swappedNettingNorm[si] === ')') depth--;
+      si++;
+    }
+    const swapArgSpan = swappedNettingNorm.slice(argStart, si - 1);
+    if (swapArgSpan.includes(NETTING_I)) {
+      return {
+        pass: false,
+        detail:
+          'TEETH FAILED: swapped-netting fixture check_headroom arg span should NOT contain ' +
+          'correct initiator netting needle "' +
+          NETTING_I +
+          '" — field swap must fail the span check (EARS 17.5b-2)',
+      };
+    }
+    if (swapArgSpan.includes(NETTING_C)) {
+      return {
+        pass: false,
+        detail:
+          'TEETH FAILED: swapped-netting fixture check_headroom arg span should NOT contain ' +
+          'correct counterparty netting needle "' +
+          NETTING_C +
+          '" — field swap must fail the span check (EARS 17.5b-2)',
+      };
+    }
+  }
+
+  // BAD FIXTURE (iv): dead-variable netting + swapped fields inside check_headroom.
+  // Body-wide check would pass (correct needles present as dead let-bindings) but
+  // the span check must FAIL (check_headroom receives swapped values).
+  const deadVarNettingFixture = [
+    'fn confirm_trade(ctx, trade_id) {',
+    '    let _pin_i = wallet_balance(ctx, offer.initiator).saturating_sub(offer.initiator_currency);',
+    '    let _pin_c = wallet_balance(ctx, offer.counterparty).saturating_sub(offer.counterparty_currency);',
+    '    check_headroom(&[], &[], 0, wallet_balance(ctx, offer.initiator).saturating_sub(offer.counterparty_currency), &[], &[], 0, wallet_balance(ctx, offer.counterparty).saturating_sub(offer.initiator_currency))?;',
+    '    for step in plan.ordered_steps() { match step { _ => {} } }',
+    '    Ok(())',
+    '}',
+    'fn cancel_trade() {}',
+  ].join('\n');
+  const deadVarNorm = normalizeWs(stripRustStrings(stripRustComments(deadVarNettingFixture)));
+  // (a) Body-wide check would pass (proving body-wide approach is bypassable):
+  if (!deadVarNorm.includes(NETTING_I)) {
+    return {
+      pass: false,
+      detail:
+        'TEETH SETUP: dead-var fixture body must contain "' +
+        NETTING_I +
+        '" at body level to demonstrate the bypass exists',
+    };
+  }
+  // (b) Span check FAILS (proving the span approach catches the bypass):
+  {
+    const dvHrIdx = deadVarNorm.indexOf(CHECK_HEADROOM_CALL);
+    if (dvHrIdx === -1) {
+      return {
+        pass: false,
+        detail: 'TEETH FAILED: dead-var fixture must contain check_headroom( call',
+      };
+    }
+    const argStart = dvHrIdx + CHECK_HEADROOM_CALL.length;
+    let depth = 1;
+    let si = argStart;
+    while (si < deadVarNorm.length && depth > 0) {
+      if (deadVarNorm[si] === '(') depth++;
+      else if (deadVarNorm[si] === ')') depth--;
+      si++;
+    }
+    const dvArgSpan = deadVarNorm.slice(argStart, si - 1);
+    if (dvArgSpan.includes(NETTING_I)) {
+      return {
+        pass: false,
+        detail:
+          'TEETH FAILED: dead-var fixture check_headroom arg span should NOT contain correct ' +
+          'initiator netting needle "' +
+          NETTING_I +
+          '" — swapped fields inside check_headroom must fail the span check',
+      };
+    }
+    if (dvArgSpan.includes(NETTING_C)) {
+      return {
+        pass: false,
+        detail:
+          'TEETH FAILED: dead-var fixture check_headroom arg span should NOT contain correct ' +
+          'counterparty netting needle "' +
+          NETTING_C +
+          '" — swapped fields inside check_headroom must fail the span check',
+      };
+    }
+  }
+
+  // GOOD FIXTURE: single `for step in plan.ordered_steps()` match loop, no legacy loops,
+  // correct netting expressions inside check_headroom.
   const goodFixture = [
     'fn confirm_trade(ctx, trade_id) {',
-    '    let plan = build_swap_plan(&i_live, &c_live, &offer.initiator_items, &offer.counterparty_items, 0, 0)?;',
+    '    let i_balance = wallet_balance(ctx, offer.initiator).saturating_sub(offer.initiator_currency);',
+    '    let c_balance = wallet_balance(ctx, offer.counterparty).saturating_sub(offer.counterparty_currency);',
+    '    check_headroom(&[], &[], 0, wallet_balance(ctx, offer.initiator).saturating_sub(offer.initiator_currency), &[], &[], 0, wallet_balance(ctx, offer.counterparty).saturating_sub(offer.counterparty_currency))?;',
     '    for step in plan.ordered_steps() {',
     '        match step {',
     '            ApplyStep::ItemDebit { from_initiator, item_id, qty } => { consume_one(ctx, from, item_id)?; }',
@@ -306,6 +451,44 @@ function checkApplyOrder(tradingSrc) {
         'TEETH FAILED: good fixture must NOT contain any legacy loop needle ' +
         '(in&plan.item_transfers / inplan.item_transfers / in&plan.currency_transfers / inplan.currency_transfers)',
     };
+  }
+  // Good fixture: netting needles must be present in check_headroom arg span.
+  {
+    const goodHrIdx = goodNorm.indexOf(CHECK_HEADROOM_CALL);
+    if (goodHrIdx === -1) {
+      return {
+        pass: false,
+        detail:
+          'TEETH FAILED: good fixture must contain check_headroom( call for netting span check',
+      };
+    }
+    const argStart = goodHrIdx + CHECK_HEADROOM_CALL.length;
+    let depth = 1;
+    let si = argStart;
+    while (si < goodNorm.length && depth > 0) {
+      if (goodNorm[si] === '(') depth++;
+      else if (goodNorm[si] === ')') depth--;
+      si++;
+    }
+    const goodArgSpan = goodNorm.slice(argStart, si - 1);
+    if (!goodArgSpan.includes(NETTING_I)) {
+      return {
+        pass: false,
+        detail:
+          'TEETH FAILED: good fixture check_headroom arg span must contain initiator netting needle "' +
+          NETTING_I +
+          '"',
+      };
+    }
+    if (!goodArgSpan.includes(NETTING_C)) {
+      return {
+        pass: false,
+        detail:
+          'TEETH FAILED: good fixture check_headroom arg span must contain counterparty netting needle "' +
+          NETTING_C +
+          '"',
+      };
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -374,11 +557,63 @@ function checkApplyOrder(tradingSrc) {
     );
   }
 
+  // NETTING: both wallet_balance().saturating_sub() expressions must appear WITHIN the
+  // check_headroom(...) argument span (paren-depth walk), not just anywhere in the body.
+  // Covers EARS 17.5b-1 (debits-before-credits) AND 17.5b-2 (netted currency headroom).
+  // Kills: netting field-swap; netting removal; dead-variable bypass.
+  // Same paren-depth span technique as check_authorize_call in trading_tests.rs.
+  const hrCallIdx = norm.indexOf(CHECK_HEADROOM_CALL);
+  if (hrCallIdx === -1) {
+    applyFailures.push(
+      'APPLY_ORDER (NETTING, 17.5b-2/ADR-0123): check_headroom( not found in whitespace-normalized ' +
+        'confirm_trade body — cannot extract argument span for netting needle check. ' +
+        'The currency headroom inputs must be netted inside the check_headroom call.',
+    );
+  } else {
+    const hrArgStart = hrCallIdx + CHECK_HEADROOM_CALL.length;
+    let hrDepth = 1;
+    let hri = hrArgStart;
+    while (hri < norm.length && hrDepth > 0) {
+      if (norm[hri] === '(') hrDepth++;
+      else if (norm[hri] === ')') hrDepth--;
+      hri++;
+    }
+    const hrArgSpan = norm.slice(hrArgStart, hri - 1);
+    if (!hrArgSpan.includes(NETTING_I)) {
+      applyFailures.push(
+        'APPLY_ORDER (NETTING/SPAN, 17.5b-2/ADR-0123): the initiator netting needle "' +
+          NETTING_I +
+          '" is not found WITHIN the check_headroom(...) argument span ' +
+          '(whitespace-normalized). The currency headroom must be netted inside the ' +
+          'check_headroom call: wallet_balance(ctx, offer.initiator).saturating_sub(offer.initiator_currency) ' +
+          'passed as the initiator balance argument. ' +
+          'Kills: netting field-swap (using counterparty_currency for initiator), ' +
+          'netting removal, and dead-variable bypass. EARS 17.5b-2.',
+      );
+    }
+    if (!hrArgSpan.includes(NETTING_C)) {
+      applyFailures.push(
+        'APPLY_ORDER (NETTING/SPAN, 17.5b-2/ADR-0123): the counterparty netting needle "' +
+          NETTING_C +
+          '" is not found WITHIN the check_headroom(...) argument span ' +
+          '(whitespace-normalized). The currency headroom must be netted inside the ' +
+          'check_headroom call: wallet_balance(ctx, offer.counterparty).saturating_sub(offer.counterparty_currency) ' +
+          'passed as the counterparty balance argument. ' +
+          'Kills: netting field-swap, netting removal, and dead-variable bypass. EARS 17.5b-2.',
+      );
+    }
+  }
+
   if (applyFailures.length > 0) {
     return { pass: false, detail: applyFailures.join('; ') };
   }
 
-  return { pass: true, detail: 'APPLY_ORDER: ordered_steps loop present, no legacy loops' };
+  return {
+    pass: true,
+    detail:
+      'APPLY_ORDER: ordered_steps loop present, no legacy loops, netting expressions ' +
+      'present within check_headroom argument span (EARS 17.5b-1/17.5b-2)',
+  };
 }
 
 // ---------------------------------------------------------------------------
