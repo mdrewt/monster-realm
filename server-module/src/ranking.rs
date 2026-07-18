@@ -6,7 +6,10 @@
 //! pvp.rs — RL-10). The `profile` table is module-write-only (ADR-0119 D6):
 //! this module declares NO reducers, so no client-callable path can write
 //! rating/wins/losses. Rating arithmetic lives in `game_core::ranking` (the
-//! functional core); this shell only reads and writes rows.
+//! functional core); this shell only reads and writes rows. Private helpers
+//! `refresh_profile_name` + `live_player_name` implement the passive
+//! display-name mirror (ADR-0125) and are exercised directly by
+//! ranking_tests.rs via `super::`.
 //!
 //! This file name extends the canonical `touches:` vocabulary fixed by
 //! ADR-0056 (M8.9) — keep it stable.

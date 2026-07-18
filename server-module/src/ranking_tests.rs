@@ -4,27 +4,26 @@
 //!   `#[path = "ranking_tests.rs"] mod ranking_tests;`
 //! so `super::` resolves to `ranking.rs`.
 //!
-//! Design: server-module/src/ranking.rs contains no ctx-free pure functions
-//! (all logic delegates to game_core::apply_elo / compute_rating_update, which
-//! are fully tested in game-core/src/ranking.rs). The active behavioral tests
-//! for RL-7 module invariants live in pvp_tests.rs (m17a section (e)), where
-//! the file is read via std::fs and the teeth are already engaged.
+//! After m17.5d (ADR-0125), ranking.rs has two private helpers that are
+//! pure/ctx-free enough to test directly:
+//!   - `refresh_profile_name(profile, live_name)` — pure struct transform,
+//!     no ctx, no DB I/O.
+//!   - `live_player_name(ctx, identity)` — ctx helper; its exact inline shape
+//!     is pinned by T2 source-scan rather than an executed test (ReducerContext
+//!     is not constructible in unit tests).
 //!
-//! This file therefore contains one lightweight test that:
-//!   - Pins the RL-4 seed constant via game_core::INITIAL_RATING (SSOT).
-//!   - References `super` to make the module declaration non-dormant once
-//!     ranking.rs exists (the declaration itself acts as a compile gate).
+//! Rating arithmetic still delegates entirely to game_core (tested there).
 //!
-//! Active behavioral teeth for RL-7:
-//!   See pvp_tests.rs — m17a_rl7_server_ranking_module_invariants() (runtime
-//!   std::fs read, RED until ranking.rs is created).
+//! Tests in this file:
+//!   - RL-4 pin: game_core::INITIAL_RATING value from server-module boundary.
+//!   - T1 executed (d1_*/d2_*): pure-core refresh_profile_name behaviour —
+//!     RED as compile-fail until ranking.rs exposes the fn (m17.5a convention).
+//!   - T2 source-scan: needle checks over ranking.rs (include_str!) verifying
+//!     wiring shape, helper count, write-count, and absence of split-bindings —
+//!     mostly RED until impl; two regression pins start GREEN.
 //!
-//! m17.5d (ADR-0125) adds:
-//!   T1 executed tests (d1_*/d2_*): pure-core `refresh_profile_name` fn — RED
-//!     as compile-fail until implementer adds the fn to ranking.rs.
-//!   T2 source-scan tests: needle checks over ranking.rs via include_str! —
-//!     RED by needle-absence until impl wires the helper correctly (except two
-//!     documented regression pins which start GREEN).
+//! RL-7 module invariants (no reducer, get_or_init_profile present, etc.)
+//! remain in pvp_tests.rs — m17a_rl7_server_ranking_module_invariants().
 
 use crate::schema::Profile;
 use spacetimedb::Identity;
@@ -64,9 +63,9 @@ fn rl4_initial_rating_ssot_pin() {
 //     the whole crate's test build fails with a compile error. That is the
 //     accepted red state for pure-core slices (m17.5a precedent).
 //
-// T2: Source-scan tests over ranking.rs (read via include_str! — file exists
-//     at @a0d5743). Needles whitespace-free (squash_ws) and assembled with
-//     concat!() to prevent self-matching. Two regression pins start GREEN.
+// T2: Source-scan tests over ranking.rs (read via include_str!). Needles
+//     whitespace-free (squash_ws) and assembled with concat!() to prevent
+//     self-matching. Two regression pins start GREEN.
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
@@ -84,14 +83,10 @@ fn rl4_initial_rating_ssot_pin() {
 ///     a limitation if deeper nesting is ever added).
 ///   - Char literals are NOT handled (ranking.rs contains none; noted).
 ///
-/// Must run BEFORE `strip_rust_comments` so that `/*` or `//` inside a string
-/// literal does not confuse the comment stripper. This mirrors the eval order:
-/// `stripRustStrings(stripRustComments(src))` in ranking-security.eval.mjs is
-/// comments-then-strings; we reverse to strings-first for correctness (a `//`
-/// inside a string would fool comment stripping done first). The eval's string
-/// stripper is applied after comment stripping there because JS regex comment
-/// stripping doesn't walk string context — our byte-walk comment stripper has
-/// the same blind-spot, so we remove strings first.
+/// Must run BEFORE `strip_rust_comments`: string content is blanked first so
+/// a `//` or `/*` inside a string literal is already spaces before the comment
+/// pass walks the buffer. Our byte-walk comment stripper does not track string
+/// context, so without this ordering it would truncate on `//` in a string.
 ///
 /// Red-team string-literal evasion (test-fan F1): without this pass, a broken
 /// impl can embed a needle inside a `let _ = "...needle...";` string literal
@@ -244,9 +239,9 @@ fn stripped_for_scan(src: &str) -> String {
     squash_ws(&strip_rust_comments(&strip_rust_strings(src)))
 }
 
-// Source for T2 scans. ranking.rs exists in the tree (verified @a0d5743).
-// The T2 tests read the CURRENT file; they go red when the impl needles are
-// absent and green once the implementer adds them.
+// Source for T2 scans (m17a/ADR-0119 introduced ranking.rs; ADR-0125 extended it).
+// The T2 tests read the current file; they are red when impl needles are absent
+// and green once the implementer wires the helpers correctly.
 const RANKING_RS: &str = include_str!("ranking.rs");
 
 // ---------------------------------------------------------------------------
@@ -544,8 +539,11 @@ fn d1_scan_live_player_name_is_inline_chained_map() {
 /// EARS 17.5d-1: `live_player_name(ctx, identity)` must be called exactly TWICE —
 /// once in the `Some` arm and once in the `None` arm of `get_or_init_profile`.
 ///
-/// The call-site needle matches only call shapes, not the function definition
-/// (the def has a different token sequence). Count == 2 pins both arms.
+/// The call-site needle matches only call shapes, not the function definition.
+/// Assumption: the fn definition's squashed param list is
+/// `(ctx:&ReducerContext,identity:Identity)` — the needle requires `(ctx,identity)`
+/// (bare identifiers, no types), so the definition cannot match. Count == 2 pins
+/// exactly the two call sites in get_or_init_profile (Some arm + None arm).
 ///
 /// Kills:
 ///   - None arm drifts back to an inline lookup, diverging from the helper (F5)
@@ -580,15 +578,16 @@ fn d1_scan_helper_used_by_both_arms() {
 ///       Starts GREEN: the current file's profile accesses are `match ctx.db.profile()...`
 ///       and `.insert(` — no `=`-binding of the accessor. Gate fires if a bad impl adds one.
 ///   (c) `=ctx.db.player()` absent — forces all player-table reads in ranking.rs through
-///       the `live_player_name` helper (ADR-0125 D3). Starts RED: the current None arm
-///       binds `let name = ctx.db.player()...`, which squashes to `letname=ctx.db.player()`
-///       and matches the needle. The needle cannot distinguish binding-the-accessor from
-///       binding-a-chain-result, so it effectively bans both forms — exactly the intent.
-///       The needle goes green once the None arm is rewritten to `live_player_name(...)`.
+///       the `live_player_name` helper (ADR-0125 D3). Lifecycle: started RED pre-impl
+///       (old None arm bound `let name = ctx.db.player()...`, squashing to
+///       `letname=ctx.db.player()` which matched the needle); turned GREEN after the impl
+///       routed both get_or_init_profile arms through live_player_name; stays as a gate
+///       against split-binding regressions in future edits. The needle cannot distinguish
+///       binding-the-accessor from binding-a-chain-result — it bans both forms intentionally.
 ///
 /// Update-count == 2 is a REGRESSION PIN — documented as green-at-birth by design.
 /// Sub-assertion (b) also starts GREEN (no profile-accessor binding in current code).
-/// Sub-assertion (c) starts RED (current None arm has a player-table binding) — intentional.
+/// Sub-assertion (c) started RED pre-impl, now GREEN post-impl (see lifecycle above).
 ///
 /// Kills:
 ///   - eager DB write added in Some arm (update count becomes 3)
@@ -680,6 +679,64 @@ fn d1_scan_apply_rating_refreshes_both_roles() {
     );
 }
 
+/// Module-hardening regression pins closing 3 cargo-mutants survivors in
+/// apply_pvp_rating (nightly mutate-server baseline, pre-existing; closed by
+/// this slice's scan coverage of ranking.rs).
+///
+/// EARS 17.5d-adjacent — GREEN at birth by design (all three needles present
+/// in current ranking.rs). Kills:
+///   - `delete ! in apply_pvp_rating` (ranking.rs:88): removing the `!` from
+///     `if !crate::guards::is_ranked_pvp(battle)` would rate everything that is
+///     NOT ranked PvP and skip everything that IS — needle 1 catches this.
+///   - `delete field rating from winner update spread` (ranking.rs:109): removing
+///     `rating: new_winner_rating` from the winner Profile spread would leave the
+///     winner's rating unchanged (stale via `..winner`) — needle 2 catches this.
+///   - `delete field rating from loser update spread` (ranking.rs:114): same
+///     for the loser — needle 3 catches this.
+#[test]
+fn d1_scan_rated_write_survivor_pins() {
+    let squashed = stripped_for_scan(RANKING_RS);
+
+    // Needle 1: `if !crate::guards::is_ranked_pvp(battle) { return; }`.
+    // Split at "is_ranked" + "_pvp" to prevent self-match.
+    // The `!` is load-bearing: its deletion is the mutant we kill.
+    let guard_needle = concat!("if!crate::guards::", "is_ranked", "_pvp(battle){return;}");
+    assert!(
+        squashed.contains(guard_needle),
+        "17.5d-adjacent FAIL (d1_scan_rated_write_survivor_pins / guard): \
+         apply_pvp_rating must contain {:?} (whitespace-free). \
+         The `!` is required: without it, the guard logic inverts and the function \
+         rates everything that is NOT ranked PvP (nightly mutant survivor, ranking.rs:88).",
+        guard_needle
+    );
+
+    // Needle 2: `rating: new_winner_rating` in the winner update spread.
+    // Split at "rating:new_" + "winner_rating" to prevent self-match.
+    let winner_rating_needle = concat!("rating:new_", "winner_rating");
+    assert!(
+        squashed.contains(winner_rating_needle),
+        "17.5d-adjacent FAIL (d1_scan_rated_write_survivor_pins / winner-rating): \
+         apply_pvp_rating's winner spread must contain {:?} (whitespace-free). \
+         Without this explicit field, `..winner` would propagate the stale pre-compute \
+         rating, silently leaving the winner's rating unchanged \
+         (nightly mutant survivor, ranking.rs:109).",
+        winner_rating_needle
+    );
+
+    // Needle 3: `rating: new_loser_rating` in the loser update spread.
+    // Split at "rating:new_" + "loser_rating" to prevent self-match.
+    let loser_rating_needle = concat!("rating:new_", "loser_rating");
+    assert!(
+        squashed.contains(loser_rating_needle),
+        "17.5d-adjacent FAIL (d1_scan_rated_write_survivor_pins / loser-rating): \
+         apply_pvp_rating's loser spread must contain {:?} (whitespace-free). \
+         Without this explicit field, `..loser` would propagate the stale pre-compute \
+         rating, silently leaving the loser's rating unchanged \
+         (nightly mutant survivor, ranking.rs:114).",
+        loser_rating_needle
+    );
+}
+
 /// Machinery self-teeth test: proves that `stripped_for_scan` (strip strings →
 /// strip comments → squash_ws) + needle correctly:
 ///   1. Flags a BAD fixture (Some arm returning bare `existing`).
@@ -709,6 +766,8 @@ fn scan_machinery_teeth() {
 
     // -------------------------------------------------------------------------
     // Fixture 1 — BAD: Some arm returns bare `existing`. Must NOT match needle.
+    // The None arm deliberately preserves the pre-impl historical shape (old
+    // inline player lookup) to exercise the machinery, not the current code.
     // -------------------------------------------------------------------------
     let bad_fixture = "
         pub(crate) fn get_or_init_profile(ctx: &ReducerContext, identity: Identity) -> Profile {
@@ -771,29 +830,18 @@ fn scan_machinery_teeth() {
     );
 
     // -------------------------------------------------------------------------
-    // Fixture 3 — EVASION (red-team test-fan F1): Some arm still returns bare
-    // `existing`, but also contains a string literal embedding the exact needle
-    // text. The string-stripping stage must blank the literal so the needle does
-    // NOT match, and the helper-count must be 0 (not inflated by the literal).
-    //
-    // The needle text inside the string is assembled via the same concat!
-    // fragments to preserve self-match protection for this test file — the
-    // string literal content is built at runtime from the same concat! result,
-    // so the literal text in ranking_tests.rs source is split and not verbatim.
+    // Fixture 3 — EVASION (red-team test-fan F1): BAD Some arm + string literals
+    // containing the needle and call-site text. strip_rust_strings must blank them
+    // so the needle does NOT match and the call-site count stays 0 (no inflation).
+    // Literal contents built at runtime via concat! to preserve self-match protection.
     // -------------------------------------------------------------------------
-    //
-    // Build the evasion literal content at runtime from the same needle fragments.
-    // This means ranking_tests.rs itself never contains the verbatim needle string.
     let evasion_literal_content = concat!(
         "Some(existing)=>",
         "refresh_pro",
         "file_name(existing,live_player_name(ctx,identity))"
     );
-    // Also embed the call-site text to test count-inflation closure.
     let evasion_call_content = concat!("live_player", "_name(ctx,identity)");
 
-    // Construct the evasion fixture as a String (so we can interpolate the
-    // literal contents without writing them verbatim in the source).
     let evasion_fixture = format!(
         "
         pub(crate) fn get_or_init_profile(ctx: &ReducerContext, identity: Identity) -> Profile {{
