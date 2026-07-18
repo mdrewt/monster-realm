@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 90 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 91 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -99,6 +99,7 @@ Generated from 90 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0122](./0122-both-role-ongoing-battle-guard-ssot.md) | 0122 — m17.5a both-role ongoing-battle guard SSOT: side-B PvP damage-laundering exploit closure | Accepted | battle, security-authz | m17.5a (M17.5 tenth-review residuals — side-B PvP exploit closure, EARS 17.5a-1..5) | Hoist the both-role ongoing-battle guard into guards.rs (pure core + ctx wrapper) as the SSOT for all PvE/PvP callers; chain the opponent index in evolve/fuse; classification pinned by eval, not a BattleKind column. |
 | [0123](./0123-trade-swap-debits-before-credits-ordering.md) | 0123 — Trade swap debits-before-credits ordering: apply-order contract + netted currency headroom | Accepted | economy-quests, security-authz | m17.5b (M17.5 tenth-review residuals §17.5b — trade same-item near-cap conservation) | Debits-before-credits via the published `SwapPlan::ordered_steps()` contract, plus currency headroom netted (balance − own outgoing) like items: the ADR-0113 check becomes exact and no swap can hit a transient over-cap clamp. |
 | [0124](./0124-shop-receiver-cap-headroom.md) | 0124 — Shop receiver-cap headroom: reject-not-destroy on buy/sell | Accepted | economy-quests, security-authz | m17.5c | Factor single-receiver `check_item_headroom`/`check_currency_headroom` out of `check_headroom` (which now delegates; SSOT per axis) and call them in `buy`/`sell` before spend/consume — reject-not-destroy at shop receiver caps. |
+| [0125](./0125-profile-name-passive-mirror.md) | 0125 — Leaderboard profile.name passive mirror on rating application | Accepted | battle | m17.5d | Refresh `profile.name` from the live `player` row (when present) in `get_or_init_profile`'s `Some` arm — in-memory, no extra write; `apply_pvp_rating`'s existing update spreads persist the fresh name for both players each rated game. |
 
 ## Harness design corpus (H- namespace)
 
@@ -175,6 +176,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0112](./0112-m16.5a-battle-trade-interlock.md) — m16.5a — Battle↔trade interlock (both directions) + vacuous-revival gate (Accepted)
 - [0119](./0119-ranked-ladder-spine.md) — m17a — Ranked ladder spine: persistent profile, integer Elo, once-only rating funnel, PvE-path PvP closure (Accepted)
 - [0122](./0122-both-role-ongoing-battle-guard-ssot.md) — m17.5a (M17.5 tenth-review residuals — side-B PvP exploit closure, EARS 17.5a-1..5) — 0122 — m17.5a both-role ongoing-battle guard SSOT: side-B PvP damage-laundering exploit closure (Accepted)
+- [0125](./0125-profile-name-passive-mirror.md) — m17.5d — 0125 — Leaderboard profile.name passive mirror on rating application (Accepted)
 
 ### evolution-fusion
 

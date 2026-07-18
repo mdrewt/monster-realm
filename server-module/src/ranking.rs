@@ -6,7 +6,10 @@
 //! pvp.rs — RL-10). The `profile` table is module-write-only (ADR-0119 D6):
 //! this module declares NO reducers, so no client-callable path can write
 //! rating/wins/losses. Rating arithmetic lives in `game_core::ranking` (the
-//! functional core); this shell only reads and writes rows.
+//! functional core); this shell only reads and writes rows. Private helpers
+//! `refresh_profile_name` + `live_player_name` implement the passive
+//! display-name mirror (ADR-0125) and are exercised directly by
+//! ranking_tests.rs via `super::`.
 //!
 //! This file name extends the canonical `touches:` vocabulary fixed by
 //! ADR-0056 (M8.9) — keep it stable.
@@ -18,23 +21,26 @@ use spacetimedb::{Identity, ReducerContext, Table};
 /// Find-or-insert the `profile` row for `identity` — the total seam that
 /// makes the rating path infallible (ADR-0119 D1, RL-1).
 ///
+/// Existing rows get a passive display-name refresh (ADR-0125): the `Some`
+/// arm composes `refresh_profile_name` over `live_player_name`, so the
+/// returned value carries the live `player.name` whenever the presence row
+/// still exists. The refresh is in-memory ONLY — this seam performs no
+/// write for existing rows; persistence rides `apply_pvp_rating`'s two
+/// `..winner`/`..loser` update spreads, so a rename surfaces on the next
+/// rated game. When the player row is absent (disconnect race), the profile
+/// keeps its last-known name.
+///
 /// New rows seed `rating` from `game_core::INITIAL_RATING` (the SSOT, never
-/// the bare literal), zero W/L, and the display name from the `player`
-/// presence row when it still exists (`unwrap_or_default()` → empty string is
-/// a defensive fallback only: all three decisive paths run before
+/// the bare literal), zero W/L, and the display name from the same
+/// `live_player_name` helper (`unwrap_or_default()` → empty string is a
+/// defensive fallback only: all three decisive paths run before
 /// `on_disconnect` deletes the player row, so the name seeds correctly even
 /// on disconnect-forfeit).
 pub(crate) fn get_or_init_profile(ctx: &ReducerContext, identity: Identity) -> Profile {
     match ctx.db.profile().identity().find(identity) {
-        Some(existing) => existing,
+        Some(existing) => refresh_profile_name(existing, live_player_name(ctx, identity)),
         None => {
-            let name = ctx
-                .db
-                .player()
-                .identity()
-                .find(identity)
-                .map(|p| p.name)
-                .unwrap_or_default();
+            let name = live_player_name(ctx, identity).unwrap_or_default();
             ctx.db.profile().insert(Profile {
                 identity,
                 name,
@@ -44,6 +50,29 @@ pub(crate) fn get_or_init_profile(ctx: &ReducerContext, identity: Identity) -> P
             })
         }
     }
+}
+
+/// Pure core of the passive name mirror (ADR-0125 D1): return `profile` with
+/// `name` replaced when a live name is present, unchanged otherwise.
+///
+/// `None` → keep the last-known name (disconnect race: the counterparty's
+/// `player` row can already be deleted by the time a rating settles). Never
+/// clobbers with a default on `None`. In-memory only — no caller writes the
+/// result here (no-eager-write rule); persistence rides `apply_pvp_rating`'s
+/// existing update spreads.
+fn refresh_profile_name(profile: Profile, live_name: Option<String>) -> Profile {
+    match live_name {
+        Some(n) => Profile { name: n, ..profile },
+        None => profile,
+    }
+}
+
+/// Live display name from the `player` presence row, if it still exists
+/// (ADR-0125 D3). The single inline `.map` chain is deliberately None-safe
+/// for the disconnect race — never `.unwrap()` here — and stays a chained
+/// expression with no split-binding, per the RL-2 style convention.
+fn live_player_name(ctx: &ReducerContext, identity: Identity) -> Option<String> {
+    ctx.db.player().identity().find(identity).map(|p| p.name)
 }
 
 /// Apply the ranked-ladder rating for a decided PvP battle (ADR-0119 D6, RL-5).
