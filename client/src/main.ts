@@ -32,6 +32,7 @@ import {
   type WasmMoveInput,
 } from './convert/convert';
 import { shouldToggleBox } from './inputGuards';
+import type { PvpAction } from './module_bindings/types';
 import { connect } from './net/connection';
 import { AuthoritativeStore } from './net/store';
 import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
@@ -1049,7 +1050,6 @@ function snapshot() {
     },
   };
 }
-(window as unknown as { __game: typeof snapshot }).__game = snapshot;
 
 // m16.5d: test hook exposing trade reducers + subscription queries for two-context e2e.
 // Mirrors window.__game pattern. All BigInt values cross the page.evaluate boundary as
@@ -1061,9 +1061,12 @@ function snapshot() {
 // boundary that the type system cannot check across. See that file if you change any
 // method signature or return shape here.
 //
-// NOTE: like window.__game, this hook is included in all builds (no import.meta.env.DEV
-// gate). Server-side identity authz prevents privilege escalation (callers can only act
-// as themselves). A future cleanup should gate both __game and __mrTrade on DEV.
+// NOTE (D-17.5-E, ADR-0127 — amends ADR-0115 D1): __game, __mrTrade, and __mrPvp are
+// DEV-gated — the window assignments live inside `if (import.meta.env.DEV)` below, so
+// production builds drop them. The guarantee is the minifier's dead-branch elimination
+// after Vite's define-replacement of import.meta.env.DEV (NOT Rollup tree-shaking): a
+// `vite build --minify false` bundle would retain the dead branch. Server-side identity
+// authz still prevents privilege escalation (callers can only act as themselves).
 const mrTradeHook = {
   proposeTrade(args: {
     counterparty: string;
@@ -1110,7 +1113,99 @@ const mrTradeHook = {
     return store.allPlayers().map((p) => ({ identity: p.identity, name: p.name }));
   },
 };
-(window as unknown as { __mrTrade: typeof mrTradeHook }).__mrTrade = mrTradeHook;
+
+// m17.5f: test hook exposing PvP challenge/battle reducers + subscription reads for
+// two-context e2e. Mirrors window.__mrTrade. All BigInt values cross the page.evaluate
+// boundary as strings; the hook converts them back to BigInt internally (BigInt cannot
+// pass the structured-clone boundary used by Playwright evaluate).
+//
+// NOTE: this hook's shape is re-declared as MrPvp in client/e2e/pvp-full.spec.ts.
+// Both must be kept in sync manually — page.evaluate() crosses a structured-clone
+// boundary that the type system cannot check across. See that file if you change any
+// method signature or return shape here.
+const mrPvpHook = {
+  challengePvp(targetHex: string, partyIds: string[]): Promise<void> | undefined {
+    return conn?.conn.reducers.challengePvp({
+      target: new Identity(targetHex),
+      partyIds: partyIds.map(BigInt),
+    });
+  },
+  acceptChallenge(challengeId: string, partyIds: string[]): Promise<void> | undefined {
+    return conn?.conn.reducers.acceptChallenge({
+      challengeId: BigInt(challengeId),
+      partyIds: partyIds.map(BigInt),
+    });
+  },
+  declineChallenge(challengeId: string): Promise<void> | undefined {
+    return conn?.conn.reducers.declineChallenge({ challengeId: BigInt(challengeId) });
+  },
+  cancelChallenge(challengeId: string): Promise<void> | undefined {
+    return conn?.conn.reducers.cancelChallenge({ challengeId: BigInt(challengeId) });
+  },
+  submitPvpAction(
+    battleId: string,
+    action: { tag: string; value: number },
+  ): Promise<void> | undefined {
+    // The structured-clone boundary erases the PvpAction union type; the cast restores
+    // it. An unknown tag would fail BSATN encode/server decode — never a silent no-op.
+    return conn?.conn.reducers.submitPvpAction({
+      battleId: BigInt(battleId),
+      action: action as PvpAction,
+    });
+  },
+  allChallenges(): Array<{
+    challengeId: string;
+    challenger: string;
+    target: string;
+    status: string;
+  }> {
+    return store.allChallenges().map((c) => ({
+      challengeId: c.challengeId.toString(),
+      challenger: c.challenger,
+      target: c.target,
+      status: c.status,
+    }));
+  },
+  allPlayers(): Array<{ identity: string; name: string }> {
+    return store.allPlayers().map((p) => ({ identity: p.identity, name: p.name }));
+  },
+  // Role-agnostic battle read: store.battle(id) hits the by-id map directly — NOT
+  // store.ongoingBattle(), which filters playerIdentity === identity (side B is
+  // opponentIdentity and would never see the row). Returns null when the battle is
+  // absent (not yet arrived or GC'd). activeSkillIds are the ACTIVE monster's known
+  // skill ids for each side, so either page can pick a legal skill for its role.
+  battleById(battleId: string): {
+    battleId: string;
+    outcome: string;
+    turnNumber: number;
+    sideA: { active: number; activeSkillIds: number[] };
+    sideB: { active: number; activeSkillIds: number[] };
+  } | null {
+    const b = store.battle(BigInt(battleId));
+    if (!b) return null;
+    return {
+      battleId: b.battleId.toString(),
+      outcome: b.outcome,
+      turnNumber: b.turnNumber,
+      sideA: {
+        active: b.sideA.active,
+        activeSkillIds: [...(b.sideA.team[b.sideA.active]?.knownSkillIds ?? [])],
+      },
+      sideB: {
+        active: b.sideB.active,
+        activeSkillIds: [...(b.sideB.team[b.sideB.active]?.knownSkillIds ?? [])],
+      },
+    };
+  },
+};
+
+// D-17.5-E (ADR-0127): DEV-only test hooks. Only the window ASSIGNMENTS are gated —
+// the hook consts above stay top-level (still referenced here, so no unused-var lint).
+if (import.meta.env.DEV) {
+  (window as unknown as { __game: typeof snapshot }).__game = snapshot;
+  (window as unknown as { __mrTrade: typeof mrTradeHook }).__mrTrade = mrTradeHook;
+  (window as unknown as { __mrPvp: typeof mrPvpHook }).__mrPvp = mrPvpHook;
+}
 
 async function main(): Promise<void> {
   const [

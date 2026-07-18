@@ -34,6 +34,52 @@ import type {
   StoreWeather,
 } from './store';
 
+// --- m17.5f (ADR-0127): SDK-boundary enum exhaustiveness --------------------------
+//
+// HANDLED_ENUM_VARIANTS is the client-side registry of every enum whose `.tag`
+// crosses the SDK→store boundary in this file (row READS only — write-direction
+// enums such as PvpAction are excluded: rowConvert never reads them from a row).
+// It is the data half of a three-part ratchet:
+//   1. evals/sdk-enum-exhaustiveness.eval.mjs statically diffs this registry
+//      against the generated `__t.enum` blocks in module_bindings/types.ts — a
+//      server-added variant widens types.ts on regen and turns the eval RED until
+//      the registry (and the handling code) are consciously updated.
+//   2. Widening a registry entry widens narrowTag's inferred T at its call site;
+//      assigning that wider union to a narrower store field (StoreTradeOffer.status)
+//      is a tsc error — forcing a deliberate store-union + consumer decision.
+//   3. narrowTag is the runtime net: an unknown tag is logged and passed through
+//      (fail-soft — NEVER throw; flushBatch has no per-listener isolation).
+// Registry entries WITHOUT a narrowTag call site feed bare-string store fields,
+// where the eval alone forces author awareness (accepted limitation, ADR-0127).
+//
+// The variant lists mirror module_bindings/types.ts EXACTLY (unit-test-pinned).
+export const HANDLED_ENUM_VARIANTS = {
+  TradeStatus: ['Pending', 'ConfirmedByCounterparty'],
+  ChallengeStatus: ['Pending', 'Accepted', 'Declined', 'Cancelled'],
+  BattleOutcome: ['Ongoing', 'SideAWins', 'SideBWins', 'Fled'],
+  Affinity: ['Fire', 'Water', 'Plant', 'Electric', 'Earth', 'Wind', 'Light', 'Dark'],
+  StatusKind: ['Poison', 'Burn', 'Paralysis', 'Sleep', 'Freeze'],
+  WeatherEffect: ['Rain', 'Sun', 'Sandstorm', 'Hail'],
+  ActionState: ['Idle', 'Walking', 'Jumping'],
+  Direction: ['North', 'South', 'East', 'West'],
+} as const;
+
+/** Narrow a raw SDK enum tag to its registry-typed union. A known tag returns
+ *  typed; an unknown tag (a future server-side variant) logs once per call via
+ *  console.warn and passes through raw — fail-soft, NEVER throw: a throw inside
+ *  a subscription callback would kill the entire flushBatch burst (no
+ *  per-listener isolation). */
+export function narrowTag<T extends string>(raw: string, known: readonly T[], enumName: string): T {
+  if (!known.some((k) => k === raw)) {
+    console.warn(
+      `[rowConvert] unknown ${enumName} tag '${raw}' — not in the handled-variant registry; passing through raw (ADR-0127 fail-soft)`,
+    );
+  }
+  // The ONE centralized, audited cast (ADR-0127): known tags are provably in T;
+  // unknown tags widen at runtime only — callers see the raw string.
+  return raw as T;
+}
+
 // Structural views of the generated rows (just the fields convert reads). Kept
 // structural — not the SDK runtime classes — so tests build plain objects and the
 // store never imports the SDK. The real generated rows satisfy these shapes.
@@ -521,8 +567,9 @@ export function tradeOfferRowToStore(row: SdkTradeOfferRow): StoreTradeOffer {
     counterpartyCurrency: row.counterpartyCurrency,
     initiatorCards: row.initiatorCards.map(sdkCardToStore),
     counterpartyCards: row.counterpartyCards.map(sdkCardToStore),
-    // SDK boundary: trust server sends only valid TradeStatus variants (m16.5c ADR-0114).
-    status: row.status.tag as 'Pending' | 'ConfirmedByCounterparty',
+    // SDK boundary (ADR-0127, supersedes the m16.5c ADR-0114 trust-cast): an unknown
+    // TradeStatus variant is logged and passed through raw via narrowTag (fail-soft).
+    status: narrowTag(row.status.tag, HANDLED_ENUM_VARIANTS.TradeStatus, 'TradeStatus'),
     createdAtMs: row.createdAtMs,
   };
 }
