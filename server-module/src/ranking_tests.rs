@@ -116,9 +116,7 @@ fn strip_rust_strings(src: &str) -> String {
                 // This IS a raw string literal.
                 // Blank the `r`, hashes, and opening `"`.
                 out.push(b' '); // r
-                for _ in 0..hashes {
-                    out.push(b' ');
-                }
+                out.resize(out.len() + hashes, b' '); // opening # hashes
                 out.push(b' '); // opening "
                 j += 1;
                 // Build the closing delimiter: `"` followed by `hashes` `#`s.
@@ -138,9 +136,7 @@ fn strip_rust_strings(src: &str) -> String {
                         if closing_hashes == hashes {
                             // Found the end: blank the `"` and hashes.
                             out.push(b' '); // closing "
-                            for _ in 0..hashes {
-                                out.push(b' ');
-                            }
+                            out.resize(out.len() + hashes, b' '); // closing # hashes
                             j = k;
                             break;
                         }
