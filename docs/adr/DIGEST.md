@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 89 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 90 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -98,6 +98,7 @@ Generated from 89 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0121](./0121-m17c-ranked-evals-tail.md) | 0121 — m17c ranked evals tail: sql-based server-truth e2e, checker-import reuse, no-op-body hardening | Accepted | ci-gates, security-authz | m17c (M17 ranked ladder — evals tail, RL-16/17/18) | RL-18 e2e reads rating truth via `spacetime sql` (no client hook; decoupled from m17b); RL-17 re-pinned by importing the frozen eval's checkers plus a guard-block-body hardening that kills the no-op-body evasion. |
 | [0122](./0122-both-role-ongoing-battle-guard-ssot.md) | 0122 — m17.5a both-role ongoing-battle guard SSOT: side-B PvP damage-laundering exploit closure | Accepted | battle, security-authz | m17.5a (M17.5 tenth-review residuals — side-B PvP exploit closure, EARS 17.5a-1..5) | Hoist the both-role ongoing-battle guard into guards.rs (pure core + ctx wrapper) as the SSOT for all PvE/PvP callers; chain the opponent index in evolve/fuse; classification pinned by eval, not a BattleKind column. |
 | [0123](./0123-trade-swap-debits-before-credits-ordering.md) | 0123 — Trade swap debits-before-credits ordering: apply-order contract + netted currency headroom | Accepted | economy-quests, security-authz | m17.5b (M17.5 tenth-review residuals §17.5b — trade same-item near-cap conservation) | Debits-before-credits via the published `SwapPlan::ordered_steps()` contract, plus currency headroom netted (balance − own outgoing) like items: the ADR-0113 check becomes exact and no swap can hit a transient over-cap clamp. |
+| [0124](./0124-shop-receiver-cap-headroom.md) | 0124 — Shop receiver-cap headroom: reject-not-destroy on buy/sell | Accepted | economy-quests, security-authz | m17.5c | Factor single-receiver `check_item_headroom`/`check_currency_headroom` out of `check_headroom` (which now delegates; SSOT per axis) and call them in `buy`/`sell` before spend/consume — reject-not-destroy at shop receiver caps. |
 
 ## Harness design corpus (H- namespace)
 
@@ -324,6 +325,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0121](./0121-m17c-ranked-evals-tail.md) — m17c (M17 ranked ladder — evals tail, RL-16/17/18) — 0121 — m17c ranked evals tail: sql-based server-truth e2e, checker-import reuse, no-op-body hardening (Accepted)
 - [0122](./0122-both-role-ongoing-battle-guard-ssot.md) — m17.5a (M17.5 tenth-review residuals — side-B PvP exploit closure, EARS 17.5a-1..5) — 0122 — m17.5a both-role ongoing-battle guard SSOT: side-B PvP damage-laundering exploit closure (Accepted)
 - [0123](./0123-trade-swap-debits-before-credits-ordering.md) — m17.5b (M17.5 tenth-review residuals §17.5b — trade same-item near-cap conservation) — 0123 — Trade swap debits-before-credits ordering: apply-order contract + netted currency headroom (Accepted)
+- [0124](./0124-shop-receiver-cap-headroom.md) — m17.5c — 0124 — Shop receiver-cap headroom: reject-not-destroy on buy/sell (Accepted)
 
 ### economy-quests
 
@@ -342,3 +344,4 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0113](./0113-m16.5b-receiver-cap-headroom.md) — m16.5b — Receiver-cap headroom check in confirm_trade (reject, don't destroy) (Accepted)
 - [0117](./0117-m16.5f-trade-ssot-polish.md) — m16.5f — Trade SSOT polish: typed authorize rules, symmetric escrow checks, privacy-doc correction, offer TTL reaper (Accepted)
 - [0123](./0123-trade-swap-debits-before-credits-ordering.md) — m17.5b (M17.5 tenth-review residuals §17.5b — trade same-item near-cap conservation) — 0123 — Trade swap debits-before-credits ordering: apply-order contract + netted currency headroom (Accepted)
+- [0124](./0124-shop-receiver-cap-headroom.md) — m17.5c — 0124 — Shop receiver-cap headroom: reject-not-destroy on buy/sell (Accepted)

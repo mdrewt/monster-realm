@@ -1131,6 +1131,23 @@ fn buy_reducer_calls_headroom_before_spend() {
          with this as a prefix does NOT satisfy this requirement (red-team F3)",
     );
 
+    // Lookup-filter pin (mutation 156:29 killer): the inventory read feeding the
+    // headroom check must filter on the PURCHASED item — `r.item_id == item_id`
+    // must appear between the inventory() read and the headroom call. Under the
+    // `==`→`!=` cargo-mutants mutation this needle disappears from the mutated
+    // source (include_str! sees the mutant), flipping this gate RED — keeping the
+    // mutate-server missed count at the ADR-0118 baseline (no net-new survivors).
+    let lookup_filter_pat = ["r.item", "_id == item", "_id"].concat();
+    let lookup_window = &buy_body[inventory_pos..headroom_pos];
+    assert!(
+        lookup_window.contains(lookup_filter_pat.as_str()),
+        "TEETH(m17.5c LOOKUP-FILTER-BUY): `r.item_id == item_id` not found between the \
+         inventory() read and the check_item_headroom( call in buy — the current-count \
+         lookup must select the stack for the item being purchased; a wrong-item filter \
+         (e.g. `!=`, or matching shop_id) reads an unrelated count and voids the cap \
+         check (ADR-0124)"
+    );
+
     // Assert provenance pins precede the headroom call.
     assert!(
         inventory_pos < headroom_pos,
