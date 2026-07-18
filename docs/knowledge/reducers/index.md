@@ -8,6 +8,7 @@
 | reducers/accept_challenge | SpacetimeDB Reducer | accept_challenge | Accept a pending PvP challenge. Creates the `battle` row and schedules the turn  |
 | reducers/advance_dialogue | SpacetimeDB Reducer | advance_dialogue | Advance dialogue by selecting a choice. Security gate: `apply_choice` re-checks  |
 | reducers/attempt_recruit | SpacetimeDB Reducer | attempt_recruit | Attempt to recruit the wild monster in a wild battle (M8d, ADR-0047). The roll i |
+| reducers/battle_challenge_reaper | SpacetimeDB Reducer | battle_challenge_reaper | Scheduled reaper: delete a Pending battle challenge that has outlived `CHALLENGE |
 | reducers/buy | SpacetimeDB Reducer | buy | Buy `qty` units of `item_id` from shop `shop_id`. Server flow (reject-not-clamp, |
 | reducers/cancel_challenge | SpacetimeDB Reducer | cancel_challenge | Cancel a pending PvP challenge (initiator-only). |
 | reducers/cancel_trade | SpacetimeDB Reducer | cancel_trade | Cancel a trade offer. Either party may cancel before the swap executes. Deletes  |

@@ -8,6 +8,7 @@
 | tables/battle | SpacetimeDB Table | battle | A single PvE or PvP battle. The `state` column holds the full `BattleState` (pur |
 | tables/battle_action | SpacetimeDB Table | battle_action | PRIVATE per-turn secret action submitted by one PvP player (M16a, ADR-0109). MUS |
 | tables/battle_challenge | SpacetimeDB Table | battle_challenge | A pending PvP challenge from one player to another (M16a, ADR-0109). PUBLIC so b |
+| tables/battle_challenge_reaper_schedule | SpacetimeDB Table | battle_challenge_reaper_schedule | SpacetimeDB table battle_challenge_reaper_schedule. |
 | tables/battle_wild | SpacetimeDB Table | battle_wild | PRIVATE wild-individuality side-table (M8c, ADR-0045). Keyed 1:1 by `battle_id`. |
 | tables/character | SpacetimeDB Table | character | One renderable entity. The enum/queue columns are the EXACT M1 `game-core` types |
 | tables/config | SpacetimeDB Table | config | Singleton world config. |

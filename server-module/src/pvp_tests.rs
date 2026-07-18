@@ -2025,7 +2025,7 @@ fn ea_chr_04_challenge_reaper_stale_recheck_guards_the_delete() {
 //
 // F7 RULE (load-bearing for this file): NO fixture string here may contain an
 // unbroken table-macro attribute prefix — the schema-snapshot eval
-// concatenates ALL server-module/src/**.rs INCLUDING this test file, and its
+// concatenates ALL .rs files under server-module/src/ INCLUDING this test file, and its
 // parser would treat a fixture as a real table.  This test therefore scans
 // only the REAL attribute (needle-based); macro-shaped fixtures live solely in
 // evals/pvp-challenge-reaper.eval.mjs (never scanned by the snapshot eval).

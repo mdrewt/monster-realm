@@ -88,6 +88,29 @@ pub fn pvp_deadline_forfeit_side(a_submitted: bool, b_submitted: bool) -> SideId
 }
 
 // ===========================================================================
+// Challenge TTL — liveness bound for Pending battle challenges (m17.5e)
+// ===========================================================================
+
+/// Pending battle-challenge time-to-live (17.5e-1, ADR-0126).
+// 2 min — a challenge is an interactive prompt to a player who was online at
+// send time, and a Pending row locks BOTH parties out of new challenges
+// (challenge_pvp guards 5b/6): the TTL directly bounds that lockout window
+// for AFK/disconnected challengers. Trade's 1 h TTL is for offers that
+// survive sessions; challenges must not. Tunable liveness constant, `>=` boundary.
+pub const CHALLENGE_TTL_MS: i64 = 120_000;
+
+/// True if the challenge has outlived `CHALLENGE_TTL_MS` (17.5e-1, ADR-0126).
+///
+/// Saturating subtraction: on clock skew (`now_ms` < `created_at_ms`) the
+/// difference goes NEGATIVE — i64 subtraction saturates only at the type
+/// extremes, never at 0 — and a negative elapsed simply compares fresh
+/// (< TTL). Boundary is `>=`: at exactly TTL the challenge IS stale.
+#[must_use]
+pub fn is_challenge_stale(created_at_ms: i64, now_ms: i64) -> bool {
+    now_ms.saturating_sub(created_at_ms) >= CHALLENGE_TTL_MS
+}
+
+// ===========================================================================
 // Tests
 // ===========================================================================
 
