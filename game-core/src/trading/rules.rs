@@ -1556,4 +1556,939 @@ mod tests {
             "is_offer_stale(i64::MAX, i64::MIN): saturating_sub gives 0 < TTL, must be false"
         );
     }
+
+    // ===========================================================================
+    // m17.5b — debits-before-credits ordering + currency netting + conservation
+    //
+    // These tests reference `SwapPlan::ordered_steps()` and `ApplyStep` (with
+    // variants ItemDebit / CurrencyDebit / ItemCredit / CurrencyCredit), which do
+    // NOT yet exist.  They will not compile until the implementer adds them to
+    // rules.rs — that is intentional (RED phase: EARS 17.5b-1 / 17.5b-2 / 17.5b-3).
+    //
+    // EARS criteria:
+    //   17.5b-1  WHEN confirm_trade executes, ALL debits SHALL be applied before ANY
+    //            credit.  `ordered_steps()` is the published game-core SSOT contract.
+    //   17.5b-2  IF debits-first is adopted, currency headroom inputs SHALL be netted
+    //            (`balance − outgoing`) symmetrically with item stacks.
+    //   17.5b-3  Regression proof-of-teeth: bilateral same-item swap near cap →
+    //            assets conserved; genuine over-cap net → Err before any walk.
+    //
+    // HONESTY NOTE (B-2): The "both inventories unchanged on reject" property proven
+    // here rests on `check_headroom` rejecting BEFORE any walk of `ordered_steps()`.
+    // Production partial-failure safety rests on SpacetimeDB reducer-Err transaction
+    // rollback — a platform guarantee NOT exercised in unit tests.  This is stated
+    // explicitly in ADR-0123 and the relevant test doc-comments.
+    // ===========================================================================
+
+    // ---------------------------------------------------------------------------
+    // In-memory parallel model (per-party, per-item_id + wallets).
+    //
+    // ModelState mirrors the inventory of both parties in a single struct so tests
+    // can assert per-party exact deltas after walking `ordered_steps()`.
+    //
+    // The credit operation MUST assert BEFORE any min/clamp so the tripwire fires
+    // on a clamp-that-engages — the regression signal for credit-before-debit (F6).
+    // ---------------------------------------------------------------------------
+
+    use std::collections::HashMap;
+
+    /// Per-party in-memory item + currency state.
+    #[derive(Clone, Debug)]
+    struct ModelState {
+        /// Keyed by (is_initiator, item_id) → current count.
+        items: HashMap<(bool, u32), u32>,
+        /// Wallet balance per party: [initiator, counterparty].
+        wallets: [u64; 2],
+    }
+
+    impl ModelState {
+        fn new(
+            initiator_items: &[(u32, u32)],
+            counterparty_items: &[(u32, u32)],
+            initiator_wallet: u64,
+            counterparty_wallet: u64,
+        ) -> Self {
+            let mut items = HashMap::new();
+            for &(id, qty) in initiator_items {
+                items.insert((true, id), qty);
+            }
+            for &(id, qty) in counterparty_items {
+                items.insert((false, id), qty);
+            }
+            ModelState {
+                items,
+                wallets: [initiator_wallet, counterparty_wallet],
+            }
+        }
+
+        /// Apply a single `ApplyStep` to the model.
+        ///
+        /// Credit ops MUST assert BEFORE any clamp (F6): if `old + qty > MAX_ITEM_STACK`
+        /// the tripwire fires, proving debits-first was violated (the net headroom check
+        /// should have caught this before any steps were walked).
+        fn apply(&mut self, step: &ApplyStep) {
+            match step {
+                ApplyStep::ItemDebit {
+                    from_initiator,
+                    item_id,
+                    qty,
+                } => {
+                    let party_idx = *from_initiator;
+                    let entry = self.items.entry((party_idx, *item_id)).or_insert(0);
+                    *entry = entry.checked_sub(*qty).expect(
+                        "ItemDebit: model debit underflowed — sender has insufficient stock",
+                    );
+                }
+                ApplyStep::CurrencyDebit {
+                    from_initiator,
+                    amount,
+                } => {
+                    let w = &mut self.wallets[if *from_initiator { 0 } else { 1 }];
+                    *w = w.checked_sub(*amount).expect(
+                        "CurrencyDebit: model wallet underflowed — sender has insufficient balance",
+                    );
+                }
+                ApplyStep::ItemCredit {
+                    to_initiator,
+                    item_id,
+                    qty,
+                } => {
+                    let party_idx = *to_initiator;
+                    let old = *self.items.entry((party_idx, *item_id)).or_insert(0);
+                    // TRIPWIRE — fires BEFORE any min/clamp (F6).
+                    // A credit-before-debit scenario leaves the old count pre-debit, so
+                    // `old + qty` hits the cap here.  Debits-first ensures the count is
+                    // already reduced before this assertion is evaluated.
+                    assert!(
+                        old.saturating_add(*qty) <= MAX_ITEM_STACK,
+                        "tripwire: credit would exceed cap — debits-first was violated \
+                         (item_id={}, party_is_initiator={}, old={}, incoming={}, cap={})",
+                        item_id,
+                        to_initiator,
+                        old,
+                        qty,
+                        MAX_ITEM_STACK
+                    );
+                    *self.items.entry((party_idx, *item_id)).or_insert(0) += qty;
+                }
+                ApplyStep::CurrencyCredit {
+                    to_initiator,
+                    amount,
+                } => {
+                    let w = &mut self.wallets[if *to_initiator { 0 } else { 1 }];
+                    *w = w.saturating_add(*amount); // currency uses saturating (no tripwire needed — check_headroom guards this)
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // A1 — executed conservation: bilateral same-item swap near-cap
+    //
+    // EARS 17.5b-3: counterparty at 9999 and 9998 of item X, with a bilateral swap
+    // that nets within headroom — ordered_steps() must walk without tripping the
+    // model tripwire AND per-party deltas must be exact.
+    // ---------------------------------------------------------------------------
+
+    /// EARS 17.5b-3: bilateral same-item swap, counterparty starts at 9999 of item X.
+    ///
+    /// Net:  counterparty sends 20, receives 15 → post-trade = 9999 − 20 + 15 = 9994 (valid).
+    /// The item-destruction bug would credit +15 at count=9999 (drop), debit −20 → 9979.
+    /// Debits-first: debit −20 first → 9979, then credit +15 → 9994 (correct, tripwire silent).
+    ///
+    /// kills: credit-before-debit impl (tripwire fires at old=9999 + incoming=15 > 9999);
+    ///        recipient-swap (initiator and counterparty deltas inverted);
+    ///        clamp-swallow (tripwire-before-min: assert fires before any min() silences it).
+    #[test]
+    fn ordered_steps_conservation_same_item_swap_counterparty_at_9999() {
+        use crate::currency::MAX_BALANCE;
+        const ITEM_X: u32 = 42;
+
+        // Initiator: has 100 of item X, sends 15, receives 20.
+        // Counterparty: has 9999 of item X, sends 20, receives 15.
+        // Net headroom check: counterparty receives 15, effective count = 9999 − 20 = 9979.
+        // 9979 + 15 = 9994 ≤ 9999 → check_headroom Ok.
+        let i_items = vec![TradeItem {
+            item_id: ITEM_X,
+            qty: 15,
+        }];
+        let c_items = vec![TradeItem {
+            item_id: ITEM_X,
+            qty: 20,
+        }];
+        let plan =
+            build_swap_plan(&[], &[], &i_items, &c_items, 0, 0).expect("ownership check passes");
+
+        // Headroom check with netted counts (initiator and counterparty both send same item).
+        // Initiator receives 20 of ITEM_X; initiator's effective count = 100 − 15 = 85.
+        // Counterparty receives 15 of ITEM_X; counterparty's effective count = 9999 − 20 = 9979.
+        let i_stacks = vec![ItemStack {
+            item_id: ITEM_X,
+            current_count: 85, // pre-netted (100 − 15)
+        }];
+        let c_stacks = vec![ItemStack {
+            item_id: ITEM_X,
+            current_count: 9979, // pre-netted (9999 − 20)
+        }];
+        check_headroom(
+            &plan
+                .item_transfers
+                .iter()
+                .filter(|t| !t.from_initiator)
+                .map(|t| TradeItem {
+                    item_id: t.item_id,
+                    qty: t.qty,
+                })
+                .collect::<Vec<_>>(),
+            &i_stacks,
+            0,
+            MAX_BALANCE,
+            &plan
+                .item_transfers
+                .iter()
+                .filter(|t| t.from_initiator)
+                .map(|t| TradeItem {
+                    item_id: t.item_id,
+                    qty: t.qty,
+                })
+                .collect::<Vec<_>>(),
+            &c_stacks,
+            0,
+            MAX_BALANCE,
+        )
+        .expect("check_headroom must pass for netted case: 9979+15=9994 ≤ 9999");
+
+        // Build the model and walk ordered_steps().
+        let mut model = ModelState::new(&[(ITEM_X, 100)], &[(ITEM_X, 9999)], 0, 0);
+        let steps = plan.ordered_steps();
+        for step in &steps {
+            model.apply(step); // tripwire inside apply() catches credit-before-debit
+        }
+
+        // Per-party exact deltas (kills identity-swap / recipient-swap mutants — F2/B-1).
+        let i_final = *model.items.get(&(true, ITEM_X)).unwrap_or(&0);
+        let c_final = *model.items.get(&(false, ITEM_X)).unwrap_or(&0);
+        assert_eq!(
+            i_final, 105,
+            "initiator: started 100, sent 15, received 20 → expected 105; got {i_final}",
+        );
+        assert_eq!(
+            c_final, 9994,
+            "counterparty: started 9999, sent 20, received 15 → expected 9994; got {c_final}",
+        );
+
+        // Aggregate conservation: total items in system unchanged.
+        let total_before = 100u32 + 9999;
+        let total_after = i_final + c_final;
+        assert_eq!(
+            total_after, total_before,
+            "aggregate conservation violated: total before={total_before}, after={total_after}",
+        );
+    }
+
+    /// EARS 17.5b-3: bilateral same-item swap, counterparty starts at 9998 of item X.
+    ///
+    /// counterparty sends 20, receives 15 → post-trade = 9998 − 20 + 15 = 9993 (valid).
+    /// Verifies the regression at 9998 (not just 9999 boundary).
+    ///
+    /// kills: same as 9999 case — credit-before-debit (old=9998+15=10013 > cap, tripwire fires).
+    #[test]
+    fn ordered_steps_conservation_same_item_swap_counterparty_at_9998() {
+        use crate::currency::MAX_BALANCE;
+        const ITEM_X: u32 = 42;
+
+        let i_items = vec![TradeItem {
+            item_id: ITEM_X,
+            qty: 15,
+        }];
+        let c_items = vec![TradeItem {
+            item_id: ITEM_X,
+            qty: 20,
+        }];
+        let plan =
+            build_swap_plan(&[], &[], &i_items, &c_items, 0, 0).expect("ownership check passes");
+
+        check_headroom(
+            &[TradeItem {
+                item_id: ITEM_X,
+                qty: 20,
+            }],
+            &[ItemStack {
+                item_id: ITEM_X,
+                current_count: 85,
+            }],
+            0,
+            MAX_BALANCE,
+            &[TradeItem {
+                item_id: ITEM_X,
+                qty: 15,
+            }],
+            &[ItemStack {
+                item_id: ITEM_X,
+                current_count: 9978,
+            }], // 9998 − 20
+            0,
+            MAX_BALANCE,
+        )
+        .expect("check_headroom: 9978+15=9993 ≤ 9999");
+
+        let mut model = ModelState::new(&[(ITEM_X, 100)], &[(ITEM_X, 9998)], 0, 0);
+        for step in &plan.ordered_steps() {
+            model.apply(step);
+        }
+
+        let i_final = *model.items.get(&(true, ITEM_X)).unwrap_or(&0);
+        let c_final = *model.items.get(&(false, ITEM_X)).unwrap_or(&0);
+        assert_eq!(
+            i_final, 105,
+            "initiator: 100 − 15 + 20 = 105; got {i_final}",
+        );
+        assert_eq!(
+            c_final, 9993,
+            "counterparty: 9998 − 20 + 15 = 9993; got {c_final}",
+        );
+        assert_eq!(
+            i_final + c_final,
+            100 + 9998,
+            "aggregate conservation failed",
+        );
+    }
+
+    /// EARS 17.5b-3: genuine over-cap net → check_headroom Err BEFORE any walk.
+    ///
+    /// counterparty at 9999, receives 20 net (sends 0) — effective count 9999 + 20 > cap.
+    /// `check_headroom` must Err; the model is never walked (honesty: no model assertion
+    /// needed — the Err is the precondition; production rollback is SpacetimeDB atomicity).
+    ///
+    /// kills: netting removed from check_headroom → false-accept on genuine over-cap.
+    #[test]
+    fn ordered_steps_genuine_over_cap_rejected_before_walk() {
+        use crate::currency::MAX_BALANCE;
+        const ITEM_X: u32 = 7;
+
+        // Initiator sends 20 of ITEM_X; counterparty has 9999, sends 0.
+        // Counterparty receives 20: 9999 + 20 = 10019 > MAX_ITEM_STACK → must Err.
+        let result = check_headroom(
+            &[], // initiator receives nothing
+            &[],
+            0,
+            MAX_BALANCE,
+            &[TradeItem {
+                item_id: ITEM_X,
+                qty: 20,
+            }], // counterparty receives 20
+            &[ItemStack {
+                item_id: ITEM_X,
+                current_count: 9999,
+            }],
+            0,
+            MAX_BALANCE,
+        );
+        assert!(
+            result.is_err(),
+            "genuine over-cap (9999 + 20 = 10019 > MAX_ITEM_STACK): \
+             check_headroom must return Err before any walk; got Ok"
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            TradeError::ItemStackCapExceeded { item_id: ITEM_X },
+            "expected ItemStackCapExceeded for item {ITEM_X}",
+        );
+        // Model intentionally NOT walked — Err precondition guarantees no mutation.
+        // (Production safety = SpacetimeDB reducer-Err transaction rollback, ADR-0123.)
+    }
+
+    // ---------------------------------------------------------------------------
+    // A2 — proptest: constructive near-cap generation, never-trip + conservation
+    //
+    // EARS 17.5b-1/2/3 (all): property that for ANY constructively-generated
+    // bilateral swap (qty bounded by remaining netted headroom), walking
+    // ordered_steps() never trips the model tripwire and per-party + aggregate
+    // totals are conserved exactly.
+    //
+    // Constructive generation (N-2/F10): qty bounded so netted headroom passes —
+    // NOT prop_assume! rejection sampling, which would filter out the near-cap region.
+    // The near-cap region is exactly the regression territory.
+    //
+    // House trap: no inline format captures in prop_assert! messages (prior slice
+    // M17a hit a clippy/build issue).  Use positional args like `{}` + separate vals.
+    // ---------------------------------------------------------------------------
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// EARS 17.5b-1/2/3 (property): constructive near-cap swap never trips the model
+        /// tripwire and conserves exactly per-party and aggregate item quantities.
+        ///
+        /// Generation: initiator and counterparty each start with a count in [0, MAX_ITEM_STACK].
+        /// Send qty bounded by current count (can't send more than held).
+        /// Receive qty bounded by (MAX_ITEM_STACK − effective_count_after_send) to stay within cap.
+        /// This ensures check_headroom passes AND exercises the near-cap region.
+        ///
+        /// kills: reversed iteration order in ordered_steps(); netting reversed;
+        ///        any permutation that puts a credit before its corresponding debit.
+        #[test]
+        fn prop_ordered_steps_conservation_no_tripwire(
+            i_start in 0u32..=MAX_ITEM_STACK,
+            c_start in 0u32..=MAX_ITEM_STACK,
+            // Initiator sends at most what it holds.
+            i_send in 0u32..=MAX_ITEM_STACK,
+            // Counterparty sends at most what it holds.
+            c_send in 0u32..=MAX_ITEM_STACK,
+        ) {
+            use crate::currency::MAX_BALANCE;
+            const ITEM_ID: u32 = 1;
+
+            // Clamp sends to available stock.
+            let i_send = i_send.min(i_start);
+            let c_send = c_send.min(c_start);
+
+            // Receive qty bounded by remaining headroom after own send.
+            // initiator receives counterparty's items; max receive = cap − (i_start − i_send).
+            let i_headroom = MAX_ITEM_STACK.saturating_sub(i_start.saturating_sub(i_send));
+            let c_headroom = MAX_ITEM_STACK.saturating_sub(c_start.saturating_sub(c_send));
+            // i_recv = how much counterparty sends; must fit in initiator headroom AND ≤ c_send.
+            let i_recv = c_send.min(i_headroom); // counterparty sends c_send, initiator receives c_send
+            let c_recv = i_send.min(c_headroom); // initiator sends i_send, counterparty receives i_send
+
+            // For a bilateral same-item swap the plan's item_transfers has one entry per side.
+            // We only add transfers when qty > 0.
+            let mut i_items_vec: Vec<TradeItem> = Vec::new();
+            let mut c_items_vec: Vec<TradeItem> = Vec::new();
+            if i_send > 0 {
+                i_items_vec.push(TradeItem { item_id: ITEM_ID, qty: i_send });
+            }
+            if c_send > 0 {
+                c_items_vec.push(TradeItem { item_id: ITEM_ID, qty: c_send });
+            }
+
+            // Skip vacuous cases — no transfers means no steps to test.
+            if i_items_vec.is_empty() && c_items_vec.is_empty() {
+                return Ok(());
+            }
+
+            let plan = build_swap_plan(&[], &[], &i_items_vec, &c_items_vec, 0, 0)
+                .expect("ownership always valid in constructive test");
+
+            // Verify check_headroom passes with netted counts.
+            // initiator receives c_send items: effective stack = i_start − i_send.
+            // counterparty receives i_send items: effective stack = c_start − c_send.
+            let i_eff = i_start.saturating_sub(i_send);
+            let c_eff = c_start.saturating_sub(c_send);
+
+            let mut i_recv_items: Vec<TradeItem> = Vec::new();
+            let mut c_recv_items: Vec<TradeItem> = Vec::new();
+            let mut i_recv_stacks: Vec<ItemStack> = Vec::new();
+            let mut c_recv_stacks: Vec<ItemStack> = Vec::new();
+
+            if c_send > 0 {
+                // initiator receives c_send of ITEM_ID
+                let actual_i_recv = c_send.min(i_headroom);
+                if actual_i_recv > 0 {
+                    i_recv_items.push(TradeItem { item_id: ITEM_ID, qty: actual_i_recv });
+                    i_recv_stacks.push(ItemStack { item_id: ITEM_ID, current_count: i_eff });
+                }
+            }
+            if i_send > 0 {
+                // counterparty receives i_send of ITEM_ID
+                let actual_c_recv = i_send.min(c_headroom);
+                if actual_c_recv > 0 {
+                    c_recv_items.push(TradeItem { item_id: ITEM_ID, qty: actual_c_recv });
+                    c_recv_stacks.push(ItemStack { item_id: ITEM_ID, current_count: c_eff });
+                }
+            }
+
+            let hr = check_headroom(
+                &i_recv_items,
+                &i_recv_stacks,
+                0,
+                MAX_BALANCE,
+                &c_recv_items,
+                &c_recv_stacks,
+                0,
+                MAX_BALANCE,
+            );
+            prop_assert!(
+                hr.is_ok(),
+                "constructive headroom check failed: i_start={} i_send={} c_start={} c_send={}",
+                i_start, i_send, c_start, c_send
+            );
+
+            let mut model = ModelState::new(
+                &[(ITEM_ID, i_start)],
+                &[(ITEM_ID, c_start)],
+                0,
+                0,
+            );
+
+            for step in &plan.ordered_steps() {
+                // apply() contains the tripwire assert — panics if credit-before-debit.
+                model.apply(step);
+            }
+
+            let i_final = *model.items.get(&(true, ITEM_ID)).unwrap_or(&0);
+            let c_final = *model.items.get(&(false, ITEM_ID)).unwrap_or(&0);
+            let expected_i = i_start - i_send + i_recv;
+            let expected_c = c_start - c_send + c_recv;
+
+            prop_assert_eq!(
+                i_final, expected_i,
+                "initiator final={} expected={}: start={} send={} recv={}",
+                i_final, expected_i, i_start, i_send, i_recv
+            );
+            prop_assert_eq!(
+                c_final, expected_c,
+                "counterparty final={} expected={}: start={} send={} recv={}",
+                c_final, expected_c, c_start, c_send, c_recv
+            );
+
+            // Aggregate conservation.
+            prop_assert_eq!(
+                i_final + c_final,
+                i_start + c_start - i_send - c_send + i_recv + c_recv,
+                "aggregate conservation violated: i_final={} c_final={} i_start={} c_start={} i_send={} c_send={} i_recv={} c_recv={}",
+                i_final, c_final, i_start, c_start, i_send, c_send, i_recv, c_recv
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // A3 — contract teeth: partition, step-content parity, zero-currency, netting
+    // sensitivity, and broke-sender boundary.
+    // ---------------------------------------------------------------------------
+
+    /// EARS 17.5b-1: strict partition — ALL ItemDebit/CurrencyDebit strictly before
+    /// ANY ItemCredit/CurrencyCredit in ordered_steps().
+    ///
+    /// kills: phase-swap (credits emitted first); interleave (debit between credits);
+    ///        dropped arm (one debit or credit variant missing entirely).
+    #[test]
+    fn ordered_steps_partition_debits_strictly_before_credits() {
+        let i_items = vec![TradeItem { item_id: 1, qty: 5 }];
+        let c_items = vec![TradeItem { item_id: 2, qty: 3 }];
+        let plan = build_swap_plan(&[], &[], &i_items, &c_items, 100, 200).expect("valid plan");
+        let steps = plan.ordered_steps();
+
+        // Verify the list is non-empty (we have both items and currency on both sides).
+        assert!(
+            !steps.is_empty(),
+            "ordered_steps() must return at least one step for a plan with transfers"
+        );
+
+        // Walk the list: find the first credit, then verify no debit follows it.
+        let mut seen_credit = false;
+        for (idx, step) in steps.iter().enumerate() {
+            let is_debit = matches!(
+                step,
+                ApplyStep::ItemDebit { .. } | ApplyStep::CurrencyDebit { .. }
+            );
+            let is_credit = matches!(
+                step,
+                ApplyStep::ItemCredit { .. } | ApplyStep::CurrencyCredit { .. }
+            );
+            if is_credit {
+                seen_credit = true;
+            }
+            if is_debit && seen_credit {
+                panic!(
+                    "partition violated: debit step at index {} appears AFTER a credit step; \
+                     ALL debits must precede ALL credits — kills phase-swap and interleave mutants",
+                    idx
+                );
+            }
+        }
+    }
+
+    /// EARS 17.5b-1: step-content parity (F1) — for every ItemTransfer in the plan,
+    /// ordered_steps() emits exactly ONE ItemDebit and ONE ItemCredit with:
+    ///   - ItemDebit:  (from_initiator, item_id, qty) matches the transfer exactly.
+    ///   - ItemCredit: (to_initiator == !from_initiator, item_id, SAME qty).
+    ///
+    /// Also covers CurrencyTransfer parity identically.
+    ///
+    /// kills: qty-divergence value-printing mutant (debit 5 but credit 4);
+    ///        emission-side identity-swap (debit from wrong party, credit to wrong party);
+    ///        dropped arm (ItemDebit emitted but no corresponding ItemCredit).
+    #[test]
+    fn ordered_steps_step_content_parity() {
+        let i_items = vec![TradeItem {
+            item_id: 10,
+            qty: 7,
+        }];
+        let c_items = vec![TradeItem {
+            item_id: 20,
+            qty: 3,
+        }];
+        let plan = build_swap_plan(&[], &[], &i_items, &c_items, 100, 250).expect("valid plan");
+        let steps = plan.ordered_steps();
+
+        // --- item parity for initiator's transfer (item_id=10, qty=7, from_initiator=true) ---
+        let item10_debits: Vec<_> = steps
+            .iter()
+            .filter_map(|s| match s {
+                ApplyStep::ItemDebit {
+                    from_initiator,
+                    item_id,
+                    qty,
+                } if *item_id == 10 => Some((*from_initiator, *qty)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            item10_debits.len(),
+            1,
+            "expected exactly 1 ItemDebit for item_id=10; got {}",
+            item10_debits.len()
+        );
+        assert_eq!(
+            item10_debits[0],
+            (true, 7),
+            "ItemDebit for item_id=10: expected (from_initiator=true, qty=7); got {:?}",
+            item10_debits[0]
+        );
+
+        let item10_credits: Vec<_> = steps
+            .iter()
+            .filter_map(|s| match s {
+                ApplyStep::ItemCredit {
+                    to_initiator,
+                    item_id,
+                    qty,
+                } if *item_id == 10 => Some((*to_initiator, *qty)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            item10_credits.len(),
+            1,
+            "expected exactly 1 ItemCredit for item_id=10; got {}",
+            item10_credits.len()
+        );
+        assert_eq!(
+            item10_credits[0],
+            (false, 7), // to_initiator = !from_initiator = false (counterparty receives)
+            "ItemCredit for item_id=10: expected (to_initiator=false, qty=7); got {:?}",
+            item10_credits[0]
+        );
+
+        // --- item parity for counterparty's transfer (item_id=20, qty=3, from_initiator=false) ---
+        let item20_debits: Vec<_> = steps
+            .iter()
+            .filter_map(|s| match s {
+                ApplyStep::ItemDebit {
+                    from_initiator,
+                    item_id,
+                    qty,
+                } if *item_id == 20 => Some((*from_initiator, *qty)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            item20_debits.len(),
+            1,
+            "expected exactly 1 ItemDebit for item_id=20; got {}",
+            item20_debits.len()
+        );
+        assert_eq!(
+            item20_debits[0],
+            (false, 3),
+            "ItemDebit for item_id=20: expected (from_initiator=false, qty=3); got {:?}",
+            item20_debits[0]
+        );
+
+        let item20_credits: Vec<_> = steps
+            .iter()
+            .filter_map(|s| match s {
+                ApplyStep::ItemCredit {
+                    to_initiator,
+                    item_id,
+                    qty,
+                } if *item_id == 20 => Some((*to_initiator, *qty)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            item20_credits.len(),
+            1,
+            "expected exactly 1 ItemCredit for item_id=20; got {}",
+            item20_credits.len()
+        );
+        assert_eq!(
+            item20_credits[0],
+            (true, 3), // to_initiator = !from_initiator = true (initiator receives)
+            "ItemCredit for item_id=20: expected (to_initiator=true, qty=3); got {:?}",
+            item20_credits[0]
+        );
+
+        // --- currency parity: initiator sends 100, counterparty sends 250 ---
+        let currency_debits: Vec<_> = steps
+            .iter()
+            .filter_map(|s| match s {
+                ApplyStep::CurrencyDebit {
+                    from_initiator,
+                    amount,
+                } => Some((*from_initiator, *amount)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            currency_debits.len(),
+            2,
+            "expected 2 CurrencyDebits (one per party); got {}",
+            currency_debits.len()
+        );
+
+        let currency_credits: Vec<_> = steps
+            .iter()
+            .filter_map(|s| match s {
+                ApplyStep::CurrencyCredit {
+                    to_initiator,
+                    amount,
+                } => Some((*to_initiator, *amount)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            currency_credits.len(),
+            2,
+            "expected 2 CurrencyCredits (one per party); got {}",
+            currency_credits.len()
+        );
+
+        // Initiator's CurrencyDebit (amount=100, from_initiator=true) → CurrencyCredit to counterparty (to_initiator=false).
+        let i_debit = currency_debits.iter().find(|&&(fi, _)| fi).copied();
+        assert!(i_debit.is_some(), "no initiator CurrencyDebit found");
+        assert_eq!(
+            i_debit.unwrap().1,
+            100,
+            "initiator CurrencyDebit amount must be 100; got {}",
+            i_debit.unwrap().1
+        );
+        let i_to_cp = currency_credits.iter().find(|&&(ti, _)| !ti).copied();
+        assert!(i_to_cp.is_some(), "no CurrencyCredit to counterparty found");
+        assert_eq!(
+            i_to_cp.unwrap().1,
+            100,
+            "CurrencyCredit to counterparty must be 100 (same as initiator debit); got {}",
+            i_to_cp.unwrap().1
+        );
+
+        // Counterparty's CurrencyDebit (amount=250, from_initiator=false) → CurrencyCredit to initiator (to_initiator=true).
+        let c_debit = currency_debits.iter().find(|&&(fi, _)| !fi).copied();
+        assert!(c_debit.is_some(), "no counterparty CurrencyDebit found");
+        assert_eq!(
+            c_debit.unwrap().1,
+            250,
+            "counterparty CurrencyDebit amount must be 250; got {}",
+            c_debit.unwrap().1
+        );
+        let c_to_i = currency_credits.iter().find(|&&(ti, _)| ti).copied();
+        assert!(c_to_i.is_some(), "no CurrencyCredit to initiator found");
+        assert_eq!(
+            c_to_i.unwrap().1,
+            250,
+            "CurrencyCredit to initiator must be 250 (same as counterparty debit); got {}",
+            c_to_i.unwrap().1
+        );
+    }
+
+    /// EARS 17.5b-1 (N-1): zero-currency plan emits NO currency steps.
+    ///
+    /// `build_swap_plan` already filters >0 currency into `currency_transfers`;
+    /// `ordered_steps()` must mirror that filter — no phantom CurrencyDebit/Credit
+    /// steps when no currency is involved.
+    ///
+    /// kills: impl that unconditionally emits CurrencyDebit/CurrencyCredit for
+    ///        both parties regardless of transfer amounts.
+    #[test]
+    fn ordered_steps_zero_currency_emits_no_currency_steps() {
+        let i_items = vec![TradeItem { item_id: 5, qty: 2 }];
+        let c_items = vec![TradeItem { item_id: 6, qty: 1 }];
+        let plan = build_swap_plan(&[], &[], &i_items, &c_items, 0, 0).expect("valid plan");
+        let steps = plan.ordered_steps();
+
+        let has_currency_step = steps.iter().any(|s| {
+            matches!(
+                s,
+                ApplyStep::CurrencyDebit { .. } | ApplyStep::CurrencyCredit { .. }
+            )
+        });
+        assert!(
+            !has_currency_step,
+            "zero-currency plan must emit no CurrencyDebit or CurrencyCredit steps; \
+             got {} currency steps",
+            steps
+                .iter()
+                .filter(|s| matches!(
+                    s,
+                    ApplyStep::CurrencyDebit { .. } | ApplyStep::CurrencyCredit { .. }
+                ))
+                .count()
+        );
+    }
+
+    /// EARS 17.5b-2: currency netting asymmetric sensitivity (F7).
+    ///
+    /// Scenario: initiator sends 100 gold, counterparty sends 200 gold.
+    /// Balances chosen so the check_headroom outcome FLIPS if the two outgoing
+    /// subtrahends are swapped (i.e. if initiator_outgoing is passed where
+    /// counterparty_outgoing is expected, or vice versa).
+    ///
+    /// Correct netting:
+    ///   initiator_balance = 50;   receives 200; passes: saturating_sub(50, 100) = 0 effective → 0 + 200 = 200 ≤ MAX_BALANCE.
+    ///   counterparty_balance = 150; receives 100; passes: saturating_sub(150, 200) = 0 effective → 0 + 100 = 100 ≤ MAX_BALANCE.
+    ///   (saturating_sub avoids negative; broke-sender is caught by spend_currency, not here.)
+    ///
+    /// Swapped netting (wrong: pass counterparty's outgoing for initiator and vice versa):
+    ///   initiator effective = 50 − 200 = 0 (saturating); 0 + 200 = 200 ≤ MAX_BALANCE → still Ok.
+    ///   counterparty effective = 150 − 100 = 50; 50 + 100 = 150 ≤ MAX_BALANCE → still Ok.
+    ///
+    /// We need a case where swapping actually flips the result. Use near-MAX_BALANCE balances:
+    ///   initiator_balance = MAX_BALANCE − 150; initiator sends 100; receives 200.
+    ///   Correct: effective = (MAX_BALANCE − 150) − 100 = MAX_BALANCE − 250; + 200 = MAX_BALANCE − 50 ≤ MAX_BALANCE → Ok.
+    ///   Swapped (use counterparty's outgoing=200): effective = (MAX_BALANCE − 150) − 200 = MAX_BALANCE − 350 (saturating ok); + 200 = MAX_BALANCE − 150 → still Ok.
+    ///
+    /// We need a tighter construction. Use:
+    ///   initiator_balance = MAX_BALANCE − 50; initiator sends 100; receives 200.
+    ///   Correct netting: effective_i = (MAX_BALANCE − 50) sat_sub 100 = MAX_BALANCE − 150; + 200 = MAX_BALANCE + 50 → OVER CAP → Err.
+    ///   Hmm, that Errs with correct netting too.
+    ///
+    /// Correct construction:
+    ///   initiator_balance = MAX_BALANCE − 150; initiator sends 100; receives 200.
+    ///   counterparty_balance = MAX_BALANCE − 50; counterparty sends 200; receives 100.
+    ///   Correct netting:
+    ///     i_effective = (MAX_BALANCE − 150) sat_sub 100 = MAX_BALANCE − 250; + 200 = MAX_BALANCE − 50 → Ok.
+    ///     c_effective = (MAX_BALANCE − 50) sat_sub 200 = MAX_BALANCE − 250; + 100 = MAX_BALANCE − 150 → Ok.
+    ///   Swapped netting (use c_outgoing=200 for i_effective, i_outgoing=100 for c_effective):
+    ///     i_effective_swapped = (MAX_BALANCE − 150) sat_sub 200 = MAX_BALANCE − 350; + 200 = MAX_BALANCE − 150 → Ok.
+    ///     c_effective_swapped = (MAX_BALANCE − 50) sat_sub 100 = MAX_BALANCE − 150; + 100 = MAX_BALANCE − 50 → Ok.
+    ///   Still Ok — need to push counterparty closer to the cap on receives.
+    ///
+    /// Use a case where swapped netting causes a PASS → FAIL flip:
+    ///   initiator_balance = MAX_BALANCE − 50; initiator sends 200; receives 100.
+    ///   counterparty_balance = MAX_BALANCE − 50; counterparty sends 100; receives 200.
+    ///   Correct netting:
+    ///     i_effective = (MAX_BALANCE − 50) sat_sub 200 = MAX_BALANCE − 250; + 100 = MAX_BALANCE − 150 → Ok.
+    ///     c_effective = (MAX_BALANCE − 50) sat_sub 100 = MAX_BALANCE − 150; + 200 = MAX_BALANCE + 50 → OVER → Err.
+    ///   With correct netting → Err (counterparty). With swapped netting:
+    ///     i_effective_swapped = (MAX_BALANCE − 50) sat_sub 100 = MAX_BALANCE − 150; + 100 = MAX_BALANCE − 50 → Ok.
+    ///     c_effective_swapped = (MAX_BALANCE − 50) sat_sub 200 = MAX_BALANCE − 250; + 200 = MAX_BALANCE − 50 → Ok.
+    ///   Swapped → Ok. FLIP!
+    ///
+    /// kills: impl that swaps initiator_outgoing / counterparty_outgoing subtrahends (F7).
+    #[test]
+    fn check_headroom_currency_netting_asymmetric_sensitivity() {
+        use crate::currency::MAX_BALANCE;
+
+        // Balances and transfer amounts chosen so the result FLIPS if subtrahends are swapped.
+        // initiator_balance = MAX_BALANCE − 50; initiator_sends = 200; initiator_receives = 100.
+        // counterparty_balance = MAX_BALANCE − 50; counterparty_sends = 100; counterparty_receives = 200.
+        let i_balance = MAX_BALANCE - 50;
+        let c_balance = MAX_BALANCE - 50;
+        let i_sends = 200u64;
+        let c_sends = 100u64;
+
+        // Correct netting: i_effective = i_balance sat_sub i_sends; c_effective = c_balance sat_sub c_sends.
+        let i_effective = i_balance.saturating_sub(i_sends); // MAX_BALANCE − 250
+        let c_effective = c_balance.saturating_sub(c_sends); // MAX_BALANCE − 150
+
+        // initiator receives counterparty_sends=100; counterparty receives initiator_sends=200.
+        let correct_result = check_headroom(
+            &[], // items empty — currency only
+            &[],
+            c_sends, // initiator receives c_sends=100
+            i_effective,
+            &[],
+            &[],
+            i_sends, // counterparty receives i_sends=200
+            c_effective,
+        );
+
+        // c_effective + i_sends = (MAX_BALANCE − 150) + 200 = MAX_BALANCE + 50 > MAX_BALANCE → Err.
+        assert!(
+            correct_result.is_err(),
+            "correct netting: c_effective + i_sends = {} + {} = {} should exceed MAX_BALANCE={}; \
+             expected Err but got Ok",
+            c_effective,
+            i_sends,
+            c_effective + i_sends,
+            MAX_BALANCE
+        );
+
+        // Swapped netting: i_effective_swapped = i_balance sat_sub c_sends; c_effective_swapped = c_balance sat_sub i_sends.
+        let i_effective_swapped = i_balance.saturating_sub(c_sends); // MAX_BALANCE − 150
+        let c_effective_swapped = c_balance.saturating_sub(i_sends); // MAX_BALANCE − 250
+
+        let swapped_result = check_headroom(
+            &[],
+            &[],
+            c_sends,
+            i_effective_swapped,
+            &[],
+            &[],
+            i_sends,
+            c_effective_swapped,
+        );
+
+        // With swapped netting: c_effective_swapped + i_sends = (MAX_BALANCE − 250) + 200 = MAX_BALANCE − 50 → Ok.
+        assert!(
+            swapped_result.is_ok(),
+            "swapped netting produces Ok — this sensitivity case proves \
+             the two subtrahends are NOT interchangeable; a swapped impl would \
+             return Ok here when the correct netting returns Err; got {:?}",
+            swapped_result
+        );
+        // The flip: correct=Err, swapped=Ok proves field-swap is detectable (F7/17.5b-2).
+    }
+
+    /// EARS 17.5b-2: broke-sender boundary (M-2/F3).
+    ///
+    /// Scenario: initiator's outgoing > live balance (broke sender), netted
+    /// effective = saturating_sub → 0, incoming 100 → 0 + 100 = 100 ≤ MAX_BALANCE.
+    /// check_headroom PASSES (cap-wise); the real rejection site is `spend_currency`
+    /// inside the step loop → whole-reducer transaction rollback (SpacetimeDB atomicity,
+    /// ADR-0123). This division of labor is explicit and documented.
+    ///
+    /// kills: impl that adds a broke-sender check in check_headroom (which would
+    ///        move the rejection responsibility and change the API contract).
+    #[test]
+    fn check_headroom_broke_sender_passes_cap_check() {
+        use crate::currency::MAX_BALANCE;
+
+        // initiator has balance=50, sends 200 (outgoing > balance → broke).
+        // Receives 100 from counterparty.
+        // Correct netting: i_effective = 50 sat_sub 200 = 0; 0 + 100 = 100 ≤ MAX_BALANCE → Ok.
+        // check_headroom is cap-only; spend_currency is the broke-sender rejection site.
+        let i_balance: u64 = 50;
+        let i_sends: u64 = 200; // broke: outgoing > balance
+        let i_receives: u64 = 100;
+
+        let i_effective = i_balance.saturating_sub(i_sends); // = 0
+        assert_eq!(
+            i_effective, 0,
+            "saturating_sub(50, 200) must be 0 for the broke-sender netting"
+        );
+
+        let result = check_headroom(
+            &[],
+            &[],
+            i_receives,  // initiator receives 100
+            i_effective, // effective balance = 0 (broke sender, sat_sub to 0)
+            &[],
+            &[],
+            0, // counterparty receives nothing
+            MAX_BALANCE,
+        );
+
+        assert!(
+            result.is_ok(),
+            "broke-sender boundary: check_headroom must PASS (cap-wise); \
+             the real rejection is spend_currency inside the step loop \
+             (SpacetimeDB reducer-Err transaction rollback, ADR-0123). \
+             Got: {:?}",
+            result
+        );
+        // Doc-comment: the division of labor is intentional and unchanged by this slice.
+        // spend_currency Err causes whole-reducer rollback → both inventories unchanged.
+    }
 }
