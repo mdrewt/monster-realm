@@ -5,12 +5,12 @@ Architecture Decision Records live in **two locations**; check both.
 - **Design ADRs `0002`–`0034`** — in the **harness spec corpus**
   (`../../specs/monster-realm-v2/adr/`). These are the foundational design
   decisions authored alongside the milestone specs.
-- **Implementation ADRs `0001`, `0035`–`0122`** — in **this directory**
+- **Implementation ADRs `0001`, `0035`–`0123`** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0123`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0124`**.
 
 **ADR numbering collision note:** the harness spec corpus also contains design
 ADRs numbered `0055`–`0057`; these cover the *same topics* as this project's
@@ -115,6 +115,7 @@ prefix `harness adr/0055` to cite the harness design ADR.
 | [0120](./0120-m17b-leaderboard-client-ui.md) | Ranked leaderboard client UI: pure-subscription profile mirror, deterministic comparator, fully-covered DOM shell | m17b |
 | [0121](./0121-m17c-ranked-evals-tail.md) | m17c ranked evals tail: sql-based server-truth e2e, checker-import reuse, no-op-body hardening | m17c |
 | [0122](./0122-both-role-ongoing-battle-guard-ssot.md) | m17.5a both-role ongoing-battle guard SSOT — close side-B PvP damage-laundering exploit | m17.5a |
+| [0123](./0123-trade-swap-debits-before-credits-ordering.md) | m17.5b trade swap debits-before-credits ordering: apply-order contract + netted currency headroom | m17.5b |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
