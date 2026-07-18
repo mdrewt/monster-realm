@@ -74,13 +74,128 @@ fn rl4_initial_rating_ssot_pin() {
 // taming_tests.rs; per-module convention, ADR-0125 anti-pattern #5).
 // ---------------------------------------------------------------------------
 
-/// Strip Rust block comments (`/* ... */`) and line comments (`// ...`) from
-/// `src`. Returns a new String with those regions replaced by spaces (same
-/// byte-length for debugging convenience).
+/// Strip Rust string literals from `src`, replacing their content (and
+/// delimiters) with spaces.
 ///
-/// Corner-cases: nested block comments unsupported; string literals containing
-/// `/*`/`//` are not special-cased (we only need comment elision for needle
-/// matching; string literals do not contain our needles).
+/// Handles:
+///   - Normal double-quoted literals `"..."` with `\"` escape sequences.
+///   - Raw strings `r"..."` and `r#"..."#` (up to 6 `#` hashes, covering all
+///     plausible real-world uses; ranking.rs currently contains none — noted as
+///     a limitation if deeper nesting is ever added).
+///   - Char literals are NOT handled (ranking.rs contains none; noted).
+///
+/// Must run BEFORE `strip_rust_comments` so that `/*` or `//` inside a string
+/// literal does not confuse the comment stripper. This mirrors the eval order:
+/// `stripRustStrings(stripRustComments(src))` in ranking-security.eval.mjs is
+/// comments-then-strings; we reverse to strings-first for correctness (a `//`
+/// inside a string would fool comment stripping done first). The eval's string
+/// stripper is applied after comment stripping there because JS regex comment
+/// stripping doesn't walk string context — our byte-walk comment stripper has
+/// the same blind-spot, so we remove strings first.
+///
+/// Red-team string-literal evasion (test-fan F1): without this pass, a broken
+/// impl can embed a needle inside a `let _ = "...needle...";` string literal
+/// and fool all T2 scan assertions.
+fn strip_rust_strings(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = Vec::with_capacity(len);
+    let mut i = 0;
+
+    while i < len {
+        // Raw string: r"..." or r#"..."# (up to 6 hashes).
+        if bytes[i] == b'r' {
+            // Count opening hashes.
+            let mut hashes: usize = 0;
+            let mut j = i + 1;
+            while j < len && bytes[j] == b'#' && hashes < 6 {
+                hashes += 1;
+                j += 1;
+            }
+            if j < len && bytes[j] == b'"' {
+                // This IS a raw string literal.
+                // Blank the `r`, hashes, and opening `"`.
+                out.push(b' '); // r
+                for _ in 0..hashes {
+                    out.push(b' ');
+                }
+                out.push(b' '); // opening "
+                j += 1;
+                // Build the closing delimiter: `"` followed by `hashes` `#`s.
+                // Scan until we find it.
+                loop {
+                    if j >= len {
+                        break;
+                    }
+                    if bytes[j] == b'"' {
+                        // Check for the required number of closing hashes.
+                        let mut k = j + 1;
+                        let mut closing_hashes: usize = 0;
+                        while k < len && bytes[k] == b'#' && closing_hashes < hashes {
+                            closing_hashes += 1;
+                            k += 1;
+                        }
+                        if closing_hashes == hashes {
+                            // Found the end: blank the `"` and hashes.
+                            out.push(b' '); // closing "
+                            for _ in 0..hashes {
+                                out.push(b' ');
+                            }
+                            j = k;
+                            break;
+                        }
+                    }
+                    out.push(b' ');
+                    j += 1;
+                }
+                i = j;
+                continue;
+            }
+            // Not a raw string — fall through to emit `r` normally.
+        }
+
+        // Normal double-quoted string literal.
+        if bytes[i] == b'"' {
+            out.push(b' '); // opening "
+            i += 1;
+            loop {
+                if i >= len {
+                    break;
+                }
+                if bytes[i] == b'\\' && i + 1 < len {
+                    // Escape sequence: blank both bytes.
+                    out.push(b' ');
+                    out.push(b' ');
+                    i += 2;
+                } else if bytes[i] == b'"' {
+                    out.push(b' '); // closing "
+                    i += 1;
+                    break;
+                } else {
+                    out.push(b' ');
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        out.push(bytes[i]);
+        i += 1;
+    }
+
+    // SAFETY: we only copy original UTF-8 bytes or ASCII spaces (0x20); the
+    // result is valid UTF-8.
+    String::from_utf8(out).expect("string-stripped source must be valid UTF-8")
+}
+
+/// Strip Rust block comments (`/* ... */`) and line comments (`// ...`) from
+/// `src`. Returns a new String with those regions replaced by spaces.
+///
+/// Run AFTER `strip_rust_strings` so that `/*` or `//` inside a string literal
+/// does not confuse this pass (string content is already blanked).
+///
+/// Corner-cases: nested block comments unsupported; char literals not handled
+/// (ranking.rs contains none).
 fn strip_rust_comments(src: &str) -> String {
     let bytes = src.as_bytes();
     let len = bytes.len();
@@ -110,11 +225,27 @@ fn strip_rust_comments(src: &str) -> String {
 
 /// Remove ALL whitespace characters from `src` (space, tab, newline, CR, etc).
 ///
-/// Combined with `strip_rust_comments`, this makes needle matching
-/// rustfmt-proof: chain breaks, arg-wraps, and indentation changes cannot
-/// defeat a whitespace-free needle. (red-team F1 mitigation, ADR-0125.)
+/// The third stage of the scan pipeline; makes needle matching rustfmt-proof.
+/// (red-team F1 mitigation, ADR-0125.)
 fn squash_ws(src: &str) -> String {
     src.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Full three-stage scan pipeline: strip strings → strip comments → squash_ws.
+///
+/// ALL T2 source-scan tests must use this helper, never a partial pipeline.
+/// The string-stripping stage closes the string-literal evasion gate-hole
+/// (red-team test-fan F1): without it, a broken impl can embed a needle inside
+/// `let _ = "...needle...";` and fool all needle assertions.
+///
+/// Pipeline order:
+///   1. `strip_rust_strings` — blanks `"..."`, `r"..."`, `r#"..."#` content.
+///   2. `strip_rust_comments` — blanks `// ...` and `/* ... */` regions.
+///      (Run after string stripping so `//` inside a string literal is already
+///      blanked before the comment pass walks it.)
+///   3. `squash_ws` — removes all whitespace for rustfmt-proof needle matching.
+fn stripped_for_scan(src: &str) -> String {
+    squash_ws(&strip_rust_comments(&strip_rust_strings(src)))
 }
 
 // Source for T2 scans. ranking.rs exists in the tree (verified @a0d5743).
@@ -353,8 +484,7 @@ fn d2_rename_then_rated_surfaces_new_name_loser_side() {
 /// Starts RED: needle absent in current ranking.rs (Some arm returns bare `existing`).
 #[test]
 fn d1_scan_some_arm_composes_refresh() {
-    let stripped = strip_rust_comments(RANKING_RS);
-    let squashed = squash_ws(&stripped);
+    let squashed = stripped_for_scan(RANKING_RS);
 
     // Needle: Some(existing)=>refresh_profile_name(existing,live_player_name(ctx,identity))
     // Split at "refresh_pro" to prevent self-match when this file is accidentally scanned.
@@ -390,8 +520,7 @@ fn d1_scan_some_arm_composes_refresh() {
 /// Starts RED: fn absent in current ranking.rs.
 #[test]
 fn d1_scan_live_player_name_is_inline_chained_map() {
-    let stripped = strip_rust_comments(RANKING_RS);
-    let squashed = squash_ws(&stripped);
+    let squashed = stripped_for_scan(RANKING_RS);
 
     // Whole-fn needle (whitespace-free).
     // Split "fnlive_player" across two fragments to avoid self-match.
@@ -429,8 +558,7 @@ fn d1_scan_live_player_name_is_inline_chained_map() {
 /// Starts RED: fn absent → count is 0.
 #[test]
 fn d1_scan_helper_used_by_both_arms() {
-    let stripped = strip_rust_comments(RANKING_RS);
-    let squashed = squash_ws(&stripped);
+    let squashed = stripped_for_scan(RANKING_RS);
 
     // Call-site needle. Split at "live_player" to avoid self-match.
     let call_needle = concat!("live_player", "_name(ctx,identity)");
@@ -472,8 +600,7 @@ fn d1_scan_helper_used_by_both_arms() {
 ///   - split-binding `= ctx.db.player()` added in new code
 #[test]
 fn d1_scan_no_eager_write_in_get_or_init() {
-    let stripped = strip_rust_comments(RANKING_RS);
-    let squashed = squash_ws(&stripped);
+    let squashed = stripped_for_scan(RANKING_RS);
 
     // (a) Exactly 2 profile update calls (apply_pvp_rating's two writes).
     // REGRESSION PIN: starts GREEN. Documents the write-count shape before impl.
@@ -532,8 +659,7 @@ fn d1_scan_no_eager_write_in_get_or_init() {
 ///   - either arm removed from apply_pvp_rating
 #[test]
 fn d1_scan_apply_rating_refreshes_both_roles() {
-    let stripped = strip_rust_comments(RANKING_RS);
-    let squashed = squash_ws(&stripped);
+    let squashed = stripped_for_scan(RANKING_RS);
 
     // Winner needle — split at "get_or_init" to prevent self-match.
     let winner_needle = concat!("get_or_init", "_profile(ctx,winner_id)");
@@ -558,17 +684,37 @@ fn d1_scan_apply_rating_refreshes_both_roles() {
     );
 }
 
-/// Machinery self-teeth test: proves that strip_rust_comments + squash_ws + needle
-/// correctly flags a BAD fixture (Some arm returning bare `existing`) and accepts a
-/// GOOD fixture (Some arm with the composed refresh call).
+/// Machinery self-teeth test: proves that `stripped_for_scan` (strip strings →
+/// strip comments → squash_ws) + needle correctly:
+///   1. Flags a BAD fixture (Some arm returning bare `existing`).
+///   2. Accepts a GOOD fixture (Some arm with the composed refresh call).
+///   3. Rejects an EVASION fixture (Some arm returning bare `existing` PLUS a
+///      string literal containing the exact needle text) — closes the
+///      string-literal evasion gate-hole (red-team test-fan F1).
+///
+/// Also verifies that the helper-count needle finds ZERO occurrences of
+/// `live_player_name(ctx,identity)` in the evasion fixture (the call-site text
+/// appears only inside the string literal and must be blanked by string stripping).
 ///
 /// If this test fails, the scan machinery itself is broken and the T2 tests above
 /// cannot be trusted regardless of their assertion results.
 #[test]
 fn scan_machinery_teeth() {
-    // BAD fixture: get_or_init_profile Some arm returns bare `existing` (current state).
-    // This must NOT match the composed-refresh needle.
-    let bad_fixture = r#"
+    // The primary needle (same as d1_scan_some_arm_composes_refresh).
+    // concat! split to prevent self-match when ranking_tests.rs is scanned.
+    let needle = concat!(
+        "Some(existing)=>",
+        "refresh_pro",
+        "file_name(existing,live_player_name(ctx,identity))"
+    );
+
+    // Helper-count needle (same as d1_scan_helper_used_by_both_arms).
+    let call_needle = concat!("live_player", "_name(ctx,identity)");
+
+    // -------------------------------------------------------------------------
+    // Fixture 1 — BAD: Some arm returns bare `existing`. Must NOT match needle.
+    // -------------------------------------------------------------------------
+    let bad_fixture = "
         pub(crate) fn get_or_init_profile(ctx: &ReducerContext, identity: Identity) -> Profile {
             match ctx.db.profile().identity().find(identity) {
                 Some(existing) => existing,
@@ -586,10 +732,22 @@ fn scan_machinery_teeth() {
                 }
             }
         }
-    "#;
+    ";
 
-    // GOOD fixture: Some arm composes the refresh call exactly as ADR-0125 D1 specifies.
-    let good_fixture = r#"
+    let bad_squashed = stripped_for_scan(bad_fixture);
+    assert!(
+        !bad_squashed.contains(needle),
+        "scan_machinery_teeth FAIL (BAD fixture): bare `existing` incorrectly matched \
+         the composed-refresh needle {:?}. The scan machinery is broken — \
+         it cannot distinguish a missing refresh from a correct one.",
+        needle
+    );
+
+    // -------------------------------------------------------------------------
+    // Fixture 2 — GOOD: Some arm composes the refresh call. Must match needle.
+    // No string literals — pipeline result must contain the needle.
+    // -------------------------------------------------------------------------
+    let good_fixture = "
         pub(crate) fn get_or_init_profile(ctx: &ReducerContext, identity: Identity) -> Profile {
             match ctx.db.profile().identity().find(identity) {
                 Some(existing) => refresh_profile_name(existing, live_player_name(ctx, identity)),
@@ -605,32 +763,88 @@ fn scan_machinery_teeth() {
                 }
             }
         }
-    "#;
+    ";
 
-    // The needle we check (same as d1_scan_some_arm_composes_refresh).
-    let needle = concat!(
+    let good_squashed = stripped_for_scan(good_fixture);
+    assert!(
+        good_squashed.contains(needle),
+        "scan_machinery_teeth FAIL (GOOD fixture): composed refresh call did NOT match \
+         needle {:?}. The scan machinery is broken — stripped_for_scan+needle \
+         fails to detect a correct implementation.",
+        needle
+    );
+
+    // -------------------------------------------------------------------------
+    // Fixture 3 — EVASION (red-team test-fan F1): Some arm still returns bare
+    // `existing`, but also contains a string literal embedding the exact needle
+    // text. The string-stripping stage must blank the literal so the needle does
+    // NOT match, and the helper-count must be 0 (not inflated by the literal).
+    //
+    // The needle text inside the string is assembled via the same concat!
+    // fragments to preserve self-match protection for this test file — the
+    // string literal content is built at runtime from the same concat! result,
+    // so the literal text in ranking_tests.rs source is split and not verbatim.
+    // -------------------------------------------------------------------------
+    //
+    // Build the evasion literal content at runtime from the same needle fragments.
+    // This means ranking_tests.rs itself never contains the verbatim needle string.
+    let evasion_literal_content = concat!(
         "Some(existing)=>",
         "refresh_pro",
         "file_name(existing,live_player_name(ctx,identity))"
     );
+    // Also embed the call-site text to test count-inflation closure.
+    let evasion_call_content = concat!("live_player", "_name(ctx,identity)");
 
-    let bad_stripped = strip_rust_comments(bad_fixture);
-    let bad_squashed = squash_ws(&bad_stripped);
+    // Construct the evasion fixture as a String (so we can interpolate the
+    // literal contents without writing them verbatim in the source).
+    let evasion_fixture = format!(
+        "
+        pub(crate) fn get_or_init_profile(ctx: &ReducerContext, identity: Identity) -> Profile {{
+            // Evasion attempt: embed needle in a dead string literal.
+            let _ = \"{}\";
+            let _ = \"{}\";
+            match ctx.db.profile().identity().find(identity) {{
+                Some(existing) => existing,
+                None => {{
+                    let name = ctx.db.player().identity().find(identity)
+                        .map(|p| p.name)
+                        .unwrap_or_default();
+                    ctx.db.profile().insert(Profile {{
+                        identity,
+                        name,
+                        rating: game_core::INITIAL_RATING,
+                        wins: 0,
+                        losses: 0,
+                    }})
+                }}
+            }}
+        }}
+        ",
+        evasion_literal_content, evasion_call_content,
+    );
+
+    let evasion_squashed = stripped_for_scan(&evasion_fixture);
+
+    // Primary needle must NOT match after string-literal stripping.
     assert!(
-        !bad_squashed.contains(needle),
-        "scan_machinery_teeth FAIL: the BAD fixture (bare `existing`) incorrectly \
-         matched the composed-refresh needle {:?}. The scan machinery is broken — \
-         it cannot distinguish a missing refresh from a correct one.",
+        !evasion_squashed.contains(needle),
+        "scan_machinery_teeth FAIL (EVASION fixture): the string-literal evasion was \
+         NOT caught — needle {:?} matched after stripped_for_scan even though the \
+         needle text appeared only inside a string literal. \
+         The strip_rust_strings stage is not working (red-team test-fan F1).",
         needle
     );
 
-    let good_stripped = strip_rust_comments(good_fixture);
-    let good_squashed = squash_ws(&good_stripped);
-    assert!(
-        good_squashed.contains(needle),
-        "scan_machinery_teeth FAIL: the GOOD fixture (composed refresh call) did NOT \
-         match the needle {:?}. The scan machinery is broken — strip+squash+needle \
-         fails to detect a correct implementation.",
-        needle
+    // Count-inflation: helper call inside the string literal must NOT be counted.
+    let evasion_call_count = evasion_squashed.matches(call_needle).count();
+    assert_eq!(
+        evasion_call_count, 0,
+        "scan_machinery_teeth FAIL (EVASION fixture / count-inflation): \
+         found {} occurrence(s) of {:?} in the evasion fixture after stripping, \
+         expected 0. The call-site text appeared only inside string literals; \
+         string stripping must blank it so the count is not inflated \
+         (red-team test-fan F1, d1_scan_helper_used_by_both_arms).",
+        evasion_call_count, call_needle
     );
 }
