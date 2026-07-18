@@ -8,12 +8,14 @@
 //   5. SHOP_TABLES_PUBLIC — schema.rs has shop_row and shop_item_row with `public`
 //   6. BUY_HEADROOM       — buy body calls check_item_headroom( (paren-anchored) before
 //                           spend_currency(, with Result propagated (`?`), item_id argument,
-//                           inventory() + unwrap_or(0) provenance before headroom, and no
-//                           cfg!( or #[cfg in the body (m17.5c-1, F1/F2/F3/F4/F5)
+//                           inventory() + unwrap_or(0) provenance before headroom,
+//                           check_item_headroom(current_count, ...) arg-identity pin, and no
+//                           cfg!( or #[cfg in the body (m17.5c-1, F1/F2/F3/F4/F5+ARG-ID)
 //   7. SELL_HEADROOM      — sell body calls check_currency_headroom( (paren-anchored) before
 //                           consume_one(, with Result propagated (`?`), total argument,
-//                           wallet_balance provenance before headroom, and no cfg!( or #[cfg
-//                           in the body (m17.5c-2, F1/F2/F3/F4/F5)
+//                           wallet_balance provenance before headroom,
+//                           check_currency_headroom(balance, ...) arg-identity pin, and no
+//                           cfg!( or #[cfg in the body (m17.5c-2, F1/F2/F3/F4/F5+ARG-ID)
 //
 // Proof-of-teeth: each checker is tested against BAD fixtures (must flag) and a GOOD
 // fixture (must pass). A checker that fails to flag a bad fixture is reported as a
@@ -317,6 +319,11 @@ export function buyHasHeadroomBeforeSpend(src) {
   const window = afterHeadroom.slice(0, semiPos + 1);
   if (window.indexOf('?') === -1) return false;
   if (window.indexOf('item_id') === -1) return false;
+  // Argument-identity pin (red-team live-mutation: check_item_headroom(0, qty, item_id)).
+  // Provenance pins above prove current_count IS read; this pin proves it IS passed as arg 1.
+  // A hardcoded-0 first arg always passes (0 + qty <= cap) even at MAX_ITEM_STACK — value
+  // destruction: buyer pays but grant_item is silently clamped (ADR-0124).
+  if (body.indexOf('check_item_headroom(current_count,') === -1) return false;
   return true;
 }
 
@@ -370,6 +377,12 @@ export function sellHasHeadroomBeforeConsume(src) {
   const window = afterHeadroom.slice(0, semiPos + 1);
   if (window.indexOf('?') === -1) return false;
   if (window.indexOf('total') === -1) return false;
+  // Argument-identity pin (red-team live-mutation: check_currency_headroom(0, total)).
+  // Provenance pin above proves balance IS read; this pin proves it IS passed as arg 1.
+  // A hardcoded-0 first arg always passes unless total > MAX_BALANCE alone — missing the
+  // case where balance is near cap: items destroyed by consume_one with clamped proceeds,
+  // no rollback backstop (ADR-0124).
+  if (body.indexOf('check_currency_headroom(balance,') === -1) return false;
   return true;
 }
 
@@ -378,7 +391,7 @@ export function sellHasHeadroomBeforeConsume(src) {
 // ---------------------------------------------------------------------------
 export default async function () {
   const name =
-    'shop-reducer-security (M13b: buy/sell require_owner order, no client price param, server DB lookup, shop tables public, buy item-headroom before spend, sell currency-headroom before consume (m17.5c))';
+    'shop-reducer-security (M13b: buy/sell require_owner order, no client price param, server DB lookup, shop tables public, buy item-headroom before spend with current_count arg-identity, sell currency-headroom before consume with balance arg-identity (m17.5c))';
 
   // -------------------------------------------------------------------------
   // Proof-of-teeth: each checker must flag the bad fixture.
@@ -766,17 +779,45 @@ export default async function () {
     };
   }
 
-  // Good: inventory() + unwrap_or(0) → check_item_headroom( → spend_currency(,
+  // Bad G: inventory()/unwrap_or(0) provenance present BUT hardcoded 0 as first arg —
+  // must flag (argument-identity bypass: check_item_headroom(0, qty, item_id)).
+  // Kills: impl that reads the count correctly but then passes 0 instead of current_count,
+  //        so the cap check always succeeds regardless of how many items the buyer holds.
+  const badBuyArgIdentity =
+    'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
+    'require_owner(ctx, "buy", ctx.sender); ' +
+    'let row = ctx.db.shop_item_row().filter(item_id).unwrap(); ' +
+    'let total = row.buy_price.checked_mul(qty as u64).ok_or("")?; ' +
+    'let current_count = ctx.db.inventory().owner_identity().filter(me).find(|r| r.item_id == item_id).map(|r| r.count).unwrap_or(0); ' +
+    'check_item_headroom(0, qty, item_id).map_err(|e| e.to_string())?; ' +
+    'spend_currency(ctx, ctx.sender, total).map_err(|e| e.to_string())?; ' +
+    'grant_item(ctx, ctx.sender, item_id, qty); }';
+  if (buyHasHeadroomBeforeSpend(badBuyArgIdentity)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (BUY_HEADROOM-G): buyHasHeadroomBeforeSpend passed on a fixture ' +
+        'where inventory()/unwrap_or(0) is present (provenance F1/F2 satisfied) BUT ' +
+        'check_item_headroom is called with a hardcoded 0 as the first argument instead of ' +
+        'current_count — check_item_headroom(0, qty, item_id) always succeeds (0+qty<=cap), ' +
+        'so a buyer at MAX_ITEM_STACK pays currency but grant_item is silently clamped ' +
+        '(value destruction; argument-identity pin, ADR-0124). ' +
+        'Kills: read-then-discard impl that passes 0 not current_count.',
+    };
+  }
+
+  // Good: inventory() + unwrap_or(0) → check_item_headroom(current_count, ...) → spend_currency(,
   //       with `?`, item_id, no cfg — must pass.
-  // Note: string-stripping erases the empty ok_or("") content → ok_or("") which
-  //       is brace-safe; the headroom call is in live code, not a string.
+  // Note: variable name MUST be `current_count` (matching the argument-identity pin).
+  // String-stripping erases the empty ok_or("") content → ok_or("") which is brace-safe.
   const goodBuyHeadroom =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
     'require_owner(ctx, "buy", ctx.sender); ' +
     'let row = ctx.db.shop_item_row().filter(item_id).unwrap(); ' +
     'let total = row.buy_price.checked_mul(qty as u64).ok_or("")?; ' +
-    'let current = ctx.db.inventory().owner_identity().filter(me).find(|r| r.item_id == item_id).map(|r| r.count).unwrap_or(0); ' +
-    'check_item_headroom(current, qty, item_id).map_err(|e| e.to_string())?; ' +
+    'let current_count = ctx.db.inventory().owner_identity().filter(me).find(|r| r.item_id == item_id).map(|r| r.count).unwrap_or(0); ' +
+    'check_item_headroom(current_count, qty, item_id).map_err(|e| e.to_string())?; ' +
     'spend_currency(ctx, ctx.sender, total).map_err(|e| e.to_string())?; ' +
     'grant_item(ctx, ctx.sender, item_id, qty); }';
   if (!buyHasHeadroomBeforeSpend(goodBuyHeadroom)) {
@@ -785,8 +826,8 @@ export default async function () {
       pass: false,
       detail:
         'TEETH FAILED (BUY_HEADROOM-GOOD): buyHasHeadroomBeforeSpend did not pass on a ' +
-        'correct fixture with inventory()+unwrap_or(0) before check_item_headroom( before ' +
-        'spend_currency(, with `?` and item_id, no cfg — the checker is too strict and ' +
+        'correct fixture with inventory()+unwrap_or(0) before check_item_headroom(current_count, ...) ' +
+        'before spend_currency(, with `?` and item_id, no cfg — the checker is too strict and ' +
         'rejects a correct implementation.',
     };
   }
@@ -936,8 +977,38 @@ export default async function () {
     };
   }
 
-  // Good: wallet_balance + checked_mul( → check_currency_headroom( → consume_one(,
+  // Bad G: wallet_balance provenance present BUT hardcoded 0 as first arg —
+  // must flag (argument-identity bypass: check_currency_headroom(0, total)).
+  // Kills: impl that reads the balance correctly but then passes 0 instead of balance,
+  //        so the cap check only catches cases where total alone exceeds MAX_BALANCE,
+  //        missing the case where balance is near MAX_BALANCE — items destroyed, ADR-0124.
+  const badSellArgIdentity =
+    'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
+    'require_owner(ctx, "sell", ctx.sender); ' +
+    'let row = ctx.db.item_row().filter(item_id).unwrap(); ' +
+    'let total = row.sell_price.checked_mul(qty as u64).ok_or("")?; ' +
+    'let balance = wallet_balance(ctx, ctx.sender); ' +
+    'check_currency_headroom(0, total).map_err(|e| e.to_string())?; ' +
+    'for _ in 0..qty { consume_one(ctx, ctx.sender, item_id)?; } ' +
+    'grant_currency(ctx, ctx.sender, total); }';
+  if (sellHasHeadroomBeforeConsume(badSellArgIdentity)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (SELL_HEADROOM-G): sellHasHeadroomBeforeConsume passed on a fixture ' +
+        'where wallet_balance is present (provenance F1/F2 satisfied) BUT ' +
+        'check_currency_headroom is called with a hardcoded 0 as the first argument instead ' +
+        'of balance — check_currency_headroom(0, total) only rejects when total itself exceeds ' +
+        'MAX_BALANCE, missing the case where balance is already near the cap: items are destroyed ' +
+        'by consume_one with clamped proceeds and no rollback backstop (ADR-0124). ' +
+        'Kills: read-then-discard impl that passes 0 not balance.',
+    };
+  }
+
+  // Good: wallet_balance + checked_mul( → check_currency_headroom(balance, ...) → consume_one(,
   //       with `?`, total, no cfg — must pass.
+  // Note: variable name `balance` matches the argument-identity pin.
   const goodSellHeadroom =
     'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
     'require_owner(ctx, "sell", ctx.sender); ' +
@@ -953,9 +1024,9 @@ export default async function () {
       pass: false,
       detail:
         'TEETH FAILED (SELL_HEADROOM-GOOD): sellHasHeadroomBeforeConsume did not pass on a ' +
-        'correct fixture with wallet_balance before check_currency_headroom( before consume_one(, ' +
-        'with checked_mul(, `?`, total, no cfg — the checker is too strict and rejects a ' +
-        'correct implementation.',
+        'correct fixture with wallet_balance before check_currency_headroom(balance, ...) before ' +
+        'consume_one(, with checked_mul(, `?`, total, no cfg — the checker is too strict and ' +
+        'rejects a correct implementation.',
     };
   }
 
@@ -1166,6 +1237,15 @@ export default async function () {
               '`item_id` — pass the actual item_id variable so the error payload identifies ' +
               'the correct item (not a hardcoded sentinel)',
           );
+        } else if (body.indexOf('check_item_headroom(current_count,') === -1) {
+          failures.push(
+            'BUY_HEADROOM (17.5c-1 ARG-IDENTITY): check_item_headroom( is called but the first ' +
+              'argument is not `current_count` — the variable read from inventory()/unwrap_or(0) ' +
+              'must be passed directly as arg 1 (not a hardcoded 0). ' +
+              'A hardcoded-0 first arg always passes (0+qty<=cap) even at MAX_ITEM_STACK: ' +
+              'the buyer pays currency but grant_item is silently clamped (ADR-0124). ' +
+              'Fix: `check_item_headroom(current_count, qty, item_id).map_err(|e| e.to_string())?`',
+          );
         }
       }
     }
@@ -1262,6 +1342,16 @@ export default async function () {
               'contain `total` — pass the checked_mul( product as the `incoming` argument ' +
               '(not a literal 0 or other sentinel)',
           );
+        } else if (body.indexOf('check_currency_headroom(balance,') === -1) {
+          failures.push(
+            'SELL_HEADROOM (17.5c-2 ARG-IDENTITY): check_currency_headroom( is called but the ' +
+              'first argument is not `balance` — the variable read from wallet_balance() must be ' +
+              'passed directly as arg 1 (not a hardcoded 0). ' +
+              'A hardcoded-0 first arg only rejects when total alone exceeds MAX_BALANCE, ' +
+              'missing the case where balance is near the cap: items are destroyed by consume_one ' +
+              'with clamped proceeds and no rollback backstop (ADR-0124). ' +
+              'Fix: `check_currency_headroom(balance, total).map_err(|e| e.to_string())?`',
+          );
         }
       }
     }
@@ -1278,7 +1368,7 @@ export default async function () {
       'all 7 shop-reducer-security criteria met ' +
       '(buy require_owner before spend, sell require_owner before grant, ' +
       'no client price param, server DB lookup, shop tables public, ' +
-      'buy check_item_headroom( before spend_currency( with ?+item_id+inventory()+unwrap_or(0)+no-cfg (m17.5c), ' +
-      'sell check_currency_headroom( before consume_one( with ?+total+wallet_balance+no-cfg (m17.5c))',
+      'buy check_item_headroom(current_count, before spend_currency( with ?+item_id+inventory()+unwrap_or(0)+arg-identity+no-cfg (m17.5c), ' +
+      'sell check_currency_headroom(balance, before consume_one( with ?+total+wallet_balance+arg-identity+no-cfg (m17.5c))',
   };
 }

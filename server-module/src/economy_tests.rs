@@ -1200,6 +1200,24 @@ fn buy_reducer_calls_headroom_before_spend() {
         statement_window
     );
 
+    // --- Argument-identity pin (red-team live-mutation: check_item_headroom(0, qty, item_id)) ---
+    // The provenance pins above (inventory_pos < headroom_pos, unwrap_or_pos < headroom_pos)
+    // prove that the real count IS read, but they do not prove it is PASSED.  An impl could
+    // read `current_count` via inventory()/unwrap_or(0) and then call
+    // `check_item_headroom(0, qty, item_id)` — hardcoding the first argument to 0 so the
+    // check ALWAYS passes (0 + qty <= cap) even when the buyer holds MAX_ITEM_STACK items.
+    // This pin anchors the variable name directly in the call, closing that bypass.
+    let current_count_arg_needle = ["check", "_item_headroom(current", "_count,"].concat();
+    assert!(
+        buy_body.contains(current_count_arg_needle.as_str()),
+        "TEETH(m17.5c ARG-IDENTITY-BUY): buy body does not contain `{}` — \
+         check_item_headroom must receive `current_count` (the value read from inventory()/unwrap_or(0)) \
+         as its first argument, not a hardcoded 0.  A hardcoded-0 first arg always passes the cap \
+         check even at MAX_ITEM_STACK: the buyer pays currency but grant_item is silently clamped \
+         (value destruction, ADR-0124).  Kills: check_item_headroom(0, qty, item_id) impl.",
+        current_count_arg_needle
+    );
+
     // Suppress unused-variable warnings for paren-anchored needles defined above
     // but not used in ordering assertions within this test.
     let _ = consume_pat;
@@ -1378,5 +1396,25 @@ fn sell_reducer_calls_headroom_before_consume() {
          as the `incoming` argument (not a literal 0 or other sentinel). \
          Statement window: {:?}",
         statement_window
+    );
+
+    // --- Argument-identity pin (red-team live-mutation: check_currency_headroom(0, total)) ---
+    // The provenance pin above (wallet_balance_pos < headroom_pos) proves the balance IS read,
+    // but does not prove it is PASSED.  An impl could call wallet_balance() for its side effects
+    // and then pass a hardcoded 0 as the first argument:
+    // `check_currency_headroom(0, total)` always returns Ok unless total > MAX_BALANCE alone,
+    // meaning a seller whose wallet is already near MAX_BALANCE will have items destroyed by
+    // the consume_one loop with only clamped (truncated) proceeds — value destruction with no
+    // rollback backstop (ADR-0124).  This pin anchors the variable name in the call.
+    let balance_arg_needle = ["check", "_currency_headroom(balance,"].concat();
+    assert!(
+        sell_body.contains(balance_arg_needle.as_str()),
+        "TEETH(m17.5c ARG-IDENTITY-SELL): sell body does not contain `{}` — \
+         check_currency_headroom must receive `balance` (the value from wallet_balance()) \
+         as its first argument, not a hardcoded 0.  A hardcoded-0 first arg always passes unless \
+         total > MAX_BALANCE, missing the case where balance is already near the cap: items are \
+         destroyed by consume_one with clamped proceeds and no rollback backstop (ADR-0124). \
+         Kills: check_currency_headroom(0, total) impl.",
+        balance_arg_needle
     );
 }

@@ -1250,8 +1250,8 @@ mod tests {
     /// Mirror of `check_headroom_accepts_exact_headroom_item` but on the counterparty
     /// argument slots (args 5–6), with initiator slots empty/zeroed.
     ///
-    /// kills: rules.rs:295:45 replace > with >= in check_headroom (counterparty item loop
-    ///        overflow check — >= incorrectly rejects a trade that exactly fills to cap)
+    /// kills: replace > with >= in check_item_headroom (delegated from check_headroom,
+    ///        counterparty item loop) — >= incorrectly rejects a trade that exactly fills to cap
     #[test]
     fn check_headroom_accepts_exact_headroom_item_counterparty() {
         use crate::currency::MAX_BALANCE;
@@ -1285,13 +1285,14 @@ mod tests {
     /// Mirror of `check_headroom_accepts_exact_currency_headroom` but on the counterparty
     /// argument slots (args 7–8), with initiator slots empty/zeroed.
     ///
-    /// kills: rules.rs:309:80 replace > with >= in check_headroom (counterparty currency
-    ///        cap check — >= incorrectly rejects a trade that exactly fills to MAX_BALANCE)
+    /// kills: replace > with >= in check_currency_headroom (delegated from check_headroom,
+    ///        counterparty currency cap check) — >= incorrectly rejects a trade that exactly
+    ///        fills to MAX_BALANCE
     ///
-    /// kills: rules.rs:309:9 replace && with || in check_headroom (counterparty compound:
-    ///        with receives=49>0 true and sum==MAX_BALANCE false, && yields false → Ok,
-    ///        while || short-circuits true on receives>0 → Err; the low_balance test
-    ///        below kills this mutant independently — either test alone suffices)
+    /// kills: replace > with || (incoming > 0 guard) in check_currency_headroom (delegated
+    ///        from check_headroom, counterparty side) — with receives=49>0 true and
+    ///        sum==MAX_BALANCE false, the real guard returns Ok; the low_balance test below
+    ///        kills this mutant independently — either test alone suffices
     #[test]
     fn check_headroom_accepts_exact_currency_headroom_counterparty() {
         use crate::currency::MAX_BALANCE;
@@ -1316,8 +1317,9 @@ mod tests {
     ///   so `||` gives true → Err.  The real `&&` gives true && false → false → Ok.
     ///   This test therefore decisively kills the 309:9 || mutant.
     ///
-    /// kills: rules.rs:309:9 replace && with || in check_headroom (counterparty compound
-    ///        — receives=50>0, balance=0, so && gives false → Ok, || gives Err)
+    /// kills: replace && with || (incoming > 0 guard) in check_currency_headroom (delegated
+    ///        from check_headroom, counterparty side) — receives=50>0, balance=0,
+    ///        so real guard (&&) gives false → Ok; || short-circuit gives Err
     #[test]
     fn check_headroom_accepts_counterparty_currency_low_balance() {
         let result = check_headroom(&[], &[], 0, 0, &[], &[], 50, 0);
@@ -1345,8 +1347,9 @@ mod tests {
     /// Under `>= 0` mutant: 0 >= 0 is true → check runs →
     ///   (MAX_BALANCE+1).saturating_add(0) > MAX_BALANCE → Err.
     ///
-    /// kills: rules.rs:302:36 replace > with >= in check_headroom (initiator skip-guard
-    ///        — >= makes receives=0 enter the balance check, incorrectly returning Err)
+    /// kills: replace > with >= in check_currency_headroom (delegated from check_headroom,
+    ///        initiator skip-guard) — >= makes receives=0 enter the balance check,
+    ///        incorrectly returning Err
     #[test]
     fn check_headroom_zero_receive_initiator_skips_balance_check() {
         use crate::currency::MAX_BALANCE;
@@ -1376,8 +1379,9 @@ mod tests {
     /// Under `>= 0` mutant: 0 >= 0 is true → check runs →
     ///   (MAX_BALANCE+1).saturating_add(0) > MAX_BALANCE → Err.
     ///
-    /// kills: rules.rs:308:39 replace > with >= in check_headroom (counterparty skip-guard
-    ///        — >= makes receives=0 enter the balance check, incorrectly returning Err)
+    /// kills: replace > with >= in check_currency_headroom (delegated from check_headroom,
+    ///        counterparty skip-guard) — >= makes receives=0 enter the balance check,
+    ///        incorrectly returning Err
     #[test]
     fn check_headroom_zero_receive_counterparty_skips_balance_check() {
         use crate::currency::MAX_BALANCE;
