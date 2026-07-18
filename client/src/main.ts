@@ -1123,6 +1123,11 @@ const mrTradeHook = {
 // Both must be kept in sync manually — page.evaluate() crosses a structured-clone
 // boundary that the type system cannot check across. See that file if you change any
 // method signature or return shape here.
+//
+// NOTE: like __game and __mrTrade, this hook is DEV-gated (ADR-0127, amends ADR-0115
+// D1) — the window assignment below only exists when import.meta.env.DEV is true, and
+// the dead branch is dropped by the minifier in a default `vite build` (a
+// `--minify false` build would retain it; server-side ctx.sender authz still holds).
 const mrPvpHook = {
   challengePvp(targetHex: string, partyIds: string[]): Promise<void> | undefined {
     return conn?.conn.reducers.challengePvp({
@@ -1174,6 +1179,8 @@ const mrPvpHook = {
   // opponentIdentity and would never see the row). Returns null when the battle is
   // absent (not yet arrived or GC'd). activeSkillIds are the ACTIVE monster's known
   // skill ids for each side, so either page can pick a legal skill for its role.
+  // An EMPTY activeSkillIds array means the side's active index was out of bounds —
+  // an abnormal server state; callers must not submit an action built from it.
   battleById(battleId: string): {
     battleId: string;
     outcome: string;

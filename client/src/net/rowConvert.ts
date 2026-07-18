@@ -263,6 +263,9 @@ function battleMonsterToStore(m: SdkBattleMonster): StoreBattleMonster {
     statSpAttack: m.stats.spAttack,
     statSpDefense: m.stats.spDefense,
     knownSkillIds: [...m.knownSkillIds],
+    // StatusEffect is deliberately NOT in HANDLED_ENUM_VARIANTS: it feeds a bare-string
+    // store field, so a new server variant flows through unregistered and the eval does
+    // not catch it (ADR-0127 accepted limitation).
     status: m.status ? { tag: m.status.tag, turnsRemaining: m.status.value } : null,
   };
 }
@@ -591,6 +594,8 @@ export function battleChallengeRowToStore(row: SdkBattleChallengeRow): StoreBatt
     challenger: row.challenger.toHexString(),
     target: row.target.toHexString(),
     challengerPartyIds: [...row.challengerPartyIds],
+    // narrowTag intentionally absent: StoreBattleChallenge.status is string-typed (not
+    // a union), so narrowing is a type no-op — the eval is the sole ratchet (ADR-0127).
     status: row.status.tag,
     createdAtMs: row.createdAtMs,
   };
