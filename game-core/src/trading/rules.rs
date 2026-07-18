@@ -223,6 +223,10 @@ impl SwapPlan {
     /// reject-not-clamp (ADR-0113) — any plan that passes the check applies
     /// without ever touching a cap. Monster transfers are ownership flips with no
     /// cap and are NOT part of this sequence.
+    ///
+    /// OBLIGATION (ADR-0123 D6): every executor of these steps MUST run the
+    /// NETTED `check_headroom` first — the type system does not enforce the
+    /// pairing, and applying steps unchecked reintroduces silent clamp loss.
     #[must_use]
     pub fn ordered_steps(&self) -> Vec<ApplyStep> {
         let mut steps =
