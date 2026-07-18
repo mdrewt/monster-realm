@@ -203,7 +203,7 @@ pub enum ApplyStep {
 }
 
 impl SwapPlan {
-    /// Emit this plan's item/currency mutations as a debits-before-credits
+    /// Produce this plan's item/currency mutations as a debits-before-credits
     /// sequence — the first-class published ordering contract consumed by
     /// `confirm_trade` (17.5b-1, ADR-0123; same SSOT standing as `check_headroom`).
     ///
@@ -211,6 +211,9 @@ impl SwapPlan {
     /// `CurrencyCredit` step. Every transfer in the plan yields exactly one debit
     /// and one credit with identical `item_id`/`qty` (or `amount`); the credit's
     /// `to_initiator` is the inverted `from_initiator` (the other party receives).
+    /// Within each phase the emission order is: item steps in `item_transfers`
+    /// order, then currency steps in `currency_transfers` order (mirrored in the
+    /// credit phase) — also part of the contract; do not reorder silently.
     ///
     /// Why this order: crediting a stack or wallet that has not yet been debited
     /// can transiently exceed `MAX_ITEM_STACK`/`MAX_BALANCE` on a same-item (or
