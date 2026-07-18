@@ -155,6 +155,10 @@ fn disarm_challenge_reaper(ctx: &ReducerContext, challenge_id: u64) {
     }
 }
 
+// ===========================================================================
+// Internal helpers (continued)
+// ===========================================================================
+
 /// Returns true if `identity` has any active (Pending) challenge as challenger.
 fn has_active_outgoing_challenge(ctx: &ReducerContext, identity: Identity) -> bool {
     ctx.db
