@@ -906,6 +906,17 @@ fn scan_machinery_teeth() {
 // They start RED (needle-absence) until the specialist implements the reducer,
 // and are BODY-BOUNDED so the legitimate profile access in apply_pvp_rating /
 // get_or_init_profile does NOT satisfy (or falsely trip) the reducer's scans.
+//
+// Coverage map:
+//   pt-c1-1 (sets player.name on valid input)   → ptc1_scan_body_validates_and_writes_player_name
+//   pt-c1-2 (rejects invalid name, no write)    → ptc1_scan_body_validates_and_writes_player_name
+//   pt-c1-3 (rejects "not joined", no write)    → ptc1_scan_body_rejects_when_not_joined
+//   pt-c1-4 (name surfaces via ADR-0125 mirror) → ptc1_scan_body_is_profile_untouching (indirect)
+//                                                  + pre-existing d2_rename_then_rated_* executed pins
+//   pt-c1-5 (profile-untouching)                → ptc1_scan_body_is_profile_untouching
+//                                                  + ptc1_scan_profile_insert_count_is_one
+//   pt-c1-6 (exactly one reducer, named)        → ptc1_scan_set_profile_name_fn_present
+//                                                  + m17a_rl7_server_ranking_module_invariants (pvp_tests.rs)
 // ===========================================================================
 
 /// Extract the brace-bounded body of a fn from ALREADY-squashed source (the
@@ -1078,6 +1089,192 @@ fn ptc1_scan_body_is_profile_untouching() {
          `set_profile_name` body contains `{}` (whitespace-free) — binding the profile \
          accessor is the documented evasion of the profile-untouching property (ADR-0132 D3).",
         profile_binding
+    );
+}
+
+/// pt-c1-3: the `set_profile_name` body must REJECT a not-joined caller with a
+/// literal `Err(` and must NOT use `.unwrap(` on the player row lookup.
+///
+/// Three body-bounded needles (control-flow-agnostic — accepts BOTH the
+/// `match … None => return Err` form the plan uses AND a `let Some(..) = … else
+/// { return Err }` form; does NOT pin control-flow shape, only the authz
+/// properties):
+///
+///   (a) `player().identity().find(` present — the body resolves the caller's row.
+///   (b) `Err(` present — an explicit reject exists in the body. The `?` on
+///       `validate_name(…)?` does NOT emit a literal `Err(` in source, so the
+///       only literal `Err(` in a correct body is the not-joined `return Err(…)`.
+///   (c) `.unwrap(` absent — bans `…find(me).unwrap()` (panics on None) and
+///       `…find(me).unwrap_or_default()` (inserts a default-identity player row
+///       and silently "renames" a not-joined caller — the authz hole). Mirrors
+///       the anti-unwrap pin on `live_player_name` (~ranking_tests.rs:499).
+///
+/// The hole closed: `ctx.db.player().identity().find(me).unwrap_or_default()`
+/// passes the pt-c1-1/-2/-5 needles yet silently inserts a zero-valued player
+/// row when the caller has no `player` row (not joined) instead of rejecting.
+///
+/// Starts RED: fn absent → extract returns None → documented panic.
+///
+/// Kills:
+///   - `find(me).unwrap()` — panics on None (not joined → 500, no authz message)
+///   - `find(me).unwrap_or_default()` — silently renames a not-joined caller by
+///     creating a default-identity player row (authz hole, pt-c1-3 violation)
+///   - body has no `Err(` literal — the not-joined reject branch was removed
+#[test]
+fn ptc1_scan_body_rejects_when_not_joined() {
+    let squashed = stripped_for_scan(RANKING_RS);
+    let fn_needle = concat!("fnset_profile", "_name(");
+    let body = extract_squashed_fn_body(&squashed, fn_needle).unwrap_or_else(|| {
+        panic!(
+            "pt-c1-3 (ptc1_scan_body_rejects_when_not_joined): `set_profile_name` fn not \
+             found in ranking.rs — RED pre-impl; the reducer must exist for the not-joined \
+             reject scan to be meaningful (ADR-0132 D1)."
+        )
+    });
+
+    // (a) The body resolves the caller's player row — a lookup must be present.
+    let find_needle = concat!("player().identity()", ".find(");
+    assert!(
+        body.contains(find_needle),
+        "pt-c1-3 FAIL (ptc1_scan_body_rejects_when_not_joined / find): \
+         the `set_profile_name` body must contain `{}` (whitespace-free) — the reducer \
+         must attempt to resolve the caller's player row before writing. \
+         Body (whitespace-free): {:?}",
+        find_needle,
+        body
+    );
+
+    // (b) An explicit `Err(` literal is present — the not-joined reject branch.
+    // `validate_name(…)?` desugars to Err propagation but emits NO literal `Err(`
+    // in source; the only source-level `Err(` is the not-joined return.
+    let err_needle = "Err(";
+    assert!(
+        body.contains(err_needle),
+        "pt-c1-3 FAIL (ptc1_scan_body_rejects_when_not_joined / Err): \
+         the `set_profile_name` body must contain `{}` (whitespace-free) — the explicit \
+         not-joined rejection (`return Err(e)` or equivalent). validate_name(…)? does NOT \
+         produce a source-level `Err(` literal, so its presence proves the not-joined \
+         branch exists. Body (whitespace-free): {:?}",
+        err_needle,
+        body
+    );
+
+    // (c) No `.unwrap(` anywhere in the body — bans panic-on-None and
+    // unwrap_or_default silently-creates-row (the authz hole).
+    // `.unwrap` (no paren) so the ban catches `.unwrap()`, `.unwrap_or_default()`,
+    // `.unwrap_or(`, `.unwrap_err()` — the paren form would miss `unwrap_or_default`.
+    let unwrap_needle = ".unwrap";
+    assert!(
+        !body.contains(unwrap_needle),
+        "pt-c1-3 FAIL (ptc1_scan_body_rejects_when_not_joined / unwrap): \
+         the `set_profile_name` body contains `{}` (whitespace-free) — `.unwrap()` \
+         panics when the caller is not joined (no player row) and \
+         `.unwrap_or_default()` silently writes a zero-identity player row instead of \
+         rejecting, violating pt-c1-3 (not-joined must reject). \
+         The not-joined case must use an explicit None-arm that returns `Err(…)`. \
+         Body (whitespace-free): {:?}",
+        unwrap_needle,
+        body
+    );
+}
+
+/// Machinery self-teeth for `ptc1_scan_body_rejects_when_not_joined`:
+/// proves the three not-joined authz needles BITE.
+///
+///   BAD  — `find(me).unwrap_or_default()` body with no `Err(` literal:
+///          needle (b) fires (no `Err(`); needle (c) fires (`.unwrap(`).
+///   GOOD — `find(me)` + `return Err(…)` + no unwrap:
+///          all three needles pass.
+///
+/// If this test fails, the pt-c1-3 pin above cannot be trusted.
+#[test]
+fn ptc1_scan_rejects_not_joined_teeth() {
+    let fn_needle = concat!("fnset_profile", "_name(");
+    let find_needle = concat!("player().identity()", ".find(");
+    let err_needle = "Err(";
+    // `.unwrap` (no paren) so the ban catches `.unwrap()`, `.unwrap_or_default()`,
+    // `.unwrap_or(`, `.unwrap_err()` — the paren form would miss `unwrap_or_default`.
+    let unwrap_needle = ".unwrap";
+
+    // -------------------------------------------------------------------------
+    // BAD: uses find(me).unwrap_or_default() — no Err( literal in body.
+    // Kills: an impl that silently "renames" a not-joined caller via the
+    // default-identity row instead of rejecting (pt-c1-3 authz hole).
+    // -------------------------------------------------------------------------
+    let bad_fixture = "
+        #[spacetimedb::reducer]
+        pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
+            let me = ctx.sender;
+            let mut player = ctx.db.player().identity().find(me).unwrap_or_default();
+            let validated = validate_name(&name)?;
+            player.name = validated;
+            ctx.db.player().identity().update(player);
+            Ok(())
+        }
+    ";
+    let bad_squashed = stripped_for_scan(bad_fixture);
+    let bad_body = extract_squashed_fn_body(&bad_squashed, fn_needle)
+        .expect("ptc1_scan_rejects_not_joined_teeth (BAD): fixture must contain set_profile_name");
+
+    // Needle (b): no Err( in a body using unwrap_or_default.
+    assert!(
+        !bad_body.contains(err_needle),
+        "ptc1_scan_rejects_not_joined_teeth FAIL (BAD / Err-absent): the BAD fixture body \
+         unexpectedly contains `Err(` — fix the fixture so the authz-hole shape has no \
+         literal Err( (only the ?-propagation from validate_name), else needle (b) cannot \
+         demonstrate its bite."
+    );
+    // Needle (c): .unwrap( present in a body using unwrap_or_default.
+    assert!(
+        bad_body.contains(unwrap_needle),
+        "ptc1_scan_rejects_not_joined_teeth FAIL (BAD / unwrap-present): the BAD fixture body \
+         does NOT contain `.unwrap(` — the fixture is malformed; `unwrap_or_default()` must \
+         appear as `.unwrap(` substring for needle (c) to demonstrate its bite."
+    );
+
+    // -------------------------------------------------------------------------
+    // GOOD: find(me) + match-arm or else returning Err, no unwrap.
+    // Must pass all three needles.
+    // -------------------------------------------------------------------------
+    let good_fixture = "
+        #[spacetimedb::reducer]
+        pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
+            let me = ctx.sender;
+            let mut player = match ctx.db.player().identity().find(me) {
+                Some(p) => p,
+                None => {
+                    let e = \"not joined\".to_string();
+                    log_reject(\"set_profile_name\", me, &e);
+                    return Err(e);
+                }
+            };
+            let validated = validate_name(&name).inspect_err(|e| log_reject(\"set_profile_name\", me, e))?;
+            player.name = validated;
+            ctx.db.player().identity().update(player);
+            Ok(())
+        }
+    ";
+    let good_squashed = stripped_for_scan(good_fixture);
+    let good_body = extract_squashed_fn_body(&good_squashed, fn_needle)
+        .expect("ptc1_scan_rejects_not_joined_teeth (GOOD): fixture must contain set_profile_name");
+
+    assert!(
+        good_body.contains(find_needle),
+        "ptc1_scan_rejects_not_joined_teeth FAIL (GOOD / find): GOOD fixture body is missing \
+         `{}` — machinery or fixture is broken.",
+        find_needle
+    );
+    assert!(
+        good_body.contains(err_needle),
+        "ptc1_scan_rejects_not_joined_teeth FAIL (GOOD / Err): GOOD fixture body is missing \
+         `Err(` after string-strip — string-stripping blanked the return Err(e) literal, \
+         but `e` is a variable (not a string literal) so it must survive. \
+         Check the strip pipeline: only string CONTENTS are blanked, not identifiers.",
+    );
+    assert!(
+        !good_body.contains(unwrap_needle),
+        "ptc1_scan_rejects_not_joined_teeth FAIL (GOOD / no-unwrap): GOOD fixture body \
+         unexpectedly contains `.unwrap(` — fix the fixture.",
     );
 }
 
