@@ -10,7 +10,7 @@ Architecture Decision Records live in **two locations**; check both.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0131`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0132`**.
 
 **ADR numbering collision note:** the harness spec corpus also contains design
 ADRs numbered `0055`–`0057`; these cover the *same topics* as this project's
@@ -123,6 +123,7 @@ prefix `harness adr/0055` to cite the harness design ADR.
 | [0128](./0128-pt-a1-client-playtest-build-hygiene.md) | pt-a1 client-side local-playtest build hygiene: prod-safe env-driven connection config (fail-loud when DB unset/empty or case-insensitively the dev default), build-time git-SHA/version stamp exposed via `#build-stamp` + ungated `window.__mrBuild` for the M-playtest-b F9 bundle, and DEV-hooks-absent reconciliation of ADR-0127 against the minified prod build | pt-a1 |
 | [0129](./0129-pt-a2-local-playtest-ops.md) | pt-a2 local playtest ops: honest release publish (dev_reducers absent from PUBLISHED module) + build-output DEV-hooks-absent grep guard, via verify-release-reducers.mjs / verify-build-hooks.mjs wired into `just` recipes; wipe/republish ops documented in docs/playtest-ops.md | pt-a2 |
 | [0130](./0130-client-observability.md) | pt-b1 client observability: error overlay + event ring + F9 bug-report bundle (H1/H2/H3 severity taxonomy) — DEV-gated capture, bounded ring buffer, F9 downloads a redacted bundle wired via `window.__mrBuild` from ADR-0128 | pt-b1 |
+| [0131](./0131-server-playtest-capture.md) | pt-b2 server-side playtest capture: additive PRIVATE `playtest_event` table fed by `attempt_recruit` at the H1 decision point + interval-singleton TTL+cap reaper for bounded growth + `just playtest-report` H1/H2/H3 proxy stream | pt-b2 |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
