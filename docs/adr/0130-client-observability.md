@@ -196,6 +196,33 @@ table is pt-b2.
   non-blocking) — **no** new `evals/*.eval.mjs` (evals/** is out of touch-set).
 - pt-b1b is reserved for the 8 parked emit-sites; pt-b2 for the server table.
 
+## Implementation-review reconciliation (reviewer + red-team + determinism lens)
+
+The determinism/netcode lens found **no perturbation** (new listeners are read-only + total; switchZone
+atomicity preserved; F9/F8 outside the movement path; zero game-core/wasm/RNG touch). The security-critical
+invariants (PII firewall, no-network, XSS, re-entrancy, bounded memory) were verified CLOSED. Fixed findings:
+
+- **`isPvpBattle` party guard (reviewer H-1):** `opponentIdentity !== playerIdentity` alone mislabels every
+  wild encounter as PvP (wild carries the all-zero `WILD_IDENTITY`). `battleStart.isPvp` now uses the pure
+  `isPvpBattle(battle)` helper (`opponentMonsterIds.length > 0 && distinct identity`), mirroring
+  `battleModel.ts`; covered by `T-ISPVP` (wild/self/empty-party → false).
+- **rankedMatch battleId attribution (red-team M-2):** `latestPlayerBattle()` returns the highest-id battle
+  of any kind; the Elo delta now attaches the battleId only when that battle `isPvpBattle`, else `''`.
+- **battleStart reconnect dedup (red-team M-1):** a `battleReseedPending` flag (set on `onReconnect` only)
+  re-baselines a surviving Ongoing battle on the first post-reconnect batch without re-emitting battleStart.
+- **F9 serialize-in-try (red-team L-1) + single timestamp (reviewer L-1):** `serializeBugBundle` moved inside
+  the try so a serialize fault also hits the console fallback; one `capturedAtMs` for body + filename.
+- **Key-store no-PII tooth (red-team L-2):** `W-KEYSTORE-NOPII` source-scan asserts the F9 region (incl.
+  `projectKeyStore`) reads no `.name`/`.nickname`/`.displayName`, guarding the projection allowlist.
+
+**Accepted residuals (no change):** (a) `lastOwnRating`/`activeBattleId` also re-baseline on intra-session
+zone-switch (resetPredictionState), so a ranked/battle delta landing in the same batch as a zone transition
+is not emitted — an unlikely race, and re-baselining is the ADR-accepted posture (reviewer L-2). (b) The ring
+`snapshot()` is an array-level defensive copy; records are `readonly`-typed plain data read-only by every
+consumer, so deep-freezing is unwarranted YAGNI (reviewer L-3). (c) A `battleEnd` that resolves entirely
+during a disconnect gap is not observed — the reconnect re-baseline introduces no spurious end (red-team M-1
+symmetric note).
+
 ## Alternatives considered
 
 - **Ship all 14 event sources now.** Rejected: doubles the emit-site count with correlation

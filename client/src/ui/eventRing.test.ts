@@ -19,6 +19,7 @@ import { describe, expect, it } from 'vitest';
 import {
   EVENT_RING_CAP,
   EventRing,
+  isPvpBattle,
   makeBattleEnd,
   makeBattleStart,
   makeBoxOpen,
@@ -240,5 +241,47 @@ describe('eventRing T-HP-1: makePreRecruitHp permille scaling / clamp / div0', (
     // also pin (2,3)->667 where round≠floor (666.67 → 667, floor would give 666).
     expect(permille(1, 3)).toBe(333);
     expect(permille(2, 3)).toBe(667);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T-ISPVP (reviewer H-1): isPvpBattle requires an owned opponent party AND a distinct
+// identity. A wild battle (all-zero WILD_IDENTITY, empty opponent party) must be FALSE.
+// ---------------------------------------------------------------------------
+
+describe('eventRing T-ISPVP: isPvpBattle party-guarded PvP detection', () => {
+  const PLAYER = '0x' + 'a'.repeat(64);
+  const WILD = '0x' + '0'.repeat(64); // WILD_IDENTITY = all-zero
+  const RIVAL = '0x' + 'b'.repeat(64);
+
+  it('T-ISPVP BITES: wild battle (empty party, WILD_IDENTITY) is NOT PvP', () => {
+    // WRONG IMPL KILLED: `opponentIdentity !== playerIdentity` alone — WILD_IDENTITY (all-zero)
+    // is != the player, so identity-inequality-only mislabels EVERY wild encounter as PvP.
+    expect(
+      isPvpBattle({ opponentMonsterIds: [], opponentIdentity: WILD, playerIdentity: PLAYER }),
+    ).toBe(false);
+  });
+
+  it('T-ISPVP: a real PvP battle (owned opponent party + distinct identity) is PvP', () => {
+    expect(
+      isPvpBattle({
+        opponentMonsterIds: [1n, 2n],
+        opponentIdentity: RIVAL,
+        playerIdentity: PLAYER,
+      }),
+    ).toBe(true);
+  });
+
+  it('T-ISPVP: a self/practice battle (same identity) is NOT PvP even with a party', () => {
+    // Practice/trainer self-battles reuse the player identity — not PvP.
+    expect(
+      isPvpBattle({ opponentMonsterIds: [3n], opponentIdentity: PLAYER, playerIdentity: PLAYER }),
+    ).toBe(false);
+  });
+
+  it('T-ISPVP: distinct identity but EMPTY opponent party is NOT PvP (party guard)', () => {
+    expect(
+      isPvpBattle({ opponentMonsterIds: [], opponentIdentity: RIVAL, playerIdentity: PLAYER }),
+    ).toBe(false);
   });
 });

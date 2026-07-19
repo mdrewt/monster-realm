@@ -119,6 +119,23 @@ export function makeTradeConfirm(tradeId: string): PlaytestEventPayload {
 }
 
 /**
+ * True iff a battle is player-vs-player. The opponent must have an owned party
+ * (`opponentMonsterIds.length > 0`) AND a distinct identity. The party guard is
+ * REQUIRED: a wild battle carries the all-zero WILD_IDENTITY (which is `!==` the
+ * player identity) but has no owned opponent monsters — so identity-inequality
+ * alone mislabels every wild encounter as PvP. Mirrors the client's canonical
+ * detector in battleModel.ts (`!isWild && player !== opponent`). Structurally
+ * typed so this module stays decoupled from net/store's StoreBattle.
+ */
+export function isPvpBattle(battle: {
+  readonly opponentMonsterIds: readonly unknown[];
+  readonly opponentIdentity: string;
+  readonly playerIdentity: string;
+}): boolean {
+  return battle.opponentMonsterIds.length > 0 && battle.opponentIdentity !== battle.playerIdentity;
+}
+
+/**
  * Bounded FIFO event buffer. Oldest-evicted at cap; `tSeq` monotonic from 1 and never reused
  * (survives eviction and clear); `tMs` from the injected clock. `snapshot()` returns a fresh
  * defensive copy oldest→newest so callers cannot mutate the buffer.

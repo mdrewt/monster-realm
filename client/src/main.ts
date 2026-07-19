@@ -72,6 +72,7 @@ import { ErrorOverlayView } from './ui/errorOverlayView';
 import { ErrorRing } from './ui/errorRing';
 import {
   EventRing,
+  isPvpBattle,
   makeBattleEnd,
   makeBattleStart,
   makeConnect,
@@ -149,6 +150,10 @@ let identity = '';
 // reconnect/zone-switch (resetPredictionState) so they re-baseline — the RINGS do NOT reset.
 let activeBattleId: bigint | null = null;
 let lastOwnRating: number | null = null;
+// pt-b1 review (red-team M-1): set on RECONNECT only. On the first post-reconnect batch a
+// still-Ongoing battle that survived the drop must NOT re-emit battleStart (store.reset cleared
+// it + the latch, so it looks "new"). The flag re-baselines that one sighting without emitting.
+let battleReseedPending = false;
 let conn: ReturnType<typeof connect> | undefined;
 let boxView: BoxView | undefined;
 let battleView: BattleView | undefined;
@@ -1086,8 +1091,19 @@ store.onBatchApplied(() => {
   if (identity === '') return;
   try {
     const latest = store.latestPlayerBattle(identity);
+    // red-team M-1: on the first post-reconnect batch, re-baseline a surviving Ongoing
+    // battle WITHOUT emitting (store.reset cleared the latch so it would look "new").
+    if (battleReseedPending) {
+      battleReseedPending = false;
+      if (latest && latest.outcome === 'Ongoing') {
+        activeBattleId = latest.battleId;
+        return;
+      }
+    }
     if (!latest) return;
-    const isPvp = latest.opponentIdentity !== latest.playerIdentity;
+    // reviewer H-1: wild battles carry the all-zero WILD_IDENTITY (!== player) but no owned
+    // opponent party — identity-inequality alone mislabels them PvP. Use the party-guarded rule.
+    const isPvp = isPvpBattle(latest);
     if (latest.outcome === 'Ongoing' && latest.battleId !== activeBattleId) {
       activeBattleId = latest.battleId;
       eventRing.push(makeBattleStart(latest.battleId.toString(), isPvp));
@@ -1116,8 +1132,12 @@ store.onBatchApplied(() => {
     if (prof.rating !== lastOwnRating) {
       const delta = prof.rating - lastOwnRating;
       lastOwnRating = prof.rating;
+      // red-team M-2: latestPlayerBattle() returns the highest-id battle of ANY kind, which
+      // may be a wild encounter — attach the id ONLY if it is genuinely a PvP battle, else ''
+      // (a wrong battleId corrupts the H3 correlation; the delta is the load-bearing signal).
       const b = store.latestPlayerBattle(identity);
-      eventRing.push(makeRankedMatch(b ? b.battleId.toString() : '', delta));
+      const battleId = b && isPvpBattle(b) ? b.battleId.toString() : '';
+      eventRing.push(makeRankedMatch(battleId, delta));
     }
   } catch (err) {
     console.error('[obs] ranked', err);
@@ -1384,29 +1404,34 @@ function projectKeyStore(): KeyStoreSnapshot {
   };
 }
 function downloadBugBundle(): void {
-  const json = serializeBugBundle(
-    buildBugBundle({
-      build: BUILD_INFO,
-      identity,
-      zoneId: rawMap.zone_id,
-      capturedAtMs: Date.now(),
-      events: eventRing.snapshot(),
-      errors: errorRing.snapshot(),
-      store: projectKeyStore(),
-    }),
-  );
+  // reviewer L-1: one timestamp for both the bundle body and the filename (they must match).
+  const capturedAtMs = Date.now();
+  const bundle = buildBugBundle({
+    build: BUILD_INFO,
+    identity,
+    zoneId: rawMap.zone_id,
+    capturedAtMs,
+    events: eventRing.snapshot(),
+    errors: errorRing.snapshot(),
+    store: projectKeyStore(),
+  });
+  // red-team L-1: serialize INSIDE the try so a (bigint-total, but defense-in-depth) serialize
+  // fault also routes to the console fallback rather than escaping the keydown handler.
+  let json = '';
   try {
+    json = serializeBugBundle(bundle);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = bugBundleFilename(BUILD_INFO.sha, Date.now());
+    a.download = bugBundleFilename(BUILD_INFO.sha, capturedAtMs);
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
   } catch {
-    console.log('[bug-bundle]', json);
+    // CSP/sandbox/serialize fallback: never silently no-op. Log whatever we have.
+    console.log('[bug-bundle]', json || bundle);
     reportError('bug bundle: download blocked — copy from console');
   }
 }
@@ -1689,6 +1714,9 @@ async function main(): Promise<void> {
       // Zone state is corrected by the reconcile listener's state-based check on
       // the first post-reconnect batch (12.5c-1 — no special zone logic needed here).
       resetPredictionState();
+      // pt-b1 (red-team M-1): re-baseline a surviving Ongoing battle on the next batch
+      // instead of re-emitting a spurious battleStart for it.
+      battleReseedPending = true;
       // RT-PL-01: a buy/sell in flight at drop time never settles (SDK — no settle
       // on drop), so the shop's double-spend lock would stay held forever. hide()
       // resets it (shopView.ts is outside this slice's touch-set; the reset rides

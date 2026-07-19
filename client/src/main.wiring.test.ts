@@ -343,6 +343,20 @@ describe('main.ts wiring (pt-b1 F9): bug-bundle region is net-free (E-10/S-2)', 
       'F9 region must log the JSON as a fallback when download is blocked',
     ).toBe(true);
   });
+
+  it('W-KEYSTORE-NOPII BITES: the F9 region (incl. projectKeyStore) reads no name/nickname field', () => {
+    // WRONG IMPL KILLED (red-team L-2): a future projectKeyStore edit adding `prof?.name` /
+    // `.nickname` / `.displayName` would leak player-controlled PII into the downloadable bundle.
+    // KeyStoreSnapshot is a numeric/id/hex allowlist by type; this pins the projection to it.
+    // NOTE: `.name` (with the leading dot) matches a property read, NOT `bugBundleFilename`.
+    const region = f9Region(readMainTs());
+    for (const needle of ['.name', '.nickname', '.displayName']) {
+      expect(
+        region.includes(needle),
+        `F9 bundle region must NOT read "${needle}" — the key-store snapshot is a no-PII allowlist`,
+      ).toBe(false);
+    }
+  });
 });
 
 describe('main.ts wiring (pt-b1 F9): bugBundle.ts is structurally pure (H-2)', () => {
