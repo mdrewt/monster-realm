@@ -1,4 +1,4 @@
-//! `playtest` domain-submodule tests — pt-b2 (ADR-0130).
+//! `playtest` domain-submodule tests — pt-b2 (ADR-0131).
 //!
 //! Declared from `server-module/src/playtest.rs` as:
 //!   `#[cfg(test)] #[path = "playtest_tests.rs"] mod playtest_tests;`
@@ -754,7 +754,9 @@ fn scan_playtest_reaper_has_scheduler_guard_before_delete() {
         Ok(s) => s,
         Err(e) => panic!("{}", e),
     };
-    let stripped = strip_rust_strings(&strip_rust_comments(&src));
+    // ADR-0125 discipline: string-strip BEFORE comment-strip (a `//` inside a string
+    // literal must be blanked before the comment pass walks the buffer).
+    let stripped = strip_rust_comments(&strip_rust_strings(&src));
 
     let body = extract_fn_body(&stripped, "playtest_reaper")
         .expect("PT-B2-SCAN-01: `playtest_reaper` function not found in playtest.rs");
@@ -803,7 +805,9 @@ fn scan_playtest_schedule_uses_interval_not_time() {
     };
     // String-strip + comment-strip before scanning to prevent evasion via string
     // literal or comment containing the needle.
-    let stripped = strip_rust_strings(&strip_rust_comments(&src));
+    // ADR-0125 discipline: string-strip BEFORE comment-strip (a `//` inside a string
+    // literal must be blanked before the comment pass walks the buffer).
+    let stripped = strip_rust_comments(&strip_rust_strings(&src));
 
     let interval_needle = concat!("ScheduleAt::", "Interval(");
     assert!(
@@ -840,7 +844,9 @@ fn scan_playtest_kind_no_spacetime_type_no_as_u16() {
         Ok(s) => s,
         Err(e) => panic!("{}", e),
     };
-    let stripped = strip_rust_strings(&strip_rust_comments(&src));
+    // ADR-0125 discipline: string-strip BEFORE comment-strip (a `//` inside a string
+    // literal must be blanked before the comment pass walks the buffer).
+    let stripped = strip_rust_comments(&strip_rust_strings(&src));
     let squashed = squash_ws(&stripped);
 
     // Negative: SpacetimeType must NOT appear adjacent to PlaytestKind.

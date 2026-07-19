@@ -31,7 +31,7 @@ import { pathToFileURL } from 'node:url';
 // Empty input (or no kind===1 rows) → all-zero (never NaN/Infinity, never throws).
 // Returns ONLY the four numeric rate fields — NO identity (PII firewall).
 // ---------------------------------------------------------------------------
-export function aggregateReport(rows) {
+export function aggregateReport(rows, { weakenThresholdPermille = 500 } = {}) {
   const r1 = rows.filter((r) => r.kind === 1);
   if (r1.length === 0) {
     return { weakenFirstRate: 0, successRate: 0, baitRate: 0, recatchRate: 0 };
@@ -52,7 +52,7 @@ export function aggregateReport(rows) {
 
   let weakenedFirstCount = 0;
   for (const group of groups.values()) {
-    if (group[0].hp_permille < 500) weakenedFirstCount++;
+    if (group[0].hp_permille < weakenThresholdPermille) weakenedFirstCount++;
   }
   const weakenFirstRate = weakenedFirstCount / groups.size;
 
@@ -101,7 +101,10 @@ export function parseSqlRows(sqlJson) {
     return parsed;
   }
   if (parsed && Array.isArray(parsed.rows)) return parsed.rows;
-  return [];
+  // Unrecognized shape (neither a row array nor a { rows: [...] } result) — fail loud
+  // rather than silently returning [] which would print a bogus "0 events" report
+  // (reviewer m-3). A legitimately-empty table is a valid `[]`, handled above.
+  throw new Error('playtest-report: unrecognized `spacetime` SQL --json output shape');
 }
 
 // ---------------------------------------------------------------------------
@@ -111,8 +114,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const server = process.env.STDB_SERVER || 'http://127.0.0.1:3000';
   const db = process.env.MR_PLAYTEST_DB || 'monster-realm-playtest';
 
+  // ORDER BY event_id ASC so rows arrive in encounter order — `aggregateReport`'s
+  // per-group `group[0]` = the FIRST recruit attempt (the H1 weaken-first proxy). Without
+  // this the DB row order is undefined and weakenFirstRate would be non-deterministic
+  // (reviewer M-3 / red-team FINDING-1; gated by playtest-report.eval PT-B2-RT-01).
   const query =
-    'SELECT kind, identity, species_id, hp_permille, bait_item_id, success FROM playtest_event';
+    'SELECT kind, identity, species_id, hp_permille, bait_item_id, success FROM playtest_event ORDER BY event_id ASC';
 
   let out;
   try {

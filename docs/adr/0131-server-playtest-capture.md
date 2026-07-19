@@ -123,9 +123,10 @@ the conservative direction for a weaken-first threshold; div-by-zero-safe; clamp
 ### 5. `just playtest-report` — dump-and-aggregate, fail-loud, no PII in output
 
 `scripts/playtest-report.mjs`: an **exported pure** `aggregateReport(rows, {weakenThresholdPermille=500})`
-(no I/O, no globals) computing — over `kind === RecruitAttempt` rows — H1 (`weakenFirstRate` = fraction at
-`hp_permille <= threshold`, plus bait-usage and success rates) and H2 (`recatchRate` from `(identity,
-species_id)` pairs appearing ≥2×). It is **division-by-zero-safe**: an empty row set returns zeroed rates
+(no I/O, no globals) computing — over `kind === RecruitAttempt` rows — H1 (`weakenFirstRate` = fraction of
+`(identity, species_id)` groups whose FIRST attempt has `hp_permille < weakenThresholdPermille` (default 500,
+strictly-below-half; the SQL dump is `ORDER BY event_id ASC` so "first" is deterministic), plus bait-usage
+and success rates) and H2 (`recatchRate` from `(identity, species_id)` pairs appearing ≥2×). It is **division-by-zero-safe**: an empty row set returns zeroed rates
 (NaN-free). The return shape carries **only numbers** — never an identity/hex string (PII firewall,
 RT-PTB2-03). A main-guarded driver dumps the table via `execFileSync('spacetime', ['sql', db, SQL,
 '--json'])` — **array args, no shell string interpolation** of the DB name (no shell/SQL injection,

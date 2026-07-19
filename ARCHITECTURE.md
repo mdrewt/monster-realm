@@ -136,7 +136,7 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 | Module | Owns | Inline-test sibling |
 |--------|------|--------------------|
 | `lib.rs` | module wiring + crate constants + lifecycle reducers (`init`/`sync_content`/`on_disconnect`) | — |
-| `schema.rs` | the data `#[table]` structs + row types (the table count is generated — see `docs/knowledge/`; scheduled tables live beside their reducers: `movement_tick_schedule` in `movement.rs`, `trade_offer_reaper_schedule` in `trading.rs`, `pvp_deadline_schedule` in `pvp.rs`) | — |
+| `schema.rs` | the data `#[table]` structs + row types (the table count is generated — see `docs/knowledge/`; scheduled tables live beside their reducers: `movement_tick_schedule` in `movement.rs`, `trade_offer_reaper_schedule` in `trading.rs`, `pvp_deadline_schedule` in `pvp.rs`, `playtest_reaper_schedule` in `playtest.rs`) | — |
 | `guards.rs` | `log_reject`, `validate_name`, `authorize_move`, `check_party_size`, `check_monster_in_party`, `check_team_coupling`, `require_owner` (the consolidated owner-check preamble), `reject_if_in_battle` (battle-escrowed check for evolve/fuse — ADR-0061), `reject_if_monster_in_trade` / `escrowed_item_qty` / `escrowed_currency_amount` (trade escrow — M15a, ADR-0106), `require_pvp_participant` (M16 — ADR-0109), `is_ranked_pvp` (ranked-battle classification — M17a, ADR-0119), `is_in_ongoing_battle` / `is_in_ongoing_battle_either_role` (both-role ongoing-battle guard, hoisted from `pvp.rs` — M17.5a, ADR-0122), and the `saturating_sub_u64` / `saturating_sub_u32` helpers | `guards_tests.rs` |
 | `marshal.rs` | row ↔ game-core marshaling helpers | `marshal_tests.rs` |
 | `content.rs` | `sync_content_inner` + seeding helpers | inline |
@@ -153,6 +153,7 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 | `pvp.rs` | `challenge_pvp`, `accept_challenge`, `decline_challenge`, `cancel_challenge`, `submit_pvp_action`, `pvp_deadline_reaper` + the `pvp_deadline_schedule` scheduled table (M16 — ADR-0109) | `pvp_tests.rs` |
 | `content_cache.rs` | `LazyLock` hot-path content caches (zone maps, evolutions, dialogue trees, quests, skills, items — no reducers; ADR-0089) | `content_cache_tests.rs` |
 | `ranking.rs` | `get_or_init_profile` + `apply_pvp_rating` (module-write-only `profile` writes — NO reducers by design; rating applied only from the `settle_pvp_battle` funnel in `pvp.rs`; M17a — ADR-0119) | `ranking_tests.rs` |
+| `playtest.rs` | the PRIVATE append-only `playtest_event` capture table + its interval-singleton TTL+cap reaper (`playtest_reaper` scheduler-only reducer + `playtest_reaper_schedule` table, armed by `ensure_playtest_reaper` from init/sync_content); `record_recruit_event` fires from `attempt_recruit` at the H1 decision point; pure seams `hp_permille`/`plan_reap`/`plan_reaper_arm` (server-only observability, NOT a game rule; pt-b2 — ADR-0131; report via `just playtest-report`) | `playtest_tests.rs` |
 
 Behavior is provably unchanged because table/reducer **names are explicit**, so
 regenerated TypeScript bindings and the schema snapshot are byte-identical — the

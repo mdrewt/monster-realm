@@ -169,7 +169,7 @@ fn attempt_recruit_routes_turn_advance_through_game_core() {
 }
 
 // =========================================================================
-// pt-b2 emit-wiring source-scan tests (ADR-0130)
+// pt-b2 emit-wiring source-scan tests (ADR-0131)
 //
 // These parse taming.rs to verify the playtest emit is wired correctly:
 //   RT-PTB2-01: record_recruit_event is called EXACTLY ONCE in attempt_recruit,

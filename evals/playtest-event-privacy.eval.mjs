@@ -1,4 +1,4 @@
-// playtest-event-privacy.eval.mjs — pt-b2 server observability (ADR-0130)
+// playtest-event-privacy.eval.mjs — pt-b2 server observability (ADR-0131)
 //
 // Encodes EARS criteria: the `playtest_event` and `playtest_reaper_schedule`
 // tables are PRIVATE (no `public` keyword), so raw event rows never reach

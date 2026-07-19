@@ -76,8 +76,11 @@ pub(crate) fn plan_reap(
         }
     }
     let mut to_delete = expired;
-    if fresh.len() as u64 > cap {
-        let over = fresh.len() - cap as usize;
+    // `cap as usize` would truncate on a 32-bit target (server-module compiles to
+    // wasm32 → usize is 32-bit); saturate instead so a future large cap is safe.
+    let cap_usize = usize::try_from(cap).unwrap_or(usize::MAX);
+    if fresh.len() > cap_usize {
+        let over = fresh.len() - cap_usize;
         to_delete.extend_from_slice(&fresh[..over]);
     }
     to_delete.sort_unstable();

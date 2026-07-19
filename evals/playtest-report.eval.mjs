@@ -1,4 +1,4 @@
-// playtest-report.eval.mjs — pt-b2 server observability (ADR-0130)
+// playtest-report.eval.mjs — pt-b2 server observability (ADR-0131)
 //
 // Encodes EARS criteria for scripts/playtest-report.mjs and the
 // `just playtest-report` justfile recipe:
@@ -600,6 +600,31 @@ export default async function () {
     };
   }
 
+  // ── 4.7: SQL query includes ORDER BY event_id (PT-B2-RT-01: weakenFirstRate ordering invariant).
+  // aggregateReport uses group[0] as the "first encounter" per (identity, species_id) pair
+  // for weakenFirstRate.  Without ORDER BY event_id ASC the row order returned by spacetime sql
+  // is implementation-defined; group[0] could be the NEWEST not the OLDEST attempt, making
+  // weakenFirstRate non-deterministic and wrong.  The H1 hypothesis measurement depends on
+  // "first encounter" being chronologically the lowest event_id.
+  //
+  // Kills: impl that relies on the DB returning rows in PK order without making it explicit
+  // in the SQL query (non-portable, non-guaranteed behaviour).
+  if (
+    !scriptStripped.includes('ORDER BY event_id') &&
+    !scriptStripped.includes('order by event_id')
+  ) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'scripts/playtest-report.mjs SQL query does not contain "ORDER BY event_id" — ' +
+        'weakenFirstRate uses group[0] as the first encounter per (identity,species_id) pair; ' +
+        'without ORDER BY event_id ASC the row order is implementation-defined and group[0] ' +
+        'may be the newest rather than the oldest attempt, making weakenFirstRate non-deterministic. ' +
+        'Fix: append "ORDER BY event_id ASC" to the SELECT query (PT-B2-RT-01).',
+    };
+  }
+
   // =========================================================================
   // ALL CHECKS PASSED
   // =========================================================================
@@ -611,7 +636,7 @@ export default async function () {
       'All pt-b2 playtest-report criteria satisfied:',
       'aggregateReport pure-fn teeth: empty→zeros (no NaN), fixture-B hand-computed rates (successRate=0.25 baitRate=0.5 weakenFirstRate=2/3 recatchRate=1/3), kind=2 filtered, PII-firewall (no hex identity in return);',
       'justfile: playtest-report recipe present;',
-      'script: exists, non-trivial, exports aggregateReport, uses execFileSync (no shell-string), has process.exit(1), filters kind===1.',
+      'script: exists, non-trivial, exports aggregateReport, uses execFileSync (no shell-string), has process.exit(1), filters kind===1, SQL query has ORDER BY event_id (PT-B2-RT-01).',
     ].join(' '),
   };
 }
