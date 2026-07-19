@@ -1,6 +1,25 @@
+import { execSync } from 'node:child_process';
 import topLevelAwait from 'vite-plugin-top-level-await';
 import wasm from 'vite-plugin-wasm';
 import { coverageConfigDefaults, defineConfig } from 'vitest/config';
+
+// pt-a1 (ADR-0128): capture the build provenance at build time. The git short-SHA +
+// build time are injected as bareword globals (__MR_BUILD_SHA__ / __MR_BUILD_TIME__),
+// read by src/net/buildInfo.ts and surfaced in-client + at window.__mrBuild for the
+// M-playtest-b F9 bug bundle. Both are env-overridable so the deferred hosted-publish
+// path (M-playtest-a2) can stamp its own provenance (e.g. a non-enumerable deploy id).
+// This `define` block is independent of the `test`/`coverage` config below (it does not
+// touch coverage.exclude/include or allowOnly — see the dom-shell/gate-hardening evals).
+function resolveBuildSha(): string {
+  if (process.env.MR_BUILD_SHA) return process.env.MR_BUILD_SHA;
+  try {
+    return execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
+  } catch {
+    return 'unknown';
+  }
+}
+const buildSha = resolveBuildSha();
+const buildTime = process.env.MR_BUILD_TIME ?? new Date().toISOString();
 
 // The client-prediction wasm (built `--target bundler` from client-wasm via
 // wasm-pack) is consumed through these plugins: `vite-plugin-wasm` resolves the
@@ -8,6 +27,12 @@ import { coverageConfigDefaults, defineConfig } from 'vitest/config';
 // module top level. M3 wires the build/plugins + the headless prediction layer
 // (convert + Predictor); M4/M5a binds the live module into the loop (ADR-0036).
 export default defineConfig({
+  // pt-a1 (ADR-0128): build-provenance globals, replaced at build time by Vite's
+  // define (and applied under vitest too, so importing buildInfo.ts never crashes).
+  define: {
+    __MR_BUILD_SHA__: JSON.stringify(buildSha),
+    __MR_BUILD_TIME__: JSON.stringify(buildTime),
+  },
   plugins: [wasm(), topLevelAwait()],
   // The wasm pkg lives at <repo>/client-wasm/pkg (one level above the client
   // root); allow the dev/preview server to serve it (M5a integration).

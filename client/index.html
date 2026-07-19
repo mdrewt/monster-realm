@@ -47,6 +47,13 @@
       <div id="leaderboard-title"></div>
       <ul id="leaderboard-list"></ul>
     </div>
+    <!-- pt-a1 (ADR-0128): build-provenance stamp — populated by main.ts from BUILD_INFO
+         (git sha + build time + mode). Non-intrusive; pins which build a playtest finding
+         came from. Present in production (unlike the DEV-gated debug hooks). -->
+    <div
+      id="build-stamp"
+      style="position:fixed;bottom:2px;right:4px;font:10px/1.2 monospace;color:#667;opacity:0.55;pointer-events:none;z-index:9999"
+    ></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -33,7 +33,9 @@ import {
 } from './convert/convert';
 import { shouldToggleBox } from './inputGuards';
 import type { PvpAction } from './module_bindings/types';
+import { BUILD_INFO, formatBuildStamp } from './net/buildInfo';
 import { connect } from './net/connection';
+import { resolveConnectionConfig } from './net/connectionConfig';
 import { AuthoritativeStore } from './net/store';
 import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
 import { HeldDirections, reissueDir } from './prediction/heldKeys';
@@ -74,8 +76,18 @@ import { reduceErrorMessage } from './ui/statusModel';
 import { buildTradeViewModel } from './ui/tradeModel';
 import type { TradeView } from './ui/tradeView';
 
-const URI = (import.meta.env.VITE_STDB_URI as string | undefined) ?? 'ws://127.0.0.1:3000';
-const DB = (import.meta.env.VITE_STDB_DB as string | undefined) ?? 'monster-realm';
+// pt-a1 (ADR-0128): resolve the SpacetimeDB target at MODULE scope (eager, like the old
+// URI/DB consts) so a misconfigured PRODUCTION build fails loud here — before connect() is
+// reachable — rather than silently writing to the dev-default database `monster-realm`.
+// Kept at module scope on purpose (guarded by main.wiring.test.ts F-3): moving it inside
+// main() could let a try/catch swallow the throw.
+const { uri: URI, db: DB } = resolveConnectionConfig(
+  {
+    uri: import.meta.env.VITE_STDB_URI as string | undefined,
+    db: import.meta.env.VITE_STDB_DB as string | undefined,
+  },
+  import.meta.env.DEV,
+);
 const ZONE_ID = 0;
 
 // Content is single-sourced from game-core via the wasm exports (never duplicated).
@@ -1214,7 +1226,18 @@ if (import.meta.env.DEV) {
   (window as unknown as { __mrPvp: typeof mrPvpHook }).__mrPvp = mrPvpHook;
 }
 
+// pt-a1 (ADR-0128): the build stamp is UNGATED — present in the production playtest build,
+// the deliberate contrast with the DEV-gated debug hooks above. The M-playtest-b F9
+// bug-report bundle reads window.__mrBuild to pin which build a finding came from; it carries
+// only non-secret build metadata (short sha + timestamp), so there is no leak/authz concern.
+(window as unknown as { __mrBuild: typeof BUILD_INFO }).__mrBuild = BUILD_INFO;
+
 async function main(): Promise<void> {
+  // pt-a1 (ADR-0128): surface the build stamp in the non-intrusive corner element (#build-stamp
+  // in index.html). BUILD_INFO is ungated, so this shows in the production playtest build too.
+  const buildStampEl = document.getElementById('build-stamp');
+  if (buildStampEl !== null) buildStampEl.textContent = formatBuildStamp(BUILD_INFO);
+
   const [
     { BoxView: BoxViewClass },
     { BattleView: BattleViewClass },
