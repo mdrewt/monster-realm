@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 97 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 98 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -106,6 +106,7 @@ Generated from 97 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0129](./0129-pt-a2-local-playtest-ops.md) | Local playtest ops: honest release publish + published-module & build-output verification | Accepted | ci-gates, security-authz, tooling-docs | pt-a2 | Playtest-ops recipes publish the default release module to isolated DB `monster-realm-playtest`; verifiers fail loud on dev_reducers in the published module (`describe`, not source) or DEV hooks in the dist; an eval gates the pure checkers. |
 | [0130](./0130-client-observability.md) | Client observability: error overlay + event ring + F9 bug-report bundle (H1/H2/H3 taxonomy) | Accepted | client-ui, tooling-docs, security-authz | pt-b1 | A dismissible self-mounting overlay unifies uncaught/unhandled-rejection/reducer errors into a capped error ring; a capped event ring records the H1/H2/H3 proxy taxonomy (identity-hex only); F9 downloads a network-free JSON bug bundle. |
 | [0131](./0131-server-playtest-capture.md) | Server-side playtest capture: additive `playtest_event` table + interval-singleton reaper + H1 report | Accepted | schema-persistence, security-authz, tooling-docs | pt-b2 | An additive PRIVATE `playtest_event` table, fed by `attempt_recruit` at the H1 decision point and bounded by an interval-singleton TTL+cap reaper, gives the fun-gate its H1/H2 proxy stream via `just playtest-report`. |
+| [0132](./0132-profile-rename-reducer.md) | `set_profile_name` rename reducer + RL-7 module-write-only tooth refinement | Accepted | security-authz, ci-gates | pt-c1 | `set_profile_name` in `ranking.rs` validates via `validate_name` and writes only `player.name` (Option a); the ADR-0125 mirror surfaces it on the leaderboard, and RL-7 refines from zero reducers to one profile-untouching name-setter. |
 
 ## Harness design corpus (H- namespace)
 
@@ -306,6 +307,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0127](./0127-m17.5f-pvp-runtime-coverage-dev-gated-hooks-enum-exhaustiveness.md) — m17.5f — PvP runtime coverage, DEV-gated test hooks, and SDK-boundary enum exhaustiveness (Accepted)
 - [0128](./0128-pt-a1-client-playtest-build-hygiene.md) — pt-a1 — Client-side local-playtest build hygiene: prod-safe connection config + build version stamp (Accepted)
 - [0129](./0129-pt-a2-local-playtest-ops.md) — pt-a2 — Local playtest ops: honest release publish + published-module & build-output verification (Accepted)
+- [0132](./0132-profile-rename-reducer.md) — pt-c1 — `set_profile_name` rename reducer + RL-7 module-write-only tooth refinement (Accepted)
 
 ### tooling-docs
 
@@ -350,6 +352,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0129](./0129-pt-a2-local-playtest-ops.md) — pt-a2 — Local playtest ops: honest release publish + published-module & build-output verification (Accepted)
 - [0130](./0130-client-observability.md) — pt-b1 — Client observability: error overlay + event ring + F9 bug-report bundle (H1/H2/H3 taxonomy) (Accepted)
 - [0131](./0131-server-playtest-capture.md) — pt-b2 — Server-side playtest capture: additive `playtest_event` table + interval-singleton reaper + H1 report (Accepted)
+- [0132](./0132-profile-rename-reducer.md) — pt-c1 — `set_profile_name` rename reducer + RL-7 module-write-only tooth refinement (Accepted)
 
 ### economy-quests
 
