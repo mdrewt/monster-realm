@@ -44,15 +44,8 @@ export interface BugBundle {
   readonly store: KeyStoreSnapshot;
 }
 
-export interface BugBundleInput {
-  readonly build: BundleBuildStamp;
-  readonly identity: string;
-  readonly zoneId: number;
-  readonly capturedAtMs: number;
-  readonly events: readonly PlaytestEvent[];
-  readonly errors: readonly ErrorRecord[];
-  readonly store: KeyStoreSnapshot;
-}
+/** The bundle inputs: everything the assembler stores, minus the fixed `schema` tag it adds. */
+export type BugBundleInput = Omit<BugBundle, 'schema'>;
 
 /** Assemble the bundle: the schema literal + passthrough of every input field (no reshaping). */
 export function buildBugBundle(input: BugBundleInput): BugBundle {

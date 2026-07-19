@@ -634,6 +634,14 @@ Closes the silent phantom-intent desync and the dead-button/blank-reconnect gaps
 - **Shell (`net/connection.ts`):** app-level rebuild-with-backoff — one `scheduleRebuild()` timer handle, shared `handleDrop()` (store.reset → freeze → surface once → schedule), `wireTables` re-registers ALL table handlers per build, ONE `MicrotaskBatcher` across rebuilds, `joinGame` unconditional on apply with exact-match benign `already joined` catch, `pagehide` teardown + `pageshow(persisted)` bfcache inverse (RT-PH-01), getter-backed `conn` (never cache across await points).
 - **Send gating (`main.ts`):** `sendGuarded(where, call)` wraps every non-movement send — frozen short-circuit ("disconnected — try again") plus `.catch` → status line; movement rejections stay silent (prediction repair, M2 §3); `healTargetLocationId` returns `undefined` = SKIP (ends the `locationId: 0` guaranteed-Err); the shop double-spend lock is released on reconnect via `shopView.hide()` (RT-PL-01 — an in-flight buy/sell at drop time never settles).
 
+## Playtest observability (`client/src/ui/`, pt-b1 — ADR-0130)
+
+Client-only observability layer extending the M13.5b error seam for the playtest gate. `game-core`/wasm untouched (determinism per ADR-0003); server `playtest_event` table is pt-b2.
+
+- **Event ring (`ui/eventRing.ts`):** capped FIFO (`EVENT_RING_CAP=256`, oldest-evicted) of the H1/H2/H3 proxy `PlaytestEvent` union (identity-hex/ids/numbers only, no PII); monotonic `tSeq` + injected clock (deterministic under test). 6 core events wired in main.ts (connect/disconnect/zoneChange/battleStart/battleEnd/rankedMatch via dedicated unconditional `onBatchApplied` latches); 8 correlation-heavy variants pre-committed but parked to pt-b1b.
+- **Error surface (`ui/errorRing.ts` + `errorOverlayModel.ts`/`errorOverlayView.ts`):** window `error`/`unhandledrejection` + augmented `reportError` funnel through total `normalizeError` (cap `ERROR_MSG_MAX_LEN=512`, `ERROR_RING_CAP=64`) into a self-mounting (`#mr-error-overlay`), non-blocking (`pointer-events:none`, off the movement-suppression list), `textContent`-only overlay; re-entrancy-guarded.
+- **F9 bug bundle (`ui/bugBundle.ts`, pure):** one keypress → Blob download of `{buildSha, identity, zone, event ring, error ring, non-PII key-store allowlist}`; **no network** (bugBundle.ts imports nothing from `net/*`; bigint-total serializer; CSP-fallback to console), so it works when the connection is the bug.
+
 ## Evolution/Fusion content (`game-core/src/evolution/` + `server-module/src/evolution.rs`, M10a — ADR-0060/0061)
 
 Pure content shape, integrity validator, and pure game-core transform rules for evolution and fusion.
