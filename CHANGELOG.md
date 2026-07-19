@@ -18,6 +18,7 @@
 - Fix stale next-free self-reference + crosswalk in ADR-0060 (#109)
 - Phase B complete — M14 close, ADR-0097, ARCHITECTURE.md M14 section (#142)
 - Backfill canonical ADR headers; LEGACY_TOLERANCE → empty (#161)
+- Ledger/docs reconciliation — module map current, generated-count refs, ADR range via DIGEST, changelog to #192 (#193)
 
 ### Features
 
@@ -119,6 +120,13 @@
 - Trade runtime coverage — __mrTrade hook + full-flow e2e + TR-13 + RT-SEC-02b (ADR-0115) (#187)
 - Eval-infra hardening — append-only snapshot direction, extraction anti-hijack, additive-content coupling (ADR-0116) (#189)
 - Trade SSOT polish — authorize delegation, symmetric escrow, privacy-doc fix, offer TTL reaper (ADR-0117) (#191)
+- Ranked-ladder spine — persistent profile, integer Elo, once-only settle funnel, PvE-path PvP closure (ADR-0119) (#196)
+- Ranked leaderboard client UI — profile subscription, deterministic comparator, KeyL overlay (RL-13/RL-15, ADR-0120) (#199)
+- Both-role ongoing-battle guard SSOT — close side-B PvP damage-laundering exploit (ADR-0122) (#203)
+- Shop buy/sell reject-not-destroy at receiver caps (ADR-0124) (#207)
+- Leaderboard profile.name passive mirror on rating application (ADR-0125) (#209)
+- Battle_challenge TTL reaper — 2min expiry, 4-site disarm, decline-cooldown deferred to M19 (ADR-0126) (#211)
+- PvP runtime coverage + DEV-gated test hooks + SDK enum exhaustiveness (ADR-0127) (#213)
 
 ### Fixes
 
@@ -134,6 +142,9 @@
 - Deflake dialogue 13.5c-5 overlay timeout + recruit R2 heal-guard (#146)
 - Ledger reconciliation + type-rigor micro-fixes (#157)
 - Kill 10 nightly mutants — 6 behavioral tests + 2 equivalent exclusions re-pinned (#174)
+- Triage red mutation gates — kill 5 check_headroom survivors, re-baseline mutate-server cap 180->309 (ADR-0118) (#194)
+- Rule-core contracts, name/party hardening, placeholder-texture teardown (#200)
+- Trade same-item near-cap conservation — debits-before-credits ordering + netted currency headroom (ADR-0123) (#205)
 
 ### M8.8b
 
@@ -205,6 +216,16 @@
 - ADR index — add 0115 row, next-free -> 0116 (#188)
 - Reconcile ADR index — 0116 registered, next free 0117 (#190)
 - Reconcile ADR index — 0117 registered, next free 0118 (#192)
+- Index ADR-0118 + next-free 0119 (nightly-mut-triage reconciliation) (#195)
+- ADR index — add 0119 row, bump next-free to 0120 (#197)
+- ADR index — add 0120 row, next-free to 0122 (0121 reserved by in-flight m17c) (#201)
+- ADR index — add 0121 row, range to 0035–0121 (next-free stays 0122) (#202)
+- ADR index — add 0122 row, range to 0035–0122, next-free 0123 (#204)
+- ADR index — add 0123 row, range to 0035–0123, next-free 0124 (#206)
+- Reconcile ADR index for 0124 (#208)
+- Reconcile ADR index for 0125 (#210)
+- Reconcile ADR index for 0126 (#212)
+- Reconcile ADR index for 0127 (#214)
 
 ### Testing
 
@@ -222,6 +243,7 @@
 - Direct mutation-kill for resolve_enemy_turn + verify combat mutants at zero (#175)
 - PvP eval harness — pvp-action-privacy + pvp-handshake-guards + pvp-deadline-disconnect (ADR-0111) (#178)
 - Deflake dialogue 13.5c-5 — soft-retry slow row-delete propagation (#182)
+- Ranked-ladder evals tail — ranking-security + PvE-exclusion evals + ranked-forfeit e2e (ADR-0121)
 
 ### Wip
 

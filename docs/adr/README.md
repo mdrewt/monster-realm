@@ -99,7 +99,7 @@ prefix `harness adr/0055` to cite the harness design ADR.
 | [0104](./0104-m-infra-d-adr-digest.md) | ADR digest convention: canonical header block + generated drift-gated DIGEST.md for agent-facing corpus compaction | M-infra-d |
 | [0105](./0105-m14.5d-1a-item-row-cure-status.md) | Additive `cure_status` column on `item_row` for data-driven cure items | M14.5d-1a |
 | [0106](./0106-m15a-trading-spine.md) | M15a Trading Spine: escrowed dual-consent trade_offer table, guards, atomic swap engine | M15a |
-| [0107](./0107-m15b-trade-client-ui.md) | Trade client UI overlay: T-key overlay, offer lifecycle client flow, escrow slot rendering | M15b |
+| [0107](./0107-m15b-trade-client-ui.md) | Trade client UI overlay: KeyU overlay, offer lifecycle client flow, escrow slot rendering | M15b |
 | [0108](./0108-m15c-trade-evals.md) | Trade evals tail: escrow/conservation/security static evals + e2e trade overlay wiring | M15c |
 | [0109](./0109-m16a-pvp-spine.md) | M16a PvP battle spine: challenge handshake, secret submit/resolve turns, deadline reaper | M16a |
 | [0110](./0110-m16b-pvp-client-ui.md) | M16b PvP client UI: challenge/accept/turn-submit/forfeit overlay flow | M16b |

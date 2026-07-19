@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: dismiss_dialogue
 slug: reducers/dismiss_dialogue
-updated: 2026-07-18
+updated: 2026-07-19
 tags: [reducer, spacetimedb, npc]
 abstract: "Dismiss the current dialogue (no-op if no active conversation)."
 resource: server-module/src/npc.rs#L375
