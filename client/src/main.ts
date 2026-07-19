@@ -55,9 +55,31 @@ import {
 import type { BattleView } from './ui/battleView';
 import { buildBoxViewModel, buildPartyViewModel, nextFreePartySlot } from './ui/boxModel';
 import type { BoxView } from './ui/boxView';
+// pt-b1 (ADR-0130): F9 bug-bundle observability — session event ring + error ring +
+// pure bundle assembler + error overlay. main.ts emits only the 6 CORE constructors;
+// the 8 parked constructors stay exported in eventRing.ts for pt-b1b.
+import {
+  bugBundleFilename,
+  buildBugBundle,
+  type KeyStoreSnapshot,
+  serializeBugBundle,
+} from './ui/bugBundle';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
 import { buildDialogueViewModel, nearestTalkableNpcId } from './ui/dialogueModel';
 import type { DialogueView } from './ui/dialogueView';
+import { buildErrorOverlayModel } from './ui/errorOverlayModel';
+import { ErrorOverlayView } from './ui/errorOverlayView';
+import { ErrorRing } from './ui/errorRing';
+import {
+  EventRing,
+  isPvpBattle,
+  makeBattleEnd,
+  makeBattleStart,
+  makeConnect,
+  makeDisconnect,
+  makeRankedMatch,
+  makeZoneChange,
+} from './ui/eventRing';
 import { buildEvolutionViewModel } from './ui/evolutionModel';
 import type { EvolutionView } from './ui/evolutionView';
 import { buildHealViewModel, healTargetLocationId } from './ui/healModel';
@@ -122,6 +144,16 @@ let lastCamY = 0;
 let sawFractionalOwnMotion = false;
 
 let identity = '';
+// pt-b1 (ADR-0130): event-emit latches. `activeBattleId` tracks the battle we saw START so
+// battleEnd only fires for a battle we witnessed (guards a stale-terminal-at-first-sight).
+// `lastOwnRating` baselines the ranked-delta detector. BOTH reset to null on
+// reconnect/zone-switch (resetPredictionState) so they re-baseline — the RINGS do NOT reset.
+let activeBattleId: bigint | null = null;
+let lastOwnRating: number | null = null;
+// pt-b1 review (red-team M-1): set on RECONNECT only. On the first post-reconnect batch a
+// still-Ongoing battle that survived the drop must NOT re-emit battleStart (store.reset cleared
+// it + the latch, so it looks "new"). The flag re-baselines that one sighting without emitting.
+let battleReseedPending = false;
 let conn: ReturnType<typeof connect> | undefined;
 let boxView: BoxView | undefined;
 let battleView: BattleView | undefined;
@@ -166,12 +198,47 @@ let statusEl: HTMLElement | undefined;
 function reportError(text: string): void {
   if (statusEl !== undefined) statusEl.textContent = text;
   console.error('[status]', text);
+  // pt-b1 (E-3): unify UI/reducer failures into the error ring so the F9 bundle captures them.
+  pushError('reducer', text);
 }
 
 /** Clear the status line (on reconnect: the frozen-link message is stale, A8). */
 function clearStatus(): void {
   if (statusEl !== undefined) statusEl.textContent = '';
 }
+
+// --- pt-b1 (ADR-0130): F9 bug-bundle observability rings + error overlay -----------
+// The rings are the SESSION buffer (survive reconnect/zone-switch — only the emit
+// latches re-baseline). tMs comes from Date.now() in production; the rings inject the
+// clock so their unit tests stay deterministic. The overlay is mounted in main().
+const eventRing = new EventRing(() => Date.now());
+const errorRing = new ErrorRing(() => Date.now());
+let errorOverlayView: ErrorOverlayView | undefined;
+// Re-entrancy guard: if rendering the overlay itself throws and re-enters pushError,
+// short-circuit so a render fault cannot recurse into a stack overflow.
+let handlingError = false;
+
+/** Record an error into the ring and reflect it in the overlay. TOTAL (never throws to
+ *  the caller): a render/ring fault routes to console.error. */
+function pushError(source: 'uncaught' | 'unhandledrejection' | 'reducer', raw: unknown): void {
+  if (handlingError) return;
+  handlingError = true;
+  try {
+    errorRing.push(source, raw);
+    if (errorOverlayView) {
+      errorOverlayView.render(buildErrorOverlayModel(errorRing.snapshot()));
+      if (!errorOverlayView.visible) errorOverlayView.show();
+    }
+  } catch (e) {
+    console.error('[obs] pushError', e);
+  } finally {
+    handlingError = false;
+  }
+}
+
+// Global capture of uncaught errors + unhandled rejections into the error ring (E-1/E-2).
+window.addEventListener('error', (e) => pushError('uncaught', e.error ?? e.message));
+window.addEventListener('unhandledrejection', (e) => pushError('unhandledrejection', e.reason));
 
 /**
  * Non-movement reducer send guard (ADR-0085 D1 + A1). While the link is frozen it
@@ -214,6 +281,11 @@ function resetPredictionState(): void {
   // holding a position from a prior zone.
   lastCamX = 0;
   lastCamY = 0;
+  // pt-b1 (ADR-0130): re-baseline the event-emit latches (NOT the rings — those are the
+  // session buffer). After a reconnect/zone-switch the old battle is GC'd and the rating
+  // baseline must be re-seeded from the first fresh batch, not carried across.
+  activeBattleId = null;
+  lastOwnRating = null;
 }
 
 // --- M12.5c: idempotent zone-switch (12.5c-1/2/3) --------------------------------
@@ -229,6 +301,8 @@ let zoneSyncFailureCount = 0;
 function switchZone(newZoneId: number): void {
   if (newZoneId === rawMap.zone_id) return;
   try {
+    // pt-b1: capture the origin zone BEFORE the commit overwrites rawMap.
+    const fromZone = rawMap.zone_id;
     const newRawMap = zone_map(newZoneId);
     TileMap.fromRaw(newRawMap); // validate BEFORE any mutation (12.5c-3) — throws on bad data
     renderer?.setMap(newRawMap); // draw BEFORE committing zone state (RT-SZ-01: atomicity)
@@ -236,6 +310,8 @@ function switchZone(newZoneId: number): void {
     rawMap = newRawMap;
     resetPredictionState();
     zoneSyncFailureCount = 0; // success: reset streak
+    // pt-b1: emit the zone-change event ONLY on the success path, after set_active_zone.
+    eventRing.push(makeZoneChange(fromZone, newZoneId));
   } catch (err) {
     console.error('[zone-sync] zone switch to %s failed — keeping current zone', newZoneId, err);
     zoneSyncFailureCount++;
@@ -387,6 +463,21 @@ const KEY_DIR: Readonly<Record<string, WasmDirection>> = {
 };
 window.addEventListener('keydown', (e) => {
   if (e.repeat) return; // ignore OS key-repeat (the frame loop re-issues held keys)
+  // pt-b1 (ADR-0130): F9 downloads the local bug bundle; F8 dismisses the error overlay.
+  // Handled EARLY (before letter-key branches) so they work under any overlay.
+  if (e.code === 'F9') {
+    downloadBugBundle();
+    e.preventDefault();
+    return;
+  }
+  if (e.code === 'F8') {
+    // Only preventDefault when the overlay is actually visible (non-blocking otherwise).
+    if (errorOverlayView?.visible) {
+      errorOverlayView.dismiss();
+      e.preventDefault();
+    }
+    return;
+  }
   if (e.code === 'KeyB') {
     // Guard: don't open the box over an active battle (ADR-0014/0052 exit ordering).
     if (
@@ -992,6 +1083,67 @@ store.onBatchApplied(() => {
   }
 });
 
+// --- pt-b1 (ADR-0130): battleStart / battleEnd emit listener -----------------------
+// Dedicated batch listener (UNCONDITIONAL — not visibility-gated). battleEnd only fires
+// for a battle we saw START (activeBattleId latch): a battle first-seen already terminal
+// has activeBattleId !== its id, so neither branch fires — guarding a stale-terminal login.
+store.onBatchApplied(() => {
+  if (identity === '') return;
+  try {
+    const latest = store.latestPlayerBattle(identity);
+    // red-team M-1: on the first post-reconnect batch, re-baseline a surviving Ongoing
+    // battle WITHOUT emitting (store.reset cleared the latch so it would look "new").
+    if (battleReseedPending) {
+      battleReseedPending = false;
+      if (latest && latest.outcome === 'Ongoing') {
+        activeBattleId = latest.battleId;
+        return;
+      }
+    }
+    if (!latest) return;
+    // reviewer H-1: wild battles carry the all-zero WILD_IDENTITY (!== player) but no owned
+    // opponent party — identity-inequality alone mislabels them PvP. Use the party-guarded rule.
+    const isPvp = isPvpBattle(latest);
+    if (latest.outcome === 'Ongoing' && latest.battleId !== activeBattleId) {
+      activeBattleId = latest.battleId;
+      eventRing.push(makeBattleStart(latest.battleId.toString(), isPvp));
+    } else if (latest.outcome !== 'Ongoing' && activeBattleId === latest.battleId) {
+      activeBattleId = null;
+      eventRing.push(makeBattleEnd(latest.battleId.toString(), latest.outcome, latest.turnNumber));
+    }
+  } catch (err) {
+    console.error('[obs] battle', err);
+  }
+});
+
+// --- pt-b1 (ADR-0130): rankedMatch emit listener -----------------------------------
+// Dedicated batch listener (its OWN, not folded into the visibility-gated leaderboard
+// listener above). Baselines lastOwnRating on first sight, then emits a delta event on
+// each rating change with the current battle id (or '' if none).
+store.onBatchApplied(() => {
+  if (identity === '') return;
+  try {
+    const prof = store.profile(identity);
+    if (!prof) return;
+    if (lastOwnRating === null) {
+      lastOwnRating = prof.rating;
+      return;
+    }
+    if (prof.rating !== lastOwnRating) {
+      const delta = prof.rating - lastOwnRating;
+      lastOwnRating = prof.rating;
+      // red-team M-2: latestPlayerBattle() returns the highest-id battle of ANY kind, which
+      // may be a wild encounter — attach the id ONLY if it is genuinely a PvP battle, else ''
+      // (a wrong battleId corrupts the H3 correlation; the delta is the load-bearing signal).
+      const b = store.latestPlayerBattle(identity);
+      const battleId = b && isPvpBattle(b) ? b.battleId.toString() : '';
+      eventRing.push(makeRankedMatch(battleId, delta));
+    }
+  } catch (err) {
+    console.error('[obs] ranked', err);
+  }
+});
+
 // --- M12d: dialogue choice click handler -----------------------------------------
 // Reads data-choice-idx from the clicked button and calls advance_dialogue.
 document.addEventListener('click', (e) => {
@@ -1231,6 +1383,59 @@ if (import.meta.env.DEV) {
 // bug-report bundle reads window.__mrBuild to pin which build a finding came from; it carries
 // only non-secret build metadata (short sha + timestamp), so there is no leak/authz concern.
 (window as unknown as { __mrBuild: typeof BUILD_INFO }).__mrBuild = BUILD_INFO;
+
+// F9-BUNDLE-BEGIN (pt-b1, ADR-0130): client-only bug bundle — NO network (works when the connection is the bug).
+/** Project the store into the no-PII KeyStoreSnapshot — reads only ids/counts, never a name. */
+function projectKeyStore(): KeyStoreSnapshot {
+  const prof = identity !== '' ? store.profile(identity) : undefined;
+  return {
+    playerCount: store.playerCount,
+    ownEntityId: identity !== '' ? (store.ownEntityId(identity)?.toString() ?? null) : null,
+    currentZoneId: rawMap.zone_id,
+    ongoingBattleId: (() => {
+      const b = identity !== '' ? store.ongoingBattle(identity) : undefined;
+      return b ? b.battleId.toString() : null;
+    })(),
+    ownRating: prof?.rating ?? null,
+    ownWins: prof?.wins ?? null,
+    ownLosses: prof?.losses ?? null,
+    ownMonsterCount: identity !== '' ? store.ownMonsters(identity).length : 0,
+    inventoryCount: identity !== '' ? store.ownInventory(identity).length : 0,
+  };
+}
+function downloadBugBundle(): void {
+  // reviewer L-1: one timestamp for both the bundle body and the filename (they must match).
+  const capturedAtMs = Date.now();
+  const bundle = buildBugBundle({
+    build: BUILD_INFO,
+    identity,
+    zoneId: rawMap.zone_id,
+    capturedAtMs,
+    events: eventRing.snapshot(),
+    errors: errorRing.snapshot(),
+    store: projectKeyStore(),
+  });
+  // red-team L-1: serialize INSIDE the try so a (bigint-total, but defense-in-depth) serialize
+  // fault also routes to the console fallback rather than escaping the keydown handler.
+  let json = '';
+  try {
+    json = serializeBugBundle(bundle);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = bugBundleFilename(BUILD_INFO.sha, capturedAtMs);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch {
+    // CSP/sandbox/serialize fallback: never silently no-op. Log whatever we have.
+    console.log('[bug-bundle]', json || bundle);
+    reportError('bug bundle: download blocked — copy from console');
+  }
+}
+// F9-BUNDLE-END
 
 async function main(): Promise<void> {
   // pt-a1 (ADR-0128): surface the build stamp in the non-intrusive corner element (#build-stamp
@@ -1488,6 +1693,10 @@ async function main(): Promise<void> {
   document.body.appendChild(status);
   statusEl = status;
 
+  // pt-b1 (ADR-0130): mount the F9 error overlay (self-mounting, starts hidden,
+  // non-blocking pointer-events:none). pushError renders into it on the first error.
+  errorOverlayView = new ErrorOverlayView();
+
   conn = connect({
     uri: URI,
     db: DB,
@@ -1495,6 +1704,8 @@ async function main(): Promise<void> {
     store,
     onReady: (id) => {
       identity = id;
+      // pt-b1: record the connect edge (identity-hex is the allowed field, U-3).
+      eventRing.push(makeConnect(identity));
       resolveReady();
     },
     onReconnect: () => {
@@ -1503,6 +1714,9 @@ async function main(): Promise<void> {
       // Zone state is corrected by the reconcile listener's state-based check on
       // the first post-reconnect batch (12.5c-1 — no special zone logic needed here).
       resetPredictionState();
+      // pt-b1 (red-team M-1): re-baseline a surviving Ongoing battle on the next batch
+      // instead of re-emitting a spurious battleStart for it.
+      battleReseedPending = true;
       // RT-PL-01: a buy/sell in flight at drop time never settles (SDK — no settle
       // on drop), so the shop's double-spend lock would stay held forever. hide()
       // resets it (shopView.ts is outside this slice's touch-set; the reset rides
@@ -1518,6 +1732,8 @@ async function main(): Promise<void> {
       leaderboardView?.hide();
       // The "connection lost — reconnecting…" status line is now stale (ADR-0085 A8).
       clearStatus();
+      // pt-b1: record the reconnect edge as a fresh connect (retained module identity).
+      eventRing.push(makeConnect(identity));
     },
     // 12.5c-1: onOwnWarp delegates to switchZone (idempotent — no-op if rawMap
     // already matches). Fires on live-warp character onUpdate (lower latency path);
@@ -1529,7 +1745,12 @@ async function main(): Promise<void> {
     },
     // M13.5b (ADR-0085 D1): lifecycle failures become user-visible via the status
     // line (reportError also console.errors); pre-M13.5b this was console-only.
-    onError: (where, message) => reportError(`${where}: ${message}`),
+    onError: (where, message) => {
+      reportError(`${where}: ${message}`);
+      // pt-b1 (B-1): emit disconnect ONLY on the link-level edge — not for other `where`
+      // values (which fire for non-link failures too).
+      if (where === 'link') eventRing.push(makeDisconnect());
+    },
   });
 
   // 12.5c-4: frame loop is wrapped in try/catch so a wasm/predictor throw does not

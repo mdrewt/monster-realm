@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 95 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 96 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -104,6 +104,7 @@ Generated from 95 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0127](./0127-m17.5f-pvp-runtime-coverage-dev-gated-hooks-enum-exhaustiveness.md) | PvP runtime coverage, DEV-gated test hooks, and SDK-boundary enum exhaustiveness | Accepted | client-ui, ci-gates | m17.5f | DEV-gate `window.__game`, `window.__mrTrade`, `window.__mrPvp` test hooks; add PvP two-context e2e with turn-advance + interlock evals; add SDK-enum-exhaustiveness eval + fail-soft narrowTag boundary check. |
 | [0128](./0128-pt-a1-client-playtest-build-hygiene.md) | Client-side local-playtest build hygiene: prod-safe connection config + build version stamp | Accepted | client-ui, security-authz, ci-gates | pt-a1 | Production client build fails loud on the dev-default DB `monster-realm` (DB not URI); every build carries an ungated git-SHA/time `BUILD_INFO` (`window.__mrBuild`) for the F9 bundle; ADR-0127 DEV hooks absent from the minified build. |
 | [0129](./0129-pt-a2-local-playtest-ops.md) | Local playtest ops: honest release publish + published-module & build-output verification | Accepted | ci-gates, security-authz, tooling-docs | pt-a2 | Playtest-ops recipes publish the default release module to isolated DB `monster-realm-playtest`; verifiers fail loud on dev_reducers in the published module (`describe`, not source) or DEV hooks in the dist; an eval gates the pure checkers. |
+| [0130](./0130-client-observability.md) | Client observability: error overlay + event ring + F9 bug-report bundle (H1/H2/H3 taxonomy) | Accepted | client-ui, tooling-docs, security-authz | pt-b1 | A dismissible self-mounting overlay unifies uncaught/unhandled-rejection/reducer errors into a capped error ring; a capped event ring records the H1/H2/H3 proxy taxonomy (identity-hex only); F9 downloads a network-free JSON bug bundle. |
 
 ## Harness design corpus (H- namespace)
 
@@ -266,6 +267,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0120](./0120-m17b-leaderboard-client-ui.md) — m17b — Ranked leaderboard client UI: pure-subscription profile mirror, deterministic comparator, fully-covered DOM shell (Accepted)
 - [0127](./0127-m17.5f-pvp-runtime-coverage-dev-gated-hooks-enum-exhaustiveness.md) — m17.5f — PvP runtime coverage, DEV-gated test hooks, and SDK-boundary enum exhaustiveness (Accepted)
 - [0128](./0128-pt-a1-client-playtest-build-hygiene.md) — pt-a1 — Client-side local-playtest build hygiene: prod-safe connection config + build version stamp (Accepted)
+- [0130](./0130-client-observability.md) — pt-b1 — Client observability: error overlay + event ring + F9 bug-report bundle (H1/H2/H3 taxonomy) (Accepted)
 
 ### ci-gates
 
@@ -319,6 +321,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0097](./0097-m14-close-phase-b-complete.md) — m14f (doc-keeper close; doc-only, no production code) — M14 Close: Phase B Complete (Accepted)
 - [0104](./0104-m-infra-d-adr-digest.md) — m-infra-d (infra slice, insertable any time after M14.5) — M-infra-d: ADR digest convention and agent-facing corpus compaction (Accepted)
 - [0129](./0129-pt-a2-local-playtest-ops.md) — pt-a2 — Local playtest ops: honest release publish + published-module & build-output verification (Accepted)
+- [0130](./0130-client-observability.md) — pt-b1 — Client observability: error overlay + event ring + F9 bug-report bundle (H1/H2/H3 taxonomy) (Accepted)
 
 ### security-authz
 
@@ -342,6 +345,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0124](./0124-shop-receiver-cap-headroom.md) — m17.5c — 0124 — Shop receiver-cap headroom: reject-not-destroy on buy/sell (Accepted)
 - [0128](./0128-pt-a1-client-playtest-build-hygiene.md) — pt-a1 — Client-side local-playtest build hygiene: prod-safe connection config + build version stamp (Accepted)
 - [0129](./0129-pt-a2-local-playtest-ops.md) — pt-a2 — Local playtest ops: honest release publish + published-module & build-output verification (Accepted)
+- [0130](./0130-client-observability.md) — pt-b1 — Client observability: error overlay + event ring + F9 bug-report bundle (H1/H2/H3 taxonomy) (Accepted)
 
 ### economy-quests
 
