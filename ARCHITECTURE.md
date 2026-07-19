@@ -92,14 +92,17 @@ generate`, drift-gated by the bindings-drift eval) and the render/DOM-only
 imperative shells (`main.ts`, `net/connection.ts`, `render/world.ts`,
 `render/characterView.ts`, `render/placeholderAssets.ts`, `ui/battleView.ts`,
 `ui/boxView.ts`, `ui/raisingView.ts`, `ui/evolutionView.ts`, `ui/dialogueView.ts`,
-`ui/questLogView.ts`, `ui/healView.ts`, `ui/shopView.ts`) — their substantive decision logic lives in the tested cores, and
+`ui/questLogView.ts`, `ui/healView.ts`, `ui/shopView.ts`, `ui/tradeView.ts`,
+`ui/pvpView.ts`) — their substantive decision logic lives in the tested cores, and
 they are validated by the two-window e2e (`e2e/golden.spec.ts`, `e2e/recruit.spec.ts`)
 via `window.__game()`, never by vitest units, so vitest-v8 would always score them
 0% (DOM/Pixi/live-SDK, not unit-runnable). The threshold was ratcheted 25 → **96** in
 m13.5a after a post-exclusion re-measure of 99.35% lines (ADR-0050 amendment A1), and no
 unit-coverable logic module is excluded, so the gate stays a real regression backstop
 rather than a number dominated by non-unit code; the exclusion set itself is
-exact-set-guarded by `dom-shell-coverage-exclusion.eval.mjs`. **Known follow-up:** a little inline
+exact-set-guarded by `dom-shell-coverage-exclusion.eval.mjs`. (`ui/leaderboardView.ts`
+is deliberately NOT excluded — it is 100% happy-dom unit-covered instead, ADR-0120 D3.)
+**Known follow-up:** a little inline
 glue logic still lives in the integration shells (`main.ts`'s Escape terminal-dismiss
 latch + party-slot sentinel routing, `battleView`'s bait-id parse, `boxView`'s
 nickname-changed guard) — e2e-validated today; extracting it into pure cores so it is
@@ -133,12 +136,12 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 |--------|------|--------------------|
 | `lib.rs` | module wiring + crate constants + lifecycle reducers (`init`/`sync_content`/`on_disconnect`) | — |
 | `schema.rs` | the data `#[table]` structs + row types (the table count is generated — see `docs/knowledge/`; scheduled tables live beside their reducers: `movement_tick_schedule` in `movement.rs`, `trade_offer_reaper_schedule` in `trading.rs`, `pvp_deadline_schedule` in `pvp.rs`) | — |
-| `guards.rs` | `log_reject`, `validate_name`, `authorize_move`, `check_party_size`, `check_monster_in_party`, `check_team_coupling`, `require_owner` (the consolidated owner-check preamble), `reject_if_in_battle` (battle-escrowed check for evolve/fuse — ADR-0061), `reject_if_monster_in_trade` / `escrowed_item_qty` / `escrowed_currency_amount` (trade escrow — M15a, ADR-0106), `require_pvp_participant` (M16 — ADR-0109), and the `saturating_sub_u64` / `saturating_sub_u32` helpers | `guards_tests.rs` |
+| `guards.rs` | `log_reject`, `validate_name`, `authorize_move`, `check_party_size`, `check_monster_in_party`, `check_team_coupling`, `require_owner` (the consolidated owner-check preamble), `reject_if_in_battle` (battle-escrowed check for evolve/fuse — ADR-0061), `reject_if_monster_in_trade` / `escrowed_item_qty` / `escrowed_currency_amount` (trade escrow — M15a, ADR-0106), `require_pvp_participant` (M16 — ADR-0109), `is_ranked_pvp` (ranked-battle classification — M17a, ADR-0119), `is_in_ongoing_battle` / `is_in_ongoing_battle_either_role` (both-role ongoing-battle guard, hoisted from `pvp.rs` — M17.5a, ADR-0122), and the `saturating_sub_u64` / `saturating_sub_u32` helpers | `guards_tests.rs` |
 | `marshal.rs` | row ↔ game-core marshaling helpers | `marshal_tests.rs` |
 | `content.rs` | `sync_content_inner` + seeding helpers | inline |
 | `movement.rs` | `join_game`, `enqueue_move`, `set_move`, `clear_queue`, `movement_tick` (including NPC wander drive via `npc_decide`), npc entity integration + the `movement_tick_schedule` scheduled table | inline |
 | `monster_mgmt.rs` | `set_nickname`, `set_party_slot` | inline |
-| `battle.rs` | `start_battle`, `start_wild_battle`, `submit_attack`, `swap_active`, `flee`, `begin_encounter`, `lead_party`, `write_back_*` (the largest module — the battle cluster) | `battle_tests.rs` |
+| `battle.rs` | `start_battle`, `start_wild_battle`, `submit_attack`, `use_battle_item` (M14e — ADR-0096), `swap_active`, `flee`, `begin_encounter`, `lead_party`, `write_back_*` (the largest module — the battle cluster) | `battle_tests.rs` |
 | `taming.rs` | `attempt_recruit`, `grant_bait` | `taming_tests.rs` |
 | `inventory.rs` | `grant_item`, `consume_one` (single item-mutation surface — ADR-0059) | — |
 | `raising.rs` | `care`, `train`, `evaluate_heal`, `heal_party` (raising + heal cooldown — ADR-0058/0059) | `raising_tests.rs` |
@@ -224,6 +227,14 @@ enforces required frontmatter (`type`, `title`, `slug`, `updated`, `tags`,
 `abstract`) on every concept; the `knowledge-bundle-conformance` eval additionally
 runs the drift check with proof-of-teeth fixtures (ADR-0010). Recipes: `just
 knowledge` regenerates; `just knowledge-check` drift-checks.
+
+**Generated changelog (m17.5g):** `CHANGELOG.md` is likewise a generated ledger —
+`git-cliff` renders it from committed Conventional Commit history (`just changelog`
+is the sole writer; never hand-edit). Policy since m17.5g: **regenerate at every
+milestone close** (the close/reconciliation chore runs `just changelog`), so the
+ledger can lag by at most the open milestone — the tenth review found it 8 merges
+behind. A slice's own squash line lands at the NEXT regen: git-cliff reads committed
+master history, so regenerate at the branch point, never after `wip:` commits.
 
 Research library (`docs/research/*.md`) carries `type: Research Note` (additive;
 validated by the vendored `research-lint.mjs`; `INDEX.md` regenerated with `type`
@@ -578,7 +589,7 @@ Currency primitive: one `u64` balance per player, PRIVATE owner-scoped table, si
 - **Private `player_wallet` table (ADR-0081):** `(owner_identity: Identity [PK], balance: u64)`, **no `public` attribute** — non-owner subscriptions are impossible (SpacetimeDB omits private tables from table accessor codegen; only the type definition is generated for reducer argument serialization). Mirrors ADR-0015 must-never-leak requirement.
 - **Server wrappers (`server-module/src/economy.rs`):** `grant_currency(ctx, owner, amount)` (upsert; 0-amount no-op, no phantom row) and `spend_currency(ctx, owner, amount) -> Result<(), String>` (find-then-update; 0-amount returns `Ok(())`; missing wallet or insufficient balance returns `Err`). Both are `pub(crate)` — no public reducer surface yet (M13b+ adds shops/sinks).
 - **Single-surface discipline:** every economy mutation routes through these two helpers. The `currency-integrity` eval (6 proof-of-teeth criteria) mechanically blocks direct `.balance +=`, unchecked subtract, `PlayerWallet {}` literals, and `player_wallet()` accessor calls outside `economy.rs`/`schema.rs`.
-- **Residuals:** starting balance (0) is content-tunable via `grant_currency` in a quest/join reducer; shops, sinks, and XP→currency conversion come in M13b+; per-owner transport RLS deferred to M16 (same pattern as inventory, ADR-0046).
+- **Residuals:** starting balance (0) is content-tunable via `grant_currency` in a quest/join reducer; shops, sinks, and XP→currency conversion come in M13b+; per-owner transport RLS deferred until per-row RLS lands (same pattern as inventory, ADR-0046).
 
 ## Economy shops (`game-core/content/shops/` + `server-module/src/economy.rs`, M13b — ADR-0082)
 
@@ -1045,7 +1056,7 @@ not seeded). ADR next-free = 0107.
 
 **M16.5c** (trade client completion — ADR-0114, PR #185) complete: three ninth-review residuals closed. (1) KeyQ/KeyH/KeyG overlay guards were already fixed in M16b review pass; new e2e test `trade open: G/Q/H keys do not open overlays` proves proof-of-teeth for the reverse direction (open trade via KeyU, press G/Q/H, assert only `#trade-overlay` is visible). (2) `StoreTradeOffer.status` narrowed from `string` to `'Pending' | 'ConfirmedByCounterparty'` literal union (`TradeStatus` type); `deriveActionsAndLabel` rewritten as exhaustive switch — a future server variant is a TypeScript TS2366 compile error. (3) `TradeView` render hygiene: `#lastRenderKey` tracks offer-state changes and clears `#feedbackEl` on transition (stale "Trade accepted!" across statuses/sessions eliminated); `#renderActions()` sets `btn.disabled = this.#pending` at button creation and `finally()` re-enables live buttons via `querySelectorAll` (not orphaned closure reference — closes mid-flight render UI deadlock). 4 new `tradeView.test.ts` unit tests (TV-1..TV-4); `TM-12a` added; 943 client tests. ADR next-free = 0115.
 
-**M16.5d** (trade runtime coverage — ADR-0115, PR #TBD) complete: write-side test-hook dispatch + full round-trip e2e + escrow-guard tail. `window.__mrTrade` test hook (mirrors `window.__game` pattern) exposes `proposeTrade` / `respondTrade` / `confirmTrade` / `cancelTrade` reducers + `allTradeOffers()` / `allPlayers()` queries; all BigInt fields serialized as strings for Playwright boundary. Two-context Playwright e2e `client/e2e/trade-full.spec.ts` (m16.5d-1: hook exists; m16.5d-2/3/4: full propose→respond→confirm flow with monster conservation assertion). `trade-escrow-guards.eval.mjs` extended: TR-13 guard site added for `attempt_recruit`/`escrowed_item_qty` (12 guard sites total); `bodyHasGuard` hardened with RT-SEC-02b string-literal/comment stripping to prevent false positives from log messages containing guard names. All 62 evals pass. M16.5 Ninth-review residuals CLOSED. ADR next-free = 0116.
+**M16.5d** (trade runtime coverage — ADR-0115, PR #187) complete: write-side test-hook dispatch + full round-trip e2e + escrow-guard tail. `window.__mrTrade` test hook (mirrors `window.__game` pattern) exposes `proposeTrade` / `respondTrade` / `confirmTrade` / `cancelTrade` reducers + `allTradeOffers()` / `allPlayers()` queries; all BigInt fields serialized as strings for Playwright boundary. Two-context Playwright e2e `client/e2e/trade-full.spec.ts` (m16.5d-1: hook exists; m16.5d-2/3/4: full propose→respond→confirm flow with monster conservation assertion). `trade-escrow-guards.eval.mjs` extended: TR-13 guard site added for `attempt_recruit`/`escrowed_item_qty` (12 guard sites total); `bodyHasGuard` hardened with RT-SEC-02b string-literal/comment stripping to prevent false positives from log messages containing guard names. All 62 evals pass. M16.5 Ninth-review residuals CLOSED. ADR next-free = 0116.
 
 **M16.5e** (eval-infra hardening — ADR-0116) complete, evals-only (no production Rust/TS): three gate-infrastructure gaps closed. (1) `spacetime-type-snapshot` gains `checkAppendOnly` — a git-history *directional* check (prev committed baseline via `merge-base HEAD origin/master`, `HEAD~1→HEAD` transition when self-identical) so a bad re-baseline (mid-insert/reorder/removal/kind-flip — a positional BSATN wire break) is caught even when source and baseline are edited together; skip is fail-open-LOUD only when git/prev-baseline is unresolvable (D2). (2) `trade-escrow-guards` extraction hardened: `orderAndFilterRustEntries` (sorted, `*_tests.rs` excluded) + whole-source comment-then-string strip in `extractFunctionBody`, so a string literal containing `pub fn sell(` (real occurrence in `economy_tests.rs`) can never hijack the anchor; string-strip escape branch matches backslash-newline (line-continuation string in content.rs otherwise inverts quote pairing). (3) `bsatn-compat-smoke` criterion 7: `checkAdditiveColumnCoupling` — every `Option<…>` column on a content-synced table must have its field-assignment in a `StructName {` row literal in content.rs (upsert AND clear-and-reinsert shapes; in-place-mutation exemption for update-only no-literal tables — the `monster`/`monster_pub` recompute shape); vacuity guard + 4 anchors (`ability`, `train_stat`, `cure_status`, `cost_item_id`). Teeth A-1..A-12, B-0..B-3, C-1..C-6+C-W written RED-first by the tester; 61/61 evals green ×5 runs. ADR next-free = 0117.
 
