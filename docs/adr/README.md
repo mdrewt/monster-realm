@@ -10,7 +10,7 @@ Architecture Decision Records live in **two locations**; check both.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0127`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0128`**.
 
 **ADR numbering collision note:** the harness spec corpus also contains design
 ADRs numbered `0055`–`0057`; these cover the *same topics* as this project's
@@ -119,6 +119,7 @@ prefix `harness adr/0055` to cite the harness design ADR.
 | [0124](./0124-shop-receiver-cap-headroom.md) | m17.5c shop receiver-cap headroom: reject-not-destroy on buy/sell — factor check_item_headroom/check_currency_headroom out of check_headroom (SSOT per axis), enforce before spend/consume | m17.5c |
 | [0125](./0125-profile-name-passive-mirror.md) | m17.5d leaderboard profile.name passive mirror on rating application: refresh profile.name from live player row in get_or_init_profile Some-arm (in-memory, no extra write); apply_pvp_rating update spreads persist the fresh name each rated game (amends ADR-0119) | m17.5d |
 | [0126](./0126-battle-challenge-ttl-reaper.md) | m17.5e battle_challenge TTL reaper: private one-shot schedule table in pvp.rs, CHALLENGE_TTL_MS=120000 + is_challenge_stale in game-core combat::pvp, disarm at all 4 challenge-deletion sites; decline-cooldown deferred to M19 | m17.5e |
+| [0127](./0127-m17.5f-pvp-runtime-coverage-dev-gated-hooks-enum-exhaustiveness.md) | m17.5f PvP runtime e2e coverage + DEV-gated __game/__mrTrade/__mrPvp test hooks (amends ADR-0115, reverses its ungated-hooks decision): pvp-full + trade-interlock specs; sdk-enum-exhaustiveness eval + HANDLED_ENUM_VARIANTS registry + fail-soft narrowTag at rowConvert cast | m17.5f |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
