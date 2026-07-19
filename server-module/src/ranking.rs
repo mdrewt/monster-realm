@@ -4,8 +4,12 @@
 //! seam (`get_or_init_profile`) and the single rating-application entry point
 //! (`apply_pvp_rating`, called ONLY from the `settle_pvp_battle` funnel in
 //! pvp.rs — RL-10). The `profile` table is module-write-only (ADR-0119 D6):
-//! this module declares NO reducers, so no client-callable path can write
-//! rating/wins/losses. Rating arithmetic lives in `game_core::ranking` (the
+//! this module declares exactly one reducer, `set_profile_name` (ADR-0132),
+//! which writes only `player.name`; `profile` rating/wins/losses stay
+//! module-write-only via `apply_pvp_rating` (no client-callable path writes
+//! them). The rename surfaces on the leaderboard on the caller's next rated
+//! game via the ADR-0125 passive mirror. Rating arithmetic lives in
+//! `game_core::ranking` (the
 //! functional core); this shell only reads and writes rows. Private helpers
 //! `refresh_profile_name` + `live_player_name` implement the passive
 //! display-name mirror (ADR-0125) and are exercised directly by
@@ -14,6 +18,7 @@
 //! This file name extends the canonical `touches:` vocabulary fixed by
 //! ADR-0056 (M8.9) — keep it stable.
 
+use crate::guards::{log_reject, validate_name};
 use crate::schema::{player, profile, Battle, Profile};
 use game_core::BattleOutcome;
 use spacetimedb::{Identity, ReducerContext, Table};
@@ -115,6 +120,36 @@ pub(crate) fn apply_pvp_rating(ctx: &ReducerContext, battle: &Battle) {
         losses: loser.losses.saturating_add(1),
         ..loser
     });
+}
+
+/// Rename the caller's display name (ADR-0132 D1). The single client-callable
+/// reducer in this module — it is **profile-untouching**: it validates the name
+/// with `guards::validate_name` (the exact SSOT rules as `join_game`,
+/// reject-not-clamp) and writes ONLY `player.name`, the display-name SSOT. The
+/// rename surfaces on the public leaderboard on the caller's next rated game via
+/// the ADR-0125 passive mirror (`live_player_name` → `apply_pvp_rating`'s update
+/// spreads) — no direct `profile` write here, so the `profile`-write-only
+/// invariant (ADR-0119 D6) is preserved.
+///
+/// Rejects `"not joined"` when the caller has no `player` row; rejects with the
+/// validation error (no write) when the name is invalid. The `match` form (not a
+/// `let Some(..) = ctx.db.player()` split-binding) mirrors `get_or_init_profile`
+/// and keeps the RL-2 split-binding pins green.
+#[spacetimedb::reducer]
+pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
+    let me = ctx.sender;
+    let mut player = match ctx.db.player().identity().find(me) {
+        Some(p) => p,
+        None => {
+            let e = "not joined".to_string();
+            log_reject("set_profile_name", me, &e);
+            return Err(e);
+        }
+    };
+    let validated = validate_name(&name).inspect_err(|e| log_reject("set_profile_name", me, e))?;
+    player.name = validated;
+    ctx.db.player().identity().update(player);
+    Ok(())
 }
 
 #[cfg(test)]
