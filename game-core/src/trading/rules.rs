@@ -805,14 +805,14 @@ mod tests {
         );
     }
 
-    /// FINDING-1 (HIGH): duplicate item_id within one side of an offer is not rejected
-    /// by validate_proposal. An initiator can list {item_id:5, qty:3} twice, causing
-    /// the escrow guard (escrowed_item_qty) to see only 3 escrowed while 6 will be
-    /// consumed at confirm time — allowing an item-count bypass if the stack has ≥6
-    /// but the guard only holds 3.
+    /// FINDING-1 (HIGH — FIXED in M15a, ADR-0106): duplicate item_id within one side
+    /// of an offer was not rejected by validate_proposal. An initiator could list
+    /// {item_id:5, qty:3} twice, causing the escrow guard (escrowed_item_qty) to see
+    /// only 3 escrowed while 6 would be consumed at confirm time — an item-count
+    /// bypass if the stack had ≥6 but the guard only held 3.
     ///
-    /// This test should FAIL against the current code (no dedup check on item_ids)
-    /// and PASS after validate_proposal rejects duplicate item_ids per side.
+    /// validate_proposal now rejects duplicate item_ids per side
+    /// (TradeError::DuplicateItem); this test pins that guard as a regression test.
     ///
     /// kills: impl that allows duplicate item_id entries in initiator_items /
     ///        counterparty_items without rejecting.
@@ -849,22 +849,18 @@ mod tests {
         );
     }
 
-    /// FINDING-2 (MEDIUM): counterparty_currency is not balance-checked at propose
-    /// time. The initiator may name any counterparty_currency value regardless of the
-    /// counterparty's actual wallet. The only backstop is spend_currency at confirm
-    /// time, but between propose and confirm the counterparty's currency is not locked
-    /// by an explicit check — only the escrowed_currency_amount guard in spend paths
-    /// prevents double-spend of what the counterparty DOES have.
+    /// FINDING-2 (MEDIUM — FIXED in M16.5f, ADR-0117): counterparty_currency was not
+    /// balance-checked at propose time. The initiator could name any
+    /// counterparty_currency value regardless of the counterparty's actual wallet;
+    /// the only backstop was spend_currency at confirm time, so if Bob had 0 currency
+    /// Alice could name counterparty_currency=999999, confirm_trade would Err, and
+    /// Alice could DoS Bob's trade slot (a MEDIUM-severity griefing vector).
     ///
-    /// Concretely: if Bob has 0 currency, Alice can name counterparty_currency=999999
-    /// in the offer. respond_trade(accepted=true) succeeds (no currency check there).
-    /// confirm_trade then calls spend_currency(Bob, 999999) which returns Err —
-    /// rolling back the whole transaction. So assets are NOT stolen, but Alice can
-    /// DoS Bob's slot (Bob's has_active_trade=true blocks Bob from OTHER trades).
-    ///
-    /// This test documents the absence of a propose-time counterparty currency check.
-    /// A fix would validate counterparty_currency <= counterparty's current balance at
-    /// propose time. For now this is a MEDIUM-severity griefing vector.
+    /// The propose_trade reducer now balance-checks BOTH parties at propose time
+    /// (server-module/src/trading.rs, ADR-0117), so an inflated counterparty_currency
+    /// is rejected before a row is inserted. This test still documents that the PURE
+    /// layer, by design, cannot see the live wallet — validate_proposal takes no DB
+    /// access, and the enforcement lives in the reducer shell.
     ///
     /// kills: impl that silently allows inflated counterparty_currency at propose time.
     #[test]
