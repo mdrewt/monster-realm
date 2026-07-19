@@ -6,8 +6,9 @@
 //! invariants live in one place (recruit bait now; training food, shop, quest
 //! reward later). Item counts are PUBLIC / world-readable — no transport RLS
 //! (no `client_visibility_filter` in this toolchain, ADR-0040/0046); owner-scoping
-//! is a client subscription filter only; per-owner transport RLS is the M16
-//! residual. The row carries ONLY (owner, item_id, count) — no gene/seed field.
+//! is a client subscription filter only; per-owner transport RLS is deferred
+//! until per-row RLS lands. The row carries ONLY (owner, item_id, count) — no
+//! gene/seed field.
 //!
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.

@@ -321,8 +321,9 @@ pub struct BattleWild {
 /// Player item inventory (M8d, ADR-0046). PUBLIC / world-readable counts: there
 /// is NO transport RLS (no `client_visibility_filter` exists in this toolchain —
 /// ADR-0040/0046), so every client can read every owner's counts. Owner-scoping
-/// is only a CLIENT subscription filter; per-owner transport RLS is tracked for
-/// M16. Carries ONLY ownership + count — NO gene/seed fields; individuality stays
+/// is only a CLIENT subscription filter; per-owner transport RLS is deferred
+/// until per-row RLS lands. Carries ONLY ownership + count — NO gene/seed
+/// fields; individuality stays
 /// in the private `monster` table. Single-stack invariant: at most ONE row per
 /// `(owner_identity, item_id)`, enforced by routing every insert through
 /// `grant_item` (the `inventory-single-stack` parity eval, ADR-0054) — there is
@@ -383,7 +384,7 @@ pub struct PlayerDialogueStateRow {
 }
 
 /// Active quest progress. Public (quest log is world-readable like `inventory`).
-/// Per-owner transport RLS deferred to M16.
+/// Per-owner transport RLS deferred until per-row RLS lands.
 #[derive(Clone)]
 #[spacetimedb::table(name = player_quest, public)]
 pub struct PlayerQuestRow {

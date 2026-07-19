@@ -5,7 +5,7 @@ slug: tables/battle_challenge
 updated: 2026-07-18
 tags: [schema, spacetimedb, public]
 abstract: "A pending PvP challenge from one player to another (M16a, ADR-0109). PUBLIC so both the challenger and the target can s…"
-resource: server-module/src/schema.rs#L568
+resource: server-module/src/schema.rs#L569
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

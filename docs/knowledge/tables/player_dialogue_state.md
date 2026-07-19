@@ -5,7 +5,7 @@ slug: tables/player_dialogue_state
 updated: 2026-07-18
 tags: [schema, spacetimedb, private]
 abstract: "PRIVATE per-player dialogue state: flags + done-quest history. Must-never-leak: flags gate content branches (ADR-0015, …"
-resource: server-module/src/schema.rs#L377
+resource: server-module/src/schema.rs#L378
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: private
 ---
