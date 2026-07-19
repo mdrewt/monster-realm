@@ -44,12 +44,14 @@ export const DEV_HOOK_FINGERPRINTS = [
 
 // findDevHooks(bundleText, fingerprints) -> string[]
 //
-// Returns the fingerprints present in the bundle. Whitespace is collapsed to
-// single spaces first, so `.__mrPvp  =` still matches the `.__mrPvp =`
-// fingerprint.
+// Returns the fingerprints present in the bundle (exact substring match). The
+// fingerprint set carries BOTH the no-space (`.__mrPvp=`) and single-space
+// (`.__mrPvp =`) binding forms — the only shapes a real minified/pretty vite
+// build emits — so no whitespace normalization is needed. (Normalizing would
+// collapse a newline between `.__mrPvp` and `=` and risk matching a split that
+// no bundler emits — a false-positive vector we deliberately avoid.)
 export function findDevHooks(bundleText, fingerprints) {
-  const normalized = bundleText.split(/\s+/).join(' ');
-  return fingerprints.filter((fp) => normalized.includes(fp));
+  return fingerprints.filter((fp) => bundleText.includes(fp));
 }
 
 // ---------------------------------------------------------------------------

@@ -55,7 +55,16 @@ export function parseReducerNames(describeOutput) {
       'parseReducerNames: zero reducers — introspection may have failed or the JSON path is wrong',
     );
   }
-  return reducers.map((r) => r.name).filter(Boolean);
+  const names = reducers.map((r) => r.name).filter(Boolean);
+  if (names.length === 0) {
+    // Reducer entries exist but none has a usable `name` — the JSON `name` field
+    // may have been renamed by a spacetime version bump. Fail loud rather than
+    // return an empty list (which findForbiddenReducers would read as "clean").
+    throw new Error(
+      'parseReducerNames: reducer entries present but all lack a name field — the describe --json schema may have changed',
+    );
+  }
+  return names;
 }
 
 // findForbiddenReducers(reducerNames, forbidden) -> string[]

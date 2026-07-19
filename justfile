@@ -206,8 +206,10 @@ adr-digest-check:
 playtest-up:
     #!/usr/bin/env bash
     set -euo pipefail
-    STDB_SERVER="${STDB_SERVER:-http://127.0.0.1:3000}"
-    MR_PLAYTEST_DB="${MR_PLAYTEST_DB:-monster-realm-playtest}"
+    # Export so a nested `just playtest-verify-*` (a child process) inherits the
+    # SAME resolved DB/server rather than re-deriving its own default.
+    export STDB_SERVER="${STDB_SERVER:-http://127.0.0.1:3000}"
+    export MR_PLAYTEST_DB="${MR_PLAYTEST_DB:-monster-realm-playtest}"
     # Reject-not-clamp: never publish to the dev-default DB. Case-insensitive
     # fold so MONSTER-REALM cannot bypass the guard.
     if [ "${MR_PLAYTEST_DB,,}" = "monster-realm" ]; then
@@ -225,18 +227,24 @@ playtest-up:
         echo "playtest-up: sync_content call exited non-zero: $SYNC_OUT" >&2
         exit 1
     fi
-    if echo "$SYNC_OUT" | grep -qi "err\|rejected\|unauthorized"; then
+    if echo "$SYNC_OUT" | grep -qi "rejected\|unauthorized"; then
         echo "playtest-up: sync_content was rejected (check owner identity): $SYNC_OUT" >&2
         exit 1
     fi
     just playtest-verify-release
-    cd client && npm run build
-    cd - >/dev/null
+    ( cd client && npm run build )
     just playtest-verify-build
     # Background the production preview under a TMPDIR PID file so playtest-down
-    # can stop it; then print the served URL.
-    ( cd client && client/node_modules/.bin/vite preview ) & echo $! > "${TMPDIR:-/tmp}/mr-playtest-preview.pid"
-    echo "playtest-up: serving production build (see vite preview URL above); DB=$MR_PLAYTEST_DB server=$STDB_SERVER"
+    # can stop it. `exec` makes the subshell BECOME vite, so $! is vite's real
+    # PID (clean teardown, no orphaned child); `disown` detaches it from job
+    # control so the recipe shell exiting cannot SIGHUP it. The vite binary path
+    # is relative to the client dir (the subshell already cd'd into it — an
+    # absolute `client/node_modules/...` here would wrongly become client/client).
+    ( cd client && exec ./node_modules/.bin/vite preview ) &
+    PREVIEW_PID=$!
+    disown "$PREVIEW_PID" 2>/dev/null || true
+    echo "$PREVIEW_PID" > "${TMPDIR:-/tmp}/mr-playtest-preview.pid"
+    echo "playtest-up: serving the production build on the vite preview URL printed above; DB=$MR_PLAYTEST_DB server=$STDB_SERVER"
 
 # Stop the served client preview. The module + data PERSIST (wipe with
 # playtest-wipe).
@@ -265,8 +273,10 @@ playtest-verify-build:
 playtest-wipe:
     #!/usr/bin/env bash
     set -euo pipefail
-    STDB_SERVER="${STDB_SERVER:-http://127.0.0.1:3000}"
-    MR_PLAYTEST_DB="${MR_PLAYTEST_DB:-monster-realm-playtest}"
+    # Export so a nested `just playtest-verify-*` (a child process) inherits the
+    # SAME resolved DB/server rather than re-deriving its own default.
+    export STDB_SERVER="${STDB_SERVER:-http://127.0.0.1:3000}"
+    export MR_PLAYTEST_DB="${MR_PLAYTEST_DB:-monster-realm-playtest}"
     if [ "${MR_PLAYTEST_DB,,}" = "monster-realm" ]; then
         echo "playtest-wipe: refusing to wipe the dev-default DB 'monster-realm' — set MR_PLAYTEST_DB to an isolated name" >&2
         exit 1
@@ -278,7 +288,7 @@ playtest-wipe:
         echo "playtest-wipe: sync_content call exited non-zero: $SYNC_OUT" >&2
         exit 1
     fi
-    if echo "$SYNC_OUT" | grep -qi "err\|rejected\|unauthorized"; then
+    if echo "$SYNC_OUT" | grep -qi "rejected\|unauthorized"; then
         echo "playtest-wipe: sync_content was rejected (check owner identity): $SYNC_OUT" >&2
         exit 1
     fi

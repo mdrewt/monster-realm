@@ -84,11 +84,17 @@ end-to-end nightly `playtest-smoke` (the pt-a2 analogue of the `smoke-republish`
 
 ## Consequences / residual risks
 
-- **Fingerprint residual (accepted):** a `defineProperty` with a *renamed* receiver
-  (`defineProperty(w,"__mrPvp"`) is not caught by the `defineProperty(window,` form. It is not emitted by
-  the current build (ADR-0128 §D3 — Rollup DCE strips the whole `if (false)` block) and is backstopped by
-  pt-a1's source-level `main.wiring.test.ts` (which catches the source `window.__x` form regardless of how
-  the bundler emits). If a future build tool changes DCE behavior, extend the fingerprint set + a tooth.
+- **Fingerprint residual (accepted, bounded):** the fingerprint set matches the two shapes a real
+  vite/terser build emits — the assignment binding (`.__x=` / `.__x =`, any receiver) and
+  `defineProperty(window,"__x"`. Alternate shapes are deliberately NOT matched: a *renamed*-receiver
+  defineProperty (`defineProperty(w,"__x"`), a *space-after-comma* defineProperty
+  (`defineProperty(window, "__x"`), bracket assignment (`window["__x"]=`), `globalThis[...]`, and
+  `Reflect.set(window,...)`. None is emitted by the default rollup+terser pipeline (terser emits no spaces
+  in argument lists and no bracket/Reflect indirection for a plain `window.__x = fn`), and the whole
+  `if (import.meta.env.DEV)` block is DCE-eliminated before minification regardless (ADR-0128 §D3). All of
+  them are additionally backstopped by pt-a1's source-level `main.wiring.test.ts`, which asserts the
+  source `window.__x` hooks stay inside the DEV gate regardless of how the bundler would emit them. If a
+  future build-tool change makes any of these shapes reachable, extend the fingerprint set + add a tooth.
 - **Guard-scope residual (accepted):** the DB guard protects only the literal dev-default
   `monster-realm`; other mistaken DB names are the operator's responsibility.
 - **Semgrep:** `execFileSync` (array args, no shell) is the safest child-process form; the SAST gate is

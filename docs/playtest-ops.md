@@ -53,6 +53,11 @@ Kills the backgrounded `vite preview` process (via the PID file) and removes the
 PID file. The published **module and its data PERSIST** — use `just playtest-wipe`
 for a fresh state.
 
+> Run `playtest-down` before re-running `playtest-up` while a preview is already
+> serving: a second `playtest-up` overwrites the PID file, leaving the first
+> preview un-stoppable via `playtest-down` (kill it by port/`pkill vite` if that
+> happens).
+
 ## `just playtest-verify-release` — dev-reducers-absent proof
 
 `node scripts/verify-release-reducers.mjs` introspects the PUBLISHED module with
