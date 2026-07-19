@@ -294,4 +294,13 @@ playtest-wipe:
     fi
     just playtest-verify-release
 
+# Aggregate the playtest_event table into the GDD §4 H1/H2 proxy report (pt-b2,
+# ADR-0131). NOT in `just ci` (live-DB dependent). Env: STDB_SERVER, MR_PLAYTEST_DB.
+playtest-report:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export STDB_SERVER="${STDB_SERVER:-http://127.0.0.1:3000}"
+    export MR_PLAYTEST_DB="${MR_PLAYTEST_DB:-monster-realm-playtest}"
+    node scripts/playtest-report.mjs
+
 ci: lint typecheck test eval security wasm client-typecheck client-test

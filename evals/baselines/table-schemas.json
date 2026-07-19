@@ -353,5 +353,13 @@
       "scheduled_at": "ScheduleAt",
       "challenge_id": "u64"
     }
+  },
+  "playtest_event": {
+    "pk": "event_id",
+    "columns": { "event_id": "u64", "identity": "Identity", "kind": "u16", "created_at_ms": "i64", "battle_id": "u64", "species_id": "u32", "hp_permille": "u16", "bait_item_id": "u32", "success": "bool" }
+  },
+  "playtest_reaper_schedule": {
+    "pk": "id",
+    "columns": { "id": "u64", "scheduled_at": "ScheduleAt" }
   }
 }

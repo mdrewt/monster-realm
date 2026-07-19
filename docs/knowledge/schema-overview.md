@@ -4,7 +4,7 @@ title: Monster Realm Schema Overview
 slug: schema-overview
 updated: 2026-07-19
 tags: [schema, spacetimedb, overview]
-abstract: "32-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 40 reducers."
+abstract: "34-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 43 reducers."
 source: scripts/okf-export.mjs@server-module/src/
 ---
 
@@ -33,7 +33,7 @@ source: scripts/okf-export.mjs@server-module/src/
 - [type_relation_row](tables/type_relation_row.md)
 - [zone_def](tables/zone_def.md)
 
-### Private (12)
+### Private (14)
 
 - [battle_action](tables/battle_action.md)
 - [battle_challenge_reaper_schedule](tables/battle_challenge_reaper_schedule.md)
@@ -45,10 +45,12 @@ source: scripts/okf-export.mjs@server-module/src/
 - [player_conversation](tables/player_conversation.md)
 - [player_dialogue_state](tables/player_dialogue_state.md)
 - [player_wallet](tables/player_wallet.md)
+- [playtest_event](tables/playtest_event.md)
+- [playtest_reaper_schedule](tables/playtest_reaper_schedule.md)
 - [pvp_deadline_schedule](tables/pvp_deadline_schedule.md)
 - [trade_offer_reaper_schedule](tables/trade_offer_reaper_schedule.md)
 
-## Reducers (40)
+## Reducers (43)
 
 - [accept_challenge](reducers/accept_challenge.md)
 - [advance_dialogue](reducers/advance_dialogue.md)
@@ -73,6 +75,9 @@ source: scripts/okf-export.mjs@server-module/src/
 - [join_game](reducers/join_game.md)
 - [movement_tick](reducers/movement_tick.md)
 - [on_disconnect](reducers/on_disconnect.md)
+- [playtest_reaper](reducers/playtest_reaper.md)
+- [playtest_reaper](reducers/playtest_reaper.md)
+- [playtest_reaper](reducers/playtest_reaper.md)
 - [propose_trade](reducers/propose_trade.md)
 - [pvp_deadline_reaper](reducers/pvp_deadline_reaper.md)
 - [respond_trade](reducers/respond_trade.md)

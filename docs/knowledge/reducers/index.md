@@ -28,6 +28,9 @@
 | reducers/join_game | SpacetimeDB Reducer | join_game | Join: one `player` + one `character` at the spawn + one starter `monster` (idemp |
 | reducers/movement_tick | SpacetimeDB Reducer | movement_tick | Per-zone, server-paced tick: drain ≤1 move per character in THIS zone, compute t |
 | reducers/on_disconnect | SpacetimeDB Reducer | on_disconnect | SpacetimeDB reducer on_disconnect. |
+| reducers/playtest_reaper | SpacetimeDB Reducer | playtest_reaper | SpacetimeDB reducer playtest_reaper. |
+| reducers/playtest_reaper | SpacetimeDB Reducer | playtest_reaper | SpacetimeDB reducer playtest_reaper. |
+| reducers/playtest_reaper | SpacetimeDB Reducer | playtest_reaper | SpacetimeDB reducer playtest_reaper. |
 | reducers/propose_trade | SpacetimeDB Reducer | propose_trade | Propose a trade: escrow the listed assets and await the counterparty's response. |
 | reducers/pvp_deadline_reaper | SpacetimeDB Reducer | pvp_deadline_reaper | Scheduled reaper: forfeit the non-submitting side when the turn deadline fires.  |
 | reducers/respond_trade | SpacetimeDB Reducer | respond_trade | Counterparty responds to a Pending offer. Role + status authorization is delegat |

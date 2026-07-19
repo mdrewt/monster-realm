@@ -133,6 +133,18 @@ pub fn attempt_recruit(
     let roll: u32 = ctx.random();
     let success = game_core::attempt_recruit(chance, roll);
 
+    // pt-b2 (ADR-0131): H1 playtest capture — single site after the roll, before the
+    // branch, so every completed attempt is recorded exactly once with the PRE-roll HP.
+    crate::playtest::record_recruit_event(
+        ctx,
+        me,
+        battle_id,
+        bw.wild_species_id,
+        crate::playtest::hp_permille(wild_current_hp, wild_max_hp),
+        bait_item_id,
+        success,
+    );
+
     if success {
         // Rebuild the EXACT wild from the stored seed at its level (full HP).
         let species_row = ctx
