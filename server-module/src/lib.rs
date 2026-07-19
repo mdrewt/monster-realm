@@ -31,6 +31,7 @@ mod marshal;
 mod monster_mgmt;
 mod movement;
 mod npc;
+mod playtest;
 mod pvp;
 mod raising;
 mod ranking;
@@ -142,6 +143,7 @@ pub fn init(ctx: &ReducerContext) {
     });
     sync_content_inner(ctx).expect("content seeding failed on init");
     ensure_zone_schedules(ctx);
+    crate::playtest::ensure_playtest_reaper(ctx);
     log::info!(
         "{{\"evt\":\"init\",\"zones\":{}}}",
         ctx.db.zone_def().iter().count()
@@ -174,6 +176,7 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
     }
     sync_content_inner(ctx)?;
     ensure_zone_schedules(ctx);
+    crate::playtest::ensure_playtest_reaper(ctx);
     Ok(())
 }
 

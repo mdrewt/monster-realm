@@ -405,6 +405,25 @@ export const PlayerWallet = __t.object("PlayerWallet", {
 });
 export type PlayerWallet = __Infer<typeof PlayerWallet>;
 
+export const PlaytestEvent = __t.object("PlaytestEvent", {
+  eventId: __t.u64(),
+  identity: __t.identity(),
+  kind: __t.u16(),
+  createdAtMs: __t.i64(),
+  battleId: __t.u64(),
+  speciesId: __t.u32(),
+  hpPermille: __t.u16(),
+  baitItemId: __t.u32(),
+  success: __t.bool(),
+});
+export type PlaytestEvent = __Infer<typeof PlaytestEvent>;
+
+export const PlaytestReaperSchedule = __t.object("PlaytestReaperSchedule", {
+  id: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+});
+export type PlaytestReaperSchedule = __Infer<typeof PlaytestReaperSchedule>;
+
 export const Profile = __t.object("Profile", {
   identity: __t.identity(),
   name: __t.string(),

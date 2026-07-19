@@ -128,8 +128,8 @@ fn strip_rust_strings(src: &str) -> String {
 /// Strip Rust block comments (`/* ... */`) and line comments (`// ...`).
 /// Replaces comment content with spaces (preserves byte-count for line numbers).
 ///
-/// Run AFTER `strip_rust_strings` so `/*` / `//` inside a string literal is
-/// already blanked before this pass.
+/// Run AFTER `strip_rust_strings` so a block-comment or line-comment opener
+/// inside a string literal is already blanked before this pass.
 fn strip_rust_comments(src: &str) -> String {
     let bytes = src.as_bytes();
     let len = bytes.len();
@@ -848,7 +848,7 @@ fn scan_playtest_kind_no_spacetime_type_no_as_u16() {
     // Needle: `derive(...SpacetimeType...)` near `PlaytestKind`.
     // Approach: check that the squashed source does not contain the token
     // `SpacetimeType` anywhere (playtest.rs has no other reason to use it).
-    let st_needle = concat!("SpacetimeType");
+    let st_needle = "SpacetimeType";
     assert!(
         !squashed.contains(st_needle),
         "PT-B2-SCAN-03 FAIL: playtest.rs contains `SpacetimeType` — this must NOT \
@@ -860,7 +860,7 @@ fn scan_playtest_kind_no_spacetime_type_no_as_u16() {
     // Extract the code() body for a narrower check.
     let code_body = extract_fn_body(&stripped, "code")
         .expect("PT-B2-SCAN-03: `code` function not found in playtest.rs");
-    let as_u16_needle = concat!("as u16");
+    let as_u16_needle = "as u16";
     assert!(
         !squash_ws(code_body).contains(&squash_ws(as_u16_needle)),
         "PT-B2-SCAN-03 FAIL: `code()` body contains `as u16` cast. \

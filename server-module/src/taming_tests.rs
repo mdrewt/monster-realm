@@ -440,7 +440,7 @@ fn rt_ptb2_01c_record_recruit_event_passes_correct_args() {
     // Split at "hp_permille" since that's the fn name.
     let hp_needle = concat!("hp_permille(", "wild_current_hp,wild_max_hp)");
     // Needle: bait_item_id is passed (not hardcoded None).
-    let bait_needle = concat!("bait_item_id");
+    let bait_needle = "bait_item_id";
 
     // All three must appear in the squashed taming.rs source — we don't narrow
     // to the body here because the body extraction is already tested in (a)/(b).

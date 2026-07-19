@@ -7,7 +7,7 @@
 **Amends:** —
 **Subsystems:** schema-persistence, security-authz, tooling-docs
 
-**Decision:** An additive PRIVATE append-only `playtest_event` table, fed by the existing `attempt_recruit` reducer at the H1 decision point and bounded by an interval-singleton TTL+cap reaper, gives the fun-gate its server-authoritative H1 (weaken-first) + H2 (re-catch) proxy stream, aggregated by `just playtest-report`.
+**Decision:** An additive PRIVATE `playtest_event` table, fed by `attempt_recruit` at the H1 decision point and bounded by an interval-singleton TTL+cap reaper, gives the fun-gate its H1/H2 proxy stream via `just playtest-report`.
 
 ---
 
