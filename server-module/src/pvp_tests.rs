@@ -1082,7 +1082,9 @@ fn m17a_rl10_settle_pvp_battle_ordering() {
 //
 // The file is read at runtime so a missing file produces a clear red failure.
 // Once the file exists, four invariants are checked:
-//   (i)  NO #[spacetimedb::reducer] attribute AND no `reducer as` alias binding.
+//   (i)  EXACTLY ONE #[spacetimedb::reducer] attribute (the set_profile_name
+//        name-setter, ADR-0132) AND no `reducer as` alias binding, AND the
+//        single reducer `set_profile_name` is profile-untouching.
 //   (ii) Contains get_or_init_profile and compute_rating_update; exactly 1
 //        compute_rating_update call.
 //   (iii) Contains INITIAL_RATING and does NOT contain the literal `1000` outside
@@ -1095,8 +1097,18 @@ fn m17a_rl10_settle_pvp_battle_ordering() {
 /// RL-7 (e): server-module/src/ranking.rs must exist and satisfy module invariants.
 ///
 /// Teeth:
-///   (i)  No #[spacetimedb::reducer] — ranking.rs is module-write-only (ADR-0119 D6).
-///        Also no `reducer as ` alias binding (documented evasion).
+///   (i)   EXACTLY ONE #[spacetimedb::reducer] — ranking.rs declares one
+///         client-callable reducer, the profile-untouching `set_profile_name`
+///         name-setter (ADR-0132 refines ADR-0119 D6's "zero reducers" to
+///         "exactly one profile-untouching name-setter"; the security property
+///         "no client-callable reducer writes profile rating/W/L" is preserved
+///         because the one reducer touches no profile table at all).
+///   (i-a) The single reducer is named `set_profile_name`.
+///   (i-b) No `reducer as ` alias binding (documented evasion).
+///   (i-c) The `set_profile_name` body is profile-untouching: it contains none
+///         of `profile().identity()`, `profile().insert`, `get_or_init_profile(`,
+///         `refresh_profile_name(`, `= ctx.db.profile()` (allowlist name-only
+///         write; ADR-0132 D3, red-team F1/F2/F3).
 ///   (ii) get_or_init_profile and compute_rating_update present; exactly 1 call.
 ///   (iii) INITIAL_RATING const present; literal `1000` absent (SSOT — the constant
 ///         is the single source of truth, not the integer literal).
@@ -1114,15 +1126,70 @@ fn m17a_rl7_server_ranking_module_invariants() {
 
     let stripped = strip_rust_comments(&src);
 
-    // (i) No reducer attribute.
+    // (i) EXACTLY ONE reducer attribute (the set_profile_name name-setter).
+    // ADR-0132 refines ADR-0119 D6's original "zero reducers" tooth: the
+    // name-setter lives IN ranking.rs (eval A2 couples all profile access here;
+    // the declared touch-set is ranking.rs) rather than in a separate reducer
+    // file. The module-write-only security property is preserved — the one
+    // allowed reducer is profile-untouching (checked by (i-c) below).
     let reducer_attr = concat!("#[spacetimedb::", "reducer");
-    assert!(
-        !stripped.contains(reducer_attr),
-        "m17a-RL-7 (i) FAIL: server-module/src/ranking.rs must NOT contain `{}`. \
-         ranking.rs is module-write-only — no client-callable reducer may write profile \
-         (ADR-0119 D6). A future name-setter belongs in a separate reducer file.",
-        reducer_attr
+    let reducer_attr_count = stripped.matches(reducer_attr).count();
+    assert_eq!(
+        reducer_attr_count, 1,
+        "m17a-RL-7 (i) FAIL: server-module/src/ranking.rs must contain EXACTLY 1 `{}` — \
+         the single client-callable reducer is the profile-untouching `set_profile_name` \
+         name-setter (ADR-0132 refines ADR-0119 D6). Found {} occurrence(s). \
+         0 = the reducer is missing (RED pre-impl); >1 = an extra reducer was added, \
+         which would need its own review (the module-write-only property forbids any \
+         reducer that writes profile rating/W/L).",
+        reducer_attr, reducer_attr_count
     );
+
+    // (i-a) The single reducer is named `set_profile_name`.
+    // Split "set_profile" across concat! fragments to avoid self-match when
+    // pvp_tests.rs is accidentally scanned by the never-deleted repo scan.
+    let name_setter_fn = concat!("fn set_profile", "_name(");
+    assert!(
+        stripped.contains(name_setter_fn),
+        "m17a-RL-7 (i-a) FAIL: server-module/src/ranking.rs must contain `{}` — \
+         the single reducer must be the name-setter `set_profile_name` (ADR-0132 D1). \
+         RED pre-impl: the reducer does not yet exist.",
+        name_setter_fn
+    );
+
+    // (i-c) The `set_profile_name` body is PROFILE-UNTOUCHING (allowlist name-only
+    // write; ADR-0132 D3, red-team F1/F2/F3). Extract the exact brace-bounded body
+    // and assert it contains NONE of the profile needles. Needles are split via
+    // concat! to prevent self-match. This is the core safety property: the one
+    // allowed reducer must not read or write the profile table at all — no eager
+    // profile update (F1/F2), no leaderboard-row injection via get_or_init_profile
+    // /profile().insert (F3), no split-binding profile accessor.
+    let name_setter_body =
+        extract_pvp_fn_body(&stripped, "set_profile_name").unwrap_or_else(|| {
+            panic!(
+                "m17a-RL-7 (i-c): `set_profile_name` function not found in ranking.rs — \
+             the reducer must exist for the profile-untouching body check to be \
+             meaningful (ADR-0132 D1). RED pre-impl: the reducer does not yet exist."
+            )
+        });
+    for profile_needle in &[
+        concat!("profile().", "identity()"),
+        concat!("profile().", "insert"),
+        concat!("get_or_init", "_profile("),
+        concat!("refresh_profile", "_name("),
+        concat!("= ctx.db.", "profile()"),
+    ] {
+        assert!(
+            !name_setter_body.contains(profile_needle),
+            "m17a-RL-7 (i-c) FAIL: the body of `set_profile_name` in ranking.rs contains \
+             `{}` — the name-setter must be PROFILE-UNTOUCHING (ADR-0132 D3). It writes \
+             only `player.name` and relies on the ADR-0125 passive mirror to surface the \
+             rename on the leaderboard at the next rated game. Any profile read/write here \
+             either adds a third profile update (breaks the ==2 pin) or injects a \
+             rating-1000 leaderboard row for an unrated player (red-team F1/F2/F3).",
+            profile_needle
+        );
+    }
 
     // (i-b) No `reducer as` alias binding (documented evasion — ADR-0119 D6).
     let reducer_alias = concat!("reducer", " as ");
