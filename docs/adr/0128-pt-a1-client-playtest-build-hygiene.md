@@ -141,10 +141,10 @@ documented here.
 - **`BUILD_INFO` fallback branch is unit-untestable** (F-4). The `typeof __MR_BUILD_SHA__ !== 'undefined'
   ? … : 'unknown'` branch is dead under vitest (the `define` always fires, so the token is a string
   literal). The `'unknown'` path is instead covered by `buildInfoFrom('unknown', …)` at the formatter
-  level plus the empirical build; the module-const init expression's fallback is not branch-tested. A
-  `test.define` block is also added to `vite.config.ts` so the injected globals are deterministic under
-  vitest. `typeof` on an undeclared global is safe in JS (returns `'undefined'`, never throws), so the
-  import is robust even if the define did not fire.
+  level plus the empirical build; the module-const init expression's fallback is not branch-tested. The
+  top-level `define` also applies under vitest (verified empirically — importing `buildInfo.ts` never
+  crashes and the suite is green), and `typeof` on an undeclared global is safe in JS (returns
+  `'undefined'`, never throws), so the import is robust even if the define did not fire.
 - **Hosted-build SHA enumeration** (F-6). `window.__mrBuild.sha` is a short git SHA. Harmless for the
   local-only playtest (the tester is the developer). When M-playtest-a2 (hosted) ships against a
   still-private repo, the publish path SHOULD set `MR_BUILD_SHA` to a non-enumerable identifier (a
@@ -152,4 +152,25 @@ documented here.
 - **Build-time non-determinism in tests** (F-7). `new Date().toISOString()` in the `vite.config.ts`
   define differs per run, so `BUILD_INFO.builtAt` is non-deterministic. Tests MUST assert via
   `buildInfoFrom(sha, builtAt, isDev)` with literal params (never import `BUILD_INFO` for a value
-  assertion); `MR_BUILD_TIME` can pin it if a future integration test needs a stable stamp.
+  assertion); `MR_BUILD_TIME` can pin it if a future integration test needs a stable stamp. The exact
+  `BuildInfo` shape `{sha, builtAt, mode}` is pinned by `buildInfo.test.ts` B1e/B1f `toEqual` — so a
+  future added field (which could leak via the ungated `window.__mrBuild`) fails those tests first
+  (closes the impl reviewer's H-1 concern about the ungated surface).
+
+The impl red-team pass (26 attacks) confirmed all F-1..F-7 closed and found two LOW residuals — both
+documented-not-fixed because there is **no untrusted-input path** in either topology (local-only: the
+operator is the developer; hosted M-playtest-a2: the build env is the deploy pipeline, not testers):
+
+- **Zero-width-char evasion of the DB guard** (LOW-1). `String.prototype.trim()` does not strip
+  `U+200B`/`U+200C`/`U+200D`/`U+FEFF` (Unicode Cf, not whitespace), so a `VITE_STDB_DB` of
+  `monster-realm` with a trailing zero-width space (`U+200B`) passes the dev-default guard. Exploitable ONLY if
+  SpacetimeDB normalizes the name by stripping the char (unconfirmed; a strict STDB rejects it =
+  fail-loud anyway) AND an adversary controls the build env (they don't, per above). The guard already
+  rejects all realistic vectors (unset/empty/whitespace/newline/tab/NBSP/case/null). Fix, if ever
+  needed: strip the `U+200B`..`U+200D` and `U+FEFF` characters before the guard, or reject non-ASCII DB names (a policy call
+  deferred — could false-reject a future i18n name). Slated for pt-a2's mechanical release-verification
+  if it lands a DB-name policy.
+- **F-5 source-scan single-DEV-block assumption** (LOW-2). The `main.wiring.test.ts` F-5 gate anchors on
+  the FIRST `if (import.meta.env.DEV)`; a future SECOND DEV block with an ungated hook between the two
+  could evade the before-gate slice. Non-exploitable today (exactly one DEV block); flagged for the next
+  editor's awareness (visible in the test comments).
