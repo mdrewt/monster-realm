@@ -140,7 +140,10 @@ describe('resolveConnectionConfig: dev mode — never throws, applies dev defaul
 
   it('dev with explicit uri uses that uri, falls back db to default', () => {
     // WRONG IMPL KILLED: an impl that ignores explicit uri in dev mode.
+    // Intentional insecure localhost WebSocket dev/playtest fixture, not a production endpoint (ADR-0128).
+    // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
     expect(resolveConnectionConfig({ uri: 'ws://0.0.0.0:3000' }, true)).toEqual({
+      // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
       uri: 'ws://0.0.0.0:3000',
       db: DEV_DB,
     });
@@ -156,9 +159,12 @@ describe('resolveConnectionConfig: dev mode — never throws, applies dev defaul
 
   it('dev trims whitespace-padded uri and db', () => {
     // WRONG IMPL KILLED: a no-trim impl that returns raw strings in dev mode.
+    // Intentional insecure localhost WebSocket dev/playtest fixture, not a production endpoint (ADR-0128).
     expect(
+      // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
       resolveConnectionConfig({ uri: '  ws://local:3000  ', db: '  dev-realm  ' }, true),
     ).toEqual({
+      // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
       uri: 'ws://local:3000',
       db: 'dev-realm',
     });
