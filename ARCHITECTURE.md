@@ -114,6 +114,7 @@ cargo-feature passthrough — ADR-0054) and hands the artifact to
 publishes it with `--bin-path` instead of `--module-path` (unset ⇒ the plain publish,
 local runs unchanged). `spec-gap-revival.eval.mjs` now enforces mechanically that no
 `test.fixme` may cite dev_reducers once any workflow publishes it.
+**Playtest-ops recipes** (M-playtest-a, ADR-0129): `just playtest-up/down/wipe` publish honest release-profile modules to isolated DB `monster-realm-playtest` (never dev-default `monster-realm`); `scripts/verify-release-reducers.mjs` fails loud on dev_reducers in published `describe --json` output (forbidden = `start_wild_battle`, `grant_bait` only); `scripts/verify-build-hooks.mjs` scans `dist/**/*.js` for DEV-hook window bindings (`.__x=` / `defineProperty`), failing loud on absent/empty dist. `evals/playtest-verify.eval.mjs` gates the pure checkers (not live in `just ci`); pt-a3 defers live nightly playtest-smoke.
 
 ## Schema & content (ADR-0006)
 

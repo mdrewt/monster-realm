@@ -192,4 +192,106 @@ adr-digest:
 adr-digest-check:
     node scripts/adr-digest.mjs --check
 
+# ---------------------------------------------------------------------------
+# Local playtest ops (pt-a2, ADR-0129). Needs a live SpacetimeDB instance + a
+# built client; NOT part of `just ci` (same class as smoke-republish/e2e — the
+# eval gates the pure checkers + wiring, the live behavior is gated here).
+# Env: STDB_SERVER (default http://127.0.0.1:3000), MR_PLAYTEST_DB (default
+# monster-realm-playtest). The honest publish is the DEFAULT publish — no cargo
+# features, no custom binary path.
+# ---------------------------------------------------------------------------
+
+# Publish the honest release module to the isolated playtest DB, seed content,
+# prove no dev reducers/hooks, build the client, and serve the production build.
+playtest-up:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Export so a nested `just playtest-verify-*` (a child process) inherits the
+    # SAME resolved DB/server rather than re-deriving its own default.
+    export STDB_SERVER="${STDB_SERVER:-http://127.0.0.1:3000}"
+    export MR_PLAYTEST_DB="${MR_PLAYTEST_DB:-monster-realm-playtest}"
+    # Reject-not-clamp: never publish to the dev-default DB. Case-insensitive
+    # fold so MONSTER-REALM cannot bypass the guard.
+    if [ "${MR_PLAYTEST_DB,,}" = "monster-realm" ]; then
+        echo "playtest-up: refusing to publish to the dev-default DB 'monster-realm' — set MR_PLAYTEST_DB to an isolated name" >&2
+        exit 1
+    fi
+    # Explicit build first so compile errors surface before network contact.
+    spacetime build --module-path server-module
+    # Honest DEFAULT publish (no delete-data so existing session data survives
+    # per ADR-0006). No custom features, no custom binary path.
+    spacetime publish -s "$STDB_SERVER" --module-path server-module -y "$MR_PLAYTEST_DB"
+    # Seed content as owner (ADR-0006); output-checked (owner path can surface
+    # unauthorized). `if ! VAR=$(cmd)` keeps set -e; no wrapping JSON array.
+    if ! SYNC_OUT=$(spacetime call -s "$STDB_SERVER" "$MR_PLAYTEST_DB" sync_content 2>&1); then
+        echo "playtest-up: sync_content call exited non-zero: $SYNC_OUT" >&2
+        exit 1
+    fi
+    if echo "$SYNC_OUT" | grep -qi "rejected\|unauthorized"; then
+        echo "playtest-up: sync_content was rejected (check owner identity): $SYNC_OUT" >&2
+        exit 1
+    fi
+    just playtest-verify-release
+    ( cd client && npm run build )
+    just playtest-verify-build
+    # Background the production preview under a TMPDIR PID file so playtest-down
+    # can stop it. `exec` makes the subshell BECOME vite, so $! is vite's real
+    # PID (clean teardown, no orphaned child); `disown` detaches it from job
+    # control so the recipe shell exiting cannot SIGHUP it. The vite binary path
+    # is relative to the client dir (the subshell already cd'd into it — an
+    # absolute `client/node_modules/...` here would wrongly become client/client).
+    ( cd client && exec ./node_modules/.bin/vite preview ) &
+    PREVIEW_PID=$!
+    disown "$PREVIEW_PID" 2>/dev/null || true
+    echo "$PREVIEW_PID" > "${TMPDIR:-/tmp}/mr-playtest-preview.pid"
+    echo "playtest-up: serving the production build on the vite preview URL printed above; DB=$MR_PLAYTEST_DB server=$STDB_SERVER"
+
+# Stop the served client preview. The module + data PERSIST (wipe with
+# playtest-wipe).
+playtest-down:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    kill "$(cat "${TMPDIR:-/tmp}/mr-playtest-preview.pid")" 2>/dev/null || true
+    rm -f "${TMPDIR:-/tmp}/mr-playtest-preview.pid"
+    echo "playtest-down: preview stopped. The published module + data persist (use 'just playtest-wipe' for a fresh state)."
+
+# Prove the PUBLISHED playtest module carries no dev reducers (describe --json).
+playtest-verify-release:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    node scripts/verify-release-reducers.mjs
+
+# Prove the built client/dist carries no DEV debug hooks.
+playtest-verify-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    node scripts/verify-build-hooks.mjs
+
+# Wipe + republish the playtest DB from scratch (fresh state) and re-seed. No
+# separate build step — publish rebuilds. Re-proves dev-reducers-absent after
+# the republish (the module is rebuilt).
+playtest-wipe:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Export so a nested `just playtest-verify-*` (a child process) inherits the
+    # SAME resolved DB/server rather than re-deriving its own default.
+    export STDB_SERVER="${STDB_SERVER:-http://127.0.0.1:3000}"
+    export MR_PLAYTEST_DB="${MR_PLAYTEST_DB:-monster-realm-playtest}"
+    if [ "${MR_PLAYTEST_DB,,}" = "monster-realm" ]; then
+        echo "playtest-wipe: refusing to wipe the dev-default DB 'monster-realm' — set MR_PLAYTEST_DB to an isolated name" >&2
+        exit 1
+    fi
+    spacetime publish -s "$STDB_SERVER" --module-path server-module --delete-data -y "$MR_PLAYTEST_DB"
+    # After --delete-data, init re-runs and the publishing identity is
+    # re-registered as owner; sync_content must come from that owner.
+    if ! SYNC_OUT=$(spacetime call -s "$STDB_SERVER" "$MR_PLAYTEST_DB" sync_content 2>&1); then
+        echo "playtest-wipe: sync_content call exited non-zero: $SYNC_OUT" >&2
+        exit 1
+    fi
+    if echo "$SYNC_OUT" | grep -qi "rejected\|unauthorized"; then
+        echo "playtest-wipe: sync_content was rejected (check owner identity): $SYNC_OUT" >&2
+        exit 1
+    fi
+    just playtest-verify-release
+
 ci: lint typecheck test eval security wasm client-typecheck client-test

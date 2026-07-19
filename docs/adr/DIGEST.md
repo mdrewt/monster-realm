@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 94 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 95 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -103,6 +103,7 @@ Generated from 94 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0126](./0126-battle-challenge-ttl-reaper.md) | 0126 — Battle-challenge TTL reaper (Pending challenge liveness) | Accepted | battle, schema-persistence | m17.5e | Clone the trade_offer TTL reaper (ADR-0117) for battle_challenge: private one-shot schedule table in pvp.rs, CHALLENGE_TTL_MS=120000 + is_challenge_stale in game-core combat::pvp, disarm at all 4 deletion sites; cooldown deferred to M19. |
 | [0127](./0127-m17.5f-pvp-runtime-coverage-dev-gated-hooks-enum-exhaustiveness.md) | PvP runtime coverage, DEV-gated test hooks, and SDK-boundary enum exhaustiveness | Accepted | client-ui, ci-gates | m17.5f | DEV-gate `window.__game`, `window.__mrTrade`, `window.__mrPvp` test hooks; add PvP two-context e2e with turn-advance + interlock evals; add SDK-enum-exhaustiveness eval + fail-soft narrowTag boundary check. |
 | [0128](./0128-pt-a1-client-playtest-build-hygiene.md) | Client-side local-playtest build hygiene: prod-safe connection config + build version stamp | Accepted | client-ui, security-authz, ci-gates | pt-a1 | Production client build fails loud on the dev-default DB `monster-realm` (DB not URI); every build carries an ungated git-SHA/time `BUILD_INFO` (`window.__mrBuild`) for the F9 bundle; ADR-0127 DEV hooks absent from the minified build. |
+| [0129](./0129-pt-a2-local-playtest-ops.md) | Local playtest ops: honest release publish + published-module & build-output verification | Accepted | ci-gates, security-authz, tooling-docs | pt-a2 | Playtest-ops recipes publish the default release module to isolated DB `monster-realm-playtest`; verifiers fail loud on dev_reducers in the published module (`describe`, not source) or DEV hooks in the dist; an eval gates the pure checkers. |
 
 ## Harness design corpus (H- namespace)
 
@@ -300,6 +301,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0121](./0121-m17c-ranked-evals-tail.md) — m17c (M17 ranked ladder — evals tail, RL-16/17/18) — 0121 — m17c ranked evals tail: sql-based server-truth e2e, checker-import reuse, no-op-body hardening (Accepted)
 - [0127](./0127-m17.5f-pvp-runtime-coverage-dev-gated-hooks-enum-exhaustiveness.md) — m17.5f — PvP runtime coverage, DEV-gated test hooks, and SDK-boundary enum exhaustiveness (Accepted)
 - [0128](./0128-pt-a1-client-playtest-build-hygiene.md) — pt-a1 — Client-side local-playtest build hygiene: prod-safe connection config + build version stamp (Accepted)
+- [0129](./0129-pt-a2-local-playtest-ops.md) — pt-a2 — Local playtest ops: honest release publish + published-module & build-output verification (Accepted)
 
 ### tooling-docs
 
@@ -316,6 +318,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0089](./0089-content-parse-caching.md) — m13.5d — 0089 — Content parse caching on hot paths (shell-side, determinism-safe) (Accepted)
 - [0097](./0097-m14-close-phase-b-complete.md) — m14f (doc-keeper close; doc-only, no production code) — M14 Close: Phase B Complete (Accepted)
 - [0104](./0104-m-infra-d-adr-digest.md) — m-infra-d (infra slice, insertable any time after M14.5) — M-infra-d: ADR digest convention and agent-facing corpus compaction (Accepted)
+- [0129](./0129-pt-a2-local-playtest-ops.md) — pt-a2 — Local playtest ops: honest release publish + published-module & build-output verification (Accepted)
 
 ### security-authz
 
@@ -338,6 +341,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0123](./0123-trade-swap-debits-before-credits-ordering.md) — m17.5b (M17.5 tenth-review residuals §17.5b — trade same-item near-cap conservation) — 0123 — Trade swap debits-before-credits ordering: apply-order contract + netted currency headroom (Accepted)
 - [0124](./0124-shop-receiver-cap-headroom.md) — m17.5c — 0124 — Shop receiver-cap headroom: reject-not-destroy on buy/sell (Accepted)
 - [0128](./0128-pt-a1-client-playtest-build-hygiene.md) — pt-a1 — Client-side local-playtest build hygiene: prod-safe connection config + build version stamp (Accepted)
+- [0129](./0129-pt-a2-local-playtest-ops.md) — pt-a2 — Local playtest ops: honest release publish + published-module & build-output verification (Accepted)
 
 ### economy-quests
 
