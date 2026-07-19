@@ -55,11 +55,14 @@ Fallback increment if the combined PR proves large or the config change trips an
 ## C) Finalized EARS acceptance criteria
 
 - **pt-a1-1 (env-driven config, prod-safe).** WHEN the client resolves its SpacetimeDB connection
-  target, the system SHALL read the URI from `VITE_STDB_URI` and the DB name from `VITE_STDB_DB`;
-  IF the build is production (`isDev === false`) AND `VITE_STDB_DB` is unset OR equals the dev-default
-  `monster-realm`, THEN the system SHALL fail loud (throw a descriptive error) rather than connect
-  (reject-not-clamp; parse-don't-validate at the boundary); WHILE running in dev (`isDev === true`),
-  the system SHALL fall back to the dev defaults (`ws://127.0.0.1:3000`, `monster-realm`).
+  target, the system SHALL read the URI from `VITE_STDB_URI` and the DB name from `VITE_STDB_DB`
+  (trimming both); IF the build is production (`isDev === false`) AND the trimmed `VITE_STDB_DB` is
+  unset, empty, whitespace-only, OR case-insensitively equals the dev-default `monster-realm`, THEN the
+  system SHALL fail loud (throw a descriptive error) rather than connect (reject-not-clamp;
+  parse-don't-validate at the boundary); WHILE running in dev (`isDev === true`), the system SHALL fall
+  back to the dev defaults (`ws://127.0.0.1:3000`, `monster-realm`). The URI is NOT guarded (localhost
+  is the legitimate local topology); only the DB — the corruption vector — is. (EARS/T1 reconciled per
+  red-team F-1/F-2: empty/whitespace/case handled explicitly.)
 - **pt-a1-2 (build version stamp — data).** WHEN the client is built, the system SHALL capture the
   git short-SHA and an ISO build timestamp at build time (both overridable via env for the pt-a2
   publish path; `'unknown'` fallback when git is unavailable) and expose them as a typed
@@ -151,11 +154,26 @@ Pure, unit-tested cores; the DOM/bootstrap wiring stays in the already-coverage-
 
 ## G) Proof-of-teeth (must BITE)
 - **config-prod-dev-default → throws** (pt-a1-1): `resolveConnectionConfig({ db: 'monster-realm',
-  isDev: false })` MUST throw; a resolver that returns it unguarded → RED. Also: prod + unset db →
-  throws; prod + `monster-realm-playtest` → ok; dev + unset → dev defaults (no throw).
-- **formatBuildStamp** (pt-a1-2/-3): stamp string MUST contain the sha and mode; an empty/na sha
+  isDev: false })` MUST throw; a resolver that returns it unguarded → RED. Also: prod + unset/empty/
+  whitespace-only db → throws; prod + case-variant `Monster-Realm` → throws (case-fold, F-2); prod +
+  `monster-realm-playtest` → ok; prod + prefix `monster-realm-old` → ok (exact-match not prefix, F-6);
+  dev + unset → dev defaults (no throw). Property: prod throws IFF trimmed db ∈ {'', dev-default}.
+- **config wiring at module scope** (F-3): a source-scan test (`main.wiring.test.ts`) asserts
+  `main.ts` calls `resolveConnectionConfig(` BEFORE `async function main(` — the throw only prevents
+  `connect()` if it fires at module-eval time; moving it inside `main()`/a try-catch would swallow it.
+  Starts RED (wiring not yet added).
+- **DEV hooks stay gated** (F-5, pt-a1-4): the same source-scan test asserts the `.__game`/`.__mrTrade`/
+  `.__mrPvp` window assignments in `main.ts` sit inside the `if (import.meta.env.DEV)` gate (and does
+  NOT flag the intentionally-ungated `window.__mrBuild`). Starts GREEN (already gated on master,
+  m17.5f) — a regression guard (kills an un-gated new hook or a `process.env`-based gate). This closes
+  the source-level regression window cheaply IN pt-a1 (no eval touch — a vitest source-scan). Only the
+  build-ARTIFACT grep (catches `--minify false`) stays parked to pt-a2 (§F).
+- **formatBuildStamp** (pt-a1-2/-3): stamp string MUST contain the sha and mode; an `unknown` sha
   formats to a recognizable `unknown` marker (F9 must never embed a blank build id).
-- **DEV-hooks-absent** (pt-a1-4): empirically verified §D + documented; automated guard parked (§F).
+- **DEV-hooks-absent from the minified artifact** (pt-a1-4): empirically verified §D + documented;
+  the automated build-output guard is parked (§F). Known limitation (F-4): the `BUILD_INFO` const's
+  `'unknown'` fallback branch is dead under vitest (define always fires) — it is covered by
+  `buildInfoFrom('unknown', …)` at the formatter level + the empirical build; documented in ADR-0128.
 
 ## H) Eval-gate risks (must not trip `node evals/run.mjs`)
 - `dom-shell-coverage-exclusion.eval.mjs`: `findUnsanctionedExclusions` rejects ANY entry in

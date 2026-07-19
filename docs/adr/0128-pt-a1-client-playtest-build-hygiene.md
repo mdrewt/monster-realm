@@ -35,12 +35,23 @@ partly landed:
 ### D1 — Prod-safe connection config: fail loud on the dev-default DB (reject-not-clamp)
 
 Extract a pure `resolveConnectionConfig({ uri?, db?, isDev }) → { uri, db }`
-(`client/src/net/connectionConfig.ts`). In dev (`isDev === true`) it preserves today's behavior exactly
-(`ws://127.0.0.1:3000` / `monster-realm` fallbacks). In a **production build** (`isDev === false`), if
-`VITE_STDB_DB` is unset **or** equals the literal dev-default `'monster-realm'`, it **throws** a
-descriptive error naming `VITE_STDB_DB` — it does not clamp to a "safe" default (parse-don't-validate;
-reject-not-clamp at the boundary). This is what stops an honest playtest build from silently pointing at
-the dev database.
+(`client/src/net/connectionConfig.ts`). It **trims** both inputs. In dev (`isDev === true`) it preserves
+today's behavior exactly (`ws://127.0.0.1:3000` / `monster-realm` fallbacks). In a **production build**
+(`isDev === false`), if the trimmed `VITE_STDB_DB` is **unset, empty, whitespace-only, or
+case-insensitively equals** the dev-default `'monster-realm'`, it **throws** a descriptive error naming
+`VITE_STDB_DB` — it does not clamp to a "safe" default (parse-don't-validate; reject-not-clamp at the
+boundary). The empty/whitespace/case handling closes the bypasses a bare `=== 'monster-realm'` check
+would leave (a red-team pass found `''`, `' monster-realm '`, and `'Monster-Realm'` all slip past an
+exact-equality guard). The comparison is EXACT on the rest of the name (not a prefix) so a legitimately
+different DB like `monster-realm-old` is allowed. This is what stops an honest playtest build from
+silently pointing at the dev database.
+
+The wiring keeps the resolve at **module top level** in `main.ts` (equivalent eager eval to today's
+`const URI/DB`), so a misconfigured prod build throws at module-evaluation time — before `connect()` is
+reachable. A `main.wiring.test.ts` source-scan gates this placement (the throw is only load-bearing if
+it fires at module scope, not inside `main()` where a try/catch could swallow it). For a solo local
+tester, a module-eval throw surfaces as a blank page + a descriptive console error (acceptable — it is a
+build-time misconfiguration, not a runtime user condition).
 
 **Guard the DB name, NOT the URI.** `ws://127.0.0.1:3000` is the *legitimate* topology for a local-only
 playtest (replan §4). The DB name is the data-corruption vector (wrong DB = wrong data written to the
@@ -87,13 +98,18 @@ slicing pass on `master` b31eeab, and re-verified post-implementation):
   is not retained; only dead object literals are. Not a reversal — the honest build is still the
   default minified one, and pt-a1 keeps the gate.
 
-**The automated build-output regression guard is deferred to pt-a2.** `evals/run.mjs` is off-limits to
-pt-a1, and a source-scan eval can only assert the `if (import.meta.env.DEV)` wrapper is present (it
-already is); the only guard that catches a future `--minify`/gate regression runs a real `vite build`
-and greps the artifact — which belongs with pt-a2's mechanical release-verification (the
-`dev_reducers`-absent proof against the published module), where a `scripts/verify-*` + `justfile` home
-exists. pt-a1's proof-of-teeth are the config fail-loud tests and the build-stamp formatter tests; the
-DEV-hooks property is verified empirically and documented here.
+**A cheap source-level regression guard ships IN pt-a1; only the build-artifact guard is deferred.**
+A `main.wiring.test.ts` source-scan asserts the `.__game`/`.__mrTrade`/`.__mrPvp` window assignments
+stay inside the `if (import.meta.env.DEV)` gate (and does not flag the intentionally-ungated
+`window.__mrBuild`). This is a vitest source-scan (NOT an eval — `evals/run.mjs` is off-limits to pt-a1)
+and it bites the two source-level regressions a red-team pass flagged: a new hook added ungated, or the
+gate swapped to `process.env.NODE_ENV` (which Vite does not define-replace the same way, so DCE would
+not fire). The remaining guard — a real `vite build` + grep of the artifact, which alone catches a
+committed `--minify false` — is deferred to **pt-a2**, alongside its mechanical release-verification
+(the `dev_reducers`-absent proof against the published module), where a `scripts/verify-*` + `justfile`
+home exists. pt-a1's proof-of-teeth are the config fail-loud tests, the build-stamp formatter tests, and
+the two `main.wiring` source-scans; the minified-artifact property is verified empirically (§D3) and
+documented here.
 
 ## Consequences
 
@@ -119,3 +135,21 @@ DEV-hooks property is verified empirically and documented here.
   co-located in `buildInfo.ts` (only that file references them), avoiding a touches-delta.
 - **An automated build-output grep eval/test now** — deferred to pt-a2 (D3): cost exceeds the drift
   risk for pt-a1, and `evals/run.mjs` is off-limits.
+
+## Residuals / known limitations (from the red-team plan pass)
+
+- **`BUILD_INFO` fallback branch is unit-untestable** (F-4). The `typeof __MR_BUILD_SHA__ !== 'undefined'
+  ? … : 'unknown'` branch is dead under vitest (the `define` always fires, so the token is a string
+  literal). The `'unknown'` path is instead covered by `buildInfoFrom('unknown', …)` at the formatter
+  level plus the empirical build; the module-const init expression's fallback is not branch-tested. A
+  `test.define` block is also added to `vite.config.ts` so the injected globals are deterministic under
+  vitest. `typeof` on an undeclared global is safe in JS (returns `'undefined'`, never throws), so the
+  import is robust even if the define did not fire.
+- **Hosted-build SHA enumeration** (F-6). `window.__mrBuild.sha` is a short git SHA. Harmless for the
+  local-only playtest (the tester is the developer). When M-playtest-a2 (hosted) ships against a
+  still-private repo, the publish path SHOULD set `MR_BUILD_SHA` to a non-enumerable identifier (a
+  deploy UUID/counter) rather than the raw SHA. The env override already supports this.
+- **Build-time non-determinism in tests** (F-7). `new Date().toISOString()` in the `vite.config.ts`
+  define differs per run, so `BUILD_INFO.builtAt` is non-deterministic. Tests MUST assert via
+  `buildInfoFrom(sha, builtAt, isDev)` with literal params (never import `BUILD_INFO` for a value
+  assertion); `MR_BUILD_TIME` can pin it if a future integration test needs a stable stamp.
