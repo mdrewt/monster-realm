@@ -914,15 +914,49 @@ jobs:
       detail: 'TEETH L-good: mutateServerRecipeIntact rejected a correct mutate-server recipe',
     };
   }
-  // Good: cap=309 (re-baselined ceiling per ADR-0118) — must be accepted, not rejected.
-  // Kills: impl that keeps the old ceiling of 200 and incorrectly rejects 201–340.
+  // Bad: cap=309 — exceeds tightened ceiling 299 (ADR-0137 amends ADR-0118 A3).
+  // Kills: impl that still uses the old ceiling of 340, silently accepting a 41-mutant
+  // loosening of the nightly survivor tolerance without any eval-visible signal.
+  // NOTE: this was previously asserted ACCEPTED (ceiling was 340). It is now REJECTED
+  // because ADR-0137 tightens the ceiling to the committed justfile cap=299 so every
+  // cap move is eval-visible. Correction rationale: spec §ptc5d-4 / ADR-0137 D4.
   const justfileMutServerRecap = `mutate-server cap="309":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n`;
-  if (!mutateServerRecipeIntact(justfileMutServerRecap)) {
+  if (mutateServerRecipeIntact(justfileMutServerRecap)) {
     return {
       name,
       pass: false,
       detail:
-        'TEETH L-recap: mutateServerRecipeIntact rejected cap=309 — cap=309 is valid per ADR-0118 re-baseline (ceiling raised to 340); an impl still using the old 200 ceiling incorrectly rejects values in the 201–340 range',
+        'TEETH L-recap: mutateServerRecipeIntact accepted cap=309 — exceeds tightened ceiling 299 ' +
+        '(ADR-0137 amends ADR-0118 A3; ceiling tightened from 340 to the committed justfile cap so ' +
+        'every cap move is eval-visible; kills impl still using the old 340 ceiling)',
+    };
+  }
+
+  // Bad: cap=300 — one above the ceiling (+ 1 boundary bite).
+  // Kills: impl using >= instead of > at the 299 boundary (off-by-one).
+  const justfileMutServerOvercap = `mutate-server cap="300":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n`;
+  if (mutateServerRecipeIntact(justfileMutServerOvercap)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH L-overcap: mutateServerRecipeIntact accepted cap=300 — must be rejected by the ' +
+        'tightened ceiling 299 (ADR-0137 D4); this is the +1 boundary bite; ' +
+        'kills impl using cap >= MUTATE_SERVER_CAP_BASELINE instead of cap > MUTATE_SERVER_CAP_BASELINE',
+    };
+  }
+
+  // Good: cap=299 — exactly at the ceiling (must be ACCEPTED, not rejected).
+  // Guards the > vs >= off-by-one: if the impl uses >= 299 it rejects 299 and this fires.
+  const justfileMutServer299 = `mutate-server cap="299":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n`;
+  if (!mutateServerRecipeIntact(justfileMutServer299)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH L-299: mutateServerRecipeIntact rejected cap=299 — the committed justfile default ' +
+        'is cap=299 and must be accepted (ceiling check is cap > 299, not cap >= 299); ' +
+        'kills impl using >= MUTATE_SERVER_CAP_BASELINE (off-by-one)',
     };
   }
 
