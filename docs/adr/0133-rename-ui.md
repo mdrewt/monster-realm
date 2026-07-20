@@ -5,7 +5,7 @@
 **Slice:** pt-c1b
 **Supersedes:** —
 **Amends:** —
-**Subsystems:** client-ui, netcode-input, ci-gates
+**Subsystems:** client-ui, movement-netcode, ci-gates
 
 **Decision:** A `KeyN` rename overlay wires the client to the already-merged `set_profile_name`
 reducer (ADR-0132). Because it is the **first overlay with a text `<input>`**, it needs three
