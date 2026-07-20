@@ -92,6 +92,8 @@ import { buildQuestLogViewModel } from './ui/questLogModel';
 import type { QuestLogView } from './ui/questLogView';
 import { buildRaisingViewModel } from './ui/raisingModel';
 import type { RaisingView } from './ui/raisingView';
+import { buildRenameViewModel } from './ui/renameModel';
+import type { RenameView } from './ui/renameView';
 import { buildShopViewModel } from './ui/shopModel';
 import type { ShopView } from './ui/shopView';
 import { reduceErrorMessage } from './ui/statusModel';
@@ -167,6 +169,9 @@ let tradeView: TradeView | undefined;
 let pvpView: PvpView | undefined;
 // m17b: ranked leaderboard overlay (ADR-0120) — pure subscription view (RL-15).
 let leaderboardView: LeaderboardView | undefined;
+// pt-c1b: profile-rename overlay (ADR-0133) — the first text-input overlay; wires the
+// merged set_profile_name reducer (ADR-0132) to a KeyN rename form.
+let renameView: RenameView | undefined;
 // m16b: tracks the turn number at the time the player submitted a PvP action.
 // When the server resolves the turn (battle.turnNumber increments beyond this),
 // pvpPendingTurnNumber is cleared and pvpPendingSubmit becomes false.
@@ -389,6 +394,7 @@ function reconcileFromStore(): void {
     if (
       diverged &&
       !(
+        renameView?.visible ||
         battleView?.visible ||
         boxView?.visible ||
         raisingView?.visible ||
@@ -485,7 +491,8 @@ window.addEventListener('keydown', (e) => {
       !shopView?.visible &&
       !tradeView?.visible &&
       !pvpView?.visible &&
-      !leaderboardView?.visible
+      !leaderboardView?.visible &&
+      !renameView?.visible
     ) {
       raisingView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
@@ -503,7 +510,8 @@ window.addEventListener('keydown', (e) => {
       !shopView?.visible &&
       !tradeView?.visible &&
       !pvpView?.visible &&
-      !leaderboardView?.visible
+      !leaderboardView?.visible &&
+      !renameView?.visible
     ) {
       boxView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
@@ -521,7 +529,8 @@ window.addEventListener('keydown', (e) => {
       !shopView?.visible &&
       !tradeView?.visible &&
       !pvpView?.visible &&
-      !leaderboardView?.visible
+      !leaderboardView?.visible &&
+      !renameView?.visible
     ) {
       boxView?.hide(); // mutual exclusivity
       raisingView?.hide(); // mutual exclusivity
@@ -544,7 +553,8 @@ window.addEventListener('keydown', (e) => {
       !shopView?.visible &&
       !tradeView?.visible &&
       !pvpView?.visible &&
-      !leaderboardView?.visible
+      !leaderboardView?.visible &&
+      !renameView?.visible
     ) {
       if (questLogView?.visible) {
         questLogView.hide();
@@ -567,7 +577,8 @@ window.addEventListener('keydown', (e) => {
       !shopView?.visible &&
       !tradeView?.visible &&
       !pvpView?.visible &&
-      !leaderboardView?.visible
+      !leaderboardView?.visible &&
+      !renameView?.visible
     ) {
       if (healView?.visible) {
         healView.hide();
@@ -591,7 +602,8 @@ window.addEventListener('keydown', (e) => {
       !healView?.visible &&
       !tradeView?.visible &&
       !pvpView?.visible &&
-      !leaderboardView?.visible
+      !leaderboardView?.visible &&
+      !renameView?.visible
     ) {
       if (shopView?.visible) {
         shopView.hide();
@@ -623,7 +635,8 @@ window.addEventListener('keydown', (e) => {
       !healView?.visible &&
       !shopView?.visible &&
       !pvpView?.visible &&
-      !leaderboardView?.visible
+      !leaderboardView?.visible &&
+      !renameView?.visible
     ) {
       if (tradeView?.visible) {
         tradeView.hide();
@@ -655,7 +668,8 @@ window.addEventListener('keydown', (e) => {
       !healView?.visible &&
       !shopView?.visible &&
       !tradeView?.visible &&
-      !leaderboardView?.visible
+      !leaderboardView?.visible &&
+      !renameView?.visible
     ) {
       if (pvpView?.visible) {
         pvpView.hide();
@@ -684,7 +698,8 @@ window.addEventListener('keydown', (e) => {
       !healView?.visible &&
       !shopView?.visible &&
       !tradeView?.visible &&
-      !pvpView?.visible
+      !pvpView?.visible &&
+      !renameView?.visible
     ) {
       if (leaderboardView?.visible) {
         leaderboardView.hide();
@@ -694,6 +709,36 @@ window.addEventListener('keydown', (e) => {
       }
     }
     e.preventDefault();
+    return;
+  }
+  // pt-c1b (ADR-0133 PTC1B-1): KeyN opens the profile-rename overlay — the first text-input
+  // overlay. Mutual-exclusion self-guard lists all 11 siblings (incl. dialogue). On open:
+  // held.clear() (RT-RN-01 D3-3) so no held movement key straddles the open/close boundary,
+  // render the current name from store.player(identity)?.name (D6), then show (deferred focus).
+  // e.preventDefault() (RT-RN-05) stops the opening 'n' from reaching the field.
+  if (e.code === 'KeyN') {
+    e.preventDefault(); // RT-RN-05: suppress the opening 'n' char reaching the field.
+    if (
+      !battleView?.visible &&
+      !boxView?.visible &&
+      !raisingView?.visible &&
+      !evolutionView?.visible &&
+      !dialogueView?.visible &&
+      !questLogView?.visible &&
+      !healView?.visible &&
+      !shopView?.visible &&
+      !tradeView?.visible &&
+      !pvpView?.visible &&
+      !leaderboardView?.visible
+    ) {
+      if (renameView?.visible) {
+        renameView.hide();
+      } else {
+        held.clear();
+        renameView?.render(buildRenameViewModel(store.player(identity)?.name ?? '', ''));
+        renameView?.show();
+      }
+    }
     return;
   }
   if (e.code === 'KeyT') {
@@ -715,6 +760,7 @@ window.addEventListener('keydown', (e) => {
       !tradeView?.visible &&
       !pvpView?.visible &&
       !leaderboardView?.visible &&
+      !renameView?.visible &&
       identity !== ''
     ) {
       const own = store.ownCharacter(identity);
@@ -734,6 +780,15 @@ window.addEventListener('keydown', (e) => {
         }
       }
     }
+    e.preventDefault();
+    return;
+  }
+  // pt-c1b (ADR-0133 PTC1B-6): Escape closes the rename overlay. Highest priority so a
+  // text-input overlay never traps Escape behind another overlay's branch. The rename
+  // input's OWN keydown listener also handles Escape while focused (D3-1, stopPropagation'd);
+  // this window-level branch covers the (rare) unfocused-overlay case.
+  if (e.code === 'Escape' && renameView?.visible) {
+    renameView.hide();
     e.preventDefault();
     return;
   }
@@ -827,7 +882,8 @@ window.addEventListener('keydown', (e) => {
     shopView?.visible ||
     tradeView?.visible ||
     pvpView?.visible ||
-    leaderboardView?.visible
+    leaderboardView?.visible ||
+    renameView?.visible
   )
     return;
   const dir = KEY_DIR[e.code];
@@ -902,6 +958,9 @@ function refreshBattle(): void {
     // overlay while the challenger may have the board open (anyOverlayVisible gates
     // only the pvp listener, not this battle auto-show).
     if (leaderboardView?.visible) leaderboardView.hide();
+    // pt-c1b (ADR-0133 D4): ...and the rename overlay — a PvP accept auto-shows the battle
+    // overlay while the player may have the rename form open.
+    if (renameView?.visible) renameView.hide();
     // Build baitItems from own inventory × item defs (12.5f-5: wire the 4th arg
     // that was already present in buildBattleViewModel with default []). The
     // function classifies by recruitBonus > 0 internally (ADR-0047 classify-by-data).
@@ -1061,7 +1120,8 @@ store.onBatchApplied(() => {
       healView?.visible ||
       shopView?.visible ||
       tradeView?.visible ||
-      leaderboardView?.visible;
+      leaderboardView?.visible ||
+      renameView?.visible;
     const forceVisible =
       !anyOverlayVisible && (vm.incoming !== null || (pvpView?.visible ?? false));
     pvpView?.refresh(vm, forceVisible);
@@ -1455,6 +1515,7 @@ async function main(): Promise<void> {
     { TradeView: TradeViewClass },
     { PvpView: PvpViewClass },
     { LeaderboardView: LeaderboardViewClass },
+    { RenameView: RenameViewClass },
   ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/battleView'),
@@ -1467,6 +1528,7 @@ async function main(): Promise<void> {
     import('./ui/tradeView'),
     import('./ui/pvpView'),
     import('./ui/leaderboardView'),
+    import('./ui/renameView'),
   ]);
   renderer = new WorldRenderer();
   const mount = document.getElementById('app');
@@ -1684,6 +1746,27 @@ async function main(): Promise<void> {
     // m17b: leaderboard DOM shell (ADR-0120). ZERO-arg construction — RL-15: the
     // leaderboard is a pure subscription view; there is no client write path to profile.
     leaderboardView = new LeaderboardViewClass();
+    // pt-c1b (ADR-0133): rename overlay. onSubmit calls set_profile_name (ADR-0132) with the
+    // frozen-link gate FIRST (ADR-0085 A1) — never send on a dead link. Feedback goes into
+    // #rename-feedback via reduceErrorMessage on reject (no InternalError leak, PTC1B-4);
+    // shop/trade feedback pattern, NOT sendGuarded/reportError. The overlay stays open on
+    // both success and reject; the view's #pending lock is reset by its own .finally().
+    renameView = new RenameViewClass({
+      onSubmit: async (name) => {
+        if (conn === undefined || conn.linkFrozen()) {
+          if (renameView?.visible) renameView.showFeedback('disconnected — try again');
+          return;
+        }
+        try {
+          await conn.conn.reducers.setProfileName({ name });
+          if (renameView?.visible) renameView.showFeedback('Name updated!');
+        } catch (err) {
+          if (renameView?.visible) {
+            renameView.showFeedback(reduceErrorMessage(err, 'set-profile-name'));
+          }
+        }
+      },
+    });
   }
 
   // M13.5b (ADR-0085 C8): create the status surface BEFORE `conn = connect(...)` is
@@ -1714,6 +1797,10 @@ async function main(): Promise<void> {
       // Zone state is corrected by the reconcile listener's state-based check on
       // the first post-reconnect batch (12.5c-1 — no special zone logic needed here).
       resetPredictionState();
+      // pt-c1b (ADR-0133 D4 / RT-RN-02): hide the rename overlay on reconnect — the store
+      // was reset (stale current-name), and an in-flight submit will never settle on the
+      // dropped link. hide() also resets the input value + feedback (stale-draft guard).
+      renameView?.hide();
       // pt-b1 (red-team M-1): re-baseline a surviving Ongoing battle on the next batch
       // instead of re-emitting a spurious battleStart for it.
       battleReseedPending = true;
@@ -1775,7 +1862,8 @@ async function main(): Promise<void> {
           shopView?.visible ||
           tradeView?.visible ||
           pvpView?.visible ||
-          leaderboardView?.visible
+          leaderboardView?.visible ||
+          renameView?.visible
         )
       ) {
         const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
