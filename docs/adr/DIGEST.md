@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 100 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 101 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -109,6 +109,7 @@ Generated from 100 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0132](./0132-profile-rename-reducer.md) | `set_profile_name` rename reducer + RL-7 module-write-only tooth refinement | Accepted | security-authz, ci-gates | pt-c1 | `set_profile_name` in `ranking.rs` validates via `validate_name` and writes only `player.name` (Option a); the ADR-0125 mirror surfaces it on the leaderboard, and RL-7 refines from zero reducers to one profile-untouching name-setter. |
 | [0133](./0133-rename-ui.md) | Client profile-rename UI (first text-input overlay) | Accepted | client-ui, movement-netcode, ci-gates | pt-c1b | A `KeyN` rename overlay wires the client to the already-merged `set_profile_name` |
 | [0134](./0134-trade-propose-ui.md) | Client trade-PROPOSE UI (KeyO offer overlay) | Accepted | client-ui, economy-quests, movement-netcode | pt-c2 | A `KeyO` ("Offer") overlay gives a human the FIRST entry point to *initiate* a trade |
+| [0135](./0135-pt-c2b-help-overlay.md) | In-client help overlay (`?`) + tester runbook (pt-c2b) | Accepted | client-ui, movement-netcode | pt-c2b | Add a display-only in-client **help overlay** — a controls (key→action) + session-goals |
 
 ## Harness design corpus (H- namespace)
 
@@ -212,6 +213,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0090](./0090-adaptive-interp-delay.md) — m13.5e — Adaptive remote-interpolation delay (M13.5e) (Accepted)
 - [0133](./0133-rename-ui.md) — pt-c1b — Client profile-rename UI (first text-input overlay) (Accepted)
 - [0134](./0134-trade-propose-ui.md) — pt-c2 — Client trade-PROPOSE UI (KeyO offer overlay) (Accepted)
+- [0135](./0135-pt-c2b-help-overlay.md) — pt-c2b — In-client help overlay (`?`) + tester runbook (pt-c2b) (Accepted)
 
 ### content
 
@@ -277,6 +279,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0130](./0130-client-observability.md) — pt-b1 — Client observability: error overlay + event ring + F9 bug-report bundle (H1/H2/H3 taxonomy) (Accepted)
 - [0133](./0133-rename-ui.md) — pt-c1b — Client profile-rename UI (first text-input overlay) (Accepted)
 - [0134](./0134-trade-propose-ui.md) — pt-c2 — Client trade-PROPOSE UI (KeyO offer overlay) (Accepted)
+- [0135](./0135-pt-c2b-help-overlay.md) — pt-c2b — In-client help overlay (`?`) + tester runbook (pt-c2b) (Accepted)
 
 ### ci-gates
 
