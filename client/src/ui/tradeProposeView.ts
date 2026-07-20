@@ -205,7 +205,11 @@ export class TradeProposeView {
       'input[type="checkbox"]:checked',
     )) {
       const raw = cb.getAttribute('data-monster-id');
-      if (raw !== null) selectedMonsterIds.push(BigInt(raw));
+      // Digit-scan guard (mirrors parseCurrency): keeps #readDraft TOTAL even if the
+      // data-monster-id attribute is tampered (DevTools) — a non-numeric value is skipped
+      // rather than thrown from BigInt() inside the synchronous #submit() path, which the
+      // downstream .catch() (a promise-reject handler) would NOT catch (reviewer/red-team).
+      if (raw !== null && /^[0-9]+$/.test(raw)) selectedMonsterIds.push(BigInt(raw));
     }
     return {
       targetIdentity: this.#target.value,
