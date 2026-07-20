@@ -84,6 +84,8 @@ import { buildEvolutionViewModel } from './ui/evolutionModel';
 import type { EvolutionView } from './ui/evolutionView';
 import { buildHealViewModel, healTargetLocationId } from './ui/healModel';
 import type { HealView } from './ui/healView';
+import { buildHelpViewModel } from './ui/helpModel';
+import type { HelpView } from './ui/helpView';
 import { buildLeaderboardViewModel } from './ui/leaderboardModel';
 import type { LeaderboardView } from './ui/leaderboardView';
 import { buildPvpChallengeViewModel } from './ui/pvpModel';
@@ -177,6 +179,9 @@ let renameView: RenameView | undefined;
 // pt-c2: trade-PROPOSE overlay (ADR-0134) — KeyO "Offer" form; wires reducers.proposeTrade
 // to let a human initiate a "sell my monster(s) + gold for your gold" trade.
 let tradeProposeView: TradeProposeView | undefined;
+// pt-c2b: in-client help overlay (ADR-0135) — display-only `?` overlay listing
+// controls + goals. No callbacks / reducer (zero-arg construction).
+let helpView: HelpView | undefined;
 // m16b: tracks the turn number at the time the player submitted a PvP action.
 // When the server resolves the turn (battle.turnNumber increments beyond this),
 // pvpPendingTurnNumber is cleared and pvpPendingSubmit becomes false.
@@ -399,6 +404,7 @@ function reconcileFromStore(): void {
     if (
       diverged &&
       !(
+        helpView?.visible ||
         renameView?.visible ||
         tradeProposeView?.visible ||
         battleView?.visible ||
@@ -499,7 +505,8 @@ window.addEventListener('keydown', (e) => {
       !pvpView?.visible &&
       !leaderboardView?.visible &&
       !renameView?.visible &&
-      !tradeProposeView?.visible
+      !tradeProposeView?.visible &&
+      !helpView?.visible
     ) {
       raisingView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
@@ -519,7 +526,8 @@ window.addEventListener('keydown', (e) => {
       !pvpView?.visible &&
       !leaderboardView?.visible &&
       !renameView?.visible &&
-      !tradeProposeView?.visible
+      !tradeProposeView?.visible &&
+      !helpView?.visible
     ) {
       boxView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
@@ -539,7 +547,8 @@ window.addEventListener('keydown', (e) => {
       !pvpView?.visible &&
       !leaderboardView?.visible &&
       !renameView?.visible &&
-      !tradeProposeView?.visible
+      !tradeProposeView?.visible &&
+      !helpView?.visible
     ) {
       boxView?.hide(); // mutual exclusivity
       raisingView?.hide(); // mutual exclusivity
@@ -564,7 +573,8 @@ window.addEventListener('keydown', (e) => {
       !pvpView?.visible &&
       !leaderboardView?.visible &&
       !renameView?.visible &&
-      !tradeProposeView?.visible
+      !tradeProposeView?.visible &&
+      !helpView?.visible
     ) {
       if (questLogView?.visible) {
         questLogView.hide();
@@ -589,7 +599,8 @@ window.addEventListener('keydown', (e) => {
       !pvpView?.visible &&
       !leaderboardView?.visible &&
       !renameView?.visible &&
-      !tradeProposeView?.visible
+      !tradeProposeView?.visible &&
+      !helpView?.visible
     ) {
       if (healView?.visible) {
         healView.hide();
@@ -615,7 +626,8 @@ window.addEventListener('keydown', (e) => {
       !pvpView?.visible &&
       !leaderboardView?.visible &&
       !renameView?.visible &&
-      !tradeProposeView?.visible
+      !tradeProposeView?.visible &&
+      !helpView?.visible
     ) {
       if (shopView?.visible) {
         shopView.hide();
@@ -649,7 +661,8 @@ window.addEventListener('keydown', (e) => {
       !pvpView?.visible &&
       !leaderboardView?.visible &&
       !renameView?.visible &&
-      !tradeProposeView?.visible
+      !tradeProposeView?.visible &&
+      !helpView?.visible
     ) {
       if (tradeView?.visible) {
         tradeView.hide();
@@ -683,7 +696,8 @@ window.addEventListener('keydown', (e) => {
       !tradeView?.visible &&
       !leaderboardView?.visible &&
       !renameView?.visible &&
-      !tradeProposeView?.visible
+      !tradeProposeView?.visible &&
+      !helpView?.visible
     ) {
       if (pvpView?.visible) {
         pvpView.hide();
@@ -714,7 +728,8 @@ window.addEventListener('keydown', (e) => {
       !tradeView?.visible &&
       !pvpView?.visible &&
       !renameView?.visible &&
-      !tradeProposeView?.visible
+      !tradeProposeView?.visible &&
+      !helpView?.visible
     ) {
       if (leaderboardView?.visible) {
         leaderboardView.hide();
@@ -745,7 +760,8 @@ window.addEventListener('keydown', (e) => {
       !tradeView?.visible &&
       !pvpView?.visible &&
       !leaderboardView?.visible &&
-      !tradeProposeView?.visible
+      !tradeProposeView?.visible &&
+      !helpView?.visible
     ) {
       if (renameView?.visible) {
         renameView.hide();
@@ -777,6 +793,7 @@ window.addEventListener('keydown', (e) => {
       !pvpView?.visible &&
       !leaderboardView?.visible &&
       !renameView?.visible &&
+      !helpView?.visible &&
       identity !== ''
     ) {
       if (tradeProposeView?.visible) {
@@ -817,6 +834,7 @@ window.addEventListener('keydown', (e) => {
       !leaderboardView?.visible &&
       !renameView?.visible &&
       !tradeProposeView?.visible &&
+      !helpView?.visible &&
       identity !== ''
     ) {
       const own = store.ownCharacter(identity);
@@ -839,6 +857,36 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
+  // pt-c2b (ADR-0135): `?` toggles the display-only help overlay. Sole e.key branch
+  // (help is about the glyph, not physical position). Mutual-exclusion self-guard lists
+  // all 13 sibling overlays. held.clear() for consistency (help does not capture focus).
+  if (e.key === '?') {
+    e.preventDefault();
+    if (
+      !battleView?.visible &&
+      !boxView?.visible &&
+      !raisingView?.visible &&
+      !evolutionView?.visible &&
+      !dialogueView?.visible &&
+      !questLogView?.visible &&
+      !healView?.visible &&
+      !shopView?.visible &&
+      !tradeView?.visible &&
+      !pvpView?.visible &&
+      !leaderboardView?.visible &&
+      !renameView?.visible &&
+      !tradeProposeView?.visible
+    ) {
+      if (helpView?.visible) {
+        helpView.hide();
+      } else {
+        held.clear();
+        helpView?.render(buildHelpViewModel());
+        helpView?.show();
+      }
+    }
+    return;
+  }
   // pt-c1b (ADR-0133 PTC1B-6): Escape closes the rename overlay. Highest priority so a
   // text-input overlay never traps Escape behind another overlay's branch. The rename
   // input's OWN keydown listener also handles Escape while focused (D3-1, stopPropagation'd);
@@ -854,6 +902,12 @@ window.addEventListener('keydown', (e) => {
   // this window-level branch covers the (rare) unfocused-overlay case.
   if (e.code === 'Escape' && tradeProposeView?.visible) {
     tradeProposeView.hide();
+    e.preventDefault();
+    return;
+  }
+  // pt-c2b (ADR-0135): Escape closes the help overlay — adjacent to the sibling Escape branches.
+  if (e.code === 'Escape' && helpView?.visible) {
+    helpView.hide();
     e.preventDefault();
     return;
   }
@@ -937,6 +991,7 @@ window.addEventListener('keydown', (e) => {
   }
   // Suppress movement input while an overlay is open.
   if (
+    helpView?.visible ||
     battleView?.visible ||
     boxView?.visible ||
     raisingView?.visible ||
@@ -1017,6 +1072,8 @@ function refreshBattle(): void {
   dismissedBattleId = r.dismissedBattleId;
   battleSynced = r.synced;
   if (r.action.kind === 'show') {
+    // pt-c2b (ADR-0135): a battle auto-show supersedes the help overlay too (PTC2B-8).
+    if (helpView?.visible) helpView.hide();
     if (boxView?.visible) boxView.hide(); // active/outcome overlay supersedes the box
     if (raisingView?.visible) raisingView.hide(); // ...and the raising/inventory overlay
     if (evolutionView?.visible) evolutionView.hide(); // ...and the evolution overlay
@@ -1179,6 +1236,7 @@ store.onBatchApplied(() => {
     // pop the PvP overlay over an active battle or another overlay (mutual-exclusivity).
     // Always preserve a manually-opened overlay (pvpView.visible) regardless.
     const anyOverlayVisible =
+      helpView?.visible ||
       battleView?.visible ||
       boxView?.visible ||
       raisingView?.visible ||
@@ -1586,6 +1644,7 @@ async function main(): Promise<void> {
     { LeaderboardView: LeaderboardViewClass },
     { RenameView: RenameViewClass },
     { TradeProposeView: TradeProposeViewClass },
+    { HelpView: HelpViewClass },
   ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/battleView'),
@@ -1600,6 +1659,7 @@ async function main(): Promise<void> {
     import('./ui/leaderboardView'),
     import('./ui/renameView'),
     import('./ui/tradeProposeView'),
+    import('./ui/helpView'),
   ]);
   renderer = new WorldRenderer();
   const mount = document.getElementById('app');
@@ -1817,6 +1877,9 @@ async function main(): Promise<void> {
     // m17b: leaderboard DOM shell (ADR-0120). ZERO-arg construction — RL-15: the
     // leaderboard is a pure subscription view; there is no client write path to profile.
     leaderboardView = new LeaderboardViewClass();
+    // pt-c2b (ADR-0135): display-only help overlay — ZERO-arg construction (no callbacks,
+    // leaderboardView precedent). Opened by `?`; content is a static SSOT const.
+    helpView = new HelpViewClass();
     // pt-c1b (ADR-0133): rename overlay. onSubmit calls set_profile_name (ADR-0132) with the
     // frozen-link gate FIRST (ADR-0085 A1) — never send on a dead link. Feedback goes into
     // #rename-feedback via reduceErrorMessage on reject (no InternalError leak, PTC1B-4);
@@ -1969,7 +2032,8 @@ async function main(): Promise<void> {
           pvpView?.visible ||
           leaderboardView?.visible ||
           renameView?.visible ||
-          tradeProposeView?.visible
+          tradeProposeView?.visible ||
+          helpView?.visible
         )
       ) {
         const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
