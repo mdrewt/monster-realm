@@ -98,6 +98,8 @@ import { buildShopViewModel } from './ui/shopModel';
 import type { ShopView } from './ui/shopView';
 import { reduceErrorMessage } from './ui/statusModel';
 import { buildTradeViewModel } from './ui/tradeModel';
+import { buildProposeLists, type TradeProposeArgs } from './ui/tradeProposeModel';
+import type { TradeProposeView } from './ui/tradeProposeView';
 import type { TradeView } from './ui/tradeView';
 
 // pt-a1 (ADR-0128): resolve the SpacetimeDB target at MODULE scope (eager, like the old
@@ -172,6 +174,9 @@ let leaderboardView: LeaderboardView | undefined;
 // pt-c1b: profile-rename overlay (ADR-0133) — the first text-input overlay; wires the
 // merged set_profile_name reducer (ADR-0132) to a KeyN rename form.
 let renameView: RenameView | undefined;
+// pt-c2: trade-PROPOSE overlay (ADR-0134) — KeyO "Offer" form; wires reducers.proposeTrade
+// to let a human initiate a "sell my monster(s) + gold for your gold" trade.
+let tradeProposeView: TradeProposeView | undefined;
 // m16b: tracks the turn number at the time the player submitted a PvP action.
 // When the server resolves the turn (battle.turnNumber increments beyond this),
 // pvpPendingTurnNumber is cleared and pvpPendingSubmit becomes false.
@@ -395,6 +400,7 @@ function reconcileFromStore(): void {
       diverged &&
       !(
         renameView?.visible ||
+        tradeProposeView?.visible ||
         battleView?.visible ||
         boxView?.visible ||
         raisingView?.visible ||
@@ -492,7 +498,8 @@ window.addEventListener('keydown', (e) => {
       !tradeView?.visible &&
       !pvpView?.visible &&
       !leaderboardView?.visible &&
-      !renameView?.visible
+      !renameView?.visible &&
+      !tradeProposeView?.visible
     ) {
       raisingView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
@@ -511,7 +518,8 @@ window.addEventListener('keydown', (e) => {
       !tradeView?.visible &&
       !pvpView?.visible &&
       !leaderboardView?.visible &&
-      !renameView?.visible
+      !renameView?.visible &&
+      !tradeProposeView?.visible
     ) {
       boxView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
@@ -530,7 +538,8 @@ window.addEventListener('keydown', (e) => {
       !tradeView?.visible &&
       !pvpView?.visible &&
       !leaderboardView?.visible &&
-      !renameView?.visible
+      !renameView?.visible &&
+      !tradeProposeView?.visible
     ) {
       boxView?.hide(); // mutual exclusivity
       raisingView?.hide(); // mutual exclusivity
@@ -554,7 +563,8 @@ window.addEventListener('keydown', (e) => {
       !tradeView?.visible &&
       !pvpView?.visible &&
       !leaderboardView?.visible &&
-      !renameView?.visible
+      !renameView?.visible &&
+      !tradeProposeView?.visible
     ) {
       if (questLogView?.visible) {
         questLogView.hide();
@@ -578,7 +588,8 @@ window.addEventListener('keydown', (e) => {
       !tradeView?.visible &&
       !pvpView?.visible &&
       !leaderboardView?.visible &&
-      !renameView?.visible
+      !renameView?.visible &&
+      !tradeProposeView?.visible
     ) {
       if (healView?.visible) {
         healView.hide();
@@ -603,7 +614,8 @@ window.addEventListener('keydown', (e) => {
       !tradeView?.visible &&
       !pvpView?.visible &&
       !leaderboardView?.visible &&
-      !renameView?.visible
+      !renameView?.visible &&
+      !tradeProposeView?.visible
     ) {
       if (shopView?.visible) {
         shopView.hide();
@@ -636,7 +648,8 @@ window.addEventListener('keydown', (e) => {
       !shopView?.visible &&
       !pvpView?.visible &&
       !leaderboardView?.visible &&
-      !renameView?.visible
+      !renameView?.visible &&
+      !tradeProposeView?.visible
     ) {
       if (tradeView?.visible) {
         tradeView.hide();
@@ -669,7 +682,8 @@ window.addEventListener('keydown', (e) => {
       !shopView?.visible &&
       !tradeView?.visible &&
       !leaderboardView?.visible &&
-      !renameView?.visible
+      !renameView?.visible &&
+      !tradeProposeView?.visible
     ) {
       if (pvpView?.visible) {
         pvpView.hide();
@@ -699,7 +713,8 @@ window.addEventListener('keydown', (e) => {
       !shopView?.visible &&
       !tradeView?.visible &&
       !pvpView?.visible &&
-      !renameView?.visible
+      !renameView?.visible &&
+      !tradeProposeView?.visible
     ) {
       if (leaderboardView?.visible) {
         leaderboardView.hide();
@@ -729,7 +744,8 @@ window.addEventListener('keydown', (e) => {
       !shopView?.visible &&
       !tradeView?.visible &&
       !pvpView?.visible &&
-      !leaderboardView?.visible
+      !leaderboardView?.visible &&
+      !tradeProposeView?.visible
     ) {
       if (renameView?.visible) {
         renameView.hide();
@@ -737,6 +753,45 @@ window.addEventListener('keydown', (e) => {
         held.clear();
         renameView?.render(buildRenameViewModel(store.player(identity)?.name ?? '', ''));
         renameView?.show();
+      }
+    }
+    return;
+  }
+  // pt-c2 (ADR-0134 D7): KeyO opens the trade-PROPOSE overlay ("Offer"). Mutual-exclusion
+  // self-guard lists all 12 siblings (incl. renameView). identity !== '' (red-team L-1) so we
+  // never open before the player is joined. On open: held.clear() so no held movement key
+  // straddles the open/close boundary, build+render the lists, then show (deferred focus).
+  // e.preventDefault() suppresses any default action for the 'o' key.
+  if (e.code === 'KeyO') {
+    e.preventDefault();
+    if (
+      !battleView?.visible &&
+      !boxView?.visible &&
+      !raisingView?.visible &&
+      !evolutionView?.visible &&
+      !dialogueView?.visible &&
+      !questLogView?.visible &&
+      !healView?.visible &&
+      !shopView?.visible &&
+      !tradeView?.visible &&
+      !pvpView?.visible &&
+      !leaderboardView?.visible &&
+      !renameView?.visible &&
+      identity !== ''
+    ) {
+      if (tradeProposeView?.visible) {
+        tradeProposeView.hide();
+      } else {
+        held.clear();
+        tradeProposeView?.render(
+          buildProposeLists(
+            store.allPlayers(),
+            store.ownMonsters(identity),
+            store.speciesMap(),
+            identity,
+          ),
+        );
+        tradeProposeView?.show();
       }
     }
     return;
@@ -761,6 +816,7 @@ window.addEventListener('keydown', (e) => {
       !pvpView?.visible &&
       !leaderboardView?.visible &&
       !renameView?.visible &&
+      !tradeProposeView?.visible &&
       identity !== ''
     ) {
       const own = store.ownCharacter(identity);
@@ -789,6 +845,15 @@ window.addEventListener('keydown', (e) => {
   // this window-level branch covers the (rare) unfocused-overlay case.
   if (e.code === 'Escape' && renameView?.visible) {
     renameView.hide();
+    e.preventDefault();
+    return;
+  }
+  // pt-c2 (ADR-0134 D7): Escape closes the trade-PROPOSE overlay — adjacent to the rename
+  // branch so this text/select-input overlay gets highest Escape priority. The currency
+  // inputs' own keydown listeners also handle Escape while focused (D6, stopPropagation'd);
+  // this window-level branch covers the (rare) unfocused-overlay case.
+  if (e.code === 'Escape' && tradeProposeView?.visible) {
+    tradeProposeView.hide();
     e.preventDefault();
     return;
   }
@@ -883,7 +948,8 @@ window.addEventListener('keydown', (e) => {
     tradeView?.visible ||
     pvpView?.visible ||
     leaderboardView?.visible ||
-    renameView?.visible
+    renameView?.visible ||
+    tradeProposeView?.visible
   )
     return;
   const dir = KEY_DIR[e.code];
@@ -961,6 +1027,8 @@ function refreshBattle(): void {
     // pt-c1b (ADR-0133 D4): ...and the rename overlay — a PvP accept auto-shows the battle
     // overlay while the player may have the rename form open.
     if (renameView?.visible) renameView.hide();
+    // pt-c2 (ADR-0134 D7): ...and the trade-PROPOSE overlay — same battle auto-show reason.
+    if (tradeProposeView?.visible) tradeProposeView.hide();
     // Build baitItems from own inventory × item defs (12.5f-5: wire the 4th arg
     // that was already present in buildBattleViewModel with default []). The
     // function classifies by recruitBonus > 0 internally (ADR-0047 classify-by-data).
@@ -1121,7 +1189,8 @@ store.onBatchApplied(() => {
       shopView?.visible ||
       tradeView?.visible ||
       leaderboardView?.visible ||
-      renameView?.visible;
+      renameView?.visible ||
+      tradeProposeView?.visible;
     const forceVisible =
       !anyOverlayVisible && (vm.incoming !== null || (pvpView?.visible ?? false));
     pvpView?.refresh(vm, forceVisible);
@@ -1516,6 +1585,7 @@ async function main(): Promise<void> {
     { PvpView: PvpViewClass },
     { LeaderboardView: LeaderboardViewClass },
     { RenameView: RenameViewClass },
+    { TradeProposeView: TradeProposeViewClass },
   ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/battleView'),
@@ -1529,6 +1599,7 @@ async function main(): Promise<void> {
     import('./ui/pvpView'),
     import('./ui/leaderboardView'),
     import('./ui/renameView'),
+    import('./ui/tradeProposeView'),
   ]);
   renderer = new WorldRenderer();
   const mount = document.getElementById('app');
@@ -1767,6 +1838,36 @@ async function main(): Promise<void> {
         }
       },
     });
+    // pt-c2 (ADR-0134 D4): trade-PROPOSE overlay. onSubmit consumes the model's typed args
+    // (no DOM re-derive) and calls reducers.proposeTrade with the frozen-link gate FIRST
+    // (ADR-0085 A1). The model's targetIdentity string is wrapped in `new Identity(...)` here
+    // (the SDK boundary); the counterparty side is currency-only (RLS — D2), so the monster/
+    // item request fields are always empty. Feedback into #tradepropose-feedback via
+    // reduceErrorMessage on reject (no InternalError leak, PTC2-15).
+    tradeProposeView = new TradeProposeViewClass({
+      onSubmit: async (args: TradeProposeArgs) => {
+        if (conn === undefined || conn.linkFrozen()) {
+          if (tradeProposeView?.visible) tradeProposeView.showFeedback('disconnected — try again');
+          return;
+        }
+        try {
+          await conn.conn.reducers.proposeTrade({
+            counterparty: new Identity(args.targetIdentity),
+            initiatorMonsterIds: [...args.initiatorMonsterIds],
+            initiatorItems: [],
+            initiatorCurrency: args.initiatorCurrency,
+            counterpartyMonsterIds: [],
+            counterpartyItems: [],
+            counterpartyCurrency: args.counterpartyCurrency,
+          });
+          if (tradeProposeView?.visible) tradeProposeView.showFeedback('Offer sent!');
+        } catch (err) {
+          if (tradeProposeView?.visible) {
+            tradeProposeView.showFeedback(reduceErrorMessage(err, 'propose-trade'));
+          }
+        }
+      },
+    });
   }
 
   // M13.5b (ADR-0085 C8): create the status surface BEFORE `conn = connect(...)` is
@@ -1801,6 +1902,10 @@ async function main(): Promise<void> {
       // was reset (stale current-name), and an in-flight submit will never settle on the
       // dropped link. hide() also resets the input value + feedback (stale-draft guard).
       renameView?.hide();
+      // pt-c2 (ADR-0134 D7 reviewer M-2 / red-team C-2): hide the trade-PROPOSE overlay on
+      // reconnect too. WITHOUT this, the view's #pending lock survives the link drop (the SDK
+      // never settles the in-flight proposeTrade promise) → dead submit button forever.
+      tradeProposeView?.hide();
       // pt-b1 (red-team M-1): re-baseline a surviving Ongoing battle on the next batch
       // instead of re-emitting a spurious battleStart for it.
       battleReseedPending = true;
@@ -1863,7 +1968,8 @@ async function main(): Promise<void> {
           tradeView?.visible ||
           pvpView?.visible ||
           leaderboardView?.visible ||
-          renameView?.visible
+          renameView?.visible ||
+          tradeProposeView?.visible
         )
       ) {
         const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);

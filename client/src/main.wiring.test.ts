@@ -831,3 +831,326 @@ describe('main.ts wiring (pt-c1b rename): onSubmit routes through reduceErrorMes
     ).toBe(true);
   });
 });
+
+// ===========================================================================
+// pt-c2 trade-PROPOSE overlay wiring — NEW describe block (does NOT modify prior blocks).
+//
+// SOURCE OF TRUTH: pt-c2 EARS criteria PTC2-13/14/15 + ADR-0134 D4/D7.
+//
+// RED REASON: main.ts on master has no tradeProposeView wiring yet — no import,
+// no let, no dynamic import, no KeyO handler, no fan-out guards.
+// Every test below starts RED (indexOf returns -1 / assertion fails).
+//
+// D7 fan-out checklist (enumerated in ADR-0134) — EXACT sites:
+//   Open guards (all 11 siblings + new KeyO self-guard): 495 KeyB, 514 KeyI, 533 KeyE,
+//     557 KeyQ, 581 KeyH, 606 KeyG, 639 KeyU, 672 KeyP, 702 KeyL, 733 KeyN, 763 KeyT.
+//   KeyO handler: identity!=='' guard + held.clear() + e.preventDefault() + toggle-close.
+//   Escape branch: `tradeProposeView?.visible` branch adjacent to renameView Escape.
+//   Movement/reissue suppression: reconcile (~390), keydown movement block (~874), rAF (~1853).
+//   PvP anyOverlayVisible: batch listener (~1113) aggregate.
+//   Force-hide: onReconnect (~1803).
+//
+// WRONG IMPL KILLED (per test):
+//   W-TP-KEYO: missing 'KeyO' branch in keydown → overlay never opens
+//   W-TP-ESCAPE: missing tradeProposeView?.visible in Escape → overlay stuck open
+//   W-TP-IMPORT/LET/DYNIMPORT/CONSTRUCT: standard import-chain gaps
+//   W-TP-REDUCER: missing proposeTrade( call → no trade initiated
+//   W-TP-IDENTITY-GUARD: missing identity!=='' check → crash on empty identity
+//   W-TP-HELD: missing held.clear() → held keys straddle open/close
+//   W-TP-PREVENT: missing e.preventDefault() → 'o' char injected into...wrong, no text input
+//                 but preventDefault() is still required to prevent any default key action
+//   W-TP-FANOUT-*: each fan-out site gap creates a bleed (movement/pvp-over-overlay)
+//   W-TP-RECONNECT: missing hide on reconnect → dead #pending lock forever
+//   W-TP-FROZEN: missing linkFrozen() gate → dead promise on dropped link
+//   W-TP-ERRMSG: missing reduceErrorMessage → InternalError leak
+//   W-TP-IDENTITY-CTOR: missing new Identity( → wrong call shape
+// ===========================================================================
+
+describe('main.ts wiring (pt-c2 tradePropose): import + let + dynamic-import + construction', () => {
+  it('W-TP-IMPORT BITES: main.ts imports from "./ui/tradeProposeView" — kills missing-import impl', () => {
+    // WRONG IMPL KILLED: an impl that never imports tradeProposeView — the view is never constructed.
+    const src = readMainTs();
+    expect(
+      src.includes("'./ui/tradeProposeView'"),
+      'main.ts must contain "\'./ui/tradeProposeView\'" import (pt-c2 wiring)',
+    ).toBe(true);
+  });
+
+  it('W-TP-LET BITES: main.ts declares "let tradeProposeView" — kills missing-let impl', () => {
+    // WRONG IMPL KILLED: an impl that never declares the module-scope let — the view
+    // cannot be referenced by the fan-out guards.
+    const src = readMainTs();
+    expect(
+      src.includes('let tradeProposeView'),
+      'main.ts must declare "let tradeProposeView" at module scope (pt-c2 wiring)',
+    ).toBe(true);
+  });
+
+  it('W-TP-DYNIMPORT BITES: main.ts dynamic-imports "./ui/tradeProposeView" — kills missing-dynamic-import impl', () => {
+    // WRONG IMPL KILLED: an impl that statically imports the view (crashes vitest on DOM)
+    // or omits the dynamic import entirely.
+    const src = readMainTs();
+    expect(
+      src.includes("import('./ui/tradeProposeView')"),
+      "main.ts must contain import('./ui/tradeProposeView') in the dynamic-import fan-out (pt-c2 wiring)",
+    ).toBe(true);
+  });
+
+  it('W-TP-CONSTRUCT BITES: main.ts constructs "new TradeProposeView(" — kills missing-construction impl', () => {
+    // WRONG IMPL KILLED: an impl that imports tradeProposeView but never constructs it.
+    const src = readMainTs();
+    const hasNew =
+      src.includes('new TradeProposeView(') || src.includes('new TradeProposeViewClass(');
+    expect(
+      hasNew,
+      'main.ts must construct new TradeProposeView( or new TradeProposeViewClass( (pt-c2 wiring)',
+    ).toBe(true);
+  });
+});
+
+describe('main.ts wiring (pt-c2 tradePropose): proposeTrade reducer call present', () => {
+  it('W-TP-REDUCER BITES: main.ts contains "reducers.proposeTrade(" — kills missing-reducer-call impl', () => {
+    // WRONG IMPL KILLED: a tradeProposeView that is constructed but never calls the server
+    // reducer — trades would never be initiated.
+    // PTC2-15: the UI must wire proposeTrade.
+    const src = readMainTs();
+    expect(
+      src.includes('reducers.proposeTrade('),
+      'main.ts must call reducers.proposeTrade( in the tradePropose wiring (PTC2-15)',
+    ).toBe(true);
+  });
+});
+
+describe('main.ts wiring (pt-c2 tradePropose): KeyO handler (PTC2-13 / D7)', () => {
+  it("W-TP-KEYO BITES: main.ts contains a 'KeyO' handler — kills missing-KeyO impl", () => {
+    // PTC2-13: WHEN KeyO pressed AND no other overlay visible, open/toggle the tradeProposeView.
+    // WRONG IMPL KILLED: an impl with no KeyO branch in the keydown handler.
+    const src = readMainTs();
+    expect(
+      src.includes("'KeyO'"),
+      "main.ts must contain a 'KeyO' handler (PTC2-13 trade-propose entry point)",
+    ).toBe(true);
+  });
+
+  it("W-TP-IDENTITY-GUARD BITES: main.ts KeyO branch checks identity !== '' — kills L-1 impl (D7)", () => {
+    // D7 red-team L-1: KeyO must guard on identity!=='' before opening the overlay.
+    // WRONG IMPL KILLED: an impl that opens the propose form without an identity guard —
+    // proposeTrade would be called with an empty targetIdentity or before the player is joined.
+    // Strategy: locate 'KeyO' and assert `identity !== ''` appears in the nearby region.
+    const src = readMainTs();
+    const keyOIdx = src.indexOf("'KeyO'");
+    expect(keyOIdx, "main.ts must contain 'KeyO' (PTC2-13)").toBeGreaterThanOrEqual(0);
+    const keyORegion = src.slice(keyOIdx, keyOIdx + 800);
+    expect(
+      keyORegion.includes("identity !== ''"),
+      "main.ts KeyO region must contain `identity !== ''` guard (D7 L-1)",
+    ).toBe(true);
+  });
+
+  it('W-TP-HELD BITES: main.ts KeyO branch contains held.clear() — kills missing-held-clear impl (D7)', () => {
+    // D7: held.clear() on open makes the held-key stack immune to press/release
+    // straddling the overlay's open/close boundary (same as KeyN pattern).
+    // WRONG IMPL KILLED: an impl that opens the overlay without clearing held keys.
+    const src = readMainTs();
+    const keyOIdx = src.indexOf("'KeyO'");
+    expect(keyOIdx, "main.ts must contain 'KeyO' (PTC2-13)").toBeGreaterThanOrEqual(0);
+    const keyORegion = src.slice(keyOIdx, keyOIdx + 800);
+    expect(
+      keyORegion.includes('held.clear()'),
+      'main.ts KeyO region must contain held.clear() — clears prediction held-key stack on open (D7)',
+    ).toBe(true);
+  });
+
+  it('W-TP-PREVENT BITES: main.ts KeyO branch contains e.preventDefault() — kills missing-preventDefault impl', () => {
+    // e.preventDefault() prevents any default browser action for 'o' key.
+    // WRONG IMPL KILLED: an impl where KeyO opens the overlay without preventing the default action.
+    const src = readMainTs();
+    const keyOIdx = src.indexOf("'KeyO'");
+    expect(keyOIdx, "main.ts must contain 'KeyO' (PTC2-13)").toBeGreaterThanOrEqual(0);
+    const keyORegion = src.slice(keyOIdx, keyOIdx + 800);
+    expect(
+      keyORegion.includes('e.preventDefault()'),
+      'main.ts KeyO region must contain e.preventDefault() (D7)',
+    ).toBe(true);
+  });
+});
+
+describe('main.ts wiring (pt-c2 tradePropose): Escape handler (PTC2-14 / D7)', () => {
+  it('W-TP-ESCAPE BITES: main.ts Escape handler includes tradeProposeView?.visible — kills missing-Escape-close impl', () => {
+    // D7: "Escape branch (NEW, placed adjacent to the rename branch)".
+    // WRONG IMPL KILLED: an impl where the Escape handler only covers renameView and other
+    // overlays but not tradeProposeView, leaving the overlay un-closeable via Escape.
+    const src = readMainTs();
+    const escapeIdx = src.indexOf("e.code === 'Escape'");
+    expect(escapeIdx, 'main.ts must contain an Escape handler').toBeGreaterThanOrEqual(0);
+    // Check in the 2500 chars after the first Escape to cover all Escape branches.
+    const escapeRegion = src.slice(escapeIdx, escapeIdx + 2500);
+    expect(
+      escapeRegion.includes('tradeProposeView'),
+      'main.ts Escape region must reference tradeProposeView — the overlay must be closeable via Escape (D7)',
+    ).toBe(true);
+  });
+});
+
+describe('★ main.ts wiring (pt-c2 tradePropose): D7 fan-out checklist (PTC2-14)', () => {
+  // Fan-out parity rule (ADR-0134 D7): every renameView?.visible guard site gets a sibling
+  // tradeProposeView?.visible. At pt-c1b authoring time, renameView?.visible appears N times.
+  // After pt-c2, tradeProposeView?.visible must appear at least the same count.
+  //
+  // The per-context needles below are the LOAD-BEARING tests — they name specific wiring
+  // sites that are easy to miss (ADR-0134 D7 enumerated checklist).
+  // Count floor: renameView?.visible count at pt-c1b authoring was 17 (same as leaderboard).
+  // tradeProposeView adds one more (the new KeyO open guard is itself the 18th self-guard).
+  // We conservatively assert ≥17 (the parity count, not +1) since the impl may structure
+  // the KeyO self-guard differently (e.g. combined with the open logic).
+  const RENAME_VISIBLE_COUNT = 17; // parity floor at pt-c1b authoring time
+
+  it(`★ W-TP-FANOUT-COUNT BITES: tradeProposeView?.visible appears at least ${RENAME_VISIBLE_COUNT} times — kills under-wired impl`, () => {
+    // WRONG IMPL KILLED: an impl that adds tradeProposeView to some but not all fan-out sites.
+    const src = readMainTs();
+    const parts = src.split('tradeProposeView?.visible');
+    const count = parts.length - 1;
+    expect(
+      count,
+      `main.ts must contain tradeProposeView?.visible at least ${RENAME_VISIBLE_COUNT} times ` +
+        `(D7 fan-out parity with renameView?.visible — ADR-0134). Found: ${count}.`,
+    ).toBeGreaterThanOrEqual(RENAME_VISIBLE_COUNT);
+  });
+
+  it('W-TP-FANOUT-RECONCILE BITES: tradeProposeView?.visible in the reconcile OR-block — kills reconcile-bleed impl (D7)', () => {
+    // D7 movement/reissue suppression site: reconcile (~390).
+    // WRONG IMPL KILLED: an impl that forgets tradeProposeView in the reconcile block —
+    // held keys could re-issue movement while the propose overlay is open.
+    const src = readMainTs();
+    const reconcileIdx = src.indexOf('predictor.reconcile(');
+    expect(reconcileIdx, 'main.ts must contain predictor.reconcile(').toBeGreaterThanOrEqual(0);
+    const reconcileRegion = src.slice(reconcileIdx, reconcileIdx + 700);
+    expect(
+      reconcileRegion.includes('tradeProposeView?.visible'),
+      'main.ts reconcile region must contain tradeProposeView?.visible (D7 movement suppression)',
+    ).toBe(true);
+  });
+
+  it('W-TP-FANOUT-KEYDOWN BITES: tradeProposeView?.visible in the keydown movement-suppression OR-block (D7)', () => {
+    // D7 movement/reissue suppression site: keydown (~874).
+    // WRONG IMPL KILLED: an impl that forgets tradeProposeView in the keydown suppression block —
+    // WASD would move the character while the propose overlay is open.
+    const src = readMainTs();
+    const suppressIdx = src.indexOf('Suppress movement input while an overlay is open');
+    expect(
+      suppressIdx,
+      "main.ts must contain the 'Suppress movement' comment",
+    ).toBeGreaterThanOrEqual(0);
+    const suppressRegion = src.slice(suppressIdx, suppressIdx + 700);
+    expect(
+      suppressRegion.includes('tradeProposeView?.visible'),
+      'main.ts keydown movement-suppression block must contain tradeProposeView?.visible (D7)',
+    ).toBe(true);
+  });
+
+  it('W-TP-FANOUT-RAF BITES: tradeProposeView?.visible in the rAF frame-loop held-key re-issue OR-block (D7)', () => {
+    // D7 movement/reissue suppression site: rAF frame-loop (~1853).
+    // WRONG IMPL KILLED: an impl that forgets tradeProposeView in the rAF block — a held key
+    // keeps walking in the background while the propose overlay is open.
+    const src = readMainTs();
+    const drainIdx = src.indexOf('predictor.drain(');
+    expect(drainIdx, 'main.ts must contain predictor.drain(').toBeGreaterThanOrEqual(0);
+    const rafRegion = src.slice(Math.max(0, drainIdx - 500), drainIdx);
+    expect(
+      rafRegion.includes('tradeProposeView?.visible'),
+      'main.ts rAF frame-loop held-key re-issue block must contain tradeProposeView?.visible (D7)',
+    ).toBe(true);
+  });
+
+  it('★ W-TP-FANOUT-PVP BITES: tradeProposeView?.visible in the anyOverlayVisible pvp aggregate (D7 reviewer B-2 / red-team C-1)', () => {
+    // D7: "PvP auto-show (add tradeProposeView?.visible): 1113-1124 batch-listener anyOverlayVisible
+    // (reviewer B-2 / red-team C-1 — a server-push auto-show, easy to miss)."
+    // WRONG IMPL KILLED: an impl that forgets tradeProposeView in anyOverlayVisible —
+    // an incoming PvP challenge auto-shows the PvP overlay OVER the propose form.
+    // PROOF-OF-TEETH: a server-push anyOverlayVisible without tradeProposeView means the
+    // PvP overlay pops over a half-filled propose form (the most common playtest UX failure).
+    const src = readMainTs();
+    const pvpAggIdx = src.indexOf('anyOverlayVisible');
+    expect(pvpAggIdx, 'main.ts must contain anyOverlayVisible').toBeGreaterThanOrEqual(0);
+    const pvpRegion = src.slice(pvpAggIdx, pvpAggIdx + 1200);
+    expect(
+      pvpRegion.includes('tradeProposeView'),
+      'main.ts anyOverlayVisible pvp aggregate must reference tradeProposeView (D7 B-2/C-1)',
+    ).toBe(true);
+  });
+
+  it('★ W-TP-FANOUT-KEYN-GUARD BITES: tradeProposeView?.visible in the KeyN open guard (D7 reviewer B-1 — easy miss)', () => {
+    // D7: "733 KeyN (reviewer B-1 — easy miss)".
+    // WRONG IMPL KILLED: an impl that guards KeyN against all other overlays but not tradeProposeView
+    // — pressing KeyN while the propose form is open would open the rename overlay over it.
+    const src = readMainTs();
+    const keyNIdx = src.indexOf("'KeyN'");
+    expect(keyNIdx, "main.ts must contain 'KeyN'").toBeGreaterThanOrEqual(0);
+    // KeyN open guard block is within ~800 chars after 'KeyN'
+    const keyNRegion = src.slice(keyNIdx, keyNIdx + 800);
+    expect(
+      keyNRegion.includes('tradeProposeView'),
+      'main.ts KeyN open guard must reference tradeProposeView (D7 reviewer B-1 — easy miss)',
+    ).toBe(true);
+  });
+
+  it('★ W-TP-RECONNECT BITES: tradeProposeView?.hide() called in onReconnect — kills dead-#pending-lock impl (D7 reviewer M-2 / red-team C-2)', () => {
+    // D7: "~1803 onReconnect (reviewer M-2 / red-team C-2 — WITHOUT this the #pending lock
+    // survives a link drop → dead submit button forever)."
+    // WRONG IMPL KILLED: an impl that hides other overlays on reconnect but forgets
+    // tradeProposeView — the propose overlay stays open with a dead in-flight lock.
+    const src = readMainTs();
+    const reconnectIdx = src.indexOf('onReconnect:');
+    expect(reconnectIdx, 'main.ts must contain onReconnect:').toBeGreaterThanOrEqual(0);
+    const reconnectRegion = src.slice(reconnectIdx, reconnectIdx + 1000);
+    expect(
+      reconnectRegion.includes('tradeProposeView'),
+      'main.ts onReconnect body must reference tradeProposeView?.hide() (D7 M-2/C-2)',
+    ).toBe(true);
+  });
+});
+
+describe('main.ts wiring (pt-c2 tradePropose): onSubmit — frozen-gate + Identity/bigint + reduceErrorMessage (PTC2-15 / D4)', () => {
+  it('W-TP-ERRMSG BITES: main.ts contains "reduceErrorMessage(" used in the tradePropose wiring — kills no-error-msg impl', () => {
+    // PTC2-15: WHEN proposeTrade rejects, show reduceErrorMessage(err,'propose-trade').
+    // WRONG IMPL KILLED: an impl that shows a raw error string (InternalError leak) or
+    // silently swallows the rejection.
+    // NOTE: reduceErrorMessage( is already present from prior slices (rename, shop, etc.);
+    // this scan asserts it is still present (regression guard + new-site confirmation).
+    const src = readMainTs();
+    expect(
+      src.includes('reduceErrorMessage('),
+      'main.ts must use reduceErrorMessage( for tradePropose error feedback (PTC2-15: no InternalError leak)',
+    ).toBe(true);
+    // The specific 'propose-trade' label must appear (pins the error context string for this slice).
+    expect(
+      src.includes("'propose-trade'"),
+      "main.ts must contain the 'propose-trade' reduceErrorMessage label (PTC2-15)",
+    ).toBe(true);
+  });
+
+  it('W-TP-IDENTITY-CTOR BITES: main.ts constructs "new Identity(" in the tradePropose wiring — kills raw-string impl (D4)', () => {
+    // D4: "main.ts's onSubmit(args) [...] calls reducers.proposeTrade({ counterparty: new Identity(args.targetIdentity), ...})".
+    // WRONG IMPL KILLED: an impl that passes args.targetIdentity as a raw string to counterparty
+    // (the SDK expects an Identity object, not a string; a string arg would be silently wrong or
+    // produce a runtime type error at the SDK boundary).
+    const src = readMainTs();
+    expect(
+      src.includes('new Identity('),
+      'main.ts must construct new Identity( in the tradePropose onSubmit (D4: SDK boundary)',
+    ).toBe(true);
+  });
+
+  it('W-TP-FROZEN BITES: main.ts contains "linkFrozen()" check in the tradePropose wiring — kills no-frozen-gate impl (D4)', () => {
+    // D4: "It gates on conn === undefined || conn.linkFrozen() FIRST (ADR-0085 A1)".
+    // WRONG IMPL KILLED: an impl where tradePropose onSubmit calls the reducer without first
+    // checking linkFrozen() — the promise never settles on a dead link (dead-button-forever).
+    // NOTE: linkFrozen() is already present in main.ts from sendGuarded and the rename wiring;
+    // this is a regression guard confirming it is still used for the propose path.
+    const src = readMainTs();
+    expect(
+      src.includes('linkFrozen()'),
+      'main.ts must contain linkFrozen() check (frozen-link gate, D4 / ADR-0085 A1)',
+    ).toBe(true);
+  });
+});

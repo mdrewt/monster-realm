@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 99 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 100 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -108,6 +108,7 @@ Generated from 99 project ADRs (`docs/adr/`) and 36 harness design entries (`doc
 | [0131](./0131-server-playtest-capture.md) | Server-side playtest capture: additive `playtest_event` table + interval-singleton reaper + H1 report | Accepted | schema-persistence, security-authz, tooling-docs | pt-b2 | An additive PRIVATE `playtest_event` table, fed by `attempt_recruit` at the H1 decision point and bounded by an interval-singleton TTL+cap reaper, gives the fun-gate its H1/H2 proxy stream via `just playtest-report`. |
 | [0132](./0132-profile-rename-reducer.md) | `set_profile_name` rename reducer + RL-7 module-write-only tooth refinement | Accepted | security-authz, ci-gates | pt-c1 | `set_profile_name` in `ranking.rs` validates via `validate_name` and writes only `player.name` (Option a); the ADR-0125 mirror surfaces it on the leaderboard, and RL-7 refines from zero reducers to one profile-untouching name-setter. |
 | [0133](./0133-rename-ui.md) | Client profile-rename UI (first text-input overlay) | Accepted | client-ui, movement-netcode, ci-gates | pt-c1b | A `KeyN` rename overlay wires the client to the already-merged `set_profile_name` |
+| [0134](./0134-trade-propose-ui.md) | Client trade-PROPOSE UI (KeyO offer overlay) | Accepted | client-ui, economy-quests, movement-netcode | pt-c2 | A `KeyO` ("Offer") overlay gives a human the FIRST entry point to *initiate* a trade |
 
 ## Harness design corpus (H- namespace)
 
@@ -210,6 +211,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0085](./0085-reducer-rejection-feedback-and-reconnect.md) — m13.5b — Reducer-rejection feedback & app-level reconnect (M13.5b) (Accepted)
 - [0090](./0090-adaptive-interp-delay.md) — m13.5e — Adaptive remote-interpolation delay (M13.5e) (Accepted)
 - [0133](./0133-rename-ui.md) — pt-c1b — Client profile-rename UI (first text-input overlay) (Accepted)
+- [0134](./0134-trade-propose-ui.md) — pt-c2 — Client trade-PROPOSE UI (KeyO offer overlay) (Accepted)
 
 ### content
 
@@ -274,6 +276,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0128](./0128-pt-a1-client-playtest-build-hygiene.md) — pt-a1 — Client-side local-playtest build hygiene: prod-safe connection config + build version stamp (Accepted)
 - [0130](./0130-client-observability.md) — pt-b1 — Client observability: error overlay + event ring + F9 bug-report bundle (H1/H2/H3 taxonomy) (Accepted)
 - [0133](./0133-rename-ui.md) — pt-c1b — Client profile-rename UI (first text-input overlay) (Accepted)
+- [0134](./0134-trade-propose-ui.md) — pt-c2 — Client trade-PROPOSE UI (KeyO offer overlay) (Accepted)
 
 ### ci-gates
 
@@ -376,3 +379,4 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0117](./0117-m16.5f-trade-ssot-polish.md) — m16.5f — Trade SSOT polish: typed authorize rules, symmetric escrow checks, privacy-doc correction, offer TTL reaper (Accepted)
 - [0123](./0123-trade-swap-debits-before-credits-ordering.md) — m17.5b (M17.5 tenth-review residuals §17.5b — trade same-item near-cap conservation) — 0123 — Trade swap debits-before-credits ordering: apply-order contract + netted currency headroom (Accepted)
 - [0124](./0124-shop-receiver-cap-headroom.md) — m17.5c — 0124 — Shop receiver-cap headroom: reject-not-destroy on buy/sell (Accepted)
+- [0134](./0134-trade-propose-ui.md) — pt-c2 — Client trade-PROPOSE UI (KeyO offer overlay) (Accepted)

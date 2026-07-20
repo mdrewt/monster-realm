@@ -54,6 +54,27 @@
       <button id="rename-submit" data-testid="rename-submit" type="button">Rename</button>
       <div id="rename-feedback" data-testid="rename-feedback"></div>
     </div>
+    <!-- pt-c2 trade-PROPOSE overlay shell — hidden by default; managed by TradeProposeView (ADR-0134). -->
+    <div id="tradepropose-overlay" style="display:none">
+      <select id="tradepropose-target" data-testid="tradepropose-target"></select>
+      <div id="tradepropose-monsters" data-testid="tradepropose-monsters"></div>
+      <input
+        id="tradepropose-offer-currency"
+        data-testid="tradepropose-offer-currency"
+        type="number"
+        min="0"
+      />
+      <input
+        id="tradepropose-request-currency"
+        data-testid="tradepropose-request-currency"
+        type="number"
+        min="0"
+      />
+      <button id="tradepropose-submit" data-testid="tradepropose-submit" type="button">
+        Offer
+      </button>
+      <div id="tradepropose-feedback" data-testid="tradepropose-feedback"></div>
+    </div>
     <!-- pt-a1 (ADR-0128): build-provenance stamp — populated by main.ts from BUILD_INFO
          (git sha + build time + mode). Non-intrusive; pins which build a playtest finding
          came from. Present in production (unlike the DEV-gated debug hooks). -->
