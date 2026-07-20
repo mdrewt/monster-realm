@@ -641,3 +641,92 @@ describe('RT-RN-08: set_profile_name_reducer.ts declares exactly one field "name
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review-hardening regression tests (impl review — reviewer B-1 / red-team F1 +
+// the e2e-caught button-never-enables bug). All strengthening; no prior test touched.
+// ---------------------------------------------------------------------------
+describe('RenameView review-hardening: live submit-enable, hide() lock reset, button stopPropagation', () => {
+  beforeEach(() => {
+    mountRenameOverlay();
+  });
+  afterEach(() => {
+    teardown();
+  });
+
+  it('★ BITES: typing a non-empty name enables the submit button; clearing it disables — kills the "no input listener → button stuck disabled" bug the e2e caught', () => {
+    // WRONG IMPL KILLED: a view whose button-disabled state is only set by render()
+    // on open (empty draft → disabled) and never re-evaluated as the user types. Real
+    // browsers do not fire click on a disabled button, so the rename would be unusable.
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.show();
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    const btn = document.getElementById('rename-submit') as HTMLButtonElement;
+
+    input.value = 'ValidName';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(btn.disabled, 'button must be ENABLED when the input has a non-empty name').toBe(false);
+
+    input.value = '   ';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(btn.disabled, 'button must be DISABLED when the input is whitespace-only').toBe(true);
+
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(btn.disabled, 'button must be DISABLED when the input is empty').toBe(true);
+  });
+
+  it('★ BITES: hide() while a submit is in-flight resets the #pending lock — a later submit fires again (reviewer B-1: dead-button after reconnect force-hide)', async () => {
+    // WRONG IMPL KILLED: a hide() that does not reset #pending. onReconnect / battle
+    // auto-show force-hide this overlay; the SDK never settles the in-flight promise on
+    // a link drop (ADR-0085), so .finally() may never run → #pending stuck true forever.
+    let resolveFirst: (() => void) | undefined;
+    const onSubmit = vi.fn().mockImplementation(
+      () =>
+        new Promise<void>((res) => {
+          resolveFirst = res; // never resolved during this test → keeps #pending true
+        }),
+    );
+    const view = new RenameView({ onSubmit });
+    view.show();
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    const btn = document.getElementById('rename-submit') as HTMLButtonElement;
+
+    input.value = 'FirstName';
+    btn.click();
+    expect(onSubmit).toHaveBeenCalledTimes(1); // #pending now true, promise never settles
+
+    // Force-hide while in-flight (the reconnect / battle-auto-show path).
+    view.hide();
+
+    // Reopen and submit a new name: if hide() reset #pending, this fires; otherwise it is
+    // swallowed by the stuck lock and onSubmit stays at 1 call.
+    view.show();
+    input.value = 'SecondName';
+    btn.click();
+    expect(
+      onSubmit,
+      'hide() must reset #pending so a post-hide submit can fire',
+    ).toHaveBeenCalledTimes(2);
+
+    resolveFirst?.(); // clean up the dangling promise
+    await flushPromises();
+  });
+
+  it('★ BITES: a hotkey keydown on the submit BUTTON does not reach the window listener — button stopPropagation (red-team Finding 1)', () => {
+    // WRONG IMPL KILLED: stopPropagation attached only to the input, not the button.
+    // Tab-focus or a mouse click leaves the button focused; a KeyW keydown then bubbles
+    // to the window keydown handler. The button's own keydown listener must stopPropagation.
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.show();
+    const btn = document.getElementById('rename-submit') as HTMLButtonElement;
+    const spy = vi.fn();
+    window.addEventListener('keydown', spy);
+    btn.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', bubbles: true }));
+    expect(
+      spy,
+      'a keydown on the focused submit button must not bubble to window',
+    ).not.toHaveBeenCalled();
+    window.removeEventListener('keydown', spy);
+  });
+});

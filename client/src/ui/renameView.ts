@@ -64,9 +64,32 @@ export class RenameView {
       else if (e.code === 'Escape') this.hide();
     });
 
+    // Live-update the submit-enabled state as the user types: render() only runs on
+    // open (empty draft → disabled), and real browsers do not fire click on a disabled
+    // button, so without this the button would stay dead no matter what is typed. Uses
+    // the same buildRenameViewModel SSOT so the enabled state matches #submit()'s gate.
+    this.#input.addEventListener('input', () => {
+      this.#refreshSubmitEnabled();
+    });
+
+    // The submit button is a second focus target (Tab from the input, or a mouse
+    // click leaves it focused). Its keydown must also stopPropagation so a hotkey/
+    // movement key pressed while the button holds focus never reaches the window
+    // listener (completes the D3 stopPropagation contract — red-team Finding 1).
+    // stopPropagation does not preventDefault, so Enter/Space still fire the click.
+    this.#submitBtn.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+    });
+
     this.#submitBtn.addEventListener('click', () => {
       this.#submit();
     });
+  }
+
+  // Recompute the submit-enabled state from the live input value, via the same
+  // buildRenameViewModel SSOT that render() and #submit() use.
+  #refreshSubmitEnabled(): void {
+    this.#submitBtn.disabled = !buildRenameViewModel('', this.#input.value).canSubmit;
   }
 
   get visible(): boolean {
@@ -84,6 +107,12 @@ export class RenameView {
     // Stale-draft guard (RT-RN-02): a value/feedback from a prior open must not survive.
     this.#input.value = '';
     this.#feedback.textContent = '';
+    // Release the in-flight lock (shopView/tradeView precedent): onReconnect and the
+    // battle auto-show force-hide this overlay, and the SDK never settles an in-flight
+    // reducer promise after a link drop (ADR-0085) — so .finally() may never run.
+    // Without this reset, #pending stays true forever → dead submit button (reviewer B-1).
+    this.#pending = false;
+    this.#submitBtn.disabled = false;
   }
 
   toggle(): void {
@@ -108,6 +137,9 @@ export class RenameView {
     // currentName is irrelevant here — only trimmedDraft/canSubmit are consulted (PTC1B-7).
     const vm = buildRenameViewModel('', this.#input.value);
     if (!vm.canSubmit) return; // empty-after-trim → no-op, do NOT call onSubmit.
+    // Clear any prior feedback so a stale "Name updated!" never lingers under a new
+    // in-flight submission (red-team Finding 2 — misleading positive UX).
+    this.#feedback.textContent = '';
     this.#pending = true;
     this.#submitBtn.disabled = true;
     // .finally() resets on BOTH resolve and reject — no dead-button-forever (RT-RN-03).

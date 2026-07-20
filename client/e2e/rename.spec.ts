@@ -154,8 +154,15 @@ function parsePlayerRow(sqlOutput: string, ownNormalizedIdentity: string): Playe
     const normalized = normalizeIdentity(rawId);
     if (normalized !== ownNormalizedIdentity) continue;
 
-    // Found the own identity row.
-    const name = cols[1] ?? '';
+    // Found the own identity row. spacetime sql wraps STRING column values in
+    // double-quotes ("Name") — strip the surrounding pair so the comparison is
+    // against the raw stored name. (ranked-forfeit.spec.ts only parses NUMERIC
+    // columns, which are unquoted, so that precedent never needed this.) Plain
+    // string ops — no RegExp (Semgrep detect-non-literal-regexp hygiene).
+    let name = cols[1] ?? '';
+    if (name.length >= 2 && name.startsWith('"') && name.endsWith('"')) {
+      name = name.slice(1, -1);
+    }
     return { identity: normalized, name };
   }
 
