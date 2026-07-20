@@ -10,7 +10,7 @@ Architecture Decision Records live in **two locations**; check both.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0133`**.
+`0001` or `0035`+ → `docs/adr/`. Next free number: **`0134`**.
 
 **ADR numbering collision note:** the harness spec corpus also contains design
 ADRs numbered `0055`–`0057`; these cover the *same topics* as this project's
@@ -125,6 +125,7 @@ prefix `harness adr/0055` to cite the harness design ADR.
 | [0130](./0130-client-observability.md) | pt-b1 client observability: error overlay + event ring + F9 bug-report bundle (H1/H2/H3 severity taxonomy) — DEV-gated capture, bounded ring buffer, F9 downloads a redacted bundle wired via `window.__mrBuild` from ADR-0128 | pt-b1 |
 | [0131](./0131-server-playtest-capture.md) | pt-b2 server-side playtest capture: additive PRIVATE `playtest_event` table fed by `attempt_recruit` at the H1 decision point + interval-singleton TTL+cap reaper for bounded growth + `just playtest-report` H1/H2/H3 proxy stream | pt-b2 |
 | [0132](./0132-profile-rename-reducer.md) | pt-c1 `set_profile_name` rename reducer + RL-7 module-write-only tooth refinement: `validate_name` + `player.name`-only write (Option a), RL-7 refined from zero reducers to one profile-untouching name-setter (amends ADR-0119); client rename UI parked to pt-c1b | pt-c1 |
+| [0133](./0133-rename-ui.md) | Client profile-rename UI (first text-input overlay): a `KeyN` rename overlay wires the client to the already-merged `set_profile_name` reducer (ADR-0132) | pt-c1b |
 
 ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended amendment
 sections; the original decision text is preserved as the historical record.
