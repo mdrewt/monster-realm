@@ -807,3 +807,320 @@ fn care_cooldown_ms_is_six_hours_in_milliseconds() {
          The cooldown policy is 6h = 6 * 60 * 60 * 1000 ms."
     );
 }
+
+// ===========================================================================
+// ptc5a (ADR-0136): care and train must be blocked mid-battle
+//
+// EARS criterion: WHEN a player calls `care` or `train` WHILE they are in an
+// Ongoing battle in EITHER role (side-A wild/PvP or side-B PvP), THE SYSTEM
+// SHALL reject with Err("cannot care/train during an ongoing battle").
+//
+// Rationale: a mid-battle `train` raises ev_hp → the level-up heal formula
+// `level_up_healed_hp(current_hp, snapshot_old_max, live_new_max)` grants
+// extra HP proportional to the EV bump, creating a bounded HP-laundering path
+// (see ADR-0136 §2 and Test 4 differential below).
+//
+// Tests 1+2 are SOURCE-SCAN RED until the implementer adds:
+//   if is_in_ongoing_battle(ctx, ctx.sender) {
+//       return Err("cannot care/train during an ongoing battle".to_string());
+//   }
+// immediately after `require_owner(ctx, …)?` in each reducer.
+//
+// Test 3 is GREEN (pins the semantics of the pre-existing helper).
+// Test 4 is GREEN (pins the pure math magnitude of the laundering vector).
+// ===========================================================================
+
+/// Brace-walk helper: given `stripped` source and a `fn_needle` that locates
+/// a reducer, return the slice of `stripped` that is the reducer body
+/// (content between the outermost `{` and its matching `}`).
+///
+/// This is the DRY core shared by `care_battle_guard_wired` and
+/// `train_battle_guard_wired`. Mirrors the walk in `care_reducer_calls_compute_evolves_to`
+/// (line ~749) exactly — same strip-then-find-then-walk pattern.
+fn reducer_body<'a>(stripped: &'a str, fn_needle: &str) -> &'a str {
+    let fn_pos = stripped
+        .find(fn_needle)
+        .unwrap_or_else(|| panic!("reducer '{}' not found in raising.rs source", fn_needle));
+    let after = &stripped[fn_pos..];
+    let brace = after.find('{').expect("reducer must have an opening brace");
+    let body_start = fn_pos + brace + 1;
+
+    let mut depth: usize = 1;
+    let chars: Vec<char> = stripped[body_start..].chars().collect();
+    let mut char_i = 0;
+    let mut byte_off = 0;
+    while char_i < chars.len() && depth > 0 {
+        match chars[char_i] {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        byte_off += chars[char_i].len_utf8();
+        char_i += 1;
+    }
+    &stripped[body_start..body_start + byte_off]
+}
+
+/// ptc5a Test 1 — care reducer source-scan: the `care` body must contain
+/// `if is_in_ongoing_battle(ctx, ctx.sender)` in its conditional form.
+///
+/// TEETH(ptc5a-1): the care reducer body must contain
+/// `if is_in_ongoing_battle(ctx, ctx.sender)` after `require_owner`.
+///
+/// Kills:
+///   - deleting the guard entirely (needle absent → RED).
+///   - a dead-code evasion `let _ = is_in_ongoing_battle(ctx, ctx.sender);`
+///     (no `if` prefix → whitespace-collapsed needle `ifis_in_ongoing_battle(ctx,ctx.sender)`
+///     is absent → RED).
+///
+/// MUST START RED until the implementer adds the guard.
+#[test]
+fn care_battle_guard_wired() {
+    let stripped = strip_raising_comments(RAISING_SOURCE);
+    let fn_needle = ["pub fn care", "(ctx:"].concat();
+    let body = reducer_body(&stripped, &fn_needle);
+
+    // Whitespace-collapse the body so rustfmt line splits never cause false RED.
+    let collapsed: String = body.split_whitespace().collect();
+
+    // Needle assembled from parts to prevent self-match in the included source text.
+    let needle = ["ifis_in_ongoing", "_battle(ctx,ctx.sender)"].concat();
+
+    assert!(
+        collapsed.contains(needle.as_str()),
+        "TEETH(ptc5a-1): the `care` reducer body must contain \
+         `if is_in_ongoing_battle(ctx, ctx.sender)` (whitespace-collapsed: \
+         `ifis_in_ongoing_battle(ctx,ctx.sender)`) immediately after `require_owner`. \
+         This guard blocks mid-battle bond-raising that would feed the HP-laundering \
+         vector (ADR-0136). \
+         Kills: deleting the guard (needle absent) AND a dead-code `let _ = ...` \
+         evasion (no `if` prefix → needle absent). \
+         RED until implementer adds: \
+         `if is_in_ongoing_battle(ctx, ctx.sender) {{ \
+             return Err(\"cannot care during an ongoing battle\".to_string()); \
+         }}`"
+    );
+}
+
+/// ptc5a Test 2 — train reducer source-scan: the `train` body must contain
+/// `if is_in_ongoing_battle(ctx, ctx.sender)` in its conditional form.
+///
+/// TEETH(ptc5a-1): same needle as Test 1 but scoped to the `train` reducer body.
+///
+/// Kills:
+///   - deleting the guard from `train` (needle absent → RED).
+///   - a dead-code `let _ = is_in_ongoing_battle(ctx, ctx.sender);` evasion
+///     (no `if` prefix → whitespace-collapsed needle absent → RED).
+///
+/// MUST START RED until the implementer adds the guard.
+#[test]
+fn train_battle_guard_wired() {
+    let stripped = strip_raising_comments(RAISING_SOURCE);
+    let fn_needle = ["pub fn train", "(ctx:"].concat();
+    let body = reducer_body(&stripped, &fn_needle);
+
+    // Whitespace-collapse so rustfmt line splits never produce false RED.
+    let collapsed: String = body.split_whitespace().collect();
+
+    // Same needle as care: both reducers use ctx.sender as the identity token.
+    let needle = ["ifis_in_ongoing", "_battle(ctx,ctx.sender)"].concat();
+
+    assert!(
+        collapsed.contains(needle.as_str()),
+        "TEETH(ptc5a-1): the `train` reducer body must contain \
+         `if is_in_ongoing_battle(ctx, ctx.sender)` (whitespace-collapsed: \
+         `ifis_in_ongoing_battle(ctx,ctx.sender)`) immediately after `require_owner`. \
+         This guard blocks mid-battle EV training that enables HP laundering via the \
+         level-up heal formula (ADR-0136). \
+         Kills: deleting the guard (needle absent) AND a dead-code `let _ = ...` \
+         evasion (no `if` prefix → needle absent). \
+         RED until implementer adds: \
+         `if is_in_ongoing_battle(ctx, ctx.sender) {{ \
+             return Err(\"cannot train during an ongoing battle\".to_string()); \
+         }}`"
+    );
+}
+
+/// Minimal Battle row builder for ptc5a tests 3+4.
+/// Only `state.outcome` and `opponent_identity` are read by
+/// `is_in_ongoing_battle_either_role`; teams can be empty.
+fn ongoing_battle(
+    player: spacetimedb::Identity,
+    opponent: spacetimedb::Identity,
+) -> crate::schema::Battle {
+    crate::schema::Battle {
+        battle_id: 1,
+        player_identity: player,
+        opponent_identity: opponent,
+        state: game_core::BattleState {
+            side_a: game_core::BattleSide {
+                active: 0,
+                team: vec![],
+            },
+            side_b: game_core::BattleSide {
+                active: 0,
+                team: vec![],
+            },
+            outcome: game_core::BattleOutcome::Ongoing,
+            turn_number: 1,
+            weather: None,
+        },
+        party_monster_ids: vec![],
+        opponent_monster_ids: vec![],
+        created_at_ms: 0,
+    }
+}
+
+/// ptc5a Test 3 — both-role predicate scenarios: pins the semantics that the
+/// guard relies on (GREEN against current code; the helper already exists).
+///
+/// Four sub-assertions covering:
+///   (a) Wild side-A: player arm fires on an Ongoing wild battle → true.
+///   (b) PvP side-B: opponent arm fires when `me` is non-WILD opponent → true.
+///   (c) No battle: both arms empty → false.
+///   (d) Wild sentinel as opponent: opponent arm skips WILD_IDENTITY → false.
+///
+/// Kills any regression to `is_in_ongoing_battle_either_role` that:
+///   - drops the opponent arm (b fails → false instead of true).
+///   - drops the `!= WILD_IDENTITY` refinement (d fails → true instead of false).
+///   - returns always-true (c fails).
+///   - returns always-false (a fails).
+#[test]
+fn both_role_predicate_scenarios() {
+    let me = spacetimedb::Identity::from_byte_array([7u8; 32]);
+    let other = spacetimedb::Identity::from_byte_array([3u8; 32]);
+    let wild = crate::WILD_IDENTITY;
+
+    // (a) Wild side-A: `me` is player_identity of an Ongoing wild battle.
+    // Player arm fires; opponent arm empty.
+    let row_a = ongoing_battle(me, wild);
+    assert!(
+        crate::guards::is_in_ongoing_battle_either_role(
+            std::iter::once(&row_a),
+            std::iter::empty::<&crate::schema::Battle>(),
+        ),
+        "ptc5a Test 3(a) FAIL: player arm with Ongoing wild battle must return true; \
+         kills: dropped-player-arm impl"
+    );
+
+    // (b) PvP side-B: `me` is opponent_identity of an Ongoing PvP battle (non-WILD opponent).
+    // Player arm empty; opponent arm fires because `me` != WILD_IDENTITY.
+    let row_b = ongoing_battle(other, me);
+    assert!(
+        crate::guards::is_in_ongoing_battle_either_role(
+            std::iter::empty::<&crate::schema::Battle>(),
+            std::iter::once(&row_b),
+        ),
+        "ptc5a Test 3(b) FAIL: opponent arm with Ongoing battle where opponent==me (non-WILD) \
+         must return true; kills: dropped-opponent-arm impl (the ADR-0122 gap)"
+    );
+
+    // (c) No battle: both arms empty → false.
+    assert!(
+        !crate::guards::is_in_ongoing_battle_either_role(
+            std::iter::empty::<&crate::schema::Battle>(),
+            std::iter::empty::<&crate::schema::Battle>(),
+        ),
+        "ptc5a Test 3(c) FAIL: empty both arms must return false; kills: always-true impl"
+    );
+
+    // (d) Wild sentinel as opponent: opponent arm has row with opponent==WILD_IDENTITY.
+    // The `!= WILD_IDENTITY` refinement must skip this row → false.
+    let row_d = ongoing_battle(other, wild);
+    assert!(
+        !crate::guards::is_in_ongoing_battle_either_role(
+            std::iter::empty::<&crate::schema::Battle>(),
+            std::iter::once(&row_d),
+        ),
+        "ptc5a Test 3(d) FAIL: opponent arm with opponent==WILD_IDENTITY must return false; \
+         pins the != WILD_IDENTITY refinement (ADR-0122 D1); \
+         kills: impl that drops the wild-sentinel exclusion"
+    );
+}
+
+/// ptc5a Test 4 — differential level-up-heal: documents the magnitude of the
+/// HP-laundering vector that the guard closes.
+///
+/// A mid-battle `train` bumps ev_hp by 64 EV. When the monster then levels up
+/// inside the battle, `level_up_healed_hp(current_hp, snapshot_old_max, live_new_max)`
+/// uses the LIVE (post-train) new_max rather than the snapshot (pre-train) new_max —
+/// granting extra HP beyond what an unmodified level-up would provide.
+///
+/// Assertion 1: `healed_laundered > healed_baseline` — the mid-battle EV bump
+/// WOULD inflate the in-battle level-up heal (the vector is real and bounded).
+///
+/// Assertion 2: `is_in_ongoing_battle_either_role` returns true for a wild-battle
+/// scenario — the guard REJECTS care/train mid-battle, so the laundered value
+/// is unreachable and post-level-up current_hp cannot exceed `healed_baseline`.
+///
+/// This is a documentation+regression test for the ptc5a vulnerability closure
+/// (ptc5a-2 differential, ADR-0136 §2).
+#[test]
+fn differential_level_up_heal_documents_laundering_vector() {
+    use game_core::combat::xp::level_up_healed_hp;
+    use game_core::derive_stats;
+
+    let base = train_base(); // Bulbasaur-like: hp=45
+    let ivs = train_ivs(); // all 15
+    let nature = train_hardy(); // neutral (no modifier)
+    let lv50 = train_lv50(); // Level 50
+    let lv51 = game_core::Level::new(51).unwrap();
+
+    let untrained = game_core::EVs::zero();
+    // 64 EV in HP — the amount a single training session grants (common food amount).
+    let trained = game_core::EVs::new(64, 0, 0, 0, 0, 0).unwrap();
+
+    // HP at battle start (level 50, no EVs yet — the snapshot the server should use).
+    let snapshot_old_max = derive_stats(&base, &ivs, &untrained, &nature, lv50).hp;
+
+    // Level-up HP WITHOUT mid-battle train (the legitimate path).
+    let baseline_new_max = derive_stats(&base, &ivs, &untrained, &nature, lv51).hp;
+
+    // Level-up HP WITH mid-battle train applied (the illegitimate laundering path).
+    let laundered_new_max = derive_stats(&base, &ivs, &trained, &nature, lv51).hp;
+
+    let current_hp: u16 = 20; // low HP — monster took damage in battle
+
+    let healed_baseline = level_up_healed_hp(current_hp, snapshot_old_max, baseline_new_max);
+    let healed_laundered = level_up_healed_hp(current_hp, snapshot_old_max, laundered_new_max);
+
+    // Assertion 1: the laundering path grants strictly MORE HP — the vector is real.
+    assert!(
+        healed_laundered > healed_baseline,
+        "ptc5a Test 4 assertion 1 FAIL: expected healed_laundered ({}) > healed_baseline ({}); \
+         with ev_hp bumped from 0 to 64 before level-up, derive_stats produces a larger stat_hp \
+         → level_up_healed_hp grants extra HP proportional to the EV delta. \
+         This quantifies the laundering vector (ADR-0136 §2). \
+         [snapshot_old_max={}, baseline_new_max={}, laundered_new_max={}]",
+        healed_laundered,
+        healed_baseline,
+        snapshot_old_max,
+        baseline_new_max,
+        laundered_new_max,
+    );
+
+    // Assertion 2: the guard rejects the caller mid-battle (closure).
+    // A player in a wild Ongoing battle cannot invoke care/train, so `laundered_new_max`
+    // is unreachable and in-battle current_hp cannot exceed `healed_baseline` after level-up.
+    let me = spacetimedb::Identity::from_byte_array([7u8; 32]);
+    let wild_row = ongoing_battle(me, crate::WILD_IDENTITY);
+    assert!(
+        crate::guards::is_in_ongoing_battle_either_role(
+            std::iter::once(&wild_row),
+            std::iter::empty::<&crate::schema::Battle>(),
+        ),
+        "ptc5a Test 4 assertion 2 FAIL: is_in_ongoing_battle_either_role must return true \
+         for a player in an Ongoing wild battle — the guard REJECTS care/train mid-battle \
+         (ADR-0136 closure), ensuring the laundered HP value ({}) is unreachable and \
+         post-level-up current_hp cannot exceed the no-mid-train baseline ({}). \
+         ptc5a-2 differential: extra heal = {} HP.",
+        healed_laundered,
+        healed_baseline,
+        healed_laundered.saturating_sub(healed_baseline),
+    );
+}
