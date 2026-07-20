@@ -47,6 +47,13 @@
       <div id="leaderboard-title"></div>
       <ul id="leaderboard-list"></ul>
     </div>
+    <!-- pt-c1b rename overlay shell — hidden by default; managed by RenameView (ADR-0133). -->
+    <div id="rename-overlay" style="display:none">
+      <div id="rename-current" data-testid="rename-current"></div>
+      <input id="rename-input" data-testid="rename-input" type="text" maxlength="24" />
+      <button id="rename-submit" data-testid="rename-submit" type="button">Rename</button>
+      <div id="rename-feedback" data-testid="rename-feedback"></div>
+    </div>
     <!-- pt-a1 (ADR-0128): build-provenance stamp — populated by main.ts from BUILD_INFO
          (git sha + build time + mode). Non-intrusive; pins which build a playtest finding
          came from. Present in production (unlike the DEV-gated debug hooks). -->

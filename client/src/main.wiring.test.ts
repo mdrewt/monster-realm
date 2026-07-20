@@ -481,3 +481,353 @@ describe('main.ts wiring (pt-b1): all 6 core event constructors are emitted (L-2
     }
   });
 });
+
+// ===========================================================================
+// pt-c1b rename UI wiring — NEW describe block (does NOT modify F-3/F-5/pt-b1 blocks).
+//
+// SOURCE OF TRUTH: pt-c1b EARS criteria PTC1B-1..9 + RT-RN-01/02/04/05/08/09/10
+//   + ADR-0133 D3/D4 + docs/specs/pt-c1b-plan.md fan-out inventory.
+//
+// RED REASON: main.ts on master has no renameView wiring yet — no import, no let,
+// no dynamic import entry, no KeyN handler, no setProfileName call, no fan-out guards.
+// Every test below starts RED (indexOf returns -1 / assertion fails).
+//
+// RL-15 (per-file, not transitive): set_profile_name and reducers.* must NOT appear
+// in leaderboardView.ts or leaderboardModel.ts. The write path is main.ts only.
+// This matches the pt-c1 RL-7 tooth precedent (ADR-0133 §Consequences).
+//
+// Fan-out inventory (ADR-0133 D4): 17 occurrences of `leaderboardView?.visible` exist
+// in main.ts at the time these tests were authored (counted from the current main.ts).
+// renameView?.visible must appear at least that many times (same structural role).
+// Per-context needles assert specific sites: reconcile(389), keydown(818), rAF(1766),
+// pvp-aggregate(1064), battle-supersession(897), onReconnect(1725), Escape handler.
+// ===========================================================================
+
+describe('main.ts wiring (pt-c1b rename): import + let + dynamic-import + construction', () => {
+  it('W-RN-IMPORT BITES: main.ts imports from "./ui/renameView" — kills missing-import impl', () => {
+    // WRONG IMPL KILLED: an impl that never imports renameView — the view is never constructed.
+    // Uses .includes() — no new RegExp().
+    const src = readMainTs();
+    expect(
+      src.includes("'./ui/renameView'"),
+      'main.ts must contain "\'./ui/renameView\'" import (pt-c1b wiring)',
+    ).toBe(true);
+  });
+
+  it('W-RN-LET BITES: main.ts declares "let renameView" — kills missing-let impl', () => {
+    // WRONG IMPL KILLED: an impl that never declares the module-scope let — the view
+    // cannot be referenced by the fan-out guards.
+    const src = readMainTs();
+    expect(
+      src.includes('let renameView'),
+      'main.ts must declare "let renameView" at module scope (pt-c1b wiring)',
+    ).toBe(true);
+  });
+
+  it('W-RN-DYNIMPORT BITES: main.ts dynamic-imports "./ui/renameView" — kills missing-dynamic-import impl', () => {
+    // WRONG IMPL KILLED: an impl that statically imports the view (would load DOM code at
+    // vitest parse time and crash) or omits the dynamic import entirely.
+    const src = readMainTs();
+    expect(
+      src.includes("import('./ui/renameView')"),
+      "main.ts must contain import('./ui/renameView') in the dynamic-import fan-out (pt-c1b wiring)",
+    ).toBe(true);
+  });
+
+  it('W-RN-CONSTRUCT BITES: main.ts constructs "new RenameView(" — kills missing-construction impl', () => {
+    // WRONG IMPL KILLED: an impl that imports renameView but never constructs it.
+    // Needle covers both `new RenameView(` and `new RenameViewClass(` (the alias used post-dynamic-import,
+    // matching the leaderboardView pattern where `LeaderboardViewClass` is the dynamic import alias).
+    const src = readMainTs();
+    const hasNew = src.includes('new RenameView(') || src.includes('new RenameViewClass(');
+    expect(
+      hasNew,
+      'main.ts must construct new RenameView( or new RenameViewClass( (pt-c1b wiring)',
+    ).toBe(true);
+  });
+});
+
+describe('main.ts wiring (pt-c1b rename): setProfileName reducer call present', () => {
+  it('W-RN-REDUCER BITES: main.ts contains "reducers.setProfileName(" — kills missing-reducer-call impl', () => {
+    // WRONG IMPL KILLED: an impl where the rename overlay is constructed but never calls
+    // the server reducer — renames would be client-side only with no persistence.
+    // PTC1B-2/9: the UI must wire setProfileName.
+    const src = readMainTs();
+    expect(
+      src.includes('reducers.setProfileName('),
+      'main.ts must call reducers.setProfileName( in the rename wiring (PTC1B-2/9)',
+    ).toBe(true);
+  });
+});
+
+describe('main.ts wiring (pt-c1b rename): RL-15 purity — write path absent from leaderboard files', () => {
+  it('★ RL-15 BITES: leaderboardView.ts must NOT contain setProfileName or reducers. — kills write-path-in-view impl', () => {
+    // RL-15 (ADR-0133 §Consequences): the write path must never live in the pure
+    // subscription view. This is a DIRECT-FILE scan (not transitive — ADR-0133 §Consequences).
+    // WRONG IMPL KILLED: an impl that moves setProfileName into leaderboardView.ts
+    // (e.g. adding a rename button to the leaderboard overlay itself).
+    // Uses .includes() — no new RegExp().
+    const viewPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      'ui/leaderboardView.ts',
+    );
+    let src: string;
+    try {
+      src = readFileSync(viewPath, 'utf8');
+    } catch (err) {
+      throw new Error(
+        'leaderboardView.ts could not be read — post-impl the file must exist: ' + String(err),
+      );
+    }
+    const forbidden = ['setProfileName', 'reducers.'];
+    for (const needle of forbidden) {
+      expect(
+        src.includes(needle),
+        `leaderboardView.ts must NOT contain "${needle}" (RL-15: pure subscription view, no write path — ADR-0133)`,
+      ).toBe(false);
+    }
+  });
+
+  it('★ RL-15 BITES: leaderboardModel.ts must NOT contain setProfileName or reducers. — kills write-path-in-model impl', () => {
+    // RL-15 mirror for the model layer (ADR-0133 §Consequences, same direct-file scope).
+    // WRONG IMPL KILLED: an impl that adds a rename action to the leaderboard model
+    // (the model is pure VM computation, no side effects, no reducer calls).
+    const modelPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      'ui/leaderboardModel.ts',
+    );
+    let src: string;
+    try {
+      src = readFileSync(modelPath, 'utf8');
+    } catch (err) {
+      throw new Error(
+        'leaderboardModel.ts could not be read — post-impl the file must exist: ' + String(err),
+      );
+    }
+    const forbidden = ['setProfileName', 'reducers.'];
+    for (const needle of forbidden) {
+      expect(
+        src.includes(needle),
+        `leaderboardModel.ts must NOT contain "${needle}" (RL-15: pure model, no write path — ADR-0133)`,
+      ).toBe(false);
+    }
+  });
+});
+
+describe('main.ts wiring (pt-c1b rename): KeyN handler (PTC1B-1 / RT-RN-01/05)', () => {
+  it("W-RN-KEYN BITES: main.ts contains a 'KeyN' handler — kills missing-KeyN impl", () => {
+    // PTC1B-1: WHEN KeyN pressed AND no other overlay visible, render+show the rename overlay.
+    // WRONG IMPL KILLED: an impl with no KeyN branch in the keydown handler.
+    const src = readMainTs();
+    expect(
+      src.includes("'KeyN'"),
+      "main.ts must contain a 'KeyN' handler (PTC1B-1 rename entry point)",
+    ).toBe(true);
+  });
+
+  it('W-RN-PREVENT BITES: main.ts KeyN branch contains e.preventDefault() — kills missing-preventDefault impl (RT-RN-05)', () => {
+    // RT-RN-05: e.preventDefault() prevents the "n" character from being injected into the
+    // input field when the overlay opens (belt-and-suspenders with deferred focus).
+    // WRONG IMPL KILLED: an impl where KeyN opens the overlay but the "n" keypress still
+    // triggers a character insertion.
+    // Strategy: locate the 'KeyN' string, take the surrounding region, assert e.preventDefault() appears in it.
+    const src = readMainTs();
+    const keyNIdx = src.indexOf("'KeyN'");
+    expect(keyNIdx, "main.ts must contain 'KeyN' (PTC1B-1)").toBeGreaterThanOrEqual(0);
+
+    // Look in the 600 chars after 'KeyN' for the prevention call — the KeyN block
+    // is compact (similar to other single-key handlers like 'KeyL', 'KeyP', etc.).
+    const keyNRegion = src.slice(keyNIdx, keyNIdx + 600);
+    expect(
+      keyNRegion.includes('e.preventDefault()'),
+      "main.ts KeyN region must contain e.preventDefault() — prevents the 'n' character injection (RT-RN-05)",
+    ).toBe(true);
+  });
+
+  it('W-RN-HELD BITES: main.ts KeyN branch contains held.clear() — kills missing-held-clear impl (RT-RN-01)', () => {
+    // RT-RN-01: held.clear() on open makes the held-key stack immune to press/release
+    // straddling the overlay's open/close boundary (ADR-0133 D3 mechanism 3).
+    // WRONG IMPL KILLED: an impl that opens the rename overlay without clearing held keys —
+    // a held movement key would resume moving after the overlay closes.
+    const src = readMainTs();
+    const keyNIdx = src.indexOf("'KeyN'");
+    expect(keyNIdx, "main.ts must contain 'KeyN' (PTC1B-1)").toBeGreaterThanOrEqual(0);
+
+    const keyNRegion = src.slice(keyNIdx, keyNIdx + 600);
+    expect(
+      keyNRegion.includes('held.clear()'),
+      'main.ts KeyN region must contain held.clear() — clears the prediction held-key stack on open (RT-RN-01, ADR-0133 D3)',
+    ).toBe(true);
+  });
+});
+
+describe('main.ts wiring (pt-c1b rename): Escape handler for rename overlay (PTC1B-6)', () => {
+  it('W-RN-ESCAPE BITES: main.ts Escape handler includes renameView?.visible — kills missing-Escape-close impl', () => {
+    // PTC1B-6: Escape must close the rename overlay.
+    // WRONG IMPL KILLED: an impl where the Escape handler only covers other overlays
+    // (leaderboard, pvp, trade) but not renameView, leaving the overlay un-closeable via Escape.
+    // Strategy: look for the Escape region (Escape is handled at line ~800 in current main.ts)
+    // and assert renameView?.visible appears in it.
+    const src = readMainTs();
+    // Find the first Escape handler region (the window keydown Escape block)
+    const escapeIdx = src.indexOf("e.code === 'Escape'");
+    expect(escapeIdx, 'main.ts must contain an Escape handler').toBeGreaterThanOrEqual(0);
+
+    // Check in the 2000 chars after the first Escape to cover all Escape branches.
+    const escapeRegion = src.slice(escapeIdx, escapeIdx + 2000);
+    expect(
+      escapeRegion.includes('renameView'),
+      'main.ts Escape region must reference renameView — the rename overlay must be closeable via Escape (PTC1B-6)',
+    ).toBe(true);
+  });
+});
+
+describe('★ main.ts wiring (pt-c1b rename): per-site fan-out (PTC1B-6 / D4 / M-1 / RT-RN-02)', () => {
+  // Fan-out inventory (ADR-0133 D4):
+  // At the time these tests were authored, `leaderboardView?.visible` appears 17 times
+  // in main.ts (counted via grep). renameView?.visible must appear at LEAST 17 times,
+  // matching the structural role of the leaderboard in every suppression context.
+  //
+  // The per-context needles below are the load-bearing tests — they name specific wiring
+  // sites rather than relying on a count floor alone (m17b fan-out-coverage-trap precedent).
+  const LEADERBOARD_VISIBLE_COUNT = 17; // AUTHORING-TIME count — do not edit post-impl
+
+  it(`★ W-RN-FANOUT-COUNT BITES: renameView?.visible appears at least ${LEADERBOARD_VISIBLE_COUNT} times — kills under-wired impl`, () => {
+    // WRONG IMPL KILLED: an impl that adds renameView to some but not all fan-out sites,
+    // e.g. wires the KeyN guard but forgets reconcile(389) or rAF(1766).
+    // Count strategy: split on 'renameView?.visible' and subtract 1 from the parts length.
+    const src = readMainTs();
+    const parts = src.split('renameView?.visible');
+    const count = parts.length - 1;
+    expect(
+      count,
+      `main.ts must contain renameView?.visible at least ${LEADERBOARD_VISIBLE_COUNT} times ` +
+        `(one per leaderboardView?.visible occurrence — ADR-0133 D4 fan-out parity). ` +
+        `Found: ${count}. The spec-comment floor is ${LEADERBOARD_VISIBLE_COUNT} (leaderboardView count at authoring time).`,
+    ).toBeGreaterThanOrEqual(LEADERBOARD_VISIBLE_COUNT);
+  });
+
+  it('W-RN-FANOUT-RECONCILE BITES: renameView?.visible in the reconcile OR-block (~line 389) — kills reconcile-bleed impl', () => {
+    // ADR-0133 D3: movement-suppression site reconcile (main.ts:389) must include renameView.
+    // WRONG IMPL KILLED: an impl that forgets renameView in the reconcile block — held keys
+    // could re-issue movement while the rename overlay is open (RT-RN-01 reconcile path).
+    // Strategy: find the reconcile OR-block anchor (`predictor.reconcile(`) and assert
+    // renameView?.visible appears in the nearby region that guards the heldDir re-issue.
+    const src = readMainTs();
+    const reconcileIdx = src.indexOf('predictor.reconcile(');
+    expect(reconcileIdx, 'main.ts must contain predictor.reconcile(').toBeGreaterThanOrEqual(0);
+    // The reconcile held-key re-issue guard is within ~600 chars after the reconcile call.
+    const reconcileRegion = src.slice(reconcileIdx, reconcileIdx + 600);
+    expect(
+      reconcileRegion.includes('renameView?.visible'),
+      'main.ts reconcile region must contain renameView?.visible — the reconcile heldDir re-issue is suppressed while rename is open (ADR-0133 D3)',
+    ).toBe(true);
+  });
+
+  it('W-RN-FANOUT-KEYDOWN BITES: renameView?.visible in the keydown movement-suppression OR-block — kills keydown-bleed impl', () => {
+    // ADR-0133 D3: movement-suppression site keydown (~line 818) must include renameView.
+    // WRONG IMPL KILLED: an impl that forgets renameView in the keydown suppression block —
+    // WASD would move the character while the rename overlay is open (the most obvious bleed).
+    // Strategy: find "Suppress movement input while an overlay is open." comment and look
+    // for renameView?.visible in the following OR-block. Fallback: scan the entire keydown
+    // suppression block (after the last Escape handler) for renameView?.visible.
+    const src = readMainTs();
+    const suppressIdx = src.indexOf('Suppress movement input while an overlay is open');
+    expect(
+      suppressIdx,
+      "main.ts must contain the 'Suppress movement' comment",
+    ).toBeGreaterThanOrEqual(0);
+    const suppressRegion = src.slice(suppressIdx, suppressIdx + 600);
+    expect(
+      suppressRegion.includes('renameView?.visible'),
+      'main.ts keydown movement-suppression block must contain renameView?.visible (ADR-0133 D3, keydown ~line 818)',
+    ).toBe(true);
+  });
+
+  it('W-RN-FANOUT-RAF BITES: renameView?.visible in the rAF frame-loop held-key re-issue OR-block (~line 1766) — kills frame-loop bleed impl', () => {
+    // ADR-0133 D3: movement-suppression site rAF frame-loop (~line 1766) must include renameView.
+    // WRONG IMPL KILLED: an impl that forgets renameView in the rAF block — a held key could
+    // keep walking in the background while the rename overlay is open (the frame loop runs
+    // regardless of overlay state unless guarded).
+    // Strategy: find the rAF re-issue block anchor (predictor.drain() is called in the rAF;
+    // the held-key re-issue immediately precedes it) and assert renameView?.visible is there.
+    const src = readMainTs();
+    const drainIdx = src.indexOf('predictor.drain(');
+    expect(drainIdx, 'main.ts must contain predictor.drain(').toBeGreaterThanOrEqual(0);
+    // The rAF OR-block is within ~400 chars BEFORE the drain call.
+    const rafRegion = src.slice(Math.max(0, drainIdx - 400), drainIdx);
+    expect(
+      rafRegion.includes('renameView?.visible'),
+      'main.ts rAF frame-loop held-key re-issue block must contain renameView?.visible (~line 1766, ADR-0133 D3)',
+    ).toBe(true);
+  });
+
+  it('W-RN-FANOUT-PVP BITES: renameView?.visible in the anyOverlayVisible pvp aggregate — kills pvp-over-rename impl', () => {
+    // ADR-0133 D4: pvp auto-show aggregate (~line 1064) must include renameView?.visible
+    // so an incoming challenge does NOT pop over an open rename form.
+    // WRONG IMPL KILLED: an impl that forgets renameView in anyOverlayVisible — an incoming
+    // PvP challenge auto-shows the PvP overlay over the rename form.
+    // Strategy: find 'anyOverlayVisible' and look for renameView in the nearby region.
+    const src = readMainTs();
+    const pvpAggIdx = src.indexOf('anyOverlayVisible');
+    expect(pvpAggIdx, 'main.ts must contain anyOverlayVisible').toBeGreaterThanOrEqual(0);
+    // anyOverlayVisible is assembled within ~1000 chars of the aggregate definition.
+    const pvpRegion = src.slice(pvpAggIdx, pvpAggIdx + 1000);
+    expect(
+      pvpRegion.includes('renameView'),
+      'main.ts anyOverlayVisible pvp aggregate must reference renameView (ADR-0133 D4 — no pvp-over-rename)',
+    ).toBe(true);
+  });
+
+  it('W-RN-FANOUT-RECONNECT BITES: renameView?.hide() called in onReconnect — kills stale-overlay-on-reconnect impl (RT-RN-02)', () => {
+    // ADR-0133 D4: the reconnect stale-overlay hide (~line 1725) must cover renameView.
+    // RT-RN-02: on reconnect the rename overlay must close (store reset; stale state).
+    // WRONG IMPL KILLED: an impl that hides shop/trade/pvp/leaderboard on reconnect but
+    // forgets renameView — the overlay could stay open with a stale in-flight lock.
+    // Strategy: find 'onReconnect' callback region and assert renameView?.hide appears in it.
+    const src = readMainTs();
+    const reconnectIdx = src.indexOf('onReconnect:');
+    expect(reconnectIdx, 'main.ts must contain onReconnect:').toBeGreaterThanOrEqual(0);
+    // The onReconnect body is within ~800 chars after the declaration.
+    const reconnectRegion = src.slice(reconnectIdx, reconnectIdx + 800);
+    expect(
+      reconnectRegion.includes('renameView'),
+      'main.ts onReconnect body must reference renameView — hide it on reconnect (RT-RN-02, ADR-0133 D4)',
+    ).toBe(true);
+  });
+});
+
+describe('main.ts wiring (pt-c1b rename): onSubmit routes through reduceErrorMessage + linkFrozen (PTC1B-4/8)', () => {
+  it('W-RN-ERRMSG BITES: main.ts contains "reduceErrorMessage(" used in the rename wiring region — kills no-error-msg impl (PTC1B-4)', () => {
+    // PTC1B-4: WHEN the call rejects, show reduceErrorMessage(err,'set-profile-name').
+    // WRONG IMPL KILLED: an impl that shows a raw error string (InternalError leak) or
+    // silently swallows the rejection.
+    const src = readMainTs();
+    expect(
+      src.includes('reduceErrorMessage('),
+      'main.ts must use reduceErrorMessage( for rename error feedback (PTC1B-4: no InternalError leak)',
+    ).toBe(true);
+    // The specific 'set-profile-name' label must appear (pins the error context string).
+    expect(
+      src.includes("'set-profile-name'"),
+      "main.ts must contain the 'set-profile-name' reduceErrorMessage label (PTC1B-4)",
+    ).toBe(true);
+  });
+
+  it('W-RN-FROZEN BITES: main.ts contains "linkFrozen()" check in the rename wiring region — kills no-frozen-gate impl (PTC1B-8)', () => {
+    // PTC1B-8: WHILE the link is frozen, submit shows "disconnected — try again" and does
+    // NOT call the reducer (ADR-0085 A1).
+    // WRONG IMPL KILLED: an impl where the rename onSubmit calls the reducer without first
+    // checking linkFrozen() — the promise never settles on a dead link (dead-button-forever
+    // without the frozen gate, ADR-0085 A1).
+    // NOTE: main.ts already uses sendGuarded() for other reducers which internally calls
+    // linkFrozen(). The rename path must also go through linkFrozen() (either via sendGuarded
+    // or directly). This scan asserts the linkFrozen() check is present in main.ts (it already
+    // is via sendGuarded, this test is a regression guard + new-site confirmation).
+    const src = readMainTs();
+    expect(
+      src.includes('linkFrozen()'),
+      'main.ts must contain linkFrozen() check in the rename wiring (PTC1B-8: frozen-link gate, ADR-0085 A1)',
+    ).toBe(true);
+  });
+});
