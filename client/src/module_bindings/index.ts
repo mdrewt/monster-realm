@@ -58,6 +58,7 @@ import SellReducer from "./sell_reducer";
 import SetMoveReducer from "./set_move_reducer";
 import SetNicknameReducer from "./set_nickname_reducer";
 import SetPartySlotReducer from "./set_party_slot_reducer";
+import SetProfileNameReducer from "./set_profile_name_reducer";
 import StartBattleReducer from "./start_battle_reducer";
 import SubmitAttackReducer from "./submit_attack_reducer";
 import SubmitPvpActionReducer from "./submit_pvp_action_reducer";
@@ -397,6 +398,7 @@ const reducersSchema = __reducers(
   __reducerSchema("set_move", SetMoveReducer),
   __reducerSchema("set_nickname", SetNicknameReducer),
   __reducerSchema("set_party_slot", SetPartySlotReducer),
+  __reducerSchema("set_profile_name", SetProfileNameReducer),
   __reducerSchema("start_battle", StartBattleReducer),
   __reducerSchema("submit_attack", SubmitAttackReducer),
   __reducerSchema("submit_pvp_action", SubmitPvpActionReducer),

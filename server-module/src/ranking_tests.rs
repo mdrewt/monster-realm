@@ -892,3 +892,529 @@ fn scan_machinery_teeth() {
         evasion_call_count, call_needle
     );
 }
+
+// ===========================================================================
+// pt-c1 — EARS pt-c1-1/-2/-3/-4/-5/-6: set_profile_name reducer (ADR-0132)
+//
+// The server-side rename write path. `set_profile_name` is the FIRST (and only)
+// #[spacetimedb::reducer] in ranking.rs; it validates via guards::validate_name
+// and writes ONLY player.name — the ADR-0125 passive mirror surfaces the rename
+// on the leaderboard at the next rated game (Option a, no direct profile write).
+//
+// These are source-scan tests over RANKING_RS (ReducerContext is not
+// unit-constructible for this module — the established honest proof, ADR-0125).
+// They start RED (needle-absence) until the specialist implements the reducer,
+// and are BODY-BOUNDED so the legitimate profile access in apply_pvp_rating /
+// get_or_init_profile does NOT satisfy (or falsely trip) the reducer's scans.
+//
+// Coverage map:
+//   pt-c1-1 (sets player.name on valid input)   → ptc1_scan_body_validates_and_writes_player_name
+//   pt-c1-2 (rejects invalid name, no write)    → ptc1_scan_body_validates_and_writes_player_name
+//   pt-c1-3 (rejects "not joined", no write)    → ptc1_scan_body_rejects_when_not_joined
+//   pt-c1-4 (name surfaces via ADR-0125 mirror) → ptc1_scan_body_is_profile_untouching (indirect)
+//                                                  + pre-existing d2_rename_then_rated_* executed pins
+//   pt-c1-5 (profile-untouching)                → ptc1_scan_body_is_profile_untouching
+//                                                  + ptc1_scan_profile_insert_count_is_one
+//   pt-c1-6 (exactly one reducer, named)        → ptc1_scan_set_profile_name_fn_present
+//                                                  + m17a_rl7_server_ranking_module_invariants (pvp_tests.rs)
+// ===========================================================================
+
+/// Extract the brace-bounded body of a fn from ALREADY-squashed source (the
+/// output of `stripped_for_scan`). Whitespace is gone but braces survive, so a
+/// depth counter over `{`/`}` isolates the exact function body. Mirrors the
+/// intent of pvp_tests.rs::extract_pvp_fn_body but operates on squashed text.
+///
+/// `fn_needle` is the squashed signature prefix, e.g. `fnset_profile_name(`
+/// (a `pub fn` squashes to `pubfn...` which still contains `fnset_profile...`).
+/// Returns the body slice between the outermost `{ }` after the signature, or
+/// `None` if the fn or a balanced body is not found.
+fn extract_squashed_fn_body<'a>(squashed: &'a str, fn_needle: &str) -> Option<&'a str> {
+    let fn_start = squashed.find(fn_needle)?;
+    let after = &squashed[fn_start..];
+    let brace_rel = after.find('{')?;
+    let body_start = fn_start + brace_rel + 1;
+    let bytes = squashed.as_bytes();
+    let mut depth: usize = 1;
+    let mut i = body_start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&squashed[body_start..i]);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// pt-c1-6: ranking.rs must declare the `set_profile_name` reducer fn.
+///
+/// Needle split at "set_profile" via concat! so ranking_tests.rs cannot
+/// self-match if it is ever scanned by the never-deleted repo scan.
+///
+/// Starts RED: the reducer does not yet exist in ranking.rs.
+///
+/// Kills:
+///   - the reducer is absent (rename write path never shipped — H2 gap)
+///   - the reducer is named something else (F4-adjacent at the source level)
+#[test]
+fn ptc1_scan_set_profile_name_fn_present() {
+    let squashed = stripped_for_scan(RANKING_RS);
+    let fn_needle = concat!("fnset_profile", "_name(");
+    assert!(
+        squashed.contains(fn_needle),
+        "pt-c1-6 FAIL (ptc1_scan_set_profile_name_fn_present): ranking.rs must contain \
+         `{}` (whitespace-free) — the single client-callable rename reducer (ADR-0132 D1). \
+         RED pre-impl: the reducer does not yet exist.",
+        fn_needle
+    );
+}
+
+/// pt-c1-1 / pt-c1-2: the `set_profile_name` body must COMPOSE the validated
+/// write of the display name — it contains `validate_name(` (reject-not-clamp
+/// canonicalization) AND `player().identity().update(` (the player.name write).
+///
+/// Body-bounded via `extract_squashed_fn_body` so apply_pvp_rating's own
+/// `player`/`profile` accesses cannot satisfy these needles for the reducer.
+///
+/// Starts RED: fn absent → extract returns None → the unwrap panics with the
+/// documented RED message.
+///
+/// Kills:
+///   - reducer writes player.name WITHOUT validating (validate_name dropped →
+///     pt-c1-2 charset/length/bidi guard bypassed)
+///   - reducer validates but never writes the row (player().identity().update
+///     missing → pt-c1-1 no-op rename)
+#[test]
+fn ptc1_scan_body_validates_and_writes_player_name() {
+    let squashed = stripped_for_scan(RANKING_RS);
+    let fn_needle = concat!("fnset_profile", "_name(");
+    let body = extract_squashed_fn_body(&squashed, fn_needle).unwrap_or_else(|| {
+        panic!(
+            "pt-c1-1/-2 (ptc1_scan_body_validates_and_writes_player_name): \
+             `set_profile_name` fn not found in ranking.rs — RED pre-impl; the reducer \
+             must exist for the body-composition scan to be meaningful (ADR-0132 D1)."
+        )
+    });
+
+    // (a) validates the name (reject-not-clamp; canonical trimmed/NFC form).
+    let validate_needle = concat!("validate", "_name(");
+    assert!(
+        body.contains(validate_needle),
+        "pt-c1-2 FAIL (ptc1_scan_body_validates_and_writes_player_name / validate): \
+         the `set_profile_name` body must call `{}` — the name must be validated with the \
+         same SSOT rules as join_game (reject-not-clamp: empty / > MAX_NAME_LEN / \
+         non-alphanumeric-non-space incl. bidi/zero-width). Body (whitespace-free): {:?}",
+        validate_needle,
+        body
+    );
+
+    // (b) writes player.name back via the player table update.
+    let write_needle = concat!("player().identity()", ".update(");
+    assert!(
+        body.contains(write_needle),
+        "pt-c1-1 FAIL (ptc1_scan_body_validates_and_writes_player_name / write): \
+         the `set_profile_name` body must call `{}` — the reducer sets player.name to the \
+         canonical validated name and writes the row back (ADR-0132 D1). Without this the \
+         rename is a no-op. Body (whitespace-free): {:?}",
+        write_needle,
+        body
+    );
+}
+
+/// pt-c1-5: the `set_profile_name` body is PROFILE-UNTOUCHING — it reads/writes
+/// no `profile` table row (no leaderboard-row create, no rating/W/L mutation).
+/// The rename surfaces via the ADR-0125 passive mirror on the next rated game,
+/// NOT a direct profile write here.
+///
+/// Body-bounded (extract_squashed_fn_body): apply_pvp_rating and
+/// get_or_init_profile legitimately touch profile, so this MUST scan only the
+/// reducer body — a whole-file scan would be permanently red and is unsound.
+///
+/// This is an ALLOWLIST property (the reducer touches nothing profile), not a
+/// `rating:`/`wins:` blocklist which a mutable-binding/helper-indirection write
+/// evades (red-team F1/F2). The get_or_init_profile / profile().insert bans
+/// close the rating-1000 leaderboard-injection hole (red-team F3).
+///
+/// Starts RED: fn absent → extract returns None → unwrap panics (RED message).
+///
+/// Kills:
+///   - reducer adds an eager profile().identity().update( (F1/F2 — would also
+///     break the whole-file ==2 update pin, but this is the direct body tooth)
+///   - reducer calls get_or_init_profile( / profile().insert( (F3 injection)
+///   - reducer binds `= ctx.db.profile()` (split-binding evasion)
+///   - reducer calls refresh_profile_name( (would imply a profile round-trip)
+#[test]
+fn ptc1_scan_body_is_profile_untouching() {
+    let squashed = stripped_for_scan(RANKING_RS);
+    let fn_needle = concat!("fnset_profile", "_name(");
+    let body = extract_squashed_fn_body(&squashed, fn_needle).unwrap_or_else(|| {
+        panic!(
+            "pt-c1-5 (ptc1_scan_body_is_profile_untouching): `set_profile_name` fn not \
+             found in ranking.rs — RED pre-impl; the reducer must exist for the \
+             profile-untouching body scan to be meaningful (ADR-0132 D3)."
+        )
+    });
+
+    for forbidden in &[
+        concat!("profile().", "identity()"),
+        concat!("profile().", "insert"),
+        concat!("get_or_init", "_profile("),
+        concat!("refresh_profile", "_name("),
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "pt-c1-5 FAIL (ptc1_scan_body_is_profile_untouching): the `set_profile_name` body \
+             contains `{}` (whitespace-free) — the name-setter must touch NO profile table \
+             (ADR-0132 D3). It writes only player.name; the ADR-0125 mirror surfaces the \
+             rename on the leaderboard at the next rated game. Any profile read/write here \
+             either adds a third profile update (breaks the ==2 pin) or injects a rating-1000 \
+             leaderboard row for an unrated player (red-team F1/F2/F3). Body: {:?}",
+            forbidden,
+            body
+        );
+    }
+
+    // Split-binding of the profile accessor is also banned (would risk a later
+    // .delete()/.update() on the bound handle; mirrors C1b).
+    let profile_binding = concat!("=ctx.db.", "profile()");
+    assert!(
+        !body.contains(profile_binding),
+        "pt-c1-5 FAIL (ptc1_scan_body_is_profile_untouching / split-binding): the \
+         `set_profile_name` body contains `{}` (whitespace-free) — binding the profile \
+         accessor is the documented evasion of the profile-untouching property (ADR-0132 D3).",
+        profile_binding
+    );
+}
+
+/// pt-c1-3: the `set_profile_name` body must REJECT a not-joined caller with a
+/// literal `Err(` and must NOT use `.unwrap(` on the player row lookup.
+///
+/// Three body-bounded needles (control-flow-agnostic — accepts BOTH the
+/// `match … None => return Err` form the plan uses AND a `let Some(..) = … else
+/// { return Err }` form; does NOT pin control-flow shape, only the authz
+/// properties):
+///
+///   (a) `player().identity().find(` present — the body resolves the caller's row.
+///   (b) `Err(` present — an explicit reject exists in the body. The `?` on
+///       `validate_name(…)?` does NOT emit a literal `Err(` in source, so the
+///       only literal `Err(` in a correct body is the not-joined `return Err(…)`.
+///   (c) `.unwrap(` absent — bans `…find(me).unwrap()` (panics on None) and
+///       `…find(me).unwrap_or_default()` (inserts a default-identity player row
+///       and silently "renames" a not-joined caller — the authz hole). Mirrors
+///       the anti-unwrap pin on `live_player_name` (~ranking_tests.rs:499).
+///
+/// The hole closed: `ctx.db.player().identity().find(me).unwrap_or_default()`
+/// passes the pt-c1-1/-2/-5 needles yet silently inserts a zero-valued player
+/// row when the caller has no `player` row (not joined) instead of rejecting.
+///
+/// Starts RED: fn absent → extract returns None → documented panic.
+///
+/// Kills:
+///   - `find(me).unwrap()` — panics on None (not joined → 500, no authz message)
+///   - `find(me).unwrap_or_default()` — silently renames a not-joined caller by
+///     creating a default-identity player row (authz hole, pt-c1-3 violation)
+///   - body has no `Err(` literal — the not-joined reject branch was removed
+#[test]
+fn ptc1_scan_body_rejects_when_not_joined() {
+    let squashed = stripped_for_scan(RANKING_RS);
+    let fn_needle = concat!("fnset_profile", "_name(");
+    let body = extract_squashed_fn_body(&squashed, fn_needle).unwrap_or_else(|| {
+        panic!(
+            "pt-c1-3 (ptc1_scan_body_rejects_when_not_joined): `set_profile_name` fn not \
+             found in ranking.rs — RED pre-impl; the reducer must exist for the not-joined \
+             reject scan to be meaningful (ADR-0132 D1)."
+        )
+    });
+
+    // (a) The body resolves the caller's player row — a lookup must be present.
+    let find_needle = concat!("player().identity()", ".find(");
+    assert!(
+        body.contains(find_needle),
+        "pt-c1-3 FAIL (ptc1_scan_body_rejects_when_not_joined / find): \
+         the `set_profile_name` body must contain `{}` (whitespace-free) — the reducer \
+         must attempt to resolve the caller's player row before writing. \
+         Body (whitespace-free): {:?}",
+        find_needle,
+        body
+    );
+
+    // (b) An explicit `Err(` literal is present — the not-joined reject branch.
+    // `validate_name(…)?` desugars to Err propagation but emits NO literal `Err(`
+    // in source; the only source-level `Err(` is the not-joined return.
+    let err_needle = "Err(";
+    assert!(
+        body.contains(err_needle),
+        "pt-c1-3 FAIL (ptc1_scan_body_rejects_when_not_joined / Err): \
+         the `set_profile_name` body must contain `{}` (whitespace-free) — the explicit \
+         not-joined rejection (`return Err(e)` or equivalent). validate_name(…)? does NOT \
+         produce a source-level `Err(` literal, so its presence proves the not-joined \
+         branch exists. Body (whitespace-free): {:?}",
+        err_needle,
+        body
+    );
+
+    // (c) No `.unwrap(` anywhere in the body — bans panic-on-None and
+    // unwrap_or_default silently-creates-row (the authz hole).
+    // `.unwrap` (no paren) so the ban catches `.unwrap()`, `.unwrap_or_default()`,
+    // `.unwrap_or(`, `.unwrap_err()` — the paren form would miss `unwrap_or_default`.
+    let unwrap_needle = ".unwrap";
+    assert!(
+        !body.contains(unwrap_needle),
+        "pt-c1-3 FAIL (ptc1_scan_body_rejects_when_not_joined / unwrap): \
+         the `set_profile_name` body contains `{}` (whitespace-free) — `.unwrap()` \
+         panics when the caller is not joined (no player row) and \
+         `.unwrap_or_default()` silently writes a zero-identity player row instead of \
+         rejecting, violating pt-c1-3 (not-joined must reject). \
+         The not-joined case must use an explicit None-arm that returns `Err(…)`. \
+         Body (whitespace-free): {:?}",
+        unwrap_needle,
+        body
+    );
+}
+
+/// Machinery self-teeth for `ptc1_scan_body_rejects_when_not_joined`:
+/// proves the three not-joined authz needles BITE.
+///
+///   BAD  — `find(me).unwrap_or_default()` body with no `Err(` literal:
+///          needle (b) fires (no `Err(`); needle (c) fires (`.unwrap(`).
+///   GOOD — `find(me)` + `return Err(…)` + no unwrap:
+///          all three needles pass.
+///
+/// If this test fails, the pt-c1-3 pin above cannot be trusted.
+#[test]
+fn ptc1_scan_rejects_not_joined_teeth() {
+    let fn_needle = concat!("fnset_profile", "_name(");
+    let find_needle = concat!("player().identity()", ".find(");
+    let err_needle = "Err(";
+    // `.unwrap` (no paren) so the ban catches `.unwrap()`, `.unwrap_or_default()`,
+    // `.unwrap_or(`, `.unwrap_err()` — the paren form would miss `unwrap_or_default`.
+    let unwrap_needle = ".unwrap";
+
+    // -------------------------------------------------------------------------
+    // BAD: uses find(me).unwrap_or_default() — no Err( literal in body.
+    // Kills: an impl that silently "renames" a not-joined caller via the
+    // default-identity row instead of rejecting (pt-c1-3 authz hole).
+    // -------------------------------------------------------------------------
+    let bad_fixture = "
+        #[spacetimedb::reducer]
+        pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
+            let me = ctx.sender;
+            let mut player = ctx.db.player().identity().find(me).unwrap_or_default();
+            let validated = validate_name(&name)?;
+            player.name = validated;
+            ctx.db.player().identity().update(player);
+            Ok(())
+        }
+    ";
+    let bad_squashed = stripped_for_scan(bad_fixture);
+    let bad_body = extract_squashed_fn_body(&bad_squashed, fn_needle)
+        .expect("ptc1_scan_rejects_not_joined_teeth (BAD): fixture must contain set_profile_name");
+
+    // Needle (b): no Err( in a body using unwrap_or_default.
+    assert!(
+        !bad_body.contains(err_needle),
+        "ptc1_scan_rejects_not_joined_teeth FAIL (BAD / Err-absent): the BAD fixture body \
+         unexpectedly contains `Err(` — fix the fixture so the authz-hole shape has no \
+         literal Err( (only the ?-propagation from validate_name), else needle (b) cannot \
+         demonstrate its bite."
+    );
+    // Needle (c): .unwrap( present in a body using unwrap_or_default.
+    assert!(
+        bad_body.contains(unwrap_needle),
+        "ptc1_scan_rejects_not_joined_teeth FAIL (BAD / unwrap-present): the BAD fixture body \
+         does NOT contain `.unwrap(` — the fixture is malformed; `unwrap_or_default()` must \
+         appear as `.unwrap(` substring for needle (c) to demonstrate its bite."
+    );
+
+    // -------------------------------------------------------------------------
+    // GOOD: find(me) + match-arm or else returning Err, no unwrap.
+    // Must pass all three needles.
+    // -------------------------------------------------------------------------
+    let good_fixture = "
+        #[spacetimedb::reducer]
+        pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
+            let me = ctx.sender;
+            let mut player = match ctx.db.player().identity().find(me) {
+                Some(p) => p,
+                None => {
+                    let e = \"not joined\".to_string();
+                    log_reject(\"set_profile_name\", me, &e);
+                    return Err(e);
+                }
+            };
+            let validated = validate_name(&name).inspect_err(|e| log_reject(\"set_profile_name\", me, e))?;
+            player.name = validated;
+            ctx.db.player().identity().update(player);
+            Ok(())
+        }
+    ";
+    let good_squashed = stripped_for_scan(good_fixture);
+    let good_body = extract_squashed_fn_body(&good_squashed, fn_needle)
+        .expect("ptc1_scan_rejects_not_joined_teeth (GOOD): fixture must contain set_profile_name");
+
+    assert!(
+        good_body.contains(find_needle),
+        "ptc1_scan_rejects_not_joined_teeth FAIL (GOOD / find): GOOD fixture body is missing \
+         `{}` — machinery or fixture is broken.",
+        find_needle
+    );
+    assert!(
+        good_body.contains(err_needle),
+        "ptc1_scan_rejects_not_joined_teeth FAIL (GOOD / Err): GOOD fixture body is missing \
+         `Err(` after string-strip — string-stripping blanked the return Err(e) literal, \
+         but `e` is a variable (not a string literal) so it must survive. \
+         Check the strip pipeline: only string CONTENTS are blanked, not identifiers.",
+    );
+    assert!(
+        !good_body.contains(unwrap_needle),
+        "ptc1_scan_rejects_not_joined_teeth FAIL (GOOD / no-unwrap): GOOD fixture body \
+         unexpectedly contains `.unwrap(` — fix the fixture.",
+    );
+}
+
+/// pt-c1-5 backstop (F3): whole-file `profile().insert(` count == 1.
+///
+/// There is exactly ONE legitimate profile insert in ranking.rs — the None arm
+/// of get_or_init_profile (seeds a new rated profile). A second insert anywhere
+/// (e.g. inside set_profile_name — the leaderboard-injection hole) drives the
+/// count to 2 and fires. Complements the body-bounded scan above with a
+/// whole-file backstop that catches an insert added via a helper the body scan
+/// might not textually contain.
+///
+/// REGRESSION PIN: starts GREEN (current ranking.rs has exactly 1 insert, in
+/// get_or_init_profile's None arm). Documented green-at-birth by design; it goes
+/// RED if the impl adds a second insert.
+///
+/// Kills:
+///   - set_profile_name (or any new helper) calls profile().insert( → count 2
+#[test]
+fn ptc1_scan_profile_insert_count_is_one() {
+    let squashed = stripped_for_scan(RANKING_RS);
+    let insert_needle = concat!("profile().", "insert(");
+    let count = squashed.matches(insert_needle).count();
+    assert_eq!(
+        count, 1,
+        "pt-c1-5 FAIL (ptc1_scan_profile_insert_count_is_one): ranking.rs must contain \
+         exactly 1 `{}` (whitespace-free) — the single get_or_init_profile None-arm seed. \
+         Found {}. If 2+, a new profile insert was added (e.g. set_profile_name injecting a \
+         rating-1000 leaderboard row for an unrated player — red-team F3). If 0, the \
+         get_or_init_profile seed was removed.",
+        insert_needle, count
+    );
+}
+
+/// Machinery self-teeth for the pt-c1 profile-untouching body scan: proves the
+/// `extract_squashed_fn_body` + forbidden-needle scan actually BITES.
+///
+///   BAD     — a set_profile_name that writes profile
+///             (`ctx.db.profile().identity().update(p)`): the forbidden needle
+///             `profile().identity()` MUST fire.
+///   GOOD    — a clean set_profile_name that writes only player.name: NO
+///             forbidden needle fires; the required needles DO.
+///   EVASION — a clean body PLUS a dead string literal containing the forbidden
+///             `ctx.db.profile().identity().update(...)` text: strip_rust_strings
+///             must blank it so the scan does NOT fire (red-team test-fan F1).
+///
+/// If this test fails, the pt-c1 body scans above cannot be trusted.
+#[test]
+fn ptc1_scan_machinery_teeth() {
+    let fn_needle = concat!("fnset_profile", "_name(");
+    let forbidden = concat!("profile().", "identity()");
+    let validate_needle = concat!("validate", "_name(");
+    let write_needle = concat!("player().identity()", ".update(");
+
+    // BAD: writes profile in the reducer body → forbidden needle must fire.
+    let bad_fixture = "
+        #[spacetimedb::reducer]
+        pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
+            let me = ctx.sender;
+            let validated = validate_name(&name)?;
+            let mut p = ctx.db.profile().identity().find(me).unwrap();
+            p.rating = 9999;
+            ctx.db.profile().identity().update(p);
+            Ok(())
+        }
+    ";
+    let bad_stripped = stripped_for_scan(bad_fixture);
+    let bad_body = extract_squashed_fn_body(&bad_stripped, fn_needle)
+        .expect("ptc1_scan_machinery_teeth (BAD): fixture must contain set_profile_name body");
+    assert!(
+        bad_body.contains(forbidden),
+        "ptc1_scan_machinery_teeth FAIL (BAD): a set_profile_name body that writes \
+         profile did NOT trip the forbidden needle {:?} — the profile-untouching scan is \
+         broken and would not catch a profile write (red-team F1/F2).",
+        forbidden
+    );
+
+    // GOOD: writes only player.name → no forbidden needle, required needles present.
+    let good_fixture = "
+        #[spacetimedb::reducer]
+        pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
+            let me = ctx.sender;
+            let mut player = match ctx.db.player().identity().find(me) {
+                Some(p) => p,
+                None => return Err(\"not joined\".to_string()),
+            };
+            let validated = validate_name(&name)?;
+            player.name = validated;
+            ctx.db.player().identity().update(player);
+            Ok(())
+        }
+    ";
+    let good_stripped = stripped_for_scan(good_fixture);
+    let good_body = extract_squashed_fn_body(&good_stripped, fn_needle)
+        .expect("ptc1_scan_machinery_teeth (GOOD): fixture must contain set_profile_name body");
+    assert!(
+        !good_body.contains(forbidden),
+        "ptc1_scan_machinery_teeth FAIL (GOOD): a clean player-only set_profile_name body \
+         incorrectly tripped the forbidden needle {:?} — false positive; the scan cannot \
+         distinguish a player.name write from a profile write.",
+        forbidden
+    );
+    assert!(
+        good_body.contains(validate_needle) && good_body.contains(write_needle),
+        "ptc1_scan_machinery_teeth FAIL (GOOD): a clean set_profile_name body is missing the \
+         required needles {:?} / {:?} — the required-needle scan would false-negative on a \
+         correct impl.",
+        validate_needle,
+        write_needle
+    );
+
+    // EVASION: clean body + dead string literal containing the forbidden text.
+    // Built via concat! so this file cannot self-match; strip_rust_strings must
+    // blank the literal so the forbidden needle does NOT fire.
+    let evasion_literal = concat!("ctx.db.", "profile().", "identity()", ".update(p)");
+    let evasion_fixture = format!(
+        "
+        #[spacetimedb::reducer]
+        pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {{
+            let _ = \"{}\";
+            let mut player = match ctx.db.player().identity().find(ctx.sender) {{
+                Some(p) => p,
+                None => return Err(\"not joined\".to_string()),
+            }};
+            player.name = validate_name(&name)?;
+            ctx.db.player().identity().update(player);
+            Ok(())
+        }}
+        ",
+        evasion_literal,
+    );
+    let evasion_stripped = stripped_for_scan(&evasion_fixture);
+    let evasion_body = extract_squashed_fn_body(&evasion_stripped, fn_needle)
+        .expect("ptc1_scan_machinery_teeth (EVASION): fixture must contain set_profile_name body");
+    assert!(
+        !evasion_body.contains(forbidden),
+        "ptc1_scan_machinery_teeth FAIL (EVASION): the string-literal evasion was NOT caught — \
+         forbidden needle {:?} matched after stripped_for_scan even though the profile-write \
+         text appeared only inside a dead string literal. strip_rust_strings is not working \
+         (red-team test-fan F1).",
+        forbidden
+    );
+}
