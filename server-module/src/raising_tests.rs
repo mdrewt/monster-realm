@@ -889,13 +889,19 @@ fn care_battle_guard_wired() {
     let collapsed: String = body.split_whitespace().collect();
 
     // Needle assembled from parts to prevent self-match in the included source text.
-    let needle = ["ifis_in_ongoing", "_battle(ctx,ctx.sender)"].concat();
+    // The trailing `{` (the opening brace of the if-block) is load-bearing: it
+    // rejects a string-literal fake like `log::info!("if is_in_ongoing_battle(ctx,
+    // ctx.sender)")` (which collapses to `..."ifis_in_ongoing_battle(ctx,ctx.sender)"`
+    // — no `){`) while matching any real guard body shape. The eval
+    // (battle-reducer-security C1) additionally strips string literals and is the
+    // authoritative gate; this Rust layer is the fast first check (red-team ptc5a F2).
+    let needle = ["ifis_in_ongoing", "_battle(ctx,ctx.sender){"].concat();
 
     assert!(
         collapsed.contains(needle.as_str()),
         "TEETH(ptc5a-1): the `care` reducer body must contain \
-         `if is_in_ongoing_battle(ctx, ctx.sender)` (whitespace-collapsed: \
-         `ifis_in_ongoing_battle(ctx,ctx.sender)`) immediately after `require_owner`. \
+         `if is_in_ongoing_battle(ctx, ctx.sender) {{` (whitespace-collapsed: \
+         `ifis_in_ongoing_battle(ctx,ctx.sender){{`) immediately after `require_owner`. \
          This guard blocks mid-battle bond-raising that would feed the HP-laundering \
          vector (ADR-0136). \
          Kills: deleting the guard (needle absent) AND a dead-code `let _ = ...` \
@@ -928,7 +934,9 @@ fn train_battle_guard_wired() {
     let collapsed: String = body.split_whitespace().collect();
 
     // Same needle as care: both reducers use ctx.sender as the identity token.
-    let needle = ["ifis_in_ongoing", "_battle(ctx,ctx.sender)"].concat();
+    // The trailing `{` rejects a string-literal fake (see care_battle_guard_wired);
+    // the eval (battle-reducer-security C1) is the authoritative string-stripped gate.
+    let needle = ["ifis_in_ongoing", "_battle(ctx,ctx.sender){"].concat();
 
     assert!(
         collapsed.contains(needle.as_str()),

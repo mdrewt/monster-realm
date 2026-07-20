@@ -34,7 +34,7 @@ The check is inserted after `require_owner(...)?` (which guarantees `ctx.sender 
 
 ### D2 — `ctx.sender` vs `m.owner_identity`
 
-After `require_owner` succeeds the two identities are equal. `ctx.sender` is chosen to match `heal_party`'s idiom (least surprise, same file) and to give the eval a single stable identity token (`identTok = 'ctx.sender'`).
+After `require_owner` succeeds the two identities are equal. `ctx.sender` is passed directly — reusing the same SSOT helper `heal_party` calls, though `heal_party` spells it through an aliased local (`let me = ctx.sender; … is_in_ongoing_battle(ctx, me)`) while `care`/`train` pass `ctx.sender` inline. The guarded predicate is identical; only the token spelling differs, which the eval accounts for per-reducer (`identTok = 'ctx.sender'` for care/train vs `'me'` for heal_party).
 
 ### D3 — policy scope (blocks all care/train while battling)
 
