@@ -29,8 +29,6 @@
 | reducers/movement_tick | SpacetimeDB Reducer | movement_tick | Per-zone, server-paced tick: drain ≤1 move per character in THIS zone, compute t |
 | reducers/on_disconnect | SpacetimeDB Reducer | on_disconnect | SpacetimeDB reducer on_disconnect. |
 | reducers/playtest_reaper | SpacetimeDB Reducer | playtest_reaper | SpacetimeDB reducer playtest_reaper. |
-| reducers/playtest_reaper | SpacetimeDB Reducer | playtest_reaper | SpacetimeDB reducer playtest_reaper. |
-| reducers/playtest_reaper | SpacetimeDB Reducer | playtest_reaper | SpacetimeDB reducer playtest_reaper. |
 | reducers/propose_trade | SpacetimeDB Reducer | propose_trade | Propose a trade: escrow the listed assets and await the counterparty's response. |
 | reducers/pvp_deadline_reaper | SpacetimeDB Reducer | pvp_deadline_reaper | Scheduled reaper: forfeit the non-submitting side when the turn deadline fires.  |
 | reducers/respond_trade | SpacetimeDB Reducer | respond_trade | Counterparty responds to a Pending offer. Role + status authorization is delegat |
@@ -39,11 +37,6 @@
 | reducers/set_nickname | SpacetimeDB Reducer | set_nickname | Set or clear a monster's nickname. Empty string clears the nickname. Ownership-c |
 | reducers/set_party_slot | SpacetimeDB Reducer | set_party_slot | Set or clear a monster's party slot. `slot = 255` moves to box; `slot < 6` assig |
 | reducers/set_profile_name | SpacetimeDB Reducer | set_profile_name | Rename the caller's display name (ADR-0132 D1). The single client-callable reduc |
-| reducers/set_profile_name | SpacetimeDB Reducer | set_profile_name | SpacetimeDB reducer set_profile_name. |
-| reducers/set_profile_name | SpacetimeDB Reducer | set_profile_name | SpacetimeDB reducer set_profile_name. |
-| reducers/set_profile_name | SpacetimeDB Reducer | set_profile_name | SpacetimeDB reducer set_profile_name. |
-| reducers/set_profile_name | SpacetimeDB Reducer | set_profile_name | SpacetimeDB reducer set_profile_name. |
-| reducers/set_profile_name | SpacetimeDB Reducer | set_profile_name | SpacetimeDB reducer set_profile_name. |
 | reducers/start_battle | SpacetimeDB Reducer | start_battle | Start a PvE battle: build BattleMonsters from the player's party and the opponen |
 | reducers/start_wild_battle | SpacetimeDB Reducer | start_wild_battle | DEV/TEST entrypoint (gate or remove at M9+): a faithful double of the grass path |
 | reducers/submit_attack | SpacetimeDB Reducer | submit_attack | Submit an attack: resolve one turn where the player attacks with `skill_id` and  |

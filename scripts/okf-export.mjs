@@ -56,18 +56,29 @@ const PUBLIC_PROJECTION = {
 // File utilities
 // ---------------------------------------------------------------------------
 
-/** Collect all .rs files under dir recursively (sorted for determinism). */
+/** Collect all non-test .rs files under dir recursively (sorted for determinism).
+ *
+ * Excludes `*_tests.rs` (ADR-0137 D1): those files carry inline `#[spacetimedb::reducer]`
+ * fixtures that `parseReducerMetadata` would otherwise pick up as real reducers,
+ * clobbering the genuine reducer pages (e.g. set_profile_name / playtest_reaper) and
+ * inflating the reducer count. The bundle documents the REAL schema, not test fixtures. */
 function collectRsFiles(dir) {
   const files = [];
   for (const entry of readdirSync(dir).sort()) {
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) files.push(...collectRsFiles(full));
-    else if (entry.endsWith('.rs')) files.push(full);
+    else if (entry.endsWith('.rs') && !entry.endsWith('_tests.rs')) files.push(full);
   }
   return files;
 }
 
-/** Concatenate all .rs files (sorted) — matches battle-schema-snapshot readServerModuleSources. */
+/** Concatenate all non-test .rs files (sorted).
+ *
+ * Uses the `*_tests.rs`-excluding collectRsFiles (ADR-0137 D1), so the bundle's schema
+ * view deliberately DIVERGES from battle-schema-snapshot's readServerModuleSources, which
+ * still concatenates ALL .rs files (it is a separate drift gate). The shared parser
+ * (parseTableSchemas) produces identical table output for both because no `*_tests.rs`
+ * file defines a real table — the two gates diverge on the file set, not the tables. */
 function readAllSources(dir) {
   return collectRsFiles(dir)
     .map((f) => readFileSync(f, 'utf8'))

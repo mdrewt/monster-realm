@@ -5,7 +5,7 @@
 //   - mutation-server job exists (ADR-0050 amendment) and is not neutered
 //   - nightly triggers on schedule + workflow_dispatch (not just push)
 //   - coverage recipe threshold ≥ 96 (not the placeholder =25)
-//   - mutate-server recipe is intact (missed.txt, no scope narrowing, cap ≤ 340)
+//   - mutate-server recipe is intact (missed.txt, no scope narrowing, cap ≤ 299)
 //
 // EXPECTED REAL-TREE STATE AT RED (m13.5a additions only):
 //   nightlyHasServerMutationJob → FAIL (mutation-server job absent from nightly.yml)
@@ -278,10 +278,19 @@ export function coverageRecipeThresholdIntact(justfileText) {
 //   - does NOT contain ` -o ` (space-delimited, F10: redirecting output to a different
 //     path leaves the recipe reading a stale or wrong missed.txt)
 //   - does NOT contain `--output` (F10 long form)
-//   - the `cap=` default in the recipe signature parses as an integer ≤ 340
-//     (catches cap="9999"; deliberate in-ceiling bumps allowed per ADR-0050 A2 as re-baselined by ADR-0118)
+//   - the `cap=` default in the recipe signature parses as an integer ≤ 299
+//     (catches cap="9999"; ceiling == committed cap so any inflation is eval-visible)
 //   - if `cap=` is present but no digit follows the `=` (after optional quote),
 //     the header is malformed → return false (tightened per reviewer n4)
+
+// Wiring-eval cap ceiling == the committed justfile `mutate-server cap=` default
+// (justfile:83 = 299, the m17.5a re-measurement recorded under ADR-0118 §4).
+// ADR-0137 D4 tightens this from 340 to the cap so EVERY cap move is eval-visible
+// (amends ADR-0118 §3/A3: headroom no longer lives in the ceiling). A legitimate
+// server-growth re-baseline bumps BOTH the justfile cap and this constant in the
+// same PR — the coupling is intentional (mechanical-enforcement-first).
+const MUTATE_SERVER_CAP_BASELINE = 299;
+
 export function mutateServerRecipeIntact(justfileText) {
   // Find the recipe header: `mutate-server` at column 0.
   const lines = justfileText.split('\n');
@@ -298,7 +307,7 @@ export function mutateServerRecipeIntact(justfileText) {
 
   // Parse `cap=` default from the header (e.g. `mutate-server cap="150":` or
   // `mutate-server cap='150':` or `mutate-server cap=150:`).
-  // We require a cap= parameter whose value is an integer ≤ 340.
+  // We require a cap= parameter whose value is an integer ≤ MUTATE_SERVER_CAP_BASELINE (299).
   // If cap= is present but has no digits (malformed), return false.
   const capMatch = headerLine.indexOf('cap=');
   if (capMatch !== -1) {
@@ -315,7 +324,7 @@ export function mutateServerRecipeIntact(justfileText) {
     // Malformed: cap= present but no digits follow (e.g. `cap=:` or `cap="`).
     if (!numStr) return false;
     const cap = parseInt(numStr, 10);
-    if (cap > 340) return false;
+    if (cap > MUTATE_SERVER_CAP_BASELINE) return false;
   }
   // cap= is optional in the recipe; absence is fine (no cap or handled differently).
 
@@ -869,7 +878,7 @@ jobs:
       name,
       pass: false,
       detail:
-        'TEETH L-bigcap: mutateServerRecipeIntact accepted cap=9999 (must reject cap > 340 per ADR-0050 A3 / ADR-0118)',
+        'TEETH L-bigcap: mutateServerRecipeIntact accepted cap=9999 (must reject cap > 299 per ADR-0137 D4 / ADR-0118)',
     };
   }
   // Bad: --file scope-narrowing bypass.
@@ -905,7 +914,7 @@ jobs:
     };
   }
   // Good: all invariants satisfied (monster-realm-module, missed.txt, --test-tool nextest,
-  // cap ≤ 340, no scope-narrowing flags).
+  // cap ≤ 299, no scope-narrowing flags).
   const justfileMutServerGood = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n`;
   if (!mutateServerRecipeIntact(justfileMutServerGood)) {
     return {
@@ -1330,13 +1339,13 @@ jobs:
 
   // Check 13: mutate-server recipe is intact (EXPECTED RED — recipe absent)
   // GREEN edit: add a mutate-server recipe to the justfile with monster-realm-module,
-  // missed.txt, cap ≤ 340, and no --shard/--file/--exclude-re narrowing.
+  // missed.txt, cap ≤ 299, and no --shard/--file/--exclude-re narrowing.
   if (!mutateServerRecipeIntact(justfile)) {
     return {
       name,
       pass: false,
       detail:
-        'justfile mutate-server recipe is absent or incomplete (EXPECTED RED — implementer must add the recipe: cargo mutants -p monster-realm-module --test-tool nextest with missed.txt count-compare, cap ≤ 340, no --shard/--file/--exclude-re)',
+        'justfile mutate-server recipe is absent or incomplete (EXPECTED RED — implementer must add the recipe: cargo mutants -p monster-realm-module --test-tool nextest with missed.txt count-compare, cap ≤ 299, no --shard/--file/--exclude-re)',
     };
   }
 
