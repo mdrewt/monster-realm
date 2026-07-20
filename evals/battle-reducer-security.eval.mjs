@@ -1547,18 +1547,21 @@ export default async function () {
   const sideBFailures = [];
 
   // -------------------------------------------------------------------------
-  // C1: 4 PvE reducer bodies must contain `if is_in_ongoing_battle(ctx, <identTok>)`
+  // C1: 6 PvE reducer bodies must contain `if is_in_ongoing_battle(ctx, <identTok>)`
   // (conditional form, correct per-reducer identity token — E2 strengthening).
-  // RED now: all four still use player_identity().filter inline.
-  // Per-reducer identTok values (ADR-0122 §1.2):
+  // RED now: care and train lack the guard (ptc5a, ADR-0136).
+  // Per-reducer identTok values (ADR-0122 §1.2 + ADR-0136):
   //   start_battle / heal_party / start_wild_battle → 'me'
   //   begin_encounter → 'player_identity'
+  //   care / train → 'ctx.sender'
   // -------------------------------------------------------------------------
   const BOTH_ROLE_GUARD_REDUCERS = [
     { name: 'start_battle', identTok: 'me' },
     { name: 'begin_encounter', identTok: 'player_identity' },
     { name: 'heal_party', identTok: 'me' },
     { name: 'start_wild_battle', identTok: 'me' },
+    { name: 'care', identTok: 'ctx.sender' },
+    { name: 'train', identTok: 'ctx.sender' },
   ];
   for (const { name: reducerName, identTok } of BOTH_ROLE_GUARD_REDUCERS) {
     const body = extractReducerBody(src, reducerName);
@@ -1785,7 +1788,7 @@ export default async function () {
       `start_battle has opponent-provenance gate; write_back helpers side_a-only; ` +
       `m17a: all ${PVP_REJECT_REDUCERS.length} PvE reducers have if is_ranked_pvp(&battle) guard ` +
       `after Ongoing check (RL-8/9, ADR-0119 D5; teeth: 4 fixtures A/B/C/D — F1 hardened); ` +
-      `m17.5a (ADR-0122): C1 if-form+identTok guard in 4 PvE reducers; C2 structural chain ` +
+      `m17.5a (ADR-0122): C1 if-form+identTok guard in ${BOTH_ROLE_GUARD_REDUCERS.length} PvE reducers (incl. care+train per ADR-0136); C2 structural chain ` +
       `count (>=1 evolve, >=2 fuse); C3 SSOT single-def + arg-order wrapper; C4 exactly 3 ` +
       `insert sites allowlisted + is_ranked_pvp two-clause ` +
       `(EARS 17.5a-1/2/5; teeth: C1x5/C2x5/C3x5/C4x3 fixtures; E1/E2/E3/E4 hardened)`,

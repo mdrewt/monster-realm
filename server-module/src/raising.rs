@@ -70,6 +70,14 @@ pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
         return Err("monster not found".to_string());
     };
     require_owner(ctx, "care", m.owner_identity)?;
+    // Both-role ongoing-battle guard (ADR-0136 amends ADR-0122 §D7): a caller
+    // who is mid-battle (side A of a wild/PvE battle OR side B of a PvP battle)
+    // cannot care — closes the bounded mid-battle HP-laundering path where a
+    // live-EV bump would fold extra HP into the level-up heal. Reuses the SSOT
+    // is_in_ongoing_battle helper (WILD_IDENTITY-refined), same as heal_party.
+    if is_in_ongoing_battle(ctx, ctx.sender) {
+        return Err("cannot care during an ongoing battle".to_string());
+    }
     // Trade escrow guard (TR-6, ADR-0106).
     reject_if_monster_in_trade(
         ctx.db
@@ -135,6 +143,13 @@ pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result
         return Err("monster not found".to_string());
     };
     require_owner(ctx, "train", m.owner_identity)?;
+    // Both-role ongoing-battle guard (ADR-0136 amends ADR-0122 §D7): a caller
+    // who is mid-battle cannot train — a mid-battle EV bump would inflate the
+    // in-battle level-up heal (the HP-laundering vector). Reuses the SSOT
+    // is_in_ongoing_battle helper (WILD_IDENTITY-refined), same as heal_party.
+    if is_in_ongoing_battle(ctx, ctx.sender) {
+        return Err("cannot train during an ongoing battle".to_string());
+    }
     // Trade escrow guards (TR-7, ADR-0106): monster and food item must be free.
     reject_if_monster_in_trade(
         ctx.db

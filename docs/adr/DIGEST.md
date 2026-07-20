@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 101 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 102 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -110,6 +110,7 @@ Generated from 101 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0133](./0133-rename-ui.md) | Client profile-rename UI (first text-input overlay) | Accepted | client-ui, movement-netcode, ci-gates | pt-c1b | A `KeyN` rename overlay wires the client to the already-merged `set_profile_name` |
 | [0134](./0134-trade-propose-ui.md) | Client trade-PROPOSE UI (KeyO offer overlay) | Accepted | client-ui, economy-quests, movement-netcode | pt-c2 | A `KeyO` ("Offer") overlay gives a human the FIRST entry point to *initiate* a trade |
 | [0135](./0135-pt-c2b-help-overlay.md) | In-client help overlay (`?`) + tester runbook (pt-c2b) | Accepted | client-ui, movement-netcode | pt-c2b | Add a display-only in-client **help overlay** — a controls (key→action) + session-goals |
+| [0136](./0136-ptc5a-care-train-battle-guard.md) | 0136 — ptc5a care/train both-role ongoing-battle guard: close the bounded mid-battle HP-laundering path (amends ADR-0122 §D7) | Accepted | battle, security-authz | ptc5a (M-playtest-c.5 pre-gate residuals — raising battle-guard gap, EARS ptc5a-1..3) | Add the SSOT both-role `is_in_ongoing_battle(ctx, ctx.sender)` guard (as `heal_party` uses) to `care`/`train`, so a mid-battle live-EV bump can no longer inflate the level-up heal; no new predicate or schema change. |
 
 ## Harness design corpus (H- namespace)
 
@@ -188,6 +189,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0122](./0122-both-role-ongoing-battle-guard-ssot.md) — m17.5a (M17.5 tenth-review residuals — side-B PvP exploit closure, EARS 17.5a-1..5) — 0122 — m17.5a both-role ongoing-battle guard SSOT: side-B PvP damage-laundering exploit closure (Accepted)
 - [0125](./0125-profile-name-passive-mirror.md) — m17.5d — 0125 — Leaderboard profile.name passive mirror on rating application (Accepted)
 - [0126](./0126-battle-challenge-ttl-reaper.md) — m17.5e — 0126 — Battle-challenge TTL reaper (Pending challenge liveness) (Accepted)
+- [0136](./0136-ptc5a-care-train-battle-guard.md) — ptc5a (M-playtest-c.5 pre-gate residuals — raising battle-guard gap, EARS ptc5a-1..3) — 0136 — ptc5a care/train both-role ongoing-battle guard: close the bounded mid-battle HP-laundering path (amends ADR-0122 §D7) (Accepted)
 
 ### evolution-fusion
 
@@ -363,6 +365,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0130](./0130-client-observability.md) — pt-b1 — Client observability: error overlay + event ring + F9 bug-report bundle (H1/H2/H3 taxonomy) (Accepted)
 - [0131](./0131-server-playtest-capture.md) — pt-b2 — Server-side playtest capture: additive `playtest_event` table + interval-singleton reaper + H1 report (Accepted)
 - [0132](./0132-profile-rename-reducer.md) — pt-c1 — `set_profile_name` rename reducer + RL-7 module-write-only tooth refinement (Accepted)
+- [0136](./0136-ptc5a-care-train-battle-guard.md) — ptc5a (M-playtest-c.5 pre-gate residuals — raising battle-guard gap, EARS ptc5a-1..3) — 0136 — ptc5a care/train both-role ongoing-battle guard: close the bounded mid-battle HP-laundering path (amends ADR-0122 §D7) (Accepted)
 
 ### economy-quests
 
