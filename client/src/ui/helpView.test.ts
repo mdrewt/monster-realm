@@ -244,14 +244,20 @@ describe('★★ HelpView render(): XSS firewall — textContent only, never inn
 
     const overlay = document.getElementById('help-overlay') as HTMLElement;
     // 1) No <script> element anywhere in the overlay subtree (an innerHTML impl would create one).
+    // False positive: this is the ASSERTION that render() never creates a <script> node (the XSS
+    // firewall's proof-of-teeth), not a sink. `overlay` is a jsdom element, never externally controlled.
     expect(
+      // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag
       overlay.querySelector('script'),
       'render() must not inject a <script> element — use textContent, never innerHTML',
     ).toBeNull();
     // 2) The literal XSS string appears verbatim as text (textContent escapes the angle brackets).
     const controlsEl = document.getElementById('help-controls') as HTMLElement;
     const li = controlsEl.querySelector('li') as HTMLElement;
+    // False positive: this asserts the <script> payload survives as LITERAL text (proof textContent
+    // escaped it), not a sink. `li` is a jsdom element; `.includes()` is a string read, not HTML injection.
     expect(
+      // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag
       li.textContent?.includes(XSS),
       'the <script> string must appear as LITERAL textContent, not be parsed',
     ).toBe(true);
