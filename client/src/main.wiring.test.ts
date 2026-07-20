@@ -653,9 +653,12 @@ describe('main.ts wiring (pt-c1b rename): KeyN handler (PTC1B-1 / RT-RN-01/05)',
     const keyNIdx = src.indexOf("'KeyN'");
     expect(keyNIdx, "main.ts must contain 'KeyN' (PTC1B-1)").toBeGreaterThanOrEqual(0);
 
-    // Window widened 600→720 (pt-c2b): the help overlay added `!helpView?.visible` to the
-    // KeyN open-guard, growing the guard block so held.clear() (at ~delta 590) now spans the
-    // old 600-char boundary. Widening preserves the bite — a missing held.clear() still fails.
+    // Window widened 600→720 (pt-c2b): the help overlay added `!helpView?.visible` to the KeyN
+    // open-guard, pushing held.clear() down so the 12-char "held.clear()" string now STARTS at
+    // ~delta 590 and ENDS at ~602 — i.e. it straddles the old 600-char slice end, so
+    // includes('held.clear()') truncated to false. Widening preserves the bite: the next
+    // held.clear() (KeyO's) is at ~delta 990, far outside 720, so a missing KeyN held.clear()
+    // still fails (no foreign held.clear() can false-credit it).
     const keyNRegion = src.slice(keyNIdx, keyNIdx + 720);
     expect(
       keyNRegion.includes('held.clear()'),
@@ -1270,11 +1273,11 @@ describe('main.ts wiring (pt-c2b help): Escape close branch (PTC2B-3)', () => {
 
 describe('★ main.ts wiring (pt-c2b help): fan-out count floor (PTC2B-4..8 / ADR-0135)', () => {
   // BINDING (plan "Plan-review resolutions" HIGH-1 / red-team F1): the count-floor is 19,
-  // NOT 21. `helpView?.visible` occurs exactly 19× — structurally identical to
-  // `leaderboardView?.visible` (which the impl-time file has exactly 19 of; asserted below
-  // as a self-check). tradePropose's 21 includes 2 sites help cannot have (reducer-response
-  // feedback + Identity self-branch). Freezing 21 makes the tooth unsatisfiable by a correct
-  // impl; 19 is the exact structural parity floor.
+  // NOT the tradePropose count. `helpView?.visible` occurs exactly 19× — structurally identical
+  // to `leaderboardView?.visible` (asserted below as a self-check). tradePropose carries 2 sites
+  // help cannot have (reducer-response feedback + an Identity self-branch), so its count (22 in
+  // the live file post-pt-c2b) must NOT be used as the floor — that would be unsatisfiable by a
+  // correct display-only impl; 19 is the exact structural parity floor.
   const HELP_VISIBLE_FLOOR = 19;
   // leaderboardView?.visible is the read-only-overlay parity anchor. Wiring the help overlay
   // adds `!leaderboardView?.visible` to help's OWN `?` open-guard, so leaderboard's live count is
