@@ -1,466 +1,643 @@
 // @vitest-environment happy-dom
-// ui/renameView.test.ts — RED gating tests for pt-c1b (ADR-0132 rename overlay).
+// ui/renameView.test.ts — RED gating tests for pt-c1b DOM shell (PTC1B-2/5/6/7/8 + RT-RN-02/03/07/08).
 //
-// Slice: pt-c1b · Source-of-truth spec: specs/monster-realm-v2/M-playtest-c-ux-completion.spec.md
+// Slice: pt-c1b · Source-of-truth spec: docs/specs/pt-c1b-plan.md + docs/adr/0133-rename-ui.md
 //
 // RED REASON: renameView.ts does not exist yet.
-// Every import below will fail until the implementer creates the module.
+// Every test below will fail with:
+//   "Failed to resolve import './renameView'" (module-not-found)
 //
-// WRONG-IMPL-KILLED list (one invariant per test group):
-//   RT-RN-01  keyup guard            → keyup has no overlay guard; held-key bleeds after rename
-//   RT-RN-02  movement suppression   → rename visible but unfocused → movement fires
-//   RT-RN-03  pending lock reset     → rejection leaves button dead forever (ADR-0085 C6 precedent)
-//   RT-RN-04  double-submit race     → rapid Enter+click submits twice
-//   RT-RN-05  opening 'N' typed      → show()+auto-focus causes 'n' typed in field
-//   RT-RN-06  canSubmit / whitespace → whitespace-only name must not submit
-//   RT-RN-07  XSS guard              → name rendered via innerHTML not textContent
-//   RT-RN-08  reducer arg key        → call uses wrong arg shape (no `name` key)
-//   RT-RN-09  RL-15 evasion          → leaderboard files must not reference setProfileName
-//   RT-RN-10  e2e SQL scope          → SELECT name FROM player without identity filter
+// WRONG-IMPL-KILLED list (one per criterion):
+//   - "ctor silently accepts missing DOM"         → throw-on-missing-overlay test catches it
+//   - "ctor silently accepts missing child"       → throw-on-missing-child tests catch it
+//   - "render never updates disabled state"       → render-disabled tests catch it
+//   - "render uses innerHTML (XSS)"               → RT-RN-07 source-scan catches it
+//   - "input keydown doesn't stopPropagation"    → stopPropagation spy tests (PTC1B-5) catch it
+//   - "Enter calls onSubmit with raw value"       → Enter-submit test catches it
+//   - "Escape calls onSubmit"                     → Escape-no-call test catches it
+//   - "empty/whitespace submit calls onSubmit"   → PTC1B-7 submit-click tests catch it
+//   - "double-click calls onSubmit twice"        → PTC1B-2 pending lock test catches it
+//   - "reject leaves button disabled forever"    → RT-RN-03 finally test catches it
+//   - "hide doesn't clear input/feedback"        → RT-RN-02 hide-reset tests catch it
+//   - "binding exports wrong key"                 → RT-RN-08 shape scan catches it
+//
+// Do NOT edit tests to match a buggy impl — correct from the spec only.
+// Corrections must be traced to the spec and must not weaken the bite.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RenameView } from './renameView';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 // ---------------------------------------------------------------------------
-// DOM mount helpers
+// DOM mount helper — installs the index.html shell for renameView (ADR-0133 D2).
+// Each test gets a fresh DOM via beforeEach to prevent cross-test contamination.
 // ---------------------------------------------------------------------------
 
 function mountRenameOverlay(): {
-  overlay: HTMLDivElement;
+  overlay: HTMLElement;
+  currentEl: HTMLElement;
   input: HTMLInputElement;
   submitBtn: HTMLButtonElement;
-  feedback: HTMLElement;
+  feedbackEl: HTMLElement;
 } {
   const existing = document.getElementById('rename-overlay');
   if (existing) existing.remove();
 
-  const overlay = document.createElement('div');
-  overlay.id = 'rename-overlay';
-  overlay.style.display = 'none';
+  // Matches the exact shell specified in docs/specs/pt-c1b-plan.md §index.html shell
+  document.body.innerHTML = `
+    <div id="rename-overlay" style="display:none">
+      <div id="rename-current" data-testid="rename-current"></div>
+      <input id="rename-input" data-testid="rename-input" type="text" maxlength="24" />
+      <button id="rename-submit" data-testid="rename-submit">Rename</button>
+      <div id="rename-feedback" data-testid="rename-feedback"></div>
+    </div>
+  `;
 
-  const input = document.createElement('input');
-  input.id = 'rename-input';
-  input.maxLength = 24;
-  overlay.appendChild(input);
-
-  const submitBtn = document.createElement('button');
-  submitBtn.id = 'rename-submit';
-  overlay.appendChild(submitBtn);
-
-  const feedback = document.createElement('div');
-  feedback.id = 'rename-feedback';
-  overlay.appendChild(feedback);
-
-  document.body.appendChild(overlay);
-  return { overlay, input, submitBtn, feedback };
+  const overlay = document.getElementById('rename-overlay') as HTMLElement;
+  const currentEl = document.getElementById('rename-current') as HTMLElement;
+  const input = document.getElementById('rename-input') as HTMLInputElement;
+  const submitBtn = document.getElementById('rename-submit') as HTMLButtonElement;
+  const feedbackEl = document.getElementById('rename-feedback') as HTMLElement;
+  return { overlay, currentEl, input, submitBtn, feedbackEl };
 }
 
 function teardown(): void {
-  const el = document.getElementById('rename-overlay');
-  if (el) el.remove();
+  document.body.innerHTML = '';
+}
+
+// Minimal ViewModel shape that RenameView.render() accepts.
+// Mirrors buildRenameViewModel's return type (ADR-0133 D2).
+interface RenameViewModel {
+  displayCurrentName: string;
+  trimmedDraft: string;
+  canSubmit: boolean;
 }
 
 // ---------------------------------------------------------------------------
-// RT-RN-08 · reducer arg key
-//
-// The generated binding (set_profile_name_reducer.ts) exports `{ name: __t.string() }`.
-// The call must be `reducers.setProfileName({ name })` — NOT `{ playerName }`,
-// NOT `{ value }`, NOT a bare string.
-// This test does NOT import module_bindings (that would be the RL-15 violation itself);
-// it reads the generated binding source and asserts the exported key is literally `name`.
+// flushPromises: drain the microtask queue (for .finally()-driven state reset).
+// Three rounds cover: initiation → then/catch → finally.
+// ---------------------------------------------------------------------------
+async function flushPromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+// ---------------------------------------------------------------------------
+// Constructor: throw on missing required DOM nodes
 // ---------------------------------------------------------------------------
 
-describe('RT-RN-08: reducer arg key is `name` (not a renamed alias)', () => {
-  it('set_profile_name_reducer.ts exports a single string field named `name`', () => {
-    const bindingPath = path.resolve(__dirname, '../module_bindings/set_profile_name_reducer.ts');
-    const src = readFileSync(bindingPath, 'utf8');
-    // The generated BSATN binding shape is `{ name: __t.string() }`.
-    // A wrong impl might import it as `{ playerName }` or call with a different key.
-    // Proof-of-teeth: if the binding is changed to e.g. `{ value: __t.string() }`, this fails.
-    expect(src).toMatch(/name\s*:\s*__t\.string\(\)/);
-    // Also assert there is NOT a second string field — the reducer has exactly one arg.
-    const stringFields = src.match(/__t\.string\(\)/g) ?? [];
-    expect(stringFields.length).toBe(1);
+describe('RenameView constructor: throws when required DOM nodes are missing', () => {
+  afterEach(() => {
+    teardown();
+  });
+
+  it('BITES: ctor throws when #rename-overlay is absent — kills no-guard impl', () => {
+    // WRONG IMPL KILLED: an impl that silently stores null from getElementById without
+    // guarding — the view would silently do nothing on render/show/hide.
+    // DOM is empty (teardown ran); no overlay exists.
+    expect(() => new RenameView({ onSubmit: async () => {} })).toThrow();
+  });
+
+  it('BITES: ctor throws when #rename-current child is missing — kills partial-DOM impl', () => {
+    // Mount overlay WITHOUT the #rename-current child to exercise the second throw path.
+    // WRONG IMPL KILLED: an impl that only checks for #rename-overlay, not the children.
+    const overlay = document.createElement('div');
+    overlay.id = 'rename-overlay';
+    overlay.style.display = 'none';
+    // Add input, submit, feedback but NOT #rename-current
+    overlay.innerHTML = `
+      <input id="rename-input" />
+      <button id="rename-submit">Rename</button>
+      <div id="rename-feedback"></div>
+    `;
+    document.body.appendChild(overlay);
+    expect(() => new RenameView({ onSubmit: async () => {} })).toThrow();
+  });
+
+  it('BITES: ctor throws when #rename-input child is missing — kills partial-DOM impl', () => {
+    // WRONG IMPL KILLED: an impl that guards current/submit/feedback but not the input.
+    const overlay = document.createElement('div');
+    overlay.id = 'rename-overlay';
+    overlay.style.display = 'none';
+    overlay.innerHTML = `
+      <div id="rename-current"></div>
+      <button id="rename-submit">Rename</button>
+      <div id="rename-feedback"></div>
+    `;
+    document.body.appendChild(overlay);
+    expect(() => new RenameView({ onSubmit: async () => {} })).toThrow();
+  });
+
+  it('BITES: ctor throws when #rename-submit child is missing — kills partial-DOM impl', () => {
+    // WRONG IMPL KILLED: an impl that guards other children but not the submit button.
+    const overlay = document.createElement('div');
+    overlay.id = 'rename-overlay';
+    overlay.style.display = 'none';
+    overlay.innerHTML = `
+      <div id="rename-current"></div>
+      <input id="rename-input" />
+      <div id="rename-feedback"></div>
+    `;
+    document.body.appendChild(overlay);
+    expect(() => new RenameView({ onSubmit: async () => {} })).toThrow();
   });
 });
 
 // ---------------------------------------------------------------------------
-// RT-RN-09 · RL-15: leaderboard files must not call setProfileName
-//
-// The rename overlay writes `player.name` via `set_profile_name`. The leaderboard
-// is a pure-read view (ADR-0120, RL-15). The write path must NOT appear in
-// leaderboardView.ts or leaderboardModel.ts — even through a helper indirection.
+// Visibility: visible / show / hide
 // ---------------------------------------------------------------------------
 
-describe('RT-RN-09: leaderboard files are write-free (RL-15)', () => {
-  const leaderboardFiles = ['leaderboardView.ts', 'leaderboardModel.ts'];
-
-  for (const filename of leaderboardFiles) {
-    it(`${filename} does not reference setProfileName or reducers.`, () => {
-      const src = readFileSync(path.resolve(__dirname, filename), 'utf8');
-      // Strip block comments to avoid false-negative from a comment-only reference.
-      const stripped = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*/g, '');
-      expect(stripped).not.toMatch(/setProfileName/);
-      // Reducers call: `reducers.` — the leaderboard must make no write calls at all.
-      expect(stripped).not.toMatch(/reducers\./);
-    });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// RT-RN-10 · e2e SQL must scope to identity
-//
-// The plan asserts `SELECT name FROM player` — but the player table has rows
-// for ALL connected players. Without a WHERE clause scoped to the test identity,
-// an unrelated player whose name already matches the target gives a false pass.
-//
-// This test reads any e2e rename spec file and requires a WHERE or identity filter
-// in the SQL helper — analogous to parseProfileRows identity-set filter in ranked-forfeit.
-// ---------------------------------------------------------------------------
-
-describe('RT-RN-10: e2e SQL query must filter by identity', () => {
-  it('rename e2e spec scopes the SQL SELECT to the test identity (not entire table)', () => {
-    // The e2e file must not contain an unscoped `SELECT name FROM player` without
-    // either a WHERE clause or a parse helper that filters by identity.
-    // We look for any e2e file that references the rename flow.
-    const e2eDir = path.resolve(__dirname, '../../../e2e');
-    let renameSpecSrc = '';
-    try {
-      // Try known candidate names. The implementer MUST create one of these.
-      for (const candidate of ['rename.spec.ts', 'profile-rename.spec.ts', 'pt-c1b.spec.ts']) {
-        try {
-          renameSpecSrc = readFileSync(path.resolve(e2eDir, candidate), 'utf8');
-          break;
-        } catch {
-          // not found, try next
-        }
-      }
-    } catch {
-      // no e2e dir at all
-    }
-
-    if (renameSpecSrc === '') {
-      // No e2e spec exists yet — this test is a RED forcing function.
-      // Fail with a clear message so the implementer knows what to create.
-      expect.fail(
-        'RT-RN-10: no rename e2e spec found. Create client/e2e/rename.spec.ts with an ' +
-          'identity-scoped SQL assertion (filter by __game().identity, not the whole player table).',
-      );
-    }
-
-    // Strip comments before checking.
-    const stripped = renameSpecSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*/g, '');
-
-    // An unscoped query is: `SELECT name FROM player` with no WHERE and no
-    // identity-filter in the parse helper. Require at least one of:
-    //   - a WHERE clause in the SQL string, or
-    //   - a reference to the identity (identity variable) near the SELECT.
-    const hasScopedQuery =
-      /SELECT\s+.*FROM\s+player\s+WHERE/i.test(stripped) ||
-      // The ranked-forfeit pattern: query all rows, then filter by identity set in JS.
-      (/SELECT\s+identity.*FROM\s+player/i.test(stripped) && /identit/i.test(stripped));
-
-    expect(hasScopedQuery).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// The tests below require renameView.ts to exist.
-// They are RED until the implementer creates the module.
-// ---------------------------------------------------------------------------
-
-describe('RT-RN-03: pending lock resets on reducer rejection (ADR-0085 C6)', () => {
-  let view: RenameView;
-  let submitCalls: Array<{ name: string }>;
-  let rejectFn!: (err: Error) => void;
-
+describe('RenameView visibility: show / hide / visible', () => {
   beforeEach(() => {
     mountRenameOverlay();
-    submitCalls = [];
-    view = new RenameView({
-      onSubmit: (name: string) => {
-        submitCalls.push({ name });
-        // Return a promise that we can reject externally to simulate reducer rejection.
-        return new Promise<void>((_, reject) => {
-          rejectFn = reject;
-        });
-      },
-    });
   });
 
-  afterEach(teardown);
+  afterEach(() => {
+    teardown();
+  });
 
-  it('submit button is re-enabled after a reducer rejection (dead-button-forever caught)', async () => {
+  it('BITES: visible is false initially (display:none in index.html) — kills visible=true-at-construction impl', () => {
+    // WRONG IMPL KILLED: an impl that calls show() in the constructor or always returns true.
+    const view = new RenameView({ onSubmit: async () => {} });
+    expect(view.visible).toBe(false);
+  });
+
+  it('BITES: show() makes visible=true — kills no-op show impl', () => {
+    // WRONG IMPL KILLED: an impl where show() does nothing.
+    const view = new RenameView({ onSubmit: async () => {} });
     view.show();
-    const input = document.getElementById('rename-input') as HTMLInputElement;
-    const submitBtn = document.getElementById('rename-submit') as HTMLButtonElement;
+    expect(view.visible).toBe(true);
+  });
 
+  it('BITES: hide() makes visible=false — kills no-op hide impl', () => {
+    // WRONG IMPL KILLED: an impl where hide() does nothing.
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.show();
+    view.hide();
+    expect(view.visible).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// render(): disabled state + textContent (PTC1B-7 + ADR-0133 D2 textContent-only)
+// ---------------------------------------------------------------------------
+
+describe('RenameView render(): disabled/enabled state and textContent', () => {
+  beforeEach(() => {
+    mountRenameOverlay();
+  });
+
+  afterEach(() => {
+    teardown();
+  });
+
+  it('BITES: render({canSubmit:false}) sets #rename-submit.disabled=true — kills always-enabled impl', () => {
+    // WRONG IMPL KILLED: an impl that never sets the disabled attribute.
+    const view = new RenameView({ onSubmit: async () => {} });
+    const vm: RenameViewModel = { displayCurrentName: 'X', trimmedDraft: '', canSubmit: false };
+    view.render(vm);
+    const btn = document.getElementById('rename-submit') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
+
+  it('BITES: render({canSubmit:true}) sets #rename-submit.disabled=false — kills always-disabled impl', () => {
+    // WRONG IMPL KILLED: an impl that always leaves disabled=true.
+    const view = new RenameView({ onSubmit: async () => {} });
+    const vm: RenameViewModel = { displayCurrentName: 'X', trimmedDraft: 'Valid', canSubmit: true };
+    view.render(vm);
+    const btn = document.getElementById('rename-submit') as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+  });
+
+  it('BITES: render() sets #rename-current textContent to displayCurrentName — kills no-render impl', () => {
+    // WRONG IMPL KILLED: an impl that ignores displayCurrentName or writes it to the wrong element.
+    const view = new RenameView({ onSubmit: async () => {} });
+    const vm: RenameViewModel = {
+      displayCurrentName: 'Aria',
+      trimmedDraft: 'New',
+      canSubmit: true,
+    };
+    view.render(vm);
+    const currentEl = document.getElementById('rename-current')!;
+    expect(currentEl.textContent).toBe('Aria');
+  });
+
+  it('BITES: render() with displayCurrentName:"(unnamed)" sets textContent literally — kills impl that strips parens', () => {
+    // D6: the model produces "(unnamed)" for an empty currentName; the view renders it verbatim.
+    const view = new RenameView({ onSubmit: async () => {} });
+    const vm: RenameViewModel = {
+      displayCurrentName: '(unnamed)',
+      trimmedDraft: '',
+      canSubmit: false,
+    };
+    view.render(vm);
+    const currentEl = document.getElementById('rename-current')!;
+    expect(currentEl.textContent).toBe('(unnamed)');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ★★ PTC1B-5: stopPropagation teeth — typing a hotkey inside the input does NOT
+//    reach the window keydown listener (the view's own listener stopPropagation'd it).
+//    This bites a view that forgets e.stopPropagation() on the input's keydown.
+// ---------------------------------------------------------------------------
+
+describe('★★ RenameView PTC1B-5: input keydown stopPropagation prevents hotkey bleeding', () => {
+  beforeEach(() => {
+    mountRenameOverlay();
+  });
+
+  afterEach(() => {
+    teardown();
+    vi.restoreAllMocks();
+  });
+
+  it('★★ BITES: KeyL typed on input does NOT reach window keydown listener — kills missing-stopPropagation impl', () => {
+    // PTC1B-5: WHILE the input is focused, typing a hotkey letter (KeyL) does NOT toggle
+    // the leaderboard overlay. The view's own listener must call e.stopPropagation().
+    // PROOF-OF-TEETH: a window keydown spy is NOT called when KeyL bubbles from the input.
+    // A view that forgets stopPropagation lets the event bubble → the spy fires → test fails.
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.show();
+
+    const spy = vi.fn();
+    window.addEventListener('keydown', spy);
+
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    input.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyL', bubbles: true }));
+
+    // The spy must NOT have been called — stopPropagation blocked bubbling.
+    expect(spy).not.toHaveBeenCalled();
+
+    window.removeEventListener('keydown', spy);
+  });
+
+  it('★★ BITES: KeyW typed on input does NOT reach window keydown listener — kills missing-stopPropagation impl (movement bleed)', () => {
+    // PTC1B-5: typing a movement key (KeyW = forward) inside the input must NOT move the
+    // character. The stopPropagation test with KeyW covers the movement-bleed path
+    // (the global movement handler fires on WASD).
+    // WRONG IMPL KILLED: a view without stopPropagation allows the "W" keydown to reach the
+    // global movement handler → character moves while the player is typing their name.
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.show();
+
+    const spy = vi.fn();
+    window.addEventListener('keydown', spy);
+
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    input.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', bubbles: true }));
+
+    expect(spy).not.toHaveBeenCalled();
+
+    window.removeEventListener('keydown', spy);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Enter key: calls onSubmit with trimmed value (PTC1B-2)
+// Escape key: hides overlay, does NOT call onSubmit (PTC1B-6)
+// ---------------------------------------------------------------------------
+
+describe('RenameView keyboard: Enter submits; Escape hides without submitting (PTC1B-2/6)', () => {
+  beforeEach(() => {
+    mountRenameOverlay();
+  });
+
+  afterEach(() => {
+    teardown();
+    vi.restoreAllMocks();
+  });
+
+  it('BITES: Enter on input with non-empty value calls onSubmit exactly once with trimmed value', async () => {
+    // WRONG IMPL KILLED: an impl where Enter does nothing, or calls onSubmit with raw (untrimmed) value.
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const view = new RenameView({ onSubmit });
+    view.show();
+
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    input.value = '  Hero  ';
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { code: 'Enter', bubbles: true }));
+    await flushPromises();
+
+    expect(onSubmit).toHaveBeenCalledOnce();
+    expect(onSubmit).toHaveBeenCalledWith('Hero');
+  });
+
+  it('BITES: Enter on input with empty value does NOT call onSubmit — PTC1B-7 gate on Enter path', async () => {
+    // WRONG IMPL KILLED: an impl that calls onSubmit on Enter regardless of value.
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const view = new RenameView({ onSubmit });
+    view.show();
+
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    input.value = '';
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { code: 'Enter', bubbles: true }));
+    await flushPromises();
+
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('BITES: Escape on input hides the overlay AND does NOT call onSubmit (PTC1B-6)', async () => {
+    // WRONG IMPL KILLED: an impl where Escape calls onSubmit (cancels but submits),
+    // or where Escape does not hide the overlay.
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const view = new RenameView({ onSubmit });
+    view.show();
+    expect(view.visible).toBe(true);
+
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    input.value = 'SomeName';
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true }));
+    await flushPromises();
+
+    expect(view.visible).toBe(false);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PTC1B-7: empty/whitespace submit-click → onSubmit NOT called
+// ---------------------------------------------------------------------------
+
+describe('RenameView PTC1B-7: empty/whitespace submit does not call onSubmit', () => {
+  beforeEach(() => {
+    mountRenameOverlay();
+  });
+
+  afterEach(() => {
+    teardown();
+    vi.restoreAllMocks();
+  });
+
+  it('BITES: click submit with empty input → onSubmit NOT called — kills impl that submits empty names', () => {
+    // WRONG IMPL KILLED: an impl that calls onSubmit regardless of the input value.
+    // Server would reject but PTC1B-7 wants the client to suppress the call for UX.
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const view = new RenameView({ onSubmit });
+    view.show();
+
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    input.value = '';
+
+    const submitBtn = document.getElementById('rename-submit') as HTMLButtonElement;
+    submitBtn.click();
+
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('BITES: click submit with whitespace-only input → onSubmit NOT called — kills impl missing trim check', () => {
+    // WRONG IMPL KILLED: an impl that checks `input.value !== ''` without trimming —
+    // '   ' passes the raw check and calls onSubmit with a whitespace-only or trimmed-empty name.
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const view = new RenameView({ onSubmit });
+    view.show();
+
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    input.value = '   ';
+
+    const submitBtn = document.getElementById('rename-submit') as HTMLButtonElement;
+    submitBtn.click();
+
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ★ PTC1B-2: double-submit lock — the #pending lock prevents onSubmit being
+//   called twice before the first promise resolves.
+// ---------------------------------------------------------------------------
+
+describe('★ RenameView PTC1B-2: double-submit calls onSubmit exactly ONCE (#pending lock)', () => {
+  beforeEach(() => {
+    mountRenameOverlay();
+  });
+
+  afterEach(() => {
+    teardown();
+    vi.restoreAllMocks();
+  });
+
+  it('★ BITES: two rapid submit clicks before first promise resolves → onSubmit called exactly once', async () => {
+    // WRONG IMPL KILLED: an impl without #pending lock — the second click fires another
+    // reducer call before the first settles.
+    // Uses a never-immediately-resolving promise to simulate in-flight state.
+    let resolveFlight: (() => void) | undefined;
+    const flightPromise = new Promise<void>((res) => {
+      resolveFlight = res;
+    });
+    const onSubmit = vi.fn().mockReturnValue(flightPromise);
+
+    const view = new RenameView({ onSubmit });
+    view.show();
+
+    const input = document.getElementById('rename-input') as HTMLInputElement;
     input.value = 'ValidName';
 
-    // First submit — sets pending lock.
+    const submitBtn = document.getElementById('rename-submit') as HTMLButtonElement;
+    // First click → initiates the in-flight promise (onSubmit called once)
     submitBtn.click();
-    expect(submitCalls.length).toBe(1);
+    // Second click immediately while still in-flight → must be a no-op (#pending lock)
+    submitBtn.click();
+    // Also try Enter as a third submit vector
+    input.dispatchEvent(new KeyboardEvent('keydown', { code: 'Enter', bubbles: true }));
 
-    // Simulate reducer rejection.
-    rejectFn(new Error('set_profile_name: name contains invalid characters'));
-    // Drain microtasks.
-    await Promise.resolve();
+    await flushPromises();
 
-    // The lock MUST be reset so the user can retry.
-    // A broken impl leaves submitBtn.disabled = true forever (ADR-0085 C6 precedent:
-    // dismissPending must reset on rejection, same as dismissDialogue).
+    // onSubmit must have been called exactly once despite three submit attempts.
+    expect(onSubmit).toHaveBeenCalledOnce();
+
+    // Unblock the flight so the lock releases (cleanup).
+    resolveFlight?.();
+    await flushPromises();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ★ RT-RN-03: dead-button-forever — a rejecting onSubmit must re-enable the
+//   button via .finally() (ADR-0133 D2, shopView #pending pattern precedent).
+// ---------------------------------------------------------------------------
+
+describe('★ RT-RN-03: rejecting onSubmit re-enables the submit button (.finally() lock reset)', () => {
+  beforeEach(() => {
+    mountRenameOverlay();
+  });
+
+  afterEach(() => {
+    teardown();
+    vi.restoreAllMocks();
+  });
+
+  it('★ BITES: button is re-enabled after onSubmit rejects — kills impl with no .finally()', async () => {
+    // WRONG IMPL KILLED: an impl that uses `.then(reset)` only (not `.finally(reset)`).
+    // When onSubmit rejects, the `.then` branch is not reached and the button stays
+    // permanently disabled (the "dead-button-forever" antipattern, ADR-0085 C6 precedent).
+    // PROOF-OF-TEETH: submit → reject → drain microtasks → assert button is enabled again.
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onSubmit = vi.fn().mockRejectedValue(new Error('server rejected'));
+
+    const view = new RenameView({ onSubmit });
+    view.show();
+
+    const input = document.getElementById('rename-input') as HTMLInputElement;
+    input.value = 'ValidName';
+
+    const submitBtn = document.getElementById('rename-submit') as HTMLButtonElement;
+    submitBtn.click();
+
+    // Drain multiple microtask ticks so the rejection + .finally() all settle.
+    await flushPromises();
+
+    // The button must be enabled again — the .finally() reset the #pending lock.
     expect(submitBtn.disabled).toBe(false);
 
-    // A second submit must go through.
-    submitBtn.click();
-    expect(submitCalls.length).toBe(2);
+    consoleSpy.mockRestore();
   });
 });
 
-describe('RT-RN-04: double-submit prevention', () => {
-  let view: RenameView;
-  let submitCalls: number;
-  let resolveFn!: () => void;
+// ---------------------------------------------------------------------------
+// RT-RN-02 / M-2: hide() resets input value to '' and clears feedback
+// ---------------------------------------------------------------------------
 
+describe('RenameView RT-RN-02 / M-2: hide() resets input value and feedback', () => {
   beforeEach(() => {
     mountRenameOverlay();
-    submitCalls = 0;
-    view = new RenameView({
-      onSubmit: (_name: string) => {
-        submitCalls++;
-        return new Promise<void>((resolve) => {
-          resolveFn = resolve;
-        });
-      },
-    });
   });
 
-  afterEach(teardown);
+  afterEach(() => {
+    teardown();
+  });
 
-  it('rapid button click + Enter while in flight submits exactly once', async () => {
+  it('BITES: hide() clears #rename-input value to "" — kills impl that leaves stale draft on re-open', () => {
+    // RT-RN-02: a stale draft persists when the overlay is re-opened if hide() does not reset it.
+    // WRONG IMPL KILLED: an impl where hide() only changes display:none without resetting value.
+    const view = new RenameView({ onSubmit: async () => {} });
     view.show();
+
     const input = document.getElementById('rename-input') as HTMLInputElement;
-    const submitBtn = document.getElementById('rename-submit') as HTMLButtonElement;
+    input.value = 'StaleValue';
 
-    input.value = 'NewName';
+    view.hide();
 
-    // Rapid double-submit.
-    submitBtn.click();
-    submitBtn.click();
-    // Also fire Enter as the input's keydown handler would.
-    input.dispatchEvent(
-      new KeyboardEvent('keydown', { code: 'Enter', key: 'Enter', bubbles: true }),
-    );
-    await Promise.resolve();
+    // After hide(), the input value must be cleared so the next open starts fresh.
+    expect(input.value).toBe('');
+  });
 
-    // Only ONE call should have gone out — the pending lock guards the rest.
-    expect(submitCalls).toBe(1);
-    resolveFn();
+  it('BITES: hide() clears #rename-feedback textContent — kills impl that leaves stale feedback on re-open', () => {
+    // RT-RN-02: feedback from a prior rename attempt (success/error) must not linger.
+    // WRONG IMPL KILLED: an impl where hide() does not touch the feedback element.
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.show();
+
+    const feedbackEl = document.getElementById('rename-feedback') as HTMLElement;
+    feedbackEl.textContent = 'Rename failed: invalid name';
+
+    view.hide();
+
+    expect(feedbackEl.textContent).toBe('');
   });
 });
 
-describe('RT-RN-06: canSubmit — whitespace-only name must not submit', () => {
-  let view: RenameView;
-  let submitCalls: number;
+// ---------------------------------------------------------------------------
+// showFeedback(): writes feedback text via textContent
+// ---------------------------------------------------------------------------
 
+describe('RenameView showFeedback(): writes textContent to #rename-feedback', () => {
   beforeEach(() => {
     mountRenameOverlay();
-    submitCalls = 0;
-    view = new RenameView({
-      onSubmit: async (_name: string) => {
-        submitCalls++;
-      },
-    });
   });
 
-  afterEach(teardown);
+  afterEach(() => {
+    teardown();
+  });
 
-  it('submitting "   " (whitespace only) does not call onSubmit', async () => {
+  it('BITES: showFeedback("Name updated") sets #rename-feedback textContent — kills no-op impl', () => {
+    // Proves the method exists and writes to the feedback element.
+    // WRONG IMPL KILLED: an impl where showFeedback() is a no-op or writes to wrong element.
+    const view = new RenameView({ onSubmit: async () => {} });
     view.show();
-    const input = document.getElementById('rename-input') as HTMLInputElement;
-    const submitBtn = document.getElementById('rename-submit') as HTMLButtonElement;
-
-    input.value = '   ';
-    submitBtn.click();
-    await Promise.resolve();
-
-    // Server would reject (trim → empty → "name must not be empty"), but the
-    // client-side canSubmit guard should block the call entirely (trim check).
-    expect(submitCalls).toBe(0);
-  });
-
-  it('submitting a 25-char name does not call onSubmit (client maxlength guard)', async () => {
-    view.show();
-    const input = document.getElementById('rename-input') as HTMLInputElement;
-    const submitBtn = document.getElementById('rename-submit') as HTMLButtonElement;
-
-    // Note: input.maxLength=24 prevents DOM typing of 25 chars, but programmatic
-    // assignment bypasses it. The view's canSubmit must also check length.
-    input.value = 'A'.repeat(25);
-    submitBtn.click();
-    await Promise.resolve();
-
-    expect(submitCalls).toBe(0);
+    view.showFeedback('Name updated');
+    const feedbackEl = document.getElementById('rename-feedback') as HTMLElement;
+    expect(feedbackEl.textContent).toBe('Name updated');
   });
 });
 
-describe('RT-RN-07: XSS — name rendered via textContent not innerHTML', () => {
-  it('renameView.ts source does not use innerHTML with name data', () => {
-    const src = readFileSync(path.resolve(__dirname, 'renameView.ts'), 'utf8');
-    // Strip block comments.
-    const stripped = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*/g, '');
-    // Allow innerHTML='' (container clear) but reject innerHTML=<expr with name>.
-    // Pattern: innerHTML used in a right-hand assignment that is NOT an empty string literal.
-    const innerHtmlAssignments = stripped.match(/\.innerHTML\s*=\s*(?!['"`]['"`])/g) ?? [];
-    // Any non-empty innerHTML assignment is suspect — renameView should only use textContent.
-    expect(innerHtmlAssignments.length).toBe(0);
-  });
-});
+// ---------------------------------------------------------------------------
+// ★ RT-RN-07: source-scan tooth — renameView.ts must not use innerHTML with data
+//   (player-controlled name must NEVER be passed to innerHTML — XSS firewall).
+//   ADR-0133 D2: "textContent only".
+// ---------------------------------------------------------------------------
 
-describe('RT-RN-02: movement suppression — rename overlay visible blocks movement', () => {
-  // This test documents the invariant that the keydown movement-suppression block
-  // in main.ts (lines 818-831 as of pt-c1b branch) MUST include renameView?.visible.
-  // It reads main.ts source after the slice is implemented and asserts the presence
-  // of `renameView` in the suppression block.
-  //
-  // RED reason: main.ts does not yet have renameView — this fails pre-impl.
-
-  it('main.ts movement suppression block references renameView', () => {
-    const mainSrc = readFileSync(path.resolve(__dirname, '../main.ts'), 'utf8');
-
-    // Locate the movement-suppression block: the comment and the condition that
-    // precedes the KEY_DIR lookup. The exact text from main.ts:818 is:
-    // "Suppress movement input while an overlay is open."
-    const suppressIdx = mainSrc.indexOf('Suppress movement input while an overlay is open');
-    expect(suppressIdx).toBeGreaterThan(0);
-
-    // Extract the next ~400 chars (the if-condition body).
-    const suppressBlock = mainSrc.slice(suppressIdx, suppressIdx + 400);
-
-    // renameView must appear in this block.
-    expect(suppressBlock).toMatch(/renameView/);
-  });
-
-  it('main.ts reconcile overlay-guard references renameView (second movement path)', () => {
-    // The reconcile listener at ~line 389 re-issues held direction.
-    // It has its own overlay guard that must also include renameView.
-    const mainSrc = readFileSync(path.resolve(__dirname, '../main.ts'), 'utf8');
-
-    const reconIdx = mainSrc.indexOf('Honor reconcile');
-    expect(reconIdx).toBeGreaterThan(0);
-
-    const reconBlock = mainSrc.slice(reconIdx, reconIdx + 600);
-    expect(reconBlock).toMatch(/renameView/);
-  });
-
-  it('main.ts frame-loop overlay guard references renameView (third movement path)', () => {
-    // The rAF frame loop at ~line 1762 also guards held-key re-issue.
-    const mainSrc = readFileSync(path.resolve(__dirname, '../main.ts'), 'utf8');
-
-    const frameIdx = mainSrc.indexOf('Re-issue the held dir so a held key keeps walking');
-    expect(frameIdx).toBeGreaterThan(0);
-
-    const frameBlock = mainSrc.slice(frameIdx, frameIdx + 500);
-    expect(frameBlock).toMatch(/renameView/);
-  });
-});
-
-describe('RT-RN-01: keyup listener has no overlay guard — held-key bleeds after rename', () => {
-  // This is the CRITICAL structural finding.
-  //
-  // The window `keyup` handler at main.ts:847 is:
-  //   window.addEventListener('keyup', (e) => {
-  //     const dir = KEY_DIR[e.code];
-  //     if (dir !== undefined) held.release(dir);
-  //   });
-  //
-  // There is NO overlay guard. This means:
-  //   1. User holds 'S' (South) → keydown fires → held.press('South') BUT
-  //      if renameView.visible is true the movement block fires ONLY IF renameView
-  //      is missing from line 818. With renameView in the block: movement is
-  //      suppressed. But keydown still registered the key as held IF it passed
-  //      the overlay check... actually if the block is correctly patched the
-  //      keydown for movement never calls held.press. HOWEVER:
-  //
-  //   2. Scenario 2 (Escape scenario): user holds 'S' BEFORE opening rename.
-  //      'S' is in held stack. Rename opens. Escape closes rename. Now renameView
-  //      is no longer visible. On the NEXT keyup for 'S', held.release('South')
-  //      fires. But the key was still physically held. The NEXT keydown for 'S'
-  //      will fire on the input (since input's stopPropagation prevents window
-  //      from seeing it). If focus leaves the input (click elsewhere), window
-  //      keydown fires for 'S' → held.press('South') IF renameView is gone.
-  //
-  //   3. WORSE Scenario — focus loss: rename overlay visible, user Tabs out of
-  //      the input. Focus is now on document.body. Window keydown fires. The
-  //      overlay guard (IF renameView is in it) suppresses movement. But keyup
-  //      unconditionally calls held.release. So the held stack is corrupted.
-  //
-  // The gating invariant: the keyup listener MUST guard on renameView?.visible.
-  // If it does not, pressing then releasing a direction key while rename is open
-  // will corrupt the held stack.
-
-  it('main.ts keyup listener guards held.release on renameView (RT-RN-01 keyup gate)', () => {
-    const mainSrc = readFileSync(path.resolve(__dirname, '../main.ts'), 'utf8');
-
-    // Find the keyup listener body.
-    const keyupIdx = mainSrc.indexOf('Release a held movement key');
-    expect(keyupIdx).toBeGreaterThan(0);
-
-    // Extract until the closing });
-    const keyupSlice = mainSrc.slice(keyupIdx, keyupIdx + 300);
-
-    // The fix: either (a) keyup guards on renameView?.visible, or
-    // (b) keyup calls held.clear() when rename is visible, or
-    // (c) rename hide() calls held.clear() before hide.
-    // Any of these is acceptable. Assert renameView appears here OR the
-    // view's hide() calls held.clear().
-    const hasKeyupGuard = /renameView/.test(keyupSlice);
-
-    if (!hasKeyupGuard) {
-      // Alternative fix: renameView.hide() clears held keys.
-      // Check that the RenameView source calls held.clear or has a clear callback.
-      let renameViewSrc = '';
-      try {
-        renameViewSrc = readFileSync(path.resolve(__dirname, 'renameView.ts'), 'utf8');
-      } catch {
-        // file doesn't exist yet — test stays RED (correct)
-      }
-      const viewClearsHeld = /heldClear|held\.clear|onHide.*clear|clearHeld/.test(renameViewSrc);
-      expect(hasKeyupGuard || viewClearsHeld).toBe(true);
+describe('★ RT-RN-07: renameView.ts source scan — no .innerHTML assignment', () => {
+  it('★ BITES: renameView.ts source must not contain ".innerHTML =" — kills innerHTML-with-data impl', () => {
+    // WRONG IMPL KILLED: an impl that sets element.innerHTML = vm.displayCurrentName (or any
+    // player-supplied string). Player names are player-controlled; innerHTML = name is XSS.
+    // ADR-0133 D2: the view uses textContent only (as leaderboardView does).
+    // Uses .includes() — no new RegExp() (ReDoS/detect-non-literal lint ban).
+    // NOTE: asserting absence of `.innerHTML =` entirely is correct — the view has no
+    // static HTML templates it needs to inject (render/feedback are all textContent).
+    // Rationale: any `.innerHTML =` in a view that handles player-controlled name strings
+    // is an XSS sink. The spec says textContent only; there is no legitimate reason
+    // for innerHTML in this shell.
+    const viewPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'renameView.ts');
+    let src: string;
+    try {
+      src = readFileSync(viewPath, 'utf8');
+    } catch (err) {
+      // File must exist post-impl; throw so the test is RED (not vacuously-green)
+      // until the implementer ships renameView.ts (m16.5a vacuous-revival-gate precedent).
+      throw new Error(
+        'renameView.ts could not be read — post-impl the file must exist: ' + String(err),
+      );
     }
+    expect(
+      src.includes('.innerHTML ='),
+      'renameView.ts must not contain ".innerHTML =" — player-controlled names must only be written via textContent (RT-RN-07, ADR-0133 D2)',
+    ).toBe(false);
   });
 });
 
-describe('RT-RN-05: opening KeyN must not type "n" into the field', () => {
-  // The plan says show() auto-focuses the input. The KeyN keydown event fires
-  // BEFORE focus moves (focus is synchronous but the keydown handler processes
-  // the key first). If the overlay calls input.focus() synchronously, the field
-  // is focused at keydown time and the 'n' would be typed... unless the field
-  // listener calls e.stopPropagation() on keydown (which the plan mandates).
-  //
-  // But there is a subtlety: the window keydown handler fires, then calls
-  // renameView.show() which calls input.focus(). The KeyN event already propagated
-  // past the input. So 'n' cannot type via bubbling. HOWEVER: if main.ts does NOT
-  // call e.preventDefault() after opening rename, the browser may commit the 'n'
-  // into the newly focused element on the UP event (browser-dependent).
-  //
-  // Gating test: KeyN branch in main.ts calls e.preventDefault().
+// ---------------------------------------------------------------------------
+// RT-RN-08: binding arg-shape — set_profile_name_reducer.ts declares exactly
+//   one field: `name: __t.string()`. Guards the call site's `{ name }` key.
+// ---------------------------------------------------------------------------
 
-  it('main.ts KeyN branch calls e.preventDefault()', () => {
-    const mainSrc = readFileSync(path.resolve(__dirname, '../main.ts'), 'utf8');
-
-    // Find the KeyN handler.
-    const keyNIdx = mainSrc.indexOf('KeyN');
-    expect(keyNIdx).toBeGreaterThan(0);
-
-    // Extract the KeyN block (up to the next `return;`).
-    const keyNBlock = mainSrc.slice(keyNIdx, keyNIdx + 500);
-    expect(keyNBlock).toMatch(/e\.preventDefault\(\)/);
+describe('RT-RN-08: set_profile_name_reducer.ts declares exactly one field "name: __t.string()"', () => {
+  it('BITES: binding file contains "name: __t.string()" as the sole field — kills wrong-key impl', () => {
+    // RT-RN-08: the reducer call site in main.ts will use `conn.reducers.setProfileName({ name })`.
+    // If the binding exports a different key (e.g. `playerName`, `username`), the call is
+    // silently type-wrong and the server rejects it. This scan pins the exact field shape.
+    // WRONG IMPL KILLED: a regen'd binding with `playerName: __t.string()` or multiple fields.
+    // Uses .includes() — no new RegExp().
+    const bindingPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '../module_bindings/set_profile_name_reducer.ts',
+    );
+    let src: string;
+    try {
+      src = readFileSync(bindingPath, 'utf8');
+    } catch (err) {
+      throw new Error(
+        'set_profile_name_reducer.ts could not be read — the file must exist: ' + String(err),
+      );
+    }
+    // The binding must declare `name: __t.string()` (the reducer's only parameter).
+    expect(
+      src.includes('name: __t.string()'),
+      'set_profile_name_reducer.ts must contain "name: __t.string()" (RT-RN-08: guards the { name } call-site key)',
+    ).toBe(true);
+    // Negative: no second field like `playerName` or `displayName`.
+    const badFields = ['playerName:', 'username:', 'displayName:', 'newName:'];
+    for (const bad of badFields) {
+      expect(
+        src.includes(bad),
+        `set_profile_name_reducer.ts must NOT contain "${bad}" — the only field is "name" (RT-RN-08)`,
+      ).toBe(false);
+    }
   });
 });
