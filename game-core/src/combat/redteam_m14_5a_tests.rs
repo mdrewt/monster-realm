@@ -358,9 +358,11 @@ fn rt_m14_5a_01_status_applied_written_to_correct_slot_after_weather_chip_ko() {
 // Phase 3.5 Sandstorm chip: max_hp/16 = 16/16 = 1 — kills slot 0 (deterministic).
 // Auto-switch to slot 1. Phase 4.5 writes Burn to slot 1 (wrong).
 //
-// Damage arithmetic dependency: active_m.stats.attack=200, wild.stats.defense=30,
-// burn_applying_skill base_power=2, STAB (both Fire). If the damage formula
-// changes, update these stats so the attack still leaves exactly 1 HP surviving.
+// Damage arithmetic dependency: the strike is wild→active, so the load-bearing
+// stats are the ATTACKER's attack (wild: stat_block attack=40) and the DEFENDER's
+// defense (active_m: stat_block defense=200), with burn_applying_skill power=1 and
+// STAB (both Fire) → 2 damage. If the damage formula changes, retune those stats so
+// the attack still leaves the 3-HP active at exactly 1 HP (surviving) before the chip.
 //
 // This test pins the invariant: `StatusApplied` from the enemy's strike-back
 // in `resolve_recruit_failure` must be committed to the slot that was attacked

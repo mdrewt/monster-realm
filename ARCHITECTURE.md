@@ -216,7 +216,7 @@ any hand edit to `docs/knowledge/**` fails the drift gate in CI.
 | Concept type | Count | Source |
 |---|---|---|
 | `SpacetimeDB Table` | generated — see `docs/knowledge/` | server module tables via `parseTableSchemas()` |
-| `SpacetimeDB Reducer` | generated — see `docs/knowledge/` | domain modules `server-module/src/**/*.rs` |
+| `SpacetimeDB Reducer` | generated — see `docs/knowledge/` | domain modules `server-module/src/**/*.rs` (excludes `*_tests.rs`, ADR-0137) |
 | `Schema Overview` | 1 | generated; links all tables + privacy classification |
 | root `index.md` | 1 | generated entry point for agent lookup |
 
@@ -228,7 +228,10 @@ to their public projections where one exists, making the ADR-0040/0044/0045
 privacy posture machine-checkable. The vendored `.claude/hooks/okf-lint.mjs`
 enforces required frontmatter (`type`, `title`, `slug`, `updated`, `tags`,
 `abstract`) on every concept; the `knowledge-bundle-conformance` eval additionally
-runs the drift check with proof-of-teeth fixtures (ADR-0010). Recipes: `just
+runs the drift check with proof-of-teeth fixtures (ADR-0010), and asserts no
+concept page's `resource:`/`source:` frontmatter points at a `*_tests.rs` file
+(ADR-0137 — so test-fixture reducers can't clobber real reducer pages while the
+committed==regenerated drift gate stays green). Recipes: `just
 knowledge` regenerates; `just knowledge-check` drift-checks.
 
 **Generated changelog (m17.5g):** `CHANGELOG.md` is likewise a generated ledger —
