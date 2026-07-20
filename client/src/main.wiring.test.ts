@@ -1154,3 +1154,374 @@ describe('main.ts wiring (pt-c2 tradePropose): onSubmit — frozen-gate + Identi
     ).toBe(true);
   });
 });
+
+// ===========================================================================
+// pt-c2b HELP overlay wiring — NEW describe block (does NOT modify prior blocks).
+//
+// SOURCE OF TRUTH: pt-c2b EARS criteria PTC2B-1..9 + ADR-0135 (D-fan-out + the
+// onReconnect asymmetry) + docs/specs/pt-c2b-plan.md "Plan-review resolutions"
+// (BINDING: count-floor = 19; rAF forward-anchor; two-endpoint reconnect region;
+// battle anchored on `r.action.kind === 'show'`).
+//
+// RED REASON: main.ts on master has ZERO helpView references (verified via grep) —
+// no import, no `let helpView`, no dynamic import, no `new HelpView...`, no `?` handler,
+// and none of the 19 fan-out guards. Every POSITIVE test below starts RED (indexOf -1 /
+// assertion fails). The single NEGATIVE regression guard (W-HELP-NO-RECONNECT-HIDE)
+// starts GREEN by design — see its self-check comment for why it is NOT vacuous.
+//
+// The help overlay is DISPLAY-ONLY (ADR-0135): no text input, no submit, no reducer.
+// It joins the overlay mutual-exclusion fan-out EXACTLY as its read-only siblings do,
+// with ONE deliberate deviation: it is NOT hidden on onReconnect (it holds no #pending
+// lock and no store-derived state — a static const — so surviving a reconnect is correct).
+//
+// NO `new RegExp(...)` anywhere — Semgrep bans it (bitten twice). indexOf/includes/split only.
+// ===========================================================================
+
+describe('main.ts wiring (pt-c2b help): import + let + dynamic-import + zero-arg construction', () => {
+  it('W-HELP-IMPORT BITES: main.ts imports from "./ui/helpView" — kills missing-import impl', () => {
+    // WRONG IMPL KILLED: an impl that never imports helpView — the view is never constructed.
+    const src = readMainTs();
+    expect(
+      src.includes("'./ui/helpView'"),
+      'main.ts must contain "\'./ui/helpView\'" import (pt-c2b wiring)',
+    ).toBe(true);
+  });
+
+  it('W-HELP-LET BITES: main.ts declares "let helpView" — kills missing-let impl', () => {
+    // WRONG IMPL KILLED: an impl that never declares the module-scope let — the view cannot
+    // be referenced by any of the 19 fan-out guards.
+    const src = readMainTs();
+    expect(
+      src.includes('let helpView'),
+      'main.ts must declare "let helpView" at module scope (pt-c2b wiring)',
+    ).toBe(true);
+  });
+
+  it('W-HELP-DYNIMPORT BITES: main.ts dynamic-imports "./ui/helpView" — kills static-import / missing-import impl', () => {
+    // WRONG IMPL KILLED: an impl that statically imports the view (would load DOM code at
+    // vitest parse time and crash) or omits the dynamic import entirely.
+    const src = readMainTs();
+    expect(
+      src.includes("import('./ui/helpView')"),
+      "main.ts must contain import('./ui/helpView') in the dynamic-import fan-out (pt-c2b wiring)",
+    ).toBe(true);
+  });
+
+  it('W-HELP-CONSTRUCT BITES: main.ts constructs helpView with a ZERO-arg new — kills missing / wrong-arity construction impl', () => {
+    // CONTRACT (ADR-0135 / plan): HelpView has a ZERO-arg constructor (display-only — no
+    // callbacks, leaderboardView precedent). The construct site is `new HelpView()` or the
+    // dynamic-import alias `new HelpViewClass()`, with an EMPTY paren pair.
+    // WRONG IMPL KILLED: an impl that imports helpView but never constructs it, OR constructs
+    // it with a callbacks object (`new HelpView({ ... })`) — that would contradict the
+    // display-only contract. The `()` needle (empty parens) pins the zero-arg shape.
+    const src = readMainTs();
+    const hasZeroArgNew = src.includes('new HelpView()') || src.includes('new HelpViewClass()');
+    expect(
+      hasZeroArgNew,
+      'main.ts must construct new HelpView() or new HelpViewClass() with ZERO args (display-only contract, ADR-0135)',
+    ).toBe(true);
+  });
+});
+
+describe('main.ts wiring (pt-c2b help): `?` toggle self-branch (PTC2B-1/2)', () => {
+  it("W-HELP-KEY BITES: main.ts contains `e.key === '?'` AND e.preventDefault() in its handler region — kills missing-help-key impl", () => {
+    // PTC2B-1/2: `?` opens the help overlay (and toggle-closes it). ADR-0135: the help key is
+    // matched on `e.key === '?'` (the produced glyph, layout-robust) — the SOLE e.key branch in
+    // an otherwise-e.code keydown handler. e.preventDefault() suppresses any default action.
+    // WRONG IMPL KILLED: (a) an impl with no `?` branch at all → overlay never opens;
+    // (b) an impl that matches `e.code === 'Slash'` instead of `e.key === '?'` (wrong layer —
+    // fails on layouts where `?` is not Shift+Slash); (c) a `?` branch without preventDefault().
+    const src = readMainTs();
+    const keyIdx = src.indexOf("e.key === '?'");
+    expect(
+      keyIdx,
+      "main.ts must contain `e.key === '?'` — the help-key branch (PTC2B-1, ADR-0135 sole e.key branch)",
+    ).toBeGreaterThanOrEqual(0);
+    // preventDefault must appear within the `?` handler region (compact single-key block, ~600 chars).
+    const keyRegion = src.slice(keyIdx, keyIdx + 600);
+    expect(
+      keyRegion.includes('e.preventDefault()'),
+      'main.ts `?` handler region must contain e.preventDefault() (ADR-0135)',
+    ).toBe(true);
+  });
+});
+
+describe('main.ts wiring (pt-c2b help): Escape close branch (PTC2B-3)', () => {
+  it('W-HELP-ESCAPE BITES: the Escape region references helpView (an Escape && helpView?.visible branch) — kills missing-Escape-close impl', () => {
+    // PTC2B-3: Escape must close the help overlay. ADR-0135: an
+    // `if (e.code === 'Escape' && helpView?.visible) { helpView.hide(); ... }` branch adjacent
+    // to the rename / tradePropose Escape branches.
+    // WRONG IMPL KILLED: an impl whose Escape handler covers every OTHER overlay but not
+    // helpView — the help overlay would be un-closeable via Escape.
+    const src = readMainTs();
+    const escapeIdx = src.indexOf("e.code === 'Escape'");
+    expect(escapeIdx, 'main.ts must contain an Escape handler').toBeGreaterThanOrEqual(0);
+    // Scan the full Escape branch stack (~2500 chars covers all sibling Escape branches).
+    const escapeRegion = src.slice(escapeIdx, escapeIdx + 2500);
+    expect(
+      escapeRegion.includes('helpView'),
+      'main.ts Escape region must reference helpView — the help overlay must be closeable via Escape (PTC2B-3)',
+    ).toBe(true);
+  });
+});
+
+describe('★ main.ts wiring (pt-c2b help): fan-out count floor (PTC2B-4..8 / ADR-0135)', () => {
+  // BINDING (plan "Plan-review resolutions" HIGH-1 / red-team F1): the count-floor is 19,
+  // NOT 21. `helpView?.visible` occurs exactly 19× — structurally identical to
+  // `leaderboardView?.visible` (which the impl-time file has exactly 19 of; asserted below
+  // as a self-check). tradePropose's 21 includes 2 sites help cannot have (reducer-response
+  // feedback + Identity self-branch). Freezing 21 makes the tooth unsatisfiable by a correct
+  // impl; 19 is the exact structural parity floor.
+  const HELP_VISIBLE_FLOOR = 19;
+
+  it(`self-check: leaderboardView?.visible appears exactly ${HELP_VISIBLE_FLOOR}× — pins the parity floor to the live file`, () => {
+    // This is a LIVE self-check, not a hard-coded assumption: it proves the floor (19) is the
+    // actual leaderboard structural count in THIS main.ts, so a future keymap change that adds
+    // or removes an overlay site is caught (the two counts must move together).
+    const src = readMainTs();
+    const lbCount = src.split('leaderboardView?.visible').length - 1;
+    expect(
+      lbCount,
+      `leaderboardView?.visible must appear exactly ${HELP_VISIBLE_FLOOR}× — the help fan-out floor is pegged to this parity count (ADR-0135)`,
+    ).toBe(HELP_VISIBLE_FLOOR);
+  });
+
+  it(`★ W-HELP-FANOUT-COUNT BITES: helpView?.visible appears at least ${HELP_VISIBLE_FLOOR}× — kills under-wired impl`, () => {
+    // WRONG IMPL KILLED: an impl that adds helpView to SOME but not all fan-out sites (e.g.
+    // wires the `?` self-branch and Escape but forgets reconcile / rAF / a sibling open-guard).
+    // Count strategy: split on 'helpView?.visible' and subtract 1 (never new RegExp).
+    const src = readMainTs();
+    const count = src.split('helpView?.visible').length - 1;
+    expect(
+      count,
+      `main.ts must contain helpView?.visible at least ${HELP_VISIBLE_FLOOR}× ` +
+        `(one per leaderboardView?.visible occurrence — ADR-0135 fan-out parity). Found: ${count}. ` +
+        `The floor is ${HELP_VISIBLE_FLOOR} (leaderboardView parity) — NOT 21 (tradePropose has 2 sites help cannot have).`,
+    ).toBeGreaterThanOrEqual(HELP_VISIBLE_FLOOR);
+  });
+});
+
+describe('★ main.ts wiring (pt-c2b help): per-context anchored fan-out teeth (PTC2B-4..8 / ADR-0135)', () => {
+  // A count-floor ALONE is the m17b fan-out-coverage-trap: 19 occurrences could cluster in
+  // the wrong places. The anchored teeth below name the specific load-bearing sites.
+
+  it('W-HELP-FANOUT-KEYDOWN BITES: helpView?.visible in the keydown movement-suppression block — kills WASD-bleed-under-help impl (PTC2B-6)', () => {
+    // PTC2B-6 movement-suppression site (keydown): the "Suppress movement input while an overlay
+    // is open." OR-block must include helpView?.visible so WASD does not move the character
+    // while the help overlay is open (the most obvious bleed).
+    // WRONG IMPL KILLED: an impl that forgets helpView in the keydown suppression OR-block.
+    const src = readMainTs();
+    const suppressIdx = src.indexOf('Suppress movement input while an overlay is open');
+    expect(
+      suppressIdx,
+      "main.ts must contain the 'Suppress movement' comment",
+    ).toBeGreaterThanOrEqual(0);
+    // The OR-block + `return` is within ~700 chars of the comment (12+ sibling lines).
+    const suppressRegion = src.slice(suppressIdx, suppressIdx + 700);
+    expect(
+      suppressRegion.includes('helpView?.visible'),
+      'main.ts keydown movement-suppression block must contain helpView?.visible (PTC2B-6)',
+    ).toBe(true);
+  });
+
+  it('W-HELP-FANOUT-RECONCILE BITES: helpView?.visible in the reconcile diverge OR-block — kills reconcile-reissue-bleed impl (PTC2B-6)', () => {
+    // PTC2B-6 movement-suppression site (reconcile): the `predictor.reconcile(` diverge OR-block
+    // that re-issues the held direction must include helpView?.visible — otherwise a held key
+    // re-issues movement on a server pullback while the help overlay is open.
+    // WRONG IMPL KILLED: an impl that forgets helpView in the reconcile diverge OR-block.
+    // FORWARD window: the diverge OR-block is within ~600 chars AFTER predictor.reconcile(.
+    const src = readMainTs();
+    const reconcileIdx = src.indexOf('predictor.reconcile(');
+    expect(reconcileIdx, 'main.ts must contain predictor.reconcile(').toBeGreaterThanOrEqual(0);
+    const reconcileRegion = src.slice(reconcileIdx, reconcileIdx + 600);
+    expect(
+      reconcileRegion.includes('helpView?.visible'),
+      'main.ts reconcile diverge region must contain helpView?.visible (PTC2B-6 movement suppression)',
+    ).toBe(true);
+  });
+
+  it('★ W-HELP-FANOUT-RAF BITES: helpView?.visible inside the rAF held-key re-issue OR-block — kills frame-loop-bleed impl (PTC2B-6, red-team F2)', () => {
+    // PTC2B-6 movement-suppression site (rAF frame loop): a held key keeps walking in the
+    // background every frame unless the rAF re-issue OR-block guards on helpView?.visible.
+    //
+    // BINDING (plan / red-team F2): help's `||` sits at the TOP of the OR-block, ~630 chars
+    // BEFORE `predictor.drain(` — OUTSIDE a `drain-500` BACKWARD window. So we anchor FORWARD on
+    // the block-opening comment `Re-issue the held dir` and slice forward. We ALSO verify the
+    // matched helpView?.visible is physically INSIDE the OR-block (before predictor.drain()) so
+    // the tooth cannot be satisfied by a helpView?.visible that lives elsewhere further down.
+    const src = readMainTs();
+    const rafAnchorIdx = src.indexOf('Re-issue the held dir');
+    expect(
+      rafAnchorIdx,
+      "main.ts must contain the rAF block-opening comment 'Re-issue the held dir'",
+    ).toBeGreaterThanOrEqual(0);
+    // The rAF OR-block sits between the comment and the drain() call. Slice from the comment
+    // up to (and only up to) predictor.drain( so we test EXACTLY the re-issue OR-block.
+    const drainIdx = src.indexOf('predictor.drain(', rafAnchorIdx);
+    expect(
+      drainIdx,
+      'main.ts must contain predictor.drain( AFTER the rAF re-issue comment',
+    ).toBeGreaterThan(rafAnchorIdx);
+    const rafBlock = src.slice(rafAnchorIdx, drainIdx);
+    expect(
+      rafBlock.includes('helpView?.visible'),
+      'main.ts rAF held-key re-issue OR-block (between "Re-issue the held dir" and predictor.drain()) must contain helpView?.visible (PTC2B-6, red-team F2)',
+    ).toBe(true);
+  });
+
+  it('★ W-HELP-FANOUT-PVP BITES: helpView in the anyOverlayVisible pvp aggregate — kills pvp-auto-show-over-help impl (PTC2B-7)', () => {
+    // PTC2B-7: an incoming PvP challenge must NOT auto-show the PvP overlay over an open help
+    // overlay. The `anyOverlayVisible` aggregate (batch listener) must include helpView.
+    // WRONG IMPL KILLED: an impl that forgets helpView in anyOverlayVisible — a server-push
+    // challenge pops the PvP overlay over the help overlay.
+    const src = readMainTs();
+    const pvpAggIdx = src.indexOf('anyOverlayVisible');
+    expect(pvpAggIdx, 'main.ts must contain anyOverlayVisible').toBeGreaterThanOrEqual(0);
+    // The aggregate assembly is within ~1200 chars of the definition.
+    const pvpRegion = src.slice(pvpAggIdx, pvpAggIdx + 1200);
+    expect(
+      pvpRegion.includes('helpView'),
+      'main.ts anyOverlayVisible pvp aggregate must reference helpView (PTC2B-7 — no pvp-over-help)',
+    ).toBe(true);
+  });
+
+  it('★ W-HELP-FANOUT-BATTLE BITES: helpView force-hidden in the battle show-path — kills battle-under-help impl (PTC2B-8, red-team F4)', () => {
+    // PTC2B-8: when a battle auto-shows (e.g. a PvP accept), the help overlay must be
+    // force-hidden (battle supersession) — the `refreshBattle()` show-path force-hides siblings.
+    //
+    // BINDING (plan / red-team F4): anchor on `r.action.kind === 'show'` (a UNIQUE marker) and
+    // assert helpView appears within ~900 chars (the existing tradePropose force-hide sits at
+    // delta ~880). ADR-0135 requires the guard in the `if (helpView?.visible) helpView.hide()`
+    // form so the count-floor needle credits it too.
+    // WRONG IMPL KILLED: an impl that force-hides box/raising/evolution/leaderboard/rename/
+    // tradePropose on battle-show but forgets helpView — a battle overlay pops under an open help.
+    const src = readMainTs();
+    const showIdx = src.indexOf("r.action.kind === 'show'");
+    expect(
+      showIdx,
+      "main.ts must contain the battle show-path anchor `r.action.kind === 'show'`",
+    ).toBeGreaterThanOrEqual(0);
+    const battleRegion = src.slice(showIdx, showIdx + 900);
+    expect(
+      battleRegion.includes('helpView'),
+      "main.ts battle show-path (anchored on `r.action.kind === 'show'`) must reference helpView within ~900 chars (PTC2B-8 battle supersession, red-team F4)",
+    ).toBe(true);
+    // Strengthen: the force-hide must be the `helpView?.visible` guarded form (credits the count-floor).
+    expect(
+      battleRegion.includes('helpView?.visible'),
+      'battle show-path force-hide must use the `if (helpView?.visible) helpView.hide()` form (helpView?.visible) — credits W-HELP-FANOUT-COUNT',
+    ).toBe(true);
+  });
+});
+
+describe('★ main.ts wiring (pt-c2b help): 12 sibling open-guards carry !helpView?.visible (PTC2B-5)', () => {
+  // PTC2B-5: while the help overlay is visible, pressing a sibling hotkey must NOT open that
+  // overlay. Each of the 12 sibling key handlers (KeyB/I/E/Q/H/G/U/P/L/N/O/T) must add
+  // `!helpView?.visible` to its open-guard block.
+  //
+  // ROBUST APPROACH: for each sibling key, slice its handler block (from `e.code === 'KeyX'`
+  // up to the NEXT sibling handler or a generous window) and assert helpView?.visible is present.
+  // We assert ONLY the presence of helpView?.visible in each block — NOT a full sibling set —
+  // because KeyB/I/E carry a PRE-EXISTING dialogue/questLog/heal omission owned by ptc5c
+  // (plan reviewer HIGH-2); pt-c2b only adds helpView?.visible, it does NOT fix that omission.
+  const SIBLING_KEYS = [
+    'KeyB',
+    'KeyI',
+    'KeyE',
+    'KeyQ',
+    'KeyH',
+    'KeyG',
+    'KeyU',
+    'KeyP',
+    'KeyL',
+    'KeyN',
+    'KeyO',
+    'KeyT',
+  ] as const;
+
+  it('W-HELP-FANOUT-OPENGUARDS BITES: EACH of the 12 sibling open-guards contains !helpView?.visible — kills partial-guard impl', () => {
+    // WRONG IMPL KILLED: an impl that adds !helpView?.visible to some sibling guards (e.g. the
+    // newer L/N/O/T) but forgets an older one (e.g. KeyB) — pressing KeyB while help is open
+    // would then open the box overlay over the help overlay (a mutual-exclusion breach).
+    const src = readMainTs();
+    for (const key of SIBLING_KEYS) {
+      const needle = `e.code === '${key}'`;
+      const keyIdx = src.indexOf(needle);
+      expect(keyIdx, `main.ts must contain the sibling handler ${needle}`).toBeGreaterThanOrEqual(
+        0,
+      );
+      // Slice this handler's guard block: from this key up to the NEXT sibling handler start,
+      // so a helpView?.visible in a *different* handler cannot false-credit this one.
+      let blockEnd = src.length;
+      for (const other of SIBLING_KEYS) {
+        if (other === key) continue;
+        const otherIdx = src.indexOf(`e.code === '${other}'`, keyIdx + needle.length);
+        if (otherIdx >= 0 && otherIdx < blockEnd) blockEnd = otherIdx;
+      }
+      const block = src.slice(keyIdx, blockEnd);
+      expect(
+        block.includes('!helpView?.visible'),
+        `the ${key} open-guard must contain !helpView?.visible (PTC2B-5 mutual-exclusion; ptc5c owns the KeyB/I/E dialogue/questLog/heal omission — help only adds its own guard)`,
+      ).toBe(true);
+    }
+  });
+});
+
+describe('main.ts wiring (pt-c2b help): onReconnect does NOT hide helpView (PTC2B-9 asymmetry)', () => {
+  it('W-HELP-NO-RECONNECT-HIDE (negative regression guard): the onReconnect region does NOT contain helpView?.hide — pins the deliberate asymmetry (PTC2B-9, red-team F3)', () => {
+    // PTC2B-9 (ADR-0135 the-one-deviation): every OTHER overlay is hidden on onReconnect (either
+    // it holds an in-flight #pending lock that never settles on a dropped link, or it renders
+    // store-derived content that goes stale on reset). The help overlay has NEITHER property —
+    // it holds no lock (display-only) and its content is a static const, not store-derived — so
+    // it MUST survive a reconnect (a gratuitous hide would be a UX interruption).
+    //
+    // BINDING (plan / red-team F3): bound the region by BOTH endpoints — from 'onReconnect:' to
+    // the NEXT 'onOwnWarp' after it — then assert !region.includes('helpView?.hide'). NEVER a
+    // fixed `+N` forward slice: the onReconnect body is ~2254 chars, so a helpView?.hide()
+    // appended at the BOTTOM of the body would false-PASS a fixed-window slice. The two-endpoint
+    // region covers the whole body.
+    //
+    // TESTER CORRECTION (spec-rationale, STRENGTHENS the bite): the plan text writes
+    // `src.indexOf('onOwnWarp')`, but the literal `onOwnWarp` first appears in a COMMENT at
+    // main.ts:306 — ~1600 chars BEFORE `onReconnect:` (main.ts:1895) — so a bare indexOf would
+    // return an endIdx < startIdx and yield an EMPTY region (vacuous, and the endpoint assertion
+    // would spuriously fail). The region the red-team intends is the onReconnect callback body,
+    // whose real closing endpoint is the sibling `onOwnWarp:` handler (main.ts:1935). We therefore
+    // search for `onOwnWarp` STARTING at startIdx (`indexOf('onOwnWarp', startIdx)`). This is a
+    // strict strengthening: it bounds the ACTUAL onReconnect body (the whole thing, not an empty
+    // slice), so a helpView?.hide() anywhere inside it — top or bottom — still bites.
+    //
+    // SELF-CHECK — WHY THIS IS NOT VACUOUS (starts GREEN as a guard, by design):
+    //   On the CURRENT main.ts there is zero helpView anywhere, so this assertion PASSES today.
+    //   That is EXPECTED for a negative regression guard. It is NOT vacuous because:
+    //   (1) the region is bounded by BOTH real endpoints (asserted present + non-empty below) — a
+    //       real slice of main.ts, not an empty string; and
+    //   (2) the instant a future "consistency" edit adds `helpView?.hide()` inside the
+    //       onReconnect body, this assertion FLIPS RED — which is exactly the deviation the ADR
+    //       pins. (Cross-check: renameView?.hide() and tradeProposeView?.hide() DO live in this
+    //       same region today, proving `helpView?.hide` here would be detectable.)
+    const src = readMainTs();
+    const startIdx = src.indexOf('onReconnect:');
+    expect(startIdx, "main.ts must contain 'onReconnect:'").toBeGreaterThanOrEqual(0);
+    // Search for the closing endpoint AFTER onReconnect: (skip the unrelated line-306 comment).
+    const endIdx = src.indexOf('onOwnWarp', startIdx);
+    expect(
+      endIdx,
+      "main.ts must contain 'onOwnWarp' AFTER 'onReconnect:' (region end endpoint)",
+    ).toBeGreaterThan(startIdx);
+    const region = src.slice(startIdx, endIdx);
+    // Positive control that the region is the REAL onReconnect body (non-vacuous): sibling
+    // overlays ARE force-hidden here today (renameView?.hide() / tradeProposeView?.hide()).
+    expect(
+      region.includes('renameView?.hide') || region.includes('tradeProposeView?.hide'),
+      'the onReconnect region must contain sibling force-hides (proves the region is the real body, not an empty slice)',
+    ).toBe(true);
+    // THE GUARD: help must NOT be hidden on reconnect (the one deliberate asymmetry, PTC2B-9).
+    expect(
+      region.includes('helpView?.hide'),
+      'onReconnect must NOT hide helpView — the help overlay deliberately survives a reconnect ' +
+        '(no #pending lock, static const content; ADR-0135 the-one-deviation, PTC2B-9). ' +
+        'A future consistency edit adding helpView?.hide() here would break the documented asymmetry.',
+    ).toBe(false);
+  });
+});
