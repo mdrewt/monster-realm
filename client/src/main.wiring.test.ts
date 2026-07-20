@@ -653,7 +653,10 @@ describe('main.ts wiring (pt-c1b rename): KeyN handler (PTC1B-1 / RT-RN-01/05)',
     const keyNIdx = src.indexOf("'KeyN'");
     expect(keyNIdx, "main.ts must contain 'KeyN' (PTC1B-1)").toBeGreaterThanOrEqual(0);
 
-    const keyNRegion = src.slice(keyNIdx, keyNIdx + 600);
+    // Window widened 600→720 (pt-c2b): the help overlay added `!helpView?.visible` to the
+    // KeyN open-guard, growing the guard block so held.clear() (at ~delta 590) now spans the
+    // old 600-char boundary. Widening preserves the bite — a missing held.clear() still fails.
+    const keyNRegion = src.slice(keyNIdx, keyNIdx + 720);
     expect(
       keyNRegion.includes('held.clear()'),
       'main.ts KeyN region must contain held.clear() — clears the prediction held-key stack on open (RT-RN-01, ADR-0133 D3)',
@@ -1273,17 +1276,21 @@ describe('★ main.ts wiring (pt-c2b help): fan-out count floor (PTC2B-4..8 / AD
   // feedback + Identity self-branch). Freezing 21 makes the tooth unsatisfiable by a correct
   // impl; 19 is the exact structural parity floor.
   const HELP_VISIBLE_FLOOR = 19;
+  // leaderboardView?.visible is the read-only-overlay parity anchor. Wiring the help overlay
+  // adds `!leaderboardView?.visible` to help's OWN `?` open-guard, so leaderboard's live count is
+  // HELP_VISIBLE_FLOOR + 1 (that guard contributes to leaderboard's count but not to help's own).
+  // help = 19, leaderboard = 20 post-wiring; the two still move together on any future keymap change.
+  const LEADERBOARD_LIVE_COUNT = HELP_VISIBLE_FLOOR + 1; // 20
 
-  it(`self-check: leaderboardView?.visible appears exactly ${HELP_VISIBLE_FLOOR}× — pins the parity floor to the live file`, () => {
-    // This is a LIVE self-check, not a hard-coded assumption: it proves the floor (19) is the
-    // actual leaderboard structural count in THIS main.ts, so a future keymap change that adds
-    // or removes an overlay site is caught (the two counts must move together).
+  it(`self-check: leaderboardView?.visible appears exactly ${LEADERBOARD_LIVE_COUNT}× — pins the parity anchor to the live file`, () => {
+    // A LIVE self-check: proves the parity overlay is fully wired in THIS main.ts, so a future
+    // keymap change that adds/removes an overlay site is caught (help + leaderboard move together).
     const src = readMainTs();
     const lbCount = src.split('leaderboardView?.visible').length - 1;
     expect(
       lbCount,
-      `leaderboardView?.visible must appear exactly ${HELP_VISIBLE_FLOOR}× — the help fan-out floor is pegged to this parity count (ADR-0135)`,
-    ).toBe(HELP_VISIBLE_FLOOR);
+      `leaderboardView?.visible must appear exactly ${LEADERBOARD_LIVE_COUNT}× (= help floor ${HELP_VISIBLE_FLOOR} + help's own ? guard) — parity anchor (ADR-0135)`,
+    ).toBe(LEADERBOARD_LIVE_COUNT);
   });
 
   it(`★ W-HELP-FANOUT-COUNT BITES: helpView?.visible appears at least ${HELP_VISIBLE_FLOOR}× — kills under-wired impl`, () => {
@@ -1375,8 +1382,14 @@ describe('★ main.ts wiring (pt-c2b help): per-context anchored fan-out teeth (
     // WRONG IMPL KILLED: an impl that forgets helpView in anyOverlayVisible — a server-push
     // challenge pops the PvP overlay over the help overlay.
     const src = readMainTs();
-    const pvpAggIdx = src.indexOf('anyOverlayVisible');
-    expect(pvpAggIdx, 'main.ts must contain anyOverlayVisible').toBeGreaterThanOrEqual(0);
+    // Anchor on the DEFINITION `const anyOverlayVisible =`, not the bare substring: an earlier
+    // comment ("anyOverlayVisible gates only the pvp listener") in the refreshBattle block would
+    // otherwise capture the anchor and the 1200-char window would never reach the real aggregate.
+    const pvpAggIdx = src.indexOf('const anyOverlayVisible =');
+    expect(
+      pvpAggIdx,
+      'main.ts must contain the const anyOverlayVisible = definition',
+    ).toBeGreaterThanOrEqual(0);
     // The aggregate assembly is within ~1200 chars of the definition.
     const pvpRegion = src.slice(pvpAggIdx, pvpAggIdx + 1200);
     expect(

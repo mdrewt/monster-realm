@@ -75,6 +75,12 @@
       </button>
       <div id="tradepropose-feedback" data-testid="tradepropose-feedback"></div>
     </div>
+    <!-- pt-c2b help overlay shell — hidden by default; managed by HelpView (ADR-0135). Display-only. -->
+    <div id="help-overlay" style="display:none">
+      <div id="help-title">Controls &amp; Goals</div>
+      <ul id="help-controls"></ul>
+      <ul id="help-goals"></ul>
+    </div>
     <!-- pt-a1 (ADR-0128): build-provenance stamp — populated by main.ts from BUILD_INFO
          (git sha + build time + mode). Non-intrusive; pins which build a playtest finding
          came from. Present in production (unlike the DEV-gated debug hooks). -->
