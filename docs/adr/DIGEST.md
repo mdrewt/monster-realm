@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 104 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 105 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -113,6 +113,7 @@ Generated from 104 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0136](./0136-ptc5a-care-train-battle-guard.md) | 0136 — ptc5a care/train both-role ongoing-battle guard: close the bounded mid-battle HP-laundering path (amends ADR-0122 §D7) | Accepted | battle, security-authz | ptc5a (M-playtest-c.5 pre-gate residuals — raising battle-guard gap, EARS ptc5a-1..3) | Add the SSOT both-role `is_in_ongoing_battle(ctx, ctx.sender)` guard (as `heal_party` uses) to `care`/`train`, so a mid-battle live-EV bump can no longer inflate the level-up heal; no new predicate or schema change. |
 | [0137](./0137-ptc5d-knowledge-bundle-fixture-exclusion-and-gate-teeth.md) | 0137 — ptc5d: knowledge-bundle `*_tests.rs` exclusion + restored gate teeth (mutate-server ceiling tightened; RT-M14.5A-02 vacuous-pass closed) | Accepted | tooling-docs, ci-gates | ptc5d (M-playtest-c.5 pre-gate residuals — tooling/eval hardening, EARS ptc5d-1..5) | Exclude `*_tests.rs` from the OKF bundle generator, assert no page is test-sourced, make RT-M14.5A-02's precondition an `assert!`, and tighten the mutate-server wiring ceiling 340→299 — each with a biting proof-of-teeth. |
 | [0138](./0138-ptc5b-wild-disconnect-gc.md) | 0138 — ptc5b wild-battle disconnect resolution: auto-flee + GC the `battle`/`battle_wild` rows to unblock returning-player re-entry | Accepted | battle, schema-persistence, security-authz | ptc5b (M-playtest-c.5 pre-gate residuals — wild-battle disconnect GC, EARS ptc5b-1..3) | On disconnect, auto-flee the caller's Ongoing WILD battle via the flee write-back SSOT, then delete its `battle` + `battle_wild` rows to unblock returning-player re-entry; no reaper, no new tables. |
+| [0139](./0139-ptc5c-overlay-mutual-exclusion-symmetry.md) | Overlay mutual-exclusion symmetry: fix KeyB/I/E open-guards + a guard-OR-hide fan-out gate (registry parked) | Accepted | client-ui | ptc5c | Close the overlay mutual-exclusion asymmetry in `client/src/main.ts`: the three oldest |
 
 ## Harness design corpus (H- namespace)
 
@@ -286,6 +287,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0133](./0133-rename-ui.md) — pt-c1b — Client profile-rename UI (first text-input overlay) (Accepted)
 - [0134](./0134-trade-propose-ui.md) — pt-c2 — Client trade-PROPOSE UI (KeyO offer overlay) (Accepted)
 - [0135](./0135-pt-c2b-help-overlay.md) — pt-c2b — In-client help overlay (`?`) + tester runbook (pt-c2b) (Accepted)
+- [0139](./0139-ptc5c-overlay-mutual-exclusion-symmetry.md) — ptc5c — Overlay mutual-exclusion symmetry: fix KeyB/I/E open-guards + a guard-OR-hide fan-out gate (registry parked) (Accepted)
 
 ### ci-gates
 
