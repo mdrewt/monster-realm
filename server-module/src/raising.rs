@@ -263,6 +263,10 @@ pub(crate) const HEAL_COOLDOWN_MS: i64 = 30_000;
 /// — instead of open-coding a second `saturating_sub`/`<` copy. Ready ⟺ elapsed
 /// `>= cooldown_ms` (elapsed == cooldown_ms is allowed); saturating so a future
 /// clock can only over-reject, never bypass the cooldown.
+///
+/// The `now` parameter is intentionally named `now` (not `now_ms`) — the same
+/// convention as `evaluate_care` — to avoid shadowing the module-level `now_ms`
+/// helper if this body is ever extended with a `now_ms(ctx)` call.
 pub(crate) fn evaluate_heal(
     last_heal_at_ms: i64,
     now: i64,

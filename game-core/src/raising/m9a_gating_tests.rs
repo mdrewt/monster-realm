@@ -1045,8 +1045,7 @@ proptest! {
 #[test]
 fn care_cooldown_ms_exact_value() {
     assert_eq!(
-        CARE_COOLDOWN_MS,
-        21_600_000i64,
+        CARE_COOLDOWN_MS, 21_600_000i64,
         "CARE_COOLDOWN_MS must be exactly 6*60*60*1000 = 21_600_000 ms (6 hours)"
     );
 }
@@ -1059,8 +1058,7 @@ fn care_cooldown_ms_exact_value() {
 #[test]
 fn care_bond_amount_exact_value() {
     assert_eq!(
-        CARE_BOND_AMOUNT,
-        5u8,
+        CARE_BOND_AMOUNT, 5u8,
         "CARE_BOND_AMOUNT must be exactly 5 (ptc5e spec e-1)"
     );
 }
