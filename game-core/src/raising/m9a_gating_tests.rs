@@ -15,7 +15,10 @@
 
 use crate::monster::rules::derive_stats;
 use crate::monster::types::{Bond, EVs, IVs, Level, Nature, NatureKind, StatBlock, StatKind};
-use crate::raising::{apply_care, focus_train, CareError, FocusTrainError};
+use crate::raising::{
+    apply_care, focus_train, is_cooldown_ready, CareError, FocusTrainError, CARE_BOND_AMOUNT,
+    CARE_COOLDOWN_MS,
+};
 
 use proptest::prelude::*;
 
@@ -1014,5 +1017,173 @@ proptest! {
                 expected_val
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ptc5e e-1 — CARE_COOLDOWN_MS / CARE_BOND_AMOUNT constants + is_cooldown_ready
+//
+// RED state: CARE_COOLDOWN_MS, CARE_BOND_AMOUNT, and is_cooldown_ready do not
+// yet exist in game-core/src/raising/rules.rs (compile-RED: E0432 on the new
+// names in the import above until the implementer adds them).
+//
+// EARS criteria covered (ptc5e §e-1):
+//   Const pin — CARE_COOLDOWN_MS and CARE_BOND_AMOUNT have exact values.
+//   Boundary triad — is_cooldown_ready boundary at ==, ==−1, and future clock.
+//   Non-zero base — predicate works from an arbitrary non-zero last_ms.
+//   Shared heal — a non-CARE cooldown length returns the right bool (generic fn).
+//   Property — is_cooldown_ready(l, n, c) == (n.saturating_sub(l) >= c) for all.
+// ---------------------------------------------------------------------------
+
+// Test e-1a
+/// CARE_COOLDOWN_MS == 21_600_000 (6 h × 60 m × 60 s × 1000 ms).
+///
+/// kills: mutating `6*60*60*1000` — `*`→`+` gives 60_066, `*`→`/` gives 0;
+/// or moving the value back to server-module without re-exporting it from
+/// game-core (making the nightly game-core mutation gate unable to pin it in its
+/// owning crate).
+#[test]
+fn care_cooldown_ms_exact_value() {
+    assert_eq!(
+        CARE_COOLDOWN_MS,
+        21_600_000i64,
+        "CARE_COOLDOWN_MS must be exactly 6*60*60*1000 = 21_600_000 ms (6 hours)"
+    );
+}
+
+// Test e-1b
+/// CARE_BOND_AMOUNT == 5u8.
+///
+/// kills: an off-by-one bond magnitude (4 or 6 would pass apply_care but
+/// change the game balance; 0 would always return NoEffect in production).
+#[test]
+fn care_bond_amount_exact_value() {
+    assert_eq!(
+        CARE_BOND_AMOUNT,
+        5u8,
+        "CARE_BOND_AMOUNT must be exactly 5 (ptc5e spec e-1)"
+    );
+}
+
+// Test e-1c — boundary: elapsed == cooldown → READY
+/// is_cooldown_ready returns true when elapsed EXACTLY equals the cooldown.
+///
+/// kills: `>` instead of `>=` in the implementation — a strict-greater check
+/// would flip this boundary to false (not-ready), meaning a player who waited
+/// exactly the cooldown duration would be incorrectly rejected. This is the
+/// dual of the prior strict-`<` reject in raising_tests.rs:378–410.
+#[test]
+fn is_cooldown_ready_exact_boundary_is_ready() {
+    let cd = CARE_COOLDOWN_MS;
+    assert!(
+        is_cooldown_ready(0, cd, cd),
+        "elapsed == cooldown must be READY (>=, not >): \
+         is_cooldown_ready(0, {cd}, {cd}) must be true"
+    );
+}
+
+// Test e-1d — boundary: elapsed == cooldown-1 → NOT READY
+/// is_cooldown_ready returns false when one millisecond short of the cooldown.
+///
+/// kills: `>=`→`>` transposed the other way (always true), or a bare `true` stub,
+/// or an impl that truncates to seconds (would make 21_599_999 ms pass as 21_600 s).
+#[test]
+fn is_cooldown_ready_one_below_boundary_is_not_ready() {
+    let cd = CARE_COOLDOWN_MS;
+    assert!(
+        !is_cooldown_ready(0, cd - 1, cd),
+        "elapsed == cooldown-1 must NOT be ready: \
+         is_cooldown_ready(0, {}, {cd}) must be false",
+        cd - 1
+    );
+}
+
+// Test e-1e — future/skewed clock: last_ms > now_ms → NOT READY
+/// is_cooldown_ready returns false when the clock appears to go backward
+/// (last_ms > now_ms). saturating_sub(0, 10_000) = 0 < cd → not ready.
+///
+/// kills: a wrapping or plain subtraction `now_ms - last_ms` that would
+/// underflow to a huge positive value when last_ms > now_ms, bypassing the
+/// cooldown and granting an immediate re-care. Saturating sub is the safe
+/// direction: a future-skewed clock can only over-reject, never under-reject.
+#[test]
+fn is_cooldown_ready_future_clock_is_not_ready() {
+    let cd = CARE_COOLDOWN_MS;
+    assert!(
+        !is_cooldown_ready(10_000, 0, cd),
+        "last_ms > now_ms must NOT be ready (saturating_sub: 0.saturating_sub(10000)=0 < cd): \
+         is_cooldown_ready(10000, 0, {cd}) must be false"
+    );
+}
+
+// Test e-1f — non-zero base: arbitrary last_ms offset
+/// is_cooldown_ready works correctly from a non-zero base timestamp.
+///
+/// kills: an impl that hardcodes `last_ms == 0` (only tests from epoch),
+/// or one that uses absolute now_ms rather than the elapsed difference.
+#[test]
+fn is_cooldown_ready_nonzero_base_boundary() {
+    let cd = CARE_COOLDOWN_MS;
+    let base = 1_000i64; // arbitrary non-zero last_ms
+
+    // Exactly at the boundary from a non-zero base.
+    assert!(
+        is_cooldown_ready(base, base + cd, cd),
+        "is_cooldown_ready({base}, {}, {cd}) must be true (elapsed == cooldown)",
+        base + cd
+    );
+
+    // One millisecond short from a non-zero base.
+    assert!(
+        !is_cooldown_ready(base, base + cd - 1, cd),
+        "is_cooldown_ready({base}, {}, {cd}) must be false (elapsed == cooldown-1)",
+        base + cd - 1
+    );
+}
+
+// Test e-1g — shared heal-sized cooldown (proves generic predicate, not care-only)
+/// is_cooldown_ready returns the right answer for a heal-sized cooldown (30_000 ms).
+///
+/// kills: an impl that special-cases CARE_COOLDOWN_MS rather than being a
+/// generic predicate shared by care AND heal (ptc5e §e-1: "shared by care AND heal").
+#[test]
+fn is_cooldown_ready_heal_sized_cooldown() {
+    let heal_cd = 30_000i64;
+    assert!(
+        is_cooldown_ready(0, 30_000, heal_cd),
+        "is_cooldown_ready(0, 30000, 30000) must be true (elapsed == cooldown)"
+    );
+    assert!(
+        !is_cooldown_ready(0, 29_999, heal_cd),
+        "is_cooldown_ready(0, 29999, 30000) must be false (elapsed < cooldown)"
+    );
+}
+
+// Test e-1h — property: is_cooldown_ready agrees with saturating_sub reference.
+// For all (last_ms, now_ms, cooldown_ms), the result equals
+// `now_ms.saturating_sub(last_ms) >= cooldown_ms`.
+//
+// kills: any impl that diverges from the saturating-sub specification for any
+// input — e.g. wrapping sub, signed absolute value, clamped-to-zero-but-wrong.
+// (Message uses positional args: `prop_assert_eq!` expands through `concat!`, so
+// inline `{var}` format captures are not permitted in the panic string.)
+proptest! {
+    #[test]
+    fn is_cooldown_ready_matches_saturating_sub_spec(
+        last_ms in 0i64..=i64::MAX / 2,
+        now_ms  in 0i64..=i64::MAX / 2,
+        cooldown_ms in 0i64..=CARE_COOLDOWN_MS * 2,
+    ) {
+        let expected = now_ms.saturating_sub(last_ms) >= cooldown_ms;
+        let got = is_cooldown_ready(last_ms, now_ms, cooldown_ms);
+        prop_assert_eq!(
+            got,
+            expected,
+            "is_cooldown_ready({}, {}, {}) must equal now_ms.saturating_sub(last_ms) >= cooldown_ms = {}",
+            last_ms,
+            now_ms,
+            cooldown_ms,
+            expected
+        );
     }
 }

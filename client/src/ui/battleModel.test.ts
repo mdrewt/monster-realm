@@ -26,6 +26,7 @@ import {
   battleVMsEqual,
   buildBattleViewModel,
   decideBattleOverlay,
+  isPvpBattle,
   type OverlayState,
   shouldSkipBattleRefresh,
   statusBadge,
@@ -1917,5 +1918,48 @@ describe('battleVMsEqual: PvP fields', () => {
     expect(vmB).not.toBeNull();
     expect(battleVMsEqual(vmA!, vmB!)).toBe(false);
     // Kills: an impl that omits pvpOpponentName from battleVMsEqual
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ptc5e e-3 — isPvpBattle canonical export (ADR-0110 seam)
+//
+// RED state: isPvpBattle is NOT yet exported from ./battleModel.
+//   → import-resolve error (TS2305 / vitest resolution failure) — all three
+//     tests below are red for this reason today.
+//
+// Contract: isPvpBattle({ opponentMonsterIds, opponentIdentity, playerIdentity })
+//   returns true iff identities differ AND opponentMonsterIds is non-empty.
+//   This matches the PvP detection rule in ADR-0110 and the `isPvp` field logic
+//   already exercised via buildBattleViewModel above — this suite pins the
+//   standalone exported function that other modules (e.g. battleView) will call
+//   directly without constructing a full ViewModel.
+// ---------------------------------------------------------------------------
+
+describe('isPvpBattle — standalone canonical export (ptc5e e-3)', () => {
+  it('wild: opponentMonsterIds empty and different identities → false', () => {
+    // A wild battle sends opponentIdentity='00' (server placeholder ≠ playerIdentity)
+    // but opponentMonsterIds is empty. isPvpBattle must require BOTH conditions.
+    // Kills: an identity-inequality-alone impl that mislabels wild as PvP.
+    expect(
+      isPvpBattle({ opponentMonsterIds: [], opponentIdentity: '00', playerIdentity: 'aa' }),
+    ).toBe(false);
+  });
+
+  it('pvp: non-empty opponentMonsterIds AND different identities → true', () => {
+    // Canonical PvP: server sets a real opponent identity and populated monsterIds.
+    // Kills: an opponentMonsterIds-only impl that would also label practice as PvP.
+    expect(
+      isPvpBattle({ opponentMonsterIds: [1n], opponentIdentity: 'bb', playerIdentity: 'aa' }),
+    ).toBe(true);
+  });
+
+  it('practice: same identity with non-empty opponentMonsterIds → false', () => {
+    // Practice battle: player fights their own party (playerIdentity===opponentIdentity).
+    // opponentMonsterIds is non-empty but identities match → not PvP.
+    // Kills: an opponentMonsterIds.length-only impl that would label practice as PvP.
+    expect(
+      isPvpBattle({ opponentMonsterIds: [1n], opponentIdentity: 'aa', playerIdentity: 'aa' }),
+    ).toBe(false);
   });
 });

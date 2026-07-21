@@ -68,7 +68,10 @@ pub use quest::{
     can_start_quest, process_trigger, trigger_matches, PlayerQuestProgress, QuestAdvance, QuestDef,
     QuestReward, QuestStep, RewardItem, StepTrigger, TriggerEvent,
 };
-pub use raising::{apply_care, focus_train, CareError, FocusTrainError, FocusTrainResult};
+pub use raising::{
+    apply_care, focus_train, is_cooldown_ready, CareError, FocusTrainError, FocusTrainResult,
+    CARE_BOND_AMOUNT, CARE_COOLDOWN_MS,
+};
 pub use ranking::{apply_elo, compute_rating_update, INITIAL_RATING};
 pub use taming::{
     attempt_recruit, encounter_triggers, recruit_chance, resolve_encounter, roll_encounter,

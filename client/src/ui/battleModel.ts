@@ -5,6 +5,25 @@
 import type { StoreBattle, StoreSkillRow, StoreSpeciesRow } from '../net/store';
 import { hpPercent } from './boxModel';
 
+/**
+ * Canonical PvP-vs-wild classifier (ptc5e-3 SSOT — was duplicated in eventRing.ts
+ * and inline here). True iff a battle is player-vs-player: the opponent must have
+ * an owned party (`opponentMonsterIds.length > 0`) AND a distinct identity. The
+ * party guard is REQUIRED: a wild battle carries the all-zero WILD_IDENTITY
+ * (which is `!==` the player identity) but has no owned opponent monsters — so
+ * identity-inequality alone mislabels every wild encounter as PvP. A practice
+ * battle has `playerIdentity === opponentIdentity` (ADR-0109, RT-M16-02). The
+ * parameter is STRUCTURALLY typed (not `StoreBattle`) so eventRing.ts can
+ * re-export it without coupling to net/store.
+ */
+export function isPvpBattle(battle: {
+  readonly opponentMonsterIds: readonly unknown[];
+  readonly opponentIdentity: string;
+  readonly playerIdentity: string;
+}): boolean {
+  return battle.opponentMonsterIds.length > 0 && battle.opponentIdentity !== battle.playerIdentity;
+}
+
 export interface BattleMonsterCardVM {
   readonly speciesName: string;
   readonly level: number;
@@ -256,10 +275,11 @@ export function buildBattleViewModel(
   const isWild = battle.opponentMonsterIds.length === 0;
   const canRecruit = ongoing && isWild;
 
-  // PvP detection (ADR-0110 complement of ADR-0045): both sides are human players
-  // when opponentMonsterIds is non-empty (opponent is owned) AND identities differ.
-  // A practice battle has playerIdentity === opponentIdentity (ADR-0109, RT-M16-02 fix).
-  const isPvp = !isWild && battle.playerIdentity !== battle.opponentIdentity;
+  // PvP detection (ADR-0110 complement of ADR-0045) via the canonical classifier
+  // (ptc5e-3): PvP ⟺ the opponent is owned (opponentMonsterIds non-empty) AND the
+  // identities differ. A practice battle has playerIdentity === opponentIdentity
+  // (ADR-0109, RT-M16-02 fix), so it is not PvP.
+  const isPvp = isPvpBattle(battle);
 
   // Bait options: classify by DATA (recruit_bonus > 0), never by item id, and
   // only surface stacks the player actually holds (count > 0). Empty when not

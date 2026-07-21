@@ -27,33 +27,34 @@ use crate::schema::{
     species_row, trade_offer, HealCooldown,
 };
 use game_core::{
-    apply_care, focus_train, Bond, EVs, FocusTrainError, FocusTrainResult, IVs, Level, Nature,
-    StatBlock, StatKind,
+    apply_care, focus_train, is_cooldown_ready, Bond, EVs, FocusTrainError, FocusTrainResult, IVs,
+    Level, Nature, StatBlock, StatKind,
 };
+// SSOT (ptc5e-1): the CARE policy magnitudes now live in game-core beside
+// `apply_care`. Re-exported `pub(crate)` — and ONLY these two names, not the
+// whole `game_core` import above — so the `#[path]`-attached `raising_tests.rs`
+// child mod reaches them through `use super::*` without an ambiguous-glob clash
+// with its own explicit `use game_core::{EVs, IVs, ...}` imports.
+pub(crate) use game_core::{CARE_BOND_AMOUNT, CARE_COOLDOWN_MS};
 use spacetimedb::{ReducerContext, Table};
-
-/// Fixed bond raise per successful `care` (tunable policy the reducer supplies to
-/// the pure rule; ADR-0058 §residual(c) / ADR-0059 §3). Initial tuning is a
-/// playtest call (spec §6 "bond curve … tunable"), not a contract.
-pub(crate) const CARE_BOND_AMOUNT: u8 = 5;
-/// Per-monster care cooldown (6h). Documented as playtest-tunable (spec §6).
-pub(crate) const CARE_COOLDOWN_MS: i64 = 6 * 60 * 60 * 1000;
 
 /// Pure decision seam (testable without a DB): apply the SSOT bond rule FIRST
 /// (so `AtMaxBond` / `NoEffect` reject before the cooldown is consulted — the
 /// order matches ADR-0058 §3 / ADR-0059 §3), THEN gate on the cooldown. Returns
 /// the new bond value, or `Err` if the action is rejected.
 ///
-/// The cooldown comparison is strict `<` (elapsed == `CARE_COOLDOWN_MS` is
-/// ALLOWED), and the elapsed is `now.saturating_sub(last_care_at_ms)` so a
-/// future/zero clock can only OVER-reject, never wrap into a bypass.
+/// The cooldown gate delegates to the SSOT `game_core::is_cooldown_ready`
+/// (ptc5e-1): ready ⟺ `now - last >= CARE_COOLDOWN_MS`, so elapsed ==
+/// `CARE_COOLDOWN_MS` is ALLOWED and the `saturating_sub` elapsed means a
+/// future/zero clock can only OVER-reject, never wrap into a bypass. This is the
+/// exact dual of the prior in-line strict-`<` reject — behavior is unchanged.
 ///
 /// The `now` parameter is the server clock ms (the caller passes `now_ms(ctx)`);
 /// it is named `now` — NOT `now_ms` — to avoid shadowing the module-level
 /// `now_ms` helper inside this body (red-team F2, least-surprise).
 pub(crate) fn evaluate_care(bond: u8, last_care_at_ms: i64, now: i64) -> Result<u8, String> {
     let new_bond = apply_care(Bond::new(bond), CARE_BOND_AMOUNT).map_err(|e| format!("{e:?}"))?;
-    if now.saturating_sub(last_care_at_ms) < CARE_COOLDOWN_MS {
+    if !is_cooldown_ready(last_care_at_ms, now, CARE_COOLDOWN_MS) {
         return Err("care cooldown not yet elapsed".to_string());
     }
     Ok(new_bond.value())
@@ -257,15 +258,17 @@ pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result
 #[cfg(test)]
 pub(crate) const HEAL_COOLDOWN_MS: i64 = 30_000;
 
-/// Pure cooldown seam (testable without DB).
-/// Uses saturating_sub to prevent wrapping subtraction (a future clock can only
-/// over-reject, never bypass the cooldown). Strict `<` (elapsed == cooldown_ms is allowed).
+/// Pure cooldown seam (testable without DB). Delegates the elapsed check to the
+/// SSOT `game_core::is_cooldown_ready` (ptc5e-1) — the SAME predicate `care` uses
+/// — instead of open-coding a second `saturating_sub`/`<` copy. Ready ⟺ elapsed
+/// `>= cooldown_ms` (elapsed == cooldown_ms is allowed); saturating so a future
+/// clock can only over-reject, never bypass the cooldown.
 pub(crate) fn evaluate_heal(
     last_heal_at_ms: i64,
     now: i64,
     cooldown_ms: i64,
 ) -> Result<(), String> {
-    if now.saturating_sub(last_heal_at_ms) < cooldown_ms {
+    if !is_cooldown_ready(last_heal_at_ms, now, cooldown_ms) {
         return Err("heal cooldown not yet elapsed".to_string());
     }
     Ok(())
