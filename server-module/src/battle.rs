@@ -1000,11 +1000,15 @@ pub(crate) fn write_back_battle_results(
 
     // GC prior terminal battles for this player (12.5e-1, ADR-0077).
     // Ordering invariant: the current battle's DB row is still Ongoing at this
-    // call site — all callers (submit_attack, swap_active, flee) call update()
-    // AFTER write_back_battle_results returns. So filtering outcome != Ongoing
-    // only targets prior terminals, never the in-flight battle. After the
-    // caller's update(), exactly one terminal battle remains per player,
-    // preserving the client's M8.7e outcome frame (keep-latest-per-player).
+    // call site — the mutating callers (submit_attack, swap_active, flee) call
+    // update() AFTER write_back_battle_results returns, and the disconnect caller
+    // (resolve_wild_battle_on_disconnect, ptc5b/ADR-0138) delete()s the row AFTER,
+    // so the in-flight row is still Ongoing in the DB here either way. Filtering
+    // outcome != Ongoing therefore only targets prior terminals, never the
+    // in-flight battle. After the mutating caller's update(), exactly one terminal
+    // battle remains per player, preserving the client's M8.7e outcome frame
+    // (keep-latest-per-player); the disconnect caller then deletes the row (no
+    // frame — a disconnected client has nothing to observe).
     let player = battle.player_identity;
     let old_terminal_ids: Vec<u64> = ctx
         .db

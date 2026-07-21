@@ -1404,7 +1404,7 @@ fn ptc5b_3_body_scan_resolve_wild_battle_on_disconnect() {
     // (iii) battle_wild side-table must be deleted.
     //       The production call: ctx.db.battle_wild().battle_id().delete(id)
     //       Needle assembled in two parts.
-    let bw_access = ["battle_wild", "()"].concat();
+    let bw_access = ["ctx.db.battle_wild()", ""].concat();
     let bw_delete = [".battle_id()", ".delete("].concat();
     let bw_needle = [bw_access.as_str(), bw_delete.as_str()].concat();
     assert!(
