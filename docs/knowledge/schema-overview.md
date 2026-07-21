@@ -4,7 +4,7 @@ title: Monster Realm Schema Overview
 slug: schema-overview
 updated: 2026-07-19
 tags: [schema, spacetimedb, overview]
-abstract: "34-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 49 reducers."
+abstract: "34-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 42 reducers."
 source: scripts/okf-export.mjs@server-module/src/
 ---
 
@@ -50,7 +50,7 @@ source: scripts/okf-export.mjs@server-module/src/
 - [pvp_deadline_schedule](tables/pvp_deadline_schedule.md)
 - [trade_offer_reaper_schedule](tables/trade_offer_reaper_schedule.md)
 
-## Reducers (49)
+## Reducers (42)
 
 - [accept_challenge](reducers/accept_challenge.md)
 - [advance_dialogue](reducers/advance_dialogue.md)
@@ -76,8 +76,6 @@ source: scripts/okf-export.mjs@server-module/src/
 - [movement_tick](reducers/movement_tick.md)
 - [on_disconnect](reducers/on_disconnect.md)
 - [playtest_reaper](reducers/playtest_reaper.md)
-- [playtest_reaper](reducers/playtest_reaper.md)
-- [playtest_reaper](reducers/playtest_reaper.md)
 - [propose_trade](reducers/propose_trade.md)
 - [pvp_deadline_reaper](reducers/pvp_deadline_reaper.md)
 - [respond_trade](reducers/respond_trade.md)
@@ -85,11 +83,6 @@ source: scripts/okf-export.mjs@server-module/src/
 - [set_move](reducers/set_move.md)
 - [set_nickname](reducers/set_nickname.md)
 - [set_party_slot](reducers/set_party_slot.md)
-- [set_profile_name](reducers/set_profile_name.md)
-- [set_profile_name](reducers/set_profile_name.md)
-- [set_profile_name](reducers/set_profile_name.md)
-- [set_profile_name](reducers/set_profile_name.md)
-- [set_profile_name](reducers/set_profile_name.md)
 - [set_profile_name](reducers/set_profile_name.md)
 - [start_battle](reducers/start_battle.md)
 - [start_wild_battle](reducers/start_wild_battle.md)

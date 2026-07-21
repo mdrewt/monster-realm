@@ -5,7 +5,7 @@
 //   - mutation-server job exists (ADR-0050 amendment) and is not neutered
 //   - nightly triggers on schedule + workflow_dispatch (not just push)
 //   - coverage recipe threshold ≥ 96 (not the placeholder =25)
-//   - mutate-server recipe is intact (missed.txt, no scope narrowing, cap ≤ 340)
+//   - mutate-server recipe is intact (missed.txt, no scope narrowing, cap ≤ 299)
 //
 // EXPECTED REAL-TREE STATE AT RED (m13.5a additions only):
 //   nightlyHasServerMutationJob → FAIL (mutation-server job absent from nightly.yml)
@@ -278,10 +278,20 @@ export function coverageRecipeThresholdIntact(justfileText) {
 //   - does NOT contain ` -o ` (space-delimited, F10: redirecting output to a different
 //     path leaves the recipe reading a stale or wrong missed.txt)
 //   - does NOT contain `--output` (F10 long form)
-//   - the `cap=` default in the recipe signature parses as an integer ≤ 340
-//     (catches cap="9999"; deliberate in-ceiling bumps allowed per ADR-0050 A2 as re-baselined by ADR-0118)
+//   - the `cap=` default in the recipe signature parses as an integer ≤ 299
+//     (catches cap="9999"; ceiling == committed cap so any inflation is eval-visible)
 //   - if `cap=` is present but no digit follows the `=` (after optional quote),
 //     the header is malformed → return false (tightened per reviewer n4)
+
+// Wiring-eval cap ceiling == the committed justfile `mutate-server cap=` default
+// (= 299, the m17.5a re-measurement recorded under ADR-0118 §4; the `just eval`
+// run also asserts the real justfile's cap parses ≤ this constant).
+// ADR-0137 D4 tightens this from 340 to the cap so EVERY cap move is eval-visible
+// (amends ADR-0118 §3/A3: headroom no longer lives in the ceiling). A legitimate
+// server-growth re-baseline bumps BOTH the justfile cap and this constant in the
+// same PR — the coupling is intentional (mechanical-enforcement-first).
+const MUTATE_SERVER_CAP_BASELINE = 299;
+
 export function mutateServerRecipeIntact(justfileText) {
   // Find the recipe header: `mutate-server` at column 0.
   const lines = justfileText.split('\n');
@@ -298,7 +308,7 @@ export function mutateServerRecipeIntact(justfileText) {
 
   // Parse `cap=` default from the header (e.g. `mutate-server cap="150":` or
   // `mutate-server cap='150':` or `mutate-server cap=150:`).
-  // We require a cap= parameter whose value is an integer ≤ 340.
+  // We require a cap= parameter whose value is an integer ≤ MUTATE_SERVER_CAP_BASELINE (299).
   // If cap= is present but has no digits (malformed), return false.
   const capMatch = headerLine.indexOf('cap=');
   if (capMatch !== -1) {
@@ -315,7 +325,7 @@ export function mutateServerRecipeIntact(justfileText) {
     // Malformed: cap= present but no digits follow (e.g. `cap=:` or `cap="`).
     if (!numStr) return false;
     const cap = parseInt(numStr, 10);
-    if (cap > 340) return false;
+    if (cap > MUTATE_SERVER_CAP_BASELINE) return false;
   }
   // cap= is optional in the recipe; absence is fine (no cap or handled differently).
 
@@ -869,7 +879,7 @@ jobs:
       name,
       pass: false,
       detail:
-        'TEETH L-bigcap: mutateServerRecipeIntact accepted cap=9999 (must reject cap > 340 per ADR-0050 A3 / ADR-0118)',
+        'TEETH L-bigcap: mutateServerRecipeIntact accepted cap=9999 (must reject cap > 299 per ADR-0137 D4 / ADR-0118)',
     };
   }
   // Bad: --file scope-narrowing bypass.
@@ -905,7 +915,7 @@ jobs:
     };
   }
   // Good: all invariants satisfied (monster-realm-module, missed.txt, --test-tool nextest,
-  // cap ≤ 340, no scope-narrowing flags).
+  // cap ≤ 299, no scope-narrowing flags).
   const justfileMutServerGood = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n`;
   if (!mutateServerRecipeIntact(justfileMutServerGood)) {
     return {
@@ -914,15 +924,49 @@ jobs:
       detail: 'TEETH L-good: mutateServerRecipeIntact rejected a correct mutate-server recipe',
     };
   }
-  // Good: cap=309 (re-baselined ceiling per ADR-0118) — must be accepted, not rejected.
-  // Kills: impl that keeps the old ceiling of 200 and incorrectly rejects 201–340.
+  // Bad: cap=309 — exceeds tightened ceiling 299 (ADR-0137 amends ADR-0118 A3).
+  // Kills: impl that still uses the old ceiling of 340, silently accepting a 41-mutant
+  // loosening of the nightly survivor tolerance without any eval-visible signal.
+  // NOTE: this was previously asserted ACCEPTED (ceiling was 340). It is now REJECTED
+  // because ADR-0137 tightens the ceiling to the committed justfile cap=299 so every
+  // cap move is eval-visible. Correction rationale: spec §ptc5d-4 / ADR-0137 D4.
   const justfileMutServerRecap = `mutate-server cap="309":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n`;
-  if (!mutateServerRecipeIntact(justfileMutServerRecap)) {
+  if (mutateServerRecipeIntact(justfileMutServerRecap)) {
     return {
       name,
       pass: false,
       detail:
-        'TEETH L-recap: mutateServerRecipeIntact rejected cap=309 — cap=309 is valid per ADR-0118 re-baseline (ceiling raised to 340); an impl still using the old 200 ceiling incorrectly rejects values in the 201–340 range',
+        'TEETH L-recap: mutateServerRecipeIntact accepted cap=309 — exceeds tightened ceiling 299 ' +
+        '(ADR-0137 amends ADR-0118 A3; ceiling tightened from 340 to the committed justfile cap so ' +
+        'every cap move is eval-visible; kills impl still using the old 340 ceiling)',
+    };
+  }
+
+  // Bad: cap=300 — one above the ceiling (+ 1 boundary bite).
+  // Kills: impl using >= instead of > at the 299 boundary (off-by-one).
+  const justfileMutServerOvercap = `mutate-server cap="300":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n`;
+  if (mutateServerRecipeIntact(justfileMutServerOvercap)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH L-overcap: mutateServerRecipeIntact accepted cap=300 — must be rejected by the ' +
+        'tightened ceiling 299 (ADR-0137 D4); this is the +1 boundary bite; ' +
+        'kills impl using cap >= MUTATE_SERVER_CAP_BASELINE instead of cap > MUTATE_SERVER_CAP_BASELINE',
+    };
+  }
+
+  // Good: cap=299 — exactly at the ceiling (must be ACCEPTED, not rejected).
+  // Guards the > vs >= off-by-one: if the impl uses >= 299 it rejects 299 and this fires.
+  const justfileMutServer299 = `mutate-server cap="299":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n`;
+  if (!mutateServerRecipeIntact(justfileMutServer299)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH L-299: mutateServerRecipeIntact rejected cap=299 — the committed justfile default ' +
+        'is cap=299 and must be accepted (ceiling check is cap > 299, not cap >= 299); ' +
+        'kills impl using >= MUTATE_SERVER_CAP_BASELINE (off-by-one)',
     };
   }
 
@@ -1296,13 +1340,13 @@ jobs:
 
   // Check 13: mutate-server recipe is intact (EXPECTED RED — recipe absent)
   // GREEN edit: add a mutate-server recipe to the justfile with monster-realm-module,
-  // missed.txt, cap ≤ 340, and no --shard/--file/--exclude-re narrowing.
+  // missed.txt, cap ≤ 299, and no --shard/--file/--exclude-re narrowing.
   if (!mutateServerRecipeIntact(justfile)) {
     return {
       name,
       pass: false,
       detail:
-        'justfile mutate-server recipe is absent or incomplete (EXPECTED RED — implementer must add the recipe: cargo mutants -p monster-realm-module --test-tool nextest with missed.txt count-compare, cap ≤ 340, no --shard/--file/--exclude-re)',
+        'justfile mutate-server recipe is absent or incomplete (EXPECTED RED — implementer must add the recipe: cargo mutants -p monster-realm-module --test-tool nextest with missed.txt count-compare, cap ≤ 299, no --shard/--file/--exclude-re)',
     };
   }
 

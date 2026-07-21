@@ -351,11 +351,18 @@ fn rt_m14_5a_01_status_applied_written_to_correct_slot_after_weather_chip_ko() {
 // the wild's strike-back KOs the player's active and an auto-switch fires
 // between the strike and phase 4.5.
 //
-// Scenario: player team has 2 monsters (active=0 has 1 HP, backup=1 healthy).
-// Enemy strike-back applies Poison to slot 0 (survives). Phase 3 DoT: slot 0
-// had no prior Burn/Poison → 0 DoT. Phase 3.5 weather chip: if weather active,
-// chip could kill slot 0. Auto-switch to slot 1. Phase 4.5 writes Poison to
-// slot 1 (wrong).
+// Scenario: player team has 2 monsters (active=0 has 3 HP, backup=1 healthy).
+// Enemy burn_applying_skill deals 2 damage (base 2 → STAB ×1.5 → 3 → neutral
+// type → ×85/100 always_hit_variance → 2), leaving active at 1 HP — survives,
+// so StatusApplied IS emitted. Phase 3 DoT: slot 0 had no prior status → 0 DoT.
+// Phase 3.5 Sandstorm chip: max_hp/16 = 16/16 = 1 — kills slot 0 (deterministic).
+// Auto-switch to slot 1. Phase 4.5 writes Burn to slot 1 (wrong).
+//
+// Damage arithmetic dependency: the strike is wild→active, so the load-bearing
+// stats are the ATTACKER's attack (wild: stat_block attack=40) and the DEFENDER's
+// defense (active_m: stat_block defense=200), with burn_applying_skill power=1 and
+// STAB (both Fire) → 2 damage. If the damage formula changes, retune those stats so
+// the attack still leaves the 3-HP active at exactly 1 HP (surviving) before the chip.
 //
 // This test pins the invariant: `StatusApplied` from the enemy's strike-back
 // in `resolve_recruit_failure` must be committed to the slot that was attacked
@@ -440,16 +447,20 @@ fn rt_m14_5a_02_recruit_failure_status_applied_to_correct_slot_after_auto_switch
         )
     });
 
-    if !status_applied {
-        // Precondition not met (e.g. enemy missed or attack KO'd without status).
-        // The test is still useful as a regression pinning future changes.
-        eprintln!(
-            "RT-M14.5A-02: StatusApplied not emitted (precondition not met). \
-             Active hp after = {}, backup hp after = {}. Events: {events:?}",
-            state.side_a.team[0].current_hp, state.side_a.team[1].current_hp,
-        );
-        return;
-    }
+    // The scenario is deterministic (always_hit_variance + no_block_sv + fixed stats).
+    // Active slot 0 starts at 3 HP, burn_applying_skill deals 2 damage → 1 HP remains
+    // (not fainted), so StatusApplied MUST be emitted. The Sandstorm chip (max_hp/16 = 1)
+    // then kills slot 0. If this assert fires, the damage formula changed and the stats
+    // in the fixture need updating — do NOT remove or weaken it (ptc5d-3, ADR-0137 D3).
+    assert!(
+        status_applied,
+        "RT-M14.5A-02: StatusApplied was not emitted — precondition violated. \
+         Active hp after attack = {}, backup hp after = {}. Events: {events:?}. \
+         Expected: burn_applying_skill deals 2 dmg to 3-HP active → 1 HP survives → \
+         StatusApplied emitted before Sandstorm chip kills. If the damage formula \
+         changed, update active_m.current_hp / stats so the attack still leaves ≥1 HP.",
+        state.side_a.team[0].current_hp, state.side_a.team[1].current_hp,
+    );
 
     // Invariant: backup (slot 1) must NOT have received a status from this turn.
     // The enemy attacked slot 0 (active). Slot 1 should remain None.
