@@ -1213,6 +1213,90 @@ pub(crate) fn write_back_battle_results(
     Ok(())
 }
 
+// ===========================================================================
+// Wild-battle disconnect resolution (ptc5b, ADR-0138)
+// ===========================================================================
+
+/// SSOT row-predicate (ADR-0138 D1): is `b` an `Ongoing` WILD battle owned by
+/// `player`? The *selecting* dual of `guards::is_in_ongoing_battle_either_role`
+/// (which *tests* membership) — one definition of "an ongoing wild battle for a
+/// player", shared by `resolve_wild_battle_on_disconnect` and its proof-of-teeth.
+pub(crate) fn is_ongoing_wild_battle(b: &Battle, player: Identity) -> bool {
+    b.player_identity == player
+        && b.opponent_identity == WILD_IDENTITY
+        && b.state.outcome == BattleOutcome::Ongoing
+}
+
+/// Resolve the disconnecting caller's Ongoing WILD battle (ptc5b, ADR-0138).
+///
+/// `pvp::forfeit_on_disconnect` deliberately excludes WILD battles and no
+/// scheduled reaper covers the wild `battle`/`battle_wild` row class, so a
+/// mid-wild-battle disconnect would otherwise leave an `Ongoing` `battle` row +
+/// its private `battle_wild` sidecar forever — soft-locking the returning player
+/// out of any new battle (`is_in_ongoing_battle`'s player arm has no WILD
+/// exclusion, so any lingering `Ongoing` row blocks `begin_encounter`/`start_battle`).
+///
+/// Resolution = **auto-flee** (ADR-0138 D2/D3): reuse the exact `flee` write-back
+/// (`write_back_battle_results` — persists damaged HP clamped to `stat_hp`, no XP
+/// on `Fled`, GCs the `battle_wild` sidecar), then DELETE the `battle` row. Unlike
+/// manual `flee`, we do NOT `update()` it to `Fled`: a disconnected client has no
+/// subscription to observe a terminal frame, and a lingering row is both a leak
+/// and a stale-overlay hazard on reconnect. Persisting damage (not a pre-battle-HP
+/// restore) keeps disconnect ≈ flee — no "disconnect-to-heal" advantage.
+///
+/// Idempotent + caller-scoped (ADR-0138 D4): a no-op when the caller has no wild
+/// battle; never touches another player's rows. Called from `on_disconnect`
+/// BEFORE the player row is deleted so write-back identity lookups still resolve.
+pub(crate) fn resolve_wild_battle_on_disconnect(ctx: &ReducerContext, disconnected: Identity) {
+    // Collect-then-mutate (mirrors `forfeit_on_disconnect`): never mutate a
+    // SpacetimeDB table while iterating it. The `player_identity` index scopes the
+    // scan to the caller; the SSOT predicate refines to Ongoing WILD rows.
+    let wild_ids: Vec<u64> = ctx
+        .db
+        .battle()
+        .player_identity()
+        .filter(disconnected)
+        .filter(|b| is_ongoing_wild_battle(b, disconnected))
+        .map(|b| b.battle_id)
+        .collect();
+
+    for id in wild_ids {
+        let Some(mut battle) = ctx.db.battle().battle_id().find(id) else {
+            continue;
+        };
+        // Re-check under the SSOT predicate (symmetry with `forfeit_on_disconnect`'s
+        // per-iteration re-check).
+        if !is_ongoing_wild_battle(&battle, disconnected) {
+            continue;
+        }
+        // Defense-in-depth at the irreversible delete site: this GC path must only
+        // ever touch a WILD battle. A predicate regression that let a PvP row
+        // through would trip here in debug/test builds before any deletion.
+        debug_assert_eq!(
+            battle.opponent_identity, WILD_IDENTITY,
+            "disconnect GC must only resolve WILD battles"
+        );
+
+        // Auto-flee: non-decisive terminal (no XP — outcome != SideAWins).
+        battle.state.outcome = BattleOutcome::Fled;
+        // Same write-back as `flee`: persists HP and GCs the `battle_wild` sidecar
+        // at its own line-999 delete. Log-and-continue — an Err (e.g. team-coupling)
+        // must NOT leave the `Ongoing` row alive (that re-creates the soft-lock);
+        // the deletes below run regardless.
+        if let Err(e) = write_back_battle_results(ctx, &battle) {
+            log::error!(
+                "{{\"evt\":\"wild_disconnect_writeback_err\",\"battle_id\":{id},\"reason\":\"{e}\"}}"
+            );
+        }
+        // Belt-and-suspenders (ADR-0138 D4): explicitly delete the private
+        // `battle_wild` sidecar — `write_back_battle_results` only reaches its own
+        // delete if it did not Err first. Then delete the main `battle` row (the new
+        // behavior; unlike `flee` we do not `update()` it). Both deletes idempotent.
+        ctx.db.battle_wild().battle_id().delete(id);
+        ctx.db.battle().battle_id().delete(id);
+    }
+}
+
 // `battle.rs` is a file-module (declared `mod battle;` in `lib.rs`), so a plain
 // `mod battle_tests;` would resolve under `src/battle/`; `#[path]` keeps the test
 // file a sibling in `src/` (the game-core `*_tests.rs` convention, ADR-0056 map).

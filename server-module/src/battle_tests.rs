@@ -1074,3 +1074,359 @@ fn m17a_attempt_recruit_is_structurally_safe_precondition() {
         not_wild_needle
     );
 }
+
+// ===========================================================================
+// ptc5b (wild-disconnect GC): Tests T1, T2, T3
+//
+// Slice: resolve_wild_battle_on_disconnect — when a player disconnects while
+// in an Ongoing WILD battle, the battle must be cleaned up automatically so
+// the player is not soft-locked (re-entry blocked) on reconnect.
+//
+// EARS criteria addressed:
+//   ptc5b-1: The `resolve_wild_battle_on_disconnect` function exists in
+//             battle.rs and is wired into `on_disconnect` in lib.rs.
+//   ptc5b-2: `is_ongoing_wild_battle` is a pure predicate scoping to
+//             the caller's Ongoing WILD rows only (caller-scoping +
+//             idempotency: no-op when there are no wild rows).
+//   ptc5b-3: After resolve, the player's Ongoing WILD battle is absent from
+//             the battle set, unblocking re-entry (soft-lock proof); the fn
+//             body calls write_back_battle_results, battle_wild().delete,
+//             and battle().delete.
+//
+// RED state: `super::is_ongoing_wild_battle` and
+//            `super::resolve_wild_battle_on_disconnect` do not yet
+//            exist → T1 and T2 fail to compile; T3 compiles but fails at
+//            runtime because the needles are absent from battle.rs.
+// ===========================================================================
+
+/// Minimal `Battle` row builder for ptc5b tests — mirrors `ongoing_battle` in
+/// raising_tests.rs (same field set, same convention).  The `battle_id` is
+/// supplied by the caller so each fixture is distinct.
+fn battle_fixture(
+    id: u64,
+    player: spacetimedb::Identity,
+    opponent: spacetimedb::Identity,
+    outcome: game_core::BattleOutcome,
+) -> crate::schema::Battle {
+    crate::schema::Battle {
+        battle_id: id,
+        player_identity: player,
+        opponent_identity: opponent,
+        state: game_core::BattleState {
+            side_a: game_core::BattleSide {
+                active: 0,
+                team: vec![],
+            },
+            side_b: game_core::BattleSide {
+                active: 0,
+                team: vec![],
+            },
+            outcome,
+            turn_number: 1,
+            weather: None,
+        },
+        party_monster_ids: vec![],
+        opponent_monster_ids: vec![],
+        created_at_ms: 0,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T1 — pure-core selection (EARS ptc5b-2: caller-scoping + idempotency)
+//
+// Proof-of-teeth: asserts is_ongoing_wild_battle returns true ONLY for the
+// exact combination (player==P, opponent==WILD_IDENTITY, outcome==Ongoing).
+//
+// Each of the four fixture rows exercises a different rejection axis:
+//   (a) true  — all three conditions met
+//   (b) false — wrong opponent (PvP, not WILD)
+//   (c) false — wrong outcome (terminal)
+//   (d) false — wrong owner (different player Q)
+//
+// Kills:
+//   - An impl that ignores opponent_identity (b would become true)
+//   - An impl that ignores outcome (c would become true)
+//   - An impl that ignores player_identity (d would become true)
+//   - An always-true impl (all b/c/d assertions would fail)
+//   - An always-false impl (assertion a would fail)
+//   - An idempotency regression: iterating zero rows must yield no matches
+//     (the empty-set arm at the end).
+// ---------------------------------------------------------------------------
+
+// EARS ptc5b-2
+// PROOF-OF-TEETH: kills wrong-opponent / wrong-outcome / wrong-owner / always-true /
+//                 always-false mutants of is_ongoing_wild_battle.
+#[test]
+fn ptc5b_1_selection_is_ongoing_wild_battle_predicate() {
+    let p = spacetimedb::Identity::from_byte_array([1u8; 32]);
+    let q = spacetimedb::Identity::from_byte_array([2u8; 32]);
+    let pvp_opponent = spacetimedb::Identity::from_byte_array([3u8; 32]);
+    let wild = crate::WILD_IDENTITY;
+
+    // (a) Ongoing WILD battle owned by P → must be true.
+    let row_a = battle_fixture(1, p, wild, game_core::BattleOutcome::Ongoing);
+    assert!(
+        super::is_ongoing_wild_battle(&row_a, p),
+        "ptc5b-T1(a) FAIL: Ongoing wild battle owned by P must return true. \
+         TEETH: kills any impl that ignores any of the three conditions."
+    );
+
+    // (b) Ongoing PvP battle owned by P (opponent is real identity, NOT WILD) → false.
+    // Kills: an impl that ignores opponent_identity (accepts any Ongoing battle for P).
+    let row_b = battle_fixture(2, p, pvp_opponent, game_core::BattleOutcome::Ongoing);
+    assert!(
+        !super::is_ongoing_wild_battle(&row_b, p),
+        "ptc5b-T1(b) FAIL: Ongoing PvP battle (non-WILD opponent) must return false. \
+         TEETH: kills an impl that drops the opponent==WILD_IDENTITY check."
+    );
+
+    // (c) Terminal (Fled) WILD battle owned by P → false.
+    // Kills: an impl that ignores outcome and accepts any wild battle for P.
+    let row_c = battle_fixture(3, p, wild, game_core::BattleOutcome::Fled);
+    assert!(
+        !super::is_ongoing_wild_battle(&row_c, p),
+        "ptc5b-T1(c) FAIL: Terminal (Fled) wild battle must return false. \
+         TEETH: kills an impl that drops the outcome==Ongoing check."
+    );
+
+    // (d) Ongoing WILD battle owned by Q (not P) → false for P.
+    // Kills: an impl that ignores player_identity and counts all wild Ongoing rows.
+    let row_d = battle_fixture(4, q, wild, game_core::BattleOutcome::Ongoing);
+    assert!(
+        !super::is_ongoing_wild_battle(&row_d, p),
+        "ptc5b-T1(d) FAIL: Ongoing wild battle owned by Q must return false for P. \
+         TEETH: kills an impl that drops the player_identity check."
+    );
+
+    // Idempotency: an empty set yields no matches — the no-op / no-wild-battle case.
+    // Kills: an impl that returns true from empty input (always-true).
+    let empty: [crate::schema::Battle; 0] = [];
+    let any_match = empty.iter().any(|b| super::is_ongoing_wild_battle(b, p));
+    assert!(
+        !any_match,
+        "ptc5b-T1(e) FAIL: empty battle set must yield no wild matches. \
+         TEETH: kills an always-true impl and documents the no-op idempotency case."
+    );
+
+    // Idempotency: a set containing only non-wild rows also yields no matches.
+    let non_wild = [row_b, row_c, row_d];
+    let any_non_wild = non_wild.iter().any(|b| super::is_ongoing_wild_battle(b, p));
+    assert!(
+        !any_non_wild,
+        "ptc5b-T1(f) FAIL: set with no qualifying wild rows must yield no matches. \
+         TEETH: documents idempotency — no-op when there are no wild Ongoing rows for P."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T2 — re-entry flip + mutation tooth (EARS ptc5b-3: THE soft-lock proof)
+//
+// This is the critical regression test.  The scenario:
+//   1. Player P has an Ongoing WILD battle in the set → is_in_ongoing_battle_either_role
+//      returns true (P is soft-locked from starting a new battle).
+//   2. `is_ongoing_wild_battle` identifies P's wild battle ids to resolve.
+//   3. The resolved rows are removed from the set (simulating the GC delete).
+//   4. With those rows gone, is_in_ongoing_battle_either_role returns false (P unblocked).
+//
+// MUTATION TOOTH (explicit): if `is_ongoing_wild_battle` were replaced by an
+// implementation that always returns false (the removed-branch mutant), then
+// `to_resolve` would be empty, `remaining` would still contain P's wild row,
+// and step 4's assertion (!is_locked_after) would FAIL — this test re-fails
+// under that mutant.  The assertion is not tautological: it depends on the
+// predicate correctly identifying P's row.
+//
+// Kills:
+//   - The always-false predicate mutant (step 2 collects nothing → step 4 fails)
+//   - An impl that resolves Q's row instead of P's (Q unblocked, P still locked)
+//   - An impl that resolves only terminal rows (step 2 skips Ongoing → step 4 fails)
+// ---------------------------------------------------------------------------
+
+// EARS ptc5b-3
+// PROOF-OF-TEETH: kills the removed-branch (always-false) mutant of
+//                 is_ongoing_wild_battle — remaining still has P's wild row and
+//                 the step-4 assertion catches the lingering soft-lock.
+#[test]
+fn ptc5b_2_reentry_flip_soft_lock_proof() {
+    let p = spacetimedb::Identity::from_byte_array([5u8; 32]);
+    let q = spacetimedb::Identity::from_byte_array([6u8; 32]);
+    let wild = crate::WILD_IDENTITY;
+
+    // Build a mixed set: P's Ongoing wild battle + Q's Ongoing wild + a terminal.
+    let row_p_wild = battle_fixture(10, p, wild, game_core::BattleOutcome::Ongoing);
+    let row_q_wild = battle_fixture(11, q, wild, game_core::BattleOutcome::Ongoing);
+    let row_p_terminal = battle_fixture(12, p, wild, game_core::BattleOutcome::SideAWins);
+
+    let all_battles = [
+        row_p_wild.clone(),
+        row_q_wild.clone(),
+        row_p_terminal.clone(),
+    ];
+
+    // Step 1: confirm P is soft-locked before resolution.
+    // as_player iterator: all rows where player_identity == P.
+    let is_locked_before = crate::guards::is_in_ongoing_battle_either_role(
+        all_battles.iter().filter(|b| b.player_identity == p),
+        std::iter::empty::<&crate::schema::Battle>(),
+    );
+    assert!(
+        is_locked_before,
+        "ptc5b-T2 precondition FAIL: P must be soft-locked before disconnect resolution. \
+         The player arm should fire on P's Ongoing wild battle row."
+    );
+
+    // Step 2: collect the ids to resolve using is_ongoing_wild_battle.
+    // MUTATION TOOTH: if is_ongoing_wild_battle always returned false, to_resolve
+    // would be empty, remaining == all_battles, and step 4 would fail.
+    let to_resolve: Vec<u64> = all_battles
+        .iter()
+        .filter(|b| super::is_ongoing_wild_battle(b, p))
+        .map(|b| b.battle_id)
+        .collect();
+
+    // Structural assertion: exactly one row is resolved (P's Ongoing wild battle).
+    // Kills: an impl that resolves 0 rows (always-false) or resolves too many rows.
+    assert_eq!(
+        to_resolve.len(),
+        1,
+        "ptc5b-T2 FAIL: exactly one battle should be resolved for P (the Ongoing wild row, \
+         id=10); found {} ids: {:?}. \
+         TEETH: kills always-false impl (0 resolved) and over-broad impl (>1 resolved).",
+        to_resolve.len(),
+        to_resolve
+    );
+    assert_eq!(
+        to_resolve[0], 10,
+        "ptc5b-T2 FAIL: the resolved id must be 10 (P's Ongoing wild battle), not {}. \
+         TEETH: kills an impl that resolves the wrong row (e.g. Q's row or the terminal).",
+        to_resolve[0]
+    );
+
+    // Step 3: build `remaining` — the set as it would look after the GC delete.
+    let remaining: Vec<_> = all_battles
+        .iter()
+        .filter(|b| !to_resolve.contains(&b.battle_id))
+        .collect();
+
+    // Step 4: confirm P is no longer soft-locked after removal.
+    // MUTATION TOOTH (the key bite): if is_ongoing_wild_battle was always-false,
+    // to_resolve would be empty, remaining would contain row_p_wild, and the
+    // is_in_ongoing_battle_either_role call below would return true, failing this assertion.
+    let is_locked_after = crate::guards::is_in_ongoing_battle_either_role(
+        remaining.iter().filter(|b| b.player_identity == p).copied(),
+        std::iter::empty::<&crate::schema::Battle>(),
+    );
+    assert!(
+        !is_locked_after,
+        "ptc5b-T2 FAIL: P must NOT be soft-locked after the wild battle GC. \
+         If is_ongoing_wild_battle returned false (removed-branch mutant), to_resolve \
+         is empty, remaining still has P's wild row, and this assertion FAILS. \
+         TEETH: this is the primary mutation kill for the predicate."
+    );
+
+    // Bonus: Q's wild row is still in remaining (only P's rows were resolved).
+    let q_still_locked = crate::guards::is_in_ongoing_battle_either_role(
+        remaining.iter().filter(|b| b.player_identity == q).copied(),
+        std::iter::empty::<&crate::schema::Battle>(),
+    );
+    assert!(
+        q_still_locked,
+        "ptc5b-T2 FAIL: Q's Ongoing wild battle must remain after resolving P's battle — \
+         the resolution must be caller-scoped to P, not a global GC of all wild battles."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T3 — body source-scan on resolve_wild_battle_on_disconnect
+//       (EARS ptc5b-1 + ptc5b-3(a): structure of the GC fn)
+//
+// Scans the body of `resolve_wild_battle_on_disconnect` from MODULE_SOURCE
+// (= battle.rs, NOT this test file) to verify four structural invariants:
+//
+//   (i)   References WILD_IDENTITY (directly or via is_ongoing_wild_battle).
+//   (ii)  Calls write_back_battle_results (log-and-continue on Err).
+//   (iii) Contains a battle_wild() ... .delete( sequence.
+//   (iv)  Contains a battle() ... .delete( sequence (NOT only battle_wild).
+//
+// All needles are assembled from concat!-split parts to avoid self-match
+// (the test file battle_tests.rs is included in MODULE_SOURCE via include_str!
+// targeting battle.rs, so this test file IS NOT in MODULE_SOURCE — but we
+// follow the concat!-parts convention for consistency and to keep the pattern
+// robust against future include changes).
+//
+// RED state: resolve_wild_battle_on_disconnect does not yet exist in battle.rs
+// → extract_fn_body returns None → expect() panics with the TEETH message.
+// ---------------------------------------------------------------------------
+
+// EARS ptc5b-1 + ptc5b-3(a)
+// PROOF-OF-TEETH:
+//   (i)   Kills: impl that uses a hardcoded all-zeros literal without WILD_IDENTITY.
+//   (ii)  Kills: impl that deletes without calling write_back (skips XP/HP write-back).
+//   (iii) Kills: impl that omits the battle_wild side-table delete (orphaned rows).
+//   (iv)  Kills: impl that omits the main battle table delete (zombie battle row).
+#[test]
+fn ptc5b_3_body_scan_resolve_wild_battle_on_disconnect() {
+    let stripped = strip_rust_strings(&strip_rust_comments(MODULE_SOURCE));
+
+    // Assemble fn name from parts per convention (avoid verbatim self-match).
+    let fn_name = ["resolve_wild_battle", "_on_disconnect"].concat();
+
+    let body = extract_fn_body(&stripped, &fn_name).unwrap_or_else(|| {
+        panic!(
+            "TEETH(ptc5b-1): `{}` function not found in battle.rs. \
+             This function must exist (ADR pending ptc5b). \
+             RED: function not yet implemented.",
+            fn_name
+        )
+    });
+
+    // (i) WILD_IDENTITY must appear in the body — the predicate gates the GC
+    //     to the caller's Ongoing WILD battles only.
+    //     Assembled in two parts so the literal `WILD_IDENTITY` does not appear
+    //     as a single token from this test's own source inside the scanned body.
+    let wild_id_needle = ["WILD", "_IDENTITY"].concat();
+    assert!(
+        body.contains(wild_id_needle.as_str()),
+        "TEETH(ptc5b-1/i): `resolve_wild_battle_on_disconnect` body must reference \
+         `WILD_IDENTITY` (directly or via `is_ongoing_wild_battle`). Without it the \
+         predicate cannot scope to wild battles — any Ongoing battle would be GC'd."
+    );
+
+    // (ii) write_back_battle_results must be called — ensures HP/XP are flushed
+    //      before the rows are deleted, and uses the log-and-continue pattern on Err.
+    let wb_needle = ["write_back_battle", "_results"].concat();
+    assert!(
+        body.contains(wb_needle.as_str()),
+        "TEETH(ptc5b-3/ii): `resolve_wild_battle_on_disconnect` body must call \
+         `write_back_battle_results` before deleting the battle rows. \
+         Skipping it loses the player's earned XP/HP for the disconnected battle."
+    );
+
+    // (iii) battle_wild side-table must be deleted.
+    //       The production call: ctx.db.battle_wild().battle_id().delete(id)
+    //       Needle assembled in two parts.
+    let bw_access = ["battle_wild", "()"].concat();
+    let bw_delete = [".battle_id()", ".delete("].concat();
+    let bw_needle = [bw_access.as_str(), bw_delete.as_str()].concat();
+    assert!(
+        body.contains(bw_needle.as_str()),
+        "TEETH(ptc5b-3/iii): `resolve_wild_battle_on_disconnect` body must contain \
+         `battle_wild().battle_id().delete(` to remove the side-table row. \
+         Without it, the wild-encounter side table is orphaned after the main battle delete."
+    );
+
+    // (iv) main battle table must also be deleted (NOT only battle_wild).
+    //      The production call: ctx.db.battle().battle_id().delete(id)
+    //      We must distinguish `battle()` from `battle_wild()`:
+    //      needle is `battle()` immediately followed by `.battle_id().delete(`.
+    //      Since stripped text has string literals blanked, `battle_wild` is blanked
+    //      if it appeared in a string, so we look for the exact accessor sequence.
+    let b_access = ["ctx.db.battle()", ".battle_id()"].concat();
+    let b_delete = [".delete("].concat();
+    let b_needle = [b_access.as_str(), b_delete.as_str()].concat();
+    assert!(
+        body.contains(b_needle.as_str()),
+        "TEETH(ptc5b-3/iv): `resolve_wild_battle_on_disconnect` body must contain \
+         `ctx.db.battle().battle_id().delete(` to remove the main battle row. \
+         Without it the battle row persists as a zombie, keeping the player soft-locked."
+    );
+}
