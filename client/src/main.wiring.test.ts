@@ -1438,8 +1438,10 @@ describe('★ main.ts wiring (pt-c2b help): 12 sibling open-guards carry !helpVi
   // ROBUST APPROACH: for each sibling key, slice its handler block (from `e.code === 'KeyX'`
   // up to the NEXT sibling handler or a generous window) and assert helpView?.visible is present.
   // We assert ONLY the presence of helpView?.visible in each block — NOT a full sibling set —
-  // because KeyB/I/E carry a PRE-EXISTING dialogue/questLog/heal omission owned by ptc5c
-  // (plan reviewer HIGH-2); pt-c2b only adds helpView?.visible, it does NOT fix that omission.
+  // because KeyB/I/E carried a PRE-EXISTING dialogue/questLog/heal omission owned by ptc5c
+  // (plan reviewer HIGH-2); pt-c2b only adds helpView?.visible. ptc5c has now SHIPPED
+  // W-OVERLAY-FANOUT-MUTEX (below) which enforces the FULL 14-overlay sibling set for ALL
+  // handlers, including the KeyB/I/E dialogue/questLog/heal omission this comment once noted.
   const SIBLING_KEYS = [
     'KeyB',
     'KeyI',
@@ -1477,7 +1479,7 @@ describe('★ main.ts wiring (pt-c2b help): 12 sibling open-guards carry !helpVi
       const block = src.slice(keyIdx, blockEnd);
       expect(
         block.includes('!helpView?.visible'),
-        `the ${key} open-guard must contain !helpView?.visible (PTC2B-5 mutual-exclusion; ptc5c owns the KeyB/I/E dialogue/questLog/heal omission — help only adds its own guard)`,
+        `the ${key} open-guard must contain !helpView?.visible (PTC2B-5 mutual-exclusion; ptc5c SHIPPED W-OVERLAY-FANOUT-MUTEX enforcing the full 14-overlay set including the former KeyB/I/E dialogue/questLog/heal omission)`,
       ).toBe(true);
     }
   });
@@ -1539,5 +1541,230 @@ describe('main.ts wiring (pt-c2b help): onReconnect does NOT hide helpView (PTC2
         '(no #pending lock, static const content; ADR-0135 the-one-deviation, PTC2B-9). ' +
         'A future consistency edit adding helpView?.hide() here would break the documented asymmetry.',
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ptc5c (ADR-0136 follow-up HIGH-2): W-OVERLAY-FANOUT-MUTEX
+//
+// INVARIANT: Every overlay-open handler in the keyboard dispatch must account
+// for EVERY sibling overlay via a guard or a legitimate hide-switch, so that no
+// two of the 14 mutual-exclusion overlays can be simultaneously visible.
+//
+// THE 14 MUTUAL-EXCLUSION OVERLAYS (SSOT — not including errorOverlayView):
+//   battleView, boxView, raisingView, evolutionView, dialogueView, questLogView,
+//   healView, shopView, tradeView, pvpView, leaderboardView, renameView,
+//   tradeProposeView, helpView
+//
+// THE 13 OPEN-HANDLERS: one per hotkey + the talk handler (KeyT, which opens NO
+// overlay but must still guard against ALL 14 so it never fires into an open UI).
+//
+// ACCEPTANCE FORM (by overlay class):
+//   battleView         → bare token `battleView?.visible`
+//                        (covers both `!battleView?.visible` and the
+//                         `shouldToggleBox(battleView?.visible ?? false)` call-form
+//                         used by KeyB/I/E — those compile to the same guard intent)
+//   boxView/raisingView/evolutionView  → guard OR hide
+//                        (`!Y?.visible` OR `Y?.hide()` OR `Y.hide()`)
+//                        (KeyB/I/E legitimately hide-and-switch within the trio)
+//   all other 10 modals (dialogue/questLog/heal/shop/trade/pvp/leaderboard/
+//                        rename/tradePropose/help) → guard-form ONLY
+//                        `!Y?.visible`
+//                        Do NOT accept `.hide()` for modals: dismissing a modal
+//                        dialog silently on a random keypress is the WRONG UX.
+//                        (A future `dialogueView?.hide()` on KeyB MUST NOT satisfy
+//                        the invariant — that would hide an active NPC conversation.)
+//
+// BLOCK-SLICING (order-independent so handler order in main.ts can change):
+//   For each handler H:
+//     hIdx    = src.indexOf(H.anchor)                               // assert >= 0
+//     blockEnd = min over every OTHER handler's anchor AND the
+//                sentinel `"e.code === 'Escape'"` of
+//                src.indexOf(otherAnchor, hIdx + H.anchor.length)   // skip back-refs
+//                when >= 0; else src.length
+//     block   = src.slice(hIdx, blockEnd)                           // assert > 0 chars
+//
+// SENTINEL: `"e.code === 'Escape'"` closes the `e.key === '?'` handler's block
+// (the `?` anchor is the last handler before the Escape branches). Including it
+// prevents the `?` block from swallowing the entire rest of main.ts.
+//
+// RED REASON (current main.ts, no ptc5c fix applied):
+//   KeyB, KeyI, KeyE use `shouldToggleBox(battleView?.visible ?? false)` as the
+//   battle guard and then list only shop/trade/pvp/leaderboard/rename/tradePropose/
+//   help siblings — they omit `!dialogueView?.visible`, `!questLogView?.visible`,
+//   and `!healView?.visible`. Those three are MODAL overlays → guard-form required →
+//   9 assertion failures (3 handlers × 3 missing modals).
+//
+// WRONG IMPL KILLED:
+//   - A partial-guard impl that adds only some modal guards to KeyB/I/E (e.g. adds
+//     `!dialogueView?.visible` but forgets `!healView?.visible`) → fails the missing
+//     pair assertions.
+//   - An impl that uses `dialogueView?.hide()` instead of `!dialogueView?.visible`
+//     on KeyB/I/E → fails the modal guard-form check (hide-form not accepted for
+//     modals, by design — hiding a live dialogue is wrong UX).
+//   - An impl that accidentally drops a guard from a PREVIOUSLY correct handler
+//     (e.g. removes `!tradeView?.visible` from KeyQ) → caught per-handler, not just
+//     for KeyB/I/E.
+// ---------------------------------------------------------------------------
+
+describe('★ main.ts wiring (ptc5c): every overlay-open handler accounts for all sibling overlays (W-OVERLAY-FANOUT-MUTEX)', () => {
+  // The 14 mutual-exclusion overlays (pin as const — no errorOverlayView).
+  const ALL_OVERLAYS = [
+    'battleView',
+    'boxView',
+    'raisingView',
+    'evolutionView',
+    'dialogueView',
+    'questLogView',
+    'healView',
+    'shopView',
+    'tradeView',
+    'pvpView',
+    'leaderboardView',
+    'renameView',
+    'tradeProposeView',
+    'helpView',
+  ] as const;
+
+  // The three "hide-switch" siblings: KeyB/I/E legitimately hide-and-switch within
+  // this trio, so we accept EITHER the guard form OR a .hide() call.
+  const HIDE_SWITCH_OVERLAYS: ReadonlyArray<string> = ['boxView', 'raisingView', 'evolutionView'];
+
+  // The 13 open-handlers (anchor uniquely identifies the handler start in the source;
+  // self = the overlay this handler toggles, or null for KeyT which opens nothing).
+  const OPEN_HANDLERS: ReadonlyArray<{ anchor: string; self: string | null }> = [
+    { anchor: "e.code === 'KeyB'", self: 'boxView' },
+    { anchor: "e.code === 'KeyI'", self: 'raisingView' },
+    { anchor: "e.code === 'KeyE'", self: 'evolutionView' },
+    { anchor: "e.code === 'KeyQ'", self: 'questLogView' },
+    { anchor: "e.code === 'KeyH'", self: 'healView' },
+    { anchor: "e.code === 'KeyG'", self: 'shopView' },
+    { anchor: "e.code === 'KeyU'", self: 'tradeView' },
+    { anchor: "e.code === 'KeyP'", self: 'pvpView' },
+    { anchor: "e.code === 'KeyL'", self: 'leaderboardView' },
+    { anchor: "e.code === 'KeyN'", self: 'renameView' },
+    { anchor: "e.code === 'KeyO'", self: 'tradeProposeView' },
+    { anchor: "e.key === '?'", self: 'helpView' }, // note: e.key not e.code
+    { anchor: "e.code === 'KeyT'", self: null }, // talk: toggles NO overlay → must guard ALL 14
+  ] as const;
+
+  // The sentinel that closes the `?` handler's block (the last open-handler before
+  // the Escape branches). Including it in the blockEnd calculation prevents the `?`
+  // block from greedily consuming the rest of main.ts.
+  const ESCAPE_SENTINEL = "e.code === 'Escape'";
+
+  it('W-OVERLAY-FANOUT-MUTEX BITES: each open-handler references every sibling overlay via guard (or legit hide-switch) — kills partial-guard impl', () => {
+    // WRONG IMPL KILLED (primary target — the 9 RED failures on unmodified main.ts):
+    //   KeyB, KeyI, KeyE each omit !dialogueView?.visible, !questLogView?.visible,
+    //   and !healView?.visible. Those are modal overlays so guard-form is required.
+    //   A player pressing KeyB while the dialogue UI is open would open the box overlay
+    //   over the active NPC conversation — a mutual-exclusion breach.
+    //
+    // WRONG IMPL KILLED (regression — any future handler that loses a sibling guard):
+    //   e.g. KeyG loses !tradeView?.visible after a merge conflict → caught here.
+    //
+    // NOTE: battleView uses the bare-token check (`battleView?.visible` without `!`)
+    //   because KeyB/I/E use `shouldToggleBox(battleView?.visible ?? false)` which
+    //   contains the token but not in `!battleView?.visible` form. The bare token
+    //   correctly covers both the `!X?.visible` guard form (KeyQ/H/G/U/P/L/N/O/T/KeyT/?
+    //   all use `!battleView?.visible`) and the shouldToggleBox() call form. A wrong
+    //   impl that REMOVES battleView consideration entirely would have no `battleView?.visible`
+    //   token in the block at all — this assertion catches it.
+
+    const src = readMainTs();
+
+    // Collect all anchors (handler anchors + Escape sentinel) for block-slicing.
+    const allAnchors: ReadonlyArray<string> = [
+      ...OPEN_HANDLERS.map((h) => h.anchor),
+      ESCAPE_SENTINEL,
+    ];
+
+    for (const handler of OPEN_HANDLERS) {
+      // 1. Locate the handler anchor — fail fast if it's missing (missing anchor means
+      //    the handler was deleted or renamed; that's a separate regression but we catch
+      //    it here with a useful message).
+      const hIdx = src.indexOf(handler.anchor);
+      expect(
+        hIdx,
+        `main.ts must contain the open-handler anchor \`${handler.anchor}\` — handler missing or renamed`,
+      ).toBeGreaterThanOrEqual(0);
+
+      if (hIdx < 0) continue; // skip further assertions if anchor missing (already failed)
+
+      // 2. Slice the handler block: from hIdx to the minimum indexOf of every OTHER
+      //    anchor (searched after hIdx + anchor.length to avoid self-match or back-refs).
+      let blockEnd = src.length;
+      for (const otherAnchor of allAnchors) {
+        if (otherAnchor === handler.anchor) continue; // skip self
+        const otherIdx = src.indexOf(otherAnchor, hIdx + handler.anchor.length);
+        if (otherIdx >= 0 && otherIdx < blockEnd) {
+          blockEnd = otherIdx;
+        }
+      }
+      const block = src.slice(hIdx, blockEnd);
+
+      // Anti-vacuity: the block must be non-empty (catches a degenerate slice).
+      expect(
+        block.length,
+        `handler block for \`${handler.anchor}\` must be non-empty (anti-vacuity)`,
+      ).toBeGreaterThan(0);
+
+      // 3. For every overlay that is NOT this handler's own toggled overlay, assert
+      //    that the block accounts for it via the correct form.
+      for (const overlay of ALL_OVERLAYS) {
+        if (overlay === handler.self) continue; // self — no guard needed
+
+        if (overlay === 'battleView') {
+          // battleView: bare token — covers both `!battleView?.visible` guard form
+          // AND `shouldToggleBox(battleView?.visible ?? false)` call form (KeyB/I/E).
+          // WRONG IMPL KILLED: a handler that drops battleView consideration entirely
+          // → `battleView?.visible` token absent from block → assertion fails.
+          expect(
+            block.includes('battleView?.visible'),
+            `\`${handler.anchor}\` handler must reference battleView?.visible ` +
+              `(bare token — covers both guard form and shouldToggleBox call form); ` +
+              `WRONG IMPL KILLED: handler opens over an active battle`,
+          ).toBe(true);
+        } else if (HIDE_SWITCH_OVERLAYS.includes(overlay)) {
+          // boxView / raisingView / evolutionView: accept guard OR hide-call.
+          // KeyB/I/E legitimately hide their siblings when switching between the trio
+          // (e.g. KeyB calls raisingView?.hide() and evolutionView?.hide() then toggles
+          // boxView) — the hide IS the account, so we accept it.
+          // WRONG IMPL KILLED: a handler that neither guards nor hides one of the trio
+          // → misses mutual exclusion within the box/raising/evolution group.
+          const guarded =
+            block.includes('!' + overlay + '?.visible') ||
+            block.includes(overlay + '?.hide()') ||
+            block.includes(overlay + '.hide()');
+          expect(
+            guarded,
+            `\`${handler.anchor}\` handler must account for ${overlay} via ` +
+              `guard (!${overlay}?.visible) OR hide (${overlay}?.hide() / ${overlay}.hide()) — ` +
+              `WRONG IMPL KILLED: two of {box,raising,evolution} open simultaneously`,
+          ).toBe(true);
+        } else {
+          // All other MODAL overlays (dialogue, questLog, heal, shop, trade, pvp,
+          // leaderboard, rename, tradePropose, help): guard-form ONLY.
+          //
+          // WHY NOT accept .hide() for modals:
+          //   A future `dialogueView?.hide()` on KeyB would silently dismiss an active
+          //   NPC conversation — that is the WRONG behaviour. The invariant requires a
+          //   GUARD (don't open while dialogue is up), not a DISMISS (close dialogue
+          //   because the player pressed a box key). Accepting hide would make the test
+          //   green for the wrong impl.
+          //
+          // WRONG IMPL KILLED (primary, 9 failures on unmodified main.ts):
+          //   KeyB/I/E lack `!dialogueView?.visible`, `!questLogView?.visible`,
+          //   `!healView?.visible` → these three overlay × three handler = 9 failures.
+          expect(
+            block.includes('!' + overlay + '?.visible'),
+            `\`${handler.anchor}\` handler must guard !${overlay}?.visible ` +
+              `(modal overlay — guard-form ONLY; .hide() is NOT accepted because ` +
+              `dismissing a modal on a hotkey press is wrong UX); ` +
+              `WRONG IMPL KILLED: handler opens over a visible ${overlay}`,
+          ).toBe(true);
+        }
+      }
+    }
   });
 });
