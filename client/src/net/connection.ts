@@ -518,7 +518,9 @@ export function connect(opts: ConnectionOptions): Connection {
           .subscribe([
             // M11c (ADR-0067 Option C): global character subscription — no WHERE zone_id filter.
             // Warp detection uses character.onUpdate (inline scalar comparison, M12.5d-5);
-            // stale-zone characters are cleared by store.resetCharacters() on zone transition.
+            // off-zone characters are excluded at RENDER time by the currentZoneId filter
+            // (main.ts) — the real mechanism. (store.resetCharacters() exists but is NOT
+            // wired into switchZone; correcting a stale comment, ptc5e-4.)
             'SELECT * FROM character',
             'SELECT * FROM player',
             'SELECT * FROM monster_pub',

@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 105 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 106 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -114,6 +114,7 @@ Generated from 105 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0137](./0137-ptc5d-knowledge-bundle-fixture-exclusion-and-gate-teeth.md) | 0137 — ptc5d: knowledge-bundle `*_tests.rs` exclusion + restored gate teeth (mutate-server ceiling tightened; RT-M14.5A-02 vacuous-pass closed) | Accepted | tooling-docs, ci-gates | ptc5d (M-playtest-c.5 pre-gate residuals — tooling/eval hardening, EARS ptc5d-1..5) | Exclude `*_tests.rs` from the OKF bundle generator, assert no page is test-sourced, make RT-M14.5A-02's precondition an `assert!`, and tighten the mutate-server wiring ceiling 340→299 — each with a biting proof-of-teeth. |
 | [0138](./0138-ptc5b-wild-disconnect-gc.md) | 0138 — ptc5b wild-battle disconnect resolution: auto-flee + GC the `battle`/`battle_wild` rows to unblock returning-player re-entry | Accepted | battle, schema-persistence, security-authz | ptc5b (M-playtest-c.5 pre-gate residuals — wild-battle disconnect GC, EARS ptc5b-1..3) | On disconnect, auto-flee the caller's Ongoing WILD battle via the flee write-back SSOT, then delete its `battle` + `battle_wild` rows to unblock returning-player re-entry; no reaper, no new tables. |
 | [0139](./0139-ptc5c-overlay-mutual-exclusion-symmetry.md) | Overlay mutual-exclusion symmetry: fix KeyB/I/E open-guards + a guard-OR-hide fan-out gate (registry parked) | Accepted | client-ui | ptc5c | Close the overlay mutual-exclusion asymmetry in `client/src/main.ts`: the three oldest |
+| [0140](./0140-ptc5e-ssot-content-dedup-polish.md) | 0140 — ptc5e SSOT / content / dedup polish: CARE magnitudes + shared cooldown-ready predicate to game-core; heal-location stale-delete; isPvpBattle canonicalization; resetCharacters comment fix | Accepted | content, client-ui | ptc5e (M-playtest-c.5 pre-gate residuals — SSOT/content/dedup polish, EARS ptc5e-1..5) | Relocate CARE magnitudes to game-core; share one pure `is_cooldown_ready` predicate across care and heal; reap content-removed heal rows; dedup `isPvpBattle`; fix a stale comment — behavior-preserving SSOT polish, no schema change. |
 
 ## Harness design corpus (H- namespace)
 
@@ -236,6 +237,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0089](./0089-content-parse-caching.md) — m13.5d — 0089 — Content parse caching on hot paths (shell-side, determinism-safe) (Accepted)
 - [0094](./0094-m14c-passive-ability-system.md) — m14c — M14c: Passive per-species ability system (Accepted)
 - [0105](./0105-m14.5d-1a-item-row-cure-status.md) — m14.5d-1a (server half of re-serialized 14.5d-1 pair) — M14.5d-1a: additive `cure_status` column on `item_row` (Accepted)
+- [0140](./0140-ptc5e-ssot-content-dedup-polish.md) — ptc5e (M-playtest-c.5 pre-gate residuals — SSOT/content/dedup polish, EARS ptc5e-1..5) — 0140 — ptc5e SSOT / content / dedup polish: CARE magnitudes + shared cooldown-ready predicate to game-core; heal-location stale-delete; isPvpBattle canonicalization; resetCharacters comment fix (Accepted)
 
 ### schema-persistence
 
@@ -288,6 +290,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0134](./0134-trade-propose-ui.md) — pt-c2 — Client trade-PROPOSE UI (KeyO offer overlay) (Accepted)
 - [0135](./0135-pt-c2b-help-overlay.md) — pt-c2b — In-client help overlay (`?`) + tester runbook (pt-c2b) (Accepted)
 - [0139](./0139-ptc5c-overlay-mutual-exclusion-symmetry.md) — ptc5c — Overlay mutual-exclusion symmetry: fix KeyB/I/E open-guards + a guard-OR-hide fan-out gate (registry parked) (Accepted)
+- [0140](./0140-ptc5e-ssot-content-dedup-polish.md) — ptc5e (M-playtest-c.5 pre-gate residuals — SSOT/content/dedup polish, EARS ptc5e-1..5) — 0140 — ptc5e SSOT / content / dedup polish: CARE magnitudes + shared cooldown-ready predicate to game-core; heal-location stale-delete; isPvpBattle canonicalization; resetCharacters comment fix (Accepted)
 
 ### ci-gates
 

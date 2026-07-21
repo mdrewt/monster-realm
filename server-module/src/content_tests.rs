@@ -1721,6 +1721,143 @@ fn plan_npc_sync_detects_only_dialogue_tree_id_change() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// ptc5e e-2 — stale_heal_location_ids pure-seam unit tests + source-scan
+//
+// RED state:
+//   - `super::stale_heal_location_ids` does not yet exist in content.rs
+//     → compile-RED (E0425) on the three unit tests below.
+//   - `seed_heal_locations_from` does not yet call `stale_heal_location_ids`
+//     or `.delete(` → source-scan assertion-RED on the wiring guard.
+//
+// EARS criteria covered (ptc5e §e-2):
+//   removed id detected — existing=[1,2,3], loaded=[1,3] → stale=[2].
+//   identical sets shuffled → empty (kills positional/zip diff).
+//   output sorted ascending — kills HashSet-iteration nondeterminism.
+//   source-scan wiring — seed_heal_locations_from calls the seam AND deletes.
+// ---------------------------------------------------------------------------
+
+/// Heal location fixture — all mandatory fields filled; matches HealLocationDef
+/// field layout (cost_currency has #[serde(default)] but we fill it explicitly).
+fn ptc5e_heal_def(id: u32) -> game_core::HealLocationDef {
+    game_core::HealLocationDef {
+        location_id: id,
+        zone_id: 0,
+        tile_x: 5,
+        tile_y: 5,
+        cost_item_id: None,
+        cost_qty: 0,
+        cooldown_ms: 30_000,
+        cost_currency: 0,
+    }
+}
+
+/// ptc5e e-2-1: removed id is detected.
+/// existing=[1,2,3], loaded=[def(1),def(3)] → stale=[2].
+///
+/// KILLS: an upsert-only impl (no set-difference seam) — it would never return
+/// id 2, so a dead heal_location row survives forever and the location remains
+/// usable after it was removed from the RON registry.
+#[test]
+fn ptc5e_stale_heal_location_ids_detects_removed_id() {
+    let existing: Vec<u32> = vec![1, 2, 3];
+    let loaded = vec![ptc5e_heal_def(1), ptc5e_heal_def(3)];
+
+    let stale = super::stale_heal_location_ids(&existing, &loaded);
+
+    assert_eq!(
+        stale,
+        vec![2u32],
+        "TEETH(ptc5e e-2): heal_location 2 is in the DB but absent from loaded RON — \
+         stale_heal_location_ids must return exactly [2]; an upsert-only sync \
+         never reports it and the dead row stays joinable"
+    );
+}
+
+/// ptc5e e-2-2: identical sets (shuffled) → empty.
+///
+/// KILLS: a positional/zip diff — `loaded` is deliberately shuffled relative to
+/// `existing`, so a positional comparison would report phantom staleness and
+/// issue spurious deletes against LIVE heal locations.
+#[test]
+fn ptc5e_stale_heal_location_ids_identical_sets_yield_empty() {
+    let existing: Vec<u32> = vec![1, 2, 3];
+    let loaded = vec![ptc5e_heal_def(3), ptc5e_heal_def(1), ptc5e_heal_def(2)]; // shuffled
+
+    let stale = super::stale_heal_location_ids(&existing, &loaded);
+
+    assert!(
+        stale.is_empty(),
+        "TEETH(ptc5e e-2): identical id sets must yield an empty stale list \
+         (order-independent set-difference); got {stale:?} — a positional diff \
+         would delete a live heal location"
+    );
+}
+
+/// ptc5e e-2-3: output sorted ascending.
+/// existing=[9,2,7,5], loaded=[def(7)] → stale=[2,5,9].
+///
+/// KILLS: a HashSet-backed set-difference with nondeterministic iteration order —
+/// the delete sequence into the DB and any downstream logging must be deterministic.
+/// Also kills an impl that preserves `existing` insertion order (9,2,5) without sorting.
+#[test]
+fn ptc5e_stale_heal_location_ids_output_sorted_ascending() {
+    let existing: Vec<u32> = vec![9, 2, 7, 5];
+    let loaded = vec![ptc5e_heal_def(7)]; // only location 7 survives
+
+    let stale = super::stale_heal_location_ids(&existing, &loaded);
+
+    assert_eq!(
+        stale,
+        vec![2u32, 5, 9],
+        "TEETH(ptc5e e-2 determinism): stale ids must be sorted ascending [2,5,9]; \
+         HashSet-iteration order or insertion-order preservation would give a \
+         nondeterministic delete sequence"
+    );
+}
+
+/// ptc5e e-2 source-scan: seed_heal_locations_from must call stale_heal_location_ids
+/// AND issue a .delete( within its own fn body.
+///
+/// Windowed to the specific fn body (fn-find + brace-walk) so the seam's own
+/// definition elsewhere in content.rs cannot false-green.
+///
+/// KILLS (needle 1 — stale_heal_location_ids(): an ad-hoc inline diff in the
+/// shell that bypasses the unit-tested pure seam — the three unit tests above
+/// would then exercise dead code.
+/// KILLS (needle 2 — heal_location_row()): the accessor for the heal_location_row
+/// table must appear in the fn body; absent means no stale row can be deleted.
+/// KILLS (needle 3 — .delete(): computing stale ids without a delete call leaves
+/// removed heal locations live in the DB; they remain usable after RON removal.
+///
+/// RED today: seed_heal_locations_from is upsert-only; none of the three
+/// needles are present in its body.
+#[test]
+fn ptc5e_seed_heal_locations_from_uses_seam_and_deletes() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
+    let body = m13_5c_fn_body(&stripped, "fn seed_heal_locations_from(");
+    let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+
+    assert!(
+        compact.contains("stale_heal_location_ids("),
+        "TEETH(ptc5e e-2 needle 1): seed_heal_locations_from must call \
+         stale_heal_location_ids( — ad-hoc inline diff bypasses the \
+         unit-tested seam (behavioral tests would be testing dead code)"
+    );
+    assert!(
+        compact.contains("heal_location_row()"),
+        "TEETH(ptc5e e-2 needle 2): seed_heal_locations_from must access \
+         the heal_location_row() table to delete stale rows; the accessor \
+         is absent from the fn body"
+    );
+    assert!(
+        compact.contains(".delete("),
+        "TEETH(ptc5e e-2 needle 3): seed_heal_locations_from must issue a \
+         .delete( call within its body — computing stale ids but never \
+         deleting leaves removed heal locations live and usable forever"
+    );
+}
+
 /// plan_npc_sync detects a SINGLE sprite_id change (no npc field change) and emits an Update.
 ///
 /// Mutant at content.rs:496 changes `|| ch.sprite_id!=` to `&& ch.sprite_id!=` in:

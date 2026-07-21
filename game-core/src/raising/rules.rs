@@ -93,6 +93,34 @@ pub fn apply_care(bond: Bond, amount: u8) -> Result<Bond, CareError> {
     Ok(Bond::new(bond.value().saturating_add(amount)))
 }
 
+/// Fixed bond raise granted by one successful `care` (ptc5e-1 SSOT: moved here
+/// from the M9b shell so the magnitude lives in game-core beside its consuming
+/// rule `apply_care`, a sibling of `CHALLENGE_TTL_MS` / `RECRUIT_BASE_RATE` /
+/// the EV caps). Documented as a playtest-tunable policy magnitude (M9 spec §6),
+/// not a contract — retuning it is a one-line game-core edit + a value test.
+pub const CARE_BOND_AMOUNT: u8 = 5;
+
+/// Per-monster care cooldown in ms (6 h). Playtest-tunable (M9 spec §6). Moved to
+/// game-core in ptc5e-1 (a single global duration is a sibling of `CHALLENGE_TTL_MS`,
+/// not per-entity data like `heal_location_row.cooldown_ms`).
+pub const CARE_COOLDOWN_MS: i64 = 6 * 60 * 60 * 1000;
+
+/// True iff a cooldown has fully elapsed: `now_ms - last_ms >= cooldown_ms`
+/// (ptc5e-1, mirroring `is_challenge_stale`). ONE cooldown-ready predicate shared
+/// by the `care` and `heal` shells (both previously open-coded the identical
+/// check) — the SSOT for "is this timed action off cooldown yet".
+///
+/// The elapsed is `now_ms.saturating_sub(last_ms)`, so a future/skewed clock
+/// (`last_ms > now_ms`) saturates to `0` and can only OVER-reject (return not-ready),
+/// never wrap negative into a bypass — the safe direction. Boundary is `>=`: at
+/// exactly `cooldown_ms` elapsed the action IS ready (the exact dual of the shells'
+/// prior strict-`<` reject, so behavior is preserved). `cooldown_ms` is a parameter
+/// (not a captured const) so per-location heal cooldowns reuse the same predicate.
+#[must_use]
+pub fn is_cooldown_ready(last_ms: i64, now_ms: i64, cooldown_ms: i64) -> bool {
+    now_ms.saturating_sub(last_ms) >= cooldown_ms
+}
+
 /// Rebuild an `EVs` with `target` set to `new_val` and every other stat copied
 /// unchanged from `evs`. Reading each `StatKind` through one closure makes a
 /// field-swap / double-write bug impossible (no sibling stat can be silently

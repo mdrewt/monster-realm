@@ -118,22 +118,11 @@ export function makeTradeConfirm(tradeId: string): PlaytestEventPayload {
   return { kind: 'tradeConfirm', tradeId };
 }
 
-/**
- * True iff a battle is player-vs-player. The opponent must have an owned party
- * (`opponentMonsterIds.length > 0`) AND a distinct identity. The party guard is
- * REQUIRED: a wild battle carries the all-zero WILD_IDENTITY (which is `!==` the
- * player identity) but has no owned opponent monsters — so identity-inequality
- * alone mislabels every wild encounter as PvP. Mirrors the client's canonical
- * detector in battleModel.ts (`!isWild && player !== opponent`). Structurally
- * typed so this module stays decoupled from net/store's StoreBattle.
- */
-export function isPvpBattle(battle: {
-  readonly opponentMonsterIds: readonly unknown[];
-  readonly opponentIdentity: string;
-  readonly playerIdentity: string;
-}): boolean {
-  return battle.opponentMonsterIds.length > 0 && battle.opponentIdentity !== battle.playerIdentity;
-}
+// The PvP-vs-wild classifier is defined ONCE, canonically, in battleModel.ts
+// (ptc5e-3 SSOT — it is a battle-model concept). Re-exported here so this module's
+// consumers (main.ts, the F9 bundle) keep a single import site. The canonical fn
+// is structurally typed, so this re-export adds no net/store type coupling.
+export { isPvpBattle } from './battleModel';
 
 /**
  * Bounded FIFO event buffer. Oldest-evicted at cap; `tSeq` monotonic from 1 and never reused

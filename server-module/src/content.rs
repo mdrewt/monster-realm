@@ -384,6 +384,26 @@ pub(crate) fn stale_zone_def_ids(existing: &[u32], loaded: &[game_core::ZoneDef]
     stale
 }
 
+/// Pure diff seam (ptc5e-2, sibling of `stale_zone_def_ids`): heal-location ids
+/// present in the DB (`existing`) but absent from the loaded RON registry
+/// (`loaded`), sorted ascending so the delete order is deterministic (HashSet
+/// iteration order must not leak into the write sequence). Lets
+/// `seed_heal_locations_from` reap a heal location that was removed from content,
+/// mirroring the zone/type/shop/fusion re-seeds (fixes the upsert-only asymmetry).
+pub(crate) fn stale_heal_location_ids(
+    existing: &[u32],
+    loaded: &[game_core::HealLocationDef],
+) -> Vec<u32> {
+    let live: std::collections::HashSet<u32> = loaded.iter().map(|d| d.location_id).collect();
+    let mut stale: Vec<u32> = existing
+        .iter()
+        .copied()
+        .filter(|id| !live.contains(id))
+        .collect();
+    stale.sort_unstable();
+    stale
+}
+
 /// One step of the NPC content-sync plan (13.5c-1). Actions carry COMPLETE
 /// replacement `Npc`/`Character` row values (review fold n1) so the shell is a
 /// pure apply fold — no patch interpretation.
@@ -651,6 +671,19 @@ fn sync_npc_entities_from(ctx: &ReducerContext, npc_defs: &[game_core::NpcDef]) 
 }
 
 fn seed_heal_locations_from(ctx: &ReducerContext, defs: &[game_core::HealLocationDef]) {
+    // Reap heal locations removed from the RON registry (ptc5e-2), mirroring the
+    // zone-def stale-delete. Two-pass: fully materialize the existing pks into a
+    // Vec FIRST, then delete — never delete inside a live table `iter()` (which
+    // would invalidate the iterator).
+    let existing_ids: Vec<u32> = ctx
+        .db
+        .heal_location_row()
+        .iter()
+        .map(|r| r.location_id)
+        .collect();
+    for stale_id in stale_heal_location_ids(&existing_ids, defs) {
+        ctx.db.heal_location_row().location_id().delete(stale_id);
+    }
     for def in defs {
         // Content integrity (F4): cost_item_id without cost_qty is a config error
         if def.cost_item_id.is_some() && def.cost_qty == 0 {
