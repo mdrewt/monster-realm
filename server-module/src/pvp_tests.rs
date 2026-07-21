@@ -234,6 +234,43 @@ fn ea_pvp_05_on_disconnect_calls_pvp_helpers() {
 }
 
 // ---------------------------------------------------------------------------
+// ptc5b-T4: on_disconnect calls battle::resolve_wild_battle_on_disconnect
+//
+// EARS ptc5b-1 (wiring): The `on_disconnect` lifecycle reducer in lib.rs must
+// call `battle::resolve_wild_battle_on_disconnect(ctx, me)` so that a player's
+// Ongoing WILD battle is GC'd on disconnect (soft-lock prevention).
+//
+// Co-located with ea_pvp_05 because both scan the same `on_disconnect` body in
+// lib.rs for disconnect-lifecycle helper wiring.
+//
+// RED state: `battle::resolve_wild_battle_on_disconnect` does not yet exist in
+// battle.rs, so lib.rs cannot contain the call — the needle is absent today.
+//
+// PROOF-OF-TEETH: kills any impl that adds resolve_wild_battle_on_disconnect to
+// battle.rs but forgets to wire it into on_disconnect, leaving the GC dead code.
+// Also kills an impl that calls it from the wrong module (e.g. pvp::resolve_wild…).
+// ---------------------------------------------------------------------------
+
+// EARS ptc5b-1
+// PROOF-OF-TEETH: kills an impl that adds the fn but omits the on_disconnect call.
+#[test]
+fn ptc5b_4_wiring_scan_on_disconnect_calls_resolve_wild_battle() {
+    let stripped = strip_rust_comments(LIB_RS);
+    // Assembled from parts — `resolve_wild_battle_on_disconnect` must not appear
+    // verbatim as a single token here, since LIB_RS is lib.rs (not this file),
+    // but we follow the concat! convention for consistency and documentation clarity.
+    let needle = concat!("battle::", "resolve_wild_battle_on_disconnect");
+    assert!(
+        stripped.contains(needle),
+        "ptc5b-T4 FAIL: `{}` not found in lib.rs. \
+         The `on_disconnect` reducer must call `battle::resolve_wild_battle_on_disconnect(ctx, me)` \
+         so a player's Ongoing WILD battle is cleaned up on disconnect (soft-lock prevention). \
+         Add it immediately after `pvp::forfeit_on_disconnect(ctx, me)` (ptc5b-1 wiring).",
+        needle
+    );
+}
+
+// ---------------------------------------------------------------------------
 // EA-PVP-06: PVP_TURN_DEADLINE_MS = 60_000
 //
 // Proof-of-teeth: kills an impl that changes the constant without updating the

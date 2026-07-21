@@ -190,6 +190,13 @@ pub fn on_disconnect(ctx: &ReducerContext) {
     // Forfeit any ongoing PvP battle (M16, ADR-0109 D8). Must run before player row
     // deletion so identity lookups in write_back still resolve.
     pvp::forfeit_on_disconnect(ctx, me);
+    // Resolve any ongoing WILD battle (ptc5b, ADR-0138): forfeit_on_disconnect
+    // deliberately excludes WILD and no reaper covers wild rows, so auto-flee + GC
+    // the battle/battle_wild rows here to unblock the returning player's re-entry.
+    // Must run before player-row deletion (write-back identity lookups resolve);
+    // order vs. the forfeit above and the challenge-cancel below is otherwise
+    // immaterial — the three touch disjoint row classes (wild vs PvP vs challenge).
+    battle::resolve_wild_battle_on_disconnect(ctx, me);
     // Cancel pending outgoing PvP challenges (M16, ADR-0109 D9).
     pvp::cancel_challenges_on_disconnect(ctx, me);
     // Clean up transient conversation row so a reconnecting player cannot
