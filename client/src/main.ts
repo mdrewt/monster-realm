@@ -498,8 +498,14 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyB') {
     // Guard: don't open the box over an active battle (ADR-0014/0052 exit ordering).
+    // ptc5c (ADR-0139): dialogue/questLog/heal are MODAL — guard against them (never hide;
+    // hiding a live dialogue/quest/heal on a box keypress is wrong UX). Matches every newer
+    // handler and closes the B/I/E overlay-stacking bug; gated by W-OVERLAY-FANOUT-MUTEX.
     if (
       shouldToggleBox(battleView?.visible ?? false) &&
+      !dialogueView?.visible &&
+      !questLogView?.visible &&
+      !healView?.visible &&
       !shopView?.visible &&
       !tradeView?.visible &&
       !pvpView?.visible &&
@@ -519,8 +525,12 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyI') {
     // Inventory/raising overlay — same battle guard as the box (reuse shouldToggleBox).
+    // ptc5c (ADR-0139): guard dialogue/questLog/heal (modal — guard, never hide).
     if (
       shouldToggleBox(battleView?.visible ?? false) &&
+      !dialogueView?.visible &&
+      !questLogView?.visible &&
+      !healView?.visible &&
       !shopView?.visible &&
       !tradeView?.visible &&
       !pvpView?.visible &&
@@ -540,8 +550,12 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyE') {
     // Evolution/fusion overlay — same battle guard as box/raising (ADR-0014).
+    // ptc5c (ADR-0139): guard dialogue/questLog/heal (modal — guard, never hide).
     if (
       shouldToggleBox(battleView?.visible ?? false) &&
+      !dialogueView?.visible &&
+      !questLogView?.visible &&
+      !healView?.visible &&
       !shopView?.visible &&
       !tradeView?.visible &&
       !pvpView?.visible &&
