@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** battle, schema-persistence, security-authz
-**Decision:** On disconnect, resolve the caller's Ongoing WILD battle via the SSOT flee write-back (auto-flee — persists damaged HP, clamped to `stat_hp`), then DELETE the `battle` row and its private `battle_wild` sidecar; unblocks returning-player re-entry. No reaper, no new tables/reducers.
+**Decision:** On disconnect, auto-flee the caller's Ongoing WILD battle via the flee write-back SSOT, then delete its `battle` + `battle_wild` rows to unblock returning-player re-entry; no reaper, no new tables.
 
 ## Context
 

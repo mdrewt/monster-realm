@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 103 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 104 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -112,6 +112,7 @@ Generated from 103 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0135](./0135-pt-c2b-help-overlay.md) | In-client help overlay (`?`) + tester runbook (pt-c2b) | Accepted | client-ui, movement-netcode | pt-c2b | Add a display-only in-client **help overlay** — a controls (key→action) + session-goals |
 | [0136](./0136-ptc5a-care-train-battle-guard.md) | 0136 — ptc5a care/train both-role ongoing-battle guard: close the bounded mid-battle HP-laundering path (amends ADR-0122 §D7) | Accepted | battle, security-authz | ptc5a (M-playtest-c.5 pre-gate residuals — raising battle-guard gap, EARS ptc5a-1..3) | Add the SSOT both-role `is_in_ongoing_battle(ctx, ctx.sender)` guard (as `heal_party` uses) to `care`/`train`, so a mid-battle live-EV bump can no longer inflate the level-up heal; no new predicate or schema change. |
 | [0137](./0137-ptc5d-knowledge-bundle-fixture-exclusion-and-gate-teeth.md) | 0137 — ptc5d: knowledge-bundle `*_tests.rs` exclusion + restored gate teeth (mutate-server ceiling tightened; RT-M14.5A-02 vacuous-pass closed) | Accepted | tooling-docs, ci-gates | ptc5d (M-playtest-c.5 pre-gate residuals — tooling/eval hardening, EARS ptc5d-1..5) | Exclude `*_tests.rs` from the OKF bundle generator, assert no page is test-sourced, make RT-M14.5A-02's precondition an `assert!`, and tighten the mutate-server wiring ceiling 340→299 — each with a biting proof-of-teeth. |
+| [0138](./0138-ptc5b-wild-disconnect-gc.md) | 0138 — ptc5b wild-battle disconnect resolution: auto-flee + GC the `battle`/`battle_wild` rows to unblock returning-player re-entry | Accepted | battle, schema-persistence, security-authz | ptc5b (M-playtest-c.5 pre-gate residuals — wild-battle disconnect GC, EARS ptc5b-1..3) | On disconnect, auto-flee the caller's Ongoing WILD battle via the flee write-back SSOT, then delete its `battle` + `battle_wild` rows to unblock returning-player re-entry; no reaper, no new tables. |
 
 ## Harness design corpus (H- namespace)
 
@@ -191,6 +192,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0125](./0125-profile-name-passive-mirror.md) — m17.5d — 0125 — Leaderboard profile.name passive mirror on rating application (Accepted)
 - [0126](./0126-battle-challenge-ttl-reaper.md) — m17.5e — 0126 — Battle-challenge TTL reaper (Pending challenge liveness) (Accepted)
 - [0136](./0136-ptc5a-care-train-battle-guard.md) — ptc5a (M-playtest-c.5 pre-gate residuals — raising battle-guard gap, EARS ptc5a-1..3) — 0136 — ptc5a care/train both-role ongoing-battle guard: close the bounded mid-battle HP-laundering path (amends ADR-0122 §D7) (Accepted)
+- [0138](./0138-ptc5b-wild-disconnect-gc.md) — ptc5b (M-playtest-c.5 pre-gate residuals — wild-battle disconnect GC, EARS ptc5b-1..3) — 0138 — ptc5b wild-battle disconnect resolution: auto-flee + GC the `battle`/`battle_wild` rows to unblock returning-player re-entry (Accepted)
 
 ### evolution-fusion
 
@@ -257,6 +259,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0119](./0119-ranked-ladder-spine.md) — m17a — Ranked ladder spine: persistent profile, integer Elo, once-only rating funnel, PvE-path PvP closure (Accepted)
 - [0126](./0126-battle-challenge-ttl-reaper.md) — m17.5e — 0126 — Battle-challenge TTL reaper (Pending challenge liveness) (Accepted)
 - [0131](./0131-server-playtest-capture.md) — pt-b2 — Server-side playtest capture: additive `playtest_event` table + interval-singleton reaper + H1 report (Accepted)
+- [0138](./0138-ptc5b-wild-disconnect-gc.md) — ptc5b (M-playtest-c.5 pre-gate residuals — wild-battle disconnect GC, EARS ptc5b-1..3) — 0138 — ptc5b wild-battle disconnect resolution: auto-flee + GC the `battle`/`battle_wild` rows to unblock returning-player re-entry (Accepted)
 
 ### client-ui
 
@@ -369,6 +372,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0131](./0131-server-playtest-capture.md) — pt-b2 — Server-side playtest capture: additive `playtest_event` table + interval-singleton reaper + H1 report (Accepted)
 - [0132](./0132-profile-rename-reducer.md) — pt-c1 — `set_profile_name` rename reducer + RL-7 module-write-only tooth refinement (Accepted)
 - [0136](./0136-ptc5a-care-train-battle-guard.md) — ptc5a (M-playtest-c.5 pre-gate residuals — raising battle-guard gap, EARS ptc5a-1..3) — 0136 — ptc5a care/train both-role ongoing-battle guard: close the bounded mid-battle HP-laundering path (amends ADR-0122 §D7) (Accepted)
+- [0138](./0138-ptc5b-wild-disconnect-gc.md) — ptc5b (M-playtest-c.5 pre-gate residuals — wild-battle disconnect GC, EARS ptc5b-1..3) — 0138 — ptc5b wild-battle disconnect resolution: auto-flee + GC the `battle`/`battle_wild` rows to unblock returning-player re-entry (Accepted)
 
 ### economy-quests
 
