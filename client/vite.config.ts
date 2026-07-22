@@ -67,9 +67,16 @@ export default defineConfig({
       // the Playwright `e2e/` specs, and the vendored `art-src/demo/pixi.min.mjs`).
       include: ['src/**/*.ts'],
       exclude: [
-        // Preserve vitest's defaults (test files, *.d.ts, common configs, node_modules)
-        // — a custom `exclude` REPLACES them otherwise.
+        // vitest's built-in default excludes. NOTE (ADR-0050 amendment 2026-07-22):
+        // vitest 4 empties coverageConfigDefaults.exclude to [] (it dropped the
+        // non-Vitest/Vite default patterns), so this spread no longer drops test
+        // files / *.d.ts / configs — it is kept only as a forward-compat spread.
         ...coverageConfigDefaults.exclude,
+        // Unit test files: they exercise the product code but are NOT product code,
+        // so they must stay OUT of the coverage denominator. Under vitest <=2 the
+        // defaults spread above dropped them; under v4 (empty defaults) we exclude
+        // them explicitly rather than lean on vitest's undocumented test-file handling.
+        'src/**/*.test.ts',
         // Generated SpacetimeDB SDK bindings: emitted by `spacetime generate`,
         // regenerated from the server schema and drift-gated by the bindings-drift
         // eval (`just eval`, ADR-0050). Not hand-written, not meaningfully unit-tested.

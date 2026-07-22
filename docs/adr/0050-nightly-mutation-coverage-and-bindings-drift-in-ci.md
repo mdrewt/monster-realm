@@ -259,3 +259,69 @@ not an adversary with admin):**
    a gutted file that keeps the tokens in comments would pass it. Low risk: gutting
    the file also has to survive the e2e-anchor run and PR review of an
    eval-infrastructure diff; recorded rather than parsed-AST-hardened.
+
+
+---
+
+## Amendment (2026-07-22 — vitest 4.x: derive the coverage provider from the installed vitest)
+
+- Date: 2026-07-22 · Trigger: `npm audit fix --force` (commit `6a81c6a`) intentionally
+  bumped `client/package.json` devDep `vitest` `^2.0.0` → `^4.1.10` (resolved 4.1.10).
+
+**Problem.** Decision #1 pinned the nightly coverage provider to a hardcoded
+`@vitest/coverage-v8@2.1.9` "to match the project's pinned vitest@2.x" — and this ADR
+itself warned that "the unpinned `*` resolves to v4 and fails the peer-dep check".
+vitest's `peerDependencies` require `@vitest/coverage-v8` at the **exact** vitest
+version, so once vitest became 4.1.10 the pinned 2.1.9 provider's `npm i` fails with
+`ERESOLVE` and `just coverage` dies at that step, before vitest runs. The provider
+version was a **duplicated source of truth** (the same fact — the installed vitest
+version — kept in two files) and drifted exactly as the Tier-1 "mechanical enforcement
+over discipline" principle predicts a remember-to-update pin will.
+
+**Decision.** The `coverage:` recipe no longer hardcodes the provider version; it
+**derives** it from the installed vitest at run time:
+`npm i --no-save -D @vitest/coverage-v8@$(node -p 'require("vitest/package.json").version')`.
+The vitest installed by `npm ci` (from the lockfile) is the single source of truth and
+the provider is always its exact match, so this drift class is now structurally
+impossible — no second literal, no new gate. The `--no-save` posture is unchanged
+(touches neither `package.json`, the lockfile, nor `vite.config.ts`). If vitest is
+absent, `node -p` exits non-zero and the `&&` chain fails loud (Tier-1 fail-early)
+rather than installing a version-less `@vitest/coverage-v8@`. The recipe stays one
+POSIX-shell line (command substitution); nightly runs on Linux.
+
+**Threshold re-measured under vitest 4.** vitest ≥3's v8 provider uses AST-aware
+remapping and measures lines slightly differently than the v2 figure in A1. Fresh
+measurement post-upgrade (vitest 4.1.10 / `@vitest/coverage-v8` 4.1.10, all 1327 unit
+tests green): **97.56% lines** (was 99.35% under v2). Still above the **96** ratchet,
+so the threshold is **unchanged**; headroom narrowed ~4.3pp → ~1.6pp, recorded so a
+future sub-96 dip reads as a real regression, not a surprise.
+
+**Guard / CI interaction.** `coverageRecipeThresholdIntact`
+(`evals/nightly-smoke-wiring.eval.mjs`) parses the recipe only for the
+`--coverage.thresholds.lines=` literal (≥96) — the provider token is not asserted, so
+deriving keeps that gate green; `nightly.yml` invokes `just coverage` unchanged, so no
+workflow/renovate edit is needed.
+
+**Related build fix (same audit-fix commit).** `npm audit fix --force` also *downgraded*
+`vite-plugin-top-level-await` `^1.4.4` → `^1.2.2` to clear a moderate advisory in its
+transitive `uuid` (GHSA-w5hq-g745-h8pq). But 1.2.2's `package.json` `exports` map does
+not expose its type declarations, so `tsc --noEmit` (`just client-typecheck`, a `just
+ci` gate) fails TS7016 on `vite.config.ts`. Restored the declared range to `^1.4.4`
+(typecheck green). The uuid advisory is dev-only / build-time (the plugin is not in the
+shipped bundle) and is **not** CI-gated (the SCA gate is `cargo audit`, Rust only; there
+is no `npm audit` gate) — it predates this audit-fix. Clearing it without the breaking
+downgrade would need an npm `overrides` pin of `uuid` to a patched, API-compatible
+version (deferred pending owner decision).
+
+**Coverage denominator under v4 (M8.5d domain, resolved 2026-07-22).** vitest 4 also
+empties `coverageConfigDefaults.exclude` to `[]` (it removed the non-Vitest/Vite default
+patterns), so `client/vite.config.ts`'s `...coverageConfigDefaults.exclude` spread — kept
+for forward-compat — no longer drops the unit **test files** from the coverage
+denominator. Empirically the v4 report still excludes them (via the `include:
+['src/**/*.ts']` scope + vitest's built-in test-file handling; 97.56% either way), but
+relying on undocumented behavior is fragile, so the config now excludes them
+**explicitly** with `'src/**/*.test.ts'`. The exact-set guard
+(`dom-shell-coverage-exclusion.eval.mjs`) gains a `REQUIRED_EXCLUDES` list so the entry
+is both sanctioned AND mechanically required (a fixture missing it fails a new tooth),
+and the stale "preserve vitest defaults" comment is corrected. The 96 threshold and the
+97.56% measurement are unchanged (the test files were already absent from the report).

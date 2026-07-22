@@ -107,14 +107,20 @@ mutate-server cap="299":
     fi
 
 # Nightly vitest line-coverage gate (ADR-0050). Self-contained: installs the
-# coverage provider via --no-save (matching the pinned vitest 2.x) so it does
-# NOT touch client/package.json, the lockfile, or vite.config.ts (M8.5d domain).
+# coverage provider via --no-save at the EXACT version of the installed vitest,
+# derived at run time (vitest's peer dep requires an exact-match provider, so a
+# hardcoded pin silently rots on a vitest bump — precisely how the m8.5c `@2.1.9`
+# pin broke on the intentional v4 upgrade; deriving keeps ONE source of truth,
+# ADR-0050 amendment 2026-07-22). Still touches NEITHER client/package.json, the
+# lockfile, nor vite.config.ts (M8.5d domain). POSIX command substitution —
+# nightly runs on Linux.
 # vitest exits non-zero if line coverage falls below the threshold. Runs in
 # nightly.yml only — NOT part of `just ci` (preserves the ADR-0043 fast loop).
 # Threshold 96: re-measured post-exclusion at 99.35% lines and ratcheted from the
 # stale 25 (set from a 29.65% pre-exclusion denominator) — ADR-0050 amendment A1.
+# Under vitest 4 (AST-aware v8) re-measured at 97.56% lines — still >96 (amendment 2026-07-22).
 coverage:
-    cd client && npm ci && npm i --no-save -D @vitest/coverage-v8@2.1.9 && npx vitest run --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.thresholds.lines=96
+    cd client && npm ci && npm i --no-save -D @vitest/coverage-v8@$(node -p 'require("vitest/package.json").version') && npx vitest run --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.thresholds.lines=96
 
 build:
     spacetime build --module-path server-module

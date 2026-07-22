@@ -22,6 +22,13 @@
 // in DOM_SHELLS (the real vite.config.ts already excludes it). Its 13.5a-4 value is
 // fixture-proven; the eval was already green for findMissingExclusions; the two new
 // predicates also pass on the real config.
+//
+// 2026-07-22 (ADR-0050 amendment — vitest 4): REQUIRED_EXCLUDES adds an explicit
+// 'src/**/*.test.ts'. vitest 4 empties coverageConfigDefaults.exclude to [], so the
+// defaults spread no longer drops test files; the exclude MUST list them explicitly
+// (findMissingRequiredExcludes(src), scoped to the exclude ARRAY) or the denominator
+// silently gains ~fully-covered test files. Also sanctioned so findUnsanctionedExclusions
+// accepts it.
 import { readFileSync } from 'node:fs';
 
 const DOM_SHELLS = [
@@ -46,9 +53,20 @@ const DOM_SHELLS = [
   'src/ui/pvpView.ts',
 ];
 
+// Denominator-hygiene excludes that MUST be present (not merely sanctioned): the unit
+// test files themselves. Pre-vitest-4 these were dropped by the coverageConfigDefaults
+// .exclude spread; vitest 4 empties that default to [], so the exclude array MUST list
+// them explicitly or ~fully-covered test files silently re-enter the coverage
+// denominator (ADR-0050 amendment 2026-07-22).
+const REQUIRED_EXCLUDES = ['src/**/*.test.ts'];
+
 // Sanctioned exclusion entries for findUnsanctionedExclusions.
 // Any entry in vite.config.ts coverage.exclude that is NOT in this set is unsanctioned.
-const SANCTIONED_EXCLUDES = new Set([...DOM_SHELLS, 'src/module_bindings/**']);
+const SANCTIONED_EXCLUDES = new Set([
+  ...DOM_SHELLS,
+  'src/module_bindings/**',
+  ...REQUIRED_EXCLUDES,
+]);
 // The spread token that must be present in the exclude array to preserve vitest defaults.
 const SPREAD_TOKEN = '...coverageConfigDefaults.exclude';
 
@@ -168,39 +186,20 @@ export function findMissingExclusions(configSrc, shells) {
 }
 
 /**
- * Find exclusion entries in vite.config.ts coverage.exclude that are NOT in the
- * sanctioned set (DOM_SHELLS ∪ {src/module_bindings/**} ∪ spread token).
- *
- * Algorithm (comment-stripped):
- *   1. Strip comments.
- *   2. Locate `exclude: [` and scan forward to find the FIRST UNQUOTED `]` — the
- *      array closer. A `]` that appears inside a single-quoted string (e.g. in a
- *      bracketed glob like `'glob[0-9].ts'`) must NOT terminate the scan early.
- *      F7: the old `indexOf(']')` did not respect quoting and would terminate on
- *      any `]` in a glob path, hiding later unsanctioned entries.
- *   3. Check that the spread token is present in the slice.
- *   4. Collect single-quoted string literals from the slice and report unsanctioned ones.
- *
- * Returns an array of unsanctioned entry strings. Empty array = fully sanctioned.
- * The spread token absence is reported as a synthetic unsanctioned entry
- * '(missing spread ...coverageConfigDefaults.exclude)'.
+ * Return the comment-stripped text strictly INSIDE the coverage `exclude: [ ... ]`
+ * array, or null if there is no exclude array. Quote-aware: the first UNQUOTED `]`
+ * closes the array (a `]` inside a single-quoted glob does not). Shared by
+ * findUnsanctionedExclusions (what IS in the array) and findMissingRequiredExcludes
+ * (what MUST be in the array) so both reason over the exact same slice.
  */
-export function findUnsanctionedExclusions(configSrc) {
+function excludeArraySlice(configSrc) {
   const stripped = stripComments(configSrc);
-  const unsanctioned = [];
-
-  // Locate the exclude: [ array inside the coverage: object.
   const excludeOpen = stripped.indexOf('exclude: [');
-  if (excludeOpen === -1) {
-    // No exclude array found — the spread is also absent.
-    unsanctioned.push('(missing spread ...coverageConfigDefaults.exclude)');
-    return unsanctioned;
-  }
+  if (excludeOpen === -1) return null;
   const arrayStart = excludeOpen + 'exclude: ['.length;
 
-  // F7: scan forward from arrayStart to find the first UNQUOTED `]`.
-  // A `]` inside a single-quoted string literal does not close the array.
-  // We track whether we are inside a single-quoted string and respect `\'` escapes.
+  // F7: scan forward from arrayStart to the first UNQUOTED `]` (respecting `\'`
+  // escapes). A `]` inside a single-quoted glob like `'g[0-9].ts'` does not close it.
   let arrayEnd = -1;
   let inSq = false;
   for (let i = arrayStart; i < stripped.length; i++) {
@@ -211,19 +210,31 @@ export function findUnsanctionedExclusions(configSrc) {
       } else if (ch === "'") {
         inSq = false;
       }
-    } else {
-      if (ch === "'") {
-        inSq = true;
-      } else if (ch === ']') {
-        arrayEnd = i;
-        break;
-      }
+    } else if (ch === "'") {
+      inSq = true;
+    } else if (ch === ']') {
+      arrayEnd = i;
+      break;
     }
   }
+  return arrayEnd !== -1 ? stripped.slice(arrayStart, arrayEnd) : stripped.slice(arrayStart);
+}
 
-  // Slice the text that is strictly inside the exclude array brackets.
-  const excludeSlice =
-    arrayEnd !== -1 ? stripped.slice(arrayStart, arrayEnd) : stripped.slice(arrayStart);
+/**
+ * Find exclusion entries in the coverage `exclude` array that are NOT in the sanctioned
+ * set (DOM_SHELLS ∪ {src/module_bindings/**} ∪ REQUIRED_EXCLUDES ∪ spread token). Scans
+ * the exclude slice only (via excludeArraySlice), so quoted strings elsewhere in the
+ * file are ignored. Returns unsanctioned entry strings; empty = fully sanctioned. A
+ * missing spread token is reported as '(missing spread ...coverageConfigDefaults.exclude)'.
+ */
+export function findUnsanctionedExclusions(configSrc) {
+  const unsanctioned = [];
+  const excludeSlice = excludeArraySlice(configSrc);
+  if (excludeSlice === null) {
+    // No exclude array found — the spread is also absent.
+    unsanctioned.push('(missing spread ...coverageConfigDefaults.exclude)');
+    return unsanctioned;
+  }
 
   // Require the spread token inside the exclude array slice.
   if (excludeSlice.indexOf(SPREAD_TOKEN) === -1) {
@@ -246,6 +257,19 @@ export function findUnsanctionedExclusions(configSrc) {
   }
 
   return unsanctioned;
+}
+
+/**
+ * Which REQUIRED_EXCLUDES entries are NOT present INSIDE the coverage exclude array.
+ * MUST be scoped to the exclude slice, not the whole file: the real vite.config.ts
+ * also lists the test-file glob in its `test.include`, so a whole-file substring
+ * search would report it present even if the coverage.exclude entry were deleted
+ * (fail-open). Returns all required entries when there is no exclude array.
+ */
+export function findMissingRequiredExcludes(configSrc) {
+  const excludeSlice = excludeArraySlice(configSrc);
+  if (excludeSlice === null) return [...REQUIRED_EXCLUDES];
+  return REQUIRED_EXCLUDES.filter((entry) => !excludeSlice.includes(entry));
 }
 
 /**
@@ -330,6 +354,75 @@ export default async function () {
   }
 
   // ------------------------------------------------------------------
+  // Proof-of-teeth (ADR-0050 amendment 2026-07-22): the explicit unit-test-file
+  // exclude is REQUIRED under vitest 4. v4 empties coverageConfigDefaults.exclude to
+  // [], so leaning on the spread to drop test files silently pollutes the denominator
+  // with ~fully-covered test files.
+  //   T-required-test-missing: a config WITHOUT 'src/**/*.test.ts' MUST be flagged.
+  //   T-required-test-present: a config WITH it MUST NOT be flagged.
+  // ------------------------------------------------------------------
+  const missingTestExcludeConfig = `
+    coverage: {
+      include: ['src/**/*.ts'],
+      exclude: [
+        ...coverageConfigDefaults.exclude,
+        'src/module_bindings/**',
+      ],
+    },
+  `;
+  if (!findMissingRequiredExcludes(missingTestExcludeConfig).includes('src/**/*.test.ts')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "T-required-test-missing: findMissingRequiredExcludes failed to flag a config missing 'src/**/*.test.ts' from coverage.exclude — the explicit test-file exclude is REQUIRED under vitest 4 (empty coverageConfigDefaults.exclude)",
+    };
+  }
+  const withTestExcludeConfig = `
+    coverage: {
+      include: ['src/**/*.ts'],
+      exclude: [
+        ...coverageConfigDefaults.exclude,
+        'src/**/*.test.ts',
+        'src/module_bindings/**',
+      ],
+    },
+  `;
+  if (findMissingRequiredExcludes(withTestExcludeConfig).length > 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "T-required-test-present: findMissingRequiredExcludes wrongly flagged a config that DOES exclude 'src/**/*.test.ts' (false positive)",
+    };
+  }
+  // T-required-test-include-not-exclude (FAIL-OPEN KILLER): 'src/**/*.test.ts' present
+  // in test.include but ABSENT from coverage.exclude MUST be flagged. The real
+  // vite.config.ts has test.include: ['src/**/*.test.ts'], so a whole-file substring
+  // search would pass even with the coverage.exclude entry deleted — the required check
+  // MUST be scoped to the exclude array slice (excludeArraySlice).
+  const testIncludeNotExcludeConfig = `
+    test: {
+      include: ['src/**/*.test.ts'],
+      coverage: {
+        include: ['src/**/*.ts'],
+        exclude: [
+          ...coverageConfigDefaults.exclude,
+          'src/module_bindings/**',
+        ],
+      },
+    },
+  `;
+  if (!findMissingRequiredExcludes(testIncludeNotExcludeConfig).includes('src/**/*.test.ts')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "T-required-test-include-not-exclude: findMissingRequiredExcludes did not flag a config where 'src/**/*.test.ts' is in test.include but NOT in coverage.exclude — the required check must be scoped to the exclude ARRAY, not a whole-file search (fail-open)",
+    };
+  }
+
+  // ------------------------------------------------------------------
   // Real check: read actual vite.config.ts.
   // ------------------------------------------------------------------
   let src;
@@ -345,6 +438,19 @@ export default async function () {
       name,
       pass: false,
       detail: `DOM shells missing from coverage.exclude in vite.config.ts: ${missing.join(', ')} — add them so coverage metrics reflect unit-testable logic only`,
+    };
+  }
+
+  // Required denominator-hygiene excludes must be present IN THE EXCLUDE ARRAY (vitest 4
+  // empties coverageConfigDefaults.exclude, so test files must be excluded explicitly).
+  // Scoped to the exclude slice — a whole-file search fails open because test.include
+  // also lists 'src/**/*.test.ts'.
+  const missingRequired = findMissingRequiredExcludes(src);
+  if (missingRequired.length > 0) {
+    return {
+      name,
+      pass: false,
+      detail: `coverage.exclude in vite.config.ts is missing required denominator-hygiene entries: ${missingRequired.join(', ')} — vitest 4 empties coverageConfigDefaults.exclude, so unit test files must be excluded explicitly (ADR-0050 amendment 2026-07-22)`,
     };
   }
 
@@ -598,6 +704,6 @@ export default async function () {
   return {
     name,
     pass: true,
-    detail: `All ${DOM_SHELLS.length} DOM-shell paths are in coverage.exclude (T1/T2/T3 teeth all pass; comment-stripping active); m13.5a: shopView.ts in DOM_SHELLS, m15b: tradeView.ts in DOM_SHELLS, zero unsanctioned exclusions, include: ['src/**/*.ts'] full`,
+    detail: `All ${DOM_SHELLS.length} DOM-shell paths are in coverage.exclude (T1/T2/T3 teeth all pass; comment-stripping active); m13.5a: shopView.ts in DOM_SHELLS, m15b: tradeView.ts in DOM_SHELLS, zero unsanctioned exclusions, include: ['src/**/*.ts'] full; required test-file exclude ${REQUIRED_EXCLUDES.join(', ')} present (v4 empty-defaults hygiene, ADR-0050 amendment 2026-07-22)`,
   };
 }
