@@ -639,7 +639,7 @@ export default async function () {
   // If the scripts don't exist yet, return pass:false (RED state).
   // ==========================================================================
 
-  let parseReducerNames, findForbiddenReducers, findDevHooks;
+  let parseReducerNames, findForbiddenReducers, findDevHooks, bundleBakesDb;
   try {
     const releaseModule = await import('../scripts/verify-release-reducers.mjs');
     parseReducerNames = releaseModule.parseReducerNames;
@@ -663,12 +663,21 @@ export default async function () {
   try {
     const buildModule = await import('../scripts/verify-build-hooks.mjs');
     findDevHooks = buildModule.findDevHooks;
+    bundleBakesDb = buildModule.bundleBakesDb;
     if (typeof findDevHooks !== 'function') {
       return {
         name,
         pass: false,
         detail:
           'scripts/verify-build-hooks.mjs exists but does not export findDevHooks as a function — pure checker must be exported',
+      };
+    }
+    if (typeof bundleBakesDb !== 'function') {
+      return {
+        name,
+        pass: false,
+        detail:
+          'scripts/verify-build-hooks.mjs exists but does not export bundleBakesDb as a function — pure checker must be exported (pt-a2 build-time DB-bake gate)',
       };
     }
   } catch (e) {
@@ -684,6 +693,63 @@ export default async function () {
   // Every tooth from sections 2–4 re-run against the real implementations.
   // A broken real impl must fail here before reaching the structural scans.
   // ==========================================================================
+
+  // --- bundleBakesDb real-impl teeth (pt-a2 build-time DB-bake gate, ADR-0128/0129) ---
+  // The connectionConfig guard's ERROR MESSAGE hardcodes the example
+  // "monster-realm-playtest" via `e.g.`, so it is present in EVERY build. bundleBakesDb
+  // must key on the `db:` property VALUE, not a bare DB-name substring, or it fails OPEN
+  // — passing a misconfigured (unset VITE_STDB_DB) build whose db is baked `void 0`.
+  {
+    // GOOD — pretty build form (the honest build is unminified, ADR-0128).
+    const bakedPretty = 'const { uri: z0, db: L0 } = yy({\n    db: "monster-realm-playtest"\n  });';
+    if (!bundleBakesDb(bakedPretty, 'monster-realm-playtest')) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH DB-pretty: bundleBakesDb failed to detect a baked `db: "monster-realm-playtest"` (pretty build form)',
+      };
+    }
+    // GOOD — minified build form.
+    if (!bundleBakesDb('a=z({db:"monster-realm-playtest"},!1)', 'monster-realm-playtest')) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH DB-min: bundleBakesDb failed to detect a baked `db:"monster-realm-playtest"` (minified build form)',
+      };
+    }
+    // KEY BAD (fail-open killer) — a misconfigured build: only the guard-message example
+    // is present and db is baked `void 0`. bundleBakesDb MUST NOT report the DB as baked.
+    const guardExampleOnly =
+      'set VITE_STDB_DB to the playtest database (e.g. "monster-realm-playtest"), not "";var x=z({db:void 0},!1);';
+    if (bundleBakesDb(guardExampleOnly, 'monster-realm-playtest')) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH DB-guard-example (fail-open killer): bundleBakesDb reported the DB as baked when ONLY the guard-message example "monster-realm-playtest" is present (db baked void 0) — it must key on the `db:` property value, not a bare DB-name substring',
+      };
+    }
+    // GOOD — a custom (non-default) DB name is honored, not hardcoded to the default.
+    if (!bundleBakesDb('q({db: "mr-playtest-2"})', 'mr-playtest-2')) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH DB-custom: bundleBakesDb failed to detect a custom baked db name "mr-playtest-2"',
+      };
+    }
+    // BAD — a custom DB absent from the bundle (only the default example present).
+    if (bundleBakesDb('database (e.g. "monster-realm-playtest")', 'mr-playtest-2')) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH DB-custom-neg: bundleBakesDb false-passed for a custom db "mr-playtest-2" absent from the bundle',
+      };
+    }
+  }
 
   // --- parseReducerNames real-impl teeth ---
 

@@ -54,6 +54,25 @@ export function findDevHooks(bundleText, fingerprints) {
   return fingerprints.filter((fp) => bundleText.includes(fp));
 }
 
+// bundleBakesDb(bundleText, dbName) -> boolean
+//
+// True iff the production bundle bakes `dbName` as the resolved connection DATABASE —
+// i.e. it appears as a `db:` object-property VALUE (the argument main.ts passes to
+// resolveConnectionConfig), NOT merely inside the connectionConfig guard's error
+// message, which hardcodes the example "monster-realm-playtest" via `e.g.` and is thus
+// present in EVERY build regardless of what was baked. Keying on the `db:` property
+// prefix rules out that guard-example false positive (a bare DB-name substring search
+// would fail OPEN — always green even for a misconfigured build).
+//
+// A build that forgot VITE_STDB_DB bakes `db: void 0` (undefined), so no `db:"<name>"`
+// value is present → returns false. Accepts the pretty (`db: "x"`) and minified
+// (`db:"x"`) shapes — the honest build is currently pretty (ADR-0128), but we hedge
+// like DEV_HOOK_FINGERPRINTS. String methods + literal concatenation only (NO
+// `new RegExp(...)` — Semgrep detect-non-literal-regexp).
+export function bundleBakesDb(bundleText, dbName) {
+  return bundleText.includes(`db:"${dbName}"`) || bundleText.includes(`db: "${dbName}"`);
+}
+
 // ---------------------------------------------------------------------------
 // Driver helper: recursively collect *.js files under a directory.
 // ---------------------------------------------------------------------------
@@ -118,8 +137,33 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(1);
   }
 
+  // pt-a2 (ADR-0128/0129): also verify the bundle baked a VALID playtest database.
+  // A client build that never received VITE_STDB_DB bakes `db: undefined`, and the
+  // served production bundle then throws the connectionConfig dev-default guard in the
+  // user's browser. Catch that misconfiguration HERE, at build time, instead. The
+  // intended DB is MR_PLAYTEST_DB (the name playtest-up published to); the default
+  // matches the playtest-up recipe default.
+  const DEV_DEFAULT_DB = 'monster-realm';
+  const expectedDb = (process.env.MR_PLAYTEST_DB || 'monster-realm-playtest').trim();
+  if (expectedDb === '' || expectedDb.toLowerCase() === DEV_DEFAULT_DB) {
+    console.error(
+      `verify-build-hooks: MR_PLAYTEST_DB is empty or the dev-default ("${expectedDb}") — set an isolated playtest DB before building`,
+    );
+    process.exit(1);
+  }
+  if (!bundleBakesDb(concat, expectedDb)) {
+    console.error(
+      `verify-build-hooks: FAIL — the production build under "${distDir}" does not bake the playtest ` +
+        `database "${expectedDb}" (no db:"${expectedDb}" value in the bundle). The client build did not ` +
+        `receive VITE_STDB_DB — build with \`VITE_STDB_DB="$MR_PLAYTEST_DB" npm run build\` (as ` +
+        `\`just playtest-up\` does), else the served bundle throws "production build refuses the ` +
+        `dev-default database" at runtime (ADR-0128).`,
+    );
+    process.exit(1);
+  }
+
   console.log(
-    `verify-build-hooks: OK — scanned ${jsFiles.length} .js file(s) under "${distDir}"; no DEV hooks (__game/__mrTrade/__mrPvp) present.`,
+    `verify-build-hooks: OK — scanned ${jsFiles.length} .js file(s) under "${distDir}"; no DEV hooks (__game/__mrTrade/__mrPvp) present; bundle bakes playtest DB "${expectedDb}".`,
   );
   process.exit(0);
 }

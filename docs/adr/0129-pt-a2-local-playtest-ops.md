@@ -113,3 +113,35 @@ end-to-end nightly `playtest-smoke` (the pt-a2 analogue of the `smoke-republish`
   eval; bash cannot export a testable pure function.
 - **Wiring the verifiers into `just ci`** — rejected: they need a live instance + real dist; they would
   red every PR (same reason `smoke-republish` is nightly-only).
+
+
+---
+
+## Amendment (2026-07-22 — build-time DB-bake gate; verify-build front-runs the ADR-0128 runtime guard)
+
+- Date: 2026-07-22 · Trigger: a playtest session hit `Uncaught Error: production build refuses
+  the dev-default database` at `localhost:4173`.
+
+**Gap.** `just playtest-up`'s client build step ran a bare `( cd client && npm run build )` — it
+never threaded `MR_PLAYTEST_DB` into `VITE_STDB_DB`, and there is no `.env` file, so the production
+bundle baked `db: undefined`. main.ts's `resolveConnectionConfig` then threw the ADR-0128
+dev-default guard **at runtime in the tester's browser**. Decision-detail #4's build-output proof
+(`verify-build-hooks.mjs`) only scanned for DEV hooks, so the broken build passed verify-build and
+failed only when served — the worst place to learn of it.
+
+**Fix (two parts).**
+1. `playtest-up` now builds with `VITE_STDB_DB="$MR_PLAYTEST_DB" npm run build`, baking the isolated
+   playtest DB (the URI keeps its `ws://127.0.0.1:3000` local-only default).
+2. `verify-build-hooks.mjs` gains a second proof that **front-runs the ADR-0128 runtime guard at
+   build time**: exported pure `bundleBakesDb(bundleText, dbName)` + a driver check that fails loud
+   if the emitted bundle does not bake a valid `MR_PLAYTEST_DB` (or if `MR_PLAYTEST_DB` is empty /
+   the dev-default `monster-realm`). A misconfigured build now reds `just playtest-up` at the
+   verify-build step with the exact `VITE_STDB_DB=…` fix, instead of in the browser.
+
+**False-positive subtlety.** The connectionConfig guard's error message hardcodes the example
+`monster-realm-playtest` via `e.g.`, so the DB name is present in EVERY bundle — a bare-substring
+check would fail OPEN. `bundleBakesDb` keys on the `db:` object-property VALUE (`db:"x"` / `db: "x"`;
+both the minified and the currently-unminified pretty shape), which the guard example (`(e.g. "x")`)
+cannot match — String methods only, no `new RegExp` (Semgrep detect-non-literal-regexp).
+`playtest-verify.eval.mjs` gains proof-of-teeth including the fail-open killer (guard-example-only,
+`db` baked `void 0`, must NOT pass) and a custom-DB case.

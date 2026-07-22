@@ -238,7 +238,12 @@ playtest-up:
         exit 1
     fi
     just playtest-verify-release
-    ( cd client && npm run build )
+    # Bake the playtest DB into the client at BUILD time: main.ts reads VITE_STDB_DB
+    # via Vite's define, and the production build's connectionConfig guard REFUSES an
+    # unset/dev-default DB (ADR-0128). Without threading MR_PLAYTEST_DB -> VITE_STDB_DB
+    # here, the served bundle throws "production build refuses the dev-default database"
+    # at runtime. (URI keeps its ws://127.0.0.1:3000 default — local-only topology.)
+    ( cd client && VITE_STDB_DB="$MR_PLAYTEST_DB" npm run build )
     just playtest-verify-build
     # Background the production preview under a TMPDIR PID file so playtest-down
     # can stop it. `exec` makes the subshell BECOME vite, so $! is vite's real
