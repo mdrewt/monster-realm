@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** content, ci-gates, tooling-docs
-**Decision:** Concurrent content slices claim a reserved species-id + filename band (pt-d2 owns ids 20–29, files `05x-*.ron`); sprites come from a NEW `generate_monsters.py` that imports `generate_art.py` primitives instead of editing it, and slice-specific invariants live in a new auto-discovered eval, not the shared Rust test files.
+**Decision:** Concurrent content slices claim a reserved species-id + filename band (pt-d2 owns ids 20–29, `05x-*.ron`); sprites come from a new `generate_monsters.py` that imports rather than edits the shared art module; slice invariants live in a new auto-discovered eval.
 
 ## Context
 
