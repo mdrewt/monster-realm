@@ -14,4 +14,31 @@
             (trigger: Bond(200), to_species: 5),
         ],
     ),
+    // ---- pt-d1 playtest roster wave 1 (ADR-0143) -------------------------
+    // COMMENT HYGIENE: full-line comments only in this file, and no comment may
+    // contain the sequences "species_id:" or "to_species:". The content-integrity
+    // eval strips whole-line comments only and then regex-scans the rest, so a
+    // trailing comment carrying either would fabricate a phantom evolution block
+    // (which surfaces as a bogus self-evolution failure).
+    //
+    // Cragling (7, Earth) and Shadelet (8, Dark) each get ONE level-triggered
+    // branch. Flameling above already demonstrates branch evolution AND the Bond
+    // trigger; a bond-gated payoff would make a short playtest non-deterministic.
+    // Targets 9 and 10 are evolution-only DERIVED forms — never wild-catchable.
+    //
+    // MERGE NOTE: this file is a single non-glob file, so a concurrent roster wave
+    // also appends here. Keep both stanzas on conflict — nothing else asserts that
+    // a given block survives except the pt-d1 gating test.
+    (
+        species_id: 7,
+        evolutions: [
+            (trigger: Level(18), to_species: 9),
+        ],
+    ),
+    (
+        species_id: 8,
+        evolutions: [
+            (trigger: Level(20), to_species: 10),
+        ],
+    ),
 ]
