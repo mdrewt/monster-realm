@@ -179,7 +179,7 @@ canonical `touches:` vocabulary**: adding content is a new
 
 | Registry | Path | Form |
 |----------|------|------|
-| species | `content/species/*.ron` | directory (`000-core.ron` wild/base species + `010-derived.ron` evolved/fused derived forms) |
+| species | `content/species/*.ron` | directory (`000-core.ron` wild/base species + `010-derived.ron` evolved/fused derived forms + `020-playtest-wave1.ron` roster wave 1 — ADR-0143) |
 | skills | `content/skills/*.ron` | directory |
 | items | `content/items/*.ron` | directory |
 | encounters | `content/encounters/*.ron` | directory |
@@ -194,6 +194,11 @@ canonical `touches:` vocabulary**: adding content is a new
 | heal_locations | `content/heal_locations/*.ron` | directory |
 | abilities | `content/abilities/*.ron` | directory (per-species passive effects — ADR-0094) |
 
+- **Species id ranges are reserved per authoring wave** (ADR-0143): 1–6 core/derived,
+  **7–10 pt-d1 roster wave 1**, 11+ reserved for later waves. Because the directory is
+  glob-*merged*, two waves that claim the same ids merge with no git conflict and surface
+  only as a `duplicate species id` error from `validate_content` at publish time — so the
+  reservation lives in each part file's header, not just in review.
 - **Numeric prefixes zero-pad to a consistent width** (`000-`, `001-`, `010-`): the
   embed sorts files **lexicographically** in both `build.rs` and the `append-only-ids`
   eval, so `10-foo.ron` would sort before `9-foo.ron`. Cross-file row order never
