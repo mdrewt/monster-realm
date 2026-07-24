@@ -5,6 +5,7 @@
 **Slice:** m13.5b
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** ADR-0142
 **Subsystems:** movement-netcode, client-ui
 **Decision:** Reducer rejections surface as UI feedback; enqueue_move drops rejected seq and forces reconcile; app-level reconnect uses exponential backoff capped at 30s.
 
@@ -201,3 +202,54 @@ try/catch totality against hostile accessors (RT-05), and the gating tests
 gained exact-name-equality teeth (an `includes()` classifier survived the
 original suite), a real assertion replacing the vacuous `tailStillPending`
 helper, and an immediate-convergence assertion in the 13.5b-4 GREEN test.
+
+## Amendment (ptc5f, 2026-07-24 — Decision E accepted risk, ADR-0142)
+
+The M-playtest-c.5 eleventh review (Decision E, Drew-delegated 2026-07-20) found
+that the A2 "ordering" safety argument above (amendment §3, RT-03) covers the
+**reconnect** path only, and recorded the uncovered **own-zone warp** case as an
+explicit accepted risk for the closed-playtest window. The epoch/generation-guard
+**fix is deferred** to the booked post-gate slice `M-postgate-netcode-hardening`
+(PLAN §9 post-gate block, owner Drew); this amendment + a reachability pin are the
+pre-gate deliverable (no behavior change).
+
+**The gap.** A2's ordering invariant — "a stale `.catch` always drains against
+the OLD predictor ≥1 s before the reconnect timer builds the new one" — depends
+on the socket being **dropped** (in-flight reducer promises never settle after a
+drop; SDK evidence above). An **own-zone warp** takes a different path:
+`switchZone → resetPredictionState()` (main.ts) rebuilds the `Predictor`
+**synchronously on a live socket** — no drop, no ≥1 s reconnect delay. So a
+still-unacked pre-warp `enqueue_move` rejection CAN still settle *after* the
+rebuild, and reconcile re-seeds the fresh predictor's `#nextSeq` at `ackedSeq`,
+handing the next new op the SAME seq the pre-warp op held. The stale
+`.catch → predictor.dropRejected(seq)` (main.ts `sendIntent`) then evicts the
+**new, legitimate** op instead of the (already-gone) pre-warp one.
+
+**Reachability bound (pinned).** Within a single predictor `#nextSeq` is strictly
+increasing and never reused, so `dropRejected` only ever evicts the intended dead
+op — the normal case is safe. Eviction of a *legit* op is reachable **only across
+a predictor rebuild that re-seeds a colliding seq**, i.e. a movement rejection
+landing exactly across a warp. `predictor.test.ts` pins this: `dropRejected` is
+precise within one epoch, and evicts a live op only in the rebuilt+re-seeded
+cross-warp scenario. A comment at `Predictor.dropRejected` records the gap and
+points here + at the booked fix.
+
+**Accepted-risk rationale (reachability corrected — ptc5f red-team pass).** The
+original Decision-E framing called the trigger "effectively unreachable for a
+single tester (no contention → no queue-full rejections)". A red-team pass on
+this slice showed that is **understated**: `MOVE_QUEUE_CAP = 2` is per-character,
+so a lone player holding a key through a warp can hit "queue full" alone; and the
+seq reuse itself produces a rejection — the fresh predictor re-issues
+`ackedSeq+1`, the older in-flight op of the same seq is acked first on the FIFO
+socket (`last_input_seq → ackedSeq+1`), so the new op's identical seq then hits
+`seq <= last_input_seq` → **`"stale seq"`** (`guards.rs`), whose `.catch`
+`dropRejected`s the player's first post-warp move. So the real trigger is
+"**walk through a doorway while holding a direction key**", reachable in **solo**
+play — a swallowed first-post-warp input / brief rubber-band. The fix stays
+deferred (Drew-delegated; retuning ADR-0085-lineage prediction code pre-gate is
+behavior-sensitive and out of the ptc5f docs-slice scope), but the risk is
+recorded accurately, not minimized. The guard (Predictor captures a `buildGen`
+epoch; the `.catch` no-ops when its captured epoch ≠ the current predictor's)
+lands in `M-postgate-netcode-hardening` — and ptc5f's handoff/PR recommends Drew
+weigh pulling it forward of / into the playtest rather than treating it as
+negligible.

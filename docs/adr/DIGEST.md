@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 107 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 108 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -116,6 +116,7 @@ Generated from 107 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0139](./0139-ptc5c-overlay-mutual-exclusion-symmetry.md) | Overlay mutual-exclusion symmetry: fix KeyB/I/E open-guards + a guard-OR-hide fan-out gate (registry parked) | Accepted | client-ui | ptc5c | Close the overlay mutual-exclusion asymmetry in `client/src/main.ts`: the three oldest |
 | [0140](./0140-ptc5e-ssot-content-dedup-polish.md) | 0140 — ptc5e SSOT / content / dedup polish: CARE magnitudes + shared cooldown-ready predicate to game-core; heal-location stale-delete; isPvpBattle canonicalization; resetCharacters comment fix | Accepted | content, client-ui | ptc5e (M-playtest-c.5 pre-gate residuals — SSOT/content/dedup polish, EARS ptc5e-1..5) | Relocate CARE magnitudes to game-core; share one pure `is_cooldown_ready` predicate across care and heal; reap content-removed heal rows; dedup `isPvpBattle`; fix a stale comment — behavior-preserving SSOT polish, no schema change. |
 | [0141](./0141-ptc5g-render-divergence-snap.md) | 0141 — ptc5g position-divergence render snap: own-render snaps on a > 1-tile (Chebyshev) authoritative target jump via the existing `snapped` path | Accepted | movement-netcode, client-ui | ptc5g (M-playtest-c.5 pre-gate residuals — position-divergence render snap; resolves M10.5 D-render-snap, EARS ptc5g-1..3) | Snap the own-render (not slide) when the new authoritative own-target is > 1 tile (Chebyshev) from the slide clock's current target, via the existing `snapped` branch — so large position jumps snap instead of gliding over one `STEP_MS`. |
+| [0142](./0142-ledger-reconciliation-and-netcode-reachability-pins.md) | 0142 — ptc5f ledger reconciliation + deferred-netcode reachability pins | Accepted | tooling-docs, movement-netcode | ptc5f (M-playtest-c.5 pre-gate residuals — ledger reconciliation, closes M-playtest-c.5; EARS ptc5f-1/ptc5f-2 + Decision A/E pins) | Reconcile the playtest ledger (git-cliff CHANGELOG regen; PLAN §Status to the M-playtest-c.5 frontier) and pin two deferred netcode reachability bounds as gated facts: ADR-0090 burst-spread inertness and ADR-0085 warp epoch-eviction. |
 
 ## Harness design corpus (H- namespace)
 
@@ -223,6 +224,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0134](./0134-trade-propose-ui.md) — pt-c2 — Client trade-PROPOSE UI (KeyO offer overlay) (Accepted)
 - [0135](./0135-pt-c2b-help-overlay.md) — pt-c2b — In-client help overlay (`?`) + tester runbook (pt-c2b) (Accepted)
 - [0141](./0141-ptc5g-render-divergence-snap.md) — ptc5g (M-playtest-c.5 pre-gate residuals — position-divergence render snap; resolves M10.5 D-render-snap, EARS ptc5g-1..3) — 0141 — ptc5g position-divergence render snap: own-render snaps on a > 1-tile (Chebyshev) authoritative target jump via the existing `snapped` path (Accepted)
+- [0142](./0142-ledger-reconciliation-and-netcode-reachability-pins.md) — ptc5f (M-playtest-c.5 pre-gate residuals — ledger reconciliation, closes M-playtest-c.5; EARS ptc5f-1/ptc5f-2 + Decision A/E pins) — 0142 — ptc5f ledger reconciliation + deferred-netcode reachability pins (Accepted)
 
 ### content
 
@@ -353,6 +355,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0130](./0130-client-observability.md) — pt-b1 — Client observability: error overlay + event ring + F9 bug-report bundle (H1/H2/H3 taxonomy) (Accepted)
 - [0131](./0131-server-playtest-capture.md) — pt-b2 — Server-side playtest capture: additive `playtest_event` table + interval-singleton reaper + H1 report (Accepted)
 - [0137](./0137-ptc5d-knowledge-bundle-fixture-exclusion-and-gate-teeth.md) — ptc5d (M-playtest-c.5 pre-gate residuals — tooling/eval hardening, EARS ptc5d-1..5) — 0137 — ptc5d: knowledge-bundle `*_tests.rs` exclusion + restored gate teeth (mutate-server ceiling tightened; RT-M14.5A-02 vacuous-pass closed) (Accepted)
+- [0142](./0142-ledger-reconciliation-and-netcode-reachability-pins.md) — ptc5f (M-playtest-c.5 pre-gate residuals — ledger reconciliation, closes M-playtest-c.5; EARS ptc5f-1/ptc5f-2 + Decision A/E pins) — 0142 — ptc5f ledger reconciliation + deferred-netcode reachability pins (Accepted)
 
 ### security-authz
 

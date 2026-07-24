@@ -1587,3 +1587,86 @@ describe('Predictor M12.5d-3: snapped signal uses last FRAME drain time (not rec
     expect(r.snapped).toBe(false);
   });
 });
+
+// ================================================================================
+// ptc5f — ADR-0142 (D4): dropRejected reachability bound (pins ADR-0085 / M13.5b)
+//
+// dropRejected(seq) is PRECISE within one predictor instance: it removes exactly
+// the pending op with the given seq and never a neighbor (proven by the normal
+// single-epoch test below). But `#nextSeq` starts at 0 in every fresh Predictor
+// instance, and `seedSeq` only ever RAISES it (monotonic, never rewinds) — so a
+// rebuilt-and-re-seeded predictor whose seed value is <= 0 REUSES the exact seq
+// space of the discarded pre-warp predictor. A stale dropRejected call that
+// arrives late (targeting the pre-warp predictor's seq) then evicts the rebuilt
+// predictor's brand-new legit op purely by seq-space collision. This is documented
+// (not fixed) — the pin proves the collision is real and reachable, and that the
+// eviction it causes is a genuine content-level loss (not just a pendingCount
+// delta), via a reconcile-replay control/experiment contrast.
+// ================================================================================
+describe('Predictor ptc5f: dropRejected reachability bound (Decision E epoch-eviction pin)', () => {
+  it('normal single-epoch: dropRejected targets EXACTLY the given seq, never a neighbor', () => {
+    // Kills: an impl that drops a neighbor seq (off-by-one filter), drops everything,
+    // or never actually removes (always-false return) — any of these flips one of
+    // the later booleans below, since a, b, c occupy disjoint seq slots (1, 2, 3).
+    const p = mkPredictor();
+    p.reconcile(baseline(5, 5, 0), [], 0, 0); // seed
+    const a = p.enqueue(east())!;
+    const b = p.enqueue(east())!;
+    const c = p.enqueue(east())!;
+    expect([a.seq, b.seq, c.seq]).toEqual([1, 2, 3]);
+    expect(p.pendingCount).toBe(3);
+
+    expect(p.dropRejected(b.seq)).toBe(true);
+    expect(p.pendingCount).toBe(2);
+    expect(p.dropRejected(b.seq)).toBe(false); // idempotent — already gone
+
+    // Vacuous-eviction is impossible here: if dropRejected(b.seq) had actually
+    // removed a or c instead of b, one of these would report false (nothing left
+    // to drop) or pendingCount would not reach exactly 0.
+    expect(p.dropRejected(a.seq)).toBe(true);
+    expect(p.dropRejected(c.seq)).toBe(true);
+    expect(p.pendingCount).toBe(0);
+  });
+
+  it('cross-warp: a rebuilt+re-seeded predictor REUSES the pre-warp seq, so a stale dropRejected evicts the NEW legit op', () => {
+    // Pre-warp predictor A: issues one still-unacked in-flight op; A is then
+    // discarded on warp (e.g. a zone transition rebuilds the predictor).
+    const a = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
+    const preWarpOp = a.enqueue(east())!;
+    expect(preWarpOp.seq).toBe(1);
+
+    // Post-warp: a REBUILT predictor B is created while the server ack is still 0
+    // (the warp landed before any ack advanced past the pre-warp op).
+    const b = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
+    b.seedSeq(0);
+    const newOp = b.enqueue(east())!;
+    // THE COLLISION: B's brand-new op reuses A's exact seq — a deterministic
+    // consequence of #nextSeq starting at 0 in both instances and seedSeq(0)
+    // never rewinding (it's a no-op here since 0 is not > the current #nextSeq).
+    expect(newOp.seq).toBe(preWarpOp.seq);
+
+    // A stale rejection of A's pre-warp op arrives late and fires against B (the
+    // module-scope predictor is now B) — it evicts B's NEW op purely by seq collision.
+    expect(b.dropRejected(preWarpOp.seq)).toBe(true);
+
+    // Prove the eviction BY CONTENT (a pendingCount delta alone is vacuous — it
+    // would also read as 0 if dropRejected simply never recorded anything). Force
+    // a queue rebuild via reconcile: rebasedAt === now (the file's established
+    // trick, see "no re-issue when held direction matches queue tail" above) means
+    // reconcile's internal drain step consumes nothing, isolating the pending-replay.
+    b.reconcile(baseline(5, 5, 0), [], 0, 0);
+    expect(b.queueDepth).toBe(0); // nothing to replay — the new op's pending record is gone
+    expect(b.lastQueuedDir).toBeUndefined();
+
+    // CONTROL: an identical predictor built the same way but WITHOUT the stale
+    // cross-warp dropRejected. The new op must SURVIVE the same reconcile —
+    // proving the eviction above happened ONLY because of the stale drop against
+    // a reused seq, not because of some unrelated reconcile side effect.
+    const c = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
+    c.seedSeq(0);
+    c.enqueue(east());
+    c.reconcile(baseline(5, 5, 0), [], 0, 0);
+    expect(c.queueDepth).toBe(1); // the new op survived — replayed from pending
+    expect(c.lastQueuedDir).toBe('East');
+  });
+});

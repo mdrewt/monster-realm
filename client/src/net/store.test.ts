@@ -10,6 +10,7 @@
 
 import * as fc from 'fast-check';
 import { describe, expect, it, vi } from 'vitest';
+import { BURST_EPSILON_MS } from '../shared/interpConfig';
 import {
   AuthoritativeStore,
   type StoreBattle,
@@ -2924,5 +2925,77 @@ describe('AuthoritativeStore m17b: no removeProfile method (RL-2 structural guar
     // Kills: an impl that adds removeProfile "just in case" (violates ADR-0119 D1).
     const s = new AuthoritativeStore();
     expect(typeof (s as unknown as Record<string, unknown>).removeProfile).not.toBe('function');
+  });
+});
+
+// =============================================================================
+// ptc5f — ADR-0142 (D3): burst-spread reachability bound (pins ADR-0090)
+//
+// upsertCharacter's burst-synthetic branch (see store.ts's `#stepMs>0 && existing
+// !== undefined && !shouldSnap && now - existing.latest.receivedAt < BURST_EPSILON_MS`
+// guard) only ASSIGNS the synthetic receivedAt when
+// `existing.latest.receivedAt + stepMs <= now + BURST_EPSILON_MS`. Substituting
+// d = now - existing.latest.receivedAt (the outer guard bounds d only from ABOVE,
+// d < BURST_EPSILON_MS — there is NO d >= 0 check in the code) reduces the guard to
+// `stepMs <= d + BURST_EPSILON_MS`. A negative d (a chained future synthetic) only
+// SHRINKS the RHS, so the reachability supremum is at d -> BURST_EPSILON_MS: the
+// branch is reachable for SOME admissible d iff `stepMs < 2*BURST_EPSILON_MS`. At
+// the real production tick rate (STEP_MS=200,
+// surfaced to the client via the wasm `step_ms()` export in main.ts — not importable
+// into this node-only vitest run) the branch is provably DEAD CODE: these are
+// TDD pins of that existing (already-true) fact, not new behaviour.
+// =============================================================================
+
+describe('AuthoritativeStore ADR-0090/ptc5f: burst-spread reachability bound (Decision A pin)', () => {
+  // SYNCED LITERAL: game-core/src/world.rs STEP_MS, surfaced to the client via the
+  // wasm step_ms() export (main.ts). Not importable into node vitest — see ADR-0142
+  // D3 drift caveat: if the Rust constant changes, this literal must be updated by
+  // hand and this describe block re-verified.
+  const PRODUCTION_STEP_MS = 200;
+
+  it('the reachability bound holds: production STEP_MS >= 2*BURST_EPSILON_MS (branch inert)', () => {
+    // Raising BURST_EPSILON_MS past 100 (2*100=200) would break this and make the
+    // burst-synthetic branch reachable at STEP_MS=200 — this is the imported-constant
+    // tooth: it fails the moment BURST_EPSILON_MS drifts past the safe half of 200.
+    expect(PRODUCTION_STEP_MS).toBeGreaterThanOrEqual(2 * BURST_EPSILON_MS);
+  });
+
+  it('BITES: at production STEP_MS the synthetic branch is unreachable across the WHOLE burst-gap domain', () => {
+    // Sweep every non-negative burst gap d in [0, BURST_EPSILON_MS) — the
+    // reachability-maximizing sub-domain (negative d only shrinks reachability, so
+    // if no non-negative d fires, none does). At PRODUCTION_STEP_MS, synthetic
+    // (t0 + 200) always exceeds now + BURST_EPSILON_MS (at most t0 + 39), so the
+    // guard never fires and receivedAt stays at real wall-clock time for every d.
+    // Wrong impl killed: any impl that fires synthetic at this stepMs (e.g. a
+    // reversed guard, or one that forgets the B-2 cap) would report t0+200 for at
+    // least one d, failing this assertion.
+    for (let d = 0; d < BURST_EPSILON_MS; d++) {
+      const s = new AuthoritativeStore(PRODUCTION_STEP_MS);
+      const t0 = 1000;
+      s.upsertCharacter(char(1n, 0, 0), t0);
+      s.upsertCharacter(char(1n, 1, 0), t0 + d);
+      expect(s.character(1n)!.latest.receivedAt).toBe(t0 + d); // wall-clock, NEVER t0+200
+    }
+  });
+
+  it('BITES the exact threshold: reachable at stepMs=2*BURST_EPSILON_MS-1, unreachable at stepMs=2*BURST_EPSILON_MS', () => {
+    // Below the bound (stepMs=39): at the worst-case gap d=BURST_EPSILON_MS-1 (=19),
+    // synthetic = t0+39, guard = t0+39 <= (t0+19)+20 = t0+39 → true (equality) → fires.
+    const s = new AuthoritativeStore(2 * BURST_EPSILON_MS - 1); // 39
+    const t0 = 1000;
+    s.upsertCharacter(char(1n, 0, 0), t0);
+    s.upsertCharacter(char(1n, 1, 0), t0 + (BURST_EPSILON_MS - 1)); // t0 + 19
+    expect(s.character(1n)!.latest.receivedAt).toBe(t0 + (2 * BURST_EPSILON_MS - 1)); // t0+39, synthetic
+
+    // AT the bound (stepMs=40): sweep the whole domain again — every d must fall
+    // back to wall-clock time, proving 40 is unreachable and the bound is TIGHT.
+    // Wrong impl killed: an off-by-one guard (e.g. `<` instead of `<=`) would still
+    // fire at d=19, stepMs=40 for at least one d, failing this loop.
+    for (let d = 0; d < BURST_EPSILON_MS; d++) {
+      const s2 = new AuthoritativeStore(2 * BURST_EPSILON_MS); // 40
+      s2.upsertCharacter(char(1n, 0, 0), t0);
+      s2.upsertCharacter(char(1n, 1, 0), t0 + d);
+      expect(s2.character(1n)!.latest.receivedAt).toBe(t0 + d); // no synthetic — 40 is unreachable
+    }
   });
 });
