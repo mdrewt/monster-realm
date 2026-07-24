@@ -320,7 +320,22 @@ export function findMissingSTAB(speciesList, skillAffinityById) {
 
 // ---------------------------------------------------------------------------
 // Checker 5 — W2-EVO-ORPHAN: every derived id reached exactly once; every
-// wave-2 evolution source is a wave-2 base species.
+// wave-2 evolution source is a wave-2 base species; every wave-2 evolution
+// SOURCE (base species) targets ONLY a declared wave-2 derived form — never
+// another base id (wild-legal or otherwise) and never an out-of-band id.
+//
+// Gap 1 fix: the original version only inspected targets that were already
+// known to be derived ids, so a base-to-base evolution (e.g. wild-legal
+// Umbraquill (20) -> wild-legal Gustwyrm (21)) was invisible — Rust's
+// derived-forms-not-wild rule is vacuous here too, since no wave-2 species
+// has an encounter row yet. This is scoped to wave-2 sources deliberately; a
+// general fix belongs in the Rust validator (tracked as a follow-up, out of
+// this slice's touch set).
+//
+// INFORMATIONAL (no check needed): this only reads evolutions.ron, so a
+// derived form reachable ONLY via fusion.ron would false-positive as an
+// orphan. Not reachable today (neither 22 nor 23 is a fusion target) and it
+// fails safe/over-strict, so it is left as a documented gap, not a bug.
 // ---------------------------------------------------------------------------
 
 export function findEvoOrphansAndBadSources(derivedIds, evolutionBlocks, baseIdSet) {
@@ -349,6 +364,19 @@ export function findEvoOrphansAndBadSources(derivedIds, evolutionBlocks, baseIdS
       violations.push(
         `evolution block for source species ${block.speciesId} targets a wave-2 derived form but its source is not a wave-2 base species`,
       );
+    }
+    // Gap 1: a wave-2 BASE source must target ONLY a declared wave-2 derived
+    // form. A base-to-base (or base-to-out-of-band) evolution is exactly the
+    // "wild-legal evolves into another wild-legal" hole the Rust step-6
+    // check can't see yet (no wave-2 encounter rows exist to trip it).
+    if (baseIdSet.has(block.speciesId)) {
+      for (const target of block.targets) {
+        if (!derivedSet.has(target)) {
+          violations.push(
+            `wave-2 evolution source ${block.speciesId} targets species ${target}, which is not a member of the declared wave-2 derived set (051-wave2-derived.ron) — wave-2 evolutions must target only wave-2 derived forms, never a base species or out-of-band id`,
+          );
+        }
+      }
     }
   }
   return violations;
@@ -544,6 +572,9 @@ export function decodePng(buf) {
   if (!ihdr) throw new Error('decodePng: missing IHDR chunk');
   const width = ihdr.data.readUInt32BE(0);
   const height = ihdr.data.readUInt32BE(4);
+  if (width <= 0 || height <= 0) {
+    throw new Error(`decodePng: invalid dimensions ${width}x${height} (both must be > 0)`);
+  }
   const bitDepth = ihdr.data.readUInt8(8);
   const colorType = ihdr.data.readUInt8(9);
   const compression = ihdr.data.readUInt8(10);
@@ -647,6 +678,22 @@ export function silhouetteDiffRatio(a, b) {
 export function findSilhouetteViolations(labelA, rawMaskA, labelB, rawMaskB) {
   const a = cropToBoundingBox(rawMaskA);
   const b = cropToBoundingBox(rawMaskB);
+  // Gap 2: a blank/degenerate mask (nothing above the alpha threshold, so its
+  // cropped bounding box has zero area) must be flagged in its own right —
+  // otherwise it counts as "sufficiently distinct" from every real neighbour
+  // (an all-transparent sheet passes the distinctness bar for free).
+  const degenerate = [];
+  if (a.w * a.h === 0) {
+    degenerate.push(
+      `${labelA} has a blank/degenerate mon_down_idle silhouette (zero-area alpha mask after bbox-crop)`,
+    );
+  }
+  if (b.w * b.h === 0) {
+    degenerate.push(
+      `${labelB} has a blank/degenerate mon_down_idle silhouette (zero-area alpha mask after bbox-crop)`,
+    );
+  }
+  if (degenerate.length > 0) return degenerate;
   if (masksEqual(a, b)) {
     return [
       `${labelA} and ${labelB} have identical mon_down_idle silhouettes after bbox-crop — palette-swap-only reskin suspected`,
@@ -668,19 +715,33 @@ export function findSilhouetteViolations(labelA, rawMaskA, labelB, rawMaskB) {
 // Contract with the implementer: generate_monsters.py MUST contain a line
 // `# PLAN-TABLE-BEGIN` and a line `# PLAN-TABLE-END`, with rows of the form
 // `("<slug>", "<body_plan>", "<size>", "<features>"),` (features `|`-separated,
-// possibly empty) between them.
+// possibly empty) between them. Either matching quote style (`"..."` or
+// `'...'`) is accepted per field — both are valid, equivalent Python string
+// literals, so the parser must not blind itself to one of them (Gap 3). A
+// full-line `#` comment inside the marker block (e.g. a commented-out
+// prototype row) is stripped before matching, same convention as every RON
+// `//`-comment strip in this file (Gap 4) — only whole comment lines are
+// removed, never a `#` embedded mid-line.
+export function stripHashLineComments(text) {
+  return text.replace(/^[ \t]*#.*$/gm, '');
+}
+
 export function parsePlanTable(src) {
   const beginIdx = src.indexOf('# PLAN-TABLE-BEGIN');
   const endIdx = src.indexOf('# PLAN-TABLE-END');
   if (beginIdx === -1 || endIdx === -1 || endIdx < beginIdx) {
     throw new Error('generate_monsters.py: missing # PLAN-TABLE-BEGIN / # PLAN-TABLE-END markers');
   }
-  const body = src.slice(beginIdx, endIdx);
+  const body = stripHashLineComments(src.slice(beginIdx, endIdx));
   const rows = [];
-  const re = /\(\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*\)\s*,/g;
+  // Group 1/3/5/7 capture the quote char used per field (backreferenced via
+  // \1/\3/\5/\7) so `"foo"` and `'foo'` both match without ever pairing a
+  // `"` with a `'`. Groups 2/4/6/8 are the field values.
+  const re =
+    /\(\s*(["'])([^"']*)\1\s*,\s*(["'])([^"']*)\3\s*,\s*(["'])([^"']*)\5\s*,\s*(["'])([^"']*)\7\s*\)\s*,/g;
   let m = re.exec(body);
   while (m !== null) {
-    rows.push({ slug: m[1], plan: m[2], size: m[3], features: m[4] });
+    rows.push({ slug: m[2], plan: m[4], size: m[6], features: m[8] });
     m = re.exec(body);
   }
   return rows;
@@ -1024,6 +1085,65 @@ export default async function () {
       };
     }
   }
+  // --- W2-EVO-ORPHAN (Gap 1 fix): wave-2 base evolving into ANOTHER wave-2 base
+  // must be flagged — this is the exact red-team fixture: Umbraquill (20, base,
+  // wild-legal) -> Gustwyrm (21, base, wild-legal). Both the Rust authority and
+  // the pre-fix version of this checker passed it silently.
+  {
+    const violations = findEvoOrphansAndBadSources(
+      [22, 23],
+      [
+        { speciesId: 20, targets: [22, 21] }, // 21 is a wave-2 BASE id, not derived
+        { speciesId: 21, targets: [23] },
+      ],
+      new Set([20, 21]),
+    );
+    if (!violations.some((v) => v.includes('20') && v.includes('21'))) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: W2-EVO-ORPHAN (Gap 1) — base-to-base evolution 20 -> 21 (Umbraquill -> Gustwyrm) was NOT flagged',
+      };
+    }
+  }
+  // --- W2-EVO-ORPHAN (Gap 1 fix): wave-2 base evolving to an out-of-band id -------
+  {
+    const violations = findEvoOrphansAndBadSources(
+      [22, 23],
+      [
+        { speciesId: 20, targets: [22] },
+        { speciesId: 21, targets: [23, 1] }, // 1 is out-of-band and not derived
+      ],
+      new Set([20, 21]),
+    );
+    if (!violations.some((v) => v.includes('21') && v.includes(' 1'))) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: W2-EVO-ORPHAN (Gap 1) — base-to-out-of-band evolution 21 -> 1 was NOT flagged',
+      };
+    }
+  }
+  // --- W2-EVO-ORPHAN (Gap 1 fix): GOOD — base sources targeting ONLY derived ids --
+  {
+    const violations = findEvoOrphansAndBadSources(
+      [22, 23],
+      [
+        { speciesId: 20, targets: [22] },
+        { speciesId: 21, targets: [23] },
+      ],
+      new Set([20, 21]),
+    );
+    if (violations.length > 0) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: W2-EVO-ORPHAN (Gap 1) — GOOD base-to-derived-only data was incorrectly flagged: ${violations.join('; ')}`,
+      };
+    }
+  }
 
   // --- W2-BST-MONOTONIC: target BST <= source BST ----------------------------------
   {
@@ -1253,6 +1373,32 @@ export default async function () {
       };
     }
   }
+  // --- decodePng (Gap 2 fix): zero width must throw ------------------------------------------------
+  {
+    const buf = buildTestPng({ width: 0, height: 4, pixels: Buffer.alloc(0) });
+    let threw = false;
+    try {
+      decodePng(buf);
+    } catch {
+      threw = true;
+    }
+    if (!threw) {
+      return { name, pass: false, detail: 'TEETH: decodePng (Gap 2) — width 0 did NOT throw' };
+    }
+  }
+  // --- decodePng (Gap 2 fix): zero height must throw -----------------------------------------------
+  {
+    const buf = buildTestPng({ width: 4, height: 0, pixels: Buffer.alloc(0) });
+    let threw = false;
+    try {
+      decodePng(buf);
+    } catch {
+      threw = true;
+    }
+    if (!threw) {
+      return { name, pass: false, detail: 'TEETH: decodePng (Gap 2) — height 0 did NOT throw' };
+    }
+  }
 
   // --- SPR-SILHOUETTE: identical masks must be flagged --------------------------------------------
   {
@@ -1305,6 +1451,42 @@ export default async function () {
       };
     }
   }
+  // --- SPR-SILHOUETTE (Gap 2 fix): a blank/all-transparent mask must be flagged in
+  // its own right, NOT counted as "sufficiently distinct" from a real neighbour.
+  // Pre-fix, a real circle vs an all-false mask produced ZERO violations (the
+  // blank mask's zero-area cropped bbox made the diff ratio trivially satisfy
+  // the >=10% bar against anything).
+  {
+    const circle = circleMask(8, 8, 4, 4, 3);
+    const blank = emptyMask(8, 8);
+    const violations = findSilhouetteViolations('circle', circle, 'blank', blank);
+    if (!violations.some((v) => v.includes('blank/degenerate'))) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: SPR-SILHOUETTE (Gap 2) — real circle mask vs all-transparent blank mask was NOT flagged as degenerate',
+      };
+    }
+  }
+  // --- SPR-SILHOUETTE (Gap 2 fix): two blank masks must ALSO be flagged (not just
+  // silently treated as "identical", which is already caught elsewhere, but as
+  // the more specific "degenerate" violation) ---------------------------------------------------
+  {
+    const violations = findSilhouetteViolations(
+      'blankA',
+      emptyMask(6, 6),
+      'blankB',
+      emptyMask(6, 6),
+    );
+    if (!violations.some((v) => v.includes('blank/degenerate'))) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: SPR-SILHOUETTE (Gap 2) — two blank masks were NOT flagged as degenerate',
+      };
+    }
+  }
 
   // --- SPR-PLAN-UNIQUE: parsePlanTable basic parse --------------------------------------------------
   {
@@ -1334,6 +1516,74 @@ export default async function () {
     }
     if (!threw) {
       return { name, pass: false, detail: 'TEETH: parsePlanTable — missing markers did NOT throw' };
+    }
+  }
+  // --- SPR-PLAN-UNIQUE (Gap 3 fix): single-quoted rows must parse, and a duplicate
+  // plan hidden behind a different quote style must still be caught. This is the
+  // exact red-team fixture: a single-quoted 'mistveil' row byte-identical (plan,
+  // size, features) to the real double-quoted 'steamveil' row.
+  {
+    const src =
+      '# PLAN-TABLE-BEGIN\n' +
+      'PLAN = [\n' +
+      '    ("steamveil", "quadruped", "medium", "steam"),\n' +
+      "    ('mistveil', 'quadruped', 'medium', 'steam'),\n" +
+      ']\n' +
+      '# PLAN-TABLE-END\n';
+    const rows = parsePlanTable(src);
+    if (rows.length !== 2 || !rows.some((r) => r.slug === 'mistveil')) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: parsePlanTable (Gap 3) — single-quoted row was NOT parsed',
+      };
+    }
+    const violations = findDuplicatePlanRows(rows);
+    if (violations.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: SPR-PLAN-UNIQUE (Gap 3) — single-quoted duplicate of the double-quoted steamveil row was NOT flagged',
+      };
+    }
+  }
+  // --- SPR-PLAN-UNIQUE (Gap 3 fix): GOOD — distinct single-quoted rows parse cleanly ------------------
+  {
+    const src =
+      '# PLAN-TABLE-BEGIN\n' +
+      "    ('umbraquill', 'quadruped', 'small', 'wings'),\n" +
+      "    ('gustwyrm', 'serpentine', 'medium', ''),\n" +
+      '# PLAN-TABLE-END\n';
+    const rows = parsePlanTable(src);
+    const violations = findDuplicatePlanRows(rows);
+    if (rows.length !== 2 || violations.length > 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: parsePlanTable (Gap 3) — GOOD distinct single-quoted rows were mis-parsed or incorrectly flagged',
+      };
+    }
+  }
+  // --- SPR-PLAN-UNIQUE (Gap 4 fix): a commented-out `#` prototype row between the
+  // markers must NOT be parsed as a live row (would otherwise be a confusing
+  // false-positive RED, or mask a real duplicate depending on content).
+  {
+    const src =
+      '# PLAN-TABLE-BEGIN\n' +
+      'PLAN = [\n' +
+      '    # ("prototype", "quadruped", "small", ""),\n' +
+      '    ("umbraquill", "quadruped", "small", "wings"),\n' +
+      ']\n' +
+      '# PLAN-TABLE-END\n';
+    const rows = parsePlanTable(src);
+    if (rows.length !== 1 || rows.some((r) => r.slug === 'prototype')) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: parsePlanTable (Gap 4) — commented-out # prototype row was NOT stripped (got ${JSON.stringify(rows)})`,
+      };
     }
   }
   // --- SPR-PLAN-UNIQUE: duplicated codec def must be flagged -----------------------------------------
@@ -1467,7 +1717,10 @@ export default async function () {
 
   const derivedIds = wave2DerivedSpecies.map((s) => s.id);
   const baseIdSet = new Set(wave2BaseSpecies.map((s) => s.id));
-  if (derivedIds.length > 0) {
+  // Run whenever EITHER file has content: a base-only registry with no derived
+  // forms yet still needs the Gap-1 base-to-non-derived check to fire (every
+  // target from a wave-2 base source would correctly be flagged as not-derived).
+  if (derivedIds.length > 0 || baseIdSet.size > 0) {
     failures.push(...findEvoOrphansAndBadSources(derivedIds, evolutionBlocks, baseIdSet));
   }
 
@@ -1576,6 +1829,6 @@ export default async function () {
   return {
     name,
     pass: true,
-    detail: `wave-2 species reserved to 20..=29, no dangling refs, STAB satisfied, no orphan derived forms, monotonic evolution BST; full sprite set/format/registration/silhouette for all ${COVERED.length} COVERED species; generate_monsters.py has unique plans and does not duplicate the PNG/JSON codec (teeth: 33 fixtures verified)${infoLine ? ` | ${infoLine}` : ''}`,
+    detail: `wave-2 species reserved to 20..=29, no dangling refs, STAB satisfied, no orphan derived forms, no base-to-non-derived evolutions, monotonic evolution BST; full sprite set/format/registration/non-degenerate-silhouette for all ${COVERED.length} COVERED species; generate_monsters.py has unique plans (both quote styles) and does not duplicate the PNG/JSON codec (all proof-of-teeth fixtures verified)${infoLine ? ` | ${infoLine}` : ''}`,
   };
 }
