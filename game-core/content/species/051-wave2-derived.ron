@@ -1,0 +1,40 @@
+// Roster wave 2 — DERIVED FORMS (evolution targets). DATA, not code
+// (ADR-0006/0057/0060/0144). Stable `id`s are APPEND-ONLY; reserved band
+// 20..=29 (ADR-0144 D1). Mirrors the 000-core/010-derived split so pt-d3's
+// encounter author has an unambiguous rule: wild-legal = 000-core + 050-wave2.
+//
+// Species 22 and 23 are evolution-only DERIVED forms and MUST NEVER appear in
+// an encounter table — `validate_evolution_fusion` enforces it. They are
+// reachable in-game only by transforming a wild-obtainable form:
+// Umbraquill (20) evolves into 22 at Level(22); Gustwyrm (21) evolves into 23
+// at Bond(180).
+//
+// Every id here must be some evolution's `to_species` exactly once — nothing in
+// the Rust validators catches an ORPHAN derived form (they walk *from*
+// evolutions, never *to* this file), so the pt-d2 eval carries that tooth.
+[
+    // Venumbra (Dark, status) — the fastest form in the roster at speed 100
+    // (Pyroleo 90), which is the whole point of the line: it applies status
+    // before the opponent acts. BST 475, in band with Pyroleo (479).
+    (
+        id: 22,
+        name: "Venumbra",
+        base_stats: (hp: 72, attack: 65, defense: 78, speed: 100, sp_attack: 82, sp_defense: 78),
+        affinity: Dark,
+        learnable_skill_ids: [11, 9],
+    ),
+    // Tempestrix (Wind, support) — the roster's first true wall: hp 92 exceeds
+    // Embersworn's 80 and sp_defense 96 exceeds Steamveil's 80. Ability 3
+    // (Regeneration, EntryHeal 1/4) is the pivot payoff that makes the
+    // evolution a gain beyond stats. Skill 3 Water Gun is added so the wall has
+    // a real attacking option — a wall with no offence is a stall trap under
+    // integer damage.
+    (
+        id: 23,
+        name: "Tempestrix",
+        base_stats: (hp: 92, attack: 60, defense: 82, speed: 66, sp_attack: 78, sp_defense: 96),
+        affinity: Wind,
+        learnable_skill_ids: [10, 7, 3],
+        ability: Some(3), // Regeneration (id=3): heals 1/4 max HP on entry (ADR-0100)
+    ),
+]

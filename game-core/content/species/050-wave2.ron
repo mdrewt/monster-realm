@@ -1,0 +1,45 @@
+// Roster wave 2 — WILD-LEGAL BASE FORMS. DATA, not code (ADR-0006/0057/0144).
+// Stable `id`s are APPEND-ONLY. This file sorts AFTER 000-core.ron and
+// 010-derived.ron, so the 000-core rows stay the registry prefix that
+// `m8_9e_species_migration_parity` pins.
+//
+// pt-d2 owns the reserved id band **20..=29** and the `05x-` filename band
+// (ADR-0144 D1): roster waves are authored by concurrently-running slices, so
+// each wave claims a disjoint band rather than taking next-free. Id gaps are
+// legal — the append-only eval flags removals, never gaps, and no validator
+// requires contiguous or sorted ids.
+//
+// Affinity/archetype are picked by the ADR-0144 D1 tie-break rule: wave 2 takes
+// the TAIL of the `Affinity` enum among affinities that already have skills
+// (Dark, Wind — Electric and Light have no skills and `content/skills/*` is out
+// of this slice's touch set) and the TAIL of the GDD §5 archetype list
+// (status, support), leaving head (tanky, fast sweeper) to wave 1.
+//
+// These are base forms with no encounter row yet: encounter tuning is slice
+// pt-d3, and no reachability validator exists — a species absent from every
+// encounter table is valid content, merely not yet wild-obtainable.
+[
+    // Umbraquill (Dark, STATUS archetype) — speed-first status applier. Base
+    // speed 68 already edges Flameling's 65; the line's identity is "moves
+    // first, lands Poison (skill 11 Toxic Sting) before the trade". Skill 9
+    // Sandblast (Earth) is the chip/weather partner, because exactly one Dark
+    // skill exists (a balance finding handed to pt-d3, not fixable here).
+    (
+        id: 20,
+        name: "Umbraquill",
+        base_stats: (hp: 46, attack: 42, defense: 52, speed: 68, sp_attack: 58, sp_defense: 44),
+        affinity: Dark,
+        learnable_skill_ids: [11, 9],
+    ),
+    // Gustwyrm (Wind, SUPPORT archetype) — the roster's first bulky pivot. hp 58
+    // is the highest base-form HP shipped (44/45/45 today). Skill 10 Hailstrike
+    // is STAB + weather; skill 7 Rain Dance gives the line a two-weather support
+    // kit against the M14d field-state system.
+    (
+        id: 21,
+        name: "Gustwyrm",
+        base_stats: (hp: 58, attack: 44, defense: 56, speed: 50, sp_attack: 50, sp_defense: 62),
+        affinity: Wind,
+        learnable_skill_ids: [10, 7],
+    ),
+]
