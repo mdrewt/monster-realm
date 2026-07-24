@@ -2935,10 +2935,12 @@ describe('AuthoritativeStore m17b: no removeProfile method (RL-2 structural guar
 // !== undefined && !shouldSnap && now - existing.latest.receivedAt < BURST_EPSILON_MS`
 // guard) only ASSIGNS the synthetic receivedAt when
 // `existing.latest.receivedAt + stepMs <= now + BURST_EPSILON_MS`. Substituting
-// d = now - existing.latest.receivedAt (0 <= d < BURST_EPSILON_MS to even enter the
-// branch) reduces the guard to `stepMs <= d + BURST_EPSILON_MS`. Since d's supremum
-// is BURST_EPSILON_MS (exclusive), the branch is reachable for SOME d in its domain
-// iff `stepMs < 2*BURST_EPSILON_MS`. At the real production tick rate (STEP_MS=200,
+// d = now - existing.latest.receivedAt (the outer guard bounds d only from ABOVE,
+// d < BURST_EPSILON_MS — there is NO d >= 0 check in the code) reduces the guard to
+// `stepMs <= d + BURST_EPSILON_MS`. A negative d (a chained future synthetic) only
+// SHRINKS the RHS, so the reachability supremum is at d -> BURST_EPSILON_MS: the
+// branch is reachable for SOME admissible d iff `stepMs < 2*BURST_EPSILON_MS`. At
+// the real production tick rate (STEP_MS=200,
 // surfaced to the client via the wasm `step_ms()` export in main.ts — not importable
 // into this node-only vitest run) the branch is provably DEAD CODE: these are
 // TDD pins of that existing (already-true) fact, not new behaviour.
@@ -2959,8 +2961,9 @@ describe('AuthoritativeStore ADR-0090/ptc5f: burst-spread reachability bound (De
   });
 
   it('BITES: at production STEP_MS the synthetic branch is unreachable across the WHOLE burst-gap domain', () => {
-    // Sweep every burst gap d in [0, BURST_EPSILON_MS) — the entire domain that can
-    // even enter the burst-detection branch. At PRODUCTION_STEP_MS, synthetic
+    // Sweep every non-negative burst gap d in [0, BURST_EPSILON_MS) — the
+    // reachability-maximizing sub-domain (negative d only shrinks reachability, so
+    // if no non-negative d fires, none does). At PRODUCTION_STEP_MS, synthetic
     // (t0 + 200) always exceeds now + BURST_EPSILON_MS (at most t0 + 39), so the
     // guard never fires and receivedAt stays at real wall-clock time for every d.
     // Wrong impl killed: any impl that fires synthetic at this stepMs (e.g. a
