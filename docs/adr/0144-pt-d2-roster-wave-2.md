@@ -97,18 +97,28 @@ fully disjoint add — whereas the natural Rust homes (`game-core/src/content.rs
 `server-module/src/content_tests.rs`) are shared files wave 1 will also edit *and* sit outside
 this slice's declared touch set.
 
-The new `evals/pt-d2-roster-wave-2.eval.mjs` deliberately carries **only invariants no
-existing gate asserts**. Stat ranges, dangling skill/ability references and evolution
-integrity stay owned by the Rust validators (the authority); the eval adds:
+The **Rust validators remain the authority** for content integrity; the eval is slice-scoped
+defence-in-depth. Its genuinely novel checks are:
 
 - the **reserved-band** rule (D1),
 - the affinity/STAB design bar,
 - the **orphan-derived-form** rule — every species in `051-wave2-derived.ron` must be some
-  evolution's `to_species` exactly once. Nothing today catches a derived form that no
-  evolution reaches: `validate_evolution_fusion` walks *from* evolutions, never *to* the
-  derived file. This is the genuinely novel tooth.
+  evolution's `to_species` exactly once, and every wave-2 evolution target must be a member
+  of that derived set. Nothing else catches either half: `validate_evolution_fusion` walks
+  *from* evolutions and never *to* the derived file, and its "derived forms not wild" step is
+  vacuous for a species that has no encounter row yet — a red-team pass demonstrated that
+  a base form evolving directly into *another wild-legal base form* passed both the Rust
+  authority test and the first draft of this eval. This is the load-bearing tooth.
 - `derived BST > source BST` (a line invariant Rust does not check),
 - sprite sheet-set/format/normal-registration, and the **silhouette-distinctness** tooth.
+
+It **also mirrors** two rules the Rust validators own — non-empty learnsets and dangling
+skill-id references — following the precedent set by
+`evals/evolution-fusion-content-integrity.eval.mjs`: a content-file-only checker catches a
+bad content edit before a Rust build, which is the cheapest possible feedback for a slice
+whose whole surface is data. Deliberately **not** mirrored: stat ranges and ability
+references, where a second implementation would be pure SSOT duplication with no
+faster-feedback payoff.
 
 `SPR-SET` iterates an **explicit `COVERED` id→slug map, not the whole registry** — a total
 gate would go red the moment wave 1 merged species this slice cannot know the slugs of. The
@@ -177,3 +187,17 @@ shared art module gains a companion rather than a fork.
 - Two independently-authored per-species art generators (one per wave) would be a duplicated
   concept. Flagged in the handoff: whichever wave lands second should import this module rather
   than add a third.
+
+**Follow-ups this slice deliberately did not take** (each is outside the declared touch set):
+
+- **`validate_evolution_fusion` does not require an evolution target to be a derived-only
+  form.** The eval closes this for wave-2 sources only; the general fix belongs in
+  `game-core/src/content.rs`, which this content slice may not edit. Worth a small rules slice
+  before pt-d3 adds encounter rows, because the existing step-6 guard only bites once a species
+  is actually wild-encounterable.
+- The orphan tooth reads `evolutions.ron` only, so a derived form reachable solely through
+  `fusion.ron` would be flagged as an orphan. Not reachable today (neither 22 nor 23 is a fusion
+  result) and it fails **safe** — over-strict, never permissive.
+- `SPR-SET`/`SPR-SILHOUETTE` iterate the eval's explicit `COVERED` map. Once both roster waves
+  have landed, promoting it to a total function over the merged registry — so every species is
+  required to have a distinct sheet — is the natural hardening step.

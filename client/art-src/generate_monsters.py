@@ -286,15 +286,18 @@ def draw_armored(facing, col, pal, sec, acc, size, feats):
     im = Img(TILE, TILE)
     b = 1 if col == "walk0" else 0
     lp = {"idle": 0, "walk0": 1, "walk1": -1}[col]
-    contact_shadow(im, 16, 30, 7)
-    for dx, ph in ((-4, lp), (1, -lp)):  # planted legs, directly under torso
+    # `size` widens the torso block and the shoulder plates, so two rows of the
+    # plan table that differ only in size cannot render identically.
+    hw = sz(size, 4, 5)  # torso half-width
+    contact_shadow(im, 16, 30, hw + 2)
+    for dx, ph in ((-hw, lp), (hw - 3, -lp)):  # planted legs, under the torso
         im.rect(16 + dx, 25 - b + (1 if ph > 0 else 0), 3, 5, acc[1])
-    im.rect(10, 22 - b, 12, 4, pal[1])  # hips
-    im.rect(11, 13 - b, 10, 10, pal[2])  # torso block
-    im.hline(11, 13 - b, 10, pal[3])
-    im.hline(11, 22 - b, 10, pal[0])
-    im.rect(8, 13 - b, 3, 3, pal[1])  # shoulder plates (2px wider than torso)
-    im.rect(21, 13 - b, 3, 3, pal[1])
+    im.rect(16 - hw - 1, 22 - b, 2 * hw + 2, 4, pal[1])  # hips
+    im.rect(16 - hw, 13 - b, 2 * hw, 10, pal[2])  # torso block
+    im.hline(16 - hw, 13 - b, 2 * hw, pal[3])
+    im.hline(16 - hw, 22 - b, 2 * hw, pal[0])
+    im.rect(16 - hw - 3, 13 - b, 3, 3, pal[1])  # shoulder plates, 3px wider
+    im.rect(16 + hw, 13 - b, 3, 3, pal[1])
     im.rect(13, 17 - b, 6, 3, sec[1])  # chest emblem / underlayer
     im.rect(12, 6 - b, 8, 7, pal[2])  # helm
     im.hline(12, 6 - b, 8, pal[3])
@@ -316,13 +319,16 @@ def draw_vapor(facing, col, pal, sec, acc, size, feats):
     """Wide-bottomed bell of vapour with trailing veils, no face, no legs."""
     im = Img(TILE, TILE)
     drift = {"idle": 0, "walk0": 1, "walk1": -1}[col]
-    contact_shadow(im, 16, 30, 5)  # small + offset: it hovers
-    body(im, 16, 23, 12, 6, pal)
-    body(im, 16, 15, 6, 6, pal)
-    body(im, 16, 19, 9, 4, pal, outline=False)
+    # `size` sets the bell's flare, so two rows of the plan table that differ
+    # only in size cannot render identically.
+    flare = sz(size, 9, 12)
+    contact_shadow(im, 16, 30, flare - 7)  # small + offset: it hovers
+    body(im, 16, 23, flare, 6, pal)
+    body(im, 16, 15, flare - 6, 6, pal)
+    body(im, 16, 19, flare - 3, 4, pal, outline=False)
     under(im, 16, 21, 4, 3, sec)  # warm ember core glowing through the veil
     if "veil" in feats:  # ribbons trail BELOW the bbox — a unique bottom edge
-        for dx, ph in ((-9, drift), (9, -drift)):
+        for dx, ph in ((-flare + 3, drift), (flare - 3, -drift)):
             for i in range(6):
                 im.put(16 + dx + int(round(ph * i / 3.0)), 25 + i, pal[1])
                 im.put(16 + dx + int(round(ph * i / 3.0)) + 1, 25 + i, pal[3])
