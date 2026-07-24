@@ -668,4 +668,75 @@ describe('RenderResolver — ptc5g: position-divergence snap (Chebyshev > 1 tile
     expect(mid.x).toBeCloseTo(5, 3);
     expect(mid.x).not.toBe(10);
   });
+
+  it('T5 REFERENT TOOTH: a mid-slide continuation compares against .target, not positionAt(now) (slides, no false snap)', () => {
+    // ADR-0141 sub-decision 1: the divergence check must compare the new
+    // authoritative target against the slide clock's CURRENT COMMITTED TARGET
+    // (`.target`), NOT its animated `positionAt(now)`. This test discriminates
+    // the two referents (symmetric with T3's metric pin, but for the referent
+    // instead of the metric).
+    //
+    // Sequence:
+    //   now=0   predicted=(0,0) snapped=false → seeds #ownClock at (0,0)
+    //   now=0   predicted=(1,0) snapped=false → chebyshev((1,0),(0,0))=1, not >1
+    //           → slides; slide 0→1 starts at t=0 (target becomes (1,0))
+    //   now=150 predicted=(2,0) snapped=false → MID-slide sample; positionAt(150)
+    //           on the in-flight 0→1 slide would be 0.75 (NOT yet at target 1).
+    //
+    // SHIPPED semantics (compare vs `.target` = (1,0)):
+    //   chebyshev((2,0), (1,0)) = 1, NOT > 1 → setTarget (slide continues).
+    //   setTarget re-roots the origin at the current animated position (0.75),
+    //   so resolve() returns own.x ≈ 0.75 (FRACTIONAL, GREEN).
+    //
+    // REJECTED alternative (compare vs `positionAt(150)` = (0.75, 0)):
+    //   chebyshev((2,0), (0.75,0)) = 1.25 > 1 → would wrongly snapTo → own.x
+    //   would be integer 2 — a fragmented multi-frame delivery force-snapped
+    //   mid-slide, which is exactly the "memoryless-by-committed-target"
+    //   semantics ADR-0141 rejects (consecutive ≤1-tile targets should each
+    //   slide, never snap, even if sampled mid-animation).
+    //
+    // So this test is GREEN on the shipped (target-referent) code and RED if
+    // someone ever swaps `.target` for `positionAt(now)` in the divergence check.
+    const resolver = new RenderResolver(STEP_MS);
+    const char = makeChar(OWN_ID, 0, 0, 0);
+
+    // Seed at (0,0)
+    resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(0, 0),
+        snapped: false,
+        now: 0,
+      }),
+    );
+
+    // Normal step: chebyshev((1,0),(0,0))=1 → slides; slide 0→1 starts at t=0
+    resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(1, 0),
+        snapped: false,
+        now: 0,
+      }),
+    );
+
+    // MID-slide (positionAt(150) on the 0→1 slide would be 0.75). New target (2,0).
+    const entities = resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(2, 0),
+        snapped: false,
+        now: 150,
+      }),
+    );
+
+    const own = entities.find((e) => e.entityId === OWN_ID);
+    expect(own).toBeDefined();
+    expect(Number.isInteger(own!.x)).toBe(false);
+    expect(own!.x).toBeLessThan(2);
+    expect(own!.x).toBeCloseTo(0.75, 3);
+  });
 });
