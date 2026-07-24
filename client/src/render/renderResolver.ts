@@ -21,8 +21,24 @@ import {
   interpolateHistory,
   type RenderPos,
 } from './interpolation';
-import { SlideClock } from './slideClock';
+import { SlideClock, type SlideTile } from './slideClock';
 import type { RenderEntity } from './world';
+
+/**
+ * ptc5g (ADR-0141): a new authoritative own-target farther than this many tiles
+ * (Chebyshev) from the slide clock's CURRENT target is a POSITION jump (server
+ * correction / same-zone respawn / dropped-update catch-up), not a step — snap
+ * through the existing `snapped` path instead of gliding it over one STEP_MS.
+ * `1` because a normal single-axis step is exactly Chebyshev 1 and must still
+ * slide (the anti-stutter core, ADR-0013). Parallels predictor's `SNAP_GAP_STEPS`.
+ */
+const SNAP_DIVERGENCE_TILES = 1;
+
+/** Chebyshev (chessboard) tile distance = the largest per-axis gap. Chosen over
+ *  Manhattan so a 1-tile diagonal (dx=dy=1) is distance 1 (still slides), not 2. */
+function chebyshev(a: SlideTile, b: SlideTile): number {
+  return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+}
 
 export interface ResolveInput {
   readonly characters: Iterable<StoredCharacter>;
@@ -64,9 +80,15 @@ export class RenderResolver {
         // Lazily seed the clock AT the current tile on first use so the first slide
         // starts from the right origin (no teleport from a stale 0,0).
         this.#ownClock ??= new SlideClock(this.#stepMs, tile, now);
-        // Every frame (incl. the seed frame): snapTo on a large-gap signal, else
-        // setTarget — a same-tile re-affirm is a SlideClock no-op (anti-stutter).
-        if (snapped) this.#ownClock.snapTo(tile, now);
+        // Snap on the predictor's time-gap signal OR a large authoritative POSITION
+        // divergence (ptc5g, ADR-0141). Compare against the clock's CURRENT target
+        // tile (the spec's referent; positionAt(now) would be frame-timing-sensitive
+        // and could under-trigger at slide start). A same-tile re-affirm is a
+        // SlideClock no-op (anti-stutter); the seed frame above targets `tile` already
+        // → distance 0 → no false snap, and a reset-covered warp re-seeds here → also
+        // distance 0 → no double-handling.
+        const targetGapTiles = chebyshev(tile, this.#ownClock.target);
+        if (snapped || targetGapTiles > SNAP_DIVERGENCE_TILES) this.#ownClock.snapTo(tile, now);
         else this.#ownClock.setTarget(tile, now);
         const pos = this.#ownClock.positionAt(now);
         out.push({

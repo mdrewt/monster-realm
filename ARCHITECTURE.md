@@ -57,7 +57,7 @@ effectful shells.
   normal/material channels are an additive future render mode — ADR-0004). It owns no
   state and reads no store/predictor: the M4c loop feeds it resolved positions
   (own from the slide clock, remote from the interpolation buffer). **Wasm-sourced constants** — `party_size()` and `party_slot_none()` are now single-sourced from `game-core` via `client-wasm` exports, replacing the former TS magic literals.
-  **M8.6b connected the pure-core slide clock and interpolation buffer into the integrated loop via `RenderResolver`** — prior integrated loop fed raw integer tiles; the pure cores were tested-but-unimported. Now own animates from SlideClock (fractional, keyed to snapped tiles) and remotes from the interpolation buffer (now − interpDelay), completing the M4c smoothness design into reality.
+  **M8.6b connected the pure-core slide clock and interpolation buffer into the integrated loop via `RenderResolver`** — prior integrated loop fed raw integer tiles; the pure cores were tested-but-unimported. Now own animates from SlideClock (fractional, keyed to snapped tiles) and remotes from the interpolation buffer (now − interpDelay), completing the M4c smoothness design into reality. **ptc5g (ADR-0141)** extends `RenderResolver`'s own-path snap: besides the predictor's time-gap `snapped` flag, it also snaps when the new authoritative own-target is `> 1` tile (Chebyshev) from the slide clock's current target — so a same-zone server correction / respawn / dropped-update catch-up jumps rather than gliding multiple tiles over one `STEP_MS` (zone warps stay reset-covered via `resolver.reset()`). Resolves the M10.5 D-render-snap residual (trigger fired at M11 warps).
 
 ## Mechanical gates (each ships a proof-of-teeth fixture — ADR-0010)
 

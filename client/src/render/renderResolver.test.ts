@@ -14,6 +14,10 @@ import { describe, expect, it } from 'vitest';
 import type { WasmCharacterState } from '../convert/convert';
 import type { StoredCharacter } from '../net/store';
 import { RenderResolver, type ResolveInput } from './renderResolver';
+// ptc5g: standalone BITES fixture (§9 below) drives the pure SlideClock directly,
+// alongside (not through) the RenderResolver, to prove the divergence-snap
+// assertion is meaningful.
+import { SlideClock } from './slideClock';
 
 // ---------------------------------------------------------------------------
 // Test-fixture helpers
@@ -487,5 +491,252 @@ describe('RenderResolver — reset() drops the own slide clock', () => {
     // Must NOT be near 5 (stale pre-reset origin)
     expect(own!.x).toBeLessThan(4);
     expect(own!.x).toBeGreaterThan(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. ptc5g — own-path position-divergence snap (Chebyshev > 1 tile ⇒ snap, not slide)
+// ---------------------------------------------------------------------------
+// EARS criterion ptc5g-2: when a NEW authoritative own-target arrives that is
+// more than 1 tile away (Chebyshev = max(|dx|,|dy|)) from the slide clock's
+// CURRENT target, the own path must SNAP (jump instantly) instead of gliding —
+// folded into the existing `snapped` branch of RenderResolver.resolve. Today
+// (unmodified source) `resolve` ALWAYS calls `setTarget` when `snapped=false`,
+// so even a 10-tile jump glides smoothly across STEP_MS — the anti-teleport-
+// glide bug this slice fixes. T2/T3 pin the boundary so the fix cannot
+// over-snap (1-tile and 1-tile-diagonal steps must keep sliding).
+
+describe('RenderResolver — ptc5g: position-divergence snap (Chebyshev > 1 tile)', () => {
+  it('T1 CORE: a >1-tile authoritative jump SNAPS instead of gliding', () => {
+    // Sequence:
+    //   now=0   predicted=(0,0)  snapped=false → seeds #ownClock at tile (0,0)
+    //   now=0   predicted=(10,0) snapped=false → chebyshev((10,0),(0,0)) = 10 > 1
+    //           → must SNAP (jump), not setTarget (glide)
+    //   now=100 predicted=(10,0) snapped=false → sample
+    //
+    // TODAY (RED): resolve() unconditionally calls setTarget on this branch, so
+    // the slide clock glides 0→10 over STEP_MS=200; positionAt(100) =
+    // 0 + 10 * clamp01(100/200) = 10 * 0.5 = 5 (WRONG — a visible teleport-glide).
+    // AFTER THE FIX (GREEN): the large-jump branch calls snapTo instead, so the
+    // origin is already (10,0) by t=0; positionAt(100) = 10 (instant, correct).
+    const resolver = new RenderResolver(STEP_MS);
+    const char = makeChar(OWN_ID, 0, 0, 0);
+
+    // Seed at tile (0,0)
+    resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(0, 0),
+        snapped: false,
+        now: 0,
+      }),
+    );
+
+    // Large jump: chebyshev((10,0), (0,0)) = 10 > 1 → must snap
+    resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(10, 0),
+        snapped: false,
+        now: 0,
+      }),
+    );
+
+    const entities = resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(10, 0),
+        snapped: false,
+        now: 100,
+      }),
+    );
+
+    const own = entities.find((e) => e.entityId === OWN_ID);
+    expect(own, 'own entity must be in the output').toBeDefined();
+    expect(own!.x).toBe(10);
+    expect(own!.y).toBe(0);
+    expect(Number.isInteger(own!.x)).toBe(true);
+  });
+
+  it('T2 COMPANION: an exactly-1-tile step STILL slides (no false snap)', () => {
+    // chebyshev((1,0), (0,0)) = 1, which is NOT > 1 → must keep sliding.
+    // GREEN today (current source always slides on snapped=false) AND after the
+    // fix (a correct fix only snaps strictly above 1 tile). A fix that snapped
+    // on `>= 1` instead of `> 1` would break this test — the anti-over-snap anchor.
+    const resolver = new RenderResolver(STEP_MS);
+    const char = makeChar(OWN_ID, 0, 0, 0);
+
+    resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(0, 0),
+        snapped: false,
+        now: 0,
+      }),
+    );
+
+    resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(1, 0),
+        snapped: false,
+        now: 0,
+      }),
+    );
+
+    const entities = resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(1, 0),
+        snapped: false,
+        now: 100,
+      }),
+    );
+
+    const own = entities.find((e) => e.entityId === OWN_ID);
+    expect(own).toBeDefined();
+    expect(own!.x).toBeCloseTo(0.5, 3);
+    expect(own!.x).toBeGreaterThan(0);
+    expect(own!.x).toBeLessThan(1);
+    expect(Number.isInteger(own!.x)).toBe(false);
+  });
+
+  it('T3 METRIC TOOTH: a 1-tile diagonal step slides (pins Chebyshev, not Manhattan)', () => {
+    // chebyshev((1,1), (0,0)) = max(|1|,|1|) = 1 → NOT > 1 → must keep sliding.
+    // A wrong implementation using MANHATTAN distance (|dx|+|dy| = 2) would treat
+    // this as a >1 jump and snap straight to integer (1,1) — this test bites that
+    // wrong metric. GREEN today and after a correct (Chebyshev) fix; RED only
+    // under a Manhattan-metric mutation.
+    const resolver = new RenderResolver(STEP_MS);
+    const char = makeChar(OWN_ID, 0, 0, 0);
+
+    resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(0, 0),
+        snapped: false,
+        now: 0,
+      }),
+    );
+
+    resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(1, 1),
+        snapped: false,
+        now: 0,
+      }),
+    );
+
+    const entities = resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(1, 1),
+        snapped: false,
+        now: 100,
+      }),
+    );
+
+    const own = entities.find((e) => e.entityId === OWN_ID);
+    expect(own).toBeDefined();
+    expect(own!.x).toBeCloseTo(0.5, 3);
+    expect(own!.y).toBeCloseTo(0.5, 3);
+    expect(Number.isInteger(own!.x)).toBe(false);
+  });
+
+  it('T4 BITES (inline mutation proof for T1): a setTarget-only clock GLIDES across the jump', () => {
+    // Models the OLD (pre-ptc5g) mechanism directly on the pure SlideClock: a
+    // clock that only ever calls setTarget (never snapTo) glides across a
+    // 10-tile jump instead of snapping. This proves the T1 snap assertion is
+    // meaningful — removing the `> 1` divergence branch (i.e. reverting to
+    // always-setTarget) re-fails T1's `own.x === 10` assertion, landing back
+    // on 5 exactly as this fixture demonstrates.
+    const clock = new SlideClock(STEP_MS, { x: 0, y: 0 }, 0); // seeded at (0,0)
+    clock.setTarget({ x: 10, y: 0 }, 0); // OLD behavior: setTarget, not snapTo
+
+    const mid = clock.positionAt(100);
+
+    expect(mid.x).toBeCloseTo(5, 3);
+    expect(mid.x).not.toBe(10);
+  });
+
+  it('T5 REFERENT TOOTH: a mid-slide continuation compares against .target, not positionAt(now) (slides, no false snap)', () => {
+    // ADR-0141 sub-decision 1: the divergence check must compare the new
+    // authoritative target against the slide clock's CURRENT COMMITTED TARGET
+    // (`.target`), NOT its animated `positionAt(now)`. This test discriminates
+    // the two referents (symmetric with T3's metric pin, but for the referent
+    // instead of the metric).
+    //
+    // Sequence:
+    //   now=0   predicted=(0,0) snapped=false → seeds #ownClock at (0,0)
+    //   now=0   predicted=(1,0) snapped=false → chebyshev((1,0),(0,0))=1, not >1
+    //           → slides; slide 0→1 starts at t=0 (target becomes (1,0))
+    //   now=150 predicted=(2,0) snapped=false → MID-slide sample; positionAt(150)
+    //           on the in-flight 0→1 slide would be 0.75 (NOT yet at target 1).
+    //
+    // SHIPPED semantics (compare vs `.target` = (1,0)):
+    //   chebyshev((2,0), (1,0)) = 1, NOT > 1 → setTarget (slide continues).
+    //   setTarget re-roots the origin at the current animated position (0.75),
+    //   so resolve() returns own.x ≈ 0.75 (FRACTIONAL, GREEN).
+    //
+    // REJECTED alternative (compare vs `positionAt(150)` = (0.75, 0)):
+    //   chebyshev((2,0), (0.75,0)) = 1.25 > 1 → would wrongly snapTo → own.x
+    //   would be integer 2 — a fragmented multi-frame delivery force-snapped
+    //   mid-slide, which is exactly the "memoryless-by-committed-target"
+    //   semantics ADR-0141 rejects (consecutive ≤1-tile targets should each
+    //   slide, never snap, even if sampled mid-animation).
+    //
+    // So this test is GREEN on the shipped (target-referent) code and RED if
+    // someone ever swaps `.target` for `positionAt(now)` in the divergence check.
+    const resolver = new RenderResolver(STEP_MS);
+    const char = makeChar(OWN_ID, 0, 0, 0);
+
+    // Seed at (0,0)
+    resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(0, 0),
+        snapped: false,
+        now: 0,
+      }),
+    );
+
+    // Normal step: chebyshev((1,0),(0,0))=1 → slides; slide 0→1 starts at t=0
+    resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(1, 0),
+        snapped: false,
+        now: 0,
+      }),
+    );
+
+    // MID-slide (positionAt(150) on the 0→1 slide would be 0.75). New target (2,0).
+    const entities = resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(2, 0),
+        snapped: false,
+        now: 150,
+      }),
+    );
+
+    const own = entities.find((e) => e.entityId === OWN_ID);
+    expect(own).toBeDefined();
+    expect(Number.isInteger(own!.x)).toBe(false);
+    expect(own!.x).toBeLessThan(2);
+    expect(own!.x).toBeCloseTo(0.75, 3);
   });
 });

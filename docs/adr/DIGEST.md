@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 106 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 107 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -115,6 +115,7 @@ Generated from 106 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0138](./0138-ptc5b-wild-disconnect-gc.md) | 0138 — ptc5b wild-battle disconnect resolution: auto-flee + GC the `battle`/`battle_wild` rows to unblock returning-player re-entry | Accepted | battle, schema-persistence, security-authz | ptc5b (M-playtest-c.5 pre-gate residuals — wild-battle disconnect GC, EARS ptc5b-1..3) | On disconnect, auto-flee the caller's Ongoing WILD battle via the flee write-back SSOT, then delete its `battle` + `battle_wild` rows to unblock returning-player re-entry; no reaper, no new tables. |
 | [0139](./0139-ptc5c-overlay-mutual-exclusion-symmetry.md) | Overlay mutual-exclusion symmetry: fix KeyB/I/E open-guards + a guard-OR-hide fan-out gate (registry parked) | Accepted | client-ui | ptc5c | Close the overlay mutual-exclusion asymmetry in `client/src/main.ts`: the three oldest |
 | [0140](./0140-ptc5e-ssot-content-dedup-polish.md) | 0140 — ptc5e SSOT / content / dedup polish: CARE magnitudes + shared cooldown-ready predicate to game-core; heal-location stale-delete; isPvpBattle canonicalization; resetCharacters comment fix | Accepted | content, client-ui | ptc5e (M-playtest-c.5 pre-gate residuals — SSOT/content/dedup polish, EARS ptc5e-1..5) | Relocate CARE magnitudes to game-core; share one pure `is_cooldown_ready` predicate across care and heal; reap content-removed heal rows; dedup `isPvpBattle`; fix a stale comment — behavior-preserving SSOT polish, no schema change. |
+| [0141](./0141-ptc5g-render-divergence-snap.md) | 0141 — ptc5g position-divergence render snap: own-render snaps on a > 1-tile (Chebyshev) authoritative target jump via the existing `snapped` path | Accepted | movement-netcode, client-ui | ptc5g (M-playtest-c.5 pre-gate residuals — position-divergence render snap; resolves M10.5 D-render-snap, EARS ptc5g-1..3) | Snap the own-render (not slide) when the new authoritative own-target is > 1 tile (Chebyshev) from the slide clock's current target, via the existing `snapped` branch — so large position jumps snap instead of gliding over one `STEP_MS`. |
 
 ## Harness design corpus (H- namespace)
 
@@ -221,6 +222,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0133](./0133-rename-ui.md) — pt-c1b — Client profile-rename UI (first text-input overlay) (Accepted)
 - [0134](./0134-trade-propose-ui.md) — pt-c2 — Client trade-PROPOSE UI (KeyO offer overlay) (Accepted)
 - [0135](./0135-pt-c2b-help-overlay.md) — pt-c2b — In-client help overlay (`?`) + tester runbook (pt-c2b) (Accepted)
+- [0141](./0141-ptc5g-render-divergence-snap.md) — ptc5g (M-playtest-c.5 pre-gate residuals — position-divergence render snap; resolves M10.5 D-render-snap, EARS ptc5g-1..3) — 0141 — ptc5g position-divergence render snap: own-render snaps on a > 1-tile (Chebyshev) authoritative target jump via the existing `snapped` path (Accepted)
 
 ### content
 
@@ -291,6 +293,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0135](./0135-pt-c2b-help-overlay.md) — pt-c2b — In-client help overlay (`?`) + tester runbook (pt-c2b) (Accepted)
 - [0139](./0139-ptc5c-overlay-mutual-exclusion-symmetry.md) — ptc5c — Overlay mutual-exclusion symmetry: fix KeyB/I/E open-guards + a guard-OR-hide fan-out gate (registry parked) (Accepted)
 - [0140](./0140-ptc5e-ssot-content-dedup-polish.md) — ptc5e (M-playtest-c.5 pre-gate residuals — SSOT/content/dedup polish, EARS ptc5e-1..5) — 0140 — ptc5e SSOT / content / dedup polish: CARE magnitudes + shared cooldown-ready predicate to game-core; heal-location stale-delete; isPvpBattle canonicalization; resetCharacters comment fix (Accepted)
+- [0141](./0141-ptc5g-render-divergence-snap.md) — ptc5g (M-playtest-c.5 pre-gate residuals — position-divergence render snap; resolves M10.5 D-render-snap, EARS ptc5g-1..3) — 0141 — ptc5g position-divergence render snap: own-render snaps on a > 1-tile (Chebyshev) authoritative target jump via the existing `snapped` path (Accepted)
 
 ### ci-gates
 
