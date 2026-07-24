@@ -22,7 +22,7 @@
 //
 // HARD CONSTRAINT: no `new RegExp(...)` anywhere (Semgrep detect-non-literal-regexp).
 // Only literal /regex/ or String.indexOf/includes/split.
-import { readFileSync, readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { deflateSync, inflateSync } from 'node:zlib';
 
 // ---------------------------------------------------------------------------
@@ -158,7 +158,9 @@ export function parseSpeciesBlock(blockText) {
     const m = baseStatsText ? statRe[key].exec(baseStatsText) : null;
     baseStats[key] = m ? Number(m[1]) : undefined;
   }
-  const learnableSkillIds = learnText ? [...learnText.matchAll(/\d+/g)].map((m) => Number(m[0])) : [];
+  const learnableSkillIds = learnText
+    ? [...learnText.matchAll(/\d+/g)].map((m) => Number(m[0]))
+    : [];
   return {
     id: idMatch ? Number(idMatch[1]) : undefined,
     name: nameMatch ? nameMatch[1] : undefined,
@@ -259,7 +261,8 @@ export function findDuplicateSpeciesIds(allIds) {
   for (const id of allIds) counts.set(id, (counts.get(id) ?? 0) + 1);
   const violations = [];
   for (const [id, count] of counts) {
-    if (count > 1) violations.push(`species id ${id} is declared ${count} times across the species registry`);
+    if (count > 1)
+      violations.push(`species id ${id} is declared ${count} times across the species registry`);
   }
   return violations;
 }
@@ -271,7 +274,10 @@ export function findDuplicateSpeciesIds(allIds) {
 export function findBadAffinities(speciesList, allowed = ALLOWED_AFFINITIES) {
   return speciesList
     .filter((s) => !allowed.has(s.affinity))
-    .map((s) => `species ${s.id} (${s.name}) has affinity ${s.affinity}, expected one of {${[...allowed].join(', ')}}`);
+    .map(
+      (s) =>
+        `species ${s.id} (${s.name}) has affinity ${s.affinity}, expected one of {${[...allowed].join(', ')}}`,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -300,7 +306,9 @@ export function findLearnsetViolations(speciesList, knownSkillIds) {
 export function findMissingSTAB(speciesList, skillAffinityById) {
   const violations = [];
   for (const s of speciesList) {
-    const hasStab = s.learnableSkillIds.some((skillId) => skillAffinityById.get(skillId) === s.affinity);
+    const hasStab = s.learnableSkillIds.some(
+      (skillId) => skillAffinityById.get(skillId) === s.affinity,
+    );
     if (!hasStab) {
       violations.push(
         `species ${s.id} (${s.name}, affinity ${s.affinity}) learns no skill of its own affinity (learnset: [${s.learnableSkillIds.join(', ')}])`,
@@ -326,9 +334,13 @@ export function findEvoOrphansAndBadSources(derivedIds, evolutionBlocks, baseIdS
   for (const id of derivedIds) {
     const count = targetCounts.get(id) ?? 0;
     if (count === 0) {
-      violations.push(`derived species ${id} is never reached as a to_species — orphan derived form`);
+      violations.push(
+        `derived species ${id} is never reached as a to_species — orphan derived form`,
+      );
     } else if (count > 1) {
-      violations.push(`derived species ${id} is reached as a to_species ${count} times — expected exactly once`);
+      violations.push(
+        `derived species ${id} is reached as a to_species ${count} times — expected exactly once`,
+      );
     }
   }
   const derivedSet = new Set(derivedIds);
@@ -376,7 +388,12 @@ export function findNonMonotonicEvolutions(evoPairs, bstById) {
 // ---------------------------------------------------------------------------
 
 function spriteFileNames(slug) {
-  return [`monster-${slug}.png`, `monster-${slug}.json`, `monster-${slug}-normal.png`, `monster-${slug}-normal.json`];
+  return [
+    `monster-${slug}.png`,
+    `monster-${slug}.json`,
+    `monster-${slug}-normal.png`,
+    `monster-${slug}-normal.json`,
+  ];
 }
 
 export function findMissingSpriteFiles(covered, existingFiles) {
@@ -449,7 +466,9 @@ export function checkSheetFormat(sheetJson, label) {
       const want = expectedAnim[k];
       const same = got.length === want.length && want.every((f, i) => got[i] === f);
       if (!same) {
-        violations.push(`${label}: animation ${k} frames ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
+        violations.push(
+          `${label}: animation ${k} frames ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`,
+        );
       }
     }
   }
@@ -468,13 +487,17 @@ export function checkNormalRegistration(albedoJson, normalJson, label) {
     const a = aFrames[key]?.frame;
     const n = nFrames[key]?.frame;
     if (!a || !n || a.x !== n.x || a.y !== n.y || a.w !== n.w || a.h !== n.h) {
-      violations.push(`${label}: frame rect for ${key} is not identical between albedo and normal sheets`);
+      violations.push(
+        `${label}: frame rect for ${key} is not identical between albedo and normal sheets`,
+      );
     }
   }
   const aImg = albedoJson?.meta?.image;
   const nImg = normalJson?.meta?.image;
   if (aImg === nImg) {
-    violations.push(`${label}: normal sheet meta.image (${nImg}) is identical to the albedo's — must differ`);
+    violations.push(
+      `${label}: normal sheet meta.image (${nImg}) is identical to the albedo's — must differ`,
+    );
   }
   if (typeof nImg !== 'string' || !nImg.endsWith('-normal.png')) {
     violations.push(`${label}: normal sheet meta.image (${nImg}) does not end with -normal.png`);
@@ -527,10 +550,14 @@ export function decodePng(buf) {
   const filterMethod = ihdr.data.readUInt8(11);
   const interlace = ihdr.data.readUInt8(12);
   if (bitDepth !== 8) throw new Error(`decodePng: unsupported bit depth ${bitDepth}, expected 8`);
-  if (colorType !== 6) throw new Error(`decodePng: unsupported colour type ${colorType}, expected 6 (RGBA)`);
-  if (compression !== 0) throw new Error(`decodePng: unsupported compression method ${compression}, expected 0`);
-  if (filterMethod !== 0) throw new Error(`decodePng: unsupported filter method ${filterMethod}, expected 0`);
-  if (interlace !== 0) throw new Error(`decodePng: unsupported interlace method ${interlace}, expected 0`);
+  if (colorType !== 6)
+    throw new Error(`decodePng: unsupported colour type ${colorType}, expected 6 (RGBA)`);
+  if (compression !== 0)
+    throw new Error(`decodePng: unsupported compression method ${compression}, expected 0`);
+  if (filterMethod !== 0)
+    throw new Error(`decodePng: unsupported filter method ${filterMethod}, expected 0`);
+  if (interlace !== 0)
+    throw new Error(`decodePng: unsupported interlace method ${interlace}, expected 0`);
   const idatChunks = chunks.filter((c) => c.type === 'IDAT');
   if (idatChunks.length !== 1) {
     throw new Error(`decodePng: expected exactly 1 IDAT chunk, found ${idatChunks.length}`);
@@ -542,7 +569,9 @@ export function decodePng(buf) {
     const rowStart = y * (stride + 1);
     const filterByte = inflated[rowStart];
     if (filterByte !== 0) {
-      throw new Error(`decodePng: scanline ${y} has non-zero filter byte ${filterByte}, expected 0`);
+      throw new Error(
+        `decodePng: scanline ${y} has non-zero filter byte ${filterByte}, expected 0`,
+      );
     }
     pixels.set(inflated.subarray(rowStart + 1, rowStart + 1 + stride), y * stride);
   }
@@ -690,7 +719,9 @@ export function findDuplicatedCodecDefs(monstersSrc) {
 
 export function findReverseDependency(artSrcText) {
   if (artSrcText.indexOf('generate_monsters') !== -1) {
-    return ['generate_art.py references generate_monsters — generate_art must remain generator-agnostic'];
+    return [
+      'generate_art.py references generate_monsters — generate_art must remain generator-agnostic',
+    ];
   }
   return [];
 }
@@ -734,7 +765,9 @@ function buildTestPng({
   for (let y = 0; y < height; y++) {
     const rowStart = y * (stride + 1);
     raw[rowStart] = scanlineFilter;
-    const rowPixels = pixels ? pixels.subarray(y * stride, y * stride + stride) : Buffer.alloc(stride);
+    const rowPixels = pixels
+      ? pixels.subarray(y * stride, y * stride + stride)
+      : Buffer.alloc(stride);
     rowPixels.copy(raw, rowStart + 1);
   }
   const compressed = deflateSync(raw);
@@ -799,12 +832,18 @@ export default async function () {
     const ids = parseSpeciesFile(ronSpecies({ id: 7 })).map((s) => s.id);
     const violations = findOutOfReservedBand(ids);
     if (violations.length === 0) {
-      return { name, pass: false, detail: 'TEETH: W2-IDS — id 7 (outside 20..=29) was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W2-IDS — id 7 (outside 20..=29) was NOT flagged',
+      };
     }
   }
   // --- W2-IDS: duplicate id ---------------------------------------------------
   {
-    const ids = parseSpeciesFile(`[${ronSpecies({ id: 20 })}${ronSpecies({ id: 20 })}]`).map((s) => s.id);
+    const ids = parseSpeciesFile(`[${ronSpecies({ id: 20 })}${ronSpecies({ id: 20 })}]`).map(
+      (s) => s.id,
+    );
     const violations = findDuplicateSpeciesIds(ids);
     if (violations.length === 0) {
       return { name, pass: false, detail: 'TEETH: W2-IDS — duplicate id 20 was NOT flagged' };
@@ -812,11 +851,17 @@ export default async function () {
   }
   // --- W2-IDS: GOOD ------------------------------------------------------------
   {
-    const ids = parseSpeciesFile(`[${ronSpecies({ id: 20 })}${ronSpecies({ id: 21 })}]`).map((s) => s.id);
+    const ids = parseSpeciesFile(`[${ronSpecies({ id: 20 })}${ronSpecies({ id: 21 })}]`).map(
+      (s) => s.id,
+    );
     const bandViolations = findOutOfReservedBand(ids);
     const dupViolations = findDuplicateSpeciesIds(ids);
     if (bandViolations.length > 0 || dupViolations.length > 0) {
-      return { name, pass: false, detail: 'TEETH: W2-IDS — GOOD ids [20,21] were incorrectly flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W2-IDS — GOOD ids [20,21] were incorrectly flagged',
+      };
     }
   }
 
@@ -833,7 +878,11 @@ export default async function () {
     const species = parseSpeciesFile(ronSpecies({ id: 20, affinity: 'Dark' }));
     const violations = findBadAffinities(species);
     if (violations.length > 0) {
-      return { name, pass: false, detail: 'TEETH: W2-AFF — GOOD affinity Dark was incorrectly flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W2-AFF — GOOD affinity Dark was incorrectly flagged',
+      };
     }
   }
 
@@ -842,7 +891,11 @@ export default async function () {
     const species = parseSpeciesFile(ronSpecies({ id: 20, skills: [] }));
     const violations = findLearnsetViolations(species, new Set([1, 9, 10, 11]));
     if (violations.length === 0) {
-      return { name, pass: false, detail: 'TEETH: W2-LEARN — empty learnable_skill_ids was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W2-LEARN — empty learnable_skill_ids was NOT flagged',
+      };
     }
   }
   // --- W2-LEARN: dangling skill ref ------------------------------------------------
@@ -850,7 +903,11 @@ export default async function () {
     const species = parseSpeciesFile(ronSpecies({ id: 20, skills: [99] }));
     const violations = findLearnsetViolations(species, new Set([1, 9, 10, 11]));
     if (violations.length === 0) {
-      return { name, pass: false, detail: 'TEETH: W2-LEARN — dangling skill id 99 was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W2-LEARN — dangling skill id 99 was NOT flagged',
+      };
     }
   }
   // --- W2-LEARN: GOOD --------------------------------------------------------------
@@ -858,7 +915,11 @@ export default async function () {
     const species = parseSpeciesFile(ronSpecies({ id: 20, skills: [11, 9] }));
     const violations = findLearnsetViolations(species, new Set([1, 9, 10, 11]));
     if (violations.length > 0) {
-      return { name, pass: false, detail: 'TEETH: W2-LEARN — GOOD learnset [11,9] was incorrectly flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W2-LEARN — GOOD learnset [11,9] was incorrectly flagged',
+      };
     }
   }
 
@@ -872,7 +933,11 @@ export default async function () {
     const species = parseSpeciesFile(ronSpecies({ id: 20, affinity: 'Dark', skills: [9] }));
     const violations = findMissingSTAB(species, skillAffinityById);
     if (violations.length === 0) {
-      return { name, pass: false, detail: 'TEETH: W2-STAB — Dark species with only Earth skill was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W2-STAB — Dark species with only Earth skill was NOT flagged',
+      };
     }
   }
   // --- W2-STAB: GOOD -----------------------------------------------------------
@@ -885,7 +950,11 @@ export default async function () {
     const species = parseSpeciesFile(ronSpecies({ id: 20, affinity: 'Dark', skills: [11, 9] }));
     const violations = findMissingSTAB(species, skillAffinityById);
     if (violations.length > 0) {
-      return { name, pass: false, detail: 'TEETH: W2-STAB — GOOD learnset [11,9] for Dark was incorrectly flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W2-STAB — GOOD learnset [11,9] for Dark was incorrectly flagged',
+      };
     }
   }
 
@@ -897,7 +966,11 @@ export default async function () {
       new Set([20, 21]),
     );
     if (!violations.some((v) => v.includes('22'))) {
-      return { name, pass: false, detail: 'TEETH: W2-EVO-ORPHAN — orphan derived species 22 was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W2-EVO-ORPHAN — orphan derived species 22 was NOT flagged',
+      };
     }
   }
   // --- W2-EVO-ORPHAN: duplicate target ---------------------------------------------
@@ -911,14 +984,26 @@ export default async function () {
       new Set([20, 21]),
     );
     if (violations.length === 0) {
-      return { name, pass: false, detail: 'TEETH: W2-EVO-ORPHAN — target 22 reached twice was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W2-EVO-ORPHAN — target 22 reached twice was NOT flagged',
+      };
     }
   }
   // --- W2-EVO-ORPHAN: bad source --------------------------------------------------
   {
-    const violations = findEvoOrphansAndBadSources([22], [{ speciesId: 99, targets: [22] }], new Set([20, 21]));
+    const violations = findEvoOrphansAndBadSources(
+      [22],
+      [{ speciesId: 99, targets: [22] }],
+      new Set([20, 21]),
+    );
     if (violations.length === 0) {
-      return { name, pass: false, detail: 'TEETH: W2-EVO-ORPHAN — source 99 (not a wave-2 base) was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W2-EVO-ORPHAN — source 99 (not a wave-2 base) was NOT flagged',
+      };
     }
   }
   // --- W2-EVO-ORPHAN: GOOD ---------------------------------------------------------
@@ -932,7 +1017,11 @@ export default async function () {
       new Set([20, 21]),
     );
     if (violations.length > 0) {
-      return { name, pass: false, detail: `TEETH: W2-EVO-ORPHAN — GOOD data was incorrectly flagged: ${violations.join('; ')}` };
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: W2-EVO-ORPHAN — GOOD data was incorrectly flagged: ${violations.join('; ')}`,
+      };
     }
   }
 
@@ -944,7 +1033,11 @@ export default async function () {
     ]);
     const violations = findNonMonotonicEvolutions([{ from: 20, to: 22 }], bstById);
     if (violations.length === 0) {
-      return { name, pass: false, detail: 'TEETH: W2-BST-MONOTONIC — target BST <= source BST was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W2-BST-MONOTONIC — target BST <= source BST was NOT flagged',
+      };
     }
   }
   // --- W2-BST-MONOTONIC: GOOD -------------------------------------------------------
@@ -955,7 +1048,11 @@ export default async function () {
     ]);
     const violations = findNonMonotonicEvolutions([{ from: 20, to: 22 }], bstById);
     if (violations.length > 0) {
-      return { name, pass: false, detail: 'TEETH: W2-BST-MONOTONIC — GOOD monotonic BST was incorrectly flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W2-BST-MONOTONIC — GOOD monotonic BST was incorrectly flagged',
+      };
     }
   }
 
@@ -970,7 +1067,11 @@ export default async function () {
       existing,
     );
     if (violations.length === 0) {
-      return { name, pass: false, detail: 'TEETH: SPR-SET — missing sprite set for species 999 was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: SPR-SET — missing sprite set for species 999 was NOT flagged',
+      };
     }
   }
   // --- SPR-SET: GOOD -----------------------------------------------------------------
@@ -978,14 +1079,20 @@ export default async function () {
     const existing = new Set(spriteFileNames('emberkit'));
     const violations = findMissingSpriteFiles([[1, 'emberkit']], existing);
     if (violations.length > 0) {
-      return { name, pass: false, detail: 'TEETH: SPR-SET — GOOD complete sprite set was incorrectly flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: SPR-SET — GOOD complete sprite set was incorrectly flagged',
+      };
     }
   }
 
   // --- SPR-FMT: missing frame key + bad size ------------------------------------------
   {
     const good = {
-      frames: Object.fromEntries(expectedFrameKeys().map((k) => [k, { frame: { x: 0, y: 0, w: 32, h: 32 } }])),
+      frames: Object.fromEntries(
+        expectedFrameKeys().map((k) => [k, { frame: { x: 0, y: 0, w: 32, h: 32 } }]),
+      ),
       animations: expectedAnimations(),
       meta: { size: { w: 96, h: 128 } },
     };
@@ -993,7 +1100,11 @@ export default async function () {
     delete badMissingFrame.frames.mon_left_walk1;
     const v1 = checkSheetFormat(badMissingFrame, 'bad-missing-frame');
     if (v1.length === 0) {
-      return { name, pass: false, detail: 'TEETH: SPR-FMT — missing mon_left_walk1 was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: SPR-FMT — missing mon_left_walk1 was NOT flagged',
+      };
     }
     const badSize = JSON.parse(JSON.stringify(good));
     badSize.meta.size = { w: 96, h: 96 };
@@ -1008,26 +1119,51 @@ export default async function () {
     try {
       emberkitJson = JSON.parse(readFileSync(`${ASSETS_DIR}/monster-emberkit.json`, 'utf8'));
     } catch (e) {
-      return { name, pass: false, detail: `TEETH: SPR-FMT — cannot read reference monster-emberkit.json: ${e.message}` };
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: SPR-FMT — cannot read reference monster-emberkit.json: ${e.message}`,
+      };
     }
     const violations = checkSheetFormat(emberkitJson, 'monster-emberkit.json');
     if (violations.length > 0) {
-      return { name, pass: false, detail: `TEETH: SPR-FMT — GOOD real emberkit sheet was incorrectly flagged: ${violations.join('; ')}` };
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: SPR-FMT — GOOD real emberkit sheet was incorrectly flagged: ${violations.join('; ')}`,
+      };
     }
   }
 
   // --- SPR-REG: shifted rect + identical meta.image -------------------------------------
   {
-    const albedo = { frames: { mon_down_idle: { frame: { x: 0, y: 0, w: 32, h: 32 } } }, meta: { image: 'a.png' } };
-    const shifted = { frames: { mon_down_idle: { frame: { x: 1, y: 0, w: 32, h: 32 } } }, meta: { image: 'a-normal.png' } };
+    const albedo = {
+      frames: { mon_down_idle: { frame: { x: 0, y: 0, w: 32, h: 32 } } },
+      meta: { image: 'a.png' },
+    };
+    const shifted = {
+      frames: { mon_down_idle: { frame: { x: 1, y: 0, w: 32, h: 32 } } },
+      meta: { image: 'a-normal.png' },
+    };
     const v1 = checkNormalRegistration(albedo, shifted, 'bad-shifted-rect');
     if (v1.length === 0) {
-      return { name, pass: false, detail: 'TEETH: SPR-REG — 1px-shifted frame rect was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: SPR-REG — 1px-shifted frame rect was NOT flagged',
+      };
     }
-    const sameImage = { frames: { mon_down_idle: { frame: { x: 0, y: 0, w: 32, h: 32 } } }, meta: { image: 'a.png' } };
+    const sameImage = {
+      frames: { mon_down_idle: { frame: { x: 0, y: 0, w: 32, h: 32 } } },
+      meta: { image: 'a.png' },
+    };
     const v2 = checkNormalRegistration(albedo, sameImage, 'bad-same-image');
     if (v2.length === 0) {
-      return { name, pass: false, detail: 'TEETH: SPR-REG — identical albedo/normal meta.image was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: SPR-REG — identical albedo/normal meta.image was NOT flagged',
+      };
     }
   }
   // --- SPR-REG: GOOD (the real emberkit albedo/normal pair) -------------------------------
@@ -1038,11 +1174,19 @@ export default async function () {
       albedoJson = JSON.parse(readFileSync(`${ASSETS_DIR}/monster-emberkit.json`, 'utf8'));
       normalJson = JSON.parse(readFileSync(`${ASSETS_DIR}/monster-emberkit-normal.json`, 'utf8'));
     } catch (e) {
-      return { name, pass: false, detail: `TEETH: SPR-REG — cannot read reference emberkit sheets: ${e.message}` };
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: SPR-REG — cannot read reference emberkit sheets: ${e.message}`,
+      };
     }
     const violations = checkNormalRegistration(albedoJson, normalJson, 'monster-emberkit');
     if (violations.length > 0) {
-      return { name, pass: false, detail: `TEETH: SPR-REG — GOOD real emberkit pair was incorrectly flagged: ${violations.join('; ')}` };
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: SPR-REG — GOOD real emberkit pair was incorrectly flagged: ${violations.join('; ')}`,
+      };
     }
   }
 
@@ -1071,7 +1215,11 @@ export default async function () {
       threw = true;
     }
     if (!threw) {
-      return { name, pass: false, detail: 'TEETH: decodePng — non-zero scanline filter byte did NOT throw' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: decodePng — non-zero scanline filter byte did NOT throw',
+      };
     }
   }
   // --- decodePng: multiple IDAT chunks must throw --------------------------------------------
@@ -1093,8 +1241,16 @@ export default async function () {
     const pixels = Buffer.from([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255]);
     const buf = buildTestPng({ width: 2, height: 2, pixels });
     const decoded = decodePng(buf);
-    if (decoded.width !== 2 || decoded.height !== 2 || Buffer.compare(Buffer.from(decoded.pixels), pixels) !== 0) {
-      return { name, pass: false, detail: 'TEETH: decodePng — GOOD 2x2 roundtrip did not decode to the input pixels' };
+    if (
+      decoded.width !== 2 ||
+      decoded.height !== 2 ||
+      Buffer.compare(Buffer.from(decoded.pixels), pixels) !== 0
+    ) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: decodePng — GOOD 2x2 roundtrip did not decode to the input pixels',
+      };
     }
   }
 
@@ -1102,7 +1258,11 @@ export default async function () {
   {
     const violations = findSilhouetteViolations('A', fullMask(8, 8), 'B', fullMask(8, 8));
     if (violations.length === 0) {
-      return { name, pass: false, detail: 'TEETH: SPR-SILHOUETTE — two identical 8x8 masks were NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: SPR-SILHOUETTE — two identical 8x8 masks were NOT flagged',
+      };
     }
   }
   // --- SPR-SILHOUETTE: translation-only offset must be flagged (not vacuous) ------------------------
@@ -1111,7 +1271,11 @@ export default async function () {
     const maskB = rectMask(10, 10, 3, 2, 4, 4); // same shape, shifted 1px in x
     const violations = findSilhouetteViolations('A', maskA, 'B', maskB);
     if (violations.length === 0) {
-      return { name, pass: false, detail: 'TEETH: SPR-SILHOUETTE — 1px-translated identical shape was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: SPR-SILHOUETTE — 1px-translated identical shape was NOT flagged',
+      };
     }
   }
   // --- SPR-SILHOUETTE: <10% pixel diff must be flagged ---------------------------------------------
@@ -1121,7 +1285,11 @@ export default async function () {
     maskB[0][0] = false; // 1 of 64 pixels differs
     const violations = findSilhouetteViolations('A', maskA, 'B', maskB);
     if (violations.length === 0) {
-      return { name, pass: false, detail: 'TEETH: SPR-SILHOUETTE — 1/64-pixel diff (<10%) was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: SPR-SILHOUETTE — 1/64-pixel diff (<10%) was NOT flagged',
+      };
     }
   }
   // --- SPR-SILHOUETTE: GOOD — clearly distinct shapes ----------------------------------------------
@@ -1130,7 +1298,11 @@ export default async function () {
     const rect = rectMask(12, 12, 0, 0, 12, 3);
     const violations = findSilhouetteViolations('circle', circle, 'rect', rect);
     if (violations.length > 0) {
-      return { name, pass: false, detail: `TEETH: SPR-SILHOUETTE — GOOD distinct shapes were incorrectly flagged: ${violations.join('; ')}` };
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: SPR-SILHOUETTE — GOOD distinct shapes were incorrectly flagged: ${violations.join('; ')}`,
+      };
     }
   }
 
@@ -1145,7 +1317,11 @@ export default async function () {
       '# PLAN-TABLE-END\n';
     const rows = parsePlanTable(src);
     if (rows.length !== 2 || rows[0].slug !== 'umbraquill' || rows[0].plan !== 'quadruped') {
-      return { name, pass: false, detail: 'TEETH: parsePlanTable failed to parse the basic fixture' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: parsePlanTable failed to parse the basic fixture',
+      };
     }
   }
   // --- SPR-PLAN-UNIQUE: missing markers must throw --------------------------------------------------
@@ -1164,7 +1340,11 @@ export default async function () {
   {
     const violations = findDuplicatedCodecDefs('def write_png(path, img):\n    pass\n');
     if (violations.length === 0) {
-      return { name, pass: false, detail: 'TEETH: SPR-PLAN-UNIQUE — duplicated def write_png( was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: SPR-PLAN-UNIQUE — duplicated def write_png( was NOT flagged',
+      };
     }
   }
   // --- SPR-PLAN-UNIQUE: duplicate plan tuple must be flagged ------------------------------------------
@@ -1175,14 +1355,23 @@ export default async function () {
     ];
     const violations = findDuplicatePlanRows(rows);
     if (violations.length === 0) {
-      return { name, pass: false, detail: 'TEETH: SPR-PLAN-UNIQUE — duplicate plan tuple was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: SPR-PLAN-UNIQUE — duplicate plan tuple was NOT flagged',
+      };
     }
   }
   // --- SPR-PLAN-UNIQUE: reverse dependency must be flagged --------------------------------------------
   {
     const violations = findReverseDependency('import generate_monsters\n');
     if (violations.length === 0) {
-      return { name, pass: false, detail: 'TEETH: SPR-PLAN-UNIQUE — generate_art referencing generate_monsters was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: SPR-PLAN-UNIQUE — generate_art referencing generate_monsters was NOT flagged',
+      };
     }
   }
   // --- SPR-PLAN-UNIQUE: GOOD -----------------------------------------------------------------------------
@@ -1191,11 +1380,17 @@ export default async function () {
       { slug: 'umbraquill', plan: 'quadruped', size: 'small', features: 'wings' },
       { slug: 'gustwyrm', plan: 'serpentine', size: 'medium', features: '' },
     ];
-    const codecViolations = findDuplicatedCodecDefs('from generate_art import write_png, write_sheet_json\n');
+    const codecViolations = findDuplicatedCodecDefs(
+      'from generate_art import write_png, write_sheet_json\n',
+    );
     const rowViolations = findDuplicatePlanRows(rows);
     const revViolations = findReverseDependency('# no mention of the other generator here\n');
     if (codecViolations.length > 0 || rowViolations.length > 0 || revViolations.length > 0) {
-      return { name, pass: false, detail: 'TEETH: SPR-PLAN-UNIQUE — GOOD generator fixtures were incorrectly flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: SPR-PLAN-UNIQUE — GOOD generator fixtures were incorrectly flagged',
+      };
     }
   }
 
@@ -1300,7 +1495,10 @@ export default async function () {
   failures.push(...findMissingSpriteFiles(COVERED, existingAssetFiles));
 
   if (allSpeciesIds.length > 0) {
-    const uncovered = findUncoveredRegistrySpecies(allSpeciesIds, COVERED.map(([id]) => id));
+    const uncovered = findUncoveredRegistrySpecies(
+      allSpeciesIds,
+      COVERED.map(([id]) => id),
+    );
     infoLine = `INFO: species in the registry with no COVERED sprite-set entry: [${uncovered.join(', ')}]`;
   }
 
