@@ -36,12 +36,14 @@ re-confirmed against the current tip (`aee493a`, after ptc5a/b/c/d/e/g merged):
 
 3. **Decision E — warp-path `Predictor` epoch-eviction gap (deferred fix,
    pinned).** On an own-zone warp, `resetPredictionState()` rebuilds the
-   `Predictor` synchronously on a *live* socket and reconcile re-seeds seqs at
-   `ackedSeq+1`. A still-unacked pre-warp op occupies that same seq value, so a
-   stale rejection's `.catch → dropRejected(seq)` can evict the *new* legitimate
-   op. Decision E resolved to DEFER the fix (book it as
-   `M-postgate-netcode-hardening`) but record the gap as an explicit accepted
-   risk + pin its reachability — not a silent defer.
+   `Predictor` synchronously on a *live* socket and reconcile re-seeds `#nextSeq`
+   to `ackedSeq` (so the next op reuses `ackedSeq+1`). A still-unacked pre-warp op
+   occupies that same seq value, so a stale rejection's
+   `.catch → dropRejected(seq)` can evict the *new* legitimate op. Decision E
+   resolved to DEFER the fix (book it as `M-postgate-netcode-hardening`) but
+   record the gap as an explicit accepted risk + pin its reachability — not a
+   silent defer. **Review of this slice sharpened the reachability: the trigger
+   does NOT require multiplayer contention** — see D4.
 
 ## Decision
 
@@ -72,8 +74,9 @@ the build-loop session and committed to the harness by the supervisor.
 ### D3 — ADR-0090 Decision-A: pin the burst-spread reachability bound (no behavior change)
 
 The synthetic assignment `receivedAt = synthetic` (`store.ts`, the B-2 guard
-branch) executes only when, letting `d = now − existing.latest.receivedAt` with
-the outer guard forcing `0 ≤ d < BURST_EPSILON_MS`:
+branch) executes only when, letting `d = now − existing.latest.receivedAt` (the
+outer guard forces only `d < BURST_EPSILON_MS` — there is **no** `d ≥ 0` check in
+the code):
 
 ```
 synthetic ≤ now + BURST_EPSILON_MS
@@ -86,19 +89,30 @@ So the branch is **reachable only when `stepMs < 2·BURST_EPSILON_MS`** (= 40 ms
 at `BURST_EPSILON_MS = 20`). At the production `STEP_MS = 200` the branch is
 **unreachable** — the ring-buffer depth-4 history carries burst smoothness
 instead (ADR-0090 §depth-4 + the `span ≤ 0` graceful path). A negative `d`
-(a chained future synthetic) only shrinks the RHS, so it cannot widen
-reachability; the bound is the ceiling. The bound is *tight*: at `stepMs = 39`,
-`d = 19` fires the branch; at `stepMs = 40` no `d < 20` can.
+(a chained future synthetic, permitted since there is no lower-bound guard) only
+shrinks the RHS, so it cannot widen reachability; the bound is the ceiling. The
+bound is *tight*: at `stepMs = 39`, `d = 19` fires the branch; at `stepMs = 40`
+no admissible `d < 20` can.
 
 Actions (this slice): (a) a code comment at the branch site pins the
 `stepMs < 2·BURST_EPSILON_MS` reachability bound; (b) a proof-of-teeth test in
-`store.test.ts` asserts the branch is unreachable across the entire burst-gap
-domain at production `STEP_MS`, and BITES (a contrast case just below the bound
-where the branch *is* reachable) so a future `STEP_MS` drop below 40 ms fails
-loud; (c) ADR-0090 gains an amendment sharpening its "almost always false"
-language into this exact bound. **No behavior change** — the smoothing path is
-untouched (option (a) tuning is kept as a named YAGNI exception, revisited only
-if playtest smoothness testing shows burst pops).
+`store.test.ts` that asserts the branch is unreachable across the entire
+burst-gap domain at the production step, BITES at the exact threshold (reachable
+at `stepMs = 39`, unreachable at `stepMs = 40`), and — importing the real
+`BURST_EPSILON_MS` — asserts `PRODUCTION_STEP_MS ≥ 2·BURST_EPSILON_MS`, so
+raising `BURST_EPSILON_MS` past 100 fails loud; (c) ADR-0090 gains an amendment
+sharpening its "almost always false" language into this exact bound.
+**Drift caveat (honest scope):** the client's operative step is the wasm
+`step_ms()` export (`game-core::STEP_MS = 200`), not importable into the
+node-only vitest suite, so `store.test.ts` carries `PRODUCTION_STEP_MS = 200` as
+a *synced literal* (comment-pinned to `game-core/src/world.rs`). The test
+therefore bites on a `store.ts` branch-logic change or a `BURST_EPSILON_MS`
+change, but a change to `game-core::STEP_MS` alone would leave the literal stale
+— a client↔core constant-parity gap that is a **separate, pre-existing drift
+vector** (no eval pins `step_ms()`'s value today), recorded here as a residual
+for the post-gate netcode/coverage work, not closed by this slice. **No behavior
+change** — the smoothing path is untouched (option (a) tuning is kept as a named
+YAGNI exception, revisited only if playtest smoothness testing shows burst pops).
 
 ### D4 — ADR-0085 Decision-E: accept the warp epoch-eviction risk + pin reachability (no fix)
 
@@ -115,10 +129,29 @@ pre-warp rejection CAN still settle after the rebuild and its
 Within a single predictor `#nextSeq` is strictly increasing and never reused, so
 `dropRejected` only ever evicts the intended dead op (safe). The
 eviction-of-a-legit-op is therefore **reachable only across a predictor rebuild
-that re-seeds a colliding seq** — i.e. a movement rejection landing exactly
-across a warp. For the LOCAL single-tester closed playtest there is no
-contention → no queue-full/movement rejections → the trigger is effectively
-unreachable.
+that re-seeds a colliding seq** — a movement rejection (or seq reuse) landing
+exactly across a warp.
+
+**Reachability — corrected by this slice's red-team pass (does NOT require
+contention).** The original Decision-E rationale framed the trigger as needing
+multiplayer contention ("no other players → no queue-full → unreachable"). That
+is wrong on two counts, both grounded in code: (1) `MOVE_QUEUE_CAP = 2`
+(`game-core/src/world.rs`) is **per-character**, so a single player holding a
+movement key through a warp can hit "queue full" alone; (2) more directly, the
+seq *reuse itself* produces a rejection — after `seedSeq(ackedSeq)` the fresh
+predictor re-issues `ackedSeq+1`, colliding with the still-in-flight pre-warp op
+of the same seq; on the single FIFO socket the older op is acked first
+(`last_input_seq → ackedSeq+1`), so the new op's identical `seq` then hits
+`seq <= last_input_seq` and is rejected **`"stale seq"`** (`guards.rs`) — whose
+`.catch` fires `dropRejected(ackedSeq+1)` and drops the player's first
+post-warp move. Net effect: **walking through a doorway while holding a
+direction key** — the single most ordinary movement test — can silently swallow
+the first post-warp input or briefly rubber-band it, entirely in **solo** play.
+The likelihood is therefore materially higher than "effectively unreachable";
+the fix stays deferred (Drew-delegated, and the guard is behavior-sensitive
+prediction code out of this docs slice's scope), but the risk is recorded
+**accurately** and surfaced to Drew (PR body + handoff) with a recommendation to
+weigh pulling `M-postgate-netcode-hardening` forward of / into the playtest.
 
 Actions (this slice): (a) amend ADR-0085 to record the epoch-eviction gap as an
 explicit **accepted risk** for the closed-playtest window; (b) a comment at
@@ -135,14 +168,19 @@ epoch/generation guard itself lands post-gate as `M-postgate-netcode-hardening`
 - + The ledger is honest: `CHANGELOG.md` covers the playtest block and `PLAN.md`
   §Status reflects the real frontier; M-playtest-c.5 is CLOSED and the milestone
   advances to M-playtest-d (content pack).
-- + Two previously-silent deferred decisions are now gated facts: a `STEP_MS`
-  drop below `2·BURST_EPSILON_MS`, or a change to the seq-reuse-on-rebuild
-  behavior, trips a test — the inertness/gap can no longer rot unnoticed.
+- + Two previously-silent deferred decisions are now gated facts: raising
+  `BURST_EPSILON_MS` past 100 (past which `STEP_MS = 200` enters the reachable
+  regime), or a change to the `store.ts` branch logic / the seq-reuse-on-rebuild
+  behavior, trips a test — the inertness/gap can no longer rot unnoticed (with
+  the client↔core `STEP_MS`-parity caveat noted in D3).
 - + Zero behavior risk: comment-only source pins, additive tests, generated docs.
   Nothing on the determinism-sensitive smoothing/prediction paths changed.
-- − The epoch-eviction gap remains open until `M-postgate-netcode-hardening`;
-  accepted for the closed-playtest window (trigger effectively unreachable with
-  a single local tester). Revisit if playtest shows warp-time rubber-banding.
+- − The epoch-eviction gap remains open until `M-postgate-netcode-hardening`.
+  This slice's red-team pass showed it is reachable in **solo** play (warp while
+  holding a key), not just under contention — a swallowed first-post-warp move /
+  brief rubber-band. Deferral is upheld (Drew-delegated; fix is out-of-scope
+  here) but flagged to Drew with a recommendation to weigh pulling the post-gate
+  fix forward before the playtest.
 - − The "regen-on-close" changelog trigger is a documented follow-up, not
   implemented here (YAGNI — the SSOT generator already exists).
 
@@ -152,10 +190,14 @@ epoch/generation guard itself lands post-gate as `M-postgate-netcode-hardening`
   runs in production.** Rejected pre-gate — speculative tuning of a
   determinism-sensitive smoothing path with no evidence a pop exists; kept as a
   named YAGNI exception (revisit only on observed playtest burst pops).
-- **Decision E: ship the epoch/generation guard now.** Rejected pre-gate —
-  touches sensitive ADR-0085-lineage prediction code; the trigger is effectively
-  unreachable for the local single-tester playtest, so the risk/reward favors
-  deferral + a reachability pin.
+- **Decision E: ship the epoch/generation guard now.** Deferred pre-gate
+  (Drew-delegated) — the guard touches sensitive ADR-0085-lineage prediction
+  code and is out of this docs slice's declared scope. Note the trigger is
+  **not** as rare as first stated (this slice's red-team pass showed solo
+  reachability via per-character queue-full / stale-seq reuse across a warp), so
+  the recorded residual recommends Drew weigh pulling the fix forward rather than
+  treating it as negligible. This slice ships the accepted-risk record + the
+  reachability pin only.
 - **Hand-edit `CHANGELOG.md` to append the missing block.** Rejected — the
   changelog is git-cliff-generated; hand-editing would drift again and collide
   with concurrent sibling slices. Regen from Conventional Commits is the SSOT.

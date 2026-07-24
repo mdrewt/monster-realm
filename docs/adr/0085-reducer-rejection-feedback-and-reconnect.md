@@ -234,10 +234,22 @@ precise within one epoch, and evicts a live op only in the rebuilt+re-seeded
 cross-warp scenario. A comment at `Predictor.dropRejected` records the gap and
 points here + at the booked fix.
 
-**Accepted-risk rationale.** For the LOCAL single-tester closed playtest there is
-no contention → no queue-full/movement rejections → the trigger is effectively
-unreachable, and retuning ADR-0085-lineage prediction code immediately before the
-fun-hypothesis playtest is speculative. The guard (Predictor captures a `buildGen`
+**Accepted-risk rationale (reachability corrected — ptc5f red-team pass).** The
+original Decision-E framing called the trigger "effectively unreachable for a
+single tester (no contention → no queue-full rejections)". A red-team pass on
+this slice showed that is **understated**: `MOVE_QUEUE_CAP = 2` is per-character,
+so a lone player holding a key through a warp can hit "queue full" alone; and the
+seq reuse itself produces a rejection — the fresh predictor re-issues
+`ackedSeq+1`, the older in-flight op of the same seq is acked first on the FIFO
+socket (`last_input_seq → ackedSeq+1`), so the new op's identical seq then hits
+`seq <= last_input_seq` → **`"stale seq"`** (`guards.rs`), whose `.catch`
+`dropRejected`s the player's first post-warp move. So the real trigger is
+"**walk through a doorway while holding a direction key**", reachable in **solo**
+play — a swallowed first-post-warp input / brief rubber-band. The fix stays
+deferred (Drew-delegated; retuning ADR-0085-lineage prediction code pre-gate is
+behavior-sensitive and out of the ptc5f docs-slice scope), but the risk is
+recorded accurately, not minimized. The guard (Predictor captures a `buildGen`
 epoch; the `.catch` no-ops when its captured epoch ≠ the current predictor's)
-lands in `M-postgate-netcode-hardening`. Revisit sooner if the playtest shows
-warp-time rubber-banding.
+lands in `M-postgate-netcode-hardening` — and ptc5f's handoff/PR recommends Drew
+weigh pulling it forward of / into the playtest rather than treating it as
+negligible.
