@@ -5,8 +5,8 @@
 **Slice:** pt-d1 (M-playtest-d content pack — roster wave 1; EARS pt-d1-1..6)
 **Supersedes:** —
 **Amends:** —
-**Subsystems:** content-pipeline, monster-species, client-assets
-**Decision:** Add species ids 7–10 (two base forms + one evolution each, Earth and Dark) in a NEW glob-loaded species part file plus two `evolutions.ron` blocks and four albedo spritesheets; bump `CONTENT_VERSION` 12→13; accept that the new forms are unreachable in-game until pt-d3 places them in an encounter table.
+**Subsystems:** content, evolution-fusion, client-ui
+**Decision:** Add species 7–10 (two Earth/Dark lines, one evolution each) in a NEW glob-loaded species part file, plus two `evolutions.ron` blocks and four albedo sheets; bump `CONTENT_VERSION` 12→13; they stay unreachable until a later slice.
 
 ## Context
 

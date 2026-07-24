@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 108 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 109 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -117,6 +117,7 @@ Generated from 108 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0140](./0140-ptc5e-ssot-content-dedup-polish.md) | 0140 — ptc5e SSOT / content / dedup polish: CARE magnitudes + shared cooldown-ready predicate to game-core; heal-location stale-delete; isPvpBattle canonicalization; resetCharacters comment fix | Accepted | content, client-ui | ptc5e (M-playtest-c.5 pre-gate residuals — SSOT/content/dedup polish, EARS ptc5e-1..5) | Relocate CARE magnitudes to game-core; share one pure `is_cooldown_ready` predicate across care and heal; reap content-removed heal rows; dedup `isPvpBattle`; fix a stale comment — behavior-preserving SSOT polish, no schema change. |
 | [0141](./0141-ptc5g-render-divergence-snap.md) | 0141 — ptc5g position-divergence render snap: own-render snaps on a > 1-tile (Chebyshev) authoritative target jump via the existing `snapped` path | Accepted | movement-netcode, client-ui | ptc5g (M-playtest-c.5 pre-gate residuals — position-divergence render snap; resolves M10.5 D-render-snap, EARS ptc5g-1..3) | Snap the own-render (not slide) when the new authoritative own-target is > 1 tile (Chebyshev) from the slide clock's current target, via the existing `snapped` branch — so large position jumps snap instead of gliding over one `STEP_MS`. |
 | [0142](./0142-ledger-reconciliation-and-netcode-reachability-pins.md) | 0142 — ptc5f ledger reconciliation + deferred-netcode reachability pins | Accepted | tooling-docs, movement-netcode | ptc5f (M-playtest-c.5 pre-gate residuals — ledger reconciliation, closes M-playtest-c.5; EARS ptc5f-1/ptc5f-2 + Decision A/E pins) | Reconcile the playtest ledger (git-cliff CHANGELOG regen; PLAN §Status to the M-playtest-c.5 frontier) and pin two deferred netcode reachability bounds as gated facts: ADR-0090 burst-spread inertness and ADR-0085 warp epoch-eviction. |
+| [0143](./0143-playtest-roster-wave-1.md) | 0143 — pt-d1 playtest roster wave 1: two new species lines (Earth + Dark) as pure ADR-0057 content, shipped data-complete but not yet wild-obtainable | Accepted | content, evolution-fusion, client-ui | pt-d1 (M-playtest-d content pack — roster wave 1; EARS pt-d1-1..6) | Add species 7–10 (two Earth/Dark lines, one evolution each) in a NEW glob-loaded species part file, plus two `evolutions.ron` blocks and four albedo sheets; bump `CONTENT_VERSION` 12→13; they stay unreachable until a later slice. |
 
 ## Harness design corpus (H- namespace)
 
@@ -208,6 +209,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0063](./0063-evolution-fusion-client-overlay.md) — m10c — Evolution & fusion client overlay: subscription shape, overlay key, fusion recipe display (Accepted)
 - [0064](./0064-m10d-evolution-fusion-content-integrity-evals.md) — m10d — M10d: evolution/fusion content-integrity evals and proof-of-teeth discipline (Accepted)
 - [0072](./0072-fuse-dual-write-ordering-fix.md) — m12.5a — fuse offspring monster_pub dual-write ordering fix (Accepted)
+- [0143](./0143-playtest-roster-wave-1.md) — pt-d1 (M-playtest-d content pack — roster wave 1; EARS pt-d1-1..6) — 0143 — pt-d1 playtest roster wave 1: two new species lines (Earth + Dark) as pure ADR-0057 content, shipped data-complete but not yet wild-obtainable (Accepted)
 
 ### movement-netcode
 
@@ -242,6 +244,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0094](./0094-m14c-passive-ability-system.md) — m14c — M14c: Passive per-species ability system (Accepted)
 - [0105](./0105-m14.5d-1a-item-row-cure-status.md) — m14.5d-1a (server half of re-serialized 14.5d-1 pair) — M14.5d-1a: additive `cure_status` column on `item_row` (Accepted)
 - [0140](./0140-ptc5e-ssot-content-dedup-polish.md) — ptc5e (M-playtest-c.5 pre-gate residuals — SSOT/content/dedup polish, EARS ptc5e-1..5) — 0140 — ptc5e SSOT / content / dedup polish: CARE magnitudes + shared cooldown-ready predicate to game-core; heal-location stale-delete; isPvpBattle canonicalization; resetCharacters comment fix (Accepted)
+- [0143](./0143-playtest-roster-wave-1.md) — pt-d1 (M-playtest-d content pack — roster wave 1; EARS pt-d1-1..6) — 0143 — pt-d1 playtest roster wave 1: two new species lines (Earth + Dark) as pure ADR-0057 content, shipped data-complete but not yet wild-obtainable (Accepted)
 
 ### schema-persistence
 
@@ -296,6 +299,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0139](./0139-ptc5c-overlay-mutual-exclusion-symmetry.md) — ptc5c — Overlay mutual-exclusion symmetry: fix KeyB/I/E open-guards + a guard-OR-hide fan-out gate (registry parked) (Accepted)
 - [0140](./0140-ptc5e-ssot-content-dedup-polish.md) — ptc5e (M-playtest-c.5 pre-gate residuals — SSOT/content/dedup polish, EARS ptc5e-1..5) — 0140 — ptc5e SSOT / content / dedup polish: CARE magnitudes + shared cooldown-ready predicate to game-core; heal-location stale-delete; isPvpBattle canonicalization; resetCharacters comment fix (Accepted)
 - [0141](./0141-ptc5g-render-divergence-snap.md) — ptc5g (M-playtest-c.5 pre-gate residuals — position-divergence render snap; resolves M10.5 D-render-snap, EARS ptc5g-1..3) — 0141 — ptc5g position-divergence render snap: own-render snaps on a > 1-tile (Chebyshev) authoritative target jump via the existing `snapped` path (Accepted)
+- [0143](./0143-playtest-roster-wave-1.md) — pt-d1 (M-playtest-d content pack — roster wave 1; EARS pt-d1-1..6) — 0143 — pt-d1 playtest roster wave 1: two new species lines (Earth + Dark) as pure ADR-0057 content, shipped data-complete but not yet wild-obtainable (Accepted)
 
 ### ci-gates
 
