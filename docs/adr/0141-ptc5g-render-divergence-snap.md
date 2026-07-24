@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** movement-netcode, client-ui
-**Decision:** The own-render snaps (does not slide) when the new authoritative own-target is more than one tile (Chebyshev distance) from the slide clock's current target, folded into the existing `snapped` branch — so a zone warp / respawn / server correction / dropped-update catch-up jumps instead of gliding multiple tiles over one `STEP_MS`.
+**Decision:** Snap the own-render (not slide) when the new authoritative own-target is > 1 tile (Chebyshev) from the slide clock's current target, via the existing `snapped` branch — so large position jumps snap instead of gliding over one `STEP_MS`.
 
 ## Context
 
