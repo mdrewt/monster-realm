@@ -14,4 +14,21 @@
             (trigger: Bond(200), to_species: 5),
         ],
     ),
+    // --- roster wave 2 (pt-d2, ADR-0144) — appended, nothing above reflowed ---
+    // Umbraquill (20, wild-legal) evolves by level into Venumbra (22).
+    (
+        species_id: 20,
+        evolutions: [
+            (trigger: Level(22), to_species: 22),
+        ],
+    ),
+    // Gustwyrm (21, wild-legal) evolves by bond into Tempestrix (23). Bond
+    // starts at 70 and rises 5 per care action, so 180 is 22 care actions —
+    // the same order of grind as the shipped Bond(200) branch.
+    (
+        species_id: 21,
+        evolutions: [
+            (trigger: Bond(180), to_species: 23),
+        ],
+    ),
 ]
