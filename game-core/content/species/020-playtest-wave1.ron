@@ -1,0 +1,75 @@
+// Playtest roster wave 1 (pt-d1, ADR-0143) — DATA, not code (ADR-0006/0057).
+// This file sorts AFTER 000-core.ron and 010-derived.ron, so those rows stay the
+// registry prefix (the SPECIES_GOLDEN / m8_9e migration-parity prefix gates).
+//
+// ID RESERVATION: pt-d1 owns species ids 7 through 10. A later roster wave MUST
+// start at 11. The species registry is a glob-merged directory, so two waves that
+// claim the same numbers merge with NO git conflict and surface only as a
+// "duplicate species id" error from validate_content at publish time.
+//
+// COMMENT HYGIENE (ADR-0143 D7): a TRAILING comment here must never contain the
+// sequence id-followed-by-a-colon. Two evals strip whole-line comments only and
+// then regex-scan the remaining text, so such a comment injects a phantom stable
+// content id into the append-only baseline. Use the "id=1" form (as 000-core.ron
+// does) instead. Whole-line comments are stripped and are therefore unrestricted.
+// This is GATED, not merely documented: game-core/tests/pt_d1_roster.rs
+// pt_d1_7_ron_comments_carry_no_id_shaped_needles scans this whole directory plus
+// evolutions.ron, so the rule binds every later authoring wave too.
+//
+// Two lines, four forms, archetype coverage per GDD section 5:
+//   7 Cragling  (Earth, tanky)   -> level 18 -> 9 Stoneward  (Earth, support)
+//   8 Shadelet  (Dark,  status)  -> level 20 -> 10 Umbrafang (Dark,  fast sweeper)
+// Earth and Dark are the only unused affinities that HAVE a skill (9 Sandblast,
+// 11 Toxic Sting); Electric and Light have none, so they wait on a skills slice.
+//
+// NOT WILD-OBTAINABLE YET: encounters/000-core.ron is outside this slice and the
+// starter is hardcoded to species 1, so all four forms are unreachable in a
+// running game until the encounter/tuning slice places 7 and 8. See ADR-0143 D4 —
+// that slice also owns the first live-Sandstorm runtime proof and the recruit e2e
+// flee-predicate generalisation.
+//
+// Species 9 and 10 are evolution-only DERIVED forms and MUST NEVER appear in an
+// encounter table (validate_evolution_fusion step 6 enforces it).
+[
+    (
+        id: 7,
+        name: "Cragling",
+        base_stats: (hp: 60, attack: 48, defense: 75, speed: 30, sp_attack: 40, sp_defense: 65),
+        affinity: Earth,
+        // Sandblast first: the AI scores power x effectiveness x stab, so 35x10x3
+        // beats Ember's 40x10x2 on a neutral matchup while Ember covers Plant.
+        learnable_skill_ids: [9, 1],
+    ),
+    (
+        id: 8,
+        name: "Shadelet",
+        base_stats: (hp: 44, attack: 46, defense: 44, speed: 74, sp_attack: 62, sp_defense: 52),
+        affinity: Dark,
+        // Toxic Sting is power 20, so on a NEUTRAL matchup the AI prefers Aqua Jet
+        // (800 vs 600) — no two-skill Dark moveset changes that until Dark gains a
+        // stronger skill. It is NOT unreachable though: against Water and Plant
+        // defenders Aqua Jet is not-very-effective (400), so the AI does pick Toxic
+        // Sting and the poison lands. Both halves matter; see ADR-0143 D3.
+        learnable_skill_ids: [11, 4],
+        ability: Some(2), // Vital Spirit (id=2): immune to Sleep (ADR-0100)
+    ),
+    (
+        id: 9,
+        name: "Stoneward",
+        base_stats: (hp: 90, attack: 62, defense: 105, speed: 38, sp_attack: 60, sp_defense: 100),
+        affinity: Earth,
+        // Sandblast (35x10x3) still beats Vine Whip (45x10x2) neutrally; Vine Whip
+        // is the Water answer this bulk-first form would otherwise lack.
+        learnable_skill_ids: [9, 5],
+        ability: Some(3), // Regeneration (id=3): heals 1/4 max HP on entry (ADR-0100)
+    ),
+    (
+        id: 10,
+        name: "Umbrafang",
+        base_stats: (hp: 68, attack: 92, defense: 60, speed: 118, sp_attack: 72, sp_defense: 60),
+        affinity: Dark,
+        // Fire Fang is the sweeper's real damage; Toxic Sting is inherited utility.
+        learnable_skill_ids: [11, 2],
+        ability: Some(2), // Vital Spirit (id=2): immune to Sleep (ADR-0100)
+    ),
+]
