@@ -19,6 +19,7 @@
 - Phase B complete — M14 close, ADR-0097, ARCHITECTURE.md M14 section (#142)
 - Backfill canonical ADR headers; LEGACY_TOLERANCE → empty (#161)
 - Ledger/docs reconciliation — module map current, generated-count refs, ADR range via DIGEST, changelog to #192 (#193)
+- Ledger reconciliation — CHANGELOG regen through #214, module-map/coverage-exclusion accuracy, milestone-free RLS deferrals, ADR-0107 KeyU label (#215)
 
 ### Features
 
@@ -127,6 +128,20 @@
 - Leaderboard profile.name passive mirror on rating application (ADR-0125) (#209)
 - Battle_challenge TTL reaper — 2min expiry, 4-site disarm, decline-cooldown deferred to M19 (ADR-0126) (#211)
 - PvP runtime coverage + DEV-gated test hooks + SDK enum exhaustiveness (ADR-0127) (#213)
+- Prod-safe connection config + build version stamp (#216)
+- Pt-a2 — local playtest ops (published-module dev-reducers-absent + build-output DEV-hooks-absent proofs) (#218)
+- Pt-b1 — client error overlay + event ring + F9 bug-report bundle (ADR-0130) (#220)
+- Pt-b2 — server playtest_event capture + interval-singleton reaper + just playtest-report (ADR-0131) (#222)
+- Pt-c1 — set_profile_name reducer (player.name-only rename) + RL-7 tooth refinement (ADR-0132) (#224)
+- Pt-c1b — client profile-rename UI (KeyN overlay → set_profile_name, ADR-0133) (#226)
+- Pt-c2 — in-client trade-PROPOSE overlay (KeyO → proposeTrade, ADR-0134) (#228)
+- In-client help overlay (?) + docs/PLAYTEST.md (ADR-0135) (#230)
+- Guard care/train with both-role ongoing-battle check (ADR-0136) (#232)
+- Exclude _tests.rs from OKF bundle + restore two degraded gate teeth (ADR-0137) (#234)
+- Resolve caller's Ongoing wild battle on disconnect — auto-flee GC + unblock re-entry (ADR-0138)
+- Overlay mutual-exclusion symmetry — fix KeyB/I/E guards + W-OVERLAY-FANOUT-MUTEX gate (ADR-0139)
+- SSOT/content/dedup polish — CARE consts + shared is_cooldown_ready to game-core, heal stale-delete, isPvpBattle dedup (ADR-0140) (#238)
+- Position-divergence render snap via existing snapped path (ADR-0141) (#239)
 
 ### Fixes
 
@@ -145,6 +160,8 @@
 - Triage red mutation gates — kill 5 check_headroom survivors, re-baseline mutate-server cap 180->309 (ADR-0118) (#194)
 - Rule-core contracts, name/party hardening, placeholder-texture teardown (#200)
 - Trade same-item near-cap conservation — debits-before-credits ordering + netted currency headroom (ADR-0123) (#205)
+- Unbreak nightly coverage + client typecheck under vitest 4
+- Bake VITE_STDB_DB in playtest-up + gate it in verify-build
 
 ### M8.8b
 
@@ -226,6 +243,16 @@
 - Reconcile ADR index for 0125 (#210)
 - Reconcile ADR index for 0126 (#212)
 - Reconcile ADR index for 0127 (#214)
+- Reconcile ADR index — add ADR-0128 row, bump next-free to 0129 (#217)
+- Reconcile ADR index (ADR-0129 row + next-free 0130) (#219)
+- Index ADR-0130 (pt-b1 client observability) + bump next-free 0131 (#221)
+- Reconcile ADR index — add 0131 row, bump next-free to 0132 (#223)
+- Reconcile ADR index (0132 row + next-free 0133) (#225)
+- Reconcile index for ADR-0133 (pt-c1b); bump next-free → 0134 (#227)
+- Reconcile ADR index — add 0134 row, bump next-free to 0135 (#229)
+- Bump ADR next-free 0135->0136 (index reconciliation) (#231)
+- Bump ADR next-free 0136->0137 (index reconciliation) (#233)
+- Bump ADR next-free 0137->0138 (index reconciliation) (#235)
 
 ### Testing
 

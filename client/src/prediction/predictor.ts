@@ -174,6 +174,17 @@ export class Predictor {
    * phantom until the next reconcile, on a `true` return the caller MUST immediately
    * force a reconcile from current store state (main.ts `reconcileFromStore()`);
    * a `false` return needs no forced reconcile — nothing was removed.
+   *
+   * ptc5f epoch-eviction pin (ADR-0085 amendment / ADR-0142 D4): within ONE
+   * predictor `#nextSeq` is strictly increasing and never reused, so this evicts
+   * exactly the intended dead op. ACROSS an own-zone warp, though,
+   * `resetPredictionState()` rebuilds the predictor on a LIVE socket and reconcile
+   * re-seeds `#nextSeq` at `ackedSeq`, so a still-in-flight pre-warp op and the
+   * fresh predictor's next op share a seq — a stale rejection's `.catch` can then
+   * `dropRejected` the NEW legit op (a swallowed first-post-warp move, reachable in
+   * SOLO play by warping while holding a key). Accepted risk for the closed
+   * playtest; the epoch/generation guard is DEFERRED to
+   * `M-postgate-netcode-hardening`. predictor.test.ts pins this reachability bound.
    */
   dropRejected(seq: number): boolean {
     const before = this.#pending.length;

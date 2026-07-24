@@ -386,6 +386,14 @@ export class AuthoritativeStore {
       // BEFORE the over-extended synthetic, producing an unsorted ring that confuses
       // interpolateHistory. Trade-off: for large stepMs this guard prevents synthetic
       // entirely, which is acceptable (see NOTE above).
+      //
+      // ptc5f reachability pin (ADR-0090 amendment / ADR-0142 D3): this synthetic
+      // assignment fires ONLY when `stepMs < 2*BURST_EPSILON_MS` (= 40 ms). Proof:
+      // the outer guard forces `d = now - existing.latest.receivedAt < BURST_EPSILON_MS`,
+      // and this inner guard is `existing.latest.receivedAt + stepMs <= now + BURST_EPSILON_MS`
+      // ⟺ `stepMs <= BURST_EPSILON_MS + d < 2*BURST_EPSILON_MS`. At the production
+      // STEP_MS=200 the branch is UNREACHABLE (burst smoothness is carried by the
+      // depth-4 ring buffer). store.test.ts pins this + BITES below the bound.
       if (synthetic <= now + BURST_EPSILON_MS) {
         receivedAt = synthetic;
       }
