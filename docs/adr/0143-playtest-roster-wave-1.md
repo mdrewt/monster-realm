@@ -92,9 +92,19 @@ matchup where possible: Cragling picks Sandblast (35×10×3 = 1050) over Ember (
 The Dark line is the honest exception. Toxic Sting is power 20, so **no two-skill Dark
 moveset exists in which the AI selects Toxic Sting on a neutral matchup** — any partner
 with power ≥ 30 outscores it. Wave 1 accepts this rather than shipping a single-skill
-moveset (which would risk a PP-exhaustion edge on an AI-driven monster): Toxic Sting stays
-**player-selectable**, which is where the Dark line's status identity actually lives, and
-the Earth/Dark STAB power gap is recorded as a residual for the slice that owns
+moveset (which would risk a PP-exhaustion edge on an AI-driven monster). The full picture,
+worked through exhaustively against the shipped chart during review:
+
+- **Shadelet (8)** picks Aqua Jet against Fire/Earth/Wind/Light/Dark defenders, and **does**
+  pick Toxic Sting against Water and Plant, where Aqua Jet is not-very-effective
+  (600 > 400). So the poison genuinely lands — just not on neutral matchups.
+- **Umbrafang (10)** never picks Toxic Sting against anything: Fire Fang wins even at
+  half effectiveness (650 > 600). Its Dark STAB is **player-only**.
+
+Neither line is AI-controlled today (only wild monsters are, and none of the four is
+wild-obtainable — D4), so this affects nothing at runtime yet. It becomes real the moment
+a later slice makes species 8 wild, which is why it is written down here rather than
+discovered then. The Earth/Dark STAB power gap is a residual for the slice that owns
 `content/skills/*`.
 
 **Ability assignments** de-orphan ability 2 (Vital Spirit), which no species referenced
@@ -118,15 +128,15 @@ into `encounters/000-core.ron` is not the cheap edit it appears to be:
 - **It changes live battle mechanics for the first time.** No species currently learns
   skills 7–11, so `sets_weather` and `applies_status` are *dead data*: no live battle has
   ever had `weather != None`. Putting Cragling in zone 0 makes the AI pick Sandblast
-  against the Fire starter (2100 vs Ember's 800), setting Sandstorm — and Earth is
-  Sandstorm-immune, so a wild Cragling chips the player 1/16 max HP per turn while taking
-  none. That is an unplaytested asymmetric DoT, not a content tweak.
+  against the Fire starter (2100, vs Ember's 400 at Fire-into-Fire), setting Sandstorm —
+  and Earth is Sandstorm-immune, so a wild Cragling chips the player 1/16 max HP per turn
+  while taking none. That is an unplaytested asymmetric DoT, not a content tweak.
 - **It breaks an out-of-scope e2e test.** `client/e2e/recruit.spec.ts` hardcodes its
-  flee-on-danger predicate to `affinity === 'Water'` and derives its `MAX_ENCOUNTERS` flake
-  budget from the exact zone-0 weights (10/7/5). Earth is super-effective on the Fire
-  starter, so adding Cragling makes the spec fail to flee from a lethal matchup, and
-  invalidates the budget. That file is outside pt-d1's touches and has a documented
-  CI-flake history.
+  flee-on-danger predicate to `affinity === 'Water'`, and its `MAX_ENCOUNTERS` flake budget
+  is justified by per-encounter success probabilities that assume the current zone-0
+  composition. Earth is super-effective on the Fire starter, so adding Cragling makes the
+  spec fail to flee from a lethal matchup and invalidates that justification. The file is
+  outside pt-d1's touches and has a documented CI-flake history.
 
 Deferring is therefore the *smaller* change, not the lazier one. pt-d3 must place species 7
 and 8, generalise the recruit e2e flee predicate to "affinity super-effective against my
@@ -206,10 +216,37 @@ Two evals parse the RON text with regexes after stripping **whole-line `//` comm
   "species 10 has a self-evolution" failure.
 
 `\b` does *not* match `species_id:`/`skill_id:` in real fields (`_` is a word character), so
-the only injection vector is comment prose. **Rule adopted:** in files this slice authors,
-explanatory comments are full-line, and no trailing comment may contain `id:`,
-`species_id:` or `to_species:` — use the existing `id=1` convention (already used by
-`// Flame Body (id=1)`) instead.
+the only injection vector is comment prose. **Rule adopted:** no *trailing* comment in a
+species part file or in `evolutions.ron` may contain `id:`, `species_id:` or
+`to_species:` — use the existing `id=1` convention (already used by `// Flame Body (id=1)`)
+instead. Whole-line comments are stripped by both scanners and stay unrestricted.
+
+This is **gated, not merely documented** (EARS pt-d1-7). Review's objection was decisive:
+a convention stated in a wave-1 file header binds nobody, and the species registry is
+authored one part file per wave, so wave 2 would inherit the hazard and none of the rule.
+`pt_d1_7_ron_comments_carry_no_id_shaped_needles` therefore scans the whole species
+directory plus `evolutions.ron`, not just this slice's files. Half the failure mode is
+loud (a phantom `species_id:` fails `evolution-fusion-content-integrity` as a bogus
+self-evolution); the species-side half is silent, which is exactly why it needs a gate.
+
+### D8 — the STAB invariant is adopted registry-wide, deliberately
+
+EARS pt-d1-3 asserts that **every** species in the merged registry can learn at least one
+skill of its own affinity — not just the four new rows. Verified green for all six
+pre-existing forms, so it costs nothing today.
+
+Scoping it to ids 7–10 was considered and rejected. The rule is what makes an affinity
+mean something (a species whose typing it can never express is a data bug, not a design),
+and it is the *only* invariant in this slice that no existing validator enforces. Adopting
+it registry-wide is what turns D2's "Electric and Light are blocked on a skills slice" from
+a note into a mechanism: a later wave that adds an Electric species without adding an
+Electric skill now fails a gate instead of shipping a species that cannot use its own type.
+The assertion message names D2 so that failure is self-explanatory.
+
+The cost is honest: this test lives in a file named for pt-d1 but constrains every later
+wave. Promoting it into `validate_content` proper is a reasonable follow-up; it was not
+done here because that function's signature is fixed by external callers and widening it
+is not a content slice's business.
 
 ## Consequences
 
@@ -229,16 +266,24 @@ where one did.
 - Stoneward (105 def / 100 sp_def + Regeneration, best move 35 power) is a stall shell;
   damage's `max(1, …)` floor prevents a true loop, but PvP turn counts could get long.
 
-**Merge hazard for whoever lands second (pt-d1 vs pt-d2).** Three files are shared and one
-of them fails *silently*:
-- `game-core/content/evolutions.ron` — a single non-glob file; both waves append. A
-  resolution that drops one side's block is caught by nothing today, so pt-d1 pins its two
-  blocks with an explicit test (EARS pt-d1-2).
-- `server-module/src/lib.rs` `CONTENT_VERSION` and `evals/baselines/content-hash.json` —
-  taking either side after merging both content sets yields a hash over a tree neither
-  branch ever hashed, turning `content-version` **and** `content-version-teeth` red on
-  master. The second slice **must rebase, re-bump to 14, and recompute the hash**; it is not
-  a take-ours resolution.
+**Merge hazard for whoever lands second (pt-d1 vs pt-d2).** A `git merge-tree` of the two
+branches was run during review: it produces **four visible conflicts and no silent
+corruption**, and the two waves' species ids do not overlap. The full shared surface:
+
+| File | Resolution |
+|---|---|
+| `evals/baselines/content-hash.json` | **Recompute** — never take a side. The hash covers the whole content tree, so after both waves land it is a hash neither branch ever computed. |
+| `server-module/src/lib.rs` (`CONTENT_VERSION`) | Re-bump to the next free value and keep **both** history lines. |
+| `game-core/content/evolutions.ron` | **Keep both stanzas.** A single non-glob file; a resolution that drops one side is caught by nothing generic, which is why pt-d1 pins its own two blocks (EARS pt-d1-2). |
+| `docs/adr/DIGEST.md` | Generated — re-run `just adr-digest`, never hand-merge. |
+| `ARCHITECTURE.md` | Both waves touch the same registry-table row and the id-reservation bullet. |
+| the ADR **number** | Each wave must hold a distinct reserved number; `adr-digest` keys on the 4-digit filename prefix. |
+
+The *silent* failure mode worth naming: the species registry is a glob-merged **directory**,
+so two waves claiming the same ids merge with **zero git conflict** and surface only as a
+`duplicate species id` from `validate_content` at publish time. That is why the id
+reservation is written into the part-file header and `ARCHITECTURE.md`, not just into review
+notes. (Verified during review that wave 2 claims a disjoint range, so this did not fire.)
 
 ## Considered alternatives
 
@@ -277,6 +322,17 @@ of them fails *silently*:
    `client/public/assets/monster-*` (the renderer uses procedural `placeholderAssets.ts`),
    so all monster sheets including emberkit's are currently inert. A client slice.
 7. `evals/baselines/species-ids.json` stale at `[1,2,3]`; ids 4–10 unguarded.
+9. **`evals/content-version.eval.mjs`'s `readContentVersion` is defeatable** — it takes the
+   first substring hit of `CONTENT_VERSION: u32 = `, so a constant merely *ending in* that
+   name (`MIN_SUPPORTED_CONTENT_VERSION`) declared above the real one shadows it, and the
+   gate reports the decoy's value. Red-team demonstrated all three version gates reporting
+   13 while the module shipped 12 — the exact ADR-0054 silent-skip they exist to prevent.
+   pt-d1's own `parse_content_version` was hardened (word-boundary anchored, must be
+   unique, with a decoy tooth); the pre-existing eval is outside this slice's touch set and
+   is left for a gate-hardening chore.
+10. **`-normal.*` asymmetry once wave 2 lands.** Wave 2 ships normal-map pairs; wave 1 does
+    not (D5). After both merge the asset set is inconsistent and `client/art-src/README.md`'s
+    inventory lists neither wave. Reconcile with residual 1.
 8. `monster-emberkit` does not follow the `monster-<species-slug>` convention this ADR
    establishes; repointing it at Flameling belongs with the wave that replaces placeholder
    sprites for existing forms.

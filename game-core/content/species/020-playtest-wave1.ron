@@ -7,11 +7,14 @@
 // claim the same numbers merge with NO git conflict and surface only as a
 // "duplicate species id" error from validate_content at publish time.
 //
-// COMMENT HYGIENE (ADR-0143 D7): comments here are FULL-LINE only, and no comment
-// may contain the two-character sequence id followed by a colon. Two evals strip
-// whole-line comments only and then regex-scan the remaining text; a trailing
-// comment carrying that sequence would inject a phantom stable content id into
-// the append-only baseline. Use the "id=1" form (as 000-core.ron does) instead.
+// COMMENT HYGIENE (ADR-0143 D7): a TRAILING comment here must never contain the
+// sequence id-followed-by-a-colon. Two evals strip whole-line comments only and
+// then regex-scan the remaining text, so such a comment injects a phantom stable
+// content id into the append-only baseline. Use the "id=1" form (as 000-core.ron
+// does) instead. Whole-line comments are stripped and are therefore unrestricted.
+// This is GATED, not merely documented: game-core/tests/pt_d1_roster.rs
+// pt_d1_7_ron_comments_carry_no_id_shaped_needles scans this whole directory plus
+// evolutions.ron, so the rule binds every later authoring wave too.
 //
 // Two lines, four forms, archetype coverage per GDD section 5:
 //   7 Cragling  (Earth, tanky)   -> level 18 -> 9 Stoneward  (Earth, support)
@@ -42,10 +45,11 @@
         name: "Shadelet",
         base_stats: (hp: 44, attack: 46, defense: 44, speed: 74, sp_attack: 62, sp_defense: 52),
         affinity: Dark,
-        // Toxic Sting is power 20, so the AI never picks it on a neutral matchup —
-        // no two-skill Dark moveset can change that until Dark gets a stronger
-        // skill. It stays player-selectable, which is where this line's status
-        // identity lives; Aqua Jet is the usable attack. See ADR-0143 D3.
+        // Toxic Sting is power 20, so on a NEUTRAL matchup the AI prefers Aqua Jet
+        // (800 vs 600) — no two-skill Dark moveset changes that until Dark gains a
+        // stronger skill. It is NOT unreachable though: against Water and Plant
+        // defenders Aqua Jet is not-very-effective (400), so the AI does pick Toxic
+        // Sting and the poison lands. Both halves matter; see ADR-0143 D3.
         learnable_skill_ids: [11, 4],
         ability: Some(2), // Vital Spirit (id=2): immune to Sleep (ADR-0100)
     ),

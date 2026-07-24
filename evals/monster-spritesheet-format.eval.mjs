@@ -21,12 +21,11 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { deflateSync, inflateSync } from 'node:zlib';
 
 const ASSET_DIR = 'client/public/assets';
 const DIRECTIONS = ['down', 'up', 'right', 'left'];
 const POSES = ['idle', 'walk0', 'walk1'];
-const LEGAL_X = [0, 32, 64];
-const LEGAL_Y = [0, 32, 64, 96];
 const SHEET_W = 96;
 const SHEET_H = 128;
 const NEW_SHEET_PNGS = [
@@ -55,7 +54,7 @@ export function requiredAnimationKeys() {
  * violations (empty === conforming). Exported so the teeth can call it directly
  * with synthetic objects instead of doctoring shipped asset files.
  */
-export function sheetFormatViolations(sheet) {
+export function sheetFormatViolations(sheet, fileName) {
   const errs = [];
   if (!sheet || typeof sheet !== 'object') return ['sheet is not an object'];
 
@@ -63,20 +62,32 @@ export function sheetFormatViolations(sheet) {
   if (!frames || typeof frames !== 'object') {
     errs.push('missing `frames` object');
   } else {
-    const cells = new Set();
-    for (const key of requiredFrameKeys()) {
-      const entry = frames[key];
-      if (!entry || !entry.frame) {
-        errs.push(`missing frame \`${key}\``);
-        continue;
+    for (const d of DIRECTIONS) {
+      for (const p of POSES) {
+        const key = `mon_${d}_${p}`;
+        const entry = frames[key];
+        if (!entry?.frame) {
+          errs.push(`missing frame \`${key}\``);
+          continue;
+        }
+        const { x, y, w, h } = entry.frame;
+        if (w !== 32 || h !== 32) errs.push(`frame \`${key}\` is ${w}x${h}, expected 32x32`);
+        // Each key is pinned to its CANONICAL cell, not merely to some unused cell
+        // on the grid. Checking only "all 12 cells are distinct" accepts a sheet
+        // whose rects have been permuted — every animation then plays the wrong
+        // facing while the sheet still looks structurally perfect.
+        const wantX = POSES.indexOf(p) * 32;
+        const wantY = DIRECTIONS.indexOf(d) * 32;
+        if (x !== wantX || y !== wantY) {
+          errs.push(`frame \`${key}\` is at (${x},${y}), expected its cell (${wantX},${wantY})`);
+        }
       }
-      const { x, y, w, h } = entry.frame;
-      if (w !== 32 || h !== 32) errs.push(`frame \`${key}\` is ${w}x${h}, expected 32x32`);
-      if (!LEGAL_X.includes(x)) errs.push(`frame \`${key}\` x=${x} is off the 3-wide grid`);
-      if (!LEGAL_Y.includes(y)) errs.push(`frame \`${key}\` y=${y} is off the 4-tall grid`);
-      const cell = `${x},${y}`;
-      if (cells.has(cell)) errs.push(`frame \`${key}\` reuses grid cell (${cell})`);
-      cells.add(cell);
+    }
+    // No stray frames: an extra key is either dead weight or a renamed frame that
+    // the renderer will never resolve.
+    const required = new Set(requiredFrameKeys());
+    for (const key of Object.keys(frames)) {
+      if (!required.has(key)) errs.push(`unexpected extra frame \`${key}\``);
     }
   }
 
@@ -85,8 +96,18 @@ export function sheetFormatViolations(sheet) {
     errs.push('missing `animations` object');
   } else {
     for (const key of requiredAnimationKeys()) {
-      if (!Array.isArray(anims[key]) || anims[key].length === 0) {
+      const seq = anims[key];
+      if (!Array.isArray(seq) || seq.length === 0) {
         errs.push(`missing/empty animation \`${key}\``);
+        continue;
+      }
+      // Every animation entry must RESOLVE to a declared frame. Without this a
+      // sheet can list eight animations pointing at names that do not exist and
+      // still pass every structural check.
+      for (const frameName of seq) {
+        if (!frames || typeof frames !== 'object' || !frames[frameName]) {
+          errs.push(`animation \`${key}\` references undeclared frame \`${frameName}\``);
+        }
       }
     }
   }
@@ -103,8 +124,15 @@ export function sheetFormatViolations(sheet) {
     }
     if (typeof meta.image !== 'string' || meta.image.length === 0) {
       errs.push('meta.image must name a sibling png');
-    } else if (!meta.image.endsWith('.png') || meta.image.includes('/')) {
+    } else if (!meta.image.endsWith('.png') || path.basename(meta.image) !== meta.image) {
+      // `basename(x) === x` rejects both `a/b.png` and a backslash-separated
+      // traversal, which an `includes('/')` guard would let through.
       errs.push(`meta.image \`${meta.image}\` must be a bare sibling .png filename`);
+    } else if (fileName && meta.image !== `${fileName.slice(0, -'.json'.length)}.png`) {
+      // The sheet must point at ITS OWN png. Otherwise two sheets can be swapped
+      // (or all of them aimed at one image) and every other check still passes,
+      // silently rendering the wrong species.
+      errs.push(`meta.image \`${meta.image}\` does not match the sheet name \`${fileName}\``);
     }
   }
   return errs;
@@ -141,7 +169,8 @@ export function ihdrViolations(ihdr, label) {
     errs.push(`${label}: IHDR is ${ihdr.width}x${ihdr.height}, expected ${SHEET_W}x${SHEET_H}`);
   }
   if (ihdr.bitDepth !== 8) errs.push(`${label}: bit depth ${ihdr.bitDepth}, expected 8`);
-  if (ihdr.colourType !== 6) errs.push(`${label}: colour type ${ihdr.colourType}, expected 6 (RGBA)`);
+  if (ihdr.colourType !== 6)
+    errs.push(`${label}: colour type ${ihdr.colourType}, expected 6 (RGBA)`);
   if (ihdr.interlace !== 0) errs.push(`${label}: interlace ${ihdr.interlace}, expected 0`);
   return errs;
 }
@@ -164,24 +193,91 @@ function sha256File(p) {
   return createHash('sha256').update(readFileSync(p)).digest('hex');
 }
 
+/**
+ * Blank-sprite detector. Returns true when the PNG's pixel data is entirely
+ * zero bytes — i.e. a fully transparent image.
+ *
+ * WHY: every check above is structural, so a 96x128 sheet whose pixels are all
+ * transparent conforms perfectly and is byte-distinct from its siblings, while
+ * rendering an invisible monster. Concatenate the IDAT chunks, inflate, and look
+ * for a non-zero byte: for an all-transparent image every scanline filter byte
+ * AND every sample byte is 0, so the inflated stream is all zeros. This is a
+ * FLOOR ("something was drawn"), deliberately not a judgement about art quality —
+ * distinct silhouettes remain a review criterion (ADR-0143 D5).
+ */
+export function isBlankPng(buf) {
+  if (!buf || buf.length < 29) return true;
+  const parts = [];
+  let pos = 8;
+  while (pos + 8 <= buf.length) {
+    const len = buf.readUInt32BE(pos);
+    const type = buf.toString('latin1', pos + 4, pos + 8);
+    if (type === 'IDAT') parts.push(buf.subarray(pos + 8, pos + 8 + len));
+    pos += 12 + len;
+  }
+  if (parts.length === 0) return true;
+  let raw;
+  try {
+    raw = inflateSync(Buffer.concat(parts));
+  } catch {
+    return true;
+  }
+  return !raw.some((b) => b !== 0);
+}
+
 function teeth() {
   // TEETH A: a sheet missing `mon_left_walk1` must be rejected.
-  const good = JSON.parse(readFileSync(path.join(ASSET_DIR, 'monster-emberkit.json'), 'utf8'));
-  if (sheetFormatViolations(good).length !== 0) {
+  const GOOD_NAME = 'monster-emberkit.json';
+  const good = JSON.parse(readFileSync(path.join(ASSET_DIR, GOOD_NAME), 'utf8'));
+  if (sheetFormatViolations(good, GOOD_NAME).length !== 0) {
     return 'TEETH A(pre): the known-good emberkit sheet must pass, else every check below is vacuous';
   }
-  const missingFrame = JSON.parse(JSON.stringify(good));
+  const clone = () => JSON.parse(JSON.stringify(good));
+  const missingFrame = clone();
   delete missingFrame.frames.mon_left_walk1;
-  if (sheetFormatViolations(missingFrame).length === 0) {
+  if (sheetFormatViolations(missingFrame, GOOD_NAME).length === 0) {
     return 'TEETH A: a sheet missing mon_left_walk1 was accepted (an 11-frame sheet renders a frozen left-walk)';
   }
 
   // TEETH B: a wrong meta.size must be rejected (a 64x96 sheet with 32px frames
   // silently crops the last row/column at render time).
-  const wrongSize = JSON.parse(JSON.stringify(good));
+  const wrongSize = clone();
   wrongSize.meta.size = { w: 64, h: 96 };
-  if (sheetFormatViolations(wrongSize).length === 0) {
+  if (sheetFormatViolations(wrongSize, GOOD_NAME).length === 0) {
     return 'TEETH B: a sheet declaring meta.size 64x96 was accepted';
+  }
+
+  // TEETH E: PERMUTED frame rects. Every cell is still distinct and on the grid,
+  // but each key now points at another key's cell — walking left plays the up
+  // animation. A "cells are unique" check accepts this; the canonical-cell pin
+  // must not.
+  const permuted = clone();
+  const swapA = permuted.frames.mon_down_idle.frame;
+  permuted.frames.mon_down_idle.frame = permuted.frames.mon_left_walk1.frame;
+  permuted.frames.mon_left_walk1.frame = swapA;
+  if (sheetFormatViolations(permuted, GOOD_NAME).length === 0) {
+    return 'TEETH E: a sheet with two frame rects swapped was accepted (canonical-cell pin is not biting)';
+  }
+
+  // TEETH F: animations pointing at frames that do not exist.
+  const danglingAnim = clone();
+  danglingAnim.animations.walk_down = ['does_not_exist'];
+  if (sheetFormatViolations(danglingAnim, GOOD_NAME).length === 0) {
+    return 'TEETH F: an animation referencing an undeclared frame was accepted';
+  }
+
+  // TEETH G: a sheet aimed at ANOTHER sheet's png — the cross-wiring that makes
+  // every species render as the wrong monster while all structure checks pass.
+  const crossWired = clone();
+  crossWired.meta.image = 'monster-cragling.png';
+  if (sheetFormatViolations(crossWired, GOOD_NAME).length === 0) {
+    return 'TEETH G: a sheet whose meta.image names a DIFFERENT sheet was accepted';
+  }
+  // ...and a traversal-shaped image name.
+  const traversal = clone();
+  traversal.meta.image = '..\\..\\evil.png';
+  if (sheetFormatViolations(traversal, GOOD_NAME).length === 0) {
+    return 'TEETH G: a backslash-separated meta.image path was accepted';
   }
 
   // TEETH C: the IHDR parser must reject a truncated buffer rather than reading
@@ -206,7 +302,54 @@ function teeth() {
   if (duplicateHashGroups({ a: 'ff', b: '00' }).length !== 0) {
     return 'TEETH D: duplicateHashGroups flagged two DISTINCT hashes (not vacuous-safe)';
   }
+
+  // TEETH H: the blank-sprite detector. A real sheet must NOT read as blank, and
+  // a synthesized fully-transparent 96x128 RGBA8 PNG MUST. Building the blank
+  // here (rather than committing a fixture) keeps the tooth self-contained.
+  if (isBlankPng(realPng)) {
+    return 'TEETH H(pre): a real, drawn sheet was reported blank — the detector is broken';
+  }
+  const blankRaw = Buffer.alloc(SHEET_H * (1 + SHEET_W * 4)); // filter byte + RGBA row, all zero
+  const blankPng = buildPng(deflateSync(blankRaw));
+  if (!isBlankPng(blankPng)) {
+    return 'TEETH H: a fully transparent 96x128 sheet was NOT reported blank';
+  }
+  if (ihdrViolations(parsePngIhdr(blankPng), 'blank').length !== 0) {
+    return 'TEETH H(pre): the synthesized blank must be structurally VALID, else it proves nothing';
+  }
   return null;
+}
+
+/** Assemble a minimal valid 96x128 RGBA8 PNG around an already-deflated IDAT. */
+function buildPng(idat) {
+  const chunk = (type, data) => {
+    const out = Buffer.alloc(12 + data.length);
+    out.writeUInt32BE(data.length, 0);
+    out.write(type, 4, 'latin1');
+    data.copy(out, 8);
+    out.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, 'latin1'), data])), 8 + data.length);
+    return out;
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(SHEET_W, 0);
+  ihdr.writeUInt32BE(SHEET_H, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // colour type RGBA
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', idat),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function crc32(buf) {
+  let c = 0xffffffff;
+  for (const byte of buf) {
+    c ^= byte;
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? (c >>> 1) ^ 0xedb88320 : c >>> 1;
+  }
+  return (c ^ 0xffffffff) >>> 0;
 }
 
 export default async function () {
@@ -223,6 +366,7 @@ export default async function () {
   }
 
   const failures = [];
+  const hashes = {};
   for (const file of sheets) {
     let sheet;
     try {
@@ -231,31 +375,33 @@ export default async function () {
       failures.push(`${file}: unparseable JSON (${e.message})`);
       continue;
     }
-    for (const err of sheetFormatViolations(sheet)) failures.push(`${file}: ${err}`);
+    for (const err of sheetFormatViolations(sheet, file)) failures.push(`${file}: ${err}`);
 
     const image = sheet?.meta?.image;
-    if (typeof image !== 'string' || image.includes('/')) continue;
+    if (typeof image !== 'string' || path.basename(image) !== image) continue;
     const pngPath = path.join(ASSET_DIR, image);
     if (!existsSync(pngPath)) {
       failures.push(`${file}: meta.image \`${image}\` does not exist next to the sheet`);
       continue;
     }
-    for (const err of ihdrViolations(parsePngIhdr(readFileSync(pngPath)), image)) {
+    const bytes = readFileSync(pngPath);
+    for (const err of ihdrViolations(parsePngIhdr(bytes), image)) {
       failures.push(`${file} -> ${err}`);
     }
+    if (isBlankPng(bytes)) {
+      failures.push(`${file} -> ${image}: pixel data is entirely transparent (nothing was drawn)`);
+    }
+    // Distinctness is derived from the GLOB, not from an allowlist, so every
+    // future roster wave inherits copy-paste protection with no eval edit.
+    hashes[image] = sha256File(pngPath);
   }
 
-  // Wave-1 (pt-d1) art distinctness: the four new PNGs must differ from each
-  // other and from the pre-existing emberkit sheet.
-  const distinctSet = [...NEW_SHEET_PNGS, 'monster-emberkit.png'];
-  const hashes = {};
-  for (const png of distinctSet) {
-    const p = path.join(ASSET_DIR, png);
-    if (!existsSync(p)) {
+  // …but wave-1's four sheets are additionally required to EXIST. Presence cannot
+  // come from the glob (an empty directory would glob to nothing and pass).
+  for (const png of NEW_SHEET_PNGS) {
+    if (!existsSync(path.join(ASSET_DIR, png))) {
       failures.push(`missing required wave-1 spritesheet png ${png}`);
-      continue;
     }
-    hashes[png] = sha256File(p);
   }
   for (const group of duplicateHashGroups(hashes)) {
     failures.push(`identical sprite bytes (placeholder copy?): ${group.join(' == ')}`);
@@ -266,6 +412,6 @@ export default async function () {
     pass: failures.length === 0,
     detail: failures.length
       ? failures.join('; ')
-      : `${sheets.length} spritesheets conform (12 frames, 8 anims, 96x128 RGBA8 IHDR); ${Object.keys(hashes).length} pngs pairwise distinct (TEETH A-D verified)`,
+      : `${sheets.length} spritesheets conform (12 frames, 8 anims, 96x128 RGBA8 IHDR); ${Object.keys(hashes).length} pngs pairwise distinct (TEETH A-H verified)`,
   };
 }
