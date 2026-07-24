@@ -5,6 +5,7 @@
 **Slice:** m13.5b
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** ADR-0142
 **Subsystems:** movement-netcode, client-ui
 **Decision:** Reducer rejections surface as UI feedback; enqueue_move drops rejected seq and forces reconcile; app-level reconnect uses exponential backoff capped at 30s.
 
@@ -201,3 +202,42 @@ try/catch totality against hostile accessors (RT-05), and the gating tests
 gained exact-name-equality teeth (an `includes()` classifier survived the
 original suite), a real assertion replacing the vacuous `tailStillPending`
 helper, and an immediate-convergence assertion in the 13.5b-4 GREEN test.
+
+## Amendment (ptc5f, 2026-07-24 — Decision E accepted risk, ADR-0142)
+
+The M-playtest-c.5 eleventh review (Decision E, Drew-delegated 2026-07-20) found
+that the A2 "ordering" safety argument above (amendment §3, RT-03) covers the
+**reconnect** path only, and recorded the uncovered **own-zone warp** case as an
+explicit accepted risk for the closed-playtest window. The epoch/generation-guard
+**fix is deferred** to the booked post-gate slice `M-postgate-netcode-hardening`
+(PLAN §9 post-gate block, owner Drew); this amendment + a reachability pin are the
+pre-gate deliverable (no behavior change).
+
+**The gap.** A2's ordering invariant — "a stale `.catch` always drains against
+the OLD predictor ≥1 s before the reconnect timer builds the new one" — depends
+on the socket being **dropped** (in-flight reducer promises never settle after a
+drop; SDK evidence above). An **own-zone warp** takes a different path:
+`switchZone → resetPredictionState()` (main.ts) rebuilds the `Predictor`
+**synchronously on a live socket** — no drop, no ≥1 s reconnect delay. So a
+still-unacked pre-warp `enqueue_move` rejection CAN still settle *after* the
+rebuild, and reconcile re-seeds the fresh predictor's `#nextSeq` at `ackedSeq`,
+handing the next new op the SAME seq the pre-warp op held. The stale
+`.catch → predictor.dropRejected(seq)` (main.ts `sendIntent`) then evicts the
+**new, legitimate** op instead of the (already-gone) pre-warp one.
+
+**Reachability bound (pinned).** Within a single predictor `#nextSeq` is strictly
+increasing and never reused, so `dropRejected` only ever evicts the intended dead
+op — the normal case is safe. Eviction of a *legit* op is reachable **only across
+a predictor rebuild that re-seeds a colliding seq**, i.e. a movement rejection
+landing exactly across a warp. `predictor.test.ts` pins this: `dropRejected` is
+precise within one epoch, and evicts a live op only in the rebuilt+re-seeded
+cross-warp scenario. A comment at `Predictor.dropRejected` records the gap and
+points here + at the booked fix.
+
+**Accepted-risk rationale.** For the LOCAL single-tester closed playtest there is
+no contention → no queue-full/movement rejections → the trigger is effectively
+unreachable, and retuning ADR-0085-lineage prediction code immediately before the
+fun-hypothesis playtest is speculative. The guard (Predictor captures a `buildGen`
+epoch; the `.catch` no-ops when its captured epoch ≠ the current predictor's)
+lands in `M-postgate-netcode-hardening`. Revisit sooner if the playtest shows
+warp-time rubber-banding.

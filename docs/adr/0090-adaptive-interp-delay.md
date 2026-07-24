@@ -5,6 +5,7 @@
 **Slice:** m13.5e
 **Supersedes:** ADR-0075 §12.5d-1
 **Amends:** —
+**Amended-by:** ADR-0142
 **Subsystems:** client-ui, movement-netcode
 **Decision:** Replace fixed interpolation delay with an adaptive EWMA jitter estimator per character and variable snapshot depth (max 4) to handle burst delivery without pops.
 
@@ -106,3 +107,39 @@ A new function that searches the snapshot array for the tightest bracket around 
 **EWMA α = 0.25 (4-sample half-life):** Higher α reacts faster to jitter but also over-fits to a single late packet. 0.125 provides a more stable estimate, important because the delay change affects the visual impression of ALL remote entities using the estimator.
 
 **Re-stamping BOTH burst arrivals** (i.e., giving the first burst tick a synthetic `receivedAt = now - STEP_MS` retroactively): Rejected — the first tick was already committed to the ring buffer with `now` as its receivedAt; retroactive modification violates the immutable-record contract and creates a store where the same snapshot has two different timestamps in different parts of the code.
+
+## Amendment (ptc5f, 2026-07-24 — Decision A, ADR-0142)
+
+The M-playtest-c.5 eleventh review (Decision A, Drew-delegated 2026-07-20)
+sharpened the §B-2 "known limitation" above from *"almost always false at
+production STEP_MS"* into an **exact reachability bound**, and pinned it as a
+gated fact (no behavior change).
+
+**Bound.** The synthetic assignment `receivedAt = synthetic` fires only when,
+letting `d = now − existing.latest.receivedAt` (the outer burst guard forces
+`d < BURST_EPSILON_MS`):
+
+```
+synthetic ≤ now + BURST_EPSILON_MS
+⟺ existing.latest.receivedAt + stepMs ≤ now + BURST_EPSILON_MS
+⟺ stepMs ≤ BURST_EPSILON_MS + d < 2·BURST_EPSILON_MS
+```
+
+So the branch is reachable **iff `stepMs < 2·BURST_EPSILON_MS`** (= 40 ms at
+`BURST_EPSILON_MS = 20`). At the production `STEP_MS = 200` it is **unreachable**
+— not merely "almost always false". Burst smoothness is carried entirely by the
+depth-4 ring buffer + the `interpolateHistory` `span ≤ 0` graceful path. A
+negative `d` (a chained future synthetic) only shrinks the RHS, so it cannot
+widen reachability. The bound is tight: at `stepMs = 39` a `d = 19` fires the
+branch; at `stepMs = 40` no admissible `d` can.
+
+**Pins (ptc5f).** A code comment at the branch site (`store.ts`) records the
+`stepMs < 2·BURST_EPSILON_MS` bound; a proof-of-teeth test
+(`store.test.ts`) asserts the branch is unreachable across the whole burst-gap
+domain at the production `STEP_MS`, and BITES just below the bound — so a future
+`STEP_MS` drop under 40 ms fails loud. The smoothing behavior is deliberately
+**unchanged**: retuning the netcode path immediately before the fun-hypothesis
+playtest is speculative (anti-YAGNI on a determinism-sensitive path); the actual
+defect was doc drift, fixed here at zero behavior risk. Option (a) — retune so
+burst-spread runs in production — is kept as a named YAGNI exception, revisited
+only if playtest smoothness testing surfaces burst pops.
