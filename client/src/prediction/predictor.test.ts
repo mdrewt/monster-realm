@@ -10,6 +10,13 @@
 // tiny map: a west wall at x <= 0, everything else walkable. Screen coords:
 // North = y-1, South = y+1, East = x+1, West = x-1.
 
+// nh3 (ADR-0152): the node builtins below serve ONE tooth — the predictor.ts SIGNATURE
+// source-scan at the foot of this file (the required-param mutant is invisible to any
+// runtime test, and main.ts is coverage-excluded). Same readFileSync idiom as
+// main.wiring.test.ts / net/connection.test.ts. No `new RegExp` anywhere (Semgrep-banned).
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { WasmCharacterState, WasmDirection, WasmMoveInput } from '../convert/convert';
@@ -1292,20 +1299,23 @@ describe('M8.8e §C: divergence re-issue + keyup-not-stuck (composition)', () =>
 });
 
 // ================================================================================
-// M13.5b ADR-0085 — Predictor.dropRejected(seq): evict a known-dead pending op
+// M13.5b ADR-0085 — Predictor.dropRejected(seq, epoch): evict a known-dead pending op
 //
-// RED REASON: `Predictor.dropRejected` does not exist yet — every call below
-// produces a TS compile error ("Property 'dropRejected' does not exist on type
-// 'Predictor'"). The entire describe block stays red until the implementer adds
-// the method.
+// HISTORY: authored RED against a Predictor with no `dropRejected` at all (M13.5b);
+// GREEN since that shipped. nh3 (ADR-0152) added the REQUIRED second parameter, so
+// every call below now passes an epoch read from an intent THAT SAME instance issued
+// (never a literal — see the nh3 banner further down for why a literal would leave
+// the `false`-oracle cases green-and-vacuous). This block is the SAME-EPOCH contract;
+// the cross-epoch guard is pinned by the nh3-2 block and by N3/N4 below it.
 //
 // API CONTRACT (pinned):
-//   dropRejected(seq: number): boolean
-//   - Removes EXACTLY the pending op with that seq (filter !==). Returns true iff
-//     one was removed.
+//   dropRejected(seq: number, epoch: PredictorEpoch): boolean
+//   - Removes EXACTLY the pending op with that seq (filter !==), and ONLY when
+//     `epoch` is this instance's own epoch. Returns true iff one was removed.
 //   - Does NOT touch #queue (queueDepth unchanged by the call itself).
 //   - Does NOT touch #nextSeq.
 //   - Unknown / already-dropped seq → returns false, no state change (idempotent).
+//   - Foreign epoch → returns false and changes NOTHING (nh3-1; see N3).
 // ================================================================================
 
 describe('dropRejected (M13.5b ADR-0085)', () => {
@@ -1603,21 +1613,36 @@ describe('Predictor M12.5d-3: snapped signal uses last FRAME drain time (not rec
 });
 
 // ================================================================================
-// ptc5f — ADR-0142 (D4): dropRejected reachability bound (pins ADR-0085 / M13.5b)
+// ptc5f → nh3-2: the cross-warp eviction pin — was "documented (not fixed)", NOW
+// PINS THE FIX. (ADR-0142 D4 reachability bound → ADR-0085 amendment / ADR-0152.)
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-postgate-netcode-hardening.spec.md §nh3
+// (nh3-2 quoted VERBATIM in the nh3 banner immediately below this block).
 //
-// dropRejected(seq) is PRECISE within one predictor instance: it removes exactly
-// the pending op with the given seq and never a neighbor (proven by the normal
-// single-epoch test below). But `#nextSeq` starts at 0 in every fresh Predictor
-// instance, and `seedSeq` only ever RAISES it (monotonic, never rewinds) — so a
-// rebuilt-and-re-seeded predictor whose seed value is <= 0 REUSES the exact seq
-// space of the discarded pre-warp predictor. A stale dropRejected call that
-// arrives late (targeting the pre-warp predictor's seq) then evicts the rebuilt
-// predictor's brand-new legit op purely by seq-space collision. This is documented
-// (not fixed) — the pin proves the collision is real and reachable, and that the
-// eviction it causes is a genuine content-level loss (not just a pendingCount
-// delta), via a reconcile-replay control/experiment contrast.
+// WHAT ptc5f PINNED (history, unchanged premise): dropRejected is PRECISE within one
+// predictor instance — it removes exactly the pending op with the given seq and never
+// a neighbor (the single-epoch test below). But `#nextSeq` starts at 0 in every fresh
+// Predictor and `seedSeq` only ever RAISES it (monotonic, never rewinds), so a
+// rebuilt-and-re-seeded predictor whose seed is <= 0 REUSES the exact seq space of the
+// discarded pre-warp predictor (own-zone warp → resetPredictionState()). A stale
+// rejection arriving late then evicted the REBUILT predictor's brand-new legit op
+// purely by seq-space collision — a swallowed first post-warp move. ptc5f asserted
+// that collision was real and reachable, and accepted the risk.
+//
+// WHAT nh3 CHANGES HERE:
+//   • Arm 1 — the collision premise is KEPT VERBATIM (`newOp.seq === preWarpOp.seq`).
+//     It is what makes the guard's job non-trivial, and it pins that the fix is
+//     EPOCH-based, not seq-disjointness. It deliberately models the UN-FLOORED pair
+//     (`b.seedSeq(0)`) so it stays valid alongside the main.ts seq-floor, which is a
+//     SECOND, independent mechanism (Case M2; pinned by N6 + W-NH3-FLOOR-*).
+//   • Arm 2 — the eviction assertion is FLIPPED to `false`: the stale drop is a TOTAL
+//     no-op and the legit op SURVIVES (proven BY CONTENT via a reconcile replay, not
+//     by a pendingCount delta). This is the nh3-2 assertion.
+//   • Arm 4 — a SAME-epoch post-warp rejection still evicts (the Case-M2 behavior
+//     pin). Without it the whole test would pass against `dropRejected(){return false}`.
+// (Arm 3, ptc5f's separate control predictor `c`, is FOLDED into arm 2's comment: it
+// is redundant post-flip, because arm 4 already rules out a never-removes impl.)
 // ================================================================================
-describe('Predictor ptc5f: dropRejected reachability bound (Decision E epoch-eviction pin)', () => {
+describe('Predictor nh3-2 (was ptc5f): cross-warp stale rejection is epoch-guarded', () => {
   it('normal single-epoch: dropRejected targets EXACTLY the given seq, never a neighbor', () => {
     // Kills: an impl that drops a neighbor seq (off-by-one filter), drops everything,
     // or never actually removes (always-false return) — any of these flips one of
@@ -1642,7 +1667,8 @@ describe('Predictor ptc5f: dropRejected reachability bound (Decision E epoch-evi
     expect(p.pendingCount).toBe(0);
   });
 
-  it('cross-warp: a rebuilt+re-seeded predictor REUSES the pre-warp seq, so a stale dropRejected evicts the NEW legit op', () => {
+  it('cross-warp (nh3-2): the seq collision is REAL, yet the stale rejection no-ops and the NEW legit op SURVIVES', () => {
+    // ---- ARM 1: the collision premise, KEPT VERBATIM from ptc5f -----------------
     // Pre-warp predictor A: issues one still-unacked in-flight op; A is then
     // discarded on warp (e.g. a zone transition rebuilds the predictor).
     const a = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
@@ -1657,31 +1683,411 @@ describe('Predictor ptc5f: dropRejected reachability bound (Decision E epoch-evi
     // THE COLLISION: B's brand-new op reuses A's exact seq — a deterministic
     // consequence of #nextSeq starting at 0 in both instances and seedSeq(0)
     // never rewinding (it's a no-op here since 0 is not > the current #nextSeq).
+    // KEPT ON PURPOSE (plan §5 arm 1): this models the UN-FLOORED pair, so the arms
+    // below prove the fix is the EPOCH GUARD and not seq-disjointness. The main.ts
+    // seq-floor is a separate mechanism (see N6 / W-NH3-FLOOR-*).
     expect(newOp.seq).toBe(preWarpOp.seq);
 
+    // ---- ARM 2 (THE nh3-2 ASSERTION, flipped from ptc5f's `true`) ---------------
     // A stale rejection of A's pre-warp op arrives late and fires against B (the
-    // module-scope predictor is now B) — it evicts B's NEW op purely by seq collision.
-    expect(b.dropRejected(preWarpOp.seq, newOp.epoch)).toBe(true);
+    // module-scope predictor is now B). It carries A's epoch — a FOREIGN epoch for
+    // B — so the guard must make it a TOTAL no-op even though the seq collides.
+    //
+    // ARM 3 (ptc5f's separate control predictor `c`) IS FOLDED INTO THIS COMMENT:
+    // post-flip it was redundant. The guard is a no-op on the STALE path only, not a
+    // survive-all — and "b's op survived" cannot be explained by a dropRejected that
+    // never removes anything, because arm 4 below makes the same-epoch call evict.
+    expect(b.dropRejected(preWarpOp.seq, preWarpOp.epoch)).toBe(false);
 
-    // Prove the eviction BY CONTENT (a pendingCount delta alone is vacuous — it
-    // would also read as 0 if dropRejected simply never recorded anything). Force
+    // Prove SURVIVAL BY CONTENT (a pendingCount delta alone is vacuous — it would
+    // also read as 1 if dropRejected merely returned false without guarding). Force
     // a queue rebuild via reconcile: rebasedAt === now (the file's established
     // trick, see "no re-issue when held direction matches queue tail" above) means
     // reconcile's internal drain step consumes nothing, isolating the pending-replay.
     b.reconcile(baseline(5, 5, 0), [], 0, 0);
-    expect(b.queueDepth).toBe(0); // nothing to replay — the new op's pending record is gone
-    expect(b.lastQueuedDir).toBeUndefined();
+    expect(b.queueDepth).toBe(1); // the legit post-warp op replayed from pending
+    expect(b.lastQueuedDir).toBe('East');
 
-    // CONTROL: an identical predictor built the same way but WITHOUT the stale
-    // cross-warp dropRejected. The new op must SURVIVE the same reconcile —
-    // proving the eviction above happened ONLY because of the stale drop against
-    // a reused seq, not because of some unrelated reconcile side effect.
-    const c = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
-    c.seedSeq(0);
-    c.enqueue(east());
-    c.reconcile(baseline(5, 5, 0), [], 0, 0);
-    expect(c.queueDepth).toBe(1); // the new op survived — replayed from pending
-    expect(c.lastQueuedDir).toBe('East');
+    // ---- ARM 4: the Case-M2 residual / behavior pin (re-labeled, plan §5) -------
+    // A GENUINE post-warp rejection carries B's OWN epoch: the server rejects the
+    // colliding seq as "stale seq" (guards.rs `seq <= last_input_seq`), and evicting
+    // it IS contractually correct. The guard must NOT suppress this — the mechanism
+    // that prevents that rejection from ever existing is the main.ts seq-FLOOR
+    // (lastSentSeq → seedSeq), not this guard.
+    // WITHOUT THIS ARM the whole test would pass against `dropRejected(){return false}`.
+    expect(b.dropRejected(newOp.seq, newOp.epoch)).toBe(true);
+    b.reconcile(baseline(5, 5, 0), [], 0, 0);
+    expect(b.queueDepth).toBe(0); // nothing left to replay — the op's record is gone
+    expect(b.lastQueuedDir).toBeUndefined();
+  });
+});
+
+// ================================================================================
+// nh3 / ADR-0152 — Predictor epoch/generation guard on the eviction seam (+ the
+// main.ts send-seq FLOOR it ships with).
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-postgate-netcode-hardening.spec.md §nh3.
+// The criteria, quoted VERBATIM (do not paraphrase — the nh2 banner post-mortem):
+//
+//   nh3-1  `Predictor` SHALL carry an epoch/generation identifier, bumped on every
+//          `resetPredictionState()` rebuild. A rejection `.catch`'s captured epoch
+//          SHALL be compared against the live predictor's current epoch before
+//          calling `dropRejected(seq)`; a mismatch SHALL no-op instead of evicting.
+//   nh3-2  (proof-of-teeth): extend the existing reachability-pinning tests in
+//          `predictor.test.ts` (added at ptc5f) so the previously-accepted-risk
+//          scenario (warp while holding a key → stale-seq rejection lands
+//          post-rebuild) now asserts the legitimate new op survives, not just that
+//          the gap is reachable. A mutation check: removing the epoch guard
+//          re-fails this assertion.
+//   nh3-3  (doc): amend ADR-0085 to record the guard is built — the accepted-risk
+//          window closes.
+//
+// SPEC-CONFORMANCE NOTE (nh3-1's letter vs. this design): the epoch comparison lives
+// INSIDE `dropRejected` (the CALLEE), not literally inside the `.catch`. Sanctioned by
+// spec §3. The `.catch` captures the epoch (`const epoch = intent.epoch;`, ADR-0085 A2
+// posture: capture primitives, never the predictor instance) and passes it in; the
+// callee is where a compiler-REQUIRED parameter can force every present and future
+// call site to supply one. Wiring pinned by W-NH3-* in main.wiring.test.ts; the
+// required-param shape by the SIGNATURE scan at the foot of this file.
+//
+// TWO MECHANISMS SHIP UNDER nh3 — the seq collision has TWO arms (plan §1):
+//   Case M1  the DEAD predictor's op was REJECTED (queue full → txn rollback, ack
+//            unchanged); post-rebuild a fresh op takes the same seq and the server
+//            ACCEPTS it; the stale rejection then evicts the NEW, accepted op.
+//            ← THE EPOCH GUARD closes exactly this (N3, N4, the nh3-2 block above).
+//   Case M2  the pre-warp op was ACCEPTED first (FIFO), so the post-rebuild colliding
+//            op is itself rejected as "stale seq". That rejection carries the LIVE
+//            epoch, the guard correctly passes, the eviction is CORRECT — and the
+//            player's first post-warp move is swallowed anyway. No rejection-side
+//            guard can fix it: the defect is upstream (a re-ISSUED seq).
+//            ← THE main.ts SEND-SEQ FLOOR closes this (`lastSentSeq` → `seedSeq`):
+//              modeled at predictor level by N6, wiring pinned by W-NH3-FLOOR-*.
+//
+// CRITERION -> TEST MAP (the auditable answer to "what covers nh3-N?"):
+//   nh3-1  N1 (a distinct epoch per instance — the "bumped on every rebuild" clause,
+//              since resetPredictionState() rebuilds = constructs)
+//          N2 (the same-epoch path is UNCHANGED: evict, then idempotent false)
+//          N3 (a foreign epoch no-ops TOTALLY under a REAL seq collision)
+//          N4 (property: foreign epochs never mutate — both BELOW and ABOVE live)
+//          N5 (ONE epoch per instance across enqueue/setMove/clearQueue, stable
+//              across seedSeq/reconcile/drain: constructor-assigned, not per-record)
+//          + W-NH3-SIG / W-NH3-BRAND / W-NH3-NO-GETTER (source scans, foot of file)
+//          + W-NH3-EPOCH-CAPTURED (main.wiring.test.ts: the `.catch` capture)
+//   nh3-2  the `Predictor nh3-2 (was ptc5f)` block ABOVE — arm 1 premise kept, arm 2
+//          flipped to `false` + content survival, arm 4 same-epoch still evicts
+//   nh3-3  docs only (ADR-0085 amendment + ADR-0152) — no test
+//   supervisor-added FLOOR (not an EARS criterion): N6 + W-NH3-FLOOR-SEND /
+//          W-NH3-FLOOR-SEED (main.wiring.test.ts)
+//
+// RED REASON (runtime, NOT tsc — `client/tsconfig.json` excludes `**/*.test.ts`, so
+// these tests are never typechecked): pre-implementation `IntentToSend` has no
+// `epoch` field, so every `intent.epoch` read is `undefined`. Distinctness (N1),
+// stability-with-not-undefined (N5), the foreign-epoch oracles (N3, N4), N6's
+// new-generation assertion and the nh3-2 arm-2 flip therefore fail on VALUES, not on
+// a compile error. N2 and arm 4 (same-epoch paths) are GREEN before AND after — they
+// are the anti-over-guard teeth that kill a `!==` → `===` flip. N6's seq-floor
+// assertions are also green before and after (the floor uses only existing public
+// API — `seedSeq`); its RED gating counterpart is W-NH3-FLOOR-SEED in
+// main.wiring.test.ts, which pins that main.ts actually calls it.
+//
+// A6 (no absolute-epoch assertions): the static counter's values depend on how many
+// Predictors the WHOLE FILE constructed first, so every assertion below is RELATIVE
+// (distinct / equal / not-equal / ±1). A8 (no public epoch getter): the live epoch is
+// readable ONLY from an issued intent — which is also why N-tests enqueue a probe op.
+// ================================================================================
+
+describe('Predictor nh3 (ADR-0152): epoch/generation guard on dropRejected', () => {
+  it('N1 (nh3-1): every instance carries a DISTINCT epoch — all constructed FIRST, then probed', () => {
+    // Kills: a constant epoch (`#epoch = 0`) — the Set collapses to size 1.
+    // Kills: a `#record`-time read of the static counter (red-team F7). Constructing
+    // ALL instances BEFORE any enqueue is the load-bearing ordering: with a per-record
+    // read every probe below would report the SAME (final) counter value, so the
+    // distinct-count would be 1 while a construct-then-probe-interleaved test would
+    // still pass. N5 attacks the same mutant from the other side.
+    fc.assert(
+      fc.property(fc.integer({ min: 2, max: 20 }), (n) => {
+        const instances: Predictor[] = [];
+        for (let i = 0; i < n; i++) instances.push(mkPredictor());
+        // The epoch is only readable via an issued intent (A8: no public getter).
+        const epochs = instances.map((p) => p.enqueue(east())!.epoch);
+        // `undefined` = no epoch stamped at all (the pre-impl RED state): the Set below
+        // would then collapse to size 1 anyway, but assert it directly for a clear message.
+        for (const e of epochs) expect(e).not.toBeUndefined();
+        // RELATIVE assertion only (A6): distinctness, never an absolute value.
+        expect(new Set(epochs).size).toBe(n);
+      }),
+    );
+  });
+
+  it('N2 (nh3-1): the SAME-epoch path is unchanged — evicts, then idempotent false', () => {
+    // Kills: `!==` → `===` in the guard (every legitimate rejection would then be
+    // ignored and the phantom-op desync of M13.5b/ADR-0085 comes straight back).
+    // GREEN before AND after the fix by design (pre-impl: undefined === undefined).
+    const p = mkPredictor();
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+    const i1 = p.enqueue(east())!;
+
+    expect(p.dropRejected(i1.seq, i1.epoch)).toBe(true);
+    expect(p.pendingCount).toBe(0);
+    expect(p.dropRejected(i1.seq, i1.epoch)).toBe(false); // already gone
+    expect(p.pendingCount).toBe(0);
+  });
+
+  it('N3 (nh3-1): a FOREIGN epoch no-ops TOTALLY — false, pendingCount AND queueDepth unchanged', () => {
+    // Kills: deleting the epoch mismatch early-return (Case M1 — the whole slice).
+    // NON-VACUITY (the load-bearing setup): the two instances are built so their
+    // seqs COLLIDE, and that collision is asserted. Without it, `false` would be
+    // explained by seq-absence and the test would pass against a guardless impl.
+    const dead = mkPredictor(); // the pre-warp instance, about to be discarded
+    const live = mkPredictor(); // the post-rebuild instance (resetPredictionState)
+    dead.reconcile(baseline(5, 5, 0), [], 0, 0);
+    live.reconcile(baseline(5, 5, 0), [], 0, 0);
+    const deadOp = dead.enqueue(east())!;
+    const liveOp = live.enqueue(east())!;
+    expect(liveOp.seq).toBe(deadOp.seq); // the collision is REAL — no vacuous false
+
+    const pendingBefore = live.pendingCount;
+    const depthBefore = live.queueDepth;
+    expect(pendingBefore).toBe(1);
+    expect(depthBefore).toBe(1);
+
+    // TOTALITY: the return value AND both state accessors.
+    expect(live.dropRejected(deadOp.seq, deadOp.epoch)).toBe(false);
+    expect(live.pendingCount).toBe(pendingBefore);
+    expect(live.queueDepth).toBe(depthBefore);
+
+    // POSITIVE CONTROL (reviewer M2): the same seq IS evictable with the live
+    // instance's own epoch — so the `false` above was the GUARD, not an unrelated
+    // failure to find the op, and the guard is not a blanket `return false`.
+    expect(live.dropRejected(liveOp.seq, liveOp.epoch)).toBe(true);
+    expect(live.pendingCount).toBe(0);
+  });
+
+  it('N4 (nh3-1): property — a foreign epoch NEVER mutates, for values both BELOW and ABOVE live', () => {
+    const p = mkPredictor();
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+    const i1 = p.enqueue(east())!;
+    const i2 = p.enqueue(east())!;
+    const liveEpoch = i1.epoch; // only readable via an issued intent (A8)
+
+    // DETERMINISTIC CORE FIRST — this file pins no fast-check seed, so the relational
+    // mutant kill must not depend on what fc happens to draw. One foreign epoch
+    // strictly BELOW and one strictly ABOVE the live value, both against a seq that
+    // IS pending: a guard written `epoch < this.#epoch` (or `>`) passes one and fails
+    // the other; only `!==` passes both (red-team F4).
+    expect(p.dropRejected(i1.seq, liveEpoch - 1)).toBe(false);
+    expect(p.dropRejected(i1.seq, liveEpoch + 1)).toBe(false);
+    expect(p.pendingCount).toBe(2); // nothing evicted by either
+
+    const pendingBefore = p.pendingCount;
+    const depthBefore = p.queueDepth;
+
+    // BREADTH: arbitrary (seq, foreignEpoch) against the SAME live instance — the
+    // guard must be idempotent, so no draw may ever mutate it. The seq arbitrary
+    // includes the two REALLY pending seqs (otherwise every `false` is excused by
+    // seq-absence); the epoch arbitrary EXCLUDES the live value by `.filter` (F7: an
+    // unconstrained small-integer arbitrary WILL draw the real epoch, which would
+    // red a CORRECT impl order-dependently).
+    const seqArb = fc.oneof(fc.constantFrom(i1.seq, i2.seq), fc.integer({ min: -5, max: 50 }));
+    const foreignBase = fc.oneof(
+      fc.integer({ min: -1_000, max: 1_000 }),
+      fc.constantFrom(liveEpoch - 1, liveEpoch + 1, liveEpoch - 250, liveEpoch + 250),
+    );
+    const foreignEpochArb = foreignBase.filter((e) => e !== liveEpoch);
+    fc.assert(
+      fc.property(seqArb, foreignEpochArb, (seq, foreignEpoch) => {
+        expect(p.dropRejected(seq, foreignEpoch)).toBe(false);
+        expect(p.pendingCount).toBe(pendingBefore);
+        expect(p.queueDepth).toBe(depthBefore);
+      }),
+    );
+
+    // POSITIVE CONTROL: after all that, the live epoch still evicts (not a blanket
+    // false, and the property's no-mutation runs really did leave the op in place).
+    expect(p.dropRejected(i2.seq, i2.epoch)).toBe(true);
+    expect(p.pendingCount).toBe(1); // i1 still pending — only i2 was evicted
+  });
+
+  it('N5 (nh3-1): ONE epoch per instance across enqueue/setMove/clearQueue, stable across seedSeq/reconcile/drain', () => {
+    // Kills: a per-record epoch (re-reading the static counter inside #record instead
+    // of the CONSTRUCTOR-assigned instance field). The interleaved construction of
+    // `other` below is what makes that mutant visible: a per-record read would hand
+    // the post-`other` intent a DIFFERENT value from the pre-`other` ones.
+    const p = mkPredictor();
+    p.reconcile(baseline(5, 5, 0), [], 0, 0);
+
+    const enq = p.enqueue(east())!;
+    const set = p.setMove(north());
+    const clr = p.clearQueue();
+    expect(enq.epoch, 'an issued intent must carry an epoch at all').not.toBe(undefined);
+    expect(set.epoch).toBe(enq.epoch); // setMove stamps the SAME instance epoch
+    expect(clr.epoch).toBe(enq.epoch); // clearQueue too
+
+    // A DIFFERENT instance is born (and records) in between — the static counter moves.
+    const other = mkPredictor();
+    const otherOp = other.enqueue(east())!;
+    expect(otherOp.epoch).not.toBe(enq.epoch); // relative only (A6)
+
+    // Every state transition the live predictor undergoes between rebuilds.
+    p.seedSeq(500);
+    p.reconcile(baseline(6, 6, 0), [], 0, 0);
+    p.drain(1_000);
+    const afterAll = p.enqueue(east())!;
+    expect(afterAll.epoch).toBe(enq.epoch); // constructor-assigned, never re-read
+
+    // And the guard still keys off THAT epoch after all of it.
+    expect(p.dropRejected(afterAll.seq, afterAll.epoch)).toBe(true);
+  });
+
+  it('N6 (the Case-M2 seq FLOOR, mechanism pin): a floored rebuild never re-issues a sent seq', () => {
+    // WHAT THIS MODELS (main.ts, coverage-excluded — wiring pinned by
+    // W-NH3-FLOOR-SEND / W-NH3-FLOOR-SEED): `lastSentSeq` records the highest seq
+    // ever SENT at the single send site; `resetPredictionState()` calls
+    // `predictor.seedSeq(lastSentSeq)` on the fresh instance. The rebuilt predictor's
+    // first seq is then strictly greater than anything the server has seen, so the
+    // Case-M2 "stale seq" rejection never comes into existence (server accepts
+    // `seq > last_input_seq`; gaps are legal — monotonic, not consecutive).
+    const a = mkPredictor();
+    a.reconcile(baseline(5, 5, 0), [], 0, 0);
+    const sent1 = a.enqueue(east())!;
+    const sent2 = a.enqueue(east())!;
+    const lastSentSeq = sent2.seq; // what main.ts records beside the send
+
+    // The warp rebuild: a FRESH instance (this is what resetPredictionState does),
+    // floored to the last seq ever sent.
+    const b = mkPredictor();
+    b.seedSeq(lastSentSeq);
+    b.reconcile(baseline(5, 5, 0), [], 0, 0);
+    const first = b.enqueue(east())!;
+
+    expect(first.seq).toBeGreaterThan(lastSentSeq); // NO collision — Case M2 gone
+    expect(first.seq).toBeGreaterThan(sent1.seq);
+    // nh3-1's "bumped on every resetPredictionState() rebuild": the rebuild is a NEW
+    // generation, so the old instance's epoch can never match the new one.
+    expect(first.epoch).not.toBe(sent2.epoch);
+
+    // BELT AND SUSPENDERS (plan §1): even with the floor in place, a stale rejection
+    // of A's op is a total no-op on B. HONEST TEETH ACCOUNTING — with the floor there
+    // is no seq collision, so this particular `false` is ALSO explainable by
+    // seq-absence; the guard's non-vacuous proof is N3 + nh3-2 arm 2, where the seqs
+    // really do collide. This arm pins the COMPOSITION of the two mechanisms.
+    const pendingBefore = b.pendingCount;
+    const depthBefore = b.queueDepth;
+    expect(b.dropRejected(sent2.seq, sent2.epoch)).toBe(false);
+    expect(b.pendingCount).toBe(pendingBefore);
+    expect(b.queueDepth).toBe(depthBefore);
+  });
+});
+
+// ================================================================================
+// nh3 SIGNATURE SOURCE-SCAN (plan §3 step 4) — the declared-sibling tooth.
+//
+// WHY A SOURCE SCAN AT ALL (red-team F4 / reviewer B1): the "make the epoch param
+// optional or defaulted" mutation (`epoch?: PredictorEpoch` or
+// `epoch: PredictorEpoch = this.#epoch`) is INVISIBLE to every runtime test in this
+// file — all of them pass an epoch — and invisible to the main.wiring tooth too,
+// because main.ts would not need to change. It is also invisible to `tsc`, since a
+// call that already supplies the argument still typechecks. The only thing that can
+// kill it is reading the declaration. Same reason the BRAND is pinned here: with
+// `export type PredictorEpoch = number` the compiler would happily accept
+// `dropRejected(seq, seq)` at the call site — the brand IS the tooth for that
+// mutation, so its shape must be asserted, not assumed.
+//
+// indexOf / includes only — `new RegExp` is Semgrep-banned repo-wide (A7).
+// ================================================================================
+
+const PREDICTOR_TS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'predictor.ts');
+
+function readPredictorTs(): string {
+  try {
+    return readFileSync(PREDICTOR_TS_PATH, 'utf8');
+  } catch (err) {
+    // Fail loud — a missing file must never make a scan vacuously pass.
+    throw new Error(
+      'predictor.ts unreadable at expected path: ' + PREDICTOR_TS_PATH + ' — ' + String(err),
+    );
+  }
+}
+
+describe('nh3 signature scan: dropRejected takes a REQUIRED branded epoch', () => {
+  it('W-NH3-SIG BITES: predictor.ts declares `dropRejected(seq: number, epoch: PredictorEpoch): boolean`', () => {
+    // RED pre-impl: the declaration is still the 1-arg `dropRejected(seq: number): boolean`.
+    // WRONG IMPL KILLED: a plain-`number` second param (`epoch: number`) — that compiles
+    // `dropRejected(seq, seq)` at main.ts and re-opens the eviction seam silently.
+    const src = readPredictorTs();
+    // Anti-vacuity: prove we are reading the real module before judging its shape.
+    expect(
+      src.indexOf('export class Predictor'),
+      'the scanned file must be the real predictor module (export class Predictor)',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      src.indexOf('dropRejected(seq: number, epoch: PredictorEpoch): boolean'),
+      'predictor.ts must declare the CONTIGUOUS signature ' +
+        '`dropRejected(seq: number, epoch: PredictorEpoch): boolean` — a required, branded ' +
+        'second parameter is what forces every present and future call site (main.ts and ' +
+        'this suite) to supply the caller-captured epoch',
+    ).toBeGreaterThanOrEqual(0);
+  });
+
+  it('W-NH3-SIG-REQUIRED BITES: the epoch param is neither optional (`epoch?:`) nor defaulted', () => {
+    // WRONG IMPL KILLED (the mutation no runtime test and no wiring tooth can see):
+    //   dropRejected(seq: number, epoch?: PredictorEpoch)                      → callers may omit
+    //   dropRejected(seq: number, epoch: PredictorEpoch = this.#epoch)         → omitted == live
+    // Either one lets a future call site (or a revert of main.ts:471 to 1-arg) drop the
+    // epoch and silently restore the Case-M1 cross-generation eviction, with this whole
+    // suite still green because every test here passes an epoch explicitly.
+    //
+    // NEEDLE PRECISION (a false-red this tester found while authoring, corrected FROM the
+    // plan's intent, not weakened): the plan spells the second ban as `epoch: PredictorEpoch
+    // =`, but a perfectly legal implementation may declare the FIELD as
+    // `readonly #epoch: PredictorEpoch = ++Predictor.#nextEpoch as PredictorEpoch;` — which
+    // contains that exact substring. The ban is therefore anchored to PARAMETER position
+    // with a leading `, ` (a field declaration is never comma-prefixed). Same bite, no false
+    // red: both banned forms remain unwriteable in the parameter list, and the positive
+    // contiguous-signature needle in W-NH3-SIG independently rejects either mutation at the
+    // declaration site.
+    const src = readPredictorTs();
+    expect(
+      src.indexOf('epoch?:'),
+      'predictor.ts must NOT declare an OPTIONAL epoch parameter (`epoch?:`) — an omitted ' +
+        'epoch is exactly the pre-nh3 call shape the guard exists to make impossible (A1)',
+    ).toBe(-1);
+    expect(
+      src.indexOf(', epoch: PredictorEpoch ='),
+      'predictor.ts must NOT give the epoch PARAMETER a default (`, epoch: PredictorEpoch = ' +
+        '...`) — a default that resolves to the live epoch makes an omitted argument ' +
+        'silently self-approve, which is a no-op guard (A1)',
+    ).toBe(-1);
+  });
+
+  it('W-NH3-BRAND BITES: PredictorEpoch is an exported BRANDED number, not a bare alias', () => {
+    // WRONG IMPL KILLED: `export type PredictorEpoch = number`. The signature scan above
+    // still passes, every runtime test still passes — but `dropRejected(seq, seq)` in
+    // main.ts becomes legal, and that call is a permanent self-approving guard. The brand
+    // is the ONLY mechanism that turns that mistake into a compile error (plan §2 R-b,
+    // promoted to REQUIRED by reviewer M1). Tests are exempt from the cost: they are not
+    // typechecked (`client/tsconfig.json` excludes `**/*.test.ts`), which is why no test
+    // in this file imports or casts the branded type.
+    const src = readPredictorTs();
+    expect(
+      src.indexOf('export type PredictorEpoch = number &'),
+      'predictor.ts must export a BRANDED epoch type (`export type PredictorEpoch = number & ' +
+        '{ readonly __brand: unique symbol }`) — a bare `= number` alias makes ' +
+        '`dropRejected(seq, seq)` typecheck at main.ts and self-approve every rejection',
+    ).toBeGreaterThanOrEqual(0);
+  });
+
+  it('W-NH3-NO-GETTER BITES: the live epoch has NO public getter (A8)', () => {
+    // WRONG IMPL KILLED: `get epoch(): PredictorEpoch { return this.#epoch; }`. With a
+    // public getter, main.ts could write `predictor.dropRejected(seq, predictor.epoch)` —
+    // a call that ALWAYS matches, i.e. the guard deleted at the call site while every
+    // tooth in this file stays green (plan A8 / R-a). The epoch must be readable only
+    // from an issued intent, which is precisely how every test above obtains it.
+    const src = readPredictorTs();
+    expect(
+      src.indexOf('get epoch('),
+      'predictor.ts must NOT expose a public epoch getter — it would make the vacuous ' +
+        'self-approving call `dropRejected(seq, predictor.epoch)` writable from main.ts (A8)',
+    ).toBe(-1);
   });
 });
 

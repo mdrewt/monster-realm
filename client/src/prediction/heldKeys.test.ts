@@ -379,9 +379,16 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
   // ============================================================================
   // M13.5b §G / T1–T3 — dropRejected integration with the held-key burst pattern
   //
-  // RED REASON: `predictor.dropRejected` does not exist yet on the Predictor
-  // class — every `.dropRejected(...)` call below is a TS compile error until
-  // the implementer adds the method.
+  // HISTORY: authored RED when `predictor.dropRejected` did not exist at all
+  // (M13.5b); GREEN since it shipped, and retained as the integration-level
+  // regression guard for the burst pattern.
+  //
+  // nh3 (ADR-0152) made the epoch a REQUIRED second parameter, so both calls below
+  // pass an epoch read from an intent THAT SAME predictor issued (never a literal).
+  // These are SAME-EPOCH paths on purpose: they are the teeth that stay GREEN across
+  // nh3 and therefore kill an over-eager guard (a `!==` → `===` flip, or any guard
+  // that also rejects the legitimate live-epoch rejection). The CROSS-epoch guard is
+  // pinned in predictor.test.ts (nh3-2 block + N3/N4), not here.
   // ============================================================================
 
   it('13.5b-4 RED-LOCK: without dropRejected, burst-tail rejection leaves a permanent +1 x-offset with diverged=false', () => {
