@@ -54,7 +54,10 @@ function readConnectionTs(): string {
   } catch (err) {
     // Fail loud — a missing file must never make a scan vacuously pass.
     throw new Error(
-      'connection.ts could not be read at expected path: ' + CONNECTION_TS_PATH + ' — ' + String(err),
+      'connection.ts could not be read at expected path: ' +
+        CONNECTION_TS_PATH +
+        ' — ' +
+        String(err),
     );
   }
 }
@@ -193,9 +196,10 @@ describe('connection.ts wiring (nh4): W-NH4-GATE-CONSTRUCTED — connect() build
     const stripped = stripLineComments(src);
     const importIdx = stripped.indexOf('import');
     const authTokenIdx = stripped.indexOf('authToken');
-    expect(authTokenIdx, 'connection.ts must reference the authToken module').toBeGreaterThanOrEqual(
-      0,
-    );
+    expect(
+      authTokenIdx,
+      'connection.ts must reference the authToken module',
+    ).toBeGreaterThanOrEqual(0);
     // The import block sits at the top of the file (before `export interface
     // ConnectionOptions`); a reference to 'authToken' found before that marker is
     // necessarily part of an import statement (no other top-of-file code references
@@ -210,6 +214,43 @@ describe('connection.ts wiring (nh4): W-NH4-GATE-CONSTRUCTED — connect() build
       "'authToken' must appear in an import statement (before " +
         '`export interface ConnectionOptions`) — RED today: no such import exists',
     ).toBeLessThan(beforeInterfaceIdx === -1 ? Number.POSITIVE_INFINITY : beforeInterfaceIdx);
+  });
+
+  it('BITES (CRITICAL): createAuthTokenGate( is constructed at connect() SCOPE, BEFORE `function build(): DbConnection {` — NOT re-created inside build() — mutant killed: "gate recreated per build ⇒ counter resets every attempt ⇒ suppression never engages ⇒ permanent auth-reject loop"', () => {
+    // WRONG IMPL KILLED: `const auth = createAuthTokenGate(opts.uri, opts.db,
+    // globalThis);` moved INSIDE `function build(): DbConnection {`. build() is
+    // re-invoked by scheduleRebuild() on every reconnect attempt, so a per-build
+    // gate would get a FRESH in-memory rejection counter on every single attempt —
+    // AUTH_REJECT_SUPPRESS_THRESHOLD can never be reached across attempts,
+    // suppression never engages, and a rejected stored credential produces exactly
+    // the permanent, unrecoverable reconnect loop ADR-0150 D2 exists to close. This
+    // mutant is invisible to every OTHER gate in this file (all six only check that
+    // the needle occurs "somewhere" in the file) and invisible to every behavior
+    // test in authToken.test.ts (which only exercises a single gate instance in
+    // isolation) — this is the only tooth that pins the declaration's SCOPE.
+    const src = readConnectionTs();
+    expectUniqueAnchor(src, 'createAuthTokenGate(');
+    expectUniqueAnchor(src, 'function build(): DbConnection {');
+    expectUniqueAnchor(src, 'wireTables(conn);');
+
+    const gateIdx = src.indexOf('createAuthTokenGate(');
+    const buildIdx = src.indexOf('function build(): DbConnection {');
+    expect(
+      gateIdx,
+      'createAuthTokenGate( must be constructed BEFORE `function build(): DbConnection ' +
+        '{` (i.e. at connect() scope, read fresh per rebuild via a closure, not ' +
+        're-created on every build() invocation) — a gate built inside build() gets a ' +
+        'fresh in-memory rejection counter on every reconnect attempt, so suppression ' +
+        'never engages',
+    ).toBeLessThan(buildIdx);
+
+    const body = bodyRegion(src, 'function build(): DbConnection {', 'wireTables(conn);');
+    expect(
+      body.includes('createAuthTokenGate('),
+      'createAuthTokenGate( must NOT be called anywhere inside build() — gate recreated ' +
+        'per build ⇒ counter resets every attempt ⇒ suppression never engages ⇒ permanent ' +
+        'auth-reject loop',
+    ).toBe(false);
   });
 });
 
@@ -339,7 +380,16 @@ describe('connection.ts wiring (nh4): W-NH4-FAILURE-WIRED — onConnectError rep
 
     expectUniqueAnchor(src, '.onConnectError((_ctx, err: Error) => {');
     expectUniqueAnchor(src, '.onDisconnect(() => {');
-    const region = bodyRegion(src, '.onConnectError((_ctx, err: Error) => {', '.onDisconnect(');
+    // NOTE (fix): the end needle here must be the SAME string just validated as
+    // unique above ('.onDisconnect(() => {'), not a shorter substring of it
+    // ('.onDisconnect(') — a mismatched validated-vs-bounding string means the
+    // uniqueness check can report OK while the region silently mis-bounds against a
+    // different (or additional) occurrence of the shorter needle.
+    const region = bodyRegion(
+      src,
+      '.onConnectError((_ctx, err: Error) => {',
+      '.onDisconnect(() => {',
+    );
     const squashedRegion = squashWhitespace(region);
 
     const guardIdx = squashedRegion.indexOf('if (stale()) return;');
@@ -390,10 +440,14 @@ describe('connection.ts wiring (nh4): W-NH4-NO-CLEAR-ON-DROP — onDisconnect / 
     // disconnect path (as opposed to a genuine rejected-token failure, which DOES
     // route through onConnectError/W-NH4-FAILURE-WIRED above).
     const src = readConnectionTs();
-    const stripped = stripLineComments(src);
 
-    expectUniqueAnchor(stripped, '.onDisconnect(() => {');
-    expectUniqueAnchor(stripped, '.build();');
+    // FIX: uniqueness must be checked against the SAME string bodyRegion() actually
+    // slices (raw `src`) — checking a comment-stripped copy while extracting from raw
+    // source means a comment containing one of these literal anchors could make the
+    // uniqueness check report OK while the region silently mis-bounds against the raw
+    // text's own (different) occurrence count.
+    expectUniqueAnchor(src, '.onDisconnect(() => {');
+    expectUniqueAnchor(src, '.build();');
     const disconnectRegion = bodyRegion(src, '.onDisconnect(() => {', '.build();');
     expect(
       disconnectRegion.includes('auth.onConnectFailed('),
@@ -406,11 +460,11 @@ describe('connection.ts wiring (nh4): W-NH4-NO-CLEAR-ON-DROP — onDisconnect / 
         'fresh successful connect and must not overwrite the saved token',
     ).toBe(false);
 
-    expectUniqueAnchor(stripped, 'function handleDrop(): void {');
+    expectUniqueAnchor(src, 'function handleDrop(): void {');
     // handleDrop() body ends at its closing brace; the next top-level anchor after it
     // in the file is the SINGLETON CONSTRAINT comment block leading into the
     // pagehide listener registration.
-    expectUniqueAnchor(stripped, "window.addEventListener('pagehide'");
+    expectUniqueAnchor(src, "window.addEventListener('pagehide'");
     const handleDropRegion = bodyRegion(
       src,
       'function handleDrop(): void {',
