@@ -100,6 +100,11 @@ export class Predictor {
   // batch listener between rAF frames) from masking a large inter-frame gap; a
   // backgrounded-tab wake correctly produces snapped=true on the next frame drain.
   #lastFrameDrainAt: number | undefined = undefined;
+  // nh2 (ADR-0148): the server's undrained `move_queue` length AS OF the last reconcile.
+  // Written ONLY by reconcile(), from the same coherent snapshot as #queue/#predicted.
+  // Between reconciles it is deliberately stale — that staleness IS the closed loop the
+  // held-key continuation gate rides on (see `outstandingSteps`).
+  #lastAuthQueueLen = 0;
 
   // ADR-0013.5: `pendingCap` is OPTIONAL; default 16 ≈ 16·STEP_MS of un-acked
   // prediction — a generous degenerate-no-ack backstop (normal ack cadence keeps
@@ -226,6 +231,9 @@ export class Predictor {
     now: number,
   ): boolean {
     const before = this.#predicted?.pos;
+    // nh2 (ADR-0148): record the authoritative queue depth BEFORE the ADR-0012 four-step,
+    // so it is visibly outside it. Reads only the `authQueue` parameter.
+    this.#lastAuthQueueLen = authQueue.length;
     // 1. drop acked pending.
     this.#pending = this.#pending.filter((p) => p.seq > ackedSeq);
     // 2. rebuild the local queue from the server's queue, then replay unacked OPS.
@@ -306,6 +314,34 @@ export class Predictor {
 
   get queueDepth(): number {
     return this.#queue.length;
+  }
+
+  /**
+   * nh2 (ADR-0148): how far prediction is allowed to run AHEAD of authority — the steps the
+   * SERVER still owes: its undrained `move_queue` as of the last reconcile, plus every op
+   * sent but not yet seen acked. M4 gates the HELD-KEY continuation re-issue on this being
+   * 0, which bounds the pipeline to one in-flight step instead of one per animation frame.
+   *
+   * NOT "tiles I will still travel": reconcile step 4 has already drained the authoritative
+   * entries into `#predicted`.
+   *
+   * `queueDepth` CANNOT serve this role. The ADR-0012 baseline is rebased to
+   * `now - 2*stepMs` (convert.ts `characterToPredictedBaseline`), so every reconcile drains
+   * `#queue` to empty — it reads 0 while the server still owes work, which is exactly the
+   * over-emission this gate exists to stop.
+   *
+   * The two terms never double-count: `authorize_move` writes the ack in the SAME
+   * transaction as the queue push (server guards.rs), so anything in `authQueue` is already
+   * acked and has been pruned from `#pending` by reconcile's `seq > ackedSeq` filter. The
+   * reconcile cap-clamp can make this OVER-count, which is the safe direction (it keeps the
+   * gate shut). It never UNDER-counts *within one predictor epoch* — but a fresh `Predictor`
+   * (zone warp / reconnect, main.ts `resetPredictionState`) starts at 0 while the server may
+   * still owe a queued step, so exactly one extra continuation can slip through per rebuild.
+   * Bounded and self-correcting on the next reconcile; same family as the ADR-0142 D4 warp
+   * epoch hazard deferred to nh3.
+   */
+  get outstandingSteps(): number {
+    return this.#lastAuthQueueLen + this.#pending.length;
   }
 
   /** The direction of the last queued move if it is a Step, else undefined (a Jump

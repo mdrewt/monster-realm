@@ -1670,3 +1670,952 @@ describe('Predictor ptc5f: dropRejected reachability bound (Decision E epoch-evi
     expect(c.lastQueuedDir).toBe('East');
   });
 });
+
+// ================================================================================
+// nh2 / ADR-0148 — held-key continuation gating on `outstandingSteps`
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-postgate-netcode-hardening.spec.md.
+// The three criteria, quoted VERBATIM (do not paraphrase these — an earlier
+// revision of this banner restated nh2-2 as "sustains the full walk rate", which
+// is actually the nh2-3 COMPANION, and mis-answered "which test covers nh2-2?"):
+//
+//   nh2-1  WHEN a held movement key is released (or the player switches to a
+//          different held direction) AND no further input in that direction has
+//          been queued by player intent, THE client SHALL cancel/not-emit steps
+//          beyond what the key-hold duration implies.
+//   nh2-2  the fix SHALL NOT desync client prediction from server authoritative
+//          state; whatever mechanism is used must reconcile cleanly, reusing the
+//          existing `reconcileFromStore()` repair path rather than inventing a
+//          second one.
+//   nh2-3  proof-of-teeth: press -> hold long enough to queue 2 steps -> release
+//          -> assert no further step beyond what was already committed/in-flight
+//          is emitted. COMPANION: a genuinely-held key for the queue-cap duration
+//          still moves the expected number of tiles (no regression on sustained
+//          movement).
+//
+// CRITERION -> TEST MAP (the auditable answer to "what covers nh2-N?"):
+//   nh2-1  U2 (tap emits once; the gate is not queueDepth)
+//          U6 (emission rate pinned to the STEP cadence at 30/60/144Hz)
+//          U8 (direction switch: <=1 further stale step, later emissions all North)
+//          U3 (a) zero emissions after release
+//   nh2-2  U5  (predicted advances <=1 tile per frame under an unaligned clock —
+//               prediction tracks authority instead of running away)
+//          U3 (c) predicted does not drift from where it was at release
+//          U4 (predictedTilesMoved in [K, K+1] WHILE serverTilesMoved === K —
+//              prediction leads authority by at most the one in-flight step)
+//          U1b (an acked op moves from pending to auth WITHOUT double-counting —
+//               the accounting that keeps reconcile's repair convergent)
+//          [also, outside this file: the W-NH2-NO-CANCEL wiring tooth pins
+//           `reconcileFromStore()` as the SOLE repair path — no second mechanism]
+//   nh2-3  U3 (b) <=1 further SERVER commit after release (the literal scenario)
+//          U4 (the COMPANION: a sustained hold still walks K tiles)
+//   ADR-0148 ACCEPTED TRADE (not an EARS criterion, a documented-cost guard):
+//          U7 / U7-XP / U7-DEG (latency + frame-rate budget)
+//   ADR-0148 R1 residual (not an EARS criterion): U5b
+//   accessor contract itself: U1a / U1b / U9
+//
+// RED AT AUTHORING TIME (pre-ADR-0148): `Predictor.outstandingSteps` did not
+// exist, so the whole file failed to typecheck — this file's established RED
+// convention (see the M3b banner at the top), red on a MISSING IMPLEMENTATION
+// rather than a typo. They are GREEN now against the shipped ADR-0148 accessor;
+// the `RED-TODAY PROOF` cases below re-create the pre-fix behaviour explicitly
+// (`gateEnabled: false` / `drainFirst: false`) so the teeth stay demonstrably
+// non-vacuous after the fix landed.
+//
+// The contract under test (the ONLY new public surface):
+//     get outstandingSteps(): number   //  = #lastAuthQueueLen + #pending.length
+// where `#lastAuthQueueLen` is assigned `authQueue.length` inside `reconcile()`.
+//
+// WHY A NEW ACCESSOR AT ALL — the load-bearing mechanic: the real client rebases
+// every reconcile baseline to `now - 2*STEP_MS`, so `reconcile()`'s internal
+// step-forward drains the whole (cap-bounded) queue IMMEDIATELY and leaves
+// `queueDepth === 0`. `queueDepth` therefore reads 0 while the SERVER still owes
+// one or more steps — it cannot serve as the gate. `outstandingSteps` counts what
+// the server still owes: its undrained move_queue as of the last reconcile plus
+// every op sent but not yet seen acked. U2 pins exactly that (`queueDepth === 0`
+// AND `outstandingSteps === 1` at the same instant).
+//
+// Everything below runs on an INJECTED clock (no Date.now / performance.now /
+// Math.random) against the file's deterministic `applyMove` fake and a tiny
+// in-file server model. Cap 2 everywhere — the real MOVE_QUEUE_CAP is 2 and the
+// file's QUEUE_CAP=8 predictor would not model reality: the pure-unit teeth
+// (U1/U9) use `mkCapped(2)`, and `runLoop` constructs
+// `new Predictor(applyMove, stepMs, cap)` directly with `cap` defaulting to 2.
+//
+// WHAT THE HARNESS DELIBERATELY DOES NOT MODEL (do not over-trust it):
+//   (a) `authorize_move`'s `seq <= last_input_seq` -> Err("stale seq") rejection.
+//       Unreachable through this harness today (arrivals are FIFO and `#nextSeq`
+//       is strictly increasing), but it IS the mechanism a warp-epoch scenario
+//       hits — see the ptc5f / ADR-0142 D4 pin above for that reachability bound.
+//   (b) `movement_tick`'s empty-queue `action -> Idle` row write and the batch it
+//       publishes. An idle tick here is silent, so the harness UNDER-COUNTS
+//       reconciles relative to reality. Benign for every assertion below: the
+//       missing reconciles only ever re-write `#lastAuthQueueLen = 0`, which is
+//       the value the gate already sees.
+//   (c) `emit()` counts sendIntent INVOCATIONS, not accepted reducer calls (the
+//       emission is recorded before `predictor.enqueue`, and a server REJECT
+//       still counts). That is conservative for every `<=` bound below, and it is
+//       faithful to main.ts, which also calls `enqueue` unconditionally.
+//   (d) RESIDUAL (noted, NOT fixed — a cross-language pin is out of this slice's
+//       touch-set): the harness HARDCODES the server queue cap
+//       (`const cap = opts.cap ?? 2`) instead of deriving it from the Rust SSOT
+//       `game-core/src/world.rs` `MOVE_QUEUE_CAP = 2`, so a server-side cap change
+//       would silently drift this simulation with nothing to catch it. Same
+//       pre-existing pattern as this file's `STEP_MS = 200`.
+// ================================================================================
+
+/** Chebyshev (king-move) tile distance — the metric the renderer's snap uses. */
+function chebyshev(a: { x: number; y: number }, b: { x: number; y: number }): number {
+  return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+}
+
+// --- the simulated client+server loop -------------------------------------------
+// One well-named helper so the teeth stay short. It mirrors the REAL shapes:
+//   server: move_queue capped at 2, reject-not-clamp, one drain per STEP_MS tick;
+//   client: seedSeq + reconcile per delivered batch, and a rAF frame body that
+//           drains FIRST (the nh2 R1 ordering) and only then runs the gated
+//           held-key continuation emit.
+// `gateEnabled: false` models TODAY'S UNFIXED behaviour so each tooth can prove it
+// is genuinely red-today rather than vacuously green.
+
+interface ScriptedInput {
+  readonly at: number;
+  readonly kind: 'press' | 'release';
+  readonly dir: WasmDirection;
+}
+
+interface RunLoopOptions {
+  readonly durationMs: number;
+  readonly script: readonly ScriptedInput[];
+  readonly frameMs?: number;
+  /** Deliberate frame-grid misalignment (U5). */
+  readonly frameOffsetMs?: number;
+  readonly oneWayLatencyMs?: number;
+  readonly stepMs?: number;
+  readonly cap?: number;
+  readonly gateEnabled?: boolean;
+  /**
+   * R1 loop ordering. `true` (default) = the shipped ADR-0148 frame body: drain
+   * FIRST, then gate, then emit. `false` = the pre-R1 body (gate + emit, then
+   * drain), so U5b can prove the ordering is observable rather than cosmetic.
+   */
+  readonly drainFirst?: boolean;
+  readonly start?: { readonly x: number; readonly y: number };
+}
+
+interface Emission {
+  readonly at: number;
+  readonly dir: WasmDirection;
+}
+
+interface FrameSample {
+  readonly at: number;
+  readonly x: number;
+  readonly y: number;
+  /** `outstandingSteps` sampled at the GATE-CHECK moment: after drain(), before emit. */
+  readonly outstanding: number;
+  readonly queueDepth: number;
+  readonly emitted: boolean;
+  readonly snapped: boolean;
+  /** Moves this frame's OWN drain() applied — the R1-ordering observable (U5b). */
+  readonly applied: number;
+  /** How many reconciles landed since the previous frame (inter-frame gap density). */
+  readonly reconcilesInGap: number;
+}
+
+/** A move the SERVER actually drained off its queue (the authoritative walk). */
+interface ServerCommit {
+  readonly at: number;
+  readonly dir: WasmDirection;
+}
+
+interface InputSnapshot {
+  readonly at: number;
+  readonly kind: 'press' | 'release';
+  readonly dir: WasmDirection;
+  readonly predicted: { readonly x: number; readonly y: number };
+  readonly serverTile: { readonly x: number; readonly y: number };
+  readonly emissionCount: number;
+  readonly commitCount: number;
+}
+
+interface RunLoopResult {
+  readonly emissions: readonly Emission[];
+  readonly frames: readonly FrameSample[];
+  /** chebyshev(predicted[i], predicted[i-1]) — length = frames.length - 1. */
+  readonly frameDeltas: readonly number[];
+  readonly commits: readonly ServerCommit[];
+  readonly inputs: readonly InputSnapshot[];
+  readonly tickTimes: readonly number[];
+  readonly startTile: { readonly x: number; readonly y: number };
+  readonly serverTile: { readonly x: number; readonly y: number };
+  readonly predictedFinal: { readonly x: number; readonly y: number };
+  readonly serverTilesMoved: number;
+  readonly predictedTilesMoved: number;
+  readonly maxOutstanding: number;
+  readonly maxFrameDelta: number;
+  readonly reconciles: number;
+}
+
+/** Event priority at an identical timestamp (deterministic tie-break). */
+const PRIO_INPUT = 0;
+const PRIO_ARRIVAL = 1;
+const PRIO_TICK = 2;
+const PRIO_DELIVERY = 3;
+const PRIO_FRAME = 4;
+
+interface SimEvent {
+  readonly t: number;
+  readonly prio: number;
+  readonly seq: number;
+  readonly run: (now: number) => void;
+}
+
+function runLoop(opts: RunLoopOptions): RunLoopResult {
+  const stepMs = opts.stepMs ?? STEP_MS;
+  const cap = opts.cap ?? 2;
+  const frameMs = opts.frameMs ?? 1000 / 60;
+  const frameOffsetMs = opts.frameOffsetMs ?? 0;
+  const lat = opts.oneWayLatencyMs ?? 0;
+  const gateEnabled = opts.gateEnabled ?? true;
+  const drainFirst = opts.drainFirst ?? true;
+  const startTile = opts.start ?? { x: 5, y: 5 };
+
+  const predictor = new Predictor(applyMove, stepMs, cap);
+  const held = new HeldDirections();
+
+  // --- server model: tile + capped move_queue + last_input_seq -------------------
+  const server = {
+    x: startTile.x,
+    y: startTile.y,
+    queue: [] as WasmMoveInput[],
+    ackedSeq: 0,
+  };
+
+  interface Batch {
+    readonly x: number;
+    readonly y: number;
+    readonly queue: readonly WasmMoveInput[];
+    readonly ackedSeq: number;
+  }
+  // What the client's local store currently believes (last delivered batch) — the
+  // source a forced reconcile reads from, exactly like main.ts reconcileFromStore().
+  let store: Batch = { x: startTile.x, y: startTile.y, queue: [], ackedSeq: 0 };
+
+  const emissions: Emission[] = [];
+  const frames: FrameSample[] = [];
+  const commits: ServerCommit[] = [];
+  const inputs: InputSnapshot[] = [];
+  const tickTimes: number[] = [];
+  let serverTilesMoved = 0;
+  let reconciles = 0;
+  let reconcilesSinceFrame = 0;
+
+  // --- deterministic ordered event queue (time, prio, insertion) -----------------
+  const pq: SimEvent[] = [];
+  let insertSeq = 0;
+  let curT = 0;
+  let curPrio = PRIO_INPUT;
+
+  function at(t: number, prio: number, run: (now: number) => void): void {
+    // Never schedule strictly BEFORE the event currently being processed: clamp to
+    // "immediately after me" so same-timestamp cascades stay causal + deterministic.
+    let tt = t;
+    let pp = prio;
+    if (tt < curT || (tt === curT && pp < curPrio)) {
+      tt = curT;
+      pp = curPrio;
+    }
+    pq.push({ t: tt, prio: pp, seq: insertSeq++, run });
+  }
+
+  function popNext(): SimEvent | undefined {
+    if (pq.length === 0) return undefined;
+    let best = 0;
+    for (let i = 1; i < pq.length; i++) {
+      const a = pq[i] as SimEvent;
+      const b = pq[best] as SimEvent;
+      const better =
+        a.t < b.t || (a.t === b.t && (a.prio < b.prio || (a.prio === b.prio && a.seq < b.seq)));
+      if (better) best = i;
+    }
+    return pq.splice(best, 1)[0] as SimEvent;
+  }
+
+  // --- client side --------------------------------------------------------------
+  function doReconcile(b: Batch, t: number): void {
+    predictor.seedSeq(b.ackedSeq);
+    // The real client rebases to now - 2*stepMs (see the banner): this is WHY
+    // queueDepth collapses to 0 and cannot be the gate.
+    predictor.reconcile(baseline(b.x, b.y, t - 2 * stepMs), b.queue, b.ackedSeq, t);
+    reconciles += 1;
+    reconcilesSinceFrame += 1;
+  }
+
+  function publish(now: number): void {
+    const snap: Batch = {
+      x: server.x,
+      y: server.y,
+      queue: [...server.queue],
+      ackedSeq: server.ackedSeq,
+    };
+    at(now + lat, PRIO_DELIVERY, (t) => {
+      store = snap;
+      doReconcile(snap, t);
+    });
+  }
+
+  function emit(dir: WasmDirection, now: number): void {
+    emissions.push({ at: now, dir });
+    const intent = predictor.enqueue({ Step: dir });
+    if (intent === undefined) return; // predictor declined locally (cap/backpressure)
+    const seq = intent.seq;
+    const input: WasmMoveInput = { Step: dir };
+    at(now + lat, PRIO_ARRIVAL, (tArr) => {
+      if (server.queue.length >= cap) {
+        // REJECT: no ack write, no push (the reducer Err rolls the whole txn back).
+        // The client only learns one more one-way hop later — mirroring main.ts:466,
+        // dropRejected() then a FORCED reconcile from the local store.
+        at(tArr + lat, PRIO_DELIVERY, (tResp) => {
+          if (predictor.dropRejected(seq)) doReconcile(store, tResp);
+        });
+        return;
+      }
+      server.queue.push(input);
+      server.ackedSeq = seq;
+      publish(tArr);
+    });
+  }
+
+  // --- seed the predictor (the first own-row snapshot) ---------------------------
+  doReconcile(store, 0);
+  reconcilesSinceFrame = 0;
+
+  // --- pre-schedule frames, server ticks and scripted input ----------------------
+  for (let n = 0; ; n++) {
+    const t = frameOffsetMs + n * frameMs;
+    if (t > opts.durationMs) break;
+    at(t, PRIO_FRAME, (now) => {
+      let applied = 0;
+      let snapped = false;
+      // R1 (shipped): DRAIN FIRST — catch prediction up to what the server already
+      // owes — and only then gate + emit. `drainFirst: false` is the pre-R1 body.
+      if (drainFirst) ({ applied, snapped } = predictor.drain(now));
+      const outstanding = predictor.outstandingSteps;
+      const queueDepth = predictor.queueDepth;
+      let emitted = false;
+      if (!gateEnabled || outstanding === 0) {
+        const d = reissueDir(held.active(), predictor.lastQueuedDir);
+        if (d !== undefined) {
+          emit(d, now);
+          emitted = true;
+        }
+      }
+      // Pre-R1: the drain runs AFTER the emit, so it consumes the intent this very
+      // frame just enqueued instead of only catching up to authority.
+      if (!drainFirst) ({ applied, snapped } = predictor.drain(now));
+      const pos = predictor.predicted!.pos;
+      frames.push({
+        at: now,
+        x: pos.x,
+        y: pos.y,
+        outstanding,
+        queueDepth,
+        emitted,
+        snapped,
+        applied,
+        reconcilesInGap: reconcilesSinceFrame,
+      });
+      reconcilesSinceFrame = 0;
+    });
+  }
+
+  for (let n = 1; ; n++) {
+    const t = n * stepMs;
+    if (t > opts.durationMs) break;
+    tickTimes.push(t);
+    at(t, PRIO_TICK, (now) => {
+      const mv = server.queue.shift();
+      if (mv === undefined) return; // idle tick: nothing changed, nothing published
+      if (mv === 'Jump') {
+        publish(now);
+        return;
+      }
+      const dir = mv.Step;
+      const target = step(dir, server.x, server.y);
+      if (walkable(target)) {
+        server.x = target.x;
+        server.y = target.y;
+        serverTilesMoved += 1;
+      }
+      commits.push({ at: now, dir });
+      publish(now);
+    });
+  }
+
+  for (const inp of opts.script) {
+    at(inp.at, PRIO_INPUT, (now) => {
+      if (inp.kind === 'press') {
+        held.press(inp.dir);
+        emit(inp.dir, now); // keydown emits ONCE, UNGATED (it never consults the gate)
+      } else {
+        held.release(inp.dir);
+      }
+      const pos = predictor.predicted!.pos;
+      inputs.push({
+        at: now,
+        kind: inp.kind,
+        dir: inp.dir,
+        predicted: { x: pos.x, y: pos.y },
+        serverTile: { x: server.x, y: server.y },
+        emissionCount: emissions.length,
+        commitCount: commits.length,
+      });
+    });
+  }
+
+  // --- run ----------------------------------------------------------------------
+  for (;;) {
+    const ev = popNext();
+    if (ev === undefined) break;
+    if (ev.t > opts.durationMs) break;
+    curT = ev.t;
+    curPrio = ev.prio;
+    ev.run(ev.t);
+  }
+
+  const frameDeltas: number[] = [];
+  for (let i = 1; i < frames.length; i++) {
+    const a = frames[i] as FrameSample;
+    const b = frames[i - 1] as FrameSample;
+    frameDeltas.push(chebyshev(a, b));
+  }
+  let maxFrameDelta = 0;
+  for (const d of frameDeltas) if (d > maxFrameDelta) maxFrameDelta = d;
+  let maxOutstanding = 0;
+  for (const f of frames) if (f.outstanding > maxOutstanding) maxOutstanding = f.outstanding;
+
+  const finalPos = predictor.predicted!.pos;
+  return {
+    emissions,
+    frames,
+    frameDeltas,
+    commits,
+    inputs,
+    tickTimes,
+    startTile,
+    serverTile: { x: server.x, y: server.y },
+    predictedFinal: { x: finalPos.x, y: finalPos.y },
+    serverTilesMoved,
+    predictedTilesMoved: chebyshev(finalPos, startTile),
+    maxOutstanding,
+    maxFrameDelta,
+    reconciles,
+  };
+}
+
+// --------------------------------------------------------------------------------
+// U1 + U9 — the accessor contract itself (pure unit, no loop). U1b additionally
+// covers nh2-2: the pending/auth hand-off accounting is what keeps reconcile's
+// repair convergent instead of double-counting a step into a desync.
+// --------------------------------------------------------------------------------
+describe('ADR-0148 U1/U9: outstandingSteps accessor contract (U1b also covers nh2-2 accounting)', () => {
+  it('U9: a freshly-constructed Predictor (no reconcile yet) reports 0', () => {
+    // KILLS: leaving #lastAuthQueueLen uninitialized (undefined/NaN — `NaN + 0` is
+    // NaN, not 0, and `NaN === 0` is false so the gate would NEVER open → the
+    // player freezes on first connect); also kills seeding it to the queue cap.
+    const p = mkCapped(2);
+    expect(p.outstandingSteps).toBe(0);
+  });
+
+  it('U1a BITES: outstandingSteps is a SUM (auth 2 + pending 2 = 4), never a max/min/queueDepth', () => {
+    // rebasedAt === now, so reconcile's internal step-forward is not due and drains
+    // nothing — isolating the accounting from the drain (the file's established trick).
+    const p = mkCapped(2);
+    p.reconcile(baseline(5, 5, 0), [], 0, 0); // seed
+    expect(p.outstandingSteps).toBe(0);
+
+    const a = p.enqueue(east());
+    const b = p.enqueue(east());
+    expect(a?.seq).toBe(1);
+    expect(b?.seq).toBe(2);
+    expect(p.pendingCount).toBe(2);
+
+    // ackedSeq 0 keeps BOTH pending ops unacked while the server reports a 2-deep queue.
+    p.reconcile(baseline(5, 5, 0), [east(), east()], 0, 0);
+    expect(p.pendingCount).toBe(2);
+    // queueDepth is clamped to the cap and is DELIBERATELY the wrong answer here (2).
+    expect(p.queueDepth).toBe(2);
+
+    // 2 (server's undrained move_queue) + 2 (sent-but-unacked) = 4.
+    // KILLS, each of which lands on 2 or 3 instead of 4:
+    //   Math.max(auth, pending) -> 2 | Math.min(...) -> 2 | Math.min(len,1)+... -> 3
+    //   return #pending.length   -> 2 | return #lastAuthQueueLen -> 2
+    //   return this.queueDepth   -> 2 | any ±1 off-by-one       -> 3 or 5
+    expect(p.outstandingSteps).toBe(4);
+  });
+
+  it('U1b BITES (nh2-2): no double-counting — an acked op moves from pending to auth, total stays 1', () => {
+    const p = mkCapped(2);
+    p.reconcile(baseline(5, 5, 0), [], 0, 0); // seed
+    const i = p.enqueue(east());
+    expect(i).toBeDefined();
+
+    // nh2-2 (NO DESYNC): the same physical step must be counted exactly once as it
+    // migrates pending -> authoritative. Double-counting it would make the gate
+    // over-estimate what the server owes and stall; under-counting would let a
+    // second step in flight and put prediction ahead of a queue reconcile can
+    // rebuild — either way the repair path stops converging.
+    // In flight, not yet seen by the server: 0 auth + 1 pending.
+    expect(p.outstandingSteps).toBe(1);
+
+    // The echo: the server ACKED it and now carries it in its own queue. The very
+    // same step must be counted ONCE, not twice.
+    // KILLS: an impl that sums a *stale* pending (forgetting reconcile's
+    // `seq > ackedSeq` prune) or that adds queueDepth on top -> 2.
+    p.reconcile(baseline(5, 5, 0), [east()], i!.seq, 0);
+    expect(p.pendingCount).toBe(0);
+    expect(p.outstandingSteps).toBe(1);
+
+    // The server drained it: nothing outstanding, the gate must open.
+    // KILLS: an impl that never re-reads authQueue.length on later reconciles
+    // (a write-once #lastAuthQueueLen) -> stuck at 1 -> the player freezes.
+    p.reconcile(baseline(6, 5, 0), [], i!.seq, 0);
+    expect(p.outstandingSteps).toBe(0);
+  });
+});
+
+// --------------------------------------------------------------------------------
+// U2 / U3 / U4 — the EARS criteria end-to-end through the simulated loop:
+//   U2 -> nh2-1        U3 -> nh2-3 (+ nh2-1 emissions, + nh2-2 no-drift)
+//   U4 -> nh2-3 COMPANION ("a genuinely-held key still moves the expected tiles")
+// --------------------------------------------------------------------------------
+describe('nh2-1 ADR-0148 U2: a TAP emits exactly one move', () => {
+  const tapScript: readonly ScriptedInput[] = [
+    { at: 0, kind: 'press', dir: 'East' },
+    { at: 30, kind: 'release', dir: 'East' }, // after exactly 2 frames (0, 16.67)
+  ];
+
+  it('U2 BITES: press+release inside one step window emits ONCE, and the gate is NOT queueDepth', () => {
+    const r = runLoop({ durationMs: 150, script: tapScript }); // 150 < first tick (200)
+
+    // nh2-1: one key press, one move. No continuation backlog.
+    expect(r.emissions.length).toBe(1);
+    expect(r.emissions[0]?.dir).toBe('East');
+
+    // THE LOAD-BEARING PIN: at every gate check before the release, the local queue
+    // reads EMPTY (the -2*STEP_MS rebase already drained it) while the server still
+    // owes exactly one step. Anything derived from queueDepth reads 0 here and lets
+    // the continuation fire.
+    // KILLS: `if (predictor.queueDepth === 0)` (the pre-nh2 trigger) and any gate
+    // that is hard-wired true.
+    const beforeRelease = r.frames.filter((f) => f.at < 30);
+    expect(beforeRelease.length).toBe(2); // anti-vacuity: the filter is not empty
+    for (const f of beforeRelease) {
+      expect(f.queueDepth).toBe(0);
+      expect(f.outstanding).toBe(1);
+    }
+    expect(r.serverTilesMoved).toBe(0); // no tick yet — the emission is still in flight
+  });
+
+  it('U2 RED-TODAY PROOF: the same tap WITHOUT the gate emits 2+ moves', () => {
+    // Today's unfixed loop re-issues the held direction on every frame whose local
+    // queue happens to be empty — which, thanks to the rebase-drain, is every frame.
+    const r = runLoop({ durationMs: 150, script: tapScript, gateEnabled: false });
+    expect(r.emissions.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('nh2-3 + nh2-1 ADR-0148 U3: releasing a held key stops the character within one tile', () => {
+  const holdScript: readonly ScriptedInput[] = [
+    { at: 0, kind: 'press', dir: 'East' },
+    { at: 510, kind: 'release', dir: 'East' }, // after the ticks at 200 and 400
+  ];
+
+  it('U3 BITES: zero emissions after release, <=1 further server commit, predicted drift <=1', () => {
+    const r = runLoop({ durationMs: 1000, script: holdScript });
+
+    const release = r.inputs.find((i) => i.kind === 'release');
+    expect(release).toBeDefined();
+    const rel = release!;
+    expect(rel.commitCount).toBeGreaterThanOrEqual(2); // anti-vacuity: it really walked
+
+    // (a) nh2-1: nothing is emitted once the key is up — no step beyond what the
+    // key-hold duration implies.
+    // KILLS: a continuation emitter driven by a latched "committed direction"
+    // instead of HeldDirections.active() — it keeps re-issuing East forever.
+    expect(r.emissions.filter((e) => e.at > rel.at).length).toBe(0);
+
+    // (b) nh2-3, THE LITERAL SCENARIO: press -> hold long enough to queue 2 steps
+    // -> release -> no further step beyond what was already committed/in-flight.
+    // The AUTHORITATIVE walk stops within one tile ("the character keeps walking
+    // after I let go") and this is the tooth that is RED TODAY: an ungated loop
+    // leaves a full cap-2 backlog on the server, which keeps draining for two more
+    // ticks after the release.
+    const commitsAfter = r.commits.filter((c) => c.at > rel.at);
+    expect(commitsAfter.length).toBeLessThanOrEqual(1);
+
+    // (c) nh2-2 (NO DESYNC): prediction does not drift away from where it was at
+    // the release — it settles onto the authoritative tile via the ordinary
+    // reconcile path rather than needing a separate cancel/repair mechanism.
+    expect(chebyshev(r.predictedFinal, rel.predicted)).toBeLessThanOrEqual(1);
+  });
+
+  it('U3 RED-TODAY PROOF: without the gate the server drains 2+ more tiles after release', () => {
+    const r = runLoop({ durationMs: 1000, script: holdScript, gateEnabled: false });
+    const rel = r.inputs.find((i) => i.kind === 'release')!;
+    expect(r.commits.filter((c) => c.at > rel.at).length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('nh2-3 COMPANION ADR-0148 U4: a sustained hold keeps walking at full rate', () => {
+  it('U4 BITES: hold across K=4 ticks -> >=K emissions, K server tiles, outstanding <=1 every frame', () => {
+    // THE nh2-3 COMPANION, verbatim: "a genuinely-held key for the queue-cap
+    // duration still moves the expected number of tiles (no regression on
+    // sustained movement)". Mandatory anti-vacuity partner to U2/U3: those two
+    // prove the gate CLOSES; this one proves it OPENS again — otherwise "emit at
+    // most once" is trivially satisfiable by never emitting at all.
+    const K = 4;
+    const r = runLoop({
+      durationMs: K * STEP_MS + 100, // 900ms: ticks at 200/400/600/800
+      script: [{ at: 0, kind: 'press', dir: 'East' }],
+    });
+
+    expect(r.tickTimes.length).toBe(K);
+
+    // KILLS: a gate that is always false (`outstandingSteps` never returning 0 —
+    // e.g. a write-once #lastAuthQueueLen, or NaN arithmetic). The walk would freeze
+    // after the single ungated keydown emission: 1 emission, 1 tile.
+    expect(r.emissions.length).toBeGreaterThanOrEqual(K);
+    // ...and it must NOT overshoot: at most one continuation per owed step, plus the
+    // ungated keydown. (Deliberately a RANGE, not `=== K + 1`: whether the final
+    // tick's echo lands before the last frame is phase-dependent and would flake.)
+    expect(r.emissions.length).toBeLessThanOrEqual(K + 1);
+
+    // nh2-3 COMPANION: the server actually walked one tile per step, no stall.
+    expect(r.serverTilesMoved).toBe(K);
+    // nh2-2 (NO DESYNC): prediction leads authority by at most the single
+    // in-flight step, for the whole sustained hold. `predictedTilesMoved` bounded
+    // to [K, K+1] WHILE `serverTilesMoved === K` is the no-runaway statement — a
+    // predictor that drifts free of authority breaks the upper bound here.
+    expect(r.predictedTilesMoved).toBeGreaterThanOrEqual(K);
+    expect(r.predictedTilesMoved).toBeLessThanOrEqual(K + 1);
+
+    // nh2-1 as an INVARIANT rather than a count: never more than one owed step.
+    // KILLS: any gate that permits a second in-flight move (`>= 0`, `<= 1`,
+    // `!== 1`, or a truthiness test on a number).
+    expect(r.frames.length).toBeGreaterThan(40); // anti-vacuity: frames really ran
+    expect(r.maxOutstanding).toBeLessThanOrEqual(1);
+  });
+});
+
+// --------------------------------------------------------------------------------
+// U5 — nh2-2 (NO DESYNC): per-frame smoothness under a DELIBERATELY UNALIGNED
+// frame clock. This is THE headline nh2-2 tooth: prediction tracks authority
+// one tile at a time through the ordinary reconcile path, never running away
+// from it and never needing a second repair mechanism to be hauled back.
+// --------------------------------------------------------------------------------
+describe('nh2-2 ADR-0148 U5: predicted advances at most one tile per frame (unaligned clock)', () => {
+  it('U5 (nh2-2): frameOffsetMs=1.5 misaligns the grid so reconciles land BETWEEN frames; delta stays <=1', () => {
+    // WITHOUT THE DELIBERATE MISALIGNMENT THIS TOOTH IS VACUOUS: on an aligned grid
+    // (offset 0, 60Hz) every server tick coincides with a frame, so the tick echo's
+    // reconcile-drain and the frame's own drain are the same instant and can never
+    // be observed as two separate advances between two samples. With offset 1.5 no
+    // frame ever coincides with a tick, so both the echo reconcile and the tick
+    // reconcile land strictly inside inter-frame gaps — the only arrangement in
+    // which a second drain can sneak in between two rendered samples.
+    //
+    // KILLS: dropping reconcile's `slice(0, queueCap)` clamp (a surprise deep
+    // authoritative queue then replays as a multi-tile jump between two samples);
+    // a `while` (rather than `if`) continuation emitter; and any gate that lets a
+    // second step be in flight, which is what puts two drainable moves in the
+    // local queue at once. Each of those produces a delta of 2, which re-arms the
+    // renderer's `chebyshev > 1` snap and shows up as a visible teleport.
+    //
+    // WHAT THIS TOOTH DOES *NOT* KILL: reverting the R1 drain-before-emit ordering.
+    // Under a correct gate `outstandingSteps === 0` implies the local queue is
+    // empty, so both orderings make the identical emit decision and both keep the
+    // delta at 1 — R1's residual is not observable as a per-frame delta here. U5b
+    // below pins R1 on the observable that DOES separate the two orderings.
+    const r = runLoop({
+      durationMs: 1200,
+      script: [{ at: 0, kind: 'press', dir: 'East' }],
+      frameMs: 1000 / 60,
+      frameOffsetMs: 1.5,
+      oneWayLatencyMs: 25,
+    });
+
+    // Proof the grid really is misaligned: no frame shares a timestamp with a tick.
+    for (const f of r.frames) {
+      for (const tt of r.tickTimes) expect(f.at).not.toBe(tt);
+    }
+    // Proof reconciles really landed inside gaps (not all at frame boundaries).
+    expect(r.frames.filter((f) => f.reconcilesInGap > 0).length).toBeGreaterThanOrEqual(4);
+
+    // Anti-vacuity: the character MOVED across frames — `<= 1` is not being
+    // satisfied by a frozen predictor.
+    expect(r.frameDeltas.filter((d) => d > 0).length).toBeGreaterThanOrEqual(4);
+
+    expect(r.maxFrameDelta).toBeLessThanOrEqual(1);
+    expect(r.maxOutstanding).toBeLessThanOrEqual(1);
+  });
+});
+
+// --------------------------------------------------------------------------------
+// U5b — ADR-0148 R1 (a DESIGN DECISION, not an EARS criterion): the frame drain
+// runs BEFORE the gated continuation emit. R1 closes the gate's residual; the
+// EARS criteria themselves are carried by U2/U3/U4/U5/U6/U8.
+// --------------------------------------------------------------------------------
+describe('ADR-0148 R1 (not an EARS criterion) U5b: drain() precedes the continuation emit', () => {
+  const R1_OPTS = {
+    durationMs: 1200,
+    script: [{ at: 0, kind: 'press', dir: 'East' }] as readonly ScriptedInput[],
+    frameMs: 1000 / 60,
+    frameOffsetMs: 1.5,
+    oneWayLatencyMs: 25,
+  };
+
+  it('U5b BITES: an emitting frame never applies a move in its own drain (applied === 0)', () => {
+    // R1 IN ONE SENTENCE: `drain()` is a pure CATCH-UP to what the server already
+    // owes; it must never consume the intent the same frame is about to issue.
+    // Under R1, a frame only emits when `outstandingSteps === 0`, which implies the
+    // local queue is empty, which implies its own drain applied nothing — so
+    // `applied === 0` on every emitting frame is exactly the ordering, observed
+    // behaviourally rather than by reading main.ts source text.
+    //
+    // KILLS: reverting the loop to emit-then-drain (the control below flips every
+    // one of these to 1 — deterministically, not statistically).
+    //
+    // PROPORTION, measured independently — do not oversell this tooth: the GATE
+    // takes press-phase render teleports from 88.0% to ~2.0% @60Hz (6.0% @30Hz);
+    // R1 takes that residual to 0.0%. R1 ALONE, WITHOUT THE GATE, REMOVES
+    // ESSENTIALLY NONE OF THEM. R1 closes the gate's residual; it is not the
+    // primary fix, and this tooth is scoped accordingly.
+    const r = runLoop(R1_OPTS);
+
+    const emitting = r.frames.filter((f) => f.emitted);
+    expect(emitting.length).toBeGreaterThanOrEqual(4); // anti-vacuity: it really emitted
+    for (const f of emitting) {
+      expect(f.applied).toBe(0);
+      expect(f.queueDepth).toBe(0); // the gate implies an empty local queue
+    }
+  });
+
+  it('U5b RED-TODAY PROOF: the pre-R1 body drains its OWN just-issued intent (applied === 1)', () => {
+    // Same clock, same gate, only the ordering flipped. Every emitting frame now
+    // consumes the move it enqueued microseconds earlier: prediction and input are
+    // coupled inside one frame, which is the residual press-phase teleport R1
+    // removes. If this control ever reports 0 the tooth above has gone vacuous.
+    const r = runLoop({ ...R1_OPTS, drainFirst: false });
+
+    const emitting = r.frames.filter((f) => f.emitted);
+    expect(emitting.length).toBeGreaterThanOrEqual(4);
+    for (const f of emitting) expect(f.applied).toBe(1);
+
+    // The gate itself is ordering-independent (that is WHY R1 is only a residual
+    // fix): the emission cadence and the smoothness bound are unchanged.
+    expect(r.maxFrameDelta).toBeLessThanOrEqual(1);
+    expect(r.maxOutstanding).toBeLessThanOrEqual(1);
+  });
+});
+
+// --------------------------------------------------------------------------------
+// U6 — nh2-1: emission-rate bound at 30 / 60 / 144 Hz. "Steps beyond what the
+// key-hold duration implies" is exactly what a frame-rate-scaled emitter produces,
+// so pinning the rate to the STEP cadence is the general form of the criterion.
+// --------------------------------------------------------------------------------
+describe('nh2-1 ADR-0148 U6: emissions are bounded by the STEP cadence, not the frame rate', () => {
+  const HOLD_MS = 2000;
+  const bound = Math.ceil(HOLD_MS / STEP_MS) + 1; // ceil(2000/200) + 1 = 11
+
+  for (const hz of [30, 60, 144]) {
+    it(`U6 BITES @${hz}Hz: a ${HOLD_MS}ms hold emits at most ${bound} moves`, () => {
+      // THE headline nh2-1 tooth: the emission rate must be pinned to the SERVER's
+      // step cadence (one owed step at a time) and must NOT scale with the display
+      // refresh rate. `<=` is kept because the bound is exactly tight (ungated
+      // keydown + one continuation per owed step); `<` would flake.
+      // KILLS: any per-frame re-issue (today's behaviour), and any gate whose value
+      // depends on frame timing rather than on what the server owes.
+      const r = runLoop({
+        durationMs: HOLD_MS,
+        script: [{ at: 0, kind: 'press', dir: 'East' }],
+        frameMs: 1000 / hz,
+      });
+      expect(r.frames.length).toBeGreaterThan(hz); // anti-vacuity: >1s of frames ran
+      expect(r.emissions.length).toBeLessThanOrEqual(bound);
+      // ...and the walk still happened at full rate — the nh2-3 companion reused
+      // here as anti-vacuity, so the nh2-1 bound cannot be met by stalling.
+      expect(r.serverTilesMoved).toBeGreaterThanOrEqual(r.tickTimes.length - 1);
+    });
+  }
+
+  it('U6 RED-TODAY PROOF: without the gate the same hold blows the bound by a wide margin', () => {
+    const r = runLoop({
+      durationMs: HOLD_MS,
+      script: [{ at: 0, kind: 'press', dir: 'East' }],
+      frameMs: 1000 / 60,
+      gateEnabled: false,
+    });
+    expect(r.emissions.length).toBeGreaterThanOrEqual(bound * 3);
+  });
+});
+
+// --------------------------------------------------------------------------------
+// U7 — the ADR-0148 ACCEPTED-TRADE GUARD, *not* an EARS criterion. It pins the
+// documented COST of the gate (a round trip of reopen latency per step) so the
+// numbers in the ADR have a machine-checked source of truth. Sustained-movement
+// as an EARS obligation is the nh2-3 companion and lives in U4.
+// --------------------------------------------------------------------------------
+describe('ADR-0148 ACCEPTED-TRADE GUARD U7: full walk rate across the accepted latency budget', () => {
+  const HOLD_MS = 2000;
+  const NOMINAL = HOLD_MS / STEP_MS; // 10 tiles at one tile per STEP_MS
+
+  for (const oneWayLatencyMs of [0, 25, 50, 90]) {
+    it(`U7 BITES @${oneWayLatencyMs}ms one-way: hold still walks ~${NOMINAL} tiles`, () => {
+      // ADR-0148 ACCEPTED TRADE, PINNED HERE. Gating on `outstandingSteps` costs a
+      // full round trip of gate-reopen latency per step, so the budget is
+      //
+      //     2 * oneWayLatencyMs + framePeriodMs < STEP_MS
+      //
+      // FRAME PERIOD IS A TERM — the cliff is (200 - framePeriod)/2, i.e. ~91ms at
+      // 60Hz but only ~83ms at 30Hz and ~76ms at 24Hz. THIS `it` IS 60Hz-ONLY, so
+      // its 90ms case is inside the budget by ~3ms and says NOTHING about other
+      // frame rates; the U7-XP block below sweeps the cross-product, and the U7-DEG
+      // pin covers 30Hz/90ms, which is OUTSIDE the budget and genuinely degrades.
+      // DO NOT EXTEND THIS TOOTH TO 100ms+ at 60Hz — documented degradation.
+      // KILLS: a gate that re-opens only on the NEXT reconcile after the tick echo
+      // (one extra round trip), or one that waits for pendingCount AND queueDepth —
+      // either halves the rate at any non-zero latency.
+      const r = runLoop({
+        durationMs: HOLD_MS,
+        script: [{ at: 0, kind: 'press', dir: 'East' }],
+        frameMs: 1000 / 60, // the budget above is derived for a 60Hz frame grid
+        oneWayLatencyMs,
+      });
+      expect(r.tickTimes.length).toBe(NOMINAL);
+      // +-1 tile of edge tolerance (first/last step straddle the window boundary).
+      expect(r.serverTilesMoved).toBeGreaterThanOrEqual(NOMINAL - 1);
+      expect(r.serverTilesMoved).toBeLessThanOrEqual(NOMINAL + 1);
+      // ...and it stayed gated the whole time (full rate must not come from a backlog).
+      expect(r.maxOutstanding).toBeLessThanOrEqual(1);
+    });
+  }
+});
+
+// --------------------------------------------------------------------------------
+// U7-XP / U7-DEG — the frame-rate x latency CROSS-PRODUCT (the term U6 and U7
+// each missed). Like U7 these are ADR-0148 ACCEPTED-TRADE GUARDS, not EARS
+// criteria: they bound the documented cost, they do not state an obligation.
+// --------------------------------------------------------------------------------
+describe('ADR-0148 ACCEPTED-TRADE GUARD U7-XP: full rate across frame rate x latency inside the budget', () => {
+  const HOLD_MS = 2000;
+  const NOMINAL = HOLD_MS / STEP_MS; // 10 tiles
+  // THE BUDGET, stated once and asserted below:
+  //     2 * oneWayLatencyMs + framePeriodMs < STEP_MS      (STEP_MS = 200)
+  // Worst-case phase: the tick echo lands just AFTER a frame, so the client waits a
+  // full frame period before it can emit, then the intent needs one more one-way
+  // hop to reach the server before the next tick. Frame period is a first-class
+  // term — U6 swept frame rate at latency 0 and U7 swept latency at 60Hz, so
+  // neither could see it. Cliff = (STEP_MS - framePeriod) / 2:
+  //     144Hz -> ~96.5ms | 60Hz -> ~91.7ms | 30Hz -> ~83.3ms | 24Hz -> ~76.4ms
+  //
+  // frameOffsetMs is DELIBERATELY 15 (non-grid-aligned at all three rates: 15 %
+  // 33.33 = 15, 15 % 16.67 = 15, 15 % 6.94 = 1.11). offset 0 is a PHASE-LUCKY
+  // alignment at 30Hz that hides the frame-period term — never use it here.
+  const UNALIGNED_OFFSET_MS = 15;
+
+  for (const hz of [30, 60, 144]) {
+    for (const oneWayLatencyMs of [0, 25, 50]) {
+      const framePeriod = 1000 / hz;
+      it(`U7-XP BITES @${hz}Hz x ${oneWayLatencyMs}ms (budget ${(2 * oneWayLatencyMs + framePeriod).toFixed(1)} < 200): full rate`, () => {
+        // Every cell here satisfies the budget, so every cell MUST walk at the full
+        // nominal rate. KILLS: any gate whose reopen costs more than one round trip
+        // (it would fail the high-latency/low-refresh corners first), and any
+        // implementation that reintroduces a frame-rate dependence into the cadence.
+        expect(2 * oneWayLatencyMs + framePeriod).toBeLessThan(STEP_MS);
+        const r = runLoop({
+          durationMs: HOLD_MS,
+          script: [{ at: 0, kind: 'press', dir: 'East' }],
+          frameMs: framePeriod,
+          frameOffsetMs: UNALIGNED_OFFSET_MS,
+          oneWayLatencyMs,
+        });
+        expect(r.tickTimes.length).toBe(NOMINAL);
+        expect(r.serverTilesMoved).toBeGreaterThanOrEqual(NOMINAL - 1);
+        expect(r.serverTilesMoved).toBeLessThanOrEqual(NOMINAL + 1);
+        expect(r.maxOutstanding).toBeLessThanOrEqual(1);
+      });
+    }
+  }
+
+  it('U7-DEG: 30Hz x 90ms is OUTSIDE the budget and degrades to ~half rate (accepted trade, NOT desired)', () => {
+    // THIS TOOTH PINS AN ACCEPTED TRADE, NOT A DESIRED BEHAVIOUR. 2*90 + 33.33 =
+    // 213.3 > 200, so the continuation reaches the server just after the tick that
+    // wanted it and waits a whole extra step: ~1 tile per 400ms instead of per
+    // 200ms. It is asserted so that (a) the ADR's numbers have a machine-checked
+    // source of truth, and (b) a FUTURE IMPROVEMENT that restores full rate here
+    // turns this RED and forces a deliberate decision rather than silently drifting.
+    expect(2 * 90 + 1000 / 30).toBeGreaterThan(STEP_MS);
+    const r = runLoop({
+      durationMs: HOLD_MS,
+      script: [{ at: 0, kind: 'press', dir: 'East' }],
+      frameMs: 1000 / 30,
+      frameOffsetMs: UNALIGNED_OFFSET_MS,
+      oneWayLatencyMs: 90,
+    });
+    expect(r.tickTimes.length).toBe(NOMINAL);
+    // Genuinely degraded (this is the assertion a future fix must break).
+    expect(r.serverTilesMoved).toBeLessThan(NOMINAL - 1);
+    // ...and degraded to ~half, not to a stall: the walk still makes progress and
+    // the gate still holds at most one owed step.
+    expect(r.serverTilesMoved).toBeGreaterThanOrEqual(4);
+    expect(r.serverTilesMoved).toBeLessThanOrEqual(6);
+    expect(r.maxOutstanding).toBeLessThanOrEqual(1);
+  });
+});
+
+// --------------------------------------------------------------------------------
+// U8 — nh2-1, the "(or the player switches to a different held direction)" limb
+// of the criterion, which U2/U3 do not exercise.
+// --------------------------------------------------------------------------------
+describe('nh2-1 ADR-0148 U8: switching direction mid-hold commits at most one more old step', () => {
+  const SWITCH_AT = 510;
+  const switchScript: readonly ScriptedInput[] = [
+    { at: 0, kind: 'press', dir: 'East' }, // hold East across the ticks at 200 and 400
+    { at: SWITCH_AT, kind: 'press', dir: 'North' }, // North pressed while East still held
+    { at: 520, kind: 'release', dir: 'East' },
+  ];
+
+  it('U8 BITES: <=1 further East commit after the North press, and every later emission is North', () => {
+    const r = runLoop({ durationMs: 1200, script: switchScript });
+
+    // Anti-vacuity: East really was walking before the switch.
+    expect(r.commits.filter((c) => c.at < SWITCH_AT && c.dir === 'East').length).toBe(2);
+
+    // THE INPUT-LAG TOOTH. With a backlog on the server, the stale East moves must
+    // drain before North is even looked at — the "I turned but he kept going" feel
+    // complaint. The gate keeps at most one owed step, so at most one stale commit.
+    // KILLS: an always-open gate (server queue saturates at cap 2 -> two more East
+    // commits AND the North keydown is outright REJECTED and lost).
+    expect(
+      r.commits.filter((c) => c.at > SWITCH_AT && c.dir === 'East').length,
+    ).toBeLessThanOrEqual(1);
+
+    // The switch actually took effect on the server.
+    expect(r.commits.filter((c) => c.dir === 'North').length).toBeGreaterThanOrEqual(1);
+
+    // Every emission from the North keydown onward is North — no stale re-issue of
+    // the released direction. KILLS: a continuation emitter reading a latched dir
+    // rather than HeldDirections.active().
+    const after = r.emissions.filter((e) => e.at >= SWITCH_AT);
+    expect(after.length).toBeGreaterThanOrEqual(1);
+    for (const e of after) expect(e.dir).toBe('North');
+    expect(after[0]?.at).toBe(SWITCH_AT); // the ungated keydown emission
+  });
+
+  it('U8 RED-TODAY PROOF: without the gate 2+ stale East steps commit after the switch', () => {
+    const r = runLoop({ durationMs: 1200, script: switchScript, gateEnabled: false });
+    expect(
+      r.commits.filter((c) => c.at > SWITCH_AT && c.dir === 'East').length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+});
