@@ -8,6 +8,15 @@
         stock: [
             ( item_id: 1, buy_price: 200 ),
             ( item_id: 2, buy_price: 300 ),
+            // Antidote (pt-d3, ADR-0145 D5). Stocked because the playtest roster
+            // gained two WILD-LEGAL Poison appliers (Shadelet and Umbraquill both
+            // know Toxic Sting), and this item was previously sold by no shop and
+            // granted by no quest — a status the player can suffer with no
+            // purchasable cure. 150 is derived, not picked: the two entries above
+            // both sit at sell = 40% of buy (80/200, 120/300) and this item's
+            // sell_price is 60, so 150 preserves that convention. ~5 wild wins
+            // at the unchanged 31-32 gold faucet.
+            ( item_id: 3, buy_price: 150 ),
         ],
     ),
 ]

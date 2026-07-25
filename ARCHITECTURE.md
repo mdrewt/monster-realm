@@ -199,6 +199,17 @@ canonical `touches:` vocabulary**: adding content is a new
   glob-*merged*, two waves that claim the same ids merge with no git conflict and surface
   only as a `duplicate species id` error from `validate_content` at publish time — so the
   reservation lives in each part file's header, not just in review.
+- **Encounter tables tier by PLAYER level, and the band does double duty** (ADR-0145):
+  `roll_encounter` filters entries by the *player's* lead-party level, then
+  `resolve_encounter` picks the *spawn* level uniformly inside that same band. A high
+  `min_level` is therefore invisible to a low-level player — that is the difficulty-curve
+  mechanism, not just a spawn range. **Zone 0 "Verdant Hollow" is frozen byte-identical**
+  because `client/e2e/recruit.spec.ts` derives two remote-CI flake budgets from its exact
+  weights and rate; any new zone-0 entry needs `min_level >= 15` (the e2e's provable
+  player-level ceiling is 12, machine-derived by `pt_d3_tuning.rs`, not asserted in prose).
+  **Zone 1 "Tideglass Cove" carries all 7 wild-legal forms**; its weights and bands are
+  tuning data and deliberately unpinned. Derived forms (4, 5, 6, 9, 10, 22, 23) must never
+  appear in any encounter table — `validate_evolution_fusion` step 6 rejects them.
 - **Numeric prefixes zero-pad to a consistent width** (`000-`, `001-`, `010-`): the
   embed sorts files **lexicographically** in both `build.rs` and the `append-only-ids`
   eval, so `10-foo.ron` would sort before `9-foo.ron`. Cross-file row order never

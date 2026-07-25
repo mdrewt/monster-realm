@@ -1,5 +1,42 @@
 // Encounter registry — DATA, not code (ADR-0006). Per-zone weighted spawn tables.
+//
+// COMMENT HYGIENE (ADR-0143 D7, extended to this directory by ADR-0145):
+// a TRAILING comment here must never contain the sequences id-followed-by-colon,
+// species-id-followed-by-colon, or to-species-followed-by-colon. Two evals strip
+// whole-line comments only and then regex-scan the remainder, so such a comment
+// injects a phantom stable content id. Use the "id=1" form instead. Whole-line
+// comments (like this block) are stripped and are therefore unrestricted.
+// GATED by game-core/tests/pt_d3_tuning.rs::t6_ron_comment_hygiene_over_tuning_dirs,
+// which — unlike the pt-d1 scanner — also sees inside /* ... */ block comments.
+//
+// LEVEL BANDS DO DOUBLE DUTY: roll_encounter filters entries by the PLAYER's
+// lead-party level, and resolve_encounter then picks the SPAWN level uniformly
+// inside the same band. A high min_level is therefore invisible to a low-level
+// player — that is the difficulty-curve mechanism.
+//
+// DERIVED FORMS (4, 5, 6, 9, 10, 22, 23) MUST NEVER APPEAR HERE — they are
+// evolution/fusion-only and validate_evolution_fusion step 6 rejects them.
+// Wild-legal base forms are exactly: 1, 2, 3, 7, 8, 20, 21.
 [
+    // ---------------------------------------------------------------------
+    // Zone 0 "Verdant Hollow" — FROZEN. Do not edit this table.
+    //
+    // client/e2e/recruit.spec.ts (a remote-CI gate) derives TWO probability
+    // budgets from these exact numbers, in comments no future author will
+    // remember to update: MAX_WALK_STEPS from encounter_rate 200, and
+    // MAX_ENCOUNTERS from the weights 10/7/5 (sum 22). Changing a weight or
+    // the rate reds a 25-minute e2e whose failure message points nowhere near
+    // the cause.
+    //
+    // FORWARD LOCK (ADR-0145 D3): any NEW entry added here must have
+    // min_level >= 15. The e2e's provable player-level ceiling is 12; the
+    // margin absorbs future XP/level-curve drift. Gated by
+    // pt_d3_tuning.rs::pt_d3_2_* — which DERIVES that ceiling from the live
+    // battle_xp_reward + level curve rather than trusting this comment.
+    // Adding a low-band Earth or Dark form here would also break the e2e's
+    // affinity-only danger heuristic: it flees "Water" wilds, but Shadelet is
+    // Dark-affinity while carrying Aqua Jet (Water, 2x vs the Fire starter).
+    // ---------------------------------------------------------------------
     (
         zone_id: 0,
         encounter_rate: 200,
@@ -7,6 +44,50 @@
             (species_id: 1, weight: 10, min_level: 3, max_level: 7),
             (species_id: 2, weight: 7, min_level: 3, max_level: 7),
             (species_id: 3, weight: 5, min_level: 4, max_level: 8),
+        ],
+    ),
+    // ---------------------------------------------------------------------
+    // Zone 1 "Tideglass Cove" (pt-d3, ADR-0145) — carries the full wild-legal
+    // roster. This is the first table in which pt-d1's Earth/Dark lines
+    // (7, 8) and pt-d2's Dark/Wind lines (20, 21) are reachable at all.
+    //
+    // encounter_rate 150 (vs zone 0's 200): zone 1 is 40x28 vs 32x24 and its
+    // bands run to level 20, where battles take more turns (higher HP, status,
+    // weather). 150 holds encounters-per-MINUTE near parity rather than
+    // encounters-per-step, and gives the playtest a rate A/B to report on.
+    //
+    // Tiering per GDD section 6 (commons / uncommons / rares), tuned so zone 0
+    // goes quiet at player level 9+ — the "you have outgrown Verdant Hollow"
+    // signal. Weights and bands here are TUNING DATA and deliberately NOT
+    // pinned by any test: the playtest is the balance test.
+    // ---------------------------------------------------------------------
+    (
+        zone_id: 1,
+        encounter_rate: 150,
+        entries: [
+            // Common. Namesake water common, live the instant a fresh level-5
+            // player steps through the warp — the zone is never empty on arrival.
+            (species_id: 2, weight: 10, min_level: 4, max_level: 10),
+            // Uncommon. The only Wind form; introduces the Hail/Rain weather
+            // pair in a low-stakes band (Wind is neutral into Fire/Water/Plant,
+            // so weather is taught without a type blowout).
+            (species_id: 21, weight: 7, min_level: 4, max_level: 10),
+            // Rare (early). First Poison applier a player meets — the encounter
+            // that creates Antidote demand. Starts 2 levels after arrival so
+            // Poison is a complication, not an ambush.
+            (species_id: 20, weight: 4, min_level: 6, max_level: 12),
+            // Common (mid). Takes over as the common exactly as the 4-10 band
+            // expires. Tanky (defense 75, speed 30): teaches "raw offence
+            // stalls, bring coverage". Sets Sandstorm.
+            (species_id: 7, weight: 8, min_level: 9, max_level: 16),
+            // Uncommon (mid). Fast (speed 74) Poison + Aqua Jet attacker — the
+            // speed check, and the second Poison source.
+            (species_id: 8, weight: 6, min_level: 9, max_level: 16),
+            // Rare (late). Only mid/late Plant source; rewards a Fire lead.
+            (species_id: 3, weight: 4, min_level: 12, max_level: 20),
+            // Rare (late). Rarest late spawn — a non-starter route to a Fire
+            // line for players who never picked one.
+            (species_id: 1, weight: 3, min_level: 14, max_level: 20),
         ],
     ),
 ]
