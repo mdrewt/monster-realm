@@ -479,8 +479,38 @@ const KEY_DIR: Readonly<Record<string, WasmDirection>> = {
   ArrowRight: 'East',
   KeyD: 'East',
 };
+
+// nh1 (ADR-0146): true when the browser's native action for THIS key on THIS target is the
+// target's own and must not be cancelled. Text fields and <select>s consume arrows AND Space;
+// a focused <button>/<a> consumes only Space (activation). Arrows over a button are NOT owned,
+// so the page-scroll fix still applies in the commonest state — a button keeps focus after a
+// click. Only renameView/tradeProposeView stopPropagation their focusables; the other eight
+// overlays' buttons/selects bubble straight here, so this guard is what keeps them usable.
+const targetOwnsKey = (e: KeyboardEvent): boolean => {
+  const t = e.target;
+  if (!(t instanceof HTMLElement)) return false;
+  if (t.isContentEditable) return true;
+  const tag = t.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  return e.code === 'Space' && (tag === 'BUTTON' || tag === 'A');
+};
+
+// nh1 (ADR-0146): movement keys and Space carry native browser defaults (page scroll) that MUST
+// be cancelled on the handler's EARLY-RETURN paths too — an open overlay makes the document
+// taller than the viewport-sized canvas, so those defaults scroll the game out from under the
+// player. Called on BOTH early returns; each OS key-repeat keydown carries its own default, so
+// suppressing only the first one would leave a held arrow key scrolling on every repeat tick.
+const suppressNativeMovementDefault = (e: KeyboardEvent): void => {
+  if ((KEY_DIR[e.code] !== undefined || e.code === 'Space') && !targetOwnsKey(e))
+    e.preventDefault();
+};
+
 window.addEventListener('keydown', (e) => {
-  if (e.repeat) return; // ignore OS key-repeat (the frame loop re-issues held keys)
+  if (e.repeat) {
+    // ignore OS key-repeat (the frame loop re-issues held keys) — but still cancel its default
+    suppressNativeMovementDefault(e);
+    return;
+  }
   // pt-b1 (ADR-0130): F9 downloads the local bug bundle; F8 dismisses the error overlay.
   // Handled EARLY (before letter-key branches) so they work under any overlay.
   if (e.code === 'F9') {
@@ -1019,8 +1049,10 @@ window.addEventListener('keydown', (e) => {
     leaderboardView?.visible ||
     renameView?.visible ||
     tradeProposeView?.visible
-  )
+  ) {
+    suppressNativeMovementDefault(e);
     return;
+  }
   const dir = KEY_DIR[e.code];
   if (dir !== undefined) {
     step(dir); // immediate first step (latency + deliberate double-tap)
