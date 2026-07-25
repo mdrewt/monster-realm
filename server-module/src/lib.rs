@@ -60,7 +60,9 @@ pub(crate) const ZONE_0: u32 = 0;
 /// v12 (M14.5d-1a): item_row gains cure_status column; re-seed required (ADR-0105).
 /// v13 (pt-d1): playtest roster wave 1 — species 7-10 + two evolution blocks (ADR-0143).
 /// v14 (pt-d2): playtest roster wave 2 — species 20-23 + two evolution blocks (ADR-0144).
-pub(crate) const CONTENT_VERSION: u32 = 14;
+/// v15 (pt-d3): tuning pass — zone-1 encounter table (first wild placement of
+///   species 7/8/20/21) + Antidote stocked in shop 1 (ADR-0145).
+pub(crate) const CONTENT_VERSION: u32 = 15;
 pub(crate) const SPRITE_PLAYER: u32 = 0;
 pub(crate) const MAX_NAME_LEN: usize = 24;
 pub(crate) const MAX_PARTY_SIZE: u8 = game_core::PARTY_SIZE; // SSOT (ADR-0052)
