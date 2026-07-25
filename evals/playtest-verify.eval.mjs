@@ -392,6 +392,26 @@ const STUB_HTTP_SERVER_SRC =
   ".createServer(function(q,s){s.writeHead(200,{'Content-Type':'application/json'});s.end('{}')})" +
   ".listen(0,'127.0.0.1',function(){console.log(this.address().port)})";
 
+// ---------------------------------------------------------------------------
+// §7.15b negative control — a stub that ANSWERS HTTP but is NOT a SpacetimeDB.
+//
+// Identical machinery to STUB_HTTP_SERVER_SRC (detached child, ephemeral port, port printed
+// on stdout) except it replies HTTP 500. THE MEASURED FACT THIS PINS (CLI 2.6.0):
+// `spacetime server ping` exits 0 for ANY COMPLETED HTTP ROUND-TRIP.
+//   http://127.0.0.1:3000    (real server)   -> exit 0, "Server is online: http://…"
+//   http://127.0.0.1:3000/   (trailing slash)-> exit 0, "Server returned 404 (Not Found)"
+//   http://127.0.0.1:3000/v1 (path suffix)   -> exit 0, "Server returned 404"
+//   node stub answering 500                  -> exit 0, "Server could not be reached (500 …)"
+//   http://127.0.0.1:1       (refused)       -> exit 1
+// Meanwhile `spacetime publish -s` FAILS on the trailing-slash / path-suffix / wrong-service
+// targets. So an exit-code-only preflight green-lights a full multi-minute wasm build that
+// dies at publish — the exact cost ux3-1 exists to remove.
+// ---------------------------------------------------------------------------
+const STUB_HTTP_500_SERVER_SRC =
+  "require('http')" +
+  ".createServer(function(q,s){s.writeHead(500);s.end('nope')})" +
+  ".listen(0,'127.0.0.1',function(){console.log(this.address().port)})";
+
 // Await the ephemeral port the stub prints on stdout. Bounded: if the stub never reports a
 // port (or dies), REJECT — the positive control must fail loud, never silently skip.
 function awaitStubPort(child, timeoutMs) {
@@ -821,7 +841,25 @@ export default async function () {
       name,
       pass: false,
       detail:
-        "TEETH P7e: timeoutBindsProbe accepted a body whose only bounded form is a dead `PROBE_DOC='timeout 10 spacetime server ping …'` assignment while the REAL call runs unbounded — the trimmed probe line must START WITH timeout/if timeout/if ! timeout/! timeout so that timeout heads an actual command; and because `every` (not `some`) is used, a bounded probe paired with a second unbounded one is also rejected",
+        "TEETH P7e: timeoutBindsProbe accepted a body whose only bounded form is a dead `PROBE_DOC='timeout 10 spacetime server ping …'` assignment while the REAL call runs unbounded — a QUOTE is not a command boundary, so `PROBE_DOC='timeout` must not count as the timeout COMMAND; and because `every` (not `some`) is used, a bounded probe paired with a second unbounded one is also rejected",
+    };
+  }
+
+  // --- Tooth P7h: timeoutBindsProbe BAD — `timeout 10` on the line but NOT adjacent (M-adj) ---
+  // Kills the naive relaxation of P7g: "the line contains `timeout <positive-duration>`
+  // somewhere before the probe". In this fixture `timeout 10` bounds an unrelated `echo`
+  // inside `$( … )` and the real `spacetime server ping` after `&&` runs with no bound at
+  // all — the exact hang ux3 exists to remove, while every A5g co-occurrence needle is
+  // satisfied on that one line. Only IMMEDIATE ADJACENCY of `timeout <duration>` to the
+  // probe token rejects it.
+  if (
+    timeoutBindsProbe(JF_TB_TIMEOUT_ELSEWHERE_ON_LINE, 'playtest-preflight', 'spacetime server ping')
+  ) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH P7h: timeoutBindsProbe accepted `if ! X=$(timeout 10 echo hi) && spacetime server ping "$STDB_SERVER"; then` — the `timeout 10` there bounds an unrelated `echo`, and the real probe runs UNBOUNDED. The two tokens immediately preceding the probe must be the timeout command and a positive duration; "a timeout appears somewhere earlier on the line" is co-occurrence, not binding',
     };
   }
 
@@ -2033,7 +2071,11 @@ export default async function () {
     }
   }
 
-  // ---- 7.13: playtest-preflight body integrity (ux3-1 / ux3-2) ----
+  // ---- 7.13: playtest-preflight body integrity (ux3-1) ----
+  //
+  // EARS LABEL NOTE: everything in this block is ux3-1 (the recipe's runtime behaviour).
+  // ux3-2 is ONLY "docs/playtest-ops.md gains a `spacetime start` step" — that criterion is
+  // gated in §7.10, not here. Several assertions below previously cited ux3-2; corrected.
   //
   // MAINTAINER NOTE: strippedRecipeBody cuts each line at the first " " + "#", so a
   // diagnosis message containing that two-character sequence would be TRUNCATED before the
@@ -2045,6 +2087,21 @@ export default async function () {
   const preflightNeedles = [
     // the probe itself — a reachability check, not a publish
     'spacetime server ping',
+    // THE OUTPUT-MATCH NEEDLE (ux3-1, added after the red-team pass that found the defect).
+    // `spacetime server ping` exits 0 for ANY COMPLETED HTTP ROUND-TRIP. Measured on CLI
+    // 2.6.0 against a live server on :3000 —
+    //   http://127.0.0.1:3000   -> exit 0, "Server is online: http://127.0.0.1:3000"
+    //   http://127.0.0.1:3000/  -> exit 0, "Server returned 404 (Not Found)"    <-- !!
+    //   http://127.0.0.1:3000/v1-> exit 0, "Server returned 404"                <-- !!
+    //   node stub answering 500 -> exit 0, "Server could not be reached (500 …)" <-- !!
+    //   http://127.0.0.1:1      -> exit 1 (connection refused)
+    // …while `spacetime publish -s` FAILS for the trailing-slash / path-suffix / wrong-service
+    // cases. An exit-code-only preflight therefore green-lights a full multi-minute wasm
+    // build that is doomed to die at publish — precisely the cost ux3-1 exists to avoid.
+    // Matching the success BODY is what makes the preflight verify a SpacetimeDB rather
+    // than "something answered HTTP". Behaviourally pinned by §7.15b; this needle stops the
+    // fix being silently reverted to exit-code-only.
+    'Server is online',
     // the target must be overridable, not hardcoded to 127.0.0.1:3000.
     // BARE token, not '$STDB_SERVER': `"${STDB_SERVER}"` is this justfile's house style
     // (cf. `${MR_PLAYTEST_DB,,}`, `${TMPDIR:-/tmp}`) and is equally correct. Demanding the
@@ -2068,7 +2125,7 @@ export default async function () {
       return {
         name,
         pass: false,
-        detail: `recipe "playtest-preflight" body (comments stripped) is missing "${needle}" — ux3-1/-2: the preflight must bound a "spacetime server ping" against the overridable $STDB_SERVER and, on failure, print an actionable message on stderr (naming "spacetime start") and exit 1; without every one of these the check is either unbounded, hardcoded, silent, or non-fatal`,
+        detail: `recipe "playtest-preflight" body (comments stripped) is missing "${needle}" — ux3-1: the preflight must bound a "spacetime server ping" against the overridable $STDB_SERVER, MATCH its "Server is online" success output (the exit code alone is 0 for any completed HTTP round-trip, including a 404 from a trailing slash and a 500 from an unrelated service) and, on failure, print an actionable message on stderr (naming "spacetime start") and exit 1; without every one of these the check is either unbounded, hardcoded, credulous, silent, or non-fatal`,
       };
     }
   }
@@ -2101,20 +2158,44 @@ export default async function () {
     };
   }
 
-  // A5h: co-occurrence is NOT enough — the `timeout` must HEAD the probe command and carry
-  // a POSITIVE duration. Three broken implementations satisfy A5g while hanging forever:
+  // A5h: co-occurrence is NOT enough — `timeout <positive-duration>` must IMMEDIATELY
+  // precede the probe token. Four broken implementations satisfy A5g while hanging forever:
   //   `timeout 0 spacetime server ping …`      (0 DISABLES the timeout — GNU coreutils)
   //   `PROBE_DOC='timeout 10 spacetime …'`     (dead string; all A5g tokens on one line)
   //   `spacetime server ping …` + a `timeout` mention elsewhere in the body
-  // See the timeoutBindsProbe comment block and teeth P7a–P7f.
+  //   `X=$(timeout 10 echo hi) && spacetime server ping …` (bounds the wrong command)
+  // …and the predicate must NOT reject the shipped, correctly-bounded
+  //   `if ! PING_OUT=$(timeout 10 spacetime server ping "$STDB_SERVER" 2>&1) || …`
+  // See the timeoutBindsProbe comment block and teeth P7a–P7h.
   if (!timeoutBindsProbe(justfile, 'playtest-preflight', 'spacetime server ping')) {
     return {
       name,
       pass: false,
       detail:
-        'recipe "playtest-preflight" has a "spacetime server ping" line where `timeout` does not HEAD the command with a positive duration — required forms are `timeout N …`, `if timeout N …`, `if ! timeout N …` or `! timeout N …` (N a positive integer, optional s/m/h/d suffix). This rejects `timeout 0` (GNU coreutils: a duration of 0 DISABLES the timeout — measured, `timeout 0 sleep 3` runs the full 3 s), a bound parked inside a quoted doc-string variable, and an unbounded real call paired with a `timeout` mention elsewhere. It also returns false if no ping line exists at all (non-vacuity)',
+        'recipe "playtest-preflight" has a "spacetime server ping" line where the two tokens IMMEDIATELY before the probe are not `timeout <positive-duration>` (N a positive integer, optional s/m/h/d suffix; `timeout` may be glued to a command boundary such as `$(`). This rejects `timeout 0` (GNU coreutils: a duration of 0 DISABLES the timeout — measured, `timeout 0 sleep 3` runs the full 3 s), a bound parked inside a quoted doc-string variable, an unbounded real call paired with a `timeout` mention elsewhere, and a `timeout` on the same line that bounds some OTHER command. It accepts both `timeout 10 spacetime server ping …` and the shipped `if ! PING_OUT=$(timeout 10 spacetime server ping …)` capture form. It also returns false if no ping line exists at all (non-vacuity)',
     };
   }
+
+  // ---- 7.13b: `spacetime` CLI presence probe — gates the four BEHAVIORAL blocks ----
+  //
+  // WHY: §7.14/§7.15/§7.15b/§7.16 all EXECUTE the recipe, and the recipe's FIRST guard is
+  // `command -v spacetime || { echo "…the 'spacetime' CLI is not on PATH…"; exit 1; }`. On a
+  // fresh clone without the CLI the recipe therefore exits 1 with a message that (correctly)
+  // says nothing about `spacetime start`, and §7.14's stderr assertion fired with "the
+  // failure message is not actionable, or it was written to stdout" — blaming the recipe for
+  // an environment fact. That is a misleading RED and a real fresh-clone DX blocker.
+  //
+  // HOUSE CONVENTION: evals/bindings-drift.eval.mjs:122 already handles exactly this case
+  // with `pass: true` + `detail: 'skipped: no spacetime CLI …'`. Followed here.
+  //
+  // SCOPE OF THE SKIP: ONLY the four behavioural blocks. Every source-scan assertion above
+  // and below still runs unconditionally, so the structural gate never weakens.
+  //
+  // CI IS UNAFFECTED: .github/workflows/ci.yml installs `just` and the pinned spacetime CLI
+  // before `- run: just eval`, so `spacetime --version` succeeds there and all four blocks
+  // execute. The skip can only ever apply on a local box that has not installed the CLI.
+  const spacetimeCliProbe = spawnSync('spacetime', ['--version'], { encoding: 'utf8' });
+  const spacetimeCliPresent = !spacetimeCliProbe.error && spacetimeCliProbe.status === 0;
 
   // ---- 7.14: BEHAVIORAL NEGATIVE TOOTH — RUN the preflight against a dead server ----
   //
@@ -2142,7 +2223,8 @@ export default async function () {
   //
   // ASSERTION SET (status alone is NOT enough: `just` exits 1 for a MISSING recipe too,
   // so a deleted playtest-preflight would otherwise read as a passing tooth):
-  {
+  // SKIPPED when the `spacetime` CLI is absent — see §7.13b.
+  if (spacetimeCliPresent) {
     const result = spawnSync('just', ['playtest-preflight'], {
       cwd: root,
       encoding: 'utf8',
@@ -2182,7 +2264,7 @@ export default async function () {
       return {
         name,
         pass: false,
-        detail: `BEHAVIORAL: "just playtest-preflight" exited 0 with STDB_SERVER=http://127.0.0.1:1 (a loopback port nothing can be listening on) — ux3-2: the preflight must exit non-zero when no SpacetimeDB answers, otherwise playtest-up proceeds into a multi-minute build that is doomed to fail at publish. Output was: ${JSON.stringify(combined.slice(0, 400))}`,
+        detail: `BEHAVIORAL: "just playtest-preflight" exited 0 with STDB_SERVER=http://127.0.0.1:1 (a loopback port nothing can be listening on) — ux3-1: the preflight must exit non-zero when no SpacetimeDB answers, otherwise playtest-up proceeds into a multi-minute build that is doomed to fail at publish. Output was: ${JSON.stringify(combined.slice(0, 400))}`,
       };
     }
 
@@ -2201,13 +2283,14 @@ export default async function () {
     //     Rationale: the runbook pipes these recipes (`just playtest-up | tee playtest.log`,
     //     `… > /dev/null`). A diagnosis written to stdout is swallowed by exactly the
     //     redirection a dev reaches for, and the dev is left with a bare "error: Recipe
-    //     failed with exit code 1". ux3-2 is about the human READING the reason, so the
+    //     failed with exit code 1". ux3-1 is about the human READING the reason, so the
     //     stream matters and asserting on stdout+stderr concatenated does not test it.
+    //     (EARS label corrected: ux3-2 is the docs criterion, gated in §7.10.)
     if (!stderrText.includes('spacetime start')) {
       return {
         name,
         pass: false,
-        detail: `BEHAVIORAL: "just playtest-preflight" exited non-zero but its STDERR never mentions "spacetime start" — either the failure message is not actionable, or it was written to stdout (where a "| tee"/"> /dev/null" of the playtest recipes loses it). ux3-2 requires telling the dev exactly how to recover, on the stream that survives piping. stderr was: ${JSON.stringify(stderrText.slice(0, 400))} / full output: ${JSON.stringify(combined.slice(0, 400))}`,
+        detail: `BEHAVIORAL: "just playtest-preflight" exited non-zero but its STDERR never mentions "spacetime start" — either the failure message is not actionable, or it was written to stdout (where a "| tee"/"> /dev/null" of the playtest recipes loses it). ux3-1 requires telling the dev exactly how to recover, on the stream that survives piping. stderr was: ${JSON.stringify(stderrText.slice(0, 400))} / full output: ${JSON.stringify(combined.slice(0, 400))}`,
       };
     }
 
@@ -2256,7 +2339,8 @@ export default async function () {
   //     hard-REDs on a bare macOS box. CI is ubuntu-latest.
   //   * The stub is ALWAYS killed in `finally` — an orphaned listener would leak a port
   //     and keep the eval process alive.
-  {
+  //   * SKIPPED when the `spacetime` CLI is absent — see §7.13b.
+  if (spacetimeCliPresent) {
     let stub = null;
     try {
       let port;
@@ -2307,6 +2391,122 @@ export default async function () {
       }
     } finally {
       if (stub) stub.kill('SIGKILL');
+    }
+  }
+
+  // ---- 7.15b: PREFLIGHT_REJECTS_NON_SPACETIME_HTTP_RESPONDER (ux3-1) ----
+  //
+  // THE TOOTH FOR THE DEFECT A RED-TEAM PASS FOUND. §7.15 proves the preflight ACCEPTS
+  // something that answers HTTP 200; nothing above proved it REJECTS something that answers
+  // HTTP but is not a SpacetimeDB. That gap was not hypothetical — the shipped-before-fix
+  // preflight checked only `spacetime server ping`'s EXIT CODE, and (measured on CLI 2.6.0):
+  //
+  //   http://127.0.0.1:3000    (real server)    -> exit 0, "Server is online: http://…"
+  //   http://127.0.0.1:3000/   (trailing slash) -> exit 0, "Server returned 404 (Not Found)"
+  //   http://127.0.0.1:3000/v1 (path suffix)    -> exit 0, "Server returned 404"
+  //   node stub answering HTTP 500              -> exit 0, "Server could not be reached (500 …)"
+  //   http://127.0.0.1:1       (refused port)   -> exit 1
+  //
+  // `spacetime publish -s` FAILS for the trailing-slash, path-suffix and wrong-service
+  // targets. So the pre-fix preflight passed, `just playtest-up` ran a full wasm build, and
+  // the dev ate multiple minutes before dying at publish — the exact failure mode ux3-1
+  // exists to prevent, with the preflight actively vouching for the bad target.
+  //
+  // THE FIX (in the justfile) captures stdout and requires the success body:
+  //   if ! PING_OUT=$(timeout 10 spacetime server ping "$STDB_SERVER" 2>&1) \
+  //      || ! printf '%s' "$PING_OUT" | grep -q 'Server is online'; then … exit 1; fi
+  // Verified: real server / scheme-less / http://localhost:3000 / nickname `local` /
+  // `maincloud` -> exit 0. Trailing slash / path suffix / 500-stub / refused port /
+  // uppercase scheme -> exit 1 carrying the real cause. STDB_SERVER unset -> exit 0.
+  //
+  // MUTANTS THIS KILLS (none reachable by §7.14/§7.15, both of which stay green):
+  //   M15  revert to exit-code-only: `if ! timeout 10 spacetime server ping "$STDB_SERVER"`
+  //        with no output match. Rejects a refused port (§7.14 green), accepts the 200 stub
+  //        (§7.15 green) — and accepts this 500 responder. ONLY this block fails it.
+  //   M16  match on a substring present in EVERY ping outcome (e.g. "Server") — the 500
+  //        stub's own text is "Server could not be reached", so a "Server" grep still passes.
+  //   M17  match on stderr only while the CLI prints the verdict on stdout (or vice versa),
+  //        which degenerates into an unconditional accept.
+  //
+  // NON-VACUITY: `status !== 0` alone is not enough — a preflight broken in ANY unrelated
+  // way (missing recipe, CLI-guard mis-negated, `set -u` on an unset var) also exits
+  // non-zero and would fake this tooth. So stderr must ALSO carry the RUNTIME-EXPANDED
+  // http://127.0.0.1:<ephemeral-port> we injected: that string appears in no source file,
+  // so it can only come from a shell that genuinely expanded $STDB_SERVER while diagnosing
+  // THIS target. (It equally kills a hardcoded-host implementation.)
+  //
+  // MECHANICS: as in §7.15 — DETACHED child (spawnSync blocks the event loop, so an
+  // in-process server would deadlock), ephemeral port so parallel runs cannot collide,
+  // killed in `finally`. Offline, no wasm, no DB, ~20 ms.
+  // SKIPPED when the `spacetime` CLI is absent — see §7.13b.
+  if (spacetimeCliPresent) {
+    let badStub = null;
+    try {
+      let badPort;
+      try {
+        badStub = spawn(process.execPath, ['-e', STUB_HTTP_500_SERVER_SRC], {
+          stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        badPort = await awaitStubPort(badStub, 10000);
+      } catch (e) {
+        // Fail loud — never skip. A negative control that silently opts out is worse than
+        // none, because the suite then LOOKS like it has one.
+        return {
+          name,
+          pass: false,
+          detail: `PREFLIGHT_REJECTS_NON_SPACETIME_HTTP_RESPONDER: could not start the local HTTP-500 stub (${e?.message ?? String(e)}) — the "preflight rejects a non-SpacetimeDB responder" assertion could not run, so an exit-code-only preflight would go unnoticed. This must not read as green`,
+        };
+      }
+
+      const badUrl = `http://127.0.0.1:${badPort}`;
+      const badResult = spawnSync('just', ['playtest-preflight'], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, STDB_SERVER: badUrl },
+        timeout: 30000,
+      });
+
+      if (badResult.error) {
+        return {
+          name,
+          pass: false,
+          detail: `PREFLIGHT_REJECTS_NON_SPACETIME_HTTP_RESPONDER: could not run "just playtest-preflight" against the HTTP-500 stub on ${badUrl} (${badResult.error.message}) — the tooth could not execute, so the preflight is UNVERIFIED against a non-SpacetimeDB responder; if this is a timeout, the preflight HUNG against a host that answers in ~20 ms, which is itself a ux3-1 defect`,
+        };
+      }
+
+      if (badResult.status === null) {
+        return {
+          name,
+          pass: false,
+          detail: `PREFLIGHT_REJECTS_NON_SPACETIME_HTTP_RESPONDER: "just playtest-preflight" was killed by signal ${String(badResult.signal)} without an exit status — terminated externally, so the reject path is UNVERIFIED and must not read as green`,
+        };
+      }
+
+      const badStderr = badResult.stderr ?? '';
+      const badCombined = `${badStderr}${badResult.stdout ?? ''}`;
+
+      // (1) THE assertion: an HTTP responder that is NOT a SpacetimeDB must be REJECTED.
+      if (badResult.status === 0) {
+        return {
+          name,
+          pass: false,
+          detail: `PREFLIGHT_REJECTS_NON_SPACETIME_HTTP_RESPONDER: "just playtest-preflight" exited 0 against ${badUrl}, a throwaway node server that answers every request with HTTP 500 and is in no sense a SpacetimeDB. Measured on CLI 2.6.0, "spacetime server ping" exits 0 for ANY completed HTTP round-trip — a 500 stub prints "Server could not be reached (500 Internal Server Error)" and STILL exits 0, as do a trailing slash ("Server returned 404") and a "/v1" path suffix — while "spacetime publish -s" FAILS for all of them. An exit-code-only preflight therefore green-lights a multi-minute wasm build that is doomed to die at publish, which is exactly what ux3-1 exists to prevent. The recipe must MATCH the success output ("Server is online"), not merely the exit status. Output was: ${JSON.stringify(badCombined.slice(0, 400))}`,
+        };
+      }
+
+      // (2) NON-VACUITY: the rejection must be ABOUT THIS TARGET. Any unrelated breakage
+      //     (missing recipe, mis-negated CLI guard, set -u on an unset var) also exits
+      //     non-zero; only a shell that actually expanded $STDB_SERVER while diagnosing the
+      //     server we injected can print this ephemeral URL, which exists in no source file.
+      if (!badStderr.includes(badUrl)) {
+        return {
+          name,
+          pass: false,
+          detail: `PREFLIGHT_REJECTS_NON_SPACETIME_HTTP_RESPONDER: "just playtest-preflight" exited ${badResult.status} against the HTTP-500 stub, but its STDERR never names the runtime-expanded "${badUrl}" we passed as STDB_SERVER — so the non-zero exit may have come from something unrelated (a missing recipe, a mis-negated "command -v spacetime" guard, an unset-variable abort) rather than from rejecting THIS responder, and the tooth would be vacuous. It also fails if the implementation ignores $STDB_SERVER and probes a hardcoded host. stderr was: ${JSON.stringify(badStderr.slice(0, 400))} / full output: ${JSON.stringify(badCombined.slice(0, 400))}`,
+        };
+      }
+    } finally {
+      if (badStub) badStub.kill('SIGKILL');
     }
   }
 
@@ -2361,7 +2561,11 @@ export default async function () {
   //     diagnosed as "reached spacetime" using the partial output spawnSync returns. It
   //     may, however, leave an orphaned preview behind. That only happens against a
   //     deliberately broken justfile, never against a correct one.
-  {
+  //   * SKIPPED when the `spacetime` CLI is absent — see §7.13b. (The fake `spacetime` is
+  //     first on PATH here, but the recipe's own `command -v spacetime` guard would still
+  //     find it, so the skip is about keeping the four behavioural blocks a single coherent
+  //     unit: either the environment can run them all, or none of them.)
+  if (spacetimeCliPresent) {
     const stubDir = mkdtempSync(path.join(tmpdir(), 'mr-ux3-callsite-'));
     try {
       // `command -v spacetime` finds this, so the preflight takes its CLI-present branch.
@@ -2437,6 +2641,13 @@ export default async function () {
   // ==========================================================================
   // ALL CHECKS PASSED
   // ==========================================================================
+
+  // House convention (evals/bindings-drift.eval.mjs:122): when the `spacetime` CLI is not
+  // installed, report pass:true with an explicit "skipped: …" detail naming exactly which
+  // teeth did not run and why — never a silent pass, never a misattributed RED.
+  const behavioralSkipNote = spacetimeCliPresent
+    ? ''
+    : ' SKIPPED (no spacetime CLI on PATH): the four BEHAVIORAL blocks did not run — §7.14 (rejects an unreachable server), §7.15 (accepts a live 200 responder), §7.15b (PREFLIGHT_REJECTS_NON_SPACETIME_HTTP_RESPONDER — rejects an HTTP-500 responder), §7.16 (playtest-up/-wipe abort before invoking spacetime). They execute the recipe, whose first guard is `command -v spacetime`, so without the CLI they would fail on an environment fact and misattribute it to the recipe. Every source-scan assertion above still ran. CI installs the CLI before `just eval` (.github/workflows/ci.yml), so this skip never applies there; install the spacetime CLI locally to run them.';
 
   return {
     name,
