@@ -84,7 +84,7 @@ tweak silently weakens. The recipe self-defaults `STDB_SERVER` in the identical
 does not die on `set -u` and parent and child can never resolve different hosts.
 
 **5. Gate behaviorally, not only structurally.** A red-team pass built the proposed
-source-scan battery and ran 11 functionally-broken implementations through it: **9
+source-scan battery and ran 19 functionally-broken implementations through it: **9
 survived**, two of them proven to exit 0 against a dead server as real `just` recipes
 (body wrapped in `if false`, a shell function never called, ping's exit captured then
 ignored). No source scan can reach that class. The eval therefore spawns

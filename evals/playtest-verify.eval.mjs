@@ -811,7 +811,7 @@ export default async function () {
       name,
       pass: false,
       detail:
-        "TEETH P7g: timeoutBindsProbe rejected the shipped `if ! PING_OUT=$(timeout 10 spacetime server ping \"$STDB_SERVER\" 2>&1) || ! printf '%s' \"$PING_OUT\" | grep -q 'Server is online'; then` form — the probe IS bounded (timeout heads the command inside the command substitution). Requiring the trimmed line to START WITH a timeout spelling encodes a SYNTAX, not the invariant, and blocks the output-matching fix that ux3-1 needs; the invariant is `timeout <positive-duration>` IMMEDIATELY preceding the probe token",
+        'TEETH P7g: timeoutBindsProbe rejected the shipped `if ! PING_OUT=$(timeout 10 spacetime server ping "$STDB_SERVER" 2>&1) || ! printf \'%s\' "$PING_OUT" | grep -q \'Server is online\'; then` form — the probe IS bounded (timeout heads the command inside the command substitution). Requiring the trimmed line to START WITH a timeout spelling encodes a SYNTAX, not the invariant, and blocks the output-matching fix that ux3-1 needs; the invariant is `timeout <positive-duration>` IMMEDIATELY preceding the probe token',
     };
   }
 
@@ -863,7 +863,11 @@ export default async function () {
   // satisfied on that one line. Only IMMEDIATE ADJACENCY of `timeout <duration>` to the
   // probe token rejects it.
   if (
-    timeoutBindsProbe(JF_TB_TIMEOUT_ELSEWHERE_ON_LINE, 'playtest-preflight', 'spacetime server ping')
+    timeoutBindsProbe(
+      JF_TB_TIMEOUT_ELSEWHERE_ON_LINE,
+      'playtest-preflight',
+      'spacetime server ping',
+    )
   ) {
     return {
       name,
@@ -2674,21 +2678,22 @@ export default async function () {
   return {
     name,
     pass: true,
-    detail: [
-      'All pt-a2 criteria satisfied:',
-      'pure-checker teeth (parseReducerNames throws on empty/bad/zero, real 2.6.0 shape parses; findForbiddenReducers exact-name-only; findDevHooks binding-form-only with anti-FP for dead literals + __mrBuild stamp);',
-      'justfile: all 6 playtest-* recipes present (5 from pt-a2 + playtest-preflight from ux3) with set -euo pipefail, isolated DB + case-insensitive guard, honest publish (no dev_reducers/--bin-path anywhere), exact-step verify invocations, playtest-up has preview+pid+sync_content+build, playtest-wipe has --delete-data+sync_content+verify-release, playtest-down has kill+pid;',
-      'scripts: both verify-*.mjs exist, non-trivial, export correct names, have process.exit(1) fail-loud guards;',
-      'docs: playtest-ops.md has playtest-up/wipe/sync_content/build-stamp/owner-note; ADR-0129 has describe+published.',
-      'ux3 (playtest-preflight) also satisfied:',
-      'recipe exists with an exact "set -euo pipefail" line (A0/A0′); "just playtest-preflight" is an exact line strictly BEFORE the first spacetime build/publish in both playtest-up and playtest-wipe, non-vacuously (A2/ux3-3);',
-      'preflight body has spacetime server ping + overridable STDB_SERVER + timeout + "command -v spacetime" AND "command -v timeout" dependency guards (a missing GNU timeout returns 127, which "if !" inverts into a confident "no SpacetimeDB responding" against a HEALTHY server — the misdiagnosis ADR-0153 rejected the curl design for, and unreachable by every behavioural tooth since CI has coreutils) + "spacetime start" remediation + exit 1 + >&2, no "|| true" (A5/A5f), the timeout co-occurs with the ping on a SINGLE line (A5g), and `timeout <positive-duration>` IMMEDIATELY precedes the probe token so "timeout 0"/dead doc-strings/unbounded real calls/a timeout bounding some OTHER command on the same line are all rejected while the shipped `if ! PING_OUT=$(timeout 10 spacetime server ping …)` capture form is accepted (A5h);',
-      'the body also matches the "Server is online" success text, so the check cannot revert to exit-code-only (ux3-1);',
-      'docs/playtest-ops.md documents "just playtest-preflight" (A6, ux3-2); ADR-0153 records the "spacetime server ping" + nickname rationale;',
-      'the BEHAVIORAL NEGATIVE tooth proves the recipe exits non-zero against an unreachable STDB_SERVER=http://127.0.0.1:1 with actionable "spacetime start" text AND the runtime-EXPANDED URL on STDERR specifically — so neither just\'s echo of a non-shebang source line nor a stdout-only diagnosis can fake it (A7);',
-      'the BEHAVIORAL POSITIVE CONTROL proves it exits 0 against a live local HTTP stub, which is what stops "the preflight always fails" from being a passing implementation (A8);',
-      'PREFLIGHT_REJECTS_NON_SPACETIME_HTTP_RESPONDER (§7.15b) proves it exits non-zero — naming the runtime-expanded ephemeral URL on stderr, so the rejection is provably about THAT target — against a throwaway node server that answers HTTP 500: measured on CLI 2.6.0, "spacetime server ping" exits 0 for ANY completed HTTP round-trip (500 stub, trailing slash and "/v1" path suffix all exit 0) while "spacetime publish -s" fails for all of them, so only matching the "Server is online" body proves the preflight verifies a SpacetimeDB rather than merely that something answers HTTP;',
-      'and the CALL-SITE tooth (PLAYTEST_UP_ABORTS_BEFORE_BUILD_WHEN_SERVER_DEAD, A9) runs playtest-up and playtest-wipe end-to-end with a fake "spacetime" first on PATH and proves they exit non-zero WITHOUT ever invoking it — the only assertion that gates whether the CALLERS honor the preflight rather than merely containing the line (kills "set +e" above the call, a "just() { :; }" shadow, and the call parked in a dead if-branch, none of which a source scan can reach).',
-    ].join(' ') + behavioralSkipNote,
+    detail:
+      [
+        'All pt-a2 criteria satisfied:',
+        'pure-checker teeth (parseReducerNames throws on empty/bad/zero, real 2.6.0 shape parses; findForbiddenReducers exact-name-only; findDevHooks binding-form-only with anti-FP for dead literals + __mrBuild stamp);',
+        'justfile: all 6 playtest-* recipes present (5 from pt-a2 + playtest-preflight from ux3) with set -euo pipefail, isolated DB + case-insensitive guard, honest publish (no dev_reducers/--bin-path anywhere), exact-step verify invocations, playtest-up has preview+pid+sync_content+build, playtest-wipe has --delete-data+sync_content+verify-release, playtest-down has kill+pid;',
+        'scripts: both verify-*.mjs exist, non-trivial, export correct names, have process.exit(1) fail-loud guards;',
+        'docs: playtest-ops.md has playtest-up/wipe/sync_content/build-stamp/owner-note; ADR-0129 has describe+published.',
+        'ux3 (playtest-preflight) also satisfied:',
+        'recipe exists with an exact "set -euo pipefail" line (A0/A0′); "just playtest-preflight" is an exact line strictly BEFORE the first spacetime build/publish in both playtest-up and playtest-wipe, non-vacuously (A2/ux3-3);',
+        'preflight body has spacetime server ping + overridable STDB_SERVER + timeout + "command -v spacetime" AND "command -v timeout" dependency guards (a missing GNU timeout returns 127, which "if !" inverts into a confident "no SpacetimeDB responding" against a HEALTHY server — the misdiagnosis ADR-0153 rejected the curl design for, and unreachable by every behavioural tooth since CI has coreutils) + "spacetime start" remediation + exit 1 + >&2, no "|| true" (A5/A5f), the timeout co-occurs with the ping on a SINGLE line (A5g), and `timeout <positive-duration>` IMMEDIATELY precedes the probe token so "timeout 0"/dead doc-strings/unbounded real calls/a timeout bounding some OTHER command on the same line are all rejected while the shipped `if ! PING_OUT=$(timeout 10 spacetime server ping …)` capture form is accepted (A5h);',
+        'the body also matches the "Server is online" success text, so the check cannot revert to exit-code-only (ux3-1);',
+        'docs/playtest-ops.md documents "just playtest-preflight" (A6, ux3-2); ADR-0153 records the "spacetime server ping" + nickname rationale;',
+        'the BEHAVIORAL NEGATIVE tooth proves the recipe exits non-zero against an unreachable STDB_SERVER=http://127.0.0.1:1 with actionable "spacetime start" text AND the runtime-EXPANDED URL on STDERR specifically — so neither just\'s echo of a non-shebang source line nor a stdout-only diagnosis can fake it (A7);',
+        'the BEHAVIORAL POSITIVE CONTROL proves it exits 0 against a live local HTTP stub, which is what stops "the preflight always fails" from being a passing implementation (A8);',
+        'PREFLIGHT_REJECTS_NON_SPACETIME_HTTP_RESPONDER (§7.15b) proves it exits non-zero — naming the runtime-expanded ephemeral URL on stderr, so the rejection is provably about THAT target — against a throwaway node server that answers HTTP 500: measured on CLI 2.6.0, "spacetime server ping" exits 0 for ANY completed HTTP round-trip (500 stub, trailing slash and "/v1" path suffix all exit 0) while "spacetime publish -s" fails for all of them, so only matching the "Server is online" body proves the preflight verifies a SpacetimeDB rather than merely that something answers HTTP;',
+        'and the CALL-SITE tooth (PLAYTEST_UP_ABORTS_BEFORE_BUILD_WHEN_SERVER_DEAD, A9) runs playtest-up and playtest-wipe end-to-end with a fake "spacetime" first on PATH and proves they exit non-zero WITHOUT ever invoking it — the only assertion that gates whether the CALLERS honor the preflight rather than merely containing the line (kills "set +e" above the call, a "just() { :; }" shadow, and the call parked in a dead if-branch, none of which a source scan can reach).',
+      ].join(' ') + behavioralSkipNote,
   };
 }
