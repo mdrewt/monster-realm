@@ -19,7 +19,15 @@
 //
 // Starts RED: scripts/verify-release-reducers.mjs, scripts/verify-build-hooks.mjs,
 // justfile playtest-* recipes, and docs/playtest-ops.md do not yet exist.
+//
+// EXTENDED BY ux3 (playtest-preflight fail-fast SpacetimeDB reachability check):
+//   - §1 teeth P5a–P5e (recipeStepOrderOk) and P6a–P6b (recipeHasLineWithAll).
+//   - §7.1/§7.2 now cover the playtest-preflight recipe (and §7.2 upgraded to exact-line).
+//   - §7.12 order gate (ux3-3), §7.13 preflight body integrity, §7.10 runbook mention.
+//   - §7.14 BEHAVIORAL tooth: actually runs `just playtest-preflight` against an
+//     unreachable loopback port. Offline, deterministic, ~14 ms.
 
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -110,6 +118,59 @@ function recipeBodyHasCaseInsensitiveGuard(justfile, recipeName) {
 }
 
 // ---------------------------------------------------------------------------
+// ux3 (playtest-preflight) predicates
+// ---------------------------------------------------------------------------
+
+// Recipe body with BOTH full-line and trailing `#` comments stripped. extractRecipeBody
+// drops only full-line comments, so a trailing ` # …` can otherwise satisfy a needle from
+// inside a comment. Extract FIRST, then strip: stripping first turns column-0 comment
+// lines into blanks, and extractRecipeBody's loop continues across blanks, which would
+// let one recipe's body bleed into the next.
+function strippedRecipeBody(justfile, recipeName) {
+  return stripJustfileComments(extractRecipeBody(justfile, recipeName));
+}
+
+// ux3-3 order gate. `earlierLine` must appear as an EXACT trimmed line (so a `|| true`
+// suffix cannot satisfy it) at a strictly smaller line index than the first line
+// containing ANY of `laterNeedles`.
+// Returns false if EITHER anchor is absent: a recipe that no longer calls spacetime must
+// NOT vacuously pass "the preflight comes first" — the gate's premise has evaporated and
+// a human must re-decide (same discipline as parseReducerNames throwing on zero reducers).
+// MAINTAINER CAVEAT: this is a line scan. Any prose mentioning `spacetime build` or
+// `spacetime publish` inside these recipe bodies shifts the later anchor and can
+// false-RED a correct implementation.
+function recipeStepOrderOk(justfile, recipeName, earlierLine, laterNeedles) {
+  const lines = strippedRecipeBody(justfile, recipeName).split('\n');
+  let earlierIdx = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].trim() === earlierLine) {
+      earlierIdx = i;
+      break;
+    }
+  }
+  let laterIdx = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (laterNeedles.some((needle) => lines[i].includes(needle))) {
+      laterIdx = i;
+      break;
+    }
+  }
+  // Non-vacuity: both anchors must exist. Missing preflight => false (the point of the
+  // gate). Missing spacetime step => ALSO false, so a gutted recipe cannot read green.
+  if (earlierIdx === -1 || laterIdx === -1) return false;
+  return earlierIdx < laterIdx;
+}
+
+// A SINGLE line must carry ALL of `tokens` — kills a body that scatters the needles
+// across unrelated lines (e.g. a bounding `timeout` parked in an unused variable while
+// the real call runs unbounded).
+function recipeHasLineWithAll(justfile, recipeName, tokens) {
+  return strippedRecipeBody(justfile, recipeName)
+    .split('\n')
+    .some((line) => tokens.every((token) => line.includes(token)));
+}
+
+// ---------------------------------------------------------------------------
 // Proof-of-teeth for the inline predicates above
 // ---------------------------------------------------------------------------
 
@@ -128,6 +189,29 @@ const JF_EXACT_LINE_OR_TRUE = `playtest-verify-release:\n    #!/usr/bin/env bash
 // --- recipeBodyHasCaseInsensitiveGuard ---
 const JF_CASE_SENSITIVE_GUARD = `playtest-up:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    if [ "$MR_PLAYTEST_DB" = "monster-realm" ]; then echo "BAD" >&2; exit 1; fi\n`;
 const JF_CASE_INSENSITIVE_GUARD = `playtest-up:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    if [ "\${MR_PLAYTEST_DB,,}" = "monster-realm" ]; then echo "BAD" >&2; exit 1; fi\n`;
+
+// --- recipeStepOrderOk fixtures (ux3-3) ---
+// GOOD: preflight is an exact trimmed line, strictly before the first spacetime step.
+const JF_ORDER_GOOD = `playtest-up:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    just playtest-preflight\n    spacetime build --project-path server-module\n`;
+// BAD: the preflight runs AFTER the build — the whole point of ux3-3 is that a dev who
+// forgot to start SpacetimeDB gets a one-line diagnosis BEFORE a multi-minute wasm build.
+const JF_ORDER_AFTER = `playtest-up:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    spacetime build --project-path server-module\n    just playtest-preflight\n`;
+// BAD: preflight exists ONLY as comments — one column-0-style full-line comment (which
+// extractRecipeBody drops) AND one trailing ` # …` comment (which only stripJustfileComments
+// drops). Subsumes the "preflight entirely absent" case.
+const JF_ORDER_COMMENT_ONLY = `playtest-up:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    # just playtest-preflight\n    echo ok  # just playtest-preflight\n    spacetime build --project-path server-module\n`;
+// BAD (marquee non-vacuity fixture): the preflight is wired, but the recipe no longer
+// calls spacetime at all — the ordering premise has evaporated and must NOT read green.
+const JF_ORDER_NO_SPACETIME = `playtest-up:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    just playtest-preflight\n    echo "module deployment is handled elsewhere now"\n`;
+// BAD: `|| true` suffix defuses the guard's exit code — mirrors existing tooth P3a (L-2).
+const JF_ORDER_OR_TRUE = `playtest-up:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    just playtest-preflight || true\n    spacetime build --project-path server-module\n`;
+
+// --- recipeHasLineWithAll fixtures (ux3 timeout-binds-the-ping) ---
+// GOOD: timeout, the ping and the server var are all on the SAME line.
+const JF_LINE_ALL_ONE = `playtest-preflight:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    if ! timeout 10 spacetime server ping "$STDB_SERVER" >/dev/null 2>&1; then\n        exit 1\n    fi\n`;
+// BAD: the bound is parked in an unused variable while the real ping runs unbounded —
+// every needle is present somewhere in the body, but the call itself can hang forever.
+const JF_LINE_SCATTERED = `playtest-preflight:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    TIMEOUT="timeout 10"\n    spacetime server ping "$STDB_SERVER" >/dev/null 2>&1\n`;
 
 // ---------------------------------------------------------------------------
 // Local implementations of the pure checker signatures
@@ -302,6 +386,133 @@ export default async function () {
       pass: false,
       detail:
         'TEETH P4b: recipeBodyHasCaseInsensitiveGuard rejected a recipe body that correctly uses ${MR_PLAYTEST_DB,,} — false negative in predicate',
+    };
+  }
+
+  // --- Tooth P5a: recipeStepOrderOk GOOD — preflight before the first spacetime step ---
+  if (
+    !recipeStepOrderOk(JF_ORDER_GOOD, 'playtest-up', 'just playtest-preflight', [
+      'spacetime build',
+      'spacetime publish',
+    ])
+  ) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH P5a: recipeStepOrderOk returned false for a body where "just playtest-preflight" is an exact line strictly above "spacetime build" — false negative; the predicate would then be unable to certify a CORRECT implementation and the ux3-3 gate could never go green',
+    };
+  }
+
+  // --- Tooth P5b: recipeStepOrderOk BAD — preflight AFTER the build must be rejected ---
+  // Kills: an impl that merely asks "is the preflight present somewhere?" (bare-presence
+  // needles are not gates — nh2). ux3-3's whole value is failing fast BEFORE the
+  // multi-minute wasm build, so a preflight placed after `spacetime build` is worthless.
+  if (
+    recipeStepOrderOk(JF_ORDER_AFTER, 'playtest-up', 'just playtest-preflight', [
+      'spacetime build',
+      'spacetime publish',
+    ])
+  ) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH P5b: recipeStepOrderOk accepted a body where "just playtest-preflight" comes AFTER "spacetime build" — the ordering gate must be a strict line-index comparison, not a presence check; a late preflight still costs the dev the whole build before diagnosing the missing server',
+    };
+  }
+
+  // --- Tooth P5c: recipeStepOrderOk BAD — preflight present only as COMMENTS ---
+  // Kills: an impl that scans raw recipe text. Two comment forms are exercised at once —
+  // a full-line `# just playtest-preflight` (dropped by extractRecipeBody) and a trailing
+  // `echo ok  # just playtest-preflight` (dropped only by stripJustfileComments). This
+  // fixture also subsumes the "preflight entirely absent" case.
+  if (
+    recipeStepOrderOk(JF_ORDER_COMMENT_ONLY, 'playtest-up', 'just playtest-preflight', [
+      'spacetime build',
+      'spacetime publish',
+    ])
+  ) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH P5c: recipeStepOrderOk accepted a body where "just playtest-preflight" appears ONLY inside comments (one full-line `#` comment and one trailing ` # ` comment) — commented-out wiring executes nothing; BOTH comment forms must be stripped before the order scan, otherwise a disabled preflight reads as green',
+    };
+  }
+
+  // --- Tooth P5d: recipeStepOrderOk BAD — no spacetime step at all (NON-VACUITY) ---
+  // THE marquee tooth. Kills: an impl that returns `earlierIdx !== -1 && (laterIdx === -1
+  // || earlierIdx < laterIdx)`, i.e. "vacuously true when there is nothing to come
+  // before". If a refactor removes `spacetime build`/`publish` from playtest-up, the
+  // gate's premise has evaporated and a human must re-decide — scanning nothing must
+  // not read as green (same discipline as parseReducerNames throwing on zero reducers).
+  if (
+    recipeStepOrderOk(JF_ORDER_NO_SPACETIME, 'playtest-up', 'just playtest-preflight', [
+      'spacetime build',
+      'spacetime publish',
+    ])
+  ) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH P5d (non-vacuity): recipeStepOrderOk accepted a body that has the preflight but NO "spacetime build"/"spacetime publish" anchor at all — with the later anchor missing the ordering claim is unverifiable, so the predicate must return false rather than pass vacuously',
+    };
+  }
+
+  // --- Tooth P5e: recipeStepOrderOk BAD — `just playtest-preflight || true` ---
+  // Kills: an impl using includes()/indexOf() for the earlier anchor instead of an exact
+  // trimmed-line match. `|| true` swallows the preflight's exit 1, so the recipe would
+  // sail on into the build against a dead server. Mirrors existing tooth P3a (reviewer L-2).
+  if (
+    recipeStepOrderOk(JF_ORDER_OR_TRUE, 'playtest-up', 'just playtest-preflight', [
+      'spacetime build',
+      'spacetime publish',
+    ])
+  ) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH P5e: recipeStepOrderOk accepted "just playtest-preflight || true" as the ordering anchor — reviewer L-2 discipline: a "|| true" suffix defuses the guard\'s non-zero exit, so only an EXACT trimmed line may satisfy the earlier anchor',
+    };
+  }
+
+  // --- Tooth P6a: recipeHasLineWithAll GOOD — all tokens on one line ---
+  if (
+    recipeHasLineWithAll(JF_LINE_ALL_ONE, 'playtest-preflight', [
+      'timeout ',
+      'spacetime server ping',
+      '"$STDB_SERVER"',
+    ]) !== true
+  ) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH P6a: recipeHasLineWithAll returned false for a body whose single `if ! timeout 10 spacetime server ping "$STDB_SERVER"` line carries all three tokens — false negative; the predicate could then never certify a correct preflight',
+    };
+  }
+
+  // --- Tooth P6b: recipeHasLineWithAll BAD — tokens scattered across lines ---
+  // Kills: an impl that ANDs body-wide includes() calls. In the scattered fixture the
+  // bound lives in an unused `TIMEOUT="timeout 10"` variable while the real
+  // `spacetime server ping "$STDB_SERVER"` runs unbounded — a hung TCP connect to an
+  // unreachable host would then block `just playtest-up` forever, which is precisely the
+  // hang ux3 exists to prevent.
+  if (
+    recipeHasLineWithAll(JF_LINE_SCATTERED, 'playtest-preflight', [
+      'timeout ',
+      'spacetime server ping',
+      '"$STDB_SERVER"',
+    ])
+  ) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH P6b: recipeHasLineWithAll accepted a body where "timeout " sits in an unused TIMEOUT variable on one line and the real `spacetime server ping "$STDB_SERVER"` runs unbounded on another — all tokens must co-occur on a SINGLE line or the timeout does not actually bind the ping',
     };
   }
 
@@ -1031,7 +1242,7 @@ export default async function () {
     return { name, pass: false, detail: 'cannot read justfile' };
   }
 
-  // ---- 7.1: Recipe existence (5 new recipes) ----
+  // ---- 7.1: Recipe existence (5 pt-a2 recipes + playtest-preflight from ux3) ----
 
   const requiredRecipes = [
     'playtest-up',
@@ -1039,25 +1250,32 @@ export default async function () {
     'playtest-verify-release',
     'playtest-verify-build',
     'playtest-wipe',
+    // ux3-1: the fail-fast SpacetimeDB reachability preflight.
+    'playtest-preflight',
   ];
   for (const recipe of requiredRecipes) {
     if (!justfileHasRecipe(justfile, recipe)) {
       return {
         name,
         pass: false,
-        detail: `justfile missing recipe "${recipe}" — implementer must add it (pt-a2-1/-2/-3/-4/-5)`,
+        detail: `justfile missing recipe "${recipe}" — implementer must add it (pt-a2-1/-2/-3/-4/-5; "playtest-preflight" is ux3-1)`,
       };
     }
   }
 
   // ---- 7.2: set -euo pipefail in every new bash recipe (reviewer M-1) ----
+  // ux3 A0′: upgraded from recipeBodyContains to recipeBodyHasExactLine. Verified safe —
+  // every existing playtest-* recipe already carries it as an exact trimmed line. The
+  // substring form was satisfiable by e.g. `echo "set -euo pipefail"`, which sets no
+  // shell option at all; a preflight without `set -e` would not propagate the ping's
+  // failure and would exit 0 on an unreachable server.
 
   for (const recipe of requiredRecipes) {
-    if (!recipeBodyContains(justfile, recipe, 'set -euo pipefail')) {
+    if (!recipeBodyHasExactLine(justfile, recipe, 'set -euo pipefail')) {
       return {
         name,
         pass: false,
-        detail: `recipe "${recipe}" body is missing "set -euo pipefail" — reviewer M-1: every new bash-shebang recipe must have it`,
+        detail: `recipe "${recipe}" body does not have "set -euo pipefail" as an EXACT trimmed line — reviewer M-1 + ux3 A0′: every bash-shebang recipe must actually set the options; a mere substring (e.g. inside an echo) sets nothing and would let a failing step be ignored`,
       };
     }
   }
@@ -1370,6 +1588,20 @@ export default async function () {
     };
   }
 
+  // ux3 A6: must document the preflight recipe by name.
+  // NOTE ON NEEDLE CHOICE: `spacetime start` was DELIBERATELY rejected as the needle —
+  // docs/playtest-ops.md ALREADY contains that literal (≈line 131, landed by nh4/ADR-0150),
+  // so asserting on it would be a vacuously-green tooth that passes before the implementer
+  // writes a single word. `just playtest-preflight` is absent today, so this tooth bites.
+  if (!playtestOps.includes('just playtest-preflight')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'docs/playtest-ops.md does not mention "just playtest-preflight" — ux3: the runbook must document the standalone reachability check so a dev hitting a dead server can run it directly instead of re-reading a failed playtest-up log',
+    };
+  }
+
   // Must mention sync_content.
   if (!playtestOps.includes('sync_content')) {
     return {
@@ -1427,6 +1659,146 @@ export default async function () {
     };
   }
 
+  // ---- 7.12: ux3-3 — preflight runs BEFORE the first spacetime step ----
+  // The value of ux3 is diagnosis in ~10 ms instead of after a multi-minute wasm build
+  // (or, worse, a hung publish). Presence alone is not the criterion; ORDER is.
+
+  for (const recipe of ['playtest-up', 'playtest-wipe']) {
+    if (
+      !recipeStepOrderOk(justfile, recipe, 'just playtest-preflight', [
+        'spacetime build',
+        'spacetime publish',
+      ])
+    ) {
+      return {
+        name,
+        pass: false,
+        detail: `recipe "${recipe}" does not have the exact line "just playtest-preflight" strictly BEFORE its first "spacetime build"/"spacetime publish" step — ux3-3: the reachability check must fail fast (~10 ms) instead of after a multi-minute wasm build; note this also fails if the preflight is only commented out, is suffixed with "|| true", or if the recipe no longer contains any spacetime step at all (non-vacuity: the ordering premise must still exist)`,
+      };
+    }
+  }
+
+  // ---- 7.13: playtest-preflight body integrity (ux3-1 / ux3-2) ----
+
+  const preflightBody = strippedRecipeBody(justfile, 'playtest-preflight');
+
+  // A5: every load-bearing element of the check + the actionable error message.
+  const preflightNeedles = [
+    // the probe itself — a reachability check, not a publish
+    'spacetime server ping',
+    // the target must be overridable, not hardcoded to 127.0.0.1:3000
+    '$STDB_SERVER',
+    // the probe must be bounded — an unreachable HOST (vs a refused port) hangs on connect
+    'timeout ',
+    // the message must tell the dev what to DO, not just that something failed
+    'spacetime start',
+    // it must actually fail the recipe, not merely warn
+    'exit 1',
+    // diagnostics belong on stderr so they survive a `| tee`/pipe of stdout
+    '>&2',
+  ];
+  for (const needle of preflightNeedles) {
+    if (!preflightBody.includes(needle)) {
+      return {
+        name,
+        pass: false,
+        detail: `recipe "playtest-preflight" body (comments stripped) is missing "${needle}" — ux3-1/-2: the preflight must bound a "spacetime server ping" against the overridable $STDB_SERVER and, on failure, print an actionable message on stderr (naming "spacetime start") and exit 1; without every one of these the check is either unbounded, hardcoded, silent, or non-fatal`,
+      };
+    }
+  }
+
+  // A5f: the ping must not be defused.
+  if (preflightBody.includes('|| true')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'recipe "playtest-preflight" body contains "|| true" — that swallows the ping\'s non-zero exit, making the preflight a no-op that always reports success; the recipe must fail (exit 1) when no SpacetimeDB answers',
+    };
+  }
+
+  // A5g: the timeout must actually BIND the ping (same line), not sit in a spare variable.
+  if (
+    !recipeHasLineWithAll(justfile, 'playtest-preflight', [
+      'timeout ',
+      'spacetime server ping',
+      '"$STDB_SERVER"',
+    ])
+  ) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'recipe "playtest-preflight" has no SINGLE line carrying all of [timeout ], [spacetime server ping] and [the quoted "$STDB_SERVER"] — the bound must wrap the actual probe; a "timeout" mentioned on some other line (e.g. parked in an unused variable) leaves the ping unbounded, and a TCP connect to an unreachable host can hang for minutes — exactly the stall ux3 exists to remove',
+    };
+  }
+
+  // ---- 7.14: BEHAVIORAL TOOTH — actually RUN the preflight against a dead server ----
+  //
+  // A source scan cannot reach the mutants this kills: a recipe that greps correctly but
+  // exits 0, a `spacetime server ping` invoked with the wrong argument order, a message
+  // written to a file instead of the terminal, a `set +e` slipped in later, etc.
+  //
+  // WHY THIS IS OFFLINE / DETERMINISTIC / CI-SAFE:
+  //   * STDB_SERVER=http://127.0.0.1:1 — port 1 on loopback. No DNS lookup happens
+  //     (127.0.0.1 is a literal address), and nothing binds port 1, so the kernel returns
+  //     ECONNREFUSED on the first SYN. The probe resolves in ~14 ms with zero network I/O.
+  //   * The 30 s spawn timeout is a belt-and-suspenders backstop only; the recipe's own
+  //     `timeout 10` fires long before it.
+  //   * .github/workflows/ci.yml installs `just` and the pinned spacetime CLI before
+  //     `- run: just eval`, so both binaries are on PATH here.
+  //
+  // THREE assertions, because status alone is NOT enough: `just` exits 1 for a MISSING
+  // recipe too, so a deleted playtest-preflight would otherwise read as a passing tooth.
+  {
+    const result = spawnSync('just', ['playtest-preflight'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, STDB_SERVER: 'http://127.0.0.1:1' },
+      timeout: 30000,
+    });
+
+    // Fail loud if the process could not be spawned at all (e.g. `just` not on PATH, or
+    // the 30 s backstop fired). Running nothing must not read as green.
+    if (result.error) {
+      return {
+        name,
+        pass: false,
+        detail: `BEHAVIORAL: could not run "just playtest-preflight" (${result.error.message}) — the behavioral tooth could not execute, so the preflight is UNVERIFIED; this must not read as green. If "just" is missing from PATH, fix the environment (CI installs it before "just eval"); if this is a timeout, the preflight is hanging, which is itself the ux3 bug`,
+      };
+    }
+
+    const combined = `${result.stderr ?? ''}${result.stdout ?? ''}`;
+
+    // (1) The preflight must REJECT an unreachable server.
+    if (result.status === 0) {
+      return {
+        name,
+        pass: false,
+        detail: `BEHAVIORAL: "just playtest-preflight" exited 0 with STDB_SERVER=http://127.0.0.1:1 (a loopback port nothing can be listening on) — ux3-2: the preflight must exit non-zero when no SpacetimeDB answers, otherwise playtest-up proceeds into a multi-minute build that is doomed to fail at publish. Output was: ${JSON.stringify(combined.slice(0, 400))}`,
+      };
+    }
+
+    // (2) ANTI-VACUITY: a missing/renamed recipe ALSO exits non-zero. Require the
+    //     actionable remediation text, which only the real implementation prints.
+    if (!combined.includes('spacetime start')) {
+      return {
+        name,
+        pass: false,
+        detail: `BEHAVIORAL: "just playtest-preflight" exited non-zero but its output never mentions "spacetime start" — either the recipe is missing/renamed (just itself exits 1, which would make assertion (1) vacuously green) or the failure message is not actionable. ux3-2 requires telling the dev exactly how to recover. Output was: ${JSON.stringify(combined.slice(0, 400))}`,
+      };
+    }
+
+    // (3) Same guard, stated explicitly against just's own "unknown recipe" diagnostic.
+    if (combined.includes('does not contain recipe')) {
+      return {
+        name,
+        pass: false,
+        detail: `BEHAVIORAL: "just playtest-preflight" failed with just's own "does not contain recipe" error — the recipe does not exist, so the non-zero exit proves nothing about the reachability check. Output was: ${JSON.stringify(combined.slice(0, 400))}`,
+      };
+    }
+  }
+
   // ==========================================================================
   // ALL CHECKS PASSED
   // ==========================================================================
@@ -1440,6 +1812,11 @@ export default async function () {
       'justfile: 5 recipes present with set -euo pipefail, isolated DB + case-insensitive guard, honest publish (no dev_reducers/--bin-path anywhere), exact-step verify invocations, playtest-up has preview+pid+sync_content+build, playtest-wipe has --delete-data+sync_content+verify-release, playtest-down has kill+pid;',
       'scripts: both verify-*.mjs exist, non-trivial, export correct names, have process.exit(1) fail-loud guards;',
       'docs: playtest-ops.md has playtest-up/wipe/sync_content/build-stamp/owner-note; ADR-0129 has describe+published.',
+      'ux3 (playtest-preflight) also satisfied:',
+      'recipe exists with an exact "set -euo pipefail" line (A0/A0′); "just playtest-preflight" is an exact line strictly BEFORE the first spacetime build/publish in both playtest-up and playtest-wipe, non-vacuously (A2/ux3-3);',
+      'preflight body has spacetime server ping + $STDB_SERVER + timeout + "spacetime start" remediation + exit 1 + >&2, no "|| true" (A5/A5f), and the timeout binds the ping on a SINGLE line (A5g);',
+      'docs/playtest-ops.md documents "just playtest-preflight" (A6);',
+      'and the BEHAVIORAL tooth proves the recipe actually exits non-zero with actionable "spacetime start" output against an unreachable STDB_SERVER=http://127.0.0.1:1 (A7).',
     ].join(' '),
   };
 }
