@@ -21,10 +21,14 @@
 // justfile playtest-* recipes, and docs/playtest-ops.md do not yet exist.
 //
 // EXTENDED BY ux3 (playtest-preflight fail-fast SpacetimeDB reachability check):
-//   - §1 teeth P5a–P5e (recipeStepOrderOk), P6a–P6b (recipeHasLineWithAll) and
-//     P7a–P7h (timeoutBindsProbe).
+//   - §1 teeth P5a–P5e (recipeStepOrderOk), P6a–P6b (recipeHasLineWithAll),
+//     P7a–P7h (timeoutBindsProbe) and P8a–P8e (hasFencedCommandLine).
 //   - §7.1/§7.2 now cover the playtest-preflight recipe (and §7.2 upgraded to exact-line).
-//   - §7.12 order gate (ux3-3), §7.13 preflight body integrity, §7.10 runbook mention.
+//   - §7.12 order gate (ux3-3), §7.13 preflight body integrity, §7.10 runbook.
+//     §7.10 gates ux3-2 DIRECTLY (a fenced `spacetime start` step must exist as a
+//     standalone line in a code block) as well as naming `just playtest-preflight`;
+//     the preflight needle alone was a PROXY — a red-team pass deleted the runnable
+//     step and the eval stayed green.
 //   - §7.11b ADR-0153 rationale gate.
 //   - §7.14 BEHAVIORAL NEGATIVE tooth: runs `just playtest-preflight` against an
 //     unreachable loopback port and asserts a non-zero exit with an actionable
@@ -311,6 +315,49 @@ function timeoutBindsProbe(justfile, recipeName, probeNeedle) {
 }
 
 // ---------------------------------------------------------------------------
+// ux3-2 — the runbook must gain a RUNNABLE `spacetime start` step, not a mention.
+//
+// ux3-2 reads: "docs/playtest-ops.md SHALL gain a one-line `spacetime start` step."
+// The deliverable is a COPY-PASTEABLE COMMAND, so the tooth must pin a fenced code block —
+// prose that merely says the words is not a step.
+//
+// WHY NOT A BARE `includes('spacetime start')` NEEDLE: the pre-ux3 file ALREADY contained
+// that literal (nh4/ADR-0150 prose about a reset data dir), so the needle was green before
+// the implementer wrote a word. That reasoning still holds and must not be reverted.
+//
+// WHY NOT A COUNT-FLOOR OF 2 EITHER (measured, do not re-propose): the CURRENT file has
+// THREE occurrences — the new fenced step, a NEW blockquote line ("the fault it guards —
+// 'I forgot to run `spacetime start`'", added by ux3 itself), and the original nh4 prose.
+// Deleting the fenced step therefore leaves TWO, so a floor of 2 does not bite. Any floor
+// is hostage to how much prose happens to mention the command; a structural assertion is
+// not. Hence: fence-aware, standalone-line-only.
+//
+// SHAPE PINNED (indentation-agnostic, so a list-nested block still passes):
+//   ```sh
+//   spacetime start
+//   ```
+// Fence tracking toggles on any line whose trim starts with ``` — the fence's info string
+// (```sh / ```bash / ```console) is deliberately NOT constrained, since that is styling.
+// ---------------------------------------------------------------------------
+function hasFencedCommandLine(markdown, command) {
+  // Non-vacuity: an empty command would match a blank line inside any fence and certify
+  // the doc while scanning for nothing. Scanning nothing is never green in this file.
+  if (typeof command !== 'string' || command.trim().length === 0) return false;
+  let inFence = false;
+  for (const raw of markdown.split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith('```')) {
+      inFence = !inFence;
+      continue;
+    }
+    // STANDALONE line only. `includes` here would re-admit prose smuggled into a fence
+    // (e.g. `echo "run spacetime start first"`), which is not a runnable step either.
+    if (inFence && line === command) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Proof-of-teeth for the inline predicates above
 // ---------------------------------------------------------------------------
 
@@ -376,6 +423,50 @@ const JF_TB_ZERO = `playtest-preflight:\n    #!/usr/bin/env bash\n    set -euo p
 const JF_TB_DOCSTRING = `playtest-preflight:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    PROBE_DOC='timeout 10 spacetime server ping "$STDB_SERVER"'\n    if ! spacetime server ping "$STDB_SERVER" >/dev/null 2>&1; then\n        exit 1\n    fi\n`;
 // BAD (non-vacuity): no probe line at all — "the probe is bounded" is unverifiable.
 const JF_TB_NO_PROBE = `playtest-preflight:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    timeout 10 echo ok\n`;
+// --- hasFencedCommandLine fixtures (ux3-2 runnable-step gate) ---
+// GOOD: the shipped shape — a ```sh fence nested under a list item (hence the 2-space
+// indent), whose sole content is the command. Indentation must not matter.
+const MD_FENCED_STEP_GOOD = [
+  '- A **local SpacetimeDB instance** running. If you have not started one yet, run:',
+  '',
+  '  ```sh',
+  '  spacetime start',
+  '  ```',
+  '',
+  '  `just playtest-up` preflights this for you.',
+].join('\n');
+// BAD (THE BASE-FILE STATE — this is exactly what the verifier's deletion produced):
+// every prose mention survives, including the pre-ux3 nh4/ADR-0150 sentence, but the
+// runnable fenced step is gone. A bare `includes("spacetime start")` needle reads GREEN
+// here; so does a count-floor of 2 (there are two mentions). Only fence-awareness bites.
+const MD_PROSE_ONLY_BAD = [
+  '- A **local SpacetimeDB instance** running.',
+  '',
+  '  `just playtest-preflight` fails with a one-line pointer instead of a tcp connect error.',
+  '',
+  '> the fault it guards — "I forgot to run `spacetime start`" — used to surface only after.',
+  '',
+  'If the host itself is reset (a fresh `spacetime start` data dir, a recreated container',
+  'volume), the stored token stops verifying.',
+].join('\n');
+// BAD: the command appears INSIDE a fence but not as a standalone line — it is an argument
+// to an echo, i.e. still prose, still not runnable as a step. Kills an implementation that
+// uses `line.includes(command)` instead of `line === command` inside the fence.
+const MD_FENCED_NOT_STANDALONE_BAD = [
+  '```sh',
+  'echo "if nothing is listening, run spacetime start in another terminal"',
+  '```',
+].join('\n');
+// BAD: standalone line, correct text, but OUTSIDE any fence — a stray paragraph line is
+// not a code step. Kills an implementation that drops the fence tracking entirely.
+const MD_STANDALONE_OUTSIDE_FENCE_BAD = [
+  'Start the server first:',
+  '',
+  'spacetime start',
+  '',
+  'then run `just playtest-up`.',
+].join('\n');
+
 // BAD (M-adj): `timeout 10` IS on the probe line — bounding an unrelated `echo` inside a
 // command substitution — while the real `spacetime server ping` after `&&` runs unbounded.
 // Every co-occurrence needle (A5g) is satisfied on that single line, and the OLD predicate
@@ -887,6 +978,67 @@ export default async function () {
       pass: false,
       detail:
         'TEETH P7f (non-vacuity): timeoutBindsProbe accepted a body containing NO "spacetime server ping" line at all — with no probe present the claim "the probe is bounded" is unverifiable and must return false, not pass vacuously via [].every()',
+    };
+  }
+
+  // --- Tooth P8a: hasFencedCommandLine GOOD — the shipped list-nested ```sh block ---
+  if (!hasFencedCommandLine(MD_FENCED_STEP_GOOD, 'spacetime start')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH P8a: hasFencedCommandLine returned false for a ```sh fence (indented two spaces because it is nested under a list item) whose sole content is "spacetime start" — false negative; the predicate must be indentation-agnostic or it could never certify the runbook\'s actual shape and the ux3-2 gate could never go green',
+    };
+  }
+
+  // --- Tooth P8b: hasFencedCommandLine BAD — prose mentions only (THE ux3-2 BITE) ---
+  // This fixture reproduces EXACTLY what the verifier's red-team deletion produced: the
+  // runnable fenced step removed, every prose mention (including the pre-ux3 nh4/ADR-0150
+  // "a fresh `spacetime start` data dir" sentence) left in place. The §7.10 gate stayed
+  // green through that deletion, which is the gap this tooth closes. Note a count-floor of
+  // 2 ALSO fails to bite here — this fixture has two mentions — which is why the assertion
+  // is structural (fenced + standalone) rather than numeric.
+  if (hasFencedCommandLine(MD_PROSE_ONLY_BAD, 'spacetime start')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH P8b: hasFencedCommandLine accepted a document whose only "spacetime start" occurrences are PROSE (an inline-backtick blockquote and the pre-existing nh4/ADR-0150 "fresh `spacetime start` data dir" sentence) with no fenced step at all — ux3-2 asks for a RUNNABLE one-line step, so a bare includes() needle (green on the pre-ux3 file) and a count-floor (this fixture already has two mentions) both fail to gate it',
+    };
+  }
+
+  // --- Tooth P8c: hasFencedCommandLine BAD — inside a fence but not standalone ---
+  // Kills `inFence && line.includes(command)`: prose smuggled into a code fence as an echo
+  // argument is still not a step a dev can copy and run.
+  if (hasFencedCommandLine(MD_FENCED_NOT_STANDALONE_BAD, 'spacetime start')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH P8c: hasFencedCommandLine accepted a fenced block whose only occurrence is `echo "… run spacetime start in another terminal"` — the command must be a STANDALONE line (line === command), not a substring of some other command, or prose merely relocated into a code fence satisfies ux3-2',
+    };
+  }
+
+  // --- Tooth P8d: hasFencedCommandLine BAD — standalone but OUTSIDE any fence ---
+  // Kills an implementation that drops the fence tracking and just looks for a bare line.
+  if (hasFencedCommandLine(MD_STANDALONE_OUTSIDE_FENCE_BAD, 'spacetime start')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH P8d: hasFencedCommandLine accepted a bare paragraph line "spacetime start" that is not inside any ``` fence — ux3-2 asks for a copy-pasteable code step; without the fence-state tracking the predicate degenerates into a line-level presence check',
+    };
+  }
+
+  // --- Tooth P8e: hasFencedCommandLine BAD — empty command (NON-VACUITY) ---
+  // An empty command would equal the blank lines inside any fence and certify the document
+  // while asserting nothing. Same discipline as P6c and P7f.
+  if (hasFencedCommandLine(MD_FENCED_STEP_GOOD, '')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH P8e (non-vacuity): hasFencedCommandLine returned true for an EMPTY command — a blank line inside a fence would match, so the predicate would certify any fenced document while scanning for nothing; scanning nothing must never read as green',
     };
   }
 
@@ -1976,6 +2128,41 @@ export default async function () {
     };
   }
 
+  // ux3-2 (THE criterion, previously proxy-gated): "docs/playtest-ops.md SHALL gain a
+  // one-line `spacetime start` step."
+  //
+  // THE GAP THIS CLOSES: the needle above pins `just playtest-preflight`, which is ux3's
+  // OTHER doc deliverable. A red-team pass deleted the actual runnable step — the fenced
+  //     ```sh
+  //     spacetime start
+  //     ```
+  // block and its lead-in sentence — while leaving the preflight sentence in place, and
+  // this eval stayed pass:true. So the ux3-2 deliverable could be removed without the gate
+  // biting; the preflight needle was a PROXY for it, not a gate on it.
+  //
+  // WHY NOT A BARE `spacetime start` NEEDLE (do not revert to it): the pre-ux3 file already
+  // contained that literal — nh4/ADR-0150 prose, "a fresh `spacetime start` data dir" —
+  // so it was green before the implementer wrote a word.
+  //
+  // WHY NOT A COUNT-FLOOR OF 2 EITHER (measured on the current file, recorded so a future
+  // maintainer does not re-propose it): `spacetime start` occurs THREE times today — the
+  // fenced step, a blockquote line ux3 itself added ("the fault it guards — 'I forgot to
+  // run `spacetime start`'"), and the original nh4 prose. Deleting the fenced step leaves
+  // TWO, so a floor of 2 would NOT have caught the red-team deletion. A floor is hostage to
+  // how much prose happens to mention the command; the structural form is not.
+  //
+  // WHAT THIS PINS: a fenced code block containing `spacetime start` as a STANDALONE line —
+  // i.e. a step a dev can copy and run, which is what ux3-2 actually promises. Teeth
+  // P8a–P8e. Both needles are kept: they cover different deliverables.
+  if (!hasFencedCommandLine(playtestOps, 'spacetime start')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'docs/playtest-ops.md has no fenced code block containing "spacetime start" as a standalone line — ux3-2 requires a RUNNABLE one-line step, not a mention. Note the file may still contain the words in prose (the pre-ux3 nh4/ADR-0150 sentence about a reset data dir, and ux3\'s own blockquote about the fault the preflight guards); that is exactly why neither a bare includes() needle nor a count-floor gates this criterion, and why the deleted deliverable here is the fenced ```sh block plus its lead-in, not any sentence',
+    };
+  }
+
   // Must mention sync_content.
   if (!playtestOps.includes('sync_content')) {
     return {
@@ -2689,7 +2876,7 @@ export default async function () {
         'recipe exists with an exact "set -euo pipefail" line (A0/A0′); "just playtest-preflight" is an exact line strictly BEFORE the first spacetime build/publish in both playtest-up and playtest-wipe, non-vacuously (A2/ux3-3);',
         'preflight body has spacetime server ping + overridable STDB_SERVER + timeout + "command -v spacetime" AND "command -v timeout" dependency guards (a missing GNU timeout returns 127, which "if !" inverts into a confident "no SpacetimeDB responding" against a HEALTHY server — the misdiagnosis ADR-0153 rejected the curl design for, and unreachable by every behavioural tooth since CI has coreutils) + "spacetime start" remediation + exit 1 + >&2, no "|| true" (A5/A5f), the timeout co-occurs with the ping on a SINGLE line (A5g), and `timeout <positive-duration>` IMMEDIATELY precedes the probe token so "timeout 0"/dead doc-strings/unbounded real calls/a timeout bounding some OTHER command on the same line are all rejected while the shipped `if ! PING_OUT=$(timeout 10 spacetime server ping …)` capture form is accepted (A5h);',
         'the body also matches the "Server is online" success text, so the check cannot revert to exit-code-only (ux3-1);',
-        'docs/playtest-ops.md documents "just playtest-preflight" (A6, ux3-2); ADR-0153 records the "spacetime server ping" + nickname rationale;',
+        'docs/playtest-ops.md documents "just playtest-preflight" (A6) AND — gating ux3-2 directly rather than by proxy — carries a fenced code block whose standalone content is "spacetime start", so the runnable step cannot be deleted while the prose survives (a bare includes() needle was green on the pre-ux3 file, and a count-floor of 2 is defeated because ux3 itself added a second prose mention); ADR-0153 records the "spacetime server ping" + nickname rationale;',
         'the BEHAVIORAL NEGATIVE tooth proves the recipe exits non-zero against an unreachable STDB_SERVER=http://127.0.0.1:1 with actionable "spacetime start" text AND the runtime-EXPANDED URL on STDERR specifically — so neither just\'s echo of a non-shebang source line nor a stdout-only diagnosis can fake it (A7);',
         'the BEHAVIORAL POSITIVE CONTROL proves it exits 0 against a live local HTTP stub, which is what stops "the preflight always fails" from being a passing implementation (A8);',
         'PREFLIGHT_REJECTS_NON_SPACETIME_HTTP_RESPONDER (§7.15b) proves it exits non-zero — naming the runtime-expanded ephemeral URL on stderr, so the rejection is provably about THAT target — against a throwaway node server that answers HTTP 500: measured on CLI 2.6.0, "spacetime server ping" exits 0 for ANY completed HTTP round-trip (500 stub, trailing slash and "/v1" path suffix all exit 0) while "spacetime publish -s" fails for all of them, so only matching the "Server is online" body proves the preflight verifies a SpacetimeDB rather than merely that something answers HTTP;',
