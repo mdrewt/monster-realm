@@ -338,6 +338,13 @@ function timeoutBindsProbe(justfile, recipeName, probeNeedle) {
 //   ```
 // Fence tracking toggles on any line whose trim starts with ``` — the fence's info string
 // (```sh / ```bash / ```console) is deliberately NOT constrained, since that is styling.
+//
+// MAINTAINER CAVEAT: this is a line scan, not a CommonMark parser. Two things would fool
+// it, neither present in this runbook today: (a) a ``` line INSIDE a fenced block (a
+// markdown-about-markdown example), which desynchronises the toggle for the rest of the
+// file; (b) a `~~~` fence, which is not tracked at all. If either is ever introduced above
+// the `spacetime start` step, this tooth false-REDs — fix the parser, do not delete the
+// assertion.
 // ---------------------------------------------------------------------------
 function hasFencedCommandLine(markdown, command) {
   // Non-vacuity: an empty command would match a blank line inside any fence and certify
