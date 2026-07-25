@@ -1254,7 +1254,10 @@ fn test_fuse_offspring_properties() {
          kills: a stat transposition (speed/sp_attack/sp_defense are all 0)"
     );
     assert_eq!(off.ev_speed, 0, "ev_speed must be 0 (both parents 0)");
-    assert_eq!(off.ev_sp_attack, 0, "ev_sp_attack must be 0 (both parents 0)");
+    assert_eq!(
+        off.ev_sp_attack, 0,
+        "ev_sp_attack must be 0 (both parents 0)"
+    );
     assert_eq!(
         off.ev_sp_defense, 0,
         "ev_sp_defense must be 0 (both parents 0)"
@@ -1727,7 +1730,11 @@ fn test_fuse_eligibility_parity_matrix() {
         // Oracle: the pure gate, over the SAME rows the seam is about to read.
         let a_inst = super::monster_to_instance(&ma).expect("parent a must marshal");
         let b_inst = super::monster_to_instance(&mb).expect("parent b must marshal");
-        let (call_a, call_b) = if self_fuse { (1u64, 1u64) } else { (1u64, 2u64) };
+        let (call_a, call_b) = if self_fuse {
+            (1u64, 1u64)
+        } else {
+            (1u64, 2u64)
+        };
         let oracle = if self_fuse {
             game_core::fusion_eligible(call_a, call_b, &a_inst, &a_inst)
         } else {

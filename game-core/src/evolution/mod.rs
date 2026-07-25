@@ -20,7 +20,6 @@ pub mod transform;
 mod m10a_gating_tests;
 
 pub use eligibility::{
-    evolves_to, fusion_eligible, resolve_evolution, FusionError, MIN_FUSION_BOND,
-    MIN_FUSION_LEVEL,
+    evolves_to, fusion_eligible, resolve_evolution, FusionError, MIN_FUSION_BOND, MIN_FUSION_LEVEL,
 };
 pub use transform::{evolve, fuse};
