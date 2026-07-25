@@ -118,6 +118,28 @@ fn make_monster_row(monster_id: u64, owner: Identity) -> Monster {
     }
 }
 
+/// A0 (ADR-0147): a Monster row that CLEARS the new fusion-eligibility gate.
+///
+/// `make_monster_row`'s defaults (level 20, bond 100) clear `MIN_FUSION_LEVEL = 10`
+/// but NOT `MIN_FUSION_BOND = 120`, so every fuse test whose target error lives
+/// DOWNSTREAM of the eligibility gate (battle guards, recipe lookup, offspring
+/// species, atomicity, offspring properties) must build its parents through this
+/// helper or its assertion becomes unreachable.
+///
+/// `make_monster_row` itself is deliberately UNCHANGED — it is shared with the
+/// evolve tests, which depend on level 20 / bond 100 exactly (a Level(20) trigger
+/// and a Bond(50) trigger are both pinned against those defaults).
+///
+/// `xp` is recomputed as `level^3` (this codebase's medium-fast curve) so the row's
+/// level/xp pair stays self-consistent; every other field is `make_monster_row`'s.
+fn make_fusable_monster_row(monster_id: u64, owner: Identity, level: u8, bond: u8) -> Monster {
+    let mut m = make_monster_row(monster_id, owner);
+    m.level = level;
+    m.bond = bond;
+    m.xp = u32::from(level) * u32::from(level) * u32::from(level);
+    m
+}
+
 /// Build a MonsterPub projection from a Monster row (mirrors pub_from_monster).
 fn make_monster_pub(m: &Monster) -> MonsterPub {
     MonsterPub {
@@ -629,9 +651,17 @@ fn test_evolve_stats_and_hp_recomputed() {
 // RED state: compile-RED until fuse_seam (or the reducer's pure inner fn) exists.
 // ---------------------------------------------------------------------------
 
-/// Slice 4 test 0: self-fuse guard — fusing a monster with itself is rejected immediately.
-/// PROOF-OF-TEETH: removing the `a_id == b_id` guard in fuse_seam/fuse causes this to return Ok.
-/// kills: missing self-fuse guard in the fuse reducer.
+/// Slice 4 test 0: self-fuse guard — fusing a monster with itself is rejected.
+///
+/// A0 (ADR-0147) note: the assertions here are UNCHANGED — this test is the
+/// byte-compatibility pin proving the self-fusion refusal survives the move from the
+/// seam's own inline id comparison to `reject_if_not_fusable` → `fusion_eligible`.
+/// The fixture deliberately seeds NO recipe: with the eligibility gate placed before
+/// the recipe lookup, self-fusion still reports "itself" (an eligibility-late impl
+/// would report "no fusion recipe" here and fail).
+///
+/// kills: dropping the self-fusion arm from the eligibility gate; placing the gate
+///        after the recipe lookup (message drift).
 #[test]
 fn test_fuse_self_fuse_rejects() {
     let owner = owner_id();
@@ -646,7 +676,7 @@ fn test_fuse_self_fuse_rejects() {
     assert!(
         result.is_err(),
         "TEETH(self-fuse guard): fusing a monster with itself must return Err; \
-         kills: missing a_id == b_id check in fuse reducer"
+         kills: an eligibility gate that lost its self-fusion arm"
     );
     let msg = result.unwrap_err();
     assert!(
@@ -670,10 +700,11 @@ fn test_fuse_both_owned_creates_offspring() {
     // Fusion recipe: species 1 + species 3 → species 4.
     db.insert_fusion(make_fusion_recipe_row(1, 1, 3, 4));
 
-    let mut ma = make_monster_row(1, owner);
+    // A0 fixture bump (no assertion weakened): eligible parents (bond >= 120).
+    let mut ma = make_fusable_monster_row(1, owner, 20, 200);
     ma.species_id = 1;
     ma.party_slot = 2; // higher slot
-    let mut mb = make_monster_row(2, owner);
+    let mut mb = make_fusable_monster_row(2, owner, 20, 200);
     mb.species_id = 3;
     mb.party_slot = 0; // lower slot — offspring must inherit this
 
@@ -798,12 +829,23 @@ fn test_fuse_b_not_owner_rejects() {
     );
 }
 
-/// Slice 4 test 4: A and B owned by different players → Err.
-/// Same as test_fuse_b_not_owner_rejects from the thief's perspective, but
-/// also tests that the both-must-be-same-owner rule fires from A's check.
-/// kills: impl that only checks B's owner after confirming A's owner.
+/// Slice 4 test 4 (A0 RE-PIN, plan rev-2 #6): cross-owner fusion is rejected by the
+/// PER-PARENT OWNERSHIP check, not by a separate same-owner rule.
+///
+/// The old `a.owner_identity != b.owner_identity` branch was DEAD code: both
+/// ownership checks compare against the SAME `sender`, so two parents that both
+/// pass them are necessarily co-owned and the branch could never fire (a guaranteed
+/// mutation-ratchet survivor). It is deleted from the seam AND the reducer.
+///
+/// This test therefore no longer pins "must be owned by the same player" (that
+/// message no longer exists anywhere). It re-pins the behaviour the spec actually
+/// requires — a cross-owner pair is refused — at the guard that really owns it, and
+/// asserts the EXACT parent named, so a swapped/one-sided ownership check dies here.
+///
+/// kills: dropping parent B's ownership check (cross-player fusion would succeed);
+///        an impl that reports parent A when it is parent B that is foreign.
 #[test]
-fn test_fuse_both_must_be_same_owner() {
+fn test_fuse_cross_owner_rejected_by_ownership_guard() {
     let owner_a = owner_id();
     let owner_b = other_owner_id();
     let mut db = TestEvolutionDb::new();
@@ -813,9 +855,11 @@ fn test_fuse_both_must_be_same_owner() {
     db.insert_species(make_species_row(4, 80, 90));
     db.insert_fusion(make_fusion_recipe_row(1, 1, 3, 4));
 
-    let mut ma = make_monster_row(1, owner_a);
+    // Both parents are fully ELIGIBLE (level 20 / bond 200) so eligibility can never
+    // be the reason for the rejection — ownership must own it.
+    let mut ma = make_fusable_monster_row(1, owner_a, 20, 200);
     ma.species_id = 1;
-    let mut mb = make_monster_row(2, owner_b);
+    let mut mb = make_fusable_monster_row(2, owner_b, 20, 200);
     mb.species_id = 3;
 
     db.insert_monster(ma.clone());
@@ -830,6 +874,12 @@ fn test_fuse_both_must_be_same_owner() {
         result.is_err(),
         "TEETH: fusing monsters from different owners must be rejected; \
          kills: impl that allows cross-player fusion by checking only A"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("not owner of monster b"),
+        "TEETH: parent B is the foreign one — the error must name monster b; \
+         kills: a one-sided or swapped ownership check; got: {msg:?}"
     );
 }
 
@@ -846,9 +896,12 @@ fn test_fuse_a_in_ongoing_battle_rejects() {
     db.insert_species(make_species_row(4, 80, 90));
     db.insert_fusion(make_fusion_recipe_row(1, 1, 3, 4));
 
-    let mut ma = make_monster_row(1, owner);
+    // A0 fixture bump (no assertion weakened): both parents must CLEAR the new
+    // fusion-eligibility gate (bond >= 120) or this test's target error becomes
+    // unreachable behind "at least 120 bond".
+    let mut ma = make_fusable_monster_row(1, owner, 20, 200);
     ma.species_id = 1;
-    let mut mb = make_monster_row(2, owner);
+    let mut mb = make_fusable_monster_row(2, owner, 20, 200);
     mb.species_id = 3;
 
     db.insert_monster(ma.clone());
@@ -886,9 +939,12 @@ fn test_fuse_b_in_ongoing_battle_rejects() {
     db.insert_species(make_species_row(4, 80, 90));
     db.insert_fusion(make_fusion_recipe_row(1, 1, 3, 4));
 
-    let mut ma = make_monster_row(1, owner);
+    // A0 fixture bump (no assertion weakened): both parents must CLEAR the new
+    // fusion-eligibility gate (bond >= 120) or this test's target error becomes
+    // unreachable behind "at least 120 bond".
+    let mut ma = make_fusable_monster_row(1, owner, 20, 200);
     ma.species_id = 1;
-    let mut mb = make_monster_row(2, owner);
+    let mut mb = make_fusable_monster_row(2, owner, 20, 200);
     mb.species_id = 3;
 
     db.insert_monster(ma.clone());
@@ -926,9 +982,12 @@ fn test_fuse_recipe_not_found_rejects() {
 
     // No fusion recipe is seeded — db.fusion is empty.
 
-    let mut ma = make_monster_row(1, owner);
+    // A0 fixture bump (no assertion weakened): both parents must CLEAR the new
+    // fusion-eligibility gate (bond >= 120) or this test's target error becomes
+    // unreachable behind "at least 120 bond".
+    let mut ma = make_fusable_monster_row(1, owner, 20, 200);
     ma.species_id = 1;
-    let mut mb = make_monster_row(2, owner);
+    let mut mb = make_fusable_monster_row(2, owner, 20, 200);
     mb.species_id = 3;
 
     db.insert_monster(ma.clone());
@@ -964,9 +1023,12 @@ fn test_fuse_offspring_species_not_found() {
     // Fusion recipe points to offspring species 99, which is NOT in the DB.
     db.insert_fusion(make_fusion_recipe_row(1, 1, 3, 99));
 
-    let mut ma = make_monster_row(1, owner);
+    // A0 fixture bump (no assertion weakened): both parents must CLEAR the new
+    // fusion-eligibility gate (bond >= 120) or this test's target error becomes
+    // unreachable behind "at least 120 bond".
+    let mut ma = make_fusable_monster_row(1, owner, 20, 200);
     ma.species_id = 1;
-    let mut mb = make_monster_row(2, owner);
+    let mut mb = make_fusable_monster_row(2, owner, 20, 200);
     mb.species_id = 3;
 
     db.insert_monster(ma.clone());
@@ -1008,9 +1070,12 @@ fn test_fuse_atomic_delete_insert_both_parents_gone() {
     db.insert_species(make_species_row(4, 80, 90));
     db.insert_fusion(make_fusion_recipe_row(1, 1, 3, 4));
 
-    let mut ma = make_monster_row(1, owner);
+    // A0 fixture bump (no assertion weakened): both parents must CLEAR the new
+    // fusion-eligibility gate (bond >= 120) or this test's target error becomes
+    // unreachable behind "at least 120 bond".
+    let mut ma = make_fusable_monster_row(1, owner, 20, 200);
     ma.species_id = 1;
-    let mut mb = make_monster_row(2, owner);
+    let mut mb = make_fusable_monster_row(2, owner, 20, 200);
     mb.species_id = 3;
 
     db.insert_monster(ma.clone());
@@ -1056,10 +1121,21 @@ fn test_fuse_atomic_delete_insert_both_parents_gone() {
     );
 }
 
-/// Slice 4 test 10: offspring properties — level 1, zero EVs, bond=70, no nickname,
-/// current_hp = derived HP at L1, species = recipe.to, IVs are per-stat max of parents,
-/// nature from higher-bond parent (a wins on tie).
-/// kills: carrying parent level/EVs/nickname/bond; wrong IV formula; wrong nature selection.
+/// Slice 4 test 10 (A0 REWRITE, T32): offspring ROW carries the TAXED level, xp,
+/// bond and EVs — the marshaling half of ADR-0147.
+///
+/// The old assertions (level 1, EVs 0, bond 70) pinned the deleted fresh-body model
+/// and are replaced by exact hardcoded pins. `game_core`'s own suite proves the
+/// formulas; THIS test proves the taxed values survive the seam's Monster-row build
+/// (a row builder that still writes `1` / `0` / `70`, or that writes the PARENT's
+/// values, dies here).
+///
+/// Parents: a = L34 bond 200 EVs(252,0,100,0,0,0) Adamant "ParentA" slot 3
+///          b = L12 bond 150 EVs(0,252,0,0,0,0)   Timid   "ParentB" slot 1
+/// Offspring pins (arithmetic in the assertion messages):
+///   level 17 · xp 4913 · bond 150 · EVs (94, 94, 37, 0, 0, 0)
+/// kills: level-1/EV-0/bond-70 leftovers; carrying a parent's level/bond/EVs/nickname
+///        into the row; wrong IV formula; wrong nature selection; xp desync.
 #[test]
 fn test_fuse_offspring_properties() {
     let owner = owner_id();
@@ -1070,12 +1146,10 @@ fn test_fuse_offspring_properties() {
     db.insert_species(make_species_row(4, 80, 90)); // id=4 (offspring)
     db.insert_fusion(make_fusion_recipe_row(1, 1, 3, 4));
 
-    // Parent A: Adamant nature, bond=200 (higher), level=30, has nickname
-    let mut ma = make_monster_row(1, owner);
+    // Parent A: Adamant nature, bond=200 (higher), level=34, has nickname
+    let mut ma = make_fusable_monster_row(1, owner, 34, 200);
     ma.species_id = 1;
-    ma.nature_kind = NatureKind::Adamant;
-    ma.bond = 200; // higher bond → nature goes to A
-    ma.level = 30;
+    ma.nature_kind = NatureKind::Adamant; // higher bond → nature goes to A
     ma.nickname = "ParentA".to_string();
     ma.party_slot = 3;
     // Distinctive IVs for parent A
@@ -1085,13 +1159,14 @@ fn test_fuse_offspring_properties() {
     ma.iv_speed = 20;
     ma.iv_sp_attack = 0;
     ma.iv_sp_defense = 15;
+    // Distinctive EVs for parent A (total 352 <= 510)
+    ma.ev_hp = 252;
+    ma.ev_defense = 100;
 
-    // Parent B: Timid nature, bond=100 (lower), level=25
-    let mut mb = make_monster_row(2, owner);
+    // Parent B: Timid nature, bond=150 (lower but still eligible), level=12
+    let mut mb = make_fusable_monster_row(2, owner, 12, 150);
     mb.species_id = 3;
     mb.nature_kind = NatureKind::Timid;
-    mb.bond = 100;
-    mb.level = 25;
     mb.nickname = "ParentB".to_string();
     mb.party_slot = 1; // lower slot — offspring must use this
                        // Complementary IVs: per-stat max should be (31, 31, 20, 20, 15, 15)
@@ -1101,6 +1176,8 @@ fn test_fuse_offspring_properties() {
     mb.iv_speed = 0;
     mb.iv_sp_attack = 15;
     mb.iv_sp_defense = 10;
+    // Complementary EVs for parent B (total 252 <= 510)
+    mb.ev_attack = 252;
 
     db.insert_monster(ma.clone());
     db.insert_monster_pub(make_monster_pub(&ma));
@@ -1116,39 +1193,58 @@ fn test_fuse_offspring_properties() {
     // species = recipe.to
     assert_eq!(off.species_id, 4, "offspring species must be recipe.to (4)");
 
-    // level = 1
+    // level: max(avg(34,12)=23 taxed to 17, max(34,12)=34 retained to 17) = 17
     assert_eq!(
-        off.level, 1,
-        "TEETH: offspring level must be 1; kills: carrying parent level"
+        off.level, 17,
+        "TEETH(A0-3): offspring ROW level must be 17 for parents (34, 12); \
+         kills: the level-1 leftover, and carrying a parent's level (34 or 12)"
     );
 
-    // EVs = zero
-    assert_eq!(off.ev_hp, 0, "ev_hp must be 0");
-    assert_eq!(off.ev_attack, 0, "ev_attack must be 0");
-    assert_eq!(off.ev_defense, 0, "ev_defense must be 0");
-    assert_eq!(off.ev_speed, 0, "ev_speed must be 0");
-    assert_eq!(off.ev_sp_attack, 0, "ev_sp_attack must be 0");
+    // xp: 17^3 = 4913 (xp_for_level of the TAXED level, not of level 1)
+    assert_eq!(
+        off.xp, 4913,
+        "TEETH(A0-4): offspring ROW xp must be 17^3 = 4913; \
+         kills: xp_for_level(1) = 1, xp = 0, and carrying a parent's xp"
+    );
+
+    // bond: max(200, 150) = 200, taxed 75% = 150
+    assert_eq!(
+        off.bond, 150,
+        "TEETH(A0-2): offspring ROW bond must be 150 (200 * 75 / 100); \
+         kills: the default_bond() 70 leftover, an untaxed carry (200), a taxed average (131)"
+    );
+
+    // EVs: per-stat taxed average of the parents' EVs
+    assert_eq!(
+        off.ev_hp, 94,
+        "TEETH(A0-5): ev_hp must be 94 (avg(252, 0) = 126, taxed 75% = 94); \
+         kills: the zero-init leftover and an untaxed carry (126)"
+    );
+    assert_eq!(
+        off.ev_attack, 94,
+        "TEETH(A0-5): ev_attack must be 94 (avg(0, 252) = 126, taxed = 94)"
+    );
+    assert_eq!(
+        off.ev_defense, 37,
+        "TEETH(A0-5): ev_defense must be 37 (avg(100, 0) = 50, taxed = 37); \
+         kills: a stat transposition (speed/sp_attack/sp_defense are all 0)"
+    );
+    assert_eq!(off.ev_speed, 0, "ev_speed must be 0 (both parents 0)");
+    assert_eq!(off.ev_sp_attack, 0, "ev_sp_attack must be 0 (both parents 0)");
     assert_eq!(
         off.ev_sp_defense, 0,
-        "ev_sp_defense must be 0; \
-         kills: impl that carries parent EVs into offspring"
+        "ev_sp_defense must be 0 (both parents 0)"
     );
 
-    // bond = 70 (Bond::default_bond())
-    assert_eq!(
-        off.bond, 70,
-        "TEETH: offspring bond must be 70 (default bond); kills: carrying parent bond"
-    );
-
-    // nickname = empty (no nickname)
+    // nickname = empty (the seam/reducer pass chosen_nickname = None)
     assert!(
         off.nickname.is_empty(),
-        "TEETH: offspring nickname must be empty (fresh); kills: carrying parent nickname; \
-         got: {:?}",
+        "TEETH(A0-6): offspring nickname must be empty (None -> unwrap_or_default); \
+         kills: carrying a parent nickname; got: {:?}",
         off.nickname
     );
 
-    // nature = parent A's nature (Adamant) because A has higher bond (200 > 100)
+    // nature = parent A's nature (Adamant) because A has higher bond (200 > 150)
     assert_eq!(
         off.nature_kind,
         NatureKind::Adamant,
@@ -1183,17 +1279,23 @@ fn test_fuse_offspring_properties() {
         "TEETH: offspring party_slot = min(3, 1) = 1; kills: max or always-A slot"
     );
 
-    // current_hp = derived HP at L1 (full HP — not parent's current_hp)
-    // We can't compute the exact value without running derive_stats, but we can
-    // assert it equals stat_hp (full HP) and is > 0.
+    // current_hp = full derived HP at the TAXED level (not the parents' current_hp,
+    // and not the level-1 body's HP). The exact number depends on derive_stats, so
+    // pin the invariant (full HP) plus a floor that the level-1 body cannot reach:
+    // make_monster_row's parents ship current_hp = 50, so an accidental carry shows.
     assert_eq!(
         off.current_hp, off.stat_hp,
-        "TEETH: offspring current_hp must equal stat_hp (full HP at L1); \
+        "TEETH: offspring current_hp must equal stat_hp (full HP at the taxed level); \
          kills: carrying parent current_hp"
     );
     assert!(
         off.current_hp > 0,
-        "offspring current_hp must be > 0 (derived HP at L1 with valid base stats)"
+        "offspring current_hp must be > 0 (derived HP with valid base stats)"
+    );
+    assert_ne!(
+        off.current_hp, 50,
+        "TEETH: offspring current_hp must NOT be the parents' stored current_hp (50); \
+         kills: an impl that copies a parent's current_hp into the offspring row"
     );
 }
 
@@ -1203,7 +1305,7 @@ fn test_fuse_offspring_properties() {
 // kills: order-dependent IV computation or slot selection.
 // ---------------------------------------------------------------------------
 
-/// fuse(a, b) and fuse(b, a): with bonds a=200 > b=100, nature goes to A regardless
+/// fuse(a, b) and fuse(b, a): with bonds a=200 > b=150, nature goes to A regardless
 /// of arg order, so FULL equality holds.
 /// kills: order-dependent IV max or slot computation.
 #[test]
@@ -1220,9 +1322,10 @@ fn test_fuse_order_independence_when_bonds_differ() {
     }
 
     // Parent A: bond=200, Adamant, species=1, party_slot=5
-    let mut ma = make_monster_row(1, owner);
+    // A0 fixture bump: both parents are now eligible (bond >= 120) and the bonds
+    // still DIFFER (200 vs 150), which is what this test's premise requires.
+    let mut ma = make_fusable_monster_row(1, owner, 20, 200);
     ma.species_id = 1;
-    ma.bond = 200;
     ma.nature_kind = NatureKind::Adamant;
     ma.party_slot = 5;
     ma.iv_hp = 10;
@@ -1232,10 +1335,9 @@ fn test_fuse_order_independence_when_bonds_differ() {
     ma.iv_sp_attack = 0;
     ma.iv_sp_defense = 15;
 
-    // Parent B: bond=100, Timid, species=3, party_slot=2
-    let mut mb = make_monster_row(2, owner);
+    // Parent B: bond=150, Timid, species=3, party_slot=2
+    let mut mb = make_fusable_monster_row(2, owner, 20, 150);
     mb.species_id = 3;
-    mb.bond = 100;
     mb.nature_kind = NatureKind::Timid;
     mb.party_slot = 2;
     mb.iv_hp = 31;
@@ -1259,7 +1361,7 @@ fn test_fuse_order_independence_when_bonds_differ() {
     let off_ab = db_ab.get_monster(r_ab.offspring_monster_id).unwrap();
     let off_ba = db_ba.get_monster(r_ba.offspring_monster_id).unwrap();
 
-    // With bonds differing (a=200 > b=100), nature is ALWAYS a's (Adamant) regardless of call order.
+    // With bonds differing (a=200 > b=150), nature is ALWAYS a's (Adamant) regardless of call order.
     assert_eq!(off_ab.nature_kind, off_ba.nature_kind,
         "TEETH: with differing bonds, nature must be from the higher-bond parent regardless of arg order; \
          kills: order-dependent nature selection");
@@ -1338,9 +1440,12 @@ fn fuse_offspring_pub_id_matches_monster_id() {
     // Fusion recipe: species 1 + species 3 → species 4.
     db.insert_fusion(make_fusion_recipe_row(1, 1, 3, 4));
 
-    let mut ma = make_monster_row(1, owner);
+    // A0 fixture bump (no assertion weakened): both parents must CLEAR the new
+    // fusion-eligibility gate (bond >= 120) or this test's target error becomes
+    // unreachable behind "at least 120 bond".
+    let mut ma = make_fusable_monster_row(1, owner, 20, 200);
     ma.species_id = 1;
-    let mut mb = make_monster_row(2, owner);
+    let mut mb = make_fusable_monster_row(2, owner, 20, 200);
     mb.species_id = 3;
 
     db.insert_monster(ma.clone());
@@ -1389,6 +1494,368 @@ fn fuse_offspring_pub_id_matches_monster_id() {
         "TEETH(12.5a): monster row must exist for pub_row.monster_id={}; \
          the pub and private tables must point at the same row",
         offspring_pub.monster_id
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A0 (ADR-0147) — fusion-eligibility gate through the seam (spec A0-7/A0-8/A0-9)
+//
+// The seam no longer hand-rolls any part of the guard chain: self-fusion, the level
+// minimum and the bond minimum all arrive through ONE call to
+// `super::reject_if_not_fusable` → `game_core::fusion_eligible`.
+//
+// Every expected message substring below is HARDCODED ("itself", "level 10",
+// "120 bond") — never built from MIN_FUSION_LEVEL/MIN_FUSION_BOND — so a silent
+// retune of either constant turns these red instead of quietly re-targeting.
+// ---------------------------------------------------------------------------
+
+/// A0 helper: seed a COMPLETE, otherwise-valid two-parent fuse setup.
+///
+/// Species 1 (parent A) + species 3 (parent B) → species 4, with the recipe row
+/// present, both parents owned by `owner`, and no battles. Levels and bonds are the
+/// ONLY variables, so any `Err` from `fuse_seam` on this setup can come from the
+/// eligibility gate and nothing else — that is what makes the parity matrix and the
+/// rejection tests non-vacuous.
+///
+/// Returns the two seeded rows so a test can build the pure oracle's
+/// `MonsterInstance`s from the very same data the seam reads.
+fn seed_fusable_pair(
+    db: &mut TestEvolutionDb,
+    owner: Identity,
+    a_level: u8,
+    a_bond: u8,
+    b_level: u8,
+    b_bond: u8,
+) -> (Monster, Monster) {
+    db.insert_species(source_species_row()); // id=1 (parent A)
+    db.insert_species(make_species_row(3, 60, 70)); // id=3 (parent B)
+    db.insert_species(make_species_row(4, 80, 90)); // id=4 (offspring)
+    db.insert_fusion(make_fusion_recipe_row(1, 1, 3, 4));
+
+    let mut ma = make_fusable_monster_row(1, owner, a_level, a_bond);
+    ma.species_id = 1;
+    let mut mb = make_fusable_monster_row(2, owner, b_level, b_bond);
+    mb.species_id = 3;
+
+    db.insert_monster(ma.clone());
+    db.insert_monster_pub(make_monster_pub(&ma));
+    db.insert_monster(mb.clone());
+    db.insert_monster_pub(make_monster_pub(&mb));
+
+    (ma, mb)
+}
+
+/// T27a (A0-7): parent A below `MIN_FUSION_LEVEL` is refused through the seam.
+/// Parent B is STRICTLY above BOTH minimums (level 50 / bond 200), so the level gate
+/// is the only thing that can fire.
+#[test]
+fn test_fuse_level_below_minimum_rejects_a() {
+    // kills: no level gate at all; a b-only check; an `&&` form that only refuses
+    //        when BOTH parents are under-levelled
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    seed_fusable_pair(&mut db, owner, 9, 200, 50, 200);
+
+    let result = fuse_seam(&mut db, owner, 1, 2);
+
+    assert!(
+        result.is_err(),
+        "TEETH(A0-7): parent A at level 9 is below the fusion minimum — must be refused"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("level 10"),
+        "the refusal must name the level minimum (10); got: {msg:?}"
+    );
+}
+
+/// T27b (A0-7): parent B below `MIN_FUSION_LEVEL` is refused through the seam.
+#[test]
+fn test_fuse_level_below_minimum_rejects_b() {
+    // kills: an a-only check (parent A is fully eligible here, so an a-only gate
+    //        would let this pair through)
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    seed_fusable_pair(&mut db, owner, 50, 200, 9, 200);
+
+    let result = fuse_seam(&mut db, owner, 1, 2);
+
+    assert!(
+        result.is_err(),
+        "TEETH(A0-7): parent B at level 9 is below the fusion minimum — must be refused"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("level 10"),
+        "the refusal must name the level minimum (10); got: {msg:?}"
+    );
+}
+
+/// T28a (A0-7): parent A below `MIN_FUSION_BOND` is refused through the seam.
+/// Both parents are level 50 (strictly above the level minimum), so bond is the only
+/// gate that can fire.
+#[test]
+fn test_fuse_bond_below_minimum_rejects_a() {
+    // kills: no bond gate at all; a b-only check; an `&&` form that only refuses
+    //        when BOTH parents are under-bonded
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    seed_fusable_pair(&mut db, owner, 50, 119, 50, 200);
+
+    let result = fuse_seam(&mut db, owner, 1, 2);
+
+    assert!(
+        result.is_err(),
+        "TEETH(A0-7): parent A at bond 119 is below the fusion minimum — must be refused"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("120 bond"),
+        "the refusal must name the bond minimum (120); got: {msg:?}"
+    );
+}
+
+/// T28b (A0-7): parent B below `MIN_FUSION_BOND` is refused through the seam.
+#[test]
+fn test_fuse_bond_below_minimum_rejects_b() {
+    // kills: an a-only bond check (parent A is fully eligible here)
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    seed_fusable_pair(&mut db, owner, 50, 200, 50, 119);
+
+    let result = fuse_seam(&mut db, owner, 1, 2);
+
+    assert!(
+        result.is_err(),
+        "TEETH(A0-7): parent B at bond 119 is below the fusion minimum — must be refused"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("120 bond"),
+        "the refusal must name the bond minimum (120); got: {msg:?}"
+    );
+}
+
+/// T29 (A0-7 boundary): the EXACT minimums (level 10 AND bond 120 on both parents)
+/// are ACCEPTED and the fusion completes end-to-end.
+#[test]
+fn test_fuse_exact_eligibility_boundary_succeeds() {
+    // kills: a strict `>` boundary anywhere in the chain (level == 10 or bond == 120
+    //        would be refused); an over-eager gate that refuses everything
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    seed_fusable_pair(&mut db, owner, 10, 120, 10, 120);
+
+    let result = fuse_seam(&mut db, owner, 1, 2);
+
+    assert!(
+        result.is_ok(),
+        "TEETH(A0-7): level 10 / bond 120 is the INCLUSIVE minimum on both parents — \
+         the fusion must succeed; got Err: {:?}",
+        result.err()
+    );
+    let offspring_id = result.unwrap().offspring_monster_id;
+    let off = db.get_monster(offspring_id).expect("offspring must exist");
+    assert_eq!(
+        off.species_id, 4,
+        "the boundary fusion must really produce the recipe's offspring species"
+    );
+    assert_eq!(
+        off.bond, 90,
+        "offspring bond must be 90 (max(120, 120) * 75 / 100) — proves the accepted \
+         fusion ran the real transform, not a short-circuit"
+    );
+}
+
+/// T30 (A0-9, ELIGIBILITY PARITY): on every boundary case, `fuse_seam`'s accept/
+/// reject decision agrees with `game_core::fusion_eligible` evaluated on the same
+/// rows, and every rejection carries the message its variant maps to.
+///
+/// Scope (plan rev-2 #5): this proves `seam ∘ reject_if_not_fusable == fusion_eligible`,
+/// NOT `whole-seam == reducer`. Each row is otherwise fully valid (owned, recipe
+/// seeded, no battle), so eligibility is the only thing that can differ.
+///
+/// kills: a seam (or helper) that re-implements the guard chain by hand and drifts
+///        from game_core on ANY boundary — a single disagreeing row fails;
+///        a variant→message mapping that emits the wrong string (e.g. the level
+///        message for a bond failure), which would silently mislead the player.
+#[test]
+fn test_fuse_eligibility_parity_matrix() {
+    let owner = owner_id();
+
+    // (label, a_level, a_bond, b_level, b_bond, self_fuse)
+    let rows: [(&str, u8, u8, u8, u8, bool); 14] = [
+        ("self-fusion with perfect stats", 50, 200, 50, 200, true),
+        ("a level 9 (below)", 9, 200, 50, 200, false),
+        ("a level 10 (exact minimum)", 10, 200, 50, 200, false),
+        ("a level 11 (above)", 11, 200, 50, 200, false),
+        ("b level 9 (below)", 50, 200, 9, 200, false),
+        ("b level 10 (exact minimum)", 50, 200, 10, 200, false),
+        ("b level 11 (above)", 50, 200, 11, 200, false),
+        ("a bond 119 (below)", 50, 119, 50, 200, false),
+        ("a bond 120 (exact minimum)", 50, 120, 50, 200, false),
+        ("a bond 121 (above)", 50, 121, 50, 200, false),
+        ("b bond 119 (below)", 50, 200, 50, 119, false),
+        ("b bond 120 (exact minimum)", 50, 200, 50, 120, false),
+        ("b bond 121 (above)", 50, 200, 50, 121, false),
+        ("both below: a level 9 + b bond 119", 9, 200, 50, 119, false),
+    ];
+
+    for (label, a_level, a_bond, b_level, b_bond, self_fuse) in rows {
+        let mut db = TestEvolutionDb::new();
+        let (ma, mb) = seed_fusable_pair(&mut db, owner, a_level, a_bond, b_level, b_bond);
+
+        // Oracle: the pure gate, over the SAME rows the seam is about to read.
+        let a_inst = super::monster_to_instance(&ma).expect("parent a must marshal");
+        let b_inst = super::monster_to_instance(&mb).expect("parent b must marshal");
+        let (call_a, call_b) = if self_fuse { (1u64, 1u64) } else { (1u64, 2u64) };
+        let oracle = if self_fuse {
+            game_core::fusion_eligible(call_a, call_b, &a_inst, &a_inst)
+        } else {
+            game_core::fusion_eligible(call_a, call_b, &a_inst, &b_inst)
+        };
+
+        let seam = fuse_seam(&mut db, owner, call_a, call_b);
+
+        assert_eq!(
+            seam.is_err(),
+            oracle.is_err(),
+            "PARITY[{label}]: fuse_seam and game_core::fusion_eligible must agree; \
+             seam = {:?}, fusion_eligible = {:?}",
+            seam.as_ref().err(),
+            oracle
+        );
+
+        if let Err(variant) = oracle {
+            // Hardcoded per-variant substrings — never derived from the constants.
+            let needle = match variant {
+                game_core::FusionError::SelfFusion => "itself",
+                game_core::FusionError::BelowMinLevel => "level 10",
+                game_core::FusionError::BelowMinBond => "120 bond",
+            };
+            let msg = seam.expect_err("parity above asserted the seam rejects this row");
+            assert!(
+                msg.contains(needle),
+                "PARITY[{label}]: {variant:?} must surface a message containing {needle:?}; \
+                 got: {msg:?}"
+            );
+        }
+    }
+}
+
+/// T31 (A0-8, END-TO-END): the bond tax reaches the offspring ROW and closes the
+/// "reusable high-bond carrier" loop through the real seam.
+///
+/// Two bond-120 parents are exactly at `MIN_FUSION_BOND`, so their fusion is legal;
+/// the offspring row must then carry bond 90 = 120 * 75 / 100. A second fusion using
+/// that offspring against a FULLY eligible partner — with a matching recipe seeded,
+/// so "no fusion recipe" cannot be the reason — must be refused for bond.
+#[test]
+fn test_fuse_bond_tax_blocks_reusing_the_offspring_as_a_carrier() {
+    // kills: an untaxed bond carry (the row would read 120 and the re-fuse would
+    //        SUCCEED, re-opening the exploit the slice exists to close);
+    //        a bond that never reaches the row at all (a default_bond() 70 leftover
+    //        also blocks the re-fuse, so the exact `90` pin is what separates the
+    //        correct impl from that accidentally-passing one);
+    //        an eligibility gate that never re-reads the offspring's own bond
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+
+    // First fusion: species 1 + 3 → 4, both parents at EXACTLY MIN_FUSION_BOND.
+    seed_fusable_pair(&mut db, owner, 20, 120, 20, 120);
+
+    let offspring_id = fuse_seam(&mut db, owner, 1, 2)
+        .expect("bond-120 parents are eligible — the first fusion must succeed")
+        .offspring_monster_id;
+
+    // Read the two columns out before touching `db` mutably again.
+    let (offspring_bond, offspring_level) = {
+        let offspring = db.get_monster(offspring_id).expect("offspring must exist");
+        (offspring.bond, offspring.level)
+    };
+    assert_eq!(
+        offspring_bond, 90,
+        "TEETH(A0-8): the offspring ROW must carry the TAXED bond 90 (120 * 75 / 100)"
+    );
+    assert_eq!(
+        offspring_level, 15,
+        "fixture sanity: the offspring is level 15 (>= the level minimum), so LEVEL \
+         cannot be why the re-fuse below is refused"
+    );
+
+    // Seed a THIRD, fully eligible partner AND a recipe pairing it with the
+    // offspring's species — the re-fuse would otherwise be a completely legal fusion.
+    db.insert_species(make_species_row(5, 70, 70)); // id=5 (partner)
+    db.insert_species(make_species_row(6, 90, 90)); // id=6 (second-generation offspring)
+    db.insert_fusion(make_fusion_recipe_row(2, 4, 5, 6));
+
+    let mut partner = make_fusable_monster_row(3, owner, 20, 200);
+    partner.species_id = 5;
+    db.insert_monster(partner.clone());
+    db.insert_monster_pub(make_monster_pub(&partner));
+
+    let result = fuse_seam(&mut db, owner, offspring_id, 3);
+
+    assert!(
+        result.is_err(),
+        "TEETH(A0-8): a bond-90 offspring must NOT be re-fusable — the carrier must \
+         regrow bond through cooldown-gated apply_care first"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("120 bond"),
+        "TEETH(A0-8): the refusal must be the BOND gate — a recipe IS seeded and the \
+         offspring clears the level minimum; got: {msg:?}"
+    );
+}
+
+/// T33 (A0-6): the seam passes `chosen_nickname = None`, so the offspring ROW's
+/// nickname column is the empty string (`Option::unwrap_or_default`) even when BOTH
+/// parents are named. The dual-written `monster_pub` row must agree.
+#[test]
+fn test_fuse_offspring_row_nickname_is_empty_when_none_is_chosen() {
+    // kills: carrying either parent's nickname into the row; a placeholder default
+    //        name; a private/pub divergence on the nickname column
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+
+    db.insert_species(source_species_row()); // id=1
+    db.insert_species(make_species_row(3, 60, 70)); // id=3
+    db.insert_species(make_species_row(4, 80, 90)); // id=4 (offspring)
+    db.insert_fusion(make_fusion_recipe_row(1, 1, 3, 4));
+
+    let mut ma = make_fusable_monster_row(1, owner, 20, 200);
+    ma.species_id = 1;
+    ma.nickname = "ParentA".to_string();
+    let mut mb = make_fusable_monster_row(2, owner, 20, 200);
+    mb.species_id = 3;
+    mb.nickname = "ParentB".to_string();
+
+    db.insert_monster(ma.clone());
+    db.insert_monster_pub(make_monster_pub(&ma));
+    db.insert_monster(mb.clone());
+    db.insert_monster_pub(make_monster_pub(&mb));
+
+    let offspring_id = fuse_seam(&mut db, owner, 1, 2)
+        .expect("both parents are eligible — this fusion must succeed")
+        .offspring_monster_id;
+
+    let off = db.get_monster(offspring_id).expect("offspring must exist");
+    assert!(
+        off.nickname.is_empty(),
+        "TEETH(A0-6): chosen_nickname is None, so the row's nickname column must be \
+         the empty string — never a parent's name; got: {:?}",
+        off.nickname
+    );
+
+    let off_pub = db
+        .get_monster_pub(offspring_id)
+        .expect("offspring monster_pub must exist");
+    assert!(
+        off_pub.nickname.is_empty(),
+        "TEETH: monster_pub.nickname must match the private row (dual-write discipline); \
+         got: {:?}",
+        off_pub.nickname
     );
 }
 
@@ -1603,9 +2070,12 @@ fn test_fuse_sideb_pvp_battle_rejects_a() {
     db.insert_species(make_species_row(4, 80, 90)); // id=4 (offspring)
     db.insert_fusion(make_fusion_recipe_row(1, 1, 3, 4));
 
-    let mut ma = make_monster_row(1, owner);
+    // A0 fixture bump (no assertion weakened): both parents must CLEAR the new
+    // fusion-eligibility gate (bond >= 120) or this test's target error becomes
+    // unreachable behind "at least 120 bond".
+    let mut ma = make_fusable_monster_row(1, owner, 20, 200);
     ma.species_id = 1;
-    let mut mb = make_monster_row(2, owner);
+    let mut mb = make_fusable_monster_row(2, owner, 20, 200);
     mb.species_id = 3;
 
     db.insert_monster(ma.clone());
@@ -1696,9 +2166,12 @@ fn test_fuse_sideb_pvp_battle_rejects_b() {
     db.insert_species(make_species_row(4, 80, 90)); // id=4 (offspring)
     db.insert_fusion(make_fusion_recipe_row(1, 1, 3, 4));
 
-    let mut ma = make_monster_row(1, owner);
+    // A0 fixture bump (no assertion weakened): both parents must CLEAR the new
+    // fusion-eligibility gate (bond >= 120) or this test's target error becomes
+    // unreachable behind "at least 120 bond".
+    let mut ma = make_fusable_monster_row(1, owner, 20, 200);
     ma.species_id = 1;
-    let mut mb = make_monster_row(2, owner);
+    let mut mb = make_fusable_monster_row(2, owner, 20, 200);
     mb.species_id = 3;
 
     db.insert_monster(ma.clone());
@@ -1862,16 +2335,29 @@ pub(crate) fn evolve_seam(
 }
 
 /// Pure fuse seam: mirrors the `fuse` reducer logic against a `TestEvolutionDb`.
+///
+/// A0 (ADR-0147) rewiring — guard order is now:
+///   lookup a,b → ownership a,b → marshal a,b (MOVED UP) → `reject_if_not_fusable`
+///   → battle ×2 → species ×2 → recipe → offspring species → canonicalize → fuse.
+///
+/// Three deliberate deletions (spec A0-7 / plan rev-2 #6):
+/// - the inline self-id comparison block is GONE — self-fusion is now owned by
+///   `super::reject_if_not_fusable` → `game_core::fusion_eligible`; the
+///   hand-duplicated guard chain is DELETED, not migrated.
+/// - the `a.owner_identity != b.owner_identity` block is GONE — it is dead code
+///   after two ownership checks against the same `sender` (a guaranteed mutation
+///   survivor).
+/// - marshal moved above the battle guards because eligibility needs the two
+///   `MonsterInstance`s; `monster_to_instance` reads only the Monster row.
+///
+/// The seam still has NO trade guard (the real reducer does) — that pre-existing
+/// asymmetry is unchanged by this slice and is recorded in ADR-0147.
 pub(crate) fn fuse_seam(
     db: &mut TestEvolutionDb,
     sender: Identity,
     a_id: u64,
     b_id: u64,
 ) -> Result<FuseEffect, String> {
-    if a_id == b_id {
-        return Err("cannot fuse a monster with itself".to_string());
-    }
-
     let Some(a) = db.get_monster(a_id).cloned() else {
         return Err("monster a not found".to_string());
     };
@@ -1879,7 +2365,8 @@ pub(crate) fn fuse_seam(
         return Err("monster b not found".to_string());
     };
 
-    // Ownership checks
+    // Ownership checks — these precede EVERY stats-derived error so a caller can
+    // never probe a foreign monster's level/bond through an eligibility message.
     if a.owner_identity != sender {
         return Err("not owner of monster a".to_string());
     }
@@ -1887,10 +2374,15 @@ pub(crate) fn fuse_seam(
         return Err("not owner of monster b".to_string());
     }
 
-    // Both must be owned by the same player (redundant given above, but explicit)
-    if a.owner_identity != b.owner_identity {
-        return Err("both monsters must be owned by the same player".to_string());
-    }
+    // Marshal MOVED UP (A0): the eligibility gate is expressed over MonsterInstance.
+    let a_inst = super::monster_to_instance(&a)?;
+    let b_inst = super::monster_to_instance(&b)?;
+
+    // Fusion eligibility (self-fusion / MIN_FUSION_LEVEL / MIN_FUSION_BOND) through
+    // the ONE shared helper both this seam and the real `fuse` reducer call, which
+    // delegates to `game_core::fusion_eligible` and maps the variants to messages
+    // exactly once (plan D3).
+    super::reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst)?;
 
     // Neither can be in battle — chain BOTH roles (player_identity and opponent_identity) to
     // mirror the production path after ADR-0122.  The chain catches a monster that is side-B
@@ -1936,16 +2428,16 @@ pub(crate) fn fuse_seam(
         ));
     };
 
-    // Marshal both parents to MonsterInstance
-    let a_inst = super::monster_to_instance(&a)?;
-    let b_inst = super::monster_to_instance(&b)?;
+    // (parents were marshaled above, before the eligibility gate)
     let offspring_species = super::species_from_row(offspring_species_row)?;
 
-    // Call pure transform (order-independent when bonds differ; canonicalize for tie-break)
+    // Call pure transform (order-independent when bonds differ; canonicalize for tie-break).
+    // A0-6: the reducer/seam pass `None` — the chosen-nickname arg is wired but
+    // unreachable from the client until slice A1.
     let offspring_inst = if a_id < b_id {
-        game_core::fuse(&a_inst, &b_inst, &offspring_species)
+        game_core::fuse(&a_inst, &b_inst, &offspring_species, None)
     } else {
-        game_core::fuse(&b_inst, &a_inst, &offspring_species)
+        game_core::fuse(&b_inst, &a_inst, &offspring_species, None)
     };
 
     // Compute evolves_to for offspring
