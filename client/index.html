@@ -75,8 +75,18 @@
       </button>
       <div id="tradepropose-feedback" data-testid="tradepropose-feedback"></div>
     </div>
-    <!-- pt-c2b help overlay shell — hidden by default; managed by HelpView (ADR-0135). Display-only. -->
-    <div id="help-overlay" style="display:none">
+    <!-- pt-c2b help overlay shell — hidden by default; managed by HelpView (ADR-0135). Display-only.
+         ux1 (ADR-0151 D1): viewport-anchored. This shell used to carry ONLY `display:none`, which
+         made it a static, in-flow div sitting AFTER the window.innerHeight-tall PixiJS canvas in
+         #app — so HelpView.show() painted it BELOW THE FOLD (measured top=724 at innerHeight=720),
+         in default black text on the #0b0d12 body. `position:fixed;inset:0;z-index:100` mirrors the
+         four JS-created modal roots (boxView/raisingView/evolutionView) and stays under battleView's
+         z-index:110 so a battle auto-show still supersedes help. HelpView only ever reads/writes
+         `style.display` (show() sets it to ''), so every other declaration here survives a toggle. -->
+    <div
+      id="help-overlay"
+      style="display:none;position:fixed;inset:0;z-index:100;overflow:auto;background:rgba(0,0,0,0.88);padding:24px;font:14px/1.6 monospace;color:#e0e0e0"
+    >
       <div id="help-title">Controls &amp; Goals</div>
       <ul id="help-controls"></ul>
       <ul id="help-goals"></ul>
@@ -88,6 +98,19 @@
       id="build-stamp"
       style="position:fixed;bottom:2px;right:4px;font:10px/1.2 monospace;color:#667;opacity:0.55;pointer-events:none;z-index:9999"
     ></div>
+    <!-- ux1 (ADR-0151 D2): persistent help affordance — zero-JS static markup, deliberately NOT a
+         view class and NOT owned by main.ts, so nothing can hide, re-render or remove it (EARS
+         ux1-1 "not just on first load"; pinned by W-UX1-HINT-NO-JS-OWNER). bottom:16px STACKS it
+         above #build-stamp (bottom:2px) rather than beside it — both are bottom-anchored fixed
+         elements and were measured overlapping at 360px width. pointer-events:none is load-bearing:
+         a fixed element over the game canvas must not eat clicks. z-index:50 sits above the static
+         canvas but below the modal band (100/110), so an open overlay covers it. -->
+    <div
+      id="help-hint"
+      style="position:fixed;bottom:16px;left:6px;font:11px/1.3 monospace;color:#9aa0b4;pointer-events:none;z-index:50"
+    >
+      Press ? for controls &amp; help
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

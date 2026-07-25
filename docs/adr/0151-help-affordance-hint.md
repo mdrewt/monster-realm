@@ -128,13 +128,24 @@ assertion set: `opacity:0`, `visibility:hidden`, `font-size:0`, `left:-9999px`, 
 document. The tests are named accordingly, carry a deny-list for the cheap cases, and this limit is
 recorded as a residual rather than papered over.
 
-Two structural teeth exist because existence checks alone were proven insufficient: the z-index is
+Structural teeth exist because existence checks alone were proven insufficient. The z-index is
 asserted `>= 1` and **below `#help-overlay`'s own parsed z-index in the same document** (a raw
 `/^\d+$/` guard first, because `parseInt` accepts the CSS-invalid `5e1`/`1e2` that a browser drops
-outright, and `z-index:-1` would paint the hint behind in-flow boxes); and `#build-stamp`'s parent is
-asserted to be `<body>`, because an unclosed `</div>` makes the parser adopt it as a *child* of
-`#help-hint` — measured — silently regressing the pt-a1/ADR-0128 provenance surface while every
-existence assertion stays green.
+outright, and `z-index:-1` would paint the hint behind in-flow boxes).
+
+The malformed-markup tooth was **corrected by mutation probe, and the correction is worth recording
+because the first version was subtly ordering-dependent.** An unclosed `</div>` on the hint makes the
+parser adopt whatever *follows* it. The tooth was first written as "`#build-stamp`'s parent is
+`<body>`", from an analysis that assumed the hint preceded the stamp. The hint actually ships **last**
+in `<body>`, after `#build-stamp` and before the module `<script>` — so the probe measured
+`{hintParent: "BODY", hintChildren: ["SCRIPT"], stampParent: "BODY"}` and **the mutant survived all
+seven original assertions**. The invariant belongs on the hint, not on a presumed victim: `#help-hint`
+must have **no element children** (it is a leaf text badge), which is placement-independent and kills
+the whole class — including the future case where an element inserted between the hint and the script
+is swallowed *and* inherits the hint's `pointer-events:none` and 11 px dim styling, vanishing from the
+UI while `querySelector` still finds it. The `#build-stamp` parent assertion is retained as an
+independent anchor guard on the pt-a1/ADR-0128 provenance surface (it kills a future wrapper div
+re-parenting the stamp), no longer credited with the unclosed-tag kill.
 
 ## Consequences
 

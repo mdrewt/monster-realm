@@ -21,10 +21,17 @@
 //
 // RED REASON (this suite MUST start red on the current tree, master bb87d74):
 //   - client/index.html has NO #help-hint element at all → H1, H3, H4, H5, H6 fail.
-//   - H2 passes today (regression guard: it bites only once the hint is added and
-//     is left with an unclosed tag — see its comment).
+//   - H2 passes today (independent anchor guard on #build-stamp's body parentage).
 //   - #help-overlay is `style="display:none"` with NO position and NO z-index
 //     → H6 (needs the overlay's z-index as its ceiling) and H7 both fail.
+//
+// H2b ADDED POST-LANDING (mutation-probe follow-up, not a pre-impl red):
+//   The unclosed-</div> mutant SURVIVED the original seven assertions. H2 was written
+//   for a hint placed BEFORE #build-stamp (the stamp would be adopted); the shipped
+//   hint is the LAST body element, so the mutant adopts the module <script> instead
+//   and H2 stays green. H2b restates the invariant placement-independently on the
+//   hint itself ("no element children") and is RED under that mutant, GREEN on the
+//   shipped tree. H2 is retained unchanged as a separate, still-valid guard.
 //
 // HONEST SCOPE LIMIT (see H5):
 //   This file proves PRESENT, BODY-ANCHORED, and NOT-OBVIOUSLY-INVISIBLE.
@@ -135,19 +142,71 @@ describe('ux1-1 (H1/H2): the help hint exists and is anchored to <body>', () => 
         'pins which build a playtest finding came from.',
     ).not.toBeNull();
 
-    // WRONG IMPL KILLED: an UNCLOSED </div> on the new #help-hint. Measured HTML
-    // parser behaviour is that #build-stamp is then ADOPTED as a CHILD of #help-hint.
-    // Every existence-only assertion (querySelector('#build-stamp') !== null) stays
-    // green, while the build-provenance surface silently regresses: the stamp
-    // inherits the hint's pointer-events:none and stacks its opacity/positioning
-    // context. This parent assertion is the only thing in the suite that catches it.
+    // SCOPE CORRECTION (post-mutation-probe): this assertion does NOT kill the
+    // unclosed-</div> mutant — H2b does. An unclosed tag adopts whatever element
+    // FOLLOWS it in document order, and #help-hint ships as the LAST body element,
+    // AFTER #build-stamp. Measured DOM shape under the unclosed-div mutant:
+    //   {"hintParent":"BODY","hintChildren":["SCRIPT"],"stampParent":"BODY"}
+    // #build-stamp precedes the hint and is therefore untouched, so this assertion
+    // stays green while the markup is genuinely broken. The tooth is placement-
+    // dependent, which is exactly why the real guard (H2b) is placement-independent.
+    //
+    // WHAT THIS STILL KILLS (an independent, still-valid anchor guard): any future
+    // edit that re-parents #build-stamp into a wrapper — e.g. a new container div
+    // added ABOVE it, or the stamp moved inside an overlay shell. That would make it
+    // inherit the wrapper's display/opacity/pointer-events and silently regress the
+    // pt-a1/ADR-0128 build-provenance surface while querySelector still finds it.
     expect(
       stamp === null ? '(no #build-stamp)' : stamp.parentElement?.tagName,
-      'KILLS: unclosed </div> on the new #help-hint — the parser re-parents ' +
-        '#build-stamp INSIDE #help-hint, silently regressing pt-a1/ADR-0128 build ' +
-        'provenance (inherited pointer-events:none + stacked opacity) while every ' +
-        'existence-only assertion stays green.',
+      'KILLS: #build-stamp re-parented into any wrapper instead of <body> — it would ' +
+        'inherit that wrapper display/opacity/pointer-events and silently regress the ' +
+        'pt-a1/ADR-0128 build-provenance surface while existence-only assertions stay ' +
+        'green. (NOT the unclosed-</div> tooth — that is H2b.)',
     ).toBe('BODY');
+  });
+
+  it('BITES: H2b — #help-hint has NO element children (it is a leaf text badge)', () => {
+    const doc = parseIndexHtml();
+    const hint = doc.querySelector('#help-hint');
+
+    // Precondition, NOT decoration: with the hint absent, children.length would read
+    // as 0 off a null-guard and pass vacuously. Deleting the element must not satisfy
+    // H2b. (H1 also covers existence; this keeps H2b self-contained.)
+    expect(
+      hint,
+      'KILLS: a vacuously-green H2b — with #help-hint absent there are no children to ' +
+        'count and the leaf assertion would pass. Deletion must not satisfy this test.',
+    ).not.toBeNull();
+
+    // WRONG IMPL KILLED: an UNCLOSED </div> on #help-hint. This is the PLACEMENT-
+    // INDEPENDENT form of that tooth and is strictly stronger than any ordering-
+    // dependent parent check (see the H2 scope correction above): an unclosed tag
+    // swallows whatever element FOLLOWS it, so the correct invariant is stated on the
+    // hint itself — "nothing may end up inside me" — rather than on one specific
+    // presumed victim.
+    //
+    // Measured DOM shape under the mutant on the SHIPPED markup (hint is the last
+    // body element, immediately before the module script):
+    //   {"hintParent":"BODY","hintChildren":["SCRIPT"],"stampParent":"BODY"}
+    // So today the swallowed victim is <script type="module" src="/src/main.ts">,
+    // and H2's stampParent check reads BODY — green on genuinely broken markup.
+    // hintChildren is ["SCRIPT"], so this assertion is RED under the mutant.
+    //
+    // It also bites for any FUTURE element inserted between the hint and the script:
+    // that element would be swallowed AND inherit the hint's pointer-events:none plus
+    // its 11px dim-grey styling — i.e. silently vanish from the UI while still being
+    // found by querySelector. ux1-1 specifies a small leaf text badge; it has no
+    // legitimate element children, so 0 is the correct and permanent expectation.
+    const childTags =
+      hint === null ? [] : Array.from(hint.children).map((child) => child.tagName);
+    expect(
+      childTags,
+      'KILLS: unclosed </div> on #help-hint — the parser swallows the FOLLOWING ' +
+        'element into the badge (today the module <script>; tomorrow whatever is ' +
+        'inserted between them, which would also inherit pointer-events:none and the ' +
+        '11px dim styling and silently vanish). ux1-1 specifies a leaf text badge, so ' +
+        'it must have zero element children. Got: ' + JSON.stringify(childTags),
+    ).toEqual([]);
   });
 });
 
