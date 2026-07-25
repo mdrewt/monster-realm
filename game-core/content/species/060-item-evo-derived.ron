@@ -1,0 +1,53 @@
+// Slice B — item-triggered evolution DERIVED FORMS. DATA, not code
+// (ADR-0006/0057/0060/0149). Stable ids are APPEND-ONLY.
+//
+// ID RESERVATION: slice B owns species 30 through 39 (band 30..=39, the
+// ADR-0144 D1 pattern extended by ADR-0149 D3). Roster wave 3 MUST take
+// 40..=49. The species registry is a glob-merged directory, so two waves that
+// claim the same numbers merge with NO git conflict and surface only as a
+// "duplicate species id" error from validate_content at publish time.
+//
+// Species 30 and 31 are evolution-only DERIVED forms and MUST NEVER appear in
+// an encounter table — validate_evolution_fusion enforces it. They are
+// reachable only by applying an evolution-trigger item to a wild-obtainable
+// source: Cragling (7, Earth) transforms into 30 with item 4 (Tidewell Shard),
+// Shadelet (8, Dark) transforms into 31 with item 5 (Emberheart Cinder).
+//
+// INERT THIS ROUND (ADR-0149 D6): no reducer can supply `applied_item` yet and
+// items 4/5 are unstocked, so neither form is reachable in a running game.
+// Slice B2 ships the apply-item reducer, the shop stocking and the sprites.
+//
+// COMMENT HYGIENE (ADR-0143 D7, gated by pt_d1_roster.rs pt_d1_7): full-line
+// comments ONLY in this file, and no comment here carries the id-shaped
+// needles the append-only-ids / evolution-fusion-content-integrity evals scan
+// for after stripping whole-line comments. Use the "id=N" form instead.
+//
+// Sidegrade stat rule (ADR-0149 D4): BST 452 (30) and 466 (31) sit above their
+// sources (318, 322) but below their level-branch siblings Stoneward (455) and
+// Umbrafang (470), inside the evolved-tier band 440..=490. Each moveset leads
+// with a same-affinity STAB move and keeps one heritage move from the source's
+// affinity.
+[
+    // Tidecrag (Water, bulky special attacker) — the item fork of the Cragling
+    // line: Stoneward trades speed for walls, Tidecrag trades walls for special
+    // offence. Skill 3 Water Gun is the STAB lead; skill 9 Sandblast is the
+    // Earth heritage move carried over from the source.
+    (
+        id: 30,
+        name: "Tidecrag",
+        base_stats: (hp: 84, attack: 60, defense: 90, speed: 46, sp_attack: 94, sp_defense: 78),
+        affinity: Water,
+        learnable_skill_ids: [3, 9],
+    ),
+    // Cindershade (Fire, fast special attacker) — the item fork of the Shadelet
+    // line: Umbrafang is a physical sweeper, Cindershade is a special one with
+    // the roster's highest sp_attack. Skill 2 Fire Fang is the STAB lead;
+    // skill 11 Toxic Sting is the Dark heritage move from the source.
+    (
+        id: 31,
+        name: "Cindershade",
+        base_stats: (hp: 72, attack: 68, defense: 66, speed: 92, sp_attack: 104, sp_defense: 64),
+        affinity: Fire,
+        learnable_skill_ids: [2, 11],
+    ),
+]
