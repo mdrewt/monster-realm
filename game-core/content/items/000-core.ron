@@ -22,4 +22,32 @@
         cure_status: Some(Poison),
         sell_price: 60,
     ),
+    // ---- slice B: evolution-trigger consumables (ADR-0149) ---------------
+    // Items 4 and 5 are the triggers for the Item-branch evolutions of species
+    // 7 (Cragling -> Tidecrag, 30) and 8 (Shadelet -> Cindershade, 31). They
+    // carry NO recruit/train/cure fields on purpose: they are neither bait,
+    // nor a training tonic, nor a battle-use cure item.
+    //
+    // DELIBERATELY UNSTOCKED (ADR-0149 D5/D6): shops/000-core.ron is NOT
+    // touched this round. No reducer can supply `applied_item` yet, so a
+    // stocked item would be a player-facing trap — gold spent on something
+    // use_battle_item rejects and nothing else accepts. Shop stocking (buy
+    // price follows that file's own 40% convention off sell_price) lands with
+    // slice B2, in the same PR as the reducer that makes these usable.
+    //
+    // COMMENT HYGIENE (gated by pt_d3_tuning.rs t6, which scans this directory
+    // for id-shaped needles in BOTH line and block comments): full-line
+    // comments only, and use the "id=N" form when naming a stable content id.
+    (
+        id: 4,
+        name: "Tidewell Shard",
+        description: "A cold, spring-fed shard; the tide it holds remakes a stone-born monster.",
+        sell_price: 200,
+    ),
+    (
+        id: 5,
+        name: "Emberheart Cinder",
+        description: "A cinder that never cools; its ember kindles a shadow-born monster.",
+        sell_price: 200,
+    ),
 ]

@@ -17,6 +17,12 @@
 // Also checked (in-scope for a static content scan):
 //   Rule 3 partial — Dangling species refs: every species id in evolutions and
 //             fusion recipes must exist in the species registry.
+//   Rule 3 partial (Item) — Dangling ITEM refs (ADR-0149, slice B): every
+//             `Item(id)` trigger id in evolutions.ron must exist in the items
+//             registry. Slice B ships the registry's first live Item trigger;
+//             before this slice the eval header above documented "Rule 3
+//             partial — species only" because no Item trigger existed to
+//             check. This closes that gap.
 //
 // Proof-of-teeth: each rule has a fixture pair (BAD must be flagged; GOOD must
 // not) so a regression in the checker is caught before a bad change lands.
@@ -113,6 +119,48 @@ export function parseEvolutions(ron) {
     sidMatch = sidRe.exec(ron);
   }
   return results;
+}
+
+/**
+ * Parse every `Item(id)` evolution TRIGGER id out of an evolutions.ron-shaped
+ * RON string (ADR-0149, slice B). Distinct from `to_species` — this reads the
+ * `trigger: Item(N)` payload, not the branch's target species.
+ *
+ * Uses only literal /regex/ — NO new RegExp(...).
+ *
+ * @param {string} ron Raw RON text (comments stripped separately by the caller).
+ * @returns {number[]} Every Item trigger id found, in source order (duplicates kept).
+ */
+export function parseEvolutionItemTriggers(ron) {
+  const results = [];
+  const re = /trigger\s*:\s*Item\(\s*(\d+)\s*\)/g;
+  let m = re.exec(ron);
+  while (m !== null) {
+    results.push(Number(m[1]));
+    m = re.exec(ron);
+  }
+  return results;
+}
+
+/**
+ * Rule 3 (partial, Item) — Dangling ITEM refs: every `Item(id)` evolution
+ * trigger id must exist in the items registry (ADR-0149, slice B — the
+ * registry's first live Item trigger).
+ *
+ * @param {number[]} triggerIds Every Item trigger id found in evolutions.ron.
+ * @param {Set<number>} knownItemIds The known item id set (from the items registry).
+ * @returns {string[]} Violation descriptions (empty = no violations).
+ */
+export function findDanglingItemRefs(triggerIds, knownItemIds) {
+  const violations = [];
+  for (const id of triggerIds) {
+    if (!knownItemIds.has(id)) {
+      violations.push(
+        `evolution Item trigger references non-existent item ${id} — dangling item reference`,
+      );
+    }
+  }
+  return violations;
 }
 
 /**
@@ -359,6 +407,12 @@ const BAD_DANGLING_EVOLUTIONS = [{ speciesId: 1, targets: [99] }];
 const BAD_DANGLING_FUSION = [{ a: 1, b: 2, to: 99 }];
 const KNOWN_SPECIES = new Set([1, 2, 3, 4, 5, 6]);
 
+// Rule 3 (Item) BAD — an Item trigger referencing a non-existent item 999.
+const BAD_DANGLING_ITEM_TRIGGER_IDS = [999];
+// Rule 3 (Item) GOOD — item 4 exists in the known set.
+const GOOD_ITEM_TRIGGER_IDS = [4];
+const KNOWN_ITEM_IDS = new Set([1, 2, 3, 4, 5]);
+
 // Rule 2 BAD — self-evolution.
 const BAD_SELF_EVOL = [{ speciesId: 1, targets: [1] }];
 // Rule 2 GOOD — no self.
@@ -515,6 +569,42 @@ export default async function () {
     }
   }
 
+  // --- Tooth: parseEvolutionItemTriggers must extract Item trigger ids -------
+  {
+    const ron = `[(species_id: 7, evolutions: [(trigger: Item(4), to_species: 30), (trigger: Level(18), to_species: 9)])]`;
+    const ids = parseEvolutionItemTriggers(ron);
+    if (ids.length !== 1 || ids[0] !== 4) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: parseEvolutionItemTriggers returned ${JSON.stringify(ids)}, expected [4]`,
+      };
+    }
+  }
+
+  // --- Tooth Rule 3 (Item): dangling item trigger must be flagged ------------
+  {
+    const violations = findDanglingItemRefs(BAD_DANGLING_ITEM_TRIGGER_IDS, KNOWN_ITEM_IDS);
+    if (violations.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: Rule 3 (Item) — Item(999) referencing a non-existent item was NOT flagged',
+      };
+    }
+  }
+  // --- Tooth Rule 3 (Item): GOOD — known item id must not be flagged --------
+  {
+    const violations = findDanglingItemRefs(GOOD_ITEM_TRIGGER_IDS, KNOWN_ITEM_IDS);
+    if (violations.length > 0) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: Rule 3 (Item) — Item(4), a known item, was incorrectly flagged: ${violations.join('; ')}`,
+      };
+    }
+  }
+
   // --- Tooth Rule 2: self-evolution must be flagged -------------------------
   {
     const violations = findSelfEvolutions(BAD_SELF_EVOL);
@@ -579,7 +669,9 @@ export default async function () {
   const failures = [];
 
   let speciesIds;
+  let itemIds;
   let evolutions;
+  let evolutionItemTriggers;
   let fusionRecipes;
   let encounterSpecies;
 
@@ -592,10 +684,20 @@ export default async function () {
   }
 
   try {
+    // Items registry (glob-loaded directory, ADR-0057) — read for the new
+    // Item-trigger dangling-reference rule (ADR-0149, slice B).
+    const itemsRon = readRegistryDir('game-core/content/items');
+    itemIds = new Set([...itemsRon.matchAll(/\bid\s*:\s*(\d+)/g)].map((m) => Number(m[1])));
+  } catch (e) {
+    return { name, pass: false, detail: `cannot read items registry: ${e.message}` };
+  }
+
+  try {
     // Evolutions registry (single file — fusion/evolutions RON is not yet
     // glob-loaded; ADR-0060 notes it as a named deferral for a future content slice).
     const evolRon = readRonFile('game-core/content/evolutions.ron');
     evolutions = parseEvolutions(evolRon);
+    evolutionItemTriggers = parseEvolutionItemTriggers(evolRon);
   } catch (e) {
     return { name, pass: false, detail: `cannot read evolutions.ron: ${e.message}` };
   }
@@ -623,6 +725,10 @@ export default async function () {
   // Rule 3 — No dangling species refs.
   const danglingRefs = findDanglingSpeciesRefs(evolutions, fusionRecipes, speciesIds);
   if (danglingRefs.length > 0) failures.push(...danglingRefs);
+
+  // Rule 3 (Item) — No dangling item refs (ADR-0149, slice B).
+  const danglingItemRefs = findDanglingItemRefs(evolutionItemTriggers, itemIds);
+  if (danglingItemRefs.length > 0) failures.push(...danglingItemRefs);
 
   // Rule 5 — Fusion coherence.
   const fusionCoherence = findFusionCoherenceViolations(fusionRecipes);
@@ -665,10 +771,11 @@ export default async function () {
     name,
     pass: true,
     detail:
-      `species registry ${speciesIds.size} ids; ` +
-      `${evolutions.length} evolution blocks (${evolutionTargets.length} targets); ` +
-      `${fusionRecipes.length} fusion recipes — no self-evolution, no dangling refs, ` +
+      `species registry ${speciesIds.size} ids; items registry ${itemIds.size} ids; ` +
+      `${evolutions.length} evolution blocks (${evolutionTargets.length} targets, ` +
+      `${evolutionItemTriggers.length} Item triggers); ` +
+      `${fusionRecipes.length} fusion recipes — no self-evolution, no dangling species/item refs, ` +
       `no fusion-coherence violations, no derived forms in wild, no duplicate pairs; ` +
-      'sync_content calls validate_evolution_fusion (teeth: 12 fixtures verified)',
+      'sync_content calls validate_evolution_fusion (teeth: 14 fixtures verified)',
   };
 }

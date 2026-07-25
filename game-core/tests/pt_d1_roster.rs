@@ -381,6 +381,18 @@ fn pt_d1_1_teeth_duplicate_species_id_is_rejected() {
 // pt-d1-2 — evolution wiring
 // ===========================================================================
 
+// TIGHTENED (not weakened) by ADR-0149 D7 / slice B: species 7/8 legitimately
+// gained a second, Item-triggered branch (`item_evolution_content.rs`'s
+// T-B1a/T-B1b/T-B1c own that criterion in full). The old form here was
+// `assert_eq!(blocks[0].evolutions, vec![want])` against a length-1 vector,
+// so ANY second branch broke it — cardinality, not order. A weaker "contains
+// the level branch" replacement would have let a future slice silently
+// replace the level payoff, so this keeps every guarantee the old form had
+// (exactly one block per source; the pinned Level branch present VERBATIM)
+// and adds the new one this slice requires: exactly one OTHER branch, and it
+// must be an `Item` trigger (not e.g. a second, redundant Level/Bond branch).
+// It does NOT pin the Item branch's item id or target — that belongs to
+// `item_evolution_content.rs`'s T-B1b, which is the slice-B-owned criterion.
 #[test]
 fn pt_d1_2_evolution_blocks_for_7_and_8_are_exact() {
     let evolutions = load_evolutions().expect("evolutions registry must parse");
@@ -392,14 +404,37 @@ fn pt_d1_2_evolution_blocks_for_7_and_8_are_exact() {
             1,
             "pt-d1-2: exactly ONE evolutions block for species {src} (two blocks are a validator Err)"
         );
-        let want = EvolutionCondition {
+        let want_level = EvolutionCondition {
             trigger: EvolutionTrigger::Level(Level::new(level).expect("level in [1,100]")),
             to_species: target,
         };
+        let level_count = blocks[0]
+            .evolutions
+            .iter()
+            .filter(|c| *c == &want_level)
+            .count();
         assert_eq!(
-            blocks[0].evolutions,
-            vec![want],
-            "pt-d1-2: species {src} must have exactly one branch Level({level}) -> {target} — kills a Bond/Item trigger or an extra branch"
+            level_count, 1,
+            "pt-d1-2: species {src} must still carry Level({level}) -> {target} VERBATIM exactly \
+             once — kills a replaced or duplicated level payoff (ADR-0149 D7)"
+        );
+        assert_eq!(
+            blocks[0].evolutions.len(),
+            2,
+            "pt-d1-2: species {src} must have exactly 2 branches (the pinned Level branch above \
+             plus ADR-0149's new Item branch) — kills an extra, unrelated branch; got {:?}",
+            blocks[0].evolutions
+        );
+        let other_is_item = blocks[0]
+            .evolutions
+            .iter()
+            .filter(|c| *c != &want_level)
+            .all(|c| matches!(c.trigger, EvolutionTrigger::Item(_)));
+        assert!(
+            other_is_item,
+            "pt-d1-2: species {src}'s non-Level branch must be an Item trigger (ADR-0149 B-1); \
+             got {:?}",
+            blocks[0].evolutions
         );
     }
 }

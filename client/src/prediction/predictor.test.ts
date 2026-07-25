@@ -1898,8 +1898,7 @@ function runLoop(opts: RunLoopOptions): RunLoopResult {
       const a = pq[i] as SimEvent;
       const b = pq[best] as SimEvent;
       const better =
-        a.t < b.t ||
-        (a.t === b.t && (a.prio < b.prio || (a.prio === b.prio && a.seq < b.seq)));
+        a.t < b.t || (a.t === b.t && (a.prio < b.prio || (a.prio === b.prio && a.seq < b.seq)));
       if (better) best = i;
     }
     return pq.splice(best, 1)[0] as SimEvent;
@@ -2527,8 +2526,9 @@ describe('nh2-1 ADR-0148 U8: switching direction mid-hold commits at most one mo
     // complaint. The gate keeps at most one owed step, so at most one stale commit.
     // KILLS: an always-open gate (server queue saturates at cap 2 -> two more East
     // commits AND the North keydown is outright REJECTED and lost).
-    expect(r.commits.filter((c) => c.at > SWITCH_AT && c.dir === 'East').length)
-      .toBeLessThanOrEqual(1);
+    expect(
+      r.commits.filter((c) => c.at > SWITCH_AT && c.dir === 'East').length,
+    ).toBeLessThanOrEqual(1);
 
     // The switch actually took effect on the server.
     expect(r.commits.filter((c) => c.dir === 'North').length).toBeGreaterThanOrEqual(1);
@@ -2544,7 +2544,8 @@ describe('nh2-1 ADR-0148 U8: switching direction mid-hold commits at most one mo
 
   it('U8 RED-TODAY PROOF: without the gate 2+ stale East steps commit after the switch', () => {
     const r = runLoop({ durationMs: 1200, script: switchScript, gateEnabled: false });
-    expect(r.commits.filter((c) => c.at > SWITCH_AT && c.dir === 'East').length)
-      .toBeGreaterThanOrEqual(2);
+    expect(
+      r.commits.filter((c) => c.at > SWITCH_AT && c.dir === 'East').length,
+    ).toBeGreaterThanOrEqual(2);
   });
 });

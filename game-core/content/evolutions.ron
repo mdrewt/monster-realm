@@ -29,15 +29,38 @@
     // MERGE NOTE: this file is a single non-glob file, so a concurrent roster wave
     // also appends here. Keep both stanzas on conflict — nothing else asserts that
     // a given block survives except the pt-d1 gating test.
+    // ---- slice B item-triggered branches (ADR-0149) ----------------------
+    // Each of the two blocks below gains a SECOND branch, triggered by an item
+    // (4 Tidewell Shard for Cragling, 5 Emberheart Cinder for Shadelet) and
+    // targeting a new evolution-only DERIVED form (30 Tidecrag, 31
+    // Cindershade, both in species/060-item-evo-derived.ron).
+    //
+    // ORDERING IS LOAD-BEARING (ADR-0149 D2): the item branch is declared
+    // FIRST, ahead of the existing level branch. resolve_evolution is
+    // FIRST-wins over declaration order, and an item trigger provably never
+    // matches while no item is applied (pinned by
+    // item_trigger_never_fires_passively), so this is behaviour-neutral for
+    // every input reachable today — every passive computation is unchanged.
+    // It is NOT neutral for the future: once a reducer supplies an applied
+    // item alongside the monster's real level, a level-18+ Cragling applying
+    // item 4 must transform into 30 rather than falling through to the level
+    // branch and consuming the item for the wrong target. Declaring the item
+    // branch first fixes that at zero cost now instead of forcing a content
+    // edit later.
+    //
+    // COMMENT HYGIENE as required by this file's header: full-line comments
+    // only, and no comment here carries the scanned field-name sequences.
     (
         species_id: 7,
         evolutions: [
+            (trigger: Item(4), to_species: 30),
             (trigger: Level(18), to_species: 9),
         ],
     ),
     (
         species_id: 8,
         evolutions: [
+            (trigger: Item(5), to_species: 31),
             (trigger: Level(20), to_species: 10),
         ],
     ),
