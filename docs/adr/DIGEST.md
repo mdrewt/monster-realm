@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 112 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 113 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -120,6 +120,7 @@ Generated from 112 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0143](./0143-playtest-roster-wave-1.md) | 0143 — pt-d1 playtest roster wave 1: two new species lines (Earth + Dark) as pure ADR-0057 content, shipped data-complete but not yet wild-obtainable | Accepted | content, evolution-fusion, client-ui | pt-d1 (M-playtest-d content pack — roster wave 1; EARS pt-d1-1..6) | Add species 7–10 (two Earth/Dark lines, one evolution each) in a NEW glob-loaded species part file, plus two `evolutions.ron` blocks and four albedo sheets; bump `CONTENT_VERSION` 12→13; they stay unreachable until a later slice. |
 | [0144](./0144-pt-d2-roster-wave-2.md) | 0144 — pt-d2 roster wave 2: reserved-block content fan-out + a species-parameterized sprite generator that imports (never edits) the shared art module | Accepted | content, ci-gates, tooling-docs | pt-d2 (M-playtest-d content pack — roster wave 2 + placeholder-replacement sprites; EARS pt-d2-1..12) | Concurrent content slices claim reserved id/filename bands (pt-d2: ids 20–29, `05x-*.ron`); sprites come from a new generator that imports rather than edits the shared art module; slice invariants live in a new auto-discovered eval. |
 | [0145](./0145-encounter-recruit-economy-tuning-pass.md) | 0145 — pt-d3 tuning pass: zone 0 frozen, zone 1 carries the wild-legal roster, one economy fix | Accepted | content, economy-quests, ci-gates | pt-d3 (M-playtest-d content pack — encounter/recruit/economy tuning; EARS pt-d3-1..6) | Freeze zone 0 byte-identical (a remote-CI e2e derives two probability budgets from its exact weights); give zone 1 a new table carrying all 7 wild-legal forms; stock the unobtainable Antidote; pin H1 and the e2e level ceiling as tests. |
+| [0146](./0146-movement-suppression-preventdefault.md) | 0146 — nh1: movement-suppression must cancel the browser's native key defaults, target-aware, on both the overlay and the key-repeat return paths | Accepted | client-ui, movement-netcode | nh1 (M-postgate-netcode-hardening — movement input responsiveness; EARS nh1-1, nh1-2) | Both early-return paths in the keydown handler delegate to one `main.ts`-local `suppressNativeMovementDefault(e)`, which calls `preventDefault()` for movement/Space keys unless the event target owns that key's native action. |
 | [0147](./0147-fuse-field-carry-and-fusion-eligibility.md) | 0147 — fuse() field-carry repair (taxed, not reset) + fusion_eligible guard SSOT | Accepted | evolution-fusion, ci-gates | A0 (M-postgate-evolution-fusion-hardening — fuse() field-carry fix + fusion_eligible extraction; EARS A0-1..A0-9) | fuse() carries taxed individuality: bond=75% of max, level=max(75% of avg, 50% of max)>=1, EVs=75% of per-stat avg, xp=level^3, nickname param. Pure fusion_eligible (no self-fuse; both parents level>=10, bond>=120) is the sole guard SSOT. |
 
 ## Harness design corpus (H- namespace)
@@ -231,6 +232,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0135](./0135-pt-c2b-help-overlay.md) — pt-c2b — In-client help overlay (`?`) + tester runbook (pt-c2b) (Accepted)
 - [0141](./0141-ptc5g-render-divergence-snap.md) — ptc5g (M-playtest-c.5 pre-gate residuals — position-divergence render snap; resolves M10.5 D-render-snap, EARS ptc5g-1..3) — 0141 — ptc5g position-divergence render snap: own-render snaps on a > 1-tile (Chebyshev) authoritative target jump via the existing `snapped` path (Accepted)
 - [0142](./0142-ledger-reconciliation-and-netcode-reachability-pins.md) — ptc5f (M-playtest-c.5 pre-gate residuals — ledger reconciliation, closes M-playtest-c.5; EARS ptc5f-1/ptc5f-2 + Decision A/E pins) — 0142 — ptc5f ledger reconciliation + deferred-netcode reachability pins (Accepted)
+- [0146](./0146-movement-suppression-preventdefault.md) — nh1 (M-postgate-netcode-hardening — movement input responsiveness; EARS nh1-1, nh1-2) — 0146 — nh1: movement-suppression must cancel the browser's native key defaults, target-aware, on both the overlay and the key-repeat return paths (Accepted)
 
 ### content
 
@@ -306,6 +308,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0140](./0140-ptc5e-ssot-content-dedup-polish.md) — ptc5e (M-playtest-c.5 pre-gate residuals — SSOT/content/dedup polish, EARS ptc5e-1..5) — 0140 — ptc5e SSOT / content / dedup polish: CARE magnitudes + shared cooldown-ready predicate to game-core; heal-location stale-delete; isPvpBattle canonicalization; resetCharacters comment fix (Accepted)
 - [0141](./0141-ptc5g-render-divergence-snap.md) — ptc5g (M-playtest-c.5 pre-gate residuals — position-divergence render snap; resolves M10.5 D-render-snap, EARS ptc5g-1..3) — 0141 — ptc5g position-divergence render snap: own-render snaps on a > 1-tile (Chebyshev) authoritative target jump via the existing `snapped` path (Accepted)
 - [0143](./0143-playtest-roster-wave-1.md) — pt-d1 (M-playtest-d content pack — roster wave 1; EARS pt-d1-1..6) — 0143 — pt-d1 playtest roster wave 1: two new species lines (Earth + Dark) as pure ADR-0057 content, shipped data-complete but not yet wild-obtainable (Accepted)
+- [0146](./0146-movement-suppression-preventdefault.md) — nh1 (M-postgate-netcode-hardening — movement input responsiveness; EARS nh1-1, nh1-2) — 0146 — nh1: movement-suppression must cancel the browser's native key defaults, target-aware, on both the overlay and the key-repeat return paths (Accepted)
 
 ### ci-gates
 
