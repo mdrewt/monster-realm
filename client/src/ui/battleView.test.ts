@@ -848,3 +848,249 @@ describe('BattleView m16b RT-PVP-DS-01: double-submit suppression — no buttons
     document.body.removeChild(parent);
   });
 });
+
+// =============================================================================
+// ux1 (ADR-0151) — EARS ux1-2: persistent "Press Esc to continue" hint on
+// battle-RESULT overlays.
+//
+// SOURCE OF TRUTH (EARS ux1-2): "Battle-result states specifically (victory /
+// flee / defeat) SHALL show a persistent 'Press Esc to continue' (or equivalent)
+// hint for as long as that overlay is showing."
+//
+// CONTRACT UNDER TEST (the implementer's side of the handoff):
+//   - constructor creates a `<div data-testid="battle-continue-hint">`, appended
+//     to #root immediately AFTER #outcomeEl, textContent set ONCE in the
+//     constructor to `Press Esc to continue`, style.display = 'none' initially;
+//   - `#renderOutcome(vm)` toggles it: hidden on outcome==='Ongoing' (the branch
+//     that already early-returns with #outcomeEl display:none), shown on EVERY
+//     terminal outcome (the branch that already sets display:'block');
+//   - the `refresh(null)` branch resets it to display:'none', alongside the
+//     existing #weatherEl / #pvpStatusEl resets.
+//
+// RED REASON (current tree): battleView.ts creates no element carrying
+// data-testid="battle-continue-hint" at all, so the querySelector returns null
+// and B1 / B2 / B3 / B5 / B6 all FAIL on the first `expect(el).not.toBeNull()`.
+// B4 PASSES VACUOUSLY TODAY — with no element in the DOM its "absent OR
+// display:none" contract is trivially satisfied by absence; B4 only becomes
+// load-bearing once the element exists, at which point it is the ONLY tooth
+// standing between the spec and an always-visible hint. That asymmetry is
+// intentional and is stated again inline on B4.
+// =============================================================================
+
+const CONTINUE_HINT_SELECTOR = '[data-testid="battle-continue-hint"]';
+
+describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overlays', () => {
+  it('BITES: outcome="SideAWins" (victory) → continue hint present, visible, and its text contains "Esc"', () => {
+    // WRONG IMPL KILLED (1): an early `return` placed before the hint toggle in
+    //   #renderOutcome (e.g. tucking the toggle under the switch's default arm, which is
+    //   unreachable) — the element would exist but stay at its constructor display:none.
+    // WRONG IMPL KILLED (2): a hint element created with empty/blanked textContent, or
+    //   whose text is re-written per-render and left empty on the victory path — the
+    //   overlay would then promise nothing and ux1-2 would be unmet while a mere
+    //   presence check still passed.
+    // WRONG IMPL KILLED (3): a hint wired to only ONE outcome (see B2/B3 for the others).
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    view.refresh(makeTerminalVM('SideAWins'));
+    view.show();
+
+    const el = parent.querySelector(CONTINUE_HINT_SELECTOR) as HTMLElement | null;
+    expect(
+      el,
+      'ux1-2: a [data-testid="battle-continue-hint"] element must exist on the battle overlay — ' +
+        'an impl that never creates the element leaves the victory overlay with no exit affordance',
+    ).not.toBeNull();
+    expect(
+      el!.style.display,
+      'ux1-2: the continue hint must be VISIBLE on the victory result — an impl that returns ' +
+        'from #renderOutcome before the toggle leaves it at the constructor display:none',
+    ).not.toBe('none');
+    expect(
+      el!.textContent,
+      'ux1-2: the hint text must name the Esc key — a blank or generic hint does not tell the ' +
+        'player how to dismiss the result overlay',
+    ).toContain('Esc');
+
+    document.body.removeChild(parent);
+  });
+
+  it('BITES: outcome="SideBWins" (defeat) → continue hint present, visible, and its text contains "Esc"', () => {
+    // WRONG IMPL KILLED: a hint toggled only for the win/flee paths (e.g. wired inside the
+    // 'SideAWins' switch arm rather than before/after the whole switch) — the DEFEAT overlay,
+    // the one a frustrated player is most likely to be stuck on, would show no way out.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    view.refresh(makeTerminalVM('SideBWins'));
+    view.show();
+
+    const el = parent.querySelector(CONTINUE_HINT_SELECTOR) as HTMLElement | null;
+    expect(
+      el,
+      'ux1-2: [data-testid="battle-continue-hint"] must exist for the defeat result',
+    ).not.toBeNull();
+    expect(
+      el!.style.display,
+      'ux1-2: the continue hint must be visible on the DEFEAT result — an impl that toggles the ' +
+        'hint inside a single switch arm (e.g. only SideAWins) fails exactly here',
+    ).not.toBe('none');
+    expect(el!.textContent, 'ux1-2: the defeat hint must name the Esc key').toContain('Esc');
+
+    document.body.removeChild(parent);
+  });
+
+  it('BITES: outcome="Fled" → continue hint present, visible, and its text contains "Esc"', () => {
+    // WRONG IMPL KILLED: a hint gated on "a battle was won or lost" (e.g. `if (vm.outcome ===
+    // 'SideAWins' || vm.outcome === 'SideBWins')`) — the Fled overlay is a battle-RESULT state
+    // per EARS ux1-2 and is enumerated there explicitly, so it must carry the hint too.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    view.refresh(makeTerminalVM('Fled'));
+    view.show();
+
+    const el = parent.querySelector(CONTINUE_HINT_SELECTOR) as HTMLElement | null;
+    expect(
+      el,
+      'ux1-2: [data-testid="battle-continue-hint"] must exist for the Fled result',
+    ).not.toBeNull();
+    expect(
+      el!.style.display,
+      'ux1-2: the continue hint must be visible on the FLED result — EARS ux1-2 enumerates ' +
+        'victory / flee / defeat, so an outcome-subset gate fails here',
+    ).not.toBe('none');
+    expect(el!.textContent, 'ux1-2: the flee hint must name the Esc key').toContain('Esc');
+
+    document.body.removeChild(parent);
+  });
+
+  it('BITES: outcome="Ongoing" → continue hint hidden (absent, or display:none)', () => {
+    // THIS CASE IS WHAT MAKES B1/B2/B3 NON-VACUOUS. Without it, the cheapest way to turn
+    // B1-B3 green is to create the element in the constructor with display:block (or with no
+    // display at all) and never toggle it — mere EXISTENCE would satisfy all three. This case
+    // rejects that impl: during an ongoing battle the result hint is a lie (there is no result
+    // to continue past, and Esc during an ongoing battle is not the "continue" affordance
+    // ux1-2 describes), so it must be hidden.
+    //
+    // WRONG IMPL KILLED: the always-visible hint — element created display:block in the
+    // constructor and never touched by #renderOutcome's Ongoing early-return branch.
+    //
+    // NOTE (stated up front, per the RED-reason header): this assertion PASSES VACUOUSLY on
+    // the current tree, because no such element exists and absence satisfies the contract. It
+    // becomes load-bearing the instant the element is created — which is precisely the moment
+    // the always-visible mistake becomes possible.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    // makeRecruitVM() is outcome:'Ongoing' by default.
+    view.refresh(makeRecruitVM());
+    view.show();
+
+    const el = parent.querySelector(CONTINUE_HINT_SELECTOR) as HTMLElement | null;
+    if (el !== null) {
+      expect(
+        el.style.display,
+        'ux1-2: during an ONGOING battle the "Press Esc to continue" hint must be hidden — an ' +
+          'element created display:block in the constructor and never toggled by the Ongoing ' +
+          'early-return branch of #renderOutcome fails here (and that impl is exactly what ' +
+          'would otherwise make B1/B2/B3 pass without any toggle logic at all)',
+      ).toBe('none');
+    }
+    // Absent entirely also satisfies "hidden" (today's state).
+
+    document.body.removeChild(parent);
+  });
+
+  it('BITES: PvP terminal result (isPvp=true) → continue hint STILL visible (ADR-0151 D3 decision-pin)', () => {
+    // DECISION-PIN for ADR-0151 D3: the hint toggle is called with NO `isPvp` branch, on
+    // purpose. This case freezes that decision so a later "PvP is different" refactor cannot
+    // quietly add one.
+    //
+    // WRONG IMPL KILLED: a future `if (!vm.isPvp)` (or `vm.isPvp ? … : …`) guard wrapped
+    // around the toggle — the PvP victory/defeat overlay would then lose its exit affordance
+    // while all of B1/B2/B3 stayed green.
+    //
+    // EXPLICIT SCOPE LIMIT — this must NOT be read as evidence that "Press Esc to continue"
+    // is TRUTHFUL for the *challenged* PvP player. A PvP battle is a single row keyed to the
+    // CHALLENGER, so side B never receives this overlay through the production path at all;
+    // this test drives the view directly with a hand-built VM. What is pinned here is only
+    // the absence of an isPvp branch in the view's toggle — nothing about side-B delivery.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    view.refresh({ ...makeTerminalVM('SideAWins'), isPvp: true });
+    view.show();
+
+    const el = parent.querySelector(CONTINUE_HINT_SELECTOR) as HTMLElement | null;
+    expect(
+      el,
+      'ux1-2 / ADR-0151 D3: the continue hint element must exist for a PvP terminal result too',
+    ).not.toBeNull();
+    expect(
+      el!.style.display,
+      'ADR-0151 D3 decision-pin: the continue-hint toggle takes NO isPvp branch — adding an ' +
+        '`if (!vm.isPvp)` guard around it would strip the exit affordance from PvP result ' +
+        'overlays while the PvE cases stayed green',
+    ).not.toBe('none');
+    expect(el!.textContent, 'ux1-2: the PvP result hint must name the Esc key').toContain('Esc');
+
+    document.body.removeChild(parent);
+  });
+
+  it('BITES: refresh(null) resets the continue hint to display:none (no state leak across battles)', () => {
+    // WRONG IMPL KILLED: an impl that toggles the hint ONLY inside #renderOutcome and omits
+    // the reset in the `refresh(null)` branch. Measured against the contract: after a terminal
+    // result the element holds display:block; refresh(null) then calls hide() on #root and
+    // returns WITHOUT touching the hint, so the element retains display:block underneath — and
+    // a later hide()/show() pair re-exposes a stale "Press Esc to continue" over a screen that
+    // has no result to continue past.
+    //
+    // LATENT, NOT LIVE, TODAY: show() is only reachable from inside refresh(vm), and every such
+    // path runs #renderOutcome, which would re-hide the hint for an Ongoing battle. This tooth
+    // is still binding because the refresh(null) branch ALREADY resets #weatherEl and
+    // #pvpStatusEl for exactly this reason — omitting the hint would break that branch's own
+    // stated invariant ("null VM ⇒ every banner is reset"), and the invariant is what protects
+    // the next caller that reaches show() by a different route.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    view.refresh(makeTerminalVM('Fled'));
+    view.show();
+
+    const elAfterResult = parent.querySelector(CONTINUE_HINT_SELECTOR) as HTMLElement | null;
+    expect(
+      elAfterResult,
+      'precondition: the continue hint must exist after a terminal result',
+    ).not.toBeNull();
+    expect(
+      elAfterResult!.style.display,
+      'precondition: the continue hint must be visible after the Fled result (else the reset ' +
+        'assertion below would pass for the wrong reason)',
+    ).not.toBe('none');
+
+    // Battle ends / the VM goes away.
+    view.refresh(null);
+
+    const elAfterNull = parent.querySelector(CONTINUE_HINT_SELECTOR) as HTMLElement | null;
+    expect(
+      elAfterNull,
+      'the hint element must not be removed from the DOM by refresh(null)',
+    ).not.toBeNull();
+    expect(
+      elAfterNull!.style.display,
+      'ux1-2 state-leak guard: the refresh(null) branch must reset the continue hint to ' +
+        'display:none alongside the existing #weatherEl / #pvpStatusEl resets — an impl that ' +
+        'toggles the hint only inside #renderOutcome leaves display:block latched across the ' +
+        'null refresh, breaking that branch own "every banner is reset" invariant',
+    ).toBe('none');
+
+    document.body.removeChild(parent);
+  });
+});
