@@ -5,11 +5,15 @@
 //! base stats (not the source), and `current_hp` is clamped to the new derived HP
 //! (cannot exceed the new max, but damage is preserved when the new max is higher).
 //!
-//! `fuse` produces an offspring `MonsterInstance` from two parents and an offspring
-//! species. The offspring is always fresh (level 1, zero EVs, default bond, full HP,
-//! no nickname). Per-stat IVs are `max(a.iv, b.iv)`; nature comes from the
-//! higher-bond parent (tie → `a`); party_slot is the min of the parents' present
-//! slots (or `None` if both are `None`).
+//! `fuse` produces an offspring `MonsterInstance` from two parents, an offspring
+//! species, and an optional chosen nickname. The offspring carries TAXED
+//! individuality (ADR-0147, repairing the ADR-0019 "carry/combine, not erase"
+//! drift): bond = 75% of the max parent bond; level = the greater of 75% of the
+//! parents' average level and 50% of the max parent level (never below 1); EVs =
+//! 75% of the per-stat average; xp = `xp_for_level(level)`. Per-stat IVs are
+//! `max(a.iv, b.iv)`; nature comes from the higher-bond parent (tie → `a`);
+//! party_slot is the min of the parents' present slots (or `None` if both are
+//! `None`); current_hp is full at the new derived stats.
 
 use crate::content::Species;
 use crate::monster::rules::{derive_stats, xp_for_level};
@@ -45,28 +49,64 @@ pub fn evolve(monster: &MonsterInstance, to_species: &Species) -> MonsterInstanc
     out
 }
 
-/// Fuse two parent monsters into a new offspring of `offspring` species.
+/// Percentage of the parents' combined investment (bond / averaged level / EVs)
+/// that survives a fusion — the ADR-0147 fusion tax. `120 × 75% = 90 < 120`, so
+/// a minimum-bond parent pair yields an offspring below `MIN_FUSION_BOND` (see
+/// `eligibility.rs`) — the tax, not a lock, is what prevents a carrier loop.
+pub const FUSION_EFFICIENCY: u32 = 75;
+
+/// Floor on level carry: the offspring is never below this percentage of the
+/// STRONGER parent's level, protecting a lopsided pair from a low taxed average
+/// (ADR-0147).
+pub const LEVEL_RETENTION_FLOOR: u32 = 50;
+
+/// `v * pct / 100`, truncating toward zero. Domain: `v * pct` must fit in `u32`
+/// (callers pass v <= 255 and pct <= 75 — far inside the safe range).
+fn scale_u32(v: u32, pct: u32) -> u32 {
+    v * pct / 100
+}
+
+/// Integer-floor average. Domain: `a + b` must fit in `u32` (callers pass
+/// values <= 255).
+fn avg_u32(a: u32, b: u32) -> u32 {
+    (a + b) / 2
+}
+
+/// Fuse two parent monsters into a new offspring of `offspring` species,
+/// carrying TAXED individuality (ADR-0147; repairs the ADR-0019 drift where
+/// fusion hard-reset the relationship half of a monster's identity).
 ///
 /// Offspring properties:
 /// - `species_id` = `offspring.id`
-/// - `ivs`: per-stat `max(a.iv, b.iv)` for each of the six stats
-/// - `nature`: higher-bond parent's nature (tie → `a`'s nature)
-/// - `bond`: `Bond::default_bond()` (70)
+/// - `ivs`: per-stat `max(a.iv, b.iv)` for each of the six stats (unchanged)
+/// - `nature`: higher-bond parent's nature (tie → `a`'s nature) (unchanged)
+/// - `bond`: `scale_u32(max(a.bond, b.bond), FUSION_EFFICIENCY)` — 75% of the
+///   max parent bond, never `Bond::default_bond()`
+/// - `level`: `max(scale_u32(avg(a.level, b.level), FUSION_EFFICIENCY),
+///   scale_u32(max(a.level, b.level), LEVEL_RETENTION_FLOOR)).max(1)`
+/// - `xp`: `xp_for_level(level)` — the level/xp pair invariant
+///   `level_for_xp(xp) == level` holds by construction
+/// - `evs`: per-stat `scale_u32(avg(a.ev, b.ev), FUSION_EFFICIENCY)`
+/// - `nickname`: `chosen_nickname` (a fused monster is named by its owner, or
+///   unnamed — a parent's nickname is never carried implicitly)
 /// - `party_slot`: min of present (Some) slots; `None` if both parents have `None`
-/// - `level`: 1
-/// - `evs`: `EVs::zero()`
-/// - `nickname`: `None`
-/// - `current_hp`: derived HP at level 1 (full)
-/// - `xp`: `xp_for_level(Level::new(1).unwrap())`
-/// - `derived_stats`: `derive_stats(offspring.base_stats, offspring_ivs, zero_evs, nature, L1)`
+/// - `current_hp`: full at the new derived stats
+/// - `derived_stats`: derived from the offspring base stats and the TAXED
+///   level and EVs
 ///
-/// **Order-independence:** `fuse(a, b, s) == fuse(b, a, s)` for every field EXCEPT
-/// `nature` (and the nature-dependent non-HP `derived_stats`) when the two parents'
-/// bonds are EQUAL — then the first argument's nature wins. Callers that need a
-/// reproducible result regardless of selection order MUST canonicalize parent order
-/// first (the M10b reducer's obligation — ADR-0061 §4).
+/// **Order-independence:** every carry formula is symmetric in `(a, b)` (`max`,
+/// `avg`), so `fuse(a, b, s, n) == fuse(b, a, s, n)` for every field EXCEPT
+/// `nature` (and the nature-dependent non-HP `derived_stats`) when the two
+/// parents' bonds are EQUAL — then the first argument's nature wins. Callers
+/// that need a reproducible result regardless of selection order MUST
+/// canonicalize parent order first (the M10b reducer's obligation — ADR-0061 §4).
 #[must_use]
-pub fn fuse(a: &MonsterInstance, b: &MonsterInstance, offspring: &Species) -> MonsterInstance {
+pub fn fuse(
+    a: &MonsterInstance,
+    b: &MonsterInstance,
+    offspring: &Species,
+    chosen_nickname: Option<String>,
+) -> MonsterInstance {
     // Per-stat IV max through ONE closure — a field transposition is impossible.
     let iv = |k: StatKind| a.ivs.get(k).max(b.ivs.get(k));
     let ivs = IVs::new(
@@ -82,8 +122,47 @@ pub fn fuse(a: &MonsterInstance, b: &MonsterInstance, offspring: &Species) -> Mo
     // Higher-bond parent's nature; `>=` resolves an equal-bond tie to `a`.
     let nature = if a.bond >= b.bond { a.nature } else { b.nature };
 
-    let level = Level::new(1).expect("1 is a valid level");
-    let evs = EVs::zero();
+    // Bond: 75% of the max parent bond. max bond 255 → 255*75/100 = 191 <= u8::MAX,
+    // so the conversion is provably infallible.
+    let bond_raw = u32::from(a.bond.value().max(b.bond.value()));
+    let bond = Bond::new(
+        u8::try_from(scale_u32(bond_raw, FUSION_EFFICIENCY))
+            .expect("max bond 255 * 75 / 100 = 191 <= u8::MAX"),
+    );
+
+    // Level: taxed average with a retention floor. Bounds proof: avg <= 100 →
+    // 75% <= 75; max <= 100 → 50% <= 50; so level_raw <= 75, and `.max(1)`
+    // (reachable only for two level-1 parents, where both branches floor to 0)
+    // keeps it >= 1 — `Level::new` over 1..=75 is provably infallible.
+    let (la, lb) = (u32::from(a.level.as_u8()), u32::from(b.level.as_u8()));
+    let level_raw = scale_u32(avg_u32(la, lb), FUSION_EFFICIENCY)
+        .max(scale_u32(la.max(lb), LEVEL_RETENTION_FLOOR))
+        .max(1);
+    let level = Level::new(u8::try_from(level_raw).expect("level_raw <= 75 <= u8::MAX"))
+        .expect("level_raw is in 1..=75 by the .max(1) floor and the 75% ceiling");
+
+    // EVs: 75% of the per-stat average. Bounds proof: each parent stat <= 252
+    // (EVs::new cap), so avg <= 252 and 252*75/100 = 189 <= 252 (per-stat cap
+    // holds); totals: sum_k floor(0.75*avg_k) <= 0.75 * (510+510)/2 = 382.5, so
+    // the total is <= 382 <= 510 (budget cap holds) — `EVs::new` is provably
+    // infallible for two individually-valid parents.
+    let ev = |k: StatKind| -> u16 {
+        u16::try_from(scale_u32(
+            avg_u32(u32::from(a.evs.get(k)), u32::from(b.evs.get(k))),
+            FUSION_EFFICIENCY,
+        ))
+        .expect("per-stat avg <= 252 -> taxed <= 189 <= u16::MAX")
+    };
+    let evs = EVs::new(
+        ev(StatKind::Hp),
+        ev(StatKind::Attack),
+        ev(StatKind::Defense),
+        ev(StatKind::Speed),
+        ev(StatKind::SpAttack),
+        ev(StatKind::SpDefense),
+    )
+    .expect("per-stat <= 189 <= 252; total <= 382 <= 510");
+
     let derived = derive_stats(&offspring.base_stats, &ivs, &evs, &nature, level);
 
     // Min of the PRESENT slots; `None` only if both are `None` (an active parent
@@ -92,13 +171,13 @@ pub fn fuse(a: &MonsterInstance, b: &MonsterInstance, offspring: &Species) -> Mo
 
     MonsterInstance {
         species_id: offspring.id,
-        nickname: None,
+        nickname: chosen_nickname,
         level,
         xp: xp_for_level(level),
         ivs,
         nature,
         evs,
-        bond: Bond::default_bond(),
+        bond,
         current_hp: derived.hp,
         derived_stats: derived,
         party_slot,

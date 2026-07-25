@@ -57,7 +57,10 @@ pub use dialogue::{
     find_entry_node, Condition, DialogueChoice, DialogueEffect, DialogueError, DialogueNode,
     DialogueTree, PlayerDialogueState,
 };
-pub use evolution::{evolve, evolves_to, fuse, resolve_evolution};
+pub use evolution::{
+    evolve, evolves_to, fuse, fusion_eligible, resolve_evolution, FusionError, MIN_FUSION_BOND,
+    MIN_FUSION_LEVEL,
+};
 pub use monster::{
     build_monster, derive_stats, level_bounds, level_for_xp, roll_individuality, roll_starter,
     xp_for_level, Affinity, Bond, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock,

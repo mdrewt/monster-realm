@@ -1,18 +1,77 @@
-//! Evolution eligibility rules — resolve which species a monster evolves into.
+//! Evolution AND fusion eligibility rules — the pure predicate layer for the
+//! evolution subsystem.
 //!
-//! `resolve_evolution` is the canonical primitive: it takes the evolution branch
-//! list plus the three eligibility dimensions (level, bond, applied item) and
-//! returns the first matching target species id (FIRST-wins, declaration order).
+//! `resolve_evolution` is the canonical evolution primitive: it takes the
+//! evolution branch list plus the three eligibility dimensions (level, bond,
+//! applied item) and returns the first matching target species id (FIRST-wins,
+//! declaration order).
 //!
 //! `evolves_to` is the passive convenience wrapper: it reads level+bond from a
 //! `MonsterInstance` and passes `None` for the item slot (passive check, no item
 //! applied). It delegates to `resolve_evolution` — ONE implementation path (SSOT).
+//!
+//! `fusion_eligible` is the fusion gate (ADR-0147): self-fusion and
+//! under-invested parents (below `MIN_FUSION_LEVEL`/`MIN_FUSION_BOND`, raw
+//! pre-tax values) are rejected. Both the real `fuse` reducer and the
+//! `fuse_seam` test double delegate here — ONE guard SSOT, never hand-copied.
 //!
 //! No wildcard `_` arms on `EvolutionTrigger`: a new variant MUST compiler-flag
 //! every match here (exhaustiveness guard, ADR-0061 §non_exhaustive note).
 
 use crate::content::{EvolutionCondition, EvolutionTrigger};
 use crate::monster::types::{Bond, Level, MonsterInstance};
+
+/// Minimum level BOTH parents need before they may be fused (ADR-0147).
+pub const MIN_FUSION_LEVEL: u8 = 10;
+
+/// Minimum raw (pre-tax) bond BOTH parents need before they may be fused
+/// (ADR-0147). Paired with the `FUSION_EFFICIENCY` output tax in `transform.rs`
+/// (`120 × 75% = 90 < 120`): a minimum-bond pair's offspring is NOT immediately
+/// re-fusable — bond must be regrown through cooldown-gated care first.
+pub const MIN_FUSION_BOND: u8 = 120;
+
+/// Why a fusion pair is ineligible (ADR-0147). Unit variants, no payload — the
+/// server boundary owns the player-facing message mapping (CareError precedent).
+/// Deliberately NOT `#[non_exhaustive]`: a new variant must compiler-flag every
+/// consumer match (ADR-0061 exhaustiveness discipline).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FusionError {
+    /// The two ids name the same monster.
+    SelfFusion,
+    /// Either parent is below `MIN_FUSION_LEVEL`.
+    BelowMinLevel,
+    /// Either parent's raw pre-tax bond is below `MIN_FUSION_BOND`.
+    BelowMinBond,
+}
+
+/// Pure fusion eligibility gate (ADR-0147): rejects self-fusion, then either
+/// parent below `MIN_FUSION_LEVEL`, then either parent below `MIN_FUSION_BOND`
+/// (checked on raw pre-tax values). Check order is part of the contract — the
+/// eligibility-parity tests pin it.
+///
+/// `MonsterInstance` carries no identity, so the caller passes the two monster
+/// ids as opaque handles compared only for equality (the recorded deviation
+/// from the spec's two-argument signature — ADR-0147).
+///
+/// # Errors
+/// Returns the first failing `FusionError` in the order above.
+pub fn fusion_eligible(
+    a_id: u64,
+    b_id: u64,
+    a: &MonsterInstance,
+    b: &MonsterInstance,
+) -> Result<(), FusionError> {
+    if a_id == b_id {
+        return Err(FusionError::SelfFusion);
+    }
+    if a.level.as_u8() < MIN_FUSION_LEVEL || b.level.as_u8() < MIN_FUSION_LEVEL {
+        return Err(FusionError::BelowMinLevel);
+    }
+    if a.bond.value() < MIN_FUSION_BOND || b.bond.value() < MIN_FUSION_BOND {
+        return Err(FusionError::BelowMinBond);
+    }
+    Ok(())
+}
 
 /// Resolve which species `evolutions` says the monster evolves into, given its
 /// current `level`, `bond`, and an optionally `applied_item` id.
