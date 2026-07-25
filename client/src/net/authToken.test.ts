@@ -127,7 +127,7 @@ describe('AUTH_REJECT_SUPPRESS_THRESHOLD', () => {
 describe('createAuthTokenGate: persistence', () => {
   it('onConnected writes the token under a key containing mr.authToken.v1 (kills a no-op onConnected)', () => {
     const storage = new FakeSessionStorage();
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(storage));
+    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', hostWithStorage(storage));
     gate.onConnected('tok-A');
     const setCall = storage.calls.find((c) => c.op === 'setItem');
     expect(setCall).toBeDefined();
@@ -136,20 +136,32 @@ describe('createAuthTokenGate: persistence', () => {
   });
 
   it('round-trip: onConnected then tokenForNextAttempt returns the same token (kills an always-undefined read)', () => {
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new FakeSessionStorage()));
+    const gate = createAuthTokenGate(
+      'ws://127.0.0.1:3000',
+      'db',
+      hostWithStorage(new FakeSessionStorage()),
+    );
     gate.onConnected('tok-A');
     expect(gate.tokenForNextAttempt()).toBe('tok-A');
   });
 
   it('a second onConnected replaces the stored token (kills a write-only-if-empty impl that strands a dead token)', () => {
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new FakeSessionStorage()));
+    const gate = createAuthTokenGate(
+      'ws://127.0.0.1:3000',
+      'db',
+      hostWithStorage(new FakeSessionStorage()),
+    );
     gate.onConnected('tok-A');
     gate.onConnected('tok-B');
     expect(gate.tokenForNextAttempt()).toBe('tok-B');
   });
 
   it('an empty store returns undefined from tokenForNextAttempt (kills a hardcoded return)', () => {
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new FakeSessionStorage()));
+    const gate = createAuthTokenGate(
+      'ws://127.0.0.1:3000',
+      'db',
+      hostWithStorage(new FakeSessionStorage()),
+    );
     expect(gate.tokenForNextAttempt()).toBeUndefined();
   });
 });
@@ -162,8 +174,8 @@ describe('createAuthTokenGate: key scoping by uri + db', () => {
   it('two gates differing ONLY in uri do not see each other token (kills a key derived from db alone)', () => {
     const storage = new FakeSessionStorage();
     const host = hostWithStorage(storage);
-    const gateA = createAuthTokenGate('ws://uri-A', 'same-db', host);
-    const gateB = createAuthTokenGate('ws://uri-B', 'same-db', host);
+    const gateA = createAuthTokenGate('ws://127.0.0.1:3000', 'same-db', host);
+    const gateB = createAuthTokenGate('ws://127.0.0.1:3001', 'same-db', host);
     gateA.onConnected('tok-A');
     expect(gateB.tokenForNextAttempt()).toBeUndefined();
     expect(gateA.tokenForNextAttempt()).toBe('tok-A');
@@ -194,7 +206,7 @@ describe('createAuthTokenGate: key scoping by uri + db', () => {
 
   it('non-string/empty stored values yield undefined (kills passing "" to .withToken(), a permanent auth-fail loop)', () => {
     const emptyGate = createAuthTokenGate(
-      'ws://x',
+      'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new FakeSessionStorage()),
     );
@@ -202,22 +214,26 @@ describe('createAuthTokenGate: key scoping by uri + db', () => {
     expect(emptyGate.tokenForNextAttempt()).toBeUndefined();
 
     const whitespaceGate = createAuthTokenGate(
-      'ws://x',
+      'ws://127.0.0.1:3000',
       'db',
       hostWithStorage(new FakeSessionStorage()),
     );
     whitespaceGate.onConnected('   ');
     expect(whitespaceGate.tokenForNextAttempt()).toBeUndefined();
 
-    const nullGate = createAuthTokenGate('ws://x', 'db', storageReturning(null));
+    const nullGate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', storageReturning(null));
     expect(nullGate.tokenForNextAttempt()).toBeUndefined();
 
-    const numberGate = createAuthTokenGate('ws://x', 'db', storageReturning(42));
+    const numberGate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', storageReturning(42));
     expect(numberGate.tokenForNextAttempt()).toBeUndefined();
   });
 
   it('a stored token with dots/dashes round-trips VERBATIM (kills an impl that mangles/trims the returned credential)', () => {
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new FakeSessionStorage()));
+    const gate = createAuthTokenGate(
+      'ws://127.0.0.1:3000',
+      'db',
+      hostWithStorage(new FakeSessionStorage()),
+    );
     gate.onConnected('abc.def-ghi');
     expect(gate.tokenForNextAttempt()).toBe('abc.def-ghi');
   });
@@ -325,7 +341,11 @@ describe('isStoredCredentialRejected', () => {
         },
       },
     );
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new FakeSessionStorage()));
+    const gate = createAuthTokenGate(
+      'ws://127.0.0.1:3000',
+      'db',
+      hostWithStorage(new FakeSessionStorage()),
+    );
     expect(() => gate.onConnectFailed(throwingGetterErr)).not.toThrow();
     expect(() => gate.onConnectFailed(throwingProxyErr)).not.toThrow();
   });
@@ -339,7 +359,11 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
   it('below threshold the token is still supplied (kills a suppress-on-first-rejection impl)', () => {
     // The SDK throws this SAME "Failed to verify token: " message for transient 500/502/503
     // gateway errors, not only 401 — dropping identity on ONE rejection would be wrong.
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new FakeSessionStorage()));
+    const gate = createAuthTokenGate(
+      'ws://127.0.0.1:3000',
+      'db',
+      hostWithStorage(new FakeSessionStorage()),
+    );
     gate.onConnected('tok-A');
     for (let i = 0; i < AUTH_REJECT_SUPPRESS_THRESHOLD - 1; i += 1) {
       gate.onConnectFailed(AUTH_ERR);
@@ -349,7 +373,7 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
 
   it('at threshold the token is withheld — but remains in storage (kills a never-suppress AND a delete-on-reject impl)', () => {
     const storage = new FakeSessionStorage();
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(storage));
+    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', hostWithStorage(storage));
     gate.onConnected('tok-A');
     for (let i = 0; i < AUTH_REJECT_SUPPRESS_THRESHOLD; i += 1) {
       gate.onConnectFailed(AUTH_ERR);
@@ -371,7 +395,11 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
     // prevent. Under the CORRECTED design, a non-auth failure neither advances nor resets:
     // it is inert. So with THRESHOLD-1 auth rejections already accrued, one interleaved
     // network error changes nothing, and the very next auth rejection reaches the threshold.
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new FakeSessionStorage()));
+    const gate = createAuthTokenGate(
+      'ws://127.0.0.1:3000',
+      'db',
+      hostWithStorage(new FakeSessionStorage()),
+    );
     gate.onConnected('tok-A');
     for (let i = 0; i < AUTH_REJECT_SUPPRESS_THRESHOLD - 1; i += 1) {
       gate.onConnectFailed(AUTH_ERR);
@@ -387,7 +415,11 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
     // An unreachable host must never cost the player their identity. Looping WELL past the
     // threshold with ONLY network errors (no classified credential rejection ever occurs)
     // must never withhold the stored token.
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new FakeSessionStorage()));
+    const gate = createAuthTokenGate(
+      'ws://127.0.0.1:3000',
+      'db',
+      hostWithStorage(new FakeSessionStorage()),
+    );
     gate.onConnected('tok-A');
     for (let i = 0; i < 3 * AUTH_REJECT_SUPPRESS_THRESHOLD; i += 1) {
       gate.onConnectFailed(new Error('NetworkError when attempting to fetch resource.'));
@@ -396,7 +428,11 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
   });
 
   it('alternation still reaches the threshold: exactly AUTH_REJECT_SUPPRESS_THRESHOLD auth rejections withhold the token, regardless of how many non-auth errors are interleaved (direct regression test for the red-team finding)', () => {
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new FakeSessionStorage()));
+    const gate = createAuthTokenGate(
+      'ws://127.0.0.1:3000',
+      'db',
+      hostWithStorage(new FakeSessionStorage()),
+    );
     gate.onConnected('tok-A');
     let authRejections = 0;
     let toggle = false;
@@ -413,7 +449,11 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
   });
 
   it('recovery: onConnected resets the counter AND persists the new token (kills a permanently-latched suppression impl)', () => {
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new FakeSessionStorage()));
+    const gate = createAuthTokenGate(
+      'ws://127.0.0.1:3000',
+      'db',
+      hostWithStorage(new FakeSessionStorage()),
+    );
     gate.onConnected('tok-OLD');
     for (let i = 0; i < AUTH_REJECT_SUPPRESS_THRESHOLD; i += 1) {
       gate.onConnectFailed(AUTH_ERR);
@@ -424,7 +464,11 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
   });
 
   it('nh4-4 host-reset scenario: the suppression loop TERMINATES, then a fresh onConnected supplies the new token', () => {
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new FakeSessionStorage()));
+    const gate = createAuthTokenGate(
+      'ws://127.0.0.1:3000',
+      'db',
+      hostWithStorage(new FakeSessionStorage()),
+    );
     gate.onConnected('tok-OLD');
     for (let i = 0; i < AUTH_REJECT_SUPPRESS_THRESHOLD; i += 1) {
       // Each retry up to the threshold still reads the OLD stored token before it fails.
@@ -445,7 +489,11 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
     // SAME token after a wipe is the correct, expected path, and no client-side token clear
     // belongs here. Modeled by: no `onConnectFailed` call at all — the JWT itself was never
     // rejected — just a repeat `onConnected` with the identical token.
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new FakeSessionStorage()));
+    const gate = createAuthTokenGate(
+      'ws://127.0.0.1:3000',
+      'db',
+      hostWithStorage(new FakeSessionStorage()),
+    );
     gate.onConnected('tok-SAME');
     gate.onConnected('tok-SAME');
     expect(gate.tokenForNextAttempt()).toBe('tok-SAME');
@@ -458,13 +506,13 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
 
 describe('createAuthTokenGate: storage degrades silently, never throws', () => {
   it('host is undefined: tokenForNextAttempt is undefined, onConnected does not throw', () => {
-    const gate = createAuthTokenGate('ws://x', 'db', undefined);
+    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', undefined);
     expect(gate.tokenForNextAttempt()).toBeUndefined();
     expect(() => gate.onConnected('t')).not.toThrow();
   });
 
   it('host is {} (no sessionStorage): same silent degradation', () => {
-    const gate = createAuthTokenGate('ws://x', 'db', {});
+    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', {});
     expect(gate.tokenForNextAttempt()).toBeUndefined();
     expect(() => gate.onConnected('t')).not.toThrow();
   });
@@ -476,14 +524,14 @@ describe('createAuthTokenGate: storage degrades silently, never throws', () => {
         throw new Error('SecurityError');
       },
     });
-    const gate = createAuthTokenGate('ws://x', 'db', host);
+    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', host);
     expect(gate.tokenForNextAttempt()).toBeUndefined();
     expect(() => gate.onConnected('t')).not.toThrow();
   });
 
   it('sessionStorage present but getItem/setItem are not functions: silent degradation', () => {
     const gate = createAuthTokenGate(
-      'ws://x',
+      'ws://127.0.0.1:3000',
       'db',
       hostWithStorage({ getItem: 'nope', setItem: 'nope' }),
     );
@@ -492,12 +540,20 @@ describe('createAuthTokenGate: storage degrades silently, never throws', () => {
   });
 
   it('setItem throws (Safari private-mode QuotaExceededError): onConnected does not throw', () => {
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new ThrowingSetStorage()));
+    const gate = createAuthTokenGate(
+      'ws://127.0.0.1:3000',
+      'db',
+      hostWithStorage(new ThrowingSetStorage()),
+    );
     expect(() => gate.onConnected('t')).not.toThrow();
   });
 
   it('getItem throws: tokenForNextAttempt returns undefined and does not throw', () => {
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new ThrowingGetStorage()));
+    const gate = createAuthTokenGate(
+      'ws://127.0.0.1:3000',
+      'db',
+      hostWithStorage(new ThrowingGetStorage()),
+    );
     expect(() => gate.tokenForNextAttempt()).not.toThrow();
     expect(gate.tokenForNextAttempt()).toBeUndefined();
   });
@@ -515,7 +571,7 @@ describe('createAuthTokenGate: storage degrades silently, never throws', () => {
 describe('createAuthTokenGate: re-reads storage on every attempt (not closure-cached)', () => {
   it('external mutation of storage is observed by the very next tokenForNextAttempt() call (kills a closure-cached token updated only inside onConnected)', () => {
     const storage = new FakeSessionStorage();
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(storage));
+    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', hostWithStorage(storage));
     gate.onConnected('tok-A');
     expect(gate.tokenForNextAttempt()).toBe('tok-A');
 
@@ -531,7 +587,7 @@ describe('createAuthTokenGate: re-reads storage on every attempt (not closure-ca
 
   it('tokenForNextAttempt() calls storage.getItem EACH time (kills a memoized read after the first call)', () => {
     const storage = new FakeSessionStorage();
-    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(storage));
+    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', hostWithStorage(storage));
     gate.onConnected('tok-A');
     const getCallsBefore = storage.calls.filter((c) => c.op === 'getItem').length;
     gate.tokenForNextAttempt();
@@ -565,7 +621,7 @@ describe('createAuthTokenGate: reads/writes sessionStorage only, never localStor
     // without reaching for `any`.
     const host = { localStorage: localFake } as unknown as TokenStorageHost;
 
-    const gate = createAuthTokenGate('ws://x', 'db', host);
+    const gate = createAuthTokenGate('ws://127.0.0.1:3000', 'db', host);
     expect(gate.tokenForNextAttempt()).toBeUndefined();
     expect(() => gate.onConnected('t')).not.toThrow();
     expect(localFake.calls.some((c) => c.op === 'setItem')).toBe(false);
