@@ -5,7 +5,7 @@
 **Slice:** m13.5b
 **Supersedes:** —
 **Amends:** —
-**Amended-by:** ADR-0142
+**Amended-by:** ADR-0142, ADR-0152
 **Subsystems:** movement-netcode, client-ui
 **Decision:** Reducer rejections surface as UI feedback; enqueue_move drops rejected seq and forces reconcile; app-level reconnect uses exponential backoff capped at 30s.
 
@@ -253,3 +253,19 @@ epoch; the `.catch` no-ops when its captured epoch ≠ the current predictor's)
 lands in `M-postgate-netcode-hardening` — and ptc5f's handoff/PR recommends Drew
 weigh pulling it forward of / into the playtest rather than treating it as
 negligible.
+
+## Amendment (nh3, 2026-07-25 — Epoch guard + send-seq floor, ADR-0152)
+
+The deferred epoch/generation guard is now BUILT (nh3 slice, ADR-0152). The accepted-risk window closes in full, and the case split is honored:
+
+**Case M1 (cross-generation eviction) — CLOSED by epoch guard.** The guard is a branded type (`PredictorEpoch`, compiler-enforced at typecheck). When a stale pre-warp rejection settles after the rebuild, `dropRejected(seq, epoch)` compares the captured epoch to the live instance's own — mismatch is a TOTAL no-op (returns `false`, mutates nothing). This prevents the wrongful eviction of the fresh op.
+
+**Case M2 (rebuilt predictor's own "stale seq" rejection) — CLOSED by send-seq floor.** main.ts keeps `lastSentSeq` updated at the single send site and calls `predictor.seedSeq(lastSentSeq)` after construction in `resetPredictionState()`. The rebuilt predictor's first seq is then strictly greater than every seq ever sent on this socket, so the server accepts it (monotonic `seq > last_input_seq` guard) and the "stale seq" rejection never comes into existence. This is the floor mechanism: uses only existing public API, is server-safe (gaps are legal), and requires zero test-file churn.
+
+**§3's A2 ordering invariant — DEMOTED to defense-in-depth.** The original claim — "a stale `.catch` always drains against the OLD predictor ≥1 s before the reconnect timer builds the new one" — is true (SDK evidence: no settle after drop), but it rests on observed SDK 2.6.0 behavior, not a contract. The epoch guard is now the MECHANICAL backstop if that behavior ever drifts. Additionally, the guard also closes §3's own edge case at the reconnect boundary: `seedSeq(N-1)` handed the old predictor seq `N`, colliding with a stale rejection of `N`. With the guard in place, that collision is now a no-op (the captured epoch is the pre-reconnect instance's, not the fresh one's), so the ordering invariant's secondary application is guarded regardless.
+
+**Per-path rebuilds now differ.** The spec noted both warp and reconnect paths exist; they now have different reconciliation timing guarantees (nh3 ADR §"Per-path invariant"):
+- Zone warp: the rebuild is followed in the same microtask flush by a reconcile (the warp's own row burst triggers the reconcile listener).
+- Reconnect: the reconcile is deferred (the server's `on_disconnect` deleted the rows, so reconcile early-returns until `joinGame` round-trips). The gap is guarded by `held.clear()` alone.
+
+This demarcation is load-bearing: a future nh5 change to held-key retention across rebuilds must revisit the reconnect path's guarantee.

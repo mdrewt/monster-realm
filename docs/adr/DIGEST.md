@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 117 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 118 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -126,6 +126,7 @@ Generated from 117 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0149](./0149-item-triggered-evolution-content.md) | 0149 — item-triggered evolution content (species 7/8 branches, id band 30..=39) | Accepted | evolution-fusion, content | B (M-postgate-evolution-fusion-hardening — item-triggered evolution content; EARS B-1..B-5) | Species 7/8 each gain a second, Item-triggered branch (`Item(4)->30`, `Item(5)->31`) declared FIRST in their existing block; targets are new derived species 30/31 in id band 30..=39; both ItemDef rows ship UNSTOCKED. |
 | [0150](./0150-reconnect-token-persistence.md) | 0150 — nh4: the reconnect token is persisted per-tab, and a rejected token is suppressed rather than cleared | Accepted | client-ui, security-authz | nh4 (M-postgate-netcode-hardening — reconnect identity persistence; EARS nh4-1, nh4-2, nh4-3, nh4-4) | Persist the SDK auth token in per-tab `sessionStorage`, supplied via `.withToken()` per build. A rejected token is never deleted — after two rejections since the last success the next build omits it and the anonymous reconnect replaces it. |
 | [0151](./0151-help-affordance-hint.md) | 0151 — ux1 help affordance: a zero-JS persistent hint, and the viewport-anchoring of the overlay it advertises | Accepted | client-ui | ux1 (M-postgate-ux-hardening — persistent on-screen hint advertising the `?` help overlay + a battle-result continue hint; EARS ux1-1..ux1-3) | Ship the "Press ? for controls & help" hint as static zero-JS markup in `index.html`, and in the same edit give `#help-overlay` `position:fixed;inset:0;z-index:100` — the overlay it advertises rendered below the fold. |
+| [0152](./0152-predictor-epoch-guard-and-send-seq-floor.md) | 0152 — Predictor epoch guard & send-seq floor (nh3: M-postgate-netcode-hardening) | Accepted | movement-netcode, client-ui | nh3 (M-postgate-netcode-hardening — predictor generation guard + send-seq floor to close the ptc5f/ADR-0142 accepted-risk window; EARS nh3-1/2/3) | Ship BOTH: branded-epoch guard on dropRejected (closes M1, cross-generation eviction) and the lastSentSeq→seedSeq floor on rebuild (closes M2, the re-issued "stale seq" rejection). The ADR-0085 window closes only with both. |
 
 ## Harness design corpus (H- namespace)
 
@@ -239,6 +240,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0142](./0142-ledger-reconciliation-and-netcode-reachability-pins.md) — ptc5f (M-playtest-c.5 pre-gate residuals — ledger reconciliation, closes M-playtest-c.5; EARS ptc5f-1/ptc5f-2 + Decision A/E pins) — 0142 — ptc5f ledger reconciliation + deferred-netcode reachability pins (Accepted)
 - [0146](./0146-movement-suppression-preventdefault.md) — nh1 (M-postgate-netcode-hardening — movement input responsiveness; EARS nh1-1, nh1-2) — 0146 — nh1: movement-suppression must cancel the browser's native key defaults, target-aware, on both the overlay and the key-repeat return paths (Accepted)
 - [0148](./0148-held-key-continuation-outstanding-gate.md) — nh2 (M-postgate-netcode-hardening — movement input responsiveness; EARS nh2-1, nh2-2, nh2-3) — 0148 — nh2: held-key continuation is gated on outstanding server work, and the frame loop drains before it re-issues (Accepted)
+- [0152](./0152-predictor-epoch-guard-and-send-seq-floor.md) — nh3 (M-postgate-netcode-hardening — predictor generation guard + send-seq floor to close the ptc5f/ADR-0142 accepted-risk window; EARS nh3-1/2/3) — 0152 — Predictor epoch guard & send-seq floor (nh3: M-postgate-netcode-hardening) (Accepted)
 
 ### content
 
@@ -319,6 +321,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0148](./0148-held-key-continuation-outstanding-gate.md) — nh2 (M-postgate-netcode-hardening — movement input responsiveness; EARS nh2-1, nh2-2, nh2-3) — 0148 — nh2: held-key continuation is gated on outstanding server work, and the frame loop drains before it re-issues (Accepted)
 - [0150](./0150-reconnect-token-persistence.md) — nh4 (M-postgate-netcode-hardening — reconnect identity persistence; EARS nh4-1, nh4-2, nh4-3, nh4-4) — 0150 — nh4: the reconnect token is persisted per-tab, and a rejected token is suppressed rather than cleared (Accepted)
 - [0151](./0151-help-affordance-hint.md) — ux1 (M-postgate-ux-hardening — persistent on-screen hint advertising the `?` help overlay + a battle-result continue hint; EARS ux1-1..ux1-3) — 0151 — ux1 help affordance: a zero-JS persistent hint, and the viewport-anchoring of the overlay it advertises (Accepted)
+- [0152](./0152-predictor-epoch-guard-and-send-seq-floor.md) — nh3 (M-postgate-netcode-hardening — predictor generation guard + send-seq floor to close the ptc5f/ADR-0142 accepted-risk window; EARS nh3-1/2/3) — 0152 — Predictor epoch guard & send-seq floor (nh3: M-postgate-netcode-hardening) (Accepted)
 
 ### ci-gates
 
