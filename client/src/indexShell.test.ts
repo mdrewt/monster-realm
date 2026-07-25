@@ -197,15 +197,15 @@ describe('ux1-1 (H1/H2): the help hint exists and is anchored to <body>', () => 
     // its 11px dim-grey styling — i.e. silently vanish from the UI while still being
     // found by querySelector. ux1-1 specifies a small leaf text badge; it has no
     // legitimate element children, so 0 is the correct and permanent expectation.
-    const childTags =
-      hint === null ? [] : Array.from(hint.children).map((child) => child.tagName);
+    const childTags = hint === null ? [] : Array.from(hint.children).map((child) => child.tagName);
     expect(
       childTags,
       'KILLS: unclosed </div> on #help-hint — the parser swallows the FOLLOWING ' +
         'element into the badge (today the module <script>; tomorrow whatever is ' +
         'inserted between them, which would also inherit pointer-events:none and the ' +
         '11px dim styling and silently vanish). ux1-1 specifies a leaf text badge, so ' +
-        'it must have zero element children. Got: ' + JSON.stringify(childTags),
+        'it must have zero element children. Got: ' +
+        JSON.stringify(childTags),
     ).toEqual([]);
   });
 });
@@ -231,7 +231,8 @@ describe('ux1-1 (H3): the hint actually advertises the ? key and help', () => {
     expect(
       text.toLowerCase().includes('help'),
       'KILLS: a bare "?" badge with no explanatory word — ux1-1 requires the hint to ' +
-        'read like "Press ? for controls & help". Got: ' + JSON.stringify(text),
+        'read like "Press ? for controls & help". Got: ' +
+        JSON.stringify(text),
     ).toBe(true);
   });
 });
@@ -250,7 +251,8 @@ describe('ux1-1 (H4/H5): the hint is persistent and not obviously invisible', ()
       style.includes('position:fixed'),
       'KILLS: a static (in-flow) #help-hint that scrolls out of the viewport with the ' +
         'document instead of being pinned — ux1-1 requires a PERSISTENT hint. ' +
-        'style=' + JSON.stringify(style),
+        'style=' +
+        JSON.stringify(style),
     ).toBe(true);
 
     // WRONG IMPL KILLED: a hint that swallows clicks in the bottom-left corner of the
@@ -258,7 +260,8 @@ describe('ux1-1 (H4/H5): the hint is persistent and not obviously invisible', ()
     expect(
       style.includes('pointer-events:none'),
       'KILLS: a fixed #help-hint WITHOUT pointer-events:none — it eats canvas clicks ' +
-        'in the bottom-left corner. style=' + JSON.stringify(style),
+        'in the bottom-left corner. style=' +
+        JSON.stringify(style),
     ).toBe(true);
   });
 
@@ -297,7 +300,9 @@ describe('ux1-1 (H4/H5): the hint is persistent and not obviously invisible', ()
       // declaration to end (or continue with a non-numeric suffix like !important).
       expect(
         hasBannedDeclaration(decls, banned),
-        'KILLS: #help-hint styled with "' + banned + '" — the hint would ship but ' +
+        'KILLS: #help-hint styled with "' +
+          banned +
+          '" — the hint would ship but ' +
           'never be seen, defeating ux1-1. NOTE: this is a deny-list for OBVIOUS ' +
           'invisibility only, not a layout/visibility proof. decls=' +
           JSON.stringify(decls),
@@ -335,7 +340,8 @@ describe('ux1-1 (H6): the hint sits in a sane stacking band, below the modal ban
       'KILLS: z-index:-1 (paints the fixed hint BEHIND in-flow boxes) and the ' +
         'CSS-invalid z-index:5e1 / z-index:1e2 (browsers drop the declaration ' +
         'entirely, but parseInt would accept it — making the test more permissive ' +
-        'than the browser). Got raw z-index=' + JSON.stringify(hintZ),
+        'than the browser). Got raw z-index=' +
+        JSON.stringify(hintZ),
     ).toBe(true);
     expect(
       overlayZ !== null && /^\d+$/.test(overlayZ),
@@ -350,7 +356,8 @@ describe('ux1-1 (H6): the hint sits in a sane stacking band, below the modal ban
     expect(
       hintValue >= 1,
       'KILLS: z-index:0 / negative stacking on #help-hint — it must be painted above ' +
-        'the in-flow document. Got ' + String(hintValue),
+        'the in-flow document. Got ' +
+        String(hintValue),
     ).toBe(true);
 
     // WRONG IMPL KILLED: `z-index:9999` copy-pasted from #build-stamp. That floats the
@@ -360,7 +367,10 @@ describe('ux1-1 (H6): the hint sits in a sane stacking band, below the modal ban
       hintValue < overlayValue,
       'KILLS: a z-index copy-pasted from #build-stamp (9999) or otherwise >= the ' +
         '#help-overlay band — the persistent hint would float OVER every modal ' +
-        'overlay. hint=' + String(hintValue) + ' overlay=' + String(overlayValue),
+        'overlay. hint=' +
+        String(hintValue) +
+        ' overlay=' +
+        String(overlayValue),
     ).toBe(true);
   });
 });
@@ -393,7 +403,8 @@ describe('ux1-1 (H7): the advertised #help-overlay is actually on-screen', () =>
       'KILLS: THE HEADLINE REGRESSION — #help-overlay left as a static in-flow div ' +
         'placed after a viewport-tall PixiJS canvas, so it un-hides BELOW THE FOLD ' +
         '(measured top=724 at innerHeight=720) and looks broken to the player the ' +
-        'new hint just invited. style=' + JSON.stringify(style),
+        'new hint just invited. style=' +
+        JSON.stringify(style),
     ).toBe(true);
 
     const raw = rawZIndex(overlay);
@@ -401,20 +412,24 @@ describe('ux1-1 (H7): the advertised #help-overlay is actually on-screen', () =>
       raw !== null && /^\d+$/.test(raw),
       'KILLS: #help-overlay with a missing, negative, or CSS-invalid exponential ' +
         '(5e1 / 1e2) z-index — a fixed element with auto stacking can still be ' +
-        'painted under the canvas. Got raw z-index=' + JSON.stringify(raw),
+        'painted under the canvas. Got raw z-index=' +
+        JSON.stringify(raw),
     ).toBe(true);
 
     const value = Number.parseInt(raw ?? '', 10);
     expect(
       value >= 1,
       'KILLS: #help-overlay stacked at 0 or below — it must paint above the in-flow ' +
-        'document and the canvas. Got ' + String(value),
+        'document and the canvas. Got ' +
+        String(value),
     ).toBe(true);
     expect(
       value < BATTLE_VIEW_Z,
       'KILLS: #help-overlay stacked at or above battleView root z-index ' +
-        String(BATTLE_VIEW_Z) + ' — a battle auto-show must still supersede an open ' +
-        'help overlay. Got ' + String(value),
+        String(BATTLE_VIEW_Z) +
+        ' — a battle auto-show must still supersede an open ' +
+        'help overlay. Got ' +
+        String(value),
     ).toBe(true);
   });
 });
