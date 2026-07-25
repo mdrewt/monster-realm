@@ -36,6 +36,8 @@ export class BattleView {
   readonly #outcomeEl: HTMLDivElement;
   /** PvP status banner ("Waiting for opponent…" / ""); hidden when not in PvP (m16b). */
   readonly #pvpStatusEl: HTMLDivElement;
+  /** "Press Esc to continue" hint; shown only on a terminal outcome (ux1, ADR-0151). */
+  readonly #continueHintEl: HTMLDivElement;
   readonly #callbacks: BattleViewCallbacks;
   /** The bait `<select>` for the current recruit render (null when not wild). */
   #baitSelectEl: HTMLSelectElement | null = null;
@@ -104,6 +106,15 @@ export class BattleView {
     this.#outcomeEl.style.cssText = 'font-size:18px;font-weight:bold;color:#ffd700;display:none;';
     this.#root.appendChild(this.#outcomeEl);
 
+    // ux1 (ADR-0151 D3): the battle-result exit affordance. A SIBLING of #outcomeEl — never its
+    // child (#renderOutcome writes #outcomeEl.textContent, which would wipe a child every render)
+    // and never merged into its text (three e2e specs use getByText('Victory!', {exact:true})).
+    this.#continueHintEl = document.createElement('div');
+    this.#continueHintEl.setAttribute('data-testid', 'battle-continue-hint');
+    this.#continueHintEl.textContent = 'Press Esc to continue';
+    this.#continueHintEl.style.cssText = 'margin-top:8px;font-size:12px;color:#aab;display:none;';
+    this.#root.appendChild(this.#continueHintEl);
+
     parent.appendChild(this.#root);
   }
 
@@ -126,6 +137,8 @@ export class BattleView {
       this.#weatherEl.style.display = 'none';
       this.#weatherEl.textContent = '';
       this.#pvpStatusEl.style.display = 'none';
+      // ux1 (ADR-0151 D3): reset the hint too, per this branch's weather/pvpStatus precedent.
+      this.#continueHintEl.style.display = 'none';
       this.hide();
       return;
     }
@@ -380,9 +393,13 @@ export class BattleView {
   #renderOutcome(vm: BattleViewModel): void {
     if (vm.outcome === 'Ongoing') {
       this.#outcomeEl.style.display = 'none';
+      this.#continueHintEl.style.display = 'none';
       return;
     }
     this.#outcomeEl.style.display = 'block';
+    // ux1 (ADR-0151 D3): rides this existing predicate; no isPvp branch — the Escape-dismiss
+    // branch (main.ts, gated only on battleView?.visible) is battle-kind-agnostic.
+    this.#continueHintEl.style.display = 'block';
     let text: string;
     switch (vm.outcome) {
       case 'SideAWins':

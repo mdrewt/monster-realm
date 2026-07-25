@@ -75,8 +75,14 @@
       </button>
       <div id="tradepropose-feedback" data-testid="tradepropose-feedback"></div>
     </div>
-    <!-- pt-c2b help overlay shell — hidden by default; managed by HelpView (ADR-0135). Display-only. -->
-    <div id="help-overlay" style="display:none">
+    <!-- pt-c2b help overlay shell — hidden by default; managed by HelpView (ADR-0135). Display-only.
+         ux1 (ADR-0151 D1): viewport-anchored — it used to carry ONLY `display:none`, i.e. a static
+         in-flow div AFTER the viewport-tall canvas, so show() painted it below the fold (top=724 at
+         innerHeight=720). HelpView writes only `style.display`, so the rest survives a toggle. -->
+    <div
+      id="help-overlay"
+      style="display:none;position:fixed;inset:0;z-index:100;overflow:auto;background:rgba(0,0,0,0.88);padding:24px;font:14px/1.6 monospace;color:#e0e0e0"
+    >
       <div id="help-title">Controls &amp; Goals</div>
       <ul id="help-controls"></ul>
       <ul id="help-goals"></ul>
@@ -88,6 +94,16 @@
       id="build-stamp"
       style="position:fixed;bottom:2px;right:4px;font:10px/1.2 monospace;color:#667;opacity:0.55;pointer-events:none;z-index:9999"
     ></div>
+    <!-- ux1 (ADR-0151 D2): persistent help affordance — deliberately zero-JS (no view class, no
+         main.ts owner), so nothing can hide or remove it. bottom:16px STACKS it above #build-stamp
+         (bottom:2px) rather than beside it — measured overlapping at 360px width.
+         pointer-events:none is load-bearing: fixed over the canvas, it must not eat clicks. -->
+    <div
+      id="help-hint"
+      style="position:fixed;bottom:16px;left:6px;font:11px/1.3 monospace;color:#9aa0b4;pointer-events:none;z-index:50"
+    >
+      Press ? for controls &amp; help
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

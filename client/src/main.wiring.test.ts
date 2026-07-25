@@ -2490,3 +2490,113 @@ describe('★ main.ts wiring (nh2/ADR-0148): drain-first + outstanding-steps gat
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// ux1 (ADR-0151) — source-scan pins backing EARS ux1-1 / ux1-2.
+//
+// EARS ux1-2: "Battle-result states specifically (victory / flee / defeat) SHALL
+//   show a persistent 'Press Esc to continue' (or equivalent) hint for as long as
+//   that overlay is showing."
+// EARS ux1-1: the on-screen controls hint SHALL be "visible during normal play
+//   (not just on first load)".
+//
+// Both pins below are whole-FILE `indexOf` checks over main.ts — one positive
+// (over comment-stripped source), one negative (over raw source; see each test
+// for why the two differ). NO `new RegExp(...)` (Semgrep bans it repo-wide) and,
+// deliberately, NO fixed-width `slice(idx, idx + N)` window: that slice is this
+// repo's documented repeat vacuity trap (nh1 and nh2 post-mortems both shipped a
+// scan whose window was shorter than the region it claimed to cover, so the tooth
+// passed on the very source it was written to red). Whole-file indexOf has no
+// window to be wrong about; do not "optimise" either of these into a windowed form.
+// ---------------------------------------------------------------------------
+
+describe('main.ts wiring (ux1, ADR-0151): the Esc-to-continue promise and its zero-JS sibling', () => {
+  it('W-UX1-ESCAPE-BATTLE (regression pin, GREEN before AND after the slice by design): main.ts keeps the `Escape && battleView?.visible` branch that the new hint advertises', () => {
+    // WRONG IMPL KILLED: any refactor that removes, renames or re-conditions the Escape
+    // battle-dismiss branch (e.g. folding it into a generic `anyOverlayVisible` dispatch, or
+    // renaming `battleView` in the guard) AFTER the slice ships the hint that names Esc. The
+    // hint then advertises a keybinding that no longer exists — a UI that lies to the player.
+    //
+    // SELF-CHECK — WHY THIS IS NOT VACUOUS (starts GREEN as a guard, by design):
+    //   (a) This branch is OTHERWISE WHOLLY UNTESTED. main.ts is coverage-excluded in
+    //       client/vite.config.ts, so no unit test executes it, and no e2e spec presses Escape
+    //       against a battle-RESULT overlay — nothing anywhere currently proves the branch
+    //       exists. Deleting it today would be caught by zero tests.
+    //   (b) The slice ships a UI element whose entire content is an ASSERTION THAT THIS
+    //       KEYBINDING EXISTS ("Press Esc to continue"). The DOM tooth in
+    //       ui/battleView.test.ts proves the hint is SHOWN; only this pin proves the hint is
+    //       TRUE. Without it, the two halves of ux1-2 can drift apart silently: the hint keeps
+    //       rendering, the key stops working, and every test stays green.
+    //   (c) Nothing pinned this before. The pre-existing ESCAPE_SENTINEL constant in this same
+    //       file (`"e.code === 'Escape'"`, used by W-OVERLAY-FANOUT-MUTEX) is only ever used as
+    //       a block-slicing endpoint — it is never asserted `>= 0` and is not battleView-
+    //       specific, so it would happily keep slicing against some OTHER Escape branch after
+    //       the battle one was deleted.
+    //
+    // SECOND-PASS FIX (review battery) — SCAN COMMENT-STRIPPED SOURCE, not raw. Scanning
+    // readMainTs() raw meant that block-commenting the Escape branch OUT left this pin GREEN:
+    // the needle still occurs, inside the comment. This file already defines
+    // stripBlockComments/stripLineComments for exactly that reason ("a needle that only appears
+    // in a comment cannot satisfy a tooth"), and the adjacent nh2 tooth (W-NH2-NO-CANCEL) uses
+    // stripLineComments(src) — which block-strips first, so it is the strictly stronger of the
+    // two and the closer local precedent. Matched here. (Its sibling W-UX1-HINT-NO-JS-OWNER
+    // below stays on RAW source on purpose: for a NEGATIVE pin, raw is the conservative
+    // direction — a commented-out `help-hint` reference should still trip it.)
+    const src = stripLineComments(readMainTs());
+    // Diagnostic guard (nh2 precedent): stripBlockComments BAILS and drops the remainder on an
+    // unterminated `/*`. For a positive pin that would red loudly rather than pass vacuously, but
+    // it would red for the WRONG reason — this assertion separates "the Escape branch was
+    // deleted" from "the comment strip ate the tail of main.ts".
+    expect(
+      src.length,
+      'comment-stripped main.ts collapsed to under half its raw size — the block-comment strip ' +
+        'bailed early (unterminated `/*`); the Escape-branch pin below would then red for the ' +
+        'wrong reason',
+    ).toBeGreaterThan(readMainTs().length / 2);
+    expect(
+      src.indexOf("e.code === 'Escape' && battleView?.visible"),
+      "main.ts must retain the branch `e.code === 'Escape' && battleView?.visible` (main.ts:964), " +
+        'as live code and not as a comment. ' +
+        'EARS ux1-2 puts a persistent "Press Esc to continue" hint on every battle-result ' +
+        'overlay; that hint is only truthful while this keybinding exists. main.ts is ' +
+        'coverage-excluded and no e2e presses Escape on a result overlay, so this pin is the ' +
+        'only thing standing between a refactor of this branch and a UI that lies',
+    ).toBeGreaterThanOrEqual(0);
+  });
+
+  it('W-UX1-HINT-NO-JS-OWNER (negative pin): the controls hint has NO main.ts owner — `help-hint` must not appear in main.ts', () => {
+    // ADR-0151 D2: the `#help-hint` controls badge is deliberately ZERO-JS STATIC MARKUP in
+    // client/index.html. Nothing in main.ts creates, queries, shows, hides or re-renders it.
+    //
+    // WHY THIS IS THE TOOTH FOR ux1-1's "(not just on first load)" QUALIFIER: that qualifier
+    // cannot be proven by a DOM test — a rendered-at-load element looks identical to a
+    // permanently-visible one at t=0. It is proven STRUCTURALLY instead: an element with no JS
+    // owner has nobody who CAN hide it, re-render it away, or drop it on a reconnect/zone
+    // switch. The absence of the identifier from main.ts IS the persistence guarantee.
+    //
+    // WRONG IMPL KILLED: a "helpful" refactor that pulls the hint into a main.ts-managed
+    // element (e.g. `document.getElementById('help-hint')`, a `helpHintView`, or a
+    // show/hide toggle wired into the overlay mutual-exclusion fan-out). The moment the badge
+    // acquires a JS owner it acquires a code path that can hide it, and ux1-1's
+    // "during normal play" qualifier stops being structurally guaranteed. This flips RED there.
+    //
+    // STATUS UPDATE (second pass — the slice landed): at authoring time this pin was green for
+    // a TRIVIAL reason (the badge did not exist yet, so the identifier was absent for want of a
+    // feature rather than for want of a JS owner). It is now green for the REAL reason: the
+    // badge SHIPPED as static markup in client/index.html (covered there by indexShell.test.ts)
+    // and main.ts still does not name it. From here on the pin is load-bearing exactly as
+    // designed. It stays on RAW source: for a negative pin raw is the conservative direction —
+    // even a commented-out `help-hint` reference in main.ts should trip it, because it signals
+    // that someone started giving the badge a JS owner. Do not weaken this into an
+    // index.html-conditional or comment-stripped assertion.
+    const src = readMainTs();
+    expect(
+      src.indexOf('help-hint'),
+      'main.ts must NOT reference `help-hint` — ADR-0151 D2 keeps the controls hint as zero-JS ' +
+        'static markup in client/index.html precisely so that no code path can hide, re-render ' +
+        'or remove it. That is the only structural proof of EARS ux1-1\'s "visible during ' +
+        'normal play (not just on first load)" qualifier; giving the badge a JS owner in ' +
+        'main.ts destroys it',
+    ).toBe(-1);
+  });
+});
