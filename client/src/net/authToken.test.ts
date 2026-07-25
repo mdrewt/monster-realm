@@ -279,6 +279,56 @@ describe('isStoredCredentialRejected', () => {
       expect(isStoredCredentialRejected(input)).toBe(false);
     }
   });
+
+  it('an object whose `message` getter throws: FALSE, does not throw (kills the mutant that removes the try/catch around the message read, which re-throws and permanently strands the reconnect ladder)', () => {
+    // A throwing accessor is exactly what a hostile/malformed error-like object can present.
+    // Without the try/catch, `const { message } = err as { message?: unknown }` throws
+    // synchronously; that throw would escape through `onConnectFailed` into connection.ts's
+    // `.onConnectError` callback, where it skips `scheduleRebuild()` — leaving the client
+    // with no pending timer and no further reconnect attempts: a permanent, silent freeze
+    // recoverable only by reload.
+    const throwingGetterErr: unknown = {};
+    Object.defineProperty(throwingGetterErr, 'message', {
+      get() {
+        throw new Error('boom');
+      },
+    });
+    expect(() => isStoredCredentialRejected(throwingGetterErr)).not.toThrow();
+    expect(isStoredCredentialRejected(throwingGetterErr)).toBe(false);
+  });
+
+  it('a Proxy whose `get` trap throws: FALSE, does not throw (same mutant as the throwing-getter case, via a different hostile shape)', () => {
+    const throwingProxyErr: unknown = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('boom');
+        },
+      },
+    );
+    expect(() => isStoredCredentialRejected(throwingProxyErr)).not.toThrow();
+    expect(isStoredCredentialRejected(throwingProxyErr)).toBe(false);
+  });
+
+  it('gate.onConnectFailed does not throw for either hostile shape — this is the call that actually sits on the reconnect path (kills the same try/catch-removal mutant one hop closer to the real integration point)', () => {
+    const throwingGetterErr: unknown = {};
+    Object.defineProperty(throwingGetterErr, 'message', {
+      get() {
+        throw new Error('boom');
+      },
+    });
+    const throwingProxyErr: unknown = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('boom');
+        },
+      },
+    );
+    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new FakeSessionStorage()));
+    expect(() => gate.onConnectFailed(throwingGetterErr)).not.toThrow();
+    expect(() => gate.onConnectFailed(throwingProxyErr)).not.toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -311,7 +361,16 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
     expect(storage.has(setCall?.key as string)).toBe(true);
   });
 
-  it('a non-auth failure resets the counter (never destroy identity while the host is merely unreachable)', () => {
+  it('a non-auth failure does NOT reset the counter — it is simply ignored (kills the reset-on-non-auth variant, which alternation defeats)', () => {
+    // WRONG IMPL KILLED: the OLD (defective) design reset `rejectionsSinceSuccess` to 0 on
+    // ANY non-classified error. That made the counter defeatable by alternation: a host
+    // whose failures interleave rejection/network-error (a load balancer where only some
+    // replicas rotated the signing key; a flaky link that fails the verify fetch outright)
+    // oscillates the counter 0->1->0->1 forever, NEVER reaches the threshold, and the client
+    // re-supplies a dead token indefinitely — the exact unrecoverable loop ADR-0150 exists to
+    // prevent. Under the CORRECTED design, a non-auth failure neither advances nor resets:
+    // it is inert. So with THRESHOLD-1 auth rejections already accrued, one interleaved
+    // network error changes nothing, and the very next auth rejection reaches the threshold.
     const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new FakeSessionStorage()));
     gate.onConnected('tok-A');
     for (let i = 0; i < AUTH_REJECT_SUPPRESS_THRESHOLD - 1; i += 1) {
@@ -319,8 +378,38 @@ describe('createAuthTokenGate: consecutive-rejection suppression', () => {
     }
     gate.onConnectFailed(new Error('NetworkError when attempting to fetch resource.'));
     gate.onConnectFailed(AUTH_ERR);
-    // Only 1 consecutive auth-rejection since the network-error reset — still below threshold.
-    expect(gate.tokenForNextAttempt()).toBe('tok-A');
+    // The network error did NOT reset anything: this last AUTH_ERR is the THRESHOLD-th
+    // classified rejection since the last success, so the token is now withheld.
+    expect(gate.tokenForNextAttempt()).toBeUndefined();
+  });
+
+  it('a pure outage never suppresses: unbroken non-auth failures never advance the counter (the single most important safety property in the module)', () => {
+    // An unreachable host must never cost the player their identity. Looping WELL past the
+    // threshold with ONLY network errors (no classified credential rejection ever occurs)
+    // must never withhold the stored token.
+    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new FakeSessionStorage()));
+    gate.onConnected('tok-A');
+    for (let i = 0; i < 3 * AUTH_REJECT_SUPPRESS_THRESHOLD; i += 1) {
+      gate.onConnectFailed(new Error('NetworkError when attempting to fetch resource.'));
+      expect(gate.tokenForNextAttempt()).toBe('tok-A');
+    }
+  });
+
+  it('alternation still reaches the threshold: exactly AUTH_REJECT_SUPPRESS_THRESHOLD auth rejections withhold the token, regardless of how many non-auth errors are interleaved (direct regression test for the red-team finding)', () => {
+    const gate = createAuthTokenGate('ws://x', 'db', hostWithStorage(new FakeSessionStorage()));
+    gate.onConnected('tok-A');
+    let authRejections = 0;
+    let toggle = false;
+    while (authRejections < AUTH_REJECT_SUPPRESS_THRESHOLD) {
+      if (toggle) {
+        gate.onConnectFailed(new Error('NetworkError when attempting to fetch resource.'));
+      } else {
+        gate.onConnectFailed(AUTH_ERR);
+        authRejections += 1;
+      }
+      toggle = !toggle;
+    }
+    expect(gate.tokenForNextAttempt()).toBeUndefined();
   });
 
   it('recovery: onConnected resets the counter AND persists the new token (kills a permanently-latched suppression impl)', () => {

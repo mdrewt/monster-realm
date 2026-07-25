@@ -17,15 +17,16 @@
 // (`Failed to verify token: <statusText>`, dist/index.mjs:5057-5063) for a transient
 // 500/502/503 from the token-verify endpoint as for a genuine 401 — and HTTP/2 mandates an
 // empty `statusText`, collapsing every case to one string. So we never delete a stored
-// token: after AUTH_REJECT_SUPPRESS_THRESHOLD consecutive rejections we merely WITHHOLD it
-// for the next attempt. If that anonymous attempt succeeds, the host is up and really did
-// reject us, and `onConnected` overwrites the dead token with the new one. If it also
-// fails, the counter resets and the next attempt supplies the stored token again — so an
-// unreachable host can never cost the player their identity.
+// token: once AUTH_REJECT_SUPPRESS_THRESHOLD rejections have accrued SINCE THE LAST SUCCESS
+// we merely WITHHOLD it. If the resulting anonymous attempt succeeds, the host is up and
+// really did reject us, and `onConnected` overwrites the dead token with the new one — a
+// successful connect is the only oracle available for "the host is up and refused US".
+// A non-auth failure (an unreachable or flaky host) never advances the counter at all, so
+// an outage can never cost the player their identity.
 
 /**
- * Consecutive credential rejections tolerated before the stored token is withheld for one
- * attempt. WHY 2 and not 1: one transient non-2xx from the verify endpoint is
+ * Credential rejections tolerated since the last successful connect before the stored token
+ * is withheld. WHY 2 and not 1: one transient non-2xx from the verify endpoint is
  * indistinguishable from a real rejection (see the header), so a threshold of 1 would swap
  * the player's identity on a single server hiccup. WHY not higher: a genuinely dead token
  * repeats deterministically, so each extra rung only delays recovery — at 2 the host-reset
@@ -61,7 +62,8 @@ export interface AuthTokenGate {
   tokenForNextAttempt(): string | undefined;
   /** A build connected: persist this connection's token and reset the rejection state. */
   onConnected(token: string): void;
-  /** A build failed: classify the error and advance or reset the rejection state. */
+  /** A build failed: a credential rejection advances the suppression counter; any other
+   *  failure is ignored (only a successful connect resets it). */
   onConnectFailed(err: unknown): void;
 }
 
@@ -75,8 +77,16 @@ export interface AuthTokenGate {
  */
 export function isStoredCredentialRejected(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false;
-  const { message } = err as { message?: unknown };
-  return typeof message === 'string' && message.startsWith(CREDENTIAL_REJECTED_PREFIX);
+  try {
+    // The READ itself can throw — a throwing accessor or a Proxy `get` trap. Without this
+    // catch the throw escapes through `onConnectFailed` into `.onConnectError`, where it
+    // would skip `scheduleRebuild()` and silently strand the client with no timer and no
+    // further attempts: a permanent, invisible freeze (red-team finding, ADR-0150 D5).
+    const { message } = err as { message?: unknown };
+    return typeof message === 'string' && message.startsWith(CREDENTIAL_REJECTED_PREFIX);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -125,11 +135,11 @@ export function createAuthTokenGate(
   host: TokenStorageHost | undefined,
 ): AuthTokenGate {
   const key = storageKey(uri, db);
-  let consecutiveRejections = 0;
+  let rejectionsSinceSuccess = 0;
 
   return {
     tokenForNextAttempt(): string | undefined {
-      if (consecutiveRejections >= AUTH_REJECT_SUPPRESS_THRESHOLD) return undefined;
+      if (rejectionsSinceSuccess >= AUTH_REJECT_SUPPRESS_THRESHOLD) return undefined;
       const getItem = storageMethod(host, 'getItem');
       if (getItem === undefined) return undefined;
       try {
@@ -148,7 +158,7 @@ export function createAuthTokenGate(
       // Unconditional write: the connection that just succeeded is authoritative about which
       // credential is live. A "write only if empty" variant would strand a dead token forever
       // after the suppressed anonymous reconnect mints a new identity.
-      consecutiveRejections = 0;
+      rejectionsSinceSuccess = 0;
       const setItem = storageMethod(host, 'setItem');
       if (setItem === undefined) return;
       try {
@@ -160,9 +170,16 @@ export function createAuthTokenGate(
     },
 
     onConnectFailed(err: unknown): void {
-      // Reset on anything that is NOT a credential rejection: an unreachable or flaky host
-      // must never accumulate toward withholding the player's token.
-      consecutiveRejections = isStoredCredentialRejected(err) ? consecutiveRejections + 1 : 0;
+      // Count rejections SINCE THE LAST SUCCESS, and reset ONLY on success (in onConnected).
+      // A non-auth failure is ignored rather than resetting the counter: resetting made the
+      // threshold defeatable by ALTERNATION — a host whose failures interleave
+      // rejection/network-error (a load balancer with only some replicas rotated, or a flaky
+      // link failing the verify fetch outright) would oscillate 0→1→0→1 forever, never
+      // suppress, and re-supply a dead token indefinitely (red-team finding, ADR-0150 D2).
+      // Counting since-last-success is strictly stronger AND still safe for the case the
+      // reset was protecting: a pure network outage produces no classified rejections at
+      // all, so the counter never advances and the stored token is never withheld.
+      if (isStoredCredentialRejected(err)) rejectionsSinceSuccess += 1;
     },
   };
 }

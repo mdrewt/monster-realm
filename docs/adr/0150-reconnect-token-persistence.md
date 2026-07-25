@@ -5,8 +5,8 @@
 **Slice:** nh4 (M-postgate-netcode-hardening — reconnect identity persistence; EARS nh4-1, nh4-2, nh4-3, nh4-4)
 **Supersedes:** —
 **Amends:** —
-**Subsystems:** client-net, security
-**Decision:** Persist the SDK auth token in per-tab `sessionStorage` and supply it via `.withToken()` on every build. A rejected token is never deleted — after two consecutive rejections the next build simply omits it, and a successful anonymous connect overwrites it.
+**Subsystems:** client-ui, security-authz
+**Decision:** Persist the SDK auth token in per-tab `sessionStorage`, supplied via `.withToken()` per build. A rejected token is never deleted — after two rejections since the last success the next build omits it and the anonymous reconnect replaces it.
 
 ## Context
 
@@ -86,25 +86,35 @@ structurally cannot see it.
 
 ### D2 — Suppress-then-overwrite, never clear
 
-`onConnectFailed` increments a consecutive-rejection counter when
-`isStoredCredentialRejected(err)` holds and resets it on anything else.
-`tokenForNextAttempt()` returns `undefined` once the counter reaches
-`AUTH_REJECT_SUPPRESS_THRESHOLD` (2), so the next `build()` connects anonymously; a
-successful `onConnected` persists that connection's token with an unconditional
-`setItem` and resets the counter. There is **no `clear()` method at all**, which deletes
-the entire "a misclassification destroys the identity" failure class rather than
-mitigating it:
+`onConnectFailed` increments `rejectionsSinceSuccess` when `isStoredCredentialRejected(err)`
+holds and **ignores every other failure**; the counter resets to 0 only in `onConnected`.
+`tokenForNextAttempt()` returns `undefined` once it reaches `AUTH_REJECT_SUPPRESS_THRESHOLD`
+(2), so the next `build()` connects anonymously; a successful `onConnected` persists that
+connection's token with an unconditional `setItem` and resets the counter. There is **no
+`clear()` method at all**, which deletes the entire "a misclassification destroys the
+identity" failure class rather than mitigating it:
 
 - **Bad token, host up** — reject, reject, suppress, anonymous connect succeeds, new
   token saved. Terminates in ~3 s (the 1 s and 2 s backoff rungs).
-- **Host down** — the suppressed attempt *also* fails, with a non-auth error, so the
-  counter resets and the next attempt supplies the stored token again. The identity is
+- **Host down** — a network failure is not a classified rejection, so the counter never
+  advances at all and every attempt keeps supplying the stored token. The identity is
   never destroyed while the host is unreachable. An anonymous connect *succeeding* is the
   only available oracle for "the host is up and it rejected specifically us", and this
   design consults that oracle instead of guessing from an ambiguous string.
 
 The threshold exists because one transient 5xx must not cause a false suppression; it is
 exported so tests import the real value rather than a copy that could drift.
+
+**Why "since the last success" and not "consecutive".** The first implementation reset the
+counter on any non-rejection failure. A red-team pass proved that defeatable by
+**alternation**: a host whose failures interleave rejection / network-error — a load
+balancer where only some replicas have rotated the signing key, or a flaky link that fails
+the verify *fetch* outright rather than returning a non-2xx — oscillates the counter
+0→1→0→1 forever, never reaches the threshold, and re-supplies the dead token indefinitely.
+That is precisely the unrecoverable loop this decision exists to close, reached by a path
+the first design did not anticipate. Counting since the last success is strictly stronger
+and loses nothing: the case the reset protected (a pure outage) produces **no** classified
+rejections, so the counter cannot drift upward during one.
 
 Recovery deliberately rides the existing ADR-0085 ladder — no immediate rebuild, no
 second retry path — so a misclassification can never become a hot loop.
@@ -148,11 +158,26 @@ the throwing-getter path then sits inside the module's own `try/catch` where a f
 exercise it. `read` rejects non-string and empty-after-trim values so `withToken('')` can
 never be supplied. The connection works with persistence degraded; nothing is surfaced.
 
+### D5 — The classifier is total, because a throw there is a permanent freeze
+
+`isStoredCredentialRejected` reads `err.message` inside a `try/catch`. The read itself can
+throw — a throwing accessor, or a `Proxy` with a throwing `get` trap — and `onConnectFailed`
+is called from `.onConnectError` **before** `opts.onError`, `onAttemptFailed` and
+`scheduleRebuild()`. An escaping throw would therefore skip the rebuild scheduling entirely,
+leaving the client with no pending timer and no event that can ever re-arm one: a silent,
+permanent freeze recoverable only by reload. The SDK offers no protection — its
+`EventEmitter.emit` has no `try/catch` around listener invocation, and the two sites that
+fire `connectError` are a promise `.catch` (an unhandled rejection nothing awaits) and a raw
+`ws.onerror`. Totality here is a liveness property, not defensive style.
+
 ## Consequences
 
-- A reload resumes the same identity: same player, character, monsters, inventory,
-  currency, and no duplicate starter grant. Playtest telemetry stops fragmenting one
-  tester across many identities.
+- A reload resumes the same identity, so monsters, inventory and currency — all keyed by
+  owner identity — survive, and no duplicate starter is granted. The `player` and
+  `character` rows do **not** survive: `on_disconnect` deletes them and `join_game`
+  re-inserts them at the `ZONE_0` spawn tile, so map position resets on every reconnect.
+  That is pre-existing server behavior, unchanged here. Playtest telemetry stops
+  fragmenting one tester across many identities.
 - nh4 introduces a credential at rest. It is a bearer token in per-tab web storage with
   no TTL. A grep of the bug-bundle assembler (`client/src/ui/bugBundle.ts`, which
   documents a deliberate PII firewall), the error ring/overlay (carries `err.message`
@@ -160,6 +185,21 @@ never be supplied. The connection works with persistence degraded; nothing is su
   metadata) found **no existing path that would dump or exfiltrate storage**. That must
   stay true: no future debug/dump hook may include the `mr.authToken.v1` key, and the
   `localStorage`-vs-`sessionStorage` call must be revisited before any hosted deployment.
+- **This slice activates a previously-dead SDK path that puts a credential in a URL.**
+  Because `.withToken()` was never called before, the SDK's `if (authToken)` branch in
+  `openWebSocket` was unreachable. It now runs: the stored token goes to
+  `/v1/identity/websocket-token` in an `Authorization` header (fine), but the short-lived
+  token it returns is placed in the WebSocket connect URL as a `?token=` **query
+  parameter**. Query strings are far more readily captured by proxy/CDN access logs and
+  devtools history than headers are. This is SDK-owned and not fixable from
+  `authToken.ts`/`connection.ts`; it is harmless on the ADR-0129 localhost topology but
+  belongs on the same "revisit before any hosted deployment" list as the storage choice.
+- **A superseded build's rejection is discarded, not deferred.** Both callbacks sit under
+  `if (stale()) return;`, so if a bfcache `pageshow` → `handleDrop()` → `scheduleRebuild()`
+  races an in-flight connect, that build's rejection never reaches the counter. The next
+  build re-supplies the same token unclassified. Recovery is delayed, never prevented — the
+  following non-stale rejection counts normally — and moving the call above the guard would
+  reintroduce the clobber D2 exists to prevent.
 - **Duplicate tab** (Chrome copies `sessionStorage`) still yields a shared identity and
   therefore the `on_disconnect` hazard in D3. Documented in `docs/playtest-ops.md`; a
   real fix needs a single-connection-per-identity guard, which is a server change and out

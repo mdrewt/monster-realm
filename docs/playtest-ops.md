@@ -92,6 +92,49 @@ re-runs and the publishing identity is **re-registered as owner**. The
 (`unauthorized`). Run `playtest-wipe` from the same identity that published, and
 the recipe's output check will fail loud if it is not.
 
+## Session identity — a reload now resumes the same character (nh4, ADR-0150)
+
+The client persists its SpacetimeDB auth token in the browser tab's `sessionStorage`
+under `mr.authToken.v1|<uri>|<db>` and supplies it on every connection attempt, so a
+**page reload resumes the same anonymous identity** — same monsters, inventory and
+currency, and no second starter grant. Before this, every reload minted a brand-new
+identity; the 2026-07-25 session silently spanned six of them.
+
+What this does and does not preserve:
+
+- **Survives a reload:** monsters, inventory, currency, quest and profile state (all
+  keyed by owner identity).
+- **Does NOT survive:** map position. `on_disconnect` deletes the `player`/`character`
+  rows and `join_game` re-inserts them at the zone-0 spawn tile. That is unchanged
+  pre-existing behavior, not something the token changes.
+- **Does NOT survive closing the tab.** `sessionStorage` is per-tab by design (see the
+  duplicate-tab warning below). Closing the tab is the way to deliberately start over
+  as a fresh identity.
+
+**⚠ Do not duplicate the playtest tab, and do not run two tabs against the same
+database.** Chrome copies `sessionStorage` when you duplicate a tab, so both tabs then
+connect as the *same* identity — and `on_disconnect` is keyed on identity alone with no
+check for another live connection. Closing either tab will therefore **forfeit an
+in-progress PvP battle (a real Elo loss), auto-flee a wild battle, and delete the
+surviving tab's character row**, with nothing on that tab to explain why. Play in one
+tab. (A proper fix needs a single-connection-per-identity guard server-side; it is not
+in scope for the local single-tester model.)
+
+**Interaction with `just playtest-wipe`:** the token is a *host*-issued credential, and
+`--delete-data` only clears one database's rows — it does not invalidate it. So after a
+wipe the client reconnects **successfully as the same identity into an empty database**,
+and the unconditional `join_game` re-creates the player, character and starter. That is
+the intended clean-slate result and needs no action from you. If you want a genuinely
+different identity after a wipe, close the tab (or clear site data in devtools →
+Application → Storage).
+
+If the host itself is reset (a fresh `spacetime start` data dir, a recreated container
+volume, or a changed `STDB_SERVER`), the stored token stops verifying. The client
+handles this on its own: after two rejections it drops the token for one attempt,
+connects anonymously, and stores the new credential — roughly a 3-second self-heal. You
+may briefly see a `Failed to verify token: …` line on the status line while that
+happens; it is transient and needs no intervention.
+
 ## "Which build am I on?"
 
 - **Client build:** in the served client, read `window.__mrBuild` in the console
