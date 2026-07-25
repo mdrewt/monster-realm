@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** content, economy-quests, ci-gates
-**Decision:** Freeze zone 0 byte-identical because a remote-CI e2e derives two probability budgets from its exact weights; give zone 1 a new table carrying all 7 wild-legal forms; stock the unobtainable Antidote; pin H1 and the e2e level ceiling as tests.
+**Decision:** Freeze zone 0 byte-identical (a remote-CI e2e derives two probability budgets from its exact weights); give zone 1 a new table carrying all 7 wild-legal forms; stock the unobtainable Antidote; pin H1 and the e2e level ceiling as tests.
 
 ## Context
 
