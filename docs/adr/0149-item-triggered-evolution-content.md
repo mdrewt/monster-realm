@@ -5,8 +5,8 @@
 **Slice:** B (M-postgate-evolution-fusion-hardening — item-triggered evolution content; EARS B-1..B-5)
 **Supersedes:** —
 **Amends:** ADR-0144 (D1 reserved-id-band discipline is extended: 30..=39 is now claimed by this slice; roster wave 3 takes 40..=49), ADR-0143 (pt-d1's `pt_d1_2` exact-branch pin is tightened, not deleted — species 7/8 now legitimately carry two branches)
-**Subsystems:** evolution-fusion, content-pipeline
-**Decision:** Species 7 and 8 gain a second, Item-triggered evolution branch (`Item(4)->30`, `Item(5)->31`) declared FIRST in their existing blocks; targets are new derived species 30/31 in a new id band 30..=39; the two ItemDef rows ship UNSTOCKED because no reducer can supply `applied_item` yet.
+**Subsystems:** evolution-fusion, content
+**Decision:** Species 7/8 each gain a second, Item-triggered branch (`Item(4)->30`, `Item(5)->31`) declared FIRST in their existing block; targets are new derived species 30/31 in id band 30..=39; both ItemDef rows ship UNSTOCKED.
 
 ## Context
 
