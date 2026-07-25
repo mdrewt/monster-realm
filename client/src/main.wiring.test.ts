@@ -755,15 +755,21 @@ describe('★ main.ts wiring (pt-c1b rename): per-site fan-out (PTC1B-6 / D4 / M
     // WRONG IMPL KILLED: an impl that forgets renameView in the rAF block — a held key could
     // keep walking in the background while the rename overlay is open (the frame loop runs
     // regardless of overlay state unless guarded).
-    // Strategy: find the rAF re-issue block anchor (predictor.drain() is called in the rAF;
-    // the held-key re-issue immediately precedes it) and assert renameView?.visible is there.
+    //
+    // nh2/ADR-0148 re-anchor — R1 moved `predictor.drain(` above this block, so the old
+    // order-dependent/fixed-width anchor no longer bounds it. Assertion is UNCHANGED; only the
+    // region extraction moved to a needle-bounded `regionOrThrow`. (The previous extraction was
+    // `src.slice(Math.max(0, drainIdx - 400), drainIdx)` — a fixed-width BACKWARD window, the
+    // exact anti-pattern the nh1 post-mortem forbids: it silently widens/narrows and, after R1,
+    // would point at the wrong text entirely.) NH2_RAF_START/END + `bodyRegion` /
+    // `expectUniqueAnchor` live at the foot of this file (module-eval order is irrelevant:
+    // `it` bodies run after the module is fully evaluated).
     const src = readMainTs();
-    const drainIdx = src.indexOf('predictor.drain(');
-    expect(drainIdx, 'main.ts must contain predictor.drain(').toBeGreaterThanOrEqual(0);
-    // The rAF OR-block is within ~400 chars BEFORE the drain call.
-    const rafRegion = src.slice(Math.max(0, drainIdx - 400), drainIdx);
+    expectUniqueAnchor(src, NH2_RAF_START);
+    expectUniqueAnchor(src, NH2_RAF_END);
+    const region = bodyRegion(src, NH2_RAF_START, NH2_RAF_END);
     expect(
-      rafRegion.includes('renameView?.visible'),
+      region.includes('renameView?.visible'),
       'main.ts rAF frame-loop held-key re-issue block must contain renameView?.visible (~line 1766, ADR-0133 D3)',
     ).toBe(true);
   });
@@ -1354,27 +1360,25 @@ describe('★ main.ts wiring (pt-c2b help): per-context anchored fan-out teeth (
     // PTC2B-6 movement-suppression site (rAF frame loop): a held key keeps walking in the
     // background every frame unless the rAF re-issue OR-block guards on helpView?.visible.
     //
-    // BINDING (plan / red-team F2): help's `||` sits at the TOP of the OR-block, ~630 chars
-    // BEFORE `predictor.drain(` — OUTSIDE a `drain-500` BACKWARD window. So we anchor FORWARD on
-    // the block-opening comment `Re-issue the held dir` and slice forward. We ALSO verify the
-    // matched helpView?.visible is physically INSIDE the OR-block (before predictor.drain()) so
-    // the tooth cannot be satisfied by a helpView?.visible that lives elsewhere further down.
+    // BINDING (plan / red-team F2): help's `||` sits at the TOP of the OR-block, far outside any
+    // sane BACKWARD window, so the region is anchored FORWARD on the block-opening comment
+    // `Re-issue the held dir` and bounded by the first statement AFTER the block. The bound is
+    // what keeps the tooth honest: a helpView?.visible living elsewhere further down the frame
+    // loop cannot satisfy it.
+    //
+    // nh2/ADR-0148 re-anchor — R1 moved `predictor.drain(` above this block, so the old
+    // order-dependent/fixed-width anchor no longer bounds it. Concretely: the previous
+    // extraction sliced FORWARD from the comment to the NEXT `predictor.drain(`, and post-R1
+    // that `indexOf(..., rafAnchorIdx)` returns -1, throwing/failing for a reason unrelated to
+    // help fan-out. Assertion is UNCHANGED (its message is kept verbatim, including its now-
+    // historical `predictor.drain()` parenthetical); only the region extraction moved to a
+    // needle-bounded `regionOrThrow` — the SAME NH2_RAF_START/END pair W-NH2-GATE-WIRED uses.
     const src = readMainTs();
-    const rafAnchorIdx = src.indexOf('Re-issue the held dir');
+    expectUniqueAnchor(src, NH2_RAF_START);
+    expectUniqueAnchor(src, NH2_RAF_END);
+    const region = bodyRegion(src, NH2_RAF_START, NH2_RAF_END);
     expect(
-      rafAnchorIdx,
-      "main.ts must contain the rAF block-opening comment 'Re-issue the held dir'",
-    ).toBeGreaterThanOrEqual(0);
-    // The rAF OR-block sits between the comment and the drain() call. Slice from the comment
-    // up to (and only up to) predictor.drain( so we test EXACTLY the re-issue OR-block.
-    const drainIdx = src.indexOf('predictor.drain(', rafAnchorIdx);
-    expect(
-      drainIdx,
-      'main.ts must contain predictor.drain( AFTER the rAF re-issue comment',
-    ).toBeGreaterThan(rafAnchorIdx);
-    const rafBlock = src.slice(rafAnchorIdx, drainIdx);
-    expect(
-      rafBlock.includes('helpView?.visible'),
+      region.includes('helpView?.visible'),
       'main.ts rAF held-key re-issue OR-block (between "Re-issue the held dir" and predictor.drain()) must contain helpView?.visible (PTC2B-6, red-team F2)',
     ).toBe(true);
   });
@@ -2159,6 +2163,244 @@ describe('main.ts wiring (nh1/ADR-0146): movement default is suppressed under ov
         helperStart,
         'suppressNativeMovementDefault must be declared BEFORE the keydown listener that calls it',
       ).toBeLessThan(listenerStart);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// nh2 / ADR-0148 — press-teleport fix: drain-first (R1) + outstanding-steps gate
+// ---------------------------------------------------------------------------
+//
+// SOURCE OF TRUTH: nh2 spec / ADR-0148. Three source-level changes, all in main.ts:
+//   R1  `const { snapped } = predictor.drain(now);` moves to IMMEDIATELY below
+//       `const now = performance.now();` — i.e. ABOVE the held-key re-issue block
+//       (today it sits BELOW it, which is the press-teleport bug: the frame emits a
+//       fresh step from a queue that has not yet been drained for this frame).
+//   R2  the rAF 14-overlay guard gains a leading conjunct:
+//       `if (predictor.outstandingSteps === 0 && !( ...14 flags... )) {`
+//   R3  the reconcile-divergence guard gains the SAME conjunct:
+//       `if (diverged && predictor.outstandingSteps === 0 && !( ...14 flags... ))`
+//
+// ANCHOR DISCIPLINE (nh1 post-mortem): every region below is needle-bounded via
+// `regionOrThrow` and every anchor's UNIQUENESS in main.ts is asserted inline. A region
+// that can silently widen passes vacuously; a fixed-width window (`src.slice(i, i + 400)`)
+// is banned outright. No `new RegExp` anywhere — indexOf/includes/split only.
+
+/** rAF held-key re-issue block. START = the block-opening comment, END = the first
+ *  statement after the block. Verified unique in main.ts at authoring time (each appears
+ *  exactly once: the comment at ~line 2063, `const ownEntityId =` at ~line 2089); the
+ *  uniqueness is RE-asserted at runtime by `expectUniqueAnchor` in every tooth that uses
+ *  them, so a future duplicate reds loudly instead of widening the region. */
+const NH2_RAF_START = 'Re-issue the held dir';
+const NH2_RAF_END = 'const ownEntityId =';
+
+/** Reconcile divergence re-issue block. START = the ADR-0013 rationale comment above the
+ *  `if (diverged && ...)` guard (~line 401), END = the outer catch's error log (~line 427).
+ *  END is chosen with its trailing quote glued on (`... uncaught error'`) precisely so it
+ *  does NOT also match the sibling `'[reconcile] uncaught error in batch listener'` log 10
+ *  lines further down — that is what keeps it unique, and `expectUniqueAnchor` proves it. */
+const NH2_RECONCILE_START = "Honor reconcile's documented divergence return";
+const NH2_RECONCILE_END = "console.error('[reconcile] uncaught error'";
+
+/** rAF frame-body region: spans the drain call AND the re-issue comment, so the ordering
+ *  tooth can compare their positions. START = the frame closure declaration (~line 2060). */
+const NH2_FRAME_START = 'const frame = ';
+
+/** Anti-vacuity: an anchor that occurs more than once means `indexOf` may resolve to the
+ *  wrong occurrence and the region silently covers the wrong code (or nothing); an anchor
+ *  that occurs zero times means the region is gone. Both are hard reds, never a pass. */
+function expectUniqueAnchor(src: string, needle: string): void {
+  expect(
+    src.split(needle).length - 1,
+    `nh2 anchor "${needle}" must appear EXACTLY once in main.ts — a duplicated or deleted ` +
+      'anchor lets a needle-bounded region silently cover the wrong code (or collapse), ' +
+      'which is how a source-scan tooth goes vacuously green (nh1 post-mortem)',
+  ).toBe(1);
+}
+
+/** Needle-bounded region BODY, comment-stripped.
+ *  Sliced from RAW source (so comment anchors still resolve), then:
+ *   1. the anchor's OWN line is dropped — the slice starts INSIDE a `//` comment, so that
+ *      first line has no visible `//` marker and `stripLineComments` cannot strip it; a
+ *      needle parked in the anchor comment would otherwise satisfy a tooth;
+ *   2. `stripLineComments` (which strips block comments first) removes the rest, so no
+ *      commented-out code can satisfy a tooth either. */
+function bodyRegion(src: string, startNeedle: string, endNeedle: string): string {
+  const raw = regionOrThrow(src, startNeedle, endNeedle);
+  const nl = raw.indexOf('\n');
+  if (nl === -1) {
+    throw new Error(
+      `nh2 region "${startNeedle}" → "${endNeedle}" collapsed to a single line — the block ` +
+        'body is missing; refusing to scan a degenerate region',
+    );
+  }
+  return stripLineComments(raw.slice(nl + 1));
+}
+
+/** Collapse every run of whitespace to ONE space so a contiguous-substring assertion is
+ *  immune to prettier/biome line-wrapping (the gate may be formatted on one line or split
+ *  across three). Hand-rolled scan — `new RegExp` is Semgrep-banned in this file. */
+function squashWhitespace(text: string): string {
+  let out = '';
+  let inWs = false;
+  for (const ch of text) {
+    const isWs = ch === ' ' || ch === '\n' || ch === '\t' || ch === '\r' || ch === '\f';
+    if (isWs) {
+      if (!inWs) out += ' ';
+      inWs = true;
+    } else {
+      out += ch;
+      inWs = false;
+    }
+  }
+  return out;
+}
+
+describe('★ main.ts wiring (nh2/ADR-0148): drain-first + outstanding-steps gate', () => {
+  it('★ W-NH2-GATE-WIRED BITES: BOTH re-issue sites gate on `predictor.outstandingSteps === 0 &&`', () => {
+    // RED TODAY: `predictor.outstandingSteps` does not appear in main.ts at all (0 occurrences
+    // at authoring time), so both assertions below fail on the unfixed source. This is the
+    // primary tooth for R2 + R3.
+    //
+    // WRONG IMPL KILLED (1): today's unfixed code — a held key re-issues a Step every frame
+    // regardless of how many steps are still outstanding in the predictor queue, which is the
+    // press-teleport bug ADR-0148 fixes.
+    // WRONG IMPL KILLED (2): gating only ONE of the two sites (the rAF frame loop but not the
+    // reconcile-divergence path, or vice versa). The reconcile path re-issues on a server
+    // pullback and reproduces the same over-queueing; both regions are asserted separately so
+    // a half fix reds.
+    // WRONG IMPL KILLED (3): a mutant that "mentions" the gate as a bare expression statement
+    // (`predictor.outstandingSteps === 0;`) and then emits unguarded. That form has no trailing
+    // `&&`, so the CONTIGUOUS needle `predictor.outstandingSteps === 0 &&` — the operator glued
+    // directly onto the comparison, exactly as the &&-for-|| tooth in nh1 does it — reds.
+    //
+    // DELIBERATELY NOT ASSERTED: that the gate appears BEFORE `reissueDir(`. The equally
+    // correct form `const d = reissueDir(...); if (d !== undefined && <gate>) sendIntent(...)`
+    // computes the direction first and gates the SEND — behaviourally identical, and an
+    // ordering assertion would red it wrongly. Position within the block is not the invariant;
+    // presence of the conjunct on both emit paths is.
+    const src = readMainTs();
+    expectUniqueAnchor(src, NH2_RECONCILE_START);
+    expectUniqueAnchor(src, NH2_RECONCILE_END);
+    expectUniqueAnchor(src, NH2_RAF_START);
+    expectUniqueAnchor(src, NH2_RAF_END);
+
+    const gate = 'predictor.outstandingSteps === 0 &&';
+
+    const reconcileRegion = squashWhitespace(
+      bodyRegion(src, NH2_RECONCILE_START, NH2_RECONCILE_END),
+    );
+    // Anti-vacuity: prove the region really bounds a held-dir re-issue site before judging it.
+    expect(
+      reconcileRegion.includes('reissueDir('),
+      'the reconcile-divergence region must contain the held-dir re-issue call reissueDir( — ' +
+        'if it does not, the anchors no longer bound the block this tooth is about',
+    ).toBe(true);
+    expect(
+      reconcileRegion.includes(gate),
+      `the reconcile-divergence re-issue guard must contain the CONTIGUOUS conjunct \`${gate}\` ` +
+        '(ADR-0148 R3: `if (diverged && predictor.outstandingSteps === 0 && !( ...overlays... ))`) ' +
+        '— without it a server pullback re-queues a Step while steps are still outstanding, ' +
+        'which is the press-teleport bug',
+    ).toBe(true);
+
+    const rafRegion = squashWhitespace(bodyRegion(src, NH2_RAF_START, NH2_RAF_END));
+    expect(
+      rafRegion.includes('reissueDir('),
+      'the rAF held-key re-issue region must contain the held-dir re-issue call reissueDir( — ' +
+        'if it does not, the anchors no longer bound the block this tooth is about',
+    ).toBe(true);
+    expect(
+      rafRegion.includes(gate),
+      `the rAF held-key re-issue guard must contain the CONTIGUOUS conjunct \`${gate}\` ` +
+        '(ADR-0148 R2: `if (predictor.outstandingSteps === 0 && !( ...14 overlay flags... ))`) ' +
+        '— without it the frame loop emits a Step every frame while steps are still ' +
+        'outstanding, teleporting the player on a single press',
+    ).toBe(true);
+  });
+
+  it('★ W-NH2-DRAIN-FIRST BITES: predictor.drain( runs BEFORE the held-key re-issue block in the rAF frame body', () => {
+    // RED TODAY: `predictor.drain(` currently sits BELOW the re-issue block (~line 2088 vs the
+    // comment at ~line 2063), so the ordering assertion fails on the unfixed source. It is the
+    // tooth for R1 — and it stays in place afterwards as a PERMANENT regression guard.
+    //
+    // WRONG IMPL KILLED (1): the current order — the frame emits a held-key Step against a
+    // queue that has not been drained for this frame, so the predictor over-queues and the
+    // render snaps forward (press-teleport).
+    // WRONG IMPL KILLED (2): a future "tidy-up" that moves the drain back below the emit,
+    // silently restoring the bug while every other tooth in this file stays green.
+    //
+    // RAW region ON PURPOSE (no comment stripping): the re-issue block's position is marked by
+    // its opening COMMENT, which stripping would delete. That is safe here because BOTH needles
+    // are asserted globally unique in main.ts — a `predictor.drain(` hidden in a comment, or a
+    // second copy of either needle, reds via expectUniqueAnchor instead of skewing the compare.
+    const src = readMainTs();
+    expectUniqueAnchor(src, NH2_FRAME_START);
+    expectUniqueAnchor(src, NH2_RAF_END);
+    expectUniqueAnchor(src, NH2_RAF_START);
+    expectUniqueAnchor(src, 'predictor.drain(');
+
+    const frameBody = regionOrThrow(src, NH2_FRAME_START, NH2_RAF_END);
+    const drainIdx = frameBody.indexOf('predictor.drain(');
+    const reissueIdx = frameBody.indexOf(NH2_RAF_START);
+    expect(
+      drainIdx,
+      'the rAF frame body (const frame = … → const ownEntityId =) must contain predictor.drain(',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      reissueIdx,
+      `the rAF frame body must contain the re-issue block comment "${NH2_RAF_START}"`,
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      drainIdx,
+      'ADR-0148 R1: `const { snapped } = predictor.drain(now);` must run BEFORE the held-key ' +
+        're-issue block (immediately below `const now = performance.now();`). With the drain ' +
+        'below the emit, the frame queues a fresh Step against an undrained queue and a single ' +
+        'press teleports the player — moving the drain back down silently restores that bug',
+    ).toBeLessThan(reissueIdx);
+  });
+
+  it('W-NH2-NO-CANCEL: no queue-cancel / setMove escape hatch anywhere in main.ts (GREEN regression guard)', () => {
+    // GREEN REGRESSION GUARD — NOT red today. None of the four needles below exist in main.ts
+    // at authoring time (0 occurrences each); this tooth exists to keep it that way, and is
+    // labelled GREEN deliberately (mislabelling a green guard as RED is itself a defect).
+    //
+    // WRONG IMPL KILLED (ADR-0148 §Alternatives, both REJECTED designs):
+    //   (a) "cancel the queue on keyup" — clearing the server/predictor move queue when the key
+    //       is released was MEASURED to teleport the player BACKWARD by up to 1.75 tiles, because
+    //       the renderer's divergence-snap path (ADR-0141) snaps to the now-shorter authoritative
+    //       path. `predictor.clearQueue` / `reducers.clearQueue` are the shapes that would take.
+    //   (b) "local-only clear" — dropping the local queue without telling the server (or
+    //       overwriting it via a setMove-style reducer) desynchronises predictor and server and
+    //       permanently FREEZES movement. `predictor.setMove` / `reducers.setMove` cover that.
+    // The accepted design gates the EMIT (R2/R3) and reorders the drain (R1); it never cancels
+    // or rewrites an already-queued move. Any reappearance of these call shapes means someone
+    // re-implemented a rejected alternative.
+    const src = readMainTs();
+    const stripped = stripLineComments(src);
+    // Anti-vacuity: `stripBlockComments` bails out and DROPS the remainder if it ever sees an
+    // unterminated `/*` (e.g. one living inside a string literal). If that happened, the tail of
+    // main.ts would go unscanned and this guard would pass vacuously. Comments are a small
+    // fraction of main.ts, so a stripped body under half the raw size means the strip ate the file.
+    expect(
+      stripped.length,
+      'comment-stripped main.ts collapsed to under half its raw size — the block-comment strip ' +
+        'bailed early (unterminated `/*`), so this ban-list scan would cover only a prefix',
+    ).toBeGreaterThan(src.length / 2);
+    const banned = [
+      'predictor.clearQueue',
+      'predictor.setMove',
+      'reducers.clearQueue',
+      'reducers.setMove',
+    ];
+    for (const needle of banned) {
+      expect(
+        stripped.includes(needle),
+        `main.ts must NOT contain \`${needle}\` — ADR-0148 §Alternatives rejected both the ` +
+          'keyup queue-cancel (measured: up to 1.75 tiles of BACKWARD teleport via the ' +
+          "renderer's snap path) and the local-only clear (permanently freezes movement). " +
+          'The accepted fix gates the emit and reorders the drain; it never cancels a queued move',
+      ).toBe(false);
     }
   });
 });
