@@ -22,6 +22,7 @@ import {
 // statusModel is a pure MODEL (no DOM, no SDK) — importing it here creates no
 // net→view dependency (see the layering note in statusModel.ts).
 import { subscriptionErrorMessage } from '../ui/statusModel';
+import { createAuthTokenGate } from './authToken';
 import { MicrotaskBatcher } from './batch';
 import {
   battleChallengeRowToStore,
@@ -96,6 +97,12 @@ export function connect(opts: ConnectionOptions): Connection {
   // re-registers row handlers per build, but every handler schedules through THIS
   // single instance, so a scheduled flush always reflects the current store.
   const batcher = new MicrotaskBatcher(() => store.flushBatch());
+  // Reconnect-credential gate (nh4, ADR-0150). Built ONCE per connect() — NEVER inside
+  // build(): its consecutive-rejection counter lives in this closure and is not persisted,
+  // so a per-build gate would reset the counter on every scheduleRebuild() attempt,
+  // suppression could never engage, and a host reset would loop forever re-supplying a
+  // permanently rejected token. Pinned by W-NH4-GATE-CONSTRUCTED.
+  const auth = createAuthTokenGate(opts.uri, opts.db, globalThis);
   let identity = '';
   let hadSession = false; // distinguishes the first connect from a reconnect (survives rebuilds)
   // App-level reconnect policy (ADR-0085 D3): pure transitions live in
@@ -482,8 +489,16 @@ export function connect(opts: ConnectionOptions): Connection {
     const conn = DbConnection.builder()
       .withUri(opts.uri)
       .withDatabaseName(opts.db)
-      .onConnect((c, id) => {
+      // nh4 (ADR-0150): resume the SAME anonymous identity across a page reload. Read
+      // FRESH on every build — hoisting this to connect() scope would pin one value for
+      // the process lifetime, making the gate's suppression inert and a rejected-token
+      // reconnect loop permanent.
+      .withToken(auth.tokenForNextAttempt())
+      .onConnect((c, id, token) => {
         if (stale()) return; // superseded build: never clobber identity/subscriptions
+        // Persist AFTER the stale guard: a superseded build's late onConnect must not
+        // overwrite the credential the live build already stored.
+        auth.onConnected(token);
         identity = id.toHexString();
         const reconnecting = hadSession;
         c.subscriptionBuilder()
@@ -566,6 +581,11 @@ export function connect(opts: ConnectionOptions): Connection {
       })
       .onConnectError((_ctx, err: Error) => {
         if (stale()) return; // a superseded build's late failure must not dirty the status line
+        // nh4 (ADR-0150): classify this failure. A credential rejection advances the gate's
+        // counter and, at the threshold, makes the NEXT build connect anonymously; anything
+        // else resets it, so an unreachable host never costs the player their identity.
+        // Reporting rides the EXISTING backoff ladder below — no second retry path.
+        auth.onConnectFailed(err);
         // A failed (re)build attempt: surface, climb the backoff ladder, retry.
         opts.onError('connect', err.message);
         state = onAttemptFailed(state);
