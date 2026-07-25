@@ -360,16 +360,34 @@ export default async function () {
   // RED state: scripts/playtest-report.mjs not yet implemented.
   // =========================================================================
 
-  let aggregateReport;
+  let aggregateReport, sortByEventId, parseSqlTable;
   try {
     const mod = await import('../scripts/playtest-report.mjs');
     aggregateReport = mod.aggregateReport;
+    sortByEventId = mod.sortByEventId;
+    parseSqlTable = mod.parseSqlTable;
     if (typeof aggregateReport !== 'function') {
       return {
         name,
         pass: false,
         detail:
           'scripts/playtest-report.mjs exists but does not export `aggregateReport` as a function — must export the pure aggregation fn',
+      };
+    }
+    if (typeof sortByEventId !== 'function') {
+      return {
+        name,
+        pass: false,
+        detail:
+          'scripts/playtest-report.mjs does not export `sortByEventId` — SpacetimeDB 2.6.0 SQL rejects ORDER BY, so the group[0]="first encounter" ordering (PT-B2-RT-01) must be enforced client-side by an exported, independently-testable pure fn.',
+      };
+    }
+    if (typeof parseSqlTable !== 'function') {
+      return {
+        name,
+        pass: false,
+        detail:
+          'scripts/playtest-report.mjs does not export `parseSqlTable` — the pinned 2.6.0 `spacetime sql` CLI has no --json output mode; output must be parsed from its pipe-table stdout.',
       };
     }
   } catch (e) {
@@ -495,6 +513,142 @@ export default async function () {
     }
   }
 
+  // ── T3e: sortByEventId — out-of-order input must come back ascending by event_id,
+  //         and group[0] after grouping must be the OLDEST row, not just any row.
+  //         This is a functional proof of PT-B2-RT-01 (unlike a source-text scan for
+  //         "ORDER BY event_id", which the pre-fix eval used and which proved nothing:
+  //         SpacetimeDB 2.6.0 silently rejects that SQL clause — confirmed live
+  //         2026-07-25, "Unsupported: ...ORDER BY..." 400 Bad Request).
+  {
+    const OUT_OF_ORDER = [
+      {
+        event_id: 30,
+        kind: 1,
+        identity: 'x',
+        species_id: 1,
+        hp_permille: 900,
+        bait_item_id: 0,
+        success: true,
+      },
+      {
+        event_id: 10,
+        kind: 1,
+        identity: 'x',
+        species_id: 1,
+        hp_permille: 200,
+        bait_item_id: 0,
+        success: false,
+      },
+      {
+        event_id: 20,
+        kind: 1,
+        identity: 'x',
+        species_id: 1,
+        hp_permille: 500,
+        bait_item_id: 0,
+        success: true,
+      },
+    ];
+    let sorted;
+    try {
+      sorted = sortByEventId(OUT_OF_ORDER);
+    } catch (e) {
+      return { name, pass: false, detail: `TEETH (real) T3e: sortByEventId threw: ${e.message}` };
+    }
+    const ids = sorted.map((r) => r.event_id);
+    if (ids[0] !== 10 || ids[1] !== 20 || ids[2] !== 30) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH (real) T3e: sortByEventId did not produce ascending event_id order. Got [${ids.join(',')}], expected [10,20,30].`,
+      };
+    }
+    // Must not mutate the input array (aggregateReport's caller re-uses rawRows elsewhere).
+    if (OUT_OF_ORDER[0].event_id !== 30) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH (real) T3e: sortByEventId mutated its input array in place — must return a new sorted array.',
+      };
+    }
+    // End-to-end: feeding the sorted rows through aggregateReport must treat event_id=10
+    // (hp=200, weakened) as the "first encounter", not event_id=30 (hp=900, not weakened).
+    const report = aggregateReport(sorted);
+    if (report.weakenFirstRate !== 1) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH (real) T3e: after sortByEventId, aggregateReport's group[0] was not the lowest event_id — weakenFirstRate=${report.weakenFirstRate}, expected 1 (event_id=10, hp=200 < 500, must be treated as first).`,
+      };
+    }
+  }
+
+  // ── T3f: parseSqlTable — parses the pinned CLI's real pipe-table stdout shape
+  //         (spacetime 2.6.0 has no --json mode; confirmed live 2026-07-25).
+  {
+    const TABLE = ' event_id | kind \n----------+------\n 10       | 1    \n 20       | 1    \n';
+    let rows;
+    try {
+      rows = parseSqlTable(TABLE);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH (real) T3f: parseSqlTable threw on a well-formed table: ${e.message}`,
+      };
+    }
+    if (rows.length !== 2 || rows[0].event_id !== '10' || rows[0].kind !== '1') {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH (real) T3f: parseSqlTable did not correctly parse a well-formed pipe table. Got: ${JSON.stringify(rows)}`,
+      };
+    }
+  }
+
+  // ── T3g: parseSqlTable — a valid-but-empty result (header + separator, 0 data rows)
+  //         must return [], not throw.
+  {
+    const EMPTY_TABLE = ' event_id | kind \n----------+------\n';
+    let rows;
+    try {
+      rows = parseSqlTable(EMPTY_TABLE);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH (real) T3g: parseSqlTable threw on a valid empty table: ${e.message}`,
+      };
+    }
+    if (!Array.isArray(rows) || rows.length !== 0) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH (real) T3g: parseSqlTable on an empty (header+separator only) table must return [], got ${JSON.stringify(rows)}`,
+      };
+    }
+  }
+
+  // ── T3h: parseSqlTable — must fail loud (throw) on an unrecognized shape rather
+  //         than silently returning [] (which would print a bogus "0 events" report).
+  {
+    let threw = false;
+    try {
+      parseSqlTable('not a spacetime sql table at all');
+    } catch {
+      threw = true;
+    }
+    if (!threw) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH (real) T3h: parseSqlTable did not throw on unrecognized (non-table) input — must fail loud.',
+      };
+    }
+  }
+
   // =========================================================================
   // SECTION 4: STRUCTURAL SCANS — justfile + script
   // =========================================================================
@@ -600,28 +754,42 @@ export default async function () {
     };
   }
 
-  // ── 4.7: SQL query includes ORDER BY event_id (PT-B2-RT-01: weakenFirstRate ordering invariant).
-  // aggregateReport uses group[0] as the "first encounter" per (identity, species_id) pair
-  // for weakenFirstRate.  Without ORDER BY event_id ASC the row order returned by spacetime sql
-  // is implementation-defined; group[0] could be the NEWEST not the OLDEST attempt, making
-  // weakenFirstRate non-deterministic and wrong.  The H1 hypothesis measurement depends on
-  // "first encounter" being chronologically the lowest event_id.
-  //
-  // Kills: impl that relies on the DB returning rows in PK order without making it explicit
-  // in the SQL query (non-portable, non-guaranteed behaviour).
-  if (
-    !scriptStripped.includes('ORDER BY event_id') &&
-    !scriptStripped.includes('order by event_id')
-  ) {
+  // ── 4.7: query must NOT use ORDER BY (regression guard). SpacetimeDB 2.6.0's SQL
+  // dialect rejects it outright (confirmed live 2026-07-25: "Unsupported: ...ORDER BY..."
+  // 400 Bad Request) — a query containing it means `just playtest-report` is broken
+  // end-to-end again, exactly the failure mode this eval previously could not catch
+  // (it string-scanned FOR "ORDER BY event_id", which is the opposite of what's safe).
+  if (scriptStripped.includes('ORDER BY') || scriptStripped.includes('order by')) {
     return {
       name,
       pass: false,
       detail:
-        'scripts/playtest-report.mjs SQL query does not contain "ORDER BY event_id" — ' +
-        'weakenFirstRate uses group[0] as the first encounter per (identity,species_id) pair; ' +
-        'without ORDER BY event_id ASC the row order is implementation-defined and group[0] ' +
-        'may be the newest rather than the oldest attempt, making weakenFirstRate non-deterministic. ' +
-        'Fix: append "ORDER BY event_id ASC" to the SELECT query (PT-B2-RT-01).',
+        'scripts/playtest-report.mjs SQL query text contains "ORDER BY" — SpacetimeDB 2.6.0 ' +
+        'rejects this clause (400 Unsupported), which breaks `just playtest-report` end-to-end. ' +
+        'The group[0]="first encounter" ordering (PT-B2-RT-01) must instead be enforced client-side ' +
+        'via the exported sortByEventId() applied to the parsed rows before aggregateReport().',
+    };
+  }
+
+  // ── 4.7b: driver selects event_id (required by sortByEventId) and calls sortByEventId
+  // before aggregateReport — the ordering guarantee must actually be wired up, not just exist.
+  if (!scriptStripped.includes('event_id')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'scripts/playtest-report.mjs does not reference "event_id" anywhere — the SELECT query ' +
+        'must fetch it so sortByEventId can order rows by encounter sequence (PT-B2-RT-01).',
+    };
+  }
+  if (!scriptStripped.includes('sortByEventId(')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'scripts/playtest-report.mjs does not call sortByEventId(...) — parsed rows must be sorted ' +
+        'by event_id before aggregateReport(), or weakenFirstRate\'s "first encounter" group[0] is ' +
+        'non-deterministic (PT-B2-RT-01).',
     };
   }
 
@@ -635,8 +803,10 @@ export default async function () {
     detail: [
       'All pt-b2 playtest-report criteria satisfied:',
       'aggregateReport pure-fn teeth: empty→zeros (no NaN), fixture-B hand-computed rates (successRate=0.25 baitRate=0.5 weakenFirstRate=2/3 recatchRate=1/3), kind=2 filtered, PII-firewall (no hex identity in return);',
+      'sortByEventId teeth: out-of-order→ascending, non-mutating, group[0] after sort is the lowest event_id (PT-B2-RT-01, enforced client-side since SpacetimeDB 2.6.0 rejects ORDER BY);',
+      'parseSqlTable teeth: real pipe-table shape parsed, valid-empty→[], unrecognized shape throws;',
       'justfile: playtest-report recipe present;',
-      'script: exists, non-trivial, exports aggregateReport, uses execFileSync (no shell-string), has process.exit(1), filters kind===1, SQL query has ORDER BY event_id (PT-B2-RT-01).',
+      'script: exists, non-trivial, exports aggregateReport/sortByEventId/parseSqlTable, uses execFileSync (no shell-string), has process.exit(1), filters kind===1, query has no ORDER BY, selects event_id, calls sortByEventId before aggregateReport.',
     ].join(' '),
   };
 }

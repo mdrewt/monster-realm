@@ -66,13 +66,14 @@ export function aggregateReport(rows, { weakenThresholdPermille = 500 } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Coerce a raw `spacetime sql --json` row (all-string values) into the typed
-// shape aggregateReport expects. success -> bool; numeric columns -> Number.
+// Coerce a raw `spacetime sql` row (all-string values) into the typed shape
+// aggregateReport/sortByEventId expect. success -> bool; numeric columns -> Number.
 // ---------------------------------------------------------------------------
 export function coerceRow(raw) {
   const s = raw.success;
   const success = s === true || s === 'true' || s === 1 || s === '1';
   return {
+    event_id: Number(raw.event_id),
     kind: Number(raw.kind),
     identity: String(raw.identity),
     species_id: Number(raw.species_id),
@@ -83,28 +84,57 @@ export function coerceRow(raw) {
 }
 
 // ---------------------------------------------------------------------------
-// Parse `spacetime sql --json` stdout into an array of row objects. The CLI
-// emits an array of statement results; each has a `rows` array. Tolerates the
-// bare-array shape too. Returns [] for a valid-but-empty result.
+// Sort coerced rows ascending by event_id. `aggregateReport`'s per-group
+// `group[0]` = the FIRST recruit attempt (the H1 weaken-first proxy), so this
+// ordering must be applied before calling it — SpacetimeDB 2.6.0's SQL dialect
+// rejects `ORDER BY` (confirmed live: "Unsupported: ...ORDER BY..." 400), so
+// the ordering guarantee (PT-B2-RT-01) is enforced client-side instead of in
+// the query. Pure + exported so it has real proof-of-teeth (a string-scan for
+// "ORDER BY" in the SQL text, the previous gate, proved nothing — SpacetimeDB
+// silently rejects that clause; this fn is what evals/playtest-report.eval.mjs
+// must exercise with an out-of-order fixture).
 // ---------------------------------------------------------------------------
-export function parseSqlRows(sqlJson) {
-  const parsed = JSON.parse(sqlJson);
-  if (Array.isArray(parsed)) {
-    // Either [{ rows: [...] }, ...] (statement results) or a bare row array.
-    if (parsed.length > 0 && parsed[0] && Array.isArray(parsed[0].rows)) {
-      const out = [];
-      for (const stmt of parsed) {
-        if (Array.isArray(stmt.rows)) out.push(...stmt.rows);
-      }
-      return out;
-    }
-    return parsed;
+export function sortByEventId(rows) {
+  return [...rows].sort((a, b) => a.event_id - b.event_id);
+}
+
+// ---------------------------------------------------------------------------
+// Parse `spacetime sql` stdout (2.6.0 has no --json output mode) into an array
+// of row objects. Format is a fixed-width pipe table:
+//
+//    col_a | col_b
+//   -------+-------
+//    1     | foo
+//
+// Header line gives column names (order matches the SELECT list); the next
+// line is a `-+-` separator; every line after that is one data row. Returns
+// [] for a valid-but-empty result (header + separator, zero data lines).
+// ---------------------------------------------------------------------------
+export function parseSqlTable(stdout) {
+  const lines = stdout.split('\n').filter((l) => l.trim().length > 0);
+  if (lines.length === 0) {
+    throw new Error(
+      'playtest-report: empty `spacetime` SQL output — expected at least a header row',
+    );
   }
-  if (parsed && Array.isArray(parsed.rows)) return parsed.rows;
-  // Unrecognized shape (neither a row array nor a { rows: [...] } result) — fail loud
-  // rather than silently returning [] which would print a bogus "0 events" report
-  // (reviewer m-3). A legitimately-empty table is a valid `[]`, handled above.
-  throw new Error('playtest-report: unrecognized `spacetime` SQL --json output shape');
+  const columns = lines[0].split('|').map((c) => c.trim());
+  const separator = lines[1];
+  if (!separator || !/^[-+]+$/.test(separator.trim())) {
+    // Unrecognized shape — fail loud rather than silently returning [] which
+    // would print a bogus "0 events" report (reviewer m-3). A legitimately-empty
+    // table is header+separator+0 rows, handled below via lines.slice(2) === [].
+    throw new Error(
+      'playtest-report: unrecognized `spacetime` SQL table output shape (no separator line)',
+    );
+  }
+  return lines.slice(2).map((line) => {
+    const cells = line.split('|').map((c) => c.trim());
+    const row = {};
+    columns.forEach((col, i) => {
+      row[col] = cells[i];
+    });
+    return row;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -114,19 +144,19 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const server = process.env.STDB_SERVER || 'http://127.0.0.1:3000';
   const db = process.env.MR_PLAYTEST_DB || 'monster-realm-playtest';
 
-  // ORDER BY event_id ASC so rows arrive in encounter order — `aggregateReport`'s
-  // per-group `group[0]` = the FIRST recruit attempt (the H1 weaken-first proxy). Without
-  // this the DB row order is undefined and weakenFirstRate would be non-deterministic
-  // (reviewer M-3 / red-team FINDING-1; gated by playtest-report.eval PT-B2-RT-01).
+  // event_id is selected (not just used to order) because ordering is enforced
+  // client-side by sortByEventId — SpacetimeDB 2.6.0's SQL dialect rejects
+  // ORDER BY (confirmed live: "Unsupported: ...ORDER BY..." 400 Bad Request).
   const query =
-    'SELECT kind, identity, species_id, hp_permille, bait_item_id, success FROM playtest_event ORDER BY event_id ASC';
+    'SELECT event_id, kind, identity, species_id, hp_permille, bait_item_id, success FROM playtest_event';
 
   let out;
   try {
     // Array args (no shell): the DB name + query are never spliced into a shell
     // string, so a hostile DB name cannot inject. The `WARNING: UNSTABLE` line
-    // goes to stderr; stdout carries only the JSON.
-    out = execFileSync('spacetime', ['sql', '-s', server, db, query, '--json'], {
+    // goes to stderr; stdout carries only the pipe-table text. No --json flag —
+    // the pinned 2.6.0 CLI (.github/workflows/{ci,nightly}.yml) does not have one.
+    out = execFileSync('spacetime', ['sql', '-s', server, db, query], {
       encoding: 'utf8',
     });
   } catch (e) {
@@ -138,10 +168,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 
   let rawRows;
   try {
-    rawRows = parseSqlRows(out);
+    rawRows = parseSqlTable(out);
   } catch (e) {
     console.error(
-      `playtest-report: could not parse the \`spacetime\` SQL --json output — ${e?.message ?? String(e)}`,
+      `playtest-report: could not parse the \`spacetime\` SQL table output — ${e?.message ?? String(e)}`,
     );
     process.exit(1);
   }
@@ -156,7 +186,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(0);
   }
 
-  const rows = rawRows.map(coerceRow);
+  const rows = sortByEventId(rawRows.map(coerceRow));
   const report = aggregateReport(rows);
 
   // Print RATES only — never a raw identity (PII firewall).
