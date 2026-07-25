@@ -6,11 +6,6 @@
 //! so `super` resolves to the `evolution` module, giving access to
 //! `compute_evolves_to`, `reject_if_in_battle`, and any seam helpers.
 //!
-//! RED state: this file does not compile until the implementer creates
-//! `server-module/src/evolution.rs` with the `evolve`/`fuse` reducers and the
-//! `compute_evolves_to`/`reject_if_in_battle` helpers, and adds the `#[path]`
-//! mod decl. That is intentional — the tests ARE the contract.
-//!
 //! EARS criteria covered (from M10 spec §3):
 //!   - Slice 3 (Evolve reducer): ownership, eligibility, battle-guard, transform,
 //!     dual-write, stats/HP recomputed.
@@ -21,8 +16,7 @@
 //! Pattern: SpacetimeDB `#[spacetimedb::client_visibility_filter]` is not a unit
 //! test harness — these tests call the *seam functions* (the pure or nearly-pure
 //! layers under the reducers) directly, following the established pattern of
-//! `evaluate_care` in raising_tests.rs.  Where a seam does not yet exist the test
-//! calls the reducer signature directly so the file is RED until the seam is added.
+//! `evaluate_care` in raising_tests.rs.
 //!
 //! Each test carries a `// kills:` comment stating which wrong implementation it
 //! catches.
@@ -792,6 +786,13 @@ fn test_fuse_a_not_owner_rejects() {
 
 /// Slice 4 test 3: caller does not own monster B → Err("not owner").
 /// kills: ownership check only guards parent A, not parent B.
+///
+/// A0 (ADR-0147): the `make_monster_row` default bond of 100 is LOAD-BEARING here
+/// and must NOT be "fixed" to an eligible value. Both parents are bond-100, i.e.
+/// INELIGIBLE, so this fixture proves ownership is evaluated BEFORE the fusion
+/// eligibility gate — if the two ever swap, the caller learns a foreign monster's
+/// investment level before being told they do not own it. The
+/// `!msg.contains("120 bond")` assertion below is the executable form of that.
 #[test]
 fn test_fuse_b_not_owner_rejects() {
     let owner = owner_id();
@@ -803,6 +804,7 @@ fn test_fuse_b_not_owner_rejects() {
     db.insert_species(make_species_row(4, 80, 90));
     db.insert_fusion(make_fusion_recipe_row(1, 1, 3, 4));
 
+    // Deliberately make_monster_row (bond 100 = INELIGIBLE) — see the doc comment.
     let mut ma = make_monster_row(1, owner); // owned by `owner`
     ma.species_id = 1;
     let mut mb = make_monster_row(2, other); // owned by `other` — not the caller
@@ -826,6 +828,15 @@ fn test_fuse_b_not_owner_rejects() {
         msg.contains("not owner"),
         "error must contain \"not owner\"; got: {:?}",
         msg
+    );
+    // A0 ORDERING TEETH: both parents are bond-100 (ineligible), so if the
+    // eligibility gate ever moved ABOVE ownership the message would be the bond
+    // one instead — leaking a foreign monster's investment level to a non-owner.
+    assert!(
+        !msg.contains("120 bond"),
+        "TEETH(A0): ownership must be reported BEFORE any eligibility failure — \
+         a bond message here means the eligibility gate overtook the ownership check \
+         and is leaking a foreign monster's stats; got: {msg:?}"
     );
 }
 
@@ -1131,11 +1142,20 @@ fn test_fuse_atomic_delete_insert_both_parents_gone() {
 /// values, dies here).
 ///
 /// Parents: a = L34 bond 200 EVs(252,0,100,0,0,0) Adamant "ParentA" slot 3
-///          b = L12 bond 150 EVs(0,252,0,0,0,0)   Timid   "ParentB" slot 1
+///          b = L10 bond 150 EVs(0,252,0,0,0,0)   Timid   "ParentB" slot 1
 /// Offspring pins (arithmetic in the assertion messages):
 ///   level 17 · xp 4913 · bond 150 · EVs (94, 94, 37, 0, 0, 0)
+///
+/// Parent b is level 10 (the inclusive MIN_FUSION_LEVEL boundary) rather than 12
+/// DELIBERATELY: at (34, 12) the taxed-average and retention-floor branches BOTH
+/// yield 17, so the row pin could not tell them apart. At (34, 10) they diverge
+/// (16 vs 17) while every pinned value stays identical, so this row now also
+/// discriminates an avg-branch-only regression. (The floor-branch-only direction
+/// coincides here and is killed in game-core by the (12,10)->8 and (34,34)->25 pins.)
+///
 /// kills: level-1/EV-0/bond-70 leftovers; carrying a parent's level/bond/EVs/nickname
-///        into the row; wrong IV formula; wrong nature selection; xp desync.
+///        into the row; wrong IV formula; wrong nature selection; xp desync;
+///        an avg-branch-only level formula (would write 16).
 #[test]
 fn test_fuse_offspring_properties() {
     let owner = owner_id();
@@ -1163,8 +1183,10 @@ fn test_fuse_offspring_properties() {
     ma.ev_hp = 252;
     ma.ev_defense = 100;
 
-    // Parent B: Timid nature, bond=150 (lower but still eligible), level=12
-    let mut mb = make_fusable_monster_row(2, owner, 12, 150);
+    // Parent B: Timid nature, bond=150 (lower but still eligible), level=10
+    // (exactly MIN_FUSION_LEVEL — see the doc comment: this is what makes the two
+    // level branches diverge, 16 vs 17, without moving any pinned value)
+    let mut mb = make_fusable_monster_row(2, owner, 10, 150);
     mb.species_id = 3;
     mb.nature_kind = NatureKind::Timid;
     mb.nickname = "ParentB".to_string();
@@ -1193,11 +1215,13 @@ fn test_fuse_offspring_properties() {
     // species = recipe.to
     assert_eq!(off.species_id, 4, "offspring species must be recipe.to (4)");
 
-    // level: max(avg(34,12)=23 taxed to 17, max(34,12)=34 retained to 17) = 17
+    // level: max(avg(34,10)=22 taxed to 16, max(34,10)=34 retained to 17) = 17
+    // The two branches DIVERGE here (16 vs 17) — that is the point of level 10.
     assert_eq!(
         off.level, 17,
-        "TEETH(A0-3): offspring ROW level must be 17 for parents (34, 12); \
-         kills: the level-1 leftover, and carrying a parent's level (34 or 12)"
+        "TEETH(A0-3): offspring ROW level must be 17 for parents (34, 10); \
+         kills: the level-1 leftover, carrying a parent's level (34 or 10), and an \
+         avg-branch-only formula (which would write the taxed average 16)"
     );
 
     // xp: 17^3 = 4913 (xp_for_level of the TAXED level, not of level 1)
@@ -1408,25 +1432,20 @@ fn test_fuse_order_independence_when_bonds_differ() {
 // EARS 12.5a-3 — dual-write ordering: offspring monster_pub must have the
 // auto-assigned monster_id (not 0).
 //
-// Bug reference: 12.5a-1 (evolution.rs lines 359-361).  pub_from_monster is
-// called on the pre-insert Monster row (monster_id==0) so the resulting
-// monster_pub.monster_id is 0 instead of the real auto_inc id.
-//
-// This test starts RED because fuse_seam intentionally reproduces the buggy
-// ordering (pub_from_monster before insert).  It turns GREEN when the
-// implementer fixes both the seam AND evolution.rs:
+// Bug reference (FIXED by 12.5a): pub_from_monster used to be called on the
+// pre-insert Monster row (monster_id == 0), so monster_pub.monster_id was 0
+// instead of the real auto_inc id. Both the seam and evolution.rs now insert
+// FIRST and project the returned row:
 //   let inserted = ctx.db.monster().insert(offspring_monster);
 //   ctx.db.monster_pub().insert(pub_from_monster(&inserted));
+// This test is the standing regression guard for that ordering.
 // ---------------------------------------------------------------------------
 
 /// 12.5a-3: offspring monster_pub.monster_id must equal offspring monster.monster_id.
 ///
-/// RED state: fuse_seam calls `pub_from_monster(&offspring_monster)` before
-/// `db.insert_monster(offspring_monster)`.  Because `offspring_monster.monster_id == 0`
-/// at that point, `offspring_pub.monster_id` is 0.  The assertions below catch this.
-///
 /// Kills: any implementation (seam OR production) that calls pub_from_monster on
-/// the pre-insert row (i.e. before the auto_inc id is assigned).
+/// the pre-insert row (i.e. before the auto_inc id is assigned) — the pub row
+/// would be keyed under 0 and the real offspring would have no public projection.
 #[test]
 fn fuse_offspring_pub_id_matches_monster_id() {
     let owner = owner_id();

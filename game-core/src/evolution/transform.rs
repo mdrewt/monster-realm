@@ -1215,6 +1215,12 @@ mod tests {
     /// UNREACHABLE through the real `fuse` reducer (`MIN_FUSION_LEVEL = 10` gates
     /// it) — this is a PURE-TOTALITY pin: without the floor, both branches yield 0
     /// and `Level::new(0)` panics (`.expect` in a reducer path = a wasm trap).
+    ///
+    /// This is the ONLY reliable killer of the dropped-`.max(1)` mutant. The
+    /// proptests are ~97.5% blind to it: `arb_level` draws uniformly from 1..=100,
+    /// and the floor only bites when BOTH parents are level 1 (a ~1-in-10 000 draw
+    /// per case), so a 256-case run misses it the overwhelming majority of the
+    /// time. Do not delete this test as "redundant with the property".
     #[test]
     fn fuse_level_floor_is_one_for_two_level_one_parents() {
         // kills: dropping `.max(1)` (Level::new(0) panics), and any "return 0" stub

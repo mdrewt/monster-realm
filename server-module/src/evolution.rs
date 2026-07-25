@@ -3,6 +3,8 @@
 //! The M10b evolve + fuse reducers: ownership-validated, battle-guarded, delegating
 //! the pure transform logic to `game_core::evolution::{evolve, fuse}`. Server-computes
 //! `evolves_to` on all monster mutations (passive eligibility check, no item applied).
+//! Also owns `reject_if_not_fusable` — the single server delegation point to the
+//! `game_core::fusion_eligible` gate (ADR-0147), shared by the reducer and the seam.
 //!
 //! This file name is part of the canonical `touches:` vocabulary fixed by ADR-0056
 //! — keep it stable.

@@ -808,7 +808,8 @@ no new ADR) complete. **M9 (Raising subsystem — train + care) fully delivered.
 `load_*` loaders; 7-rule cross-registry `validate_evolution_fusion` with proof-of-teeth; ADR-0060)
 complete. **M10a-rules** (pure `game-core/evolution/` module — `eligibility` (`evolves_to`/
 `resolve_evolution` passive branch check by level/bond/item) + `transform` (`evolve` carries all
-individuality per ADR-0019; `fuse` per-stat-max-IV + higher-bond-nature + fresh-L1 + lower-slot);
+individuality per ADR-0019; `fuse` per-stat-max-IV + higher-bond-nature + lower-slot + TAXED
+carry — bond 75% of max, level max(75% avg, 50% max)≥1, EVs 75% of avg — ADR-0147);
 46 unit/property tests; ADR-0061) complete. **M10b** (server evolution + fusion reducers —
 `evolve` + `fuse` reducers in `evolution.rs`; additive `fusion` table + `evolves_to: Option<u32>`
 column on `monster`; `compute_evolves_to` server helper; atomic fuse delete-two-insert-one in one
@@ -818,7 +819,8 @@ integrity gate is live on publish; ADR-0062; 16 server tests) complete.
 rules (no-dup-pair, derived-not-wild, dangling-refs, self-evolution, fusion-coherence) + 12
 proof-of-teeth; `evolution-reducer-security` eval: 5 reducer invariants (ownership×2 for fuse,
 battle-guard×2, fusion-eligibility delegation via `reject_if_not_fusable`→`game_core::fusion_eligible`
-(ADR-0147, production-source-scoped), dual-write, SSOT delegation) + 17 proof-of-teeth fixtures
+(ADR-0147, production-source-scoped: single-definition, arg-identity, Result-enforced, ordered
+after ALL ownership checks), dual-write, SSOT delegation) + 23 proof-of-teeth fixtures
 and a production-reader exclusion probe; ADR-0064)
 complete.
 

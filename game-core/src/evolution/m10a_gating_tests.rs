@@ -14,7 +14,6 @@
 //!       of the A0-3 formula with LITERAL 75/50 (the ONLY sanctioned formula
 //!       mirror in this suite — every other expectation is a hardcoded pin).
 //!
-//! Red state: every test will PANIC on the `todo!()` stubs.
 //! Run: cargo test m10a_gating -- --nocapture
 
 use crate::content::Species;

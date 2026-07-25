@@ -52,7 +52,9 @@ decisions, deviations, and honest consequences.
    exception to the `reject_if_*`-lives-in-guards.rs convention, recorded here) delegates to
    `game_core::fusion_eligible` and owns the variant→message mapping. Both the real `fuse`
    reducer and the `fuse_seam` test double call it; the reducer's inline `a_id == b_id` and
-   the seam's hand-duplicated guard copy are DELETED (A0-7: delete, don't migrate).
+   the seam's hand-duplicated guard copy are DELETED (A0-7: delete, don't migrate). The
+   seam intentionally retains NO trade-escrow guard (pre-existing seam↔reducer asymmetry,
+   unchanged by A0; the reducer's trade guards stay pinned by the trade-escrow-guards eval).
 4. **Reducer guard order** (new): lookups → require_owner ×2 → marshal both →
    `reject_if_not_fusable` → battle ×2 → trade ×2 → species rows → recipe → transform.
    Ownership precedes eligibility (convention/hygiene — NOT a security property:
