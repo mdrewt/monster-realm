@@ -66,6 +66,10 @@ mod tests {
     use crate::monster::types::{
         Bond, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock, Xp,
     };
+    // A0 T-reach: `apply_care` is the ONLY bond writer in the game, so the fusion
+    // bond minimum's real cost is measured in care actions (ADR-0140 moved these
+    // constants into `game-core::raising`).
+    use crate::raising::CARE_BOND_AMOUNT;
 
     // -----------------------------------------------------------------------
     // Fixture helpers
@@ -341,6 +345,153 @@ mod tests {
                 "evolves_to must equal resolve_evolution(..., None) for level={lv_val} bond={bond_val}"
             );
         }
+    }
+
+    // =======================================================================
+    // A0-7 (ADR-0147) — `fusion_eligible` gate: T17–T23 + T-reach
+    //
+    // Check order under test (D4): self -> level (EITHER parent) -> bond (EITHER
+    // parent). `FusionError` variants are payload-free, so only the CATEGORY order
+    // is observable — that is exactly what T22 pins.
+    //
+    // Every fixture below sits STRICTLY above the minimum it is not testing, so a
+    // `<` -> `!=` mutation cannot hide behind an exact-boundary-only fixture.
+    // =======================================================================
+
+    /// T17: the EXACT minimums (level 10, bond 120 on BOTH parents) → `Ok(())`.
+    #[test]
+    fn fusion_eligible_accepts_the_exact_minimums() {
+        // kills: `>` / `<=` boundary bugs — a strict impl rejects level==10 or bond==120
+        assert_eq!(
+            fusion_eligible(1, 2, &fixture_monster(10, 120), &fixture_monster(10, 120)),
+            Ok(()),
+            "level 10 / bond 120 is the INCLUSIVE minimum on both parents — must be Ok"
+        );
+    }
+
+    /// T17b: strictly ABOVE both minimums → `Ok(())`.
+    #[test]
+    fn fusion_eligible_accepts_strictly_above_the_minimums() {
+        // kills: `<` -> `!=` mutants, which survive an exact-boundary-only Ok fixture
+        assert_eq!(
+            fusion_eligible(1, 2, &fixture_monster(50, 200), &fixture_monster(50, 200)),
+            Ok(()),
+            "levels 50 / bonds 200 are strictly above both minimums — must be Ok"
+        );
+    }
+
+    /// T18: the same monster id on both sides is `SelfFusion`, whatever its stats.
+    #[test]
+    fn fusion_eligible_rejects_self_fusion() {
+        // kills: dropping the id comparison entirely; comparing the INSTANCES
+        // (identical stats would then read as "different monsters")
+        assert_eq!(
+            fusion_eligible(7, 7, &fixture_monster(50, 200), &fixture_monster(50, 200)),
+            Err(FusionError::SelfFusion),
+            "the same monster id on both sides must be SelfFusion even with perfect stats"
+        );
+    }
+
+    /// T19: identity is checked BEFORE the stat gates.
+    #[test]
+    fn fusion_eligible_reports_self_fusion_before_stat_failures() {
+        // kills: level/bond checked first — a level-1 bond-0 self-fuse would then
+        // report BelowMinLevel and the reducer's self-fusion message would drift
+        assert_eq!(
+            fusion_eligible(7, 7, &fixture_monster(1, 0), &fixture_monster(1, 0)),
+            Err(FusionError::SelfFusion),
+            "a level-1 / bond-0 self-fuse must report SelfFusion, not BelowMinLevel"
+        );
+    }
+
+    /// T20: level below the minimum on EITHER parent → `BelowMinLevel`.
+    /// Both fixtures carry bond 200 (strictly above 120) so bond can never fire.
+    #[test]
+    fn fusion_eligible_rejects_level_below_minimum_on_either_parent() {
+        // kills: `&&` instead of `||` (only both-below rejects), a-only, b-only
+        assert_eq!(
+            fusion_eligible(1, 2, &fixture_monster(9, 200), &fixture_monster(50, 200)),
+            Err(FusionError::BelowMinLevel),
+            "parent a at level 9 must be rejected (kills b-only and && forms)"
+        );
+        assert_eq!(
+            fusion_eligible(1, 2, &fixture_monster(50, 200), &fixture_monster(9, 200)),
+            Err(FusionError::BelowMinLevel),
+            "parent b at level 9 must be rejected (kills a-only and && forms)"
+        );
+    }
+
+    /// T21: bond below the minimum on EITHER parent → `BelowMinBond`.
+    /// Both fixtures carry level 50 (strictly above 10) so level can never fire.
+    #[test]
+    fn fusion_eligible_rejects_bond_below_minimum_on_either_parent() {
+        // kills: `&&` instead of `||`, a-only, b-only, and a POST-TAX bond check
+        // (the gate reads the raw stored bond, not 119 * 75 / 100)
+        assert_eq!(
+            fusion_eligible(1, 2, &fixture_monster(50, 119), &fixture_monster(50, 200)),
+            Err(FusionError::BelowMinBond),
+            "parent a at bond 119 must be rejected (kills b-only and && forms)"
+        );
+        assert_eq!(
+            fusion_eligible(1, 2, &fixture_monster(50, 200), &fixture_monster(50, 119)),
+            Err(FusionError::BelowMinBond),
+            "parent b at bond 119 must be rejected (kills a-only and && forms)"
+        );
+    }
+
+    /// T22: level is the COARSER gate and is reported before bond.
+    #[test]
+    fn fusion_eligible_reports_level_before_bond() {
+        // kills: bond-checked-first (would report BelowMinBond and drift the
+        // server-side message mapping away from the parity matrix)
+        assert_eq!(
+            fusion_eligible(1, 2, &fixture_monster(9, 200), &fixture_monster(50, 119)),
+            Err(FusionError::BelowMinLevel),
+            "a level failure on a and a bond failure on b must report BelowMinLevel"
+        );
+    }
+
+    /// T23: the two published minimums are pinned to their spec values.
+    #[test]
+    fn fusion_minimum_constants_are_pinned() {
+        // kills: a silent retune of either constant (every other test in this file
+        // hardcodes its expectations, so a retune must land HERE first)
+        assert_eq!(
+            MIN_FUSION_LEVEL, 10u8,
+            "MIN_FUSION_LEVEL must be exactly 10 (spec A0-7)"
+        );
+        assert_eq!(
+            MIN_FUSION_BOND, 120u8,
+            "MIN_FUSION_BOND must be exactly 120 (spec A0-7)"
+        );
+    }
+
+    /// T-reach: `MIN_FUSION_BOND` must stay REACHABLE by real play. `apply_care`
+    /// (+`CARE_BOND_AMOUNT` per action, 6h cooldown) is the only bond writer, so a
+    /// default-bond monster needs exactly 10 care actions to become fusable.
+    /// The 10 is hardcoded: any retune of `MIN_FUSION_BOND`, `CARE_BOND_AMOUNT`, or
+    /// `Bond::default_bond()` must surface here as a wall-clock grind change.
+    #[test]
+    fn fusion_bond_minimum_is_ten_care_actions_above_default_bond() {
+        // kills: a silent MIN_FUSION_BOND / CARE_BOND_AMOUNT / default_bond retune
+        // that quietly changes the fusion grind without any other test going red
+        let gap = u32::from(MIN_FUSION_BOND) - u32::from(Bond::default_bond().value());
+        assert_eq!(
+            gap, 50,
+            "the fusion bond gap above default bond must be 50 (120 - 70)"
+        );
+        assert_eq!(
+            gap / u32::from(CARE_BOND_AMOUNT),
+            10,
+            "MIN_FUSION_BOND must be exactly 10 apply_care actions above Bond::default_bond()"
+        );
+        // Exactness (not just the floor of the division): 10 whole care actions land
+        // EXACTLY on the minimum — no truncated 11th partial action hiding in the gap.
+        assert_eq!(
+            10 * u32::from(CARE_BOND_AMOUNT),
+            gap,
+            "10 care actions must land exactly on MIN_FUSION_BOND, not merely past it"
+        );
     }
 
     // -----------------------------------------------------------------------
