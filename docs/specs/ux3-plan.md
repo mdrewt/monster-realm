@@ -112,7 +112,23 @@ kills that mutant directly, and brittle prose-needles cost future slices); revie
 `playtest-report` coverage (outside the EARS — recorded as a deliberate non-scope below).
 
 
-## Final design
+## ⚠ Final design — SUPERSEDED IN PART by the post-plan hardening passes
+
+The block below is the design as it stood when implementation started. Two later
+adversarial passes changed it materially; **the shipped code and the eval's own header
+comment are authoritative**, and ADR-0153 records the reasoning. Deltas:
+
+- The recipe gained a `command -v spacetime` branch and a `command -v timeout` branch, and
+  the probe now matches `server ping`'s **output** (`Server is online`) rather than only
+  its exit code — `server ping` exits 0 for a 404 (trailing slash / path suffix) and for a
+  500 from an unrelated service, all of which `publish -s` rejects. See ADR-0153 §1b.
+- The gate grew from A0–A7 to A0–A9 plus `timeoutBindsProbe` (A5h) and **four** behavioral
+  teeth (negative, positive control, non-SpacetimeDB responder, call-site), after a
+  red-team pass proved 9 of 19 broken implementations passed the A0–A7 draft.
+- Helpers shipped: `strippedRecipeBody`, `recipeStepOrderOk`, `recipeHasLineWithAll`,
+  `timeoutBindsProbe`, `isBoundingDuration` (the plan named two).
+
+## Final design (as planned)
 
 ### `justfile` — new recipe, inserted above `playtest-up`
 

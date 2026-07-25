@@ -214,22 +214,56 @@ function recipeHasLineWithAll(justfile, recipeName, tokens) {
 //   (M-raw) if ! spacetime server ping "$STDB_SERVER" …   # the real call, unbounded,
 //           paired with a `timeout` mention anywhere else in the body.
 //
-// So we require, for EVERY line that carries `spacetime server ping`:
-//   (a) the TRIMMED line begins with `timeout `/`if timeout `/`if ! timeout `/`! timeout `
-//       — i.e. `timeout` heads a COMMAND. An assignment (`X='timeout 10 …'`) or any other
-//       leading token fails, which kills M-doc and M-raw.
-//   (b) the token immediately following `timeout ` is a POSITIVE integer duration, which
-//       kills M-t0. An optional GNU unit suffix s/m/h/d is accepted so a correct
-//       `timeout 10s` does not false-RED.
+// THE INVARIANT (re-expressed — this predicate previously encoded a SYNTAX, not the
+// invariant, and REJECTED the correct shipped implementation):
+//
+//   `timeout <positive-duration>` must be the two tokens IMMEDIATELY PRECEDING the
+//   `spacetime server ping` token, on the same line.
+//
+// The old form demanded the TRIMMED LINE START WITH one of
+// `timeout `/`if timeout `/`if ! timeout `/`! timeout `. That is a whitelist of four
+// spellings, not the property we care about, and it false-REDs the shipped recipe:
+//
+//     if ! PING_OUT=$(timeout 10 spacetime server ping "$STDB_SERVER" 2>&1) || …
+//
+// …which is correctly bounded (the `timeout` is the head of the command inside the
+// command substitution) but starts with `if ! PING_OUT=$(`. Capturing stdout is REQUIRED
+// by ux3-1's output-matching fix (see the `Server is online` needle in §7.13), so the
+// old predicate structurally forbade the correct implementation.
+//
+// So we require, for EVERY line that carries `spacetime server ping`: take the substring
+// BEFORE the needle, split it on whitespace, drop empties, and demand that
+//   (a) the second-to-last token IS the `timeout` command — either the bare word, or the
+//       word preceded by a shell COMMAND-BOUNDARY character (`$(`, backtick, `(`, `{`,
+//       `;`, `&`, `|`). A quote is deliberately NOT a boundary, so the dead doc-string
+//       `PROBE_DOC='timeout 10 spacetime server ping …'` still fails (M-doc), and neither
+//       is a letter/underscore, so `MYtimeout` fails.
+//   (b) the last token is a POSITIVE duration (isBoundingDuration), which kills M-t0. An
+//       optional GNU unit suffix s/m/h/d is accepted so `timeout 10s` does not false-RED.
+//
+// IMMEDIATE ADJACENCY is what makes this bite where mere co-occurrence does not:
+//     if ! X=$(timeout 10 echo hi) && spacetime server ping "$STDB_SERVER"; then
+// has `timeout 10` on the line — bounding something else entirely — while the real probe
+// runs unbounded. The preceding tokens there are `hi)` and `&&`, so it is rejected.
 //
 // `every` (not `some`) is deliberate: if a body contains a bounded probe AND a second
 // unbounded one, the unbounded one can still hang, so the pair must not read as green.
 // ---------------------------------------------------------------------------
 
-// The only accepted forms in which `timeout` heads the command that runs the probe.
-// Longest-distinguishing forms are all checked; order does not matter because none of
-// these is a prefix of another.
-const TIMEOUT_COMMAND_PREFIXES = ['timeout ', 'if timeout ', 'if ! timeout ', '! timeout '];
+// Shell metacharacters after which a word starts a NEW command, so `…$(timeout` /
+// `;timeout` / `|timeout` still have `timeout` heading a command. Quotes are excluded on
+// purpose: inside `'…'`/`"…"` the word is data, not a command (that is the M-doc mutant).
+const COMMAND_BOUNDARY_CHARS = ['(', '`', '{', ';', '&', '|'];
+
+// True iff `token` is the `timeout` COMMAND, possibly glued to a command-substitution or
+// list operator prefix (`PING_OUT=$(timeout`, `;timeout`, `&&timeout`).
+function isTimeoutCommandToken(token) {
+  if (typeof token !== 'string') return false;
+  if (token === 'timeout') return true;
+  if (!token.endsWith('timeout')) return false;
+  const boundary = token[token.length - 'timeout'.length - 1];
+  return COMMAND_BOUNDARY_CHARS.includes(boundary);
+}
 
 // A GNU `timeout` DURATION that actually bounds the command: a positive integer with an
 // optional s/m/h/d unit suffix. `0`, `0s`, `00` are rejected (0 DISABLES the timeout).
@@ -246,21 +280,23 @@ function isBoundingDuration(token) {
   return Number(digits) > 0;
 }
 
-// True iff every `spacetime server ping` line in the recipe is headed by a `timeout`
-// COMMAND carrying a positive duration. Returns false when the recipe has no probe line
-// at all (non-vacuity: the claim "the probe is bounded" is unverifiable without a probe).
+// True iff, on every `spacetime server ping` line in the recipe, the two tokens
+// IMMEDIATELY preceding the probe are a `timeout` command and a positive duration.
+// Returns false when the recipe has no probe line at all (non-vacuity: the claim "the
+// probe is bounded" is unverifiable without a probe).
 function timeoutBindsProbe(justfile, recipeName, probeNeedle) {
   const probeLines = strippedRecipeBody(justfile, recipeName)
     .split('\n')
     .filter((line) => line.includes(probeNeedle));
   if (probeLines.length === 0) return false;
   return probeLines.every((raw) => {
-    const line = raw.trim();
-    const prefix = TIMEOUT_COMMAND_PREFIXES.find((p) => line.startsWith(p));
-    if (prefix === undefined) return false;
-    const rest = line.slice(prefix.length).trim();
-    const durationToken = rest.split(/\s+/)[0];
-    return isBoundingDuration(durationToken);
+    const before = raw.slice(0, raw.indexOf(probeNeedle));
+    // Literal regex only — no new RegExp (Semgrep detect-non-literal-regexp).
+    const tokens = before.split(/\s+/).filter((t) => t.length > 0);
+    if (tokens.length < 2) return false;
+    const durationToken = tokens[tokens.length - 1];
+    const commandToken = tokens[tokens.length - 2];
+    return isTimeoutCommandToken(commandToken) && isBoundingDuration(durationToken);
   });
 }
 
@@ -315,6 +351,13 @@ const JF_TB_IF_BANG = `playtest-preflight:\n    #!/usr/bin/env bash\n    set -eu
 // GOOD: a GNU unit suffix is legal and must NOT false-RED. Also uses the justfile's house
 // `"${STDB_SERVER}"` brace style to prove the predicate is quoting-agnostic.
 const JF_TB_UNIT_SUFFIX = `playtest-preflight:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    if ! timeout 10s spacetime server ping "\${STDB_SERVER}" >/dev/null 2>&1; then\n        exit 1\n    fi\n`;
+// GOOD (THE SHIPPED FORM): stdout is captured in a command substitution so the recipe can
+// MATCH the body ("Server is online"), because `spacetime server ping` exits 0 for any
+// completed HTTP round-trip — including a 404 or a 500 from a non-SpacetimeDB service.
+// The probe is still bounded: `timeout 10` heads the command inside `$( … )`. The previous
+// "trimmed line must START WITH timeout/if timeout/…" predicate REJECTED this correct
+// implementation, i.e. it encoded a spelling instead of the invariant.
+const JF_TB_CMD_SUBST = `playtest-preflight:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    if ! PING_OUT=$(timeout 10 spacetime server ping "$STDB_SERVER" 2>&1) || ! printf '%s' "$PING_OUT" | grep -q 'Server is online'; then\n        exit 1\n    fi\n`;
 // BAD (M-t0): `timeout 0` DISABLES the timeout entirely (GNU coreutils). Measured:
 // `timeout 0 sleep 3` took 3.002 s and exited 0 — the probe is unbounded.
 const JF_TB_ZERO = `playtest-preflight:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    if ! timeout 0 spacetime server ping "$STDB_SERVER" >/dev/null 2>&1; then\n        exit 1\n    fi\n`;
@@ -323,6 +366,13 @@ const JF_TB_ZERO = `playtest-preflight:\n    #!/usr/bin/env bash\n    set -euo p
 const JF_TB_DOCSTRING = `playtest-preflight:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    PROBE_DOC='timeout 10 spacetime server ping "$STDB_SERVER"'\n    if ! spacetime server ping "$STDB_SERVER" >/dev/null 2>&1; then\n        exit 1\n    fi\n`;
 // BAD (non-vacuity): no probe line at all — "the probe is bounded" is unverifiable.
 const JF_TB_NO_PROBE = `playtest-preflight:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    timeout 10 echo ok\n`;
+// BAD (M-adj): `timeout 10` IS on the probe line — bounding an unrelated `echo` inside a
+// command substitution — while the real `spacetime server ping` after `&&` runs unbounded.
+// Every co-occurrence needle (A5g) is satisfied on that single line, and the OLD predicate
+// would also have accepted it once relaxed away from line-start matching. Only IMMEDIATE
+// ADJACENCY of `timeout <duration>` to the probe rejects it: the two tokens before the
+// probe here are `hi)` and `&&`.
+const JF_TB_TIMEOUT_ELSEWHERE_ON_LINE = `playtest-preflight:\n    #!/usr/bin/env bash\n    set -euo pipefail\n    if ! X=$(timeout 10 echo hi) && spacetime server ping "$STDB_SERVER" >/dev/null 2>&1; then\n        exit 1\n    fi\n`;
 
 // ---------------------------------------------------------------------------
 // §7.15 positive control — source for the throwaway HTTP stub.
@@ -713,7 +763,25 @@ export default async function () {
       name,
       pass: false,
       detail:
-        'TEETH P7b: timeoutBindsProbe rejected the intended `if ! timeout 10 spacetime server ping …; then` form — the accepted-prefix set must cover `if ! timeout `, not just a bare `timeout `',
+        'TEETH P7b: timeoutBindsProbe rejected the `if ! timeout 10 spacetime server ping …; then` form — leading `if`/`!` tokens are irrelevant; only the two tokens IMMEDIATELY before the probe are load-bearing',
+    };
+  }
+
+  // --- Tooth P7g: timeoutBindsProbe GOOD — THE SHIPPED COMMAND-SUBSTITUTION FORM ---
+  // THE BLOCKING TOOTH. `spacetime server ping` exits 0 for ANY completed HTTP round-trip
+  // (measured on CLI 2.6.0: a trailing slash, a `/v1` path suffix and a node stub returning
+  // HTTP 500 all exit 0), so ux3-1 requires the recipe to MATCH the output body, which means
+  // capturing stdout: `if ! PING_OUT=$(timeout 10 spacetime server ping "$STDB_SERVER" 2>&1)
+  // || ! printf '%s' "$PING_OUT" | grep -q 'Server is online'; then`. The previous predicate
+  // demanded the trimmed line START WITH `timeout `/`if timeout `/`if ! timeout `/`! timeout `
+  // and therefore REJECTED this correct, bounded implementation — a gate that structurally
+  // forbids the only correct fix. This fixture pins the corrected invariant.
+  if (!timeoutBindsProbe(JF_TB_CMD_SUBST, 'playtest-preflight', 'spacetime server ping')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "TEETH P7g: timeoutBindsProbe rejected the shipped `if ! PING_OUT=$(timeout 10 spacetime server ping \"$STDB_SERVER\" 2>&1) || ! printf '%s' \"$PING_OUT\" | grep -q 'Server is online'; then` form — the probe IS bounded (timeout heads the command inside the command substitution). Requiring the trimmed line to START WITH a timeout spelling encodes a SYNTAX, not the invariant, and blocks the output-matching fix that ux3-1 needs; the invariant is `timeout <positive-duration>` IMMEDIATELY preceding the probe token",
     };
   }
 

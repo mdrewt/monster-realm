@@ -16,9 +16,11 @@ ADR-0128 for the build-stamp / DEV-hooks reconciliation.
   spacetime start
   ```
 
-  Every `playtest-*` recipe that touches the network now preflights this for you
-  (`just playtest-preflight`, ADR-0153) and fails with a one-line pointer instead of
-  an opaque `tcp connect error`. You can run that check on its own at any time.
+  `just playtest-up` and `just playtest-wipe` preflight this for you
+  (`just playtest-preflight`, ADR-0153) and fail with a one-line pointer instead of an
+  opaque `tcp connect error`. You can run that check on its own at any time.
+  `playtest-report` and `playtest-verify-release` also reach the server but do **not**
+  preflight — they still surface the raw connect error.
 - `just setup` has been run so the client has its dependencies. A fresh worktree
   lacks `client/node_modules`, and `npm run build` fails with `vite: not found`
   until you run:
@@ -39,7 +41,10 @@ Runs, in order:
 
 1. **Guard** — refuse if `MR_PLAYTEST_DB` resolves to `monster-realm`. A pure local
    check, so a config typo reports itself even when the server is down.
-2. `just playtest-preflight` — refuse if nothing answers at `$STDB_SERVER` (ADR-0153).
+2. `just playtest-preflight` — refuse unless a **SpacetimeDB** answers at `$STDB_SERVER`
+   (ADR-0153). It matches the CLI's `Server is online` line, not just a successful HTTP
+   round-trip, so a trailing slash, a path suffix, or an unrelated service on that port
+   is rejected here rather than at `publish`.
 3. `spacetime build --module-path server-module` — surfaces compile errors before the
    publish.
 4. `spacetime publish -s "$STDB_SERVER" --module-path server-module -y "$MR_PLAYTEST_DB"`
@@ -96,7 +101,8 @@ must not read as green) — run `just playtest-up` / a vite build first.
 
 ## `just playtest-wipe` — wipe / reset to a fresh state
 
-Preflights `$STDB_SERVER` (`just playtest-preflight`), then republishes with
+Rejects the dev-default DB, preflights `$STDB_SERVER` (`just playtest-preflight`),
+then republishes with
 `--delete-data -y` to `$MR_PLAYTEST_DB`, re-runs `sync_content`, and re-proves
 dev-reducers-absent (`just playtest-verify-release`) because the module is rebuilt.
 There is no separate build step — `publish` rebuilds.

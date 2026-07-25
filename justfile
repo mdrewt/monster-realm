@@ -223,8 +223,16 @@ playtest-preflight:
     # A missing CLI is a DIFFERENT fault than a stopped server — telling someone to run
     # 'spacetime start' when the binary is absent is misattribution, so it gets its own message.
     command -v spacetime >/dev/null 2>&1 || { echo "playtest-preflight: the 'spacetime' CLI is not on PATH — install it before running playtest-*." >&2; exit 1; }
-    if ! timeout 10 spacetime server ping "$STDB_SERVER" >/dev/null 2>&1; then
-        echo "playtest-preflight: no SpacetimeDB responding at $STDB_SERVER. Start one first: 'spacetime start' — or set STDB_SERVER to the host you meant." >&2
+    # Symmetric with the CLI check: without GNU timeout the probe below returns 127 and a
+    # HEALTHY server would be reported as down — the misdiagnosis this recipe exists to avoid.
+    command -v timeout >/dev/null 2>&1 || { echo "playtest-preflight: GNU 'timeout' is not on PATH (macOS: brew install coreutils) — the probe cannot be bounded." >&2; exit 1; }
+    # Match the OUTPUT, not just the exit code: `server ping` exits 0 for ANY completed HTTP
+    # round-trip, so a 404 (a trailing slash or path suffix on $STDB_SERVER) and a 500 from
+    # some unrelated service on that port both "succeed". Only the literal "Server is online"
+    # line means a SpacetimeDB actually answered. Exit-code-only would let playtest-up pay a
+    # full wasm build before dying at publish — precisely the cost ux3 exists to remove.
+    if ! PING_OUT=$(timeout 10 spacetime server ping "$STDB_SERVER" 2>&1) || ! printf '%s' "$PING_OUT" | grep -q 'Server is online'; then
+        echo "playtest-preflight: no SpacetimeDB responding at $STDB_SERVER — $(printf '%s' "$PING_OUT" | tail -n 1). Start one first: 'spacetime start' — or set STDB_SERVER to the host you meant." >&2
         exit 1
     fi
 

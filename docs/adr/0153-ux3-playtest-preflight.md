@@ -31,15 +31,33 @@ curl illustratively ("e.g."). A curl probe constructs its own URL and therefore 
 with `STDB_SERVER=local` the publish succeeds while `curl local/v1/ping` fails DNS — the
 preflight would confidently misdiagnose a healthy server and tell the user to start one.
 That is strictly worse than the opaque error this slice exists to remove. `spacetime
-server ping` resolves through the same path as `publish -s`, which makes preflight and
-publish *incapable of disagreeing*. Verified empirically at 2.6.0: URL → exit 0 (15 ms) ·
-nickname `local` → exit 0 · unregistered `http://localhost:3000` → exit 0 · scheme-less
-`127.0.0.1:3000` → exit 0 · refused port → exit 1 (14 ms) · trailing slash → exit 101
-(fails closed, matching the fact that `publish` also breaks on it).
+server ping` resolves `$STDB_SERVER` through the same path as `publish -s`, so the two
+cannot disagree about *which host is meant*. Verified empirically at 2.6.0: URL → exit 0
+(15 ms) · nickname `local` → exit 0 · unregistered `http://localhost:3000` → exit 0 ·
+scheme-less `127.0.0.1:3000` → exit 0 · `maincloud` → exit 0 (0.14 s) · refused port →
+exit 1 (14 ms). A 13-value sweep against real `publish -s` found **no** value the
+preflight rejects that publish would have accepted.
 
-Consequence: `curl` never becomes a dependency of these recipes, and the "what if curl is
-missing" branch that a curl-based design needs does not exist. `spacetime` is already a
-hard dependency of every one of these recipes.
+**1b. Match `server ping`'s OUTPUT, not merely its exit code.** Shared resolution is not
+by itself sufficient, and the first draft of this slice was wrong about that. `spacetime
+server ping` exits **0 for any completed HTTP round-trip**: a trailing slash
+(`http://127.0.0.1:3000/`) and a path suffix both return `Server returned 404` at exit 0,
+and an unrelated service on that port returns `Server could not be reached (500 …)` at
+exit 0 — while `publish -s` fails for all three. An exit-code-only preflight therefore
+passed, and `playtest-up` still paid a full wasm build before dying at publish, which is
+exactly the cost this ADR exists to remove. The probe now requires the literal
+`Server is online` line, which is emitted for URL, nickname and `maincloud` alike, and
+echoes the CLI's own last output line in the failure message so the user sees the real
+cause (404 / 500 / connection refused) rather than a generic "server down". Found by an
+adversarial pass, not by design; recorded here because the exit-code-only reading is the
+obvious one and would be re-derived by the next person.
+
+Consequence: `curl` never becomes a dependency of these recipes. `spacetime` is already a
+hard dependency of every one of them, and is guarded by an explicit `command -v` branch
+with its own message — telling someone to run `spacetime start` when the *binary* is
+absent is the same misattribution this decision rejects `curl` for. GNU `timeout` is
+guarded symmetrically, because without it the probe returns 127 and a healthy server
+reads as down.
 
 **2. A single bounded check, not a retry loop.** A missing `spacetime start` is a steady
 state; N retries only delay the message N×. `timeout 10` is load-bearing rather than
@@ -77,7 +95,24 @@ SpacetimeDB CLI before `- run: just eval`.
 
 The tooth carries its own anti-vacuity guard: a **missing** recipe also exits 1, so
 `status !== 0` alone would pass on a deleted recipe. It additionally asserts stderr
-contains `spacetime start` and does *not* contain `does not contain recipe`.
+contains `spacetime start` and the **runtime-expanded** URL — `just` echoes the source
+lines of a non-shebang recipe, so the remediation string alone can be supplied by a line
+that never executed, whereas the expanded URL can only appear if the `echo` actually ran.
+
+Three further behavioral teeth exist because a negative test alone is weak:
+- a **positive control** against a detached local HTTP stub, asserting exit 0. Without
+  it, a preflight that *always* fails passes every other assertion in the gate.
+- a **non-SpacetimeDB-responder** tooth (a stub returning HTTP 500), asserting non-zero.
+  This is the tooth for Decision 1b; exit-code-only would pass it.
+- a **call-site** tooth that runs `playtest-up`/`playtest-wipe` end-to-end with a fake
+  `spacetime` first on `PATH` and asserts they exit non-zero *without ever invoking it*.
+  It is the only assertion gating whether the **callers** honor the preflight rather than
+  merely containing the line — it kills `set +e` above the call, a `just() { :; }` shadow
+  (which would also silently disable the pt-a2 dev-reducer honesty gates), and the call
+  parked in a dead `if` branch. No source scan can reach that class.
+
+All four skip, per this repo's existing `bindings-drift` convention, when the `spacetime`
+CLI is absent; CI installs it before `just eval`, so the skip never applies there.
 
 ## Consequences
 
