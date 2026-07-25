@@ -380,10 +380,16 @@ export class Predictor {
    * per rebuild. nh3 (ADR-0152) closed the OTHER two rebuild hazards in this family — the
    * cross-generation EVICTION (the `dropRejected` epoch guard) and, with the main.ts
    * send-seq floor, the seq COLLISION itself — but neither touches this under-count. Its
-   * window is near-zero in practice: the rebuild is immediately followed by a reconcile
-   * (which rewrites `#lastAuthQueueLen` from the authoritative queue) and `held.clear()`
-   * empties the held stack, so no continuation is pending across the gap. Bounded and
-   * self-correcting on the next reconcile.
+   * window is near-zero in practice, for a DIFFERENT reason per rebuild path (desync-guard
+   * review, nh3): on a zone warp the rebuild is followed in the SAME microtask flush by a
+   * reconcile (the warp's own row burst → MicrotaskBatcher → reconcileFromStore), which
+   * rewrites `#lastAuthQueueLen` from the authoritative queue; on a RECONNECT that reconcile
+   * is deferred (the server's on_disconnect deleted the player/character rows, so
+   * reconcileFromStore early-returns until joinGame round-trips), and the guarantee rests on
+   * `held.clear()` ALONE — no held continuation survives the rebuild, so nothing emits into
+   * the gap. That makes `held.clear()` load-bearing for the reconnect arm: an nh5-style
+   * change to held-key retention across rebuilds must revisit this residual. Bounded and
+   * self-correcting on the next reconcile either way.
    */
   get outstandingSteps(): number {
     return this.#lastAuthQueueLen + this.#pending.length;

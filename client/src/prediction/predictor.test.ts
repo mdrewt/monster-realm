@@ -2389,6 +2389,10 @@ function runLoop(opts: RunLoopOptions): RunLoopResult {
     const intent = predictor.enqueue({ Step: dir });
     if (intent === undefined) return; // predictor declined locally (cap/backpressure)
     const seq = intent.seq;
+    // Primitives hoisted at send time — TRUE parity with main.ts's ADR-0085 A2 posture
+    // (`const epoch = intent.epoch;` beside `const seq`): the callbacks below close over
+    // primitives only, never the intent object (nh3 plan A9; reviewer nit fixed).
+    const epoch = intent.epoch;
     const input: WasmMoveInput = { Step: dir };
     at(now + lat, PRIO_ARRIVAL, (tArr) => {
       if (server.queue.length >= cap) {
@@ -2396,9 +2400,7 @@ function runLoop(opts: RunLoopOptions): RunLoopResult {
         // The client only learns one more one-way hop later — mirroring main.ts:466,
         // dropRejected() then a FORCED reconcile from the local store.
         at(tArr + lat, PRIO_DELIVERY, (tResp) => {
-          // Epoch captured from the intent this same (never-rebuilt) predictor issued
-          // — mirrors main.ts's `const epoch = intent.epoch;` capture (nh3 plan A9).
-          if (predictor.dropRejected(seq, intent.epoch)) doReconcile(store, tResp);
+          if (predictor.dropRejected(seq, epoch)) doReconcile(store, tResp);
         });
         return;
       }
