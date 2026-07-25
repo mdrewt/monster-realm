@@ -283,6 +283,12 @@ const ready = new Promise<void>((r) => {
 // the store or rawMap. Called from switchZone AND from onReconnect.
 function resetPredictionState(): void {
   predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
+  // nh3 (ADR-0152) Case M2: the rebuilt predictor must never re-issue a seq already
+  // sent on this socket — otherwise the server rejects the player's first post-warp
+  // move as "stale seq" and it is (correctly, same-epoch) evicted. Floor the fresh
+  // instance to the highest seq ever sent; the gap this leaves is legal because the
+  // server's stale-seq guard is monotonic, not consecutive (ADR-0085 SDK-evidence).
+  predictor.seedSeq(lastSentSeq);
   resolver.reset();
   held.clear();
   sawFractionalOwnMotion = false;
@@ -444,6 +450,8 @@ store.onBatchApplied(() => {
 });
 
 // --- input: predict locally + send the intent to the M2 reducer (seq-tracked) ----
+// nh3 (ADR-0152): highest seq ever handed to enqueueMove — the seedSeq floor for rebuilds.
+let lastSentSeq = 0;
 function sendIntent(input: WasmMoveInput): void {
   // Single choke point for the movement freeze (ADR-0085 D3): the keydown first
   // step, the frame-loop held re-issue, AND the reconcile-listener divergence
@@ -453,22 +461,31 @@ function sendIntent(input: WasmMoveInput): void {
   const intent = predictor.enqueue(input);
   if (intent === undefined) return; // ADR-0052: declined (queue at cap) — predict & send nothing
   const seq = intent.seq;
+  const epoch = intent.epoch;
+  lastSentSeq = seq; // nh3 Case-M2 floor: reached only when the reducer call below is issued
   conn.conn.reducers.enqueueMove({ input: moveInputToSdk(input), seq: BigInt(seq) }).catch(() => {
     // Movement rejections stay SILENT to the user (M2 §3) — prediction repair only.
-    // ADR-0085 A2 (invariant corrected in review, RT-03): this closure captures ONLY
-    // `seq` (a const) and reads the module-scope `predictor` at fire time — never
-    // capture the predictor instance at send time. Cross-session safety comes from
-    // ORDERING, not seq disjointness: rejections settle only on message receipt from
-    // the live socket (no settle after a drop), so a stale `.catch` always drains as
-    // a microtask against the OLD predictor — the fresh predictor is created ≥1s
-    // later by the reconnect timer. (seedSeq alone would NOT protect the boundary:
-    // seedSeq(N-1) hands the fresh predictor seq N, colliding with a stale reject
-    // of N — reachable only if the drop/reconnect ordering above were violated.)
+    // ADR-0085 A2 (amended by nh3/ADR-0152): this closure captures ONLY PRIMITIVES —
+    // `seq` and `epoch`, both consts read from the intent BEFORE the closure exists —
+    // and reads the module-scope `predictor` at fire time. Never capture the intent
+    // object or the predictor instance here: a rejection promise may never settle
+    // after a socket drop (SDK no-settle-on-drop), so anything non-primitive it
+    // closes over is retained indefinitely. Cross-instance staleness is now guarded
+    // MECHANICALLY: dropRejected no-ops when the captured epoch is not the live
+    // instance's own generation (Case M1), and the send-seq floor above + the
+    // seedSeq call in the prediction reset remove the post-rebuild seq collision
+    // itself (Case M2), so a genuine "stale seq" rejection of the first post-warp
+    // move never comes into existence. The ordering invariant that previously
+    // carried this seam alone — rejections settle only on message receipt from the
+    // live socket, so a stale `.catch` drains as a microtask against the OLD
+    // predictor before any rebuild — is hereby DEMOTED to defense-in-depth, not
+    // retracted: it still holds, but it rests on observed SDK 2.6.0 behavior, not
+    // on a contract, and the epoch guard is the mechanical backstop if it drifts.
     // ADR-0085 A3: burst rejections (N rejects → N drop+reconcile microtasks in one
     // turn) are harmless — the microtask checkpoint drains before the next rAF, the
     // renderer reads predictor state only in rAF, and each reconcile is a total
     // re-derivation from store truth (idempotent, converging). No coalescing needed.
-    if (predictor.dropRejected(seq)) reconcileFromStore();
+    if (predictor.dropRejected(seq, epoch)) reconcileFromStore();
   });
 }
 const step = (dir: WasmDirection): void => sendIntent({ Step: dir });
