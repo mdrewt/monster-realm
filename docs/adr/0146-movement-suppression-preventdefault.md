@@ -16,14 +16,23 @@ code found a concrete defect at `client/src/main.ts:1006-1023`: the movement-sup
 branch of the single `keydown` handler tests 14 overlay `?.visible` flags and bare-`return`s
 **without** calling `e.preventDefault()` — unlike every other branch in the same handler.
 
-Why the page can scroll at all: the overlay shells in `client/index.html` are plain
-block-level `<div>`s in normal document flow (not `position: fixed`), and the Pixi canvas is
-sized to the full viewport (`client/src/render/world.ts` — `window.innerWidth/innerHeight`).
-Showing an overlay therefore appends content *below* a viewport-height canvas, making the
-document taller than the window — i.e. **the page becomes scrollable exactly when an overlay
-is open**, which is precisely when the suppression branch is reached. `KeyW/A/S/D` have no
-native scroll action, so they silently no-op instead; consistent with the report naming the
-arrow keys specifically.
+Why the page can scroll at all: the Pixi canvas is sized to the full viewport
+(`client/src/render/world.ts` — `window.innerWidth/innerHeight`), and **10 of the 14
+suppressed overlays are plain block-level `<div>` shells declared in `client/index.html`**
+(dialogue, quest-log, heal, shop, trade, pvp-challenge, leaderboard, rename, tradepropose,
+help) — normal document flow, no positioning. Showing one appends content *below* a
+viewport-height canvas, so the document outgrows the window and the page becomes scrollable.
+The reported triggers (quest log via `KeyQ`, trade via `KeyU`) are both in this set.
+
+The other **4 overlays build their own `position: fixed; inset: 0` roots in JS** (`boxView`,
+`raisingView`, `evolutionView`, `battleView`) — those are viewport-bound and scroll internally
+(`overflow-y: auto`), so they do *not* grow the document and do not exhibit the bug by this
+mechanism. The fix is applied uniformly at the branch rather than per-overlay: the branch
+cannot cheaply know which shell is open, uniform suppression is correct for all of them
+anyway, and a future overlay added as a normal-flow shell inherits the fix automatically.
+
+`KeyW/A/S/D` have no native scroll action, so they silently no-op instead; consistent with the
+report naming the arrow keys specifically.
 
 Two facts about the surrounding code shaped the fix beyond the literal EARS text:
 
@@ -73,12 +82,26 @@ Two facts about the surrounding code shaped the fix beyond the literal EARS text
 - **Consequences (negative / disclosed):** `main.ts` is not importable under vitest (module-scope
   DOM/PIXI/wasm side effects), so nh1-2's "simulate a keydown" is satisfied by **source-scan**
   teeth in the sibling `main.wiring.test.ts`, the established pattern for this file
-  (`W-RN-PREVENT`, `W-OVERLAY-FANOUT-MUTEX`). Source-scan cannot prove semantics: the teeth pin
-  the `||` operator contiguously (killing the realistic `&&`-swap false-green) and strip line
-  comments before matching (killing needles-in-a-comment), but an inverted `=== undefined`
-  would still pass. Closing that fully needs either alternative C or an e2e keyboard test
-  (`client/e2e/**`, outside this slice's touch-set) — named here as the follow-up, not
-  pretended away.
+  (`W-RN-PREVENT`, `W-OVERLAY-FANOUT-MUTEX`). A red-team pass mutation-probed those teeth and
+  they were hardened in response: they now pin the guard expression contiguously (killing both
+  an `&&`-for-`||` swap and an outer negation of the whole condition — the latter passed lint,
+  typecheck *and* every other tooth) and strip line **and block** comments before matching.
+  **Residual, accepted:** dead-code wrappers (`if (false) { … }`, an unconditional early
+  `return true` in `targetOwnsKey`) still satisfy the source scan and are caught only
+  downstream by `just lint` (biome `noConstantCondition`) or `tsc`. Fully closing that needs
+  alternative C or a Playwright e2e keyboard test (`client/e2e/**`) — both outside this slice's
+  touch-set. Named as follow-up, not pretended away.
+- **Residual — other native scroll keys (disclosed, deliberately out of scope):** `PageUp`,
+  `PageDown`, `Home` and `End` also carry native page-scroll defaults and are *not* suppressed,
+  so they can still scroll a normal-flow overlay's page. They are outside nh1-1's stated key set
+  (`KEY_DIR` ∪ `Space`), are not part of the reported symptom, and the four `position: fixed`
+  overlays legitimately scroll internally — a future slice that widens the key set should decide
+  that per-overlay rather than blanket-suppressing here.
+- **Residual — modifier chords (disclosed, accepted):** the helper is modifier-blind, so
+  `Alt`/`Cmd`+Arrow (browser back-navigation) is now suppressed while an overlay is open. This
+  makes the overlay path *consistent* with the pre-existing movement branch, which has always
+  been modifier-blind and already suppressed those chords during normal play; introducing a
+  modifier check on only one of the two paths would be a new inconsistency, so it is left alone.
 - **Follow-up (not owed by this slice):** the eight overlays that never `stopPropagation()`
   their focusables remain asymmetric with `renameView`/`tradeProposeView`. This ADR's
   `targetOwnsKey` compensates from the window side; making the views symmetric belongs with

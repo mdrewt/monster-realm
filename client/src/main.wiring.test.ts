@@ -1809,19 +1809,58 @@ describe('★ main.ts wiring (ptc5c): every overlay-open handler accounts for al
 //   Because stripping happens strictly after slicing, there is no offset-mismatch risk:
 //   we never need a stripped-text index to correspond to a raw-text index.
 //
-// KNOWN LIMITATION of stripLineComments (line-based, not a real tokenizer): a `//`
-// inside a string/template literal would truncate the rest of that line, which would be
-// wrong for a line like `const s = "http://example.com";`. No such literal exists in any
-// of the 4 regions scanned below (verified by reading main.ts lines 472-490 and 1006-1035,
-// and by inspection of the ADR-0146 helper bodies quoted in the spec) — the regions are
-// plain control-flow/object-literal code with ordinary `//` line comments only.
+// KNOWN LIMITATION of stripLineComments/stripBlockComments (line-based / marker-scan, not
+// a real tokenizer): a `//` or `/*` living INSIDE a string/template literal would be
+// mistaken for a real comment marker and truncate/eat real code (e.g. a line like
+// `const s = "http://example.com";` or `const s = "/* not a comment */";`). No such
+// literal exists in any of the 4 regions scanned below (verified by reading main.ts lines
+// 472-490 and 1006-1035, and by inspection of the ADR-0146 helper bodies quoted in the
+// spec) — the regions are plain control-flow/object-literal code with ordinary comments
+// only, so this limitation is disclosed but does not bite here.
+//
+// DISCLOSED RESIDUALS (accepted, NOT closed by these source-scan teeth — do not attempt
+// to close via more string-matching; see rationale below): a dead-code wrapper such as
+// `if (false) { if ((KEY_DIR[e.code] ...) && !targetOwnsKey(e)) e.preventDefault(); }`, or
+// `targetOwnsKey` starting with an unconditional early `return true;` before its real
+// checks, would still contain every needle these teeth look for and would PASS this whole
+// suite while suppressing nothing (or suppressing everything). These are caught
+// downstream, not here: `just lint` (biome `noConstantCondition`) flags `if (false)`/
+// `if (true)`, and `tsc` flags the resulting unreachable-code paths in strict mode. A
+// fully behavioural (not source-scan) test would need `targetOwnsKey`/
+// `suppressNativeMovementDefault` extracted into an importable, DOM-light pure module (so
+// vitest can call them directly with a fake KeyboardEvent), or a Playwright e2e that
+// actually dispatches keydown and observes `preventDefault` — both are outside this
+// slice's touch-set (this file only, per the coordinator's instruction).
 // ===========================================================================
 
-// Drop `//` line comments so a needle that only appears in a comment cannot satisfy a
-// tooth (an implementer could otherwise "pass" a test by pasting the predicate into a
-// comment above an unconditional `e.preventDefault()`). See KNOWN LIMITATION note above.
+// Drop `/* ... */` block comments (multi-line-aware, marker-scan not regex) THEN `//` line
+// comments, so a needle that only appears in a comment — including one hidden by
+// block-commenting out the real body (red-team Mutant 2) — cannot satisfy a tooth. Order
+// matters: block comments are stripped FIRST so no `//` living inside a `/* */` block can
+// be mis-parsed by the line-comment pass afterward (it's simply gone by then).
+function stripBlockComments(src: string): string {
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const start = src.indexOf('/*', i);
+    if (start === -1) {
+      out += src.slice(i);
+      return out;
+    }
+    out += src.slice(i, start);
+    const end = src.indexOf('*/', start + 2);
+    if (end === -1) {
+      // Unterminated block comment — drop the remainder defensively (should not occur in
+      // the well-formed regions this file scans; see KNOWN LIMITATION above).
+      return out;
+    }
+    i = end + 2;
+  }
+}
+
 function stripLineComments(src: string): string {
-  return src
+  const withoutBlocks = stripBlockComments(src);
+  return withoutBlocks
     .split('\n')
     .map((line) => {
       const i = line.indexOf('//');
@@ -1971,6 +2010,51 @@ describe('main.ts wiring (nh1/ADR-0146): movement default is suppressed under ov
       'suppressNativeMovementDefault must negate targetOwnsKey(e) as a guard — without it, ' +
         "a blanket preventDefault would break arrow-key selection inside battleView's " +
         '<select> elements and Space-activation of focused overlay buttons',
+    ).toBe(true);
+  });
+
+  it("W-NH1-NONEGATION BITES: suppressNativeMovementDefault opens with the exact, non-negated guard `if ((KEY_DIR[e.code] !== undefined || e.code === 'Space') && !targetOwnsKey(e))`", () => {
+    // WRONG IMPL KILLED (red-team finding, CRITICAL — this mutant survived all 4 other nh1
+    // teeth AND `just lint` (biome) AND `tsc`): wrapping the whole condition in an outer
+    // negation —
+    //   if (!((KEY_DIR[e.code] !== undefined || e.code === 'Space') && !targetOwnsKey(e)))
+    //     e.preventDefault();
+    // — is De Morgan's-law-legal TypeScript: it type-checks and lints clean, but it fires
+    // e.preventDefault() for every NON-movement key and for every form-control target,
+    // leaving the ORIGINAL native-scroll bug completely unfixed while ALSO breaking
+    // arrow-key use inside battleView's <select> elements and Space-activation of overlay
+    // buttons — i.e. it is the exact behavioural inverse of the fix.
+    // Every substring W-NH1-HELPER checks ('KEY_DIR[e.code] !== undefined ||',
+    // "e.code === 'Space'", 'e.preventDefault()', '!targetOwnsKey(') is still present
+    // verbatim inside this negated mutant, so W-NH1-HELPER (and W-NH1-TARGET, which never
+    // looks at this line at all) both pass it. Only an assertion on the CONTIGUOUS,
+    // un-negated `if ((...) && !targetOwnsKey(e))` opening — which the mutant's
+    // `if (!((...` does not contain — closes this gap.
+    //
+    // BRITTLENESS TRADEOFF (accepted, stated per coordinator instruction): this pins the
+    // EXACT guard text verbatim. A behaviour-preserving reordering of the guard (e.g.
+    // swapping the `||` operands to `e.code === 'Space' || KEY_DIR[e.code] !== undefined`,
+    // or reformatting whitespace) WILL red this tooth even though it changes nothing
+    // wrong. That brittleness is the deliberate, disclosed price of killing a mutant that
+    // otherwise survives lint + typecheck + every substring-only tooth in this file. If a
+    // future refactor legitimately changes the guard's shape, the expected string here
+    // must be corrected FROM THE SPEC (ADR-0146) by the tester role, never silently
+    // deleted or loosened back to a substring check that the negated mutant would re-pass.
+    const src = readMainTs();
+    const rawRegion = regionOrThrow(
+      src,
+      'const suppressNativeMovementDefault',
+      "window.addEventListener('keydown'",
+    );
+    const region = stripLineComments(rawRegion);
+    const guard = "if ((KEY_DIR[e.code] !== undefined || e.code === 'Space') && !targetOwnsKey(e))";
+    expect(
+      region.includes(guard),
+      `suppressNativeMovementDefault must open with the exact, non-negated guard \`${guard}\` ` +
+        '— an outer negation (De Morgan-equivalent `if (!(... && !targetOwnsKey(e)))`) fires ' +
+        'preventDefault() for every non-movement key / form-control target, leaving the ' +
+        'original bug unfixed while breaking form controls, and still contains every needle ' +
+        'the other nh1 teeth check — only this exact-contiguous, un-negated form catches it',
     ).toBe(true);
   });
 
