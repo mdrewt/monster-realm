@@ -1392,16 +1392,19 @@ describe('★ main.ts wiring (pt-c2b help): per-context anchored fan-out teeth (
     // order-dependent/fixed-width anchor no longer bounds it. Concretely: the previous
     // extraction sliced FORWARD from the comment to the NEXT `predictor.drain(`, and post-R1
     // that `indexOf(..., rafAnchorIdx)` returns -1, throwing/failing for a reason unrelated to
-    // help fan-out. Assertion is UNCHANGED (its message is kept verbatim, including its now-
-    // historical `predictor.drain()` parenthetical); only the region extraction moved to a
-    // needle-bounded `regionOrThrow` — the SAME NH2_RAF_START/END pair W-NH2-GATE-WIRED uses.
+    // help fan-out. The ASSERTION is unchanged; only the region extraction moved to a needle-
+    // bounded `regionOrThrow` — the SAME NH2_RAF_START/END pair W-NH2-GATE-WIRED uses. The
+    // failure MESSAGE had one factual correction: its parenthetical named `predictor.drain()`
+    // as the end bound, which post-R1 is no longer true and would send a debugger to the wrong
+    // line; it now names the real bound, `const ownEntityId =`. Wording only — the predicate,
+    // the needle and the region are untouched.
     const src = readMainTs();
     expectUniqueAnchor(src, NH2_RAF_START);
     expectUniqueAnchor(src, NH2_RAF_END);
     const region = bodyRegion(src, NH2_RAF_START, NH2_RAF_END);
     expect(
       region.includes('helpView?.visible'),
-      'main.ts rAF held-key re-issue OR-block (between "Re-issue the held dir" and predictor.drain()) must contain helpView?.visible (PTC2B-6, red-team F2)',
+      'main.ts rAF held-key re-issue OR-block (between "Re-issue the held dir" and "const ownEntityId =") must contain helpView?.visible (PTC2B-6, red-team F2)',
     ).toBe(true);
   });
 
@@ -2296,12 +2299,40 @@ describe('★ main.ts wiring (nh2/ADR-0148): drain-first + outstanding-steps gat
     // (`predictor.outstandingSteps === 0;`) and then emits unguarded. That form has no trailing
     // `&&`, so the CONTIGUOUS needle `predictor.outstandingSteps === 0 &&` — the operator glued
     // directly onto the comparison, exactly as the &&-for-|| tooth in nh1 does it — reds.
+    // WRONG IMPL KILLED (4) — THE M12 HOISTED-CONST-OR MUTANT, the one that nearly shipped:
+    //     const serverOwesNothing = predictor.outstandingSteps === 0 && conn !== undefined;
+    //     const walking = held.active() !== undefined;
+    //     if ((serverOwesNothing || walking) && !( ...overlay flags... )) { ... }
+    //   This is a COMPLETE revert of the fix (measured on the mutant build: 65.2 sends/s, 600
+    //   rejects in 10s, 59.3% of presses teleport — i.e. exact baseline behaviour), yet it kept
+    //   the entire 1365-test suite green and passed `tsc --noEmit` + `biome check`. It survived
+    //   because a mere-presence needle is satisfied by the hoisted `const` DECLARATION, and the
+    //   `reissueDir(` anti-vacuity probe still passes. The kill is the `opensWith(...)`
+    //   assertion below: the gate must be the GUARD'S OWN LEADING CONJUNCT, and this mutant's
+    //   guard opens `if ( (serverOwesNothing || walking) &&`, which matches neither spelling.
     //
-    // DELIBERATELY NOT ASSERTED: that the gate appears BEFORE `reissueDir(`. The equally
-    // correct form `const d = reissueDir(...); if (d !== undefined && <gate>) sendIntent(...)`
-    // computes the direction first and gates the SEND — behaviourally identical, and an
-    // ordering assertion would red it wrongly. Position within the block is not the invariant;
-    // presence of the conjunct on both emit paths is.
+    // WHY squashWhitespace IS LOAD-BEARING (a `/simplify` lens previously flagged it as inert):
+    // the shipped guards are multi-line — `if (\n        predictor.outstandingSteps === 0 &&\n
+    // !(` — so the leading-conjunct needle only exists as a contiguous substring AFTER runs of
+    // whitespace collapse to one space. Without the squash this tooth could not check the
+    // guard's opening at all, and the M12 mutant would still be alive.
+    //
+    // BRITTLENESS TRADEOFF (accepted + disclosed, same posture as W-NH1-NONEGATION): pinning the
+    // guard's OPENING supersedes this tooth's original "position is not the invariant" stance. A
+    // behaviour-preserving refactor to `const d = reissueDir(...); if (d !== undefined && <gate>)`
+    // WILL red this tooth even though it is correct. That is the deliberate price of killing a
+    // mutant that survives lint + typecheck + 1365 tests. If such a refactor ever lands, the
+    // needle must be corrected FROM THE SPEC (ADR-0148) by the tester role — never loosened back
+    // to the bare-presence check, which the M12 mutant re-passes.
+    //
+    // HONEST RESIDUAL — what this tooth still does NOT kill (red-team enumerated; parked as a
+    // known gap, closed by the parked `nh2-e2e` Playwright tooth, NOT by any source scan):
+    //   (a) `if (true || predictor.outstandingSteps === 0 && ...)` — and symmetrically any
+    //       trailing `|| <other predicate>` appended after the required prefix; the opening
+    //       matches, the semantics are reverted. Reachable only by evaluating the expression.
+    //   (b) a SECOND, ungated emitter added BELOW the region end (outside both anchors).
+    //   (c) a second `store.onBatchApplied` listener that re-issues ungated.
+    // No source scan can reach (a)-(c); do not read this tooth as proving their absence.
     const src = readMainTs();
     expectUniqueAnchor(src, NH2_RECONCILE_START);
     expectUniqueAnchor(src, NH2_RECONCILE_END);
@@ -2309,6 +2340,15 @@ describe('★ main.ts wiring (nh2/ADR-0148): drain-first + outstanding-steps gat
     expectUniqueAnchor(src, NH2_RAF_END);
 
     const gate = 'predictor.outstandingSteps === 0 &&';
+
+    /** Does the region contain an `if (` whose FIRST conjunct(s) are exactly `conjuncts`?
+     *  Both spellings are the SAME code under the two layouts biome can produce: the shipped
+     *  multi-line guard squashes to `if ( <conjuncts>` (newline+indent -> one space), while a
+     *  hypothetical single-line reflow gives `if (<conjuncts>`. Accepting both removes a pure-
+     *  formatting false red WITHOUT admitting any wrong impl — the M12 mutant's guard opens
+     *  `if ( (serverOwesNothing || walking) &&` and matches neither. */
+    const opensWith = (region: string, conjuncts: string): boolean =>
+      region.includes(`if ( ${conjuncts}`) || region.includes(`if (${conjuncts}`);
 
     const reconcileRegion = squashWhitespace(
       bodyRegion(src, NH2_RECONCILE_START, NH2_RECONCILE_END),
@@ -2326,6 +2366,18 @@ describe('★ main.ts wiring (nh2/ADR-0148): drain-first + outstanding-steps gat
         '— without it a server pullback re-queues a Step while steps are still outstanding, ' +
         'which is the press-teleport bug',
     ).toBe(true);
+    // THE BITING ASSERTION (kills the M12 hoisted-const-OR mutant): leading conjunct, not
+    // merely present. Weak needle above is retained only for a clearer message on a plain
+    // gate-is-missing failure; it does NOT kill M12 on its own.
+    expect(
+      opensWith(reconcileRegion, `diverged && ${gate}`),
+      'the reconcile-divergence guard must OPEN with `if (diverged && ' +
+        'predictor.outstandingSteps === 0 && ...)` (ADR-0148 R3) — the gate must be the ' +
+        "GUARD'S OWN LEADING CONJUNCT, not merely present somewhere in the block. A hoisted " +
+        '`const serverOwesNothing = predictor.outstandingSteps === 0 && ...` that the guard ' +
+        'then ORs with a second predicate (`(serverOwesNothing || walking) && !(...)`) ' +
+        'satisfies mere presence while completely reverting the fix',
+    ).toBe(true);
 
     const rafRegion = squashWhitespace(bodyRegion(src, NH2_RAF_START, NH2_RAF_END));
     expect(
@@ -2340,6 +2392,17 @@ describe('★ main.ts wiring (nh2/ADR-0148): drain-first + outstanding-steps gat
         '— without it the frame loop emits a Step every frame while steps are still ' +
         'outstanding, teleporting the player on a single press',
     ).toBe(true);
+    // THE BITING ASSERTION (kills the M12 hoisted-const-OR mutant at the site it was built
+    // against — the rAF loop, measured 65.2 sends/s / 59.3% press teleports while green).
+    expect(
+      opensWith(rafRegion, gate),
+      'the rAF held-key re-issue guard must OPEN with `if (predictor.outstandingSteps === 0 ' +
+        "&& !( ...14 overlay flags... ))` (ADR-0148 R2) — the gate must be the GUARD'S OWN " +
+        'LEADING CONJUNCT, not merely present somewhere in the block. The M12 mutant ' +
+        '(`const serverOwesNothing = predictor.outstandingSteps === 0 && conn !== undefined; ' +
+        'if ((serverOwesNothing || walking) && !(...))`) satisfies mere presence, passes tsc ' +
+        'and biome, and is an exact revert of the fix — only this opening check reds it',
+    ).toBe(true);
   });
 
   it('★ W-NH2-DRAIN-FIRST BITES: predictor.drain( runs BEFORE the held-key re-issue block in the rAF frame body', () => {
@@ -2347,7 +2410,7 @@ describe('★ main.ts wiring (nh2/ADR-0148): drain-first + outstanding-steps gat
     // block, so this ordering assertion failed on the unfixed source. It is the tooth for R1 —
     // the landed fix satisfies it, and it stays in place as a PERMANENT regression guard.
     //
-    // WRONG IMPL KILLED (1): the current order — the frame emits a held-key Step against a
+    // WRONG IMPL KILLED (1): the pre-fix order — the frame emits a held-key Step against a
     // queue that has not been drained for this frame, so the predictor over-queues and the
     // render snaps forward (press-teleport).
     // WRONG IMPL KILLED (2): a future "tidy-up" that moves the drain back below the emit,

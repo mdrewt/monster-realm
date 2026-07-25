@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 113 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 114 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -122,6 +122,7 @@ Generated from 113 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0145](./0145-encounter-recruit-economy-tuning-pass.md) | 0145 — pt-d3 tuning pass: zone 0 frozen, zone 1 carries the wild-legal roster, one economy fix | Accepted | content, economy-quests, ci-gates | pt-d3 (M-playtest-d content pack — encounter/recruit/economy tuning; EARS pt-d3-1..6) | Freeze zone 0 byte-identical (a remote-CI e2e derives two probability budgets from its exact weights); give zone 1 a new table carrying all 7 wild-legal forms; stock the unobtainable Antidote; pin H1 and the e2e level ceiling as tests. |
 | [0146](./0146-movement-suppression-preventdefault.md) | 0146 — nh1: movement-suppression must cancel the browser's native key defaults, target-aware, on both the overlay and the key-repeat return paths | Accepted | client-ui, movement-netcode | nh1 (M-postgate-netcode-hardening — movement input responsiveness; EARS nh1-1, nh1-2) | Both early-return paths in the keydown handler delegate to one `main.ts`-local `suppressNativeMovementDefault(e)`, which calls `preventDefault()` for movement/Space keys unless the event target owns that key's native action. |
 | [0147](./0147-fuse-field-carry-and-fusion-eligibility.md) | 0147 — fuse() field-carry repair (taxed, not reset) + fusion_eligible guard SSOT | Accepted | evolution-fusion, ci-gates | A0 (M-postgate-evolution-fusion-hardening — fuse() field-carry fix + fusion_eligible extraction; EARS A0-1..A0-9) | fuse() carries taxed individuality: bond=75% of max, level=max(75% of avg, 50% of max)>=1, EVs=75% of per-stat avg, xp=level^3, nickname param. Pure fusion_eligible (no self-fuse; both parents level>=10, bond>=120) is the sole guard SSOT. |
+| [0148](./0148-held-key-continuation-outstanding-gate.md) | 0148 — nh2: held-key continuation is gated on outstanding server work, and the frame loop drains before it re-issues | Accepted | client-ui, movement-netcode | nh2 (M-postgate-netcode-hardening — movement input responsiveness; EARS nh2-1, nh2-2, nh2-3) | Both held-key continuation emitters gate on a new pure `Predictor.outstandingSteps === 0`, and the rAF frame body drains before it re-issues. A not-emit fix: nothing is cancelled and no reducer is called. |
 
 ## Harness design corpus (H- namespace)
 
@@ -233,6 +234,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0141](./0141-ptc5g-render-divergence-snap.md) — ptc5g (M-playtest-c.5 pre-gate residuals — position-divergence render snap; resolves M10.5 D-render-snap, EARS ptc5g-1..3) — 0141 — ptc5g position-divergence render snap: own-render snaps on a > 1-tile (Chebyshev) authoritative target jump via the existing `snapped` path (Accepted)
 - [0142](./0142-ledger-reconciliation-and-netcode-reachability-pins.md) — ptc5f (M-playtest-c.5 pre-gate residuals — ledger reconciliation, closes M-playtest-c.5; EARS ptc5f-1/ptc5f-2 + Decision A/E pins) — 0142 — ptc5f ledger reconciliation + deferred-netcode reachability pins (Accepted)
 - [0146](./0146-movement-suppression-preventdefault.md) — nh1 (M-postgate-netcode-hardening — movement input responsiveness; EARS nh1-1, nh1-2) — 0146 — nh1: movement-suppression must cancel the browser's native key defaults, target-aware, on both the overlay and the key-repeat return paths (Accepted)
+- [0148](./0148-held-key-continuation-outstanding-gate.md) — nh2 (M-postgate-netcode-hardening — movement input responsiveness; EARS nh2-1, nh2-2, nh2-3) — 0148 — nh2: held-key continuation is gated on outstanding server work, and the frame loop drains before it re-issues (Accepted)
 
 ### content
 
@@ -309,6 +311,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0141](./0141-ptc5g-render-divergence-snap.md) — ptc5g (M-playtest-c.5 pre-gate residuals — position-divergence render snap; resolves M10.5 D-render-snap, EARS ptc5g-1..3) — 0141 — ptc5g position-divergence render snap: own-render snaps on a > 1-tile (Chebyshev) authoritative target jump via the existing `snapped` path (Accepted)
 - [0143](./0143-playtest-roster-wave-1.md) — pt-d1 (M-playtest-d content pack — roster wave 1; EARS pt-d1-1..6) — 0143 — pt-d1 playtest roster wave 1: two new species lines (Earth + Dark) as pure ADR-0057 content, shipped data-complete but not yet wild-obtainable (Accepted)
 - [0146](./0146-movement-suppression-preventdefault.md) — nh1 (M-postgate-netcode-hardening — movement input responsiveness; EARS nh1-1, nh1-2) — 0146 — nh1: movement-suppression must cancel the browser's native key defaults, target-aware, on both the overlay and the key-repeat return paths (Accepted)
+- [0148](./0148-held-key-continuation-outstanding-gate.md) — nh2 (M-postgate-netcode-hardening — movement input responsiveness; EARS nh2-1, nh2-2, nh2-3) — 0148 — nh2: held-key continuation is gated on outstanding server work, and the frame loop drains before it re-issues (Accepted)
 
 ### ci-gates
 

@@ -2065,11 +2065,13 @@ async function main(): Promise<void> {
   const frame = (): void => {
     try {
       const now = performance.now();
-      // nh2 (ADR-0148 R1): drain BEFORE the continuation re-issue. A step emitted below must
-      // not be drainable in the same frame — otherwise a reconcile-drain and a same-frame
-      // continuation-drain both land between two rendered frames, advancing `predicted` by 2,
-      // which trips RenderResolver's chebyshev>1 snap (ADR-0141) and teleports the player on
-      // a plain keypress. Do NOT move this back below the block.
+      // nh2 (ADR-0148 R1): drain BEFORE the continuation re-issue, so a step emitted below is
+      // never drained by the frame that issued it. This is a RESIDUAL fix, not the primary one:
+      // measured, the outstanding-work gate takes press-phase render teleports from 88% to ~2%
+      // (6% at 30Hz), and this reordering takes that remainder to 0 — R1 WITHOUT the gate
+      // removes essentially none of them, so the two must not be separated. The teleport is
+      // RenderResolver's chebyshev>1 snap (ADR-0141) firing when `predicted` advances two tiles
+      // between rendered frames. Do NOT move this back below the block.
       const { snapped } = predictor.drain(now);
       // Re-issue the held dir so a held key keeps walking — but only when no overlay
       // is visible, so a held key resumes after an overlay closes yet never walks

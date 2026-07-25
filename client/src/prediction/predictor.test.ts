@@ -1682,9 +1682,13 @@ describe('Predictor ptc5f: dropRejected reachability bound (Decision E epoch-evi
 //   nh2-3  WHEN a held movement key is released, the character SHALL stop within
 //          one tile (no post-release "keeps walking" drift).
 //
-// THESE TESTS START RED: `Predictor.outstandingSteps` DOES NOT EXIST YET, so the
-// whole file fails to typecheck. That is this file's established RED convention
-// (see the M3b banner at the top) — red on a MISSING IMPLEMENTATION, not a typo.
+// RED AT AUTHORING TIME (pre-ADR-0148): `Predictor.outstandingSteps` did not
+// exist, so the whole file failed to typecheck — this file's established RED
+// convention (see the M3b banner at the top), red on a MISSING IMPLEMENTATION
+// rather than a typo. They are GREEN now against the shipped ADR-0148 accessor;
+// the `RED-TODAY PROOF` cases below re-create the pre-fix behaviour explicitly
+// (`gateEnabled: false` / `drainFirst: false`) so the teeth stay demonstrably
+// non-vacuous after the fix landed.
 //
 // The contract under test (the ONLY new public surface):
 //     get outstandingSteps(): number   //  = #lastAuthQueueLen + #pending.length
@@ -1701,8 +1705,25 @@ describe('Predictor ptc5f: dropRejected reachability bound (Decision E epoch-evi
 //
 // Everything below runs on an INJECTED clock (no Date.now / performance.now /
 // Math.random) against the file's deterministic `applyMove` fake and a tiny
-// in-file server model. `mkCapped(2)` everywhere: the real MOVE_QUEUE_CAP is 2 and
-// the file's QUEUE_CAP=8 predictor would not model reality.
+// in-file server model. Cap 2 everywhere — the real MOVE_QUEUE_CAP is 2 and the
+// file's QUEUE_CAP=8 predictor would not model reality: the pure-unit teeth
+// (U1/U9) use `mkCapped(2)`, and `runLoop` constructs
+// `new Predictor(applyMove, stepMs, cap)` directly with `cap` defaulting to 2.
+//
+// WHAT THE HARNESS DELIBERATELY DOES NOT MODEL (do not over-trust it):
+//   (a) `authorize_move`'s `seq <= last_input_seq` -> Err("stale seq") rejection.
+//       Unreachable through this harness today (arrivals are FIFO and `#nextSeq`
+//       is strictly increasing), but it IS the mechanism a warp-epoch scenario
+//       hits — see the ptc5f / ADR-0142 D4 pin above for that reachability bound.
+//   (b) `movement_tick`'s empty-queue `action -> Idle` row write and the batch it
+//       publishes. An idle tick here is silent, so the harness UNDER-COUNTS
+//       reconciles relative to reality. Benign for every assertion below: the
+//       missing reconciles only ever re-write `#lastAuthQueueLen = 0`, which is
+//       the value the gate already sees.
+//   (c) `emit()` counts sendIntent INVOCATIONS, not accepted reducer calls (the
+//       emission is recorded before `predictor.enqueue`, and a server REJECT
+//       still counts). That is conservative for every `<=` bound below, and it is
+//       faithful to main.ts, which also calls `enqueue` unconditionally.
 // ================================================================================
 
 /** Chebyshev (king-move) tile distance — the metric the renderer's snap uses. */
@@ -1735,6 +1756,12 @@ interface RunLoopOptions {
   readonly stepMs?: number;
   readonly cap?: number;
   readonly gateEnabled?: boolean;
+  /**
+   * R1 loop ordering. `true` (default) = the shipped ADR-0148 frame body: drain
+   * FIRST, then gate, then emit. `false` = the pre-R1 body (gate + emit, then
+   * drain), so U5b can prove the ordering is observable rather than cosmetic.
+   */
+  readonly drainFirst?: boolean;
   readonly start?: { readonly x: number; readonly y: number };
 }
 
@@ -1752,6 +1779,8 @@ interface FrameSample {
   readonly queueDepth: number;
   readonly emitted: boolean;
   readonly snapped: boolean;
+  /** Moves this frame's OWN drain() applied — the R1-ordering observable (U5b). */
+  readonly applied: number;
   /** How many reconciles landed since the previous frame (inter-frame gap density). */
   readonly reconcilesInGap: number;
 }
@@ -1811,6 +1840,7 @@ function runLoop(opts: RunLoopOptions): RunLoopResult {
   const frameOffsetMs = opts.frameOffsetMs ?? 0;
   const lat = opts.oneWayLatencyMs ?? 0;
   const gateEnabled = opts.gateEnabled ?? true;
+  const drainFirst = opts.drainFirst ?? true;
   const startTile = opts.start ?? { x: 5, y: 5 };
 
   const predictor = new Predictor(applyMove, stepMs, cap);
@@ -1929,8 +1959,11 @@ function runLoop(opts: RunLoopOptions): RunLoopResult {
     const t = frameOffsetMs + n * frameMs;
     if (t > opts.durationMs) break;
     at(t, PRIO_FRAME, (now) => {
-      // 1. DRAIN FIRST (the nh2 R1 ordering) — then gate, then emit.
-      const { snapped } = predictor.drain(now);
+      let applied = 0;
+      let snapped = false;
+      // R1 (shipped): DRAIN FIRST — catch prediction up to what the server already
+      // owes — and only then gate + emit. `drainFirst: false` is the pre-R1 body.
+      if (drainFirst) ({ applied, snapped } = predictor.drain(now));
       const outstanding = predictor.outstandingSteps;
       const queueDepth = predictor.queueDepth;
       let emitted = false;
@@ -1941,6 +1974,9 @@ function runLoop(opts: RunLoopOptions): RunLoopResult {
           emitted = true;
         }
       }
+      // Pre-R1: the drain runs AFTER the emit, so it consumes the intent this very
+      // frame just enqueued instead of only catching up to authority.
+      if (!drainFirst) ({ applied, snapped } = predictor.drain(now));
       const pos = predictor.predicted!.pos;
       frames.push({
         at: now,
@@ -1950,6 +1986,7 @@ function runLoop(opts: RunLoopOptions): RunLoopResult {
         queueDepth,
         emitted,
         snapped,
+        applied,
         reconcilesInGap: reconcilesSinceFrame,
       });
       reconcilesSinceFrame = 0;
@@ -2229,11 +2266,18 @@ describe('nh2 ADR-0148 U5: predicted advances at most one tile per frame (unalig
     // reconcile land strictly inside inter-frame gaps — the only arrangement in
     // which a second drain can sneak in between two rendered samples.
     //
-    // KILLS: reverting the drain-before-emit ordering (emit-then-drain lets a
-    // reconcile-drain AND the frame drain both land between two samples -> delta 2,
-    // which re-arms the renderer's `chebyshev > 1` snap and produces the visible
-    // teleport); also kills dropping reconcile's `slice(0, queueCap)` clamp, and a
-    // `while` (rather than `if`) continuation emitter.
+    // KILLS: dropping reconcile's `slice(0, queueCap)` clamp (a surprise deep
+    // authoritative queue then replays as a multi-tile jump between two samples);
+    // a `while` (rather than `if`) continuation emitter; and any gate that lets a
+    // second step be in flight, which is what puts two drainable moves in the
+    // local queue at once. Each of those produces a delta of 2, which re-arms the
+    // renderer's `chebyshev > 1` snap and shows up as a visible teleport.
+    //
+    // WHAT THIS TOOTH DOES *NOT* KILL: reverting the R1 drain-before-emit ordering.
+    // Under a correct gate `outstandingSteps === 0` implies the local queue is
+    // empty, so both orderings make the identical emit decision and both keep the
+    // delta at 1 — R1's residual is not observable as a per-frame delta here. U5b
+    // below pins R1 on the observable that DOES separate the two orderings.
     const r = runLoop({
       durationMs: 1200,
       script: [{ at: 0, kind: 'press', dir: 'East' }],
@@ -2253,6 +2297,62 @@ describe('nh2 ADR-0148 U5: predicted advances at most one tile per frame (unalig
     // satisfied by a frozen predictor.
     expect(r.frameDeltas.filter((d) => d > 0).length).toBeGreaterThanOrEqual(4);
 
+    expect(r.maxFrameDelta).toBeLessThanOrEqual(1);
+    expect(r.maxOutstanding).toBeLessThanOrEqual(1);
+  });
+});
+
+// --------------------------------------------------------------------------------
+// U5b — R1: the frame drain runs BEFORE the gated continuation emit
+// --------------------------------------------------------------------------------
+describe('nh2 ADR-0148 U5b: R1 — drain() precedes the continuation emit', () => {
+  const R1_OPTS = {
+    durationMs: 1200,
+    script: [{ at: 0, kind: 'press', dir: 'East' }] as readonly ScriptedInput[],
+    frameMs: 1000 / 60,
+    frameOffsetMs: 1.5,
+    oneWayLatencyMs: 25,
+  };
+
+  it('U5b BITES: an emitting frame never applies a move in its own drain (applied === 0)', () => {
+    // R1 IN ONE SENTENCE: `drain()` is a pure CATCH-UP to what the server already
+    // owes; it must never consume the intent the same frame is about to issue.
+    // Under R1, a frame only emits when `outstandingSteps === 0`, which implies the
+    // local queue is empty, which implies its own drain applied nothing — so
+    // `applied === 0` on every emitting frame is exactly the ordering, observed
+    // behaviourally rather than by reading main.ts source text.
+    //
+    // KILLS: reverting the loop to emit-then-drain (the control below flips every
+    // one of these to 1 — deterministically, not statistically).
+    //
+    // PROPORTION, measured independently — do not oversell this tooth: the GATE
+    // takes press-phase render teleports from 88.0% to ~2.0% @60Hz (6.0% @30Hz);
+    // R1 takes that residual to 0.0%. R1 ALONE, WITHOUT THE GATE, REMOVES
+    // ESSENTIALLY NONE OF THEM. R1 closes the gate's residual; it is not the
+    // primary fix, and this tooth is scoped accordingly.
+    const r = runLoop(R1_OPTS);
+
+    const emitting = r.frames.filter((f) => f.emitted);
+    expect(emitting.length).toBeGreaterThanOrEqual(4); // anti-vacuity: it really emitted
+    for (const f of emitting) {
+      expect(f.applied).toBe(0);
+      expect(f.queueDepth).toBe(0); // the gate implies an empty local queue
+    }
+  });
+
+  it('U5b RED-TODAY PROOF: the pre-R1 body drains its OWN just-issued intent (applied === 1)', () => {
+    // Same clock, same gate, only the ordering flipped. Every emitting frame now
+    // consumes the move it enqueued microseconds earlier: prediction and input are
+    // coupled inside one frame, which is the residual press-phase teleport R1
+    // removes. If this control ever reports 0 the tooth above has gone vacuous.
+    const r = runLoop({ ...R1_OPTS, drainFirst: false });
+
+    const emitting = r.frames.filter((f) => f.emitted);
+    expect(emitting.length).toBeGreaterThanOrEqual(4);
+    for (const f of emitting) expect(f.applied).toBe(1);
+
+    // The gate itself is ordering-independent (that is WHY R1 is only a residual
+    // fix): the emission cadence and the smoothness bound are unchanged.
     expect(r.maxFrameDelta).toBeLessThanOrEqual(1);
     expect(r.maxOutstanding).toBeLessThanOrEqual(1);
   });
@@ -2305,11 +2405,17 @@ describe('nh2-2 ADR-0148 U7: full walk rate is preserved across the accepted lat
 
   for (const oneWayLatencyMs of [0, 25, 50, 90]) {
     it(`U7 BITES @${oneWayLatencyMs}ms one-way: hold still walks ~${NOMINAL} tiles`, () => {
-      // ADR-0148 ACCEPTED TRADE, PINNED HERE: gating on `outstandingSteps` costs one
-      // round trip of gate-reopen latency per step, so the full nominal rate is
-      // guaranteed only up to ~90ms one-way (90 + one 60Hz frame + 90 < 200ms).
-      // DO NOT EXTEND THIS TOOTH TO 100ms+ — that is the DOCUMENTED degradation
-      // (the emit misses the next tick and the walk halves), not a regression.
+      // ADR-0148 ACCEPTED TRADE, PINNED HERE. Gating on `outstandingSteps` costs a
+      // full round trip of gate-reopen latency per step, so the budget is
+      //
+      //     2 * oneWayLatencyMs + framePeriodMs < STEP_MS
+      //
+      // FRAME PERIOD IS A TERM — the cliff is (200 - framePeriod)/2, i.e. ~91ms at
+      // 60Hz but only ~83ms at 30Hz and ~76ms at 24Hz. THIS `it` IS 60Hz-ONLY, so
+      // its 90ms case is inside the budget by ~3ms and says NOTHING about other
+      // frame rates; the U7-XP block below sweeps the cross-product, and the U7-DEG
+      // pin covers 30Hz/90ms, which is OUTSIDE the budget and genuinely degrades.
+      // DO NOT EXTEND THIS TOOTH TO 100ms+ at 60Hz — documented degradation.
       // KILLS: a gate that re-opens only on the NEXT reconcile after the tick echo
       // (one extra round trip), or one that waits for pendingCount AND queueDepth —
       // either halves the rate at any non-zero latency.
@@ -2327,6 +2433,76 @@ describe('nh2-2 ADR-0148 U7: full walk rate is preserved across the accepted lat
       expect(r.maxOutstanding).toBeLessThanOrEqual(1);
     });
   }
+});
+
+// --------------------------------------------------------------------------------
+// U7-XP — the frame-rate x latency CROSS-PRODUCT (the term U6 and U7 each missed)
+// --------------------------------------------------------------------------------
+describe('nh2-2 ADR-0148 U7-XP: full rate holds across frame rate x latency inside the budget', () => {
+  const HOLD_MS = 2000;
+  const NOMINAL = HOLD_MS / STEP_MS; // 10 tiles
+  // THE BUDGET, stated once and asserted below:
+  //     2 * oneWayLatencyMs + framePeriodMs < STEP_MS      (STEP_MS = 200)
+  // Worst-case phase: the tick echo lands just AFTER a frame, so the client waits a
+  // full frame period before it can emit, then the intent needs one more one-way
+  // hop to reach the server before the next tick. Frame period is a first-class
+  // term — U6 swept frame rate at latency 0 and U7 swept latency at 60Hz, so
+  // neither could see it. Cliff = (STEP_MS - framePeriod) / 2:
+  //     144Hz -> ~96.5ms | 60Hz -> ~91.7ms | 30Hz -> ~83.3ms | 24Hz -> ~76.4ms
+  //
+  // frameOffsetMs is DELIBERATELY 15 (non-grid-aligned at all three rates: 15 %
+  // 33.33 = 15, 15 % 16.67 = 15, 15 % 6.94 = 1.11). offset 0 is a PHASE-LUCKY
+  // alignment at 30Hz that hides the frame-period term — never use it here.
+  const UNALIGNED_OFFSET_MS = 15;
+
+  for (const hz of [30, 60, 144]) {
+    for (const oneWayLatencyMs of [0, 25, 50]) {
+      const framePeriod = 1000 / hz;
+      it(`U7-XP BITES @${hz}Hz x ${oneWayLatencyMs}ms (budget ${(2 * oneWayLatencyMs + framePeriod).toFixed(1)} < 200): full rate`, () => {
+        // Every cell here satisfies the budget, so every cell MUST walk at the full
+        // nominal rate. KILLS: any gate whose reopen costs more than one round trip
+        // (it would fail the high-latency/low-refresh corners first), and any
+        // implementation that reintroduces a frame-rate dependence into the cadence.
+        expect(2 * oneWayLatencyMs + framePeriod).toBeLessThan(STEP_MS);
+        const r = runLoop({
+          durationMs: HOLD_MS,
+          script: [{ at: 0, kind: 'press', dir: 'East' }],
+          frameMs: framePeriod,
+          frameOffsetMs: UNALIGNED_OFFSET_MS,
+          oneWayLatencyMs,
+        });
+        expect(r.tickTimes.length).toBe(NOMINAL);
+        expect(r.serverTilesMoved).toBeGreaterThanOrEqual(NOMINAL - 1);
+        expect(r.serverTilesMoved).toBeLessThanOrEqual(NOMINAL + 1);
+        expect(r.maxOutstanding).toBeLessThanOrEqual(1);
+      });
+    }
+  }
+
+  it('U7-DEG: 30Hz x 90ms is OUTSIDE the budget and degrades to ~half rate (accepted trade, NOT desired)', () => {
+    // THIS TOOTH PINS AN ACCEPTED TRADE, NOT A DESIRED BEHAVIOUR. 2*90 + 33.33 =
+    // 213.3 > 200, so the continuation reaches the server just after the tick that
+    // wanted it and waits a whole extra step: ~1 tile per 400ms instead of per
+    // 200ms. It is asserted so that (a) the ADR's numbers have a machine-checked
+    // source of truth, and (b) a FUTURE IMPROVEMENT that restores full rate here
+    // turns this RED and forces a deliberate decision rather than silently drifting.
+    expect(2 * 90 + 1000 / 30).toBeGreaterThan(STEP_MS);
+    const r = runLoop({
+      durationMs: HOLD_MS,
+      script: [{ at: 0, kind: 'press', dir: 'East' }],
+      frameMs: 1000 / 30,
+      frameOffsetMs: UNALIGNED_OFFSET_MS,
+      oneWayLatencyMs: 90,
+    });
+    expect(r.tickTimes.length).toBe(NOMINAL);
+    // Genuinely degraded (this is the assertion a future fix must break).
+    expect(r.serverTilesMoved).toBeLessThan(NOMINAL - 1);
+    // ...and degraded to ~half, not to a stall: the walk still makes progress and
+    // the gate still holds at most one owed step.
+    expect(r.serverTilesMoved).toBeGreaterThanOrEqual(4);
+    expect(r.serverTilesMoved).toBeLessThanOrEqual(6);
+    expect(r.maxOutstanding).toBeLessThanOrEqual(1);
+  });
 });
 
 // --------------------------------------------------------------------------------

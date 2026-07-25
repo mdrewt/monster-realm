@@ -334,7 +334,11 @@ export class Predictor {
    * transaction as the queue push (server guards.rs), so anything in `authQueue` is already
    * acked and has been pruned from `#pending` by reconcile's `seq > ackedSeq` filter. The
    * reconcile cap-clamp can make this OVER-count, which is the safe direction (it keeps the
-   * gate shut) — it can never under-count and let a second step through.
+   * gate shut). It never UNDER-counts *within one predictor epoch* — but a fresh `Predictor`
+   * (zone warp / reconnect, main.ts `resetPredictionState`) starts at 0 while the server may
+   * still owe a queued step, so exactly one extra continuation can slip through per rebuild.
+   * Bounded and self-correcting on the next reconcile; same family as the ADR-0142 D4 warp
+   * epoch hazard deferred to nh3.
    */
   get outstandingSteps(): number {
     return this.#lastAuthQueueLen + this.#pending.length;

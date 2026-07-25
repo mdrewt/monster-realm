@@ -62,7 +62,7 @@ gate: predictor.outstandingSteps === 0
 ```
 
 applied as the leading conjunct of the existing overlay guards at the rAF frame loop
-(`main.ts:2067-2084`) **and** the reconcile-divergence re-issue (`main.ts:404-425`).
+(`main.ts:2083`) **and** the reconcile-divergence re-issue (`main.ts:410`).
 
 The two terms cannot double-count: `authorize_move` writes `player.last_input_seq` in the *same
 transaction* as the queue push (`server-module/src/guards.rs:93-94`, `movement.rs:127-128`), and an
@@ -75,10 +75,13 @@ the safe direction — it keeps the gate shut.
 **(R1)** In the rAF frame body, `predictor.drain(now)` moves **above** the re-issue block, so a
 continuation emitted this frame cannot be drained in the same frame.
 
-Measured, versus the unfixed baseline: sends/s **63.8 → 5.1**, `"queue full"` rejects **557 → 0** over
-10 s, at unchanged **5.00 tiles/s** (nominal `1000/STEP_MS`); tap emissions collapse from a
-`{1..9}` spread to `{1: 172, 2: 28}` over 200 press phases (never 0 — no swallowed tap); press-phase
-snaps **88.0% → 3.5%** with the gate alone and **→ 0.0%** with R1 (0/800 at 30/60/120/144 Hz).
+Measured, versus the unfixed baseline: sends/s **63.8 → 5.0**, `"queue full"` rejects **557 → 0** over
+10 s, at unchanged **5.00 tiles/s** (nominal `1000/STEP_MS`); tap emissions collapse from a `{1..9}`
+spread to `{1, 2}` over 200 press phases (never 0 — no swallowed tap, and every 2 is a hold that
+genuinely spans a server tick); press-phase render teleports **88.0% → ~2.0%** at 60 Hz (6.0% at
+30 Hz) from **the gate**, and that residual **→ 0.0%** from **R1** (0/2400 across 12 fps × latency
+cells). The split matters: **R1 alone, without the gate, removes essentially none of the teleports** —
+it closes the gate's remainder and the two must not be separated.
 
 **Why a gate and not a cancel.** nh2-1 explicitly permits "cancel/**not-emit**". A not-emit mechanism
 satisfies nh2-2 *by construction*: it never writes `#predicted`/`#queue`/`#pending`, so
@@ -132,23 +135,45 @@ The pre-existing press-from-idle teleport (88% of press phases at localhost late
 now sits near 1, deepening the ADR-0013.5 backpressure backstop. Per-reconcile predicted advance drops
 from 2 to 1 on the continuation path, so ADR-0141's `snapTo` branch fires less, not more.
 
-**⚠ Accepted trade — walk speed above ~95 ms one-way latency.** The gate reopens only when the client
-*observes* the server's drain, so a tick slot is preserved only while `2·latency + frameLag < STEP_MS`.
-Measured: **5.00 tiles/s at 1–90 ms, 4.38 at 95 ms, 2.52 at 100 ms** (400 ms stalls), independent of
-frame rate. The baseline's flood is precisely what masked RTT. This is acceptable **for the ADR-0129
-local, single-tester, isolated-DB playtest model** (latency ≈ 0–1 ms) and is pinned by a test asserting
-full speed at L ≤ 90 ms. Allowing one outstanding step restores 5.00 tiles/s at 100–150 ms but costs the
-tap fix (tap travel 1 → 2 tiles), i.e. it un-fixes nh2-1 — so it is the wrong default, not a free knob.
-**Any remote/hosted deployment needs a real lookahead or adaptive bound first.** Flagged for Drew.
+**⚠ Accepted trade — sustained walk speed is now bounded by `2·oneWayLatency + framePeriod < STEP_MS`.**
+The gate reopens only when the client *observes* the server's drain, and the emit then waits for the
+next animation frame — so **display refresh rate is a term in the budget, not just RTT**. Measured
+cliff `(STEP_MS − framePeriod)/2`: ≈96 ms one-way at 144 Hz, ≈90 ms at 60 Hz, ≈83 ms at 30 Hz, ≈76 ms
+at 24 Hz. Past it the rate degrades toward half (30 Hz / 90 ms → 3.5 tiles/s; 60 Hz / 100 ms → 2.5),
+and because `movement_tick` sets `action = Idle` on an empty queue, a missed slot is a visible pause —
+the own-avatar stutter ADR-0013 exists to prevent. Pre-nh2 this coupling did not exist: the flood kept
+the server queue non-empty regardless of RTT or frame rate.
+
+This is acceptable **only for the ADR-0129 local, single-tester, isolated-DB playtest model**
+(latency ≈ 0–1 ms, where the budget holds down to ~5 FPS). It is pinned by a 3×3 frame-rate × latency
+cross-product test, plus one test that deliberately pins the *degraded* 30 Hz/90 ms case so a future
+improvement reds it and forces a decision. An earlier draft of this ADR claimed the safe bound was
+"≤90 ms, independent of frame rate" — that was wrong, and wrong in the unsafe direction; it was
+measured off a 60 Hz-only sweep at a phase-lucky frame offset. Allowing one outstanding step restores
+full speed at 100–150 ms but costs the tap fix (tap travel 1 → 2 tiles), i.e. it un-fixes nh2-1 — so it
+is the wrong default, not a free knob. **Any remote/hosted deployment needs a real lookahead or
+adaptive bound first.** Flagged for Drew.
 
 **⚠ Accepted risk — freeze onset moves from ~16 steps to 1 step.** If a reducer-rejection promise is
 lost on a still-`connected` socket, the leaked `#pending` entry holds the gate shut and held-key walking
-stops (measured: 6 tiles vs 44 baseline). It is the *same* freeze mode ADR-0085 already documents, with
-an earlier onset, and it is escapable: keydown is deliberately left ungated, so release + re-press emits,
-is accepted, raises `ackedSeq` and prunes the leaked op (`predictor.ts:230`); `linkFrozen()`
-(`main.ts:447`) and the reconnect rebuild (`main.ts:284-285`) also clear it. Counterweight: **today** the
-same leak causes a silent persistent desync (the phantom op replays at every reconcile); under the gate
-it causes a visible stop, which is the safer failure.
+stops (measured: 0 tiles over 5 s while held, still wedged at 60 s). It is the *same* freeze mode
+ADR-0085 already documents, with an earlier onset, and it is escapable: keydown is deliberately left
+ungated, so a **physical release + re-press** emits, is accepted, raises `ackedSeq`, and reconcile's
+`seq > ackedSeq` filter then prunes *every* stuck pending op at once (measured: full rate restored).
+Note the escape requires a real release — OS auto-repeat does not provide it, because the keydown
+handler early-returns on `e.repeat`. `linkFrozen()` and the reconnect rebuild also clear it, and
+reachability is near-nil since a `.catch` normally fails to settle only on a socket drop, which triggers
+reconnect → `resetPredictionState()` → fresh predictor. Counterweight: **today** the same leak causes a
+silent persistent desync (the phantom op replays at every reconcile); under the gate it causes a visible
+stop, which is the safer failure.
+
+**The gate subsumes `reissueDir`'s duplicate-direction dedup at both call sites.** `outstandingSteps === 0`
+implies `#pending` is empty, and every `#queue` growth path also records into `#pending`, so `#queue` is
+provably empty whenever the gate is open and `lastQueuedDir` is always `undefined` there. This is why no
+continuation can be silently swallowed by the dedup — but it also means the M8.6c dedup no longer
+contributes defence-in-depth at these two sites, and the gate is the sole guard. That raises the value of
+the parked `nh2-e2e` keyboard tooth from nice-to-have to the only thing that can catch a `main.ts`-level
+revert (see Residuals).
 
 **Spec corrections this work forces.** (a) `M-postgate-netcode-hardening.spec.md` §4 attributes the 7,961
 rejects to key *release*; they occur during sustained holds and a keyup-only fix would not have reduced
@@ -163,9 +188,17 @@ rendered tiles, not the "up to 2" the spec states.
 test `client/src/prediction/heldKeys.test.ts:556-589`). The local *queue* is bounded; the *send rate* was
 not. Both are outside this slice's touch-set and are left for a follow-up.
 
-**Residuals.** (1) The mutant `if (true || predictor.outstandingSteps === 0)` survives every source scan,
-`tsc` and `biome recommended`; closing it needs a keyboard-driven Playwright tooth
-(`page.keyboard.down/up`), parked as `nh2-e2e`. (2) The `now − 2·stepMs` rebase (`convert.ts:93-102`) is
+**Residuals.** (1) **No automated test executes `main.ts`'s frame body** — the wiring is held by source
+scans only, so a class of mutants survives the full suite plus `tsc` and `biome`: `if (true || gate …)`,
+a trailing `|| <pred>` appended to the guard, a *second* ungated emitter added below the scanned region,
+and a second `store.onBatchApplied` listener that re-issues ungated. One such mutant (hoisting the gate
+into a `const` and OR-ing it with a "still held" term) was found by the red-team pass to keep all 1365
+tests green while fully reverting the fix; the `W-NH2-GATE-WIRED` tooth was tightened to pin the gate as
+the guard's leading conjunct, which kills that one — but the class is only closed by a keyboard-driven
+Playwright tooth (`page.keyboard.down/up`), parked as `nh2-e2e`. (1b) A same-direction 2-tile teleport is
+still reachable through the deliberately-ungated keydown path, because `KEY_DIR` maps two codes to each
+direction (`ArrowRight` + `KeyD`) and `step(dir)` is not deduped against `held` — pre-existing, outside
+this slice's touch-set, and filed with `nh2-e2e`. (2) The `now − 2·stepMs` rebase (`convert.ts:93-102`) is
 the deeper root cause of §Context (1) and remains. (3) `predictor.setMove`/`clearQueue` stay as
 deliberately-dead API, now forbidden at the call site by a regression-guard tooth — dead by decision, not
 by oversight. (4) Server-side, `enqueue_move` has no rate limit and logs one `log::warn!` per rejection
