@@ -401,8 +401,13 @@ function reconcileFromStore(): void {
     // Honor reconcile's documented divergence return (ADR-0013): on a genuine server
     // pullback, re-commit the held direction so a held key keeps walking from the
     // corrected baseline (same held-state-guarded dedup as the rAF frame loop).
+    // nh2 (ADR-0148): gate this second continuation emitter on the same outstanding-work
+    // predicate as the rAF loop. Cost is bounded by the next authoritative batch
+    // (<= ~STEP_MS + RTT), never stuck: every server-side queue mutation writes the
+    // character row, and the reject path force-reconciles here (ADR-0085).
     if (
       diverged &&
+      predictor.outstandingSteps === 0 &&
       !(
         helpView?.visible ||
         renameView?.visible ||
@@ -2060,11 +2065,20 @@ async function main(): Promise<void> {
   const frame = (): void => {
     try {
       const now = performance.now();
+      // nh2 (ADR-0148 R1): drain BEFORE the continuation re-issue. A step emitted below must
+      // not be drainable in the same frame — otherwise a reconcile-drain and a same-frame
+      // continuation-drain both land between two rendered frames, advancing `predicted` by 2,
+      // which trips RenderResolver's chebyshev>1 snap (ADR-0141) and teleports the player on
+      // a plain keypress. Do NOT move this back below the block.
+      const { snapped } = predictor.drain(now);
       // Re-issue the held dir so a held key keeps walking — but only when no overlay
       // is visible, so a held key resumes after an overlay closes yet never walks
       // under one (M8.6c, ADR-0013). sendIntent routes through the backpressured
       // predictor.enqueue + reducer send, and no-ops if declined.
+      // nh2 (ADR-0148): ...and only while the server owes nothing. Pure NOT-EMIT: it never
+      // cancels or writes predictor state, so reconcileFromStore stays the one repair path.
       if (
+        predictor.outstandingSteps === 0 &&
         !(
           battleView?.visible ||
           boxView?.visible ||
@@ -2085,7 +2099,6 @@ async function main(): Promise<void> {
         const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
         if (heldDir !== undefined) sendIntent({ Step: heldDir });
       }
-      const { snapped } = predictor.drain(now);
       const ownEntityId = store.ownEntityId(identity);
       const predicted = predictor.predicted;
       const entities = resolver.resolve({

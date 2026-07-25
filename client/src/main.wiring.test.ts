@@ -717,13 +717,17 @@ describe('★ main.ts wiring (pt-c1b rename): per-site fan-out (PTC1B-6 / D4 / M
     // ADR-0133 D3: movement-suppression site reconcile (main.ts:389) must include renameView.
     // WRONG IMPL KILLED: an impl that forgets renameView in the reconcile block — held keys
     // could re-issue movement while the rename overlay is open (RT-RN-01 reconcile path).
-    // Strategy: find the reconcile OR-block anchor (`predictor.reconcile(`) and assert
-    // renameView?.visible appears in the nearby region that guards the heldDir re-issue.
+    //
+    // nh2/ADR-0148 re-anchor — the landed fix added a 4-line rationale comment plus the
+    // `predictor.outstandingSteps === 0 &&` conjunct above the overlay OR-block, pushing
+    // renameView?.visible past the old `reconcileIdx + 600` fixed-width window. Assertion is
+    // UNCHANGED; only the region extraction moved to a needle-bounded `regionOrThrow` (via
+    // `bodyRegion`, foot of this file). NOT widened to 900 — a fixed-width window is the
+    // nh1-post-mortem anti-pattern precisely because it drifts with every legitimate edit.
     const src = readMainTs();
-    const reconcileIdx = src.indexOf('predictor.reconcile(');
-    expect(reconcileIdx, 'main.ts must contain predictor.reconcile(').toBeGreaterThanOrEqual(0);
-    // The reconcile held-key re-issue guard is within ~600 chars after the reconcile call.
-    const reconcileRegion = src.slice(reconcileIdx, reconcileIdx + 600);
+    expectUniqueAnchor(src, NH2_RECONCILE_START);
+    expectUniqueAnchor(src, NH2_RECONCILE_END);
+    const reconcileRegion = bodyRegion(src, NH2_RECONCILE_START, NH2_RECONCILE_END);
     expect(
       reconcileRegion.includes('renameView?.visible'),
       'main.ts reconcile region must contain renameView?.visible — the reconcile heldDir re-issue is suppressed while rename is open (ADR-0133 D3)',
@@ -1033,10 +1037,16 @@ describe('★ main.ts wiring (pt-c2 tradePropose): D7 fan-out checklist (PTC2-14
     // D7 movement/reissue suppression site: reconcile (~390).
     // WRONG IMPL KILLED: an impl that forgets tradeProposeView in the reconcile block —
     // held keys could re-issue movement while the propose overlay is open.
+    //
+    // nh2/ADR-0148 re-anchor — the landed fix added a 4-line rationale comment plus the
+    // `predictor.outstandingSteps === 0 &&` conjunct above the overlay OR-block, pushing
+    // tradeProposeView?.visible past the old `reconcileIdx + 700` fixed-width window. Assertion
+    // is UNCHANGED; only the region extraction moved to a needle-bounded `regionOrThrow` (via
+    // `bodyRegion`, foot of this file). NOT widened — widening would re-admit the same drift.
     const src = readMainTs();
-    const reconcileIdx = src.indexOf('predictor.reconcile(');
-    expect(reconcileIdx, 'main.ts must contain predictor.reconcile(').toBeGreaterThanOrEqual(0);
-    const reconcileRegion = src.slice(reconcileIdx, reconcileIdx + 700);
+    expectUniqueAnchor(src, NH2_RECONCILE_START);
+    expectUniqueAnchor(src, NH2_RECONCILE_END);
+    const reconcileRegion = bodyRegion(src, NH2_RECONCILE_START, NH2_RECONCILE_END);
     expect(
       reconcileRegion.includes('tradeProposeView?.visible'),
       'main.ts reconcile region must contain tradeProposeView?.visible (D7 movement suppression)',
@@ -1064,10 +1074,16 @@ describe('★ main.ts wiring (pt-c2 tradePropose): D7 fan-out checklist (PTC2-14
     // D7 movement/reissue suppression site: rAF frame-loop (~1853).
     // WRONG IMPL KILLED: an impl that forgets tradeProposeView in the rAF block — a held key
     // keeps walking in the background while the propose overlay is open.
+    //
+    // nh2/ADR-0148 re-anchor — R1 moved `predictor.drain(` ABOVE this block, so the old
+    // `src.slice(drainIdx - 500, drainIdx)` BACKWARD window now points at the code preceding the
+    // frame loop entirely (it cannot contain the OR-block at any width). Assertion is UNCHANGED;
+    // only the region extraction moved to a needle-bounded `regionOrThrow` (via `bodyRegion`,
+    // foot of this file) — the SAME NH2_RAF_START/END pair the other rAF teeth now use.
     const src = readMainTs();
-    const drainIdx = src.indexOf('predictor.drain(');
-    expect(drainIdx, 'main.ts must contain predictor.drain(').toBeGreaterThanOrEqual(0);
-    const rafRegion = src.slice(Math.max(0, drainIdx - 500), drainIdx);
+    expectUniqueAnchor(src, NH2_RAF_START);
+    expectUniqueAnchor(src, NH2_RAF_END);
+    const rafRegion = bodyRegion(src, NH2_RAF_START, NH2_RAF_END);
     expect(
       rafRegion.includes('tradeProposeView?.visible'),
       'main.ts rAF frame-loop held-key re-issue block must contain tradeProposeView?.visible (D7)',
@@ -1345,11 +1361,17 @@ describe('★ main.ts wiring (pt-c2b help): per-context anchored fan-out teeth (
     // that re-issues the held direction must include helpView?.visible — otherwise a held key
     // re-issues movement on a server pullback while the help overlay is open.
     // WRONG IMPL KILLED: an impl that forgets helpView in the reconcile diverge OR-block.
-    // FORWARD window: the diverge OR-block is within ~600 chars AFTER predictor.reconcile(.
+    //
+    // nh2/ADR-0148 re-anchor — the old comment here claimed a "FORWARD window: the diverge
+    // OR-block is within ~600 chars AFTER predictor.reconcile(". The landed fix added a 4-line
+    // rationale comment plus the `predictor.outstandingSteps === 0 &&` conjunct above the OR-
+    // block, pushing helpView?.visible past that fixed 600. Assertion is UNCHANGED; only the
+    // region extraction moved to a needle-bounded `regionOrThrow` (via `bodyRegion`, foot of
+    // this file). NOT widened: a bigger constant just defers the same silent drift.
     const src = readMainTs();
-    const reconcileIdx = src.indexOf('predictor.reconcile(');
-    expect(reconcileIdx, 'main.ts must contain predictor.reconcile(').toBeGreaterThanOrEqual(0);
-    const reconcileRegion = src.slice(reconcileIdx, reconcileIdx + 600);
+    expectUniqueAnchor(src, NH2_RECONCILE_START);
+    expectUniqueAnchor(src, NH2_RECONCILE_END);
+    const reconcileRegion = bodyRegion(src, NH2_RECONCILE_START, NH2_RECONCILE_END);
     expect(
       reconcileRegion.includes('helpView?.visible'),
       'main.ts reconcile diverge region must contain helpView?.visible (PTC2B-6 movement suppression)',
@@ -2258,8 +2280,9 @@ function squashWhitespace(text: string): string {
 
 describe('★ main.ts wiring (nh2/ADR-0148): drain-first + outstanding-steps gate', () => {
   it('★ W-NH2-GATE-WIRED BITES: BOTH re-issue sites gate on `predictor.outstandingSteps === 0 &&`', () => {
-    // RED TODAY: `predictor.outstandingSteps` does not appear in main.ts at all (0 occurrences
-    // at authoring time), so both assertions below fail on the unfixed source. This is the
+    // RED AT AUTHORING TIME (pre-ADR-0148 main.ts): `predictor.outstandingSteps` did not appear
+    // in main.ts at all (0 occurrences), so both assertions below failed on the unfixed source.
+    // The landed fix satisfies it; it is retained as a permanent regression guard. This is the
     // primary tooth for R2 + R3.
     //
     // WRONG IMPL KILLED (1): today's unfixed code — a held key re-issues a Step every frame
@@ -2320,9 +2343,9 @@ describe('★ main.ts wiring (nh2/ADR-0148): drain-first + outstanding-steps gat
   });
 
   it('★ W-NH2-DRAIN-FIRST BITES: predictor.drain( runs BEFORE the held-key re-issue block in the rAF frame body', () => {
-    // RED TODAY: `predictor.drain(` currently sits BELOW the re-issue block (~line 2088 vs the
-    // comment at ~line 2063), so the ordering assertion fails on the unfixed source. It is the
-    // tooth for R1 — and it stays in place afterwards as a PERMANENT regression guard.
+    // RED AT AUTHORING TIME (pre-ADR-0148 main.ts): `predictor.drain(` sat BELOW the re-issue
+    // block, so this ordering assertion failed on the unfixed source. It is the tooth for R1 —
+    // the landed fix satisfies it, and it stays in place as a PERMANENT regression guard.
     //
     // WRONG IMPL KILLED (1): the current order — the frame emits a held-key Step against a
     // queue that has not been drained for this frame, so the predictor over-queues and the
