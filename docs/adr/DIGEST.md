@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 111 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 112 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -120,6 +120,7 @@ Generated from 111 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0143](./0143-playtest-roster-wave-1.md) | 0143 — pt-d1 playtest roster wave 1: two new species lines (Earth + Dark) as pure ADR-0057 content, shipped data-complete but not yet wild-obtainable | Accepted | content, evolution-fusion, client-ui | pt-d1 (M-playtest-d content pack — roster wave 1; EARS pt-d1-1..6) | Add species 7–10 (two Earth/Dark lines, one evolution each) in a NEW glob-loaded species part file, plus two `evolutions.ron` blocks and four albedo sheets; bump `CONTENT_VERSION` 12→13; they stay unreachable until a later slice. |
 | [0144](./0144-pt-d2-roster-wave-2.md) | 0144 — pt-d2 roster wave 2: reserved-block content fan-out + a species-parameterized sprite generator that imports (never edits) the shared art module | Accepted | content, ci-gates, tooling-docs | pt-d2 (M-playtest-d content pack — roster wave 2 + placeholder-replacement sprites; EARS pt-d2-1..12) | Concurrent content slices claim reserved id/filename bands (pt-d2: ids 20–29, `05x-*.ron`); sprites come from a new generator that imports rather than edits the shared art module; slice invariants live in a new auto-discovered eval. |
 | [0145](./0145-encounter-recruit-economy-tuning-pass.md) | 0145 — pt-d3 tuning pass: zone 0 frozen, zone 1 carries the wild-legal roster, one economy fix | Accepted | content, economy-quests, ci-gates | pt-d3 (M-playtest-d content pack — encounter/recruit/economy tuning; EARS pt-d3-1..6) | Freeze zone 0 byte-identical (a remote-CI e2e derives two probability budgets from its exact weights); give zone 1 a new table carrying all 7 wild-legal forms; stock the unobtainable Antidote; pin H1 and the e2e level ceiling as tests. |
+| [0147](./0147-fuse-field-carry-and-fusion-eligibility.md) | 0147 — fuse() field-carry repair (taxed, not reset) + fusion_eligible guard SSOT | Accepted | evolution-fusion, ci-gates | A0 (M-postgate-evolution-fusion-hardening — fuse() field-carry fix + fusion_eligible extraction; EARS A0-1..A0-9) | fuse() carries taxed individuality: bond=75% of max, level=max(75% of avg, 50% of max)>=1, EVs=75% of per-stat avg, xp=level^3, nickname param. Pure fusion_eligible (no self-fuse; both parents level>=10, bond>=120) is the sole guard SSOT. |
 
 ## Harness design corpus (H- namespace)
 
@@ -212,6 +213,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0064](./0064-m10d-evolution-fusion-content-integrity-evals.md) — m10d — M10d: evolution/fusion content-integrity evals and proof-of-teeth discipline (Accepted)
 - [0072](./0072-fuse-dual-write-ordering-fix.md) — m12.5a — fuse offspring monster_pub dual-write ordering fix (Accepted)
 - [0143](./0143-playtest-roster-wave-1.md) — pt-d1 (M-playtest-d content pack — roster wave 1; EARS pt-d1-1..6) — 0143 — pt-d1 playtest roster wave 1: two new species lines (Earth + Dark) as pure ADR-0057 content, shipped data-complete but not yet wild-obtainable (Accepted)
+- [0147](./0147-fuse-field-carry-and-fusion-eligibility.md) — A0 (M-postgate-evolution-fusion-hardening — fuse() field-carry fix + fusion_eligible extraction; EARS A0-1..A0-9) — 0147 — fuse() field-carry repair (taxed, not reset) + fusion_eligible guard SSOT (Accepted)
 
 ### movement-netcode
 
@@ -345,6 +347,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0137](./0137-ptc5d-knowledge-bundle-fixture-exclusion-and-gate-teeth.md) — ptc5d (M-playtest-c.5 pre-gate residuals — tooling/eval hardening, EARS ptc5d-1..5) — 0137 — ptc5d: knowledge-bundle `*_tests.rs` exclusion + restored gate teeth (mutate-server ceiling tightened; RT-M14.5A-02 vacuous-pass closed) (Accepted)
 - [0144](./0144-pt-d2-roster-wave-2.md) — pt-d2 (M-playtest-d content pack — roster wave 2 + placeholder-replacement sprites; EARS pt-d2-1..12) — 0144 — pt-d2 roster wave 2: reserved-block content fan-out + a species-parameterized sprite generator that imports (never edits) the shared art module (Accepted)
 - [0145](./0145-encounter-recruit-economy-tuning-pass.md) — pt-d3 (M-playtest-d content pack — encounter/recruit/economy tuning; EARS pt-d3-1..6) — 0145 — pt-d3 tuning pass: zone 0 frozen, zone 1 carries the wild-legal roster, one economy fix (Accepted)
+- [0147](./0147-fuse-field-carry-and-fusion-eligibility.md) — A0 (M-postgate-evolution-fusion-hardening — fuse() field-carry fix + fusion_eligible extraction; EARS A0-1..A0-9) — 0147 — fuse() field-carry repair (taxed, not reset) + fusion_eligible guard SSOT (Accepted)
 
 ### tooling-docs
 

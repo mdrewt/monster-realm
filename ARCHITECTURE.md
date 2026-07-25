@@ -668,8 +668,8 @@ Client-only observability layer extending the M13.5b error seam for the playtest
 Pure content shape, integrity validator, and pure game-core transform rules for evolution and fusion.
 
 - **Content (M10a-content — ADR-0060):** `EvolutionCondition` / `EvolutionTrigger` / `FusionRecipe` / `SpeciesEvolutions` types; `content/evolutions.ron` (single file, evolution conditions per species) and `content/fusion.ron` (single file, fusion recipes). `validate_evolution_fusion` is a **separate** cross-registry validator (not a `Species` field — avoids E0063 across 8 constructors with RON try_from mirrors for bare-int triggers); 7-rule check: no duplicate pairs, no derived-species in wild encounters, no dangling species/item/skill refs, no self-evolution, fusion-coherence. Derived species live in `content/species/010-derived.ron` (additive; `000-core.ron` stays the wild-encounter source). `sync_content` calls `validate_evolution_fusion` so the integrity gate is live on publish.
-- **Pure rules (M10a-rules — ADR-0061):** `game-core/src/evolution/` — `eligibility` (`evolves_to` passive level/bond check; `resolve_evolution` item-path) + `transform` (`evolve` carries all individuality per ADR-0019, `current_hp` clamped to new max; `fuse` per-stat-max-IV + higher-bond-nature + fresh-L1 + lower-slot). First-match declaration order; Level/Bond triggers inclusive `>=`. 46 unit/property tests.
-- **Server (M10b — ADR-0062):** `evolution.rs` — `evolve` + `fuse` reducers with battle-escrow + ownership guards; `compute_evolves_to` server helper; atomic `fuse` delete-two-insert-one in one transaction; additive `fusion` table + `evolves_to: Option<u32>` column on `monster`. The `monster-dual-write` eval's CAPTURE_INSERT teeth prevent the pre-M12.5a dual-write ordering bug (ADR-0072) from regressing.
+- **Pure rules (M10a-rules — ADR-0061; carry model ADR-0147):** `game-core/src/evolution/` — `eligibility` (`evolves_to` passive level/bond check; `resolve_evolution` item-path; `fusion_eligible` fusion gate: self-fusion + both parents ≥ MIN_FUSION_LEVEL/MIN_FUSION_BOND) + `transform` (`evolve` carries all individuality per ADR-0019, `current_hp` clamped to new max; `fuse` per-stat-max-IV + higher-bond-nature + lower-slot + TAXED carry — bond 75% of max, level max(75% avg, 50% max)≥1, EVs 75% of avg, xp=level³, optional chosen nickname). First-match declaration order; Level/Bond triggers inclusive `>=`.
+- **Server (M10b — ADR-0062; eligibility delegation ADR-0147):** `evolution.rs` — `evolve` + `fuse` reducers with battle-escrow + trade-escrow + ownership guards; `reject_if_not_fusable` delegates fusion eligibility to the `game_core::fusion_eligible` SSOT (shared by the reducer AND the `fuse_seam` test double — no hand-copied guard chain); `compute_evolves_to` server helper; atomic `fuse` delete-two-insert-one in one transaction; additive `fusion` table + `evolves_to: Option<u32>` column on `monster`. The `monster-dual-write` eval's CAPTURE_INSERT teeth prevent the pre-M12.5a dual-write ordering bug (ADR-0072) from regressing.
 - **Client (M10c — ADR-0063):** `evolvesTo?: number` on `StoreMonsterPub` (`option(u32)` decodes as primitive `number | undefined`); `StoreFusionRow` + `store.fusions()` wired to `buildEvolutionViewModel` via `FusionRecipeViewModel` (display-only; server validates); `EvolutionView` DOM shell (KeyE toggle, mutual exclusion with B/I/battle). Coverage-excluded per ADR-0015 `dom-shell-coverage-exclusion` eval.
 
 ## Known follow-ups / tech-debt
@@ -817,7 +817,9 @@ integrity gate is live on publish; ADR-0062; 16 server tests) complete.
 **M10d** (evals + Phase A docs — `evolution-fusion-content-integrity` eval: 5 content-integrity
 rules (no-dup-pair, derived-not-wild, dangling-refs, self-evolution, fusion-coherence) + 12
 proof-of-teeth; `evolution-reducer-security` eval: 5 reducer invariants (ownership×2 for fuse,
-battle-guard×2, self-fusion guard, dual-write, SSOT delegation) + 14 proof-of-teeth; ADR-0064)
+battle-guard×2, fusion-eligibility delegation via `reject_if_not_fusable`→`game_core::fusion_eligible`
+(ADR-0147, production-source-scoped), dual-write, SSOT delegation) + 17 proof-of-teeth fixtures
+and a production-reader exclusion probe; ADR-0064)
 complete.
 
 **Phase A (M0–M10) complete.** The single-player core loop — move → find a wild monster →
