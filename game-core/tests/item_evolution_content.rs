@@ -39,9 +39,8 @@
 
 use game_core::{
     base_stat_total, load_encounters, load_evolutions, load_fusion, load_items, load_species,
-    parse_evolutions, resolve_evolution, validate_evolution_fusion,
-    Affinity, Bond, EvolutionCondition, EvolutionTrigger, ItemDef, Level, Species,
-    SpeciesEvolutions, StatBlock,
+    parse_evolutions, resolve_evolution, validate_evolution_fusion, Affinity, Bond,
+    EvolutionCondition, EvolutionTrigger, ItemDef, Level, Species, SpeciesEvolutions, StatBlock,
 };
 
 // ===========================================================================
@@ -182,9 +181,7 @@ fn t_b1c_item_branch_declared_first_wins_above_level_threshold() {
     let max_level = Level::new(100).expect("100 is a valid level");
     let max_bond = Bond::new(255);
 
-    for (src, passive_target, item_id, item_target) in
-        [(7u32, 9u32, 4u32, 30u32), (8, 10, 5, 31)]
-    {
+    for (src, passive_target, item_id, item_target) in [(7u32, 9u32, 4u32, 30u32), (8, 10, 5, 31)] {
         let block = evolutions
             .iter()
             .find(|b| b.species_id == src)
@@ -544,7 +541,11 @@ fn teeth_s2_sidegrade_predicate_case_table() {
         mutate: fn(&mut Species),
         needle: &'static str,
     }
-    let case = |idx, mutate: fn(&mut Species), needle| Case { idx, mutate, needle };
+    let case = |idx, mutate: fn(&mut Species), needle| Case {
+        idx,
+        mutate,
+        needle,
+    };
     let cases = [
         // species 30 pushed to/above Stoneward's (species 9) BST 455.
         case(
@@ -565,7 +566,12 @@ fn teeth_s2_sidegrade_predicate_case_table() {
             "power band",
         ),
     ];
-    for Case { idx, mutate, needle } in cases {
+    for Case {
+        idx,
+        mutate,
+        needle,
+    } in cases
+    {
         let mut fixture = good();
         mutate(&mut fixture[idx]);
         let violations = sidegrade_violations(&fixture);
