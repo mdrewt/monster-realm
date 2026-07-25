@@ -195,7 +195,9 @@ canonical `touches:` vocabulary**: adding content is a new
 | abilities | `content/abilities/*.ron` | directory (per-species passive effects — ADR-0094) |
 
 - **Species id ranges are reserved per authoring wave** (ADR-0143): 1–6 core/derived,
-  **7–10 pt-d1 roster wave 1**, 11+ reserved for later waves. Because the directory is
+  **7–10 pt-d1 roster wave 1**, **20–29 pt-d2 roster wave 2** (ADR-0144 D1),
+  **30–39 slice B item-evolution derived forms** (ADR-0149 D3), **40–49 reserved for roster
+  wave 3**. Because the directory is
   glob-*merged*, two waves that claim the same ids merge with no git conflict and surface
   only as a `duplicate species id` error from `validate_content` at publish time — so the
   reservation lives in each part file's header, not just in review.
