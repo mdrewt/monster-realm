@@ -19,27 +19,16 @@
 //   styling is inline on the element, so the inline `style` attribute IS the
 //   complete styling contract and is legitimately assertable as text.
 //
-// RED REASON (this suite MUST start red on the current tree, master bb87d74):
-//   - client/index.html has NO #help-hint element at all → H1, H3, H4, H5, H6 fail.
-//   - H2 passes today (independent anchor guard on #build-stamp's body parentage).
-//   - #help-overlay is `style="display:none"` with NO position and NO z-index
-//     → H6 (needs the overlay's z-index as its ceiling) and H7 both fail.
-//
-// H2b ADDED POST-LANDING (mutation-probe follow-up, not a pre-impl red):
-//   The unclosed-</div> mutant SURVIVED the original seven assertions. H2 was written
-//   for a hint placed BEFORE #build-stamp (the stamp would be adopted); the shipped
-//   hint is the LAST body element, so the mutant adopts the module <script> instead
-//   and H2 stays green. H2b restates the invariant placement-independently on the
-//   hint itself ("no element children") and is RED under that mutant, GREEN on the
-//   shipped tree. H2 is retained unchanged as a separate, still-valid guard.
+// PRE-IMPL RED (historical): #help-hint did not exist and #help-overlay carried only
+// `display:none`, so H1/H3/H4/H5/H6 and H7 all failed. See ADR-0151 for the full log.
 //
 // HONEST SCOPE LIMIT (see H5):
 //   This file proves PRESENT, BODY-ANCHORED, and NOT-OBVIOUSLY-INVISIBLE.
 //   It does NOT and CANNOT prove VISIBLE. happy-dom performs no layout, no
 //   compositing and no viewport clipping, so a real visibility proof requires
 //   client/e2e/** with Playwright's toBeInViewport() — out of this slice's
-//   touch-set. H5 is a deny-list of the four cheapest invisibility regressions,
-//   not a visibility check.
+//   touch-set. H5 (hint) and H7 (overlay) are deny-lists of the cheapest
+//   invisibility regressions, not visibility checks.
 //
 // NO `new RegExp(...)` anywhere — Semgrep detect-non-literal-regexp is banned
 // repo-wide. All matching uses String.indexOf / .includes / .split / literal regex.
@@ -56,9 +45,7 @@ function readIndexHtml(): string {
     return readFileSync(INDEX_HTML_PATH, 'utf8');
   } catch (err) {
     // Fail loud — every assertion below is vacuous if the file cannot be read.
-    throw new Error(
-      'index.html could not be read at expected path: ' + INDEX_HTML_PATH + ' — ' + String(err),
-    );
+    throw new Error(`index.html could not be read at expected path: ${INDEX_HTML_PATH} — ${err}`);
   }
 }
 
@@ -82,30 +69,71 @@ function declarations(el: Element | null): string[] {
 }
 
 /**
- * True if any declaration is `banned` (or `banned` + a non-numeric suffix).
- * The suffix guard is what stops `opacity:0` from falsely matching `opacity:0.75`
- * while still catching `opacity:0!important` and `font-size:0px`.
+ * True if any declaration is `banned`, or is `banned` followed by a non-numeric
+ * suffix. `declarations()` has already split on `;`, so a plain `includes` would
+ * never have matched across declarations — the suffix guard's REAL value is
+ * catching same-property variants: `font-size:0px`, `display:none!important`,
+ * `opacity:0%`. It deliberately lets a genuinely different VALUE through, so
+ * `opacity:0.75` and `font-size:0.9rem` do not false-positive.
+ *
+ * KNOWN RESIDUAL: `opacity:0.0` / `opacity:0e0` are fully transparent yet start
+ * with a numeric suffix char, so they survive this deny-list. Closing them needs
+ * per-property numeric parsing; the honest catch-all is the e2e visibility proof
+ * named in the HONEST SCOPE LIMIT above, not more string machinery here.
  */
 function hasBannedDeclaration(decls: string[], banned: string): boolean {
   return decls.some((decl) => {
     if (decl.indexOf(banned) !== 0) return false;
     const rest = decl.slice(banned.length);
     if (rest.length === 0) return true;
-    return '0123456789.%'.indexOf(rest.charAt(0)) === -1;
+    // NOTE: `%` is deliberately NOT in this allow-list — `opacity:0%` is valid CSS
+    // and fully transparent, so it must be BANNED, not waved through as numeric.
+    return '0123456789.'.indexOf(rest.charAt(0)) === -1;
+  });
+}
+
+/** A CSS length that means "flush to this edge". */
+function isZeroLength(value: string): boolean {
+  return value === '0' || value === '0px';
+}
+
+/** Value of the first declaration for `property`, or null when absent. */
+function declarationValue(decls: string[], property: string): string | null {
+  for (const decl of decls) {
+    if (decl.indexOf(`${property}:`) === 0) return decl.slice(property.length + 1);
+  }
+  return null;
+}
+
+/**
+ * True if the declarations anchor the box to all four viewport edges — either via
+ * the `inset:0` shorthand or via all four of top/right/bottom/left explicitly.
+ */
+function hasFourEdgeAnchor(decls: string[]): boolean {
+  const inset = declarationValue(decls, 'inset');
+  if (inset !== null && isZeroLength(inset)) return true;
+
+  return ['top', 'right', 'bottom', 'left'].every((edge) => {
+    const value = declarationValue(decls, edge);
+    return value !== null && isZeroLength(value);
   });
 }
 
 /** Raw (unparsed) value of the `z-index` declaration, or null when absent. */
 function rawZIndex(el: Element | null): string | null {
-  for (const decl of declarations(el)) {
-    if (decl.indexOf('z-index:') === 0) return decl.slice('z-index:'.length);
-  }
-  return null;
+  return declarationValue(declarations(el), 'z-index');
 }
 
 // battleView's root z-index. The help overlay must sit BELOW it so a battle
 // auto-show still supersedes an open help overlay (pt-c2b / ADR-0135 behaviour).
 const BATTLE_VIEW_Z = 110;
+
+// Invisibility declarations that survive a HelpView show() (which writes ONLY
+// style.display). Banned on BOTH the always-on hint and the toggled overlay shell.
+const PERSISTENT_INVISIBILITY_DECLARATIONS = ['visibility:hidden', 'opacity:0', 'font-size:0'];
+
+// The hint is never toggled by any view, so display:none is fatal there too.
+const HINT_BANNED_DECLARATIONS = ['display:none', ...PERSISTENT_INVISIBILITY_DECLARATIONS];
 
 describe('ux1-1 (H1/H2): the help hint exists and is anchored to <body>', () => {
   it('BITES: H1 — #help-hint exists and is a DIRECT child of <body>', () => {
@@ -130,6 +158,17 @@ describe('ux1-1 (H1/H2): the help hint exists and is anchored to <body>', () => 
       'KILLS: #help-hint nested inside a display:none overlay shell (or any wrapper) ' +
         'instead of being a direct child of <body> — it would be permanently hidden.',
     ).toBe('BODY');
+
+    // WRONG IMPL KILLED: a DUPLICATED #help-hint (two badges, duplicate id — invalid
+    // HTML). querySelector returns only the FIRST match, so H1's parent check, H2b,
+    // H3, H4, H5 and H6 would all inspect one of two elements and stay green while
+    // the player sees a doubled badge and the second copy goes entirely unasserted.
+    expect(
+      doc.querySelectorAll('#help-hint').length,
+      'KILLS: a duplicated #help-hint (duplicate id, invalid HTML) — every other ' +
+        'assertion in this file uses querySelector and would silently inspect only ' +
+        'the first of the two.',
+    ).toBe(1);
   });
 
   it('BITES: H2 — #build-stamp is STILL a direct child of <body>', () => {
@@ -142,20 +181,9 @@ describe('ux1-1 (H1/H2): the help hint exists and is anchored to <body>', () => 
         'pins which build a playtest finding came from.',
     ).not.toBeNull();
 
-    // SCOPE CORRECTION (post-mutation-probe): this assertion does NOT kill the
-    // unclosed-</div> mutant — H2b does. An unclosed tag adopts whatever element
-    // FOLLOWS it in document order, and #help-hint ships as the LAST body element,
-    // AFTER #build-stamp. Measured DOM shape under the unclosed-div mutant:
-    //   {"hintParent":"BODY","hintChildren":["SCRIPT"],"stampParent":"BODY"}
-    // #build-stamp precedes the hint and is therefore untouched, so this assertion
-    // stays green while the markup is genuinely broken. The tooth is placement-
-    // dependent, which is exactly why the real guard (H2b) is placement-independent.
-    //
-    // WHAT THIS STILL KILLS (an independent, still-valid anchor guard): any future
-    // edit that re-parents #build-stamp into a wrapper — e.g. a new container div
-    // added ABOVE it, or the stamp moved inside an overlay shell. That would make it
-    // inherit the wrapper's display/opacity/pointer-events and silently regress the
-    // pt-a1/ADR-0128 build-provenance surface while querySelector still finds it.
+    // Independent anchor guard on the pt-a1/ADR-0128 provenance surface: kills a
+    // future wrapper div that re-parents #build-stamp (it would inherit that
+    // wrapper's display/opacity/pointer-events). The unclosed-tag kill is H2b's.
     expect(
       stamp === null ? '(no #build-stamp)' : stamp.parentElement?.tagName,
       'KILLS: #build-stamp re-parented into any wrapper instead of <body> — it would ' +
@@ -295,7 +323,7 @@ describe('ux1-1 (H4/H5): the hint is persistent and not obviously invisible', ()
         'repo, so an unstyled hint is an unpositioned in-flow div (also caught by H4).',
     ).toBe(true);
 
-    for (const banned of ['display:none', 'visibility:hidden', 'opacity:0', 'font-size:0']) {
+    for (const banned of HINT_BANNED_DECLARATIONS) {
       // `opacity:0` must NOT match `opacity:0.75` — hasBannedDeclaration requires the
       // declaration to end (or continue with a non-numeric suffix like !important).
       expect(
@@ -376,18 +404,25 @@ describe('ux1-1 (H6): the hint sits in a sane stacking band, below the modal ban
 });
 
 describe('ux1-1 (H7): the advertised #help-overlay is actually on-screen', () => {
-  it('BITES: H7 — #help-overlay has position:fixed and an integer z-index in [1, 110)', () => {
+  it('BITES: H7 — #help-overlay is viewport-anchored (position:fixed + four edges), default-hidden, integer z-index in [1, 110), and not persistently invisible', () => {
     // THE HEADLINE REGRESSION THIS KILLS.
-    // Today #help-overlay is `style="display:none"` and nothing else: a STATIC,
-    // IN-FLOW <div> that sits in document order AFTER #app, which PixiJS fills with a
+    // Pre-slice, #help-overlay was `style="display:none"` and nothing else: a STATIC,
+    // IN-FLOW <div> sitting in document order AFTER #app, which PixiJS fills with a
     // canvas sized to window.innerHeight. There is no CSS file anywhere in this repo,
-    // and HelpView only ever writes `style.display` — it never sets position, inset or
-    // z-index. So when the user presses `?`, the overlay un-hides at document offset
-    // top=724 with innerHeight=720: BELOW THE FOLD, off-screen, apparently broken.
-    // ux1-1 adds a badge ADVERTISING that affordance; advertising an off-screen
-    // overlay is a net-negative change, so repositioning it is part of this slice.
-    // If a future edit reverts the overlay to a static in-flow div, this assertion —
-    // and only this assertion — catches it.
+    // and HelpView only ever reads/writes `style.display` — it never sets position,
+    // inset or z-index. So pressing `?` un-hid the overlay at document offset top=724
+    // with innerHeight=720: BELOW THE FOLD, apparently broken. ux1-1 adds a badge
+    // ADVERTISING that affordance, so advertising an off-screen overlay would be a
+    // net-negative change — repositioning it is part of this slice, and every
+    // declaration that makes it reachable is therefore load-bearing here.
+    //
+    // POSITION AND ANCHORING ARE TWO SEPARATE TEETH (measured, red-team):
+    // `position:fixed` ALONE is not enough. With all four offsets `auto`, a fixed box
+    // lays out at its STATIC position — real-Chromium {top: 720, inViewport: false} at
+    // innerHeight=720 — and because it is now FIXED it no longer contributes to
+    // docScrollHeight (stays 720), so the page is not even scrollable. The overlay
+    // becomes PERMANENTLY UNREACHABLE: strictly worse than the pre-slice bug, which
+    // at least let you scroll down to it. Hence the four-edge anchor assertion below.
     const doc = parseIndexHtml();
     const overlay = doc.querySelector('#help-overlay');
 
@@ -406,6 +441,54 @@ describe('ux1-1 (H7): the advertised #help-overlay is actually on-screen', () =>
         'new hint just invited. style=' +
         JSON.stringify(style),
     ).toBe(true);
+
+    const overlayDecls = declarations(overlay);
+
+    // WRONG IMPL KILLED: `inset:0` deleted while position:fixed;z-index:100 stay — the
+    // mutant that survived the first eight assertions. See the measured layout note in
+    // this test's header comment.
+    expect(
+      hasFourEdgeAnchor(overlayDecls),
+      'KILLS: #help-overlay with position:fixed but NO edge anchoring (inset:0 deleted, ' +
+        'or fewer than all four of top/right/bottom/left:0) — with all offsets auto the ' +
+        'fixed box lays out at its STATIC position: measured real-Chromium top=720 at ' +
+        'innerHeight=720, inViewport=false, and docScrollHeight stays 720 so the page ' +
+        'cannot even be scrolled to it. PERMANENTLY UNREACHABLE — strictly worse than ' +
+        'the pre-slice below-the-fold bug. decls=' +
+        JSON.stringify(overlayDecls),
+    ).toBe(true);
+
+    // WRONG IMPL KILLED: `display:none` deleted from the shell. Nothing else in the
+    // repo pins this — helpView.test.ts uses a hand-written fixture, no eval reads
+    // index.html, and this file is its only vitest reader. The slice itself RAISED the
+    // severity of that untested invariant (the shell is now a full-viewport opaque
+    // z-index:100 panel), so pinning it belongs here.
+    expect(
+      overlayDecls.includes('display:none'),
+      'KILLS: #help-overlay shipping WITHOUT display:none — post-slice the client boots ' +
+        'straight into a full-viewport opaque z-index:100 panel. Worse, HelpView.visible ' +
+        'is `style.display !== "none"`, so it reads TRUE at boot and main.ts suppresses ' +
+        'ALL movement and ALL 13 overlay hotkeys: an unrecoverable boot-time soft-lock. ' +
+        'decls=' +
+        JSON.stringify(overlayDecls),
+    ).toBe(true);
+
+    // WRONG IMPL KILLED: a PERSISTENT invisibility declaration on the shell. HelpView
+    // toggles ONLY `style.display`, so anything in this list survives show() and makes
+    // it a silent no-op — the badge advertises a key that visibly does nothing.
+    // NOTE: `display:none` is deliberately NOT in this list (it is the REQUIRED default
+    // asserted just above); the coordinator's "reuse the same four" would have
+    // contradicted that. These three are exactly the ones show() cannot clear.
+    for (const banned of PERSISTENT_INVISIBILITY_DECLARATIONS) {
+      expect(
+        hasBannedDeclaration(overlayDecls, banned),
+        'KILLS: #help-overlay carrying "' +
+          banned +
+          '" — HelpView.show() only clears style.display, so this survives the toggle ' +
+          'and makes pressing `?` a visible no-op. decls=' +
+          JSON.stringify(overlayDecls),
+      ).toBe(false);
+    }
 
     const raw = rawZIndex(overlay);
     expect(

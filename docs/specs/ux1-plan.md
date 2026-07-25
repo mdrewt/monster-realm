@@ -44,7 +44,7 @@ Scope discipline: **only `#help-overlay`** is repositioned. The other nine in-fl
 
 Mirrors the four JS-created modal roots (`boxView.ts:32`, `raisingView.ts:29`, `evolutionView.ts:39`
 are `position:fixed;inset:0;z-index:100`), stays **below** `battleView`'s `z-index:110`
-(`battleView.ts:51`) so a battle auto-show still supersedes it. `HelpView.show()/hide()/visible`
+(`battleView.ts:53`) so a battle auto-show still supersedes it. `HelpView.show()/hide()/visible`
 touch only `style.display`, so `show()` (`display = ''`) leaves every other declaration intact —
 no view-class change needed.
 

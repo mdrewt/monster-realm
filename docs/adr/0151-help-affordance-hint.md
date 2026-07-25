@@ -34,7 +34,7 @@ the `#0b0d12` body background. Measured in real Chromium at 1280×720: `help-ove
 
 Three independent corroborations that this is the live behaviour, not a fixture artifact:
 
-- in-tree, from nh1/ADR-0146 (`client/src/main.ts:502-504`): *"an open overlay makes the document
+- in-tree, from nh1/ADR-0146 (`client/src/main.ts:504-506`): *"an open overlay makes the document
   taller than the viewport-sized canvas, so those defaults scroll the game out from under the
   player."*
 - `PlaytestReport.md:85`, on the structurally-identical `#shop-overlay`: *"opens a shopping menu **at
@@ -52,9 +52,9 @@ nothing when followed — a net-negative change that passes 100% of its own stat
 ### D1 — ux1-1 is delivered as two parts, and the extension is disclosed
 
 `#help-overlay` gains `position:fixed;inset:0;z-index:100;overflow:auto` plus a readable
-background/padding/colour, mirroring the four JS-created modal roots (`boxView.ts:32`,
-`raisingView.ts:29`, `evolutionView.ts:39` are all `position:fixed;inset:0;z-index:100`) and staying
-below `battleView`'s `z-index:110` (`battleView.ts:51`) so a battle auto-show still supersedes it.
+background/padding/colour, mirroring the three JS-created `z-index:100` modal roots (`boxView.ts:32`,
+`raisingView.ts:29`, `evolutionView.ts:39`) and staying below `battleView`'s `z-index:110`
+(`battleView.ts:53`) so a battle auto-show still supersedes it.
 `HelpView.show()` sets `style.display = ''`, which removes only that one declaration and leaves the
 rest of the inline style intact — so no view-class change is needed and `show`/`hide`/`visible` are
 byte-unchanged.
@@ -102,12 +102,12 @@ own precedent: the element otherwise retains `display:block` across `refresh(nul
 
 ### D4 — "Press Esc to continue" is truthful, with one recorded limit
 
-Five adversarial routes were tried and all failed. The three Escape branches above battle in the
-ladder — rename (`main.ts:943`), tradePropose (`:952`), help (`:958`) — cannot be open over a battle
-overlay: all three are force-hidden by the battle auto-show path (`main.ts:1127-1139`) and their
-open-guards all contain `!battleView?.visible`. The battle Escape branch is a pure local `hide()`
-with no `sendGuarded`, so a frozen link cannot deaden it. `dismissedBattleId` sticks
-(`battleModel.ts:379-381`) and reconnect pre-dismisses rather than re-pops. The terminal frame
+Five adversarial routes were tried and all failed: the three Escape branches above battle in the
+ladder (rename `main.ts:943`, tradePropose `:952`, help `:958`) cannot be open over a battle overlay
+— all are force-hidden by the battle auto-show path (`main.ts:1127-1139`) and their open-guards all
+contain `!battleView?.visible`; the battle Escape branch is a pure local `hide()` with no
+`sendGuarded`, so a frozen link cannot deaden it; `dismissedBattleId` sticks
+(`battleModel.ts:379-381`) and reconnect pre-dismisses rather than re-pops; and the terminal frame
 renders zero action buttons (`bench` is populated only inside `if (ongoing)`,
 `battleModel.ts:257-270`).
 
@@ -133,19 +133,24 @@ asserted `>= 1` and **below `#help-overlay`'s own parsed z-index in the same doc
 `/^\d+$/` guard first, because `parseInt` accepts the CSS-invalid `5e1`/`1e2` that a browser drops
 outright, and `z-index:-1` would paint the hint behind in-flow boxes).
 
-The malformed-markup tooth was **corrected by mutation probe, and the correction is worth recording
-because the first version was subtly ordering-dependent.** An unclosed `</div>` on the hint makes the
-parser adopt whatever *follows* it. The tooth was first written as "`#build-stamp`'s parent is
-`<body>`", from an analysis that assumed the hint preceded the stamp. The hint actually ships **last**
-in `<body>`, after `#build-stamp` and before the module `<script>` — so the probe measured
-`{hintParent: "BODY", hintChildren: ["SCRIPT"], stampParent: "BODY"}` and **the mutant survived all
-seven original assertions**. The invariant belongs on the hint, not on a presumed victim: `#help-hint`
-must have **no element children** (it is a leaf text badge), which is placement-independent and kills
-the whole class — including the future case where an element inserted between the hint and the script
-is swallowed *and* inherits the hint's `pointer-events:none` and 11 px dim styling, vanishing from the
-UI while `querySelector` still finds it. The `#build-stamp` parent assertion is retained as an
-independent anchor guard on the pt-a1/ADR-0128 provenance surface (it kills a future wrapper div
-re-parenting the stamp), no longer credited with the unclosed-tag kill.
+**Two of these teeth were written wrong first and corrected by mutation probe.** Both corrections
+generalise, so they are recorded rather than quietly fixed:
+
+- *An invariant belongs on the thing you own, not on a presumed victim.* The malformed-markup tooth
+  was first "`#build-stamp`'s parent is `<body>`", which assumed the hint preceded the stamp. The hint
+  actually ships **last** in `<body>`, so an unclosed `</div>` adopts the module `<script>` instead —
+  measured `{hintParent:"BODY", hintChildren:["SCRIPT"], stampParent:"BODY"}`, and the mutant survived
+  all seven original assertions. The correct, placement-independent invariant is that `#help-hint` has
+  **no element children** (it is a leaf text badge).
+- *Pin the element you changed, not just the element you added.* The first `#help-overlay` tooth
+  asserted only `position:fixed` + a z-index band, which left four survivors: deleting `inset:0` (a
+  fixed box with `auto` offsets lays out at its **static** position — measured `top=720` — but the
+  document is no longer scrollable, so the overlay becomes *permanently* unreachable, strictly worse
+  than the bug this slice fixed); deleting `display:none` (the client then boots into a full-viewport
+  opaque panel, and because `HelpView.visible` is `style.display !== 'none'` it reads **true** at
+  boot, so `main.ts` suppresses movement *and* all 13 overlay hotkeys); and `visibility:hidden` or a
+  dropped `color`/`background`. The overlay now carries the same anchoring, `display:none` and
+  invisibility deny-list assertions as the hint.
 
 ## Consequences
 
@@ -158,27 +163,57 @@ of the ten overlays that make the document taller than the viewport (the ADR-014
 
 1. **Nine sibling overlays still render below the fold** — `dialogue`, `quest-log`, `heal`, `shop`,
    `trade`, `pvp-challenge`, `leaderboard`, `rename`, `tradepropose` all have the identical defect
-   and are the direct cause of `PlaytestReport.md:81`, `:85` and `:97`. Deliberately **not** fixed
-   here (touch-set + blast-radius discipline); this is the strongest available evidence for
-   prioritising the parked `M-postgate-overlay-registry` slice, and the first thing a reader of this
-   ADR should act on.
-2. **No test in this slice proves the hint is *visibly* rendered** (D5). A real check needs
-   `client/e2e/**` + `toBeInViewport()`, which is out of this slice's touch-set.
-3. The z-index tooth reads inline style only; moving these declarations to a stylesheet would make
-   it a false negative. Acceptable while the repo has zero CSS files.
-4. The `W-UX1-ESCAPE-BATTLE` pin is textual and green-before-and-after by design (a regression pin,
+   and are the direct cause of `PlaytestReport.md:81`, `:85` and `:97`. (A tenth, `errorOverlayView`,
+   is JS-created with no `position`/`z-index` and has the same defect; post-slice it also stacks
+   *under* the help panel.) Deliberately **not** fixed here (touch-set + blast-radius discipline);
+   this is the strongest available evidence for prioritising the parked
+   `M-postgate-overlay-registry` slice, and the first thing a reader of this ADR should act on.
+2. **⚠ The badge is dishonest while any overlay is open — and residual #1 is what makes it so.**
+   `main.ts:912-936`'s `?` branch `preventDefault()`s and then does nothing if any of the 13 overlays
+   is visible. For the nine below-the-fold shells that state is *invisible*: press `G`, nothing
+   appears to happen (the shop is at `y=736`), movement is suppressed, the badge is still painted
+   (`z-index:50` fixed, and an unpositioned shell cannot cover it) — and `?` is a dead key. Measured:
+   `{docScrollHeight: 844, hint.top: 690 (inViewport), shopOverlay.top: 736 (not inViewport)}`. There
+   is also a race to the same state via a modal-styled overlay: press `T`, then `?` before the batch
+   lands (guard passes, help opens), then `dialogueView.render()` self-shows unconditionally
+   (`main.ts:1212` — the only batch-driven self-show) and `?` will no longer close help either.
+   Escape still recovers in every case. **This elevates residual #1 from cosmetic to load-bearing for
+   this slice's own honesty.** Not fixed here: making `?` supersede its siblings the way the battle
+   auto-show does is a behaviour change across the `W-OVERLAY-FANOUT-MUTEX`-gated fan-out, needing
+   its own teeth — it belongs with the overlay-registry slice.
+3. **No test in this slice proves the hint is *visibly* rendered** (D5). A real check needs
+   `client/e2e/**` + `toBeInViewport()`, out of this slice's touch-set. **Named follow-up:** a
+   `client/e2e/help-hint.spec.ts` asserting `toBeInViewport()` for `#help-hint` and, after pressing
+   `?`, for `#help-overlay` — to be scheduled with `M-postgate-overlay-registry`, which will need
+   exactly this harness for the other ten overlays anyway.
+4. **Overlay-internal scrolling is a trap for the next agent.** `overflow:auto` on a
+   `position:fixed;inset:0` element creates a scroll container that is **wheel-only**: `#help-overlay`
+   has no `tabindex`, so it never takes focus and arrows/PageDown never reach it (verified in
+   Chromium — `overlayScrollTop` stays 0 with and without the suppression helper, so there is no new
+   hole in ADR-0146). It matters below ~560 px viewport height, where help content overflows. **The
+   obvious repair is dangerous:** adding a `#help-overlay` case to `targetOwnsKey`, or dropping
+   `helpView?.visible` from the `main.ts` suppression fan-out, would reopen the nh1/ADR-0146
+   page-scroll bug for the nine overlays that are *still* in-flow, because that helper is shared by
+   all fourteen. Scroll it explicitly in JS from the help branch instead, or reduce the content's
+   intrinsic height.
+5. The style teeth read inline declarations only; moving them to a stylesheet would make them false
+   negatives. Acceptable while the repo has zero CSS files.
+6. `refresh(null)` resets the hint (per that branch's weather/pvpStatus precedent) but leaves
+   `#outcomeEl` at `display:block` — a pre-existing asymmetry this slice deliberately did not widen
+   its diff to fix. Unreachable today: `show()` is only reachable from inside `refresh(vm)`, which
+   always runs `#renderOutcome` before the root is next visible.
+7. The `W-UX1-ESCAPE-BATTLE` pin is textual and green-before-and-after by design (a regression pin,
    `W-HELP-NO-RECONNECT-HIDE` precedent); a benign reformat of `main.ts:964` would false-RED it. It
    is justified because that branch is otherwise wholly untested — `main.ts` is coverage-excluded
    and no e2e presses Escape against a battle-result overlay.
 
 ## Considered alternatives
 
-- **Ship ux1-1's hint without repositioning `#help-overlay`.** Rejected: measurably advertises a
-  no-op, and is strictly worse than shipping nothing.
-- **Reposition all ten in-flow overlays.** Correct eventually, wrong here: ten behaviour-sensitive
-  shells, out of proportion to a MEDIUM discoverability slice, and it is exactly the parked
-  `M-postgate-overlay-registry` work.
-- **Reuse `#build-stamp` for the hint.** Rejected: `main.ts:1681-1682` overwrites its `textContent`
-  from `BUILD_INFO`, and it would conflate provenance with help.
-- **Append "(Press Esc to continue)" to the existing outcome string.** Fewer lines, but inherits
-  18 px bold gold styling and breaks three `getByText(..., { exact: true })` e2e assertions.
+The rejections specific to the hint's and the continue-hint's *shape* are recorded inline in D2 and
+D3. The one whole-slice fork worth recording separately:
+
+- **Reposition all ten in-flow overlays, not just `#help-overlay`.** Correct eventually, wrong here:
+  ten behaviour-sensitive shells is out of proportion to a MEDIUM discoverability slice, and it is
+  exactly the parked `M-postgate-overlay-registry` work. Fixing only the overlay this slice
+  *advertises* is the smallest change that makes the badge honest (see Consequences #2 for the part
+  that stays dishonest until the registry slice lands).

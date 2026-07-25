@@ -106,16 +106,13 @@ export class BattleView {
     this.#outcomeEl.style.cssText = 'font-size:18px;font-weight:bold;color:#ffd700;display:none;';
     this.#root.appendChild(this.#outcomeEl);
 
-    // ux1 (ADR-0151 D3): the battle-result exit affordance. A SIBLING of #outcomeEl, never its
-    // child and never merged into its text: #renderOutcome writes #outcomeEl.textContent (which
-    // would wipe a child every render), three e2e specs assert getByText('Victory!', {exact:true}),
-    // and the outcome banner's 18px bold gold styling is wrong for a hint. Text is set once here —
-    // #renderOutcome only toggles display.
+    // ux1 (ADR-0151 D3): the battle-result exit affordance. A SIBLING of #outcomeEl — never its
+    // child (#renderOutcome writes #outcomeEl.textContent, which would wipe a child every render)
+    // and never merged into its text (three e2e specs use getByText('Victory!', {exact:true})).
     this.#continueHintEl = document.createElement('div');
     this.#continueHintEl.setAttribute('data-testid', 'battle-continue-hint');
     this.#continueHintEl.textContent = 'Press Esc to continue';
-    this.#continueHintEl.style.cssText =
-      'margin-top:8px;font-size:12px;color:#aab;letter-spacing:0.02em;display:none;';
+    this.#continueHintEl.style.cssText = 'margin-top:8px;font-size:12px;color:#aab;display:none;';
     this.#root.appendChild(this.#continueHintEl);
 
     parent.appendChild(this.#root);
@@ -140,9 +137,7 @@ export class BattleView {
       this.#weatherEl.style.display = 'none';
       this.#weatherEl.textContent = '';
       this.#pvpStatusEl.style.display = 'none';
-      // ux1 (ADR-0151 D3): reset the continue hint here too, matching this branch's own
-      // weather/pvpStatus precedent — the toggle in #renderOutcome would otherwise leave a
-      // terminal battle's hint at display:block across a null refresh.
+      // ux1 (ADR-0151 D3): reset the hint too, per this branch's weather/pvpStatus precedent.
       this.#continueHintEl.style.display = 'none';
       this.hide();
       return;
@@ -402,9 +397,8 @@ export class BattleView {
       return;
     }
     this.#outcomeEl.style.display = 'block';
-    // ux1 (ADR-0151 D3): the continue hint rides this existing predicate — no isPvp branch, since
-    // both #renderOutcome and the Escape-dismiss branch (main.ts:964, gated only on
-    // battleView?.visible) are battle-kind-agnostic.
+    // ux1 (ADR-0151 D3): rides this existing predicate; no isPvp branch — the Escape-dismiss
+    // branch (main.ts, gated only on battleView?.visible) is battle-kind-agnostic.
     this.#continueHintEl.style.display = 'block';
     let text: string;
     switch (vm.outcome) {
