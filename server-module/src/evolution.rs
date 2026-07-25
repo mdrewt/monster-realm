@@ -12,8 +12,36 @@ use crate::marshal::{monster_to_instance, pub_from_monster, species_from_row};
 use crate::schema::{
     battle, fusion, monster, monster_pub, species_row, trade_offer, Fusion, Monster,
 };
-use game_core::{evolve as game_core_evolve, resolve_evolution, Bond, EvolutionCondition, Level};
+use game_core::{
+    evolve as game_core_evolve, resolve_evolution, Bond, EvolutionCondition, FusionError, Level,
+    MonsterInstance, MIN_FUSION_BOND, MIN_FUSION_LEVEL,
+};
 use spacetimedb::{ReducerContext, Table};
+
+/// Fusion eligibility gate — the ONLY server entry point to the pure
+/// `game_core::fusion_eligible` SSOT (ADR-0147). Maps the typed `FusionError`
+/// to the player-facing message ONCE; both the real `fuse` reducer and the
+/// `fuse_seam` test double call this helper, so the guard chain can never be
+/// hand-duplicated again (the pre-A0 seam copy is deleted, not migrated).
+/// Lives here rather than guards.rs because the fusion rule is
+/// evolution-domain, and guards.rs is outside this slice's touch-set
+/// (naming exception recorded in ADR-0147).
+pub(crate) fn reject_if_not_fusable(
+    a_id: u64,
+    b_id: u64,
+    a: &MonsterInstance,
+    b: &MonsterInstance,
+) -> Result<(), String> {
+    game_core::fusion_eligible(a_id, b_id, a, b).map_err(|e| match e {
+        FusionError::SelfFusion => "cannot fuse a monster with itself".to_string(),
+        FusionError::BelowMinLevel => {
+            format!("both monsters must be at least level {MIN_FUSION_LEVEL} to fuse")
+        }
+        FusionError::BelowMinBond => {
+            format!("both monsters must have at least {MIN_FUSION_BOND} bond to fuse")
+        }
+    })
+}
 
 // Result types for seams (test-harness effects) — only used in #[cfg(test)] seam fns.
 #[cfg(test)]
@@ -188,20 +216,21 @@ fn find_fusion_recipe(
         .ok_or_else(|| "no fusion recipe for these species".to_string())
 }
 
-/// Fuse two owned monsters into a new offspring (M10b, ADR-0061).
+/// Fuse two owned monsters into a new offspring (M10b, ADR-0061; carry model ADR-0147).
 /// Steps:
 /// 1. Look up both Monster rows (reject loud if not found)
-/// 2. require_owner for both (must be same owner)
-/// 3. reject_if_in_battle for both (escrowed guard)
-/// 4. Find fusion recipe (order-independent lookup)
-/// 5. Call game_core::fuse to create offspring (per-stat max IV, higher-bond nature, L1)
-/// 6. Atomic: DELETE both parents + INSERT offspring (one transaction, SpacetimeDB atomicity)
+/// 2. require_owner for both (ownership precedes any stats-derived error)
+/// 3. Marshal both rows to MonsterInstance (parse-don't-validate boundary)
+/// 4. reject_if_not_fusable — the game_core::fusion_eligible SSOT (self-fusion,
+///    MIN_FUSION_LEVEL, MIN_FUSION_BOND) — BEFORE the recipe lookup so self-fusion
+///    reports itself and can never reach the transform
+/// 5. reject_if_in_battle + reject_if_monster_in_trade for both (escrow guards)
+/// 6. Find fusion recipe (order-independent lookup)
+/// 7. Call game_core::fuse (per-stat max IV, higher-bond nature, TAXED
+///    bond/level/EVs carry, nickname None until A1's UI)
+/// 8. Atomic: DELETE both parents + INSERT offspring (one transaction)
 #[spacetimedb::reducer]
 pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-    if a_id == b_id {
-        return Err("cannot fuse a monster with itself".to_string());
-    }
-
     let Some(a) = ctx.db.monster().monster_id().find(a_id) else {
         return Err("monster a not found".to_string());
     };
@@ -209,14 +238,21 @@ pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
         return Err("monster b not found".to_string());
     };
 
-    // Both must be owned by the caller
+    // Both must be owned by the caller. (No separate same-owner check: two
+    // require_owner passes against the same ctx.sender imply it — the old
+    // explicit branch was unreachable, ADR-0147.)
     require_owner(ctx, "fuse", a.owner_identity)?;
     require_owner(ctx, "fuse", b.owner_identity)?;
 
-    // Both parents must be owned by the SAME player (implied but check explicitly)
-    if a.owner_identity != b.owner_identity {
-        log_reject("fuse", ctx.sender, "monsters owned by different players");
-        return Err("both monsters must be owned by the same player".to_string());
+    // Marshal early: the eligibility gate reads pure MonsterInstance values.
+    let a_inst = monster_to_instance(&a)?;
+    let b_inst = monster_to_instance(&b)?;
+
+    // Fusion eligibility (ADR-0147): self-fusion + investment minimums, via the
+    // single game-core SSOT. Must precede the recipe lookup (step 4 rationale).
+    if let Err(msg) = reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst) {
+        log_reject("fuse", ctx.sender, &msg);
+        return Err(msg);
     }
 
     // Neither can be in battle — both roles (ADR-0122): chain the
@@ -277,17 +313,15 @@ pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
         ));
     };
 
-    // Marshal both parents to MonsterInstance
-    let a_inst = monster_to_instance(&a)?;
-    let b_inst = monster_to_instance(&b)?;
     let offspring_species = species_from_row(&offspring_species_row)?;
 
     // Call pure transform (order-independent when bonds differ; canonicalize for tie-break)
-    // Canonicalize: ascending monster_id for reproducibility when bonds are equal
+    // Canonicalize: ascending monster_id for reproducibility when bonds are equal.
+    // Nickname is None until A1's confirm-screen UI supplies one (ADR-0147).
     let offspring_inst = if a_id < b_id {
-        game_core::fuse(&a_inst, &b_inst, &offspring_species)
+        game_core::fuse(&a_inst, &b_inst, &offspring_species, None)
     } else {
-        game_core::fuse(&b_inst, &a_inst, &offspring_species)
+        game_core::fuse(&b_inst, &a_inst, &offspring_species, None)
     };
 
     // Compute evolves_to for offspring (cached ADR-0089)
