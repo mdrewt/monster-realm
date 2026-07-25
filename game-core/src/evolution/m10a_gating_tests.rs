@@ -6,10 +6,14 @@
 //!       (full equality); order-independent subset when bonds are equal.
 //!   19. Exhaustiveness guard comment (no wildcard arm on EvolutionTrigger).
 //!   20. Property: evolve — current_hp <= derived_stats.hp, never panics.
-//!   21. Property: fuse — IVs<=31, level==1, evs.total()==0, current_hp==derived.hp.
+//!   21. Property (A0/ADR-0147 REWRITE): fuse — totality + carry invariants:
+//!       never panics, IVs<=31, 1<=level<=75, per-stat EV<=189, EV total<=382,
+//!       current_hp==derived.hp>0, xp==xp_for_level(level).
 //!   22. Property: fuse IVs per stat == max of parents (property form of criterion 11).
+//!   25. Property (A0/ADR-0147 NEW): fuse level == an independent recomputation
+//!       of the A0-3 formula with LITERAL 75/50 (the ONLY sanctioned formula
+//!       mirror in this suite — every other expectation is a hardcoded pin).
 //!
-//! Red state: every test will PANIC on the `todo!()` stubs.
 //! Run: cargo test m10a_gating -- --nocapture
 
 use crate::content::Species;
@@ -161,8 +165,8 @@ fn fuse_is_deterministic() {
         &base,
     );
 
-    let result_a = fuse(&a, &b, &sp_off);
-    let result_b = fuse(&a, &b, &sp_off);
+    let result_a = fuse(&a, &b, &sp_off, None);
+    let result_b = fuse(&a, &b, &sp_off, None);
 
     assert_eq!(
         result_a, result_b,
@@ -216,8 +220,8 @@ fn fuse_is_order_independent_when_bonds_differ() {
         &base,
     );
 
-    let ab = fuse(&a, &b, &sp_off);
-    let ba = fuse(&b, &a, &sp_off);
+    let ab = fuse(&a, &b, &sp_off, None);
+    let ba = fuse(&b, &a, &sp_off, None);
 
     assert_eq!(
         ab, ba,
@@ -267,8 +271,8 @@ fn fuse_order_independent_subset_when_bonds_equal() {
         &base,
     );
 
-    let ab = fuse(&a, &b, &sp_off);
-    let ba = fuse(&b, &a, &sp_off);
+    let ab = fuse(&a, &b, &sp_off, None);
+    let ba = fuse(&b, &a, &sp_off, None);
 
     // ORDER-INDEPENDENT subset: IVs, party_slot, level, evs, bond, current_hp, xp
     // (nature is the ONLY order-sensitive field — see comment below)
@@ -506,23 +510,37 @@ proptest! {
     }
 
     // ---------------------------------------------------------------------------
-    // Criterion 21 — Property: fuse output never panics; IVs<=31, level==1,
-    // evs.total()==0, current_hp==derived.hp
-    // kills: panics on valid inputs; carrying evs/level; current_hp not full
+    // Criterion 21 (A0/ADR-0147 REWRITE, T24) — Property: fuse is TOTAL and its
+    // carried fields stay inside the type invariants over the WHOLE valid space.
+    //
+    // This is the ".expect() never fires" proof for D8's four inline bound proofs:
+    // `Level::new(..).expect`, `u8::try_from(bond).expect`, `IVs::new(..).expect`
+    // and `EVs::new(..).expect` are all reducer-path panics (= a wasm trap) if any
+    // bound is wrong. `arb_monster`/`arb_evs` already enforce exactly the A0-5
+    // preconditions (per-stat <= 252 AND total <= 510).
+    //
+    // The EV bounds are the ATTAINED ceilings (189 per stat, 382 total), NOT the
+    // vacuous type caps (252 / 510) — an untaxed EV carry passes 252/510 but fails
+    // 189/382.
     // ---------------------------------------------------------------------------
 
-    /// Criterion 21: for arbitrary valid parents + offspring species, fuse:
-    /// (a) never panics, (b) every IV <= 31, (c) level == 1, (d) evs.total() == 0,
-    /// (e) current_hp == derived_stats.hp (full HP), (f) current_hp > 0.
+    /// Criterion 21 (T24): for arbitrary valid parents + offspring species, fuse:
+    /// (a) never panics, (b) every IV <= 31, (c) 1 <= level <= 75,
+    /// (d) every EV <= 189, (e) evs.total() <= 382, (f) current_hp == derived.hp,
+    /// (g) current_hp > 0, (h) xp == xp_for_level(level).
     #[test]
-    fn fuse_totality_and_fresh_body_invariants(
+    fn fuse_totality_and_carry_invariants(
         parent_a in arb_monster(1),
         parent_b in arb_monster(2),
         offspring in arb_species(3),
     ) {
-        // kills: panics on any valid input
-        // kills: carrying parent evs/level; current_hp not set to full
-        let result = fuse(&parent_a, &parent_b, &offspring);
+        // kills: ANY .expect() that can fire on a valid pair (Level::new(0) when the
+        //        .max(1) floor is dropped; u8::try_from overflow on the bond/level
+        //        intermediates; EVs::new per-stat/total cap violation)
+        // kills: the level==1 hardcode (upper bound 75 is attained, lower bound 1)
+        // kills: an untaxed EV carry (per-stat <= 189 and total <= 382, NOT 252/510)
+        // kills: xp desynced from the level the offspring actually ships with
+        let result = fuse(&parent_a, &parent_b, &offspring, None);
 
         // (b) Every IV <= 31
         let all_stats = [
@@ -542,35 +560,89 @@ proptest! {
             );
         }
 
-        // (c) level == 1
-        prop_assert_eq!(
-            result.level.as_u8(),
-            1,
-            "offspring level must be 1 (was {})",
+        // (c) 1 <= level <= 75 (75 = two level-100 parents, the taxed ceiling)
+        prop_assert!(
+            result.level.as_u8() >= 1,
+            "offspring level must be >= 1 (was {})",
+            result.level.as_u8()
+        );
+        prop_assert!(
+            result.level.as_u8() <= 75,
+            "offspring level must be <= 75 — the 75%-of-average ceiling (was {})",
             result.level.as_u8()
         );
 
-        // (d) evs.total() == 0
-        prop_assert_eq!(
-            result.evs.total(),
-            0,
-            "offspring evs.total() must be 0 (was {})",
+        // (d) Every EV <= 189 (the attained per-stat ceiling: avg 252 taxed to 189)
+        for stat in all_stats {
+            prop_assert!(
+                result.evs.get(stat) <= 189,
+                "offspring EV for {:?} = {} exceeds the attained taxed ceiling 189",
+                stat,
+                result.evs.get(stat)
+            );
+        }
+
+        // (e) EV total <= 382 (sum of taxed floors; NOT the vacuous 510 budget)
+        prop_assert!(
+            result.evs.total() <= 382,
+            "offspring evs.total() must be <= 382 (was {})",
             result.evs.total()
         );
 
-        // (e) current_hp == derived_stats.hp (full HP)
+        // (f) current_hp == derived_stats.hp (full HP at the taxed level)
         prop_assert_eq!(
             result.current_hp,
             result.derived_stats.hp,
-            "offspring current_hp ({}) must equal derived_stats.hp ({}) (full HP)",
-            result.current_hp,
-            result.derived_stats.hp
+            "offspring current_hp must equal derived_stats.hp (full HP at the taxed level)"
         );
 
-        // (f) current_hp > 0 (derived HP at level 1 with valid base stats is always > 0)
+        // (g) current_hp > 0 (derived HP with base stats >= 1 is always positive)
         prop_assert!(
             result.current_hp > 0,
-            "offspring current_hp must be > 0 (derived HP at level 1 with base stats >= 1)"
+            "offspring current_hp must be > 0 (derived HP with base stats >= 1)"
+        );
+
+        // (h) the level/xp pair invariant holds at the TAXED level
+        prop_assert_eq!(
+            result.xp,
+            xp_for_level(result.level),
+            "offspring xp must equal xp_for_level(offspring.level)"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Criterion 25 (A0/ADR-0147 NEW, T25) — Property: the offspring level equals an
+    // INDEPENDENT recomputation of the A0-3 formula.
+    //
+    // This is the ONE place in the A0 suite where mirroring the formula is allowed,
+    // and the percentages are written as LITERAL 75 / 50 (never read from
+    // FUSION_EFFICIENCY / LEVEL_RETENTION_FLOOR) so a constant retune still turns
+    // this red alongside the hardcoded pins in transform.rs.
+    // ---------------------------------------------------------------------------
+
+    /// Criterion 25 (T25): offspring level == `max(avg*75/100, max*50/100).max(1)`
+    /// over the whole valid parent-level space (1..=100 x 1..=100).
+    #[test]
+    fn fuse_level_matches_independent_recomputation(
+        parent_a in arb_monster(1),
+        parent_b in arb_monster(2),
+        offspring in arb_species(3),
+    ) {
+        // kills: dropping either branch (avg-only / retention-floor-only),
+        //        swapping 75 <-> 50, dropping .max(1), u8-width truncation of the
+        //        intermediate (level 100 + 100 overflows a u8 sum)
+        let la = u32::from(parent_a.level.as_u8());
+        let lb = u32::from(parent_b.level.as_u8());
+        let taxed_average = (la + lb) / 2 * 75 / 100;
+        let retained = la.max(lb) * 50 / 100;
+        let expected = taxed_average.max(retained).max(1);
+
+        let result = fuse(&parent_a, &parent_b, &offspring, None);
+
+        prop_assert_eq!(
+            u32::from(result.level.as_u8()),
+            expected,
+            "offspring level must equal max(avg(a,b)*75/100, max(a,b)*50/100).max(1)"
         );
     }
 
@@ -588,7 +660,7 @@ proptest! {
         offspring in arb_species(3),
     ) {
         // kills: min(a,b) / avg(a,b) / always-a / always-b for any stat
-        let result = fuse(&parent_a, &parent_b, &offspring);
+        let result = fuse(&parent_a, &parent_b, &offspring, None);
 
         let all_stats = [
             StatKind::Hp,
