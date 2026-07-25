@@ -483,7 +483,11 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
     }
 
     expect(sentIntents.length).toBeGreaterThan(0);
-    const tailSeq = sentIntents[sentIntents.length - 1]!.seq;
+    // nh3 (plan §3 step 3 / A9): hoisted so the epoch passed to dropRejected below is
+    // read from an intent THIS predictor issued, never a literal. `tailSeq` is the same
+    // value as before the hoist.
+    const tail = sentIntents[sentIntents.length - 1]!;
+    const tailSeq = tail.seq;
     const ackedSeqBeforeReject = tailSeq - 1;
 
     // Authority at (5,5): server rejected the tail (and every op that moved us).
@@ -492,7 +496,8 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
     // THE FIX: drop the rejected tail, then force a reconcile.
     // T3: capture queueDepth BEFORE dropRejected — #queue must be unchanged by the call.
     const qDepthBefore = predictor.queueDepth;
-    expect(predictor.dropRejected(tailSeq)).toBe(true); // the op was present and is now evicted
+    // the op was present and is now evicted (epoch = this instance's own, via `tail`)
+    expect(predictor.dropRejected(tailSeq, tail.epoch)).toBe(true);
     expect(predictor.queueDepth).toBe(qDepthBefore); // T3: #queue not spliced by dropRejected
 
     // One reconcile at ack = tailSeq-1 (server hasn't acked the tail because it
@@ -536,7 +541,8 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
     expect(predictor.pendingCount).toBe(2); // M and N pending
 
     // Drop N (the one we "reject").
-    const dropped = predictor.dropRejected(intN.seq);
+    // nh3 (A9): `intN` is in scope and was issued by THIS predictor — no hoist needed.
+    const dropped = predictor.dropRejected(intN.seq, intN.epoch);
     expect(dropped).toBe(true);
     expect(predictor.pendingCount).toBe(1); // only M remains (T1 + T3 queueDepth assertion)
 

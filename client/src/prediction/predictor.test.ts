@@ -1324,7 +1324,7 @@ describe('dropRejected (M13.5b ADR-0085)', () => {
     const i2 = p.enqueue(east())!; // seq n2  ← the one we drop
     const i3 = p.enqueue(east())!; // seq n3
 
-    const removed = p.dropRejected(i2.seq);
+    const removed = p.dropRejected(i2.seq, i2.epoch);
 
     expect(removed).toBe(true);
     expect(p.pendingCount).toBe(2); // n1 and n3 survive
@@ -1346,10 +1346,21 @@ describe('dropRejected (M13.5b ADR-0085)', () => {
     const i1 = p.enqueue(east())!;
 
     const neverIssuedSeq = i1.seq + 9999;
-    const removed = p.dropRejected(neverIssuedSeq);
+    // The epoch argument is read from an intent THIS instance issued (nh3 plan A9:
+    // never a literal — a plausible `0` can never match the real epoch, which would
+    // make the `false` oracle below pass for the wrong reason).
+    const removed = p.dropRejected(neverIssuedSeq, i1.epoch);
 
     expect(removed).toBe(false);
     expect(p.pendingCount).toBe(1); // i1 untouched
+
+    // POSITIVE CONTROL (nh3 plan §3 step 3 / reviewer M2), ordered AFTER the
+    // unknown-seq oracle so it cannot invalidate it: the SAME epoch value, paired
+    // with a seq this instance really issued, MUST evict. That proves the epoch
+    // passed above is live — so the `false` above is caused by the unknown seq
+    // alone, not by a silently-mismatching epoch.
+    expect(p.dropRejected(i1.seq, i1.epoch)).toBe(true);
+    expect(p.pendingCount).toBe(0);
     void i1;
   });
 
@@ -1360,8 +1371,8 @@ describe('dropRejected (M13.5b ADR-0085)', () => {
     p.reconcile(baseline(5, 5, 0), [], 0, 0);
     const i1 = p.enqueue(east())!;
 
-    expect(p.dropRejected(i1.seq)).toBe(true);
-    expect(p.dropRejected(i1.seq)).toBe(false); // second call: already gone
+    expect(p.dropRejected(i1.seq, i1.epoch)).toBe(true);
+    expect(p.dropRejected(i1.seq, i1.epoch)).toBe(false); // second call: already gone
     expect(p.pendingCount).toBe(0);
   });
 
@@ -1375,7 +1386,7 @@ describe('dropRejected (M13.5b ADR-0085)', () => {
     const i2 = p.enqueue(east())!;
     const depthBefore = p.queueDepth; // 2
 
-    p.dropRejected(i1.seq);
+    p.dropRejected(i1.seq, i1.epoch);
 
     // #queue must be UNCHANGED — only reconcile rebuilds it.
     expect(p.queueDepth).toBe(depthBefore);
@@ -1390,7 +1401,7 @@ describe('dropRejected (M13.5b ADR-0085)', () => {
     const i1 = p.enqueue(east())!;
     const i2 = p.enqueue(east())!;
 
-    p.dropRejected(i2.seq);
+    p.dropRejected(i2.seq, i2.epoch);
     // free up a queue slot by dropping then reconciling
     p.reconcile(baseline(5, 5, 0), [], i2.seq, 0); // ack up to i2 (nothing survives)
 
@@ -1423,7 +1434,10 @@ describe('dropRejected (M13.5b ADR-0085)', () => {
           const targetSeq = dropIndex < intents.length ? intents[dropIndex]!.seq : 999999; // guaranteed absent
 
           const wasPresent = intents.some((i) => i.seq === targetSeq);
-          const removed = p.dropRejected(targetSeq);
+          // Epoch read from an intent THIS instance issued (nh3 plan A9). Safe:
+          // count >= 1, the loop reconciles BEFORE each enqueue and count <= 5 <
+          // QUEUE_CAP (8), so no enqueue is declined → intents[0] always exists.
+          const removed = p.dropRejected(targetSeq, intents[0]!.epoch);
 
           expect(removed).toBe(wasPresent);
           const expectedDelta = wasPresent ? 1 : 0;
@@ -1482,7 +1496,7 @@ describe('dropRejected (M13.5b ADR-0085)', () => {
 
     // --- THE FIX ---
     // dropRejected(seqN) evicts the phantom op.
-    const dropped = p.dropRejected(seqN);
+    const dropped = p.dropRejected(seqN, intent.epoch);
     expect(dropped).toBe(true);
 
     // One more reconcile at the same ackedSeq (server still at x=5, ack still N-1).
@@ -1616,15 +1630,15 @@ describe('Predictor ptc5f: dropRejected reachability bound (Decision E epoch-evi
     expect([a.seq, b.seq, c.seq]).toEqual([1, 2, 3]);
     expect(p.pendingCount).toBe(3);
 
-    expect(p.dropRejected(b.seq)).toBe(true);
+    expect(p.dropRejected(b.seq, b.epoch)).toBe(true);
     expect(p.pendingCount).toBe(2);
-    expect(p.dropRejected(b.seq)).toBe(false); // idempotent — already gone
+    expect(p.dropRejected(b.seq, b.epoch)).toBe(false); // idempotent — already gone
 
     // Vacuous-eviction is impossible here: if dropRejected(b.seq) had actually
     // removed a or c instead of b, one of these would report false (nothing left
     // to drop) or pendingCount would not reach exactly 0.
-    expect(p.dropRejected(a.seq)).toBe(true);
-    expect(p.dropRejected(c.seq)).toBe(true);
+    expect(p.dropRejected(a.seq, a.epoch)).toBe(true);
+    expect(p.dropRejected(c.seq, c.epoch)).toBe(true);
     expect(p.pendingCount).toBe(0);
   });
 
@@ -1647,7 +1661,7 @@ describe('Predictor ptc5f: dropRejected reachability bound (Decision E epoch-evi
 
     // A stale rejection of A's pre-warp op arrives late and fires against B (the
     // module-scope predictor is now B) — it evicts B's NEW op purely by seq collision.
-    expect(b.dropRejected(preWarpOp.seq)).toBe(true);
+    expect(b.dropRejected(preWarpOp.seq, newOp.epoch)).toBe(true);
 
     // Prove the eviction BY CONTENT (a pendingCount delta alone is vacuous — it
     // would also read as 0 if dropRejected simply never recorded anything). Force
@@ -1976,7 +1990,9 @@ function runLoop(opts: RunLoopOptions): RunLoopResult {
         // The client only learns one more one-way hop later — mirroring main.ts:466,
         // dropRejected() then a FORCED reconcile from the local store.
         at(tArr + lat, PRIO_DELIVERY, (tResp) => {
-          if (predictor.dropRejected(seq)) doReconcile(store, tResp);
+          // Epoch captured from the intent this same (never-rebuilt) predictor issued
+          // — mirrors main.ts's `const epoch = intent.epoch;` capture (nh3 plan A9).
+          if (predictor.dropRejected(seq, intent.epoch)) doReconcile(store, tResp);
         });
         return;
       }
