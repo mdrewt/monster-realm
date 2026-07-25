@@ -1768,3 +1768,313 @@ describe('★ main.ts wiring (ptc5c): every overlay-open handler accounts for al
     }
   });
 });
+
+// ===========================================================================
+// nh1 movement-suppress-default fix — NEW describe block (does NOT modify prior blocks).
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-postgate-netcode-hardening.spec.md nh1 +
+//   ADR-0146 (playtest-gate 2026-07-25 movement bug): "movement-suppression must call
+//   preventDefault(), or arrow keys get hijacked by the browser once any overlay opens."
+//
+// BUG (current master): both early-return paths in the `keydown` handler —
+// `if (e.repeat) return;` and the 14-overlay `Suppress movement input while an overlay
+// is open` block — omit `e.preventDefault()`. With an overlay open (or on OS key-repeat),
+// ArrowUp/Down/Left/Right/Space fall through to the browser's native page-scroll/
+// button-activate default.
+//
+// THE FIX (ADR-0146) main.ts must ship, verbatim in shape:
+//   - two NEW non-exported helpers, `targetOwnsKey` and `suppressNativeMovementDefault`,
+//     declared AFTER `KEY_DIR` and BEFORE `window.addEventListener('keydown'`.
+//   - `suppressNativeMovementDefault(e);` called on BOTH early-return paths, before the
+//     `return;`.
+//
+// RED REASON (ALL five tests below): none of this exists on the current main.ts — no
+// `targetOwnsKey`, no `suppressNativeMovementDefault`, and neither early-return path
+// calls it. `regionOrThrow` throws (helper/target regions have no start anchor at all);
+// the repeat/suppression region tests find their regions fine but the call-needle search
+// inside them comes up empty. See the per-test RED comment for the exact failure.
+//
+// ANCHOR-SLICING STRATEGY (documented once, applies to all 4 regions below):
+//   All four regions are located using RAW main.ts text — including the suppression
+//   region's START anchor, which is itself inside a `//` comment
+//   (`// Suppress movement input while an overlay is open.`). We do NOT run
+//   stripLineComments() over the whole file first and then re-locate anchors in the
+//   stripped text (that would require re-deriving every offset and is exactly the kind
+//   of raw-vs-stripped index mismatch this comment is warning about). Instead:
+//     1. Anchor indices (start/end) are always found via indexOf on the RAW source.
+//     2. The region is sliced out of the RAW source using those raw indices.
+//     3. stripLineComments() is applied to that ALREADY-SLICED region substring — never
+//        to the whole file, never to relocate an anchor — purely so a needle that lives
+//        only inside a `//` comment WITHIN the region cannot satisfy a tooth.
+//   Because stripping happens strictly after slicing, there is no offset-mismatch risk:
+//   we never need a stripped-text index to correspond to a raw-text index.
+//
+// KNOWN LIMITATION of stripLineComments (line-based, not a real tokenizer): a `//`
+// inside a string/template literal would truncate the rest of that line, which would be
+// wrong for a line like `const s = "http://example.com";`. No such literal exists in any
+// of the 4 regions scanned below (verified by reading main.ts lines 472-490 and 1006-1035,
+// and by inspection of the ADR-0146 helper bodies quoted in the spec) — the regions are
+// plain control-flow/object-literal code with ordinary `//` line comments only.
+// ===========================================================================
+
+// Drop `//` line comments so a needle that only appears in a comment cannot satisfy a
+// tooth (an implementer could otherwise "pass" a test by pasting the predicate into a
+// comment above an unconditional `e.preventDefault()`). See KNOWN LIMITATION note above.
+function stripLineComments(src: string): string {
+  return src
+    .split('\n')
+    .map((line) => {
+      const i = line.indexOf('//');
+      return i === -1 ? line : line.slice(0, i);
+    })
+    .join('\n');
+}
+
+/** Generic "slice from START needle to END needle" region extractor for the nh1 teeth
+ *  below. Mirrors the file's existing `f9Region` pattern: throws loud (never returns an
+ *  empty/negative slice) if either needle is missing or END does not follow START, so a
+ *  missing implementation is a HARD RED (thrown error), never a vacuous pass. `fromIdx`
+ *  lets a caller anchor the END search past an earlier duplicate occurrence (see the
+ *  suppression region: `const dir = KEY_DIR[e.code];` appears twice in main.ts — once in
+ *  the keydown handler we want, once in the keyup handler at ~line 1039 — searching END
+ *  FROM startIdx resolves to the nearer, correct occurrence today). */
+function regionOrThrow(src: string, startNeedle: string, endNeedle: string, fromIdx = 0): string {
+  const startIdx = src.indexOf(startNeedle, fromIdx);
+  if (startIdx < 0) {
+    throw new Error(`main.ts must contain "${startNeedle}" (nh1/ADR-0146 region start)`);
+  }
+  const endIdx = src.indexOf(endNeedle, startIdx);
+  if (endIdx < 0) {
+    throw new Error(
+      `main.ts must contain "${endNeedle}" AFTER "${startNeedle}" (nh1/ADR-0146 region end)`,
+    );
+  }
+  if (endIdx <= startIdx) {
+    throw new Error(`"${endNeedle}" must appear AFTER "${startNeedle}" (nh1/ADR-0146 region)`);
+  }
+  return src.slice(startIdx, endIdx);
+}
+
+describe('main.ts wiring (nh1/ADR-0146): movement default is suppressed under overlay + key-repeat', () => {
+  it('W-NH1-SUPPRESS BITES: overlay-suppression block calls suppressNativeMovementDefault(e) before its return', () => {
+    // WRONG IMPL KILLED (primary): the CURRENT unfixed code — the 14-overlay
+    // `Suppress movement input while an overlay is open` block is a bare
+    // `if (...) return;` with no call at all. RED today: callIdx === -1.
+    // WRONG IMPL KILLED (secondary): a call placed AFTER the `return;` (dead code) —
+    // e.g. `if (...) { return; suppressNativeMovementDefault(e); }` would satisfy a
+    // naive "does the region contain the string" check but never actually run; the
+    // before-return ordering assertion below catches it.
+    const src = readMainTs();
+    const rawRegion = regionOrThrow(
+      src,
+      'Suppress movement input while an overlay is open',
+      'const dir = KEY_DIR[e.code];',
+    );
+    // Anti-vacuity: this must be the keydown-handler occurrence, not the keyup one.
+    expect(
+      rawRegion.includes("addEventListener('keyup'"),
+      'suppression region must not have widened past the keydown block into the keyup handler',
+    ).toBe(false);
+
+    const region = stripLineComments(rawRegion);
+    const callIdx = region.indexOf('suppressNativeMovementDefault(e)');
+    expect(
+      callIdx,
+      'the overlay-suppression block must call suppressNativeMovementDefault(e) — ' +
+        'RED today: the current block is a bare `if (...) return;` with no such call ' +
+        '(ArrowUp/Down/Left/Right/Space fall through to the browser default while any ' +
+        'overlay is open, e.g. native page-scroll)',
+    ).toBeGreaterThanOrEqual(0);
+
+    const returnIdx = region.indexOf('return;');
+    expect(returnIdx, 'suppression region must contain a return;').toBeGreaterThanOrEqual(0);
+    expect(
+      callIdx,
+      'suppressNativeMovementDefault(e) must be called BEFORE the return; in the ' +
+        'suppression block — a call placed after `return;` is dead code and never runs',
+    ).toBeLessThan(returnIdx);
+  });
+
+  it('W-NH1-REPEAT BITES: the e.repeat early-return calls suppressNativeMovementDefault(e) before its return', () => {
+    // WRONG IMPL KILLED (primary): the CURRENT unfixed code — `if (e.repeat) return;`
+    // has no call at all. RED today: callIdx === -1.
+    // WRONG IMPL KILLED (secondary, the dominant real-world case): a "first-keydown-only"
+    // fix that adds suppressNativeMovementDefault ONLY to the overlay block and skips the
+    // e.repeat path — every OS key-repeat keydown event carries its OWN default action, so
+    // a held arrow key over an open overlay would keep scrolling the page on every repeat
+    // tick even if the very first keydown was suppressed. This is the tooth that catches
+    // exactly that half-fix.
+    const src = readMainTs();
+    const rawRegion = regionOrThrow(src, 'if (e.repeat)', "if (e.code === 'F9')");
+    const region = stripLineComments(rawRegion);
+
+    const callIdx = region.indexOf('suppressNativeMovementDefault(e)');
+    expect(
+      callIdx,
+      'the `if (e.repeat)` early return must call suppressNativeMovementDefault(e) — ' +
+        'RED today: the current line is `if (e.repeat) return;` with no such call ' +
+        '(a held arrow key over an open overlay would keep triggering the native ' +
+        'page-scroll on every OS key-repeat tick)',
+    ).toBeGreaterThanOrEqual(0);
+
+    const returnIdx = region.indexOf('return;');
+    expect(returnIdx, 'e.repeat region must contain a return;').toBeGreaterThanOrEqual(0);
+    expect(
+      callIdx,
+      'suppressNativeMovementDefault(e) must be called BEFORE the return; in the ' +
+        'e.repeat early-return — a call placed after `return;` is dead code',
+    ).toBeLessThan(returnIdx);
+  });
+
+  it('W-NH1-HELPER BITES: suppressNativeMovementDefault checks KEY_DIR OR Space, negates targetOwnsKey, and calls preventDefault', () => {
+    // WRONG IMPL KILLED (the &&-for-|| swap, the sneakiest failure mode): a helper body
+    // written as `if (KEY_DIR[e.code] !== undefined && e.code === 'Space')` is ALWAYS
+    // false (e.code cannot simultaneously be a movement key AND 'Space') — it would
+    // satisfy any test that only checks the three substrings appear SEPARATELY anywhere
+    // in the helper region, while suppressing nothing. This test requires the CONTIGUOUS
+    // substring `KEY_DIR[e.code] !== undefined ||` (the `||` glued directly onto the
+    // condition, not merely present somewhere else in the region) to rule that out.
+    // WRONG IMPL KILLED: a movement-only fix that drops the `e.code === 'Space'` disjunct
+    // — Space (jump) would still leak to native scroll/button-activate under an overlay.
+    // WRONG IMPL KILLED: a helper that never calls e.preventDefault() at all (a no-op stub).
+    // WRONG IMPL KILLED: a helper that doesn't consult targetOwnsKey (see W-NH1-TARGET for
+    // why that guard matters) — checked here via the negated-call substring `!targetOwnsKey(`.
+    // RED today: 'const suppressNativeMovementDefault' does not exist in main.ts at all —
+    // regionOrThrow throws before any substring check runs.
+    const src = readMainTs();
+    const rawRegion = regionOrThrow(
+      src,
+      'const suppressNativeMovementDefault',
+      "window.addEventListener('keydown'",
+    );
+    const region = stripLineComments(rawRegion);
+
+    expect(
+      region.includes('KEY_DIR[e.code] !== undefined ||'),
+      'suppressNativeMovementDefault must check `KEY_DIR[e.code] !== undefined ||` as a ' +
+        'CONTIGUOUS substring (the || glued directly onto the condition) — an && swap ' +
+        "(`KEY_DIR[e.code] !== undefined && e.code === 'Space'`) is always false and " +
+        'would suppress nothing, while still containing the three needles separately',
+    ).toBe(true);
+    expect(
+      region.includes("e.code === 'Space'"),
+      "suppressNativeMovementDefault must also gate on e.code === 'Space' — dropping " +
+        'this disjunct would leave Space (jump) leaking to the native default under an overlay',
+    ).toBe(true);
+    expect(
+      region.includes('e.preventDefault()'),
+      'suppressNativeMovementDefault must actually call e.preventDefault() — a stub that ' +
+        'checks the condition but never calls preventDefault() suppresses nothing',
+    ).toBe(true);
+    expect(
+      region.includes('!targetOwnsKey('),
+      'suppressNativeMovementDefault must negate targetOwnsKey(e) as a guard — without it, ' +
+        "a blanket preventDefault would break arrow-key selection inside battleView's " +
+        '<select> elements and Space-activation of focused overlay buttons',
+    ).toBe(true);
+  });
+
+  it('W-NH1-TARGET BITES: targetOwnsKey recognizes INPUT/TEXTAREA/SELECT/contentEditable, and gates BUTTON/A on Space only', () => {
+    // WRONG IMPL KILLED (a): omitting the target check entirely (suppressNativeMovementDefault
+    // calling e.preventDefault() unconditionally whenever KEY_DIR/Space matches, regardless
+    // of focused element) — a blanket preventDefault would break arrow-key selection on
+    // battleView's two <select> elements (bait-selector, cure-item-selector) and break
+    // Space-activation of every focused overlay button, since only renameView/
+    // tradeProposeView stopPropagation their own focusables. The INPUT/TEXTAREA/SELECT/
+    // isContentEditable needles below catch the "no target check at all" impl (none of
+    // these strings would exist in the helper region).
+    // WRONG IMPL KILLED (b): a blanket target-skip that exempts BUTTON/A for EVERY key
+    // (not just Space) — e.g. `if (tag === 'BUTTON' || tag === 'A') return true;` with no
+    // Space gate — would reopen the ORIGINAL arrow-scroll bug in the single commonest
+    // focus state (a <button> retains focus after a click, and arrow keys are not
+    // BUTTON/A's native key, so exempting them unconditionally defeats the whole fix for
+    // that focus state). The contiguous substring `e.code === 'Space' &&` requires the
+    // BUTTON/A exemption to be conditioned on Space specifically.
+    // RED today: 'const targetOwnsKey' does not exist in main.ts at all — regionOrThrow
+    // throws before any substring check runs.
+    const src = readMainTs();
+    const rawRegion = regionOrThrow(
+      src,
+      'const targetOwnsKey',
+      'const suppressNativeMovementDefault',
+    );
+    const region = stripLineComments(rawRegion);
+
+    expect(
+      region.includes("'INPUT'"),
+      "targetOwnsKey must name 'INPUT' — omitting it would let a blanket preventDefault " +
+        'break arrow-key/Space use inside any future text <input>',
+    ).toBe(true);
+    expect(region.includes("'TEXTAREA'"), "targetOwnsKey must name 'TEXTAREA'").toBe(true);
+    expect(
+      region.includes("'SELECT'"),
+      "targetOwnsKey must name 'SELECT' — omitting it breaks arrow-key selection on " +
+        "battleView's bait-selector / cure-item-selector <select> elements",
+    ).toBe(true);
+    expect(region.includes('isContentEditable'), 'targetOwnsKey must check isContentEditable').toBe(
+      true,
+    );
+    expect(
+      region.includes("e.code === 'Space' &&"),
+      "targetOwnsKey must gate the BUTTON/A exemption on `e.code === 'Space' &&` as a " +
+        'CONTIGUOUS substring — an unconditional BUTTON/A exemption (no Space gate) would ' +
+        'reopen the original arrow-scroll bug for the commonest focus state (a <button> ' +
+        'keeps focus after being clicked, and arrow keys are not native to BUTTON/A)',
+    ).toBe(true);
+  });
+
+  it('W-NH1-NOVACUITY BITES: every nh1 anchor is found and every region is non-degenerate (anti-vacuity positive control)', () => {
+    // This is the tooth that fails LOUDLY if a future refactor renames a comment, reorders
+    // the handler, or otherwise moves one of the 4 anchors, instead of silently reducing
+    // every test above to a pass-on-empty-slice. Independent of regionOrThrow (does its
+    // own raw indexOf + expect calls) so a bug in the shared helper can't hide a break here.
+    const src = readMainTs();
+
+    const suppressStart = src.indexOf('Suppress movement input while an overlay is open');
+    const suppressEnd = src.indexOf('const dir = KEY_DIR[e.code];', suppressStart);
+    expect(suppressStart, 'suppression region START anchor must be found').toBeGreaterThanOrEqual(
+      0,
+    );
+    expect(suppressEnd, 'suppression region END anchor must be found').toBeGreaterThanOrEqual(0);
+    expect(suppressEnd, 'suppression region END must come strictly after START').toBeGreaterThan(
+      suppressStart,
+    );
+    // Defensive: the region must not have silently widened into the keyup handler (the
+    // END needle appears twice in main.ts; this proves indexOf(needle, startIdx) is still
+    // resolving to the nearer, keydown-handler occurrence and not the keyup one).
+    const suppressRegion = src.slice(suppressStart, suppressEnd);
+    expect(
+      suppressRegion.includes("addEventListener('keyup'"),
+      'suppression region must NOT contain the keyup handler registration — if it does, ' +
+        'a future edit has silently widened this region past the intended block',
+    ).toBe(false);
+
+    const repeatStart = src.indexOf('if (e.repeat)');
+    const repeatEnd = src.indexOf("if (e.code === 'F9')", repeatStart);
+    expect(repeatStart, 'e.repeat region START anchor must be found').toBeGreaterThanOrEqual(0);
+    expect(repeatEnd, 'e.repeat region END anchor must be found').toBeGreaterThanOrEqual(0);
+    expect(repeatEnd, 'e.repeat region END must come strictly after START').toBeGreaterThan(
+      repeatStart,
+    );
+
+    // Helper regions: these do NOT exist yet on unmodified main.ts (post-impl anchors),
+    // so we only assert them >= 0 when present; their absence is already the RED reason
+    // for W-NH1-HELPER / W-NH1-TARGET above. Here we additionally prove the ORDERING
+    // invariant once they DO exist: targetOwnsKey must be declared before
+    // suppressNativeMovementDefault, which must be declared before the keydown listener.
+    const targetStart = src.indexOf('const targetOwnsKey');
+    const helperStart = src.indexOf('const suppressNativeMovementDefault');
+    const listenerStart = src.indexOf("window.addEventListener('keydown'");
+    expect(listenerStart, 'keydown listener anchor must always be found').toBeGreaterThanOrEqual(0);
+    if (targetStart >= 0 && helperStart >= 0) {
+      expect(
+        targetStart,
+        'targetOwnsKey must be declared BEFORE suppressNativeMovementDefault (the latter calls the former)',
+      ).toBeLessThan(helperStart);
+      expect(
+        helperStart,
+        'suppressNativeMovementDefault must be declared BEFORE the keydown listener that calls it',
+      ).toBeLessThan(listenerStart);
+    }
+  });
+});
