@@ -1673,14 +1673,45 @@ describe('Predictor ptc5f: dropRejected reachability bound (Decision E epoch-evi
 
 // ================================================================================
 // nh2 / ADR-0148 — held-key continuation gating on `outstandingSteps`
-// EARS nh2-1 / nh2-2 / nh2-3.
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-postgate-netcode-hardening.spec.md.
+// The three criteria, quoted VERBATIM (do not paraphrase these — an earlier
+// revision of this banner restated nh2-2 as "sustains the full walk rate", which
+// is actually the nh2-3 COMPANION, and mis-answered "which test covers nh2-2?"):
 //
-//   nh2-1  WHEN a movement key is held, the client SHALL emit at most one
-//          continuation move per step the server still owes (no backlog build-up).
-//   nh2-2  WHILE a movement key is held, the client SHALL sustain the full
-//          nominal walk rate of one tile per STEP_MS.
-//   nh2-3  WHEN a held movement key is released, the character SHALL stop within
-//          one tile (no post-release "keeps walking" drift).
+//   nh2-1  WHEN a held movement key is released (or the player switches to a
+//          different held direction) AND no further input in that direction has
+//          been queued by player intent, THE client SHALL cancel/not-emit steps
+//          beyond what the key-hold duration implies.
+//   nh2-2  the fix SHALL NOT desync client prediction from server authoritative
+//          state; whatever mechanism is used must reconcile cleanly, reusing the
+//          existing `reconcileFromStore()` repair path rather than inventing a
+//          second one.
+//   nh2-3  proof-of-teeth: press -> hold long enough to queue 2 steps -> release
+//          -> assert no further step beyond what was already committed/in-flight
+//          is emitted. COMPANION: a genuinely-held key for the queue-cap duration
+//          still moves the expected number of tiles (no regression on sustained
+//          movement).
+//
+// CRITERION -> TEST MAP (the auditable answer to "what covers nh2-N?"):
+//   nh2-1  U2 (tap emits once; the gate is not queueDepth)
+//          U6 (emission rate pinned to the STEP cadence at 30/60/144Hz)
+//          U8 (direction switch: <=1 further stale step, later emissions all North)
+//          U3 (a) zero emissions after release
+//   nh2-2  U5  (predicted advances <=1 tile per frame under an unaligned clock —
+//               prediction tracks authority instead of running away)
+//          U3 (c) predicted does not drift from where it was at release
+//          U4 (predictedTilesMoved in [K, K+1] WHILE serverTilesMoved === K —
+//              prediction leads authority by at most the one in-flight step)
+//          U1b (an acked op moves from pending to auth WITHOUT double-counting —
+//               the accounting that keeps reconcile's repair convergent)
+//          [also, outside this file: the W-NH2-NO-CANCEL wiring tooth pins
+//           `reconcileFromStore()` as the SOLE repair path — no second mechanism]
+//   nh2-3  U3 (b) <=1 further SERVER commit after release (the literal scenario)
+//          U4 (the COMPANION: a sustained hold still walks K tiles)
+//   ADR-0148 ACCEPTED TRADE (not an EARS criterion, a documented-cost guard):
+//          U7 / U7-XP / U7-DEG (latency + frame-rate budget)
+//   ADR-0148 R1 residual (not an EARS criterion): U5b
+//   accessor contract itself: U1a / U1b / U9
 //
 // RED AT AUTHORING TIME (pre-ADR-0148): `Predictor.outstandingSteps` did not
 // exist, so the whole file failed to typecheck — this file's established RED
@@ -1724,6 +1755,12 @@ describe('Predictor ptc5f: dropRejected reachability bound (Decision E epoch-evi
 //       emission is recorded before `predictor.enqueue`, and a server REJECT
 //       still counts). That is conservative for every `<=` bound below, and it is
 //       faithful to main.ts, which also calls `enqueue` unconditionally.
+//   (d) RESIDUAL (noted, NOT fixed — a cross-language pin is out of this slice's
+//       touch-set): the harness HARDCODES the server queue cap
+//       (`const cap = opts.cap ?? 2`) instead of deriving it from the Rust SSOT
+//       `game-core/src/world.rs` `MOVE_QUEUE_CAP = 2`, so a server-side cap change
+//       would silently drift this simulation with nothing to catch it. Same
+//       pre-existing pattern as this file's `STEP_MS = 200`.
 // ================================================================================
 
 /** Chebyshev (king-move) tile distance — the metric the renderer's snap uses. */
@@ -1732,7 +1769,7 @@ function chebyshev(a: { x: number; y: number }, b: { x: number; y: number }): nu
 }
 
 // --- the simulated client+server loop -------------------------------------------
-// One well-named helper so the nine teeth stay short. It mirrors the REAL shapes:
+// One well-named helper so the teeth stay short. It mirrors the REAL shapes:
 //   server: move_queue capped at 2, reject-not-clamp, one drain per STEP_MS tick;
 //   client: seedSeq + reconcile per delivered batch, and a rAF frame body that
 //           drains FIRST (the nh2 R1 ordering) and only then runs the gated
@@ -2077,9 +2114,11 @@ function runLoop(opts: RunLoopOptions): RunLoopResult {
 }
 
 // --------------------------------------------------------------------------------
-// U1 + U9 — the accessor contract itself (pure unit, no loop)
+// U1 + U9 — the accessor contract itself (pure unit, no loop). U1b additionally
+// covers nh2-2: the pending/auth hand-off accounting is what keeps reconcile's
+// repair convergent instead of double-counting a step into a desync.
 // --------------------------------------------------------------------------------
-describe('nh2 ADR-0148 U1/U9: outstandingSteps accessor contract', () => {
+describe('ADR-0148 U1/U9: outstandingSteps accessor contract (U1b also covers nh2-2 accounting)', () => {
   it('U9: a freshly-constructed Predictor (no reconcile yet) reports 0', () => {
     // KILLS: leaving #lastAuthQueueLen uninitialized (undefined/NaN — `NaN + 0` is
     // NaN, not 0, and `NaN === 0` is false so the gate would NEVER open → the
@@ -2115,12 +2154,17 @@ describe('nh2 ADR-0148 U1/U9: outstandingSteps accessor contract', () => {
     expect(p.outstandingSteps).toBe(4);
   });
 
-  it('U1b BITES: no double-counting — an acked op moves from pending to auth, total stays 1', () => {
+  it('U1b BITES (nh2-2): no double-counting — an acked op moves from pending to auth, total stays 1', () => {
     const p = mkCapped(2);
     p.reconcile(baseline(5, 5, 0), [], 0, 0); // seed
     const i = p.enqueue(east());
     expect(i).toBeDefined();
 
+    // nh2-2 (NO DESYNC): the same physical step must be counted exactly once as it
+    // migrates pending -> authoritative. Double-counting it would make the gate
+    // over-estimate what the server owes and stall; under-counting would let a
+    // second step in flight and put prediction ahead of a queue reconcile can
+    // rebuild — either way the repair path stops converging.
     // In flight, not yet seen by the server: 0 auth + 1 pending.
     expect(p.outstandingSteps).toBe(1);
 
@@ -2141,7 +2185,9 @@ describe('nh2 ADR-0148 U1/U9: outstandingSteps accessor contract', () => {
 });
 
 // --------------------------------------------------------------------------------
-// U2 / U3 / U4 — the three EARS criteria, end-to-end through the simulated loop
+// U2 / U3 / U4 — the EARS criteria end-to-end through the simulated loop:
+//   U2 -> nh2-1        U3 -> nh2-3 (+ nh2-1 emissions, + nh2-2 no-drift)
+//   U4 -> nh2-3 COMPANION ("a genuinely-held key still moves the expected tiles")
 // --------------------------------------------------------------------------------
 describe('nh2-1 ADR-0148 U2: a TAP emits exactly one move', () => {
   const tapScript: readonly ScriptedInput[] = [
@@ -2179,7 +2225,7 @@ describe('nh2-1 ADR-0148 U2: a TAP emits exactly one move', () => {
   });
 });
 
-describe('nh2-3 ADR-0148 U3: releasing a held key stops the character within one tile', () => {
+describe('nh2-3 + nh2-1 ADR-0148 U3: releasing a held key stops the character within one tile', () => {
   const holdScript: readonly ScriptedInput[] = [
     { at: 0, kind: 'press', dir: 'East' },
     { at: 510, kind: 'release', dir: 'East' }, // after the ticks at 200 and 400
@@ -2193,19 +2239,24 @@ describe('nh2-3 ADR-0148 U3: releasing a held key stops the character within one
     const rel = release!;
     expect(rel.commitCount).toBeGreaterThanOrEqual(2); // anti-vacuity: it really walked
 
-    // (a) nothing is emitted once the key is up.
+    // (a) nh2-1: nothing is emitted once the key is up — no step beyond what the
+    // key-hold duration implies.
     // KILLS: a continuation emitter driven by a latched "committed direction"
     // instead of HeldDirections.active() — it keeps re-issuing East forever.
     expect(r.emissions.filter((e) => e.at > rel.at).length).toBe(0);
 
-    // (b) the AUTHORITATIVE walk stops within one tile. This is the literal nh2-3
-    // symptom ("the character keeps walking after I let go") and it is the tooth
-    // that is RED TODAY: an ungated loop leaves a full cap-2 backlog on the server,
-    // which keeps draining for two more ticks after the release.
+    // (b) nh2-3, THE LITERAL SCENARIO: press -> hold long enough to queue 2 steps
+    // -> release -> no further step beyond what was already committed/in-flight.
+    // The AUTHORITATIVE walk stops within one tile ("the character keeps walking
+    // after I let go") and this is the tooth that is RED TODAY: an ungated loop
+    // leaves a full cap-2 backlog on the server, which keeps draining for two more
+    // ticks after the release.
     const commitsAfter = r.commits.filter((c) => c.at > rel.at);
     expect(commitsAfter.length).toBeLessThanOrEqual(1);
 
-    // (c) prediction does not drift away from where it was at the release either.
+    // (c) nh2-2 (NO DESYNC): prediction does not drift away from where it was at
+    // the release — it settles onto the authoritative tile via the ordinary
+    // reconcile path rather than needing a separate cancel/repair mechanism.
     expect(chebyshev(r.predictedFinal, rel.predicted)).toBeLessThanOrEqual(1);
   });
 
@@ -2216,11 +2267,13 @@ describe('nh2-3 ADR-0148 U3: releasing a held key stops the character within one
   });
 });
 
-describe('nh2-2 ADR-0148 U4: a sustained hold keeps walking at full rate', () => {
+describe('nh2-3 COMPANION ADR-0148 U4: a sustained hold keeps walking at full rate', () => {
   it('U4 BITES: hold across K=4 ticks -> >=K emissions, K server tiles, outstanding <=1 every frame', () => {
-    // MANDATORY ANTI-VACUITY PARTNER to U2/U3: those two prove the gate CLOSES.
-    // This one proves it OPENS again — otherwise "emit at most once" is trivially
-    // satisfiable by never emitting at all.
+    // THE nh2-3 COMPANION, verbatim: "a genuinely-held key for the queue-cap
+    // duration still moves the expected number of tiles (no regression on
+    // sustained movement)". Mandatory anti-vacuity partner to U2/U3: those two
+    // prove the gate CLOSES; this one proves it OPENS again — otherwise "emit at
+    // most once" is trivially satisfiable by never emitting at all.
     const K = 4;
     const r = runLoop({
       durationMs: K * STEP_MS + 100, // 900ms: ticks at 200/400/600/800
@@ -2238,9 +2291,12 @@ describe('nh2-2 ADR-0148 U4: a sustained hold keeps walking at full rate', () =>
     // tick's echo lands before the last frame is phase-dependent and would flake.)
     expect(r.emissions.length).toBeLessThanOrEqual(K + 1);
 
-    // nh2-2: the server actually walked one tile per step, no stall.
+    // nh2-3 COMPANION: the server actually walked one tile per step, no stall.
     expect(r.serverTilesMoved).toBe(K);
-    // Prediction leads authority by at most the single in-flight step.
+    // nh2-2 (NO DESYNC): prediction leads authority by at most the single
+    // in-flight step, for the whole sustained hold. `predictedTilesMoved` bounded
+    // to [K, K+1] WHILE `serverTilesMoved === K` is the no-runaway statement — a
+    // predictor that drifts free of authority breaks the upper bound here.
     expect(r.predictedTilesMoved).toBeGreaterThanOrEqual(K);
     expect(r.predictedTilesMoved).toBeLessThanOrEqual(K + 1);
 
@@ -2253,10 +2309,13 @@ describe('nh2-2 ADR-0148 U4: a sustained hold keeps walking at full rate', () =>
 });
 
 // --------------------------------------------------------------------------------
-// U5 — per-frame smoothness under a DELIBERATELY UNALIGNED frame clock
+// U5 — nh2-2 (NO DESYNC): per-frame smoothness under a DELIBERATELY UNALIGNED
+// frame clock. This is THE headline nh2-2 tooth: prediction tracks authority
+// one tile at a time through the ordinary reconcile path, never running away
+// from it and never needing a second repair mechanism to be hauled back.
 // --------------------------------------------------------------------------------
-describe('nh2 ADR-0148 U5: predicted advances at most one tile per frame (unaligned clock)', () => {
-  it('U5: frameOffsetMs=1.5 misaligns the grid so reconciles land BETWEEN frames; delta stays <=1', () => {
+describe('nh2-2 ADR-0148 U5: predicted advances at most one tile per frame (unaligned clock)', () => {
+  it('U5 (nh2-2): frameOffsetMs=1.5 misaligns the grid so reconciles land BETWEEN frames; delta stays <=1', () => {
     // WITHOUT THE DELIBERATE MISALIGNMENT THIS TOOTH IS VACUOUS: on an aligned grid
     // (offset 0, 60Hz) every server tick coincides with a frame, so the tick echo's
     // reconcile-drain and the frame's own drain are the same instant and can never
@@ -2302,9 +2361,11 @@ describe('nh2 ADR-0148 U5: predicted advances at most one tile per frame (unalig
 });
 
 // --------------------------------------------------------------------------------
-// U5b — R1: the frame drain runs BEFORE the gated continuation emit
+// U5b — ADR-0148 R1 (a DESIGN DECISION, not an EARS criterion): the frame drain
+// runs BEFORE the gated continuation emit. R1 closes the gate's residual; the
+// EARS criteria themselves are carried by U2/U3/U4/U5/U6/U8.
 // --------------------------------------------------------------------------------
-describe('nh2 ADR-0148 U5b: R1 — drain() precedes the continuation emit', () => {
+describe('ADR-0148 R1 (not an EARS criterion) U5b: drain() precedes the continuation emit', () => {
   const R1_OPTS = {
     durationMs: 1200,
     script: [{ at: 0, kind: 'press', dir: 'East' }] as readonly ScriptedInput[],
@@ -2358,7 +2419,9 @@ describe('nh2 ADR-0148 U5b: R1 — drain() precedes the continuation emit', () =
 });
 
 // --------------------------------------------------------------------------------
-// U6 — emission-rate bound at 30 / 60 / 144 Hz
+// U6 — nh2-1: emission-rate bound at 30 / 60 / 144 Hz. "Steps beyond what the
+// key-hold duration implies" is exactly what a frame-rate-scaled emitter produces,
+// so pinning the rate to the STEP cadence is the general form of the criterion.
 // --------------------------------------------------------------------------------
 describe('nh2-1 ADR-0148 U6: emissions are bounded by the STEP cadence, not the frame rate', () => {
   const HOLD_MS = 2000;
@@ -2379,7 +2442,8 @@ describe('nh2-1 ADR-0148 U6: emissions are bounded by the STEP cadence, not the 
       });
       expect(r.frames.length).toBeGreaterThan(hz); // anti-vacuity: >1s of frames ran
       expect(r.emissions.length).toBeLessThanOrEqual(bound);
-      // ...and the walk still happened at full rate (this bound is not met by stalling).
+      // ...and the walk still happened at full rate — the nh2-3 companion reused
+      // here as anti-vacuity, so the nh2-1 bound cannot be met by stalling.
       expect(r.serverTilesMoved).toBeGreaterThanOrEqual(r.tickTimes.length - 1);
     });
   }
@@ -2396,9 +2460,12 @@ describe('nh2-1 ADR-0148 U6: emissions are bounded by the STEP cadence, not the 
 });
 
 // --------------------------------------------------------------------------------
-// U7 — latency budget (the ADR-0148 ACCEPTED trade)
+// U7 — the ADR-0148 ACCEPTED-TRADE GUARD, *not* an EARS criterion. It pins the
+// documented COST of the gate (a round trip of reopen latency per step) so the
+// numbers in the ADR have a machine-checked source of truth. Sustained-movement
+// as an EARS obligation is the nh2-3 companion and lives in U4.
 // --------------------------------------------------------------------------------
-describe('nh2-2 ADR-0148 U7: full walk rate is preserved across the accepted latency budget', () => {
+describe('ADR-0148 ACCEPTED-TRADE GUARD U7: full walk rate across the accepted latency budget', () => {
   const HOLD_MS = 2000;
   const NOMINAL = HOLD_MS / STEP_MS; // 10 tiles at one tile per STEP_MS
 
@@ -2435,9 +2502,11 @@ describe('nh2-2 ADR-0148 U7: full walk rate is preserved across the accepted lat
 });
 
 // --------------------------------------------------------------------------------
-// U7-XP — the frame-rate x latency CROSS-PRODUCT (the term U6 and U7 each missed)
+// U7-XP / U7-DEG — the frame-rate x latency CROSS-PRODUCT (the term U6 and U7
+// each missed). Like U7 these are ADR-0148 ACCEPTED-TRADE GUARDS, not EARS
+// criteria: they bound the documented cost, they do not state an obligation.
 // --------------------------------------------------------------------------------
-describe('nh2-2 ADR-0148 U7-XP: full rate holds across frame rate x latency inside the budget', () => {
+describe('ADR-0148 ACCEPTED-TRADE GUARD U7-XP: full rate across frame rate x latency inside the budget', () => {
   const HOLD_MS = 2000;
   const NOMINAL = HOLD_MS / STEP_MS; // 10 tiles
   // THE BUDGET, stated once and asserted below:
@@ -2505,7 +2574,8 @@ describe('nh2-2 ADR-0148 U7-XP: full rate holds across frame rate x latency insi
 });
 
 // --------------------------------------------------------------------------------
-// U8 — direction switch responsiveness
+// U8 — nh2-1, the "(or the player switches to a different held direction)" limb
+// of the criterion, which U2/U3 do not exercise.
 // --------------------------------------------------------------------------------
 describe('nh2-1 ADR-0148 U8: switching direction mid-hold commits at most one more old step', () => {
   const SWITCH_AT = 510;
