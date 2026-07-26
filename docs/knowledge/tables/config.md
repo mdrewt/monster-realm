@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: config
 slug: tables/config
-updated: 2026-07-19
+updated: 2026-07-26
 tags: [schema, spacetimedb, public]
 abstract: "Singleton world config."
 resource: server-module/src/schema.rs#L56
