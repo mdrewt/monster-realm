@@ -34,6 +34,13 @@
 //     handler) have NO analogue here yet: client/src/net/connection.ts is
 //     outside ux2's touch-set. They are DEFERRED to ux2b, not silently dropped.
 //     Check S below is the always-fail sliver of D that IS enforceable in ux2.
+//   * DISCLOSURE — check S is structurally GREEN today and cannot be otherwise:
+//     with no wallet subscription wired at all it cannot distinguish "correct"
+//     from "unimplemented" (its fixtures F12/F20/F21 are what prove it is not
+//     always-green). When ux2b wires the subscription it MUST add the positive
+//     anchor — `FROM my_wallet` present in exactly one `.subscribe([...])`
+//     array — which is the same absence-only trap conversation-privacy's check D
+//     already closed (m2+RT-8: absence-only is concat-bypassable).
 //
 // Checks (each exported so the fixtures exercise it directly). Every clause
 // carries a [tag] in its message so a fixture can assert WHICH clause fired —
@@ -61,6 +68,21 @@
 //             `player_wallet__TableHandle` parameter is a wallet reach too —
 //             then grown to a fixed point, so view -> roster -> census ->
 //             accessor is caught, not just one hop).
+//      [B/3c-forged-ctx] no module code CONSTRUCTS a view context
+//             (`ViewContext::new(` / `ViewContext{`). `ViewContext::new(sender)`
+//             is a PUB constructor (spacetimedb-1.12.0/src/lib.rs:902-911), so a
+//             second view can launder a read THROUGH my_wallet with a forged
+//             sender and name neither the table nor any closure member:
+//               fn peek_wallet(_ctx: &ViewContext) -> Option<PlayerWallet> {
+//                   my_wallet(&ViewContext::new(victim))
+//               }
+//             The host is the only legitimate constructor (rt.rs:1100-1121), so
+//             banning the constructor outright has no false-red surface — and it
+//             is strictly narrower than dropping the closure's my_wallet
+//             exclusion, which must stay so a future HUD view may call it.
+//      [B/3d] a view OTHER than my_wallet may call `my_wallet(...)`, but only
+//             with the VERBATIM caller context (`my_wallet(ctx)` /
+//             `my_wallet(&ctx)`) — never a synthesized argument.
 //   B2 checkWalletAccessorConfined(schemaSrc) — in schema.rs the wallet accessor
 //      appears ONLY inside the my_wallet view fn (located by the view's real
 //      fnName, not by the literal string). Fills a real hole: currency-integrity's
@@ -92,7 +114,7 @@
 // NO `new RegExp()` anywhere (Semgrep detect-non-literal-regexp) — literal
 // /regex/ and String.indexOf only.
 //
-// Proof-of-teeth fixtures (F1-F21) run BEFORE the live-tree checks so a broken
+// Proof-of-teeth fixtures (F1-F24) run BEFORE the live-tree checks so a broken
 // checker is caught first. Every clause that can fire has a BAD fixture
 // asserting its [tag], and every checker has a GOOD fixture that must PASS — an
 // always-red checker is indistinguishable from a working one (the ux3
@@ -216,6 +238,10 @@ const WALLET_ACCESSOR = 'player_wallet(';
 const WALLET_HANDLE = 'player_wallet__';
 const VIEW_NAME = 'my_wallet';
 const VIEW_ATTR = '#[spacetimedb::view(';
+// Forged-context construction (whitespace-compacted forms). `ViewContext::new`
+// is a PUB constructor; only the host may legitimately call it.
+const FORGED_CTX_NEW = 'ViewContext::new(';
+const FORGED_CTX_STRUCT = 'ViewContext{';
 // The ONE sanctioned body, whitespace-compacted. `&ctx.sender` is an
 // equally-correct borrow spelling of the same unique-index lookup.
 const SANCTIONED_BODY = 'ctx.db.player_wallet().owner_identity().find(ctx.sender)';
@@ -420,6 +446,40 @@ export function checkWalletViewsSafe(serverSrc) {
     );
   }
 
+  // [B/3c-forged-ctx] Nothing in the module may CONSTRUCT a view context.
+  // `spacetimedb::ViewContext::new(sender)` is a `pub` constructor
+  // (spacetimedb-1.12.0/src/lib.rs:902-911), so a second view can launder a read
+  // through my_wallet itself with a forged sender:
+  //   fn peek_wallet(_ctx: &ViewContext) -> Option<PlayerWallet> {
+  //       my_wallet(&spacetimedb::ViewContext::new(victim))
+  //   }
+  // — which names neither `player_wallet(` (3a, B2 and currency-integrity's
+  // ACCESSOR_BYPASS all miss it) nor any closure member (my_wallet is
+  // DELIBERATELY excluded from the closure so a future HUD view may call it with
+  // its own ctx). The host is the only legitimate constructor
+  // (spacetimedb-1.12.0/src/rt.rs:1100-1121), so this ban has no false-red
+  // surface — verified against the tree: every live `ViewContext` occurrence is
+  // a `&spacetimedb::ViewContext)` parameter type.
+  //
+  // NOTE (intended, not a false positive): after whitespace compaction, a fn
+  // that RETURNS a context (`fn forge() -> spacetimedb::ViewContext {`) also
+  // yields `ViewContext{` and is flagged — correct, because such a fn has to
+  // have constructed one. A `&ViewContext` PARAMETER is always followed by `)`
+  // or `,`, so parameters never trip it.
+  const compactAll = compactWs(stripped);
+  for (const needle of [FORGED_CTX_NEW, FORGED_CTX_STRUCT]) {
+    if (compactAll.indexOf(needle) !== -1) {
+      return (
+        `[B/3c-forged-ctx] module source constructs a view context (\`${needle}\`) — ` +
+        'only the SpacetimeDB host may build a ViewContext (it is what makes ' +
+        '`sender` authentic). A constructed context lets any view call ' +
+        `${VIEW_NAME} with a FORGED sender and read an arbitrary player's wallet ` +
+        'while naming neither the table nor any wallet-reading helper. Remove it; ' +
+        'a view that legitimately needs the wallet must take its own ctx'
+      );
+    }
+  }
+
   // (3) No OTHER view may reach the table — directly OR through the call graph.
   const readers = walletReaderClosure(fns, viewFnName);
   for (const v of views) {
@@ -431,6 +491,24 @@ export function checkWalletViewsSafe(serverSrc) {
         'sanctioned read path for the private wallet table; every other view leaks ' +
         'balances'
       );
+    }
+
+    // [B/3d] Calling my_wallet from another view is ALLOWED (a future HUD view),
+    // but only with the caller's own, host-supplied context. Any other argument
+    // is a synthesized sender — belt to [B/3c-forged-ctx]'s braces, and it also
+    // catches a context laundered through a helper or a local binding.
+    if (vBody.indexOf(`${viewFnName}(`) !== -1) {
+      const verbatim =
+        vBody.indexOf(`${viewFnName}(ctx)`) !== -1 || vBody.indexOf(`${viewFnName}(&ctx)`) !== -1;
+      if (!verbatim) {
+        return (
+          `[B/3d] view '${v.name}' calls ${viewFnName}( with something other than its ` +
+          `own context — the only sanctioned forms are ${viewFnName}(ctx) and ` +
+          `${viewFnName}(&ctx). Any synthesized or laundered context argument ` +
+          'supplies a forged `sender`, turning the owner-scoped view into an ' +
+          'arbitrary-wallet read'
+        );
+      }
     }
     for (const reader of readers) {
       if (vBody.indexOf(`${reader}(`) !== -1) {
@@ -634,7 +712,7 @@ export function checkNoPrivateWalletSubscription(connectionSrc) {
 }
 
 // ---------------------------------------------------------------------------
-// PROOF-OF-TEETH FIXTURES (F1-F21) — inline sources, run BEFORE the live-tree
+// PROOF-OF-TEETH FIXTURES (F1-F24) — inline sources, run BEFORE the live-tree
 // checks. Returns the first tooth failure (string) or null.
 // The Rust fixtures below are STRING LITERALS in a .mjs file; the live scan
 // globs `server-module/src/**/*.rs` only, so they can never be picked up as
@@ -1064,6 +1142,60 @@ export function buildQueries(): string[] {
     }
   }
 
+  // F22 (auditor M-1) — indirection THROUGH my_wallet via a FORGED context.
+  // `ViewContext::new(sender)` is a pub constructor, so `peek_wallet` reads an
+  // arbitrary victim's wallet while naming neither `player_wallet(` (3a / B2 /
+  // currency-integrity's ACCESSOR_BYPASS all miss it) nor any member of the
+  // reader closure (my_wallet is deliberately excluded from it).
+  // Kills: a closure-only reachability model, i.e. exactly the claim ADR-0154
+  // D2b makes about this eval.
+  {
+    const fixture = `${TABLE_DECL}${GOOD_VIEW}
+#[spacetimedb::view(name = peek_wallet, public)]
+fn peek_wallet(_ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
+    let victim = Identity::from_byte_array([7u8; 32]);
+    my_wallet(&spacetimedb::ViewContext::new(victim))
+}
+`;
+    const bad = expectTag(checkWalletViewsSafe(fixture), '[B/3c-forged-ctx]', 'F22');
+    if (bad) return bad;
+  }
+
+  // F23 — GOOD: a second view calling my_wallet with its OWN host-supplied
+  // context must PASS. This is the deliberate HUD allowance (it is why
+  // walletReaderClosure excludes my_wallet), and without this fixture the
+  // forged-context ban could be "fixed" by banning the call outright — an
+  // always-red clause that closes a legitimate path.
+  {
+    const fixture = `${TABLE_DECL}${GOOD_VIEW}
+#[spacetimedb::view(name = wallet_hud, public)]
+fn wallet_hud(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
+    my_wallet(ctx)
+}
+`;
+    const err = checkWalletViewsSafe(fixture);
+    if (err) {
+      return `F23: GOOD fixture (second view calling my_wallet(ctx) with its own context) incorrectly flagged: ${err}`;
+    }
+  }
+
+  // F24 — clause [B/3d]'s own BAD fixture: a context LAUNDERED through a helper,
+  // so the forged-constructor ban [B/3c-forged-ctx] never sees a `ViewContext::new(`
+  // token in this source at all. Without this fixture, deleting 3d would leave
+  // the suite green (F22 is caught by 3c, F23 is a GOOD case) — precisely the
+  // unfixtured-clause dishonesty the red-team flagged as F-4.
+  {
+    const fixture = `${TABLE_DECL}${GOOD_VIEW}
+#[spacetimedb::view(name = peek_wallet, public)]
+fn peek_wallet(_ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
+    let laundered = ctx_for(Identity::from_byte_array([7u8; 32]));
+    my_wallet(laundered)
+}
+`;
+    const bad = expectTag(checkWalletViewsSafe(fixture), '[B/3d]', 'F24');
+    if (bad) return bad;
+  }
+
   return null;
 }
 
@@ -1158,8 +1290,9 @@ export default async function walletPrivacyEval() {
       'EXACTLY the sender-keyed unique-index lookup, it is the only view reaching ' +
       'player_wallet (directly or through the transitive reader closure), the accessor ' +
       'is confined to it inside schema.rs, no view is hidden in a comment or written ' +
-      'short-form, bindings are view-only, the shop shell renders label/kind without ' +
-      'formatting amount, and no subscribe array names the private table (21 teeth verified)',
+      'short-form, no module code forges a ViewContext, bindings are view-only, the ' +
+      'shop shell renders label/kind without formatting amount, and no subscribe array ' +
+      'names the private table (24 teeth verified)',
   };
 }
 

@@ -1839,3 +1839,68 @@ fn player_wallet_rows_are_never_deleted() {
         wallet_desc
     );
 }
+
+// ---------------------------------------------------------------------------
+// ux2 R3: no module code constructs a view context (forged-sender ban)
+// ---------------------------------------------------------------------------
+
+/// ux2 (ADR-0154, auditor finding M-1): neither schema.rs nor economy.rs may
+/// CONSTRUCT a `ViewContext` — not via the constructor and not as a struct
+/// literal.  Mirrors clause `[B/3c-forged-ctx]` of
+/// `evals/wallet-privacy.eval.mjs` so `cargo test` bites too (the eval runs
+/// only under `just eval`, never under `cargo mutants`).
+///
+/// WHY: `spacetimedb::ViewContext::new(sender)` is a `pub` constructor
+/// (spacetimedb-1.12.0/src/lib.rs:902-911).  A second view can therefore
+/// launder a read THROUGH the owner-scoped view with a sender it chose:
+/// ```ignore
+/// #[spacetimedb::view(name = peek_wallet, public)]
+/// fn peek_wallet(_ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
+///     let victim = Identity::from_byte_array([7u8; 32]);
+///     my_wallet(&spacetimedb::ViewContext::new(victim))   // arbitrary wallet
+/// }
+/// ```
+/// That body names neither the wallet accessor (so R1/R2, the eval's accessor
+/// clauses, and currency-integrity's ACCESSOR_BYPASS all miss it) nor any
+/// wallet-reading helper (the view fn is deliberately excluded from the eval's
+/// reader closure, so a future HUD view may legitimately call it with its OWN
+/// context).  The authenticity of `sender` is the WHOLE privacy mechanism: the
+/// host is the only legitimate constructor
+/// (spacetimedb-1.12.0/src/rt.rs:1100-1121), so module code constructing one is
+/// banned outright.  No false-red surface: every live `ViewContext` occurrence
+/// in these files is a `&spacetimedb::ViewContext` parameter type, and a
+/// parameter is always followed by `)` or `,`.  (A fn that RETURNS a context —
+/// `fn forge() -> spacetimedb::ViewContext {` — does compact to the banned
+/// `ViewContext{` and is flagged: intended, because such a fn must have
+/// constructed one.)
+///
+/// kills: any `peek_wallet`-shaped view; a struct-literal `ViewContext { … }`
+///        spelling of the same; a helper that manufactures a context for a
+///        reducer to pass into a view fn.
+#[test]
+fn no_forged_view_context_construction() {
+    // Split-literal needles: this test file must never match itself, and the
+    // needles are compared against the whitespace-COMPACTED source so
+    // `ViewContext :: new (` cannot slip past.
+    let ctor = ["ViewContext", "::new("].concat();
+    let struct_literal = ["ViewContext", "{"].concat();
+
+    for (file, src) in [("schema.rs", SCHEMA_SOURCE), ("economy.rs", ECONOMY_SOURCE)] {
+        let compact = compact_ws(&strip_rust_strings_economy(&strip_rust_comments_economy(src)));
+        for needle in [ctor.as_str(), struct_literal.as_str()] {
+            assert!(
+                !compact.contains(needle),
+                "TEETH(ux2 ADR-0154 R3 FORGED-CTX): {} constructs a view context (`{}`) — \
+                 only the SpacetimeDB host may build a ViewContext; that is what makes \
+                 `ctx.sender` authentic, and authenticity of the sender is the ENTIRE \
+                 privacy mechanism of the owner-scoped `my_wallet` view. A constructed \
+                 context lets any view call `my_wallet` with a sender it picked and read \
+                 an arbitrary player's wallet while naming neither the wallet table nor \
+                 any wallet-reading helper. A view that needs the wallet must take its \
+                 own `&spacetimedb::ViewContext` parameter and pass THAT.",
+                file,
+                needle
+            );
+        }
+    }
+}
