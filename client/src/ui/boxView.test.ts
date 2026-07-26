@@ -55,10 +55,21 @@
 // behind by an earlier case (spuriously red, or — worse — vacuously green). Every query
 // below is additionally scoped to the case's own `parent`.
 //
-// RED REASON AT AUTHORING TIME: boxView.ts creates no element carrying
-// data-testid="box-party-hint", so X3/X4/X5/X6 fail on their first not-null assertion.
-// X2 is EXPECTED GREEN — the box/party render and the `-1`/`255` slot emission already work;
-// X2 is the executable repro of the roster that yields no swap option, plus a forward fence.
+// HISTORY (not a claim about the current tree): at authoring time, before the implementer's
+// change, boxView.ts created no element carrying data-testid="box-party-hint", so X3/X4/X5/X6
+// all failed on their first not-null assertion. They are permanent gating cases now, not
+// one-shot red markers. X2 was GREEN from the start — the box/party render and the `-1`/`255`
+// slot emission already worked; X2 is the executable repro of the roster that yields no swap
+// option, plus a forward fence on the two sentinels.
+//
+// WHAT THESE CASES CAN AND CANNOT PROVE (disclosure, deferral D2): happy-dom does no layout,
+// so every assertion in this file proves "the element is PRESENT and is not display:none" —
+// never that it is actually VISIBLE in a viewport. The real visibility proof is the parked
+// real-Chromium `toBeInViewport()` spec (`client/e2e/swap-hint.spec.ts`, deferral D2). ux1
+// (ADR-0151) shipped a badge for an overlay that rendered below the fold precisely because a
+// happy-dom suite cannot see that. boxView's `#root` is already `overflow-y:auto`
+// (boxView.ts:34) and its content is ~425px against a 720px viewport, so the ux1 defect is not
+// expected to apply here — but this file is not what establishes that.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MonsterCardViewModel } from './boxModel';
@@ -139,6 +150,22 @@ function findByTag(parent: HTMLElement, tag: string, text: string): HTMLElement 
   return found as HTMLElement;
 }
 
+/**
+ * ANCHOR HARDENING (reviewer nit 8a). These resolve the grid as the label's
+ * `nextElementSibling`, so a hint inserted between the `Party` h3 and `#partyEl` would make
+ * this helper silently return THE HINT — and X2's `expect(partyGrid.textContent)
+ * .not.toContain('Emberfang')` would then pass vacuously against the hint's own text. The
+ * testid guard below rejects that: a misplaced hint fails here loudly instead.
+ */
+function assertNotTheHint(el: Element, label: string): void {
+  expect(
+    el.getAttribute('data-testid'),
+    `precondition: the element resolved as ${label} must NOT be the box-party hint. If the hint ` +
+      `is inserted between the label and its grid, this helper returns the HINT and every ` +
+      `textContent assertion made through it becomes vacuous`,
+  ).not.toBe('box-party-hint');
+}
+
 function partyGridOf(parent: HTMLElement): HTMLElement {
   const label = findByTag(parent, 'h3', 'Party');
   const grid = label.nextElementSibling;
@@ -146,6 +173,7 @@ function partyGridOf(parent: HTMLElement): HTMLElement {
     grid,
     'precondition: the "Party" h3 must be immediately followed by #partyEl',
   ).not.toBeNull();
+  assertNotTheHint(grid as Element, '#partyEl');
   return grid as HTMLElement;
 }
 
@@ -153,7 +181,20 @@ function boxGridOf(parent: HTMLElement): HTMLElement {
   const label = findByTag(parent, 'h3', 'Box');
   const grid = label.nextElementSibling;
   expect(grid, 'precondition: the "Box" h3 must be immediately followed by #boxEl').not.toBeNull();
+  assertNotTheHint(grid as Element, '#boxEl');
   return grid as HTMLElement;
+}
+
+/** The header row (the `Party & Box` h2's parent) — anchor for the insertion-point pins. */
+function headerRowOf(parent: HTMLElement): HTMLElement {
+  const title = findByTag(parent, 'h2', 'Party & Box');
+  const header = title.parentElement;
+  expect(
+    header,
+    'precondition: the "Party & Box" h2 must have a parent (the header row holding it and the ' +
+      '"Heal Party" button)',
+  ).not.toBeNull();
+  return header as HTMLElement;
 }
 
 /** BoxView's `#root`, resolved exactly the way the e2e specs resolve it. */
@@ -190,8 +231,14 @@ describe('BoxView ux4 X2: box vs party render + slot-sentinel emission (EXPECTED
     //   "To Box" sending -1 (which would silently RE-ADD it to the party).
     // KILLS (2): a dropped "To Party" control on box rows — with no such button the box
     //   becomes a one-way trap and there is genuinely no way to switch monsters.
-    // KILLS (3): a render that leaks box monsters into the party grid (or vice versa),
-    //   which would make the roster look swap-eligible when it is not.
+    // KILLS (3): a SWAPPED-ARGUMENT / swapped-render-call mutant — `#renderParty(box)` +
+    //   `#renderBox(party)`, or a `refresh()` that forwards its two arguments the wrong way
+    //   round. The box monster would then appear under "Party", telling the player they have
+    //   a swappable second monster when the server builds side A only from
+    //   `party_slot != PARTY_SLOT_NONE`. (Deliberately NOT claimed: "a render that leaks box
+    //   monsters into the party grid" — the two sets arrive as SEPARATE arguments, so no
+    //   filtering happens in this shell at all; partitioning them is boxModel's job and is
+    //   owned by boxModel.test.ts. Overclaiming that here would be a false teeth claim.)
     // THIS IS ALSO THE CLIENT-SIDE REPRO: "Emberfang" is present in the UI (in the Box)
     //   yet cannot appear on the battle bench, because side A is built only from
     //   `party_slot != PARTY_SLOT_NONE` (battle.rs:283-294). Nothing on the battle screen
@@ -296,21 +343,67 @@ describe('BoxView ux4 X3: box-party hint is present, visible, and quotes the rea
     ).not.toBe('none');
 
     const text = hint!.textContent ?? '';
+
+    // -----------------------------------------------------------------------
+    // SUBSUMPTION FIX (red-team F4/F5). The first draft asserted only
+    // `toContain('Party')` + `toContain('Box')` + `toContain('To Party')`. Both of the
+    // first two are STRICTLY SUBSUMED by the third ('To Party' contains 'Party';
+    // 'To Box' contains 'Box'), so the copy `'To Party To Box'` was measured PASSING
+    // X3, and the RT-3 imperative `'Click the "To Party" button under each Box monster
+    // now.'` was measured passing X3 + X4 + X5 + X6 together. The two subsumed
+    // assertions are REPLACED — not merely supplemented — by the strictly stronger
+    // clauses below, which imply both of them ("…your Party can battle…" contains
+    // 'Party'; "…arrive in your Box…" contains 'Box'), so nothing is lost.
+    // -----------------------------------------------------------------------
     expect(
       text,
-      'ux4 (X3): the hint must name the Party — the set that can battle or be swapped in',
-    ).toContain('Party');
+      'ux4 (X3): the hint must state WHAT the party is FOR — the semantic content, not just the ' +
+        'word "Party". `toContain(\'Party\')` is subsumed by the "To Party" pin below and was ' +
+        'measured passing the copy "To Party To Box"',
+    ).toMatch(/can battle/i);
     expect(
       text,
-      'ux4 (X3): the hint must name the Box — where new recruits actually arrive ' +
-        '(taming.rs:163 / ADR-0047 §3)',
-    ).toContain('Box');
+      'ux4 (X3): the hint must state the SWAP consequence — that only party monsters can be ' +
+        'swapped in. This is the rule the playtest report ran into and it is stated nowhere in the ' +
+        'UI today',
+    ).toMatch(/swapped in/i);
+    expect(
+      text,
+      'ux4 (X3): the invariant must read as ONE readable clause, not a token salad',
+    ).toContain('Only monsters in your Party can battle or be swapped in.');
+    expect(
+      text,
+      'ux4 (X3): the hint must say where new recruits actually GO (taming.rs:163 / ADR-0047 §3) — ' +
+        'this is the fact whose absence produced the playtest report. The literal clause pin also ' +
+        'replaces the subsumed toContain(\'Box\'), which the substring inside "To Box" satisfied',
+    ).toContain('New recruits arrive in your Box');
     expect(
       text,
       'ux4 (X3): the hint must quote the LITERAL button label "To Party" (boxView.ts:167 — ' +
         'note :159 is "To Box"). Copy that names a differently-worded control sends the player ' +
         'hunting for a button that does not exist, which is the ux1 failure mode (ADR-0151)',
     ).toContain('To Party');
+    // TESTER NOTE (judgement call, logged): asserted as a literal REGEX rather than
+    // `toContain('each box monster has a "To Party" button')` so that either straight (")
+    // or typographic (“ ”) quotes satisfy it. The codebase does use typographic punctuation
+    // in UI copy (e.g. battleView.ts:165 "opponent’s action…"), so a straight-quote-only
+    // `toContain` would red a substantively-correct implementation over a glyph. The bite is
+    // unchanged: the full clause must be present, in order, naming the label — the RT-3
+    // imperative and the "To Party To Box" salad both still die here, and the separate
+    // `toContain('To Party')` pin above still requires the straight-quoted label text itself
+    // to appear somewhere (it is the literal button textContent at boxView.ts:167).
+    expect(
+      text,
+      'ux4 (X3): the affordance must be DESCRIBED (state-neutral), quoting the label — see X6 for ' +
+        'why an imperative would be a lie in the empty-box state',
+    ).toMatch(/each box monster has a ["“]To Party["”] button/);
+    expect(
+      text.length,
+      `ux4 (X3) LENGTH CAP: the hint copy is ${text.length} chars. COPY B is ~170. The cap bounds ` +
+        'ADDITIVE dishonesty — extra sentences are how a hint acquires claims nothing gates (the ' +
+        'battle-side analogue, H1f, killed a 150-char copy that appended a false heal promise) — ' +
+        "and keeps the hint inside the grids' 600px column",
+    ).toBeLessThanOrEqual(200);
   });
 });
 
@@ -360,6 +453,35 @@ describe('BoxView ux4 X4: e2e compatibility — sibling of header, no HP-shaped 
         "the hint's parent) — only the two containment clauses catch that the resolved node no " +
         'longer holds #partyEl / #boxEl, the grids those helpers read HP text out of',
     ).toBe(true);
+
+    // -----------------------------------------------------------------------
+    // MANDATED INSERTION POINT (reviewer #4). The clauses above accept the hint ANYWHERE
+    // under #root; the red-team's control implementation drifted to #root's FIRST child —
+    // above the "Party & Box" title — with the entire suite green. The plan requires the
+    // hint BETWEEN the `header` block (boxView.ts:36-48) and the `partyLabel` h3 (:50-53),
+    // which these two assertions pin exactly:
+    //   • `header` stays #root's first element  ⇒ the hint is not above the title;
+    //   • the hint is immediately followed by the `Party` h3 ⇒ it is not below the grids
+    //     and not between a label and its grid (which would also break the anchor
+    //     helpers — see assertNotTheHint).
+    // The `Party` h3 is resolved by textContent, never by index.
+    // -----------------------------------------------------------------------
+    const header = headerRowOf(parent);
+    expect(
+      header.previousElementSibling,
+      'ux4 (X4) INSERTION POINT: the header row (h2 "Party & Box" + "Heal Party") must remain ' +
+        "#root's FIRST element child. A hint inserted ABOVE the title passes every containment " +
+        "clause in this case — the red-team's control impl drifted exactly there with the whole " +
+        "suite green — while putting explanatory small print above the screen's own heading",
+    ).toBeNull();
+    expect(
+      hint!.nextElementSibling,
+      'ux4 (X4) INSERTION POINT: the hint must sit immediately BEFORE the "Party" h3 — i.e. ' +
+        'between the header block and the party label, exactly where the plan puts it. Anywhere ' +
+        'else either buries the rule below the grids the player is already confused by, or (if ' +
+        'placed between a label and its grid) silently retargets the nextElementSibling anchors ' +
+        'this file resolves the grids through',
+    ).toBe(findByTag(parent, 'h3', 'Party'));
 
     const text = hint!.textContent ?? '';
     expect(
@@ -492,5 +614,30 @@ describe('BoxView ux4 X6: the hint stays truthful in the fresh-player state (emp
       'precondition (X6): the fresh-player state must still render its real controls, so the ' +
         'zero-length assertion above cannot pass because nothing rendered at all',
     ).toContain('To Box');
+
+    // -----------------------------------------------------------------------
+    // THE COPY HALF (red-team F5). Until now X6 asserted only about the DOM, so its own
+    // docstring's claim — "the copy must be state-neutral" — was backed by NOTHING: the
+    // RT-3 imperative `'Click the "To Party" button under each Box monster now.'` was
+    // measured passing X3 + X4 + X5 + X6. The assertion below is the missing half, made
+    // HERE because this is the state in which such copy is provably false: the control
+    // assertion above has just established that no "To Party" button exists.
+    // The regex requires an imperative verb within 40 non-sentence-ending characters of
+    // the label, so it catches "Click the \"To Party\" button", "press To Party", "use the
+    // To Party button" — while COPY B's descriptive form ("each box monster has a
+    // \"To Party\" button that moves it…") has no such verb before the label and passes.
+    // -----------------------------------------------------------------------
+    const text = hint!.textContent ?? '';
+    expect(
+      text,
+      `ux4 (X6) STATE-NEUTRAL PHRASING: the copy was ${JSON.stringify(text)}. It must DESCRIBE ` +
+        'the "To Party" affordance, never COMMAND a click on it. The control assertion above has ' +
+        'just proved that in this state — one starter, empty box, the single most likely state a ' +
+        'confused new player reaches — boxView.ts:118-124 short-circuits to "No monsters in box." ' +
+        'and returns, so the rendered buttons are exactly Heal Party / Rename / To Box and there ' +
+        'is NO "To Party" control. An imperative copy therefore instructs the player to click a ' +
+        "button that is not on screen: ux1's defect (ADR-0151 — a badge shipped for an overlay " +
+        'that did not render) repeated in the very next slice',
+    ).not.toMatch(/\b(click|press|tap|hit|use)\b[^.]{0,40}"?To Party/i);
   });
 });
