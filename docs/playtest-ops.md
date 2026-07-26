@@ -9,7 +9,18 @@ ADR-0128 for the build-stamp / DEV-hooks reconciliation.
 ## Prerequisites
 
 - A **local SpacetimeDB instance** running (default `http://127.0.0.1:3000`) and
-  the `spacetime` CLI on PATH.
+  the `spacetime` CLI on PATH. If you have not started one yet, run this first — in
+  its own terminal, since it runs in the foreground:
+
+  ```sh
+  spacetime start
+  ```
+
+  `just playtest-up` and `just playtest-wipe` preflight this for you
+  (`just playtest-preflight`, ADR-0153) and fail with a one-line pointer instead of an
+  opaque `tcp connect error`. You can run that check on its own at any time.
+  `playtest-report` and `playtest-verify-release` also reach the server but do **not**
+  preflight — they still surface the raw connect error.
 - `just setup` has been run so the client has its dependencies. A fresh worktree
   lacks `client/node_modules`, and `npm run build` fails with `vite: not found`
   until you run:
@@ -28,20 +39,29 @@ ADR-0128 for the build-stamp / DEV-hooks reconciliation.
 
 Runs, in order:
 
-1. **Guard** — refuse if `MR_PLAYTEST_DB` resolves to `monster-realm`.
-2. `spacetime build --module-path server-module` — surfaces compile errors
-   before any network contact.
-3. `spacetime publish -s "$STDB_SERVER" --module-path server-module -y "$MR_PLAYTEST_DB"`
+1. **Guard** — refuse if `MR_PLAYTEST_DB` resolves to `monster-realm`. A pure local
+   check, so a config typo reports itself even when the server is down.
+2. `just playtest-preflight` — refuse unless a **SpacetimeDB** answers at `$STDB_SERVER`
+   (ADR-0153). It matches the CLI's `Server is online` line, not just a successful HTTP
+   round-trip, so a trailing slash, a path suffix, or an unrelated service on that port
+   is rejected here rather than at `publish`.
+3. `spacetime build --module-path server-module` — surfaces compile errors before the
+   publish.
+4. `spacetime publish -s "$STDB_SERVER" --module-path server-module -y "$MR_PLAYTEST_DB"`
    — the honest DEFAULT publish (no `--features`, no `--bin-path`, no
    `--delete-data`, so existing session data survives per ADR-0006).
-4. `spacetime call ... sync_content` — re-seeds content as the module owner
+5. `spacetime call ... sync_content` — re-seeds content as the module owner
    (output-checked for `unauthorized`/`rejected`).
-5. `just playtest-verify-release` — proves the PUBLISHED module has no dev
+6. `just playtest-verify-release` — proves the PUBLISHED module has no dev
    reducers (see below).
-6. `cd client && npm run build` — the production (minified) client build.
-7. `just playtest-verify-build` — proves the built `client/dist` has no DEV hooks.
-8. Serves the production build via `vite preview`, backgrounded under a PID file
+7. `cd client && npm run build` — the production (minified) client build.
+8. `just playtest-verify-build` — proves the built `client/dist` has no DEV hooks.
+9. Serves the production build via `vite preview`, backgrounded under a PID file
    at `${TMPDIR:-/tmp}/mr-playtest-preview.pid`, and prints the served URL.
+
+> The preflight deliberately runs **before** the build. A wasm build costs tens of
+> seconds, and the fault it guards — "I forgot to run `spacetime start`" — used to
+> surface only afterwards, as an opaque `tcp connect error` (ADR-0153).
 
 Re-running `playtest-up` is also the **republish-with-content-resync** path: it
 republishes WITHOUT `--delete-data` (existing data survives, ADR-0006) and
@@ -81,10 +101,11 @@ must not read as green) — run `just playtest-up` / a vite build first.
 
 ## `just playtest-wipe` — wipe / reset to a fresh state
 
-Republishes with `--delete-data -y` to `monster-realm-playtest`, re-runs
-`sync_content`, and re-proves dev-reducers-absent (`just playtest-verify-release`)
-because the module is rebuilt. There is no separate build step — `publish`
-rebuilds.
+Rejects the dev-default DB, preflights `$STDB_SERVER` (`just playtest-preflight`),
+then republishes with
+`--delete-data -y` to `$MR_PLAYTEST_DB`, re-runs `sync_content`, and re-proves
+dev-reducers-absent (`just playtest-verify-release`) because the module is rebuilt.
+There is no separate build step — `publish` rebuilds.
 
 **Owner re-register note (13.5c-4):** after `--delete-data`, the module's `init`
 re-runs and the publishing identity is **re-registered as owner**. The

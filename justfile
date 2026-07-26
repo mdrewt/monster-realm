@@ -207,6 +207,35 @@ adr-digest-check:
 # features, no custom binary path.
 # ---------------------------------------------------------------------------
 
+# Fail fast, and legibly, when no SpacetimeDB answers at $STDB_SERVER (ux3-1, ADR-0153).
+# `spacetime server ping` is the CLI's OWN liveness check and resolves $STDB_SERVER
+# through the SAME path `publish -s` does, so a `spacetime server` NICKNAME (e.g. `local`)
+# preflights correctly — a raw `curl "$STDB_SERVER/v1/ping"` would fail DNS on one and
+# confidently misdiagnose a healthy server, which is worse than the opaque error this
+# replaces. `timeout` is load-bearing: ping has no timeout of its own and hangs
+# indefinitely against a black-holed host.
+playtest-preflight:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Self-default so a standalone `just playtest-preflight` does not die under `set -u`;
+    # identical form to the callers', so parent and child can never resolve a different host.
+    STDB_SERVER="${STDB_SERVER:-http://127.0.0.1:3000}"
+    # A missing CLI is a DIFFERENT fault than a stopped server — telling someone to run
+    # 'spacetime start' when the binary is absent is misattribution, so it gets its own message.
+    command -v spacetime >/dev/null 2>&1 || { echo "playtest-preflight: the 'spacetime' CLI is not on PATH — install it before running playtest-*." >&2; exit 1; }
+    # Symmetric with the CLI check: without GNU timeout the probe below returns 127 and a
+    # HEALTHY server would be reported as down — the misdiagnosis this recipe exists to avoid.
+    command -v timeout >/dev/null 2>&1 || { echo "playtest-preflight: GNU 'timeout' is not on PATH (macOS: brew install coreutils) — the probe cannot be bounded." >&2; exit 1; }
+    # Match the OUTPUT, not just the exit code: `server ping` exits 0 for ANY completed HTTP
+    # round-trip, so a 404 (a trailing slash or path suffix on $STDB_SERVER) and a 500 from
+    # some unrelated service on that port both "succeed". Only the literal "Server is online"
+    # line means a SpacetimeDB actually answered. Exit-code-only would let playtest-up pay a
+    # full wasm build before dying at publish — precisely the cost ux3 exists to remove.
+    if ! PING_OUT=$(timeout 10 spacetime server ping "$STDB_SERVER" 2>&1) || ! printf '%s' "$PING_OUT" | grep -q 'Server is online'; then
+        echo "playtest-preflight: no SpacetimeDB responding at $STDB_SERVER — $(printf '%s' "$PING_OUT" | tail -n 1). Start one first: 'spacetime start' — or set STDB_SERVER to the host you meant." >&2
+        exit 1
+    fi
+
 # Publish the honest release module to the isolated playtest DB, seed content,
 # prove no dev reducers/hooks, build the client, and serve the production build.
 playtest-up:
@@ -222,7 +251,12 @@ playtest-up:
         echo "playtest-up: refusing to publish to the dev-default DB 'monster-realm' — set MR_PLAYTEST_DB to an isolated name" >&2
         exit 1
     fi
-    # Explicit build first so compile errors surface before network contact.
+    # Cheapest and most specific check first: the DB-name guard above needs no network,
+    # so a config typo still reports itself even when the server is down. Then preflight,
+    # BEFORE the build (ux3-1, ADR-0153) — a dead server costs ~15 ms instead of a full
+    # wasm build followed by an opaque tcp connect error. A compile error still surfaces
+    # before the publish, and with the server down this recipe cannot succeed either way.
+    just playtest-preflight
     spacetime build --module-path server-module
     # Honest DEFAULT publish (no delete-data so existing session data survives
     # per ADR-0006). No custom features, no custom binary path.
@@ -292,6 +326,10 @@ playtest-wipe:
         echo "playtest-wipe: refusing to wipe the dev-default DB 'monster-realm' — set MR_PLAYTEST_DB to an isolated name" >&2
         exit 1
     fi
+    # Same ordering as playtest-up: local guard, then reachability, then the network call
+    # (ux3-1, ADR-0153). `publish` is this recipe's first live step — there is no separate
+    # build — so without this the failure mode is the bare tcp connect error.
+    just playtest-preflight
     spacetime publish -s "$STDB_SERVER" --module-path server-module --delete-data -y "$MR_PLAYTEST_DB"
     # After --delete-data, init re-runs and the publishing identity is
     # re-registered as owner; sync_content must come from that owner.

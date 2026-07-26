@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 118 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 119 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -127,6 +127,7 @@ Generated from 118 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0150](./0150-reconnect-token-persistence.md) | 0150 — nh4: the reconnect token is persisted per-tab, and a rejected token is suppressed rather than cleared | Accepted | client-ui, security-authz | nh4 (M-postgate-netcode-hardening — reconnect identity persistence; EARS nh4-1, nh4-2, nh4-3, nh4-4) | Persist the SDK auth token in per-tab `sessionStorage`, supplied via `.withToken()` per build. A rejected token is never deleted — after two rejections since the last success the next build omits it and the anonymous reconnect replaces it. |
 | [0151](./0151-help-affordance-hint.md) | 0151 — ux1 help affordance: a zero-JS persistent hint, and the viewport-anchoring of the overlay it advertises | Accepted | client-ui | ux1 (M-postgate-ux-hardening — persistent on-screen hint advertising the `?` help overlay + a battle-result continue hint; EARS ux1-1..ux1-3) | Ship the "Press ? for controls & help" hint as static zero-JS markup in `index.html`, and in the same edit give `#help-overlay` `position:fixed;inset:0;z-index:100` — the overlay it advertises rendered below the fold. |
 | [0152](./0152-predictor-epoch-guard-and-send-seq-floor.md) | 0152 — Predictor epoch guard & send-seq floor (nh3: M-postgate-netcode-hardening) | Accepted | movement-netcode, client-ui | nh3 (M-postgate-netcode-hardening — predictor generation guard + send-seq floor to close the ptc5f/ADR-0142 accepted-risk window; EARS nh3-1/2/3) | Ship BOTH: branded-epoch guard on dropRejected (closes M1, cross-generation eviction) and the lastSentSeq→seedSeq floor on rebuild (closes M2, the re-issued "stale seq" rejection). The ADR-0085 window closes only with both. |
+| [0153](./0153-ux3-playtest-preflight.md) | 0153 — ux3 playtest preflight: reach the server through the CLI's own resolver, and gate it behaviorally | Accepted | tooling-docs, ci-gates | ux3 (M-postgate-ux-hardening — `playtest-up`/`playtest-wipe` preflight-check `$STDB_SERVER` reachability; EARS ux3-1..ux3-3) | Preflight `$STDB_SERVER` with `timeout 10 spacetime server ping "$STDB_SERVER"` — the CLI's own resolver, so the check cannot disagree with the `publish -s` it guards — and gate it with a behavioral tooth, not source scans alone. |
 
 ## Harness design corpus (H- namespace)
 
@@ -364,6 +365,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0144](./0144-pt-d2-roster-wave-2.md) — pt-d2 (M-playtest-d content pack — roster wave 2 + placeholder-replacement sprites; EARS pt-d2-1..12) — 0144 — pt-d2 roster wave 2: reserved-block content fan-out + a species-parameterized sprite generator that imports (never edits) the shared art module (Accepted)
 - [0145](./0145-encounter-recruit-economy-tuning-pass.md) — pt-d3 (M-playtest-d content pack — encounter/recruit/economy tuning; EARS pt-d3-1..6) — 0145 — pt-d3 tuning pass: zone 0 frozen, zone 1 carries the wild-legal roster, one economy fix (Accepted)
 - [0147](./0147-fuse-field-carry-and-fusion-eligibility.md) — A0 (M-postgate-evolution-fusion-hardening — fuse() field-carry fix + fusion_eligible extraction; EARS A0-1..A0-9) — 0147 — fuse() field-carry repair (taxed, not reset) + fusion_eligible guard SSOT (Accepted)
+- [0153](./0153-ux3-playtest-preflight.md) — ux3 (M-postgate-ux-hardening — `playtest-up`/`playtest-wipe` preflight-check `$STDB_SERVER` reachability; EARS ux3-1..ux3-3) — 0153 — ux3 playtest preflight: reach the server through the CLI's own resolver, and gate it behaviorally (Accepted)
 
 ### tooling-docs
 
@@ -386,6 +388,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0137](./0137-ptc5d-knowledge-bundle-fixture-exclusion-and-gate-teeth.md) — ptc5d (M-playtest-c.5 pre-gate residuals — tooling/eval hardening, EARS ptc5d-1..5) — 0137 — ptc5d: knowledge-bundle `*_tests.rs` exclusion + restored gate teeth (mutate-server ceiling tightened; RT-M14.5A-02 vacuous-pass closed) (Accepted)
 - [0142](./0142-ledger-reconciliation-and-netcode-reachability-pins.md) — ptc5f (M-playtest-c.5 pre-gate residuals — ledger reconciliation, closes M-playtest-c.5; EARS ptc5f-1/ptc5f-2 + Decision A/E pins) — 0142 — ptc5f ledger reconciliation + deferred-netcode reachability pins (Accepted)
 - [0144](./0144-pt-d2-roster-wave-2.md) — pt-d2 (M-playtest-d content pack — roster wave 2 + placeholder-replacement sprites; EARS pt-d2-1..12) — 0144 — pt-d2 roster wave 2: reserved-block content fan-out + a species-parameterized sprite generator that imports (never edits) the shared art module (Accepted)
+- [0153](./0153-ux3-playtest-preflight.md) — ux3 (M-postgate-ux-hardening — `playtest-up`/`playtest-wipe` preflight-check `$STDB_SERVER` reachability; EARS ux3-1..ux3-3) — 0153 — ux3 playtest preflight: reach the server through the CLI's own resolver, and gate it behaviorally (Accepted)
 
 ### security-authz
 
