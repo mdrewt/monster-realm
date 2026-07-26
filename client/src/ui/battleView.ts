@@ -33,6 +33,8 @@ export class BattleView {
   readonly #opponentCardEl: HTMLDivElement;
   readonly #skillsEl: HTMLDivElement;
   readonly #actionsEl: HTMLDivElement;
+  /** Empty-swap explainer; shown only on an ongoing battle with no swap (ux4, ADR-0155). */
+  readonly #swapHintEl: HTMLDivElement;
   readonly #outcomeEl: HTMLDivElement;
   /** PvP status banner ("Waiting for opponent…" / ""); hidden when not in PvP (m16b). */
   readonly #pvpStatusEl: HTMLDivElement;
@@ -92,6 +94,24 @@ export class BattleView {
     this.#actionsEl.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;';
     this.#root.appendChild(this.#actionsEl);
 
+    // ux4 (ADR-0155): explains the ABSENCE of a swap control. A SIBLING of #actionsEl — never
+    // its child, since #renderActions opens with #actionsEl.replaceChildren() (which would
+    // detach it on the next refresh) — and never appended to the caller-supplied `parent`.
+    // The copy names the Esc step because it must: KeyB is dead while this overlay is open
+    // (main.ts:551-577 gates it on shouldToggleBox(battleView?.visible ?? false);
+    // client/src/inputGuards.ts:6-8 is `return !battleVisible`), and the terminal battle row is
+    // not GC'd on resolution, so the overlay stays up — and B stays dead — until Escape.
+    // It advertises no healing: heal_party is zone-gated (raising.rs:302-304, zone 0 only).
+    this.#swapHintEl = document.createElement('div');
+    this.#swapHintEl.setAttribute('data-testid', 'battle-swap-hint');
+    this.#swapHintEl.textContent =
+      'No healthy party monster to swap in. When this battle ends, ' +
+      'press Esc, then B for Party & Box to add one.';
+    this.#swapHintEl.style.cssText =
+      'width:100%;max-width:320px;text-align:center;margin-bottom:8px;' +
+      'font-size:12px;color:#aab;display:none;';
+    this.#root.appendChild(this.#swapHintEl);
+
     // PvP status banner: "Waiting for opponent…" when pvpPendingSubmit; hidden otherwise.
     this.#pvpStatusEl = document.createElement('div');
     this.#pvpStatusEl.setAttribute('data-testid', 'pvp-status');
@@ -139,6 +159,10 @@ export class BattleView {
       this.#pvpStatusEl.style.display = 'none';
       // ux1 (ADR-0151 D3): reset the hint too, per this branch's weather/pvpStatus precedent.
       this.#continueHintEl.style.display = 'none';
+      // ux4 (ADR-0155): same precedent — "null VM ⇒ every banner is reset". Symmetry/defense
+      // only: this branch is reachable in production just on the corrupt-VM path (main.ts
+      // hides directly when the battle row is gone), so the LIVE defense is the else-arm below.
+      this.#swapHintEl.style.display = 'none';
       this.hide();
       return;
     }
@@ -259,6 +283,15 @@ export class BattleView {
     if (vm.canSwap) {
       this.#renderSwapButtons(vm);
     }
+    // ux4 (ADR-0155): toggled inline here, following the #continueHintEl precedent (toggled
+    // inside #renderOutcome, no dedicated #renderX method), so the hint and the buttons read the
+    // SAME `vm.canSwap` in the SAME method — "hint shown ⟺ no swap buttons rendered" is then
+    // structural, not derived through the model's `canSwap = bench.length > 0` identity (a
+    // `bench.length === 0` predicate leaves canSwap=false/bench≠[] a silent dead-end). The
+    // `Ongoing` conjunct is required: canSwap is false on EVERY terminal outcome, so without it
+    // the hint sits beside "Victory!". No isPvp branch (ADR-0151 D3 precedent) — the PvP swap
+    // control is suppressed only while pvpPendingSubmit, so canSwap=false means the same thing.
+    this.#swapHintEl.style.display = vm.outcome === 'Ongoing' && !vm.canSwap ? 'block' : 'none';
     // Recruit is wild-only (canRecruit). Render the bait selector first so the
     // Recruit button can read the current selection at click time.
     this.#baitSelectEl = null;

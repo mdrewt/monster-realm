@@ -1725,66 +1725,65 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     { outcome: 'SideAWins' as const },
     { outcome: 'SideBWins' as const },
     { outcome: 'Fled' as const },
-  ])(
-    'BITES: H3 terminal outcome $outcome (canSwap=false, empty bench) → swap hint hidden while the ux1 continue hint stays visible',
-    ({ outcome }) => {
-      // KILLS: the MOST LIKELY wrong implementation — a predicate missing the
-      //   `vm.outcome === 'Ongoing' &&` conjunct, i.e. keyed on `!vm.canSwap` alone.
-      //   `canSwap` is false and `bench` is empty on EVERY terminal outcome
-      //   (battleModel.ts:258 gates the bench loop on `ongoing`), so a bench-or-canSwap-only
-      //   predicate parks "No healthy party monster to swap in. When this battle ends…" right
-      //   next to "Victory!" and ux1's "Press Esc to continue" — advice about a battle that
-      //   has already ended, on the very overlay ux1 just finished making honest.
-      // ALSO GATES ux1: the continue-hint clause in the same assertion means a regression
-      //   that hides the ux1 exit affordance while wiring the ux4 one cannot pass here.
-      const parent = document.createElement('div');
-      document.body.appendChild(parent);
+  ])('BITES: H3 terminal outcome $outcome (canSwap=false, empty bench) → swap hint hidden while the ux1 continue hint stays visible', ({
+    outcome,
+  }) => {
+    // KILLS: the MOST LIKELY wrong implementation — a predicate missing the
+    //   `vm.outcome === 'Ongoing' &&` conjunct, i.e. keyed on `!vm.canSwap` alone.
+    //   `canSwap` is false and `bench` is empty on EVERY terminal outcome
+    //   (battleModel.ts:258 gates the bench loop on `ongoing`), so a bench-or-canSwap-only
+    //   predicate parks "No healthy party monster to swap in. When this battle ends…" right
+    //   next to "Victory!" and ux1's "Press Esc to continue" — advice about a battle that
+    //   has already ended, on the very overlay ux1 just finished making honest.
+    // ALSO GATES ux1: the continue-hint clause in the same assertion means a regression
+    //   that hides the ux1 exit affordance while wiring the ux4 one cannot pass here.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
 
-      const view = new BattleView(parent, makeUx4Callbacks());
-      // turnNumber 12 and skills:[] — distinct from H1 (5, two skills) and H2 (9, one
-      // skill) so an incidental-field predicate cannot hide behind a shared constant (F2).
-      view.refresh(
-        makeUx4VM({
-          outcome,
-          isPvp: false,
-          canSwap: false,
-          bench: [],
-          canFlee: false,
-          turnNumber: 12,
-          skills: [],
-        }),
-      );
-      view.show();
+    const view = new BattleView(parent, makeUx4Callbacks());
+    // turnNumber 12 and skills:[] — distinct from H1 (5, two skills) and H2 (9, one
+    // skill) so an incidental-field predicate cannot hide behind a shared constant (F2).
+    view.refresh(
+      makeUx4VM({
+        outcome,
+        isPvp: false,
+        canSwap: false,
+        bench: [],
+        canFlee: false,
+        turnNumber: 12,
+        skills: [],
+      }),
+    );
+    view.show();
 
-      const swapHint = parent.querySelector(UX4_SWAP_HINT_SELECTOR) as HTMLElement | null;
-      expect(
-        swapHint,
-        `ux4-2 (H3/${outcome}): the swap hint element must exist on the result overlay too ` +
-          '(created once in the constructor, only toggled thereafter)',
-      ).not.toBeNull();
-      const continueHint = parent.querySelector(CONTINUE_HINT_SELECTOR) as HTMLElement | null;
-      expect(
-        continueHint,
-        `precondition (H3/${outcome}): ux1's continue hint must exist — it is the second half of ` +
-          "this case's single conjunction",
-      ).not.toBeNull();
+    const swapHint = parent.querySelector(UX4_SWAP_HINT_SELECTOR) as HTMLElement | null;
+    expect(
+      swapHint,
+      `ux4-2 (H3/${outcome}): the swap hint element must exist on the result overlay too ` +
+        '(created once in the constructor, only toggled thereafter)',
+    ).not.toBeNull();
+    const continueHint = parent.querySelector(CONTINUE_HINT_SELECTOR) as HTMLElement | null;
+    expect(
+      continueHint,
+      `precondition (H3/${outcome}): ux1's continue hint must exist — it is the second half of ` +
+        "this case's single conjunction",
+    ).not.toBeNull();
 
-      const swapHidden = swapHint!.style.display === 'none';
-      const continueVisible = continueHint!.style.display !== 'none';
-      expect(
-        swapHidden && continueVisible,
-        `ux4-2 (H3/${outcome}) ONE CONJUNCTION — swapHintHidden=${String(swapHidden)} ` +
-          `(display=${JSON.stringify(swapHint!.style.display)}), ` +
-          `continueHintVisible=${String(continueVisible)} ` +
-          `(display=${JSON.stringify(continueHint!.style.display)}). The toggle predicate MUST ` +
-          "include the `vm.outcome === 'Ongoing' &&` conjunct: canSwap is false and bench is " +
-          'empty on every terminal outcome, so a `!vm.canSwap`-only predicate shows swap advice ' +
-          'on the result screen. And ux1-2 must keep its exit affordance on that same screen',
-      ).toBe(true);
+    const swapHidden = swapHint!.style.display === 'none';
+    const continueVisible = continueHint!.style.display !== 'none';
+    expect(
+      swapHidden && continueVisible,
+      `ux4-2 (H3/${outcome}) ONE CONJUNCTION — swapHintHidden=${String(swapHidden)} ` +
+        `(display=${JSON.stringify(swapHint!.style.display)}), ` +
+        `continueHintVisible=${String(continueVisible)} ` +
+        `(display=${JSON.stringify(continueHint!.style.display)}). The toggle predicate MUST ` +
+        "include the `vm.outcome === 'Ongoing' &&` conjunct: canSwap is false and bench is " +
+        'empty on every terminal outcome, so a `!vm.canSwap`-only predicate shows swap advice ' +
+        'on the result screen. And ux1-2 must keep its exit affordance on that same screen',
+    ).toBe(true);
 
-      document.body.removeChild(parent);
-    },
-  );
+    document.body.removeChild(parent);
+  });
 
   it('BITES: H4 the hint is a #root sibling of #outcomeEl — NOT inside #actionsEl, NOT on the caller-supplied parent — and 3 refreshes leave exactly one', () => {
     // KILLS (anti-pattern 3): appending the hint to the caller-supplied `parent`

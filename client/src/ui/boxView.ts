@@ -21,6 +21,8 @@ export class BoxView {
   readonly #root: HTMLDivElement;
   readonly #partyEl: HTMLDivElement;
   readonly #boxEl: HTMLDivElement;
+  /** Static box-vs-party explainer (ux4, ADR-0155); never toggled — it states an invariant. */
+  readonly #hintEl: HTMLDivElement;
   readonly #callbacks: BoxViewCallbacks;
   #visible = false;
 
@@ -46,6 +48,23 @@ export class BoxView {
     healBtn.addEventListener('click', () => this.#callbacks.onHealParty());
     header.appendChild(healBtn);
     this.#root.appendChild(header);
+
+    // ux4 (ADR-0155): states the box-vs-party rule where the player can act on it. STATIC — no
+    // toggle, no predicate, no render coupling — because unlike battleView's conditional hint
+    // this asserts a model INVARIANT (only party monsters battle; the box stores), true whenever
+    // this overlay is open; and as a direct #root child it cannot be wiped by #renderParty /
+    // #renderBox, which only touch #partyEl / #boxEl. A SIBLING of `header`, never wrapping it:
+    // three client/e2e/recruit.spec.ts sites resolve this root as
+    // h2['Party & Box'].parentElement.parentElement, and a wrapper retargets that chain.
+    // The copy DESCRIBES the "To Party" button (#renderCard) rather than commanding a click —
+    // the empty-box short-circuit below renders no such button in the fresh-player state.
+    this.#hintEl = document.createElement('div');
+    this.#hintEl.setAttribute('data-testid', 'box-party-hint');
+    this.#hintEl.textContent =
+      'Only monsters in your Party can battle or be swapped in. New recruits arrive in your ' +
+      'Box — each box monster has a "To Party" button that moves it into an open party slot.';
+    this.#hintEl.style.cssText = 'max-width:600px;margin:0 0 12px;font-size:12px;color:#aaa;';
+    this.#root.appendChild(this.#hintEl);
 
     const partyLabel = document.createElement('h3');
     partyLabel.textContent = 'Party';
