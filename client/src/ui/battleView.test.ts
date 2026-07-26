@@ -1210,6 +1210,15 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
 // ux4 (ADR-0155) — swap discoverability. TWO describes are appended below; no
 // existing case, factory or assertion above this line is touched.
 //
+// ANCHORS BELOW THIS LINE ARE SYMBOLIC, NOT NUMERIC (reviewer W3 / simplify F1). The
+// original citations were correct against base 4368a07 and were silently invalidated
+// by this file's own insertions plus the implementer's edits to battleView.ts — the
+// trap bit TWICE in one slice, and stale citations read as present-tense claims. So:
+// cite the METHOD (`#renderActions`, `#renderSwapButtons`, `#renderRecruit`,
+// `#renderPvpStatus`) or the LITERAL (`Party & Box`, `Swap: `) instead. Citations into
+// OTHER, untouched files (main.ts, battleModel.ts, recruit.spec.ts, the Rust server,
+// and this file's own pre-ux4 region above) keep their line numbers.
+//
 //   • ux4-1 (S1, S2) — the EXECUTABLE REPRO/REFUTATION of the playtest report
 //     ("no method of switching monsters seemed to exist"). These are EXPECTED
 //     GREEN on the untouched tree, and that green IS the discharge of ux4-1: the
@@ -1222,14 +1231,9 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
 //     coverage at `battleView.test.ts:772-775` pins ONLY the PvP `Submit Swap:`
 //     label; there is no PvE `Swap:` assertion anywhere in `client/src/**` or
 //     `client/e2e/**`, and there is no TS mutation harness — so deleting the PvE
-//     arm of the label ternary (`battleView.ts:379-381`) is a GREEN mutant today.
+//     arm of `#renderSwapButtons`' label ternary is a GREEN mutant today.
 //
-//   • ux4-2 (H1..H8) — the NEW empty-swap explainer.
-//
-// HISTORY (not a claim about the current tree): at authoring time, before the
-// implementer's change, battleView.ts created no element carrying
-// data-testid="battle-swap-hint", so H1-H8 all failed on their first not-null
-// assertion. They are permanent gating cases now, not one-shot red markers.
+//   • ux4-2 (H1..H8) — the NEW empty-swap explainer. Permanent gating cases.
 //
 // WHAT THESE CASES CAN AND CANNOT PROVE (disclosure, deferral D2): happy-dom does no
 // layout, so every assertion here proves "the element is PRESENT and is not
@@ -1243,7 +1247,7 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
 //   - the constructor creates ONE `<div data-testid="battle-swap-hint">`, appended
 //     to BattleView's own `#root` in a block between the `#actionsEl` block and the
 //     `#pvpStatusEl` block — a SIBLING of `#actionsEl`, never its child
-//     (`#renderActions` calls `this.#actionsEl.replaceChildren()` at :249) and
+//     (`#renderActions` opens with `this.#actionsEl.replaceChildren()`) and
 //     never appended to the caller-supplied `parent`;
 //   - `textContent` is set ONCE in the constructor to COPY A; `display:none` initially;
 //   - `#renderActions(vm)` toggles it INLINE, immediately after the
@@ -1255,9 +1259,9 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
 //   - the `refresh(null)` branch resets it to `display:'none'`, beside the existing
 //     `#weatherEl` / `#pvpStatusEl` / `#continueHintEl` resets.
 //
-// COPY A (the plan's final, honesty-constrained wording):
-//   "No healthy party monster to swap in. When this battle ends, press Esc, then B
-//    for Party & Box to add one."
+// COPY A (the shipped, honesty-constrained wording — 109 chars):
+//   "No healthy party monster in this battle to swap in. When this battle ends, press
+//    Esc, then B for Party & Box."
 // Every clause is a measured constraint, not a preference:
 //   - `B` is DEAD while the battle overlay is open (`main.ts:551-577` gates KeyB on
 //     `shouldToggleBox(battleView?.visible ?? false)`; `inputGuards.ts:6-8` is
@@ -1270,7 +1274,24 @@ describe('BattleView ux1-2: "Press Esc to continue" hint on battle-result overla
 //     (`raising.rs:302-304`; the only heal location is `zone_id: 0`) and zone 1 has
 //     its own encounter table.
 //   - it names `Party & Box` because that is the literal `h2` the player will see
-//     (`boxView.ts:39`).
+//     (boxView's constructor sets that title on the header `h2`).
+//
+// *** WHY THE REASON CLAUSE IS SCOPED "in this battle" — THE HONESTY PROPERTY ***
+// (CORRECTION driven by the spec's honesty spine, red-team lens; a future copy edit
+// MUST preserve this scoping, and H1f's literal pin is what forces it.)
+// The unscoped first sentence ("No healthy party monster to swap in.") is FALSIFIABLE
+// MID-BATTLE BY A PLAYER FOLLOWING THE COPY'S OWN INSTRUCTIONS:
+//   Esc on an ONGOING battle is a bare `battleView.hide()` (main.ts, the dismiss
+//   branch) ⇒ `shouldToggleBox` now returns true ⇒ KeyB opens the box ⇒
+//   `set_party_slot` has NO in-battle guard (server-module/src/monster_mgmt.rs) so
+//   `To Party` is ACCEPTED ⇒ that row-write is the very batch that re-shows the battle
+//   overlay ⇒ but `sideA.team` is a BATTLE-ROW SNAPSHOT, so `canSwap` stays false and
+//   the hint re-renders still claiming there is no healthy party monster — which the
+//   player has just disproved. Scoping the claim to "in this battle" makes it TRUE in
+//   that state: the newly-added monster genuinely is not on this battle's side A.
+// Second driver: `movement.rs` grants a fresh player exactly ONE monster and an EMPTY
+// box, so on every new player's FIRST wild battle the old trailing "to add one"
+// pointed at a screen with nothing to add. That clause is gone.
 //
 // WHY THESE CASES ARE THE ONLY DEFENSE: `src/ui/battleView.ts` is in
 // `client/vite.config.ts:102` `coverage.exclude` (exact-set-guarded by
@@ -1373,19 +1394,42 @@ function makeUx4EmptySwapVM(overrides: Partial<BattleViewModel> = {}): BattleVie
 // deliberately DISAGREE on `turnNumber`, `canRecruit`, `baitOptions` and
 // `skills.length`, and H1 runs the `canRecruit: true` wild-battle shape — the state
 // where this hint actually fires most often (a wild encounter with a single party
-// monster, where the Recruit control is rendered into the SAME #actionsEl at
-// battleView.ts:315-326; COPY A deliberately does not mention Recruit — plan RT-8).
+// monster, where the Recruit control is rendered into the SAME #actionsEl by
+// `#renderRecruit`; COPY A deliberately does not mention Recruit — plan RT-8).
+//
+// *** THREE MORE FIELDS, ADDED AFTER MEASUREMENT (review item 2, red-team F5). ***
+// The paragraph above USED TO CLAIM this whole class was closed. It was not: `weather`,
+// `playerCard.status` and `cureItems` were CONSTANT (null / null / []) across all EIGHT
+// H fixtures, and all 47 tests were measured GREEN with each of these conjuncts bolted
+// onto the toggle:
+//     && vm.weather === null            (suppresses the hint in ANY weather — M14d)
+//     && vm.playerCard.status === null  (suppresses it whenever poisoned/burned — M14a)
+//     && vm.cureItems.length === 0      (suppresses it whenever a cure item is held — M14e)
+// Each is a plausible copy-paste accident off the neighbouring `#renderWeather` /
+// `#renderCureItems` conditions, and each silently deletes the explanation in exactly
+// the states a mid-battle player is MOST likely to be in. H1 now carries a non-null
+// `weather`, a non-null `playerCard.status` and one `cureItems` entry, so all three die
+// there. HONEST STATEMENT OF WHAT IS VARIED: turnNumber, canRecruit, baitOptions,
+// skills.length, weather, playerCard.status, cureItems — H1 is the odd-one-out for the
+// last three (they are null/null/[] on H2..H8), which is sufficient: a conjunct that
+// reads any of them flips H1's expected-VISIBLE hint to hidden.
 //
 // DISCLOSED RESIDUAL: `pvpPendingSubmit` is false on every case here. It is a
 // PvP-only field, and the only VM that could vary it while staying a shape the model
 // actually produces is a PvP battle mid-submit; the plan discloses that interaction
 // as a non-lie (with `pvpPendingSubmit` true and a NON-empty bench the swap buttons
-// are suppressed by battleView.ts:373 while the hint correctly stays hidden, because
-// `canSwap` is true, and the pvp-status banner explains the wait). A
+// are suppressed by `#renderSwapButtons`' early return while the hint correctly stays
+// hidden, because `canSwap` is true, and the pvp-status banner explains the wait). A
 // `&& !vm.pvpPendingSubmit` conjunct would therefore survive this suite; it would
 // only suppress the explanation for one transient PvP turn. Recorded, not fixed
 // here — fabricating a `isPvp:false, pvpPendingSubmit:true` VM would pin a shape
 // buildBattleViewModel never emits.
+//
+// SECOND DISCLOSED RESIDUAL (stated, not hidden): `opponentCard.status` is still
+// constant (null), so `&& vm.opponentCard.status === null` would survive this suite.
+// Not varied, deliberately: `#renderActions` has no opponent-side condition to
+// copy-paste from, so that conjunct has no plausible provenance, whereas the three
+// closed above each mirror a real neighbouring condition in the same file.
 // -----------------------------------------------------------------------------
 
 /** Two skills — H1's wild-battle fixture, so `skills.length` is not constant across H. */
@@ -1406,7 +1450,7 @@ describe('BattleView ux4-1: PvE swap buttons — executable repro/refutation (EX
     // KILLS (1): the hypothesized defect itself — "no method of switching monsters
     //   seemed to exist". If this case is RED on the untouched tree, the swap UI IS
     //   the bug and the ux4-2 hint is the wrong remedy.
-    // KILLS (2): deleting the PvE arm of the label ternary at battleView.ts:379-381
+    // KILLS (2): deleting the PvE arm of `#renderSwapButtons`' label ternary
     //   (`vm.isPvp ? 'Submit Swap: …' : 'Swap: … (hp/max)'`). That mutant is GREEN
     //   today: battleView.test.ts:772-775 pins ONLY the `Submit Swap:` prefix, and
     //   there is no PvE `Swap:` assertion anywhere in client/src or client/e2e.
@@ -1429,8 +1473,8 @@ describe('BattleView ux4-1: PvE swap buttons — executable repro/refutation (EX
       'ux4-1 (S1): an ongoing PvE battle with canSwap=true and a 2-member bench must render ' +
         'EXACTLY one "Swap: <name> (hp/max)" button per bench member. Zero buttons ⇒ the swap ' +
         'UI is the reported defect (ux4-3 would apply, not ux4-2). One button ⇒ a bench[0]-only ' +
-        'render. Non-"Swap: " labels ⇒ the PvE arm of the label ternary (battleView.ts:379-381) ' +
-        'was deleted — a mutant that is green against the pre-existing suite',
+        'render. Non-"Swap: " labels ⇒ the PvE arm of `#renderSwapButtons`\' label ternary was ' +
+        'deleted — a mutant that is green against the pre-existing suite',
     ).toHaveLength(2);
 
     for (const member of UX4_BENCH) {
@@ -1529,15 +1573,60 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     // a single party monster — and nothing else in the suite exercises it. It also breaks
     // the fixture constants that let `&& vm.turnNumber === 2` / `&& !vm.canRecruit` /
     // `&& vm.skills.length === 1` predicates survive (red-team F2).
+    //
+    // STRENGTHENING (review item 2, red-team F5): the next three fields are set NON-DEFAULT
+    // here for one reason only — to kill three MEASURED surviving predicate conjuncts. All
+    // 47 tests were green with each of `&& vm.weather === null`,
+    // `&& vm.playerCard.status === null` and `&& vm.cureItems.length === 0` added to the
+    // toggle, because those fields were null/null/[] on every H fixture. H1 is the natural
+    // home: it is the hint-VISIBLE case, so a conjunct that reads any of them flips this
+    // case's expected `display !== 'none'` to 'none' and reds HERE. No new case needed.
+    // The shapes are real ones buildBattleViewModel emits: `weather.label` is a
+    // weatherBanner() output ('Rain'), `playerCard.status` is a statusBadge() output ('PSN'),
+    // and the cure item satisfies the classify-by-data rule (cureStatus !== null, count > 0).
     view.refresh(
       makeUx4EmptySwapVM({
         turnNumber: 5,
         canRecruit: true,
         baitOptions: [{ itemId: 7, name: 'Lure Berry', recruitBonus: 150, count: 2 }],
         skills: UX4_TWO_SKILLS,
+        // Kills `&& vm.weather === null` (M14d weather/field-state).
+        weather: { label: 'Rain', turnsRemaining: 3 },
+        // Kills `&& vm.playerCard.status === null` (M14a status effects).
+        playerCard: { ...makeUx4VM().playerCard, status: 'PSN' },
+        // Kills `&& vm.cureItems.length === 0` (M14e status-curing items).
+        cureItems: [{ itemId: 12, name: 'Antidote', cureStatus: 'Poison', count: 1 }],
       }),
     );
     view.show();
+
+    // (a0) FIXTURE-VARIATION GUARD (review item 2). The three non-default fields above are
+    // only teeth while they REACH the render. If a future edit to makeUx4VM /
+    // makeUx4EmptySwapVM ever hard-codes them back to null/null/[] after the override spread,
+    // the three conjuncts below become survivors again — silently, because H1's display
+    // assertion would still be green. These three DOM probes make that regression loud.
+    // They are proof-of-variation, NOT a claim about the hint.
+    // Named `...El` so it cannot be confused with battleModel's `weatherBanner()` mapper.
+    const weatherBannerEl = parent.querySelector(
+      '[data-testid="weather-banner"]',
+    ) as HTMLElement | null;
+    expect(
+      weatherBannerEl?.style.display,
+      'precondition (H1a0): vm.weather must be non-null and reach #renderWeather — that is what ' +
+        'kills the measured `&& vm.weather === null` conjunct. If this fails, the fixture ' +
+        'variation has been undone and that mutant is a survivor again',
+    ).toBe('block');
+    expect(
+      parent.querySelector('[data-testid="cure-item-selector"]'),
+      'precondition (H1a0): vm.cureItems must be non-empty and reach #renderCureItems — that is ' +
+        'what kills the measured `&& vm.cureItems.length === 0` conjunct',
+    ).not.toBeNull();
+    expect(
+      parent.textContent,
+      'precondition (H1a0): vm.playerCard.status must be non-null and reach #renderMonsterCard ' +
+        "(the 'PSN' badge) — that is what kills the measured `&& vm.playerCard.status === null` " +
+        'conjunct',
+    ).toContain('PSN');
 
     // (a) no swap control of EITHER label form is rendered.
     const anySwapButtons = [...parent.querySelectorAll('button')].filter((b) => {
@@ -1567,12 +1656,12 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
 
     const text = el!.textContent ?? '';
 
-    // (c) names the literal h2 the player will actually see (boxView.ts:39).
+    // (c) names the literal h2 the player will actually see (boxView's constructor title).
     expect(
       text,
-      'ux4-2 (H1c): the hint must name the literal "Party & Box" screen (the h2 at ' +
-        'boxView.ts:39) — a vague "your team" sends the player looking for a screen that does ' +
-        'not exist under that name',
+      'ux4-2 (H1c): the hint must name the literal "Party & Box" screen (the title h2 boxView\'s ' +
+        'constructor puts in its header row) — a vague "your team" sends the player looking for a ' +
+        'screen that does not exist under that name',
     ).toContain('Party & Box');
 
     // (d) ORDER, not presence. A timing qualifier must come FIRST, then the key name.
@@ -1587,6 +1676,17 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     // word-order-swapped mutant the standalone B appears BEFORE the timing clause,
     // so the strict inequality still fails — and it strengthens (c)/(d) jointly by
     // no longer depending on one particular verb.
+    //
+    // RECOMPUTED for the revised COPY A (review item 1). The reason clause now itself
+    // contains the words "in this battle", so it is worth stating explicitly why the two
+    // probes still land where they must:
+    //   • `timingIndex` = 52 — the timing alternation needs the literal "when this battle
+    //     ends"; the reason clause's "in this battle" does NOT match either alternative, so
+    //     the probe cannot be pulled backwards into sentence one.
+    //   • `keyIndex`    = 91 — `/\bB\b/` is case-sensitive, so the four lowercase "battle"
+    //     tokens are not candidates, and "Box" fails the trailing \b. The only standalone
+    //     uppercase B is the key name.
+    //   ⇒ 52 < 91, and the word-order-swapped mutant still inverts them. Bite preserved.
     const timingIndex = text.search(/when this battle ends|after (?:this|the) battle/i);
     const keyIndex = text.search(/\bB\b/);
     expect(
@@ -1638,18 +1738,86 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     // assertions above remain as the DOCUMENTATION of why the order matters (they
     // explain the constraint that the literal pin merely enforces).
     // -----------------------------------------------------------------------
+    // CORRECTED PIN (review item 1) — NOT a weakening. Was
+    // `.toContain('No healthy party monster to swap in.')`. The unscoped claim is
+    // FALSIFIABLE MID-BATTLE by a player following this very copy: Esc on an ongoing
+    // battle is a bare `battleView.hide()`, which un-gates KeyB; `set_party_slot` has no
+    // in-battle guard (server-module/src/monster_mgmt.rs), so `To Party` is ACCEPTED; that
+    // row-write is the batch that re-shows the overlay; and because `sideA.team` is a
+    // battle-row SNAPSHOT, `canSwap` stays false and the banner re-asserts a claim the
+    // player has just disproved. Adding "in this battle" makes the sentence TRUE in that
+    // state. RATIONALE FOR THE NEW EXPECTED VALUE, tied to the spec: the spec's honesty
+    // spine (ADR-0151 — never state something the player can falsify) requires the claim
+    // be scoped to what the view can actually see, and the view only ever sees this
+    // battle's side A. The pin is STRICTLY STRONGER: the old literal is a substring of
+    // nothing in the new copy, so every impl the old pin rejected is still rejected, AND
+    // the unscoped-copy impl (which the old pin ACCEPTED) now reds too.
+    // -----------------------------------------------------------------------
     expect(
       text,
-      'ux4-2 (H1f): the hint must open by stating the REASON as a readable clause. A copy that ' +
-        'merely contains the right tokens ("healthy … swap … Party & Box") in the right order can ' +
-        'still be an unreadable needle salad — measured passing every token/order assertion above',
-    ).toContain('No healthy party monster to swap in.');
+      'ux4-2 (H1f): the hint must open by stating the REASON as a readable clause, SCOPED to this ' +
+        'battle. A copy that merely contains the right tokens ("healthy … swap … Party & Box") in ' +
+        'the right order can still be an unreadable needle salad — measured passing every ' +
+        'token/order assertion above. And the UNSCOPED "No healthy party monster to swap in." is ' +
+        'falsifiable mid-battle by a player who follows the copy: Esc un-gates KeyB, set_party_slot ' +
+        'has no in-battle guard, and the resulting row-write re-shows the overlay with canSwap ' +
+        'still false (sideA.team is a battle-row snapshot) — so the banner would repeat a claim the ' +
+        'player just disproved. "in this battle" is the honesty fix and must be preserved',
+    ).toContain('No healthy party monster in this battle to swap in.');
     expect(
       text,
       'ux4-2 (H1f): the hint must carry the remedy as ONE readable clause in the mandated order — ' +
         'timing, then Esc, then B, then the screen name. This is the literal form of the ordering ' +
         'constraint asserted by index above',
     ).toContain('When this battle ends, press Esc, then B for Party & Box');
+
+    // -----------------------------------------------------------------------
+    // (g) REASON BEFORE REMEDY — a SECOND, INDEPENDENT ordering property.
+    //
+    // MEASURED SURVIVOR (42 passed) that this closes — the WHOLE-SENTENCE swap:
+    //   'When this battle ends, press Esc, then B for Party & Box. No healthy party
+    //    monster in this battle to swap in.'
+    // Same words, same two clauses, sentences reordered. Nothing above could see it:
+    //   • H1f's two `toContain` pins are order-INDEPENDENT (each clause is intact and
+    //     present, just relocated);
+    //   • H1d still PASSES, because in that arrangement the timing clause ("When this
+    //     battle ends") STILL precedes the standalone `B` — H1d's inequality is
+    //     satisfied inside the remedy sentence, wherever that sentence happens to sit.
+    //
+    // WHY THIS IS A DIFFERENT PROPERTY FROM H1d (do not merge them):
+    //   • H1d gates ordering WITHIN the remedy — timing qualifier before the key name —
+    //     so the copy never tells the player to press a key that is dead right now.
+    //   • (g) gates ordering BETWEEN the two clauses — the explanation before the
+    //     instruction — so the banner never opens with a keystroke and buries the reason
+    //     the player is stuck. A hint whose first words are "When this battle ends, press
+    //     Esc, then B…" reads as an unprompted command: the player does not yet know WHY
+    //     they are being told to leave the battle, which is the ux1 failure shape
+    //     (ADR-0151) in miniature — an affordance advertised ahead of its justification.
+    //     This hint exists to answer a question ("where did my swap option go?"); the
+    //     answer must come before the directions.
+    //
+    // Both index lookups are safe: the two `toContain` assertions immediately above have
+    // already proved each literal is present, so neither indexOf can be -1 here without
+    // this case having failed first. `String.indexOf` — no `new RegExp` (ReDoS lint).
+    // -----------------------------------------------------------------------
+    const reasonIndex = text.indexOf('No healthy');
+    const remedyIndex = text.indexOf('When this battle ends');
+    expect(
+      reasonIndex,
+      `ux4-2 (H1g) REASON BEFORE REMEDY: the reason clause (index ${reasonIndex}) must come ` +
+        `STRICTLY BEFORE the remedy clause (index ${remedyIndex}). Copy text was: ` +
+        `${JSON.stringify(text)}. THE MUTANT THIS KILLS is the whole-sentence swap — the same ` +
+        'two clauses with the sentences reordered ("When this battle ends, press Esc, then B for ' +
+        'Party & Box. No healthy party monster in this battle to swap in."), measured SURVIVING ' +
+        'the whole suite: both `toContain` pins above are order-independent, and H1d still passes ' +
+        'because the timing clause still precedes the standalone B inside the relocated remedy ' +
+        'sentence. This assertion gates a DIFFERENT property from H1d: H1d orders timing before ' +
+        'key WITHIN the remedy; this orders explanation before instruction BETWEEN the clauses. A ' +
+        'banner that opens with a keystroke and buries the reason is the ADR-0151 shape in ' +
+        'miniature — an affordance advertised ahead of its justification, on a hint whose whole ' +
+        'job is to answer "where did my swap option go?" before giving directions',
+    ).toBeLessThan(remedyIndex);
+
     expect(
       text,
       'ux4-2 (H1f) NO HEAL ADVICE: `heal_party` is ZONE-GATED (raising.rs:302-304; the only heal ' +
@@ -1666,14 +1834,43 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
         'inverts the positional `allHpTexts[0]/[1]` opponent-affinity assumption documented at ' +
         'client/e2e/recruit.spec.ts:650-655,:688-697',
     ).not.toMatch(/HP\s*\d+\s*\/\s*\d+/);
+    // ---------------------------------------------------------------------
+    // NEW FENCE (review item 3, red-team F6) — NO OTHER KEY, NO HELP AFFORDANCE.
+    // MEASURED SURVIVOR: COPY A + ' Or press ? for help.' (124 chars, under the old 140
+    // cap) passed every single H assertion. That addition is the literal ux1 lie, ungated:
+    // `?` is DEAD while the battle overlay is open — main.ts's help handler leads with
+    // `!battleView?.visible`, so the key the copy tells the player to press does nothing
+    // at the moment they read it. This is the same defect class as the word-order mutant
+    // (d) kills, arriving as an EXTRA sentence rather than a reordered one, so the order
+    // assertions cannot see it. Two literal probes (no `new RegExp` — ReDoS lint).
+    // ---------------------------------------------------------------------
+    expect(
+      text,
+      'ux4-2 (H1f) NO SECOND KEY: the copy must not name `?`. The measured additive mutant ' +
+        "(COPY A + ' Or press ? for help.') slipped past every other assertion here, yet `?` is " +
+        "DEAD while this overlay is open — main.ts's help handler leads with `!battleView?.visible` " +
+        '— so it advertises an action that cannot be taken: exactly the ADR-0151 defect this slice ' +
+        'exists to avoid repeating. Esc and B are the ONLY keys this copy may name, and both are ' +
+        'gated on the timing clause (d) pins',
+    ).not.toMatch(/\?/);
+    expect(
+      text,
+      'ux4-2 (H1f) NO HELP AFFORDANCE: the copy must not point at the help overlay in any wording ' +
+        '("for help", "see help"). ux1 (ADR-0151) shipped the help hint; this hint must not ' +
+        're-advertise it from a screen where the key is inert',
+    ).not.toMatch(/\bhelp\b/i);
     expect(
       text.length,
-      `ux4-2 (H1f) LENGTH CAP: the hint copy is ${text.length} chars. COPY A is 104. The cap ` +
-        'structurally bounds ADDITIVE dishonesty — the fluent-lie mutant above (COPY A plus a ' +
-        'second, false sentence about pressing B and healing right now) measures ~150 chars and ' +
-        'dies here even if it slips past every keyword fence. It also keeps the banner inside its ' +
-        '320px column',
-    ).toBeLessThanOrEqual(140);
+      `ux4-2 (H1f) LENGTH CAP: the hint copy is ${text.length} chars. The shipped COPY A is 109. ` +
+        'The cap structurally bounds ADDITIVE dishonesty — the fluent-lie mutant above (COPY A ' +
+        'plus a false sentence about pressing B and healing right now) measures ~150 chars and ' +
+        'dies here even if it slips past every keyword fence. TIGHTENED 140 → 120 (review item 3): ' +
+        'at 140 there were 31 chars of free additive room, and the measured ' +
+        "' Or press ? for help.' mutant (124 chars bolted onto the pre-revision copy, 130 onto the " +
+        'shipped one) fitted inside it either way. 120 leaves 11 chars of headroom over the shipped ' +
+        'copy — enough for ordinary punctuation edits, not enough for a second claim. It also keeps ' +
+        'the banner inside its 320px column',
+    ).toBeLessThanOrEqual(120);
     expect(
       text,
       'ux4-2 (H1f): the copy must say WHY, not just which key — "healthy" is the load-bearing ' +
@@ -1692,8 +1889,8 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     // THIS IS WHAT MAKES H1 NON-VACUOUS. The cheapest way to green H1 with zero logic
     // is to create the element in the constructor with display:block (or no display at
     // all) and never toggle it. That impl fails here: while real swap buttons are on
-    // screen, "No healthy party monster to swap in" is false, and it would sit directly
-    // beside the very buttons it denies.
+    // screen, "No healthy party monster in this battle to swap in" is false, and it would
+    // sit directly beside the very buttons it denies.
     // KILLS: the always-visible hint (constructor display:block, never toggled).
     const parent = document.createElement('div');
     document.body.appendChild(parent);
@@ -1715,7 +1912,8 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
       el!.style.display,
       'ux4-2 (H2): the hint must be HIDDEN whenever swap buttons are rendered. An element created ' +
         'display:block and never toggled greens H1 with no logic at all — and ships a banner ' +
-        'reading "No healthy party monster to swap in" immediately above two live "Swap: …" buttons',
+        'reading "No healthy party monster in this battle to swap in" immediately above two live ' +
+        '"Swap: …" buttons',
     ).toBe('none');
 
     document.body.removeChild(parent);
@@ -1732,9 +1930,9 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     //   `vm.outcome === 'Ongoing' &&` conjunct, i.e. keyed on `!vm.canSwap` alone.
     //   `canSwap` is false and `bench` is empty on EVERY terminal outcome
     //   (battleModel.ts:258 gates the bench loop on `ongoing`), so a bench-or-canSwap-only
-    //   predicate parks "No healthy party monster to swap in. When this battle ends…" right
-    //   next to "Victory!" and ux1's "Press Esc to continue" — advice about a battle that
-    //   has already ended, on the very overlay ux1 just finished making honest.
+    //   predicate parks "No healthy party monster in this battle to swap in. When this
+    //   battle ends…" right next to "Victory!" and ux1's "Press Esc to continue" — advice
+    //   about a battle that has already ended, on the very overlay ux1 just made honest.
     // ALSO GATES ux1: the continue-hint clause in the same assertion means a regression
     //   that hides the ux1 exit affordance while wiring the ux4 one cannot pass here.
     const parent = document.createElement('div');
@@ -1794,8 +1992,8 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     //   in-flow div AFTER a viewport-tall canvas (below the fold: ux1's own defect),
     //   survives `hide()`, and re-lengthens the document (the ADR-0146 scroll mechanism).
     // KILLS (anti-pattern 2): making the hint a CHILD of #actionsEl. `#renderActions`
-    //   opens with `this.#actionsEl.replaceChildren()` (battleView.ts:249), so the hint
-    //   would be detached on the very next refresh.
+    //   opens with `this.#actionsEl.replaceChildren()`, so the hint would be detached on
+    //   the very next refresh.
     // KILLS (anti-pattern 7): a per-render `appendChild` — N duplicate hints after N
     //   batches, which a presence-only check cannot see.
     //
@@ -1851,8 +2049,7 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     expect(
       el!.parentElement,
       'ux4-2 (H4): the hint must NOT be a child of #actionsEl — #renderActions begins with ' +
-        '`this.#actionsEl.replaceChildren()` (battleView.ts:249), which would detach the hint on ' +
-        'the next refresh',
+        '`this.#actionsEl.replaceChildren()`, which would detach the hint on the next refresh',
     ).not.toBe(actionsEl);
     expect(
       el!.parentElement,
@@ -1921,8 +2118,8 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
   it('BITES: H5 the hint is turned OFF again — (a) refresh(null) resets it, (b) after a bare hide() a canSwap=true VM hides it', () => {
     // KILLS (anti-pattern 5): a SHOW-ONLY toggle with no else-arm
     //   (`if (!vm.canSwap) hint.display = 'block';`). The player then fixes their party,
-    //   swap buttons appear — and "No healthy party monster to swap in" stays latched
-    //   directly above them, which is worse than no hint at all.
+    //   swap buttons appear — and "No healthy party monster in this battle to swap in"
+    //   stays latched directly above them, which is worse than no hint at all.
     // ORDER-SENSITIVITY IS THE POINT (the ADR-0151 B7 analogue, and REQUIRED for the
     //   same reason): H2 builds a FRESH view, so the constructor's own display:none
     //   satisfies it even with the else-arm deleted. Only a sequence that first turns
@@ -1984,9 +2181,9 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
         "(`= cond ? 'block' : 'none'`), not a show-only `if`. With no else-arm the hint stays " +
         'latched at display:block across the bare hide() dismiss (main.ts:981-990 / :1209-1211, ' +
         'neither of which calls refresh(null)), so once the player fixes their party the banner ' +
-        '"No healthy party monster to swap in" renders directly above two live "Swap: …" buttons. ' +
-        'H2 cannot see this: it builds a FRESH view whose constructor display:none already ' +
-        'satisfies it',
+        '"No healthy party monster in this battle to swap in" renders directly above two live ' +
+        '"Swap: …" buttons. H2 cannot see this: it builds a FRESH view whose constructor ' +
+        'display:none already satisfies it',
     ).toBe('none');
 
     document.body.removeChild(parent);
@@ -1998,8 +2195,9 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     //   H1/H4/H5 are all PvE. This case pins the plan's own explicit decision — no
     //   isPvp branch, following the ADR-0151 D3 precedent.
     // WHY THE HINT IS TRUTHFUL HERE: the PvP swap control is suppressed only while
-    //   `pvpPendingSubmit` is true (battleView.ts:373), and this VM sets it false — so
-    //   `canSwap=false` really does mean "no healthy party monster to swap in".
+    //   `pvpPendingSubmit` is true (`#renderSwapButtons`' early return), and this VM sets
+    //   it false — so `canSwap=false` really does mean "no healthy party monster in this
+    //   battle to swap in".
     // DISCLOSED SCOPE LIMIT (deferral D6): in PvP only side A (the challenger, who IS
     //   `player_identity`) receives a battle overlay at all — `latestPlayerBattle`
     //   (main.ts:1138 / net/store.ts:718-726) skips rows where the identity is the
@@ -2081,9 +2279,9 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
         'hide() and no refresh(null) between the two refreshes, the swap hint must be turned OFF ' +
         'by the else-arm of its own predicate. A show-only toggle whose reset lives in hide() ' +
         'passes BOTH H5 arms (refresh(null) calls hide(); H5b dismisses with hide()) and still ' +
-        'parks "No healthy party monster to swap in. When this battle ends…" directly beside ' +
-        '"Victory!" — advice about a battle that has already ended, on the very overlay ux1 ' +
-        'just finished making honest. The Victory! clause proves the new state actually arrived',
+        'parks "No healthy party monster in this battle to swap in. When this battle ends…" ' +
+        'directly beside "Victory!" — advice about a battle that has already ended, on the very ' +
+        'overlay ux1 just made honest. The Victory! clause proves the new state actually arrived',
     ).toBe(true);
 
     // ---- (b) ongoing (no swap) → ongoing WITH a swappable bench, one view ----
@@ -2113,8 +2311,8 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
         `(display=${JSON.stringify(hintB!.style.display)}), liveSwapButtons=` +
         `${String(liveSwapButtons.length)} (must be > 0). The moment swapping becomes possible ` +
         'the explanation of its absence must disappear, on the SAME live view, with no hide() and ' +
-        'no refresh(null) to launder the state. Otherwise the player sees ' +
-        '"No healthy party monster to swap in" directly above the "Swap: …" buttons that prove it ' +
+        'no refresh(null) to launder the state. Otherwise the player sees "No healthy party ' +
+        'monster in this battle to swap in" directly above the "Swap: …" buttons that prove it ' +
         'false — strictly worse than shipping no hint at all',
     ).toBe(true);
 
@@ -2131,14 +2329,15 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     // same correction): the plan claims the differentiator is an inconsistent
     // `canSwap:true, bench:[]` VM, under which "a bench-based predicate renders NEITHER
     // buttons NOR hint". That was measured WRONG — under BOTH predicates that VM renders
-    // neither buttons nor hint (the buttons are gated on `vm.canSwap` at battleView.ts:259
+    // neither buttons nor hint (the buttons are gated by `#renderActions`' `if (vm.canSwap)`
     // and the loop body iterates an empty `bench`; the hint is hidden because canSwap is
     // true), so it cannot tell the two predicates apart.
     //
     // THE ONLY VM SHAPE THAT SEPARATES THEM is the complementary one used here:
     //     outcome:'Ongoing', canSwap:false, bench:[one member]
     //   • `!vm.canSwap`        → hint SHOWN  (correct: no buttons are rendered, because
-    //                            #renderSwapButtons is never called — :259 gates on canSwap)
+    //                            `#renderActions`' `if (vm.canSwap)` never calls
+    //                            #renderSwapButtons at all)
     //   • `bench.length === 0` → hint HIDDEN (WRONG: zero buttons AND no explanation —
     //                            precisely the silent dead-end this slice exists to remove)
     // Keying the hint off the SAME flag the buttons are gated on is what makes
@@ -2168,9 +2367,9 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     expect(
       swapButtons.map((b) => b.textContent),
       'precondition (H8): with canSwap=false NO swap button may be rendered, regardless of what ' +
-        '`bench` contains — battleView.ts:259 gates #renderSwapButtons on `vm.canSwap` alone. ' +
-        'This is what makes the hint the ONLY thing standing between the player and a silent ' +
-        'dead-end in this state',
+        "`bench` contains — `#renderActions`' `if (vm.canSwap)` gates #renderSwapButtons on that " +
+        'flag alone. This is what makes the hint the ONLY thing standing between the player and a ' +
+        'silent dead-end in this state',
     ).toHaveLength(0);
 
     const el = parent.querySelector(UX4_SWAP_HINT_SELECTOR) as HTMLElement | null;

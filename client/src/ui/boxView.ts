@@ -49,11 +49,8 @@ export class BoxView {
     header.appendChild(healBtn);
     this.#root.appendChild(header);
 
-    // ux4 (ADR-0155): states the box-vs-party rule where the player can act on it. STATIC — no
-    // toggle, no predicate, no render coupling — because unlike battleView's conditional hint
-    // this asserts a model INVARIANT (only party monsters battle; the box stores), true whenever
-    // this overlay is open; and as a direct #root child it cannot be wiped by #renderParty /
-    // #renderBox, which only touch #partyEl / #boxEl. A SIBLING of `header`, never wrapping it:
+    // ux4 (ADR-0155): a direct #root child, so it cannot be wiped by #renderParty / #renderBox,
+    // which only touch #partyEl / #boxEl. A SIBLING of `header`, never wrapping it:
     // three client/e2e/recruit.spec.ts sites resolve this root as
     // h2['Party & Box'].parentElement.parentElement, and a wrapper retargets that chain.
     // The copy DESCRIBES the "To Party" button (#renderCard) rather than commanding a click —
