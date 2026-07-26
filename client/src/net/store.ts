@@ -180,6 +180,13 @@ export type StorePlayerConversation = {
   readonly currentNodeId: string;
 };
 
+/** The caller's own wallet row, normalized (ownerIdentity as hex string; ux2/ADR-0154).
+ *  Sourced from the owner-scoped `my_wallet` view — never a whole-table subscription. */
+export type StoreWallet = {
+  readonly ownerIdentity: string;
+  readonly balance: bigint;
+};
+
 /** A player quest row, normalized (ownerIdentity as hex string; M12d). */
 export type StorePlayerQuest = {
   readonly pqId: bigint;
@@ -332,6 +339,12 @@ export class AuthoritativeStore {
   // leaderboard). Deliberately NO removeProfile: profile rows are never deleted
   // server-side (RL-2, ADR-0119 D1), so a remove path would be unreachable dead code.
   readonly #profiles = new Map<string, StoreProfile>();
+  // ux2: the caller's own wallet row (ADR-0154). A SLOT, not a Map: the
+  // `my_wallet` view returns exactly one row — the caller's — so a keyed map
+  // would make another player's balance representable in the client cache.
+  // Deliberately NO removeWallet: wallet rows are never deleted server-side, so
+  // a view onDelete can only ever be the old half of an update pair.
+  #ownWallet: StoreWallet | undefined;
   readonly #batchListeners = new Set<() => void>();
   #dirty = false;
   /** Nominal server step interval (ms), used for burst detection + jitter EWMA.
@@ -629,6 +642,10 @@ export class AuthoritativeStore {
     // m17b: profile rows — cleared on disconnect; repopulated from the initial
     // onInsert burst when the subscription re-applies on reconnect.
     this.#profiles.clear();
+    // ux2: own-wallet slot — cleared on disconnect so a previous identity's balance
+    // can never be surfaced to the next one; repopulated from the `my_wallet` view's
+    // initial onInsert when the subscription re-applies (ADR-0154).
+    this.#ownWallet = undefined;
     this.#dirty = false;
   }
 
@@ -916,5 +933,23 @@ export class AuthoritativeStore {
    *  corrupt the store (one-way `server -> store -> render` flow). */
   allProfiles(): StoreProfile[] {
     return [...this.#profiles.values()];
+  }
+
+  // --- ux2: own-wallet slot ingest/read (ADR-0154 `my_wallet` view) --------------
+
+  /** Replace the own-wallet slot (insert-wins: the view re-emits the whole row on
+   *  every balance change). Deliberately NO removeWallet counterpart — wallet rows
+   *  are never deleted server-side, so an onDelete is only ever the old half of an
+   *  update pair, and `reset()` is the sole clearing path. */
+  upsertWallet(row: StoreWallet): void {
+    this.#ownWallet = row;
+    this.#dirty = true;
+  }
+
+  /** The own wallet ONLY when it belongs to `identity` — client-side owner filter,
+   *  defense in depth behind the server-side owner-scoped view (ADR-0015 V1). */
+  ownWallet(identity: string): StoreWallet | undefined {
+    const slot = this.#ownWallet;
+    return slot !== undefined && slot.ownerIdentity === identity ? slot : undefined;
   }
 }

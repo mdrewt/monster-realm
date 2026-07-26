@@ -81,6 +81,7 @@ import InventoryRow from "./inventory_table";
 import ItemRowRow from "./item_row_table";
 import MonsterPubRow from "./monster_pub_table";
 import MyConversationRow from "./my_conversation_table";
+import MyWalletRow from "./my_wallet_table";
 import NpcRow from "./npc_table";
 import PlayerRow from "./player_table";
 import PlayerQuestRow from "./player_quest_table";
@@ -370,6 +371,13 @@ const tablesSchema = __schema({
     constraints: [
     ],
   }, MyConversationRow),
+  my_wallet: __table({
+    name: 'my_wallet',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyWalletRow),
 });
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */

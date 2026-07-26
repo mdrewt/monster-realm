@@ -519,6 +519,18 @@ pub struct PlayerWallet {
     pub balance: u64,
 }
 
+/// Owner-scoped read path for `player_wallet` (ADR-0154): each client's
+/// subscription sees ONLY its own row, via the `owner_identity` unique index —
+/// never a whole-table scan. The table stays PRIVATE (ADR-0087 precedent set by
+/// `my_conversation` above): this view is the single sanctioned client read
+/// path, so `Option` is load-bearing — "no row" stays distinguishable from
+/// "balance 0" and must never be flattened through `economy::wallet_balance`.
+/// Lives next to the table it projects (visibility is a schema artifact).
+#[spacetimedb::view(name = my_wallet, public)]
+fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
+    ctx.db.player_wallet().owner_identity().find(ctx.sender)
+}
+
 // --- M17a ranked-ladder table (ADR-0119) ---------------------------------------
 
 /// Persistent per-player ranked-ladder record (M17, ADR-0119 D1) — the

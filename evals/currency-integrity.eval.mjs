@@ -5,7 +5,8 @@
 //   3. PRIVATE_TABLE   — player_wallet table is NOT public (ADR-0015 must-never-leak)
 //   4. ZERO_GUARD      — grant_currency has a zero-amount early-return guard (no phantom rows)
 //   5. SINGLE_SURFACE  — no direct .balance assignment bypassing grant/spend helpers
-//   6. ACCESSOR_BYPASS — no file outside economy.rs calls player_wallet() or constructs
+//   6. ACCESSOR_BYPASS — no file outside economy.rs / schema.rs / economy_tests.rs (see
+//                        the allowlist below) calls player_wallet() or constructs
 //                        PlayerWallet{} directly (struct-literal bypass evades criterion 5)
 //
 // Proof-of-teeth: each checker is tested against a BAD fixture (must flag) and a GOOD

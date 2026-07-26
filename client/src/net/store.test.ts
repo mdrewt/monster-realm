@@ -27,6 +27,8 @@ import {
   type StoreSkillRow,
   type StoreSpeciesRow,
   type StoreTradeOffer,
+  // ux2 (ADR-0154): owner-scoped wallet slot — see the ux2 block at the end of this file.
+  type StoreWallet,
 } from './store';
 
 function char(entityId: bigint, tileX: number, tileY: number): StoreCharacter {
@@ -2997,5 +2999,178 @@ describe('AuthoritativeStore ADR-0090/ptc5f: burst-spread reachability bound (De
       s2.upsertCharacter(char(1n, 1, 0), t0 + d);
       expect(s2.character(1n)!.latest.receivedAt).toBe(t0 + d); // no synthetic — 40 is unreachable
     }
+  });
+});
+
+// =============================================================================
+// ux2 (ADR-0154) — owner-scoped wallet SLOT: upsertWallet / ownWallet / reset
+//
+// SOURCE OF TRUTH: ux2 build plan v3 §T4 ("store slot") + "Client unit tests".
+// Tests are INTENTIONALLY RED until store.ts grows the slot. Do NOT edit them to
+// match a buggy implementation — correct from the plan only.
+//
+// CONTRACT UNDER TEST
+//   export type StoreWallet = { readonly ownerIdentity: string; readonly balance: bigint };
+//   upsertWallet(row: StoreWallet): void   — sets a SINGLE slot, marks #dirty
+//   ownWallet(identity: string): StoreWallet | undefined
+//                                          — the slot ONLY when slot.ownerIdentity === identity
+//   reset()                                — also clears the slot
+//   NO remove path exists, deliberately (server never deletes wallet rows — T2/R2).
+//
+// WHY A SLOT, NOT A MAP (§T4): the `my_wallet` view returns exactly ONE row for the
+// caller, so a Map would make another player's balance representable in the client
+// cache for free. A single slot makes that structurally unrepresentable.
+//
+// TEETH CONTRACT (what these four kill):
+//   S1 — a Number()-casting impl (`balance: 100` instead of `100n`), and an impl
+//        that returns the slot regardless of ownerIdentity (ADR-0015 V1 owner filter).
+//   S2 — an impl that stores the row but forgets `#dirty = true`, so the shop batch
+//        listener never re-renders when the balance changes after a buy/sell.
+//   S3 — an impl whose reset() forgets the slot (stale balance leaks across a
+//        reconnect / identity change), and an impl that ships a removeWallet path.
+//   S4 — an impl that ACCUMULATES (`balance += row.balance`) or that keeps the FIRST
+//        row (insert-wins-per-key rather than slot-replaces) — the buy-then-sell
+//        100→50→100 delivery would then display a wrong balance forever.
+// =============================================================================
+
+function makeWallet(ownerIdentity: string, balance: bigint): StoreWallet {
+  return { ownerIdentity, balance };
+}
+
+describe('AuthoritativeStore ux2 S1: ownWallet returns the own row and filters by identity', () => {
+  it('S1 BITES: upsertWallet + ownWallet(own identity) returns the row with a BIGINT balance', () => {
+    // Kills: an impl that Number()-casts the balance (toBe uses Object.is, so 100
+    // !== 100n and the assertion fails); an impl that stores to the wrong key.
+    const s = new AuthoritativeStore();
+    s.upsertWallet(makeWallet('alice-hex', 100n));
+
+    const own = s.ownWallet('alice-hex');
+    expect(own).toBeDefined();
+    expect(own!.ownerIdentity).toBe('alice-hex');
+    expect(typeof own!.balance).toBe('bigint');
+    expect(own!.balance).toBe(100n); // bigint literal — a `100` number impl dies here
+  });
+
+  it('S1 BITES: ownWallet(a DIFFERENT identity) returns undefined (client-side owner filter)', () => {
+    // Kills: an impl that returns the slot unconditionally (`return this.#ownWallet`).
+    // Defense in depth (ADR-0015 V1): even though the server view is owner-scoped, a
+    // stale slot from a previous identity must never be surfaced to the new one.
+    const s = new AuthoritativeStore();
+    s.upsertWallet(makeWallet('alice-hex', 100n));
+
+    expect(s.ownWallet('bob-hex')).toBeUndefined();
+  });
+
+  it('S1 BITES: a large balance survives past 2^53 as an exact bigint (no Number() round-trip)', () => {
+    // Kills: an impl that round-trips through Number() internally — 2^53+1 is lossy.
+    const s = new AuthoritativeStore();
+    const huge = 9007199254740993n; // 2^53 + 1
+    s.upsertWallet(makeWallet('alice-hex', huge));
+    expect(s.ownWallet('alice-hex')!.balance).toBe(huge);
+  });
+});
+
+describe('AuthoritativeStore ux2 S2: upsertWallet marks dirty; listeners fire once per batch', () => {
+  it('S2 BITES: upsertWallet marks dirty — flushBatch fires onBatchApplied exactly once', () => {
+    // Kills: an impl that sets the slot but forgets `this.#dirty = true`. The shop
+    // overlay would then keep showing the pre-buy balance until some unrelated row
+    // happened to dirty the store.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+
+    s.upsertWallet(makeWallet('alice-hex', 100n));
+    expect(cb).toHaveBeenCalledTimes(0); // not mid-batch — only flushBatch signals
+
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1); // exactly one coherent batch signal
+  });
+
+  it('S2 BITES: a SECOND upsert for the same owner marks dirty again (update, not just insert)', () => {
+    // Kills: an impl that only dirties when the slot was previously undefined. Every
+    // balance change after the first is an UPDATE — that is the whole point of the view.
+    const s = new AuthoritativeStore();
+    s.upsertWallet(makeWallet('alice-hex', 100n));
+    s.flushBatch(); // consume the first dirty
+
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.upsertWallet(makeWallet('alice-hex', 50n));
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AuthoritativeStore ux2 S3: reset() clears the wallet slot; no remove path exists', () => {
+  it('S3 BITES: reset() clears the slot — ownWallet returns undefined afterwards', () => {
+    // Kills: an impl whose reset() forgets the new slot. On reconnect (or on an
+    // identity change) the old player's balance would still be readable and would
+    // be rendered as the new player's gold.
+    const s = new AuthoritativeStore();
+    s.upsertWallet(makeWallet('alice-hex', 100n));
+    expect(s.ownWallet('alice-hex')).toBeDefined(); // precondition
+
+    s.reset();
+
+    expect(s.ownWallet('alice-hex')).toBeUndefined();
+  });
+
+  it('S3 BITES: reset() keeps batch listeners alive; a post-reset upsertWallet still signals', () => {
+    // Kills: an impl that clears listeners on reset (breaks the running loop).
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.upsertWallet(makeWallet('alice-hex', 100n));
+    s.flushBatch();
+
+    s.reset();
+    expect(s.ownWallet('alice-hex')).toBeUndefined();
+
+    s.upsertWallet(makeWallet('bob-hex', 7n));
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(2); // once pre-reset, once post-reset
+    expect(s.ownWallet('bob-hex')!.balance).toBe(7n);
+  });
+
+  it('S3 BITES: AuthoritativeStore exposes NO removeWallet method (§T4 no-remove policy)', () => {
+    // §T4: the server never deletes a wallet row (gated by R2), so a view onDelete can
+    // only be the OLD half of an update pair. A remove path is not merely dead — on the
+    // coalesced buy-then-sell delivery I(50) I(100) D(100) D(50) any field-equality gate
+    // would delete the LIVE row. Insert-wins + reset() is the only correct policy.
+    // Kills: an impl that adds removeWallet "for symmetry" with the other tables.
+    const s = new AuthoritativeStore();
+    expect(typeof (s as unknown as Record<string, unknown>).removeWallet).not.toBe('function');
+  });
+});
+
+describe('AuthoritativeStore ux2 S4: buy-then-sell round trip — the slot REPLACES, never accumulates', () => {
+  it('S4 BITES: upsertWallet(50n) then upsertWallet(100n) → ownWallet() is exactly 100n', () => {
+    // The real delivery shape from §T4: a buy takes 100→50, a sell takes 50→100, and the
+    // view re-emits the row each time.
+    // Kills: (a) an accumulating impl (`balance + row.balance`) → 150n;
+    //        (b) a first-write-wins impl (insert-only, ignores the update) → 50n;
+    //        (c) an impl that appends to a list and reads element [0] → 50n.
+    const s = new AuthoritativeStore();
+    s.upsertWallet(makeWallet('alice-hex', 50n));
+    s.upsertWallet(makeWallet('alice-hex', 100n));
+
+    const own = s.ownWallet('alice-hex');
+    expect(own).toBeDefined();
+    expect(own!.balance).toBe(100n);
+    expect(own!.balance).not.toBe(150n); // explicit: no accumulation
+    expect(own!.balance).not.toBe(50n); // explicit: no first-write-wins
+  });
+
+  it('S4 BITES: a wallet for a NEW owner replaces the slot entirely (the old owner is gone)', () => {
+    // Single-slot semantics: the slot is not a keyed map, so an arriving row for a
+    // different owner must not leave the previous owner readable.
+    // Kills: a Map-backed impl (which would keep both) — that is exactly the shape
+    // §T4 rejects, because another player's balance becomes representable in the cache.
+    const s = new AuthoritativeStore();
+    s.upsertWallet(makeWallet('alice-hex', 100n));
+    s.upsertWallet(makeWallet('bob-hex', 3n));
+
+    expect(s.ownWallet('bob-hex')!.balance).toBe(3n);
+    expect(s.ownWallet('alice-hex')).toBeUndefined();
   });
 });
