@@ -18,6 +18,7 @@ export class ShopView {
   readonly #forSaleList: HTMLElement;
   readonly #inventoryList: HTMLElement;
   readonly #feedbackEl: HTMLElement;
+  readonly #balanceEl: HTMLElement;
   readonly #cbs: ShopCallbacks;
   // In-flight lock: prevents double-spend when a reducer Promise is pending.
   #pending = false;
@@ -46,6 +47,16 @@ export class ShopView {
       (() => {
         throw new Error('shop-feedback missing');
       })();
+    // ux2 (ADR-0154): the gold readout is created here, not in index.html, and is
+    // inserted directly after the shop title so it reads as part of the shop panel.
+    // No inline positioning: #shop-overlay is a plain in-flow shell, and floating
+    // just this child would put a naked balance in the viewport corner while the
+    // panel it belongs to stays below the fold (owned by the overlay-registry slice).
+    const balanceEl = document.createElement('p');
+    balanceEl.id = 'shop-balance';
+    balanceEl.hidden = true;
+    this.#title.insertAdjacentElement('afterend', balanceEl);
+    this.#balanceEl = balanceEl;
     this.#cbs = cbs;
   }
 
@@ -70,6 +81,14 @@ export class ShopView {
 
   /** Render or re-render the shop view from the view model. */
   render(vm: ShopScreenViewModel): void {
+    // BEFORE the no-shop early return: the balance is owned by the wallet view, not
+    // by shop proximity, so the no-shop path must still refresh it (a write placed
+    // after the return would freeze a stale gold count on screen).
+    const known = vm.balance.kind === 'known';
+    this.#balanceEl.textContent = known ? vm.balance.label : '';
+    this.#balanceEl.hidden = !known;
+    this.#balanceEl.dataset.balanceState = vm.balance.kind;
+
     if (vm.kind === 'no-shop') {
       this.#title.textContent = 'Shop';
       this.#forSaleList.innerHTML = '<li>No shop available.</li>';
