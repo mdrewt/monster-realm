@@ -17,10 +17,11 @@
 
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import type { StoreInventory, StoreItemRow } from '../net/store';
+import type { StoreInventory, StoreItemRow, StoreWallet } from '../net/store';
 import {
   buildShopViewModel,
   type NoShopViewModel,
+  type ShopBalanceViewModel,
   type ShopInventoryItemViewModel,
   type ShopItemViewModel,
   type ShopScreenViewModel,
@@ -392,7 +393,16 @@ describe('buildShopViewModel [m13d-7]: total safety — never throws on any vali
 // ---------------------------------------------------------------------------
 
 describe('buildShopViewModel [m13d-11]: property — forSale.length === shopItems for selected shopId', () => {
-  it('[m13d-11] BITES fast-check property: forSale length = count of shopItems for selected shop', () => {
+  // ux2 (ADR-0154) EXTENSION: this property now also carries the OPTIONAL 5th
+  // `ownWallet` argument (build plan §T5 / "Client unit tests"). The original
+  // forSale-length invariant is unchanged — the wallet arbitrary is added on top,
+  // so the pre-existing tooth is preserved and a second one is folded in:
+  // `balance.kind === 'known'` iff `typeof ownWallet?.balance === 'bigint'`.
+  // The `undefined`-balance branch of the arbitrary is what makes truthiness
+  // (`wallet?.balance ? …`) and nullish-coalescing (`balance ?? 0n`) impls die here
+  // as well as in M2/M4 — under randomised input the property covers ALL THREE arms
+  // (absent / valid / malformed) in one run.
+  it('[m13d-11] BITES fast-check property: forSale length = count of shopItems for selected shop, and balance.kind tracks typeof ownWallet?.balance', () => {
     // The forSale array must contain exactly one entry per shop_item_row with a matching shopId.
     // Kills: an impl that includes items from other shops or drops items from the correct shop.
     // selectedShopId is always 1 (lowest); otherShopIds are always > 1 so the sort is deterministic.
@@ -400,7 +410,18 @@ describe('buildShopViewModel [m13d-11]: property — forSale.length === shopItem
       fc.property(
         fc.array(fc.integer({ min: 2, max: 10 }), { minLength: 0, maxLength: 10 }), // other shopIds (always > 1)
         fc.integer({ min: 0, max: 8 }), // count of items for the selected shop
-        (otherShopIds, selectedShopItemCount) => {
+        // ux2: absent wallet | well-formed wallet (INCLUDING 0n) | malformed wallet row
+        fc.oneof(
+          fc.constant(undefined),
+          fc
+            .bigInt({ min: 0n, max: 1_000_000n })
+            .map((balance) => ({ ownerIdentity: 'own-player', balance })),
+          fc.constant({
+            ownerIdentity: 'own-player',
+            balance: undefined,
+          } as unknown as StoreWallet),
+        ),
+        (otherShopIds, selectedShopItemCount, ownWallet) => {
           const selectedShopId = 1; // always lowest → always selected after sort
           const shops = [
             makeShop(selectedShopId, 'Main'),
@@ -415,8 +436,23 @@ describe('buildShopViewModel [m13d-11]: property — forSale.length === shopItem
             .filter((id) => id !== selectedShopId)
             .flatMap((id, i) => [makeShopItem(BigInt(100 + i), id, i + 50, 5n)]);
           const allItems = [...selectedItems, ...otherItems];
-          const result = buildShopViewModel(shops, allItems, new Map(), []) as ShopViewModel;
+          const result = buildShopViewModel(
+            shops,
+            allItems,
+            new Map(),
+            [],
+            ownWallet,
+          ) as ShopViewModel;
           expect(result.forSale).toHaveLength(selectedShopItemCount);
+
+          // ux2 balance invariant — totality guard is `typeof … === 'bigint'`, nothing else.
+          const expectKnown = typeof ownWallet?.balance === 'bigint';
+          expect(result.balance.kind).toBe(expectKnown ? 'known' : 'unknown');
+          if (expectKnown) {
+            const known = result.balance as Extract<ShopBalanceViewModel, { kind: 'known' }>;
+            expect(known.amount).toBe(ownWallet?.balance);
+            expect(known.label).toBe(`Gold: ${ownWallet?.balance}`);
+          }
         },
       ),
     );
@@ -572,5 +608,265 @@ describe('buildShopViewModel [m13d-15]: output structure — ShopViewModel has a
     expect(item.shopItemId).toBe(largeShopItemId);
     expect(typeof item.buyPrice).toBe('bigint');
     expect(item.buyPrice).toBe(largeBuyPrice);
+  });
+});
+
+// ===========================================================================
+// ux2 (ADR-0154) — wallet balance view model
+//
+// SOURCE OF TRUTH: ux2 build plan v3 §T5 + "Client unit tests".
+// Tests are INTENTIONALLY RED until shopModel.ts grows the balance arm.
+// Do NOT edit them to match a buggy implementation — correct from the plan only.
+//
+// CONTRACT UNDER TEST
+//   export type ShopBalanceViewModel =
+//     | { readonly kind: 'known'; readonly amount: bigint; readonly label: string } // 'Gold: 123'
+//     | { readonly kind: 'unknown' };
+//   `balance` is present on BOTH ShopViewModel and NoShopViewModel (§T5: "so the
+//   shell never decides to clear").
+//   buildShopViewModel(shops, shopItems, itemDefs, ownInventory, ownWallet?)
+//   — the 5th parameter is OPTIONAL; the totality guard is
+//   `typeof ownWallet?.balance === 'bigint'` (NOT truthiness, NOT `!= null`).
+//
+// THE SEMANTIC INVARIANT: "broke" (0n, a known balance of zero) and "dark" (no
+// wallet row subscribed yet) are DIFFERENT STATES and must never collapse into
+// one another. §"Anti-patterns" 1 names zero-conflation as the primary hazard.
+//
+// LABEL FORMAT is spec-pinned to `Gold: <amount>` (§T5 comment "'Gold: 123'").
+// It is asserted exactly so that a label which drops the amount, or which renders
+// `Gold: undefined`, cannot pass.
+// ===========================================================================
+
+type KnownBalance = Extract<ShopBalanceViewModel, { kind: 'known' }>;
+
+function makeStoreWallet(balance: bigint, ownerIdentity = 'own-player'): StoreWallet {
+  return { ownerIdentity, balance };
+}
+
+// ---------------------------------------------------------------------------
+// [ux2-M1] The 5th parameter is OPTIONAL — both existing main.ts call sites are 4-arg
+// ---------------------------------------------------------------------------
+
+describe('buildShopViewModel [ux2-M1]: 4-argument call (the existing main.ts shape) → balance unknown', () => {
+  it('[ux2-M1] BITES: exactly FOUR arguments → balance.kind === "unknown" (no wallet ⇒ dark)', () => {
+    // §T5 / anti-pattern 8: main.ts is FORBIDDEN in this slice and has TWO call sites
+    // (:701-708 KeyG and :1265-1279 the batch listener). Both stay 4-arg, so the 5th
+    // parameter must be optional AND the no-wallet case must degrade to `unknown`.
+    // Kills: (a) a required 5th parameter (this call would be a compile error and the
+    //            impl would read `undefined.balance` at runtime);
+    //        (b) `balance ?? 0n` zero-conflation — it would report kind:'known' here,
+    //            painting a permanent, false "Gold: 0" for every player.
+    const shops = [makeShop(1, 'General Store')];
+    const defs = new Map([[3, makeItemDef(3, { name: 'Potion' })]]);
+    const shopItems = [makeShopItem(1n, 1, 3, 50n)];
+
+    const result = buildShopViewModel(shops, shopItems, defs, []) as ShopViewModel;
+
+    expect(result.kind).toBe('shop');
+    expect(result.balance.kind).toBe('unknown');
+    // The unknown arm carries NO amount and NO label — illegal states are not representable.
+    expect((result.balance as Partial<KnownBalance>).amount).toBeUndefined();
+    expect((result.balance as Partial<KnownBalance>).label).toBeUndefined();
+  });
+
+  it('[ux2-M1] BITES: 4-argument call on the no-shop path also yields balance.kind === "unknown"', () => {
+    // The no-shop early path must produce the same dark state, not a missing `balance`
+    // field (which would make the shell crash on `vm.balance.kind`).
+    const result = buildShopViewModel([], [], new Map(), []) as NoShopViewModel;
+
+    expect(result.kind).toBe('no-shop');
+    expect(result.balance).toBeDefined();
+    expect(result.balance.kind).toBe('unknown');
+  });
+
+  it('[ux2-M1] BITES: an explicitly-undefined 5th argument behaves exactly like omitting it', () => {
+    // Kills: an impl that distinguishes "argument absent" from "argument undefined"
+    // (e.g. via `arguments.length`), which would diverge once ux2b wires
+    // `store.ownWallet(identity)` — that expression legitimately returns undefined.
+    const shops = [makeShop(1)];
+    const omitted = buildShopViewModel(shops, [], new Map(), []) as ShopViewModel;
+    const explicit = buildShopViewModel(shops, [], new Map(), [], undefined) as ShopViewModel;
+
+    expect(explicit.balance).toEqual(omitted.balance);
+    expect(explicit.balance.kind).toBe('unknown');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [ux2-M2] CORE SEMANTIC TOOTH — 0n is KNOWN, and "broke" never collapses into "dark"
+// ---------------------------------------------------------------------------
+
+describe('buildShopViewModel [ux2-M2]: a 0n balance is KNOWN — broke is not the same state as dark', () => {
+  it('[ux2-M2] BITES: ownWallet with balance 0n → kind:"known", amount:0n, label:"Gold: 0"', () => {
+    // THE anti-pattern-1 kill (zero-conflation). Wrong impls that die here:
+    //   `wallet?.balance ? known : unknown`      → 0n is falsy → reports 'unknown'
+    //   `if (wallet?.balance) {...}`             → same
+    //   `wallet && wallet.balance ? ... : ...`   → same
+    //   a label built from a truthiness fallback (`balance || '—'`) → label ≠ 'Gold: 0'
+    // A player who has just spent their last gold MUST see "Gold: 0", not a hidden
+    // readout that is indistinguishable from "the wallet view has not arrived yet".
+    const shops = [makeShop(1, 'General Store')];
+
+    const result = buildShopViewModel(
+      shops,
+      [],
+      new Map(),
+      [],
+      makeStoreWallet(0n),
+    ) as ShopViewModel;
+
+    expect(result.balance.kind).toBe('known');
+    const known = result.balance as KnownBalance;
+    expect(known.amount).toBe(0n); // bigint literal — `0` (number) dies here
+    expect(typeof known.amount).toBe('bigint');
+    expect(known.label).toBe('Gold: 0');
+  });
+
+  it('[ux2-M2] BITES: the 0n (broke) result is DISTINGUISHABLE from the no-wallet (dark) result', () => {
+    // The two states must not collapse in EITHER direction:
+    //   `balance ?? 0n` collapses dark → broke (dark would render 'Gold: 0');
+    //   truthiness collapses broke → dark (0n would render nothing).
+    // This asserts the discriminants differ AND that no string the dark arm can
+    // produce equals the broke label.
+    const shops = [makeShop(1)];
+
+    const broke = buildShopViewModel(
+      shops,
+      [],
+      new Map(),
+      [],
+      makeStoreWallet(0n),
+    ) as ShopViewModel;
+    const dark = buildShopViewModel(shops, [], new Map(), []) as ShopViewModel;
+
+    expect(broke.balance.kind).toBe('known');
+    expect(dark.balance.kind).toBe('unknown');
+    expect(broke.balance.kind).not.toBe(dark.balance.kind);
+    // The dark arm produces NO label at all, so it can never be mistaken for 'Gold: 0'.
+    expect((dark.balance as Partial<KnownBalance>).label).toBeUndefined();
+    expect((broke.balance as KnownBalance).label).not.toBe(
+      (dark.balance as Partial<KnownBalance>).label,
+    );
+  });
+
+  it('[ux2-M2] BITES: a positive balance keeps the exact bigint amount and the spec label format', () => {
+    // Kills: an impl that Number()-casts the amount (2^53+1 is lossy) or that formats
+    // the label without the amount.
+    const shops = [makeShop(1)];
+    const huge = 9007199254740993n; // 2^53 + 1
+
+    const result = buildShopViewModel(
+      shops,
+      [],
+      new Map(),
+      [],
+      makeStoreWallet(huge),
+    ) as ShopViewModel;
+
+    const known = result.balance as KnownBalance;
+    expect(typeof known.amount).toBe('bigint');
+    expect(known.amount).toBe(huge);
+    expect(known.label).toBe('Gold: 9007199254740993');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [ux2-M3] `balance` is present on the no-shop variant too
+// ---------------------------------------------------------------------------
+
+describe('buildShopViewModel [ux2-M3]: no-shop + a wallet → kind "no-shop" AND balance "known"', () => {
+  it('[ux2-M3] BITES: empty shops + wallet(123n) → { kind:"no-shop", balance:{kind:"known", amount:123n} }', () => {
+    // §T5: `balance` is present on BOTH variants "so the shell never decides to clear".
+    // Kills: an impl that computes the balance only on the `shop` path and returns a
+    // bare `{ kind: 'no-shop' }` — the shell would then read `vm.balance.kind` off
+    // undefined and THROW inside a store batch listener (starving its siblings).
+    const result = buildShopViewModel([], [], new Map(), [], makeStoreWallet(123n));
+
+    expect(result.kind).toBe('no-shop');
+    const noShop = result as NoShopViewModel;
+    expect(noShop.balance).toBeDefined();
+    expect(noShop.balance.kind).toBe('known');
+    expect((noShop.balance as KnownBalance).amount).toBe(123n);
+    expect((noShop.balance as KnownBalance).label).toBe('Gold: 123');
+  });
+
+  it('[ux2-M3] BITES: the SAME wallet yields the SAME balance vm on the shop and no-shop paths', () => {
+    // Kills: an impl that duplicates the mapping and lets the two copies drift (e.g.
+    // 'Gold: 5' on one path and '5 gold' on the other).
+    const withShop = buildShopViewModel(
+      [makeShop(1)],
+      [],
+      new Map(),
+      [],
+      makeStoreWallet(5n),
+    ) as ShopViewModel;
+    const withoutShop = buildShopViewModel(
+      [],
+      [],
+      new Map(),
+      [],
+      makeStoreWallet(5n),
+    ) as NoShopViewModel;
+
+    expect(withoutShop.balance).toEqual(withShop.balance);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [ux2-M4] Malformed wallet rows degrade to `unknown` — and NEVER throw
+// ---------------------------------------------------------------------------
+
+describe('buildShopViewModel [ux2-M4]: malformed wallet row → unknown, never throws', () => {
+  it('[ux2-M4] BITES: { ownerIdentity:"x", balance: undefined } → balance.kind "unknown" (no throw)', () => {
+    // §T5: `typeof ownWallet?.balance === 'bigint'` is the totality guard. A row that
+    // arrives with a missing field (bad binding, hand-built fake, future schema drift)
+    // must degrade to `unknown`, never render 'Gold: undefined', and never throw —
+    // a throw here starves sibling store batch listeners (shopModel.ts header contract).
+    // Kills: `ownWallet !== undefined ? known : unknown` and `ownWallet != null ? …`,
+    // both of which report kind:'known' with a garbage label for this input.
+    const malformed = { ownerIdentity: 'x', balance: undefined } as unknown as StoreWallet;
+    const shops = [makeShop(1)];
+
+    let result!: ShopScreenViewModel;
+    expect(() => {
+      result = buildShopViewModel(shops, [], new Map(), [], malformed);
+    }).not.toThrow();
+
+    expect(result.balance.kind).toBe('unknown');
+    expect((result.balance as Partial<KnownBalance>).label).toBeUndefined();
+  });
+
+  it('[ux2-M4] BITES: a NUMBER balance (100, not 100n) → "unknown" — typeof discipline, not truthiness', () => {
+    // A number is truthy and non-null, so ONLY the `typeof === 'bigint'` guard rejects it.
+    // Kills: `!= null` and truthiness guards, which would emit kind:'known' from a
+    // lossy Number-typed balance and silently normalise a precision bug into the UI.
+    const numeric = { ownerIdentity: 'x', balance: 100 } as unknown as StoreWallet;
+
+    const result = buildShopViewModel([makeShop(1)], [], new Map(), [], numeric) as ShopViewModel;
+
+    expect(result.balance.kind).toBe('unknown');
+  });
+
+  it('[ux2-M4] BITES: a STRING balance ("100") → "unknown" (no coercion into the label)', () => {
+    // Kills: an impl that builds the label by interpolation without checking the type —
+    // it would print a plausible-looking 'Gold: 100' from an untyped value.
+    const stringy = { ownerIdentity: 'x', balance: '100' } as unknown as StoreWallet;
+
+    const result = buildShopViewModel([makeShop(1)], [], new Map(), [], stringy) as ShopViewModel;
+
+    expect(result.balance.kind).toBe('unknown');
+  });
+
+  it('[ux2-M4] BITES: a null wallet argument → "unknown" (no throw)', () => {
+    // `store.ownWallet()` returns `undefined`, but a null can reach here through any
+    // untyped call site. Optional chaining handles it; a bare `ownWallet.balance` throws.
+    const nullish = null as unknown as StoreWallet | undefined;
+
+    let result!: ShopScreenViewModel;
+    expect(() => {
+      result = buildShopViewModel([makeShop(1)], [], new Map(), [], nullish);
+    }).not.toThrow();
+
+    expect(result.balance.kind).toBe('unknown');
   });
 });
