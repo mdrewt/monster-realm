@@ -1557,7 +1557,11 @@ fn rust_fn_bodies(src: &str) -> Vec<(String, String, String)> {
             continue;
         };
 
-        out.push((name, src[idx..open_abs].to_string(), src[open_abs..=close_abs].to_string()));
+        out.push((
+            name,
+            src[idx..open_abs].to_string(),
+            src[open_abs..=close_abs].to_string(),
+        ));
     }
     out
 }
