@@ -33,6 +33,8 @@ export class BattleView {
   readonly #opponentCardEl: HTMLDivElement;
   readonly #skillsEl: HTMLDivElement;
   readonly #actionsEl: HTMLDivElement;
+  /** Empty-swap explainer; shown only on an ongoing battle with no swap (ux4, ADR-0155). */
+  readonly #swapHintEl: HTMLDivElement;
   readonly #outcomeEl: HTMLDivElement;
   /** PvP status banner ("Waiting for opponent…" / ""); hidden when not in PvP (m16b). */
   readonly #pvpStatusEl: HTMLDivElement;
@@ -92,6 +94,23 @@ export class BattleView {
     this.#actionsEl.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;';
     this.#root.appendChild(this.#actionsEl);
 
+    // ux4 (ADR-0155): explains the ABSENCE of a swap control. A SIBLING of #actionsEl — never
+    // its child, since #renderActions calls #actionsEl.replaceChildren() before rendering (which
+    // would detach it on the next refresh) — and never appended to the caller-supplied `parent`.
+    // Copy is honesty-constrained (dead KeyB, persistent terminal overlay, zone-gated heal,
+    // mutable party_slot) — ADR-0155 §3; teeth in battleView.test.ts H1. The claim is scoped
+    // "in this battle" deliberately: party_slot is mutable mid-battle while sideA.team is a
+    // snapshot, so an unscoped "no healthy party monster" is falsifiable — keep the scope.
+    this.#swapHintEl = document.createElement('div');
+    this.#swapHintEl.setAttribute('data-testid', 'battle-swap-hint');
+    this.#swapHintEl.textContent =
+      'No healthy party monster in this battle to swap in. ' +
+      'When this battle ends, press Esc, then B for Party & Box.';
+    this.#swapHintEl.style.cssText =
+      'width:100%;max-width:320px;text-align:center;margin-bottom:8px;' +
+      'font-size:12px;color:#aab;display:none;';
+    this.#root.appendChild(this.#swapHintEl);
+
     // PvP status banner: "Waiting for opponent…" when pvpPendingSubmit; hidden otherwise.
     this.#pvpStatusEl = document.createElement('div');
     this.#pvpStatusEl.setAttribute('data-testid', 'pvp-status');
@@ -139,6 +158,8 @@ export class BattleView {
       this.#pvpStatusEl.style.display = 'none';
       // ux1 (ADR-0151 D3): reset the hint too, per this branch's weather/pvpStatus precedent.
       this.#continueHintEl.style.display = 'none';
+      // ux4 (ADR-0155): same precedent; defense-only — LIVE reset is #renderActions' 'none' arm.
+      this.#swapHintEl.style.display = 'none';
       this.hide();
       return;
     }
@@ -259,6 +280,10 @@ export class BattleView {
     if (vm.canSwap) {
       this.#renderSwapButtons(vm);
     }
+    // ux4 (ADR-0155): toggled inline so the hint and the swap buttons read the SAME `vm.canSwap`
+    // in the SAME method. The `Ongoing` conjunct is required — canSwap is false on EVERY terminal
+    // outcome, so without it the hint would sit beside "Victory!". No isPvp branch (ADR-0151 D3).
+    this.#swapHintEl.style.display = vm.outcome === 'Ongoing' && !vm.canSwap ? 'block' : 'none';
     // Recruit is wild-only (canRecruit). Render the bait selector first so the
     // Recruit button can read the current selection at click time.
     this.#baitSelectEl = null;
