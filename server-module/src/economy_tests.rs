@@ -1886,7 +1886,9 @@ fn no_forged_view_context_construction() {
     let struct_literal = ["ViewContext", "{"].concat();
 
     for (file, src) in [("schema.rs", SCHEMA_SOURCE), ("economy.rs", ECONOMY_SOURCE)] {
-        let compact = compact_ws(&strip_rust_strings_economy(&strip_rust_comments_economy(src)));
+        let compact = compact_ws(&strip_rust_strings_economy(&strip_rust_comments_economy(
+            src,
+        )));
         for needle in [ctor.as_str(), struct_literal.as_str()] {
             assert!(
                 !compact.contains(needle),
