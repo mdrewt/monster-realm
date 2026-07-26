@@ -2600,3 +2600,262 @@ describe('main.ts wiring (ux1, ADR-0151): the Esc-to-continue promise and its ze
     ).toBe(-1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// nh3 (ADR-0152) — the epoch capture at the rejection seam + the send-seq FLOOR.
+// SOURCE OF TRUTH: specs/monster-realm-v2/M-postgate-netcode-hardening.spec.md §nh3.
+//
+// EARS nh3-1 (VERBATIM): "`Predictor` SHALL carry an epoch/generation identifier,
+//   bumped on every `resetPredictionState()` rebuild. A rejection `.catch`'s captured
+//   epoch SHALL be compared against the live predictor's current epoch before calling
+//   `dropRejected(seq)`; a mismatch SHALL no-op instead of evicting."
+// PLUS the supervisor-added Case-M2 send-seq FLOOR (nh3 plan §1 mechanism 2): main.ts
+//   keeps `let lastSentSeq` updated at the single send site and `resetPredictionState()`
+//   calls `predictor.seedSeq(lastSentSeq)` on the fresh instance, so a rebuilt predictor
+//   can never re-issue a seq the server has already seen ("stale seq" rejection of the
+//   player's first post-warp move — the arm no rejection-side guard can close).
+//
+// SPEC CONFORMANCE: the epoch COMPARISON lives inside `dropRejected` (the callee), not
+// literally in the `.catch` — sanctioned by spec §3, and it is the only placement a
+// required parameter can enforce. What main.ts owes is the CAPTURE and the pass-through.
+//
+// TOOTH -> CLAIM map (correctness vs style, stated honestly):
+//   W-NH3-EPOCH-CAPTURED  (a) STYLE pin: ADR-0085 A2 posture — the closure captures
+//                             PRIMITIVES at send time (`const epoch = intent.epoch;`),
+//                             never the predictor instance, and captures before the
+//                             closure exists. Not a correctness proof on its own.
+//   W-NH3-DROP-GUARDED    (b) CORRECTNESS: the 2-arg guarded call is the ONLY predictor
+//                             touch in the rejection `.catch`.
+//   W-NH3-FLOOR-SEND      (c) CORRECTNESS: the floor is recorded at the send site and
+//                             its `let` is NOT function-local (a function-local one
+//                             resets every call → the floor silently does nothing).
+//   W-NH3-FLOOR-SEED      (c) CORRECTNESS: the floor is applied AFTER the rebuild.
+// The remaining correctness pins live outside this file: the required-param + brand
+// SIGNATURE scan and the N1-N6 behaviour teeth in prediction/predictor.test.ts.
+//
+// WHY stripLineComments (NOT raw, and NOT stripBlockComments alone): the ADR-0085 A2
+// comment block at main.ts:457-470 is `//`-style and its nh3 rewrite WILL mention
+// `dropRejected(`, `epoch`, `seedSeq(lastSentSeq)` in prose. Scanning raw source would
+// let that comment satisfy every needle below — the classic vacuous-green. `bodyRegion`
+// drops the anchor's own line and then strips block comments FIRST, then line comments.
+//
+// ANCHOR DISCIPLINE (nh1 post-mortem): needle-bounded regions only, every anchor's
+// uniqueness re-asserted at runtime, no fixed-width `slice(i, i + N)` windows, and no
+// `new RegExp` (Semgrep-banned repo-wide).
+// ---------------------------------------------------------------------------
+
+/** The single movement send site (`sendIntent`). START is the enqueue call — verified
+ *  unique in main.ts (one occurrence, ~line 453); END is the arrow directly below the
+ *  function (~line 474). The region therefore covers the seq/epoch capture, the reducer
+ *  call and the whole rejection `.catch` body, and nothing else. */
+const NH3_SEND_START = 'const intent = predictor.enqueue(input);';
+const NH3_SEND_END = 'const step = (dir';
+
+/** The predictor rebuild (`resetPredictionState`). START is the declaration (unique —
+ *  the two CALL sites have no `function ` prefix); END is the next declaration. */
+const NH3_RESET_START = 'function resetPredictionState';
+const NH3_RESET_END = 'function switchZone';
+
+describe('★ main.ts wiring (nh3/ADR-0152): epoch captured at the rejection seam + seq floor', () => {
+  it('★ W-NH3-EPOCH-CAPTURED BITES: sendIntent captures `const epoch = intent.epoch;` before the .catch', () => {
+    // RED AT AUTHORING TIME: main.ts:455 captures only `const seq = intent.seq;` — the
+    // needle does not exist (0 occurrences), so this reds on the unfixed source.
+    //
+    // WRONG IMPL KILLED (1): reading `intent.epoch` INSIDE the `.catch` closure. That
+    // retains the whole intent object (and, transitively, whatever it references) on a
+    // promise that may never settle after a socket drop — the exact retention ADR-0085
+    // A2 forbids ("capture primitives, never the instance"). The ordering assertion
+    // below (capture before `.catch(`) is what catches it.
+    // WRONG IMPL KILLED (2): capturing the epoch from somewhere OTHER than the intent
+    // just issued (e.g. a module-level `let currentEpoch` mutated elsewhere) — the
+    // whole-statement needle `const epoch = intent.epoch;` plus the "exactly one
+    // `epoch =` assignment in the region" count rules that out.
+    const src = readMainTs();
+    expectUniqueAnchor(src, NH3_SEND_START);
+    expectUniqueAnchor(src, NH3_SEND_END);
+    const region = bodyRegion(src, NH3_SEND_START, NH3_SEND_END);
+
+    // ADR-0116 bail-guards: a collapsed region, or one that no longer contains the
+    // eviction seam, must red LOUDLY rather than pass vacuously.
+    expect(
+      region.trim().length,
+      'the sendIntent region collapsed to nothing — the anchors no longer bound the send site',
+    ).toBeGreaterThan(0);
+    expect(
+      region.includes('dropRejected('),
+      'the sendIntent region must still contain the eviction call dropRejected( — if it does ' +
+        'not, these anchors no longer bound the rejection seam and every needle below is vacuous',
+    ).toBe(true);
+
+    expect(
+      region.includes('const epoch = intent.epoch;'),
+      'sendIntent must capture the epoch as the WHOLE statement `const epoch = intent.epoch;` ' +
+        'beside `const seq = intent.seq;` (ADR-0152 / ADR-0085 A2: capture primitives at send ' +
+        'time). RED today: main.ts captures only the seq',
+    ).toBe(true);
+    expect(
+      region.split('epoch =').length - 1,
+      'the sendIntent region must contain EXACTLY ONE `epoch =` assignment — a second one ' +
+        'means the epoch passed to dropRejected may not be the one this intent was stamped ' +
+        'with (e.g. re-derived from a mutable module-level variable at fire time)',
+    ).toBe(1);
+
+    const capIdx = region.indexOf('const epoch = intent.epoch;');
+    const catchIdx = region.indexOf('.catch(');
+    expect(
+      catchIdx,
+      'the sendIntent region must contain the rejection `.catch(` — without it there is no ' +
+        'rejection seam to guard',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      capIdx,
+      'the epoch must be captured BEFORE the `.catch(` closure is created — reading ' +
+        '`intent.epoch` inside the closure retains the intent object on a promise that may ' +
+        'never settle after a socket drop (ADR-0085 A2 forbids holding non-primitives there)',
+    ).toBeLessThan(catchIdx);
+  });
+
+  it('★ W-NH3-DROP-GUARDED BITES: the rejection .catch calls predictor.dropRejected(seq, epoch) and touches the predictor nowhere else', () => {
+    // RED AT AUTHORING TIME: main.ts:471 is `if (predictor.dropRejected(seq))` — the
+    // 2-arg needle has 0 occurrences on the unfixed source.
+    //
+    // WRONG IMPL KILLED (1): a revert of the call site to the 1-arg form (tsc also
+    // catches that once the param is required — this is the belt).
+    // WRONG IMPL KILLED (2): the SELF-APPROVING call — passing anything read from the
+    // LIVE predictor instead of the captured epoch (`predictor.dropRejected(seq,
+    // predictor.<something>)`). Such a call always matches, i.e. the guard is deleted
+    // at the call site while every behaviour test in prediction/ stays green. The
+    // "exactly as many `predictor.` references as guarded calls" count is the kill;
+    // predictor.test.ts's W-NH3-NO-GETTER closes the same hole from the other side by
+    // banning the getter that would make it writable.
+    // WRONG IMPL KILLED (3): a second, UNGUARDED predictor mutation smuggled into the
+    // same `.catch` (e.g. `predictor.seedSeq(...)` on a rejection).
+    const src = readMainTs();
+    expectUniqueAnchor(src, NH3_SEND_START);
+    expectUniqueAnchor(src, NH3_SEND_END);
+    const region = bodyRegion(src, NH3_SEND_START, NH3_SEND_END);
+    const catchIdx = region.indexOf('.catch(');
+    expect(
+      catchIdx,
+      'the sendIntent region must contain the rejection `.catch(` (ADR-0085 D3 send seam)',
+    ).toBeGreaterThanOrEqual(0);
+    // squashWhitespace so the needle survives any biome line-wrapping of the call.
+    const catchBody = squashWhitespace(region.slice(catchIdx));
+
+    // ADR-0116 bail-guard: the slice must really contain the eviction seam.
+    expect(
+      catchBody.includes('dropRejected('),
+      'the `.catch` body must contain dropRejected( — otherwise this scan is judging the ' +
+        'wrong slice of main.ts',
+    ).toBe(true);
+
+    const guardedCalls = catchBody.split('predictor.dropRejected(seq, epoch)').length - 1;
+    expect(
+      guardedCalls,
+      'the rejection `.catch` must call `predictor.dropRejected(seq, epoch)` — the CAPTURED ' +
+        'epoch, passed positionally as the second argument (ADR-0152). RED today: the call ' +
+        'site is still the 1-arg `predictor.dropRejected(seq)`',
+    ).toBeGreaterThanOrEqual(1);
+
+    const predictorRefs = catchBody.split('predictor.').length - 1;
+    expect(
+      predictorRefs,
+      'the rejection `.catch` must touch `predictor.` ONLY through the guarded ' +
+        'dropRejected(seq, epoch) call. Any additional reference is either a self-approving ' +
+        'epoch read from the live instance (which deletes the guard at the call site while ' +
+        'every unit test stays green) or an unguarded predictor mutation on a rejection path',
+    ).toBe(guardedCalls);
+  });
+
+  it('★ W-NH3-FLOOR-SEND BITES: the send site records the seq floor, and `lastSentSeq` is not function-local', () => {
+    // RED AT AUTHORING TIME: `lastSentSeq` does not exist in main.ts (0 occurrences).
+    //
+    // WRONG IMPL KILLED (1): the floor is never recorded — Case M2 stays open (the
+    // rebuilt predictor re-issues a seq the server already acked, that op is rejected as
+    // "stale seq", and the player's first post-warp move is swallowed). The epoch guard
+    // cannot close this arm: that rejection carries the LIVE epoch and is correct.
+    // WRONG IMPL KILLED (2, the sneaky one): `let lastSentSeq = 0;` declared INSIDE
+    // sendIntent. Both needles above would still be present, the code compiles, lint is
+    // clean — and the variable resets to 0 on every call, so `seedSeq(0)` is a no-op and
+    // the floor does nothing at all. The scope assertion below is the only thing that
+    // reds it.
+    const src = readMainTs();
+    expectUniqueAnchor(src, NH3_SEND_START);
+    expectUniqueAnchor(src, NH3_SEND_END);
+    expectUniqueAnchor(src, 'function sendIntent(');
+    const region = bodyRegion(src, NH3_SEND_START, NH3_SEND_END);
+
+    expect(
+      region.includes('lastSentSeq = seq;'),
+      'the single send site must record the floor with `lastSentSeq = seq;` beside ' +
+        '`const seq = intent.seq;` (nh3 plan §1 mechanism 2) — this is the value ' +
+        'resetPredictionState() seeds the rebuilt predictor with',
+    ).toBe(true);
+
+    const stripped = stripLineComments(src);
+    // Anti-vacuity (nh2 precedent): stripBlockComments BAILS and drops the remainder on an
+    // unterminated `/*`; a stripped body under half the raw size means the strip ate the file.
+    expect(
+      stripped.length,
+      'comment-stripped main.ts collapsed to under half its raw size — the block-comment strip ' +
+        'bailed early (unterminated `/*`), so the scope scan below would cover only a prefix',
+    ).toBeGreaterThan(src.length / 2);
+    expect(
+      stripped.includes('let lastSentSeq'),
+      'main.ts must DECLARE the floor accumulator (`let lastSentSeq = 0;` per nh3 plan §1) ' +
+        'as live code, not only assign to it',
+    ).toBe(true);
+
+    // The declaration must live at MODULE scope, i.e. anywhere except inside sendIntent.
+    const sendFnBody = bodyRegion(src, 'function sendIntent(', NH3_SEND_END);
+    expect(
+      sendFnBody.includes('let lastSentSeq'),
+      'the `let lastSentSeq` declaration must NOT be inside sendIntent — a function-local ' +
+        'accumulator is re-initialised on every send, so `predictor.seedSeq(lastSentSeq)` ' +
+        'would always seed 0 and the Case-M2 floor would silently do nothing while both ' +
+        'needles above still match',
+    ).toBe(false);
+  });
+
+  it('★ W-NH3-FLOOR-SEED BITES: resetPredictionState() seeds the FRESH predictor with the floor, after constructing it', () => {
+    // RED AT AUTHORING TIME: resetPredictionState() constructs the predictor and never
+    // calls seedSeq (0 occurrences of the needle in main.ts).
+    //
+    // WRONG IMPL KILLED (1): no seeding at all — Case M2 stays open (see W-NH3-FLOOR-SEND).
+    // WRONG IMPL KILLED (2, the ordering mutant): `predictor.seedSeq(lastSentSeq);` placed
+    // BEFORE `predictor = new Predictor(...)`. That seeds the DEAD instance — the one about
+    // to be discarded — so the fresh predictor still starts at #nextSeq = 0 and re-issues
+    // the colliding seq. Every needle-presence check would pass; only the position compare
+    // reds it.
+    // WRONG IMPL KILLED (3): seeding with something other than the floor (e.g.
+    // `seedSeq(0)`) — the contiguous needle includes the argument.
+    const src = readMainTs();
+    expectUniqueAnchor(src, NH3_RESET_START);
+    expectUniqueAnchor(src, NH3_RESET_END);
+    const region = squashWhitespace(bodyRegion(src, NH3_RESET_START, NH3_RESET_END));
+
+    // ADR-0116 bail-guard: prove this really is the rebuild body before judging it.
+    expect(
+      region.includes('new Predictor('),
+      'the resetPredictionState region must contain the `new Predictor(` rebuild — if it does ' +
+        'not, these anchors no longer bound the rebuild and the pin below is vacuous',
+    ).toBe(true);
+
+    const seedIdx = region.indexOf('predictor.seedSeq(lastSentSeq);');
+    expect(
+      seedIdx,
+      'resetPredictionState() must call `predictor.seedSeq(lastSentSeq);` on the freshly ' +
+        'constructed predictor (nh3 plan §1 mechanism 2) — without it the rebuilt instance ' +
+        "restarts #nextSeq at 0 and re-issues seqs the server has already acked (Case M2's " +
+        'swallowed first post-warp move)',
+    ).toBeGreaterThanOrEqual(0);
+
+    const ctorIdx = region.indexOf('new Predictor(');
+    expect(
+      ctorIdx,
+      'the seedSeq(lastSentSeq) call must come AFTER `predictor = new Predictor(...)` — placed ' +
+        'before it, the floor is applied to the DEAD instance and the fresh predictor still ' +
+        'starts at 0 (a needle-presence-only tooth would not notice)',
+    ).toBeLessThan(seedIdx);
+  });
+});

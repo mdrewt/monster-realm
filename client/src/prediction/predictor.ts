@@ -31,16 +31,31 @@ export type QueueOp =
   | { readonly kind: 'Clear' };
 
 // Internal bookkeeping shape of #pending — deliberately unexported: callers see
-// only IntentToSend out and a bare seq into dropRejected (simplify F2, m13.5b).
+// only IntentToSend out and a (seq, epoch) pair into dropRejected (simplify F2, m13.5b; nh3).
 interface PendingOp {
   readonly seq: number;
   readonly op: QueueOp;
 }
 
+/**
+ * nh3 (ADR-0152): the predictor's generation identifier — a BRANDED number, not a bare
+ * alias. The brand makes it a compile error to pass a plain number (e.g. the seq itself)
+ * where a generation is required, so the self-approving call `dropRejected(seq, seq)` is
+ * unwriteable at every call site. Values are minted ONLY at `Predictor` construction (one
+ * per instance, strictly increasing module-wide) and are readable ONLY from an issued
+ * `IntentToSend` — deliberately no public accessor on the class (plan A8), so a caller
+ * cannot read the LIVE value and vacuously self-approve a rejection.
+ */
+export type PredictorEpoch = number & { readonly __brand: unique symbol };
+
 /** What `enqueue`/`setMove`/`clearQueue` surface for M4 to send to the M2 reducers. */
 export interface IntentToSend {
   readonly seq: number;
   readonly op: QueueOp;
+  /** The issuing instance's generation (nh3): captured as a primitive at send time and
+   *  passed back to `dropRejected`, so a stale rejection addressed to a discarded
+   *  predictor can be told apart from a live one. */
+  readonly epoch: PredictorEpoch;
 }
 
 export interface DrainResult {
@@ -86,10 +101,17 @@ export function boundSeq(seq: bigint): number {
 }
 
 export class Predictor {
+  // nh3 (ADR-0152): module-wide generation counter — class-scoped rather than loose
+  // module state (same idiom as connection.ts's buildGen, different scope). Pre-
+  // incremented at construction, so the first epoch is 1 and a plausible literal 0
+  // can never match any instance.
+  static #nextEpoch = 0;
+
   readonly #applyMove: ApplyMove;
   readonly #stepMs: number;
   readonly #queueCap: number;
   readonly #pendingCap: number; // ADR-0013.5: unacked-ops backpressure bound
+  readonly #epoch: PredictorEpoch; // nh3: this instance's generation, constructor-assigned ONCE
 
   #predicted: WasmCharacterState | undefined; // undefined until the first own-row seeds it
   #queue: WasmMoveInput[] = []; //               the LOCAL intent queue
@@ -115,6 +137,11 @@ export class Predictor {
     this.#stepMs = stepMs;
     this.#queueCap = queueCap;
     this.#pendingCap = pendingCap;
+    // nh3: assigned ONCE here — #record must never re-read the static counter (a
+    // per-record read would stamp intents from ONE instance with drifting generations
+    // whenever another instance is constructed in between; N5 pins this). The single
+    // `as PredictorEpoch` cast in the codebase lives at this mint site.
+    this.#epoch = ++Predictor.#nextEpoch as PredictorEpoch;
   }
 
   // --- input: mutate the QUEUE (+ record the op in pending), never `predicted` ---
@@ -157,13 +184,18 @@ export class Predictor {
   #record(op: QueueOp): IntentToSend {
     const seq = ++this.#nextSeq; // strictly increasing
     this.#pending.push({ seq, op });
-    return { seq, op };
+    return { seq, op, epoch: this.#epoch }; // nh3: stamp the constructor-assigned generation
   }
 
   /**
-   * Evict the pending op with exactly this `seq` (M13.5b, ADR-0085). Returns true
-   * iff an op was removed; unknown/already-dropped seq is an idempotent no-op
-   * (false, no state change).
+   * Evict the pending op with exactly this `seq` (M13.5b, ADR-0085) — PROVIDED the
+   * rejection belongs to THIS predictor generation (nh3, ADR-0152). `epoch` is the
+   * generation the caller captured from the issued intent at send time; when it is
+   * not this instance's own, the call is a TOTAL no-op — returns `false`, mutates
+   * nothing — because the rejection was addressed to a discarded (pre-warp /
+   * pre-reconnect) instance's op, not to anything this instance owns. Otherwise
+   * returns true iff an op was removed; an unknown/already-dropped seq is an
+   * idempotent no-op (false, no state change).
    *
    * WHY: this is eviction of a KNOWN-DEAD op — the server rejected the reducer call
    * (its accept-time ack write rolled back with the transaction on `Err`), so the
@@ -180,18 +212,24 @@ export class Predictor {
    * force a reconcile from current store state (main.ts `reconcileFromStore()`);
    * a `false` return needs no forced reconcile — nothing was removed.
    *
-   * ptc5f epoch-eviction pin (ADR-0085 amendment / ADR-0142 D4): within ONE
-   * predictor `#nextSeq` is strictly increasing and never reused, so this evicts
-   * exactly the intended dead op. ACROSS an own-zone warp, though,
-   * `resetPredictionState()` rebuilds the predictor on a LIVE socket and reconcile
-   * re-seeds `#nextSeq` at `ackedSeq`, so a still-in-flight pre-warp op and the
-   * fresh predictor's next op share a seq — a stale rejection's `.catch` can then
-   * `dropRejected` the NEW legit op (a swallowed first-post-warp move, reachable in
-   * SOLO play by warping while holding a key). Accepted risk for the closed
-   * playtest; the epoch/generation guard is DEFERRED to
-   * `M-postgate-netcode-hardening`. predictor.test.ts pins this reachability bound.
+   * nh3 epoch guard (ADR-0152, closing the ptc5f/ADR-0142 D4 accepted risk): within
+   * ONE predictor `#nextSeq` is strictly increasing and never reused, so this evicts
+   * exactly the intended dead op. ACROSS an own-zone warp, `resetPredictionState()`
+   * rebuilds the predictor on a LIVE socket, so a still-in-flight pre-warp rejection
+   * can land after the rebuild while its seq collides with a fresh op's. The guard
+   * makes that cross-instance stale rejection a no-op (Case M1: the captured
+   * generation can never match the fresh instance — the counter only goes up), and
+   * main.ts's send-seq floor (`lastSentSeq` → `seedSeq` on rebuild) prevents the
+   * rebuilt predictor from ever re-issuing an already-sent seq, so the post-rebuild
+   * "stale seq" rejection of the player's first post-warp move never comes into
+   * existence (Case M2). The nh3-2 block in predictor.test.ts pins both.
    */
-  dropRejected(seq: number): boolean {
+  dropRejected(seq: number, epoch: PredictorEpoch): boolean {
+    // nh3: the generation guard comes FIRST and is TOTAL — a foreign epoch means the
+    // rejection targets a dead instance's op, and touching #pending here would evict
+    // a live op purely by seq collision. `false` also keeps the caller's contract
+    // coherent: nothing was removed, so no forced reconcile is owed.
+    if (epoch !== this.#epoch) return false;
     const before = this.#pending.length;
     this.#pending = this.#pending.filter((p) => p.seq !== seq);
     return this.#pending.length !== before;
@@ -334,11 +372,24 @@ export class Predictor {
    * transaction as the queue push (server guards.rs), so anything in `authQueue` is already
    * acked and has been pruned from `#pending` by reconcile's `seq > ackedSeq` filter. The
    * reconcile cap-clamp can make this OVER-count, which is the safe direction (it keeps the
-   * gate shut). It never UNDER-counts *within one predictor epoch* — but a fresh `Predictor`
-   * (zone warp / reconnect, main.ts `resetPredictionState`) starts at 0 while the server may
-   * still owe a queued step, so exactly one extra continuation can slip through per rebuild.
-   * Bounded and self-correcting on the next reconcile; same family as the ADR-0142 D4 warp
-   * epoch hazard deferred to nh3.
+   * gate shut). It never UNDER-counts *within one predictor generation*.
+   *
+   * OPEN RESIDUAL (named, deliberately NOT fixed by nh3): a fresh `Predictor` (zone warp /
+   * reconnect, main.ts `resetPredictionState`) starts with `#lastAuthQueueLen = 0` while the
+   * server may still owe a queued step, so exactly one extra continuation can slip through
+   * per rebuild. nh3 (ADR-0152) closed the OTHER two rebuild hazards in this family — the
+   * cross-generation EVICTION (the `dropRejected` epoch guard) and, with the main.ts
+   * send-seq floor, the seq COLLISION itself — but neither touches this under-count. Its
+   * window is near-zero in practice, for a DIFFERENT reason per rebuild path (desync-guard
+   * review, nh3): on a zone warp the rebuild is followed in the SAME microtask flush by a
+   * reconcile (the warp's own row burst → MicrotaskBatcher → reconcileFromStore), which
+   * rewrites `#lastAuthQueueLen` from the authoritative queue; on a RECONNECT that reconcile
+   * is deferred (the server's on_disconnect deleted the player/character rows, so
+   * reconcileFromStore early-returns until joinGame round-trips), and the guarantee rests on
+   * `held.clear()` ALONE — no held continuation survives the rebuild, so nothing emits into
+   * the gap. That makes `held.clear()` load-bearing for the reconnect arm: an nh5-style
+   * change to held-key retention across rebuilds must revisit this residual. Bounded and
+   * self-correcting on the next reconcile either way.
    */
   get outstandingSteps(): number {
     return this.#lastAuthQueueLen + this.#pending.length;
