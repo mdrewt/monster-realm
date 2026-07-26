@@ -52,11 +52,21 @@ export class ShopView {
     // No inline positioning: #shop-overlay is a plain in-flow shell, and floating
     // just this child would put a naked balance in the viewport corner while the
     // panel it belongs to stays below the fold (owned by the overlay-registry slice).
-    const balanceEl = document.createElement('p');
-    balanceEl.id = 'shop-balance';
-    balanceEl.hidden = true;
-    this.#title.insertAdjacentElement('afterend', balanceEl);
-    this.#balanceEl = balanceEl;
+    // Locate-or-create so a second construction against the same document cannot
+    // produce a duplicate `id` (the shipped app builds one ShopView, but an
+    // idempotent lookup costs nothing and keeps the invariant local).
+    const existing = el.querySelector('#shop-balance');
+    let balanceEl: Element;
+    if (existing === null) {
+      const created = document.createElement('p');
+      created.id = 'shop-balance';
+      created.hidden = true;
+      this.#title.insertAdjacentElement('afterend', created);
+      balanceEl = created;
+    } else {
+      balanceEl = existing;
+    }
+    this.#balanceEl = balanceEl as HTMLElement;
     this.#cbs = cbs;
   }
 

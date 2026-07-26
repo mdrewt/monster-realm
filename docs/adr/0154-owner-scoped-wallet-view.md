@@ -38,26 +38,29 @@ row" with "balance 0" — the exact distinction this slice must preserve all the
 UI — and it takes `&ReducerContext`, not `&ViewContext`. ADR-0081's single-surface
 discipline governs *mutations*; a view is a read projection and adds no write surface.
 
-**D2 — the eval gates leak-shape by a derived call graph, not by body-anchored scanning.**
-Adversarial review produced two implementations that leak every player's balance while
-passing the obvious gate:
+**D2 — the view's body is pinned EXACTLY, not by needle presence.** Adversarial review
+corrected the threat model. A view handle has no `Table` impl, so `.iter()` does not
+compile inside a `ViewContext` and `UniqueColumnReadOnly` exposes only `find`: the
+whole-table-scan family is already forbidden by the compiler. **The one reachable leak is
+a point lookup on the wrong key**, and a presence-only "body contains `find(ctx.sender)`"
+check waves it through — a dead `let _decoy = …find(ctx.sender);` above
+`…find(victim_identity)` passes the eval, `cargo test`, clippy and `fmt` while returning
+an arbitrary player's wallet. Since the sanctioned body is one expression, both the eval
+and the Rust tooth assert the whitespace-compacted body **equals**
+`ctx.db.player_wallet().owner_identity().find(ctx.sender)`. Equality (rather than
+absence-checking) is also what preserves the cargo-mutants kill in D8.
 
-- *Helper indirection.* `fn census(ctx) { ctx.db.player_wallet().iter().collect() }` plus
-  `#[view] rich_list(ctx) { census(ctx) }`. `rich_list`'s body never contains the string
-  `player_wallet`, so a "views whose body references the table" filter — the ADR-0087
-  hardening — never inspects it.
-- *`Table::iter`.* `spacetimedb::Table::iter(&ctx.db.player_wallet()).collect()` contains
-  neither a literal dot nor empty parens, so it walks straight past a `.iter()` needle,
-  while a dead `owner_identity().find(ctx.sender)` line satisfies the positive needle.
-
-So `checkWalletViewsSafe` first derives `walletReaderFns` — every function whose body
-touches the accessor — then fails any view that references the table *or calls one of
-those functions*. A hard-coded allowlist over all views was rejected: it would
-collaterally gate unrelated future views.
+**D2b — reachability is a transitive closure, not a body filter.** Two indirection
+attacks motivated it: `fn census(ctx) { …player_wallet()… }` + `#[view] rich_list(ctx)
+{ census(ctx) }` (the ADR-0087-style "views whose body references the table" filter never
+inspects `rich_list`), and the two-hop `view → roster() → census()` that defeats a 1-hop
+derivation. `checkWalletViewsSafe` therefore closes `walletReaderFns` to a fixed point and
+fails any view reaching the table through it. A hard-coded allowlist over all views was
+rejected: it would collaterally gate unrelated future views.
 
 **D3 — the view's return type is pinned to `Option<PlayerWallet>`, with `Vec<` banned.**
 `-> Vec<PlayerWallet>` from a view named `my_wallet` is a whole-table leak carrying a
-conforming `find` needle, and the generated client binding is byte-identical either way,
+conforming `find` needle, and it is indistinguishable in the generated client binding,
 so no other gate can see it. `&AnonymousViewContext` is likewise banned in the signature:
 it is a legal view context (`spacetimedb-bindings-macro-1.12.0/src/view.rs:94,102,112`)
 that carries no `sender` at all, and a substring match on `ViewContext` waves it through.
@@ -70,8 +73,8 @@ the body's filter is the entire security boundary.
 UPDATE arrives as `onInsert(new)` + `onDelete(old)`, unordered, with no `onUpdate`
 (ADR-0087). The conversation precedent gates the delete on a net-effect comparison. For
 wallets that gate is both dead and wrong: no server code path deletes a `player_wallet`
-row (six accessor calls in `economy.rs` — two finds, two updates, one insert, one find;
-zero deletes; `on_disconnect` does not touch it), and on a buy-then-sell round trip
+row (six accessor calls in `economy.rs` — three finds, two updates, one insert; zero
+deletes; `on_disconnect` does not touch it), and on a buy-then-sell round trip
 (100→50→100) the coalesced delivery `I(50) I(100) D(100) D(50)` makes a balance-equality
 gate fire on `D(100)` and remove the *live* row. No comparison on the row's own fields can
 distinguish that from a genuine delete. Insert-wins plus `store.reset()` on disconnect is
@@ -97,7 +100,23 @@ all sit outside this slice's declared touch-set, which a concurrent sibling slic
 The 5th `buildShopViewModel` parameter is therefore optional so both existing call sites
 compile untouched. Patching only the first call site in `ux2b` would render the balance
 once on open and let the batch listener overwrite it on the next batch — worse than not
-shipping it — so `ux2b` must patch both.
+shipping it — so `ux2b` must patch both, and must carry a call-site-count tooth (the
+ADR-0108 RT-SEC-02 "guard + `(` call-site count" idiom) so a future third call site cannot
+silently ship a blank readout. Until then `checkShopViewNoAmountFormatting` is
+*structurally* green rather than behaviourally proven: no runtime path can put a `known`
+balance into the shell, so its absence-check cannot fail. That is disclosed, not implied.
+
+**D8 — the Rust body pin is load-bearing for the mutation gate, so it asserts presence,
+never absence.** `mutate-server` caps *surviving* mutants at exactly 299 with zero
+headroom (`justfile` + `nightly-smoke-wiring.eval.mjs`), and the `justfile` is outside
+this slice's touch-set, so one new survivor would mean a red nightly that cannot be fixed
+here. `cargo mutants --list --file server-module/src/schema.rs` shows `my_wallet` adds
+exactly two mutants: `-> None` and `-> Some(Default::default())`. The second is *unviable*
+(`PlayerWallet` derives no `Default`) and never reaches `missed.txt`. The first is caught
+by `my_wallet_view_is_owner_scoped`, because `SCHEMA_SOURCE` is a **relative**
+`include_str!` and therefore reads the *mutated* file in the cargo-mutants scratch tree
+(the M17.5c precedent). Measured: `2 mutants tested: 1 caught, 1 unviable`, 0 lines in
+`missed.txt`. An absence-only rewrite of that test would resurrect the survivor.
 
 ## Consequences
 

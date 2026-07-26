@@ -1,7 +1,11 @@
 // ui/shopModel.ts — pure view model for the shop screen (M13d, ADR-0084).
 //
-// No DOM, no SDK, no side-effects. Never throws on any input — a throw
-// here would starve sibling store batch-listeners (store.ts one-way flow).
+// No DOM, no SDK, no side-effects. Total for every well-typed input, and
+// malformed row FIELDS degrade to a safe value rather than throwing (see the
+// `[ux2-M4]` teeth) — a throw here would starve sibling store batch-listeners
+// (store.ts one-way flow). It is not hardened against a hostile argument (a
+// null `shops`, a throwing getter): unreachable from the store, and the two
+// call sites are try/catch-wrapped with per-listener isolation (M10.5d).
 //
 // The wallet table stays PRIVATE (ADR-0081/0040); since ux2 (ADR-0154) the
 // balance reaches the client through the owner-scoped `my_wallet` view only, as
