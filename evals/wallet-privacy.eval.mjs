@@ -3,91 +3,132 @@
 // path — an owner-scoped `#[spacetimedb::view]` named `my_wallet` in schema.rs
 // returning `Option<PlayerWallet>` for `ctx.sender` and NOTHING else.
 //
-// VERIFIED SEMANTICS (spacetimedb-bindings-macro-1.12.0/src/view.rs,
-// spacetimedb-1.12.0/src/rt.rs:1099-1119): `public` on `#[spacetimedb::view]`
-// is a MANDATORY keyword with NO visibility effect; per-caller scoping comes
-// from the host reconstructing `sender`; `&AnonymousViewContext` is ALSO a
-// legal view context and has NO sender; the compiler rejects extra view
-// params, so a "no identity parameter" check would be vacuous. Privacy
-// therefore rests ENTIRELY on: the body filters by `ctx.sender`, returns ONE
-// row, never iterates, is not Anonymous, and NO OTHER view reaches the table
-// directly or through a helper.
+// VERIFIED SEMANTICS (spacetimedb-bindings-macro-1.12.0, spacetimedb-1.12.0):
+//   * `public` on `#[spacetimedb::view]` is a MANDATORY keyword with NO
+//     visibility effect (view.rs:13-14, :43-45).
+//   * Per-caller scoping comes from the host reconstructing `sender`
+//     (rt.rs:1099-1119).
+//   * `&AnonymousViewContext` is ALSO a legal view context and has NO sender.
+//   * The compiler rejects extra view params, so a "no identity parameter"
+//     check would be vacuous.
+//   * A view handle has no `Table` impl (bindings-macro table.rs:1133-1135), so
+//     `.iter()` does not even compile inside a `ViewContext`. Clause 2b (iter
+//     ban) and clauses 2e/2f (return type) therefore police leaks the compiler
+//     already forbids — they are kept as defense in depth and as parser guards,
+//     but the LOAD-BEARING clause is 2c: the body must be EXACTLY the
+//     sender-keyed lookup. A presence-only 2c is defeated by
+//     `let _decoy = …find(ctx.sender); …find(victim)` — a compiling, clippy-
+//     clean, fmt-clean, arbitrary-wallet leak (red-team F-1, CRITICAL).
 //
 // OWNERSHIP / SSOT — what this eval does NOT do:
 //   * Table privacy (`player_wallet` must not be `public`) is owned by
 //     currency-integrity.eval.mjs criterion 3 (walletTableIsPrivate) and by
-//     economy_tests.rs::player_wallet_table_is_not_public. It is NOT
-//     re-implemented here; check B only asserts the table DECLARATION exists,
-//     as a "did the scan reach the right tree" guard.
+//     economy_tests.rs::player_wallet_table_is_not_public. Check B only asserts
+//     the table DECLARATION exists, as a "did the scan reach the right tree"
+//     guard.
 //   * The cargo-mutants kill on the view body and the never-deleted invariant
 //     are owned by economy_tests.rs::my_wallet_view_is_owner_scoped (R1) and
 //     ::player_wallet_rows_are_never_deleted (R2) — `cargo mutants` runs
 //     `cargo test`, never `just eval`.
 //   * conversation-privacy's checks D (subscription wiring) and E (onDelete
 //     handler) have NO analogue here yet: client/src/net/connection.ts is
-//     outside ux2's touch-set. They are DEFERRED to ux2b (where the subscribe
-//     line and the gated `onInsert` land), not silently dropped. Check S below
-//     is the always-fail sliver of D that IS enforceable in ux2.
+//     outside ux2's touch-set. They are DEFERRED to ux2b, not silently dropped.
+//     Check S below is the always-fail sliver of D that IS enforceable in ux2.
 //
-// Checks (each exported so the fixtures exercise it directly):
+// Checks (each exported so the fixtures exercise it directly). Every clause
+// carries a [tag] in its message so a fixture can assert WHICH clause fired —
+// without that, deleting a clause can leave the suite green because a
+// neighbouring clause's message happens to share a word (red-team F-4).
 //   B  checkWalletViewsSafe(allRustSrc) — whole-tree, CALL-GRAPH-DERIVED:
-//      (1) derive walletReaderFns = every fn whose brace-walked body contains
-//          `player_wallet(`; (2) `my_wallet` must be a view whose body reads
-//          the table via owner_identity().find(ctx.sender), contains NO `iter`
-//          substring, whose signature is not `AnonymousViewContext`, and whose
-//          return type contains `Option<PlayerWallet>` and NOT `Vec<`;
-//          (3) any OTHER view whose body references player_wallet OR calls any
-//          name in walletReaderFns FAILS.
-//      A body-filtered "views mentioning player_wallet" check is defeated by
-//      one line of indirection (fixture F5); a hard-coded view allowlist would
-//      collaterally gate every unrelated future view.
-//   B2 checkWalletAccessorConfined(schemaSrc) — in schema.rs the
-//      `player_wallet(` accessor appears ONLY inside `fn my_wallet`'s body.
-//      Fills a real hole: currency-integrity's ACCESSOR_BYPASS criterion
-//      explicitly EXCLUDES schema.rs from its scan.
-//   C  checkBindings(fsProbe) — `player_wallet_table.ts` ABSENT (a private
-//      table must emit no client table binding), `my_wallet_table.ts` PRESENT.
-//   V  checkShopViewNoAmountFormatting(shopViewSrc) — the shop shell must not
-//      contain `balance.amount`. (shopView.test.ts is the behavioral gate;
-//      V's independent sliver is a shell that re-formats `amount` into a string
-//      identical to `label` — behaviorally green, no-logic-in-shell violated.)
+//      [B/0-table]      the player_wallet table is declared in the scan.
+//      [B/M2-shortform] no short-form `#[view(` attr (parseViews anchors on the
+//                       fully-qualified form and would be BLIND to it).
+//      [B/F5-hidden]    the literal `#[spacetimedb::view(` occurs the same
+//                       number of times in the RAW and in the comment-stripped
+//                       source — a view hidden inside a comment (or inside a
+//                       comment FORGED with `const X: &str = "/*";`) is invisible
+//                       to every checker that consumes stripComments.
+//      [B/2a] my_wallet exists as a view and its body reads the table.
+//      [B/2b] its body contains no `iter` substring.
+//      [B/2d] its signature is not AnonymousViewContext.
+//      [B/2e] its return type contains no `Vec<`.
+//      [B/2f] its return type is Option<PlayerWallet>.
+//      [B/2c] its whitespace-compacted body EQUALS the sanctioned one-expression
+//             lookup (kills the decoy-line leak, red-team F-1).
+//      [B/3a] no OTHER view references player_wallet.
+//      [B/3b] no OTHER view calls anything in the TRANSITIVE closure of
+//             wallet-reading fns (seeded from bodies AND signatures — a
+//             `player_wallet__TableHandle` parameter is a wallet reach too —
+//             then grown to a fixed point, so view -> roster -> census ->
+//             accessor is caught, not just one hop).
+//   B2 checkWalletAccessorConfined(schemaSrc) — in schema.rs the wallet accessor
+//      appears ONLY inside the my_wallet view fn (located by the view's real
+//      fnName, not by the literal string). Fills a real hole: currency-integrity's
+//      ACCESSOR_BYPASS criterion explicitly EXCLUDES schema.rs.
+//   C  checkBindings(fsProbe) — `player_wallet_table.ts` ABSENT (a private table
+//      must emit no client table binding), `my_wallet_table.ts` PRESENT.
+//   V  checkShopBalanceShell(shopViewSrc) — the shop shell must NOT contain
+//      `balance.amount` (no re-formatting in a coverage-excluded shell) and MUST
+//      contain `balance.label` + `balance.kind` (positive anchors: an
+//      absence-only check stays green if the readout is never added or is
+//      deleted — reviewer M4).
 //   S  checkNoPrivateWalletSubscription(connSrc) — `FROM player_wallet` must
-//      never appear in connection.ts's `.subscribe([...])` array (subscribing
-//      a private table errors the WHOLE batch → onApplied never fires → blank
-//      world).
+//      appear in NO `.subscribe([...])` array (ALL of them are walked — a
+//      per-zone resubscribe adds a second array, ADR-0067) and nowhere in the
+//      file at all (the whole-file needle runs unconditionally, so a source with
+//      no subscribe array is still scanned — reviewer M3).
 //
 // SOURCE GLOB: `server-module/src/**/*.rs` EXCLUDING `*_tests.rs` (precedent
 // currency-integrity.eval.mjs:458-472, ptc5d). Test files are `cfg(test)` and
-// never published, and excluding them removes the whole class of self-red
-// hazards from `.concat()`-assembled needles and inline Rust fixtures.
-// Every source is comment-stripped before scanning (connection.ts already
-// contains the token `player_wallet` inside a comment).
+// never published, and excluding them removes every self-red hazard from
+// `.concat()`-assembled needles in economy_tests.rs. Every source is
+// comment-stripped before scanning (connection.ts already contains the token
+// `player_wallet` inside a comment).
+//
+// Whitespace is compacted before every needle match: `ctx.db.player_wallet ()`
+// (space before the paren) compiles and would otherwise bypass the accessor
+// needles (red-team F-6).
 //
 // NO `new RegExp()` anywhere (Semgrep detect-non-literal-regexp) — literal
 // /regex/ and String.indexOf only.
 //
-// RED STATE AT AUTHORING (ux2 TDD red phase, before the view exists):
-//   B  RED — no view named `my_wallet` exists anywhere in server-module/src.
-//   B2 GREEN-VACUOUS — schema.rs contains zero `player_wallet(` accessor calls
-//      today, so confinement holds trivially. Proven NON-vacuous by F5/F7.
-//   C  RED — client/src/module_bindings/my_wallet_table.ts is missing.
-//   V  GREEN — shopView.ts has no balance readout yet (guards the shell that
-//      T6 adds). Proven non-vacuous by F10/F11.
-//   S  GREEN — connection.ts subscribes no wallet SQL (the mention at :565 is
-//      a comment and is stripped). Proven non-vacuous by F12.
-// The eval is RED overall via B and C.
-//
-// Proof-of-teeth fixtures (F1-F12) run BEFORE the live-tree checks so a broken
-// checker is caught first; every checker has at least one BAD fixture that must
-// FAIL and one GOOD fixture that must PASS (an always-red checker is
-// indistinguishable from a working one — the ux3 postmortem found a scan-only
-// gate that let 9 of 19 broken implementations pass GREEN).
+// Proof-of-teeth fixtures (F1-F21) run BEFORE the live-tree checks so a broken
+// checker is caught first. Every clause that can fire has a BAD fixture
+// asserting its [tag], and every checker has a GOOD fixture that must PASS — an
+// always-red checker is indistinguishable from a working one (the ux3
+// postmortem found a scan-only gate that let 9 of 19 broken impls pass GREEN).
 
 import { existsSync, readFileSync } from 'node:fs';
 import { glob } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseTables, parseViews, stripComments } from './conversation-privacy.eval.mjs';
+
+// ---------------------------------------------------------------------------
+// Small shared helpers.
+// ---------------------------------------------------------------------------
+
+/**
+ * Remove ALL whitespace so needles survive line breaks and stray spaces
+ * (`player_wallet ()` compiles; so does `Table :: iter`).
+ * @param {string} s Source text.
+ * @returns {string} Whitespace-free text.
+ */
+export function compactWs(s) {
+  return s.replace(/\s+/g, '');
+}
+
+/**
+ * Count non-overlapping occurrences of a literal needle.
+ * @param {string} hay Text to search.
+ * @param {string} needle Literal needle.
+ * @returns {number} Occurrence count.
+ */
+export function countOccurrences(hay, needle) {
+  let n = 0;
+  for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + needle.length)) n++;
+  return n;
+}
 
 // ---------------------------------------------------------------------------
 // parseFns — brace-walking fn collector (the call-graph substrate for check B).
@@ -97,9 +138,9 @@ import { parseTables, parseViews, stripComments } from './conversation-privacy.e
 // `->` is skipped so the arrow's `>` never underflows the angle depth; a
 // depth-0 `;` marks a bodyless declaration.
 //
-// Nested fns are reported IN ADDITION to their enclosing fn (the enclosing
-// body simply contains them) — conservative, the safe direction for a security
-// scan: a helper hidden inside another fn still lands in walletReaderFns.
+// Nested fns are reported IN ADDITION to their enclosing fn (the enclosing body
+// simply contains them) — conservative, the safe direction for a security scan:
+// a helper hidden inside another fn still lands in the reader closure.
 // ---------------------------------------------------------------------------
 
 /**
@@ -169,11 +210,68 @@ export function parseFns(src) {
 // must not alias the needle (and the table ATTR `name = player_wallet)` has no
 // paren after the name, so a declaration alone never counts as a read).
 const WALLET_ACCESSOR = 'player_wallet(';
+// A generated handle type (`player_wallet__TableHandle` / `player_wallet__ViewHandle`)
+// passed as a parameter is a wallet reach WITHOUT the accessor ever appearing in
+// that fn's body (red-team F-2).
+const WALLET_HANDLE = 'player_wallet__';
 const VIEW_NAME = 'my_wallet';
-// Sender-scoped code shape, compared whitespace-compacted. `&ctx.sender` is an
+const VIEW_ATTR = '#[spacetimedb::view(';
+// The ONE sanctioned body, whitespace-compacted. `&ctx.sender` is an
 // equally-correct borrow spelling of the same unique-index lookup.
-const SCOPED_NEEDLE = 'owner_identity().find(ctx.sender)';
-const SCOPED_NEEDLE_REF = 'owner_identity().find(&ctx.sender)';
+const SANCTIONED_BODY = 'ctx.db.player_wallet().owner_identity().find(ctx.sender)';
+const SANCTIONED_BODY_REF = 'ctx.db.player_wallet().owner_identity().find(&ctx.sender)';
+
+/**
+ * Does this fn reach the wallet table directly (body accessor or handle param)?
+ * @param {{sigText:string, bodyText:string}} f Parsed fn.
+ * @returns {boolean} True when the fn touches player_wallet directly.
+ */
+function touchesWalletDirectly(f) {
+  const sig = compactWs(f.sigText);
+  const body = compactWs(f.bodyText);
+  return (
+    body.indexOf(WALLET_ACCESSOR) !== -1 ||
+    body.indexOf(WALLET_HANDLE) !== -1 ||
+    sig.indexOf(WALLET_ACCESSOR) !== -1 ||
+    sig.indexOf(WALLET_HANDLE) !== -1
+  );
+}
+
+/**
+ * Transitive closure of wallet-reading fns: seed with the DIRECT readers, then
+ * grow while any fn's body calls a name already in the set (red-team F-7 /
+ * reviewer M1 — one hop is not a call graph: view -> roster -> census ->
+ * accessor slips through a one-hop set).
+ *
+ * The my_wallet view fn is EXCLUDED: its own safety is proven by clauses 2a-2f,
+ * and a read THROUGH it is sender-scoped by construction, so including it would
+ * false-red an unrelated future view that legitimately calls it.
+ * @param {Array<{name:string, sigText:string, bodyText:string}>} fns Parsed fns.
+ * @param {string} viewFnName The my_wallet view's fn identifier.
+ * @returns {Set<string>} Closure of wallet-reading fn names.
+ */
+export function walletReaderClosure(fns, viewFnName) {
+  const readers = new Set();
+  for (const f of fns) {
+    if (f.name === viewFnName) continue;
+    if (touchesWalletDirectly(f)) readers.add(f.name);
+  }
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const f of fns) {
+      if (f.name === viewFnName || readers.has(f.name)) continue;
+      const body = compactWs(f.bodyText);
+      for (const reader of [...readers]) {
+        if (body.indexOf(`${reader}(`) !== -1) {
+          readers.add(f.name);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  return readers;
+}
 
 /**
  * @param {string} serverSrc Raw (unstripped) combined Rust source.
@@ -184,122 +282,163 @@ export function checkWalletViewsSafe(serverSrc) {
   const fns = parseFns(stripped);
   const views = parseViews(stripped);
 
-  // Guard: the scan must have reached a tree that actually declares the table.
+  // [B/0-table] the scan must have reached a tree that declares the table.
   // (Table PRIVACY is owned by currency-integrity.eval.mjs — this is only a
   // "we are scanning the right thing" non-vacuity guard.)
   const tables = parseTables(stripped);
   if (!tables.some((t) => t.name === 'player_wallet')) {
     return (
-      'player_wallet table declaration not found in the scanned server source — ' +
-      'the scan reached the wrong tree (or the table was renamed); every check ' +
-      'below would pass vacuously'
+      '[B/0-table] player_wallet table declaration not found in the scanned server ' +
+      'source — the scan reached the wrong tree (or the table was renamed); every ' +
+      'clause below would pass vacuously'
     );
   }
 
-  // (1) Call-graph substrate: every fn that reaches the wallet table directly.
-  const walletReaderFns = fns
-    .filter((f) => f.bodyText.indexOf(WALLET_ACCESSOR) !== -1)
-    .map((f) => f.name);
+  // [B/M2-shortform] parseViews anchors on the fully-qualified attr path (the
+  // project-wide convention). A short-form `use spacetimedb::view;` +
+  // `#[view(name = all_wallets, public)]` would be INVISIBLE to it, so a leaky
+  // view could be added under the parser's nose. Fail loudly instead.
+  if (/#\[view\(/.test(compactWs(stripped))) {
+    return (
+      '[B/M2-shortform] a short-form `#[view(...)]` attribute is present — the ' +
+      'project convention is the fully-qualified `#[spacetimedb::view(...)]` form, ' +
+      "and this eval's parser (parseViews) cannot see the short form, so a leaky " +
+      'view written that way would go unscanned. Rewrite it fully-qualified'
+    );
+  }
 
-  // (2) The blessed view must exist and be shaped correctly.
+  // [B/F5-hidden] a view attribute present in the RAW source but absent from the
+  // comment-stripped source is hidden inside a comment — either a real comment
+  // (harmless, but reword it so this tripwire stays sharp) or, far worse, a
+  // comment FORGED out of string literals (`const OPEN: &str = "/*";` …
+  // `const CLOSE: &str = "*/";`), which blanks a REAL leaky view for every
+  // checker that consumes stripComments (red-team F-5; stripComments is
+  // string-literal-unaware by documented limitation).
+  const rawViewAttrs = countOccurrences(serverSrc, VIEW_ATTR);
+  const strippedViewAttrs = countOccurrences(stripped, VIEW_ATTR);
+  if (rawViewAttrs > strippedViewAttrs) {
+    return (
+      `[B/F5-hidden] ${rawViewAttrs - strippedViewAttrs} occurrence(s) of ` +
+      `\`${VIEW_ATTR}\` vanish when comments are stripped — a view declaration is ` +
+      'hidden inside a comment. If a string literal forged that comment ' +
+      '(`const X: &str = "/*";`), a REAL leaky view is being blanked out of every ' +
+      'comment-stripping checker in this repo. If it is a genuine doc-comment ' +
+      'mention, reword it (drop the `#[`)'
+    );
+  }
+
+  // [B/2a] The blessed view must exist and actually read the table.
   const mineView = views.find((v) => v.name === VIEW_NAME || v.fnName === VIEW_NAME);
   if (!mineView) {
     return (
-      `no #[spacetimedb::view] named '${VIEW_NAME}' reads player_wallet — the table is ` +
-      'PRIVATE (ADR-0015/0081), so without the owner-scoped view the client is dark ' +
-      '(no balance readout is possible). Add it next to the PlayerWallet table in ' +
-      'schema.rs: fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> ' +
-      '{ ctx.db.player_wallet().owner_identity().find(ctx.sender) }'
+      `[B/2a] no #[spacetimedb::view] named '${VIEW_NAME}' reads player_wallet — the ` +
+      'table is PRIVATE (ADR-0015/0081), so without the owner-scoped view the client ' +
+      'is dark (no balance readout is possible). Add it next to the PlayerWallet ' +
+      `table in schema.rs, with body: ${SANCTIONED_BODY}`
     );
   }
-  const mineFn = fns.find((f) => f.name === (mineView.fnName || VIEW_NAME));
+  const viewFnName = mineView.fnName || VIEW_NAME;
+  const mineFn = fns.find((f) => f.name === viewFnName);
   if (!mineFn) {
-    return `view '${VIEW_NAME}' parsed, but its fn body could not be walked — source parse failure`;
+    return `[B/2a] view '${VIEW_NAME}' parsed, but its fn body could not be walked — source parse failure`;
   }
 
-  const compactBody = mineFn.bodyText.replace(/\s+/g, '');
+  const compactBody = compactWs(mineFn.bodyText);
+  const compactSig = compactWs(mineFn.sigText);
 
-  // 2a — it must actually read the table (kills a decoy stub returning None,
-  // whose scoped shape lives only in a doc comment).
   if (compactBody.indexOf(WALLET_ACCESSOR) === -1) {
     return (
-      `view '${VIEW_NAME}' never reads player_wallet( — a stub (e.g. \`None\`) satisfies the ` +
-      'name requirement while leaving the client dark; the comment-stripped BODY must ' +
-      'contain the accessor call'
+      `[B/2a] view '${VIEW_NAME}' never reads the wallet accessor — a stub (e.g. ` +
+      '`None`) satisfies the name requirement while leaving the client dark; the ' +
+      'comment-stripped BODY must contain the accessor call'
     );
   }
 
-  // 2b — `iter` substring ban, checked BEFORE the scoped needle: a whole-table
-  // read is a leak even when a conforming `.find(ctx.sender)` line also exists
-  // (dead decoy). The SUBSTRING (not the literal `.iter()`) is banned because
-  // `Table::iter(&ctx.db.player_wallet())`, `into_iter`, and `iter_mut` all walk
-  // past a `.iter()` needle.
+  // Clause ORDER matters: the iter/signature/return-type clauses run BEFORE the
+  // exact-body pin (2c), which ANY non-canonical body trips — otherwise a
+  // fixture aimed at one of them would be short-circuited by 2c.
+
+  // [B/2b] `iter` SUBSTRING ban (not the literal `.iter()`: `Table::iter(&handle)`,
+  // `into_iter` and `iter_mut` all walk past that needle). Defense in depth: a
+  // view handle has no Table impl, so this cannot compile today — it guards
+  // against a future handle that does, and it is free.
   if (compactBody.indexOf('iter') !== -1) {
     return (
-      `view '${VIEW_NAME}' body contains the substring 'iter' — a whole-table scan over ` +
-      "player_wallet leaks EVERY player's balance (and `Table::iter(&handle)` / " +
-      '`into_iter` walk past a `.iter()` needle). The view must read exactly one row ' +
-      'through the owner_identity unique index'
+      `[B/2b] view '${VIEW_NAME}' body contains the substring 'iter' — a whole-table ` +
+      "scan over player_wallet leaks EVERY player's balance. The view must read " +
+      'exactly one row through the owner_identity unique index'
     );
   }
 
-  // 2c — sender-keyed unique-index lookup.
-  if (compactBody.indexOf(SCOPED_NEEDLE) === -1 && compactBody.indexOf(SCOPED_NEEDLE_REF) === -1) {
+  // [B/2d] an AnonymousViewContext has NO sender at all.
+  if (compactSig.indexOf('AnonymousViewContext') !== -1) {
     return (
-      `view '${VIEW_NAME}' is not sender-scoped — its body must contain ` +
-      'owner_identity().find(ctx.sender); per-caller scoping comes ENTIRELY from ' +
-      "the host-reconstructed `sender`, so any other key returns another player's row"
-    );
-  }
-
-  // 2d — an AnonymousViewContext has NO sender at all (legal view context per
-  // the macro; the body would not compile against ctx.sender, but a rewritten
-  // body that reads some other key would — and it would be world-readable).
-  if (mineFn.sigText.indexOf('AnonymousViewContext') !== -1) {
-    return (
-      `view '${VIEW_NAME}' takes an &AnonymousViewContext — an anonymous view context has ` +
-      'NO sender, so the projection cannot be per-caller: it must take ' +
+      `[B/2d] view '${VIEW_NAME}' takes an &AnonymousViewContext — an anonymous view ` +
+      'context has NO sender, so the projection cannot be per-caller: it must take ' +
       '&spacetimedb::ViewContext'
     );
   }
 
-  // 2e — return-type pin. THE highest-value tooth: `-> Vec<PlayerWallet>` with a
-  // conforming `find` generates a byte-identical client binding, so no other
-  // check (bindings probe included) can see the difference — but the shape then
-  // permits a whole-table projection with a one-line edit.
   const arrowIdx = mineFn.sigText.indexOf('->');
-  const retType = arrowIdx === -1 ? '' : mineFn.sigText.slice(arrowIdx + 2).replace(/\s+/g, '');
+  const retType = arrowIdx === -1 ? '' : compactWs(mineFn.sigText.slice(arrowIdx + 2));
+
+  // [B/2e] no multi-row return.
   if (retType.indexOf('Vec<') !== -1) {
     return (
-      `view '${VIEW_NAME}' returns a Vec (return type '${retType}') — the view must project ` +
-      'exactly ONE row: `-> Option<PlayerWallet>`. A Vec return with a conforming find ' +
-      'produces a byte-identical client binding, so this is the only check that can see it'
-    );
-  }
-  if (retType.indexOf('Option<PlayerWallet>') === -1) {
-    return (
-      `view '${VIEW_NAME}' does not return Option<PlayerWallet> (found '${retType}') — ` +
-      'the single-row projection is the privacy contract; anything else (a Vec, a tuple, ' +
-      "a custom struct) can carry more than the sender's own row"
+      `[B/2e] view '${VIEW_NAME}' returns a collection (return type '${retType}') — the ` +
+      'view must project exactly ONE row. A multi-row return with a conforming find ' +
+      'produces a byte-identical client binding, so no other check can see the shape'
     );
   }
 
-  // (3) No OTHER view may reach the table — directly OR through a helper.
+  // [B/2f] the return type is the single-row projection of the OWN row.
+  if (retType.indexOf('Option<PlayerWallet>') === -1) {
+    return (
+      `[B/2f] view '${VIEW_NAME}' does not return Option<PlayerWallet> (found ` +
+      `'${retType}') — the single-row projection is the privacy contract; anything ` +
+      'else (a tuple, a custom struct, another row type) can carry more than the ' +
+      'sender\'s own row, and `Option` is load-bearing besides ("no wallet row" must ' +
+      'stay distinguishable from "balance 0")'
+    );
+  }
+
+  // [B/2c] LOAD-BEARING: the body must be EXACTLY the sanctioned lookup.
+  // Presence-only matching is defeated by a decoy line (red-team F-1, CRITICAL):
+  //   let _decoy = ctx.db.player_wallet().owner_identity().find(ctx.sender);
+  //   let victim = Identity::from_byte_array([7u8; 32]);
+  //   ctx.db.player_wallet().owner_identity().find(victim)
+  // — compiles, clippy-clean, fmt-clean, contains every needle, and returns an
+  // arbitrary player's wallet. The sanctioned body is ONE expression, so pin it.
+  if (compactBody !== SANCTIONED_BODY && compactBody !== SANCTIONED_BODY_REF) {
+    return (
+      `[B/2c] view '${VIEW_NAME}' body is not EXACTLY the sanctioned sender-keyed ` +
+      `lookup. Expected (whitespace-insensitive): ${SANCTIONED_BODY} — got: ` +
+      `${compactBody}. This clause is exact ON PURPOSE: a presence check is passed ` +
+      'by a decoy line (`let _decoy = …find(ctx.sender);` followed by ' +
+      '`…find(some_other_identity)`), which compiles clean and leaks an arbitrary ' +
+      "player's wallet. Any legitimate change to this body must be re-reviewed here"
+    );
+  }
+
+  // (3) No OTHER view may reach the table — directly OR through the call graph.
+  const readers = walletReaderClosure(fns, viewFnName);
   for (const v of views) {
-    if (v.name === VIEW_NAME || v.fnName === VIEW_NAME) continue;
-    if (v.bodyText.indexOf('player_wallet') !== -1) {
+    if (v.name === VIEW_NAME || v.fnName === viewFnName) continue;
+    const vBody = compactWs(v.bodyText);
+    if (vBody.indexOf('player_wallet') !== -1) {
       return (
-        `view '${v.name}' references player_wallet — ${VIEW_NAME} is the ONLY sanctioned ` +
-        'read path for the private wallet table; every other view leaks balances'
+        `[B/3a] view '${v.name}' references player_wallet — ${VIEW_NAME} is the ONLY ` +
+        'sanctioned read path for the private wallet table; every other view leaks ' +
+        'balances'
       );
     }
-    for (const reader of walletReaderFns) {
-      if (reader === VIEW_NAME) continue;
-      if (v.bodyText.indexOf(`${reader}(`) !== -1) {
+    for (const reader of readers) {
+      if (vBody.indexOf(`${reader}(`) !== -1) {
         return (
-          `view '${v.name}' calls '${reader}(', which reads player_wallet — one line of ` +
-          'helper indirection is still a leak (the view body never says player_wallet, ' +
-          'which is exactly why this check is call-graph-derived and not body-filtered)'
+          `[B/3b] view '${v.name}' calls '${reader}(', which is in the transitive ` +
+          'closure of fns that reach player_wallet — indirection is still a leak ' +
+          '(the view body never says player_wallet, which is exactly why this check ' +
+          'is call-graph-derived and iterated to a fixed point, not one hop)'
         );
       }
     }
@@ -309,9 +448,14 @@ export function checkWalletViewsSafe(serverSrc) {
 }
 
 // ---------------------------------------------------------------------------
-// Check B2: the wallet accessor is confined to fn my_wallet inside schema.rs.
-// currency-integrity.eval.mjs's ACCESSOR_BYPASS criterion excludes schema.rs
-// from its scan, so without this, a helper added to schema.rs is ungated.
+// Check B2: the wallet accessor is confined to the my_wallet view fn inside
+// schema.rs. currency-integrity.eval.mjs's ACCESSOR_BYPASS criterion excludes
+// schema.rs from its scan, so without this a helper added here is ungated.
+//
+// Whitespace-compacted per fn (red-team F-6: `player_wallet ()` compiles), and
+// the view fn is located by the VIEW'S REAL fnName (red-team F-8: a view
+// declared `#[spacetimedb::view(name = my_wallet)] fn wallet_read(…)` must not
+// false-red).
 // ---------------------------------------------------------------------------
 
 /**
@@ -321,24 +465,33 @@ export function checkWalletViewsSafe(serverSrc) {
 export function checkWalletAccessorConfined(schemaSrc) {
   const stripped = stripComments(schemaSrc);
   const fns = parseFns(stripped);
-  const mineFn = fns.find((f) => f.name === VIEW_NAME);
+  const views = parseViews(stripped);
+  const mineView = views.find((v) => v.name === VIEW_NAME || v.fnName === VIEW_NAME);
+  const viewFnName = mineView ? mineView.fnName || VIEW_NAME : VIEW_NAME;
 
-  // NOTE: the `continue` below runs the update expression, so the scan always
-  // advances (a while-loop with a trailing increment would spin forever here).
-  for (
-    let at = stripped.indexOf(WALLET_ACCESSOR);
-    at !== -1;
-    at = stripped.indexOf(WALLET_ACCESSOR, at + WALLET_ACCESSOR.length)
-  ) {
-    if (mineFn && at >= mineFn.bodyStart && at < mineFn.bodyEnd) continue;
+  let insideFns = 0;
+  for (const f of fns) {
+    const hits = countOccurrences(compactWs(f.bodyText), WALLET_ACCESSOR);
+    insideFns += hits;
+    if (hits > 0 && f.name !== viewFnName) {
+      return (
+        `[B2/fn] schema.rs fn '${f.name}' calls the wallet accessor, but only the ` +
+        `owner-scoped view fn ('${viewFnName}') may touch it in this file — ` +
+        'currency-integrity.eval.mjs ACCESSOR_BYPASS deliberately excludes schema.rs, ' +
+        'so a helper here is otherwise ungated and can be called from any future view'
+      );
+    }
+  }
 
-    const enclosing = fns.find((f) => at >= f.bodyStart && at < f.bodyEnd);
+  // Occurrences outside every fn body (module-scope const/static/macro). Nested
+  // fns are double-counted in `insideFns`, which can only make this UNDER-fire —
+  // the safe direction (never a false red).
+  const total = countOccurrences(compactWs(stripped), WALLET_ACCESSOR);
+  if (total > insideFns) {
     return (
-      `schema.rs calls player_wallet( outside fn ${VIEW_NAME}` +
-      (enclosing ? ` (inside fn ${enclosing.name})` : ' (at module scope)') +
-      ' — the wallet accessor must be confined to the owner-scoped view in this file ' +
-      '(currency-integrity.eval.mjs ACCESSOR_BYPASS deliberately excludes schema.rs, ' +
-      'so a helper here is otherwise ungated and can be called from any future view)'
+      `[B2/module] schema.rs references the wallet accessor ${total - insideFns} ` +
+      'time(s) outside any fn body (module-scope const/static/macro) — the accessor ' +
+      `must appear ONLY inside the owner-scoped view fn ('${viewFnName}')`
     );
   }
 
@@ -360,47 +513,61 @@ const VIEW_BINDING = 'client/src/module_bindings/my_wallet_table.ts';
 export function checkBindings(fsProbe) {
   if (fsProbe(LEGACY_BINDING)) {
     return (
-      `${LEGACY_BINDING} exists — a PRIVATE table must not emit a client table binding; ` +
-      'its presence means player_wallet was made public (regen bindings after reverting; ' +
-      'never hand-edit module_bindings/**)'
+      `[C/legacy] ${LEGACY_BINDING} exists — a PRIVATE table must not emit a client ` +
+      'table binding; its presence means player_wallet was made public (regen ' +
+      'bindings after reverting; never hand-edit module_bindings/**)'
     );
   }
   if (!fsProbe(VIEW_BINDING)) {
     return (
-      `${VIEW_BINDING} missing — the owner-scoped view binding was not generated ` +
-      '(run `just gen`); without it the client cannot subscribe to my_wallet and the ' +
-      'balance readout can never hydrate'
+      `[C/missing] ${VIEW_BINDING} missing — the owner-scoped view binding was not ` +
+      'generated (run `just gen`); without it the client cannot subscribe to ' +
+      'my_wallet and the balance readout can never hydrate'
     );
   }
   return null;
 }
 
 // ---------------------------------------------------------------------------
-// Check V: no amount formatting in the shop DOM shell.
+// Check V: the shop DOM shell renders the model's pre-computed label and does
+// no formatting of its own. Absence-only would stay green if the readout were
+// never added or later deleted (reviewer M4), so positive anchors are required.
 // ---------------------------------------------------------------------------
 
 /**
  * @param {string} shopViewSrc Raw shopView.ts source.
  * @returns {string|null} Error string, or null on pass.
  */
-export function checkShopViewNoAmountFormatting(shopViewSrc) {
-  const compact = stripComments(shopViewSrc).replace(/\s+/g, '');
+export function checkShopBalanceShell(shopViewSrc) {
+  const compact = compactWs(stripComments(shopViewSrc));
   if (compact.indexOf('balance.amount') !== -1) {
     return (
-      'shopView.ts references balance.amount — the DOM shell must render the ' +
-      'pre-computed `label` from the view model and nothing else. Re-formatting `amount` ' +
-      'in the shell duplicates the currency-string logic outside the tested model ' +
-      '(shopView.ts is coverage-EXCLUDED, so that logic would ship untested)'
+      '[V/no-amount] shopView.ts references balance.amount — the DOM shell must ' +
+      'render the pre-computed `label` from the view model and nothing else. ' +
+      'Re-formatting `amount` in the shell duplicates the currency-string logic ' +
+      'outside the tested model (shopView.ts is coverage-EXCLUDED, so that logic ' +
+      'would ship untested)'
     );
+  }
+  for (const anchor of ['balance.label', 'balance.kind']) {
+    if (compact.indexOf(anchor) === -1) {
+      return (
+        `[V/anchors] shopView.ts does not reference ${anchor} — the shell must read ` +
+        'BOTH vm.balance.label (the text it renders) and vm.balance.kind (the ' +
+        'known/unknown discriminant driving `hidden`). An absence-only check would ' +
+        'stay green if the balance readout were never added, or were deleted later'
+      );
+    }
   }
   return null;
 }
 
 // ---------------------------------------------------------------------------
-// Check S: the private table must never be subscribed.
-// Windowed to the `.subscribe([...])` array (a dead string constant elsewhere
-// is not a subscription); falls back to a whole-file needle if the bracket walk
-// fails, so a restructured connection.ts cannot silently disable the check.
+// Check S: the private table must never be subscribed. ALL `.subscribe([...])`
+// arrays are walked (a per-zone resubscribe is a planned shape, ADR-0067 —
+// windowing only the FIRST would leave a second array unscanned, reviewer M3),
+// and the whole-file needle runs UNCONDITIONALLY so a source with no subscribe
+// array (or a restructured one) is still scanned.
 // ---------------------------------------------------------------------------
 
 /**
@@ -430,46 +597,53 @@ function walkBracket(src, openIdx) {
 export function checkNoPrivateWalletSubscription(connectionSrc) {
   const stripped = stripComments(connectionSrc);
   const marker = '.subscribe([';
-  const markerIdx = stripped.indexOf(marker);
 
   // \b guard: `FROM player_wallet_archive` (a hypothetical future public
   // sibling) must not false-red here — `_` is a word char, so \b does not match
   // between `wallet` and `_archive`.
   const bad = /FROM\s+player_wallet\b/;
 
-  if (markerIdx !== -1) {
-    const arrayOpenIdx = markerIdx + marker.length - 1;
+  let arrayIndex = 0;
+  for (let at = stripped.indexOf(marker); at !== -1; at = stripped.indexOf(marker, at + 1)) {
+    arrayIndex++;
+    const arrayOpenIdx = at + marker.length - 1;
     const arrayCloseIdx = walkBracket(stripped, arrayOpenIdx);
-    if (arrayCloseIdx !== -1) {
-      const arrayWindow = stripped.slice(arrayOpenIdx, arrayCloseIdx + 1);
-      if (bad.test(arrayWindow)) {
-        return (
-          "the .subscribe([...]) array contains 'FROM player_wallet' — player_wallet is " +
-          'PRIVATE, and subscribing a private table errors the WHOLE subscription batch: ' +
-          'onApplied never fires and the player gets a blank world. Subscribe the ' +
-          "owner-scoped view ('SELECT * FROM my_wallet') instead"
-        );
-      }
-      return null;
+    if (arrayCloseIdx === -1) continue;
+    const arrayWindow = stripped.slice(arrayOpenIdx, arrayCloseIdx + 1);
+    if (bad.test(arrayWindow)) {
+      return (
+        `[S/array] .subscribe([...]) array #${arrayIndex} contains 'FROM player_wallet' — ` +
+        'player_wallet is PRIVATE, and subscribing a private table errors the WHOLE ' +
+        'subscription batch: onApplied never fires and the player gets a blank world. ' +
+        "Subscribe the owner-scoped view ('SELECT * FROM my_wallet') instead"
+      );
     }
   }
 
+  // Unconditional whole-file needle (reviewer M3): runs even when no subscribe
+  // array is found, and catches a wallet SQL string assembled anywhere else.
   if (bad.test(stripped)) {
     return (
-      "the connection source contains 'FROM player_wallet' (fallback whole-file scan — " +
-      'the .subscribe([...]) bracket walk failed, check connection.ts structure): ' +
-      'subscribing the private table errors the whole batch (blank world)'
+      "[S/file] the connection source contains 'FROM player_wallet' outside any " +
+      'walked .subscribe([...]) array — nothing in the client may name the private ' +
+      'table in SQL (subscribing it errors the whole batch → blank world); use the ' +
+      'owner-scoped view'
     );
   }
   return null;
 }
 
 // ---------------------------------------------------------------------------
-// PROOF-OF-TEETH FIXTURES (F1-F12) — inline sources, run BEFORE the live-tree
+// PROOF-OF-TEETH FIXTURES (F1-F21) — inline sources, run BEFORE the live-tree
 // checks. Returns the first tooth failure (string) or null.
 // The Rust fixtures below are STRING LITERALS in a .mjs file; the live scan
 // globs `server-module/src/**/*.rs` only, so they can never be picked up as
 // real source.
+//
+// Every BAD fixture asserts the [tag] of the clause it targets, so deleting a
+// clause cannot be masked by a neighbouring clause that happens to share a word
+// (red-team F-4: deleting clause 2e used to leave all fixtures green because F3
+// asserted only `err.indexOf('Vec')` and clause 2f's message also says "Vec").
 // ---------------------------------------------------------------------------
 
 const TABLE_DECL = `
@@ -491,10 +665,26 @@ fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
 }
 `;
 
+/**
+ * Assert that a checker fired the EXPECTED clause (by tag), not merely that it
+ * failed — a fixture that only asserts "some error" cannot tell a live clause
+ * from a deleted one whose neighbour happens to catch the fixture.
+ * @param {string|null} err Checker output.
+ * @param {string} tag Expected clause tag.
+ * @param {string} label Fixture label for the failure message.
+ * @returns {string|null} Tooth failure, or null when the tag matches.
+ */
+function expectTag(err, tag, label) {
+  if (!err) return `${label}: expected clause ${tag} to fire, but the checker returned PASS`;
+  if (err.indexOf(tag) === -1) {
+    return `${label}: expected clause ${tag} to fire, but a different clause did: ${err}`;
+  }
+  return null;
+}
+
 function runTeeth() {
   // F1 — a SECOND view reading the table alongside a perfectly good my_wallet.
-  // Kills: a name-anchored checker that only inspects `my_wallet` and blesses
-  // every other view (the classic whole-table leak added "for the leaderboard").
+  // Kills: a name-anchored checker that only inspects `my_wallet`.
   {
     const fixture = `${TABLE_DECL}${GOOD_VIEW}
 #[spacetimedb::view(name = all_wallets, public)]
@@ -503,18 +693,16 @@ fn all_wallets(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
 }
 `;
     const err = checkWalletViewsSafe(fixture);
-    if (!err) {
-      return 'F1: second view all_wallets reading player_wallet was NOT flagged — check B is name-anchored';
-    }
+    const bad = expectTag(err, '[B/3a]', 'F1');
+    if (bad) return bad;
     if (err.indexOf('all_wallets') === -1) {
       return `F1: flagged, but the message does not name the leaky view all_wallets: ${err}`;
     }
   }
 
-  // F2 — decoy `my_wallet` that returns None; the sender-scoped shape appears
-  // ONLY in a doc comment. Kills: a checker that reads needles out of comments,
-  // AND an impl that satisfies the view-name requirement with a stub (client
-  // dark: the balance never hydrates, so the readout renders forever unknown).
+  // F2 — decoy `my_wallet` returning None; the sender-scoped shape appears ONLY
+  // in a doc comment. Kills: a checker that reads needles out of comments, and a
+  // stub that satisfies the name requirement while leaving the client dark.
   {
     const fixture = `${TABLE_DECL}
 /// Reads ctx.db.player_wallet().owner_identity().find(ctx.sender) — one day.
@@ -523,18 +711,13 @@ fn my_wallet(_ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
     None
 }
 `;
-    const err = checkWalletViewsSafe(fixture);
-    if (!err) {
-      return 'F2: decoy my_wallet stub (body never reads the table; scoped shape only in a doc comment) was NOT flagged';
-    }
+    const bad = expectTag(checkWalletViewsSafe(fixture), '[B/2a]', 'F2');
+    if (bad) return bad;
   }
 
-  // F3 — `-> Vec<PlayerWallet>` with a fully conforming sender-scoped find and
-  // NO `iter` anywhere. Kills: an unconstrained return type. This is the
-  // highest-value tooth: the generated client binding is byte-identical to the
-  // Option version, so the bindings probe (C) and every needle on the body pass;
-  // only the return-type pin sees it, and the Vec shape is one edit away from a
-  // whole-table projection.
+  // F3 — `-> Vec<PlayerWallet>` with a sender-scoped find and NO `iter`.
+  // Kills: an unconstrained return type. Asserts the 2e tag specifically, so
+  // deleting clause 2e cannot be masked by clause 2f (whose message also says Vec).
   {
     const fixture = `${TABLE_DECL}
 #[spacetimedb::view(name = my_wallet, public)]
@@ -546,19 +729,12 @@ fn my_wallet(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
     out
 }
 `;
-    const err = checkWalletViewsSafe(fixture);
-    if (!err) {
-      return 'F3: `-> Vec<PlayerWallet>` view with a conforming find was NOT flagged — the return type is unpinned';
-    }
-    if (err.indexOf('Vec') === -1) {
-      return `F3: flagged for the wrong reason (expected the return-type branch): ${err}`;
-    }
+    const bad = expectTag(checkWalletViewsSafe(fixture), '[B/2e]', 'F3');
+    if (bad) return bad;
   }
 
-  // F4 — `Table::iter(&ctx.db.player_wallet())` (UFCS form) plus a DEAD but
-  // fully conforming `find(ctx.sender)` decoy line, returning Option.
-  // Kills: a literal `.iter()` needle (walked past by `Table::iter(&handle)`),
-  // and a checker that stops at the first conforming line it finds.
+  // F4 — `Table::iter(&ctx.db.player_wallet())` (UFCS) plus a DEAD conforming
+  // decoy line, returning Option. Kills: a literal `.iter()` needle.
   {
     const fixture = `${TABLE_DECL}
 #[spacetimedb::view(name = my_wallet, public)]
@@ -568,22 +744,14 @@ fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
     everyone.into_iter().next()
 }
 `;
-    const err = checkWalletViewsSafe(fixture);
-    if (!err) {
-      return 'F4: Table::iter(&ctx.db.player_wallet()) whole-table read was NOT flagged — the `iter` ban is written as a literal `.iter()` needle';
-    }
-    if (err.indexOf('iter') === -1) {
-      return `F4: flagged for the wrong reason (expected the iter branch): ${err}`;
-    }
+    const bad = expectTag(checkWalletViewsSafe(fixture), '[B/2b]', 'F4');
+    if (bad) return bad;
   }
 
-  // F5 — HELPER INDIRECTION. `census` iterates the table; the view `rich_list`
-  // only calls `census(ctx)`, so its body never contains the token
-  // `player_wallet`. Kills: a body-filtered "views that mention player_wallet"
-  // check (defeated by exactly one line of indirection) — this is why check B
-  // derives walletReaderFns from the whole tree first.
-  // The same fixture must ALSO trip B2 (confinement) when it stands in for
-  // schema.rs: the helper reads the accessor outside fn my_wallet.
+  // F5 — ONE-HOP helper indirection: `census` iterates the table; the view
+  // `rich_list` only calls `census(ctx)`, so its body never says player_wallet.
+  // Kills: a body-filtered "views that mention player_wallet" check.
+  // The same fixture must ALSO trip B2 when it stands in for schema.rs.
   {
     const fixture = `${TABLE_DECL}${GOOD_VIEW}
 fn census(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
@@ -596,25 +764,20 @@ fn rich_list(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
 }
 `;
     const errB = checkWalletViewsSafe(fixture);
-    if (!errB) {
-      return 'F5: view rich_list leaking through the helper census() was NOT flagged — check B is body-filtered, not call-graph-derived';
-    }
+    const bad = expectTag(errB, '[B/3b]', 'F5');
+    if (bad) return bad;
     if (errB.indexOf('rich_list') === -1 || errB.indexOf('census') === -1) {
       return `F5: flagged, but the message does not name both rich_list and census: ${errB}`;
     }
     const errB2 = checkWalletAccessorConfined(fixture);
-    if (!errB2) {
-      return 'F5: the census() helper reading player_wallet( outside fn my_wallet was NOT flagged by checkWalletAccessorConfined';
-    }
+    const badB2 = expectTag(errB2, '[B2/fn]', 'F5');
+    if (badB2) return badB2;
     if (errB2.indexOf('census') === -1) {
       return `F5: confinement flagged, but the message does not name the offending fn census: ${errB2}`;
     }
   }
 
   // F6 — `&AnonymousViewContext` signature with an otherwise perfect body.
-  // Kills: an impl that swaps the context type (an anonymous view context has
-  // NO sender at all, so the projection stops being per-caller) — and a checker
-  // that only ever looks at the body.
   {
     const fixture = `${TABLE_DECL}
 #[spacetimedb::view(name = my_wallet, public)]
@@ -622,21 +785,15 @@ fn my_wallet(ctx: &spacetimedb::AnonymousViewContext) -> Option<PlayerWallet> {
     ctx.db.player_wallet().owner_identity().find(ctx.sender)
 }
 `;
-    const err = checkWalletViewsSafe(fixture);
-    if (!err) {
-      return 'F6: &AnonymousViewContext signature was NOT flagged — the signature is unchecked';
-    }
-    if (err.indexOf('Anonymous') === -1) {
-      return `F6: flagged for the wrong reason (expected the AnonymousViewContext branch): ${err}`;
-    }
+    const bad = expectTag(checkWalletViewsSafe(fixture), '[B/2d]', 'F6');
+    if (bad) return bad;
   }
 
   // F7 — GOOD server fixture: the correct end state must PASS both B and B2.
-  // Without it an always-red checker is indistinguishable from a working one
-  // (ux3 postmortem). Deliberately hostile to the checker rather than friendly:
-  // the token `iter` appears in a comment INSIDE the view body and the word
-  // `public` appears in prose, so a checker that scans the un-stripped body
-  // would false-red the CORRECT implementation and be caught here.
+  // Deliberately hostile rather than friendly: the token `iter` sits in a
+  // comment INSIDE the view body and `public` appears in prose, so a checker
+  // that scans the UN-stripped body would false-red the CORRECT implementation
+  // and be caught here.
   {
     const fixture = `
 /// PRIVATE wallet (ADR-0015/0081): never public, never projected wholesale.
@@ -644,7 +801,7 @@ ${TABLE_DECL}
 /// Owner-scoped read path (ADR-0154).
 #[spacetimedb::view(name = my_wallet, public)]
 fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
-    // Never Table::iter(...) here: exactly one row, via the unique index.
+    // Never a whole-table iter(...) here: exactly one row, via the unique index.
     ctx.db
         .player_wallet()
         .owner_identity()
@@ -652,9 +809,7 @@ fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
 }
 `;
     const errB = checkWalletViewsSafe(fixture);
-    if (errB) {
-      return `F7: GOOD server fixture incorrectly flagged by checkWalletViewsSafe: ${errB}`;
-    }
+    if (errB) return `F7: GOOD server fixture incorrectly flagged by checkWalletViewsSafe: ${errB}`;
     const errB2 = checkWalletAccessorConfined(fixture);
     if (errB2) {
       return `F7: GOOD server fixture incorrectly flagged by checkWalletAccessorConfined: ${errB2}`;
@@ -662,46 +817,46 @@ fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
   }
 
   // F8 — bindings probe: the legacy private-table binding is present.
-  // Kills: making player_wallet public (the generator would emit this file).
   {
-    const err = checkBindings(() => true);
-    if (!err || err.indexOf('player_wallet_table.ts') === -1) {
-      return 'F8: a present player_wallet_table.ts was NOT flagged by checkBindings';
-    }
+    const bad = expectTag(
+      checkBindings(() => true),
+      '[C/legacy]',
+      'F8',
+    );
+    if (bad) return bad;
   }
 
   // F9 — bindings probe: the view binding is missing.
-  // Kills: adding the view but never running `just gen` (client cannot subscribe).
   // GOOD companion: view present + legacy absent must PASS (no always-red).
   {
-    const err = checkBindings(() => false);
-    if (!err || err.indexOf('my_wallet_table.ts') === -1) {
-      return 'F9: a missing my_wallet_table.ts was NOT flagged by checkBindings';
-    }
+    const bad = expectTag(
+      checkBindings(() => false),
+      '[C/missing]',
+      'F9',
+    );
+    if (bad) return bad;
     const good = checkBindings((p) => p.indexOf('my_wallet_table.ts') !== -1);
     if (good) {
       return `F9: GOOD bindings probe (view present, legacy absent) incorrectly flagged: ${good}`;
     }
   }
 
-  // F10 — shop shell formatting the raw amount itself.
-  // Kills: a shell that rebuilds the currency string from `amount` (identical
-  // output today, untested logic forever after — shopView.ts is coverage-excluded).
+  // F10 — shop shell formatting the raw amount itself. The positive anchors are
+  // present in the fixture, so the no-amount clause is unambiguously the one
+  // that must fire.
   {
     const fixture = `
   render(vm: ShopScreenViewModel): void {
-    this.#balanceEl.textContent = \`Gold: \${vm.balance.amount}\`;
+    const known = vm.balance.kind === 'known';
+    this.#balanceEl.textContent = known ? \`Gold: \${vm.balance.amount}\` : vm.balance.label;
   }
 `;
-    const err = checkShopViewNoAmountFormatting(fixture);
-    if (!err) {
-      return 'F10: shopView shell formatting vm.balance.amount was NOT flagged by checkShopViewNoAmountFormatting';
-    }
+    const bad = expectTag(checkShopBalanceShell(fixture), '[V/no-amount]', 'F10');
+    if (bad) return bad;
   }
 
   // F11 — GOOD shopView fixture: renders the pre-computed label, mentions
-  // `balance.amount` only in a comment. Must PASS (proves V is not always-red
-  // and that comments are stripped).
+  // `balance.amount` only in a comment. Must PASS.
   {
     const fixture = `
   // The model owns the string; the shell never touches vm.balance.amount.
@@ -712,17 +867,13 @@ fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
     this.#balanceEl.dataset.balanceState = vm.balance.kind;
   }
 `;
-    const err = checkShopViewNoAmountFormatting(fixture);
-    if (err) {
-      return `F11: GOOD shopView fixture incorrectly flagged: ${err}`;
-    }
+    const err = checkShopBalanceShell(fixture);
+    if (err) return `F11: GOOD shopView fixture incorrectly flagged: ${err}`;
   }
 
   // F12 — connection fixture subscribing the PRIVATE table.
-  // Kills: "just subscribe player_wallet" — which errors the entire batch, so
-  // onApplied never fires and the player sees a blank world (not just a missing
-  // balance). GOOD companion: the view subscription, with the private table
-  // named only in a comment, must PASS.
+  // GOOD companion: the view subscription, with the private table named only in
+  // a comment, must PASS.
   {
     const bad = `
         .subscribe([
@@ -730,10 +881,8 @@ fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
           'SELECT * FROM player_wallet',
         ]);
 `;
-    const err = checkNoPrivateWalletSubscription(bad);
-    if (!err) {
-      return "F12: 'SELECT * FROM player_wallet' inside the .subscribe([...]) array was NOT flagged";
-    }
+    const badTag = expectTag(checkNoPrivateWalletSubscription(bad), '[S/array]', 'F12');
+    if (badTag) return badTag;
     const good = `
         .subscribe([
           'SELECT * FROM shop_row',
@@ -747,6 +896,174 @@ fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
     }
   }
 
+  // F13 (red-team F-1, CRITICAL) — THE decoy-line leak: a conforming
+  // `find(ctx.sender)` line kept alive only to satisfy a presence check,
+  // followed by the real read keyed on an ARBITRARY identity. Compiles, passes
+  // clippy and rustfmt, and returns another player's wallet.
+  // Kills: ANY presence-only spelling of clause 2c.
+  {
+    const fixture = `${TABLE_DECL}
+#[spacetimedb::view(name = my_wallet, public)]
+fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
+    let _decoy = ctx.db.player_wallet().owner_identity().find(ctx.sender);
+    let victim = Identity::from_byte_array([7u8; 32]);
+    ctx.db.player_wallet().owner_identity().find(victim)
+}
+`;
+    const bad = expectTag(checkWalletViewsSafe(fixture), '[B/2c]', 'F13');
+    if (bad) return bad;
+  }
+
+  // F14 — wrong single-row return type: another row type can carry more than the
+  // sender's own row, and flattening (e.g. to a bare u64) would destroy the
+  // "no row" vs "balance 0" distinction the Option is there to preserve.
+  {
+    const fixture = `${TABLE_DECL}
+#[spacetimedb::view(name = my_wallet, public)]
+fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<Wallet> {
+    ctx.db.player_wallet().owner_identity().find(ctx.sender)
+}
+`;
+    const bad = expectTag(checkWalletViewsSafe(fixture), '[B/2f]', 'F14');
+    if (bad) return bad;
+  }
+
+  // F15 (red-team F-7 / reviewer M1) — TWO-HOP indirection:
+  // view rich_list -> roster() -> census() -> accessor. A one-hop reader set
+  // blesses this; only a fixed-point closure catches it. `census` also uses the
+  // SPACED accessor `player_wallet ()` (red-team F-6), which compiles and would
+  // bypass an un-compacted needle in both B and B2.
+  {
+    const fixture = `${TABLE_DECL}${GOOD_VIEW}
+fn census(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
+    Table::iter(&ctx.db.player_wallet ()).collect()
+}
+
+fn roster(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
+    census(ctx)
+}
+
+#[spacetimedb::view(name = rich_list, public)]
+fn rich_list(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
+    roster(ctx)
+}
+`;
+    const err = checkWalletViewsSafe(fixture);
+    const bad = expectTag(err, '[B/3b]', 'F15');
+    if (bad) return bad;
+    if (err.indexOf('roster') === -1) {
+      return `F15: two-hop leak flagged, but the message does not name the called fn roster: ${err}`;
+    }
+    // The SPACED accessor must also be seen by B2's confinement scan.
+    const badB2 = expectTag(checkWalletAccessorConfined(fixture), '[B2/fn]', 'F15');
+    if (badB2) return badB2;
+  }
+
+  // F16 (red-team F-2) — the table handle passed ONE HOP as a parameter: the
+  // deleting fn's body never names the accessor, only its SIGNATURE does.
+  // Kills: a reader set seeded from bodies alone.
+  {
+    const fixture = `${TABLE_DECL}${GOOD_VIEW}
+fn purge(h: &crate::schema::player_wallet__TableHandle, owner: Identity) {
+    h.owner_identity().delete(owner);
+}
+
+#[spacetimedb::view(name = purge_view, public)]
+fn purge_view(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
+    purge(ctx.db.player_wallet(), ctx.sender);
+    None
+}
+`;
+    // The view body names the accessor directly, so 3a fires first; the point of
+    // this fixture is that `purge` IS in the reader closure via its SIGNATURE,
+    // which is what makes a handle-hop leak visible when the view body does not.
+    const bad = expectTag(checkWalletViewsSafe(fixture), '[B/3a]', 'F16');
+    if (bad) return bad;
+    const readers = walletReaderClosure(parseFns(stripComments(fixture)), 'my_wallet');
+    if (!readers.has('purge')) {
+      return 'F16: fn purge (wallet handle in its SIGNATURE, accessor never in its body) is NOT in the wallet-reader closure — the seed ignores signatures (red-team F-2)';
+    }
+  }
+
+  // F17 (reviewer M4) — the balance readout is simply absent from the shell
+  // (never added, or deleted later). An absence-only check V stays green here.
+  {
+    const fixture = `
+  render(vm: ShopScreenViewModel): void {
+    this.#titleEl.textContent = vm.kind === 'shop' ? vm.title : '';
+  }
+`;
+    const bad = expectTag(checkShopBalanceShell(fixture), '[V/anchors]', 'F17');
+    if (bad) return bad;
+  }
+
+  // F18 (red-team F-5) — a leaky view hidden inside a comment FORGED out of
+  // string literals: `const BLOCK_OPEN: &str = "/*";` … `const BLOCK_CLOSE: &str = "*/";`
+  // stripComments is string-literal-unaware, so it blanks the real view between
+  // them and every downstream clause goes blind. The raw-vs-stripped
+  // view-attribute count is the tripwire.
+  {
+    const fixture = `${TABLE_DECL}${GOOD_VIEW}
+const BLOCK_OPEN: &str = "/*";
+
+#[spacetimedb::view(name = all_wallets, public)]
+fn all_wallets(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
+    Table::iter(&ctx.db.player_wallet()).collect()
+}
+
+const BLOCK_CLOSE: &str = "*/";
+`;
+    const bad = expectTag(checkWalletViewsSafe(fixture), '[B/F5-hidden]', 'F18');
+    if (bad) return bad;
+  }
+
+  // F19 (reviewer M2) — short-form view attribute, invisible to parseViews.
+  {
+    const fixture = `${TABLE_DECL}${GOOD_VIEW}
+#[view(name = all_wallets, public)]
+fn all_wallets(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
+    Table::iter(&ctx.db.player_wallet()).collect()
+}
+`;
+    const bad = expectTag(checkWalletViewsSafe(fixture), '[B/M2-shortform]', 'F19');
+    if (bad) return bad;
+  }
+
+  // F20 (reviewer M3) — check S must scan a source with NO `.subscribe([` array
+  // at all (restructured transport, or the SQL assembled elsewhere): the
+  // whole-file needle runs unconditionally.
+  {
+    const fixture = `
+const WALLET_SQL = 'SELECT * FROM player_wallet';
+export function buildQueries(): string[] {
+  return [WALLET_SQL];
+}
+`;
+    const bad = expectTag(checkNoPrivateWalletSubscription(fixture), '[S/file]', 'F20');
+    if (bad) return bad;
+  }
+
+  // F21 (reviewer M3) — a SECOND subscribe array (per-zone resubscribe shape,
+  // ADR-0067) carries the private table while the first is clean.
+  {
+    const fixture = `
+        .subscribe([
+          'SELECT * FROM shop_row',
+          'SELECT * FROM my_wallet',
+        ]);
+      handle.subscribe([
+        'SELECT * FROM character',
+        'SELECT * FROM player_wallet',
+      ]);
+`;
+    const err = checkNoPrivateWalletSubscription(fixture);
+    const bad = expectTag(err, '[S/array]', 'F21');
+    if (bad) return bad;
+    if (err.indexOf('#2') === -1) {
+      return `F21: flagged, but not attributed to the SECOND subscribe array (only the first is being walked): ${err}`;
+    }
+  }
+
   return null;
 }
 
@@ -757,7 +1074,7 @@ fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
 
 export default async function walletPrivacyEval() {
   const name =
-    'wallet-privacy (owner-scoped my_wallet view: call-graph view safety, accessor confinement, single-row return type, bindings, no private subscription)';
+    'wallet-privacy (owner-scoped my_wallet view: exact sender-keyed body, call-graph view safety, accessor confinement, bindings, shop shell, no private subscription)';
 
   const toothErr = runTeeth();
   if (toothErr) {
@@ -814,7 +1131,7 @@ export default async function walletPrivacyEval() {
     failures.push('[V shop-shell] cannot read client/src/ui/shopView.ts');
   }
   if (shopViewSrc !== undefined) {
-    const errV = checkShopViewNoAmountFormatting(shopViewSrc);
+    const errV = checkShopBalanceShell(shopViewSrc);
     if (errV) failures.push(`[V shop-shell] ${errV}`);
   }
 
@@ -837,11 +1154,12 @@ export default async function walletPrivacyEval() {
     name,
     pass: true,
     detail:
-      `${rsSources.length} non-test server source file(s) scanned; my_wallet is the only ` +
-      'view reaching player_wallet (directly or through a helper), returns ' +
-      'Option<PlayerWallet> via owner_identity().find(ctx.sender) with no iter, the ' +
-      'accessor is confined to it inside schema.rs, bindings are view-only, the shop ' +
-      'shell formats nothing, and the private table is never subscribed (12 teeth verified)',
+      `${rsSources.length} non-test server source file(s) scanned; my_wallet's body is ` +
+      'EXACTLY the sender-keyed unique-index lookup, it is the only view reaching ' +
+      'player_wallet (directly or through the transitive reader closure), the accessor ' +
+      'is confined to it inside schema.rs, no view is hidden in a comment or written ' +
+      'short-form, bindings are view-only, the shop shell renders label/kind without ' +
+      'formatting amount, and no subscribe array names the private table (21 teeth verified)',
   };
 }
 

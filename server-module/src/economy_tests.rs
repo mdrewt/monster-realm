@@ -1474,20 +1474,31 @@ fn sell_reducer_calls_headroom_before_consume() {
 // file) so this test file cannot self-match if it is ever source-scanned.
 // ===========================================================================
 
-/// Brace-walk every `fn <name> { … }` in a comment+string-stripped Rust source
-/// and return `(name, body_including_braces)` pairs.
+/// Remove ALL whitespace, so needles and the exact-body pin below survive
+/// rustfmt line breaks and stray spaces (`player_wallet ()` compiles and would
+/// otherwise bypass an un-compacted accessor needle — red-team F-6).
+fn compact_ws(src: &str) -> String {
+    src.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Brace-walk every `fn <name> … { … }` in a comment+string-stripped Rust source
+/// and return `(name, signature, body_including_braces)` triples.
 ///
-/// Shared by R1 (body-scoped needle assertions on `my_wallet`) and R2 (the
-/// fn-scoped never-deleted scan).  Nested fns are reported in addition to the
-/// enclosing fn (the enclosing body simply contains them) — conservative, which
-/// is the safe direction for a security scan.
+/// Shared by R1 (the exact-body pin on `my_wallet`) and R2 (the fn-scoped
+/// never-deleted scan).  The SIGNATURE is returned because a fn can reach the
+/// wallet table without ever naming the accessor in its body — it can take the
+/// generated handle as a parameter (`&player_wallet__TableHandle`), which is a
+/// one-hop bypass of a body-only scan (red-team F-2).
+///
+/// Nested fns are reported in addition to the enclosing fn (the enclosing body
+/// simply contains them) — conservative, the safe direction for a security scan.
 ///
 /// LIMITATION: the body-opening brace is "the first `{` before the first `;`".
 /// A const-generic brace in a return type (`Vec<[T; {1}]>`) would blind it —
 /// no such signature exists in this crate, and the JS eval's parser (which uses
 /// an angle/paren-aware scan) is the belt to this suspenders.
-fn rust_fn_bodies(src: &str) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
+fn rust_fn_bodies(src: &str) -> Vec<(String, String, String)> {
+    let mut out: Vec<(String, String, String)> = Vec::new();
     let bytes = src.as_bytes();
     let mut cursor = 0usize;
     while let Some(rel) = src[cursor..].find("fn ") {
@@ -1546,7 +1557,7 @@ fn rust_fn_bodies(src: &str) -> Vec<(String, String)> {
             continue;
         };
 
-        out.push((name, src[open_abs..=close_abs].to_string()));
+        out.push((name, src[idx..open_abs].to_string(), src[open_abs..=close_abs].to_string()));
     }
     out
 }
@@ -1561,15 +1572,27 @@ fn rust_fn_bodies(src: &str) -> Vec<(String, String)> {
 /// `owner_identity()` and `.find(ctx.sender)` (the `&ctx.sender` borrow
 /// spelling is an equally-correct form of the same scoping and is accepted).
 ///
+/// EXACTNESS (red-team F-1, CRITICAL): the presence assertions alone are NOT
+/// enough.  This body compiles, is clippy-clean and rustfmt-clean, contains
+/// every needle below, and returns an ARBITRARY player's wallet:
+/// ```ignore
+/// let _decoy = <accessor>.owner_identity().find(ctx.sender);
+/// let victim = Identity::from_byte_array([7u8; 32]);
+/// <accessor>.owner_identity().find(victim)
+/// ```
+/// The sanctioned body is ONE expression, so the final assertion pins the
+/// whitespace-compacted body EXACTLY.  That pin still CONTAINS the needles, so
+/// it keeps killing the `cargo mutants` "replace body with `None`" mutant (an
+/// absence-only rewrite would not) — `mutate-server` has zero headroom.
+///
 /// kills:
 ///  - `cargo mutants` "replace body with `None`" on `my_wallet` (the body loses
-///    every needle; `SCHEMA_SOURCE` is a relative `include_str!` so the test
-///    reads the mutated file in the mutants scratch tree);
-///  - a body that scans the table (`Table::iter(&ctx.db.player_wallet())`) and
-///    filters afterwards — no `.find(ctx.sender)`, so RED;
-///  - a body keyed on a client-supplied identity argument instead of
-///    `ctx.sender` (the compiler rejects extra view params, but a body that
-///    reads some other field would still lose the `.find(ctx.sender)` needle);
+///    every needle AND stops matching the exact pin; `SCHEMA_SOURCE` is a
+///    relative `include_str!` so the test reads the mutated file in the mutants
+///    scratch tree);
+///  - the decoy-line leak above (exact pin);
+///  - a body that scans the table and filters afterwards;
+///  - a body keyed on any identity other than `ctx.sender`;
 ///  - a view placed in some OTHER module (SCHEMA_SOURCE would not contain it) —
 ///    which also matters because currency-integrity.eval.mjs's ACCESSOR_BYPASS
 ///    criterion only exempts economy.rs / schema.rs / economy_tests.rs.
@@ -1585,8 +1608,8 @@ fn my_wallet_view_is_owner_scoped() {
     let view_fn_name = ["my", "_wallet"].concat();
     let body = bodies
         .iter()
-        .find(|(name, _)| *name == view_fn_name)
-        .map(|(_, body)| body.as_str())
+        .find(|(name, _, _)| *name == view_fn_name)
+        .map(|(_, _, body)| body.as_str())
         .unwrap_or_else(|| {
             // The message deliberately does NOT spell the view attribute or the
             // wallet accessor literally: this file must stay free of tokens that
@@ -1609,8 +1632,17 @@ fn my_wallet_view_is_owner_scoped() {
     let find_sender = [".find(ctx", ".sender)"].concat();
     let find_sender_ref = [".find(&ctx", ".sender)"].concat();
 
+    // All needles are matched on the whitespace-COMPACTED body (with the outer
+    // braces peeled), so neither a rustfmt line break nor a stray space
+    // (`player_wallet ()`) changes the verdict — red-team F-6.
+    let compact_body = compact_ws(body);
+    let inner = compact_body
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .unwrap_or(compact_body.as_str());
+
     assert!(
-        body.contains(accessor.as_str()),
+        inner.contains(accessor.as_str()),
         "TEETH(ux2 ADR-0154 R1): the `my_wallet` view BODY does not contain `{}` — \
          the view must actually read the wallet table (a stub returning `None`, or the \
          cargo-mutants `replace body with None` mutant, lands here). Body was: {:?}",
@@ -1618,7 +1650,7 @@ fn my_wallet_view_is_owner_scoped() {
         body
     );
     assert!(
-        body.contains(unique_index.as_str()),
+        inner.contains(unique_index.as_str()),
         "TEETH(ux2 ADR-0154 R1): the `my_wallet` view BODY does not contain `{}` — \
          the read MUST go through the owner_identity unique index, never a table scan \
          (a whole-table read is a balance leak for every player). Body was: {:?}",
@@ -1626,7 +1658,7 @@ fn my_wallet_view_is_owner_scoped() {
         body
     );
     assert!(
-        body.contains(find_sender.as_str()) || body.contains(find_sender_ref.as_str()),
+        inner.contains(find_sender.as_str()) || inner.contains(find_sender_ref.as_str()),
         "TEETH(ux2 ADR-0154 R1): the `my_wallet` view BODY contains neither `{}` nor `{}` — \
          the index lookup MUST be keyed on `ctx.sender` (the host reconstructs `sender` \
          per caller; that is the ONLY thing making this view per-player). Body was: {:?}",
@@ -1634,14 +1666,52 @@ fn my_wallet_view_is_owner_scoped() {
         find_sender_ref,
         body
     );
+
+    // --- EXACT-BODY PIN (red-team F-1, CRITICAL) -------------------------------
+    // Everything above is presence-only and is passed by a decoy line. The
+    // sanctioned body is ONE expression: pin it, whitespace-insensitively.
+    let sanctioned = [
+        "ctx.db.",
+        "player",
+        "_wallet().",
+        "owner",
+        "_identity().find(ctx",
+        ".sender)",
+    ]
+    .concat();
+    let sanctioned_ref = [
+        "ctx.db.",
+        "player",
+        "_wallet().",
+        "owner",
+        "_identity().find(&ctx",
+        ".sender)",
+    ]
+    .concat();
+
+    assert!(
+        inner == sanctioned || inner == sanctioned_ref,
+        "TEETH(ux2 ADR-0154 R1 EXACT-BODY): the `my_wallet` view body is not EXACTLY the \
+         sanctioned sender-keyed lookup.\n  expected (whitespace-insensitive): {}\n  \
+         found:                            {}\n\
+         This pin is exact ON PURPOSE: a presence check is passed by a decoy line \
+         (`let _decoy = <accessor>.owner_identity().find(ctx.sender);` followed by a real \
+         read keyed on some OTHER identity), which compiles clean, passes clippy and \
+         rustfmt, and returns an arbitrary player's wallet. If this body must legitimately \
+         change, the new shape has to be re-reviewed for sender-scoping HERE and in \
+         evals/wallet-privacy.eval.mjs clause [B/2c].",
+        sanctioned,
+        inner
+    );
 }
 
 // ---------------------------------------------------------------------------
 // ux2 R2: no code path deletes a player_wallet row
 // ---------------------------------------------------------------------------
 
-/// ux2 (ADR-0154): in every function of economy.rs and schema.rs whose body
-/// touches the `player_wallet()` accessor, neither `.delete(` nor
+/// ux2 (ADR-0154): in every function of economy.rs and schema.rs that touches
+/// the wallet table — via the `player_wallet()` accessor in its body OR via a
+/// generated wallet handle type in its SIGNATURE — neither `.delete(` nor
 /// `.try_delete(` may appear.  Verified true at authoring time: economy.rs
 /// does find / update / insert only, and no `on_disconnect` hook touches the
 /// wallet.
@@ -1653,6 +1723,26 @@ fn my_wallet_view_is_owner_scoped() {
 /// wallet-touching functions are constrained, so an unrelated future
 /// `.delete(` elsewhere in economy.rs (e.g. an inventory row) does not
 /// false-red this test.
+///
+/// SIGNATURE-AWARE (red-team F-2): a fn is "wallet-touching" when its body OR
+/// its SIGNATURE names the accessor or a generated wallet handle type
+/// (`player_wallet__TableHandle` / `player_wallet__ViewHandle`).  Without the
+/// signature arm, one hop defeats the scan entirely:
+/// ```ignore
+/// fn purge(h: &crate::schema::player_wallet__TableHandle, owner: Identity) {
+///     h.owner_identity().delete(owner);          // body never names the accessor
+/// }
+/// #[spacetimedb::reducer]
+/// pub fn purge_wallet(ctx: &ReducerContext) -> Result<(), String> {
+///     purge(ctx.db.player_wallet(), ctx.sender); // caller has no `.delete(`
+///     Ok(())
+/// }
+/// ```
+/// Both halves are individually clean under a body-only scan; the signature arm
+/// puts `purge` in scope and the `.delete(` fires.
+///
+/// Needles are matched on the whitespace-COMPACTED text so `player_wallet ()`
+/// and `.delete (` cannot slip past (red-team F-6).
 ///
 /// Non-vacuity: at least one wallet-touching fn must be found in EACH file.
 /// The economy.rs arm kills a renamed/removed accessor silently emptying the
@@ -1671,6 +1761,9 @@ fn my_wallet_view_is_owner_scoped() {
 #[test]
 fn player_wallet_rows_are_never_deleted() {
     let accessor = ["player", "_wallet()"].concat();
+    // Generated handle types: `player_wallet__TableHandle`, `player_wallet__ViewHandle`.
+    let handle = ["player", "_wallet__"].concat();
+    let wallet_desc = [accessor.as_str(), " or handle type ", handle.as_str()].concat();
     let delete_pat = [".delete", "("].concat();
     let try_delete_pat = [".try", "_delete("].concat();
 
@@ -1679,8 +1772,14 @@ fn player_wallet_rows_are_never_deleted() {
 
     for (file, src) in [("economy.rs", ECONOMY_SOURCE), ("schema.rs", SCHEMA_SOURCE)] {
         let stripped = strip_rust_strings_economy(&strip_rust_comments_economy(src));
-        for (name, body) in rust_fn_bodies(&stripped) {
-            if !body.contains(accessor.as_str()) {
+        for (name, sig, raw_body) in rust_fn_bodies(&stripped) {
+            let sig = compact_ws(&sig);
+            let body = compact_ws(&raw_body);
+            let touches_wallet = body.contains(accessor.as_str())
+                || body.contains(handle.as_str())
+                || sig.contains(accessor.as_str())
+                || sig.contains(handle.as_str());
+            if !touches_wallet {
                 continue;
             }
             if file == "economy.rs" {
@@ -1701,7 +1800,7 @@ fn player_wallet_rows_are_never_deleted() {
                  the row, or this slice's client policy must be redesigned.",
                 name,
                 file,
-                accessor,
+                wallet_desc,
                 delete_pat
             );
             assert!(
@@ -1711,7 +1810,7 @@ fn player_wallet_rows_are_never_deleted() {
                  the fallible spelling is the same violation).",
                 name,
                 file,
-                accessor,
+                wallet_desc,
                 try_delete_pat
             );
         }
@@ -1719,20 +1818,20 @@ fn player_wallet_rows_are_never_deleted() {
 
     assert!(
         wallet_fns_in_economy >= 1,
-        "TEETH(ux2 ADR-0154 R2 NON-VACUITY): no function in economy.rs reads `{}` — \
+        "TEETH(ux2 ADR-0154 R2 NON-VACUITY): no function in economy.rs touches `{}` — \
          the never-deleted scan found nothing to check and would pass vacuously. \
          Either the wallet accessor was renamed (update this test) or the \
          single-surface wallet helpers (grant_currency / wallet_balance / \
          spend_currency, ADR-0081) were moved out of economy.rs.",
-        accessor
+        wallet_desc
     );
     assert!(
         wallet_fns_in_schema >= 1,
-        "TEETH(ux2 ADR-0154 R2 COVERAGE): no function in schema.rs reads `{}` — \
+        "TEETH(ux2 ADR-0154 R2 COVERAGE): no function in schema.rs touches `{}` — \
          the `my_wallet` view MUST live in schema.rs (currency-integrity.eval.mjs's \
          ACCESSOR_BYPASS criterion exempts only economy.rs / schema.rs / \
          economy_tests.rs), and the never-deleted scan must cover the file that owns \
          the new client read path.",
-        accessor
+        wallet_desc
     );
 }
