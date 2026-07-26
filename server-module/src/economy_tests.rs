@@ -1435,3 +1435,474 @@ fn sell_reducer_calls_headroom_before_consume() {
         balance_arg_needle
     );
 }
+
+// ===========================================================================
+// ux2: owner-scoped `my_wallet` view (ADR-0154) — R1 + R2
+//
+// `player_wallet` is PRIVATE (ADR-0015/ADR-0081) and therefore invisible to
+// every client.  ux2 opens exactly ONE read path: a `#[spacetimedb::view]`
+// named `my_wallet` in schema.rs that returns the SENDER'S row and nothing
+// else.  The JS eval (evals/wallet-privacy.eval.mjs) owns the leak-SHAPE
+// invariants (whole-tree call-graph view safety, return-type pin, `iter` ban,
+// accessor confinement, bindings probe).  These two Rust tests own what the
+// eval structurally cannot:
+//
+//   R1 — the cargo-mutants KILL.  `cargo mutants` runs `cargo test`, never
+//        `just eval`, and `SCHEMA_SOURCE` is a RELATIVE `include_str!`, so in
+//        the mutants scratch tree it reads the MUTATED schema.rs (M17.5c
+//        precedent).  The `replace my_wallet -> Option<PlayerWallet> with
+//        None` mutant blanks the body, the PRESENCE assertions below go red,
+//        and the mutant dies — holding `mutate-server` at its exact committed
+//        cap (justfile + nightly-smoke-wiring.eval.mjs).  Note the two
+//        deliberate design choices: BODY-scoped (a file-scoped scan is
+//        satisfied forever by the pre-existing `my_conversation` view, i.e.
+//        vacuous) and PRESENCE-asserting (an absence-only assertion is
+//        *satisfied by* the `None` mutant).
+//
+//   R2 — the never-deleted invariant.  No code path may delete a
+//        `player_wallet` row.  This is what LICENSES the client's
+//        insert-wins/no-remove store policy: through a view subscription a row
+//        UPDATE is delivered as onInsert(new) + onDelete(old), so if wallet
+//        rows were genuinely deletable the client could not tell a real delete
+//        from the old half of an update pair (buy-then-sell 100 -> 50 -> 100
+//        coalesces to I(50) I(100) D(100) D(50) — a balance-equality gate
+//        would remove the LIVE row).
+//
+// Both scans run on the comment- AND string-stripped source (helpers above),
+// so prose and planted string literals can neither satisfy nor trip a needle.
+// Needles are assembled with `.concat()` (precedent: test 2 at the top of this
+// file) so this test file cannot self-match if it is ever source-scanned.
+// ===========================================================================
+
+/// Remove ALL whitespace, so needles and the exact-body pin below survive
+/// rustfmt line breaks and stray spaces (`player_wallet ()` compiles and would
+/// otherwise bypass an un-compacted accessor needle — red-team F-6).
+fn compact_ws(src: &str) -> String {
+    src.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// Brace-walk every `fn <name> … { … }` in a comment+string-stripped Rust source
+/// and return `(name, signature, body_including_braces)` triples.
+///
+/// Shared by R1 (the exact-body pin on `my_wallet`) and R2 (the fn-scoped
+/// never-deleted scan).  The SIGNATURE is returned because a fn can reach the
+/// wallet table without ever naming the accessor in its body — it can take the
+/// generated handle as a parameter (`&player_wallet__TableHandle`), which is a
+/// one-hop bypass of a body-only scan (red-team F-2).
+///
+/// Nested fns are reported in addition to the enclosing fn (the enclosing body
+/// simply contains them) — conservative, the safe direction for a security scan.
+///
+/// LIMITATION: the body-opening brace is "the first `{` before the first `;`".
+/// A const-generic brace in a return type (`Vec<[T; {1}]>`) would blind it —
+/// no such signature exists in this crate, and the JS eval's parser (which uses
+/// an angle/paren-aware scan) is the belt to this suspenders.
+fn rust_fn_bodies(src: &str) -> Vec<(String, String, String)> {
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    let bytes = src.as_bytes();
+    let mut cursor = 0usize;
+    while let Some(rel) = src[cursor..].find("fn ") {
+        let idx = cursor + rel;
+        cursor = idx + 3;
+
+        // `fn` must be its own token (never the tail of an identifier).
+        if idx > 0 {
+            let prev = bytes[idx - 1];
+            if prev.is_ascii_alphanumeric() || prev == b'_' {
+                continue;
+            }
+        }
+
+        let name: String = src[idx + 3..]
+            .chars()
+            .skip_while(|c| c.is_whitespace())
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+
+        // Body-opening brace; a `;` first means a bodyless declaration.
+        let mut open_abs: Option<usize> = None;
+        for (i, ch) in src[idx..].char_indices() {
+            match ch {
+                '{' => {
+                    open_abs = Some(idx + i);
+                    break;
+                }
+                ';' => break,
+                _ => {}
+            }
+        }
+        let Some(open_abs) = open_abs else {
+            continue;
+        };
+
+        let mut depth: usize = 0;
+        let mut close_abs: Option<usize> = None;
+        for (i, ch) in src[open_abs..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close_abs = Some(open_abs + i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(close_abs) = close_abs else {
+            continue;
+        };
+
+        out.push((
+            name,
+            src[idx..open_abs].to_string(),
+            src[open_abs..=close_abs].to_string(),
+        ));
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// ux2 R1: the `my_wallet` view body is owner-scoped
+// ---------------------------------------------------------------------------
+
+/// ux2 (ADR-0154): schema.rs must declare `fn my_wallet`, and its BODY must
+/// read the wallet through the `owner_identity` unique index keyed on
+/// `ctx.sender` — i.e. it must contain all of `player_wallet()`,
+/// `owner_identity()` and `.find(ctx.sender)` (the `&ctx.sender` borrow
+/// spelling is an equally-correct form of the same scoping and is accepted).
+///
+/// EXACTNESS (red-team F-1, CRITICAL): the presence assertions alone are NOT
+/// enough.  This body compiles, is clippy-clean and rustfmt-clean, contains
+/// every needle below, and returns an ARBITRARY player's wallet:
+/// ```ignore
+/// let _decoy = <accessor>.owner_identity().find(ctx.sender);
+/// let victim = Identity::from_byte_array([7u8; 32]);
+/// <accessor>.owner_identity().find(victim)
+/// ```
+/// The sanctioned body is ONE expression, so the final assertion pins the
+/// whitespace-compacted body EXACTLY.  That pin still CONTAINS the needles, so
+/// it keeps killing the `cargo mutants` "replace body with `None`" mutant (an
+/// absence-only rewrite would not) — `mutate-server` has zero headroom.
+///
+/// kills:
+///  - `cargo mutants` "replace body with `None`" on `my_wallet` (the body loses
+///    every needle AND stops matching the exact pin; `SCHEMA_SOURCE` is a
+///    relative `include_str!` so the test reads the mutated file in the mutants
+///    scratch tree);
+///  - the decoy-line leak above (exact pin);
+///  - a body that scans the table and filters afterwards;
+///  - a body keyed on any identity other than `ctx.sender`;
+///  - a view placed in some OTHER module (SCHEMA_SOURCE would not contain it) —
+///    which also matters because currency-integrity.eval.mjs's ACCESSOR_BYPASS
+///    criterion only exempts economy.rs / schema.rs / economy_tests.rs.
+///
+/// Deliberately NOT absence-only and NOT file-scoped: see the block comment
+/// above (both weaker forms are satisfied by an implementation that leaks).
+#[test]
+fn my_wallet_view_is_owner_scoped() {
+    let schema_stripped = strip_rust_strings_economy(&strip_rust_comments_economy(SCHEMA_SOURCE));
+    let bodies = rust_fn_bodies(&schema_stripped);
+
+    // Split-literal fn name (self-match guard).
+    let view_fn_name = ["my", "_wallet"].concat();
+    let body = bodies
+        .iter()
+        .find(|(name, _, _)| *name == view_fn_name)
+        .map(|(_, _, body)| body.as_str())
+        .unwrap_or_else(|| {
+            // The message deliberately does NOT spell the view attribute or the
+            // wallet accessor literally: this file must stay free of tokens that
+            // any current or future source scan could match against itself
+            // (same doctrine as the split-literal needles below). See ux2 plan T1
+            // for the exact snippet to paste.
+            panic!(
+                "TEETH(ux2 ADR-0154): `fn {view_fn_name}` not found in schema.rs — the \
+                 owner-scoped view is the ONLY sanctioned client read path for the PRIVATE \
+                 wallet table. Add it immediately after the PlayerWallet table, carrying the \
+                 spacetimedb view attribute (name = {view_fn_name}, public), taking a \
+                 &spacetimedb::ViewContext, returning Option<PlayerWallet>, with a body that \
+                 is the sender-keyed unique-index lookup on the wallet accessor \
+                 (owner_identity().find(ctx.sender)) and nothing else."
+            )
+        });
+
+    let accessor = ["player", "_wallet()"].concat();
+    let unique_index = ["owner", "_identity()"].concat();
+    let find_sender = [".find(ctx", ".sender)"].concat();
+    let find_sender_ref = [".find(&ctx", ".sender)"].concat();
+
+    // All needles are matched on the whitespace-COMPACTED body (with the outer
+    // braces peeled), so neither a rustfmt line break nor a stray space
+    // (`player_wallet ()`) changes the verdict — red-team F-6.
+    let compact_body = compact_ws(body);
+    let inner = compact_body
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .unwrap_or(compact_body.as_str());
+
+    assert!(
+        inner.contains(accessor.as_str()),
+        "TEETH(ux2 ADR-0154 R1): the `my_wallet` view BODY does not contain `{}` — \
+         the view must actually read the wallet table (a stub returning `None`, or the \
+         cargo-mutants `replace body with None` mutant, lands here). Body was: {:?}",
+        accessor,
+        body
+    );
+    assert!(
+        inner.contains(unique_index.as_str()),
+        "TEETH(ux2 ADR-0154 R1): the `my_wallet` view BODY does not contain `{}` — \
+         the read MUST go through the owner_identity unique index, never a table scan \
+         (a whole-table read is a balance leak for every player). Body was: {:?}",
+        unique_index,
+        body
+    );
+    assert!(
+        inner.contains(find_sender.as_str()) || inner.contains(find_sender_ref.as_str()),
+        "TEETH(ux2 ADR-0154 R1): the `my_wallet` view BODY contains neither `{}` nor `{}` — \
+         the index lookup MUST be keyed on `ctx.sender` (the host reconstructs `sender` \
+         per caller; that is the ONLY thing making this view per-player). Body was: {:?}",
+        find_sender,
+        find_sender_ref,
+        body
+    );
+
+    // --- EXACT-BODY PIN (red-team F-1, CRITICAL) -------------------------------
+    // Everything above is presence-only and is passed by a decoy line. The
+    // sanctioned body is ONE expression: pin it, whitespace-insensitively.
+    let sanctioned = [
+        "ctx.db.",
+        "player",
+        "_wallet().",
+        "owner",
+        "_identity().find(ctx",
+        ".sender)",
+    ]
+    .concat();
+    let sanctioned_ref = [
+        "ctx.db.",
+        "player",
+        "_wallet().",
+        "owner",
+        "_identity().find(&ctx",
+        ".sender)",
+    ]
+    .concat();
+
+    assert!(
+        inner == sanctioned || inner == sanctioned_ref,
+        "TEETH(ux2 ADR-0154 R1 EXACT-BODY): the `my_wallet` view body is not EXACTLY the \
+         sanctioned sender-keyed lookup.\n  expected (whitespace-insensitive): {}\n  \
+         found:                            {}\n\
+         This pin is exact ON PURPOSE: a presence check is passed by a decoy line \
+         (`let _decoy = <accessor>.owner_identity().find(ctx.sender);` followed by a real \
+         read keyed on some OTHER identity), which compiles clean, passes clippy and \
+         rustfmt, and returns an arbitrary player's wallet. If this body must legitimately \
+         change, the new shape has to be re-reviewed for sender-scoping HERE and in \
+         evals/wallet-privacy.eval.mjs clause [B/2c].",
+        sanctioned,
+        inner
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ux2 R2: no code path deletes a player_wallet row
+// ---------------------------------------------------------------------------
+
+/// ux2 (ADR-0154): in every function of economy.rs and schema.rs that touches
+/// the wallet table — via the `player_wallet()` accessor in its body OR via a
+/// generated wallet handle type in its SIGNATURE — neither `.delete(` nor
+/// `.try_delete(` may appear.  Verified true at authoring time: economy.rs
+/// does find / update / insert only, and no `on_disconnect` hook touches the
+/// wallet.
+///
+/// fn-SCOPED rather than statement-scoped on purpose: a statement window
+/// (accessor -> next `;`) is walked past by both
+/// `let h = ctx.db.player_wallet(); h.owner_identity().delete(owner);` and by a
+/// delete inside a `match ctx.db.player_wallet()…{ … }` arm.  Only
+/// wallet-touching functions are constrained, so an unrelated future
+/// `.delete(` elsewhere in economy.rs (e.g. an inventory row) does not
+/// false-red this test.
+///
+/// SIGNATURE-AWARE (red-team F-2): a fn is "wallet-touching" when its body OR
+/// its SIGNATURE names the accessor or a generated wallet handle type
+/// (`player_wallet__TableHandle` / `player_wallet__ViewHandle`).  Without the
+/// signature arm, one hop defeats the scan entirely:
+/// ```ignore
+/// fn purge(h: &crate::schema::player_wallet__TableHandle, owner: Identity) {
+///     h.owner_identity().delete(owner);          // body never names the accessor
+/// }
+/// #[spacetimedb::reducer]
+/// pub fn purge_wallet(ctx: &ReducerContext) -> Result<(), String> {
+///     purge(ctx.db.player_wallet(), ctx.sender); // caller has no `.delete(`
+///     Ok(())
+/// }
+/// ```
+/// Both halves are individually clean under a body-only scan; the signature arm
+/// puts `purge` in scope and the `.delete(` fires.
+///
+/// Needles are matched on the whitespace-COMPACTED text so `player_wallet ()`
+/// and `.delete (` cannot slip past (red-team F-6).
+///
+/// Non-vacuity: at least one wallet-touching fn must be found in EACH file.
+/// The economy.rs arm kills a renamed/removed accessor silently emptying the
+/// scan; the schema.rs arm requires the `my_wallet` view to live in schema.rs
+/// (where currency-integrity.eval.mjs's ACCESSOR_BYPASS criterion exempts it)
+/// so the never-deleted invariant actually covers the new read path.
+///
+/// kills:
+///  - an impl that "cleans up" empty wallets with
+///    `ctx.db.player_wallet().owner_identity().delete(owner)` on a zero balance
+///    or on disconnect — that would make the client's insert-wins/no-remove
+///    policy unsound (a genuine delete would be indistinguishable from the old
+///    half of a view UPDATE pair, so the UI could not react to it);
+///  - a `try_delete` spelling of the same;
+///  - the view being added outside schema.rs (schema.rs arm goes red).
+#[test]
+fn player_wallet_rows_are_never_deleted() {
+    let accessor = ["player", "_wallet()"].concat();
+    // Generated handle types: `player_wallet__TableHandle`, `player_wallet__ViewHandle`.
+    let handle = ["player", "_wallet__"].concat();
+    let wallet_desc = [accessor.as_str(), " or handle type ", handle.as_str()].concat();
+    let delete_pat = [".delete", "("].concat();
+    let try_delete_pat = [".try", "_delete("].concat();
+
+    let mut wallet_fns_in_economy = 0usize;
+    let mut wallet_fns_in_schema = 0usize;
+
+    for (file, src) in [("economy.rs", ECONOMY_SOURCE), ("schema.rs", SCHEMA_SOURCE)] {
+        let stripped = strip_rust_strings_economy(&strip_rust_comments_economy(src));
+        for (name, sig, raw_body) in rust_fn_bodies(&stripped) {
+            let sig = compact_ws(&sig);
+            let body = compact_ws(&raw_body);
+            let touches_wallet = body.contains(accessor.as_str())
+                || body.contains(handle.as_str())
+                || sig.contains(accessor.as_str())
+                || sig.contains(handle.as_str());
+            if !touches_wallet {
+                continue;
+            }
+            if file == "economy.rs" {
+                wallet_fns_in_economy += 1;
+            } else {
+                wallet_fns_in_schema += 1;
+            }
+
+            assert!(
+                !body.contains(delete_pat.as_str()),
+                "TEETH(ux2 ADR-0154 R2): `{}` in {} touches `{}` AND contains `{}` — \
+                 player_wallet rows must NEVER be deleted. The client's wallet slot is \
+                 insert-wins with NO remove path precisely because of this invariant: \
+                 through a view subscription an UPDATE is delivered as onInsert(new) + \
+                 onDelete(old), so a genuine delete is indistinguishable from the old \
+                 half of an update pair (buy-then-sell 100 -> 50 -> 100 coalesces to \
+                 I(50) I(100) D(100) D(50)). Zero out the balance instead of deleting \
+                 the row, or this slice's client policy must be redesigned.",
+                name,
+                file,
+                wallet_desc,
+                delete_pat
+            );
+            assert!(
+                !body.contains(try_delete_pat.as_str()),
+                "TEETH(ux2 ADR-0154 R2): `{}` in {} touches `{}` AND contains `{}` — \
+                 player_wallet rows must NEVER be deleted (see the `.delete(` arm above; \
+                 the fallible spelling is the same violation).",
+                name,
+                file,
+                wallet_desc,
+                try_delete_pat
+            );
+        }
+    }
+
+    assert!(
+        wallet_fns_in_economy >= 1,
+        "TEETH(ux2 ADR-0154 R2 NON-VACUITY): no function in economy.rs touches `{}` — \
+         the never-deleted scan found nothing to check and would pass vacuously. \
+         Either the wallet accessor was renamed (update this test) or the \
+         single-surface wallet helpers (grant_currency / wallet_balance / \
+         spend_currency, ADR-0081) were moved out of economy.rs.",
+        wallet_desc
+    );
+    assert!(
+        wallet_fns_in_schema >= 1,
+        "TEETH(ux2 ADR-0154 R2 COVERAGE): no function in schema.rs touches `{}` — \
+         the `my_wallet` view MUST live in schema.rs (currency-integrity.eval.mjs's \
+         ACCESSOR_BYPASS criterion exempts only economy.rs / schema.rs / \
+         economy_tests.rs), and the never-deleted scan must cover the file that owns \
+         the new client read path.",
+        wallet_desc
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ux2 R3: no module code constructs a view context (forged-sender ban)
+// ---------------------------------------------------------------------------
+
+/// ux2 (ADR-0154, auditor finding M-1): neither schema.rs nor economy.rs may
+/// CONSTRUCT a `ViewContext` — not via the constructor and not as a struct
+/// literal.  Mirrors clause `[B/3c-forged-ctx]` of
+/// `evals/wallet-privacy.eval.mjs` so `cargo test` bites too (the eval runs
+/// only under `just eval`, never under `cargo mutants`).
+///
+/// WHY: `spacetimedb::ViewContext::new(sender)` is a `pub` constructor
+/// (spacetimedb-1.12.0/src/lib.rs:902-911).  A second view can therefore
+/// launder a read THROUGH the owner-scoped view with a sender it chose:
+/// ```ignore
+/// #[spacetimedb::view(name = peek_wallet, public)]
+/// fn peek_wallet(_ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
+///     let victim = Identity::from_byte_array([7u8; 32]);
+///     my_wallet(&spacetimedb::ViewContext::new(victim))   // arbitrary wallet
+/// }
+/// ```
+/// That body names neither the wallet accessor (so R1/R2, the eval's accessor
+/// clauses, and currency-integrity's ACCESSOR_BYPASS all miss it) nor any
+/// wallet-reading helper (the view fn is deliberately excluded from the eval's
+/// reader closure, so a future HUD view may legitimately call it with its OWN
+/// context).  The authenticity of `sender` is the WHOLE privacy mechanism: the
+/// host is the only legitimate constructor
+/// (spacetimedb-1.12.0/src/rt.rs:1100-1121), so module code constructing one is
+/// banned outright.  No false-red surface: every live `ViewContext` occurrence
+/// in these files is a `&spacetimedb::ViewContext` parameter type, and a
+/// parameter is always followed by `)` or `,`.  (A fn that RETURNS a context —
+/// `fn forge() -> spacetimedb::ViewContext {` — does compact to the banned
+/// `ViewContext{` and is flagged: intended, because such a fn must have
+/// constructed one.)
+///
+/// kills: any `peek_wallet`-shaped view; a struct-literal `ViewContext { … }`
+///        spelling of the same; a helper that manufactures a context for a
+///        reducer to pass into a view fn.
+#[test]
+fn no_forged_view_context_construction() {
+    // Split-literal needles: this test file must never match itself, and the
+    // needles are compared against the whitespace-COMPACTED source so
+    // `ViewContext :: new (` cannot slip past.
+    let ctor = ["ViewContext", "::new("].concat();
+    let struct_literal = ["ViewContext", "{"].concat();
+
+    for (file, src) in [("schema.rs", SCHEMA_SOURCE), ("economy.rs", ECONOMY_SOURCE)] {
+        let compact = compact_ws(&strip_rust_strings_economy(&strip_rust_comments_economy(
+            src,
+        )));
+        for needle in [ctor.as_str(), struct_literal.as_str()] {
+            assert!(
+                !compact.contains(needle),
+                "TEETH(ux2 ADR-0154 R3 FORGED-CTX): {} constructs a view context (`{}`) — \
+                 only the SpacetimeDB host may build a ViewContext; that is what makes \
+                 `ctx.sender` authentic, and authenticity of the sender is the ENTIRE \
+                 privacy mechanism of the owner-scoped `my_wallet` view. A constructed \
+                 context lets any view call `my_wallet` with a sender it picked and read \
+                 an arbitrary player's wallet while naming neither the wallet table nor \
+                 any wallet-reading helper. A view that needs the wallet must take its \
+                 own `&spacetimedb::ViewContext` parameter and pass THAT.",
+                file,
+                needle
+            );
+        }
+    }
+}

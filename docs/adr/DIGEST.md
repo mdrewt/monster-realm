@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 120 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 121 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -128,6 +128,7 @@ Generated from 120 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0151](./0151-help-affordance-hint.md) | 0151 — ux1 help affordance: a zero-JS persistent hint, and the viewport-anchoring of the overlay it advertises | Accepted | client-ui | ux1 (M-postgate-ux-hardening — persistent on-screen hint advertising the `?` help overlay + a battle-result continue hint; EARS ux1-1..ux1-3) | Ship the "Press ? for controls & help" hint as static zero-JS markup in `index.html`, and in the same edit give `#help-overlay` `position:fixed;inset:0;z-index:100` — the overlay it advertises rendered below the fold. |
 | [0152](./0152-predictor-epoch-guard-and-send-seq-floor.md) | 0152 — Predictor epoch guard & send-seq floor (nh3: M-postgate-netcode-hardening) | Accepted | movement-netcode, client-ui | nh3 (M-postgate-netcode-hardening — predictor generation guard + send-seq floor to close the ptc5f/ADR-0142 accepted-risk window; EARS nh3-1/2/3) | Ship BOTH: branded-epoch guard on dropRejected (closes M1, cross-generation eviction) and the lastSentSeq→seedSeq floor on rebuild (closes M2, the re-issued "stale seq" rejection). The ADR-0085 window closes only with both. |
 | [0153](./0153-ux3-playtest-preflight.md) | 0153 — ux3 playtest preflight: reach the server through the CLI's own resolver, and gate it behaviorally | Accepted | tooling-docs, ci-gates | ux3 (M-postgate-ux-hardening — `playtest-up`/`playtest-wipe` preflight-check `$STDB_SERVER` reachability; EARS ux3-1..ux3-3) | Preflight `$STDB_SERVER` with `timeout 10 spacetime server ping "$STDB_SERVER"` — the CLI's own resolver, so the check cannot disagree with the `publish -s` it guards — and gate it with a behavioral tooth, not source scans alone. |
+| [0154](./0154-owner-scoped-wallet-view.md) | 0154 — Owner-scoped `my_wallet` view over the private `player_wallet` table | Accepted | security-authz, economy-quests, client-ui | ux2 (M-postgate-ux-hardening — owner-scoped `#[view]` over `player_wallet` + shop balance seam; EARS ux2-1..ux2-3) | Expose the caller's own balance through an owner-scoped `#[view] my_wallet -> Option<PlayerWallet>` (the ADR-0087 pattern), keep `player_wallet` private, and gate leak-shape with a call-graph-derived eval rather than body-anchored scanning. |
 | [0155](./0155-ux4-battle-swap-discoverability.md) | 0155 — ux4 battle-swap discoverability: the swap UI was correct, so explain the absence instead of fixing it | Accepted | client-ui, battle | ux4 (M-postgate-ux-hardening — repro-and-confirm the battle monster-switch gap, then hint; EARS ux4-1..ux4-3) | ux4-1 confirmed the box/team-separation hypothesis and refuted a swap-UI bug, so ship no fix — pin the working PvE swap path with teeth and add two persistent hints that explain the absence without advertising a currently-dead key. |
 
 ## Harness design corpus (H- namespace)
@@ -325,6 +326,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0150](./0150-reconnect-token-persistence.md) — nh4 (M-postgate-netcode-hardening — reconnect identity persistence; EARS nh4-1, nh4-2, nh4-3, nh4-4) — 0150 — nh4: the reconnect token is persisted per-tab, and a rejected token is suppressed rather than cleared (Accepted)
 - [0151](./0151-help-affordance-hint.md) — ux1 (M-postgate-ux-hardening — persistent on-screen hint advertising the `?` help overlay + a battle-result continue hint; EARS ux1-1..ux1-3) — 0151 — ux1 help affordance: a zero-JS persistent hint, and the viewport-anchoring of the overlay it advertises (Accepted)
 - [0152](./0152-predictor-epoch-guard-and-send-seq-floor.md) — nh3 (M-postgate-netcode-hardening — predictor generation guard + send-seq floor to close the ptc5f/ADR-0142 accepted-risk window; EARS nh3-1/2/3) — 0152 — Predictor epoch guard & send-seq floor (nh3: M-postgate-netcode-hardening) (Accepted)
+- [0154](./0154-owner-scoped-wallet-view.md) — ux2 (M-postgate-ux-hardening — owner-scoped `#[view]` over `player_wallet` + shop balance seam; EARS ux2-1..ux2-3) — 0154 — Owner-scoped `my_wallet` view over the private `player_wallet` table (Accepted)
 - [0155](./0155-ux4-battle-swap-discoverability.md) — ux4 (M-postgate-ux-hardening — repro-and-confirm the battle monster-switch gap, then hint; EARS ux4-1..ux4-3) — 0155 — ux4 battle-swap discoverability: the swap UI was correct, so explain the absence instead of fixing it (Accepted)
 
 ### ci-gates
@@ -421,6 +423,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0136](./0136-ptc5a-care-train-battle-guard.md) — ptc5a (M-playtest-c.5 pre-gate residuals — raising battle-guard gap, EARS ptc5a-1..3) — 0136 — ptc5a care/train both-role ongoing-battle guard: close the bounded mid-battle HP-laundering path (amends ADR-0122 §D7) (Accepted)
 - [0138](./0138-ptc5b-wild-disconnect-gc.md) — ptc5b (M-playtest-c.5 pre-gate residuals — wild-battle disconnect GC, EARS ptc5b-1..3) — 0138 — ptc5b wild-battle disconnect resolution: auto-flee + GC the `battle`/`battle_wild` rows to unblock returning-player re-entry (Accepted)
 - [0150](./0150-reconnect-token-persistence.md) — nh4 (M-postgate-netcode-hardening — reconnect identity persistence; EARS nh4-1, nh4-2, nh4-3, nh4-4) — 0150 — nh4: the reconnect token is persisted per-tab, and a rejected token is suppressed rather than cleared (Accepted)
+- [0154](./0154-owner-scoped-wallet-view.md) — ux2 (M-postgate-ux-hardening — owner-scoped `#[view]` over `player_wallet` + shop balance seam; EARS ux2-1..ux2-3) — 0154 — Owner-scoped `my_wallet` view over the private `player_wallet` table (Accepted)
 
 ### economy-quests
 
@@ -442,3 +445,4 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0124](./0124-shop-receiver-cap-headroom.md) — m17.5c — 0124 — Shop receiver-cap headroom: reject-not-destroy on buy/sell (Accepted)
 - [0134](./0134-trade-propose-ui.md) — pt-c2 — Client trade-PROPOSE UI (KeyO offer overlay) (Accepted)
 - [0145](./0145-encounter-recruit-economy-tuning-pass.md) — pt-d3 (M-playtest-d content pack — encounter/recruit/economy tuning; EARS pt-d3-1..6) — 0145 — pt-d3 tuning pass: zone 0 frozen, zone 1 carries the wild-legal roster, one economy fix (Accepted)
+- [0154](./0154-owner-scoped-wallet-view.md) — ux2 (M-postgate-ux-hardening — owner-scoped `#[view]` over `player_wallet` + shop balance seam; EARS ux2-1..ux2-3) — 0154 — Owner-scoped `my_wallet` view over the private `player_wallet` table (Accepted)
