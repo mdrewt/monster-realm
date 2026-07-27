@@ -14,6 +14,37 @@ export { BURST_EPSILON_MS, INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH } from '../shar
 /** Pixels per logical tile (the one configurable mapping; default ~32). */
 export const TILE_PX = 32;
 
+// ---------------------------------------------------------------------------
+// uxd1 / ADR-0160: responsive viewport scaling — the framing window.
+// These three are Drew-tunable FEEL numbers; the EARS criteria use them
+// symbolically, so retuning them stays testable. They are consumed ONLY by
+// `viewport.ts` (a pure core) — no Pixi type ever enters this module.
+// (every constant is commented with WHAT it controls and WHY that value)
+// ---------------------------------------------------------------------------
+
+/** Shorter-axis tile count the chosen scale AIMS for (ADR-0160).
+ *  WHAT: deviceScale ≈ round(shorterAxisDevicePx / (TARGET × TILE_PX)).
+ *  WHY 11: a 10×7 shipped zone is 320×224 source px, so ~11 tiles on the
+ *  shorter axis frames the whole zone with a small margin on a 16:9 desktop
+ *  while still leaving a monster sprite legible on a phone. */
+export const TARGET_VISIBLE_TILES = 11;
+
+/** Best-effort FLOOR on the shorter-axis visible-tile count (ADR-0160).
+ *  WHAT: lower bound of the admissible window — the scale is not allowed to
+ *  zoom in past this while a larger integer scale is still admissible.
+ *  WHY 7: fewer than 7 tiles on the shorter axis hides the full height of a
+ *  10×7 zone and the player loses the sense of the room. BEST-EFFORT, not
+ *  strict: `deviceScale >= 1` is a HARD floor (a sub-1 scale IS the blur bug
+ *  this slice fixes), so below MIN × TILE_PX = 224 device px this yields. */
+export const MIN_VISIBLE_TILES = 7;
+
+/** STRICT CEILING on the shorter-axis visible-tile count (ADR-0160).
+ *  WHAT: upper bound of the admissible window — never show more than this.
+ *  WHY 16: past ~16 tiles the 32-px placeholder sprites are too small to read
+ *  on a laptop. Unlike MIN this is never violated: the ceiling is enforced by
+ *  raising deviceScale, which the `>= 1` floor never opposes. */
+export const MAX_VISIBLE_TILES = 16;
+
 /** Remote interpolation delay BASE, in STEP_MS multiples (ADR-0013/0075, M12.5d-1).
  *  This is the documentary base value — on smooth networks it equals the operative
  *  delay. The actual per-character delay is ADAPTIVE (ADR-0090): derived from the
