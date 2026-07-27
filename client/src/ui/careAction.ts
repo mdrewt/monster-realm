@@ -43,7 +43,19 @@ const DISCONNECTED_MESSAGE = 'disconnected — try again';
  * only ever disagree with the one that is actually sent.
  */
 export async function performCare(deps: CareActionDeps): Promise<void> {
-  const inFlight = deps.callCare();
+  let inFlight: Promise<unknown> | undefined;
+  try {
+    // The SDK's callReducerWithParams BSATN-serializes the reducer args
+    // SYNCHRONOUSLY before it returns a promise, so a serialization failure
+    // THROWS here rather than rejecting. Calling outside a try let that throw
+    // escape performCare as a rejected promise before any showFeedback — the
+    // caller only console.error's it, so the player saw nothing at all. A sync
+    // throw must land in the SAME error arm as a rejection.
+    inFlight = deps.callCare();
+  } catch (err) {
+    deps.showFeedback(reduceErrorMessage(err, 'care'));
+    return;
+  }
   // Branch BEFORE awaiting: `await undefined` resolves without throwing, so a
   // frozen link would otherwise fall straight through to the success arm and
   // report a call that never happened.
@@ -51,6 +63,10 @@ export async function performCare(deps: CareActionDeps): Promise<void> {
     deps.showFeedback(DISCONNECTED_MESSAGE);
     return;
   }
+  // The await and its two arms get their OWN try: a single try wrapping both
+  // callCare() and the settle arms would re-enter the catch (a second
+  // showFeedback call) if showFeedback itself ever threw on the success or
+  // frozen arm. Exactly one showFeedback call per arm, always.
   try {
     await inFlight;
     deps.showFeedback(CARED_MESSAGE);

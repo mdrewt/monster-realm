@@ -31,7 +31,17 @@ export class RaisingView {
   // In-flight lock: prevents a double-click from firing two care calls (whose
   // contradictory outcomes would flash "Cared!" then "care cooldown not yet
   // elapsed"). shopView/renameView precedent.
-  #pending = false;
+  //
+  // PER MONSTER, not view-wide: a single shared boolean made a care call in
+  // flight for monster A silently swallow monster B's click (B's own button was
+  // never disabled, so it looked clickable), and had no way to express "A is
+  // still pending" to a mid-flight refresh() that rebuilds every button.
+  readonly #pending = new Set<bigint>();
+  // The Care button currently on screen for each monster. #renderMonsters
+  // rebuilds every node via replaceChildren(), so the button a click closure
+  // captured can be detached by the time its call settles — re-enabling that
+  // stale node would leave the LIVE one disabled forever.
+  readonly #careButtons = new Map<bigint, HTMLButtonElement>();
 
   constructor(parent: HTMLElement, callbacks: RaisingViewCallbacks) {
     this.#callbacks = callbacks;
@@ -99,7 +109,7 @@ export class RaisingView {
     // released here because the SDK never settles a reducer promise after a link
     // drop — .finally() may never run (shopView/renameView precedent).
     this.#feedbackEl.textContent = '';
-    this.#pending = false;
+    this.#pending.clear();
   }
 
   /** Display a care outcome. textContent ONLY — the message can carry a
@@ -118,6 +128,7 @@ export class RaisingView {
     items: readonly InventoryItemViewModel[],
   ): void {
     this.#monsterEl.replaceChildren();
+    this.#careButtons.clear();
     if (monsters.length === 0) {
       const empty = document.createElement('div');
       empty.textContent = 'No monsters.';
@@ -149,20 +160,33 @@ export class RaisingView {
       const actions = document.createElement('div');
       actions.style.cssText = 'margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;';
 
+      const monsterId = mon.monsterId;
       const careBtn = document.createElement('button');
       careBtn.textContent = 'Care';
       careBtn.style.cssText = 'font-size:11px;cursor:pointer;';
+      // Re-derive the disabled state from the pending SET rather than defaulting
+      // to enabled: refresh() can rebuild this button while THIS monster's care
+      // call is still in flight, and a brand-new enabled-looking button whose
+      // click the lock then swallows is worse than no button at all.
+      careBtn.disabled = this.#pending.has(monsterId);
+      this.#careButtons.set(monsterId, careBtn);
       // Re-entrancy guard (ADR-0159 D1, shopView/renameView precedent): the
       // callback's return value is wrapped so a genuinely pending care call holds
       // the lock until it settles; .finally() resets on BOTH arms (no dead button).
+      // The lock is keyed by monsterId, so it only ever blocks a second click on
+      // the SAME monster — a sibling monster's Care button stays live.
       careBtn.addEventListener('click', () => {
-        if (this.#pending) return;
-        this.#pending = true;
+        if (this.#pending.has(monsterId)) return;
+        this.#pending.add(monsterId);
         careBtn.disabled = true;
-        void Promise.resolve(this.#callbacks.onCare(mon.monsterId))
+        void Promise.resolve(this.#callbacks.onCare(monsterId))
           .finally(() => {
-            this.#pending = false;
-            careBtn.disabled = false;
+            this.#pending.delete(monsterId);
+            // Re-enable whichever button is on screen NOW: a refresh() during the
+            // call replaces this closure's node, and re-enabling the detached one
+            // would strand the live button disabled forever.
+            const live = this.#careButtons.get(monsterId) ?? careBtn;
+            live.disabled = false;
           })
           .catch((err: unknown) => {
             // Feedback is the caller's responsibility, so this is swallowed to
