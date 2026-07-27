@@ -162,8 +162,24 @@ fn npc_decide_same_inputs_same_direction() {
     let map = game_core::zone_0();
     let home = game_core::TilePos { x: 5, y: 5 };
     let current = game_core::TilePos { x: 4, y: 5 };
-    let a = game_core::npc_decide(current, home, 2, game_core::Direction::North, 99u64, 42u64, &map);
-    let b = game_core::npc_decide(current, home, 2, game_core::Direction::North, 99u64, 42u64, &map);
+    let a = game_core::npc_decide(
+        current,
+        home,
+        2,
+        game_core::Direction::North,
+        99u64,
+        42u64,
+        &map,
+    );
+    let b = game_core::npc_decide(
+        current,
+        home,
+        2,
+        game_core::Direction::North,
+        99u64,
+        42u64,
+        &map,
+    );
     assert_eq!(a, b, "npc_decide must be deterministic");
 }
 
@@ -182,7 +198,15 @@ fn npc_decide_same_inputs_same_direction() {
 fn npc_decide_radius_zero_never_moves() {
     let map = game_core::zone_0();
     let home = game_core::TilePos { x: 5, y: 5 };
-    let dir = game_core::npc_decide(home, home, 0, game_core::Direction::South, 42u64, 7u64, &map);
+    let dir = game_core::npc_decide(
+        home,
+        home,
+        0,
+        game_core::Direction::South,
+        42u64,
+        7u64,
+        &map,
+    );
     assert!(
         dir.is_none(),
         "NPC with wander_radius=0 must never move; got {:?}",

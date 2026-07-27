@@ -432,8 +432,16 @@ fn npc_decide_aliasing_distinct_id_tick_pairs_differ() {
 
     let result_id1 = npc_decide(current, home, radius, Direction::South, 1, 0, &map);
     let result_id7 = npc_decide(current, home, radius, Direction::South, 7, 0, &map);
-    assert_eq!(result_id1, Some(Direction::East), "oracle: npc_id=1,tick=0 -> Some(East)");
-    assert_eq!(result_id7, Some(Direction::West), "oracle: npc_id=7,tick=0 -> Some(West)");
+    assert_eq!(
+        result_id1,
+        Some(Direction::East),
+        "oracle: npc_id=1,tick=0 -> Some(East)"
+    );
+    assert_eq!(
+        result_id7,
+        Some(Direction::West),
+        "oracle: npc_id=7,tick=0 -> Some(West)"
+    );
     assert_ne!(
         result_id1, result_id7,
         "RT-NPC-01: npc_id=1 and npc_id=7 at the SAME tick=0 (same position/facing) must \
@@ -925,7 +933,10 @@ fn npc_decide_behavioural_bound_zero_bumps_bounded_reversals_over_long_walk() {
         "expected ZERO wall-bumps over 60000 ticks on the real zone-0 grid \
          (status quo measured 14.33% of ticks as bumps); got {bumps} bumps"
     );
-    assert!(moves > 0, "sanity: the simulation must have moved at least once");
+    assert!(
+        moves > 0,
+        "sanity: the simulation must have moved at least once"
+    );
     #[allow(clippy::cast_precision_loss)] // bounded by MAX_TICKS (60_000); no precision concern
     let reversal_rate = reversals as f64 / moves as f64;
     assert!(
@@ -1067,7 +1078,8 @@ fn npc_decide_visits_every_legal_tile_from_real_start_state_not_an_absorbing_sta
         }
 
         assert_eq!(
-            visited, expected,
+            visited,
+            expected,
             "npc_id={npc_id}: driven from the REAL start state (5,5) facing South for \
              20000 ticks on the real zone-0 grid, npc_decide must visit ALL {} legal tiles; \
              visited only {} -- an absorbing \"continue whenever legal, no re-roll\" bug \
