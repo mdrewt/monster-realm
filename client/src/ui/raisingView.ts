@@ -10,8 +10,15 @@ import type { InventoryItemViewModel, RaisingViewModel } from './raisingModel';
 export interface RaisingViewCallbacks {
   /** Called when the user feeds a training item to a monster. */
   readonly onTrain: (monsterId: bigint, foodItemId: number) => void;
-  /** Called when the user clicks the Care button on a monster. */
-  readonly onCare: (monsterId: bigint) => void;
+  /**
+   * Called when the user clicks the Care button on a monster.
+   *
+   * May return a promise: the `#pending` re-entrancy lock is held until that
+   * promise settles, so the return type must express it. Typing this `=> void`
+   * would let a future implementation type-check cleanly while silently
+   * reducing the lock to a no-op (a double-click would fire two care calls).
+   */
+  readonly onCare: (monsterId: bigint) => void | Promise<void>;
 }
 
 export class RaisingView {
@@ -157,9 +164,12 @@ export class RaisingView {
             this.#pending = false;
             careBtn.disabled = false;
           })
-          .catch(() => {
-            /* feedback is the caller's responsibility; swallow to avoid an
-               unhandled rejection if a caller hands back a rejecting promise */
+          .catch((err: unknown) => {
+            // Feedback is the caller's responsibility, so this is swallowed to
+            // avoid an unhandled rejection — but a rejecting onCare violates the
+            // contract (performCare never rejects), so log it rather than making
+            // the violation invisible in a coverage-excluded shell.
+            console.error('care click handler error', err);
           });
       });
       actions.appendChild(careBtn);

@@ -38,11 +38,11 @@ const DISCONNECTED_MESSAGE = 'disconnected — try again';
  * the reducer promise settles, so a rejection (CARE_COOLDOWN_MS is 6 h — most
  * real clicks ARE rejections) can never be preceded by a false 'Cared!'.
  *
- * `monsterId` is part of the click identity the caller binds into `callCare`; it
- * is not consumed here (the closure already carries it), but it stays on the
- * signature so the call site reads as "care for THIS monster".
+ * The monster identity is not a parameter: it is already bound into the
+ * `callCare` closure by the caller, and a second, unread copy of it here could
+ * only ever disagree with the one that is actually sent.
  */
-export async function performCare(deps: CareActionDeps, _monsterId: bigint): Promise<void> {
+export async function performCare(deps: CareActionDeps): Promise<void> {
   const inFlight = deps.callCare();
   // Branch BEFORE awaiting: `await undefined` resolves without throwing, so a
   // frozen link would otherwise fall straight through to the success arm and

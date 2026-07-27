@@ -84,9 +84,21 @@ fn toward_home(current: TilePos, home: TilePos) -> Direction {
 ///    `Direction` declaration order): `d` is legal iff `current.step(d)` is
 ///    walkable on `map` AND stays within `wander_radius` of `home`.
 ///    `L` empty (boxed in) → `None`.
-/// 6. If `facing` is in `L` → `Some(facing)`, continuing the current heading —
-///    this is what lengthens runs and roughly halves immediate reversals.
-/// 7. Otherwise → `Some(L[((h >> 1) as usize) % L.len()])`.
+/// 6. **Continue** — if `facing` is in `L` AND the voluntary re-roll does not
+///    fire (`(h >> 33) % NPC_CONTINUE_REROLL != 0`) → `Some(facing)`, continuing
+///    the current heading. This is what lengthens runs and cuts immediate
+///    reversals.
+/// 7. **Re-pick** — otherwise (`facing` illegal, or the 1-in-
+///    [`NPC_CONTINUE_REROLL`] voluntary re-roll fired) →
+///    `Some(L[((h >> 1) as usize) % L.len()])`.
+///
+/// The voluntary re-roll is NOT optional polish: "continue whenever legal" with
+/// no re-roll is an *absorbing state* — once `facing` is East or West at the
+/// shipped config it can never change, so the NPC reaches only 5 of its 8 legal
+/// tiles and degenerates into an E↔W metronome (ADR-0159 D2, alternative B2).
+///
+/// The three hash slices are disjoint on purpose — `h % 5` (stay), `h >> 33`
+/// (re-roll) and `h >> 1` (pick) — so the three decisions do not correlate.
 #[must_use]
 pub fn npc_decide(
     current: TilePos,
@@ -113,8 +125,9 @@ pub fn npc_decide(
         return None;
     }
     // Legal set L: walkable AND still inside the wander radius. Fixed-size
-    // buffer (at most 4 directions) — no allocation in a pure rule.
-    let mut legal = [Direction::North; 4];
+    // buffer sized off DIRECTION_ORDER (the set it is filled from, so the two
+    // cannot drift) — no allocation in a pure rule.
+    let mut legal = [Direction::North; DIRECTION_ORDER.len()];
     let mut n = 0usize;
     for d in DIRECTION_ORDER {
         let next = current.step(d);
@@ -128,8 +141,11 @@ pub fn npc_decide(
         // Boxed in: every neighbour is a wall or outside the radius.
         return None;
     }
-    if legal.contains(&facing) {
-        // Continue the current heading while it stays legal.
+    // Continue the current heading while it stays legal — but voluntarily
+    // re-roll 1 decision in NPC_CONTINUE_REROLL, otherwise "continue while
+    // legal" is an absorbing state (ADR-0159 D2). The `h >> 33` slice is
+    // independent of both the stay roll (`h % 5`) and the pick (`h >> 1`).
+    if legal.contains(&facing) && !(h >> 33).is_multiple_of(NPC_CONTINUE_REROLL) {
         return Some(facing);
     }
     Some(legal[((h >> 1) as usize) % legal.len()])
@@ -147,6 +163,21 @@ const DIRECTION_ORDER: [Direction; 4] = [
     Direction::East,
     Direction::West,
 ];
+
+/// Voluntary re-roll rate for the continue-facing branch: 1 decision in 6
+/// re-picks even though the current `facing` is still legal.
+///
+/// A FEEL constant, swept in ADR-0159 D2 against the real zone-0 grid: K=4 →
+/// 25.9 % immediate reversals / 1.68 mean run, **K=6 → 24.1 % / 1.84**, K=8 →
+/// 23.2 % / 1.96, K=16 → 21.8 % / 2.16. Larger K buys longer runs but trends
+/// back toward a degenerate pendulum; K=0 is the absorbing bug. It is COUPLED to
+/// `wander_radius` (fitted at the shipped radius 2, sanity-checked at 5) — if
+/// content ships a much larger radius or a much more open map, re-run the sweep.
+///
+/// Declared strictly BELOW `npc_decide` for the same reason as
+/// [`DIRECTION_ORDER`]: nothing may be inserted above the `npc/rules.rs:61:15`
+/// line-pin in `.cargo/mutants.toml`.
+const NPC_CONTINUE_REROLL: u64 = 6;
 
 // ===========================================================================
 // fix-nightly (ADR-0088): in-file tests for the PRIVATE `toward_home` fn.

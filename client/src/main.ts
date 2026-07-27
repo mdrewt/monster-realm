@@ -1833,19 +1833,23 @@ async function main(): Promise<void> {
       // connection and the real overlay to it. Returned (not `void`ed) so the
       // view's #pending lock stays held until the reducer promise settles.
       onCare: (monsterId) =>
-        performCare(
-          {
-            // ADR-0085 A1 frozen gate (onBuy/onSell shape): a call against a dead
-            // conn is silently queued and never settles — report `undefined` so
-            // performCare shows the disconnected line instead of hanging.
-            callCare: () =>
-              conn === undefined || conn.linkFrozen()
-                ? undefined
-                : conn.conn.reducers.care({ monsterId }),
-            showFeedback: (message) => raisingView?.showFeedback(message),
+        performCare({
+          // ADR-0085 A1 frozen gate (onBuy/onSell shape): a call against a dead
+          // conn is silently queued and never settles — report `undefined` so
+          // performCare shows the disconnected line instead of hanging.
+          callCare: () =>
+            conn === undefined || conn.linkFrozen()
+              ? undefined
+              : conn.conn.reducers.care({ monsterId }),
+          // Visibility gate (onBuy/onSell idiom): KeyB/KeyE call
+          // raisingView.hide() unconditionally, which clears the feedback
+          // line. Without this check a care that settles after the overlay
+          // was force-hidden writes a stale message the player then sees on
+          // the NEXT open, with no click behind it.
+          showFeedback: (message) => {
+            if (raisingView?.visible) raisingView.showFeedback(message);
           },
-          monsterId,
-        ),
+        }),
     });
     evolutionView = new EvolutionViewClass(mount, {
       onEvolve: (monsterId) => {
