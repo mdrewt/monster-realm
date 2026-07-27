@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** 0068
 **Subsystems:** client-ui, movement-netcode
-**Decision:** Care gets an in-overlay feedback line via the established showFeedback idiom (no toast subsystem); npc_decide becomes collision- and radius-aware and continues its facing while legal, eliminating wall-bumps and halving reversals.
+**Decision:** Care gets an in-overlay feedback line via the established showFeedback idiom (no toast); npc_decide picks only legal directions and continues its facing except 1 decision in 6, so wander cannot become absorbing; bumps 14.3%->0%.
 
 ## Context
 
@@ -137,15 +137,20 @@ decision skips the write (`movement.rs` `continue`s). So eliminating bumps does 
 gaps between row updates — it slightly lengthens them: no-write ticks go 17.6 % → 20.3 %, mean row
 inter-arrival 242.6 ms → 251.1 ms, and the modelled adaptive interp delay rises ~285 ms → ~302 ms
 (1.43 → 1.51 steps). The **worst unbroken no-write run is unchanged at 8 ticks** in both, as it must
-be — the 1-in-5 stay roll is untouched and is the sole producer of no-write ticks. That +17 ms sits
+be — the 1-in-5 stay roll is untouched and is, at the shipped config, the only reachable producer of
+no-write ticks (the empty-legal-set branch is a second producer in principle, but needs an NPC boxed
+into a 1-tile pocket, which no shipped content creates). That +17 ms sits
 far inside the 2.5-step / 500 ms clamp (`config.ts:41,47`); clamp saturation moves 0.26 % → 0.50 %
 of arrivals. **No new stutter or rubberbanding risk**, but the earlier draft of this ADR claimed the
 gaps got *shorter* and the delay did not inflate — that was wrong and is corrected here.
 
-The real smoothness win is a **snapshot-content** effect, not a gap-timing one: previously **14.3 %
-of NPC row updates carried zero displacement** (a bump rewrites facing/action/`move_started_at` with
-the tile unchanged), so the interpolator was handed two snapshots at the same tile and rendered a
-hard 200 ms stop mid-motion. That is now **0 %** — every row update is a real one-tile step.
+The real smoothness win is a **snapshot-content** effect, not a gap-timing one: previously **17.4 %
+of NPC row updates carried zero displacement** (14.3 % of all ticks — a bump rewrites
+facing/action/`move_started_at` with the tile unchanged), so the interpolator was handed two
+snapshots at the same tile and rendered a hard 200 ms stop mid-motion. That is now **0 %** — every
+row update is a real one-tile step. (Per *row update* is the correct denominator here: it is what
+the interpolator actually consumes. An earlier draft quoted the per-tick figure against the
+per-row-update noun.)
 
 ## Alternatives considered
 
@@ -172,9 +177,10 @@ later, and leaves the rule buggy.
 ## Consequences / residuals
 
 1. `npc_decide`'s signature changes (two added params). It is exported from `game-core` and has
-   exactly one production caller (`server-module/src/movement.rs:312-318`); the ~15 test call sites
-   in `npc/m12a_gating_tests.rs` and `server-module/src/npc_tests.rs` are updated positionally, and
-   the two known-answer vectors are **re-derived** rather than weakened.
+   exactly one production caller (`server-module/src/movement.rs:313-321`); the **41** test call
+   sites in `npc/m12a_gating_tests.rs`, `rules.rs`'s in-file `mod tests`, and
+   `server-module/src/npc_tests.rs` are updated positionally, and the known-answer vectors are
+   **re-derived** rather than weakened.
 2. `npc_decide` now depends on `TileMap`, so an NPC's wander is coupled to zone geometry. This is
    correct (the geometry is what makes a move legal) but means a future map edit can change an NPC's
    observed path — the gating tests therefore assert *properties* (no bump, bounded reversal rate)
@@ -184,24 +190,24 @@ later, and leaves the rule buggy.
    `onBuy`/`onSell`/rename (which also bypass it) but is now asymmetric with `onTrain`, still on
    `sendGuarded`, inside the *same* overlay. Deliberate, recorded here; unifying the five overlay
    feedback paths with the error ring is a named follow-up.
-4b. The other four overlays that use this idiom (`shopView`, `tradeView`, `tradeProposeView`,
+4. The other four overlays that use this idiom (`shopView`, `tradeView`, `tradeProposeView`,
    `renameView`, `pvpView`) still inline their reducer-await logic in `main.ts`, which is
    coverage-excluded — so none of them has a test pinning that feedback follows settlement rather
    than preceding it. They are not known to be broken; they are *unguarded* against exactly the
    optimistic-lie regression `careAction.test.ts` now pins for care. Extracting them was out of this
    slice's blast radius. Named follow-up, and the more direct parallel to residual 3 below.
-4. No care-cooldown countdown is shown, so a rejected click still only explains itself in words.
+5. No care-cooldown countdown is shown, so a rejected click still only explains itself in words.
    Showing "ready in 4 h 12 m" needs `last_care_at_ms` (or a derived `care_ready_at_ms`) exposed on
    the **public** `monster_pub` projection — an additive column plus
    `evals/baselines/table-schemas.json` and the `no-idle-accrual` allowlist. Parked.
-5. `NPC_DECIDE_SALT`, the splitmix64 constants, the 1-in-5 stay rate and the `toward_home` tiebreak
+6. `NPC_DECIDE_SALT`, the splitmix64 constants, the 1-in-5 stay rate and the `toward_home` tiebreak
    are untouched, so `.cargo/mutants.toml`'s `npc/rules.rs:61:15` line-pin (asserted as a literal
    ~8× in `evals/mutate-core-recipe-integrity.eval.mjs`) stays valid — `toward_home` must not move,
    which constrains where new items may be declared in the file.
-6. All wandering NPCs still decide on the same global `tick_counter` (`movement.rs:289`), so they
+7. All wandering NPCs still decide on the same global `tick_counter` (`movement.rs:289`), so they
    re-decide in lockstep. Invisible with one NPC; if a zone ever hosts ≥3, add a per-NPC phase
    offset. Named follow-up.
-7. The client jitter estimator (`store.ts:435-440`) counts "entity idle → no row update" as network
+8. The client jitter estimator (`store.ts:435-440`) counts "entity idle → no row update" as network
    jitter. D2 makes this marginally *worse*, not better (no-write ticks 17.6 % → 20.3 %, modelled
    delay +17 ms — see the netcode paragraph); it stays far inside the clamp, but the conflation is
    real and unaddressed. Named follow-up: exclude idle intervals from the jitter EWMA.
@@ -215,7 +221,7 @@ later, and leaves the rule buggy.
    uses bounded retry loops rather than fixed tick counts so it should still converge, but its
    in-file comment describing the old cadence is now imprecise and the retry budget is worth
    watching for flake.
-8. Ledger items **088 (walk speed)** and **090 (walk animation)** are NOT delivered here — see the
+11. Ledger items **088 (walk speed)** and **090 (walk animation)** are NOT delivered here — see the
    PR body and the slice handoff for the parked scope and its evidence.
 
 ## Proof of teeth

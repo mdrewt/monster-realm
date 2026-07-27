@@ -1011,6 +1011,14 @@ fn npc_decide_radius_zero_pinned_to_home_never_moves_regardless_of_facing() {
 // kills: the shipped "continue whenever legal, no re-roll" absorbing-state
 // bug. RED against it: the visited set is a strict subset (size 5, the y=5
 // row only) of the expected set (size 8) for the affected npc_ids.
+//
+// SCOPE NOTE — this gate bites the absorbing *class*, NOT the value of
+// NPC_CONTINUE_REROLL. Any K in 1..~1000 passes this test (and K up to ~1000
+// also passes the behavioural bound), because full coverage only needs the
+// re-roll to fire *eventually*. K = 6 is pinned uniquely (within 2..32) by
+// npc_decide_known_answer_vectors_pin_the_continue_reroll combined with the
+// behavioural bound. Do NOT delete or loosen those vectors believing this
+// test covers the constant — it does not.
 // ---------------------------------------------------------------------------
 
 #[test]
