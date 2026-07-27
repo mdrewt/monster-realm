@@ -3433,7 +3433,7 @@ describe('★ main.ts wiring (mvi): the hold-commit threshold is wired into BOTH
 //     actually connect to raisingView.showFeedback (e.g. a stub `showFeedback: () =>
 //     {}`) — the EARS criterion is unmet even if performCare itself is correct.
 //   W-CARE-SHOWFEEDBACK-VISIBLE-GUARD: an unguarded `raisingView?.showFeedback(...)`
-//     forward (the CURRENT shipped shape, code-review MAJOR finding) — a care call
+//     forward (the PRE-FIX shape this test now guards against, code-review MAJOR finding) — a care call
 //     that settles after the overlay is force-hidden (KeyB/KeyE) writes a stale
 //     message the player sees with no click behind it on the NEXT open.
 //   W-CARE-ERRMSG-CAREACTION: careAction.ts's catch arm shows a raw err.message
@@ -3565,7 +3565,7 @@ describe('main.ts wiring (feel-polish D1): care feedback (ADR-0159, hardened aga
     // Raising later and sees a stale "Cared!" (or a stale error) with no click
     // behind it — exactly the "click #2 looks identical to click #1" confusion
     // ADR-0159 exists to remove.
-    // WRONG IMPL KILLED: the CURRENT shipped shape — an unguarded
+    // WRONG IMPL KILLED: the PRE-FIX shape (now fixed; this test keeps it fixed) — an unguarded
     // `raisingView?.showFeedback(message)` forward with no `.visible` check.
     const src = readMainTs();
     const onCareIdx = src.indexOf('onCare:');

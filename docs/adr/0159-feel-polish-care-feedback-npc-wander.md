@@ -184,6 +184,12 @@ later, and leaves the rule buggy.
    `onBuy`/`onSell`/rename (which also bypass it) but is now asymmetric with `onTrain`, still on
    `sendGuarded`, inside the *same* overlay. Deliberate, recorded here; unifying the five overlay
    feedback paths with the error ring is a named follow-up.
+4b. The other four overlays that use this idiom (`shopView`, `tradeView`, `tradeProposeView`,
+   `renameView`, `pvpView`) still inline their reducer-await logic in `main.ts`, which is
+   coverage-excluded — so none of them has a test pinning that feedback follows settlement rather
+   than preceding it. They are not known to be broken; they are *unguarded* against exactly the
+   optimistic-lie regression `careAction.test.ts` now pins for care. Extracting them was out of this
+   slice's blast radius. Named follow-up, and the more direct parallel to residual 3 below.
 4. No care-cooldown countdown is shown, so a rejected click still only explains itself in words.
    Showing "ready in 4 h 12 m" needs `last_care_at_ms` (or a derived `care_ready_at_ms`) exposed on
    the **public** `monster_pub` projection — an additive column plus

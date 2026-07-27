@@ -228,7 +228,7 @@ describe('★ RaisingView Care button: re-entrancy guard (C4, ADR-0159 D1)', () 
     const flightPromise = new Promise<void>((res) => {
       resolveFlight = res;
     });
-    // onCare is typed `(monsterId: bigint) => void`, but (shopView/renameView
+    // onCare is typed `(monsterId: bigint) => void | Promise<void>`, but (shopView/renameView
     // precedent) the guard implementation is expected to wrap the callback's return
     // value via `Promise.resolve(this.#cbs.onCare(...)).finally(...)` so a caller that
     // genuinely returns a pending Promise keeps the lock held until it settles.
