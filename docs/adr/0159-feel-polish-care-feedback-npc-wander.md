@@ -221,7 +221,37 @@ later, and leaves the rule buggy.
    uses bounded retry loops rather than fixed tick counts so it should still converge, but its
    in-file comment describing the old cadence is now imprecise and the retry budget is worth
    watching for flake.
-11. Ledger items **088 (walk speed)** and **090 (walk animation)** are NOT delivered here — see the
+12. **PRE-EXISTING, NOT INTRODUCED HERE — the homing branch can livelock, and a content edit can
+   trigger it.** `toward_home` is a pure function of `(current, home)` with no legality check, so if
+   its chosen axis is a wall the NPC bumps, does not move, and next tick computes the identical
+   direction — forever, with no fallback. Adversarial review drove the shipped rule from
+   `current=(5,2), home=(5,5), radius=2` (the gating suite's own Fixture B) for 100 000 ticks:
+   **0 escapes, 100 000/100 000 bump ticks.** Sweeping every walkable zone-0 tile as a candidate new
+   `home` found **56 (start, new-home) pairs that freeze permanently**, and
+   `server-module/src/content.rs:513-538` deliberately preserves an NPC's live `tile_x/tile_y` across
+   a republish that changes `home_x`/`home_y`/`wander_radius` — so "move an NPC's home" or "shrink
+   its leash", both code-free content edits, are exactly the operations that can strand a live NPC
+   outside its new radius. Nothing validates that `home_x/home_y` is even walkable.
+   **This slice neither introduced nor worsened it** — the homing branch is byte-unchanged, and D2
+   in fact makes it *less* reachable, because the wander branch can no longer step outside the
+   radius at all (pre-D2 the NPC left its radius routinely and homed back, exercising this path
+   constantly; post-D2 it is unreachable for all shipped content). Not fixed here because a fix
+   changes semantics that the gating suite deliberately pins — `npc_decide_homing_answers_every_tick_never_stalls`
+   Fixture B asserts `Some(South)` *into* a wall — and needs its own known-answer re-derivation plus
+   content-load validation. **Follow-up slice:** give `toward_home` a legality-aware fallback
+   (secondary axis, then any legal step), validate at content load that home is walkable and that
+   spawn is within radius of home, and add a liveness gate ("from any out-of-radius start the NPC
+   re-enters its radius within N ticks") — the current test asserts only "never returns `None`",
+   which is strictly weaker.
+13. Feedback is gated on `raisingView?.visible` **at settle time**, so closing and *reopening* the
+   overlay before an in-flight care call settles lands a stale "Cared!" in the freshly reopened
+   overlay with no click behind it in that viewing. Cosmetic; the robust fix is an in-flight token
+   invalidated by `hide()` rather than a visibility check. Named follow-up.
+14. If `deps.showFeedback` itself throws on the resolve arm, `performCare`'s `catch` calls it a
+   second time with an error message — so a *successful* care would be reported as a generic error.
+   The real implementation is `textContent = message`, which does not throw for a string, so this is
+   theoretical; noted because the "exactly one message" contract has no defence against it.
+15. Ledger items **088 (walk speed)** and **090 (walk animation)** are NOT delivered here — see the
    PR body and the slice handoff for the parked scope and its evidence.
 
 ## Proof of teeth
