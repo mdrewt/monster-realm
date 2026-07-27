@@ -14,8 +14,13 @@
 //!     G2 — continue-facing: a still-legal facing is returned unchanged
 //!     G3 — homing (outside-radius) answers every tick, never None
 //!     G4 — known-answer vectors pin the hash/salt/legality interaction
+//!     G4b — known-answer vectors pin the 1-in-K "continue" re-roll (fixes the
+//!           absorbing-state metronome bug: unconditional continue-when-legal
+//!           on the shipped elder_oak pocket never leaves the y=5 row)
 //!     G5 — behavioural bound: zero bumps, bounded reversal rate over a long walk
 //!     G6 — unchanged contracts (radius=0, determinism, toward_home axis/tiebreak) still hold
+//!     G7 — full-coverage: driven from the real start state, the NPC must visit
+//!          EVERY legal tile, not orbit a subset forever (the desync-guard-audit tooth)
 //!
 //! Each test carries a `/// kills:` comment naming which wrong implementation it
 //! catches, so the verifier can match failing assertion → eliminated bug class.
@@ -23,17 +28,27 @@
 //! NEW SIGNATURE (ADR-0159 D2):
 //!   npc_decide(current, home, wander_radius, facing, npc_id, tick, map) -> Option<Direction>
 //!
-//! Red state: every test in this file fails to compile until `npc_decide` gains
-//! `facing: Direction` and `map: &TileMap` (ADR-0159 D2) — a missing-impl RED,
-//! not a typo in these tests.
+//! Red state: `npc_decide` now compiles against this signature (the legality +
+//! continue-facing half of ADR-0159 D2 is implemented), but it ships an
+//! ABSORBING-STATE bug — "continue whenever facing is legal" with NO voluntary
+//! re-roll — caught by an independent desync-guard-audit simulation: once
+//! `facing` becomes East or West on elder_oak's shipped pocket (home (5,5),
+//! radius 2, zone 0), every interior tile has E/W legal, so the NPC oscillates
+//! forever along the y=5 row (5 of the 8 legal tiles) and NEVER visits
+//! (4,4)/(5,4)/(6,4). G7 and G4b below are RED against this real, compiling,
+//! but behaviourally-wrong implementation; they will go GREEN once the fix (a
+//! `(h >> 33) % NPC_CONTINUE_REROLL` voluntary re-roll, K=6) lands.
 //!
 //! Run: cargo nextest run -p game-core npc::m12a_gating_tests -- --nocapture
 
 use crate::npc::npc_decide;
-use crate::types::{dir_from_code, Direction, TilePos};
-use crate::world::zone_0;
+use crate::types::{
+    dir_from_code, ActionState, CharacterState, Direction, Millis, MoveInput, TilePos,
+};
+use crate::world::{apply_move, zone_0};
 
 use proptest::prelude::*;
+use std::collections::HashSet;
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -713,6 +728,82 @@ fn npc_decide_known_answer_vectors_pin_hash_and_legality() {
 }
 
 // ---------------------------------------------------------------------------
+// G4b — RE-ROLL KNOWN-ANSWER VECTORS.
+//
+// Desync-guard-audit finding: the shipped implementation has an ABSORBING
+// STATE. "Continue whenever `facing` is legal" with NO voluntary re-roll means
+// that once `facing` becomes East or West on elder_oak's real pocket (home
+// (5,5), radius 2, zone 0), it can never change: every interior tile has E/W
+// legal (continue always fires), and the two end tiles (3,5)/(7,5) force the
+// exact reverse. Measured: the NPC oscillates along the y=5 row (5 of the 8
+// legal tiles) and NEVER visits (4,4), (5,4), (6,4) — a metronome, not a
+// wanderer (see G7 below for the full-coverage proof).
+//
+// The fix adds a THIRD, independent bit-slice: even when `facing` is legal,
+// `(h >> 33) % NPC_CONTINUE_REROLL == 0` (K = 6) forces a re-roll via the
+// existing `L[(h >> 1) % L.len()]` pick instead of continuing. `(h >> 33)` is
+// deliberately disjoint from the stay-roll bits (`h % 5`) and the pick bits
+// (`h >> 1`).
+//
+// These vectors are independently derived (home (5,5), radius 2, zone-0 grid;
+// L = [North, East, West] there, South is walled) and PIN cases where
+// `facing` IS legal but the correct output is still a re-roll — the exact
+// scenario an unconditional-continue implementation can never produce.
+//
+// kills: the shipped "continue whenever legal, no re-roll" bug — these
+// vectors are RED against it (it returns `Some(facing)` unconditionally,
+// never `Some(East)` when facing is the illegal-to-continue North/West here).
+// Also kills an impl that ALWAYS re-rolls (ignores `facing` entirely): the
+// trailing "control" pair proves continuation still happens when
+// `(h >> 33) % 6 != 0`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn npc_decide_known_answer_vectors_pin_the_continue_reroll() {
+    let map = zone_0();
+    let home = pos(5, 5);
+    let radius = 2u8;
+
+    // facing legal (North, West both in L) but (h>>33)%6==0 -> REROLLED to
+    // the hash-pick (East), NOT continued.
+    assert_eq!(
+        npc_decide(home, home, radius, Direction::North, 7, 5, &map),
+        Some(Direction::East),
+        "oracle: (5,5) facing=North(legal) npc_id=7 tick=5: h%5=3 (not stay), \
+         (h>>33)%6=0 -> REROLLED away from North to East, not continued"
+    );
+    assert_eq!(
+        npc_decide(home, home, radius, Direction::West, 7, 5, &map),
+        Some(Direction::East),
+        "oracle: (5,5) facing=West(legal) npc_id=7 tick=5: same (npc_id, tick) hash draw \
+         as above (the hash does not depend on `facing`) -> REROLLED away from West to \
+         East, not continued"
+    );
+    assert_eq!(
+        npc_decide(home, home, radius, Direction::North, 7, 7, &map),
+        Some(Direction::East),
+        "oracle: (5,5) facing=North(legal) npc_id=7 tick=7: h%5=4 (not stay), \
+         (h>>33)%6=0 -> REROLLED away from North to East, not continued"
+    );
+
+    // Control pair, SAME position, discriminating the branch the other way:
+    // facing IS continued when the (h>>33)%6 draw is non-zero, so the fix is
+    // not "always reroll" either.
+    assert_eq!(
+        npc_decide(home, home, radius, Direction::East, 1, 6, &map),
+        Some(Direction::East),
+        "oracle: (5,5) facing=East(legal) npc_id=1 tick=6: h%5=4 (not stay), \
+         (h>>33)%6=5 (!=0) -> CONTINUED (paired with the North/West vectors above at \
+         the SAME position to prove the branch genuinely discriminates)"
+    );
+    assert_eq!(
+        npc_decide(home, home, radius, Direction::East, 1, 7, &map),
+        Some(Direction::East),
+        "oracle: (5,5) facing=East(legal) npc_id=1 tick=7: (h>>33)%6=3 (!=0) -> CONTINUED"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // G5 — BEHAVIOURAL BOUND (encodes the playtest complaint).
 //
 // Simulate a long walk (60 000 ticks — the ADR's own measurement window) on
@@ -720,30 +811,49 @@ fn npc_decide_known_answer_vectors_pin_hash_and_legality() {
 // position/facing tick-by-tick (mirroring how movement.rs drives npc_decide +
 // apply_move in production). Assert:
 //   - bump count == 0 (exact).
-//   - IMMEDIATE reversal rate < 25% of moves. Status quo measured 32.26%; the
-//     shipped design measured 19.97%; this threshold sits strictly between
-//     the two (~5pp margin on both sides), so the CURRENT (pre-ADR-0159)
-//     implementation fails it and the correct one passes with headroom.
+//   - IMMEDIATE reversal rate < 28% of moves.
 //   - the NPC never leaves its wander_radius.
+//
+// THRESHOLD RE-DERIVATION (2nd red-team pass): the FIRST fix considered
+// ("always continue when legal", no re-roll) measured 19.97% immediate
+// reversals — but that fix has an ABSORBING STATE (G4b/G7): it never visits
+// 3 of the 8 legal tiles. The desync-guard-audit's actual fix adds a 1-in-6
+// voluntary re-roll (`(h >> 33) % NPC_CONTINUE_REROLL`, K=6), which reaches
+// all 8 tiles but costs a somewhat higher reversal rate:
+//
+//   rule                     tiles  rev%   bump%  meanRun   (60k ticks, real grid)
+//   status quo (pre-slice)    13*   32.26  14.33  1.14      (*incl. out-of-radius)
+//   always-continue (bug)      5    19.97   0.00  2.48
+//   K=4                        8    25.88   0.00  1.68
+//   K=6  <-- CHOSEN             8    24.05   0.00  1.84
+//   K=8                        8    23.23   0.00  1.96
+//   K=16                       8    21.75   0.00  2.16
+//
+// `< 0.25` (the prior threshold, derived against the absorbing-state 19.97%
+// figure) would leave K=6's honest 24.05% only ~1pp of margin — the SAME
+// knife-edge problem red-team already flagged once (see the METRIC note
+// below for that history). Threshold moved to `< 0.28`: status quo 32.26%
+// fails by 4.3pp; the K=6 fix's 24.05% passes by 4.0pp — comparable margin on
+// both sides, at the ADR's actual measurement window (N=60000).
 //
 // METRIC (precise, do not re-introduce ambiguity here): a reversal is an
 // IMMEDIATE reversal — a MOVE tick whose direction is the exact opposite of
 // the PREVIOUS MOVE tick's direction, with NO intervening stay (`None`) tick
 // between them. `last_move_dir` is therefore reset to `None` on every stay
-// tick below: "move East, stay, stay, move West" is NOT a reversal (the ADR's
-// 32.26%/19.97% figures were measured this way). A prior version of this test
-// tracked `last_move_dir` across stay ticks (an "any-gap" metric); red-team
-// showed that metric converges to EXACTLY 25.00% regardless of implementation
-// correctness (measured 24.9937% at N=5000, 25.0005% at N=60000, 25.0002% at
-// N=200000 against a KNOWN-CORRECT implementation) — i.e. the old `< 0.25`
-// assertion was a coin-flip on sample-size noise, not a tooth. Recomputed
-// against the immediate-reversal metric at N=60000: status quo 32.26% (fails
-// this gate), correct 19.97% (passes), ignore-facing variant 35.44% (fails).
+// tick below: "move East, stay, stay, move West" is NOT a reversal. A prior
+// version of this test tracked `last_move_dir` across stay ticks (an
+// "any-gap" metric); red-team showed that metric converges to EXACTLY 25.00%
+// regardless of implementation correctness (measured 24.9937% at N=5000,
+// 25.0005% at N=60000, 25.0002% at N=200000) — i.e. that `< 0.25` assertion
+// was a coin-flip on sample-size noise, not a tooth. Both historical issues
+// (wrong metric, then a too-tight threshold against the RIGHT metric) are
+// folded into the `< 0.28` / N=60000 combination above.
 //
 // kills: any impl that ignores the map (status quo: 14.33% of ticks were
-// bumps) or that is collision-aware but drops continue-facing (measured
-// 35.44% immediate-reversal rate in the ADR's alternative (B) — still over
-// this bound).
+// bumps), or that is collision-aware but drops continue-facing entirely
+// (measured 35.44% immediate-reversal rate in the ADR's alternative (B) —
+// still over this bound), or the shipped absorbing-state bug's sibling
+// failure mode were its reversal rate ever to regress upward past 28%.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -819,9 +929,10 @@ fn npc_decide_behavioural_bound_zero_bumps_bounded_reversals_over_long_walk() {
     #[allow(clippy::cast_precision_loss)] // bounded by MAX_TICKS (60_000); no precision concern
     let reversal_rate = reversals as f64 / moves as f64;
     assert!(
-        reversal_rate < 0.25,
-        "IMMEDIATE reversal rate must be < 25% of moves (status quo measured 32.26%, \
-         target ~19.97%, both at N=60000); got {:.4}% ({reversals} reversals / {moves} moves)",
+        reversal_rate < 0.28,
+        "IMMEDIATE reversal rate must be < 28% of moves (status quo measured 32.26%, \
+         the K=6 voluntary-reroll fix measured 24.05%, both at N=60000); got {:.4}% \
+         ({reversals} reversals / {moves} moves)",
         reversal_rate * 100.0
     );
 }
@@ -855,6 +966,114 @@ fn npc_decide_radius_zero_pinned_to_home_never_moves_regardless_of_facing() {
             result, None,
             "wander_radius=0 with current==home must always return None (pinned to home), \
              regardless of facing={facing:?}; got {result:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G7 — FULL COVERAGE, NOT AN ABSORBING STATE (desync-guard-audit finding,
+// HIGHEST PRIORITY: this is the tooth that would have caught the shipped bug).
+//
+// G1 sweeps every diamond position and asserts "IF Some(d) is returned, it's
+// legal" — that is necessary but NOT sufficient: it never drives the NPC from
+// its real start state, so it cannot see that a legality-correct decision
+// function can still be a de-facto metronome if it always continues a legal
+// facing. The shipped implementation does exactly that: "continue whenever
+// facing is legal", no voluntary re-roll. On elder_oak's real pocket (home
+// (5,5), radius 2, zone 0) every interior tile has East/West legal, so once
+// `facing` becomes East or West it NEVER changes again (the two end tiles,
+// (3,5) and (7,5), force the exact reverse, which is still East/West). The
+// independent desync-guard-audit simulation confirmed the NPC visits only 5
+// of the 8 legal tiles — the whole y=5 row — and never reaches
+// (4,4), (5,4), (6,4), for 7 of 8 sampled npc_ids.
+//
+// This test drives `npc_decide` + the REAL `apply_move` (not a hand-rolled
+// step) from the REAL production start state — home (5,5), facing South,
+// `action: Idle` — for 20 000 ticks (matching movement.rs's own tick-by-tick
+// loop: `Some(dir)` -> `apply_move(...)`, `None` -> `continue` with state
+// untouched, exactly as encoded here). It collects the SET of tiles visited
+// and asserts it equals the full set of legal tiles, computed PROGRAMMATICALLY
+// from the map + radius (not hardcoded), so the test stays honest if content
+// ever changes. It repeats for 8 different npc_ids, since the bug reproduced
+// for 7 of the 8 ids the audit sampled.
+//
+// kills: the shipped "continue whenever legal, no re-roll" absorbing-state
+// bug. RED against it: the visited set is a strict subset (size 5, the y=5
+// row only) of the expected set (size 8) for the affected npc_ids.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn npc_decide_visits_every_legal_tile_from_real_start_state_not_an_absorbing_state() {
+    let map = zone_0();
+    let home = pos(5, 5);
+    let radius: u8 = 2;
+
+    // Expected set: computed PROGRAMMATICALLY from the map + radius (not
+    // hardcoded), so this test stays honest if zone-0 content ever changes.
+    let mut expected: HashSet<TilePos> = HashSet::new();
+    let r = i32::from(radius);
+    for dx in -r..=r {
+        for dy in -r..=r {
+            if dx.abs() + dy.abs() > r {
+                continue; // outside the diamond radius
+            }
+            let candidate = pos(home.x + dx, home.y + dy);
+            if map.is_walkable(candidate) {
+                expected.insert(candidate);
+            }
+        }
+    }
+    // Sanity pin on elder_oak's real shipped config (documents the premise;
+    // if content drifts this fails loud rather than silently passing a
+    // smaller/larger coverage requirement).
+    assert_eq!(
+        expected.len(),
+        8,
+        "sanity: elder_oak's real wander pocket (home (5,5), radius 2, zone 0) must have \
+         exactly 8 legal tiles per the desync-guard audit; got {} -- if zone-0 content \
+         changed, re-derive this test's premise from the new grid",
+        expected.len()
+    );
+
+    // Several npc_ids, not just one -- the audit measured coverage
+    // [5,5,5,7,5,5,5,5] across these 8 ids: EVERY one of them falls short of
+    // the full 8-tile set under the shipped bug (one outlier reaches 7, via
+    // whichever end tile it happens to bounce off first, before settling into
+    // the same y=5-row oscillation as the rest) -- a single-id test could
+    // still catch this, but sampling all 8 matches the audit's own evidence
+    // and guards against a fix that only breaks the absorbing state for some
+    // ids (e.g. an off-by-one in the re-roll bit-slice for certain hashes).
+    for npc_id in 1u64..=8 {
+        let mut state = CharacterState {
+            pos: home,
+            facing: Direction::South,
+            action: ActionState::Idle,
+            move_started_at: Millis(0),
+        };
+        let mut visited: HashSet<TilePos> = HashSet::new();
+        visited.insert(state.pos);
+
+        for tick in 0u64..20_000 {
+            match npc_decide(state.pos, home, radius, state.facing, npc_id, tick, &map) {
+                Some(d) => {
+                    state = apply_move(&state, MoveInput::Step(d), &map, Millis(0));
+                    visited.insert(state.pos);
+                }
+                None => {
+                    // Stay: movement.rs `continue`s without calling apply_move,
+                    // so state (position AND facing) is left untouched here too.
+                }
+            }
+        }
+
+        assert_eq!(
+            visited, expected,
+            "npc_id={npc_id}: driven from the REAL start state (5,5) facing South for \
+             20000 ticks on the real zone-0 grid, npc_decide must visit ALL {} legal tiles; \
+             visited only {} -- an absorbing \"continue whenever legal, no re-roll\" bug \
+             oscillates along the y=5 row and never reaches (4,4)/(5,4)/(6,4)",
+            expected.len(),
+            visited.len()
         );
     }
 }

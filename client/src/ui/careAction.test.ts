@@ -38,18 +38,67 @@
 // behaviour: node environment, no DOM, no SDK, no wasm — pure async control flow
 // over injected fakes.
 //
-// EXACT CONTRACT UNDER TEST (careAction.ts does not exist yet — every test below
-// fails on module resolution until the implementer creates it):
+// CODE-REVIEW UPDATE (2 findings against the shipped implementation):
+//
+//   MAJOR — stale feedback into a hidden overlay. main.ts wires `showFeedback:
+//     (message) => raisingView?.showFeedback(message)` with NO visibility guard
+//     (every sibling — onBuy/onSell — guards it: `if (shopView?.visible)
+//     shopView.showFeedback(...)`). Reachable failure: click Care -> reducer in
+//     flight -> press KeyB/KeyE -> raisingView.hide() clears the feedback line AND
+//     releases #pending immediately -> the care promise later settles -> showFeedback
+//     fires anyway into the now-hidden node -> the player reopens Raising later and
+//     sees a stale "Cared!"/error with no click behind it. The REAL fix (the
+//     visibility guard) lives in main.ts's wiring, so the load-bearing tooth is
+//     main.wiring.test.ts's W-CARE-SHOWFEEDBACK-VISIBLE-GUARD scan. This file adds a
+//     complementary pin below: performCare itself has no visibility concept and must
+//     stay agnostic to it — it always ATTEMPTS exactly one showFeedback call per arm,
+//     full stop; suppressing the render when hidden is entirely the injected
+//     function's job, never performCare's.
+//
+//   MINOR — performCare's second parameter was dead (`_monsterId: bigint`, never
+//     read; `deps.callCare` already closes over the real id). Per this repo's
+//     "public surface larger than the spec requires" red flag, it is removed. Every
+//     call site below now calls `performCare(deps)` with ONE argument.
+//
+//   NOT ADDED (documented decision): raisingView.hide() releasing #pending while a
+//     care call is in flight means close-then-reopen-then-click can issue a SECOND
+//     `care` reducer call before the first settles. This is NOT new to this slice —
+//     it is the exact same unconditional-release-on-hide shape shopView/renameView/
+//     tradeView already ship (hide() resets #pending unconditionally, because the
+//     SDK never settles a promise after a link drop and .finally() may not run —
+//     ADR-0085 precedent). It is also not a correctness hazard: CARE_COOLDOWN_MS (6h,
+//     game-core/src/raising/rules.rs:106) rejects the redundant second call
+//     server-side exactly like any other double-click within the cooldown window.
+//     Adding a test here would only re-prove "the pending lock resets on hide()",
+//     which is a cross-cutting DOM-shell precedent orthogonal to ADR-0159, not a
+//     property of performCare or this feature. No test added for it.
+//
+// EXACT CONTRACT UNDER TEST (the ONE-argument shape below is what the tests require;
+// see the STATUS UPDATE just below for the current gap against the shipped module):
 //
 //   export interface CareActionDeps {
 //     readonly callCare: () => Promise<unknown> | undefined; // undefined => frozen/disconnected
 //     readonly showFeedback: (message: string) => void;
 //   }
-//   export async function performCare(deps: CareActionDeps, monsterId: bigint): Promise<void>
+//   export async function performCare(deps: CareActionDeps): Promise<void>
 //
-// RED REASON: `client/src/ui/careAction.ts` does not exist. Every test below fails
-// with a module-resolution error ("Failed to resolve import './careAction'") until
-// the implementer ships it.
+// STATUS UPDATE (post-implementation code review): careAction.ts has since been
+// shipped. Re-verified against the current source: its core ordering/resolve/reject/
+// frozen logic is ALREADY CORRECT (no PoC-A-shaped pre-await call, reject routes
+// through reduceErrorMessage, frozen never reports 'Cared!') — the code review's
+// MAJOR finding is entirely in main.ts's WIRING (the unguarded showFeedback forward),
+// not in this module. Every test in this file (ORDER / resolve / reject×2 / frozen /
+// the two new visibility-agnostic pins below) is therefore a GREEN regression guard
+// against the current implementation, proving performCare's contract holds and stays
+// stable — NOT a currently-failing gate. The still-open item is the code review's
+// MINOR finding: `performCare(deps, _monsterId: bigint)` carries a dead second
+// parameter. Every call site below now passes ONE argument (`performCare(deps)`);
+// this does not itself flip any test red (JS ignores an extra/missing argument at
+// runtime, and `client/tsconfig.json` excludes `**/*.test.ts` from `tsc --noEmit`,
+// so neither `vitest run` nor `npm run typecheck` catches the arity mismatch) — it
+// pins the one-argument contract the implementer must match by deleting the
+// parameter from careAction.ts, per this repo's "public surface larger than the spec
+// requires" red flag.
 //
 // WRONG-IMPL-KILLED list (one per criterion):
 //   ORDER (kills PoC A)        -> showFeedback called before the in-flight promise settles
@@ -61,14 +110,19 @@
 //                                  throw — a naive impl could easily call showFeedback
 //                                  ('Cared!') on it)
 //   exactly-once (every arm)   -> a double-flash (optimistic + settled) in any arm
+//   visibility-agnostic        -> performCare itself trying to skip/dedup the call
+//                                  based on some assumed visibility state it has no
+//                                  access to (the guard belongs to the caller's
+//                                  showFeedback wrapper, never to performCare)
 //
 // Do NOT edit these tests to match a buggy implementation — corrections must trace to
-// ADR-0159 D1 (as amended by the red-team finding above) only, never to the code
-// under test.
+// ADR-0159 D1 (as amended by the red-team finding and code-review findings above)
+// only, never to the code under test.
 
 import { describe, expect, it, vi } from 'vitest';
-// NOTE: careAction.ts does not exist yet — this import is what makes every test in
-// this file fail at module-resolution time (the correct RED reason).
+// careAction.ts is now shipped (see the STATUS UPDATE above) — this import resolves
+// against the real module; `performCare` still declares a second `_monsterId: bigint`
+// parameter the tests below no longer pass (code review MINOR finding).
 import type { CareActionDeps } from './careAction';
 import { performCare } from './careAction';
 import { reduceErrorMessage } from './statusModel';
@@ -115,7 +169,7 @@ describe('★★ performCare(): ORDER — feedback only follows settlement, neve
     const showFeedback = vi.fn();
     const deps: CareActionDeps = { callCare, showFeedback };
 
-    const resultPromise = performCare(deps, 1n);
+    const resultPromise = performCare(deps);
 
     // Drain several microtask ticks — the in-flight promise is STILL unresolved (we
     // control it), so no correct implementation can have progressed past the await.
@@ -146,7 +200,7 @@ describe('performCare(): resolve arm — success shows "Cared!" exactly once', (
     const showFeedback = vi.fn();
     const deps: CareActionDeps = { callCare, showFeedback };
 
-    await performCare(deps, 1n);
+    await performCare(deps);
 
     expect(callCare).toHaveBeenCalledOnce();
     expect(showFeedback).toHaveBeenCalledTimes(1);
@@ -170,7 +224,7 @@ describe("performCare(): reject arm — failure routes through reduceErrorMessag
     const showFeedback = vi.fn();
     const deps: CareActionDeps = { callCare, showFeedback };
 
-    await performCare(deps, 1n);
+    await performCare(deps);
 
     const expectedText = reduceErrorMessage(senderErr, 'care');
     expect(callCare).toHaveBeenCalledOnce();
@@ -189,7 +243,7 @@ describe("performCare(): reject arm — failure routes through reduceErrorMessag
     const showFeedback = vi.fn();
     const deps: CareActionDeps = { callCare, showFeedback };
 
-    await performCare(deps, 1n);
+    await performCare(deps);
 
     const expectedText = reduceErrorMessage(internalErr, 'care');
     expect(showFeedback).toHaveBeenCalledTimes(1);
@@ -219,7 +273,7 @@ describe('performCare(): frozen/disconnected arm — callCare() returns undefine
     const showFeedback = vi.fn();
     const deps: CareActionDeps = { callCare, showFeedback };
 
-    await performCare(deps, 1n);
+    await performCare(deps);
 
     expect(callCare).toHaveBeenCalledOnce();
     expect(showFeedback).toHaveBeenCalledTimes(1);
@@ -233,5 +287,82 @@ describe('performCare(): frozen/disconnected arm — callCare() returns undefine
       message.length,
       'the frozen/disconnected feedback message must be non-empty',
     ).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ★ code-review MAJOR finding — performCare stays agnostic to view visibility.
+// The hidden-overlay guard (main.ts: `if (raisingView?.visible) ...`, pinned by
+// main.wiring.test.ts's W-CARE-SHOWFEEDBACK-VISIBLE-GUARD) is entirely the caller's
+// job. This complementary test proves performCare's OWN contract does not change
+// when the injected showFeedback happens to be a no-op-when-hidden wrapper:
+// performCare must still ATTEMPT exactly one call per arm, unconditionally — it has
+// no visibility state of its own to consult, and must never try to "help" by
+// skipping/deduping the call itself.
+// ---------------------------------------------------------------------------
+
+describe("★ performCare(): stays agnostic to view visibility — the hidden-overlay guard is entirely the injected showFeedback wrapper's job", () => {
+  it('★ BITES: resolve arm — even when showFeedback simulates a hidden-overlay no-op wrapper, performCare still ATTEMPTS exactly one call with "Cared!" — kills a performCare that tries to skip/dedup the call itself', async () => {
+    // Simulates main.ts's real fix shape: `showFeedback: (msg) => { if (visible)
+    // render(msg); }`. The WRAPPER may silently no-op when hidden (that is main.ts's
+    // job — see main.wiring.test.ts's W-CARE-SHOWFEEDBACK-VISIBLE-GUARD) — but
+    // performCare itself must still call the dependency exactly once, unconditionally.
+    // Reproduces the exact reachable failure from code review: click Care -> reducer
+    // in flight -> the overlay gets force-hidden (KeyB/KeyE) -> the promise settles.
+    let visible = true;
+    const rendered: string[] = [];
+    const showFeedback = vi.fn((message: string) => {
+      if (!visible) return; // simulates the hidden-overlay no-op main.ts must add
+      rendered.push(message);
+    });
+
+    let resolveCall: (() => void) | undefined;
+    const callPromise = new Promise<void>((res) => {
+      resolveCall = res;
+    });
+    const callCare = vi.fn().mockReturnValue(callPromise);
+    const deps: CareActionDeps = { callCare, showFeedback };
+
+    const resultPromise = performCare(deps);
+    visible = false; // the player pressed KeyB/KeyE while the call was in flight
+    resolveCall?.();
+    await resultPromise;
+
+    // performCare has no visibility concept — it cannot "know" to skip the call, and
+    // must not try. Suppression is entirely the wrapper's job (asserted separately).
+    expect(showFeedback).toHaveBeenCalledTimes(1);
+    expect(showFeedback).toHaveBeenCalledWith('Cared!');
+    // The wrapper's own no-op correctly suppressed the actual render.
+    expect(rendered, 'the wrapper must have suppressed the render while hidden').toEqual([]);
+  });
+
+  it('★ BITES: reject arm — even when showFeedback simulates a hidden-overlay no-op wrapper, performCare still ATTEMPTS exactly one call with the reduced error text — kills a performCare that tries to skip/dedup the call itself', async () => {
+    // Same scenario, but the MORE common real-world case per code review:
+    // CARE_COOLDOWN_MS is 6h, so most in-flight calls that outlive an overlay
+    // force-hide settle as a REJECTION, not a success.
+    let visible = true;
+    const rendered: string[] = [];
+    const showFeedback = vi.fn((message: string) => {
+      if (!visible) return;
+      rendered.push(message);
+    });
+
+    const senderErr = makeSenderError('care cooldown not yet elapsed');
+    let rejectCall: ((err: unknown) => void) | undefined;
+    const callPromise = new Promise<void>((_res, rej) => {
+      rejectCall = rej;
+    });
+    const callCare = vi.fn().mockReturnValue(callPromise);
+    const deps: CareActionDeps = { callCare, showFeedback };
+
+    const resultPromise = performCare(deps);
+    visible = false;
+    rejectCall?.(senderErr);
+    await resultPromise;
+
+    const expectedText = reduceErrorMessage(senderErr, 'care');
+    expect(showFeedback).toHaveBeenCalledTimes(1);
+    expect(showFeedback).toHaveBeenCalledWith(expectedText);
+    expect(rendered, 'the wrapper must have suppressed the render while hidden').toEqual([]);
   });
 });

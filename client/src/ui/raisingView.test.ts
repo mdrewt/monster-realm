@@ -5,12 +5,17 @@
 // THE UI SHALL show a visible confirmation (toast, animation, or stat-delta
 // feedback)." + docs/adr/0159-feel-polish-care-feedback-npc-wander.md D1.
 //
-// RED REASON: RaisingView (client/src/ui/raisingView.ts) has NO showFeedback()
-// method and NO feedback node in its constructor-built DOM tree today — every test
-// in the "showFeedback" / "re-entrancy" describes below fails with
-// `TypeError: view.showFeedback is not a function` (or, for the re-entrancy tests,
-// with a failed call-count/disabled assertion against the current no-guard Care
-// button) until the implementer ships ADR-0159 D1.
+// STATUS UPDATE (post-implementation code review): RaisingView has since shipped
+// `#raising-feedback` (constructor-appended inside the overlay root, textContent-only)
+// and the Care button's `#pending`/disabled re-entrancy guard. Re-verified against the
+// current source: every test below (C1-C5) is GREEN against the shipped
+// raisingView.ts — code review found no issues in this file; the one open finding
+// (stale feedback into a hidden overlay) is a main.ts WIRING bug (the injected
+// showFeedback callback has no visibility guard), not a defect in RaisingView itself,
+// and is gated separately by main.wiring.test.ts's W-CARE-SHOWFEEDBACK-VISIBLE-GUARD
+// and careAction.test.ts's visibility-agnostic pins. This file's original RED reason
+// (RaisingView had no showFeedback()/no #pending guard at all) no longer applies; the
+// tests below now function as regression guards proving the shipped behaviour holds.
 //
 // This file did not exist before this change — RaisingView had no unit test file
 // (it is currently listed in vite.config.ts coverage.exclude as a "thin DOM shell";

@@ -181,9 +181,6 @@ mod tests {
         );
     }
 
-    /// kills: game-core/src/npc/rules.rs:103:13: delete match arm 0 in npc_decide
-    /// kills: game-core/src/npc/rules.rs:105:13: delete match arm 2 in npc_decide
-    ///
     /// Scans (npc_id, tick) within-radius inputs to verify that both North (arm 0,
     /// `(h >> 1) % 4 == 0`) and East (arm 2, `(h >> 1) % 4 == 2`) are reachable
     /// npc_decide outputs.

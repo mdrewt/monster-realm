@@ -3408,9 +3408,17 @@ describe('★ main.ts wiring (mvi): the hold-commit threshold is wired into BOTH
 // stays as a cheap STRUCTURAL frame over the wiring only — it can no longer be the
 // only line of defense, per the two PoCs above.
 //
-// RED REASON: main.ts on master still routes onCare through
-// `sendGuarded('care', ...)` (main.ts:1827-1829) and does not reference performCare
-// or './ui/careAction' at all. careAction.ts does not exist yet.
+// STATUS UPDATE (post-implementation code review): the implementer has since shipped
+// careAction.ts and rewired main.ts's onCare through `performCare`. Re-verified against
+// the current source: W-CARE-NO-SENDGUARDED-CARE / W-CARE-PERFORMCARE / W-CARE-IMPORT /
+// W-CARE-REDUCER-CALL / W-CARE-SHOWFEEDBACK-WIRING / W-CARE-ERRMSG-CAREACTION are all
+// GREEN today — they now function as regression guards (same role as this file's
+// pre-existing F-5 GREEN guards), not red gates. Only ONE test in this block is
+// genuinely RED against the current implementation:
+//   W-CARE-SHOWFEEDBACK-VISIBLE-GUARD — code review's MAJOR finding. main.ts's
+//   `showFeedback` dependency is currently `(message) =>
+//   raisingView?.showFeedback(message)` with NO `.visible` guard (every sibling —
+//   onBuy/onSell — guards it). This is the new, load-bearing tooth in this block.
 //
 // WRONG IMPL KILLED (per test):
 //   W-CARE-NO-SENDGUARDED-CARE: a revert to sendGuarded(...'care'...) in EITHER quote
@@ -3424,6 +3432,10 @@ describe('★ main.ts wiring (mvi): the hold-commit threshold is wired into BOTH
 //   W-CARE-SHOWFEEDBACK-WIRING: an onCare wiring site whose performCare deps never
 //     actually connect to raisingView.showFeedback (e.g. a stub `showFeedback: () =>
 //     {}`) — the EARS criterion is unmet even if performCare itself is correct.
+//   W-CARE-SHOWFEEDBACK-VISIBLE-GUARD: an unguarded `raisingView?.showFeedback(...)`
+//     forward (the CURRENT shipped shape, code-review MAJOR finding) — a care call
+//     that settles after the overlay is force-hidden (KeyB/KeyE) writes a stale
+//     message the player sees with no click behind it on the NEXT open.
 //   W-CARE-ERRMSG-CAREACTION: careAction.ts's catch arm shows a raw err.message
 //     (InternalError leak) instead of routing through reduceErrorMessage(err, 'care').
 //     NOTE: this is a cheap structural pin only — the load-bearing behavioural gate
@@ -3538,6 +3550,34 @@ describe('main.ts wiring (feel-polish D1): care feedback (ADR-0159, hardened aga
       region.includes('showFeedback('),
       'main.ts onCare wiring region must call showFeedback( — the performCare `showFeedback` ' +
         'dependency must forward to raisingView.showFeedback(...), not a no-op stub',
+    ).toBe(true);
+  });
+
+  it('★ W-CARE-SHOWFEEDBACK-VISIBLE-GUARD BITES: the onCare wiring region gates the showFeedback dependency on raisingView?.visible — kills the stale-feedback-into-hidden-overlay regression (code-review MAJOR finding)', () => {
+    // MAJOR finding (code review): main.ts wires `showFeedback: (message) =>
+    // raisingView?.showFeedback(message)` with NO visibility guard, unlike every
+    // sibling (onBuy/onSell do `if (shopView?.visible) shopView.showFeedback(...)`).
+    // REACHABLE FAILURE: raisingView.hide() clears the feedback line and releases
+    // #pending immediately; main.ts calls `raisingView?.hide()` unconditionally on
+    // KeyB (Box) and KeyE (Evolution). So: click Care -> reducer in flight -> press
+    // B -> hide() clears feedback + releases the lock -> the promise later settles
+    // -> showFeedback fires anyway into the now-hidden node -> the player reopens
+    // Raising later and sees a stale "Cared!" (or a stale error) with no click
+    // behind it — exactly the "click #2 looks identical to click #1" confusion
+    // ADR-0159 exists to remove.
+    // WRONG IMPL KILLED: the CURRENT shipped shape — an unguarded
+    // `raisingView?.showFeedback(message)` forward with no `.visible` check.
+    const src = readMainTs();
+    const onCareIdx = src.indexOf('onCare:');
+    expect(onCareIdx, 'main.ts must contain an onCare: wiring site').toBeGreaterThanOrEqual(0);
+    const region = src.slice(onCareIdx, onCareIdx + 1200);
+    expect(
+      region.includes('raisingView?.visible'),
+      'main.ts onCare wiring region must gate the showFeedback dependency on ' +
+        'raisingView?.visible (mirroring the onBuy/onSell `if (shopView?.visible) ' +
+        'shopView.showFeedback(...)` idiom) — otherwise a care call that settles after ' +
+        'the overlay is force-hidden (KeyB/KeyE) writes a stale message the player sees ' +
+        'on the NEXT open, with no click behind it',
     ).toBe(true);
   });
 
