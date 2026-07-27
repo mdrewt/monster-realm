@@ -16,13 +16,17 @@
  *  ONE truncation rule (the ADR-0130 discipline reuse of ADR-0157 §4). */
 export const MAX_LINE_LEN = 512;
 
-export type DevLogLevel = 'off' | 'send' | 'send-move';
+/** The accepted token set. The union below is DERIVED from it, so the levels, the parser's
+ *  rejection message, and the exhaustive switch in `shouldLogReducer` cannot drift apart:
+ *  adding a member here is a compile error at that switch (TS2366) until it is handled.
+ *  (Annotating this `readonly DevLogLevel[]` instead would invert the dependency and make
+ *  the "single source" claim false — the array could then silently lag the union.) */
+const DEV_LOG_LEVELS = ['off', 'send', 'send-move'] as const;
+
+export type DevLogLevel = (typeof DEV_LOG_LEVELS)[number];
 
 /** The injected outbound sink: called once per LOGGED reducer call. */
 export type SendLogger = (reducerName: string, args: readonly unknown[]) => void;
-
-/** The accepted token set — the single source for the parser's rejection message. */
-const DEV_LOG_LEVELS: readonly DevLogLevel[] = ['off', 'send', 'send-move'];
 
 /** Excluded at 'send' (~5 calls/second while walking), included at 'send-move' (§A4). */
 const NOISY_REDUCERS: ReadonlySet<string> = new Set(['enqueueMove']);
