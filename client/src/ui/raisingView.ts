@@ -10,16 +10,38 @@ import type { InventoryItemViewModel, RaisingViewModel } from './raisingModel';
 export interface RaisingViewCallbacks {
   /** Called when the user feeds a training item to a monster. */
   readonly onTrain: (monsterId: bigint, foodItemId: number) => void;
-  /** Called when the user clicks the Care button on a monster. */
-  readonly onCare: (monsterId: bigint) => void;
+  /**
+   * Called when the user clicks the Care button on a monster.
+   *
+   * May return a promise: the `#pending` re-entrancy lock is held until that
+   * promise settles, so the return type must express it. Typing this `=> void`
+   * would let a future implementation type-check cleanly while silently
+   * reducing the lock to a no-op (a double-click would fire two care calls).
+   */
+  readonly onCare: (monsterId: bigint) => void | Promise<void>;
 }
 
 export class RaisingView {
   readonly #root: HTMLDivElement;
+  readonly #feedbackEl: HTMLDivElement;
   readonly #monsterEl: HTMLDivElement;
   readonly #inventoryEl: HTMLDivElement;
   readonly #callbacks: RaisingViewCallbacks;
   #visible = false;
+  // In-flight lock: prevents a double-click from firing two care calls (whose
+  // contradictory outcomes would flash "Cared!" then "care cooldown not yet
+  // elapsed"). shopView/renameView precedent.
+  //
+  // PER MONSTER, not view-wide: a single shared boolean made a care call in
+  // flight for monster A silently swallow monster B's click (B's own button was
+  // never disabled, so it looked clickable), and had no way to express "A is
+  // still pending" to a mid-flight refresh() that rebuilds every button.
+  readonly #pending = new Set<bigint>();
+  // The Care button currently on screen for each monster. #renderMonsters
+  // rebuilds every node via replaceChildren(), so the button a click closure
+  // captured can be detached by the time its call settles — re-enabling that
+  // stale node would leave the LIVE one disabled forever.
+  readonly #careButtons = new Map<bigint, HTMLButtonElement>();
 
   constructor(parent: HTMLElement, callbacks: RaisingViewCallbacks) {
     this.#callbacks = callbacks;
@@ -34,6 +56,15 @@ export class RaisingView {
     title.textContent = 'Raising & Inventory';
     title.style.cssText = 'margin:0 0 16px;color:#fff;';
     this.#root.appendChild(title);
+
+    // ADR-0159 D1: the feedback line lives INSIDE the overlay root. main.ts's
+    // statusEl sits in normal document flow, so this `position:fixed; z-index:100`
+    // overlay painted over every care message it raised — the player saw nothing.
+    this.#feedbackEl = document.createElement('div');
+    this.#feedbackEl.id = 'raising-feedback';
+    this.#feedbackEl.style.cssText =
+      'min-height:16px;margin:0 0 12px;font-size:12px;color:#ffd479;';
+    this.#root.appendChild(this.#feedbackEl);
 
     const monsterLabel = document.createElement('h3');
     monsterLabel.textContent = 'Monsters';
@@ -74,6 +105,17 @@ export class RaisingView {
   hide(): void {
     this.#visible = false;
     this.#root.style.display = 'none';
+    // A stale "Cared!" must not greet the next open, and the in-flight lock is
+    // released here because the SDK never settles a reducer promise after a link
+    // drop — .finally() may never run (shopView/renameView precedent).
+    this.#feedbackEl.textContent = '';
+    this.#pending.clear();
+  }
+
+  /** Display a care outcome. textContent ONLY — the message can carry a
+   * server-supplied error reason, so innerHTML would be an injection vector. */
+  showFeedback(message: string): void {
+    this.#feedbackEl.textContent = message;
   }
 
   refresh(vm: RaisingViewModel): void {
@@ -86,6 +128,7 @@ export class RaisingView {
     items: readonly InventoryItemViewModel[],
   ): void {
     this.#monsterEl.replaceChildren();
+    this.#careButtons.clear();
     if (monsters.length === 0) {
       const empty = document.createElement('div');
       empty.textContent = 'No monsters.';
@@ -117,10 +160,42 @@ export class RaisingView {
       const actions = document.createElement('div');
       actions.style.cssText = 'margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;';
 
+      const monsterId = mon.monsterId;
       const careBtn = document.createElement('button');
       careBtn.textContent = 'Care';
       careBtn.style.cssText = 'font-size:11px;cursor:pointer;';
-      careBtn.addEventListener('click', () => this.#callbacks.onCare(mon.monsterId));
+      // Re-derive the disabled state from the pending SET rather than defaulting
+      // to enabled: refresh() can rebuild this button while THIS monster's care
+      // call is still in flight, and a brand-new enabled-looking button whose
+      // click the lock then swallows is worse than no button at all.
+      careBtn.disabled = this.#pending.has(monsterId);
+      this.#careButtons.set(monsterId, careBtn);
+      // Re-entrancy guard (ADR-0159 D1, shopView/renameView precedent): the
+      // callback's return value is wrapped so a genuinely pending care call holds
+      // the lock until it settles; .finally() resets on BOTH arms (no dead button).
+      // The lock is keyed by monsterId, so it only ever blocks a second click on
+      // the SAME monster — a sibling monster's Care button stays live.
+      careBtn.addEventListener('click', () => {
+        if (this.#pending.has(monsterId)) return;
+        this.#pending.add(monsterId);
+        careBtn.disabled = true;
+        void Promise.resolve(this.#callbacks.onCare(monsterId))
+          .finally(() => {
+            this.#pending.delete(monsterId);
+            // Re-enable whichever button is on screen NOW: a refresh() during the
+            // call replaces this closure's node, and re-enabling the detached one
+            // would strand the live button disabled forever.
+            const live = this.#careButtons.get(monsterId) ?? careBtn;
+            live.disabled = false;
+          })
+          .catch((err: unknown) => {
+            // Feedback is the caller's responsibility, so this is swallowed to
+            // avoid an unhandled rejection — but a rejecting onCare violates the
+            // contract (performCare never rejects), so log it rather than making
+            // the violation invisible in a coverage-excluded shell.
+            console.error('care click handler error', err);
+          });
+      });
       actions.appendChild(careBtn);
 
       for (const item of items) {

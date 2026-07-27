@@ -3382,3 +3382,227 @@ describe('★ main.ts wiring (mvi): the hold-commit threshold is wired into BOTH
     ).toBe(1);
   });
 });
+
+// ===========================================================================
+// feel-polish D1: care feedback wiring (ADR-0159, ledger item 087).
+//
+// SOURCE OF TRUTH: EARS criterion "WHEN the player presses the care-button/action,
+// THE UI SHALL show a visible confirmation (toast, animation, or stat-delta
+// feedback)." + docs/adr/0159-feel-polish-care-feedback-npc-wander.md D1.
+//
+// RED-TEAM CORRECTION (post-authoring): the original 4-test version of this block
+// was pure `.includes()` string-presence scanning and did NOT test the ADR's central
+// claim — "the await genuinely reflects the server outcome, so the confirmation can
+// never lie." Red-team demonstrated two working cheats that passed all 4 original
+// scans: (A) an OPTIMISTIC impl that calls showFeedback('Cared!') BEFORE awaiting the
+// reducer call (lies on every rejected click — and CARE_COOLDOWN_MS is 6h, so MOST
+// real clicks are rejections); (B) a QUOTE-SWAP + dead-decoy impl
+// (`sendGuarded("care", ...)` with double quotes dodging the single-quoted literal,
+// plus `if (false) { ... }` decoy blocks) that changed NOTHING behaviourally.
+//
+// FIX: the ordering/no-lie property is untestable against main.ts directly (it is
+// coverage-excluded and onCare is a non-exported closure), so main.ts's onCare is
+// now wired to route through `performCare` — an exported, directly-testable function
+// in `client/src/ui/careAction.ts` (see careAction.test.ts for the REAL behavioural
+// gate: order-of-operations, resolve/reject/frozen arms, exactly-once). This block
+// stays as a cheap STRUCTURAL frame over the wiring only — it can no longer be the
+// only line of defense, per the two PoCs above.
+//
+// STATUS UPDATE (post-implementation code review): the implementer has since shipped
+// careAction.ts and rewired main.ts's onCare through `performCare`. Re-verified against
+// the current source: W-CARE-NO-SENDGUARDED-CARE / W-CARE-PERFORMCARE / W-CARE-IMPORT /
+// W-CARE-REDUCER-CALL / W-CARE-SHOWFEEDBACK-WIRING / W-CARE-ERRMSG-CAREACTION are all
+// GREEN today — they now function as regression guards (same role as this file's
+// pre-existing F-5 GREEN guards), not red gates. Only ONE test in this block is
+// genuinely RED against the current implementation:
+//   W-CARE-SHOWFEEDBACK-VISIBLE-GUARD — code review's MAJOR finding. main.ts's
+//   `showFeedback` dependency is currently `(message) =>
+//   raisingView?.showFeedback(message)` with NO `.visible` guard (every sibling —
+//   onBuy/onSell — guards it). This is the new, load-bearing tooth in this block.
+//
+// WRONG IMPL KILLED (per test):
+//   W-CARE-NO-SENDGUARDED-CARE: a revert to sendGuarded(...'care'...) in EITHER quote
+//     style (kills PoC B's quote-swap dodge, not just the single-quoted literal).
+//   W-CARE-PERFORMCARE: an onCare wiring site that keeps the old inline logic (or a
+//     PoC-B-style dead-decoy shim) instead of routing through performCare.
+//   W-CARE-IMPORT: a locally-redefined decoy `function performCare() {}` inside
+//     main.ts that satisfies W-CARE-PERFORMCARE's string scan without ever importing
+//     the real, tested module.
+//   W-CARE-REDUCER-CALL: an onCare wiring site that never calls the care reducer.
+//   W-CARE-SHOWFEEDBACK-WIRING: an onCare wiring site whose performCare deps never
+//     actually connect to raisingView.showFeedback (e.g. a stub `showFeedback: () =>
+//     {}`) — the EARS criterion is unmet even if performCare itself is correct.
+//   W-CARE-SHOWFEEDBACK-VISIBLE-GUARD: an unguarded `raisingView?.showFeedback(...)`
+//     forward (the PRE-FIX shape this test now guards against, code-review MAJOR finding) — a care call
+//     that settles after the overlay is force-hidden (KeyB/KeyE) writes a stale
+//     message the player sees with no click behind it on the NEXT open.
+//   W-CARE-ERRMSG-CAREACTION: careAction.ts's catch arm shows a raw err.message
+//     (InternalError leak) instead of routing through reduceErrorMessage(err, 'care').
+//     NOTE: this is a cheap structural pin only — the load-bearing behavioural gate
+//     (showFeedback called with exactly this text, exactly once, never 'Cared!') is
+//     careAction.test.ts's reject-arm test.
+//
+// Do NOT edit these tests to match a buggy implementation — corrections must trace
+// to ADR-0159 D1 (as amended by the red-team finding above) only.
+// ===========================================================================
+
+/**
+ * Quote-insensitive scan for a `sendGuarded(` call site whose first argument names
+ * "care" (kills PoC B's dodge: `sendGuarded("care", ...)` uses double quotes to slip
+ * past a single-quoted `sendGuarded('care'` literal check). Scans every
+ * `sendGuarded(` call site in the source and checks the following ~24 chars for the
+ * bare substring `care`, regardless of quote character. Returns the index of the
+ * first offending call site, or -1 if none exists. No `new RegExp` — plain
+ * indexOf/slice/includes only.
+ */
+function findSendGuardedCareCallSite(src: string): number {
+  const needle = 'sendGuarded(';
+  let searchFrom = 0;
+  for (;;) {
+    const idx = src.indexOf(needle, searchFrom);
+    if (idx === -1) return -1;
+    const argWindow = src.slice(idx + needle.length, idx + needle.length + 24);
+    if (argWindow.includes('care')) return idx;
+    searchFrom = idx + needle.length;
+  }
+}
+
+describe('main.ts wiring (feel-polish D1): care feedback (ADR-0159, hardened against PoC A/B)', () => {
+  it("W-CARE-NO-SENDGUARDED-CARE BITES (quote-insensitive): no sendGuarded( call site names 'care' in its first arg, in EITHER quote style — kills the PoC B quote-swap dodge", () => {
+    // ADR-0159 D1: onCare must be rewritten to the onBuy/onSell await+showFeedback shape.
+    // sendGuarded attaches ONLY a .catch (no success branch at all) — a revert back to it,
+    // in ANY quote style, would silently drop the success confirmation.
+    const src = readMainTs();
+    const idx = findSendGuardedCareCallSite(src);
+    expect(
+      idx,
+      "main.ts must NOT contain any sendGuarded(...) call site whose first argument is 'care' " +
+        '(single OR double quoted) — sendGuarded has no success branch, so routing care through ' +
+        'it in ANY quote style silently drops the success confirmation (ADR-0159 D1)',
+    ).toBe(-1);
+  });
+
+  it('W-CARE-PERFORMCARE BITES: the onCare wiring region calls performCare( — kills a wiring that silently keeps the old inline path (or a PoC-B-style dead-decoy shim)', () => {
+    // WRONG IMPL KILLED: an impl that keeps the pre-fix inline sendGuarded/catch-only
+    // shape (or PoC B's quote-swapped/dead-decoy variant) instead of routing through the
+    // tested performCare module — the ordering/no-lie property is unenforceable otherwise.
+    const src = readMainTs();
+    const onCareIdx = src.indexOf('onCare:');
+    expect(onCareIdx, 'main.ts must contain an onCare: wiring site').toBeGreaterThanOrEqual(0);
+    const region = src.slice(onCareIdx, onCareIdx + 1200);
+    expect(
+      region.includes('performCare('),
+      'main.ts onCare wiring region must call performCare( — the ordering/no-lie property ' +
+        '(ADR-0159 D1) is only guaranteed by routing through the tested performCare module ' +
+        '(see careAction.test.ts), not a hand-rolled inline path',
+    ).toBe(true);
+  });
+
+  it("W-CARE-IMPORT BITES: main.ts references './ui/careAction' naming performCare — kills a locally-redefined decoy performCare() that dodges the tested module", () => {
+    // WRONG IMPL KILLED: a decoy `function performCare(...) { ... }` defined LOCALLY inside
+    // main.ts (never imported from careAction.ts) would satisfy W-CARE-PERFORMCARE's bare
+    // string scan alone. This test additionally requires main.ts to actually reference the
+    // './ui/careAction' module path, with 'performCare' named near that reference.
+    const src = readMainTs();
+    const pathIdx = src.indexOf("'./ui/careAction'");
+    expect(
+      pathIdx,
+      "main.ts must reference './ui/careAction' (static or dynamic import)",
+    ).toBeGreaterThanOrEqual(0);
+    const region = src.slice(Math.max(0, pathIdx - 150), pathIdx + 40);
+    expect(
+      region.includes('performCare'),
+      "the './ui/careAction' reference in main.ts must name performCare",
+    ).toBe(true);
+  });
+
+  it('W-CARE-REDUCER-CALL BITES: the onCare wiring region calls reducers.care( — kills missing-reducer-call impl', () => {
+    // WRONG IMPL KILLED: an impl that guts the reducer call entirely while adding UI text —
+    // care would stop functioning even though the overlay claims success. main.ts is the
+    // only place with access to `conn`, so this call site necessarily still lives here
+    // (inside the `callCare` closure handed to performCare).
+    const src = readMainTs();
+    const onCareIdx = src.indexOf('onCare:');
+    expect(onCareIdx, 'main.ts must contain an onCare: wiring site').toBeGreaterThanOrEqual(0);
+    const region = src.slice(onCareIdx, onCareIdx + 1200);
+    expect(
+      region.includes('reducers.care('),
+      'main.ts onCare wiring region must call reducers.care( (ADR-0159 D1)',
+    ).toBe(true);
+  });
+
+  it('W-CARE-SHOWFEEDBACK-WIRING BITES: the onCare wiring region connects the performCare deps to raisingView.showFeedback( — kills a stub/no-op showFeedback dependency', () => {
+    // EARS criterion: "THE UI SHALL show a visible confirmation". WRONG IMPL KILLED: an impl
+    // that correctly calls performCare( with a `showFeedback` dependency that is a no-op
+    // stub (e.g. `showFeedback: () => {}`) — performCare's own tests would still pass (they
+    // only see the mock), but the player would see nothing. main.ts is the only place with
+    // access to `raisingView`, so the real forwarding call necessarily lives here.
+    const src = readMainTs();
+    const onCareIdx = src.indexOf('onCare:');
+    expect(onCareIdx, 'main.ts must contain an onCare: wiring site').toBeGreaterThanOrEqual(0);
+    const region = src.slice(onCareIdx, onCareIdx + 1200);
+    expect(
+      region.includes('raisingView'),
+      'main.ts onCare wiring region must reference raisingView (the showFeedback dependency ' +
+        'must actually forward to the view, ADR-0159 D1)',
+    ).toBe(true);
+    expect(
+      region.includes('showFeedback('),
+      'main.ts onCare wiring region must call showFeedback( — the performCare `showFeedback` ' +
+        'dependency must forward to raisingView.showFeedback(...), not a no-op stub',
+    ).toBe(true);
+  });
+
+  it('★ W-CARE-SHOWFEEDBACK-VISIBLE-GUARD BITES: the onCare wiring region gates the showFeedback dependency on raisingView?.visible — kills the stale-feedback-into-hidden-overlay regression (code-review MAJOR finding)', () => {
+    // MAJOR finding (code review): main.ts wires `showFeedback: (message) =>
+    // raisingView?.showFeedback(message)` with NO visibility guard, unlike every
+    // sibling (onBuy/onSell do `if (shopView?.visible) shopView.showFeedback(...)`).
+    // REACHABLE FAILURE: raisingView.hide() clears the feedback line and releases
+    // #pending immediately; main.ts calls `raisingView?.hide()` unconditionally on
+    // KeyB (Box) and KeyE (Evolution). So: click Care -> reducer in flight -> press
+    // B -> hide() clears feedback + releases the lock -> the promise later settles
+    // -> showFeedback fires anyway into the now-hidden node -> the player reopens
+    // Raising later and sees a stale "Cared!" (or a stale error) with no click
+    // behind it — exactly the "click #2 looks identical to click #1" confusion
+    // ADR-0159 exists to remove.
+    // WRONG IMPL KILLED: the PRE-FIX shape (now fixed; this test keeps it fixed) — an unguarded
+    // `raisingView?.showFeedback(message)` forward with no `.visible` check.
+    const src = readMainTs();
+    const onCareIdx = src.indexOf('onCare:');
+    expect(onCareIdx, 'main.ts must contain an onCare: wiring site').toBeGreaterThanOrEqual(0);
+    const region = src.slice(onCareIdx, onCareIdx + 1200);
+    expect(
+      region.includes('raisingView?.visible'),
+      'main.ts onCare wiring region must gate the showFeedback dependency on ' +
+        'raisingView?.visible (mirroring the onBuy/onSell `if (shopView?.visible) ' +
+        'shopView.showFeedback(...)` idiom) — otherwise a care call that settles after ' +
+        'the overlay is force-hidden (KeyB/KeyE) writes a stale message the player sees ' +
+        'on the NEXT open, with no click behind it',
+    ).toBe(true);
+  });
+
+  it("W-CARE-ERRMSG-CAREACTION BITES: careAction.ts routes rejection through reduceErrorMessage(err, 'care') — kills InternalError-leak/silent-catch impl (cheap structural pin; the REAL behavioural gate is careAction.test.ts's reject-arm test)", () => {
+    // This assertion moved from main.ts to careAction.ts (red-team fix): once onCare routes
+    // through performCare, the reject-arm error-message logic lives in careAction.ts, not
+    // inline in main.ts. This is a CHEAP structural pin only — the load-bearing behavioural
+    // gate (that showFeedback is called with exactly this text, exactly once, and NEVER with
+    // 'Cared!') lives in careAction.test.ts.
+    const careActionPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      'ui/careAction.ts',
+    );
+    let src: string;
+    try {
+      src = readFileSync(careActionPath, 'utf8');
+    } catch (err) {
+      // Fail loud — post-impl the file must exist (vacuous-revival-gate precedent).
+      throw new Error(
+        'careAction.ts could not be read — post-impl the file must exist: ' + String(err),
+      );
+    }
+    expect(
+      src.includes("reduceErrorMessage(err, 'care')"),
+      "careAction.ts must call reduceErrorMessage(err, 'care') on rejection (ADR-0159 D1)",
+    ).toBe(true);
+  });
+});

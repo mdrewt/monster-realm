@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 124 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 125 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -133,6 +133,7 @@ Generated from 124 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0156](./0156-zero-hp-lead-selection-and-fainted-actor-rejection.md) | 0156 — a 0 HP monster is never seated as lead (PvE), and a fainted player active cannot submit an attack | Accepted | battle | battle-0hp-fix (M-postgate-battle-0hp-fix — 0hp lead-monster battle-start defect; EARS E1–E5) | PvE lead selection moves into `BattleSide::with_lead` (first `hp > 0` slot, team order preserved) and `submit_attack` rejects a fainted side-A active at the reducer boundary; the pure resolver is NOT hardened (D3). |
 | [0157](./0157-dev-console-outbound-reducer-log.md) | 0157 — Dev-console outbound reducer log: a flag-gated Proxy at the connection seam, console-only | Accepted | client-ui, tooling-docs | dev-observability (M-postgate-dev-observability — a toggleable dev-console log of outbound reducer calls; EARS 1–4) | A `VITE_MR_DEVLOG`-gated Proxy installed at `build()`'s return logs every outbound reducer call (name + args) to the browser console, is strict-identity when the flag is off, and never feeds the shared F9 bug bundle. |
 | [0158](./0158-hold-commit-continuation-gate.md) | 0158 — mvi: hold-commit tap/hold discrimination on the held-key continuation emitters | Accepted | movement-netcode, client-ui | movement-investigation (M-postgate-movement-investigation — r2 playtest ledger items 003/015/029/040-042) | Both held-key continuation emitters re-issue only via HeldDirections.committedActive(now): the active key must have been held >= HOLD_COMMIT_MS (150 ms, injected clock). Keydown's first step stays ungated. Pure not-emit. |
+| [0159](./0159-feel-polish-care-feedback-npc-wander.md) | 0159 — feel-polish: care-button success feedback + collision-aware NPC wander | Accepted | client-ui, movement-netcode | feel-polish (M-postgate-feel-polish — r2 playtest ledger items 087-090) | Care gets an in-overlay feedback line via the established showFeedback idiom (no toast); npc_decide picks only legal directions and continues its facing except 1 decision in 6, so wander cannot become absorbing; bumps 14.3%->0%. |
 
 ## Harness design corpus (H- namespace)
 
@@ -250,6 +251,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0148](./0148-held-key-continuation-outstanding-gate.md) — nh2 (M-postgate-netcode-hardening — movement input responsiveness; EARS nh2-1, nh2-2, nh2-3) — 0148 — nh2: held-key continuation is gated on outstanding server work, and the frame loop drains before it re-issues (Accepted)
 - [0152](./0152-predictor-epoch-guard-and-send-seq-floor.md) — nh3 (M-postgate-netcode-hardening — predictor generation guard + send-seq floor to close the ptc5f/ADR-0142 accepted-risk window; EARS nh3-1/2/3) — 0152 — Predictor epoch guard & send-seq floor (nh3: M-postgate-netcode-hardening) (Accepted)
 - [0158](./0158-hold-commit-continuation-gate.md) — movement-investigation (M-postgate-movement-investigation — r2 playtest ledger items 003/015/029/040-042) — 0158 — mvi: hold-commit tap/hold discrimination on the held-key continuation emitters (Accepted)
+- [0159](./0159-feel-polish-care-feedback-npc-wander.md) — feel-polish (M-postgate-feel-polish — r2 playtest ledger items 087-090) — 0159 — feel-polish: care-button success feedback + collision-aware NPC wander (Accepted)
 
 ### content
 
@@ -335,6 +337,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0155](./0155-ux4-battle-swap-discoverability.md) — ux4 (M-postgate-ux-hardening — repro-and-confirm the battle monster-switch gap, then hint; EARS ux4-1..ux4-3) — 0155 — ux4 battle-swap discoverability: the swap UI was correct, so explain the absence instead of fixing it (Accepted)
 - [0157](./0157-dev-console-outbound-reducer-log.md) — dev-observability (M-postgate-dev-observability — a toggleable dev-console log of outbound reducer calls; EARS 1–4) — 0157 — Dev-console outbound reducer log: a flag-gated Proxy at the connection seam, console-only (Accepted)
 - [0158](./0158-hold-commit-continuation-gate.md) — movement-investigation (M-postgate-movement-investigation — r2 playtest ledger items 003/015/029/040-042) — 0158 — mvi: hold-commit tap/hold discrimination on the held-key continuation emitters (Accepted)
+- [0159](./0159-feel-polish-care-feedback-npc-wander.md) — feel-polish (M-postgate-feel-polish — r2 playtest ledger items 087-090) — 0159 — feel-polish: care-button success feedback + collision-aware NPC wander (Accepted)
 
 ### ci-gates
 

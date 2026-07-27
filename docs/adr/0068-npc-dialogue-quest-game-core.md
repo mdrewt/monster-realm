@@ -7,7 +7,7 @@
 **Amends:** —
 **Subsystems:** economy-quests, content
 **Decision:** NPC wander rule, dialogue tree model + evaluation, and quest/flag advance rules are pure game-core; NPC hash is non-commutative; Condition enum is the SSOT.
-**Amended-by:** ADR-0091
+**Amended-by:** ADR-0091, ADR-0159
 
 - Status: accepted
 - Date: 2026-07-02
