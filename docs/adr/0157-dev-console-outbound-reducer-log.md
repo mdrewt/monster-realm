@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** client-ui, tooling-docs
-**Decision:** A `VITE_MR_DEVLOG`-gated Proxy installed at `build()`'s return in `connection.ts` logs every outbound reducer call (name + args) to the browser console; it is strict-identity (zero allocation) when the flag is off, and its records never enter the shared F9 bug bundle.
+**Decision:** A `VITE_MR_DEVLOG`-gated Proxy installed at `build()`'s return logs every outbound reducer call (name + args) to the browser console, is strict-identity when the flag is off, and never feeds the shared F9 bug bundle.
 
 ## Context
 

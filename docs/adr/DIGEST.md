@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 121 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 122 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -130,6 +130,7 @@ Generated from 121 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0153](./0153-ux3-playtest-preflight.md) | 0153 — ux3 playtest preflight: reach the server through the CLI's own resolver, and gate it behaviorally | Accepted | tooling-docs, ci-gates | ux3 (M-postgate-ux-hardening — `playtest-up`/`playtest-wipe` preflight-check `$STDB_SERVER` reachability; EARS ux3-1..ux3-3) | Preflight `$STDB_SERVER` with `timeout 10 spacetime server ping "$STDB_SERVER"` — the CLI's own resolver, so the check cannot disagree with the `publish -s` it guards — and gate it with a behavioral tooth, not source scans alone. |
 | [0154](./0154-owner-scoped-wallet-view.md) | 0154 — Owner-scoped `my_wallet` view over the private `player_wallet` table | Accepted | security-authz, economy-quests, client-ui | ux2 (M-postgate-ux-hardening — owner-scoped `#[view]` over `player_wallet` + shop balance seam; EARS ux2-1..ux2-3) | Expose the caller's own balance through an owner-scoped `#[view] my_wallet -> Option<PlayerWallet>` (the ADR-0087 pattern), keep `player_wallet` private, and gate leak-shape with a call-graph-derived eval rather than body-anchored scanning. |
 | [0155](./0155-ux4-battle-swap-discoverability.md) | 0155 — ux4 battle-swap discoverability: the swap UI was correct, so explain the absence instead of fixing it | Accepted | client-ui, battle | ux4 (M-postgate-ux-hardening — repro-and-confirm the battle monster-switch gap, then hint; EARS ux4-1..ux4-3) | ux4-1 confirmed the box/team-separation hypothesis and refuted a swap-UI bug, so ship no fix — pin the working PvE swap path with teeth and add two persistent hints that explain the absence without advertising a currently-dead key. |
+| [0157](./0157-dev-console-outbound-reducer-log.md) | 0157 — Dev-console outbound reducer log: a flag-gated Proxy at the connection seam, console-only | Accepted | client-ui, tooling-docs | dev-observability (M-postgate-dev-observability — a toggleable dev-console log of outbound reducer calls; EARS 1–4) | A `VITE_MR_DEVLOG`-gated Proxy installed at `build()`'s return logs every outbound reducer call (name + args) to the browser console, is strict-identity when the flag is off, and never feeds the shared F9 bug bundle. |
 
 ## Harness design corpus (H- namespace)
 
@@ -328,6 +329,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0152](./0152-predictor-epoch-guard-and-send-seq-floor.md) — nh3 (M-postgate-netcode-hardening — predictor generation guard + send-seq floor to close the ptc5f/ADR-0142 accepted-risk window; EARS nh3-1/2/3) — 0152 — Predictor epoch guard & send-seq floor (nh3: M-postgate-netcode-hardening) (Accepted)
 - [0154](./0154-owner-scoped-wallet-view.md) — ux2 (M-postgate-ux-hardening — owner-scoped `#[view]` over `player_wallet` + shop balance seam; EARS ux2-1..ux2-3) — 0154 — Owner-scoped `my_wallet` view over the private `player_wallet` table (Accepted)
 - [0155](./0155-ux4-battle-swap-discoverability.md) — ux4 (M-postgate-ux-hardening — repro-and-confirm the battle monster-switch gap, then hint; EARS ux4-1..ux4-3) — 0155 — ux4 battle-swap discoverability: the swap UI was correct, so explain the absence instead of fixing it (Accepted)
+- [0157](./0157-dev-console-outbound-reducer-log.md) — dev-observability (M-postgate-dev-observability — a toggleable dev-console log of outbound reducer calls; EARS 1–4) — 0157 — Dev-console outbound reducer log: a flag-gated Proxy at the connection seam, console-only (Accepted)
 
 ### ci-gates
 
@@ -394,6 +396,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0142](./0142-ledger-reconciliation-and-netcode-reachability-pins.md) — ptc5f (M-playtest-c.5 pre-gate residuals — ledger reconciliation, closes M-playtest-c.5; EARS ptc5f-1/ptc5f-2 + Decision A/E pins) — 0142 — ptc5f ledger reconciliation + deferred-netcode reachability pins (Accepted)
 - [0144](./0144-pt-d2-roster-wave-2.md) — pt-d2 (M-playtest-d content pack — roster wave 2 + placeholder-replacement sprites; EARS pt-d2-1..12) — 0144 — pt-d2 roster wave 2: reserved-block content fan-out + a species-parameterized sprite generator that imports (never edits) the shared art module (Accepted)
 - [0153](./0153-ux3-playtest-preflight.md) — ux3 (M-postgate-ux-hardening — `playtest-up`/`playtest-wipe` preflight-check `$STDB_SERVER` reachability; EARS ux3-1..ux3-3) — 0153 — ux3 playtest preflight: reach the server through the CLI's own resolver, and gate it behaviorally (Accepted)
+- [0157](./0157-dev-console-outbound-reducer-log.md) — dev-observability (M-postgate-dev-observability — a toggleable dev-console log of outbound reducer calls; EARS 1–4) — 0157 — Dev-console outbound reducer log: a flag-gated Proxy at the connection seam, console-only (Accepted)
 
 ### security-authz
 

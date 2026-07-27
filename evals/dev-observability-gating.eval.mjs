@@ -1,0 +1,541 @@
+// dev-observability-gating.eval.mjs — slice `dev-observability` (ADR-0157)
+//
+// ONE architecture gate over `client/src/net/devLog.ts`, covering two EARS criteria
+// mechanically (plan §D, gates E1 + T-NO-RING):
+//
+//   E1 — the module has ZERO runtime imports (`import type` permitted) and ZERO literal
+//        `console.`. This single check subsumes three separate v1 checks:
+//          * criterion 4's PII firewall — a module that imports nothing at runtime CANNOT
+//            reach eventRing / errorRing / bugBundle, so a reducer arg (joinGame({name}),
+//            setNickname({nickname}), setProfileName({name}) all carry player free text)
+//            can never land in the downloadable F9 bug bundle Drew SHARES (pt-b1 U-3);
+//          * criterion 2's real bundle-bloat risk — bloat comes from dragging a dependency
+//            into the prod bundle, not from ~110 lines of formatter;
+//          * criterion 4's "no second logging mechanism" — the module cannot own a console
+//            sink; the sink stays INJECTED (`out`/`warn` parameters), which is also what
+//            keeps the whole module unit-testable with no globals.
+//
+//   T-NO-RING — belt-and-braces: the source must not name `eventRing`, `errorRing`,
+//        `bugBundle` or `pushError` at all. This BITES WHERE E1 CANNOT: a `import type
+//        { EventRing } from '../ui/eventRing'` is a legal type-only import that E1 permits,
+//        yet it signals the module is being wired into the shared-artifact path (obs-e must
+//        re-open pt-b1 U-3 before that is allowed).
+//
+// RED STATE AT AUTHORING TIME: `client/src/net/devLog.ts` does not exist. The eval FAILS
+// (pass:false, "cannot read") — it does NOT skip. A missing module must be red, never green.
+//
+// Implementation notes (house style, copied from dev-reducer-gating.eval.mjs):
+//   - NO `new RegExp(...)` / dynamic regex ANYWHERE. Semgrep's detect-non-literal-regexp has
+//     bitten master three times. All matching is String.indexOf / .includes / .startsWith
+//     / .split on literal needles.
+//   - Comments (`/* */` and `//`) are stripped BEFORE every scan, so prose cannot trip a
+//     check. This is load-bearing here: devLog.ts is expected to CARRY a comment naming
+//     `errorRing.ts` (the MAX_LINE_LEN=512 provenance) and one naming console.log vs
+//     console.debug — neither may be flagged.
+//   - Every predicate is pure and exported. Every predicate has GOOD + BAD fixtures that run
+//     UNCONDITIONALLY before any real-source scan; a fixture failure aborts the eval (a
+//     broken predicate must never gate production code).
+
+import { readFileSync } from 'node:fs';
+
+const DEVLOG_PATH = 'client/src/net/devLog.ts';
+
+// ============================================================================
+// Shared helper — comment stripping (block then line), literal scans only
+// ============================================================================
+
+/**
+ * Drop block comments (open/close marker scan, multi-line aware) then line comments.
+ * NOT a regex — Semgrep bans dynamic RegExp and this needs no regex at all.
+ * @param {string} src
+ * @returns {string}
+ */
+export function stripComments(src) {
+  let withoutBlocks = '';
+  let i = 0;
+  for (;;) {
+    const start = src.indexOf('/*', i);
+    if (start === -1) {
+      withoutBlocks += src.slice(i);
+      break;
+    }
+    withoutBlocks += src.slice(i, start);
+    const end = src.indexOf('*/', start + 2);
+    if (end === -1) break; // unterminated block comment: drop the remainder
+    i = end + 2;
+  }
+  return withoutBlocks
+    .split('\n')
+    .map((line) => {
+      const c = line.indexOf('//');
+      return c === -1 ? line : line.slice(0, c);
+    })
+    .join('\n');
+}
+
+// ============================================================================
+// Check E1a — zero RUNTIME imports (`import type` permitted)
+// ============================================================================
+//
+// A runtime import is any of:
+//   * a statement-initial `import ...` that is not `import type ...`
+//     (this covers `import { X } from 'y'`, `import X from 'y'`, `import 'y'` and the
+//      multi-line `import {\n  X,\n} from 'y'` form — the first line still starts the
+//      statement and still is not `import type`)
+//   * a dynamic `import(` anywhere
+//   * a CommonJS `require(` anywhere
+//   * a re-export `export ... from ...` (a re-export IS a runtime import of the source
+//     module), unless it is `export type ...`
+//
+// Kills: an impl that imports the event ring, the error ring, the bug bundle, a
+// formatting helper, or anything else — the module must stand alone.
+
+/**
+ * @param {string} stripped  Comment-stripped source.
+ * @returns {string|null}  null = pass, string = failure description.
+ */
+export function checkNoRuntimeImports(stripped) {
+  const lines = stripped.split('\n');
+  for (let n = 0; n < lines.length; n++) {
+    const line = lines[n].trim();
+    if (line.startsWith('import')) {
+      // Allowed: type-only imports (erased at build time, zero runtime cost).
+      if (line.startsWith('import type ') || line.startsWith('import type{')) continue;
+      return (
+        `${DEVLOG_PATH}:${n + 1}: runtime import "${line}" — devLog.ts must have ZERO runtime ` +
+        'imports (only `import type` is permitted). A runtime import can reach the shared F9 ' +
+        'bug bundle (PII, pt-b1 U-3) and drags a dependency into the prod bundle (criterion 2)'
+      );
+    }
+    // Re-export forms only (`export { x } from '…'` / `export * from '…'`). A narrow
+    // needle on purpose: a broad "any exported line containing ' from '" rule would
+    // false-positive on an ordinary string literal such as `'derived from the level'`.
+    const isReExport = line.startsWith('export {') || line.startsWith('export *');
+    if (isReExport && line.includes(' from ')) {
+      return (
+        `${DEVLOG_PATH}:${n + 1}: re-export "${line}" — a re-export is a runtime import of the ` +
+        'source module; devLog.ts must have ZERO runtime imports'
+      );
+    }
+  }
+  if (stripped.indexOf('import(') !== -1) {
+    return (
+      `${DEVLOG_PATH}: dynamic import( found — a dynamic import is still a runtime import ` +
+      '(and would let the module reach eventRing/bugBundle at run time despite a clean import ' +
+      'header). devLog.ts must have ZERO runtime imports'
+    );
+  }
+  if (stripped.indexOf('require(') !== -1) {
+    return (
+      `${DEVLOG_PATH}: require( found — devLog.ts must have ZERO runtime imports (ESM-only ` +
+      'repo; a require() is a runtime import through a side door)'
+    );
+  }
+  return null;
+}
+
+// ============================================================================
+// Check E1b — zero literal `console.`
+// ============================================================================
+//
+// The sink is INJECTED (`out: (line: string) => void`, `warn: (msg: string) => void`).
+// A module that owns a console sink is (a) untestable without globals, (b) a second
+// logging mechanism (criterion 4), and (c) unable to honor "zero additional console
+// output" (criterion 2) by construction.
+//
+// Kills: `console.log(line)` inside makeSendLogger; a `console.error` fallback in the
+// resolver instead of the injected `warn`.
+
+/**
+ * @param {string} stripped  Comment-stripped source.
+ * @returns {string|null}
+ */
+export function checkNoConsole(stripped) {
+  const idx = stripped.indexOf('console.');
+  if (idx === -1) return null;
+  const lineNo = stripped.slice(0, idx).split('\n').length;
+  return (
+    `${DEVLOG_PATH}:${lineNo}: literal "console." found — the sink must be INJECTED ` +
+    '(`out`/`warn` parameters, wired in main.ts). Owning a console sink makes the module ' +
+    'untestable without globals and is the "second logging mechanism" criterion 4 forbids'
+  );
+}
+
+// ============================================================================
+// Check T-NO-RING — the source never names the shared-artifact substrate
+// ============================================================================
+//
+// Bites where E1 cannot: `import type { EventRing } from '../ui/eventRing'` is a
+// type-only import E1 permits, but it means devLog records are being shaped for the
+// durable, SHARED bug bundle — which carries player free text (joinGame({name}),
+// setNickname, setProfileName). ADR-0157 §4: console-only, obs-e must re-open pt-b1 U-3
+// before any devlog content goes near the bundle.
+
+const RING_NEEDLES = ['eventRing', 'errorRing', 'bugBundle', 'pushError'];
+
+/**
+ * @param {string} stripped  Comment-stripped source.
+ * @returns {string|null}
+ */
+export function checkNoRingReferences(stripped) {
+  for (const needle of RING_NEEDLES) {
+    const idx = stripped.indexOf(needle);
+    if (idx !== -1) {
+      const lineNo = stripped.slice(0, idx).split('\n').length;
+      return (
+        `${DEVLOG_PATH}:${lineNo}: references "${needle}" in live code — reducer-call records ` +
+        'are CONSOLE-ONLY and must never enter the shared F9 bug bundle (ADR-0157 §4; reducer ' +
+        'args carry player free text, pt-b1 U-3). Deferred as obs-e. (Comments are stripped ' +
+        'before this scan, so a prose mention of errorRing.ts is NOT what tripped this.)'
+      );
+    }
+  }
+  return null;
+}
+
+// ============================================================================
+// Positive control — the file is the real module, not an empty stub
+// ============================================================================
+//
+// Anti-vacuity: every check above is an ABSENCE check, so an empty (or deleted-content)
+// devLog.ts would satisfy all three. This pins that the file actually exports the pinned
+// API surface (plan §A1).
+
+const REQUIRED_NAMES = [
+  'MAX_LINE_LEN',
+  'parseDevLogLevel',
+  'resolveDevLogLevel',
+  'shouldLogReducer',
+  'formatSendLine',
+  'makeSendLogger',
+  'wrapReducerLogging',
+];
+
+/**
+ * @param {string} stripped  Comment-stripped source.
+ * @returns {string|null}
+ */
+export function checkIsRealModule(stripped) {
+  const missing = REQUIRED_NAMES.filter((n) => stripped.indexOf(n) === -1);
+  if (missing.length > 0) {
+    return (
+      `${DEVLOG_PATH}: missing pinned export(s) ${missing.join(', ')} — the absence checks above ` +
+      'would pass vacuously on an empty file, so the module must be proven present (plan §A1)'
+    );
+  }
+  const exportCount = stripped.split('export').length - 1;
+  if (exportCount < 6) {
+    return (
+      `${DEVLOG_PATH}: only ${exportCount} "export" occurrences — plan §A1 pins 7 exported ` +
+      'values plus 2 exported types; a file this thin cannot be the real module'
+    );
+  }
+  return null;
+}
+
+// ============================================================================
+// Internal proof-of-teeth fixtures (run UNCONDITIONALLY, before real scanning)
+// ============================================================================
+
+const GOOD_DEVLOG = `
+// net/devLog.ts — dev-console outbound reducer log (ADR-0157).
+//
+// ZERO runtime imports by design (see evals/dev-observability-gating.eval.mjs E1):
+// a module that imports nothing cannot reach the eventRing / errorRing / bugBundle,
+// so a reducer arg can never land in the shared F9 bundle. The console sink is
+// INJECTED: main.ts passes (line) => console.log(line) — console.log, not
+// console.debug (Chrome hides debug behind the Verbose level).
+/* MAX_LINE_LEN mirrors ERROR_MSG_MAX_LEN (client/src/ui/errorRing.ts:12).
+   A block comment naming pushError and bugBundle must NOT trip the scan. */
+import type { SomeSdkThing } from './sdkTypes';
+
+export const MAX_LINE_LEN = 512;
+export type DevLogLevel = 'off' | 'send' | 'send-move';
+export type SendLogger = (reducerName: string, args: readonly unknown[]) => void;
+export function parseDevLogLevel(raw) { return 'off'; }
+export function resolveDevLogLevel(raw, isDev, warn) { warn('x'); return 'off'; }
+export function shouldLogReducer(level, name) { return false; }
+export function formatSendLine(name, args) { return '-> ' + name; }
+export function makeSendLogger(level, out) { return (n, a) => out(formatSendLine(n, a)); }
+export function wrapReducerLogging(target, log) { return target; }
+`;
+// Must pass ALL FOUR predicates: type-only import, injected sink, and banned words
+// present ONLY inside comments (the comment-immunity proof).
+
+const BAD_RUNTIME_IMPORT = `
+import { formatThing } from './fmt';
+export const MAX_LINE_LEN = 512;
+export function parseDevLogLevel() {}
+export function resolveDevLogLevel() {}
+export function shouldLogReducer() {}
+export function formatSendLine() {}
+export function makeSendLogger() {}
+export function wrapReducerLogging() {}
+`;
+// Kills: any impl with a plain runtime import (the dependency-into-the-bundle risk),
+// even one that names nothing ring-related — checkNoRingReferences must NOT flag it,
+// proving the two predicates are independent.
+
+const BAD_MULTILINE_IMPORT = `
+import {
+  EventRing,
+} from '../ui/eventRing';
+export function wrapReducerLogging() {}
+`;
+// Kills: an impl hiding a runtime import behind biome's multi-line specifier wrapping.
+
+const BAD_DYNAMIC_IMPORT = `
+export async function pushIt(rec) {
+  const ring = await import('../ui/eventRing');
+  ring.eventRing.push(rec);
+}
+`;
+// Kills: a lazy runtime import — a clean import header with a dynamic import in the body.
+
+const BAD_REEXPORT = `
+export { eventRing } from '../ui/eventRing';
+export function wrapReducerLogging() {}
+`;
+// Kills: a re-export, which is a runtime import of the source module.
+
+const BAD_CONSOLE = `
+import type { SendLogger } from './types';
+export function makeSendLogger(level, out) {
+  return (n, a) => {
+    console.log(formatSendLine(n, a));
+  };
+}
+`;
+// Kills: a module that owns its console sink instead of taking it as a parameter.
+// checkNoRuntimeImports must NOT flag it (it only has a type import), proving the
+// console predicate is what bites.
+
+const BAD_TYPE_ONLY_RING = `
+import type { EventRecord } from '../ui/eventRing';
+export function toRingRecord(name, args): EventRecord {
+  return { kind: 'reducerCall', name, args };
+}
+`;
+// Kills: the case E1 CANNOT catch — a legal type-only import that nevertheless wires the
+// devlog into the shared-artifact path. checkNoRuntimeImports must PASS it (type-only) and
+// checkNoRingReferences must FLAG it; that asymmetry is the whole reason T-NO-RING exists.
+
+const BAD_EMPTY_STUB = `
+// devLog.ts — nothing here yet.
+`;
+// Kills: an empty/gutted file that satisfies all three ABSENCE checks vacuously.
+
+// ============================================================================
+// Default export — eval entry point
+// ============================================================================
+
+export default async function () {
+  const name =
+    'dev-observability-gating (ADR-0157 E1: client/src/net/devLog.ts has ZERO runtime imports + ' +
+    'ZERO literal console.; T-NO-RING: no eventRing/errorRing/bugBundle/pushError)';
+
+  // ==========================================================================
+  // PROOFS-OF-TEETH — a fixture failure means the PREDICATE is broken, so the
+  // eval must abort rather than judge production code with a broken ruler.
+  // ==========================================================================
+
+  const good = stripComments(GOOD_DEVLOG);
+  for (const [label, result] of [
+    ['checkNoRuntimeImports', checkNoRuntimeImports(good)],
+    ['checkNoConsole', checkNoConsole(good)],
+    ['checkNoRingReferences', checkNoRingReferences(good)],
+    ['checkIsRealModule', checkIsRealModule(good)],
+  ]) {
+    if (result) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH G1: GOOD_DEVLOG (type-only import, injected sink, banned words only inside ` +
+          `comments) was incorrectly flagged by ${label}: ${result}`,
+      };
+    }
+  }
+
+  // --- Tooth G2: comment immunity is REAL (not an accident of the fixture) --
+  {
+    // The raw GOOD fixture DOES contain every banned string; only comment-stripping
+    // saves it. If this stops holding, Tooth G1 proves nothing about comment immunity.
+    const rawHasBanned =
+      GOOD_DEVLOG.indexOf('console.') !== -1 &&
+      GOOD_DEVLOG.indexOf('eventRing') !== -1 &&
+      GOOD_DEVLOG.indexOf('pushError') !== -1 &&
+      GOOD_DEVLOG.indexOf('bugBundle') !== -1;
+    if (!rawHasBanned) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH G2: GOOD_DEVLOG no longer contains the banned strings in its comments, so ' +
+          'Tooth G1 no longer proves comment-immunity — the fixture has lost its teeth',
+      };
+    }
+  }
+
+  // --- Tooth B1: a plain runtime import must be flagged --------------------
+  {
+    const stripped = stripComments(BAD_RUNTIME_IMPORT);
+    if (!checkNoRuntimeImports(stripped)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH B1: BAD_RUNTIME_IMPORT (`import { formatThing } from "./fmt";`) was NOT flagged ' +
+          'by checkNoRuntimeImports — devLog.ts must have zero runtime imports',
+      };
+    }
+    if (checkNoRingReferences(stripped)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH B1b: BAD_RUNTIME_IMPORT was flagged by checkNoRingReferences — the two ' +
+          'predicates must be independent, or B1 proves nothing about the import check',
+      };
+    }
+  }
+  if (!checkNoRuntimeImports(stripComments(BAD_MULTILINE_IMPORT))) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH B2: BAD_MULTILINE_IMPORT (biome-wrapped specifier list) was NOT flagged — a ' +
+        'line-oriented scan must still catch the statement-initial `import {` line',
+    };
+  }
+  if (!checkNoRuntimeImports(stripComments(BAD_DYNAMIC_IMPORT))) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH B3: BAD_DYNAMIC_IMPORT (`await import("../ui/eventRing")`) was NOT flagged — a ' +
+        'clean import header with a lazy import in the body still reaches the ring at run time',
+    };
+  }
+  if (!checkNoRuntimeImports(stripComments(BAD_REEXPORT))) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH B4: BAD_REEXPORT (`export { eventRing } from "../ui/eventRing";`) was NOT ' +
+        'flagged — a re-export is a runtime import of the source module',
+    };
+  }
+
+  // --- Tooth B5: an owned console sink must be flagged ---------------------
+  {
+    const stripped = stripComments(BAD_CONSOLE);
+    if (!checkNoConsole(stripped)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH B5: BAD_CONSOLE (`console.log(...)` inside makeSendLogger) was NOT flagged by ' +
+          'checkNoConsole — the sink must stay injected',
+      };
+    }
+    if (checkNoRuntimeImports(stripped)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH B5b: BAD_CONSOLE (whose only import is `import type`) was flagged by ' +
+          'checkNoRuntimeImports — a type-only import must be PERMITTED, and the console ' +
+          'predicate must be the thing that bites here',
+      };
+    }
+  }
+
+  // --- Tooth B6: the type-only ring import — E1 permits it, T-NO-RING kills it ---
+  {
+    const stripped = stripComments(BAD_TYPE_ONLY_RING);
+    if (checkNoRuntimeImports(stripped)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH B6a: BAD_TYPE_ONLY_RING was flagged by checkNoRuntimeImports — `import type` ' +
+          'must be permitted; if E1 flagged it, T-NO-RING adds nothing and this eval is ' +
+          'testing the wrong thing',
+      };
+    }
+    if (!checkNoRingReferences(stripped)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH B6b: BAD_TYPE_ONLY_RING (a legal type-only import of ../ui/eventRing) was NOT ' +
+          'flagged by checkNoRingReferences — this is the exact case E1 cannot see, and it is ' +
+          'the whole reason T-NO-RING exists (ADR-0157 §4 / obs-e)',
+      };
+    }
+  }
+  if (!checkIsRealModule(stripComments(BAD_EMPTY_STUB))) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH B7: BAD_EMPTY_STUB (a file with only a comment) was NOT flagged by ' +
+        'checkIsRealModule — every other check is an ABSENCE check and would pass it ' +
+        'vacuously, so deleting the module would turn this eval green',
+    };
+  }
+
+  // ==========================================================================
+  // REAL SOURCE CHECK — scan client/src/net/devLog.ts.
+  // Expected RED at authoring time: the module does not exist yet. A missing
+  // module FAILS (it must never skip — fail-open is a silent blind spot).
+  // ==========================================================================
+
+  let raw;
+  try {
+    raw = readFileSync(DEVLOG_PATH, 'utf8');
+  } catch (e) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `cannot read ${DEVLOG_PATH}: ${e.message} — the module must exist (RED until the ` +
+        'implementer creates it; a missing file is a failure, never a skip)',
+    };
+  }
+
+  const stripped = stripComments(raw);
+  const failures = [];
+
+  {
+    const r = checkIsRealModule(stripped);
+    if (r) failures.push(`[positive-control] ${r}`);
+  }
+  {
+    const r = checkNoRuntimeImports(stripped);
+    if (r) failures.push(`[E1:no-runtime-imports] ${r}`);
+  }
+  {
+    const r = checkNoConsole(stripped);
+    if (r) failures.push(`[E1:no-console] ${r}`);
+  }
+  {
+    const r = checkNoRingReferences(stripped);
+    if (r) failures.push(`[T-NO-RING] ${r}`);
+  }
+
+  if (failures.length > 0) {
+    return { name, pass: false, detail: failures.join('; ') };
+  }
+
+  return {
+    name,
+    pass: true,
+    detail:
+      `${DEVLOG_PATH} exports the pinned API and has ZERO runtime imports, ZERO literal ` +
+      '"console.", and no eventRing/errorRing/bugBundle/pushError reference — criterion 2 ' +
+      '(no dependency dragged into the prod bundle) and criterion 4 (console-only; the shared ' +
+      'F9 bundle is structurally unreachable) hold. Teeth verified (11 fixture assertions).',
+  };
+}

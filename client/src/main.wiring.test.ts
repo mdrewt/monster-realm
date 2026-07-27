@@ -2859,3 +2859,110 @@ describe('★ main.ts wiring (nh3/ADR-0152): epoch captured at the rejection sea
     ).toBeLessThan(seedIdx);
   });
 });
+
+// ===========================================================================
+// dev-observability (ADR-0157) — W-DEVLOG-EAGER. APPENDED block; nothing above
+// is modified.
+//
+// SOURCE OF TRUTH: plan §A8 + §D (gate `W-DEVLOG-EAGER`), ADR-0157 §2.
+//
+// TWO HALVES, both required:
+//   (a) EAGER: `resolveDevLogLevel(` is called at MODULE scope — i.e. BEFORE the
+//       `async function main(` declaration and never inside its body. This is the
+//       existing F-3 idiom, for the same reason: the resolver is fail-loud in DEV, and
+//       a throw from inside main() (or from inside a try/catch there) is swallowed.
+//   (b) THREADED: `onSend:` is actually passed to `connect({ … })`. A resolved level and
+//       a constructed sink that nobody consumes is dead config — the feature would look
+//       wired and log nothing.
+//
+// RED AT AUTHORING TIME: main.ts contains neither `resolveDevLogLevel(` nor
+// `makeSendLogger(` nor `onSend:` (0 occurrences each).
+//
+// Uses the file's existing helpers (expectUniqueAnchor / bodyRegion / stripLineComments)
+// — function declarations, so definition order above is irrelevant. NO `new RegExp(...)`.
+// ===========================================================================
+
+/** The `connect({ … })` options-object region: START is the single call site, END is the
+ *  comment that immediately follows the closing `});`. Needle-bounded (NOT a fixed-width
+ *  window — the nh1 post-mortem anti-pattern) so `onSend:` is found wherever in the option
+ *  list the implementer puts it, but NOT if it drifts outside the connect() call entirely. */
+const DEVLOG_CONNECT_START = 'conn = connect({';
+const DEVLOG_CONNECT_END = '12.5c-4: frame loop is wrapped';
+
+describe('★ main.ts wiring (ADR-0157): W-DEVLOG-EAGER — module-scope resolve + onSend threaded into connect()', () => {
+  it('★ W-DEVLOG-EAGER BITES (a): resolveDevLogLevel( is called at MODULE scope, BEFORE `async function main(`', () => {
+    // WRONG IMPL KILLED (1): no call at all — the flag is never read and the whole feature
+    // is dead (indexOf returns -1).
+    // WRONG IMPL KILLED (2): the resolve moved INSIDE main() (or into a try/catch there).
+    // resolveDevLogLevel RETHROWS in dev by design; swallowed, a developer's flag typo
+    // silently produces "the feature is broken" instead of an instant, named error — which
+    // is the entire justification for §A3's asymmetry.
+    const src = readMainTs();
+    const callIdx = src.indexOf('resolveDevLogLevel(');
+    expect(
+      callIdx,
+      'main.ts must call resolveDevLogLevel( — RED today: it does not appear at all (ADR-0157 §2)',
+    ).toBeGreaterThanOrEqual(0);
+
+    const mainFnIdx = src.indexOf('async function main(');
+    expect(
+      mainFnIdx,
+      'async function main( declaration must be present in main.ts',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      callIdx,
+      'the resolveDevLogLevel( call must appear BEFORE `async function main(` — at module ' +
+        'scope, beside the pt-a1 resolveConnectionConfig call (§A8), so the DEV rethrow is ' +
+        'not swallowed by a try/catch inside main()',
+    ).toBeLessThan(mainFnIdx);
+
+    // No SECOND call inside main() (the F-3c precedent): only the module-scope call is
+    // eager, and a duplicate there is either dead or a second, divergent SSOT.
+    const afterMain = stripLineComments(src.slice(mainFnIdx));
+    expect(
+      afterMain.indexOf('resolveDevLogLevel('),
+      'resolveDevLogLevel( must NOT appear inside async function main() — the module-scope ' +
+        'call is the only eager one',
+    ).toBe(-1);
+  });
+
+  it('★ W-DEVLOG-EAGER BITES (b): the sink is constructed via makeSendLogger( and `onSend:` is threaded into the connect({ … }) call', () => {
+    // WRONG IMPL KILLED (1): the level is resolved and a logger constructed, but `onSend:`
+    // is never passed to connect( — DEAD CONFIG. The flag would parse, the resolver would
+    // fail loud on a typo, and not one reducer call would ever be logged. Nothing else in
+    // this slice's gates can see that: devLog.test.ts proves the module works in isolation
+    // and connection.test.ts proves build() wraps whatever it is given.
+    // WRONG IMPL KILLED (2): `onSend:` present somewhere else in main.ts (e.g. on an unrelated
+    // options object) but not inside the connect({ … }) call — the region is needle-bounded to
+    // that call, so a stray occurrence elsewhere cannot credit it.
+    // WRONG IMPL KILLED (3): passing a raw `console.log` (or a hand-rolled closure) instead of
+    // makeSendLogger's result — the level filter and the 'off' ⇒ undefined ⇒ strict-identity
+    // path would both be bypassed, so the default prod build would install a live Proxy.
+    const src = readMainTs();
+    expect(
+      src.includes('makeSendLogger('),
+      'main.ts must construct the sink with makeSendLogger(DEV_LOG_LEVEL, (line) => …) (§A8) — ' +
+        "it is what returns undefined at level 'off', which is what makes wrapReducerLogging " +
+        'strict identity in the default production build',
+    ).toBe(true);
+
+    expectUniqueAnchor(src, DEVLOG_CONNECT_START);
+    expectUniqueAnchor(src, DEVLOG_CONNECT_END);
+    const region = bodyRegion(src, DEVLOG_CONNECT_START, DEVLOG_CONNECT_END);
+
+    // Anti-vacuity bail-guard: prove the region really is the connect() options object
+    // before judging it (a collapsed/wrong region would make the pin below meaningless).
+    expect(
+      region.includes('onReady:'),
+      'the connect({ … }) region must still contain onReady: — if it does not, these anchors ' +
+        'no longer bound the connect call and the onSend: pin below is vacuous',
+    ).toBe(true);
+
+    expect(
+      region.includes('onSend:'),
+      'the connect({ … }) call must pass `onSend: <the makeSendLogger result>` (§A8) — without ' +
+        'it the resolved level and the constructed logger are dead config and no outbound ' +
+        'reducer call is ever logged (EARS-1 never fires)',
+    ).toBe(true);
+  });
+});
