@@ -421,7 +421,8 @@ function reconcileFromStore(): void {
     const diverged = predictor.reconcile(baseline, own.row.moveQueue, ackedSeq, now);
     // Honor reconcile's documented divergence return (ADR-0013): on a genuine server
     // pullback, re-commit the held direction so a held key keeps walking from the
-    // corrected baseline (same held-state-guarded dedup as the rAF frame loop).
+    // corrected baseline (same held-state-guarded dedup + hold-commit tap/hold
+    // discrimination as the rAF frame loop, ADR-0158).
     // nh2 (ADR-0148): gate this second continuation emitter on the same outstanding-work
     // predicate as the rAF loop. Cost is bounded by the next authoritative batch
     // (<= ~STEP_MS + RTT), never stuck: every server-side queue mutation writes the
@@ -446,7 +447,7 @@ function reconcileFromStore(): void {
         leaderboardView?.visible
       )
     ) {
-      const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
+      const heldDir = reissueDir(held.committedActive(now), predictor.lastQueuedDir);
       if (heldDir !== undefined) sendIntent({ Step: heldDir });
     }
   } catch (err) {
@@ -1093,7 +1094,7 @@ window.addEventListener('keydown', (e) => {
   const dir = KEY_DIR[e.code];
   if (dir !== undefined) {
     step(dir); // immediate first step (latency + deliberate double-tap)
-    held.press(dir); // mark held so the frame loop re-issues it (continuous walk)
+    held.press(dir, performance.now()); // mark held (stamped) so the frame loop re-issues it once hold-committed (ADR-0158)
     e.preventDefault();
     return;
   }
@@ -2111,7 +2112,8 @@ async function main(): Promise<void> {
       const { snapped } = predictor.drain(now);
       // Re-issue the held dir so a held key keeps walking — but only when no overlay
       // is visible, so a held key resumes after an overlay closes yet never walks
-      // under one (M8.6c, ADR-0013). sendIntent routes through the backpressured
+      // under one (M8.6c, ADR-0013) + hold-commit tap/hold discrimination (ADR-0158).
+      // sendIntent routes through the backpressured
       // predictor.enqueue + reducer send, and no-ops if declined.
       // nh2 (ADR-0148): ...and only while the server owes nothing. Pure NOT-EMIT: it never
       // cancels or writes predictor state, so reconcileFromStore stays the one repair path.
@@ -2134,7 +2136,7 @@ async function main(): Promise<void> {
           helpView?.visible
         )
       ) {
-        const heldDir = reissueDir(held.active(), predictor.lastQueuedDir);
+        const heldDir = reissueDir(held.committedActive(now), predictor.lastQueuedDir);
         if (heldDir !== undefined) sendIntent({ Step: heldDir });
       }
       const ownEntityId = store.ownEntityId(identity);
