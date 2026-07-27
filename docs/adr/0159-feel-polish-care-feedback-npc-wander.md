@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** 0068
 **Subsystems:** client-ui, movement-netcode
-**Decision:** Care gets an in-overlay success/error feedback line via the established showFeedback idiom (no toast subsystem); npc_decide becomes collision- and radius-aware and continues its current facing while that stays legal, eliminating wall-bumps and halving direction reversals.
+**Decision:** Care gets an in-overlay feedback line via the established showFeedback idiom (no toast subsystem); npc_decide becomes collision- and radius-aware and continues its facing while legal, eliminating wall-bumps and halving reversals.
 
 ## Context
 
