@@ -584,21 +584,64 @@ fn npc_decide_continues_current_facing_when_legal() {
 // kills: any impl that mistakenly applies the legality filter (L-empty check)
 // or the 1-in-5 stay roll to the `dist > wander_radius` branch, which could
 // freeze a returning NPC forever outside its radius.
+//
+// Red-team finding (MAJOR, fixed here): the ORIGINAL fixture — current=(1,1),
+// home=(5,5), r=2 — has toward_home = East, and (2,1) (the East step from
+// (1,1)) is walkable, so a mutant that adds a legality filter to the homing
+// branch produces the IDENTICAL answer (filtering never removes a legal
+// choice when the only candidate is already legal). That mutant PASSED
+// against this fixture. Fixed by adding a SECOND fixture below where
+// toward_home's step target is a genuine on-map WALL, so a legality-filtered
+// mutant is forced to diverge (either to `None`, because the empty legal set
+// L has no fallback, or to some other direction chosen via the hash) from the
+// correct, unconditional `Some(toward_home(...))`.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn npc_decide_homing_answers_every_tick_never_stalls() {
     let map = zone_0();
     let home = pos(5, 5);
-    let current = pos(1, 1); // manhattan distance 8 > radius 2 -> outside
     let radius = 2u8;
 
+    // Fixture A (kept): current=(1,1), home=(5,5), r=2 -> dist=8>2, outside.
+    // toward_home dx=4,dy=4 (tied -> X wins) -> East. (2,1) is walkable floor,
+    // so this fixture alone does NOT distinguish "unconditional homing" from
+    // "homing filtered through legality" (see red-team finding above) — kept
+    // as a baseline "answers every tick" regression check.
+    let current_a = pos(1, 1);
     for tick in 0u64..4 {
-        let result = npc_decide(current, home, radius, Direction::North, 1, tick, &map);
+        let result = npc_decide(current_a, home, radius, Direction::North, 1, tick, &map);
         assert_eq!(
             result,
             Some(Direction::East),
             "outside-radius homing must answer Some(East) every tick (tick={tick}), got {result:?}"
+        );
+    }
+
+    // Fixture B (NEW, the actual tooth): current=(5,2), home=(5,5), r=2.
+    // Derivation from the real zone-0 grid (content/zone_maps/000-core.ron):
+    //   dist((5,2),(5,5)) = |5-5| + |2-5| = 3 > radius(2) -> outside/homing.
+    //   toward_home: dx=5-5=0, dy=5-2=3; |dx| < |dy| -> Y-axis dominant;
+    //   dy=3>0 -> South (South = increasing y in screen coords).
+    //   Step target = (5,2).step(South) = (5,3). Row y=3 of the grid is
+    //   "#...##..~#" -> index 5 (0-based) is '#' -- a genuine WALL, not an
+    //   off-map coordinate.
+    // The homing branch is UNCHANGED by ADR-0159 D2 (no hash, no legality
+    // filter, no stay roll), so npc_decide MUST still return Some(South)
+    // here, on every tick, even though that exact tile is a wall (apply_move,
+    // not npc_decide, is responsible for ever rejecting the step). A mutant
+    // that legality-filters the homing branch has NO legal candidate at all
+    // from (5,2) toward home along this axis and must diverge (to `None` or
+    // to a hash-picked alternative) -- this fixture forces that divergence.
+    let current_b = pos(5, 2);
+    for tick in 0u64..4 {
+        let result = npc_decide(current_b, home, radius, Direction::North, 1, tick, &map);
+        assert_eq!(
+            result,
+            Some(Direction::South),
+            "outside-radius homing from (5,2) toward home (5,5) must answer Some(South) \
+             every tick (tick={tick}), even though the target tile (5,3) is a wall — the \
+             homing branch must be unconditional (no legality filter); got {result:?}"
         );
     }
 }
@@ -672,19 +715,35 @@ fn npc_decide_known_answer_vectors_pin_hash_and_legality() {
 // ---------------------------------------------------------------------------
 // G5 — BEHAVIOURAL BOUND (encodes the playtest complaint).
 //
-// Simulate a long walk (5000 ticks) on the REAL zone-0 grid starting at
-// elder_oak's home, driving the NPC's actual position/facing tick-by-tick
-// (mirroring how movement.rs drives npc_decide + apply_move in production).
-// Assert:
+// Simulate a long walk (60 000 ticks — the ADR's own measurement window) on
+// the REAL zone-0 grid starting at elder_oak's home, driving the NPC's actual
+// position/facing tick-by-tick (mirroring how movement.rs drives npc_decide +
+// apply_move in production). Assert:
 //   - bump count == 0 (exact).
-//   - reversal rate < 25% of moves. Status quo measured 32.26%; the shipped
-//     design measured 19.97%; this threshold sits strictly between the two,
-//     so the CURRENT (pre-ADR-0159) implementation fails it.
+//   - IMMEDIATE reversal rate < 25% of moves. Status quo measured 32.26%; the
+//     shipped design measured 19.97%; this threshold sits strictly between
+//     the two (~5pp margin on both sides), so the CURRENT (pre-ADR-0159)
+//     implementation fails it and the correct one passes with headroom.
 //   - the NPC never leaves its wander_radius.
+//
+// METRIC (precise, do not re-introduce ambiguity here): a reversal is an
+// IMMEDIATE reversal — a MOVE tick whose direction is the exact opposite of
+// the PREVIOUS MOVE tick's direction, with NO intervening stay (`None`) tick
+// between them. `last_move_dir` is therefore reset to `None` on every stay
+// tick below: "move East, stay, stay, move West" is NOT a reversal (the ADR's
+// 32.26%/19.97% figures were measured this way). A prior version of this test
+// tracked `last_move_dir` across stay ticks (an "any-gap" metric); red-team
+// showed that metric converges to EXACTLY 25.00% regardless of implementation
+// correctness (measured 24.9937% at N=5000, 25.0005% at N=60000, 25.0002% at
+// N=200000 against a KNOWN-CORRECT implementation) — i.e. the old `< 0.25`
+// assertion was a coin-flip on sample-size noise, not a tooth. Recomputed
+// against the immediate-reversal metric at N=60000: status quo 32.26% (fails
+// this gate), correct 19.97% (passes), ignore-facing variant 35.44% (fails).
 //
 // kills: any impl that ignores the map (status quo: 14.33% of ticks were
 // bumps) or that is collision-aware but drops continue-facing (measured
-// 35.4% reversal rate in the ADR's alternative (B) — still over this bound).
+// 35.44% immediate-reversal rate in the ADR's alternative (B) — still over
+// this bound).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -708,9 +767,12 @@ fn npc_decide_behavioural_bound_zero_bumps_bounded_reversals_over_long_walk() {
     let mut bumps: u64 = 0;
     let mut moves: u64 = 0;
     let mut reversals: u64 = 0;
+    // Reset to `None` on every stay tick (see METRIC note above) -- only a
+    // MOVE immediately following another MOVE is eligible to count as a
+    // reversal; a stay tick breaks the chain.
     let mut last_move_dir: Option<Direction> = None;
 
-    for tick in 0u64..5000 {
+    for tick in 0u64..60_000 {
         if let Some(d) = npc_decide(current, home, radius, facing, npc_id, tick, &map) {
             let target = current.step(d);
             if map.is_walkable(target) {
@@ -724,11 +786,20 @@ fn npc_decide_behavioural_bound_zero_bumps_bounded_reversals_over_long_walk() {
                 current = target;
             } else {
                 bumps += 1;
+                // A bump is neither a move nor a stay for reversal-eligibility
+                // purposes on the real grid this test targets bumps==0, so
+                // this branch is exercised only by a still-buggy impl; reset
+                // defensively so a bump can never be misread as "the previous
+                // move" for the next tick's reversal check.
+                last_move_dir = None;
             }
             facing = d; // apply_move always turns to face the input, even on a bump
+        } else {
+            // None (stay): position and facing are both unchanged, matching
+            // movement.rs, which never calls apply_move when npc_decide
+            // returns None. Breaks the reversal-eligibility chain (METRIC note).
+            last_move_dir = None;
         }
-        // else: None (stay) -- position and facing are both unchanged, matching
-        // movement.rs, which never calls apply_move when npc_decide returns None.
 
         let dist = (i64::from(current.x) - i64::from(home.x)).abs()
             + (i64::from(current.y) - i64::from(home.y)).abs();
@@ -741,16 +812,16 @@ fn npc_decide_behavioural_bound_zero_bumps_bounded_reversals_over_long_walk() {
 
     assert_eq!(
         bumps, 0,
-        "expected ZERO wall-bumps over 5000 ticks on the real zone-0 grid \
+        "expected ZERO wall-bumps over 60000 ticks on the real zone-0 grid \
          (status quo measured 14.33% of ticks as bumps); got {bumps} bumps"
     );
     assert!(moves > 0, "sanity: the simulation must have moved at least once");
-    #[allow(clippy::cast_precision_loss)] // bounded by MAX_TICKS (5000); no precision concern
+    #[allow(clippy::cast_precision_loss)] // bounded by MAX_TICKS (60_000); no precision concern
     let reversal_rate = reversals as f64 / moves as f64;
     assert!(
         reversal_rate < 0.25,
-        "reversal rate must be < 25% of moves (status quo measured 32.26%, \
-         target ~19.97%); got {:.4}% ({reversals} reversals / {moves} moves)",
+        "IMMEDIATE reversal rate must be < 25% of moves (status quo measured 32.26%, \
+         target ~19.97%, both at N=60000); got {:.4}% ({reversals} reversals / {moves} moves)",
         reversal_rate * 100.0
     );
 }
