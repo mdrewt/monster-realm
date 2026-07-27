@@ -3212,6 +3212,30 @@ describe('★ main.ts wiring (mvi): the hold-commit threshold is wired into BOTH
         're-issues a step while the tap key is still physically down (movementSim S1)',
     ).toBe(true);
 
+    // [red-team hardening] occurrence-count discipline: EXACTLY ONE `reissueDir(` call per
+    // region. `bodyRegion` strips comments but NOT string/template-literal contents, so a dead
+    // decoy such as `` const _sig = `reissueDir(held.committedActive(now), predictor.lastQueuedDir)`; ``
+    // sitting next to a REVERTED real call satisfies the `.includes(emitter)` checks above by
+    // itself while the actual re-issue reads the ungated accessor via bracket-notation
+    // (`held['active']()`), which ALSO dodges the whole-file `held.active(` ban below (no
+    // literal dot-notation substring). Any decoy that reproduces the emitter text necessarily
+    // reproduces its `reissueDir(` prefix too, so a lone "region must contain the emitter"
+    // check cannot see the duplication — this count can. PoC verified (scratch, not committed):
+    // both sites reverted to `held['active']()` plus one decoy string per region passed every
+    // other assertion in this tooth (the whole 135-test gating suite stayed green) before this
+    // check was added.
+    expect(
+      countOccurrences(reconcileRegion, 'reissueDir('),
+      'the reconcile-divergence region must contain EXACTLY ONE reissueDir( call — a second ' +
+        'occurrence (e.g. a decoy string literal duplicating the emitter text) means the ' +
+        'emitter check above can be satisfied by dead data while the REAL call reverts',
+    ).toBe(1);
+    expect(
+      countOccurrences(rafRegion, 'reissueDir('),
+      'the rAF held-key re-issue region must contain EXACTLY ONE reissueDir( call — same ' +
+        'decoy-string closure as the reconcile-region count above',
+    ).toBe(1);
+
     // WHOLE-FILE counts (comment-stripped, so prose cannot credit or defeat them).
     const live = stripLineComments(src);
     expect(
@@ -3324,6 +3348,37 @@ describe('★ main.ts wiring (mvi): the hold-commit threshold is wired into BOTH
       countOccurrences(live, 'new HeldDirections('),
       'main.ts must construct EXACTLY ONE HeldDirections — a second instance means keydown ' +
         'and keyup (or the two continuation emitters) would read different held-key state',
+    ).toBe(1);
+  });
+
+  it('★ W-MVI-HELDKEYS-IMPORT-SEALED BITES: main.ts imports ONLY { HeldDirections, reissueDir } from heldKeys.ts, via exactly one static import', () => {
+    // RED-TEAM FINDING: a module-mutable "internal default" back door in heldKeys.ts — e.g. a
+    // `let`-based constructor default the class reads instead of `HOLD_COMMIT_MS` directly,
+    // plus an exported setter — is invisible to every OTHER tooth in this file and to
+    // heldKeys.test.ts / movementSim.test.ts, because neither test file ever imports or
+    // executes main.ts. A one-line addition to main.ts's import + one module-scope call
+    // (`__setSomeInternalDefault(0)`) would silently disable the entire hold-commit fix at
+    // runtime while every other assertion in this 135-test gating suite stays green.
+    // PoC verified in a scratch copy (not committed): heldKeys.ts exported
+    // `_internalDefaultHoldCommitMs` (a `let`, initialized from `HOLD_COMMIT_MS`) and
+    // `__setInternalDefaultHoldCommitMs`, the constructor default read the mutable `let`, and
+    // main.ts added `__setInternalDefaultHoldCommitMs(0)` at module scope — the full gating
+    // suite (heldKeys.test.ts + movementSim.test.ts + this file) passed 135/135.
+    // This tooth closes the main.ts-side half of that mutant by sealing the import surface:
+    // only `HeldDirections` and `reissueDir` may ever be pulled from heldKeys.ts, and only via
+    // one static import statement (no second import, no dynamic `import(...)`).
+    const src = readMainTs();
+    const exactImport = "import { HeldDirections, reissueDir } from './prediction/heldKeys';";
+    expect(
+      src.includes(exactImport),
+      `main.ts must import EXACTLY \`${exactImport}\` — no additional named imports (e.g. a ` +
+        'mutable internal-default setter) may be pulled in from heldKeys.ts',
+    ).toBe(true);
+    expect(
+      countOccurrences(src, "from './prediction/heldKeys'"),
+      'main.ts must import from ./prediction/heldKeys via exactly ONE static import statement ' +
+        '— a second import (or a dynamic import(...)) could pull in additional exports unseen ' +
+        'by the exact-match check above',
     ).toBe(1);
   });
 });

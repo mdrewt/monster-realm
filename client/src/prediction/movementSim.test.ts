@@ -590,21 +590,25 @@ describe('[mvi] S1 tap matrix: one tap == one tile, in EVERY (scenario × fps ×
       // behaviour (`committedActive` degenerates to `active`), so this reproduces the defect and
       // asserts the harness SEES it. Without this twin, a matrix that (say) mis-measured
       // `tilesMovedByTap` as always 1 would look like a passing gate.
-      let doubles = 0;
-      const sc = TAP_SCENARIOS[1] as TapScenario; // (b) mid-map: the cleanest signal
-      for (const fps of [30, 60, 144]) {
-        for (const tapMs of [40, 80, 120, 140]) {
-          for (let phase = 0; phase < STEP_MS; phase += 20) {
-            if (runTap(sc, fps, phase, tapMs, 0).tilesMovedByTap >= 2) doubles += 1;
+      // EVERY scenario must independently prove it can see doubles — a per-scenario harness
+      // defect (e.g. scenario (a)'s wall phase mis-measuring tilesMovedByTap) must not hide
+      // behind another scenario's signal.
+      for (const sc of TAP_SCENARIOS) {
+        let doubles = 0;
+        for (const fps of [30, 60, 144]) {
+          for (const tapMs of [40, 80, 120, 140]) {
+            for (let phase = 0; phase < STEP_MS; phase += 20) {
+              if (runTap(sc, fps, phase, tapMs, 0).tilesMovedByTap >= 2) doubles += 1;
+            }
           }
         }
+        expect(
+          doubles,
+          `scenario (${sc.label}): with the hold-commit threshold disabled the tap matrix MUST ` +
+            'observe double-moves — if it observes none, the matrix cannot detect the defect ' +
+            'it is supposed to gate and S1 above is vacuous for this scenario',
+        ).toBeGreaterThan(0);
       }
-      expect(
-        doubles,
-        'with the hold-commit threshold disabled the tap matrix MUST observe double-moves — if ' +
-          'it observes none, the matrix cannot detect the defect it is supposed to gate and ' +
-          'S1 above is vacuous',
-      ).toBeGreaterThan(0);
     },
     GRID_TIMEOUT_MS,
   );
@@ -982,7 +986,7 @@ describe('[mvi] S8 two-key fallback: releasing the newer key resumes the older o
 // window that is still open when the threshold is DISABLED (holdCommitMs=0 emits on the very
 // first frame after the gate opens, which closes the window again). With tickPhase=175 the
 // first drain is at t=575 and its snapshot lands at t=576, while the next frame is at
-// t=583.33 — so a nudge arriving at t=580 is inside the open window under BOTH thresholds and
+// t=583.33 — so a nudge arriving at t=579 is inside the open window under BOTH thresholds and
 // is exactly 80ms after the press. The later window used by S9a ([976, 983.33)) is 480ms
 // after the press, i.e. comfortably committed.
 
@@ -1043,7 +1047,7 @@ describe('[mvi] S9 divergence site: the reconcile re-issue uses the same hold-co
     ).toBe(true);
     expect(
       divergenceEmissions(r),
-      'the key has been held for only 80ms when the reposition lands: the divergence site must ' +
+      'the key has been held for only 79ms when the reposition lands: the divergence site must ' +
         "NOT re-issue it (that extra step is the second source of Drew's double-move)",
     ).toBe(0);
   });
