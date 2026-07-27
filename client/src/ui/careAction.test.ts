@@ -38,7 +38,23 @@
 // behaviour: node environment, no DOM, no SDK, no wasm — pure async control flow
 // over injected fakes.
 //
-// CODE-REVIEW UPDATE (2 findings against the shipped implementation):
+// RED-TEAM ROUND 2 (against the shipped careAction.ts, AFTER the first code-review
+// round below had already landed): BUG 1 — a SYNCHRONOUS throw from `callCare()`
+// shows the player NOTHING. `careAction.ts:46` calls
+// `const inFlight = deps.callCare();` OUTSIDE the try block. If callCare() throws
+// synchronously (rather than returning a rejected promise), the throw escapes
+// performCare entirely as a REJECTED performCare() promise, before any showFeedback
+// call. Reachable, not hypothetical: the real SDK's callReducerWithParams
+// BSATN-serializes reducer args SYNCHRONOUSLY before returning a promise
+// (client/node_modules/spacetimedb/src/sdk/db_connection_impl.ts:1196-1202), so a
+// serialization failure throws sync. raisingView.ts's click handler only
+// console.error's a rejecting onCare — net effect: click -> button disables ->
+// silently re-enables -> NOTHING shown. THIS IS RED against the current
+// careAction.ts — see the "★★ ... BUG 1" describe block below, which is the new
+// load-bearing tooth in this file (every OTHER test here remains a green regression
+// guard, per the STATUS UPDATE further down).
+//
+// CODE-REVIEW UPDATE (round 1 — 2 findings against the shipped implementation):
 //
 //   MAJOR — stale feedback into a hidden overlay. main.ts wires `showFeedback:
 //     (message) => raisingView?.showFeedback(message)` with NO visibility guard
@@ -82,16 +98,15 @@
 //   }
 //   export async function performCare(deps: CareActionDeps): Promise<void>
 //
-// STATUS UPDATE (post-implementation code review): careAction.ts has since been
-// shipped. Re-verified against the current source: its core ordering/resolve/reject/
-// frozen logic is ALREADY CORRECT (no PoC-A-shaped pre-await call, reject routes
-// through reduceErrorMessage, frozen never reports 'Cared!') — the code review's
-// MAJOR finding is entirely in main.ts's WIRING (the unguarded showFeedback forward),
-// not in this module. Every test in this file (ORDER / resolve / reject×2 / frozen /
-// the two new visibility-agnostic pins below) is therefore a GREEN regression guard
-// against the current implementation, proving performCare's contract holds and stays
-// stable — NOT a currently-failing gate. The still-open item is the code review's
-// MINOR finding: `performCare(deps, _monsterId: bigint)` carries a dead second
+// STATUS UPDATE (post-implementation code review, round 1): careAction.ts has since
+// been shipped. Re-verified against the current source: its core ordering/resolve/
+// reject/frozen logic (for a callCare that RETURNS a promise, resolved or rejected)
+// is CORRECT (no PoC-A-shaped pre-await call, reject routes through
+// reduceErrorMessage, frozen never reports 'Cared!') — round 1's MAJOR finding was
+// entirely in main.ts's WIRING (the unguarded showFeedback forward), not in this
+// module. So ORDER / resolve / reject×2 / frozen / the two visibility-agnostic pins
+// are all GREEN regression guards against the current implementation. Round 1's
+// MINOR finding: `performCare(deps, _monsterId: bigint)` carried a dead second
 // parameter. Every call site below now passes ONE argument (`performCare(deps)`);
 // this does not itself flip any test red (JS ignores an extra/missing argument at
 // runtime, and `client/tsconfig.json` excludes `**/*.test.ts` from `tsc --noEmit`,
@@ -99,6 +114,12 @@
 // pins the one-argument contract the implementer must match by deleting the
 // parameter from careAction.ts, per this repo's "public surface larger than the spec
 // requires" red flag.
+//
+// ROUND 2 (see the RED-TEAM ROUND 2 note above): callCare() is only ever exercised
+// above via a RETURNED promise (resolved/rejected/undefined) — never via a
+// SYNCHRONOUS throw. `careAction.ts:46` calls `deps.callCare()` OUTSIDE the try
+// block, so that code path was untested and is broken. The new "★★ ... BUG 1"
+// describe block below is the genuinely RED test in this file today.
 //
 // WRONG-IMPL-KILLED list (one per criterion):
 //   ORDER (kills PoC A)        -> showFeedback called before the in-flight promise settles
@@ -109,6 +130,10 @@
 //                                  (awaiting `undefined` resolves immediately with no
 //                                  throw — a naive impl could easily call showFeedback
 //                                  ('Cared!') on it)
+//   synchronous-throw (BUG 1)  -> callCare() called OUTSIDE any try/catch, so a sync
+//                                  throw (e.g. BSATN serialization failure) escapes as
+//                                  a rejected performCare() promise with NO
+//                                  showFeedback call — the "no visible effect" bug
 //   exactly-once (every arm)   -> a double-flash (optimistic + settled) in any arm
 //   visibility-agnostic        -> performCare itself trying to skip/dedup the call
 //                                  based on some assumed visibility state it has no
@@ -287,6 +312,61 @@ describe('performCare(): frozen/disconnected arm — callCare() returns undefine
       message.length,
       'the frozen/disconnected feedback message must be non-empty',
     ).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ★★ code-review BUG 1 (MAJOR) — a SYNCHRONOUS throw from callCare() must still
+// produce exactly one showFeedback call, and performCare must NOT reject.
+//
+// The shipped careAction.ts calls `const inFlight = deps.callCare();` OUTSIDE the
+// try block (careAction.ts:46). If callCare() throws synchronously rather than
+// returning a rejected promise, the throw escapes performCare entirely as a
+// REJECTED performCare() promise, before any showFeedback call. This is reachable,
+// not hypothetical: the real SDK's callReducerWithParams BSATN-serializes the
+// reducer args SYNCHRONOUSLY before returning a promise
+// (client/node_modules/spacetimedb/src/sdk/db_connection_impl.ts:1196-1202), so a
+// serialization failure throws sync. raisingView.ts's click handler only
+// console.error's a rejecting onCare (never calls showFeedback) — net effect:
+// click -> button disables -> silently re-enables -> NOTHING shown. That is the
+// exact "care button has no visible effect" bug this whole slice exists to fix.
+//
+// RED-TEAM PoC (passes against the shipped code today — this is the bug):
+//   const callCare = () => { throw new Error('serialization failure'); };
+//   await performCare({ callCare, showFeedback }).catch(() => {});
+//   expect(showFeedback).not.toHaveBeenCalled();   // passes today — the bug
+// ---------------------------------------------------------------------------
+
+describe('★★ performCare(): a SYNCHRONOUSLY-throwing callCare() must still report a message (code-review BUG 1, MAJOR)', () => {
+  it("★★ BITES: callCare() throws SYNCHRONOUSLY -> performCare resolves (does NOT reject) and showFeedback is called exactly once with reduceErrorMessage(err, 'care')'s text, NEVER 'Cared!' — kills the callCare-outside-try shape", async () => {
+    const thrownErr = new Error('serialization failure');
+    const callCare = vi.fn((): Promise<unknown> | undefined => {
+      throw thrownErr;
+    });
+    const showFeedback = vi.fn();
+    const deps: CareActionDeps = { callCare, showFeedback };
+
+    // performCare must NOT reject: the caller (raisingView.ts's click handler) should
+    // never have to guess it needs a .catch just to get a message rendered — a
+    // rejecting performCare IS the bug (raisingView.ts's click handler catches the
+    // rejection today but only console.error's it, so the player sees nothing).
+    await expect(
+      performCare(deps),
+      'performCare must resolve even when callCare() throws synchronously — a rejecting ' +
+        'promise here forces every caller to add its own catch, and the shipped ' +
+        "raisingView.ts caller's catch only console.error's, showing the player nothing",
+    ).resolves.toBeUndefined();
+
+    const expectedText = reduceErrorMessage(thrownErr, 'care');
+    expect(callCare).toHaveBeenCalledOnce();
+    expect(
+      showFeedback,
+      'a synchronously-thrown callCare() error must still produce EXACTLY ONE showFeedback ' +
+        'call — kills the callCare-outside-try shape, where a sync throw propagates as a ' +
+        'rejected performCare() promise with NO showFeedback call at all',
+    ).toHaveBeenCalledTimes(1);
+    expect(showFeedback).toHaveBeenCalledWith(expectedText);
+    expect(showFeedback).not.toHaveBeenCalledWith('Cared!');
   });
 });
 
