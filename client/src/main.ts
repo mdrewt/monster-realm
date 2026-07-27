@@ -65,6 +65,7 @@ import {
   type KeyStoreSnapshot,
   serializeBugBundle,
 } from './ui/bugBundle';
+import { performCare } from './ui/careAction';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
 import { buildDialogueViewModel, nearestTalkableNpcId } from './ui/dialogueModel';
 import type { DialogueView } from './ui/dialogueView';
@@ -1824,9 +1825,27 @@ async function main(): Promise<void> {
       onTrain: (monsterId, foodItemId) => {
         sendGuarded('train', () => conn?.conn.reducers.train({ monsterId, foodItemId }));
       },
-      onCare: (monsterId) => {
-        sendGuarded('care', () => conn?.conn.reducers.care({ monsterId }));
-      },
+      // ADR-0159 D1: care used to run through sendGuarded, which attaches ONLY a
+      // .catch — a successful care was acknowledged by nothing, and the rejection
+      // it did raise went to statusEl, which this overlay paints over. The whole
+      // decision (frozen gate / await / exactly-one message) now lives in the
+      // tested performCare core; this closure is the adapter that binds the real
+      // connection and the real overlay to it. Returned (not `void`ed) so the
+      // view's #pending lock stays held until the reducer promise settles.
+      onCare: (monsterId) =>
+        performCare(
+          {
+            // ADR-0085 A1 frozen gate (onBuy/onSell shape): a call against a dead
+            // conn is silently queued and never settles — report `undefined` so
+            // performCare shows the disconnected line instead of hanging.
+            callCare: () =>
+              conn === undefined || conn.linkFrozen()
+                ? undefined
+                : conn.conn.reducers.care({ monsterId }),
+            showFeedback: (message) => raisingView?.showFeedback(message),
+          },
+          monsterId,
+        ),
     });
     evolutionView = new EvolutionViewClass(mount, {
       onEvolve: (monsterId) => {

@@ -16,10 +16,15 @@ export interface RaisingViewCallbacks {
 
 export class RaisingView {
   readonly #root: HTMLDivElement;
+  readonly #feedbackEl: HTMLDivElement;
   readonly #monsterEl: HTMLDivElement;
   readonly #inventoryEl: HTMLDivElement;
   readonly #callbacks: RaisingViewCallbacks;
   #visible = false;
+  // In-flight lock: prevents a double-click from firing two care calls (whose
+  // contradictory outcomes would flash "Cared!" then "care cooldown not yet
+  // elapsed"). shopView/renameView precedent.
+  #pending = false;
 
   constructor(parent: HTMLElement, callbacks: RaisingViewCallbacks) {
     this.#callbacks = callbacks;
@@ -34,6 +39,15 @@ export class RaisingView {
     title.textContent = 'Raising & Inventory';
     title.style.cssText = 'margin:0 0 16px;color:#fff;';
     this.#root.appendChild(title);
+
+    // ADR-0159 D1: the feedback line lives INSIDE the overlay root. main.ts's
+    // statusEl sits in normal document flow, so this `position:fixed; z-index:100`
+    // overlay painted over every care message it raised — the player saw nothing.
+    this.#feedbackEl = document.createElement('div');
+    this.#feedbackEl.id = 'raising-feedback';
+    this.#feedbackEl.style.cssText =
+      'min-height:16px;margin:0 0 12px;font-size:12px;color:#ffd479;';
+    this.#root.appendChild(this.#feedbackEl);
 
     const monsterLabel = document.createElement('h3');
     monsterLabel.textContent = 'Monsters';
@@ -74,6 +88,17 @@ export class RaisingView {
   hide(): void {
     this.#visible = false;
     this.#root.style.display = 'none';
+    // A stale "Cared!" must not greet the next open, and the in-flight lock is
+    // released here because the SDK never settles a reducer promise after a link
+    // drop — .finally() may never run (shopView/renameView precedent).
+    this.#feedbackEl.textContent = '';
+    this.#pending = false;
+  }
+
+  /** Display a care outcome. textContent ONLY — the message can carry a
+   * server-supplied error reason, so innerHTML would be an injection vector. */
+  showFeedback(message: string): void {
+    this.#feedbackEl.textContent = message;
   }
 
   refresh(vm: RaisingViewModel): void {
@@ -120,7 +145,23 @@ export class RaisingView {
       const careBtn = document.createElement('button');
       careBtn.textContent = 'Care';
       careBtn.style.cssText = 'font-size:11px;cursor:pointer;';
-      careBtn.addEventListener('click', () => this.#callbacks.onCare(mon.monsterId));
+      // Re-entrancy guard (ADR-0159 D1, shopView/renameView precedent): the
+      // callback's return value is wrapped so a genuinely pending care call holds
+      // the lock until it settles; .finally() resets on BOTH arms (no dead button).
+      careBtn.addEventListener('click', () => {
+        if (this.#pending) return;
+        this.#pending = true;
+        careBtn.disabled = true;
+        void Promise.resolve(this.#callbacks.onCare(mon.monsterId))
+          .finally(() => {
+            this.#pending = false;
+            careBtn.disabled = false;
+          })
+          .catch(() => {
+            /* feedback is the caller's responsibility; swallow to avoid an
+               unhandled rejection if a caller hands back a rejecting promise */
+          });
+      });
       actions.appendChild(careBtn);
 
       for (const item of items) {

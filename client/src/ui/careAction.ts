@@ -1,0 +1,62 @@
+// ui/careAction.ts — the care-button decision core (feel-polish D1, ADR-0159).
+//
+// WHY THIS MODULE EXISTS: `onCare` used to live inline in main.ts, which is
+// coverage-excluded and whose wiring closures are not exported — so the ADR's
+// central claim ("the await genuinely reflects the server outcome, so the
+// confirmation can never lie") was only ever checkable by string-scanning
+// main.ts, which red-team defeated twice (an optimistic pre-await 'Cared!' and a
+// quote-swapped dead-decoy revert). The whole decision therefore lives HERE:
+// exported, coverage-measured, and tested directly over injected fakes
+// (careAction.test.ts). main.ts keeps only the adapter that binds the real
+// connection and the real overlay to these two dependencies.
+//
+// No DOM, no SDK, no clock, no globals — the function touches nothing but its
+// injected deps, so the ordering property is provable without a browser.
+import { reduceErrorMessage } from './statusModel';
+
+export interface CareActionDeps {
+  /**
+   * Invokes the `care` reducer. Returns the SDK promise that settles on the
+   * server's keyed TransactionUpdate, or `undefined` when the link is
+   * frozen/disconnected and no call was made at all (ADR-0085 A1: a call against
+   * a dead connection is silently queued and its promise never settles).
+   */
+  readonly callCare: () => Promise<unknown> | undefined;
+  /** Renders a message on the raising overlay's feedback line. */
+  readonly showFeedback: (message: string) => void;
+}
+
+/** Success confirmation — the EARS "visible confirmation" for a committed care. */
+const CARED_MESSAGE = 'Cared!';
+/** Frozen/disconnected link: no reducer call happened, so this is NOT a success. */
+const DISCONNECTED_MESSAGE = 'disconnected — try again';
+
+/**
+ * Run one care click end to end and report EXACTLY ONE outcome message.
+ *
+ * Ordering is the load-bearing property: `showFeedback` is never called before
+ * the reducer promise settles, so a rejection (CARE_COOLDOWN_MS is 6 h — most
+ * real clicks ARE rejections) can never be preceded by a false 'Cared!'.
+ *
+ * `monsterId` is part of the click identity the caller binds into `callCare`; it
+ * is not consumed here (the closure already carries it), but it stays on the
+ * signature so the call site reads as "care for THIS monster".
+ */
+export async function performCare(deps: CareActionDeps, _monsterId: bigint): Promise<void> {
+  const inFlight = deps.callCare();
+  // Branch BEFORE awaiting: `await undefined` resolves without throwing, so a
+  // frozen link would otherwise fall straight through to the success arm and
+  // report a call that never happened.
+  if (inFlight === undefined) {
+    deps.showFeedback(DISCONNECTED_MESSAGE);
+    return;
+  }
+  try {
+    await inFlight;
+    deps.showFeedback(CARED_MESSAGE);
+  } catch (err) {
+    // reduceErrorMessage passes SenderError reasons through and collapses
+    // InternalError to a generic line — raw err.message is never shown.
+    deps.showFeedback(reduceErrorMessage(err, 'care'));
+  }
+}
