@@ -51,15 +51,17 @@ export function parseDevLogLevel(raw: string | undefined): DevLogLevel {
 
 /**
  * Shell-facing resolver with the fail-loud asymmetry INVERTED relative to pt-a1's
- * resolveConnectionConfig (§A3, ADR-0157 §2): rethrow in DEV, degrade to 'off' plus one
- * `warn` in PROD. The eager resolve sits at main.ts module scope, BEFORE the onerror /
- * unhandledrejection listeners are registered, so a throw there would blank the whole
- * playtest session and kill the F9 bug-bundle path built to diagnose exactly that.
- * Fail loud where it is free; degrade safely where it is expensive.
+ * resolveConnectionConfig (§A3, ADR-0157 §2): rethrow in DEV, degrade to 'off' plus exactly
+ * one call to the INJECTED `warn` sink in PROD (main.ts wires that sink to console.error —
+ * this module never names a sink of its own). The eager resolve sits at main.ts module
+ * scope, BEFORE the onerror / unhandledrejection listeners are registered, so a throw there
+ * would blank the whole playtest session and kill the F9 bug-bundle path built to diagnose
+ * exactly that. Fail loud where it is free; degrade safely where it is expensive.
  */
 export function resolveDevLogLevel(
   raw: string | undefined,
   isDev: boolean,
+  /** The misconfiguration sink. Injected — main.ts passes console.error. */
   warn: (msg: string) => void,
 ): DevLogLevel {
   try {
@@ -133,10 +135,21 @@ export function makeSendLogger(
  *  memoized so `w.reducers.enqueueMove` has stable identity across the movement hot path
  *  (~5 reads/second). Non-function properties pass through raw and unlogged. */
 function wrapReducers(rawReducers: object, log: SendLogger): object {
+  // ASSUMPTION (true today): every OWN property of `rawReducers` is set once and never
+  // reassigned — the SDK builds the object in #makeReducers and assigns `reducers` once in
+  // the __DbConnectionImpl constructor (db_connection_impl.ts:316/376). The memo captures
+  // `value` at first read, so a later reassignment would keep invoking the stale closure.
   const memo = new Map<PropertyKey, unknown>();
   return new Proxy(rawReducers, {
     get(target, prop): unknown {
       const value = Reflect.get(target, prop, target);
+      // INHERITED members pass through RAW and unlogged. The SDK builds `reducers` as a
+      // plain `{}` literal (db_connection_impl.ts:376 — #makeDbView at :360 uses
+      // Object.create(null), #makeReducers does not), so toString / hasOwnProperty /
+      // valueOf / constructor are all reachable FUNCTIONS. A typeof-only test would wrap
+      // them and fabricate lines like `-> hasOwnProperty ["enqueueMove"]` in the one
+      // artifact whose whole purpose is to be a trustworthy record of what the client sent.
+      if (!Object.hasOwn(target, prop)) return value;
       if (typeof value !== 'function') return value;
       const cached = memo.get(prop);
       if (cached !== undefined) return cached;

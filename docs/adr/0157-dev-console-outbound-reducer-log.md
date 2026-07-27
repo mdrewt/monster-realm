@@ -164,8 +164,8 @@ build`), measuring `client/dist/assets/index-*.js`:
 | | raw | gzip -9 |
 |---|---|---|
 | baseline (`d66e867`) | 647,531 B | 142,501 B |
-| with this slice | 649,741 B | 143,078 B |
-| **delta** | **+2,210 B (+0.34 %)** | **+577 B (+0.40 %)** |
+| with this slice | 649,765 B | 143,095 B |
+| **delta** | **+2,234 B (+0.34 %)** | **+594 B (+0.42 %)** |
 
 The gzip delta — what actually ships — is well inside the 1 KB bar registered in the plan. The raw
 delta is **162 bytes over** the 2 KB raw bar that same plan registered; recorded here rather than
