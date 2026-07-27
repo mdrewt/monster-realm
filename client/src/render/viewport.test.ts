@@ -73,12 +73,20 @@ function visibleTiles(vs: { effectiveW: number; effectiveH: number }): number {
 describe('viewport constants: the clamp window is well-formed', () => {
   it('BITES: 1 <= MIN_VISIBLE_TILES <= TARGET_VISIBLE_TILES <= MAX_VISIBLE_TILES', () => {
     // These three are Drew-tunable FEEL numbers (spec:58 — "EARS use them
-    // symbolically so remain testable at any value"). This test exists so a bad
-    // retune fails HERE with a readable message instead of deep inside a
-    // property test whose counterexample says nothing about why.
-    // Kills: a retune that inverts MIN/MAX (the admissible deviceScale window
-    // becomes empty for every input and `min(Dhi, max(Dlo, D0))` returns the
-    // MAX clamp unconditionally), or a MIN of 0 (division by zero in Dhi).
+    // symbolically so remain testable at any value").
+    //
+    // HONEST SCOPE — this is a READABLE-FAILURE GUARD, not a mutation tooth.
+    // It kills no implementation mutant: it constrains the constants, not the
+    // algorithm. Its whole job is that an inverted or zero retune fails HERE,
+    // naming the offending constant, instead of surfacing as an inscrutable
+    // fast-check counterexample inside P-MAX/P-MIN (or as a silent division by
+    // zero in `Dhi = floor(S / MIN)`).
+    //
+    // Related honest note: brute-forcing (MIN, TARGET, MAX) against this whole
+    // suite shows the deterministic teeth pin TARGET = 11 and MAX = 16 uniquely,
+    // but leave MIN undetermined over {1..9} — `MIN_VISIBLE_TILES` has NO
+    // discriminating tooth anywhere in this file, because the MIN clamp `Dhi`
+    // is non-binding at the shipped constants (plan residual 4).
     expect(MIN_VISIBLE_TILES).toBeGreaterThanOrEqual(1);
     expect(TARGET_VISIBLE_TILES).toBeGreaterThanOrEqual(MIN_VISIBLE_TILES);
     expect(MAX_VISIBLE_TILES).toBeGreaterThanOrEqual(TARGET_VISIBLE_TILES);
@@ -184,6 +192,16 @@ describe('A1b+A2: degenerate input is normalized to documented fallbacks (never 
       expect(viewportScale(1920, bad, 1).cssH).toBe(1);
       expect(appInitOptions(bad, 1080, 1, 0).width).toBe(1);
       expect(appInitOptions(1920, bad, 1, 0).height).toBe(1);
+      // Kills: NORMALIZE-THE-ECHO-BUT-NOT-THE-MATH — an impl that echoes the
+      // normalized `cssW`/`cssH` (so the four assertions above pass) while the
+      // scale body still reads the RAW arguments:
+      //     const shorterCss = Math.min(cssW, cssH);   // raw, not cssWN/cssHN
+      // That mutant returns deviceScale/stageScale/effectiveW = NaN for NaN
+      // input (`stage.scale.set(NaN)` = a blank renderer) and deviceScale
+      // 5.68e+305 for 1e308 — which passes `Number.isInteger`, so the
+      // postcondition loop below does not catch it either. Every BAD_CSS entry
+      // normalizes to cssWN = cssHN = 1, so S = 1/32 and deviceScale is 1.
+      expect(viewportScale(bad, bad, 1).deviceScale).toBe(1);
     }
 
     // --- cssW / cssH: the accepted bounds are INCLUSIVE ----------------------
@@ -238,8 +256,10 @@ describe('A3: shorter-axis visible tiles are clamped into [MIN, MAX]', () => {
     // Kills: the clamp-the-FLOAT-then-round implementation
     // (`round(clamp(idealCssScale, …) * dpr)`), which keeps Number.isInteger
     // green, reproduces the whole 1920x1080 table, and violates P-MAX exactly
-    // here. Kills an unclamped `max(1, round(S/TARGET))`. Kills a MIN clamp
-    // applied with the wrong precedence (`max(Dlo, min(Dhi, D0))` order swapped).
+    // here. Kills an unclamped `max(1, round(S/TARGET))`.
+    // NOT claimed: swapping the clamp order to `max(Dlo, min(Dhi, D0))` is the
+    // median identity and is EQUIVALENT whenever Dlo <= Dhi — which holds by
+    // construction (`Dhi = max(Dlo, …)`). No test can kill it, so none claims to.
     expect(viewportScale(1024, 512, 1).deviceScale).toBe(1);
     expect(viewportScale(1024, 513, 1).deviceScale).toBe(2);
 
@@ -333,8 +353,13 @@ describe('A4: deviceScale is an integer >= 1; stageScale = deviceScale/dpr', () 
     // This postcondition is the whole point of "device-integer crisp": one source
     // texel must map to a WHOLE number of device pixels.
     // Kills: clamping/rounding the FLOAT stageScale and never producing an
-    // integer at all; kills a missing `max(1, …)` (deviceScale 0 -> stageScale 0
-    // -> a blank stage, and a division by zero in effectiveW).
+    // integer at all.
+    // NOT claimed: deleting the `max(1, …)` in D0. Given the normalizer's lower
+    // bounds, `Dlo = max(1, ceil(S/MAX))` is already >= 1 and the final
+    // `max(Dlo, D0)` re-imposes the floor, so that mutant is EQUIVALENT. The
+    // `max(1, …)` is defence-in-depth against a future loosened normalizer (a
+    // deviceScale of 0 would mean stageScale 0 and a division by zero in
+    // effectiveW) — the `>= 1` assertion documents the invariant, not a kill.
     fc.assert(
       fc.property(cssArb, cssArb, dprArb, (cssW, cssH, dpr) => {
         const vs = viewportScale(cssW, cssH, dpr);

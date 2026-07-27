@@ -223,6 +223,25 @@ describe('FollowCamera A6: fractional effective viewport (cssPx / stageScale)', 
     const off = cam.offsetFor(5, 3, 1366 / 1.5, 768 / 1.5, 10, 7);
     expect(off.x).toBe(-295.3333333333333);
     expect(off.y).toBe(-144);
+
+    // Fractional viewport on the SCROLL branch: the CLAMP BOUND must stay fractional too.
+    // Both axes above land on the CENTER branch, and every other scroll-branch test in this
+    // file passes an INTEGER view (160/112, 320/224, 256/64, integer fast-check generators),
+    // so without this line `mapPx - view` is never once evaluated with a fractional view.
+    // Widen the map to 40 tiles so x scrolls against the same 910.666… viewport:
+    //   mapPxW = 40*32 = 1280 >= 910.6666666666666 → SCROLL branch
+    //   raw = (39+0.5)*32 - 910.6666666666666/2 = 1264 - 455.3333333333333 = 808.6666666666667
+    //   max = 1280 - 910.6666666666666 = 369.33333333333337  (exact in doubles: both operands
+    //         are multiples of 2^-43 and the difference fits in 53 bits; the shortest
+    //         round-tripping decimal is 369.33333333333337 — note 369.3333333333334 is a
+    //         DIFFERENT double, just past the half-ulp, so this literal is load-bearing)
+    //   raw > max → clamped to max.
+    // Kills: `mapPx - Math.floor(view)` (or any round/ceil of the view) in the clamp bound —
+    // it yields 370, letting up to frac(effW) source px (~6 CSS px at stageScale 6) of
+    // FLOOR_COLOR show past the map edge. That is a direct violation of spec A6 "no pixels
+    // outside the map edge are shown" and anti-pattern §6.4, and it survives every other
+    // test in this file.
+    expect(cam.offsetFor(39, 3, 1366 / 1.5, 768 / 1.5, 40, 7).x).toBe(369.33333333333337);
   });
 });
 
@@ -450,6 +469,14 @@ describe('FollowCamera M12.5d-4: centers on tile CENTER (+0.5 tile offset)', () 
     // clamp expression is simply the wrong law — it would false-RED a CORRECT impl, which
     // no implementer could fix without editing a gating test. The mirrored expression is
     // legitimate here only because it is the ONE-branch law on this restricted domain.
+    //
+    // ⚠ NOT THE PRIMARY SCROLL-BRANCH TOOTH. This property is a formula MIRROR of the
+    // production expression: an implementer who copies the expected-value lines below into
+    // camera.ts passes it BY CONSTRUCTION. It does bite in practice (it kills the missing
+    // lower clamp, the missing upper clamp, the tile-corner anchor and the axis copy-paste),
+    // but the load-bearing scroll-branch teeth are the hand-computed deterministic cases
+    // (C1a, C1c, N2, N5) and the formula-independent range property above — judge the scroll
+    // branch by THOSE, not by this one.
     fc.assert(
       fc.property(
         fc.integer({ min: 20, max: 40 }), // mapW  → mapPxW ∈ [640, 1280]
