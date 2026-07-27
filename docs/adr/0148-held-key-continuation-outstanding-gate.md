@@ -5,6 +5,7 @@
 **Slice:** nh2 (M-postgate-netcode-hardening — movement input responsiveness; EARS nh2-1, nh2-2, nh2-3)
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** 0158
 **Subsystems:** client-ui, movement-netcode
 **Decision:** Both held-key continuation emitters gate on a new pure `Predictor.outstandingSteps === 0`, and the rAF frame body drains before it re-issues. A not-emit fix: nothing is cancelled and no reducer is called.
 
