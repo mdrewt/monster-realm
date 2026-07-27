@@ -75,6 +75,9 @@ fields — ADR-0015), **encounter-privacy** (private encounter table, no project
 no client accessor, spawn weights never leak — ADR-0044).
 **Knowledge-bundle drift** (M8.95, ADR-0080): committed `docs/knowledge/` == fresh
 `scripts/okf-export.mjs --check`; a stale or malformed concept fails CI.
+**Dev-observability gating** (dev-observability, ADR-0157): `net/devLog.ts` carries zero
+runtime imports, no bareword `console`, no `globalThis`/`window` and no ring reference —
+so the outbound dev log structurally cannot reach the F9 bug bundle or own a second sink.
 **Cache-freshness** (M-infra-a, ADR-0043): no shared `CARGO_TARGET_DIR`, `rust-cache`
 wired without `cache-all-crates`, distinct per-job `prefix-key`, sccache +
 `CARGO_INCREMENTAL=0` co-located, no committed `.cargo` rustc-wrapper, nextest +
@@ -669,6 +672,7 @@ Client-only observability layer extending the M13.5b error seam for the playtest
 - **Event ring (`ui/eventRing.ts`):** capped FIFO (`EVENT_RING_CAP=256`, oldest-evicted) of the H1/H2/H3 proxy `PlaytestEvent` union (identity-hex/ids/numbers only, no PII); monotonic `tSeq` + injected clock (deterministic under test). 6 core events wired in main.ts (connect/disconnect/zoneChange/battleStart/battleEnd/rankedMatch via dedicated unconditional `onBatchApplied` latches); 8 correlation-heavy variants pre-committed but parked to pt-b1b.
 - **Error surface (`ui/errorRing.ts` + `errorOverlayModel.ts`/`errorOverlayView.ts`):** window `error`/`unhandledrejection` + augmented `reportError` funnel through total `normalizeError` (cap `ERROR_MSG_MAX_LEN=512`, `ERROR_RING_CAP=64`) into a self-mounting (`#mr-error-overlay`), non-blocking (`pointer-events:none`, off the movement-suppression list), `textContent`-only overlay; re-entrancy-guarded.
 - **F9 bug bundle (`ui/bugBundle.ts`, pure):** one keypress → Blob download of `{buildSha, identity, zone, event ring, error ring, non-PII key-store allowlist}`; **no network** (bugBundle.ts imports nothing from `net/*`; bigint-total serializer; CSP-fallback to console), so it works when the connection is the bug.
+- **Outbound dev log (`net/devLog.ts`, pure — dev-observability, ADR-0157):** `VITE_MR_DEVLOG` (`off` | `send` | `send-move`, default `off`) gates a Proxy installed at `build()`'s return in `net/connection.ts`, logging every outbound reducer call (name + args) to `console.log`; `send` excludes the `enqueueMove` movement flood, `send-move` includes it. **Strict identity when disabled** (`wrapReducerLogging(c, undefined) === c`) so the default production build allocates no Proxy and emits nothing. Deliberately **console-only — never the event ring or the F9 bundle**: reducer args carry player free text (`joinGame`/`setNickname`/`setProfileName`) and the bundle is a shared artifact bound by the pt-b1 no-PII rule. Fail-loud asymmetry is **inverted** vs pt-a1: an unknown token throws in dev but degrades to `off` + one `console.error` in prod, because the eager module-scope resolve runs before the error listeners exist and a throw there would blank the session. Enforced by `evals/dev-observability-gating.eval.mjs` (zero runtime imports ⇒ the module structurally cannot reach the ring).
 
 ## Evolution/Fusion content (`game-core/src/evolution/` + `server-module/src/evolution.rs`, M10a — ADR-0060/0061)
 
