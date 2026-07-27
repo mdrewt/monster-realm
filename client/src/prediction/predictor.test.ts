@@ -1176,7 +1176,7 @@ describe('M8.8e §C: divergence re-issue + keyup-not-stuck (composition)', () =>
 
     // User presses East.
     const held = new HeldDirections();
-    held.press('East');
+    held.press('East', 0);
 
     // Enqueue + drain: predicted advances to x=6.
     const intent1 = p.enqueue(east());
@@ -1224,7 +1224,7 @@ describe('M8.8e §C: divergence re-issue + keyup-not-stuck (composition)', () =>
     p.reconcile(baseline(5, 5, now - 2 * STEP_MS), [], 0, now);
 
     const held = new HeldDirections();
-    held.press('East');
+    held.press('East', 0);
 
     const intent1 = p.enqueue(east());
     expect(intent1).toBeDefined();
@@ -1270,7 +1270,7 @@ describe('M8.8e §C: divergence re-issue + keyup-not-stuck (composition)', () =>
     p.reconcile(baseline(5, 5, now - 2 * STEP_MS), [], 0, now);
 
     const held = new HeldDirections();
-    held.press('East');
+    held.press('East', 0);
 
     // Enqueue + drain: one East move applied, predicted → x=6, queue empty.
     const intent1 = p.enqueue(east());
@@ -2290,6 +2290,15 @@ interface SimEvent {
   readonly run: (now: number) => void;
 }
 
+// [mvi] SCOPE NOTE — this runLoop model is DELIBERATELY PRE-mvi and stays that way.
+// It gates the nh2/ADR-0148 `outstandingSteps` invariants (bounded in-flight work,
+// drain-first ordering, no press-teleport), so its frame body keeps reading the UNGATED
+// `held.active()` — introducing the hold-commit threshold here would change what these
+// teeth measure without adding a single new guarantee. The `press(dir, now)` argument
+// below is the mechanical migration of the new required parameter and nothing more.
+// The AUTHORITATIVE post-mvi model of the frame body + the reconcile divergence site
+// (with `held.committedActive(now)` at both emitters) is
+// `client/src/prediction/movementSim.test.ts`.
 function runLoop(opts: RunLoopOptions): RunLoopResult {
   const stepMs = opts.stepMs ?? STEP_MS;
   const cap = opts.cap ?? 2;
@@ -2479,7 +2488,7 @@ function runLoop(opts: RunLoopOptions): RunLoopResult {
   for (const inp of opts.script) {
     at(inp.at, PRIO_INPUT, (now) => {
       if (inp.kind === 'press') {
-        held.press(inp.dir);
+        held.press(inp.dir, now);
         emit(inp.dir, now); // keydown emits ONCE, UNGATED (it never consults the gate)
       } else {
         held.release(inp.dir);

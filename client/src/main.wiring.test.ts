@@ -3085,3 +3085,300 @@ describe('★ main.ts wiring (ADR-0157): W-DEVLOG-EAGER — module-scope resolve
     }
   });
 });
+
+// ===========================================================================
+// mvi (movement-investigation) — hold-commit threshold wiring
+// ===========================================================================
+//
+// SOURCE OF TRUTH: the movement-investigation spec. THREE source-level changes, all in
+// main.ts, all one-liners:
+//   M1  keydown movement branch (:1096): `held.press(dir);`
+//         → `held.press(dir, performance.now());`
+//       The FIRST step (`step(dir);`) stays UNGATED — the whole point of the fix is that
+//       a tap still moves exactly one tile, immediately.
+//   M2  reconcile divergence emitter (:449) and
+//   M3  rAF frame-loop emitter (:2137): `reissueDir(held.active(), predictor.lastQueuedDir)`
+//         → `reissueDir(held.committedActive(now), predictor.lastQueuedDir)`
+//       BOTH sites, or the defect survives via whichever one was missed.
+//   `const held = new HeldDirections();` (:153) stays ARGLESS — the shipped threshold is
+//   the module default HOLD_COMMIT_MS.
+//
+// WHY a source scan at all: the BEHAVIOUR is proven node-only in
+// client/src/prediction/movementSim.test.ts, over a model of exactly these lines. That
+// model is worthless if main.ts does not actually carry the shape it models — main.ts is
+// not importable under vitest (module-scope DOM/PIXI/wasm side effects), so this file is
+// the only thing that binds the two together.
+//
+// ANCHOR DISCIPLINE (nh1 post-mortem, unchanged): every region is needle-bounded via
+// bodyRegion/regionOrThrow, every anchor's uniqueness in main.ts is asserted inline with
+// expectUniqueAnchor, and no fixed-width windows. No `new RegExp` — indexOf/includes/split
+// only; whole-file counts use split(), never a global regex.
+//
+// INHERITED UN-KILLABLE CLASS (disclosed exactly as W-NH2-GATE-WIRED does; unchanged by
+// this slice and NOT claimed as closed):
+//   (a) `if (true || <predicate>)` — and symmetrically any `|| <other predicate>` appended
+//       after a required prefix: the text matches, the semantics are reverted. Reachable
+//       only by EVALUATING the expression.
+//   (b) a SECOND, ungated emitter added BELOW a region end (outside both anchors), or a
+//       second `store.onBatchApplied` listener that re-issues ungated.
+// The `held.active(` === 0 whole-file count in W-MVI-COMMITTED-WIRED narrows (b) for the
+// specific mutant "a new emitter grabs the UNGATED accessor" (that is the ADR-0148
+// residual (b) this slice partially closes), but it cannot see an emitter that calls
+// `committedActive` and then ignores the result, nor one that re-derives held state some
+// other way. Closing (a)/(b) properly needs the parked nh2-e2e Playwright tooth — do not
+// read these teeth as proving their absence.
+
+/** The keydown MOVEMENT branch. START is the two-line `const dir = KEY_DIR[e.code];` +
+ *  `if (dir !== undefined) {` pair, which is what makes it unique: the SAME `const dir =`
+ *  line also opens the keyup handler (~:1108), but there it is followed by
+ *  `if (dir !== undefined) held.release(dir);` — a different second line. END is the Space
+ *  branch that immediately follows the movement branch. Deliberately NOT reusing
+ *  W-NH1-SUPPRESS's anchors ('Suppress movement input while an overlay is open' /
+ *  'const dir = KEY_DIR[e.code];'): sharing an anchor couples two teeth's regions, and this
+ *  one must bound the branch BODY, not the block above it.
+ *  BRITTLENESS (accepted + disclosed): the START needle carries the branch's two-space
+ *  indentation, so a re-indentation of the keydown listener reds this tooth with a loud
+ *  `regionOrThrow` throw rather than a silent pass. Correct the needle FROM THE SPEC if
+ *  that ever happens — never widen it to a bare `const dir =`, which matches the keyup
+ *  handler too. */
+const MVI_KEYDOWN_START = 'const dir = KEY_DIR[e.code];\n  if (dir !== undefined) {';
+const MVI_KEYDOWN_END = "if (e.code === 'Space') {";
+
+/** Count NON-OVERLAPPING occurrences of `needle` in `src` via split (no `new RegExp`). */
+function countOccurrences(src: string, needle: string): number {
+  return src.split(needle).length - 1;
+}
+
+describe('★ main.ts wiring (mvi): the hold-commit threshold is wired into BOTH continuation emitters', () => {
+  it('★ W-MVI-COMMITTED-WIRED BITES: both re-issue sites call reissueDir(held.committedActive(now), predictor.lastQueuedDir) and held.active( is gone', () => {
+    // RED AT AUTHORING TIME: `held.committedActive(` appears 0 times in main.ts and
+    // `held.active(` appears twice (:449 and :2137). Every assertion below fails on the
+    // unfixed source.
+    //
+    // WRONG IMPL KILLED (1): the unfixed code — a held key becomes eligible for
+    // CONTINUATION the instant it goes down, so the first frame after the server's
+    // movement_tick drain is observed re-issues a second step. Inside a 50-150ms tap that
+    // is a coin flip on the tick phase, which is Drew's r2 "one tap moves 2 tiles".
+    // WRONG IMPL KILLED (2): fixing ONE site only. The rAF loop is the obvious emitter, but
+    // the reconcile-divergence site emits the identical extra step on any authoritative
+    // reposition landing mid-tap. Both regions are asserted separately, so a half fix reds
+    // (movementSim S9a/S9b are the behavioural halves of this same pair).
+    // WRONG IMPL KILLED (3): calling committedActive with the WRONG clock — the CONTIGUOUS
+    // needle pins the argument to the frame's own `now`. `committedActive(Date.now())`
+    // compares a wall-clock instant against a performance.now() press stamp (an offset of
+    // ~1.7e12 ms), so every held key would read as "committed since the Unix epoch" and the
+    // fix would be a no-op. `committedActive()` (argless) would not type-check, but
+    // `committedActive(performance.now())` would — and would silently re-read the clock
+    // AFTER the drain, which is not the frame's decision time.
+    // WRONG IMPL KILLED (4) — THE RESIDUAL THIS SLICE PARTIALLY CLOSES (ADR-0148 residual
+    // (b)): a future third emitter that grabs the UNGATED accessor. `held.active(` === 0
+    // over the WHOLE FILE means the ungated accessor has no call site left at all, so such
+    // an emitter cannot be written without also reding this tooth. (It does NOT see an
+    // emitter that calls committedActive and ignores the answer — see the disclosure above.)
+    const src = readMainTs();
+    expectUniqueAnchor(src, NH2_RECONCILE_START);
+    expectUniqueAnchor(src, NH2_RECONCILE_END);
+    expectUniqueAnchor(src, NH2_RAF_START);
+    expectUniqueAnchor(src, NH2_RAF_END);
+
+    const emitter = 'reissueDir(held.committedActive(now), predictor.lastQueuedDir)';
+
+    const reconcileRegion = squashWhitespace(
+      bodyRegion(src, NH2_RECONCILE_START, NH2_RECONCILE_END),
+    );
+    // Anti-vacuity: prove the region still bounds a held-dir re-issue site before judging it.
+    expect(
+      reconcileRegion.includes('reissueDir('),
+      'the reconcile-divergence region must contain the held-dir re-issue call reissueDir( — ' +
+        'if it does not, the anchors no longer bound the block this tooth is about',
+    ).toBe(true);
+    expect(
+      reconcileRegion.includes(emitter),
+      `the reconcile-divergence re-issue must read the COMMITTED held dir: \`${emitter}\`. ` +
+        'Without it, a server reposition landing during a 50-150ms tap re-commits the tapped ' +
+        'direction and the player moves a second tile (movementSim S9b)',
+    ).toBe(true);
+
+    const rafRegion = squashWhitespace(bodyRegion(src, NH2_RAF_START, NH2_RAF_END));
+    expect(
+      rafRegion.includes('reissueDir('),
+      'the rAF held-key re-issue region must contain the held-dir re-issue call reissueDir( — ' +
+        'if it does not, the anchors no longer bound the block this tooth is about',
+    ).toBe(true);
+    expect(
+      rafRegion.includes(emitter),
+      `the rAF held-key continuation must read the COMMITTED held dir: \`${emitter}\`. This is ` +
+        "the primary site of Drew's r2 double-move: the frame after the drain snapshot lands " +
+        're-issues a step while the tap key is still physically down (movementSim S1)',
+    ).toBe(true);
+
+    // [red-team hardening] occurrence-count discipline: EXACTLY ONE `reissueDir(` call per
+    // region. `bodyRegion` strips comments but NOT string/template-literal contents, so a dead
+    // decoy such as `` const _sig = `reissueDir(held.committedActive(now), predictor.lastQueuedDir)`; ``
+    // sitting next to a REVERTED real call satisfies the `.includes(emitter)` checks above by
+    // itself while the actual re-issue reads the ungated accessor via bracket-notation
+    // (`held['active']()`), which ALSO dodges the whole-file `held.active(` ban below (no
+    // literal dot-notation substring). Any decoy that reproduces the emitter text necessarily
+    // reproduces its `reissueDir(` prefix too, so a lone "region must contain the emitter"
+    // check cannot see the duplication — this count can. PoC verified (scratch, not committed):
+    // both sites reverted to `held['active']()` plus one decoy string per region passed every
+    // other assertion in this tooth (the whole 135-test gating suite stayed green) before this
+    // check was added.
+    expect(
+      countOccurrences(reconcileRegion, 'reissueDir('),
+      'the reconcile-divergence region must contain EXACTLY ONE reissueDir( call — a second ' +
+        'occurrence (e.g. a decoy string literal duplicating the emitter text) means the ' +
+        'emitter check above can be satisfied by dead data while the REAL call reverts',
+    ).toBe(1);
+    expect(
+      countOccurrences(rafRegion, 'reissueDir('),
+      'the rAF held-key re-issue region must contain EXACTLY ONE reissueDir( call — same ' +
+        'decoy-string closure as the reconcile-region count above',
+    ).toBe(1);
+
+    // WHOLE-FILE counts (comment-stripped, so prose cannot credit or defeat them).
+    const live = stripLineComments(src);
+    expect(
+      live.length,
+      'comment-stripped main.ts collapsed to under half its raw size — the block-comment strip ' +
+        'bailed early (unterminated `/*`), so these whole-file counts would cover only a prefix',
+    ).toBeGreaterThan(src.length / 2);
+    expect(
+      countOccurrences(live, 'held.committedActive('),
+      'main.ts must have EXACTLY TWO held.committedActive( call sites — the rAF continuation ' +
+        'and the reconcile-divergence continuation. Fewer means a site was missed; more means ' +
+        'a third continuation emitter exists that no behavioural tooth in this slice models',
+    ).toBe(2);
+    expect(
+      countOccurrences(live, 'held.active('),
+      'main.ts must have ZERO held.active( call sites after this slice: the UNGATED accessor ' +
+        'is what re-issues a continuation for a key that has been down for 2ms. Leaving a live ' +
+        'call site (or adding one back later) is exactly the ADR-0148 residual (b) mutant — a ' +
+        'second emitter that reaches past the gate. HeldDirections.active() itself stays ' +
+        'exported and unit-tested; it just has no call site in the integration loop',
+    ).toBe(0);
+  });
+
+  it('★ W-MVI-KEYDOWN-UNGATED BITES: the keydown movement branch is `step(dir); held.press(dir, performance.now());` — first step UNGATED, press timestamped', () => {
+    // RED AT AUTHORING TIME: main.ts:1096 reads `held.press(dir);` with no timestamp.
+    //
+    // WRONG IMPL KILLED (1): GATING THE FIRST STEP. The single most tempting wrong fix is to
+    // move the threshold onto the keydown itself ("don't move until the key has been held
+    // 150ms"). That trades a rare double-move for 150ms of input lag on EVERY tap — the
+    // exact regression ADR-0013's immediate-first-step design exists to avoid. The negative
+    // assertions below (no `committedActive`, no `outstandingSteps` in this region) are what
+    // make that unwriteable here.
+    // WRONG IMPL KILLED (2): `held.press(dir, e.timeStamp)`. It type-checks, it looks more
+    // "correct" than reading the clock, and it is a silent revert: e.timeStamp is 0 for
+    // synthetic events and is measured from a DIFFERENT origin than performance.now(), so
+    // `now - pressedAtMs` reads as "held since page load" and every key commits instantly.
+    // WRONG IMPL KILLED (3): `held.press(dir, Date.now())` — a wall-clock instant compared
+    // against performance.now() at the emitters; ~1.7e12ms of "hold time", same instant
+    // commit, same defect.
+    // WRONG IMPL KILLED (4): dropping the press entirely (`step(dir);` alone) — continuous
+    // movement dies silently; the contiguous two-statement needle catches it.
+    //
+    // The needle is checked CONTIGUOUSLY (comment-stripped, whitespace-squashed) so the two
+    // statements must be adjacent: nothing may be interposed between the immediate step and
+    // the press that records when it happened.
+    const src = readMainTs();
+    expectUniqueAnchor(src, MVI_KEYDOWN_START);
+    expectUniqueAnchor(src, MVI_KEYDOWN_END);
+    const region = squashWhitespace(bodyRegion(src, MVI_KEYDOWN_START, MVI_KEYDOWN_END));
+
+    // Anti-vacuity: prove the region really is the keydown movement branch.
+    expect(
+      region.includes('step(dir);'),
+      'the keydown movement region must contain the immediate first step `step(dir);` — if it ' +
+        'does not, these anchors no longer bound the branch this tooth is about',
+    ).toBe(true);
+
+    expect(
+      region.includes('step(dir); held.press(dir, performance.now());'),
+      'the keydown movement branch must be exactly `step(dir); held.press(dir, ' +
+        'performance.now());` — the immediate first step, then the press stamped with the ' +
+        'SAME clock the two continuation emitters read. e.timeStamp (0 in synthetic events, ' +
+        'different time origin) and Date.now() (wall clock) both make every key read as ' +
+        '"held since page load", which reverts the fix while type-checking cleanly',
+    ).toBe(true);
+
+    expect(
+      region.includes('committedActive'),
+      'the keydown movement branch must NOT consult committedActive: the FIRST step is ' +
+        'deliberately UNGATED (ADR-0013). Gating it would add 150ms of input lag to every ' +
+        'single tap — a far worse defect than the one being fixed',
+    ).toBe(false);
+    expect(
+      region.includes('outstandingSteps'),
+      'the keydown movement branch must NOT consult predictor.outstandingSteps either — the ' +
+        'nh2/ADR-0148 gate applies to the CONTINUATION emitters only. sendIntent already ' +
+        'declines an over-cap enqueue (ADR-0052); gating the keypress itself drops the ' +
+        "player's deliberate input on the floor",
+    ).toBe(false);
+  });
+
+  it('W-MVI-HELD-ARGLESS: `const held = new HeldDirections();` appears exactly once, with NO threshold argument (GREEN regression guard)', () => {
+    // GREEN REGRESSION GUARD — NOT red today, and labelled so deliberately (the W-NH2-NO-CANCEL
+    // precedent: mislabelling a green guard as RED is itself a defect). The argless line already
+    // exists on master; what this slice CHANGES is that `HeldDirections` gains an optional
+    // `holdCommitMs` constructor parameter, which is what makes the mutant below writeable for
+    // the first time. The guard is authored now so the threshold can never be forked at the one
+    // call site that ships.
+    //
+    // WRONG IMPL KILLED (1): `new HeldDirections(0)` — the threshold is disabled at the
+    // single call site that matters while heldKeys.ts still exports HOLD_COMMIT_MS = 150 and
+    // every unit tooth in heldKeys.test.ts (which constructs its own instances) stays green.
+    // movementSim.test.ts uses holdCommitMs=0 as its documented ANTI-VACUITY control, so the
+    // behavioural suite would stay green too. This is the one place that sees it.
+    // WRONG IMPL KILLED (2): any hand-tuned literal (`new HeldDirections(120)`) that forks
+    // the shipped threshold away from the one U-H8's budget pin protects.
+    // WRONG IMPL KILLED (3): a SECOND HeldDirections instance constructed elsewhere in
+    // main.ts (e.g. a per-view tracker) — two held-key stacks means one of them never sees
+    // keyup and the "exactly once" count reds.
+    const src = readMainTs();
+    const live = squashWhitespace(stripLineComments(src));
+    expect(
+      countOccurrences(live, 'const held = new HeldDirections();'),
+      'main.ts must construct the held-key tracker ARGLESS, exactly once: ' +
+        '`const held = new HeldDirections();`. The threshold SSOT is heldKeys.ts ' +
+        'HOLD_COMMIT_MS; passing a literal here forks it invisibly (`new HeldDirections(0)` ' +
+        'disables the whole fix while every other gate in this slice stays green)',
+    ).toBe(1);
+    expect(
+      countOccurrences(live, 'new HeldDirections('),
+      'main.ts must construct EXACTLY ONE HeldDirections — a second instance means keydown ' +
+        'and keyup (or the two continuation emitters) would read different held-key state',
+    ).toBe(1);
+  });
+
+  it('★ W-MVI-HELDKEYS-IMPORT-SEALED BITES: main.ts imports ONLY { HeldDirections, reissueDir } from heldKeys.ts, via exactly one static import', () => {
+    // RED-TEAM FINDING: a module-mutable "internal default" back door in heldKeys.ts — e.g. a
+    // `let`-based constructor default the class reads instead of `HOLD_COMMIT_MS` directly,
+    // plus an exported setter — is invisible to every OTHER tooth in this file and to
+    // heldKeys.test.ts / movementSim.test.ts, because neither test file ever imports or
+    // executes main.ts. A one-line addition to main.ts's import + one module-scope call
+    // (`__setSomeInternalDefault(0)`) would silently disable the entire hold-commit fix at
+    // runtime while every other assertion in this 135-test gating suite stays green.
+    // PoC verified in a scratch copy (not committed): heldKeys.ts exported
+    // `_internalDefaultHoldCommitMs` (a `let`, initialized from `HOLD_COMMIT_MS`) and
+    // `__setInternalDefaultHoldCommitMs`, the constructor default read the mutable `let`, and
+    // main.ts added `__setInternalDefaultHoldCommitMs(0)` at module scope — the full gating
+    // suite (heldKeys.test.ts + movementSim.test.ts + this file) passed 135/135.
+    // This tooth closes the main.ts-side half of that mutant by sealing the import surface:
+    // only `HeldDirections` and `reissueDir` may ever be pulled from heldKeys.ts, and only via
+    // one static import statement (no second import, no dynamic `import(...)`).
+    const src = readMainTs();
+    const exactImport = "import { HeldDirections, reissueDir } from './prediction/heldKeys';";
+    expect(
+      src.includes(exactImport),
+      `main.ts must import EXACTLY \`${exactImport}\` — no additional named imports (e.g. a ` +
+        'mutable internal-default setter) may be pulled in from heldKeys.ts',
+    ).toBe(true);
+    expect(
+      countOccurrences(src, "from './prediction/heldKeys'"),
+      'main.ts must import from ./prediction/heldKeys via exactly ONE static import statement ' +
+        '— a second import (or a dynamic import(...)) could pull in additional exports unseen ' +
+        'by the exact-match check above',
+    ).toBe(1);
+  });
+});
