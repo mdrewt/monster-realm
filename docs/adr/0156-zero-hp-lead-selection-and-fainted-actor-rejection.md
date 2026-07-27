@@ -227,6 +227,11 @@ attack, and buys a free switch that costs no turn). That raises the follow-up's 
 - **P6 — `BattleSide::has_conscious_member`** has no production callers once D1 lands (only
   test callers). Deleting a `pub` `game-core` method is an exported-symbol change and belongs
   in its own slice.
+- **P7 — no reducer-executing test harness.** `server-module/src/battle_tests.rs` proves
+  reducer behavior only by scanning `include_str!("battle.rs")`. Every server-side guard in
+  this repo therefore rests on string assertions. An integration harness that can execute a
+  reducer against a live `ReducerContext` would convert E2 and E3-layer-1 from structural to
+  behavioral proofs. Out of touch-set; the largest standing gap in this subsystem's gate.
 
 ## Amendment to ADR-0155
 
@@ -245,9 +250,24 @@ now pins as the recovery route.
 - Four `BattleSide { active: 0, .. }` literals in `battle.rs` become `with_lead` calls; the two
   in `pvp.rs` remain until P1.
 - Server-side gating tests for this slice are **source-scan** assertions: `battle_tests.rs` is
-  `include_str!`-based and there is no reducer-executing harness. Honest scope — the behavioral
-  proof for D1 lives in `game-core`, and the source scans assert both presence *and* absence
-  *and* per-function occurrence counts so a half-applied fix cannot pass.
+  `include_str!`-based and there is no reducer-executing harness. The behavioral proof for D1
+  lives in `game-core`. **Honest scope, measured rather than asserted:** an adversarial pass
+  built a tree in which this defect was fully intact and every server-side scan still passed,
+  via three evasions — a dead `let _ = …is_fainted();` binding, adopting `with_lead` and then
+  writing `side_a.active = 0;` (legal because `active` is still `pub` — residual P2), and
+  permuting `team` at the call site before passing it in. The scans were hardened against all
+  three (block-scoped `return Err` + audit assertions, a forbidden-needle set covering
+  `.active =` / `set_active(`, and argument pinning on `with_lead(team_a)`/`with_lead(team_b)`).
+  What remains true: **the scans detect a fix that was never started or was locally undone;
+  they cannot see through indirection into a differently-named helper.** The only complete
+  mechanical proof would be an integration test that starts a battle from a 0 HP slot-0 party
+  and reads back `battle.state.side_a.active`. That harness does not exist and is out of
+  touch-set — recorded as residual P7.
+- **The four `with_lead` call sites must stay inline** in `start_battle` / `begin_encounter`.
+  The scans assert a per-body call count of exactly 2 and walk per-call-site windows for the
+  audit assertion, so an otherwise-correct DRY `fn build_side(..)` helper would zero all of
+  them. This is a deliberate, recorded trade: argument-level teeth (which catch the silent
+  write-back corruption above) require call sites the scanner can see.
 
 ## EARS criteria → proof
 
