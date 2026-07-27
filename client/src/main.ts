@@ -36,6 +36,7 @@ import type { PvpAction } from './module_bindings/types';
 import { BUILD_INFO, formatBuildStamp } from './net/buildInfo';
 import { connect } from './net/connection';
 import { resolveConnectionConfig } from './net/connectionConfig';
+import { makeSendLogger, resolveDevLogLevel } from './net/devLog';
 import { AuthoritativeStore } from './net/store';
 import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
 import { HeldDirections, reissueDir } from './prediction/heldKeys';
@@ -116,6 +117,20 @@ const { uri: URI, db: DB } = resolveConnectionConfig(
   },
   import.meta.env.DEV,
 );
+// dev-observability (ADR-0157): resolve VITE_MR_DEVLOG at MODULE scope too, for the same
+// F-3 reason — the resolver RETHROWS in dev, and a throw from inside main() could be
+// swallowed by a try/catch there. Asymmetric on purpose (inverted vs pt-a1): dev rethrows,
+// prod degrades to 'off' with one console.error, because this line runs BEFORE the
+// window.onerror / unhandledrejection listeners below. `sendLogger` is undefined at level
+// 'off', which is what keeps wrapReducerLogging strict identity in the default prod build.
+// console.log, NOT console.debug (Chrome hides debug behind the Verbose level).
+const DEV_LOG_LEVEL = resolveDevLogLevel(
+  import.meta.env.VITE_MR_DEVLOG as string | undefined,
+  import.meta.env.DEV,
+  (m) => console.error(m),
+);
+const sendLogger = makeSendLogger(DEV_LOG_LEVEL, (line) => console.log(line));
+
 const ZONE_ID = 0;
 
 // Content is single-sourced from game-core via the wasm exports (never duplicated).
@@ -2017,6 +2032,10 @@ async function main(): Promise<void> {
     db: DB,
     name: 'Player',
     store,
+    // ADR-0157: undefined unless VITE_MR_DEVLOG is set — then the connection installs the
+    // outbound-log Proxy. Bare identifier by design (no inline sink: the ring must stay
+    // unreachable from the send path).
+    onSend: sendLogger,
     onReady: (id) => {
       identity = id;
       // pt-b1: record the connect edge (identity-hex is the allowed field, U-3).

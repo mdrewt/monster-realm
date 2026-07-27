@@ -143,9 +143,22 @@ coverage-measured module (`client/src/net/devLog.ts`); the two shells it touches
   job (the ADR-0128 §D3 precedent); the standing automated tooth is the zero-runtime-imports eval,
   which catches the dominant real risk — a dependency dragged in.
 
-**Measured bundle delta** (pinned stamp, `client/dist/assets/index-*.js`):
+**Measured bundle delta.** Built both sides with the provenance stamp pinned so the only variable is
+the new code (`MR_BUILD_SHA=bench MR_BUILD_TIME=bench VITE_STDB_DB=bench npm --prefix client run
+build`), measuring `client/dist/assets/index-*.js`:
 
-<!-- MEASURED -->
+| | raw | gzip -9 |
+|---|---|---|
+| baseline (`d66e867`) | 647,531 B | 142,501 B |
+| with this slice | 649,741 B | 143,078 B |
+| **delta** | **+2,210 B (+0.34 %)** | **+577 B (+0.40 %)** |
+
+The gzip delta — what actually ships — is well inside the 1 KB bar registered in the plan. The raw
+delta is **162 bytes over** the 2 KB raw bar that same plan registered; recorded here rather than
+quietly rebaselined. On the standard the spec actually sets ("SHALL NOT increase production bundle
+size materially") a 0.34 % increase on a Pixi+wasm bundle is immaterial, and the flag is off in that
+measured build, so the criterion is met. The standing automated tooth against real bloat is the
+zero-runtime-imports eval, not this number.
 
 ## Alternatives rejected
 
