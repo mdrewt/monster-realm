@@ -531,3 +531,105 @@ describe('connection.ts wiring (nh4): SDK-DRIFT — spacetimedb SDK still throws
     ).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// dev-observability (ADR-0157) — W-DEVLOG-WRAP. APPENDED block; nothing above is
+// modified. Same source-scan idiom + helpers as the nh4 gates above.
+//
+// SOURCE OF TRUTH: plan §A2/§A8 + §D (gate `W-DEVLOG-WRAP`), ADR-0157 §1.
+//
+// The outbound surface is 38 call sites, covered by exactly TWO wiring lines:
+//   1. `build()`'s RETURN — `return wrapReducerLogging(conn, opts.onSend);` AFTER
+//      `wireTables(conn);` (the inbound path must keep seeing the RAW conn). Because
+//      `current` is only ever assigned and returned by the `get conn()` accessor, the
+//      wrapped instance simply BECOMES the connection, so all 37 `conn.conn.reducers.*`
+//      sites in main.ts route through it with no per-read allocation.
+//   2. The one site that does NOT go through the getter: `joinGame` inside the
+//      subscription's onApplied (connection.ts:516), which calls the local raw `c`.
+//
+// RED AT AUTHORING TIME: `wrapReducerLogging` occurs ZERO times in connection.ts.
+//
+// WRONG IMPL KILLED: dropping EITHER site. Dropping (1) unlogs 37 of 38 call sites;
+// dropping (2) leaves the single most interesting call (the reconnect re-join, and the
+// one that carries the player name) silently invisible — a gap no unit test of devLog.ts
+// and no main.ts wiring gate can see.
+// ---------------------------------------------------------------------------
+
+describe('connection.ts wiring (ADR-0157): W-DEVLOG-WRAP — both outbound wrap sites exist', () => {
+  it('★ W-DEVLOG-WRAP BITES (build): build() RETURNS wrapReducerLogging(conn, …) AFTER wireTables(conn)', () => {
+    // WRONG IMPL KILLED (1): `return conn;` left untouched — 37 of the 38 outbound sites
+    // are unlogged and the feature appears "half broken" only at runtime.
+    // WRONG IMPL KILLED (2): wrapping BEFORE / instead of `wireTables(conn)` — the inbound
+    // row-callback wiring would then be installed against the Proxy rather than the raw
+    // connection, putting the trap on the hot inbound path this slice explicitly excludes
+    // (EARS-3, obs-b). Region-bounding the assertion to the text AFTER `wireTables(conn);`
+    // is what pins the order.
+    const src = readConnectionTs();
+    expectUniqueAnchor(src, 'wireTables(conn);');
+    expectUniqueAnchor(src, 'let current = build();');
+
+    const tail = squashWhitespace(bodyRegion(src, 'wireTables(conn);', 'let current = build();'));
+    expect(
+      tail.includes('return wrapReducerLogging(conn'),
+      'build() must end with `return wrapReducerLogging(conn, opts.onSend);` — placed AFTER ' +
+        'wireTables(conn) so the inbound path still sees the RAW connection (§A2). RED today: ' +
+        'wrapReducerLogging does not appear in connection.ts at all',
+    ).toBe(true);
+  });
+
+  it('★ W-DEVLOG-WRAP BITES (joinGame): the connection-internal joinGame call goes through wrapReducerLogging, not the raw `c`', () => {
+    // WRONG IMPL KILLED: leaving `c.reducers.joinGame({ name })` bare. It is the ONE outbound
+    // call that does not go through the `get conn()` accessor, so the build()-return wrap
+    // cannot cover it — it would be silently unlogged forever, and it is precisely the call a
+    // developer debugging a reconnect wants to see.
+    const src = readConnectionTs();
+    const stripped = stripLineComments(src);
+    const squashed = squashWhitespace(stripped);
+
+    // Anti-vacuity: the call site must still exist at all before we judge its receiver.
+    expect(
+      squashed.includes('.reducers.joinGame('),
+      'connection.ts must still contain the internal .reducers.joinGame( call — if it moved, ' +
+        'this gate is judging the wrong file',
+    ).toBe(true);
+
+    expect(
+      squashed.includes('c.reducers.joinGame('),
+      'the bare `c.reducers.joinGame(` receiver must be gone — the joinGame call must be made ' +
+        'through wrapReducerLogging(c, opts.onSend) (§A2), otherwise the one outbound site that ' +
+        'bypasses the get conn() accessor is never logged',
+    ).toBe(false);
+
+    const joinIdx = squashed.indexOf('.reducers.joinGame(');
+    const before = squashed.slice(Math.max(0, joinIdx - 140), joinIdx);
+    expect(
+      before.includes('wrapReducerLogging('),
+      'the receiver of .reducers.joinGame( must come from wrapReducerLogging( — expected ' +
+        '`wrapReducerLogging(c, opts.onSend).reducers.joinGame({ name })` (§A2)',
+    ).toBe(true);
+
+    // Both sites §A2 specifies must be present. AT LEAST two, not exactly two: a
+    // behaviourally identical local helper (`const wrap = () => wrapReducerLogging(conn,
+    // opts.onSend)` used at both sites) is a legitimate refactor, and an exact count would
+    // red it for no reason. The invariant that actually matters is the one below — no
+    // wrap of a wrap.
+    const wrapCalls = squashed.split('wrapReducerLogging(').length - 1;
+    expect(
+      wrapCalls,
+      'wrapReducerLogging( must be called at least twice in connection.ts — once at build()`s ' +
+        'return and once at the joinGame site (§A2). The import statement is not a call site ' +
+        '(no paren), so it is not counted',
+    ).toBeGreaterThanOrEqual(2);
+
+    // WRONG IMPL KILLED: layering a second Proxy over an already-wrapped connection
+    // (`wrapReducerLogging(wrapReducerLogging(conn, log), log)`). Every reducer call would
+    // then be logged TWICE and pay two trap hops on the movement hot path, and the
+    // `this`-binding chain would run through a Proxy rather than the raw instance.
+    expect(
+      squashed.includes('wrapReducerLogging(wrapReducerLogging('),
+      'wrapReducerLogging( must never wrap an already-wrapped connection — a double Proxy ' +
+        'double-logs every reducer call and puts a Proxy (not the raw instance) in the bind ' +
+        'chain',
+    ).toBe(false);
+  });
+});

@@ -24,6 +24,7 @@ import {
 import { subscriptionErrorMessage } from '../ui/statusModel';
 import { createAuthTokenGate } from './authToken';
 import { MicrotaskBatcher } from './batch';
+import { type SendLogger, wrapReducerLogging } from './devLog';
 import {
   battleChallengeRowToStore,
   battleRowToStore,
@@ -76,6 +77,9 @@ export interface ConnectionOptions {
   /** Called when the own entity crosses a zone boundary (M11c, ADR-0067 Option C).
    *  Receives the new zone id so the caller can reload the map and reset prediction. */
   readonly onOwnWarp?: (newZoneId: number) => void;
+  /** dev-observability (ADR-0157): outbound reducer-call sink. `undefined` (the default
+   *  production build) makes wrapReducerLogging strict identity — no Proxy is installed. */
+  readonly onSend?: SendLogger;
 }
 
 export interface Connection {
@@ -513,16 +517,20 @@ export function connect(opts: ConnectionOptions): Connection {
             state = onConnected(state);
             // joinGame stays UNCONDITIONAL: server on_disconnect DELETES the player +
             // character rows, so a reconnect MUST re-join (ADR-0085 A4).
-            c.reducers.joinGame({ name }).catch((err) => {
-              const msg = (err as Error)?.message ?? '';
-              // "already joined" is benign: the server hasn't processed the old
-              // session's drop yet — rows still live; the new subscription
-              // re-hydrates them (ADR-0085 A4). EXACT match (RT-JB-01): the SDK
-              // delivers the reducer's Err string verbatim (SenderError(errorString))
-              // and movement.rs errs exactly this — a substring test would swallow
-              // hypothetical non-benign messages that merely contain the phrase.
-              if (msg !== 'already joined') opts.onError('join', msg || 'join failed');
-            });
+            // ADR-0157 §1: the ONE outbound site that does not go through the get conn()
+            // accessor, so the build()-return wrap cannot cover it — wrap it explicitly.
+            wrapReducerLogging(c, opts.onSend)
+              .reducers.joinGame({ name })
+              .catch((err) => {
+                const msg = (err as Error)?.message ?? '';
+                // "already joined" is benign: the server hasn't processed the old
+                // session's drop yet — rows still live; the new subscription
+                // re-hydrates them (ADR-0085 A4). EXACT match (RT-JB-01): the SDK
+                // delivers the reducer's Err string verbatim (SenderError(errorString))
+                // and movement.rs errs exactly this — a substring test would swallow
+                // hypothetical non-benign messages that merely contain the phrase.
+                if (msg !== 'already joined') opts.onError('join', msg || 'join failed');
+              });
             hadSession = true;
             if (reconnecting) opts.onReconnect();
             else opts.onReady(identity);
@@ -603,7 +611,9 @@ export function connect(opts: ConnectionOptions): Connection {
       })
       .build();
     wireTables(conn);
-    return conn;
+    // dev-observability (ADR-0157 §1): wrap AFTER wireTables so the inbound row callbacks
+    // stay wired to the RAW connection. Identity when opts.onSend is undefined.
+    return wrapReducerLogging(conn, opts.onSend);
   }
 
   // Cold-start note (ADR-0085 D3): `attempt` counts consecutive FAILED builds, so a
