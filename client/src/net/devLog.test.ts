@@ -505,8 +505,9 @@ describe('devLog formatter (EARS-1): formatSendLine', () => {
   });
 
   it('T-FMT-TOTAL (property): for arbitrary args, formatSendLine returns a capped string and never throws', () => {
-    // fast-check block-body arrow (never expression-body — fast-check misreads a returned
-    // matcher as `false`). See standards/testing-tdd.md [[vitest-fast-check]].
+    // fast-check + vitest gotcha: the predicate below MUST use a block-body arrow. With an
+    // expression-body arrow (`(name, args) => expect(...)`), fast-check reads the matcher's
+    // return value as the property result and can report a spurious failure.
     const hostile = fc.constantFrom<unknown>(
       undefined,
       null,

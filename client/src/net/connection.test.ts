@@ -608,14 +608,28 @@ describe('connection.ts wiring (ADR-0157): W-DEVLOG-WRAP — both outbound wrap 
         '`wrapReducerLogging(c, opts.onSend).reducers.joinGame({ name })` (§A2)',
     ).toBe(true);
 
-    // Exactly the two sites §A2 specifies — no more (a third wrap would mean a second,
-    // divergent Proxy layer on the same connection) and no fewer.
+    // Both sites §A2 specifies must be present. AT LEAST two, not exactly two: a
+    // behaviourally identical local helper (`const wrap = () => wrapReducerLogging(conn,
+    // opts.onSend)` used at both sites) is a legitimate refactor, and an exact count would
+    // red it for no reason. The invariant that actually matters is the one below — no
+    // wrap of a wrap.
     const wrapCalls = squashed.split('wrapReducerLogging(').length - 1;
     expect(
       wrapCalls,
-      'wrapReducerLogging( must be called EXACTLY twice in connection.ts — once at build()`s ' +
+      'wrapReducerLogging( must be called at least twice in connection.ts — once at build()`s ' +
         'return and once at the joinGame site (§A2). The import statement is not a call site ' +
         '(no paren), so it is not counted',
-    ).toBe(2);
+    ).toBeGreaterThanOrEqual(2);
+
+    // WRONG IMPL KILLED: layering a second Proxy over an already-wrapped connection
+    // (`wrapReducerLogging(wrapReducerLogging(conn, log), log)`). Every reducer call would
+    // then be logged TWICE and pay two trap hops on the movement hot path, and the
+    // `this`-binding chain would run through a Proxy rather than the raw instance.
+    expect(
+      squashed.includes('wrapReducerLogging(wrapReducerLogging('),
+      'wrapReducerLogging( must never wrap an already-wrapped connection — a double Proxy ' +
+        'double-logs every reducer call and puts a Proxy (not the raw instance) in the bind ' +
+        'chain',
+    ).toBe(false);
   });
 });

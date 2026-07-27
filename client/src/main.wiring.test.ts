@@ -2871,15 +2871,36 @@ describe('★ main.ts wiring (nh3/ADR-0152): epoch captured at the rejection sea
 //       `async function main(` declaration and never inside its body. This is the
 //       existing F-3 idiom, for the same reason: the resolver is fail-loud in DEV, and
 //       a throw from inside main() (or from inside a try/catch there) is swallowed.
-//   (b) THREADED: `onSend:` is actually passed to `connect({ … })`. A resolved level and
-//       a constructed sink that nobody consumes is dead config — the feature would look
-//       wired and log nothing.
+//   (b) THREADED: the connect({ … }) call passes the EXACT token sequence
+//       `onSend: sendLogger` (§A8, verbatim), and the `sendLogger` binding is the whole
+//       result of a module-scope `makeSendLogger(…)` whose injected sink writes to
+//       console.log and touches NO ring. A resolved level and a constructed sink that
+//       nobody consumes is dead config — the feature would look wired and log nothing.
+//
+// WHY (b) PINS THE VALUE, NOT JUST THE KEY (red-team, PROVEN bypass of the first draft of
+// this gate): main.ts already imports and uses `eventRing` (:74-82, :229, :2023), so an
+// inline arrow satisfied a mere `onSend:`-is-present check while re-opening exactly the
+// hazard ADR-0157 §4 exists to prevent:
+//     onSend: (name, args) => {
+//       sendLogger?.(name, args);
+//       eventRing.push({ kind: 'reducerCall', name, args, ts: Date.now() } as any);
+//     },
+// devLog.ts's own eval cannot see that — the violation lives in main.ts. Requiring the
+// value to be the BARE IDENTIFIER `sendLogger` makes an inline sink structurally
+// impossible, and the balanced-paren scan of the `makeSendLogger(` call arguments closes
+// the same hole one level down (a ring push smuggled into the injected `out` closure).
+//
+// NOTE on scope: the ring-needle ban is applied to the makeSendLogger ARGUMENT LIST, not
+// to the whole connect({ … }) region. The connect options legitimately contain
+// `eventRing.push(makeConnect(identity))` in onReady/onReconnect (pt-b1, ADR-0130) — a
+// region-wide ban would red CORRECT code. The pins above are what close the send path.
 //
 // RED AT AUTHORING TIME: main.ts contains neither `resolveDevLogLevel(` nor
 // `makeSendLogger(` nor `onSend:` (0 occurrences each).
 //
-// Uses the file's existing helpers (expectUniqueAnchor / bodyRegion / stripLineComments)
-// — function declarations, so definition order above is irrelevant. NO `new RegExp(...)`.
+// Uses the file's existing helpers (expectUniqueAnchor / bodyRegion / stripLineComments /
+// squashWhitespace) — function declarations, so definition order above is irrelevant.
+// NO `new RegExp(...)`.
 // ===========================================================================
 
 /** The `connect({ … })` options-object region: START is the single call site, END is the
@@ -2888,6 +2909,33 @@ describe('★ main.ts wiring (nh3/ADR-0152): epoch captured at the rejection sea
  *  list the implementer puts it, but NOT if it drifts outside the connect() call entirely. */
 const DEVLOG_CONNECT_START = 'conn = connect({';
 const DEVLOG_CONNECT_END = '12.5c-4: frame loop is wrapped';
+
+/** The shared-artifact substrate devlog content must never reach (ADR-0157 §4 / obs-e).
+ *  A local copy of the eval's needle list: the eval can only see devLog.ts, so the main.ts
+ *  side of the same firewall has to be checked here. */
+const DEVLOG_RING_NEEDLES = ['eventRing', 'errorRing', 'bugBundle', 'pushError'];
+
+/** Return the ARGUMENT LIST of the first `needle` call in `src`, by balanced-paren scan
+ *  from the `(` that terminates the needle. Throws loud when the call is absent or the
+ *  parens never balance — a missing implementation must be a HARD RED, never a vacuous
+ *  pass. Hand-rolled scan; `new RegExp` is Semgrep-banned in this file. */
+function callArgs(src: string, needle: string): string {
+  const idx = src.indexOf(needle);
+  if (idx < 0) {
+    throw new Error(`main.ts must contain the call "${needle}" (ADR-0157 §A8 wiring)`);
+  }
+  let i = idx + needle.length - 1; // the needle ends with '('
+  let depth = 0;
+  const start = i + 1;
+  for (; i < src.length; i++) {
+    if (src[i] === '(') depth++;
+    else if (src[i] === ')') {
+      depth--;
+      if (depth === 0) return src.slice(start, i);
+    }
+  }
+  throw new Error(`unbalanced parentheses after "${needle}" in main.ts — refusing to scan`);
+}
 
 describe('★ main.ts wiring (ADR-0157): W-DEVLOG-EAGER — module-scope resolve + onSend threaded into connect()', () => {
   it('★ W-DEVLOG-EAGER BITES (a): resolveDevLogLevel( is called at MODULE scope, BEFORE `async function main(`', () => {
@@ -2926,7 +2974,7 @@ describe('★ main.ts wiring (ADR-0157): W-DEVLOG-EAGER — module-scope resolve
     ).toBe(-1);
   });
 
-  it('★ W-DEVLOG-EAGER BITES (b): the sink is constructed via makeSendLogger( and `onSend:` is threaded into the connect({ … }) call', () => {
+  it('★ W-DEVLOG-EAGER BITES (b): the connect({ … }) call passes the BARE identifier — `onSend: sendLogger`, never an inline sink', () => {
     // WRONG IMPL KILLED (1): the level is resolved and a logger constructed, but `onSend:`
     // is never passed to connect( — DEAD CONFIG. The flag would parse, the resolver would
     // fail loud on a typo, and not one reducer call would ever be logged. Nothing else in
@@ -2935,7 +2983,13 @@ describe('★ main.ts wiring (ADR-0157): W-DEVLOG-EAGER — module-scope resolve
     // WRONG IMPL KILLED (2): `onSend:` present somewhere else in main.ts (e.g. on an unrelated
     // options object) but not inside the connect({ … }) call — the region is needle-bounded to
     // that call, so a stray occurrence elsewhere cannot credit it.
-    // WRONG IMPL KILLED (3): passing a raw `console.log` (or a hand-rolled closure) instead of
+    // WRONG IMPL KILLED (3, red-team PROVEN): an INLINE arrow that calls the sendLogger and
+    // ALSO pushes the call into eventRing — main.ts already has eventRing in scope, so the
+    // shared, downloadable F9 bundle would start carrying `joinGame({name})` /
+    // `setNickname({nickname})` / `setProfileName({name})` free text (pt-b1 U-3, ADR-0157 §4).
+    // A key-only `onSend:` check waves that through; requiring the value to be the BARE
+    // identifier makes any inline body structurally impossible.
+    // WRONG IMPL KILLED (4): passing a raw `console.log` or a hand-rolled closure instead of
     // makeSendLogger's result — the level filter and the 'off' ⇒ undefined ⇒ strict-identity
     // path would both be bypassed, so the default prod build would install a live Proxy.
     const src = readMainTs();
@@ -2960,9 +3014,74 @@ describe('★ main.ts wiring (ADR-0157): W-DEVLOG-EAGER — module-scope resolve
 
     expect(
       region.includes('onSend:'),
-      'the connect({ … }) call must pass `onSend: <the makeSendLogger result>` (§A8) — without ' +
-        'it the resolved level and the constructed logger are dead config and no outbound ' +
-        'reducer call is ever logged (EARS-1 never fires)',
+      'the connect({ … }) call must pass `onSend:` (§A8) — without it the resolved level and ' +
+        'the constructed logger are dead config and no outbound reducer call is ever logged ' +
+        '(EARS-1 never fires)',
     ).toBe(true);
+
+    // squashWhitespace so the pin survives any biome line-wrapping of the option list.
+    expect(
+      squashWhitespace(region).includes('onSend: sendLogger'),
+      'the option must be the VERBATIM `onSend: sendLogger` (§A8) — a bare identifier, never ' +
+        'an inline arrow. main.ts has eventRing in scope, so an inline sink can push reducer ' +
+        'args (player free text) into the shared, downloadable F9 bundle — the one thing ' +
+        'ADR-0157 §4 forbids, and something the devLog.ts eval structurally cannot see',
+    ).toBe(true);
+
+    // The binding must be the module-scope makeSendLogger result (not a wrapper around it).
+    // Comment-stripped + squashed, so neither a prose mention nor line-wrapping can credit
+    // or defeat the pin.
+    const live = squashWhitespace(stripLineComments(src));
+    expect(
+      live.indexOf('const sendLogger = makeSendLogger('),
+      'main.ts must bind `const sendLogger = makeSendLogger(…)` (§A8) — the identifier passed ' +
+        'to onSend: must be the logger itself, not a closure wrapping it',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      live.indexOf('makeSendLogger('),
+      'the makeSendLogger( construction must sit at MODULE scope, before `async function ' +
+        'main(` — beside the eager resolve (§A8)',
+    ).toBeLessThan(live.indexOf('async function main('));
+  });
+
+  it('★ W-DEVLOG-EAGER BITES (c): the injected sink writes to console.log and touches NO ring (ADR-0157 §4 firewall, main.ts side)', () => {
+    // WRONG IMPL KILLED (1, red-team PROVEN one level down): the ring push moved OUT of the
+    // connect option and INTO the injected `out` closure —
+    //     makeSendLogger(DEV_LOG_LEVEL, (line) => { console.log(line); eventRing.push(…); })
+    // — which satisfies `onSend: sendLogger` while still shipping devlog content into the
+    // shared F9 bundle. Scanning the makeSendLogger ARGUMENT LIST (balanced-paren, not a
+    // fixed-width window) is what closes it. This is deliberately scoped to the argument
+    // list and NOT to the whole connect region: the connect options legitimately contain
+    // `eventRing.push(makeConnect(identity))` (pt-b1/ADR-0130), so a region-wide ring ban
+    // would red correct code.
+    // WRONG IMPL KILLED (2): `console.debug` instead of `console.log` — Chrome hides debug
+    // behind the Verbose level by default, so the feature would read as broken (ADR-0157 §2).
+    // Comments are stripped BEFORE the balanced-paren scan so a prose mention of
+    // `makeSendLogger(...)` cannot capture the scan (and so a commented-out ring push
+    // cannot red a clean impl).
+    const args = callArgs(stripLineComments(readMainTs()), 'makeSendLogger(');
+
+    // Anti-vacuity: the argument list must actually contain the sink, or this scan is
+    // judging the wrong slice.
+    expect(
+      args.includes('=>'),
+      'the makeSendLogger( argument list must contain the injected sink arrow `(line) => …` — ' +
+        'if it does not, this scan is not looking at the sink and the ban below is vacuous',
+    ).toBe(true);
+    expect(
+      args.includes('console.log'),
+      'the injected sink must write to console.log (§A8) — NOT console.debug, which Chrome ' +
+        'hides behind the Verbose level so the feature reads as broken',
+    ).toBe(true);
+
+    for (const needle of DEVLOG_RING_NEEDLES) {
+      expect(
+        args.includes(needle),
+        `the makeSendLogger( sink must NOT reference "${needle}" — reducer-call records are ` +
+          'CONSOLE-ONLY (ADR-0157 §4). The args carry player free text (joinGame({name}), ' +
+          'setNickname, setProfileName) and the ring is serialised into the F9 bundle Drew ' +
+          'SHARES (pt-b1 U-3). Deferred as obs-e',
+      ).toBe(false);
+    }
   });
 });

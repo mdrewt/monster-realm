@@ -3,8 +3,8 @@
 // ONE architecture gate over `client/src/net/devLog.ts`, covering two EARS criteria
 // mechanically (plan §D, gates E1 + T-NO-RING):
 //
-//   E1 — the module has ZERO runtime imports (`import type` permitted) and ZERO literal
-//        `console.`. This single check subsumes three separate v1 checks:
+//   E1 — the module has ZERO runtime imports (`import type` permitted), never names
+//        `console`, and never names `globalThis`/`window`. This subsumes three v1 checks:
 //          * criterion 4's PII firewall — a module that imports nothing at runtime CANNOT
 //            reach eventRing / errorRing / bugBundle, so a reducer arg (joinGame({name}),
 //            setNickname({nickname}), setProfileName({name}) all carry player free text)
@@ -20,6 +20,17 @@
 //        { EventRing } from '../ui/eventRing'` is a legal type-only import that E1 permits,
 //        yet it signals the module is being wired into the shared-artifact path (obs-e must
 //        re-open pt-b1 U-3 before that is allowed).
+//
+//   NO-GLOBAL-SCOPE — the source must not name `globalThis` or `window`. T-NO-RING is a
+//        FIXED VOCABULARY, so it cannot see a module that builds its OWN durable ring:
+//        a module-level buffer published as `globalThis.__mrSideChannel = BUF` has zero
+//        runtime imports, trips no ring needle, and is exactly the "second logging
+//        mechanism" (anti-pattern #9) plus the latent PII-in-a-shared-artifact risk that
+//        criterion 4 forbids. devLog.ts has NO legitimate reason to touch either global:
+//        every input arrives as a parameter (`raw`, `isDev`, `warn`, `out`, `target`,
+//        `log`) and all state lives in module consts and closures reached only through the
+//        exported functions. Banning the two global roots also closes the string-indexed
+//        console bypasses (`globalThis['console'].log(line)`).
 //
 // RED STATE AT AUTHORING TIME: `client/src/net/devLog.ts` does not exist. The eval FAILS
 // (pass:false, "cannot read") — it does NOT skip. A missing module must be red, never green.
@@ -135,7 +146,7 @@ export function checkNoRuntimeImports(stripped) {
 }
 
 // ============================================================================
-// Check E1b — zero literal `console.`
+// Check E1b — the bareword `console` never appears
 // ============================================================================
 //
 // The sink is INJECTED (`out: (line: string) => void`, `warn: (msg: string) => void`).
@@ -143,22 +154,76 @@ export function checkNoRuntimeImports(stripped) {
 // logging mechanism (criterion 4), and (c) unable to honor "zero additional console
 // output" (criterion 2) by construction.
 //
-// Kills: `console.log(line)` inside makeSendLogger; a `console.error` fallback in the
-// resolver instead of the injected `warn`.
+// THE NEEDLE IS THE BAREWORD `console`, NOT `console.` — a red-team pass built four
+// implementations that pass every unit gate AND emit a second, uninjected log stream
+// while containing no `console.` substring at all:
+//     globalThis.console['log'](line)      globalThis['console'].log(line)
+//     const { log } = console; log(line)   const c = console; c.log(line)
+// Each of them still contains the bareword. (`globalThis['console']` is additionally
+// caught by checkNoGlobalScope below — the two predicates overlap on purpose.)
+//
+// FALSE-POSITIVE NOTE for the implementer: comments are stripped before this scan, so a
+// rationale comment about console.log-vs-console.debug is fine. A user-facing MESSAGE
+// STRING containing the word "console" WOULD trip it — reword the message; devLog.ts has
+// no reason to say "console" in live code (the parse/resolve errors name the FLAG and the
+// accepted token set, not the sink).
 
 /**
  * @param {string} stripped  Comment-stripped source.
  * @returns {string|null}
  */
 export function checkNoConsole(stripped) {
-  const idx = stripped.indexOf('console.');
+  const idx = stripped.indexOf('console');
   if (idx === -1) return null;
   const lineNo = stripped.slice(0, idx).split('\n').length;
   return (
-    `${DEVLOG_PATH}:${lineNo}: literal "console." found — the sink must be INJECTED ` +
-    '(`out`/`warn` parameters, wired in main.ts). Owning a console sink makes the module ' +
-    'untestable without globals and is the "second logging mechanism" criterion 4 forbids'
+    `${DEVLOG_PATH}:${lineNo}: the bareword "console" appears in live code — the sink must be ` +
+    'INJECTED (`out`/`warn` parameters, wired in main.ts). Owning a console sink makes the ' +
+    'module untestable without globals and is the "second logging mechanism" criterion 4 ' +
+    'forbids. Note the needle is the BAREWORD, so `globalThis.console["log"](x)`, ' +
+    '`const { log } = console` and `const c = console` are caught too'
   );
+}
+
+// ============================================================================
+// Check NO-GLOBAL-SCOPE — `globalThis` / `window` are never named
+// ============================================================================
+//
+// T-NO-RING is a FIXED VOCABULARY and therefore cannot see a module that builds its OWN
+// durable ring. A red-team implementation that keeps a module-level array of every logged
+// call and publishes it as `globalThis.__mrSideChannel = SIDE_BUFFER` has zero runtime
+// imports, hits no ring needle, passes every unit gate — and is a second logging mechanism
+// holding player free text in a place a future bundle/screenshot can reach.
+//
+// devLog.ts is a PURE policy module: `raw`, `isDev`, `warn`, `out`, `target`, `log` all
+// arrive as parameters. There is no legitimate `globalThis`/`window` reference in it. (The
+// runtime toggle that WOULD need one is deferred as obs-d, and must land with its own ADR.)
+//
+// Kills: the side-channel buffer; `window.__mrDevLog = …`; `globalThis['console'].log(…)`;
+// any other reach for ambient state that makes the module untestable-without-globals.
+
+const GLOBAL_NEEDLES = ['globalThis', 'window'];
+
+/**
+ * @param {string} stripped  Comment-stripped source.
+ * @returns {string|null}
+ */
+export function checkNoGlobalScope(stripped) {
+  for (const needle of GLOBAL_NEEDLES) {
+    const idx = stripped.indexOf(needle);
+    if (idx !== -1) {
+      const lineNo = stripped.slice(0, idx).split('\n').length;
+      return (
+        `${DEVLOG_PATH}:${lineNo}: references "${needle}" in live code — devLog.ts must not ` +
+        'touch ambient global scope. Every input is a parameter and all state belongs in ' +
+        'module consts/closures reached only through the exported functions; a global ' +
+        'side-channel (e.g. `globalThis.__mrSideChannel = BUF`) is a SECOND logging mechanism ' +
+        "(anti-pattern #9) that T-NO-RING's fixed vocabulary cannot see, and a latent " +
+        'PII-in-a-shared-artifact risk. A runtime toggle is deferred as obs-d'
+      );
+    }
+  }
+  return null;
 }
 
 // ============================================================================
@@ -246,8 +311,16 @@ const GOOD_DEVLOG = `
 // INJECTED: main.ts passes (line) => console.log(line) — console.log, not
 // console.debug (Chrome hides debug behind the Verbose level).
 /* MAX_LINE_LEN mirrors ERROR_MSG_MAX_LEN (client/src/ui/errorRing.ts:12).
-   A block comment naming pushError and bugBundle must NOT trip the scan. */
+   A block comment naming pushError and bugBundle must NOT trip the scan.
+   Neither may a comment quoting the banned FORMS themselves:
+     import { EventRing } from '../ui/eventRing';
+     const ring = await import('../ui/eventRing');
+     const fs = require('node:fs');
+     export { eventRing } from '../ui/eventRing';
+     globalThis.__mrSideChannel = BUF;  window.__mrDevLog = 'send';
+   All of the above are PROSE here — they must be stripped, not flagged. */
 import type { SomeSdkThing } from './sdkTypes';
+export type { SomeSdkThing } from './sdkTypes';
 
 export const MAX_LINE_LEN = 512;
 export type DevLogLevel = 'off' | 'send' | 'send-move';
@@ -259,8 +332,11 @@ export function formatSendLine(name, args) { return '-> ' + name; }
 export function makeSendLogger(level, out) { return (n, a) => out(formatSendLine(n, a)); }
 export function wrapReducerLogging(target, log) { return target; }
 `;
-// Must pass ALL FOUR predicates: type-only import, injected sink, and banned words
-// present ONLY inside comments (the comment-immunity proof).
+// Must pass ALL FIVE predicates. It exercises every PERMITTED form (a type-only import
+// AND a type-only re-export, an injected sink) and quotes every BANNED form — the ring
+// names, the bareword console, globalThis/window, a plain import, a dynamic import, a
+// require, a value re-export — exclusively inside comments (the comment-immunity proof;
+// Tooth G2 asserts they are all still really there).
 
 const BAD_RUNTIME_IMPORT = `
 import { formatThing } from './fmt';
@@ -320,6 +396,58 @@ export function toRingRecord(name, args): EventRecord {
 // devlog into the shared-artifact path. checkNoRuntimeImports must PASS it (type-only) and
 // checkNoRingReferences must FLAG it; that asymmetry is the whole reason T-NO-RING exists.
 
+const BAD_CONSOLE_BRACKET = `
+export function makeSendLogger(level, out) {
+  return (n, a) => {
+    const line = formatSendLine(n, a);
+    out(line);
+    globalThis.console['log'](line);
+  };
+}
+`;
+// Kills (red-team, PROVEN bypass of the old `console.` needle): an impl that correctly
+// calls the injected sink AND ALSO emits its own stream through bracket access. It passes
+// every unit gate — `out` is called exactly once — while doubling console output in a build
+// where the operator asked for one line. Contains no `console.` substring; the BAREWORD
+// needle is what catches it (and checkNoGlobalScope catches it independently).
+
+const BAD_CONSOLE_DESTRUCTURE = `
+const { log } = console;
+export function makeSendLogger(level, out) {
+  return (n, a) => {
+    out(formatSendLine(n, a));
+    log('devlog: ' + n);
+  };
+}
+`;
+// Kills (red-team, PROVEN): the destructure-alias form. No `console.` substring, no
+// globalThis, no ring needle — the bareword `console` is the ONLY thing that sees it.
+
+const BAD_GLOBAL_SIDE_CHANNEL = `
+const SIDE_BUFFER = [];
+export function makeSendLogger(level, out) {
+  return (n, a) => {
+    SIDE_BUFFER.push({ n, a, t: Date.now() });
+    out(formatSendLine(n, a));
+  };
+}
+globalThis.__mrSideChannel = SIDE_BUFFER;
+`;
+// Kills (red-team, PROVEN): the module builds its OWN durable ring and publishes it on the
+// global object. Zero runtime imports, no ring needle, no console reference, all 25 unit
+// gates green — a second logging mechanism (anti-pattern #9) retaining player free text.
+// checkNoGlobalScope is the ONLY predicate that sees it; the teeth below assert exactly
+// that asymmetry (the other four must all return null on this fixture).
+
+const BAD_WINDOW_TOGGLE = `
+export function makeSendLogger(level, out) {
+  const live = window.__mrDevLog ?? level;
+  return live === 'off' ? undefined : (n, a) => out(formatSendLine(n, a));
+}
+`;
+// Kills: the obs-d runtime toggle smuggled in early — a second configuration source (a
+// second SSOT) that also makes the module untestable without a DOM global.
+
 const BAD_EMPTY_STUB = `
 // devLog.ts — nothing here yet.
 `;
@@ -331,8 +459,8 @@ const BAD_EMPTY_STUB = `
 
 export default async function () {
   const name =
-    'dev-observability-gating (ADR-0157 E1: client/src/net/devLog.ts has ZERO runtime imports + ' +
-    'ZERO literal console.; T-NO-RING: no eventRing/errorRing/bugBundle/pushError)';
+    'dev-observability-gating (ADR-0157 E1: client/src/net/devLog.ts has ZERO runtime imports, ' +
+    'no bareword console, no globalThis/window; T-NO-RING: no eventRing/errorRing/bugBundle/pushError)';
 
   // ==========================================================================
   // PROOFS-OF-TEETH — a fixture failure means the PREDICATE is broken, so the
@@ -344,6 +472,7 @@ export default async function () {
     ['checkNoRuntimeImports', checkNoRuntimeImports(good)],
     ['checkNoConsole', checkNoConsole(good)],
     ['checkNoRingReferences', checkNoRingReferences(good)],
+    ['checkNoGlobalScope', checkNoGlobalScope(good)],
     ['checkIsRealModule', checkIsRealModule(good)],
   ]) {
     if (result) {
@@ -351,21 +480,32 @@ export default async function () {
         name,
         pass: false,
         detail:
-          `TEETH G1: GOOD_DEVLOG (type-only import, injected sink, banned words only inside ` +
-          `comments) was incorrectly flagged by ${label}: ${result}`,
+          `TEETH G1: GOOD_DEVLOG (type-only import + a permitted \`export type … from\`, an ` +
+          `injected sink, and every banned FORM quoted only inside comments) was incorrectly ` +
+          `flagged by ${label}: ${result}`,
       };
     }
   }
 
   // --- Tooth G2: comment immunity is REAL (not an accident of the fixture) --
   {
-    // The raw GOOD fixture DOES contain every banned string; only comment-stripping
-    // saves it. If this stops holding, Tooth G1 proves nothing about comment immunity.
-    const rawHasBanned =
-      GOOD_DEVLOG.indexOf('console.') !== -1 &&
-      GOOD_DEVLOG.indexOf('eventRing') !== -1 &&
-      GOOD_DEVLOG.indexOf('pushError') !== -1 &&
-      GOOD_DEVLOG.indexOf('bugBundle') !== -1;
+    // The raw GOOD fixture DOES contain every banned string AND every banned FORM
+    // (a plain import, a dynamic import, a require, a re-export, globalThis, window);
+    // only comment-stripping saves it. If this stops holding, Tooth G1 proves nothing
+    // about comment immunity — which is the property that lets the real devLog.ts carry
+    // its `errorRing.ts` provenance note and its console.log-vs-console.debug rationale.
+    const rawHasBanned = [
+      'console.',
+      'eventRing',
+      'pushError',
+      'bugBundle',
+      "import { EventRing } from '../ui/eventRing';",
+      "await import('../ui/eventRing')",
+      "require('node:fs')",
+      "export { eventRing } from '../ui/eventRing';",
+      'globalThis',
+      'window',
+    ].every((needle) => GOOD_DEVLOG.indexOf(needle) !== -1);
     if (!rawHasBanned) {
       return {
         name,
@@ -486,6 +626,86 @@ export default async function () {
     };
   }
 
+  // --- Tooth B8: the BAREWORD console bypasses (red-team, both PROVEN) ------
+  {
+    const bracket = stripComments(BAD_CONSOLE_BRACKET);
+    if (!checkNoConsole(bracket)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          "TEETH B8a: BAD_CONSOLE_BRACKET (`globalThis.console['log'](line)` alongside a correct " +
+          'out(line)) was NOT flagged by checkNoConsole — this impl passes every unit gate and ' +
+          'emits a SECOND, uninjected console stream while containing no "console." substring. ' +
+          'The needle must be the BAREWORD "console"',
+      };
+    }
+    const destructured = stripComments(BAD_CONSOLE_DESTRUCTURE);
+    if (!checkNoConsole(destructured)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH B8b: BAD_CONSOLE_DESTRUCTURE (`const { log } = console; log(...)`) was NOT ' +
+          'flagged by checkNoConsole — no "console." substring, no globalThis, no ring needle: ' +
+          'the bareword is the only thing that sees this one',
+      };
+    }
+    if (checkNoGlobalScope(destructured)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH B8c: BAD_CONSOLE_DESTRUCTURE was flagged by checkNoGlobalScope — it names no ' +
+          'global root, so if the global predicate fires here then B8b proves nothing about ' +
+          'the bareword-console widening',
+      };
+    }
+  }
+
+  // --- Tooth B9: the global side-channel — ONLY checkNoGlobalScope sees it --
+  {
+    const side = stripComments(BAD_GLOBAL_SIDE_CHANNEL);
+    if (!checkNoGlobalScope(side)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH B9a: BAD_GLOBAL_SIDE_CHANNEL (a module-level buffer published as ' +
+          '`globalThis.__mrSideChannel = SIDE_BUFFER`) was NOT flagged by checkNoGlobalScope — ' +
+          'that is a SECOND logging mechanism (anti-pattern #9) retaining player free text, ' +
+          "and T-NO-RING's fixed vocabulary structurally cannot see it",
+      };
+    }
+    for (const [label, result] of [
+      ['checkNoRuntimeImports', checkNoRuntimeImports(side)],
+      ['checkNoConsole', checkNoConsole(side)],
+      ['checkNoRingReferences', checkNoRingReferences(side)],
+    ]) {
+      if (result) {
+        return {
+          name,
+          pass: false,
+          detail:
+            `TEETH B9b: BAD_GLOBAL_SIDE_CHANNEL was flagged by ${label} — it must be invisible ` +
+            'to every OTHER predicate, otherwise B9a does not prove that checkNoGlobalScope is ' +
+            `load-bearing: ${result}`,
+        };
+      }
+    }
+    const win = stripComments(BAD_WINDOW_TOGGLE);
+    if (!checkNoGlobalScope(win)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH B9c: BAD_WINDOW_TOGGLE (`window.__mrDevLog ?? level`) was NOT flagged by ' +
+          'checkNoGlobalScope — a runtime toggle is a second configuration source (obs-d) and ' +
+          'makes the module untestable without a DOM global',
+      };
+    }
+  }
+
   // ==========================================================================
   // REAL SOURCE CHECK — scan client/src/net/devLog.ts.
   // Expected RED at authoring time: the module does not exist yet. A missing
@@ -524,6 +744,10 @@ export default async function () {
     const r = checkNoRingReferences(stripped);
     if (r) failures.push(`[T-NO-RING] ${r}`);
   }
+  {
+    const r = checkNoGlobalScope(stripped);
+    if (r) failures.push(`[NO-GLOBAL-SCOPE] ${r}`);
+  }
 
   if (failures.length > 0) {
     return { name, pass: false, detail: failures.join('; ') };
@@ -533,9 +757,10 @@ export default async function () {
     name,
     pass: true,
     detail:
-      `${DEVLOG_PATH} exports the pinned API and has ZERO runtime imports, ZERO literal ` +
-      '"console.", and no eventRing/errorRing/bugBundle/pushError reference — criterion 2 ' +
-      '(no dependency dragged into the prod bundle) and criterion 4 (console-only; the shared ' +
-      'F9 bundle is structurally unreachable) hold. Teeth verified (11 fixture assertions).',
+      `${DEVLOG_PATH} exports the pinned API and has ZERO runtime imports, no bareword ` +
+      '"console", no globalThis/window, and no eventRing/errorRing/bugBundle/pushError ' +
+      'reference — criterion 2 (no dependency dragged into the prod bundle) and criterion 4 ' +
+      '(console-only; both the shared F9 bundle AND any self-built second ring are ' +
+      'structurally unreachable) hold. Teeth verified (19 fixture assertions).',
   };
 }
