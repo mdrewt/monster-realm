@@ -75,8 +75,10 @@ pub enum SwapError {
 #[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub struct BattleSide {
     /// Index into `team` for the currently-active monster (u32 for SpacetimeType).
-    /// Mutate ONLY via [`BattleSide::set_active`], the sole sanctioned mutator
-    /// (field stays pub this slice; full privatization parked — ADR-0053).
+    /// Established by [`BattleSide::with_lead`] at construction and mutated ONLY
+    /// by [`BattleSide::set_active`] thereafter — those two are the whole
+    /// sanctioned surface (ADR-0053, ADR-0156 D1).
+    /// (Field stays pub this slice; full privatization parked — ADR-0053.)
     pub active: u32,
     pub team: Vec<BattleMonster>,
 }

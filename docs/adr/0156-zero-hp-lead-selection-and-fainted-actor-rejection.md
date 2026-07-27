@@ -1,4 +1,4 @@
-# 0156 — a 0 HP monster is never seated as lead, and a 0 HP active never resolves an action
+# 0156 — a 0 HP monster is never seated as lead (PvE), and a fainted player active cannot submit an attack
 
 **Status:** Accepted
 **Date:** 2026-07-27
@@ -6,7 +6,13 @@
 **Supersedes:** —
 **Amends:** ADR-0155
 **Subsystems:** battle
-**Decision:** Lead selection moves into `BattleSide::with_lead` (first `hp > 0` slot, team order preserved) and `submit_attack` rejects a fainted active at the reducer boundary; the pure resolver is deliberately NOT hardened, because a fainted-actor early-return removes the only mechanism that repairs a 0 HP active.
+**Decision:** PvE lead selection moves into `BattleSide::with_lead` (first `hp > 0` slot, team order preserved) and `submit_attack` rejects a fainted side-A active at the reducer boundary; the pure resolver is NOT hardened (D3).
+
+**Scope, stated up front so the title is not read as unconditional:** D1 covers the two **PvE**
+construction paths only. D2 guards **side A**, in **`submit_attack`**, in **PvE** only. A legacy
+row's side-B 0 HP active still acts and still deals full damage — that is not an oversight, it is
+the self-repair mechanism D3 depends on. Ranked PvP is untouched and still seats a 0 HP lead
+(D7 / residual P1).
 
 ## Context
 
@@ -49,8 +55,14 @@ Add `BattleSide::with_lead(team: Vec<BattleMonster>) -> Option<BattleSide>` to
 establish `active`, alongside `set_active` (ADR-0053).
 
 `start_battle` and `begin_encounter` adopt it for **both** sides, which folds away their
-separate "has a conscious member" checks — the constructor's `None` *is* that check. The
-existing reject strings and `log_reject` audit calls are preserved verbatim at each site.
+separate "has a conscious member" checks — the constructor's `None` *is* that check. The four
+existing reject strings and both `start_battle` `log_reject` audit calls are preserved verbatim;
+`begin_encounter` had no audit call and deliberately gains none. One **new** string is
+introduced — `"wild opponent has no conscious monster"` for `begin_encounter`'s side B — which is
+provably unreachable (`derive_stats` yields `hp >= level + 10 >= 11` for any base stat, IV or EV,
+and saturates high rather than wrapping; `Level::new` rejects 0). It exists only because routing
+side B through the constructor too is what keeps a fourth `BattleSide { .. }` literal — and thus
+a reopened hole — out of the file.
 
 **`with_lead` MUST NOT reorder `team`.** `side_a.team[i]` is positionally coupled to
 `party_monster_ids[i]` for HP write-back (`write_back_party_hp`), the XP award loop, and the
@@ -128,10 +140,12 @@ This slice **documents** these rules; it does not change them. A change is a sep
 |---|---|---|---|---|---|
 | Pokémon mainline | "the first Pokémon that has not fainted in the party list is the one that will be drawn first" — fainted skipped [1] | Not representable: 0 HP ⇒ faint ⇒ leaves the battle immediately [2] | Gen 1–4 / Smogon: tie. Self-KO Clause, when in force: the user of Explosion/Destiny Bond/Perish Song loses [4] | Random 50/50, re-rolled each turn [3] | Player prompt; replacement cannot move that turn |
 | Pokémon Showdown (source) | Team order; fainted never active | `runAction`: `case 'move': if (action.pokemon.fainted) return false;` — a **state** check, not an event check [5] | `checkWin`: both sides empty ⇒ `win(gen > 4 ? faintData.target.side : null)`; `win(null)` ⇒ `tie`. Gen ≤ 4 draw, gen 5+ the last-faint's side wins [5][6] | `speedSort` → `prng.shuffle` on equal keys [5] | Forced `requestState: 'switch'`; `chooseSwitch` rejects a fainted target; replacement cannot move that turn [7] |
-| Temtem | not found | not found | not found | Deterministic alternating "speed arrow", flips owner after each tie [8] | not found |
-| Cassette Beasts | not found | not found | not found | Host-authoritative as of 1.6.2, planned to become random [9] | not found |
-| Coromon | not found | not found | not found | Random [10] | not documented for same-turn action |
-| Nexomon | no authoritative source found — omitted rather than guessed | | | | |
+
+Beyond the two Pokémon rows, the comparators document only speed-tie behavior: Temtem uses a
+deterministic alternating "speed arrow" that flips owner after each tie [8], Cassette Beasts
+resolved ties host-authoritatively as of 1.6.2 with a stated plan to move to random [9], and
+Coromon uses a random breaker [10]. No authoritative source was found for Nexomon on any of
+these columns — recorded as unknown rather than guessed.
 
 Where we conform and where we diverge:
 
@@ -243,10 +257,19 @@ now pins as the recovery route.
 
 ## Consequences
 
-- Entry abilities now fire on the **real** lead. Previously a 0 HP slot-0 monster's entry
-  ability was skipped by `apply_entry_ability`'s own fainted guard and the backup's ability
-  fired a turn later via the KO auto-switch; now the correct ability fires at turn 0. This is
-  the only observable behavior change besides `active` itself, and it is desirable.
+- Entry abilities now fire on the **real** lead, and the pre-fix behavior was *not* uniform:
+  `apply_entry_ability`'s `EntryHeal` arm has a `!is_fainted()` guard so a corpse's heal was
+  skipped, but the `StatusImmunity` arm has **no** such guard, so a corpse's immunity did fire.
+  After this slice the correct monster's ability fires at turn 0 in both cases. This is the only
+  observable behavior change besides `active` itself, and it is desirable. PvP is unaffected
+  (`pvp.rs` still passes `active: 0`), so PvP entry-ability behavior is bit-identical to master.
+- **`lead_party` and `with_lead` now mean different monsters, deliberately.** `lead_party`
+  (`server-module/src/battle.rs`) returns the lowest-`party_slot` monster HP-blind, and its level
+  feeds the wild encounter roll; `begin_encounter` then seats the first *conscious* monster. When
+  slot 0 is fainted these are provably different monsters: the corpse steers the wild's level
+  band, the survivor fights it. The scaling itself is pre-existing and unchanged, but the two
+  functions now use "lead" for two different things in the same file — noted so a future reader
+  does not "unify" them without deciding which rule encounter scaling should follow.
 - Four `BattleSide { active: 0, .. }` literals in `battle.rs` become `with_lead` calls; the two
   in `pvp.rs` remain until P1.
 - Server-side gating tests for this slice are **source-scan** assertions: `battle_tests.rs` is

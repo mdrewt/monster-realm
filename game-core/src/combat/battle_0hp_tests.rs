@@ -3,13 +3,13 @@
 //! Criterion → test mapping:
 //!   EARS E5 (regression reproducing Drew's r2 sequence)
 //!       → drew_r2_zero_hp_lead_is_never_sent_out_and_produces_no_phantom_swap
-//!         [RED until `BattleSide::with_lead` exists — ADR-0156 D1]
+//!         [GREEN since ADR-0156 D1 landed; was RED — `with_lead` did not exist]
 //!   EARS E5 (proof-of-teeth control for the above)
 //!       → drew_r2_control_the_old_hardcoded_lead_did_produce_the_phantom_swap
-//!         [GREEN as soon as the crate compiles, and stays green — by design]
+//!         [GREEN before AND after `with_lead` landed — by design; see its doc]
 //!   ADR-0156 "Consequences" (entry abilities fire on the REAL lead)
 //!       → entry_ability_fires_on_the_real_lead_not_on_the_corpse
-//!         [RED until `with_lead` exists]
+//!         [GREEN since ADR-0156 D1 landed; was RED]
 //!   ADR-0156 D3 (rejected: hardening the pure resolver against a fainted actor)
 //!       → a_zero_hp_active_state_self_repairs_and_never_becomes_a_fixpoint
 //!         [GREEN today — pins the behavior D3 forbids removing; the ONLY test
@@ -315,11 +315,11 @@ fn drew_r2_zero_hp_lead_is_never_sent_out_and_produces_no_phantom_swap() {
 
 /// EARS E5 PROOF-OF-TEETH (control): the pre-fix shape DOES produce the phantom swap.
 ///
-/// This test is GREEN as soon as the crate compiles — i.e. from the moment
-/// `BattleSide::with_lead` exists, whether or not the server shells have adopted
-/// it, and it stays green after the whole slice lands. (It cannot be observed in
-/// the current RED state at all: `with_lead` is missing, so `game-core` does not
-/// build.) That invariance is the entire point: it is what proves the regression
+/// This test was GREEN from the moment `BattleSide::with_lead` existed — whether
+/// or not the server shells had adopted it — and it is still green now that the
+/// whole slice has landed. (It could not be observed at all during the initial
+/// RED state, when `with_lead` was missing and `game-core` did not build.)
+/// That invariance is the entire point: it is what proves the regression
 /// test above is measuring something real rather than being vacuously true. If
 /// the shared fixture were somehow unable to produce a
 /// `Faint`/`Switch` pair at all (an `Immune` matchup, a miss, a blocked action, a

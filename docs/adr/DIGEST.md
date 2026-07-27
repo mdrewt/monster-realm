@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 121 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 122 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -130,6 +130,7 @@ Generated from 121 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0153](./0153-ux3-playtest-preflight.md) | 0153 — ux3 playtest preflight: reach the server through the CLI's own resolver, and gate it behaviorally | Accepted | tooling-docs, ci-gates | ux3 (M-postgate-ux-hardening — `playtest-up`/`playtest-wipe` preflight-check `$STDB_SERVER` reachability; EARS ux3-1..ux3-3) | Preflight `$STDB_SERVER` with `timeout 10 spacetime server ping "$STDB_SERVER"` — the CLI's own resolver, so the check cannot disagree with the `publish -s` it guards — and gate it with a behavioral tooth, not source scans alone. |
 | [0154](./0154-owner-scoped-wallet-view.md) | 0154 — Owner-scoped `my_wallet` view over the private `player_wallet` table | Accepted | security-authz, economy-quests, client-ui | ux2 (M-postgate-ux-hardening — owner-scoped `#[view]` over `player_wallet` + shop balance seam; EARS ux2-1..ux2-3) | Expose the caller's own balance through an owner-scoped `#[view] my_wallet -> Option<PlayerWallet>` (the ADR-0087 pattern), keep `player_wallet` private, and gate leak-shape with a call-graph-derived eval rather than body-anchored scanning. |
 | [0155](./0155-ux4-battle-swap-discoverability.md) | 0155 — ux4 battle-swap discoverability: the swap UI was correct, so explain the absence instead of fixing it | Accepted | client-ui, battle | ux4 (M-postgate-ux-hardening — repro-and-confirm the battle monster-switch gap, then hint; EARS ux4-1..ux4-3) | ux4-1 confirmed the box/team-separation hypothesis and refuted a swap-UI bug, so ship no fix — pin the working PvE swap path with teeth and add two persistent hints that explain the absence without advertising a currently-dead key. |
+| [0156](./0156-zero-hp-lead-selection-and-fainted-actor-rejection.md) | 0156 — a 0 HP monster is never seated as lead (PvE), and a fainted player active cannot submit an attack | Accepted | battle | battle-0hp-fix (M-postgate-battle-0hp-fix — 0hp lead-monster battle-start defect; EARS E1–E5) | PvE lead selection moves into `BattleSide::with_lead` (first `hp > 0` slot, team order preserved) and `submit_attack` rejects a fainted side-A active at the reducer boundary; the pure resolver is NOT hardened (D3). |
 
 ## Harness design corpus (H- namespace)
 
@@ -211,6 +212,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0136](./0136-ptc5a-care-train-battle-guard.md) — ptc5a (M-playtest-c.5 pre-gate residuals — raising battle-guard gap, EARS ptc5a-1..3) — 0136 — ptc5a care/train both-role ongoing-battle guard: close the bounded mid-battle HP-laundering path (amends ADR-0122 §D7) (Accepted)
 - [0138](./0138-ptc5b-wild-disconnect-gc.md) — ptc5b (M-playtest-c.5 pre-gate residuals — wild-battle disconnect GC, EARS ptc5b-1..3) — 0138 — ptc5b wild-battle disconnect resolution: auto-flee + GC the `battle`/`battle_wild` rows to unblock returning-player re-entry (Accepted)
 - [0155](./0155-ux4-battle-swap-discoverability.md) — ux4 (M-postgate-ux-hardening — repro-and-confirm the battle monster-switch gap, then hint; EARS ux4-1..ux4-3) — 0155 — ux4 battle-swap discoverability: the swap UI was correct, so explain the absence instead of fixing it (Accepted)
+- [0156](./0156-zero-hp-lead-selection-and-fainted-actor-rejection.md) — battle-0hp-fix (M-postgate-battle-0hp-fix — 0hp lead-monster battle-start defect; EARS E1–E5) — 0156 — a 0 HP monster is never seated as lead (PvE), and a fainted player active cannot submit an attack (Accepted)
 
 ### evolution-fusion
 

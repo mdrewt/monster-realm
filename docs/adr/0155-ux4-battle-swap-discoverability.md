@@ -5,6 +5,7 @@
 **Slice:** ux4 (M-postgate-ux-hardening — repro-and-confirm the battle monster-switch gap, then hint; EARS ux4-1..ux4-3)
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** ADR-0156
 **Subsystems:** client-ui, battle
 **Decision:** ux4-1 confirmed the box/team-separation hypothesis and refuted a swap-UI bug, so ship no fix — pin the working PvE swap path with teeth and add two persistent hints that explain the absence without advertising a currently-dead key.
 

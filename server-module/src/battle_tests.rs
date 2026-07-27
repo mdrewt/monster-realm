@@ -124,45 +124,17 @@ fn strip_rust_strings(src: &str) -> String {
 /// outer braces (exclusive), or `None` if the function is not found.
 ///
 /// Mirrors `extractReducerBody` in evals/recruit-reducer-security.eval.mjs.
+///
+/// SSOT (ADR-0003): this is a thin slicing wrapper over
+/// [`extract_fn_body_range`], which owns the single locate-and-brace-walk
+/// implementation. It previously carried a second, independent copy of that
+/// parser (locate `fn <name>(`, find `{`, accumulate `len_utf8()` while
+/// brace-counting) — byte-for-byte the same algorithm, differing only in that it
+/// materialised a `Vec<char>` first. Two parsers for one grammar in one file is a
+/// duplicated source of truth; the copy is gone and all callers are unaffected.
 fn extract_fn_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
-    // Try `pub fn <name>(` first, then `fn <name>(`.
-    let pub_needle = format!("pub fn {}(", name);
-    let priv_needle = format!("fn {}(", name);
-    let fn_start = src
-        .find(pub_needle.as_str())
-        .or_else(|| src.find(priv_needle.as_str()))?;
-
-    // Walk forward from fn_start to find the opening `{`.
-    let after_fn = &src[fn_start..];
-    let brace_offset = after_fn.find('{')?;
-    let body_start = fn_start + brace_offset + 1; // character after '{'
-
-    // Count brace depth to find the matching '}'.
-    // `rel` tracks the byte offset within `src[body_start..]`.
-    let mut depth: usize = 1;
-    let mut rel: usize = 0;
-    let chars: Vec<char> = src[body_start..].chars().collect();
-    let mut char_pos = 0;
-    while char_pos < chars.len() && depth > 0 {
-        match chars[char_pos] {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-            }
-            _ => {}
-        }
-        rel += chars[char_pos].len_utf8();
-        char_pos += 1;
-    }
-
-    if depth == 0 {
-        Some(&src[body_start..body_start + rel])
-    } else {
-        None // unbalanced braces (should not happen in valid Rust)
-    }
+    let (start, end) = extract_fn_body_range(src, name)?;
+    Some(&src[start..end])
 }
 
 /// SSOT wiring: the level-up HP heal inside the battle-results write-back
@@ -1445,11 +1417,14 @@ fn ptc5b_3_body_scan_resolve_wild_battle_on_disconnect() {
 // item marked (verified) is an evasion that a red-team pass actually built and
 // got past an earlier, weaker version of these tests:
 //   - C1/C2 assert an exact per-body OCCURRENCE COUNT (kills the half-applied
-//     fix), the ABSENCE of *every* forbidden way to set `active` — including
-//     `.active =` / `.active=` / `set_active(`, because the field is still `pub`
-//     and can be overwritten right after a correct `with_lead` call (verified) —
-//     and the ARGUMENT passed to `with_lead`, because pinning the constructor in
-//     game-core does not pin the call site (verified).
+//     fix), a WHITELIST on every access to the two still-`pub` fields `active`
+//     and `team` (both can be tampered with immediately after a correct
+//     `with_lead` call — verified, twice: `side_a.active -= side_a.active;` and
+//     `side_a.team.swap(0, 1);`, each a single inline statement), and the
+//     ARGUMENT passed to `with_lead`, because pinning the constructor in
+//     game-core does not pin the call site (verified). The field checks are
+//     whitelists rather than blacklists on purpose: an enumerated forbidden-list
+//     has to guess the next spelling, and it guessed wrong both times.
 //   - C3 asserts a PER-CALL-SITE audit, not a whole-function count: a count floor
 //     is both evadable (drop both audits, add any unrelated reject) and a
 //     false-positive landmine on audit-preserving refactors (verified).
@@ -1482,17 +1457,20 @@ fn ptc5b_3_body_scan_resolve_wild_battle_on_disconnect() {
 
 /// Byte range `[start, end)` of a named `fn`'s body within `src`.
 ///
-/// Same location + brace-counting logic as [`extract_fn_body`], but returns the
-/// RANGE rather than the slice, so the identical range can be cut out of a
-/// DIFFERENT length-preserving view of the same source.
+/// The SINGLE locate-and-brace-walk implementation in this module (ADR-0003
+/// SSOT); [`extract_fn_body`] is a two-line slicing wrapper over it. Returning
+/// the RANGE rather than the slice is what lets the identical range be cut out of
+/// a DIFFERENT length-preserving view of the same source — see [`fn_body_views`].
 ///
-/// S7: `extract_fn_body` brace-counts through live string literals. Callers that
-/// pass a comment-stripped-but-string-bearing source are relying on every `{`/`}`
-/// inside every string literal in the scanned function happening to balance — in
-/// `battle.rs` that is true today only by accident (the `log::info!` format
-/// strings at the tails of `start_battle` and `begin_encounter` use `{{ .. }}`).
-/// Every scan below therefore locates the range on the FULLY stripped source,
-/// where no string literal survives to be counted.
+/// S7: brace-counting is only sound on a source with no live string literals.
+/// A caller that passes a comment-stripped-but-string-BEARING source is relying
+/// on every `{`/`}` inside every string literal in the scanned function happening
+/// to balance — in `battle.rs` that is true today only by accident (the
+/// `log::info!` format strings at the tails of `start_battle` and
+/// `begin_encounter` use `{{ .. }}`). Every ADR-0156 scan below therefore locates
+/// the range on the FULLY stripped source, where no string literal survives to be
+/// counted. (Pre-existing callers via [`extract_fn_body`] keep their historical
+/// behaviour — this refactor changed no call site.)
 fn extract_fn_body_range(src: &str, name: &str) -> Option<(usize, usize)> {
     let pub_needle = format!("pub fn {}(", name);
     let priv_needle = format!("fn {}(", name);
@@ -1545,6 +1523,16 @@ fn fn_body_views(name: &str) -> (String, String) {
         comments_only[start..end].to_string(),
         fully_stripped[start..end].to_string(),
     )
+}
+
+/// The fully-stripped view of a `fn` body — [`fn_body_views`]`.1`.
+///
+/// Most scans never need the string-bearing view; only the two assertions whose
+/// needle IS a string literal (`log_reject("start_battle"` in C3,
+/// `log_reject("submit_attack"` in C4) do. This wrapper keeps the other six call
+/// sites from binding an ignored `_body_ws`.
+fn fn_body(name: &str) -> String {
+    fn_body_views(name).1
 }
 
 /// Byte range `[inner_start, close)` of the `{ .. }` block that OPENS at or
@@ -1613,40 +1601,19 @@ fn with_lead_needle() -> String {
     ["BattleSide::", "with_lead("].concat()
 }
 
-/// Every construction-time way to establish `active` that ADR-0156 D1 forbids,
-/// paired with why it is forbidden. Each is asserted to occur ZERO times.
+/// Construction-time spellings that ADR-0156 D1 forbids outright, paired with
+/// why. Each is asserted to occur ZERO times.
 ///
-/// The `.active =` / `.active=` / `set_active(` entries close the S2 evasion:
-/// `BattleSide.active` is still a `pub` field (privatization is parked as
-/// ADR-0156 residual P2, blocked by the `spacetime-type-snapshot` eval), so a
-/// shell can adopt `with_lead` correctly for BOTH sides and then immediately
-/// overwrite the result with `state.side_a.active = 0;`. A scan that only looked
-/// for the struct literal and the `active: 0` field initialiser would report that
-/// tree as fixed while the defect is fully restored.
+/// These are the two *shapes* that can be named exactly. The two *field-access*
+/// families — any touch of `BattleSide.active` and any non-order-preserving touch
+/// of `BattleSide.team` — cannot be enumerated safely and are handled by the
+/// whitelist counts in [`assert_lead_fields_untouched`] instead.
 fn forbidden_lead_needles() -> Vec<(String, &'static str)> {
     vec![
         (
             ["BattleSide", " {"].concat(),
             "a `BattleSide { .. }` struct literal — hardcodes the lead with no \
              regard for the monster's HP; this IS the defect",
-        ),
-        (
-            ["active", ": 0"].concat(),
-            "a hardcoded `active: 0` field initialiser",
-        ),
-        // Trailing space on the spaced form so a comparison (`.active == team_index`)
-        // is not mistaken for an assignment. The tight form has no such guard, but
-        // `.active==` is not rustfmt output and neither constructor compares `active`
-        // to anything — if one ever does, that is itself worth a second look.
-        (
-            [".active", " = "].concat(),
-            "a post-construction `side.active = 0` assignment — `with_lead` is \
-             adopted and then overwritten, restoring the defect (S2)",
-        ),
-        (
-            [".active", "="].concat(),
-            "a post-construction `side.active=0` assignment (unformatted \
-             spelling of the same S2 evasion)",
         ),
         (
             ["set", "_active("].concat(),
@@ -1656,6 +1623,81 @@ fn forbidden_lead_needles() -> Vec<(String, &'static str)> {
              conscious and rejects otherwise, which is not the D1 rule",
         ),
     ]
+}
+
+/// Assert that a construction reducer's body never touches `BattleSide.active`,
+/// and never touches `BattleSide.team` in a way that could reorder or resize it.
+///
+/// Both checks are WHITELISTS, not blacklists, and that is the point. `active`
+/// and `team` are both still `pub` fields (privatization is parked as ADR-0156
+/// residual P2, blocked by the `spacetime-type-snapshot` eval), so a shell can
+/// adopt `with_lead` correctly for both sides and then undo it on the next line.
+/// An enumerated blacklist loses this arms race by construction — two verified
+/// evasions walked straight through the previous one:
+///
+/// - **T1** `side_a.active -= side_a.active;` — a compound assignment. The old
+///   needle set listed `.active = ` and `.active=` but no operator form, so
+///   `-=`, `+=`, `*=`, `&=`, `|=`, `^=`, `%=`, `<<=`, `>>=` all passed. Rather
+///   than list ten operators (and miss the eleventh), forbid the bare field
+///   ENTIRELY: `.active` may appear only as part of `.active_monster`.
+/// - **T2** `side_a.team.swap(0, 1);` — a post-construction permutation. The
+///   argument pin (`with_lead(team_a)` verbatim) kills the PRE-construction
+///   permutation but says nothing about afterwards, so the strictly stronger form
+///   of the same attack passed. `side_a.team[i]` is positionally coupled to
+///   `party_monster_ids[i]` for HP write-back and the XP award loop, and
+///   `check_team_coupling` compares LENGTHS ONLY — a permutation is invisible to
+///   every other check in the tree. So: `.team` may appear only as `.team.iter()`
+///   or `.team.iter_mut()`. Neither can reorder or resize a `Vec` (they hand out
+///   element references, never `&mut Vec`), while every mutator that can —
+///   `swap`, `sort*`, `rotate_*`, `reverse`, `retain`, `remove`, `insert`,
+///   `push`, `pop`, `drain`, `truncate`, `dedup*`, `clear`, `split_off`,
+///   `append`, `resize`, whole-field assignment, `[i] =` — is excluded because it
+///   is not on the list, without anyone having had to think of it.
+///
+/// Both whitelists are exact on the shipped code: each reducer reads
+/// `state.side_X.team.iter()` twice (building the `BattleStatusStore`) and
+/// `state.side_X.team.iter_mut()` twice (writing status back), and neither
+/// mentions `.active` at all.
+///
+/// If a future change needs another genuinely order-preserving accessor (say
+/// `.team.len()`), this fails and the whitelist must be widened DELIBERATELY.
+/// That is the intended failure mode, not a defect.
+fn assert_lead_fields_untouched(reducer: &str, body: &str) {
+    // --- T1: `.active` may only appear inside `.active_monster` ---------------
+    let active_any = body.matches(".active").count();
+    let active_accessor = body.matches(".active_monster").count();
+    let bare_active = active_any.saturating_sub(active_accessor);
+    assert_eq!(
+        bare_active, 0,
+        "TEETH (E1/D1 T1): `{reducer}` touches the bare `BattleSide.active` field \
+         {bare_active} time(s). At construction, `active` is computed by \
+         `with_lead` (first slot with current_hp > 0) and by NOTHING else — not \
+         `= 0`, and not a compound assignment such as `side_a.active -= \
+         side_a.active`, which is how this evasion was actually built. The field \
+         is still `pub` (residual P2), so the only durable rule is: do not name \
+         it here. If you need to READ the lead, call `active_monster()`."
+    );
+
+    // --- T2: `.team` may only appear as an order-preserving accessor ----------
+    let team_any = body.matches(".team").count();
+    let team_iter = body.matches(".team.iter()").count();
+    let team_iter_mut = body.matches(".team.iter_mut()").count();
+    let team_other = team_any.saturating_sub(team_iter + team_iter_mut);
+    assert_eq!(
+        team_other, 0,
+        "TEETH (E1/D1 T2): `{reducer}` touches `BattleSide.team` in \
+         {team_other} way(s) that are not `.team.iter()` ({team_iter}) or \
+         `.team.iter_mut()` ({team_iter_mut}) out of {team_any} total `.team` \
+         occurrences. After `with_lead` returns, the team must not be reordered or \
+         resized: `side_a.team[i]` is positionally coupled to \
+         `party_monster_ids[i]` for HP write-back and the XP award loop, and \
+         `check_team_coupling` compares LENGTHS ONLY — so a `team.swap(0, 1)` \
+         here silently writes one monster's post-battle HP onto another's row and \
+         awards its XP to the wrong monster, and nothing else in the tree can see \
+         it. `iter()`/`iter_mut()` hand out element references and cannot reorder \
+         a Vec; every method that can is excluded by not being on this list. \
+         Widening the whitelist is a deliberate decision, not a formality."
+    );
 }
 
 /// **C1** — EARS E1 (ADR-0156 D1): `start_battle` must build BOTH sides through
@@ -1668,10 +1710,16 @@ fn forbidden_lead_needles() -> Vec<(String, &'static str)> {
 ///    half-applied fix that converts side A and leaves side B as
 ///    `BattleSide { active: 0, team: team_b }` — still seating a 0 HP opponent
 ///    lead. A presence-only needle cannot see that; the count can.
-/// 2. **Every forbidden spelling of `active` (S2).** Not just the struct literal
-///    and `active: 0`, but also `.active =`, `.active=` and `set_active(` —
-///    because `BattleSide.active` is still `pub` (residual P2), a tree can adopt
-///    `with_lead` for both sides and then restore the defect on the next line.
+/// 2. **The fields, whitelisted (S2 + T1 + T2).** `BattleSide { .. }` and
+///    `set_active(` are forbidden outright; then
+///    [`assert_lead_fields_untouched`] requires that `.active` appear ONLY inside
+///    `.active_monster`, and `.team` ONLY as `.team.iter()` / `.team.iter_mut()`.
+///    Both fields are still `pub` (residual P2), so a tree can adopt `with_lead`
+///    for both sides and undo it on the next line. Enumerated needles lose that
+///    arms race: `side_a.active -= side_a.active;` (T1) walked past a set that
+///    listed `.active = ` and `.active=` but no compound operator, and
+///    `side_a.team.swap(0, 1);` (T2) walked past layer 3 entirely. Whitelists do
+///    not have to anticipate the next spelling.
 /// 3. **The ARGUMENT (S3).** `with_lead(team_a)` / `with_lead(team_b)` verbatim.
 ///    `with_lead_preserves_team_order` in game-core pins the CONSTRUCTOR; nothing
 ///    pinned the CALL SITE. `let mut t = team_a; t.swap(0, i);
@@ -1679,9 +1727,11 @@ fn forbidden_lead_needles() -> Vec<(String, &'static str)> {
 ///    silent HP/XP write-back corruption D1 warns about — `side_a.team[i]` is
 ///    positionally coupled to `party_monster_ids[i]` and `check_team_coupling`
 ///    compares LENGTHS ONLY, so a permutation is invisible everywhere else.
+///    Layer 2's `.team` whitelist closes the mirror-image attack AFTER the call.
 ///
-/// Kills: the half-applied fix; adopt-then-overwrite via the pub field; a
-/// permuted/filtered team argument; `set_active(0)` masquerading as lead
+/// Kills: the half-applied fix; adopt-then-overwrite via either pub field, by
+/// plain OR compound assignment; a permuted/filtered team argument before the
+/// call OR a permuted `side.team` after it; `set_active(0)` masquerading as lead
 /// selection.
 ///
 /// NOTE (deliberate, ADR-0156-recorded constraint): the two calls must stay
@@ -1690,10 +1740,12 @@ fn forbidden_lead_needles() -> Vec<(String, &'static str)> {
 /// an otherwise-correct fix. The per-body count is the point — a whole-file count
 /// cannot distinguish "both sides converted" from "side A converted twice".
 ///
-/// RED today: two `BattleSide {` literals with `active: 0`, zero `with_lead` calls.
+/// GREEN as of the ADR-0156 implementation: 2 `with_lead` calls, 0 forbidden
+/// spellings, `.active` untouched, `.team` only iterated, both teams passed
+/// directly. It was RED before: two `BattleSide {` literals with `active: 0`.
 #[test]
 fn start_battle_constructs_both_sides_via_with_lead() {
-    let (_body_ws, body) = fn_body_views("start_battle");
+    let body = fn_body("start_battle");
 
     // Layer 1: exact call count.
     let with_lead = with_lead_needle();
@@ -1707,7 +1759,8 @@ fn start_battle_constructs_both_sides_via_with_lead() {
          (a shared build_side() helper would zero this count on a correct fix)."
     );
 
-    // Layer 2: no other way to establish `active`.
+    // Layer 2: no other way to establish `active`, and no post-construction
+    // tampering with either `active` (T1) or `team` (T2).
     for (needle, why) in forbidden_lead_needles() {
         let n = body.matches(needle.as_str()).count();
         assert_eq!(
@@ -1717,6 +1770,7 @@ fn start_battle_constructs_both_sides_via_with_lead() {
              `with_lead` (first slot with current_hp > 0) and by nothing else."
         );
     }
+    assert_lead_fields_untouched("start_battle", &body);
 
     // Layer 3: the argument itself (S3).
     let arg_a = ["with_lead(", "team_a)"].concat();
@@ -1749,18 +1803,21 @@ fn start_battle_constructs_both_sides_via_with_lead() {
 /// repro came through the wild path, so this is the reducer his session actually
 /// exercised.
 ///
-/// Same three layers as C1 (exact count / every forbidden `active` spelling /
-/// the argument), with one asymmetry: only `with_lead(team_a)` is pinned by
-/// argument. Side B here is the single freshly-rolled wild, which has NO backing
-/// `monster` row (`opponent_monster_ids` is empty by design — see the ASYMMETRY
-/// note in `begin_encounter`), so it carries no positional coupling to protect.
+/// Same three layers as C1 (exact count / whitelisted `active` + `team` field
+/// access / the argument), with one asymmetry: only `with_lead(team_a)` is pinned
+/// by argument. Side B here is the single freshly-rolled wild, which has NO
+/// backing `monster` row (`opponent_monster_ids` is empty by design — see the
+/// ASYMMETRY note in `begin_encounter`), so it carries no positional coupling to
+/// protect. The `.team` whitelist still applies to BOTH sides: the status-store
+/// write-back loop below the constructor iterates side B too.
 ///
 /// Same inline-call constraint as C1 (see its note).
 ///
-/// RED today: two `BattleSide {` literals with `active: 0`, zero `with_lead`.
+/// GREEN as of the ADR-0156 implementation; it was RED before (two
+/// `BattleSide {` literals with `active: 0`, zero `with_lead` calls).
 #[test]
 fn begin_encounter_constructs_both_sides_via_with_lead() {
-    let (_body_ws, body) = fn_body_views("begin_encounter");
+    let body = fn_body("begin_encounter");
 
     let with_lead = with_lead_needle();
     let call_count = body.matches(with_lead.as_str()).count();
@@ -1781,6 +1838,7 @@ fn begin_encounter_constructs_both_sides_via_with_lead() {
              encounter actually went through."
         );
     }
+    assert_lead_fields_untouched("begin_encounter", &body);
 
     let arg_a = ["with_lead(", "team_a)"].concat();
     assert!(
@@ -1826,9 +1884,10 @@ fn begin_encounter_constructs_both_sides_via_with_lead() {
 /// returns the reject `Err` without auditing it; a fix that audits one side and
 /// not the other (the site count is asserted too).
 ///
-/// RED today: zero `with_lead` call sites exist, so the "exactly 2 sites"
-/// assertion fails. (This test was a GREEN floor before this hardening pass; it
-/// is now coupled to the fix and starts RED.)
+/// GREEN as of the ADR-0156 implementation: both `ok_or_else` closures call
+/// `log_reject("start_battle", me, &e)` before returning the message. It was RED
+/// while the reducer still used `BattleSide { active: 0, .. }` literals (zero
+/// call sites to audit).
 #[test]
 fn start_battle_still_logs_the_no_conscious_monster_rejects() {
     // `body_ws` keeps string literals (the audit call is easier to read there);
@@ -1917,7 +1976,9 @@ fn start_battle_still_logs_the_no_conscious_monster_rejects() {
 /// a log string; a guard on the wrong subject (`team[i]`); a guard that returns
 /// no `Err`; a guard that returns `Err` without an audit record.
 ///
-/// RED today: `active_monster().is_fainted()` is absent from `submit_attack`.
+/// GREEN as of the ADR-0156 implementation (`battle.rs`: the guard sits between
+/// the `is_ranked_pvp` reject and the moveset check, with its own `log_reject` +
+/// `return Err`). It was RED while `active_monster().is_fainted()` was absent.
 #[test]
 fn submit_attack_rejects_a_fainted_active() {
     // Two length-preserving views of the SAME byte range (see `fn_body_views`):
@@ -2095,16 +2156,18 @@ fn submit_attack_rejects_a_fainted_active() {
 /// `swap_active` or `flee`; the `reject_if_active_fainted(..)` helper-indirection
 /// variant; a build where the guard was never written at all (the positive arm).
 ///
-/// The submit_attack arm is RED today (that is E2); the swap_active/flee arms are
-/// GREEN today and must STAY green.
+/// All four arms are GREEN as of the ADR-0156 implementation and must STAY green:
+/// `swap_active` has exactly its one target check, `flee` has none, and
+/// `submit_attack` carries the D2 guard inline. The positive arm was RED before
+/// the implementation landed.
 #[test]
 fn swap_active_and_flee_deliberately_have_no_fainted_active_guard() {
     let fainted_needle = ["active_monster()", ".is_fainted()"].concat();
     let bare_needle = ["fain", "ted"].concat();
 
-    let (_swap_ws, swap_body) = fn_body_views("swap_active");
-    let (_flee_ws, flee_body) = fn_body_views("flee");
-    let (_atk_ws, attack_body) = fn_body_views("submit_attack");
+    let swap_body = fn_body("swap_active");
+    let flee_body = fn_body("flee");
+    let attack_body = fn_body("submit_attack");
 
     // ---- Layer 1: the discriminating expression ---------------------------
     assert!(
@@ -2182,7 +2245,7 @@ fn swap_active_and_flee_deliberately_have_no_fainted_active_guard() {
 /// GREEN today — an anti-regression pin.
 #[test]
 fn swap_active_rejects_a_fainted_swap_target() {
-    let (_body_ws, body) = fn_body_views("swap_active");
+    let body = fn_body("swap_active");
 
     let target_needle = ["team[idx]", ".is_fainted()"].concat();
     assert!(
