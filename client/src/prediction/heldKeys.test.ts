@@ -338,7 +338,7 @@ describe('[mvi] HeldDirections.committedActive: the hold-commit threshold', () =
   it('U-H6 BITES: clear() then press starts a FRESH window', () => {
     // Kills: a parallel stamp map that `clear()` forgets to empty. main.ts calls
     // held.clear() on blur and on every overlay open/close and on reconnect
-    // (main.ts:308/850/883/964/1113); a surviving stamp means the first key pressed
+    // (main.ts:308/851/884/965/1114); a surviving stamp means the first key pressed
     // after an overlay closes would be INSTANTLY committed and could double-move.
     const held = new HeldDirections(150);
     held.press('East', 0);
