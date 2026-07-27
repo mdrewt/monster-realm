@@ -309,16 +309,19 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
             x: npc_row.home_x,
             y: npc_row.home_y,
         };
+        let st = char_state(&ch);
         let Some(dir) = npc_decide(
             current,
             home,
             npc_row.wander_radius,
+            st.facing,
             entity_id,
             tick_counter,
+            &map,
         ) else {
             continue;
         };
-        let next_state = apply_move(&char_state(&ch), MoveInput::Step(dir), &map, now);
+        let next_state = apply_move(&st, MoveInput::Step(dir), &map, now);
         apply_state(&mut ch, &next_state);
         // NOTE (F5): apply_state writes ONLY tile_x/tile_y/facing/action/move_started_at.
         // It does NOT write zone_id. NPC zone crossings deferred to M12c.

@@ -1,10 +1,10 @@
 //! NPC wander decision rules — pure & deterministic (ADR-0003, ADR-0068).
 //!
-//! `npc_decide` is the only public entry point. It takes explicit `npc_id` and
-//! `tick` inputs and mixes them with a non-commutative hash (RT-NPC-01 fix) so
-//! that two NPCs with the same `npc_id + tick` sum produce different outputs.
-//!
-//! Wall-collision is NOT handled here; `apply_move` handles bumps.
+//! `npc_decide` is the only public entry point. It mixes explicit `npc_id` and
+//! `tick` with a non-commutative hash (RT-NPC-01 fix) so that two NPCs with the
+//! same `npc_id + tick` sum produce different outputs. ADR-0159 amends ADR-0068:
+//! the WANDER branch now chooses only LEGAL steps (walkable + inside the radius)
+//! so it never picks a wall; HOMING is unfiltered, `apply_move` still no-ops bumps.
 
 use crate::types::{Direction, TilePos};
 
@@ -66,51 +66,87 @@ fn toward_home(current: TilePos, home: TilePos) -> Direction {
     }
 }
 
-/// Seeded NPC wander decision.
+/// Seeded NPC wander decision — collision- and radius-aware (ADR-0159 D2,
+/// amending ADR-0068).
 ///
 /// Returns `None` (stay) or `Some(direction)` to move.
 ///
 /// # Logic
-/// 1. Compute `h = npc_hash(npc_id, tick)`.
-/// 2. If `manhattan_distance(current, home) <= wander_radius` → wander path:
-///    - If `h % 5 == 0` → stay (`None`), 1-in-5 probability.
-///    - Otherwise → random direction from `h`.
-/// 3. Otherwise (outside radius) → `toward_home(current, home)` (deterministic,
-///    no hash, no stay chance — an NPC outside its radius always moves home).
+/// 1. `dist = manhattan_distance(current, home)`.
+/// 2. **Homing** — if `dist > wander_radius` → `Some(toward_home(current, home))`.
+///    Unfiltered on purpose: every tick, no hash, no legality check, no stay
+///    roll, so an NPC outside its radius can never stall. `apply_move` is still
+///    the authority that no-ops the step if that direction is a wall.
+/// 3. Else if `wander_radius == 0` → `None` (pinned to home).
+/// 4. **Wander** — `h = npc_hash(npc_id, tick)` (raw `tick`, unchanged salt and
+///    splitmix64 avalanche); `h % 5 == 0` → stay (`None`), the 1-in-5 rate.
+/// 5. Build `L`, the LEGAL directions, iterating [`DIRECTION_ORDER`] (the
+///    `Direction` declaration order): `d` is legal iff `current.step(d)` is
+///    walkable on `map` AND stays within `wander_radius` of `home`.
+///    `L` empty (boxed in) → `None`.
+/// 6. If `facing` is in `L` → `Some(facing)`, continuing the current heading —
+///    this is what lengthens runs and roughly halves immediate reversals.
+/// 7. Otherwise → `Some(L[((h >> 1) as usize) % L.len()])`.
 #[must_use]
 pub fn npc_decide(
     current: TilePos,
     home: TilePos,
     wander_radius: u8,
+    facing: Direction,
     npc_id: u64,
     tick: u64,
+    map: &crate::world::TileMap,
 ) -> Option<Direction> {
     let dist = manhattan_distance(current, home);
 
-    if dist <= i64::from(wander_radius) {
-        // Within (or at) radius → wander path
-        // Special case: radius=0 means "pinned to home" — always stay when AT home.
-        if wander_radius == 0 {
-            return None;
-        }
-        let h = npc_hash(npc_id, tick);
-        if h.is_multiple_of(5) {
-            // 1-in-5 stay probability
-            return None;
-        }
-        // Random direction from hash
-        let dir = match (h >> 1) % 4 {
-            0 => Direction::North,
-            1 => Direction::South,
-            2 => Direction::East,
-            _ => Direction::West,
-        };
-        Some(dir)
-    } else {
-        // Outside radius → deterministic toward-home (no hash, no stay)
-        Some(toward_home(current, home))
+    if dist > i64::from(wander_radius) {
+        // Outside radius → deterministic toward-home (no hash, no stay, no filter)
+        return Some(toward_home(current, home));
     }
+    // Special case: radius=0 means "pinned to home" — always stay when AT home.
+    if wander_radius == 0 {
+        return None;
+    }
+    let h = npc_hash(npc_id, tick);
+    if h.is_multiple_of(5) {
+        // 1-in-5 stay probability
+        return None;
+    }
+    // Legal set L: walkable AND still inside the wander radius. Fixed-size
+    // buffer (at most 4 directions) — no allocation in a pure rule.
+    let mut legal = [Direction::North; 4];
+    let mut n = 0usize;
+    for d in DIRECTION_ORDER {
+        let next = current.step(d);
+        if map.is_walkable(next) && manhattan_distance(next, home) <= i64::from(wander_radius) {
+            legal[n] = d;
+            n += 1;
+        }
+    }
+    let legal = &legal[..n];
+    if legal.is_empty() {
+        // Boxed in: every neighbour is a wall or outside the radius.
+        return None;
+    }
+    if legal.contains(&facing) {
+        // Continue the current heading while it stays legal.
+        return Some(facing);
+    }
+    Some(legal[((h >> 1) as usize) % legal.len()])
 }
+
+/// Compass directions in `Direction` declaration order — the stable iteration
+/// order the legal set `L` is built in, so `L`'s indices are deterministic.
+///
+/// Declared strictly BELOW `npc_decide` on purpose: `.cargo/mutants.toml`
+/// line-pins `npc/rules.rs:61:15` (the `if dy > 0 {` inside `toward_home`), so
+/// nothing may be inserted above that line.
+const DIRECTION_ORDER: [Direction; 4] = [
+    Direction::North,
+    Direction::South,
+    Direction::East,
+    Direction::West,
+];
 
 // ===========================================================================
 // fix-nightly (ADR-0088): in-file tests for the PRIVATE `toward_home` fn.
