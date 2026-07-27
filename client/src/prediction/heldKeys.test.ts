@@ -1,7 +1,19 @@
 // prediction/heldKeys.test.ts — HeldDirections + reissueDir (M8.6c, ADR-0013.5)
 //
-// RED reason: heldKeys.ts does NOT EXIST YET — the import itself fails and the
-// entire suite stays red until the implementer creates the module.
+// RED reason (M8.6c, historical): heldKeys.ts did NOT EXIST YET — the import itself
+// failed and the entire suite stayed red until the implementer created the module.
+//
+// RED reason (mvi, THIS slice): `press` gains a REQUIRED `nowMs` argument, the module
+// gains `export const HOLD_COMMIT_MS = 150`, and `HeldDirections` gains
+// `committedActive(nowMs)` + a `constructor(holdCommitMs = HOLD_COMMIT_MS)`. The
+// import of HOLD_COMMIT_MS and every U-H* tooth below are red until that lands. The
+// pre-existing teeth are migrated MECHANICALLY (every `press(dir)` gains a timestamp;
+// the timestamp is irrelevant to `active()`, so their assertions are BYTE-IDENTICAL) and
+// carry no new obligation — an extra argument is harmless to the current implementation.
+// NOTE on the red: the static `HOLD_COMMIT_MS` import fails at MODULE-LINK time while the
+// export is missing, so the whole FILE reds, not just the U-H* teeth. That is the correct
+// signal (a missing implementation, loudly), and the migrated teeth go green unchanged the
+// moment heldKeys.ts exports it.
 //
 // This suite is pure / node-only. No wasm. No real timers.
 // All tests follow the block-body arrow rule for fast-check (see project standards):
@@ -10,7 +22,7 @@
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { WasmDirection } from '../convert/convert';
-import { HeldDirections, reissueDir } from './heldKeys';
+import { HeldDirections, HOLD_COMMIT_MS, reissueDir } from './heldKeys';
 
 // ================================================================================
 // 1. reissueDir — pure dedup decision for the frame-loop CONTINUATION re-issue
@@ -79,7 +91,7 @@ describe('HeldDirections: single key press/release', () => {
     // Kills: an impl that leaves active() undefined after a press, or returns the
     // wrong direction.
     const held = new HeldDirections();
-    held.press('North');
+    held.press('North', 0);
     expect(held.active()).toBe('North');
   });
 
@@ -88,8 +100,8 @@ describe('HeldDirections: single key press/release', () => {
     // then one release(N) would leave N still "held" → active() !== undefined.
     // The no-dup invariant: pressing an already-held dir is a no-op.
     const held = new HeldDirections();
-    held.press('North');
-    held.press('North'); // duplicate press — must be ignored
+    held.press('North', 0);
+    held.press('North', 0); // duplicate press — must be ignored
     expect(held.active()).toBe('North');
     held.release('North');
     expect(held.active()).toBeUndefined(); // one release clears it (no dup stored)
@@ -99,7 +111,7 @@ describe('HeldDirections: single key press/release', () => {
     // Kills: an impl that throws or corrupts state on release of an un-held dir.
     const held = new HeldDirections();
     expect(() => held.release('East')).not.toThrow();
-    held.press('North');
+    held.press('North', 0);
     held.release('East'); // East was never pressed
     expect(held.active()).toBe('North'); // North unaffected
   });
@@ -107,8 +119,8 @@ describe('HeldDirections: single key press/release', () => {
   it('clear() removes all dirs → active() === undefined', () => {
     // Kills: an impl that forgets to clear the stack or the set.
     const held = new HeldDirections();
-    held.press('North');
-    held.press('East');
+    held.press('North', 0);
+    held.press('East', 0);
     held.clear();
     expect(held.active()).toBeUndefined();
   });
@@ -118,8 +130,8 @@ describe('HeldDirections: two-key fallback (the critical stack regression)', () 
   it('press(N), press(S) → active() === "South" (most-recently-pressed)', () => {
     // Kills: an impl that returns the first-pressed key rather than the last.
     const held = new HeldDirections();
-    held.press('North');
-    held.press('South');
+    held.press('North', 0);
+    held.press('South', 0);
     expect(held.active()).toBe('South');
   });
 
@@ -129,8 +141,8 @@ describe('HeldDirections: two-key fallback (the critical stack regression)', () 
     // release — it would lose 'North' when 'South' was released, returning undefined.
     // A correct stack/set impl falls back to the previously held key.
     const held = new HeldDirections();
-    held.press('North');
-    held.press('South');
+    held.press('North', 0);
+    held.press('South', 0);
     held.release('South');
     expect(held.active()).toBe('North'); // must NOT be undefined
   });
@@ -138,8 +150,8 @@ describe('HeldDirections: two-key fallback (the critical stack regression)', () 
   it('press(N), press(E), release(N) → active() === "East" (the non-released key wins)', () => {
     // Kills: an impl that clears on any release, or tracks only one key.
     const held = new HeldDirections();
-    held.press('North');
-    held.press('East');
+    held.press('North', 0);
+    held.press('East', 0);
     held.release('North');
     expect(held.active()).toBe('East');
   });
@@ -148,9 +160,9 @@ describe('HeldDirections: two-key fallback (the critical stack regression)', () 
     // Kills: a 2-slot impl that drops the oldest key when a 3rd is pressed.
     // After pressing 3, releasing the most-recent falls back to the 2nd.
     const held = new HeldDirections();
-    held.press('North');
-    held.press('South');
-    held.press('East');
+    held.press('North', 0);
+    held.press('South', 0);
+    held.press('East', 0);
     expect(held.active()).toBe('East');
     held.release('East');
     expect(held.active()).toBe('South'); // falls back to the previously held key
@@ -160,8 +172,8 @@ describe('HeldDirections: two-key fallback (the critical stack regression)', () 
     // Kills: an impl that uses a stack where releasing a non-top element corrupts the
     // stack order, causing the wrong key to become active.
     const held = new HeldDirections();
-    held.press('North');
-    held.press('South');
+    held.press('North', 0);
+    held.press('South', 0);
     held.release('North'); // release a non-active key
     expect(held.active()).toBe('South'); // South is still the most-recently-pressed held key
   });
@@ -169,10 +181,10 @@ describe('HeldDirections: two-key fallback (the critical stack regression)', () 
   it('all four dirs pressed then released in LIFO order → active() tracks correctly', () => {
     // Kills: an impl with off-by-one in stack traversal.
     const held = new HeldDirections();
-    held.press('North');
-    held.press('South');
-    held.press('East');
-    held.press('West');
+    held.press('North', 0);
+    held.press('South', 0);
+    held.press('East', 0);
+    held.press('West', 0);
     expect(held.active()).toBe('West');
     held.release('West');
     expect(held.active()).toBe('East');
@@ -206,7 +218,7 @@ describe('HeldDirections: fast-check property — active() is the most-recent st
         const model: WasmDirection[] = [];
         for (const op of ops) {
           if (op.kind === 'press') {
-            held.press(op.dir);
+            held.press(op.dir, 0);
             // no-dup: if already present, do nothing; else push to end (most recent)
             if (!model.includes(op.dir)) model.push(op.dir);
           } else if (op.kind === 'release') {
@@ -223,6 +235,153 @@ describe('HeldDirections: fast-check property — active() is the most-recent st
         expect(held.active()).toBe(expected);
       }),
     );
+  });
+});
+
+// ================================================================================
+// 4. [mvi] committedActive — the HOLD-COMMIT threshold that separates a TAP from a
+//    deliberate WALK.
+//
+// SOURCE OF TRUTH: the movement-investigation spec. `committedActive(nowMs)` returns
+// the ACTIVE (stack-top) dir iff `nowMs - top.pressedAtMs >= holdCommitMs`, else
+// undefined. `active()` keeps its old, ungated meaning (nothing reads it in main.ts
+// after this slice — W-MVI-COMMITTED-WIRED pins that).
+//
+// THE DESIGN CONSTRAINT THESE TEETH ENCODE: the press timestamp lives INSIDE the stack
+// entry, so `release`/`clear` evict it BY CONSTRUCTION. A parallel `Map<dir, pressedAt>`
+// is the mutant family this section exists to kill (a red-team PoC of one that forgets
+// to evict on release double-moves on a same-direction re-tap; U-H7 is its precise
+// killer and movementSim's S1 scenario (c) is its end-to-end killer).
+// ================================================================================
+
+describe('[mvi] HeldDirections.committedActive: the hold-commit threshold', () => {
+  it('U-H1 BITES: boundary table {0, X-1, X, X+1} → {undefined, undefined, dir, dir} (>= semantics)', () => {
+    // Kills: `>` instead of `>=` (the X row would be undefined); an off-by-one that
+    // commits at X-1; and any impl that commits the instant a key goes down (which is
+    // exactly today's `active()` behaviour and the r2 defect).
+    const X = 150;
+    const held = new HeldDirections(X);
+    held.press('East', 1000);
+    expect(held.committedActive(1000)).toBeUndefined(); // 0ms held
+    expect(held.committedActive(1000 + X - 1)).toBeUndefined(); // X-1 ms held
+    expect(held.committedActive(1000 + X)).toBe('East'); // X ms held — COMMITTED
+    expect(held.committedActive(1000 + X + 1)).toBe('East'); // X+1 ms held
+
+    // The SAME table against the ARGLESS constructor + the exported default, so a
+    // default that silently disagrees with HOLD_COMMIT_MS cannot hide behind the
+    // explicit-threshold rows above.
+    const dflt = new HeldDirections();
+    dflt.press('North', 5000);
+    expect(dflt.committedActive(5000)).toBeUndefined();
+    expect(dflt.committedActive(5000 + HOLD_COMMIT_MS - 1)).toBeUndefined();
+    expect(dflt.committedActive(5000 + HOLD_COMMIT_MS)).toBe('North');
+    expect(dflt.committedActive(5000 + HOLD_COMMIT_MS + 1)).toBe('North');
+  });
+
+  it('U-H2: nothing held → committedActive() is undefined at any time', () => {
+    // Kills: an impl that returns a stale last-pressed dir when the stack is empty —
+    // the "stuck walking after keyup" regression the M8.6c stack was built to prevent.
+    const held = new HeldDirections(150);
+    expect(held.committedActive(0)).toBeUndefined();
+    expect(held.committedActive(1_000_000)).toBeUndefined();
+    held.press('East', 0);
+    held.release('East');
+    expect(held.committedActive(1_000_000)).toBeUndefined(); // released, however long ago
+  });
+
+  it('U-H3 BITES: a duplicate press does NOT refresh the stamp — the FIRST press governs', () => {
+    // Kills: `press` implemented as an unconditional `set` (map) or as
+    // remove-then-push (stack) — an OS key-repeat or a re-entrant keydown would then
+    // restart the commit window on every repeat tick and a held key would NEVER commit,
+    // silently killing continuous movement. main.ts filters `e.repeat`, but the unit
+    // must be idempotent on its own (the existing no-dup tooth above is the `active()`
+    // half of the same invariant).
+    const held = new HeldDirections(150);
+    held.press('East', 0);
+    held.press('East', 100); // duplicate press of an already-held dir
+    expect(held.committedActive(150)).toBe('East'); // FIRST stamp (0) governs → committed
+    expect(held.committedActive(149)).toBeUndefined(); // …and not one ms earlier
+  });
+
+  it('U-H4 BITES: two-key fallback keeps the older key ORIGINAL stamp (no fresh window on release)', () => {
+    // THE precise killer for the `activeSince`-scalar mutant family: an impl that stamps
+    // "when the active dir last changed" restarts A's window at the moment B is released,
+    // so a long-held A would have to be re-earned for another 150ms — a visible stutter
+    // mid-walk every time the player brushes a second arrow key (movementSim S8 is the
+    // end-to-end version of this, and only bites in high-latency cells; THIS is the
+    // parameter-free kill).
+    const held = new HeldDirections(150);
+    held.press('North', 0); // A, committed long before B appears
+    held.press('South', 1000); // B becomes active (its own window opens at 1150)
+    held.release('South'); // …and B is released at t=1050, before it ever commits
+    expect(held.active()).toBe('North'); // fallback (pre-existing semantics)
+    // t=1060 is only 60ms after B was pressed, but A has been held for 1060ms: A's
+    // ORIGINAL stamp (0) governs, so the walk resumes IMMEDIATELY, not 150ms later.
+    expect(held.committedActive(1060)).toBe('North');
+  });
+
+  it('U-H5 BITES: a newly-pressed key does not inherit the older key commitment', () => {
+    // Kills the "any held dir that has been held >= X" mis-binding (e.g. a scan over the
+    // whole stack, or `#stack.find(e => now - e.pressedAtMs >= X)`): North has been held
+    // for over a second and IS committed, but it is no longer the ACTIVE dir; East is
+    // active and NOT yet committed. The correct answer is undefined — the player just
+    // changed direction and no continuation may fire until East earns its own window.
+    // The mis-binding would keep walking NORTH after the player turned east.
+    const held = new HeldDirections(150);
+    held.press('North', 0);
+    held.press('East', 1000);
+    expect(held.active()).toBe('East');
+    expect(held.committedActive(1100)).toBeUndefined(); // East uncommitted; North not active
+    expect(held.committedActive(1150)).toBe('East'); // East earns its OWN window
+  });
+
+  it('U-H6 BITES: clear() then press starts a FRESH window', () => {
+    // Kills: a parallel stamp map that `clear()` forgets to empty. main.ts calls
+    // held.clear() on blur and on every overlay open/close and on reconnect
+    // (main.ts:308/850/883/964/1113); a surviving stamp means the first key pressed
+    // after an overlay closes would be INSTANTLY committed and could double-move.
+    const held = new HeldDirections(150);
+    held.press('East', 0);
+    held.clear();
+    held.press('East', 60);
+    expect(held.committedActive(120)).toBeUndefined(); // 60ms into the FRESH window
+    expect(held.committedActive(210)).toBe('East'); // 150ms into the FRESH window
+  });
+
+  it('U-H7 BITES: release-then-repress of the SAME dir starts a FRESH window (stale-stamp killer)', () => {
+    // THE red-team mutant this tooth exists for: a parallel `Map<dir, pressedAtMs>` whose
+    // `release` splices `#stack` but leaves the map entry behind. `active()` stays correct,
+    // every legacy tooth stays green, and `committedActive` returns the dir IMMEDIATELY on
+    // a re-tap of a direction the player walked in earlier — a guaranteed double-move on
+    // the second tap. The fix keeps the stamp INSIDE the stack entry so eviction is
+    // structural. movementSim S1 scenario (c) is the end-to-end version.
+    const held = new HeldDirections(150);
+    held.press('East', 0);
+    expect(held.committedActive(500)).toBe('East'); // long-held: committed
+    held.release('East');
+    held.press('East', 600); // the re-tap
+    expect(held.committedActive(650)).toBeUndefined(); // 50ms into the FRESH window
+    expect(held.committedActive(750)).toBe('East'); // 150ms into the FRESH window
+  });
+
+  it('U-H8 BUDGET PIN: 140 <= HOLD_COMMIT_MS and HOLD_COMMIT_MS + 1000/30 + 1 < STEP_MS(200)', () => {
+    // The threshold is squeezed from BOTH sides and neither bound is arbitrary:
+    //
+    // CEILING (< 200): after the first step drains, the continuation must reach the
+    // server before the NEXT movement_tick 200ms later, or a deliberate walk stutters a
+    // whole slot on start. The worst-case budget is the threshold plus one frame at the
+    // slowest supported refresh rate (1000/30 ≈ 33.3ms) plus a millisecond of jitter =
+    // 184.3ms. movementSim S4 measures the real margin (min 22.9ms) and S5 proves that
+    // metric reds at 175.
+    //
+    // FLOOR (>= 140): a tap must be fully covered or the r2 defect survives. The sweep
+    // measured taps up to 140ms as safe in EVERY (fps × tickPhase × scenario) cell, so
+    // the threshold may never drop below that without re-opening the defect.
+    //
+    // Kills: any future "tuning" of HOLD_COMMIT_MS that silently breaks one of the two
+    // constraints while every behavioural tooth still happens to pass on its own grid.
+    expect(HOLD_COMMIT_MS + 1000 / 30 + 1).toBeLessThan(200);
+    expect(HOLD_COMMIT_MS).toBeGreaterThanOrEqual(140);
   });
 });
 
@@ -295,7 +454,7 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
     predictor.reconcile(fakeBaseline(5, 5, t0 - 2 * STEP_MS), [], 0, t0);
 
     // The player holds East for 30 sub-step-ms "frames".
-    held.press('East');
+    held.press('East', 0);
     const FRAME_MS = 50; // sub-step: 4 frames per step_ms
     let now = t0;
     const sentIntents: IntentToSend[] = [];
@@ -344,7 +503,7 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
 
     const t0 = 10_000;
     predictor.reconcile(fakeBaseline(5, 5, t0 - 2 * STEP_MS), [], 0, t0);
-    held.press('East');
+    held.press('East', 0);
 
     let now = t0;
     const FRAME_MS = 60;
@@ -406,7 +565,7 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
 
     const t0 = 10_000;
     predictor.reconcile(fakeBaseline(5, 5, t0 - 2 * STEP_MS), [], 0, t0);
-    held.press('East');
+    held.press('East', 0);
 
     const FRAME_MS = 50;
     let now = t0;
@@ -473,7 +632,7 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
 
     const t0 = 10_000;
     predictor.reconcile(fakeBaseline(5, 5, t0 - 2 * STEP_MS), [], 0, t0);
-    held.press('East');
+    held.press('East', 0);
 
     const FRAME_MS = 50;
     let now = t0;
@@ -581,7 +740,7 @@ describe('Held-key / lag integration regression (M8.6c ADR-0013.5)', () => {
 
     const t0 = 10_000;
     predictor.reconcile(fakeBaseline(2, 2, t0 - 2 * STEP_MS), [], 0, t0);
-    held.press('East');
+    held.press('East', 0);
 
     let now = t0;
     // Run 50 sub-step frames. With correct dedup, pendingCount stays bounded.
