@@ -391,7 +391,11 @@ Pure, deterministic, integer-only combat resolution engine. All battle rules
 live here exactly once (ADR-0003 SSOT). Randomness injected via `TurnVariance`.
 
 - **`types`** — value objects: `BattleMonster` (projected stats for combat),
-  `BattleSide` (active slot + team roster with auto-switch), `BattleState`
+  `BattleSide` (active slot + team roster with auto-switch; `BattleSide::with_lead`
+  seats the first `hp > 0` member as the lead at construction and returns `None`
+  for an empty/all-fainted side, so a 0 HP monster is never sent out — team order
+  is preserved because `team[i]` is positionally coupled to the caller's
+  monster-id list, ADR-0156), `BattleState`
   (symmetric SideA/SideB for PvP readiness, ADR-0017), `TurnChoice`
   (Attack/Swap), `BattleEvent` (`#[non_exhaustive]` for M14 extensibility),
   `TurnVariance` (injected damage/accuracy rolls + speed tie-breaker),

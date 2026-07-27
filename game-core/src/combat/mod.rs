@@ -18,6 +18,8 @@
 
 pub mod ability;
 pub mod ai;
+#[cfg(test)]
+pub mod battle_0hp_tests;
 pub mod damage;
 #[cfg(test)]
 pub mod m14_5b_tests;

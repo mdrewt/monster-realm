@@ -75,13 +75,35 @@ pub enum SwapError {
 #[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
 pub struct BattleSide {
     /// Index into `team` for the currently-active monster (u32 for SpacetimeType).
-    /// Mutate ONLY via [`BattleSide::set_active`], the sole sanctioned mutator
-    /// (field stays pub this slice; full privatization parked — ADR-0053).
+    /// Established by [`BattleSide::with_lead`] at construction and mutated ONLY
+    /// by [`BattleSide::set_active`] thereafter — those two are the whole
+    /// sanctioned surface (ADR-0053, ADR-0156 D1).
+    /// (Field stays pub this slice; full privatization parked — ADR-0053.)
     pub active: u32,
     pub team: Vec<BattleMonster>,
 }
 
 impl BattleSide {
+    /// Build a side from `team`, seating the FIRST non-fainted member as the
+    /// active lead (ADR-0156 D1). This is the second sanctioned way to establish
+    /// `active`, alongside [`BattleSide::set_active`] (ADR-0053): `set_active` is
+    /// the mid-battle swap mutator, `with_lead` is the construction-time selector.
+    ///
+    /// Returns `None` when `team` is empty or every member has fainted. That
+    /// `None` IS the "this side has a conscious member" precondition — callers
+    /// fold their own check into it rather than testing separately.
+    ///
+    /// `team` is returned UNMODIFIED: never sorted, rotated, filtered or
+    /// truncated. `team[i]` is positionally coupled to the caller's monster-id
+    /// list (post-battle HP write-back and the XP award loop), and that coupling
+    /// is only ever checked by length — a permutation here would be silent
+    /// corruption. This constructor computes `active` and nothing else.
+    #[must_use]
+    pub fn with_lead(team: Vec<BattleMonster>) -> Option<BattleSide> {
+        let active = team.iter().position(|m| !m.is_fainted())? as u32;
+        Some(BattleSide { active, team })
+    }
+
     /// Borrow the currently-active monster.
     #[must_use]
     pub fn active_monster(&self) -> &BattleMonster {
@@ -576,6 +598,159 @@ mod tests {
              yields OutOfBounds, never Fainted, never a panic"
         );
         assert_eq!(side.active, 0, "active unchanged on OutOfBounds");
+    }
+
+    // -----------------------------------------------------------------------
+    // BattleSide::with_lead — lead selection at battle construction
+    // (ADR-0156 D1, EARS E1)
+    //
+    // Contract:
+    //   - `active` = the FIRST index with `current_hp > 0` (lowest index wins)
+    //   - `None` when the team is empty OR every member is fainted
+    //   - `team` is returned UNMODIFIED — never sorted, rotated or filtered
+    //
+    // The second sanctioned way to establish `active` alongside `set_active`
+    // (ADR-0053). Vacuity ban: every test below asserts the EXACT index —
+    // `assert!(!side.active_monster().is_fainted())` is true for ANY impl that
+    // picks ANY conscious slot and is therefore banned as a sole assertion.
+    // -----------------------------------------------------------------------
+
+    /// EARS E1 (ADR-0156 D1): a conscious slot-0 monster stays the lead.
+    ///
+    /// Kills: an impl that unconditionally scans for a *later* conscious slot
+    /// (e.g. reusing `next_conscious_index`, which skips `active` and would
+    /// return 1 here), and any impl that returns `None` for a healthy team.
+    #[test]
+    fn with_lead_selects_slot_zero_when_lead_is_conscious() {
+        let m0 = make_battle_monster(Affinity::Fire, 10, 30);
+        let m1 = make_battle_monster(Affinity::Water, 10, 30);
+        let side = BattleSide::with_lead(vec![m0, m1])
+            .expect("a team with a conscious slot 0 must yield Some(BattleSide)");
+        assert_eq!(
+            side.active, 0,
+            "TEETH (E1): with a conscious slot 0 the lead must be index 0; \
+             an impl delegating to next_conscious_index would return 1"
+        );
+    }
+
+    /// EARS E1 (ADR-0156 D1): a 0 HP lead is skipped and the FIRST conscious
+    /// slot is chosen — this is Drew's r2 defect in its smallest form.
+    ///
+    /// The fixture deliberately carries TWO conscious slots (1 and 2). With only
+    /// one conscious slot a `rposition`/`rfind` (last-conscious) implementation
+    /// would be indistinguishable from the correct first-conscious rule; here it
+    /// yields 2 and this assertion kills it.
+    ///
+    /// Kills: `rposition`/`rfind`/`.rev().find()` (last-conscious) impls; an impl
+    /// that hardcodes `active: 0` (the pre-fix shape) and seats the corpse.
+    #[test]
+    fn with_lead_skips_leading_fainted_and_picks_the_first_conscious_not_the_last() {
+        let fainted = make_battle_monster(Affinity::Fire, 0, 30);
+        let first_conscious = make_battle_monster(Affinity::Water, 10, 30);
+        let second_conscious = make_battle_monster(Affinity::Plant, 10, 30);
+        let side = BattleSide::with_lead(vec![fainted, first_conscious, second_conscious])
+            .expect("a team with two conscious members must yield Some(BattleSide)");
+        assert_eq!(
+            side.active, 1,
+            "TEETH (E1): the lead must be the FIRST conscious slot (1), not the \
+             last (2) and not the 0 HP slot 0; a last-conscious impl returns 2 \
+             and the pre-fix hardcoded literal returns 0"
+        );
+    }
+
+    /// EARS E1 (ADR-0156 D1): a run of leading corpses is skipped entirely.
+    ///
+    /// Kills: an impl that only checks slot 0 and falls back to slot 1 (an
+    /// off-by-one "skip one corpse" shortcut) — it would return 1 here.
+    #[test]
+    fn with_lead_skips_multiple_leading_fainted() {
+        let f0 = make_battle_monster(Affinity::Fire, 0, 30);
+        let f1 = make_battle_monster(Affinity::Water, 0, 30);
+        let conscious = make_battle_monster(Affinity::Plant, 10, 30);
+        let side = BattleSide::with_lead(vec![f0, f1, conscious])
+            .expect("a team with one conscious member must yield Some(BattleSide)");
+        assert_eq!(
+            side.active, 2,
+            "TEETH (E1): two leading corpses must both be skipped; a \
+             'skip exactly one' impl returns 1"
+        );
+    }
+
+    /// EARS E1 (ADR-0156 D1): `with_lead` computes `active` and NOTHING else —
+    /// the team is returned in its original order.
+    ///
+    /// Why full-`Vec` equality and not `.len()`: `side_a.team[i]` is positionally
+    /// coupled to `party_monster_ids[i]` for HP write-back (`write_back_party_hp`)
+    /// and for the XP award loop, and `check_team_coupling` compares LENGTHS ONLY
+    /// — it cannot detect a permutation. A constructor that "helpfully" rotates
+    /// the first conscious monster into slot 0 would satisfy a naive
+    /// `!active_monster().is_fainted()` assertion while writing one monster's
+    /// post-battle HP onto another monster's row and awarding its XP to the wrong
+    /// monster. Distinct `species_id`s make any permutation observable.
+    ///
+    /// Kills: any sort/rotate/`swap(0, i)`/`retain(|m| !m.is_fainted())` impl.
+    #[test]
+    fn with_lead_preserves_team_order() {
+        let mut fainted = make_battle_monster(Affinity::Fire, 0, 30);
+        fainted.species_id = 10;
+        let mut mid = make_battle_monster(Affinity::Water, 10, 30);
+        mid.species_id = 11;
+        let mut tail = make_battle_monster(Affinity::Plant, 20, 30);
+        tail.species_id = 12;
+
+        let original = vec![fainted, mid, tail];
+        let side = BattleSide::with_lead(original.clone())
+            .expect("a team with conscious members must yield Some(BattleSide)");
+
+        assert_eq!(
+            side.team, original,
+            "TEETH (E1/D1): with_lead must return `team` UNMODIFIED — same \
+             members, same order. A rotate/sort/filter breaks the positional \
+             coupling with party_monster_ids (HP write-back + XP award), which \
+             check_team_coupling cannot detect because it compares lengths only."
+        );
+        assert_eq!(
+            side.active, 1,
+            "TEETH (E1): order preservation must be achieved by computing `active`, \
+             NOT by moving the conscious monster into slot 0"
+        );
+    }
+
+    /// EARS E1 (ADR-0156 D1): an all-fainted team has no legal lead.
+    ///
+    /// `None` IS the "has a conscious member" precondition — the shells
+    /// (`start_battle` / `begin_encounter`) fold their separate `any(conscious)`
+    /// check into this return value.
+    ///
+    /// Kills: an impl that returns `Some(BattleSide { active: 0, .. })` for an
+    /// all-fainted team, which would seat a corpse and re-open the defect.
+    #[test]
+    fn with_lead_is_none_when_every_member_is_fainted() {
+        let f0 = make_battle_monster(Affinity::Fire, 0, 30);
+        let f1 = make_battle_monster(Affinity::Water, 0, 30);
+        assert_eq!(
+            BattleSide::with_lead(vec![f0, f1]),
+            None,
+            "TEETH (E1): an entirely-fainted team must yield None — there is no \
+             legal lead, and Some(active: 0) would seat a corpse"
+        );
+    }
+
+    /// EARS E1 (ADR-0156 D1): an empty team has no legal lead.
+    ///
+    /// `active_monster()` indexes `team[active]` unconditionally, so any
+    /// `Some(_)` here is a panic landmine on the first resolver call.
+    ///
+    /// Kills: an impl using `unwrap_or(0)` / `position(..).unwrap_or_default()`
+    /// which returns `Some(BattleSide { active: 0, team: vec![] })`.
+    #[test]
+    fn with_lead_is_none_on_an_empty_team() {
+        assert_eq!(
+            BattleSide::with_lead(Vec::new()),
+            None,
+            "TEETH (E1): an empty team must yield None; Some(active: 0) on an \
+             empty team panics the first time active_monster() is called"
+        );
     }
 
     // -----------------------------------------------------------------------
