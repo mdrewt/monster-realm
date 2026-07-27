@@ -43,7 +43,8 @@ use game_core::resolve_encounter;
 
 /// Start a PvE battle: build BattleMonsters from the player's party and the
 /// opponent's party (owned by opponent_identity), create a BattleState, insert
-/// the Battle row. Both parties must have at least one conscious party member.
+/// the Battle row. Each side's lead is the first slot with HP > 0 (ADR-0156 D1);
+/// a side with no conscious member at all has no legal lead and is rejected.
 ///
 /// Opponent provenance (ADR-0048): only a self/sandbox opponent
 /// (`opponent_identity == ctx.sender`) or the server/NPC sentinel
@@ -214,27 +215,24 @@ pub fn start_battle(
         team_b.push(battle_monster_from_row(&m, &sp, &skills)?);
     }
 
-    // At least one conscious monster per side.
-    if !team_a.iter().any(|m| !m.is_fainted()) {
+    // Seat each side's lead: the first slot with HP > 0 (ADR-0156 D1). `None`
+    // means the side has no conscious monster at all — that is the precondition
+    // check, folded into the constructor. Team order is preserved, so
+    // `team[i]` stays coupled to `*_monster_ids[i]` for HP write-back and XP.
+    let side_a = BattleSide::with_lead(team_a).ok_or_else(|| {
         let e = "party has no conscious monster".to_string();
         log_reject("start_battle", me, &e);
-        return Err(e);
-    }
-    if !team_b.iter().any(|m| !m.is_fainted()) {
+        e
+    })?;
+    let side_b = BattleSide::with_lead(team_b).ok_or_else(|| {
         let e = "opponent has no conscious monster".to_string();
         log_reject("start_battle", me, &e);
-        return Err(e);
-    }
+        e
+    })?;
 
     let mut state = BattleState {
-        side_a: BattleSide {
-            active: 0,
-            team: team_a,
-        },
-        side_b: BattleSide {
-            active: 0,
-            team: team_b,
-        },
+        side_a,
+        side_b,
         outcome: BattleOutcome::Ongoing,
         turn_number: 0,
         weather: None,
@@ -298,8 +296,10 @@ pub(crate) fn lead_party(ctx: &ReducerContext, owner: Identity) -> Option<(Vec<u
 /// a single freshly-rolled wild (no owned `monster` row). Builds the `Battle` row
 /// DIRECTLY (NOT via `start_battle`, so `start_battle`'s owned-opponent guards stay
 /// intact) and inserts the private `battle_wild` row (1:1). Returns the new
-/// `battle_id`. Carries ALL of `start_battle`'s guards (R-D). EVERY rejection is an
-/// `Err`, never a panic.
+/// `battle_id`. Carries ALL of `start_battle`'s guards (R-D), including lead
+/// selection: side A's active is the first party slot with HP > 0 (ADR-0156 D1),
+/// and a party with no conscious member is rejected. EVERY rejection is an `Err`,
+/// never a panic.
 pub(crate) fn begin_encounter(
     ctx: &ReducerContext,
     player_identity: Identity,
@@ -366,9 +366,11 @@ pub(crate) fn begin_encounter(
         ability_ids_a.push(sp.ability);
         team_a.push(battle_monster_from_row(&m, &sp, &skills)?);
     }
-    if !team_a.iter().any(|m| !m.is_fainted()) {
-        return Err("party has no conscious monster".to_string());
-    }
+    // Seat side A's lead: the first slot with HP > 0 (ADR-0156 D1). `None` is
+    // the "party has a conscious monster" precondition. Team order is preserved,
+    // keeping `team[i]` coupled to `party_monster_ids[i]`.
+    let side_a = BattleSide::with_lead(team_a)
+        .ok_or_else(|| "party has no conscious monster".to_string())?;
 
     // Build side B: exactly ONE wild monster (no owned monster row). The species
     // must exist at creation (R-G): a battle created after `sync_content` cannot
@@ -389,19 +391,18 @@ pub(crate) fn begin_encounter(
         .collect();
     let wild = wild_battle_monster(&sp, &skill_ids, wild_level, individuality_seed)?;
 
+    // ASYMMETRY (documented for M8d): `side_b.team.len() == 1` (the wild, so
+    // `side_b.active_monster()` never indexes an empty team), but
+    // `opponent_monster_ids.len() == 0` (the wild is UNOWNED — no monster row).
+    // Do NOT zip these two: side_b has a BattleMonster but no backing id.
+    // A freshly-rolled wild is always conscious, so the `None` arm is unreachable
+    // in practice; it exists because `with_lead` is total (ADR-0156 D1).
+    let side_b = BattleSide::with_lead(vec![wild])
+        .ok_or_else(|| "wild opponent has no conscious monster".to_string())?;
+
     let mut state = BattleState {
-        side_a: BattleSide {
-            active: 0,
-            team: team_a,
-        },
-        // ASYMMETRY (documented for M8d): `side_b.team.len() == 1` (the wild, so
-        // `side_b.active_monster()` never indexes an empty team), but
-        // `opponent_monster_ids.len() == 0` (the wild is UNOWNED — no monster row).
-        // Do NOT zip these two: side_b has a BattleMonster but no backing id.
-        side_b: BattleSide {
-            active: 0,
-            team: vec![wild],
-        },
+        side_a,
+        side_b,
         outcome: BattleOutcome::Ongoing,
         turn_number: 0,
         weather: None,
@@ -542,6 +543,17 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
     // submit_pvp_action and the pvp.rs funnel.
     if is_ranked_pvp(&battle) {
         let e = "not available in PvP battles".to_string();
+        log_reject("submit_attack", me, &e);
+        return Err(e);
+    }
+    // Fainted-active reject (ADR-0156 D2). Defence for LEGACY rows persisted with
+    // a 0 HP active: lead selection is start-time-only and does not repair them,
+    // and `calc_damage` never reads the attacker's HP, so a corpse would deal
+    // FULL damage. Sited before the moveset check so a corpse does not produce
+    // the misleading "skill N not in active monster's moveset". Reject-not-clamp:
+    // no silent auto-swap — that is the round-2 surprise this slice removes.
+    if battle.state.side_a.active_monster().is_fainted() {
+        let e = "your active monster has fainted — swap to another monster or flee".to_string();
         log_reject("submit_attack", me, &e);
         return Err(e);
     }

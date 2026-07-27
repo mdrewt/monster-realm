@@ -243,9 +243,9 @@ fn drew_r2_zero_hp_lead_is_never_sent_out_and_produces_no_phantom_swap() {
     // no-Faint/no-Switch claims are conditional on the turn having happened.
     let damage_to_a = events
         .iter()
-        .filter(|e| {
-            matches!(e, BattleEvent::Damage { side: SideId::SideA, amount, .. } if *amount > 0)
-        })
+        .filter(
+            |e| matches!(e, BattleEvent::Damage { side: SideId::SideA, amount, .. } if *amount > 0),
+        )
         .count();
     assert_eq!(
         damage_to_a, 1,
@@ -256,7 +256,15 @@ fn drew_r2_zero_hp_lead_is_never_sent_out_and_produces_no_phantom_swap() {
     );
     let damage_to_b = events
         .iter()
-        .filter(|e| matches!(e, BattleEvent::Damage { side: SideId::SideB, .. }))
+        .filter(|e| {
+            matches!(
+                e,
+                BattleEvent::Damage {
+                    side: SideId::SideB,
+                    ..
+                }
+            )
+        })
         .count();
     assert_eq!(
         damage_to_b, 1,
@@ -532,7 +540,8 @@ fn a_zero_hp_active_state_self_repairs_and_never_becomes_a_fixpoint() {
     const MAX_TURNS: u16 = 5;
     let mut turns_used = 0u16;
     for _ in 0..MAX_TURNS {
-        if !state.side_a.active_monster().is_fainted() && !state.side_b.active_monster().is_fainted()
+        if !state.side_a.active_monster().is_fainted()
+            && !state.side_b.active_monster().is_fainted()
         {
             break;
         }

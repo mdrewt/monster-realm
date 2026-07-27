@@ -82,6 +82,26 @@ pub struct BattleSide {
 }
 
 impl BattleSide {
+    /// Build a side from `team`, seating the FIRST non-fainted member as the
+    /// active lead (ADR-0156 D1). This is the second sanctioned way to establish
+    /// `active`, alongside [`BattleSide::set_active`] (ADR-0053): `set_active` is
+    /// the mid-battle swap mutator, `with_lead` is the construction-time selector.
+    ///
+    /// Returns `None` when `team` is empty or every member has fainted. That
+    /// `None` IS the "this side has a conscious member" precondition — callers
+    /// fold their own check into it rather than testing separately.
+    ///
+    /// `team` is returned UNMODIFIED: never sorted, rotated, filtered or
+    /// truncated. `team[i]` is positionally coupled to the caller's monster-id
+    /// list (post-battle HP write-back and the XP award loop), and that coupling
+    /// is only ever checked by length — a permutation here would be silent
+    /// corruption. This constructor computes `active` and nothing else.
+    #[must_use]
+    pub fn with_lead(team: Vec<BattleMonster>) -> Option<BattleSide> {
+        let active = team.iter().position(|m| !m.is_fainted())? as u32;
+        Some(BattleSide { active, team })
+    }
+
     /// Borrow the currently-active monster.
     #[must_use]
     pub fn active_monster(&self) -> &BattleMonster {

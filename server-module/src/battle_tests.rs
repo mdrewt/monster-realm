@@ -1534,9 +1534,8 @@ fn extract_fn_body_range(src: &str, name: &str) -> Option<(usize, usize)> {
 fn fn_body_views(name: &str) -> (String, String) {
     let comments_only = strip_rust_comments(MODULE_SOURCE);
     let fully_stripped = strip_rust_strings(&comments_only);
-    let (start, end) = extract_fn_body_range(&fully_stripped, name).unwrap_or_else(|| {
-        panic!("ADR-0156: `{name}` must exist in server-module/src/battle.rs")
-    });
+    let (start, end) = extract_fn_body_range(&fully_stripped, name)
+        .unwrap_or_else(|| panic!("ADR-0156: `{name}` must exist in server-module/src/battle.rs"));
     debug_assert_eq!(
         comments_only.len(),
         fully_stripped.len(),
