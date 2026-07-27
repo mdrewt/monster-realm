@@ -24,11 +24,23 @@
 //
 // GATE MAP (plan §D):
 //   EARS-1: T-CFG-ON, T-LOG-EMITS, T-FMT, T-FMT-NESTED, T-FMT-IDENTITY-LIKE, T-FMT-TOTAL,
-//           T-PROXY-CALLS, T-PROXY-THIS, T-PROXY-SINK-THROWS, T-PROXY-STABLE
+//           T-PROXY-CALLS, T-PROXY-THIS, T-PROXY-OWN-PROPS, T-PROXY-SINK-THROWS,
+//           T-PROXY-STABLE
 //   EARS-2: T-CFG-DEFAULT-OFF, T-CFG-REJECT, T-CFG-DEV-THROWS, T-CFG-PROD-DEGRADE,
 //           T-LOG-OFF-UNDEFINED, T-PROXY-IDENTITY   (+ E1 in evals/dev-observability-gating.eval.mjs)
 //   EARS-3: T-CFG-NO-INBOUND, T-FILTER   (+ T-LOG-FILTER-WIRED, see NOTE below)
 //   EARS-4: E1 / T-NO-RING live in the eval (source-level firewall)
+//
+// POST-LANDING ADDITIONS (review round 2 — the implementation is green on everything above;
+// these gates encode defects the earlier suite could not see):
+//   * `T-PROXY-OWN-PROPS` (red-team Finding 1, reproduced against the real SDK): the SDK
+//     builds `reducers` as a plain `{}` (db_connection_impl.ts:376 — #makeDbView at :360
+//     uses Object.create(null), #makeReducers does not), so every Object.prototype member
+//     is a reachable FUNCTION and a typeof-only trap wraps and LOGS them.
+//   * the MAX_LINE_LEN gate now asserts the MIRROR relationship against the imported
+//     ERROR_MSG_MAX_LEN, not just the literal 512 (desync-guard: a literal-only assertion
+//     survives a re-tune of the source constant and silently splits the repo's one
+//     truncation rule in two).
 //
 // NOTE — ONE GATE ADDED BEYOND PLAN §D (tester judgement, recorded for the verifier):
 //   `T-LOG-FILTER-WIRED`. §D's T-FILTER only exercises `shouldLogReducer` directly, and
@@ -40,6 +52,12 @@
 
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+// The line cap is DERIVED, not coincidental: ADR-0157 §4 reuses ADR-0130's discipline so
+// the repo keeps ONE truncation rule. Importing the source constant is what makes the
+// mirror enforceable instead of a comment. (errorRing.ts has zero imports and no DOM
+// access, so this stays a node-only unit test. This import lives in the TEST file only —
+// devLog.ts itself must keep ZERO runtime imports, gated by the E1 eval.)
+import { ERROR_MSG_MAX_LEN } from '../ui/errorRing';
 import {
   type DevLogLevel,
   formatSendLine,
@@ -387,10 +405,22 @@ describe('devLog sink (EARS-1/2): makeSendLogger', () => {
 // ===========================================================================
 
 describe('devLog formatter (EARS-1): formatSendLine', () => {
-  it('MAX_LINE_LEN is 512 — mirrors ERROR_MSG_MAX_LEN (ui/errorRing.ts:12), the ADR-0130 discipline reuse', () => {
-    // WRONG IMPL KILLED: an arbitrary/absent cap. The 512 value is not free-choice — §A6/§4 of
-    // ADR-0157 pins it to the existing errorRing constant so the repo has ONE truncation rule.
+  it('MAX_LINE_LEN is 512 AND is still equal to ERROR_MSG_MAX_LEN (ui/errorRing.ts) — the ADR-0130 discipline reuse', () => {
+    // WRONG IMPL KILLED (1): an arbitrary/absent cap. The 512 value is not free-choice — §A6/§4
+    // of ADR-0157 pins it to the existing errorRing constant so the repo has ONE truncation rule.
     expect(MAX_LINE_LEN).toBe(512);
+    // WRONG IMPL KILLED (2, the DRIFT case): a literal-only assertion goes on passing after
+    // someone re-tunes ERROR_MSG_MAX_LEN, silently splitting the repo's single truncation rule
+    // into two divergent ones while devLog.ts's own comment still claims it "mirrors" it. The
+    // relationship is the invariant, so the relationship is what is asserted. If this ever
+    // fails, the fix is to move BOTH constants together (or to amend ADR-0157 §4 and delete
+    // the "mirrors" claim from devLog.ts) — never to loosen this line.
+    expect(
+      MAX_LINE_LEN,
+      'MAX_LINE_LEN must stay equal to ERROR_MSG_MAX_LEN — devLog.ts documents it as MIRRORING ' +
+        'that constant (ADR-0157 §4 reusing ADR-0130). devLog.ts cannot import it (zero runtime ' +
+        'imports, E1), so this test is the only thing holding the two in sync',
+    ).toBe(ERROR_MSG_MAX_LEN);
   });
 
   it('T-FMT: a bigint arg renders (does not throw) and the line carries the reducer name', () => {
@@ -618,6 +648,93 @@ describe('devLog Proxy (EARS-1): wrapReducerLogging logs and forwards', () => {
     expect(logged, 'reading a property must never emit a log line — only CALLS are logged').toEqual(
       [],
     );
+  });
+
+  it('T-PROXY-OWN-PROPS (fixture self-check): the fake reducers object really DOES inherit from Object.prototype', () => {
+    // PROOF OF TEETH. The SDK builds `reducers` as a plain `{}` object literal
+    // (db_connection_impl.ts:376 — note that #makeDbView at :360 uses Object.create(null),
+    // but #makeReducers does NOT), so `toString`, `hasOwnProperty`, `valueOf` and
+    // `constructor` are all reachable FUNCTIONS on it. If this fixture were ever "cleaned
+    // up" to Object.create(null), the gate below would pass vacuously against a wrapper
+    // that still wraps every inherited member on the real SDK object.
+    const c = new FakeDbConnection('mr-test');
+    expect(
+      Object.getPrototypeOf(c.reducers),
+      'the fake reducers object must be a plain {} literal inheriting Object.prototype — the ' +
+        'SDK shape. An Object.create(null) fake makes T-PROXY-OWN-PROPS vacuous',
+    ).toBe(Object.prototype);
+    expect(
+      Object.hasOwn(c.reducers, 'hasOwnProperty'),
+      'hasOwnProperty must be INHERITED on the fake, not an own property',
+    ).toBe(false);
+    expect(typeof (c.reducers as unknown as Record<string, unknown>).hasOwnProperty).toBe(
+      'function',
+    );
+  });
+
+  it('T-PROXY-OWN-PROPS: INHERITED functions (toString / hasOwnProperty / valueOf / constructor) pass through RAW and are NEVER logged', () => {
+    // WRONG IMPL KILLED (red-team Finding 1, reproduced against the real SDK): a reducers
+    // `get` trap that tests only `typeof value === 'function'` with no own-property check.
+    // Every Object.prototype member is a function, so all of them get wrapped, memoized and
+    // LOGGED as if they were game reducers:
+    //     wrapped.reducers.hasOwnProperty('enqueueMove')  =>  -> hasOwnProperty ["enqueueMove"]
+    //     `${wrapped.reducers}`                           =>  -> toString []
+    // That fabricates console lines which look exactly like real player actions — in the one
+    // artifact whose entire purpose is to be trusted as a record of what the client sent.
+    // It also breaks the "only reducer methods are wrapped" invariant, so a future call site
+    // (or any library that probes with hasOwnProperty) silently corrupts the log.
+    // The fix is an own-property guard, e.g.
+    //     if (!Object.prototype.hasOwnProperty.call(target, prop)) return value;
+    // placed BEFORE the wrap/memoize.
+    const c = new FakeDbConnection('mr-test');
+    const logged: string[] = [];
+    const w = wrapReducerLogging(c, (name) => {
+      logged.push(name);
+    });
+    const view = w.reducers as unknown as Record<string, unknown>;
+
+    // (a) IDENTITY: an inherited member must come back as the real Object.prototype
+    // function, not a logging wrapper around it.
+    expect(
+      view.hasOwnProperty,
+      'w.reducers.hasOwnProperty must be the REAL Object.prototype.hasOwnProperty — an ' +
+        'inherited member must pass through raw, never be wrapped',
+    ).toBe(Object.prototype.hasOwnProperty);
+    expect(view.toString, 'w.reducers.toString must be the REAL Object.prototype.toString').toBe(
+      Object.prototype.toString,
+    );
+    expect(view.valueOf, 'w.reducers.valueOf must be the REAL Object.prototype.valueOf').toBe(
+      Object.prototype.valueOf,
+    );
+    expect(view.constructor, 'w.reducers.constructor must be the REAL Object constructor').toBe(
+      Object,
+    );
+
+    // (b) SILENCE: reading them, CALLING them through the view, and implicitly stringifying
+    // the view must emit no line at all. (The inherited function is captured and invoked
+    // via .call so this stays a genuine call-through-the-wrapper, not an Object.hasOwn
+    // shortcut that would bypass the get trap entirely and prove nothing.)
+    const inheritedHasOwn = view.hasOwnProperty as (this: unknown, key: string) => boolean;
+    expect(
+      inheritedHasOwn.call(w.reducers, 'talk'),
+      'an inherited member must still WORK when called through the wrapped view',
+    ).toBe(true);
+    expect(`${w.reducers}`, 'implicit stringification must still work').toBe('[object Object]');
+    expect(
+      logged,
+      'no inherited member may be logged — `-> hasOwnProperty [...]` / `-> toString []` are ' +
+        'fabricated lines that look like real player actions in the outbound log',
+    ).toEqual([]);
+
+    // (c) POSITIVE CONTROL: the fix must NOT be "pass everything through raw" — an OWN
+    // reducer method is still wrapped and still logged.
+    w.reducers.talk({ x: 1 });
+    expect(
+      logged,
+      'own reducer methods must still be wrapped and logged — a guard that passes everything ' +
+        'through raw would disable the feature entirely',
+    ).toEqual(['talk']);
+    expect(c.callLog().length, 'and the underlying own method must still run exactly once').toBe(1);
   });
 
   it('T-PROXY-THIS (fixture self-check): the fake really DOES trip a private-field TypeError under a naive Reflect.get pass-through', () => {

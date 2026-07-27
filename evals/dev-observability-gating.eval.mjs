@@ -3,8 +3,8 @@
 // ONE architecture gate over `client/src/net/devLog.ts`, covering two EARS criteria
 // mechanically (plan §D, gates E1 + T-NO-RING):
 //
-//   E1 — the module has ZERO runtime imports (`import type` permitted), never names
-//        `console`, and never names `globalThis`/`window`. This subsumes three v1 checks:
+//   E1 — the module has ZERO runtime imports (`import type` permitted) and never names
+//        `console`. This subsumes three v1 checks:
 //          * criterion 4's PII firewall — a module that imports nothing at runtime CANNOT
 //            reach eventRing / errorRing / bugBundle, so a reducer arg (joinGame({name}),
 //            setNickname({nickname}), setProfileName({name}) all carry player free text)
@@ -31,6 +31,13 @@
 //        `log`) and all state lives in module consts and closures reached only through the
 //        exported functions. Banning the two global roots also closes the string-indexed
 //        console bypasses (`globalThis['console'].log(line)`).
+//
+//   NO-AMBIENT-CLOCK-OR-RNG — the source must not name `Date`, `Math.random`,
+//        `performance` or `crypto`. Those are BAREWORDS, so NO-GLOBAL-SCOPE (which only
+//        catches named global OBJECTS) cannot see them — on a module that runs
+//        synchronously in front of every outbound reducer dispatch, i.e. the determinism
+//        axis ADR-0003 guards hardest. A future increment that genuinely needs a clock
+//        must INJECT it (`now: () => number`), the way `warn`/`out` already are.
 //
 // RED STATE AT AUTHORING TIME: `client/src/net/devLog.ts` does not exist. The eval FAILS
 // (pass:false, "cannot read") — it does NOT skip. A missing module must be red, never green.
@@ -259,6 +266,51 @@ export function checkNoRingReferences(stripped) {
 }
 
 // ============================================================================
+// Check NO-AMBIENT-CLOCK-OR-RNG — `Date` / `Math.random` / `performance` / `crypto`
+// ============================================================================
+//
+// checkNoGlobalScope only catches named global OBJECTS. The ambient CLOCK and RNG are
+// barewords: `Date.now()`, `Math.random()`, `performance.now()`, `crypto.getRandomValues()`
+// would all sail through every other predicate — on a module that sits SYNCHRONOUSLY in
+// front of every outbound reducer dispatch, i.e. exactly the determinism axis ADR-0003
+// guards hardest. A timestamped or sampled log line also makes formatSendLine
+// non-deterministic, so its own property test (`T-FMT-TOTAL`) could no longer pin it.
+//
+// devLog.ts needs neither: the console already timestamps lines, and every input arrives
+// as a parameter. If a future increment genuinely needs a clock it must be INJECTED
+// (`now: () => number`), the way `warn` and `out` already are — which keeps the module
+// unit-testable and keeps this predicate honest.
+//
+// `Math.random` (not bare `Math`) on purpose: Math.max/Math.min are deterministic and
+// perfectly legitimate; only the RNG is banned. The GOOD fixture exercises `Math.max` to
+// prove this predicate does not over-reach.
+
+const CLOCK_RNG_NEEDLES = ['Date', 'Math.random', 'performance', 'crypto'];
+
+/**
+ * @param {string} stripped  Comment-stripped source.
+ * @returns {string|null}
+ */
+export function checkNoAmbientClockOrRng(stripped) {
+  for (const needle of CLOCK_RNG_NEEDLES) {
+    const idx = stripped.indexOf(needle);
+    if (idx !== -1) {
+      const lineNo = stripped.slice(0, idx).split('\n').length;
+      return (
+        `${DEVLOG_PATH}:${lineNo}: references "${needle}" in live code — devLog.ts must read no ` +
+        'ambient clock and no RNG. It runs synchronously in front of every outbound reducer ' +
+        'dispatch, so a hidden Date.now()/Math.random() reading puts non-determinism on the ' +
+        'send path (ADR-0003) and makes the pure formatter untestable. Inject it instead ' +
+        '(`now: () => number`), the way `warn` and `out` already are. NOTE: comments are ' +
+        'stripped before this scan, so the toISOString()/toDate() rationale prose is fine; ' +
+        'Math.max/Math.min are NOT banned, only Math.random'
+      );
+    }
+  }
+  return null;
+}
+
+// ============================================================================
 // Positive control — the file is the real module, not an empty stub
 // ============================================================================
 //
@@ -318,11 +370,17 @@ const GOOD_DEVLOG = `
      const fs = require('node:fs');
      export { eventRing } from '../ui/eventRing';
      globalThis.__mrSideChannel = BUF;  window.__mrDevLog = 'send';
+     Date.now();  Math.random();  performance.now();  crypto.getRandomValues(a);
+   toISOString()/toDate() are NOT duck-typed (they are PARTIAL on the SDK Timestamp) —
+   that rationale comment names Date and must stay legal.
    All of the above are PROSE here — they must be stripped, not flagged. */
 import type { SomeSdkThing } from './sdkTypes';
 export type { SomeSdkThing } from './sdkTypes';
 
 export const MAX_LINE_LEN = 512;
+// Deterministic Math is NOT banned — only the RNG is. This live call proves the
+// clock/RNG predicate does not over-reach.
+export function clampLen(n) { return Math.max(0, n); }
 export type DevLogLevel = 'off' | 'send' | 'send-move';
 export type SendLogger = (reducerName: string, args: readonly unknown[]) => void;
 export function parseDevLogLevel(raw) { return 'off'; }
@@ -332,10 +390,12 @@ export function formatSendLine(name, args) { return '-> ' + name; }
 export function makeSendLogger(level, out) { return (n, a) => out(formatSendLine(n, a)); }
 export function wrapReducerLogging(target, log) { return target; }
 `;
-// Must pass ALL FIVE predicates. It exercises every PERMITTED form (a type-only import
-// AND a type-only re-export, an injected sink) and quotes every BANNED form — the ring
-// names, the bareword console, globalThis/window, a plain import, a dynamic import, a
-// require, a value re-export — exclusively inside comments (the comment-immunity proof;
+// Must pass ALL SIX predicates. It exercises every PERMITTED form (a type-only import, a
+// type-only re-export, an injected sink, and a DETERMINISTIC Math.max call) and quotes
+// every BANNED form — the ring names, the bareword console, globalThis/window, a plain
+// import, a dynamic import, a require, a value re-export, Date.now/Math.random/
+// performance.now/crypto.getRandomValues, and the toISOString()/toDate() rationale prose
+// the real module carries — exclusively inside comments (the comment-immunity proof;
 // Tooth G2 asserts they are all still really there).
 
 const BAD_RUNTIME_IMPORT = `
@@ -448,6 +508,46 @@ export function makeSendLogger(level, out) {
 // Kills: the obs-d runtime toggle smuggled in early — a second configuration source (a
 // second SSOT) that also makes the module untestable without a DOM global.
 
+const BAD_AMBIENT_CLOCK = `
+export function makeSendLogger(level, out) {
+  return (n, a) => {
+    out('[' + Date.now() + '] ' + formatSendLine(n, a));
+  };
+}
+`;
+// Kills: a timestamped line. It reads the ambient clock on the synchronous send path
+// (ADR-0003 determinism) and makes formatSendLine's own property test unable to pin the
+// output. Invisible to every other predicate — no import, no console, no global object,
+// no ring needle.
+
+const BAD_AMBIENT_RNG = `
+export function makeSendLogger(level, out) {
+  return (n, a) => {
+    if (Math.random() < 0.1) return;
+    out(formatSendLine(n, a));
+  };
+}
+`;
+// Kills: sampling the log. Non-deterministic OUTPUT from a module the whole slice treats
+// as pure — and a log that silently drops 10% of the calls it exists to record.
+
+const BAD_AMBIENT_PERF = `
+export function formatSendLine(name, args) {
+  return '-> ' + performance.now() + ' ' + name;
+}
+`;
+// Kills: the same defect via the other clock. `performance` is a bareword, so neither the
+// global-object ban nor the ring vocabulary sees it.
+
+const BAD_AMBIENT_CRYPTO = `
+export function makeSendLogger(level, out) {
+  const id = crypto.getRandomValues(new Uint8Array(4)).join('');
+  return (n, a) => out(id + ' ' + formatSendLine(n, a));
+}
+`;
+// Kills: a per-session correlation id minted from the ambient CSPRNG — non-deterministic,
+// and (unlike everything else in this module) an unreviewed new identifier in the log.
+
 const BAD_EMPTY_STUB = `
 // devLog.ts — nothing here yet.
 `;
@@ -460,7 +560,8 @@ const BAD_EMPTY_STUB = `
 export default async function () {
   const name =
     'dev-observability-gating (ADR-0157 E1: client/src/net/devLog.ts has ZERO runtime imports, ' +
-    'no bareword console, no globalThis/window; T-NO-RING: no eventRing/errorRing/bugBundle/pushError)';
+    'no bareword console, no globalThis/window, no ambient clock/RNG; T-NO-RING: no ' +
+    'eventRing/errorRing/bugBundle/pushError)';
 
   // ==========================================================================
   // PROOFS-OF-TEETH — a fixture failure means the PREDICATE is broken, so the
@@ -473,6 +574,7 @@ export default async function () {
     ['checkNoConsole', checkNoConsole(good)],
     ['checkNoRingReferences', checkNoRingReferences(good)],
     ['checkNoGlobalScope', checkNoGlobalScope(good)],
+    ['checkNoAmbientClockOrRng', checkNoAmbientClockOrRng(good)],
     ['checkIsRealModule', checkIsRealModule(good)],
   ]) {
     if (result) {
@@ -505,6 +607,11 @@ export default async function () {
       "export { eventRing } from '../ui/eventRing';",
       'globalThis',
       'window',
+      'Date.now()',
+      'Math.random()',
+      'performance.now()',
+      'crypto.getRandomValues(',
+      'toDate()',
     ].every((needle) => GOOD_DEVLOG.indexOf(needle) !== -1);
     if (!rawHasBanned) {
       return {
@@ -705,6 +812,55 @@ export default async function () {
       };
     }
   }
+  for (const [label, fixture] of [
+    ['BAD_AMBIENT_CLOCK (Date.now() in the line)', BAD_AMBIENT_CLOCK],
+    ['BAD_AMBIENT_RNG (Math.random() sampling)', BAD_AMBIENT_RNG],
+    ['BAD_AMBIENT_PERF (performance.now() in the line)', BAD_AMBIENT_PERF],
+    ['BAD_AMBIENT_CRYPTO (crypto.getRandomValues() session id)', BAD_AMBIENT_CRYPTO],
+  ]) {
+    const stripped = stripComments(fixture);
+    if (!checkNoAmbientClockOrRng(stripped)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH B10: ${label} was NOT flagged by checkNoAmbientClockOrRng — an ambient clock ` +
+          'or RNG on the synchronous outbound send path is non-determinism (ADR-0003) that ' +
+          'every other predicate is blind to: it needs no import, no console, no global ' +
+          'object and no ring name',
+      };
+    }
+    // Independence: if another predicate happened to catch it, B10 proves nothing.
+    for (const [other, result] of [
+      ['checkNoRuntimeImports', checkNoRuntimeImports(stripped)],
+      ['checkNoConsole', checkNoConsole(stripped)],
+      ['checkNoRingReferences', checkNoRingReferences(stripped)],
+      ['checkNoGlobalScope', checkNoGlobalScope(stripped)],
+    ]) {
+      if (result) {
+        return {
+          name,
+          pass: false,
+          detail:
+            `TEETH B10b: ${label} was also flagged by ${other} — it must be invisible to every ` +
+            `OTHER predicate, otherwise B10 does not prove the clock/RNG check is ` +
+            `load-bearing: ${result}`,
+        };
+      }
+    }
+  }
+  // Over-reach guard: deterministic Math must NOT be banned (the GOOD fixture calls
+  // Math.max). Covered by Tooth G1, asserted explicitly here so the intent is recorded.
+  if (checkNoAmbientClockOrRng(stripComments('export const f = (n) => Math.max(0, n);'))) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH B10c: `Math.max(0, n)` was flagged by checkNoAmbientClockOrRng — only the RNG ' +
+        'is banned; Math.max/Math.min are deterministic and legitimate. Over-reaching here ' +
+        'would push the implementer to work around the gate rather than obey it',
+    };
+  }
 
   // ==========================================================================
   // REAL SOURCE CHECK — scan client/src/net/devLog.ts.
@@ -748,6 +904,10 @@ export default async function () {
     const r = checkNoGlobalScope(stripped);
     if (r) failures.push(`[NO-GLOBAL-SCOPE] ${r}`);
   }
+  {
+    const r = checkNoAmbientClockOrRng(stripped);
+    if (r) failures.push(`[NO-AMBIENT-CLOCK-OR-RNG] ${r}`);
+  }
 
   if (failures.length > 0) {
     return { name, pass: false, detail: failures.join('; ') };
@@ -758,9 +918,10 @@ export default async function () {
     pass: true,
     detail:
       `${DEVLOG_PATH} exports the pinned API and has ZERO runtime imports, no bareword ` +
-      '"console", no globalThis/window, and no eventRing/errorRing/bugBundle/pushError ' +
-      'reference — criterion 2 (no dependency dragged into the prod bundle) and criterion 4 ' +
-      '(console-only; both the shared F9 bundle AND any self-built second ring are ' +
-      'structurally unreachable) hold. Teeth verified (19 fixture assertions).',
+      '"console", no globalThis/window, no ambient Date/Math.random/performance/crypto, and ' +
+      'no eventRing/errorRing/bugBundle/pushError reference — criterion 2 (no dependency ' +
+      'dragged into the prod bundle), criterion 4 (console-only; both the shared F9 bundle ' +
+      'AND any self-built second ring are structurally unreachable) and ADR-0003 determinism ' +
+      'on the send path all hold. Teeth verified (46 fixture assertions).',
   };
 }

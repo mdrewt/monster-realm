@@ -142,6 +142,20 @@ coverage-measured module (`client/src/net/devLog.ts`); the two shells it touches
 - Bundle-size verification is an empirically measured, ADR-recorded number rather than a CI budget
   job (the ADR-0128 §D3 precedent); the standing automated tooth is the zero-runtime-imports eval,
   which catches the dominant real risk — a dependency dragged in.
+- At `send-move` the sink runs *before* `value.apply(...)`, so a synchronous format + `console.log`
+  sits in front of the `enqueueMove` dispatch by construction. Measured overhead is ~0.35 µs/call
+  (0.80 → 1.15 µs over 200k calls) against a 16.7 ms frame and a direction-change-gated send rate,
+  so it is not an ADR-0013 smoothness risk — but `send-move` is a debugging mode, not a default.
+- The outer Proxy returns a fresh `.bind(target)` per read for non-`reducers` function properties, so
+  `conn.conn.disconnect !== conn.conn.disconnect`. Only the reducers view and its per-name method
+  wrappers are memoized (that is the hot path). Nothing relies on the identity of the others today.
+- `NOISY_REDUCERS` hardcodes the accessor name `'enqueueMove'`. A rename in the generated bindings
+  would fail the `main.ts` typecheck but leave this string silently stale, degrading `send` into a
+  move-rate flood rather than breaking anything.
+- The flag-on Proxy path is unit-validated against a fake that reproduces the SDK's `#private`-field
+  shape (with a fixture self-check proving the fake actually bites), plus a red-team pass against a
+  real `DbConnection` and a live server/browser reconnect run. CI's e2e gate runs with the flag off,
+  which is the correct default to exercise.
 
 **Measured bundle delta.** Built both sides with the provenance stamp pinned so the only variable is
 the new code (`MR_BUILD_SHA=bench MR_BUILD_TIME=bench VITE_STDB_DB=bench npm --prefix client run
