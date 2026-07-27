@@ -148,15 +148,22 @@ fn dialogue_state_done_to_vec_round_trips() {
 /// M12b: npc_decide is deterministic — identical inputs produce identical output.
 ///
 /// kills: any impl that reads wall-clock, OS entropy, or a mutable global RNG
-/// instead of computing deterministically from (current, home, radius, npc_id, tick).
+/// instead of computing deterministically from
+/// (current, home, radius, facing, npc_id, tick, map).
 /// The server calls npc_decide once per tick per NPC; different calls with the
 /// same inputs must agree (no drift between replicas).
+///
+/// ADR-0159 D2: `npc_decide` gained `facing: Direction` and `map: &TileMap`
+/// params (collision-/radius-aware wander); this call site is updated
+/// positionally (facing=North, map=the real zone_0() grid) — the assertion
+/// itself (determinism) is unaffected by the migration.
 #[test]
 fn npc_decide_same_inputs_same_direction() {
+    let map = game_core::zone_0();
     let home = game_core::TilePos { x: 5, y: 5 };
     let current = game_core::TilePos { x: 4, y: 5 };
-    let a = game_core::npc_decide(current, home, 2, 99u64, 42u64);
-    let b = game_core::npc_decide(current, home, 2, 99u64, 42u64);
+    let a = game_core::npc_decide(current, home, 2, game_core::Direction::North, 99u64, 42u64, &map);
+    let b = game_core::npc_decide(current, home, 2, game_core::Direction::North, 99u64, 42u64, &map);
     assert_eq!(a, b, "npc_decide must be deterministic");
 }
 
@@ -167,10 +174,15 @@ fn npc_decide_same_inputs_same_direction() {
 /// The correct implementation special-cases `wander_radius == 0` at the top of
 /// `npc_decide` (game-core/src/npc/rules.rs) to always return None — this is
 /// confirmed implemented and this test is GREEN.
+///
+/// ADR-0159 D2: unaffected by the migration (the radius==0 pinned-stay special
+/// case is checked before any facing/map consultation); call site updated
+/// positionally.
 #[test]
 fn npc_decide_radius_zero_never_moves() {
+    let map = game_core::zone_0();
     let home = game_core::TilePos { x: 5, y: 5 };
-    let dir = game_core::npc_decide(home, home, 0, 42u64, 7u64);
+    let dir = game_core::npc_decide(home, home, 0, game_core::Direction::South, 42u64, 7u64, &map);
     assert!(
         dir.is_none(),
         "NPC with wander_radius=0 must never move; got {:?}",

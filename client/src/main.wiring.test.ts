@@ -3382,3 +3382,87 @@ describe('★ main.ts wiring (mvi): the hold-commit threshold is wired into BOTH
     ).toBe(1);
   });
 });
+
+// ===========================================================================
+// feel-polish D1: care feedback wiring (ADR-0159, ledger item 087).
+//
+// SOURCE OF TRUTH: EARS criterion "WHEN the player presses the care-button/action,
+// THE UI SHALL show a visible confirmation (toast, animation, or stat-delta
+// feedback)." + docs/adr/0159-feel-polish-care-feedback-npc-wander.md D1.
+//
+// RED REASON: main.ts on master routes onCare through `sendGuarded('care', ...)`
+// (main.ts:1827-1829), which attaches only a `.catch` — there is no success branch,
+// and raisingView has no showFeedback() to route through even on rejection. Every
+// test below fails against the current main.ts source.
+//
+// WRONG IMPL KILLED (per test):
+//   W-CARE-NO-SENDGUARDED: a revert back to sendGuarded('care', ...) — the catch-only
+//     path silently hides both success and rejection feedback behind the raising
+//     overlay (the exact shipped bug ADR-0159 D1 fixes).
+//   W-CARE-REDUCER-CALL: an onCare wiring site that never calls the care reducer.
+//   W-CARE-SHOWFEEDBACK: an onCare wiring site that calls the reducer but never
+//     shows ANY feedback on success — the EARS criterion is unmet even if care
+//     itself still works server-side.
+//   W-CARE-ERRMSG: an onCare wiring site whose catch arm shows a raw err.message
+//     (InternalError leak) instead of routing through reduceErrorMessage(err, 'care').
+//
+// Do NOT edit these tests to match a buggy implementation — corrections must trace
+// to ADR-0159 D1 only.
+// ===========================================================================
+
+describe('main.ts wiring (feel-polish D1): care feedback (ADR-0159)', () => {
+  it("W-CARE-NO-SENDGUARDED BITES: main.ts no longer calls sendGuarded('care' — kills silent revert to the catch-only path", () => {
+    // ADR-0159 D1: onCare must be rewritten to the onBuy/onSell await+showFeedback shape.
+    // sendGuarded attaches ONLY a .catch (no success branch at all) — a revert back to it
+    // would silently drop the success confirmation the EARS criterion requires.
+    const src = readMainTs();
+    expect(
+      src.includes("sendGuarded('care'"),
+      "main.ts must NOT call sendGuarded('care' — sendGuarded has no success branch, so a " +
+        'successful care would once again be acknowledged by nothing (ADR-0159 D1)',
+    ).toBe(false);
+  });
+
+  it('W-CARE-REDUCER-CALL BITES: the onCare wiring region calls reducers.care( — kills missing-reducer-call impl', () => {
+    // WRONG IMPL KILLED: an impl that guts the reducer call entirely while adding UI text —
+    // care would stop functioning even though the overlay claims success.
+    const src = readMainTs();
+    const onCareIdx = src.indexOf('onCare:');
+    expect(onCareIdx, 'main.ts must contain an onCare: wiring site').toBeGreaterThanOrEqual(0);
+    const region = src.slice(onCareIdx, onCareIdx + 1200);
+    expect(
+      region.includes('reducers.care('),
+      'main.ts onCare wiring region must call reducers.care( (ADR-0159 D1)',
+    ).toBe(true);
+  });
+
+  it('W-CARE-SHOWFEEDBACK BITES: the onCare wiring region calls raisingView.showFeedback( — kills silent-success impl (the EARS criterion itself)', () => {
+    // EARS criterion: "THE UI SHALL show a visible confirmation" on a successful care press.
+    // WRONG IMPL KILLED: an impl that awaits the reducer call (so care still works) but never
+    // calls showFeedback on the success path — click #2 would still look identical to click #1.
+    const src = readMainTs();
+    const onCareIdx = src.indexOf('onCare:');
+    expect(onCareIdx, 'main.ts must contain an onCare: wiring site').toBeGreaterThanOrEqual(0);
+    const region = src.slice(onCareIdx, onCareIdx + 1200);
+    expect(
+      region.includes('showFeedback('),
+      'main.ts onCare wiring region must call showFeedback( — a successful care press must be ' +
+        'visibly confirmed (ADR-0159 D1, EARS criterion)',
+    ).toBe(true);
+  });
+
+  it("W-CARE-ERRMSG BITES: the onCare wiring region routes rejection through reduceErrorMessage(err, 'care') — kills InternalError-leak/silent-catch impl", () => {
+    // ADR-0159 D1: catch(err) -> raisingView.showFeedback(reduceErrorMessage(err, 'care')) —
+    // the SenderError "care cooldown not yet elapsed" reason must pass through unmangled and
+    // an InternalError's raw detail must never leak to the player (onBuy/onSell precedent).
+    const src = readMainTs();
+    const onCareIdx = src.indexOf('onCare:');
+    expect(onCareIdx, 'main.ts must contain an onCare: wiring site').toBeGreaterThanOrEqual(0);
+    const region = src.slice(onCareIdx, onCareIdx + 1200);
+    expect(
+      region.includes("reduceErrorMessage(err, 'care')"),
+      "main.ts onCare wiring region must call reduceErrorMessage(err, 'care') on rejection " +
+        '(ADR-0159 D1)',
+    ).toBe(true);
+  });
+});

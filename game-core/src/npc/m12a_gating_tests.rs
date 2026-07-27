@@ -1,21 +1,37 @@
 //! M12a NPC gating tests — proof-of-teeth for `npc_decide`, authored from the
-//! M12 spec §3 EARS criteria (ADR-0068 §"Proof-of-teeth"). Populated by the tester.
+//! M12 spec §3 EARS criteria (ADR-0068 §"Proof-of-teeth"), extended by
+//! ADR-0159 D2 (collision-/radius-aware wander, feel-polish slice).
 //!
 //! EARS criteria covered:
-//!   Determinism — same (current, home, radius, npc_id, tick) → same Option<Direction>
-//!   Outside-radius — deterministic toward-home direction (L1 Manhattan, dominant axis)
+//!   Determinism — same (current, home, radius, facing, npc_id, tick, map) → same Option<Direction>
+//!   Outside-radius — deterministic toward-home direction (L1 Manhattan, dominant axis),
+//!                    answered EVERY tick, never None (ADR-0159 G3)
 //!   Within-radius / at-boundary — seeded wander (varies over ticks, stays sometimes)
-//!   Known-answer — exact splitmix64 output pinned for npc_id=1, tick=0, outside-radius
+//!   Known-answer — exact splitmix64 output pinned for several (npc_id, tick, facing) vectors
+//!   ADR-0159 D2 ("WHEN NPCs move, THE npc_decide/movement tick SHALL avoid abrupt
+//!   stop/start bursts"):
+//!     G1 — no legal-direction result is ever a wall or outside the radius (headline tooth)
+//!     G2 — continue-facing: a still-legal facing is returned unchanged
+//!     G3 — homing (outside-radius) answers every tick, never None
+//!     G4 — known-answer vectors pin the hash/salt/legality interaction
+//!     G5 — behavioural bound: zero bumps, bounded reversal rate over a long walk
+//!     G6 — unchanged contracts (radius=0, determinism, toward_home axis/tiebreak) still hold
 //!
 //! Each test carries a `/// kills:` comment naming which wrong implementation it
 //! catches, so the verifier can match failing assertion → eliminated bug class.
 //!
-//! Red state: every test will PANIC on the `todo!()` stubs in `rules.rs`.
+//! NEW SIGNATURE (ADR-0159 D2):
+//!   npc_decide(current, home, wander_radius, facing, npc_id, tick, map) -> Option<Direction>
+//!
+//! Red state: every test in this file fails to compile until `npc_decide` gains
+//! `facing: Direction` and `map: &TileMap` (ADR-0159 D2) — a missing-impl RED,
+//! not a typo in these tests.
 //!
 //! Run: cargo nextest run -p game-core npc::m12a_gating_tests -- --nocapture
 
 use crate::npc::npc_decide;
-use crate::types::{Direction, TilePos};
+use crate::types::{dir_from_code, Direction, TilePos};
+use crate::world::zone_0;
 
 use proptest::prelude::*;
 
@@ -38,10 +54,11 @@ fn pos(x: i32, y: i32) -> TilePos {
 #[test]
 fn npc_decide_deterministic() {
     // Within-radius scenario: distance=1 < radius=3
+    let map = zone_0();
     let current = pos(5, 6);
     let home = pos(5, 5);
-    let r1 = npc_decide(current, home, 3, 42, 7);
-    let r2 = npc_decide(current, home, 3, 42, 7);
+    let r1 = npc_decide(current, home, 3, Direction::North, 42, 7, &map);
+    let r2 = npc_decide(current, home, 3, Direction::North, 42, 7, &map);
     assert_eq!(
         r1, r2,
         "npc_decide must return the same result for identical inputs"
@@ -62,13 +79,16 @@ proptest! {
         hx in any::<i32>(),
         hy in any::<i32>(),
         radius in 0u8..=30u8,
+        facing_code in 0u8..4,
         npc_id in any::<u64>(),
         tick in any::<u64>(),
     ) {
         let current = TilePos { x: cx, y: cy };
         let home = TilePos { x: hx, y: hy };
-        let r1 = npc_decide(current, home, radius, npc_id, tick);
-        let r2 = npc_decide(current, home, radius, npc_id, tick);
+        let facing = dir_from_code(facing_code).expect("facing_code in 0..4 is valid");
+        let map = zone_0();
+        let r1 = npc_decide(current, home, radius, facing, npc_id, tick, &map);
+        let r2 = npc_decide(current, home, radius, facing, npc_id, tick, &map);
         prop_assert_eq!(
             r1, r2,
             "npc_decide must return the same result for identical inputs (no mutable global state)"
@@ -80,13 +100,15 @@ proptest! {
 // Test 3 — Outside radius moves toward home on X axis (pure East)
 // kills: an impl that uses a random direction even when outside the wander
 //        radius (any seeded-random path applied here is a correctness bug).
+//        ADR-0159 D2: the homing branch is UNCHANGED — no facing/map influence.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn npc_decide_outside_radius_moves_toward_home_x_axis() {
     // home=(5,5), current=(0,5): dx=5, dy=0, distance=5 > radius=3
     // dx > dy → dominant axis is X, home is to the East
-    let result = npc_decide(pos(0, 5), pos(5, 5), 3, 1, 0);
+    let map = zone_0();
+    let result = npc_decide(pos(0, 5), pos(5, 5), 3, Direction::North, 1, 0, &map);
     assert_eq!(
         result,
         Some(Direction::East),
@@ -104,7 +126,8 @@ fn npc_decide_outside_radius_moves_toward_home_x_axis() {
 fn npc_decide_outside_radius_moves_toward_home_y_axis() {
     // home=(5,5), current=(5,10): dx=0, dy=5, distance=5 > radius=3
     // dy > dx → dominant axis is Y, home is North (y decreases toward home)
-    let result = npc_decide(pos(5, 10), pos(5, 5), 3, 1, 0);
+    let map = zone_0();
+    let result = npc_decide(pos(5, 10), pos(5, 5), 3, Direction::East, 1, 0, &map);
     assert_eq!(
         result,
         Some(Direction::North),
@@ -121,7 +144,8 @@ fn npc_decide_outside_radius_moves_toward_home_y_axis() {
 fn npc_decide_outside_radius_moves_toward_home_northeast() {
     // home=(10,3), current=(3,3): dx=7, dy=0, distance=7 > radius=4
     // dx=7 > dy=0 → dominant axis is X → East
-    let result = npc_decide(pos(3, 3), pos(10, 3), 4, 99, 0);
+    let map = zone_0();
+    let result = npc_decide(pos(3, 3), pos(10, 3), 4, Direction::South, 99, 0, &map);
     assert_eq!(
         result,
         Some(Direction::East),
@@ -132,17 +156,23 @@ fn npc_decide_outside_radius_moves_toward_home_northeast() {
 // ---------------------------------------------------------------------------
 // Test 6 — Within radius varies over ticks (wander is not always the same)
 // kills: an impl that always returns the same direction for within-radius
-//        (e.g. hardcoded Some(North) or constant modulo bias).
+//        (e.g. hardcoded Some(North) or constant modulo bias) — and, under
+//        ADR-0159 D2, an impl that collapses the legal set incorrectly (e.g.
+//        always L[0]).
 // ---------------------------------------------------------------------------
 
 #[test]
 fn npc_decide_within_radius_varies_over_ticks() {
     // home=(5,5), current=(5,5): distance=0 < radius=5
-    // Over 20 different ticks, we must see at least 2 distinct results
+    // facing=South is ILLEGAL at (5,5) on the real zone-0 grid (wall directly
+    // south of home), so every non-stay tick is forced through the hash-pick
+    // branch (never continue-facing) — preserving the "must see >=2 distinct
+    // outcomes" property under the new legality-aware algorithm.
+    let map = zone_0();
     let home = pos(5, 5);
     let current = pos(5, 5); // at home, always within any positive radius
     let results: Vec<Option<Direction>> = (0u64..20)
-        .map(|tick| npc_decide(current, home, 5, 1, tick))
+        .map(|tick| npc_decide(current, home, 5, Direction::South, 1, tick, &map))
         .collect();
 
     let distinct_count = {
@@ -165,21 +195,33 @@ fn npc_decide_within_radius_varies_over_ticks() {
 // kills: an impl that uses strict `>` for the boundary check instead of `>=`,
 //        causing an NPC at exactly `radius` distance to walk toward home when
 //        it should wander freely (spec says "within wander radius" is distance ≤ radius).
+//
+// ADR-0159 D2 migration note: `current = (5,8)` is OUTSIDE the real zone-0
+// grid's bounds (height 7, valid y is 0..6), so under the NEW legality-aware
+// wander path every step target is off-map (`is_walkable` is bounds-safe and
+// returns `false`), making the legal set L empty and the result ALWAYS `None`
+// across all 20 ticks. This is a DIFFERENT constant than the old
+// "varies over ticks" result, but the assertion below (`!all_north`) is still
+// exactly the right tooth: an impl that wrongly treats distance==radius as
+// "outside" would deterministically return `Some(Direction::North)` on EVERY
+// tick (toward_home doesn't consult ticks), which the assertion below still
+// catches. All-`None` correctly passes; all-`Some(North)` correctly fails.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn npc_decide_at_radius_boundary_treated_as_within() {
     // home=(5,5), current=(5,8): Manhattan distance = 3 = radius = 3
     // At exact boundary → must NOT always return the same toward-home value
-    // (if wander is used, different ticks must differ as in test 6)
+    let map = zone_0();
     let home = pos(5, 5);
     let current = pos(5, 8); // distance = |5-5| + |8-5| = 3 = radius
     let radius = 3u8;
 
     // If this were "outside" logic, every call would return Some(North).
-    // If this is "inside/boundary" logic, results vary over ticks.
+    // If this is "inside/boundary" logic, results are governed by legality
+    // (here: always None, since (5,8) is off the real map).
     let results: Vec<Option<Direction>> = (0u64..20)
-        .map(|tick| npc_decide(current, home, radius, 7, tick))
+        .map(|tick| npc_decide(current, home, radius, Direction::South, 7, tick, &map))
         .collect();
 
     let all_north = results.iter().all(|r| *r == Some(Direction::North));
@@ -194,16 +236,19 @@ fn npc_decide_at_radius_boundary_treated_as_within() {
 // Test 8 — Stay probability: within radius, None appears at least once in 100 ticks
 // kills: an impl that never returns None (always moves), violating the
 //        1-in-5 stay probability (hash mod 5 == 0 → stay per the plan).
+//        ADR-0159 D2: the stay roll happens BEFORE the legality/continue-facing
+//        check, so this remains unaffected by facing/map.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn npc_decide_stay_sometimes() {
     // home=(5,5), current=(5,5): within any positive radius
+    let map = zone_0();
     let home = pos(5, 5);
     let current = pos(5, 5);
 
     let none_count = (0u64..100)
-        .filter(|&tick| npc_decide(current, home, 10, 42, tick).is_none())
+        .filter(|&tick| npc_decide(current, home, 10, Direction::North, 42, tick, &map).is_none())
         .count();
 
     assert!(
@@ -217,21 +262,15 @@ fn npc_decide_stay_sometimes() {
 // Test 9 — Known-answer vector: outside-radius with npc_id=1, tick=0
 // kills: any impl that changes the toward-home axis-selection logic for the
 //        outside-radius path — the result must be Some(East) for this exact
-//        fixture regardless of the hash/salt (no RNG used outside radius).
-//        Also kills an impl using dy-dominant tie-breaking when dx==dy (here
-//        dx=10 > dy=0 so East is unambiguous; the known answer is exact).
-//
-// Spec note: outside-radius path is purely deterministic (no hash involved),
-// so this vector requires no salt knowledge. A distinct within-radius known-
-// answer test would pin the salt; that is deferred to M12a integration tests
-// (a pre-run of the impl produces the vector, which is then locked into the
-// suite — currently the NPC_DECIDE_SALT constant is not finalized in the spec).
+//        fixture regardless of the hash/salt (no RNG used outside radius), and
+//        regardless of `facing`/`map` (ADR-0159 D2 leaves this branch UNCHANGED).
 // ---------------------------------------------------------------------------
 
 #[test]
 fn npc_decide_known_answer() {
     // npc_id=1, tick=0; home=(10,10), current=(0,10): dx=10, dy=0 → East (outside radius=3)
-    let result = npc_decide(pos(0, 10), pos(10, 10), 3, 1, 0);
+    let map = zone_0();
+    let result = npc_decide(pos(0, 10), pos(10, 10), 3, Direction::West, 1, 0, &map);
     assert_eq!(
         result,
         Some(Direction::East),
@@ -250,7 +289,8 @@ fn npc_decide_known_answer() {
 fn npc_decide_outside_radius_larger_dy_chooses_y_axis() {
     // home=(5,5), current=(5,0): dx=0, dy=5, distance=5 > radius=2
     // home.y=5 > current.y=0 → home is South (y increases toward home)
-    let result = npc_decide(pos(5, 0), pos(5, 5), 2, 1, 0);
+    let map = zone_0();
+    let result = npc_decide(pos(5, 0), pos(5, 5), 2, Direction::West, 1, 0, &map);
     assert_eq!(
         result,
         Some(Direction::South),
@@ -264,22 +304,33 @@ fn npc_decide_outside_radius_larger_dy_chooses_y_axis() {
 //        silently alters the wander distribution — property tests won't catch this
 //        because they only check determinism/direction-class invariants, not exact values.
 //
-// Vector derivation:
-//   npc_hash(1, 0):
-//     z = 1 * 0x9E3779B97F4A7C15 + 0 + 0xDEADBEEFCAFE1234 = 0x7CE538A94A488E49... (splitmix64)
-//   Final h = 0x03a6ca87389f2e7 (independently confirmed with JS BigInt)
-//   h % 5 = 4 ≠ 0 → no stay; (h >> 1) % 4 = 3 → West
+// ADR-0159 D2 re-derivation (the old fixture's expected value genuinely changed:
+// old code had no legality filter, so `home==current, radius=5, npc_id=1, tick=0`
+// used to hash-pick among ALL FOUR compass directions and landed on West.
+// The new algorithm restricts the pick to the LEGAL set. `facing=South` is used
+// below (rather than the arbitrary facing the old signature didn't have) so the
+// wander STILL exercises the hash-pick branch (not continue-facing) — South is
+// illegal at home (5,5) on the real zone-0 grid, so this vector still pins
+// NPC_DECIDE_SALT/splitmix64.):
+//
+//   Independent oracle (Python model of npc_hash + the real shipped zone-0 grid):
+//   npc_hash(1, 0) % 5 == 4 (not a stay); legal set at (5,5), radius=5, is
+//   [North, East, West] (South is walled — the row directly south of home is
+//   "##########" in content/zone_maps/000-core.ron); (h >> 1) % 3 selects
+//   index 1 = East.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn npc_decide_known_answer_within_radius() {
     // home=(5,5), current=(5,5): distance=0 <= radius=5 → wander path applies
-    let result = npc_decide(pos(5, 5), pos(5, 5), 5, 1, 0);
+    let map = zone_0();
+    let result = npc_decide(pos(5, 5), pos(5, 5), 5, Direction::South, 1, 0, &map);
     assert_eq!(
         result,
-        Some(Direction::West),
-        "npc_decide at home (npc_id=1, tick=0, radius=5) must return Some(West) — \
-         change indicates NPC_DECIDE_SALT or splitmix64 constants were altered"
+        Some(Direction::East),
+        "npc_decide at home (npc_id=1, tick=0, radius=5, facing=South-illegal) must return \
+         Some(East) — change indicates NPC_DECIDE_SALT, splitmix64 constants, or the legal-set \
+         construction were altered"
     );
 }
 
@@ -322,58 +373,60 @@ fn npc_decide_known_answer_within_radius() {
 // This test encodes the INVARIANT that must hold after the fix is applied:
 // two distinct (npc_id, tick) pairs that sum to the same value must produce
 // DIFFERENT hashes (and therefore potentially different move decisions).
-// It will be RED until the aliasing is corrected in the hash construction.
+//
+// ADR-0159 D2 MIGRATION NOTE: `npc_decide` now filters the raw hash pick
+// through a per-position LEGAL direction set and a continue-facing branch, so
+// its OWN output alphabet is narrower and position-dependent (e.g. South is
+// never a reachable `npc_decide` output at home (5,5) on the real grid — it is
+// walled). The original direct-comparison fixture (npc_id=1,tick=100 →
+// Some(North) vs npc_id=100,tick=1 → Some(South)) can therefore no longer be
+// expressed as a fixed, position-independent `npc_decide`-level pair. Per the
+// migration plan, the PRECISE proof of non-commutativity is moved to the raw,
+// legality-filter-independent `npc_hash` itself (which ADR-0159 D2 leaves
+// UNCHANGED) — see `npc_hash_non_commutative_known_pair` and
+// `npc_hash_sum_aliasing_pairs_do_not_all_collide` in
+// `game-core/src/npc/rules.rs`'s `mod tests` (the only seam that can reach the
+// module-private `npc_hash`). Both reuse the EXACT SAME (npc_id, tick) pairs
+// as this test did pre-migration; see their doc-comments for the full
+// derivation (in short: the pre-migration version of THIS test, which passed,
+// already proved those hashes differ — reusing the same pairs at the hash
+// level is strictly more precise, not weaker).
+//
+// This test is KEPT (not deleted) and still carries a black-box, public-API
+// proof: a DIFFERENT id/tick pair, backed by the independently-derived oracle
+// (see the module doc for the full known-answer table), that shows two
+// distinct npc_ids at the SAME tick and SAME position/facing produce
+// different `npc_decide` outputs — the observable, end-to-end symptom
+// RT-NPC-01 worried about ("two NPCs behaving identically").
 // ---------------------------------------------------------------------------
 
 #[test]
 fn npc_decide_aliasing_distinct_id_tick_pairs_differ() {
-    // Two (npc_id, tick) pairs with npc_id_a + tick_a == npc_id_b + tick_b
-    // — they MUST produce different outcomes (at minimum they must not be
-    // identical in direction for this well-separated fixture).
-    //
-    // Both have sum = 1005. If aliasing is present, npc_decide returns
-    // the same Option<Direction> for BOTH.
-    //
-    // The fixture uses positions where within-radius wander applies, so the
-    // direction COMES FROM the hash — this test will catch hash aliasing
-    // directly without any outside-radius determinism masking it.
-    let current = pos(5, 5); // at home; distance=0, always within any radius>0
+    // Public-API (npc_decide-level) witness that distinct npc_ids diverge at
+    // the SAME tick: home=(5,5), current=(5,5), radius=2, facing=South
+    // (illegal at home -> forces the hash-pick branch). Oracle-backed
+    // (independently derived, NOT read off any Rust impl):
+    //   npc_id=1, tick=0 -> Some(East)
+    //   npc_id=7, tick=0 -> Some(West)
+    // If a commutative/degenerate hash aliased these two npc_ids together at
+    // the same tick, both would produce the SAME direction.
+    let map = zone_0();
+    let current = pos(5, 5);
     let home = pos(5, 5);
-    let radius = 10u8;
+    let radius = 2u8;
 
-    // npc_id=5, tick=1000: sum=1005
-    let result_a = npc_decide(current, home, radius, 5, 1000);
-    // npc_id=1000, tick=5: sum=1005 — SAME SUM, different (id, tick)
-    let result_b = npc_decide(current, home, radius, 1000, 5);
-    // npc_id=502, tick=503: sum=1005 — also the same sum
-    let result_c = npc_decide(current, home, radius, 502, 503);
-
-    // All three produce the same hash if aliasing is present.
-    // After the fix, at least one pair must differ.
-    //
-    // Proof-of-teeth: a naive additive hash (state+input+seed) makes
-    // result_a == result_b == result_c.  A correct two-input hash breaks
-    // all three equalities (or at least two of the three).
-    assert!(
-        !(result_a == result_b && result_b == result_c),
-        "RT-NPC-01: tick_seed aliasing — npc_id=5,tick=1000 and npc_id=1000,tick=5 \
-         and npc_id=502,tick=503 all produced {:?} (identical). \
-         Pairs with the same (npc_id + tick) sum must NOT map to the same hash. \
-         Fix: replace additive mixing with a two-input (non-commutative) hash.",
-        result_a
-    );
-
-    // Direct pairwise assertion on a fixture where the non-commutative hash
-    // produces DIFFERENT directions. npc_id=1,tick=100 → Some(North);
-    // npc_id=100,tick=1 → Some(South). Both have sum=101.
-    // An additive/commutative hash would make these identical; the multiplicative
-    // non-commutative hash makes them distinct at the 4-way direction level too.
-    let result_x = npc_decide(current, home, radius, 1, 100); // → Some(North)
-    let result_y = npc_decide(current, home, radius, 100, 1); // → Some(South)
+    let result_id1 = npc_decide(current, home, radius, Direction::South, 1, 0, &map);
+    let result_id7 = npc_decide(current, home, radius, Direction::South, 7, 0, &map);
+    assert_eq!(result_id1, Some(Direction::East), "oracle: npc_id=1,tick=0 -> Some(East)");
+    assert_eq!(result_id7, Some(Direction::West), "oracle: npc_id=7,tick=0 -> Some(West)");
     assert_ne!(
-        result_x, result_y,
-        "RT-NPC-01 direct: npc_id=1,tick=100 vs npc_id=100,tick=1 (same sum 101) \
-         must produce different directions; additive aliasing would make them equal"
+        result_id1, result_id7,
+        "RT-NPC-01: npc_id=1 and npc_id=7 at the SAME tick=0 (same position/facing) must \
+         diverge; an aliasing hash would make two different NPCs move identically at the \
+         same tick. Full hash-level non-commutativity proofs (reusing the original \
+         (npc_id=1,tick=100)/(npc_id=100,tick=1) and sum-aliased (5,1000)/(1000,5)/(502,503) \
+         fixtures) live in game-core/src/npc/rules.rs's `mod tests` — see \
+         npc_hash_non_commutative_known_pair and npc_hash_sum_aliasing_pairs_do_not_all_collide."
     );
 }
 
@@ -393,20 +446,16 @@ fn npc_decide_aliasing_distinct_id_tick_pairs_differ() {
 // the NPC is ALWAYS outside radius → always moves toward home.
 // A stationary NPC is modelled by NpcKind::Stationary (deferred) not radius=0.
 //
-// The finding: there is no content-authoring guard that prevents radius=0
-// being used on a Wanderer NPC.  An author who sets radius=0 thinking it
-// means "stays put" will get an NPC that ALWAYS pathfinds toward home.
-// This gates on the validate_content pipeline (M12c) adding a check that
-// Wanderer NPCs have radius >= 1.
-//
-// This test documents the expected (correct) behaviour for radius=0 so that
-// if the impl silently "stays" (returns None) for radius=0 the gate fails.
+// ADR-0159 D2: the outside-radius (homing) branch is UNCHANGED — no
+// facing/map influence — so this fixture's expected value is unaffected by
+// the migration; only the call site gains the two new params.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn npc_decide_radius_zero_current_outside_always_moves_toward_home() {
     // home=(5,5), current=(6,5): distance=1 > radius=0 → outside → toward home (West)
-    let result = npc_decide(pos(6, 5), pos(5, 5), 0, 42, 99);
+    let map = zone_0();
+    let result = npc_decide(pos(6, 5), pos(5, 5), 0, Direction::North, 42, 99, &map);
     assert_eq!(
         result,
         Some(Direction::West),
@@ -414,4 +463,327 @@ fn npc_decide_radius_zero_current_outside_always_moves_toward_home() {
          → must move West toward home. \
          Content pipeline (M12c) must validate Wanderer radius >= 1."
     );
+}
+
+// ===========================================================================
+// ADR-0159 D2 gates (feel-polish slice) — EARS: "WHEN NPCs move, THE
+// npc_decide/movement tick SHALL avoid abrupt stop/start bursts."
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// G1 — NO ILLEGAL MOVE (the headline tooth).
+//
+// For EVERY reachable position within elder_oak's real wander radius (home
+// (5,5), wander_radius 2, real zone-0 grid) and every facing, over many ticks:
+// whenever npc_decide returns Some(d) on the wander path, the target tile MUST
+// be walkable AND still within wander_radius.
+//
+// kills: the STATUS-QUO implementation, which ignores `map` entirely and
+// uniformly hash-picks among all FOUR compass directions with no legality or
+// radius filter. At current=(5,5), facing=South, npc_id=1, tick=0 the status
+// quo returns Some(South) — stepping into (5,6), which is a WALL (row y=6 of
+// content/zone_maps/000-core.ron is "##########"). This exhaustive sweep
+// catches that exact bug (and any regression to unrestricted 4-way choice)
+// without hardcoding a single example.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn npc_decide_never_returns_illegal_move_on_real_zone_0_wander_positions() {
+    let map = zone_0();
+    let home = pos(5, 5);
+    let radius: u8 = 2;
+    let directions = [
+        Direction::North,
+        Direction::South,
+        Direction::East,
+        Direction::West,
+    ];
+
+    for dx in -2i32..=2 {
+        for dy in -2i32..=2 {
+            if dx.abs() + dy.abs() > 2 {
+                continue; // outside the diamond radius -- not a wander-path position
+            }
+            let current = pos(home.x + dx, home.y + dy);
+            for &facing in &directions {
+                for npc_id in 1u64..=5 {
+                    for tick in 0u64..100 {
+                        if let Some(d) =
+                            npc_decide(current, home, radius, facing, npc_id, tick, &map)
+                        {
+                            let target = current.step(d);
+                            assert!(
+                                map.is_walkable(target),
+                                "npc_decide returned Some({d:?}) from current={current:?} \
+                                 home={home:?} facing={facing:?} npc_id={npc_id} tick={tick}, \
+                                 but the target tile {target:?} is NOT walkable (wall bump) — \
+                                 the wander path must never choose an illegal direction"
+                            );
+                            let dist = (i64::from(target.x) - i64::from(home.x)).abs()
+                                + (i64::from(target.y) - i64::from(home.y)).abs();
+                            assert!(
+                                dist <= i64::from(radius),
+                                "npc_decide returned Some({d:?}) from current={current:?} \
+                                 home={home:?} facing={facing:?} npc_id={npc_id} tick={tick}, \
+                                 but the target tile {target:?} is OUTSIDE wander_radius={radius} \
+                                 (distance {dist})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G2 — CONTINUE-FACING.
+//
+// When the current facing is legal (walkable + within radius), npc_decide
+// must return Some(facing) unchanged (continue heading) rather than
+// re-rolling — the persistence half of ADR-0159 D2 that halves reversals.
+//
+// kills: an impl that drops the continue-facing check entirely and always
+// hash-picks from L (ignoring `facing`), even when the current facing is
+// still legal.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn npc_decide_continues_current_facing_when_legal() {
+    let map = zone_0();
+    let home = pos(5, 5);
+    let radius = 2u8;
+
+    // North and East are legal at (5,5); tick=0 (h%5=4, not a stay).
+    for facing in [Direction::North, Direction::East] {
+        let result = npc_decide(home, home, radius, facing, 1, 0, &map);
+        assert_eq!(
+            result,
+            Some(facing),
+            "facing={facing:?} is legal at (5,5) (h%5=4, not a stay) — npc_decide must \
+             continue the same heading, got {result:?}"
+        );
+    }
+    // West is legal at (5,5); tick=1 (h%5=1, not a stay).
+    let result = npc_decide(home, home, radius, Direction::West, 1, 1, &map);
+    assert_eq!(
+        result,
+        Some(Direction::West),
+        "facing=West is legal at (5,5) at tick=1 (h%5=1, not a stay) — npc_decide must \
+         continue the same heading, got {result:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// G3 — HOMING IS PER-TICK.
+//
+// Outside the wander radius, npc_decide must return Some(toward_home) on
+// EVERY tick and never None — the homing branch has no hash, no legality
+// filter, no stay roll (unchanged, ADR-0159 D2).
+//
+// kills: any impl that mistakenly applies the legality filter (L-empty check)
+// or the 1-in-5 stay roll to the `dist > wander_radius` branch, which could
+// freeze a returning NPC forever outside its radius.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn npc_decide_homing_answers_every_tick_never_stalls() {
+    let map = zone_0();
+    let home = pos(5, 5);
+    let current = pos(1, 1); // manhattan distance 8 > radius 2 -> outside
+    let radius = 2u8;
+
+    for tick in 0u64..4 {
+        let result = npc_decide(current, home, radius, Direction::North, 1, tick, &map);
+        assert_eq!(
+            result,
+            Some(Direction::East),
+            "outside-radius homing must answer Some(East) every tick (tick={tick}), got {result:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G4 — KNOWN-ANSWER VECTORS.
+//
+// Pins several exact oracle rows (home (5,5), radius 2, real zone-0 grid)
+// derived independently from the spec + a Python model of npc_hash and the
+// real shipped grid (NOT read off any Rust implementation).
+//
+// kills: any change to NPC_DECIDE_SALT, the splitmix64 avalanche constants, or
+// the 1-in-5 stay threshold that silently alters the wander distribution —
+// property tests alone would not catch this.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn npc_decide_known_answer_vectors_pin_hash_and_legality() {
+    let map = zone_0();
+    let home = pos(5, 5);
+    let radius = 2u8;
+
+    // South is illegal at (5,5) -> hash-picks among [North, East, West];
+    // npc_id=1, tick=0 picks East.
+    assert_eq!(
+        npc_decide(home, home, radius, Direction::South, 1, 0, &map),
+        Some(Direction::East),
+        "oracle: (5,5) facing=South npc_id=1 tick=0 -> Some(East)"
+    );
+    // Same current/tick, DIFFERENT npc_id=7 -> different hash pick: West.
+    // Proves NPC_DECIDE_SALT / splitmix64 constants are untouched (a changed
+    // salt would shift this pick).
+    assert_eq!(
+        npc_decide(home, home, radius, Direction::South, 7, 0, &map),
+        Some(Direction::West),
+        "oracle: (5,5) facing=South npc_id=7 tick=0 -> Some(West)"
+    );
+    // Three independent 1-in-5 "stay" rows (h % 5 == 0) -> None. Proves the
+    // stay rate/threshold is untouched.
+    assert_eq!(
+        npc_decide(home, home, radius, Direction::North, 1, 2, &map),
+        None,
+        "oracle: (5,5) facing=North npc_id=1 tick=2 -> None (stay)"
+    );
+    assert_eq!(
+        npc_decide(home, home, radius, Direction::South, 1, 5, &map),
+        None,
+        "oracle: (5,5) facing=South npc_id=1 tick=5 -> None (stay)"
+    );
+    assert_eq!(
+        npc_decide(home, home, radius, Direction::North, 1, 9, &map),
+        None,
+        "oracle: (5,5) facing=North npc_id=1 tick=9 -> None (stay)"
+    );
+    // (4,5) with facing East (legal there) at tick=3 continues East.
+    assert_eq!(
+        npc_decide(pos(4, 5), home, radius, Direction::East, 1, 3, &map),
+        Some(Direction::East),
+        "oracle: (4,5) facing=East npc_id=1 tick=3 -> Some(East) (continue-facing)"
+    );
+    // (5,4) with facing South at tick=4 -> stay (h % 5 == 0), even though
+    // South IS legal from (5,4) (it steps to home (5,5), not the wall) —
+    // proves the stay roll is checked BEFORE facing/legality.
+    assert_eq!(
+        npc_decide(pos(5, 4), home, radius, Direction::South, 1, 4, &map),
+        None,
+        "oracle: (5,4) facing=South npc_id=1 tick=4 -> None (stay, checked before legality)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// G5 — BEHAVIOURAL BOUND (encodes the playtest complaint).
+//
+// Simulate a long walk (5000 ticks) on the REAL zone-0 grid starting at
+// elder_oak's home, driving the NPC's actual position/facing tick-by-tick
+// (mirroring how movement.rs drives npc_decide + apply_move in production).
+// Assert:
+//   - bump count == 0 (exact).
+//   - reversal rate < 25% of moves. Status quo measured 32.26%; the shipped
+//     design measured 19.97%; this threshold sits strictly between the two,
+//     so the CURRENT (pre-ADR-0159) implementation fails it.
+//   - the NPC never leaves its wander_radius.
+//
+// kills: any impl that ignores the map (status quo: 14.33% of ticks were
+// bumps) or that is collision-aware but drops continue-facing (measured
+// 35.4% reversal rate in the ADR's alternative (B) — still over this bound).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn npc_decide_behavioural_bound_zero_bumps_bounded_reversals_over_long_walk() {
+    let map = zone_0();
+    let home = pos(5, 5);
+    let radius = 2u8;
+    let npc_id = 1u64;
+
+    fn opposite(d: Direction) -> Direction {
+        match d {
+            Direction::North => Direction::South,
+            Direction::South => Direction::North,
+            Direction::East => Direction::West,
+            Direction::West => Direction::East,
+        }
+    }
+
+    let mut current = home;
+    let mut facing = Direction::South; // matches the ADR's measured starting facing
+    let mut bumps: u64 = 0;
+    let mut moves: u64 = 0;
+    let mut reversals: u64 = 0;
+    let mut last_move_dir: Option<Direction> = None;
+
+    for tick in 0u64..5000 {
+        if let Some(d) = npc_decide(current, home, radius, facing, npc_id, tick, &map) {
+            let target = current.step(d);
+            if map.is_walkable(target) {
+                moves += 1;
+                if let Some(prev) = last_move_dir {
+                    if d == opposite(prev) {
+                        reversals += 1;
+                    }
+                }
+                last_move_dir = Some(d);
+                current = target;
+            } else {
+                bumps += 1;
+            }
+            facing = d; // apply_move always turns to face the input, even on a bump
+        }
+        // else: None (stay) -- position and facing are both unchanged, matching
+        // movement.rs, which never calls apply_move when npc_decide returns None.
+
+        let dist = (i64::from(current.x) - i64::from(home.x)).abs()
+            + (i64::from(current.y) - i64::from(home.y)).abs();
+        assert!(
+            dist <= i64::from(radius),
+            "NPC left its wander_radius at tick {tick}: current={current:?} home={home:?} \
+             dist={dist}"
+        );
+    }
+
+    assert_eq!(
+        bumps, 0,
+        "expected ZERO wall-bumps over 5000 ticks on the real zone-0 grid \
+         (status quo measured 14.33% of ticks as bumps); got {bumps} bumps"
+    );
+    assert!(moves > 0, "sanity: the simulation must have moved at least once");
+    #[allow(clippy::cast_precision_loss)] // bounded by MAX_TICKS (5000); no precision concern
+    let reversal_rate = reversals as f64 / moves as f64;
+    assert!(
+        reversal_rate < 0.25,
+        "reversal rate must be < 25% of moves (status quo measured 32.26%, \
+         target ~19.97%); got {:.4}% ({reversals} reversals / {moves} moves)",
+        reversal_rate * 100.0
+    );
+}
+
+// ---------------------------------------------------------------------------
+// G6 — UNCHANGED CONTRACTS still pass.
+//
+// wander_radius == 0 with current == home must still return None (the
+// "pinned to home" special case, ADR-0068, UNCHANGED by ADR-0159 D2).
+//
+// kills: an impl that, while adding legality-awareness, accidentally routes
+// the radius==0 pinned-stay special case through the new legal-set logic
+// (e.g. an empty L at radius=0 producing None for the WRONG reason, which
+// would coincidentally still pass a weaker test — this test also confirms the
+// SAME behaviour holds regardless of which facing is passed, proving the
+// special case is checked before any facing/map consultation).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn npc_decide_radius_zero_pinned_to_home_never_moves_regardless_of_facing() {
+    let map = zone_0();
+    let home = pos(5, 5);
+    for facing in [
+        Direction::North,
+        Direction::South,
+        Direction::East,
+        Direction::West,
+    ] {
+        let result = npc_decide(home, home, 0, facing, 42, 7, &map);
+        assert_eq!(
+            result, None,
+            "wander_radius=0 with current==home must always return None (pinned to home), \
+             regardless of facing={facing:?}; got {result:?}"
+        );
+    }
 }

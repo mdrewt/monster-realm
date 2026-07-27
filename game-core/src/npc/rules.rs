@@ -157,16 +157,31 @@ mod tests {
     /// `_` → West; `assert!(saw_east)` fails.
     ///
     /// Setup: home == current (dist=0 ≤ wander_radius=10) → wander path, not
-    /// toward-home. wander_radius != 0 → not pinned-stay → we reach the hash+match.
+    /// toward-home. wander_radius != 0 → not pinned-stay → we reach the hash+pick.
+    ///
+    /// ADR-0159 D2 migration note: `npc_decide` gained `facing: Direction` and
+    /// `map: &TileMap` params and now indexes into the *legal* direction set `L`
+    /// (`L[(h >> 1) % L.len()]`) instead of a hardcoded 4-arm match on
+    /// `(h >> 1) % 4`. `facing = Direction::South` is used below because South is
+    /// the one direction that is ILLEGAL at home (5,5) on the real zone-0 grid
+    /// (the row immediately south of home is a wall) — this forces every
+    /// non-stay tick through the hash-pick branch (never the continue-facing
+    /// branch), reproducing the same "many (npc_id, tick) draws must reach more
+    /// than one legal direction" property the pre-migration test pinned.
+    /// kills: an impl that always returns `L[0]` regardless of the hash (or one
+    /// that indexes with `(h >> 1) % 4` against the real, shorter `L`, which can
+    /// panic or silently alias two legal directions to the same output).
     #[test]
     fn npc_decide_arms_north_and_east_are_reachable() {
+        let map = crate::world::zone_0();
         let home = TilePos { x: 5, y: 5 };
         let wander_radius = 10u8;
+        let facing = Direction::South; // illegal at home -> forces the hash-pick branch
         let mut saw_north = false;
         let mut saw_east = false;
         'outer: for npc_id in 1u64..=100 {
             for tick in 0u64..=100 {
-                match npc_decide(home, home, wander_radius, npc_id, tick) {
+                match npc_decide(home, home, wander_radius, facing, npc_id, tick, &map) {
                     Some(Direction::North) => saw_north = true,
                     Some(Direction::East) => saw_east = true,
                     _ => {}
@@ -179,12 +194,74 @@ mod tests {
         assert!(
             saw_north,
             "npc_decide must produce North from some (npc_id, tick) within wander range; \
-             deleting match arm 0 routes hash%4==0 inputs to West instead"
+             an impl that always returns the first legal direction (or a fixed default) \
+             would never produce North here"
         );
         assert!(
             saw_east,
             "npc_decide must produce East from some (npc_id, tick) within wander range; \
-             deleting match arm 2 routes hash%4==2 inputs to West instead"
+             an impl that always returns the first legal direction (or a fixed default) \
+             would never produce East here"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR-0159 D2: RT-NPC-01 non-commutativity proofs, moved to the raw
+    // `npc_hash` level (see `m12a_gating_tests.rs`'s
+    // `npc_decide_aliasing_distinct_id_tick_pairs_differ` for the full
+    // migration rationale). `npc_hash` is UNCHANGED by ADR-0159 D2 — only
+    // `npc_decide`'s legality filter and continue-facing branch are new — so
+    // these hash-level proofs are the precise, legality-filter-independent home
+    // for the RT-NPC-01 regression net going forward.
+    // -----------------------------------------------------------------------
+
+    /// kills: RT-NPC-01 regression — additive/commutative mixing of
+    /// `(npc_id, tick)`.
+    ///
+    /// Derivation: pre-ADR-0159, the `m12a_gating_tests.rs` aliasing test
+    /// asserted `npc_decide(current=home, radius=10, npc_id=1, tick=100) ==
+    /// Some(North)` and `npc_decide(current=home, radius=10, npc_id=100,
+    /// tick=1) == Some(South)` — i.e. `(h1 >> 1) % 4 == 0` (North) and
+    /// `(h2 >> 1) % 4 == 1` (South) for `h1 = npc_hash(1, 100)`,
+    /// `h2 = npc_hash(100, 1)`. Since that test passed against the SAME
+    /// (unchanged) `npc_hash`, `h1` and `h2` land in different mod-4 residue
+    /// classes and therefore cannot be equal — `h1 != h2` is a direct
+    /// consequence, reproduced here as its own hash-level assertion so it no
+    /// longer depends on `npc_decide`'s (now position-dependent) output
+    /// alphabet.
+    #[test]
+    fn npc_hash_non_commutative_known_pair() {
+        assert_ne!(
+            npc_hash(1, 100),
+            npc_hash(100, 1),
+            "npc_hash(1, 100) must differ from npc_hash(100, 1); an additive/commutative \
+             mixing function would make these equal (RT-NPC-01)"
+        );
+    }
+
+    /// kills: RT-NPC-01 regression — `tick_seed`-style additive aliasing across
+    /// `(npc_id, tick)` pairs that share the same sum (`5 + 1000 == 1000 + 5 ==
+    /// 502 + 503 == 1005`).
+    ///
+    /// Derivation: pre-ADR-0159, the aliasing test asserted
+    /// `!(npc_decide(..., 5, 1000) == npc_decide(..., 1000, 5) &&
+    /// npc_decide(..., 1000, 5) == npc_decide(..., 502, 503))` at a fixed
+    /// (current=home, radius=10) fixture. If the three raw hashes below were
+    /// all equal, `npc_decide` would necessarily have produced identical
+    /// results for all three (same hash -> same deterministic mapping) — which
+    /// would have contradicted that (passing, unchanged-`npc_hash`) test. So
+    /// the three hashes are not all identical; pinned directly here so the
+    /// proof no longer depends on `npc_decide`'s legality-narrowed alphabet.
+    #[test]
+    fn npc_hash_sum_aliasing_pairs_do_not_all_collide() {
+        let h_a = npc_hash(5, 1000); // sum = 1005
+        let h_b = npc_hash(1000, 5); // sum = 1005 -- same sum, different pair
+        let h_c = npc_hash(502, 503); // sum = 1005 -- same sum, different pair
+        assert!(
+            !(h_a == h_b && h_b == h_c),
+            "npc_hash(5,1000)={h_a:#x}, npc_hash(1000,5)={h_b:#x}, npc_hash(502,503)={h_c:#x}: \
+             pairs with the same (npc_id + tick) sum must NOT all collide to the same hash; \
+             an additive mixing function would make all three identical (RT-NPC-01)"
         );
     }
 }
