@@ -16,12 +16,18 @@
 // the `dismissDialogue` reducer, `main.ts`). `canOpen` makes that distinction explicit and
 // testable instead of implicit in fourteen hand-maintained guard lists.
 //
-// SCOPE (uxd3-a + uxd3-b): this module holds the DECISIONS, plus the READ substrate —
-// `OverlayProbes` and `anyVisible`, which uxd3-b's five `main.ts` fan-out surfaces consume.
-// The WRITE substrate (per-id open/hide thunks, `hideAllExcept`, routing the hotkey guard
-// lists through `canOpen`) lands in uxd3-c with ITS consumers. `visibleIds()`/`isVisible()`
-// /`anyVisibleExcept()` are deliberately absent: shipping an abstraction ahead of its
-// consumer is the YAGNI violation amendment A7 already rejected in this same module.
+// SCOPE (uxd3-a + uxd3-b + uxd3-c): this module holds the DECISIONS, plus the READ substrate
+// — `OverlayProbes` and `anyVisible`, which uxd3-b's five `main.ts` fan-out surfaces consume
+// — plus, since uxd3-c (ADR-0164), the WRITE substrate: `visibleIds()` and the
+// `OverlayHandles` TYPE, which together let all twelve `main.ts` hotkey open-guards and
+// `refreshBattle` route through `canOpen`/`hideAllExceptPlan` instead of fourteen
+// hand-maintained guard lists. `visibleIds()` is an explicit REVERSAL of A7's deletion, and
+// the reversal is the YAGNI rule working rather than churn: it landed the slice it acquired
+// its two production consumers (the `canOpen` gate binder and `refreshBattle`'s force-hide
+// loop). What uxd3-c deliberately did NOT ship, for exactly that same reason — zero consumers,
+// the A7/A15 precedent — is per-id `open` thunks, `hideAllExcept` (the pure
+// `hideAllExceptPlan` below is what `refreshBattle` consumes), `isVisible(id)` and
+// `anyVisibleExcept()`.
 
 /** The 15 mutual-exclusion overlays. `errorOverlayView` is NOT a member: it is
  *  non-blocking, F8-dismissed, and re-shows itself, so it never participates in
@@ -190,3 +196,26 @@ export type OverlayProbes = Readonly<Record<OverlayId, () => boolean>>;
 export function anyVisible(probes: OverlayProbes, exempt?: OverlayId): boolean {
   return OVERLAY_IDS.some((id) => id !== exempt && probes[id]());
 }
+
+/** Which overlays are visible right now, in OVERLAY_IDS declaration order — the argument
+ *  `canOpen`/`hideAllExceptPlan` take. Re-probes on EVERY call, same contract as
+ *  `anyVisible`: `main.ts` builds its probe table at module scope while all fifteen view
+ *  bindings are still `undefined`, so a cached list would be permanently empty and mutual
+ *  exclusion would never engage. NO try/catch, for `anyVisible`'s reason. The deterministic
+ *  order is load-bearing — it is what makes `canOpen`'s `blockedBy` reproducible. */
+export function visibleIds(probes: OverlayProbes): readonly OverlayId[] {
+  return OVERLAY_IDS.filter((id) => probes[id]());
+}
+
+/** Per-id force-hide thunks — the WRITE mirror of `OverlayProbes`, and the same division of
+ *  labour: this module owns the SHAPE of the write, `main.ts` owns the handles.
+ *
+ *  Total `Record<OverlayId, _>` on purpose, so a 16th overlay is a COMPILE error here rather
+ *  than a silently unhidable overlay. The value type admits `undefined`, and exactly the
+ *  `NEVER_FORCE_HIDE` members supply it. For `dialogueView` that is not style: `main.ts` must
+ *  contain ZERO `dialogueView?.hide` occurrences (ADR-0162 AC-9,
+ *  W-ESCAPE-DIALOGUE-NEVER-BARE-HIDE), because a client-side hide strands the server
+ *  `player_conversation` row — so a table of REQUIRED thunks cannot compile in this codebase
+ *  at all. Deliberately NOT `Partial<>`: that would let ANY id go missing, not just the one
+ *  that must. */
+export type OverlayHandles = Readonly<Record<OverlayId, (() => void) | undefined>>;

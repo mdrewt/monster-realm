@@ -5372,8 +5372,16 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
     // repo's line-length rule, exactly as the pre-existing battleModel/menuModel imports already
     // do — a raw-single-line needle would false-red a correctly-wrapped import.
     const stripped = squashWhitespace(stripLineComments(src));
+    // The specifier ORDER and the trailing comma below are Biome's canonical output for this
+    // block (assist/source/organizeImports sorts `type CanOpenVerdict` before `canOpen` on an
+    // uppercase-first tiebreak; the formatter wraps at lineWidth 100 and adds a trailing comma,
+    // which squashes to `visibleIds, }`). uxd3-c deliberately matches the FORMATTER rather than
+    // suppressing it in `main.ts`: the load-bearing content of this needle is WHICH VALUES are
+    // imported — the ordering is incidental, and file-level `biome-ignore-all
+    // assist/source/organizeImports` would have left main.ts's whole import block permanently
+    // un-organized to protect an accident of alphabetization.
     const UXD3C_OVERLAYREGISTRY_IMPORT =
-      "import { anyVisible, canOpen, type CanOpenVerdict, hideAllExceptPlan, type OverlayHandles, type OverlayId, type OverlayProbes, visibleIds } from './ui/overlayRegistry';";
+      "import { anyVisible, type CanOpenVerdict, canOpen, hideAllExceptPlan, type OverlayHandles, type OverlayId, type OverlayProbes, visibleIds, } from './ui/overlayRegistry';";
     expect(
       countOccurrences(stripped, UXD3C_OVERLAYREGISTRY_IMPORT),
       'main.ts must import `anyVisible`, `canOpen`, `hideAllExceptPlan` and `visibleIds` AS ' +
@@ -6157,22 +6165,16 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): no de-Morgan-&&-spelled hand-rol
     // (`W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY-NO-HAND-ROLLED-OR-LIST`) closes only the `||`
     // spelling; this tooth closes the `&&` spelling.
     //
-    // TODO(orchestrator-measure): the plan's needle is
-    // `countOccurrences(stripped, '?.visible && !') === 0` (measured 148 -> 0 across the red-team's
-    // full migration). Re-measure `countOccurrences(stripped, '?.visible &&')` (WITHOUT the
-    // trailing `!`) on the FULLY-MIGRATED tree — if THAT is also 0, ship the stricter needle
-    // instead (it additionally kills a single-term guard like `!x?.visible && identity !== ''`,
-    // which the `&& !` needle cannot see because there is no second negated term to glue onto).
-    // Command: run the project's vitest invocation for this file after T2 lands
-    // (`just ci` per AGENTS.md, or scoped: `npx vitest run client/src/main.wiring.test.ts` from
-    // `client/`) with this tooth temporarily using the stricter needle, and inspect PASS/FAIL —
-    // or grep main.ts directly, comments included: `grep -c '?\.visible &&' client/src/main.ts`
-    // (a manual grep will read slightly higher than this test's own comment-stripped scan).
-    // Record the measurement in this comment AND in ADR-0164 D6.
-    //
-    // Chosen needle for THIS commit (the plan's, proven to measure 148->0 by red-team's full
-    // migration): may be tightened by the orchestrator once the TODO above is resolved.
-    const NEEDLE = '?.visible && !';
+    // MEASURED (orchestrator, on the fully-migrated tree — the TODO this comment replaces):
+    //   `?.visible && !`  148 pre-migration -> 0 post   (the plan's needle)
+    //   `?.visible &&`    151 pre-migration -> 0 post   (the STRICTER needle — shipped)
+    // Both measure 0 after the migration, so the stricter form ships. It additionally kills a
+    // single-term guard like `!x?.visible && identity !== ''`, which `&& !` structurally cannot
+    // see (there is no second negated term for the `!` to glue onto) — and a single-term
+    // hand-rolled guard beside a `canOpen` verdict is exactly how a fan-out grows back one
+    // overlay at a time. Re-measure with: `grep -c '?\.visible &&' client/src/main.ts` (a raw
+    // grep reads an upper bound — it does not strip comments — so a 0 there implies 0 here).
+    const NEEDLE = '?.visible &&';
 
     const stripped = squashWhitespace(stripLineComments(readMainTs()));
 

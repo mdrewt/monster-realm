@@ -31,7 +31,6 @@ import {
   type WasmDirection,
   type WasmMoveInput,
 } from './convert/convert';
-import { shouldToggleBox } from './inputGuards';
 import type { PvpAction } from './module_bindings/types';
 import { BUILD_INFO, formatBuildStamp } from './net/buildInfo';
 import { connect } from './net/connection';
@@ -106,7 +105,23 @@ import {
   menuStep,
 } from './ui/menuModel';
 import type { MenuView } from './ui/menuView';
-import { anyVisible, type OverlayProbes } from './ui/overlayRegistry';
+// uxd3-c (ADR-0164): this import block is pinned by
+// W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY Part B — the clause that proves every fan-out
+// surface, every hotkey open-guard and the force-hide table resolve to the node-tested
+// registry rather than a local decoy, instead of to a locally-declared shadow (red-team F2 /
+// the W-CARE-IMPORT pattern). The needle is applied AFTER squashWhitespace, so this block is
+// left in Biome's canonical order and wrapping — the tooth pins WHICH VALUES are imported,
+// which is the load-bearing part; the specifier order is incidental and is the formatter's.
+import {
+  anyVisible,
+  type CanOpenVerdict,
+  canOpen,
+  hideAllExceptPlan,
+  type OverlayHandles,
+  type OverlayId,
+  type OverlayProbes,
+  visibleIds,
+} from './ui/overlayRegistry';
 import { buildPvpChallengeViewModel } from './ui/pvpModel';
 import type { PvpView } from './ui/pvpView';
 import { buildQuestLogViewModel } from './ui/questLogModel';
@@ -264,6 +279,49 @@ const overlayProbes: OverlayProbes = {
   menuView: () => menuView?.visible ?? false,
 };
 // UXD3B-PROBES-END
+
+// UXD3C-HANDLES-BEGIN
+// uxd3-c (ADR-0164): the ONE force-hide handle table — the WRITE mirror of `overlayProbes`.
+// Typed `OverlayHandles` (a total `Record<OverlayId, _>`), so a 16th overlay is a COMPILE
+// error here rather than an overlay a verdict can name and nothing can hide. Every entry is
+// intentionally byte-identical `<id>: () => <id>?.hide()` — W-UXD3C-HANDLE-TABLE pins that
+// literal per id, because main.ts is coverage-excluded and a copy-pasted sibling thunk
+// (`raisingView: () => boxView?.hide()`) type-checks perfectly while hiding the wrong overlay.
+// `dialogueView` is the SOLE `undefined` entry and must stay that way: it is the only member
+// of NEVER_FORCE_HIDE, because hiding a live conversation client-side strands the server
+// `player_conversation` row (ptc5c/ADR-0139, ADR-0162 AC-9). Consumers read
+// `overlayHandles[id]?.()`; only verdicts decide WHICH ids they call.
+// ⚠ No quoted hotkey literal may appear in this block (W-UXD3-HOTKEY-ANCHORS-AFTER-KEYDOWN).
+const overlayHandles: OverlayHandles = {
+  battleView: () => battleView?.hide(),
+  boxView: () => boxView?.hide(),
+  raisingView: () => raisingView?.hide(),
+  evolutionView: () => evolutionView?.hide(),
+  dialogueView: undefined,
+  questLogView: () => questLogView?.hide(),
+  healView: () => healView?.hide(),
+  shopView: () => shopView?.hide(),
+  tradeView: () => tradeView?.hide(),
+  pvpView: () => pvpView?.hide(),
+  leaderboardView: () => leaderboardView?.hide(),
+  renameView: () => renameView?.hide(),
+  tradeProposeView: () => tradeProposeView?.hide(),
+  helpView: () => helpView?.hide(),
+  menuView: () => menuView?.hide(),
+};
+// UXD3C-HANDLES-END
+
+// UXD3C-CANOPEN-BEGIN
+// uxd3-c (ADR-0164): the ONE gate binder. Returns the VERDICT, not a boolean, because the
+// three hide-switch handlers consume `forceHide`; each call site spells `.kind === 'allow'`
+// itself, deliberately, so no single `!` can invert eleven gates at once. Re-probes through
+// `visibleIds(overlayProbes)` on EVERY call — this table is built while every view binding is
+// still undefined, so anything cached would be permanently empty.
+// ⚠ No quoted hotkey literal may appear in this block (W-UXD3-HOTKEY-ANCHORS-AFTER-KEYDOWN).
+function overlayVerdict(id: OverlayId): CanOpenVerdict {
+  return canOpen(id, visibleIds(overlayProbes));
+}
+// UXD3C-CANOPEN-END
 
 /** uxd2 (ADR-0161 D4), rewired by uxd3-b (ADR-0163): the ONE shared predicate over the
  *  15 mutual-exclusion overlays. Every per-overlay read now lives in `overlayProbes`
@@ -839,26 +897,19 @@ window.addEventListener('keydown', (e) => {
     }
   }
   if (e.code === 'KeyB') {
-    // Guard: don't open the box over an active battle (ADR-0014/0052 exit ordering).
-    // ptc5c (ADR-0139): dialogue/questLog/heal are MODAL — guard against them (never hide;
-    // hiding a live dialogue/quest/heal on a box keypress is wrong UX). Matches every newer
-    // handler and closes the B/I/E overlay-stacking bug; gated by W-OVERLAY-FANOUT-MUTEX.
-    if (
-      shouldToggleBox(battleView?.visible ?? false) &&
-      !dialogueView?.visible &&
-      !questLogView?.visible &&
-      !healView?.visible &&
-      !shopView?.visible &&
-      !tradeView?.visible &&
-      !pvpView?.visible &&
-      !leaderboardView?.visible &&
-      !renameView?.visible &&
-      !tradeProposeView?.visible &&
-      !helpView?.visible &&
-      !menuView?.visible
-    ) {
-      raisingView?.hide(); // mutual exclusivity: box and raising never co-open
-      evolutionView?.hide(); // mutual exclusivity: close evolution overlay
+    // uxd3-c (ADR-0164): the 12-term guard list is GONE — one verdict from the registry
+    // reproduces it exactly. WHAT THE LIST USED TO SAY IN PLACE, recorded here because the
+    // retired W-OVERLAY-FANOUT-MUTEX was its last statement in main.ts (KeyI/KeyE below share
+    // this note): modals are GUARDED, NEVER DISMISSED. `canOpen` DENIES over every GUARD_ONLY
+    // overlay — dialogue, questLog, heal, shop, trade, pvp, leaderboard, rename, tradePropose,
+    // help, menu — and over a live battle (EXCLUSIVE_TOP); the only ids it ever returns in
+    // `forceHide` are the box/raising/evolution HIDE_SWITCH siblings this trio legitimately
+    // switches between. Silently dismissing a modal on a stray keypress is wrong UX, and for
+    // dialogue it is a server desync (ptc5c/ADR-0139). The tier table (ui/overlayRegistry.ts)
+    // is now the SSOT for that distinction, exhaustively proved by the OR-CANOPEN-* teeth.
+    const boxVerdict = overlayVerdict('boxView');
+    if (boxVerdict.kind === 'allow') {
+      for (const id of boxVerdict.forceHide) overlayHandles[id]?.();
       boxView?.toggle();
       if (boxView?.visible) refreshBox();
     }
@@ -866,24 +917,12 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'KeyI') {
-    // Inventory/raising overlay — same battle guard as the box (reuse shouldToggleBox).
-    // ptc5c (ADR-0139): guard dialogue/questLog/heal (modal — guard, never hide).
-    if (
-      shouldToggleBox(battleView?.visible ?? false) &&
-      !dialogueView?.visible &&
-      !questLogView?.visible &&
-      !healView?.visible &&
-      !shopView?.visible &&
-      !tradeView?.visible &&
-      !pvpView?.visible &&
-      !leaderboardView?.visible &&
-      !renameView?.visible &&
-      !tradeProposeView?.visible &&
-      !helpView?.visible &&
-      !menuView?.visible
-    ) {
-      boxView?.hide(); // mutual exclusivity: box and raising never co-open
-      evolutionView?.hide(); // mutual exclusivity: close evolution overlay
+    // Inventory/raising overlay — the same verdict-driven gate as the box above, whose
+    // comment records why modals are guarded rather than dismissed (ptc5c/ADR-0139) and why
+    // `forceHide` can only ever name the two hide-switch siblings.
+    const raisingVerdict = overlayVerdict('raisingView');
+    if (raisingVerdict.kind === 'allow') {
+      for (const id of raisingVerdict.forceHide) overlayHandles[id]?.();
       raisingView?.toggle();
       if (raisingView?.visible) refreshRaising();
     }
@@ -891,24 +930,11 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'KeyE') {
-    // Evolution/fusion overlay — same battle guard as box/raising (ADR-0014).
-    // ptc5c (ADR-0139): guard dialogue/questLog/heal (modal — guard, never hide).
-    if (
-      shouldToggleBox(battleView?.visible ?? false) &&
-      !dialogueView?.visible &&
-      !questLogView?.visible &&
-      !healView?.visible &&
-      !shopView?.visible &&
-      !tradeView?.visible &&
-      !pvpView?.visible &&
-      !leaderboardView?.visible &&
-      !renameView?.visible &&
-      !tradeProposeView?.visible &&
-      !helpView?.visible &&
-      !menuView?.visible
-    ) {
-      boxView?.hide(); // mutual exclusivity
-      raisingView?.hide(); // mutual exclusivity
+    // Evolution/fusion overlay — third member of the hide-switch trio, same verdict-driven
+    // gate as box/raising above (see the KeyB comment for the guard-never-dismiss rule).
+    const evolutionVerdict = overlayVerdict('evolutionView');
+    if (evolutionVerdict.kind === 'allow') {
+      for (const id of evolutionVerdict.forceHide) overlayHandles[id]?.();
       evolutionView?.toggle();
       if (evolutionView?.visible) refreshEvolution();
     }
@@ -916,23 +942,10 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'KeyQ') {
-    // Quest log overlay — mutual exclusivity with all other overlays (M12d, ADR-0071).
-    if (
-      !battleView?.visible &&
-      !boxView?.visible &&
-      !raisingView?.visible &&
-      !evolutionView?.visible &&
-      !dialogueView?.visible &&
-      !healView?.visible &&
-      !shopView?.visible &&
-      !tradeView?.visible &&
-      !pvpView?.visible &&
-      !leaderboardView?.visible &&
-      !renameView?.visible &&
-      !tradeProposeView?.visible &&
-      !helpView?.visible &&
-      !menuView?.visible
-    ) {
+    // Quest log overlay — mutual exclusivity with all other overlays (M12d, ADR-0071),
+    // through the ONE registry verdict since uxd3-c. Self is exempt, so the toggle-close
+    // below still works while the quest log itself is open.
+    if (overlayVerdict('questLogView').kind === 'allow') {
       if (questLogView?.visible) {
         questLogView.hide();
       } else {
@@ -945,22 +958,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyU') {
     // Trade overlay — mutual exclusivity with all other overlays (m15b, ADR-0107).
     // Shows the active offer involving this player; "No active trade" when none.
-    if (
-      !battleView?.visible &&
-      !boxView?.visible &&
-      !raisingView?.visible &&
-      !evolutionView?.visible &&
-      !dialogueView?.visible &&
-      !questLogView?.visible &&
-      !healView?.visible &&
-      !shopView?.visible &&
-      !pvpView?.visible &&
-      !leaderboardView?.visible &&
-      !renameView?.visible &&
-      !tradeProposeView?.visible &&
-      !helpView?.visible &&
-      !menuView?.visible
-    ) {
+    if (overlayVerdict('tradeView').kind === 'allow') {
       if (tradeView?.visible) {
         tradeView.hide();
       } else {
@@ -972,23 +970,9 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyP') {
     // PvP challenge overlay — mutual exclusivity with all other overlays (m16b, ADR-0110).
-    // Not available during an active battle (ADR-0014 exit ordering).
-    if (
-      !battleView?.visible &&
-      !boxView?.visible &&
-      !raisingView?.visible &&
-      !evolutionView?.visible &&
-      !dialogueView?.visible &&
-      !questLogView?.visible &&
-      !healView?.visible &&
-      !shopView?.visible &&
-      !tradeView?.visible &&
-      !leaderboardView?.visible &&
-      !renameView?.visible &&
-      !tradeProposeView?.visible &&
-      !helpView?.visible &&
-      !menuView?.visible
-    ) {
+    // Not available during an active battle (ADR-0014 exit ordering) — the registry's
+    // EXCLUSIVE_TOP tier is what carries that half now.
+    if (overlayVerdict('pvpView').kind === 'allow') {
       if (pvpView?.visible) {
         pvpView.hide();
       } else {
@@ -1002,22 +986,7 @@ window.addEventListener('keydown', (e) => {
     // Leaderboard overlay — mutual exclusivity with all other overlays (m17b, ADR-0120).
     // Renders once on open from store.allProfiles(); the batch listener below keeps
     // it live while visible. Pure subscription view — no write path (RL-15).
-    if (
-      !battleView?.visible &&
-      !boxView?.visible &&
-      !raisingView?.visible &&
-      !evolutionView?.visible &&
-      !dialogueView?.visible &&
-      !questLogView?.visible &&
-      !healView?.visible &&
-      !shopView?.visible &&
-      !tradeView?.visible &&
-      !pvpView?.visible &&
-      !renameView?.visible &&
-      !tradeProposeView?.visible &&
-      !helpView?.visible &&
-      !menuView?.visible
-    ) {
+    if (overlayVerdict('leaderboardView').kind === 'allow') {
       if (leaderboardView?.visible) {
         leaderboardView.hide();
       } else {
@@ -1028,28 +997,13 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   // pt-c1b (ADR-0133 PTC1B-1): KeyN opens the profile-rename overlay — the first text-input
-  // overlay. Mutual-exclusion self-guard lists all 11 siblings (incl. dialogue). On open:
+  // overlay. Mutual exclusion is the ONE registry verdict since uxd3-c (self exempt). On open:
   // held.clear() (RT-RN-01 D3-3) so no held movement key straddles the open/close boundary,
   // render the current name from store.player(identity)?.name (D6), then show (deferred focus).
   // e.preventDefault() (RT-RN-05) stops the opening 'n' from reaching the field.
   if (e.code === 'KeyN') {
     e.preventDefault(); // RT-RN-05: suppress the opening 'n' char reaching the field.
-    if (
-      !battleView?.visible &&
-      !boxView?.visible &&
-      !raisingView?.visible &&
-      !evolutionView?.visible &&
-      !dialogueView?.visible &&
-      !questLogView?.visible &&
-      !healView?.visible &&
-      !shopView?.visible &&
-      !tradeView?.visible &&
-      !pvpView?.visible &&
-      !leaderboardView?.visible &&
-      !tradeProposeView?.visible &&
-      !helpView?.visible &&
-      !menuView?.visible
-    ) {
+    if (overlayVerdict('renameView').kind === 'allow') {
       if (renameView?.visible) {
         renameView.hide();
       } else {
@@ -1060,29 +1014,13 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   // pt-c2 (ADR-0134 D7): KeyO opens the trade-PROPOSE overlay ("Offer"). Mutual-exclusion
-  // self-guard lists all 12 siblings (incl. renameView). identity !== '' (red-team L-1) so we
+  // is the ONE registry verdict since uxd3-c. identity !== '' (red-team L-1) so we
   // never open before the player is joined. On open: held.clear() so no held movement key
   // straddles the open/close boundary, build+render the lists, then show (deferred focus).
   // e.preventDefault() suppresses any default action for the 'o' key.
   if (e.code === 'KeyO') {
     e.preventDefault();
-    if (
-      !battleView?.visible &&
-      !boxView?.visible &&
-      !raisingView?.visible &&
-      !evolutionView?.visible &&
-      !dialogueView?.visible &&
-      !questLogView?.visible &&
-      !healView?.visible &&
-      !shopView?.visible &&
-      !tradeView?.visible &&
-      !pvpView?.visible &&
-      !leaderboardView?.visible &&
-      !renameView?.visible &&
-      !helpView?.visible &&
-      !menuView?.visible &&
-      identity !== ''
-    ) {
+    if (overlayVerdict('tradeProposeView').kind === 'allow' && identity !== '') {
       if (tradeProposeView?.visible) {
         tradeProposeView.hide();
       } else {
@@ -1102,24 +1040,10 @@ window.addEventListener('keydown', (e) => {
     // (interact opens UI, it never transacts). The client-side range check is
     // latency hygiene, NOT security — the server re-validates zone + range
     // (npc.rs talk Steps 4-5, TALK_RANGE at npc.rs:20).
-    if (
-      !battleView?.visible &&
-      !boxView?.visible &&
-      !raisingView?.visible &&
-      !evolutionView?.visible &&
-      !dialogueView?.visible &&
-      !questLogView?.visible &&
-      !healView?.visible &&
-      !shopView?.visible &&
-      !tradeView?.visible &&
-      !pvpView?.visible &&
-      !leaderboardView?.visible &&
-      !renameView?.visible &&
-      !tradeProposeView?.visible &&
-      !helpView?.visible &&
-      !menuView?.visible &&
-      identity !== ''
-    ) {
+    // uxd3-c (ADR-0164): NOT a canOpen() site — interact opens no overlay of its own, so it
+    // has no id to exempt and its guard is the plain "nothing is open" predicate, in the same
+    // contiguous shape the AC-12 click front door uses.
+    if (!anyOverlayVisible() && identity !== '') {
       // uxd3 (ADR-0162): the dispatch body now lives in interactAtNearest() so this hotkey
       // and the menu's Interact leaf share ONE exhaustive switch (ADR-0161's compiler flag).
       interactAtNearest();
@@ -1128,27 +1052,12 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   // pt-c2b (ADR-0135): `?` toggles the display-only help overlay. Sole e.key branch
-  // (help is about the glyph, not physical position). Mutual-exclusion self-guard lists
-  // all 14 sibling overlays (uxd3/ADR-0162 added menuView). held.clear() for consistency
+  // (help is about the glyph, not physical position). Mutual exclusion is the ONE registry
+  // verdict since uxd3-c (self exempt, so the toggle-close survives). held.clear() for consistency
   // (help does not capture focus).
   if (e.key === '?') {
     e.preventDefault();
-    if (
-      !battleView?.visible &&
-      !boxView?.visible &&
-      !raisingView?.visible &&
-      !evolutionView?.visible &&
-      !dialogueView?.visible &&
-      !questLogView?.visible &&
-      !healView?.visible &&
-      !shopView?.visible &&
-      !tradeView?.visible &&
-      !pvpView?.visible &&
-      !leaderboardView?.visible &&
-      !renameView?.visible &&
-      !tradeProposeView?.visible &&
-      !menuView?.visible
-    ) {
+    if (overlayVerdict('helpView').kind === 'allow') {
       if (helpView?.visible) {
         helpView.hide();
       } else {
@@ -1161,28 +1070,13 @@ window.addEventListener('keydown', (e) => {
   // uxd3 (ADR-0162): the menu front-door. KeyM was verified UNBOUND before this slice — no
   // KEY_DIR/letter/`?` collision and no browser default. Escape is deliberately NOT overloaded
   // to open the menu: it stays a pure close/back key, so mashing Escape never surprises the
-  // player with a menu. This is the 12th open-handler and carries the full 14-sibling guard
-  // list plus `identity !== ''` — menuAvailability() reads store.ownCharacter(identity), which
-  // is undefined before join, and this listener has no try/catch.
+  // player with a menu. This is the 12th open-handler; since uxd3-c its guard is the ONE
+  // registry verdict plus `identity !== ''` — menuAvailability() reads
+  // store.ownCharacter(identity), which is undefined before join, and this listener has no
+  // try/catch. The AC-12 click front door carries the SAME predicate (ADR-0163 D6 closed).
   if (e.code === 'KeyM') {
     e.preventDefault();
-    if (
-      !battleView?.visible &&
-      !boxView?.visible &&
-      !raisingView?.visible &&
-      !evolutionView?.visible &&
-      !dialogueView?.visible &&
-      !questLogView?.visible &&
-      !healView?.visible &&
-      !shopView?.visible &&
-      !tradeView?.visible &&
-      !pvpView?.visible &&
-      !leaderboardView?.visible &&
-      !renameView?.visible &&
-      !tradeProposeView?.visible &&
-      !helpView?.visible &&
-      identity !== ''
-    ) {
+    if (overlayVerdict('menuView').kind === 'allow' && identity !== '') {
       if (menuView?.visible) {
         menuView.hide();
       } else {
@@ -1370,21 +1264,19 @@ function refreshBattle(): void {
   dismissedBattleId = r.dismissedBattleId;
   battleSynced = r.synced;
   if (r.action.kind === 'show') {
-    // pt-c2b (ADR-0135): a battle auto-show supersedes the help overlay too (PTC2B-8).
-    if (helpView?.visible) helpView.hide();
-    if (boxView?.visible) boxView.hide(); // active/outcome overlay supersedes the box
-    if (raisingView?.visible) raisingView.hide(); // ...and the raising/inventory overlay
-    if (evolutionView?.visible) evolutionView.hide(); // ...and the evolution overlay
-    // m17b (ADR-0120): ...and the leaderboard — a PvP accept auto-shows the battle
-    // overlay while the challenger may have the board open (anyOverlayVisible gates
-    // only the pvp listener, not this battle auto-show).
-    if (leaderboardView?.visible) leaderboardView.hide();
-    // pt-c1b (ADR-0133 D4): ...and the rename overlay — a PvP accept auto-shows the battle
-    // overlay while the player may have the rename form open.
-    if (renameView?.visible) renameView.hide();
-    // pt-c2 (ADR-0134 D7): ...and the trade-PROPOSE overlay — same battle auto-show reason.
-    if (tradeProposeView?.visible) tradeProposeView.hide();
-    if (menuView?.visible) menuView.hide(); // uxd3: the menu never occludes a battle
+    // uxd3-c (ADR-0164): the eight hand-written `if (X?.visible) X.hide();` lines are gone —
+    // BATTLE_FORCE_HIDE (ui/overlayRegistry.ts) now DRIVES the loop, so the manifest and the
+    // code cannot drift apart (they used to be two independently-authored lists kept in sync
+    // only by a test). Same ids, same order, same behaviour: help, box, raising, evolution,
+    // leaderboard, rename, tradePropose, menu — and NOT dialogue/shop/trade/pvp/questLog/heal,
+    // which a battle auto-show leaves standing exactly as before. Deliberately NOT canOpen():
+    // a battle auto-show is server truth and must fire even over a GUARD_ONLY overlay that
+    // would deny it.
+    // UXD3C-BATTLEHIDE-BEGIN
+    for (const id of hideAllExceptPlan('battleView', visibleIds(overlayProbes))) {
+      overlayHandles[id]?.();
+    }
+    // UXD3C-BATTLEHIDE-END
     // Build baitItems from own inventory × item defs (12.5f-5: wire the 4th arg
     // that was already present in buildBattleViewModel with default []). The
     // function classifies by recruitBonus > 0 internally (ADR-0047 classify-by-data).
@@ -1696,11 +1588,18 @@ document.addEventListener('click', (e) => {
   // uxd3-b (ADR-0163, AC-12): the click front door. Delegated on the data-attribute, the
   // house idiom in this listener — so main.ts still never NAMES the badge and acquires no
   // reference to it (W-UX1-HINT-NO-JS-OWNER stays green verbatim; ADR-0151 D2's "no owner
-  // that can hide or remove it" survives). Gated on the same anyOverlayVisible() SSOT this
-  // slice builds, plus the identity guard the KeyM door carries (menuAvailability() reads
-  // store.ownCharacter(identity) and this listener has no try/catch).
+  // that can hide or remove it" survives).
+  // uxd3-c (ADR-0164, closing ADR-0163 D6): the two front doors are UNIFIED — this branch now
+  // carries the SAME predicate the menu hotkey does, so a single verdict decides both. The one
+  // difference from the retired `!anyOverlayVisible()` form, stated rather than glossed:
+  // canOpen exempts self, so with ONLY the menu visible this branch would re-open (resetting
+  // menuState) where it previously dead-clicked. Unreachable in practice — #menu-overlay is
+  // position:fixed;inset:0;z-index:100 over the badge's z-index:50, so a click while the menu
+  // is open never reaches the badge and closest() returns null. The identity guard is
+  // preserved: menuAvailability() reads store.ownCharacter(identity) and this listener has no
+  // try/catch.
   if ((e.target as HTMLElement).closest('[data-menu-launcher]') !== null) {
-    if (!anyOverlayVisible() && identity !== '') {
+    if (overlayVerdict('menuView').kind === 'allow' && identity !== '') {
       held.clear();
       openMenu();
     }
