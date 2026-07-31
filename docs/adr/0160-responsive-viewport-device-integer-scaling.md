@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** 0067
 **Subsystems:** client-ui
-**Decision:** The render edge gains a pure viewport core: the Pixi app runs at resolution=devicePixelRatio with autoDensity, scale is an INTEGER deviceScale applied as a fractional stageScale=deviceScale/dpr, and FollowCamera centers per-axis when the map is smaller than the effective viewport.
+**Decision:** A pure viewport core sizes the render edge: Pixi runs at resolution=devicePixelRatio+autoDensity, an INTEGER deviceScale is applied as stageScale=deviceScale/dpr, and FollowCamera centers per-axis when the map is smaller than the viewport.
 
 ## Context
 
@@ -112,11 +112,12 @@ pre-clamp target.
 
 ### D8 — Degenerate input is normalized, not rejected
 
-`viewportScale`/`appInitOptions` normalize `dpr` to `[0.25, 8]` and CSS dimensions to `(0, 1e6]`,
+`viewportScale`/`appInitOptions` normalize `dpr` to `[0.25, 8]` and CSS dimensions to `[1, 1e6]`,
 falling back to `1` outside those bands. Two reasons for normalize-not-throw: this code runs from a
 `resize` handler adjacent to the frame loop, so a throw on a browser-supplied `devicePixelRatio` stops
-rendering; and this is not a trust boundary (the project `AGENTS.md` declares no reject-not-clamp
-inversion, so the default applies). The bands are bounded rather than merely finite-and-positive
+rendering; and **this is not a trust boundary** — reject-not-clamp governs the SERVER's handling of
+client intent (ADR-0046, ADR-0113), and `viewport.ts` reads `window` in the same process it renders
+into, so there is no asset on the far side to protect. The bands are bounded rather than merely finite-and-positive
 because `Number.isFinite` alone admits `Number.MAX_VALUE`, and `shorterCss * dpr` then overflows to
 `Infinity`, making the documented `deviceScale` integer postcondition false. Bounding makes every
 declared postcondition true **by parsing**.
@@ -127,7 +128,12 @@ Generated placeholder textures use `scaleMode: 'nearest'` (spec EARS A10) and le
 unset, so it defaults to `renderer.resolution` (= dpr).
 
 **The measured consequence, stated plainly because the obvious reasoning is wrong:** the residual
-nearest-magnification is `deviceScale / textureResolution = deviceScale / dpr = stageScale`, which is
+nearest-magnification is `deviceScale / textureResolution`. `textureResolution` is snapshotted from
+`renderer.resolution` AT GENERATION TIME and the per-animKey cache is never invalidated on resize, so
+the identity `= deviceScale / dpr = stageScale` holds for the dpr in force when that texture was first
+built; after a mid-session monitor change the live `stageScale` moves while the cached texture's baked
+resolution does not, and the residual for already-cached textures drifts off the identity. At the
+generation-time dpr the residual is
 **2–6× on desktop** (1920×1080 → 3.00×; 1366×768 → 2.00×; 2560×1440 → 4.00×; 3840×2160 → 6.00×;
 390×844 at dpr 3 → 1.00×). The 22×22-texel placeholder therefore renders with 3×3-device-pixel blocks
 on its rounded-rect corners at 1080p, and `antialias: false` means the source raster is aliased too.
@@ -168,9 +174,19 @@ symbolically, so every test stays valid at any value.
 
 **Known-weak verification, declared rather than papered over:**
 
-- Three `world.ts` plumbing lines are review-only (`renderer.resize`, `stage.scale.set`, and `app.init`
-  actually receiving the options object) — coverage-excluded shell with no legal test home in this
-  slice's `touches:` set. D6 pulled the two highest-risk expressions out of that set.
+- Four `world.ts` plumbing lines are review-only (`renderer.resize`, both `stage.scale.set` calls, and
+  `app.init` actually receiving the options object) — coverage-excluded shell with no legal test home in
+  this slice's `touches:` set. D6 pulled the two highest-risk expressions out of that set.
+  The review round's red-team lens demonstrated (fake-Pixi PoC) that the ORIGINAL `init()` applied no
+  stage scale at all: `#vs` was seeded to `viewportScale(1,1,1)`, whose `stageScale` is `1` — identical
+  to Pixi's own default — so any frame drawn before the first `resize()` used a transform computed for a
+  1×1 viewport. It was unreachable only because `main.ts` calls `installResizeHandler` (which resizes
+  synchronously) immediately after `await init(...)`; an `await` slipped between the two would have
+  silently restored a broken first frame. `init()` now reads the window triple ONCE, derives `#vs` from
+  it, and applies `stage.scale` itself, so correctness no longer depends on caller ordering.
+  The `tester` lens was asked whether the fix needs a test and answered no, on the record: mocking
+  `pixi.js` would be a new one-off pattern this ADR already rejected, and a pure-module test cannot
+  observe whether the shell called `stage.scale.set` — it would have passed on the buggy code too.
 - **Spec criterion A8 is NOT satisfied — uxd1 claims no-regression only.** Its premise is false on
   `master`: only `battleView`, `boxView`, `evolutionView`, `raisingView` and `#help-overlay` are
   `position:fixed; inset:0`; ten-plus overlays are plain in-flow divs, a pre-existing defect documented

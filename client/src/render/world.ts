@@ -56,12 +56,22 @@ export class WorldRenderer {
   async init(mount: HTMLElement, rawMap: RawTileMap): Promise<void> {
     const map = TileMap.fromRaw(rawMap);
     const app = new Application();
+    // Read the window ONCE and derive both the Pixi options and #vs from that one
+    // triple, so the backing store and the stage transform can never disagree.
+    const cssW = window.innerWidth;
+    const cssH = window.innerHeight;
+    const dpr = window.devicePixelRatio;
     // M11c: viewport-sized canvas; camera offset via stage.position. uxd1: the
     // DPR-correct backing store (resolution/autoDensity) is decided in viewport.ts.
-    await app.init(
-      appInitOptions(window.innerWidth, window.innerHeight, window.devicePixelRatio, FLOOR_COLOR),
-    );
+    await app.init(appInitOptions(cssW, cssH, dpr, FLOOR_COLOR));
     mount.appendChild(app.canvas);
+    // init() applies the stage scale ITSELF rather than relying on the caller to
+    // land a resize() first. main.ts happens to call installResizeHandler (which
+    // resizes synchronously) right after init(), but nothing enforces that
+    // ordering — and world.ts is coverage-excluded, so a future `await` slipped
+    // between the two would silently draw the first frame at scale 1.
+    this.#vs = viewportScale(cssW, cssH, dpr);
+    app.stage.scale.set(this.#vs.stageScale);
     app.stage.addChild(this.#bg);
     app.stage.addChild(this.#actors);
     // e-4 (ADR-0090): Pixi sorts children by zIndex when sortableChildren is true.

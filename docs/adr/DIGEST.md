@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 125 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 126 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -134,6 +134,7 @@ Generated from 125 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0157](./0157-dev-console-outbound-reducer-log.md) | 0157 — Dev-console outbound reducer log: a flag-gated Proxy at the connection seam, console-only | Accepted | client-ui, tooling-docs | dev-observability (M-postgate-dev-observability — a toggleable dev-console log of outbound reducer calls; EARS 1–4) | A `VITE_MR_DEVLOG`-gated Proxy installed at `build()`'s return logs every outbound reducer call (name + args) to the browser console, is strict-identity when the flag is off, and never feeds the shared F9 bug bundle. |
 | [0158](./0158-hold-commit-continuation-gate.md) | 0158 — mvi: hold-commit tap/hold discrimination on the held-key continuation emitters | Accepted | movement-netcode, client-ui | movement-investigation (M-postgate-movement-investigation — r2 playtest ledger items 003/015/029/040-042) | Both held-key continuation emitters re-issue only via HeldDirections.committedActive(now): the active key must have been held >= HOLD_COMMIT_MS (150 ms, injected clock). Keydown's first step stays ungated. Pure not-emit. |
 | [0159](./0159-feel-polish-care-feedback-npc-wander.md) | 0159 — feel-polish: care-button success feedback + collision-aware NPC wander | Accepted | client-ui, movement-netcode | feel-polish (M-postgate-feel-polish — r2 playtest ledger items 087-090) | Care gets an in-overlay feedback line via the established showFeedback idiom (no toast); npc_decide picks only legal directions and continues its facing except 1 decision in 6, so wander cannot become absorbing; bumps 14.3%->0%. |
+| [0160](./0160-responsive-viewport-device-integer-scaling.md) | 0160 — Responsive viewport: DPR-correct backing store, device-integer scaling, per-axis map centering | Accepted | client-ui | uxd1 (M-postgate-ux-design — responsive viewport scaling) | A pure viewport core sizes the render edge: Pixi runs at resolution=devicePixelRatio+autoDensity, an INTEGER deviceScale is applied as stageScale=deviceScale/dpr, and FollowCamera centers per-axis when the map is smaller than the viewport. |
 
 ## Harness design corpus (H- namespace)
 
@@ -338,6 +339,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0157](./0157-dev-console-outbound-reducer-log.md) — dev-observability (M-postgate-dev-observability — a toggleable dev-console log of outbound reducer calls; EARS 1–4) — 0157 — Dev-console outbound reducer log: a flag-gated Proxy at the connection seam, console-only (Accepted)
 - [0158](./0158-hold-commit-continuation-gate.md) — movement-investigation (M-postgate-movement-investigation — r2 playtest ledger items 003/015/029/040-042) — 0158 — mvi: hold-commit tap/hold discrimination on the held-key continuation emitters (Accepted)
 - [0159](./0159-feel-polish-care-feedback-npc-wander.md) — feel-polish (M-postgate-feel-polish — r2 playtest ledger items 087-090) — 0159 — feel-polish: care-button success feedback + collision-aware NPC wander (Accepted)
+- [0160](./0160-responsive-viewport-device-integer-scaling.md) — uxd1 (M-postgate-ux-design — responsive viewport scaling) — 0160 — Responsive viewport: DPR-correct backing store, device-integer scaling, per-axis map centering (Accepted)
 
 ### ci-gates
 
