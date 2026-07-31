@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 129 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 130 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -138,6 +138,7 @@ Generated from 129 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0161](./0161-npc-interaction-context-interact.md) | 0161 — Server-anchored NpcInteraction enum and the context-sensitive KeyT interact system | Accepted | content, client-ui, schema-persistence | uxd2 (M-postgate-ux-design — shop-via-NPC interaction) | NPC roles live in a server-anchored NpcInteraction{Dialogue,Shop(u32),Heal(u32)} enum column; one pure nearestInteractable resolver drives a generalized KeyT (greet-then-shop per Drew) and an on-world prompt; global KeyG/KeyH are removed. |
 | [0162](./0162-overlay-registry-two-level-main-menu.md) | 0162 — A pure `canOpen` modality core and a registry-backed two-level main menu | Accepted | client-ui | uxd3-a (M-postgate-ux-design — unified overlay IA) | Overlay modality moves into a pure `canOpen` reducer over a 15-member tier manifest, and a `KeyM` two-level menu makes the hotkeys discoverable; the fan-out collapse and gate retirement defer to uxd3-b. |
 | [0163](./0163-overlay-probe-substrate-and-click-front-door.md) | 0163 — One overlay probe table behind all five fan-out surfaces, and the AC-12 click front door | Accepted | client-ui | uxd3-b (M-postgate-ux-design — unified overlay IA) | The five overlay OR-lists in `main.ts` collapse onto one probe table read via `anyVisible()`, and `#help-hint` becomes the menu's click door via attribute delegation; the hotkey→`canOpen` migration and the gate retirement defer to uxd3-c. |
+| [0164](./0164-overlay-registry-write-substrate-and-canopen-migration.md) | 0164 — Overlay registry write substrate and `canOpen` migration | Accepted | client-ui | uxd3-c (M-postgate-ux-design — unified overlay IA) | Overlay write substrate: `visibleIds()`/`OverlayHandles` (optional thunks; `dialogueView` guarded); 12 hotkeys routed to `canOpen`; retire 4 guard-scan teeth; unify AC-12; decline `onReconnect`; defer Escape re-anchor. |
 
 ## Harness design corpus (H- namespace)
 
@@ -348,6 +349,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0161](./0161-npc-interaction-context-interact.md) — uxd2 (M-postgate-ux-design — shop-via-NPC interaction) — 0161 — Server-anchored NpcInteraction enum and the context-sensitive KeyT interact system (Accepted)
 - [0162](./0162-overlay-registry-two-level-main-menu.md) — uxd3-a (M-postgate-ux-design — unified overlay IA) — 0162 — A pure `canOpen` modality core and a registry-backed two-level main menu (Accepted)
 - [0163](./0163-overlay-probe-substrate-and-click-front-door.md) — uxd3-b (M-postgate-ux-design — unified overlay IA) — 0163 — One overlay probe table behind all five fan-out surfaces, and the AC-12 click front door (Accepted)
+- [0164](./0164-overlay-registry-write-substrate-and-canopen-migration.md) — uxd3-c (M-postgate-ux-design — unified overlay IA) — 0164 — Overlay registry write substrate and `canOpen` migration (Accepted)
 
 ### ci-gates
 

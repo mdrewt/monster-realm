@@ -35,8 +35,14 @@
 //
 // Added in uxd3-b (ADR-0163): OverlayProbes + anyVisible(probes, exempt?) — the read half of
 // the imperative shell, shipped WITH its five consumers (see BLOCK 6 below).
-// Still NOT shipped (A7 + A15, no consumer yet — they land with uxd3-c's hotkey migration):
-// per-id open/hide thunks, hideAllExcept, visibleIds, isVisible, RECONNECT_HIDE.
+//
+// Added in uxd3-c (ADR-0164, adjudication B4 + plan §A): `visibleIds(probes)` (the reversal of
+// A7's own deletion — it now has two real consumers, `overlayVerdict()` and refreshBattle's
+// `hideAllExceptPlan` call) and `OverlayHandles`, a BARE optional-thunk table —
+// `Readonly<Record<OverlayId, (() => void) | undefined>>` — NOT the `{ hide?: () => void }`
+// wrapper an earlier draft of this slice sketched. See BLOCK 7 below.
+// Still NOT shipped (A7 + A15, no consumer — DO-NOT-SHIP list, plan §A): per-id `open` thunks,
+// `hideAllExcept`, `isVisible(id)`, `anyVisibleExcept`, `canOpenNow`, `RECONNECT_HIDE`.
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the spec/plan only.
 
@@ -54,8 +60,10 @@ import {
   NEVER_FORCE_HIDE,
   OVERLAY_IDS,
   OVERLAY_TIERS,
+  type OverlayHandles,
   type OverlayId,
   type OverlayProbes,
+  visibleIds,
 } from './overlayRegistry';
 
 // ---------------------------------------------------------------------------
@@ -795,5 +803,209 @@ describe('overlayRegistry — anyVisible over a probe table (uxd3-b, AC-7)', () 
       cells += 3;
     }
     expect(cells, 'ANTI-VACUITY: all 15 ids x 3 cells must have been exercised').toBe(45);
+  });
+});
+
+// ===========================================================================
+// BLOCK 7 — uxd3-c (ADR-0164, pending): visibleIds(probes) + OverlayHandles, the WRITE
+// substrate (adjudication B4 / plan §A / §C1).
+//
+// RED REASON (all three tests below): `visibleIds` is not exported from
+// `client/src/ui/overlayRegistry.ts` yet — under vitest's SSR transform the missing named
+// export resolves to `undefined`, so `OR-VISIBLEIDS-*` die with "visibleIds is not a function".
+// `OR-HANDLES-DIALOGUE-HAS-NO-HIDE` builds an `OverlayHandles`-typed object literal, so it dies
+// at `tsc`/vitest's on-the-fly type-check with "Cannot find name 'OverlayHandles'" until the type
+// is exported (§B4's shape: `Readonly<Record<OverlayId, (() => void) | undefined>>`).
+//
+// WHY EXHAUSTIVE LOOPS AND NOT fast-check (same rationale as BLOCK 6, adjudication §B2): over 15
+// ids the domain is finitely enumerable, so a loop is strictly stronger than sampling.
+// ===========================================================================
+
+describe("overlayRegistry — visibleIds(probes), the write substrate's read half (uxd3-c, ADR-0164)", () => {
+  it('OR-VISIBLEIDS-EXACT BITES: exhaustive per-id domain — all-false -> [], each single-true -> [id], all-true -> OVERLAY_IDS in declaration order', () => {
+    // WRONG IMPL KILLED (1) — the headline: a TRUNCATED iteration domain (e.g.
+    //   `OVERLAY_IDS.slice(0, 14).filter(...)` or a hand-written 14-term list that forgot the
+    //   newest overlay). That overlay then sits OUTSIDE mutual exclusion in ALL ELEVEN
+    //   canOpen-routed hotkey sites at once (they all read visibility through `overlayVerdict()`,
+    //   which calls `visibleIds(overlayProbes)`) — the ptc5c/ADR-0139 defect class, amplified
+    //   11x. Flipping ONE id at a time and requiring `[id]` for every id is what makes a
+    //   14-of-15 domain impossible to pass.
+    // WRONG IMPL KILLED (2): a constant `return []` (every canOpen() call sees nothing visible
+    //   ⇒ mutual exclusion never engages — every overlay opens over every other) or a constant
+    //   `return [...OVERLAY_IDS]` (nothing can ever open — every hotkey permanently denied). The
+    //   ANTI-VACUITY all-false assertion below kills the first; the per-id loop kills the second
+    //   (every single-true cell would return the full 15-element array instead of `[id]`).
+    // WRONG IMPL KILLED (3): an INVERTED predicate (`OVERLAY_IDS.filter((id) => !probes[id]())`)
+    //   — caught the same way as (2): all-false would return the full 15 (not `[]`), and each
+    //   single-true cell would return the OTHER 14 ids (not `[id]`).
+    // WRONG IMPL KILLED (4) — `Object.keys` order drift: an implementation that iterates
+    //   `Object.keys(probes)` (the CALLER-supplied probe table's own key order) instead of the
+    //   exported `OVERLAY_IDS` array. Both orders happen to coincide for a probes object built by
+    //   iterating OVERLAY_IDS (as `makeProbes()` below does) — so the per-id loop and the
+    //   IN-ORDER probes' all-true case CANNOT see this bug. The REVERSED-insertion-order probes
+    //   table at the end of this test is what kills it: `Object.keys` on that table yields the
+    //   REVERSE of OVERLAY_IDS, while the correct implementation (which never calls
+    //   `Object.keys` on its argument) still returns OVERLAY_IDS' own declaration order.
+    const { flags, probes } = makeProbes();
+
+    // ANTI-VACUITY, ASSERTED FIRST: the manifest is the real 15, and an all-false table answers
+    // `[]`. Without this, a constant-`[...OVERLAY_IDS]` implementation would pass every per-id
+    // assertion below (every single-true cell would ALSO look like "the full list", which is
+    // wrong, but only visible once compared against the exact `[id]` expectation) — asserting the
+    // EMPTY case first and independently is what makes that failure legible on its own line.
+    expect(OVERLAY_IDS.length, 'the manifest must hold 15 mutual-exclusion overlays').toBe(15);
+    expect(
+      visibleIds(probes),
+      'ANTI-VACUITY: with every probe returning false, visibleIds(probes) must be [] — a ' +
+        'constant-full implementation would satisfy every per-id assertion below for the wrong ' +
+        'reason',
+    ).toEqual([]);
+
+    let checked = 0;
+    for (const id of OVERLAY_IDS) {
+      flags[id] = true;
+      expect(
+        visibleIds(probes),
+        `visibleIds(probes) must be exactly ['${id}'] when ONLY '${id}' is visible — if this is ` +
+          `the only failing id, '${id}' is missing from the iteration domain and is outside ` +
+          'mutual exclusion at every canOpen-routed hotkey site at once',
+      ).toEqual([id]);
+      flags[id] = false;
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: all 15 ids must have been flipped individually').toBe(15);
+
+    for (const id of OVERLAY_IDS) flags[id] = true;
+    expect(
+      visibleIds(probes),
+      'with every probe returning true, visibleIds(probes) must equal OVERLAY_IDS ITSELF, IN ' +
+        "DECLARATION ORDER — an implementation that iterates the caller's probes object via " +
+        '`Object.keys` rather than the exported `OVERLAY_IDS` array would (for THIS probes ' +
+        'table, built in OVERLAY_IDS order) coincidentally pass this assertion too; the ' +
+        'REVERSED-order probes table below is what actually distinguishes the two',
+    ).toEqual([...OVERLAY_IDS]);
+    for (const id of OVERLAY_IDS) flags[id] = false;
+
+    // (4): Object.keys-order-drift kill. A probes object whose OWN key insertion order is the
+    // REVERSE of OVERLAY_IDS. `Object.keys(reversedProbes)` yields the reverse order — only an
+    // implementation that filters the EXPORTED `OVERLAY_IDS` array (ignoring the argument's own
+    // key order) returns OVERLAY_IDS' declaration order regardless.
+    const reversedFlags: Record<string, boolean> = {};
+    const reversedProbesRaw: Record<string, () => boolean> = {};
+    for (const id of [...OVERLAY_IDS].reverse()) {
+      reversedFlags[id] = true;
+      reversedProbesRaw[id] = () => reversedFlags[id] === true;
+    }
+    const reversedProbes = reversedProbesRaw as OverlayProbes;
+    expect(
+      Object.keys(reversedProbes),
+      'ANTI-VACUITY (the fixture itself): Object.keys on the reversed-insertion probes table ' +
+        'must actually BE the reverse of OVERLAY_IDS, or this test proves nothing about order',
+    ).toEqual([...OVERLAY_IDS].reverse());
+    expect(
+      visibleIds(reversedProbes),
+      'all-true over a probes object whose OWN key insertion order is REVERSED must still ' +
+        'return OVERLAY_IDS declaration order, NOT the reversed order — an ' +
+        '`Object.keys(probes).filter(...)` implementation would return the reversed order instead',
+    ).toEqual([...OVERLAY_IDS]);
+  });
+
+  it('OR-VISIBLEIDS-REPROBES BITES: visibleIds RE-PROBES on every call — a cached/memoized impl leaves canOpen() seeing a permanently empty visible set', () => {
+    // WRONG IMPL KILLED: any snapshot/memoization of the filter result — whether keyed on "has
+    // this exact probes object been seen before" or memoized unconditionally after the FIRST
+    // call. main.ts builds `overlayProbes` at MODULE SCOPE while all fifteen `let xView`
+    // bindings are still `undefined` (they are constructed ~200 lines later), so the FIRST call
+    // to `visibleIds(overlayProbes)` — which happens the moment any hotkey is pressed — would see
+    // an all-false table. A memoizing implementation would therefore cache `[]` FOREVER: every
+    // `canOpen()` verdict becomes `allow` with an empty `forceHide`, and mutual exclusion
+    // silently stops working machine-wide (the menu opens over a live battle, a hotkey opens over
+    // a live NPC conversation, etc.) — this is the exact defect class `anyVisible`'s own
+    // re-probing contract (`OR-ANYVISIBLE-PROBES-EVERY-ID`) already guards against for the READ
+    // half; this is its WRITE-side twin.
+    //
+    // Flip a flag between calls and require the result to change BOTH WAYS — [] -> non-empty ->
+    // a DIFFERENT non-empty -> [] — which is the only shape a real re-probe (and not a cache
+    // keyed on "seen this probes object before") can produce.
+    const { flags, probes } = makeProbes();
+
+    expect(
+      visibleIds(probes),
+      'ANTI-VACUITY: with every probe false, visibleIds(probes) must be [] — a constant-full ' +
+        'implementation would pass every later assertion in this test for the wrong reason',
+    ).toEqual([]);
+
+    flags.battleView = true;
+    expect(
+      visibleIds(probes),
+      'flipping battleView true must be reflected on the VERY NEXT call — a cached/memoized ' +
+        'result computed on the FIRST (all-false) call would still read []',
+    ).toEqual(['battleView']);
+
+    flags.battleView = false;
+    flags.menuView = true;
+    expect(
+      visibleIds(probes),
+      'flipping battleView back to false AND menuView to true must change the result AGAIN, to ' +
+        'a DIFFERENT single-element array — a cache keyed on "has this probes object ever been ' +
+        "seen before\" would still return ['battleView'] here",
+    ).toEqual(['menuView']);
+
+    flags.menuView = false;
+    expect(
+      visibleIds(probes),
+      'flipping menuView back off must return to [] — proves the implementation holds no state ' +
+        'of its own between calls, exactly as main.ts building overlayProbes at module scope ' +
+        'while every view is still undefined requires',
+    ).toEqual([]);
+  });
+});
+
+describe('overlayRegistry — OverlayHandles, the force-hide write table (uxd3-c, ADR-0164 D7-mandated)', () => {
+  it('OR-HANDLES-DIALOGUE-HAS-NO-HIDE BITES: NEVER_FORCE_HIDE is exactly [dialogueView], and only dialogueView may omit a hide thunk', () => {
+    // ADJUDICATION B4 (ADR-0163 D7 mandate): the shipped shape is a BARE optional-thunk table —
+    // `export type OverlayHandles = Readonly<Record<OverlayId, (() => void) | undefined>>` — NOT
+    // a `{ readonly hide?: () => void }` wrapper. `dialogueView` is the SOLE member allowed to
+    // supply `undefined` instead of a thunk: a client-side hide of a live conversation strands
+    // the server `player_conversation` row (ptc5c/ADR-0139), and
+    // `W-ESCAPE-DIALOGUE-NEVER-BARE-HIDE` (main.wiring.test.ts) is a whole-file ZERO-count on
+    // `dialogueView?.hide` / `dialogueView.hide` in main.ts — so a table of REQUIRED thunks
+    // cannot compile in this codebase at all.
+    //
+    // HONEST LIMIT (state it here AND in ADR-0164 — do not overclaim): the LOAD-BEARING half of
+    // this guarantee is the TYPE CHECK, not the runtime assertions below. A table typed
+    // `Record<OverlayId, () => void>` (no `| undefined`) simply CANNOT be given
+    // `dialogueView: undefined` — `tsc --noEmit` reds on THIS file and on main.ts's own handle
+    // table before a single test runs. The runtime assertions here can only prove that a
+    // CONFORMING table built from the imported NEVER_FORCE_HIDE looks right; they CANNOT catch a
+    // LOOSENING of the type to `Partial<Record<OverlayId, () => void>>` (which would let ANY id
+    // go missing, not just dialogueView) — `@ts-expect-error` appears ZERO times in
+    // `client/src` and is not this repo's house style, so asserting the type is not
+    // `Partial<>`-loosened is NOT this tooth's job. That loosening is caught instead by
+    // `W-UXD3C-HANDLE-TABLE` (main.wiring.test.ts), whose bidirectional per-id loop over
+    // `main.ts`'s ACTUAL handle table checks every one of the OTHER 14 ids too, so a `Partial<>`
+    // table that dropped a random id (not just dialogueView) reds there.
+    expect(NEVER_FORCE_HIDE, 'NEVER_FORCE_HIDE must be exactly [dialogueView]').toEqual([
+      'dialogueView',
+    ]);
+
+    const built = {} as Record<OverlayId, (() => void) | undefined>;
+    for (const id of OVERLAY_IDS) {
+      built[id] = NEVER_FORCE_HIDE.includes(id) ? undefined : () => {};
+    }
+    const handles: OverlayHandles = built;
+
+    expect(
+      handles.dialogueView,
+      'handles.dialogueView must be undefined — dialogueView must NEVER get a hide thunk, ' +
+        'because a bare hide strands the server player_conversation row',
+    ).toBeUndefined();
+
+    let checked = 0;
+    for (const id of OVERLAY_IDS) {
+      if (id === 'dialogueView') continue;
+      expect(typeof handles[id], `typeof handles.${id} must be 'function'`).toBe('function');
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: all 14 non-dialogue ids must have been checked').toBe(14);
   });
 });

@@ -61,7 +61,9 @@ import { describe, expect, it } from 'vitest';
 // a dynamic one: that tooth was authored while `./ui/overlayRegistry` did not exist yet, so a
 // static import would have failed module RESOLUTION and reded the COLLECTION of this whole file.
 // uxd3-a landed the module, so the resolution hazard is gone.
-import { OVERLAY_IDS } from './ui/overlayRegistry';
+// uxd3-c (ADR-0164): W-UXD3C-HANDLE-TABLE needs NEVER_FORCE_HIDE as a second static import,
+// bidirectional alongside OVERLAY_IDS, for the same reason OVERLAY_IDS is static (see above).
+import { NEVER_FORCE_HIDE, OVERLAY_IDS } from './ui/overlayRegistry';
 
 // Locate main.ts relative to this test file (both live in client/src/).
 const MAIN_TS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'main.ts');
@@ -712,19 +714,38 @@ describe('★ main.ts wiring (pt-c1b rename): per-site fan-out (PTC1B-6 / D4 / M
   // (W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY). The reconnect tooth below is unaffected: it
   // scans onReconnect, which uxd3-b does not touch.
   it('W-RN-FANOUT-RECONNECT BITES: renameView?.hide() called in onReconnect — kills stale-overlay-on-reconnect impl (RT-RN-02)', () => {
-    // ADR-0133 D4: the reconnect stale-overlay hide (~line 1725) must cover renameView.
+    // ADR-0133 D4: the reconnect stale-overlay hide must cover renameView.
     // RT-RN-02: on reconnect the rename overlay must close (store reset; stale state).
     // WRONG IMPL KILLED: an impl that hides shop/trade/pvp/leaderboard on reconnect but
     // forgets renameView — the overlay could stay open with a stale in-flight lock.
-    // Strategy: find 'onReconnect' callback region and assert renameView?.hide appears in it.
+    //
+    // uxd3-c re-anchor (ADR-0163 D7, task T1a — lands BEFORE any main.ts edit, and MUST stay
+    // GREEN on the UNMODIFIED tree). The OLD anchor sliced a FIXED `reconnectIdx + 800` window
+    // (~131 chars of headroom on the pre-uxd3-c tree). uxd3-c's E3 handle table introduces new
+    // `renameView?.hide()`-shaped call sites elsewhere in the file and a future insertion above
+    // this call inside onReconnect is exactly the class of edit a fixed window cannot survive.
+    // Re-anchored onto the SAME two endpoints `W-HELP-NO-RECONNECT-HIDE` (:1259) and
+    // `W-RECONNECT-HIDES-MENU` (:4443) already use: `onReconnect:` -> the NEXT `onOwnWarp`
+    // searched FROM startIdx (a bare `indexOf('onOwnWarp')` resolves to an unrelated comment
+    // BEFORE `onReconnect:` and would yield an empty/negative region).
     const src = readMainTs();
-    const reconnectIdx = src.indexOf('onReconnect:');
-    expect(reconnectIdx, 'main.ts must contain onReconnect:').toBeGreaterThanOrEqual(0);
-    // The onReconnect body is within ~800 chars after the declaration.
-    const reconnectRegion = src.slice(reconnectIdx, reconnectIdx + 800);
+    const startIdx = src.indexOf('onReconnect:');
+    expect(startIdx, "main.ts must contain 'onReconnect:'").toBeGreaterThanOrEqual(0);
+    const endIdx = src.indexOf('onOwnWarp', startIdx);
     expect(
-      reconnectRegion.includes('renameView'),
-      'main.ts onReconnect body must reference renameView — hide it on reconnect (RT-RN-02, ADR-0133 D4)',
+      endIdx,
+      "main.ts must contain 'onOwnWarp' AFTER 'onReconnect:' (region end endpoint) — a bare " +
+        'indexOf would resolve to the unrelated comment BEFORE onReconnect and yield an empty region',
+    ).toBeGreaterThan(startIdx);
+    const reconnectRegion = src.slice(startIdx, endIdx);
+    // Strengthened from the bare identifier `renameView` to the CALL form `renameView?.hide()`:
+    // a guard-only `!renameView?.visible` living in this region would not satisfy this positive
+    // control, and the region now spans the WHOLE onReconnect body so this bites regardless of
+    // where in the body the call lives.
+    expect(
+      reconnectRegion.includes('renameView?.hide()'),
+      'main.ts onReconnect body must call renameView?.hide() — hide it on reconnect (RT-RN-02, ' +
+        'ADR-0133 D4)',
     ).toBe(true);
   });
 });
@@ -925,33 +946,38 @@ describe('main.ts wiring (pt-c2 tradePropose): Escape handler (PTC2-14 / D7)', (
 });
 
 describe('★ main.ts wiring (pt-c2 tradePropose): D7 fan-out checklist (PTC2-14)', () => {
-  it('★ W-TP-FANOUT-KEYN-GUARD BITES: tradeProposeView?.visible in the KeyN open guard (D7 reviewer B-1 — easy miss)', () => {
-    // D7: "733 KeyN (reviewer B-1 — easy miss)".
-    // WRONG IMPL KILLED: an impl that guards KeyN against all other overlays but not tradeProposeView
-    // — pressing KeyN while the propose form is open would open the rename overlay over it.
-    const src = readMainTs();
-    const keyNIdx = src.indexOf("'KeyN'");
-    expect(keyNIdx, "main.ts must contain 'KeyN'").toBeGreaterThanOrEqual(0);
-    // KeyN open guard block is within ~800 chars after 'KeyN'
-    const keyNRegion = src.slice(keyNIdx, keyNIdx + 800);
-    expect(
-      keyNRegion.includes('tradeProposeView'),
-      'main.ts KeyN open guard must reference tradeProposeView (D7 reviewer B-1 — easy miss)',
-    ).toBe(true);
-  });
-
   it('★ W-TP-RECONNECT BITES: tradeProposeView?.hide() called in onReconnect — kills dead-#pending-lock impl (D7 reviewer M-2 / red-team C-2)', () => {
     // D7: "~1803 onReconnect (reviewer M-2 / red-team C-2 — WITHOUT this the #pending lock
     // survives a link drop → dead submit button forever)."
     // WRONG IMPL KILLED: an impl that hides other overlays on reconnect but forgets
     // tradeProposeView — the propose overlay stays open with a dead in-flight lock.
+    //
+    // uxd3-c re-anchor (ADR-0163 D7, task T1a — lands BEFORE any main.ts edit, and MUST stay
+    // GREEN on the UNMODIFIED tree). The OLD anchor sliced a FIXED `reconnectIdx + 1000` window.
+    // `tradeProposeView?.hide()` sits at delta ~978 on the pre-uxd3-c tree — ~22 characters of
+    // headroom — and on failure it named *tradePropose* rather than the real culprit (an
+    // insertion ABOVE it inside onReconnect, e.g. uxd3's `menuView?.hide()` line). Re-anchored
+    // onto the SAME two endpoints `W-HELP-NO-RECONNECT-HIDE` (:1259) and `W-RECONNECT-HIDES-MENU`
+    // (:4443) already use: `onReconnect:` -> the NEXT `onOwnWarp` searched FROM startIdx (a bare
+    // `indexOf('onOwnWarp')` resolves to an unrelated comment BEFORE `onReconnect:` and would
+    // yield an empty/negative region).
     const src = readMainTs();
-    const reconnectIdx = src.indexOf('onReconnect:');
-    expect(reconnectIdx, 'main.ts must contain onReconnect:').toBeGreaterThanOrEqual(0);
-    const reconnectRegion = src.slice(reconnectIdx, reconnectIdx + 1000);
+    const startIdx = src.indexOf('onReconnect:');
+    expect(startIdx, "main.ts must contain 'onReconnect:'").toBeGreaterThanOrEqual(0);
+    const endIdx = src.indexOf('onOwnWarp', startIdx);
     expect(
-      reconnectRegion.includes('tradeProposeView'),
-      'main.ts onReconnect body must reference tradeProposeView?.hide() (D7 M-2/C-2)',
+      endIdx,
+      "main.ts must contain 'onOwnWarp' AFTER 'onReconnect:' (region end endpoint) — a bare " +
+        'indexOf would resolve to the unrelated comment BEFORE onReconnect and yield an empty region',
+    ).toBeGreaterThan(startIdx);
+    const reconnectRegion = src.slice(startIdx, endIdx);
+    // Strengthened from the bare identifier `tradeProposeView` to the CALL form
+    // `tradeProposeView?.hide()` — the region now spans the WHOLE onReconnect body so this bites
+    // regardless of where in the body the call lives, and no longer fails by naming an unrelated
+    // overlay when an unrelated edit merely lengthens the body above the old fixed window.
+    expect(
+      reconnectRegion.includes('tradeProposeView?.hide()'),
+      'main.ts onReconnect body must call tradeProposeView?.hide() (D7 M-2/C-2)',
     ).toBe(true);
   });
 });
@@ -1112,113 +1138,6 @@ describe('main.ts wiring (pt-c2b help): Escape close branch (PTC2B-3)', () => {
   });
 });
 
-describe('★ main.ts wiring (pt-c2b help): per-context anchored fan-out teeth (PTC2B-4..8 / ADR-0135)', () => {
-  // uxd3-b (ADR-0163): the four keydown/reconcile/rAF/pvp teeth that lived here retired with
-  // the OR-list surfaces they scanned — W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY covers those
-  // reads structurally now. The battle force-hide below is untouched by uxd3-b (refreshBattle
-  // is a WRITE surface, deferred to uxd3-c), so it stays exactly as authored.
-
-  it('★ W-HELP-FANOUT-BATTLE BITES: helpView force-hidden in the battle show-path — kills battle-under-help impl (PTC2B-8, red-team F4)', () => {
-    // PTC2B-8: when a battle auto-shows (e.g. a PvP accept), the help overlay must be
-    // force-hidden (battle supersession) — the `refreshBattle()` show-path force-hides siblings.
-    //
-    // BINDING (plan / red-team F4): anchor on `r.action.kind === 'show'` (a UNIQUE marker) and
-    // assert helpView appears within ~900 chars (the existing tradePropose force-hide sits at
-    // delta ~880). ADR-0135 requires the guard in the `if (helpView?.visible) helpView.hide()`
-    // form — the same form W-BATTLE-FORCEHIDE-SET-MATCHES-MANIFEST's extractor requires.
-    // WRONG IMPL KILLED: an impl that force-hides box/raising/evolution/leaderboard/rename/
-    // tradePropose on battle-show but forgets helpView — a battle overlay pops under an open help.
-    const src = readMainTs();
-    const showIdx = src.indexOf("r.action.kind === 'show'");
-    expect(
-      showIdx,
-      "main.ts must contain the battle show-path anchor `r.action.kind === 'show'`",
-    ).toBeGreaterThanOrEqual(0);
-    const battleRegion = src.slice(showIdx, showIdx + 900);
-    expect(
-      battleRegion.includes('helpView'),
-      "main.ts battle show-path (anchored on `r.action.kind === 'show'`) must reference helpView within ~900 chars (PTC2B-8 battle supersession, red-team F4)",
-    ).toBe(true);
-    // Strengthen: the force-hide must be the `helpView?.visible` guarded form (credits the count-floor).
-    expect(
-      battleRegion.includes('helpView?.visible'),
-      'battle show-path force-hide must use the `if (helpView?.visible) helpView.hide()` form (helpView?.visible) — the guarded form W-BATTLE-FORCEHIDE-SET-MATCHES-MANIFEST extracts',
-    ).toBe(true);
-  });
-});
-
-describe('★ main.ts wiring (pt-c2b help): 11 sibling open-guards carry !helpView?.visible (PTC2B-5)', () => {
-  // PTC2B-5: while the help overlay is visible, pressing a sibling hotkey must NOT open that
-  // overlay. Each of the 11 sibling key handlers (KeyB/I/E/Q/U/P/L/N/O/T/M — uxd3 added M) must
-  // add `!helpView?.visible` to its open-guard block.
-  //
-  // uxd2 EDIT (ADR-0161 D5 / plan AC-10′ — list maintenance, NOT a weakening): 'KeyH' and
-  // 'KeyG' were removed from SIBLING_KEYS because uxd2 DELETES both handlers outright (the
-  // shop opens from a shopkeeper interaction, the heal from a heal tile). Leaving them in
-  // would make this suite fail post-impl for the wrong reason — `src.indexOf("e.code ===
-  // 'KeyG'")` returns -1 and the anchor assertion fires, masking the real invariant. The
-  // ABSENCE of those two handlers is asserted positively by W-INTERACT-NO-GH at the foot of
-  // this file, so nothing is lost: the pair moved from "must be guarded" to "must not exist".
-  // ALL_OVERLAYS (W-OVERLAY-FANOUT-MUTEX) deliberately KEEPS shopView and healView at 14 —
-  // both overlays still exist; they simply have no hotkey of their own any more, so EVERY
-  // remaining handler must now guard both of them.
-  //
-  // ROBUST APPROACH: for each sibling key, slice its handler block (from `e.code === 'KeyX'`
-  // up to the NEXT sibling handler or a generous window) and assert helpView?.visible is present.
-  // We assert ONLY the presence of helpView?.visible in each block — NOT a full sibling set —
-  // because KeyB/I/E carried a PRE-EXISTING dialogue/questLog/heal omission owned by ptc5c
-  // (plan reviewer HIGH-2); pt-c2b only adds helpView?.visible. ptc5c has now SHIPPED
-  // W-OVERLAY-FANOUT-MUTEX (below) which enforces the FULL 14-overlay sibling set for ALL
-  // handlers, including the KeyB/I/E dialogue/questLog/heal omission this comment once noted.
-  //
-  // uxd3 EDIT (ADR-0162 / plan §8 T3.2 — list GROWTH, 10 -> 11): 'KeyM' joins the sibling set.
-  // The new menu front-door is a full open-handler, so it must carry `!helpView?.visible` like
-  // every other sibling (pressing M while the help overlay is open must NOT stack the menu on
-  // top of it). Adding it also TIGHTENS every other key's block bound: the KeyM anchor becomes a
-  // candidate `blockEnd`, so a stray helpView?.visible living in the KeyM block can no longer
-  // false-credit the handler that precedes it.
-  const SIBLING_KEYS = [
-    'KeyB',
-    'KeyI',
-    'KeyE',
-    'KeyQ',
-    'KeyU',
-    'KeyP',
-    'KeyL',
-    'KeyN',
-    'KeyO',
-    'KeyT',
-    'KeyM',
-  ] as const;
-
-  it('W-HELP-FANOUT-OPENGUARDS BITES: EACH of the 11 sibling open-guards contains !helpView?.visible — kills partial-guard impl', () => {
-    // WRONG IMPL KILLED: an impl that adds !helpView?.visible to some sibling guards (e.g. the
-    // newer L/N/O/T) but forgets an older one (e.g. KeyB) — pressing KeyB while help is open
-    // would then open the box overlay over the help overlay (a mutual-exclusion breach).
-    const src = readMainTs();
-    for (const key of SIBLING_KEYS) {
-      const needle = `e.code === '${key}'`;
-      const keyIdx = src.indexOf(needle);
-      expect(keyIdx, `main.ts must contain the sibling handler ${needle}`).toBeGreaterThanOrEqual(
-        0,
-      );
-      // Slice this handler's guard block: from this key up to the NEXT sibling handler start,
-      // so a helpView?.visible in a *different* handler cannot false-credit this one.
-      let blockEnd = src.length;
-      for (const other of SIBLING_KEYS) {
-        if (other === key) continue;
-        const otherIdx = src.indexOf(`e.code === '${other}'`, keyIdx + needle.length);
-        if (otherIdx >= 0 && otherIdx < blockEnd) blockEnd = otherIdx;
-      }
-      const block = src.slice(keyIdx, blockEnd);
-      expect(
-        block.includes('!helpView?.visible'),
-        `the ${key} open-guard must contain !helpView?.visible (PTC2B-5 mutual-exclusion; ptc5c SHIPPED W-OVERLAY-FANOUT-MUTEX enforcing the full 14-overlay set including the former KeyB/I/E dialogue/questLog/heal omission)`,
-      ).toBe(true);
-    }
-  });
-});
-
 describe('main.ts wiring (pt-c2b help): onReconnect does NOT hide helpView (PTC2B-9 asymmetry)', () => {
   it('W-HELP-NO-RECONNECT-HIDE (negative regression guard): the onReconnect region does NOT contain helpView?.hide — pins the deliberate asymmetry (PTC2B-9, red-team F3)', () => {
     // PTC2B-9 (ADR-0135 the-one-deviation): every OTHER overlay is hidden on onReconnect (either
@@ -1275,256 +1194,6 @@ describe('main.ts wiring (pt-c2b help): onReconnect does NOT hide helpView (PTC2
         '(no #pending lock, static const content; ADR-0135 the-one-deviation, PTC2B-9). ' +
         'A future consistency edit adding helpView?.hide() here would break the documented asymmetry.',
     ).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// ptc5c (ADR-0136 follow-up HIGH-2): W-OVERLAY-FANOUT-MUTEX
-//
-// INVARIANT: Every overlay-open handler in the keyboard dispatch must account
-// for EVERY sibling overlay via a guard or a legitimate hide-switch, so that no
-// two of the 14 mutual-exclusion overlays can be simultaneously visible.
-//
-// THE 15 MUTUAL-EXCLUSION OVERLAYS (SSOT — not including errorOverlayView):
-//   battleView, boxView, raisingView, evolutionView, dialogueView, questLogView,
-//   healView, shopView, tradeView, pvpView, leaderboardView, renameView,
-//   tradeProposeView, helpView, menuView          (uxd3/ADR-0162 added menuView)
-//
-// THE 12 OPEN-HANDLERS (uxd2: was 13 — KeyG/KeyH deleted, ADR-0161 D5 → 11; uxd3:
-// +KeyM → 12): one per remaining hotkey + the interact handler (KeyT, which opens NO
-// overlay of its own but must still guard against ALL 15 so it never fires into an
-// open UI).
-//
-// ACCEPTANCE FORM (by overlay class):
-//   battleView         → bare token `battleView?.visible`
-//                        (covers both `!battleView?.visible` and the
-//                         `shouldToggleBox(battleView?.visible ?? false)` call-form
-//                         used by KeyB/I/E — those compile to the same guard intent)
-//   boxView/raisingView/evolutionView  → guard OR hide
-//                        (`!Y?.visible` OR `Y?.hide()` OR `Y.hide()`)
-//                        (KeyB/I/E legitimately hide-and-switch within the trio)
-//   all other 10 modals (dialogue/questLog/heal/shop/trade/pvp/leaderboard/
-//                        rename/tradePropose/help) → guard-form ONLY
-//                        `!Y?.visible`
-//                        Do NOT accept `.hide()` for modals: dismissing a modal
-//                        dialog silently on a random keypress is the WRONG UX.
-//                        (A future `dialogueView?.hide()` on KeyB MUST NOT satisfy
-//                        the invariant — that would hide an active NPC conversation.)
-//
-// BLOCK-SLICING (order-independent so handler order in main.ts can change):
-//   For each handler H:
-//     hIdx    = src.indexOf(H.anchor)                               // assert >= 0
-//     blockEnd = min over every OTHER handler's anchor AND the
-//                sentinel `"e.code === 'Escape'"` of
-//                src.indexOf(otherAnchor, hIdx + H.anchor.length)   // skip back-refs
-//                when >= 0; else src.length
-//     block   = src.slice(hIdx, blockEnd)                           // assert > 0 chars
-//
-// SENTINEL: `"e.code === 'Escape'"` closes the `e.key === '?'` handler's block
-// (the `?` anchor is the last handler before the Escape branches). Including it
-// prevents the `?` block from swallowing the entire rest of main.ts.
-//
-// RED REASON (current main.ts, no ptc5c fix applied):
-//   KeyB, KeyI, KeyE use `shouldToggleBox(battleView?.visible ?? false)` as the
-//   battle guard and then list only shop/trade/pvp/leaderboard/rename/tradePropose/
-//   help siblings — they omit `!dialogueView?.visible`, `!questLogView?.visible`,
-//   and `!healView?.visible`. Those three are MODAL overlays → guard-form required →
-//   9 assertion failures (3 handlers × 3 missing modals).
-//
-// WRONG IMPL KILLED:
-//   - A partial-guard impl that adds only some modal guards to KeyB/I/E (e.g. adds
-//     `!dialogueView?.visible` but forgets `!healView?.visible`) → fails the missing
-//     pair assertions.
-//   - An impl that uses `dialogueView?.hide()` instead of `!dialogueView?.visible`
-//     on KeyB/I/E → fails the modal guard-form check (hide-form not accepted for
-//     modals, by design — hiding a live dialogue is wrong UX).
-//   - An impl that accidentally drops a guard from a PREVIOUSLY correct handler
-//     (e.g. removes `!tradeView?.visible` from KeyQ) → caught per-handler, not just
-//     for KeyB/I/E.
-// ---------------------------------------------------------------------------
-
-describe('★ main.ts wiring (ptc5c): every overlay-open handler accounts for all sibling overlays (W-OVERLAY-FANOUT-MUTEX)', () => {
-  // The 15 mutual-exclusion overlays (pin as const — no errorOverlayView).
-  //
-  // uxd3 EDIT (ADR-0162 / plan §8 T3.2 — list GROWTH, 14 -> 15): `menuView` is a full
-  // mutual-exclusion member (GUARD_ONLY tier — see overlayRegistry's OVERLAY_TIERS). Adding it
-  // here is what forces the eleven existing handlers to each carry `!menuView?.visible`: without
-  // it, pressing B/I/E/Q/U/P/L/N/O/T/? while the menu is open would stack an overlay UNDER a
-  // modal menu that still swallows the arrow keys. This list stays the SSOT that
-  // overlayRegistry.OVERLAY_IDS is checked against (OR-MANIFEST-COMPLETE, 15 ids).
-  const ALL_OVERLAYS = [
-    'battleView',
-    'boxView',
-    'raisingView',
-    'evolutionView',
-    'dialogueView',
-    'questLogView',
-    'healView',
-    'shopView',
-    'tradeView',
-    'pvpView',
-    'leaderboardView',
-    'renameView',
-    'tradeProposeView',
-    'helpView',
-    'menuView',
-  ] as const;
-
-  // The three "hide-switch" siblings: KeyB/I/E legitimately hide-and-switch within
-  // this trio, so we accept EITHER the guard form OR a .hide() call.
-  const HIDE_SWITCH_OVERLAYS: ReadonlyArray<string> = ['boxView', 'raisingView', 'evolutionView'];
-
-  // The 11 open-handlers (anchor uniquely identifies the handler start in the source;
-  // self = the overlay this handler toggles, or null for KeyT which opens nothing).
-  //
-  // uxd2 EDIT (ADR-0161 D5 / plan AC-10′ — list maintenance): the KeyH (self healView) and
-  // KeyG (self shopView) entries were removed because uxd2 deletes both handlers. This
-  // STRENGTHENS the invariant rather than weakening it: with no handler claiming healView or
-  // shopView as its `self`, EVERY remaining handler must now carry `!healView?.visible` AND
-  // `!shopView?.visible` (previously each of those two was exempted in its own handler).
-  // ALL_OVERLAYS stayed at 14 — both overlays still exist, they are just hotkey-less now.
-  //
-  // uxd3 EDIT (ADR-0162 / plan §8 T3.2 — list GROWTH, 11 -> 12): the `KeyM` menu front-door is
-  // the 12th open-handler, `self: 'menuView'`. It therefore must guard the OTHER 14 overlays
-  // (W-KEYM-HANDLER, at the foot of this file, states the same 14-guard requirement
-  // list-independently, so a future mis-edit of THIS list cannot silently un-pin it).
-  // ⚠ ANCHOR DISCIPLINE (plan anti-pattern 14): the literal `e.code === 'KeyM'` must appear in
-  // main.ts EXACTLY ONCE — the slicing below uses first-`indexOf`, so the same string in a
-  // comment above the handler would anchor the block at the comment and let the real guard list
-  // fall outside it. W-KEYM-HANDLER asserts that uniqueness explicitly.
-  const OPEN_HANDLERS: ReadonlyArray<{ anchor: string; self: string | null }> = [
-    { anchor: "e.code === 'KeyB'", self: 'boxView' },
-    { anchor: "e.code === 'KeyI'", self: 'raisingView' },
-    { anchor: "e.code === 'KeyE'", self: 'evolutionView' },
-    { anchor: "e.code === 'KeyQ'", self: 'questLogView' },
-    { anchor: "e.code === 'KeyU'", self: 'tradeView' },
-    { anchor: "e.code === 'KeyP'", self: 'pvpView' },
-    { anchor: "e.code === 'KeyL'", self: 'leaderboardView' },
-    { anchor: "e.code === 'KeyN'", self: 'renameView' },
-    { anchor: "e.code === 'KeyO'", self: 'tradeProposeView' },
-    { anchor: "e.key === '?'", self: 'helpView' }, // note: e.key not e.code
-    { anchor: "e.code === 'KeyT'", self: null }, // talk: toggles NO overlay → must guard ALL 15
-    { anchor: "e.code === 'KeyM'", self: 'menuView' }, // uxd3: the menu front-door (ADR-0162)
-  ] as const;
-
-  // The sentinel that closes the `?` handler's block (the last open-handler before
-  // the Escape branches). Including it in the blockEnd calculation prevents the `?`
-  // block from greedily consuming the rest of main.ts.
-  const ESCAPE_SENTINEL = "e.code === 'Escape'";
-
-  it('W-OVERLAY-FANOUT-MUTEX BITES: each open-handler references every sibling overlay via guard (or legit hide-switch) — kills partial-guard impl', () => {
-    // WRONG IMPL KILLED (primary target — the 9 RED failures on unmodified main.ts):
-    //   KeyB, KeyI, KeyE each omit !dialogueView?.visible, !questLogView?.visible,
-    //   and !healView?.visible. Those are modal overlays so guard-form is required.
-    //   A player pressing KeyB while the dialogue UI is open would open the box overlay
-    //   over the active NPC conversation — a mutual-exclusion breach.
-    //
-    // WRONG IMPL KILLED (regression — any future handler that loses a sibling guard):
-    //   e.g. KeyG loses !tradeView?.visible after a merge conflict → caught here.
-    //
-    // NOTE: battleView uses the bare-token check (`battleView?.visible` without `!`)
-    //   because KeyB/I/E use `shouldToggleBox(battleView?.visible ?? false)` which
-    //   contains the token but not in `!battleView?.visible` form. The bare token
-    //   correctly covers both the `!X?.visible` guard form (KeyQ/H/G/U/P/L/N/O/T/KeyT/?
-    //   all use `!battleView?.visible`) and the shouldToggleBox() call form. A wrong
-    //   impl that REMOVES battleView consideration entirely would have no `battleView?.visible`
-    //   token in the block at all — this assertion catches it.
-
-    const src = readMainTs();
-
-    // Collect all anchors (handler anchors + Escape sentinel) for block-slicing.
-    const allAnchors: ReadonlyArray<string> = [
-      ...OPEN_HANDLERS.map((h) => h.anchor),
-      ESCAPE_SENTINEL,
-    ];
-
-    for (const handler of OPEN_HANDLERS) {
-      // 1. Locate the handler anchor — fail fast if it's missing (missing anchor means
-      //    the handler was deleted or renamed; that's a separate regression but we catch
-      //    it here with a useful message).
-      const hIdx = src.indexOf(handler.anchor);
-      expect(
-        hIdx,
-        `main.ts must contain the open-handler anchor \`${handler.anchor}\` — handler missing or renamed`,
-      ).toBeGreaterThanOrEqual(0);
-
-      if (hIdx < 0) continue; // skip further assertions if anchor missing (already failed)
-
-      // 2. Slice the handler block: from hIdx to the minimum indexOf of every OTHER
-      //    anchor (searched after hIdx + anchor.length to avoid self-match or back-refs).
-      let blockEnd = src.length;
-      for (const otherAnchor of allAnchors) {
-        if (otherAnchor === handler.anchor) continue; // skip self
-        const otherIdx = src.indexOf(otherAnchor, hIdx + handler.anchor.length);
-        if (otherIdx >= 0 && otherIdx < blockEnd) {
-          blockEnd = otherIdx;
-        }
-      }
-      const block = src.slice(hIdx, blockEnd);
-
-      // Anti-vacuity: the block must be non-empty (catches a degenerate slice).
-      expect(
-        block.length,
-        `handler block for \`${handler.anchor}\` must be non-empty (anti-vacuity)`,
-      ).toBeGreaterThan(0);
-
-      // 3. For every overlay that is NOT this handler's own toggled overlay, assert
-      //    that the block accounts for it via the correct form.
-      for (const overlay of ALL_OVERLAYS) {
-        if (overlay === handler.self) continue; // self — no guard needed
-
-        if (overlay === 'battleView') {
-          // battleView: bare token — covers both `!battleView?.visible` guard form
-          // AND `shouldToggleBox(battleView?.visible ?? false)` call form (KeyB/I/E).
-          // WRONG IMPL KILLED: a handler that drops battleView consideration entirely
-          // → `battleView?.visible` token absent from block → assertion fails.
-          expect(
-            block.includes('battleView?.visible'),
-            `\`${handler.anchor}\` handler must reference battleView?.visible ` +
-              `(bare token — covers both guard form and shouldToggleBox call form); ` +
-              `WRONG IMPL KILLED: handler opens over an active battle`,
-          ).toBe(true);
-        } else if (HIDE_SWITCH_OVERLAYS.includes(overlay)) {
-          // boxView / raisingView / evolutionView: accept guard OR hide-call.
-          // KeyB/I/E legitimately hide their siblings when switching between the trio
-          // (e.g. KeyB calls raisingView?.hide() and evolutionView?.hide() then toggles
-          // boxView) — the hide IS the account, so we accept it.
-          // WRONG IMPL KILLED: a handler that neither guards nor hides one of the trio
-          // → misses mutual exclusion within the box/raising/evolution group.
-          const guarded =
-            block.includes('!' + overlay + '?.visible') ||
-            block.includes(overlay + '?.hide()') ||
-            block.includes(overlay + '.hide()');
-          expect(
-            guarded,
-            `\`${handler.anchor}\` handler must account for ${overlay} via ` +
-              `guard (!${overlay}?.visible) OR hide (${overlay}?.hide() / ${overlay}.hide()) — ` +
-              `WRONG IMPL KILLED: two of {box,raising,evolution} open simultaneously`,
-          ).toBe(true);
-        } else {
-          // All other MODAL overlays (dialogue, questLog, heal, shop, trade, pvp,
-          // leaderboard, rename, tradePropose, help): guard-form ONLY.
-          //
-          // WHY NOT accept .hide() for modals:
-          //   A future `dialogueView?.hide()` on KeyB would silently dismiss an active
-          //   NPC conversation — that is the WRONG behaviour. The invariant requires a
-          //   GUARD (don't open while dialogue is up), not a DISMISS (close dialogue
-          //   because the player pressed a box key). Accepting hide would make the test
-          //   green for the wrong impl.
-          //
-          // WRONG IMPL KILLED (primary, 9 failures on unmodified main.ts):
-          //   KeyB/I/E lack `!dialogueView?.visible`, `!questLogView?.visible`,
-          //   `!healView?.visible` → these three overlay × three handler = 9 failures.
-          expect(
-            block.includes('!' + overlay + '?.visible'),
-            `\`${handler.anchor}\` handler must guard !${overlay}?.visible ` +
-              `(modal overlay — guard-form ONLY; .hide() is NOT accepted because ` +
-              `dismissing a modal on a hotkey press is wrong UX); ` +
-              `WRONG IMPL KILLED: handler opens over a visible ${overlay}`,
-          ).toBe(true);
-        }
-      }
-    }
   });
 });
 
@@ -2257,11 +1926,12 @@ describe('main.ts wiring (ux1, ADR-0151): the Esc-to-continue promise and its ze
     //       ui/battleView.test.ts proves the hint is SHOWN; only this pin proves the hint is
     //       TRUE. Without it, the two halves of ux1-2 can drift apart silently: the hint keeps
     //       rendering, the key stops working, and every test stays green.
-    //   (c) Nothing pinned this before. The pre-existing ESCAPE_SENTINEL constant in this same
-    //       file (`"e.code === 'Escape'"`, used by W-OVERLAY-FANOUT-MUTEX) is only ever used as
-    //       a block-slicing endpoint — it is never asserted `>= 0` and is not battleView-
-    //       specific, so it would happily keep slicing against some OTHER Escape branch after
-    //       the battle one was deleted.
+    //   (c) Nothing pinned this before. The Escape-sentinel constants in this same file
+    //       (`"e.code === 'Escape'"` — UXD3_ESCAPE_SENTINEL, and UXD3C_ESCAPE_SENTINEL used by
+    //       W-UXD3C-OPENGUARDS-ROUTE-THROUGH-CANOPEN; the retired W-OVERLAY-FANOUT-MUTEX had its
+    //       own copy) are only ever used as a block-slicing endpoint — never asserted `>= 0` and
+    //       not battleView-specific, so they would happily keep slicing against some OTHER
+    //       Escape branch after the battle one was deleted.
     //
     // SECOND-PASS FIX (review battery) — SCAN COMMENT-STRIPPED SOURCE, not raw. Scanning
     // readMainTs() raw meant that block-commenting the Escape branch OUT left this pin GREEN:
@@ -3349,8 +3019,10 @@ describe('main.ts wiring (feel-polish D1): care feedback (ADR-0159, hardened aga
 
 // ===========================================================================
 // uxd2 — context-sensitive interact wiring (W-INTERACT). NEW describe block; the
-// only edits to the blocks ABOVE are the two list shrinks (SIBLING_KEYS,
-// OPEN_HANDLERS), each annotated in place.
+// only edits to the blocks ABOVE were two list shrinks — W-HELP-FANOUT-OPENGUARDS's
+// SIBLING_KEYS and W-OVERLAY-FANOUT-MUTEX's OPEN_HANDLERS. Both teeth (and both lists)
+// have since been RETIRED by uxd3-c (ADR-0164); their coverage now lives in
+// W-UXD3C-OPENGUARDS-ROUTE-THROUGH-CANOPEN and its UXD3C_OPEN_HANDLERS list.
 //
 // SOURCE OF TRUTH: docs/specs/uxd2-plan.md I6/I6b/I7 (ACs 1,2,3,5,6,10′,12) +
 //                  docs/adr/0161-npc-interaction-context-interact.md D3/D4/D5/D6.
@@ -3561,17 +3233,32 @@ describe('★ main.ts wiring (uxd2): the KeyT handler dispatches through nearest
     }
   });
 
-  it('★ W-INTERACT-KEYT-GUARD BITES: the KeyT block still guards ALL 14 mutual-exclusion overlays (AC-6)', () => {
+  it('★ W-INTERACT-KEYT-GUARD BITES: the KeyT block still guards on !anyOverlayVisible() && identity !== "" (AC-6)', () => {
     // AC-6: the interact key must never fire into an open UI. This duplicates the coverage of
-    // W-OVERLAY-FANOUT-MUTEX deliberately — that test's OPEN_HANDLERS list is edited by this
-    // slice, so a second, list-independent statement of the KeyT guard keeps the invariant
-    // pinned even if the shared list is ever mis-edited again.
-    // WRONG IMPL KILLED: a rewritten KeyT that drops guards while restructuring the body into
+    // the retired W-OVERLAY-FANOUT-MUTEX / the new W-UXD3C-OPENGUARDS-ROUTE-THROUGH-CANOPEN
+    // DELIBERATELY — that shared block-slicer's handler list (UXD3C_OPEN_HANDLERS) is edited by every
+    // uxd3-c slice, so a second, list-independent statement of the KeyT guard keeps the
+    // invariant pinned even if the shared list is ever mis-edited again (this tooth STAYS —
+    // plan §C3 / adjudication §C).
+    //
+    // uxd3-c re-anchor (ADR-0164, plan §C3): KeyT is NOT a canOpen() site (it opens no overlay
+    // of its own — plan §0), so its 15-term inline guard collapses to
+    // `!anyOverlayVisible() && identity !== ''`, byte-identical to the AC-12 click branch (E15).
+    // WRONG IMPL KILLED: a rewritten KeyT that drops the guard while restructuring the body into
     // a switch (the easiest thing to lose in this refactor) — pressing T with the shop open
-    // would send `talk` behind the overlay.
+    // would send `talk` behind the overlay. ALSO KILLED: a residual hand-rolled per-id guard
+    // term surviving ALONGSIDE the collapsed call (a copy-paste leftover from the pre-migration
+    // 14-term list).
     const src = readMainTs();
     const block = stripLineComments(regionOrThrow(src, UXD2_KEYT_START, UXD2_KEYT_END));
-    const overlays = [
+    const squashed = squashWhitespace(block);
+    expect(
+      squashed.includes("!anyOverlayVisible() && identity !== ''"),
+      "the KeyT block must guard on the CONTIGUOUS `!anyOverlayVisible() && identity !== ''` — " +
+        "the SAME shape the AC-12 click branch uses (E15); a `.kind === 'deny'`-style inversion " +
+        'or a dropped `!` would fall through this exact-substring check',
+    ).toBe(true);
+    for (const overlay of [
       'battleView',
       'boxView',
       'raisingView',
@@ -3586,17 +3273,14 @@ describe('★ main.ts wiring (uxd2): the KeyT handler dispatches through nearest
       'renameView',
       'tradeProposeView',
       'helpView',
-    ];
-    for (const overlay of overlays) {
+      'menuView',
+    ]) {
       expect(
         block.includes(`!${overlay}?.visible`),
-        `the KeyT block must keep the guard !${overlay}?.visible (AC-6 — 14-way mutual exclusion)`,
-      ).toBe(true);
+        `the KeyT block must NOT contain a residual hand-rolled guard !${overlay}?.visible — ` +
+          'the 15-way exclusion now routes exclusively through !anyOverlayVisible()',
+      ).toBe(false);
     }
-    expect(
-      block.includes("identity !== ''"),
-      "the KeyT block must keep its `identity !== ''` guard (no dispatch before onReady)",
-    ).toBe(true);
   });
 });
 
@@ -3962,53 +3646,58 @@ describe('★ main.ts wiring (uxd2): the dialogue view renders the enum-derived 
 // therefore carries a documented, live positive control proving it is not vacuous.
 //
 // ---------------------------------------------------------------------------------------
-// ⚠⚠ READ BEFORE EDITING main.ts — FOUR FIXED-WINDOW HAZARDS THAT FAIL IN THE WRONG FILE ⚠⚠
+// ⚠⚠ READ BEFORE EDITING main.ts — FIXED-WINDOW HAZARD STATUS (uxd3-c update) ⚠⚠
 // ---------------------------------------------------------------------------------------
-// Several PRE-EXISTING teeth in this file slice with a fixed `+N` character window instead of
-// two endpoints. They cannot be re-anchored in this slice (that would be editing gating tests
-// unrelated to uxd3 — deferred to uxd3-b Boy-Scout, plan A17). Until then, uxd3's insertions
-// must respect their headroom. Every one of these fails by NAMING AN UNRELATED OVERLAY, so an
-// implementer who does not read this will debug rename/tradePropose/help for an hour.
+// uxd3-b left FOUR fixed-`+N`-window hazards live against uxd3-c's own edits. uxd3-c resolves
+// three of them outright and re-states the one that survives, plus one new H4 concern of its
+// own. Read this before touching KeyB/I/E, the handle table, or refreshBattle.
 //
-//  H1. `W-TP-RECONNECT` (this file, ~:1125) slices `reconnectIdx + 1000` and asserts the region
-//      mentions tradeProposeView. `tradeProposeView?.hide()` currently sits at delta **978** —
-//      i.e. **22 characters of headroom**. A bare `menuView?.hide();` inserted ABOVE it pushes
-//      it to ~1002 → RED BY 2 CHARACTERS; add the house-style 2-line rationale comment above it
-//      and the delta hits ~1176, which reds `W-RN-FANOUT-RECONNECT` (+800) too.
-//      ⇒ plan A8 / main.ts edit 25: insert `menuView?.hide();` **STRICTLY AFTER**
-//        `tradeProposeView?.hide();`, with the rationale comment ON THE SAME LINE or omitted.
-//        **Add no lines above it.** W-RECONNECT-HIDES-MENU (below) asserts BOTH the presence
-//        and that ordering, and re-checks the 1000-char headroom with a readable message so
-//        this fails as "uxd3 placement" rather than as "tradePropose regression".
+//  H1. RESOLVED by T1a. `W-TP-RECONNECT` and `W-RN-FANOUT-RECONNECT` no longer slice a fixed
+//      `+1000`/`+800` window from `reconnectIdx` — both are re-anchored onto the SAME
+//      two-endpoint region `W-HELP-NO-RECONNECT-HIDE` and `W-RECONNECT-HIDES-MENU` already use
+//      (`onReconnect:` -> the NEXT `onOwnWarp` searched FROM startIdx), and both now assert the
+//      CALL form (`tradeProposeView?.hide()` / `renameView?.hide()`) rather than the bare
+//      identifier. `W-RECONNECT-HIDES-MENU` clause 2b (the `tpDelta < 1000` restatement that
+//      existed ONLY to make H1's fixed window fail legibly) was RETIRED by the orchestrator in
+//      T3 alongside it — there is no fixed window left to protect.
 //
-//  H2. `W-HELP-FANOUT-BATTLE` (this file, ~:1440) slices `showIdx + 900`; the tradePropose
-//      force-hide already sits at ~880. ⇒ plan A16: main.ts edit 20 (`refreshBattle`'s
-//      `if (menuView?.visible) menuView.hide();`) may add **NO lines above main.ts:1190** —
-//      append it AFTER the tradePropose line, in the identical one-line form.
+//  H2. RESOLVED by E17. `W-HELP-FANOUT-BATTLE` slices `showIdx + 900` over the EIGHT hand-written
+//      `if (X?.visible) X.hide();` lines in refreshBattle's show-arm; E17 deletes all eight in
+//      favour of the `hideAllExceptPlan('battleView', visibleIds(overlayProbes))` loop (surface 7
+//      below), so the `helpView` token this tooth anchored on is GONE and it went red BY DESIGN —
+//      the orchestrator RETIRED it in T3 (pre-assessed: genuinely subsumed by `OR-FORCEHIDE-EXACT`
+//      + `W-BATTLE-FORCEHIDE-SET-MATCHES-MANIFEST`'s rewritten shape assertion, not a
+//      would-have-stayed-green deletion).
 //
-//  H3. THREE teeth — `W-RN-ESCAPE` (+2000), `W-TP-ESCAPE` (+2500), `W-HELP-ESCAPE` (+2500) —
-//      locate their region with `src.indexOf("e.code === 'Escape'")`, i.e. the **first**
-//      occurrence in the whole file. The real Escape branch stack starts at ~offset 43597; the
-//      NEW menu-nav intercept (plan edit 6) sits at ~offset 31026, BEFORE it. If that intercept
-//      spells the literal `e.code === 'Escape'` (or a comment near it does), all three teeth
-//      silently re-anchor onto the KeyB/I/E guard lists and stay **FALSELY GREEN FOREVER** —
-//      they would no longer test Escape at all, and nothing would announce it.
-//      ⇒ Route Escape through `menuKeyInput(e.code, e.key)`; never write the literal there.
-//      `W-UXD3-ESCAPE-ANCHOR-FIRST` (below) is the tooth that makes this loud instead of silent.
-//      (plan A16 corrects anti-pattern 15's stated rationale: `ESCAPE_SENTINEL` is found by a
-//      FORWARD search from each handler, so the sentinel is not the victim — these three
-//      first-`indexOf` teeth are.)
+//  H3. STILL LIVE. THREE teeth — `W-RN-ESCAPE` (+2000), `W-TP-ESCAPE` (+2500), `W-HELP-ESCAPE`
+//      (+2500) — still locate their region with the FIRST `src.indexOf("e.code === 'Escape'")`
+//      in the whole file. uxd3-c does not touch the Escape branch stack or the menu-nav
+//      intercept, so the hazard is UNCHANGED IN KIND. The mitigating fact that emerged in this
+//      slice: post-migration, KeyB/I/E no longer contain the `renameView`/`tradeProposeView`/
+//      `helpView` tokens at all (their guard lists collapse into a single
+//      `overlayVerdict('boxView')` etc. call), so a future mis-anchored `+2000/+2500` window
+//      would land in a block that satisfies NONE of the three teeth's needles — H3's "silently
+//      re-anchor and stay falsely green forever" failure mode now fails LOUDLY instead. The
+//      hazard is REDUCED, not eliminated: the boy-scout re-anchor itself (ADR-0163 D8, ~73 lines
+//      / 4 hunks against a ~40-line / <=3-hunk cap, atomic and therefore untrimmable) is deferred
+//      a THIRD time, to the named follow-up **uxd3-d**.
 //
-//  H4. Anti-pattern 14b: the new helper block (plan edit 4, at ~main.ts:262) sits BEFORE the
-//      first-`indexOf` anchors of `'KeyN'` (W-RN-HELD, W-RN-PREVENT, W-TP-FANOUT-KEYN-GUARD),
-//      `"e.code === 'KeyO'"`, `"e.key === '?'"` and `"e.code === 'KeyM'"` (W-OVERLAY-FANOUT-MUTEX,
-//      W-KEYM-HANDLER). A quoted hotkey literal in that block — including inside a comment —
-//      re-anchors those teeth onto code that is not the handler. `W-UXD3-HOTKEY-ANCHORS-AFTER-
-//      KEYDOWN` (below) makes that loud too. Describe the keys in prose, never as quoted code.
+//  H4. STILL LIVE, and now also uxd3-c's own concern. Anti-pattern 14b: uxd3-c's TWO new blocks
+//      (`// UXD3C-HANDLES-BEGIN`/`-END` and `// UXD3C-CANOPEN-BEGIN`/`-END`) land, like uxd3-b's
+//      probe table before them, ABOVE `window.addEventListener('keydown'` — i.e. before the
+//      first-`indexOf` anchors of every hotkey tooth in this file. A quoted hotkey literal in
+//      either block (in code OR in a comment) re-anchors those teeth onto the wrong region.
+//      `W-UXD3-HOTKEY-ANCHORS-AFTER-KEYDOWN` (below) still makes that loud. Describe the keys in
+//      prose in both new blocks, exactly as the probe table already does.
 //
-//  H5. `W-RN-HELD` slices `indexOf("'KeyN'") + 720`; `held.clear()` moves 602 → ~630 once KeyN
-//      gains `!menuView?.visible`. Margin ~90 — it survives, but it is the next to go. Do not
-//      add anything else to the KeyN block.
+//  H5. RESOLVED (headroom improved, not eliminated). `W-RN-HELD` slices `indexOf("'KeyN'") + 720`
+//      for `held.clear()`. uxd3-c's collapse SHRINKS the KeyN block (the 12-term guard list
+//      becomes one `overlayVerdict('renameView').kind === 'allow'` call), so `held.clear()` moves
+//      CLOSER to the anchor, not farther — headroom improves by roughly 430 characters instead of
+//      shrinking. The same improvement applies to `W-RN-PREVENT` (+600), `W-TP-HELD` (+800),
+//      `W-TP-PREVENT` (+800) and `W-TP-IDENTITY-GUARD` (+800). None of these fixed windows is
+//      re-anchored in this slice (that remains uxd3-d's Escape boy-scout territory per D8) — they
+//      are simply no longer the "next to go".
 //
 // NO `new RegExp(...)` anywhere (Semgrep ban, this file's rule): indexOf/includes/split only.
 // ===========================================================================
@@ -4023,10 +3712,11 @@ const UXD3_ESCAPE_SENTINEL = "e.code === 'Escape'";
 
 /** The eleven pre-uxd3 open-handler anchors, used to bound the KeyM block from ABOVE regardless
  *  of where the implementer places the new handler. Deliberately a SECOND, independent copy of
- *  W-OVERLAY-FANOUT-MUTEX's `OPEN_HANDLERS` list (plan §6 AC-8 precedent, and the same reason
- *  W-INTERACT-KEYT-GUARD duplicates the KeyT guard): this slice EDITS that shared list, so a
- *  list-independent statement of the KeyM invariant keeps it pinned even if the shared list is
- *  ever mis-edited. */
+ *  the shared open-handler list (originally the retired W-OVERLAY-FANOUT-MUTEX's `OPEN_HANDLERS`,
+ *  now W-UXD3C-OPENGUARDS-ROUTE-THROUGH-CANOPEN's `UXD3C_OPEN_HANDLERS`) — plan §6 AC-8
+ *  precedent, and the same reason W-INTERACT-KEYT-GUARD duplicates the KeyT guard: every uxd3
+ *  slice EDITS that shared list, so a list-independent statement of the KeyM invariant keeps it
+ *  pinned even if the shared list is ever mis-edited. */
 const UXD3_OTHER_HANDLER_ANCHORS: readonly string[] = [
   "e.code === 'KeyB'",
   "e.code === 'KeyI'",
@@ -4042,10 +3732,11 @@ const UXD3_OTHER_HANDLER_ANCHORS: readonly string[] = [
 ];
 
 /** The 14 siblings the KeyM handler must guard (every mutual-exclusion overlay EXCEPT its own
- *  `menuView`). Hard-coded rather than derived from `ALL_OVERLAYS` on purpose: plan A4's lesson
- *  is that a loop domain derived from the table under test goes tautological the moment the
- *  table is mutated (drop an id from ALL_OVERLAYS and a derived list simply stops checking it).
- *  This literal is the independent statement of "all 14". */
+ *  `menuView`). Hard-coded rather than derived from the overlay manifest (overlayRegistry's
+ *  `OVERLAY_IDS`, formerly the retired W-OVERLAY-FANOUT-MUTEX's `ALL_OVERLAYS`) on purpose: plan
+ *  A4's lesson is that a loop domain derived from the table under test goes tautological the
+ *  moment the table is mutated (drop an id from the manifest and a derived list simply stops
+ *  checking it). This literal is the independent statement of "all 14". */
 const UXD3_KEYM_SIBLINGS: readonly string[] = [
   'battleView',
   'boxView',
@@ -4129,7 +3820,8 @@ function uxd3FunctionBody(src: string, declNeedle: string): string {
 }
 
 /** The KeyM handler block: from its anchor to the nearest FOLLOWING open-handler anchor or the
- *  Escape sentinel (order-independent, the W-OVERLAY-FANOUT-MUTEX idiom), so a guard living in
+ *  Escape sentinel (order-independent — the idiom the retired W-OVERLAY-FANOUT-MUTEX
+ *  established and W-UXD3C-OPENGUARDS-ROUTE-THROUGH-CANOPEN now carries), so a guard living in
  *  a DIFFERENT handler can never false-credit KeyM. */
 function uxd3KeyMBlock(src: string): string {
   const keyMIdx = src.indexOf(UXD3_KEYM_ANCHOR);
@@ -4147,30 +3839,37 @@ function uxd3KeyMBlock(src: string): string {
 }
 
 describe('★ main.ts wiring (uxd3): the KeyM menu front-door handler (AC-11 / AC-8)', () => {
-  it('★ W-KEYM-HANDLER BITES: a UNIQUE `e.code === KeyM` handler guards all 14 siblings AND identity !== ""', () => {
+  it('★ W-KEYM-HANDLER BITES: a UNIQUE `e.code === KeyM` handler gates on overlayVerdict(\'menuView\') AND identity !== ""', () => {
     // AC-11 (spec :148): "WHEN the player presses KeyM AND canOpen('menuView') returns allow,
     // THE client SHALL open the menu at the top-level category list; AND THIS SHALL function
-    // with NO persistent launcher element present." The mechanism in uxd3-a is the inline
-    // 14-guard list, not a canOpen() call (plan A16 records that deferral explicitly).
+    // with NO persistent launcher element present."
     //
-    // WRONG IMPL KILLED (1): no KeyM handler at all — the RED state today (`menuView` appears
-    //   0× in main.ts). The menu would be unreachable: KeyM is the ONLY front door in uxd3-a
-    //   (the #menu-launcher click is uxd3-b), so a missing handler ships a dead feature.
-    // WRONG IMPL KILLED (2): a partial guard list — e.g. a handler that guards the 13 "obvious"
-    //   overlays but forgets `!dialogueView?.visible`. Pressing M mid-conversation would then
-    //   paint a full-screen modal menu over a live NPC dialogue whose server
-    //   `player_conversation` row is still open, and the menu's own arrow-key intercept would
-    //   swallow the dialogue's choice keys. This is the ptc5c/ADR-0139 defect class, re-run.
+    // uxd3-c re-anchor (ADR-0164, plan §C3 / adjudication §C): the 14-term inline guard list is
+    // GONE — KeyM now asks the ONE shared reducer `overlayVerdict('menuView')` (E16), which is
+    // exhaustively node-tested in overlayRegistry.test.ts (`OR-CANOPEN-*`). Restating all 14
+    // guards here would be tautological against a table that no longer exists in main.ts; the
+    // CONTIGUOUS call-shape assertion below is what a wrong tier assignment, a `.kind === 'deny'`
+    // inversion, or an extra conjunct spliced inside the parens cannot survive.
+    //
+    // WRONG IMPL KILLED (1): no KeyM handler at all — the RED state pre-uxd3 (`menuView` appears
+    //   0× in main.ts). The menu would be unreachable: KeyM is the ONLY hotkey front door.
+    // WRONG IMPL KILLED (2): `.kind === 'deny'` inverted, or an extra conjunct spliced INSIDE the
+    //   parens (`overlayVerdict('menuView').kind === 'allow' && somethingElse`). The CONTIGUOUS
+    //   needle below requires the exact shape with nothing between `'allow'` and `&&`.
     // WRONG IMPL KILLED (3): the `identity !== ''` omission (plan A12 / reviewer H3). KeyM would
     //   otherwise be the ONLY open-handler without it. `menuAvailability()` calls
     //   `nearestInteractable(store.ownCharacter(identity)!.row, …)`; pre-join `ownCharacter('')`
     //   is `undefined`, so the non-null assertion throws INSIDE an uncaught window keydown
     //   listener — pressing M on the loading screen breaks input handling for the session.
     // WRONG IMPL KILLED (4): the literal `e.code === 'KeyM'` written twice (typically once in a
-    //   rationale comment above the handler). W-OVERLAY-FANOUT-MUTEX slices from the FIRST
-    //   indexOf, so the comment would become the block start and the real guard list would fall
-    //   outside the block — anti-pattern 14. The uniqueness assertion below is the only thing
-    //   standing between that and a silently mis-anchored gate.
+    //   rationale comment above the handler). The block slicer takes the FIRST indexOf, so the
+    //   comment would become the block start and the real guard would fall outside the block —
+    //   anti-pattern 14. The uniqueness assertion below is the only thing standing between that
+    //   and a silently mis-anchored gate.
+    // WRONG IMPL KILLED (5): a residual hand-rolled per-id guard term surviving ALONGSIDE the
+    //   canOpen() call (a copy-paste leftover from the pre-migration 14-term list) — harmless on
+    //   its own, but evidence the migration was not a clean collapse, and a future edit to ONLY
+    //   the residual term would silently diverge from the real gate.
     const src = readMainTs();
     // (4): exactly once, in RAW source — a comment occurrence counts and must fail.
     expectUniqueAnchor(src, UXD3_KEYM_ANCHOR);
@@ -4187,25 +3886,23 @@ describe('★ main.ts wiring (uxd3): the KeyM menu front-door handler (AC-11 / A
       'the KeyM block must reference menuView — proves the region really is the menu handler ' +
         'and not a degenerate/mis-anchored slice (anti-vacuity)',
     ).toBe(true);
-    // (1)+(2): the full 14-sibling guard list, guard-form ONLY. `.hide()` is NOT accepted for
-    // any of them: the menu is not a member of the box/raising/evolution hide-switch trio, so a
-    // KeyM that HIDES a sibling instead of refusing to open would dismiss a modal on a stray
-    // keypress — the wrong UX, and for dialogueView it would strand the server conversation row.
+
+    const squashed = squashWhitespace(block);
+    expect(
+      squashed.includes("overlayVerdict('menuView').kind === 'allow' && identity !== ''"),
+      "the KeyM block must gate on the CONTIGUOUS `overlayVerdict('menuView').kind === 'allow' " +
+        "&& identity !== ''` — the ONE call that reproduces the full 15-way mutual exclusion AND " +
+        'the pre-join guard; both halves are exhaustively proved node-side (OR-CANOPEN-*).',
+    ).toBe(true);
+
+    // (5): no residual hand-rolled guard term may survive alongside the canOpen() call.
     for (const overlay of UXD3_KEYM_SIBLINGS) {
       expect(
         block.includes(`!${overlay}?.visible`),
-        `the KeyM block must guard !${overlay}?.visible (AC-11 — 15-way mutual exclusion; ` +
-          'guard-form only, a .hide() here would dismiss a modal on a hotkey press)',
-      ).toBe(true);
+        `the KeyM block must NOT contain a residual hand-rolled guard !${overlay}?.visible — ` +
+          "mutual exclusion now routes exclusively through overlayVerdict('menuView')",
+      ).toBe(false);
     }
-    // (3): the 15th term.
-    expect(
-      block.includes("identity !== ''"),
-      "the KeyM block must carry `identity !== ''` as its 15th guard term (plan A12): " +
-        'menuAvailability() dereferences store.ownCharacter(identity)!, which is undefined ' +
-        'before join — the throw would escape an uncaught window keydown listener. Every other ' +
-        'open-handler that touches store state (KeyO, KeyT) already carries this guard.',
-    ).toBe(true);
   });
 
   it('★ W-KEYM-PREVENTDEFAULT BITES: KeyM calls e.preventDefault() UNCONDITIONALLY, before its guard list', () => {
@@ -4235,15 +3932,18 @@ describe('★ main.ts wiring (uxd3): the KeyM menu front-door handler (AC-11 / A
       preventIdx,
       'the KeyM handler must call e.preventDefault() (AC-8 — a denied open still consumes the key)',
     ).toBeGreaterThanOrEqual(0);
-    const firstGuardIdx = block.indexOf('!battleView?.visible');
+    // uxd3-c re-anchor (ADR-0164, plan §C3): the OLD anchor `!battleView?.visible` no longer
+    // exists in the KeyM block (the 14-term guard list collapsed into ONE overlayVerdict() call
+    // — W-KEYM-HANDLER). Re-anchored onto the call itself; the AC-8 ordering claim is unchanged.
+    const firstGuardIdx = block.indexOf("overlayVerdict('menuView')");
     expect(
       firstGuardIdx,
-      'the KeyM handler must contain its guard list (W-KEYM-HANDLER states this too; repeated ' +
-        'here so the ordering assertion below cannot compare against -1)',
+      "the KeyM handler must contain its overlayVerdict('menuView') gate (W-KEYM-HANDLER " +
+        'states this too; repeated here so the ordering assertion below cannot compare against -1)',
     ).toBeGreaterThanOrEqual(0);
     expect(
       preventIdx,
-      'e.preventDefault() must appear BEFORE the KeyM guard list — i.e. unconditionally, on the ' +
+      'e.preventDefault() must appear BEFORE the KeyM guard — i.e. unconditionally, on the ' +
         'DENY path too (AC-8). A preventDefault nested inside the allow-arm lets a KeyM press ' +
         'during a battle fall through to the movement-suppression block instead of being ' +
         'consumed by its own handler.',
@@ -4277,93 +3977,93 @@ describe('★ main.ts wiring (uxd3): refreshBattle force-hide set === the overla
     return found;
   }
 
-  it('★ W-BATTLE-FORCEHIDE-SET-MATCHES-MANIFEST BITES: the show-arm hides EXACTLY the 8 ids in BATTLE_FORCE_HIDE', async () => {
+  it('★ W-BATTLE-FORCEHIDE-SET-MATCHES-MANIFEST BITES: the show-arm force-hide loop matches the manifest exactly, and the manifest excludes dialogueView', async () => {
     // AC-4 (spec :141) + AC-19 battle half (spec :156): a battle auto-show must force-hide
     // exactly the declared subset — and, now that the menu is a registry member, it must close
     // the menu too ("the menu never occludes a battle").
     //
-    // BIDIRECTIONAL by construction: the expected set is IMPORTED from the registry, so the two
-    // cannot drift in either direction. Plan A18 errata: the set is **8** — the pre-existing 7
-    // (help, box, raising, evolution, leaderboard, rename, tradePropose) PLUS menuView. §6 of the
-    // plan calls it "the 7-subset"; a tester following §6 verbatim would write the wrong number.
+    // uxd3-c re-anchor (ADR-0164, plan §C3): the eight hand-written `if (X?.visible) X.hide();`
+    // pairs `extractForceHidePairs` (above) used to scan are GONE — E17 replaces all eight with
+    // `hideAllExceptPlan('battleView', visibleIds(overlayProbes))` (surface 7). Set-drift between
+    // refreshBattle and BATTLE_FORCE_HIDE is therefore STRUCTURALLY UNREPRESENTABLE: the manifest
+    // DRIVES the loop directly at runtime, so there is no second hand-authored list left to drift
+    // out of sync with it. `extractForceHidePairs` is KEPT (the orchestrator removes it in T3 once
+    // it is confirmed orphaned, not the tester) and repurposed below as a "the old form is
+    // COMPLETELY gone" sanity check.
+    //
+    // WHAT IS LOST, stated honestly (plan §C3): the one-line GUARDED FORM pin
+    // (`if (X?.visible) X.hide();`) `extractForceHidePairs` used to verify is gone; what remains
+    // is the loop's own contiguous SHAPE (surface 7 in the uxd3-b/uxd3-c Part A block, restated
+    // here as an independent statement) plus the two invariants below, neither of which is
+    // re-proved by surface 7 alone: the manifest's LENGTH and its exclusion of dialogueView. The
+    // ORDERED exact-literal content pin lives in the registry's own suite (`OR-FORCEHIDE-EXACT`,
+    // `OR-NEVER-FORCE-HIDE`), both node-tested — so the *content* of the set is, if anything,
+    // BETTER covered after this change than the guarded-pair scan ever was.
     //
     // WRONG IMPL KILLED (1): a `refreshBattle` that force-hides the old 7 and forgets the menu —
-    //   a wild encounter or an accepted PvP challenge paints the battle UI while the modal menu
-    //   is still up and still eating arrow keys. AC-19's exact scenario.
-    // WRONG IMPL KILLED (2): the reverse drift — someone adds `menuView` to the manifest but
-    //   wires the hide nowhere (or wires a hide that the manifest does not declare).
-    // WRONG IMPL KILLED (3): a "helpful" extra force-hide, most dangerously
-    //   `if (dialogueView?.visible) dialogueView.hide();`. dialogueView is GUARD_ONLY precisely
-    //   because hiding it client-side strands the server `player_conversation` row (ptc5c /
-    //   ADR-0139); the set-equality reds on the orphan. The disjointness assertion below states
-    //   that invariant directly, so the failure message names the hazard rather than a diff.
-    // WRONG IMPL KILLED (4): a hide written in a DIFFERENT form (a bare `menuView?.hide();` with
-    //   no `?.visible` guard). The extractor only credits the guarded `if (X?.visible) X.hide();`
-    //   form — the same form W-HELP-FANOUT-BATTLE pins for helpView (anti-pattern 19).
+    //   BATTLE_FORCE_HIDE.length !== 8 catches a shrunken manifest.
+    // WRONG IMPL KILLED (2): dialogueView added to the manifest (force-hiding a live conversation
+    //   strands the server player_conversation row, ptc5c/ADR-0139) — the disjointness assertion
+    //   states that invariant directly.
+    // WRONG IMPL KILLED (3): the loop rewritten with the WRONG keep id, or NOT reading
+    //   `visibleIds(overlayProbes)` — the exact-equality region check catches any deviation from
+    //   the pinned contiguous shape.
+    // WRONG IMPL KILLED (4): a leftover hand-written `if (X?.visible) X.hide();` pair surviving
+    //   ALONGSIDE the loop (an incomplete collapse) — the `extractForceHidePairs` sanity check at
+    //   the end requires exactly ZERO pairs in the show-arm region.
     //
-    // ⚠ H2: append the menuView line AFTER the tradePropose line. W-HELP-FANOUT-BATTLE slices
-    //   showIdx+900 and tradePropose already sits at ~880 — edit 20 may add NO lines above 1190.
-    //
-    // WHY A DYNAMIC import(): `client/src/ui/overlayRegistry.ts` does not exist yet (Phase 1 of
-    // the plan lands it). A STATIC top-level import of a missing module fails module RESOLUTION,
-    // which reds the COLLECTION of this entire 4200-line file — every unrelated tooth would fail
-    // for a reason that has nothing to do with its invariant, exactly the "fails in the wrong
-    // file" hazard this block's banner warns about. The dynamic import confines the RED to this
-    // one test while still being a real import, so the constant and the source scan cannot drift.
-    // (`tsc --noEmit` reds either way until the module lands — that is correct TDD RED.)
+    // WHY A DYNAMIC import(): `client/src/ui/overlayRegistry.ts` does not exist yet at authoring
+    // time. A STATIC top-level import of a missing module fails module RESOLUTION, which reds the
+    // COLLECTION of this entire multi-thousand-line file. The dynamic import confines the RED to
+    // this one test while still being a real import.
     const { BATTLE_FORCE_HIDE } = await import('./ui/overlayRegistry');
-    const src = readMainTs();
-    expectUniqueAnchor(src, UXD3_BATTLE_SHOW_START);
-    expectUniqueAnchor(src, UXD3_BATTLE_SHOW_END);
-    const region = bodyRegion(src, UXD3_BATTLE_SHOW_START, UXD3_BATTLE_SHOW_END);
-    const pairs = extractForceHidePairs(region);
-
-    // ANTI-VACUITY #1 (the extractor works at all): a broken parser returns [] and would make
-    // the set comparison fail for the wrong reason — or, if the manifest were ever emptied,
-    // pass vacuously. main.ts has carried >= 7 of these pairs since ADR-0135.
-    expect(
-      pairs.length,
-      'the refreshBattle show-arm parser found ' +
-        `${pairs.length} \`if (X?.visible) X.hide();\` pairs — expected at least 7. Either the ` +
-        'region anchors moved or the force-hide statements changed FORM (anti-pattern 19 pins ' +
-        'the one-line guarded form). This is a parser/region failure, not a manifest mismatch.',
-    ).toBeGreaterThanOrEqual(7);
-    // ANTI-VACUITY #2 (the imported manifest is the real 8-set, not a shrunken one that would
-    // make set-equality trivially satisfiable by an under-wired main.ts — plan A2's coordinated
-    // two-sided-edit mutation). The ORDERED exact-literal pin lives in the registry's own suite
-    // (OR-FORCEHIDE-EXACT); these two are the behaviourally load-bearing facts.
     expect(
       BATTLE_FORCE_HIDE.length,
-      'BATTLE_FORCE_HIDE must have exactly 8 members (plan A18: the pre-existing 7 + menuView)',
+      'BATTLE_FORCE_HIDE must have exactly 8 members (the pre-existing 7 + menuView, AC-19)',
     ).toBe(8);
     expect(
       [...BATTLE_FORCE_HIDE].includes('dialogueView'),
       'BATTLE_FORCE_HIDE must NEVER contain dialogueView — force-hiding a live conversation ' +
-        'strands the server player_conversation row (ptc5c/ADR-0139; plan A2 NEVER_FORCE_HIDE)',
+        'strands the server player_conversation row (ptc5c/ADR-0139; NEVER_FORCE_HIDE)',
     ).toBe(false);
 
-    const scanned = [...new Set(pairs)].sort();
-    const manifest = [...new Set<string>(BATTLE_FORCE_HIDE)].sort();
-    const missingFromMainTs = manifest.filter((id) => !scanned.includes(id));
-    const orphanInMainTs = scanned.filter((id) => !manifest.includes(id));
+    const src = readMainTs();
+    expectUniqueAnchor(src, UXD3C_BATTLEHIDE_BEGIN);
+    expectUniqueAnchor(src, UXD3C_BATTLEHIDE_END);
+    const region = squashWhitespace(
+      stripLineComments(regionOrThrow(src, UXD3C_BATTLEHIDE_BEGIN, UXD3C_BATTLEHIDE_END)),
+    ).trim();
     expect(
-      missingFromMainTs,
-      'BATTLE_FORCE_HIDE declares ids that refreshBattle does NOT force-hide: ' +
-        `${JSON.stringify(missingFromMainTs)}. Add \`if (X?.visible) X.hide();\` for each, in ` +
-        'that exact one-line form, AFTER the tradePropose line (H2: no lines above main.ts:1190).',
-    ).toEqual([]);
+      region.length,
+      'ANTI-VACUITY: the battle force-hide loop region is empty after comment-stripping — the ' +
+        'region collapsed and the equality below would fail for the wrong reason',
+    ).toBeGreaterThan(0);
     expect(
-      orphanInMainTs,
-      'refreshBattle force-hides ids that BATTLE_FORCE_HIDE does not declare: ' +
-        `${JSON.stringify(orphanInMainTs)}. Either declare them in the manifest or delete the ` +
-        'hide — an undeclared force-hide is invisible to canOpen/hideAllExceptPlan, and for a ' +
-        'GUARD_ONLY id such as dialogueView it desyncs server state (AC-4).',
-    ).toEqual([]);
+      region,
+      "refreshBattle's show-arm force-hide must be EXACTLY " +
+        "`for (const id of hideAllExceptPlan('battleView', visibleIds(overlayProbes))) { " +
+        'overlayHandles[id]?.(); }` (E17) — the manifest now DRIVES this loop directly, so a ' +
+        'hand-added extra hide or a dropped one is invisible to a source scan by construction ' +
+        '(it would have to change the MANIFEST, which is separately pinned by OR-FORCEHIDE-EXACT ' +
+        'and OR-NEVER-FORCE-HIDE). Region=' +
+        JSON.stringify(region),
+    ).toBe(
+      "for (const id of hideAllExceptPlan('battleView', visibleIds(overlayProbes))) { overlayHandles[id]?.(); }",
+    );
+
+    // Old-form sanity: extractForceHidePairs (retained, orphaned — the orchestrator removes it in
+    // T3) must now find ZERO of the old guarded-hide pairs in the show-arm — proves the collapse
+    // is total and no leftover hand-written pair survives alongside the loop.
+    expectUniqueAnchor(src, UXD3_BATTLE_SHOW_START);
+    expectUniqueAnchor(src, UXD3_BATTLE_SHOW_END);
+    const showRegion = bodyRegion(src, UXD3_BATTLE_SHOW_START, UXD3_BATTLE_SHOW_END);
+    const pairs = extractForceHidePairs(showRegion);
     expect(
-      scanned,
-      'the refreshBattle force-hide set must EQUAL the BATTLE_FORCE_HIDE manifest (AC-4, ' +
-        'bidirectional — the manifest is imported so the two cannot drift)',
-    ).toEqual(manifest);
+      pairs.length,
+      'the old `if (X?.visible) X.hide();` guarded-pair form must be COMPLETELY gone from the ' +
+        `show-arm — found ${pairs.length}: ${JSON.stringify(pairs)}. A nonzero count means the ` +
+        'E17 collapse is incomplete (a hand-written pair survives alongside the loop).',
+    ).toBe(0);
   });
 });
 
@@ -4429,12 +4129,13 @@ describe('★ main.ts wiring (uxd3): context overlays PREEMPT the menu (AC-19) a
     //   would advertise availability for rows that no longer exist, and activating one would
     //   fire a reducer against a stale target).
     // WRONG IMPL KILLED (2 — the placement half, plan A8 / red-team F6): `menuView?.hide();`
-    //   inserted ABOVE `tradeProposeView?.hide();`. W-TP-RECONNECT slices `reconnectIdx + 1000`
-    //   and tradePropose currently sits at delta 978 — TWENTY-TWO characters of headroom. The
-    //   suite would go red naming *tradePropose*, and with a house-style 2-line comment added it
-    //   would also red W-RN-FANOUT-RECONNECT (+800) naming *rename* — sending the implementer to
-    //   debug two overlays this slice never touched. Both assertions below exist to make that
-    //   failure mode announce itself HERE, with the real cause, instead.
+    //   inserted ABOVE `tradeProposeView?.hide();`. The ordering is plan A8's own requirement —
+    //   the menu hide is the LAST teardown in the body — so the ordering assertion below states
+    //   it directly. (Historical note: this clause was originally paired with a `tpDelta < 1000`
+    //   headroom restatement of W-TP-RECONNECT's old FIXED `reconnectIdx + 1000` window. uxd3-c
+    //   T1a re-anchored W-TP-RECONNECT onto the two-endpoint `onReconnect:` -> next `onOwnWarp`
+    //   region, so there is no fixed window left to protect and the headroom clause was retired
+    //   in T3.)
     // WRONG IMPL KILLED (3): a `RECONNECT_HIDE.forEach(...)` loop refactor (anti-pattern 17) —
     //   it would delete the literal hides that are W-HELP-NO-RECONNECT-HIDE's positive control.
     const src = readMainTs();
@@ -4463,21 +4164,9 @@ describe('★ main.ts wiring (uxd3): context overlays PREEMPT the menu (AC-19) a
     expect(
       menuIdx,
       'menuView?.hide() must be placed STRICTLY AFTER tradeProposeView?.hide() in onReconnect ' +
-        '(plan A8). W-TP-RECONNECT slices a FIXED reconnectIdx+1000 window and tradePropose ' +
-        'sits at delta 978 — 22 characters of headroom. Inserting above it reds a test that ' +
-        'names tradePropose, not the menu.',
+        '(plan A8 — the menu teardown is the LAST hide in the body, after every overlay whose ' +
+        'in-flight lock or store-derived content the reconnect reset invalidates).',
     ).toBeGreaterThan(tpIdx);
-    // (2b) headroom — re-state W-TP-RECONNECT's fixed window HERE, so an over-long insertion
-    // fails with the real cause instead of as a mystery tradePropose regression.
-    const tpDelta = src.indexOf('tradeProposeView?.hide()', startIdx) - startIdx;
-    expect(
-      tpDelta,
-      `tradeProposeView?.hide() now sits ${tpDelta} chars after 'onReconnect:' — W-TP-RECONNECT ` +
-        '(this file, ~:1125) slices a FIXED reconnectIdx+1000 window, so it must stay under ' +
-        '1000. uxd3 added lines ABOVE it inside onReconnect: put `menuView?.hide();` below the ' +
-        'tradePropose line, with any rationale comment on the SAME line or omitted (plan A8). ' +
-        'Re-anchoring W-TP-RECONNECT on two endpoints is deferred to uxd3-b (plan A17).',
-    ).toBeLessThan(1000);
   });
 });
 
@@ -4527,6 +4216,67 @@ describe('★ main.ts wiring (uxd3): Escape stays a pure close/back key (AC-9 / 
       'main.ts must NEVER call dialogueView.hide() either (the non-optional spelling — AC-9 / ' +
         'plan A7). Same desync; both spellings are banned.',
     ).toBe(0);
+
+    // --- uxd3-c (ADR-0164): the ALIAS bypass, MEASURED CI-green before this clause -----------
+    // Red-team on the shipped uxd3-c code demonstrated that the two zero-counts above are
+    // defeated by one line of indirection, with the FULL suite green (1742/1742) and tsc clean:
+    //
+    //     const dialogueHandle = dialogueView;
+    //     dialogueHandle?.hide();          // hides a live conversation; neither needle matches
+    //
+    // Neither `dialogueView?.hide` nor `dialogueView.hide` appears anywhere, so both counts stay
+    // 0 and the tooth is VACUOUSLY satisfied — while the ptc5c/ADR-0139 desync it exists to
+    // prevent ships. This is not a uxd3-c regression (the hole predates the slice, since uxd3-a),
+    // but uxd3-c is the slice that OWNS the never-hide invariant (ADR-0163 D7 /
+    // OR-HANDLES-DIALOGUE-HAS-NO-HIDE), so it closes it here.
+    //
+    // The close is an ENUMERATED CEILING on the identifier itself, the same idiom Part B uses for
+    // `overlayProbes`/`overlayHandles`: every legitimate mention of `dialogueView` in main.ts is
+    // listed below with its exact count, and the total is pinned. An alias — or ANY new use, by
+    // any spelling, including ones nobody has thought of — pushes the total past the ceiling and
+    // reds with a message naming this comment. Raising the ceiling therefore requires a
+    // deliberate edit here plus a new enumerated entry, which is exactly the review conversation
+    // the invariant deserves.
+    //
+    // HONEST SCOPE: this bounds USES of the binding, not reachability. It cannot see a hide
+    // performed through `document.getElementById('dialogue-overlay').style.display = 'none'` or
+    // through a DialogueView instance obtained some other way — those are outside this binding
+    // entirely. It does close every spelling that starts from `dialogueView`.
+    const DIALOGUE_VIEW_SITES: readonly { readonly needle: string; readonly count: number }[] = [
+      // the two dynamic/static module specifiers — `'./ui/dialogueView'` contains the identifier
+      // as a substring, so they are counted here rather than excluded
+      { needle: "'./ui/dialogueView'", count: 2 },
+      // the module-scope binding declaration and its one assignment at construction time
+      { needle: 'let dialogueView: DialogueView | undefined;', count: 1 },
+      { needle: 'dialogueView = new DialogueViewClass();', count: 1 },
+      // the probe table entry (uxd3-b) — TWO occurrences on one line: key and read
+      { needle: 'dialogueView: () => dialogueView?.visible ?? false,', count: 1 },
+      // the handle table entry (uxd3-c) — the sole `undefined` member, pinned by
+      // W-UXD3C-HANDLE-TABLE against NEVER_FORCE_HIDE
+      { needle: 'dialogueView: undefined,', count: 1 },
+      // the Escape branch's visibility read — the POSITIVE half of AC-9, asserted below
+      { needle: "e.code === 'Escape' && dialogueView?.visible", count: 1 },
+      // the batch listener's render call — the only other write path, and it is a render, not a hide
+      { needle: 'dialogueView?.render(', count: 1 },
+    ];
+    const DIALOGUE_VIEW_CEILING = 9; // 2 + 1 + 1 + 2 (key + read on one line) + 1 + 1 + 1
+    for (const site of DIALOGUE_VIEW_SITES) {
+      expect(
+        countOccurrences(stripped, site.needle),
+        `enumerated dialogueView site \`${site.needle}\` must occur exactly ${site.count}× in ` +
+          'main.ts — if this moved, update the enumeration AND the ceiling together, never one ' +
+          'alone (an un-updated enumeration lets the ceiling absorb a NEW use silently)',
+      ).toBe(site.count);
+    }
+    expect(
+      countOccurrences(stripped, 'dialogueView'),
+      `main.ts must mention \`dialogueView\` exactly ${DIALOGUE_VIEW_CEILING}× — the enumerated ` +
+        'sites above and nothing else. A count ABOVE this means a NEW use of the dialogue view ' +
+        'binding was added; if it is an alias (`const h = dialogueView;`) it can call .hide() ' +
+        'and desync the server player_conversation row while both zero-counts above stay green ' +
+        '(MEASURED CI-green before this clause existed). Read the comment above this assertion ' +
+        'before raising the number.',
+    ).toBe(DIALOGUE_VIEW_CEILING);
 
     // The POSITIVE half of AC-9, on the branch that owns it (existing anchors, both unique).
     const src = readMainTs();
@@ -4879,8 +4629,8 @@ describe('★ main.ts wiring (uxd3): anchor discipline — new code must not re-
     //
     // WRONG IMPL KILLED: a leaf table or rationale comment in the helper block containing
     //   `'KeyN'` / `"e.code === 'KeyO'"` / `"e.key === '?'"` / `"e.code === 'KeyM'"`. Victims:
-    //   W-RN-KEYN / W-RN-PREVENT (+600) / W-RN-HELD (+720) / W-TP-FANOUT-KEYN-GUARD (+800) all
-    //   slice forward from the first `'KeyN'`; W-OVERLAY-FANOUT-MUTEX slices every handler block
+    //   W-RN-KEYN / W-RN-PREVENT (+600) / W-RN-HELD (+720) all slice forward from the first
+    //   `'KeyN'`; W-UXD3C-OPENGUARDS-ROUTE-THROUGH-CANOPEN slices every handler block
     //   from its first anchor; W-KEYM-HANDLER's own uniqueness check covers KeyM. All would
     //   measure the helper block instead of the handler — some going red for an unrelated
     //   reason, others staying green on the wrong region.
@@ -4935,6 +4685,18 @@ const UXD3B_PROBES_END = '// UXD3B-PROBES-END';
 /** Marker-comment bounds of the AC-12 click front door (adjudication §B3 E8). */
 const UXD3B_LAUNCHER_BEGIN = '// UXD3B-LAUNCHER-BEGIN';
 const UXD3B_LAUNCHER_END = '// UXD3B-LAUNCHER-END';
+
+/** uxd3-c (ADR-0164) marker-comment bounds — the canOpen() gate binder (plan E4). */
+const UXD3C_CANOPEN_BEGIN = '// UXD3C-CANOPEN-BEGIN';
+const UXD3C_CANOPEN_END = '// UXD3C-CANOPEN-END';
+
+/** uxd3-c (ADR-0164) marker-comment bounds — the force-hide handle table (plan E3). */
+const UXD3C_HANDLES_BEGIN = '// UXD3C-HANDLES-BEGIN';
+const UXD3C_HANDLES_END = '// UXD3C-HANDLES-END';
+
+/** uxd3-c (ADR-0164) marker-comment bounds — refreshBattle's collapsed force-hide loop (E17). */
+const UXD3C_BATTLEHIDE_BEGIN = '// UXD3C-BATTLEHIDE-BEGIN';
+const UXD3C_BATTLEHIDE_END = '// UXD3C-BATTLEHIDE-END';
 
 describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route through ONE probe table (AC-7)', () => {
   it('★ W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY-ROUTES BITES: each of the 5 surfaces carries the EXACT registry call shape', () => {
@@ -5135,6 +4897,58 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
         'the "I opened the menu while walking and my character kept walking" bug. Region=' +
         JSON.stringify(s5),
     ).toBe(true);
+
+    // ---- SURFACE 6 (uxd3-c, E4): the canOpen() gate binder ---------------------------
+    // Required by this test's OWN "raise the ceiling only together with a new Part A surface"
+    // rule (Part B, below): E4 is the FIRST new `visibleIds(overlayProbes)` call site added by
+    // uxd3-c, so the whole-file `overlayProbes` ceiling raise (3 -> 5, Part B) needs this surface.
+    expectUniqueAnchor(src, UXD3C_CANOPEN_BEGIN);
+    expectUniqueAnchor(src, UXD3C_CANOPEN_END);
+    const s6 = squashWhitespace(
+      stripLineComments(regionOrThrow(src, UXD3C_CANOPEN_BEGIN, UXD3C_CANOPEN_END)),
+    ).trim();
+    expect(
+      s6.length,
+      'ANTI-VACUITY (surface 6): the canOpen() gate-binder region is empty after comment-' +
+        'stripping — the region collapsed and the equality below would fail for the wrong reason',
+    ).toBeGreaterThan(0);
+    expect(
+      s6,
+      'surface 6 (the canOpen() gate binder, uxd3-c E4) must be EXACTLY ' +
+        '`function overlayVerdict(id: OverlayId): CanOpenVerdict { return canOpen(id, ' +
+        "visibleIds(overlayProbes)); }` — EXACT EQUALITY, per surface 1's precedent (adjudication " +
+        "B1): a prefixed `if (...) return { kind: 'allow', forceHide: [] };` would disable all " +
+        'eleven canOpen-routed gates while leaving the pinned `return canOpen(...)` in place, ' +
+        'satisfying any containment check. Region=' +
+        JSON.stringify(s6),
+    ).toBe(
+      'function overlayVerdict(id: OverlayId): CanOpenVerdict { return canOpen(id, visibleIds(overlayProbes)); }',
+    );
+
+    // ---- SURFACE 7 (uxd3-c, E17): refreshBattle's collapsed force-hide loop ----------
+    // Required by the SAME "new surface per ceiling raise" rule: E17 is the SECOND new
+    // `visibleIds(overlayProbes)` call site.
+    expectUniqueAnchor(src, UXD3C_BATTLEHIDE_BEGIN);
+    expectUniqueAnchor(src, UXD3C_BATTLEHIDE_END);
+    const s7 = squashWhitespace(
+      stripLineComments(regionOrThrow(src, UXD3C_BATTLEHIDE_BEGIN, UXD3C_BATTLEHIDE_END)),
+    ).trim();
+    expect(
+      s7.length,
+      'ANTI-VACUITY (surface 7): the battle force-hide loop region is empty after comment-' +
+        'stripping',
+    ).toBeGreaterThan(0);
+    expect(
+      s7,
+      "surface 7 (refreshBattle's force-hide loop, uxd3-c E17) must be EXACTLY " +
+        "`for (const id of hideAllExceptPlan('battleView', visibleIds(overlayProbes))) { " +
+        'overlayHandles[id]?.(); }` — EXACT EQUALITY (adjudication B3): a containment check was ' +
+        'MEASURED to pass on a region with a nonsensical `if (menuView?.visible) { ' +
+        'menuView.show(); }` appended inside the same markers. Region=' +
+        JSON.stringify(s7),
+    ).toBe(
+      "for (const id of hideAllExceptPlan('battleView', visibleIds(overlayProbes))) { overlayHandles[id]?.(); }",
+    );
   });
 
   it('★ W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY-PROBE-TABLE BITES: one byte-identical probe per OVERLAY_IDS member, and nothing else', () => {
@@ -5236,16 +5050,29 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
     // green — because they test the MODULE, which production code no longer references. All five
     // surfaces plus the launcher went dead. Same defect class as W-CARE-IMPORT (:3228), which
     // exists in this file for exactly this reason; the pattern simply had not been applied here.
-    const stripped = stripLineComments(src);
+    // uxd3-c (ADR-0164, adjudication Part B / E1): squashWhitespace is now applied ALONGSIDE
+    // stripLineComments (the original single-line-only check did not need it). The import list
+    // grows to cover the write substrate and is likely to wrap across multiple lines under this
+    // repo's line-length rule, exactly as the pre-existing battleModel/menuModel imports already
+    // do — a raw-single-line needle would false-red a correctly-wrapped import.
+    const stripped = squashWhitespace(stripLineComments(src));
+    // The specifier ORDER and the trailing comma below are Biome's canonical output for this
+    // block (assist/source/organizeImports sorts `type CanOpenVerdict` before `canOpen` on an
+    // uppercase-first tiebreak; the formatter wraps at lineWidth 100 and adds a trailing comma,
+    // which squashes to `visibleIds, }`). uxd3-c deliberately matches the FORMATTER rather than
+    // suppressing it in `main.ts`: the load-bearing content of this needle is WHICH VALUES are
+    // imported — the ordering is incidental, and file-level `biome-ignore-all
+    // assist/source/organizeImports` would have left main.ts's whole import block permanently
+    // un-organized to protect an accident of alphabetization.
+    const UXD3C_OVERLAYREGISTRY_IMPORT =
+      "import { anyVisible, type CanOpenVerdict, canOpen, hideAllExceptPlan, type OverlayHandles, type OverlayId, type OverlayProbes, visibleIds, } from './ui/overlayRegistry';";
     expect(
-      countOccurrences(
-        stripped,
-        "import { anyVisible, type OverlayProbes } from './ui/overlayRegistry';",
-      ),
-      'main.ts must import `anyVisible` AS A VALUE from ./ui/overlayRegistry — the module the ' +
-        'OR-ANYVISIBLE-* teeth actually exercise. A type-only import plus a locally-defined ' +
-        'decoy satisfies every source-scan needle in this file and silently disconnects all ' +
-        'five fan-out surfaces from the tested implementation.',
+      countOccurrences(stripped, UXD3C_OVERLAYREGISTRY_IMPORT),
+      'main.ts must import `anyVisible`, `canOpen`, `hideAllExceptPlan` and `visibleIds` AS ' +
+        'VALUES from ./ui/overlayRegistry (plus the three types) — the module the OR-* teeth ' +
+        'actually exercise. A type-only import plus a locally-defined decoy satisfies every ' +
+        'source-scan needle in this file and silently disconnects every fan-out surface, every ' +
+        'hotkey open-guard and the force-hide handle table from the tested implementation.',
     ).toBe(1);
     expect(
       countOccurrences(stripped, 'function anyVisible'),
@@ -5253,22 +5080,41 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
         'registry function. A local declaration shadows the import and is invisible to every ' +
         'other tooth here (red-team F2).',
     ).toBe(0);
+    // uxd3-c: the SAME W-CARE-IMPORT decoy defect (:3241) now applies to TWO further imported
+    // values — `visibleIds` and `canOpen` — since both now feed production call sites
+    // (`overlayVerdict()` and refreshBattle's force-hide loop). A locally-redefined decoy for
+    // either would satisfy every source-scan needle that merely checks for the NAME.
+    expect(
+      countOccurrences(stripped, 'function visibleIds'),
+      'main.ts must NOT declare its own `visibleIds` — it must resolve to the imported registry ' +
+        'function (W-CARE-IMPORT pattern, applied to a second value)',
+    ).toBe(0);
+    expect(
+      countOccurrences(stripped, 'function canOpen'),
+      'main.ts must NOT declare its own `canOpen` — it must resolve to the imported registry ' +
+        'function (W-CARE-IMPORT pattern, applied to a third value)',
+    ).toBe(0);
 
     // --- F3: the table must be READ, not mutated, and read only where we pinned it -----
     // Red-team F3, MEASURED GREEN before this clause: `Reflect.set(overlayProbes, 'battleView',
     // () => false)` one line AFTER the END marker poisoned the live object — `Readonly<Record<>>`
     // is compile-time only — and put battleView permanently outside mutual exclusion on all five
     // surfaces at once. A region-bounded tooth structurally cannot see that; only a whole-file
-    // ceiling on USES can. 3 = the declaration + the two anyVisible( call sites (surfaces 1 & 4).
+    // ceiling on USES can.
+    //
+    // uxd3-c raises this ceiling 3 -> 5 (adjudication Part B): E4's canOpen() gate binder
+    // (surface 6) and E17's refreshBattle collapse (surface 7) each add ONE new
+    // `visibleIds(overlayProbes)` call site. This test's own comment demands a new Part A surface
+    // for any raise — surfaces 6 and 7 above supply exactly that.
     expect(
       countOccurrences(stripped, 'overlayProbes'),
-      'the identifier `overlayProbes` must occur EXACTLY 3 times in main.ts (the declaration ' +
-        'inside the markers, and the two anyVisible( call sites — surface 1 and surface 4). A ' +
-        'fourth occurrence means something else touches the table: a runtime mutation such as ' +
-        '`Reflect.set(overlayProbes, ...)` (Readonly is erased at runtime), or a sixth hand-wired ' +
+      'the identifier `overlayProbes` must occur EXACTLY 5 times in main.ts (the declaration, ' +
+        'surfaces 1 and 4 from uxd3-b, and surfaces 6 and 7 from uxd3-c). A 6th occurrence means ' +
+        'something else touches the table: a runtime mutation such as ' +
+        '`Reflect.set(overlayProbes, ...)` (Readonly is erased at runtime), or a 7th hand-wired ' +
         'consumer that this file has not pinned. Raise this number ONLY together with a new ' +
         'surface assertion in Part A.',
-    ).toBe(3);
+    ).toBe(5);
   });
 
   it('★ W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY-NO-HAND-ROLLED-OR-LIST BITES: zero hand-rolled `View?.visible ||` fan-out terms survive anywhere in main.ts', () => {
@@ -5390,16 +5236,31 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): the AC-12 click front door is a 
     // RED AT AUTHORING TIME: this test THROWS. `// UXD3B-LAUNCHER-BEGIN` does not exist in
     // main.ts yet, so `regionOrThrow` raises before any assertion runs — a hard red.
     //
+    // uxd3-c (ADR-0163 D6 CLOSED, adjudication B5): UNIFIED onto canOpen('menuView') — the
+    // divergence D6 recorded ("the click gate is the stricter of the two") is deliberately
+    // resolved here rather than blessed with its own tooth. The ONE behavioural difference,
+    // recorded plainly rather than glossed: canOpen exempts self, so with ONLY menuView visible
+    // this branch now calls openMenu() (resetting menuState to MENU_INITIAL) where it previously
+    // dead-clicked under the old `!anyOverlayVisible()` guard. Both branches are unreachable in
+    // practice — `#menu-overlay` sits at `inset:0;z-index:100` over `#help-hint`'s `z-index:50`,
+    // so a click while the menu is open lands on the menu overlay and
+    // `closest('[data-menu-launcher]')` returns null — but the IMPLEMENTER MUST VERIFY that
+    // z-index claim by direct grep of index.html BEFORE landing this needle. If it does not hold,
+    // STOP: keep the OLD `!anyOverlayVisible() && identity !== ''` divergence (and restore a
+    // `W-UXD3C-FRONT-DOORS-DIVERGE-BY-DESIGN`-shaped blessing tooth) instead of shipping a
+    // reachable behaviour change on the strength of this comment alone. Record which branch was
+    // taken in ADR-0164 D4 either way.
+    //
     // WRONG IMPL KILLED (1) — red-team F4, the headline: a branch that CALLS the gate and
-    //   ignores it. `void anyOverlayVisible(); held.clear(); openMenu();` contains
-    //   `anyOverlayVisible`, `held.clear()` and `openMenu(` — every token a presence-only tooth
+    //   ignores it. `void overlayVerdict('menuView'); held.clear(); openMenu();` contains
+    //   `overlayVerdict`, `held.clear()` and `openMenu(` — every token a presence-only tooth
     //   looks for — and opens the modal menu OVER a live battle or a live NPC dialogue, AND
     //   pre-join (where `menuAvailability()` reads `store.ownCharacter(identity)` and
     //   inside a listener with no try/catch, breaking the click handler for the session).
     //   W-KEYM-HANDLER cannot help: it slices only the KeyM block, ~500 lines above this
     //   listener. Hence the FULL GUARD as ONE contiguous needle.
-    // WRONG IMPL KILLED (2): the identity guard dropped — `if (!anyOverlayVisible())` alone.
-    //   Same pre-join throw, and the contiguous needle rejects it.
+    // WRONG IMPL KILLED (2): the identity guard dropped — `if (overlayVerdict('menuView').kind
+    //   === 'allow')` alone. Same pre-join throw, and the contiguous needle rejects it.
     // WRONG IMPL KILLED (3): the branch keyed on the ELEMENT ID (`closest('#help-hint')` or
     //   `document.getElementById('help-hint')`) instead of the data attribute. That reds
     //   W-UX1-HINT-NO-JS-OWNER, but only AFTER this branch exists; the positive needle here
@@ -5445,13 +5306,14 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): the AC-12 click front door is a 
         'main.ts an owner of the badge and red W-UX1-HINT-NO-JS-OWNER.',
     ).toBe(true);
     expect(
-      region.includes("if (!anyOverlayVisible() && identity !== '')"),
+      region.includes("if (overlayVerdict('menuView').kind === 'allow' && identity !== '')"),
       'the launcher branch must carry the FULL guard as ONE contiguous expression: ' +
-        "`if (!anyOverlayVisible() && identity !== '')`. Asserting the two tokens separately is " +
-        'not enough — `void anyOverlayVisible(); held.clear(); openMenu();` contains both and ' +
-        'opens the modal menu over a live battle AND before join, where menuAvailability() ' +
-        'reads store.ownCharacter(identity) and buildProposeLists(...) against an un-joined ' +
-        'identity, inside a listener with no try/catch. ' +
+        "`if (overlayVerdict('menuView').kind === 'allow' && identity !== '')` — the SAME shape " +
+        'KeyM uses (adjudication B5, unifying the two front doors onto canOpen). Asserting the ' +
+        "tokens separately is not enough — `void overlayVerdict('menuView'); held.clear(); " +
+        'openMenu();` contains every token and opens the modal menu over a live battle AND ' +
+        'before join, where menuAvailability() reads store.ownCharacter(identity) against an ' +
+        'un-joined identity, inside a listener with no try/catch. ' +
         'Region=' +
         JSON.stringify(region),
     ).toBe(true);
@@ -5469,7 +5331,10 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): the AC-12 click front door is a 
     ).toBe(true);
 
     // --- NEGATIVE: an ALLOW-LIST over method calls, plus the two non-call escapes -----
-    const ALLOWED = ['closest', 'clear', 'openMenu', 'anyOverlayVisible'];
+    // uxd3-c (adjudication B5): `anyOverlayVisible` -> `overlayVerdict` — the branch no longer
+    // calls the former, and an allow-list should name only what is actually called (a dead
+    // allowance is a small crack the same class of hole B5 just closed could reopen through).
+    const ALLOWED = ['closest', 'clear', 'openMenu', 'overlayVerdict'];
     // Red-team F7, MEASURED GREEN before bare calls were included: `hideCornerBadge();` inside
     // the branch, with `function hideCornerBadge() { ...querySelectorAll('body > div')...remove() }`
     // defined ELSEWHERE in main.ts, removed the badge at runtime while W-UX1-HINT-NO-JS-OWNER
@@ -5534,5 +5399,515 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): the AC-12 click front door is a 
         'NOTE: this counts RAW source, so a comment quoting the attribute also fails — write ' +
         'the rationale in prose.',
     ).toBe(1);
+  });
+});
+
+// ===========================================================================
+// uxd3-c (ADR-0164, pending) — the WRITE substrate: every hotkey open-guard routes through
+// canOpen(), the force-hide handle table mirrors OverlayHandles, and the ADR-0163 D3
+// de-Morgan landmine is closed generically.
+//
+// SOURCE OF TRUTH: /tmp/uxd3c-adjudication.md (BINDING over the plan wherever they conflict)
+// + /tmp/uxd3c-plan.md §B (E1-E18) and §C. ADR number reserved: 0164.
+//
+// This section's teeth are the DIRECT REPLACEMENT for `W-OVERLAY-FANOUT-MUTEX`,
+// `W-HELP-FANOUT-OPENGUARDS`, `W-HELP-FANOUT-BATTLE` and `W-TP-FANOUT-KEYN-GUARD`. Per the
+// coordinator's explicit instruction, ALL FOUR of those pre-existing teeth are LEFT UNTOUCHED
+// here; the orchestrator retires them in T3 AFTER capturing a RED receipt against the migrated
+// main.ts. Until that migration lands, every tooth below is RED for the obvious reason: none of
+// `overlayVerdict(`, `// UXD3C-HANDLES-BEGIN`, `// UXD3C-CANOPEN-BEGIN`, `visibleIds(`,
+// `canOpen(` or `hideAllExceptPlan(` exist in main.ts yet, and `overlayHandles` does not exist
+// either.
+// ===========================================================================
+
+describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes through canOpen() (replaces W-OVERLAY-FANOUT-MUTEX)', () => {
+  // The SAME 12 open-handler anchors W-OVERLAY-FANOUT-MUTEX uses, plus the Escape sentinel, feed
+  // the SAME order-independent block-slicer (main.wiring.test.ts, the W-OVERLAY-FANOUT-MUTEX
+  // idiom): slice each handler from its own anchor to the MINIMUM forward indexOf of every OTHER
+  // anchor (or the Escape sentinel), so handler ORDER in main.ts can change without breaking this
+  // tooth.
+  const UXD3C_ESCAPE_SENTINEL = "e.code === 'Escape'";
+
+  const UXD3C_OPEN_HANDLERS: ReadonlyArray<{
+    anchor: string;
+    selfAnchor: string;
+    carriesIdentity: boolean;
+    expectedRaw: string;
+  }> = [
+    {
+      anchor: "e.code === 'KeyB'",
+      selfAnchor: "'boxView'",
+      carriesIdentity: false,
+      expectedRaw: `e.code === 'KeyB') {
+    const boxVerdict = overlayVerdict('boxView');
+    if (boxVerdict.kind === 'allow') {
+      for (const id of boxVerdict.forceHide) overlayHandles[id]?.();
+      boxView?.toggle();
+      if (boxView?.visible) refreshBox();
+    }
+    e.preventDefault();
+    return;
+  }
+  if (`,
+    },
+    {
+      anchor: "e.code === 'KeyI'",
+      selfAnchor: "'raisingView'",
+      carriesIdentity: false,
+      expectedRaw: `e.code === 'KeyI') {
+    const raisingVerdict = overlayVerdict('raisingView');
+    if (raisingVerdict.kind === 'allow') {
+      for (const id of raisingVerdict.forceHide) overlayHandles[id]?.();
+      raisingView?.toggle();
+      if (raisingView?.visible) refreshRaising();
+    }
+    e.preventDefault();
+    return;
+  }
+  if (`,
+    },
+    {
+      anchor: "e.code === 'KeyE'",
+      selfAnchor: "'evolutionView'",
+      carriesIdentity: false,
+      expectedRaw: `e.code === 'KeyE') {
+    const evolutionVerdict = overlayVerdict('evolutionView');
+    if (evolutionVerdict.kind === 'allow') {
+      for (const id of evolutionVerdict.forceHide) overlayHandles[id]?.();
+      evolutionView?.toggle();
+      if (evolutionView?.visible) refreshEvolution();
+    }
+    e.preventDefault();
+    return;
+  }
+  if (`,
+    },
+    {
+      anchor: "e.code === 'KeyQ'",
+      selfAnchor: "'questLogView'",
+      carriesIdentity: false,
+      expectedRaw: `e.code === 'KeyQ') {
+    if (overlayVerdict('questLogView').kind === 'allow') {
+      if (questLogView?.visible) {
+        questLogView.hide();
+      } else {
+        openQuestLog();
+      }
+    }
+    e.preventDefault();
+    return;
+  }
+  if (`,
+    },
+    {
+      anchor: "e.code === 'KeyU'",
+      selfAnchor: "'tradeView'",
+      carriesIdentity: false,
+      expectedRaw: `e.code === 'KeyU') {
+    if (overlayVerdict('tradeView').kind === 'allow') {
+      if (tradeView?.visible) {
+        tradeView.hide();
+      } else {
+        openTrade();
+      }
+    }
+    e.preventDefault();
+    return;
+  }
+  if (`,
+    },
+    {
+      anchor: "e.code === 'KeyP'",
+      selfAnchor: "'pvpView'",
+      carriesIdentity: false,
+      expectedRaw: `e.code === 'KeyP') {
+    if (overlayVerdict('pvpView').kind === 'allow') {
+      if (pvpView?.visible) {
+        pvpView.hide();
+      } else {
+        openPvp();
+      }
+    }
+    e.preventDefault();
+    return;
+  }
+  if (`,
+    },
+    {
+      anchor: "e.code === 'KeyL'",
+      selfAnchor: "'leaderboardView'",
+      carriesIdentity: false,
+      expectedRaw: `e.code === 'KeyL') {
+    if (overlayVerdict('leaderboardView').kind === 'allow') {
+      if (leaderboardView?.visible) {
+        leaderboardView.hide();
+      } else {
+        openLeaderboard();
+      }
+    }
+    e.preventDefault();
+    return;
+  }
+  if (`,
+    },
+    {
+      anchor: "e.code === 'KeyN'",
+      selfAnchor: "'renameView'",
+      carriesIdentity: false,
+      expectedRaw: `e.code === 'KeyN') {
+    e.preventDefault();
+    if (overlayVerdict('renameView').kind === 'allow') {
+      if (renameView?.visible) {
+        renameView.hide();
+      } else {
+        held.clear();
+        openRename();
+      }
+    }
+    return;
+  }
+  if (`,
+    },
+    {
+      anchor: "e.code === 'KeyO'",
+      selfAnchor: "'tradeProposeView'",
+      carriesIdentity: true,
+      expectedRaw: `e.code === 'KeyO') {
+    e.preventDefault();
+    if (overlayVerdict('tradeProposeView').kind === 'allow' && identity !== '') {
+      if (tradeProposeView?.visible) {
+        tradeProposeView.hide();
+      } else {
+        held.clear();
+        openPropose();
+      }
+    }
+    return;
+  }
+  if (`,
+    },
+    {
+      anchor: "e.code === 'KeyT'",
+      selfAnchor: 'anyOverlayVisible()',
+      carriesIdentity: true,
+      expectedRaw: `e.code === 'KeyT') {
+    if (!anyOverlayVisible() && identity !== '') {
+      interactAtNearest();
+    }
+    e.preventDefault();
+    return;
+  }
+  if (`,
+    },
+    {
+      anchor: "e.key === '?'",
+      selfAnchor: "'helpView'",
+      carriesIdentity: false,
+      expectedRaw: `e.key === '?') {
+    e.preventDefault();
+    if (overlayVerdict('helpView').kind === 'allow') {
+      if (helpView?.visible) {
+        helpView.hide();
+      } else {
+        held.clear();
+        openHelp();
+      }
+    }
+    return;
+  }
+  if (`,
+    },
+    {
+      anchor: "e.code === 'KeyM'",
+      selfAnchor: "'menuView'",
+      carriesIdentity: true,
+      expectedRaw: `e.code === 'KeyM') {
+    e.preventDefault();
+    if (overlayVerdict('menuView').kind === 'allow' && identity !== '') {
+      if (menuView?.visible) {
+        menuView.hide();
+      } else {
+        held.clear();
+        openMenu();
+      }
+    }
+    return;
+  }
+  if (`,
+    },
+  ] as const;
+
+  it('★ W-UXD3C-OPENGUARDS-ROUTE-THROUGH-CANOPEN BITES: each handler EQUALS its exact post-migration body — replaces W-OVERLAY-FANOUT-MUTEX', () => {
+    // ADJUDICATION B1 (kills red-team F1/F3): the retired W-OVERLAY-FANOUT-MUTEX read RAW
+    // source and asked "does the block CONTAIN every sibling guard token" — a containment check.
+    // Red-team MEASURED three HIGH survivors against that shape, ALL ZERO assertion failures:
+    //   (1) wrong-view body: overlayVerdict('boxView') computed correctly, then
+    //       raisingView?.toggle() — KeyB silently drives the wrong overlay forever, and the old
+    //       tooth's own anti-vacuity ("block contains its own overlay id") is satisfied by the
+    //       overlayVerdict('boxView') ARGUMENT alone.
+    //   (2) dead-wrap: the whole correct body inside `if (false) { … }` — needle found verbatim.
+    //   (3) an early `return;` inserted ABOVE the pinned prefix.
+    // EXACT EQUALITY on the comment-stripped, whitespace-squashed block is what closes all three:
+    // there is no room left for a wrong view, a dead wrapper or an early return without changing
+    // the string.
+    //
+    // ADJUDICATION B2 (kills red-team F2): expectUniqueAnchor on ALL 12 anchors. The reused
+    // slicer does `src.indexOf(anchor)` — first occurrence only. A duplicate EARLIER shadow block
+    // (e.g. a stray `if (e.code === 'KeyB') { e.preventDefault(); return; }` copy-pasted above the
+    // real handler) is invisible to a slice that spans both blocks; the needle is still found
+    // while the FIRST `if` wins at runtime and KeyB is permanently dead. MEASURED: 0 assertion
+    // failures without the uniqueness check. Kept ALONGSIDE the equality check (belt-and-braces):
+    // a doubled slice also fails equality, but only the uniqueness check gives the CORRECT
+    // diagnosis ("duplicate anchor"), where equality alone would just say "unexpected block text".
+    //
+    // ADJUDICATION B7 clause (b): the identity census — `block.includes("identity !== ''") ===
+    // carriesIdentity`, asserted as an EQUALITY IN BOTH DIRECTIONS. Carries it: KeyO, KeyT, KeyM.
+    // Does not: KeyB/I/E/Q/U/P/L/N/'?'. Kept independently of the equality check above (the
+    // file's own "state it independently, don't just derive it" precedent — UXD3_KEYM_SIBLINGS)
+    // despite being formally redundant with it: its failure mode (a pre-join
+    // `store.ownCharacter(identity)` throw inside an uncaught listener) is silent, and it costs
+    // ~5 lines. Clause (a) from the plan (per-id "no `!<id>?.visible`") is CUT (adjudication B7)
+    // — fully subsumed by the equality check and by the whole-file `W-UXD3C-NO-DEMORGAN-FANOUT`
+    // ceiling below.
+    //
+    // BOUNDARY RESIDUE (state it, don't hide it): every `expectedRaw` ends in `  if (` — the
+    // slicer's blockEnd is the index of the NEXT handler anchor, e.g. `e.code === 'KeyI'`, which
+    // sits inside `  if (e.code === 'KeyI') {` in main.ts. The slice therefore STOPS one token
+    // short of that anchor, capturing the closing `}` of the PREVIOUS handler's `if` statement
+    // plus the bare `if (` that opens the next one — uniformly, for every handler including the
+    // KeyM -> Escape-sentinel boundary (`  if (e.code === 'Escape' && renameView?.visible) {`).
+    // This is NOT a bug in the expectation: it is the same residue W-OVERLAY-FANOUT-MUTEX's own
+    // slicer has always left; pinning it explicitly (rather than trimming it away) is what proves
+    // the slicer's behaviour is understood rather than papered over.
+    const src = readMainTs();
+
+    const allAnchors: readonly string[] = [
+      ...UXD3C_OPEN_HANDLERS.map((h) => h.anchor),
+      UXD3C_ESCAPE_SENTINEL,
+    ];
+
+    let handlersChecked = 0;
+    for (const handler of UXD3C_OPEN_HANDLERS) {
+      // B2: uniqueness FIRST — a duplicated anchor gives the correct diagnosis on its own,
+      // before the slicer or the equality check can misattribute the failure.
+      expectUniqueAnchor(src, handler.anchor);
+
+      const hIdx = src.indexOf(handler.anchor);
+      expect(
+        hIdx,
+        `main.ts must contain the open-handler anchor \`${handler.anchor}\` — handler missing or renamed`,
+      ).toBeGreaterThanOrEqual(0);
+
+      let blockEnd = src.length;
+      for (const otherAnchor of allAnchors) {
+        if (otherAnchor === handler.anchor) continue;
+        const otherIdx = src.indexOf(otherAnchor, hIdx + handler.anchor.length);
+        if (otherIdx >= 0 && otherIdx < blockEnd) blockEnd = otherIdx;
+      }
+      const block = src.slice(hIdx, blockEnd);
+
+      // ANTI-VACUITY (raw block, before any processing): non-empty, and really is this
+      // handler's own block (names its own overlay id, or `anyOverlayVisible()` for KeyT).
+      expect(
+        block.length,
+        `handler block for \`${handler.anchor}\` must be non-empty (anti-vacuity)`,
+      ).toBeGreaterThan(0);
+      expect(
+        block.includes(handler.selfAnchor),
+        `handler block for \`${handler.anchor}\` must reference ${handler.selfAnchor} — proves ` +
+          'this is the real handler, not a degenerate/mis-anchored slice (anti-vacuity)',
+      ).toBe(true);
+
+      const actual = squashWhitespace(stripLineComments(block));
+      const expected = squashWhitespace(stripLineComments(handler.expectedRaw));
+
+      // ANTI-VACUITY (the expectation itself): a near-empty expected literal would make the
+      // equality below trivially easy to satisfy by accident. Every real handler body here is
+      // well over 100 characters once squashed.
+      expect(
+        expected.length,
+        `the expected literal for \`${handler.anchor}\` collapsed to ${expected.length} chars — ` +
+          'refusing to gate on a near-empty expectation (anti-vacuity)',
+      ).toBeGreaterThan(80);
+
+      expect(
+        actual,
+        `\`${handler.anchor}\` handler body must equal, EXACTLY (comment-stripped, whitespace-` +
+          `squashed):\n${expected}\n\nGot:\n${actual}\n\n` +
+          'Containment is NOT enough here (adjudication B1) — a wrong-view body, a dead `if ' +
+          '(false) { … }` wrapper and an early `return;` all CONTAIN every needle a presence ' +
+          'check looks for while changing behaviour completely; only exact equality on the whole ' +
+          'block closes all three.',
+      ).toBe(expected);
+
+      // B7(b): the identity census, as an equality in BOTH directions.
+      expect(
+        actual.includes("identity !== ''"),
+        `\`${handler.anchor}\` handler must ${handler.carriesIdentity ? '' : 'NOT '}carry ` +
+          `\`identity !== ''\` — expected carriesIdentity=${handler.carriesIdentity}. Adding it ` +
+          'to a handler that never carried it silently no-ops six overlays pre-join; dropping it ' +
+          'from KeyO/KeyT/KeyM re-opens the pre-join store.ownCharacter(identity) throw inside an ' +
+          'uncaught listener.',
+      ).toBe(handler.carriesIdentity);
+
+      handlersChecked += 1;
+    }
+    expect(handlersChecked, 'ANTI-VACUITY: all 12 open-handlers must have been exercised').toBe(12);
+  });
+});
+
+describe('★ main.ts wiring (uxd3-c/ADR-0164): the force-hide handle table mirrors OverlayHandles', () => {
+  it('★ W-UXD3C-HANDLE-TABLE BITES: overlayHandles is bidirectional against OVERLAY_IDS and NEVER_FORCE_HIDE, dialogueView undefined, all others the exact hide-call thunk', () => {
+    // ADJUDICATION B4: the shipped type is a BARE optional-thunk table —
+    // `Readonly<Record<OverlayId, (() => void) | undefined>>` — NOT the plan's `{ hide?: () =>
+    // void }` wrapper. Call sites read `overlayHandles[id]?.()`; the table entry for the one
+    // NEVER_FORCE_HIDE member is the explicit, self-explaining `dialogueView: undefined,` (not
+    // `{}`, which reads as "config TBD").
+    //
+    // WHY presence-only would not bite (Part B's own measured wrong impl, replayed on the write
+    // side): `raisingView: () => boxView?.hide()` type-checks perfectly and makes the KeyB/I/E
+    // switch hide the WRONG overlay; only the byte-identical per-id literal sees it.
+    const src = readMainTs();
+    expectUniqueAnchor(src, UXD3C_HANDLES_BEGIN);
+    expectUniqueAnchor(src, UXD3C_HANDLES_END);
+    const region = squashWhitespace(
+      stripLineComments(regionOrThrow(src, UXD3C_HANDLES_BEGIN, UXD3C_HANDLES_END)),
+    );
+
+    // ANTI-VACUITY, ASSERTED FIRST.
+    expect(OVERLAY_IDS.length, 'the imported manifest must hold 15 overlays').toBe(15);
+    expect(
+      NEVER_FORCE_HIDE.length,
+      'the imported NEVER_FORCE_HIDE must hold exactly 1 member',
+    ).toBe(1);
+    expect(
+      region.includes('overlayHandles'),
+      'ANTI-VACUITY: the marked region must actually contain the `overlayHandles` declaration',
+    ).toBe(true);
+
+    // --- uxd3-c: pin the TYPE itself, MEASURED CI-green before this clause ------------------
+    // `OR-HANDLES-DIALOGUE-HAS-NO-HIDE` states in its own comment that its runtime half cannot
+    // see a loosening of the type, and nominates THIS tooth to catch it. Red-team then measured
+    // the gap for real: rewriting the alias to
+    //     export type OverlayHandles = Partial<Readonly<Record<OverlayId, () => void>>>;
+    // left `tsc --noEmit` clean and the whole 1742-test suite green, silently destroying the
+    // totality guarantee — with `Partial<>`, ANY id may go missing, not just the one
+    // NEVER_FORCE_HIDE member, so a 16th overlay (or a dropped 15th) stops being a compile error
+    // and becomes a runtime no-op that hides nothing. The per-id loop below would still pass,
+    // because it reads main.ts's literal, which the loosening does not touch.
+    // The close is an exact-shape pin on the declaration line in the registry source.
+    const registrySrc = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), 'ui', 'overlayRegistry.ts'),
+      'utf8',
+    );
+    const OVERLAY_HANDLES_DECL =
+      'export type OverlayHandles = Readonly<Record<OverlayId, (() => void) | undefined>>;';
+    expect(
+      countOccurrences(squashWhitespace(stripLineComments(registrySrc)), OVERLAY_HANDLES_DECL),
+      'ui/overlayRegistry.ts must declare OverlayHandles EXACTLY as ' +
+        `\`${OVERLAY_HANDLES_DECL}\` — a total Record whose VALUE type admits undefined. ` +
+        'Any `Partial<...>` / optional-key spelling type-checks and keeps this whole suite ' +
+        'green (MEASURED) while erasing the "a 16th overlay is a COMPILE error" guarantee that ' +
+        'is the entire reason the table is typed rather than tested (ADR-0163 D7 / ADR-0164 D2).',
+    ).toBe(1);
+
+    for (const id of OVERLAY_IDS) {
+      if (NEVER_FORCE_HIDE.includes(id)) {
+        expect(
+          region.includes(`${id}: undefined,`),
+          `the handle table must contain \`${id}: undefined,\` — ${id} is the sole ` +
+            'NEVER_FORCE_HIDE member and must NEVER get a hide thunk (a client-side hide strands ' +
+            'the server player_conversation row)',
+        ).toBe(true);
+        expect(
+          region.includes(`${id}: () =>`),
+          `the handle table must NOT give ${id} a hide thunk of any form`,
+        ).toBe(false);
+      } else {
+        const needle = `${id}: () => ${id}?.hide(),`;
+        expect(
+          region.includes(needle),
+          `the handle table must contain the EXACT entry \`${needle}\` — byte-identical, so a ` +
+            `copy-pasted sibling thunk (e.g. \`${id}: () => boxView?.hide(),\`) cannot satisfy ` +
+            'this tooth',
+        ).toBe(true);
+      }
+    }
+
+    expect(
+      countOccurrences(region, '?.hide(),'),
+      'the handle table must contain EXACTLY 14 `?.hide(),` thunks — one per non-dialogue ' +
+        'manifest member. A different count means an id was smuggled in, dropped, or given a ' +
+        'malformed thunk.',
+    ).toBe(14);
+    expect(
+      region.includes('...'),
+      'the handle table must be a FLAT object literal with no `...` spread — a spread source ' +
+        'would hide a poisoned entry outside this region, exactly as the probe table tooth pins',
+    ).toBe(false);
+
+    const stripped = stripLineComments(src);
+    expect(
+      countOccurrences(stripped, 'const overlayHandles'),
+      'main.ts must declare `const overlayHandles` EXACTLY once',
+    ).toBe(1);
+
+    // Whole-file ceiling: closes the Reflect.set poisoning hole (Part B's own precedent) — no
+    // reflection API reaches a module-scope binding without NAMING it, so a bounded whole-file
+    // count of every occurrence of the identifier is a complete guard. RED-TEAM MEASURED exactly
+    // 5 on the fully-migrated tree: the declaration + the KeyB/KeyI/KeyE force-hide loops + the
+    // refreshBattle force-hide loop (surface 7).
+    expect(
+      countOccurrences(stripped, 'overlayHandles'),
+      'the identifier `overlayHandles` must occur EXACTLY 5 times in main.ts (whole file, ' +
+        'comment-stripped): the declaration, the KeyB/KeyI/KeyE force-hide loops, and the ' +
+        'refreshBattle force-hide loop. A 6th occurrence means something else touches the table ' +
+        '(e.g. `Reflect.set(overlayHandles, ...)`, which erases `Readonly` at runtime).',
+    ).toBe(5);
+  });
+});
+
+describe('★ main.ts wiring (uxd3-c/ADR-0164): no de-Morgan-&&-spelled hand-rolled fan-out survives (closes ADR-0163 D3)', () => {
+  it('★ W-UXD3C-NO-DEMORGAN-FANOUT BITES: zero de-Morgan `&&` hand-rolled fan-out terms survive anywhere in main.ts', () => {
+    // ADJUDICATION B9. ADR-0163 D3 named the de-Morgan `&&` chain as the shape a future author
+    // is MOST LIKELY to reach for (all 12 pre-migration hotkey guard lists already use it), and
+    // demonstrated a hand-rolled 13-term sixth surface passing the whole suite. Part C's ceiling
+    // (`W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY-NO-HAND-ROLLED-OR-LIST`) closes only the `||`
+    // spelling; this tooth closes the `&&` spelling.
+    //
+    // MEASURED (orchestrator, on the fully-migrated tree — the TODO this comment replaces):
+    //   `?.visible && !`  148 pre-migration -> 0 post   (the plan's needle)
+    //   `?.visible &&`    151 pre-migration -> 0 post   (the STRICTER needle — shipped)
+    // Both measure 0 after the migration, so the stricter form ships. It additionally kills a
+    // single-term guard like `!x?.visible && identity !== ''`, which `&& !` structurally cannot
+    // see (there is no second negated term for the `!` to glue onto) — and a single-term
+    // hand-rolled guard beside a `canOpen` verdict is exactly how a fan-out grows back one
+    // overlay at a time. Re-measure with: `grep -c '?\.visible &&' client/src/main.ts` (a raw
+    // grep reads an upper bound — it does not strip comments — so a 0 there implies 0 here).
+    const NEEDLE = '?.visible &&';
+
+    const stripped = squashWhitespace(stripLineComments(readMainTs()));
+
+    // ANTI-VACUITY, ASSERTED FIRST: the probe table's own `?.visible ?? false` idiom is a named,
+    // stable control — if the scan itself breaks (bad path, over-eager comment strip, a squash
+    // that eats the `?`), this floor collapses to 0 and the ceiling below would pass vacuously.
+    expect(
+      countOccurrences(stripped, '?.visible ?? false'),
+      'main.ts must still contain at least 15 `?.visible ?? false` occurrences (the probe table) ' +
+        '— a count under 15 means the SCAN itself is broken, not that the probe table shrank',
+    ).toBeGreaterThanOrEqual(15);
+
+    expect(
+      countOccurrences(stripped, NEEDLE),
+      `main.ts must contain ZERO \`${NEEDLE}\` fan-out terms once every hotkey guard routes ` +
+        'through overlayVerdict()/canOpen(). RED AT AUTHORING TIME: ~148 (measured on the ' +
+        'pre-migration tree — 160 guard terms across the 12 hotkey lists, minus the 12 terminal ' +
+        'conjuncts that have no following `!`). If this reds AFTER migration, a hand-rolled ' +
+        'de-Morgan `&&` chain was written somewhere — route it through the registry instead. ' +
+        "HONEST SCOPE (state, don't overclaim): together with Part C's `View?.visible ||` " +
+        'ceiling, this closes both the `||` and the de-Morgan `&&` spellings ADR-0163 D3 named as ' +
+        'most likely. It does NOT see `[a,b].some(v => v?.visible)`, a `||=` accumulator, an ' +
+        'aliased local, or a ternary chain.',
+    ).toBe(0);
   });
 });
