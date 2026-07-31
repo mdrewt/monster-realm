@@ -38,6 +38,7 @@ import {
   playerConversationRowToStore,
   playerQuestRowToStore,
   playerRowToStore,
+  playerWalletRowToStore,
   profileRowToStore,
   type SdkBattleChallengeRow,
   type SdkBattleRow,
@@ -47,6 +48,7 @@ import {
   type SdkItemRowRow,
   type SdkMonsterPubRow,
   type SdkPlayerRow,
+  type SdkPlayerWalletRow,
   type SdkProfileRow,
   type SdkShopItemRowRow,
   type SdkShopRowRow,
@@ -431,6 +433,28 @@ export function connect(opts: ConnectionOptions): Connection {
       batcher.schedule();
     });
 
+    // ux2b (ADR-0169 D2): my_wallet — the owner-scoped VIEW over the PRIVATE
+    // player_wallet table (ADR-0154). INSERT-ONLY, on purpose.
+    // TRIPWIRE — deliberately NO onDelete and deliberately NO onUpdate handler, and
+    // deliberately NO shouldRemoveOnViewDelete gate (do NOT copy the my_conversation
+    // block above — it is the nearest precedent and it is both dead and wrong here):
+    //   * no onDelete — no server path ever deletes a player_wallet row
+    //     (economy_tests.rs::player_wallet_rows_are_never_deleted is the soundness gate),
+    //     AND through a view a row UPDATE arrives as unordered onInsert(new) +
+    //     onDelete(old) (ADR-0154 D4), so on a buy-then-sell round trip the coalesced
+    //     `I(50) I(100) D(100) D(50)` makes ANY net-effect delete gate remove the LIVE
+    //     row and the player's gold vanishes mid-session. store.reset() on disconnect is
+    //     the SOLE clearing path — which is why store.ts ships upsertWallet with no
+    //     removeWallet counterpart at all.
+    //   * no onUpdate — a view table has no PK for SDK correlation, so it never fires
+    //     (ADR-0087); wiring one implies a delivery guarantee the transport does not make.
+    // If the server ever grows a wallet-delete path, this absence is the review tripwire:
+    // revisit ADR-0154 D4 first, then wire removal + the store API in the same change.
+    conn.db.my_wallet.onInsert((_ctx, row) => {
+      store.upsertWallet(playerWalletRowToStore(row as unknown as SdkPlayerWalletRow));
+      batcher.schedule();
+    });
+
     // m15b: trade_offer (public runtime table — both parties subscribe).
     // Completed/cancelled offers are deleted server-side (D5: terminal row GC);
     // no onUpdate expected, but handle it defensively to stay fresh.
@@ -573,10 +597,14 @@ export function connect(opts: ConnectionOptions): Connection {
             'SELECT * FROM player_quest',
             'SELECT * FROM heal_location_row',
             'SELECT * FROM npc',
-            // M13d: shop catalog (public content; ADR-0084). player_wallet is PRIVATE
-            // (ADR-0081/0040) and produces no client subscription — excluded.
+            // M13d: shop catalog (public content; ADR-0084).
             'SELECT * FROM shop_row',
             'SELECT * FROM shop_item_row',
+            // ux2b (ADR-0169 D1): player_wallet is PRIVATE (ADR-0081/0040) — subscribe
+            // the owner-scoped my_wallet view instead (ADR-0154), exactly as
+            // my_conversation is subscribed above. Subscribing the private table would
+            // error the whole batch and onApplied would never fire.
+            'SELECT * FROM my_wallet',
             // m15b: trade_offer is a PUBLIC runtime table (ADR-0106 D3); both parties
             // subscribe. Per-row RLS is a M16 future (ADR-0106 W3 INFO); until then the
             // client sees all offers and filters by own identity in ownTradeOffer().

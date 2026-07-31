@@ -31,6 +31,7 @@ import type {
   StoreSpeciesRow,
   StoreTradeItem,
   StoreTradeOffer,
+  StoreWallet,
   StoreWeather,
 } from './store';
 
@@ -449,6 +450,37 @@ export function shouldRemoveOnViewDelete(
   return (
     stored.npcEntityId === deleted.npcEntityId && stored.currentNodeId === deleted.currentNodeId
   );
+}
+
+// --- ux2b (ADR-0169 D3): the owner-scoped `my_wallet` VIEW row -----------------------
+
+export interface SdkPlayerWalletRow {
+  readonly ownerIdentity: { toHexString(): string };
+  readonly balance: bigint;
+}
+
+/**
+ * Map a `my_wallet` view row to the store's wallet slot. PURE PASS-THROUGH — and that
+ * is the whole contract (ADR-0169 D3):
+ *
+ * - NO numeric coercion. `Number(row.balance)` loses precision past 2^53 (the server
+ *   column is u64) and lies about the type; `BigInt(Number(...))` restores the type
+ *   while keeping the wrong value.
+ * - NO defaulting. `row.balance ?? 0n` (or `|| 0n`, or a `< 0n` clamp) fabricates
+ *   "broke" out of "dark": shopModel decides `unknown` vs `known` on
+ *   `typeof amount !== 'bigint'`, so an invented `0n` makes the client confidently
+ *   report `Gold: 0` when it has no idea — exactly the `.unwrap_or(0)` that ADR-0154
+ *   D1/D6 refused to let reach the UI.
+ * - NO validation that can THROW. This runs inside a subscription row callback and
+ *   flushBatch has no per-listener isolation (ADR-0085 A6), so one throw starves every
+ *   sibling table's ingest for that batch. Fail soft, always.
+ * - EXPLICIT field mapping, never a spread: no SDK-only field may leak into the store.
+ */
+export function playerWalletRowToStore(row: SdkPlayerWalletRow): StoreWallet {
+  return {
+    ownerIdentity: row.ownerIdentity.toHexString(),
+    balance: row.balance,
+  };
 }
 
 interface SdkPlayerQuest {
