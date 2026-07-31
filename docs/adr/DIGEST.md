@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 131 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 132 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -140,6 +140,7 @@ Generated from 131 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0163](./0163-overlay-probe-substrate-and-click-front-door.md) | 0163 — One overlay probe table behind all five fan-out surfaces, and the AC-12 click front door | Accepted | client-ui | uxd3-b (M-postgate-ux-design — unified overlay IA) | The five overlay OR-lists in `main.ts` collapse onto one probe table read via `anyVisible()`, and `#help-hint` becomes the menu's click door via attribute delegation; the hotkey→`canOpen` migration and the gate retirement defer to uxd3-c. |
 | [0164](./0164-overlay-registry-write-substrate-and-canopen-migration.md) | 0164 — Overlay registry write substrate and `canOpen` migration | Accepted | client-ui | uxd3-c (M-postgate-ux-design — unified overlay IA) | Overlay write substrate: `visibleIds()`/`OverlayHandles` (optional thunks; `dialogueView` guarded); 12 hotkeys routed to `canOpen`; retire 4 guard-scan teeth; unify AC-12; decline `onReconnect`; defer Escape re-anchor. |
 | [0165](./0165-changelog-freshness-nightly-check.md) | 0165 — Changelog freshness: nightly drift check (not per-PR, not manual) | Accepted | tooling-docs, ci-gates | 11r-d | Changelog freshness is enforced as a nightly drift check (spec D4's default), not a per-PR gate nor manual-only discipline; implementation defers to 11r-i, being outside 11r-d's declared `touches:`. |
+| [0167](./0167-pvp-side-b-battle-perspective.md) | 0167 — PvP side-B battle overlay: role-agnostic accessors + a view-boundary perspective projection | Accepted | battle, client-ui | 11r-b | The store's battle accessors match either PvP role and return RAW server rows; a pure `ownPerspective()` projection re-seats the local player as sideA and is applied at exactly ONE view call site, leaving diagnostics on server truth. |
 
 ## Harness design corpus (H- namespace)
 
@@ -222,6 +223,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0138](./0138-ptc5b-wild-disconnect-gc.md) — ptc5b (M-playtest-c.5 pre-gate residuals — wild-battle disconnect GC, EARS ptc5b-1..3) — 0138 — ptc5b wild-battle disconnect resolution: auto-flee + GC the `battle`/`battle_wild` rows to unblock returning-player re-entry (Accepted)
 - [0155](./0155-ux4-battle-swap-discoverability.md) — ux4 (M-postgate-ux-hardening — repro-and-confirm the battle monster-switch gap, then hint; EARS ux4-1..ux4-3) — 0155 — ux4 battle-swap discoverability: the swap UI was correct, so explain the absence instead of fixing it (Accepted)
 - [0156](./0156-zero-hp-lead-selection-and-fainted-actor-rejection.md) — battle-0hp-fix (M-postgate-battle-0hp-fix — 0hp lead-monster battle-start defect; EARS E1–E5) — 0156 — a 0 HP monster is never seated as lead (PvE), and a fainted player active cannot submit an attack (Accepted)
+- [0167](./0167-pvp-side-b-battle-perspective.md) — 11r-b — 0167 — PvP side-B battle overlay: role-agnostic accessors + a view-boundary perspective projection (Accepted)
 
 ### evolution-fusion
 
@@ -351,6 +353,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0162](./0162-overlay-registry-two-level-main-menu.md) — uxd3-a (M-postgate-ux-design — unified overlay IA) — 0162 — A pure `canOpen` modality core and a registry-backed two-level main menu (Accepted)
 - [0163](./0163-overlay-probe-substrate-and-click-front-door.md) — uxd3-b (M-postgate-ux-design — unified overlay IA) — 0163 — One overlay probe table behind all five fan-out surfaces, and the AC-12 click front door (Accepted)
 - [0164](./0164-overlay-registry-write-substrate-and-canopen-migration.md) — uxd3-c (M-postgate-ux-design — unified overlay IA) — 0164 — Overlay registry write substrate and `canOpen` migration (Accepted)
+- [0167](./0167-pvp-side-b-battle-perspective.md) — 11r-b — 0167 — PvP side-B battle overlay: role-agnostic accessors + a view-boundary perspective projection (Accepted)
 
 ### ci-gates
 
