@@ -4217,6 +4217,67 @@ describe('★ main.ts wiring (uxd3): Escape stays a pure close/back key (AC-9 / 
         'plan A7). Same desync; both spellings are banned.',
     ).toBe(0);
 
+    // --- uxd3-c (ADR-0164): the ALIAS bypass, MEASURED CI-green before this clause -----------
+    // Red-team on the shipped uxd3-c code demonstrated that the two zero-counts above are
+    // defeated by one line of indirection, with the FULL suite green (1742/1742) and tsc clean:
+    //
+    //     const dialogueHandle = dialogueView;
+    //     dialogueHandle?.hide();          // hides a live conversation; neither needle matches
+    //
+    // Neither `dialogueView?.hide` nor `dialogueView.hide` appears anywhere, so both counts stay
+    // 0 and the tooth is VACUOUSLY satisfied — while the ptc5c/ADR-0139 desync it exists to
+    // prevent ships. This is not a uxd3-c regression (the hole predates the slice, since uxd3-a),
+    // but uxd3-c is the slice that OWNS the never-hide invariant (ADR-0163 D7 /
+    // OR-HANDLES-DIALOGUE-HAS-NO-HIDE), so it closes it here.
+    //
+    // The close is an ENUMERATED CEILING on the identifier itself, the same idiom Part B uses for
+    // `overlayProbes`/`overlayHandles`: every legitimate mention of `dialogueView` in main.ts is
+    // listed below with its exact count, and the total is pinned. An alias — or ANY new use, by
+    // any spelling, including ones nobody has thought of — pushes the total past the ceiling and
+    // reds with a message naming this comment. Raising the ceiling therefore requires a
+    // deliberate edit here plus a new enumerated entry, which is exactly the review conversation
+    // the invariant deserves.
+    //
+    // HONEST SCOPE: this bounds USES of the binding, not reachability. It cannot see a hide
+    // performed through `document.getElementById('dialogue-overlay').style.display = 'none'` or
+    // through a DialogueView instance obtained some other way — those are outside this binding
+    // entirely. It does close every spelling that starts from `dialogueView`.
+    const DIALOGUE_VIEW_SITES: readonly { readonly needle: string; readonly count: number }[] = [
+      // the two dynamic/static module specifiers — `'./ui/dialogueView'` contains the identifier
+      // as a substring, so they are counted here rather than excluded
+      { needle: "'./ui/dialogueView'", count: 2 },
+      // the module-scope binding declaration and its one assignment at construction time
+      { needle: 'let dialogueView: DialogueView | undefined;', count: 1 },
+      { needle: 'dialogueView = new DialogueViewClass();', count: 1 },
+      // the probe table entry (uxd3-b) — TWO occurrences on one line: key and read
+      { needle: 'dialogueView: () => dialogueView?.visible ?? false,', count: 1 },
+      // the handle table entry (uxd3-c) — the sole `undefined` member, pinned by
+      // W-UXD3C-HANDLE-TABLE against NEVER_FORCE_HIDE
+      { needle: 'dialogueView: undefined,', count: 1 },
+      // the Escape branch's visibility read — the POSITIVE half of AC-9, asserted below
+      { needle: "e.code === 'Escape' && dialogueView?.visible", count: 1 },
+      // the batch listener's render call — the only other write path, and it is a render, not a hide
+      { needle: 'dialogueView?.render(', count: 1 },
+    ];
+    const DIALOGUE_VIEW_CEILING = 9; // 2 + 1 + 1 + 2 (key + read on one line) + 1 + 1 + 1
+    for (const site of DIALOGUE_VIEW_SITES) {
+      expect(
+        countOccurrences(stripped, site.needle),
+        `enumerated dialogueView site \`${site.needle}\` must occur exactly ${site.count}× in ` +
+          'main.ts — if this moved, update the enumeration AND the ceiling together, never one ' +
+          'alone (an un-updated enumeration lets the ceiling absorb a NEW use silently)',
+      ).toBe(site.count);
+    }
+    expect(
+      countOccurrences(stripped, 'dialogueView'),
+      `main.ts must mention \`dialogueView\` exactly ${DIALOGUE_VIEW_CEILING}× — the enumerated ` +
+        'sites above and nothing else. A count ABOVE this means a NEW use of the dialogue view ' +
+        'binding was added; if it is an alias (`const h = dialogueView;`) it can call .hide() ' +
+        'and desync the server player_conversation row while both zero-counts above stay green ' +
+        '(MEASURED CI-green before this clause existed). Read the comment above this assertion ' +
+        'before raising the number.',
+    ).toBe(DIALOGUE_VIEW_CEILING);
+
     // The POSITIVE half of AC-9, on the branch that owns it (existing anchors, both unique).
     const src = readMainTs();
     expectUniqueAnchor(src, UXD2_ESC_DLG_START);
@@ -5723,6 +5784,32 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): the force-hide handle table mirr
       region.includes('overlayHandles'),
       'ANTI-VACUITY: the marked region must actually contain the `overlayHandles` declaration',
     ).toBe(true);
+
+    // --- uxd3-c: pin the TYPE itself, MEASURED CI-green before this clause ------------------
+    // `OR-HANDLES-DIALOGUE-HAS-NO-HIDE` states in its own comment that its runtime half cannot
+    // see a loosening of the type, and nominates THIS tooth to catch it. Red-team then measured
+    // the gap for real: rewriting the alias to
+    //     export type OverlayHandles = Partial<Readonly<Record<OverlayId, () => void>>>;
+    // left `tsc --noEmit` clean and the whole 1742-test suite green, silently destroying the
+    // totality guarantee — with `Partial<>`, ANY id may go missing, not just the one
+    // NEVER_FORCE_HIDE member, so a 16th overlay (or a dropped 15th) stops being a compile error
+    // and becomes a runtime no-op that hides nothing. The per-id loop below would still pass,
+    // because it reads main.ts's literal, which the loosening does not touch.
+    // The close is an exact-shape pin on the declaration line in the registry source.
+    const registrySrc = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), 'ui', 'overlayRegistry.ts'),
+      'utf8',
+    );
+    const OVERLAY_HANDLES_DECL =
+      'export type OverlayHandles = Readonly<Record<OverlayId, (() => void) | undefined>>;';
+    expect(
+      countOccurrences(squashWhitespace(stripLineComments(registrySrc)), OVERLAY_HANDLES_DECL),
+      'ui/overlayRegistry.ts must declare OverlayHandles EXACTLY as ' +
+        `\`${OVERLAY_HANDLES_DECL}\` — a total Record whose VALUE type admits undefined. ` +
+        'Any `Partial<...>` / optional-key spelling type-checks and keeps this whole suite ' +
+        'green (MEASURED) while erasing the "a 16th overlay is a COMPILE error" guarantee that ' +
+        'is the entire reason the table is typed rather than tested (ADR-0163 D7 / ADR-0164 D2).',
+    ).toBe(1);
 
     for (const id of OVERLAY_IDS) {
       if (NEVER_FORCE_HIDE.includes(id)) {
