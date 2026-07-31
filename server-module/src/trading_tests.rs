@@ -2095,6 +2095,30 @@ fn e4_propose_trade_bounds_both_sides_before_validate_proposal() {
          choice, change this assertion WITH it, not around it."
     );
 
+    // NEW-5: every ordering assertion above is POSITION-based, so none of them can
+    // see REACHABILITY. A red-team wrapped both cap calls in `if false { .. }`:
+    // both tuple needles match, both `?` match, both indices are still less than
+    // `validate_proposal(` and less than the first `ctx.db`, and the caps bound
+    // nothing at all. This is the same class as EV-9, which E2 guards and E4 did
+    // not. Pinning the caps as the reducer's literal FIRST statements makes the
+    // dead-code wrapper unrepresentable — and it is the placement ADR-0166 D3
+    // decided anyway ("as the reducer's first statement after `let me =
+    // ctx.sender;`"), so this assertion and the D3 decision are the same claim.
+    let first_stmt = concat!("letme=ctx.sender;check_trade_", "side_size(");
+    assert!(
+        squashed.contains(first_stmt),
+        "TEETH (E4-B/D3, NEW-5): the first size bound must be the reducer's literal \
+         FIRST statement — the squashed body must contain \
+         `letme=ctx.sender;check_trade_side_size(`. Every other assertion in this \
+         test is position-based and therefore blind to REACHABILITY: \
+         `if false {{ check_trade_side_size(..)?; check_trade_side_size(..)?; }}` \
+         satisfies both tuple pins, both `?` pins, and both ordering pins while the \
+         caps bound nothing (same class as E2's EV-9). Anything between \
+         `let me = ctx.sender;` and the first cap — a condition, a DB read, a \
+         binding — either makes the caps skippable or violates D3's \
+         bound-before-any-DB-read ordering."
+    );
+
     let truncate = concat!("trunc", "ate(");
     let n_truncate = squashed.matches(truncate).count();
     assert_eq!(

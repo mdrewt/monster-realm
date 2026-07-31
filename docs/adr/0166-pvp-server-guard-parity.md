@@ -92,10 +92,17 @@ the 60 s deadline reaper (`pvp.rs:54` → `apply_pvp_forfeit` → `settle_pvp_ba
 important entry in this ADR: without it, the next consistency-minded security pass adds the
 symmetric guard and ships that bug.
 
-For the same reason the rejection message is PvP-specific. It must **not** be copied verbatim
+For the same reason the rejection message names **only an action the player can actually take**:
+`"your active monster has fainted — swap to another monster"`. It must not be copied verbatim
 from `battle.rs:556`, which offers "…or flee": `PvpAction` is `Attack | Swap` only and there is
-no flee in PvP — the exit is `forfeit`. A legacy corpse-active row is exitable only by Swap, so
-a message that names the wrong escape hatch walks the player into the reaper.
+no flee in PvP. The first draft of this slice said "…or forfeit" and the security audit caught
+that this is the **same defect wearing a different word** — there is no player-callable forfeit
+either. `pvp.rs` exposes seven reducers and none is a forfeit; the only forfeit entry points are
+`forfeit_on_disconnect` (a `pub(crate)` lifecycle helper) and the 60 s `pvp_deadline_reaper`, and
+`client/src` has no forfeit affordance at all. A legacy corpse-active row is exitable only by
+Swap, so a message naming an escape hatch the client cannot render walks the player into the
+reaper — a **ranked rating loss**. The gating test pins the absence of both "or flee" and
+"forfeit" so neither can be reintroduced. See residual R9.
 
 ### D3 — `propose_trade` bounds both sides before any O(N) work; the caps are DoS bounds, not game rules
 
@@ -199,6 +206,30 @@ parties are the same size).
 - **R7 — `confirm_trade`'s per-unit transfer loop** (`trading.rs:644`,
   `for _ in 0..qty { consume_one(..) }`, `qty ≤ MAX_ITEM_STACK` = 9999) is one indexed scan plus
   one row update per iteration. Real holdings bound it in practice; out of D3's scope.
+- **R9 — there is no player-callable forfeit, and now no client affordance behind D2's reject.**
+  A PvP player whose active has fainted can press Attack, receive an authoritative `Err`, and have
+  no rendered way to act on it other than Swap; the only forfeits are disconnect-driven or the 60 s
+  reaper. D2 names Swap for exactly this reason, but the underlying gap is a product one: either
+  add a `forfeit_pvp(ctx, battle_id)` reducer guarded by `require_pvp_participant` + ongoing
+  (delegating to `apply_pvp_forfeit`), or surface a swap affordance on the fainted-active state.
+  Route to a PvP client/server slice — `client/src/ui/battleModel.ts:262` also re-derives
+  `is_fainted()` as `currentHp > 0` for its swap list, which is the same class.
+- **R10 — the sim-harness models a movement rule the server does not have.**
+  `sim-harness/src/world.rs:100-103` short-circuits the entire move drain for `battle_locked`
+  characters and its comment at `:84-89` claims it is *"mirroring the server's battle-lock check in
+  `movement_tick`"*. There is no such check: `authorize_move` (`guards.rs:66-100`) and
+  `enqueue_move`/`set_move`/`clear_queue` have no battle gate, and after this slice `movement_tick`'s
+  only battle references are the warp guard and the grass pre-check. The server model is "in battle
+  ⇒ warp skipped, movement continues"; the harness model is "in battle ⇒ frozen". Since the harness
+  is the ADR-0013 convergence proof and `tick_zone` is a second hand-written implementation of the
+  warp resolution, this drift matters. Pre-existing — but this is the slice that rewrote the guard,
+  so the comment is now demonstrably false. Route to **11r-c** (which owns both the drain-time lock
+  and `movement.rs`); the parity test it should add is: a battle-locked character stepping onto a
+  warp tile ends up **moved but not warped**.
+- **R11 — the `propose_trade` size rejections are not audited.** `check_trade_side_size(..)?`
+  propagates without `log_reject`, so a cap-flood produces no reject telemetry — unfortunate for the
+  one guard whose purpose is bounding abuse. There is in-function precedent for silence (the two
+  joined-player checks also do not log), so this is left consistent rather than fixed piecemeal.
 - **R8 — `docs/adr/README.md:16` "Next free number" is stale** (says 0165; 0165 exists, and
   this ADR makes 0166 taken). It is hand-maintained and gated by nothing — the exact drift class
   11r-d flagged. Not bumped here: the ADR index is supervisor-owned.

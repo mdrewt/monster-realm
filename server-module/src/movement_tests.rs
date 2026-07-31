@@ -254,6 +254,50 @@ fn e3_warp_guard_uses_the_both_role_ssot_with_the_player_identity() {
          their home zones. RED at HEAD: the local is still named `in_battle`."
     );
 
+    // --- Layer 1d (NEW-4): the guard gates the WRITE, not just the `continue` -
+    // The most plausible real-implementer slip, and a red-team proved it passes
+    // every other needle in this file: hoist the three warp writes OUT of the
+    // branch, leaving only the bookkeeping inside.
+    //
+    //     let (to_zone, tx, ty) = (..);
+    //     row.zone_id = to_zone; row.tile_x = tx; row.tile_y = ty;   // <-- hoisted
+    //     let skip_warp = ..map(|p| is_in_ongoing_battle(ctx, p.identity))
+    //         .unwrap_or(true);
+    //     if !skip_warp { row.move_queue.clear(); ..; continue; }
+    //
+    // Layers 1, 1b, 1c, 2, 3 and the fence all still pass verbatim — but when
+    // `skip_warp` is TRUE the code simply falls out of the `if let` to the normal
+    // one-write path at movement.rs:237, which PERSISTS the warped zone anyway.
+    // Every player in a battle warps (PvE and PvP), and so does every NPC. Pure
+    // statement ordering; nothing that looks at needles alone can see it.
+    let guard_open = ["if!skip", "_warp{"].concat();
+    let warp_write = ["if!skip_warp{row.", "zone_id=to_zone;"].concat();
+    assert!(
+        region.contains(warp_write.as_str()),
+        "TEETH (E3/D4 layer 1d, NEW-4): the warp branch must contain \
+         `if!skip_warp{{row.zone_id=to_zone;` as ONE contiguous squashed \
+         expression — the zone write must be the FIRST statement INSIDE the \
+         guarded block. If the writes are hoisted above the guard, a `skip_warp` \
+         of true no longer prevents anything: control falls out of the `if let` to \
+         the normal one-write path (movement.rs:237) and the warped zone is \
+         persisted regardless, warping every battling player AND every NPC. Layers \
+         1, 1b, 1c, 2 and 3 all pass on that shell — this is the only assertion \
+         that sees it."
+    );
+    let zone_write = ["row.", "zone_id"].concat();
+    let guard_at = region
+        .find(guard_open.as_str())
+        .expect("E3: `if!skip_warp{` not found in the warp branch");
+    let n_pre_write = region[..guard_at].matches(zone_write.as_str()).count();
+    assert_eq!(
+        n_pre_write, 0,
+        "TEETH (E3/D4 layer 1d, NEW-4): `row.zone_id` is written {n_pre_write} \
+         time(s) BEFORE `if !skip_warp {{` in the warp branch; it must be written \
+         only INSIDE the guarded block. The contiguous needle above is satisfied by \
+         a shell that hoists the write AND repeats it inside the branch; this \
+         assertion is what makes the hoist itself unrepresentable."
+    );
+
     // --- Layer 1c (EV-3b): no inline battle scan survives, in ANY spelling ---
     let battle_accessor = ["battle", "()"].concat();
     let n_battle = squashed.matches(battle_accessor.as_str()).count();
@@ -271,6 +315,26 @@ fn e3_warp_guard_uses_the_both_role_ssot_with_the_player_identity() {
          btree accessor, `.iter().any(|b| b.player_identity == ..)`, or anything \
          else — all of them must name `battle()`. If a later slice legitimately \
          fixes R4, this number changes; update it DELIBERATELY."
+    );
+    // NEW-3: layer 1 accepts the BARE `is_in_ongoing_battle(..)` call spelling, so
+    // a file-local shim of the same name would satisfy it while answering `false`
+    // for everyone — and a shim never names `battle()`, so layer 1c misses it too.
+    // Forbidding movement.rs from DEFINING the name closes it in one assertion,
+    // and unlike an import check it stays correct for all three accepted path
+    // spellings.
+    let local_shim = ["fnis_in_ongoing", "_battle"].concat();
+    let n_shim = squashed.matches(local_shim.as_str()).count();
+    assert_eq!(
+        n_shim, 0,
+        "TEETH (E3/D4 layer 1c, NEW-3): `movement.rs` must not DEFINE \
+         `is_in_ongoing_battle`; found {n_shim} definition(s). Layer 1 accepts the \
+         bare call spelling, so a file-local shim \
+         (`fn is_in_ongoing_battle(_: &ReducerContext, _: Identity) -> bool \
+         {{ false }}`) satisfies it verbatim while shadowing the ADR-0122 SSOT and \
+         answering `false` for every player — and because a shim never touches the \
+         `battle()` table, layer 1c does not see it either. The guard must resolve \
+         to `crate::guards::is_in_ongoing_battle` (guards.rs:264), whether reached \
+         through the import at movement.rs:13 or a qualified path."
     );
 
     // --- Layer 2 (M3): the single-role filter is GONE from the warp branch ---

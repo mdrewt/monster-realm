@@ -978,8 +978,8 @@ pub fn cancel_challenge(ctx: &ReducerContext, challenge_id: u64) -> Result<(), S
 /// 4. outcome == Ongoing.
 /// 5. Validate action against caller's active monster: for Attack, reject when the
 ///    caller's active monster has fainted (ADR-0166 D2) BEFORE the moveset check,
-///    so a corpse gets the actionable "swap or forfeit" message rather than a
-///    misleading "skill N not in active monster's moveset"; for Swap, the target
+///    so a corpse gets an actionable "swap to another monster" message rather than
+///    a misleading "skill N not in active monster's moveset"; for Swap, the target
 ///    index must be in bounds, not fainted, and not already active. `Swap` is
 ///    deliberately NOT given the fainted-active guard — see the ADR-0166 D2
 ///    anti-decision: it is the only exit from a corpse-active row.
@@ -1028,8 +1028,14 @@ pub fn submit_pvp_action(
     match action {
         PvpAction::Attack { skill_id } => {
             if my_team.active_monster().is_fainted() {
-                let e = "your active monster has fainted — swap to another monster or forfeit"
-                    .to_string();
+                // Names ONLY an action the player can actually take. `battle.rs:556`
+                // says "or flee" and ADR-0166 D2 rejected copying it because PvP has
+                // no flee; the first draft said "or forfeit", which is the SAME defect
+                // — there is no player-callable forfeit reducer either (the only
+                // forfeits are `forfeit_on_disconnect` and the 60s deadline reaper).
+                // A message naming an affordance the client cannot render walks a
+                // corpse-active player into the reaper, i.e. a ranked rating loss.
+                let e = "your active monster has fainted — swap to another monster".to_string();
                 log_reject("submit_pvp_action", me, &e);
                 return Err(e);
             }

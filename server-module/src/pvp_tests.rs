@@ -2374,8 +2374,21 @@ fn ea_chr_06_schedule_challenge_reaper_deadline_ms_floored() {
 ///      field is `pub` (ADR-0156 residual P2) and a compound assignment
 ///      (`side_a.active -= side_a.active`) is a separately-verified evasion, so
 ///      the durable rule is: do not name the field.
-///    - *L2c:* `.team` may appear ONLY as `.team.iter()` / `.team.iter_mut()`
-///      (verified EXACT against `pvp.rs:277-287`, two of each — do not widen).
+///    - *L2b2 (NEW-1, FILE-scoped):* `.team` may appear across all of `pvp.rs`
+///      only as `.team.iter()`, `.team.iter_mut()`, `.team.len()`, `.team[` or
+///      `.team;` (residual-zero, 13 of 13 on the current source), and no function
+///      may take a `&mut BattleSide`. This closes the twin of L2b's hole, which a
+///      red-team also proved: `fn normalize_side(s: &mut BattleSide) { ..
+///      s.team.swap(0, 1); .. }` returns `()` (so no `-> BattleSide`), never names
+///      `.active`, and lives outside the body (so L2c is blind). `with_lead` on
+///      `[corpse, conscious]` sets `active = 1`; swapping `team[0]`/`team[1]`
+///      leaves `active` pointing AT THE CORPSE — D1 fully restored — and the
+///      permutation is length-preserving, so `check_team_coupling` cannot see the
+///      broken `team[i]` ↔ `party_monster_ids[i]` pairing either.
+///    - *L2c:* the body-scoped version of the same whitelist, kept because it is
+///      tighter where it applies: inside this body `.team` may appear ONLY as
+///      `.team.iter()` / `.team.iter_mut()` (verified EXACT against
+///      `pvp.rs:283-291`, two of each — do not widen).
 ///    - *L2d:* `is_fainted` must occur ZERO times in this body. This is a
 ///      SPELLING check on the removed pre-checks and nothing more — see its
 ///      failure message; the first draft overclaimed it as a filter-mutant guard,
@@ -2430,8 +2443,10 @@ fn ea_chr_06_schedule_challenge_reaper_deadline_ms_floored() {
 /// unlike in the PvE original it is now caught here, by L2e's exact `team_a`
 /// count of 2 (the shadow-rebind is a third mention).
 /// (b) L2b's `-> BattleSide` needle sees only that literal spelling;
-/// `-> Option<BattleSide>` would slip past it. L2b's `.active` count is the
-/// assertion doing the real work against that mutant class.
+/// `-> Option<BattleSide>` would slip past it. The assertions doing the real work
+/// against that whole mutant class are the two FILE-scoped whitelists — L2b's
+/// `.active` count and L2b2's `.team` residual — plus L2b2's `&mut BattleSide`
+/// == 0: a helper cannot reseat or permute a side without naming one of those.
 /// (c) Nothing here pins the `ability_ids_* ↔ team_*` alignment beyond L2f's
 /// binding text; ADR-0166 D1 records that coupling as newly load-bearing and
 /// unpinned by anything else in the tree.
@@ -2554,7 +2569,73 @@ fn e1_start_pvp_battle_constructs_both_sides_via_with_lead() {
          `iter_mut()` hand out element references and cannot reorder a Vec; every \
          method that can is excluded by not being on this whitelist. Widening it is \
          a deliberate decision, not a formality (the exact counts verified against \
-         pvp.rs:277-287)."
+         pvp.rs:283-291)."
+    );
+
+    // --- L2b2: `.team` is FILE-scoped-whitelisted too (NEW-1) ---------------
+    // The `-> BattleSide` needle above has a twin hole, and a red-team proved it:
+    // `fn normalize_side(s: &mut BattleSide) { if s.team.len() > 1 {
+    // s.team.swap(0, 1); } }`, called on both sides AFTER two textbook-correct
+    // `with_lead` bindings, returns `()` (so no `-> BattleSide`), never names
+    // `.active` (so the count above is unmoved), and lives outside this body (so
+    // L2c is blind). `with_lead` on [corpse, conscious] sets active = 1; swapping
+    // team[0]/team[1] leaves `active` pointing AT THE CORPSE — D1 fully restored —
+    // and the permutation is LENGTH-PRESERVING, so `check_team_coupling`
+    // (guards.rs:124) cannot see the broken team[i] ↔ party_monster_ids[i] pairing
+    // either.
+    //
+    // Residual-zero form (the `assert_lead_fields_untouched` doctrine) rather than
+    // pinned per-form counts: adding another legitimate `.team.iter()` elsewhere in
+    // pvp.rs must not turn this test red, but adding ANY non-whitelisted form must.
+    // The five whitelisted spellings are exhaustive against the current source
+    // (6 × `.iter()`, 4 × `.iter_mut()`, 1 × `.len()`, 1 × `[`, 1 × `;` = 13 of 13),
+    // and none of them can reorder or resize a Vec: `iter`/`iter_mut` hand out
+    // element references, `len` is a read, `[` is an indexed read, and `;` closes
+    // the shared immutable borrow at pvp.rs:539
+    // (`let team_b = &battle.state.side_b.team;`).
+    let team_any_file = squashed_file.matches(team_any_needle.as_str()).count();
+    let team_iter_file = squashed_file.matches(team_iter_needle.as_str()).count();
+    let team_mut_file = squashed_file.matches(team_iter_mut_needle.as_str()).count();
+    let team_len_needle = [".", "team.len()"].concat();
+    let team_index_needle = [".", "team["].concat();
+    let team_borrow_needle = [".", "team;"].concat();
+    let team_len_file = squashed_file.matches(team_len_needle.as_str()).count();
+    let team_index_file = squashed_file.matches(team_index_needle.as_str()).count();
+    let team_borrow_file = squashed_file.matches(team_borrow_needle.as_str()).count();
+    let team_other_file = team_any_file.saturating_sub(
+        team_iter_file + team_mut_file + team_len_file + team_index_file + team_borrow_file,
+    );
+    assert_eq!(
+        team_other_file, 0,
+        "TEETH (E1/D1 L2b2, NEW-1): pvp.rs touches `BattleSide.team` in \
+         {team_other_file} way(s) that are not on the order-preserving whitelist, \
+         out of {team_any_file} total `.team` — `.team.iter()` ({team_iter_file}), \
+         `.team.iter_mut()` ({team_mut_file}), `.team.len()` ({team_len_file}), \
+         `.team[` ({team_index_file}), `.team;` ({team_borrow_file}). \
+         FILE-scoped, because a red-team defeated the body-scoped L2c with a helper \
+         defined outside the body: `fn normalize_side(s: &mut BattleSide)` calling \
+         `s.team.swap(0, 1)`, applied to both sides after correct `with_lead` \
+         bindings. `with_lead` on [corpse, conscious] sets active = 1; swapping \
+         team[0]/team[1] leaves `active` pointing AT THE CORPSE, fully restoring the \
+         confirmed-exploitable D1 defect — and the permutation is LENGTH-PRESERVING, \
+         so `check_team_coupling` (guards.rs:124) cannot see the broken \
+         `team[i]` ↔ `party_monster_ids[i]` pairing either. \
+         Every method that could reorder or resize — `swap`, `sort*`, `rotate_*`, \
+         `reverse`, `retain`, `remove`, `insert`, `push`, `pop`, `drain`, \
+         `truncate`, `dedup*`, `clear`, `split_off`, `append`, `resize`, whole-field \
+         assignment — is excluded by NOT BEING ON THE LIST, without anyone having had \
+         to think of it. Widening the whitelist is a deliberate decision."
+    );
+    let mut_side_needle = ["&mut", "BattleSide"].concat();
+    let n_mut_side = squashed_file.matches(mut_side_needle.as_str()).count();
+    assert_eq!(
+        n_mut_side, 0,
+        "ANTI-EVASION (E1/D1 L2b2, green at HEAD): no function in pvp.rs may take a \
+         `&mut BattleSide`; found {n_mut_side}. Belt-and-braces with the `.team` \
+         whitelist above and the `-> BattleSide` needle: a side that is handed to \
+         ANY mutator after construction is a side whose `active` and team order this \
+         test can no longer vouch for. `with_lead` must be the last thing that \
+         touches either."
     );
 
     // --- L2d: the conscious-party pre-checks are GONE, not kept alongside ----
@@ -2823,14 +2904,21 @@ fn e1_start_pvp_battle_constructs_both_sides_via_with_lead() {
 ///    (`if battle.state.turn_number == u16::MAX { .. return Err(e); }`), which
 ///    satisfies assertion 4 exactly and makes the entire guard a no-op.
 ///
-/// 5. **The PvP-specific message: `forfeit` must appear inside the Attack arm,
-///    and `or flee` must appear NOWHERE in this function.** `PvpAction` is
-///    `Attack | Swap` — there is no flee in PvP; the exit is forfeit.
-///    `battle.rs:556` says "…or flee", and a verbatim copy of that string would
-///    name an escape hatch that does not exist: a player on a legacy
+/// 5. **The PvP-specific message: `swap to another monster` must appear inside
+///    the Attack arm, and NEITHER `or flee` NOR `forfeit` may appear anywhere in
+///    this function.** The rule is "name only actions the player can actually
+///    take", and it has now caught two violations. `battle.rs:556`'s "…or flee"
+///    is the first: `PvpAction` is `Attack | Swap`, so there is no flee in PvP.
+///    "…or forfeit" was the second, found by a security audit AFTER the first
+///    draft of this fix shipped it: **there is no player-callable forfeit reducer
+///    either.** The only forfeits in the tree are `forfeit_on_disconnect` (a
+///    `pub(crate)` lifecycle helper) and the 60 s `pvp_deadline_reaper`, and
+///    `client/src` renders no forfeit affordance. Both spellings name an
+///    unrenderable action, and the consequence is identical: a player on a
 ///    corpse-active row who keeps retrying Attack instead of swapping is reaped
 ///    at 60 s (`pvp.rs:54` → `apply_pvp_forfeit` → `settle_pvp_battle` →
-///    `ranking.rs:92`) into a **ranked rating loss**. These two are the only
+///    `ranking.rs:92`) into a **ranked rating loss**. Swap is the only real exit,
+///    so it is the only one the message may offer. These three are the only
 ///    assertions that need live string literals, so they run on the comments-only
 ///    view (`strip_rust_comments`), bounded by `fn` MARKERS rather than by brace
 ///    counting (M5): brace-counting string-bearing source works on this function
@@ -3011,6 +3099,7 @@ fn e2_submit_pvp_action_rejects_attack_from_a_fainted_active() {
     // closes it. (The needle is a bare keyword; it is assembled only for
     // uniformity with the rest of this file.)
     let if_needle = ["i", "f"].concat();
+    let match_needle = ["mat", "ch"].concat();
     let tail = &squashed[guard_pos + guard.len()..];
     let ret_rel = tail.find(return_err.as_str()).unwrap_or_else(|| {
         panic!(
@@ -3019,17 +3108,25 @@ fn e2_submit_pvp_action_rejects_attack_from_a_fainted_active() {
         )
     });
     let guard_prelude = &tail[..ret_rel];
-    let n_nested_if = guard_prelude.matches(if_needle.as_str()).count();
+    let n_nested_if = guard_prelude.matches(if_needle.as_str()).count()
+        + guard_prelude.matches(match_needle.as_str()).count();
     assert_eq!(
         n_nested_if, 0,
         "TEETH (E2/D2 EV-9): the fainted-active guard must reject UNCONDITIONALLY; \
-         found {n_nested_if} nested `if` between the guard's opening brace and its \
-         `return Err(`. Any further condition there makes the rejection conditional, \
-         and a condition that is never true (`turn_number == u16::MAX`) turns the \
-         whole guard into a no-op while still satisfying the \
+         found {n_nested_if} nested `if`/`match` between the guard's opening brace \
+         and its `return Err(`. Any further condition there makes the rejection \
+         conditional, and a condition that is never true (`turn_number == u16::MAX`) \
+         turns the whole guard into a no-op while still satisfying the \
          `log_reject` + `return Err` presence checks above. On a correct \
          implementation the only statements here are the message binding, the \
-         `log_reject` call, and the return."
+         `log_reject` call, and the return. \
+         LIMIT (NEW-2, recorded not closed): `while`, `for _ in 0..usize::from(cond)` \
+         and `cond.then(..)` spellings are NOT counted here. `for` in particular \
+         cannot be added as a needle — it is a substring of `format!`, which a \
+         legitimate message binding may use. Those spellings are covered instead by \
+         `clippy -D warnings`, which rejects both the `match`-as-equality and the \
+         `for`-as-conditional forms outright; clippy is the sanctioned backstop for \
+         that residue, and `just lint` runs it on every CI pass."
     );
 
     // --- (5) the PvP-specific message (needs LIVE strings) -------------------
@@ -3060,18 +3157,17 @@ fn e2_submit_pvp_action_rejects_attack_from_a_fainted_active() {
     let swap_pos_ws = squashed_ws
         .find(swap_marker.as_str())
         .expect("E2: `PvpAction::Swap` arm not found in the string-bearing view");
-    let forfeit = ["for", "feit"].concat();
+    let swap_advice = ["swaptoanother", "monster"].concat();
     assert!(
-        squashed_ws[attack_pos_ws..swap_pos_ws].contains(forfeit.as_str()),
+        squashed_ws[attack_pos_ws..swap_pos_ws].contains(swap_advice.as_str()),
         "TEETH (E2/D2 message): the fainted-active rejection inside the \
-         `PvpAction::Attack` arm must name `forfeit` as the exit. PvP has no flee — \
-         `PvpAction` is `Attack | Swap` only — so a legacy corpse-active row is \
-         exitable ONLY by Swap or by forfeiting. A message that names the wrong \
-         escape hatch leaves the player retrying Attack until the 60 s deadline \
-         reaper (pvp.rs:54) forfeits for them, which `settle_pvp_battle` → \
-         `ranking.rs:92` turns into a RANKED RATING LOSS. \
-         RED at HEAD: `forfeit` does not occur in `submit_pvp_action`."
+         `PvpAction::Attack` arm must tell the player to `swap to another monster` \
+         — the ONLY exit that actually exists. A corpse-active row is escapable \
+         solely by `PvpAction::Swap`; any other advice leaves the player retrying \
+         Attack until the 60 s deadline reaper (pvp.rs:54) forfeits FOR them, which \
+         `settle_pvp_battle` → `ranking.rs:92` turns into a RANKED RATING LOSS."
     );
+    // Two absences, pinned together: NEITHER named action exists.
     let or_flee = ["or", "flee"].concat();
     assert!(
         !squashed_ws.contains(or_flee.as_str()),
@@ -3079,8 +3175,21 @@ fn e2_submit_pvp_action_rejects_attack_from_a_fainted_active() {
          anywhere. `battle.rs:556` reads `…swap to another monster or flee`, and a \
          verbatim copy-paste of that PvE string into PvP names an action that does \
          not exist in `PvpAction` (Attack | Swap). See the previous assertion for \
-         the ranked-rating-loss consequence. (Green at HEAD — this is an \
-         anti-copy-paste guard on the incoming fix, not a live defect.)"
+         the ranked-rating-loss consequence."
+    );
+    let forfeit = ["for", "feit"].concat();
+    assert!(
+        !squashed_ws.contains(forfeit.as_str()),
+        "TEETH (E2/D2 message): `submit_pvp_action` must NOT contain `forfeit` \
+         either. The first draft of this fix said `…swap to another monster or \
+         forfeit`, and a security audit found that this is the SAME defect ADR-0166 \
+         D2 rejected `or flee` for: THERE IS NO PLAYER-CALLABLE FORFEIT REDUCER. \
+         The only forfeits in the tree are `forfeit_on_disconnect` (a `pub(crate)` \
+         lifecycle helper) and the 60 s `pvp_deadline_reaper` — and `client/src` \
+         renders no forfeit affordance at all. Telling a corpse-active player to \
+         forfeit therefore names an UNRENDERABLE action and walks them into the \
+         reaper, i.e. into the ranked rating loss this guard exists to prevent. \
+         Both absences are pinned so a future edit cannot reintroduce either."
     );
 
     // NOTE: the "Swap arm is deliberately unguarded" fence lives in its own test
