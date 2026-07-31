@@ -95,6 +95,17 @@ import type { HelpView } from './ui/helpView';
 import { interactPrompt, nearestInteractable } from './ui/interactModel';
 import { buildLeaderboardViewModel } from './ui/leaderboardModel';
 import type { LeaderboardView } from './ui/leaderboardView';
+import {
+  buildMenuViewModel,
+  MENU_INITIAL,
+  type MenuAvailability,
+  type MenuInput,
+  type MenuLeafDef,
+  type MenuNavState,
+  menuKeyInput,
+  menuStep,
+} from './ui/menuModel';
+import type { MenuView } from './ui/menuView';
 import { buildPvpChallengeViewModel } from './ui/pvpModel';
 import type { PvpView } from './ui/pvpView';
 import { buildQuestLogViewModel } from './ui/questLogModel';
@@ -203,6 +214,8 @@ let tradeProposeView: TradeProposeView | undefined;
 // pt-c2b: in-client help overlay (ADR-0135) — display-only `?` overlay listing
 // controls + goals. No callbacks / reducer (zero-arg construction).
 let helpView: HelpView | undefined;
+// uxd3 (ADR-0162): the two-level main menu — the 15th mutual-exclusion overlay.
+let menuView: MenuView | undefined;
 // m16b: tracks the turn number at the time the player submitted a PvP action.
 // When the server resolves the turn (battle.turnNumber increments beyond this),
 // pvpPendingTurnNumber is cleared and pvpPendingSubmit becomes false.
@@ -243,7 +256,8 @@ function anyOverlayVisible(): boolean {
       leaderboardView?.visible ||
       renameView?.visible ||
       tradeProposeView?.visible ||
-      helpView?.visible,
+      helpView?.visible ||
+      menuView?.visible,
   );
 }
 
@@ -260,6 +274,204 @@ function characterTileMap(): Map<bigint, { zoneId: number; tileX: number; tileY:
     ]),
   );
 }
+// --- uxd3 (ADR-0162): the main menu ------------------------------------------------
+//
+// ⚠ ANCHOR DISCIPLINE (plan anti-pattern 14b): this block sits ABOVE the keydown listener,
+// and many wiring teeth slice forward from the FIRST indexOf of a quoted hotkey literal.
+// No quoted hotkey anchor may appear anywhere below until the listener — describe keys in
+// prose only. Pinned by W-UXD3-HOTKEY-ANCHORS-AFTER-KEYDOWN.
+//
+// ONE OPEN PATH PER OVERLAY: each openX() below is the single build-VM-and-show body for
+// its overlay, called by BOTH its hotkey handler and the menu. The view contract is
+// non-uniform (dialogue/questLog/heal expose render() with no show(); pvp takes
+// refresh(vm, forceVisible)), so these are per-id thunks, never a generic view.show().
+
+/** Nav position inside the menu. Reset by openMenu() — four paths (the M toggle-close,
+ *  refreshBattle, the dialogue preempt, onReconnect) hide the view WITHOUT going through
+ *  menuStep, so resetting on close would miss them. Pinned by W-OPENMENU-RESETS-STATE. */
+let menuState: MenuNavState = MENU_INITIAL;
+
+function openQuestLog(): void {
+  questLogView?.render(buildQuestLogViewModel(store.ownQuests(identity)));
+}
+
+function openTrade(): void {
+  tradeView?.render(
+    buildTradeViewModel(store.allTradeOffers(), identity, store.speciesMap(), store.itemDefs()),
+  );
+  tradeView?.show();
+}
+
+function openPvp(): void {
+  // forceVisible=true: the player explicitly opened it — stay up even with no live challenge.
+  pvpView?.refresh(
+    buildPvpChallengeViewModel(store.allChallenges(), identity, store.allPlayers()),
+    true,
+  );
+}
+
+function openLeaderboard(): void {
+  leaderboardView?.render(buildLeaderboardViewModel(store.allProfiles(), identity));
+  leaderboardView?.show();
+}
+
+function openRename(): void {
+  renameView?.render(buildRenameViewModel(store.player(identity)?.name ?? '', ''));
+  renameView?.show();
+}
+
+function openPropose(): void {
+  tradeProposeView?.render(
+    buildProposeLists(
+      store.allPlayers(),
+      store.ownMonsters(identity),
+      store.speciesMap(),
+      identity,
+    ),
+  );
+  tradeProposeView?.show();
+}
+
+function openHelp(): void {
+  helpView?.render(buildHelpViewModel());
+  helpView?.show();
+}
+
+/** The interact dispatch, extracted so the menu's Interact leaf and the interact hotkey
+ *  share ONE exhaustive `switch (target.kind)` — duplicating it would destroy the
+ *  single-site compiler flag a 4th NpcInteraction kind relies on (ADR-0161). */
+function interactAtNearest(): void {
+  const own = store.ownCharacter(identity);
+  if (own === undefined) return;
+  const target = nearestInteractable(
+    own.row,
+    store.allNpcs(),
+    characterTileMap(),
+    store.healLocations(),
+  );
+  if (target === undefined) return;
+  // Exhaustive switch on the descriptor kind — NO default arm, so a 4th
+  // NpcInteraction-driven kind compiler-flags this dispatch site.
+  switch (target.kind) {
+    case 'dialogue':
+    case 'shop':
+      sendGuarded('talk', () => conn?.conn.reducers.talk({ npcEntityId: target.npcEntityId }));
+      break;
+    case 'heal':
+      boundHealLocationId = target.locationId;
+      healView?.render(
+        buildHealViewModelForLocation(target.locationId, store.healLocations(), store.itemDefs()),
+      );
+      break;
+  }
+}
+
+/** Store reads → the three plain booleans the pure core consumes. TOTAL: pre-join and
+ *  mid-reconnect `ownCharacter` is undefined, and PvP/Offer are online-player EXISTENCE,
+ *  never a proximity test (the help copy says "nearby", but no reducer has a range rule —
+ *  a distance check would grey both leaves out permanently). W-MENU-AVAILABILITY-SOURCES. */
+function menuAvailability(): MenuAvailability {
+  const own = store.ownCharacter(identity);
+  const hasInteractTarget =
+    own !== undefined &&
+    nearestInteractable(own.row, store.allNpcs(), characterTileMap(), store.healLocations()) !==
+      undefined;
+  const pvpVm = buildPvpChallengeViewModel(store.allChallenges(), identity, store.allPlayers());
+  return {
+    hasInteractTarget,
+    hasTradeTargets:
+      buildProposeLists(
+        store.allPlayers(),
+        store.ownMonsters(identity),
+        store.speciesMap(),
+        identity,
+      ).targets.length > 0,
+    hasPvpTargets: pvpVm.challengeablePlayers.length > 0 || pvpVm.incoming !== null,
+  };
+}
+
+function renderMenu(): void {
+  menuView?.render(buildMenuViewModel(menuState, menuAvailability()));
+}
+
+/** The SINGLE entry point. Resets the nav position so the menu always opens at the
+ *  top-level category list, whatever hid it last. */
+function openMenu(): void {
+  menuState = MENU_INITIAL;
+  renderMenu();
+  menuView?.show();
+}
+
+/** Route a chosen leaf. The menu has already closed itself, so Escape from the overlay
+ *  this opens returns to the world in ONE press and can never re-open the menu. */
+function activateMenuLeaf(leaf: MenuLeafDef): void {
+  menuView?.hide(); // close FIRST — the target opens over the world, never over the menu
+  // Leaf activation is a SECOND route to talk / proposeTrade / store.ownCharacter(identity),
+  // all of which throw or send garbage before the join round-trip completes. The KeyM guard
+  // is not enough: activation happens later, and onReconnect can clear identity meanwhile.
+  if (identity !== '') {
+    // Exhaustive switch, no default arm: a new leaf compiler-flags this site.
+    switch (leaf.id) {
+      // The menu is GUARD_ONLY, so canOpen denies it over any of the box/raising/evolution
+      // trio — none of them can be visible here, and no force-hide is needed.
+      case 'box':
+        boxView?.show();
+        refreshBox();
+        break;
+      case 'backpack':
+        raisingView?.show();
+        refreshRaising();
+        break;
+      case 'evolve':
+        evolutionView?.show();
+        refreshEvolution();
+        break;
+      case 'interact':
+        interactAtNearest();
+        break;
+      case 'journal':
+        openQuestLog();
+        break;
+      case 'incomingTrade':
+        openTrade();
+        break;
+      case 'offerTrade':
+        openPropose();
+        break;
+      case 'pvp':
+        openPvp();
+        break;
+      case 'leaderboard':
+        openLeaderboard();
+        break;
+      case 'rename':
+        openRename();
+        break;
+      case 'help':
+        openHelp();
+        break;
+    }
+  }
+}
+
+/** Feed one nav input through the pure reducer and apply its effect. */
+function handleMenuInput(input: MenuInput): void {
+  const step = menuStep(menuState, input, menuAvailability());
+  menuState = step.state;
+  switch (step.effect.kind) {
+    case 'none':
+      renderMenu();
+      break;
+    case 'close':
+      menuView?.hide();
+      break;
+    case 'activate': {
+      activateMenuLeaf(step.effect.leaf);
+      break;
+    }
+  }
+}
+
 // Outcome-frame lifecycle (M8.7e): the dismissed battle id (so a resolved outcome
 // renders once but never re-pops) + whether any battle has been observed this
 // session (first-sight pre-dismiss of a historical/stale-on-login resolved battle).
@@ -486,6 +698,7 @@ function reconcileFromStore(): void {
       predictor.outstandingSteps === 0 &&
       !(
         helpView?.visible ||
+        menuView?.visible ||
         renameView?.visible ||
         tradeProposeView?.visible ||
         battleView?.visible ||
@@ -618,6 +831,19 @@ window.addEventListener('keydown', (e) => {
     }
     return;
   }
+  // uxd3 (ADR-0162): while the menu is open it owns the arrow/WASD/Enter keys, so this
+  // intercept must precede every movement and hotkey path below. Unrecognised keys fall
+  // through to the normal handlers (and then to the movement-suppression block, which
+  // keeps nh1's preventDefault). Nav does NOT key-repeat: the e.repeat gate at the top of
+  // this listener returns first — accepted, the lists are <= 5 rows and wrap (ADR-0162).
+  if (menuView?.visible) {
+    const menuInput = menuKeyInput(e.code);
+    if (menuInput !== undefined) {
+      handleMenuInput(menuInput);
+      e.preventDefault();
+      return;
+    }
+  }
   if (e.code === 'KeyB') {
     // Guard: don't open the box over an active battle (ADR-0014/0052 exit ordering).
     // ptc5c (ADR-0139): dialogue/questLog/heal are MODAL — guard against them (never hide;
@@ -634,7 +860,8 @@ window.addEventListener('keydown', (e) => {
       !leaderboardView?.visible &&
       !renameView?.visible &&
       !tradeProposeView?.visible &&
-      !helpView?.visible
+      !helpView?.visible &&
+      !menuView?.visible
     ) {
       raisingView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
@@ -659,7 +886,8 @@ window.addEventListener('keydown', (e) => {
       !leaderboardView?.visible &&
       !renameView?.visible &&
       !tradeProposeView?.visible &&
-      !helpView?.visible
+      !helpView?.visible &&
+      !menuView?.visible
     ) {
       boxView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
@@ -684,7 +912,8 @@ window.addEventListener('keydown', (e) => {
       !leaderboardView?.visible &&
       !renameView?.visible &&
       !tradeProposeView?.visible &&
-      !helpView?.visible
+      !helpView?.visible &&
+      !menuView?.visible
     ) {
       boxView?.hide(); // mutual exclusivity
       raisingView?.hide(); // mutual exclusivity
@@ -710,12 +939,13 @@ window.addEventListener('keydown', (e) => {
       !leaderboardView?.visible &&
       !renameView?.visible &&
       !tradeProposeView?.visible &&
-      !helpView?.visible
+      !helpView?.visible &&
+      !menuView?.visible
     ) {
       if (questLogView?.visible) {
         questLogView.hide();
       } else {
-        questLogView?.render(buildQuestLogViewModel(store.ownQuests(identity)));
+        openQuestLog();
       }
     }
     e.preventDefault();
@@ -737,20 +967,13 @@ window.addEventListener('keydown', (e) => {
       !leaderboardView?.visible &&
       !renameView?.visible &&
       !tradeProposeView?.visible &&
-      !helpView?.visible
+      !helpView?.visible &&
+      !menuView?.visible
     ) {
       if (tradeView?.visible) {
         tradeView.hide();
       } else {
-        tradeView?.render(
-          buildTradeViewModel(
-            store.allTradeOffers(),
-            identity,
-            store.speciesMap(),
-            store.itemDefs(),
-          ),
-        );
-        tradeView?.show();
+        openTrade();
       }
     }
     e.preventDefault();
@@ -772,16 +995,13 @@ window.addEventListener('keydown', (e) => {
       !leaderboardView?.visible &&
       !renameView?.visible &&
       !tradeProposeView?.visible &&
-      !helpView?.visible
+      !helpView?.visible &&
+      !menuView?.visible
     ) {
       if (pvpView?.visible) {
         pvpView.hide();
       } else {
-        // forceVisible=true: user explicitly opened — keep visible even with no active challenge
-        pvpView?.refresh(
-          buildPvpChallengeViewModel(store.allChallenges(), identity, store.allPlayers()),
-          true,
-        );
+        openPvp();
       }
     }
     e.preventDefault();
@@ -804,13 +1024,13 @@ window.addEventListener('keydown', (e) => {
       !pvpView?.visible &&
       !renameView?.visible &&
       !tradeProposeView?.visible &&
-      !helpView?.visible
+      !helpView?.visible &&
+      !menuView?.visible
     ) {
       if (leaderboardView?.visible) {
         leaderboardView.hide();
       } else {
-        leaderboardView?.render(buildLeaderboardViewModel(store.allProfiles(), identity));
-        leaderboardView?.show();
+        openLeaderboard();
       }
     }
     e.preventDefault();
@@ -836,14 +1056,14 @@ window.addEventListener('keydown', (e) => {
       !pvpView?.visible &&
       !leaderboardView?.visible &&
       !tradeProposeView?.visible &&
-      !helpView?.visible
+      !helpView?.visible &&
+      !menuView?.visible
     ) {
       if (renameView?.visible) {
         renameView.hide();
       } else {
-        held.clear();
-        renameView?.render(buildRenameViewModel(store.player(identity)?.name ?? '', ''));
-        renameView?.show();
+        held.clear(); // the opening keypress must not leave a held movement key latched
+        openRename();
       }
     }
     return;
@@ -869,21 +1089,14 @@ window.addEventListener('keydown', (e) => {
       !leaderboardView?.visible &&
       !renameView?.visible &&
       !helpView?.visible &&
+      !menuView?.visible &&
       identity !== ''
     ) {
       if (tradeProposeView?.visible) {
         tradeProposeView.hide();
       } else {
-        held.clear();
-        tradeProposeView?.render(
-          buildProposeLists(
-            store.allPlayers(),
-            store.ownMonsters(identity),
-            store.speciesMap(),
-            identity,
-          ),
-        );
-        tradeProposeView?.show();
+        held.clear(); // the opening keypress must not leave a held movement key latched
+        openPropose();
       }
     }
     return;
@@ -913,47 +1126,20 @@ window.addEventListener('keydown', (e) => {
       !renameView?.visible &&
       !tradeProposeView?.visible &&
       !helpView?.visible &&
+      !menuView?.visible &&
       identity !== ''
     ) {
-      const own = store.ownCharacter(identity);
-      if (own !== undefined) {
-        const characterTiles = characterTileMap();
-        const target = nearestInteractable(
-          own.row,
-          store.allNpcs(),
-          characterTiles,
-          store.healLocations(),
-        );
-        if (target !== undefined) {
-          // Exhaustive switch on the descriptor kind — NO default arm, so a
-          // 4th NpcInteraction-driven kind compiler-flags this dispatch site.
-          switch (target.kind) {
-            case 'dialogue':
-            case 'shop':
-              sendGuarded('talk', () =>
-                conn?.conn.reducers.talk({ npcEntityId: target.npcEntityId }),
-              );
-              break;
-            case 'heal':
-              boundHealLocationId = target.locationId;
-              healView?.render(
-                buildHealViewModelForLocation(
-                  target.locationId,
-                  store.healLocations(),
-                  store.itemDefs(),
-                ),
-              );
-              break;
-          }
-        }
-      }
+      // uxd3 (ADR-0162): the dispatch body now lives in interactAtNearest() so this hotkey
+      // and the menu's Interact leaf share ONE exhaustive switch (ADR-0161's compiler flag).
+      interactAtNearest();
     }
     e.preventDefault();
     return;
   }
   // pt-c2b (ADR-0135): `?` toggles the display-only help overlay. Sole e.key branch
   // (help is about the glyph, not physical position). Mutual-exclusion self-guard lists
-  // all 13 sibling overlays. held.clear() for consistency (help does not capture focus).
+  // all 14 sibling overlays (uxd3/ADR-0162 added menuView). held.clear() for consistency
+  // (help does not capture focus).
   if (e.key === '?') {
     e.preventDefault();
     if (
@@ -969,14 +1155,48 @@ window.addEventListener('keydown', (e) => {
       !pvpView?.visible &&
       !leaderboardView?.visible &&
       !renameView?.visible &&
-      !tradeProposeView?.visible
+      !tradeProposeView?.visible &&
+      !menuView?.visible
     ) {
       if (helpView?.visible) {
         helpView.hide();
       } else {
         held.clear();
-        helpView?.render(buildHelpViewModel());
-        helpView?.show();
+        openHelp();
+      }
+    }
+    return;
+  }
+  // uxd3 (ADR-0162): the menu front-door. KeyM was verified UNBOUND before this slice — no
+  // KEY_DIR/letter/`?` collision and no browser default. Escape is deliberately NOT overloaded
+  // to open the menu: it stays a pure close/back key, so mashing Escape never surprises the
+  // player with a menu. This is the 12th open-handler and carries the full 14-sibling guard
+  // list plus `identity !== ''` — menuAvailability() reads store.ownCharacter(identity), which
+  // is undefined before join, and this listener has no try/catch.
+  if (e.code === 'KeyM') {
+    e.preventDefault();
+    if (
+      !battleView?.visible &&
+      !boxView?.visible &&
+      !raisingView?.visible &&
+      !evolutionView?.visible &&
+      !dialogueView?.visible &&
+      !questLogView?.visible &&
+      !healView?.visible &&
+      !shopView?.visible &&
+      !tradeView?.visible &&
+      !pvpView?.visible &&
+      !leaderboardView?.visible &&
+      !renameView?.visible &&
+      !tradeProposeView?.visible &&
+      !helpView?.visible &&
+      identity !== ''
+    ) {
+      if (menuView?.visible) {
+        menuView.hide();
+      } else {
+        held.clear();
+        openMenu();
       }
     }
     return;
@@ -1092,6 +1312,7 @@ window.addEventListener('keydown', (e) => {
   // Suppress movement input while an overlay is open.
   if (
     helpView?.visible ||
+    menuView?.visible ||
     battleView?.visible ||
     boxView?.visible ||
     raisingView?.visible ||
@@ -1188,6 +1409,7 @@ function refreshBattle(): void {
     if (renameView?.visible) renameView.hide();
     // pt-c2 (ADR-0134 D7): ...and the trade-PROPOSE overlay — same battle auto-show reason.
     if (tradeProposeView?.visible) tradeProposeView.hide();
+    if (menuView?.visible) menuView.hide(); // uxd3: the menu never occludes a battle
     // Build baitItems from own inventory × item defs (12.5f-5: wire the 4th arg
     // that was already present in buildBattleViewModel with default []). The
     // function classifies by recruitBonus > 0 internally (ADR-0047 classify-by-data).
@@ -1252,6 +1474,9 @@ store.onBatchApplied(() => refreshBattle());
 store.onBatchApplied(() => {
   try {
     const conv = store.ownConversation(identity);
+    // uxd3 (ADR-0162): a server-pushed conversation preempts the menu. Guarded on conv so
+    // this per-batch listener cannot close a just-opened menu on the very next batch.
+    if (conv !== undefined && menuView?.visible) menuView?.hide();
     // e-4 guard (M13.5e): build npcsMap only when a conversation is open.
     // allNpcs() is O(n) — doing it on every batch is wasteful during normal play.
     // Reconnect-ordering assumption: NPC content rows arrive in the same batch as (or
@@ -1383,6 +1608,7 @@ store.onBatchApplied(() => {
     // Always preserve a manually-opened overlay (pvpView.visible) regardless.
     const anyOverlayVisible =
       helpView?.visible ||
+      menuView?.visible ||
       battleView?.visible ||
       boxView?.visible ||
       raisingView?.visible ||
@@ -1816,6 +2042,7 @@ async function main(): Promise<void> {
     { RenameView: RenameViewClass },
     { TradeProposeView: TradeProposeViewClass },
     { HelpView: HelpViewClass },
+    { MenuView: MenuViewClass },
   ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/battleView'),
@@ -1831,6 +2058,7 @@ async function main(): Promise<void> {
     import('./ui/renameView'),
     import('./ui/tradeProposeView'),
     import('./ui/helpView'),
+    import('./ui/menuView'),
   ]);
   renderer = new WorldRenderer();
   const mount = document.getElementById('app');
@@ -2073,6 +2301,9 @@ async function main(): Promise<void> {
     // pt-c2b (ADR-0135): display-only help overlay — ZERO-arg construction (no callbacks,
     // leaderboardView precedent). Opened by `?`; content is a static SSOT const.
     helpView = new HelpViewClass();
+    // uxd3 (ADR-0162): the menu forwards every input to the pure menuStep reducer; it
+    // decides nothing itself (ADR-0014 functional core / imperative shell).
+    menuView = new MenuViewClass({ onInput: handleMenuInput });
     // pt-c1b (ADR-0133): rename overlay. onSubmit calls set_profile_name (ADR-0132) with the
     // frozen-link gate FIRST (ADR-0085 A1) — never send on a dead link. Feedback goes into
     // #rename-feedback via reduceErrorMessage on reject (no InternalError leak, PTC1B-4);
@@ -2188,6 +2419,7 @@ async function main(): Promise<void> {
       // reconnect too. WITHOUT this, the view's #pending lock survives the link drop (the SDK
       // never settles the in-flight proposeTrade promise) → dead submit button forever.
       tradeProposeView?.hide();
+      menuView?.hide(); // uxd3: grey-out reads store state that the reset invalidated
       // pt-b1 (red-team M-1): re-baseline a surviving Ongoing battle on the next batch
       // instead of re-emitting a spurious battleStart for it.
       battleReseedPending = true;
@@ -2271,7 +2503,8 @@ async function main(): Promise<void> {
           leaderboardView?.visible ||
           renameView?.visible ||
           tradeProposeView?.visible ||
-          helpView?.visible
+          helpView?.visible ||
+          menuView?.visible
         )
       ) {
         const heldDir = reissueDir(held.committedActive(now), predictor.lastQueuedDir);

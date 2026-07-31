@@ -3716,6 +3716,15 @@ const UXD2_SHOPOPEN_END = '// UXD2-SHOPOPEN-END';
 /** KeyT handler block: from its own anchor to the NEXT open-handler (`e.key === '?'`).
  *  Both anchors are asserted UNIQUE at runtime, so the block cannot silently widen. */
 const UXD2_KEYT_START = "e.code === 'KeyT'";
+// uxd3 (ADR-0162) RE-ANCHOR — NOT a weakening. uxd2's dispatch body moved out of the KeyT
+// block into `interactAtNearest()` so the interact HOTKEY and the menu's Interact leaf share
+// ONE exhaustive `switch (target.kind)`; duplicating it into the menu route would have
+// destroyed exactly the single-site compiler flag ADR-0161 built these teeth to protect.
+// The assertions below are unchanged in content — they now slice the function that holds the
+// dispatch, and W-INTERACT-KEYT-DISPATCH additionally pins that the KeyT block still ROUTES
+// through it, which the pre-uxd3 form could not check.
+const UXD2_INTERACT_FN_START = 'function interactAtNearest';
+const UXD2_INTERACT_FN_END = 'function menuAvailability';
 const UXD2_KEYT_END = "e.key === '?'";
 
 /** Escape-dialogue branch: bounded by the two adjacent Escape branches (both unique). */
@@ -3824,12 +3833,19 @@ describe('★ main.ts wiring (uxd2): the KeyT handler dispatches through nearest
     expectUniqueAnchor(src, UXD2_KEYT_START);
     expectUniqueAnchor(src, UXD2_KEYT_END);
     const block = stripLineComments(regionOrThrow(src, UXD2_KEYT_START, UXD2_KEYT_END));
+    // uxd3: the hotkey must ROUTE through the shared dispatch — an inlined second copy of
+    // the switch would satisfy the old body-scan while breaking the one-site guarantee.
     expect(
-      block.includes('nearestInteractable('),
+      block.includes('interactAtNearest()'),
+      'the KeyT block must dispatch via interactAtNearest() (uxd3/ADR-0162 re-anchor)',
+    ).toBe(true);
+    const fn = stripLineComments(regionOrThrow(src, UXD2_INTERACT_FN_START, UXD2_INTERACT_FN_END));
+    expect(
+      fn.includes('nearestInteractable('),
       'the KeyT block must resolve its target via nearestInteractable( (plan I7.2)',
     ).toBe(true);
     expect(
-      block.includes('reducers.talk('),
+      fn.includes('reducers.talk('),
       'the KeyT block must send the talk reducer for the dialogue/shop arms (AC-1/AC-2 greet-then-shop)',
     ).toBe(true);
   });
@@ -3842,7 +3858,9 @@ describe('★ main.ts wiring (uxd2): the KeyT handler dispatches through nearest
     //   buildHealViewModel instead of the bound one — the overlay would list every pad in
     //   the world and the ADR-0161 D5 "never silently swap a bound view" rule is broken.
     const src = readMainTs();
-    const block = stripLineComments(regionOrThrow(src, UXD2_KEYT_START, UXD2_KEYT_END));
+    const block = stripLineComments(
+      regionOrThrow(src, UXD2_INTERACT_FN_START, UXD2_INTERACT_FN_END),
+    );
     for (const needle of ["case 'dialogue'", "case 'shop'", "case 'heal'"]) {
       expect(
         block.includes(needle),
