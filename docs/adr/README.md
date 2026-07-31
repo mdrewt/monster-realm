@@ -7,12 +7,19 @@ Architecture Decision Records live in **two locations**; check both.
   decisions authored alongside the milestone specs.
 - **Implementation ADRs `0001`, `0035` and up** — in **this directory**
   (`docs/adr/`). These record decisions made while building the milestones. The
-  current upper bound is deliberately **not** written here — it is generated into
-  [`DIGEST.md`](./DIGEST.md) (see below), so it cannot go stale.
+  current upper bound is deliberately **not** written here — the enumeration is
+  generated into [`DIGEST.md`](./DIGEST.md) (see below), so the *catalog* cannot
+  go stale.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
 `0001` or `0035`+ → `docs/adr/`. Next free number: **`0165`**.
+
+> ⚠ **`Next free number` above is still hand-maintained** — `scripts/adr-digest.mjs`
+> does not compute it, and nothing in `just ci` drift-gates it, so unlike the catalog
+> below it *can* fall behind (the CHANGELOG's long run of "reconcile next-free index"
+> chores is the evidence). Deriving it in the digest generator is a known follow-up;
+> it was out of slice 11r-d's declared `touches:` (it needs `scripts/adr-digest.mjs`).
 
 **ADR numbering collision note:** the harness spec corpus also contains design
 ADRs numbered `0055`–`0057`; these cover the *same topics* as this project's

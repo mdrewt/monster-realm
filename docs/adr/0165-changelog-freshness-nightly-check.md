@@ -44,8 +44,9 @@ post-gate wave; that is the empirical case against the manual option
   slice may own those files). This ADR records the decision only; the
   follow-up is recommended for slice **11r-i** (gate-coverage extensions),
   which already carries a nightly-infra-only phase and whose declared
-  `touches:` already include `evals/`. Note 11r-i's `touches:` names only
-  `scripts/smoke-republish.sh`, not `.github/workflows/nightly.yml` — whoever
+  `touches:` (`evals/`, `scripts/smoke-republish.sh`, `server-module/src/npc.rs`)
+  already include `evals/`. Note it names only one `scripts/` file and does
+  **not** include `.github/workflows/nightly.yml` — whoever
   schedules the follow-up must widen that declaration to cover the workflow
   file, or the check lands as an `evals/` script the nightly job already runs.
 - Shape for the follow-up: a nightly job step runs `just changelog` into a
