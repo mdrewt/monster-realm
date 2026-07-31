@@ -36,7 +36,7 @@ import { BUILD_INFO, formatBuildStamp } from './net/buildInfo';
 import { connect } from './net/connection';
 import { resolveConnectionConfig } from './net/connectionConfig';
 import { makeSendLogger, resolveDevLogLevel } from './net/devLog';
-import { AuthoritativeStore } from './net/store';
+import { AuthoritativeStore, ownPerspective } from './net/store';
 import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
 import { HeldDirections, reissueDir } from './prediction/heldKeys';
 import { type ApplyMove, boundSeq, Predictor } from './prediction/predictor';
@@ -1259,7 +1259,11 @@ store.onBatchApplied(() => refreshEvolution());
 // --- battle view: refresh on batch, auto-show/hide (M7c, ADR-0014/0042) --------
 function refreshBattle(): void {
   if (!battleView || identity === '') return;
-  const latest = store.latestPlayerBattle(identity);
+  // 11r-b (ADR-0167 D2): the ONE view-perspective projection in the client — it re-seats
+  // the local player as sideA so a PvP accepter (stored in opponentIdentity) gets their
+  // OWN cards/skills/bench from a view layer that hardcodes sideA = the local player.
+  // Every OTHER read of these accessors (diagnostics, observability) stays RAW by design.
+  const latest = ownPerspective(store.latestPlayerBattle(identity), identity);
   const r = decideBattleOverlay(latest, { dismissedBattleId, synced: battleSynced });
   dismissedBattleId = r.dismissedBattleId;
   battleSynced = r.synced;
@@ -1521,6 +1525,10 @@ store.onBatchApplied(() => {
       eventRing.push(makeBattleStart(latest.battleId.toString(), isPvp));
     } else if (latest.outcome !== 'Ongoing' && activeBattleId === latest.battleId) {
       activeBattleId = null;
+      // 11r-b (ADR-0167 D3): `outcome` here is the SERVER-side tag — SideA is always the
+      // challenger — and is deliberately NOT perspective-mapped, so a PvP accepter's ring
+      // records SideAWins for their own loss. That is intentional: two players' event rings
+      // and bug bundles must agree on who won. Do not "fix" this to the local perspective.
       eventRing.push(makeBattleEnd(latest.battleId.toString(), latest.outcome, latest.turnNumber));
     }
   } catch (err) {
@@ -1797,11 +1805,12 @@ const mrPvpHook = {
   allPlayers(): Array<{ identity: string; name: string }> {
     return store.allPlayers().map((p) => ({ identity: p.identity, name: p.name }));
   },
-  // Role-agnostic battle read: store.battle(id) hits the by-id map directly — NOT
-  // store.ongoingBattle(), which filters playerIdentity === identity (side B is
-  // opponentIdentity and would never see the row). Returns null when the battle is
-  // absent (not yet arrived or GC'd). activeSkillIds are the ACTIVE monster's known
-  // skill ids for each side, so either page can pick a legal skill for its role.
+  // BOTH-SIDES battle read: store.battle(id) hits the by-id map directly and exposes BOTH
+  // sides' internals to a test driver — which the production path deliberately never does
+  // (it reads only the local player's own row, via the either-role accessors, and sees the
+  // opponent only through the view model). Returns null when the battle is absent (not yet
+  // arrived or GC'd). activeSkillIds are the ACTIVE monster's known skill ids for each
+  // side, so either page can pick a legal skill for its role.
   // An EMPTY activeSkillIds array means the side's active index was out of bounds —
   // an abnormal server state; callers must not submit an action built from it.
   battleById(battleId: string): {

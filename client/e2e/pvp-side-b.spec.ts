@@ -50,20 +50,43 @@ import {
 // guard replaces.
 //
 // DEADLINE HEADROOM ARITHMETIC (house style per pvp-full.spec.ts:48-56):
-// PVP_TURN_DEADLINE_MS = 60_000 ms (server constant, server-module/src/pvp.rs). This test
-// asserts the accept-click -> both-players-submitted flow completes within 45_000 ms of
-// the accept click — a hard ceiling with 15s of headroom under the 60s deadline, so the
-// deadline reaper can never be the reason the turn-advance assertion below passes.
+// PVP_TURN_DEADLINE_MS = 60_000 ms (server constant, server-module/src/pvp.rs) — the
+// server's deadline clock starts at `accept_challenge`. `acceptedAt` is therefore
+// captured immediately AFTER pageB's accept-button click (never before A's challenge
+// click, which would also fold the challenge-button poll into the budget — stricter
+// than intended and a spurious-flake risk). This test asserts the accept-click ->
+// both-players-submitted flow completes within 45_000 ms of THAT click — a hard ceiling
+// with 15s of headroom under the 60s deadline, so the deadline reaper can never be the
+// reason the turn-advance assertion below passes. The rename steps (below) run BEFORE
+// the challenge and are therefore entirely outside this window.
+//
+// WHY BOTH PLAYERS ARE RENAMED FIRST (red-team HIGH — the half-fix discriminator):
+// STARTER_SPECIES_ID=1 (server-module/src/lib.rs:72) and roll_starter hardcodes level 5
+// (game-core/src/monster/rolls.rs:75) — the join_game seed perturbs only genes/IVs/
+// nature — so two FRESH players' active starters share identical species, level and
+// known_skill_ids. That makes the turn-advance witness (AC-9) alone UNABLE to
+// discriminate the HALF-FIX (role-agnostic accessors landed, `ownPerspective` never
+// wired into `refreshBattle`) from the real fix: under the half-fix, B's overlay
+// renders the RAW row, so B's Submit buttons are built from the CHALLENGER's
+// known_skill_ids — but those ids are cross-legal for B's own identical starter too, so
+// submit_pvp_action still accepts them and the turn still advances. A rename (via the
+// production KeyN -> rename-input -> rename-submit path, ADR-0133/PTC1B-9) gives each
+// player a distinct, deterministic label with NO such coincidental overlap: the opponent
+// card's header text is resolved from `battle.opponentIdentity` (main.ts:1309-1313,
+// battleView.ts:170,203-214) — on a RAW side-B row `opponentIdentity` IS side B, so the
+// half-fix mislabels B's OWN opponent card with B's OWN name. See the two
+// `getByText(...)` assertions after the Submit-visible check for the exact proof; that
+// pair — not the turn-advance witness — is what makes this file catch the half-fix.
 //
 // WHAT THIS TEST KILLS:
 //   - The CURRENT defect: side B's client renders no battle overlay at all — the
 //     "Submit:" assertion below is RED today (zero elements match).
-//   - The "half-fix": role-agnostic accessors with NO view-perspective projection. This
-//     would make the ongoingBattle-non-null witness pass while the Submit-visible
-//     assertion still fails — or worse, would render side B's overlay with the
-//     OPPONENT's cards/skills, so B's own Submit click would submit a skill id illegal
-//     for B's own side (rejected server-side, pvp.rs:1018-1022) and the turn would never
-//     advance, which the strict turn-advance poll below catches.
+//   - THE HALF-FIX (role-agnostic accessors landed, `ownPerspective` never wired into
+//     `refreshBattle`): the turn-advance witness alone CANNOT see it (see the rename
+//     rationale above — both fresh starters share identical known_skill_ids, so a
+//     wrong-side skill submission is cross-legal and the server accepts it). The two
+//     opponent-label assertions below are the discriminator: under the half-fix, B's
+//     "opponent" card is mislabeled with B's OWN name instead of the challenger's.
 //   - A silently-rejected side-B action masquerading as success: the poll below requires
 //     `turnNumber === turnNumber0 + 1` WHILE `outcome === 'Ongoing'` — never merely "the
 //     waiting banner hid", because that banner's underlying pending flag is ALSO cleared
@@ -71,7 +94,8 @@ import {
 //     terminal outcome WITHOUT advancing the turn (pvp.rs:1124-1178). A banner-hidden-only
 //     check would pass on a silently-rejected action once the reaper eventually fires;
 //     turn-advance-while-still-Ongoing is unambiguous proof the server ACCEPTED the skill
-//     id B itself submitted.
+//     id B itself submitted (AC-9) — but that alone does not prove PERSPECTIVE (AC-7),
+//     which is why the label assertions are complementary, not a replacement.
 //
 // EARS CRITERIA COVERED: AC-1, AC-7, AC-9 (memory/projects/monster-realm-11r-b-plan.md §4)
 
@@ -153,6 +177,43 @@ async function readHookCallCount(page: Page): Promise<number> {
   );
 }
 
+/**
+ * Renames `page`'s own player through the REAL production UI (Escape -> KeyN ->
+ * rename-input -> rename-submit), copied from rename.spec.ts:228-245 (PTC1B-9). This is
+ * the half-fix discriminator setup — see the file header. Leaves NO overlay open on exit
+ * (the rename overlay does NOT auto-close on success, main.ts:2182-2186, so this presses
+ * Escape again after the feedback confirms) — required because the incoming-challenge
+ * auto-show and A's own KeyP open both need `!anyOverlayVisible`.
+ */
+async function renamePlayer(page: Page, name: string): Promise<void> {
+  await page.keyboard.press('Escape'); // dismiss any stale overlay first
+  await page.waitForTimeout(200);
+  await page.keyboard.press('KeyN');
+  await page.waitForSelector('[data-testid="rename-input"]', {
+    state: 'visible',
+    timeout: 10_000,
+  });
+  await page.fill('[data-testid="rename-input"]', name);
+  await page.click('[data-testid="rename-submit"]');
+  await page.waitForFunction(
+    () => {
+      const fb = document.querySelector('[data-testid="rename-feedback"]');
+      return fb !== null && (fb.textContent ?? '').trim().length > 0;
+    },
+    null,
+    { timeout: 15_000 },
+  );
+  const feedbackText = await page.textContent('[data-testid="rename-feedback"]');
+  expect(
+    feedbackText ?? '',
+    `11r-b: rename feedback for "${name}" must not indicate an error — the opponent-label ` +
+      'discriminator below is meaningless if the rename itself silently failed',
+  ).not.toMatch(/error|failed|reject/i);
+  // Close the overlay (see doc comment above) before the challenge/accept flow.
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+}
+
 test.describe
   .serial('11r-b — PvP side-B battle overlay (production path, zero DEV-hook use)', () => {
     let browserA: Browser;
@@ -208,14 +269,30 @@ test.describe
       expect(identityB, 'identityB must be non-empty').not.toBe('');
       expect(identityA, 'identityA and identityB must differ').not.toBe(identityB);
 
+      // Rename BOTH players through the production UI — the half-fix discriminator setup
+      // (see the file header's "WHY BOTH PLAYERS ARE RENAMED FIRST"). Runs BEFORE the
+      // challenge, so it is entirely outside the deadline-headroom window measured below.
+      // Unique per-run suffix so the shared e2e world can't collide with a prior run's row;
+      // alphanumeric-only, well under the server's MAX_NAME_LEN=24 (server-module/src/
+      // guards.rs:49-62, validate_name).
+      const uniqueSuffix = String(Date.now() % 1_000_000);
+      const nameA = `PvpA${uniqueSuffix}`;
+      const nameB = `PvpB${uniqueSuffix}`;
+      await Promise.all([renamePlayer(pageA, nameA), renamePlayer(pageB, nameB)]);
+
       // B must have no overlay open — the incoming-challenge auto-show requires
-      // !anyOverlayVisible (ranked-forfeit.spec.ts:282-287 precedent).
+      // !anyOverlayVisible (ranked-forfeit.spec.ts:282-287 precedent). renamePlayer already
+      // closes its own overlay on exit; this is a defensive re-assert immediately before
+      // the challenge, matching the ranked-forfeit.spec.ts placement exactly.
       await pageB.keyboard.press('Escape');
       await pageB.waitForTimeout(200);
 
       // A opens the PvP overlay and challenges B. Identity-attribute selection is
-      // MANDATORY, not stylistic: every client joins as name:'Player' (main.ts:2271), so
-      // button TEXT cannot distinguish players.
+      // MANDATORY, not stylistic: every client joins as name:'Player' (main.ts:2271) and
+      // this scan runs on whatever the challenge list shows at click time — selecting by
+      // the `data-player-identity` attribute is robust regardless of the current display
+      // name, so it stays the selection method even though both players now have distinct
+      // rename labels by this point.
       await pageA.keyboard.press('KeyP');
       await pageA.waitForFunction(
         (myIdentity: string) => {
@@ -227,7 +304,6 @@ test.describe
         identityA,
         { timeout: 15_000 },
       );
-      const acceptedAt = Date.now();
       await pageA.evaluate((myIdentity: string) => {
         const buttons = Array.from(
           document.querySelectorAll('[data-testid="pvp-challenge-player-btn"]'),
@@ -237,9 +313,14 @@ test.describe
         btn.click();
       }, identityA);
 
-      // B accepts through the real DOM button.
+      // B accepts through the real DOM button. `acceptedAt` is captured HERE (never
+      // earlier) — the server's PVP_TURN_DEADLINE_MS clock starts at accept_challenge, so
+      // capturing before A's challenge-button poll (or before the rename steps above)
+      // would fold unrelated setup time into the 45s budget asserted below (see the file
+      // header's DEADLINE HEADROOM ARITHMETIC).
       await pageB.waitForSelector('[data-testid="pvp-accept-btn"]', { timeout: 15_000 });
       await pageB.click('[data-testid="pvp-accept-btn"]');
+      const acceptedAt = Date.now();
 
       // RED TODAY (AC-7): side B renders NO battle overlay at all on master — zero
       // elements match this selector, because refreshBattle returns early
@@ -251,6 +332,17 @@ test.describe
       await expect(pageB.getByRole('button', { name: /^Submit: / }).first()).toBeVisible({
         timeout: 15_000,
       });
+
+      // THE HALF-FIX DISCRIMINATOR (red-team HIGH; see the file header for the full chain
+      // of evidence — identical starters make the turn-advance witness below unable to
+      // catch this on its own). WRONG IMPL KILLED: role-agnostic accessors landed with
+      // `ownPerspective` never wired into `refreshBattle`. Under that half-fix, B's overlay
+      // renders the RAW row, whose `opponentIdentity` field IS B itself — so B's "opponent"
+      // card is mislabeled with B's OWN name (main.ts:1309-1313 resolves the label from
+      // that raw field via store.allPlayers()). Plain-string getByText substring matching —
+      // no `new RegExp(...)` (Semgrep detect-non-literal-regexp is an active CI gate here).
+      await expect(pageB.getByText(`${nameA}: `)).toBeVisible();
+      await expect(pageB.getByText(`${nameB}: `)).toHaveCount(0);
 
       // Direct production-path witness of AC-1: __game().ongoingBattle is non-null on
       // side B ONLY because store.ongoingBattle() became role-agnostic (11r-b). Read-only
