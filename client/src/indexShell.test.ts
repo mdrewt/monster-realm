@@ -277,13 +277,25 @@ describe('ux1-1 (H4/H5): the hint is persistent and not obviously invisible', ()
     // not be narrated as an upgrade. H4 forbade the badge from consuming ANY click; H4b
     // permits exactly that and instead BOUNDS the surface it can consume. What H4b buys back:
     // four assertions H4 never made (explicit pointer-events:auto, width:max-content, at most
-    // one horizontal edge, and a growth deny-list) plus the launcher-attribute pin. What is
-    // genuinely given up: the guarantee that a bottom-left canvas click always reaches the
-    // canvas. Recorded as an amendment to ADR-0151 D2, NOT as a silent test edit.
-    // (Measured mitigation, not a proof: nothing in the client handles a bare canvas click
-    // today — the document click listener matches only [data-shop-id] / [data-choice-idx] /
-    // [data-menu-launcher] — so the eaten-click regression is latent, not live. It goes live
-    // the day click-to-move ships, which is why the surface is bounded now rather than later.)
+    // one horizontal edge, and a property allow-list) plus the launcher-attribute pin. What is
+    // genuinely given up: the guarantee that a bottom-left click always reaches whatever is
+    // under the badge. Recorded as an amendment to ADR-0151 D2, NOT as a silent test edit.
+    //
+    // SCOPE OF THE RESIDUAL, stated precisely (an earlier draft said "latent, not live" and was
+    // too narrow — code review caught it). Two distinct exposures:
+    //   (a) bare CANVAS clicks — genuinely latent: nothing in the client handles one today (the
+    //       document click listener matches only [data-shop-id] / [data-choice-idx] /
+    //       [data-menu-launcher]). It goes live the day click-to-move ships.
+    //   (b) OVERLAY BUTTONS — live in principle, not latent: nine overlay shells in index.html
+    //       are unpositioned in-flow divs that render BELOW the viewport-tall canvas, so when one
+    //       is shown the page scrolls and this fixed badge floats over whatever lands in the
+    //       bottom-left ~250x15px band. Buttons there ([data-shop-id], the trade/pvp/box/rename
+    //       controls) can be occluded, and the launcher branch's unconditional `return;` swallows
+    //       the click even when its guard denies. MEASURED: the full Playwright suite is green
+    //       against this markup (44 passed / 1 skipped), so no shipped flow hits it — but that is
+    //       a measurement, not a proof. ADR-0163 D4 records it, with the two escape routes
+    //       (move the badge to a corner no in-flow shell occupies, or give the shells the
+    //       position:fixed treatment #help-overlay already has) reserved for uxd3-c.
     //
     // RED AT AUTHORING TIME: client/index.html:114-119 still ships `pointer-events:none`, no
     // `data-menu-launcher` attribute and no `width:max-content`, so assertions 2, 3 and 6 all
@@ -435,7 +447,6 @@ describe('ux1-1 (H4/H5): the hint is persistent and not obviously invisible', ()
     for (const banned of declaredProps.filter(
       (name) => !BOUNDED_SURFACE_ALLOWED_PROPS.includes(name),
     )) {
-
       expect(
         banned,
         'KILLS: #help-hint grown into a click-eater via the un-allow-listed property "' +

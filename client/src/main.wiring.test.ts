@@ -3749,7 +3749,7 @@ describe('★ main.ts wiring (uxd2): the Shop button defers the open through dis
       region.includes('if (!anyOverlayVisible()) {'),
       'the deferred open must be gated on the CONTIGUOUS `if (!anyOverlayVisible()) {` — an ' +
         'overlay that opened during the dismiss round-trip must drop the pending open ' +
-        '(ADR-0161 D4). STRENGTHENED in uxd3-b (red-team F5): a bare `includes(\'anyOverlayVisible\')` ' +
+        "(ADR-0161 D4). STRENGTHENED in uxd3-b (red-team F5): a bare `includes('anyOverlayVisible')` " +
         'presence check was MEASURED green against the one-character inversion ' +
         '`if (anyOverlayVisible()) {`, which makes the shop open ONLY while another overlay is up ' +
         '— i.e. never on the normal path, and directly over a live battle on the encounter path. ' +
@@ -4997,13 +4997,13 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
         'and nothing else (keep the FUNCTION NAME and its JSDoc — W-INTERACT-DEFERRED-OPEN and ' +
         'three region scans anchor on the literal `anyOverlayVisible`, anti-pattern 18). ' +
         'EXACT EQUALITY, not containment (red-team F1, measured GREEN under a ' +
-        'containment check): a prefixed early-out such as `if (identity !== \'\') return false;` ' +
+        "containment check): a prefixed early-out such as `if (identity !== '') return false;` " +
         'leaves the pinned return in place while making this predicate — the SSOT for FOUR of ' +
         'the five surfaces PLUS the deferred shop-open gate PLUS the AC-12 launcher PLUS the ' +
         'frame-loop prompt — return a constant. That single mutation removes mutual exclusion ' +
         'everywhere at once, or kills all movement. ' +
         'It also rejects `return !anyVisible(overlayProbes);` and a stray appended `|| x?.visible`. ' +
-        'NOTE the trailing `}` is the function\'s own closing brace: bodyRegion drops the ' +
+        "NOTE the trailing `}` is the function's own closing brace: bodyRegion drops the " +
         '`function anyOverlayVisible(` line and runs to the next declaration, so the whole ' +
         'squashed body is exactly `return anyVisible(overlayProbes); }`. Region=' +
         JSON.stringify(s1),
