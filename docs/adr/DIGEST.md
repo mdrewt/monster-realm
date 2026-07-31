@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 130 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 131 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -139,6 +139,7 @@ Generated from 130 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0162](./0162-overlay-registry-two-level-main-menu.md) | 0162 — A pure `canOpen` modality core and a registry-backed two-level main menu | Accepted | client-ui | uxd3-a (M-postgate-ux-design — unified overlay IA) | Overlay modality moves into a pure `canOpen` reducer over a 15-member tier manifest, and a `KeyM` two-level menu makes the hotkeys discoverable; the fan-out collapse and gate retirement defer to uxd3-b. |
 | [0163](./0163-overlay-probe-substrate-and-click-front-door.md) | 0163 — One overlay probe table behind all five fan-out surfaces, and the AC-12 click front door | Accepted | client-ui | uxd3-b (M-postgate-ux-design — unified overlay IA) | The five overlay OR-lists in `main.ts` collapse onto one probe table read via `anyVisible()`, and `#help-hint` becomes the menu's click door via attribute delegation; the hotkey→`canOpen` migration and the gate retirement defer to uxd3-c. |
 | [0164](./0164-overlay-registry-write-substrate-and-canopen-migration.md) | 0164 — Overlay registry write substrate and `canOpen` migration | Accepted | client-ui | uxd3-c (M-postgate-ux-design — unified overlay IA) | Overlay write substrate: `visibleIds()`/`OverlayHandles` (optional thunks; `dialogueView` guarded); 12 hotkeys routed to `canOpen`; retire 4 guard-scan teeth; unify AC-12; decline `onReconnect`; defer Escape re-anchor. |
+| [0165](./0165-changelog-freshness-nightly-check.md) | 0165 — Changelog freshness: nightly drift check (not per-PR, not manual) | Accepted | tooling-docs, ci-gates | 11r-d | Changelog freshness is enforced as a nightly drift check (spec D4's default), not a per-PR gate nor manual-only discipline; implementation defers to 11r-i, being outside 11r-d's declared `touches:`. |
 
 ## Harness design corpus (H- namespace)
 
@@ -393,6 +394,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0145](./0145-encounter-recruit-economy-tuning-pass.md) — pt-d3 (M-playtest-d content pack — encounter/recruit/economy tuning; EARS pt-d3-1..6) — 0145 — pt-d3 tuning pass: zone 0 frozen, zone 1 carries the wild-legal roster, one economy fix (Accepted)
 - [0147](./0147-fuse-field-carry-and-fusion-eligibility.md) — A0 (M-postgate-evolution-fusion-hardening — fuse() field-carry fix + fusion_eligible extraction; EARS A0-1..A0-9) — 0147 — fuse() field-carry repair (taxed, not reset) + fusion_eligible guard SSOT (Accepted)
 - [0153](./0153-ux3-playtest-preflight.md) — ux3 (M-postgate-ux-hardening — `playtest-up`/`playtest-wipe` preflight-check `$STDB_SERVER` reachability; EARS ux3-1..ux3-3) — 0153 — ux3 playtest preflight: reach the server through the CLI's own resolver, and gate it behaviorally (Accepted)
+- [0165](./0165-changelog-freshness-nightly-check.md) — 11r-d — 0165 — Changelog freshness: nightly drift check (not per-PR, not manual) (Accepted)
 
 ### tooling-docs
 
@@ -417,6 +419,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0144](./0144-pt-d2-roster-wave-2.md) — pt-d2 (M-playtest-d content pack — roster wave 2 + placeholder-replacement sprites; EARS pt-d2-1..12) — 0144 — pt-d2 roster wave 2: reserved-block content fan-out + a species-parameterized sprite generator that imports (never edits) the shared art module (Accepted)
 - [0153](./0153-ux3-playtest-preflight.md) — ux3 (M-postgate-ux-hardening — `playtest-up`/`playtest-wipe` preflight-check `$STDB_SERVER` reachability; EARS ux3-1..ux3-3) — 0153 — ux3 playtest preflight: reach the server through the CLI's own resolver, and gate it behaviorally (Accepted)
 - [0157](./0157-dev-console-outbound-reducer-log.md) — dev-observability (M-postgate-dev-observability — a toggleable dev-console log of outbound reducer calls; EARS 1–4) — 0157 — Dev-console outbound reducer log: a flag-gated Proxy at the connection seam, console-only (Accepted)
+- [0165](./0165-changelog-freshness-nightly-check.md) — 11r-d — 0165 — Changelog freshness: nightly drift check (not per-PR, not manual) (Accepted)
 
 ### security-authz
 

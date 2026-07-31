@@ -20,6 +20,10 @@
 - Backfill canonical ADR headers; LEGACY_TOLERANCE → empty (#161)
 - Ledger/docs reconciliation — module map current, generated-count refs, ADR range via DIGEST, changelog to #192 (#193)
 - Ledger reconciliation — CHANGELOG regen through #214, module-map/coverage-exclusion accuracy, milestone-free RLS deferrals, ADR-0107 KeyU label (#215)
+- Ledger reconciliation (CHANGELOG/PLAN) + ADR-0090/0085 netcode reachability pins (ADR-0142) (#240)
+- Reconcile next-free index after pt-d1/pt-d2 (0143/0144) -> 0145 (#243)
+- Reconcile next-free index after pt-d3 (0145 -> 0146) (#245)
+- Reconcile next-free index after feel-polish (0146 -> 0160) (#261)
 
 ### Features
 
@@ -142,6 +146,22 @@
 - Overlay mutual-exclusion symmetry — fix KeyB/I/E guards + W-OVERLAY-FANOUT-MUTEX gate (ADR-0139)
 - SSOT/content/dedup polish — CARE consts + shared is_cooldown_ready to game-core, heal stale-delete, isPvpBattle dedup (ADR-0140) (#238)
 - Position-divergence render snap via existing snapped path (ADR-0141) (#239)
+- Playtest roster wave 1 — Earth/Dark species lines 7-10 with evolutions + spritesheets (ADR-0143) (#241)
+- Roster wave 2 — Dark/status + Wind/support lines (20-23) + placeholder-replacement sprites for 9 forms (ADR-0144) (#242)
+- Encounter/recruit/economy tuning — zone-1 table places the full wild-legal roster + Antidote stocked (ADR-0145) (#244)
+- Fuse() taxed field-carry + fusion_eligible guard SSOT (ADR-0147) (#248)
+- Item-triggered evolution content — species 30/31, items 4/5, Item-first branches on 7/8 (ADR-0149) (#249)
+- Persist reconnect auth token per-tab so a reload resumes the same identity (ADR-0150) (#252)
+- Persistent help-affordance hint + battle-result continue hint (ADR-0151) (#251)
+- Preflight $STDB_SERVER reachability in playtest-up/wipe (ADR-0153) (#253)
+- Owner-scoped my_wallet view over the private wallet table (ADR-0154) (#255)
+- Explain the absent battle-swap option and the box/party split (ADR-0155) (#256)
+- Flag-gated dev-console log of outbound reducer calls (ADR-0157) (#257)
+- Responsive DPR-correct device-integer viewport scaling + per-axis camera centering (ADR-0160) (#262)
+- Shop-via-NPC context-sensitive interact system (ADR-0161) (#264)
+- Unified overlay IA — pure canOpen core + registry-backed two-level main menu (ADR-0162) (#266)
+- One overlay probe table behind all five fan-out surfaces + AC-12 click front door (ADR-0163) (#267)
+- Overlay write substrate + 12 hotkeys routed through canOpen — closes M-postgate-overlay-registry (ADR-0164) (#268)
 
 ### Fixes
 
@@ -162,6 +182,13 @@
 - Trade same-item near-cap conservation — debits-before-credits ordering + netted currency headroom (ADR-0123) (#205)
 - Unbreak nightly coverage + client typecheck under vitest 4
 - Bake VITE_STDB_DB in playtest-up + gate it in verify-build
+- Playtest-report — pinned spacetime 2.6.0 has no --json, rejects ORDER BY (#246)
+- Keydown early returns cancel native movement/Space defaults (ADR-0146) (#247)
+- Gate held-key continuation on outstanding server work + drain before re-issue (ADR-0148) (#250)
+- Predictor epoch guard + send-seq floor — close the ADR-0085 warp-path eviction/collision window (ADR-0152) (#254)
+- Never seat a 0 HP monster as the PvE battle lead, and reject actions from a fainted active (ADR-0156) (#258)
+- Hold-commit tap/hold gate on held-key continuation — single tap moves one tile (ADR-0158) (#259)
+- Care-button confirmation + collision-aware NPC wander (ADR-0159) (#260)
 
 ### M8.8b
 
@@ -253,6 +280,10 @@
 - Bump ADR next-free 0135->0136 (index reconciliation) (#231)
 - Bump ADR next-free 0136->0137 (index reconciliation) (#233)
 - Bump ADR next-free 0137->0138 (index reconciliation) (#235)
+- Sync judge.md structural-bias protocol from harness (kept identical by design)
+- Reconcile next-free index after uxd1 (0160 -> 0161) (#263)
+- Reconcile next-free index after uxd2 (0161 -> 0162) (#265)
+- Reconcile next-free index to 0165 (post ADR-0162..0164 merges) (#269)
 
 ### Testing
 

@@ -5,6 +5,7 @@
 **Slice:** m17.5a (M17.5 tenth-review residuals — side-B PvP exploit closure, EARS 17.5a-1..5)
 **Supersedes:** —
 **Amends:** ADR-0119 (subsumes + widens the unscheduled `m17-fix-sideb-guards` residual: adds evolve/fuse and the laundering-exploit analysis)
+**Amended-by:** ADR-0136
 **Subsystems:** battle, security-authz
 **Decision:** Hoist the both-role ongoing-battle guard into guards.rs (pure core + ctx wrapper) as the SSOT for all PvE/PvP callers; chain the opponent index in evolve/fuse; classification pinned by eval, not a BattleKind column.
 

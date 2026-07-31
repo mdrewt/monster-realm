@@ -5,6 +5,7 @@
 **Slice:** m17a
 **Supersedes:** —
 **Amends:** ADR-0109 (PvP orchestration — terminal-commit sites unified into one settle funnel)
+**Amended-by:** ADR-0122, ADR-0125, ADR-0132
 **Subsystems:** battle, security-authz, schema-persistence
 **Decision:** Persistent world-readable `profile` table + pure integer-Elo `game-core::ranking` + a single `settle_pvp_battle` funnel (sole `apply_pvp_rating` caller) + PvP-reject guards on the four PvE battle reducers, eval-pinned in-slice.
 
