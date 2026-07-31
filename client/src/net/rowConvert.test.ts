@@ -2224,6 +2224,7 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS.TradeStatus — registry matc
 //     WeatherEffect  — battleRowToStore: row.state.weather?.tag
 //     TradeStatus    — tradeOfferRowToStore: row.status.tag (the narrowTag site)
 //     ChallengeStatus — battleChallengeRowToStore: row.status.tag
+//     NpcInteraction — npcRowToStore: row.interaction.tag  // uxd2: registered — ADR-0161
 //
 //   Excluded (write-direction or non-.tag reads):
 //     PvpAction      — the client WRITES this via submitPvpAction; rowConvert never
@@ -2242,10 +2243,11 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS.TradeStatus — registry matc
 //
 // The exact required registry keys are:
 //   TradeStatus, ChallengeStatus, BattleOutcome, Affinity,
-//   StatusKind, WeatherEffect, ActionState, Direction
+//   StatusKind, WeatherEffect, ActionState, Direction,
+//   NpcInteraction                        // uxd2: NpcInteraction registered — ADR-0161
 // ---------------------------------------------------------------------------
 describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)', () => {
-  it('BITES: registry contains all eight required boundary enum keys', () => {
+  it('BITES: registry contains all nine required boundary enum keys', () => {
     // These are the enums whose .tag values cross the SDK→store boundary in rowConvert.ts.
     // Verified by reading each .tag access site in rowConvert.ts.
     // Kills: an impl that omits any boundary enum (eval cannot check an unregistered enum).
@@ -2258,6 +2260,10 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
       'WeatherEffect',
       'ActionState',
       'Direction',
+      // uxd2: NpcInteraction registered — ADR-0161. npcRowToStore reads
+      // `row.interaction.tag` at the SDK→store boundary, so a server-added 4th
+      // variant MUST ratchet the sdk-enum-exhaustiveness eval RED (plan I5).
+      'NpcInteraction',
     ] as const;
     for (const key of requiredKeys) {
       expect(
@@ -2278,22 +2284,29 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
     ).toBe(false);
   });
 
-  it('BITES: registry has EXACTLY 8 keys — no extra keys allowed (T4-6 exact-count pin)', () => {
-    // Exact-count gate: the required set is exactly the 8 boundary-read enums listed
+  it('BITES: registry has EXACTLY 9 keys — no extra keys allowed (T4-6 exact-count pin)', () => {
+    // Exact-count gate: the required set is exactly the 9 boundary-read enums listed
     // in the T4-6 comment above. No more, no less. This kills:
     //   - An impl that adds extra enums (e.g. StatKind, PvpAction, MoveInput) that
     //     are NOT boundary-read enums in rowConvert.ts — the eval would silently
     //     check them against types.ts, masking gaps in the real required set.
-    //   - An impl that correctly includes the 8 required keys but also adds extras,
+    //   - An impl that correctly includes the 9 required keys but also adds extras,
     //     making the registry a superset rather than the exact required set.
-    // The presence test above confirms the 8 required keys exist; this test pins
+    // The presence test above confirms the 9 required keys exist; this test pins
     // that no additional keys were added.
+    //
+    // uxd2 RECALIBRATION (8 -> 9): NpcInteraction registered — ADR-0161. The pin was
+    // calibrated pre-uxd2 and is now internally inconsistent with plan I5, which
+    // MANDATES the registry entry: with the count left at 8 no implementation could
+    // both register NpcInteraction and pass this gate. RED TODAY (the live registry
+    // still has 8 keys) — correct TDD red.
     expect(
       Object.keys(HANDLED_ENUM_VARIANTS).length,
-      'HANDLED_ENUM_VARIANTS must have EXACTLY 8 keys: TradeStatus, ChallengeStatus, ' +
-        'BattleOutcome, Affinity, StatusKind, WeatherEffect, ActionState, Direction. ' +
+      'HANDLED_ENUM_VARIANTS must have EXACTLY 9 keys: TradeStatus, ChallengeStatus, ' +
+        'BattleOutcome, Affinity, StatusKind, WeatherEffect, ActionState, Direction, ' +
+        'NpcInteraction. ' +
         `Got ${Object.keys(HANDLED_ENUM_VARIANTS).length} keys: ${Object.keys(HANDLED_ENUM_VARIANTS).sort().join(', ')}`,
-    ).toBe(8);
+    ).toBe(9);
   });
 
   it('BITES: ChallengeStatus registry matches types.ts variants', () => {
@@ -2334,5 +2347,35 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
     // Verified against types.ts: WeatherEffect = {Rain: __t.u8(), Sun: __t.u8(), Sandstorm: __t.u8(), Hail: __t.u8()}
     // These are payload-carrying variants (__t.u8()) — the KEY names are what matter for tag matching.
     expect(HANDLED_ENUM_VARIANTS.WeatherEffect).toEqual(['Rain', 'Sun', 'Sandstorm', 'Hail']);
+  });
+
+  it('BITES: NpcInteraction registry matches types.ts variants in DECLARATION order', () => {
+    // uxd2: NpcInteraction registered — ADR-0161.
+    //
+    // ORDERING CONVENTION (read from rowConvert.ts:55 and verified against the generated
+    // client/src/module_bindings/types.ts this session): the registry's variant lists are
+    // DECLARATION-ORDERED — they "mirror module_bindings/types.ts EXACTLY", and the SDK
+    // generator emits each `__t.enum` variant map in Rust declaration order. They are NOT
+    // alphabetical, and every existing entry proves it:
+    //     Direction    = North, South, East, West        (alphabetical: East, North, …)
+    //     ActionState  = Idle, Walking, Jumping          (alphabetical: Idle, Jumping, …)
+    //     BattleOutcome= Ongoing, SideAWins, SideBWins, Fled  (alphabetical: Fled first)
+    //     Affinity     = Fire, Water, Plant, Electric, … (not remotely alphabetical)
+    // game-core declares `NpcInteraction { #[default] Dialogue, Shop(u32), Heal(u32) }`
+    // (plan I0), so `just gen` will emit
+    //     __t.enum("NpcInteraction", { Dialogue: __t.unit(), Shop: __t.u32(), Heal: __t.u32() })
+    // and the registry entry is therefore ['Dialogue', 'Shop', 'Heal'] — Shop BEFORE Heal.
+    //
+    // Shop/Heal are payload-carrying (__t.u32()); as with WeatherEffect, only the KEY names
+    // matter for tag matching, so the payload type is not pinned here.
+    //
+    // WRONG IMPL KILLED (1): an alphabetised entry ['Dialogue', 'Heal', 'Shop'] — it would
+    //   still satisfy the sdk-enum-exhaustiveness eval (C2/C3 are set-based) and would
+    //   still satisfy the key-presence and exact-count gates above, so THIS array pin is
+    //   the only thing standing between the registry and a silent drift away from the
+    //   file's stated "mirrors types.ts EXACTLY" contract.
+    // WRONG IMPL KILLED (2): an entry that omits a variant (e.g. ['Dialogue']) — the eval's
+    //   C2 would red on regen, but this pins it at unit speed with the enum named.
+    expect(HANDLED_ENUM_VARIANTS.NpcInteraction).toEqual(['Dialogue', 'Shop', 'Heal']);
   });
 });

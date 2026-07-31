@@ -62,6 +62,7 @@ export const HANDLED_ENUM_VARIANTS = {
   WeatherEffect: ['Rain', 'Sun', 'Sandstorm', 'Hail'],
   ActionState: ['Idle', 'Walking', 'Jumping'],
   Direction: ['North', 'South', 'East', 'West'],
+  NpcInteraction: ['Dialogue', 'Shop', 'Heal'],
 } as const;
 
 /** Narrow a raw SDK enum tag to its registry-typed union. A known tag returns
