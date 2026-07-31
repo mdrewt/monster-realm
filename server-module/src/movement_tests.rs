@@ -72,6 +72,39 @@ fn strip_rust_comments(src: &str) -> String {
     String::from_utf8(out).expect("stripped source must be valid UTF-8")
 }
 
+/// `movement.rs` with comments stripped and ALL whitespace squashed out, so a
+/// rustfmt line split can never cause a false RED.
+fn squashed_movement() -> String {
+    strip_rust_comments(MOVEMENT_RS)
+        .split_whitespace()
+        .collect()
+}
+
+/// The squashed warp branch: everything from `warp_at(` up to the
+/// grass-encounter trigger `stepped_onto_grass(`.
+///
+/// Region-scoping (rather than whole-file counting) is what makes the
+/// `player_identity()` and `ctx.sender` assertions below both TIGHT and stable:
+/// the grass-encounter pre-check at `movement.rs:251-256` legitimately keeps its
+/// own single-role `player_identity()` lookup (ADR-0166 residual R4, deliberately
+/// out of scope for 11r-a), and three unrelated reducers above legitimately use
+/// `ctx.sender`. A whole-file count would have to encode those as magic numbers
+/// and would drift the moment anything else in the file changes.
+///
+/// Both tests in this file use it, so there is no dead code and no drift between
+/// two hand-copied slices.
+fn warp_region(squashed: &str) -> &str {
+    let warp_marker = ["warp", "_at("].concat();
+    let grass_marker = ["stepped_onto", "_grass("].concat();
+    let start = squashed
+        .find(warp_marker.as_str())
+        .expect("movement_tests: `warp_at(` not found in movement.rs");
+    let len = squashed[start..]
+        .find(grass_marker.as_str())
+        .expect("movement_tests: `stepped_onto_grass(` not found after `warp_at(`");
+    &squashed[start..start + len]
+}
+
 // ---------------------------------------------------------------------------
 // E3: the warp guard uses the both-role SSOT, with the CHARACTER's identity
 //
@@ -87,9 +120,13 @@ fn strip_rust_comments(src: &str) -> String {
 /// **E3** (ADR-0166 D4) — `movement_tick`'s warp branch must ask the ADR-0122
 /// both-role SSOT, and must ask it about **`p.identity`**.
 ///
-/// Four layers.  Layers 1 and 2 are RED at HEAD; layers 3 and 4 are labelled
-/// ANTI-REGRESSION / ANTI-EVASION and are green today — they exist so the fix
-/// cannot introduce a *worse* bug while repairing this one.
+/// Layers 1, 1b, 1c and 2 are RED at HEAD; layer 3 is an ANTI-EVASION fence that
+/// is green today.  Layers 1b and 1c were added after a red-team EMPIRICALLY
+/// built and ran a wrong implementation that passed the first draft's layers 1
+/// and 2 while leaving the vulnerability fully live.  The pure ADR-0070
+/// anti-regression fences moved into their own test
+/// ([`movement_warp_guard_unwrap_or_true_is_preserved`]) so that they actually
+/// run — behind layer 1 they could never be observed green.
 ///
 /// 1. **The composite adjacency needle (RED at HEAD).**  The squashed body must
 ///    contain `.map(|p| is_in_ongoing_battle(ctx, p.identity)).unwrap_or(true)` as
@@ -106,46 +143,62 @@ fn strip_rust_comments(src: &str) -> String {
 ///    than the bug being fixed.  A presence-only needle cannot see that; this one
 ///    does.
 ///
-/// 2. **`player_identity()` whole-file count == 1 (RED at HEAD).**  Arithmetic,
-///    counted by hand at HEAD: `movement.rs` uses the `player_identity()` btree
-///    accessor exactly TWICE — `:218` (the warp guard being replaced) and `:254`
-///    (the grass-encounter pre-check, which this slice deliberately does NOT touch
-///    — ADR-0166 residual R4).  After the fix the warp occurrence is gone and
-///    exactly ONE remains.  This is what kills a "belt-and-braces" implementation
-///    that calls the SSOT *and* keeps the old inline filter: the composite needle
-///    alone would pass such a shell.  If a future slice fixes R4 too, this number
-///    goes to 0 and the assertion must be updated DELIBERATELY — that is the
-///    intended failure mode, not a defect.
+///    **1b (EV-3a) — the guard's VALUE must be the branch condition.**  Layer 1
+///    proves the SSOT is *called*; nothing in it proves anything *consumes* the
+///    result.  A red-team kept a textbook-perfect SSOT call, discarded it with
+///    `let _ = skip_warp;`, and left a differently-spelled inline single-role
+///    filter (`ctx.db.battle().iter().any(|b| b.player_identity == p.identity &&
+///    ..)`) as the effective condition — passing layers 1 AND 2 with the
+///    vulnerability fully live.  Requiring `.unwrap_or(true);if!skip_warp{` as one
+///    contiguous needle closes it, and pins the ADR-0166 D4 `in_battle` →
+///    `skip_warp` rename at the same time.
 ///
-/// 3. **ANTI-REGRESSION (green today, must stay green): `.unwrap_or(true)`
-///    survives and `.unwrap_or(false)` never appears.**  `unwrap_or(true)` means
-///    "no `player` row ⇒ an NPC ⇒ **skip the warp**" (ADR-0070 home-zone policy),
-///    NOT "is in battle".  Flipping it to `false` teleports wandering NPCs out of
-///    their home zones permanently.  `npc_tests.rs:351-371` (outside this slice's
-///    touch set) pins the same text and must stay green through the
-///    `in_battle`→`skip_warp` rename; this assertion is the local canary for that.
+///    **1c (EV-3b) — `battle()` exactly once, file-wide.**  The
+///    spelling-independent backstop to layer 2: any inline re-implementation of
+///    the battle scan, in ANY spelling, must name the `battle()` table accessor.
+///    HEAD has two (`:217` warp guard, `:253` grass pre-check); after the fix the
+///    warp guard reaches the table through `guards::is_in_ongoing_battle` and only
+///    the grass one remains.
 ///
-/// 4. **ANTI-EVASION (green today): no `ctx.sender` between `warp_at(` and
+/// 2. **`player_identity()` count == 0 in the warp branch (RED at HEAD).**
+///    Scoped to `warp_at(` … `stepped_onto_grass(` rather than counted file-wide:
+///    same teeth, but immune to unrelated edits and to the eventual fix of
+///    ADR-0166 residual R4 (the grass-encounter pre-check at `:254` keeps its own
+///    single-role lookup on purpose — out of scope for 11r-a).  A count of 1
+///    alongside a passing layer 1 is the "belt-and-braces" shell that calls the
+///    SSOT *and* keeps the old filter.
+///
+/// 3. **ANTI-EVASION (green today): no `ctx.sender` between `warp_at(` and
 ///    `stepped_onto_grass(`.**  A second, independent line of defence against the
 ///    module-identity mutant described in layer 1 — it also catches a
 ///    `let me = ctx.sender;` hoisted just above the guard and passed in under
 ///    another name.
 ///
-/// RED state at HEAD: layer 1 fails (no `is_in_ongoing_battle` anywhere in
-/// `movement.rs`); layer 2 fails (count is 2, not 1).
+/// RED state at HEAD: layer 1 fails (no `is_in_ongoing_battle` in `movement.rs`);
+/// 1b fails (the local is named `in_battle`); 1c fails (`battle()` count is 2);
+/// layer 2 fails (`player_identity()` count in the warp branch is 1, not 0).
 ///
-/// HONEST LIMIT: the composite needle pins one exact spelling of the closure.  A
-/// semantically identical but differently-spelled fix (e.g. binding the identity
-/// to a local first, or an `if let Some(p) = … else` rewrite) would false-RED.
-/// The required text is stated verbatim in the failure message, and ADR-0166 D4
-/// fixes it as the sanctioned shape; both the expression-bodied and
-/// block-bodied closure forms are accepted, as are the bare, `guards::` and
-/// `crate::guards::` path spellings.
+/// HONEST LIMITS.
+/// (a) Layers 1 and 1b pin exact spellings.  A semantically identical rewrite —
+/// binding the identity to a local first, an `if let Some(p) = … else`, or
+/// inverting the branch to `if skip_warp { } else { …warp… }` — would false-RED.
+/// The required text is stated verbatim in each failure message and ADR-0166 D4
+/// fixes it as the sanctioned shape; layer 1 additionally accepts the
+/// expression-bodied and block-bodied closure forms and the bare, `guards::` and
+/// `crate::guards::` path spellings.  This is a deliberate trade: adjacency is
+/// the only property that distinguishes "the SSOT decides the branch" from "the
+/// SSOT is called somewhere nearby", and the latter was empirically shipped past
+/// the first draft of this test.
+/// (b) Layer 1c is a whole-file count with a hand-derived number (2 at HEAD → 1
+/// after the fix).  Unlike layer 2 it cannot be region-scoped, because its whole
+/// point is to catch a re-implementation wherever it is put.  It is therefore the
+/// one assertion here that an unrelated edit to `movement.rs` can disturb; when
+/// it fires, check whether the new `battle()` use is legitimate before changing
+/// the number.
 #[test]
 fn e3_warp_guard_uses_the_both_role_ssot_with_the_player_identity() {
-    let squashed: String = strip_rust_comments(MOVEMENT_RS)
-        .split_whitespace()
-        .collect();
+    let squashed = squashed_movement();
+    let region = warp_region(&squashed);
 
     // --- Layer 1: composite adjacency needle, argument pinned ----------------
     // Accepted spellings: bare / `guards::` / `crate::guards::` path, and an
@@ -178,64 +231,118 @@ fn e3_warp_guard_uses_the_both_role_ssot_with_the_player_identity() {
          worse than the bug being fixed. RED at HEAD: the SSOT is not called."
     );
 
-    // --- Layer 2: the single-role filter is GONE, not merely supplemented ----
-    let accessor = ["player_", "identity()"].concat();
-    let accessor_count = squashed.matches(accessor.as_str()).count();
-    assert_eq!(
-        accessor_count, 1,
-        "TEETH (E3/D4 layer 2): `movement.rs` must contain the `{accessor}` btree \
-         accessor EXACTLY ONCE; found {accessor_count}. The arithmetic: at HEAD there \
-         are two — `:218` (the warp guard, replaced by this slice) and `:254` (the \
-         grass-encounter pre-check, deliberately NOT touched here — ADR-0166 residual \
-         R4). After the fix only the grass-encounter one remains. A count of 2 means \
-         the old single-role filter was left in place ALONGSIDE the SSOT call, which \
-         layer 1's needle alone cannot see: the effective condition would still be \
-         side-A-only. A count of 0 means the grass guard was collaterally rewritten \
-         — out of scope for 11r-a. If a later slice legitimately fixes R4, update \
-         this number deliberately."
-    );
-
-    // --- Layer 3: ANTI-REGRESSION (green today — do not mistake green for teeth)
-    let unwrap_true = [".unwrap_or(", "true)"].concat();
-    let unwrap_false = [".unwrap_or(", "false)"].concat();
+    // --- Layer 1b (EV-3a): the guard's VALUE is the branch condition ---------
+    // Layer 1 proves the SSOT is CALLED. It does not prove anything CONSUMES the
+    // result. A red-team kept the call, wrote `let _ = skip_warp;`, and let a
+    // differently-spelled inline single-role filter decide the branch — passing
+    // layers 1 and 2 with the vulnerability fully live. Requiring the assignment
+    // and its `if !` to be contiguous closes it, and pins the ADR-0166 D4
+    // `in_battle` → `skip_warp` rename at the same time.
+    let branch = [".unwrap_or(", "true);if!skip_warp{"].concat();
     assert!(
-        squashed.contains(unwrap_true.as_str()),
-        "ANTI-REGRESSION (E3/D4 layer 3): `.unwrap_or(true)` must survive the rewrite \
-         verbatim. It means `no player row ⇒ an NPC ⇒ SKIP the warp` (ADR-0070 \
-         home-zone policy) — it does NOT mean `is in battle`, which is what the old \
-         local name `in_battle` misleadingly implied. `npc_tests.rs:351-371` pins the \
-         same text from outside this slice's touch set and must stay green."
-    );
-    let false_count = squashed.matches(unwrap_false.as_str()).count();
-    assert_eq!(
-        false_count, 0,
-        "ANTI-REGRESSION (E3/D4 layer 3): found {false_count} occurrence(s) of \
-         `.unwrap_or(false)` in movement.rs. Flipping the warp guard's default to \
-         `false` treats every NPC (no `player` row) as not-in-battle and teleports it \
-         through warp tiles, stranding it in a zone it can never wander back from \
-         (ADR-0070). This is the exact 'cleanup' the `in_battle`→`skip_warp` rename \
-         exists to prevent."
+        squashed.contains(branch.as_str()),
+        "TEETH (E3/D4 layer 1b): the squashed source must contain \
+         `.unwrap_or(true);if!skip_warp{{` — i.e. the guard's value must be bound to \
+         `skip_warp` and immediately negated as the warp branch's condition. \
+         Layer 1 proves the SSOT is CALLED; only this proves its result DECIDES the \
+         branch. A red-team kept a perfect SSOT call, discarded it (`let _ = \
+         skip_warp;`), and left an inline single-role filter as the effective \
+         condition — passing layers 1 and 2 with the bug fully live. \
+         This also pins the ADR-0166 D4 rename: the local must be `skip_warp`, not \
+         `in_battle`. The old name makes `unwrap_or(true)` read as a bug, which is \
+         exactly how a future cleanup flips it to `false` and teleports NPCs out of \
+         their home zones. RED at HEAD: the local is still named `in_battle`."
     );
 
-    // --- Layer 4: ANTI-EVASION — no module identity in the warp region -------
-    let warp_marker = ["warp", "_at("].concat();
-    let grass_marker = ["stepped_onto", "_grass("].concat();
-    let warp_pos = squashed
-        .find(warp_marker.as_str())
-        .expect("E3: `warp_at(` not found in movement.rs — the warp branch must exist");
-    let grass_rel = squashed[warp_pos..]
-        .find(grass_marker.as_str())
-        .expect("E3: `stepped_onto_grass(` not found after `warp_at(` in movement.rs");
-    let warp_region = &squashed[warp_pos..warp_pos + grass_rel];
+    // --- Layer 1c (EV-3b): no inline battle scan survives, in ANY spelling ---
+    let battle_accessor = ["battle", "()"].concat();
+    let n_battle = squashed.matches(battle_accessor.as_str()).count();
+    assert_eq!(
+        n_battle, 1,
+        "TEETH (E3/D4 layer 1c): `movement.rs` must contain the `ctx.db.battle()` \
+         table accessor EXACTLY ONCE; found {n_battle}. The arithmetic: HEAD has two \
+         — `:217` (the warp guard's inline single-role scan, which this slice \
+         REPLACES with the guards.rs SSOT) and `:253` (the grass-encounter \
+         pre-check, deliberately NOT touched here — ADR-0166 residual R4). After the \
+         fix only the grass one remains, because the warp guard reaches the battle \
+         table through `guards::is_in_ongoing_battle`. \
+         This is the spelling-INDEPENDENT version of layer 2: it kills any inline \
+         re-implementation regardless of whether it uses the `player_identity()` \
+         btree accessor, `.iter().any(|b| b.player_identity == ..)`, or anything \
+         else — all of them must name `battle()`. If a later slice legitimately \
+         fixes R4, this number changes; update it DELIBERATELY."
+    );
+
+    // --- Layer 2 (M3): the single-role filter is GONE from the warp branch ---
+    // Scoped to the warp region rather than counted file-wide: same teeth, but
+    // immune to unrelated edits and to residual R4's eventual fix.
+    let accessor = ["player_", "identity()"].concat();
+    let accessor_count = region.matches(accessor.as_str()).count();
+    assert_eq!(
+        accessor_count, 0,
+        "TEETH (E3/D4 layer 2): the warp branch (`warp_at(` … \
+         `stepped_onto_grass(`) must contain ZERO `{accessor}` btree accessors; \
+         found {accessor_count} (HEAD has 1, at movement.rs:218). That accessor IS \
+         the single-role filter: it matches only `battle.player_identity`, so a PvP \
+         side-B player — whose row names them as `opponent_identity` — walks through \
+         a warp tile mid-ranked-battle. A count of 1 alongside a passing layer 1 \
+         means the old filter was left in place ALONGSIDE the SSOT call, which \
+         layer 1's needle alone cannot see."
+    );
+
+    // --- Layer 3: ANTI-EVASION — no module identity in the warp region -------
     let sender_needle = ["ctx.", "sender"].concat();
-    let sender_count = warp_region.matches(sender_needle.as_str()).count();
+    let sender_count = region.matches(sender_needle.as_str()).count();
     assert_eq!(
         sender_count, 0,
-        "ANTI-EVASION (E3/D4 layer 4): `ctx.sender` appears {sender_count} time(s) \
-         between `warp_at(` and `stepped_onto_grass(`. `movement_tick` is \
-         scheduler-only (`movement.rs:156` rejects any other sender), so `ctx.sender` \
-         inside it is the MODULE identity and can never be a player. Asking the battle \
-         guard about it returns false for everyone, warping every player out of every \
-         battle. The warp guard must ask about the character's own `p.identity`."
+        "ANTI-EVASION (E3/D4 layer 3, green at HEAD): `ctx.sender` appears \
+         {sender_count} time(s) between `warp_at(` and `stepped_onto_grass(`. \
+         `movement_tick` is scheduler-only (`movement.rs:156` rejects any other \
+         sender), so `ctx.sender` inside it is the MODULE identity and can never be a \
+         player. Asking the battle guard about it returns false for everyone, warping \
+         every player out of every battle. The warp guard must ask about the \
+         character's own `p.identity`."
+    );
+}
+
+/// **ADR-0070 / ADR-0166 D4 fence** — `.unwrap_or(true)` at the warp guard must
+/// survive this slice verbatim, and `.unwrap_or(false)` must never appear there.
+///
+/// A pure ANTI-REGRESSION fence: **green at HEAD, green after the fix**, red only
+/// if someone "corrects" the default. It is a separate `#[test]` on purpose —
+/// folded into E3 it would sit behind layer 1, which panics at HEAD, so it could
+/// never be observed passing and would prove nothing about the fix.
+///
+/// `unwrap_or(true)` means "this character has no `player` row ⇒ it is an NPC ⇒
+/// **SKIP the warp**" (ADR-0070 home-zone policy). It does NOT mean "is in
+/// battle" — which is exactly what the pre-slice local name `in_battle` implied,
+/// and why ADR-0166 D4 renames it `skip_warp`. Flipping the default to `false`
+/// treats every NPC as not-in-battle and teleports it through warp tiles,
+/// stranding it in a zone it can never wander home from.
+///
+/// `npc_tests.rs:351-371` pins the same text from OUTSIDE this slice's touch set
+/// and must stay green through the rename; this test is the local canary for it.
+#[test]
+fn movement_warp_guard_unwrap_or_true_is_preserved() {
+    let squashed = squashed_movement();
+    let region = warp_region(&squashed);
+
+    let unwrap_true = [".unwrap_or(", "true)"].concat();
+    assert!(
+        region.contains(unwrap_true.as_str()),
+        "ANTI-REGRESSION (ADR-0070 / E3-D4): `.unwrap_or(true)` must survive in the \
+         warp branch verbatim. It means `no player row ⇒ an NPC ⇒ SKIP the warp`, \
+         not `is in battle`. `npc_tests.rs:351-371` pins the same text from outside \
+         this slice's touch set and would go red with it."
+    );
+    let unwrap_false = [".unwrap_or(", "false)"].concat();
+    let false_count = region.matches(unwrap_false.as_str()).count();
+    assert_eq!(
+        false_count, 0,
+        "ANTI-REGRESSION (ADR-0070 / E3-D4): found {false_count} occurrence(s) of \
+         `.unwrap_or(false)` in the warp branch. Flipping the default treats every \
+         NPC (no `player` row) as not-in-battle and teleports it through warp tiles, \
+         stranding it in a zone it can never wander back from. This is the exact \
+         'cleanup' the `in_battle` → `skip_warp` rename exists to prevent."
     );
 }

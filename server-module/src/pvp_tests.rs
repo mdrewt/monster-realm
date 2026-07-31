@@ -2349,7 +2349,10 @@ fn ea_chr_06_schedule_challenge_reaper_deadline_ms_floored() {
 /// actually hit (`resolve.rs:105-129` Faint → auto-switch), so an out-speeding
 /// sac-lead is never hit and never repaired. D1 is confirmed exploitable.
 ///
-/// Four layers:
+/// Layers L1 through L4. Layers L2b/L2e/L2f were added after a red-team
+/// EMPIRICALLY built and ran four implementations that passed the first draft of
+/// this test while leaving D1 fully live; each is annotated with the evasion it
+/// closes.
 ///
 /// 1. **L1 — exact count (== 2).** `contains("with_lead")` passes on a
 ///    half-applied fix that converts side A and leaves side B as
@@ -2359,21 +2362,34 @@ fn ea_chr_06_schedule_challenge_reaper_deadline_ms_floored() {
 ///    this count on an otherwise-correct fix. That is the intended constraint,
 ///    recorded in ADR-0166's anti-pattern list.
 ///
-/// 2. **L2 — forbidden spellings and field whitelists.** `BattleSide {` and
-///    `set_active(` are forbidden outright; `.active` may appear ONLY inside
-///    `.active_monster`; `.team` may appear ONLY as `.team.iter()` or
-///    `.team.iter_mut()` (verified EXACT against `pvp.rs:277-287`, which uses
-///    each twice — do not widen). Both fields are still `pub` (ADR-0156 residual
-///    P2), so a shell can adopt `with_lead` correctly and undo it on the next
-///    line; whitelists do not have to anticipate the next spelling, blacklists
-///    do. `is_fainted` must occur ZERO times **in this body** — this is the
-///    single strongest assertion in the set, because it kills the most likely
-///    PvP-flavoured mutant, `team_a.retain(|m| !m.is_fainted())` (which would
-///    silently break the positional coupling to `party_monster_ids[i]` while
-///    passing every other layer). It is deliberately BODY-SCOPED: `pvp.rs:1031`
-///    (the Swap target check) and E2's new guard both use `is_fainted`
-///    legitimately, so a file-wide count would be RED by construction and
-///    therefore worthless.
+/// 2. **L2 — forbidden spellings, field whitelists, and vector identity.**
+///    - *L2a:* `BattleSide {` and `set_active(` are forbidden outright.
+///    - *L2b (EV-1, FILE-scoped):* bare `.active` may occur exactly ONCE across
+///      all of `pvp.rs` — the Swap-arm read at `pvp.rs:1036` — and no function
+///      may have a `-> BattleSide` return type. **This layer was body-scoped in
+///      the first draft and a red-team defeated it empirically:**
+///      `fn reseat(mut s: BattleSide) -> BattleSide { s.active = 0; s }` applied
+///      to both sides *after* correct `with_lead` bindings passes every
+///      body-scoped layer and restores the confirmed-exploitable defect. The
+///      field is `pub` (ADR-0156 residual P2) and a compound assignment
+///      (`side_a.active -= side_a.active`) is a separately-verified evasion, so
+///      the durable rule is: do not name the field.
+///    - *L2c:* `.team` may appear ONLY as `.team.iter()` / `.team.iter_mut()`
+///      (verified EXACT against `pvp.rs:277-287`, two of each — do not widen).
+///    - *L2d:* `is_fainted` must occur ZERO times in this body. This is a
+///      SPELLING check on the removed pre-checks and nothing more — see its
+///      failure message; the first draft overclaimed it as a filter-mutant guard,
+///      which it is not.
+///    - *L2e (EV-6):* `team_a` and `team_b` are each named EXACTLY TWICE. This is
+///      the spelling-independent successor to L2d and the assertion that actually
+///      kills both `team_a.retain(|m| m.current_hp > 0)` and the strictly worse
+///      `team_a.sort_by_key(|m| m.current_hp == 0)` — the latter is
+///      length-preserving, so `check_team_coupling` cannot see it either, and it
+///      silently rebinds every `team[i]` to the wrong `party_monster_ids[i]`.
+///    - *L2f (EV-5):* both `build_pvp_team` bindings are pinned verbatim. Without
+///      it the swap L3 guards against simply moves ONE LINE UP: bind the
+///      challenger's roster to `team_b`, the opponent's to `team_a`, and every
+///      `with_lead` binding below reads perfectly.
 ///
 /// 3. **L3 — the BINDING pin (the most important layer).** The squashed body must
 ///    contain `let side_a = BattleSide::with_lead(team_a)` AND
@@ -2388,24 +2404,37 @@ fn ea_chr_06_schedule_challenge_reaper_deadline_ms_floored() {
 ///    LENGTHS ONLY, so the corruption is invisible to every other check in the
 ///    tree whenever both parties are the same size.
 ///
-/// 4. **L4 — the audit.** Exactly two `log_reject(` call sites in this body, one
-///    inside each rejection closure. The pre-checks being replaced reject
-///    SILENTLY, unlike every other rejection in `pvp.rs` and unlike
-///    `battle.rs:224/229`; an `ok_or_else` that returns the right `Err` but drops
-///    the audit is invisible to the rest of `just ci` (cf. `battle_tests.rs:1892`).
+/// 4. **L4 — the audit, and WHO it names (EV-8).** Exactly one `log_reject(` in
+///    each rejection closure's window, plus `,challenger,` in side A's and
+///    `,opponent,` in side B's, plus zero `ctx.sender` in the body. The
+///    per-window counts replace a whole-body `== 2` deliberately (M1): that form
+///    is what `battle_tests.rs:1864-1870` calls "too loose AND a false-positive
+///    landmine", and it is satisfied by putting both audits in one closure.
+///    The identity pins matter because a call-site count says nothing about the
+///    argument: `log_reject("start_pvp_battle", ctx.sender, &e)` in both closures
+///    passes a count check and IS the ADR-0166 D1 defect — `start_pvp_battle` is
+///    reached only from `accept_challenge`, where `ctx.sender` is the ACCEPTOR.
 ///    The error STRINGS are deliberately NOT pinned: they have no consumer
 ///    outside `pvp.rs`, so pinning them would turn any future rewording RED.
 ///
-/// **RED state at HEAD:** two `BattleSide {` literals with `active: 0`
-/// (`pvp.rs:259-267`), ZERO `BattleSide::with_lead(` calls, two `is_fainted`
-/// pre-checks (`pvp.rs:252-257`), and ZERO `log_reject(` calls.
+/// **RED state at HEAD** (L1 fires first): ZERO `BattleSide::with_lead(` calls,
+/// two `BattleSide {` literals with `active: 0` (`pvp.rs:259-267`), two
+/// `is_fainted` pre-checks (`pvp.rs:252-257`), `team_a`/`team_b` named 3× each,
+/// and ZERO `log_reject(` calls. GREEN at HEAD and required to stay green:
+/// L2a `set_active`, L2b (bare `.active` == 1 file-wide, `-> BattleSide` == 0),
+/// L2c, L2f, and the `ctx.sender` == 0 fence.
 ///
-/// **HONEST LIMIT** (inherited verbatim from `battle_tests.rs:1727-1735`): a
-/// SAME-NAMED permutation still passes L3 — `let mut team_a = team_a;
-/// team_a.sort_by_key(..); BattleSide::with_lead(team_a)` shadows the binding and
-/// the needle still matches. L2's `.team` whitelist closes the mirror-image
-/// attack AFTER the call, but the before-the-call same-named case is not covered
-/// by any layer here. It is caught only by review.
+/// **HONEST LIMITS.**
+/// (a) A same-named permutation of the kind `battle_tests.rs:1727-1735` records
+/// (`let mut team_a = team_a; team_a.sort_by_key(..)`) passes L3's needle — but
+/// unlike in the PvE original it is now caught here, by L2e's exact `team_a`
+/// count of 2 (the shadow-rebind is a third mention).
+/// (b) L2b's `-> BattleSide` needle sees only that literal spelling;
+/// `-> Option<BattleSide>` would slip past it. L2b's `.active` count is the
+/// assertion doing the real work against that mutant class.
+/// (c) Nothing here pins the `ability_ids_* ↔ team_*` alignment beyond L2f's
+/// binding text; ADR-0166 D1 records that coupling as newly load-bearing and
+/// unpinned by anything else in the tree.
 #[test]
 fn e1_start_pvp_battle_constructs_both_sides_via_with_lead() {
     let stripped = stripped_pvp_for_scan();
@@ -2416,6 +2445,10 @@ fn e1_start_pvp_battle_constructs_both_sides_via_with_lead() {
         )
     });
     let squashed = squash_ws(body);
+    // EV-1: the `.active` whitelist and the "no helper returns a BattleSide" rule
+    // must be FILE-scoped, not body-scoped — a helper defined OUTSIDE this body is
+    // exactly how the body-scoped version was defeated. See L2b.
+    let squashed_file = squash_ws(&stripped);
 
     // --- L1: exact call count -----------------------------------------------
     let with_lead = ["BattleSide::", "with_lead("].concat();
@@ -2446,30 +2479,56 @@ fn e1_start_pvp_battle_constructs_both_sides_via_with_lead() {
     let n_set_active = squashed.matches(set_active.as_str()).count();
     assert_eq!(
         n_set_active, 0,
-        "TEETH (E1/D1 L2): `start_pvp_battle` must contain no `set_active(` — \
-         `set_active` is the mid-battle swap mutator (ADR-0053), not a lead \
-         selector: `set_active(0)` silently SUCCEEDS whenever slot 0 happens to be \
-         conscious and rejects otherwise, which is not the D1 rule. Found \
+        "ANTI-EVASION (E1/D1 L2, green at HEAD): `start_pvp_battle` must contain no \
+         `set_active(` — `set_active` is the mid-battle swap mutator (ADR-0053), not \
+         a lead selector: `set_active(0)` silently SUCCEEDS whenever slot 0 happens \
+         to be conscious and rejects otherwise, which is not the D1 rule. Found \
          {n_set_active}."
     );
 
-    // --- L2b: `.active` may only appear inside `.active_monster` -------------
+    // --- L2b: `.active` is FILE-scoped-whitelisted, and no helper returns a
+    //          BattleSide (EV-1) ---------------------------------------------
     let active_any_needle = [".", "active"].concat();
     let active_accessor_needle = [".", "active_monster"].concat();
-    let active_any = squashed.matches(active_any_needle.as_str()).count();
-    let active_accessor = squashed.matches(active_accessor_needle.as_str()).count();
+    let active_any = squashed_file.matches(active_any_needle.as_str()).count();
+    let active_accessor = squashed_file
+        .matches(active_accessor_needle.as_str())
+        .count();
     let bare_active = active_any.saturating_sub(active_accessor);
     assert_eq!(
-        bare_active, 0,
-        "TEETH (E1/D1 L2): `start_pvp_battle` touches the bare `BattleSide.active` \
-         field {bare_active} time(s) (of {active_any} total `.active`, \
-         {active_accessor} of which are the `.active_monster` accessor). The field \
-         is still `pub` (ADR-0156 residual P2), so an adopt-then-overwrite shell can \
-         call `with_lead` correctly and undo it on the next line — including via a \
-         COMPOUND assignment such as `side_a.active -= side_a.active`, which is a \
-         VERIFIED prior evasion of an operator-enumerating blacklist. The only \
-         durable rule is: do not name the field here. To READ the lead, call \
-         `active_monster()`."
+        bare_active, 1,
+        "ANTI-EVASION (E1/D1 L2b, green at HEAD): pvp.rs must contain EXACTLY ONE \
+         bare `BattleSide.active` reference file-wide; found {bare_active} (of \
+         {active_any} total `.active`, {active_accessor} of which are the \
+         `.active_monster` accessor). \
+         The ONE legitimate occurrence is the Swap-arm comparison \
+         `if my_team.active == team_index` at pvp.rs:1036 — a read, not a write. \
+         FILE-scoped rather than body-scoped ON PURPOSE: a red-team PoC defeated the \
+         body-scoped form with a helper defined outside the body — \
+         `fn reseat(mut s: BattleSide) -> BattleSide {{ s.active = 0; s }}` applied to \
+         both sides AFTER correct `with_lead` bindings. That passes every body-scoped \
+         layer and restores the confirmed-exploitable D1 defect in full. \
+         The field is still `pub` (ADR-0156 residual P2), and a compound assignment \
+         (`side_a.active -= side_a.active`) is a VERIFIED prior evasion of an \
+         operator-enumerating blacklist, so the only durable rule is: do not name the \
+         field. To READ the lead, call `active_monster()`. If a future change needs \
+         another legitimate `.active` read, raise this number DELIBERATELY."
+    );
+    let returns_side = ["->", "BattleSide"].concat();
+    let n_returns_side = squashed_file.matches(returns_side.as_str()).count();
+    assert_eq!(
+        n_returns_side, 0,
+        "ANTI-EVASION (E1/D1 L2b, green at HEAD): no function in pvp.rs may RETURN a \
+         `BattleSide`; found {n_returns_side} `-> BattleSide` return type(s). \
+         Belt-and-braces with the `.active` whitelist above against the `reseat` \
+         helper class of evasion: a side that is built by `with_lead` and then passed \
+         through any post-processing function is a side whose `active` this test can \
+         no longer vouch for. `with_lead` must be the last thing that touches the \
+         lead. \
+         LIMIT, stated honestly: this needle sees only the literal `-> BattleSide` \
+         spelling; `-> Option<BattleSide>` or `-> (BattleSide, BattleSide)` would slip \
+         past it. The `.active` whitelist above is the assertion that actually kills \
+         the mutant — this one just makes the shape harder to reach for."
     );
 
     // --- L2c: `.team` may only appear as an order-preserving accessor --------
@@ -2482,7 +2541,8 @@ fn e1_start_pvp_battle_constructs_both_sides_via_with_lead() {
     let team_other = team_any.saturating_sub(team_iter + team_iter_mut);
     assert_eq!(
         team_other, 0,
-        "TEETH (E1/D1 L2): `start_pvp_battle` touches `BattleSide.team` in \
+        "ANTI-EVASION (E1/D1 L2c, green at HEAD): `start_pvp_battle` touches \
+         `BattleSide.team` in \
          {team_other} way(s) that are not `.team.iter()` ({team_iter}) or \
          `.team.iter_mut()` ({team_iter_mut}), out of {team_any} total `.team`. \
          After `with_lead` returns, the team must not be reordered or resized: \
@@ -2502,19 +2562,92 @@ fn e1_start_pvp_battle_constructs_both_sides_via_with_lead() {
     let n_fainted = squashed.matches(is_fainted.as_str()).count();
     assert_eq!(
         n_fainted, 0,
-        "TEETH (E1/D1 L2): `start_pvp_battle` must contain ZERO `is_fainted` \
+        "TEETH (E1/D1 L2d): `start_pvp_battle` must contain ZERO `is_fainted` \
          occurrences; found {n_fainted} (HEAD has 2, the `any(|m| !m.is_fainted())` \
          pre-checks at pvp.rs:252-257). `with_lead`'s `None` IS that precondition \
          (game-core/src/combat/types.rs:102-105), so keeping both leaves dead code \
          that makes the adoption scan ambiguous (ADR-0166 D1). \
-         This assertion is ALSO the one that kills the most likely PvP mutant — \
-         `let team_a: Vec<_> = team_a.into_iter().filter(|m| !m.is_fainted()).collect()` \
-         or `team_a.retain(|m| !m.is_fainted())` before the call. That mutant passes \
-         L1, L2a-c and L3 (the binding name and argument name are unchanged) while \
-         silently breaking the positional coupling to `party_monster_ids[i]`. \
+         SCOPE OF THIS ASSERTION, stated precisely (an earlier draft OVERCLAIMED \
+         here): this is a SPELLING check on the removed pre-checks and nothing more. \
+         It does NOT kill a team-filtering mutant — `team_a.retain(|m| m.current_hp \
+         > 0)` never says `is_fainted` and walks straight past it, and \
+         `team_a.sort_by_key(|m| m.current_hp == 0)` is worse still: \
+         length-preserving, so `check_team_coupling` cannot see it either. L2e below \
+         is the assertion that kills BOTH, spelling-independently. \
          DELIBERATELY BODY-SCOPED: `pvp.rs:1031` and E2's new Attack guard use \
          `is_fainted` legitimately, so a file-wide count would be RED by \
          construction and prove nothing."
+    );
+
+    // --- L2e: the team vectors are NAMED EXACTLY TWICE each (EV-6) ----------
+    // Spelling-independent successor to L2d: on a correct implementation each team
+    // is mentioned once when bound and once when passed to `with_lead`, and NOWHERE
+    // else. Any interposed statement — filter, sort, swap, truncate, shadow-rebind
+    // — must name the vector a third time.
+    let team_a_needle = ["team", "_a"].concat();
+    let team_b_needle = ["team", "_b"].concat();
+    let n_team_a = squashed.matches(team_a_needle.as_str()).count();
+    let n_team_b = squashed.matches(team_b_needle.as_str()).count();
+    assert_eq!(
+        n_team_a, 2,
+        "TEETH (E1/D1 L2e): `team_a` must be named EXACTLY TWICE in \
+         `start_pvp_battle` — once in the `build_pvp_team` binding, once as the \
+         `with_lead` argument; found {n_team_a} (HEAD has 3: the binding, the \
+         `is_fainted` pre-check, and the struct literal). \
+         This is the spelling-INDEPENDENT reorder/filter guard, and it is the one \
+         that bites where L2d cannot. Both of these pass every other layer: \
+         `team_a.retain(|m| m.current_hp > 0)` (resizes the vector, so \
+         `side_a.team[i]` no longer pairs with `party_monster_ids[i]`, and \
+         `check_team_coupling` catches it only because lengths then differ) and — \
+         far worse — `team_a.sort_by_key(|m| m.current_hp == 0)`, which is \
+         LENGTH-PRESERVING and therefore invisible to `check_team_coupling` too: it \
+         silently rebinds every `team[i]` to the wrong `party_monster_ids[i]`, so \
+         post-battle HP is written onto the wrong monster rows. Each of those \
+         statements names `team_a` a third time. So does a shadow-rebind \
+         (`let team_a = ...`)."
+    );
+    assert_eq!(
+        n_team_b, 2,
+        "TEETH (E1/D1 L2e): `team_b` must be named EXACTLY TWICE in \
+         `start_pvp_battle`; found {n_team_b} (HEAD has 3). Side B is positionally \
+         coupled to `opponent_monster_ids[i]` exactly the way side A is to \
+         `party_monster_ids[i]` — see the `team_a` message."
+    );
+
+    // --- L2f: the SOURCE of each team vector is pinned (EV-5) ---------------
+    // Without this, the swap can be moved one line UP: binding the CHALLENGER's
+    // roster to `team_b` and the opponent's to `team_a` leaves every `with_lead`
+    // binding below looking perfect while producing the identical catastrophic
+    // mis-seating that L3 exists to prevent.
+    let build_a = concat!(
+        "let(team_a,ability_ids_a)=build_pvp_",
+        "team(ctx,&challenger_party,challenger,"
+    );
+    let build_b = concat!(
+        "let(team_b,ability_ids_b)=build_pvp_",
+        "team(ctx,&opponent_party,opponent,"
+    );
+    assert!(
+        squashed.contains(build_a),
+        "ANTI-EVASION (E1/D1 L2f, green at HEAD): `start_pvp_battle` must bind the \
+         challenger's roster as `let (team_a, ability_ids_a) = build_pvp_team(ctx, \
+         &challenger_party, challenger, ..)` (whitespace-squashed: `{build_a}..`). \
+         A red-team PoC defeated L3 by moving the swap ONE LINE UP — binding the \
+         challenger's roster to `team_b` and the opponent's to `team_a`, then writing \
+         textbook-correct `let side_a = BattleSide::with_lead(team_a)` bindings below. \
+         Every other layer passes; each player then plays the OTHER player's \
+         monsters, and `party_monster_ids` / `opponent_monster_ids` (pvp.rs:294-295) \
+         stay un-swapped so `write_back_*` corrupts both players' rows. \
+         This needle also pins the positional coupling that D1 makes load-bearing for \
+         the first time: `ability_ids_a[i]` must stay aligned to `team_a[i]` \
+         (ADR-0166 D1, `abilities.side_a[active]`)."
+    );
+    assert!(
+        squashed.contains(build_b),
+        "ANTI-EVASION (E1/D1 L2f, green at HEAD): `start_pvp_battle` must bind the \
+         opponent's roster as `let (team_b, ability_ids_b) = build_pvp_team(ctx, \
+         &opponent_party, opponent, ..)` (whitespace-squashed: `{build_b}..`). \
+         See the side-A message for the one-line-up swap this pins against."
     );
 
     // --- L3: the BINDING pin (kills the swapped-argument evasion) -----------
@@ -2549,45 +2682,72 @@ fn e1_start_pvp_battle_constructs_both_sides_via_with_lead() {
         )
     });
 
-    // --- L4: both rejections are audited, one log_reject per closure --------
+    // --- L4: both rejections are audited, AGAINST THE RIGHT IDENTITY --------
+    // NOTE (M1, deliberate omission): there is NO whole-body `log_reject( == 2`
+    // assertion here. battle_tests.rs:1864-1870 rejects that exact form as "too
+    // loose AND a false-positive landmine" — it is implied by the two per-window
+    // `== 1` checks below, and because `win_b` runs to the end of the body, any
+    // audit legitimately added later (e.g. ADR-0166 residual R1) would false-RED it.
     let log_reject = ["log_", "reject("].concat();
-    let n_audit = squashed.matches(log_reject.as_str()).count();
+    // Each window runs from its own `with_lead` binding to the NEXT one (or to the
+    // end of the body for whichever comes second), so building side B first is not
+    // a false RED and neither window can borrow the other's audit.
+    let end_a = if pos_b > pos_a { pos_b } else { squashed.len() };
+    let end_b = if pos_a > pos_b { pos_a } else { squashed.len() };
+    let win_a = &squashed[pos_a..end_a];
+    let win_b = &squashed[pos_b..end_b];
+    let n_a = win_a.matches(log_reject.as_str()).count();
+    let n_b = win_b.matches(log_reject.as_str()).count();
     assert_eq!(
-        n_audit, 2,
-        "TEETH (E1/D1 L4): `start_pvp_battle` must contain EXACTLY 2 `log_reject(` \
-         call sites — one per `with_lead` rejection closure; found {n_audit}. The \
-         pre-checks being replaced reject SILENTLY, unlike every other rejection in \
-         pvp.rs and unlike battle.rs:224/229, so an `ok_or_else` that returns the \
-         right `Err` but drops the audit is invisible to the rest of `just ci`. \
-         Note (ADR-0166 D1 / plan R6): the identity argument must be `challenger` / \
-         `opponent`, NOT `ctx.sender` — `start_pvp_battle` is reached only from \
-         `accept_challenge`, where `ctx.sender` is the ACCEPTOR, so `ctx.sender` \
-         would audit a side-A rejection against the opponent's identity. \
-         RED at HEAD: 0 audit calls."
-    );
-    let (first, second) = if pos_a <= pos_b {
-        (pos_a, pos_b)
-    } else {
-        (pos_b, pos_a)
-    };
-    let win_first = &squashed[first..second];
-    let win_second = &squashed[second..];
-    let n_first = win_first.matches(log_reject.as_str()).count();
-    let n_second = win_second.matches(log_reject.as_str()).count();
-    assert_eq!(
-        n_first, 1,
-        "TEETH (E1/D1 L4): the FIRST `with_lead` rejection closure in \
-         `start_pvp_battle` must contain exactly one `log_reject(`; found {n_first} \
-         between the two `with_lead` bindings. A total count of 2 is satisfied by \
-         putting BOTH audits in one closure and leaving the other rejection silent — \
-         which is the half-applied audit this per-site window exists to catch."
+        n_a, 1,
+        "TEETH (E1/D1 L4): the side-A `with_lead` rejection closure must contain \
+         exactly one `log_reject(`; found {n_a}. The pre-checks being replaced reject \
+         SILENTLY, unlike every other rejection in pvp.rs and unlike \
+         battle.rs:224/229, so an `ok_or_else` that returns the right `Err` but drops \
+         the audit is invisible to the rest of `just ci`. Per-window rather than \
+         whole-body: a body-wide count of 2 is satisfied by putting BOTH audits in \
+         one closure and leaving the other rejection silent. RED at HEAD: 0 audits."
     );
     assert_eq!(
-        n_second, 1,
-        "TEETH (E1/D1 L4): the SECOND `with_lead` rejection closure in \
-         `start_pvp_battle` must contain exactly one `log_reject(`; found {n_second} \
-         after the second `with_lead` binding. (Nothing else below the constructor \
-         rejects, so any other count means the audits are mis-sited.)"
+        n_b, 1,
+        "TEETH (E1/D1 L4): the side-B `with_lead` rejection closure must contain \
+         exactly one `log_reject(`; found {n_b}. See the side-A message."
+    );
+    // EV-8: the AUDITED IDENTITY, per window. Counting call sites says nothing
+    // about who they name.
+    let challenger_arg = [",", "challenger,"].concat();
+    let opponent_arg = [",", "opponent,"].concat();
+    assert!(
+        win_a.contains(challenger_arg.as_str()),
+        "TEETH (E1/D1 L4 / ADR-0166 D1, plan R6): the side-A rejection must be \
+         audited against `challenger` — the squashed window must contain \
+         `,challenger,` as the `log_reject` identity argument. \
+         `log_reject(\"start_pvp_battle\", ctx.sender, &e)` in both closures passes a \
+         call-site COUNT unchanged, and it is precisely the defect ADR-0166 D1 calls \
+         out: `start_pvp_battle` is reached only from `accept_challenge`, where \
+         `ctx.sender` is the ACCEPTOR — so a side-A rejection would be filed against \
+         the opponent's identity, pointing any abuse investigation at the wrong \
+         player. The sibling helper in this same file already gets it right \
+         (`build_pvp_team` takes an `owner` param, pvp.rs:195-216)."
+    );
+    assert!(
+        win_b.contains(opponent_arg.as_str()),
+        "TEETH (E1/D1 L4 / ADR-0166 D1, plan R6): the side-B rejection must be \
+         audited against `opponent` — the squashed window must contain `,opponent,` \
+         as the `log_reject` identity argument. See the side-A message. (The `Battle` \
+         row literal below spells this field as `opponent_identity:opponent,`, which \
+         does NOT match this needle, so the assertion cannot be satisfied by \
+         accident.)"
+    );
+    let sender_needle = ["ctx.", "sender"].concat();
+    let n_sender = squashed.matches(sender_needle.as_str()).count();
+    assert_eq!(
+        n_sender, 0,
+        "ANTI-EVASION (E1/D1 L4, green at HEAD): `start_pvp_battle` must not mention \
+         `ctx.sender` at all; found {n_sender}. It is not a reducer — it is an \
+         internal helper reached only from `accept_challenge`, so `ctx.sender` is the \
+         ACCEPTOR and is never the right identity for anything in this body. Naming \
+         it here is the shape of the audit defect the two assertions above reject."
     );
 }
 
@@ -2628,11 +2788,21 @@ fn e1_start_pvp_battle_constructs_both_sides_via_with_lead() {
 ///    passes every proposed test, and leaves **side B's corpse dealing full damage
 ///    in ranked**. The inline form makes that bug unrepresentable.
 ///
+///    **1b (EV-2), the assertion that makes 1 mean anything.** `my_team` must be
+///    bound EXACTLY ONCE in this reducer. A red-team defeated the receiver pin by
+///    shadowing the name — `let real_team = my_team; let my_team =
+///    &battle.state.side_a;` before the `match`, `let my_team = real_team;` after
+///    the guard inside the arm — producing a guard that checks side A for BOTH
+///    players. That is precisely the "unrepresentable" bug, it passes assertion 1
+///    verbatim, and it contains no `SideId::Side` token so assertion 2 misses it
+///    too.
+///
 /// 2. **Sited INSIDE the Attack arm, and `SideId::Side` never appears there.**
 ///    The guard's index must fall strictly between `PvpAction::Attack` and
 ///    `PvpAction::Swap`. A guard hoisted ABOVE the `match action` would apply to
-///    Swap as well (see assertion 5) and would still satisfy assertion 1 and the
-///    ordering chain — this is the only assertion that catches it. The
+///    Swap as well (see [`pvp_swap_arm_has_no_fainted_active_guard`]) and would
+///    still satisfy assertions 1 and 1b and the whole ordering chain — this is the
+///    only assertion that catches that placement. The
 ///    `SideId::Side` count of 0 inside the arm closes the re-derivation
 ///    (`match my_side { SideId::SideA => .. }`) that assertion 1's `my_team.`
 ///    prefix is designed to prevent.
@@ -2647,6 +2817,12 @@ fn e1_start_pvp_battle_constructs_both_sides_via_with_lead() {
 ///    contain both `log_reject(` and `return Err` — killing a guard that logs
 ///    without returning, or returns without auditing.
 ///
+///    **4b (EV-9), because 4 alone is presence-only.** Nothing between the
+///    guard's opening brace and its `return Err(` may open another `if`. A
+///    red-team nested a never-true condition inside the guard body
+///    (`if battle.state.turn_number == u16::MAX { .. return Err(e); }`), which
+///    satisfies assertion 4 exactly and makes the entire guard a no-op.
+///
 /// 5. **The PvP-specific message: `forfeit` must appear inside the Attack arm,
 ///    and `or flee` must appear NOWHERE in this function.** `PvpAction` is
 ///    `Attack | Swap` — there is no flee in PvP; the exit is forfeit.
@@ -2656,20 +2832,29 @@ fn e1_start_pvp_battle_constructs_both_sides_via_with_lead() {
 ///    at 60 s (`pvp.rs:54` → `apply_pvp_forfeit` → `settle_pvp_battle` →
 ///    `ranking.rs:92`) into a **ranked rating loss**. These two are the only
 ///    assertions that need live string literals, so they run on the comments-only
-///    view (`strip_rust_comments`) rather than `stripped_pvp_for_scan()`.
+///    view (`strip_rust_comments`), bounded by `fn` MARKERS rather than by brace
+///    counting (M5): brace-counting string-bearing source works on this function
+///    today only because its literals' `{{`/`}}` happen to balance, which no
+///    future edit is obliged to preserve.
 ///
-/// 6. **ANTI-REGRESSION (green today and it must STAY green — do not mistake
-///    green for teeth):** the guard needle occurs EXACTLY ONCE in the whole body,
-///    i.e. it is NOT also applied to the `PvpAction::Swap` arm. A player whose
-///    active has fainted MUST still be able to swap out; guarding Swap soft-locks
-///    them, and in PvP the 60 s deadline reaper launders that soft-lock into a
-///    ranked rating loss. This is ADR-0166 D2's anti-decision, and it exists
-///    because the next consistency-minded security pass will otherwise add the
-///    symmetric guard and ship that bug.
+/// The Swap-arm anti-decision fence lives in its own test,
+/// [`pvp_swap_arm_has_no_fainted_active_guard`], so that it actually runs — folded
+/// in here it would sit behind assertion 1, which panics at HEAD.
 ///
 /// **RED state at HEAD:** the Attack arm (`pvp.rs:1017-1023`) contains only the
 /// moveset check — the guard needle is absent, and the word `forfeit` does not
-/// occur anywhere in `submit_pvp_action`.
+/// occur anywhere in `submit_pvp_action`. Assertions 1b, 2 and 5's `or flee` half
+/// are GREEN at HEAD and labelled ANTI-EVASION.
+///
+/// **HONEST LIMIT — the guard's spelling is pinned (FR-3).** Assertion 1 requires
+/// the literal `if my_team.active_monster().is_fainted() {`. A semantically
+/// identical rewrite — `let active = my_team.active_monster(); if
+/// active.is_fainted() {` — is CORRECT but would false-RED, because binding the
+/// active to a local drops the `my_team.` receiver that makes both-role coverage
+/// structural. That is a deliberate trade (E3 carries the same class of limit):
+/// the receiver is the only thing distinguishing a both-role guard from a
+/// side-hardcoded one in a scan. The required text is stated verbatim in the
+/// failure message; ADR-0166 D2 fixes it as the sanctioned shape.
 #[test]
 fn e2_submit_pvp_action_rejects_attack_from_a_fainted_active() {
     let stripped = stripped_pvp_for_scan();
@@ -2715,6 +2900,29 @@ fn e2_submit_pvp_action_rejects_attack_from_a_fainted_active() {
         )
     });
 
+    // --- (1b) EV-2: `my_team` is bound EXACTLY ONCE -------------------------
+    // Without this, the `my_team.` receiver in (1) is decorative: a red-team PoC
+    // shadowed it (`let real_team = my_team; let my_team = &battle.state.side_a;`
+    // before the match, `let my_team = real_team;` after the guard inside the arm)
+    // and produced a guard that checks SIDE A for BOTH players — exactly the
+    // side-B-corpse-attacks-at-full-damage bug ADR-0166 D2 claims is
+    // "unrepresentable". No `SideId::Side` token appears anywhere in it, so
+    // assertion (2) below does not see it either.
+    let bind_my_team = ["letmy_", "team="].concat();
+    let n_bind_my_team = squashed.matches(bind_my_team.as_str()).count();
+    assert_eq!(
+        n_bind_my_team, 1,
+        "ANTI-EVASION (E2/D2, green at HEAD): `my_team` must be bound EXACTLY ONCE \
+         in `submit_pvp_action`; found {n_bind_my_team}. The single binding is the \
+         exhaustive `match my_side` at pvp.rs:1012-1015, and it is the ONLY reason \
+         the guard's `my_team.` receiver proves both-role coverage. A second `let \
+         my_team = ..` re-points the name — a shadow to `&battle.state.side_a` \
+         before the match, restored after the guard inside the Attack arm, makes the \
+         guard check side A for BOTH players while every other assertion in this test \
+         still passes. That leaves a side-B corpse dealing FULL damage in ranked: the \
+         precise defect this test exists to prevent."
+    );
+
     // --- (2) sited inside the Attack arm; no SideId re-derivation there ------
     assert!(
         guard_pos > attack_pos && guard_pos < swap_pos,
@@ -2731,8 +2939,9 @@ fn e2_submit_pvp_action_rejects_attack_from_a_fainted_active() {
     let n_side_id = attack_arm.matches(side_id.as_str()).count();
     assert_eq!(
         n_side_id, 0,
-        "TEETH (E2/D2): the `PvpAction::Attack` arm must contain no `SideId::Side*` \
-         reference; found {n_side_id}. `my_side` has ALREADY been resolved into \
+        "ANTI-EVASION (E2/D2, green at HEAD): the `PvpAction::Attack` arm must \
+         contain no `SideId::Side*` reference; found {n_side_id}. `my_side` has \
+         ALREADY been resolved into \
          `my_team` by the exhaustive match at pvp.rs:1012-1015 — re-deriving the side \
          inside the arm is an SSOT regression and is exactly the shape that admits a \
          hardcoded `SideId::SideA`, leaving side B unguarded in ranked play."
@@ -2792,16 +3001,59 @@ fn e2_submit_pvp_action_rejects_attack_from_a_fainted_active() {
          to `resolve_full_turn`."
     );
 
+    // --- (4b) EV-9: the rejection is UNCONDITIONAL inside the guard ----------
+    // Assertion (4) only requires `log_reject(` and `return Err` to appear
+    // SOMEWHERE between the guard and the moveset check. A red-team PoC nested a
+    // second, never-true condition inside the guard body
+    // (`if battle.state.turn_number == u16::MAX { .. return Err(e); }`), which
+    // satisfies (4) exactly while making the whole guard a no-op. Requiring that
+    // nothing between the guard's `{` and its `return Err(` opens another `if`
+    // closes it. (The needle is a bare keyword; it is assembled only for
+    // uniformity with the rest of this file.)
+    let if_needle = ["i", "f"].concat();
+    let tail = &squashed[guard_pos + guard.len()..];
+    let ret_rel = tail.find(return_err.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (E2/D2 EV-9) FAIL: no `return Err(` follows the fainted-active \
+             guard in `submit_pvp_action` — the guard does not reject at all."
+        )
+    });
+    let guard_prelude = &tail[..ret_rel];
+    let n_nested_if = guard_prelude.matches(if_needle.as_str()).count();
+    assert_eq!(
+        n_nested_if, 0,
+        "TEETH (E2/D2 EV-9): the fainted-active guard must reject UNCONDITIONALLY; \
+         found {n_nested_if} nested `if` between the guard's opening brace and its \
+         `return Err(`. Any further condition there makes the rejection conditional, \
+         and a condition that is never true (`turn_number == u16::MAX`) turns the \
+         whole guard into a no-op while still satisfying the \
+         `log_reject` + `return Err` presence checks above. On a correct \
+         implementation the only statements here are the message binding, the \
+         `log_reject` call, and the return."
+    );
+
     // --- (5) the PvP-specific message (needs LIVE strings) -------------------
     // These two assertions are the only ones that inspect string literals, so
     // they use the comments-only view rather than `stripped_pvp_for_scan()`
     // (which blanks every literal). Whitespace is squashed on this view too, so
     // "…or flee" collapses to `orflee` and the needle is assembled to match.
+    //
+    // M5: this view is bounded by `fn` MARKERS, not by brace counting. Running
+    // `extract_pvp_fn_body` over string-bearing source works today only because
+    // every `{`/`}` inside this function's literals happens to balance — a
+    // property no future edit is obliged to preserve, and one the plan explicitly
+    // names as an anti-pattern. The marker idiom is trading_tests.rs:1939-1947.
     let comments_only = strip_rust_comments(PVP_RS);
-    let body_ws = extract_pvp_fn_body(&comments_only, "submit_pvp_action").unwrap_or_else(|| {
-        panic!("E2 FAIL: `submit_pvp_action` not found in the comments-only view of pvp.rs.")
-    });
-    let squashed_ws = squash_ws(body_ws);
+    let submit_fn = concat!("fn ", "submit_pvp_action(");
+    let next_fn = concat!("fn ", "battle_challenge_reaper(");
+    let ws_start = comments_only
+        .find(submit_fn)
+        .expect("E2: `fn submit_pvp_action(` not found in pvp.rs");
+    let ws_end = comments_only[ws_start..]
+        .find(next_fn)
+        .map(|p| ws_start + p)
+        .unwrap_or(comments_only.len());
+    let squashed_ws = squash_ws(&comments_only[ws_start..ws_end]);
     let attack_pos_ws = squashed_ws
         .find(attack_marker.as_str())
         .expect("E2: `PvpAction::Attack` arm not found in the string-bearing view");
@@ -2831,18 +3083,65 @@ fn e2_submit_pvp_action_rejects_attack_from_a_fainted_active() {
          anti-copy-paste guard on the incoming fix, not a live defect.)"
     );
 
-    // --- (6) ANTI-REGRESSION: Swap deliberately gets NO such guard -----------
+    // NOTE: the "Swap arm is deliberately unguarded" fence lives in its own test
+    // (`pvp_swap_arm_has_no_fainted_active_guard`) so that it actually RUNS —
+    // folded in here it would be unreachable at HEAD, because assertion (1)
+    // panics first and the fence would never be observed either green or red.
+}
+
+/// **ADR-0166 D2 anti-decision fence** — `PvpAction::Swap` must NEVER acquire the
+/// fainted-active guard, and must keep its own *target* legality check.
+///
+/// This is the single most important entry in ADR-0166, and it is a pure
+/// ANTI-REGRESSION fence: **green at HEAD (0 guards), green after the fix (1, in
+/// the Attack arm only), and red only if someone adds the symmetric guard.**
+/// It is a separate `#[test]` on purpose — inside E2 it would sit behind an
+/// assertion that panics at HEAD, so it could never be observed passing.
+///
+/// A player whose active monster has fainted MUST still be able to swap out. In
+/// PvE, guarding Swap would merely soft-lock them; in PvP the 60 s deadline
+/// reaper (`pvp.rs:54` → `apply_pvp_forfeit` → `settle_pvp_battle` →
+/// `ranking.rs:92`) launders that soft-lock into a **ranked rating loss**. The
+/// next consistency-minded security pass will want to add the symmetric guard
+/// "for parity"; this test is what stops it.
+///
+/// The second assertion is a survivor-pin: the Swap arm must KEEP its own
+/// `my_team.team[idx].is_fainted()` check (`pvp.rs:1031`), which rejects swapping
+/// TO a fainted bench monster. Deleting it while "simplifying the fainted checks"
+/// would let a player swap into a corpse and stall the battle.
+#[test]
+fn pvp_swap_arm_has_no_fainted_active_guard() {
+    let stripped = stripped_pvp_for_scan();
+    let body = extract_pvp_fn_body(&stripped, "submit_pvp_action")
+        .unwrap_or_else(|| panic!("E2 fence FAIL: `submit_pvp_action` not found in pvp.rs."));
+    let squashed = squash_ws(body);
+
+    let guard = ["ifmy_team.", "active_monster().is_fainted(){"].concat();
     let n_guard = squashed.matches(guard.as_str()).count();
-    assert_eq!(
-        n_guard, 1,
-        "ANTI-REGRESSION (E2/D2 anti-decision): the fainted-active guard must occur \
-         EXACTLY ONCE in `submit_pvp_action`; found {n_guard}. A second occurrence \
-         means it was also applied to the `PvpAction::Swap` arm. `Swap` gets NO such \
-         guard ON PURPOSE: a player whose active has fainted MUST still be able to \
-         swap out, else they are soft-locked — and in PvP the 60 s deadline reaper \
-         (pvp.rs:54 → apply_pvp_forfeit → settle_pvp_battle → ranking.rs:92) launders \
-         that soft-lock into a RANKED RATING LOSS. This is the single most important \
-         entry in ADR-0166 (D2). NOTE: this assertion is GREEN today and must STAY \
-         green — it is a regression fence, not a proof of teeth."
+    assert!(
+        n_guard <= 1,
+        "ANTI-REGRESSION (ADR-0166 D2 anti-decision): the fainted-active guard \
+         occurs {n_guard} times in `submit_pvp_action`; it may occur AT MOST ONCE \
+         (in the `PvpAction::Attack` arm). A second occurrence means it was also \
+         applied to the `Swap` arm. `Swap` gets NO such guard ON PURPOSE: a player \
+         whose active has fainted MUST still be able to swap out, else they are \
+         soft-locked — and in PvP the 60 s deadline reaper (pvp.rs:54 → \
+         apply_pvp_forfeit → settle_pvp_battle → ranking.rs:92) launders that \
+         soft-lock into a RANKED RATING LOSS. Reject-not-clamp does NOT extend to \
+         removing the only legal exit."
+    );
+
+    let swap_marker = ["PvpAction::", "Swap"].concat();
+    let swap_pos = squashed
+        .find(swap_marker.as_str())
+        .expect("E2 fence: `PvpAction::Swap` arm not found in `submit_pvp_action`");
+    let target_check = ["ifmy_team.team[idx].is_", "fainted(){"].concat();
+    assert!(
+        squashed[swap_pos..].contains(target_check.as_str()),
+        "ANTI-REGRESSION (ADR-0166 D2): the `PvpAction::Swap` arm must KEEP its own \
+         target check `if my_team.team[idx].is_fainted() {{` (pvp.rs:1031) — the one \
+         that rejects swapping TO a fainted bench monster. It is a different rule \
+         from the Attack-arm guard and must survive any consolidation of the \
+         `is_fainted` checks in this reducer."
     );
 }
