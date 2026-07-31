@@ -682,14 +682,39 @@ async function questLogShows(
   wanted: boolean,
   timeout: number,
 ): Promise<boolean> {
-  const log = p.locator('#quest-log-overlay');
   await p.keyboard.press('KeyQ');
-  await expect(
-    log,
-    'KeyQ must open #quest-log-overlay — a log that never opened would make the ' +
-      '"quest_001 has left the log" reading VACUOUS (and KeyQ is guarded on no other ' +
-      'overlay being visible, so an undismissed dialogue overlay lands here)',
-  ).toBeVisible({ timeout: 15_000 });
+  // ANTI-VACUITY GUARD — assert the overlay's OPEN STATE, never `toBeVisible()`.
+  //
+  // `toBeVisible()` here is a trap that makes this helper unconditionally red in exactly
+  // the case it exists for. `client/index.html:16-18` gives #quest-log-overlay one child,
+  // #quest-log-list, so with ZERO <li> the div's box is 1280x0 — and Playwright treats a
+  // zero bounding box as hidden no matter what `display` says. Measured: quest active =>
+  // {display:"block", h:18} passes; quest completed => {display:"block", h:0} FAILS after
+  // the full timeout. Since this helper is called with wanted=false precisely when
+  // quest_001 has left the log, and A is a fresh identity owning no other quest, the list
+  // is ALWAYS empty at that call and the guard could never pass. (dialogue.spec.ts:388
+  // never hit this because it only ever reads a log that still CONTAINS a quest.)
+  //
+  // The intent is preserved, not weakened: a log that never opened must not be allowed to
+  // read as "the quest is gone". We assert the same thing QuestLogView itself defines as
+  // open (`questLogView.ts:16-35` sets the INLINE style.display to 'block' on render and
+  // 'none' on hide; its own `visible` getter reads that inline property), which is
+  // independent of how tall the rendered content happens to be.
+  const opened = await p
+    .waitForFunction(
+      () => document.getElementById('quest-log-overlay')?.style.display === 'block',
+      undefined,
+      { timeout: 15_000 },
+    )
+    .then(() => true)
+    .catch(() => false);
+  expect(
+    opened,
+    'KeyQ must open #quest-log-overlay (inline style.display === "block", per ' +
+      'questLogView.ts:21) — a log that never opened would make the "quest_001 has left ' +
+      'the log" reading VACUOUS, and KeyQ is guarded on no other overlay being visible, ' +
+      'so an undismissed dialogue overlay lands here',
+  ).toBe(true);
   const held = await p
     .waitForFunction(
       (args: { q: string; want: boolean }) => {
@@ -703,7 +728,24 @@ async function questLogShows(
     .then(() => true)
     .catch(() => false);
   await p.keyboard.press('Escape');
-  await expect(log).toBeHidden({ timeout: 15_000 });
+  // Same reasoning inverted: `toBeHidden()` would pass VACUOUSLY on an empty log even if
+  // Escape did nothing, because a zero-height box already reads as hidden. Assert the
+  // inline closed state instead, so this really does prove the overlay was dismissed
+  // before the caller walks on with the world in an unknown overlay state.
+  const closed = await p
+    .waitForFunction(
+      () => document.getElementById('quest-log-overlay')?.style.display === 'none',
+      undefined,
+      { timeout: 15_000 },
+    )
+    .then(() => true)
+    .catch(() => false);
+  expect(
+    closed,
+    'Escape must close #quest-log-overlay (inline style.display === "none", per ' +
+      'questLogView.ts:35) — leaving it open would suppress the next KeyT/KeyQ, which are ' +
+      'guarded on no other overlay being visible',
+  ).toBe(true);
   return held;
 }
 
