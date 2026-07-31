@@ -44,6 +44,7 @@ import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import {
+  anyVisible,
   BATTLE_FORCE_HIDE,
   type CanOpenVerdict,
   canOpen,
@@ -52,6 +53,7 @@ import {
   OVERLAY_IDS,
   OVERLAY_TIERS,
   type OverlayId,
+  type OverlayProbes,
 } from './overlayRegistry';
 
 // ---------------------------------------------------------------------------
@@ -637,5 +639,159 @@ describe('overlayRegistry — canOpen over arbitrary visible sets (A3)', () => {
         },
       ),
     );
+  });
+});
+
+// ===========================================================================
+// BLOCK 6 — uxd3-b (ADR-0163): `anyVisible(probes, exempt?)`, the READ substrate (AC-7).
+//
+// AMENDS THIS FILE'S HEADER: the "NOT part of uxd3-a … OverlayProbes" note above was a
+// SCOPE statement for uxd3-a, not a permanent ban. uxd3-b adjudication §A2 ships exactly
+// two new exports — `type OverlayProbes` and `anyVisible` — and NOTHING else (no
+// `OverlayHandle` object, no `visibleIds()`, no `isVisible(id)`, no `open`/`hide`/
+// `hideAllExcept`: those have zero consumers in this slice, which is the same YAGNI rule
+// A7/A15 used to delete `createOverlayVisibility` and `RECONNECT_HIDE` one slice ago).
+//
+// RED REASON (both tests below): `anyVisible` is not exported from
+// `client/src/ui/overlayRegistry.ts` yet. Under vitest's SSR transform the missing named
+// export resolves to `undefined`, so each test dies with "anyVisible is not a function" —
+// the RED is CONFINED to these two tests and every uxd3-a tooth above stays green.
+// `tsc --noEmit` also reds on both `anyVisible` and `OverlayProbes` until §B1 lands.
+//
+// WHY AN EXHAUSTIVE LOOP AND NOT fast-check (adjudication §B2): over 15 ids the property is
+// finitely ENUMERABLE, so a loop is strictly stronger than sampling 2^15 subsets — no
+// shrinking, no flake, and the failure message names the offending id directly. fast-check
+// stays where the domain is genuinely large (canOpen's arbitrary visible sets, BLOCK 5).
+// ===========================================================================
+
+/**
+ * A live probe table over a mutable flag record. Deliberately NOT a snapshot: `anyVisible`
+ * must RE-PROBE on every call (main.ts builds the real table at module scope while all
+ * fifteen `let xView` bindings are still `undefined`), so flipping `flags` between calls is
+ * how these teeth detect a caching implementation.
+ */
+function makeProbes(): { flags: Record<string, boolean>; probes: OverlayProbes } {
+  const flags: Record<string, boolean> = {};
+  const probes: Record<string, () => boolean> = {};
+  for (const id of OVERLAY_IDS) {
+    flags[id] = false;
+    probes[id] = () => flags[id] === true;
+  }
+  return { flags, probes: probes as OverlayProbes };
+}
+
+describe('overlayRegistry — anyVisible over a probe table (uxd3-b, AC-7)', () => {
+  it('OR-ANYVISIBLE-PROBES-EVERY-ID BITES: each of the 15 ids is consulted on EVERY call', () => {
+    // WRONG IMPL KILLED (1) — the headline: a TRUNCATED iteration domain, e.g.
+    //   `OVERLAY_IDS.slice(0, 14).some(...)` or a hand-written 14-term `||` chain that
+    //   forgot the newest overlay. That overlay then sits outside mutual exclusion in ALL
+    //   FIVE main.ts fan-out surfaces simultaneously (movement suppression, the reconcile
+    //   re-issue, the rAF re-issue, the pvp auto-show aggregate and the deferred shop-open
+    //   gate) — the ptc5c/ADR-0139 defect class, amplified 5x. Flipping ONE id at a time
+    //   and requiring `true` for every id is what makes a 14-of-15 domain impossible.
+    // WRONG IMPL KILLED (2): a constant `return false` (every overlay invisible ⇒ the menu
+    //   opens over a live battle) or a constant `return true` (movement dead forever). The
+    //   all-false anti-vacuity assertion below kills the second; the loop kills the first.
+    // WRONG IMPL KILLED (3): an impl that CACHES — snapshots the probe results once at
+    //   construction or memoises after the first call. main.ts builds this table before any
+    //   view object exists, so a cached table is permanently all-false and mutual exclusion
+    //   never engages at runtime. The "flip back to false and re-assert false" step inside
+    //   the loop is the anti-cache control: a memoiser returns the stale `true`.
+    const { flags, probes } = makeProbes();
+
+    // ANTI-VACUITY, ASSERTED FIRST: the manifest is the real 15, and an all-false table
+    // answers FALSE. Without this an `anyVisible = () => true` impl passes the whole loop.
+    expect(OVERLAY_IDS.length, 'the manifest must hold 15 mutual-exclusion overlays').toBe(15);
+    expect(
+      anyVisible(probes),
+      'ANTI-VACUITY: with every probe returning false, anyVisible(probes) must be false — ' +
+        'a constant-true implementation would satisfy every per-id assertion below',
+    ).toBe(false);
+
+    let checked = 0;
+    for (const id of OVERLAY_IDS) {
+      flags[id] = true;
+      expect(
+        anyVisible(probes),
+        `anyVisible must return true when ONLY '${id}' is visible — if this is the only ` +
+          `failing id, '${id}' is missing from the iteration domain and is outside mutual ` +
+          'exclusion in all five main.ts fan-out surfaces at once',
+      ).toBe(true);
+      flags[id] = false;
+      expect(
+        anyVisible(probes),
+        `anyVisible must return false again once '${id}' is hidden — a stale true here means ` +
+          'the implementation cached/snapshotted the probe results instead of re-probing, and ' +
+          'main.ts builds this table while every view binding is still undefined',
+      ).toBe(false);
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: all 15 ids must have been flipped individually').toBe(15);
+  });
+
+  it('OR-ANYVISIBLE-EXEMPT BITES: `exempt` skips EXACTLY that one id and nothing else', () => {
+    // Sole production consumer: the pvp auto-show aggregate (main.ts:1609), which must ask
+    // "is anything OTHER THAN the pvp overlay up?" — a manually-opened pvpView must not veto
+    // its own refresh, while a live battle/dialogue must.
+    //
+    // WRONG IMPL KILLED (1): `exempt` IGNORED (a plain `anyVisible(probes)` under a new
+    //   signature). Cell (a) reds: with only pvpView up, the aggregate would read true and
+    //   `forceVisible` would go false, so an already-open PvP overlay silently stops
+    //   refreshing the moment a challenge lands.
+    // WRONG IMPL KILLED (2): `exempt` applied to the WRONG id (an off-by-one over
+    //   OVERLAY_IDS, or `id === exempt` written against the array INDEX). Cell (c) reds.
+    // WRONG IMPL KILLED (3): an `exempt` that short-circuits the whole scan — e.g.
+    //   `if (exempt !== undefined) return false;`. Cell (b) reds: with pvpView AND a battle
+    //   both up, a server-pushed challenge would pop the PvP overlay over the live battle.
+    // WRONG IMPL KILLED (4): `exempt` treated as "the only id to CONSULT" (inverted sense).
+    //   Cells (a) and (b) red together.
+    const { flags, probes } = makeProbes();
+
+    // ANTI-VACUITY, ASSERTED FIRST: with nothing visible the answer is false whatever the
+    // exempt argument is, so a constant-true impl cannot satisfy cells (b)/(c) for free.
+    expect(OVERLAY_IDS.length, 'the manifest must hold 15 mutual-exclusion overlays').toBe(15);
+    for (const id of OVERLAY_IDS) {
+      expect(
+        anyVisible(probes, id),
+        `ANTI-VACUITY: nothing visible ⇒ anyVisible(probes, '${id}') must be false`,
+      ).toBe(false);
+    }
+
+    let cells = 0;
+    for (const id of OVERLAY_IDS) {
+      // Any other manifest member; the non-null assertion is safe (15 >= 2) and this file's
+      // override allows it.
+      const other = OVERLAY_IDS.find((x) => x !== id)!;
+
+      // (a) only `id` visible, exempting `id` ⇒ FALSE (the exempt overlay does not veto itself)
+      flags[id] = true;
+      expect(
+        anyVisible(probes, id),
+        `(a) only '${id}' visible and exempt='${id}' ⇒ must be FALSE — an ignored exempt ` +
+          'argument reds here, and the pvp auto-show would stop refreshing an overlay the ' +
+          'player opened by hand',
+      ).toBe(false);
+
+      // (c) only `id` visible, exempting a DIFFERENT id ⇒ TRUE (exempt must not be blanket)
+      expect(
+        anyVisible(probes, other),
+        `(c) only '${id}' visible and exempt='${other}' ⇒ must be TRUE — an exempt that ` +
+          'excuses the wrong id (or every id) reds here',
+      ).toBe(true);
+
+      // (b) `id` + `other` visible, exempting `id` ⇒ TRUE (the non-exempt one still counts)
+      flags[other] = true;
+      expect(
+        anyVisible(probes, id),
+        `(b) '${id}' and '${other}' visible, exempt='${id}' ⇒ must be TRUE — an exempt that ` +
+          'short-circuits the whole scan reds here, and a server-pushed PvP challenge would ' +
+          'pop the PvP overlay over a live battle',
+      ).toBe(true);
+
+      flags[id] = false;
+      flags[other] = false;
+      cells += 3;
+    }
+    expect(cells, 'ANTI-VACUITY: all 15 ids x 3 cells must have been exercised').toBe(45);
   });
 });

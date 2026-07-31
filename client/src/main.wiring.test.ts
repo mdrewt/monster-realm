@@ -54,6 +54,14 @@ import { fileURLToPath } from 'node:url';
 // below rather than exported/shared, deliberately.)
 import { Window } from 'happy-dom';
 import { describe, expect, it } from 'vitest';
+// uxd3-b (ADR-0163): W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY Part B needs the manifest as a
+// STATIC import so the probe-table check is BIDIRECTIONAL and cannot drift — a 16th OVERLAY_IDS
+// member with no probe entry reds, and a 16th probe entry with no manifest member reds too.
+// A static import is safe here where W-BATTLE-FORCEHIDE-SET-MATCHES-MANIFEST (~:4810) had to use
+// a dynamic one: that tooth was authored while `./ui/overlayRegistry` did not exist yet, so a
+// static import would have failed module RESOLUTION and reded the COLLECTION of this whole file.
+// uxd3-a landed the module, so the resolution hazard is gone.
+import { OVERLAY_IDS } from './ui/overlayRegistry';
 
 // Locate main.ts relative to this test file (both live in client/src/).
 const MAIN_TS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'main.ts');
@@ -5410,5 +5418,537 @@ describe('★ main.ts wiring (uxd3): anchor discipline — new code must not re-
           'leaf key glyphs in menuModel MENU_TREE as bare glyphs.',
       ).toBeGreaterThan(listenerIdx);
     }
+  });
+});
+
+// ===========================================================================
+// uxd3-b (ADR-0163) — the ONE probe table, the five fan-out surfaces that read through it,
+// and the AC-12 click front door.
+//
+// ⚠ client/src/main.ts is COVERAGE-EXCLUDED (client/vite.config.ts:97). These source-scan
+// teeth are therefore the ONLY executable guard on the probe table and on the launcher
+// branch — there is no unit test that can ever observe them running.
+// ===========================================================================
+
+/** Marker-comment bounds of the probe table (adjudication §B3 E2). The markers are the
+ *  contract: they are what lets a region-bounded scan pin the table's SHAPE without
+ *  importing main.ts (which has DOM/wasm side effects and cannot be imported in vitest). */
+const UXD3B_PROBES_BEGIN = '// UXD3B-PROBES-BEGIN';
+const UXD3B_PROBES_END = '// UXD3B-PROBES-END';
+
+/** Marker-comment bounds of the AC-12 click front door (adjudication §B3 E8). */
+const UXD3B_LAUNCHER_BEGIN = '// UXD3B-LAUNCHER-BEGIN';
+const UXD3B_LAUNCHER_END = '// UXD3B-LAUNCHER-END';
+
+describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route through ONE probe table (AC-7)', () => {
+  it('★ W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY-ROUTES BITES: each of the 5 surfaces carries the EXACT registry call shape', () => {
+    // AC-7 (spec :144) mechanism half. Replaces the five uxd3-a anti-collapse teeth
+    // (W-MENU-FANOUT-ANYOVERLAY/-KEYDOWN/-RECONCILE/-RAF/-PVP) and the sixteen legacy
+    // per-overlay fan-out floors, which the orchestrator retires AFTER this goes green.
+    //
+    // RED AT AUTHORING TIME: all five surfaces still hold hand-written OR-lists
+    // (main.ts:246-260, :699-715, :1313-1329, :1609-1623, :2492-2508). The tokens
+    // `anyVisible(` and `overlayProbes` appear ZERO times in main.ts, so all five shape
+    // assertions below fail. Surfaces 1 and 4 fail on a missing call; 2, 3 and 5 fail
+    // because their guard is a 15-term `!(a || b || …)` and not the collapsed form.
+    //
+    // WHY EXACT CONTIGUOUS SHAPES AND NOT TOKEN PRESENCE (red-team F1 — the reason this
+    // tooth is not five `.includes('anyOverlayVisible')` checks):
+    // WRONG IMPL KILLED (1): a ONE-CHARACTER inversion.
+    //   `if (!anyOverlayVisible()) { suppressNativeMovementDefault(e); return; }` contains
+    //   every token a presence check looks for, and kills ALL movement in the game — the
+    //   suppression block would fire whenever NO overlay is open. Identically for surfaces
+    //   2/5: dropping the `!` from `!anyOverlayVisible()` re-issues held movement ONLY while
+    //   an overlay is up, i.e. exactly the walking-under-the-menu bug inverted.
+    // WRONG IMPL KILLED (2): the result DISCARDED — `anyOverlayVisible();` as a bare
+    //   statement (or `void anyOverlayVisible();`) beside an untouched OR-list, or beside no
+    //   guard at all. A presence-only tooth is green; the surface does nothing.
+    // WRONG IMPL KILLED (3): a PARTIAL collapse — four surfaces routed, one left hand-rolled.
+    //   Each surface is asserted separately with its own message, so a half-migration names
+    //   the surface that was missed instead of failing once, ambiguously.
+    // WRONG IMPL KILLED (4): surface 4 collapsed WITHOUT the exempt argument, or exempting
+    //   the wrong id — `anyVisible(overlayProbes)` there makes a manually-opened pvpView veto
+    //   its own refresh, so an incoming challenge silently stops updating the open overlay.
+    //   No pre-existing tooth checks that the exempt id is `pvpView`.
+    // WRONG IMPL KILLED (5): the nh1/ADR-0146 regression — a "tidy" of surface 3 that drops
+    //   `suppressNativeMovementDefault(e);` or moves it after the `return;`. That silently
+    //   reverts the playtest-BLOCKING movement bug (arrow keys and Space fall through to the
+    //   browser's native page-scroll / button-activate the moment any overlay opens). The nh1
+    //   half below is copied CHARACTER-FOR-CHARACTER from W-MENU-FANOUT-KEYDOWN (:4661-4679),
+    //   which this tooth replaces — it is the highest-risk carry-over in the slice.
+    // WRONG IMPL KILLED (6): a surface-3 region widened past the keydown block into the
+    //   keyup handler, where any needle can be satisfied by unrelated code.
+    //
+    // NO per-region "zero residue" clause is needed: every needle below requires the `)` of
+    // the call to be IMMEDIATELY followed by ` {` or `;`, so an appended `|| x?.visible` term
+    // cannot survive. The whole-file ceiling is Part C.
+    const src = readMainTs();
+
+    // ---- SURFACE 1: the shared anyOverlayVisible() predicate (E3) --------------------
+    // ANTI-VACUITY: both function-declaration anchors unique — the `characterTileMap` bound
+    // is what stops the region running to end-of-file and swallowing unrelated code.
+    expectUniqueAnchor(src, UXD3_ANYOVERLAY_START);
+    expectUniqueAnchor(src, UXD3_ANYOVERLAY_END);
+    const s1 = squashWhitespace(bodyRegion(src, UXD3_ANYOVERLAY_START, UXD3_ANYOVERLAY_END));
+    expect(
+      s1.trim().length,
+      'ANTI-VACUITY (surface 1): the anyOverlayVisible() body region is empty after ' +
+        'comment-stripping — the region collapsed and any needle would fail for the wrong reason',
+    ).toBeGreaterThan(0);
+    expect(
+      s1.includes('return anyVisible(overlayProbes);'),
+      'surface 1 (anyOverlayVisible(), E3) must be exactly `return anyVisible(overlayProbes);`. ' +
+        'Keep the FUNCTION NAME and its JSDoc: W-INTERACT-DEFERRED-OPEN and three region scans ' +
+        'anchor on the literal `anyOverlayVisible` (anti-pattern 18). The contiguous shape is ' +
+        'what rejects `return !anyVisible(overlayProbes);` and a stray appended `|| x?.visible`. ' +
+        'Region=' +
+        JSON.stringify(s1),
+    ).toBe(true);
+
+    // ---- SURFACE 2: the reconcile divergence re-issue (E4) ---------------------------
+    expectUniqueAnchor(src, NH2_RECONCILE_START);
+    expectUniqueAnchor(src, NH2_RECONCILE_END);
+    const s2 = squashWhitespace(bodyRegion(src, NH2_RECONCILE_START, NH2_RECONCILE_END));
+    expect(
+      s2.includes('reissueDir('),
+      'ANTI-VACUITY (surface 2): the reconcile region must still contain `reissueDir(` — its ' +
+        'own identity marker. Without it the region is mis-anchored and every needle is vacuous.',
+    ).toBe(true);
+    expect(
+      s2.includes('predictor.outstandingSteps === 0 && !anyOverlayVisible()'),
+      'surface 2 (reconcile divergence emitter, E4) must gate on the CONTIGUOUS ' +
+        '`predictor.outstandingSteps === 0 && !anyOverlayVisible()`. The leading conjunct is ' +
+        "W-NH2-GATE-WIRED's `opensWith` anchor and must stay FIRST (nh2/ADR-0148); the `!` is " +
+        'load-bearing — dropping it re-issues held movement ONLY while an overlay is up, i.e. ' +
+        'the character walks under the open overlay on every server pullback. Region=' +
+        JSON.stringify(s2),
+    ).toBe(true);
+
+    // ---- SURFACE 3: the keydown movement-suppression block (E6) ----------------------
+    // ⚠ The END anchor `const dir = KEY_DIR[e.code];` LEGITIMATELY occurs TWICE in main.ts
+    // (the keydown handler we want, and the keyup handler ~15 lines later — documented at
+    // :1974-1981). So `expectUniqueAnchor` must NOT be applied to it: it would red on correct
+    // source. `regionOrThrow` searches END forward FROM START, so it resolves to the nearer,
+    // correct occurrence — and W-NH1-SUPPRESS's control (the region must not contain
+    // `addEventListener('keyup'`) is carried verbatim below to prove that resolution held.
+    expectUniqueAnchor(src, UXD3_SUPPRESS_START);
+    const s3raw = regionOrThrow(src, UXD3_SUPPRESS_START, UXD3_SUPPRESS_END);
+    expect(
+      s3raw.includes("addEventListener('keyup'"),
+      'ANTI-VACUITY (surface 3): the suppression region must not have widened past the keydown ' +
+        'block into the keyup handler — a widened region can satisfy any needle ' +
+        "(W-NH1-SUPPRESS's control, carried verbatim)",
+    ).toBe(false);
+    const s3body = bodyRegion(src, UXD3_SUPPRESS_START, UXD3_SUPPRESS_END);
+    const s3 = squashWhitespace(s3body);
+    expect(
+      s3body.includes('suppressNativeMovementDefault(e);'),
+      'ANTI-VACUITY (surface 3): the region must still contain suppressNativeMovementDefault(e); ' +
+        '— its own identity marker (nh1/ADR-0146)',
+    ).toBe(true);
+    expect(
+      s3.includes('if (anyOverlayVisible()) { suppressNativeMovementDefault(e); return; }'),
+      'surface 3 (keydown movement suppression, E6) must be exactly ' +
+        '`if (anyOverlayVisible()) { suppressNativeMovementDefault(e); return; }`. ⚠ Do NOT ' +
+        'reword the START comment `// Suppress movement input while an overlay is open.` — ' +
+        'W-NH1-SUPPRESS anchors on it (anti-pattern 16). The contiguous shape is the ONLY thing ' +
+        'standing between the correct code and `if (!anyOverlayVisible()) {…}`, a one-character ' +
+        'mutation that passes every presence check and kills ALL movement in the game. Region=' +
+        JSON.stringify(s3),
+    ).toBe(true);
+    // nh1 / ADR-0146 preservation — copied CHARACTER-FOR-CHARACTER from the retiring
+    // W-MENU-FANOUT-KEYDOWN (:4661-4679). Losing this pair silently reverts the
+    // playtest-blocking movement bug, which is why it is asserted independently of the
+    // contiguous shape above (the shape could be reformatted; these two facts cannot move).
+    const callIdx = s3body.indexOf('suppressNativeMovementDefault(e);');
+    expect(
+      callIdx,
+      'the suppression block must STILL call suppressNativeMovementDefault(e); (nh1/ADR-0146, ' +
+        'AC-7). uxd3-b collapses this block to a single registry call and touches nothing else ' +
+        'in it — if this is RED, the block was restructured and arrow keys are hijacked by the ' +
+        'browser again.',
+    ).toBeGreaterThanOrEqual(0);
+    const returnIdx = s3body.indexOf('return;');
+    expect(
+      returnIdx,
+      'the suppression block must STILL early-`return;` after suppressing (nh1/ADR-0146)',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      callIdx,
+      'suppressNativeMovementDefault(e); must come BEFORE the `return;` — a call placed after it ' +
+        'is dead code that satisfies a substring check while suppressing nothing (nh1 ' +
+        'post-mortem, W-NH1-SUPPRESS secondary target)',
+    ).toBeLessThan(returnIdx);
+
+    // ---- SURFACE 4: the pvp auto-show aggregate (E7) ---------------------------------
+    // ⚠ regionOrThrow, NOT bodyRegion. bodyRegion drops the region's FIRST LINE by design
+    // (:2337, `raw.slice(nl + 1)`) because its START anchors are usually comments — but this
+    // START anchor is CODE, and after the collapse the first line IS the entire surface. Using
+    // bodyRegion here would return whitespace (or throw on a single-line region), i.e. a
+    // vacuously green surface. stripLineComments is therefore applied explicitly instead.
+    expectUniqueAnchor(src, UXD3_PVPAGG_START);
+    expectUniqueAnchor(src, UXD3_PVPAGG_END);
+    const s4 = squashWhitespace(
+      stripLineComments(regionOrThrow(src, UXD3_PVPAGG_START, UXD3_PVPAGG_END)),
+    );
+    expect(
+      s4.trim().length,
+      'ANTI-VACUITY (surface 4): the pvp aggregate region is empty after comment-stripping — ' +
+        'if this fires, bodyRegion was used instead of regionOrThrow and the first line (the ' +
+        'whole surface) was dropped',
+    ).toBeGreaterThan(0);
+    expect(
+      s4.includes("const anyOverlayVisible = anyVisible(overlayProbes, 'pvpView');"),
+      'surface 4 (pvp auto-show aggregate, E7) must be exactly ' +
+        "`const anyOverlayVisible = anyVisible(overlayProbes, 'pvpView');`. The `const " +
+        'anyOverlayVisible =` literal must stay verbatim (anti-pattern 18 — it is this ' +
+        "region's START anchor). The exempt argument must be 'pvpView': without it a " +
+        'manually-opened PvP overlay vetoes its own refresh and an incoming challenge stops ' +
+        'updating it; with the wrong id a server-pushed challenge pops the PvP overlay over a ' +
+        'live battle. Region=' +
+        JSON.stringify(s4),
+    ).toBe(true);
+
+    // ---- SURFACE 5: the rAF held-key re-issue (E9) -----------------------------------
+    expectUniqueAnchor(src, NH2_RAF_START);
+    expectUniqueAnchor(src, NH2_RAF_END);
+    const s5 = squashWhitespace(bodyRegion(src, NH2_RAF_START, NH2_RAF_END));
+    expect(
+      s5.includes('reissueDir('),
+      'ANTI-VACUITY (surface 5): the rAF re-issue region must still contain `reissueDir(` — its ' +
+        'own identity marker',
+    ).toBe(true);
+    expect(
+      s5.includes('if (predictor.outstandingSteps === 0 && !anyOverlayVisible())'),
+      'surface 5 (rAF held-key re-issue, E9) must gate on the CONTIGUOUS ' +
+        '`if (predictor.outstandingSteps === 0 && !anyOverlayVisible())`. ⚠ Do NOT touch the ' +
+        '`// Re-issue the held dir` comment (NH2_RAF_START) or `const ownEntityId =` ' +
+        "(NH2_RAF_END). The leading conjunct is W-NH2-GATE-WIRED's `opensWith` anchor. Without " +
+        'the `!`, a key held down when an overlay opens keeps re-issuing a Step EVERY FRAME — ' +
+        'the "I opened the menu while walking and my character kept walking" bug. Region=' +
+        JSON.stringify(s5),
+    ).toBe(true);
+  });
+
+  it('★ W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY-PROBE-TABLE BITES: one byte-identical probe per OVERLAY_IDS member, and nothing else', () => {
+    // THE tooth this slice cannot ship without. `client/src/main.ts` is COVERAGE-EXCLUDED
+    // (client/vite.config.ts:97), so no unit test can ever observe the probe table executing.
+    // This scan is the ONLY guard on it, and the table now feeds ALL FIVE fan-out surfaces —
+    // one wrong entry corrupts every one of them at once while every other tooth stays green.
+    //
+    // RED AT AUTHORING TIME: this test THROWS. `// UXD3B-PROBES-BEGIN` does not exist in
+    // main.ts yet, so `regionOrThrow` raises `main.ts must contain "// UXD3B-PROBES-BEGIN"`
+    // before any assertion runs. That is a HARD red, never a vacuous pass — the whole reason
+    // the region helper throws instead of returning an empty slice.
+    //
+    // WRONG IMPL KILLED (1) — the one that costs the most: `?? true` instead of `?? false`
+    //   on any single entry. Every probe would read TRUE before its view is constructed, so at
+    //   boot: ALL movement suppressed, the reconcile AND rAF re-issues both dead, the PvP
+    //   auto-show dead, and the AC-12 launcher a permanently dead button. The exact-literal
+    //   assertion catches it; a "the key equals the identifier read" parser does not.
+    // WRONG IMPL KILLED (2): a COPY-PASTE probe — `raisingView: () => boxView?.visible ?? false`.
+    //   It type-checks perfectly, and the box and raising overlays become indistinguishable to
+    //   mutual exclusion. Only a `${id}: () => ${id}?.visible` literal sees it.
+    // WRONG IMPL KILLED (3): a NEGATED or reshaped probe — `!x?.visible`, `x?.visible === false`,
+    //   `x !== undefined` (true forever once the view is built), `x?.visible ?? false === true`
+    //   and every other precedence trap, all in one assertion.
+    // WRONG IMPL KILLED (4): a SPREAD base — `{ ...BASE_PROBES, menuView: () => false }` would
+    //   show fifteen correct-looking literals in this region and still ship a poisoned table,
+    //   because the spread's contents live outside the markers. Hence the no-`...` clause.
+    // WRONG IMPL KILLED (5): a 16th smuggled entry (an id not in the manifest, or a duplicate)
+    //   — the `?.visible ?? false` count must equal OVERLAY_IDS.length exactly.
+    // WRONG IMPL KILLED (6): a SHADOW table — a second `const overlayProbes` later in the file
+    //   that some surfaces close over instead. The whole-file count clause kills it.
+    // WRONG IMPL KILLED (7): a 16th overlay added to the manifest with no probe entry. The
+    //   manifest is a STATIC import, so this loop grows automatically and reds — that is what
+    //   "bidirectional" buys, and it is why the loop domain is OVERLAY_IDS and not a literal.
+    const src = readMainTs();
+    expectUniqueAnchor(src, UXD3B_PROBES_BEGIN);
+    expectUniqueAnchor(src, UXD3B_PROBES_END);
+    // Comment-stripped so the rationale comment INSIDE the markers (which necessarily quotes
+    // the entry template) can never satisfy a needle; squashed so biome re-wrapping cannot.
+    const region = squashWhitespace(
+      stripLineComments(regionOrThrow(src, UXD3B_PROBES_BEGIN, UXD3B_PROBES_END)),
+    );
+
+    // ANTI-VACUITY, ASSERTED FIRST: a real, non-degenerate region over the real 15-id manifest.
+    expect(
+      OVERLAY_IDS.length,
+      'the imported manifest must hold 15 overlays (anti-vacuity: a shrunken manifest would ' +
+        'make the per-id loop below trivially satisfiable by an under-wired table)',
+    ).toBe(15);
+    expect(
+      region.includes('overlayProbes'),
+      'ANTI-VACUITY: the marked region must actually contain the `overlayProbes` declaration — ' +
+        'an empty marker pair (or markers wrapped around the wrong code) would satisfy every ' +
+        'deny-list clause below vacuously',
+    ).toBe(true);
+
+    for (const id of OVERLAY_IDS) {
+      const needle = `${id}: () => ${id}?.visible ?? false`;
+      expect(
+        region.includes(needle),
+        `the probe table must contain the EXACT entry \`${needle},\` — byte-identical to the ` +
+          'template, in OVERLAY_IDS declaration order. main.ts is coverage-excluded, so this ' +
+          'literal is the only thing distinguishing a correct probe from `?? true` (every ' +
+          'overlay reads visible before its view exists ⇒ movement dead, both re-issue paths ' +
+          'dead, PvP auto-show dead, the AC-12 launcher a dead button), from a copy-pasted ' +
+          'sibling identifier, and from a negated read. Region=' +
+          JSON.stringify(region),
+      ).toBe(true);
+    }
+
+    expect(
+      countOccurrences(region, '?.visible ?? false'),
+      'the probe table must hold EXACTLY one `?.visible ?? false` per manifest id ' +
+        `(${OVERLAY_IDS.length}). A higher count means a 16th entry was smuggled in for an id ` +
+        'that is not a registry member (it would be invisible to canOpen and to every manifest ' +
+        'tooth); a lower count means the region no longer covers the whole table.',
+    ).toBe(OVERLAY_IDS.length);
+
+    expect(
+      region.includes('...'),
+      'the probe table must be a FLAT object literal with no `...` spread. ' +
+        '`{ ...BASE_PROBES, menuView: () => false }` would show fifteen correct literals inside ' +
+        'these markers and still ship a poisoned table, because the spread source lives outside ' +
+        'the region this tooth can see.',
+    ).toBe(false);
+
+    expect(
+      countOccurrences(stripLineComments(src), 'const overlayProbes'),
+      'main.ts must declare `const overlayProbes` EXACTLY once (whole file, comment-stripped). ' +
+        'A second, shadowing table that some fan-out surfaces close over instead would leave ' +
+        'this region green while half the surfaces read a different, unguarded set of probes.',
+    ).toBe(1);
+  });
+
+  it('★ W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY-NO-HAND-ROLLED-OR-LIST BITES: zero hand-rolled `View?.visible ||` fan-out terms survive anywhere in main.ts', () => {
+    // The CEILING that replaces the sixteen retired per-overlay FLOORS. A floor ("renameView
+    // appears at least 17 times") can only ever detect an overlay being dropped from an
+    // EXISTING list; it is structurally blind to a NEW sixth hand-written fan-out surface, and
+    // it needs recalibrating every time an overlay is added. A ceiling of zero needs no
+    // recalibration and fails the moment anyone hand-rolls a list again.
+    //
+    // RED AT AUTHORING TIME: the residual is 69, not 0 — the five OR-lists at main.ts:246-260
+    // (14 terms with `||`), :699-715 (14), :1313-1329 (14), :1609-1623 (13) and :2492-2508 (14).
+    // MEASURED on this tree: 75 total `View?.visible ||`, minus the 6 exempted below.
+    //
+    // THE NAMED EXEMPTION: `if (!xView?.visible || identity === '') return;` is the
+    // refresh-listener early-out idiom, NOT a fan-out list — it names ONE overlay and asks
+    // "is my own overlay closed, or am I not joined yet?". Six sites, all batch listeners:
+    //   main.ts:1357 boxView, :1371 raisingView, :1383 evolutionView,
+    //   main.ts:1557 shopView, :1589 tradeView, :1637 leaderboardView.
+    // It is EXCISED FIRST so the ceiling is a true 0 that stays stable as overlays are added.
+    // A bare `toBe(6)` would need recalibrating the day a 16th overlay gets a batch listener —
+    // exactly the recalibration treadmill this tooth exists to end.
+    //
+    // WRONG IMPL KILLED (1): a collapse that leaves ONE list behind (the pvp aggregate is the
+    //   likeliest, being the only one that is not a boolean guard). 13 residual ⇒ RED.
+    // WRONG IMPL KILLED (2): a "helpful" 15-term OR-list added to a NEW sixth surface later —
+    //   the failure mode no retired floor could see.
+    // WRONG IMPL KILLED (3): a partial collapse that keeps a couple of terms appended to the
+    //   registry call, e.g. `anyOverlayVisible() || settingsView?.visible`.
+    //
+    // HONEST SCOPE LIMIT (red-team F9 — recorded in ADR-0163 D3, and NOT to be overstated in
+    // the PR body): this ceiling sees ONLY the `||` spelling. All of these are invisible to it:
+    //   • a de-Morgan `&&` chain — `!a?.visible && !b?.visible && …`. This is the MOST likely
+    //     shape a future author reaches for, because all 12 hotkey guard lists already use it.
+    //   • `[a, b].some((v) => v?.visible)`
+    //   • a `||=` accumulator
+    //   • an alias — `const h = helpView; … h?.visible || …`
+    //   • a ternary chain
+    // The claim this tooth supports is "no hand-rolled `||` fan-out list survives", not "a new
+    // sixth surface is impossible".
+    const stripped = squashWhitespace(stripLineComments(readMainTs()));
+
+    // ANTI-VACUITY FLOOR, ASSERTED FIRST: the six exempted sites must actually be found. If a
+    // future edit reshapes that idiom, the excision below silently removes nothing (fine) — but
+    // if the SCAN is broken (bad path, over-eager stripper, squash changing the spacing) the
+    // exemption count collapses to 0 and the `toBe(0)` ceiling would pass on an empty string.
+    expect(
+      countOccurrences(stripped, "?.visible || identity === ''"),
+      "main.ts must still contain the refresh-listener idiom `?.visible || identity === ''` at " +
+        'least 6 times (box/raising/evolution/shop/trade/leaderboard batch listeners, ' +
+        'main.ts:1357, 1371, 1383, 1557, 1589, 1637). A count of 0 means the source scan itself ' +
+        'is broken and the ceiling below would pass vacuously — this is a scan failure, not a ' +
+        'fan-out regression.',
+    ).toBeGreaterThanOrEqual(6);
+
+    const exempted = stripped.split("?.visible || identity === ''").join('');
+    expect(
+      countOccurrences(exempted, 'View?.visible ||'),
+      'main.ts must contain ZERO hand-rolled `View?.visible ||` fan-out terms once the six ' +
+        "named refresh-listener early-outs (`?.visible || identity === ''`) are excised. Every " +
+        'mutual-exclusion read goes through the ONE probe table now (anyOverlayVisible() / ' +
+        'anyVisible(overlayProbes, …)). RED at authoring time with 69 — the five OR-lists. If ' +
+        'this reds AFTER the collapse, someone hand-wrote a new fan-out list; route it through ' +
+        "the registry instead. NOTE the honest limit in this test's comment: a de-Morgan `&&` " +
+        'chain is invisible to this ceiling.',
+    ).toBe(0);
+  });
+});
+
+/** Every `.<identifier>(` method-call token in a region, hand-scanned (no `new RegExp` —
+ *  Semgrep's detect-non-literal-regexp is banned repo-wide and has broken CI twice).
+ *  Deliberately returns the tokens rather than answering a yes/no question, so the caller can
+ *  ALLOW-LIST them: a deny-list of forbidden verbs is unclosable (see the tooth below). */
+function dotMethodTokens(region: string): string[] {
+  const IDENT = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$';
+  const found: string[] = [];
+  for (const part of region.split('.').slice(1)) {
+    let i = 0;
+    while (i < part.length && IDENT.indexOf(part.charAt(i)) >= 0) i += 1;
+    if (i > 0 && part.charAt(i) === '(') found.push(part.slice(0, i));
+  }
+  return found;
+}
+
+describe('★ main.ts wiring (uxd3-b/ADR-0163): the AC-12 click front door is a READ-ONLY delegated branch', () => {
+  it('★ W-UXD3B-LAUNCHER-BRANCH-IS-READ-ONLY BITES: the launcher branch gates on the SSOT, owns no DOM, and has exactly one binding site', () => {
+    // AC-12 (spec :149) positive half: the persistent corner badge becomes the click front door
+    // for the main menu. The whole design rests on the branch being DELEGATED and READ-ONLY —
+    // main.ts must never NAME, resolve, mutate, hide or remove `#help-hint`, so
+    // W-UX1-HINT-NO-JS-OWNER (:2640) stays green VERBATIM and ADR-0151 D2's "no owner that can
+    // hide or remove it" survives the amendment.
+    //
+    // RED AT AUTHORING TIME: this test THROWS. `// UXD3B-LAUNCHER-BEGIN` does not exist in
+    // main.ts yet, so `regionOrThrow` raises before any assertion runs — a hard red.
+    //
+    // WRONG IMPL KILLED (1) — red-team F4, the headline: a branch that CALLS the gate and
+    //   ignores it. `void anyOverlayVisible(); held.clear(); openMenu();` contains
+    //   `anyOverlayVisible`, `held.clear()` and `openMenu(` — every token a presence-only tooth
+    //   looks for — and opens the modal menu OVER a live battle or a live NPC dialogue, AND
+    //   pre-join (where `menuAvailability()` dereferences `store.ownCharacter('')!` and throws
+    //   inside a listener with no try/catch, breaking the click handler for the session).
+    //   W-KEYM-HANDLER cannot help: it slices only the KeyM block, ~500 lines above this
+    //   listener. Hence the FULL GUARD as ONE contiguous needle.
+    // WRONG IMPL KILLED (2): the identity guard dropped — `if (!anyOverlayVisible())` alone.
+    //   Same pre-join throw, and the contiguous needle rejects it.
+    // WRONG IMPL KILLED (3): the branch keyed on the ELEMENT ID (`closest('#help-hint')` or
+    //   `document.getElementById('help-hint')`) instead of the data attribute. That reds
+    //   W-UX1-HINT-NO-JS-OWNER, but only AFTER this branch exists; the positive needle here
+    //   states the intended mechanism up front.
+    // WRONG IMPL KILLED (4) — red-team F5, why this is an ALLOW-LIST and not a deny-list: a
+    //   deny-list of nine DOM verbs misses `.removeAttribute(` (note `.remove(` does NOT
+    //   substring-match it), `.dataset`, `.replaceWith(`, `.append(`, `.insertAdjacentHTML(`,
+    //   `.toggleAttribute(`, `.setHTMLUnsafe(` and `el['style']`. Any one of them turns the
+    //   zero-owner badge into an owned element and quietly voids ADR-0151 D2. An allow-list is
+    //   closed by construction: anything not named fails, including verbs invented later.
+    // WRONG IMPL KILLED (5): a SECOND binding site for the attribute (a duplicate branch, or a
+    //   `setAttribute('data-menu-launcher')` that creates a second launcher). The whole-file
+    //   count is the clause carrying the "ux1-1's structural guarantee is now DOUBLE-guarded"
+    //   claim — it must not be the first thing dropped under budget pressure.
+    const src = readMainTs();
+    expectUniqueAnchor(src, UXD3B_LAUNCHER_BEGIN);
+    expectUniqueAnchor(src, UXD3B_LAUNCHER_END);
+    const region = squashWhitespace(
+      stripLineComments(regionOrThrow(src, UXD3B_LAUNCHER_BEGIN, UXD3B_LAUNCHER_END)),
+    );
+
+    // ANTI-VACUITY, ASSERTED FIRST: a real, non-degenerate branch. An empty marker pair would
+    // satisfy every deny-list clause and the allow-list subset check below for free.
+    expect(
+      region.trim().length,
+      'ANTI-VACUITY: the launcher region is empty after comment-stripping — the markers wrap ' +
+        'nothing, and every deny-list/allow-list clause below would pass vacuously',
+    ).toBeGreaterThan(0);
+    const methods = dotMethodTokens(region);
+    expect(
+      methods.length,
+      'ANTI-VACUITY: the region must contain at least one `.method(` call (the delegation ' +
+        '`closest(` at minimum) — an empty token set makes the allow-list subset check below ' +
+        `vacuously true. Found: ${JSON.stringify(methods)}`,
+    ).toBeGreaterThanOrEqual(1);
+
+    // --- POSITIVE: the intended mechanism, stated as code, not as prose ---------------
+    expect(
+      region.includes("closest('[data-menu-launcher]')"),
+      'the launcher branch must delegate on the DATA ATTRIBUTE — ' +
+        "`closest('[data-menu-launcher]')`, the house idiom of this very listener " +
+        '(`[data-shop-id]`, `[data-choice-idx]`). Keying on `#help-hint` instead would make ' +
+        'main.ts an owner of the badge and red W-UX1-HINT-NO-JS-OWNER.',
+    ).toBe(true);
+    expect(
+      region.includes("if (!anyOverlayVisible() && identity !== '')"),
+      'the launcher branch must carry the FULL guard as ONE contiguous expression: ' +
+        "`if (!anyOverlayVisible() && identity !== '')`. Asserting the two tokens separately is " +
+        'not enough — `void anyOverlayVisible(); held.clear(); openMenu();` contains both and ' +
+        'opens the modal menu over a live battle AND before join, where menuAvailability() ' +
+        "dereferences store.ownCharacter('')! and throws inside an uncaught click listener. " +
+        'Region=' +
+        JSON.stringify(region),
+    ).toBe(true);
+    expect(
+      region.includes('held.clear()'),
+      'the launcher branch must call held.clear() — the player can be HOLDING a movement key ' +
+        'when they click the badge, and a held direction survives into the open menu and keeps ' +
+        'the character walking underneath it (the same class of bug nh2 fixed for the rAF loop)',
+    ).toBe(true);
+    expect(
+      region.includes('openMenu('),
+      'the launcher branch must call openMenu( — the shared top-level helper the KeyM front ' +
+        'door uses. Re-implementing the open inline would give AC-11 and AC-12 two divergent ' +
+        'open paths.',
+    ).toBe(true);
+
+    // --- NEGATIVE: an ALLOW-LIST over method calls, plus the two non-call escapes -----
+    const ALLOWED = ['closest', 'clear', 'openMenu', 'anyOverlayVisible'];
+    const disallowed = methods.filter((m) => !ALLOWED.includes(m));
+    expect(
+      disallowed,
+      'the launcher branch may call ONLY ' +
+        JSON.stringify(ALLOWED) +
+        ' — it is a READ-ONLY delegated branch. Anything else means main.ts acquired an ' +
+        'imperative handle on the badge (or on some other element) inside the one listener ' +
+        'that is allowed to see it, which voids ADR-0151 D2 ("no owner that can hide or remove ' +
+        'it") while W-UX1-HINT-NO-JS-OWNER stays green because the literal `help-hint` never ' +
+        'appears. Found disallowed: ' +
+        JSON.stringify(disallowed),
+    ).toEqual([]);
+    expect(
+      region.includes('.dataset'),
+      'the launcher branch must not touch `.dataset` — it is a property, not a call, so the ' +
+        'method allow-list above cannot see it, and `el.dataset.menuLauncher = ...` mutates the ' +
+        'badge just as thoroughly as removeAttribute would',
+    ).toBe(false);
+    // Indexed member access (`el['style']`, `el[prop]`) is the other way past a method
+    // allow-list. The ONLY legitimate `[` in this branch is inside the attribute-selector
+    // STRING `'[data-menu-launcher]'`, where the bracket is immediately preceded by a quote.
+    let indexedAccess = 0;
+    for (let i = 0; i < region.length; i += 1) {
+      if (region.charAt(i) !== '[') continue;
+      const prev = i === 0 ? '' : region.charAt(i - 1);
+      if (prev !== "'" && prev !== '"') indexedAccess += 1;
+    }
+    expect(
+      indexedAccess,
+      'the launcher branch must contain no INDEXED member access — the only `[` allowed is the ' +
+        "one inside the attribute selector string '[data-menu-launcher]'. `el['style']` / " +
+        '`el[prop]` is the standard way past a method allow-list. Region=' +
+        JSON.stringify(region),
+    ).toBe(0);
+    expect(
+      region.length,
+      'the launcher branch must stay SMALL (< 400 chars after comment-stripping and whitespace ' +
+        'squashing). It is a four-line delegated guard; anything larger is logic that belongs in ' +
+        `a named helper where it can be unit-tested. Got ${region.length}: ` +
+        JSON.stringify(region),
+    ).toBeLessThan(400);
+
+    // --- WHOLE FILE: exactly one binding site ------------------------------------------
+    // RAW source deliberately (not comment-stripped): a rationale comment that spells the
+    // attribute is a second textual site and would make this count ambiguous for any future
+    // reader. Describe the mechanism in prose instead of quoting the literal.
+    expect(
+      countOccurrences(src, 'data-menu-launcher'),
+      'the literal `data-menu-launcher` must appear EXACTLY once in main.ts — one delegated ' +
+        'binding site, nothing else. Two occurrences means either a duplicate branch (two ' +
+        'competing open paths for one click) or, worse, main.ts writing the attribute onto some ' +
+        'element at runtime — which would create a second launcher that ' +
+        'W-ONE-CORNER-AFFORDANCE (a markup-only scan of index.html) can never see. This clause ' +
+        "is what carries the claim that ux1-1's structural guarantee is now double-guarded. " +
+        'NOTE: this counts RAW source, so a comment quoting the attribute also fails — write ' +
+        'the rationale in prose.',
+    ).toBe(1);
   });
 });
