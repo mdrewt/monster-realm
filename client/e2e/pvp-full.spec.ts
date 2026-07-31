@@ -514,9 +514,14 @@ test.describe
 
       // Step 8: A reads its active monster's skill IDs via battleById (from sideA).
       // B reads its active monster's skill IDs via battleById (from sideB).
-      // battleById is role-agnostic — it does NOT use store.ongoingBattle() which
-      // only returns battles where playerIdentity === identity. B is opponentIdentity;
-      // without battleById, B cannot read the battle state at all (reviewer B-1).
+      // As of ADR-0167 (11r-b), the PRODUCTION path (store.ongoingBattle()/
+      // latestPlayerBattle()) is role-agnostic too, and side B gets a real battle overlay
+      // built from its OWN perspective — covered end-to-end by client/e2e/pvp-side-b.spec.ts.
+      // battleById is retained here specifically because it reads BOTH sides' internals by
+      // id in one call (sideA AND sideB), which production deliberately never does (ADR-0167
+      // D5 — the client never needs the opponent's raw side once its own view is projected).
+      // That is why this DEV-hook-driven flow stays useful alongside the production-DOM spec,
+      // not a workaround for B being unable to see the battle at all.
       const skillIdA = await pageA
         .waitForFunction(
           (bid: string) => {

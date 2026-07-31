@@ -11,11 +11,19 @@
 import * as fc from 'fast-check';
 import { describe, expect, it, vi } from 'vitest';
 import { BURST_EPSILON_MS } from '../shared/interpConfig';
+// 11r-b (ADR-0167): T-OWNP-DOWNSTREAM composes ownPerspective with the REAL view model —
+// the behavioral tooth that proves the projection actually feeds the render path, not just
+// its own field-swap.
+import { buildBattleViewModel } from '../ui/battleModel';
 // uxd2 (ADR-0161 D1): the boundary converter, used by the npc-interaction integration
 // tooth at the foot of this file (adapter path: upsertNpc(npcRowToStore(row))).
 import { npcRowToStore } from './rowConvert';
 import {
   AuthoritativeStore,
+  // 11r-b (ADR-0167): ownPerspective does NOT exist on master yet — every T-OWNP-* test
+  // below is RED at authoring time on a missing export (see the describe block's own
+  // RED-reason comment).
+  ownPerspective,
   type StoreBattle,
   type StoreBattleMonster,
   type StoreBattleSide,
@@ -565,12 +573,21 @@ function battleSide(overrides: Partial<StoreBattleSide> = {}): StoreBattleSide {
   return { active: 0, team: [battleMonster()], ...overrides };
 }
 
-/** Factory: minimal valid StoreBattle. */
-function battle(battleId: bigint, playerIdentity = 'alice', outcome = 'Ongoing'): StoreBattle {
+/** Factory: minimal valid StoreBattle.
+ *  11r-b (ADR-0167): `opponentIdentity` is now a 4th parameter (default 'npc' — every
+ *  pre-existing positional call site is unaffected). Needed so the role-agnostic (T-RA)
+ *  and ownPerspective (T-OWNP) fixtures below can put a real player identity ('bob') on
+ *  the opponent side without hand-building the whole row inline. */
+function battle(
+  battleId: bigint,
+  playerIdentity = 'alice',
+  outcome = 'Ongoing',
+  opponentIdentity = 'npc',
+): StoreBattle {
   return {
     battleId,
     playerIdentity,
-    opponentIdentity: 'npc',
+    opponentIdentity,
     outcome,
     turnNumber: 1,
     sideA: battleSide(),
@@ -843,11 +860,17 @@ describe('AuthoritativeStore M8.6c: speciesMap() returns a COPY (no live-map lea
 //   outcome frame at least once"
 //
 // latestPlayerBattle(identity) returns the StoreBattle row with the HIGHEST
-// battleId (bigint comparison) among rows whose playerIdentity === identity,
+// battleId (bigint comparison) among rows in which `identity` appears in EITHER
+// role — playerIdentity OR opponentIdentity (11r-b/ADR-0167: a PvP ACCEPTER is
+// stored in opponentIdentity, server-module/src/pvp.rs:289-297, so a
+// playerIdentity-only filter left the accepter with no battle at all) —
 // regardless of outcome (Ongoing OR terminal). Returns undefined when no row
-// matches. The existing ongoingBattle() selector is UNCHANGED.
+// matches, and ALSO when identity === '' (explicit pre-join guard; 11r-b AC-3).
+// ongoingBattle() matches the SAME either-role rule, Ongoing-only.
 //
-// RED: `latestPlayerBattle` does not exist on AuthoritativeStore yet.
+// RED (11r-b): both accessors currently match `playerIdentity === identity`
+// ONLY — see the "role-agnostic accessors" describe block below (T-RA-1..4)
+// and the retitled T1c for the failing coverage.
 // =============================================================================
 
 describe('AuthoritativeStore M8.7e: latestPlayerBattle', () => {
@@ -875,17 +898,28 @@ describe('AuthoritativeStore M8.7e: latestPlayerBattle', () => {
     expect(s.latestPlayerBattle('alice')).toBeUndefined();
   });
 
-  it('T1c: BITES filters strictly by playerIdentity (alice id 5n, bob id 9n)', () => {
-    // alice has battleId 5n, bob has battleId 9n. latestPlayerBattle('alice')
-    // must return alice's 5n row, NOT bob's higher-id 9n row.
+  it("T1c: BITES returns the player's OWN row, not a higher-id battle of a player it is not in (alice id 5n, bob id 9n); a stranger gets undefined from BOTH accessors", () => {
+    // RETITLED (11r-b/ADR-0167): this used to assert "filters strictly by playerIdentity",
+    // which is now FALSE — the real invariant is that latestPlayerBattle returns the
+    // caller's own battle, never a stranger's higher-id row, regardless of which role the
+    // caller would occupy in that stranger's battle. Both fixture rows carry an EXPLICIT
+    // opponentIdentity ('npc') so the fixture is unambiguous: alice is in NEITHER role of
+    // bob's 9n battle.
     // Kills: ignoring the identity filter and returning the global highest-id row.
     const s = new AuthoritativeStore();
-    s.upsertBattle(battle(5n, 'alice', 'Ongoing'));
-    s.upsertBattle(battle(9n, 'bob', 'Ongoing'));
+    s.upsertBattle(battle(5n, 'alice', 'Ongoing', 'npc'));
+    s.upsertBattle(battle(9n, 'bob', 'Ongoing', 'npc'));
     const result = s.latestPlayerBattle('alice');
     expect(result).toBeDefined();
     expect(result!.battleId).toBe(5n);
     expect(result!.playerIdentity).toBe('alice');
+
+    // Folded in from the cut T-RA-5 (plan §11 R-3, subsumed here): a stranger ('carol'),
+    // who appears in NEITHER role of EITHER stored battle, gets undefined from BOTH
+    // accessors — never "any battle that happens to exist".
+    // Kills: an impl that returns any/the-first battle regardless of role membership.
+    expect(s.latestPlayerBattle('carol')).toBeUndefined();
+    expect(s.ongoingBattle('carol')).toBeUndefined();
   });
 
   it('T1d: BITES bigint comparison is exact across the 2^53 boundary (Number() coercion broken)', () => {
@@ -918,6 +952,87 @@ describe('AuthoritativeStore M8.7e: latestPlayerBattle', () => {
     expect(ongoing!.outcome).toBe('Ongoing');
     // latestPlayerBattle returns the highest (3n), ongoingBattle returns the Ongoing (1n)
     expect(s.latestPlayerBattle('alice')!.battleId).toBe(3n);
+  });
+});
+
+// =============================================================================
+// 11r-b — role-agnostic ongoingBattle() / latestPlayerBattle() (ADR-0167)
+// SOURCE OF TRUTH: memory/projects/monster-realm-11r-b-plan.md §4 AC-1/AC-2/AC-3
+//
+// `store.ongoingBattle()` / `store.latestPlayerBattle()` filtered `playerIdentity ===
+// identity` ONLY. A PvP ACCEPTER is stored in `opponentIdentity`
+// (server-module/src/pvp.rs:289-297), so the accepter got NO battle overlay at all —
+// invisible until the 60s deadline reaper forfeited them (the defect this slice closes).
+//
+// Both accessors now match `playerIdentity === identity || opponentIdentity === identity`,
+// with an explicit `identity === ''` early-return guard in both (AC-3 — role-agnostic
+// matching turns "no match" into "possible false match" without it).
+//
+// RED reason: both accessors on master still filter `playerIdentity === identity` only —
+// every test below fails against the CURRENT (unfixed) source.
+// =============================================================================
+
+describe('AuthoritativeStore 11r-b: ongoingBattle()/latestPlayerBattle() match EITHER role', () => {
+  it("T-RA-1: BITES ongoingBattle('bob') returns a row where 'bob' is the opponentIdentity (AC-1)", () => {
+    // Kills: a revert to the playerIdentity===identity-only filter — the pre-11r-b defect
+    // that leaves a PvP accepter (stored in opponentIdentity) with NO ongoing battle.
+    const s = new AuthoritativeStore();
+    const b = battle(1n, 'alice', 'Ongoing', 'bob');
+    s.upsertBattle(b);
+    const result = s.ongoingBattle('bob');
+    expect(result).toBeDefined();
+    expect(result).toEqual(b);
+  });
+
+  it("T-RA-2: BITES latestPlayerBattle('bob') returns the SAME row via opponentIdentity — the second, independent loop (AC-2)", () => {
+    // Same fixture as T-RA-1 but against the SECOND accessor: ongoingBattle and
+    // latestPlayerBattle are two independently-written loops in store.ts — a fix landed on
+    // one and forgotten on the other would pass T-RA-1 and fail here.
+    const s = new AuthoritativeStore();
+    const b = battle(10n, 'alice', 'Ongoing', 'bob');
+    s.upsertBattle(b);
+    expect(s.latestPlayerBattle('bob')?.battleId).toBe(10n);
+  });
+
+  it('T-RA-3: BITES latestPlayerBattle picks the highest battleId across MIXED roles (bigint `>`, never Number()/Math.max — T1d)', () => {
+    // 'bob' is playerIdentity on battle 5n and opponentIdentity on battle 9n. Kills an impl
+    // that stops scanning at the first playerIdentity hit (would wrongly return 5n) instead
+    // of comparing EVERY row where identity appears in either role.
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(5n, 'bob', 'Ongoing', 'npc'));
+    s.upsertBattle(battle(9n, 'alice', 'SideAWins', 'bob'));
+    const result = s.latestPlayerBattle('bob');
+    expect(result).toBeDefined();
+    expect(result!.battleId).toBe(9n); // bigint `>` comparison — never Number()/Math.max
+  });
+
+  it("T-RA-4: BITES identity==='' returns undefined from BOTH accessors, even with a row whose opponentIdentity is '' (AC-3)", () => {
+    // Kills the missing empty-identity guard: without an explicit early return, a row with
+    // opponentIdentity==='' would falsely match ongoingBattle('') / latestPlayerBattle('').
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(1n, 'alice', 'Ongoing', ''));
+    expect(s.ongoingBattle('')).toBeUndefined();
+    expect(s.latestPlayerBattle('')).toBeUndefined();
+  });
+
+  it("T-RA-6: BITES ongoingBattle('bob') picks the HIGHEST battleId when TWO Ongoing rows both match 'bob' — no first-match-wins Map-iteration nondeterminism", () => {
+    // Kills: first-match-wins Map-iteration order. Pre-11r-b at most one row could match a
+    // given identity (playerIdentity-only filter), so ongoingBattle's early `return` on the
+    // first match was safe. Either-role matching made TWO SIMULTANEOUS Ongoing matches
+    // possible — you can be the challenger in one battle and the accepter in another at the
+    // same time — and this accessor kept its early return instead of getting the same
+    // highest-battleId tiebreak its sibling latestPlayerBattle got in the SAME diff (see
+    // T-RA-3 / T1d — bigint `>` comparison, never Number()/Math.max).
+    // Insertion order is DELIBERATE: the LOWER id (5n, 'bob' as playerIdentity) is inserted
+    // FIRST — a first-match-wins impl returns it (WRONG). The correct impl must scan every
+    // either-role match and pick the HIGHEST (9n, 'bob' as opponentIdentity) regardless of
+    // insertion/Map-iteration order.
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(5n, 'bob', 'Ongoing', 'npc')); // 'bob' is playerIdentity — lower id, inserted first
+    s.upsertBattle(battle(9n, 'alice', 'Ongoing', 'bob')); // 'bob' is opponentIdentity — higher id, inserted second
+    const result = s.ongoingBattle('bob');
+    expect(result).toBeDefined();
+    expect(result!.battleId).toBe(9n); // bigint `>` comparison — never Number()/Math.max (T1d)
   });
 });
 
@@ -3315,5 +3430,222 @@ describe('uxd2: AuthoritativeStore round-trips StoreNpcRow.interaction on every 
     expect(npcApi(s).npc(11n)).toBeUndefined();
     expect(npcApi(s).npcByNpcId('shopkeeper')).toBeUndefined();
     expect(npcApi(s).allNpcs()).toHaveLength(0);
+  });
+});
+
+// =============================================================================
+// 11r-b — ownPerspective(battle, identity) — pure view-perspective projection
+// SOURCE OF TRUTH: memory/projects/monster-realm-11r-b-plan.md §4 AC-4/AC-5/AC-6/AC-7/AC-8
+//   + §11 R-3 (T-OWNP-1 merged into the swap tooth; T-OWNP-OUTCOME kept as-is)
+//
+// `ownPerspective` is a NEW exported pure free function (not a store method — keeps the
+// store's accessors honestly "raw server truth" and keeps the projection directly
+// unit-testable, ADR-0167 D2) that re-expresses a battle so the caller's OWN side is
+// always sideA:
+//   - identity === playerIdentity (checked FIRST — this ordering is what covers a
+//     practice battle, where playerIdentity === opponentIdentity, ADR-0109) → returned
+//     BY REFERENCE (`.toBe`, not `.toEqual` — the cheapest possible proof of "no swap").
+//   - identity === opponentIdentity AND !== playerIdentity → sideA/sideB,
+//     playerIdentity/opponentIdentity, partyMonsterIds/opponentMonsterIds swapped;
+//     outcome SideAWins/SideBWins swapped. battleId/turnNumber/weather/createdAtMs/
+//     'Ongoing'/'Fled'/any unrecognized outcome string pass through verbatim.
+//   - identity in NEITHER role → returned BY REFERENCE (never a fabricated perspective).
+//   - `undefined` in → `undefined` out.
+//
+// NEVER MUTATE a projected view in place (ADR-0167 hardening note): the fast path returns
+// a store-owned object by reference and the slow path shallow-swaps nested side objects —
+// the raw/projected split relies on callers treating both as read-only.
+//
+// RED reason: `ownPerspective` is not exported from ./store yet — every test below fails
+// on the missing export (see the import-site comment at the top of this file).
+// =============================================================================
+
+/** A monster factory for ownPerspective's fixtures — same shape as battleMonster() above,
+ *  but the caller supplies speciesId explicitly so side-A/side-B fixtures never collide on
+ *  a shared default (T-OWNP-SWAP and T-OWNP-DOWNSTREAM both need DISTINGUISHABLE sides so a
+ *  partial swap cannot accidentally look correct). */
+function ownpMonster(
+  speciesId: number,
+  overrides: Partial<StoreBattleMonster> = {},
+): StoreBattleMonster {
+  return battleMonster({ speciesId, ...overrides });
+}
+
+/** A battle fixture with DELIBERATELY asymmetric sideA/sideB (different `active` index,
+ *  different team length, different species ids, non-empty and DIFFERENT
+ *  partyMonsterIds/opponentMonsterIds) so a partial swap in ownPerspective cannot
+ *  accidentally look correct. playerIdentity='alice' (the challenger), opponentIdentity='bob'
+ *  (the accepter — the side this whole slice is about). */
+function ownpFixture(overrides: Partial<StoreBattle> = {}): StoreBattle {
+  return {
+    battleId: 77n,
+    playerIdentity: 'alice',
+    opponentIdentity: 'bob',
+    outcome: 'Ongoing',
+    turnNumber: 4,
+    sideA: { active: 0, team: [ownpMonster(101), ownpMonster(102)] },
+    sideB: { active: 2, team: [ownpMonster(201), ownpMonster(202), ownpMonster(203)] },
+    partyMonsterIds: [11n, 12n],
+    opponentMonsterIds: [21n, 22n, 23n],
+    createdAtMs: 5000n,
+    weather: { tag: 'Rain', turnsRemaining: 2 },
+    ...overrides,
+  };
+}
+
+describe('AuthoritativeStore 11r-b: ownPerspective(battle, identity) — pure view projection (ADR-0167)', () => {
+  it('T-OWNP-SIDEA: BITES identity===playerIdentity returns the SAME object by reference (AC-4)', () => {
+    // Cheapest possible proof of "no swap": reference equality, not deep-equal.
+    // Kills: an impl that always builds a fresh object (even if field-identical).
+    const b = ownpFixture();
+    expect(ownPerspective(b, 'alice')).toBe(b);
+  });
+
+  it("T-OWNP-PRACTICE: BITES a practice battle (playerIdentity===opponentIdentity==='alice', ADR-0109) returns the SAME object — the role-check-ORDERING tooth (AC-4)", () => {
+    // THE role-check-ordering tooth: an impl that tests `identity === opponentIdentity`
+    // BEFORE `identity === playerIdentity` would swap a practice battle's sides, seating the
+    // player on the WRONG side of their own mirror. Only THIS fixture — where BOTH roles
+    // equal the caller's identity — can distinguish "checks playerIdentity first" from
+    // "checks opponentIdentity first"; every other fixture in this describe block has the
+    // two roles held by different identities, so an ordering bug is invisible there.
+    const b = ownpFixture({ playerIdentity: 'alice', opponentIdentity: 'alice' });
+    expect(ownPerspective(b, 'alice')).toBe(b);
+  });
+
+  it('T-OWNP-SWAP: BITES identity===opponentIdentity (≠playerIdentity) swaps the 6 side fields AND preserves the 4 verbatim fields, in ONE test (AC-5, merged per plan §11 R-3)', () => {
+    // ONE test asserts BOTH halves so a partial swap cannot pass: swapping sideA/sideB but
+    // forgetting partyMonsterIds/opponentMonsterIds (or vice versa) fails here, and so does
+    // an impl that (incorrectly) ALSO remaps battleId/turnNumber/weather/createdAtMs.
+    const b = ownpFixture(); // playerIdentity='alice', opponentIdentity='bob'
+    const projected = ownPerspective(b, 'bob');
+
+    expect(projected).not.toBe(b); // a real swap happened, not the reference fast path
+
+    // The 6 exchanged fields:
+    expect(projected.sideA).toEqual(b.sideB);
+    expect(projected.sideB).toEqual(b.sideA);
+    expect(projected.playerIdentity).toBe('bob');
+    expect(projected.opponentIdentity).toBe('alice');
+    expect(projected.partyMonsterIds).toEqual(b.opponentMonsterIds);
+    expect(projected.opponentMonsterIds).toEqual(b.partyMonsterIds);
+
+    // The 4 verbatim-preserved fields:
+    expect(projected.battleId).toBe(b.battleId);
+    expect(projected.turnNumber).toBe(b.turnNumber);
+    expect(projected.weather).toEqual(b.weather);
+    expect(projected.createdAtMs).toBe(b.createdAtMs);
+  });
+
+  it('T-OWNP-NONPARTICIPANT: BITES identity in NEITHER role returns the SAME object by reference — never a fabricated perspective (AC-6)', () => {
+    const b = ownpFixture(); // alice / bob
+    expect(ownPerspective(b, 'carol')).toBe(b);
+  });
+
+  it('T-OWNP-UNDEFINED: BITES ownPerspective(undefined, identity) returns undefined', () => {
+    expect(ownPerspective(undefined, 'alice')).toBeUndefined();
+  });
+
+  it('T-OWNP-OUTCOME: fast-check — the outcome remap is an INVOLUTION; Ongoing/Fled/any unrecognized tag are FIXED POINTS', () => {
+    // Kills: a remap that touches 'Fled' (only SideAWins/SideBWins ever swap), or that
+    // coerces/normalizes an unknown tag — which would defeat parseOutcomeTag's
+    // bindings-regen drift detector (ui/battleModel.ts:203-213 relies on an unrecognized
+    // string reaching it UNCHANGED so its null-guard path stays reachable and meaningful).
+    fc.assert(
+      fc.property(
+        fc.oneof(fc.constantFrom('Ongoing', 'SideAWins', 'SideBWins', 'Fled'), fc.string()),
+        (outcome) => {
+          const b = ownpFixture({ outcome, playerIdentity: 'alice', opponentIdentity: 'bob' });
+          const projectedOnce = ownPerspective(b, 'bob'); // side-B projection
+          const once = projectedOnce.outcome;
+
+          // Fixed point: every tag OTHER than the two known win tags passes through
+          // UNCHANGED (covers 'Ongoing', 'Fled', and any fc.string() garbage tag).
+          if (outcome !== 'SideAWins' && outcome !== 'SideBWins') {
+            expect(once).toBe(outcome);
+          } else {
+            expect(once).toBe(outcome === 'SideAWins' ? 'SideBWins' : 'SideAWins');
+          }
+
+          // Involution: projecting the ALREADY-projected battle from the ORIGINAL
+          // playerIdentity's perspective (who is now the opponentIdentity of
+          // projectedOnce) swaps back to the original tag.
+          const back = ownPerspective(projectedOnce, 'alice').outcome;
+          expect(back).toBe(outcome);
+        },
+      ),
+    );
+  });
+});
+
+describe('AuthoritativeStore 11r-b: ownPerspective ∘ buildBattleViewModel — the downstream behavioral tooth (ADR-0167)', () => {
+  it("T-OWNP-DOWNSTREAM: BITES side B's projected VM shows THEIR OWN cards/skills/bench; the RAW VM (no projection) shows the challenger's instead — the contrast that makes this bite (AC-7)", () => {
+    const aliceActive = ownpMonster(101, { knownSkillIds: [1] });
+    const aliceBench = ownpMonster(102, { knownSkillIds: [2] });
+    const bobActive = ownpMonster(201, { knownSkillIds: [3] });
+    const bobBenchHealthy = ownpMonster(202, { knownSkillIds: [4], currentHp: 10 });
+    const bobBenchFainted = ownpMonster(203, { knownSkillIds: [5], currentHp: 0 });
+
+    const b: StoreBattle = {
+      battleId: 77n,
+      playerIdentity: 'alice',
+      opponentIdentity: 'bob',
+      outcome: 'Ongoing',
+      turnNumber: 4,
+      sideA: { active: 0, team: [aliceActive, aliceBench] },
+      sideB: { active: 0, team: [bobActive, bobBenchHealthy, bobBenchFainted] },
+      partyMonsterIds: [11n, 12n],
+      opponentMonsterIds: [21n, 22n, 23n],
+      createdAtMs: 5000n,
+      weather: null,
+    };
+
+    const skillMap = new Map<number, StoreSkillRow>(
+      [1, 2, 3, 4, 5].map((id): [number, StoreSkillRow] => [id, skillRow(id)]),
+    );
+    const speciesMap = new Map<number, StoreSpeciesRow>(
+      [101, 102, 201, 202, 203].map((id): [number, StoreSpeciesRow] => [id, speciesRow(id)]),
+    );
+
+    // THE FIX under test: identity 'bob' is the accepter (opponentIdentity) — project
+    // BEFORE building the view model, exactly as main.ts's refreshBattle must (W-PVPB-PROJECT).
+    const projected = ownPerspective(b, 'bob');
+    const vmProjected = buildBattleViewModel(projected, skillMap, speciesMap);
+    expect(vmProjected).not.toBeNull();
+
+    expect(vmProjected!.playerCard.speciesName).toBe(speciesRow(201).name); // bob's OWN active
+    expect(vmProjected!.skills.map((s) => s.id)).toEqual([3]); // bob's OWN active's skills
+    expect(vmProjected!.bench.map((m) => m.speciesName)).toEqual([speciesRow(202).name]); // bob's OWN healthy bench (fainted excluded)
+    expect(vmProjected!.opponentCard.speciesName).toBe(speciesRow(101).name); // the challenger's
+    expect(vmProjected!.isPvp).toBe(true);
+    expect(vmProjected!.canRecruit).toBe(false); // AC-11
+    expect(vmProjected!.canFlee).toBe(false); // AC-11
+
+    // THE CONTRAST — what makes this bite: building the SAME view model from the RAW
+    // (unprojected) row shows the CHALLENGER's monster as playerCard. This is exactly the
+    // defect a dropped or partial ownPerspective call reproduces (the half-fix: AC-1
+    // satisfied via the role-agnostic accessor, AC-7 still violated because nothing
+    // projected the row before it reached buildBattleViewModel).
+    const vmRaw = buildBattleViewModel(b, skillMap, speciesMap);
+    expect(vmRaw).not.toBeNull();
+    expect(vmRaw!.playerCard.speciesName).toBe(speciesRow(101).name); // alice's, NOT bob's
+  });
+
+  it("T-OWNP-OUTCOME-VM: BITES side B's projected VM outcome is SideAWins when the raw row is SideBWins ('Victory!'), and SideBWins when raw is SideAWins ('Defeat...') (AC-8)", () => {
+    // battleView.ts #renderOutcome (~:430-435) maps SideAWins -> 'Victory!' and
+    // SideBWins -> 'Defeat...'. This VM-level tooth does not render the DOM banner itself
+    // (battleView.test.ts's job) — it pins the outcome tag battleView reads, which is what
+    // makes that fixed mapping correct FOR SIDE B specifically.
+    const skillMap = new Map<number, StoreSkillRow>();
+    const speciesMap = new Map<number, StoreSpeciesRow>();
+
+    const bobWon = ownpFixture({ outcome: 'SideBWins' }); // raw server truth: side B won
+    const vmBobWon = buildBattleViewModel(ownPerspective(bobWon, 'bob'), skillMap, speciesMap);
+    expect(vmBobWon).not.toBeNull();
+    expect(vmBobWon!.outcome).toBe('SideAWins'); // side B's OWN perspective: "I won"
+
+    const aliceWon = ownpFixture({ outcome: 'SideAWins' }); // raw server truth: side A won
+    const vmAliceWon = buildBattleViewModel(ownPerspective(aliceWon, 'bob'), skillMap, speciesMap);
+    expect(vmAliceWon).not.toBeNull();
+    expect(vmAliceWon!.outcome).toBe('SideBWins'); // side B's OWN perspective: "I lost"
   });
 });
