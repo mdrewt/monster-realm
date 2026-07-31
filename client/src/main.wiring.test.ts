@@ -1300,12 +1300,18 @@ describe('★ main.ts wiring (pt-c2b help): fan-out count floor (PTC2B-4..8 / AD
   // help cannot have (reducer-response feedback + an Identity self-branch), so its count (22 in
   // the live file post-pt-c2b) must NOT be used as the floor — that would be unsatisfiable by a
   // correct display-only impl; 19 is the exact structural parity floor.
-  const HELP_VISIBLE_FLOOR = 19;
+  // uxd2 RECALIBRATION (19 -> 18): KeyG/KeyH blocks deleted (-2), anyOverlayVisible() predicate
+  // added (+1) — see ADR-0161. Without this the suite is internally UNSATISFIABLE: no impl can
+  // both delete the two handlers (W-INTERACT-NO-GH) and keep 19 occurrences.
+  const HELP_VISIBLE_FLOOR = 18;
   // leaderboardView?.visible is the read-only-overlay parity anchor. Wiring the help overlay
   // adds `!leaderboardView?.visible` to help's OWN `?` open-guard, so leaderboard's live count is
   // HELP_VISIBLE_FLOOR + 1 (that guard contributes to leaderboard's count but not to help's own).
-  // help = 19, leaderboard = 20 post-wiring; the two still move together on any future keymap change.
-  const LEADERBOARD_LIVE_COUNT = HELP_VISIBLE_FLOOR + 1; // 20
+  // uxd2 RECALIBRATION (20 -> 19): KeyG/KeyH blocks deleted (-2), anyOverlayVisible() predicate
+  // added (+1) — see ADR-0161. Both overlays lose and gain the SAME sites, so the +1 parity
+  // relation is preserved and the two still move together on any future keymap change.
+  // This exact self-check is RED TODAY (the live file still has 20) — correct TDD red.
+  const LEADERBOARD_LIVE_COUNT = HELP_VISIBLE_FLOOR + 1; // 19
 
   it(`self-check: leaderboardView?.visible appears exactly ${LEADERBOARD_LIVE_COUNT}× — pins the parity anchor to the live file`, () => {
     // A LIVE self-check: proves the parity overlay is fully wired in THIS main.ts, so a future
@@ -1328,7 +1334,8 @@ describe('★ main.ts wiring (pt-c2b help): fan-out count floor (PTC2B-4..8 / AD
       count,
       `main.ts must contain helpView?.visible at least ${HELP_VISIBLE_FLOOR}× ` +
         `(one per leaderboardView?.visible occurrence — ADR-0135 fan-out parity). Found: ${count}. ` +
-        `The floor is ${HELP_VISIBLE_FLOOR} (leaderboardView parity) — NOT 21 (tradePropose has 2 sites help cannot have).`,
+        `The floor is ${HELP_VISIBLE_FLOOR} (leaderboardView parity) — NOT 21 (tradePropose has 2 sites help cannot have). ` +
+        'uxd2 recalibrated 19 -> 18: KeyG/KeyH deleted (-2), anyOverlayVisible() added (+1) — ADR-0161.',
     ).toBeGreaterThanOrEqual(HELP_VISIBLE_FLOOR);
   });
 });
@@ -3664,9 +3671,21 @@ const UXD2_KEYT_END = "e.key === '?'";
 const UXD2_ESC_DLG_START = "e.code === 'Escape' && dialogueView?.visible";
 const UXD2_ESC_DLG_END = "e.code === 'Escape' && questLogView?.visible";
 
-/** rAF frame body: the frame closure declaration to its own catch (first one after it). */
+/** rAF frame body: the frame closure declaration to its OWN error log.
+ *  END is the frame handler's unique log line — NOT `} catch (err) {`, which occurs ~26× in
+ *  main.ts and therefore cannot be uniqueness-checked (an inner try/catch added inside the
+ *  frame body would silently truncate the region, which is exactly how a needle-bounded scan
+ *  goes vacuously green — nh1 post-mortem). Both anchors are asserted unique at runtime. */
 const UXD2_FRAME_START = 'const frame = ';
-const UXD2_FRAME_END = '} catch (err) {';
+const UXD2_FRAME_END = "console.error('[frame] uncaught error'";
+
+/** The LIVE document click listener the Shop branch must live inside, and the existing
+ *  data-choice-idx branch it must sit ABOVE. Both anchors are CODE-SHAPED on purpose
+ *  (`closest('[data-choice-idx]')`, not the bare attribute name): uniqueness is checked
+ *  against RAW source — which the `//` sentinels require — so a prose mention of
+ *  "data-choice-idx" in a new comment must not be able to red these teeth spuriously. */
+const UXD2_CLICK_LISTENER = "document.addEventListener('click'";
+const UXD2_CHOICE_BRANCH = "closest('[data-choice-idx]')";
 
 /** Read a sibling module under client/src by relative path; fail LOUD if absent so a
  *  deleted file can never make a direct-file scan vacuously green (RL-15 precedent). */
@@ -3878,6 +3897,75 @@ describe('★ main.ts wiring (uxd2): the Shop button defers the open through dis
       'the Shop-button branch must record pendingShopId — the open is DEFERRED to the ' +
         'dialogue batch listener, never performed inline (adjudication 1)',
     ).toBe(true);
+    expect(
+      region.includes('closest('),
+      'the UXD2-SHOPBTN region must contain the actual click-delegation code — a `closest(...)` ' +
+        'target test (anti-vacuity: an empty sentinel pair would satisfy every needle below)',
+    ).toBe(true);
+  });
+
+  it('★ W-INTERACT-SHOPBTN-LIVE BITES: the branch sits INSIDE the live document click listener, ABOVE the data-choice-idx branch — kills a never-invoked dead-code wrapper', () => {
+    // RED-TEAM (HIGH): every needle in the sibling test is satisfied by a function that is
+    // DECLARED and never CALLED — e.g. `function wireShopButton() { /* sentinels + needles */ }`
+    // parked at module scope. The suite would go green while clicking the Shop button did
+    // nothing at all. Structural position is the cheapest proof of liveness available to a
+    // source scan: pin the region between two anchors that are ALREADY PROVEN LIVE by an
+    // existing shipped behaviour (the dialogue-choice click path, gated by dialogue.spec.ts).
+    //
+    // WRONG IMPL KILLED (1): a dead wrapper function anywhere in the file — its sentinels
+    //   cannot be both after `document.addEventListener('click'` and before the
+    //   `[data-choice-idx]` closest() call unless they are literally inside that listener.
+    // WRONG IMPL KILLED (2): a SECOND `document.addEventListener('click', …)` registered for
+    //   the shop button — the uniqueness assertion on the listener anchor reds, and a second
+    //   listener is a real hazard (ordering with the dismiss round-trip becomes undefined).
+    // WRONG IMPL KILLED (3): the shop branch placed BELOW the choice branch — the choice
+    //   branch would `return` on a non-matching target before the shop branch is reached only
+    //   if written carelessly, and the ordering pin removes the whole class.
+    const src = readMainTs();
+    expectUniqueAnchor(src, UXD2_CLICK_LISTENER);
+    expectUniqueAnchor(src, UXD2_CHOICE_BRANCH);
+    expectUniqueAnchor(src, UXD2_SHOPBTN_BEGIN);
+    expectUniqueAnchor(src, UXD2_SHOPBTN_END);
+
+    const listenerIdx = src.indexOf(UXD2_CLICK_LISTENER);
+    const choiceIdx = src.indexOf(UXD2_CHOICE_BRANCH);
+    const beginIdx = src.indexOf(UXD2_SHOPBTN_BEGIN);
+    const endIdx = src.indexOf(UXD2_SHOPBTN_END);
+
+    expect(
+      beginIdx,
+      `${UXD2_SHOPBTN_BEGIN} must appear AFTER \`${UXD2_CLICK_LISTENER}\` — the Shop branch must ` +
+        'live INSIDE the one live document click listener, not in a dead module-scope wrapper',
+    ).toBeGreaterThan(listenerIdx);
+    expect(
+      endIdx,
+      `${UXD2_SHOPBTN_END} must appear BEFORE the \`${UXD2_CHOICE_BRANCH}\` branch — the Shop ` +
+        'branch belongs in the same listener, above the (already e2e-proven-live) choice branch',
+    ).toBeLessThan(choiceIdx);
+  });
+
+  it('★ W-INTERACT-SHOPBTN-NO-WRAPPER BITES: the sentinel region declares no function and registers no listener of its own', () => {
+    // The second half of the dead-code defence (red-team HIGH). Even correctly positioned,
+    // an implementer could nest `document.addEventListener('click', () => { …sentinels… })`
+    // or a helper `function` declaration inside the region, re-opening the dead/deferred-code
+    // hole. The region must be STRAIGHT-LINE branch code in the enclosing live listener.
+    // WRONG IMPL KILLED: a nested listener registration (double-handling every click, and
+    //   undefined ordering against the choice branch) or a declared-but-uncalled helper.
+    // NOTE: an ARROW callback passed to an existing call is unaffected — only the `function `
+    //   keyword and a fresh `addEventListener(` registration are rejected.
+    const region = stripLineComments(
+      regionOrThrow(readMainTs(), UXD2_SHOPBTN_BEGIN, UXD2_SHOPBTN_END),
+    );
+    expect(
+      region.includes('addEventListener('),
+      'the UXD2-SHOPBTN region must NOT register its own listener — it is a BRANCH inside the ' +
+        'existing document click listener (a nested registration double-handles every click)',
+    ).toBe(false);
+    expect(
+      region.includes('function '),
+      'the UXD2-SHOPBTN region must NOT declare a function — a declared-but-never-called ' +
+        'wrapper satisfies every needle while the Shop button does nothing (red-team HIGH)',
+    ).toBe(false);
   });
 
   it('★ W-INTERACT-SHOPBTN-NO-REDUCER BITES: the [data-shop-id] branch calls no shop/buy reducer', () => {
@@ -3896,7 +3984,7 @@ describe('★ main.ts wiring (uxd2): the Shop button defers the open through dis
     }
     // Positive control: the region is the REAL branch, not an empty sentinel pair.
     expect(
-      region.includes('addEventListener') || region.includes('closest('),
+      region.includes('closest('),
       'the UXD2-SHOPBTN region must contain the actual click-delegation code (anti-vacuity: ' +
         'an empty sentinel pair would satisfy every negative assertion above)',
     ).toBe(true);
@@ -4003,6 +4091,11 @@ describe('★ main.ts wiring (uxd2): the on-world prompt is driven from the fram
     //   into a device-px offset) is invisible until a non-1 DPR machine runs it.
     const src = readMainTs();
     expectUniqueAnchor(src, UXD2_FRAME_START);
+    // BOTH endpoints are uniqueness-checked (file discipline; the START alone is not enough).
+    // The END was `} catch (err) {` at authoring time — ~26 occurrences in main.ts, so an inner
+    // try/catch added anywhere in the frame body would silently truncate the region and this
+    // tooth would pass on a prompt wired nowhere. The frame handler's own error log is unique.
+    expectUniqueAnchor(src, UXD2_FRAME_END);
     const region = stripLineComments(regionOrThrow(src, UXD2_FRAME_START, UXD2_FRAME_END));
     // Anti-vacuity: this really is the frame body.
     expect(
