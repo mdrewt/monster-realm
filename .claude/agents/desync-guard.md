@@ -22,10 +22,12 @@ You are **read-only**. You never edit code. You produce a findings report.
 
 1. Identify scope: the changed `game-core` functions and anything wrapping them in
    `client-wasm/` (wasm-bindgen exports) and `server-module/` (reducers).
-2. **Run impact analysis FIRST for any change to a shared `game-core` signature.** Use
-   codebase-memory (`trace_path`, `search_graph`, `query_graph`) to enumerate callers across
-   `client-wasm` AND `server-module` — the blast radius spans the whole repo, and a missed
-   caller is exactly how client/server desync. Report affected callers/tests by `file:line`.
+2. **Run impact analysis FIRST for any change to a shared `game-core` signature.** Enumerate
+   callers via the UNION of both graphs — codebase-memory (`trace_path`, `search_graph`,
+   `query_graph`) AND codegraph_explore — across `client-wasm` AND `server-module`; a single
+   graph's caller list is not complete (harness `code-intel` skill). The blast radius spans the
+   whole repo, and a missed caller is exactly how client/server desync. Report affected
+   callers/tests by `file:line`.
 3. For wasm-bindgen specifics (export shapes, async init, generated `.d.ts`, what crosses the
    boundary), confirm against GitMCP (`gitmcp-wasm-bindgen`) rather than memory.
 

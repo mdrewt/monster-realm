@@ -10,7 +10,6 @@
       "mcp__codebase-memory-mcp__trace_path",
       "mcp__codebase-memory-mcp__get_code_snippet",
       "mcp__codebase-memory-mcp__search_code",
-      "mcp__codebase-memory-mcp__get_architecture",
       "mcp__codebase-memory-mcp__get_graph_schema",
       "mcp__codebase-memory-mcp__list_projects",
       "mcp__codegraph__codegraph_explore",
