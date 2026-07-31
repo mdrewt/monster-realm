@@ -6,10 +6,12 @@
 // exposes ONLY { controls, goals } — no callback / submit / reducer field.
 //
 // The controls list documents every load-bearing key so a tester reading the
-// overlay discovers the full keymap: the `?` help key itself, Escape (close),
-// movement (WASD / arrows), Space (jump), F9 (bug bundle), and the 10 overlay
-// hotkeys B I E Q U P L N O T (G and H deleted in uxd2, ADR-0161 D5 — shop and
-// heal are reached through the interact key T). buildHelpViewModel() returns a
+// overlay discovers the full keymap: the `?` help key itself, M (the main-menu
+// front door, uxd3/ADR-0162), Escape (close), movement (WASD / arrows), Space
+// (jump), F9 (bug bundle), and the 10 overlay hotkeys B I E Q U P L N O T (G and
+// H deleted in uxd2, ADR-0161 D5 — shop and heal are reached through the interact
+// key T). The menu sources every leaf's shortcut label from this SSOT, so a key
+// that diverges from it fails MM-KEYGLYPH-FROM-HELP-SSOT. buildHelpViewModel() returns a
 // fresh copy so a caller mutating the result cannot poison a later call
 // (purity / totality).
 
@@ -23,6 +25,7 @@ export interface HelpViewModel {
 // Space = jump, F9 = bug bundle, plus the 10 overlay hotkeys incl. Interact (T).
 const CONTROLS: readonly { readonly key: string; readonly action: string }[] = [
   { key: '?', action: 'Toggle this help overlay' },
+  { key: 'M', action: 'Open the main menu' },
   { key: 'WASD / Arrows', action: 'Move around the world' },
   { key: 'Space', action: 'Jump' },
   { key: 'Escape', action: 'Close the open overlay' },
