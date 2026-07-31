@@ -87,6 +87,19 @@
       <ul id="help-controls"></ul>
       <ul id="help-goals"></ul>
     </div>
+    <!-- uxd3 (ADR-0162): main-menu overlay shell — hidden by default; managed by MenuView.
+         Carries position:fixed;inset:0;z-index:100 for the SAME reason #help-overlay does
+         (ux1 / ADR-0151 D1): a static in-flow div after the viewport-tall canvas paints below
+         the fold. MenuView writes only style.display, so the rest survives a toggle.
+         inset:0 (not a corner offset) also keeps it out of W-ONE-CORNER-AFFORDANCE's set. -->
+    <div
+      id="menu-overlay"
+      style="display:none;position:fixed;inset:0;z-index:100;overflow:auto;background:rgba(0,0,0,0.88);padding:24px;font:14px/1.6 monospace;color:#e0e0e0"
+    >
+      <div id="menu-heading"></div>
+      <ul id="menu-rows"></ul>
+      <div id="menu-back-hint"></div>
+    </div>
     <!-- pt-a1 (ADR-0128): build-provenance stamp — populated by main.ts from BUILD_INFO
          (git sha + build time + mode). Non-intrusive; pins which build a playtest finding
          came from. Present in production (unlike the DEV-gated debug hooks). -->
@@ -102,7 +115,7 @@
       id="help-hint"
       style="position:fixed;bottom:16px;left:6px;font:11px/1.3 monospace;color:#9aa0b4;pointer-events:none;z-index:50"
     >
-      Press ? for controls &amp; help
+      Press ? for controls &amp; help · M for menu
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
