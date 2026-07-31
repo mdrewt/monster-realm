@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** ADR-0154
 **Subsystems:** client-ui, economy-quests, security-authz
-**Decision:** Subscribe the owner-scoped `my_wallet` view, ingest it insert-only with no delete handler, and pass `store.ownWallet(identity)` at all THREE `buildShopViewModel*` call sites, pinned by a contiguous-needle ingest tooth plus a call-site-count tooth.
+**Decision:** Subscribe the owner-scoped `my_wallet` view, ingest it insert-only with no delete handler, and pass `store.ownWallet(identity)` at all THREE `buildShopViewModel*` call sites, pinned by a contiguous-needle ingest tooth and a count tooth.
 
 ## Context
 
