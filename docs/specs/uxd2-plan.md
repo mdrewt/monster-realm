@@ -123,7 +123,8 @@ KeyG/KeyH removed, heal-via-tile only, shopkeeper deeper in zone 1, greeting "He
    no gate): out of scope — its own tooling slice. `just smoke-republish` still runs pre-PR;
    residual recorded in ADR-0161.
 5. **Out-of-declared-touches set (all mechanically forced, listed for the PR's touches-delta):**
-   `rowConvert.ts` (+test), `dialogueContent.ts` (eval C6), `dialogueView.ts` (Shop button),
+   `rowConvert.ts` (+test), `connection.ts` (1-line local SdkNpcRow mirror — same mechanically-forced
+   class as rowConvert; found at implementation), `dialogueContent.ts` (eval C6), `dialogueView.ts` (Shop button),
    `helpModel.ts` (+test — forced by the KeyG/H removal), `main.wiring.test.ts` (hard-coded key
    lists), `world.ts` (screenFor), `evals/baselines/*` (snapshot gates), `dialogueModel.talk.test.ts`
    (deleted, cases ported). uxd2 launched SOLO (supervisor note 2026-07-31): no concurrent sibling

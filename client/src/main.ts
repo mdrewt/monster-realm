@@ -246,6 +246,20 @@ function anyOverlayVisible(): boolean {
       helpView?.visible,
   );
 }
+
+/** entityId → positional tile snapshot for the interact resolver (uxd2, ADR-0161).
+ *  store.characters() is the WHOLE character table (players + NPCs); entityId is
+ *  globally unique (one auto_inc sequence), so joining the NPC registry against
+ *  this map always lands on the NPC's own row. Shared by the KeyT dispatch and
+ *  the frame-loop prompt so the two sites can never diverge. */
+function characterTileMap(): Map<bigint, { zoneId: number; tileX: number; tileY: number }> {
+  return new Map(
+    [...store.characters()].map((c) => [
+      c.row.entityId,
+      { zoneId: c.row.zoneId, tileX: c.row.tileX, tileY: c.row.tileY },
+    ]),
+  );
+}
 // Outcome-frame lifecycle (M8.7e): the dismissed battle id (so a resolved outcome
 // renders once but never re-pops) + whether any battle has been observed this
 // session (first-sight pre-dismiss of a historical/stale-on-login resolved battle).
@@ -903,15 +917,7 @@ window.addEventListener('keydown', (e) => {
     ) {
       const own = store.ownCharacter(identity);
       if (own !== undefined) {
-        // store.characters() is the WHOLE character table (players + NPCs);
-        // entityId is globally unique (one auto_inc sequence), so joining the
-        // NPC registry against this map always lands on the NPC's own row.
-        const characterTiles = new Map(
-          [...store.characters()].map((c) => [
-            c.row.entityId,
-            { zoneId: c.row.zoneId, tileX: c.row.tileX, tileY: c.row.tileY },
-          ]),
-        );
+        const characterTiles = characterTileMap();
         const target = nearestInteractable(
           own.row,
           store.allNpcs(),
@@ -2310,17 +2316,19 @@ async function main(): Promise<void> {
       // reconnect / overlay open. Positioned via renderer.screenFor — the
       // exact camera offset + stageScale the stage applied THIS frame.
       const ownChar = store.ownCharacter(identity);
-      const promptTiles = new Map(
-        [...store.characters()].map((c) => [
-          c.row.entityId,
-          { zoneId: c.row.zoneId, tileX: c.row.tileX, tileY: c.row.tileY },
-        ]),
-      );
+      // Overlay-open frames skip the resolve entirely (the prompt is guaranteed
+      // hidden), so the per-frame map/array allocations only happen in-world.
+      const overlayUp = anyOverlayVisible();
       const promptTarget =
-        ownChar !== undefined
-          ? nearestInteractable(ownChar.row, store.allNpcs(), promptTiles, store.healLocations())
+        !overlayUp && ownChar !== undefined
+          ? nearestInteractable(
+              ownChar.row,
+              store.allNpcs(),
+              characterTileMap(),
+              store.healLocations(),
+            )
           : undefined;
-      const promptVm = interactPrompt(promptTarget, anyOverlayVisible());
+      const promptVm = interactPrompt(promptTarget, overlayUp);
       const promptPos =
         promptVm !== null
           ? renderer?.screenFor({ x: promptVm.anchorWorldX, y: promptVm.anchorWorldY })
