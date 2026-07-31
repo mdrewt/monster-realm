@@ -103,11 +103,16 @@ the leaderboard exact-count parity self-check, the two `W-*-FANOUT-COUNT` floors
   *ceiling* on an overlay token, and Part C does not replace it (Part C's needle is
   `View?.visible ||`; a new guard-form `!leaderboardView?.visible &&` site is invisible to it).
   Demonstrated concretely: a hand-rolled de-Morgan `&&` sixth surface passes the whole suite.
-- Also worth recording: the four `*-FANOUT-PVP` teeth sliced `indexOf('anyOverlayVisible') + 1000`,
-  and the first occurrence of that identifier on master is the **shared predicate**, not the pvp
-  aggregate 1300 lines later. Those four were measuring the wrong region and were already vacuous
-  before this slice. Surface 4's needle is the first assertion in this repo's history that the
-  exempt id is `'pvpView'`.
+- Also worth recording, precisely (an earlier draft of this bullet said "all four" and the verifier
+  caught it): **two** of the four `*-FANOUT-PVP` teeth — `W-RN-FANOUT-PVP` and `W-TP-FANOUT-PVP` —
+  sliced a bare `indexOf('anyOverlayVisible') + 1000/1200`, and the first occurrence of that
+  identifier on master is the **shared predicate**, not the pvp aggregate ~1300 lines later. Those
+  two were measuring the wrong region and were already vacuous before this slice. The other two were
+  **not**: `W-HELP-FANOUT-PVP` anchored on the unique `const anyOverlayVisible =` and
+  `W-MENU-FANOUT-PVP` used the two-endpoint bounded region, so both really did read the aggregate.
+  Their coverage is not lost — surface 4's needle pins the whole collapsed statement and is the
+  first assertion in this repo's history that the exempt id is `'pvpView'` (measured: dropping the
+  exempt argument reds).
 
 ### D3 — Part C is a ceiling where the retired teeth were floors, with a named exemption and an honest scope limit.
 
