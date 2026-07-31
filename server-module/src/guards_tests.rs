@@ -728,3 +728,172 @@ fn laundering_two_ongoing_rows() {
          because the player arm is empty, missing the PvP side-B slot entirely)"
     );
 }
+
+// ===========================================================================
+// 11r-c (ADR-0168 D3) — the battle guard is PER-REDUCER, never inside
+// `authorize_move`
+//
+// `guards.rs` is deliberately UNCHANGED by slice 11r-c. This section is the
+// fence that keeps it that way: a source scan asserting `authorize_move` — the
+// shared preamble of `enqueue_move`, `set_move` AND `clear_queue` — carries no
+// battle guard.
+//
+// Source-guard pattern (house convention, same as `movement_tests.rs`): read the
+// production source via `include_str!`, strip comments, squash whitespace, search
+// for **concat!-assembled** needles. No needle is written verbatim here, so
+// neither this scan nor any eval that concatenates every `.rs` file under
+// `server-module/src` can be satisfied by the test's own text.
+//
+// WARNING when editing any comment in this crate: a slash immediately followed
+// by an asterisk opens a block comment for the evals' REGEX comment-stripper,
+// which runs over the concatenated sources and swallows everything up to the
+// next closing marker — ACROSS FILE BOUNDARIES. Writing that sequence here
+// (e.g. as a glob) silently deletes a later file's reducers from the eval's view
+// and false-REDs an unrelated check. Never write it; say ".rs file under <dir>"
+// instead.
+// ===========================================================================
+
+const GUARDS_RS: &str = include_str!("guards.rs");
+
+// ---------------------------------------------------------------------------
+// Comment-stripping helper — a LOCAL copy on purpose.
+//
+// Byte-identical to the copies in `movement_tests.rs:48`, `pvp_tests.rs:64`,
+// `trading_tests.rs:457`, `taming_tests.rs:42` and `economy_tests.rs:936`. A
+// shared `scan_helpers` module would need a `lib.rs` edit, and `lib.rs` is
+// explicitly OUTSIDE this slice's touch set — the same call ADR-0166 recorded as
+// residual R5. Duplicated deliberately, not by accident.
+//
+// Removed bytes are replaced with spaces so byte offsets are preserved (the
+// squash step drops them again anyway).
+// ---------------------------------------------------------------------------
+
+fn strip_rust_comments(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = vec![b' '; len];
+    let mut i = 0;
+    while i < len {
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else {
+            out[i] = bytes[i];
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("stripped source must be valid UTF-8")
+}
+
+/// `guards.rs` with comments stripped and ALL whitespace squashed out, so a
+/// rustfmt line split can never cause a false RED.
+fn squashed_guards() -> String {
+    let stripped = strip_rust_comments(GUARDS_RS);
+    stripped.split_whitespace().collect()
+}
+
+/// **ADR-0168 D3 consequence fence** — `authorize_move` must carry NO battle
+/// guard.
+///
+/// GREEN at HEAD and GREEN after slice 11r-c (which changes `movement.rs` only);
+/// RED the moment someone "de-duplicates" the two inline intake guards into the
+/// shared move authorizer.
+///
+/// WHY THIS IS A REAL HAZARD, not a hypothetical: 11r-c adds the SAME four-line
+/// battle-reject block to `enqueue_move` and to `set_move`. Two identical copies
+/// in adjacent reducers is exactly the shape that invites a helper — and
+/// `authorize_move` is sitting right there, already called by both of them. But
+/// it is called by THREE reducers: hoisting the guard into it silently guards
+/// `clear_queue` too, voiding ADR-0168 D3's anti-decision without a single line
+/// of `clear_queue` changing. The three D3 reasons that would be voided:
+///   1. `clear_queue` is pure cancellation — it cannot cause movement and enables
+///      no attack.
+///   2. Rejecting it forces the stale pre-battle queue to survive to battle end,
+///      turning the post-battle stale drain into a GUARANTEED behavior.
+///   3. It denies an honest key-release cancel while the battle overlay opens.
+///
+/// This is the Rust-side half of a matched pair: `movement_tests.rs`'s
+/// `clear_queue_is_deliberately_not_battle_guarded` pins `clear_queue`'s entire
+/// body (so the guard cannot be added there directly, nor through a renamed
+/// wrapper), and this test closes the one remaining route — adding it upstream in
+/// the shared authorizer, where `clear_queue`'s own body never changes at all
+/// (red-team HIGH-4 / the former eval-B6 check, moved into Rust where it runs in
+/// the same `cargo test` as the thing it protects).
+///
+/// The needle is `is_in_ongoing_battle` WITHOUT a trailing `(`: inside this region
+/// a bare mention — a re-import, a path fragment, a `let f = is_in_ongoing_battle;`
+/// function value — is just as much a smell as a call.
+///
+/// HONEST LIMITS. (a) Region-scoped by text, from `pub(crate) fn authorize_move(`
+/// to the next `pub(crate) fn`: it deliberately does NOT forbid `guards.rs` from
+/// containing the predicate (it DEFINES it, at `guards.rs:264`), only from using
+/// it in this one function. (b) A differently-NAMED battle predicate called from
+/// `authorize_move` would not be seen here — that class is covered from the other
+/// side by `movement_tests.rs`'s I3 count (`is_in_ongoing_battle(` exactly 4× in
+/// `movement.rs`) and NEW-3 (no local shim definition), since any such helper must
+/// ultimately reach the SSOT. (c) Source scan, not execution: this crate has no
+/// reducer-executing harness (ADR-0156 P7).
+#[test]
+fn authorize_move_carries_no_battle_guard() {
+    let squashed = squashed_guards();
+
+    // Region anchor. `authorize_move` is `pub(crate) fn`, not `pub fn` — the
+    // whole of guards.rs is crate-internal.
+    let fn_marker = ["pub(crate)fnauthorize", "_move("].concat();
+    let n_marker = squashed.matches(fn_marker.as_str()).count();
+    assert_eq!(
+        n_marker, 1,
+        "FENCE PRECONDITION (ADR-0168 D3): `pub(crate)fnauthorize_move(` must \
+         appear EXACTLY ONCE in the squashed `guards.rs`; found {n_marker}. With \
+         zero, the function was renamed or moved and the fence below cannot be \
+         built; with two, the region extractor takes the first match and a decoy \
+         definition could hide the real one's contents from this scan."
+    );
+
+    let start = squashed
+        .find(fn_marker.as_str())
+        .expect("guards_tests: `pub(crate)fnauthorize_move(` not found in guards.rs");
+    let rest_at = start + fn_marker.len();
+    let next_fn = ["pub(crate)", "fn"].concat();
+    let end = squashed[rest_at..]
+        .find(next_fn.as_str())
+        .map_or(squashed.len(), |off| rest_at + off);
+    let region = &squashed[start..end];
+
+    let ssot = ["is_in_ongoing", "_battle"].concat();
+    let n_guard = region.matches(ssot.as_str()).count();
+    assert_eq!(
+        n_guard, 0,
+        "TEETH (ADR-0168 D3 consequence, green at HEAD): `authorize_move`'s region \
+         (`pub(crate) fn authorize_move(` … next `pub(crate) fn`) must contain ZERO \
+         occurrences of `is_in_ongoing_battle`; found {n_guard}. \
+         The battle guard is PER-REDUCER BY DESIGN. `authorize_move` is the shared \
+         preamble of THREE reducers — `enqueue_move`, `set_move` and `clear_queue` \
+         — and 11r-c guards only the first two. Hoisting the guard in here to \
+         de-duplicate the two identical inline copies would silently guard \
+         `clear_queue` as well, voiding ADR-0168 D3's anti-decision without one \
+         line of `clear_queue` changing: (1) `clear_queue` is pure cancellation, it \
+         cannot cause movement and enables no attack; (2) rejecting it forces the \
+         stale pre-battle queue to survive to battle end, turning the post-battle \
+         stale drain into a GUARANTEED behavior — strictly worse; (3) it denies an \
+         honest key-release cancel exactly while the battle overlay is opening. \
+         `guards.rs` is UNCHANGED by slice 11r-c; this is the fence that keeps the \
+         guard inline in `movement.rs`. It pairs with \
+         `movement_tests.rs::clear_queue_is_deliberately_not_battle_guarded` (which \
+         pins `clear_queue`'s whole body, closing the direct and renamed-wrapper \
+         routes); this test closes the upstream route. \
+         If a future slice really must guard all three, change ADR-0168 D3 FIRST \
+         and re-argue the three reasons — never delete this fence to make a build \
+         green."
+    );
+}

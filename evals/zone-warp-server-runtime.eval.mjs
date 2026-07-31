@@ -8,14 +8,26 @@
 //
 // Invariants checked:
 //
+//   W0. `movement_tick` is defined EXACTLY ONCE across the concatenated
+//       server-module sources — a decoy `pub fn movement_tick(` planted earlier
+//       in the blob would hijack extraction for W1/W2/W3/W6 (11r-c red-team
+//       HIGH-3). Runs BEFORE any extraction; failure is reported as "ambiguous
+//       extraction".
 //   W1. movement_tick uses `map_for(` (and does NOT use the old stub
 //       `zone_0()` call as the map — the stub may appear elsewhere).
 //   W2. movement_tick calls `warp_at(` to detect warp tiles.
-//   W3. The warp branch in movement_tick has a battle guard
-//       (BattleOutcome::Ongoing or battle_outcome near warp detection).
+//   W3. The WARP branch in movement_tick has a battle guard: an
+//       `is_in_ongoing_battle(` call after `warp_at(` (ADR-0122 both-role SSOT).
+//       De-vacuified in 11r-c — the old `BattleOutcome::Ongoing` needle was
+//       satisfied by the grass-encounter pre-check (ADR-0166 R3).
 //   W4. sync_content_inner calls `validate_zone_maps(` before zone_def upserts.
 //   W5. `ensure_zone_schedules` is called from BOTH the `init` reducer body
 //       AND the public `sync_content` reducer body.
+//   W6. The DRAIN in movement_tick has a battle lock: the FIRST
+//       `is_in_ongoing_battle(` in the body precedes `move_queue.remove(`
+//       (ADR-0168 D1). W3 structurally cannot see this guard — it counts
+//       occurrences AFTER `warp_at(`, and the drain lock sits before it — which
+//       is exactly why the two checks are independent and both have teeth.
 //
 // Proof-of-teeth: each invariant has a pair of synthetic Rust snippets — a BAD
 // fixture that MUST be flagged and a GOOD fixture that MUST pass — so a regression
@@ -149,21 +161,36 @@ function checkWarpAtCalled(body) {
 }
 
 /**
- * W3 — The warp branch in movement_tick must contain a battle guard that appears
- * AFTER the warp_at( call (proving the guard is in the warp execution path, not
- * just in the pre-existing grass-encounter guard).
+ * W3 — The WARP branch in movement_tick must contain a battle guard that appears
+ * AFTER the `warp_at(` call (proving the guard is in the warp execution path).
  *
- * The existing M8c grass-encounter code already contains `BattleOutcome::Ongoing`
- * in movement_tick — but that guard is for the grass trigger, NOT for the warp.
- * W3 therefore checks that a SECOND occurrence of `BattleOutcome::Ongoing` exists
- * after `warp_at(` in the compact body. This catches the C1 security finding:
- * a character in an active battle must not be teleported via a warp.
+ * DE-VACUIFIED in slice 11r-c (ADR-0166 R3, ADR-0168 D6). The old needle was
+ * `BattleOutcome::Ongoing`, and the docstring claimed the grass-encounter
+ * pre-check ran BEFORE `warp_at(` so any occurrence after it had to be the warp
+ * guard. **That claim was false.** In the real `movement.rs` the grass-encounter
+ * block (with its own `BattleOutcome::Ongoing` compare) sits AFTER the warp
+ * branch, so it satisfied an after-`warp_at(` count all by itself: deleting the
+ * warp guard outright still passed W3. Verified empirically during 11r-a.
  *
- * Strategy: count occurrences of `BattleOutcome::Ongoing` that appear after the
+ * The needle is therefore now `is_in_ongoing_battle(` — the ADR-0122 both-role
+ * SSOT predicate, which the grass pre-check does NOT call (it still uses its own
+ * inline single-role `battle().player_identity()` scan; ADR-0166 residual R4).
+ * The count-after-`warp_at(` strategy now works BECAUSE of where the two 11r-c
+ * guards sit: the ADR-0168 D1 DRAIN lock calls the SSOT *before* `warp_at(` and
+ * is invisible here, while the warp guard's own call is *after* it. So this
+ * check sees the warp guard and only the warp guard — delete it and the count
+ * drops to zero even with the drain lock fully in place.
+ *
+ * Strategy: count occurrences of `is_in_ongoing_battle(` that appear after the
  * FIRST occurrence of `warp_at(` using indexOf in a loop.
  *
- * Kills: an impl that adds warp_at() but forgets the battle guard in the warp
- * branch, relying on the existing grass-encounter guard to satisfy this check.
+ * Kills: an impl that adds warp_at() but forgets the warp battle guard; and the
+ * retired inline single-role filter (`battle().player_identity().filter(..).any(
+ * .. BattleOutcome::Ongoing)`), which sees PvP side A only and lets a side-B
+ * player walk through a warp tile mid-ranked-battle
+ * (BAD_MOVEMENT_TICK_INLINE_SINGLE_ROLE_WARP_GUARD proves this bites).
+ *
+ * HONEST LIMIT: W3 covers the WARP guard only. The drain-time lock is W6's job.
  *
  * @param {string} body  Comment-stripped movement_tick function body.
  * @returns {string|null}
@@ -177,12 +204,10 @@ function checkWarpBattleGuard(body) {
     return 'movement_tick: warp_at( not found — cannot verify warp battle guard without warp detection (W2 precondition)';
   }
 
-  // Count occurrences of BattleOutcome::Ongoing that appear AFTER warp_at(.
-  // The pre-existing grass-encounter guard appears BEFORE warp_at in the correct
-  // implementation (warp is checked before the grass trigger, so warp_at comes
-  // first in the loop body). A second BattleOutcome::Ongoing after warp_at proves
-  // the warp branch has its own independent battle guard.
-  const needle = 'BattleOutcome::Ongoing';
+  // Count occurrences of the both-role SSOT call that appear AFTER warp_at(.
+  // The drain-time lock (ADR-0168 D1) calls the same predicate BEFORE warp_at(,
+  // so it cannot satisfy this count; only the warp branch's own guard can.
+  const needle = 'is_in_ongoing_battle(';
   let countAfterWarp = 0;
   let i = warpAtIdx + 1;
   while (true) {
@@ -195,14 +220,120 @@ function checkWarpBattleGuard(body) {
   if (countAfterWarp === 0) {
     return (
       'movement_tick: warp branch is missing a battle guard — ' +
-      'BattleOutcome::Ongoing does not appear after warp_at( in the function body; ' +
-      'the existing grass-encounter guard (before warp_at) is NOT sufficient: ' +
-      'the warp code path itself must check BattleOutcome::Ongoing before teleporting ' +
-      '(C1 security finding: a character mid-battle must not be warped to a new zone)'
+      'is_in_ongoing_battle( does not appear after warp_at( in the function body; ' +
+      'the warp code path itself must ask the ADR-0122 both-role SSOT before teleporting ' +
+      '(C1 security finding: a character mid-battle must not be warped to a new zone). ' +
+      'An inline battle scan does NOT satisfy this on purpose: the retired ' +
+      'battle().player_identity().filter(..) filter matches side A only, so a PvP ' +
+      'side-B player walks through a warp tile mid-ranked-battle (ADR-0166 D4). ' +
+      'NOTE: the drain-time lock (ADR-0168 D1) sits BEFORE warp_at( and cannot satisfy ' +
+      'this check — that is W6, and it is deliberately independent'
     );
   }
 
   return null;
+}
+
+/**
+ * W6 (11r-c, ADR-0168 D1) — the DRAIN in movement_tick must be battle-locked:
+ * the first `is_in_ongoing_battle(` in the body must appear BEFORE
+ * `move_queue.remove(`.
+ *
+ * This is the eval-layer tie for the real server-side movement lock. Before
+ * 11r-c the ONLY battle read in `movement_tick` was the warp guard, which runs
+ * long after the queue has been drained and `apply_move` has already moved the
+ * character — so a modified client could walk out of a wild encounter's tile or
+ * reposition during ranked PvP, with only honest-client overlay suppression
+ * preventing it (ADR-0166 R10).
+ *
+ * Ordering, not presence, is the property: a guard sited after the drain has
+ * already consumed the input and already moved the character, so it is a
+ * decorative no-op. `move_queue.remove(` is the drain site; if it cannot be
+ * found the check fails loudly rather than passing vacuously.
+ *
+ * Kills: BAD_MOVEMENT_TICK_GUARD_ONLY_IN_WARP_BRANCH — a movement_tick whose
+ * only SSOT call is the warp guard (i.e. the pre-11r-c real source). That
+ * fixture PASSES W3, which is precisely why W6 has to exist separately.
+ *
+ * HONEST LIMIT: this is an ordering scan over source text. The lock's semantics
+ * (frozen tile, queue intact) are pinned by `movement_tests.rs`'s full-block
+ * needles and proven behaviorally by the sim-harness's own battle-lock tests in
+ * the same `just ci` run; no reducer is executed anywhere (ADR-0156 P7).
+ *
+ * @param {string} body  Comment-stripped movement_tick function body.
+ * @returns {string|null}
+ */
+function checkDrainBattleGuard(body) {
+  const compact = body.replace(/\s+/g, '');
+
+  const removeIdx = compact.indexOf('move_queue.remove(');
+  if (removeIdx === -1) {
+    return (
+      'movement_tick: move_queue.remove( not found — cannot verify the drain-time battle lock ' +
+      'without the drain site (W6 precondition: the drain was renamed or restructured; ' +
+      're-derive this check rather than deleting it)'
+    );
+  }
+
+  const guardIdx = compact.indexOf('is_in_ongoing_battle(');
+  if (guardIdx === -1) {
+    return (
+      'movement_tick: no is_in_ongoing_battle( call in the body at all — ' +
+      'the drain-time battle lock (ADR-0168 D1) is missing: a character whose player is in an ' +
+      'ongoing battle must not have its move queue drained (spec E1 — it stays at its pre-lock tile)'
+    );
+  }
+
+  if (guardIdx > removeIdx) {
+    return (
+      'movement_tick: the drain-time battle lock is missing or mis-sited — the first ' +
+      'is_in_ongoing_battle( call is at compact offset ' +
+      String(guardIdx) +
+      ', AFTER move_queue.remove( at ' +
+      String(removeIdx) +
+      '. A battle check that runs after the drain has already consumed the queued input and ' +
+      'already applied the move, so it prevents nothing (this is exactly the pre-11r-c shape: ' +
+      'the only battle read was the warp guard, which is why W3 passes on it). ADR-0168 D1 ' +
+      'places the lock after the empty-queue early-continue and BEFORE move_queue.remove(0)'
+    );
+  }
+
+  return null;
+}
+
+/**
+ * W0 — count `fn <name>(` definitions in `src`.
+ *
+ * Ported from `battle-reducer-security.eval.mjs`'s C3 `countFnDefinitions`
+ * (String.indexOf loop — NO dynamic RegExp, Semgrep detect-non-literal-regexp).
+ * Used to assert `movement_tick` is defined exactly once across the concatenated
+ * server sources BEFORE `extractFnBody` picks one: `extractFnBody` takes the
+ * FIRST match, so a decoy `pub fn movement_tick(` planted earlier in the blob
+ * (alphabetically-earlier file, or earlier in movement.rs itself) would hand
+ * W1/W2/W3/W6 a body that is not the real reducer (11r-c red-team HIGH-3).
+ *
+ * HONEST LIMIT: this eval has no string-literal stripper (unlike
+ * battle-reducer-security, whose C3 adds one), so a `fn movement_tick(` embedded
+ * in a Rust string literal would be counted. No server source does that today,
+ * and a false-positive here fails loudly ("ambiguous extraction") rather than
+ * silently passing — the safe direction.
+ *
+ * @param {string} src  Rust source (comment-stripping is applied internally).
+ * @param {string} fnName  Bare function name.
+ * @returns {number}
+ */
+function countFnDefinitions(src, fnName) {
+  const code = stripRustComments(src);
+  const needle = 'fn ' + fnName + '(';
+  let count = 0;
+  let idx = 0;
+  while (true) {
+    idx = code.indexOf(needle, idx);
+    if (idx === -1) break;
+    count++;
+    idx += needle.length;
+  }
+  return count;
 }
 
 /**
@@ -287,7 +418,18 @@ const BAD_MOVEMENT_TICK_USES_STUB = `
   }
 `;
 
-// W1 GOOD — movement_tick using map_for.
+// GOOD (W1 + W2 + W3 + W6) — the full sanctioned POST-11r-c shape of
+// movement_tick: the real `map_for` pipeline, `warp_at(` detection, the ADR-0168
+// D1 drain-time battle lock BEFORE `move_queue.remove(`, and the ADR-0166 D4
+// both-role SSOT warp guard (`skip_warp` / `unwrap_or(true)`) AFTER `warp_at(`.
+//
+// ONE fixture serves four GOOD teeth on purpose: it is the only shape that can
+// satisfy all four checks simultaneously, so if a future needle change breaks the
+// combination the teeth say so immediately. Required properties, spelled out so a
+// later edit cannot quietly void a check: it MUST contain `map_for(`, MUST NOT
+// contain `zone_map(` (W1), MUST contain `warp_at(` (W2), MUST call
+// `is_in_ongoing_battle(` after `warp_at(` (W3) AND before `move_queue.remove(`
+// (W6).
 const GOOD_MOVEMENT_TICK_MAP_FOR = `
   #[spacetimedb::reducer]
   pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Result<(), String> {
@@ -304,20 +446,40 @@ const GOOD_MOVEMENT_TICK_MAP_FOR = `
       let ids: Vec<u64> = ctx.db.character().zone_id().filter(zone).map(|c| c.entity_id).collect();
       for id in ids {
           let Some(mut row) = ctx.db.character().entity_id().find(id) else { continue; };
-          if row.move_queue.is_empty() { continue; }
+          if row.move_queue.is_empty() {
+              if row.action != ActionState::Idle {
+                  row.action = ActionState::Idle;
+                  ctx.db.character().entity_id().update(row);
+              }
+              continue;
+          }
+          let battle_locked = ctx.db.player().entity_id().filter(id).next()
+              .map(|p| is_in_ongoing_battle(ctx, p.identity))
+              .unwrap_or(false);
+          if battle_locked {
+              if row.action != ActionState::Idle {
+                  row.action = ActionState::Idle;
+                  ctx.db.character().entity_id().update(row);
+              }
+              continue;
+          }
           let input = row.move_queue.remove(0);
           let prev = char_state(&row).pos;
           let next = apply_move(&char_state(&row), input, &map, now);
           apply_state(&mut row, &next);
+          let entity_id = row.entity_id;
           if prev != next.pos {
               if let Some(warp) = map.warp_at(next.pos) {
-                  let already = ctx.db.battle().player_identity().filter(p_id).any(|b| b.state.outcome == BattleOutcome::Ongoing);
-                  if already { ctx.db.character().entity_id().update(row); continue; }
                   let (to_zone, tx, ty) = (warp.to_zone, warp.to_tile.x, warp.to_tile.y);
-                  row.zone_id = to_zone; row.tile_x = tx; row.tile_y = ty;
-                  row.move_queue.clear(); row.action = ActionState::Idle;
-                  ctx.db.character().entity_id().update(row);
-                  continue;
+                  let skip_warp = ctx.db.player().entity_id().filter(entity_id).next()
+                      .map(|p| is_in_ongoing_battle(ctx, p.identity))
+                      .unwrap_or(true);
+                  if !skip_warp {
+                      row.zone_id = to_zone; row.tile_x = tx; row.tile_y = ty;
+                      row.move_queue.clear(); row.action = ActionState::Idle;
+                      ctx.db.character().entity_id().update(row);
+                      continue;
+                  }
               }
           }
           ctx.db.character().entity_id().update(row);
@@ -325,6 +487,108 @@ const GOOD_MOVEMENT_TICK_MAP_FOR = `
       Ok(())
   }
 `;
+
+// W3 BAD (11r-c, ADR-0166 R3) — the RETIRED inline single-role warp guard: a
+// `battle().player_identity().filter(..).any(.. BattleOutcome::Ongoing)` scan
+// inside the warp branch and no SSOT call anywhere.
+//
+// This fixture is what the previous GOOD fixture used to contain, and it is the
+// whole point of the W3 needle change: under the OLD needle
+// (`BattleOutcome::Ongoing` after `warp_at(`) it passed, because the inline scan
+// spells the outcome compare out. Under the new `is_in_ongoing_battle(` needle it
+// is flagged. Without this fixture the R3 de-vacuification would be unproven.
+//
+// The bug it encodes is real: `player_identity` matches PvP side A only, so a
+// side-B player (recorded as `opponent_identity`) walks through a warp tile
+// mid-ranked-battle while the battle row stays Ongoing (ADR-0166 D4).
+const BAD_MOVEMENT_TICK_INLINE_SINGLE_ROLE_WARP_GUARD = `
+  #[spacetimedb::reducer]
+  pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Result<(), String> {
+      if ctx.sender != ctx.identity() { return Err("scheduler-only".to_string()); }
+      let zone = sched.zone_id;
+      let zone_maps = game_core::load_zone_maps().map_err(|e| e)?;
+      let map = game_core::map_for(zone, &zone_maps).map_err(|e| e)?;
+      let ids: Vec<u64> = ctx.db.character().zone_id().filter(zone).map(|c| c.entity_id).collect();
+      for id in ids {
+          let Some(mut row) = ctx.db.character().entity_id().find(id) else { continue; };
+          if row.move_queue.is_empty() { continue; }
+          let input = row.move_queue.remove(0);
+          let prev = char_state(&row).pos;
+          let next = apply_move(&char_state(&row), input, &map, now);
+          apply_state(&mut row, &next);
+          let entity_id = row.entity_id;
+          if prev != next.pos {
+              if let Some(warp) = map.warp_at(next.pos) {
+                  let (to_zone, tx, ty) = (warp.to_zone, warp.to_tile.x, warp.to_tile.y);
+                  let in_battle = ctx.db.player().entity_id().filter(entity_id).next()
+                      .map(|p| ctx.db.battle().player_identity().filter(p.identity)
+                          .any(|b| b.state.outcome == BattleOutcome::Ongoing))
+                      .unwrap_or(true);
+                  if !in_battle {
+                      row.zone_id = to_zone; row.tile_x = tx; row.tile_y = ty;
+                      row.move_queue.clear(); row.action = ActionState::Idle;
+                      ctx.db.character().entity_id().update(row);
+                      continue;
+                  }
+              }
+          }
+          ctx.db.character().entity_id().update(row);
+      }
+      Ok(())
+  }
+`;
+
+// W6 BAD (11r-c, ADR-0168 D1) — the PRE-SLICE real shape: the only
+// `is_in_ongoing_battle(` call in the whole reducer is the warp guard, which runs
+// AFTER `move_queue.remove(0)` and after `apply_move`/`apply_state` have already
+// moved the character. The drain itself is unlocked, so a modified client walks
+// mid-battle.
+//
+// Note this fixture PASSES W3 (its SSOT call is after `warp_at(`) — that is
+// exactly why W6 must exist as a separate check: W3 counts occurrences AFTER
+// `warp_at(` and is structurally blind to the drain-side guard.
+const BAD_MOVEMENT_TICK_GUARD_ONLY_IN_WARP_BRANCH = `
+  #[spacetimedb::reducer]
+  pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Result<(), String> {
+      if ctx.sender != ctx.identity() { return Err("scheduler-only".to_string()); }
+      let zone = sched.zone_id;
+      let zone_maps = game_core::load_zone_maps().map_err(|e| e)?;
+      let map = game_core::map_for(zone, &zone_maps).map_err(|e| e)?;
+      let ids: Vec<u64> = ctx.db.character().zone_id().filter(zone).map(|c| c.entity_id).collect();
+      for id in ids {
+          let Some(mut row) = ctx.db.character().entity_id().find(id) else { continue; };
+          if row.move_queue.is_empty() { continue; }
+          let input = row.move_queue.remove(0);
+          let prev = char_state(&row).pos;
+          let next = apply_move(&char_state(&row), input, &map, now);
+          apply_state(&mut row, &next);
+          let entity_id = row.entity_id;
+          if prev != next.pos {
+              if let Some(warp) = map.warp_at(next.pos) {
+                  let (to_zone, tx, ty) = (warp.to_zone, warp.to_tile.x, warp.to_tile.y);
+                  let skip_warp = ctx.db.player().entity_id().filter(entity_id).next()
+                      .map(|p| is_in_ongoing_battle(ctx, p.identity))
+                      .unwrap_or(true);
+                  if !skip_warp {
+                      row.zone_id = to_zone; row.tile_x = tx; row.tile_y = ty;
+                      row.move_queue.clear(); row.action = ActionState::Idle;
+                      ctx.db.character().entity_id().update(row);
+                      continue;
+                  }
+              }
+          }
+          ctx.db.character().entity_id().update(row);
+      }
+      Ok(())
+  }
+`;
+
+// W0 BAD — two definitions of movement_tick in one blob (the decoy-extraction
+// hijack, 11r-c red-team HIGH-3). extractFnBody takes the FIRST match, so the
+// decoy's harmless body would be handed to W1/W2/W3/W6.
+const BAD_TWO_MOVEMENT_TICK_DEFS =
+  'pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Result<(), String> { Ok(()) }\n' +
+  'pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Result<(), String> { Ok(()) }\n';
 
 // W2 BAD — movement_tick with map_for but no warp_at call.
 const BAD_MOVEMENT_TICK_NO_WARP_AT = `
@@ -467,7 +731,7 @@ const GOOD_SYNC_CONTENT_WITH_ENSURE = `
 
 export default async function () {
   const name =
-    'zone-warp-server-runtime (M11b: movement_tick map_for+warp_at+battle-guard; sync_content validate_zone_maps; ensure_zone_schedules; ADR-0020)';
+    'zone-warp-server-runtime (M11b: movement_tick map_for+warp_at+warp battle-guard; sync_content validate_zone_maps; ensure_zone_schedules; ADR-0020 — 11r-c adds W0 extraction-uniqueness and W6 drain battle lock, ADR-0168)';
 
   // =========================================================================
   // PROOFS-OF-TEETH — run before real-source scan.
@@ -573,8 +837,10 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH: BAD_MOVEMENT_TICK_NO_BATTLE_GUARD (no BattleOutcome::Ongoing) was NOT flagged by checkWarpBattleGuard — ' +
-          'kills: C1 security finding: a character in battle must not be warped away',
+          'TEETH: BAD_MOVEMENT_TICK_NO_BATTLE_GUARD (no battle guard of any kind in the warp ' +
+          'branch — no is_in_ongoing_battle( after warp_at() was NOT flagged by ' +
+          'checkWarpBattleGuard — kills: C1 security finding: a character in battle must not be ' +
+          'warped away',
       };
     }
   }
@@ -596,6 +862,129 @@ export default async function () {
         name,
         pass: false,
         detail: `TEETH: GOOD_MOVEMENT_TICK_MAP_FOR was incorrectly flagged by checkWarpBattleGuard: ${err}`,
+      };
+    }
+  }
+
+  // --- Tooth W3 BAD (11r-c / R3): the retired INLINE SINGLE-ROLE warp guard ---
+  // This is the fixture that proves the needle change from `BattleOutcome::Ongoing`
+  // to `is_in_ongoing_battle(` actually bites. Under the old needle this snippet
+  // PASSED (its inline scan spells the outcome compare out); under the new one it
+  // must be flagged, because a single-role `player_identity()` filter sees PvP
+  // side A only and lets a side-B player warp mid-ranked-battle (ADR-0166 D4).
+  {
+    const body = extractFnBody(
+      stripRustComments(BAD_MOVEMENT_TICK_INLINE_SINGLE_ROLE_WARP_GUARD),
+      'movement_tick',
+    );
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract movement_tick body from BAD_MOVEMENT_TICK_INLINE_SINGLE_ROLE_WARP_GUARD',
+      };
+    }
+    if (!checkWarpBattleGuard(body)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_MOVEMENT_TICK_INLINE_SINGLE_ROLE_WARP_GUARD (inline single-role ' +
+          'battle().player_identity() scan, no SSOT call) was NOT flagged by checkWarpBattleGuard — ' +
+          'the ADR-0166 R3 de-vacuification is not in effect: the needle is still satisfied by ' +
+          'text the grass-encounter pre-check also contains. Kills: a warp guard that sees PvP ' +
+          'side A only, letting a side-B player walk through a warp tile mid-ranked-battle',
+      };
+    }
+  }
+
+  // --- Tooth W6 BAD: guard only in the warp branch (the pre-11r-c shape) ---
+  {
+    const body = extractFnBody(
+      stripRustComments(BAD_MOVEMENT_TICK_GUARD_ONLY_IN_WARP_BRANCH),
+      'movement_tick',
+    );
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract movement_tick body from BAD_MOVEMENT_TICK_GUARD_ONLY_IN_WARP_BRANCH',
+      };
+    }
+    if (!checkDrainBattleGuard(body)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_MOVEMENT_TICK_GUARD_ONLY_IN_WARP_BRANCH — whose only SSOT call sits in the ' +
+          'warp branch, after move_queue.remove(0) — was NOT flagged by checkDrainBattleGuard. ' +
+          'Kills: ADR-0168 D1 / spec E1: the DRAIN must be locked, not just the warp; a battle ' +
+          'check that runs after the drain has already consumed the input and moved the character',
+      };
+    }
+    // Cross-check that makes the independence of W6 explicit: this same fixture
+    // must PASS W3 (its SSOT call IS after warp_at). If it ever started failing
+    // W3 too, the two checks would have collapsed into one and W6 would prove
+    // nothing beyond W3.
+    if (checkWarpBattleGuard(body)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_MOVEMENT_TICK_GUARD_ONLY_IN_WARP_BRANCH was flagged by checkWarpBattleGuard — ' +
+          'it must PASS W3 (its guard is in the warp branch) and FAIL W6 (the drain is unlocked). ' +
+          'If it fails both, W3 and W6 are no longer independent and the teeth of W6 are unproven',
+      };
+    }
+  }
+
+  // --- Tooth W6 GOOD: drain lock before move_queue.remove( must pass ---
+  {
+    const body = extractFnBody(stripRustComments(GOOD_MOVEMENT_TICK_MAP_FOR), 'movement_tick');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract movement_tick body from GOOD_MOVEMENT_TICK_MAP_FOR (W6 check)',
+      };
+    }
+    const err = checkDrainBattleGuard(body);
+    if (err) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: GOOD_MOVEMENT_TICK_MAP_FOR was incorrectly flagged by checkDrainBattleGuard: ${err}`,
+      };
+    }
+  }
+
+  // --- Tooth W0: definition-uniqueness counter must count 2 and 1 ---
+  {
+    const twoDefs = countFnDefinitions(BAD_TWO_MOVEMENT_TICK_DEFS, 'movement_tick');
+    if (twoDefs !== 2) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: countFnDefinitions returned ' +
+          String(twoDefs) +
+          ' (expected 2) for BAD_TWO_MOVEMENT_TICK_DEFS — the counter is broken, so the ' +
+          'ambiguous-extraction guard protecting W1/W2/W3/W6 would never fire',
+      };
+    }
+    const oneDef = countFnDefinitions(GOOD_MOVEMENT_TICK_MAP_FOR, 'movement_tick');
+    if (oneDef !== 1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: countFnDefinitions returned ' +
+          String(oneDef) +
+          ' (expected 1) for GOOD_MOVEMENT_TICK_MAP_FOR — false positive; the ' +
+          'ambiguous-extraction guard would fail a correct source tree',
       };
     }
   }
@@ -733,13 +1122,37 @@ export default async function () {
   const failures = [];
   const checks = [];
 
-  // --- W1 + W2 + W3: movement_tick body ---
+  // --- W0: movement_tick must be defined EXACTLY ONCE, BEFORE any extraction ---
+  // extractFnBody takes the FIRST `pub fn movement_tick(` in the concatenated
+  // blob, so a decoy definition — in an alphabetically-earlier file, or earlier
+  // in movement.rs itself — silently redirects W1/W2/W3/W6 at a body that is not
+  // the real reducer (11r-c red-team HIGH-3). Precedent: battle-reducer-security
+  // C3's countFnDefinitions SSOT guard.
+  const movementTickDefs = countFnDefinitions(src, 'movement_tick');
+  if (movementTickDefs !== 1) {
+    const w0 =
+      'ambiguous extraction: found ' +
+      String(movementTickDefs) +
+      ' definitions of fn movement_tick( across server-module/src (expected exactly 1, in movement.rs). ' +
+      'A count of 0 means the reducer was renamed or moved (W1/W2/W3/W6 would silently stop ' +
+      'checking anything); a count above 1 means extractFnBody — which takes the FIRST match — ' +
+      'may be scanning a decoy body while the real movement_tick goes unchecked. Either way every ' +
+      'W1/W2/W3/W6 result below is untrustworthy (11r-c red-team HIGH-3; precedent: ' +
+      'battle-reducer-security C3).';
+    failures.push(w0);
+    checks.push({ check: 'W0 movement_tick defined exactly once', pass: false, detail: w0 });
+  } else {
+    checks.push({ check: 'W0 movement_tick defined exactly once', pass: true, detail: 'ok' });
+  }
+
+  // --- W1 + W2 + W3 + W6: movement_tick body ---
   const movementTickBody = extractFnBody(src, 'movement_tick');
   if (!movementTickBody) {
     failures.push('movement_tick: reducer not found in server-module source');
     checks.push({ check: 'W1', pass: false, detail: 'movement_tick not found' });
     checks.push({ check: 'W2', pass: false, detail: 'movement_tick not found' });
     checks.push({ check: 'W3', pass: false, detail: 'movement_tick not found' });
+    checks.push({ check: 'W6', pass: false, detail: 'movement_tick not found' });
   } else {
     const w1 = checkMapForUsed(movementTickBody);
     checks.push({ check: 'W1 map_for used (not zone_map stub)', pass: !w1, detail: w1 ?? 'ok' });
@@ -750,8 +1163,17 @@ export default async function () {
     if (w2) failures.push(w2);
 
     const w3 = checkWarpBattleGuard(movementTickBody);
-    checks.push({ check: 'W3 warp branch battle guard', pass: !w3, detail: w3 ?? 'ok' });
+    checks.push({ check: 'W3 warp branch battle guard (SSOT)', pass: !w3, detail: w3 ?? 'ok' });
     if (w3) failures.push(w3);
+
+    // W6 (11r-c, ADR-0168 D1): RED until the implementer adds the drain-time lock.
+    const w6 = checkDrainBattleGuard(movementTickBody);
+    checks.push({
+      check: 'W6 drain battle lock before move_queue.remove(',
+      pass: !w6,
+      detail: w6 ?? 'ok',
+    });
+    if (w6) failures.push(w6);
   }
 
   // --- W4: sync_content_inner body ---
@@ -794,7 +1216,7 @@ export default async function () {
     pass: allPass,
     checks,
     detail: allPass
-      ? 'W1-W5 all pass: map_for+warp_at+battle-guard in movement_tick; validate_zone_maps in sync_content_inner; ensure_zone_schedules in init+sync_content (teeth: 9 fixtures verified)'
+      ? 'W0-W6 all pass: movement_tick uniquely defined; map_for+warp_at+SSOT warp guard+drain battle lock in movement_tick; validate_zone_maps in sync_content_inner; ensure_zone_schedules in init+sync_content (teeth: 17 fixture checks verified)'
       : failures.join('; '),
   };
 }
