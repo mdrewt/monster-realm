@@ -330,3 +330,10 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
 
     Ok(())
 }
+
+// movement.rs is a file-module (declared `mod movement;` in `lib.rs`), so a plain
+// `mod movement_tests;` would resolve under `src/movement/`; `#[path]` keeps the
+// test file a sibling in `src/` (the game-core `*_tests.rs` convention, ADR-0056 map).
+#[cfg(test)]
+#[path = "movement_tests.rs"]
+mod movement_tests;
