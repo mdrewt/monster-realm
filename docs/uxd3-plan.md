@@ -7,7 +7,218 @@
 > and `helpView?.visible` = 18, so the KeyM handler's 14-guard list moves them to 20 / 19
 > exactly as §0 predicts.
 
-**Slice:** uxd3-a · **Branch:** `feat/uxd3-overlay-registry-menu` · **ADR:** reserve at build (expect **0162**; `mr-state.json.adr_next_free`) · **Serial after** nh1/nh2/uxd2 (all landed).
+**Slice:** uxd3-a · **Branch:** `feat/uxd3-overlay-registry-menu` · **ADR:** **0162** (supervisor-assigned) · **Serial after** nh1/nh2/uxd2 (all landed).
+
+---
+
+## §A. AMENDMENTS — binding, and they OVERRIDE the sections below
+
+Three independent lenses ran against the plan as first written: a `reviewer` (BLOCKER×2, HIGH×4,
+MEDIUM×6, LOW×8), a `red-team` (14 findings incl. two mutations that keep every named tooth green
+while breaking mutual exclusion), and an orchestrator `/simplify` pass. Adjudicated below. **Where
+§A conflicts with §1-§9, §A wins.** The cut line itself survived all three lenses unchanged.
+
+### A1 — `canOpen`'s battle-as-TARGET row was wrong (reviewer B2). MUST fix before T1.1.
+
+§2's table gives *blocker = GUARD_ONLY ⇒ deny* for every target tier, so
+`canOpen('battleView', ['helpView'])` = deny. But `refreshBattle` (`main.ts:1176-1190`) force-hides
+`helpView`/`leaderboardView`/`renameView`/`tradeProposeView` — all GUARD_ONLY — and shows the
+battle. Spec `:128` models EXCLUSIVE_TOP as *"may force-hide the subset"*. Latent in uxd3-a (battle
+is not a leaf) but it detonates in uxd3-b. **Add the EXCLUSIVE_TOP-target row:** `allow` with
+`forceHide = blockers ∩ BATTLE_FORCE_HIDE`; `deny` only when a blocker sits outside that set
+(`dialogue/questLog/heal/shop/trade/pvp` — which `refreshBattle` indeed does not hide). New tooth
+`OR-CANOPEN-BATTLE-TARGET-MATCHES-FORCEHIDE`.
+
+### A2 — `forceHide` teeth: exact-set + a NEVER invariant (red-team F1). The headline tooth was fake.
+
+`OR-HIDEALLEXCEPT-BATTLE-SUBSET` as specced is **tautological** — §2 defines the plan as
+`visible.filter(id => FORCE_HIDE_FOR[keep].includes(id))` and §6 expects "`BATTLE_FORCE_HIDE` minus
+battle": the same expression on both sides. And `W-BATTLE-FORCEHIDE-SET-MATCHES-MANIFEST` is
+bidirectional against `main.ts`, so it is blind to a *coordinated* two-sided edit that adds
+`dialogueView` to both. §6 AC-4's claimed kill ("someone force-hiding `dialogueView` on battle,
+which would strand `player_conversation`") **is false as written.** Add:
+- `OR-FORCEHIDE-EXACT`: `expect(BATTLE_FORCE_HIDE).toEqual([...8 literal ids])` — ordered, exact, not `.includes`.
+- `OR-NEVER-FORCE-HIDE`: `NEVER_FORCE_HIDE = ['dialogueView'] as const`; assert disjoint from `BATTLE_FORCE_HIDE` **and** that no `canOpen(t, V)` verdict over any target/blocker-set ever puts a `NEVER_FORCE_HIDE` id in `forceHide`.
+
+The second bullet is why `forceHide` is NOT narrowed to a 3-member `HideSwitchId` union (reviewer M1
+/ red-team F4 both proposed that): A1 requires EXCLUSIVE_TOP verdicts to carry GUARD_ONLY ids, so
+the narrow type is unsound. The `NEVER` invariant is the stronger guarantee and covers both rows.
+
+### A3 — every `canOpen` tooth passes ≤1 blocker; a `blockers[0]`-only impl is 100% green (red-team F2).
+
+`canOpen('boxView', ['raisingView','dialogueView'])` would return `allow{forceHide:['raisingView']}`
+instead of `deny` — the box opens over a live conversation. Add **`OR-CANOPEN-MULTI-BLOCKER`**, one
+fast-check property over random `V ⊆ OVERLAY_IDS`: (a) `deny` iff ∃ `b ∈ V\{target}` that denies for
+this target tier; (b) on allow, `new Set(forceHide)` equals the full qualifying blocker set — not
+just the first; (c) on deny, `blockedBy` is the `OVERLAY_IDS`-first denying blocker; (d) permutation
+invariance: `canOpen(t, V)` deep-equals `canOpen(t, shuffle(V))`.
+
+### A4 — `OR-CANOPEN-GUARDONLY-ALL` is tautological w.r.t. retiering (red-team F5).
+
+Its loop domain is `OVERLAY_IDS.filter(isGuardOnly)` — **derived from the table being mutated**.
+Demote `shopView` to HIDE_SWITCH and it simply exits the loop: 11×14 → 10×14, still green. §6(b)'s
+"every escape route is closed" is wrong. **Hoist a hard-coded `EXPECTED_GUARD_ONLY` 11-element
+literal and share it between `OR-TIERS-PARTITION` and `OR-CANOPEN-GUARDONLY-ALL`.** The behavioural
+stake is real: a demoted `shopView` makes `KeyB` force-hide the shop mid-`buy()`, and
+`shopView.hide()` resets the double-spend `#pending` lock.
+
+### A5 — `openMenu()` must reset `menuState` (red-team F3). Real, 30-second-repro AC-11 break.
+
+`M` → `Enter` (into Party) → `M` (toggle-close) → `M` re-opens **inside the submenu**. Four paths
+hide the view without going through `menuStep`: the KeyM toggle-close arm, `refreshBattle`, the
+dialogue preempt, `onReconnect`. §3's "activate resets, so nothing remembers" covers only one path.
+**Make `openMenu()` the single choke point** — `menuState = MENU_INITIAL; renderMenu(); menuView?.show();`
+— and add `W-OPENMENU-RESETS-STATE`.
+
+### A6 — extract the open bodies NOW (reviewer M3 + B1). Kills the duplication instead of time-boxing it.
+
+§1's "extraction breaks `W-OVERLAY-FANOUT-MUTEX`" is true **only for KeyB/I/E**, whose `.hide()`
+calls are the block's sole gate credit for the trio. It does not apply to the seven non-trio
+handlers (`main.ts:715-720, 742-754, 777-785, 809-814, 841-847, 874-887, 974-980`) — their bodies
+contain no sibling `.hide()`, so extracting each **else-arm** into `openQuestLog()` / `openTrade()` /
+`openPvp()` / `openLeaderboard()` / `openRename()` / `openPropose()` / `openHelp()` leaves every
+guard list and every `X?.visible` toggle read in place. The trio arms need only
+`boxView?.toggle(); if (boxView?.visible) refreshBox();` — `refreshBox`/`refreshRaising`/`refreshEvolution`
+already exist. Likewise **extract `main.ts:918-949` into `interactAtNearest()`** (reviewer B1):
+without it the Interact leaf would paste a SECOND exhaustive `switch (target.kind)`, destroying the
+single-site compiler flag that is ADR-0161's whole point — and `KeyT` earns all its gate credit from
+its guard list, so extraction is safe there too.
+
+Result: `activateMenuLeaf` shrinks from ~70 duplicated lines to **~6** (one exhaustive switch of
+calls), there is **one** open path per overlay, and uxd3-b's "first task is the extract-function
+refactor" becomes a no-op. Cost-neutral — the same code is written either way.
+
+### A7 — DROP the probe shell (reviewer M2 + red-team F9 + `/simplify` S3).
+
+`OverlayProbes` / `OverlayVisibility` / `createOverlayVisibility` (§2, edit 4) are required by no
+EARS criterion here and have exactly one consumer. Worse, red-team F9: the 15-entry table lives in
+coverage-excluded `main.ts` with no tooth, so `raisingView: () => boxView?.visible ?? false`
+type-checks and silently corrupts the only race guard in the new open path. **Delete all three.**
+`activateMenuLeaf` uses the existing SSOT — `if (anyOverlayVisible()) return;` — which is already
+the precedent for exactly this (the uxd2 deferred shop-open, `main.ts:1279`). This also deletes the
+`hideById` table, and with it the first-ever `dialogueView?.hide` call site in `main.ts` (red-team
+F4). `overlayRegistry.ts` becomes 100% pure. Replace the region-scoped
+`W-ESCAPE-DIALOGUE-NEVER-BARE-HIDE` with a strictly stronger **whole-file zero-count**:
+`dialogueView?.hide` and `dialogueView.hide` must each occur **0** times in `main.ts`.
+
+### A8 — `onReconnect` has 22 characters of headroom (red-team F6). Placement is load-bearing.
+
+`W-TP-RECONNECT` slices `reconnectIdx+1000` and `tradeProposeView?.hide()` currently sits at delta
+**978**. A bare `menuView?.hide();` inserted *above* it → delta 1002 → **RED by 2 chars**; with the
+house-style 2-line rationale comment above `renameView?.hide();` → 1176, and `W-RN-FANOUT-RECONNECT`
+(+800) reds too. Both failures name *tradePropose/rename*, so the implementer will chase the wrong
+file. **Edit 25 is: insert `menuView?.hide();` STRICTLY AFTER `tradeProposeView?.hide();`, with the
+comment on the same line or omitted. Add no lines above it.** (Related: `W-RN-HELD` at
+`indexOf("'KeyN'")+720` moves 602→630, margin 90 — survives, but it is the next to go.)
+
+### A9 — ship the discovery path; it is free (reviewer H4).
+
+With `#menu-launcher` parked, nothing tells the player `M` exists. But `client/index.html` IS in the
+touch set, and every `indexShell.test.ts` tooth on `#help-hint` survives a **text-node-only** change:
+H2b forbids element children (unchanged), H3 is a substring check for `?` and `help` (both kept), H4/H5/H6
+read only the `style` attribute (untouched), and `W-UX1-HINT-NO-JS-OWNER` stays green because
+`main.ts` still never names `help-hint`. Verified: no `client/e2e/**` spec references the string.
+**Edit 27: `index.html:105` → `Press ? for controls &amp; help · M for menu`.** Still exactly one
+corner element; uxd3-b relabels rather than adds.
+
+### A10 — `W-ONE-CORNER-AFFORDANCE` does not pin AC-12 as specced (red-team F10).
+
+Filtering on `position:fixed` **and** `bottom:` misses `#menu-launcher` at `top:8px;right:8px` —
+precisely the element uxd3-b will add. **Filter on `position:fixed` AND NOT `inset:0`.** The
+asserted set stays `{build-stamp, help-hint}` today (`#help-overlay` and `#menu-overlay` are both
+`inset:0`). Note (reviewer L5) both target divs spread `id`/`style` across lines, so this needs real
+attribute parsing, not a line regex.
+
+### A11 — menu-nav input semantics were underspecified (reviewer H2, L4).
+
+`{kind:'click'|'hover', index}` carries its own index, but §3 says enter/click uses the *currently
+selected* `categoryIndex` — so a click on an unselected row opens the wrong category. It only
+accidentally works in a browser because `mouseover` fires first; a bare synthetic `click` in
+`MV-*` exposes it. **Define: `hover`/`click` first set the level's index to `input.index`; `click`
+then applies `enter`. `menuStep` is TOTAL — an out-of-range index (a stale `data-menu-index` read
+after `replaceChildren`) yields `{state: s, effect:{kind:'none'}}`, and `buildMenuViewModel` clamps
+rather than indexing OOB.**
+
+### A12 — `activateMenuLeaf` drops guards the hotkeys carry (reviewer H3, red-team F7).
+
+`main.ts:872`/`:916` gate KeyO/KeyT on `identity !== ''` (ADR-0134 red-team L-1: never
+`proposeTrade`/`talk` before join) and `:844`/`:877` call `held.clear()` on the two text-input
+overlays. **`KeyM`'s guard list gets `identity !== ''` as its 15th term** (it is otherwise the only
+open-handler without it, and `menuAvailability()` → `nearestInteractable(store.ownCharacter('')!.row, …)`
+throws inside an uncaught window listener pre-join). `activateMenuLeaf` early-returns on
+`identity === ''`. A6's extraction carries `held.clear()` along for free. New tooth
+`W-ACTIVATE-LEAF-IDENTITY-GUARD`.
+
+### A13 — AC-18's tooth is weaker than AC-18 (reviewer H5).
+
+Membership (`leaf.keyGlyph ∈ CONTROLS.map(c => c.key)`) passes a Journal leaf advertising `'B'`.
+AC-18 requires failure "if any displayed key diverges". **Add an explicit 11-pair
+`MenuLeafId → keyGlyph` expectation table** alongside the membership check.
+
+### A14 — manifest tooth cannot run as written (red-team F12).
+
+`client/package.json` is `"type": "module"`, so `__dirname` is undefined and `join(__dirname)`
+throws. Every precedent in this repo uses `path.dirname(fileURLToPath(import.meta.url))`. Also the
+anti-vacuity floor `scanned.size >= 15` is off by one once `menuView.ts` lands — use
+`expect(scanned.size).toBe(OVERLAY_IDS.length + 1)` (the +1 is `errorOverlayView`). Record in the
+ADR that `/View\.ts$/` + non-recursive `readdirSync` makes the completeness claim
+naming-convention-dependent.
+
+### A15 — `/simplify` reductions (orchestrator), all adopted.
+
+- **Drop `RECONNECT_HIDE`** and `OR-RECONNECT-HIDE-EXCLUDES-HELP` — dead data with no uxd3-a
+  consumer, and §1 IN.1 already says consumer-less exports go to uxd3-b (red-team F14 concurs).
+  AC-10's real teeth are the two `main.ts` source-scans.
+- **Derive `OVERLAY_IDS = Object.keys(OVERLAY_TIERS) as readonly OverlayId[]`** — string keys keep
+  insertion order, so §2's determinism holds; deletes a hand-maintained parallel list, makes
+  id-in-one-but-not-the-other unrepresentable, and lets `OR-TIERS-TOTAL` be deleted.
+- **Drop the `MenuInput.right` variant** — `menuKeyInput` maps `ArrowRight/KeyD/Enter → enter`, so
+  nothing ever constructs it. AC-13's "Enter/Right" is satisfied by the mapper.
+- **Drop `menuKeyInput`'s unused `key` parameter** (also reviewer L1 — trips `noUnusedParameters`).
+- **Drop edit 22, the batch-refresh listener.** No EARS criterion needs live grey-out; the menu
+  suppresses movement, so the player cannot walk into or out of Interact range while it is open.
+  This also moots reviewer M4 (missing try/catch).
+- **Merge `OR-BATTLE-FORCEHIDE-INCLUDES-MENU` into `OR-FORCEHIDE-EXACT`** (A2 asserts the whole set).
+
+### A16 — smaller accepted corrections
+
+- **`menuAvailability()` must be total** (reviewer M5): `hasInteractTarget` is `false` when
+  `store.ownCharacter(identity)` is `undefined`.
+- **Edit 20 adds NO lines above `main.ts:1190`**, comments included (reviewer L2) —
+  `W-HELP-FANOUT-BATTLE` slices `showIdx+900` and the tradePropose hide already sits at ~880.
+- **`activateMenuLeaf`'s switch arms are open-only and contain no `?.visible` read** (reviewer L3),
+  or the exact `LEADERBOARD_LIVE_COUNT` `.toBe()` breaks after T4.5 signed it off.
+- **Anti-pattern 14b** (red-team): no quoted hotkey-anchor literal (`'KeyN'`, `"e.code === 'KeyO'"`,
+  `"e.key === '?'"`, `"e.code === 'KeyM'"`) may appear in the new helper block at `main.ts:~262` —
+  it sits before every one of those first-`indexOf` anchors.
+- **Anti-pattern 15's rationale is wrong** (red-team F8) — `ESCAPE_SENTINEL` is found by a *forward*
+  search from each handler, so an `Escape` literal in the intercept never reaches it. Keep the rule,
+  restate the reason: three teeth (`W-RN-ESCAPE` +2000, `W-TP-ESCAPE` +2500, `W-HELP-ESCAPE` +2500)
+  do `indexOf("e.code === 'Escape'")` + fixed window; an Escape literal at ~31026 re-anchors them
+  onto the KeyB/I/E guard lists where they stay **silently green forever**. That is the damage.
+- **Declare AC-11's mechanism deferral** next to AC-7/AC-8 (reviewer L7) — the KeyM handler uses the
+  inline 14-guard list, not `canOpen`.
+- **Record the PvP-availability widening** (`|| incoming !== null`) as deliberate in the ADR
+  (reviewer L6) — AC-16 says "challengeable rows exist"; answering an incoming challenge is also valid.
+
+### A17 — DEFERRED with rationale (not silently dropped)
+
+- **Menu nav does not key-repeat** (red-team F13). The `e.repeat` gate is the listener's first
+  statement, before the intercept; holding ArrowDown moves one row. Fixing it means editing nh1's
+  block. Accepted as-is: the lists are ≤5 rows with wrap-around, and hover/click work. **ADR-record it.**
+- **Re-anchoring the three Escape teeth** on `"e.code === 'Escape' && renameView?.visible"` etc.
+  (red-team F8) — a genuine improvement, but it edits gating tests unrelated to this slice.
+  → uxd3-b Boy-Scout.
+- **Greyed-leaf reason text** ("Interact — nothing nearby", reviewer L8) — AC-15 does not require it.
+- **`OVERLAY_IDS` duplicate-id mutation** (red-team M15) — all checks are `Set`-based; benign, and
+  A15's derivation from `OVERLAY_TIERS` makes a duplicate key impossible anyway.
+- **`blockedBy` returning a wrong-but-real id** (red-team M16) — A3(c) now pins it.
+
+### A18 — plan-text errata (reviewer M6)
+
+§1 `:51` cites "§7.3" for the wiring-constant edits; the real location is §8 T3.2. §6 AC-4 calls
+`BATTLE_FORCE_HIDE` "the 7-subset"; §2 defines it as **8** (the existing 7 + `menuView`). A tester
+following §6 verbatim would write the wrong expectation.
 
 ---
 
