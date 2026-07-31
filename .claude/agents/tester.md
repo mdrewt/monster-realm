@@ -35,6 +35,7 @@ specialist implements, the verifier runs).
 - **vitest + fast-check:** inside `fc.property(arb, fn)` use **block-body** arrows
   (`(x) => { expect(a).toEqual(b); }`), never expression-body (`(x) => expect(...)`)
   — fast-check misreads the matcher's return as a `false` and fails spuriously.
-  See `[[vitest-fast-check]]`.
+  When a property test flakes or the runner picks up the wrong specs, Read
+  `~/.claude/skills/vitest-fast-check/SKILL.md` (full gotcha list) before debugging.
 - Use the project's framework + `standards/testing-tdd.md`; scope the runner away
   from other test types (e.g. Playwright e2e specs the unit runner would grab).
