@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 127 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 128 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -136,6 +136,7 @@ Generated from 127 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0159](./0159-feel-polish-care-feedback-npc-wander.md) | 0159 — feel-polish: care-button success feedback + collision-aware NPC wander | Accepted | client-ui, movement-netcode | feel-polish (M-postgate-feel-polish — r2 playtest ledger items 087-090) | Care gets an in-overlay feedback line via the established showFeedback idiom (no toast); npc_decide picks only legal directions and continues its facing except 1 decision in 6, so wander cannot become absorbing; bumps 14.3%->0%. |
 | [0160](./0160-responsive-viewport-device-integer-scaling.md) | 0160 — Responsive viewport: DPR-correct backing store, device-integer scaling, per-axis map centering | Accepted | client-ui | uxd1 (M-postgate-ux-design — responsive viewport scaling) | A viewport core sizes the render edge: Pixi runs at resolution=devicePixelRatio+autoDensity, an INTEGER deviceScale is applied as stageScale=deviceScale/dpr, and FollowCamera centers per-axis when the map is smaller than the viewport. |
 | [0161](./0161-npc-interaction-context-interact.md) | 0161 — Server-anchored NpcInteraction enum and the context-sensitive KeyT interact system | Accepted | content, client-ui, schema-persistence | uxd2 (M-postgate-ux-design — shop-via-NPC interaction) | NPC roles live in a server-anchored NpcInteraction{Dialogue,Shop(u32),Heal(u32)} enum column; one pure nearestInteractable resolver drives a generalized KeyT (greet-then-shop per Drew) and an on-world prompt; global KeyG/KeyH are removed. |
+| [0162](./0162-overlay-registry-two-level-main-menu.md) | 0162 — A pure `canOpen` modality core and a registry-backed two-level main menu | Accepted | client-ui | uxd3-a (M-postgate-ux-design — unified overlay IA) | Overlay modality moves into a pure `canOpen` reducer over a 15-member tier manifest, and a `KeyM` two-level menu makes the hotkeys discoverable; the fan-out collapse and gate retirement defer to uxd3-b. |
 
 ## Harness design corpus (H- namespace)
 
@@ -344,6 +345,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0159](./0159-feel-polish-care-feedback-npc-wander.md) — feel-polish (M-postgate-feel-polish — r2 playtest ledger items 087-090) — 0159 — feel-polish: care-button success feedback + collision-aware NPC wander (Accepted)
 - [0160](./0160-responsive-viewport-device-integer-scaling.md) — uxd1 (M-postgate-ux-design — responsive viewport scaling) — 0160 — Responsive viewport: DPR-correct backing store, device-integer scaling, per-axis map centering (Accepted)
 - [0161](./0161-npc-interaction-context-interact.md) — uxd2 (M-postgate-ux-design — shop-via-NPC interaction) — 0161 — Server-anchored NpcInteraction enum and the context-sensitive KeyT interact system (Accepted)
+- [0162](./0162-overlay-registry-two-level-main-menu.md) — uxd3-a (M-postgate-ux-design — unified overlay IA) — 0162 — A pure `canOpen` modality core and a registry-backed two-level main menu (Accepted)
 
 ### ci-gates
 
