@@ -5,7 +5,7 @@ slug: tables/skill_row
 updated: 2026-07-26
 tags: [schema, spacetimedb, public]
 abstract: "Skill definitions seeded from the `game-core` RON registry."
-resource: server-module/src/schema.rs#L96
+resource: server-module/src/schema.rs#L97
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

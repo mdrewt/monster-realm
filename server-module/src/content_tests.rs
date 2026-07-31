@@ -865,6 +865,7 @@ fn m13_5c_npc_def(id: u32, npc_id: &str, zone_id: u32, spawn: (i32, i32)) -> Npc
         wander_radius: 3,
         dialogue_tree_id: format!("tree_{npc_id}"),
         sprite_id: 7,
+        interaction: game_core::NpcInteraction::Dialogue,
     }
 }
 
@@ -882,6 +883,7 @@ fn m13_5c_pair_from_def(def: &NpcDef, entity_id: u64) -> (Npc, Character) {
             home_y: def.home_y,
             wander_radius: def.wander_radius,
             dialogue_tree_id: def.dialogue_tree_id.clone(),
+            interaction: def.interaction,
         },
         Character {
             entity_id,
@@ -2106,14 +2108,16 @@ fn uxd2_sync_content_inner_validates_npc_interactions_before_write_phase() {
     let body = m13_5c_fn_body(&stripped, "fn sync_content_inner(ctx");
     let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
 
-    let call_at = compact.find("validate_npc_interactions(").unwrap_or_else(|| {
-        panic!(
-            "TEETH(uxd2 AC-8 needle 1): sync_content_inner must call \
+    let call_at = compact
+        .find("validate_npc_interactions(")
+        .unwrap_or_else(|| {
+            panic!(
+                "TEETH(uxd2 AC-8 needle 1): sync_content_inner must call \
              `validate_npc_interactions(` in its VALIDATE block — a validator \
              that is never called is dead code and a dangling Shop(id)/Heal(id) \
              seed reaches production unchecked"
-        )
-    });
+            )
+        });
     let write_at = compact
         .find("stale_zone_def_ids(")
         .expect("write-phase anchor `stale_zone_def_ids(` must exist in sync_content_inner");

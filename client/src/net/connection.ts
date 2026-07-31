@@ -389,6 +389,9 @@ export function connect(opts: ConnectionOptions): Connection {
       homeY: number;
       wanderRadius: number;
       dialogueTreeId: string;
+      // uxd2 (ADR-0161): the NpcInteraction tagged union as the SDK delivers
+      // it — normalized (totally, AC-16) by npcRowToStore.
+      interaction: { tag: string; value?: number };
     };
     const ingestNpc = (row: SdkNpcRow): void => {
       store.upsertNpc(npcRowToStore(row));

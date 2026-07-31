@@ -1122,6 +1122,10 @@ pub struct NpcDef {
     pub wander_radius: u8,
     pub dialogue_tree_id: String,
     pub sprite_id: u32,
+    /// Interaction role for the context-sensitive interact key (uxd2, ADR-0161).
+    /// Defaults to Dialogue so existing NPC RON files that omit this field remain valid.
+    #[serde(default)]
+    pub interaction: crate::types::NpcInteraction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1496,6 +1500,56 @@ pub fn validate_npc_content(
                 "heal location {} has cost_item_id set but cost_qty is 0",
                 hl.location_id
             ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Cross-registry integrity check for `NpcDef.interaction` payloads (uxd2,
+/// ADR-0161 D2). A separate function from `validate_npc_content` on purpose:
+/// its 6-arg signature (~40 test call sites) stays untouched, and this check
+/// remains independently falsifiable (ADR-0010).
+///
+/// Checks (deterministic order — npcs in slice order):
+/// 1. `Shop(id)` references an existing `ShopDef.id`
+/// 2. `Heal(id)` references an existing `HealLocationDef.location_id`
+/// 3. `Dialogue` carries no payload — an explicit no-op arm (NO wildcard, so a
+///    4th `NpcInteraction` variant compiler-flags this site)
+///
+/// # Errors
+/// Returns `Err` naming BOTH the offending `npc_id` and the dangling id, so an
+/// operator can find the broken RON row from the sync failure alone.
+pub fn validate_npc_interactions(
+    npcs: &[NpcDef],
+    shops: &[ShopDef],
+    heal_locations: &[HealLocationDef],
+) -> Result<(), String> {
+    use std::collections::BTreeSet;
+
+    let shop_ids: BTreeSet<u32> = shops.iter().map(|s| s.id).collect();
+    let heal_ids: BTreeSet<u32> = heal_locations.iter().map(|h| h.location_id).collect();
+
+    for npc in npcs {
+        match npc.interaction {
+            crate::types::NpcInteraction::Dialogue => {}
+            crate::types::NpcInteraction::Shop(shop_id) => {
+                if !shop_ids.contains(&shop_id) {
+                    return Err(format!(
+                        "NPC '{}' interaction Shop({shop_id}) references unknown shop id {shop_id}",
+                        npc.npc_id
+                    ));
+                }
+            }
+            crate::types::NpcInteraction::Heal(location_id) => {
+                if !heal_ids.contains(&location_id) {
+                    return Err(format!(
+                        "NPC '{}' interaction Heal({location_id}) references unknown heal \
+                         location id {location_id}",
+                        npc.npc_id
+                    ));
+                }
+            }
         }
     }
 
@@ -4286,6 +4340,7 @@ mod tests {
             wander_radius: 2,
             dialogue_tree_id: dialogue_tree_id.to_string(),
             sprite_id: 10,
+            interaction: crate::NpcInteraction::Dialogue,
         }
     }
 
@@ -4830,6 +4885,7 @@ mod tests {
             wander_radius: 2,
             dialogue_tree_id: "elder_oak_talk".to_string(),
             sprite_id: 10,
+            interaction: crate::NpcInteraction::Dialogue,
         };
         assert_eq!(
             defs.first(),
@@ -6546,10 +6602,16 @@ mod tests {
             1,
             "uxd2 I3 TEETH: exactly one (Leave) choice — the Shop affordance is \
              derived from NpcInteraction, NEVER from choice text; got {:?}",
-            node.choices.iter().map(|c| c.text.as_str()).collect::<Vec<_>>()
+            node.choices
+                .iter()
+                .map(|c| c.text.as_str())
+                .collect::<Vec<_>>()
         );
         let choice = &node.choices[0];
-        assert_eq!(choice.text, "Leave", "uxd2 I3: the single choice is 'Leave'");
+        assert_eq!(
+            choice.text, "Leave",
+            "uxd2 I3: the single choice is 'Leave'"
+        );
         assert_eq!(
             choice.next_node, None,
             "uxd2 I3 TEETH: the Leave choice must END the conversation \

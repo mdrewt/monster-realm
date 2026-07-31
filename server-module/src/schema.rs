@@ -14,7 +14,8 @@
 //! the canonical `touches:` vocabulary fixed by ADR-0056 — keep it stable.
 
 use game_core::{
-    ActionState, Affinity, BattleState, Direction, MoveInput, NatureKind, StatKind, StatusKind,
+    ActionState, Affinity, BattleState, Direction, MoveInput, NatureKind, NpcInteraction, StatKind,
+    StatusKind,
 };
 use spacetimedb::Identity;
 
@@ -370,6 +371,10 @@ pub struct Npc {
     pub home_y: i32,
     pub wander_radius: u8,
     pub dialogue_tree_id: String,
+    /// Interaction role (uxd2, ADR-0161): appended LAST (BSATN tail-append —
+    /// widening a public row is wire-safe only at the tail). Threaded from
+    /// `NpcDef.interaction` by `npc_row_from_def`.
+    pub interaction: NpcInteraction,
 }
 
 /// PRIVATE per-player dialogue state: flags + done-quest history.

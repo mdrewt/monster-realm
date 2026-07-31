@@ -23,8 +23,8 @@ use game_core::{
     load_fusion, load_heal_locations, load_items, load_npc_defs, load_quest_defs, load_shops,
     load_skills, load_species, load_type_chart, load_zone_maps, validate_abilities,
     validate_content, validate_encounters, validate_evolution_fusion, validate_npc_content,
-    validate_shops, validate_zone_maps, ActionState, Direction, EVs, EvolutionCondition, IVs,
-    Level, Nature, StatBlock,
+    validate_npc_interactions, validate_shops, validate_zone_maps, ActionState, Direction, EVs,
+    EvolutionCondition, IVs, Level, Nature, StatBlock,
 };
 // Species and SpeciesEvolutions are only used by the test-only recheck seam.
 #[cfg(test)]
@@ -75,6 +75,10 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
         &heal_defs,
     )
     .map_err(|e| format!("npc_content invalid: {e}"))?;
+    // uxd2 (ADR-0161 D2): cross-check NpcDef.interaction payloads against the
+    // shop/heal registries — still in the VALIDATE phase (all-before-any-write).
+    validate_npc_interactions(&npc_defs, &shops, &heal_defs)
+        .map_err(|e| format!("npc_interactions invalid: {e}"))?;
     validate_shops(&shops, &items).map_err(|e| format!("shops invalid: {e}"))?;
     validate_abilities(&abilities, &species).map_err(|e| format!("abilities invalid: {e}"))?;
 
@@ -445,6 +449,7 @@ fn npc_row_from_def(def: &game_core::NpcDef, entity_id: u64) -> Npc {
         home_y: def.home_y,
         wander_radius: def.wander_radius,
         dialogue_tree_id: def.dialogue_tree_id.clone(),
+        interaction: def.interaction,
     }
 }
 
@@ -517,7 +522,8 @@ pub(crate) fn plan_npc_sync(
                     || npc.home_x != def.home_x
                     || npc.home_y != def.home_y
                     || npc.wander_radius != def.wander_radius
-                    || npc.dialogue_tree_id != def.dialogue_tree_id;
+                    || npc.dialogue_tree_id != def.dialogue_tree_id
+                    || npc.interaction != def.interaction;
                 let character_stale = ch.zone_id != def.zone_id || ch.sprite_id != def.sprite_id;
                 if !npc_row_stale && !character_stale {
                     continue; // idempotence: def-identical pair plans nothing

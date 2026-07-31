@@ -51,6 +51,10 @@ export class WorldRenderer {
   // with a valid record: an undefined-gated field would leave any frame drawn
   // before the first resize() with NO camera transform at all.
   #vs: ViewportScale = viewportScale(1, 1, 1);
+  // uxd2 (ADR-0161 D6): the camera offset render() ACTUALLY applied last frame,
+  // stashed so screenFor() reuses the exact stage transform (never a parallel
+  // camera recomputation, which desyncs by the sub-tile slide amount).
+  #lastOffset = { x: 0, y: 0 };
 
   /** Create the Pixi app, mount its canvas, and draw the tile map ONCE. */
   async init(mount: HTMLElement, rawMap: RawTileMap): Promise<void> {
@@ -157,7 +161,7 @@ export class WorldRenderer {
     if (app !== undefined && map !== undefined) {
       const vs = this.#vs;
       // offsetFor takes the EFFECTIVE viewport in SOURCE px, never CSS px (uxd1 R1).
-      const off = this.#camera.offsetFor(
+      this.#lastOffset = this.#camera.offsetFor(
         ownTileX,
         ownTileY,
         vs.effectiveW,
@@ -168,7 +172,7 @@ export class WorldRenderer {
       // The stage's screen position IS where the world origin lands under this
       // camera — routed through worldToScreen so the shipped transform is the
       // ONE tested formula, not a parallel copy of it.
-      const origin = worldToScreen({ x: 0, y: 0 }, off, vs.stageScale);
+      const origin = worldToScreen({ x: 0, y: 0 }, this.#lastOffset, vs.stageScale);
       app.stage.position.set(origin.x, origin.y);
     }
   }
@@ -183,6 +187,14 @@ export class WorldRenderer {
     if (app === undefined) return;
     app.renderer.resize(vs.cssW, vs.cssH, vs.dpr);
     app.stage.scale.set(vs.stageScale);
+  }
+
+  /** uxd2 (ADR-0161 D6): world (SOURCE px) → screen (CSS px) under the camera
+   *  offset + stageScale the last render() ACTUALLY applied — the DOM interact
+   *  prompt reuses the stage's own transform, so it cannot swim against the
+   *  canvas mid-slide. Built on the tested worldToScreen (render/viewport.ts). */
+  screenFor(world: { x: number; y: number }): { x: number; y: number } {
+    return worldToScreen(world, this.#lastOffset, this.#vs.stageScale);
   }
 
   get viewCount(): number {

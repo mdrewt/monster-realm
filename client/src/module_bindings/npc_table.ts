@@ -9,6 +9,10 @@ import {
   type AlgebraicTypeType as __AlgebraicTypeType,
   type Infer as __Infer,
 } from "spacetimedb";
+import {
+  NpcInteraction,
+} from "./types";
+
 
 export default __t.row({
   entityId: __t.u64().primaryKey().name("entity_id"),
@@ -18,4 +22,7 @@ export default __t.row({
   homeY: __t.i32().name("home_y"),
   wanderRadius: __t.u8().name("wander_radius"),
   dialogueTreeId: __t.string().name("dialogue_tree_id"),
+  get interaction() {
+    return NpcInteraction;
+  },
 });

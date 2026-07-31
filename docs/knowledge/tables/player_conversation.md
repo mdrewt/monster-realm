@@ -5,7 +5,7 @@ slug: tables/player_conversation
 updated: 2026-07-26
 tags: [schema, spacetimedb, private]
 abstract: "In-progress dialogue node. Single row per player (PK = owner_identity). PRIVATE since M13.5c (ADR-0087): `npc_entity_id…"
-resource: server-module/src/schema.rs#L404
+resource: server-module/src/schema.rs#L409
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: private
 ---

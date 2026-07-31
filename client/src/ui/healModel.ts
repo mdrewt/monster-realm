@@ -34,6 +34,24 @@ export function healTargetLocationId(
   return locations[0]?.locationId;
 }
 
+/**
+ * Bound-location view (uxd2, ADR-0161 D5): the heal view model for ONE
+ * location id. THIN filter-then-delegate — cost/isFree resolution stays in
+ * buildHealViewModel. Unknown id → `{ locations: [] }` (never the full list,
+ * never the first pad, never a throw). `===` on the id — location id 0 is a
+ * valid bound id (falsy-0 trap).
+ */
+export function buildHealViewModelForLocation(
+  locationId: number,
+  healLocations: readonly StoreHealLocationRow[],
+  itemDefs: ReadonlyMap<number, StoreItemRow>,
+): HealViewModel {
+  return buildHealViewModel(
+    healLocations.filter((loc) => loc.locationId === locationId),
+    itemDefs,
+  );
+}
+
 export function buildHealViewModel(
   healLocations: readonly StoreHealLocationRow[],
   itemDefs: ReadonlyMap<number, StoreItemRow>,

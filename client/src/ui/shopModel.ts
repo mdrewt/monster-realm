@@ -140,3 +140,28 @@ export function buildShopViewModel(
 
   return { kind: 'shop', shopId, shopName, forSale, forSaleByPlayer, balance };
 }
+
+/**
+ * Bound-shop selection (uxd2, ADR-0161 D5): the view model for ONE named shop.
+ * THIN filter-then-delegate — every rule (stock filter, inventory aggregation,
+ * canSell, balance) stays in buildShopViewModel, exactly once. An unknown id
+ * filters to zero shops and delegates to the `no-shop` arm (balance included):
+ * NEVER a silent fall back to the first shop ("never silently swap a bound
+ * shop", D5). `===` on the id — a truthiness guard would break shop id 0.
+ */
+export function buildShopViewModelForShop(
+  shopId: number,
+  shops: readonly StoreShopRow[],
+  shopItems: readonly StoreShopItemRow[],
+  itemDefs: ReadonlyMap<number, StoreItemRow>,
+  ownInventory: readonly StoreInventory[],
+  ownWallet?: StoreWallet,
+): ShopScreenViewModel {
+  return buildShopViewModel(
+    shops.filter((s) => s.shopId === shopId),
+    shopItems,
+    itemDefs,
+    ownInventory,
+    ownWallet,
+  );
+}

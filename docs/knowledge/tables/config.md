@@ -5,7 +5,7 @@ slug: tables/config
 updated: 2026-07-26
 tags: [schema, spacetimedb, public]
 abstract: "Singleton world config."
-resource: server-module/src/schema.rs#L56
+resource: server-module/src/schema.rs#L57
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---
