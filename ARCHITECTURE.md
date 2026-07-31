@@ -183,7 +183,7 @@ canonical `touches:` vocabulary**: adding content is a new
 
 | Registry | Path | Form |
 |----------|------|------|
-| species | `content/species/*.ron` | directory (`000-core.ron` wild/base species + `010-derived.ron` evolved/fused derived forms + `020-playtest-wave1.ron` roster wave 1 — ADR-0143) |
+| species | `content/species/*.ron` | directory (`000-core.ron` wild/base species + `010-derived.ron` evolved/fused derived forms + `020-playtest-wave1.ron` roster wave 1 — ADR-0143 + `050-wave2.ron`/`051-wave2-derived.ron` roster wave 2 — ADR-0144 + `060-item-evo-derived.ron` item-triggered derived forms — ADR-0149) |
 | skills | `content/skills/*.ron` | directory |
 | items | `content/items/*.ron` | directory |
 | encounters | `content/encounters/*.ron` | directory |
@@ -196,6 +196,7 @@ canonical `touches:` vocabulary**: adding content is a new
 | dialogue_trees | `content/dialogue_trees/*.ron` | directory |
 | quests | `content/quests/*.ron` | directory |
 | heal_locations | `content/heal_locations/*.ron` | directory |
+| shops | `content/shops/*.ron` | directory (per-shop stock + buy/sell prices — ADR-0082) |
 | abilities | `content/abilities/*.ron` | directory (per-species passive effects — ADR-0094) |
 
 - **Species id ranges are reserved per authoring wave** (ADR-0143): 1–6 core/derived,
@@ -291,9 +292,10 @@ Hot-path content registries cached at the shell layer; **game-core stays pure** 
 ADRs **0002–0034** are design ADRs that live in the harness spec corpus
 (`../../specs/monster-realm-v2/adr/`); **0001** is mirrored in both locations.
 Implementation ADRs **0001, 0035 onward** live in `docs/adr/` — see
-`docs/adr/README.md` for the navigable catalog and the generated
-`docs/adr/DIGEST.md` for the current range + one-line-per-ADR digest
-(the hard upper bound is deliberately not repeated here). **ADR numbering note:** the harness
+`docs/adr/README.md` for the two-location navigation rules + next-free number and
+the generated `docs/adr/DIGEST.md` for the navigable catalog: the current range +
+one-line-per-ADR digest (the hard upper bound is deliberately not repeated here;
+`DIGEST.md` is the sole enumeration, drift-gated by `just adr-digest`). **ADR numbering note:** the harness
 spec corpus also contains design ADRs numbered `0055`–`0057` (different topics from
 the project's implementation ADRs `0055`–`0057`); when resolving a bare `ADR-0055`
 citation, check context — a `docs/adr/` path prefix disambiguates to the project
