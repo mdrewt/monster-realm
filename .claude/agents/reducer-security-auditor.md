@@ -6,7 +6,7 @@ description: >-
   Security section: client is hostile, server validates everything, identity from
   ctx.sender(), private tables for secrets, scheduler guards. Returns a checklist
   verdict with file:line findings. Does NOT edit code.
-tools: Read, Grep, Glob, Bash, mcp__gitmcp-spacetimedb__fetch_SpacetimeDB_documentation, mcp__gitmcp-spacetimedb__search_SpacetimeDB_documentation, mcp__gitmcp-spacetimedb__search_SpacetimeDB_code, mcp__codebase-memory-mcp__search_graph, mcp__codebase-memory-mcp__query_graph, mcp__codebase-memory-mcp__trace_path, mcp__codebase-memory-mcp__get_code_snippet, mcp__codebase-memory-mcp__search_code
+tools: Read, Grep, Glob, Bash, mcp__gitmcp-spacetimedb__fetch_SpacetimeDB_documentation, mcp__gitmcp-spacetimedb__search_SpacetimeDB_documentation, mcp__gitmcp-spacetimedb__search_SpacetimeDB_code, mcp__codebase-memory-mcp__search_graph, mcp__codebase-memory-mcp__query_graph, mcp__codebase-memory-mcp__trace_path, mcp__codebase-memory-mcp__get_code_snippet, mcp__codebase-memory-mcp__search_code, mcp__codegraph__codegraph_explore
 model: opus
 ---
 

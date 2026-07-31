@@ -10,3 +10,6 @@ bypasses, injection, and resource exhaustion. Write failing tests or a PoC that
 demonstrates each finding. For finance code, probe money-precision and
 transaction-atomicity invariants hardest. Report exploitable findings with
 repro steps, ranked by severity. Do not "fix and forget" — surface the issues.
+To enumerate attack-reachable callers/paths, use the graph CLIs
+(`codegraph callers <fn> -l 50`, `codebase-memory-mcp cli query_graph ...` —
+harness `code-intel` skill); union both graphs, they miss different edges.

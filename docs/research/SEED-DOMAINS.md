@@ -6,7 +6,7 @@ each becomes a dated doc in this library when first needed — not before.
   Mine for ideas/techniques/design/practices/content — preserve originality: no clones, no
   plagiarism or copyright infringement.
 - Standard practices — AND when to break them; hybrids/case-by-case switching are legitimate.
-- Current project state: `codebase-memory-mcp` CLI is installed natively; prefer it over blind grep.
+- Current project state: two code graphs cover this repo (CodeGraph + `codebase-memory-mcp` CLI) — route per the harness `code-intel` skill; prefer a graph call over blind grep.
 - Design patterns (same caveats as standard practices).
 - Dependency docs: Rust, TypeScript, WASM, SpacetimeDB, PixiJS, and sub-dependencies.
 - Agentic-coding gotchas + best practices (perishable — re-verify anything dated).

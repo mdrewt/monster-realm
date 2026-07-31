@@ -12,7 +12,14 @@
       "mcp__codebase-memory-mcp__search_code",
       "mcp__codebase-memory-mcp__get_architecture",
       "mcp__codebase-memory-mcp__get_graph_schema",
-      "mcp__codebase-memory-mcp__list_projects"
+      "mcp__codebase-memory-mcp__list_projects",
+      "mcp__codegraph__codegraph_explore",
+      "mcp__gitmcp-spacetimedb__fetch_SpacetimeDB_documentation",
+      "mcp__gitmcp-spacetimedb__search_SpacetimeDB_documentation",
+      "mcp__gitmcp-spacetimedb__search_SpacetimeDB_code",
+      "mcp__gitmcp-wasm-bindgen__fetch_wasm_bindgen_documentation",
+      "mcp__gitmcp-wasm-bindgen__search_wasm_bindgen_documentation",
+      "mcp__gitmcp-wasm-bindgen__search_wasm_bindgen_code"
     ],
     "deny": [
       "Bash(rm -rf:*)", "Bash(rm -fr:*)",
