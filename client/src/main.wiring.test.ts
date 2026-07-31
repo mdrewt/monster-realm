@@ -40,7 +40,10 @@
 //   F-5: a `process.env.NODE_ENV`-based gate substituted — Vite won't define-replace
 //        process.env.NODE_ENV, breaking DCE; the gate-string check catches it.
 
-import { readFileSync } from 'node:fs';
+// `readdirSync` is 11r-e's (ADR-0169 D4 / plan R7) addition: the wallet call-site count tooth
+// at the end of this file must prove that main.ts is the ONLY non-test client/src file naming
+// buildShopViewModel*, which needs a directory walk rather than a fixed path list.
+import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 // uxd3 (ADR-0162): W-ONE-CORNER-AFFORDANCE parses the REAL client/index.html with a real HTML
@@ -2328,11 +2331,33 @@ const DEVLOG_RING_NEEDLES = ['eventRing', 'errorRing', 'bugBundle', 'pushError']
 /** Return the ARGUMENT LIST of the first `needle` call in `src`, by balanced-paren scan
  *  from the `(` that terminates the needle. Throws loud when the call is absent or the
  *  parens never balance — a missing implementation must be a HARD RED, never a vacuous
- *  pass. Hand-rolled scan; `new RegExp` is Semgrep-banned in this file. */
+ *  pass. Hand-rolled scan; `new RegExp` is Semgrep-banned in this file.
+ *
+ *  11r-e (ADR-0169 D4): this is now a thin delegation to `callArgsFrom` so the file keeps
+ *  exactly ONE balanced-paren walker. The wallet call-site tooth at the END of this file
+ *  needs EVERY `buildShopViewModel*(` call, not just the first; a second, parallel walker is
+ *  precisely how two source scans drift apart and one of them silently stops biting. */
 function callArgs(src: string, needle: string): string {
-  const idx = src.indexOf(needle);
+  return callArgsFrom(src, needle, 0);
+}
+
+/** `callArgs` with a START OFFSET — the argument list of the first `needle` call at or after
+ *  `from`. Callers iterate `from = idx + 1` to walk every call site in a file.
+ *
+ *  ACCEPTED RESIDUAL (inherited verbatim from the original single-call helper, now written
+ *  down because a second caller depends on it): the walk is NOT string-literal aware, so an
+ *  unmatched `)` inside a string literal in the argument list would terminate the walk early.
+ *  main.ts contains no such literal today, and the failure mode is a SHORT slice — which reds
+ *  a `toContain` assertion rather than passing it. Deliberately not fixed with a hand-rolled
+ *  string stripper: see the section header at the end of this file for why that stripper was
+ *  specified, measured, and REJECTED. */
+function callArgsFrom(src: string, needle: string, from: number): string {
+  const idx = src.indexOf(needle, from);
   if (idx < 0) {
-    throw new Error(`main.ts must contain the call "${needle}" (ADR-0157 §A8 wiring)`);
+    throw new Error(
+      `main.ts must contain the call "${needle}" at or after offset ${from} ` +
+        '(ADR-0157 §A8 / ADR-0169 D4 wiring scans)',
+    );
   }
   let i = idx + needle.length - 1; // the needle ends with '('
   let depth = 0;
@@ -6069,5 +6094,432 @@ describe('★ main.ts wiring (11r-b/ADR-0167): the side-B e2e spec proves the PR
         '(battleView.ts) — the whole point of this slice is that this text becomes visible ' +
         "on side B's page for the first time.",
     ).toBe(true);
+  });
+});
+
+// ===========================================================================
+// 11r-e — ux2b wallet view completion: the THREE shop-view-model call sites.
+//
+// SOURCE OF TRUTH: EARS 11r-e-4 and 11r-e-5 (memory/projects/monster-realm-11r-e-plan.md
+// §2, as amended by PLAN REVISION v2 R1/R2/R7), decided in ADR-0169 D4 and MANDATED by
+// ADR-0154 D7 ("must carry a call-site-count tooth … so a future third call site cannot
+// silently ship a blank readout").
+//
+//   11r-e-4 — WHERE main.ts builds a shop view model, EVERY `buildShopViewModel(` /
+//     `buildShopViewModelForShop(` call site SHALL pass `store.ownWallet(identity)` as its
+//     wallet argument.
+//   11r-e-5 — this test SHALL fail when the total number of shop-view-model call sites in
+//     main.ts differs from 3, or when any one of them omits the wallet argument; counting
+//     SHALL ignore occurrences inside comments.
+//
+// THE DEFECT: ADR-0154 shipped the pure client half of the wallet readout (store.ownWallet,
+// ShopBalanceViewModel, shopView's `#shop-balance` node) but left the composition unwired.
+// All three call sites stop at `store.ownInventory(identity)`, so shopModel's optional wallet
+// parameter is always `undefined` → `{kind:'unknown'}` → a permanently hidden balance node.
+// Drew's 2026-07-25 playtest complaint verbatim: a cost is listed, but the player cannot see
+// how much money they have.
+//
+// RED REASON (the whole section's primary tooth, W-UX2B-WALLET-CALLSITES): main.ts contains
+// `store.ownWallet(` ZERO times today. The count clause (`toBe(3)`) already passes on the
+// unfixed source — that clause is the FREEZE, not the fix — and all three per-site
+// `toContain('store.ownWallet(identity)')` assertions fail. Verified by direct read of
+// main.ts:1377-1385 / :1434-1449 at authoring time.
+//
+// WRONG IMPLEMENTATIONS KILLED (each named again at its assertion):
+//  (1) THE 2-OF-3 PATCH — ADR-0154 D7's named catastrophe, and the reason this is a per-site
+//      loop rather than a whole-file `includes`. Patch only :1378 (the dialogue listener's
+//      deferred greet-then-shop open) ⇒ the balance renders once when the overlay opens and
+//      then BLANKS on the very next store batch — worse than not shipping, because the player
+//      sees a number flash and vanish. Patch only :1436 (the shop batch listener's bound arm)
+//      ⇒ blank on open, then pops in. A whole-file substring check is green for both.
+//  (2) A FUTURE FOURTH CALL SITE with no wallet argument — the exact failure ADR-0154 D7
+//      demands this tooth prevent. main.ts is SERIAL with several sibling branches; a fourth
+//      site arriving from one of them must red here, not ship a blank readout.
+//  (3) A COUNTER THAT MATCHES THE IMPORT at main.ts:133
+//      (`import { buildShopViewModel, buildShopViewModelForShop } from './ui/shopModel';`).
+//      Both needles carry their own `(`, and the import line has none, so it cannot be
+//      counted; a needle without the paren would count 5 and calibrate this tooth to a
+//      meaningless number. Proven on a fixture below, not merely asserted here.
+//  (4) A COUNTER THAT COUNTS AN OCCURRENCE INSIDE A COMMENT — including a commented-out call
+//      site that already carries the wallet argument, which would let a real, unpatched site
+//      be credited by prose. Proven on `//` and block-comment fixtures below.
+//  (5) `store.ownWallet('')` / `store.ownWallet(undefined)` written to satisfy a loose
+//      substring check. The needle is the exact CONTIGUOUS `store.ownWallet(identity)`; the
+//      fixture below proves `store.ownWallet('')` does NOT match it.
+//  (6) THE TWO BYPASSES a main.ts-only count leaves open (plan R7): an aliased import
+//      (`import { buildShopViewModel as buildShop }`, whose call sites spell `buildShop(` and
+//      are invisible to both needles) and a NEW production call site in another client/src
+//      file. Two dedicated teeth below.
+//
+// WHY COMMENT-STRIPPING ONLY — NO STRING-LITERAL STRIPPER (plan R1, ADR-0169 D4; this was
+// specified, measured and then explicitly REJECTED, and must not be re-litigated):
+//   (a) A string literal containing a needle can only INCREASE the observed count past 3,
+//       which is a hard RED. It can never mask an unpatched call site. The stripper therefore
+//       defended a false-RED that does not occur — main.ts contains zero such literals — at
+//       the cost of machinery that itself needs machinery.
+//   (b) Running a string stripper BEFORE comment-stripping DESYNCHRONISES on the ~40 unpaired
+//       apostrophes inside main.ts `//` comments (:113 "Biome's", :1430 "shopkeeper's", …):
+//       everything between two of them is eaten as a "string", collapsing the observed count
+//       3 → 1 and leaving only :1378 standing. That calibrates this tooth to the WORST
+//       possible number and lets a 1-of-3 patch of the most catastrophic site ship green.
+//   The file's existing `stripLineComments` (which strips block comments FIRST, :1292-1301)
+//   is sound here: main.ts contains no `://`, so no URL is truncated by the `//` pass.
+//   ACCEPTED RESIDUAL, disclosed exactly as the `callArgs` helper discloses it: the paren walk
+//   is not string-literal aware, so an unmatched `)` inside a string literal in an argument
+//   list could terminate a walk early — a SHORT slice, which reds `toContain` rather than
+//   passing it.
+//
+// HONEST SCOPE LIMIT (state it, do not overclaim): this is a source scan of the composition.
+// It proves the wallet is PASSED; it cannot prove the value rendered. The runtime witness is
+// client/e2e/wallet-balance.spec.ts (11r-e-6/7), and per ADR-0169's consequences main.ts:1443
+// (the unbound arm) is unreachable at runtime — the overlay only opens bound — so this tooth
+// is the ONLY gate that covers the third site. Neither surface is redundant.
+//
+// NO `new RegExp(...)` — the established per-file convention (:2549, :2582, :5211). All
+// matching is indexOf / includes / split, and the balanced-paren walk is the file's existing
+// `callArgsFrom` helper (:2354), extended with a start offset rather than reimplemented so
+// this file keeps ONE paren walker.
+// ===========================================================================
+
+/** The two shop-view-model call needles. Each carries its OWN open paren, which is what makes
+ *  the import at main.ts:133 uncountable (it has no `(`). They are DISJOINT on the real
+ *  source: at :1378 and :1436 the character after `buildShopViewModel` is `F`, not `(`, so
+ *  `buildShopViewModel(` matches ONLY the unbound arm at :1443. 2 + 1 = 3. */
+const SHOP_VM_NEEDLES = ['buildShopViewModelForShop(', 'buildShopViewModel('] as const;
+
+/** The exact, CONTIGUOUS wallet argument every call site must carry (ADR-0169 D4). Contiguous
+ *  on purpose: `store.ownWallet('')` and `store.ownWallet(undefined)` must NOT satisfy it. */
+const SHOP_VM_WALLET_ARG = 'store.ownWallet(identity)';
+
+/** Every shop-view-model call site's ARGUMENT LIST in `rawSrc`, comment-stripped first.
+ *  ONE loop yields both 11r-e-4 (per-site content) and 11r-e-5 (the count) — deliberately the
+ *  same slices, so the number this tooth freezes and the arguments it inspects can never
+ *  disagree. Shared with the fixture tooth below, which is what proves this function BITES. */
+function shopViewModelCallSites(rawSrc: string): string[] {
+  // stripLineComments strips BLOCK comments first (:1292-1301), so both comment forms are
+  // gone before any needle search — a needle in either kind of comment is unreachable here.
+  const stripped = stripLineComments(rawSrc);
+  const sites: string[] = [];
+  for (const needle of SHOP_VM_NEEDLES) {
+    for (let i = stripped.indexOf(needle); i !== -1; i = stripped.indexOf(needle, i + 1)) {
+      sites.push(callArgsFrom(stripped, needle, i));
+    }
+  }
+  return sites;
+}
+
+/** How many of `sites` carry the contiguous wallet argument. Whitespace-squashed so a
+ *  prettier/biome line-wrap of the argument list cannot red a correct implementation. */
+function sitesCarryingWallet(sites: readonly string[]): number {
+  return sites.filter((args) => squashWhitespace(args).includes(SHOP_VM_WALLET_ARG)).length;
+}
+
+/** Every `.ts` file under client/src, as forward-slashed paths relative to client/src.
+ *  Fails loud (via readdirSync) if the tree is unreadable, so the cross-file tooth below can
+ *  never go vacuously green on an empty list. */
+function clientSrcTsFiles(): string[] {
+  const root = path.dirname(fileURLToPath(import.meta.url));
+  const out: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(abs);
+        continue;
+      }
+      if (!entry.name.endsWith('.ts')) continue;
+      out.push(path.relative(root, abs).split(path.sep).join('/'));
+    }
+  };
+  walk(root);
+  return out.sort();
+}
+
+describe('★ main.ts wiring (11r-e/ADR-0169 D4, mandated by ADR-0154 D7): all THREE shop-view-model call sites pass store.ownWallet(identity)', () => {
+  it('★ W-UX2B-WALLET-CALLSITES BITES: main.ts has EXACTLY 3 buildShopViewModel*( call sites and EVERY one passes store.ownWallet(identity)', () => {
+    // EARS 11r-e-4 (every site carries the wallet) AND 11r-e-5 (the count is frozen at 3).
+    //
+    // RED AT AUTHORING TIME: `store.ownWallet(` occurs 0 times in main.ts. The count clause
+    // passes on the unfixed source by design — it is the FREEZE — and all three per-site
+    // clauses fail. Do NOT "fix" a future failure of this test by editing the number: if a
+    // fourth site is genuinely wanted, it must pass the wallet AND the number is raised in the
+    // same review, with ADR-0169 D4 amended. That is the whole point of a count tooth.
+    const stripped = stripLineComments(readMainTs());
+
+    // --- ANTI-VACUITY, ASSERTED FIRST -------------------------------------------------
+    // A broken read (bad path, over-eager strip, empty string) would make `sites` empty and
+    // every per-site assertion below vacuously true. This control is a token unrelated to
+    // this slice's change, so it stays true both before and after the implementation.
+    expect(
+      countOccurrences(stripped, 'store.onBatchApplied('),
+      'positive control: main.ts must contain `store.onBatchApplied(` — proves this tooth is ' +
+        'reading real, comment-stripped main.ts source and not an empty string',
+    ).toBeGreaterThan(0);
+
+    const sites = shopViewModelCallSites(readMainTs());
+
+    // --- (1) THE COUNT TOOTH (11r-e-5) ------------------------------------------------
+    expect(
+      sites.length,
+      'main.ts must contain EXACTLY 3 shop-view-model call sites — :1378 ' +
+        '(buildShopViewModelForShop, the dialogue listener’s deferred greet-then-shop ' +
+        'open), :1436 (buildShopViewModelForShop, the shop batch listener’s bound arm) ' +
+        'and :1443 (buildShopViewModel, its unbound arm). This number is FROZEN by ADR-0154 ' +
+        'D7 and ADR-0169 D4. A count of 4 means a new call site was added: it must pass ' +
+        '`store.ownWallet(identity)` like the other three, or the player gets a blank balance ' +
+        'on whatever path it serves — silently, which is precisely what D7 says this tooth ' +
+        'exists to prevent. A count of 2 means a site was deleted or renamed. Either way this ' +
+        'is a DELIBERATE-REVIEW gate: raise/lower the number and amend ADR-0169 D4 in the ' +
+        `same change, never edit it to match the code. Observed slices: ${JSON.stringify(sites)}`,
+    ).toBe(3);
+
+    // Each slice must be a real argument list, not a degenerate empty capture (a walk that
+    // matched `foo()` would return '' and then trivially fail the contains-check below — but
+    // for the RIGHT reason only if we say so out loud).
+    for (const args of sites) {
+      expect(
+        args.trim().length,
+        'every sliced shop-view-model argument list must be non-empty — an empty slice means ' +
+          'the balanced-paren walk resolved to the wrong `(`',
+      ).toBeGreaterThan(0);
+    }
+
+    // --- (2) EVERY SITE CARRIES THE WALLET (11r-e-4) ----------------------------------
+    // WRONG IMPL KILLED — THE 2-OF-3 PATCH (ADR-0154 D7's named catastrophe): a whole-file
+    // `src.includes('store.ownWallet(identity)')` is GREEN when only one of the three sites is
+    // patched. Patch only :1378 and the balance renders on open then blanks on the next store
+    // batch (~200 ms later, since the character subscription is globally unfiltered); patch
+    // only :1436 and it is blank on open then pops in. Both are worse than not shipping. This
+    // loop asserts per SLICE, so a half-patch reds with the offending argument list printed.
+    for (const [idx, args] of sites.entries()) {
+      expect(
+        squashWhitespace(args),
+        `shop-view-model call site #${idx + 1} of ${sites.length} must pass ` +
+          '`store.ownWallet(identity)` in its argument list (EARS 11r-e-4, ADR-0169 D4). ' +
+          'RED AT AUTHORING TIME for all three: main.ts stops at `store.ownInventory(identity)` ' +
+          'and never passes a wallet, so shopModel’s optional wallet parameter is always ' +
+          'undefined and `#shop-balance` is permanently hidden. Argument ORDER is NOT asserted ' +
+          'here and must not be: tsc rejects `StoreWallet | undefined` in the ' +
+          '`readonly StoreInventory[]` slot at both shopModel signatures, and client-typecheck ' +
+          'runs in `just ci`.',
+      ).toContain(SHOP_VM_WALLET_ARG);
+    }
+
+    // Belt-and-braces on the same slices, phrased as the number a reviewer can read at a
+    // glance: 3 of 3, never 2 of 3.
+    expect(
+      sitesCarryingWallet(sites),
+      'ALL 3 shop-view-model call sites must carry the wallet — a 2-of-3 patch is ADR-0154 ' +
+        'D7’s named half-catastrophe, not a partial win',
+    ).toBe(3);
+  });
+
+  it("★ W-UX2B-WALLET-CALLSITES-SCANNER-PROVEN BITES: the call-site scanner ignores comments and the import, over-counts (never under-counts) string literals, and rejects store.ownWallet('')", () => {
+    // PROOF OF TEETH for the tooth above. Without these fixtures the count `toBe(3)` is an
+    // unproven number: a scanner that silently matched nothing but :1378 would also "pass" any
+    // day someone edited the expected count to 1. Each fixture names the wrong scanner it
+    // kills. This test is GREEN at authoring time BY DESIGN — it gates the SCANNER, not the
+    // implementation (the file's F-5 precedent for a deliberately-green structural guard).
+
+    // (a) THE IMPORT LINE IS NOT A CALL SITE. Kills: a needle without the open paren, which
+    //     would count main.ts:133 twice (the specifier names both functions) and calibrate the
+    //     count tooth to 5 — a number no implementation change could ever move meaningfully.
+    const FIX_IMPORT =
+      "import { buildShopViewModel, buildShopViewModelForShop } from './ui/shopModel';\n";
+    expect(
+      shopViewModelCallSites(FIX_IMPORT).length,
+      'the import specifier must contribute ZERO call sites (both needles carry their own `(`)',
+    ).toBe(0);
+
+    // (b) A `//` COMMENT IS NOT A CALL SITE — even one that carries the wallet argument.
+    //     Kills: a scanner that credits prose. The RT-SEC-02 class: a commented-out, fully
+    //     patched call site sitting beside a real, unpatched one would otherwise read as
+    //     compliant.
+    const FIX_LINE_COMMENT =
+      '// buildShopViewModelForShop(1, store.allShops(), store.ownWallet(identity));\n' +
+      'const unrelated = 1;\n';
+    expect(
+      shopViewModelCallSites(FIX_LINE_COMMENT).length,
+      'a `//`-commented call must contribute ZERO call sites',
+    ).toBe(0);
+
+    // (c) A BLOCK COMMENT IS NOT A CALL SITE EITHER (stripLineComments strips `/* */` first).
+    //     Kills: block-commenting out the real body to keep a tooth green (the red-team
+    //     "Mutant 2" the existing stripper comment at :1267-1271 records).
+    const FIX_BLOCK_COMMENT =
+      '/* buildShopViewModel(store.allShops(), store.ownWallet(identity)) */\nconst y = 2;\n';
+    expect(
+      shopViewModelCallSites(FIX_BLOCK_COMMENT).length,
+      'a block-commented call must contribute ZERO call sites',
+    ).toBe(0);
+
+    // (d) A STRING LITERAL OVER-COUNTS — and that is the ACCEPTED direction (plan R1).
+    //     This fixture is the evidence for the "no string stripper" decision: a needle inside
+    //     a literal ADDS a site (3 → 4 ⇒ the count tooth reds hard) and it does not carry the
+    //     wallet argument (⇒ the per-site tooth reds too). It can never HIDE an unpatched call
+    //     site, which is the only failure direction that could ship a blank readout.
+    const FIX_STRING_LITERAL = "const label = 'buildShopViewModel(x)';\n";
+    const literalSites = shopViewModelCallSites(FIX_STRING_LITERAL);
+    expect(
+      literalSites.length,
+      'a needle inside a string literal is COUNTED (over-count, never under-count) — this is ' +
+        'why comment-stripping alone is sound: the failure direction is a hard RED',
+    ).toBe(1);
+    expect(
+      sitesCarryingWallet(literalSites),
+      'and such a phantom site carries no wallet argument, so it reds the per-site tooth too',
+    ).toBe(0);
+
+    // (e) A REAL, MULTI-LINE, NESTED-PAREN CALL IS SLICED CORRECTLY. Kills: a naive
+    //     "read to the next `)`" scanner, which would slice `store.allShops(` and report a
+    //     missing wallet on a CORRECT implementation (a false RED that a later reviewer would
+    //     "fix" by weakening the tooth). Also proves squashWhitespace makes the contiguous
+    //     needle immune to the formatter's line-wrapping.
+    const FIX_REAL_CALL =
+      'shopView?.render(\n' +
+      '  buildShopViewModelForShop(\n' +
+      '    openShopId,\n' +
+      '    store.allShops(),\n' +
+      '    store.allShopItems(),\n' +
+      '    store.itemDefs(),\n' +
+      '    store.ownInventory(identity),\n' +
+      '    store.ownWallet(identity),\n' +
+      '  ),\n' +
+      ');\n';
+    const realSites = shopViewModelCallSites(FIX_REAL_CALL);
+    expect(realSites.length, 'one real call ⇒ exactly one site').toBe(1);
+    expect(
+      sitesCarryingWallet(realSites),
+      'a correctly patched, formatter-wrapped call site must be recognised — otherwise this ' +
+        'tooth would red a correct implementation',
+    ).toBe(1);
+
+    // (f) THE 2-OF-3 PATCH IS DETECTED. This is the fixture that proves the headline tooth
+    //     bites the ADR-0154 D7 catastrophe: three sites, only the first two patched.
+    const FIX_TWO_OF_THREE =
+      'buildShopViewModelForShop(a, store.ownInventory(identity), store.ownWallet(identity));\n' +
+      'buildShopViewModelForShop(b, store.ownInventory(identity), store.ownWallet(identity));\n' +
+      'buildShopViewModel(store.ownInventory(identity));\n';
+    const halfSites = shopViewModelCallSites(FIX_TWO_OF_THREE);
+    expect(halfSites.length, 'the 2-of-3 fixture still has three call sites').toBe(3);
+    expect(
+      sitesCarryingWallet(halfSites),
+      'the 2-of-3 patch must be VISIBLE as 2, not 3 — if this ever reads 3, the headline ' +
+        'tooth above is blind to ADR-0154 D7’s named catastrophe and is worthless',
+    ).toBe(2);
+
+    // (g) A FOURTH CALL SITE MOVES THE COUNT. Kills: the belief that the count tooth is
+    //     decorative. This is the exact future event ADR-0154 D7 mandates be un-silenceable.
+    const FIX_FOUR_SITES =
+      FIX_TWO_OF_THREE + 'buildShopViewModelForShop(d, store.ownInventory(identity));\n';
+    expect(
+      shopViewModelCallSites(FIX_FOUR_SITES).length,
+      'a fourth call site must be COUNTED (4 ≠ 3 ⇒ the headline tooth reds)',
+    ).toBe(4);
+
+    // (h) `store.ownWallet('')` DOES NOT SATISFY THE NEEDLE. Kills: someone making a loose
+    //     substring check pass by threading a blank/undefined identity — which returns
+    //     `undefined` from the store (store.ts:992-995) and renders the `unknown` arm forever,
+    //     i.e. exactly the blank readout this slice exists to remove, with all the source-scan
+    //     evidence of a fix.
+    const FIX_BLANK_IDENTITY =
+      "buildShopViewModel(store.ownInventory(identity), store.ownWallet(''));\n";
+    const blankSites = shopViewModelCallSites(FIX_BLANK_IDENTITY);
+    expect(blankSites.length, "the store.ownWallet('') fixture has one call site").toBe(1);
+    expect(
+      sitesCarryingWallet(blankSites),
+      "store.ownWallet('') must NOT be accepted as the wallet argument — the needle is the " +
+        'CONTIGUOUS `store.ownWallet(identity)`',
+    ).toBe(0);
+  });
+
+  it('★ W-UX2B-WALLET-CALLSITES-NO-CROSSFILE BITES: main.ts is the ONLY non-test client/src file naming buildShopViewModel* (besides shopModel.ts itself)', () => {
+    // Plan R7 / red-team S7, bypass 1: the count tooth reads main.ts ONLY. A future
+    // client/src/ui/shopController.ts that calls buildShopViewModelForShop( without a wallet
+    // would ship a blank readout with every main.ts tooth still green. This closes it by
+    // asserting the composition lives in exactly one production file.
+    //
+    // GREEN AT AUTHORING TIME (a regression guard, stated plainly per this file's convention):
+    // main.ts and ui/shopModel.ts are today the only client/src files naming the functions.
+    //
+    // The needle is the BARE identifier `buildShopViewModel` (which subsumes
+    // `buildShopViewModelForShop`), NOT the paren forms: that way an ALIASED import in a
+    // sibling file — `import { buildShopViewModel as buildShop }`, whose call sites spell
+    // `buildShop(` — is caught here too.
+    const files = clientSrcTsFiles();
+
+    // --- ANTI-VACUITY: the walk must actually see the tree, and both exclusions must be real
+    expect(
+      files.length,
+      'the client/src walk must find a substantial number of .ts files — a small number means ' +
+        'the walk is broken and every exclusion/assertion below is vacuous',
+    ).toBeGreaterThan(50);
+    expect(files.includes('main.ts'), 'the client/src walk must include main.ts').toBe(true);
+    expect(
+      files.includes('ui/shopModel.ts'),
+      'the client/src walk must include ui/shopModel.ts — it is EXCLUDED below as the ' +
+        'legitimate definition site, and an exclusion for a path that does not exist is a ' +
+        'silently stale exclusion (a rename would otherwise red this tooth for the wrong reason)',
+    ).toBe(true);
+    expect(
+      readClientSrc('ui/shopModel.ts').includes('buildShopViewModel'),
+      'positive control for the needle itself: ui/shopModel.ts must name buildShopViewModel ' +
+        '(it defines both functions, and its ForShop arm legitimately delegates to the base ' +
+        'builder at shopModel.ts:160) — if this is false the needle is wrong and every ' +
+        'not-found below proves nothing',
+    ).toBe(true);
+    expect(
+      stripLineComments(readClientSrc('main.ts')).includes('buildShopViewModel'),
+      'positive control: main.ts must name buildShopViewModel — otherwise the whole section ' +
+        'is scanning the wrong file',
+    ).toBe(true);
+
+    // --- THE CEILING: no OTHER production file may name it -----------------------------
+    const offenders = files.filter((rel) => {
+      if (rel === 'main.ts' || rel === 'ui/shopModel.ts') return false;
+      if (rel.endsWith('.test.ts')) return false; // sibling unit tests legitimately import it
+      return stripLineComments(readClientSrc(rel)).includes('buildShopViewModel');
+    });
+    expect(
+      offenders,
+      'main.ts must be the ONLY non-test client/src file that names buildShopViewModel* ' +
+        '(ui/shopModel.ts, which defines them, and *.test.ts files are exempt). A production ' +
+        'call site in another file is invisible to the 3-site count tooth above, so it could ' +
+        'ship a shop overlay with a blank balance while every main.ts tooth stays green ' +
+        '(plan R7 / red-team S7). If a shop controller module is genuinely wanted, MOVE the ' +
+        'call sites there and move this tooth with them — do not split them across two files.',
+    ).toEqual([]);
+  });
+
+  it('★ W-UX2B-WALLET-IMPORT-UNALIASED BITES: main.ts imports both builders under their real names, contiguously and unaliased', () => {
+    // Plan R7 / red-team S7, bypass 2: `import { buildShopViewModel as buildShop }` makes every
+    // call site spell `buildShop(`, which BOTH needles miss — the count collapses to 0, and a
+    // `toBe(3)` would red loudly (good) while a future maintainer's "fix" of relaxing the count
+    // would then hide the aliased, wallet-less sites entirely. Asserting the import form makes
+    // the alias impossible in the first place, and names the reason at the failure site.
+    //
+    // GREEN AT AUTHORING TIME (regression guard): main.ts:133 already has the contiguous form.
+    //
+    // This mirrors the 11r-b W-PVPB-PROJECT precedent (`ownPerspective as` ⇒ 0), which was
+    // added for exactly the same measured bypass.
+    const stripped = squashWhitespace(stripLineComments(readMainTs()));
+
+    expect(
+      stripped.includes('import { buildShopViewModel, buildShopViewModelForShop }'),
+      'main.ts must import the two builders in the CONTIGUOUS, unaliased specifier form ' +
+        '`import { buildShopViewModel, buildShopViewModelForShop }` (main.ts:133). Whitespace ' +
+        'is squashed first, so re-wrapping the specifier across lines is fine; renaming or ' +
+        'aliasing is not.',
+    ).toBe(true);
+    expect(
+      countOccurrences(stripped, 'buildShopViewModel as'),
+      'main.ts must NOT alias buildShopViewModel — an alias routes every call through a name ' +
+        'neither call-site needle can see, silently emptying the 3-site count tooth above',
+    ).toBe(0);
+    expect(
+      countOccurrences(stripped, 'buildShopViewModelForShop as'),
+      'main.ts must NOT alias buildShopViewModelForShop — same bypass, other function ' +
+        '(the needle above does not match this spelling, so it needs its own clause)',
+    ).toBe(0);
   });
 });

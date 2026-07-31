@@ -164,6 +164,14 @@ function squashWhitespace(text: string): string {
   return out;
 }
 
+/** Count NON-OVERLAPPING occurrences of `needle` in `src` via split (no `new RegExp`).
+ *  11r-e: added because this file's helper family (copied from main.wiring.test.ts)
+ *  omitted it; this is the verbatim main.wiring.test.ts:2557-2560 form, NOT a parallel
+ *  helper family. */
+function countOccurrences(src: string, needle: string): number {
+  return src.split(needle).length - 1;
+}
+
 // ---------------------------------------------------------------------------
 // W-NH4-GATE-CONSTRUCTED — connect() builds the gate.
 // ---------------------------------------------------------------------------
@@ -631,5 +639,498 @@ describe('connection.ts wiring (ADR-0157): W-DEVLOG-WRAP — both outbound wrap 
         'double-logs every reducer call and puts a Proxy (not the raw instance) in the bind ' +
         'chain',
     ).toBe(false);
+  });
+});
+
+// ===========================================================================
+// 11r-e (ux2b) — the `my_wallet` runtime path: subscription + insert-only ingest
+// SOURCE OF TRUTH: docs/adr/0169-wallet-view-runtime-path.md D1/D2, amending
+//   docs/adr/0154-owner-scoped-wallet-view.md D4/D6/D7.
+//
+// EARS COVERED HERE
+//   11r-e-1  — the connection SHALL include `SELECT * FROM my_wallet` INSIDE the
+//              `.subscribe([...])` array, and SHALL NOT name `player_wallet` inside that
+//              array. Additionally the RAW (un-stripped) source SHALL NOT contain the
+//              stale phrase `produces no client subscription`.
+//   11r-e-3  — WHEN a `my_wallet` row insert arrives, the connection SHALL convert it,
+//              call `store.upsertWallet(...)`, and call `batcher.schedule()`.
+//   11r-e-3b — the connection SHALL register NO `onDelete` and NO `onUpdate` handler for
+//              `my_wallet`, SHALL call no wallet-removal API, and SHALL construct no
+//              fallback/default wallet row.
+//
+// RED REASON (verified by reading client/src/net/connection.ts this session)
+//   `my_wallet` appears NOWHERE in connection.ts. The only occurrence of the string
+//   `wallet` in the whole file is the comment at :576-577 — "player_wallet is PRIVATE
+//   (ADR-0081/0040) and produces no client subscription — excluded". So:
+//     * the `.subscribe([...])` array (:544-591) has no `'SELECT * FROM my_wallet'`;
+//     * `wireTables` (:300-483) has no `conn.db.my_wallet.*` handler of any kind;
+//     * `playerWalletRowToStore` / `SdkPlayerWalletRow` are not imported (the
+//       `./rowConvert` import block at :28-62 does not list them — and they do not exist
+//       in rowConvert.ts yet either);
+//     * the stale phrase IS still present in the raw source.
+//   Every gate below therefore reds on a MISSING IMPLEMENTATION, not on a typo here.
+//   The THREE calibration fixtures (W-UX2B-SCAN-SOUND) are GREEN today by design — they
+//   prove the scanning pipeline itself works, so a red elsewhere cannot be blamed on it.
+//
+// WHY SOURCE SCAN AND NOT AN IMPORT: unchanged from this file's header — connection.ts
+//   is coverage-excluded (vite.config.ts:99-100) because importing it touches DOM/wasm
+//   globals. The BEHAVIORAL half of this slice lives in rowConvert.test.ts (a real
+//   import of the pure converter) and client/e2e/wallet-balance.spec.ts (a real browser).
+//   Per ADR-0169 "Which gate owns what", 11r-e-3's `batcher.schedule()` and 11r-e-3b's
+//   absent `onDelete` are STRUCTURALLY UNREACHABLE by any e2e in this slice — with
+//   schedule() omitted the next NPC wander tick re-renders and the e2e self-heals, and
+//   the D4 delete catastrophe needs a wallet UPDATE, which the 150-gold price floor makes
+//   impossible in a 50-gold run. This file is the only gate for both.
+//
+// COMMENT-STRIPPING ONLY — NO string-literal stripper (plan R1). connection.ts contains
+//   ZERO occurrences of `://` (verified by grep this session), so stripLineComments'
+//   naive `indexOf('//')` cannot truncate a line at a URL. A string literal containing a
+//   needle could only ever INCREASE a count past its pin (a hard red), never mask a
+//   missing implementation, so a stripper would defend a false-RED that does not occur.
+//
+// WHY NO SENTINEL REGION (`// UX2B-WALLET-INGEST-BEGIN/END`) — ADR-0169 D2 rejects it:
+//   11r-e-3b is a WHOLE-FILE negative and a region-bounded negative cannot see a handler
+//   relocated 200 lines away. Presence-only assertions were rejected for a second reason:
+//   they admit a CONDITIONAL ingest — `if (store.ownWallet(identity) === undefined) {
+//   …upsertWallet… }` — which compiles, reads as a plausible "insert-wins", FREEZES the
+//   balance after the first delivery, and passes every behavioral gate in this slice
+//   (the e2e is deliberately designed so the balance never changes). The single
+//   contiguous needle below admits no `if` / `?:` / `&&`.
+//
+// NO `new RegExp(...)` — this file's established convention (see its header and
+//   main.wiring.test.ts:2524, 2557, 5186). indexOf / includes / split / startsWith only.
+// ===========================================================================
+
+/** The EXACT ingest statement ADR-0169 D2 mandates, as it appears after
+ *  stripLineComments + squashWhitespace. One needle pins ALL of: the table
+ *  (`my_wallet`, not `player_wallet`), the handler kind (`onInsert`), the callback
+ *  signature, the conversion (`playerWalletRowToStore`, not the raw SDK row), the cast
+ *  target (`SdkPlayerWalletRow`, imported from rowConvert per ADR-0169 D3), the store
+ *  call (`upsertWallet`), the re-render kick (`batcher.schedule()`), their ORDER, and —
+ *  via the ===1 count — its uniqueness.
+ *
+ *  FORMATTER STABILITY: biome.json sets lineWidth 100 and indentWidth 2. At the
+ *  `wireTables` indent the longest line here is
+ *  `      store.upsertWallet(playerWalletRowToStore(row as unknown as SdkPlayerWalletRow));`
+ *  = 86 columns, so biome will not wrap it and will not insert a trailing comma. The
+ *  sibling my_conversation statement (connection.ts:331-334) is 97 columns and is
+ *  likewise unwrapped — which is exactly what the calibration fixture below proves. */
+const UX2B_WALLET_INGEST =
+  'conn.db.my_wallet.onInsert((_ctx, row) => { ' +
+  'store.upsertWallet(playerWalletRowToStore(row as unknown as SdkPlayerWalletRow)); ' +
+  'batcher.schedule(); });';
+
+/** The already-shipped `my_conversation` insert handler (connection.ts:331-334) in the
+ *  SAME squashed form. It is the calibration control for UX2B_WALLET_INGEST: if the
+ *  strip+squash pipeline ever stops producing this shape, THIS fixture reds and tells us
+ *  the harness is broken — so a red on the wallet needle can only mean the wallet
+ *  implementation is missing or misshapen. */
+const M13_5C_CONVERSATION_INGEST_CONTROL =
+  'conn.db.my_conversation.onInsert((_ctx, row) => { ' +
+  'store.upsertConversation(playerConversationRowToStore(row as unknown as SdkConversationRow)); ' +
+  'batcher.schedule(); });';
+
+/** The whole file, comment-stripped and whitespace-squashed — the surface every
+ *  11r-e-3 / 11r-e-3b assertion runs against. */
+function squashedStrippedConnectionTs(): string {
+  return squashWhitespace(stripLineComments(readConnectionTs()));
+}
+
+// ---------------------------------------------------------------------------
+// W-UX2B-SCAN-SOUND — calibration fixtures. GREEN today, BY DESIGN.
+// These are not feature gates; they are the proof that the two teeth below fail for
+// the right reason. Without them, a red on UX2B_WALLET_INGEST is ambiguous between
+// "the implementation is missing" and "the tester's needle format is unachievable".
+// ---------------------------------------------------------------------------
+
+describe('connection.ts wiring (11r-e): W-UX2B-SCAN-SOUND — the contiguous-needle pipeline is calibrated', () => {
+  it('FIXTURE (green today): the shipped my_conversation insert handler matches a contiguous needle of exactly this shape', () => {
+    // If this reds, the strip+squash pipeline (or biome's formatting of wireTables)
+    // changed and UX2B_WALLET_INGEST's FORM must be re-derived FROM THE SOURCE — never
+    // by loosening the wallet assertion to match a buggy implementation.
+    const squashed = squashedStrippedConnectionTs();
+    expect(
+      countOccurrences(squashed, M13_5C_CONVERSATION_INGEST_CONTROL),
+      'the my_conversation ingest statement (connection.ts:331-334) must appear EXACTLY ' +
+        'once in the comment-stripped, whitespace-squashed source. This fixture calibrates ' +
+        'the exact needle FORM that 11r-e-3 requires of my_wallet — if it reds, the harness ' +
+        'is broken, not the wallet implementation',
+    ).toBe(1);
+  });
+
+  it('FIXTURE (green today): connection.ts contains no `://`, so the naive stripLineComments is sound', () => {
+    // stripLineComments truncates each line at the first `//`. A protocol URL in a string
+    // literal (`'ws://…'`) would therefore silently delete the rest of that line and could
+    // make a negative assertion pass vacuously. connectionConfig.ts has such URLs;
+    // connection.ts does not. This assertion is the standing guard on that precondition
+    // (plan R1) — if a URL is ever added here, this reds loudly instead of the scans
+    // going quietly soft.
+    expect(
+      countOccurrences(readConnectionTs(), '://'),
+      'connection.ts must contain no `://` — stripLineComments truncates at the first `//`, ' +
+        'so a URL literal would silently eat the rest of its line. If this reds, move the URL ' +
+        'to connectionConfig.ts (where it belongs) rather than weakening the scans',
+    ).toBe(0);
+  });
+
+  it('FIXTURE (green today): comment-stripping removes a TRIPWIRE comment that names onDelete / onUpdate / shouldRemoveOnViewDelete', () => {
+    // ADR-0169 D2 requires the implementer to leave a tripwire COMMENT in connection.ts
+    // (the profile idiom at connection.ts:470-482) that deliberately NAMES the handlers
+    // it is refusing to register. Without comment-stripping, that sanctioned comment
+    // would trip every negative below and CORRECT code would red — which is the classic
+    // way a tester ends up "fixing" a good implementation to satisfy a bad test.
+    // This fixture proves the pipeline eats it, in both the `//` and `/* */` forms.
+    const tripwireLine = [
+      '    // m17-style TRIPWIRE — deliberately NO conn.db.my_wallet.onDelete and no',
+      '    // conn.db.my_wallet.onUpdate handler, and NO shouldRemoveOnViewDelete gate:',
+      '    // ADR-0154 D4 (a view update arrives as unordered insert+delete).',
+      '    conn.db.my_wallet.onInsert((_ctx, row) => {});',
+    ].join('\n');
+    const strippedLine = squashWhitespace(stripLineComments(tripwireLine));
+    expect(countOccurrences(strippedLine, 'conn.db.my_wallet.onDelete')).toBe(0);
+    expect(countOccurrences(strippedLine, 'conn.db.my_wallet.onUpdate')).toBe(0);
+    expect(countOccurrences(strippedLine, 'shouldRemoveOnViewDelete')).toBe(0);
+    // Anti-vacuity: the stripper must not have eaten the real code on the last line.
+    expect(countOccurrences(strippedLine, 'conn.db.my_wallet.onInsert')).toBe(1);
+
+    const tripwireBlock =
+      '/* NO conn.db.my_wallet.onDelete, NO shouldRemoveOnViewDelete */\n' +
+      '    conn.db.my_wallet.onInsert((_ctx, row) => {});';
+    const strippedBlock = squashWhitespace(stripLineComments(tripwireBlock));
+    expect(countOccurrences(strippedBlock, 'conn.db.my_wallet.onDelete')).toBe(0);
+    expect(countOccurrences(strippedBlock, 'shouldRemoveOnViewDelete')).toBe(0);
+    expect(countOccurrences(strippedBlock, 'conn.db.my_wallet.onInsert')).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W-UX2B-SUBSCRIBE (EARS 11r-e-1) — `my_wallet` joins the ONE subscribe array.
+// ---------------------------------------------------------------------------
+
+describe('connection.ts wiring (11r-e / ADR-0169 D1): W-UX2B-SUBSCRIBE — my_wallet is subscribed INSIDE the .subscribe([...]) array', () => {
+  it("★ BITES: the .subscribe([...]) array contains 'SELECT * FROM my_wallet' exactly once", () => {
+    // WRONG IMPL KILLED (b): subscribing NOTHING — ship the converter and the ingest
+    // handler and leave the client dark. That is today's state, and it is the single most
+    // likely way this slice "lands" without working: every other gate in the slice can be
+    // satisfied while no row ever arrives.
+    // WRONG IMPL KILLED (c): parking 'SELECT * FROM my_wallet' in a dead module-level
+    // constant, in a commented-out line, or in a second unreachable .subscribe() call.
+    // The window is what kills this — a needle checked against the whole file cannot
+    // tell a live subscription from a dead string (the precedent reasoning is
+    // evals/conversation-privacy.eval.mjs:394-420, Finding 5).
+    // WRONG IMPL KILLED (d): subscribing the view TWICE (an over-eager merge of two
+    // branches) — the ===1 count, not a mere `toContain`.
+    const src = readConnectionTs();
+    // Anti-vacuity (red-team S8): a duplicated or deleted anchor lets a needle-bounded
+    // region silently cover the wrong code — the nh1 post-mortem failure mode. Verified
+    // this session: `.subscribe([` occurs exactly once in connection.ts (:544).
+    expectUniqueAnchor(src, '.subscribe([');
+
+    const arrayBody = bodyRegion(src, '.subscribe([', ']);');
+
+    // Anti-vacuity: the window really is the subscription array. `my_conversation` is
+    // the sibling owner-scoped VIEW already subscribed there (:572) and is the closest
+    // structural analogue of what we are adding, so its presence proves both that the
+    // region resolved and that comment-stripping did not eat the array's contents.
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM my_conversation'"),
+      'the .subscribe([...]) window must still contain the my_conversation subscription — ' +
+        'if it does not, this gate is judging the wrong region and every assertion below ' +
+        'is vacuous',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM my_wallet'"),
+      "connection.ts's ONE .subscribe([...]) array must contain 'SELECT * FROM my_wallet' " +
+        'exactly once (ADR-0169 D1). RED TODAY: `my_wallet` appears nowhere in ' +
+        'connection.ts, so the owner-scoped wallet view is never subscribed and ' +
+        '#shop-balance renders `unknown` forever — the player still cannot see their gold',
+    ).toBe(1);
+  });
+
+  it('★ BITES: the .subscribe([...]) array does NOT name player_wallet (windowed, comment-stripped)', () => {
+    // WRONG IMPL KILLED (a): subscribing the PRIVATE table `player_wallet` instead of the
+    // owner-scoped view. This is not a mild bug: SpacetimeDB rejects the whole
+    // subscription BATCH, `onApplied` never fires, and every player gets a blank world —
+    // the T0 rollout probe finding recorded in ADR-0087 / conversation-privacy check D.
+    //
+    // WHY WINDOWED AND NOT WHOLE-FILE (plan R8 / reviewer m2): ADR-0169 D1 REQUIRES the
+    // comment at connection.ts:576-577 to be rewritten into the my_conversation form
+    // (:569-571), which legitimately NAMES the private table to explain why it is not
+    // subscribed. A whole-file `not.toContain('player_wallet')` would go red on correct,
+    // sanctioned code — and the natural "fix" would be deleting a security-relevant
+    // comment. Scoping the negative to the comment-stripped array body is what makes it
+    // both sound and sharp.
+    const src = readConnectionTs();
+    expectUniqueAnchor(src, '.subscribe([');
+    const arrayBody = bodyRegion(src, '.subscribe([', ']);');
+
+    // Anti-vacuity: this negative is meaningless until the positive exists — an array
+    // with no wallet subscription at all trivially satisfies it. Asserting the positive
+    // first is what makes this test RED TODAY for the right reason (missing subscription)
+    // rather than green-and-empty.
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM my_wallet'"),
+      'precondition for the player_wallet negative: the my_wallet subscription must exist ' +
+        'first, otherwise "player_wallet is absent" is a vacuous truth. RED TODAY',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(arrayBody, 'player_wallet'),
+      'the .subscribe([...]) array must NEVER name the PRIVATE player_wallet table — ' +
+        'subscribing it errors the entire subscription batch, onApplied never fires, and ' +
+        'EVERY player gets a blank world (ADR-0081/0040 privacy + ADR-0087 rollout probe). ' +
+        'Only the owner-scoped my_wallet view may be subscribed',
+    ).toBe(0);
+  });
+
+  it('★ BITES: the RAW (un-stripped) source no longer claims player_wallet "produces no client subscription"', () => {
+    // WRONG IMPL KILLED: wiring the subscription and leaving the comment at
+    // connection.ts:576-577 in place. After this slice that sentence is FALSE, in a
+    // security-sensitive file, next to the exact list a reviewer reads to decide whether
+    // a private table leaked. Comment rot here is not cosmetic: the next person auditing
+    // wallet privacy would be told, in the file itself, that no wallet subscription
+    // exists.
+    //
+    // THIS IS THE ONE ASSERTION THAT MUST RUN ON RAW SOURCE. Every other tooth in this
+    // section strips comments — and a comment-stripped scan is structurally incapable of
+    // seeing comment rot (plan R8 / reviewer m1).
+    const raw = readConnectionTs();
+
+    // Anti-vacuity: we are scanning the file we think we are.
+    expectUniqueAnchor(raw, '.subscribe([');
+
+    expect(
+      countOccurrences(raw, 'produces no client subscription'),
+      'connection.ts must no longer contain the phrase "produces no client subscription" — ' +
+        'ADR-0169 D1 requires that comment to be REWRITTEN into the my_conversation form ' +
+        '(:569-571). RED TODAY: the stale claim is still at connection.ts:576-577',
+    ).toBe(0);
+
+    // WRONG IMPL KILLED: satisfying the assertion above by DELETING the comment outright.
+    // ADR-0169 D1 says rewritten, not removed: the replacement must still record that
+    // player_wallet is private and that the owner-scoped view is subscribed in its place,
+    // exactly as my_conversation's comment does. Deleting it would make the next reviewer
+    // re-derive the privacy rationale from scratch — in the file where getting it wrong
+    // blanks the world for everyone.
+    expect(
+      countOccurrences(raw, 'player_wallet') >= 1,
+      'the rewritten comment must STILL name player_wallet as the private table whose ' +
+        'owner-scoped view is subscribed instead (ADR-0169 D1, mirroring connection.ts:' +
+        '569-571) — deleting the comment to satisfy the stale-phrase check throws away the ' +
+        'ADR-0081/0040 privacy rationale in a security-sensitive file',
+    ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W-UX2B-INGEST (EARS 11r-e-3 / 11r-e-3b) — insert-only, exact shape, whole file.
+// ---------------------------------------------------------------------------
+
+describe('connection.ts wiring (11r-e / ADR-0169 D2): W-UX2B-INGEST — the my_wallet ingest is insert-only and exactly one statement', () => {
+  it('★ BITES (11r-e-3): the EXACT contiguous ingest statement occurs exactly once in the whole comment-stripped file', () => {
+    // ONE needle, many teeth. Each of the following wrong implementations fails it:
+    //   * `store.upsertWallet(row as unknown as StoreWallet)` — the RAW SDK row, so
+    //     ownerIdentity stays an SDK Identity OBJECT and store.ownWallet's `===` filter
+    //     never matches. The readout is `unknown` forever and looks like an unwired
+    //     feature (ADR-0169 D3 c, seen from the wiring side).
+    //   * omitting `batcher.schedule()` — the row lands in the store but nothing
+    //     re-renders until some UNRELATED batch happens to flush. No e2e in this slice can
+    //     see this (the NPC wander tick re-renders every ~200 ms and the run self-heals),
+    //     which is precisely why this assertion is load-bearing (ADR-0169 Consequences).
+    //   * a CONDITIONAL upsert — `if (store.ownWallet(identity) === undefined) { … }` or
+    //     `store.upsertWallet(existing ?? playerWalletRowToStore(row))`. It compiles, reads
+    //     like a plausible "insert-wins", and FREEZES the balance after the first delivery:
+    //     buy or sell anything and the readout is stale forever. It passes every
+    //     behavioral gate in this slice because the e2e is designed so the balance never
+    //     changes. A contiguous needle admits no `if` / `?:` / `&&` (ADR-0169 D2).
+    //   * registering the handler TWICE (double schedule per row) — the ===1 count.
+    //   * `conn.db.player_wallet.onInsert(...)` — wrong table name, no match.
+    const squashed = squashedStrippedConnectionTs();
+    expect(
+      countOccurrences(squashed, UX2B_WALLET_INGEST),
+      'connection.ts must contain EXACTLY this statement, exactly once (ADR-0169 D2):\n  ' +
+        UX2B_WALLET_INGEST +
+        '\nRED TODAY: `conn.db.my_wallet` appears nowhere in connection.ts. If the ' +
+        'implementation is present but this reds, compare it CHARACTER BY CHARACTER — the ' +
+        'needle deliberately pins conversion, argument, ordering and batcher.schedule() ' +
+        'together, because each of those omitted separately is a real shipped-and-broken ' +
+        'outcome. Do NOT loosen this needle to match the code; correct the code, or ' +
+        're-derive the needle FROM ADR-0169 D2',
+    ).toBe(1);
+  });
+
+  it('★ BITES (11r-e-3b): NO conn.db.my_wallet.onDelete and NO conn.db.my_wallet.onUpdate handler exists anywhere in the file', () => {
+    // WRONG IMPL KILLED (the single most likely mistake in this slice — ADR-0169 D2 names
+    // it, and it is 3 lines away in the same function): copying the my_conversation
+    // onDelete block at connection.ts:335-341. Through a VIEW a row UPDATE arrives as
+    // unordered onInsert(new) + onDelete(old), so on a buy-then-sell round trip the
+    // coalesced sequence `I(50) I(100) D(100) D(50)` makes ANY net-effect delete gate
+    // remove the LIVE row: the player's gold vanishes mid-session (ADR-0154 D4). And
+    // because no server path ever deletes a player_wallet row
+    // (economy_tests.rs::player_wallet_rows_are_never_deleted), the handler is DEAD as
+    // well as wrong. store.reset() on disconnect is the sole clearing path — which is why
+    // store.ts:981-988 ships upsertWallet with no removeWallet counterpart at all.
+    //
+    // WHOLE-FILE, not region-bounded (ADR-0169 D2 / red-team S4): a sentinel-delimited
+    // region cannot see a delete handler relocated 200 lines down, and a relocated
+    // handler is just as fatal as an adjacent one.
+    //
+    // The negatives are safe against the mandated TRIPWIRE comment because the source is
+    // comment-stripped first — proved by W-UX2B-SCAN-SOUND above.
+    const squashed = squashedStrippedConnectionTs();
+
+    // Anti-vacuity: "no wallet delete handler" is a vacuous truth while there is no wallet
+    // wiring at all. Asserting the insert handler first makes this test RED TODAY for the
+    // right reason and keeps it meaningful afterwards.
+    expect(
+      countOccurrences(squashed, 'conn.db.my_wallet.onInsert'),
+      'precondition: the my_wallet insert handler must exist before "no delete handler" ' +
+        'means anything. RED TODAY',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(squashed, 'conn.db.my_wallet.onDelete'),
+      'there must be NO conn.db.my_wallet.onDelete handler (ADR-0154 D4): a view UPDATE ' +
+        'arrives as unordered insert+delete, so `I(50) I(100) D(100) D(50)` would delete ' +
+        "the LIVE row and the player's gold would vanish mid-session. No server path " +
+        'deletes a player_wallet row, so the handler is dead as well as wrong',
+    ).toBe(0);
+
+    expect(
+      countOccurrences(squashed, 'conn.db.my_wallet.onUpdate'),
+      'there must be NO conn.db.my_wallet.onUpdate handler (ADR-0087): a VIEW table has ' +
+        'no PK for SDK correlation, so onUpdate never fires — wiring one is dead code that ' +
+        'implies a delivery guarantee the transport does not make',
+    ).toBe(0);
+
+    // 11r-e-3b, second clause: "SHALL call no wallet-removal API". store.ts deliberately
+    // ships upsertWallet with NO removeWallet counterpart (store.ts:981-988), so this is
+    // currently also a tsc error — but the assertion states the invariant explicitly so a
+    // future slice that ADDS removeWallet (for some other reason) cannot quietly wire it
+    // here. store.reset() on disconnect remains the sole clearing path.
+    expect(
+      countOccurrences(squashed, 'removeWallet'),
+      'connection.ts must call no wallet-removal API (ADR-0154 D4 / store.ts:981-988): ' +
+        'store.reset() on disconnect is the ONLY path that may clear the wallet slot',
+    ).toBe(0);
+
+    // 11r-e-3b, third clause: "SHALL construct no fallback/default wallet row". The single
+    // contiguous needle already pins the ONE upsert call's argument; this pins that there
+    // is no SECOND one — e.g. a `store.upsertWallet({ ownerIdentity: identity, balance: 0n })`
+    // seeded on connect "so the UI has something to show". That is exactly the fabricated
+    // zero ADR-0154 D1 refused to let `economy::wallet_balance`'s `.unwrap_or(0)` reach the
+    // UI, and it would make a dark client render a confident, wrong `Gold: 0`.
+    expect(
+      countOccurrences(squashed, 'store.upsertWallet('),
+      'store.upsertWallet( must be called from EXACTLY ONE site in connection.ts — the ' +
+        'my_wallet onInsert handler. A second call site is a fabricated/default wallet row ' +
+        '(ADR-0154 D1/D6: "broke" must never be invented from "dark")',
+    ).toBe(1);
+  });
+
+  it('★ BITES (11r-e-3b): shouldRemoveOnViewDelete is still invoked at exactly ONE call site — my_conversation’s', () => {
+    // The free tooth against ADR-0169 D2's named anti-pattern. A copy-pasted wallet delete
+    // gate — `if (shouldRemoveOnViewDelete(store.ownWallet(deleted.ownerIdentity),
+    // deleted)) { … }` — is the most plausible wrong implementation because the nearest
+    // precedent in the same function does exactly that and it reads entirely sensible.
+    // The `.onDelete` negative above already catches the standard form; THIS catches a
+    // variant that reaches the gate through some other handler or helper.
+    //
+    // CRITERION CORRECTION (tester, from the spec): the slice brief and plan R3 both
+    // specify `countOccurrences(S, 'shouldRemoveOnViewDelete') === 1`. That number is
+    // WRONG on the live file and would red on correct code. The identifier occurs TWICE
+    // in the comment-stripped source today:
+    //   1. connection.ts:58  — the import specifier in the `./rowConvert` block, and
+    //   2. connection.ts:337 — the single my_conversation call site.
+    //   (A third occurrence at :322 is a `//` comment and IS stripped.)
+    // The INTENT — "still ONLY my_conversation's gate" — is preserved exactly by counting
+    // INVOCATIONS (the needle carries the open paren, so the import specifier is not a
+    // call site). This is the same import-is-not-a-call-site reasoning the W-DEVLOG-WRAP
+    // gate uses above. Both numbers are asserted so the correction is self-documenting.
+    const squashed = squashedStrippedConnectionTs();
+
+    // Anti-vacuity / RED TODAY: only meaningful once the wallet ingest exists.
+    expect(
+      countOccurrences(squashed, 'conn.db.my_wallet.onInsert'),
+      'precondition: the my_wallet ingest must exist before this gate means anything. ' +
+        'RED TODAY',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(squashed, 'shouldRemoveOnViewDelete('),
+      'shouldRemoveOnViewDelete( must be INVOKED exactly once in connection.ts — only the ' +
+        'my_conversation view-delete gate at connection.ts:335-341. A second call site ' +
+        'means the wallet (or another view) grew a delete gate, which ADR-0154 D4 forbids: ' +
+        'the coalesced `I(50) I(100) D(100) D(50)` update pair would wipe the live row',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(squashed, 'shouldRemoveOnViewDelete'),
+      'the shouldRemoveOnViewDelete IDENTIFIER must occur exactly twice in the ' +
+        'comment-stripped source: the ./rowConvert import specifier (connection.ts:58) and ' +
+        'the one my_conversation call site (:337). A third occurrence is a new gate; a ' +
+        'first-only occurrence means the my_conversation gate was deleted',
+    ).toBe(2);
+  });
+
+  it('★ BITES: playerWalletRowToStore and SdkPlayerWalletRow are imported from ./rowConvert (not re-declared locally)', () => {
+    // ADR-0169 D3: SdkPlayerWalletRow is EXPORTED from rowConvert.ts — the dominant
+    // convention (SdkProfileRow, SdkTradeOfferRow, …) — rather than re-declared inside
+    // wireTables the way the anomalous SdkConversationRow is (connection.ts:326-330).
+    // WRONG IMPL KILLED: copying that anomaly. A locally re-declared row type drifts
+    // silently from the converter's own parameter type, so the `as unknown as` cast in the
+    // ingest statement would stop meaning anything — the compiler would be checking the
+    // cast against a hand-written shape rather than against the converter's contract.
+    // WRONG IMPL KILLED: an inline `(row: {ownerIdentity:{toHexString():string};
+    // balance:bigint})` shape that never touches rowConvert at all.
+    //
+    // WINDOWING NOTE: `import {` is NOT unique in connection.ts (:12 and :28), so it
+    // cannot anchor a region. Instead the needles carry a TRAILING COMMA — which occurs
+    // only in an import specifier list, never at the call site `playerWalletRowToStore(`
+    // (the same import-is-not-a-call-site discrimination the W-DEVLOG-WRAP gate above
+    // relies on) — and each is then required to appear BEFORE the unique
+    // `} from './rowConvert';` terminator, which is what pins them into THAT import.
+    const squashed = squashedStrippedConnectionTs();
+    const rowConvertImportEnd = squashed.indexOf("} from './rowConvert';");
+    expect(
+      rowConvertImportEnd,
+      "connection.ts must still import from './rowConvert' — if this anchor is gone, this " +
+        'gate is judging the wrong file',
+    ).toBeGreaterThan(0);
+
+    expect(
+      countOccurrences(squashed, 'playerWalletRowToStore,'),
+      "playerWalletRowToStore must be imported from './rowConvert' (the alphabetized import " +
+        'block at connection.ts:28-62). RED TODAY: it is absent — and does not exist in ' +
+        'rowConvert.ts yet either',
+    ).toBe(1);
+    expect(
+      squashed.indexOf('playerWalletRowToStore,'),
+      "the playerWalletRowToStore specifier must sit INSIDE the './rowConvert' import block " +
+        '(i.e. before its closing `} from` terminator), not in some other import',
+    ).toBeLessThan(rowConvertImportEnd);
+
+    expect(
+      countOccurrences(squashed, 'type SdkPlayerWalletRow,'),
+      "SdkPlayerWalletRow must be imported as a type from './rowConvert' (ADR-0169 D3), NOT " +
+        're-declared locally the way the anomalous SdkConversationRow is at ' +
+        'connection.ts:326-330 — a local re-declaration silently drifts from the ' +
+        "converter's own parameter type and hollows out the `as unknown as` cast",
+    ).toBe(1);
+    expect(
+      squashed.indexOf('type SdkPlayerWalletRow,'),
+      "the SdkPlayerWalletRow specifier must sit INSIDE the './rowConvert' import block",
+    ).toBeLessThan(rowConvertImportEnd);
+    // The type must not ALSO be declared locally (belt and braces against a merge that
+    // keeps both).
+    expect(
+      countOccurrences(squashed, 'type SdkPlayerWalletRow = {'),
+      'SdkPlayerWalletRow must not be re-declared inside connection.ts',
+    ).toBe(0);
+    expect(
+      countOccurrences(squashed, 'interface SdkPlayerWalletRow'),
+      'SdkPlayerWalletRow must not be re-declared inside connection.ts',
+    ).toBe(0);
   });
 });
