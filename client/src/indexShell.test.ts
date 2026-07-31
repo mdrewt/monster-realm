@@ -266,11 +266,92 @@ describe('ux1-1 (H3): the hint actually advertises the ? key and help', () => {
 });
 
 describe('ux1-1 (H4/H5): the hint is persistent and not obviously invisible', () => {
-  it('BITES: H4 — hint inline style has position:fixed and pointer-events:none', () => {
+  it('BITES: H4b — #help-hint is fixed, deliberately clickable, and its pointer surface is BOUNDED', () => {
+    // SLICE: uxd3-b   ADR: 0163 D4 (an AMENDMENT to ADR-0151 D2)   EARS criterion: AC-12
+    //
+    // REPLACES H4 ("position:fixed AND pointer-events:none") IN PLACE. AC-12 makes the badge
+    // the click front door for the main menu, so the badge MUST receive pointer events and
+    // H4's blanket `pointer-events:none` ban is no longer a satisfiable invariant.
+    //
+    // HONESTY — H4b IS NOT STRICTLY STRONGER THAN H4 on the click-eating axis, and this must
+    // not be narrated as an upgrade. H4 forbade the badge from consuming ANY click; H4b
+    // permits exactly that and instead BOUNDS the surface it can consume. What H4b buys back:
+    // four assertions H4 never made (explicit pointer-events:auto, width:max-content, at most
+    // one horizontal edge, and a property allow-list) plus the launcher-attribute pin. What is
+    // genuinely given up: the guarantee that a bottom-left click always reaches whatever is
+    // under the badge. Recorded as an amendment to ADR-0151 D2, NOT as a silent test edit.
+    //
+    // SCOPE OF THE RESIDUAL, stated precisely (an earlier draft said "latent, not live" and was
+    // too narrow — code review caught it). Two distinct exposures:
+    //   (a) bare CANVAS clicks — genuinely latent: nothing in the client handles one today (the
+    //       document click listener matches only [data-shop-id] / [data-choice-idx] /
+    //       [data-menu-launcher]). It goes live the day click-to-move ships.
+    //   (b) OVERLAY BUTTONS — live in principle, not latent: nine overlay shells in index.html
+    //       are unpositioned in-flow divs that render BELOW the viewport-tall canvas, so when one
+    //       is shown the page scrolls and this fixed badge floats over whatever lands in the
+    //       bottom-left ~250x15px band. Buttons there ([data-shop-id], the trade/pvp/box/rename
+    //       controls) can be occluded, and the launcher branch's unconditional `return;` swallows
+    //       the click even when its guard denies. MEASURED: the full Playwright suite is green
+    //       against this markup (44 passed / 1 skipped), so no shipped flow hits it — but that is
+    //       a measurement, not a proof. ADR-0163 D4 records it, with the two escape routes
+    //       (move the badge to a corner no in-flow shell occupies, or give the shells the
+    //       position:fixed treatment #help-overlay already has) reserved for uxd3-c.
+    //
+    // RED AT AUTHORING TIME: client/index.html:114-119 still ships `pointer-events:none`, no
+    // `data-menu-launcher` attribute and no `width:max-content`, so assertions 2, 3 and 6 all
+    // fail on the current markup. Assertion 1 (position:fixed) is green today and is carried
+    // over from H4 verbatim as a regression guard.
+    //
+    // WRONG IMPL KILLED (1): a static/in-flow hint — H4's kill, carried over verbatim.
+    // WRONG IMPL KILLED (2): flipping the branch to a click front door and FORGETTING the
+    //   markup half. `pointer-events:none` left in place makes the badge un-clickable, so
+    //   AC-12 ships as a dead feature that no unit test can otherwise see (happy-dom performs
+    //   no hit-testing, and main.ts is coverage-excluded). Asserting `:auto` EXPLICITLY rather
+    //   than "`:none` is absent" also kills deleting the declaration entirely — the property
+    //   is inherited, and a future `pointer-events:none` on a wrapper would silently win.
+    // WRONG IMPL KILLED (3): a badge that grows into a full-width click-eating strip. Each of
+    //   these keeps `position:fixed` + one horizontal edge and still swallows the whole
+    //   viewport bottom (or the whole viewport): `width:100%`, `left:6px;right:6px`,
+    //   `padding:0 50vw`, `min-width:100vw`, `height:100vh`, `inset:auto 0 16px 0`,
+    //   `transform:scale(40)`, `zoom:40`, `border:50vw solid transparent`, `scale:40`.
+    //   `width:max-content` + at-most-one-horizontal-edge + a PROPERTY ALLOW-LIST is what closes
+    //   all ten — a deny-list of growth knobs was measured unclosable (the last three survived it).
+    // WRONG IMPL KILLED (4): binding the click by ELEMENT ID instead of the attribute. Without
+    //   `data-menu-launcher` in the markup, main.ts's delegated branch matches nothing and the
+    //   badge is decorative — while W-UXD3B-LAUNCHER-BRANCH-IS-READ-ONLY (which scans main.ts,
+    //   not index.html) stays green. This is the markup half of that pair.
+    // WRONG IMPL KILLED (5): a SECOND element carrying `data-menu-launcher` (the natural way to
+    //   "add a real button" later). Two launchers is the always-on rail the spec rejects, and
+    //   W-ONE-CORNER-AFFORDANCE only sees `position:fixed` divs — an inline <span> launcher
+    //   inside #app is invisible to it and caught only here.
+    //
+    // DELIBERATELY NOT ASSERTED: `cursor:pointer`. No EARS criterion asks for it, and
+    // discoverability is already carried by the hint TEXT, which H3 pins. It stays in the
+    // markup as good practice; pinning it here would be inventing a requirement.
     const doc = parseIndexHtml();
     const hint = doc.querySelector('#help-hint');
-    const style = normalisedStyle(hint);
 
+    // ANTI-VACUITY, ASSERTED FIRST (this file's house rule): with #help-hint absent,
+    // normalisedStyle() returns '' and declarations() returns [], so EVERY deny-list clause
+    // and every "at most one" clause below passes vacuously. Deleting the element must never
+    // be a way to satisfy H4b.
+    expect(
+      hint,
+      'KILLS: a vacuously-green H4b — with #help-hint absent the style string is empty and ' +
+        'every bounded-surface clause below passes. Deleting the element must not satisfy ' +
+        'this test.',
+    ).not.toBeNull();
+
+    const style = normalisedStyle(hint);
+    const decls = declarations(hint);
+    expect(
+      decls.length > 0,
+      'KILLS: #help-hint with no inline style at all — there is no CSS file in this repo, so ' +
+        'an unstyled hint is an unpositioned in-flow div AND an unbounded one. Every ' +
+        'assertion below would be judging an empty string.',
+    ).toBe(true);
+
+    // (1) CARRIED OVER FROM H4, VERBATIM.
     // WRONG IMPL KILLED: a static/in-flow hint. There is no CSS file in this repo, so
     // without an inline position it scrolls/flows away with the document and is NOT
     // "persistent, always-visible" as ux1-1 demands — the same below-the-fold failure
@@ -283,14 +364,120 @@ describe('ux1-1 (H4/H5): the hint is persistent and not obviously invisible', ()
         JSON.stringify(style),
     ).toBe(true);
 
-    // WRONG IMPL KILLED: a hint that swallows clicks in the bottom-left corner of the
-    // PixiJS canvas — a fixed overlay without pointer-events:none is a click-eater.
+    // (2) The badge must be clickable AT ALL — the one thing a layout-free happy-dom test can
+    // still say about AC-12's front door.
     expect(
-      style.includes('pointer-events:none'),
-      'KILLS: a fixed #help-hint WITHOUT pointer-events:none — it eats canvas clicks ' +
-        'in the bottom-left corner. style=' +
+      style.includes('pointer-events:auto'),
+      'KILLS: AC-12 shipped as a DEAD BUTTON — #help-hint still carrying (or inheriting) ' +
+        'pointer-events:none while main.ts binds a delegated click branch to it. Asserted as ' +
+        'the EXPLICIT `pointer-events:auto` declaration, not as "`:none` is absent": the ' +
+        'property inherits, so an omitted declaration is not the same as an opted-in one. ' +
+        'style=' +
         JSON.stringify(style),
     ).toBe(true);
+
+    // (3) The width bound: shrink-to-fit, never a strip.
+    expect(
+      style.includes('width:max-content'),
+      'KILLS: a clickable #help-hint with an UNBOUNDED width. `width:100%` (or an author-set ' +
+        'width in vw) turns a one-line badge into a full-width bar across the bottom of the ' +
+        'PixiJS canvas that eats every click in that band. width:max-content is the explicit ' +
+        "bound that replaces H4's retired blanket pointer-events:none ban. style=" +
+        JSON.stringify(style),
+    ).toBe(true);
+
+    // (4) The horizontal bound: anchored to ONE edge, so it cannot be stretched between two.
+    // Tested as DECLARATION STARTS (declarationValue matches `left:` only at index 0 of a
+    // declaration) so `padding-left:` cannot false-positive as a horizontal anchor.
+    expect(
+      declarationValue(decls, 'bottom') !== null,
+      'KILLS: #help-hint that lost its `bottom:` anchor — a fixed box with all offsets auto ' +
+        'lays out at its STATIC position (the measured H7 failure mode) and, at bottom:2px, ' +
+        'would also collide with #build-stamp. decls=' +
+        JSON.stringify(decls),
+    ).toBe(true);
+    const horizontalEdges = ['left', 'right'].filter(
+      (edge) => declarationValue(decls, edge) !== null,
+    );
+    expect(
+      horizontalEdges.length,
+      'KILLS: #help-hint anchored to BOTH horizontal edges (`left:6px;right:6px`) — that ' +
+        'stretches the box across the full viewport width regardless of width:max-content, ' +
+        'recreating the full-width click-eating strip. Exactly one horizontal anchor is ' +
+        'allowed. Found: ' +
+        JSON.stringify(horizontalEdges) +
+        ' decls=' +
+        JSON.stringify(decls),
+    ).toBeLessThanOrEqual(1);
+
+    // (5) BOUNDED SURFACE — a PROPERTY ALLOW-LIST, not a deny-list of growth knobs.
+    // A deny-list here was MEASURED unclosable (red-team F8): `zoom:40`, `border:50vw solid
+    // transparent` and `scale:40` (the modern individual transform property, which the
+    // `transform` shorthand needle does not match) each kept `width:max-content` plus a single
+    // horizontal edge and still grew the HIT BOX to viewport scale — all three green against a
+    // six-entry deny-list. An allow-list is closed by construction: any property not named here
+    // fails, including ones invented after this test was written. This mirrors the reasoning
+    // W-UXD3B-LAUNCHER-BRANCH-IS-READ-ONLY uses for its method allow-list, applied consistently.
+    // Widening it is a deliberate act that must re-argue the bounded-surface claim, which is the
+    // whole justification for retiring H4's blanket pointer-events:none ban (ADR-0151 D2, amended
+    // by ADR-0163 D4).
+    const BOUNDED_SURFACE_ALLOWED_PROPS = [
+      'position',
+      'bottom',
+      'left',
+      'width',
+      'font',
+      'color',
+      'pointer-events',
+      'cursor',
+      'z-index',
+    ];
+    const declaredProps = style
+      .split(';')
+      .map((d) => d.slice(0, d.indexOf(':')).trim())
+      .filter((name) => name.length > 0);
+    // ANTI-VACUITY: a mangled style attribute that parses to zero properties would satisfy a
+    // subset check trivially. The shipped badge declares nine.
+    expect(
+      declaredProps.length,
+      'ANTI-VACUITY: #help-hint must declare a real inline style — parsing yielded no ' +
+        'properties, so the allow-list below would pass on garbage. style=' +
+        JSON.stringify(style),
+    ).toBeGreaterThanOrEqual(5);
+    for (const banned of declaredProps.filter(
+      (name) => !BOUNDED_SURFACE_ALLOWED_PROPS.includes(name),
+    )) {
+      expect(
+        banned,
+        'KILLS: #help-hint grown into a click-eater via the un-allow-listed property "' +
+          banned +
+          '". `padding:0 50vw`, `min-width:100vw`, `height:100vh`, `inset:auto 0 16px 0`, ' +
+          '`transform:scale(40)`, `zoom:40`, `border:50vw solid transparent` and `scale:40` all ' +
+          'keep `width:max-content` plus a single horizontal edge and still swallow most of the ' +
+          "viewport. The BOUNDED surface is the whole justification for retiring H4's blanket " +
+          'pointer-events:none ban, so the property set is allow-listed: ' +
+          JSON.stringify(BOUNDED_SURFACE_ALLOWED_PROPS) +
+          '. style=' +
+          JSON.stringify(style),
+      ).toBe('<not reached — property is not on the allow-list>');
+    }
+
+    // (6) The markup half of the AC-12 front door.
+    expect(
+      hint === null ? false : hint.hasAttribute('data-menu-launcher'),
+      'KILLS: AC-12 wired in main.ts but NOT in the markup — the delegated ' +
+        '[data-menu-launcher] branch would match nothing and the badge would be decorative, ' +
+        'while the main.ts-side tooth stays green. The attribute (not the id) is the binding ' +
+        'contract: it is what lets main.ts stay a non-owner of #help-hint ' +
+        '(W-UX1-HINT-NO-JS-OWNER, ADR-0151 D2).',
+    ).toBe(true);
+    expect(
+      doc.querySelectorAll('[data-menu-launcher]').length,
+      'KILLS: a SECOND element carrying data-menu-launcher — two competing always-on menu ' +
+        'affordances is the rail AC-12 exists to forbid, and W-ONE-CORNER-AFFORDANCE only ' +
+        'inspects position:fixed <body> divs, so an inline launcher elsewhere in the document ' +
+        'is invisible to it and caught only here.',
+    ).toBe(1);
   });
 
   it('BITES: H5 — hint style contains no obvious-invisibility declaration (deny-list, NOT a visibility check)', () => {

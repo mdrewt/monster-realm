@@ -106,6 +106,7 @@ import {
   menuStep,
 } from './ui/menuModel';
 import type { MenuView } from './ui/menuView';
+import { anyVisible, type OverlayProbes } from './ui/overlayRegistry';
 import { buildPvpChallengeViewModel } from './ui/pvpModel';
 import type { PvpView } from './ui/pvpView';
 import { buildQuestLogViewModel } from './ui/questLogModel';
@@ -237,28 +238,41 @@ let pendingShopId: number | null = null;
 let boundShopId: number | null = null;
 let boundHealLocationId: number | null = null;
 
-/** uxd2 (ADR-0161 D4): the ONE shared predicate over the 14 mutual-exclusion
- *  overlays — used by the deferred shop-open gate and the frame-loop prompt.
- *  The hotkey handlers keep their inline guard lists (each exempts its own
- *  overlay), so this is deliberately the only NEW occurrence of each. */
+// UXD3B-PROBES-BEGIN
+// uxd3-b (ADR-0163): the ONE probe table. Every fan-out surface below reads visibility
+// through it, so a 16th overlay is a COMPILE error here instead of 5 silent omissions.
+// Each entry is intentionally byte-identical `<id>: () => <id>?.visible ?? false` —
+// W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY Part B pins that literal shape, because
+// main.ts is coverage-excluded and a single negated or `?? true` probe would corrupt all
+// five surfaces at once while every other tooth stayed green.
+// ⚠ No quoted hotkey literal may appear in this block (W-UXD3-HOTKEY-ANCHORS-AFTER-KEYDOWN).
+const overlayProbes: OverlayProbes = {
+  battleView: () => battleView?.visible ?? false,
+  boxView: () => boxView?.visible ?? false,
+  raisingView: () => raisingView?.visible ?? false,
+  evolutionView: () => evolutionView?.visible ?? false,
+  dialogueView: () => dialogueView?.visible ?? false,
+  questLogView: () => questLogView?.visible ?? false,
+  healView: () => healView?.visible ?? false,
+  shopView: () => shopView?.visible ?? false,
+  tradeView: () => tradeView?.visible ?? false,
+  pvpView: () => pvpView?.visible ?? false,
+  leaderboardView: () => leaderboardView?.visible ?? false,
+  renameView: () => renameView?.visible ?? false,
+  tradeProposeView: () => tradeProposeView?.visible ?? false,
+  helpView: () => helpView?.visible ?? false,
+  menuView: () => menuView?.visible ?? false,
+};
+// UXD3B-PROBES-END
+
+/** uxd2 (ADR-0161 D4), rewired by uxd3-b (ADR-0163): the ONE shared predicate over the
+ *  15 mutual-exclusion overlays. Every per-overlay read now lives in `overlayProbes`
+ *  above — this body holds none. Six consumers: the four negated fan-out surfaces, the
+ *  deferred shop-open gate and the frame-loop prompt. The hotkey handlers still keep
+ *  their inline guard lists (each exempts its own overlay); routing those through
+ *  `canOpen` is uxd3-c. The NAME is load-bearing (anti-pattern 18). */
 function anyOverlayVisible(): boolean {
-  return Boolean(
-    battleView?.visible ||
-      boxView?.visible ||
-      raisingView?.visible ||
-      evolutionView?.visible ||
-      dialogueView?.visible ||
-      questLogView?.visible ||
-      healView?.visible ||
-      shopView?.visible ||
-      tradeView?.visible ||
-      pvpView?.visible ||
-      leaderboardView?.visible ||
-      renameView?.visible ||
-      tradeProposeView?.visible ||
-      helpView?.visible ||
-      menuView?.visible,
-  );
+  return anyVisible(overlayProbes);
 }
 
 /** entityId → positional tile snapshot for the interact resolver (uxd2, ADR-0161).
@@ -693,27 +707,7 @@ function reconcileFromStore(): void {
     // predicate as the rAF loop. Cost is bounded by the next authoritative batch
     // (<= ~STEP_MS + RTT), never stuck: every server-side queue mutation writes the
     // character row, and the reject path force-reconciles here (ADR-0085).
-    if (
-      diverged &&
-      predictor.outstandingSteps === 0 &&
-      !(
-        helpView?.visible ||
-        menuView?.visible ||
-        renameView?.visible ||
-        tradeProposeView?.visible ||
-        battleView?.visible ||
-        boxView?.visible ||
-        raisingView?.visible ||
-        evolutionView?.visible ||
-        dialogueView?.visible ||
-        questLogView?.visible ||
-        healView?.visible ||
-        shopView?.visible ||
-        tradeView?.visible ||
-        pvpView?.visible ||
-        leaderboardView?.visible
-      )
-    ) {
+    if (diverged && predictor.outstandingSteps === 0 && !anyOverlayVisible()) {
       const heldDir = reissueDir(held.committedActive(now), predictor.lastQueuedDir);
       if (heldDir !== undefined) sendIntent({ Step: heldDir });
     }
@@ -865,7 +859,6 @@ window.addEventListener('keydown', (e) => {
     ) {
       raisingView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
-      tradeView?.hide(); // mutual exclusivity: close trade overlay
       boxView?.toggle();
       if (boxView?.visible) refreshBox();
     }
@@ -891,7 +884,6 @@ window.addEventListener('keydown', (e) => {
     ) {
       boxView?.hide(); // mutual exclusivity: box and raising never co-open
       evolutionView?.hide(); // mutual exclusivity: close evolution overlay
-      tradeView?.hide(); // mutual exclusivity: close trade overlay
       raisingView?.toggle();
       if (raisingView?.visible) refreshRaising();
     }
@@ -917,7 +909,6 @@ window.addEventListener('keydown', (e) => {
     ) {
       boxView?.hide(); // mutual exclusivity
       raisingView?.hide(); // mutual exclusivity
-      tradeView?.hide(); // mutual exclusivity: close trade overlay
       evolutionView?.toggle();
       if (evolutionView?.visible) refreshEvolution();
     }
@@ -1310,23 +1301,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   // Suppress movement input while an overlay is open.
-  if (
-    helpView?.visible ||
-    menuView?.visible ||
-    battleView?.visible ||
-    boxView?.visible ||
-    raisingView?.visible ||
-    evolutionView?.visible ||
-    dialogueView?.visible ||
-    questLogView?.visible ||
-    healView?.visible ||
-    shopView?.visible ||
-    tradeView?.visible ||
-    pvpView?.visible ||
-    leaderboardView?.visible ||
-    renameView?.visible ||
-    tradeProposeView?.visible
-  ) {
+  if (anyOverlayVisible()) {
     suppressNativeMovementDefault(e);
     return;
   }
@@ -1606,21 +1581,7 @@ store.onBatchApplied(() => {
     // Auto-show on incoming challenge ONLY when no other overlay is visible — never
     // pop the PvP overlay over an active battle or another overlay (mutual-exclusivity).
     // Always preserve a manually-opened overlay (pvpView.visible) regardless.
-    const anyOverlayVisible =
-      helpView?.visible ||
-      menuView?.visible ||
-      battleView?.visible ||
-      boxView?.visible ||
-      raisingView?.visible ||
-      evolutionView?.visible ||
-      dialogueView?.visible ||
-      questLogView?.visible ||
-      healView?.visible ||
-      shopView?.visible ||
-      tradeView?.visible ||
-      leaderboardView?.visible ||
-      renameView?.visible ||
-      tradeProposeView?.visible;
+    const anyOverlayVisible = anyVisible(overlayProbes, 'pvpView');
     const forceVisible =
       !anyOverlayVisible && (vm.incoming !== null || (pvpView?.visible ?? false));
     pvpView?.refresh(vm, forceVisible);
@@ -1731,6 +1692,21 @@ document.addEventListener('click', (e) => {
     return;
   }
   // UXD2-SHOPBTN-END
+  // UXD3B-LAUNCHER-BEGIN
+  // uxd3-b (ADR-0163, AC-12): the click front door. Delegated on the data-attribute, the
+  // house idiom in this listener — so main.ts still never NAMES the badge and acquires no
+  // reference to it (W-UX1-HINT-NO-JS-OWNER stays green verbatim; ADR-0151 D2's "no owner
+  // that can hide or remove it" survives). Gated on the same anyOverlayVisible() SSOT this
+  // slice builds, plus the identity guard the KeyM door carries (menuAvailability() reads
+  // store.ownCharacter(identity) and this listener has no try/catch).
+  if ((e.target as HTMLElement).closest('[data-menu-launcher]') !== null) {
+    if (!anyOverlayVisible() && identity !== '') {
+      held.clear();
+      openMenu();
+    }
+    return;
+  }
+  // UXD3B-LAUNCHER-END
   const btn = (e.target as HTMLElement).closest('[data-choice-idx]') as HTMLElement | null;
   if (!btn) return;
   const raw = btn.dataset.choiceIdx;
@@ -2487,26 +2463,7 @@ async function main(): Promise<void> {
       // predictor.enqueue + reducer send, and no-ops if declined.
       // nh2 (ADR-0148): ...and only while the server owes nothing. Pure NOT-EMIT: it never
       // cancels or writes predictor state, so reconcileFromStore stays the one repair path.
-      if (
-        predictor.outstandingSteps === 0 &&
-        !(
-          battleView?.visible ||
-          boxView?.visible ||
-          raisingView?.visible ||
-          evolutionView?.visible ||
-          dialogueView?.visible ||
-          questLogView?.visible ||
-          healView?.visible ||
-          shopView?.visible ||
-          tradeView?.visible ||
-          pvpView?.visible ||
-          leaderboardView?.visible ||
-          renameView?.visible ||
-          tradeProposeView?.visible ||
-          helpView?.visible ||
-          menuView?.visible
-        )
-      ) {
+      if (predictor.outstandingSteps === 0 && !anyOverlayVisible()) {
         const heldDir = reissueDir(held.committedActive(now), predictor.lastQueuedDir);
         if (heldDir !== undefined) sendIntent({ Step: heldDir });
       }

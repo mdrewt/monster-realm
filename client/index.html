@@ -107,15 +107,22 @@
       id="build-stamp"
       style="position:fixed;bottom:2px;right:4px;font:10px/1.2 monospace;color:#667;opacity:0.55;pointer-events:none;z-index:9999"
     ></div>
-    <!-- ux1 (ADR-0151 D2): persistent help affordance — deliberately zero-JS (no view class, no
-         main.ts owner), so nothing can hide or remove it. bottom:16px STACKS it above #build-stamp
-         (bottom:2px) rather than beside it — measured overlapping at 360px width.
-         pointer-events:none is load-bearing: fixed over the canvas, it must not eat clicks. -->
+    <!-- ux1 (ADR-0151 D2), amended by uxd3-b (ADR-0163 D4): persistent help affordance, now ALSO the
+         click front door for the main menu (AC-12). Still zero-owner: main.ts binds by DELEGATION on
+         [data-menu-launcher] and never resolves, mutates, hides or removes this element.
+         bottom:16px STACKS it above #build-stamp (bottom:2px) rather than beside it — measured
+         overlapping at 360px width. pointer-events:auto is what makes AC-12's click possible; the
+         click surface is BOUNDED by width:max-content plus a single horizontal edge (left:6px) and
+         an allow-listed property set, so the badge can never become a full-width strip — the
+         regression the superseded pointer-events:none blanket ban was written against. The label
+         is deliberately SHORT: width:max-content forbids wrapping, and the previous 49-char text
+         measured ~323px at 11px monospace, which overflows a 320px viewport from left:6px. -->
     <div
       id="help-hint"
-      style="position:fixed;bottom:16px;left:6px;font:11px/1.3 monospace;color:#9aa0b4;pointer-events:none;z-index:50"
+      data-menu-launcher
+      style="position:fixed;bottom:16px;left:6px;width:max-content;font:11px/1.3 monospace;color:#9aa0b4;pointer-events:auto;cursor:pointer;z-index:50"
     >
-      Press ? for controls &amp; help · M for menu
+      Press ? for help · click or M for menu
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

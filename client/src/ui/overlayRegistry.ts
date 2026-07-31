@@ -1,9 +1,11 @@
 // ui/overlayRegistry.ts — the pure modality core for the 15 mutual-exclusion overlays
 // (uxd3, ADR-0162).
 //
-// FUNCTIONAL CORE, zero imperative shell (ADR-0014). No DOM, no SDK, no import from
-// `main.ts`, no view handles, no thunks — every export here is a data table or a total
-// pure function, so the whole module is node-testable with zero mocks.
+// FUNCTIONAL CORE (ADR-0014). No DOM, no SDK, no import from `main.ts`, no view handles,
+// no thunks — every export here is a data table, a total pure function, or (since uxd3-b)
+// the TYPE of the caller-supplied probe table, so the whole module stays node-testable
+// with zero mocks. `anyVisible` takes the probes as an argument and holds no state of its
+// own: the module owns the SHAPE of the visibility read, never a handle on a view.
 //
 // The name is deliberately distinct from `render/viewRegistry.ts` (the M4b sprite pool).
 //
@@ -14,10 +16,12 @@
 // the `dismissDialogue` reducer, `main.ts`). `canOpen` makes that distinction explicit and
 // testable instead of implicit in fourteen hand-maintained guard lists.
 //
-// SCOPE (uxd3-a): this module holds the DECISIONS only. The imperative side — per-id open
-// thunks, a handle table, `anyVisible()`, and routing the five `main.ts` fan-out surfaces
-// through them — lands in uxd3-b with its consumers. Shipping an abstraction ahead of its
-// consumer is the YAGNI violation this slice deliberately avoids.
+// SCOPE (uxd3-a + uxd3-b): this module holds the DECISIONS, plus the READ substrate —
+// `OverlayProbes` and `anyVisible`, which uxd3-b's five `main.ts` fan-out surfaces consume.
+// The WRITE substrate (per-id open/hide thunks, `hideAllExcept`, routing the hotkey guard
+// lists through `canOpen`) lands in uxd3-c with ITS consumers. `visibleIds()`/`isVisible()`
+// /`anyVisibleExcept()` are deliberately absent: shipping an abstraction ahead of its
+// consumer is the YAGNI violation amendment A7 already rejected in this same module.
 
 /** The 15 mutual-exclusion overlays. `errorOverlayView` is NOT a member: it is
  *  non-blocking, F8-dismissed, and re-shows itself, so it never participates in
@@ -173,4 +177,16 @@ export function hideAllExceptPlan(
 ): readonly OverlayId[] {
   if (keep !== 'battleView') return [];
   return BATTLE_FORCE_HIDE.filter((id) => id !== keep && currentlyVisible.includes(id));
+}
+
+/** Per-id visibility probes. `Record<OverlayId, _>` ⇒ omitting an id is a COMPILE error,
+ *  not a test failure. Each probe MUST read THIS overlay's own `visible` getter. */
+export type OverlayProbes = Readonly<Record<OverlayId, () => boolean>>;
+
+/** True iff any overlay other than `exempt` is currently visible (AC-7).
+ *  Re-probes on EVERY call — nothing is cached, so it can be built at module scope
+ *  before the views exist. NO try/catch on purpose: swallowing a throwing probe would
+ *  return `false` silently, i.e. a mutual-exclusion breach that looks like working code. */
+export function anyVisible(probes: OverlayProbes, exempt?: OverlayId): boolean {
+  return OVERLAY_IDS.some((id) => id !== exempt && probes[id]());
 }
