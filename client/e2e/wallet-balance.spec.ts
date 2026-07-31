@@ -164,9 +164,19 @@ import {
 // all inside ONE synchronous turn, before any MutationObserver callback or paint. A latch
 // that merely READS the DOM when the overlay becomes visible would see the settled
 // `Gold: 50` and pass. The recorder below therefore keeps an ORDERED LOG of mutation
-// RECORDS (using `attributeOldValue` to recover each written value), so the transient blank
-// that precedes `show()` is recoverable. That is the one assertion no source scan and no
-// polled matcher can fake.
+// RECORDS — each `childList` record CARRIES the text that was written in its `addedNodes`,
+// so the transient blank that precedes `show()` is recoverable verbatim. That is the one
+// assertion no source scan and no polled matcher can fake.
+//
+// The first-paint channel is the TEXT one ONLY (ADR-0169 D7, tightened during the 11r-e
+// review — deliberate, and strictly stronger, not a weakening). shopView.ts:97-100 derives
+// text, `hidden` and `dataset.balanceState` from ONE boolean in three adjacent statements,
+// so per render the text and the state are equivalent; but recovering a written ATTRIBUTE
+// value requires chaining the NEXT record's `oldValue` and falling back to the LIVE DOM
+// when there is none — the settled-DOM read this whole apparatus exists to avoid, which
+// could only ever have turned a red into a green. See readFirstPaint. The sticky latches
+// still read `data-balance-state` records' `oldValue` DIRECTLY (no chaining, no fallback)
+// and are unaffected.
 //
 //   patched sites | settled toHaveText | FIRST PAINT | "ever unknown" latch | verdict
 //   --------------|--------------------|-------------|----------------------|---------
@@ -340,8 +350,13 @@ const TALK_RANGE = 2;
  *  non-player character is within TALK_RANGE of the own authoritative tile, then presses
  *  KeyT once. A press can still lose the race against a wandering elder_oak (up to 1 tile
  *  per 200 ms tick between the poll and the server-side range check), so retries are
- *  bounded. Against the zone-1 shopkeeper (wander_radius 0, pinned) attempt 1 always wins. */
-const MAX_TALK_ATTEMPTS = 20;
+ *  bounded. Against the zone-1 shopkeeper (wander_radius 0, pinned) attempt 1 always wins.
+ *  SIX, not dialogue.spec.ts's 20: from the pocket (5,4), 6 of elder_oak's ~8 reachable
+ *  wander tiles are in range, so per-press success is high and the tail is short — while
+ *  20 attempts would cost 20 x (20 s poll + 2 s wait) = ~440 s, i.e. MORE than the whole
+ *  300 s phase budget, so those attempts could never actually be spent. 6 x 22 s = 132 s
+ *  is a bound the enclosing budget can honour. */
+const MAX_TALK_ATTEMPTS = 6;
 
 async function talkUntilOpen(p: Page, playerEntityIds: readonly string[]): Promise<void> {
   const overlay = p.locator('#dialogue-overlay');
@@ -397,7 +412,7 @@ const installShopBalanceRecorder = (): void => {
   // and only the PREFIX up to the first "overlay became visible" record is analysed. No
   // shop render happens at all before the open (the batch listener early-returns while the
   // overlay is hidden, main.ts:1428), so the open sequence is always at the very front.
-  // The counter and the sticky latch below are NOT capped.
+  // The write counter and the two sticky latches below are NOT capped.
   const LOG_CAP = 400;
   const push = (k: string, old: string | null, text: string): void => {
     const log = w.__mrShopLog;
@@ -430,7 +445,9 @@ const installShopBalanceRecorder = (): void => {
           push('overlay', r.oldValue, '');
         } else if (el.id === 'shop-balance') {
           if (r.type === 'attributes' && r.attributeName === 'data-balance-state') {
-            push('state', r.oldValue, '');
+            // Deliberately NOT pushed into the log: the first-paint reconstruction reads
+            // the TEXT channel only (see readFirstPaint). data-balance-state is still
+            // OBSERVED — the two sticky latches and the write counter live here.
             w.__mrBalanceWrites = (w.__mrBalanceWrites ?? 0) + 1;
             // Sticky latches, transient-proof: this write REPLACED the recorded value,
             // so a state that existed only between two synchronous renders is still seen.
@@ -469,17 +486,28 @@ interface FirstPaint {
   installed: boolean;
   logLength: number;
   openIndex: number;
-  /** data-balance-state as written by the render that immediately PRECEDED show(). */
-  state: string | null;
-  /** #shop-balance textContent as written by that same render. */
+  /** #shop-balance textContent as written by the render that immediately PRECEDED show().
+   *  `null` = no text was written to the balance node at ALL before the overlay went
+   *  visible, which is itself the `:1436`-only signature (see readFirstPaint). */
   text: string | null;
-  liveState: string | null;
   liveText: string;
 }
 
-/** Reconstruct the balance as it stood at the instant #shop-overlay became visible.
- *  A MutationRecord carries the OLD attribute value, so the value WRITTEN by record i is
- *  recovered from record i+1's oldValue (or, for the final write, from the live DOM). */
+/** Reconstruct the balance TEXT as it stood at the instant #shop-overlay became visible.
+ *
+ *  TEXT ONLY, deliberately (ADR-0169 D7, tightened during the 11r-e review). shopView.ts:97-100
+ *  derives `textContent`, `hidden` and `dataset.balanceState` from ONE boolean in three
+ *  adjacent statements, so within any SINGLE render `textContent === 'Gold: 50'` ⟺
+ *  `balanceState === 'known'` — the state channel carried no information the text channel
+ *  lacks. It was also strictly weaker: a childList record CARRIES the written text in
+ *  `addedNodes` (no chaining), whereas recovering a written ATTRIBUTE value needs the next
+ *  record's `oldValue` and falls back to the LIVE DOM when there is no next record — which
+ *  is exactly the read-the-settled-DOM anti-pattern this recorder exists to avoid, and
+ *  would have silently converted a `:1436`-only FAIL into a PASS if it ever fired.
+ *  The text channel alone catches that patch: its pre-`show()` render writes '' (or, on a
+ *  never-yet-rendered node, produces no childList record at all), so `text` comes back ''
+ *  or `null` and the assertion is red either way. The two sticky latches read `r.oldValue`
+ *  DIRECTLY and are unaffected. */
 const readFirstPaint = (p: Page): Promise<FirstPaint> =>
   p.evaluate(() => {
     const w = window as unknown as {
@@ -488,61 +516,27 @@ const readFirstPaint = (p: Page): Promise<FirstPaint> =>
     };
     const log = w.__mrShopLog ?? [];
     const bal = document.getElementById('shop-balance');
-    const liveState = bal === null ? null : bal.getAttribute('data-balance-state');
     const liveText = bal === null ? '' : (bal.textContent ?? '');
 
-    let openIndex = -1;
-    for (let i = 0; i < log.length; i++) {
-      const e = log[i];
-      // The transition to VISIBLE is the style write whose OLD value hid the overlay.
-      // (index.html ships `style="display:none"`; a programmatic hide serialises as
-      // `display: none;` — both collapse to `display:none` once spaces are removed.)
-      if (
-        e !== undefined &&
-        e.k === 'overlay' &&
-        (e.old ?? '').split(' ').join('').includes('display:none')
-      ) {
-        openIndex = i;
-        break;
-      }
-    }
+    // The transition to VISIBLE is the style write whose OLD value hid the overlay.
+    // (index.html ships `style="display:none"`; a programmatic hide serialises as
+    // `display: none;` — both collapse to `display:none` once spaces are removed.)
+    const openIndex = log.findIndex(
+      (e) => e.k === 'overlay' && (e.old ?? '').split(' ').join('').includes('display:none'),
+    );
 
-    let state: string | null = null;
+    // The LAST text written before that transition (overwrite-as-you-go, so no indexing).
     let text: string | null = null;
     if (openIndex >= 0) {
-      for (let i = openIndex - 1; i >= 0; i--) {
-        const e = log[i];
-        if (e !== undefined && e.k === 'text') {
-          text = e.text;
-          break;
-        }
-      }
-      let lastStateBefore = -1;
-      for (let i = openIndex - 1; i >= 0; i--) {
-        const e = log[i];
-        if (e !== undefined && e.k === 'state') {
-          lastStateBefore = i;
-          break;
-        }
-      }
-      if (lastStateBefore >= 0) {
-        state = liveState;
-        for (let i = lastStateBefore + 1; i < log.length; i++) {
-          const e = log[i];
-          if (e !== undefined && e.k === 'state') {
-            state = e.old;
-            break;
-          }
-        }
+      for (const e of log.slice(0, openIndex)) {
+        if (e.k === 'text') text = e.text;
       }
     }
     return {
       installed: w.__mrRecorderInstalled === true,
       logLength: log.length,
       openIndex,
-      state,
       text,
-      liveState,
       liveText,
     };
   });
@@ -587,8 +581,18 @@ const readBalance = (p: Page): Promise<BalanceReading> =>
 // rename.spec.ts:88-110). `player_wallet` is PRIVATE, but the CLI runs as the module OWNER,
 // which can still read the table directly (ADR-0087:100 — the closed channel is client
 // SUBSCRIPTIONS, not owner queries). Failures are HARD failures, never warn-and-continue.
-// Every query below is a hard-coded literal; only `server`/`db` are interpolated and both
-// are charset-validated first (literal regexes only — never new RegExp(dynamic)).
+//
+// ⚠ EVERY WALLET ASSERTION MUST BE IDENTITY-SCOPED. `global-setup.ts` republishes with
+// --delete-data ONCE PER RUN, `workers: 1`, and 15 spec files share that one database;
+// this file is 14th alphabetically. By the time it runs, `recruit.spec.ts` has won wild
+// battles (battle.rs:1074 pays `bst/10` per KO, accumulating) and `dialogue.spec.ts`'s
+// advance-retry path can itself complete quest_001 for exactly 50. So `player_wallet` is
+// NOT a one-row table here, and a substring test like `output.includes('50')` passes on
+// ANY foreign balance containing "50" (50 / 150 / 250 / 502 / …) while A's own row reads 0.
+// The parse below therefore looks up A's row BY IDENTITY and asserts THAT row's balance.
+//
+// Only `server`/`db`/`query` are interpolated into the shell string and all three are
+// charset-validated first (literal regexes only — never new RegExp(dynamic)).
 // ---------------------------------------------------------------------------------------
 function sqlQuery(query: string, label: string): string {
   const server = process.env.STDB_SERVER ?? 'local';
@@ -597,6 +601,11 @@ function sqlQuery(query: string, label: string): string {
     throw new Error(
       `${label}: STDB_SERVER/VITE_STDB_DB failed charset validation: ${server} ${db}`,
     );
+  }
+  // Defense in depth: every call site passes a literal, and this keeps it that way —
+  // no quote, backtick, $ or ; can reach the shell through the query slot.
+  if (!/^[A-Za-z0-9_ *]+$/.test(query)) {
+    throw new Error(`${label}: refusing to run a non-literal-shaped sql query: ${query}`);
   }
   try {
     return execSync(`spacetime sql -s ${server} ${db} "${query}"`, {
@@ -621,8 +630,45 @@ function normalizeIdentity(id: string): string {
   return s;
 }
 
-function walletRowsSql(label: string): string {
-  return sqlQuery('SELECT * FROM player_wallet', label).toLowerCase();
+/** Parse `spacetime sql` stdout (the pinned 2.6.0 CLI has no --json mode) into row
+ *  objects keyed by column name. Fixed-width pipe table: header, a `-+-` separator, then
+ *  one line per row; header + separator + zero rows is a valid EMPTY result.
+ *  Re-implemented verbatim-in-spirit from scripts/playtest-report.mjs:113-138 (that file is
+ *  a repo-root .mjs outside client/tsconfig's include, and its own eval pins its behaviour).
+ *  An unrecognised shape THROWS rather than returning [] — a silent [] would turn every
+ *  identity lookup below into a vacuous "no such row". */
+function parseSqlTable(stdout: string, label: string): Record<string, string>[] {
+  // shift() (rather than [0]/[1]) so the undefined-ness is in the type under every
+  // tsconfig, with or without noUncheckedIndexedAccess; what remains in `lines` after the
+  // two shifts is exactly the data rows.
+  const lines = stdout.split('\n').filter((l) => l.trim().length > 0);
+  const header = lines.shift();
+  const separator = lines.shift();
+  if (header === undefined || separator === undefined || !/^[-+]+$/.test(separator.trim())) {
+    throw new Error(
+      `${label}: unrecognised \`spacetime sql\` table shape (expected a header line then a ` +
+        `-+- separator). Got: ${stdout.slice(0, 400)}`,
+    );
+  }
+  const columns = header.split('|').map((c) => c.trim());
+  return lines.map((line) => {
+    const cells = line.split('|').map((c) => c.trim());
+    const row: Record<string, string> = {};
+    columns.forEach((col, i) => {
+      row[col] = cells[i] ?? '';
+    });
+    return row;
+  });
+}
+
+/** The `player_wallet` balance cell for ONE identity, or undefined when that identity owns
+ *  no row. This is the ONLY wallet reader in this file: every assertion is scoped to a row
+ *  the test itself created, never to the shared table's contents (see the ⚠ note above). */
+function walletBalanceFor(identityHex: string, label: string): string | undefined {
+  const rows = parseSqlTable(sqlQuery('SELECT * FROM player_wallet', label), label);
+  const wanted = normalizeIdentity(identityHex);
+  const row = rows.find((r) => normalizeIdentity(r.owner_identity ?? '') === wanted);
+  return row === undefined ? undefined : row.balance;
 }
 
 /** Open the quest log, poll for `wanted`-ness of `questId`, close it again.
@@ -702,8 +748,14 @@ const SHOPKEEPER_GREETING = 'Hello, customer!';
 const SHOP_NAME = 'Pebble Town Shop';
 const EXPECTED_BALANCE_TEXT = 'Gold: 50';
 /** Bounded retries per quest phase. Elder_oak wanders, so a talk or an advance can be
- *  rejected as walked_away; each attempt costs at most ~55 s under the waits below, so 5
- *  attempts fit inside the 300 s per-phase budget with headroom. */
+ *  rejected as walked_away and the phase must be able to try again.
+ *  ARITHMETIC, stated honestly: an attempt normally costs ~8 s (one talk round trip, one
+ *  dismiss, one quest-log read), so the expected phase is ~10-20 s inside a 300 s budget.
+ *  Its THEORETICAL worst case — every internal bound below also running to its limit —
+ *  is ~207 s (132 s talkUntilOpen + 10 npc-name + 5 click + 20 hidden + 40 quest log), so
+ *  a phase in which several attempts fully degrade trips the 300 s TEST timeout rather
+ *  than this loop bound. Both are red and neither can false-pass; this bound exists to
+ *  give the FAST failure a named diagnosis, not to cap the phase. */
 const MAX_QUEST_ATTEMPTS = 5;
 
 test.describe
@@ -840,9 +892,9 @@ test.describe
         if (!hidden) continue;
         started = await questLogShows(a, QUEST_ID, true, 8_000);
         if (!started) {
-          questGrantedDuringRetry = walletRowsSql('precondition (a)').includes(
-            normalizeIdentity(identityA),
-          );
+          // Identity-scoped: A is a fresh identity created in this file's beforeAll, so a
+          // row under A's OWN identity can only have come from quest_001's grant.
+          questGrantedDuringRetry = walletBalanceFor(identityA, 'precondition (a)') !== undefined;
           if (questGrantedDuringRetry) break;
         }
       }
@@ -905,19 +957,17 @@ test.describe
       ).toBe(true);
 
       // SERVER TRUTH — the precondition for 11r-e-6 stated as an assertion, not as prose.
-      // `SELECT balance` (not `SELECT *`) so the only digits in the output are balances:
-      // an identity hex would otherwise contain "50" by chance ~22% of the time.
-      const balances = sqlQuery('SELECT balance FROM player_wallet', 'precondition (b)');
+      // ONE identity-scoped read: A's OWN row's balance cell. A substring test over the
+      // whole table would pass on any foreign balance containing "50" left behind by an
+      // earlier spec file in this shared --delete-data database (see the ⚠ note above
+      // sqlQuery) while A's own row read 0.
       expect(
-        balances.includes('50'),
-        'A must own a server-side wallet row with balance 50 before the shop assertions ' +
-          `mean anything (quest_001 reward.currency = 50). spacetime sql output: ${balances.slice(0, 300)}`,
-      ).toBe(true);
-      const rows = walletRowsSql('precondition (b)');
-      expect(
-        rows.includes(normalizeIdentity(identityA)),
-        `the wallet row must belong to A (${identityA}). spacetime sql output: ${rows.slice(0, 400)}`,
-      ).toBe(true);
+        walletBalanceFor(identityA, 'precondition (b)'),
+        `A's OWN server-side player_wallet row must read exactly 50 before the shop ` +
+          `assertions mean anything (quest_001 reward.currency = 50; A=${identityA}). ` +
+          'undefined here = the QuestComplete arm never ran; any other number = the faucet ' +
+          'is not the one this spec derives its expectation from.',
+      ).toBe('50');
     });
 
     // -------------------------------------------------------------------------
@@ -1000,12 +1050,12 @@ test.describe
       expect(
         fp.text,
         '11r-e-6 FIRST PAINT: the render that ran immediately BEFORE shopView.show() must ' +
-          'already carry the balance. A blank here is the `:1436`-only 2-of-3 patch — the ' +
+          "already carry the balance. '' here — or null, meaning that render wrote no text " +
+          'to the node at all — is the `:1436`-only 2-of-3 patch: the ' +
           'dialogue listener at main.ts:1378 rendered without store.ownWallet(identity) and the ' +
           'shop batch listener papered over it in the same synchronous flushBatch turn. ' +
           `Recorded: ${JSON.stringify(fp).slice(0, 400)}`,
       ).toBe(EXPECTED_BALANCE_TEXT);
-      expect(fp.state, '11r-e-6 FIRST PAINT: data-balance-state at the open').toBe('known');
 
       // Baseline the 11r-e-7 test diffs against.
       balanceWritesAtOpen = await readBalanceWrites(a);
@@ -1019,10 +1069,17 @@ test.describe
     // -------------------------------------------------------------------------
     // 11r-e-8 + 11r-e-9 (B): a second identity never sees A's gold.
     //
-    // KILLS: a client rendering someone else's balance — a store keyed as a Map over
-    // identities (ADR-0154 D5), a dropped owner filter in store.ownWallet, an identity
-    // mangled by the converter into a value that matches everything.
-    // NOT a server-scoping gate — see the header (ADR-0169 D8).
+    // KILLS: any RENDER path that puts a balance on screen for a player who has none —
+    // a store keyed as a Map over identities that surfaces the first row it holds
+    // (ADR-0154 D5), an `ownWallet` call replaced by a raw slot read, a fabricated
+    // `?? 0n` default anywhere between the view and the DOM.
+    //
+    // DOES NOT KILL a dropped owner FILTER inside store.ownWallet, and must never be
+    // described as if it did (the header says the same, and ADR-0169 D8 is the SSOT):
+    // with the server view correctly scoped, B's slot is EMPTY, so `ownWallet` returns
+    // undefined with or without its `slot.ownerIdentity === identity` test. That mutant
+    // is killed by store.test.ts S1/S4, and server-side scoping by
+    // evals/wallet-privacy.eval.mjs [B/2c] + economy_tests.rs::my_wallet_view_is_owner_scoped.
     // PASSES VACUOUSLY TODAY: hence 11r-e-9 in the same test, the shared readBalance()
     // helper, and the server-truth query below.
     // -------------------------------------------------------------------------
@@ -1097,17 +1154,17 @@ test.describe
       // Identity rendering: '0x' + 64 lowercase hex (ADR-0121 D1); both sides normalized.
       // If the CLI ever abbreviates identities this check is the ADR-0169 D8 SHOULD and may
       // be dropped — the 11r-e-8 gate itself does not depend on it.
-      const rows = walletRowsSql('11r-e-8');
       expect(
-        rows.includes(normalizeIdentity(identityA)),
-        `A's player_wallet row must exist server-side while B looks (A=${identityA}). ` +
-          `spacetime sql output: ${rows.slice(0, 400)}`,
-      ).toBe(true);
+        walletBalanceFor(identityA, '11r-e-8'),
+        `A's player_wallet row must still read 50 server-side at the moment B looks ` +
+          `(A=${identityA}) — otherwise B's "no balance" is not a contrast with anything.`,
+      ).toBe('50');
       expect(
-        rows.includes(normalizeIdentity(identityB)),
-        `B must own NO player_wallet row — join_game grants no gold and grant_currency's ` +
-          `zero-guard prevents a phantom row (B=${identityB}). spacetime sql output: ${rows.slice(0, 400)}`,
-      ).toBe(false);
+        walletBalanceFor(identityB, '11r-e-8'),
+        `B must own NO player_wallet row at all — join_game grants no gold and ` +
+          `grant_currency's zero-guard prevents a phantom row (B=${identityB}). A row here ` +
+          'means B earned currency somewhere in this run and the 11r-e-8 premise is gone.',
+      ).toBeUndefined();
     });
 
     // -------------------------------------------------------------------------

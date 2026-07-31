@@ -471,9 +471,19 @@ export interface SdkPlayerWalletRow {
  *   `typeof amount !== 'bigint'`, so an invented `0n` makes the client confidently
  *   report `Gold: 0` when it has no idea — exactly the `.unwrap_or(0)` that ADR-0154
  *   D1/D6 refused to let reach the UI.
- * - NO validation that can THROW. This runs inside a subscription row callback and
- *   flushBatch has no per-listener isolation (ADR-0085 A6), so one throw starves every
- *   sibling table's ingest for that batch. Fail soft, always.
+ * - NO validation of its own that can THROW. This runs inside an SDK ROW callback, and
+ *   the SDK dispatches those in a bare unguarded loop (`for (const callback of
+ *   callbacks) callback.cb();` — spacetimedb/dist/index.browser.mjs
+ *   #dispatchPendingCallbacks), so a throw here escapes into the SDK and starves every
+ *   sibling table's row callbacks for that transaction. NOTE this is NOT store.flushBatch,
+ *   which DOES isolate per listener (store.ts:589-602, M10.5d) — that guarantee covers
+ *   batch LISTENERS and does not extend back up the ingest path to here.
+ *   The totality claim, stated exactly: the converter adds no validation, no assertion
+ *   and no throw of its own, so it is total over well-typed rows and over the
+ *   malformed-`balance` rows the unit tests probe. It is NOT unconditionally total —
+ *   `row.ownerIdentity.toHexString()` would TypeError on a row that lost `ownerIdentity`
+ *   to schema drift. Hardening that belongs to the whole converter family at once, not
+ *   to this one function.
  * - EXPLICIT field mapping, never a spread: no SDK-only field may leak into the store.
  */
 export function playerWalletRowToStore(row: SdkPlayerWalletRow): StoreWallet {

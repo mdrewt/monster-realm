@@ -121,22 +121,25 @@ globally unfiltered and `movement_tick` runs per zone at `STEP_MS = 200`, so the
 re-renders an open overlay roughly every 200 ms with no player input. A retrying `toHaveText`
 therefore **cannot** distinguish a correct implementation from one that patched only the batch
 listener (`:1436`) and blanks on open — ADR-0154 D7's other named half-catastrophe. The spec
-installs an `addInitScript` `MutationObserver` on the buyer's page that records the balance state
-**synchronously at the transition to visible**, and asserts on that in addition to the polled text.
+installs an `addInitScript` `MutationObserver` on the buyer's page that records, **from the mutation
+records themselves rather than by reading the settled DOM**, the balance text written at the
+transition to visible, and asserts on that in addition to the polled text.
+
+The recorder deliberately captures the balance **text** and not the `data-balance-state` attribute.
+`shopView.ts:97-100` writes `textContent`, `hidden` and `dataset.balanceState` from one boolean in
+three adjacent statements, so for any single render `textContent === 'Gold: 50'` ⟺
+`balanceState === 'known'` — the attribute channel is derived, not independent. Recovering it needed
+a backward scan plus an `oldValue`-chaining lookahead plus a live-DOM fallback, and that fallback is
+the read-the-settled-DOM anti-pattern the recorder exists to avoid: had it ever triggered it would
+have converted a `:1436`-only FAIL into a PASS. The text is recovered directly from the childList
+record's `addedNodes` with no chaining, and a blank pre-`show()` render leaves no text record before
+the open, so the assertion reds. One channel, no fallback, strictly stronger.
+
 The same observer counts `data-balance-state` writes, giving a direct witness that
 `buildShopViewModel*` was re-invoked (the naive witness — "the other player's character moved" —
 proves nothing, because character rows are written by the row callback directly and the listener
 body is `try`/`catch`-wrapped). A sticky "was `known` ever observed" latch on the second identity
 turns its negative assertion from a spot check into a whole-session claim.
-
-**D8 — the two-identity e2e gates the CLIENT owner filter and render path, NOT server view scoping.**
-This is stated explicitly so it is not later miscited. `store.upsertWallet` stores unconditionally
-and `ownWallet(identity)` filters on *read*, so if the view were ever widened, the second identity's
-client would **receive and store** the first's row and still render `unknown` — observably identical
-to correct behaviour, while another player's balance sits in browser memory. Server-side scoping
-remains owned by `evals/wallet-privacy.eval.mjs` `[B/2c]` and
-`economy_tests.rs::my_wallet_view_is_owner_scoped`, whose pinned view body is the entire security
-boundary (ADR-0154 D2).
 
 ## Consequences
 
@@ -150,6 +153,16 @@ the next NPC wander tick re-renders and the e2e self-heals, and D4's catastrophe
 only surface that can see a wiring that source-scans green. Both are load-bearing. Note also that
 `main.ts:1443` (the unbound arm) is unreachable at runtime — the overlay only opens bound — so the
 behavioral witness covers 2 of the 3 sites and the count tooth covers the third.
+
+**What the two-identity e2e does NOT gate — stated so it is not later miscited.** It gates the
+CLIENT owner filter and render path, **not** server-side view scoping. `store.upsertWallet` stores
+unconditionally and `ownWallet(identity)` filters on *read*, so if the view were ever widened, the
+second identity's client would **receive and store** the first's row and still render `unknown` —
+observably identical to correct behaviour, while another player's balance sits in browser memory.
+Server-side scoping remains owned by `evals/wallet-privacy.eval.mjs` `[B/2c]` and
+`economy_tests.rs::my_wallet_view_is_owner_scoped`, whose pinned view body is the entire security
+boundary (ADR-0154 D2). (This is a scope disclaimer, not a decision, which is why it lives here
+rather than among D1–D7.)
 
 Accepted risks and named residuals:
 
@@ -185,3 +198,24 @@ Accepted risks and named residuals:
    and asserts the quest *still active at step 0*; the `QuestComplete → grant_currency` half has no
    prior e2e precedent. The bounded-loop machinery it reuses is CI-proven; the completion assertion
    itself is not yet.
+6. **No drift gate binds the hand-written `Sdk*Row` interfaces to the generated bindings.**
+   `row as unknown as SdkPlayerWalletRow` deliberately erases tsc's view of the real SDK row. If a
+   server column were renamed, `just gen` would regenerate `module_bindings/my_wallet_table.ts`,
+   `bindings-drift` would stay green, `SdkPlayerWalletRow` would silently keep the old field name,
+   and the readout would render `unknown` forever — indistinguishable from an unwired feature, with
+   every unit test still passing (they build their own fixtures). This is the established repo-wide
+   convention (`SdkProfileRow`, `SdkConversationRow`, `SdkTradeOfferRow`, …), not a regression
+   introduced here, and the de facto shape gate is the new e2e (which runs in the GitHub `e2e` job,
+   not in local `just ci`). The durable fix — one eval parsing `module_bindings/*_table.ts` field
+   names and asserting each hand-written `Sdk*Row` is a structural subset — is a repo-wide follow-up.
+7. **Two pre-existing client-wide defects the new readout inherits, both fail-safe.** (a) `main.ts`'s
+   `identity` is assigned only from `opts.onReady` and is never refreshed on reconnect, while
+   `createAuthTokenGate` can withhold a rejected token and cause the server to mint a *new* identity
+   — after which `store.ownWallet(staleIdentity)` never matches and the balance is permanently blank
+   for the session (never another player's number). (b) `wireTables`' row callbacks carry no
+   `stale()` guard and are never unwired, so a superseded build's socket can still write into the
+   live store; the single-slot design means another identity's row can become *resident* (though the
+   read-time owner filter keeps it from rendering). Both predate this slice and affect
+   `ownMonsters`/`ownInventory`/`ownCharacter` equally; recorded here because a user-visible balance
+   makes (a) newly noticeable. Multi-tab is not a vector — the auth gate is `sessionStorage`-scoped
+   (ADR-0150 D3).

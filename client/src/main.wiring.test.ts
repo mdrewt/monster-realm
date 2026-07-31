@@ -2328,30 +2328,26 @@ const DEVLOG_CONNECT_END = '12.5c-4: frame loop is wrapped';
  *  side of the same firewall has to be checked here. */
 const DEVLOG_RING_NEEDLES = ['eventRing', 'errorRing', 'bugBundle', 'pushError'];
 
-/** Return the ARGUMENT LIST of the first `needle` call in `src`, by balanced-paren scan
- *  from the `(` that terminates the needle. Throws loud when the call is absent or the
- *  parens never balance — a missing implementation must be a HARD RED, never a vacuous
- *  pass. Hand-rolled scan; `new RegExp` is Semgrep-banned in this file.
+/** Return the ARGUMENT LIST of the first `needle` call in `src` AT OR AFTER `from`, by
+ *  balanced-paren scan from the `(` that terminates the needle. Throws loud when the call is
+ *  absent or the parens never balance — a missing implementation must be a HARD RED, never a
+ *  vacuous pass. Hand-rolled scan; `new RegExp` is Semgrep-banned in this file.
  *
- *  11r-e (ADR-0169 D4): this is now a thin delegation to `callArgsFrom` so the file keeps
- *  exactly ONE balanced-paren walker. The wallet call-site tooth at the END of this file
- *  needs EVERY `buildShopViewModel*(` call, not just the first; a second, parallel walker is
- *  precisely how two source scans drift apart and one of them silently stops biting. */
-function callArgs(src: string, needle: string): string {
-  return callArgsFrom(src, needle, 0);
-}
-
-/** `callArgs` with a START OFFSET — the argument list of the first `needle` call at or after
- *  `from`. Callers iterate `from = idx + 1` to walk every call site in a file.
+ *  11r-e (ADR-0169 D4): the `from` DEFAULT PARAMETER is the whole 11r-e extension — the wallet
+ *  call-site tooth at the end of this file needs EVERY `buildShopViewModel*(` call, not just
+ *  the first, and it iterates `from = idx + 1` to get them. Extending this walker rather than
+ *  writing a second, parallel one is deliberate: two source scans that drift apart is exactly
+ *  how one of them silently stops biting. Existing callers pass two arguments and are
+ *  bit-identical (`indexOf(needle, 0) === indexOf(needle)`).
  *
- *  ACCEPTED RESIDUAL (inherited verbatim from the original single-call helper, now written
- *  down because a second caller depends on it): the walk is NOT string-literal aware, so an
- *  unmatched `)` inside a string literal in the argument list would terminate the walk early.
- *  main.ts contains no such literal today, and the failure mode is a SHORT slice — which reds
- *  a `toContain` assertion rather than passing it. Deliberately not fixed with a hand-rolled
+ *  ACCEPTED RESIDUAL (present in the original single-call helper, written down now that a
+ *  second caller depends on it): the walk is NOT string-literal aware, so an unmatched `)`
+ *  inside a string literal in the argument list would terminate the walk early. main.ts
+ *  contains no such literal today, and the failure mode is a SHORT slice — which reds a
+ *  `toContain` assertion rather than passing it. Deliberately not fixed with a hand-rolled
  *  string stripper: see the section header at the end of this file for why that stripper was
  *  specified, measured, and REJECTED. */
-function callArgsFrom(src: string, needle: string, from: number): string {
+function callArgs(src: string, needle: string, from = 0): string {
   const idx = src.indexOf(needle, from);
   if (idx < 0) {
     throw new Error(
@@ -6119,18 +6115,20 @@ describe('★ main.ts wiring (11r-b/ADR-0167): the side-B e2e spec proves the PR
 // Drew's 2026-07-25 playtest complaint verbatim: a cost is listed, but the player cannot see
 // how much money they have.
 //
-// RED REASON (the whole section's primary tooth, W-UX2B-WALLET-CALLSITES): main.ts contains
-// `store.ownWallet(` ZERO times today. The count clause (`toBe(3)`) already passes on the
-// unfixed source — that clause is the FREEZE, not the fix — and all three per-site
-// `toContain('store.ownWallet(identity)')` assertions fail. Verified by direct read of
-// main.ts:1377-1385 / :1434-1449 at authoring time.
+// RED AT AUTHORING TIME (the whole section's primary tooth, W-UX2B-WALLET-CALLSITES):
+// main.ts contained `store.ownWallet(` ZERO times — all three call sites stopped at
+// `store.ownInventory(identity)` (pre-fix main.ts:1377-1385 / :1434-1449). The count clause
+// (`toBe(3)`) passed on the unfixed source by design — that clause is the FREEZE, not the fix
+// — and all three per-site `toContain('store.ownWallet(identity)')` assertions failed. The
+// implementation has since landed the wallet at all three sites (:1384, :1443, :1450), so
+// this tooth is now GREEN and serves as the permanent regression guard D7 asked for.
 //
 // WRONG IMPLEMENTATIONS KILLED (each named again at its assertion):
 //  (1) THE 2-OF-3 PATCH — ADR-0154 D7's named catastrophe, and the reason this is a per-site
-//      loop rather than a whole-file `includes`. Patch only :1378 (the dialogue listener's
-//      deferred greet-then-shop open) ⇒ the balance renders once when the overlay opens and
+//      loop rather than a whole-file `includes`. Patch only the deferred greet-then-shop open
+//      in the dialogue listener (:1378) ⇒ the balance renders once when the overlay opens and
 //      then BLANKS on the very next store batch — worse than not shipping, because the player
-//      sees a number flash and vanish. Patch only :1436 (the shop batch listener's bound arm)
+//      sees a number flash and vanish. Patch only the shop batch listener's bound arm (:1437)
 //      ⇒ blank on open, then pops in. A whole-file substring check is green for both.
 //  (2) A FUTURE FOURTH CALL SITE with no wallet argument — the exact failure ADR-0154 D7
 //      demands this tooth prevent. main.ts is SERIAL with several sibling branches; a fourth
@@ -6171,41 +6169,49 @@ describe('★ main.ts wiring (11r-b/ADR-0167): the side-B e2e spec proves the PR
 //
 // HONEST SCOPE LIMIT (state it, do not overclaim): this is a source scan of the composition.
 // It proves the wallet is PASSED; it cannot prove the value rendered. The runtime witness is
-// client/e2e/wallet-balance.spec.ts (11r-e-6/7), and per ADR-0169's consequences main.ts:1443
-// (the unbound arm) is unreachable at runtime — the overlay only opens bound — so this tooth
+// client/e2e/wallet-balance.spec.ts (11r-e-6/7), and per ADR-0169's consequences the unbound
+// arm (main.ts:1445) is unreachable at runtime — the overlay only opens bound — so this tooth
 // is the ONLY gate that covers the third site. Neither surface is redundant.
 //
-// NO `new RegExp(...)` — the established per-file convention (:2549, :2582, :5211). All
+// NO `new RegExp(...)` — the established per-file convention (:2545, :2578, :5207). All
 // matching is indexOf / includes / split, and the balanced-paren walk is the file's existing
-// `callArgsFrom` helper (:2354), extended with a start offset rather than reimplemented so
-// this file keeps ONE paren walker.
+// `callArgs` helper (:2350), extended with a `from = 0` DEFAULT PARAMETER rather than
+// reimplemented, so this file keeps ONE paren walker.
 // ===========================================================================
 
 /** The two shop-view-model call needles. Each carries its OWN open paren, which is what makes
  *  the import at main.ts:133 uncountable (it has no `(`). They are DISJOINT on the real
- *  source: at :1378 and :1436 the character after `buildShopViewModel` is `F`, not `(`, so
- *  `buildShopViewModel(` matches ONLY the unbound arm at :1443. 2 + 1 = 3. */
+ *  source: at :1378 and :1437 the character after `buildShopViewModel` is `F`, not `(`, so
+ *  `buildShopViewModel(` matches ONLY the unbound arm at :1445. 2 + 1 = 3. */
 const SHOP_VM_NEEDLES = ['buildShopViewModelForShop(', 'buildShopViewModel('] as const;
 
 /** The exact, CONTIGUOUS wallet argument every call site must carry (ADR-0169 D4). Contiguous
  *  on purpose: `store.ownWallet('')` and `store.ownWallet(undefined)` must NOT satisfy it. */
 const SHOP_VM_WALLET_ARG = 'store.ownWallet(identity)';
 
-/** Every shop-view-model call site's ARGUMENT LIST in `rawSrc`, comment-stripped first.
+/** Every shop-view-model call site's ARGUMENT LIST in `rawSrc`, comment-stripped first, IN
+ *  SOURCE ORDER.
  *  ONE loop yields both 11r-e-4 (per-site content) and 11r-e-5 (the count) — deliberately the
  *  same slices, so the number this tooth freezes and the arguments it inspects can never
- *  disagree. Shared with the fixture tooth below, which is what proves this function BITES. */
+ *  disagree. Shared with the fixture tooth below, which is what proves this function BITES.
+ *
+ *  SOURCE ORDER MATTERS FOR THE FAILURE MESSAGE, not for any assertion: the scan is
+ *  needle-by-needle, so without the sort the reported `call site #3 of 3` would be the
+ *  `buildShopViewModel(` unbound arm (main.ts:1445) while `#1`/`#2` are the two `ForShop`
+ *  calls (:1378/:1437) — an index grouped by FUNCTION NAME, which sends a reader chasing
+ *  "#3" to the wrong line. Sorting by the offset each slice was cut from makes the index mean
+ *  what a reader assumes it means. */
 function shopViewModelCallSites(rawSrc: string): string[] {
   // stripLineComments strips BLOCK comments first (:1292-1301), so both comment forms are
   // gone before any needle search — a needle in either kind of comment is unreachable here.
   const stripped = stripLineComments(rawSrc);
-  const sites: string[] = [];
+  const found: { offset: number; args: string }[] = [];
   for (const needle of SHOP_VM_NEEDLES) {
     for (let i = stripped.indexOf(needle); i !== -1; i = stripped.indexOf(needle, i + 1)) {
-      sites.push(callArgsFrom(stripped, needle, i));
+      found.push({ offset: i, args: callArgs(stripped, needle, i) });
     }
   }
-  return sites;
+  return found.sort((a, b) => a.offset - b.offset).map((site) => site.args);
 }
 
 /** How many of `sites` carry the contiguous wallet argument. Whitespace-squashed so a
@@ -6239,9 +6245,10 @@ describe('★ main.ts wiring (11r-e/ADR-0169 D4, mandated by ADR-0154 D7): all T
   it('★ W-UX2B-WALLET-CALLSITES BITES: main.ts has EXACTLY 3 buildShopViewModel*( call sites and EVERY one passes store.ownWallet(identity)', () => {
     // EARS 11r-e-4 (every site carries the wallet) AND 11r-e-5 (the count is frozen at 3).
     //
-    // RED AT AUTHORING TIME: `store.ownWallet(` occurs 0 times in main.ts. The count clause
-    // passes on the unfixed source by design — it is the FREEZE — and all three per-site
-    // clauses fail. Do NOT "fix" a future failure of this test by editing the number: if a
+    // RED AT AUTHORING TIME: `store.ownWallet(` occurred 0 times in main.ts, so all three
+    // per-site clauses failed. The count clause passed even then, by design — it is the
+    // FREEZE, not the fix. (The implementation has since landed; see the section header.)
+    // Do NOT "fix" a future failure of this test by editing the number: if a
     // fourth site is genuinely wanted, it must pass the wallet AND the number is raised in the
     // same review, with ADR-0169 D4 amended. That is the whole point of a count tooth.
     const stripped = stripLineComments(readMainTs());
@@ -6263,8 +6270,8 @@ describe('★ main.ts wiring (11r-e/ADR-0169 D4, mandated by ADR-0154 D7): all T
       sites.length,
       'main.ts must contain EXACTLY 3 shop-view-model call sites — :1378 ' +
         '(buildShopViewModelForShop, the dialogue listener’s deferred greet-then-shop ' +
-        'open), :1436 (buildShopViewModelForShop, the shop batch listener’s bound arm) ' +
-        'and :1443 (buildShopViewModel, its unbound arm). This number is FROZEN by ADR-0154 ' +
+        'open), :1437 (buildShopViewModelForShop, the shop batch listener’s bound arm) ' +
+        'and :1445 (buildShopViewModel, its unbound arm). This number is FROZEN by ADR-0154 ' +
         'D7 and ADR-0169 D4. A count of 4 means a new call site was added: it must pass ' +
         '`store.ownWallet(identity)` like the other three, or the player gets a blank balance ' +
         'on whatever path it serves — silently, which is precisely what D7 says this tooth ' +
@@ -6289,7 +6296,7 @@ describe('★ main.ts wiring (11r-e/ADR-0169 D4, mandated by ADR-0154 D7): all T
     // `src.includes('store.ownWallet(identity)')` is GREEN when only one of the three sites is
     // patched. Patch only :1378 and the balance renders on open then blanks on the next store
     // batch (~200 ms later, since the character subscription is globally unfiltered); patch
-    // only :1436 and it is blank on open then pops in. Both are worse than not shipping. This
+    // only :1437 and it is blank on open then pops in. Both are worse than not shipping. This
     // loop asserts per SLICE, so a half-patch reds with the offending argument list printed.
     for (const [idx, args] of sites.entries()) {
       expect(
@@ -6521,5 +6528,120 @@ describe('★ main.ts wiring (11r-e/ADR-0169 D4, mandated by ADR-0154 D7): all T
       'main.ts must NOT alias buildShopViewModelForShop — same bypass, other function ' +
         '(the needle above does not match this spelling, so it needs its own clause)',
     ).toBe(0);
+  });
+});
+
+// ===========================================================================
+// 11r-e — the CROSS-FILE half of EARS 11r-e-3b: "SHALL construct no fallback/default wallet
+// row" is a CLIENT-WIDE negative, and connection.test.ts can only see connection.ts.
+//
+// THE GREEN-BUT-BROKEN HOLE (red-team, MEASURED — 1787/1787 green, tsc clean, biome clean):
+// connection.test.ts pins `store.upsertWallet(` to EXACTLY ONE site *inside connection.ts*.
+// That says nothing about the other ~190 .ts files under client/src. Dropping this into the
+// M13d shop batch listener in main.ts — a file connection.test.ts cannot see — therefore
+// ships completely green under `just ci`:
+//
+//     if (store.ownWallet(identity) === undefined) {
+//       store.upsertWallet({ ownerIdentity: identity, balance: 0n });
+//     }
+//
+// It compiles, it reads as a plausible "sensible default so the overlay isn't blank", and it
+// is the exact `.unwrap_or(0)` collapse ADR-0154 D1/D6 and ADR-0169 D3 exist to forbid: a
+// player sitting at MAX_BALANCE during a subscription delivery gap is told, confidently and
+// with a `known` badge, `Gold: 0`. "Broke" and "dark" are DIFFERENT STATES — the whole reason
+// ShopBalanceViewModel has an `unknown` arm and the whole reason the converter is pass-through
+// with no `?? 0n`. A wrong number the player trusts is strictly worse than a hidden node.
+//
+// WHY THIS TOOTH AND NOT THE E2E: client/e2e/wallet-balance.spec.ts would catch it (B's
+// identity would render `Gold: 0` instead of the hidden `unknown` arm), but `just e2e` is a
+// SEPARATE CI job from `just ci` — so without this, the merge gate that runs on every change
+// is blind to it. See also ADR-0169's "which gate owns what": neither surface is redundant.
+//
+// STATE AT AUTHORING TIME: GREEN (a ceiling / regression guard, not a red-phase tooth) —
+// main.ts calls store.upsertWallet( zero times, and net/connection.ts:454 is the sole writer.
+// Its BITE is proven on a fixture inside the test rather than asserted in prose.
+//
+// SCOPE NOTE, stated so it is not overclaimed: the needle is the receiver-qualified
+// `store.upsertWallet(`. `net/store.ts` declares the METHOD (`upsertWallet(row: StoreWallet)`,
+// store.ts:985) and is therefore not matched — correctly, that is the definition. An aliased
+// store binding (`const s = store; s.upsertWallet(...)`) is NOT seen; the same honest limit
+// every lexical ceiling in this file carries.
+// ===========================================================================
+
+/** The single client-wide wallet WRITE needle (ADR-0169 D2/D3). Receiver-qualified so
+ *  `net/store.ts`'s method DECLARATION is not a false positive. */
+const WALLET_WRITE_NEEDLE = 'store.upsertWallet(';
+
+/** Does this source text WRITE a wallet row into the store? Comment-stripped, so a rationale
+ *  comment naming the call (connection.ts:447 has one) cannot make a file an offender.
+ *  Factored out purely so the tooth's BITE can be proven on fixtures below. */
+function namesWalletWrite(src: string): boolean {
+  return stripLineComments(src).includes(WALLET_WRITE_NEEDLE);
+}
+
+describe('★ client/src wiring (11r-e/ADR-0169 D2+D3): connection.ts is the ONLY wallet writer — nothing fabricates a 0n balance', () => {
+  it('★ W-UX2B-NO-FABRICATED-WALLET BITES: net/connection.ts is the ONLY non-test client/src file that calls store.upsertWallet(', () => {
+    // --- PROOF OF TEETH FIRST: this ceiling is green today, so prove it BITES ------------
+    // WRONG IMPL KILLED (the measured, fully-green-under-`just ci` mutant): the fabricated
+    // zero-balance fallback quoted in this section's header. If `namesWalletWrite` ever
+    // returns false for it, this whole tooth is decoration.
+    const FIX_FABRICATED_ZERO =
+      'if (store.ownWallet(identity) === undefined) {\n' +
+      '  store.upsertWallet({ ownerIdentity: identity, balance: 0n });\n' +
+      '}\n';
+    expect(
+      namesWalletWrite(FIX_FABRICATED_ZERO),
+      'the fabricated-0n fallback MUST be detected as a wallet write — this fixture is the ' +
+        'red-team mutant that shipped 1787/1787 green; if it is not detected, the ceiling ' +
+        'below is worthless',
+    ).toBe(true);
+    // And a prose mention must NOT make a file an offender (otherwise a future rationale
+    // comment reds a clean tree and the tooth gets weakened to buy peace).
+    expect(
+      namesWalletWrite('// store.upsertWallet(...) is called ONLY from the my_wallet ingest\n'),
+      'a `//`-commented mention must NOT count as a wallet write',
+    ).toBe(false);
+
+    // --- ANTI-VACUITY: the walk sees the tree, and the one sanctioned writer is real ------
+    const files = clientSrcTsFiles();
+    expect(
+      files.length,
+      'the client/src walk must find a substantial number of .ts files — a small number means ' +
+        'the walk is broken and the ceiling below is vacuous',
+    ).toBeGreaterThan(50);
+    expect(
+      files.includes('net/connection.ts'),
+      'the client/src walk must include net/connection.ts — the ONE sanctioned wallet writer, ' +
+        'exempted below; an exemption for a path that does not exist is a stale exemption',
+    ).toBe(true);
+    expect(
+      namesWalletWrite(readClientSrc('net/connection.ts')),
+      'net/connection.ts must actually call store.upsertWallet( — the my_wallet onInsert ' +
+        'ingest (EARS 11r-e-3, ADR-0169 D2; its exact contiguous shape is gated by ' +
+        "connection.test.ts, not here). If this is false the needle is wrong and the ceiling's " +
+        'every not-found below proves nothing.',
+    ).toBe(true);
+
+    // --- THE CEILING ---------------------------------------------------------------------
+    const writers = files.filter((rel) => {
+      if (rel === 'net/connection.ts') return false;
+      if (rel.endsWith('.test.ts')) return false; // unit tests drive the store directly
+      return namesWalletWrite(readClientSrc(rel));
+    });
+    expect(
+      writers,
+      'net/connection.ts must be the ONLY non-test client/src file that calls ' +
+        '`store.upsertWallet(` (EARS 11r-e-3b, ADR-0169 D3). A second writer anywhere in the ' +
+        'client is, in practice, always the same mistake: fabricating a default row so the ' +
+        'overlay "has something to show" — e.g. ' +
+        '`if (store.ownWallet(identity) === undefined) store.upsertWallet({ ownerIdentity: ' +
+        'identity, balance: 0n });` in the shop batch listener. That renders `Gold: 0` with a ' +
+        '`known` badge to a player who may be at MAX_BALANCE during a delivery gap — the ' +
+        '`.unwrap_or(0)` collapse ADR-0154 D1/D6 refused to let reach the UI. A confidently ' +
+        'WRONG number is worse than no readout: the `unknown` arm exists precisely so "broke" ' +
+        'and "dark" stay distinguishable. The wallet has exactly one source of truth — the ' +
+        'server, via the my_wallet subscription. If you need a second ingest path, it belongs ' +
+        'in connection.ts beside the first, where connection.test.ts can see its shape.',
+    ).toEqual([]);
   });
 });
