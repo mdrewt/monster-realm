@@ -888,6 +888,8 @@ wide-but-short map scrolls horizontally while centering vertically. **Unit contr
 scope at the call site. `stage.position` routes through the tested `worldToScreen` rather than an
 inlined parallel copy. `screenToWorld` ships unwired as a seam for uxd2 (spec-directed).
 
+**uxd2** (shop-via-NPC context interaction — ADR-0161) complete, full-stack additive slice: server-anchored `NpcInteraction{Dialogue, Shop(u32), Heal(u32)}` enum on the public `npc` table (SSOT for NPC roles; validated by `validate_npc_interactions` at seed); pure client resolver `client/src/ui/interactModel.ts` (`nearestInteractable`: distance → NPC-before-tile → id-within-kind; heal tiles join same resolver); generalized `KeyT` dispatch (Dialogue → `talk` reducer, Shop → greet-then-shop then open bound shop overlay, Heal → open bound overlay); frame-loop `#interact-prompt` positioned via `WorldRenderer.screenFor` (the exact offset+stageScale the stage applied that frame); removed global `KeyG`/`KeyH` hotkeys (helpModel rows dropped; overlays now open contextually). `CONTENT_VERSION` bump, bindings regen, zone-1 shopkeeper seeded. Proof: `shop-npc.spec.ts` e2e, resolver range/zone/kind-precedence tests, prompt anchor/label tests, default first-shop/first-location model-arm regression guards, validator teeth. **ADR next-free: 0162.**
+
 **M12.5c** (zone-sync robustness — ADR-0074) complete: four bugs fixed via state-based zone
 reconciliation. **Bug 1:** edge-triggered `onOwnWarp` races with `reconcile` (stale `rawMap.zone_id`
 vs. own row). **Fix:** state-based check in reconcile listener: `if (own.row.zoneId !== rawMap.zone_id)`
