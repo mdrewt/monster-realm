@@ -33,8 +33,10 @@
 //   export function hideAllExceptPlan(keep: OverlayId, currentlyVisible: readonly OverlayId[]):
 //     readonly OverlayId[];                                // pure PLAN, performs nothing
 //
-// NOT part of uxd3-a (do NOT ship them; A7 + A15): createOverlayVisibility / OverlayProbes /
-// OverlayVisibility / RECONNECT_HIDE. They have no consumer in this slice.
+// Added in uxd3-b (ADR-0163): OverlayProbes + anyVisible(probes, exempt?) — the read half of
+// the imperative shell, shipped WITH its five consumers (see BLOCK 6 below).
+// Still NOT shipped (A7 + A15, no consumer yet — they land with uxd3-c's hotkey migration):
+// per-id open/hide thunks, hideAllExcept, visibleIds, isVisible, RECONNECT_HIDE.
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the spec/plan only.
 
