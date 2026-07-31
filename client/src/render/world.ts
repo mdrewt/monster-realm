@@ -17,6 +17,7 @@ import { CharacterView } from './characterView';
 import { TILE_PX } from './config';
 import { type RawTileMap, TileMap } from './map';
 import { PlaceholderAssets } from './placeholderAssets';
+import { appInitOptions, type ViewportScale, viewportScale, worldToScreen } from './viewport';
 import { ViewRegistry } from './viewRegistry';
 import { zIndexForEntity } from './zorder';
 
@@ -45,22 +46,32 @@ export class WorldRenderer {
   readonly #views = new Map<bigint, CharacterView>();
   readonly #registry = new ViewRegistry();
   readonly #camera = new FollowCamera();
-  // Viewport dimensions tracked by resize() so render() can compute camera offset.
-  #viewW = 0;
-  #viewH = 0;
+  // The resolved viewport scale, tracked by resize() so render() can compute the
+  // camera offset in SOURCE px and the stage transform. NON-OPTIONAL and seeded
+  // with a valid record: an undefined-gated field would leave any frame drawn
+  // before the first resize() with NO camera transform at all.
+  #vs: ViewportScale = viewportScale(1, 1, 1);
 
   /** Create the Pixi app, mount its canvas, and draw the tile map ONCE. */
   async init(mount: HTMLElement, rawMap: RawTileMap): Promise<void> {
     const map = TileMap.fromRaw(rawMap);
     const app = new Application();
-    // M11c: viewport-sized canvas (no full-map scale); camera offset via stage.position.
-    await app.init({
-      width: window.innerWidth,
-      height: window.innerHeight,
-      background: FLOOR_COLOR,
-      antialias: false,
-    });
+    // Read the window ONCE and derive both the Pixi options and #vs from that one
+    // triple, so the backing store and the stage transform can never disagree.
+    const cssW = window.innerWidth;
+    const cssH = window.innerHeight;
+    const dpr = window.devicePixelRatio;
+    // M11c: viewport-sized canvas; camera offset via stage.position. uxd1: the
+    // DPR-correct backing store (resolution/autoDensity) is decided in viewport.ts.
+    await app.init(appInitOptions(cssW, cssH, dpr, FLOOR_COLOR));
     mount.appendChild(app.canvas);
+    // init() applies the stage scale ITSELF rather than relying on the caller to
+    // land a resize() first. main.ts happens to call installResizeHandler (which
+    // resizes synchronously) right after init(), but nothing enforces that
+    // ordering — and world.ts is coverage-excluded, so a future `await` slipped
+    // between the two would silently draw the first frame at scale 1.
+    this.#vs = viewportScale(cssW, cssH, dpr);
+    app.stage.scale.set(this.#vs.stageScale);
     app.stage.addChild(this.#bg);
     app.stage.addChild(this.#actors);
     // e-4 (ADR-0090): Pixi sorts children by zIndex when sortableChildren is true.
@@ -144,26 +155,34 @@ export class WorldRenderer {
     const map = this.#map;
     const app = this.#app;
     if (app !== undefined && map !== undefined) {
-      const { x: cx, y: cy } = this.#camera.offsetFor(
+      const vs = this.#vs;
+      // offsetFor takes the EFFECTIVE viewport in SOURCE px, never CSS px (uxd1 R1).
+      const off = this.#camera.offsetFor(
         ownTileX,
         ownTileY,
-        this.#viewW,
-        this.#viewH,
+        vs.effectiveW,
+        vs.effectiveH,
         map.width,
         map.height,
       );
-      app.stage.position.set(-cx, -cy);
+      // The stage's screen position IS where the world origin lands under this
+      // camera — routed through worldToScreen so the shipped transform is the
+      // ONE tested formula, not a parallel copy of it.
+      const origin = worldToScreen({ x: 0, y: 0 }, off, vs.stageScale);
+      app.stage.position.set(origin.x, origin.y);
     }
   }
 
-  /** M11c: resize to viewport dimensions (no stage scale — follow-camera handles scroll). */
-  resize(viewWidth: number, viewHeight: number): void {
-    this.#viewW = viewWidth;
-    this.#viewH = viewHeight;
+  /** uxd1: resize to CSS viewport dimensions at the live dpr, and apply the
+   *  device-integer stage scale (ADR-0160). Pixi's 3-arg resize re-resolutions the
+   *  backing store, so a monitor drag re-crisps without a reload. */
+  resize(cssW: number, cssH: number, dpr: number): void {
+    const vs = viewportScale(cssW, cssH, dpr);
+    this.#vs = vs;
     const app = this.#app;
     if (app === undefined) return;
-    app.renderer.resize(viewWidth, viewHeight);
-    app.stage.scale.set(1);
+    app.renderer.resize(vs.cssW, vs.cssH, vs.dpr);
+    app.stage.scale.set(vs.stageScale);
   }
 
   get viewCount(): number {

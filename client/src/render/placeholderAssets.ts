@@ -62,7 +62,14 @@ export class PlaceholderAssets implements AssetProvider {
     const cx = TILE_PX / 2 + n.x * (body / 2 - 3);
     const cy = TILE_PX / 2 + n.y * (body / 2 - 3);
     g.circle(cx, cy, 3).fill(0x10131a);
-    const tex = this.#renderer.generateTexture(g);
+    // `nearest` (uxd1/ADR-0160): the stage is scaled by a device-INTEGER factor,
+    // so bilinear filtering would only blur crisp texel edges. `resolution` stays
+    // UNSET (defaults to renderer.resolution = dpr) — pinning it to the device
+    // scale would force regenerating this whole cache on every resize.
+    const tex = this.#renderer.generateTexture({
+      target: g,
+      textureSourceOptions: { scaleMode: 'nearest' },
+    });
     g.destroy();
     return tex;
   }

@@ -868,7 +868,25 @@ zones, no silent zone_0 fallback); `ACTIVE_ZONE_ID` atomic + `set_active_zone()`
 try/catch (onBatchApplied isolation, M8.8e); `WorldRenderer.resize()` sets viewport-sized canvas
 (no stage scale); `app.stage.position.set(-cx, -cy)` for camera scroll. 450 client tests,
 7 Rust tests. Deferred to future: per-zone subscription cancellation (ADR-0007 goal; blocked on
-SpacetimeDB subscription-group API).
+SpacetimeDB subscription-group API). **Superseded in part by uxd1/ADR-0160** — the canvas is no
+longer unscaled and `offsetFor` no longer pins small maps to `(0,0)`; see the uxd1 note below.
+
+**uxd1** (responsive viewport scaling — ADR-0160) complete, pure-client render edge (no server,
+schema, or `game-core` change): a new pure module `client/src/render/viewport.ts` owns the whole
+scale decision — `viewportScale(cssW, cssH, dpr)` picks an **integer** `deviceScale` (source→device,
+so one texel covers a whole number of device pixels) aimed at `TARGET_VISIBLE_TILES` on the shorter
+axis and bounded by `[MIN_VISIBLE_TILES, MAX_VISIBLE_TILES]` (MAX strict, MIN best-effort — the hard
+`deviceScale >= 1` floor wins, since a sub-1 scale IS the blur bug), and derives the fractional
+`stageScale = deviceScale / dpr` plus the effective viewport in SOURCE px. `app.init`/`renderer.resize`
+now carry `resolution = devicePixelRatio` + `autoDensity` (the Pixi v8 defaults `1`/`false` were the
+retina-blur root cause); `installResizeHandler` reads `innerWidth`/`innerHeight`/`devicePixelRatio`
+at **fire-time** so a monitor drag re-crisps without a reload. `FollowCamera.offsetFor` branches
+**per axis** — scroll-clamp when `mapPx >= view`, center at `-(view − mapPx)/2` when smaller — so a
+wide-but-short map scrolls horizontally while centering vertically. **Unit contract:** `offsetFor`'s
+`viewW`/`viewH` are now the effective viewport in SOURCE px, never CSS px; `WorldRenderer`'s old
+`#viewW`/`#viewH` fields are deleted in favor of one `#vs: ViewportScale` so the CSS value is not in
+scope at the call site. `stage.position` routes through the tested `worldToScreen` rather than an
+inlined parallel copy. `screenToWorld` ships unwired as a seam for uxd2 (spec-directed).
 
 **M12.5c** (zone-sync robustness — ADR-0074) complete: four bugs fixed via state-based zone
 reconciliation. **Bug 1:** edge-triggered `onOwnWarp` races with `reconcile` (stale `rawMap.zone_id`
