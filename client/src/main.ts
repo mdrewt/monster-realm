@@ -265,10 +265,12 @@ const overlayProbes: OverlayProbes = {
 };
 // UXD3B-PROBES-END
 
-/** uxd2 (ADR-0161 D4): the ONE shared predicate over the 14 mutual-exclusion
- *  overlays — used by the deferred shop-open gate and the frame-loop prompt.
- *  The hotkey handlers keep their inline guard lists (each exempts its own
- *  overlay), so this is deliberately the only NEW occurrence of each. */
+/** uxd2 (ADR-0161 D4), rewired by uxd3-b (ADR-0163): the ONE shared predicate over the
+ *  15 mutual-exclusion overlays. Every per-overlay read now lives in `overlayProbes`
+ *  above — this body holds none. Six consumers: the four negated fan-out surfaces, the
+ *  deferred shop-open gate and the frame-loop prompt. The hotkey handlers still keep
+ *  their inline guard lists (each exempts its own overlay); routing those through
+ *  `canOpen` is uxd3-c. The NAME is load-bearing (anti-pattern 18). */
 function anyOverlayVisible(): boolean {
   return anyVisible(overlayProbes);
 }

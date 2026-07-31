@@ -1006,8 +1006,9 @@ describe('main.ts wiring (pt-c2 tradePropose): onSubmit — frozen-gate + Identi
 //
 // SOURCE OF TRUTH: pt-c2b EARS criteria PTC2B-1..9 + ADR-0135 (D-fan-out + the
 // onReconnect asymmetry) + docs/specs/pt-c2b-plan.md "Plan-review resolutions"
-// (BINDING: count-floor = 19; rAF forward-anchor; two-endpoint reconnect region;
-// battle anchored on `r.action.kind === 'show'`).
+// (BINDING: rAF forward-anchor; two-endpoint reconnect region; battle anchored on
+// `r.action.kind === 'show'`). The count-floor = 19 clause retired with the OR-lists it
+// counted (uxd3-b / ADR-0163 D2) — those reads now go through the ONE probe table.
 //
 // RED REASON: main.ts on master has ZERO helpView references (verified via grep) —
 // no import, no `let helpView`, no dynamic import, no `new HelpView...`, no `?` handler,
@@ -1112,8 +1113,10 @@ describe('main.ts wiring (pt-c2b help): Escape close branch (PTC2B-3)', () => {
 });
 
 describe('★ main.ts wiring (pt-c2b help): per-context anchored fan-out teeth (PTC2B-4..8 / ADR-0135)', () => {
-  // A count-floor ALONE is the m17b fan-out-coverage-trap: 19 occurrences could cluster in
-  // the wrong places. The anchored teeth below name the specific load-bearing sites.
+  // uxd3-b (ADR-0163): the four keydown/reconcile/rAF/pvp teeth that lived here retired with
+  // the OR-list surfaces they scanned — W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY covers those
+  // reads structurally now. The battle force-hide below is untouched by uxd3-b (refreshBattle
+  // is a WRITE surface, deferred to uxd3-c), so it stays exactly as authored.
 
   it('★ W-HELP-FANOUT-BATTLE BITES: helpView force-hidden in the battle show-path — kills battle-under-help impl (PTC2B-8, red-team F4)', () => {
     // PTC2B-8: when a battle auto-shows (e.g. a PvP accept), the help overlay must be
@@ -1122,7 +1125,7 @@ describe('★ main.ts wiring (pt-c2b help): per-context anchored fan-out teeth (
     // BINDING (plan / red-team F4): anchor on `r.action.kind === 'show'` (a UNIQUE marker) and
     // assert helpView appears within ~900 chars (the existing tradePropose force-hide sits at
     // delta ~880). ADR-0135 requires the guard in the `if (helpView?.visible) helpView.hide()`
-    // form so the count-floor needle credits it too.
+    // form — the same form W-BATTLE-FORCEHIDE-SET-MATCHES-MANIFEST's extractor requires.
     // WRONG IMPL KILLED: an impl that force-hides box/raising/evolution/leaderboard/rename/
     // tradePropose on battle-show but forgets helpView — a battle overlay pops under an open help.
     const src = readMainTs();
@@ -2312,7 +2315,17 @@ describe('main.ts wiring (ux1, ADR-0151): the Esc-to-continue promise and its ze
     // feature rather than for want of a JS owner). It is now green for the REAL reason: the
     // badge SHIPPED as static markup in client/index.html (covered there by indexShell.test.ts)
     // and main.ts still does not name it. From here on the pin is load-bearing exactly as
-    // designed. It stays on RAW source: for a negative pin raw is the conservative direction —
+    // designed.
+    //
+    // STATUS UPDATE (uxd3-b / ADR-0163 D4 — the AC-12 click front door): the badge is now
+    // CLICKABLE, and main.ts does react to a click on it. It still has no OWNER: the binding is
+    // DELEGATED on the `[data-menu-launcher]` attribute inside the pre-existing document click
+    // listener, so main.ts never names the id, never resolves the element, and never holds a
+    // reference it could hide, re-render or remove. This pin therefore stays green VERBATIM and
+    // keeps proving exactly what it always proved. Its companion on the mutation axis is
+    // W-UXD3B-LAUNCHER-BRANCH-IS-READ-ONLY, which allow-lists the calls the branch may make.
+    //
+    // It stays on RAW source: for a negative pin raw is the conservative direction —
     // even a commented-out `help-hint` reference in main.ts should trip it, because it signals
     // that someone started giving the badge a JS owner. Do not weaken this into an
     // index.html-conditional or comment-stripped assertion.
@@ -3733,9 +3746,15 @@ describe('★ main.ts wiring (uxd2): the Shop button defers the open through dis
       'the UXD2-SHOPOPEN region must read pendingShopId (the deferred open)',
     ).toBe(true);
     expect(
-      region.includes('anyOverlayVisible'),
-      'the deferred open must be gated on the anyOverlayVisible() predicate — an overlay that ' +
-        'opened during the dismiss round-trip must drop the pending open (ADR-0161 D4)',
+      region.includes('if (!anyOverlayVisible()) {'),
+      'the deferred open must be gated on the CONTIGUOUS `if (!anyOverlayVisible()) {` — an ' +
+        'overlay that opened during the dismiss round-trip must drop the pending open ' +
+        '(ADR-0161 D4). STRENGTHENED in uxd3-b (red-team F5): a bare `includes(\'anyOverlayVisible\')` ' +
+        'presence check was MEASURED green against the one-character inversion ' +
+        '`if (anyOverlayVisible()) {`, which makes the shop open ONLY while another overlay is up ' +
+        '— i.e. never on the normal path, and directly over a live battle on the encounter path. ' +
+        'uxd3-b made this the SIXTH consumer of a now-shared predicate, so presence alone is no ' +
+        'longer meaningful.',
     ).toBe(true);
     expect(
       region.includes('buildShopViewModelForShop('),
@@ -4973,14 +4992,22 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
         'comment-stripping — the region collapsed and any needle would fail for the wrong reason',
     ).toBeGreaterThan(0);
     expect(
-      s1.includes('return anyVisible(overlayProbes);'),
-      'surface 1 (anyOverlayVisible(), E3) must be exactly `return anyVisible(overlayProbes);`. ' +
-        'Keep the FUNCTION NAME and its JSDoc: W-INTERACT-DEFERRED-OPEN and three region scans ' +
-        'anchor on the literal `anyOverlayVisible` (anti-pattern 18). The contiguous shape is ' +
-        'what rejects `return !anyVisible(overlayProbes);` and a stray appended `|| x?.visible`. ' +
-        'Region=' +
+      s1.trim(),
+      'surface 1 (anyOverlayVisible(), E3) must be EXACTLY `return anyVisible(overlayProbes);` ' +
+        'and nothing else (keep the FUNCTION NAME and its JSDoc — W-INTERACT-DEFERRED-OPEN and ' +
+        'three region scans anchor on the literal `anyOverlayVisible`, anti-pattern 18). ' +
+        'EXACT EQUALITY, not containment (red-team F1, measured GREEN under a ' +
+        'containment check): a prefixed early-out such as `if (identity !== \'\') return false;` ' +
+        'leaves the pinned return in place while making this predicate — the SSOT for FOUR of ' +
+        'the five surfaces PLUS the deferred shop-open gate PLUS the AC-12 launcher PLUS the ' +
+        'frame-loop prompt — return a constant. That single mutation removes mutual exclusion ' +
+        'everywhere at once, or kills all movement. ' +
+        'It also rejects `return !anyVisible(overlayProbes);` and a stray appended `|| x?.visible`. ' +
+        'NOTE the trailing `}` is the function\'s own closing brace: bodyRegion drops the ' +
+        '`function anyOverlayVisible(` line and runs to the next declaration, so the whole ' +
+        'squashed body is exactly `return anyVisible(overlayProbes); }`. Region=' +
         JSON.stringify(s1),
-    ).toBe(true);
+    ).toBe('return anyVisible(overlayProbes); }');
 
     // ---- SURFACE 2: the reconcile divergence re-issue (E4) ---------------------------
     expectUniqueAnchor(src, NH2_RECONCILE_START);
@@ -4992,12 +5019,15 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
         'own identity marker. Without it the region is mis-anchored and every needle is vacuous.',
     ).toBe(true);
     expect(
-      s2.includes('predictor.outstandingSteps === 0 && !anyOverlayVisible()'),
+      s2.includes('predictor.outstandingSteps === 0 && !anyOverlayVisible()) {'),
       'surface 2 (reconcile divergence emitter, E4) must gate on the CONTIGUOUS ' +
         '`predictor.outstandingSteps === 0 && !anyOverlayVisible()`. The leading conjunct is ' +
         "W-NH2-GATE-WIRED's `opensWith` anchor and must stay FIRST (nh2/ADR-0148); the `!` is " +
         'load-bearing — dropping it re-issues held movement ONLY while an overlay is up, i.e. ' +
-        'the character walks under the open overlay on every server pullback. Region=' +
+        'the character walks under the open overlay on every server pullback. The needle is ' +
+        'CLOSE-PAREN BOUNDED (red-team F4, measured GREEN without it): an appended conjunct such ' +
+        "as `&& identity === ''` is false for the whole post-join session, silently killing the " +
+        'ADR-0085/nh2 repair path while an unbounded needle stayed green. Region=' +
         JSON.stringify(s2),
     ).toBe(true);
 
@@ -5197,6 +5227,48 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
         'A second, shadowing table that some fan-out surfaces close over instead would leave ' +
         'this region green while half the surfaces read a different, unguarded set of probes.',
     ).toBe(1);
+
+    // --- F2: the probes must be consumed by the REAL module, not a local decoy ---------
+    // Red-team F2, MEASURED GREEN before this clause: replacing the value import with a
+    // type-only one and declaring `function anyVisible(_p, _e) { return false; }` locally left
+    // every source-scan needle satisfied (`return anyVisible(overlayProbes);` and
+    // `anyVisible(overlayProbes, 'pvpView')` still read verbatim) and both OR-ANYVISIBLE-* teeth
+    // green — because they test the MODULE, which production code no longer references. All five
+    // surfaces plus the launcher went dead. Same defect class as W-CARE-IMPORT (:3228), which
+    // exists in this file for exactly this reason; the pattern simply had not been applied here.
+    const stripped = stripLineComments(src);
+    expect(
+      countOccurrences(
+        stripped,
+        "import { anyVisible, type OverlayProbes } from './ui/overlayRegistry';",
+      ),
+      'main.ts must import `anyVisible` AS A VALUE from ./ui/overlayRegistry — the module the ' +
+        'OR-ANYVISIBLE-* teeth actually exercise. A type-only import plus a locally-defined ' +
+        'decoy satisfies every source-scan needle in this file and silently disconnects all ' +
+        'five fan-out surfaces from the tested implementation.',
+    ).toBe(1);
+    expect(
+      countOccurrences(stripped, 'function anyVisible'),
+      'main.ts must NOT declare its own `anyVisible` — the name must resolve to the imported ' +
+        'registry function. A local declaration shadows the import and is invisible to every ' +
+        'other tooth here (red-team F2).',
+    ).toBe(0);
+
+    // --- F3: the table must be READ, not mutated, and read only where we pinned it -----
+    // Red-team F3, MEASURED GREEN before this clause: `Reflect.set(overlayProbes, 'battleView',
+    // () => false)` one line AFTER the END marker poisoned the live object — `Readonly<Record<>>`
+    // is compile-time only — and put battleView permanently outside mutual exclusion on all five
+    // surfaces at once. A region-bounded tooth structurally cannot see that; only a whole-file
+    // ceiling on USES can. 3 = the declaration + the two anyVisible( call sites (surfaces 1 & 4).
+    expect(
+      countOccurrences(stripped, 'overlayProbes'),
+      'the identifier `overlayProbes` must occur EXACTLY 3 times in main.ts (the declaration ' +
+        'inside the markers, and the two anyVisible( call sites — surface 1 and surface 4). A ' +
+        'fourth occurrence means something else touches the table: a runtime mutation such as ' +
+        '`Reflect.set(overlayProbes, ...)` (Readonly is erased at runtime), or a sixth hand-wired ' +
+        'consumer that this file has not pinned. Raise this number ONLY together with a new ' +
+        'surface assertion in Part A.',
+    ).toBe(3);
   });
 
   it('★ W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY-NO-HAND-ROLLED-OR-LIST BITES: zero hand-rolled `View?.visible ||` fan-out terms survive anywhere in main.ts', () => {
@@ -5246,7 +5318,7 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
       countOccurrences(stripped, "?.visible || identity === ''"),
       "main.ts must still contain the refresh-listener idiom `?.visible || identity === ''` at " +
         'least 6 times (box/raising/evolution/shop/trade/leaderboard batch listeners, ' +
-        'main.ts:1357, 1371, 1383, 1557, 1589, 1637). A count of 0 means the source scan itself ' +
+        'main.ts:1330, 1344, 1356, 1530, 1562, 1596 post-collapse). A count of 0 means the source scan itself ' +
         'is broken and the ceiling below would pass vacuously — this is a scan failure, not a ' +
         'fan-out regression.',
     ).toBeGreaterThanOrEqual(6);
@@ -5280,6 +5352,33 @@ function dotMethodTokens(region: string): string[] {
   return found;
 }
 
+/** Every BARE `identifier(` call token in `region` — i.e. a call NOT preceded by a `.`, so it is
+ *  a free function rather than a method. Control-flow keywords are excluded (biome always emits
+ *  `if (`/`return ` with a space, but the filter costs nothing and keeps the failure message
+ *  honest). Companion to dotMethodTokens: an allow-list over methods alone is one indirection
+ *  from useless, because a bare call can reach a DOM-owning helper defined elsewhere in the
+ *  file (red-team F7). Hand-rolled scan — `new RegExp` is Semgrep-banned in this file. */
+function bareCallTokens(region: string): string[] {
+  const IDENT = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$';
+  const KEYWORDS = ['if', 'for', 'while', 'switch', 'catch', 'return', 'typeof', 'function'];
+  const found: string[] = [];
+  let i = 0;
+  while (i < region.length) {
+    if (IDENT.indexOf(region.charAt(i)) < 0) {
+      i += 1;
+      continue;
+    }
+    const start = i;
+    while (i < region.length && IDENT.indexOf(region.charAt(i)) >= 0) i += 1;
+    const token = region.slice(start, i);
+    const precededByDot = start > 0 && region.charAt(start - 1) === '.';
+    if (!precededByDot && region.charAt(i) === '(' && KEYWORDS.indexOf(token) < 0) {
+      found.push(token);
+    }
+  }
+  return found;
+}
+
 describe('★ main.ts wiring (uxd3-b/ADR-0163): the AC-12 click front door is a READ-ONLY delegated branch', () => {
   it('★ W-UXD3B-LAUNCHER-BRANCH-IS-READ-ONLY BITES: the launcher branch gates on the SSOT, owns no DOM, and has exactly one binding site', () => {
     // AC-12 (spec :149) positive half: the persistent corner badge becomes the click front door
@@ -5295,7 +5394,7 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): the AC-12 click front door is a 
     //   ignores it. `void anyOverlayVisible(); held.clear(); openMenu();` contains
     //   `anyOverlayVisible`, `held.clear()` and `openMenu(` — every token a presence-only tooth
     //   looks for — and opens the modal menu OVER a live battle or a live NPC dialogue, AND
-    //   pre-join (where `menuAvailability()` dereferences `store.ownCharacter('')!` and throws
+    //   pre-join (where `menuAvailability()` reads `store.ownCharacter(identity)` and
     //   inside a listener with no try/catch, breaking the click handler for the session).
     //   W-KEYM-HANDLER cannot help: it slices only the KeyM block, ~500 lines above this
     //   listener. Hence the FULL GUARD as ONE contiguous needle.
@@ -5351,7 +5450,8 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): the AC-12 click front door is a 
         "`if (!anyOverlayVisible() && identity !== '')`. Asserting the two tokens separately is " +
         'not enough — `void anyOverlayVisible(); held.clear(); openMenu();` contains both and ' +
         'opens the modal menu over a live battle AND before join, where menuAvailability() ' +
-        "dereferences store.ownCharacter('')! and throws inside an uncaught click listener. " +
+        'reads store.ownCharacter(identity) and buildProposeLists(...) against an un-joined ' +
+        'identity, inside a listener with no try/catch. ' +
         'Region=' +
         JSON.stringify(region),
     ).toBe(true);
@@ -5370,7 +5470,14 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): the AC-12 click front door is a 
 
     // --- NEGATIVE: an ALLOW-LIST over method calls, plus the two non-call escapes -----
     const ALLOWED = ['closest', 'clear', 'openMenu', 'anyOverlayVisible'];
-    const disallowed = methods.filter((m) => !ALLOWED.includes(m));
+    // Red-team F7, MEASURED GREEN before bare calls were included: `hideCornerBadge();` inside
+    // the branch, with `function hideCornerBadge() { ...querySelectorAll('body > div')...remove() }`
+    // defined ELSEWHERE in main.ts, removed the badge at runtime while W-UX1-HINT-NO-JS-OWNER
+    // stayed green (the literal `help-hint` never appears). A method-only allow-list cannot see
+    // an undotted call, so the escape hatch is one indirection away. Both token kinds are
+    // collected here, against the SAME allow-list.
+    const methodsAndBare = methods.concat(bareCallTokens(region));
+    const disallowed = methodsAndBare.filter((m) => !ALLOWED.includes(m));
     expect(
       disallowed,
       'the launcher branch may call ONLY ' +

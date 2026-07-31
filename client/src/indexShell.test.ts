@@ -301,8 +301,9 @@ describe('ux1-1 (H4/H5): the hint is persistent and not obviously invisible', ()
     //   these keeps `position:fixed` + one horizontal edge and still swallows the whole
     //   viewport bottom (or the whole viewport): `width:100%`, `left:6px;right:6px`,
     //   `padding:0 50vw`, `min-width:100vw`, `height:100vh`, `inset:auto 0 16px 0`,
-    //   `transform:scale(40)`. `width:max-content` + at-most-one-horizontal-edge + the growth
-    //   deny-list is what closes all seven.
+    //   `transform:scale(40)`, `zoom:40`, `border:50vw solid transparent`, `scale:40`.
+    //   `width:max-content` + at-most-one-horizontal-edge + a PROPERTY ALLOW-LIST is what closes
+    //   all ten — a deny-list of growth knobs was measured unclosable (the last three survived it).
     // WRONG IMPL KILLED (4): binding the click by ELEMENT ID instead of the attribute. Without
     //   `data-menu-launcher` in the markup, main.ts's delegated branch matches nothing and the
     //   badge is decorative — while W-UXD3B-LAUNCHER-BRANCH-IS-READ-ONLY (which scans main.ts,
@@ -397,31 +398,57 @@ describe('ux1-1 (H4/H5): the hint is persistent and not obviously invisible', ()
         JSON.stringify(decls),
     ).toBeLessThanOrEqual(1);
 
-    // (5) GROWTH DENY-LIST. Every entry here keeps `width:max-content` + one horizontal edge
-    // literally true while growing the HIT BOX. NOTE (disclosed, not accidental): `height`
-    // also matches `line-height` / `min-height` / `max-height`. That is deliberate — the
-    // badge's typography is set by the `font:` shorthand, so a separate height declaration of
-    // any kind on this element is a size knob, and this deny-list is about size knobs.
-    const BOUNDED_SURFACE_DENY_LIST = [
-      'padding',
-      'min-width',
-      'max-width',
-      'height',
-      'inset:',
-      'transform',
+    // (5) BOUNDED SURFACE — a PROPERTY ALLOW-LIST, not a deny-list of growth knobs.
+    // A deny-list here was MEASURED unclosable (red-team F8): `zoom:40`, `border:50vw solid
+    // transparent` and `scale:40` (the modern individual transform property, which the
+    // `transform` shorthand needle does not match) each kept `width:max-content` plus a single
+    // horizontal edge and still grew the HIT BOX to viewport scale — all three green against a
+    // six-entry deny-list. An allow-list is closed by construction: any property not named here
+    // fails, including ones invented after this test was written. This mirrors the reasoning
+    // W-UXD3B-LAUNCHER-BRANCH-IS-READ-ONLY uses for its method allow-list, applied consistently.
+    // Widening it is a deliberate act that must re-argue the bounded-surface claim, which is the
+    // whole justification for retiring H4's blanket pointer-events:none ban (ADR-0151 D2, amended
+    // by ADR-0163 D4).
+    const BOUNDED_SURFACE_ALLOWED_PROPS = [
+      'position',
+      'bottom',
+      'left',
+      'width',
+      'font',
+      'color',
+      'pointer-events',
+      'cursor',
+      'z-index',
     ];
-    for (const banned of BOUNDED_SURFACE_DENY_LIST) {
+    const declaredProps = style
+      .split(';')
+      .map((d) => d.slice(0, d.indexOf(':')).trim())
+      .filter((name) => name.length > 0);
+    // ANTI-VACUITY: a mangled style attribute that parses to zero properties would satisfy a
+    // subset check trivially. The shipped badge declares nine.
+    expect(
+      declaredProps.length,
+      'ANTI-VACUITY: #help-hint must declare a real inline style — parsing yielded no ' +
+        'properties, so the allow-list below would pass on garbage. style=' +
+        JSON.stringify(style),
+    ).toBeGreaterThanOrEqual(5);
+    for (const banned of declaredProps.filter(
+      (name) => !BOUNDED_SURFACE_ALLOWED_PROPS.includes(name),
+    )) {
+
       expect(
-        style.includes(banned),
-        'KILLS: #help-hint grown into a click-eater via "' +
+        banned,
+        'KILLS: #help-hint grown into a click-eater via the un-allow-listed property "' +
           banned +
-          '" — `padding:0 50vw`, `min-width:100vw`, `max-width` paired with a percentage ' +
-          'width, `height:100vh`, `inset:auto 0 16px 0` and `transform:scale(40)` each keep ' +
-          'width:max-content plus a single horizontal edge and still swallow most of the ' +
-          "viewport. The bounded surface is the whole justification for retiring H4's " +
-          'pointer-events:none ban. style=' +
+          '". `padding:0 50vw`, `min-width:100vw`, `height:100vh`, `inset:auto 0 16px 0`, ' +
+          '`transform:scale(40)`, `zoom:40`, `border:50vw solid transparent` and `scale:40` all ' +
+          'keep `width:max-content` plus a single horizontal edge and still swallow most of the ' +
+          "viewport. The BOUNDED surface is the whole justification for retiring H4's blanket " +
+          'pointer-events:none ban, so the property set is allow-listed: ' +
+          JSON.stringify(BOUNDED_SURFACE_ALLOWED_PROPS) +
+          '. style=' +
           JSON.stringify(style),
-      ).toBe(false);
+      ).toBe('<not reached — property is not on the allow-list>');
     }
 
     // (6) The markup half of the AC-12 front door.
