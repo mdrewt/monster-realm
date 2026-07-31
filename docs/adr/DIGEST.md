@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 132 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 133 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -140,6 +140,7 @@ Generated from 132 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0163](./0163-overlay-probe-substrate-and-click-front-door.md) | 0163 — One overlay probe table behind all five fan-out surfaces, and the AC-12 click front door | Accepted | client-ui | uxd3-b (M-postgate-ux-design — unified overlay IA) | The five overlay OR-lists in `main.ts` collapse onto one probe table read via `anyVisible()`, and `#help-hint` becomes the menu's click door via attribute delegation; the hotkey→`canOpen` migration and the gate retirement defer to uxd3-c. |
 | [0164](./0164-overlay-registry-write-substrate-and-canopen-migration.md) | 0164 — Overlay registry write substrate and `canOpen` migration | Accepted | client-ui | uxd3-c (M-postgate-ux-design — unified overlay IA) | Overlay write substrate: `visibleIds()`/`OverlayHandles` (optional thunks; `dialogueView` guarded); 12 hotkeys routed to `canOpen`; retire 4 guard-scan teeth; unify AC-12; decline `onReconnect`; defer Escape re-anchor. |
 | [0165](./0165-changelog-freshness-nightly-check.md) | 0165 — Changelog freshness: nightly drift check (not per-PR, not manual) | Accepted | tooling-docs, ci-gates | 11r-d | Changelog freshness is enforced as a nightly drift check (spec D4's default), not a per-PR gate nor manual-only discipline; implementation defers to 11r-i, being outside 11r-d's declared `touches:`. |
+| [0166](./0166-pvp-server-guard-parity.md) | 0166 — PvP server-guard parity: `with_lead` at the PvP start, a fainted-active attack reject, the both-role warp guard, and trade size bounds | Accepted | security-authz, battle, movement-netcode | 11r-a (M-postgate-eleventh-review-residuals §2; EARS E1–E4) | PvP adopts `BattleSide::with_lead` at both start sites and rejects an Attack from a fainted active; the warp guard moves to the both-role ADR-0122 SSOT; `propose_trade` gains O(1) size bounds ahead of its O(N) dedup. |
 | [0167](./0167-pvp-side-b-battle-perspective.md) | 0167 — PvP side-B battle overlay: role-agnostic accessors + a view-boundary perspective projection | Accepted | battle, client-ui | 11r-b | The store's battle accessors match either PvP role and return RAW server rows; a pure `ownPerspective()` projection re-seats the local player as sideA and is applied at exactly ONE view call site, leaving diagnostics on server truth. |
 
 ## Harness design corpus (H- namespace)
@@ -223,6 +224,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0138](./0138-ptc5b-wild-disconnect-gc.md) — ptc5b (M-playtest-c.5 pre-gate residuals — wild-battle disconnect GC, EARS ptc5b-1..3) — 0138 — ptc5b wild-battle disconnect resolution: auto-flee + GC the `battle`/`battle_wild` rows to unblock returning-player re-entry (Accepted)
 - [0155](./0155-ux4-battle-swap-discoverability.md) — ux4 (M-postgate-ux-hardening — repro-and-confirm the battle monster-switch gap, then hint; EARS ux4-1..ux4-3) — 0155 — ux4 battle-swap discoverability: the swap UI was correct, so explain the absence instead of fixing it (Accepted)
 - [0156](./0156-zero-hp-lead-selection-and-fainted-actor-rejection.md) — battle-0hp-fix (M-postgate-battle-0hp-fix — 0hp lead-monster battle-start defect; EARS E1–E5) — 0156 — a 0 HP monster is never seated as lead (PvE), and a fainted player active cannot submit an attack (Accepted)
+- [0166](./0166-pvp-server-guard-parity.md) — 11r-a (M-postgate-eleventh-review-residuals §2; EARS E1–E4) — 0166 — PvP server-guard parity: `with_lead` at the PvP start, a fainted-active attack reject, the both-role warp guard, and trade size bounds (Accepted)
 - [0167](./0167-pvp-side-b-battle-perspective.md) — 11r-b — 0167 — PvP side-B battle overlay: role-agnostic accessors + a view-boundary perspective projection (Accepted)
 
 ### evolution-fusion
@@ -260,6 +262,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0152](./0152-predictor-epoch-guard-and-send-seq-floor.md) — nh3 (M-postgate-netcode-hardening — predictor generation guard + send-seq floor to close the ptc5f/ADR-0142 accepted-risk window; EARS nh3-1/2/3) — 0152 — Predictor epoch guard & send-seq floor (nh3: M-postgate-netcode-hardening) (Accepted)
 - [0158](./0158-hold-commit-continuation-gate.md) — movement-investigation (M-postgate-movement-investigation — r2 playtest ledger items 003/015/029/040-042) — 0158 — mvi: hold-commit tap/hold discrimination on the held-key continuation emitters (Accepted)
 - [0159](./0159-feel-polish-care-feedback-npc-wander.md) — feel-polish (M-postgate-feel-polish — r2 playtest ledger items 087-090) — 0159 — feel-polish: care-button success feedback + collision-aware NPC wander (Accepted)
+- [0166](./0166-pvp-server-guard-parity.md) — 11r-a (M-postgate-eleventh-review-residuals §2; EARS E1–E4) — 0166 — PvP server-guard parity: `with_lead` at the PvP start, a fainted-active attack reject, the both-role warp guard, and trade size bounds (Accepted)
 
 ### content
 
@@ -453,6 +456,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0138](./0138-ptc5b-wild-disconnect-gc.md) — ptc5b (M-playtest-c.5 pre-gate residuals — wild-battle disconnect GC, EARS ptc5b-1..3) — 0138 — ptc5b wild-battle disconnect resolution: auto-flee + GC the `battle`/`battle_wild` rows to unblock returning-player re-entry (Accepted)
 - [0150](./0150-reconnect-token-persistence.md) — nh4 (M-postgate-netcode-hardening — reconnect identity persistence; EARS nh4-1, nh4-2, nh4-3, nh4-4) — 0150 — nh4: the reconnect token is persisted per-tab, and a rejected token is suppressed rather than cleared (Accepted)
 - [0154](./0154-owner-scoped-wallet-view.md) — ux2 (M-postgate-ux-hardening — owner-scoped `#[view]` over `player_wallet` + shop balance seam; EARS ux2-1..ux2-3) — 0154 — Owner-scoped `my_wallet` view over the private `player_wallet` table (Accepted)
+- [0166](./0166-pvp-server-guard-parity.md) — 11r-a (M-postgate-eleventh-review-residuals §2; EARS E1–E4) — 0166 — PvP server-guard parity: `with_lead` at the PvP start, a fainted-active attack reject, the both-role warp guard, and trade size bounds (Accepted)
 
 ### economy-quests
 

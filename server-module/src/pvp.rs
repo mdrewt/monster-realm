@@ -249,22 +249,28 @@ pub(crate) fn start_pvp_battle(
     let (team_b, ability_ids_b) =
         build_pvp_team(ctx, &opponent_party, opponent, "start_pvp_battle")?;
 
-    if !team_a.iter().any(|m| !m.is_fainted()) {
-        return Err("challenger party has no conscious monster".to_string());
-    }
-    if !team_b.iter().any(|m| !m.is_fainted()) {
-        return Err("opponent party has no conscious monster".to_string());
-    }
+    // Seat each side's lead: the first slot with HP > 0 (ADR-0156 D1, ported to
+    // PvP by ADR-0166 D1). `None` IS the "no conscious monster" precondition, so
+    // the former `any(|m| !m.is_fainted())` pre-checks are gone rather than kept
+    // alongside. Team order is preserved, so `team[i]` stays coupled to
+    // `*_monster_ids[i]` for HP write-back and to `ability_ids_*[i]` for the
+    // entry ability. The audited identity is the SIDE'S OWNER, never `ctx.sender`
+    // — this helper is reached only from `accept_challenge`, where `ctx.sender`
+    // is the ACCEPTOR.
+    let side_a = BattleSide::with_lead(team_a).ok_or_else(|| {
+        let e = "challenger party has no conscious monster".to_string();
+        log_reject("start_pvp_battle", challenger, &e);
+        e
+    })?;
+    let side_b = BattleSide::with_lead(team_b).ok_or_else(|| {
+        let e = "opponent party has no conscious monster".to_string();
+        log_reject("start_pvp_battle", opponent, &e);
+        e
+    })?;
 
     let mut state = BattleState {
-        side_a: BattleSide {
-            active: 0,
-            team: team_a,
-        },
-        side_b: BattleSide {
-            active: 0,
-            team: team_b,
-        },
+        side_a,
+        side_b,
         outcome: BattleOutcome::Ongoing,
         turn_number: 0,
         weather: None,
@@ -970,7 +976,13 @@ pub fn cancel_challenge(ctx: &ReducerContext, challenge_id: u64) -> Result<(), S
 /// 2. ctx.sender is player_identity (side A) or opponent_identity (side B).
 /// 3. battle is PvP (opponent_identity != WILD_IDENTITY).
 /// 4. outcome == Ongoing.
-/// 5. Validate action against caller's active monster (skill in moveset / index legal).
+/// 5. Validate action against caller's active monster: for Attack, reject when the
+///    caller's active monster has fainted (ADR-0166 D2) BEFORE the moveset check,
+///    so a corpse gets an actionable "swap to another monster" message rather than
+///    a misleading "skill N not in active monster's moveset"; for Swap, the target
+///    index must be in bounds, not fainted, and not already active. `Swap` is
+///    deliberately NOT given the fainted-active guard — see the ADR-0166 D2
+///    anti-decision: it is the only exit from a corpse-active row.
 /// 6. Double-submit guard: no existing BattleAction for (battle_id, caller, turn_number).
 /// 7. Insert BattleAction (irreversible).
 /// 8. Resolve turn if both sides have now submitted.
@@ -1015,6 +1027,18 @@ pub fn submit_pvp_action(
     };
     match action {
         PvpAction::Attack { skill_id } => {
+            if my_team.active_monster().is_fainted() {
+                // Names ONLY an action the player can actually take. `battle.rs:556`
+                // says "or flee" and ADR-0166 D2 rejected copying it because PvP has
+                // no flee; the first draft said "or forfeit", which is the SAME defect
+                // — there is no player-callable forfeit reducer either (the only
+                // forfeits are `forfeit_on_disconnect` and the 60s deadline reaper).
+                // A message naming an affordance the client cannot render walks a
+                // corpse-active player into the reaper, i.e. a ranked rating loss.
+                let e = "your active monster has fainted — swap to another monster".to_string();
+                log_reject("submit_pvp_action", me, &e);
+                return Err(e);
+            }
             if !my_team.active_monster().known_skill_ids.contains(&skill_id) {
                 let e = format!("skill {skill_id} not in active monster's moveset");
                 log_reject("submit_pvp_action", me, &e);

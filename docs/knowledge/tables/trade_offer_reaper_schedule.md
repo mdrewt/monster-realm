@@ -5,7 +5,7 @@ slug: tables/trade_offer_reaper_schedule
 updated: 2026-07-31
 tags: [schema, spacetimedb, private]
 abstract: "SpacetimeDB private table trade_offer_reaper_schedule."
-resource: server-module/src/trading.rs#L88
+resource: server-module/src/trading.rs#L113
 source: scripts/okf-export.mjs@server-module/src/trading.rs
 visibility: private
 ---

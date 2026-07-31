@@ -1792,3 +1792,341 @@ fn ea_conservation_order_inline_01_span_check_requires_inline_netting_expression
          If you refactored to a named variable, update EA-CONSERVATION-ORDER-01 as well."
     );
 }
+
+// ===========================================================================
+// 11r-a — trade proposal size bounds (ADR-0166 D3).  RED until implemented.
+//
+// EARS criterion covered:
+//   E4  `propose_trade` SHALL reject an oversized monster/item list on EITHER
+//       side before performing any O(N) work on it.
+//
+// At HEAD `propose_trade` (`trading.rs:192-238`) runs two joined-player lookups
+// and then `validate_proposal`, whose four `HashSet` dedups
+// (`game-core/src/trading/rules.rs:63-90`) are unbounded in the client-supplied
+// vector lengths; below that, `trading.rs:278-329` scans the whole inventory
+// ONCE PER LISTED ITEM. Nothing bounds any of the four vectors first.
+//
+// What the caps do NOT do, recorded so the gate is not overclaimed: they cannot
+// bound BSATN decode — the host materialises the argument `Vec`s before the
+// reducer's first statement runs. What they bound is everything after.
+//
+// Two tests, split on purpose: (A) the pure size predicate, tested
+// BEHAVIOURALLY (real values, real Ok/Err — no scan); (B) its adoption at the
+// call site, where only a scan can see ordering and argument identity.
+// ===========================================================================
+
+/// **E4-A** (ADR-0166 D3) — the pure trade-side size predicate, by value.
+///
+/// Contract pinned by this test — the implementer must add to `trading.rs`:
+/// ```ignore
+/// const MAX_TRADE_MONSTERS_PER_SIDE: usize = 64;
+/// const MAX_TRADE_ITEMS_PER_SIDE: usize = 64;
+/// fn check_trade_side_size(n_monsters: usize, n_items: usize) -> Result<(), String>;
+/// ```
+/// File-local (`guards.rs` is outside 11r-a's touch set — ADR-0166 residual R5),
+/// pure, and `ReducerContext`-free so it can be tested exactly like this.
+///
+/// The boundary pairs `(64, 0) Ok` / `(65, 0) Err` and `(0, 64) Ok` /
+/// `(0, 65) Err` pin the cap VALUES (an off-by-one in either direction fails).
+/// They do **not**, on their own, pin that the two limits are checked
+/// INDEPENDENTLY — an earlier draft of this docstring claimed they did and was
+/// **wrong**: a single `n_monsters + n_items > 64` sum check passes all four,
+/// then rejects a perfectly legal `(64, 64)` trade. `(64, 64) Ok` is the
+/// assertion that actually kills it, and it is why that case is here.
+///
+/// The three saturation cases (`usize::MAX`, `65_536`) exist because
+/// boundary-only pairs cannot see a TRUNCATING comparison: `if n_monsters as u8 >
+/// MAX_TRADE_MONSTERS_PER_SIDE as u8` passes every small-value assertion while
+/// `n = 256` (and `65_536`, and `usize::MAX`) wrap to values that compare as
+/// under the cap and return `Ok` — leaving the DoS surface wide open at exactly
+/// the magnitudes it was added to bound.
+///
+/// **`(0, 0)` must be `Ok`, and that case is the load-bearing one.** The nearest
+/// in-repo template is `guards::check_party_size` (`guards.rs:105-108`), which
+/// rejects `n == 0` — copy-pasting it here would reject EVERY legal one-sided
+/// trade (offer monsters, ask currency), i.e. break a shipped feature while
+/// "adding a security guard". Emptiness is not this function's concern: it is
+/// `validate_proposal`'s CROSS-SIDE `EmptyOffer` rule
+/// (`game-core/src/trading/rules.rs:53-61`) and must not be restated here.
+/// Why 64 and not `MAX_PARTY_SIZE`: `propose_trade` never checks `party_slot`,
+/// and `client/src/ui/tradeProposeModel.ts:91-96` offers ALL owned monsters, so
+/// boxed monsters are tradeable today — a cap of 6 would reject legitimate
+/// existing UI flows. These are DoS bounds, not game rules.
+///
+/// **RED state at HEAD: this test does not COMPILE** — `check_trade_side_size`
+/// does not exist in `trading.rs`, so the whole `server-module` test target
+/// fails with `E0425: cannot find function ... in module `super``. That is the
+/// correct red for a TDD gate on a not-yet-written pure function, and is the
+/// house pattern (a passing-by-stub alternative would have no teeth).
+///
+/// Kills: no cap at all (compile error → E0425); a `check_party_size` copy-paste
+/// (`(0,0)` returns Err); an off-by-one on either cap (`(64,·)` or `(·,64)`
+/// rejected, or `(65,·)`/`(·,65)` admitted); a monsters-only cap that leaves the
+/// item vector unbounded (`(0,65)` returns Ok).
+#[test]
+fn e4_trade_side_size_caps_reject_oversized_and_admit_empty() {
+    assert!(
+        super::check_trade_side_size(64, 0).is_ok(),
+        "TEETH (E4-A/D3): check_trade_side_size(64, 0) must be Ok — 64 is \
+         MAX_TRADE_MONSTERS_PER_SIDE and the cap is inclusive. A cap of 6 \
+         (== PARTY_SIZE) was considered and REJECTED: propose_trade never checks \
+         party_slot and the client offers all owned monsters, so boxed monsters are \
+         tradeable today and a 6 cap would reject legitimate existing UI flows with \
+         an opaque server error (ADR-0166 D3)."
+    );
+    assert!(
+        super::check_trade_side_size(65, 0).is_err(),
+        "TEETH (E4-A/D3): check_trade_side_size(65, 0) must be Err — one over \
+         MAX_TRADE_MONSTERS_PER_SIDE. Reject, never truncate: silently clamping a \
+         trade list changes what the player agreed to."
+    );
+    assert!(
+        super::check_trade_side_size(0, 64).is_ok(),
+        "TEETH (E4-A/D3): check_trade_side_size(0, 64) must be Ok — 64 is \
+         MAX_TRADE_ITEMS_PER_SIDE and the cap is inclusive."
+    );
+    assert!(
+        super::check_trade_side_size(0, 65).is_err(),
+        "TEETH (E4-A/D3): check_trade_side_size(0, 65) must be Err. This is the \
+         assertion that kills a monsters-only cap: the per-item inventory scan at \
+         trading.rs:278-329 is O(items x inventory rows), so the ITEM vector is the \
+         more expensive one to leave unbounded."
+    );
+    assert!(
+        super::check_trade_side_size(0, 0).is_ok(),
+        "TEETH (E4-A/D3): check_trade_side_size(0, 0) must be Ok. This is the \
+         load-bearing case. The nearest in-repo template, guards::check_party_size \
+         (guards.rs:105-108), REJECTS n == 0 — copy-pasting it here would break EVERY \
+         legal one-sided trade (offer monsters, ask currency). Emptiness is NOT this \
+         function's concern: it is validate_proposal's cross-side EmptyOffer rule \
+         (game-core/src/trading/rules.rs:53-61) and must not be restated (ADR-0166 D3)."
+    );
+    // H1: the two caps must be INDEPENDENT, not a sum.
+    assert!(
+        super::check_trade_side_size(64, 64).is_ok(),
+        "TEETH (E4-A/D3): check_trade_side_size(64, 64) must be Ok — the monster cap \
+         and the item cap are INDEPENDENT limits, not a shared budget. A single \
+         `n_monsters + n_items > 64` check passes all four boundary pairs above and \
+         is caught only here; it would reject a completely legal trade of 64 \
+         monsters plus 64 items with an opaque server error."
+    );
+    // EV-7: boundary-only pairs cannot see a truncating comparison.
+    assert!(
+        super::check_trade_side_size(65_536, 0).is_err(),
+        "TEETH (E4-A/D3, EV-7): check_trade_side_size(65_536, 0) must be Err. \
+         Boundary pairs alone do not pin the comparison's WIDTH: \
+         `if n_monsters as u8 > MAX_TRADE_MONSTERS_PER_SIDE as u8` passes (64,0) and \
+         (65,0) while 256, 65_536 and usize::MAX all wrap to values that compare as \
+         under the cap — the caps become inert at exactly the magnitudes they exist \
+         to bound. A `u16` cast fails on this value specifically."
+    );
+    assert!(
+        super::check_trade_side_size(usize::MAX, 0).is_err(),
+        "TEETH (E4-A/D3, EV-7): check_trade_side_size(usize::MAX, 0) must be Err. \
+         Any narrowing cast, wrapping arithmetic, or `n % something` comparison in \
+         the monster check dies here. Note this value is not reachable through a \
+         real BSATN payload — it is a pure-function probe of the comparison itself."
+    );
+    assert!(
+        super::check_trade_side_size(0, usize::MAX).is_err(),
+        "TEETH (E4-A/D3, EV-7): check_trade_side_size(0, usize::MAX) must be Err — \
+         the same width probe for the ITEM check, which is the more expensive vector \
+         to leave unbounded (trading.rs:278-329 scans the whole inventory once per \
+         listed item)."
+    );
+}
+
+/// **E4-B** (ADR-0166 D3) — `propose_trade` bounds BOTH sides, with the right
+/// arguments, BEFORE `validate_proposal`.
+///
+/// Ordering and argument identity are not behaviourally observable from outside
+/// the reducer (there is no reducer-executing harness in this crate), so they are
+/// pinned by scan. The scan runs on the comment- AND string-stripped source and
+/// on a whitespace-squashed body, so a dead string literal cannot host a needle
+/// and a rustfmt line split cannot cause a false RED.
+///
+/// **Why BOTH argument tuples are pinned verbatim, and not just "two call sites
+/// before `validate_proposal`".** A red-team PoC confirmed that a count-only
+/// assertion is satisfied by copy-pasting the initiator call twice:
+/// ```ignore
+/// check_trade_side_size(initiator_monster_ids.len(), initiator_items.len())?;
+/// check_trade_side_size(initiator_monster_ids.len(), initiator_items.len())?;  // "counterparty"
+/// ```
+/// which leaves the COUNTERPARTY vectors — the ones the attacker fully controls,
+/// since they choose what the counterparty is asked to give — completely
+/// unbounded. Pinning the tuples makes that evasion unrepresentable.
+///
+/// **Why the `?` is part of the needle (EV-4).** A red-team wrote
+/// `let _ = check_trade_side_size(..);` for both sides. It passes every other
+/// assertion here, compiles, and stays clippy-clean under `-D warnings`
+/// (`let_underscore_must_use` is off by default) — the caps exist, run, and bound
+/// nothing at all. Pinning `)?` / `,)?` is what makes the call a REJECT rather
+/// than an expensive no-op.
+/// *Limit:* this needle also rejects a `.map_err(..)?` wrapper, which would be a
+/// correct implementation. ADR-0166 D3 does not ask for a `log_reject` on the
+/// caps, so a bare `?` is the sanctioned shape; a future decision to audit these
+/// rejections must revise this needle from the ADR, not work around it.
+///
+/// **Two placement assertions, and they say different things.**
+/// `< validate_proposal` is the weaker, load-bearing one: `validate_proposal` is
+/// the unbounded `HashSet` dedup this bound exists to protect
+/// (`game-core/src/trading/rules.rs:63-90`). `< first ctx.db` (M6) pins what
+/// ADR-0166 D3 actually decided — the `battle.rs:62-75` bound-before-any-DB-read
+/// ordering. The weaker one alone admits bounding after the two joined-player
+/// lookups, which is the ordering `pvp.rs`'s own siblings use (`challenge_pvp` at
+/// `:694`, `accept_challenge` at `:853`) and which D3 considered and rejected.
+/// Recording it honestly: this is a choice between two in-repo idioms, not a
+/// uniform house rule, so if a later ADR revisits it, change the assertion WITH
+/// the decision.
+///
+/// **ANTI-REGRESSION (green today, must stay green — not a proof of teeth):**
+/// `truncate(` must occur ZERO times in `propose_trade`. Reject, never clamp: a
+/// truncating "fix" would execute a trade whose contents differ from what the
+/// player submitted and the counterparty saw.
+///
+/// **RED state at HEAD:** `check_trade_side_size` is not called anywhere in
+/// `propose_trade` — the first assertion panics with its named FAIL message.
+#[test]
+fn e4_propose_trade_bounds_both_sides_before_validate_proposal() {
+    let stripped = strip_rust_strings_trading(&strip_rust_comments_trading(TRADING_RS));
+    let propose_fn = concat!("fn ", "propose_trade");
+    let respond_fn = concat!("fn ", "respond_trade");
+    let fn_pos = stripped
+        .find(propose_fn)
+        .expect("E4-B: `propose_trade` function not found in trading.rs");
+    let next_fn_pos = stripped[fn_pos..]
+        .find(respond_fn)
+        .map(|p| fn_pos + p)
+        .unwrap_or(stripped.len());
+    // Whitespace-squashed body (rustfmt-proof composite needles).
+    let squashed: String = stripped[fn_pos..next_fn_pos].split_whitespace().collect();
+
+    // The trailing `?` is PART OF THE NEEDLE (EV-4). Without it,
+    // `let _ = check_trade_side_size(..);` for both sides satisfies every
+    // assertion in this test and stays clippy-clean under `-D warnings`
+    // (`let_underscore_must_use` is off by default) — the caps compile, run, and
+    // are completely INERT. Two closing forms are accepted: `)?` (single-line
+    // call) and `,)?` (rustfmt adds a trailing comma when it splits a call across
+    // lines, which squashes to `,)`) — the EA-CHR-01 precedent in pvp_tests.rs.
+    let call = concat!("check_trade_", "side_size(");
+    let args_initiator = concat!("initiator_monster_ids.len(),", "initiator_items.len()");
+    let args_cp = concat!(
+        "counterparty_monster_ids.len(),",
+        "counterparty_items.len()"
+    );
+
+    let find_call = |args: &str| -> Option<usize> {
+        let plain = [call, args, ")?"].concat();
+        let trailing = [call, args, ",)?"].concat();
+        squashed
+            .find(plain.as_str())
+            .or_else(|| squashed.find(trailing.as_str()))
+    };
+
+    let pos_initiator = find_call(args_initiator).unwrap_or_else(|| {
+        panic!(
+            "TEETH (E4-B/D3) FAIL: `propose_trade` must call \
+             `check_trade_side_size(initiator_monster_ids.len(), initiator_items.len())?` \
+             with EXACTLY those arguments AND the `?` propagation operator. \
+             The `?` is load-bearing: `let _ = check_trade_side_size(..);` passes \
+             every other assertion here and stays clippy-clean under -D warnings \
+             (let_underscore_must_use is off by default), leaving the caps inert. \
+             RED at HEAD: no size bound is applied at \
+             all, so `validate_proposal`'s four unbounded HashSet dedups \
+             (game-core/src/trading/rules.rs:63-90) and the O(items x inventory-rows) \
+             scans at trading.rs:278-329 run on whatever vector lengths the client \
+             sent. There is no rate limiting anywhere in this module and a rejected \
+             proposal creates no row, so the call loop is unbounded too."
+        )
+    });
+    let pos_counterparty = find_call(args_cp).unwrap_or_else(|| {
+        panic!(
+            "TEETH (E4-B/D3) FAIL: `propose_trade` must call \
+             `check_trade_side_size(counterparty_monster_ids.len(), \
+             counterparty_items.len())` with EXACTLY those arguments. \
+             This tuple is pinned separately BECAUSE a count-only assertion (\"two \
+             call sites before validate_proposal\") is satisfied by copy-pasting the \
+             initiator call twice — a red-team PoC confirmed that evasion. It would \
+             leave the counterparty vectors unbounded, and those are the ones the \
+             ATTACKER fully controls: the proposer chooses what the counterparty is \
+             asked to give."
+        )
+    });
+
+    // The caps' position is pinned RELATIVE to this call, so it must still exist.
+    let validate = concat!("validate_", "proposal(");
+    let pos_validate = squashed
+        .find(validate)
+        .expect("E4-B: `validate_proposal(` not found in `propose_trade`");
+    assert!(
+        pos_initiator < pos_validate,
+        "TEETH (E4-B/D3 ordering): the initiator size bound (squashed offset \
+         {pos_initiator}) must precede `validate_proposal(` ({pos_validate}). \
+         `validate_proposal` IS the unbounded O(N) HashSet dedup this cap exists to \
+         protect; bounding afterwards protects nothing."
+    );
+    assert!(
+        pos_counterparty < pos_validate,
+        "TEETH (E4-B/D3 ordering): the counterparty size bound (squashed offset \
+         {pos_counterparty}) must precede `validate_proposal(` ({pos_validate}). \
+         Same reason as the initiator side — and `validate_proposal` dedups all FOUR \
+         client vectors, not just the proposer's two."
+    );
+
+    // M6: ADR-0166 D3 decides "bound before any DB read" (the battle.rs:62-75
+    // idiom, chosen over pvp.rs's bound-later siblings). Pin the decision, not
+    // just its weaker `< validate_proposal` consequence.
+    let db_needle = concat!("ctx.", "db");
+    let pos_db = squashed
+        .find(db_needle)
+        .expect("E4-B: no `ctx.db` access found in `propose_trade`");
+    let pos_first_cap = pos_initiator.min(pos_counterparty);
+    assert!(
+        pos_first_cap < pos_db,
+        "TEETH (E4-B/D3 placement): the first size bound (squashed offset \
+         {pos_first_cap}) must precede the FIRST `ctx.db` access ({pos_db}) in \
+         `propose_trade`. ADR-0166 D3 decides the caps are the reducer's first \
+         statement after `let me = ctx.sender;`, following battle.rs:62-75's \
+         bound-before-any-DB-read ordering. The weaker `< validate_proposal` \
+         assertions above still admit bounding AFTER the two joined-player lookups \
+         (trading.rs:205-216) — which is the ordering pvp.rs's own siblings use \
+         (`challenge_pvp` at :694, `accept_challenge` at :853), and which ADR-0166 D3 \
+         explicitly considered and did NOT choose. If a later ADR revisits that \
+         choice, change this assertion WITH it, not around it."
+    );
+
+    // NEW-5: every ordering assertion above is POSITION-based, so none of them can
+    // see REACHABILITY. A red-team wrapped both cap calls in `if false { .. }`:
+    // both tuple needles match, both `?` match, both indices are still less than
+    // `validate_proposal(` and less than the first `ctx.db`, and the caps bound
+    // nothing at all. This is the same class as EV-9, which E2 guards and E4 did
+    // not. Pinning the caps as the reducer's literal FIRST statements makes the
+    // dead-code wrapper unrepresentable — and it is the placement ADR-0166 D3
+    // decided anyway ("as the reducer's first statement after `let me =
+    // ctx.sender;`"), so this assertion and the D3 decision are the same claim.
+    let first_stmt = concat!("letme=ctx.sender;check_trade_", "side_size(");
+    assert!(
+        squashed.contains(first_stmt),
+        "TEETH (E4-B/D3, NEW-5): the first size bound must be the reducer's literal \
+         FIRST statement — the squashed body must contain \
+         `letme=ctx.sender;check_trade_side_size(`. Every other assertion in this \
+         test is position-based and therefore blind to REACHABILITY: \
+         `if false {{ check_trade_side_size(..)?; check_trade_side_size(..)?; }}` \
+         satisfies both tuple pins, both `?` pins, and both ordering pins while the \
+         caps bound nothing (same class as E2's EV-9). Anything between \
+         `let me = ctx.sender;` and the first cap — a condition, a DB read, a \
+         binding — either makes the caps skippable or violates D3's \
+         bound-before-any-DB-read ordering."
+    );
+
+    let truncate = concat!("trunc", "ate(");
+    let n_truncate = squashed.matches(truncate).count();
+    assert_eq!(
+        n_truncate, 0,
+        "ANTI-REGRESSION (E4-B/D3): `propose_trade` must contain no `truncate(`; \
+         found {n_truncate}. Reject-not-clamp: silently truncating an oversized \
+         trade list would execute a trade whose contents differ from what the \
+         proposer submitted and the counterparty later confirms. GREEN today — this \
+         is a fence on the incoming fix, not a live defect."
+    );
+}

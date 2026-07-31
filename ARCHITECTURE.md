@@ -857,8 +857,11 @@ multi-zone world, ADR-0008/0020).**
 content: `content/zone_maps/000-core.ron` (zones 0 and 1, mutual warps at (5,5)); all re-exported from `game_core::`.
 
 **M11b** (server warp runtime — ADR-0066) complete: warp resolution in `movement_tick` via
-`warp_at` — fires on actual movement only (`prev != next.pos`), battle-guarded (`BattleOutcome::Ongoing`
-blocks warp, C1 security finding); per-zone schedules managed by `ensure_zone_schedules` (private,
+`warp_at` — fires on actual movement only (`prev != next.pos`), battle-guarded (C1 security finding;
+since **11r-a / ADR-0166 D4** the guard is the both-role SSOT `guards::is_in_ongoing_battle(ctx, p.identity)`
+— the former inline `battle().player_identity()` filter saw side A only, so a PvP side-B player walked
+through a warp tile mid-ranked-battle. `unwrap_or(true)` means "no player row ⇒ an NPC ⇒ *skip* the warp",
+ADR-0070, hence the local is named `skip_warp`); per-zone schedules managed by `ensure_zone_schedules` (private,
 idempotent, additive, called from both `init` and `sync_content`); `validate_zone_maps` gates
 `sync_content_inner` before any `zone_def` upsert. 36/36 evals pass.
 
