@@ -5,7 +5,7 @@ slug: reducers/cancel_challenge
 updated: 2026-07-31
 tags: [reducer, spacetimedb, pvp]
 abstract: "Cancel a pending PvP challenge (initiator-only)."
-resource: server-module/src/pvp.rs#L933
+resource: server-module/src/pvp.rs#L939
 source: scripts/okf-export.mjs@server-module/src/pvp.rs
 ---
 

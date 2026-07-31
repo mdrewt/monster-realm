@@ -29,6 +29,31 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// DoS bound, not a game rule (ADR-0166 D3). File-local by scope: guards.rs and
+/// lib.rs are outside this slice. `MAX_PARTY_SIZE` is deliberately NOT reused — a
+/// trade is not a party (boxed monsters are tradeable), and box-monster trading
+/// will bump THIS constant. n == 0 is legal: one-sided trades are valid and
+/// emptiness is validate_proposal's cross-side EmptyOffer rule, not restated here.
+const MAX_TRADE_MONSTERS_PER_SIDE: usize = 64;
+const MAX_TRADE_ITEMS_PER_SIDE: usize = 64;
+
+/// Bound ONE side of a proposed trade. The two caps are INDEPENDENT limits, not a
+/// shared budget, and both compare in `usize` — a narrowing cast would make them
+/// inert at exactly the magnitudes they exist to bound. Reject, never truncate.
+fn check_trade_side_size(n_monsters: usize, n_items: usize) -> Result<(), String> {
+    if n_monsters > MAX_TRADE_MONSTERS_PER_SIDE {
+        return Err(format!(
+            "too many monsters in one trade side: {n_monsters} (max {MAX_TRADE_MONSTERS_PER_SIDE})"
+        ));
+    }
+    if n_items > MAX_TRADE_ITEMS_PER_SIDE {
+        return Err(format!(
+            "too many items in one trade side: {n_items} (max {MAX_TRADE_ITEMS_PER_SIDE})"
+        ));
+    }
+    Ok(())
+}
+
 /// Returns true if `owner` has any active (Pending or ConfirmedByCounterparty)
 /// trade offer, as either initiator or counterparty (TR-20, D4).
 /// Uses the two btree indexes — O(active_offers_for_owner), not O(total).
@@ -174,6 +199,10 @@ pub fn trade_offer_reaper(
 /// Propose a trade: escrow the listed assets and await the counterparty's response.
 ///
 /// Guards (in order):
+/// 0. Both sides' monster/item list lengths are within the per-side DoS caps
+///    (`check_trade_side_size`, ADR-0166 D3) — checked before ANY DB read, so the
+///    unbounded `HashSet` dedups in `validate_proposal` and the per-item inventory
+///    scans below can never run on an oversized client vector.
 /// 1. Caller must be joined.
 /// 2. Counterparty != caller (no self-trade, TR-21).
 /// 3. Neither party has an active offer (TR-20 / D4).
@@ -200,6 +229,11 @@ pub fn propose_trade(
     counterparty_currency: u64,
 ) -> Result<(), String> {
     let me = ctx.sender;
+
+    // Guard 0 (ADR-0166 D3): bound both sides BEFORE any DB read, following
+    // battle.rs:62-75's bound-before-any-DB-read ordering.
+    check_trade_side_size(initiator_monster_ids.len(), initiator_items.len())?;
+    check_trade_side_size(counterparty_monster_ids.len(), counterparty_items.len())?;
 
     // Must be joined.
     ctx.db

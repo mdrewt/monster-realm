@@ -10,7 +10,7 @@
 //! ADR-0056 — keep it stable.
 
 use crate::battle::{begin_encounter, lead_party};
-use crate::guards::{authorize_move, log_reject, validate_name};
+use crate::guards::{authorize_move, is_in_ongoing_battle, log_reject, validate_name};
 use crate::marshal::{
     apply_state, char_state, monster_from_instance, now_ms, pub_from_monster,
     table_from_encounter_row,
@@ -205,22 +205,24 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
             if let Some(warp) = map.warp_at(next.pos) {
                 // Copy scalars out of the WarpDef borrow BEFORE mutating row.
                 let (to_zone, tx, ty) = (warp.to_zone, warp.to_tile.x, warp.to_tile.y);
-                // Battle guard: skip warp for players currently in an ongoing battle.
-                let in_battle = ctx
+                // Battle guard: skip the warp for a character whose player is in an
+                // ongoing battle in EITHER role (ADR-0122 D1 SSOT — the former inline
+                // filter saw side A only, so a PvP side-B player walked through a warp
+                // tile mid-ranked-battle; ADR-0166 D4). The argument is the CHARACTER's
+                // own `p.identity`: `movement_tick` is scheduler-only, so `ctx.sender`
+                // here is the MODULE identity and would make the guard always false.
+                // `skip_warp` is named for what it decides, NOT for "is in battle":
+                // `unwrap_or(true)` means "no player row ⇒ an NPC ⇒ SKIP the warp"
+                // (stay in home zone, ADR-0070), so the default must stay `true`.
+                let skip_warp = ctx
                     .db
                     .player()
                     .entity_id()
                     .filter(entity_id)
                     .next()
-                    .map(|p| {
-                        ctx.db
-                            .battle()
-                            .player_identity()
-                            .filter(p.identity)
-                            .any(|b| b.state.outcome == BattleOutcome::Ongoing)
-                    })
-                    .unwrap_or(true); // NPCs have no player row → skip warp (stay in home zone, ADR-0070)
-                if !in_battle {
+                    .map(|p| is_in_ongoing_battle(ctx, p.identity))
+                    .unwrap_or(true);
+                if !skip_warp {
                     row.zone_id = to_zone;
                     row.tile_x = tx;
                     row.tile_y = ty;
