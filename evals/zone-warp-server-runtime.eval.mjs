@@ -35,12 +35,29 @@
 //
 // All pattern matching uses String.indexOf() or literal /regex/ — NO
 // `new RegExp(...)` with a non-literal argument (Semgrep detect-non-literal-regexp).
+//
+// Every check consumes SCRUBBED source — comments AND string-literal contents
+// blanked — never raw source: `scrubRust` for the fixtures, the same two steps
+// applied PER FILE inside `readServerModuleSources` for the real scan.
+// Comment-stripping alone let a dead `let _decoy = "<needle text>";` satisfy a
+// check while the real guard was missing (11r-c red-team); it also let a `{`
+// inside a string corrupt extractFnBody's brace counting. Per-file (rather than
+// whole-blob) scrubbing is itself load-bearing — see readServerModuleSources.
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripRustStrings } from './battle-reducer-security.eval.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// A double-quote inside a Rust char / byte-char literal is a LANDMINE for any
+// text-level string stripper (`stripRustStrings` has no char-literal lexer): the
+// lone quote reads as opening a string literal and inverts string/code polarity
+// for everything after it. Built by concatenation so this eval's own source does
+// not contain the sequence it looks for.
+const DOUBLE_QUOTE = String.fromCharCode(34);
+const CHAR_LITERAL_QUOTE = "'" + DOUBLE_QUOTE + "'";
 
 // ---------------------------------------------------------------------------
 // Shared helpers (mirrors the evolution-reducer-security eval convention).
@@ -53,6 +70,38 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  */
 function stripRustComments(src) {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
+/**
+ * The scan pipeline for this eval: blank comments, THEN blank string-literal
+ * contents. Every check below consumes scrubbed output — never raw source.
+ * `readServerModuleSources` applies these same two steps per file rather than
+ * calling this helper, because it needs the comment-stripped intermediate to
+ * spot char-literal landmines; keep the two in step if either changes.
+ *
+ * Why the string pass (11r-c red-team): with comments-only stripping, a dead
+ * `let _decoy = "…";` whose CONTENT spelled a needle satisfied W6 (and the Rust
+ * gating tests) while the real guard was absent. `stripRustStrings` is imported
+ * from `battle-reducer-security.eval.mjs` rather than re-implemented — that file
+ * added it for exactly this class (its F1 guard-fakery hardening) and a seventh
+ * private copy would be a seventh thing to keep correct. Cross-eval checker reuse
+ * is established here (`ci-gate-wiring` ← `e2e-desync-teeth`, `wallet-privacy` ←
+ * `conversation-privacy`); importing executes only function/const definitions.
+ *
+ * Bonus: because string contents become spaces, a `{` or `}` inside a literal can
+ * no longer corrupt `extractFnBody`'s brace counting.
+ *
+ * INHERITED LIMIT: the imported stripper does not handle raw strings
+ * (`r"…"`, `r#"…"#`). That is acceptable here because this eval is the COARSE
+ * backstop — the airtight layer for `movement.rs` is `movement_tests.rs`, whose
+ * local byte-sequential stripper does handle raw strings (and asserts loudly on
+ * hash depths it does not). No server source uses raw strings today.
+ *
+ * @param {string} src Raw Rust source.
+ * @returns {string} Source with comment and string-literal text blanked.
+ */
+function scrubRust(src) {
+  return stripRustStrings(stripRustComments(src));
 }
 
 /**
@@ -90,21 +139,45 @@ function extractFnBody(src, fnName) {
 }
 
 /**
- * Read all .rs files under `dir` recursively (ADR-0056 module split).
+ * Read all .rs files under `dir` recursively (ADR-0056 module split), scrubbing
+ * EACH FILE before joining them.
+ *
+ * Per file, NOT once over the joined blob. Every text-level stripper is a state
+ * machine, so one stray delimiter misaligns everything that FOLLOWS it — and
+ * files are concatenated in sorted order, which means an unrelated test file can
+ * silently blank a production reducer that happens to sort later. Both variants
+ * were observed on this eval: an unpaired block-comment opener in a test file's
+ * comment, and a double-quote inside a `b'…'` byte-char literal in a test
+ * helper. Each blanked `pub fn init(` in `lib.rs` and failed W5 with
+ * "init not found" — a loud but thoroughly misleading failure. Scrubbing per
+ * file bounds the damage to the file that contains the stray delimiter, so
+ * `movement.rs`, `lib.rs` and `content.rs` are unreachable from a sibling's
+ * lexical accident. (This crate carries four such char-literal landmines today:
+ * `battle_tests.rs`, `ranking_tests.rs`, `taming_tests.rs`, `m14_5d_1a_tests.rs`
+ * — all outside this slice's touch set, all now harmless.)
+ *
+ * Also reports which files carry a char-literal double-quote, so that if an
+ * extraction ever does come up empty the failure can name the likely culprit.
+ *
  * @param {string} dir
- * @returns {string}
+ * @returns {{ src: string, quoteLandmines: string[] }}
  */
 function readServerModuleSources(dir) {
   const parts = [];
+  const quoteLandmines = [];
   for (const entry of readdirSync(dir).sort()) {
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) {
-      parts.push(readServerModuleSources(full));
+      const nested = readServerModuleSources(full);
+      parts.push(nested.src);
+      quoteLandmines.push(...nested.quoteLandmines);
     } else if (entry.endsWith('.rs')) {
-      parts.push(readFileSync(full, 'utf8'));
+      const commentless = stripRustComments(readFileSync(full, 'utf8'));
+      if (commentless.indexOf(CHAR_LITERAL_QUOTE) !== -1) quoteLandmines.push(entry);
+      parts.push(stripRustStrings(commentless));
     }
   }
-  return parts.join('\n');
+  return { src: parts.join('\n'), quoteLandmines };
 }
 
 // ---------------------------------------------------------------------------
@@ -312,18 +385,19 @@ function checkDrainBattleGuard(body) {
  * (alphabetically-earlier file, or earlier in movement.rs itself) would hand
  * W1/W2/W3/W6 a body that is not the real reducer (11r-c red-team HIGH-3).
  *
- * HONEST LIMIT: this eval has no string-literal stripper (unlike
- * battle-reducer-security, whose C3 adds one), so a `fn movement_tick(` embedded
- * in a Rust string literal would be counted. No server source does that today,
- * and a false-positive here fails loudly ("ambiguous extraction") rather than
- * silently passing — the safe direction.
+ * String literals are blanked as well as comments (`scrubRust`), matching
+ * battle-reducer-security's C3, so a `fn movement_tick(` inside a log message
+ * cannot inflate the count. HONEST LIMIT: raw strings are not blanked by the
+ * imported stripper — a `fn movement_tick(` inside `r"…"` would still be counted,
+ * which fails loudly ("ambiguous extraction") rather than passing silently, the
+ * safe direction. No server source uses raw strings today.
  *
- * @param {string} src  Rust source (comment-stripping is applied internally).
+ * @param {string} src  Rust source (scrubbing is applied internally).
  * @param {string} fnName  Bare function name.
  * @returns {number}
  */
 function countFnDefinitions(src, fnName) {
-  const code = stripRustComments(src);
+  const code = scrubRust(src);
   const needle = 'fn ' + fnName + '(';
   let count = 0;
   let idx = 0;
@@ -739,7 +813,7 @@ export default async function () {
 
   // --- Tooth W1 BAD: zone_map() stub must be flagged ---
   {
-    const body = extractFnBody(stripRustComments(BAD_MOVEMENT_TICK_USES_STUB), 'movement_tick');
+    const body = extractFnBody(scrubRust(BAD_MOVEMENT_TICK_USES_STUB), 'movement_tick');
     if (!body) {
       return {
         name,
@@ -759,7 +833,7 @@ export default async function () {
 
   // --- Tooth W1 GOOD: map_for() usage must pass ---
   {
-    const body = extractFnBody(stripRustComments(GOOD_MOVEMENT_TICK_MAP_FOR), 'movement_tick');
+    const body = extractFnBody(scrubRust(GOOD_MOVEMENT_TICK_MAP_FOR), 'movement_tick');
     if (!body) {
       return {
         name,
@@ -779,7 +853,7 @@ export default async function () {
 
   // --- Tooth W2 BAD: movement_tick without warp_at must be flagged ---
   {
-    const body = extractFnBody(stripRustComments(BAD_MOVEMENT_TICK_NO_WARP_AT), 'movement_tick');
+    const body = extractFnBody(scrubRust(BAD_MOVEMENT_TICK_NO_WARP_AT), 'movement_tick');
     if (!body) {
       return {
         name,
@@ -799,7 +873,7 @@ export default async function () {
 
   // --- Tooth W2 GOOD: movement_tick with warp_at must pass ---
   {
-    const body = extractFnBody(stripRustComments(GOOD_MOVEMENT_TICK_MAP_FOR), 'movement_tick');
+    const body = extractFnBody(scrubRust(GOOD_MOVEMENT_TICK_MAP_FOR), 'movement_tick');
     if (!body) {
       return {
         name,
@@ -820,10 +894,7 @@ export default async function () {
 
   // --- Tooth W3 BAD: warp branch without battle guard must be flagged ---
   {
-    const body = extractFnBody(
-      stripRustComments(BAD_MOVEMENT_TICK_NO_BATTLE_GUARD),
-      'movement_tick',
-    );
+    const body = extractFnBody(scrubRust(BAD_MOVEMENT_TICK_NO_BATTLE_GUARD), 'movement_tick');
     if (!body) {
       return {
         name,
@@ -847,7 +918,7 @@ export default async function () {
 
   // --- Tooth W3 GOOD: warp branch with battle guard must pass ---
   {
-    const body = extractFnBody(stripRustComments(GOOD_MOVEMENT_TICK_MAP_FOR), 'movement_tick');
+    const body = extractFnBody(scrubRust(GOOD_MOVEMENT_TICK_MAP_FOR), 'movement_tick');
     if (!body) {
       return {
         name,
@@ -874,7 +945,7 @@ export default async function () {
   // side A only and lets a side-B player warp mid-ranked-battle (ADR-0166 D4).
   {
     const body = extractFnBody(
-      stripRustComments(BAD_MOVEMENT_TICK_INLINE_SINGLE_ROLE_WARP_GUARD),
+      scrubRust(BAD_MOVEMENT_TICK_INLINE_SINGLE_ROLE_WARP_GUARD),
       'movement_tick',
     );
     if (!body) {
@@ -902,7 +973,7 @@ export default async function () {
   // --- Tooth W6 BAD: guard only in the warp branch (the pre-11r-c shape) ---
   {
     const body = extractFnBody(
-      stripRustComments(BAD_MOVEMENT_TICK_GUARD_ONLY_IN_WARP_BRANCH),
+      scrubRust(BAD_MOVEMENT_TICK_GUARD_ONLY_IN_WARP_BRANCH),
       'movement_tick',
     );
     if (!body) {
@@ -942,7 +1013,7 @@ export default async function () {
 
   // --- Tooth W6 GOOD: drain lock before move_queue.remove( must pass ---
   {
-    const body = extractFnBody(stripRustComments(GOOD_MOVEMENT_TICK_MAP_FOR), 'movement_tick');
+    const body = extractFnBody(scrubRust(GOOD_MOVEMENT_TICK_MAP_FOR), 'movement_tick');
     if (!body) {
       return {
         name,
@@ -991,10 +1062,7 @@ export default async function () {
 
   // --- Tooth W4 BAD: sync_content_inner without validate_zone_maps must be flagged ---
   {
-    const body = extractFnBody(
-      stripRustComments(BAD_SYNC_CONTENT_NO_VALIDATE),
-      'sync_content_inner',
-    );
+    const body = extractFnBody(scrubRust(BAD_SYNC_CONTENT_NO_VALIDATE), 'sync_content_inner');
     if (!body) {
       return {
         name,
@@ -1015,10 +1083,7 @@ export default async function () {
 
   // --- Tooth W4 GOOD: sync_content_inner with validate_zone_maps before zone_def must pass ---
   {
-    const body = extractFnBody(
-      stripRustComments(GOOD_SYNC_CONTENT_VALIDATE_FIRST),
-      'sync_content_inner',
-    );
+    const body = extractFnBody(scrubRust(GOOD_SYNC_CONTENT_VALIDATE_FIRST), 'sync_content_inner');
     if (!body) {
       return {
         name,
@@ -1039,11 +1104,8 @@ export default async function () {
 
   // --- Tooth W5 BAD (init): init without ensure_zone_schedules must be flagged ---
   {
-    const initBody = extractFnBody(stripRustComments(BAD_INIT_NO_ENSURE), 'init');
-    const syncBody = extractFnBody(
-      stripRustComments(GOOD_SYNC_CONTENT_WITH_ENSURE),
-      'sync_content',
-    );
+    const initBody = extractFnBody(scrubRust(BAD_INIT_NO_ENSURE), 'init');
+    const syncBody = extractFnBody(scrubRust(GOOD_SYNC_CONTENT_WITH_ENSURE), 'sync_content');
     if (!initBody || !syncBody) {
       return {
         name,
@@ -1063,8 +1125,8 @@ export default async function () {
 
   // --- Tooth W5 BAD (sync_content): sync_content without ensure_zone_schedules must be flagged ---
   {
-    const initBody = extractFnBody(stripRustComments(GOOD_INIT_WITH_ENSURE), 'init');
-    const syncBody = extractFnBody(stripRustComments(BAD_SYNC_CONTENT_NO_ENSURE), 'sync_content');
+    const initBody = extractFnBody(scrubRust(GOOD_INIT_WITH_ENSURE), 'init');
+    const syncBody = extractFnBody(scrubRust(BAD_SYNC_CONTENT_NO_ENSURE), 'sync_content');
     if (!initBody || !syncBody) {
       return {
         name,
@@ -1084,11 +1146,8 @@ export default async function () {
 
   // --- Tooth W5 GOOD: both init and sync_content with ensure_zone_schedules must pass ---
   {
-    const initBody = extractFnBody(stripRustComments(GOOD_INIT_WITH_ENSURE), 'init');
-    const syncBody = extractFnBody(
-      stripRustComments(GOOD_SYNC_CONTENT_WITH_ENSURE),
-      'sync_content',
-    );
+    const initBody = extractFnBody(scrubRust(GOOD_INIT_WITH_ENSURE), 'init');
+    const syncBody = extractFnBody(scrubRust(GOOD_SYNC_CONTENT_WITH_ENSURE), 'sync_content');
     if (!initBody || !syncBody) {
       return {
         name,
@@ -1113,14 +1172,57 @@ export default async function () {
 
   const serverSrc = join(__dirname, '..', 'server-module', 'src');
   let src;
+  let quoteLandmines = [];
   try {
-    src = stripRustComments(readServerModuleSources(serverSrc));
+    const read = readServerModuleSources(serverSrc);
+    src = read.src;
+    quoteLandmines = read.quoteLandmines;
   } catch (e) {
     return { name, pass: false, detail: `cannot read server-module/src: ${e.message}` };
   }
 
   const failures = [];
   const checks = [];
+
+  // Appended to every "reducer not found" failure below. An empty extraction is
+  // almost never a deleted reducer — it is the scan pipeline having blanked it.
+  const blankingHint =
+    ' If the reducer plainly exists in the source, the SCAN blanked it: look for an unpaired ' +
+    'block-comment opener, or a double-quote inside a char / byte-char literal (spell it 0x22 ' +
+    'in Rust — the string stripper has no char-literal lexer). Files carrying a char-literal ' +
+    'double-quote: ' +
+    (quoteLandmines.length > 0 ? quoteLandmines.join(', ') : 'none') +
+    ' (harmless while scrubbing is per-file).';
+
+  // --- W-pre: no char-literal double-quote in a PRODUCTION source ------------
+  // Scrubbing is per file, so a landmine can only misalign the file that holds
+  // it — which is fine for a test file and fatal for one this eval extracts from
+  // (`movement.rs`, `lib.rs`, `content.rs`). Production files are clean today;
+  // this makes any reintroduction there a loud, attributable failure rather than
+  // a mysteriously "missing" reducer. Deliberately NOT applied to `*_tests.rs`:
+  // four of them have carried this spelling for many slices, they are outside
+  // this slice's touch set, and per-file scrubbing already neutralised them.
+  const productionLandmines = quoteLandmines.filter((f) => !f.endsWith('_tests.rs'));
+  if (productionLandmines.length > 0) {
+    const wPre =
+      'char-literal double-quote in production source (' +
+      productionLandmines.join(', ') +
+      '): a lone double-quote inside a char or byte-char literal is read as a string opener by ' +
+      'stripRustStrings, which inverts string/code polarity for the rest of THAT file and can ' +
+      'blank the very reducer being checked. Spell it as a 0x22 constant in the Rust source.';
+    failures.push(wPre);
+    checks.push({
+      check: 'W-pre no char-literal quote in production source',
+      pass: false,
+      detail: wPre,
+    });
+  } else {
+    checks.push({
+      check: 'W-pre no char-literal quote in production source',
+      pass: true,
+      detail: 'ok',
+    });
+  }
 
   // --- W0: movement_tick must be defined EXACTLY ONCE, BEFORE any extraction ---
   // extractFnBody takes the FIRST `pub fn movement_tick(` in the concatenated
@@ -1148,7 +1250,7 @@ export default async function () {
   // --- W1 + W2 + W3 + W6: movement_tick body ---
   const movementTickBody = extractFnBody(src, 'movement_tick');
   if (!movementTickBody) {
-    failures.push('movement_tick: reducer not found in server-module source');
+    failures.push('movement_tick: reducer not found in server-module source.' + blankingHint);
     checks.push({ check: 'W1', pass: false, detail: 'movement_tick not found' });
     checks.push({ check: 'W2', pass: false, detail: 'movement_tick not found' });
     checks.push({ check: 'W3', pass: false, detail: 'movement_tick not found' });
@@ -1179,7 +1281,7 @@ export default async function () {
   // --- W4: sync_content_inner body ---
   const syncInnerBody = extractFnBody(src, 'sync_content_inner');
   if (!syncInnerBody) {
-    failures.push('sync_content_inner: function not found in server-module source');
+    failures.push('sync_content_inner: function not found in server-module source.' + blankingHint);
     checks.push({ check: 'W4', pass: false, detail: 'sync_content_inner not found' });
   } else {
     const w4 = checkValidateZoneMaps(syncInnerBody);
@@ -1195,10 +1297,10 @@ export default async function () {
   const initBody = extractFnBody(src, 'init');
   const syncContentBody = extractFnBody(src, 'sync_content');
   if (!initBody) {
-    failures.push('init: reducer not found in server-module source');
+    failures.push('init: reducer not found in server-module source.' + blankingHint);
     checks.push({ check: 'W5', pass: false, detail: 'init not found' });
   } else if (!syncContentBody) {
-    failures.push('sync_content: reducer not found in server-module source');
+    failures.push('sync_content: reducer not found in server-module source.' + blankingHint);
     checks.push({ check: 'W5', pass: false, detail: 'sync_content not found' });
   } else {
     const w5 = checkEnsureZoneSchedulesBothSites(initBody, syncContentBody);
@@ -1216,7 +1318,7 @@ export default async function () {
     pass: allPass,
     checks,
     detail: allPass
-      ? 'W0-W6 all pass: movement_tick uniquely defined; map_for+warp_at+SSOT warp guard+drain battle lock in movement_tick; validate_zone_maps in sync_content_inner; ensure_zone_schedules in init+sync_content (teeth: 17 fixture checks verified)'
+      ? 'W-pre + W0-W6 all pass: production source free of char-literal quote landmines; movement_tick uniquely defined; map_for+warp_at+SSOT warp guard+drain battle lock in movement_tick; validate_zone_maps in sync_content_inner; ensure_zone_schedules in init+sync_content (teeth: 17 fixture checks verified)'
       : failures.join('; '),
   };
 }

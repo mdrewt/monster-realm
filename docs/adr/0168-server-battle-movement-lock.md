@@ -177,6 +177,31 @@ neither a direct guard nor a differently-named wrapper can reintroduce it silent
   intake. The drain-time lock — the authoritative freeze — is in exact parity; the intake
   reject is server-side defense-in-depth. `sim-harness/` is out of this slice's touches.
 
+## Gate-hardening findings (test-phase red-team, empirical)
+
+A red-team built and ran wrong implementations against the drafted gate. Two evasions were
+ALIVE and were closed before implementation:
+
+- **String-literal decoys (CRITICAL):** neither the Rust squash helpers nor the eval's regex
+  comment-stripper stripped string literals, so a dead `let _decoy = "<needle text>";`
+  satisfied every needle in BOTH scanners at once (the "union of gates" premise fails when
+  both layers share a blind spot). Closed by blanking string-literal contents before matching:
+  the Rust helpers handle plain/byte/raw strings sequentially (raw-hash depth ≤ 2, loud
+  precondition asserts beyond); the eval imports the exported `stripRustStrings` from
+  `battle-reducer-security.eval.mjs` (SSOT, plain strings only — the Rust layer is the
+  airtight one). Honest cost: reducer-name/message strings are no longer pinned by the intake
+  needles; the per-reducer regions carry that burden.
+- **Loop-variable shadowing (HIGH):** `let id = u64::MAX;` ahead of the pinned lookup chain
+  left the needle byte-identical while the guard could never fire. Closed by a green sentinel:
+  zero `letid=`/`letid:` between `for id in ids {` and `warp_at(`.
+
+Known coupling, flagged deliberately: an **outcome-blind extra freeze** (locking on any
+historical battle row, not just `Ongoing`) is caught today only by the 11r-a fence pinning
+`ctx.db.battle()` to exactly one occurrence in `movement.rs` (layer 1c). If a later slice
+legitimately changes that count (e.g. fixing R4), re-audit outcome-blindness rather than just
+bumping the number. Also verified: a dead SSOT call planted before the drain fools eval W6
+alone, but the Rust L1 mega-needle catches it — that union is real; W6 is the coarse backstop.
+
 ## Residuals
 
 - ADR-0166 R4 (grass pre-check single-role) — open, unchanged.
@@ -184,3 +209,8 @@ neither a direct guard nor a differently-named wrapper can reintroduce it silent
   subsystem's gate.
 - Predictor lock-window divergence + post-battle stale drain (above) — client-side polish if
   playtest ever surfaces it.
+- The evals' regex comment-stripper is order-sensitive: an unpaired slash-asterisk sequence in
+  any server-module comment (e.g. a glob like `src/<asterisk>.rs` written literally) is
+  swallowed across file boundaries and false-REDs unrelated checks (loud, not silent — but
+  confusing). Warned at both new test-file helper sites; a sequential-lexer rewrite of the
+  shared eval helpers would retire the class.

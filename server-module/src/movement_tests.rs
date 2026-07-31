@@ -1,9 +1,9 @@
 //! `movement` server-module gating tests — slice 11r-a / ADR-0166 D4.
 //!
 //! Source-guard pattern (house convention): read production source via
-//! `include_str!`, strip comments, squash whitespace, search for
-//! **concat!-assembled** needles.  No needle is written verbatim in this file, so
-//! the scan can never pass by matching the test's own text.
+//! `include_str!`, strip comments AND string literals, squash whitespace, search
+//! for **concat!-assembled** needles.  No needle is written verbatim in this
+//! file, so the scan can never pass by matching the test's own text.
 //!
 //! EARS criterion covered:
 //!   E3  `movement_tick`'s warp branch SHALL reject the warp for a character in an
@@ -32,7 +32,7 @@
 const MOVEMENT_RS: &str = include_str!("movement.rs");
 
 // ---------------------------------------------------------------------------
-// Comment-stripping helper.
+// Comment- AND string-stripping helper.
 //
 // A LOCAL copy on purpose: the sibling test modules each keep their own
 // (`pvp_tests.rs:64`, `trading_tests.rs:457`, `taming_tests.rs:42`,
@@ -40,12 +40,128 @@ const MOVEMENT_RS: &str = include_str!("movement.rs");
 // edit, which is outside 11r-a's touch set — recorded as ADR-0166 residual R5.
 //
 // Removed bytes are replaced with spaces so byte offsets are preserved (the
-// squash step drops them again anyway).  No string-literal stripper is needed
-// here: every needle below is code-shaped and `movement.rs` contains no string
-// literal that could host one.
+// squash step drops them again anyway).
+//
+// STRING LITERALS ARE BLANKED TOO — this is load-bearing, not tidiness.  An
+// earlier draft of this file stripped comments only, on the reasoning that every
+// needle is code-shaped.  A red-team then defeated the whole file with three
+// lines: a dead `let _decoy = r#"<the needle's squashed text>"#;` satisfied the
+// contiguity needles, the exactly-once counts AND the index-ordering assertions
+// at once, while the real guard was absent — all green, vulnerability live.
+// Blanking literal CONTENT (delimiters included) makes that unrepresentable:
+// the only place a needle can now live is executable code.
+//
+// Handled in one sequential pass, so a construct can never be re-scanned in the
+// wrong state: block comments, line comments, `"…"` (with `\` escapes), `b"…"`,
+// raw strings `r"…"` / `r#"…"#` / `r##"…"##` and their `br` forms, and char /
+// byte-char literals (consumed ATOMICALLY — a char literal holding a double
+// quote would otherwise open a phantom string and blank the rest of the file,
+// which is also why `DQUOTE` below is a number).  Char literals are
+// copied through rather than blanked: at most a few bytes, they cannot host a
+// needle, and copying keeps a mis-detected lifetime tick harmless.
+// `assert_stripper_preconditions` fails loudly on the two constructs this does
+// NOT handle (see its doc comment).
 // ---------------------------------------------------------------------------
 
-fn strip_rust_comments(src: &str) -> String {
+/// The ASCII double-quote byte, spelled as a NUMBER on purpose.
+///
+/// Writing the obvious byte-char literal would put a bare, unpaired double-quote
+/// CHARACTER into this file's source. The evals concatenate every `.rs` file in
+/// this crate and run `stripRustStrings` over the result — a stripper with no
+/// char-literal lexer — so that quote reads as opening a string literal and
+/// inverts string/code polarity for everything after it. Measured cost of the
+/// obvious spelling: `pub fn init(` in `lib.rs` was blanked and the zone-warp
+/// eval's W5 check failed with "init not found". Same cross-file blast radius as
+/// the block-comment opener warned about below. Every double-quote in this file
+/// is now part of a balanced Rust string literal; keep it that way.
+const DQUOTE: u8 = 0x22;
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// If a STRING literal starts at `i`, the index one past its closing delimiter.
+///
+/// Covers `"…"`, `b"…"`, and raw `r"…"` / `r#"…"#` / `r##"…"##` plus the `br`
+/// forms. A `b` / `r` prefix only counts when it is not itself part of a longer
+/// identifier, so `ctx.db` and `row` are never mistaken for literal openers.
+fn string_literal_end(bytes: &[u8], i: usize) -> Option<usize> {
+    let len = bytes.len();
+    let first = bytes[i];
+    if first != DQUOTE && first != b'r' && first != b'b' {
+        return None;
+    }
+    let prev_is_ident = i > 0 && is_ident_byte(bytes[i - 1]);
+    let mut p = i;
+    if first == b'b' {
+        if prev_is_ident || p + 1 >= len {
+            return None;
+        }
+        if bytes[p + 1] != DQUOTE && bytes[p + 1] != b'r' {
+            return None;
+        }
+        p += 1;
+    } else if first == b'r' && prev_is_ident {
+        return None;
+    }
+    if bytes[p] == b'r' {
+        let mut hashes = 0usize;
+        while p + 1 + hashes < len && bytes[p + 1 + hashes] == b'#' {
+            hashes += 1;
+        }
+        if p + 1 + hashes >= len || bytes[p + 1 + hashes] != DQUOTE {
+            return None;
+        }
+        let mut j = p + 2 + hashes;
+        while j < len {
+            if bytes[j] == DQUOTE {
+                let mut k = 0usize;
+                while k < hashes && j + 1 + k < len && bytes[j + 1 + k] == b'#' {
+                    k += 1;
+                }
+                if k == hashes {
+                    return Some(j + 1 + hashes);
+                }
+            }
+            j += 1;
+        }
+        return Some(len);
+    }
+    let mut j = p + 1;
+    while j < len {
+        if bytes[j] == b'\\' {
+            j += 2;
+        } else if bytes[j] == DQUOTE {
+            return Some(j + 1);
+        } else {
+            j += 1;
+        }
+    }
+    Some(len)
+}
+
+/// If a CHAR (or byte-char) literal starts at `i`, the index one past it.
+///
+/// A `'` is only read as a literal when a closing `'` follows within four bytes;
+/// otherwise it is a lifetime tick (`&'a str`) and is left alone. The point of
+/// this branch is a char literal HOLDING a double quote: unconsumed, that quote
+/// opens a phantom string literal and everything after it would be blanked.
+fn char_literal_end(bytes: &[u8], i: usize) -> Option<usize> {
+    let len = bytes.len();
+    if bytes[i] != b'\'' {
+        return None;
+    }
+    let escaped = i + 1 < len && bytes[i + 1] == b'\\';
+    let first = if escaped { 3 } else { 2 };
+    for k in first..=4 {
+        if i + k < len && bytes[i + k] == b'\'' {
+            return Some(i + k + 1);
+        }
+    }
+    None
+}
+
+fn strip_comments_and_strings(src: &str) -> String {
     let bytes = src.as_bytes();
     let len = bytes.len();
     let mut out = vec![b' '; len];
@@ -64,6 +180,13 @@ fn strip_rust_comments(src: &str) -> String {
             while i < len && bytes[i] != b'\n' {
                 i += 1;
             }
+        } else if let Some(end) = string_literal_end(bytes, i) {
+            i = end;
+        } else if let Some(end) = char_literal_end(bytes, i) {
+            while i < end {
+                out[i] = bytes[i];
+                i += 1;
+            }
         } else {
             out[i] = bytes[i];
             i += 1;
@@ -72,12 +195,49 @@ fn strip_rust_comments(src: &str) -> String {
     String::from_utf8(out).expect("stripped source must be valid UTF-8")
 }
 
-/// `movement.rs` with comments stripped and ALL whitespace squashed out, so a
-/// rustfmt line split can never cause a false RED.
+/// Loud preconditions covering the two constructs the stripper deliberately does
+/// NOT handle. A silent misalignment in a stripper is the worst possible failure
+/// mode for a source-scan gate — it blanks the wrong bytes and every needle
+/// below turns vacuous — so each one fails with an explicit message instead.
+///
+/// 1. **Raw strings with three or more hashes.** Depth 0/1/2 is handled; deeper
+///    is rejected here rather than mis-parsed.
+/// 2. **A surviving block-comment CLOSE marker in the stripped output.** This
+///    stripper, like every sibling copy in the crate, treats block comments as
+///    NON-nesting: it stops at the first close marker. Rust allows nesting, so a
+///    nested block comment leaves the outer comment's tail exposed to the scan as
+///    if it were executable code — a hiding place for needle text. Correctly
+///    stripped source cannot contain a close marker (code cannot spell one, and
+///    string literals are now blanked), so finding one proves that shape.
+fn assert_stripper_preconditions(raw: &str, stripped: &str) {
+    let deep_raw = ["r#", "##"].concat();
+    assert!(
+        !raw.contains(deep_raw.as_str()),
+        "SCAN PRECONDITION: the scanned source contains a raw-string opener with \
+         three or more hashes, which this file's byte-sequential stripper does not \
+         handle — it would blank the wrong byte range and silently hollow out every \
+         needle below. Extend the stripper's hash-depth handling before adding such \
+         a literal to the scanned file."
+    );
+    let close_marker = ["*", "/"].concat();
+    assert!(
+        !stripped.contains(close_marker.as_str()),
+        "SCAN PRECONDITION: a block-comment CLOSE marker survived stripping, which \
+         means the scanned source contains a NESTED block comment. This stripper \
+         stops at the FIRST close marker, so the outer comment's tail is handed to \
+         the scan as if it were executable code — a place to hide needle text and \
+         turn a red test green. Un-nest the comment, or extend the stripper with a \
+         nesting depth counter."
+    );
+}
+
+/// `movement.rs` with comments AND string literals blanked and ALL whitespace
+/// squashed out, so a rustfmt line split can never cause a false RED and no
+/// needle can be satisfied by inert text.
 fn squashed_movement() -> String {
-    strip_rust_comments(MOVEMENT_RS)
-        .split_whitespace()
-        .collect()
+    let stripped = strip_comments_and_strings(MOVEMENT_RS);
+    assert_stripper_preconditions(MOVEMENT_RS, &stripped);
+    stripped.split_whitespace().collect()
 }
 
 /// The squashed warp branch: everything from `warp_at(` up to the
@@ -495,7 +655,18 @@ fn contains_any(region: &str, variants: &[String]) -> bool {
 }
 
 /// The three accepted path spellings (bare / `guards::` / `crate::guards::`) of
-/// the ADR-0168 D2 intake-reject block for `reducer`, whitespace-squashed.
+/// the ADR-0168 D2 intake-reject block, as the STRING-STRIPPED squash sees it.
+///
+/// The block's two string literals are blanked before matching, so the needle is
+/// `…{lete=.to_string();log_reject(,ctx.sender,&e);returnErr(e);}`. That is a
+/// deliberate trade made when string-blanking closed the decoy-literal hole: the
+/// error MESSAGE and the reducer NAME in the log call are no longer pinned, which
+/// makes this needle identical for `enqueue_move` and `set_move` — the per-reducer
+/// REGIONS at the call sites are what prove each reducer carries its own guard.
+/// Neither string is a security property: the message is a `raising.rs` idiom and
+/// the log label only affects an observability line. Everything that DECIDES —
+/// the SSOT call, its argument, the block's statements, and the `return Err` —
+/// is code, and all of it is still pinned contiguously.
 ///
 /// Assembled from fragments (house rule): no needle exists verbatim anywhere in
 /// this file, so neither this scan nor any eval that concatenates every `.rs`
@@ -509,13 +680,13 @@ fn contains_any(region: &str, variants: &[String]) -> bool {
 /// (e.g. as a glob) silently deletes a later file's reducers from the eval's
 /// view and false-REDs an unrelated check. Never write it; say ".rs file under
 /// <dir>" instead.
-fn intake_reject_variants(reducer: &str) -> Vec<String> {
+fn intake_reject_variants() -> Vec<String> {
     let ssot = ["is_in_ongoing", "_battle"].concat();
     let args = ["(ctx,ctx.", "sender){"].concat();
-    let bind = ["lete=\"cannotmove", "duringanongoingbattle\".to_string();"].concat();
-    let log_head = ["log_re", "ject(\""].concat();
-    let log_tail = ["\",ctx.sender,&e);", "returnErr(e);}"].concat();
-    let body = [bind.as_str(), log_head.as_str(), reducer, log_tail.as_str()].concat();
+    let bind = ["lete=.to", "_string();"].concat();
+    let log = ["log_re", "ject(,ctx.sender,&e);"].concat();
+    let ret = ["return", "Err(e);}"].concat();
+    let body = [bind.as_str(), log.as_str(), ret.as_str()].concat();
     let mut out = Vec::new();
     for path in ["", "guards::", "crate::guards::"] {
         let head = ["if", path, ssot.as_str()].concat();
@@ -808,6 +979,100 @@ fn movement_drain_region_uses_no_module_identity() {
     );
 }
 
+/// **E1 ANTI-EVASION sentinel (loop-variable shadow)** — `id` inside the drain
+/// loop must stay the binding from `for id in ids`.
+///
+/// GREEN at HEAD and GREEN after the fix. A SIBLING of
+/// [`movement_drain_region_uses_no_module_identity`] rather than another layer of
+/// the E1 test, for the same reason: behind E1's layer 1 (which panics at HEAD)
+/// it could never be observed passing.
+///
+/// THE ATTACK IT KILLS (red-team, empirically green against every other needle in
+/// this file): insert ONE line just above the pinned guard —
+///
+/// ```text
+/// let id = u64::MAX;
+/// let battle_locked = ctx.db.player().entity_id().filter(id).next()… // unchanged
+/// ```
+///
+/// The mega-needle still matches BYTE FOR BYTE — the shadowing `let` sits before
+/// it, and `.filter(id)` still reads `id`. But `id` now names a sentinel that no
+/// character's `entity_id` can equal, so the lookup always yields `None`,
+/// `unwrap_or(false)` reports "not battle-locked", and the drain proceeds for
+/// everyone. Same class as the module-identity mutant: the guard is textually
+/// perfect and permanently false. Contiguity cannot see it, because the poison is
+/// OUTSIDE the pinned span.
+///
+/// The fence is a region-scoped absence: between the loop header `for id in ids {`
+/// and `warp_at(`, `id` may be READ but never re-bound. Four spellings are
+/// forbidden (`let id =`, `let id:`, `let mut id =`, `let mut id:`), covering the
+/// annotated and mutable variants. HEAD's real bindings in that span —
+/// `let Some(mut row)`, `let input`, `let prev`, `let next`, `let entity_id` — none
+/// match, and neither does the drain guard's own `let battle_locked`.
+///
+/// The loop-header anchor's uniqueness is asserted first: `movement.rs` has a
+/// SECOND loop (`for entity_id in npc_entity_ids`), so a silently-moved anchor
+/// would scope this to the wrong body.
+///
+/// HONEST LIMITS. (a) It fences the NAME, not the value: rebinding through a
+/// different route (`let ids = vec![u64::MAX];` above the loop) is not seen here —
+/// but that shape changes which characters are iterated at all and is visible to
+/// the whole drain, not just the guard, so it is a different (and much louder)
+/// defect class. (b) Region-scoped to before `warp_at(`: a shadow after the warp
+/// branch cannot affect a guard that has already been evaluated.
+#[test]
+fn movement_drain_loop_variable_id_is_not_shadowed() {
+    let squashed = squashed_movement();
+
+    let loop_anchor = ["foridin", "ids{"].concat();
+    let n_anchor = squashed.matches(loop_anchor.as_str()).count();
+    assert_eq!(
+        n_anchor, 1,
+        "SENTINEL PRECONDITION (E1 shadow fence): `foridinids{{` must appear EXACTLY \
+         ONCE in the squashed `movement.rs`; found {n_anchor}. It is the drain \
+         loop's header (`for id in ids {{`) and the opening anchor of the region \
+         scanned below. `movement.rs` also contains `for entity_id in \
+         npc_entity_ids {{`, which deliberately does NOT match; if the drain loop is \
+         renamed, re-derive this anchor rather than deleting the assertion — with \
+         zero matches the region cannot be built and the fence would be vacuous."
+    );
+
+    let start = squashed
+        .find(loop_anchor.as_str())
+        .expect("movement_tests: `for id in ids {` not found in movement.rs");
+    let warp_marker = ["warp", "_at("].concat();
+    let len = squashed[start..]
+        .find(warp_marker.as_str())
+        .expect("movement_tests: `warp_at(` not found after the drain loop header");
+    let region = &squashed[start..start + len];
+
+    let shadows = [
+        ["letid", "="].concat(),
+        ["letid", ":"].concat(),
+        ["letmutid", "="].concat(),
+        ["letmutid", ":"].concat(),
+    ];
+    for shadow in &shadows {
+        let n = region.matches(shadow.as_str()).count();
+        assert_eq!(
+            n, 0,
+            "TEETH (E1/ADR-0168 D1, shadow fence — green at HEAD): found {n} \
+             occurrence(s) of `{shadow}` between the drain loop header \
+             (`for id in ids {{`) and `warp_at(`, which must contain ZERO. \
+             `id` there must remain the LOOP BINDING — it is the character's own \
+             `entity_id` (movement.rs:177-185), and the drain guard's \
+             `ctx.db.player().entity_id().filter(id)` depends on that identity. \
+             Re-binding `id` to anything else (`let id = u64::MAX;` is the \
+             red-team's one-line version) leaves E1 layer 1's contiguous needle \
+             matching BYTE FOR BYTE while the player lookup can never succeed: \
+             `.next()` is always `None`, `unwrap_or(false)` always says \
+             'not battle-locked', and every battling player walks. The poison sits \
+             OUTSIDE the pinned span, so no contiguity needle can see it — only \
+             this absence assertion can."
+        );
+    }
+}
+
 /// **E2** (ADR-0168 D2) — `enqueue_move` and `set_move` must reject movement
 /// intent while the caller is in an ongoing battle, in either role.
 ///
@@ -822,10 +1087,18 @@ fn movement_drain_region_uses_no_module_identity() {
 ///   reducer stays open (red-team HIGH-3). Green at HEAD.
 ///
 /// * **I1 / I2 — the full-block needle, per reducer.** The reducer's region must
-///   contain, contiguously and squashed:
-///   `ifis_in_ongoing_battle(ctx,ctx.sender){lete="cannotmoveduringanongoingbattle"
-///   .to_string();log_reject("<reducer>",ctx.sender,&e);returnErr(e);}`
-///   (bare / `guards::` / `crate::guards::` path spellings accepted).
+///   contain, contiguously, squashed and string-blanked:
+///   `ifis_in_ongoing_battle(ctx,ctx.sender){lete=.to_string();
+///   log_reject(,ctx.sender,&e);returnErr(e);}`
+///   (bare / `guards::` / `crate::guards::` path spellings accepted) — i.e. the
+///   source must read `if is_in_ongoing_battle(ctx, ctx.sender) { let e = "cannot
+///   move during an ongoing battle".to_string(); log_reject("<reducer>",
+///   ctx.sender, &e); return Err(e); }`.
+///
+///   The two string literals are blanked by the scan, so I1 and I2 use the SAME
+///   needle text and the per-reducer REGION is what proves each reducer carries
+///   its own guard (I0 proves those regions are unambiguous). One guard written
+///   in `enqueue_move` cannot satisfy I2, and vice versa.
 ///
 ///   The BLOCK is what has teeth. Red-team CRITICAL-2 shipped
 ///   `if is_in_ongoing_battle(ctx, ctx.sender) { if seq == 0 { return Err(..) } }`
@@ -860,15 +1133,17 @@ fn movement_drain_region_uses_no_module_identity() {
 ///   unrelated future edit that legitimately changes it must update the number
 ///   DELIBERATELY, after re-deriving the arithmetic.
 ///
-/// HONEST LIMITS. (a) I1/I2 pin the exact sanctioned text including the error
-/// message; a reworded message or an early-return helper would false-RED. ADR-0168
-/// D2 fixes the wording (it follows the `raising.rs` "cannot care during an
-/// ongoing battle" idiom) and the same trade was taken by 11r-a. (b) Comments are
-/// stripped but string literals are not: a `log::info!("<the whole block>")` would
-/// satisfy I1 textually. The `battle-reducer-security` eval strips string literals
-/// and is the authoritative gate for that class (see `raising_tests.rs:893-897`);
-/// I3's exact count also moves under such a fake. (c) Source scan, not execution —
-/// no reducer-executing harness exists (ADR-0156 P7).
+/// HONEST LIMITS. (a) I1/I2 pin the exact sanctioned CODE shape; a semantically
+/// identical rewrite (an early-return helper, a `match`) would false-RED. ADR-0168
+/// D2 fixes the shape and the same trade was taken by 11r-a. (b) What is NO LONGER
+/// pinned, since string literals are blanked before matching: the error message
+/// text and the reducer name passed to `log_reject`. Neither is a security
+/// property — the message is a `raising.rs` idiom ("cannot care during an ongoing
+/// battle") and the label only affects one observability line — and the price
+/// buys the far more valuable property that no dead string literal can satisfy
+/// any needle in this file (a red-team defeated the whole file with a single
+/// `let _decoy = r#"…"#;` before the stripper handled literals). (c) Source scan,
+/// not execution — no reducer-executing harness exists (ADR-0156 P7).
 #[test]
 fn e2_intake_rejects_movement_intent_during_an_ongoing_battle() {
     let squashed = squashed_movement();
@@ -900,16 +1175,23 @@ fn e2_intake_rejects_movement_intent_during_an_ongoing_battle() {
     );
 
     // --- I1: enqueue_move's full-block reject --------------------------------
+    // ONE needle set, TWO regions: string literals are blanked before matching,
+    // so the reducer name in the log call is not part of the needle. What proves
+    // each reducer has its OWN guard is that the needle is found inside each
+    // reducer's own region (I0 above proves those regions are unambiguous).
+    let variants = intake_reject_variants();
     let enqueue_region = reducer_region(&squashed, enqueue_marker.as_str());
-    let enqueue_variants = intake_reject_variants(enqueue_name.as_str());
-    let enqueue_ok = contains_any(enqueue_region, &enqueue_variants);
+    let enqueue_ok = contains_any(enqueue_region, &variants);
     assert!(
         enqueue_ok,
         "TEETH (E2/ADR-0168 D2, I1): `enqueue_move` must contain the intake reject \
-         as ONE contiguous whitespace-squashed block: \
-         `ifis_in_ongoing_battle(ctx,ctx.sender){{\
-         lete=\"cannotmoveduringanongoingbattle\".to_string();\
-         log_reject(\"enqueue_move\",ctx.sender,&e);returnErr(e);}}` \
+         as ONE contiguous block. Whitespace-squashed AND string-literal-blanked \
+         (which is how this scan sees the file), the required text is: \
+         `ifis_in_ongoing_battle(ctx,ctx.sender){{lete=.to_string();\
+         log_reject(,ctx.sender,&e);returnErr(e);}}` — i.e. the source must read \
+         `if is_in_ongoing_battle(ctx, ctx.sender) {{ let e = \"cannot move during \
+         an ongoing battle\".to_string(); log_reject(\"enqueue_move\", ctx.sender, \
+         &e); return Err(e); }}` \
          (the `guards::` / `crate::guards::` path spellings are also accepted). \
          The BLOCK is the point, not the call: a red-team shipped \
          `if is_in_ongoing_battle(ctx, ctx.sender) {{ if seq == 0 {{ return \
@@ -929,15 +1211,16 @@ fn e2_intake_rejects_movement_intent_during_an_ongoing_battle() {
 
     // --- I2: set_move's full-block reject ------------------------------------
     let set_region = reducer_region(&squashed, set_marker.as_str());
-    let set_variants = intake_reject_variants(set_name.as_str());
-    let set_ok = contains_any(set_region, &set_variants);
+    let set_ok = contains_any(set_region, &variants);
     assert!(
         set_ok,
         "TEETH (E2/ADR-0168 D2, I2): `set_move` must contain the same intake reject \
-         block, with its OWN reducer name in the log line: \
-         `ifis_in_ongoing_battle(ctx,ctx.sender){{\
-         lete=\"cannotmoveduringanongoingbattle\".to_string();\
-         log_reject(\"set_move\",ctx.sender,&e);returnErr(e);}}`. \
+         block INSIDE ITS OWN BODY — squashed and string-blanked: \
+         `ifis_in_ongoing_battle(ctx,ctx.sender){{lete=.to_string();\
+         log_reject(,ctx.sender,&e);returnErr(e);}}`, written with `set_move`'s own \
+         name in the log call (the name is blanked before matching, so it is I1/I2's \
+         REGION scoping — not the needle text — that proves each reducer is guarded \
+         separately; a single shared guard placed in one reducer fails the other). \
          `set_move` REPLACES the entire undrained queue, so it adds movement intent \
          exactly as `enqueue_move` does and must be guarded identically. It has no \
          production caller today (`main.wiring.test.ts` W-NH2-NO-CANCEL forbids one) \
@@ -1005,7 +1288,12 @@ fn e2_intake_rejects_movement_intent_during_an_ongoing_battle() {
 ///     an ADR-level decision, not an implementation detail.
 ///
 /// Comment-stripping runs before the match, so the D3 rationale comment the
-/// implementer is asked to add INSIDE the body cannot break this pin.
+/// implementer is asked to add INSIDE the body cannot break this pin. String
+/// literals are blanked too, so the `"clear_queue"` label handed to
+/// `authorize_move` is no longer pinned (only the log line would change if it
+/// were altered); the pin is anchored instead on the `pub fn clear_queue(`
+/// marker, which is code and survives stripping. That trade is what makes a dead
+/// `let _decoy = r#"…"#;` unable to satisfy any needle in this file.
 ///
 /// HONEST LIMIT: pinning a whole body means a legitimate future change to
 /// `clear_queue` (a new ack scheme, a rename of `authorize_move`) turns this red.
@@ -1016,21 +1304,39 @@ fn e2_intake_rejects_movement_intent_during_an_ongoing_battle() {
 fn clear_queue_is_deliberately_not_battle_guarded() {
     let squashed = squashed_movement();
 
+    // Region-scoped, not whole-file: string literals are blanked before matching,
+    // so the `"clear_queue"` label inside `authorize_move(..)` is no longer part
+    // of the needle. Anchoring on the fn NAME — which is code and survives
+    // stripping — is what still proves this body belongs to `clear_queue`.
+    let marker = ["pubfnclear", "_queue("].concat();
+    let n_marker = squashed.matches(marker.as_str()).count();
+    assert_eq!(
+        n_marker, 1,
+        "ANTI-DECISION PRECONDITION (ADR-0168 D3): `pubfnclear_queue(` must appear \
+         EXACTLY ONCE in the squashed `movement.rs`; found {n_marker}. With zero \
+         the reducer was renamed or deleted — re-argue D3 before adjusting this \
+         test. With two, the region extractor takes the first match and a decoy \
+         could carry the pinned body while the real `clear_queue` is guarded."
+    );
+    let region = reducer_region(&squashed, marker.as_str());
+
     // Assembled from fragments (house rule): the full body never appears
     // verbatim in this file, so no scan over the concatenated server sources can
     // be satisfied by the test's own text.
     let body_pin = [
-        "{letmutch=authorize_move(ctx,\"clear",
-        "_queue\",seq)?;ch.move_queue.clear();",
+        "{letmutch=authorize_move(ctx,,seq)?;ch.move_queue.clear();",
         "ctx.db.character().entity_id().update(ch);Ok(())}",
     ]
     .concat();
     assert!(
-        squashed.contains(body_pin.as_str()),
+        region.contains(body_pin.as_str()),
         "ANTI-DECISION SENTINEL (ADR-0168 D3, green at HEAD): `clear_queue`'s ENTIRE \
-         body must remain, whitespace-squashed and brace-to-brace: \
-         `{{letmutch=authorize_move(ctx,\"clear_queue\",seq)?;ch.move_queue.clear();\
-         ctx.db.character().entity_id().update(ch);Ok(())}}`. \
+         body must remain, brace-to-brace — squashed and string-blanked (which is \
+         how this scan sees the file): \
+         `{{letmutch=authorize_move(ctx,,seq)?;ch.move_queue.clear();\
+         ctx.db.character().entity_id().update(ch);Ok(())}}` — i.e. the source must \
+         still read `let mut ch = authorize_move(ctx, \"clear_queue\", seq)?;` and \
+         nothing else. \
          `clear_queue` is deliberately NOT battle-guarded, and this is the fence \
          that keeps it that way. THE THREE REASONS (ADR-0168 D3): \
          (1) it is PURE CANCELLATION — it cannot cause movement and enables no \
