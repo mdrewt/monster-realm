@@ -766,7 +766,12 @@ DOM shell (textContent-only), connection wiring for `battle`+`skill_row` in same
 subscribe() call, main.ts integration with Escape priority battle>box>movement,
 auto-hide box during battle, heal_party button in box view — 57 new client tests, all
 green) complete. **M7 (Battle system) is now fully delivered** (M7a + M7b + M7c all
-merged). **M8a** (taming rules — pure encounter triggering, recruit-chance arithmetic,
+merged). **11r-b** (PvP side-B battle overlay — ADR-0167) later made the battle
+accessors role-agnostic: `store.ongoingBattle`/`latestPlayerBattle` match either PvP
+role and return raw server rows, and `ownPerspective()` in `net/store.ts` is the single
+view-boundary seam that re-seats the local player as sideA — wired exactly once, from
+`refreshBattle` in main.ts, while diagnostics deliberately keep reading raw server
+truth. **M8a** (taming rules — pure encounter triggering, recruit-chance arithmetic,
 encounters.ron registry, validation, 24 tests with 5 proof-of-teeth fixtures + 2
 proptest suites, all green) complete. **M8b** (encounter server integration — private
 encounter table, validate-before-write upsert seeding, B1 empty/duplicate validation,

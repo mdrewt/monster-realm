@@ -727,22 +727,56 @@ export class AuthoritativeStore {
     return this.#battles.get(battleId);
   }
 
-  /** The player's own ongoing battle (ADR-0042: public table, client-side filter). */
-  ongoingBattle(identity: string): StoreBattle | undefined {
-    for (const b of this.#battles.values()) {
-      if (b.playerIdentity === identity && b.outcome === 'Ongoing') return b;
-    }
-    return undefined;
+  /** Is `identity` one of the battle's two PARTICIPANT columns? A PvP accepter is stored
+   *  in `opponentIdentity` (server-module/src/pvp.rs:289-297), so a `playerIdentity`-only
+   *  match left side B with no battle at all (11r-b, ADR-0167 D1). ONE condition shared by
+   *  both accessors below, deliberately — two hand-written copies can drift (a fix landed
+   *  on one and forgotten on the other). Exact equality against participant columns only:
+   *  the `battle` table is subscribed unfiltered (connection.ts:554-559), so this is what
+   *  keeps a stranger's row out. */
+  #isParticipant(b: StoreBattle, identity: string): boolean {
+    return b.playerIdentity === identity || b.opponentIdentity === identity;
   }
 
-  /** The player's most-recent battle of ANY outcome (highest battleId among
-   *  playerIdentity === identity). Highest battleId = most recent (server auto-inc,
-   *  monotonic; single current battle per player). Feeds the outcome-frame lifecycle;
-   *  ongoingBattle() (Ongoing-only) is unchanged. (M8.7e, ADR-0014/0042.) */
-  latestPlayerBattle(identity: string): StoreBattle | undefined {
+  /** The player's own ongoing battle — matched in EITHER PvP role, `playerIdentity` OR
+   *  `opponentIdentity` (11r-b/ADR-0167 D1; ADR-0042: public table, client-side filter).
+   *  Returns the RAW server row: the store stays a mirror of server truth, and the
+   *  own-side-is-sideA view projection lives in `ownPerspective()` below. When more than
+   *  one Ongoing row matches, the HIGHEST battleId wins — the same tiebreak
+   *  `latestPlayerBattle()` uses (T-RA-6). */
+  ongoingBattle(identity: string): StoreBattle | undefined {
+    // Pre-join guard: matching two participant columns instead of one turns "no match"
+    // into "possible false match" for an empty identity (AC-3).
+    if (identity === '') return undefined;
     let best: StoreBattle | undefined;
     for (const b of this.#battles.values()) {
-      if (b.playerIdentity !== identity) continue;
+      if (!this.#isParticipant(b, identity) || b.outcome !== 'Ongoing') continue;
+      // Scan-and-keep-highest, NOT return-on-first-match: while this accessor matched a
+      // single identity column at most one row could ever match, so an early return was
+      // safe. Either-role matching makes TWO simultaneous Ongoing matches possible (you can
+      // be the challenger in one battle and the accepter in another), and first-match-wins
+      // would then hand back whichever row `Map` iteration reached first — insertion-order
+      // nondeterminism, and a disagreement with latestPlayerBattle() about which battle is
+      // "the" one. Both accessors must agree: the __game() DEV hook, the F9 bug bundle and
+      // e2e/pvp-side-b.spec.ts's AC-1 witness all read THIS one.
+      // bigint `>` (never Number()/Math.max — ids exceed 2^53; T1d).
+      if (best === undefined || b.battleId > best.battleId) best = b;
+    }
+    return best;
+  }
+
+  /** The player's most-recent battle of ANY outcome (highest battleId among rows where
+   *  `identity` holds EITHER PvP role — 11r-b/ADR-0167 D1). Highest battleId = most recent
+   *  (server auto-inc, monotonic; single current battle per player). Returns the RAW server
+   *  row (see `ownPerspective()` for the view projection). Feeds the outcome-frame
+   *  lifecycle; ongoingBattle() (Ongoing-only) matches the same either-role rule.
+   *  (M8.7e, ADR-0014/0042.) */
+  latestPlayerBattle(identity: string): StoreBattle | undefined {
+    // Pre-join guard — same reason as ongoingBattle() above (AC-3).
+    if (identity === '') return undefined;
+    let best: StoreBattle | undefined;
+    for (const b of this.#battles.values()) {
+      if (!this.#isParticipant(b, identity)) continue;
       // bigint `>` (never Number()/Math.max — ids exceed 2^53; T1d).
       if (best === undefined || b.battleId > best.battleId) best = b;
     }
@@ -959,4 +993,70 @@ export class AuthoritativeStore {
     const slot = this.#ownWallet;
     return slot !== undefined && slot.ownerIdentity === identity ? slot : undefined;
   }
+}
+
+// --- 11r-b: the ONE view-perspective seam (ADR-0167 D2) -------------------------
+// Companion to ongoingBattle()/latestPlayerBattle() above, which return RAW server rows
+// in EITHER PvP role. A free function, not a store method, on purpose: it keeps the
+// accessors honestly "a mirror of server truth" and keeps the projection directly
+// unit-testable (store.test.ts T-OWNP-*).
+
+/** Re-express `battle` so the CALLER's own side is always sideA — the projection that lets
+ *  a PvP accepter (stored in `opponentIdentity`, server-module/src/pvp.rs:289-297) use a
+ *  view layer that hardcodes sideA = the local player (`buildBattleViewModel`
+ *  ui/battleModel.ts:239-271, `battleView.#renderOutcome` ui/battleView.ts:430-435).
+ *
+ *  Returned BY REFERENCE — no swap — when `identity` is `playerIdentity`, when it is in
+ *  NEITHER role (never fabricate a perspective), or when `battle` is undefined. The
+ *  `playerIdentity` test comes FIRST and that ordering is load-bearing: it is also what
+ *  makes a practice battle (`playerIdentity === opponentIdentity`, ADR-0109) a no-op
+ *  instead of seating the player on the wrong side of their own mirror.
+ *
+ *  Otherwise sideA/sideB, playerIdentity/opponentIdentity and
+ *  partyMonsterIds/opponentMonsterIds are exchanged (all six are load-bearing — the id
+ *  lists feed `isWild` and therefore `canRecruit`) and `outcome` SideAWins<->SideBWins is
+ *  permuted. `battleId`, `turnNumber`, `weather`, `createdAtMs`, 'Ongoing', 'Fled' and any
+ *  UNRECOGNIZED outcome string pass through verbatim — the last of these deliberately, so
+ *  `parseOutcomeTag`'s bindings-regen drift detector (ui/battleModel.ts:203-213) still
+ *  fires on a new server variant. Do not normalize or coerce an unknown tag.
+ *
+ *  VIEW-PERSPECTIVE ONLY — never feed the result to logs, the event ring, the F9 bug
+ *  bundle, or a DEV hook; those carry server truth, where sideA is always the challenger,
+ *  so that two players' bug bundles and event rings agree on who won (ADR-0167 D3).
+ *
+ *  NEVER MUTATE a projected view in place: the fast path returns a store-owned object by
+ *  reference and the slow path shallow-swaps store-owned nested side objects, so an
+ *  in-place edit would corrupt the canonical row for BOTH players. */
+export function ownPerspective(battle: StoreBattle, identity: string): StoreBattle;
+export function ownPerspective(
+  battle: StoreBattle | undefined,
+  identity: string,
+): StoreBattle | undefined;
+export function ownPerspective(
+  battle: StoreBattle | undefined,
+  identity: string,
+): StoreBattle | undefined {
+  if (battle === undefined) return undefined;
+  // Two sequential by-reference fast paths, in THIS order — playerIdentity first is
+  // load-bearing (see the practice-battle note above; pinned by T-OWNP-PRACTICE).
+  if (identity === battle.playerIdentity) return battle; // I am side A (also: a practice battle)
+  if (identity !== battle.opponentIdentity) return battle; // not a participant — never fabricate
+  return {
+    ...battle,
+    playerIdentity: battle.opponentIdentity,
+    opponentIdentity: battle.playerIdentity,
+    sideA: battle.sideB,
+    sideB: battle.sideA,
+    partyMonsterIds: battle.opponentMonsterIds,
+    opponentMonsterIds: battle.partyMonsterIds,
+    outcome: swapWinnerTag(battle.outcome),
+  };
+}
+
+/** SideAWins <-> SideBWins; EVERY other tag (including 'Ongoing', 'Fled' and an
+ *  unrecognized one) is a fixed point. An involution, by construction. */
+function swapWinnerTag(outcome: string): string {
+  if (outcome === 'SideAWins') return 'SideBWins';
+  if (outcome === 'SideBWins') return 'SideAWins';
+  return outcome;
 }
