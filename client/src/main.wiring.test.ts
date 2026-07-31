@@ -5911,3 +5911,163 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): no de-Morgan-&&-spelled hand-rol
     ).toBe(0);
   });
 });
+
+// ===========================================================================
+// 11r-b — PvP side-B battle overlay wiring (ADR-0167, closes ADR-0155 D6)
+//
+// SOURCE OF TRUTH: memory/projects/monster-realm-11r-b-plan.md §4 AC-1..AC-11, as
+//   AMENDED by §11 (R-1 red-team/reviewer finding: the plan's original 3 lexical-ban
+//   source-scan teeth are each individually defeatable — see the concrete defeats
+//   named in the comments below — and are REPLACED here with an ENUMERATED CEILING,
+//   the same idiom DIALOGUE_VIEW_CEILING above uses, for the SAME measured reason: a
+//   whole-file substring ban on `x?.hide` was beaten CI-green by
+//   `const h = dialogueView; h?.hide();` with the full suite green and tsc clean).
+//
+// THE DEFECT (context for both teeth below): store.ongoingBattle()/latestPlayerBattle()
+// filtered `playerIdentity === identity` ONLY. A PvP ACCEPTER is stored in
+// opponentIdentity (server-module/src/pvp.rs:289-297), so the accepter got NO battle
+// overlay at all in production builds — no cards, no skills, no swap — frozen until the
+// 60s deadline reaper forfeited them. The existing e2e suite masked this by driving side
+// B through the DEV-gated role-agnostic __mrPvp.battleById hook: green CI, broken real
+// path. This slice's fix has TWO independent parts, and each needs its own tooth:
+//   (a) the accessors become role-agnostic (store.test.ts's T-RA-* — NOT this file's job)
+//   (b) refreshBattle projects the row through ownPerspective BEFORE it reaches the view
+//       model (THIS file's W-PVPB-PROJECT) — (a) alone is the "half-fix": it makes
+//       AC-1 (ongoingBattle non-null) true while AC-7 (own cards rendered) stays false,
+//       because buildBattleViewModel would receive the RAW row and paint the
+//       CHALLENGER's monster as the "You" card — strictly worse than a blank screen,
+//       and invisible to every existing behavioural test (refreshBattle has none).
+//
+// RED REASON: main.ts on master has no `ownPerspective` import or call at all (the bare
+// identifier occurs 0 times) — every assertion below fails against the CURRENT
+// (unfixed) source.
+// ===========================================================================
+
+describe('★ main.ts wiring (11r-b/ADR-0167): ownPerspective — unaliased import, ceiling of 2, wraps the refreshBattle read', () => {
+  it('★ W-PVPB-PROJECT BITES: ownPerspective is imported unaliased, mentioned EXACTLY 2× whole-file (a CEILING, not just a floor), and its ONE call is the syntactically wrapped form inside refreshBattle', () => {
+    const src = readMainTs();
+    const stripped = stripLineComments(src);
+
+    // --- (1) the UNALIASED named import: kills `import { ownPerspective as op }` --------
+    // Concrete defeat this closes (plan §11 R-1): with an alias, every call site in
+    // main.ts would invoke `op(...)`, never the bare `ownPerspective(...)` identifier — the
+    // needle `import { ownPerspective as op }` beats a bare-name-only needle outright. This
+    // assertion names that failure directly instead of relying solely on the ceiling count
+    // below (whose failure message has to explain several possible causes at once).
+    expect(
+      countOccurrences(stripped, 'ownPerspective as'),
+      'main.ts must import ownPerspective UNALIASED. `import { ownPerspective as op }` would ' +
+        'route every call through the alias `op`, silently defeating the ceiling and ' +
+        'wrapped-form checks below (which both read the bare `ownPerspective` identifier).',
+    ).toBe(0);
+
+    // --- (2) whole-file CEILING on the bare identifier: EXACTLY 2 (1 import + 1 call) ----
+    // ANTI-VACUITY positive control: `AuthoritativeStore` is an EXISTING named import from
+    // the same `./net/store` module — proving it is found here (before trusting a
+    // brand-new identifier's count) rules out an empty-read or an over-eager strip.
+    expect(
+      countOccurrences(stripped, 'AuthoritativeStore'),
+      'positive control: `AuthoritativeStore` must occur in main.ts — proves this is reading ' +
+        'real, comment-stripped source and not an empty string',
+    ).toBeGreaterThan(0);
+    expect(
+      countOccurrences(stripped, 'ownPerspective'),
+      'main.ts must mention `ownPerspective` EXACTLY 2× (1 import + 1 call) — a CEILING. RED ' +
+        'AT AUTHORING TIME: 0 (the symbol does not exist in main.ts yet). AFTER implementation, ' +
+        'a count ABOVE 2 means one of two things: (a) a SECOND call — the ' +
+        '`const _proj = ownPerspective(store.latestPlayerBattle(identity), identity); const ' +
+        'latest = store.latestPlayerBattle(identity);` compute-then-ignore defeat, which ' +
+        'computes the projection and then renders the RAW row anyway, showing side B the ' +
+        "OPPONENT's cards and skills — or (b) a leak into a diagnostic region (F9 bundle / " +
+        "snapshot() DEV hook / battleById), violating AC-10's raw-diagnostics invariant (two " +
+        "players' bug bundles must agree on who won). The enumeration here is a single flat " +
+        'number rather than a per-site list (unlike DIALOGUE_VIEW_SITES above) because this ' +
+        'slice adds exactly ONE legitimate call site; if that ever changes, the enumeration ' +
+        'AND this ceiling must be updated together in the SAME review, never one alone.',
+    ).toBe(2);
+
+    // --- (3) inside refreshBattle, store.latestPlayerBattle(identity) occurs EXACTLY 1× --
+    // Region bound: 'function refreshBattle(): void {' -> the literal statement immediately
+    // following the function's own closing brace, 'store.onBatchApplied(() =>
+    // refreshBattle());' — grep-verified UNIQUE in main.ts (appears nowhere else), so no
+    // implementer sentinel comment is needed to disambiguate this region.
+    const region = stripLineComments(
+      regionOrThrow(
+        src,
+        'function refreshBattle(): void {',
+        'store.onBatchApplied(() => refreshBattle());',
+      ),
+    );
+    expect(
+      countOccurrences(region, 'store.latestPlayerBattle(identity)'),
+      'inside refreshBattle, `store.latestPlayerBattle(identity)` must occur EXACTLY once — ' +
+        'kills "compute the projection, then re-read the raw accessor a second time" (the ' +
+        'same half-fix named above, caught a second, more local way: this scan cannot be ' +
+        'satisfied by moving the extra raw read to a DIFFERENT function).',
+    ).toBe(1);
+
+    // --- (4) that ONE occurrence is the syntactically WRAPPED form -----------------------
+    expect(
+      region.includes('ownPerspective(store.latestPlayerBattle(identity), identity)'),
+      'refreshBattle must read exactly ' +
+        '`ownPerspective(store.latestPlayerBattle(identity), identity)` — the raw accessor ' +
+        'result must be projected BEFORE anything downstream (the VM build, and the PvP ' +
+        'opponent-name lookup that reads the SAME `latest`/`r.action.battle` binding) sees ' +
+        'it. RED AT AUTHORING TIME: refreshBattle currently reads ' +
+        '`const latest = store.latestPlayerBattle(identity);` completely unwrapped.',
+    ).toBe(true);
+  });
+});
+
+describe('★ main.ts wiring (11r-b/ADR-0167): the side-B e2e spec proves the PRODUCTION path, never the DEV hook', () => {
+  it('★ W-PVPB-E2E-NOHOOK BITES: client/e2e/pvp-side-b.spec.ts exists, contains NEITHER `__mrPvp` NOR `battleById`, and DOES contain the production-DOM anchors', () => {
+    // HONEST SCOPE: this lexical scan is a CHEAP SUPPLEMENT, not the load-bearing guard —
+    // plan §11 R-1 red-team-demonstrated the concrete defeat
+    // `window['__mr' + 'Pvp']['battleById'](id)`, which contains NEITHER literal and beats
+    // this check outright. The LOAD-BEARING guard lives INSIDE the spec file itself: an
+    // addInitScript call-counter installed on pageB BEFORE the app script runs, which
+    // observes every CALL made through the DEV hook regardless of how its property name is
+    // spelled at the source-text level (immune to rename/alias/dynamic-property/string-
+    // concat obfuscation because it watches the CALL, not the identifier) — see that spec's
+    // own header comment and its `expect(...calls...).toBe(0)` assertion (Task 3).
+    // This scan exists anyway as a fast, specific, human-readable early warning — and to
+    // stop the exact failure that hid the 11r-b CRITICAL for a whole milestone: the
+    // existing e2e suite drove side B entirely through this DEV hook, so CI stayed green
+    // while the production path was completely broken.
+    const specPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '../e2e/pvp-side-b.spec.ts',
+    );
+    let src: string;
+    try {
+      src = readFileSync(specPath, 'utf8');
+    } catch (err) {
+      throw new Error(
+        'client/e2e/pvp-side-b.spec.ts could not be read — the file must exist: ' + String(err),
+      );
+    }
+    expect(
+      src.includes('__mrPvp'),
+      'pvp-side-b.spec.ts must NOT reference the DEV multiplayer-PvP test hook anywhere ' +
+        '(including comments — this is a whole-file raw scan) — driving side B through it is ' +
+        'exactly the failure this test exists to prevent from recurring.',
+    ).toBe(false);
+    expect(
+      src.includes('battleById'),
+      'pvp-side-b.spec.ts must NOT reference the DEV role-agnostic battle-lookup method — ' +
+        'same rationale (that method legitimately reads BOTH sides, which the production ' +
+        'path this spec exercises never will).',
+    ).toBe(false);
+    expect(
+      src.includes('pvp-accept-btn'),
+      'pvp-side-b.spec.ts must drive the accept flow through the REAL pvp-accept-btn DOM ' +
+        'element (production path), not a hook call.',
+    ).toBe(true);
+    expect(
+      src.includes('Submit: '),
+      'pvp-side-b.spec.ts must assert on the REAL "Submit: <skill>" button text ' +
+        '(battleView.ts) — the whole point of this slice is that this text becomes visible ' +
+        "on side B's page for the first time.",
+    ).toBe(true);
+  });
+});
