@@ -43,6 +43,16 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// uxd3 (ADR-0162): W-ONE-CORNER-AFFORDANCE parses the REAL client/index.html with a real HTML
+// parser (both target divs spread `id`/`style` across several lines, so a line regex would miss
+// them — see plan A10 / reviewer L5). This file's vitest environment is `node`, and the
+// `@vitest-environment happy-dom` docblock is FILE-scoped — flipping it would change the
+// environment for all ~90 pre-existing node-only source-scan teeth in this file for the sake of
+// one test. Importing the detached `Window` gives us the same `DOMParser` that
+// client/src/indexShell.test.ts uses, with zero blast radius. (indexShell.test.ts is OUT of this
+// slice's touch-set; its parseIndexHtml()/normalisedStyle() helpers are re-implemented locally
+// below rather than exported/shared, deliberately.)
+import { Window } from 'happy-dom';
 import { describe, expect, it } from 'vitest';
 
 // Locate main.ts relative to this test file (both live in client/src/).
@@ -1303,7 +1313,16 @@ describe('★ main.ts wiring (pt-c2b help): fan-out count floor (PTC2B-4..8 / AD
   // uxd2 RECALIBRATION (19 -> 18): KeyG/KeyH blocks deleted (-2), anyOverlayVisible() predicate
   // added (+1) — see ADR-0161. Without this the suite is internally UNSATISFIABLE: no impl can
   // both delete the two handlers (W-INTERACT-NO-GH) and keep 19 occurrences.
-  const HELP_VISIBLE_FLOOR = 18;
+  //
+  // uxd3 RECALIBRATION (18 -> 19, plan §8 T3.2 / ADR-0162): the +1 is the NEW `KeyM` open-handler
+  // (main.ts edit 18) — the 12th open-handler, which carries the FULL 14-sibling guard list and
+  // therefore contributes exactly one `!helpView?.visible` (and exactly one
+  // `!leaderboardView?.visible`, which is why the derived parity anchor below moves in lockstep).
+  // NOTHING ELSE in uxd3 touches either count: the eleven existing guard lists gain
+  // `!menuView?.visible`, the five fan-out OR-lists gain `menuView?.visible`, and the
+  // refreshBattle / dialogue-preempt / onReconnect edits name `menuView` only. Verified against
+  // the pre-impl file: helpView?.visible = 18, leaderboardView?.visible = 19 today.
+  const HELP_VISIBLE_FLOOR = 19;
   // leaderboardView?.visible is the read-only-overlay parity anchor. Wiring the help overlay
   // adds `!leaderboardView?.visible` to help's OWN `?` open-guard, so leaderboard's live count is
   // HELP_VISIBLE_FLOOR + 1 (that guard contributes to leaderboard's count but not to help's own).
@@ -1311,7 +1330,12 @@ describe('★ main.ts wiring (pt-c2b help): fan-out count floor (PTC2B-4..8 / AD
   // added (+1) — see ADR-0161. Both overlays lose and gain the SAME sites, so the +1 parity
   // relation is preserved and the two still move together on any future keymap change.
   // This exact self-check is RED TODAY (the live file still has 20) — correct TDD red.
-  const LEADERBOARD_LIVE_COUNT = HELP_VISIBLE_FLOOR + 1; // 19
+  //
+  // uxd3 (plan §8 T3.2): this constant is DERIVED (`HELP_VISIBLE_FLOOR + 1`) and therefore needs
+  // NO separate edit — moving the floor 18 -> 19 moves it 19 -> 20 automatically, which is exactly
+  // the post-uxd3 live count (the KeyM guard list adds one occurrence to BOTH overlays, so the +1
+  // parity relation is preserved). Verified: leaderboardView?.visible = 19 pre-impl, 20 post-impl.
+  const LEADERBOARD_LIVE_COUNT = HELP_VISIBLE_FLOOR + 1; // 20 post-uxd3
 
   it(`self-check: leaderboardView?.visible appears exactly ${LEADERBOARD_LIVE_COUNT}× — pins the parity anchor to the live file`, () => {
     // A LIVE self-check: proves the parity overlay is fully wired in THIS main.ts, so a future
@@ -1466,10 +1490,10 @@ describe('★ main.ts wiring (pt-c2b help): per-context anchored fan-out teeth (
   });
 });
 
-describe('★ main.ts wiring (pt-c2b help): 10 sibling open-guards carry !helpView?.visible (PTC2B-5)', () => {
+describe('★ main.ts wiring (pt-c2b help): 11 sibling open-guards carry !helpView?.visible (PTC2B-5)', () => {
   // PTC2B-5: while the help overlay is visible, pressing a sibling hotkey must NOT open that
-  // overlay. Each of the 10 sibling key handlers (KeyB/I/E/Q/U/P/L/N/O/T) must add
-  // `!helpView?.visible` to its open-guard block.
+  // overlay. Each of the 11 sibling key handlers (KeyB/I/E/Q/U/P/L/N/O/T/M — uxd3 added M) must
+  // add `!helpView?.visible` to its open-guard block.
   //
   // uxd2 EDIT (ADR-0161 D5 / plan AC-10′ — list maintenance, NOT a weakening): 'KeyH' and
   // 'KeyG' were removed from SIBLING_KEYS because uxd2 DELETES both handlers outright (the
@@ -1489,6 +1513,13 @@ describe('★ main.ts wiring (pt-c2b help): 10 sibling open-guards carry !helpVi
   // (plan reviewer HIGH-2); pt-c2b only adds helpView?.visible. ptc5c has now SHIPPED
   // W-OVERLAY-FANOUT-MUTEX (below) which enforces the FULL 14-overlay sibling set for ALL
   // handlers, including the KeyB/I/E dialogue/questLog/heal omission this comment once noted.
+  //
+  // uxd3 EDIT (ADR-0162 / plan §8 T3.2 — list GROWTH, 10 -> 11): 'KeyM' joins the sibling set.
+  // The new menu front-door is a full open-handler, so it must carry `!helpView?.visible` like
+  // every other sibling (pressing M while the help overlay is open must NOT stack the menu on
+  // top of it). Adding it also TIGHTENS every other key's block bound: the KeyM anchor becomes a
+  // candidate `blockEnd`, so a stray helpView?.visible living in the KeyM block can no longer
+  // false-credit the handler that precedes it.
   const SIBLING_KEYS = [
     'KeyB',
     'KeyI',
@@ -1500,9 +1531,10 @@ describe('★ main.ts wiring (pt-c2b help): 10 sibling open-guards carry !helpVi
     'KeyN',
     'KeyO',
     'KeyT',
+    'KeyM',
   ] as const;
 
-  it('W-HELP-FANOUT-OPENGUARDS BITES: EACH of the 10 sibling open-guards contains !helpView?.visible — kills partial-guard impl', () => {
+  it('W-HELP-FANOUT-OPENGUARDS BITES: EACH of the 11 sibling open-guards contains !helpView?.visible — kills partial-guard impl', () => {
     // WRONG IMPL KILLED: an impl that adds !helpView?.visible to some sibling guards (e.g. the
     // newer L/N/O/T) but forgets an older one (e.g. KeyB) — pressing KeyB while help is open
     // would then open the box overlay over the help overlay (a mutual-exclusion breach).
@@ -1596,14 +1628,15 @@ describe('main.ts wiring (pt-c2b help): onReconnect does NOT hide helpView (PTC2
 // for EVERY sibling overlay via a guard or a legitimate hide-switch, so that no
 // two of the 14 mutual-exclusion overlays can be simultaneously visible.
 //
-// THE 14 MUTUAL-EXCLUSION OVERLAYS (SSOT — not including errorOverlayView):
+// THE 15 MUTUAL-EXCLUSION OVERLAYS (SSOT — not including errorOverlayView):
 //   battleView, boxView, raisingView, evolutionView, dialogueView, questLogView,
 //   healView, shopView, tradeView, pvpView, leaderboardView, renameView,
-//   tradeProposeView, helpView
+//   tradeProposeView, helpView, menuView          (uxd3/ADR-0162 added menuView)
 //
-// THE 11 OPEN-HANDLERS (uxd2: was 13 — KeyG/KeyH deleted, ADR-0161 D5): one per
-// remaining hotkey + the interact handler (KeyT, which opens NO overlay of its own
-// but must still guard against ALL 14 so it never fires into an open UI).
+// THE 12 OPEN-HANDLERS (uxd2: was 13 — KeyG/KeyH deleted, ADR-0161 D5 → 11; uxd3:
+// +KeyM → 12): one per remaining hotkey + the interact handler (KeyT, which opens NO
+// overlay of its own but must still guard against ALL 15 so it never fires into an
+// open UI).
 //
 // ACCEPTANCE FORM (by overlay class):
 //   battleView         → bare token `battleView?.visible`
@@ -1654,7 +1687,14 @@ describe('main.ts wiring (pt-c2b help): onReconnect does NOT hide helpView (PTC2
 // ---------------------------------------------------------------------------
 
 describe('★ main.ts wiring (ptc5c): every overlay-open handler accounts for all sibling overlays (W-OVERLAY-FANOUT-MUTEX)', () => {
-  // The 14 mutual-exclusion overlays (pin as const — no errorOverlayView).
+  // The 15 mutual-exclusion overlays (pin as const — no errorOverlayView).
+  //
+  // uxd3 EDIT (ADR-0162 / plan §8 T3.2 — list GROWTH, 14 -> 15): `menuView` is a full
+  // mutual-exclusion member (GUARD_ONLY tier — see overlayRegistry's OVERLAY_TIERS). Adding it
+  // here is what forces the eleven existing handlers to each carry `!menuView?.visible`: without
+  // it, pressing B/I/E/Q/U/P/L/N/O/T/? while the menu is open would stack an overlay UNDER a
+  // modal menu that still swallows the arrow keys. This list stays the SSOT that
+  // overlayRegistry.OVERLAY_IDS is checked against (OR-MANIFEST-COMPLETE, 15 ids).
   const ALL_OVERLAYS = [
     'battleView',
     'boxView',
@@ -1670,6 +1710,7 @@ describe('★ main.ts wiring (ptc5c): every overlay-open handler accounts for al
     'renameView',
     'tradeProposeView',
     'helpView',
+    'menuView',
   ] as const;
 
   // The three "hide-switch" siblings: KeyB/I/E legitimately hide-and-switch within
@@ -1684,7 +1725,16 @@ describe('★ main.ts wiring (ptc5c): every overlay-open handler accounts for al
   // STRENGTHENS the invariant rather than weakening it: with no handler claiming healView or
   // shopView as its `self`, EVERY remaining handler must now carry `!healView?.visible` AND
   // `!shopView?.visible` (previously each of those two was exempted in its own handler).
-  // ALL_OVERLAYS stays at 14 — both overlays still exist, they are just hotkey-less now.
+  // ALL_OVERLAYS stayed at 14 — both overlays still exist, they are just hotkey-less now.
+  //
+  // uxd3 EDIT (ADR-0162 / plan §8 T3.2 — list GROWTH, 11 -> 12): the `KeyM` menu front-door is
+  // the 12th open-handler, `self: 'menuView'`. It therefore must guard the OTHER 14 overlays
+  // (W-KEYM-HANDLER, at the foot of this file, states the same 14-guard requirement
+  // list-independently, so a future mis-edit of THIS list cannot silently un-pin it).
+  // ⚠ ANCHOR DISCIPLINE (plan anti-pattern 14): the literal `e.code === 'KeyM'` must appear in
+  // main.ts EXACTLY ONCE — the slicing below uses first-`indexOf`, so the same string in a
+  // comment above the handler would anchor the block at the comment and let the real guard list
+  // fall outside it. W-KEYM-HANDLER asserts that uniqueness explicitly.
   const OPEN_HANDLERS: ReadonlyArray<{ anchor: string; self: string | null }> = [
     { anchor: "e.code === 'KeyB'", self: 'boxView' },
     { anchor: "e.code === 'KeyI'", self: 'raisingView' },
@@ -1696,7 +1746,8 @@ describe('★ main.ts wiring (ptc5c): every overlay-open handler accounts for al
     { anchor: "e.code === 'KeyN'", self: 'renameView' },
     { anchor: "e.code === 'KeyO'", self: 'tradeProposeView' },
     { anchor: "e.key === '?'", self: 'helpView' }, // note: e.key not e.code
-    { anchor: "e.code === 'KeyT'", self: null }, // talk: toggles NO overlay → must guard ALL 14
+    { anchor: "e.code === 'KeyT'", self: null }, // talk: toggles NO overlay → must guard ALL 15
+    { anchor: "e.code === 'KeyM'", self: 'menuView' }, // uxd3: the menu front-door (ADR-0162)
   ] as const;
 
   // The sentinel that closes the `?` handler's block (the last open-handler before
