@@ -649,3 +649,143 @@ describe('M12d gating: dialogueContent.ts bundle text matches 000-core.ron (RT-D
     expect(result!.choices[0]!.idx).toBe(0);
   });
 });
+
+// =============================================================================
+// uxd2 (ADR-0161 D4) — GREET-THEN-SHOP: DialogueViewModel gains `shopAction`.
+// APPENDED BLOCK — nothing above this line is modified.
+//
+// SOURCE OF TRUTH: docs/specs/uxd2-plan.md AC-2 + docs/adr/0161-*.md §D4.
+//
+// CONTRACT:
+//   DialogueViewModel += readonly shopAction: { readonly shopId: number } | null
+//   Derived in buildDialogueViewModel from `npcs.get(conv.npcEntityId).interaction`:
+//     { kind:'shop', shopId }      -> { shopId }
+//     { kind:'dialogue' }          -> null
+//     { kind:'heal', locationId }  -> null
+//   The derivation is from the SERVER ENUM, never from choice text (un-pinnable string
+//   coupling) and never from a second content source (would drift from the enum SSOT).
+//   BOTH '...'-fallback arms (missing tree / missing node) also carry shopAction — the
+//   npc row IS present in those arms, so the Shop affordance must survive a content gap
+//   (a shopkeeper whose greeting tree failed to bundle must still be shoppable).
+//   The missing-NPC arm still returns a null VM (no shopAction to speak of).
+//
+// RED TODAY: buildDialogueViewModel returns no `shopAction` key at all, so every
+// `toEqual`/`toBe` below reads `undefined`. The failures are assertion failures on the
+// missing field, not import errors.
+//
+// FIXTURE NOTE: these cases build their NPC rows against the REAL `StoreNpcRow`
+// (imported below) rather than the file-local mirror at the top, so the `interaction`
+// discriminants are pinned to the shipped type. The local mirror + its makeNpc factory
+// are deliberately left untouched.
+// =============================================================================
+
+import type { StoreNpcRow as RealStoreNpcRow } from '../net/store';
+
+type Uxd2Interaction = RealStoreNpcRow['interaction'];
+
+function shopNpc(
+  entityId: bigint,
+  interaction: Uxd2Interaction,
+  dialogueTreeId = 'elder_oak_talk',
+): RealStoreNpcRow {
+  return {
+    entityId,
+    npcId: `npc-${entityId}`,
+    zoneId: 1,
+    homeX: 8,
+    homeY: 1,
+    wanderRadius: 0,
+    dialogueTreeId,
+    interaction,
+  };
+}
+
+const UXD2_CONV = { ownerIdentity: 'player-hex', npcEntityId: 42n, currentNodeId: 'greeting' };
+
+describe('uxd2 AC-2: buildDialogueViewModel derives shopAction from npc.interaction', () => {
+  it('★ BITES: a Shop NPC yields shopAction = { shopId } taken from the enum payload', () => {
+    // WRONG IMPL KILLED: a VM that never exposes the Shop affordance — greet-then-shop would
+    // be unreachable, because the ONLY path from the greeting to the shop overlay is this
+    // field (main.ts renders [data-shop-id] from it).
+    const npcs = new Map([[42n, shopNpc(42n, { kind: 'shop', shopId: 7 })]]);
+    const vm = buildDialogueViewModel(UXD2_CONV, npcs, DIALOGUE_TREES);
+    expect(vm).not.toBeNull();
+    expect(vm!.shopAction).toEqual({ shopId: 7 });
+  });
+
+  it('★ BITES: shopId 0 is preserved (falsy-0 trap — `??`, never `||`)', () => {
+    // WRONG IMPL KILLED: `shopAction: npc.interaction.shopId ? { shopId } : null` or
+    // `shopId || 1`. Shop id 0 is representable (u32); a truthiness derivation would make a
+    // shop-0 NPC silently un-shoppable (AC-16 payload-read discipline, rowConvert.ts:277).
+    const npcs = new Map([[42n, shopNpc(42n, { kind: 'shop', shopId: 0 })]]);
+    const vm = buildDialogueViewModel(UXD2_CONV, npcs, DIALOGUE_TREES);
+    expect(vm!.shopAction).toEqual({ shopId: 0 });
+  });
+
+  it('BITES: a Dialogue NPC yields shopAction = null (exactly null, not undefined)', () => {
+    // WRONG IMPL KILLED (1): an impl that always emits a shopAction — every villager would
+    //   render a Shop button opening the first shop.
+    // WRONG IMPL KILLED (2): an impl that omits the key entirely on this arm — the view's
+    //   `if (vm.shopAction)` would still work, but the VM shape would be non-total and the
+    //   `toBeNull` contract (the one dialogueView renders against) unpinned.
+    const npcs = new Map([[42n, shopNpc(42n, { kind: 'dialogue' })]]);
+    const vm = buildDialogueViewModel(UXD2_CONV, npcs, DIALOGUE_TREES);
+    expect(vm!.shopAction).toBeNull();
+  });
+
+  it('BITES: a Heal NPC yields shopAction = null (heal is not a shop)', () => {
+    // WRONG IMPL KILLED: an impl that treats every non-dialogue variant as "has a payload,
+    // therefore a shop" — a Heal NPC would render a Shop button bound to its locationId as a
+    // shopId, opening an unrelated shop (or 'no-shop').
+    const npcs = new Map([[42n, shopNpc(42n, { kind: 'heal', locationId: 3 })]]);
+    const vm = buildDialogueViewModel(UXD2_CONV, npcs, DIALOGUE_TREES);
+    expect(vm!.shopAction).toBeNull();
+  });
+
+  it('★ BITES: the MISSING-TREE "..." fallback arm still carries shopAction', () => {
+    // ADR-0161 D4: the Shop affordance is derived from the ENUM, not from content, so a
+    // content gap must not remove it. The npc row IS present in this arm.
+    // WRONG IMPL KILLED: an impl that computes shopAction only on the happy path and returns
+    // the pre-existing `{ npcName, nodeText:'...', choices:[], canDismiss:true }` literal
+    // unchanged in the two fallback arms — a shopkeeper whose tree failed to bundle would
+    // show "..." with no way out but Escape, and the e2e's greet-then-shop chain would die
+    // on exactly the day dialogueContent.ts drifts.
+    const npcs = new Map([[42n, shopNpc(42n, { kind: 'shop', shopId: 1 }, 'nonexistent_tree')]]);
+    const vm = buildDialogueViewModel(UXD2_CONV, npcs, DIALOGUE_TREES);
+    expect(vm).not.toBeNull();
+    expect(vm!.nodeText).toBe('...'); // proves we really are in the fallback arm
+    expect(vm!.shopAction).toEqual({ shopId: 1 });
+  });
+
+  it('★ BITES: the MISSING-NODE "..." fallback arm still carries shopAction', () => {
+    // Second fallback arm (tree found, currentNodeId absent — e.g. a server node id the
+    // client bundle does not know). Same rationale, separate code path.
+    // WRONG IMPL KILLED: an impl that patched only ONE of the two fallback returns.
+    const npcs = new Map([[42n, shopNpc(42n, { kind: 'shop', shopId: 1 })]]);
+    const conv = { ...UXD2_CONV, currentNodeId: 'no_such_node' };
+    const vm = buildDialogueViewModel(conv, npcs, DIALOGUE_TREES);
+    expect(vm).not.toBeNull();
+    expect(vm!.nodeText).toBe('...'); // proves we really are in the fallback arm
+    expect(vm!.shopAction).toEqual({ shopId: 1 });
+  });
+
+  it('BITES: the missing-NPC arm still returns null (no fabricated shopAction VM)', () => {
+    // WRONG IMPL KILLED: an impl that, while adding shopAction, "helpfully" starts returning a
+    // partial VM when the npc row has not arrived yet — the overlay would flash an empty
+    // dialogue with a Shop button bound to nothing during the reconnect hydration gap.
+    const vm = buildDialogueViewModel(UXD2_CONV, new Map(), DIALOGUE_TREES);
+    expect(vm).toBeNull();
+  });
+
+  it('BITES: shopAction is derived from the ENUM, not from choice text (anti-coupling)', () => {
+    // WRONG IMPL KILLED: an impl that string-matches a choice like "Shop" / "Browse wares" to
+    // decide the affordance. The fixture's ONLY choice text is "I seek a quest." and the NPC
+    // is a Shop NPC — a text-matching impl returns null here. The inverse (a dialogue NPC with
+    // shop-sounding choice text) is covered by the Dialogue-NPC case above, whose seeded tree
+    // choice text is unrelated to shopping.
+    const npcs = new Map([[42n, shopNpc(42n, { kind: 'shop', shopId: 5 })]]);
+    const vm = buildDialogueViewModel(UXD2_CONV, npcs, DIALOGUE_TREES);
+    expect(vm!.choices.map((c) => c.text)).toEqual(['I seek a quest.']);
+    expect(vm!.shopAction).toEqual({ shopId: 5 });
+  });
+});

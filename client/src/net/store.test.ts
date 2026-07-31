@@ -11,6 +11,9 @@
 import * as fc from 'fast-check';
 import { describe, expect, it, vi } from 'vitest';
 import { BURST_EPSILON_MS } from '../shared/interpConfig';
+// uxd2 (ADR-0161 D1): the boundary converter, used by the npc-interaction integration
+// tooth at the foot of this file (adapter path: upsertNpc(npcRowToStore(row))).
+import { npcRowToStore } from './rowConvert';
 import {
   AuthoritativeStore,
   type StoreBattle,
@@ -3172,5 +3175,145 @@ describe('AuthoritativeStore ux2 S4: buy-then-sell round trip — the slot REPLA
 
     expect(s.ownWallet('bob-hex')!.balance).toBe(3n);
     expect(s.ownWallet('alice-hex')).toBeUndefined();
+  });
+});
+
+// ===========================================================================
+// uxd2 (ADR-0161 D1) — StoreNpcRow carries the NpcInteraction discriminated union.
+// APPENDED BLOCK — nothing above this line is modified.
+//
+// SOURCE OF TRUTH: docs/specs/uxd2-plan.md I5 / AC-16 + docs/adr/0161-*.md §D1.
+//
+// THE INVARIANT: the interaction reaches EVERY npc read path — `npc(entityId)`,
+// `npcByNpcId(npcId)` and `allNpcs()`. main.ts feeds `allNpcs()` to the resolver and
+// the DIALOGUE VM reads the map built from it, so a read path that drops the field
+// silently disables either the prompt or the Shop button (never both — which is
+// exactly the kind of half-failure that survives a single spot check).
+//
+// RED STATE (declared honestly): the three pure round-trips below are REGRESSION
+// GUARDS and pass on master, because `upsertNpc` stores the row object by reference
+// and therefore carries any field the caller put on it. They bite a future rewrite
+// that reconstructs the row field-by-field inside the store (the shape every other
+// converter in this repo uses) — that rewrite would drop `interaction` silently.
+// The FOURTH case is the RED one: it drives the row through the REAL boundary
+// converter (`npcRowToStore`) first, which today discards `interaction`.
+// ===========================================================================
+
+interface Uxd2SdkNpcRow {
+  entityId: bigint;
+  npcId: string;
+  zoneId: number;
+  homeX: number;
+  homeY: number;
+  wanderRadius: number;
+  dialogueTreeId: string;
+  interaction: { tag: string; value?: number };
+}
+
+type Uxd2StoreNpcInteraction =
+  | { kind: 'dialogue' }
+  | { kind: 'shop'; shopId: number }
+  | { kind: 'heal'; locationId: number };
+
+function uxd2NpcRow(
+  entityId: bigint,
+  interaction: Uxd2StoreNpcInteraction,
+  npcId = `npc-${entityId}`,
+): Record<string, unknown> {
+  return {
+    entityId,
+    npcId,
+    zoneId: 1,
+    homeX: 8,
+    homeY: 1,
+    wanderRadius: 0,
+    dialogueTreeId: 'shopkeeper_greeting',
+    interaction,
+  };
+}
+
+/** The store's npc methods are reached through the same cast idiom the M12d block uses. */
+function npcApi(s: AuthoritativeStore): Record<string, (...args: unknown[]) => unknown> {
+  return s as unknown as Record<string, (...args: unknown[]) => unknown>;
+}
+
+describe('uxd2: AuthoritativeStore round-trips StoreNpcRow.interaction on every read path', () => {
+  const cases: ReadonlyArray<{ label: string; interaction: Uxd2StoreNpcInteraction }> = [
+    { label: 'dialogue', interaction: { kind: 'dialogue' } },
+    { label: 'shop', interaction: { kind: 'shop', shopId: 1 } },
+    { label: 'heal', interaction: { kind: 'heal', locationId: 3 } },
+  ];
+
+  for (const c of cases) {
+    it(`REGRESSION GUARD (green on master): upsertNpc preserves a ${c.label} interaction through npc() / npcByNpcId() / allNpcs()`, () => {
+      // WRONG IMPL KILLED: a future upsertNpc that normalises the row by rebuilding it
+      // field-by-field (`this.#npcs.set(row.entityId, { entityId: row.entityId, … })`) and
+      // forgets the new column — the client would go dark on interactions with no error.
+      // Asserting all THREE read paths kills a half-fix that only threads the primary map.
+      const s = new AuthoritativeStore();
+      const row = uxd2NpcRow(11n, c.interaction, 'tideglass_shopkeeper');
+      npcApi(s).upsertNpc(row);
+
+      const byEid = npcApi(s).npc(11n) as { interaction?: unknown } | undefined;
+      const byNpcId = npcApi(s).npcByNpcId('tideglass_shopkeeper') as
+        | { interaction?: unknown }
+        | undefined;
+      const all = npcApi(s).allNpcs() as Array<{ interaction?: unknown }>;
+
+      expect(byEid?.interaction).toEqual(c.interaction);
+      expect(byNpcId?.interaction).toEqual(c.interaction);
+      expect(all).toHaveLength(1);
+      expect(all[0]!.interaction).toEqual(c.interaction);
+    });
+  }
+
+  it('REGRESSION GUARD: re-upserting the SAME entityId replaces the interaction (no stale role)', () => {
+    // WRONG IMPL KILLED: a merge-style upsert (`{...existing, ...row}` with a guard that
+    // keeps a previously-set field) — a content republish that demotes a shopkeeper back to
+    // Dialogue would leave a phantom Shop button until a full reconnect.
+    const s = new AuthoritativeStore();
+    npcApi(s).upsertNpc(uxd2NpcRow(11n, { kind: 'shop', shopId: 1 }, 'shopkeeper'));
+    npcApi(s).upsertNpc(uxd2NpcRow(11n, { kind: 'dialogue' }, 'shopkeeper'));
+    expect((npcApi(s).npc(11n) as { interaction?: unknown }).interaction).toEqual({
+      kind: 'dialogue',
+    });
+  });
+
+  it('★ BITES (RED today): a row driven through npcRowToStore reaches the store with its interaction intact', () => {
+    // THE INTEGRATION TOOTH. This is the path the live adapter actually uses
+    // (connection.ts: `store.upsertNpc(npcRowToStore(row))`). On master the converter
+    // discards `interaction`, so `npc(2n).interaction` is `undefined` here and this case
+    // fails — the unit-level converter cases in rowConvert.test.ts pin the mapping table,
+    // and THIS one pins that the two halves are actually joined.
+    // WRONG IMPL KILLED: a converter hardened in isolation while connection.ts keeps
+    // building its own row literal (the field would never reach the store).
+    const s = new AuthoritativeStore();
+    const sdkRow: Uxd2SdkNpcRow = {
+      entityId: 2n,
+      npcId: 'tideglass_shopkeeper',
+      zoneId: 1,
+      homeX: 8,
+      homeY: 1,
+      wanderRadius: 0,
+      dialogueTreeId: 'shopkeeper_greeting',
+      interaction: { tag: 'Shop', value: 1 },
+    };
+    npcApi(s).upsertNpc(npcRowToStore(sdkRow) as unknown as Record<string, unknown>);
+    expect((npcApi(s).npc(2n) as { interaction?: unknown }).interaction).toEqual({
+      kind: 'shop',
+      shopId: 1,
+    });
+  });
+
+  it('BITES: reset() drops npc rows (a stale shopkeeper cannot survive a reconnect)', () => {
+    // WRONG IMPL KILLED: an impl that adds the interaction column but forgets the npc maps
+    // in reset() — after a reconnect to a republished module the client would resolve an
+    // interact against a shopkeeper whose row no longer exists server-side.
+    const s = new AuthoritativeStore();
+    npcApi(s).upsertNpc(uxd2NpcRow(11n, { kind: 'shop', shopId: 1 }, 'shopkeeper'));
+    s.reset();
+    expect(npcApi(s).npc(11n)).toBeUndefined();
+    expect(npcApi(s).npcByNpcId('shopkeeper')).toBeUndefined();
+    expect(npcApi(s).allNpcs()).toHaveLength(0);
   });
 });

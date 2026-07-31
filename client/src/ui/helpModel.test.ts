@@ -67,9 +67,11 @@ describe('buildHelpViewModel(): content shape — non-empty controls + goals (PT
 });
 
 describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)', () => {
-  // The keymap that the help overlay documents (ADR-0135): the `?` help key itself,
-  // Escape (close), movement (WASD / arrows), Space (jump), the 12 overlay hotkeys
-  // B I E Q H G U P L N O T, and F9 (bug bundle). Each must be mentioned by SOME
+  // The keymap that the help overlay documents (ADR-0135, amended by ADR-0161 D5): the
+  // `?` help key itself, Escape (close), movement (WASD / arrows), Space (jump), the 10
+  // overlay hotkeys B I E Q U P L N O T (G and H deleted in uxd2 — the shop is reached
+  // through a shopkeeper and the heal through a heal tile, both via the interact key T),
+  // and F9 (bug bundle). Each must be mentioned by SOME
   // control entry's `key`. We match case-insensitively / by substring so we pin the
   // COVERAGE of the SSOT without over-pinning the exact glyph wording (e.g. "WASD"
   // vs "W A S D" vs "Arrows/WASD" all satisfy the movement requirement).
@@ -116,19 +118,51 @@ describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)
     expect(blob.includes('f9'), 'controls SSOT must document F9 (bug bundle)').toBe(true);
   });
 
-  it('BITES: each overlay hotkey B I E Q H G U P L N O T is documented in the SSOT', () => {
-    // WRONG IMPL KILLED: an SSOT that documents only some of the 12 overlay hotkeys —
+  it('BITES: each overlay hotkey B I E Q U P L N O T is documented in the SSOT', () => {
+    // WRONG IMPL KILLED: an SSOT that documents only some of the overlay hotkeys —
     // a tester would not discover, e.g., the Trade-propose (O) or Leaderboard (L) overlay.
     // Substring match against the per-entry key blob (case-insensitive). Each letter must
     // appear SOMEWHERE in some control's key text.
+    //
+    // uxd2 EDIT (ADR-0161 D5, plan AC-10′ — the ONLY edit to this file): the list shrank
+    // 12 → 10. `g` and `h` were removed because the global KeyG (shop) and KeyH (heal)
+    // handlers are DELETED in uxd2 — shop is reached by interacting with a shopkeeper and
+    // heal by standing on a heal tile, both via the single interact key T. Documenting a
+    // key that no longer does anything is worse than not documenting it.
+    // This assertion alone is WEAK (a substring scan would still credit a stray "g"/"h"
+    // inside another key's text), so the deletion itself is pinned by the exact-key
+    // assertion in the sibling test below — that is the tooth, this is coverage.
     const blob = keyBlob();
-    const hotkeys = ['b', 'i', 'e', 'q', 'h', 'g', 'u', 'p', 'l', 'n', 'o', 't'];
+    const hotkeys = ['b', 'i', 'e', 'q', 'u', 'p', 'l', 'n', 'o', 't'];
     for (const k of hotkeys) {
       expect(
         blob.includes(k),
         `controls SSOT must document the overlay hotkey "${k.toUpperCase()}"`,
       ).toBe(true);
     }
+  });
+
+  it('★ uxd2 BITES: NO controls row has key "G" or "H"; the "T" row still exists', () => {
+    // uxd2 / AC-10′ (ADR-0161 D5). RED TODAY: helpModel.ts:32-33 still ship
+    // `{ key: 'H', action: 'Heal your party' }` and `{ key: 'G', action: 'Open the shop' }`.
+    //
+    // WRONG IMPL KILLED (1): an impl that deletes the KeyG/KeyH HANDLERS in main.ts but
+    //   leaves the help rows — the overlay would teach a playtester two keys that silently
+    //   do nothing, which is the single worst outcome for an onboarding surface.
+    // WRONG IMPL KILLED (2): an impl that deletes the T row while reworking its wording —
+    //   the one key the whole slice is about would vanish from the help overlay.
+    // EXACT-KEY (trim + uppercase), NOT substring: a substring test cannot distinguish a
+    // deleted row from the "h" inside another key's text, which is precisely how the
+    // sibling coverage test above could go vacuously green.
+    const vm = buildHelpViewModel();
+    const exactKeys = vm.controls.map((c) => c.key.trim().toUpperCase());
+    expect(exactKeys, 'the global shop hotkey G is removed in uxd2 (ADR-0161 D5)').not.toContain(
+      'G',
+    );
+    expect(exactKeys, 'the global heal hotkey H is removed in uxd2 (ADR-0161 D5)').not.toContain(
+      'H',
+    );
+    expect(exactKeys, 'the interact key T must still be documented').toContain('T');
   });
 });
 

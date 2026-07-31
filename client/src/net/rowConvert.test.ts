@@ -1,6 +1,8 @@
 // rowConvert — SDK generated row -> normalized store row (M4a + M6c extension).
 // M6c adds monsterPubRowToStore and speciesRowToStore.
 // M9c adds inventoryRowToStore and itemRowToStore.
+// uxd2: fast-check is used by the AC-16 totality property at the foot of this file.
+import * as fc from 'fast-check';
 import { describe, expect, it, vi } from 'vitest';
 import {
   battleRowToStore,
@@ -1034,6 +1036,199 @@ describe('M12d converters', () => {
     const store = npcRowToStore(sdkRow);
     expect(store.npcId).toBe('Weird_NPC_ID_v2');
     expect(store.dialogueTreeId).toBe('MyTree_v2');
+  });
+});
+
+// =============================================================================
+// uxd2 (ADR-0161 D1/AC-16) — npcRowToStore: the NpcInteraction boundary converter.
+// APPENDED BLOCK — nothing above this line is modified.
+//
+// SOURCE OF TRUTH: docs/specs/uxd2-plan.md I5 + AC-16 + docs/adr/0161-*.md §D1.
+//
+// CONTRACT:
+//   SdkNpcRow += readonly interaction: { readonly tag: string; readonly value?: number }
+//   StoreNpcRow += readonly interaction:
+//        { kind:'dialogue' } | { kind:'shop'; shopId:number } | { kind:'heal'; locationId:number }
+//
+//   CONVERSION TABLE (TOTAL — never throws, for ANY tag/value pair):
+//     tag 'Dialogue'                     -> { kind:'dialogue' }
+//     tag 'Shop', typeof value==='number'-> { kind:'shop',   shopId: value }
+//     tag 'Heal', typeof value==='number'-> { kind:'heal',   locationId: value }
+//     ANY other tag                      -> { kind:'dialogue' }   (no throw)
+//     'Shop'/'Heal' with a missing or non-numeric value -> { kind:'dialogue' } (no throw)
+//
+// WHY TOTALITY (AC-16): this converter runs inside a SpacetimeDB subscription callback.
+// A throw there is not caught by the app — it aborts the row-callback batch and leaves the
+// store half-applied. An unknown tag is exactly what a NEWER server module (a 4th
+// NpcInteraction variant) sends to an older client, so it MUST degrade, never crash.
+//
+// WHY `??`/typeof AND NOT `||` (AC-16, rowConvert.ts:277 precedent): value 0 is a
+// representable u32 payload. `value || fallback` silently rewrites shop 0 / location 0.
+//
+// RED TODAY: npcRowToStore ignores `row.interaction` entirely, so `store.interaction`
+// reads `undefined` and every assertion below fails. No throw is involved — these are
+// plain value mismatches, i.e. red for exactly the right reason.
+// =============================================================================
+
+/** Build a well-formed SdkNpcRow with a caller-chosen interaction payload. */
+function sdkNpc(interaction: { tag: string; value?: number }): {
+  entityId: bigint;
+  npcId: string;
+  zoneId: number;
+  homeX: number;
+  homeY: number;
+  wanderRadius: number;
+  dialogueTreeId: string;
+  interaction: { tag: string; value?: number };
+} {
+  return {
+    entityId: 2n,
+    npcId: 'tideglass_shopkeeper',
+    zoneId: 1,
+    homeX: 8,
+    homeY: 1,
+    wanderRadius: 0,
+    dialogueTreeId: 'shopkeeper_greeting',
+    interaction,
+  };
+}
+
+describe('uxd2 AC-16: npcRowToStore normalises the NpcInteraction enum (total, no throw)', () => {
+  it('BITES: tag "Dialogue" → { kind: "dialogue" }', () => {
+    // WRONG IMPL KILLED: a converter that drops the field (today's behaviour) or that
+    // stores the raw SDK `{tag, value}` shape — the resolver + dialogue VM both switch on
+    // `kind`, so a raw tag would make every NPC fall through to the default arm.
+    expect(npcRowToStore(sdkNpc({ tag: 'Dialogue' })).interaction).toEqual({ kind: 'dialogue' });
+  });
+
+  it('BITES: tag "Shop" with value 1 → { kind: "shop", shopId: 1 }', () => {
+    // WRONG IMPL KILLED: a converter that maps every tag to 'dialogue' — the shopkeeper
+    // would greet and never offer a Shop action (the whole slice, silently inert).
+    expect(npcRowToStore(sdkNpc({ tag: 'Shop', value: 1 })).interaction).toEqual({
+      kind: 'shop',
+      shopId: 1,
+    });
+  });
+
+  it('★ BITES (falsy-0 tooth): tag "Shop" with value 0 → { kind: "shop", shopId: 0 }', () => {
+    // THE `||` TRAP. `shopId: row.interaction.value || 0` happens to survive this one, but
+    // `value || undefined` / `if (!value) return {kind:'dialogue'}` — the natural shapes a
+    // "guard against a missing payload" reflex produces — both convert a legitimate shop 0
+    // into a plain dialogue NPC. Only a `typeof value === 'number'` guard passes.
+    expect(npcRowToStore(sdkNpc({ tag: 'Shop', value: 0 })).interaction).toEqual({
+      kind: 'shop',
+      shopId: 0,
+    });
+  });
+
+  it('BITES: tag "Heal" with value 2 → { kind: "heal", locationId: 2 }', () => {
+    // WRONG IMPL KILLED: a converter that stores the Heal payload under `shopId` (a
+    // copy-paste of the Shop arm) — main.ts's heal arm would bind the wrong overlay.
+    expect(npcRowToStore(sdkNpc({ tag: 'Heal', value: 2 })).interaction).toEqual({
+      kind: 'heal',
+      locationId: 2,
+    });
+  });
+
+  it('★ BITES (falsy-0 tooth): tag "Heal" with value 0 → { kind: "heal", locationId: 0 }', () => {
+    // Same `||` trap on the Heal arm — pinned separately so a half-fix (Shop hardened, Heal
+    // left on truthiness) still reds.
+    expect(npcRowToStore(sdkNpc({ tag: 'Heal', value: 0 })).interaction).toEqual({
+      kind: 'heal',
+      locationId: 0,
+    });
+  });
+
+  it('★ BITES: an UNKNOWN tag degrades to { kind: "dialogue" } and does NOT throw', () => {
+    // AC-16 subscription-callback totality. A newer server module with a 4th variant
+    // (e.g. `Trainer(u32)`) sends a tag this client has never heard of.
+    // WRONG IMPL KILLED: `throw new Error('unhandled NpcInteraction tag')` — an exhaustive
+    // `never`-check pattern copied from the Rust side. Inside an SDK onInsert callback that
+    // aborts the batch and the store is left half-applied for the rest of the session.
+    let out!: ReturnType<typeof npcRowToStore>;
+    expect(() => {
+      out = npcRowToStore(sdkNpc({ tag: 'Trainer', value: 5 }));
+    }).not.toThrow();
+    expect(out.interaction).toEqual({ kind: 'dialogue' });
+  });
+
+  it('★ BITES: tag "Shop" with a MISSING value degrades to { kind: "dialogue" } (no throw)', () => {
+    // WRONG IMPL KILLED: `shopId: row.interaction.value!` — a non-null assertion. The store
+    // would carry `shopId: undefined`, the dialogue VM would render a Shop button, and the
+    // click would open `buildShopViewModelForShop(undefined, …)` → a dead "no shop" overlay.
+    let out!: ReturnType<typeof npcRowToStore>;
+    expect(() => {
+      out = npcRowToStore(sdkNpc({ tag: 'Shop' }));
+    }).not.toThrow();
+    expect(out.interaction).toEqual({ kind: 'dialogue' });
+  });
+
+  it('BITES: tag "Heal" with a NON-NUMERIC value degrades to { kind: "dialogue" } (no throw)', () => {
+    // WRONG IMPL KILLED: a `value !== undefined` guard (rather than `typeof === 'number'`) —
+    // a string payload from a schema drift would be stored as a locationId and every
+    // downstream `===` comparison against a number would silently never match.
+    const malformed = { tag: 'Heal', value: '2' } as unknown as { tag: string; value?: number };
+    let out!: ReturnType<typeof npcRowToStore>;
+    expect(() => {
+      out = npcRowToStore(sdkNpc(malformed));
+    }).not.toThrow();
+    expect(out.interaction).toEqual({ kind: 'dialogue' });
+  });
+
+  it('BITES: tag "Dialogue" with a stray value still yields exactly { kind: "dialogue" }', () => {
+    // WRONG IMPL KILLED: an impl that keys off the PRESENCE of `value` rather than the tag
+    // (e.g. `value !== undefined ? shop : dialogue`) — a Dialogue variant that the SDK
+    // happens to serialise with a 0 payload would become a shop.
+    const out = npcRowToStore(sdkNpc({ tag: 'Dialogue', value: 9 }));
+    expect(out.interaction).toEqual({ kind: 'dialogue' });
+    expect(Object.keys(out.interaction).sort()).toEqual(['kind']);
+  });
+
+  it('BITES: the other npc fields are unaffected by the new interaction field', () => {
+    // WRONG IMPL KILLED: an impl that rewrites the converter around the new field and drops
+    // one of the seven originals (entityId is the u64 one that must stay bigint).
+    const out = npcRowToStore(sdkNpc({ tag: 'Shop', value: 1 }));
+    expect(typeof out.entityId).toBe('bigint');
+    expect(out.entityId).toBe(2n);
+    expect(out.npcId).toBe('tideglass_shopkeeper');
+    expect(out.zoneId).toBe(1);
+    expect(out.homeX).toBe(8);
+    expect(out.homeY).toBe(1);
+    expect(out.wanderRadius).toBe(0);
+    expect(out.dialogueTreeId).toBe('shopkeeper_greeting');
+  });
+
+  it('★ BITES fast-check: TOTAL — any tag/value pair converts to one of the 3 kinds without throwing', () => {
+    // AC-16 as a property: the converter is a boundary function, so its totality must hold
+    // over the whole input space, not just the 9 hand-written rows above.
+    // WRONG IMPL KILLED: any residual throw path (an exhaustive switch's default arm, a
+    // `JSON.parse`, a non-null assertion) reachable only from an input shape nobody enumerated.
+    // Block-body arrow per [[vitest-fast-check]] — an expression body would hand fast-check
+    // the matcher's return value and report a spurious counterexample.
+    fc.assert(
+      fc.property(
+        fc.string(),
+        fc.option(fc.integer({ min: -5, max: 5 }), { nil: undefined }),
+        (tag, value) => {
+          let out!: ReturnType<typeof npcRowToStore>;
+          expect(() => {
+            out = npcRowToStore(sdkNpc({ tag, value }));
+          }).not.toThrow();
+          expect(
+            out.interaction,
+            'npcRowToStore must always emit an interaction field (RED today: it emits none)',
+          ).toBeDefined();
+          expect(['dialogue', 'shop', 'heal']).toContain(out.interaction.kind);
+          // And the payload arms are internally consistent (no `shopId: undefined`).
+          if (out.interaction.kind === 'shop') {
+            expect(typeof out.interaction.shopId).toBe('number');
+          }
+          if (out.interaction.kind === 'heal') {
+            expect(typeof out.interaction.locationId).toBe('number');
+          }
+        },
+      ),
+    );
   });
 });
 
