@@ -365,8 +365,19 @@ export const Npc = __t.object("Npc", {
   homeY: __t.i32(),
   wanderRadius: __t.u8(),
   dialogueTreeId: __t.string(),
+  get interaction() {
+    return NpcInteraction;
+  },
 });
 export type Npc = __Infer<typeof Npc>;
+
+// The tagged union or sum type for the algebraic type `NpcInteraction`.
+export const NpcInteraction = __t.enum("NpcInteraction", {
+  Dialogue: __t.unit(),
+  Shop: __t.u32(),
+  Heal: __t.u32(),
+});
+export type NpcInteraction = __Infer<typeof NpcInteraction>;
 
 export const Player = __t.object("Player", {
   identity: __t.identity(),

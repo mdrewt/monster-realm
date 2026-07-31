@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 126 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 127 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -135,6 +135,7 @@ Generated from 126 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0158](./0158-hold-commit-continuation-gate.md) | 0158 — mvi: hold-commit tap/hold discrimination on the held-key continuation emitters | Accepted | movement-netcode, client-ui | movement-investigation (M-postgate-movement-investigation — r2 playtest ledger items 003/015/029/040-042) | Both held-key continuation emitters re-issue only via HeldDirections.committedActive(now): the active key must have been held >= HOLD_COMMIT_MS (150 ms, injected clock). Keydown's first step stays ungated. Pure not-emit. |
 | [0159](./0159-feel-polish-care-feedback-npc-wander.md) | 0159 — feel-polish: care-button success feedback + collision-aware NPC wander | Accepted | client-ui, movement-netcode | feel-polish (M-postgate-feel-polish — r2 playtest ledger items 087-090) | Care gets an in-overlay feedback line via the established showFeedback idiom (no toast); npc_decide picks only legal directions and continues its facing except 1 decision in 6, so wander cannot become absorbing; bumps 14.3%->0%. |
 | [0160](./0160-responsive-viewport-device-integer-scaling.md) | 0160 — Responsive viewport: DPR-correct backing store, device-integer scaling, per-axis map centering | Accepted | client-ui | uxd1 (M-postgate-ux-design — responsive viewport scaling) | A viewport core sizes the render edge: Pixi runs at resolution=devicePixelRatio+autoDensity, an INTEGER deviceScale is applied as stageScale=deviceScale/dpr, and FollowCamera centers per-axis when the map is smaller than the viewport. |
+| [0161](./0161-npc-interaction-context-interact.md) | 0161 — Server-anchored NpcInteraction enum and the context-sensitive KeyT interact system | Accepted | content, client-ui, schema-persistence | uxd2 (M-postgate-ux-design — shop-via-NPC interaction) | NPC roles live in a server-anchored NpcInteraction{Dialogue,Shop(u32),Heal(u32)} enum column; one pure nearestInteractable resolver drives a generalized KeyT (greet-then-shop per Drew) and an on-world prompt; global KeyG/KeyH are removed. |
 
 ## Harness design corpus (H- namespace)
 
@@ -274,6 +275,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0144](./0144-pt-d2-roster-wave-2.md) — pt-d2 (M-playtest-d content pack — roster wave 2 + placeholder-replacement sprites; EARS pt-d2-1..12) — 0144 — pt-d2 roster wave 2: reserved-block content fan-out + a species-parameterized sprite generator that imports (never edits) the shared art module (Accepted)
 - [0145](./0145-encounter-recruit-economy-tuning-pass.md) — pt-d3 (M-playtest-d content pack — encounter/recruit/economy tuning; EARS pt-d3-1..6) — 0145 — pt-d3 tuning pass: zone 0 frozen, zone 1 carries the wild-legal roster, one economy fix (Accepted)
 - [0149](./0149-item-triggered-evolution-content.md) — B (M-postgate-evolution-fusion-hardening — item-triggered evolution content; EARS B-1..B-5) — 0149 — item-triggered evolution content (species 7/8 branches, id band 30..=39) (Accepted)
+- [0161](./0161-npc-interaction-context-interact.md) — uxd2 (M-postgate-ux-design — shop-via-NPC interaction) — 0161 — Server-anchored NpcInteraction enum and the context-sensitive KeyT interact system (Accepted)
 
 ### schema-persistence
 
@@ -299,6 +301,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0126](./0126-battle-challenge-ttl-reaper.md) — m17.5e — 0126 — Battle-challenge TTL reaper (Pending challenge liveness) (Accepted)
 - [0131](./0131-server-playtest-capture.md) — pt-b2 — Server-side playtest capture: additive `playtest_event` table + interval-singleton reaper + H1 report (Accepted)
 - [0138](./0138-ptc5b-wild-disconnect-gc.md) — ptc5b (M-playtest-c.5 pre-gate residuals — wild-battle disconnect GC, EARS ptc5b-1..3) — 0138 — ptc5b wild-battle disconnect resolution: auto-flee + GC the `battle`/`battle_wild` rows to unblock returning-player re-entry (Accepted)
+- [0161](./0161-npc-interaction-context-interact.md) — uxd2 (M-postgate-ux-design — shop-via-NPC interaction) — 0161 — Server-anchored NpcInteraction enum and the context-sensitive KeyT interact system (Accepted)
 
 ### client-ui
 
@@ -340,6 +343,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0158](./0158-hold-commit-continuation-gate.md) — movement-investigation (M-postgate-movement-investigation — r2 playtest ledger items 003/015/029/040-042) — 0158 — mvi: hold-commit tap/hold discrimination on the held-key continuation emitters (Accepted)
 - [0159](./0159-feel-polish-care-feedback-npc-wander.md) — feel-polish (M-postgate-feel-polish — r2 playtest ledger items 087-090) — 0159 — feel-polish: care-button success feedback + collision-aware NPC wander (Accepted)
 - [0160](./0160-responsive-viewport-device-integer-scaling.md) — uxd1 (M-postgate-ux-design — responsive viewport scaling) — 0160 — Responsive viewport: DPR-correct backing store, device-integer scaling, per-axis map centering (Accepted)
+- [0161](./0161-npc-interaction-context-interact.md) — uxd2 (M-postgate-ux-design — shop-via-NPC interaction) — 0161 — Server-anchored NpcInteraction enum and the context-sensitive KeyT interact system (Accepted)
 
 ### ci-gates
 

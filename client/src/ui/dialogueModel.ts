@@ -1,5 +1,7 @@
 // ui/dialogueModel.ts — pure dialogue view model (M12d, ADR-0071).
 // TOTAL: never throws. All error paths return null or a safe default.
+// uxd2 (ADR-0161 D3): the nearest-NPC resolver moved to interactModel.ts
+// (nearestInteractable) — this module is view-model derivation only.
 import type { StoreNpcRow, StorePlayerConversation } from '../net/store';
 import type { ClientDialogueTree } from './dialogueContent';
 
@@ -13,47 +15,17 @@ export interface DialogueViewModel {
   nodeText: string;
   choices: ReadonlyArray<DialogueChoiceViewModel>;
   canDismiss: boolean; // always true from model; dismissPending guard lives in main.ts
+  /** uxd2 (ADR-0161 D4): the greet-then-shop affordance, derived from the
+   *  SERVER enum (npc.interaction) — never from choice text, never from a
+   *  second content source. null for every non-Shop NPC. */
+  shopAction: { readonly shopId: number } | null;
 }
 
-/** Client-side talk range in Manhattan tiles — mirrors the server's
- *  `TALK_RANGE: i64 = 2` (server-module/src/npc.rs:20). Latency hygiene ONLY,
- *  never security: the `talk` reducer re-validates zone + range server-side
- *  (npc.rs talk Steps 4-5). */
-export const CLIENT_TALK_RANGE = 2;
-
-/** The positional subset of a character row the talk-target selection reads. */
-export interface TalkTile {
-  readonly zoneId: number;
-  readonly tileX: number;
-  readonly tileY: number;
-}
-
-/**
- * Nearest NPC within CLIENT_TALK_RANGE of the own AUTHORITATIVE tile (M13.5c
- * KeyT contract — dialogue.spec.ts header). NPC positions come from their
- * CHARACTER rows (current wander position, not home_x/home_y), joined by
- * entityId. Same-zone only. Deterministic: minimum Manhattan distance, ties
- * broken by lowest entityId. Returns undefined when none is in range (KeyT
- * no-ops). TOTAL: never throws; NPCs without a character row are skipped.
- */
-export function nearestTalkableNpcId(
-  own: TalkTile,
-  npcs: readonly StoreNpcRow[],
-  characterTiles: ReadonlyMap<bigint, TalkTile>,
-): bigint | undefined {
-  let best: bigint | undefined;
-  let bestDist = CLIENT_TALK_RANGE + 1;
-  for (const npc of npcs) {
-    const c = characterTiles.get(npc.entityId);
-    if (c === undefined || c.zoneId !== own.zoneId) continue;
-    const dist = Math.abs(c.tileX - own.tileX) + Math.abs(c.tileY - own.tileY);
-    if (dist > CLIENT_TALK_RANGE) continue;
-    if (dist < bestDist || (dist === bestDist && best !== undefined && npc.entityId < best)) {
-      best = npc.entityId;
-      bestDist = dist;
-    }
-  }
-  return best;
+/** Derive the Shop affordance from the npc row's interaction. Explicit kind
+ *  check (never payload truthiness) so shop id 0 survives (AC-16 discipline).
+ *  `?.` keeps this total for a row that predates the interaction column. */
+function shopActionFor(npc: StoreNpcRow): { readonly shopId: number } | null {
+  return npc.interaction?.kind === 'shop' ? { shopId: npc.interaction.shopId } : null;
 }
 
 export function buildDialogueViewModel(
@@ -64,14 +36,23 @@ export function buildDialogueViewModel(
   if (!conv) return null;
   const npc = npcs.get(conv.npcEntityId);
   if (!npc) return null;
+  // BOTH '...'-fallback arms carry shopAction too (the npc row IS present
+  // here): a shopkeeper whose greeting tree failed to bundle must still be
+  // shoppable — the affordance derives from the enum, not from content.
+  const shopAction = shopActionFor(npc);
   const tree = content.get(npc.dialogueTreeId);
-  if (!tree) return { npcName: npc.npcId, nodeText: '...', choices: [], canDismiss: true };
+  if (!tree) {
+    return { npcName: npc.npcId, nodeText: '...', choices: [], canDismiss: true, shopAction };
+  }
   const node = tree.nodes.get(conv.currentNodeId);
-  if (!node) return { npcName: npc.npcId, nodeText: '...', choices: [], canDismiss: true };
+  if (!node) {
+    return { npcName: npc.npcId, nodeText: '...', choices: [], canDismiss: true, shopAction };
+  }
   return {
     npcName: npc.npcId,
     nodeText: node.text,
     choices: node.choices.map((c, i) => ({ text: c.text, idx: i })),
     canDismiss: true,
+    shopAction,
   };
 }

@@ -865,6 +865,7 @@ fn m13_5c_npc_def(id: u32, npc_id: &str, zone_id: u32, spawn: (i32, i32)) -> Npc
         wander_radius: 3,
         dialogue_tree_id: format!("tree_{npc_id}"),
         sprite_id: 7,
+        interaction: game_core::NpcInteraction::Dialogue,
     }
 }
 
@@ -882,6 +883,7 @@ fn m13_5c_pair_from_def(def: &NpcDef, entity_id: u64) -> (Npc, Character) {
             home_y: def.home_y,
             wander_radius: def.wander_radius,
             dialogue_tree_id: def.dialogue_tree_id.clone(),
+            interaction: def.interaction,
         },
         Character {
             entity_id,
@@ -1890,5 +1892,291 @@ fn plan_npc_sync_detects_only_sprite_id_change() {
         matches!(&plan[0], NpcSyncAction::Update { .. }),
         "TEETH(mutant-496): single sprite_id change must yield an Update, not {:?}",
         m13_5c_action_kind(&plan[0])
+    );
+}
+
+// ---------------------------------------------------------------------------
+// uxd2 (ADR-0161) — the `interaction` column: def -> row threading, the
+// staleness OR-chain, and the validator wiring in sync_content_inner.
+//
+// RED until I1/I2 land: `game_core::NpcInteraction` and the `Npc.interaction` /
+// `NpcDef.interaction` fields do not exist yet, so this section is compile-RED
+// (E0433/E0063) — the accepted red convention for this file (see the M13.5c
+// header above).
+//
+// Contract under test (plan of record `docs/specs/uxd2-plan.md` §I2):
+//   schema.rs   `Npc` += `pub interaction: NpcInteraction` (appended last)
+//   content.rs  `npc_row_from_def` threads `def.interaction`
+//   content.rs  `npc_row_stale` += `|| npc.interaction != def.interaction`
+//   content.rs  `sync_content_inner` calls `validate_npc_interactions(...)`
+//               in the VALIDATE block, BEFORE any write.
+//
+// Fixtures below are LOCAL (`uxd2_*`): `m13_5c_npc_def` / `m13_5c_pair_from_def`
+// belong to the M13.5c section and will be given SOME interaction value as a
+// mechanical compile fix — these tests must not inherit whatever that is. Every
+// uxd2 fixture states its interaction explicitly.
+// ---------------------------------------------------------------------------
+
+/// uxd2 def fixture — every field explicit, interaction included.
+fn uxd2_npc_def(id: u32, npc_id: &str, interaction: game_core::NpcInteraction) -> NpcDef {
+    NpcDef {
+        id,
+        npc_id: npc_id.to_string(),
+        zone_id: 1,
+        spawn_x: 8,
+        spawn_y: 1,
+        home_x: 8,
+        home_y: 1,
+        wander_radius: 0,
+        dialogue_tree_id: format!("tree_{npc_id}"),
+        sprite_id: 7,
+        interaction,
+    }
+}
+
+/// uxd2 live-pair fixture: the (Npc, Character) rows a correct seed derives
+/// from `def` — interaction included, so a "live pair identical to the def"
+/// really is identical on every def-derived column.
+fn uxd2_pair_from_def(def: &NpcDef, entity_id: u64) -> (Npc, Character) {
+    (
+        Npc {
+            entity_id,
+            npc_id: def.npc_id.clone(),
+            zone_id: def.zone_id,
+            home_x: def.home_x,
+            home_y: def.home_y,
+            wander_radius: def.wander_radius,
+            dialogue_tree_id: def.dialogue_tree_id.clone(),
+            interaction: def.interaction,
+        },
+        Character {
+            entity_id,
+            zone_id: def.zone_id,
+            tile_x: def.spawn_x,
+            tile_y: def.spawn_y,
+            facing: Direction::South,
+            action: ActionState::Idle,
+            move_started_at_ms: 0,
+            sprite_id: def.sprite_id,
+            move_queue: vec![],
+        },
+    )
+}
+
+/// uxd2 AC-14: `npc_row_from_def` copies `def.interaction` onto the row.
+///
+/// KILLS: an `npc_row_from_def` that hard-codes `NpcInteraction::Dialogue` (the
+/// path of least resistance when fixing the E0063 the new column causes) — the
+/// public `npc` table would then carry Dialogue for every NPC no matter what
+/// the RON says, the client would derive no Shop affordance, and AC-2/AC-12
+/// would fail with the whole Rust suite green.
+#[test]
+fn npc_row_from_def_copies_interaction() {
+    let def = uxd2_npc_def(2, "shopkeeper", game_core::NpcInteraction::Shop(1));
+
+    let row = super::npc_row_from_def(&def, 42);
+
+    assert_eq!(
+        row.interaction,
+        game_core::NpcInteraction::Shop(1),
+        "TEETH(uxd2 AC-14): npc_row_from_def must thread def.interaction onto \
+         the row (Shop(1) in, Shop(1) out); got {:?}",
+        row.interaction
+    );
+    assert_eq!(
+        row.entity_id, 42,
+        "uxd2: the row still takes the entity_id it was handed"
+    );
+    assert_eq!(
+        row.npc_id, "shopkeeper",
+        "uxd2: the row still takes the def npc_id"
+    );
+}
+
+/// uxd2 AC-15: `plan_npc_sync` emits an Update when ONLY `interaction` differs,
+/// and that Update carries the NEW interaction.
+///
+/// This is the ADR-0054 silent-skip class: `npc_row_stale` is a hand-maintained
+/// OR-chain, so a def-derived column that never joins the chain re-syncs
+/// exactly never. Every other def-derived field already has this tooth
+/// (home_x/home_y/wander_radius/dialogue_tree_id/sprite_id above).
+///
+/// KILLS (needle 1 — plan.len()/variant): an `npc_row_stale` that omits
+/// `|| npc.interaction != def.interaction`. A live world seeded before uxd2
+/// (or before a shopkeeper's shop id changed) keeps the stale interaction
+/// forever: sync bumps CONTENT_VERSION, plans nothing, and the shopkeeper stays
+/// mute — the exact defect a `just smoke-republish` would surface only in prod.
+/// ALSO KILLS: the `||`->`&&` mutant on the newly added chain term (only ONE
+/// field changes here, so the conjunction collapses to false and suppresses the
+/// Update).
+/// KILLS (needle 2 — the carried value): an Update whose npc row is rebuilt
+/// from the LIVE row instead of `npc_row_from_def(def, ..)` — it would be
+/// planned but write back the old Dialogue value.
+#[test]
+fn plan_npc_sync_detects_only_interaction_change() {
+    let def_old = uxd2_npc_def(2, "shopkeeper", game_core::NpcInteraction::Dialogue);
+    let (npc, ch) = uxd2_pair_from_def(&def_old, 7);
+    let existing = vec![(npc, Some(ch))];
+
+    // Change ONLY interaction — zone/home/wander/dialogue_tree_id/sprite_id all
+    // identical to the live pair.
+    let def_new = uxd2_npc_def(2, "shopkeeper", game_core::NpcInteraction::Shop(1));
+
+    let plan = plan_npc_sync(&existing, &[def_new]);
+
+    assert_eq!(
+        plan.len(),
+        1,
+        "TEETH(uxd2 AC-15): changing ONLY interaction must produce exactly 1 \
+         action; got {:?} — an npc_row_stale chain missing the interaction term \
+         never re-syncs the column (ADR-0054 silent-skip)",
+        plan.iter().map(m13_5c_action_kind).collect::<Vec<_>>()
+    );
+    match &plan[0] {
+        NpcSyncAction::Update { entity_id, npc, .. } => {
+            assert_eq!(
+                *entity_id, 7,
+                "TEETH(uxd2 AC-15): the Update must preserve the live entity_id \
+                 (never delete+reinsert — auto_inc would orphan \
+                 player_conversation.npc_entity_id)"
+            );
+            assert_eq!(
+                npc.interaction,
+                game_core::NpcInteraction::Shop(1),
+                "TEETH(uxd2 AC-15): the Update must carry the NEW interaction \
+                 Shop(1) from the def, not the live row's stale value; got {:?}",
+                npc.interaction
+            );
+        }
+        other => panic!(
+            "TEETH(uxd2 AC-15): an interaction-only diff must yield an Update, \
+             got {}",
+            m13_5c_action_kind(other)
+        ),
+    }
+}
+
+/// uxd2 AC-15 (idempotence arm): a pair matching its def on a NON-default
+/// interaction plans NOTHING.
+///
+/// The sibling `m13_5c_plan_npc_sync_identical_state_yields_empty_plan` covers
+/// def-identical worlds, but only with whatever interaction the shared M13.5c
+/// fixture happens to carry.
+///
+/// KILLS: the comparison-operator mutant `npc.interaction == def.interaction`
+/// (inverted term) — every def-identical NPC would then be reported stale and
+/// rewritten on EVERY content-version bump, churning the public `npc` table and
+/// pushing a row update to every subscriber for nothing.
+#[test]
+fn plan_npc_sync_ignores_identical_shop_interaction() {
+    let def = uxd2_npc_def(2, "shopkeeper", game_core::NpcInteraction::Shop(1));
+    let (npc, ch) = uxd2_pair_from_def(&def, 7);
+    let existing = vec![(npc, Some(ch))];
+
+    let plan = plan_npc_sync(&existing, &[def]);
+
+    assert!(
+        plan.is_empty(),
+        "TEETH(uxd2 AC-15 idempotence): a pair whose interaction already equals \
+         the def's must plan ZERO actions; got {:?}",
+        plan.iter().map(m13_5c_action_kind).collect::<Vec<_>>()
+    );
+}
+
+/// uxd2 AC-8 wiring (vacuity guard): `sync_content_inner` must CALL
+/// `validate_npc_interactions(` inside its own body, must propagate the Err,
+/// and must do so BEFORE the write phase begins.
+///
+/// Windowed to the fn body (fn-find + brace-walk) and whitespace-compacted —
+/// the same idiom as `m13_5c_sync_content_inner_deletes_stale_zone_defs` above.
+/// The write-phase anchor is `stale_zone_def_ids(`: the first write-phase
+/// statement of the fn (its presence there is itself pinned by that sibling
+/// test), so "before the anchor" means "before ANY DB write".
+///
+/// KILLS (needle 1): a `validate_npc_interactions` that exists, is unit-tested
+/// in game-core, and is never called — the entire AC-8 validator would be dead
+/// code and a dangling `Shop(id)` would ship.
+/// KILLS (needle 2): a call placed in the WRITE phase (e.g. next to
+/// `sync_npc_entities_from`) — that breaks the all-before-any-write contract
+/// (ADR-0073 §12.5b-2): zone/species/item/shop rows would already be committed
+/// when the validator aborts the reducer.
+/// KILLS (needle 3): a call whose Result is swallowed (`let _ = …` / `.ok();`),
+/// which validates nothing at all.
+#[test]
+fn uxd2_sync_content_inner_validates_npc_interactions_before_write_phase() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
+    let body = m13_5c_fn_body(&stripped, "fn sync_content_inner(ctx");
+    let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+
+    let call_at = compact
+        .find("validate_npc_interactions(")
+        .unwrap_or_else(|| {
+            panic!(
+                "TEETH(uxd2 AC-8 needle 1): sync_content_inner must call \
+             `validate_npc_interactions(` in its VALIDATE block — a validator \
+             that is never called is dead code and a dangling Shop(id)/Heal(id) \
+             seed reaches production unchecked"
+            )
+        });
+    let write_at = compact
+        .find("stale_zone_def_ids(")
+        .expect("write-phase anchor `stale_zone_def_ids(` must exist in sync_content_inner");
+
+    assert!(
+        call_at < write_at,
+        "TEETH(uxd2 AC-8 needle 2): validate_npc_interactions( must be called \
+         BEFORE the write phase (anchor `stale_zone_def_ids(`, the first \
+         write-phase statement) — all-before-any-write, ADR-0073 §12.5b-2. \
+         Found the call at byte {call_at} and the anchor at {write_at} in the \
+         compacted fn body."
+    );
+
+    // Needle 3: the Result must be propagated, not swallowed. Scan the single
+    // statement that starts at the call site (up to its terminating `;`).
+    let after = &compact[call_at..];
+    let stmt_end = after.find(';').unwrap_or(after.len());
+    let stmt = &after[..stmt_end];
+    assert!(
+        stmt.contains('?') || stmt.contains("returnErr("),
+        "TEETH(uxd2 AC-8 needle 3): the validate_npc_interactions call must \
+         propagate its Err (`?` / an explicit `return Err(`) — a swallowed \
+         Result (`let _ = …`, `.ok();`) validates nothing while looking wired. \
+         Statement scanned: {stmt:?}"
+    );
+}
+
+/// uxd2 I2: `CONTENT_VERSION` must be >= 17.
+///
+/// Mirrors the EA-6 precedent in `m14_5d_1a_tests.rs` (same extraction shape).
+///
+/// KILLS: an impl that adds the `interaction` column and the RON seeds but
+/// leaves CONTENT_VERSION at 16 — `sync_content_inner`'s version gate then
+/// early-returns on every already-seeded DB, so `sync_npc_entities_from` never
+/// runs, the shopkeeper is never inserted, and the new column stays at its
+/// republish default. Every unit test still passes; only a live DB shows it
+/// (the ADR-0054 silent-skip trap).
+#[test]
+fn uxd2_content_version_is_at_least_17() {
+    let cv_needle = ["CONTENT_VERSION", ": u32 ="].concat();
+    let cv_pos = M13_5C_LIB_RS_SOURCE
+        .find(cv_needle.as_str())
+        .expect("CONTENT_VERSION constant must be declared in lib.rs");
+    let after_eq = &M13_5C_LIB_RS_SOURCE[cv_pos..];
+    let eq_offset = after_eq.find('=').expect("CONTENT_VERSION must have `=`");
+    let after_value = after_eq[eq_offset + 1..].trim_start();
+    let end = after_value
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(after_value.len());
+    let value: u32 = after_value[..end]
+        .parse()
+        .expect("CONTENT_VERSION must be a plain integer literal");
+
+    assert!(
+        value >= 17,
+        "TEETH(uxd2 I2): CONTENT_VERSION in server-module/src/lib.rs must be \
+         >= 17 (current: {value}). The uxd2 slice widens the public `npc` table \
+         and appends a shopkeeper to the npcs RON; without the bump, \
+         sync_content_inner's version gate returns Ok early on every deployed \
+         DB and neither the column nor the new NPC is ever seeded (ADR-0054)."
     );
 }

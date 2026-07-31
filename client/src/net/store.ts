@@ -215,6 +215,13 @@ export type StoreNpcRow = {
   readonly homeY: number;
   readonly wanderRadius: number;
   readonly dialogueTreeId: string;
+  /** uxd2 (ADR-0161 D1): the normalized NpcInteraction discriminated union.
+   *  Total at the boundary (rowConvert AC-16): unknown/malformed SDK payloads
+   *  arrive here already degraded to `{ kind: 'dialogue' }`. */
+  readonly interaction:
+    | { readonly kind: 'dialogue' }
+    | { readonly kind: 'shop'; readonly shopId: number }
+    | { readonly kind: 'heal'; readonly locationId: number };
 };
 
 /** A monster card snapshot (public display fields only — no genes, per ADR-0015). */

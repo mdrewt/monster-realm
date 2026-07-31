@@ -1,6 +1,8 @@
 // rowConvert — SDK generated row -> normalized store row (M4a + M6c extension).
 // M6c adds monsterPubRowToStore and speciesRowToStore.
 // M9c adds inventoryRowToStore and itemRowToStore.
+// uxd2: fast-check is used by the AC-16 totality property at the foot of this file.
+import * as fc from 'fast-check';
 import { describe, expect, it, vi } from 'vitest';
 import {
   battleRowToStore,
@@ -1038,6 +1040,199 @@ describe('M12d converters', () => {
 });
 
 // =============================================================================
+// uxd2 (ADR-0161 D1/AC-16) — npcRowToStore: the NpcInteraction boundary converter.
+// APPENDED BLOCK — nothing above this line is modified.
+//
+// SOURCE OF TRUTH: docs/specs/uxd2-plan.md I5 + AC-16 + docs/adr/0161-*.md §D1.
+//
+// CONTRACT:
+//   SdkNpcRow += readonly interaction: { readonly tag: string; readonly value?: number }
+//   StoreNpcRow += readonly interaction:
+//        { kind:'dialogue' } | { kind:'shop'; shopId:number } | { kind:'heal'; locationId:number }
+//
+//   CONVERSION TABLE (TOTAL — never throws, for ANY tag/value pair):
+//     tag 'Dialogue'                     -> { kind:'dialogue' }
+//     tag 'Shop', typeof value==='number'-> { kind:'shop',   shopId: value }
+//     tag 'Heal', typeof value==='number'-> { kind:'heal',   locationId: value }
+//     ANY other tag                      -> { kind:'dialogue' }   (no throw)
+//     'Shop'/'Heal' with a missing or non-numeric value -> { kind:'dialogue' } (no throw)
+//
+// WHY TOTALITY (AC-16): this converter runs inside a SpacetimeDB subscription callback.
+// A throw there is not caught by the app — it aborts the row-callback batch and leaves the
+// store half-applied. An unknown tag is exactly what a NEWER server module (a 4th
+// NpcInteraction variant) sends to an older client, so it MUST degrade, never crash.
+//
+// WHY `??`/typeof AND NOT `||` (AC-16, rowConvert.ts:277 precedent): value 0 is a
+// representable u32 payload. `value || fallback` silently rewrites shop 0 / location 0.
+//
+// RED TODAY: npcRowToStore ignores `row.interaction` entirely, so `store.interaction`
+// reads `undefined` and every assertion below fails. No throw is involved — these are
+// plain value mismatches, i.e. red for exactly the right reason.
+// =============================================================================
+
+/** Build a well-formed SdkNpcRow with a caller-chosen interaction payload. */
+function sdkNpc(interaction: { tag: string; value?: number }): {
+  entityId: bigint;
+  npcId: string;
+  zoneId: number;
+  homeX: number;
+  homeY: number;
+  wanderRadius: number;
+  dialogueTreeId: string;
+  interaction: { tag: string; value?: number };
+} {
+  return {
+    entityId: 2n,
+    npcId: 'tideglass_shopkeeper',
+    zoneId: 1,
+    homeX: 8,
+    homeY: 1,
+    wanderRadius: 0,
+    dialogueTreeId: 'shopkeeper_greeting',
+    interaction,
+  };
+}
+
+describe('uxd2 AC-16: npcRowToStore normalises the NpcInteraction enum (total, no throw)', () => {
+  it('BITES: tag "Dialogue" → { kind: "dialogue" }', () => {
+    // WRONG IMPL KILLED: a converter that drops the field (today's behaviour) or that
+    // stores the raw SDK `{tag, value}` shape — the resolver + dialogue VM both switch on
+    // `kind`, so a raw tag would make every NPC fall through to the default arm.
+    expect(npcRowToStore(sdkNpc({ tag: 'Dialogue' })).interaction).toEqual({ kind: 'dialogue' });
+  });
+
+  it('BITES: tag "Shop" with value 1 → { kind: "shop", shopId: 1 }', () => {
+    // WRONG IMPL KILLED: a converter that maps every tag to 'dialogue' — the shopkeeper
+    // would greet and never offer a Shop action (the whole slice, silently inert).
+    expect(npcRowToStore(sdkNpc({ tag: 'Shop', value: 1 })).interaction).toEqual({
+      kind: 'shop',
+      shopId: 1,
+    });
+  });
+
+  it('★ BITES (falsy-0 tooth): tag "Shop" with value 0 → { kind: "shop", shopId: 0 }', () => {
+    // THE `||` TRAP. `shopId: row.interaction.value || 0` happens to survive this one, but
+    // `value || undefined` / `if (!value) return {kind:'dialogue'}` — the natural shapes a
+    // "guard against a missing payload" reflex produces — both convert a legitimate shop 0
+    // into a plain dialogue NPC. Only a `typeof value === 'number'` guard passes.
+    expect(npcRowToStore(sdkNpc({ tag: 'Shop', value: 0 })).interaction).toEqual({
+      kind: 'shop',
+      shopId: 0,
+    });
+  });
+
+  it('BITES: tag "Heal" with value 2 → { kind: "heal", locationId: 2 }', () => {
+    // WRONG IMPL KILLED: a converter that stores the Heal payload under `shopId` (a
+    // copy-paste of the Shop arm) — main.ts's heal arm would bind the wrong overlay.
+    expect(npcRowToStore(sdkNpc({ tag: 'Heal', value: 2 })).interaction).toEqual({
+      kind: 'heal',
+      locationId: 2,
+    });
+  });
+
+  it('★ BITES (falsy-0 tooth): tag "Heal" with value 0 → { kind: "heal", locationId: 0 }', () => {
+    // Same `||` trap on the Heal arm — pinned separately so a half-fix (Shop hardened, Heal
+    // left on truthiness) still reds.
+    expect(npcRowToStore(sdkNpc({ tag: 'Heal', value: 0 })).interaction).toEqual({
+      kind: 'heal',
+      locationId: 0,
+    });
+  });
+
+  it('★ BITES: an UNKNOWN tag degrades to { kind: "dialogue" } and does NOT throw', () => {
+    // AC-16 subscription-callback totality. A newer server module with a 4th variant
+    // (e.g. `Trainer(u32)`) sends a tag this client has never heard of.
+    // WRONG IMPL KILLED: `throw new Error('unhandled NpcInteraction tag')` — an exhaustive
+    // `never`-check pattern copied from the Rust side. Inside an SDK onInsert callback that
+    // aborts the batch and the store is left half-applied for the rest of the session.
+    let out!: ReturnType<typeof npcRowToStore>;
+    expect(() => {
+      out = npcRowToStore(sdkNpc({ tag: 'Trainer', value: 5 }));
+    }).not.toThrow();
+    expect(out.interaction).toEqual({ kind: 'dialogue' });
+  });
+
+  it('★ BITES: tag "Shop" with a MISSING value degrades to { kind: "dialogue" } (no throw)', () => {
+    // WRONG IMPL KILLED: `shopId: row.interaction.value!` — a non-null assertion. The store
+    // would carry `shopId: undefined`, the dialogue VM would render a Shop button, and the
+    // click would open `buildShopViewModelForShop(undefined, …)` → a dead "no shop" overlay.
+    let out!: ReturnType<typeof npcRowToStore>;
+    expect(() => {
+      out = npcRowToStore(sdkNpc({ tag: 'Shop' }));
+    }).not.toThrow();
+    expect(out.interaction).toEqual({ kind: 'dialogue' });
+  });
+
+  it('BITES: tag "Heal" with a NON-NUMERIC value degrades to { kind: "dialogue" } (no throw)', () => {
+    // WRONG IMPL KILLED: a `value !== undefined` guard (rather than `typeof === 'number'`) —
+    // a string payload from a schema drift would be stored as a locationId and every
+    // downstream `===` comparison against a number would silently never match.
+    const malformed = { tag: 'Heal', value: '2' } as unknown as { tag: string; value?: number };
+    let out!: ReturnType<typeof npcRowToStore>;
+    expect(() => {
+      out = npcRowToStore(sdkNpc(malformed));
+    }).not.toThrow();
+    expect(out.interaction).toEqual({ kind: 'dialogue' });
+  });
+
+  it('BITES: tag "Dialogue" with a stray value still yields exactly { kind: "dialogue" }', () => {
+    // WRONG IMPL KILLED: an impl that keys off the PRESENCE of `value` rather than the tag
+    // (e.g. `value !== undefined ? shop : dialogue`) — a Dialogue variant that the SDK
+    // happens to serialise with a 0 payload would become a shop.
+    const out = npcRowToStore(sdkNpc({ tag: 'Dialogue', value: 9 }));
+    expect(out.interaction).toEqual({ kind: 'dialogue' });
+    expect(Object.keys(out.interaction).sort()).toEqual(['kind']);
+  });
+
+  it('BITES: the other npc fields are unaffected by the new interaction field', () => {
+    // WRONG IMPL KILLED: an impl that rewrites the converter around the new field and drops
+    // one of the seven originals (entityId is the u64 one that must stay bigint).
+    const out = npcRowToStore(sdkNpc({ tag: 'Shop', value: 1 }));
+    expect(typeof out.entityId).toBe('bigint');
+    expect(out.entityId).toBe(2n);
+    expect(out.npcId).toBe('tideglass_shopkeeper');
+    expect(out.zoneId).toBe(1);
+    expect(out.homeX).toBe(8);
+    expect(out.homeY).toBe(1);
+    expect(out.wanderRadius).toBe(0);
+    expect(out.dialogueTreeId).toBe('shopkeeper_greeting');
+  });
+
+  it('★ BITES fast-check: TOTAL — any tag/value pair converts to one of the 3 kinds without throwing', () => {
+    // AC-16 as a property: the converter is a boundary function, so its totality must hold
+    // over the whole input space, not just the 9 hand-written rows above.
+    // WRONG IMPL KILLED: any residual throw path (an exhaustive switch's default arm, a
+    // `JSON.parse`, a non-null assertion) reachable only from an input shape nobody enumerated.
+    // Block-body arrow per [[vitest-fast-check]] — an expression body would hand fast-check
+    // the matcher's return value and report a spurious counterexample.
+    fc.assert(
+      fc.property(
+        fc.string(),
+        fc.option(fc.integer({ min: -5, max: 5 }), { nil: undefined }),
+        (tag, value) => {
+          let out!: ReturnType<typeof npcRowToStore>;
+          expect(() => {
+            out = npcRowToStore(sdkNpc({ tag, value }));
+          }).not.toThrow();
+          expect(
+            out.interaction,
+            'npcRowToStore must always emit an interaction field (RED today: it emits none)',
+          ).toBeDefined();
+          expect(['dialogue', 'shop', 'heal']).toContain(out.interaction.kind);
+          // And the payload arms are internally consistent (no `shopId: undefined`).
+          if (out.interaction.kind === 'shop') {
+            expect(typeof out.interaction.shopId).toBe('number');
+          }
+          if (out.interaction.kind === 'heal') {
+            expect(typeof out.interaction.locationId).toBe('number');
+          }
+        },
+      ),
+    );
+  });
+});
+
+// =============================================================================
 // M12d gating: heal_location_row cooldownMs i64 type invariant
 //
 // FINDING: schema.rs declares `cooldown_ms: i64` and the generated binding
@@ -2029,6 +2224,7 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS.TradeStatus — registry matc
 //     WeatherEffect  — battleRowToStore: row.state.weather?.tag
 //     TradeStatus    — tradeOfferRowToStore: row.status.tag (the narrowTag site)
 //     ChallengeStatus — battleChallengeRowToStore: row.status.tag
+//     NpcInteraction — npcRowToStore: row.interaction.tag  // uxd2: registered — ADR-0161
 //
 //   Excluded (write-direction or non-.tag reads):
 //     PvpAction      — the client WRITES this via submitPvpAction; rowConvert never
@@ -2047,10 +2243,11 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS.TradeStatus — registry matc
 //
 // The exact required registry keys are:
 //   TradeStatus, ChallengeStatus, BattleOutcome, Affinity,
-//   StatusKind, WeatherEffect, ActionState, Direction
+//   StatusKind, WeatherEffect, ActionState, Direction,
+//   NpcInteraction                        // uxd2: NpcInteraction registered — ADR-0161
 // ---------------------------------------------------------------------------
 describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)', () => {
-  it('BITES: registry contains all eight required boundary enum keys', () => {
+  it('BITES: registry contains all nine required boundary enum keys', () => {
     // These are the enums whose .tag values cross the SDK→store boundary in rowConvert.ts.
     // Verified by reading each .tag access site in rowConvert.ts.
     // Kills: an impl that omits any boundary enum (eval cannot check an unregistered enum).
@@ -2063,6 +2260,10 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
       'WeatherEffect',
       'ActionState',
       'Direction',
+      // uxd2: NpcInteraction registered — ADR-0161. npcRowToStore reads
+      // `row.interaction.tag` at the SDK→store boundary, so a server-added 4th
+      // variant MUST ratchet the sdk-enum-exhaustiveness eval RED (plan I5).
+      'NpcInteraction',
     ] as const;
     for (const key of requiredKeys) {
       expect(
@@ -2083,22 +2284,29 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
     ).toBe(false);
   });
 
-  it('BITES: registry has EXACTLY 8 keys — no extra keys allowed (T4-6 exact-count pin)', () => {
-    // Exact-count gate: the required set is exactly the 8 boundary-read enums listed
+  it('BITES: registry has EXACTLY 9 keys — no extra keys allowed (T4-6 exact-count pin)', () => {
+    // Exact-count gate: the required set is exactly the 9 boundary-read enums listed
     // in the T4-6 comment above. No more, no less. This kills:
     //   - An impl that adds extra enums (e.g. StatKind, PvpAction, MoveInput) that
     //     are NOT boundary-read enums in rowConvert.ts — the eval would silently
     //     check them against types.ts, masking gaps in the real required set.
-    //   - An impl that correctly includes the 8 required keys but also adds extras,
+    //   - An impl that correctly includes the 9 required keys but also adds extras,
     //     making the registry a superset rather than the exact required set.
-    // The presence test above confirms the 8 required keys exist; this test pins
+    // The presence test above confirms the 9 required keys exist; this test pins
     // that no additional keys were added.
+    //
+    // uxd2 RECALIBRATION (8 -> 9): NpcInteraction registered — ADR-0161. The pin was
+    // calibrated pre-uxd2 and is now internally inconsistent with plan I5, which
+    // MANDATES the registry entry: with the count left at 8 no implementation could
+    // both register NpcInteraction and pass this gate. RED TODAY (the live registry
+    // still has 8 keys) — correct TDD red.
     expect(
       Object.keys(HANDLED_ENUM_VARIANTS).length,
-      'HANDLED_ENUM_VARIANTS must have EXACTLY 8 keys: TradeStatus, ChallengeStatus, ' +
-        'BattleOutcome, Affinity, StatusKind, WeatherEffect, ActionState, Direction. ' +
+      'HANDLED_ENUM_VARIANTS must have EXACTLY 9 keys: TradeStatus, ChallengeStatus, ' +
+        'BattleOutcome, Affinity, StatusKind, WeatherEffect, ActionState, Direction, ' +
+        'NpcInteraction. ' +
         `Got ${Object.keys(HANDLED_ENUM_VARIANTS).length} keys: ${Object.keys(HANDLED_ENUM_VARIANTS).sort().join(', ')}`,
-    ).toBe(8);
+    ).toBe(9);
   });
 
   it('BITES: ChallengeStatus registry matches types.ts variants', () => {
@@ -2139,5 +2347,35 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
     // Verified against types.ts: WeatherEffect = {Rain: __t.u8(), Sun: __t.u8(), Sandstorm: __t.u8(), Hail: __t.u8()}
     // These are payload-carrying variants (__t.u8()) — the KEY names are what matter for tag matching.
     expect(HANDLED_ENUM_VARIANTS.WeatherEffect).toEqual(['Rain', 'Sun', 'Sandstorm', 'Hail']);
+  });
+
+  it('BITES: NpcInteraction registry matches types.ts variants in DECLARATION order', () => {
+    // uxd2: NpcInteraction registered — ADR-0161.
+    //
+    // ORDERING CONVENTION (read from rowConvert.ts:55 and verified against the generated
+    // client/src/module_bindings/types.ts this session): the registry's variant lists are
+    // DECLARATION-ORDERED — they "mirror module_bindings/types.ts EXACTLY", and the SDK
+    // generator emits each `__t.enum` variant map in Rust declaration order. They are NOT
+    // alphabetical, and every existing entry proves it:
+    //     Direction    = North, South, East, West        (alphabetical: East, North, …)
+    //     ActionState  = Idle, Walking, Jumping          (alphabetical: Idle, Jumping, …)
+    //     BattleOutcome= Ongoing, SideAWins, SideBWins, Fled  (alphabetical: Fled first)
+    //     Affinity     = Fire, Water, Plant, Electric, … (not remotely alphabetical)
+    // game-core declares `NpcInteraction { #[default] Dialogue, Shop(u32), Heal(u32) }`
+    // (plan I0), so `just gen` will emit
+    //     __t.enum("NpcInteraction", { Dialogue: __t.unit(), Shop: __t.u32(), Heal: __t.u32() })
+    // and the registry entry is therefore ['Dialogue', 'Shop', 'Heal'] — Shop BEFORE Heal.
+    //
+    // Shop/Heal are payload-carrying (__t.u32()); as with WeatherEffect, only the KEY names
+    // matter for tag matching, so the payload type is not pinned here.
+    //
+    // WRONG IMPL KILLED (1): an alphabetised entry ['Dialogue', 'Heal', 'Shop'] — it would
+    //   still satisfy the sdk-enum-exhaustiveness eval (C2/C3 are set-based) and would
+    //   still satisfy the key-presence and exact-count gates above, so THIS array pin is
+    //   the only thing standing between the registry and a silent drift away from the
+    //   file's stated "mirrors types.ts EXACTLY" contract.
+    // WRONG IMPL KILLED (2): an entry that omits a variant (e.g. ['Dialogue']) — the eval's
+    //   C2 would red on regen, but this pins it at unit speed with the enum named.
+    expect(HANDLED_ENUM_VARIANTS.NpcInteraction).toEqual(['Dialogue', 'Shop', 'Heal']);
   });
 });

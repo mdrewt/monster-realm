@@ -63,7 +63,9 @@ pub(crate) const ZONE_0: u32 = 0;
 /// v15 (pt-d3): tuning pass — zone-1 encounter table (first wild placement of
 ///   species 7/8/20/21) + Antidote stocked in shop 1 (ADR-0145).
 /// v16 (B): item-triggered evolution content — species 30/31 + items 4/5 + two Item branches (ADR-0149).
-pub(crate) const CONTENT_VERSION: u32 = 16;
+/// v17 (uxd2): npc row gains the interaction column + the Tideglass shopkeeper
+///   (Shop(1), zone 1) and its inert greeting tree are seeded (ADR-0161).
+pub(crate) const CONTENT_VERSION: u32 = 17;
 pub(crate) const SPRITE_PLAYER: u32 = 0;
 pub(crate) const MAX_NAME_LEN: usize = 24;
 pub(crate) const MAX_PARTY_SIZE: u8 = game_core::PARTY_SIZE; // SSOT (ADR-0052)

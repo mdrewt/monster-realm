@@ -1300,12 +1300,18 @@ describe('★ main.ts wiring (pt-c2b help): fan-out count floor (PTC2B-4..8 / AD
   // help cannot have (reducer-response feedback + an Identity self-branch), so its count (22 in
   // the live file post-pt-c2b) must NOT be used as the floor — that would be unsatisfiable by a
   // correct display-only impl; 19 is the exact structural parity floor.
-  const HELP_VISIBLE_FLOOR = 19;
+  // uxd2 RECALIBRATION (19 -> 18): KeyG/KeyH blocks deleted (-2), anyOverlayVisible() predicate
+  // added (+1) — see ADR-0161. Without this the suite is internally UNSATISFIABLE: no impl can
+  // both delete the two handlers (W-INTERACT-NO-GH) and keep 19 occurrences.
+  const HELP_VISIBLE_FLOOR = 18;
   // leaderboardView?.visible is the read-only-overlay parity anchor. Wiring the help overlay
   // adds `!leaderboardView?.visible` to help's OWN `?` open-guard, so leaderboard's live count is
   // HELP_VISIBLE_FLOOR + 1 (that guard contributes to leaderboard's count but not to help's own).
-  // help = 19, leaderboard = 20 post-wiring; the two still move together on any future keymap change.
-  const LEADERBOARD_LIVE_COUNT = HELP_VISIBLE_FLOOR + 1; // 20
+  // uxd2 RECALIBRATION (20 -> 19): KeyG/KeyH blocks deleted (-2), anyOverlayVisible() predicate
+  // added (+1) — see ADR-0161. Both overlays lose and gain the SAME sites, so the +1 parity
+  // relation is preserved and the two still move together on any future keymap change.
+  // This exact self-check is RED TODAY (the live file still has 20) — correct TDD red.
+  const LEADERBOARD_LIVE_COUNT = HELP_VISIBLE_FLOOR + 1; // 19
 
   it(`self-check: leaderboardView?.visible appears exactly ${LEADERBOARD_LIVE_COUNT}× — pins the parity anchor to the live file`, () => {
     // A LIVE self-check: proves the parity overlay is fully wired in THIS main.ts, so a future
@@ -1328,7 +1334,8 @@ describe('★ main.ts wiring (pt-c2b help): fan-out count floor (PTC2B-4..8 / AD
       count,
       `main.ts must contain helpView?.visible at least ${HELP_VISIBLE_FLOOR}× ` +
         `(one per leaderboardView?.visible occurrence — ADR-0135 fan-out parity). Found: ${count}. ` +
-        `The floor is ${HELP_VISIBLE_FLOOR} (leaderboardView parity) — NOT 21 (tradePropose has 2 sites help cannot have).`,
+        `The floor is ${HELP_VISIBLE_FLOOR} (leaderboardView parity) — NOT 21 (tradePropose has 2 sites help cannot have). ` +
+        'uxd2 recalibrated 19 -> 18: KeyG/KeyH deleted (-2), anyOverlayVisible() added (+1) — ADR-0161.',
     ).toBeGreaterThanOrEqual(HELP_VISIBLE_FLOOR);
   });
 });
@@ -1459,10 +1466,21 @@ describe('★ main.ts wiring (pt-c2b help): per-context anchored fan-out teeth (
   });
 });
 
-describe('★ main.ts wiring (pt-c2b help): 12 sibling open-guards carry !helpView?.visible (PTC2B-5)', () => {
+describe('★ main.ts wiring (pt-c2b help): 10 sibling open-guards carry !helpView?.visible (PTC2B-5)', () => {
   // PTC2B-5: while the help overlay is visible, pressing a sibling hotkey must NOT open that
-  // overlay. Each of the 12 sibling key handlers (KeyB/I/E/Q/H/G/U/P/L/N/O/T) must add
+  // overlay. Each of the 10 sibling key handlers (KeyB/I/E/Q/U/P/L/N/O/T) must add
   // `!helpView?.visible` to its open-guard block.
+  //
+  // uxd2 EDIT (ADR-0161 D5 / plan AC-10′ — list maintenance, NOT a weakening): 'KeyH' and
+  // 'KeyG' were removed from SIBLING_KEYS because uxd2 DELETES both handlers outright (the
+  // shop opens from a shopkeeper interaction, the heal from a heal tile). Leaving them in
+  // would make this suite fail post-impl for the wrong reason — `src.indexOf("e.code ===
+  // 'KeyG'")` returns -1 and the anchor assertion fires, masking the real invariant. The
+  // ABSENCE of those two handlers is asserted positively by W-INTERACT-NO-GH at the foot of
+  // this file, so nothing is lost: the pair moved from "must be guarded" to "must not exist".
+  // ALL_OVERLAYS (W-OVERLAY-FANOUT-MUTEX) deliberately KEEPS shopView and healView at 14 —
+  // both overlays still exist; they simply have no hotkey of their own any more, so EVERY
+  // remaining handler must now guard both of them.
   //
   // ROBUST APPROACH: for each sibling key, slice its handler block (from `e.code === 'KeyX'`
   // up to the NEXT sibling handler or a generous window) and assert helpView?.visible is present.
@@ -1476,8 +1494,6 @@ describe('★ main.ts wiring (pt-c2b help): 12 sibling open-guards carry !helpVi
     'KeyI',
     'KeyE',
     'KeyQ',
-    'KeyH',
-    'KeyG',
     'KeyU',
     'KeyP',
     'KeyL',
@@ -1486,7 +1502,7 @@ describe('★ main.ts wiring (pt-c2b help): 12 sibling open-guards carry !helpVi
     'KeyT',
   ] as const;
 
-  it('W-HELP-FANOUT-OPENGUARDS BITES: EACH of the 12 sibling open-guards contains !helpView?.visible — kills partial-guard impl', () => {
+  it('W-HELP-FANOUT-OPENGUARDS BITES: EACH of the 10 sibling open-guards contains !helpView?.visible — kills partial-guard impl', () => {
     // WRONG IMPL KILLED: an impl that adds !helpView?.visible to some sibling guards (e.g. the
     // newer L/N/O/T) but forgets an older one (e.g. KeyB) — pressing KeyB while help is open
     // would then open the box overlay over the help overlay (a mutual-exclusion breach).
@@ -1585,8 +1601,9 @@ describe('main.ts wiring (pt-c2b help): onReconnect does NOT hide helpView (PTC2
 //   healView, shopView, tradeView, pvpView, leaderboardView, renameView,
 //   tradeProposeView, helpView
 //
-// THE 13 OPEN-HANDLERS: one per hotkey + the talk handler (KeyT, which opens NO
-// overlay but must still guard against ALL 14 so it never fires into an open UI).
+// THE 11 OPEN-HANDLERS (uxd2: was 13 — KeyG/KeyH deleted, ADR-0161 D5): one per
+// remaining hotkey + the interact handler (KeyT, which opens NO overlay of its own
+// but must still guard against ALL 14 so it never fires into an open UI).
 //
 // ACCEPTANCE FORM (by overlay class):
 //   battleView         → bare token `battleView?.visible`
@@ -1659,15 +1676,20 @@ describe('★ main.ts wiring (ptc5c): every overlay-open handler accounts for al
   // this trio, so we accept EITHER the guard form OR a .hide() call.
   const HIDE_SWITCH_OVERLAYS: ReadonlyArray<string> = ['boxView', 'raisingView', 'evolutionView'];
 
-  // The 13 open-handlers (anchor uniquely identifies the handler start in the source;
+  // The 11 open-handlers (anchor uniquely identifies the handler start in the source;
   // self = the overlay this handler toggles, or null for KeyT which opens nothing).
+  //
+  // uxd2 EDIT (ADR-0161 D5 / plan AC-10′ — list maintenance): the KeyH (self healView) and
+  // KeyG (self shopView) entries were removed because uxd2 deletes both handlers. This
+  // STRENGTHENS the invariant rather than weakening it: with no handler claiming healView or
+  // shopView as its `self`, EVERY remaining handler must now carry `!healView?.visible` AND
+  // `!shopView?.visible` (previously each of those two was exempted in its own handler).
+  // ALL_OVERLAYS stays at 14 — both overlays still exist, they are just hotkey-less now.
   const OPEN_HANDLERS: ReadonlyArray<{ anchor: string; self: string | null }> = [
     { anchor: "e.code === 'KeyB'", self: 'boxView' },
     { anchor: "e.code === 'KeyI'", self: 'raisingView' },
     { anchor: "e.code === 'KeyE'", self: 'evolutionView' },
     { anchor: "e.code === 'KeyQ'", self: 'questLogView' },
-    { anchor: "e.code === 'KeyH'", self: 'healView' },
-    { anchor: "e.code === 'KeyG'", self: 'shopView' },
     { anchor: "e.code === 'KeyU'", self: 'tradeView' },
     { anchor: "e.code === 'KeyP'", self: 'pvpView' },
     { anchor: "e.code === 'KeyL'", self: 'leaderboardView' },
@@ -3603,6 +3625,577 @@ describe('main.ts wiring (feel-polish D1): care feedback (ADR-0159, hardened aga
     expect(
       src.includes("reduceErrorMessage(err, 'care')"),
       "careAction.ts must call reduceErrorMessage(err, 'care') on rejection (ADR-0159 D1)",
+    ).toBe(true);
+  });
+});
+
+// ===========================================================================
+// uxd2 — context-sensitive interact wiring (W-INTERACT). NEW describe block; the
+// only edits to the blocks ABOVE are the two list shrinks (SIBLING_KEYS,
+// OPEN_HANDLERS), each annotated in place.
+//
+// SOURCE OF TRUTH: docs/specs/uxd2-plan.md I6/I6b/I7 (ACs 1,2,3,5,6,10′,12) +
+//                  docs/adr/0161-npc-interaction-context-interact.md D3/D4/D5/D6.
+//
+// RED REASON (every case below): master's main.ts still has the global KeyG/KeyH
+// handlers, still calls nearestTalkableNpcId, has no [data-shop-id] branch, no
+// pendingShopId, no interactPrompt/screenFor in the frame loop, and no
+// #interact-prompt element. Each case fails with either a thrown missing-anchor
+// error (regionOrThrow / expectUniqueAnchor) or a false/-1 assertion.
+//
+// TWO SENTINEL PAIRS ARE REQUIRED OF THE IMPLEMENTER (`// F9-BUNDLE-BEGIN/END`
+// precedent, main.wiring.test.ts:283):
+//     // UXD2-SHOPBTN-BEGIN  … the [data-shop-id] click branch …  // UXD2-SHOPBTN-END
+//     // UXD2-SHOPOPEN-BEGIN … the deferred shop-open arm …       // UXD2-SHOPOPEN-END
+// WHY: both are NEW code with no pre-existing stable neighbour to bound a region
+// against. A fixed-width `src.slice(i, i + N)` window is the nh1-post-mortem
+// anti-pattern (it silently widens/narrows with every legitimate edit and goes
+// vacuously green), and an unbounded forward slice would let a needle anywhere later
+// in the file satisfy the tooth. The sentinels make the region exact and un-widenable;
+// a missing sentinel is a HARD RED (thrown), never a vacuous pass.
+//
+// NO `new RegExp` anywhere (Semgrep ban, this file's rule): indexOf/includes/split only.
+// ===========================================================================
+
+const UXD2_SHOPBTN_BEGIN = '// UXD2-SHOPBTN-BEGIN';
+const UXD2_SHOPBTN_END = '// UXD2-SHOPBTN-END';
+const UXD2_SHOPOPEN_BEGIN = '// UXD2-SHOPOPEN-BEGIN';
+const UXD2_SHOPOPEN_END = '// UXD2-SHOPOPEN-END';
+
+/** KeyT handler block: from its own anchor to the NEXT open-handler (`e.key === '?'`).
+ *  Both anchors are asserted UNIQUE at runtime, so the block cannot silently widen. */
+const UXD2_KEYT_START = "e.code === 'KeyT'";
+const UXD2_KEYT_END = "e.key === '?'";
+
+/** Escape-dialogue branch: bounded by the two adjacent Escape branches (both unique). */
+const UXD2_ESC_DLG_START = "e.code === 'Escape' && dialogueView?.visible";
+const UXD2_ESC_DLG_END = "e.code === 'Escape' && questLogView?.visible";
+
+/** rAF frame body: the frame closure declaration to its OWN error log.
+ *  END is the frame handler's unique log line — NOT `} catch (err) {`, which occurs ~26× in
+ *  main.ts and therefore cannot be uniqueness-checked (an inner try/catch added inside the
+ *  frame body would silently truncate the region, which is exactly how a needle-bounded scan
+ *  goes vacuously green — nh1 post-mortem). Both anchors are asserted unique at runtime. */
+const UXD2_FRAME_START = 'const frame = ';
+const UXD2_FRAME_END = "console.error('[frame] uncaught error'";
+
+/** The LIVE document click listener the Shop branch must live inside, and the existing
+ *  data-choice-idx branch it must sit ABOVE. Both anchors are CODE-SHAPED on purpose
+ *  (`closest('[data-choice-idx]')`, not the bare attribute name): uniqueness is checked
+ *  against RAW source — which the `//` sentinels require — so a prose mention of
+ *  "data-choice-idx" in a new comment must not be able to red these teeth spuriously. */
+const UXD2_CLICK_LISTENER = "document.addEventListener('click'";
+const UXD2_CHOICE_BRANCH = "closest('[data-choice-idx]')";
+
+/** Read a sibling module under client/src by relative path; fail LOUD if absent so a
+ *  deleted file can never make a direct-file scan vacuously green (RL-15 precedent). */
+function readClientSrc(relPath: string): string {
+  const p = path.join(path.dirname(fileURLToPath(import.meta.url)), relPath);
+  try {
+    return readFileSync(p, 'utf8');
+  } catch (err) {
+    throw new Error(`${relPath} could not be read at ${p} — ` + String(err));
+  }
+}
+
+describe('★ main.ts wiring (uxd2): the global KeyG/KeyH hotkeys are GONE (AC-10′)', () => {
+  it("★ W-INTERACT-NO-GH BITES: no `e.code === 'KeyG'` and no `e.code === 'KeyH'` anywhere in main.ts", () => {
+    // AC-10′ / ADR-0161 D5. RED TODAY: main.ts:671 (`KeyH`) and :697 (`KeyG`) both exist.
+    //
+    // WRONG IMPL KILLED (1): an impl that adds the interact system but LEAVES the global
+    //   hotkeys "for convenience" — the world-unconnected shop open is the exact defect
+    //   Drew's 2026-07-25 playtest raised, and a surviving KeyG re-opens it.
+    // WRONG IMPL KILLED (2): an impl that empties the handler body but keeps the branch
+    //   (`if (e.code === 'KeyG') { e.preventDefault(); return; }`) — G would still swallow
+    //   the keypress, so the key remains reserved and undocumented-but-live.
+    // Comment-stripped first: main.ts:2089 carries a stale "Escape/KeyG already recover it"
+    // COMMENT which the plan requires fixing; a comment must never fail this tooth (and,
+    // symmetrically, must never satisfy one).
+    const src = stripLineComments(readMainTs());
+    expect(
+      src.includes("e.code === 'KeyG'"),
+      "main.ts must NOT contain an `e.code === 'KeyG'` branch — the global shop hotkey is " +
+        'deleted in uxd2; the shop opens only from a shopkeeper interaction (ADR-0161 D5)',
+    ).toBe(false);
+    expect(
+      src.includes("e.code === 'KeyH'"),
+      "main.ts must NOT contain an `e.code === 'KeyH'` branch — the global heal hotkey is " +
+        'deleted in uxd2; heal opens only from a heal tile interaction (ADR-0161 D5)',
+    ).toBe(false);
+  });
+
+  it('★ W-INTERACT-NO-GH-HELP BITES: helpModel.ts documents no G / H row', () => {
+    // Direct-file scan (RL-15 precedent). RED TODAY: helpModel.ts:32-33.
+    // WRONG IMPL KILLED: an impl that deletes the handlers but leaves the help rows — the
+    // onboarding overlay would teach a playtester two keys that do nothing.
+    // The needle is the SSOT row form `{ key: 'G'`, not a bare 'G', so the letter appearing
+    // inside another row's action text cannot false-fire this.
+    const src = readClientSrc('ui/helpModel.ts');
+    expect(
+      src.includes("{ key: 'G'"),
+      "helpModel.ts must NOT contain a `{ key: 'G'` controls row (AC-10′)",
+    ).toBe(false);
+    expect(
+      src.includes("{ key: 'H'"),
+      "helpModel.ts must NOT contain a `{ key: 'H'` controls row (AC-10′)",
+    ).toBe(false);
+    expect(
+      src.includes("{ key: 'T'"),
+      "helpModel.ts must STILL contain the `{ key: 'T'` interact row (the one key uxd2 is about)",
+    ).toBe(true);
+  });
+
+  it('★ W-INTERACT-NO-OLD-RESOLVER BITES: main.ts no longer imports/calls nearestTalkableNpcId', () => {
+    // Plan I6: nearestInteractable REPLACES nearestTalkableNpcId; the old symbol is deleted
+    // from dialogueModel.ts (pinned by interactModel.test.ts G1).
+    // WRONG IMPL KILLED: an impl that adds the new resolver for the PROMPT but leaves the
+    // KeyT dispatch on the old one — the prompt would advertise "Shop"/"Heal" on targets
+    // KeyT then refuses to act on (the two would disagree on every non-dialogue target).
+    const src = stripLineComments(readMainTs());
+    expect(
+      src.includes('nearestTalkableNpcId'),
+      'main.ts must NOT reference nearestTalkableNpcId — nearestInteractable replaces it (plan I6)',
+    ).toBe(false);
+  });
+});
+
+describe('★ main.ts wiring (uxd2): the KeyT handler dispatches through nearestInteractable (AC-1/3/6)', () => {
+  it('★ W-INTERACT-KEYT-DISPATCH BITES: the KeyT block calls nearestInteractable( and reducers.talk(', () => {
+    // AC-1: dialogue AND shop NPCs share one dispatch arm — the existing `talk` reducer
+    // (greet-then-shop, ADR-0161 D4).
+    // WRONG IMPL KILLED (1): a KeyT that keeps calling the old resolver (see the sibling
+    //   tooth) or that resolves inline with a hand-rolled loop — the ordering rules proven
+    //   in interactModel.test.ts would then not govern the actual dispatch.
+    // WRONG IMPL KILLED (2): a KeyT that opens the shop overlay directly for a Shop NPC
+    //   (the spec's pre-adjudication default) — Drew's answer is GREET-THEN-SHOP, so the
+    //   shop arm MUST send `talk`; `reducers.talk(` must be present in the block.
+    const src = readMainTs();
+    expectUniqueAnchor(src, UXD2_KEYT_START);
+    expectUniqueAnchor(src, UXD2_KEYT_END);
+    const block = stripLineComments(regionOrThrow(src, UXD2_KEYT_START, UXD2_KEYT_END));
+    expect(
+      block.includes('nearestInteractable('),
+      'the KeyT block must resolve its target via nearestInteractable( (plan I7.2)',
+    ).toBe(true);
+    expect(
+      block.includes('reducers.talk('),
+      'the KeyT block must send the talk reducer for the dialogue/shop arms (AC-1/AC-2 greet-then-shop)',
+    ).toBe(true);
+  });
+
+  it('★ W-INTERACT-KEYT-SWITCH BITES: the KeyT block has an exhaustive dialogue/shop/heal switch with a BOUND heal render', () => {
+    // AC-3: the heal arm binds the OVERLAY to the resolved locationId and calls NO reducer.
+    // WRONG IMPL KILLED (1): a KeyT that handles only NPCs and ignores heal targets — the
+    //   heal overlay becomes unreachable once KeyH is deleted (the whole heal affordance).
+    // WRONG IMPL KILLED (2): a heal arm that renders the DEFAULT (all-locations)
+    //   buildHealViewModel instead of the bound one — the overlay would list every pad in
+    //   the world and the ADR-0161 D5 "never silently swap a bound view" rule is broken.
+    const src = readMainTs();
+    const block = stripLineComments(regionOrThrow(src, UXD2_KEYT_START, UXD2_KEYT_END));
+    for (const needle of ["case 'dialogue'", "case 'shop'", "case 'heal'"]) {
+      expect(
+        block.includes(needle),
+        `the KeyT block must contain \`${needle}:\` — the dispatch is an EXHAUSTIVE switch on ` +
+          'the descriptor kind (no `default:`/`_ =>`, so a 4th variant compiler-flags this site)',
+      ).toBe(true);
+    }
+    expect(
+      block.includes('buildHealViewModelForLocation('),
+      'the KeyT heal arm must render buildHealViewModelForLocation( — the BOUND location, not ' +
+        'the first-location default (AC-3, ADR-0161 D5)',
+    ).toBe(true);
+  });
+
+  it('★ W-INTERACT-KEYT-NO-REDUCER BITES: the KeyT block calls NEITHER reducers.buy( NOR reducers.healParty(', () => {
+    // AC-3 / AC-11: KeyT never spends and never heals. The heal arm is a VIEW bind only
+    // (adjudication 2: binding the SEND waits for a second heal location), and the shop arm
+    // opens a greeting, not a purchase.
+    // WRONG IMPL KILLED: a "helpful" KeyT that fires heal_party on a heal tile — the player
+    //   would consume a cooldown (and, once heal locations cost items, an item) by walking
+    //   past a pad and pressing the interact key, with no confirmation step. Also kills a
+    //   KeyT that shortcuts a purchase for a shop NPC.
+    const src = readMainTs();
+    const block = stripLineComments(regionOrThrow(src, UXD2_KEYT_START, UXD2_KEYT_END));
+    for (const needle of ['reducers.buy(', 'reducers.healParty(', 'reducers.sellItem(']) {
+      expect(
+        block.includes(needle),
+        `the KeyT block must NOT contain ${needle} — interact opens UI, it never transacts ` +
+          '(AC-3; the buy/heal_party reducers are byte-identical to master in this slice)',
+      ).toBe(false);
+    }
+  });
+
+  it('★ W-INTERACT-KEYT-GUARD BITES: the KeyT block still guards ALL 14 mutual-exclusion overlays (AC-6)', () => {
+    // AC-6: the interact key must never fire into an open UI. This duplicates the coverage of
+    // W-OVERLAY-FANOUT-MUTEX deliberately — that test's OPEN_HANDLERS list is edited by this
+    // slice, so a second, list-independent statement of the KeyT guard keeps the invariant
+    // pinned even if the shared list is ever mis-edited again.
+    // WRONG IMPL KILLED: a rewritten KeyT that drops guards while restructuring the body into
+    // a switch (the easiest thing to lose in this refactor) — pressing T with the shop open
+    // would send `talk` behind the overlay.
+    const src = readMainTs();
+    const block = stripLineComments(regionOrThrow(src, UXD2_KEYT_START, UXD2_KEYT_END));
+    const overlays = [
+      'battleView',
+      'boxView',
+      'raisingView',
+      'evolutionView',
+      'dialogueView',
+      'questLogView',
+      'healView',
+      'shopView',
+      'tradeView',
+      'pvpView',
+      'leaderboardView',
+      'renameView',
+      'tradeProposeView',
+      'helpView',
+    ];
+    for (const overlay of overlays) {
+      expect(
+        block.includes(`!${overlay}?.visible`),
+        `the KeyT block must keep the guard !${overlay}?.visible (AC-6 — 14-way mutual exclusion)`,
+      ).toBe(true);
+    }
+    expect(
+      block.includes("identity !== ''"),
+      "the KeyT block must keep its `identity !== ''` guard (no dispatch before onReady)",
+    ).toBe(true);
+  });
+});
+
+describe('★ main.ts wiring (uxd2): the Shop button defers the open through dismissDialogue (AC-2)', () => {
+  it('★ W-INTERACT-SHOPBTN BITES: a sentinel-bounded [data-shop-id] click branch exists, sends dismissDialogue under the dismissPending guard, and sets pendingShopId', () => {
+    // ADR-0161 D4. RED TODAY: no `data-shop-id` in main.ts at all → regionOrThrow throws.
+    //
+    // WRONG IMPL KILLED (1): a Shop button wired onto `data-choice-idx` — the existing
+    //   dialogue click handler would send advance_dialogue with a bogus choice index.
+    // WRONG IMPL KILLED (2): a click branch that opens the shop IMMEDIATELY — that stacks two
+    //   overlays for a server round-trip, during which Escape hits the DIALOGUE branch instead
+    //   of the shop branch, and a frozen link pins the overlap permanently (ADR-0161 D4,
+    //   adjudication 1). The deferred open is the whole design; `pendingShopId` is its proof.
+    // WRONG IMPL KILLED (3): a branch that sends dismissDialogue WITHOUT the dismissPending
+    //   guard — a double-click would double-send while the first dismiss is in flight (C6).
+    const region = stripLineComments(
+      regionOrThrow(readMainTs(), UXD2_SHOPBTN_BEGIN, UXD2_SHOPBTN_END),
+    );
+    expect(
+      region.includes('data-shop-id'),
+      'the UXD2-SHOPBTN region must select on [data-shop-id] (the Shop button carries no ' +
+        'data-choice-idx, so it must have its own click branch)',
+    ).toBe(true);
+    expect(
+      region.includes('dismissDialogue'),
+      'the Shop-button branch must end the conversation via dismissDialogue (ADR-0161 D4)',
+    ).toBe(true);
+    expect(
+      region.includes('dismissPending'),
+      'the Shop-button branch must respect the dismissPending in-flight guard (ADR-0085 C6)',
+    ).toBe(true);
+    expect(
+      region.includes('pendingShopId'),
+      'the Shop-button branch must record pendingShopId — the open is DEFERRED to the ' +
+        'dialogue batch listener, never performed inline (adjudication 1)',
+    ).toBe(true);
+    expect(
+      region.includes('closest('),
+      'the UXD2-SHOPBTN region must contain the actual click-delegation code — a `closest(...)` ' +
+        'target test (anti-vacuity: an empty sentinel pair would satisfy every needle below)',
+    ).toBe(true);
+  });
+
+  it('★ W-INTERACT-SHOPBTN-LIVE BITES: the branch sits INSIDE the live document click listener, ABOVE the data-choice-idx branch — kills a never-invoked dead-code wrapper', () => {
+    // RED-TEAM (HIGH): every needle in the sibling test is satisfied by a function that is
+    // DECLARED and never CALLED — e.g. `function wireShopButton() { /* sentinels + needles */ }`
+    // parked at module scope. The suite would go green while clicking the Shop button did
+    // nothing at all. Structural position is the cheapest proof of liveness available to a
+    // source scan: pin the region between two anchors that are ALREADY PROVEN LIVE by an
+    // existing shipped behaviour (the dialogue-choice click path, gated by dialogue.spec.ts).
+    //
+    // WRONG IMPL KILLED (1): a dead wrapper function anywhere in the file — its sentinels
+    //   cannot be both after `document.addEventListener('click'` and before the
+    //   `[data-choice-idx]` closest() call unless they are literally inside that listener.
+    // WRONG IMPL KILLED (2): a SECOND `document.addEventListener('click', …)` registered for
+    //   the shop button — the uniqueness assertion on the listener anchor reds, and a second
+    //   listener is a real hazard (ordering with the dismiss round-trip becomes undefined).
+    // WRONG IMPL KILLED (3): the shop branch placed BELOW the choice branch — the choice
+    //   branch would `return` on a non-matching target before the shop branch is reached only
+    //   if written carelessly, and the ordering pin removes the whole class.
+    const src = readMainTs();
+    expectUniqueAnchor(src, UXD2_CLICK_LISTENER);
+    expectUniqueAnchor(src, UXD2_CHOICE_BRANCH);
+    expectUniqueAnchor(src, UXD2_SHOPBTN_BEGIN);
+    expectUniqueAnchor(src, UXD2_SHOPBTN_END);
+
+    const listenerIdx = src.indexOf(UXD2_CLICK_LISTENER);
+    const choiceIdx = src.indexOf(UXD2_CHOICE_BRANCH);
+    const beginIdx = src.indexOf(UXD2_SHOPBTN_BEGIN);
+    const endIdx = src.indexOf(UXD2_SHOPBTN_END);
+
+    expect(
+      beginIdx,
+      `${UXD2_SHOPBTN_BEGIN} must appear AFTER \`${UXD2_CLICK_LISTENER}\` — the Shop branch must ` +
+        'live INSIDE the one live document click listener, not in a dead module-scope wrapper',
+    ).toBeGreaterThan(listenerIdx);
+    expect(
+      endIdx,
+      `${UXD2_SHOPBTN_END} must appear BEFORE the \`${UXD2_CHOICE_BRANCH}\` branch — the Shop ` +
+        'branch belongs in the same listener, above the (already e2e-proven-live) choice branch',
+    ).toBeLessThan(choiceIdx);
+  });
+
+  it('★ W-INTERACT-SHOPBTN-NO-WRAPPER BITES: the sentinel region declares no function and registers no listener of its own', () => {
+    // The second half of the dead-code defence (red-team HIGH). Even correctly positioned,
+    // an implementer could nest `document.addEventListener('click', () => { …sentinels… })`
+    // or a helper `function` declaration inside the region, re-opening the dead/deferred-code
+    // hole. The region must be STRAIGHT-LINE branch code in the enclosing live listener.
+    // WRONG IMPL KILLED: a nested listener registration (double-handling every click, and
+    //   undefined ordering against the choice branch) or a declared-but-uncalled helper.
+    // NOTE: an ARROW callback passed to an existing call is unaffected — only the `function `
+    //   keyword and a fresh `addEventListener(` registration are rejected.
+    const region = stripLineComments(
+      regionOrThrow(readMainTs(), UXD2_SHOPBTN_BEGIN, UXD2_SHOPBTN_END),
+    );
+    expect(
+      region.includes('addEventListener('),
+      'the UXD2-SHOPBTN region must NOT register its own listener — it is a BRANCH inside the ' +
+        'existing document click listener (a nested registration double-handles every click)',
+    ).toBe(false);
+    expect(
+      region.includes('function '),
+      'the UXD2-SHOPBTN region must NOT declare a function — a declared-but-never-called ' +
+        'wrapper satisfies every needle while the Shop button does nothing (red-team HIGH)',
+    ).toBe(false);
+  });
+
+  it('★ W-INTERACT-SHOPBTN-NO-REDUCER BITES: the [data-shop-id] branch calls no shop/buy reducer', () => {
+    // AC-2 / AC-11: "no shop reducer is called anywhere". The Shop button is pure UI routing.
+    // WRONG IMPL KILLED: a branch that fires `reducers.buy(...)` or a new server-side
+    //   open_shop reducer — the shop overlay is a pure subscription projection and adding a
+    //   write here would break the byte-identical economy.rs guarantee.
+    const region = stripLineComments(
+      regionOrThrow(readMainTs(), UXD2_SHOPBTN_BEGIN, UXD2_SHOPBTN_END),
+    );
+    for (const needle of ['reducers.buy(', 'reducers.sellItem(', 'reducers.healParty(']) {
+      expect(
+        region.includes(needle),
+        `the Shop-button branch must NOT contain ${needle} (AC-2/AC-11)`,
+      ).toBe(false);
+    }
+    // Positive control: the region is the REAL branch, not an empty sentinel pair.
+    expect(
+      region.includes('closest('),
+      'the UXD2-SHOPBTN region must contain the actual click-delegation code (anti-vacuity: ' +
+        'an empty sentinel pair would satisfy every negative assertion above)',
+    ).toBe(true);
+  });
+
+  it('★ W-INTERACT-DEFERRED-OPEN BITES: the deferred-open arm consumes pendingShopId gated on anyOverlayVisible and binds the shop by id', () => {
+    // ADR-0161 D4: the open is consumed-and-cleared atomically in the dialogue batch
+    // listener's `if (!conv)` arm, and ONLY when no overlay is visible at consumption time
+    // (a battle that opened meanwhile drops the pending open silently).
+    // WRONG IMPL KILLED (1): an ungated consumption — a wild encounter during the dismiss
+    //   round-trip would pop the shop over the battle overlay, puncturing the 14-way
+    //   mutual-exclusion invariant from a code path no hotkey guard covers.
+    // WRONG IMPL KILLED (2): a consumption that opens `buildShopViewModel` (first-shop
+    //   default) instead of the bound `buildShopViewModelForShop(...)` — the player would
+    //   greet the Tideglass shopkeeper and be shown the Pebble Town catalogue.
+    // WRONG IMPL KILLED (3): a consumption that does not CLEAR pendingShopId — the next
+    //   unrelated dialogue dismissal would spontaneously re-open the shop.
+    const region = stripLineComments(
+      regionOrThrow(readMainTs(), UXD2_SHOPOPEN_BEGIN, UXD2_SHOPOPEN_END),
+    );
+    expect(
+      region.includes('pendingShopId'),
+      'the UXD2-SHOPOPEN region must read pendingShopId (the deferred open)',
+    ).toBe(true);
+    expect(
+      region.includes('anyOverlayVisible'),
+      'the deferred open must be gated on the anyOverlayVisible() predicate — an overlay that ' +
+        'opened during the dismiss round-trip must drop the pending open (ADR-0161 D4)',
+    ).toBe(true);
+    expect(
+      region.includes('buildShopViewModelForShop('),
+      'the deferred open must bind the overlay to the pending shopId via ' +
+        'buildShopViewModelForShop( — never the first-shop default (ADR-0161 D5)',
+    ).toBe(true);
+    expect(
+      squashWhitespace(region).includes('pendingShopId = null'),
+      'the deferred open must CLEAR pendingShopId (`pendingShopId = null`) as it consumes it — ' +
+        'consume-and-clear is atomic (ADR-0161 D4); without the clear, the next unrelated ' +
+        'dialogue dismissal spontaneously re-opens the shop',
+    ).toBe(true);
+  });
+
+  it('★ W-INTERACT-PENDING-ESCAPE BITES: the Escape-dialogue branch clears pendingShopId (last-intent-wins)', () => {
+    // ADR-0161 D4: Escape CANCELS a pending shop-open. Without this, the sequence
+    // "click Shop → change your mind → Escape" still pops the shop when the dismiss lands.
+    // WRONG IMPL KILLED: an impl that wires the deferred open but never cancels it — the
+    // player's last expressed intent (Escape) loses to their previous one.
+    const src = readMainTs();
+    expectUniqueAnchor(src, UXD2_ESC_DLG_START);
+    expectUniqueAnchor(src, UXD2_ESC_DLG_END);
+    const region = stripLineComments(regionOrThrow(src, UXD2_ESC_DLG_START, UXD2_ESC_DLG_END));
+    expect(
+      region.includes('pendingShopId'),
+      'the Escape-while-dialogue-visible branch must clear pendingShopId (ADR-0161 D4 ' +
+        'last-intent-wins). Region is bounded by the two adjacent Escape branches, so a ' +
+        'pendingShopId clear living elsewhere cannot satisfy this.',
+    ).toBe(true);
+  });
+
+  it('★ W-INTERACT-PENDING-RECONNECT BITES: onReconnect clears pendingShopId AND boundShopId', () => {
+    // ADR-0161 D4 / plan I7.8: the store was reset, so any pending or bound shop id refers to
+    // rows that may no longer exist.
+    // WRONG IMPL KILLED: an impl that hides shopView on reconnect (already there) but leaves
+    // the two ids set — the first post-reconnect dialogue dismissal would open a shop the
+    // player never asked for, bound to a possibly-deleted shop row.
+    // Region: onReconnect: → the sibling onOwnWarp handler (this file's existing precedent —
+    // the END is searched FROM startIdx so the unrelated line-306 comment cannot capture it).
+    const src = readMainTs();
+    const startIdx = src.indexOf('onReconnect:');
+    expect(startIdx, "main.ts must contain 'onReconnect:'").toBeGreaterThanOrEqual(0);
+    const endIdx = src.indexOf('onOwnWarp', startIdx);
+    expect(
+      endIdx,
+      "main.ts must contain 'onOwnWarp' AFTER 'onReconnect:' (region end endpoint)",
+    ).toBeGreaterThan(startIdx);
+    const region = stripLineComments(src.slice(startIdx, endIdx));
+    // Anti-vacuity: this really is the onReconnect body (siblings are force-hidden here).
+    expect(
+      region.includes('shopView?.hide()'),
+      'the onReconnect region must contain the existing shopView?.hide() (proves the region ' +
+        'is the real body, not an empty slice)',
+    ).toBe(true);
+    expect(
+      region.includes('pendingShopId'),
+      'onReconnect must clear pendingShopId (plan I7.8)',
+    ).toBe(true);
+    expect(region.includes('boundShopId'), 'onReconnect must clear boundShopId (plan I7.8)').toBe(
+      true,
+    );
+  });
+});
+
+describe('★ main.ts wiring (uxd2): the on-world prompt is driven from the frame loop (AC-7/AC-12)', () => {
+  it('★ W-INTERACT-FRAME BITES: the rAF frame body calls interactPrompt( and renderer screenFor(', () => {
+    // ADR-0161 D6 / plan I7.9: the prompt is recomputed EVERY FRAME (so it self-heals on zone
+    // switch, reconnect and overlay open) and its screen position comes from
+    // WorldRenderer.screenFor — the exact camera offset + stageScale the stage applied THIS
+    // frame.
+    // WRONG IMPL KILLED (1): a prompt updated only on a store batch — it would freeze in place
+    //   mid-slide and lag a zone switch by a whole transaction.
+    // WRONG IMPL KILLED (2): a prompt positioned from a PARALLEL camera computation
+    //   (`offsetFor(...)` recomputed locally, or lastCamX/lastCamY with no stageScale) — the
+    //   DOM label swims against the canvas during every slide, and the mixed-unit bug (CSS px
+    //   into a device-px offset) is invisible until a non-1 DPR machine runs it.
+    const src = readMainTs();
+    expectUniqueAnchor(src, UXD2_FRAME_START);
+    // BOTH endpoints are uniqueness-checked (file discipline; the START alone is not enough).
+    // The END was `} catch (err) {` at authoring time — ~26 occurrences in main.ts, so an inner
+    // try/catch added anywhere in the frame body would silently truncate the region and this
+    // tooth would pass on a prompt wired nowhere. The frame handler's own error log is unique.
+    expectUniqueAnchor(src, UXD2_FRAME_END);
+    const region = stripLineComments(regionOrThrow(src, UXD2_FRAME_START, UXD2_FRAME_END));
+    // Anti-vacuity: this really is the frame body.
+    expect(
+      region.includes('renderer?.render('),
+      'the frame region must contain the existing renderer?.render( call (proves the region is ' +
+        'the real rAF body)',
+    ).toBe(true);
+    expect(
+      region.includes('interactPrompt('),
+      'the frame body must call interactPrompt( each frame (plan I7.9 — recomputed per frame ' +
+        'so the prompt self-heals on zone switch / reconnect / overlay open)',
+    ).toBe(true);
+    expect(
+      region.includes('screenFor('),
+      'the frame body must position the prompt via renderer.screenFor( — the ONE tested ' +
+        'world→screen transform, reusing the offset the stage actually applied (ADR-0161 D6)',
+    ).toBe(true);
+    expect(
+      region.includes('nearestInteractable('),
+      'the frame body must resolve the prompt target with nearestInteractable( — the SAME ' +
+        'resolver KeyT dispatches on, so the prompt can never advertise a target KeyT refuses',
+    ).toBe(true);
+  });
+
+  it('★ W-INTERACT-PROMPT-EL BITES: main.ts CREATES the #interact-prompt element (the #status precedent)', () => {
+    // ADR-0161 D6 / plan I7.9: created inline in main.ts next to the `status.id = 'status'`
+    // precedent, `position:fixed`, `pointer-events:none`.
+    // WRONG IMPL KILLED (1): no element at all — interactPrompt would compute a VM nothing
+    //   renders, and the e2e's `#interact-prompt` locator would never resolve.
+    // WRONG IMPL KILLED (2): a prompt element WITHOUT pointer-events:none — it would shadow
+    //   the document-level dialogue/shop click handlers wherever it floats, and a player
+    //   standing next to an NPC could not click a dialogue choice underneath it.
+    // Needle is the ASSIGNMENT form `.id = 'interact-prompt'` (mirrors `status.id = 'status'`),
+    // so a mere getElementById lookup of an element shipped in index.html does not satisfy it.
+    const src = readMainTs();
+    expect(
+      src.includes(".id = 'interact-prompt'"),
+      "main.ts must create the prompt element and assign `.id = 'interact-prompt'` (the " +
+        "`status.id = 'status'` precedent, plan I7.9)",
+    ).toBe(true);
+    const squashed = squashWhitespace(stripLineComments(src));
+    expect(
+      squashed.includes('pointer-events: none') ||
+        squashed.includes('pointer-events:none') ||
+        squashed.includes('pointerEvents'),
+      'the #interact-prompt element must be pointer-events:none — it floats over the canvas ' +
+        'and must never shadow the document-level dialogue/shop click delegation (ADR-0161 D6)',
+    ).toBe(true);
+  });
+
+  it('★ W-INTERACT-SCREENFOR BITES: WorldRenderer exposes screenFor( built on the tested worldToScreen', () => {
+    // ADR-0161 D6 / plan I6b. world.ts is Pixi-bound and coverage-excluded, so it is pinned
+    // by a direct-file source scan rather than a unit test (the composed pure pieces —
+    // offsetFor + worldToScreen — are already unit-tested in render/viewport.test.ts).
+    // WRONG IMPL KILLED (1): no screenFor at all (the frame tooth above would then fail for a
+    //   second, confusing reason — this one names the real cause).
+    // WRONG IMPL KILLED (2): a screenFor that recomputes the camera offset from scratch
+    //   instead of reusing the one `render()` actually applied — that is a PARALLEL camera and
+    //   it desynchronises by exactly the sub-tile slide amount every frame.
+    // WRONG IMPL KILLED (3): a screenFor that forgets stageScale — correct at DPR 1 and
+    //   wrong everywhere else (the uxd1/ADR-0160 device-integer scaling).
+    const src = readClientSrc('render/world.ts');
+    expect(
+      src.includes('screenFor('),
+      'world.ts must expose screenFor( on WorldRenderer (plan I6b)',
+    ).toBe(true);
+    expect(
+      src.includes('worldToScreen('),
+      'screenFor must be built on the tested worldToScreen( (render/viewport.ts) — not a ' +
+        'hand-rolled second transform (ADR-0161 D6)',
+    ).toBe(true);
+    expect(
+      src.includes('stageScale'),
+      'screenFor must apply stageScale — a DPR-1-only transform is the uxd1/ADR-0160 ' +
+        'mixed-unit bug re-introduced',
+    ).toBe(true);
+  });
+});
+
+describe('★ main.ts wiring (uxd2): the dialogue view renders the enum-derived Shop button (AC-2)', () => {
+  it('★ W-INTERACT-DLGVIEW BITES: dialogueView.ts renders a [data-shop-id] button from vm.shopAction', () => {
+    // ADR-0161 D4. Direct-file scan (dialogueView.ts is a coverage-excluded DOM shell, so it
+    // has no unit test of its own — this is the only structural gate on it).
+    // WRONG IMPL KILLED (1): a Shop button rendered from CHOICE TEXT rather than from
+    //   vm.shopAction — un-pinnable string coupling that breaks the moment the greeting is
+    //   reworded, and that would render a Shop button for any NPC whose dialogue mentions one.
+    // WRONG IMPL KILLED (2): a Shop button that carries `data-choice-idx` — the existing
+    //   dialogue click delegation would fire advance_dialogue with a nonsense index.
+    // NOTE the needle is `shopId` on the dataset (the DOM API camel-cases `data-shop-id`), so
+    // either literal spelling satisfies it, but the shopAction read is asserted separately.
+    const src = readClientSrc('ui/dialogueView.ts');
+    expect(
+      src.includes('shopAction'),
+      'dialogueView.ts must render the Shop button from vm.shopAction (the enum-derived ' +
+        'affordance), never from choice text (ADR-0161 D4)',
+    ).toBe(true);
+    expect(
+      src.includes('shopId') || src.includes('data-shop-id'),
+      'dialogueView.ts must stamp the shop id onto the button (dataset.shopId / data-shop-id) ' +
+        'so the main.ts click branch can read it',
     ).toBe(true);
   });
 });

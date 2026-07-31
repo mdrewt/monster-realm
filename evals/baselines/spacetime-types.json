@@ -325,5 +325,13 @@
       "Attack",
       "Swap"
     ]
+  },
+  "NpcInteraction": {
+    "kind": "enum",
+    "variants": [
+      "Dialogue",
+      "Shop",
+      "Heal"
+    ]
   }
 }

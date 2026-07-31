@@ -62,6 +62,7 @@ export const HANDLED_ENUM_VARIANTS = {
   WeatherEffect: ['Rain', 'Sun', 'Sandstorm', 'Hail'],
   ActionState: ['Idle', 'Walking', 'Jumping'],
   Direction: ['North', 'South', 'East', 'West'],
+  NpcInteraction: ['Dialogue', 'Shop', 'Heal'],
 } as const;
 
 /** Narrow a raw SDK enum tag to its registry-typed union. A known tag returns
@@ -496,6 +497,26 @@ interface SdkNpcRow {
   readonly homeY: number;
   readonly wanderRadius: number;
   readonly dialogueTreeId: string;
+  /** uxd2 (ADR-0161): NpcInteraction as the SDK delivers it — unit variants carry
+   *  no `value`; Shop/Heal carry a u32 payload. */
+  readonly interaction: { readonly tag: string; readonly value?: number };
+}
+
+/** uxd2 (ADR-0161 D1 / AC-16): TOTAL NpcInteraction normalizer. Runs inside a
+ *  subscription callback, so it NEVER throws: an unknown tag (a newer server's
+ *  4th variant) and a missing/non-numeric payload both degrade to dialogue.
+ *  `typeof value === 'number'` — never `||`/truthiness — so shop id 0 and
+ *  heal-location id 0 survive (falsy-0 trap, the battleRowToStore precedent).
+ *  A row cached from a pre-uxd2 module may lack the field entirely — also
+ *  dialogue. */
+function npcInteractionToStore(
+  interaction: { readonly tag: string; readonly value?: number } | undefined,
+): StoreNpcRow['interaction'] {
+  const tag = interaction?.tag;
+  const value = interaction?.value;
+  if (tag === 'Shop' && typeof value === 'number') return { kind: 'shop', shopId: value };
+  if (tag === 'Heal' && typeof value === 'number') return { kind: 'heal', locationId: value };
+  return { kind: 'dialogue' };
 }
 
 export function npcRowToStore(row: SdkNpcRow): StoreNpcRow {
@@ -507,6 +528,7 @@ export function npcRowToStore(row: SdkNpcRow): StoreNpcRow {
     homeY: row.homeY,
     wanderRadius: row.wanderRadius,
     dialogueTreeId: row.dialogueTreeId,
+    interaction: npcInteractionToStore(row.interaction),
   };
 }
 

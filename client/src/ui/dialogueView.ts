@@ -34,6 +34,16 @@ export class DialogueView {
       btn.dataset.choiceIdx = String(choice.idx);
       this.choicesContainer.appendChild(btn);
     });
+    // uxd2 (ADR-0161 D4): the enum-derived Shop affordance — rendered from
+    // vm.shopAction only (never from choice text). Carries data-shop-id and
+    // deliberately NO data-choice-idx, so the existing dialogue click
+    // delegation never mistakes it for a choice.
+    if (vm.shopAction) {
+      const shopBtn = document.createElement('button');
+      shopBtn.textContent = 'Shop';
+      shopBtn.dataset.shopId = String(vm.shopAction.shopId);
+      this.choicesContainer.appendChild(shopBtn);
+    }
   }
 
   get visible(): boolean {

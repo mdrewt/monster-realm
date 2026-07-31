@@ -26,4 +26,23 @@ export const DIALOGUE_TREES: ReadonlyMap<string, ClientDialogueTree> = new Map([
       ]),
     },
   ],
+  // uxd2 (ADR-0161 D4): the shopkeeper greeting mirror — one inert node with a
+  // single conversation-ending Leave choice, matching the RON tree exactly.
+  // The Shop affordance is derived from the server NpcInteraction enum in the
+  // dialogue view model, NEVER from this content, so the tree stays a plain
+  // greeting; drift against the RON is gated by dialogue-client-integrity C6.
+  [
+    'shopkeeper_greeting',
+    {
+      nodes: new Map([
+        [
+          'greeting',
+          {
+            text: 'Hello, customer!',
+            choices: [{ text: 'Leave', nextNodeId: null }],
+          },
+        ],
+      ]),
+    },
+  ],
 ]);

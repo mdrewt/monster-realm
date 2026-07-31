@@ -17,7 +17,12 @@
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import type { StoreItemRow } from '../net/store';
-import { buildHealViewModel, healTargetLocationId } from './healModel';
+import {
+  buildHealViewModel,
+  // uxd2 (ADR-0161 D5): the bound-location selector. Named import — RED until it exists.
+  buildHealViewModelForLocation,
+  healTargetLocationId,
+} from './healModel';
 
 // ---------------------------------------------------------------------------
 // Local type definition (mirrors what store.ts will export as StoreHealLocationRow).
@@ -365,5 +370,115 @@ describe('healTargetLocationId (M13.5b ADR-0085 §D)', () => {
     // on a minimal { locationId } object.
     const locs = [{ locationId: 55, zoneId: 1, tileX: 5, tileY: 5 }];
     expect(healTargetLocationId(locs)).toBe(55);
+  });
+});
+
+// ===========================================================================
+// uxd2 (ADR-0161 D5) — buildHealViewModelForLocation: BOUND location view.
+// APPENDED BLOCK — every case above this line is untouched. The
+// `healTargetLocationId` first-location DEFAULT is deliberately unchanged
+// (AC-10′ / adjudication 2: onHealParty's SEND keeps the first-location default;
+// only the OVERLAY's VIEW binds, until a second heal location is seeded).
+//
+// SOURCE OF TRUTH: docs/specs/uxd2-plan.md I6 / AC-3 + docs/adr/0161-*.md §D5.
+//
+// CONTRACT:
+//   export function buildHealViewModelForLocation(
+//     locationId: number,
+//     healLocations: readonly StoreHealLocationRow[],
+//     itemDefs: ReadonlyMap<number, StoreItemRow>,
+//   ): HealViewModel
+//   THIN: filter to that one location, then DELEGATE to buildHealViewModel.
+//   Unknown id → { locations: [] } (never all locations, never a throw).
+//
+// RED TODAY: `buildHealViewModelForLocation` is not exported from ./healModel, so the
+// named import at the top of this file fails to link and the WHOLE file is red — the
+// established red mode for this suite (see the healTargetLocationId block header).
+// ===========================================================================
+
+describe('buildHealViewModelForLocation [uxd2-1]: renders ONLY the bound location', () => {
+  it('★ [uxd2-1] BITES: with locations {1,2,3} loaded, id 2 yields exactly one entry — location 2', () => {
+    // WRONG IMPL KILLED (the dominant one): a body that ignores `locationId` and delegates
+    // straight to buildHealViewModel(healLocations, …) — the KeyT heal arm would open an
+    // overlay listing every pad in the world instead of the one the player is standing on.
+    // The fixture uses a MIDDLE id so neither "first" nor "last" accidentally matches.
+    const locs = [
+      makeLocation({ locationId: 1, zoneId: 0, tileX: 8, tileY: 3 }),
+      makeLocation({ locationId: 2, zoneId: 1, tileX: 4, tileY: 2, costItemId: 7, costQty: 2 }),
+      makeLocation({ locationId: 3, zoneId: 1, tileX: 9, tileY: 5 }),
+    ];
+    const defs = new Map<number, StoreItemRow>([[7, makeItemDef(7, 'Tideglass Shard')]]);
+    const vm = buildHealViewModelForLocation(2, locs, defs);
+    expect(vm.locations).toHaveLength(1);
+    const entry = vm.locations[0]!;
+    expect(entry.locationId).toBe(2);
+    expect(entry.zoneId).toBe(1);
+    expect(entry.tileX).toBe(4);
+    expect(entry.tileY).toBe(2);
+    // Delegation proof: the cost resolution the default arm performs still happens here.
+    expect(entry.costItemName).toBe('Tideglass Shard');
+    expect(entry.costQty).toBe(2);
+    expect(entry.isFree).toBe(false);
+  });
+
+  it('[uxd2-1] BITES: id 3 (the HIGHEST) is selectable — not just the first match', () => {
+    // WRONG IMPL KILLED: `healLocations[0]`-style selection with the id argument used only
+    // as a presence check.
+    const locs = [
+      makeLocation({ locationId: 1 }),
+      makeLocation({ locationId: 2 }),
+      makeLocation({ locationId: 3, tileX: 9, tileY: 5 }),
+    ];
+    const vm = buildHealViewModelForLocation(3, locs, new Map());
+    expect(vm.locations).toHaveLength(1);
+    expect(vm.locations[0]!.locationId).toBe(3);
+    expect(vm.locations[0]!.tileX).toBe(9);
+  });
+
+  it('★ [uxd2-1] BITES: locationId 0 is a valid bound id (falsy-0 trap)', () => {
+    // WRONG IMPL KILLED: `if (!locationId) return { locations: healLocations.map(…) }` or
+    // `locationId || firstId` — a truthiness guard on a representable u32 id. The sibling
+    // healTargetLocationId block already pins the same trap on the SEND side; this is the
+    // VIEW side of it.
+    const locs = [
+      makeLocation({ locationId: 0, tileX: 2, tileY: 2 }),
+      makeLocation({ locationId: 1 }),
+    ];
+    const vm = buildHealViewModelForLocation(0, locs, new Map());
+    expect(vm.locations).toHaveLength(1);
+    expect(vm.locations[0]!.locationId).toBe(0);
+    expect(vm.locations[0]!.tileX).toBe(2);
+  });
+});
+
+describe('buildHealViewModelForLocation [uxd2-2]: unknown id → empty, never a fallback', () => {
+  it('★ [uxd2-2] BITES: an unknown id yields { locations: [] } — NOT the full list, NOT the first', () => {
+    // WRONG IMPL KILLED (1): a fallback to the whole list when the id is not found — during
+    //   the reconnect hydration gap the bound overlay would silently widen to every pad.
+    // WRONG IMPL KILLED (2): a fallback to locations[0] — the overlay would offer a heal at a
+    //   pad the player is nowhere near.
+    const locs = [makeLocation({ locationId: 1 }), makeLocation({ locationId: 2 })];
+    const vm = buildHealViewModelForLocation(99, locs, new Map());
+    expect(Array.isArray(vm.locations)).toBe(true);
+    expect(vm.locations).toHaveLength(0);
+  });
+
+  it('[uxd2-2] BITES: an EMPTY location array with any id → { locations: [] } (no throw)', () => {
+    // WRONG IMPL KILLED: a non-null assertion on the filtered array's [0]. The batch listener
+    // calls this on every heal-row update; a throw would starve the sibling listeners.
+    let vm!: ReturnType<typeof buildHealViewModelForLocation>;
+    expect(() => {
+      vm = buildHealViewModelForLocation(1, [], new Map());
+    }).not.toThrow();
+    expect(vm.locations).toHaveLength(0);
+  });
+
+  it('★ [uxd2-2] BITES: differential — for a single-location store, ForLocation(thatId) equals the default arm', () => {
+    // Cheapest possible proof of "thin filter + delegate" AND a re-pin of the untouched
+    // default arm (AC-10′). WRONG IMPL KILLED: a hand-rolled reimplementation inside
+    // ForLocation that drops isFree / costItemName / cooldownMs.
+    const locs = [makeLocation({ locationId: 4, costItemId: 2, costQty: 1, cooldownMs: 60_000 })];
+    const defs = new Map<number, StoreItemRow>([[2, makeItemDef(2, 'Herb')]]);
+    expect(buildHealViewModelForLocation(4, locs, defs)).toEqual(buildHealViewModel(locs, defs));
   });
 });

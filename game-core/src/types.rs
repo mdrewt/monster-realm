@@ -118,6 +118,25 @@ impl TileKind {
     }
 }
 
+/// An NPC's interaction role (uxd2, ADR-0161): the server-anchored enum column
+/// that drives the client's context-sensitive interact key. Payloads
+/// cross-reference the content registries — `Shop(shop_id)` → `ShopDef.id`,
+/// `Heal(location_id)` → `HealLocationDef.location_id` — validated by
+/// `content::validate_npc_interactions`. Grows with its milestone; the
+/// exhaustive `match` will then compiler-flag every site (OCP-inverted, per
+/// principles — the `TileKind` precedent above).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
+pub enum NpcInteraction {
+    /// Plain conversation — the `#[serde(default)]` every legacy NPC row inherits.
+    #[default]
+    Dialogue,
+    /// Shopkeeper: the greet-then-shop affordance binds the shop overlay to this shop id.
+    Shop(u32),
+    /// Heal-provider NPC: binds the heal overlay to this heal-location id.
+    Heal(u32),
+}
+
 /// A character's authoritative movement state. Zone-agnostic — the entity's
 /// `zone_id` lives on the table (M2); `apply_move` works within the one `TileMap`
 /// it is handed.

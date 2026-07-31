@@ -2,10 +2,10 @@
 type: SpacetimeDB Table
 title: character
 slug: tables/character
-updated: 2026-07-26
+updated: 2026-07-31
 tags: [schema, spacetimedb, public]
 abstract: "One renderable entity. The enum/queue columns are the EXACT M1 `game-core` types (the shared type IS the schema, never …"
-resource: server-module/src/schema.rs#L26
+resource: server-module/src/schema.rs#L27
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

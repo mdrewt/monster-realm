@@ -47,9 +47,10 @@ pub use content::{
     parse_npc_defs_parts, parse_quest_defs, parse_quest_defs_parts, parse_shops, parse_skills,
     parse_species, parse_type_chart, parse_zone_maps, parse_zone_maps_parts, parse_zones,
     validate_abilities, validate_content, validate_encounters, validate_evolution_fusion,
-    validate_npc_content, validate_shops, validate_zones, AbilityDef, EvolutionCondition,
-    EvolutionTrigger, FusionRecipe, HealLocationDef, ItemDef, NpcDef, ShopDef, ShopStockEntry,
-    SkillDef, Species, SpeciesEvolutions, TypeRelation, WarpDef, ZoneDef, ZoneMapDef,
+    validate_npc_content, validate_npc_interactions, validate_shops, validate_zones, AbilityDef,
+    EvolutionCondition, EvolutionTrigger, FusionRecipe, HealLocationDef, ItemDef, NpcDef, ShopDef,
+    ShopStockEntry, SkillDef, Species, SpeciesEvolutions, TypeRelation, WarpDef, ZoneDef,
+    ZoneMapDef,
 };
 pub use currency::battle_currency_reward;
 pub use dialogue::{
@@ -87,7 +88,9 @@ pub use trading::{
     ProposalSide, SwapPlan, TradeError, TradeItem, TradeSide, TradeStatus, MAX_ITEM_STACK,
     TRADE_OFFER_TTL_MS,
 };
-pub use types::{ActionState, CharacterState, Direction, Millis, MoveInput, TileKind, TilePos};
+pub use types::{
+    ActionState, CharacterState, Direction, Millis, MoveInput, NpcInteraction, TileKind, TilePos,
+};
 pub use world::{
     apply_move, apply_move_coded, check_party_slot, map_for, spawn, stepped_onto_grass,
     validate_zone_maps, zone_0, SlotError, TileMap, MOVE_QUEUE_CAP, PARTY_SIZE, PARTY_SLOT_NONE,

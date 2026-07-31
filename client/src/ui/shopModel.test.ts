@@ -20,6 +20,8 @@ import { describe, expect, it } from 'vitest';
 import type { StoreInventory, StoreItemRow, StoreWallet } from '../net/store';
 import {
   buildShopViewModel,
+  // uxd2 (ADR-0161 D5): the bound-shop selector. Named import — RED until it exists.
+  buildShopViewModelForShop,
   type NoShopViewModel,
   type ShopBalanceViewModel,
   type ShopInventoryItemViewModel,
@@ -868,5 +870,158 @@ describe('buildShopViewModel [ux2-M4]: malformed wallet row → unknown, never t
     }).not.toThrow();
 
     expect(result.balance.kind).toBe('unknown');
+  });
+});
+
+// ===========================================================================
+// uxd2 (ADR-0161 D5) — buildShopViewModelForShop: BOUND shop selection.
+// APPENDED BLOCK — every case above this line is untouched and is the
+// byte-preservation guard for the first-shop DEFAULT arm (plan AC-10′).
+//
+// SOURCE OF TRUTH: docs/specs/uxd2-plan.md I6 + AC-10′ + docs/adr/0161-*.md §D5.
+//
+// CONTRACT:
+//   export function buildShopViewModelForShop(
+//     shopId: number,
+//     shops: readonly StoreShopRow[],
+//     shopItems: readonly StoreShopItemRow[],
+//     itemDefs: ReadonlyMap<number, StoreItemRow>,
+//     ownInventory: readonly StoreInventory[],
+//     ownWallet?: StoreWallet,
+//   ): ShopScreenViewModel
+//   THIN: filter `shops` to the named id, then DELEGATE to buildShopViewModel. An
+//   unknown id yields `{ kind:'no-shop', balance }` — never a silent fall back to the
+//   first shop (ADR-0161 D5: "never silently swap a bound shop to first-shop").
+//
+// RED TODAY: `buildShopViewModelForShop` is not exported from ./shopModel, so this
+// file's named import fails to link and the WHOLE file is red. That is the intended
+// red state (healModel.test.ts / helpModel.test.ts precedent) — the existing cases
+// come back green the moment the export exists, unchanged.
+// ===========================================================================
+
+describe('buildShopViewModelForShop [uxd2-1]: selects the NAMED shop, not the first', () => {
+  it('★ [uxd2-1] BITES: with shops {1,2,3} loaded, shopId 2 returns SHOP 2 (kills a first-shop copy-paste)', () => {
+    // WRONG IMPL KILLED (the dominant one): a body that ignores its `shopId` argument and
+    // just calls `buildShopViewModel(shops, …)` — which sorts by shopId and takes [0]. That
+    // impl returns shop 1 here and would silently open the wrong shop for every shopkeeper
+    // except the lowest-id one. The fixture deliberately uses a MIDDLE id so neither
+    // "first" nor "last" accidentally matches.
+    const shops = [makeShop(3, 'Third Shop'), makeShop(1, 'First Shop'), makeShop(2, 'Tideglass')];
+    const defs = new Map([
+      [10, makeItemDef(10, { name: 'Potion' })],
+      [20, makeItemDef(20, { name: 'Antidote' })],
+      [30, makeItemDef(30, { name: 'Ether' })],
+    ]);
+    const shopItems = [
+      makeShopItem(1n, 1, 10, 50n),
+      makeShopItem(2n, 2, 20, 60n),
+      makeShopItem(3n, 3, 30, 70n),
+    ];
+    const result = buildShopViewModelForShop(2, shops, shopItems, defs, []) as ShopViewModel;
+    expect(result.kind).toBe('shop');
+    expect(result.shopId).toBe(2);
+    expect(result.shopName).toBe('Tideglass');
+    // …and only shop 2's stock (kills a filter-the-shop-but-not-the-items impl).
+    expect(result.forSale).toHaveLength(1);
+    expect(result.forSale[0]!.itemId).toBe(20);
+    expect(result.forSale[0]!.name).toBe('Antidote');
+  });
+
+  it('[uxd2-1] BITES: shopId 3 (the HIGHEST id) is selectable too', () => {
+    // WRONG IMPL KILLED: `[...shops].sort(...)[0]` with the filter applied AFTER the sort,
+    // or a `shops.find(s => s.shopId >= shopId)`-style near-miss lookup.
+    const shops = [makeShop(1, 'First Shop'), makeShop(2, 'Tideglass'), makeShop(3, 'Third Shop')];
+    const result = buildShopViewModelForShop(3, shops, [], new Map(), []) as ShopViewModel;
+    expect(result.shopId).toBe(3);
+    expect(result.shopName).toBe('Third Shop');
+  });
+
+  it('★ [uxd2-1] BITES: shopId 0 is a valid bound id (falsy-0 trap)', () => {
+    // WRONG IMPL KILLED: `if (!shopId) return buildShopViewModel(shops, …)` — a truthiness
+    // guard on the bound id would fall back to the first shop for shop 0 (representable u32),
+    // the exact silent-swap ADR-0161 D5 forbids.
+    const shops = [makeShop(0, 'Zero Shop'), makeShop(1, 'First Shop')];
+    const result = buildShopViewModelForShop(0, shops, [], new Map(), []) as ShopViewModel;
+    expect(result.kind).toBe('shop');
+    expect(result.shopId).toBe(0);
+    expect(result.shopName).toBe('Zero Shop');
+  });
+});
+
+describe('buildShopViewModelForShop [uxd2-2]: unknown id → no-shop, never a fallback', () => {
+  it('★ [uxd2-2] BITES: an unknown shopId returns { kind:"no-shop" } — NOT the first shop', () => {
+    // WRONG IMPL KILLED: a "be helpful" fallback to the first shop when the bound id is not
+    // (yet) in the store. During the reconnect hydration gap the shop rows can be missing for
+    // a beat; a fallback would open a DIFFERENT shop's catalogue under the shopkeeper the
+    // player actually walked up to, and a buy would spend real gold on the wrong item.
+    const shops = [makeShop(1, 'First Shop'), makeShop(2, 'Tideglass')];
+    const shopItems = [makeShopItem(1n, 1, 10, 50n)];
+    const result = buildShopViewModelForShop(99, shops, shopItems, new Map(), []);
+    expect(result.kind).toBe('no-shop');
+    expect(result).not.toHaveProperty('shopId');
+    expect(result).not.toHaveProperty('forSale');
+  });
+
+  it('[uxd2-2] BITES: an EMPTY shops array with any id → no-shop (no throw)', () => {
+    // WRONG IMPL KILLED: a non-null assertion on the filtered array's [0].
+    let result!: ShopScreenViewModel;
+    expect(() => {
+      result = buildShopViewModelForShop(1, [], [], new Map(), []);
+    }).not.toThrow();
+    expect(result.kind).toBe('no-shop');
+  });
+
+  it('★ [uxd2-2] BITES: the no-shop arm still carries the wallet balance (passthrough)', () => {
+    // ADR-0154: `balance` is present on BOTH arms so the shell never has to decide to clear.
+    // WRONG IMPL KILLED: an early `return { kind:'no-shop' }` written inside ForShop instead
+    // of delegating — it would drop the balance field and crash the shell on `vm.balance.kind`.
+    const wallet = makeStoreWallet(1234n);
+    const result = buildShopViewModelForShop(99, [makeShop(1)], [], new Map(), [], wallet);
+    expect(result.kind).toBe('no-shop');
+    expect(result.balance.kind).toBe('known');
+    expect((result.balance as KnownBalance).amount).toBe(1234n);
+    expect((result.balance as KnownBalance).label).toBe('Gold: 1234');
+  });
+
+  it('[uxd2-2] BITES: omitting the wallet on the no-shop arm yields "unknown", not a fabricated 0', () => {
+    // WRONG IMPL KILLED: `balance: { kind:'known', amount: 0n, … }` invented locally.
+    const result = buildShopViewModelForShop(99, [makeShop(1)], [], new Map(), []);
+    expect(result.balance.kind).toBe('unknown');
+  });
+});
+
+describe('buildShopViewModelForShop [uxd2-3]: delegation is REAL (sell side + wallet)', () => {
+  it('★ [uxd2-3] BITES: forSaleByPlayer + balance are computed exactly as the default arm does', () => {
+    // WRONG IMPL KILLED: a hand-rolled reimplementation of the shop VM inside ForShop that
+    // forgets the inventory aggregation / canSell rule / balance label. The assertion is a
+    // DIFFERENTIAL one: for a single-shop store, ForShop(thatId) must be deeply equal to the
+    // default arm's output — which is the cheapest possible proof of "thin filter + delegate"
+    // and simultaneously re-pins the default arm as unchanged (AC-10′).
+    const shops = [makeShop(1, 'General Store')];
+    const defs = new Map([
+      [1, makeItemDef(1, { name: 'Herb', sellPrice: 15n })],
+      [2, makeItemDef(2, { name: 'Quest Scroll', sellPrice: 0n })],
+      [10, makeItemDef(10, { name: 'Potion' })],
+    ]);
+    const shopItems = [makeShopItem(1n, 1, 10, 50n)];
+    const inv = [
+      makeInventoryItem(1n, 1, 5),
+      makeInventoryItem(2n, 2, 1),
+      makeInventoryItem(3n, 1, 2),
+    ];
+    const wallet = makeStoreWallet(0n); // "broke", NOT "dark" — must stay distinguishable
+
+    const bound = buildShopViewModelForShop(1, shops, shopItems, defs, inv, wallet);
+    const dflt = buildShopViewModel(shops, shopItems, defs, inv, wallet);
+    expect(bound).toEqual(dflt);
+
+    // Spot-pin a few delegated values so a "both are equally broken" impl cannot pass.
+    const vm = bound as ShopViewModel;
+    expect(vm.balance.kind).toBe('known');
+    expect((vm.balance as KnownBalance).amount).toBe(0n);
+    const herb = vm.forSaleByPlayer.find((i) => i.itemId === 1);
+    expect(herb?.count).toBe(7); // 5 + 2 aggregated across two stacks
+    expect(herb?.canSell).toBe(true);
+    expect(vm.forSaleByPlayer.find((i) => i.itemId === 2)?.canSell).toBe(false);
   });
 });

@@ -1122,6 +1122,10 @@ pub struct NpcDef {
     pub wander_radius: u8,
     pub dialogue_tree_id: String,
     pub sprite_id: u32,
+    /// Interaction role for the context-sensitive interact key (uxd2, ADR-0161).
+    /// Defaults to Dialogue so existing NPC RON files that omit this field remain valid.
+    #[serde(default)]
+    pub interaction: crate::types::NpcInteraction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1496,6 +1500,56 @@ pub fn validate_npc_content(
                 "heal location {} has cost_item_id set but cost_qty is 0",
                 hl.location_id
             ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Cross-registry integrity check for `NpcDef.interaction` payloads (uxd2,
+/// ADR-0161 D2). A separate function from `validate_npc_content` on purpose:
+/// its 6-arg signature (~40 test call sites) stays untouched, and this check
+/// remains independently falsifiable (ADR-0010).
+///
+/// Checks (deterministic order — npcs in slice order):
+/// 1. `Shop(id)` references an existing `ShopDef.id`
+/// 2. `Heal(id)` references an existing `HealLocationDef.location_id`
+/// 3. `Dialogue` carries no payload — an explicit no-op arm (NO wildcard, so a
+///    4th `NpcInteraction` variant compiler-flags this site)
+///
+/// # Errors
+/// Returns `Err` naming BOTH the offending `npc_id` and the dangling id, so an
+/// operator can find the broken RON row from the sync failure alone.
+pub fn validate_npc_interactions(
+    npcs: &[NpcDef],
+    shops: &[ShopDef],
+    heal_locations: &[HealLocationDef],
+) -> Result<(), String> {
+    use std::collections::BTreeSet;
+
+    let shop_ids: BTreeSet<u32> = shops.iter().map(|s| s.id).collect();
+    let heal_ids: BTreeSet<u32> = heal_locations.iter().map(|h| h.location_id).collect();
+
+    for npc in npcs {
+        match npc.interaction {
+            crate::types::NpcInteraction::Dialogue => {}
+            crate::types::NpcInteraction::Shop(shop_id) => {
+                if !shop_ids.contains(&shop_id) {
+                    return Err(format!(
+                        "NPC '{}' interaction Shop({shop_id}) references unknown shop id {shop_id}",
+                        npc.npc_id
+                    ));
+                }
+            }
+            crate::types::NpcInteraction::Heal(location_id) => {
+                if !heal_ids.contains(&location_id) {
+                    return Err(format!(
+                        "NPC '{}' interaction Heal({location_id}) references unknown heal \
+                         location id {location_id}",
+                        npc.npc_id
+                    ));
+                }
+            }
         }
     }
 
@@ -4286,6 +4340,7 @@ mod tests {
             wander_radius: 2,
             dialogue_tree_id: dialogue_tree_id.to_string(),
             sprite_id: 10,
+            interaction: crate::NpcInteraction::Dialogue,
         }
     }
 
@@ -4830,6 +4885,7 @@ mod tests {
             wander_radius: 2,
             dialogue_tree_id: "elder_oak_talk".to_string(),
             sprite_id: 10,
+            interaction: crate::NpcInteraction::Dialogue,
         };
         assert_eq!(
             defs.first(),
@@ -6063,6 +6119,511 @@ mod tests {
              (serde default would silently set it to None, making Antidote \
              non-functional in battle).",
             antidote.cure_status
+        );
+    }
+
+    // =======================================================================
+    // uxd2 (ADR-0161) — `NpcInteraction`: serde default, wire round-trip, and
+    // the `validate_npc_interactions` cross-registry validator.
+    //
+    // RED until I0/I1 land: `crate::NpcInteraction` (types.rs + the lib.rs
+    // re-export) and `validate_npc_interactions` do not exist yet, so this
+    // whole section is compile-RED (E0432/E0433/E0425) — the repo's accepted
+    // red convention (see the M12c section header above).
+    //
+    // Contract under test (plan of record `docs/specs/uxd2-plan.md` §I0/I1/I3):
+    //   pub enum NpcInteraction { #[default] Dialogue, Shop(u32), Heal(u32) }
+    //   NpcDef += `#[serde(default)] pub interaction: NpcInteraction`
+    //   pub fn validate_npc_interactions(
+    //       npcs: &[NpcDef], shops: &[ShopDef], heal_locations: &[HealLocationDef],
+    //   ) -> Result<(), String>      // Err names the npc_id AND the missing id
+    //
+    // The fixtures below are LOCAL (`uxd2_*`) on purpose: `fixture_npc_def_m12c`
+    // belongs to the M12c section and its `interaction` value is not part of
+    // this slice's contract — these tests must never depend on it.
+    // =======================================================================
+
+    /// uxd2 fixture: an `NpcDef` with an EXPLICIT interaction (every field set).
+    fn uxd2_npc_def(id: u32, npc_id: &str, interaction: crate::NpcInteraction) -> NpcDef {
+        NpcDef {
+            id,
+            npc_id: npc_id.to_string(),
+            zone_id: 0,
+            spawn_x: 1,
+            spawn_y: 1,
+            home_x: 1,
+            home_y: 1,
+            wander_radius: 0,
+            dialogue_tree_id: "tree_a".to_string(),
+            sprite_id: 10,
+            interaction,
+        }
+    }
+
+    /// uxd2 fixture: a stock-less `ShopDef` (only its `id` matters here).
+    fn uxd2_shop_def(id: u32) -> ShopDef {
+        ShopDef {
+            id,
+            name: format!("Shop{id}"),
+            stock: vec![],
+        }
+    }
+
+    /// uxd2 fixture: a free `HealLocationDef` (only its `location_id` matters).
+    fn uxd2_heal_def(location_id: u32) -> HealLocationDef {
+        HealLocationDef {
+            location_id,
+            zone_id: 0,
+            tile_x: 8,
+            tile_y: 3,
+            cost_item_id: None,
+            cost_qty: 0,
+            cooldown_ms: 30_000,
+            cost_currency: 0,
+        }
+    }
+
+    /// uxd2 AC-9: a 10-field NPC RON row (no `interaction` key) still parses,
+    /// and the missing field defaults to `Dialogue`.
+    ///
+    /// KILLS: an `interaction` field added WITHOUT `#[serde(default)]` — RON
+    /// then fails with "missing field `interaction`", which takes down
+    /// `load_npc_defs()` and therefore `sync_content_inner`'s LOAD phase for
+    /// every pre-existing NPC row on disk (and any third-party content part).
+    /// ALSO KILLS: a `Default` impl that picks Shop/Heal, which would silently
+    /// hand every legacy NPC a shop affordance.
+    #[test]
+    fn uxd2_npc_def_omitting_interaction_defaults_to_dialogue() {
+        let ron_10_field = r#"[
+    (
+        id: 1,
+        npc_id: "elder_oak",
+        zone_id: 0,
+        spawn_x: 5,
+        spawn_y: 5,
+        home_x: 5,
+        home_y: 5,
+        wander_radius: 2,
+        dialogue_tree_id: "elder_oak_talk",
+        sprite_id: 10,
+    ),
+]"#;
+        let defs = parse_npc_defs(ron_10_field).expect(
+            "uxd2 AC-9: a 10-field NPC row (no `interaction`) must still parse — \
+             `interaction` must carry #[serde(default)]",
+        );
+        assert_eq!(defs.len(), 1, "uxd2 AC-9: one row in, one row out");
+        assert_eq!(
+            defs[0].interaction,
+            crate::NpcInteraction::Dialogue,
+            "uxd2 AC-9 TEETH: an NPC row omitting `interaction` must default to \
+             Dialogue; got {:?}",
+            defs[0].interaction
+        );
+    }
+
+    /// uxd2 AC-9 (positive arm): an 11-field row with `interaction: Shop(1)`
+    /// deserializes to `Shop(1)`.
+    ///
+    /// KILLS: an impl that hard-wires the field to the default (e.g.
+    /// `#[serde(skip)]` instead of `#[serde(default)]`) — content could then
+    /// never mark ANY npc as a shopkeeper, and AC-2/AC-12 die silently with a
+    /// green serde-default test.
+    #[test]
+    fn uxd2_npc_def_parses_explicit_shop_interaction() {
+        let ron_11_field = r#"[
+    (
+        id: 2,
+        npc_id: "tideglass_shopkeeper",
+        zone_id: 1,
+        spawn_x: 8,
+        spawn_y: 1,
+        home_x: 8,
+        home_y: 1,
+        wander_radius: 0,
+        dialogue_tree_id: "shopkeeper_greeting",
+        sprite_id: 10,
+        interaction: Shop(1),
+    ),
+]"#;
+        let defs = parse_npc_defs(ron_11_field)
+            .expect("uxd2: an NPC row carrying `interaction: Shop(1)` must parse");
+        assert_eq!(
+            defs[0].interaction,
+            crate::NpcInteraction::Shop(1),
+            "uxd2 TEETH: `interaction: Shop(1)` must deserialize to \
+             NpcInteraction::Shop(1) (payload preserved, not dropped); got {:?}",
+            defs[0].interaction
+        );
+    }
+
+    /// uxd2 AC-9 (positive arm): `interaction: Heal(2)` deserializes to
+    /// `Heal(2)` — the payload is the heal-location id, NOT a shop id.
+    ///
+    /// KILLS: a single-payload-slot impl that collapses Shop/Heal into one
+    /// variant, and any impl that drops the u32 payload (`Heal` unit variant).
+    #[test]
+    fn uxd2_npc_def_parses_explicit_heal_interaction() {
+        let ron_11_field = r#"[
+    (
+        id: 3,
+        npc_id: "spring_warden",
+        zone_id: 0,
+        spawn_x: 4,
+        spawn_y: 4,
+        home_x: 4,
+        home_y: 4,
+        wander_radius: 0,
+        dialogue_tree_id: "tree_a",
+        sprite_id: 11,
+        interaction: Heal(2),
+    ),
+]"#;
+        let defs = parse_npc_defs(ron_11_field)
+            .expect("uxd2: an NPC row carrying `interaction: Heal(2)` must parse");
+        assert_eq!(
+            defs[0].interaction,
+            crate::NpcInteraction::Heal(2),
+            "uxd2 TEETH: `interaction: Heal(2)` must deserialize to \
+             NpcInteraction::Heal(2); got {:?}",
+            defs[0].interaction
+        );
+    }
+
+    /// uxd2 I0: `NpcInteraction::default()` is `Dialogue`.
+    ///
+    /// KILLS: `#[default]` placed on Shop/Heal (both carry a payload, so the
+    /// derive would not even compile) or a hand-written `Default` returning a
+    /// non-Dialogue variant — every `#[serde(default)]` NPC row would then
+    /// claim an affordance no content asked for. This is the direct unit
+    /// falsification of the default the serde tests above observe indirectly.
+    #[test]
+    fn uxd2_npc_interaction_default_trait_is_dialogue() {
+        assert_eq!(
+            crate::NpcInteraction::default(),
+            crate::NpcInteraction::Dialogue,
+            "uxd2 TEETH(I0): NpcInteraction::default() must be Dialogue — it is \
+             the `#[serde(default)]` value every legacy NPC row inherits"
+        );
+    }
+
+    /// uxd2 I0 wire contract: each variant survives a RON serialize/deserialize
+    /// round-trip (mirrors the TilePos round-trip in types.rs).
+    ///
+    /// KILLS: a serde rename/tag attribute (e.g. `#[serde(rename_all)]` or an
+    /// internally-tagged representation) that makes the emitted form unreadable
+    /// by the reader — the RON registry and the generated bindings would then
+    /// disagree about the tag spelling used by AC-16's client converter.
+    /// ALSO KILLS: a payload-dropping `Serialize` (Shop(1) -> Shop(0)).
+    #[test]
+    fn uxd2_npc_interaction_ron_round_trip_preserves_each_variant() {
+        for variant in [
+            crate::NpcInteraction::Dialogue,
+            crate::NpcInteraction::Shop(1),
+            crate::NpcInteraction::Heal(2),
+            // 0 is a REAL id shape on the wire (falsy-0 trap, AC-16): it must
+            // round-trip as 0, never collapse to the default.
+            crate::NpcInteraction::Shop(0),
+        ] {
+            let s = ron::to_string(&variant)
+                .unwrap_or_else(|e| panic!("uxd2: NpcInteraction must serialize: {e}"));
+            let back: crate::NpcInteraction = ron::from_str(&s).unwrap_or_else(|e| {
+                panic!("uxd2: NpcInteraction must deserialize from its own RON `{s}`: {e}")
+            });
+            assert_eq!(
+                back, variant,
+                "uxd2 TEETH: RON round-trip must preserve {variant:?} (emitted `{s}`)"
+            );
+        }
+    }
+
+    /// uxd2 AC-8(a): `Shop(id)` referencing an id absent from the shops
+    /// registry is rejected, and the error names BOTH the npc_id and the id.
+    ///
+    /// The heal registry deliberately CONTAINS 999 while the shop registry does
+    /// not — so an impl that cross-references `Shop(id)` against heal-location
+    /// ids (registry swap) returns Ok here and is killed.
+    ///
+    /// KILLS: a no-op validator; a registry-swapped validator; an error message
+    /// that omits the npc_id or the dangling id (an operator staring at
+    /// "invalid npc interaction" cannot find the offending RON row).
+    #[test]
+    fn uxd2_validate_npc_interactions_rejects_shop_id_missing_from_shops() {
+        let npcs = vec![uxd2_npc_def(
+            2,
+            "tideglass_shopkeeper",
+            crate::NpcInteraction::Shop(999),
+        )];
+        let shops = vec![uxd2_shop_def(1)];
+        let heals = vec![uxd2_heal_def(999)]; // 999 exists ONLY as a heal id
+
+        let result = validate_npc_interactions(&npcs, &shops, &heals);
+        let err = result.expect_err(
+            "uxd2 AC-8 TEETH: Shop(999) with shops {1} must be Err — a dangling \
+             shop id ships a shopkeeper whose overlay can never bind, and the \
+             seed must fail loudly at sync time instead",
+        );
+        assert!(
+            err.contains("tideglass_shopkeeper"),
+            "uxd2 AC-8 TEETH: the error must name the offending npc_id \
+             'tideglass_shopkeeper'; got: {err:?}"
+        );
+        assert!(
+            err.contains("999"),
+            "uxd2 AC-8 TEETH: the error must name the missing id 999; got: {err:?}"
+        );
+    }
+
+    /// uxd2 AC-8(b): `Heal(id)` referencing an id absent from the heal-location
+    /// registry is rejected, naming the npc_id and the id.
+    ///
+    /// Mirror-image trap: 999 exists ONLY as a SHOP id here, so a validator
+    /// that checks `Heal(id)` against shop ids returns Ok and is killed.
+    #[test]
+    fn uxd2_validate_npc_interactions_rejects_heal_id_missing_from_heal_locations() {
+        let npcs = vec![uxd2_npc_def(
+            3,
+            "spring_warden",
+            crate::NpcInteraction::Heal(999),
+        )];
+        let shops = vec![uxd2_shop_def(999)]; // 999 exists ONLY as a shop id
+        let heals = vec![uxd2_heal_def(1)];
+
+        let result = validate_npc_interactions(&npcs, &shops, &heals);
+        let err = result.expect_err(
+            "uxd2 AC-8 TEETH: Heal(999) with heal locations {1} must be Err — \
+             the Heal payload is a heal-location id and must be cross-checked \
+             against the heal registry, not the shop registry",
+        );
+        assert!(
+            err.contains("spring_warden"),
+            "uxd2 AC-8 TEETH: the error must name the offending npc_id \
+             'spring_warden'; got: {err:?}"
+        );
+        assert!(
+            err.contains("999"),
+            "uxd2 AC-8 TEETH: the error must name the missing id 999; got: {err:?}"
+        );
+    }
+
+    /// uxd2 AC-8(c): a mixed, fully-resolvable set validates Ok.
+    ///
+    /// Shop ids {7} and heal ids {42} are DISJOINT, so a registry-swapped
+    /// validator rejects this set and is killed. A `Dialogue` npc is present to
+    /// kill an impl whose `Dialogue` arm falls through into an id lookup
+    /// (there is no id to look up) instead of being an explicit no-op.
+    ///
+    /// KILLS: an always-Err validator (which would fail every `sync_content`
+    /// and brick the server) and the two mutants above.
+    #[test]
+    fn uxd2_validate_npc_interactions_accepts_mixed_valid_set() {
+        let npcs = vec![
+            uxd2_npc_def(1, "elder_oak", crate::NpcInteraction::Dialogue),
+            uxd2_npc_def(2, "tideglass_shopkeeper", crate::NpcInteraction::Shop(7)),
+            uxd2_npc_def(3, "spring_warden", crate::NpcInteraction::Heal(42)),
+        ];
+        let shops = vec![uxd2_shop_def(7)];
+        let heals = vec![uxd2_heal_def(42)];
+
+        let result = validate_npc_interactions(&npcs, &shops, &heals);
+        assert!(
+            result.is_ok(),
+            "uxd2 AC-8 TEETH: Dialogue + Shop(7) with shops {{7}} + Heal(42) with \
+             heal locations {{42}} must validate Ok; got: {:?}",
+            result.err()
+        );
+    }
+
+    /// uxd2 AC-8(d): an empty npc list validates Ok.
+    ///
+    /// KILLS: a validator that demands a non-empty npcs slice (or indexes
+    /// `npcs[0]`), which would panic/Err on any content set with no NPCs.
+    #[test]
+    fn uxd2_validate_npc_interactions_accepts_empty_npc_list() {
+        let result = validate_npc_interactions(&[], &[uxd2_shop_def(1)], &[uxd2_heal_def(1)]);
+        assert!(
+            result.is_ok(),
+            "uxd2 AC-8: zero npcs is vacuously valid; got: {:?}",
+            result.err()
+        );
+    }
+
+    /// uxd2 AC-8(e): the validator inspects EVERY npc, not just the first.
+    /// npc #1 is valid (`Shop(7)`); npc #2 is dangling (`Heal(999)`).
+    ///
+    /// KILLS: an early `return Ok(())` inside the loop body (a very common
+    /// mutant: `for npc in npcs { ...; return Ok(()) }`) and any impl that only
+    /// examines `npcs.first()`. Either would let a broken shopkeeper past the
+    /// gate as long as some earlier npc happened to be well-formed.
+    #[test]
+    fn uxd2_validate_npc_interactions_checks_every_npc_not_just_the_first() {
+        let npcs = vec![
+            uxd2_npc_def(2, "tideglass_shopkeeper", crate::NpcInteraction::Shop(7)),
+            uxd2_npc_def(3, "spring_warden", crate::NpcInteraction::Heal(999)),
+        ];
+        let shops = vec![uxd2_shop_def(7)];
+        let heals = vec![uxd2_heal_def(42)];
+
+        let err = validate_npc_interactions(&npcs, &shops, &heals).expect_err(
+            "uxd2 AC-8 TEETH: a dangling reference on the SECOND npc must still \
+             fail — the validator must iterate the whole slice",
+        );
+        assert!(
+            err.contains("spring_warden") && err.contains("999"),
+            "uxd2 AC-8 TEETH: the error must name the second npc ('spring_warden') \
+             and its missing heal-location id 999; got: {err:?}"
+        );
+    }
+
+    /// uxd2 AC-8(f): the REAL embedded registries validate Ok (integration
+    /// smoke — the same shape as `m12c_validate_npc_content_passes_for_embedded`).
+    ///
+    /// KILLS: an I3 RON seed whose `interaction: Shop(n)` points at a shop that
+    /// does not exist (the shipped content would then hard-fail `sync_content`
+    /// at deploy time, after CI was green), and an over-strict validator that
+    /// rejects the plain `Dialogue` NPCs already in the registry.
+    #[test]
+    fn uxd2_validate_npc_interactions_passes_for_embedded_content() {
+        let npcs = load_npc_defs().expect("uxd2: load_npc_defs must succeed");
+        let shops = load_shops().expect("uxd2: load_shops must succeed");
+        let heals = load_heal_locations().expect("uxd2: load_heal_locations must succeed");
+        validate_npc_interactions(&npcs, &shops, &heals).expect(
+            "uxd2 AC-8 TEETH: the embedded NPC/shop/heal registries must \
+             cross-validate — a dangling seeded interaction bricks sync_content",
+        );
+    }
+
+    /// uxd2 I3 content pin: the seeded shopkeeper carries `Shop(1)` and the
+    /// placement the e2e route (AC-12) walks to.
+    ///
+    /// KILLS: a shopkeeper seeded WITHOUT `interaction` (serde-defaults to
+    /// Dialogue -> `buildDialogueViewModel` derives no `shopAction` -> the Shop
+    /// button never renders and the AC-2 chain dies with every Rust test green).
+    /// ALSO KILLS: a non-zero `wander_radius` (the e2e has no retry loop and the
+    /// NPC would drift out of the range-2 prompt window) and a moved home tile
+    /// (the pinned zone-1 route to (8,1) stops being 2 tiles away at (6,1)).
+    #[test]
+    fn uxd2_shopkeeper_seed_carries_shop_interaction() {
+        let defs = load_npc_defs().expect("uxd2: load_npc_defs must succeed");
+        let keeper = defs
+            .iter()
+            .find(|d| d.npc_id == "tideglass_shopkeeper")
+            .unwrap_or_else(|| {
+                panic!(
+                    "uxd2 I3 TEETH: npcs RON must contain an NPC with \
+                     npc_id 'tideglass_shopkeeper'; got: {:?}",
+                    defs.iter().map(|d| d.npc_id.as_str()).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            keeper.interaction,
+            crate::NpcInteraction::Shop(1),
+            "uxd2 I3 TEETH: the seeded shopkeeper must carry Shop(1) — a Dialogue \
+             default renders no Shop button at all; got {:?}",
+            keeper.interaction
+        );
+        assert_eq!(keeper.zone_id, 1, "uxd2 I3: shopkeeper lives in zone 1");
+        assert_eq!(
+            (keeper.home_x, keeper.home_y),
+            (8, 1),
+            "uxd2 I3: shopkeeper home tile is (8,1) — the e2e route measures \
+             range from it"
+        );
+        assert_eq!(
+            (keeper.spawn_x, keeper.spawn_y),
+            (8, 1),
+            "uxd2 I3: shopkeeper spawns on its home tile"
+        );
+        assert_eq!(
+            keeper.wander_radius, 0,
+            "uxd2 I3 TEETH: wander_radius MUST be 0 (npc_decide's pinned \
+             stationary special case) or the e2e prompt/talk steps flake"
+        );
+        assert_eq!(
+            keeper.dialogue_tree_id, "shopkeeper_greeting",
+            "uxd2 I3: shopkeeper greets from the 'shopkeeper_greeting' tree"
+        );
+    }
+
+    /// uxd2 I3 content pin: the greeting tree is a genuinely INERT one-node
+    /// tree — "Hello, customer!" plus a single Leave choice, no effects.
+    ///
+    /// KILLS: a greeting tree that carries effects (a SetFlag/GrantItem/
+    /// StartQuest on the shop path would fire on every re-entry — the ADR-0068
+    /// farming class) or that branches into more nodes (the AC-12 e2e asserts
+    /// the greeting text directly and the Shop button is derived from the enum,
+    /// never from choice text). ALSO KILLS: a text drift that would make the
+    /// `#dialogue-overlay` assertion in shop-npc.spec.ts unreproducible.
+    #[test]
+    fn uxd2_shopkeeper_greeting_tree_is_inert_single_node() {
+        let trees = load_dialogue_trees().expect("uxd2: load_dialogue_trees must succeed");
+        let tree = trees
+            .iter()
+            .find(|t| t.id == "shopkeeper_greeting")
+            .unwrap_or_else(|| {
+                panic!(
+                    "uxd2 I3 TEETH: dialogue_trees RON must contain a \
+                     'shopkeeper_greeting' tree; got: {:?}",
+                    trees.iter().map(|t| t.id.as_str()).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            tree.nodes.len(),
+            1,
+            "uxd2 I3 TEETH: the greeting tree must have exactly ONE node \
+             (inert greeting); got {} nodes",
+            tree.nodes.len()
+        );
+        let node = &tree.nodes[0];
+        assert_eq!(
+            tree.root_node_id, node.id,
+            "uxd2 I3: the single node must be the root"
+        );
+        assert_eq!(
+            node.text, "Hello, customer!",
+            "uxd2 I3 TEETH: greeting text is pinned by the AC-12 e2e assertion; \
+             got {:?}",
+            node.text
+        );
+        assert!(
+            node.auto_effects.is_empty(),
+            "uxd2 I3 TEETH: the greeting node must have NO auto_effects — the \
+             shop path is re-enterable, so any effect fires unbounded; got {:?}",
+            node.auto_effects
+        );
+        assert!(
+            node.entry_conditions.is_empty(),
+            "uxd2 I3 TEETH: a gated greeting node can leave the shopkeeper with \
+             no reachable node; got {:?}",
+            node.entry_conditions
+        );
+        assert_eq!(
+            node.choices.len(),
+            1,
+            "uxd2 I3 TEETH: exactly one (Leave) choice — the Shop affordance is \
+             derived from NpcInteraction, NEVER from choice text; got {:?}",
+            node.choices
+                .iter()
+                .map(|c| c.text.as_str())
+                .collect::<Vec<_>>()
+        );
+        let choice = &node.choices[0];
+        assert_eq!(
+            choice.text, "Leave",
+            "uxd2 I3: the single choice is 'Leave'"
+        );
+        assert_eq!(
+            choice.next_node, None,
+            "uxd2 I3 TEETH: the Leave choice must END the conversation \
+             (next_node: None); got {:?}",
+            choice.next_node
+        );
+        assert!(
+            choice.effects.is_empty() && choice.conditions.is_empty(),
+            "uxd2 I3 TEETH: the Leave choice must be inert (no effects, no \
+             conditions); got effects {:?} / conditions {:?}",
+            choice.effects,
+            choice.conditions
         );
     }
 }

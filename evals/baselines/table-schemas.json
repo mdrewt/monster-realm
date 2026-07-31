@@ -211,7 +211,8 @@
       "home_x": "i32",
       "home_y": "i32",
       "wander_radius": "u8",
-      "dialogue_tree_id": "String"
+      "dialogue_tree_id": "String",
+      "interaction": "NpcInteraction"
     }
   },
   "player": {

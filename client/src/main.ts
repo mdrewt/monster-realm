@@ -67,7 +67,7 @@ import {
 } from './ui/bugBundle';
 import { performCare } from './ui/careAction';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
-import { buildDialogueViewModel, nearestTalkableNpcId } from './ui/dialogueModel';
+import { buildDialogueViewModel } from './ui/dialogueModel';
 import type { DialogueView } from './ui/dialogueView';
 import { buildErrorOverlayModel } from './ui/errorOverlayModel';
 import { ErrorOverlayView } from './ui/errorOverlayView';
@@ -84,10 +84,15 @@ import {
 } from './ui/eventRing';
 import { buildEvolutionViewModel } from './ui/evolutionModel';
 import type { EvolutionView } from './ui/evolutionView';
-import { buildHealViewModel, healTargetLocationId } from './ui/healModel';
+import {
+  buildHealViewModel,
+  buildHealViewModelForLocation,
+  healTargetLocationId,
+} from './ui/healModel';
 import type { HealView } from './ui/healView';
 import { buildHelpViewModel } from './ui/helpModel';
 import type { HelpView } from './ui/helpView';
+import { interactPrompt, nearestInteractable } from './ui/interactModel';
 import { buildLeaderboardViewModel } from './ui/leaderboardModel';
 import type { LeaderboardView } from './ui/leaderboardView';
 import { buildPvpChallengeViewModel } from './ui/pvpModel';
@@ -98,7 +103,7 @@ import { buildRaisingViewModel } from './ui/raisingModel';
 import type { RaisingView } from './ui/raisingView';
 import { buildRenameViewModel } from './ui/renameModel';
 import type { RenameView } from './ui/renameView';
-import { buildShopViewModel } from './ui/shopModel';
+import { buildShopViewModel, buildShopViewModelForShop } from './ui/shopModel';
 import type { ShopView } from './ui/shopView';
 import { reduceErrorMessage } from './ui/statusModel';
 import { buildTradeViewModel } from './ui/tradeModel';
@@ -207,6 +212,54 @@ let pvpPendingTurnNumber: number | null = null;
 // dismissPending: prevents double-sending dismiss_dialogue while server processes it (M12d).
 // eslint-disable-next-line prefer-const
 let dismissPending = false;
+// uxd2 (ADR-0161 D4/D5): deferred shop-open + bound-overlay view state.
+// pendingShopId is set by the [data-shop-id] dialogue click branch and
+// consumed-and-cleared atomically by the dialogue batch listener's
+// no-conversation arm — the open is NEVER performed inline (adjudication 1).
+// boundShopId / boundHealLocationId record which shop / heal location the
+// visible overlay is bound to, so a refresh batch never silently swaps a bound
+// view back to the first-row default. All three clear on Escape-cancel paths
+// and on reconnect (the store reset invalidates the ids).
+let pendingShopId: number | null = null;
+let boundShopId: number | null = null;
+let boundHealLocationId: number | null = null;
+
+/** uxd2 (ADR-0161 D4): the ONE shared predicate over the 14 mutual-exclusion
+ *  overlays — used by the deferred shop-open gate and the frame-loop prompt.
+ *  The hotkey handlers keep their inline guard lists (each exempts its own
+ *  overlay), so this is deliberately the only NEW occurrence of each. */
+function anyOverlayVisible(): boolean {
+  return Boolean(
+    battleView?.visible ||
+      boxView?.visible ||
+      raisingView?.visible ||
+      evolutionView?.visible ||
+      dialogueView?.visible ||
+      questLogView?.visible ||
+      healView?.visible ||
+      shopView?.visible ||
+      tradeView?.visible ||
+      pvpView?.visible ||
+      leaderboardView?.visible ||
+      renameView?.visible ||
+      tradeProposeView?.visible ||
+      helpView?.visible,
+  );
+}
+
+/** entityId → positional tile snapshot for the interact resolver (uxd2, ADR-0161).
+ *  store.characters() is the WHOLE character table (players + NPCs); entityId is
+ *  globally unique (one auto_inc sequence), so joining the NPC registry against
+ *  this map always lands on the NPC's own row. Shared by the KeyT dispatch and
+ *  the frame-loop prompt so the two sites can never diverge. */
+function characterTileMap(): Map<bigint, { zoneId: number; tileX: number; tileY: number }> {
+  return new Map(
+    [...store.characters()].map((c) => [
+      c.row.entityId,
+      { zoneId: c.row.zoneId, tileX: c.row.tileX, tileY: c.row.tileY },
+    ]),
+  );
+}
 // Outcome-frame lifecycle (M8.7e): the dismissed battle id (so a resolved outcome
 // renders once but never re-pops) + whether any battle has been observed this
 // session (first-sight pre-dismiss of a historical/stale-on-login resolved battle).
@@ -668,67 +721,6 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
-  if (e.code === 'KeyH') {
-    // Heal overlay — mutual exclusivity: only when no other overlay is open (M12d, ADR-0071).
-    if (
-      !battleView?.visible &&
-      !boxView?.visible &&
-      !raisingView?.visible &&
-      !evolutionView?.visible &&
-      !dialogueView?.visible &&
-      !questLogView?.visible &&
-      !shopView?.visible &&
-      !tradeView?.visible &&
-      !pvpView?.visible &&
-      !leaderboardView?.visible &&
-      !renameView?.visible &&
-      !tradeProposeView?.visible &&
-      !helpView?.visible
-    ) {
-      if (healView?.visible) {
-        healView.hide();
-      } else {
-        healView?.render(buildHealViewModel(store.healLocations(), store.itemDefs()));
-      }
-    }
-    e.preventDefault();
-    return;
-  }
-  if (e.code === 'KeyG') {
-    // Shop overlay — mutual exclusivity with all other overlays (M13d, ADR-0084).
-    // Opens with the first available shop; if no shops loaded shows "No shop available".
-    if (
-      !battleView?.visible &&
-      !boxView?.visible &&
-      !raisingView?.visible &&
-      !evolutionView?.visible &&
-      !dialogueView?.visible &&
-      !questLogView?.visible &&
-      !healView?.visible &&
-      !tradeView?.visible &&
-      !pvpView?.visible &&
-      !leaderboardView?.visible &&
-      !renameView?.visible &&
-      !tradeProposeView?.visible &&
-      !helpView?.visible
-    ) {
-      if (shopView?.visible) {
-        shopView.hide();
-      } else {
-        shopView?.render(
-          buildShopViewModel(
-            store.allShops(),
-            store.allShopItems(),
-            store.itemDefs(),
-            store.ownInventory(identity),
-          ),
-        );
-        shopView?.show();
-      }
-    }
-    e.preventDefault();
-    return;
-  }
   if (e.code === 'KeyU') {
     // Trade overlay — mutual exclusivity with all other overlays (m15b, ADR-0107).
     // Shows the active offer involving this player; "No active trade" when none.
@@ -897,12 +889,15 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'KeyT') {
-    // TALK (M13.5c — implementer contract in client/e2e/dialogue.spec.ts header):
-    // only when NO overlay is visible, target the nearest NPC (store.allNpcs()
-    // joined to character rows, same zone) within CLIENT_TALK_RANGE of the own
-    // AUTHORITATIVE tile and send the talk reducer; no-op when none is in range.
-    // The client-side range check is latency hygiene, NOT security — the server
-    // re-validates zone + range (npc.rs talk Steps 4-5, TALK_RANGE at npc.rs:20).
+    // INTERACT (uxd2, ADR-0161 D3/D4 — generalizes the M13.5c TALK key):
+    // only when NO overlay is visible, resolve the nearest interactable
+    // (store.allNpcs() joined to character rows + heal tiles, same zone,
+    // Manhattan <= 2 of the own AUTHORITATIVE tile) and dispatch by kind:
+    // dialogue/shop share the ONE existing talk-reducer arm (greet-then-shop);
+    // heal binds the heal overlay VIEW to the resolved location — no reducer
+    // (interact opens UI, it never transacts). The client-side range check is
+    // latency hygiene, NOT security — the server re-validates zone + range
+    // (npc.rs talk Steps 4-5, TALK_RANGE at npc.rs:20).
     if (
       !battleView?.visible &&
       !boxView?.visible &&
@@ -922,18 +917,34 @@ window.addEventListener('keydown', (e) => {
     ) {
       const own = store.ownCharacter(identity);
       if (own !== undefined) {
-        // store.characters() is the WHOLE character table (players + NPCs);
-        // entityId is globally unique (one auto_inc sequence), so joining the
-        // NPC registry against this map always lands on the NPC's own row.
-        const characterTiles = new Map(
-          [...store.characters()].map((c) => [
-            c.row.entityId,
-            { zoneId: c.row.zoneId, tileX: c.row.tileX, tileY: c.row.tileY },
-          ]),
+        const characterTiles = characterTileMap();
+        const target = nearestInteractable(
+          own.row,
+          store.allNpcs(),
+          characterTiles,
+          store.healLocations(),
         );
-        const npcEntityId = nearestTalkableNpcId(own.row, store.allNpcs(), characterTiles);
-        if (npcEntityId !== undefined) {
-          sendGuarded('talk', () => conn?.conn.reducers.talk({ npcEntityId }));
+        if (target !== undefined) {
+          // Exhaustive switch on the descriptor kind — NO default arm, so a
+          // 4th NpcInteraction-driven kind compiler-flags this dispatch site.
+          switch (target.kind) {
+            case 'dialogue':
+            case 'shop':
+              sendGuarded('talk', () =>
+                conn?.conn.reducers.talk({ npcEntityId: target.npcEntityId }),
+              );
+              break;
+            case 'heal':
+              boundHealLocationId = target.locationId;
+              healView?.render(
+                buildHealViewModelForLocation(
+                  target.locationId,
+                  store.healLocations(),
+                  store.itemDefs(),
+                ),
+              );
+              break;
+          }
         }
       }
     }
@@ -1021,6 +1032,10 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'Escape' && dialogueView?.visible) {
+    // uxd2 (ADR-0161 D4): Escape CANCELS a pending shop-open (last-intent-wins)
+    // — without this, "click Shop, change your mind, Escape" still pops the
+    // shop when the dismiss lands.
+    pendingShopId = null;
     // dismissPending guards against double-send while server processes the dismiss.
     if (!dismissPending) {
       // The flag is set INSIDE the lambda (reviewer M1): sendGuarded's frozen
@@ -1048,11 +1063,13 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'Escape' && healView?.visible) {
+    boundHealLocationId = null; // uxd2: closing unbinds the heal view (ADR-0161 D5)
     healView.hide();
     e.preventDefault();
     return;
   }
   if (e.code === 'Escape' && shopView?.visible) {
+    boundShopId = null; // uxd2: closing unbinds the shop view (ADR-0161 D5)
     shopView.hide();
     e.preventDefault();
     return;
@@ -1249,7 +1266,32 @@ store.onBatchApplied(() => {
     // player_conversation row (lib.rs on_disconnect) so the post-reconnect
     // snapshot has no conversation — removing that server-side delete would
     // silently strand dismissPending=true across a mid-dismiss drop.
-    if (!conv) dismissPending = false;
+    if (!conv) {
+      dismissPending = false;
+      // UXD2-SHOPOPEN-BEGIN (ADR-0161 D4): the deferred greet-then-shop open.
+      // Consume-and-clear ATOMICALLY (read to a local, null the module var
+      // first), then open ONLY if no overlay is visible at consumption time —
+      // a battle that popped during the dismiss round-trip drops the pending
+      // open silently rather than stacking two overlays.
+      if (pendingShopId !== null) {
+        const openShopId = pendingShopId;
+        pendingShopId = null;
+        if (!anyOverlayVisible()) {
+          boundShopId = openShopId;
+          shopView?.render(
+            buildShopViewModelForShop(
+              openShopId,
+              store.allShops(),
+              store.allShopItems(),
+              store.itemDefs(),
+              store.ownInventory(identity),
+            ),
+          );
+          shopView?.show();
+        }
+      }
+      // UXD2-SHOPOPEN-END
+    }
   } catch (err) {
     console.error('[M12d] dialogue batch listener error', err);
   }
@@ -1267,11 +1309,18 @@ store.onBatchApplied(() => {
 });
 
 store.onBatchApplied(() => {
-  // Heal overlay is user-toggled (KeyH); only refresh when already open (ADR-0014 pattern).
+  // Heal overlay is user-opened (KeyT on a heal tile); only refresh when
+  // already open (ADR-0014 pattern). uxd2 (ADR-0161 D5): while bound, refresh
+  // through the SAME bound-location selector the open used — never let a
+  // batch silently widen a bound view to the all-locations default.
   if (!healView?.visible) return;
   try {
     const itemDefs = store.itemDefs();
-    healView.render(buildHealViewModel(store.healLocations(), itemDefs));
+    healView.render(
+      boundHealLocationId !== null
+        ? buildHealViewModelForLocation(boundHealLocationId, store.healLocations(), itemDefs)
+        : buildHealViewModel(store.healLocations(), itemDefs),
+    );
   } catch (err) {
     console.error('[M12d] heal batch listener error', err);
   }
@@ -1282,13 +1331,25 @@ store.onBatchApplied(() => {
 store.onBatchApplied(() => {
   if (!shopView?.visible || identity === '') return;
   try {
+    // uxd2 (ADR-0161 D5): while bound to a shopkeeper's shop, refresh through
+    // the bound-shop selector — a batch must never silently swap the visible
+    // catalogue to the first-shop default. Unbound (defensive: the overlay now
+    // only opens bound) keeps the pre-uxd2 default path unchanged.
     shopView.render(
-      buildShopViewModel(
-        store.allShops(),
-        store.allShopItems(),
-        store.itemDefs(),
-        store.ownInventory(identity),
-      ),
+      boundShopId !== null
+        ? buildShopViewModelForShop(
+            boundShopId,
+            store.allShops(),
+            store.allShopItems(),
+            store.itemDefs(),
+            store.ownInventory(identity),
+          )
+        : buildShopViewModel(
+            store.allShops(),
+            store.allShopItems(),
+            store.itemDefs(),
+            store.ownInventory(identity),
+          ),
     );
   } catch (err) {
     console.error('[M13d] shop batch listener error', err);
@@ -1419,6 +1480,31 @@ store.onBatchApplied(() => {
 // --- M12d: dialogue choice click handler -----------------------------------------
 // Reads data-choice-idx from the clicked button and calls advance_dialogue.
 document.addEventListener('click', (e) => {
+  // UXD2-SHOPBTN-BEGIN (ADR-0161 D4): the greet-then-shop button. It carries
+  // data-shop-id and NO choice index, so it gets its own branch ABOVE the
+  // choice delegation. Record the pending open ALWAYS (last-intent-wins), then
+  // end the conversation via dismissDialogue under the dismissPending in-flight
+  // guard (C6 discipline, mirroring the Escape-dismiss branch) — the shop open
+  // itself is DEFERRED to the dialogue batch listener's no-conversation arm.
+  const shopBtn = (e.target as HTMLElement).closest('[data-shop-id]') as HTMLElement | null;
+  if (shopBtn !== null) {
+    const clickedShopId = Number(shopBtn.dataset.shopId);
+    if (!Number.isNaN(clickedShopId)) {
+      pendingShopId = clickedShopId;
+      if (!dismissPending) {
+        sendGuarded('dismiss', () => {
+          dismissPending = true;
+          return conn?.conn.reducers.dismissDialogue({}).catch((err: unknown) => {
+            dismissPending = false;
+            pendingShopId = null;
+            throw err;
+          });
+        });
+      }
+    }
+    return;
+  }
+  // UXD2-SHOPBTN-END
   const btn = (e.target as HTMLElement).closest('[data-choice-idx]') as HTMLElement | null;
   if (!btn) return;
   const raw = btn.dataset.choiceIdx;
@@ -2047,6 +2133,28 @@ async function main(): Promise<void> {
   document.body.appendChild(status);
   statusEl = status;
 
+  // uxd2 (ADR-0161 D6): the on-world interact prompt — created inline beside
+  // the #status precedent. pointer-events:none so it can NEVER shadow the
+  // document-level dialogue/shop click delegation; z-index below the overlays
+  // (help sits at 100); translate(-50%,-100%) hangs the label above the anchor
+  // (tile-top centre). Positioned each frame via renderer.screenFor(...).
+  const interactPromptEl = document.createElement('div');
+  interactPromptEl.id = 'interact-prompt';
+  interactPromptEl.style.position = 'fixed';
+  interactPromptEl.style.pointerEvents = 'none';
+  interactPromptEl.style.display = 'none';
+  interactPromptEl.style.transform = 'translate(-50%, -100%)';
+  interactPromptEl.style.zIndex = '40';
+  interactPromptEl.style.font = '12px/1.4 monospace';
+  interactPromptEl.style.color = '#e8ecf5';
+  interactPromptEl.style.background = 'rgba(10, 14, 24, 0.75)';
+  interactPromptEl.style.padding = '1px 6px';
+  interactPromptEl.style.borderRadius = '3px';
+  document.body.appendChild(interactPromptEl);
+  // Memoized last-applied prompt state: style/text writes happen ONLY when the
+  // (actionWord, screen position) key changes — never unconditionally per frame.
+  let lastPromptKey = 'none';
+
   // pt-b1 (ADR-0130): mount the F9 error overlay (self-mounting, starts hidden,
   // non-blocking pointer-events:none). pushError renders into it on the first error.
   errorOverlayView = new ErrorOverlayView();
@@ -2086,9 +2194,16 @@ async function main(): Promise<void> {
       // RT-PL-01: a buy/sell in flight at drop time never settles (SDK — no settle
       // on drop), so the shop's double-spend lock would stay held forever. hide()
       // resets it (shopView.ts is outside this slice's touch-set; the reset rides
-      // the existing public hide()). Escape/KeyG already recover it manually
-      // during the gap.
+      // the existing public hide()). Escape-only recovery during the gap (uxd2:
+      // the global shop hotkey is gone — ADR-0161 D5).
       shopView?.hide();
+      // uxd2 (ADR-0161 D4/D5): the store was reset, so a pending or bound
+      // shop / heal id refers to rows that may no longer exist — clear all three
+      // (a stale pendingShopId would otherwise pop a shop on the first
+      // post-reconnect dialogue dismissal).
+      pendingShopId = null;
+      boundShopId = null;
+      boundHealLocationId = null;
       // m15b: trade's double-spend lock must also be reset on reconnect (same reason as shop).
       tradeView?.hide();
       // m16b: hide the PvP overlay on reconnect — any pending challenge state is stale.
@@ -2195,6 +2310,44 @@ async function main(): Promise<void> {
         lastCamY = ownEntity.y;
       }
       renderer?.render(entities, lastCamX, lastCamY);
+      // uxd2 (ADR-0161 D6): recompute the on-world interact prompt EVERY frame
+      // — the SAME resolver KeyT dispatches on, so the prompt can never
+      // advertise a target KeyT refuses, and it self-heals on zone switch /
+      // reconnect / overlay open. Positioned via renderer.screenFor — the
+      // exact camera offset + stageScale the stage applied THIS frame.
+      const ownChar = store.ownCharacter(identity);
+      // Overlay-open frames skip the resolve entirely (the prompt is guaranteed
+      // hidden), so the per-frame map/array allocations only happen in-world.
+      const overlayUp = anyOverlayVisible();
+      const promptTarget =
+        !overlayUp && ownChar !== undefined
+          ? nearestInteractable(
+              ownChar.row,
+              store.allNpcs(),
+              characterTileMap(),
+              store.healLocations(),
+            )
+          : undefined;
+      const promptVm = interactPrompt(promptTarget, overlayUp);
+      const promptPos =
+        promptVm !== null
+          ? renderer?.screenFor({ x: promptVm.anchorWorldX, y: promptVm.anchorWorldY })
+          : undefined;
+      const promptKey =
+        promptVm !== null && promptPos !== undefined
+          ? `${promptVm.actionWord}|${promptPos.x}|${promptPos.y}`
+          : 'none';
+      if (promptKey !== lastPromptKey) {
+        lastPromptKey = promptKey;
+        if (promptVm !== null && promptPos !== undefined) {
+          interactPromptEl.textContent = `${promptVm.actionWord} [${promptVm.keyGlyph}]`;
+          interactPromptEl.style.left = `${promptPos.x}px`;
+          interactPromptEl.style.top = `${promptPos.y}px`;
+          interactPromptEl.style.display = 'block';
+        } else {
+          interactPromptEl.style.display = 'none';
+        }
+      }
     } catch (err) {
       console.error('[frame] uncaught error', err);
     } finally {
