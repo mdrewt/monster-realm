@@ -119,7 +119,7 @@ would cost 780 lines of rework for zero product value. What must not recur is a
 side-B assertion sliding back onto it, and that is enforced by the new e2e's own
 call-counting guard (below).
 
-## Enforcement, and one accepted residual
+## Enforcement, and three accepted residuals
 
 The primary anti-regression teeth are behavioral: `store.test.ts` fixtures where
 the local identity is `opponentIdentity` (a revert to the old filter turns both
@@ -142,12 +142,21 @@ scan for `__mrPvp` is defeated by `window['__mr'+'Pvp']`, so `pvp-side-b.spec.ts
 installs a call counter over the hook before the app script runs and asserts it is
 never invoked.
 
-**Accepted residual:** a future author could hand-inline the side swap
-(`{ ...raw, sideA: raw.sideB, ... }`) inside a diagnostic region and violate D3
-without the identifier `ownPerspective` appearing anywhere. Closing that
-mechanically needs a shape-matcher fragile enough to cost more than it catches;
-it is left to code review and recorded here so the next reader knows it was
-considered, not missed.
+**Accepted residuals:**
+
+1. **A future author could hand-inline the side swap** (`{ ...raw, sideA: raw.sideB, ... }`) inside a diagnostic region and violate D3 without the identifier `ownPerspective` appearing anywhere. Closing that mechanically needs a shape-matcher fragile enough to cost more than it catches; it is left to code review and recorded here so the next reader knows it was considered, not missed.
+
+2. **Side-B Swap has no end-to-end coverage.** The e2e exercises side-B Attack only, because both fresh players hold a single starter (`STARTER_SPECIES_ID = 1`, level 5) so there is no bench to swap to without seeding party state. The analytic argument is that `ownPerspective` swaps whole side OBJECTS and never reindexes within a team, so a `teamIndex` read off the projected bench is exactly the index the server expects into the raw side it resolves from `ctx.sender`; and a wrong index fails CLOSED at the server's bounds/fainted guards in `submit_pvp_action` (`pvp.rs:1018-1022`). Unit coverage is `T-OWNP-DOWNSTREAM` (bench contents, client-side).
+
+3. **The `player_identity ↔ side_a` pairing is knowledge held on both sides of the boundary** with no generated artifact binding them (`client/src/net/store.ts` vs `server-module/src/guards.rs:294-297`). It is NOT movable into `game-core`: `game_core::BattleState` carries no identity fields at all — the identities live only on the `server-module` `Battle` table row — so the pairing is a schema-boundary convention, and a parity test is the right guard rather than a move. `client/e2e/pvp-side-b.spec.ts`'s opponent-name assertions are that guard: if the server ever changes its side-assignment convention (e.g. randomizing which participant seats as side A for first-move fairness), that e2e fails loudly.
+
+### How this was verified
+
+The e2e was empirically proven to bite: with `main.ts` reverted to the half-fix (the accessors role-agnostic but `ownPerspective` not wired into `refreshBattle`), the `Submit:`-button-visible assertion still PASSED and the test failed only at the opponent-name discriminator. A naive turn-advance-only e2e could not have caught it because both fresh players' starters share `STARTER_SPECIES_ID = 1` at level 5 and therefore identical `known_skill_ids`, so a wrong-side skill submission is cross-legal and the server accepts it — the turn genuinely advances. That is why both players are renamed first and the opponent card's `${name}: ` label is the load-bearing discriminator. This is the single most useful thing in the ADR for a future author.
+
+### Design decisions in review
+
+The `ownPerspective` two-overload signature was flagged by the simplify lens as having no production caller for the non-optional form. It was KEPT deliberately — collapsing it would churn the gating tests for five lines of production code, and the implementer is forbidden from editing its own gating tests. This is recorded so it is a decision, not an oversight.
 
 ## Consequences
 

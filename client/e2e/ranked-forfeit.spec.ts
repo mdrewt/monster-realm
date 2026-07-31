@@ -325,10 +325,13 @@ test.describe
       // B clicks accept → accept_challenge reducer → ranked battle starts.
       await pageB.click('[data-testid="pvp-accept-btn"]');
 
-      // Step 6: assert battle live on A's page ONLY (AM-2).
-      // __game().ongoingBattle is non-null for the player_identity (side A);
-      // B is opponent_identity — B's client has NO battle view (store.ongoingBattle
-      // matches player_identity only). Do NOT assert B has ongoingBattle.
+      // Step 6: assert battle live on A's page (AM-2).
+      // __game().ongoingBattle is non-null for the player_identity (side A). As of ADR-0167
+      // (11r-b), store.ongoingBattle()/latestPlayerBattle() are EITHER-role — B (the
+      // accepter, opponent_identity) now gets a real battle view too, proven end-to-end by
+      // client/e2e/pvp-side-b.spec.ts. This spec still doesn't assert B's ongoingBattle here
+      // only because it closes browserB immediately after accept (forfeit-via-disconnect is
+      // the point of THIS test), not because B lacks one.
       // WHAT THIS KILLS: a start_pvp_battle impl that does not create a battle row,
       // or that creates it with the wrong player_identity.
       await pageA.waitForFunction(

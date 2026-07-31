@@ -1014,6 +1014,26 @@ describe('AuthoritativeStore 11r-b: ongoingBattle()/latestPlayerBattle() match E
     expect(s.ongoingBattle('')).toBeUndefined();
     expect(s.latestPlayerBattle('')).toBeUndefined();
   });
+
+  it("T-RA-6: BITES ongoingBattle('bob') picks the HIGHEST battleId when TWO Ongoing rows both match 'bob' — no first-match-wins Map-iteration nondeterminism", () => {
+    // Kills: first-match-wins Map-iteration order. Pre-11r-b at most one row could match a
+    // given identity (playerIdentity-only filter), so ongoingBattle's early `return` on the
+    // first match was safe. Either-role matching made TWO SIMULTANEOUS Ongoing matches
+    // possible — you can be the challenger in one battle and the accepter in another at the
+    // same time — and this accessor kept its early return instead of getting the same
+    // highest-battleId tiebreak its sibling latestPlayerBattle got in the SAME diff (see
+    // T-RA-3 / T1d — bigint `>` comparison, never Number()/Math.max).
+    // Insertion order is DELIBERATE: the LOWER id (5n, 'bob' as playerIdentity) is inserted
+    // FIRST — a first-match-wins impl returns it (WRONG). The correct impl must scan every
+    // either-role match and pick the HIGHEST (9n, 'bob' as opponentIdentity) regardless of
+    // insertion/Map-iteration order.
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(5n, 'bob', 'Ongoing', 'npc')); // 'bob' is playerIdentity — lower id, inserted first
+    s.upsertBattle(battle(9n, 'alice', 'Ongoing', 'bob')); // 'bob' is opponentIdentity — higher id, inserted second
+    const result = s.ongoingBattle('bob');
+    expect(result).toBeDefined();
+    expect(result!.battleId).toBe(9n); // bigint `>` comparison — never Number()/Math.max (T1d)
+  });
 });
 
 describe('AuthoritativeStore M8.6c: skillMap() returns a COPY (no live-map leak)', () => {

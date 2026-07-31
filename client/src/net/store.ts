@@ -741,15 +741,28 @@ export class AuthoritativeStore {
   /** The player's own ongoing battle — matched in EITHER PvP role, `playerIdentity` OR
    *  `opponentIdentity` (11r-b/ADR-0167 D1; ADR-0042: public table, client-side filter).
    *  Returns the RAW server row: the store stays a mirror of server truth, and the
-   *  own-side-is-sideA view projection lives in `ownPerspective()` below. */
+   *  own-side-is-sideA view projection lives in `ownPerspective()` below. When more than
+   *  one Ongoing row matches, the HIGHEST battleId wins — the same tiebreak
+   *  `latestPlayerBattle()` uses (T-RA-6). */
   ongoingBattle(identity: string): StoreBattle | undefined {
     // Pre-join guard: matching two participant columns instead of one turns "no match"
     // into "possible false match" for an empty identity (AC-3).
     if (identity === '') return undefined;
+    let best: StoreBattle | undefined;
     for (const b of this.#battles.values()) {
-      if (this.#isParticipant(b, identity) && b.outcome === 'Ongoing') return b;
+      if (!this.#isParticipant(b, identity) || b.outcome !== 'Ongoing') continue;
+      // Scan-and-keep-highest, NOT return-on-first-match: while this accessor matched a
+      // single identity column at most one row could ever match, so an early return was
+      // safe. Either-role matching makes TWO simultaneous Ongoing matches possible (you can
+      // be the challenger in one battle and the accepter in another), and first-match-wins
+      // would then hand back whichever row `Map` iteration reached first — insertion-order
+      // nondeterminism, and a disagreement with latestPlayerBattle() about which battle is
+      // "the" one. Both accessors must agree: the __game() DEV hook, the F9 bug bundle and
+      // e2e/pvp-side-b.spec.ts's AC-1 witness all read THIS one.
+      // bigint `>` (never Number()/Math.max — ids exceed 2^53; T1d).
+      if (best === undefined || b.battleId > best.battleId) best = b;
     }
-    return undefined;
+    return best;
   }
 
   /** The player's most-recent battle of ANY outcome (highest battleId among rows where
@@ -1024,9 +1037,10 @@ export function ownPerspective(
   identity: string,
 ): StoreBattle | undefined {
   if (battle === undefined) return undefined;
-  // playerIdentity FIRST (see the practice-battle note above), then the non-participant
-  // pass-through: both return the argument itself.
-  if (battle.playerIdentity === identity || battle.opponentIdentity !== identity) return battle;
+  // Two sequential by-reference fast paths, in THIS order — playerIdentity first is
+  // load-bearing (see the practice-battle note above; pinned by T-OWNP-PRACTICE).
+  if (identity === battle.playerIdentity) return battle; // I am side A (also: a practice battle)
+  if (identity !== battle.opponentIdentity) return battle; // not a participant — never fabricate
   return {
     ...battle,
     playerIdentity: battle.opponentIdentity,

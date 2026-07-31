@@ -23,6 +23,23 @@ import {
 // its connection+identity in the page's JS module scope, so a shared browser/context
 // would yield ONE identity and challenge_pvp would reject the self-challenge).
 //
+// FILE-ORDERING AUDIT (reviewer, recorded so a future reviewer never has to re-derive
+// this): playwright.config.ts:23-29 documents single-worker, alphabetical-across-files
+// execution over ONE shared world as load-bearing (golden.spec.ts asserts an EXACT
+// player population, so a concurrently-joined player from a differently-ordered spec
+// would make that unreachable) — docs/specs/m17.5f-plan.md T3 records a prior incident
+// where trade-interlock.spec.ts was deliberately NAMED to sort after golden.spec.ts and
+// recruit.spec.ts to dodge exactly this. `pvp-side-b.spec.ts` sorts alphabetically
+// BEFORE recruit.spec.ts ('p' < 'r') and AFTER golden.spec.ts ('g' < 'p'). Audited safe:
+// golden.spec.ts (the only exact-population assertion in this suite) already sorts
+// before this file, so it never observes this file's two extra joined players;
+// recruit.spec.ts (which sorts after) asserts no population counts at all; and both of
+// THIS file's renamed players' rows are deleted on disconnect
+// (server-module/src/lib.rs:190-216, on_disconnect deletes the player + character rows)
+// via the tolerant afterAll's browser.close() calls, before the next file's beforeAll
+// runs. If an earlier-sorting spec ever grows a population-sensitive assertion, this
+// audit needs re-deriving.
+//
 // ZERO USE OF THE DEV TEST HOOK: this spec drives BOTH players through the REAL
 // production DOM only — KeyP -> the challenge button -> the accept button -> the real
 // "Submit: <skill>" buttons. `__game()` is used ONLY for readiness and as a READ-ONLY
