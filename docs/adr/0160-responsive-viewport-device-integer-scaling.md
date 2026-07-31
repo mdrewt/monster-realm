@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** 0067
 **Subsystems:** client-ui
-**Decision:** A pure viewport core sizes the render edge: Pixi runs at resolution=devicePixelRatio+autoDensity, an INTEGER deviceScale is applied as stageScale=deviceScale/dpr, and FollowCamera centers per-axis when the map is smaller than the viewport.
+**Decision:** A viewport core sizes the render edge: Pixi runs at resolution=devicePixelRatio+autoDensity, an INTEGER deviceScale is applied as stageScale=deviceScale/dpr, and FollowCamera centers per-axis when the map is smaller than the viewport.
 
 ## Context
 
@@ -205,7 +205,18 @@ scale hysteresis (D10); touch listeners.
 `screenToWorld` ships with **no caller**, as the slice brief and spec directed, so a future
 interaction-prompt or mobile tap-to-move consumes a seam rather than re-deriving one. The `/simplify`
 lens dissented on YAGNI grounds and the dissent is recorded here: if the seam is still unused when
-mobile input is scheduled, delete it rather than bend a real caller to fit it. A future
+mobile input is scheduled, delete it rather than bend a real caller to fit it.
+
+**Re-litigated and re-affirmed at the review round.** A second `/simplify` pass (plus the `reviewer`
+lens) again recommended deleting it as unwired public surface. Overruled on SPEC AUTHORITY, not
+preference: `M-postgate-ux-design.spec.md:34` assigns `worldToScreen`/`screenToWorld` to this module
+by name, `:53` lists the `screenToWorld` round-trip among uxd1's required teeth, `:55` puts it under
+**Out of scope** as "the `screenToWorld` seam ships for a future milestone to consume, no listeners
+wired", and `:178` records it as a SHARED seam uxd2 consumes. Deleting it would put the code out of
+sync with the spec, which the Definition of Done requires it to match. The lens's *other* point is
+accepted and is the real residual: a prose "delete it later" note has no forcing function. Tracked as
+a follow-up flag on the slice handoff rather than left only in this paragraph — if uxd2 lands without
+consuming the seam, that follow-up is the trigger to delete it. A future
 `PointerEvent.clientX` caller must subtract the canvas origin — this function's screen space is
 canvas-relative CSS pixels. Relatedly, `WorldRenderer` exposes no `#vs` accessor; uxd2 must be given
 one rather than re-deriving the scale from `window` and drifting.
