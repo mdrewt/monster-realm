@@ -2707,6 +2707,193 @@ describe('AuthoritativeStore ADR-0090 RT-BURST-CHAIN-01: burst detection synthet
 });
 
 // =============================================================================
+// 11r-f (ADR-0171) D1 — the jitter EWMA idle-gap gate
+//
+// SOURCE OF TRUTH: docs/adr/0171-resume-from-idle-interpolation.md D1 (amends
+// ADR-0090's ungated inline EWMA in `upsertCharacter`) + spec
+// M-postgate-eleventh-review-residuals §11r-f EARS E1 ("... no post-resume
+// max-delay clamp").
+//
+// THE RULE. Skip the EWMA update when `interval > JITTER_IDLE_GAP_STEPS x stepMs`
+// (K = 3). `<=` ADMITS, `>` SKIPS — at exactly 600 ms with stepMs=200 the sample is
+// admitted. The gate is ONE-SIDED: a burst co-arrival (interval ~ 0) is genuine
+// delivery jitter and STILL updates; only large intervals are idleness. The
+// `receivedAt: now` baseline write and the ring append stay UNCONDITIONAL, and the
+// EWMA is carried across the gap UNCHANGED (never reset).
+//
+// RED REASON (before impl): `upsertCharacter` updates the EWMA on every non-snap
+// arrival, so a 5 s idle feeds deviation 4800 and drives jitterEwma to ~600 (raw
+// delay 200 + 1200 → clamped to the 500 ms max for ~2 s). Every "stays exactly"
+// assertion below lands on a large number instead. Cases (xii)/(xiv) and the
+// 2-tile leg of (xv) are deliberately GREEN — they are the anti-regression /
+// anti-alternative pins that keep the gate one-sided and keep the fix out of the
+// net layer's data model.
+// =============================================================================
+
+// Namespace import ON PURPOSE (see case (xvi)): JITTER_IDLE_GAP_STEPS does not
+// exist yet, and a missing NAMED binding is an ESM link error that would take this
+// whole FILE's collection down. Property access reds as a clean `undefined !== 3`.
+import * as storeMod from './store';
+
+describe('11r-f EWMA idle-gap gate (ADR-0171)', () => {
+  const STEP = 200; // production STEP_MS; gate boundary = 3 x 200 = 600 ms
+
+  it('(xi) BITES: gate boundary — interval 601 is frozen out, interval 600 is admitted', () => {
+    // WRONG IMPL KILLED (three of them):
+    //   a) no gate at all — leg A would move the EWMA to 55.59375;
+    //   b) reset-to-0 across a gap — leg A would land on 0, not 6.25;
+    //   c) `>=` instead of `>` (or K != 3) — leg B's exactly-600 sample would be
+    //      skipped and the EWMA would still read 6.25.
+    const s = new AuthoritativeStore(STEP);
+    s.upsertCharacter(char(1n, 0, 0), 1000); // first sight: no interval yet → ewma 0
+    // interval 1250-1000 = 250 (admitted); deviation |250-200| = 50
+    //   ewma = 0.125*50 + 0.875*0 = 6.25
+    s.upsertCharacter(char(1n, 1, 0), 1250);
+    expect(s.character(1n)!.jitterEwma).toBe(6.25);
+
+    // leg A — interval 1851-1250 = 601 > 600 → SKIPPED. Carried across unchanged.
+    s.upsertCharacter(char(1n, 2, 0), 1851);
+    expect(s.character(1n)!.jitterEwma).toBe(6.25); // bit-identical: not updated, not reset
+
+    // leg B — interval 2451-1851 = 600 <= 600 → ADMITTED; deviation |600-200| = 400
+    //   ewma = 0.125*400 + 0.875*6.25 = 50 + 5.46875 = 55.46875
+    s.upsertCharacter(char(1n, 3, 0), 2451);
+    expect(s.character(1n)!.jitterEwma).toBe(55.46875);
+  });
+
+  it('(xii) the gate is ONE-SIDED: burst co-arrivals (interval ~ 0) still update the EWMA', () => {
+    // WRONG IMPL KILLED: a TWO-SIDED gate (`Math.abs(interval - stepMs) > K*stepMs`
+    // or `interval < stepMs/K` short-circuits). That would silence exactly the
+    // burst-delivery signal ADR-0090's adaptive delay exists to absorb — a
+    // coalesced-tick spike presents as interval ~ 0 plus interval ~ 2 x stepMs.
+    const s = new AuthoritativeStore(STEP);
+    s.upsertCharacter(char(1n, 0, 0), 1000);
+    // interval 0 (admitted: 0 <= 600); deviation |0-200| = 200
+    //   ewma = 0.125*200 + 0.875*0 = 25
+    s.upsertCharacter(char(1n, 1, 0), 1000);
+    expect(s.character(1n)!.jitterEwma).toBe(25);
+
+    // the ADR-0090 12.5 case (stepMs=100: on-time arrival, then a burst) must survive
+    const s100 = new AuthoritativeStore(100); // gate boundary here is 3 x 100 = 300 ms
+    s100.upsertCharacter(char(2n, 0, 0), 1000);
+    s100.upsertCharacter(char(2n, 1, 0), 1100); // interval 100 = stepMs → deviation 0
+    expect(s100.character(2n)!.jitterEwma).toBe(0);
+    s100.upsertCharacter(char(2n, 2, 0), 1100); // interval 0 → deviation 100 → 12.5
+    expect(s100.character(2n)!.jitterEwma).toBe(12.5);
+  });
+
+  it('(xiii) BITES: the receivedAt baseline advances across a gated gap (the estimator never freezes)', () => {
+    // WRONG IMPL KILLED (two of them):
+    //   a) "skip the whole block, receivedAt included" — the baseline would stay at
+    //      1000 forever, every later interval would measure G + n*stepMs, be gated
+    //      again, and the estimator would be dead for the rest of the session. The
+    //      6450 arrival exposes it: it would still read 0 instead of 6.25.
+    //   b) measuring the interval from `existing.latest.receivedAt` (a possibly
+    //      synthetic burst stamp) instead of the real wall-clock `existing.receivedAt`.
+    const s = new AuthoritativeStore(STEP);
+    s.upsertCharacter(char(1n, 0, 0), 1000); // first sight
+    s.upsertCharacter(char(1n, 1, 0), 6000); // interval 5000 > 600 → SKIPPED
+    expect(s.character(1n)!.jitterEwma).toBe(0);
+    expect(s.character(1n)!.receivedAt).toBe(6000); // baseline write is UNCONDITIONAL
+
+    // interval measured from 6000 (not 1000): 200 = stepMs → deviation 0 → stays 0
+    s.upsertCharacter(char(1n, 2, 0), 6200);
+    expect(s.character(1n)!.jitterEwma).toBe(0);
+    // interval 250 → deviation 50 → 0.125*50 + 0.875*0 = 6.25: the estimator LIVES
+    s.upsertCharacter(char(1n, 3, 0), 6450);
+    expect(s.character(1n)!.jitterEwma).toBe(6.25);
+  });
+
+  it('(xiv) BITES: a gated arrival does NOT mutate the snapshot ring (no store-side re-anchor)', () => {
+    // PINS THE REJECTED ALTERNATIVE (ADR-0171 Considered alternatives; ADR-0090
+    // already rejected retroactive re-stamping). WRONG IMPL KILLED: a store-side fix
+    // that rewrites the prior snapshot's receivedAt to `now - stepMs` (5800 here) on
+    // a gap append — the ring must stay an immutable record of real wall-clock
+    // arrivals; the re-anchor is a RENDER policy and lives in interpolateHistory.
+    const s = new AuthoritativeStore(STEP);
+    s.upsertCharacter(char(1n, 0, 0), 1000);
+    s.upsertCharacter(char(1n, 1, 0), 6000); // 5 s idle, then one tile
+    const stored = s.character(1n)!;
+    expect(stored.snapshots).toHaveLength(2); // append is UNCONDITIONAL (not dropped)
+    expect(stored.snapshots.map((sn) => sn.receivedAt)).toEqual([1000, 6000]); // un-rewritten
+    expect(stored.prev).toMatchObject({ tileX: 0, tileY: 0, receivedAt: 1000 });
+    expect(stored.latest).toMatchObject({ tileX: 1, tileY: 0, receivedAt: 6000 });
+  });
+
+  it('(xv) shouldSnap interaction: a 2-tile resume resets the ring; a 1-tile diagonal keeps it and stays gated', () => {
+    // Scope boundary (ADR-0171 Consequences): 11r-f smooths the 1-TILE resume only.
+    // A >= 2-tile catch-up still trips shouldSnap → ring reset → teleport (M12.5d-2:
+    // interpolating multi-tile jumps smears sprites through walls).
+    const two = new AuthoritativeStore(STEP);
+    two.upsertCharacter(char(1n, 0, 0), 1000);
+    two.upsertCharacter(char(1n, 2, 0), 6000); // |dx| = 2 > 1 → shouldSnap
+    expect(two.character(1n)!.snapshots).toHaveLength(1); // ring reset to [latest]
+    expect(two.character(1n)!.snapshots[0]!.receivedAt).toBe(6000);
+    expect(two.character(1n)!.prev).toBeUndefined();
+    expect(two.character(1n)!.jitterEwma).toBe(0); // snap path never touches the EWMA
+
+    // WRONG IMPL KILLED: gating on Manhattan distance / treating a diagonal as a
+    // 2-tile jump. Chebyshev((1,1),(0,0)) = 1 → NOT a snap → the ring keeps both
+    // snapshots so the re-anchored bracket has its resume snapshot, and the 5000 ms
+    // interval is still gated (today this leg reds at 600).
+    const diag = new AuthoritativeStore(STEP);
+    diag.upsertCharacter(char(2n, 0, 0), 1000);
+    diag.upsertCharacter(char(2n, 1, 1), 6000); // one diagonal tile after a 5 s idle
+    expect(diag.character(2n)!.snapshots).toHaveLength(2);
+    expect(diag.character(2n)!.jitterEwma).toBe(0);
+  });
+
+  it('(xvi) PIN: JITTER_IDLE_GAP_STEPS is exported from store.ts and equals 3 (ADR-0171 D5)', () => {
+    // Literal pin so an implementer cannot silently relax K. Accessed off the module
+    // NAMESPACE rather than as a named import because the export does not exist yet:
+    // a missing named binding is an ESM link error that would abort collection of
+    // this entire FILE; property access reds as `undefined !== 3`.
+    // The twin pin (REANCHOR_SPAN_STEPS === 2) lives in render/interpolation.test.ts;
+    // ADR-0171 D5 keeps the two constants deliberately independent — do not unify.
+    expect((storeMod as unknown as Record<string, unknown>).JITTER_IDLE_GAP_STEPS).toBe(3);
+  });
+
+  it('(xvii) T-E: genuine pre-idle jitter crosses a 5 s gap bit-identical (the gap must not amplify it)', () => {
+    // EARS E1's "no post-resume max-delay clamp" clause is scoped by ADR-0171 to
+    // *the resume interval itself must not cause the clamp*. Pre-existing genuine
+    // jitter legitimately keeps the delay high (and here already clamped) — what
+    // must never happen is the IDLE GAP inflating it further.
+    //
+    // Seed with four ADMITTED boundary samples (interval exactly 600 = 3 x stepMs,
+    // deviation |600-200| = 400 each). alpha = 0.125, so 0.125*400 = 50 per sample:
+    //   ewma0 = 0
+    //   ewma1 = 50 + 0.875 * 0          = 50
+    //   ewma2 = 50 + 0.875 * 50         = 50 + 43.75        = 93.75
+    //   ewma3 = 50 + 0.875 * 93.75      = 50 + 82.03125     = 132.03125
+    //   ewma4 = 50 + 0.875 * 132.03125  = 50 + 115.52734375 = 165.52734375
+    // (every term is a dyadic rational — the value is exact, hence toBe not toBeCloseTo)
+    const s = new AuthoritativeStore(STEP);
+    s.upsertCharacter(char(1n, 0, 0), 1000); // first sight
+    s.upsertCharacter(char(1n, 1, 0), 1600);
+    s.upsertCharacter(char(1n, 2, 0), 2200);
+    s.upsertCharacter(char(1n, 3, 0), 2800);
+    s.upsertCharacter(char(1n, 4, 0), 3400);
+    const seeded = s.character(1n)!.jitterEwma;
+    expect(seeded).toBe(165.52734375);
+
+    // That estimate already saturates the ADR-0090 max-delay clamp on its own:
+    //   clamp(200 + 2*165.52734375, 100, 500) = clamp(531.0546875, ...) = 500.
+    // The formula is inlined rather than imported from render/interpolation — a
+    // net-layer test must not import the render layer (ADR-0014 one-way flow); the
+    // delay function itself is pinned in render/interpolation.test.ts.
+    expect(Math.min(500, Math.max(100, 200 + 2 * seeded))).toBe(500);
+
+    // 5 s idle, then a 1-tile resume: interval 5000 > 600 → SKIPPED.
+    // WRONG IMPL KILLED: the ungated estimator computes
+    //   0.125*4800 + 0.875*165.52734375 = 600 + 144.83642578125 = 744.83642578125,
+    // i.e. the pause itself would nearly quintuple the estimate and pin the delay at
+    // the 500 ms clamp for ~10 further samples.
+    s.upsertCharacter(char(1n, 5, 0), 8400);
+    expect(s.character(1n)!.jitterEwma).toBe(seeded); // bit-identical across the gap
+  });
+});
+
+// =============================================================================
 // m15b: trade_offer store methods — upsert/remove/allTradeOffers/ownTradeOffer (RT-TO-02)
 //
 // The trade_offer table is PUBLIC (both parties subscribe — ADR-0106 D3).
