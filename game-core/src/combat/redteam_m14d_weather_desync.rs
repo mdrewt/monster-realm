@@ -178,88 +178,133 @@ fn rt_w14_desync_01_recruit_failure_weather_set_by_load_skills_path() {
 }
 
 // ===========================================================================
-// RT-W14-VALID-01 (MEDIUM): validate_content weather guard is dead code.
+// RT-W14-VALID-01: validate_content accepts EVERY WeatherKind (runtime pin).
 //
-// In game-core/src/content.rs, the weather cross-check is:
+// 11r-h (ADR-0172 D5) — WHAT CHANGED HERE, STATED PLAINLY. The previous version of
+// this test was named `..._weather_guard_is_vacuous` and carried a 25-line block
+// comment quoting a `let _valid = matches!(...)` in content.rs that NO LONGER EXISTS.
+// content.rs now uses an exhaustive `match` with no wildcard arm. The test's name and
+// its whole rationale asserted a defect the codebase had already fixed, so both were
+// deleted and the test rewritten as a positive pin.
 //
-//   if let Some(kind) = sk.sets_weather {
-//       let _valid = matches!(
-//           kind,
-//           WeatherKind::Rain | WeatherKind::Sun | WeatherKind::Sandstorm | WeatherKind::Hail
-//       );
-//   }
-//
-// The `let _valid = ...` discards the boolean result without asserting it.
-// The code never asserts `_valid` and never returns an error if `_valid` is false.
-//
-// Today this is a vacuous gate: it ALWAYS passes, regardless of the weather kind,
-// because the unreachable branch (`_valid == false`) never returns `Err`.
-// The OCP compile-time gate IS real (adding a new WeatherKind variant forces a
-// compile error at the match arm), but the runtime enforcement is absent.
-//
-// This test documents the vacuousness by showing that validate_content
-// accepts a skill with sets_weather even when there's no assertion on _valid.
-// The correct fix is to assert _valid:
-//   assert!(_valid, "...");
-// or equivalently, remove the `let _valid` and use a direct error return.
+// WHY REWRITE AND NOT DELETE: `validate_content` has 56 call sites including
+// sync_content_inner, and "content validation accepts every weather-setting skill" is a
+// live invariant that nothing else pins — every other validate_content test pins a
+// REJECTION. Deleting would have removed a lie at the cost of leaving real behaviour
+// unguarded.
 // ===========================================================================
 
-/// Prove that validate_content's weather guard is a dead-code boolean that
-/// never causes a validation error, even though the comment claims it is a gate.
+/// RT-W14-VALID-01 (rewritten): pin that `validate_content` ACCEPTS a skill setting
+/// each of the four `WeatherKind` variants at RUNTIME, one skill per case so a failure
+/// names the offending variant.
 ///
-/// Kills: a future impl that restores the assertion (making this vacuousness test
-/// GREEN only when the assertion is absent and RED when it's present).
+/// HONEST SCOPE — read this before trusting the test for more than it proves:
+/// * What it pins: RUNTIME acceptance of `sets_weather: Some(k)` for every `k`.
+/// * What it does NOT pin: the OCP property. The open/closed gate for `WeatherKind` is
+///   the COMPILER — `content.rs:824-834` is an exhaustive `match` with no wildcard arm,
+///   so a new variant is a compile error there. No runtime test can red the replacement
+///   of that `match` with `_ => {}`. The old doc-comment claimed a runtime gate; this
+///   one does not.
 ///
-/// Documents the current state so a reviewer can confirm the fix closes the gap.
+/// NEGATIVE CONTROL (mandatory, see the last case in the table): a positive `is_ok()`
+/// pin over inputs that structurally cannot be rejected is barely stronger than the
+/// vacuity it replaced — the whole-function mutant `validate_content(..) { Ok(()) }`
+/// survives it untouched. The final case is a weather-setting skill that is ALSO
+/// independently invalid (`power: 0`, rejected by the guard at content.rs:807-812,
+/// which sits inside the same per-skill loop), asserted `is_err()`. That proves the RON
+/// fixture really reaches the skill-validation loop and kills the always-`Ok` mutant.
+///
+/// NOTE FOR A VERIFIER MUTATING content.rs: `content.rs:828-833` is a SINGLE COMBINED
+/// arm (`Rain | Sun | Sandstorm | Hail => {}`). A kill mutation must SPLIT the arm
+/// first, e.g. `WeatherKind::Hail => return Err("mutant".to_string()),` — then this test
+/// reds naming Hail. Sibling reds from `validate_content_passes_for_embedded` are
+/// expected collateral; the required signal is THIS test reding with the variant named.
 #[test]
-fn rt_w14_valid_01_validate_content_weather_guard_is_vacuous() {
+fn rt_w14_valid_01_validate_content_accepts_every_weather_kind() {
     use crate::content::{parse_skills, parse_species, parse_type_chart, validate_content};
 
-    // A skill with sets_weather populated (WeatherKind::Rain) passes validate_content
-    // because the guard computes `_valid` but never asserts it.
-    // The correct behavior would be: if _valid is false for some unrecognized kind,
-    // return Err. Today: always Ok regardless.
+    // One species that learns exactly the one skill each case defines, so the
+    // "learnable_skill_ids must exist" cross-check (content.rs:849-867) never fires and
+    // cannot be confused with the weather guard.
     let species_ron = r#"[
         (id: 1, name: "A", base_stats: (hp:45,attack:49,defense:49,speed:65,sp_attack:65,sp_defense:45),
          affinity: Fire, learnable_skill_ids: [1])
     ]"#;
-    let skills_ron_with_weather = r#"[
-        (id: 1, name: "Rain Dance", affinity: Water, power: 40, accuracy: 100, pp: 10, sets_weather: Some(Rain))
-    ]"#;
-
     let species = parse_species(species_ron).expect("species parse");
-    let skills = parse_skills(skills_ron_with_weather).expect("skills parse");
     let type_chart = parse_type_chart("[]").expect("type chart parse");
     let items = vec![];
 
-    // validate_content must accept weather-setting skills (the guard is dead code
-    // that never rejects anything via the _valid path).
-    let result = validate_content(&species, &skills, &type_chart, &items);
+    // ONE SKILL PER ITERATION, on purpose: a single 4-skill fixture returns one
+    // Result and cannot name which variant was rejected.
+    let cases = [
+        (WeatherKind::Rain, "Rain"),
+        (WeatherKind::Sun, "Sun"),
+        (WeatherKind::Sandstorm, "Sandstorm"),
+        (WeatherKind::Hail, "Hail"),
+    ];
 
-    assert!(
-        result.is_ok(),
-        "VACUOUS GATE (RT-W14-VALID-01): validate_content accepted a weather-setting skill. \
-         The `let _valid = matches!(...)` guard discards its result without asserting. \
-         This is correct behavior for valid WeatherKind values, but documents that \
-         the _valid boolean is never used to gate validation. \
-         Fix: change to `if !matches!(...) {{ return Err(...) }}`"
+    let mut checked = 0usize;
+    for (kind, name) in cases {
+        // The table's own consistency, pinned cheaply: the RON below is built from the
+        // STRING, so a mistyped pair would silently test the wrong variant four times.
+        assert_eq!(
+            format!("{kind:?}"),
+            name,
+            "RT-W14-VALID-01 table is inconsistent: WeatherKind::{kind:?} is paired with the \
+             RON name {name:?}, so the fixture would not exercise the variant it claims to"
+        );
+
+        // power: 40 / accuracy: 100 keep the unrelated guards at content.rs:807-823
+        // silent, so an `is_err()` here could only come from the weather cross-check.
+        let skills_ron = format!(
+            r#"[(id: 1, name: "WeatherMove", affinity: Water, power: 40, accuracy: 100, pp: 10, sets_weather: Some({name}))]"#
+        );
+        let skills = parse_skills(&skills_ron).expect("skills parse");
+
+        let result = validate_content(&species, &skills, &type_chart, &items);
+        assert!(
+            result.is_ok(),
+            "RT-W14-VALID-01: validate_content must ACCEPT a skill with \
+             sets_weather: Some({name}) — every WeatherKind variant is legal content \
+             (content.rs:824-834 is an exhaustive match whose arms all accept). \
+             Rejected variant: {name}. Got: {result:?}"
+        );
+        checked += 1;
+    }
+
+    // ANTI-VACUITY: the loop must actually have run four times. A future edit that
+    // empties the table would otherwise leave this test passing on nothing.
+    assert_eq!(
+        checked, 4,
+        "RT-W14-VALID-01: all four WeatherKind variants must have been exercised; only \
+         {checked} were. An empty/short table makes every assertion above unreachable."
     );
 
-    // The key assertion: the guard checks WeatherKind exhaustively at compile time
-    // (correct OCP), but the result is NEVER used to produce a validation error.
-    // We prove this by confirming that validate_content returns Ok for a weather skill
-    // without any runtime check on _valid.
-    //
-    // To confirm the guard is dead, look at content.rs lines ~815-820:
-    //   if let Some(kind) = sk.sets_weather {
-    //       let _valid = matches!(kind, WeatherKind::Rain | ...);
-    //       // NO: assert!(_valid, ...);
-    //       // NO: if !_valid { return Err(...); }
-    //   }
-    //
-    // The boolean is computed and silently discarded. This test documents that
-    // the guard does not currently enforce runtime correctness.
-    let _ = result; // consumed above
+    // --- NEGATIVE CONTROL ---------------------------------------------------------
+    // A weather-setting skill that is INDEPENDENTLY invalid: power == 0 is rejected by
+    // content.rs:807-812, inside the same per-skill loop the weather match lives in.
+    // Kills the whole-function mutant `validate_content(..) -> Result<(),String> {
+    // Ok(()) }`, which every `is_ok()` assertion above survives, and proves the fixture
+    // really reaches skill validation rather than short-circuiting somewhere earlier.
+    let invalid_skills_ron = r#"[
+        (id: 1, name: "Powerless Hail", affinity: Water, power: 0, accuracy: 100, pp: 10, sets_weather: Some(Hail))
+    ]"#;
+    let invalid_skills = parse_skills(invalid_skills_ron).expect("skills parse");
+    let negative = validate_content(&species, &invalid_skills, &type_chart, &items);
+    assert!(
+        negative.is_err(),
+        "RT-W14-VALID-01 NEGATIVE CONTROL: validate_content must REJECT a weather-setting \
+         skill with power=0 (content.rs:807-812). If this is Ok, validate_content is not \
+         validating skills at all — and every is_ok() assertion above is vacuous. Got: \
+         {negative:?}"
+    );
+    let message = negative.unwrap_err();
+    assert!(
+        message.contains("power=0"),
+        "RT-W14-VALID-01 NEGATIVE CONTROL: the rejection must come from the power guard \
+         inside the per-skill loop (its message names power=0), not from some earlier \
+         cross-check that would not prove the loop was reached. Got: {message}"
+    );
 }
 
 // ===========================================================================

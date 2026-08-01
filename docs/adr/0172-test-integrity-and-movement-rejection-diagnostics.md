@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** ADR-0130, ADR-0157
 **Subsystems:** ci-gates, client-ui, movement-netcode
-**Decision:** De-vacuify three assertions (RT-SZ-02, F-5f, the M14d weather red-team pin), add a `grantBait` revival tripwire for R4, and trace movement rejections into the F9 bundle via a rate-limited, overlay-filtered breadcrumb plus a dev-console fate line.
+**Decision:** De-vacuify three assertions (RT-SZ-02, F-5f, the M14d weather pin), add a grantBait revival tripwire for R4, and trace movement rejections into the F9 bundle via a rate-limited, overlay-filtered breadcrumb plus a dev fate line.
 
 ## Context
 

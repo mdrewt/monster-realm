@@ -37,6 +37,14 @@
 //   - specs:     client/e2e/*.spec.ts ONLY — never evals/**, so synthetic fixtures in
 //                this eval file cannot self-trip.
 //
+// 11r-h addition (spec §11r-h item 4, ADR-0172 D8): grantBait revival tripwire.
+//
+//   Third detector trio, mirroring the dev_reducers one: a test.fixme citing
+//   "grantBait" while ANY live line under client/src names grantBait is a stale
+//   blocker.  Full rationale, scan scope, and the ACCEPTED UNCOVERED HALF of the
+//   anchor ("or equivalent test-hook" — a hook named grantItem/giveItem/debugGrant
+//   leaves this gate green) are documented at the detector section below.
+//
 // Round-2 teeth (added after specialist implemented detectors) cover additional
 // bypass vectors found by red-team/reviewer: swap_active false-positive, give_monster
 // and donate_monster broadened detection, cfg_attr-form ignore, and the matrix case
@@ -190,6 +198,160 @@ export function devReducerRevivalStatus({ specSources, workflowSources }) {
       `but no workflow publishes with dev_reducers — blocker still valid)`;
   }
   return { violated, offenders, reason };
+}
+
+// ===========================================================================
+// 11r-h / ADR-0172 D8: grantBait revival tripwire (spec §11r-h item 4, plan §R4)
+//
+// client/e2e/recruit.spec.ts:1004 parks R4 behind test.fixme.  Its stated revival
+// condition (:1001-1002) is: "This test will be un-fixmed when a client/src slice
+// exposes __game().grantBait(itemId, qty) or equivalent test-hook on __game()."
+// So the moment any LIVE line under client/src names grantBait, the stated blocker
+// has been met and the fixme is stale.  Structurally this is devReducerRevivalStatus
+// with "a workflow publishes dev_reducers" replaced by "the client exposes the hook",
+// and the three exports below mirror that trio deliberately.
+//
+// ACCEPTED, UNCOVERED GAP (recorded here, not only in the ADR): the anchor says
+// "or equivalent test-hook".  This detector covers the LITERAL token `grantBait`
+// ONLY.  A hook shipped as grantItem / giveItem / debugGrant satisfies R4's stated
+// condition, un-blocks the test, and leaves this gate GREEN.  Pinning the whole
+// __game() key-set against a golden list is the real fix for that half and is
+// explicitly OUT of scope for this slice; treat this tripwire as covering the
+// literal-token half of the condition and nothing more.
+//
+// Scan scope (load-bearing — both halves are the accepted bypass surface):
+//   specs  = client/e2e/*.spec.ts ONLY.  NEVER evals/**: this file contains the
+//            literal grantBait many times (fixtures below, plus the pre-existing
+//            mention at ~:1040), so a walker that read evals/ would self-trip.
+//   client = recursive walk of client/src, EXCLUDING *.test.ts and module_bindings/**.
+//            - a unit test NAMING the hook is not an exposed hook;
+//            - the SpacetimeDB SDK camelCases reducer names, so regenerating bindings
+//              from a dev_reducers-featured module would drop a `grantBait` into
+//              client/src/module_bindings/grant_bait_reducer.ts (cf. docs/adr/0054:113)
+//              and fire the tripwire on an event that is NOT the revival condition.
+//            client/src today contains no .tsx, no .spec.ts and no .d.ts files, so the
+//            exclusion list above is complete as of this slice.
+//
+// indexOf / includes / split only — no new RegExp() (ReDoS + Semgrep
+// detect-non-literal-regexp discipline, shared with every other detector here).
+// ===========================================================================
+
+/**
+ * Returns true iff `clientSrc` names the LITERAL token `grantBait` on a LIVE line.
+ *
+ * Comment handling (plan §R4, revised): whole-line comment forms are skipped, and
+ * every line is truncated at its first `//` before the token test.  A trailing
+ * comment on a live statement — the exact sentence someone would plausibly write,
+ * `const snapshot = { ... }; // deliberately no grantBait hook, see ADR-0172` — is
+ * NOT an exposure, and a tripwire that false-alarms on it gets deleted rather than
+ * fixed.  Accepted under-detection from the same truncation: a `//` inside a string
+ * literal earlier on the line hides the rest of that line.
+ *
+ * NOT TOTAL, by construction: this covers the literal token only (see the section
+ * header's "or equivalent" gap).
+ */
+export function clientExposesGrantBait(clientSrc) {
+  const lines = clientSrc.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    // Whole-line comment forms: `//`, a block-comment continuation (`*`), and a
+    // block-comment opener.  Compared char-by-char rather than with a slash-star
+    // string literal — the repo's source-scan strippers misalign on an unpaired one
+    // (see the m16.5a stripBlockComments scanner below, same technique).
+    if (trimmed.startsWith('//')) continue;
+    if (trimmed[0] === '*') continue;
+    if (trimmed[0] === '/' && trimmed[1] === '*') continue;
+    const commentAt = line.indexOf('//');
+    const live = commentAt === -1 ? line : line.slice(0, commentAt);
+    if (live.indexOf('grantBait') !== -1) return true;
+  }
+  return false;
+}
+
+/**
+ * Returns true iff `specSrc` contains BOTH a `test.fixme` call AND the token
+ * `grantBait`.  Byte-for-byte the fixmeCitesDevReducers shape (file-level scan;
+ * per-block brace matching rejected there for the same reasons).
+ *
+ * KNOWN FALSE-POSITIVE DIRECTION (inherited, accepted): an UNRELATED test.fixme
+ * plus a mere comment naming grantBait trips this.  That failure is LOUD, never
+ * silent — the safe direction for a tripwire.
+ */
+export function fixmeCitesGrantBait(specSrc) {
+  if (!specSrc.includes('test.fixme')) return false;
+  if (specSrc.indexOf('grantBait') !== -1) return true;
+  return false;
+}
+
+/**
+ * Returns { violated, offenders, exposers, reason }.
+ *
+ * violated  — true iff ANY client/src file exposes grantBait on a live line AND ANY
+ *             spec cites grantBait in a test.fixme.  That is the forcing condition:
+ *             R4's stated blocker (no client-side bait-grant hook) has been met, so
+ *             the fixme is stale and must be un-fixmed or re-anchored.
+ * offenders — offending spec identifiers (keys of specSources).
+ * exposers  — client identifiers that expose the hook (keys of clientSources).
+ * reason    — human-readable explanation (same four-branch ladder as
+ *             devReducerRevivalStatus).
+ *
+ * @param {{ specSources: Record<string,string>, clientSources: Record<string,string> }} args
+ */
+export function grantBaitRevivalStatus({ specSources, clientSources }) {
+  const exposers = Object.keys(clientSources).filter((k) =>
+    clientExposesGrantBait(clientSources[k]),
+  );
+  const anyExposes = exposers.length > 0;
+
+  const offenders = Object.keys(specSources).filter((k) => fixmeCitesGrantBait(specSources[k]));
+  const anyCites = offenders.length > 0;
+
+  const violated = anyExposes && anyCites;
+  let reason;
+  if (violated) {
+    reason =
+      `grantBait fixme tripwire fired: client source(s) [${exposers.join(', ')}] expose ` +
+      `grantBait on a live line, but spec(s) [${offenders.join(', ')}] still have test.fixme ` +
+      `citing grantBait — R4's stated blocker (no client-side bait-grant hook) has been met; ` +
+      `un-fixme or re-anchor the blocked tests to the real current blocker`;
+  } else if (!anyExposes && !anyCites) {
+    reason = 'ok (no client/src file exposes grantBait; no fixme cites it — both sides dormant)';
+  } else if (anyExposes && !anyCites) {
+    reason =
+      `ok (grantBait exposed by [${exposers.join(', ')}]; no test.fixme cites grantBait — ` +
+      `fixmes already revived or re-anchored)`;
+  } else {
+    reason =
+      `ok (fixme(s) [${offenders.join(', ')}] cite grantBait, but no client/src file exposes ` +
+      `it — blocker still valid)`;
+  }
+  return { violated, offenders, exposers, reason };
+}
+
+// Recursively collect every client TypeScript SOURCE file under `dir`, applying the
+// two scope exclusions documented in the section header above: *.test.ts (naming the
+// hook in a unit test is not exposing it) and module_bindings/** (SDK-generated,
+// camelCased reducer names — a false positive on an event that is not the revival
+// condition).  .tsx is collected for forward cover; client/src has none today.
+function collectClientSourceFiles(dir) {
+  const out = [];
+  let entries = [];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    const full = path.join(dir, entry);
+    if (statSync(full).isDirectory()) {
+      if (entry === 'module_bindings') continue;
+      out.push(...collectClientSourceFiles(full));
+      continue;
+    }
+    if (entry.endsWith('.test.ts') || entry.endsWith('.test.tsx')) continue;
+    if (entry.endsWith('.ts') || entry.endsWith('.tsx')) out.push(full);
+  }
+  return out;
 }
 
 // Recursively collect every `.rs` file path under `dir` (subdirs included).
@@ -1824,10 +1986,531 @@ mod tests {
     }
   }
 
+  // =========================================================================
+  // 11r-h / ADR-0172 D8 — grantBait revival tripwire fixtures + teeth.
+  //
+  // Every fixture below is SYNTHETIC and lives in evals/, which the detectors
+  // never read — that scope choice is what stops this block self-tripping the
+  // real-tree tooth GB-real further down.
+  // =========================================================================
+
+  // Client fixture: a LIVE line exposing the hook (the revival condition met).
+  const clientWithLiveGrantBait = `import { store } from './store';
+
+export function buildGameSnapshot() {
+  return {
+    zoneId: store.zoneId,
+    grantBait: (itemId, qty) => store.debugGrantItem(itemId, qty),
+  };
+}
+`;
+
+  // Client fixture: the token appears ONLY on a whole-line // comment.
+  const clientWithCommentedGrantBait = `export function buildGameSnapshot() {
+  return {
+    zoneId: store.zoneId,
+    // grantBait: (itemId, qty) => store.debugGrantItem(itemId, qty),
+  };
+}
+`;
+
+  // Client fixture: the token appears ONLY in a TRAILING comment on a live line.
+  // This is the false-alarm case the truncation exists for — a maintainer noting
+  // WHY the hook is absent must not arm the tripwire.
+  const clientWithTrailingCommentGrantBait = `export function buildGameSnapshot() {
+  const snapshot = { zoneId: store.zoneId }; // deliberately no grantBait hook, see ADR-0172
+  return snapshot;
+}
+`;
+
+  // Client fixture: no mention at all (today's real client/src).
+  const clientWithNoGrantBait = `export function buildGameSnapshot() {
+  return { zoneId: store.zoneId, party: store.party };
+}
+`;
+
+  // Spec fixtures.
+  const specWithFixmeCitingGrantBait = `
+// RE-ANCHOR REASON: a bait item can only be granted via a client/src slice that
+// exposes __game().grantBait(itemId, qty) — that hook does not exist yet.
+test.fixme('R4: bait selector lists only items with recruit_bonus > 0', async () => {
+  // ...
+});
+`;
+  const specCitingGrantBaitWithoutFixme = `
+// Historical note: R4 used to be blocked on __game().grantBait(itemId, qty);
+// it now drives the shop path instead and is an ACTIVE test.
+test('R4: bait selector lists only items with recruit_bonus > 0', async () => {
+  // ...
+});
+`;
+  const specWithFixmeNotCitingGrantBait = `
+// BLOCKED: the bait-grant path needs a server-side dev reducer that is not published.
+test.fixme('R4: bait selector lists only items with recruit_bonus > 0', async () => {
+  // ...
+});
+`;
+
+  // =========================================================================
+  // Tooth GB1 (clientExposesGrantBait — live line → true).
+  // Kills: impl that always returns false (a dormant-by-construction tripwire),
+  // and impl whose comment handling is so eager it eats live code.
+  // =========================================================================
+  {
+    let gb1result;
+    try {
+      gb1result = clientExposesGrantBait(clientWithLiveGrantBait);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth GB1 (clientExposesGrantBait with live line): threw — ${err.message}`,
+      };
+    }
+    if (gb1result !== true) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'tooth GB1: clientExposesGrantBait must return true when a live (non-comment) line names grantBait — kills: impl that always returns false, i.e. a tripwire that can never fire.',
+      };
+    }
+  }
+
+  // =========================================================================
+  // Tooth GB2 (clientExposesGrantBait — whole-line // comment only → false).
+  // Kills: impl with no comment handling at all (a plain src.includes('grantBait')),
+  // which fires on a commented-out draft of the hook.
+  // =========================================================================
+  {
+    let gb2result;
+    try {
+      gb2result = clientExposesGrantBait(clientWithCommentedGrantBait);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth GB2 (clientExposesGrantBait with commented line): threw — ${err.message}`,
+      };
+    }
+    if (gb2result !== false) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'tooth GB2: clientExposesGrantBait must return false when grantBait appears only on a whole-line // comment — kills: impl that is a bare file-level includes() with no comment skip.',
+      };
+    }
+  }
+
+  // =========================================================================
+  // Tooth GB2b (clientExposesGrantBait — TRAILING comment only → false).
+  // THE FALSE-ALARM TOOTH.  Kills: impl that only skips lines whose trimStart()
+  // begins with // (plan v1's shape) — a live statement with an explanatory
+  // trailing comment ("deliberately no grantBait hook, see ADR-0172") would arm
+  // the tripwire, and a gate that false-alarms on documentation gets deleted
+  // rather than fixed.  The fix is truncating each line at its first //.
+  // =========================================================================
+  {
+    let gb2bresult;
+    try {
+      gb2bresult = clientExposesGrantBait(clientWithTrailingCommentGrantBait);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth GB2b (clientExposesGrantBait with trailing comment): threw — ${err.message}`,
+      };
+    }
+    if (gb2bresult !== false) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'tooth GB2b: clientExposesGrantBait must return false when grantBait appears only in a TRAILING comment on an otherwise-live line — kills: impl that skips only whole-line comments and never truncates a line at its first //.',
+      };
+    }
+  }
+
+  // =========================================================================
+  // Tooth GB3 (clientExposesGrantBait — no mention → false).
+  // Kills: impl that always returns true (a permanently-armed tripwire).
+  // =========================================================================
+  {
+    let gb3result;
+    try {
+      gb3result = clientExposesGrantBait(clientWithNoGrantBait);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth GB3 (clientExposesGrantBait with no mention): threw — ${err.message}`,
+      };
+    }
+    if (gb3result !== false) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'tooth GB3: clientExposesGrantBait must return false for a client file that never names grantBait — kills: impl that always returns true.',
+      };
+    }
+  }
+
+  // =========================================================================
+  // Tooth GB4 (fixmeCitesGrantBait — test.fixme + grantBait → true).
+  // Kills: impl that never detects the citation, which would silently disarm the
+  // whole tripwire (violated = anyExposes && anyCites).
+  // =========================================================================
+  {
+    let gb4result;
+    try {
+      gb4result = fixmeCitesGrantBait(specWithFixmeCitingGrantBait);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth GB4 (fixmeCitesGrantBait with fixme+grantBait): threw — ${err.message}`,
+      };
+    }
+    if (gb4result !== true) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'tooth GB4: fixmeCitesGrantBait must return true when a spec has BOTH test.fixme and grantBait — kills: impl that never detects the citation, silently disarming the tripwire (violated = anyExposes && anyCites).',
+      };
+    }
+  }
+
+  // =========================================================================
+  // Tooth GB5 (fixmeCitesGrantBait — grantBait without test.fixme → false).
+  // Kills: impl that drops the test.fixme co-presence requirement and fires on a
+  // spec that already REVIVED its R4 test but kept the historical note.
+  // =========================================================================
+  {
+    let gb5result;
+    try {
+      gb5result = fixmeCitesGrantBait(specCitingGrantBaitWithoutFixme);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth GB5 (fixmeCitesGrantBait without test.fixme): threw — ${err.message}`,
+      };
+    }
+    if (gb5result !== false) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'tooth GB5: fixmeCitesGrantBait must return false when grantBait appears in a spec with NO test.fixme — kills: impl that matches the token alone and keeps firing after the test was revived.',
+      };
+    }
+  }
+
+  // =========================================================================
+  // Tooth GB6 (fixmeCitesGrantBait — test.fixme without grantBait → false).
+  // Kills: impl that flags any test.fixme regardless of its stated condition.
+  // =========================================================================
+  {
+    let gb6result;
+    try {
+      gb6result = fixmeCitesGrantBait(specWithFixmeNotCitingGrantBait);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth GB6 (fixmeCitesGrantBait with re-anchored fixme): threw — ${err.message}`,
+      };
+    }
+    if (gb6result !== false) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'tooth GB6: fixmeCitesGrantBait must return false for a test.fixme re-anchored to a different blocker — kills: impl that flags any test.fixme regardless of content.',
+      };
+    }
+  }
+
+  // =========================================================================
+  // Teeth GBS1-GBS4 — the four-cell grantBaitRevivalStatus matrix.
+  // GBS1 expose + cite  -> violated (THE forcing tooth)
+  // GBS2 no expose + cite -> ok (today's real state: blocker still valid)
+  // GBS3 expose + no cite -> ok (already revived or re-anchored)
+  // GBS4 neither          -> ok (both sides dormant)
+  // =========================================================================
+  {
+    let gbs1result;
+    try {
+      gbs1result = grantBaitRevivalStatus({
+        specSources: { 'recruit.spec.ts': specWithFixmeCitingGrantBait },
+        clientSources: { 'main.ts': clientWithLiveGrantBait },
+      });
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth GBS1 (grantBaitRevivalStatus expose+cite): threw — ${err.message}`,
+      };
+    }
+    if (!gbs1result.violated) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `tooth GBS1: grantBaitRevivalStatus must be violated=true when a client/src file ` +
+          `exposes grantBait on a live line AND a spec cites grantBait in test.fixme — ` +
+          `got violated=${gbs1result.violated} — ${gbs1result.reason}. ` +
+          `Kills: impl that does not fire when both conditions hold simultaneously (the forcing tooth).`,
+      };
+    }
+    if (
+      !gbs1result.exposers.includes('main.ts') ||
+      !gbs1result.offenders.includes('recruit.spec.ts')
+    ) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `tooth GBS1: grantBaitRevivalStatus must NAME both sides — exposers must include ` +
+          `'main.ts' (got [${gbs1result.exposers.join(', ')}]) and offenders must include ` +
+          `'recruit.spec.ts' (got [${gbs1result.offenders.join(', ')}]). ` +
+          `Kills: impl that reports a bare boolean, leaving the author no way to find the offending files.`,
+      };
+    }
+  }
+
+  {
+    let gbs2result;
+    try {
+      gbs2result = grantBaitRevivalStatus({
+        specSources: { 'recruit.spec.ts': specWithFixmeCitingGrantBait },
+        clientSources: { 'main.ts': clientWithNoGrantBait },
+      });
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth GBS2 (grantBaitRevivalStatus no-expose+cite): threw — ${err.message}`,
+      };
+    }
+    if (gbs2result.violated) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `tooth GBS2: grantBaitRevivalStatus must NOT be violated when no client/src file ` +
+          `exposes grantBait (R4's blocker is still valid — today's real state) — ` +
+          `got violated=${gbs2result.violated} — ${gbs2result.reason}. ` +
+          `Kills: impl that fires on any fixme citation regardless of the client side.`,
+      };
+    }
+  }
+
+  {
+    let gbs3result;
+    try {
+      gbs3result = grantBaitRevivalStatus({
+        specSources: { 'recruit.spec.ts': specWithFixmeNotCitingGrantBait },
+        clientSources: { 'main.ts': clientWithLiveGrantBait },
+      });
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth GBS3 (grantBaitRevivalStatus expose+no-cite): threw — ${err.message}`,
+      };
+    }
+    if (gbs3result.violated) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `tooth GBS3: grantBaitRevivalStatus must NOT be violated when the client exposes ` +
+          `grantBait but every fixme has been revived or re-anchored — ` +
+          `got violated=${gbs3result.violated} — ${gbs3result.reason}. ` +
+          `Kills: impl that fires on any client exposure regardless of spec content.`,
+      };
+    }
+  }
+
+  {
+    let gbs4result;
+    try {
+      gbs4result = grantBaitRevivalStatus({
+        specSources: { 'recruit.spec.ts': specWithFixmeNotCitingGrantBait },
+        clientSources: { 'main.ts': clientWithNoGrantBait },
+      });
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth GBS4 (grantBaitRevivalStatus neither): threw — ${err.message}`,
+      };
+    }
+    if (gbs4result.violated) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `tooth GBS4: grantBaitRevivalStatus must NOT be violated when neither side is armed — ` +
+          `got violated=${gbs4result.violated} — ${gbs4result.reason}. ` +
+          `Kills: impl that always returns violated=true.`,
+      };
+    }
+  }
+
+  // =========================================================================
+  // Tooth GB-ANCHOR (anti-vacuity, MANDATORY).
+  // The real client/e2e/recruit.spec.ts must STILL carry a test.fixme citing
+  // grantBait.  Without this, a dormant tripwire and a DELETED anchor look
+  // identical: R4 could be reworded (or the whole fixme deleted) and every tooth
+  // above would keep passing against synthetic fixtures forever.
+  // =========================================================================
+  {
+    const recruitSpecPath = path.resolve('client/e2e/recruit.spec.ts');
+    let recruitSrc;
+    try {
+      recruitSrc = readFileSync(recruitSpecPath, 'utf8');
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `tooth GB-ANCHOR: cannot read ${recruitSpecPath}: ${err.message} — the R4 anchor this ` +
+          `tripwire is built on has moved or been deleted. If R4 was revived or re-anchored, ` +
+          `delete this tripwire and its anchor together.`,
+      };
+    }
+    let anchorCites;
+    try {
+      anchorCites = fixmeCitesGrantBait(recruitSrc);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth GB-ANCHOR (fixmeCitesGrantBait on the real recruit.spec.ts): threw — ${err.message}`,
+      };
+    }
+    if (anchorCites !== true) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `tooth GB-ANCHOR: client/e2e/recruit.spec.ts must STILL contain a test.fixme citing ` +
+          `grantBait (R4's stated revival condition, ~:1002). It does not. A tripwire whose ` +
+          `anchor is gone is indistinguishable from a dormant one and will never fire again. ` +
+          `If R4 was revived or re-anchored, delete this tripwire and its anchor together.`,
+      };
+    }
+  }
+
+  // =========================================================================
+  // Tooth GB-SCOPE + GB-real (the LIVE tree).
+  // GB-SCOPE: the walk must find files, and must have applied both exclusions.
+  //   Kills: a walker pointed at the wrong directory (zero files => every real
+  //   check below passes vacuously), and a walker that forgot the *.test.ts /
+  //   module_bindings exclusions (which would fire on a unit test naming the hook
+  //   or on SDK-generated bindings — NOT the revival condition).
+  // GB-real: grantBaitRevivalStatus over client/e2e/*.spec.ts + client/src must be
+  //   NOT violated today (verified: client/src has ZERO grantBait occurrences).
+  //   This is the tooth that fires for real when a client slice lands the hook and
+  //   leaves R4 parked.
+  // =========================================================================
+  {
+    const clientSrcDir = path.resolve('client/src');
+    const e2eSpecDirGb = path.resolve('client/e2e');
+
+    let clientFiles;
+    try {
+      clientFiles = collectClientSourceFiles(clientSrcDir);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth GB-SCOPE: cannot walk client/src: ${err.message}`,
+      };
+    }
+    if (clientFiles.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'tooth GB-SCOPE: the client/src walk found ZERO TypeScript source files — the walker is pointed at the wrong directory (or over-excluding), which would make GB-real pass vacuously forever.',
+      };
+    }
+    for (const f of clientFiles) {
+      if (f.indexOf('module_bindings') !== -1 || f.endsWith('.test.ts')) {
+        return {
+          name,
+          pass: false,
+          detail:
+            `tooth GB-SCOPE: the client/src walk collected ${f}, which must be EXCLUDED ` +
+            `(*.test.ts naming the hook is not an exposed hook; module_bindings/** is ` +
+            `SDK-generated and camelCases reducer names, so it would fire on an event that is ` +
+            `NOT the revival condition). Kills: impl that drops either exclusion.`,
+        };
+      }
+    }
+
+    const realClientSources = {};
+    for (const f of clientFiles) {
+      try {
+        realClientSources[path.relative(clientSrcDir, f)] = readFileSync(f, 'utf8');
+      } catch (err) {
+        return { name, pass: false, detail: `tooth GB-real: cannot read ${f}: ${err.message}` };
+      }
+    }
+
+    const realGbSpecSources = {};
+    try {
+      const specFiles = readdirSync(e2eSpecDirGb).filter((f) => f.endsWith('.spec.ts'));
+      for (const f of specFiles) {
+        realGbSpecSources[f] = readFileSync(path.join(e2eSpecDirGb, f), 'utf8');
+      }
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth GB-real: cannot read client/e2e/: ${err.message}`,
+      };
+    }
+
+    let realGbStatus;
+    try {
+      realGbStatus = grantBaitRevivalStatus({
+        specSources: realGbSpecSources,
+        clientSources: realClientSources,
+      });
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth GB-real: grantBaitRevivalStatus threw on real files — ${err.message}`,
+      };
+    }
+
+    if (realGbStatus.violated) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `tooth GB-real: grantBaitRevivalStatus on the real tree is violated — ` +
+          `client/src file(s) [${realGbStatus.exposers.join(', ')}] now expose grantBait on a ` +
+          `live line while spec(s) [${realGbStatus.offenders.join(', ')}] still park a ` +
+          `test.fixme citing grantBait. R4's stated blocker has been met: un-fixme the R4 test ` +
+          `in client/e2e/recruit.spec.ts (and delete this tripwire with its anchor), or ` +
+          `re-anchor the fixme to the real current blocker. — ${realGbStatus.reason}`,
+      };
+    }
+  }
+
   return {
     name,
     pass: true,
     detail:
-      'spec-gap-revival teeth all pass: findTradeTransferReducers correct (swap_active not matched, give_monster/donate_monster matched, trade_monster matched, benign reducers clean), parkedTestIsIgnored correct (bare and cfg_attr forms recognised, revived form false), specGapStatus matrix all 5 cases correct (incl. reducer-landed+fn-deleted), real codebase is in healthy/dormant state; test.fixme condition-expiry guard GREEN (T-E1/T-E1b/T-E2/T-E3 teeth pass, no expired conditions in client/e2e/); 13.5h-2 dev_reducers fixme tripwire GREEN (W1/W2/W3/W4/W5 workflow detector teeth incl. env-var form, F1/F1h/F2/F3 spec-citation teeth, S1/S1b/S2/S3 combined-status teeth, R-real on live tree all pass); m16.5a vacuous-revival check GREEN (V1/V2/V3/V4 teeth pass: line-comment and block-comment vacuous forms both rejected; real m7b_2 body has assert when revived)',
+      'spec-gap-revival teeth all pass: findTradeTransferReducers correct (swap_active not matched, give_monster/donate_monster matched, trade_monster matched, benign reducers clean), parkedTestIsIgnored correct (bare and cfg_attr forms recognised, revived form false), specGapStatus matrix all 5 cases correct (incl. reducer-landed+fn-deleted), real codebase is in healthy/dormant state; test.fixme condition-expiry guard GREEN (T-E1/T-E1b/T-E2/T-E3 teeth pass, no expired conditions in client/e2e/); 13.5h-2 dev_reducers fixme tripwire GREEN (W1/W2/W3/W4/W5 workflow detector teeth incl. env-var form, F1/F1h/F2/F3 spec-citation teeth, S1/S1b/S2/S3 combined-status teeth, R-real on live tree all pass); m16.5a vacuous-revival check GREEN (V1/V2/V3/V4 teeth pass: line-comment and block-comment vacuous forms both rejected; real m7b_2 body has assert when revived); 11r-h grantBait revival tripwire GREEN (GB1/GB2/GB2b/GB3 client-exposure teeth incl. the trailing-comment false-alarm case, GB4/GB5/GB6 spec-citation teeth, GBS1-GBS4 combined-status matrix, GB-ANCHOR proves recruit.spec.ts still carries the R4 fixme citing grantBait, GB-SCOPE proves the client/src walk is non-empty and excludes *.test.ts + module_bindings/**, GB-real on the live tree not violated — no client/src file exposes the hook yet)',
   };
 }
