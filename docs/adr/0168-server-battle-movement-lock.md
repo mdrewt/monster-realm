@@ -206,7 +206,29 @@ alone, but the Rust L1 mega-needle catches it — that union is real; W6 is the 
 
 - ADR-0166 R4 (grass pre-check single-role) — open, unchanged.
 - ADR-0156 P7 (no reducer-executing harness) — open; still the largest standing gap in this
-  subsystem's gate.
+  subsystem's gate. Concretely: there is no reducer-executing parity test asserting the real
+  `movement_tick` freezes a live `battle` row, and therefore no client↔server parity test for
+  the locked case. The source-pin + eval-W6 + sim-harness-behavioral triad is the strongest
+  gate this crate's infrastructure admits; the true parity test is the standing residual.
+- **PvE stuck-`Ongoing` compounding (new, out-of-touches — record against `battle.rs`):** the
+  connected-and-playing PvE resolution path (`flee`/`submit_attack`/`swap_active` →
+  `write_back_battle_results(ctx, &battle)?`) aborts the whole reducer with `?` if write-back
+  errors (e.g. a `check_team_coupling` length-mismatch), leaving the row `Ongoing` — unlike the
+  hardened PvP `settle_pvp_battle` funnel and the wild-on-disconnect path, which log-and-commit
+  the terminal outcome regardless. Before this slice that was ambulatory (other reducers blocked,
+  but the player could still walk); D1 now also **movement-freezes** such a player, turning a rare
+  data-invariant fault into a while-connected softlock (escapable by disconnect/reconnect, which
+  hits the robust GC path). 11r-c does not cause the fragility and cannot fix it from
+  `movement.rs`; flagged so the blast-radius change is on record. Recommend hardening the PvE
+  settle path to the PvP funnel's log-and-commit shape as a follow-up.
+- **Cross-connection TOCTOU at battle start (theoretical, self-healing):** if SpacetimeDB truly
+  runs reducers per-connection-serialized rather than per-identity (ADR-0091 RT-PS-DIALOGUE /
+  ADR-0048 D-d name this platform property), `movement_tick`'s drain read could snapshot a
+  battle-start commit landing on another connection, leaking at most **one** extra tile before
+  the next tick freezes correctly — the SSOT is re-read fresh every tick (no cache) and the warp
+  guard re-checks independently, so it cannot chain into a multi-tile walk or a warp bypass. Wild
+  starts are immune (`begin_encounter` runs in the same transaction as the triggering move).
+  Same residual class the codebase already tracks elsewhere; not introduced here.
 - Predictor lock-window divergence + post-battle stale drain (above) — client-side polish if
   playtest ever surfaces it.
 - The evals' regex comment-stripper is order-sensitive: an unpaired slash-asterisk sequence in

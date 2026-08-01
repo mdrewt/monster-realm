@@ -1,8 +1,10 @@
 //! `movement` — server-module domain submodule (M8.9, ADR-0056).
 //!
 //! Server-paced, per-zone movement (ADR-0011/0007): clients buffer intent; the
-//! scheduled `movement_tick` drains one move/character/tick and runs the M8c
-//! grass-encounter trigger. The `movement_tick_schedule` scheduled `#[table]`
+//! scheduled `movement_tick` drains at most one move/character/tick (a character
+//! whose player is in an ongoing battle drains none — its queue stays frozen,
+//! ADR-0168) and runs the M8c grass-encounter trigger. The
+//! `movement_tick_schedule` scheduled `#[table]`
 //! lives HERE (not `schema.rs`) so the `scheduled(movement_tick)` attribute
 //! reference resolves within the module (ADR-0056 / spec §6 macro hygiene).
 //!
