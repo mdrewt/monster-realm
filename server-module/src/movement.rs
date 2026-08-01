@@ -1,8 +1,10 @@
 //! `movement` — server-module domain submodule (M8.9, ADR-0056).
 //!
 //! Server-paced, per-zone movement (ADR-0011/0007): clients buffer intent; the
-//! scheduled `movement_tick` drains one move/character/tick and runs the M8c
-//! grass-encounter trigger. The `movement_tick_schedule` scheduled `#[table]`
+//! scheduled `movement_tick` drains at most one move/character/tick (a character
+//! whose player is in an ongoing battle drains none — its queue stays frozen,
+//! ADR-0168) and runs the M8c grass-encounter trigger. The
+//! `movement_tick_schedule` scheduled `#[table]`
 //! lives HERE (not `schema.rs`) so the `scheduled(movement_tick)` attribute
 //! reference resolves within the module (ADR-0056 / spec §6 macro hygiene).
 //!
@@ -118,6 +120,14 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
 /// intent only — NEVER computes movement. Atomic: queue + ack in one transaction.
 #[spacetimedb::reducer]
 pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), String> {
+    // Intake battle lock (ADR-0168 D2): reject-not-clamp movement intent while
+    // the caller is in an ongoing battle, either role. `ctx.sender` is correct
+    // here — this is a player-called reducer (unlike scheduler-only movement_tick).
+    if is_in_ongoing_battle(ctx, ctx.sender) {
+        let e = "cannot move during an ongoing battle".to_string();
+        log_reject("enqueue_move", ctx.sender, &e);
+        return Err(e);
+    }
     let mut ch = authorize_move(ctx, "enqueue_move", seq)?;
     if ch.move_queue.len() >= MOVE_QUEUE_CAP {
         let e = "queue full".to_string();
@@ -133,6 +143,13 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
 /// change). Cap-safe (length 1).
 #[spacetimedb::reducer]
 pub fn set_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), String> {
+    // Intake battle lock (ADR-0168 D2): same reject as enqueue_move — set_move
+    // also ADDS movement intent, and the client is hostile.
+    if is_in_ongoing_battle(ctx, ctx.sender) {
+        let e = "cannot move during an ongoing battle".to_string();
+        log_reject("set_move", ctx.sender, &e);
+        return Err(e);
+    }
     let mut ch = authorize_move(ctx, "set_move", seq)?;
     ch.move_queue.clear();
     ch.move_queue.push(input);
@@ -143,6 +160,10 @@ pub fn set_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), 
 /// Empty the queue (key release).
 #[spacetimedb::reducer]
 pub fn clear_queue(ctx: &ReducerContext, seq: u64) -> Result<(), String> {
+    // Deliberately NOT battle-guarded (ADR-0168 D3): pure cancellation — it
+    // cannot cause movement. Guarding it would force the stale pre-battle queue
+    // to survive to battle end and deny an honest key-release cancel while the
+    // battle overlay is opening.
     let mut ch = authorize_move(ctx, "clear_queue", seq)?;
     ch.move_queue.clear();
     ctx.db.character().entity_id().update(ch);
@@ -186,6 +207,33 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
             continue;
         };
         if row.move_queue.is_empty() {
+            if row.action != ActionState::Idle {
+                row.action = ActionState::Idle;
+                ctx.db.character().entity_id().update(row);
+            }
+            continue;
+        }
+        // Drain-time battle lock (ADR-0168 D1): while this character's player is
+        // in an ongoing battle in EITHER role, SKIP the drain with the queue
+        // INTACT — the same semantics the sim-harness models — normalising
+        // `action` to Idle write-on-change; the lock self-releases the tick after
+        // the battle's outcome leaves Ongoing. The argument is the CHARACTER's
+        // own `p.identity`: `movement_tick` is scheduler-only, so `ctx.sender`
+        // here is the MODULE identity and would make the guard always false.
+        // `unwrap_or(false)` states a FACT — a character with no `player` row is
+        // not a player and can never appear in a `battle` row, so it is not
+        // battle-locked — deliberately OPPOSITE to the warp guard's ADR-0070
+        // `unwrap_or(true)` POLICY below (no player row means an NPC, which must
+        // stay in its home zone). Do not unify the two defaults.
+        let battle_locked = ctx
+            .db
+            .player()
+            .entity_id()
+            .filter(id)
+            .next()
+            .map(|p| is_in_ongoing_battle(ctx, p.identity))
+            .unwrap_or(false);
+        if battle_locked {
             if row.action != ActionState::Idle {
                 row.action = ActionState::Idle;
                 ctx.db.character().entity_id().update(row);

@@ -728,3 +728,328 @@ fn laundering_two_ongoing_rows() {
          because the player arm is empty, missing the PvP side-B slot entirely)"
     );
 }
+
+// ===========================================================================
+// 11r-c (ADR-0168 D3) — the battle guard is PER-REDUCER, never inside
+// `authorize_move`
+//
+// `guards.rs` is deliberately UNCHANGED by slice 11r-c. This section is the
+// fence that keeps it that way: a source scan asserting `authorize_move` — the
+// shared preamble of `enqueue_move`, `set_move` AND `clear_queue` — carries no
+// battle guard.
+//
+// Source-guard pattern (house convention, same as `movement_tests.rs`): read the
+// production source via `include_str!`, strip comments AND string literals,
+// squash whitespace, search for **concat!-assembled** needles. No needle is
+// written verbatim here, so neither this scan nor any eval that concatenates
+// every `.rs` file under `server-module/src` can be satisfied by the test's own
+// text.
+//
+// WARNING when editing any comment in this crate: a slash immediately followed
+// by an asterisk opens a block comment for the evals' REGEX comment-stripper,
+// which runs over the concatenated sources and swallows everything up to the
+// next closing marker — ACROSS FILE BOUNDARIES. Writing that sequence here
+// (e.g. as a glob) silently deletes a later file's reducers from the eval's view
+// and false-REDs an unrelated check. Never write it; say ".rs file under <dir>"
+// instead.
+// ===========================================================================
+
+const GUARDS_RS: &str = include_str!("guards.rs");
+
+// ---------------------------------------------------------------------------
+// Comment- AND string-stripping helper — a LOCAL copy on purpose.
+//
+// Byte-identical to the copy in `movement_tests.rs` (the sibling test modules
+// `pvp_tests.rs:64`, `trading_tests.rs:457`, `taming_tests.rs:42` and
+// `economy_tests.rs:936` each keep their own comment-only variants). A shared
+// `scan_helpers` module would need a `lib.rs` edit, and `lib.rs` is explicitly
+// OUTSIDE this slice's touch set — the same call ADR-0166 recorded as residual
+// R5. Duplicated deliberately, not by accident.
+//
+// Removed bytes are replaced with spaces so byte offsets are preserved (the
+// squash step drops them again anyway).
+//
+// STRING LITERALS ARE BLANKED TOO, for the reason documented at length in
+// `movement_tests.rs`: a red-team satisfied a whole file of needles with a dead
+// `let _decoy = r#"<needle text>"#;`. Here it matters for the opposite polarity —
+// this file's fence asserts an ABSENCE (`authorize_move` contains no battle
+// guard), so blanking literals removes false ALARMS (a log message naming the
+// predicate) while leaving every executable call visible. The two files must
+// agree on what "the source says" or one could be green while the other is red
+// about the same bytes.
+//
+// Handled in one sequential pass: block comments, line comments, `"…"` (with
+// `\` escapes), `b"…"`, raw strings `r"…"` / `r#"…"#` / `r##"…"##` and their `br`
+// forms, and char / byte-char literals (consumed ATOMICALLY — `guards.rs:58` has
+// a real one, `c == ' '`, and a char literal holding a double quote would
+// otherwise open a phantom string and blank the rest of the file, which is also
+// why `DQUOTE` below is a number). `assert_stripper_preconditions` fails loudly
+// on the two constructs this does NOT handle.
+// ---------------------------------------------------------------------------
+
+/// The ASCII double-quote byte, spelled as a NUMBER on purpose.
+///
+/// Writing the obvious byte-char literal would put a bare, unpaired double-quote
+/// CHARACTER into this file's source. The evals concatenate every `.rs` file in
+/// this crate and run `stripRustStrings` over the result — a stripper with no
+/// char-literal lexer — so that quote reads as opening a string literal and
+/// inverts string/code polarity for everything after it. This file sorts before
+/// `lib.rs`, and the measured cost of the obvious spelling was exactly that:
+/// `pub fn init(` was blanked and the zone-warp eval's W5 check failed with
+/// "init not found". Every double-quote in this file is now part of a balanced
+/// Rust string literal; keep it that way.
+const DQUOTE: u8 = 0x22;
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// If a STRING literal starts at `i`, the index one past its closing delimiter.
+///
+/// Covers `"…"`, `b"…"`, and raw `r"…"` / `r#"…"#` / `r##"…"##` plus the `br`
+/// forms. A `b` / `r` prefix only counts when it is not itself part of a longer
+/// identifier, so `ctx.db` and `require_owner` are never mistaken for openers.
+fn string_literal_end(bytes: &[u8], i: usize) -> Option<usize> {
+    let len = bytes.len();
+    let first = bytes[i];
+    if first != DQUOTE && first != b'r' && first != b'b' {
+        return None;
+    }
+    let prev_is_ident = i > 0 && is_ident_byte(bytes[i - 1]);
+    let mut p = i;
+    if first == b'b' {
+        if prev_is_ident || p + 1 >= len {
+            return None;
+        }
+        if bytes[p + 1] != DQUOTE && bytes[p + 1] != b'r' {
+            return None;
+        }
+        p += 1;
+    } else if first == b'r' && prev_is_ident {
+        return None;
+    }
+    if bytes[p] == b'r' {
+        let mut hashes = 0usize;
+        while p + 1 + hashes < len && bytes[p + 1 + hashes] == b'#' {
+            hashes += 1;
+        }
+        if p + 1 + hashes >= len || bytes[p + 1 + hashes] != DQUOTE {
+            return None;
+        }
+        let mut j = p + 2 + hashes;
+        while j < len {
+            if bytes[j] == DQUOTE {
+                let mut k = 0usize;
+                while k < hashes && j + 1 + k < len && bytes[j + 1 + k] == b'#' {
+                    k += 1;
+                }
+                if k == hashes {
+                    return Some(j + 1 + hashes);
+                }
+            }
+            j += 1;
+        }
+        return Some(len);
+    }
+    let mut j = p + 1;
+    while j < len {
+        if bytes[j] == b'\\' {
+            j += 2;
+        } else if bytes[j] == DQUOTE {
+            return Some(j + 1);
+        } else {
+            j += 1;
+        }
+    }
+    Some(len)
+}
+
+/// If a CHAR (or byte-char) literal starts at `i`, the index one past it.
+///
+/// A `'` is only read as a literal when a closing `'` follows within four bytes;
+/// otherwise it is a lifetime tick and is left alone. The point of this branch is
+/// a char literal HOLDING a double quote: unconsumed, that quote opens a phantom
+/// string literal and everything after it would be blanked.
+fn char_literal_end(bytes: &[u8], i: usize) -> Option<usize> {
+    let len = bytes.len();
+    if bytes[i] != b'\'' {
+        return None;
+    }
+    let escaped = i + 1 < len && bytes[i + 1] == b'\\';
+    let first = if escaped { 3 } else { 2 };
+    for k in first..=4 {
+        if i + k < len && bytes[i + k] == b'\'' {
+            return Some(i + k + 1);
+        }
+    }
+    None
+}
+
+fn strip_comments_and_strings(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = vec![b' '; len];
+    let mut i = 0;
+    while i < len {
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else if let Some(end) = string_literal_end(bytes, i) {
+            i = end;
+        } else if let Some(end) = char_literal_end(bytes, i) {
+            while i < end {
+                out[i] = bytes[i];
+                i += 1;
+            }
+        } else {
+            out[i] = bytes[i];
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("stripped source must be valid UTF-8")
+}
+
+/// Loud preconditions covering the two constructs the stripper deliberately does
+/// NOT handle. A silent misalignment in a stripper is the worst failure mode for
+/// a source-scan gate — it blanks the wrong bytes and the assertion below turns
+/// vacuous — so each fails with an explicit message instead.
+///
+/// 1. **Raw strings with three or more hashes.** Depth 0/1/2 is handled.
+/// 2. **A surviving block-comment CLOSE marker in the stripped output**, which
+///    means a NESTED block comment: this stripper stops at the FIRST close
+///    marker, so the outer comment's tail would be handed to the scan as if it
+///    were code. Correctly stripped source cannot contain one.
+fn assert_stripper_preconditions(raw: &str, stripped: &str) {
+    let deep_raw = ["r#", "##"].concat();
+    assert!(
+        !raw.contains(deep_raw.as_str()),
+        "SCAN PRECONDITION: `guards.rs` contains a raw-string opener with three or \
+         more hashes, which this file's byte-sequential stripper does not handle — \
+         it would blank the wrong byte range and hollow out the fence below. Extend \
+         the stripper's hash-depth handling before adding such a literal."
+    );
+    let close_marker = ["*", "/"].concat();
+    assert!(
+        !stripped.contains(close_marker.as_str()),
+        "SCAN PRECONDITION: a block-comment CLOSE marker survived stripping, which \
+         means `guards.rs` contains a NESTED block comment. This stripper stops at \
+         the FIRST close marker, so the outer comment's tail is handed to the scan \
+         as if it were executable code. Un-nest the comment, or extend the stripper \
+         with a nesting depth counter."
+    );
+}
+
+/// `guards.rs` with comments AND string literals blanked and ALL whitespace
+/// squashed out, so a rustfmt line split can never cause a false RED and no
+/// inert text can move the count below.
+fn squashed_guards() -> String {
+    let stripped = strip_comments_and_strings(GUARDS_RS);
+    assert_stripper_preconditions(GUARDS_RS, &stripped);
+    stripped.split_whitespace().collect()
+}
+
+/// **ADR-0168 D3 consequence fence** — `authorize_move` must carry NO battle
+/// guard.
+///
+/// GREEN at HEAD and GREEN after slice 11r-c (which changes `movement.rs` only);
+/// RED the moment someone "de-duplicates" the two inline intake guards into the
+/// shared move authorizer.
+///
+/// WHY THIS IS A REAL HAZARD, not a hypothetical: 11r-c adds the SAME four-line
+/// battle-reject block to `enqueue_move` and to `set_move`. Two identical copies
+/// in adjacent reducers is exactly the shape that invites a helper — and
+/// `authorize_move` is sitting right there, already called by both of them. But
+/// it is called by THREE reducers: hoisting the guard into it silently guards
+/// `clear_queue` too, voiding ADR-0168 D3's anti-decision without a single line
+/// of `clear_queue` changing. The three D3 reasons that would be voided:
+///   1. `clear_queue` is pure cancellation — it cannot cause movement and enables
+///      no attack.
+///   2. Rejecting it forces the stale pre-battle queue to survive to battle end,
+///      turning the post-battle stale drain into a GUARANTEED behavior.
+///   3. It denies an honest key-release cancel while the battle overlay opens.
+///
+/// This is the Rust-side half of a matched pair: `movement_tests.rs`'s
+/// `clear_queue_is_deliberately_not_battle_guarded` pins `clear_queue`'s entire
+/// body (so the guard cannot be added there directly, nor through a renamed
+/// wrapper), and this test closes the one remaining route — adding it upstream in
+/// the shared authorizer, where `clear_queue`'s own body never changes at all
+/// (red-team HIGH-4 / the former eval-B6 check, moved into Rust where it runs in
+/// the same `cargo test` as the thing it protects).
+///
+/// The needle is `is_in_ongoing_battle` WITHOUT a trailing `(`: inside this region
+/// a bare mention — a re-import, a path fragment, a `let f = is_in_ongoing_battle;`
+/// function value — is just as much a smell as a call.
+///
+/// HONEST LIMITS. (a) Region-scoped by text, from `pub(crate) fn authorize_move(`
+/// to the next `pub(crate) fn`: it deliberately does NOT forbid `guards.rs` from
+/// containing the predicate (it DEFINES it, at `guards.rs:264`), only from using
+/// it in this one function. (b) A differently-NAMED battle predicate called from
+/// `authorize_move` would not be seen here — that class is covered from the other
+/// side by `movement_tests.rs`'s I3 count (`is_in_ongoing_battle(` exactly 4× in
+/// `movement.rs`) and NEW-3 (no local shim definition), since any such helper must
+/// ultimately reach the SSOT. (c) Source scan, not execution: this crate has no
+/// reducer-executing harness (ADR-0156 P7).
+#[test]
+fn authorize_move_carries_no_battle_guard() {
+    let squashed = squashed_guards();
+
+    // Region anchor. `authorize_move` is `pub(crate) fn`, not `pub fn` — the
+    // whole of guards.rs is crate-internal.
+    let fn_marker = ["pub(crate)fnauthorize", "_move("].concat();
+    let n_marker = squashed.matches(fn_marker.as_str()).count();
+    assert_eq!(
+        n_marker, 1,
+        "FENCE PRECONDITION (ADR-0168 D3): `pub(crate)fnauthorize_move(` must \
+         appear EXACTLY ONCE in the squashed `guards.rs`; found {n_marker}. With \
+         zero, the function was renamed or moved and the fence below cannot be \
+         built; with two, the region extractor takes the first match and a decoy \
+         definition could hide the real one's contents from this scan."
+    );
+
+    let start = squashed
+        .find(fn_marker.as_str())
+        .expect("guards_tests: `pub(crate)fnauthorize_move(` not found in guards.rs");
+    let rest_at = start + fn_marker.len();
+    let next_fn = ["pub(crate)", "fn"].concat();
+    let end = squashed[rest_at..]
+        .find(next_fn.as_str())
+        .map_or(squashed.len(), |off| rest_at + off);
+    let region = &squashed[start..end];
+
+    let ssot = ["is_in_ongoing", "_battle"].concat();
+    let n_guard = region.matches(ssot.as_str()).count();
+    assert_eq!(
+        n_guard, 0,
+        "TEETH (ADR-0168 D3 consequence, green at HEAD): `authorize_move`'s region \
+         (`pub(crate) fn authorize_move(` … next `pub(crate) fn`) must contain ZERO \
+         occurrences of `is_in_ongoing_battle`; found {n_guard}. \
+         The battle guard is PER-REDUCER BY DESIGN. `authorize_move` is the shared \
+         preamble of THREE reducers — `enqueue_move`, `set_move` and `clear_queue` \
+         — and 11r-c guards only the first two. Hoisting the guard in here to \
+         de-duplicate the two identical inline copies would silently guard \
+         `clear_queue` as well, voiding ADR-0168 D3's anti-decision without one \
+         line of `clear_queue` changing: (1) `clear_queue` is pure cancellation, it \
+         cannot cause movement and enables no attack; (2) rejecting it forces the \
+         stale pre-battle queue to survive to battle end, turning the post-battle \
+         stale drain into a GUARANTEED behavior — strictly worse; (3) it denies an \
+         honest key-release cancel exactly while the battle overlay is opening. \
+         `guards.rs` is UNCHANGED by slice 11r-c; this is the fence that keeps the \
+         guard inline in `movement.rs`. It pairs with \
+         `movement_tests.rs::clear_queue_is_deliberately_not_battle_guarded` (which \
+         pins `clear_queue`'s whole body, closing the direct and renamed-wrapper \
+         routes); this test closes the upstream route. \
+         If a future slice really must guard all three, change ADR-0168 D3 FIRST \
+         and re-argue the three reasons — never delete this fence to make a build \
+         green."
+    );
+}

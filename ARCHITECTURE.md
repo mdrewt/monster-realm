@@ -865,6 +865,21 @@ ADR-0070, hence the local is named `skip_warp`); per-zone schedules managed by `
 idempotent, additive, called from both `init` and `sync_content`); `validate_zone_maps` gates
 `sync_content_inner` before any `zone_def` upsert. 36/36 evals pass.
 
+**11r-c** (real server battle movement lock — ADR-0168, amends 0166) complete, server-only:
+`movement_tick` gains a **drain-time battle lock** — a character whose player is in an ongoing
+battle in EITHER role (`guards::is_in_ongoing_battle(ctx, p.identity)`, ADR-0122 SSOT) has its
+drain SKIPPED with the queue INTACT (matching the sim-harness model, closing ADR-0166 R10's
+harness-fiction drift), sited after the empty-queue arm and before `move_queue.remove(0)` so idle
+characters pay no extra probes; `unwrap_or(false)` states the FACT "no player row ⇒ never in a
+battle row" (deliberately opposite to the warp guard's ADR-0070 `unwrap_or(true)` POLICY — do not
+unify). `enqueue_move`/`set_move` add an **intake reject** (`is_in_ongoing_battle(ctx, ctx.sender)`
+→ `Err`, reject-not-clamp, first statement); `clear_queue` is deliberately NOT guarded (pure
+cancellation — guarding it would strand the stale pre-battle queue to battle end). Closes the
+walk-mid-battle hole that only honest-client overlay suppression previously covered; the eval W3
+warp-guard needle is de-vacuified (`is_in_ongoing_battle(` vs the grass-check-satisfiable
+`BattleOutcome::Ongoing`) and a new eval W6 pins the drain lock before the drain. Gate is
+source-scan + eval (no reducer-executing harness, ADR-0156 P7). ADR next-free = 0169.
+
 **M11c** (client follow-camera + warp resubscribe — ADR-0067) complete: `FollowCamera` pure class
 (`offsetFor` clamps `playerPx − viewSize/2` to `[0, mapPx − viewPx]`; map < viewport → `(0,0)`);
 `isOwnZoneChange(oldRow, newRow, ownEntityId)` pure predicate in `warpDetect.ts` (strict bigint
