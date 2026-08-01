@@ -1956,9 +1956,28 @@ fn rate_limiter_arithmetic_saturates_and_lock_poisoning_recovers() {
 ///     whole feature exists to surface. Kills the natural simplification of one
 ///     shared static.
 ///
-///   * **Both statics are `.check(`ed inside the grass region, exactly once
-///     each.** Declaring a static that nothing consults is the cheapest way to
-///     satisfy a presence needle while logging unconditionally (or not at all).
+///   * **A shared `const ENCOUNTER_ERR_WINDOW_MS: i64 = 5000;`.** Named, not two
+///     inline literals, because the contiguous gate needles below pin the window
+///     BY NAME — which also makes the two arms provably share one window value
+///     instead of drifting apart.
+///
+///   * **Each log lives INSIDE its own limiter's gate — pinned CONTIGUOUSLY.**
+///     This is the layer a red-team defeated in the first draft. A presence-only
+///     `LIMITER.check(` needle is satisfied by
+///     `let _ = ENCOUNTER_TABLE_ERR_LIMITER.check(..); log::error!(..);`: the
+///     limiter is consulted, its answer is DISCARDED, and the error line fires on
+///     every tick for every character in the zone — a worse flood than the
+///     silence this slice replaces, passing every count-based needle. Requiring
+///     `ifletSome(suppressed)=<LIMITER>.check(now.0,ENCOUNTER_ERR_WINDOW_MS){log::error!(`
+///     as ONE squashed string makes it unrepresentable (E3/E1 precedent, this
+///     file). Because the binding is `suppressed` and not `_suppressed`, the
+///     compiler itself then forces the log body to consume it.
+///
+///   * **Neither limiter is consulted anywhere ELSE in the tail (exactly once
+///     each).** The gate needle proves one correct call exists; only the count
+///     proves it is the only one. A second, discarded `check` re-anchors the
+///     window and resets the suppressed counter, so the emitted count
+///     under-reports the loss it exists to report.
 ///
 ///   * **Exactly TWO `log::error!` sites in the grass region.** Zero at HEAD.
 ///     Pins one log per failure arm: with one, only one arm was wired; with
@@ -2024,16 +2043,81 @@ fn movement_tick_encounter_failures_are_logged_and_rate_limited() {
          non-saturating) type."
     );
 
-    // --- Layer 2: each static actually gates a log in the grass region --------
+    // --- Layer 1b: the shared window constant exists, at the ADR's value ------
+    let window_const = ["constENCOUNTER_ERR_WINDOW", "_MS:i64="].concat();
+    let window_variants = [
+        [window_const.as_str(), "5000;"].concat(),
+        [window_const.as_str(), "5_000;"].concat(),
+    ];
+    let window_ok = window_variants.iter().any(|v| squashed.contains(v.as_str()));
+    assert!(
+        window_ok,
+        "TEETH (11r-g M-7, ADR-0170 D4): `movement.rs` must declare a file-level \
+         `const ENCOUNTER_ERR_WINDOW_MS: i64 = 5000;` (the `5_000` spelling is also \
+         accepted) — the 5000 ms window both limiters share. It is a NAMED constant, \
+         not two inline literals, because the two contiguous gate needles below pin \
+         it by name: an inline number in one arm and a different one in the other is \
+         exactly the drift this constant removes. RED at HEAD."
+    );
+
+    // --- Layer 2: each log is INSIDE its own limiter's gate -------------------
+    // Contiguous mega-needles, the E3/E1 precedent in this file. A presence-only
+    // needle for `LIMITER.check(` is satisfied by
+    // `let _ = LIMITER.check(..); log::error!(..)` — the limiter is consulted, its
+    // answer is thrown away, and the log fires on EVERY tick for EVERY character
+    // in the zone. That shell passed every earlier draft of this test.
+    let gate_open = ["ifletSome(suppressed)", "="].concat();
+    let gate_tail = [".check(now.0,ENCOUNTER_ERR_WINDOW", "_MS){log::error!("].concat();
+    let gate = |limiter: &str| [gate_open.as_str(), limiter, gate_tail.as_str()].concat();
+
+    let table_gate = gate(&["ENCOUNTER_TABLE_ERR", "_LIMITER"].concat());
+    let n_table_gate = region.matches(table_gate.as_str()).count();
+    assert_eq!(
+        n_table_gate, 1,
+        "TEETH (11r-g M-7, ADR-0170 D4): the encounter-table arm must contain, as ONE \
+         contiguous whitespace-squashed expression, \
+         `ifletSome(suppressed)=ENCOUNTER_TABLE_ERR_LIMITER.check(now.0,\
+         ENCOUNTER_ERR_WINDOW_MS){{log::error!(` — i.e. the source must read \
+         `if let Some(suppressed) = ENCOUNTER_TABLE_ERR_LIMITER.check(now.0, \
+         ENCOUNTER_ERR_WINDOW_MS) {{ log::error!(..` — found {n_table_gate}. \
+         WHY CONTIGUITY: a presence-only `LIMITER.check(` needle is satisfied by \
+         `let _ = ENCOUNTER_TABLE_ERR_LIMITER.check(..); log::error!(..);` — the \
+         limiter is consulted, its answer DISCARDED, and the error line fires on \
+         every tick for every character in the zone. That is a worse log flood than \
+         the silence this slice replaces, and it passes every count-based needle. \
+         Only pinning the `if let Some(..) = ..` gate and the log's opening token as \
+         ONE string makes it unrepresentable. `now.0` is the tick's INJECTED clock \
+         (ADR-0003, movement.rs:181) — never a wall clock. The `suppressed` binding \
+         is not underscore-prefixed, so the compiler itself requires the log body to \
+         consume it. RED at HEAD."
+    );
+
+    let begin_gate = gate(&["BEGIN_ENCOUNTER_ERR", "_LIMITER"].concat());
+    let n_begin_gate = region.matches(begin_gate.as_str()).count();
+    assert_eq!(
+        n_begin_gate, 1,
+        "TEETH (11r-g M-7, ADR-0170 D4): the begin-encounter arm must contain the \
+         SAME contiguous gate, with its OWN limiter: \
+         `ifletSome(suppressed)=BEGIN_ENCOUNTER_ERR_LIMITER.check(now.0,\
+         ENCOUNTER_ERR_WINDOW_MS){{log::error!(` — found {n_begin_gate}. This is the \
+         arm where an ungated log hurts most: the routine 'party has no conscious \
+         monster' Err fires on EVERY grass step of EVERY fainted party, so a \
+         discarded `check` answer turns a bounded one-line-per-window signal into a \
+         5 Hz per-character ERROR flood. RED at HEAD."
+    );
+
+    // --- Layer 2b: neither limiter is consulted anywhere ELSE in the tail -----
     let table_check = ["ENCOUNTER_TABLE_ERR", "_LIMITER.check("].concat();
     let n_table_check = region.matches(table_check.as_str()).count();
     assert_eq!(
         n_table_check, 1,
         "TEETH (11r-g M-7, ADR-0170 D4): the encounter-table limiter must be \
          consulted EXACTLY ONCE inside `movement_tick`'s grass block; found \
-         {n_table_check}. Declaring a static that nothing calls is the cheapest way \
-         to satisfy a presence needle while the log stays unconditional (a 5 Hz flood \
-         per character) or absent."
+         {n_table_check}. Layer 2 proves ONE correct gated call exists; this proves \
+         it is the ONLY call. A second, discarded `check` alongside the good one \
+         burns the window (it re-anchors and resets the suppressed count), so the \
+         emitted count under-reports what was dropped — the one number ADR-0170 D4 \
+         relies on to make the loss visible."
     );
 
     let begin_check = ["BEGIN_ENCOUNTER_ERR", "_LIMITER.check("].concat();
@@ -2042,9 +2126,8 @@ fn movement_tick_encounter_failures_are_logged_and_rate_limited() {
         n_begin_check, 1,
         "TEETH (11r-g M-7, ADR-0170 D4): the begin-encounter limiter must be \
          consulted EXACTLY ONCE inside `movement_tick`'s grass block; found \
-         {n_begin_check}. With zero, the routine 'no conscious monster' path logs at \
-         ERROR level on every grass step of every fainted party — a flood ADR-0170 D4 \
-         explicitly bounds to one line per window."
+         {n_begin_check}. Same reasoning as the encounter-table count above: a second \
+         `check` silently re-anchors the window and resets the suppressed counter."
     );
 
     // --- Layer 3: exactly two error logs in the grass region ------------------
@@ -2194,11 +2277,25 @@ fn movement_tick_encounter_error_events_are_named() {
 /// is not counted, and it is scoped to `movement_tick`'s brace-matched body so
 /// the import cannot be reached at all.
 ///
-/// HONEST LIMIT: it pins that the escape is CALLED as many times as reasons are
-/// logged, not that each specific interpolation consumes an escaped value. That
-/// residue is covered by `guards_tests.rs`'s G-1..G-3 (the helper is worth
-/// calling) and by this workspace's `-D warnings` gate, under which an unused
-/// `String` binding fails the build.
+/// THE DISCARD IDIOM IS CLOSED BY A NEGATIVE NEEDLE, NOT BY THE LINT GATE.
+/// An earlier draft of this comment claimed `-D warnings` made
+/// `let _ = json_escape(&e);` beside a raw interpolation a build failure. That is
+/// WRONG: `let _ = expr;` binds to the wildcard pattern, which `unused_variables`
+/// never reports (and `let _esc = ..` would only be a warning-level lint, not the
+/// hard error the claim assumed). The same evasion with the same wrong
+/// justification was found and fixed once before in this crate —
+/// `trading_tests.rs:1959-2039`. What actually closes it here is the ZERO-`let_`
+/// assertion below: every discard spelling (`let _ =`, `let _esc =`,
+/// `let _unused:`) squashes to a string containing `let_`, while the legitimate
+/// shadowing form `let reason = json_escape(&e);` squashes to `letreason=` and
+/// does not match.
+///
+/// HONEST LIMIT: the counts pin that the escape is CALLED as many times as
+/// reasons are logged, and the `let_` needle pins that no call's result is
+/// discarded; together they leave only "escaped into the wrong slot of the right
+/// log line", which no lexical scan can see. That residue is covered by
+/// `guards_tests.rs`'s G-1..G-3 (the helper is worth calling) and by the eval
+/// layer's independent body scan.
 #[test]
 fn movement_tick_error_reasons_are_json_escaped() {
     let squashed = squashed_movement();
@@ -2239,6 +2336,51 @@ fn movement_tick_error_reasons_are_json_escaped() {
          reducer interpolates exactly one error reason, so the escapes can never be \
          fewer than the logs. This is the invariant that survives a future slice \
          adding a fifth log line."
+    );
+
+    // --- The discard kill: no underscore binding anywhere in the body --------
+    // `let _ = json_escape(&e);` next to a RAW interpolation satisfies both counts
+    // above while every log line stays malformed. It is NOT a compile error and
+    // NOT a lint failure — `let _ = expr;` is a wildcard pattern and
+    // `unused_variables` never fires on it. (Same evasion, same wrong "the lint
+    // will catch it" justification: trading_tests.rs:1959-2039.)
+    //
+    // The needle is the three-character `let_` on the squashed body, which catches
+    // `let _ =`, `let _esc =` and `let _: String =` alike, while the legitimate
+    // shadowing form `let reason = json_escape(&e);` squashes to `letreason=` and
+    // does not match.
+    //
+    // AT HEAD this is RED, and the arithmetic is exact: `movement_tick`'s body
+    // contains exactly ONE underscore binding today — `let _ = begin_encounter(..)`
+    // at movement.rs:326 — which this slice deletes. Every other binding in the
+    // body is named (`zone_maps`, `map`, `ids`, `row`, `battle_locked`, `input`,
+    // `prev`, `next`, `entity_id`, `to_zone`, `skip_warp`, `player`,
+    // `player_identity`, `already`, `party_ids`, `player_level`, `enc_row`,
+    // `table`, `seed`, `tick_counter`, `npc_entity_ids`, `npc_row`, `ch`,
+    // `current`, `home`, `st`, `dir`, `next_state`), and none of them ENDS in
+    // `let` before an underscore, so none can produce the substring by accident.
+    // After the slice the count must be 0 and stay 0.
+    let discard = ["let", "_"].concat();
+    let n_discard = body.matches(discard.as_str()).count();
+    assert_eq!(
+        n_discard, 0,
+        "TEETH (11r-g M-6, ADR-0170 D4): `movement_tick`'s body contains {n_discard} \
+         underscore binding(s) (`let _`) and must contain ZERO. \
+         WHAT THIS KILLS: `let _ = json_escape(&e); log::error!(.., e);` — the escape \
+         is called (satisfying both counts above), its result is thrown away, and the \
+         reason is still interpolated RAW, so a parse error containing a double quote \
+         still emits a malformed JSON log line. This is NOT caught by the compiler or \
+         by `-D warnings`: `let _ = expr;` binds the wildcard pattern and \
+         `unused_variables` never reports it. The same evasion with the same wrong \
+         'the lint gate catches it' justification was found and fixed before in this \
+         crate at trading_tests.rs:1959-2039. \
+         AT HEAD the count is 1 — `let _ = begin_encounter(..)` at movement.rs:326, \
+         the swallow this slice deletes — so this assertion is RED now and must be \
+         green after. Use the escaped value directly in the format arguments, or \
+         bind it under a real name (`let reason = json_escape(&e);` squashes to \
+         `letreason=` and does not match). If a future slice genuinely needs a \
+         discarded expression here, it must re-argue this needle rather than delete \
+         it."
     );
 }
 

@@ -1360,16 +1360,30 @@ proptest! {
 ///     and then drops or downgrades the log call itself, which would make every
 ///     assertion above vacuously true while deleting the observability this whole
 ///     seam exists to protect.
+///   * **ZERO `let_` in the region** — kills the DISCARD idiom
+///     `let _ = json_escape(reason);` sitting beside a raw interpolation, which
+///     satisfies every needle above while every log line stays malformed. The
+///     three-character needle catches `let _ =`, `let _esc =` and
+///     `let _: String =` alike; the legitimate shadowing form
+///     `let reducer = json_escape(reducer);` squashes to `letreducer=` and does
+///     not match.
 ///
-/// HONEST LIMITS. (a) It pins that the escapes happen inside `log_reject`, not
-/// that the ESCAPED values are the ones interpolated — the format string is
+/// THE DISCARD IDIOM IS CLOSED BY THAT NEEDLE, NOT BY THE LINT GATE. An earlier
+/// draft of this comment claimed `-D warnings` made the discard a build failure.
+/// That is WRONG: `let _ = expr;` binds the wildcard pattern, which
+/// `unused_variables` never reports (and `let _esc = ..` would at most be a
+/// warning-level lint, not the hard error the claim assumed). The same evasion
+/// with the same wrong justification was found and fixed once before in this
+/// crate — `trading_tests.rs:1959-2039`.
+///
+/// HONEST LIMITS. (a) With the discard closed, what remains unpinned is only
+/// "escaped into the wrong slot of the right log line": the format string is
 /// blanked before matching (the same trade `movement_tests.rs:658-669` records),
-/// so `let _ = json_escape(reason);` beside a raw interpolation would pass. That
-/// residue is covered from the other side by G-1..G-3 (which prove the function
-/// is worth calling) and by this workspace's `-D warnings` lint gate, under which
-/// an unused binding is a build failure. (b) Source scan, not execution:
-/// `log_reject` writes to the host logger and this crate has no harness that can
-/// read it back (ADR-0156 P7).
+/// so the scan sees that both parameters are escaped and that nothing throws the
+/// results away, but not which placeholder consumes which. That residue is
+/// covered from the other side by G-1..G-3, which prove the function is worth
+/// calling at all. (b) Source scan, not execution: `log_reject` writes to the
+/// host logger and this crate has no harness that can read it back (ADR-0156 P7).
 #[test]
 fn log_reject_escapes_both_reducer_and_reason() {
     let squashed = squashed_guards();
@@ -1439,6 +1453,32 @@ fn log_reject_escapes_both_reducer_and_reason() {
          call. An implementation that escapes both arguments and then deletes or \
          downgrades the log call satisfies every needle above while removing the \
          observability the whole seam exists to protect."
+    );
+
+    // The discard kill. Green at HEAD (the body is a single `log::warn!` with no
+    // bindings at all) and it must STAY green: every needle above is satisfied by
+    // `let _ = json_escape(reducer); let _ = json_escape(reason); log::warn!(..)`
+    // with both parameters still interpolated raw. That shell is neither a compile
+    // error nor a lint failure — see this test's doc comment and the identical
+    // finding at trading_tests.rs:1959-2039.
+    let discard = ["let", "_"].concat();
+    let n_discard = region.matches(discard.as_str()).count();
+    assert_eq!(
+        n_discard, 0,
+        "TEETH (11r-g G-4, ADR-0170 D5): `log_reject`'s region contains {n_discard} \
+         underscore binding(s) (`let _`) and must contain ZERO. \
+         WHAT THIS KILLS: `let _ = json_escape(reducer); let _ = json_escape(reason);` \
+         placed beside a `log::warn!` that still interpolates both parameters RAW. \
+         That shell satisfies the escape COUNT and both named needles above while \
+         emitting exactly the malformed JSON this seam exists to prevent, and it is \
+         caught by nothing else: `let _ = expr;` binds the wildcard pattern, so \
+         `unused_variables` never fires and `-D warnings` is silent (the same evasion, \
+         with the same wrong 'the lint gate catches it' justification, was found and \
+         fixed before at trading_tests.rs:1959-2039). \
+         Use the escaped values directly in the format arguments, or bind them by \
+         shadowing under their real names — `let reducer = json_escape(reducer);` \
+         squashes to `letreducer=` and does not match this needle. Green at HEAD; if \
+         it ever fires, the escape results are being thrown away."
     );
 }
 

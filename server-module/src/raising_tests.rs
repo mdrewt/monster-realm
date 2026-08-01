@@ -1162,6 +1162,69 @@ fn differential_level_up_heal_documents_laundering_vector() {
 // test's own text.
 // ===========================================================================
 
+/// Blank the CONTENT and delimiters of every `"…"` string literal, preserving
+/// byte length by substituting spaces.
+///
+/// A LOCAL, ADDITIVE companion to this file's shared `strip_raising_comments`
+/// (which stays comment-only): used ONLY by
+/// [`heal_party_reads_the_cached_heal_location_registry`], so the pre-existing
+/// ptc5a `care` / `train` needles keep the exact view they were written against.
+/// Apply AFTER comment stripping, never before.
+///
+/// Handles `"…"` with `\` escapes only; [`assert_no_heal_scan_landmines`] fails
+/// loudly on the two constructs that would misalign it.
+fn blank_heal_scan_strings(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = vec![b' '; len];
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == 0x22 {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                } else if bytes[i] == 0x22 {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+        } else {
+            out[i] = bytes[i];
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("string-blanked source must be valid UTF-8")
+}
+
+/// Loud preconditions for [`blank_heal_scan_strings`]'s two blind spots: raw
+/// strings and a double quote spelled as a char literal. A silently misaligned
+/// blanker would blank the wrong byte range and turn the gate below vacuous, so
+/// each fails with an explicit message instead (the discipline
+/// `guards_tests.rs`'s `assert_stripper_preconditions` established).
+fn assert_no_heal_scan_landmines(raw: &str) {
+    let raw_opener = ["r", "#"].concat();
+    assert!(
+        !raw.contains(raw_opener.as_str()),
+        "SCAN PRECONDITION (11r-g H-2): `raising.rs` contains a raw-string / \
+         raw-identifier opener, which this file's minimal string blanker does not \
+         handle — it would blank the wrong byte range and hollow out the gate below. \
+         Extend the blanker before adding such a literal."
+    );
+    let sq = char::from(0x27u8).to_string();
+    let dq = char::from(0x22u8).to_string();
+    let char_literal_quote = [sq.as_str(), dq.as_str(), sq.as_str()].concat();
+    assert!(
+        !raw.contains(char_literal_quote.as_str()),
+        "SCAN PRECONDITION (11r-g H-2): `raising.rs` spells a double quote as a CHAR \
+         literal. This blanker has no char-literal lexer, so that quote reads as a \
+         string OPENER and inverts string/code polarity for the rest of the file. \
+         Spell it with a Unicode escape inside the char literal."
+    );
+}
+
 /// **H-2** (ADR-0170 D3) — `heal_party` reads the CACHED heal-location registry.
 ///
 /// ASSERTION-RED at HEAD: raising.rs:324 calls the uncached loader, re-parsing
@@ -1190,13 +1253,24 @@ fn differential_level_up_heal_documents_laundering_vector() {
 ///     unlisted `location_id` into an error or a panic on a path that today is
 ///     simply free, and ADR-0170 D3 requires the semantics to be unchanged.
 ///
+/// COMMENTS **AND** STRING LITERALS ARE BLANKED before any needle is evaluated.
+/// This file's shared `strip_raising_comments` is comment-only, which is fine for
+/// the pre-existing tests but NOT for a gate whose teeth are a POSITIVE needle: a
+/// dead `let _decoy = "content_cache::cached_heal_locations()";` in the body would
+/// satisfy the positive needle while `heal_party` still calls the uncached loader,
+/// and the negative needle would never fire because the decoy does not spell it.
+/// That is the red-team hole `movement_tests.rs:45-52` records for this crate.
+/// [`blank_heal_scan_strings`] is a local, additive step — the shared helper and
+/// the ptc5a tests are untouched.
+///
 /// HONEST LIMIT: a source scan, not an execution — this crate has no
 /// reducer-executing harness (ADR-0156 P7). That the cached accessor returns the
 /// same data as the loader is proven separately and behaviourally by
 /// `content_cache_tests.rs::cached_heal_locations_matches_load`.
 #[test]
 fn heal_party_reads_the_cached_heal_location_registry() {
-    let stripped = strip_raising_comments(RAISING_SOURCE);
+    assert_no_heal_scan_landmines(RAISING_SOURCE);
+    let stripped = blank_heal_scan_strings(&strip_raising_comments(RAISING_SOURCE));
     let fn_needle = ["pub fn heal", "_party(ctx:"].concat();
     let body = reducer_body(&stripped, &fn_needle);
     let collapsed: String = body.split_whitespace().collect();
@@ -1208,8 +1282,11 @@ fn heal_party_reads_the_cached_heal_location_registry() {
          registry through `content_cache::cached_heal_locations(..)` — the eighth \
          LazyLock this slice adds. RED at HEAD: raising.rs:324 calls the uncached \
          loader and re-parses the embedded RON on EVERY heal. The needle is \
-         module-QUALIFIED and keeps its opening paren so neither a bare mention nor a \
-         file-local `load_cached_heal_locations()` shim can satisfy it."
+         module-QUALIFIED and keeps its opening paren so a file-local \
+         `load_cached_heal_locations()` shim cannot satisfy it, and comments AND \
+         string literals are blanked before matching so a dead \
+         `let _decoy = <the needle text>;` cannot satisfy it either — only an \
+         executable call can."
     );
 
     let banned = ["load_heal", "_locations("].concat();
@@ -1220,9 +1297,10 @@ fn heal_party_reads_the_cached_heal_location_registry() {
          call(s) to the uncached heal-location loader and must make ZERO. HEAD has 1. \
          Adding the cached accessor while leaving this call in place is the \
          belt-and-braces shell that passes the positive needle above with the \
-         per-call RON re-parse fully intact. The needle targets the CALL (it keeps \
-         the opening paren), so the accessor name appearing inside the `map_err` \
-         message does not trip it — though renaming that message is good hygiene."
+         per-call RON re-parse fully intact. String literals are blanked before \
+         matching, so the accessor name inside the existing `map_err` message cannot \
+         trip this — only an executable call can. (Renaming that message when the \
+         call moves is still good hygiene; it is deliberately not gated.)"
     );
 
     let cost_field = ["cost", "_currency"].concat();

@@ -796,6 +796,81 @@ fn counted_err(
     Err(message.to_string())
 }
 
+/// Blank the CONTENT and delimiters of every `"…"` string literal, preserving
+/// byte length by substituting spaces.
+///
+/// A LOCAL, minimal companion to `strip_rust_comments_local` above — added by
+/// 11r-g and used ONLY by `battle_reducers_use_cached_abilities_and_cached_type_chart`.
+/// The pre-existing `hot_path_reducers_use_cached_content_not_load` keeps the
+/// comment-only view on purpose: its `content error` needle IS string content.
+///
+/// WHY IT IS LOAD-BEARING. A comment-only view lets a dead
+/// `let _decoy = "content_cache::cached_abilities()";` satisfy the POSITIVE
+/// needle of the call-site gate while the reducer still calls the uncached
+/// loader — the exact red-team hole `movement_tests.rs:45-52` records for this
+/// crate. Blanking literal content makes the only place a needle can live
+/// executable code. As a bonus, a `{` or `}` inside a format string can no longer
+/// perturb `extract_fn_body_local`'s brace counting.
+///
+/// SCOPE OF THE LEXER, and why it is sufficient here. It handles `"…"` with `\`
+/// escapes only. `battle.rs` contains no raw strings and no char literal holding
+/// a double quote (both asserted by `assert_no_scan_landmines` before use), which
+/// are the two constructs that would misalign it. Apply AFTER comment stripping,
+/// never before.
+fn blank_rust_strings_local(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = vec![b' '; len];
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == 0x22 {
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                } else if bytes[i] == 0x22 {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+        } else {
+            out[i] = bytes[i];
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("string-blanked source must be valid UTF-8")
+}
+
+/// Loud preconditions for [`blank_rust_strings_local`]'s two blind spots.
+///
+/// A silently misaligned stripper is the worst failure mode for a source gate —
+/// it blanks the wrong byte range and every needle downstream turns vacuous — so
+/// each blind spot fails with an explicit message instead. Mirrors the discipline
+/// of `assert_stripper_preconditions` in `guards_tests.rs` / `movement_tests.rs`.
+fn assert_no_scan_landmines(name: &str, raw: &str) {
+    let raw_opener = ["r", "#"].concat();
+    assert!(
+        !raw.contains(raw_opener.as_str()),
+        "SCAN PRECONDITION (11r-g): `{name}` contains a raw-string / raw-identifier \
+         opener, which this file's minimal string blanker does not handle — it would \
+         blank the wrong byte range and hollow out the call-site gate below. Extend \
+         the blanker before adding such a literal."
+    );
+    let sq = char::from(0x27u8).to_string();
+    let dq = char::from(0x22u8).to_string();
+    let char_literal_quote = [sq.as_str(), dq.as_str(), sq.as_str()].concat();
+    assert!(
+        !raw.contains(char_literal_quote.as_str()),
+        "SCAN PRECONDITION (11r-g): `{name}` spells a double quote as a CHAR literal. \
+         This blanker has no char-literal lexer, so that quote reads as a string \
+         OPENER and inverts string/code polarity for the rest of the file. Spell it \
+         with a Unicode escape inside the char literal (the same rule \
+         `guards_tests.rs`'s G-5a fence enforces for this slice's own files)."
+    );
+}
+
 /// CRITERION C-1 (abilities transparency): `cached_abilities()` returns exactly
 /// the same data as `game_core::load_abilities()` — same count and same contents.
 ///
@@ -1303,14 +1378,26 @@ fn sync_content_reachable_modules_never_call_cached_type_chart() {
 ///     that one is the expensive half: a full `type_relation_row` scan plus a
 ///     chart rebuild on EVERY `submit_attack` and `swap_active`.
 ///
-/// HONEST LIMIT: comments are stripped but string literals are not (this file's
-/// helper is comment-only, by convention), so a `format!` message naming
-/// `load_abilities` inside one of these bodies would false-RED. That is the
-/// desirable direction — an error message naming an accessor the code no longer
-/// calls is itself a defect — and the message below says so.
+/// COMMENTS **AND** STRING LITERALS ARE BLANKED before any needle is evaluated.
+/// The comment-only view this file uses elsewhere is not enough for a gate whose
+/// teeth are a POSITIVE needle: a dead
+/// `let _decoy = "content_cache::cached_abilities()";` anywhere in a reducer body
+/// satisfies the positive needle while the body still calls the uncached loader,
+/// and the negative needle never fires because the decoy does not spell it. That
+/// is the red-team hole `movement_tests.rs:45-52` records for this crate,
+/// reproduced here. [`blank_rust_strings_local`] makes executable code the only
+/// place a needle can live; [`assert_no_scan_landmines`] fails loudly on the two
+/// constructs its lexer cannot see.
+///
+/// A welcome side effect: the negative needles no longer false-RED on an error
+/// MESSAGE that happens to name the old accessor. Renaming such a message stays
+/// good hygiene, but it is no longer gated here — a fence with no defect behind
+/// it is worse than none.
 #[test]
 fn battle_reducers_use_cached_abilities_and_cached_type_chart() {
-    let battle_stripped = strip_rust_comments_local(include_str!("battle.rs"));
+    let battle_raw = include_str!("battle.rs");
+    assert_no_scan_landmines("battle.rs", battle_raw);
+    let battle_stripped = blank_rust_strings_local(&strip_rust_comments_local(battle_raw));
 
     let cached_abilities_needle = ["content_cache::cached", "_abilities"].concat();
     let banned_abilities_needle = ["load", "_abilities"].concat();
@@ -1339,10 +1426,9 @@ fn battle_reducers_use_cached_abilities_and_cached_type_chart() {
             "TEETH (11r-g C-8, ADR-0170 D2): `{fn_name}` must NOT mention the uncached \
              abilities loader. Adding the cached call while leaving the uncached one \
              in place is the belt-and-braces shell that passes the positive needle \
-             above with the RON re-parse fully intact. (Comments are stripped but \
-             string literals are not: if this fires on an error MESSAGE, rename the \
-             message too — text naming an accessor the code no longer calls is itself \
-             a defect.)"
+             above with the RON re-parse fully intact. Comments AND string literals \
+             are blanked before this scan, so only an executable call can trip it — \
+             an error message that still names the old accessor will not."
         );
     }
 
