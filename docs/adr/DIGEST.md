@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 137 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 138 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -146,6 +146,7 @@ Generated from 137 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0169](./0169-wallet-view-runtime-path.md) | 0169 — Wallet view runtime path: `my_wallet` subscription, insert-only ingest, and a three-site call-site tooth | Accepted | client-ui, economy-quests, security-authz | 11r-e (M-postgate-eleventh-review-residuals — ux2b wallet view completion; EARS 11r-e-1..11r-e-9) | Subscribe the owner-scoped `my_wallet` view, ingest it insert-only with no delete handler, and pass `store.ownWallet(identity)` at all THREE `buildShopViewModel*` call sites, pinned by a contiguous-needle ingest tooth and a count tooth. |
 | [0170](./0170-server-hardening-cache-completion-log-escaping.md) | 0170 — Server hardening basket: version-keyed type-chart cache, ADR-0089 completion, heal-cost seam split, and JSON log escaping | Accepted | battle, movement-netcode, economy-quests | 11r-g (M-postgate-eleventh-review-residuals — server hardening basket; EARS G-1..G-5, M-1..M-7, C-1..C-10, H-1..H-3, V-1..V-5) | Cache abilities/heal-locations as LazyLock statics and the type chart behind a content_version-keyed rebuild; rate-limit + JSON-escape silent wild-encounter failure logs; ship heal-cost cached read + inert client seam, column parked. |
 | [0171](./0171-resume-from-idle-interpolation.md) | 0171 — Resume-from-idle interpolation smoothness: idle-gap-gated jitter EWMA + re-anchored lerp bracket | Accepted | movement-netcode, client-ui | 11r-f (M-postgate-eleventh-review-residuals — resume-from-idle smoothness; EARS E1) | Gate the per-character jitter EWMA to inter-arrival intervals <= 3x stepMs (idleness is not jitter) and re-anchor any interpolation bracket wider than 2x stepMs to [next-stepMs, next], holding at prev below it. |
+| [0172](./0172-test-integrity-and-movement-rejection-diagnostics.md) | 0172 — Test-integrity residuals and movement-rejection diagnostics | Accepted | ci-gates, client-ui, movement-netcode | 11r-h (M-postgate-eleventh-review-residuals — test-integrity & diagnostics residuals; EARS E1-1..E1-2, E2-1..E2-3, E3-1..E3-4, E4-1..E4-4, E5-1..E5-9) | De-vacuify three assertions (RT-SZ-02, F-5f, the M14d weather pin), add a grantBait revival tripwire for R4, and trace movement rejections into the F9 bundle via a rate-limited, overlay-filtered breadcrumb plus a dev fate line. |
 
 ## Harness design corpus (H- namespace)
 
@@ -272,6 +273,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0168](./0168-server-battle-movement-lock.md) — 11r-c (M-postgate-eleventh-review-residuals §2; EARS E1–E3) — 0168 — Real server battle movement lock: drain-time freeze in `movement_tick`, intake rejects in the move reducers (Accepted)
 - [0170](./0170-server-hardening-cache-completion-log-escaping.md) — 11r-g (M-postgate-eleventh-review-residuals — server hardening basket; EARS G-1..G-5, M-1..M-7, C-1..C-10, H-1..H-3, V-1..V-5) — 0170 — Server hardening basket: version-keyed type-chart cache, ADR-0089 completion, heal-cost seam split, and JSON log escaping (Accepted)
 - [0171](./0171-resume-from-idle-interpolation.md) — 11r-f (M-postgate-eleventh-review-residuals — resume-from-idle smoothness; EARS E1) — 0171 — Resume-from-idle interpolation smoothness: idle-gap-gated jitter EWMA + re-anchored lerp bracket (Accepted)
+- [0172](./0172-test-integrity-and-movement-rejection-diagnostics.md) — 11r-h (M-postgate-eleventh-review-residuals — test-integrity & diagnostics residuals; EARS E1-1..E1-2, E2-1..E2-3, E3-1..E3-4, E4-1..E4-4, E5-1..E5-9) — 0172 — Test-integrity residuals and movement-rejection diagnostics (Accepted)
 
 ### content
 
@@ -368,6 +370,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0167](./0167-pvp-side-b-battle-perspective.md) — 11r-b — 0167 — PvP side-B battle overlay: role-agnostic accessors + a view-boundary perspective projection (Accepted)
 - [0169](./0169-wallet-view-runtime-path.md) — 11r-e (M-postgate-eleventh-review-residuals — ux2b wallet view completion; EARS 11r-e-1..11r-e-9) — 0169 — Wallet view runtime path: `my_wallet` subscription, insert-only ingest, and a three-site call-site tooth (Accepted)
 - [0171](./0171-resume-from-idle-interpolation.md) — 11r-f (M-postgate-eleventh-review-residuals — resume-from-idle smoothness; EARS E1) — 0171 — Resume-from-idle interpolation smoothness: idle-gap-gated jitter EWMA + re-anchored lerp bracket (Accepted)
+- [0172](./0172-test-integrity-and-movement-rejection-diagnostics.md) — 11r-h (M-postgate-eleventh-review-residuals — test-integrity & diagnostics residuals; EARS E1-1..E1-2, E2-1..E2-3, E3-1..E3-4, E4-1..E4-4, E5-1..E5-9) — 0172 — Test-integrity residuals and movement-rejection diagnostics (Accepted)
 
 ### ci-gates
 
@@ -412,6 +415,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0147](./0147-fuse-field-carry-and-fusion-eligibility.md) — A0 (M-postgate-evolution-fusion-hardening — fuse() field-carry fix + fusion_eligible extraction; EARS A0-1..A0-9) — 0147 — fuse() field-carry repair (taxed, not reset) + fusion_eligible guard SSOT (Accepted)
 - [0153](./0153-ux3-playtest-preflight.md) — ux3 (M-postgate-ux-hardening — `playtest-up`/`playtest-wipe` preflight-check `$STDB_SERVER` reachability; EARS ux3-1..ux3-3) — 0153 — ux3 playtest preflight: reach the server through the CLI's own resolver, and gate it behaviorally (Accepted)
 - [0165](./0165-changelog-freshness-nightly-check.md) — 11r-d — 0165 — Changelog freshness: nightly drift check (not per-PR, not manual) (Accepted)
+- [0172](./0172-test-integrity-and-movement-rejection-diagnostics.md) — 11r-h (M-postgate-eleventh-review-residuals — test-integrity & diagnostics residuals; EARS E1-1..E1-2, E2-1..E2-3, E3-1..E3-4, E4-1..E4-4, E5-1..E5-9) — 0172 — Test-integrity residuals and movement-rejection diagnostics (Accepted)
 
 ### tooling-docs
 

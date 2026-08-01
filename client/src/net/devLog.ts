@@ -120,6 +120,109 @@ export function formatSendLine(name: string, args: readonly unknown[]): string {
 }
 
 /**
+ * The settled outcome of an outbound reducer call, reported INBOUND (`<-`). Exactly one
+ * fate exists today: `enqueueMove` rejected by the server (ADR-0172 E5.4). The literal
+ * union — not a bare `string` — keeps the module's `as const`-derived-union discipline,
+ * so adding a second fate is a deliberate, type-checked edit at every call site.
+ */
+export type FateLogger = (reducerName: string, fate: 'rejected', args: readonly unknown[]) => void;
+
+/** One inbound-fate line: `<- <name> <fate> <args>`, capped at MAX_LINE_LEN.
+ *  The arrow is INBOUND on purpose — direction is the one thing a wire log must never lie
+ *  about, and reusing formatSendLine's `->` would claim the client SENT a rejection.
+ *  `fate` is typed `string` (not the union) so the cap is exercised on a hostile token too;
+ *  the FateLogger signature is what narrows it at the call sites.
+ *  The args go through the SAME total renderer as formatSendLine — one renderer for the
+ *  whole module, so the bigint / toHexString / `<unserializable>` behaviour cannot drift
+ *  between the send path and the rejection path (which only ever runs in a playtest). */
+export function formatFateLine(name: string, fate: string, args: readonly unknown[]): string {
+  return `<- ${name} ${fate} ${formatArgs(args)}`.slice(0, MAX_LINE_LEN);
+}
+
+/**
+ * The fate sink factory. Mirrors makeSendLogger's strict-identity discipline — `undefined`
+ * at level 'off', so the default production build allocates and formats nothing — but
+ * deliberately does NOT consult `shouldLogReducer` / NOISY_REDUCERS (ADR-0172 D2).
+ * The asymmetry is the point: enqueueMove SENDS run ~5/second while walking (hence their
+ * exclusion at 'send'), while a REJECTION is rare and is precisely the event a developer
+ * who turned the log on is trying to see. Filtering it here would suppress signal, not noise.
+ */
+export function makeFateLogger(
+  level: DevLogLevel,
+  out: (line: string) => void,
+): FateLogger | undefined {
+  if (level === 'off') return undefined;
+  return (reducerName, fate, args) => {
+    out(formatFateLine(reducerName, fate, args));
+  };
+}
+
+/**
+ * Rate-limit accounting for a repeating diagnostic event (ADR-0172 D1).
+ *  - `lastMs`  the clock reading the last EMIT happened at (the caller owns the clock);
+ *  - `emitted` how many emits this session has spent, against the policy cap;
+ *  - `pending` how many events have arrived since the last emit, EXCLUSIVE of the tick
+ *    currently being decided (a tick adds itself, so an emit reports `pending + 1`).
+ * Immutable: `rateLimitTick` returns a new state and never touches the one handed to it.
+ */
+export type RateLimitState = {
+  readonly lastMs: number;
+  readonly emitted: number;
+  readonly pending: number;
+};
+
+/** The start state. `lastMs` is "infinitely long ago", NOT zero: the caller feeds a
+ *  monotonic clock that starts near 0, so a zero anchor would swallow the very first
+ *  event of the session — exactly the one a rejection storm at load time depends on. */
+export const RATE_LIMIT_INITIAL: RateLimitState = {
+  lastMs: Number.NEGATIVE_INFINITY,
+  emitted: 0,
+  pending: 0,
+};
+
+/** An OPTIONS OBJECT, not two bare numbers: the two fields are both counts and a swapped
+ *  positional pair would type-check silently. `minGapMs` is the minimum spacing between
+ *  emits; `cap` is a SESSION total that elapsed time never reopens. */
+export type RateLimitPolicy = { readonly minGapMs: number; readonly cap: number };
+
+/**
+ * The pure transition. Suppress iff the tick lands inside `minGapMs` of the last emit OR
+ * the session cap is spent; otherwise emit, carrying the count of events since the last
+ * emit INCLUSIVE of this one (that count is the only surviving record of a suppressed
+ * storm's magnitude).
+ *
+ * The gap test is guarded by `nowMs >= state.lastMs` so a BACKWARDS clock reading emits
+ * and re-anchors instead of suppressing forever: an unguarded subtraction goes negative,
+ * i.e. permanently "inside the gap", and no test that only walks time forwards can see it.
+ * The cap term is deliberately outside that relaxation — a clock jump must not resurrect
+ * an exhausted session cap.
+ *
+ * EDGE CASES, stated so a future reader does not have to re-derive them: a `cap` of 0 or less
+ * disables emission entirely (the session budget is already spent), a `minGapMs` of 0 or less
+ * emits on every tick until the cap, and a NaN clock reading degrades to emit-until-cap rather
+ * than suppress-forever — the cap is the only hard bound on the emit path, which is why it is a
+ * const literal at the call site and pinned by a source-scan tooth.
+ */
+export function rateLimitTick(
+  state: RateLimitState,
+  nowMs: number,
+  policy: RateLimitPolicy,
+): { readonly state: RateLimitState; readonly emit: { readonly pending: number } | undefined } {
+  const pending = state.pending + 1;
+  const insideGap = nowMs >= state.lastMs && nowMs - state.lastMs < policy.minGapMs;
+  if (insideGap || state.emitted >= policy.cap) {
+    return {
+      state: { lastMs: state.lastMs, emitted: state.emitted, pending },
+      emit: undefined,
+    };
+  }
+  return {
+    state: { lastMs: nowMs, emitted: state.emitted + 1, pending: 0 },
+    emit: { pending },
+  };
+}
+
+/**
  * The sink factory. Returns `undefined` at level 'off' so the disabled path allocates
  * nothing at all — that undefined is what makes `wrapReducerLogging` strict identity in
  * the default production build (spec criterion 2).
