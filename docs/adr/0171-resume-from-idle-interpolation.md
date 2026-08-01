@@ -37,9 +37,10 @@ small intervals are genuine delivery jitter; only large ones are idleness.
 **K = 3 derivation.** Floor: `K > 2`, because a latency spike that coalesces two ticks
 presents as one `interval ≈ 0` plus one `interval ≈ 2×stepMs` — the exact pattern
 ADR-0090 exists to absorb, so `2×stepMs` must stay inside the gate. Ceiling: one
-admitted sample moves the delay by `COEFF × α × deviation = 0.25×(K−1)×stepMs`; at
-`K = 3` that caps the per-sample delay movement at `+0.5` steps, while `K ≥ 7` would let
-a single sample saturate the 2.5-step clamp outright (`1 + 0.25(K−1) ≥ 2.5`). On the
+admitted sample moves the delay by up to `COEFF × α × deviation = 0.25×(K−1)×stepMs`
+(exact from a zero prior; an upper bound otherwise, since `Δewma = α×(deviation−ewma)`);
+at `K = 3` that caps the per-sample delay movement at `+0.5` steps, while `K ≥ 7` would
+let a single sample saturate the 2.5-step clamp outright (`1 + 0.25(K−1) ≥ 2.5`). On the
 scheduled-tick local deployment (ADR-0129), three missed steps is an idle character,
 not a network event.
 
@@ -158,11 +159,18 @@ files, different failure modes) — a future consolidation must not silently uni
   (1 tile per cadence of constant drift). Sustained *network* degradation does not
   produce this shape: WebSocket delivery of a stalled fast mover arrives as bursts
   (small intra-burst intervals still update the EWMA) or as multi-tile deltas
-  (`shouldSnap` → teleport, M12.5d-2). At such cadences the gate also freezes the EWMA
-  (every interval `> 3×stepMs`) — harmless by design: the re-anchor makes wide-bracket
-  rendering independent of span, so no delay adaptation is needed there, and the delay
-  stays at base instead of inflating toward the clamp. A sustained-cadence test pins
-  this shape as intended.
+  (`shouldSnap` → teleport, M12.5d-2). At cadences `> 3×stepMs` the gate also freezes
+  the EWMA — harmless by design: the re-anchor makes wide-bracket rendering independent
+  of span, so no delay adaptation is needed there, and the delay stays at base instead
+  of inflating toward the clamp. A sustained-cadence test pins this shape as intended.
+  **Known band (`2×stepMs`, `3×stepMs`]:** a sustained uniform cadence inside this band
+  re-anchors (correct shape) but every arrival is still admitted to the EWMA, whose
+  fixed point `|cadence − stepMs| ≥ 150 ms` keeps the delay at the 2.5-step clamp —
+  correct rendering, ~1.5 steps of avoidable lag. Never a regression (pre-11r-f had the
+  same delay AND the crawl), and a one-off interval in that band is genuine dropped-tick
+  jitter that MUST feed the estimator, so the gate cannot be tightened to `K = 2`
+  without under-adapting real jitter; distinguishing sustained-cadence from spike needs
+  history the estimator does not keep. Recorded as the concrete evidence for D-D.
 - **Scope boundary: only 1-tile resumes are smoothed.** A ≥ 2-tile catch-up resume
   trips `shouldSnap` (ring reset → teleport), unchanged and intended — interpolating
   multi-tile jumps smears sprites through walls. Pinned by a test.
@@ -176,8 +184,11 @@ files, different failure modes) — a future consolidation must not silently uni
   EWMA via a `shared/` pure core, or delete the class.
 - **D-C** — idle-decay/reset policy for `jitterEwma` across long gaps (carried-forward
   is the current policy).
-- **D-D** — genuinely irregular server cadences (NPC wander schedules) — no evidence of
-  a problem yet; the sustained-cadence test documents the rendering shape.
+- **D-D** — sustained non-step cadences. Concrete evidence: the (`2×stepMs`, `3×stepMs`]
+  band (Consequences above) renders correctly but holds the delay at the clamp —
+  ~1.5 steps of avoidable lag for entities that genuinely step in that band. Fix needs
+  cadence history (e.g. a median-of-ring estimate) the estimator deliberately does not
+  keep yet.
 - **D-E** — an e2e/visual smoothness proof (happy-dom does no layout; all teeth here
   are behavioral on the pure cores).
 - **D-F** — per-frame delay recomputation wobble (slew-limit `D`) — pre-existing

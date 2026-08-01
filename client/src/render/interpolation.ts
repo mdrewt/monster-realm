@@ -164,14 +164,10 @@ export const REANCHOR_SPAN_STEPS = 2;
  * even when the two burst snapshots share the same `receivedAt`.
  *
  * ADR-0171 (11r-f) re-anchor: when `stepMs > 0` and a bracket's raw span exceeds
- * REANCHOR_SPAN_STEPS×stepMs (an idle gap, not delivery jitter), the lerp window
- * becomes [next.receivedAt − stepMs, next.receivedAt]; at or below its lower edge
- * the position HOLDS at `prev` — the dead zone: the character genuinely stood
- * there for the whole gap (ADR-0013's hold-don't-drift applied to a bracket
- * interior). WHY: lerping the whole gap renders a resume as a near-full-tile pop
- * plus a crawl; re-anchored, it renders as rest → one exactly-stepMs slide that
- * ENDS when the new authoritative position becomes current. Brackets re-anchor
- * per-bracket; the outer HOLD/clamp paths are evaluated first and are untouched.
+ * REANCHOR_SPAN_STEPS×stepMs, the lerp window becomes [next.receivedAt − stepMs,
+ * next.receivedAt]; at or below its lower edge the position HOLDS at `prev` (the
+ * dead zone). Brackets re-anchor per-bracket; the outer HOLD/clamp paths are
+ * evaluated first and are untouched. Rationale: ADR-0171 D2.
  *
  * WARNING: omitting `stepMs` DISABLES the ADR-0171 re-anchor — pass the real step
  * interval from any new call site. 0/negative = disabled = the legacy math,
@@ -241,9 +237,8 @@ export function interpolateHistory(
   // span would put `lower` below `prev` and corrupt the bracket.
   if (span <= 0) return { x: next.tileX, y: next.tileY };
 
-  // ADR-0171 D2 re-anchor: a raw span strictly wider than REANCHOR_SPAN_STEPS×stepMs
-  // is an idle gap. The lower edge is `next − stepMs`, never `prev + stepMs`: the
-  // slide must END when the new authoritative position becomes current (front-
+  // ADR-0171 D2 re-anchor. The lower edge is `next − stepMs`, never `prev + stepMs`:
+  // the slide must END when the new authoritative position becomes current (front-
   // anchoring would move the character at gap start and freeze it for the rest).
   let lower = prev.receivedAt;
   if (stepMs > 0 && span > REANCHOR_SPAN_STEPS * stepMs) {

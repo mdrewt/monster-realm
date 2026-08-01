@@ -19,17 +19,9 @@ import { BURST_EPSILON_MS, INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH } from '../shar
  * `upsertCharacter` skips the EWMA update for them (`<=` admits, `>` skips; one-sided:
  * interval ≈ 0 burst co-arrivals still update).
  *
- * WHY K = 3 (two-sided derivation):
- * - Floor K > 2: a latency spike that coalesces two ticks presents as one
- *   interval ≈ 0 plus one interval ≈ 2×stepMs — genuine delivery jitter, the exact
- *   pattern ADR-0090's adaptive delay exists to absorb, so 2×stepMs must stay
- *   inside the gate.
- * - Ceiling: one admitted sample moves the delay by COEFF×α×deviation =
- *   0.25×(K−1)×stepMs. K = 3 caps the per-sample delay movement at +0.5 steps;
- *   K ≥ 7 would let a single sample saturate the 2.5-step clamp outright
- *   (1 + 0.25(K−1) ≥ 2.5).
- * - On the scheduled-tick local deployment (ADR-0129), three missed steps is an
- *   idle character, not a network event.
+ * WHY 3: must exceed 2 — a coalesced-tick spike presents as interval ≈ 2×stepMs of
+ * genuine delivery jitter that must stay inside the gate — while capping one admitted
+ * sample's delay movement at +0.5 steps. Floor-and-ceiling derivation: ADR-0171 D1.
  */
 export const JITTER_IDLE_GAP_STEPS = 3;
 
@@ -461,10 +453,8 @@ export class AuthoritativeStore {
     if (this.#stepMs > 0 && existing !== undefined && !shouldSnap) {
       // Use wall-clock now (not synthetic receivedAt) for the true interval measure.
       const interval = now - existing.receivedAt;
-      // ADR-0171 D1 idle-gap gate: intervals > JITTER_IDLE_GAP_STEPS × stepMs are
-      // idleness, not delivery jitter — skip the update so a pause can never inflate
-      // the adaptive delay toward its clamp. The estimate is carried across the gap
-      // UNCHANGED, never reset: the pre-idle value is the best available prior (D-C).
+      // ADR-0171 D1 idle-gap gate; the estimate is carried across the gap UNCHANGED,
+      // never reset — the pre-idle value is the best available prior (D-C).
       if (interval <= JITTER_IDLE_GAP_STEPS * this.#stepMs) {
         const deviation = Math.abs(interval - this.#stepMs);
         newJitter = INTERP_JITTER_ALPHA * deviation + (1 - INTERP_JITTER_ALPHA) * newJitter;
@@ -473,10 +463,11 @@ export class AuthoritativeStore {
 
     this.#chars.set(row.entityId, {
       row,
-      // WHY unconditional across a gated idle gap (ADR-0171 D1): gating this baseline
-      // would freeze the estimator forever after any idle — the next interval, measured
-      // from the stale base, would exceed the gate again, and so on all session.
-      receivedAt: now, // always real wall-clock time (jitter base for the NEXT update)
+      // Always real wall-clock time — the jitter base for the NEXT update, written
+      // even when the gate skips (ADR-0171 D1): gating this baseline would freeze the
+      // estimator forever after any idle (each next interval, measured from the stale
+      // base, would exceed the gate again, all session).
+      receivedAt: now,
       latest,
       prev: newSnapshots.length >= 2 ? newSnapshots[newSnapshots.length - 2] : undefined,
       snapshots: newSnapshots,

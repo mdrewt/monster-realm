@@ -107,6 +107,8 @@ export class RenderResolver {
         let pos: RenderPos;
         if (c.snapshots.length > 0) {
           const delay = adaptiveInterpDelayMs(c.jitterEwma, this.#stepMs);
+          // The stepMs argument arms the ADR-0171 idle-gap re-anchor — without it the
+          // resume-from-idle fix is inert in production (renderResolver.test.ts pins it).
           pos = interpolateHistory(c.snapshots, now - delay, this.#stepMs);
         } else {
           pos = interpolate(c.prev, c.latest, now - interpDelayMs(this.#stepMs));
