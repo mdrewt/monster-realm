@@ -1132,3 +1132,215 @@ fn differential_level_up_heal_documents_laundering_vector() {
         healed_laundered.saturating_sub(healed_baseline),
     );
 }
+
+// ===========================================================================
+// 11r-g (ADR-0170 D3) — `heal_party` reads the CACHED heal-location registry
+//
+// EARS criteria covered by this section:
+//
+//   H-2  `heal_party` SHALL read the heal-location registry through
+//        `content_cache::cached_heal_locations` (the eighth LazyLock) instead of
+//        re-parsing the embedded RON on every call, with the currency-cost
+//        semantics UNCHANGED: find by `location_id`, read `cost_currency`,
+//        default to 0.
+//   H-3  The swap SHALL NOT reorder the ownership / escrow / spend sequence that
+//        `economy-sinks-sources.eval.mjs` pins (ADR-0170 D3 says so in as many
+//        words: "the owner-first/spend ordering ... is not reordered").
+//
+// RED STATE. H-2 is ASSERTION-RED at HEAD: `heal_party` (raising.rs:324) calls
+// the uncached loader. H-3 is a GREEN-AT-HEAD fence, and a SEPARATE `#[test]`
+// for the reason the house records elsewhere (`movement_tests.rs:917-921`):
+// behind a failing assertion it could never be observed passing, so it would
+// prove nothing about the swap it exists to constrain.
+//
+// Both scans reuse this file's existing helpers verbatim — `RAISING_SOURCE`
+// (line ~656), `strip_raising_comments` (line ~659) and `reducer_body`
+// (line ~840) — and whitespace-collapse the extracted body the same way
+// `care_battle_guard_wired` does, so a rustfmt line split can never cause a
+// false RED. Needles are assembled from fragments (house rule) so no eval that
+// concatenates every source file under this crate can be satisfied by this
+// test's own text.
+// ===========================================================================
+
+/// **H-2** (ADR-0170 D3) — `heal_party` reads the CACHED heal-location registry.
+///
+/// ASSERTION-RED at HEAD: raising.rs:324 calls the uncached loader, re-parsing
+/// the embedded heal-location RON on every single `heal_party` call.
+///
+/// WHAT EACH NEEDLE KILLS.
+///   * Positive, module-QUALIFIED `content_cache::cached_heal_locations(` —
+///     kills the false green where a file-local helper named
+///     `load_cached_heal_locations()` satisfies a bare substring while still
+///     re-parsing internally (the same qualification reasoning
+///     `content_cache_tests.rs`'s M14.5e gate records). The trailing open paren
+///     pins a CALL rather than a mention.
+///   * Negative `load_heal_locations(` — kills the belt-and-braces shell that
+///     adds the cached call and leaves the uncached one, so the re-parse
+///     survives. The open paren is deliberate: it targets the CALL and
+///     deliberately ignores the accessor's name appearing inside the `map_err`
+///     message text, which this file's comment-only stripper leaves visible.
+///     (Renaming that message is good hygiene but is not gated here — a false
+///     RED on a message would be a fence with no defect behind it.)
+///   * `cost_currency` — kills a swap that reaches the cache but then reads the
+///     wrong field or drops the currency lookup entirely. ADR-0083 puts the heal
+///     price on `HealLocationDef`, not on the DB row, so this field IS the price.
+///   * `unwrap_or(0)` at least twice — pins BOTH defaults that make `heal_party`
+///     total: the missing-cooldown-row default (raising.rs:320) and the
+///     unknown-location cost default (:329). Dropping the cost default turns an
+///     unlisted `location_id` into an error or a panic on a path that today is
+///     simply free, and ADR-0170 D3 requires the semantics to be unchanged.
+///
+/// HONEST LIMIT: a source scan, not an execution — this crate has no
+/// reducer-executing harness (ADR-0156 P7). That the cached accessor returns the
+/// same data as the loader is proven separately and behaviourally by
+/// `content_cache_tests.rs::cached_heal_locations_matches_load`.
+#[test]
+fn heal_party_reads_the_cached_heal_location_registry() {
+    let stripped = strip_raising_comments(RAISING_SOURCE);
+    let fn_needle = ["pub fn heal", "_party(ctx:"].concat();
+    let body = reducer_body(&stripped, &fn_needle);
+    let collapsed: String = body.split_whitespace().collect();
+
+    let cached = ["content_cache::cached_heal", "_locations("].concat();
+    assert!(
+        collapsed.contains(cached.as_str()),
+        "TEETH (11r-g H-2, ADR-0170 D3): `heal_party` must read the heal-location \
+         registry through `content_cache::cached_heal_locations(..)` — the eighth \
+         LazyLock this slice adds. RED at HEAD: raising.rs:324 calls the uncached \
+         loader and re-parses the embedded RON on EVERY heal. The needle is \
+         module-QUALIFIED and keeps its opening paren so neither a bare mention nor a \
+         file-local `load_cached_heal_locations()` shim can satisfy it."
+    );
+
+    let banned = ["load_heal", "_locations("].concat();
+    let n_banned = collapsed.matches(banned.as_str()).count();
+    assert_eq!(
+        n_banned, 0,
+        "TEETH (11r-g H-2, ADR-0170 D3): `heal_party`'s body makes {n_banned} direct \
+         call(s) to the uncached heal-location loader and must make ZERO. HEAD has 1. \
+         Adding the cached accessor while leaving this call in place is the \
+         belt-and-braces shell that passes the positive needle above with the \
+         per-call RON re-parse fully intact. The needle targets the CALL (it keeps \
+         the opening paren), so the accessor name appearing inside the `map_err` \
+         message does not trip it — though renaming that message is good hygiene."
+    );
+
+    let cost_field = ["cost", "_currency"].concat();
+    assert!(
+        collapsed.contains(cost_field.as_str()),
+        "TEETH (11r-g H-2, ADR-0170 D3): `heal_party` must still read `cost_currency` \
+         from the heal-location definition. ADR-0083 §A puts the heal price on \
+         `HealLocationDef` (content), NOT on the DB row, so this field IS the price — \
+         a swap that reaches the cache but drops the field makes every paid heal free."
+    );
+
+    let default_zero = ["unwrap_or(", "0)"].concat();
+    let n_default = collapsed.matches(default_zero.as_str()).count();
+    assert!(
+        n_default >= 2,
+        "TEETH (11r-g H-2, ADR-0170 D3): `heal_party` must keep BOTH of its \
+         zero-defaults; the body has {n_default} `unwrap_or(0)` and needs at least 2. \
+         The two are raising.rs:320 (no `heal_cooldown` row yet ⇒ last heal at 0) and \
+         :329 (the `location_id` is absent from the registry ⇒ the heal is FREE). \
+         ADR-0170 D3 requires the semantics to be unchanged by the cache swap: \
+         dropping the cost default turns an unlisted location from a free heal into \
+         an error or a panic, on a path a content edit can reach."
+    );
+}
+
+/// **H-3** (ADR-0170 D3, ADR-0083 / ADR-0106 consequence fence) — the cache swap
+/// must not reorder `heal_party`'s ownership / escrow / spend sequence.
+///
+/// GREEN AT HEAD and green after the slice; RED if the currency block is
+/// restructured while the cost lookup above it is being rewritten.
+///
+/// WHY THIS FENCE EXISTS HERE. H-2 rewrites the statement DIRECTLY ABOVE this
+/// sequence (`let currency_cost = ...`). Editing the head of a block is the
+/// classic way to accidentally re-flow the rest of it, and every property below
+/// is invisible to H-2's needles:
+///
+///   1. **`if currency_cost > 0 {` still gates the whole spend.** A content edit
+///      that sets a heal price is only safe because a zero price skips the block
+///      entirely. Without the gate, `spend_currency(ctx, me, 0)` runs on every
+///      free heal — a write, a wallet row touch, and a broadcast to every
+///      subscriber, on the most-called reducer in the raising domain.
+///   2. **`require_owner` precedes the escrow check, which precedes the spend.**
+///      This is the ordering `economy-sinks-sources.eval.mjs` pins. Spending
+///      before the escrow check lets a player pay for a heal with currency that
+///      is already locked in an active trade offer (TR-10, ADR-0106) — the
+///      double-spend the escrow guard exists to close. Spending before
+///      `require_owner` is the reject-never-burns violation ADR-0083 names: the
+///      currency is gone before the call is known to be legitimate.
+///   3. **Each of the three appears EXACTLY ONCE.** With two `spend_currency`
+///      calls the index comparison below is satisfiable while a second, unguarded
+///      spend runs later — the same reasoning `movement_tests.rs`'s E1 layer-3
+///      precondition records for a duplicated drain site.
+///
+/// HONEST LIMIT: it pins textual ORDER within one reducer body, which is a sound
+/// proxy here because these three are straight-line statements in a single block.
+/// It says nothing about the ordering eval itself — that gate stays the SSOT; this
+/// is the fast local canary that runs in the same `cargo test` as the swap.
+#[test]
+fn heal_party_keeps_owner_and_escrow_checks_before_the_spend() {
+    let stripped = strip_raising_comments(RAISING_SOURCE);
+    let fn_needle = ["pub fn heal", "_party(ctx:"].concat();
+    let body = reducer_body(&stripped, &fn_needle);
+    let collapsed: String = body.split_whitespace().collect();
+
+    let gate = ["ifcurrency_cost", ">0{"].concat();
+    assert!(
+        collapsed.contains(gate.as_str()),
+        "TEETH (11r-g H-3, ADR-0083): `heal_party` must keep `if currency_cost > 0 {{` \
+         as the gate on the whole currency block. Without it a FREE heal still runs \
+         `spend_currency(ctx, me, 0)` — a wallet write and a subscriber broadcast on \
+         the most-called reducer in this domain — and the zero-price content path \
+         stops being a no-op."
+    );
+
+    let owner = ["require", "_owner(ctx,"].concat();
+    let escrow = ["escrowed_currency", "_amount("].concat();
+    let spend = ["spend", "_currency(ctx,"].concat();
+
+    for (label, needle) in [
+        ("the ownership guard", owner.as_str()),
+        ("the trade-escrow check", escrow.as_str()),
+        ("the currency spend", spend.as_str()),
+    ] {
+        let n = collapsed.matches(needle).count();
+        assert_eq!(
+            n, 1,
+            "FENCE PRECONDITION (11r-g H-3): {label} must appear EXACTLY ONCE in \
+             `heal_party`'s body; found {n}. With zero the step was deleted; with two \
+             the index comparison below is satisfiable while a SECOND, unguarded copy \
+             runs later in the same block (the duplicated-site hazard \
+             `movement_tests.rs`'s E1 layer-3 precondition records)."
+        );
+    }
+
+    let owner_at = collapsed
+        .find(owner.as_str())
+        .expect("11r-g H-3: the ownership guard was not found in heal_party's body");
+    let escrow_at = collapsed
+        .find(escrow.as_str())
+        .expect("11r-g H-3: the trade-escrow check was not found in heal_party's body");
+    let spend_at = collapsed
+        .find(spend.as_str())
+        .expect("11r-g H-3: the currency spend was not found in heal_party's body");
+
+    assert!(
+        owner_at < escrow_at,
+        "TEETH (11r-g H-3, ADR-0083 reject-never-burns): the ownership guard is at \
+         collapsed byte {owner_at} but the trade-escrow check is at {escrow_at} — the \
+         guard must come FIRST. Green at HEAD; if this fires, the currency block was \
+         re-flowed while the cost lookup above it was being swapped to the cache."
+    );
+    assert!(
+        escrow_at < spend_at,
+        "TEETH (11r-g H-3, ADR-0106 TR-10): the trade-escrow check is at collapsed \
+         byte {escrow_at} but the spend is at {spend_at} — the escrow check must come \
+         FIRST. Spending before it lets a player pay for a heal with currency already \
+         locked in an active trade offer, which is the double-spend \
+         `escrowed_currency_amount` exists to close and which \
+         `economy-sinks-sources.eval.mjs` pins from outside this crate. Green at HEAD."
+    );
+}
