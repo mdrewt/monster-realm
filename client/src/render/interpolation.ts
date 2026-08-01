@@ -74,6 +74,11 @@ export function interpolate(
  * both snapshots share the same `receivedAt`, collapsing the interpolation span
  * to zero → instant position pop. This estimator detects burst patterns so the
  * adaptive delay can widen the render window to bracket the pre-burst snapshot.
+ *
+ * DIVERGENCE (ADR-0171 D4): this class is the documentary mirror of the PRE-11r-f
+ * rule and has no production caller — the shipped estimator (store.ts
+ * `upsertCharacter`) additionally skips intervals > JITTER_IDLE_GAP_STEPS×stepMs
+ * (idleness is not jitter). Unification/deletion is queued as D-B.
  */
 export class JitterEstimator {
   /** Current EWMA estimate of |interval − stepMs| in milliseconds. */
@@ -134,6 +139,18 @@ export function adaptiveInterpDelayMs(jitterMs: number, stepMs: number): number 
 }
 
 /**
+ * ADR-0171 D2: a bracket whose RAW span is STRICTLY greater than this many steps is
+ * an idle gap — `interpolateHistory` re-anchors its lerp window to
+ * [next − stepMs, next] and holds at `prev` below it.
+ *
+ * WHY 2: exactly 2×stepMs is one dropped tick — a legitimate two-step slide the
+ * adaptive delay is designed to bridge, so it must NOT re-anchor (hence strictly
+ * `>`). A threshold of 1 step would re-anchor the very burst windows ADR-0090's
+ * depth-4 ring exists to smooth.
+ */
+export const REANCHOR_SPAN_STEPS = 2;
+
+/**
  * Interpolate a remote position across a variable-depth snapshot history.
  *
  * WHAT: Search the history (oldest-first, index 0 = oldest) for the tightest
@@ -146,6 +163,16 @@ export function adaptiveInterpDelayMs(jitterMs: number, stepMs: number): number 
  * `receivedAt`) is available as the lower bracket — enabling smooth interpolation
  * even when the two burst snapshots share the same `receivedAt`.
  *
+ * ADR-0171 (11r-f) re-anchor: when `stepMs > 0` and a bracket's raw span exceeds
+ * REANCHOR_SPAN_STEPS×stepMs, the lerp window becomes [next.receivedAt − stepMs,
+ * next.receivedAt]; at or below its lower edge the position HOLDS at `prev` (the
+ * dead zone). Brackets re-anchor per-bracket; the outer HOLD/clamp paths are
+ * evaluated first and are untouched. Rationale: ADR-0171 D2.
+ *
+ * WARNING: omitting `stepMs` DISABLES the ADR-0171 re-anchor — pass the real step
+ * interval from any new call site. 0/negative = disabled = the legacy math,
+ * byte-for-byte (the tested "no stepMs ⇒ old math" regression property, D3).
+ *
  * Same-receivedAt tiebreak: when both burst co-arrivals carry `receivedAt ≤ renderTime`,
  * the HOLD path (`renderTime >= newest`) fires and returns the latest position — this is
  * the primary graceful degradation for unmitigated bursts. The internal `span ≤ 0` guard
@@ -155,10 +182,13 @@ export function adaptiveInterpDelayMs(jitterMs: number, stepMs: number): number 
  *
  * @param snapshots  - Ordered oldest-first; must have ≥ 1 entry.
  * @param renderTime - Target render clock (ms), typically now − adaptive delay.
+ * @param stepMs     - Nominal server step interval (ms). Default 0 = re-anchoring
+ *   disabled (legacy behaviour preserved exactly).
  */
 export function interpolateHistory(
   snapshots: readonly InterpSample[],
   renderTime: number,
+  stepMs = 0,
 ): RenderPos {
   // Degenerate: no history — no position to render.
   if (snapshots.length === 0) return { x: 0, y: 0 };
@@ -203,9 +233,22 @@ export function interpolateHistory(
   // happen with a valid oldest-first array — the HOLD path (renderTime >= newest) fires
   // first for same-receivedAt bursts at renderTime. The guard is retained as a defensive
   // check against future ring-buffer invariant violations. Holds at `next`.
+  // Evaluated FIRST, on the RAW span (ADR-0171 D2): re-anchoring an inverted/zero
+  // span would put `lower` below `prev` and corrupt the bracket.
   if (span <= 0) return { x: next.tileX, y: next.tileY };
 
-  const a = (renderTime - prev.receivedAt) / span;
+  // ADR-0171 D2 re-anchor. The lower edge is `next − stepMs`, never `prev + stepMs`:
+  // the slide must END when the new authoritative position becomes current (front-
+  // anchoring would move the character at gap start and freeze it for the rest).
+  let lower = prev.receivedAt;
+  if (stepMs > 0 && span > REANCHOR_SPAN_STEPS * stepMs) {
+    lower = next.receivedAt - stepMs;
+    // Dead zone — the character genuinely stood at `prev` for the whole gap
+    // (ADR-0013 hold-don't-drift applied to the interior of a bracket).
+    if (renderTime <= lower) return { x: prev.tileX, y: prev.tileY };
+  }
+
+  const a = (renderTime - lower) / (next.receivedAt - lower);
   return {
     x: prev.tileX + (next.tileX - prev.tileX) * a,
     y: prev.tileY + (next.tileY - prev.tileY) * a,

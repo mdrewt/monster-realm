@@ -14,6 +14,17 @@
 import type { WasmAction, WasmDirection, WasmMoveInput } from '../convert/convert';
 import { BURST_EPSILON_MS, INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH } from '../shared/interpConfig';
 
+/**
+ * ADR-0171 D1: inter-arrival intervals above K × stepMs are IDLENESS, not jitter —
+ * `upsertCharacter` skips the EWMA update for them (`<=` admits, `>` skips; one-sided:
+ * interval ≈ 0 burst co-arrivals still update).
+ *
+ * WHY 3: must exceed 2 — a coalesced-tick spike presents as interval ≈ 2×stepMs of
+ * genuine delivery jitter that must stay inside the gate — while capping one admitted
+ * sample's delay movement at +0.5 steps. Floor-and-ceiling derivation: ADR-0171 D1.
+ */
+export const JITTER_IDLE_GAP_STEPS = 3;
+
 /** A character row, normalized at the SDK boundary (ids `bigint`, enums as strings). */
 export interface StoreCharacter {
   readonly entityId: bigint;
@@ -442,13 +453,21 @@ export class AuthoritativeStore {
     if (this.#stepMs > 0 && existing !== undefined && !shouldSnap) {
       // Use wall-clock now (not synthetic receivedAt) for the true interval measure.
       const interval = now - existing.receivedAt;
-      const deviation = Math.abs(interval - this.#stepMs);
-      newJitter = INTERP_JITTER_ALPHA * deviation + (1 - INTERP_JITTER_ALPHA) * newJitter;
+      // ADR-0171 D1 idle-gap gate; the estimate is carried across the gap UNCHANGED,
+      // never reset — the pre-idle value is the best available prior (D-C).
+      if (interval <= JITTER_IDLE_GAP_STEPS * this.#stepMs) {
+        const deviation = Math.abs(interval - this.#stepMs);
+        newJitter = INTERP_JITTER_ALPHA * deviation + (1 - INTERP_JITTER_ALPHA) * newJitter;
+      }
     }
 
     this.#chars.set(row.entityId, {
       row,
-      receivedAt: now, // always real wall-clock time (jitter base for the NEXT update)
+      // Always real wall-clock time — the jitter base for the NEXT update, written
+      // even when the gate skips (ADR-0171 D1): gating this baseline would freeze the
+      // estimator forever after any idle (each next interval, measured from the stale
+      // base, would exceed the gate again, all session).
+      receivedAt: now,
       latest,
       prev: newSnapshots.length >= 2 ? newSnapshots[newSnapshots.length - 2] : undefined,
       snapshots: newSnapshots,

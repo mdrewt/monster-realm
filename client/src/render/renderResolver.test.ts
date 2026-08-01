@@ -740,3 +740,282 @@ describe('RenderResolver — ptc5g: position-divergence snap (Chebyshev > 1 tile
     expect(own!.x).toBeCloseTo(0.75, 3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 10. 11r-f (ADR-0171) — resolver wiring + evolving-D bounded wobble
+// ---------------------------------------------------------------------------
+// SOURCE OF TRUTH: docs/adr/0171-resume-from-idle-interpolation.md — D3 ("the sole
+// production consumer passes its existing #stepMs") and Consequences ("bounded
+// evolving-D wobble", closed-form worst case 0.2 tile) — plus spec
+// M-postgate-eleventh-review-residuals §11r-f EARS E1.
+//
+// These two tests drive the REAL AuthoritativeStore(200) through the REAL
+// RenderResolver(200) instead of hand-built StoredCharacter fixtures, because the
+// SEAM is the thing under test: the store's idle-gated EWMA feeds the resolver's
+// adaptive delay, and the resolver must forward its own `#stepMs` into
+// `interpolateHistory`. Every fixture in §§1-9 above uses `snapshots: []` and takes
+// the legacy 2-snapshot fallback — they are deliberately left untouched.
+//
+// RED REASON (before impl), both tests: (a) the store's ungated EWMA turns the 5 s
+// idle into jitterEwma ~600, so the adaptive delay clamps to 500 ms; and (b)
+// `resolve()` calls `interpolateHistory(c.snapshots, now - delay)` with two
+// arguments, so the whole 5000 ms bracket is lerped — the resume frame pops ~0.9
+// tile and the trailing crawl never reaches the new tile inside the walk.
+import { AuthoritativeStore, type StoreCharacter } from '../net/store';
+
+describe('11r-f resolver wiring + evolving-D (ADR-0171)', () => {
+  const NPC_ID = 7n;
+  const FRAME_MS = 16;
+
+  /** An authoritative character row shaped as the SDK boundary converter emits it. */
+  function row(entityId: bigint, tileX: number, tileY: number): StoreCharacter {
+    return {
+      entityId,
+      zoneId: 1,
+      tileX,
+      tileY,
+      facing: 'East',
+      action: 'Walking',
+      moveStartedAtMs: 0n,
+      moveQueue: [],
+    };
+  }
+
+  /** Resolve one frame for a NON-own entity (ownEntityId undefined → remote path)
+   *  and return its rendered x. `currentZoneId` is omitted → no zone filtering. */
+  function renderX(store: AuthoritativeStore, resolver: RenderResolver, now: number): number {
+    const entities = resolver.resolve({
+      characters: [...store.characters()],
+      ownEntityId: undefined,
+      predicted: undefined,
+      snapped: false,
+      now,
+    });
+    const npc = entities.find((e) => e.entityId === NPC_ID);
+    expect(npc, 'the remote NPC must be in the resolver output').toBeDefined();
+    return npc!.x;
+  }
+
+  it('(xviii) E1 LIVENESS: resolve() renders a post-idle 1-tile step as one <= stepMs slide', () => {
+    // THE TEST THAT KILLS "renderResolver.ts does not pass stepMs" (its sibling (xix)
+    // depends on the same wiring, but this is the headline E1 walk). Every test in
+    // interpolation.test.ts calls `interpolateHistory` DIRECTLY, so all of them stay
+    // green if the one-line consumer wiring at renderResolver.ts:110 is reverted or
+    // never written — the fix would be inert in production and only this describe
+    // would notice. Do not delete it as "an integration duplicate of case (v)".
+    const store = new AuthoritativeStore(STEP_MS);
+    const resolver = new RenderResolver(STEP_MS);
+
+    // The NPC has stood on (5,5) since t=1000.
+    store.upsertCharacter(row(NPC_ID, 5, 5), 1000);
+
+    let resumeApplied = false;
+    const times: number[] = [];
+    const xs: number[] = [];
+    for (let now = 5900; now <= 6450; now += FRAME_MS) {
+      // The resume row lands on the wire at wall-clock 6000, between two frames.
+      // Interval 5000 > 3 x 200 → the D1 gate keeps jitterEwma at 0 → delay = 200.
+      if (!resumeApplied && now >= 6000) {
+        store.upsertCharacter(row(NPC_ID, 6, 5), 6000);
+        resumeApplied = true;
+      }
+      times.push(now);
+      xs.push(renderX(store, resolver, now));
+    }
+    expect(resumeApplied).toBe(true);
+    expect(store.character(NPC_ID)!.jitterEwma).toBe(0); // precondition: idle is not jitter
+
+    expect(xs[0]).toBe(5); // rests on the old tile until the slide window opens
+    expect(xs[xs.length - 1]).toBe(6); // fully arrived by the end of the walk
+    expect(xs[xs.length - 1]! - xs[0]!).toBe(1); // exactly one tile of travel
+
+    let maxDelta = 0;
+    for (let i = 1; i < xs.length; i++) {
+      expect(xs[i]!).toBeGreaterThanOrEqual(xs[i - 1]!); // never back-steps
+      maxDelta = Math.max(maxDelta, Math.abs(xs[i]! - xs[i - 1]!));
+    }
+    // <= 0.08 tile per 16 ms frame. Today the resume frame moves ~0.90 tile in one
+    // frame (delay clamped to 500 → renderTime 5512 → a = 0.9024 on the raw span).
+    expect(maxDelta).toBeLessThanOrEqual(FRAME_MS / STEP_MS + 1e-9);
+
+    // and the transition completes inside one step (+ one frame of sampling slack)
+    const lastOnOldTile = xs.lastIndexOf(5);
+    const firstOnNewTile = xs.indexOf(6);
+    expect(lastOnOldTile).toBeGreaterThanOrEqual(0);
+    expect(firstOnNewTile).toBeGreaterThan(lastOnOldTile);
+    expect(times[firstOnNewTile]! - times[lastOnOldTile]!).toBeLessThanOrEqual(STEP_MS + FRAME_MS);
+  });
+
+  it('(xix) T-A: an EWMA bump one frame after the resume back-steps <= 0.2 tile and never below the old tile', () => {
+    // Pins the ACCEPTED residual of ADR-0171 (Consequences → "bounded evolving-D
+    // wobble") and its closed form. RenderResolver recomputes the adaptive delay
+    // EVERY frame, so an arrival that moves the EWMA moves `renderTime` backward;
+    // inside a re-anchored (stepMs-wide) window that reads as a back-step of
+    // min(a_before, dD/stepMs) tiles — worst case 0.2 tile, floored at `prev` by the
+    // dead zone. This is the same wobble class ordinary brackets already exhibit
+    // (ADR-0090 accepted it); the test exists so the bound cannot silently grow.
+    const store = new AuthoritativeStore(STEP_MS);
+    const resolver = new RenderResolver(STEP_MS);
+
+    store.upsertCharacter(row(NPC_ID, 0, 0), 1000); // A: idle on (0,0)
+    store.upsertCharacter(row(NPC_ID, 1, 0), 6000); // B: resume step; interval 5000 → GATED
+    expect(store.character(NPC_ID)!.jitterEwma).toBe(0); // precondition (today: 600)
+
+    // Frame 1 — clean estimator → delay 200 → renderTime 5839.9.
+    // Bracket A->B, rawSpan 5000 > 400 → window [5800, 6000] → a = 39.9/200 = 0.1995.
+    const before = renderX(store, resolver, 6039.9);
+    expect(before).toBeCloseTo(0.1995, 6);
+
+    // C arrives 40 ms after B — the closed-form worst case. Interval 40 <= 600 →
+    // ADMITTED; deviation |40-200| = 160 → ewma = 0.125*160 + 0.875*0 = 20
+    // → delay = clamp(200 + 2*20, 100, 500) = 240.
+    store.upsertCharacter(row(NPC_ID, 2, 0), 6040);
+    expect(store.character(NPC_ID)!.jitterEwma).toBe(20);
+
+    // Frame 2 — renderTime 6040.1 - 240 = 5800.1: STILL the A->B bracket, now only
+    // 0.1 ms into its window → a = 0.0005. The render clock stepped backward 40 ms.
+    const after = renderX(store, resolver, 6040.1);
+    expect(after).toBeCloseTo(0.0005, 6);
+
+    expect(before - after).toBeLessThanOrEqual(0.2 + 1e-3); // the pinned closed-form bound
+    expect(after).toBeGreaterThanOrEqual(0); // dead-zone floor: never behind `prev`
+  });
+
+  it('(x) T-B: a uniform 700 ms cadence renders hold-then-slide per step, EWMA frozen at base delay', () => {
+    // PINS A DELIBERATE SHAPE, NOT A BUG. ADR-0171 Consequences → "Slow-cadence
+    // movers render hold-then-slide, deliberately" (red-team Finding B, adjudicated
+    // INTENDED in PLAN v2). An entity whose rows arrive uniformly every 700 ms
+    // (> 2 x stepMs) renders as rest → one stepMs slide per step: exactly the own
+    // player's SlideClock motion language (slide stepMs, rest until the next step).
+    // The pre-fix "smooth crawl" (one tile of continuous drift per 700 ms) is the
+    // DEFECT class the spec names, not a virtue.
+    //
+    // Every interval here is > 3 x stepMs, so the D1 gate freezes the EWMA at 0.
+    // That is BY DESIGN, not lost adaptation: the re-anchor makes wide-bracket
+    // rendering independent of the span, so no delay adaptation is needed there, and
+    // the delay stays at its 200 ms base instead of inflating toward the 500 ms
+    // clamp. Sustained NETWORK degradation does not produce this shape — a stalled
+    // connection burst-delivers (small intra-burst intervals still update the EWMA,
+    // case (xii) in store.test.ts) or delivers a multi-tile delta that trips
+    // shouldSnap (M12.5d-2, case (xv)).
+    const store = new AuthoritativeStore(STEP_MS);
+    const resolver = new RenderResolver(STEP_MS);
+
+    // tile x = 0 @1000, 1 @1700, 2 @2400, 3 @3100, 4 @3800 — every interval 700 ms.
+    const ARRIVALS = [1000, 1700, 2400, 3100, 3800];
+    store.upsertCharacter(row(NPC_ID, 0, 0), ARRIVALS[0]!); // first sight
+
+    let nextArrival = 1;
+    const times: number[] = [];
+    const xs: number[] = [];
+    for (let now = 1000; now <= 4100; now += FRAME_MS) {
+      while (nextArrival < ARRIVALS.length && now >= ARRIVALS[nextArrival]!) {
+        const at = ARRIVALS[nextArrival]!;
+        store.upsertCharacter(row(NPC_ID, nextArrival, 0), at);
+        // CLAUSE 1 — the gate fires on EVERY arrival (700 > 3 x 200), so the estimate
+        // never leaves 0 and the delay never leaves its 200 ms base.
+        // WRONG IMPL KILLED: a gate that admits intervals above 3 x stepMs. Today the
+        // ungated EWMA walks 62.5 -> 117.1875 -> 165.0390625 -> 206.9091796875
+        // (deviation |700-200| = 500 every time), clamping the delay at 500 ms from
+        // the third arrival onward — sustained lag inflation from pure cadence.
+        expect(store.character(NPC_ID)!.jitterEwma).toBe(0);
+        // CLAUSE 2a — sampled at exactly the arrival wall clock, renderTime sits on
+        // the dead-zone edge (next - stepMs), so the render is EXACTLY the OLD tile:
+        // the character holds first and slides after. An implementation that slides
+        // across the whole 700 ms bracket is already fractional here.
+        expect(renderX(store, resolver, at)).toBe(nextArrival - 1);
+        nextArrival++;
+      }
+      times.push(now);
+      xs.push(renderX(store, resolver, now));
+    }
+    expect(nextArrival).toBe(ARRIVALS.length); // every arrival was applied
+    expect(store.character(NPC_ID)!.jitterEwma).toBe(0); // still frozen after the walk
+
+    // CLAUSE 3 — no pop anywhere in the walk, bracket SEAMS included.
+    // WRONG IMPL KILLED: today the per-frame delay grows with the ungated EWMA
+    // (325 -> 434.375 -> 500 ms), stepping renderTime ~109 ms backward at an arrival —
+    // a ~0.16-tile lurch on the 700 ms raw span, twice the per-frame budget.
+    let maxDelta = 0;
+    for (let i = 1; i < xs.length; i++) {
+      maxDelta = Math.max(maxDelta, Math.abs(xs[i]! - xs[i - 1]!));
+    }
+    expect(maxDelta).toBeLessThanOrEqual(FRAME_MS / STEP_MS + 1e-9);
+
+    // CLAUSE 2b — hold-then-slide per bracket: every 1-tile step has a real rest
+    // plateau on the previous tile and completes within one stepMs (+ up to one
+    // frame of sampling slack at each end, the same allowance as the property walk
+    // in interpolation.test.ts). Under the legacy whole-bracket crawl there is no
+    // exact-integer plateau at all between the first and last tiles.
+    for (let tile = 1; tile < ARRIVALS.length; tile++) {
+      const lastOnPrevTile = xs.lastIndexOf(tile - 1);
+      const firstOnTile = xs.indexOf(tile);
+      expect(lastOnPrevTile).toBeGreaterThanOrEqual(0); // the rest plateau exists
+      expect(firstOnTile).toBeGreaterThan(lastOnPrevTile); // ... and precedes the slide
+      expect(times[firstOnTile]! - times[lastOnPrevTile]!).toBeLessThanOrEqual(
+        STEP_MS + 2 * FRAME_MS,
+      );
+    }
+    expect(xs[0]).toBe(0); // starts at rest on the first tile
+    expect(xs[xs.length - 1]).toBe(4); // and ends at rest on the last
+  });
+
+  it('(H-E) BITES: the resolver forwards its OWN stepMs, not a hardcoded 200', () => {
+    // Kills `interpolateHistory(c.snapshots, now - delay, 200)` — a wiring cheat
+    // verified live to pass every other test in the repository, because EVERY other
+    // resolver fixture (this describe included) constructs RenderResolver(200) and so
+    // cannot tell the field from the literal. This one runs at stepMs = 50.
+    //
+    // A hand-built StoredCharacter (the §§1-9 idiom) rather than a real store: at
+    // stepMs=50 the store's own gate ADMITS the 150 ms interval (150 <= 3 x 50) and
+    // moves jitterEwma off 0 — store behaviour, not the wiring under test. Pinning
+    // jitterEwma = 0 isolates the one argument this test exists for.
+    //
+    // Ring span 1150 - 1000 = 150 ms:
+    //   correct (stepMs = 50): 150 >  2 x 50  = 100 → RE-ANCHOR, window [1100, 1150]
+    //   cheat   (literal 200): 150 >  2 x 200 = 400 is FALSE → legacy lerp over 150 ms
+    // delay = adaptiveInterpDelayMs(0, 50) = clamp(50 + 0, 25, 125) = 50 under BOTH,
+    // so the third argument is the only difference between them.
+    const resolver50 = new RenderResolver(50);
+    const remote: StoredCharacter = {
+      row: {
+        entityId: NPC_ID,
+        zoneId: 1,
+        tileX: 1,
+        tileY: 0,
+        facing: 'East',
+        action: 'Walking',
+        moveStartedAtMs: 0n,
+        moveQueue: [],
+      },
+      receivedAt: 1150,
+      latest: { tileX: 1, tileY: 0, receivedAt: 1150 },
+      prev: { tileX: 0, tileY: 0, receivedAt: 1000 },
+      snapshots: [
+        { tileX: 0, tileY: 0, receivedAt: 1000 },
+        { tileX: 1, tileY: 0, receivedAt: 1150 },
+      ],
+      jitterEwma: 0,
+    };
+    const at = (now: number): number => {
+      const out = resolver50.resolve({
+        characters: [remote],
+        ownEntityId: undefined,
+        predicted: undefined,
+        snapped: false,
+        now,
+      });
+      const npc = out.find((e) => e.entityId === NPC_ID);
+      expect(npc, 'the remote must be in the resolver output').toBeDefined();
+      return npc!.x;
+    };
+
+    // now 1125 → renderTime 1075 <= lower 1100 → dead zone → EXACTLY the old tile.
+    //   200-literal cheat: legacy a = (1075 - 1000)/150 = 0.5 → x = 0.5.
+    expect(at(1125)).toBe(0);
+    // now 1175 → renderTime 1125, inside the re-anchored window:
+    //   a = (1125 - 1100)/50 = 0.5 → x = 0.5.
+    //   200-literal cheat: a = (1125 - 1000)/150 = 0.8333... → x = 0.8333333333333334.
+    expect(at(1175)).toBe(0.5);
+  });
+});

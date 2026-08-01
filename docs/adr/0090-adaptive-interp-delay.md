@@ -5,7 +5,7 @@
 **Slice:** m13.5e
 **Supersedes:** ADR-0075 §12.5d-1
 **Amends:** —
-**Amended-by:** ADR-0142
+**Amended-by:** ADR-0142, ADR-0171
 **Subsystems:** client-ui, movement-netcode
 **Decision:** Replace fixed interpolation delay with an adaptive EWMA jitter estimator per character and variable snapshot depth (max 4) to handle burst delivery without pops.
 

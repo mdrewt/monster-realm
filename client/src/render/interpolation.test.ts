@@ -546,3 +546,352 @@ describe('e-5 adaptive scheme: monotone positions for two-tick burst (GREEN afte
     expect(delay).toBeGreaterThan(stepMs); // delay adapted upward
   });
 });
+
+// =============================================================================
+// 11r-f (ADR-0171) D2/D3/D5 — resume-from-idle re-anchored interpolation bracket
+//
+// SOURCE OF TRUTH: docs/adr/0171-resume-from-idle-interpolation.md (D2 re-anchor,
+// D3 API, D5 constants) + spec M-postgate-eleventh-review-residuals §11r-f EARS E1:
+//   "a 1-tile step after a >= 5 s idle renders as one smooth <= stepMs slide —
+//    no pop, no post-resume max-delay clamp."
+//
+// NEW API: interpolateHistory(snapshots, renderTime, stepMs = 0)
+//   * stepMs <= 0                                  -> re-anchoring DISABLED; today's
+//                                                     math, byte-for-byte (D3).
+//   * stepMs > 0 && rawSpan > 2 x stepMs           -> lower = next.receivedAt - stepMs
+//       - renderTime <= lower                      -> HOLD at `prev` (the dead zone:
+//                                                     the character genuinely stood there)
+//       - renderTime  > lower                      -> lerp over the exactly-stepMs
+//                                                     window [lower, next.receivedAt]
+//   The outer HOLD (renderTime >= newest) / clamp (renderTime <= oldest) paths and
+//   the raw span <= 0 guard are evaluated FIRST and are untouched; multi-bracket
+//   rings re-anchor PER BRACKET.
+//
+// RED REASON (before impl): `interpolateHistory` takes two parameters today, so the
+// third argument is silently ignored (vitest does not typecheck) and every
+// re-anchor expectation below resolves to the legacy whole-gap crawl — e.g. x=5.5
+// where the contract demands exactly x=5. The constant pin reds on
+// `undefined !== 2`. Cases (i), (vii-a), (H-C) and (H-D) are deliberately GREEN both
+// before and after the fix — they pin the legacy / steady-state / clamp behaviour the
+// implementation must NOT disturb (each says so in its own comment).
+// =============================================================================
+
+import * as fc from 'fast-check';
+// Namespace import ON PURPOSE (see case (ix)): REANCHOR_SPAN_STEPS does not exist
+// yet, and a missing NAMED binding is an ESM link error that would take the whole
+// FILE's collection down. Property access on the namespace reds as a clean
+// `undefined !== 2` assertion failure instead.
+import * as interpolationModule from './interpolation';
+
+describe('11r-f re-anchor (ADR-0171)', () => {
+  const STEP_MS = 200;
+
+  /** The E1 bracket: the character stood on (5,5) for 5 s, then took ONE tile step
+   *  to (6,5). rawSpan = 5000 ms = 25 x STEP_MS — far past the 2-step re-anchor
+   *  threshold. Shared by cases (i), (iii), (iv), (v) and (vii-a). */
+  const GAP_RING: readonly InterpSample[] = [s(5, 5, 1000), s(6, 5, 6000)];
+
+  it('(i) LEGACY/BITES twin: with no stepMs the 5 s bracket crawls AND pops > 0.5 tile at the resume frame', () => {
+    // ANTI-VACUITY TWIN. Deliberately GREEN both before and after the fix — it is
+    // what makes every OTHER case in this describe meaningful:
+    //   1. it pins the exact pre-11r-f crawl math (a = (rt - prev)/rawSpan) so the
+    //      new greens below can only come from the NEW third argument;
+    //   2. it demonstrates that the defect E1 names (a >0.5-tile single-frame pop
+    //      at the resume frame) is REAL under that math, so the smoothness
+    //      assertions are not asserting something that was already true.
+    // WRONG IMPL KILLED: "the stepMs=0 path is not byte-legacy" (an implementer who
+    // re-anchors unconditionally, or who deletes the disable path, reds here).
+
+    // --- exact legacy crawl at four sample points inside the gap -----------------
+    // a = (renderTime - 1000) / 5000
+    expect(interpolateHistory(GAP_RING, 2000).x).toBeCloseTo(5.2, 10); // a = 0.20
+    expect(interpolateHistory(GAP_RING, 3500).x).toBeCloseTo(5.5, 10); // a = 0.50
+    expect(interpolateHistory(GAP_RING, 5800).x).toBeCloseTo(5.96, 10); // a = 0.96
+    expect(interpolateHistory(GAP_RING, 5999).x).toBeCloseTo(5.9998, 10); // a = 0.9998
+    // explicit stepMs=0 must reproduce the omitted-argument numbers bit-for-bit
+    expect(interpolateHistory(GAP_RING, 2000, 0).x).toBe(interpolateHistory(GAP_RING, 2000).x);
+    expect(interpolateHistory(GAP_RING, 3500, 0).x).toBe(interpolateHistory(GAP_RING, 3500).x);
+    expect(interpolateHistory(GAP_RING, 5800, 0).x).toBe(interpolateHistory(GAP_RING, 5800).x);
+
+    // --- the pop: the resume frame vs. the frame ~16 ms earlier ------------------
+    // 16 ms earlier the resume snapshot has not arrived yet, so the ring is the
+    // single pre-idle snapshot; at the resume frame renderTime = next - 200.
+    const beforeArrival = interpolateHistory([s(5, 5, 1000)], 5984 - 200).x;
+    const atResumeFrame = interpolateHistory(GAP_RING, 6000 - 200).x;
+    expect(beforeArrival).toBe(5);
+    expect(atResumeFrame).toBeCloseTo(5.96, 10);
+    expect(Math.abs(atResumeFrame - beforeArrival)).toBeGreaterThan(0.5); // ~0.96 tile in one frame
+  });
+
+  it('(ii) BITES: the threshold is strictly > 2 x stepMs AND is tight at fractional spans', () => {
+    // WRONG IMPL KILLED: `rawSpan >= REANCHOR_SPAN_STEPS * stepMs`. Under `>=` the
+    // exactly-400 bracket would re-anchor to lower = 1400 - 200 = 1200, and
+    // renderTime 1200 <= 1200 would HOLD at prev (x=0) instead of lerping to 0.5.
+    // Exactly 2 x stepMs is ONE dropped tick — a legitimate two-step slide the
+    // adaptive delay is designed to bridge (ADR-0171 D2).
+    const spanExactly400: readonly InterpSample[] = [s(0, 0, 1000), s(1, 0, 1400)];
+    expect(interpolateHistory(spanExactly400, 1200, STEP_MS).x).toBe(0.5); // legacy midpoint
+
+    // One millisecond wider: 401 > 400 → re-anchor to lower = 1401 - 200 = 1201;
+    // renderTime 1201 <= 1201 → dead zone → exactly prev.
+    const span401: readonly InterpSample[] = [s(0, 0, 1000), s(1, 0, 1401)];
+    expect(interpolateHistory(span401, 1201, STEP_MS)).toEqual({ x: 0, y: 0 });
+
+    // H-A — SUB-MILLISECOND ALIASING. `performance.now()` is fractional in production,
+    // so real brackets land a fraction of a millisecond past the threshold. An
+    // integer-only boundary suite is passed by a slack comparison such as
+    // `rawSpan > 2 * stepMs + 0.5` (verified live against a golden reference), which
+    // silently un-re-anchors every bracket in the 400.0-400.5 ms band.
+    // WRONG IMPL KILLED: any epsilon / rounding slack on the threshold comparison.
+    const span400point3: readonly InterpSample[] = [s(0, 0, 1000), s(1, 0, 1400.3)];
+    // rawSpan 400.3 > 400 → re-anchor; lower = 1400.3 - 200 = 1200.3 → 1200 is inside
+    // the dead zone. A slack threshold lerps the raw span instead: a = 200/400.3 ≈ 0.4996.
+    expect(interpolateHistory(span400point3, 1200, STEP_MS)).toEqual({ x: 0, y: 0 });
+    // and one millisecond later, just INSIDE the re-anchored window:
+    //   a = (1201 - 1200.3) / 200 = 0.7 / 200 = 0.0035
+    // (a slack threshold gives a = 201/400.3 ≈ 0.5021 — two orders of magnitude out)
+    expect(interpolateHistory(span400point3, 1201, STEP_MS).x).toBeCloseTo(0.0035, 6);
+  });
+
+  it('(iii) BITES: the dead zone holds EXACTLY at prev for every renderTime in (prev, next - stepMs]', () => {
+    // WRONG IMPL KILLED (two of them):
+    //   a) `lower = prev.receivedAt + stepMs` (front-anchored). That window is
+    //      [1000, 1200]; at renderTime 3500 the character would already be sitting
+    //      on the NEW tile for 4.8 s of the gap — it moves at gap START and freezes.
+    //   b) "dead zone returns next" — a hold at the wrong end of the bracket, which
+    //      teleports the sprite to the resume tile the instant the gap opens.
+    for (const renderTime of [1001, 3500, 5800]) {
+      expect(interpolateHistory(GAP_RING, renderTime, STEP_MS)).toEqual({ x: 5, y: 5 });
+    }
+  });
+
+  it('(iv) the re-anchored slide window is exactly [next - stepMs, next] wide', () => {
+    // lower = 6000 - 200 = 5800, so a = (renderTime - 5800) / 200.
+    // WRONG IMPL KILLED: any other window arithmetic (span still rawSpan, lower off
+    // by a step, a computed against prev.receivedAt) misses these fractions.
+    expect(interpolateHistory(GAP_RING, 5850, STEP_MS).x).toBeCloseTo(5.25, 10); // a = 0.25
+    expect(interpolateHistory(GAP_RING, 5900, STEP_MS).x).toBeCloseTo(5.5, 10); // a = 0.50
+    expect(interpolateHistory(GAP_RING, 5950, STEP_MS).x).toBeCloseTo(5.75, 10); // a = 0.75
+    expect(interpolateHistory(GAP_RING, 5999.99, STEP_MS).x).toBeCloseTo(5.99995, 9);
+    // y never moves (both tiles are on row 5) — the lerp must not smear the axis.
+    expect(interpolateHistory(GAP_RING, 5900, STEP_MS).y).toBe(5);
+    // at/past the newest snapshot the untouched OUTER hold takes over (evaluated first)
+    expect(interpolateHistory(GAP_RING, 6000, STEP_MS)).toEqual({ x: 6, y: 5 });
+    expect(interpolateHistory(GAP_RING, 6400, STEP_MS)).toEqual({ x: 6, y: 5 });
+  });
+
+  it('(v) E1 HEADLINE: a 16 ms frame walk across the resume renders one <= stepMs slide, no pop', () => {
+    // The criterion itself, at production cadence. FIXED delay for the walk (a clean
+    // estimator: the D1 gate keeps jitterEwma at 0 across an idle gap, so D = stepMs).
+    // Evolving-D is covered by the deterministic T-A case in renderResolver.test.ts.
+    const D = adaptiveInterpDelayMs(0, STEP_MS);
+    expect(D).toBe(200); // precondition: no jitter → base delay
+
+    const FRAME_MS = 16;
+    const times: number[] = [];
+    const xs: number[] = [];
+    for (let now = 5800; now <= 6400; now += FRAME_MS) {
+      times.push(now);
+      xs.push(interpolateHistory(GAP_RING, now - D, STEP_MS).x);
+    }
+
+    // WRONG IMPL KILLED: a gate-less / re-anchor-less implementation. Under legacy
+    // math the walk STARTS at 5.92 (the ~0.9-tile pop has already happened before
+    // the first frame) and never reaches 6 inside the window — both assertions red.
+    expect(xs[0]).toBe(5); // rests on the old tile until the slide window opens
+    expect(xs[xs.length - 1]).toBe(6); // and has fully arrived by the end of the walk
+
+    let maxDelta = 0;
+    for (let i = 1; i < xs.length; i++) {
+      expect(xs[i]!).toBeGreaterThanOrEqual(xs[i - 1]!); // never back-steps
+      maxDelta = Math.max(maxDelta, Math.abs(xs[i]! - xs[i - 1]!));
+    }
+    expect(maxDelta).toBeLessThanOrEqual(FRAME_MS / STEP_MS + 1e-9); // <= 0.08 tile/frame
+
+    // one tile of travel, completed within one step (+ one frame of sampling slack)
+    const lastOnOldTile = xs.lastIndexOf(5);
+    const firstOnNewTile = xs.indexOf(6);
+    expect(lastOnOldTile).toBeGreaterThanOrEqual(0);
+    expect(firstOnNewTile).toBeGreaterThan(lastOnOldTile);
+    expect(times[firstOnNewTile]! - times[lastOnOldTile]!).toBeLessThanOrEqual(STEP_MS + FRAME_MS);
+  });
+
+  it('(vi) BITES: every bracket of a multi-bracket slow-NPC ring re-anchors, not just the newest', () => {
+    // A slow-wander NPC: one tile every 5 s, depth-4 ring.
+    // WRONG IMPL KILLED: "only the newest bracket is re-anchored" (e.g. an impl that
+    // compares against snapshots[len-1].receivedAt instead of the located `next`) —
+    // the two interior samples below would fall back to the legacy crawl (1.5 / 1.98).
+    const NPC_RING: readonly InterpSample[] = [
+      s(0, 0, 0),
+      s(1, 0, 5000),
+      s(2, 0, 10000),
+      s(3, 0, 15000),
+    ];
+    // interior bracket B->C, deep inside the gap → dead zone at B
+    expect(interpolateHistory(NPC_RING, 7500, STEP_MS)).toEqual({ x: 1, y: 0 });
+    // interior bracket B->C, inside its re-anchored window [9800, 10000] → half way
+    expect(interpolateHistory(NPC_RING, 9900, STEP_MS).x).toBeCloseTo(1.5, 10);
+    // the next bracket C->D, window [14800, 15000] → half way again
+    expect(interpolateHistory(NPC_RING, 14900, STEP_MS).x).toBeCloseTo(2.5, 10);
+  });
+
+  it('(H-C) BITES: on-cadence brackets are NEVER re-anchored, wherever they sit in the ring', () => {
+    // Kills a bracket-INDEX cheat verified live against a golden reference:
+    // `nextIdx >= 2 || rawSpan > REANCHOR_SPAN_STEPS * stepMs`. Every gap fixture in
+    // this describe happens to bracket at a high ring index, so an index-based
+    // "re-anchor" passes all of them while corrupting ordinary steady-state motion.
+    // The re-anchor decision is a function of the bracket's SPAN ALONE — a bracket's
+    // position in the ring must not enter it.
+    // Deliberately GREEN today and after the fix: it pins the untouched steady state.
+    const STEADY_RING: readonly InterpSample[] = [
+      s(0, 0, 0),
+      s(1, 0, 200),
+      s(2, 0, 400),
+      s(3, 0, 700), // a 300 ms hiccup: still <= 2 x stepMs, so still a plain lerp
+    ];
+    // bracket idx2 -> idx3 (nextIdx = 3), rawSpan 300 <= 400 → legacy math:
+    //   a = (450 - 400) / 300 = 1/6 → x = 2 + 1/6 = 2.1666666666666665
+    // The index cheat re-anchors to lower = 700 - 200 = 500, sees 450 <= 500, and
+    // freezes at prev → x = 2 exactly.
+    expect(interpolateHistory(STEADY_RING, 450, STEP_MS).x).toBe(2.1666666666666665);
+  });
+
+  it('(H-D) BITES: the oldest-clamp survives stepMs > 0 (no v1 backward extrapolation)', () => {
+    // Kills `if (stepMs <= 0 && renderTime <= oldest.receivedAt) return oldest` — a
+    // cheat verified live to pass an integer-only suite while REINTRODUCING the v1
+    // backward rubberband ADR-0013 exists to prevent. With the clamp gated off,
+    // renderTime 800 falls through into the 1000→1200 bracket at
+    // a = (800 - 1000)/200 = -1 and renders x = -1: a whole tile BEHIND the oldest
+    // position ever observed. The outer clamp/HOLD paths are untouched by ADR-0171
+    // (D2) and must be evaluated before any re-anchor logic.
+    // Deliberately GREEN today and after the fix.
+    const RING: readonly InterpSample[] = [s(0, 0, 1000), s(1, 0, 1200)];
+    expect(interpolateHistory(RING, 800, STEP_MS)).toEqual({ x: 0, y: 0 });
+  });
+
+  it('(vii-a) degenerate: stepMs <= 0 disables re-anchoring entirely (byte-legacy)', () => {
+    // Deliberately GREEN both before and after the fix — the "no stepMs ⇒ old math"
+    // regression property ADR-0171 D3 keeps the default parameter for.
+    // WRONG IMPL KILLED: `stepMs !== undefined` / truthiness checks that treat a
+    // negative or zero step as "enabled" (a caller passing a not-yet-known step_ms()
+    // would silently get re-anchoring with a nonsense window).
+    const legacyMid = interpolateHistory(GAP_RING, 3500).x;
+    const legacyLate = interpolateHistory(GAP_RING, 5800).x;
+    expect(legacyMid).toBeCloseTo(5.5, 10);
+    expect(legacyLate).toBeCloseTo(5.96, 10);
+    for (const disabled of [0, -1]) {
+      expect(interpolateHistory(GAP_RING, 3500, disabled).x).toBe(legacyMid);
+      expect(interpolateHistory(GAP_RING, 5800, disabled).x).toBe(legacyLate);
+    }
+  });
+
+  it('(vii-b) degenerate: duplicate-timestamp bracket, empty and length-1 rings are unaffected by the new argument', () => {
+    // WHAT THIS VERIFIES: bracket-SCAN correctness when a duplicate `receivedAt` sits
+    // strictly interior to the ring (indices 1 and 2), with re-anchoring on. The scan
+    // must advance `prev` past BOTH duplicates, so prev = (2,0)@3000 (not (1,0)@3000)
+    // and next = (3,0)@9000; rawSpan = 6000 > 400 → dead zone → exactly (2,0).
+    //
+    // WHAT IT DOES *NOT* VERIFY (explicitly, so nobody re-derives the claim): the
+    // `span <= 0` guard's ORDERING relative to the re-anchor. That guard is
+    // unreachable through the public API — the scan guarantees
+    // prev.receivedAt <= renderTime < next.receivedAt ⇒ rawSpan > 0, and the
+    // no-break case makes prev === newest, which the outer HOLD already returned.
+    // interpolation.ts:200-206 documents it as a defensive check against future
+    // ring-invariant violations; ADR-0171 D2 keeps it on the RAW span for that
+    // reason, and no black-box fixture can discriminate the two orderings.
+    const DUP_RING: readonly InterpSample[] = [
+      s(0, 0, 1000),
+      s(1, 0, 3000),
+      s(2, 0, 3000), // duplicate receivedAt, strictly interior
+      s(3, 0, 9000),
+    ];
+    expect(interpolateHistory(DUP_RING, 4000, STEP_MS)).toEqual({ x: 2, y: 0 });
+
+    // empty / single-snapshot rings must be untouched by the third argument
+    expect(interpolateHistory([], 4000, STEP_MS)).toEqual({ x: 0, y: 0 });
+    expect(interpolateHistory([s(3, 7, 1000)], 4000, STEP_MS)).toEqual({ x: 3, y: 7 });
+  });
+
+  it('(viii) PROPERTY: for any idle gap / step / fixed delay / frame interval the resume slide is smooth', () => {
+    // Block-body arrow ONLY (project standard): fast-check misreads an
+    // expression-body matcher return value as a `false` predicate.
+    //
+    // D is FIXED for each generated walk (a per-frame-evolving delay is the
+    // deterministic T-A case in renderResolver.test.ts, ADR-0171 Consequences).
+    //
+    // The generated bracket span is floored at stepMs: a bracket NARROWER than one
+    // step cannot satisfy `delta <= dt/stepMs` under ANY implementation (a 1 ms
+    // bracket must move a whole tile inside one frame), so a sub-step span would
+    // make the property arithmetically false rather than test anything.
+    //
+    // WRONG IMPL KILLED: a broad class — seam discontinuities, off-by-one window
+    // edges, span-dependent slide duration. Today it reds on the `xs[0] === 0`
+    // and transition-duration clauses (legacy math starts the walk mid-crawl at
+    // (G - D)/G, e.g. 0.958 for a 20 s gap).
+    fc.assert(
+      fc.property(
+        fc.double({ min: 0, max: 20000, noNaN: true, noDefaultInfinity: true }),
+        fc.constantFrom(50, 100, 200, 333),
+        fc.double({ min: 1, max: 2.5, noNaN: true, noDefaultInfinity: true }),
+        fc.integer({ min: 8, max: 33 }),
+        (gapMs, stepMs, delayMult, dt) => {
+          const t0 = 1000;
+          const span = Math.max(gapMs, stepMs);
+          const ring: readonly InterpSample[] = [s(0, 0, t0), s(1, 0, t0 + span)];
+          const D = delayMult * stepMs; // fixed for the whole walk
+
+          const times: number[] = [];
+          const xs: number[] = [];
+          for (let now = t0 + gapMs; now <= t0 + gapMs + D + 2 * stepMs; now += dt) {
+            times.push(now);
+            xs.push(interpolateHistory(ring, now - D, stepMs).x);
+          }
+
+          // H-D — UNCONDITIONAL bounds, outside the re-anchor-eligible branch below:
+          // a walk whose delay exceeds the gap starts BEFORE the oldest snapshot, and
+          // a cheat that gates the oldest-clamp on `stepMs <= 0` renders a NEGATIVE
+          // tile there (backward extrapolation, the v1 rubberband). The upper bound is
+          // the matching anti-extrapolation clause for the HOLD path.
+          for (const x of xs) {
+            expect(x).toBeGreaterThanOrEqual(0); // never behind the older tile
+            expect(x).toBeLessThanOrEqual(1); // never past the newer tile
+          }
+
+          for (let i = 1; i < xs.length; i++) {
+            expect(xs[i]!).toBeGreaterThanOrEqual(xs[i - 1]!); // monotone non-decreasing
+            expect(Math.abs(xs[i]! - xs[i - 1]!)).toBeLessThanOrEqual(dt / stepMs + 1e-9);
+          }
+          expect(xs[xs.length - 1]!).toBe(1); // always ends ON the newest snapshot
+
+          if (span > 2 * stepMs) {
+            // Re-anchor-eligible: D >= stepMs always, so the window is entered from
+            // the dead-zone side at a = 0 and the whole slide fits in one step.
+            expect(xs[0]!).toBe(0);
+            const lastOnPrev = xs.lastIndexOf(0);
+            const firstOnNext = xs.indexOf(1);
+            expect(lastOnPrev).toBeGreaterThanOrEqual(0);
+            expect(firstOnNext).toBeGreaterThan(lastOnPrev);
+            // The slide itself is exactly stepMs long; sampling on a dt grid can only
+            // stretch the OBSERVED transition by one frame at each end (the last
+            // dead-zone sample sits up to dt before `lower`, the first HOLD sample up
+            // to dt after `next`) — hence stepMs + 2*dt, not stepMs + dt. Under
+            // legacy math the observed transition is ~gapMs (up to 20 s) instead.
+            expect(times[firstOnNext]! - times[lastOnPrev]!).toBeLessThanOrEqual(
+              stepMs + 2 * dt + 1e-9,
+            );
+          }
+        },
+      ),
+    );
+  });
+
+  it('(ix) PIN: REANCHOR_SPAN_STEPS is exported from interpolation.ts and equals 2 (ADR-0171 D5)', () => {
+    // Literal pin so an implementer cannot silently relax the threshold. Accessed
+    // off the module NAMESPACE rather than as a named import because the export does
+    // not exist yet: a missing named binding is an ESM link error that would abort
+    // collection of this entire FILE; property access reds as `undefined !== 2`.
+    // The twin pin (JITTER_IDLE_GAP_STEPS === 3) lives in net/store.test.ts; ADR-0171
+    // D5 keeps the two constants deliberately independent — do not unify them.
+    expect((interpolationModule as unknown as Record<string, unknown>).REANCHOR_SPAN_STEPS).toBe(2);
+  });
+});
