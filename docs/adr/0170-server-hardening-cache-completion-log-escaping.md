@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** ADR-0089
 **Subsystems:** battle, movement-netcode, economy-quests
-**Decision:** Cache abilities and heal-locations as LazyLock statics and the DB-derived type chart behind a `content_version`-keyed rebuildable cache; rate-limit + JSON-escape the silent wild-encounter failure logs; split the heal cost item — cached read + inert client seam now, the `HealLocationRow.cost_currency` column parked as a recorded hidden dependency.
+**Decision:** Cache abilities/heal-locations as LazyLock statics and the type chart behind a content_version-keyed rebuild; rate-limit + JSON-escape silent wild-encounter failure logs; ship heal-cost cached read + inert client seam, column parked.
 
 ## Context
 
