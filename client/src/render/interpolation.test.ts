@@ -571,7 +571,9 @@ describe('e-5 adaptive scheme: monotone positions for two-tick burst (GREEN afte
 // third argument is silently ignored (vitest does not typecheck) and every
 // re-anchor expectation below resolves to the legacy whole-gap crawl — e.g. x=5.5
 // where the contract demands exactly x=5. The constant pin reds on
-// `undefined !== 2`. Case (i) is the deliberate GREEN anti-vacuity twin.
+// `undefined !== 2`. Cases (i), (vii-a), (H-C) and (H-D) are deliberately GREEN both
+// before and after the fix — they pin the legacy / steady-state / clamp behaviour the
+// implementation must NOT disturb (each says so in its own comment).
 // =============================================================================
 
 import * as fc from 'fast-check';
@@ -586,7 +588,7 @@ describe('11r-f re-anchor (ADR-0171)', () => {
 
   /** The E1 bracket: the character stood on (5,5) for 5 s, then took ONE tile step
    *  to (6,5). rawSpan = 5000 ms = 25 x STEP_MS — far past the 2-step re-anchor
-   *  threshold. Shared by cases (i), (iii), (iv), (v) and (vii). */
+   *  threshold. Shared by cases (i), (iii), (iv), (v) and (vii-a). */
   const GAP_RING: readonly InterpSample[] = [s(5, 5, 1000), s(6, 5, 6000)];
 
   it('(i) LEGACY/BITES twin: with no stepMs the 5 s bracket crawls AND pops > 0.5 tile at the resume frame', () => {
@@ -621,7 +623,7 @@ describe('11r-f re-anchor (ADR-0171)', () => {
     expect(Math.abs(atResumeFrame - beforeArrival)).toBeGreaterThan(0.5); // ~0.96 tile in one frame
   });
 
-  it('(ii) BITES: the threshold is strictly > 2 x stepMs — span 400 lerps legacy, span 401 re-anchors', () => {
+  it('(ii) BITES: the threshold is strictly > 2 x stepMs AND is tight at fractional spans', () => {
     // WRONG IMPL KILLED: `rawSpan >= REANCHOR_SPAN_STEPS * stepMs`. Under `>=` the
     // exactly-400 bracket would re-anchor to lower = 1400 - 200 = 1200, and
     // renderTime 1200 <= 1200 would HOLD at prev (x=0) instead of lerping to 0.5.
@@ -634,6 +636,21 @@ describe('11r-f re-anchor (ADR-0171)', () => {
     // renderTime 1201 <= 1201 → dead zone → exactly prev.
     const span401: readonly InterpSample[] = [s(0, 0, 1000), s(1, 0, 1401)];
     expect(interpolateHistory(span401, 1201, STEP_MS)).toEqual({ x: 0, y: 0 });
+
+    // H-A — SUB-MILLISECOND ALIASING. `performance.now()` is fractional in production,
+    // so real brackets land a fraction of a millisecond past the threshold. An
+    // integer-only boundary suite is passed by a slack comparison such as
+    // `rawSpan > 2 * stepMs + 0.5` (verified live against a golden reference), which
+    // silently un-re-anchors every bracket in the 400.0-400.5 ms band.
+    // WRONG IMPL KILLED: any epsilon / rounding slack on the threshold comparison.
+    const span400point3: readonly InterpSample[] = [s(0, 0, 1000), s(1, 0, 1400.3)];
+    // rawSpan 400.3 > 400 → re-anchor; lower = 1400.3 - 200 = 1200.3 → 1200 is inside
+    // the dead zone. A slack threshold lerps the raw span instead: a = 200/400.3 ≈ 0.4996.
+    expect(interpolateHistory(span400point3, 1200, STEP_MS)).toEqual({ x: 0, y: 0 });
+    // and one millisecond later, just INSIDE the re-anchored window:
+    //   a = (1201 - 1200.3) / 200 = 0.7 / 200 = 0.0035
+    // (a slack threshold gives a = 201/400.3 ≈ 0.5021 — two orders of magnitude out)
+    expect(interpolateHistory(span400point3, 1201, STEP_MS).x).toBeCloseTo(0.0035, 6);
   });
 
   it('(iii) BITES: the dead zone holds EXACTLY at prev for every renderTime in (prev, next - stepMs]', () => {
@@ -718,7 +735,43 @@ describe('11r-f re-anchor (ADR-0171)', () => {
     expect(interpolateHistory(NPC_RING, 14900, STEP_MS).x).toBeCloseTo(2.5, 10);
   });
 
-  it('(vii) degenerate: stepMs <= 0 disables re-anchoring entirely (byte-legacy)', () => {
+  it('(H-C) BITES: on-cadence brackets are NEVER re-anchored, wherever they sit in the ring', () => {
+    // Kills a bracket-INDEX cheat verified live against a golden reference:
+    // `nextIdx >= 2 || rawSpan > REANCHOR_SPAN_STEPS * stepMs`. Every gap fixture in
+    // this describe happens to bracket at a high ring index, so an index-based
+    // "re-anchor" passes all of them while corrupting ordinary steady-state motion.
+    // The re-anchor decision is a function of the bracket's SPAN ALONE — a bracket's
+    // position in the ring must not enter it.
+    // Deliberately GREEN today and after the fix: it pins the untouched steady state.
+    const STEADY_RING: readonly InterpSample[] = [
+      s(0, 0, 0),
+      s(1, 0, 200),
+      s(2, 0, 400),
+      s(3, 0, 700), // a 300 ms hiccup: still <= 2 x stepMs, so still a plain lerp
+    ];
+    // bracket idx2 -> idx3 (nextIdx = 3), rawSpan 300 <= 400 → legacy math:
+    //   a = (450 - 400) / 300 = 1/6 → x = 2 + 1/6 = 2.1666666666666665
+    // The index cheat re-anchors to lower = 700 - 200 = 500, sees 450 <= 500, and
+    // freezes at prev → x = 2 exactly.
+    expect(interpolateHistory(STEADY_RING, 450, STEP_MS).x).toBe(2.1666666666666665);
+  });
+
+  it('(H-D) BITES: the oldest-clamp survives stepMs > 0 (no v1 backward extrapolation)', () => {
+    // Kills `if (stepMs <= 0 && renderTime <= oldest.receivedAt) return oldest` — a
+    // cheat verified live to pass an integer-only suite while REINTRODUCING the v1
+    // backward rubberband ADR-0013 exists to prevent. With the clamp gated off,
+    // renderTime 800 falls through into the 1000→1200 bracket at
+    // a = (800 - 1000)/200 = -1 and renders x = -1: a whole tile BEHIND the oldest
+    // position ever observed. The outer clamp/HOLD paths are untouched by ADR-0171
+    // (D2) and must be evaluated before any re-anchor logic.
+    // Deliberately GREEN today and after the fix.
+    const RING: readonly InterpSample[] = [s(0, 0, 1000), s(1, 0, 1200)];
+    expect(interpolateHistory(RING, 800, STEP_MS)).toEqual({ x: 0, y: 0 });
+  });
+
+  it('(vii-a) degenerate: stepMs <= 0 disables re-anchoring entirely (byte-legacy)', () => {
+    // Deliberately GREEN both before and after the fix — the "no stepMs ⇒ old math"
+    // regression property ADR-0171 D3 keeps the default parameter for.
     // WRONG IMPL KILLED: `stepMs !== undefined` / truthiness checks that treat a
     // negative or zero step as "enabled" (a caller passing a not-yet-known step_ms()
     // would silently get re-anchoring with a nonsense window).
@@ -732,16 +785,20 @@ describe('11r-f re-anchor (ADR-0171)', () => {
     }
   });
 
-  it('(vii) degenerate: duplicate-timestamp bracket, empty and length-1 rings are unaffected by the new argument', () => {
-    // Duplicate receivedAt STRICTLY INTERIOR to the ring (indices 1 and 2), resolved
-    // with re-anchoring on. The bracket scan advances `prev` past BOTH duplicates, so
-    // prev = (2,0)@3000 and next = (3,0)@9000; rawSpan = 6000 > 400 → dead zone at prev.
+  it('(vii-b) degenerate: duplicate-timestamp bracket, empty and length-1 rings are unaffected by the new argument', () => {
+    // WHAT THIS VERIFIES: bracket-SCAN correctness when a duplicate `receivedAt` sits
+    // strictly interior to the ring (indices 1 and 2), with re-anchoring on. The scan
+    // must advance `prev` past BOTH duplicates, so prev = (2,0)@3000 (not (1,0)@3000)
+    // and next = (3,0)@9000; rawSpan = 6000 > 400 → dead zone → exactly (2,0).
     //
-    // NOTE on the raw-span guard ordering (ADR-0171 D2): the `span <= 0` guard must
-    // stay on the RAW span and be evaluated BEFORE the re-anchor. This fixture pins
-    // the observable consequence — a duplicate-timestamp pair must NOT make the
-    // function return `next` (3) and must NOT be lerped as garbage; it resolves
-    // through the ordinary re-anchored bracket at prev (2).
+    // WHAT IT DOES *NOT* VERIFY (explicitly, so nobody re-derives the claim): the
+    // `span <= 0` guard's ORDERING relative to the re-anchor. That guard is
+    // unreachable through the public API — the scan guarantees
+    // prev.receivedAt <= renderTime < next.receivedAt ⇒ rawSpan > 0, and the
+    // no-break case makes prev === newest, which the outer HOLD already returned.
+    // interpolation.ts:200-206 documents it as a defensive check against future
+    // ring-invariant violations; ADR-0171 D2 keeps it on the RAW span for that
+    // reason, and no black-box fixture can discriminate the two orderings.
     const DUP_RING: readonly InterpSample[] = [
       s(0, 0, 1000),
       s(1, 0, 3000),
@@ -788,6 +845,16 @@ describe('11r-f re-anchor (ADR-0171)', () => {
           for (let now = t0 + gapMs; now <= t0 + gapMs + D + 2 * stepMs; now += dt) {
             times.push(now);
             xs.push(interpolateHistory(ring, now - D, stepMs).x);
+          }
+
+          // H-D — UNCONDITIONAL bounds, outside the re-anchor-eligible branch below:
+          // a walk whose delay exceeds the gap starts BEFORE the oldest snapshot, and
+          // a cheat that gates the oldest-clamp on `stepMs <= 0` renders a NEGATIVE
+          // tile there (backward extrapolation, the v1 rubberband). The upper bound is
+          // the matching anti-extrapolation clause for the HOLD path.
+          for (const x of xs) {
+            expect(x).toBeGreaterThanOrEqual(0); // never behind the older tile
+            expect(x).toBeLessThanOrEqual(1); // never past the newer tile
           }
 
           for (let i = 1; i < xs.length; i++) {

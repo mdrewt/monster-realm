@@ -959,4 +959,63 @@ describe('11r-f resolver wiring + evolving-D (ADR-0171)', () => {
     expect(xs[0]).toBe(0); // starts at rest on the first tile
     expect(xs[xs.length - 1]).toBe(4); // and ends at rest on the last
   });
+
+  it('(H-E) BITES: the resolver forwards its OWN stepMs, not a hardcoded 200', () => {
+    // Kills `interpolateHistory(c.snapshots, now - delay, 200)` — a wiring cheat
+    // verified live to pass every other test in the repository, because EVERY other
+    // resolver fixture (this describe included) constructs RenderResolver(200) and so
+    // cannot tell the field from the literal. This one runs at stepMs = 50.
+    //
+    // A hand-built StoredCharacter (the §§1-9 idiom) rather than a real store: at
+    // stepMs=50 the store's own gate ADMITS the 150 ms interval (150 <= 3 x 50) and
+    // moves jitterEwma off 0 — store behaviour, not the wiring under test. Pinning
+    // jitterEwma = 0 isolates the one argument this test exists for.
+    //
+    // Ring span 1150 - 1000 = 150 ms:
+    //   correct (stepMs = 50): 150 >  2 x 50  = 100 → RE-ANCHOR, window [1100, 1150]
+    //   cheat   (literal 200): 150 >  2 x 200 = 400 is FALSE → legacy lerp over 150 ms
+    // delay = adaptiveInterpDelayMs(0, 50) = clamp(50 + 0, 25, 125) = 50 under BOTH,
+    // so the third argument is the only difference between them.
+    const resolver50 = new RenderResolver(50);
+    const remote: StoredCharacter = {
+      row: {
+        entityId: NPC_ID,
+        zoneId: 1,
+        tileX: 1,
+        tileY: 0,
+        facing: 'East',
+        action: 'Walking',
+        moveStartedAtMs: 0n,
+        moveQueue: [],
+      },
+      receivedAt: 1150,
+      latest: { tileX: 1, tileY: 0, receivedAt: 1150 },
+      prev: { tileX: 0, tileY: 0, receivedAt: 1000 },
+      snapshots: [
+        { tileX: 0, tileY: 0, receivedAt: 1000 },
+        { tileX: 1, tileY: 0, receivedAt: 1150 },
+      ],
+      jitterEwma: 0,
+    };
+    const at = (now: number): number => {
+      const out = resolver50.resolve({
+        characters: [remote],
+        ownEntityId: undefined,
+        predicted: undefined,
+        snapped: false,
+        now,
+      });
+      const npc = out.find((e) => e.entityId === NPC_ID);
+      expect(npc, 'the remote must be in the resolver output').toBeDefined();
+      return npc!.x;
+    };
+
+    // now 1125 → renderTime 1075 <= lower 1100 → dead zone → EXACTLY the old tile.
+    //   200-literal cheat: legacy a = (1075 - 1000)/150 = 0.5 → x = 0.5.
+    expect(at(1125)).toBe(0);
+    // now 1175 → renderTime 1125, inside the re-anchored window:
+    //   a = (1125 - 1100)/50 = 0.5 → x = 0.5.
+    //   200-literal cheat: a = (1125 - 1000)/150 = 0.8333... → x = 0.8333333333333334.
+    expect(at(1175)).toBe(0.5);
+  });
 });

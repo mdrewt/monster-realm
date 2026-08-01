@@ -2724,10 +2724,11 @@ describe('AuthoritativeStore ADR-0090 RT-BURST-CHAIN-01: burst detection synthet
 // RED REASON (before impl): `upsertCharacter` updates the EWMA on every non-snap
 // arrival, so a 5 s idle feeds deviation 4800 and drives jitterEwma to ~600 (raw
 // delay 200 + 1200 → clamped to the 500 ms max for ~2 s). Every "stays exactly"
-// assertion below lands on a large number instead. Cases (xii)/(xiv) and the
-// 2-tile leg of (xv) are deliberately GREEN — they are the anti-regression /
-// anti-alternative pins that keep the gate one-sided and keep the fix out of the
-// net layer's data model.
+// assertion below lands on a large number instead. Case (xiv), (H-F), the burst
+// legs of (xii) and the 2-tile leg of (xv) are deliberately GREEN — they are the
+// anti-regression / anti-alternative pins that keep the gate one-sided, keep the
+// interval measured from the wall clock, and keep the fix out of the net layer's
+// data model.
 // =============================================================================
 
 // Namespace import ON PURPOSE (see case (xvi)): JITTER_IDLE_GAP_STEPS does not
@@ -2761,7 +2762,24 @@ describe('11r-f EWMA idle-gap gate (ADR-0171)', () => {
     expect(s.character(1n)!.jitterEwma).toBe(55.46875);
   });
 
-  it('(xii) the gate is ONE-SIDED: burst co-arrivals (interval ~ 0) still update the EWMA', () => {
+  it('(xi-b / H-B) BITES: sub-millisecond aliasing — a 600.3 ms interval is still outside the gate', () => {
+    // `performance.now()` is fractional, so real inter-arrival intervals never land on
+    // the integer grid. An integer-only boundary suite is passed by a slack gate such
+    // as `interval <= JITTER_IDLE_GAP_STEPS * stepMs + 0.5` (verified live against a
+    // golden reference), which quietly admits every idle gap in the 600.0-600.5 band.
+    // WRONG IMPL KILLED: any epsilon / rounding slack on the gate comparison.
+    const s = new AuthoritativeStore(STEP);
+    s.upsertCharacter(char(1n, 0, 0), 1000); // first sight
+    s.upsertCharacter(char(1n, 1, 0), 1250); // interval 250 → deviation 50 → ewma 6.25
+    expect(s.character(1n)!.jitterEwma).toBe(6.25);
+    // interval 1850.3 - 1250 = 600.3 > 600 → SKIPPED, bit-identical.
+    // Today (and under a +0.5 slack gate): deviation |600.3 - 200| = 400.3 →
+    //   0.125*400.3 + 0.875*6.25 = 50.0375 + 5.46875 = 55.50625
+    s.upsertCharacter(char(1n, 2, 0), 1850.3);
+    expect(s.character(1n)!.jitterEwma).toBe(6.25);
+  });
+
+  it('(xii) the gate is ONE-SIDED and scales with stepMs (3 x stepMs, not a 600 ms constant)', () => {
     // WRONG IMPL KILLED: a TWO-SIDED gate (`Math.abs(interval - stepMs) > K*stepMs`
     // or `interval < stepMs/K` short-circuits). That would silence exactly the
     // burst-delivery signal ADR-0090's adaptive delay exists to absorb — a
@@ -2780,16 +2798,33 @@ describe('11r-f EWMA idle-gap gate (ADR-0171)', () => {
     expect(s100.character(2n)!.jitterEwma).toBe(0);
     s100.upsertCharacter(char(2n, 2, 0), 1100); // interval 0 → deviation 100 → 12.5
     expect(s100.character(2n)!.jitterEwma).toBe(12.5);
+
+    // The boundary MULTIPLIES by stepMs — it is not a 600 ms constant. Fresh store so
+    // the chain starts from 0; at stepMs=100 the gate sits at 3 x 100 = 300 ms.
+    // WRONG IMPL KILLED: `interval > 600` hardcoded (and any K != 3) — it admits the
+    // 301 ms sample and moves the estimate to
+    //   0.125*|301-100| + 0.875*25 = 0.125*201 + 21.875 = 25.125 + 21.875 = 47.
+    const s100b = new AuthoritativeStore(100);
+    s100b.upsertCharacter(char(3n, 0, 0), 1000); // first sight
+    // interval 300 = 3 x 100 → ADMIT; deviation |300-100| = 200 → 0.125*200 + 0 = 25
+    s100b.upsertCharacter(char(3n, 1, 0), 1300);
+    expect(s100b.character(3n)!.jitterEwma).toBe(25);
+    // interval 301 > 300 → SKIP → bit-identical
+    s100b.upsertCharacter(char(3n, 2, 0), 1601);
+    expect(s100b.character(3n)!.jitterEwma).toBe(25);
   });
 
   it('(xiii) BITES: the receivedAt baseline advances across a gated gap (the estimator never freezes)', () => {
-    // WRONG IMPL KILLED (two of them):
-    //   a) "skip the whole block, receivedAt included" — the baseline would stay at
-    //      1000 forever, every later interval would measure G + n*stepMs, be gated
-    //      again, and the estimator would be dead for the rest of the session. The
-    //      6450 arrival exposes it: it would still read 0 instead of 6.25.
-    //   b) measuring the interval from `existing.latest.receivedAt` (a possibly
-    //      synthetic burst stamp) instead of the real wall-clock `existing.receivedAt`.
+    // WRONG IMPL KILLED: "skip the whole block, receivedAt included" — the baseline
+    // would stay at 1000 forever, every later interval would measure G + n*stepMs, be
+    // gated again, and the estimator would be dead for the rest of the session. The
+    // 6450 arrival exposes it: it would still read 0 instead of 6.25.
+    //
+    // NOT killed here (deliberately not claimed): the `existing.latest.receivedAt`
+    // vs `existing.receivedAt` source mutant. Every interval in THIS fixture exceeds
+    // BURST_EPSILON_MS, so the synthetic-timestamp branch never fires and the two
+    // fields are equal throughout — the two formulas agree on every step below. Case
+    // (H-F) drives stepMs=20 to make them diverge and kills that mutant.
     const s = new AuthoritativeStore(STEP);
     s.upsertCharacter(char(1n, 0, 0), 1000); // first sight
     s.upsertCharacter(char(1n, 1, 0), 6000); // interval 5000 > 600 → SKIPPED
@@ -2802,6 +2837,40 @@ describe('11r-f EWMA idle-gap gate (ADR-0171)', () => {
     // interval 250 → deviation 50 → 0.125*50 + 0.875*0 = 6.25: the estimator LIVES
     s.upsertCharacter(char(1n, 3, 0), 6450);
     expect(s.character(1n)!.jitterEwma).toBe(6.25);
+  });
+
+  it('(H-F) BITES: the EWMA interval comes from the wall-clock receivedAt, never the synthetic latest stamp', () => {
+    // REPAIRS ILLUSORY COVERAGE. The pre-existing ADR-0090 fixture
+    // "BITES: jitter EWMA uses real wall-clock interval (not synthetic receivedAt)"
+    // claims to kill `interval = now - existing.latest.receivedAt`, but at its
+    // stepMs=100 the synthetic-timestamp branch is UNREACHABLE (the ptc5f pin in
+    // store.ts: synthetic fires only when stepMs < 2 * BURST_EPSILON_MS = 40), so
+    // latest.receivedAt === receivedAt throughout and the two formulas agree on every
+    // step — the mutant survives it. That test is left BYTE-UNTOUCHED; this one runs
+    // at stepMs=20 so the synthetic branch actually fires and the two sources diverge.
+    // Deliberately GREEN today and after the fix: the shipped code is already correct
+    // here, and no 11r-f edit to this block (the gate lands in the same `if`) may
+    // disturb it.
+    const s = new AuthoritativeStore(20); // < 2 x BURST_EPSILON_MS → synthetic reachable
+    s.upsertCharacter(char(1n, 0, 0), 900); // A: receivedAt = latest.receivedAt = 900
+
+    // B at 919: delta 19 < BURST_EPSILON_MS=20 → burst; synthetic = 900 + 20 = 920,
+    // and 920 <= 919 + 20 = 939 → assigned. Wall-clock baseline stays 919.
+    //   interval = 919 - 900 = 19 (gate: 19 <= 3 x 20 = 60 → admit)
+    //   deviation = |19 - 20| = 1  →  ewma = 0.125*1 + 0.875*0 = 0.125
+    s.upsertCharacter(char(1n, 1, 0), 919);
+    const afterBurst = s.character(1n)!;
+    expect(afterBurst.receivedAt).toBe(919); // real wall clock
+    expect(afterBurst.latest.receivedAt).toBe(920); // SYNTHETIC — the two now diverge
+    expect(afterBurst.jitterEwma).toBe(0.125);
+
+    // C at 925 — the discriminating step:
+    //   correct: interval = 925 - 919 = 6, deviation |6 - 20| = 14
+    //            ewma = 0.125*14 + 0.875*0.125 = 1.75 + 0.109375 = 1.859375
+    //   mutant : interval = 925 - 920 = 5, deviation |5 - 20| = 15
+    //            ewma = 0.125*15 + 0.875*0.125 = 1.875 + 0.109375 = 1.984375
+    s.upsertCharacter(char(1n, 2, 0), 925);
+    expect(s.character(1n)!.jitterEwma).toBe(1.859375);
   });
 
   it('(xiv) BITES: a gated arrival does NOT mutate the snapshot ring (no store-side re-anchor)', () => {
