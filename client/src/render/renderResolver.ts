@@ -107,7 +107,7 @@ export class RenderResolver {
         let pos: RenderPos;
         if (c.snapshots.length > 0) {
           const delay = adaptiveInterpDelayMs(c.jitterEwma, this.#stepMs);
-          pos = interpolateHistory(c.snapshots, now - delay);
+          pos = interpolateHistory(c.snapshots, now - delay, this.#stepMs);
         } else {
           pos = interpolate(c.prev, c.latest, now - interpDelayMs(this.#stepMs));
         }
