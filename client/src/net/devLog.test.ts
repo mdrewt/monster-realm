@@ -50,6 +50,37 @@
 //   and `shouldLogReducer` becomes dead code. That is a vacuity hole, so the wiring is
 //   gated here.
 
+// ---------------------------------------------------------------------------
+// 11r-h ADDITIONS (ADR-0172, plan §R5.2/§R5.6) — RED WHEN WRITTEN.
+//
+// The movement-rejection diagnostics slice adds an INBOUND-fate formatter and a
+// pure, generic rate-limit transition to devLog.ts. Neither exists yet, so this
+// whole FILE fails to link ("does not provide an export named 'formatFateLine'")
+// until the implementer lands them — a missing implementation, not a typo. The
+// pre-existing gates above go red with it and turn green together.
+//
+// API UNDER TEST (plan §R5.6 + the accepted simplify deltas — `type`, not
+// `interface`; no `emit.emitted`; no exported ReducerFate):
+//   type FateLogger = (reducerName: string, fate: 'rejected', args: readonly unknown[]) => void
+//   formatFateLine(name, fate, args): string        // `<- ${name} ${fate} ${formatArgs(args)}`, capped
+//   makeFateLogger(level, out): FateLogger | undefined            // undefined when 'off'
+//   type RateLimitState  = { lastMs: number; emitted: number; pending: number }
+//   RATE_LIMIT_INITIAL: RateLimitState
+//   type RateLimitPolicy = { minGapMs: number; cap: number }
+//   rateLimitTick(state, nowMs, policy): { state: RateLimitState; emit: { pending: number } | undefined }
+//
+// GATE MAP (11r-h):
+//   E5.4/D2: T-FATE-NOT-FILTERED, T-FATE-SHAPE
+//   E5.5:    T-FATE-CAP, T-FATE-TOTAL
+//   E5.6:    T-FATE-OFF-UNDEFINED
+//   E5.3/D1: T-THROTTLE-FIRST, T-THROTTLE-GAP, T-THROTTLE-CAP, T-THROTTLE-PURE,
+//            T-THROTTLE-BACKWARDS-CLOCK, T-THROTTLE-CONSERVATION
+//
+// WHY THE ARITHMETIC LIVES HERE AT ALL (plan §R5.2): main.ts is coverage-excluded,
+// so counters kept there are only ever source-SCANNED. Moving the transition into
+// this pure module is what makes the throttle executable-tested; these gates are the
+// entire proof that the policy behaves, so none of them may be relaxed to fit an
+// implementation — a wrong gate is re-derived from the plan, never from the code.
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 // The line cap is DERIVED, not coincidental: ADR-0157 §4 reuses ADR-0130's discipline so
@@ -60,10 +91,17 @@ import { describe, expect, it } from 'vitest';
 import { ERROR_MSG_MAX_LEN } from '../ui/errorRing';
 import {
   type DevLogLevel,
+  type FateLogger,
+  formatFateLine,
   formatSendLine,
   MAX_LINE_LEN,
+  makeFateLogger,
   makeSendLogger,
   parseDevLogLevel,
+  RATE_LIMIT_INITIAL,
+  type RateLimitPolicy,
+  type RateLimitState,
+  rateLimitTick,
   resolveDevLogLevel,
   shouldLogReducer,
   wrapReducerLogging,
@@ -833,5 +871,432 @@ describe('devLog Proxy (EARS-1): wrapReducerLogging logs and forwards', () => {
       w.reducers.talk,
       'the reducers view must be WRAPPED (a raw pass-through logs nothing)',
     ).not.toBe(c.reducers.talk);
+  });
+});
+
+// ===========================================================================
+// 11r-h — the reducer FATE line (ADR-0172 D2; EARS E5.4/E5.5/E5.6)
+//
+// A "fate" is the settled outcome of an outbound call. This slice needs exactly one:
+// `enqueueMove` REJECTED. The line is INBOUND-facing (`<-`), mirroring formatSendLine's
+// outbound `->`, and reuses the same total arg renderer.
+// ===========================================================================
+
+/** Non-null-assert a fate logger with a loud message (an `undefined` here is a real failure). */
+function requireFateLogger(logger: FateLogger | undefined, level: DevLogLevel): FateLogger {
+  if (typeof logger !== 'function') {
+    throw new Error(
+      `makeFateLogger('${level}', out) must return a FateLogger function (got ${typeof logger}) — ` +
+        'only the OFF level may return undefined',
+    );
+  }
+  return logger;
+}
+
+describe('devLog fate formatter (E5.5): formatFateLine', () => {
+  it('T-FATE-SHAPE: the line is exactly `<- <name> <fate> <args>` — inbound arrow, fate token, rendered args', () => {
+    // WRONG IMPL KILLED (1): reusing formatSendLine's `->` prefix. The bug bundle and the
+    // console then claim the client SENT a "rejected" call; direction is the one thing a
+    // wire log must never lie about.
+    // WRONG IMPL KILLED (2): dropping the fate token (a line indistinguishable from a send),
+    // or dropping the args (seq/dropped are the entire diagnostic payload of E5.2's
+    // breadcrumb companion).
+    expect(formatFateLine('enqueueMove', 'rejected', [{ seq: 7, dropped: true }])).toBe(
+      '<- enqueueMove rejected [{"seq":7,"dropped":true}]',
+    );
+    expect(formatFateLine('enqueueMove', 'rejected', [])).toBe('<- enqueueMove rejected []');
+  });
+
+  it("T-FATE-SHAPE (shared renderer): the args tail is byte-identical to formatSendLine's, including the hostile fallbacks", () => {
+    // WRONG IMPL KILLED: a hand-rolled second arg renderer inside formatFateLine. It would
+    // pass every shape assertion above and then throw on a bigint (`Do not know how to
+    // serialize a BigInt`) or lose `.toHexString()` — ONLY on the rejection path, i.e. only
+    // in Drew's playtest, never in CI. The repo keeps ONE renderer (devLog.ts formatArgs);
+    // this is what holds the two call sites on it.
+    const cyclic: Record<string, unknown> = { name: 'cyclic' };
+    cyclic.self = cyclic;
+    const argSets: readonly (readonly [string, readonly unknown[]])[] = [
+      ['a bigint seq', [{ seq: 12n }]],
+      ['an Identity-like arg', [{ owner: { toHexString: () => '0xc0ffee' } }]],
+      [
+        'the real MoveInput payload',
+        [{ input: { tag: 'Step', value: { tag: 'North' } }, seq: 3n }],
+      ],
+      ['a cyclic object (the <unserializable> fallback)', [cyclic]],
+    ];
+    for (const [label, args] of argSets) {
+      const fate = formatFateLine('enqueueMove', 'rejected', args);
+      const send = formatSendLine('enqueueMove', args);
+      const fateHead = '<- enqueueMove rejected ';
+      const sendHead = '-> enqueueMove ';
+      expect(fate.startsWith(fateHead), `${label}: fate line must start with "${fateHead}"`).toBe(
+        true,
+      );
+      expect(
+        fate.slice(fateHead.length),
+        `${label}: the fate line must render args through the SAME total renderer as formatSendLine`,
+      ).toBe(send.slice(sendHead.length));
+    }
+  });
+
+  it('T-FATE-CAP (examples + property): the line is capped at MAX_LINE_LEN', () => {
+    // WRONG IMPL KILLED: dropping the `.slice(0, MAX_LINE_LEN)`. One pathological rejection
+    // payload then dumps a screenful into the console the developer turned on to READ.
+    const huge = formatFateLine('enqueueMove', 'rejected', [new Array(5000).fill('xxxxxxxxxx')]);
+    expect(
+      huge.length,
+      'a 5000-element arg must be truncated to exactly MAX_LINE_LEN, not merely "be a string"',
+    ).toBe(MAX_LINE_LEN);
+    const longName = formatFateLine('x'.repeat(4000), 'rejected', []);
+    expect(longName.length, 'an absurd reducer NAME must be capped too').toBe(MAX_LINE_LEN);
+    const longFate = formatFateLine('enqueueMove', 'y'.repeat(4000), []);
+    expect(longFate.length, 'an absurd FATE token must be capped too').toBe(MAX_LINE_LEN);
+
+    // fast-check + vitest gotcha: BLOCK-body arrow only — with an expression-body arrow
+    // fast-check reads the matcher's return value as the property result.
+    fc.assert(
+      fc.property(
+        fc.string(),
+        fc.string(),
+        fc.array(fc.oneof(fc.string({ maxLength: 400 }), fc.integer(), fc.bigInt()), {
+          maxLength: 40,
+        }),
+        (name, fate, args) => {
+          const line = formatFateLine(name, fate, args);
+          expect(typeof line).toBe('string');
+          expect(line.length).toBeLessThanOrEqual(MAX_LINE_LEN);
+        },
+      ),
+      { numRuns: 300 },
+    );
+  });
+
+  it('T-FATE-TOTAL: hostile args never throw — the diagnostics path may not escalate a rejection', () => {
+    // WRONG IMPL KILLED: no try/catch around the serialisation (or a renderer that calls the
+    // PARTIAL toISOString()/toDate()). formatFateLine runs inside the enqueueMove `.catch`;
+    // a throw there rejects the handler's promise, reaches main.ts's unhandledrejection
+    // listener, and turns a silently-corrected movement rejection into a user-visible error
+    // overlay — the exact failure E5.1 forbids.
+    const cyclic: Record<string, unknown> = { name: 'cyclic' };
+    cyclic.self = cyclic;
+    const throwingGetter = {
+      get boom(): never {
+        throw new Error('getter exploded');
+      },
+    };
+    const throwingToJson = {
+      toJSON(): never {
+        throw new Error('toJSON exploded');
+      },
+    };
+    const hostileTimestamp = {
+      toISOString(): string {
+        throw new RangeError('Invalid time value');
+      },
+      toDate(): Date {
+        throw new RangeError('Invalid time value');
+      },
+    };
+    let deep: unknown = { leaf: true };
+    for (let i = 0; i < 60; i++) deep = { nested: deep };
+
+    const cases: readonly (readonly [string, readonly unknown[]])[] = [
+      ['a cyclic object', [cyclic]],
+      ['a throwing getter', [throwingGetter]],
+      ['a throwing toJSON', [throwingToJson]],
+      ['a Timestamp-like arg with PARTIAL toISOString/toDate', [hostileTimestamp]],
+      ['60-deep nesting', [deep]],
+      ['undefined', [undefined]],
+      ['a symbol', [Symbol('sym')]],
+      ['a function', [() => 1]],
+      ['NaN / Infinity / -0', [Number.NaN, Number.POSITIVE_INFINITY, -0]],
+      ['a Map and a Set', [new Map([['k', 'v']]), new Set([1, 2, 3])]],
+      ['a null-prototype object', [Object.create(null) as object]],
+      ['no args at all', []],
+    ];
+    for (const [label, args] of cases) {
+      let line = '';
+      expect(() => {
+        line = formatFateLine('enqueueMove', 'rejected', args);
+      }, `formatFateLine must be TOTAL for ${label}`).not.toThrow();
+      expect(typeof line, 'formatFateLine must always return a string').toBe('string');
+      expect(line.length).toBeLessThanOrEqual(MAX_LINE_LEN);
+      expect(line, `the fate line must survive ${label} with its subject intact`).toContain(
+        'enqueueMove',
+      );
+      expect(line, `the fate token must survive ${label}`).toContain('rejected');
+    }
+  });
+});
+
+describe('devLog fate sink (E5.4/E5.6/ADR-0172 D2): makeFateLogger', () => {
+  it('T-FATE-OFF-UNDEFINED: makeFateLogger("off", out) === undefined and out is never called', () => {
+    // WRONG IMPL KILLED: returning a no-op function at 'off'. main.ts calls the fate logger
+    // with `fateLogger?.(...)`; a no-op sink means the default production build formats a
+    // line (allocating, serialising player-adjacent args) on every rejection and throws it
+    // away — the disabled path must allocate nothing at all, exactly as makeSendLogger's does.
+    const { lines, out } = makeOutRecorder();
+    expect(
+      makeFateLogger('off', out),
+      "makeFateLogger('off', out) must return undefined — the disabled path allocates nothing",
+    ).toBeUndefined();
+    expect(lines, 'the off path must never call out').toEqual([]);
+  });
+
+  it('T-FATE-NOT-FILTERED: at level "send", the enqueueMove fate line IS emitted — fates ignore NOISY_REDUCERS', () => {
+    // ADR-0172 D2. The asymmetry is deliberate: sends of enqueueMove run ~5/s while walking
+    // (hence the NOISY_REDUCERS exclusion at 'send'), but a REJECTION is rare and is precisely
+    // the event a developer who turned the log on wants to see.
+    // WRONG IMPL KILLED: `makeFateLogger` delegating to shouldLogReducer (the copy-paste of
+    // makeSendLogger's body). At the DEFAULT non-off level the one interesting enqueueMove
+    // line would then be suppressed unless the developer also opted into the 5/s flood — the
+    // filter would suppress signal, not noise.
+    // ANTI-VACUITY: the first assertion proves enqueueMove really IS filtered for SENDS, so a
+    // pass below cannot come from the fixture picking a non-noisy reducer name.
+    expect(
+      shouldLogReducer('send', 'enqueueMove'),
+      "fixture self-check: 'enqueueMove' must still be a NOISY_REDUCER at level 'send', " +
+        'otherwise this gate proves nothing',
+    ).toBe(false);
+
+    const send = makeOutRecorder();
+    const sendFate = requireFateLogger(makeFateLogger('send', send.out), 'send');
+    sendFate('enqueueMove', 'rejected', [{ seq: 4, dropped: false }]);
+    expect(
+      send.lines.length,
+      "level 'send' MUST emit the enqueueMove fate line — fates deliberately bypass the " +
+        'noisy-reducer filter that applies to sends (ADR-0172 D2)',
+    ).toBe(1);
+    expect(send.lines[0]).toContain('enqueueMove');
+    expect(send.lines[0]).toContain('rejected');
+
+    const move = makeOutRecorder();
+    const moveFate = requireFateLogger(makeFateLogger('send-move', move.out), 'send-move');
+    moveFate('enqueueMove', 'rejected', [{ seq: 5, dropped: true }]);
+    expect(move.lines.length, "level 'send-move' must emit the fate line too").toBe(1);
+  });
+
+  it('T-FATE-SHAPE (sink arm): exactly ONE line per call, byte-identical to formatFateLine', () => {
+    // WRONG IMPL KILLED (1): a logger that emits nothing (E5.4 never fires) or emits twice
+    // (a double-wired sink double-counts every rejection in the console record).
+    // WRONG IMPL KILLED (2): a logger that formats its own divergent line, so the format the
+    // gates above pin is not the format the console actually receives.
+    const { lines, out } = makeOutRecorder();
+    const log = requireFateLogger(makeFateLogger('send', out), 'send');
+    log('enqueueMove', 'rejected', [{ seq: 9, dropped: true }]);
+    expect(lines.length, 'exactly one line per fate call').toBe(1);
+    expect(lines[0]).toBe(formatFateLine('enqueueMove', 'rejected', [{ seq: 9, dropped: true }]));
+    log('enqueueMove', 'rejected', [{ seq: 10, dropped: false }]);
+    expect(lines.length, 'a second fate call must produce exactly one more line').toBe(2);
+  });
+});
+
+// ===========================================================================
+// 11r-h — the pure breadcrumb rate limit (ADR-0172 D1; EARS E5.3)
+//
+// Generic arithmetic, no ring/bundle vocabulary and no clock: main.ts owns the ONE
+// mutable binding and reads performance.now(); every decision is made here, where it
+// can actually be executed by a test (main.ts is coverage-excluded).
+//
+// SEMANTICS PINNED (plan §R5.2):
+//   pending  counts events since the last emit, INCLUSIVE of the current one;
+//   suppress iff (the current tick is inside minGapMs of lastMs) OR emitted >= cap;
+//   on emit    -> emit.pending = that inclusive count; state = { lastMs: nowMs,
+//                 emitted: emitted + 1, pending: 0 };
+//   on suppress-> state = { lastMs, emitted, pending: pending + 1 }.
+// ===========================================================================
+
+describe('devLog rate limit (E5.3/ADR-0172 D1): rateLimitTick', () => {
+  const POLICY: RateLimitPolicy = { minGapMs: 3_000, cap: 16 };
+
+  it('T-THROTTLE-FIRST: the FIRST tick from RATE_LIMIT_INITIAL emits, with pending === 1, at ANY clock reading', () => {
+    // WRONG IMPL KILLED: `RATE_LIMIT_INITIAL = { lastMs: 0, ... }`. main.ts feeds
+    // performance.now(), which starts near 0 — so with lastMs 0 the FIRST rejection of the
+    // session (0 - 0 = 0 < minGapMs) is silently swallowed, and a rejection storm in the first
+    // 3 seconds after load leaves the bug bundle with no breadcrumb at all. The initial state
+    // must be "infinitely long ago", not "at time zero".
+    const first = rateLimitTick(RATE_LIMIT_INITIAL, 0, POLICY);
+    expect(first.emit, 'the first tick must EMIT').toBeDefined();
+    expect(first.emit?.pending, 'pending is INCLUSIVE of the current event').toBe(1);
+    expect(first.state.pending, 'an emit resets the pending counter').toBe(0);
+    expect(first.state.emitted, 'an emit increments the session counter').toBe(1);
+    expect(first.state.lastMs, 'an emit records the clock reading it emitted at').toBe(0);
+    // The emit payload carries ONLY the inclusive count — the caller reads state.emitted for
+    // the breadcrumb index. WRONG IMPL KILLED: a second, drift-prone copy of `emitted`.
+    expect(
+      Object.keys(first.emit ?? {}),
+      'emit must carry exactly { pending } — the caller reads state.emitted, so a duplicated ' +
+        'emit.emitted is a second source of truth that can drift',
+    ).toEqual(['pending']);
+
+    fc.assert(
+      fc.property(fc.integer({ min: 0, max: 1_000_000_000 }), (nowMs) => {
+        const r = rateLimitTick(RATE_LIMIT_INITIAL, nowMs, POLICY);
+        expect(r.emit).toBeDefined();
+        expect(r.emit?.pending).toBe(1);
+        expect(r.state.emitted).toBe(1);
+        expect(r.state.lastMs).toBe(nowMs);
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  it('T-THROTTLE-GAP: inside minGapMs suppresses; the tick at EXACTLY lastMs + minGapMs emits and carries the accumulated inclusive pending', () => {
+    // WRONG IMPL KILLED (1): dropping the gap term entirely (`return emit` always) — a 30 s
+    // rubber-band episode then floods the 64-slot error ring and evicts every real crash record.
+    // WRONG IMPL KILLED (2): an EXCLUSIVE boundary (`gap > minGapMs`), which makes the emit
+    // time drift by one tick forever and is invisible to any non-boundary fixture.
+    // WRONG IMPL KILLED (3): resetting `pending` on a SUPPRESSED tick (or counting it
+    // exclusively) — the emitted breadcrumb would understate the storm's magnitude, which is
+    // the whole reason the count is carried at all.
+    const emitted1 = rateLimitTick(RATE_LIMIT_INITIAL, 1_000, POLICY);
+    expect(emitted1.emit).toBeDefined();
+
+    const inside = rateLimitTick(emitted1.state, 2_000, POLICY);
+    expect(inside.emit, 'a tick 1000ms after an emit (minGapMs=3000) must be SUPPRESSED').toBe(
+      undefined,
+    );
+    expect(inside.state.pending, 'a suppressed tick still counts').toBe(1);
+    expect(inside.state.lastMs, 'a suppressed tick must NOT move the gap window').toBe(1_000);
+    expect(inside.state.emitted, 'a suppressed tick must NOT consume the session cap').toBe(1);
+
+    const alsoInside = rateLimitTick(inside.state, 3_999, POLICY);
+    expect(alsoInside.emit, '2999ms after the emit is still inside the gap').toBe(undefined);
+    expect(alsoInside.state.pending).toBe(2);
+
+    const atBoundary = rateLimitTick(alsoInside.state, 4_000, POLICY);
+    expect(
+      atBoundary.emit,
+      'nowMs - lastMs === minGapMs is INCLUSIVE — exactly at the boundary the tick must EMIT',
+    ).toBeDefined();
+    expect(
+      atBoundary.emit?.pending,
+      'the emitted count must carry the two suppressed events PLUS the current one (inclusive)',
+    ).toBe(3);
+    expect(atBoundary.state.pending).toBe(0);
+    expect(atBoundary.state.lastMs).toBe(4_000);
+    expect(atBoundary.state.emitted).toBe(2);
+  });
+
+  it('T-THROTTLE-CAP: emitted === cap - 1 emits; emitted === cap suppresses forever (even on a backwards clock)', () => {
+    // WRONG IMPL KILLED (1): dropping the `emitted < cap` term. A long session of rejections
+    // then owns the whole 64-slot ring; the cap is what guarantees >= 48 slots stay available
+    // for genuine crash records (ADR-0172 D1).
+    // WRONG IMPL KILLED (2): an off-by-one cap (`emitted > cap`, or `>=` on cap - 1) — the
+    // last legitimate breadcrumb is lost, or one extra lands.
+    const atCapMinusOne: RateLimitState = { lastMs: 0, emitted: POLICY.cap - 1, pending: 0 };
+    const last = rateLimitTick(atCapMinusOne, 1_000_000, POLICY);
+    expect(last.emit, 'the cap-th breadcrumb (emitted === cap - 1) must still EMIT').toBeDefined();
+    expect(last.state.emitted).toBe(POLICY.cap);
+
+    const over = rateLimitTick(last.state, 2_000_000, POLICY);
+    expect(over.emit, 'at emitted === cap the gap no longer matters — SUPPRESS').toBe(undefined);
+    expect(over.state.emitted, 'a suppressed tick must not grow the counter past the cap').toBe(
+      POLICY.cap,
+    );
+    expect(over.state.pending, 'post-cap events are still counted').toBe(1);
+
+    const muchLater = rateLimitTick(over.state, 900_000_000, POLICY);
+    expect(muchLater.emit, 'the cap is a SESSION cap — no amount of elapsed time reopens it').toBe(
+      undefined,
+    );
+    expect(muchLater.state.pending).toBe(2);
+
+    // The cap term is an OR with the gap term, so the backwards-clock relaxation (below)
+    // applies to the GAP only: a non-monotonic jump must never reopen an exhausted cap.
+    const backwards = rateLimitTick(muchLater.state, 5, POLICY);
+    expect(backwards.emit, 'a clock jump must not resurrect an exhausted session cap').toBe(
+      undefined,
+    );
+    expect(backwards.state.pending).toBe(3);
+  });
+
+  it('T-THROTTLE-BACKWARDS-CLOCK: a nowMs BELOW lastMs emits — a non-monotonic jump must never suppress forever', () => {
+    // WRONG IMPL KILLED: the naive `if (nowMs - state.lastMs < minGapMs) suppress`. A single
+    // backwards clock reading (a clock the shell does not fully control: a resumed tab, a
+    // remounted timer origin, a future caller passing Date.now()) makes the difference
+    // NEGATIVE, i.e. permanently "inside the gap" — movement diagnostics then go dark for the
+    // rest of the session and no test that only walks time FORWARDS can ever see it.
+    const state: RateLimitState = { lastMs: 10_000, emitted: 1, pending: 0 };
+    const jumped = rateLimitTick(state, 500, POLICY);
+    expect(jumped.emit, 'a backwards clock jump must EMIT, not suppress').toBeDefined();
+    expect(jumped.emit?.pending).toBe(1);
+    expect(jumped.state.lastMs, 'the jump must re-anchor the gap window on the new reading').toBe(
+      500,
+    );
+    expect(jumped.state.emitted).toBe(2);
+
+    // ...and normal throttling resumes from the new anchor (the fix must not be "always emit").
+    const after = rateLimitTick(jumped.state, 600, POLICY);
+    expect(after.emit, 'after re-anchoring, the gap must apply again from the new lastMs').toBe(
+      undefined,
+    );
+    expect(after.state.pending).toBe(1);
+  });
+
+  it('T-THROTTLE-PURE: rateLimitTick mutates nothing — the input state and RATE_LIMIT_INITIAL survive unchanged', () => {
+    // WRONG IMPL KILLED: an in-place transition (`state.pending += 1; return { state, ... }`).
+    // main.ts holds ONE module-scope binding reassigned from the result; an in-place mutation
+    // silently corrupts the shared RATE_LIMIT_INITIAL constant for every later reader and
+    // makes the "pure transition" claim (the reason this logic left main.ts) false.
+    const state: RateLimitState = { lastMs: 1_000, emitted: 2, pending: 5 };
+    const before = { ...state };
+    const emitResult = rateLimitTick(state, 9_000, POLICY);
+    expect({ ...state }, 'the EMIT path must not mutate its input state').toEqual(before);
+    expect(emitResult.state, 'the transition must return a NEW state object').not.toBe(state);
+
+    const suppressResult = rateLimitTick(state, 1_500, POLICY);
+    expect({ ...state }, 'the SUPPRESS path must not mutate its input state either').toEqual(
+      before,
+    );
+    expect(suppressResult.state, 'the suppress path must also return a NEW state object').not.toBe(
+      state,
+    );
+
+    const initialBefore = { ...RATE_LIMIT_INITIAL };
+    rateLimitTick(RATE_LIMIT_INITIAL, 50, POLICY);
+    rateLimitTick(RATE_LIMIT_INITIAL, 50, POLICY);
+    expect(
+      { ...RATE_LIMIT_INITIAL },
+      'RATE_LIMIT_INITIAL is a shared module constant — ticking it must never move it',
+    ).toEqual(initialBefore);
+    expect(rateLimitTick(RATE_LIMIT_INITIAL, 50, POLICY).state).not.toBe(RATE_LIMIT_INITIAL);
+  });
+
+  it('T-THROTTLE-CONSERVATION (property): no event is ever lost — sum of emitted pending + final pending === tick count', () => {
+    // WRONG IMPL KILLED: any counter bookkeeping that drops events — resetting `pending` on a
+    // suppressed tick, forgetting to reset it on an emit (double-counting), or reporting the
+    // count EXCLUSIVE of the current event. The carried count is the only record of a storm's
+    // magnitude once the breadcrumbs are throttled, so "the numbers add up" IS the invariant.
+    // The cap is deliberately set out of reach here (cap = ticks + 1); T-THROTTLE-CAP owns the
+    // post-cap behaviour.
+    // fast-check + vitest gotcha: BLOCK-body arrow only.
+    fc.assert(
+      fc.property(
+        fc.array(fc.integer({ min: -5_000, max: 20_000 }), { minLength: 1, maxLength: 40 }),
+        fc.integer({ min: 0, max: 5_000 }),
+        (deltas, minGapMs) => {
+          const policy: RateLimitPolicy = { minGapMs, cap: deltas.length + 1 };
+          // Annotated (not inferred) so a literal-typed `as const` initial state stays legal.
+          let state: RateLimitState = RATE_LIMIT_INITIAL;
+          let nowMs = 0;
+          let carried = 0;
+          let emits = 0;
+          for (const delta of deltas) {
+            nowMs += delta;
+            const result = rateLimitTick(state, nowMs, policy);
+            if (result.emit !== undefined) {
+              carried += result.emit.pending;
+              emits += 1;
+            }
+            state = result.state;
+          }
+          expect(carried + state.pending).toBe(deltas.length);
+          expect(state.emitted).toBe(emits);
+          expect(state.emitted).toBeLessThanOrEqual(policy.cap);
+        },
+      ),
+      { numRuns: 300 },
+    );
   });
 });

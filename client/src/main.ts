@@ -35,7 +35,13 @@ import type { PvpAction } from './module_bindings/types';
 import { BUILD_INFO, formatBuildStamp } from './net/buildInfo';
 import { connect } from './net/connection';
 import { resolveConnectionConfig } from './net/connectionConfig';
-import { makeSendLogger, resolveDevLogLevel } from './net/devLog';
+import {
+  makeFateLogger,
+  makeSendLogger,
+  RATE_LIMIT_INITIAL,
+  rateLimitTick,
+  resolveDevLogLevel,
+} from './net/devLog';
 import { AuthoritativeStore, ownPerspective } from './net/store';
 import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
 import { HeldDirections, reissueDir } from './prediction/heldKeys';
@@ -163,6 +169,10 @@ const DEV_LOG_LEVEL = resolveDevLogLevel(
   (m) => console.error(m),
 );
 const sendLogger = makeSendLogger(DEV_LOG_LEVEL, (line) => console.log(line));
+// ADR-0172 D2: the INBOUND fate line, same level/sink/undefined-at-'off' discipline as
+// sendLogger. CONSOLE-ONLY — a ring push smuggled into this sink would ship reducer args
+// (player free text) into the shared F9 bundle (ADR-0157 §4).
+const fateLogger = makeFateLogger(DEV_LOG_LEVEL, (line) => console.log(line));
 
 const ZONE_ID = 0;
 
@@ -594,7 +604,14 @@ function pushError(source: 'uncaught' | 'unhandledrejection' | 'reducer', raw: u
   try {
     errorRing.push(source, raw);
     if (errorOverlayView) {
-      errorOverlayView.render(buildErrorOverlayModel(errorRing.snapshot()));
+      // ADR-0172 D3: the movement breadcrumb is BUNDLE-bound, never OVERLAY-bound. This ring
+      // IS the overlay's source (newest 8), so unfiltered the 16 capped breadcrumbs would
+      // surface silent rejections (M2 §3) and evict real errors from the visible window.
+      errorOverlayView.render(
+        buildErrorOverlayModel(
+          errorRing.snapshot().filter((r) => !r.message.startsWith(MOVE_REJECT_PREFIX)),
+        ),
+      );
       if (!errorOverlayView.visible) errorOverlayView.show();
     }
   } catch (e) {
@@ -787,6 +804,38 @@ store.onBatchApplied(() => {
 // --- input: predict locally + send the intent to the M2 reducer (seq-tracked) ----
 // nh3 (ADR-0152): highest seq ever handed to enqueueMove — the seedSeq floor for rebuilds.
 let lastSentSeq = 0;
+
+// --- 11r-h (ADR-0172): movement-rejection diagnostics -----------------------------
+// Rejections stay SILENT to the player (M2 §3), so an F9 bundle from a rubber-banding
+// session used to show nothing. Two sinks close that: the flag-gated console fate line
+// and a rate-limited errorRing breadcrumb (bundle-only, overlay-filtered). ONE prefix
+// const feeds both the formatter and that filter, so they cannot drift apart.
+const MOVE_REJECT_PREFIX = 'movement-reject ';
+// ADR-0172 D1: 16 breadcrumbs leave >= 48 of the 64 ring slots for real crash records.
+// `minGapMs`, not `windowMs` — the substring `window` reds the dev-observability eval.
+const MOVE_REJECT_POLICY = { minGapMs: 3_000, cap: 16 };
+// MODULE scope: inside the helper this would re-initialise per rejection and the gap and
+// the cap would both silently do nothing.
+let moveRejectLimit = RATE_LIMIT_INITIAL;
+/** Record one rejected movement intent. TOTAL — see the catch. */
+function noteMoveRejection(seq: number, dropped: boolean): void {
+  try {
+    fateLogger?.('enqueueMove', 'rejected', [{ seq, dropped }]);
+    // Monotonic clock, as elsewhere on this path. rateLimitTick is PURE — write it back.
+    const tick = rateLimitTick(moveRejectLimit, performance.now(), MOVE_REJECT_POLICY);
+    moveRejectLimit = tick.state;
+    if (tick.emit) {
+      errorRing.push(
+        'reducer',
+        `${MOVE_REJECT_PREFIX}seq=${seq} dropped=${dropped ? 1 : 0} count=${tick.emit.pending} breadcrumb=${tick.state.emitted}/${MOVE_REJECT_POLICY.cap}`,
+      );
+    }
+  } catch {
+    // Diagnostics must never escalate a movement rejection into a user-visible error:
+    // a throw here rejects the .catch handler's promise, which reaches the
+    // unhandledrejection listener, which calls pushError, which SHOWS the overlay.
+  }
+}
 function sendIntent(input: WasmMoveInput): void {
   // Single choke point for the movement freeze (ADR-0085 D3): the keydown first
   // step, the frame-loop held re-issue, AND the reconcile-listener divergence
@@ -820,7 +869,9 @@ function sendIntent(input: WasmMoveInput): void {
     // turn) are harmless — the microtask checkpoint drains before the next rAF, the
     // renderer reads predictor state only in rAF, and each reconcile is a total
     // re-derivation from store truth (idempotent, converging). No coalescing needed.
-    if (predictor.dropRejected(seq, epoch)) reconcileFromStore();
+    const dropped = predictor.dropRejected(seq, epoch);
+    if (dropped) reconcileFromStore();
+    noteMoveRejection(seq, dropped);
   });
 }
 const step = (dir: WasmDirection): void => sendIntent({ Step: dir });
