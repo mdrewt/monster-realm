@@ -1989,6 +1989,17 @@ fn rate_limiter_arithmetic_saturates_and_lock_poisoning_recovers() {
 ///     file). Because the binding is `suppressed` and not `_suppressed`, the
 ///     compiler itself then forces the log body to consume it.
 ///
+///   * **The routine-reason filter sits IMMEDIATELY OUTSIDE the begin-encounter
+///     gate, spelled `!=`.** `NO_CONSCIOUS_MONSTER_REASON` is client-reachable
+///     (walk grass with an all-fainted party), so it must consume neither the log
+///     NOR the limiter window — a filter placed inside the `if let Some(..)` block
+///     would still let it `.check(`, re-anchoring the window and resetting the
+///     suppressed counter, which is a client-driven way to mask genuine faults.
+///     Pinning filter+gate as one contiguous sequence also kills the
+///     `replace != with ==` mutant that a cargo-mutants run found surviving every
+///     other assertion here (inverted, only the non-event is ever logged and every
+///     real fault is permanently silent).
+///
 ///   * **Neither limiter is consulted anywhere ELSE in the tail (exactly once
 ///     each).** The gate needle proves one correct call exists; only the count
 ///     proves it is the only one. A second, discarded `check` re-anchors the
@@ -2122,6 +2133,55 @@ fn movement_tick_encounter_failures_are_logged_and_rate_limited() {
          monster' Err fires on EVERY grass step of EVERY fainted party, so a \
          discarded `check` answer turns a bounded one-line-per-window signal into a \
          5 Hz per-character ERROR flood. RED at HEAD."
+    );
+
+    // --- Layer 2-filter: the routine-reason filter, and its COMPARISON DIRECTION
+    // A refinement of layer 2's begin-encounter gate, so it lives here rather than
+    // after the counts below. Added after a cargo-mutants run showed
+    // `replace != with == at movement.rs:433` SURVIVING every other assertion in
+    // this file: the filter was present, contiguous, correctly placed, and
+    // semantically inverted.
+    let routine_filter = ["ife!=NO_CONSCIOUS_MONSTER", "_REASON{"].concat();
+    let filtered_gate = [
+        routine_filter.as_str(),
+        gate_open.as_str(),
+        "BEGIN_ENCOUNTER_ERR",
+        "_LIMITER.check(",
+    ]
+    .concat();
+    let n_filtered = region.matches(filtered_gate.as_str()).count();
+    assert_eq!(
+        n_filtered, 1,
+        "TEETH (11r-g M-7 layer 2-filter, ADR-0170 D4): the begin-encounter arm must \
+         contain, as ONE contiguous whitespace-squashed sequence, \
+         `ife!=NO_CONSCIOUS_MONSTER_REASON{{ifletSome(suppressed)=\
+         BEGIN_ENCOUNTER_ERR_LIMITER.check(` — i.e. the source must read \
+         `if e != NO_CONSCIOUS_MONSTER_REASON {{ if let Some(suppressed) = \
+         BEGIN_ENCOUNTER_ERR_LIMITER.check(..` — found {n_filtered}. \
+         THE MUTANT THIS KILLS: `replace != with ==` at movement.rs:433, which a \
+         cargo-mutants run found SURVIVING every other assertion in this file — the \
+         filter is still present, still contiguous, still correctly placed, and \
+         exactly backwards. Inverted, the limiter and the log fire ONLY for the \
+         routine fainted-party reason and NEVER for a genuine fault \
+         (species-not-found, stat corruption): those are permanently silenced, while \
+         the one non-event that must never be logged becomes the only thing in the \
+         log. It is strictly worse than the pre-slice silence, because it looks like \
+         a working feature. The `==` spelling squashes to `ife==…` and cannot match \
+         this needle. \
+         WHY THE FILTER AND THE GATE ARE PINNED ADJACENTLY: the routine reason is \
+         client-reachable (walk grass with an all-fainted party), so it must consume \
+         NEITHER the log NOR the limiter window. A filter wrapped around the \
+         `log::error!` alone — inside the `if let Some(suppressed)` block instead of \
+         outside it — still lets the routine reason call `.check(`, which re-anchors \
+         the window and resets the suppressed counter: a client could then saturate \
+         the limiter and mask genuine faults, the exact attack the filter exists to \
+         close. Only requiring the filter IMMEDIATELY OUTSIDE the gate rules that out. \
+         A dropped filter fails this needle too (the sequence simply does not occur). \
+         GREEN at HEAD. \
+         HONEST LIMIT: this pins the comparison and its position, not the CONSTANT's \
+         value — `NO_CONSCIOUS_MONSTER_REASON` is a `pub(crate) const` in `battle.rs`, \
+         outside this file's scan, and is the SSOT precisely so the reason string \
+         cannot drift apart from the guard that produces it."
     );
 
     // --- Layer 2b: neither limiter is consulted anywhere ELSE in the tail -----
