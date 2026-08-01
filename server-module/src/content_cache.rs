@@ -170,6 +170,11 @@ pub(crate) fn type_chart_cache_lookup(
 /// built from rows that no longer exist. Pinned by the
 /// `sync_content_reachable_modules_never_call_cached_type_chart` scan.
 ///
+/// NOTE (ADR-0170 D1 trade-off): the cell lock is HELD across the rebuild
+/// closure (racing rebuilds cannot clobber each other; safe because reducers
+/// are serial). The re-entrancy footgun: any future rebuild path that
+/// reacquires this cache would DEADLOCK — keep the rebuild closure cache-free.
+///
 /// # Errors
 /// Propagates the rebuild's error (`marshal::type_chart_from_rows`) without
 /// caching it.

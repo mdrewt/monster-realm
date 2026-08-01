@@ -293,6 +293,14 @@ pub(crate) fn lead_party(ctx: &ReducerContext, owner: Identity) -> Option<(Vec<u
     Some((ids, lead_level))
 }
 
+/// `begin_encounter`'s ROUTINE rejection: the party has zero conscious monsters
+/// (a fainted party walking grass — normal gameplay, not a fault). A shared
+/// `pub(crate)` const (ADR-0170 D4 hardening) so `movement_tick`'s limiter
+/// filter compares against this reducer's actual Err text and can never drift
+/// from it — a hostile client must not be able to saturate the
+/// begin-encounter error limiter with this reason and mask genuine faults.
+pub(crate) const NO_CONSCIOUS_MONSTER_REASON: &str = "party has no conscious monster";
+
 /// Begin a wild battle: build side A from the player's owned party and side B from
 /// a single freshly-rolled wild (no owned `monster` row). Builds the `Battle` row
 /// DIRECTLY (NOT via `start_battle`, so `start_battle`'s owned-opponent guards stay
@@ -370,8 +378,8 @@ pub(crate) fn begin_encounter(
     // Seat side A's lead: the first slot with HP > 0 (ADR-0156 D1). `None` is
     // the "party has a conscious monster" precondition. Team order is preserved,
     // keeping `team[i]` coupled to `party_monster_ids[i]`.
-    let side_a = BattleSide::with_lead(team_a)
-        .ok_or_else(|| "party has no conscious monster".to_string())?;
+    let side_a =
+        BattleSide::with_lead(team_a).ok_or_else(|| NO_CONSCIOUS_MONSTER_REASON.to_string())?;
 
     // Build side B: exactly ONE wild monster (no owned monster row). The species
     // must exist at creation (R-G): a battle created after `sync_content` cannot

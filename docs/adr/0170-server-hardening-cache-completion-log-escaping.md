@@ -86,7 +86,11 @@ poisoning of every battle's damage math). The chosen design is a
   `sync_content_inner` — a one-file lexical scan would miss a transitive call), and
   (b) a doc-comment contract on `cached_type_chart` naming the forbidden callers.
 - **Structure:** a pure inner (`cache cell + version + rebuild closure`) carries all the
-  logic and is unit-tested directly; the `ReducerContext` wrapper is ~5 lines.
+  logic and is unit-tested directly; the `ReducerContext` wrapper is ~5 lines. The cell
+  lock is deliberately HELD across the rebuild closure (racing rebuilds cannot clobber
+  each other; safe because reducers are serial) — the trade-off is a re-entrancy
+  footgun: any future rebuild path that reacquires the cache would deadlock. Named
+  here and in the accessor's doc comment.
 
 **Rejected:** plain `LazyLock` over DB rows (stale-after-reseed poisoning); an
 invalidation hook inside `sync_content` (requires editing out-of-scope `content.rs`,
@@ -151,8 +155,16 @@ sibling `movement_tick_error` JSON shape with reasons passed through `json_escap
   `begin_encounter` failures. Justified concretely: one of `begin_encounter`'s Err
   paths ("party has no conscious monster") is ROUTINE gameplay (a fainted party
   walking grass), so it can burst; a shared limiter would let it mask a real content
-  defect. Consciously accepted: that routine path now produces rate-limited
-  ERROR-level lines (bounded to one per window process-wide).
+  defect.
+- **The routine fainted-party reason is filtered at source** (post-review hardening):
+  that reason is fully client-controlled, so left unfiltered it would let a hostile
+  client saturate `BEGIN_ENCOUNTER_ERR_LIMITER`'s single per-window emit slot and
+  blind the channel to genuine anomalies. `battle.rs` exports
+  `NO_CONSCIOUS_MONSTER_REASON` (a shared const, so the filter cannot drift from the
+  Err construction) and `movement.rs` skips both the limiter and the log for it — a
+  normal-gameplay non-event, like a no-trigger encounter roll. Remaining
+  client-steerable reasons (e.g. a player walking grass with an escrowed party
+  monster) can still consume the shared window — see residual 7.
 - **Each limiter is an instantiable `RateLimiter` struct wrapping
   `Mutex<(Option<i64>, u32)>`** (`last_emit_ms`, `suppressed`) with a
   `check(now_ms, window_ms) -> Option<u32>` method (`Some(suppressed)` = emit,
@@ -198,9 +210,11 @@ structurally quote-free (documented inline).
 **Repo invariant honored:** the double-quote is spelled `'\u{0022}'` (never a raw
 `'"'` char literal) and no comment contains an unpaired block-comment opener — eval
 W-pre and the per-file stripper helpers hard-fail otherwise. A ~5-line raw-text
-guard test over the files this slice touches (no `'"'` substring, balanced `/*`)
-gives `cargo test`-speed feedback without duplicating the eval's stripper as a
-second source of truth.
+guard test over the three files with new escaping-relevant text (guards.rs,
+movement.rs, content_cache.rs — battle.rs/raising.rs gained only call-site swaps
+with no quote-risk text and stay covered by the repo-wide eval W-pre) gives
+`cargo test`-speed feedback without duplicating the eval's stripper as a second
+source of truth.
 
 ## Consequences
 
@@ -221,13 +235,20 @@ second source of truth.
    `schema.rs:430-441` + `content.rs:702` seed + bindings regen +
    `client/src/net/{store,rowConvert}.ts` + `healView.ts` display; amends ADR-0083 §A
    (its m13c/m13d constraint has expired); u64→number narrowing at `rowConvert.ts:522`.
+   The `healView.ts` currency arm is a NON-OPTIONAL pairing with the wiring: once
+   `rowConvert` supplies the field, a currency-only pad would otherwise render
+   "0x Unknown item" (its non-free branch has no currency arm today).
 2. **ADR-0089 residual call sites:** `pvp.rs:280/:392` and `taming.rs:205`
    (`load_abilities`; only taming.rs:203 carries a PARK comment to delete);
    `pvp.rs:383` and `taming.rs:191` (`type_chart_from_rows` — plain call sites, no
    PARK comments exist there). Follow-up slice swaps them to
    `cached_abilities`/`cached_type_chart`.
-3. `movement_tick_error` sites (:186/:193) escaped but not rate-limited (once per
-   zone per tick — no spam risk).
+3. `movement_tick_error` sites escaped but not rate-limited. Stated honestly: the
+   scheduler ticks every zone every STEP_MS (200 ms) regardless of players, so a
+   persistent zone-map/content fault would emit ~5 ERROR lines/sec/zone until
+   redeploy — a higher frequency than anything this slice rate-limits. Accepted
+   because that fault class is compile-time-embedded content (deploy-time
+   detectable, never player-triggered); rate-limit them in a follow-up if it bites.
 4. No proactive cache invalidation from `sync_content`: the type-chart cache relies on
    the `content_version` key; the "no `cached_type_chart` call reachable from
    `sync_content_inner`" invariant is pinned by a lexical scan of
@@ -237,6 +258,17 @@ second source of truth.
    source-scan call-site guards; end-to-end reducer behavior deferred to e2e/playtest.
 6. `begin_encounter` still returns bare `Err` strings without internal `log_reject`
    (the grass path logs at the call site; `start_wild_battle` already log-rejects).
-7. The routine "party has no conscious monster" path logs at ERROR level
-   (rate-limited); demoting it would require typed errors from `begin_encounter` —
-   deliberate non-goal this slice.
+7. The fainted-party routine reason is filtered at source (shared const), but other
+   client-steerable `begin_encounter` reasons (e.g. "monster is in an active trade",
+   reachable by walking grass with an escrowed party monster) can still consume the
+   shared `begin_encounter_error` window and mask rarer anomalies. Full fix =
+   per-reason discriminants or typed errors from `begin_encounter` — deliberate
+   non-goal this slice.
+8. The unescaped hand-built-JSON log defect class (D5) persists at
+   `battle.rs:1087/:1124/:1310` (in a touched file — deliberately NOT ridden along:
+   3 hunks near the boyscout cap, adjacent to eval-scanned regions) and at
+   `pvp.rs:501/:518/:607`, `content.rs:266/:696`, `npc.rs:147` (out of scope).
+   Batch them into the residual-2 follow-up swap slice.
+9. The C-7 pin is a hand-maintained three-file lexical list. A stronger inversion —
+   scan all of `server-module/src/` for `type_relation_row` WRITES outside
+   `content.rs` (fails closed as modules grow) — is a cheap follow-up test.

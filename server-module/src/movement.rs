@@ -11,8 +11,8 @@
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
 
-use crate::battle::{begin_encounter, lead_party};
-use crate::guards::{authorize_move, is_in_ongoing_battle, log_reject, validate_name};
+use crate::battle::{begin_encounter, lead_party, NO_CONSCIOUS_MONSTER_REASON};
+use crate::guards::{authorize_move, is_in_ongoing_battle, json_escape, log_reject, validate_name};
 use crate::marshal::{
     apply_state, char_state, monster_from_instance, now_ms, pub_from_monster,
     table_from_encounter_row,
@@ -194,9 +194,12 @@ impl RateLimiter {
         }
     }
 
-    /// Decide whether to emit at `now_ms`: `Some(suppressed)` means EMIT and
-    /// report how many checks were suppressed since the last emit (then
-    /// re-anchor and reset the count); `None` means suppress and count.
+    /// Decide whether to emit at `now` (ms on the caller's injected clock):
+    /// `Some(suppressed)` means EMIT and report how many checks were suppressed
+    /// since the last emit (then re-anchor and reset the count); `None` means
+    /// suppress and count. The parameter is `now`, not a name shadowing the
+    /// imported `marshal::now_ms` helper (the landmine raising.rs's evaluate
+    /// helpers deliberately avoid).
     ///
     /// Emits on the first-ever check, at `elapsed >= window_ms` (boundary
     /// INCLUSIVE), and when the clock runs BACKWARDS — re-anchoring to the new
@@ -204,15 +207,15 @@ impl RateLimiter {
     /// (ADR-0170 D4 accepts the jittery-clock trade explicitly). A poisoned
     /// lock is recovered: one unrelated panic must not silence the encounter
     /// log path for the process lifetime.
-    pub(crate) fn check(&self, now_ms: i64, window_ms: i64) -> Option<u32> {
+    pub(crate) fn check(&self, now: i64, window_ms: i64) -> Option<u32> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let (last, suppressed) = *state;
         let emit = match last {
             None => true,
-            Some(l) => now_ms < l || now_ms.saturating_sub(l) >= window_ms,
+            Some(l) => now < l || now.saturating_sub(l) >= window_ms,
         };
         if emit {
-            *state = (Some(now_ms), 0);
+            *state = (Some(now), 0);
             Some(suppressed)
         } else {
             *state = (last, suppressed.saturating_add(1));
@@ -254,7 +257,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
             // exactly the shape that carries a double quote into hand-built JSON.
             log::error!(
                 "{{\"evt\":\"movement_tick_error\",\"zone\":{zone},\"reason\":\"{}\"}}",
-                crate::guards::json_escape(&e)
+                json_escape(&e)
             );
             return Ok(()); // logged no-op: a content-load failure must not abort the tick (ADR-0066)
         }
@@ -264,7 +267,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         Err(e) => {
             log::error!(
                 "{{\"evt\":\"movement_tick_error\",\"zone\":{zone},\"reason\":\"{}\"}}",
-                crate::guards::json_escape(&e)
+                json_escape(&e)
             );
             return Ok(());
         }
@@ -402,7 +405,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
                 {
                     log::error!(
                         "{{\"evt\":\"encounter_table_error\",\"zone\":{zone},\"reason\":\"{}\",\"suppressed\":{suppressed}}}",
-                        crate::guards::json_escape(&e)
+                        json_escape(&e)
                     );
                 }
                 continue;
@@ -412,7 +415,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         if let Some(w) = resolve_encounter(&table, seed, player_level) {
             // A failed begin_encounter is a rate-limited logged no-op (ADR-0170 D4):
             // one character's failure cannot abort the tick, and its own limiter
-            // keeps the routine fainted-party burst from masking content defects.
+            // keeps genuine faults visible.
             if let Err(e) = begin_encounter(
                 ctx,
                 player_identity,
@@ -421,13 +424,21 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
                 w.level.as_u8(),
                 w.individuality_seed,
             ) {
-                if let Some(suppressed) =
-                    BEGIN_ENCOUNTER_ERR_LIMITER.check(now.0, ENCOUNTER_ERR_WINDOW_MS)
-                {
-                    log::error!(
-                        "{{\"evt\":\"begin_encounter_error\",\"zone\":{zone},\"reason\":\"{}\",\"suppressed\":{suppressed}}}",
-                        crate::guards::json_escape(&e)
-                    );
+                // Routine fainted-party reason filtered at source (shared const,
+                // ADR-0170 D4): normal gameplay, a non-event like a None roll —
+                // it must consume neither the limiter window nor the suppressed
+                // counter, or a client walking grass with an all-fainted party
+                // could saturate the limiter and mask genuine faults
+                // (species-not-found, stat corruption), which still log below.
+                if e != NO_CONSCIOUS_MONSTER_REASON {
+                    if let Some(suppressed) =
+                        BEGIN_ENCOUNTER_ERR_LIMITER.check(now.0, ENCOUNTER_ERR_WINDOW_MS)
+                    {
+                        log::error!(
+                            "{{\"evt\":\"begin_encounter_error\",\"zone\":{zone},\"reason\":\"{}\",\"suppressed\":{suppressed}}}",
+                            json_escape(&e)
+                        );
+                    }
                 }
             }
         }
