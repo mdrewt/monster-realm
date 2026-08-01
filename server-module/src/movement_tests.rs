@@ -1536,7 +1536,8 @@ fn rate_limiter_first_check_emits_zero_suppressed() {
     let limiter = RateLimiter::new();
     let first = limiter.check(1_000, TEST_WINDOW_MS);
     assert_eq!(
-        first, Some(0),
+        first,
+        Some(0),
         "TEETH (11r-g M-1, ADR-0170 D4): a fresh RateLimiter's first check must be \
          Some(0) — EMIT, with zero suppressed — but it returned {first:?}. \
          `last_emit_ms` is `Option<i64>` exactly so that never-emitted is \
@@ -1567,7 +1568,8 @@ fn rate_limiter_new_is_const_and_the_type_is_sync() {
     static PROBE: RateLimiter = RateLimiter::new();
     let first = PROBE.check(0, TEST_WINDOW_MS);
     assert_eq!(
-        first, Some(0),
+        first,
+        Some(0),
         "TEETH (11r-g M-1b, ADR-0170 D4): a limiter declared as a process `static` \
          must behave exactly like a locally constructed one on its first check; got \
          {first:?}. The real content of this test is that it COMPILES: \
@@ -1601,7 +1603,8 @@ fn rate_limiter_suppresses_in_window_then_reports_the_exact_count() {
 
     let opening = limiter.check(0, TEST_WINDOW_MS);
     assert_eq!(
-        opening, Some(0),
+        opening,
+        Some(0),
         "TEETH (11r-g M-2 precondition): the opening check must emit Some(0); got \
          {opening:?}. Every count below is measured relative to this anchor."
     );
@@ -1620,7 +1623,8 @@ fn rate_limiter_suppresses_in_window_then_reports_the_exact_count() {
 
     let after_window = limiter.check(5_000, TEST_WINDOW_MS);
     assert_eq!(
-        after_window, Some(3),
+        after_window,
+        Some(3),
         "TEETH (11r-g M-2, ADR-0170 D4): the emit at the window boundary must report \
          EXACTLY the three checks it suppressed — Some(3) — but it returned \
          {after_window:?}. Some(0) means the impl suppresses without counting, and \
@@ -1638,7 +1642,8 @@ fn rate_limiter_suppresses_in_window_then_reports_the_exact_count() {
 
     let second_emit = limiter.check(10_001, TEST_WINDOW_MS);
     assert_eq!(
-        second_emit, Some(1),
+        second_emit,
+        Some(1),
         "TEETH (11r-g M-2, ADR-0170 D4): the second emit must report exactly the ONE \
          check suppressed since the previous emit — Some(1) — but it returned \
          {second_emit:?}. Some(4) is the signature of an impl that never resets the \
@@ -1666,7 +1671,8 @@ fn rate_limiter_window_boundary_is_inclusive() {
     let just_inside = RateLimiter::new();
     let opened_a = just_inside.check(0, TEST_WINDOW_MS);
     assert_eq!(
-        opened_a, Some(0),
+        opened_a,
+        Some(0),
         "TEETH (11r-g M-3 precondition): limiter A's opening check must emit Some(0); \
          got {opened_a:?}."
     );
@@ -1682,13 +1688,15 @@ fn rate_limiter_window_boundary_is_inclusive() {
     let exactly_at = RateLimiter::new();
     let opened_b = exactly_at.check(0, TEST_WINDOW_MS);
     assert_eq!(
-        opened_b, Some(0),
+        opened_b,
+        Some(0),
         "TEETH (11r-g M-3 precondition): limiter B's opening check must emit Some(0); \
          got {opened_b:?}."
     );
     let at_boundary = exactly_at.check(TEST_WINDOW_MS, TEST_WINDOW_MS);
     assert_eq!(
-        at_boundary, Some(0),
+        at_boundary,
+        Some(0),
         "TEETH (11r-g M-3, ADR-0170 D4): EXACTLY at the window must emit with zero \
          suppressed, but check(window) returned {at_boundary:?}. This kills the \
          `elapsed > window` mutant, which would silently stretch every window by one \
@@ -1725,7 +1733,8 @@ fn rate_limiter_clock_backwards_emits_and_reanchors() {
 
     let opening = limiter.check(1_000, TEST_WINDOW_MS);
     assert_eq!(
-        opening, Some(0),
+        opening,
+        Some(0),
         "TEETH (11r-g M-4 precondition): the opening check at 1_000 must emit \
          Some(0); got {opening:?}."
     );
@@ -1738,7 +1747,8 @@ fn rate_limiter_clock_backwards_emits_and_reanchors() {
 
     let backwards = limiter.check(500, TEST_WINDOW_MS);
     assert_eq!(
-        backwards, Some(1),
+        backwards,
+        Some(1),
         "TEETH (11r-g M-4, ADR-0170 D4): a check whose clock reading is EARLIER than \
          the last emit must EMIT and report the one suppressed check — Some(1) — but \
          it returned {backwards:?}. None is the signature of an impl with no \
@@ -1755,7 +1765,8 @@ fn rate_limiter_clock_backwards_emits_and_reanchors() {
     );
     let at_new_window = limiter.check(500 + TEST_WINDOW_MS, TEST_WINDOW_MS);
     assert_eq!(
-        at_new_window, Some(1),
+        at_new_window,
+        Some(1),
         "TEETH (11r-g M-4, ADR-0170 D4): exactly one window after the NEW anchor (500) \
          must emit, reporting the one check suppressed since — Some(1) — but it \
          returned {at_new_window:?}. This is the assertion that proves the backwards \
@@ -1788,20 +1799,23 @@ fn rate_limiter_extreme_clock_operands_never_panic() {
     let jumped_back = RateLimiter::new();
     let anchor = jumped_back.check(0, TEST_WINDOW_MS);
     assert_eq!(
-        anchor, Some(0),
+        anchor,
+        Some(0),
         "TEETH (11r-g M-5 precondition): the opening check at 0 must emit Some(0); \
          got {anchor:?}."
     );
     let at_min = jumped_back.check(i64::MIN, TEST_WINDOW_MS);
     assert_eq!(
-        at_min, Some(0),
+        at_min,
+        Some(0),
         "TEETH (11r-g M-5, ADR-0170 D4): check(i64::MIN) after an emit at 0 is the \
          backwards case at the extreme — it must emit Some(0) and re-anchor, not \
          panic; got {at_min:?}."
     );
     let min_plus_window = jumped_back.check(i64::MIN + TEST_WINDOW_MS, TEST_WINDOW_MS);
     assert_eq!(
-        min_plus_window, Some(0),
+        min_plus_window,
+        Some(0),
         "TEETH (11r-g M-5, ADR-0170 D4): exactly one window after an anchor at \
          i64::MIN must emit Some(0); got {min_plus_window:?}."
     );
@@ -1810,13 +1824,15 @@ fn rate_limiter_extreme_clock_operands_never_panic() {
     let full_span = RateLimiter::new();
     let anchored_at_min = full_span.check(i64::MIN, TEST_WINDOW_MS);
     assert_eq!(
-        anchored_at_min, Some(0),
+        anchored_at_min,
+        Some(0),
         "TEETH (11r-g M-5 precondition): a fresh limiter's first check must emit \
          Some(0) whatever the clock reads; got {anchored_at_min:?}."
     );
     let at_max = full_span.check(i64::MAX, TEST_WINDOW_MS);
     assert_eq!(
-        at_max, Some(0),
+        at_max,
+        Some(0),
         "TEETH (11r-g M-5, ADR-0170 D4): with the anchor at i64::MIN, a check at \
          i64::MAX must emit Some(0); got {at_max:?}. THIS IS THE OVERFLOW ROW: a bare \
          `now - last` computes `i64::MAX - i64::MIN`, which PANICS under this \
@@ -2049,7 +2065,9 @@ fn movement_tick_encounter_failures_are_logged_and_rate_limited() {
         [window_const.as_str(), "5000;"].concat(),
         [window_const.as_str(), "5_000;"].concat(),
     ];
-    let window_ok = window_variants.iter().any(|v| squashed.contains(v.as_str()));
+    let window_ok = window_variants
+        .iter()
+        .any(|v| squashed.contains(v.as_str()));
     assert!(
         window_ok,
         "TEETH (11r-g M-7, ADR-0170 D4): `movement.rs` must declare a file-level \

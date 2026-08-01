@@ -1254,7 +1254,9 @@ fn type_chart_cache_recovers_from_a_poisoned_lock() {
     let poisoner = std::sync::Arc::clone(&cell);
 
     let handle = std::thread::spawn(move || {
-        let _guard = poisoner.lock().expect("C-6: the uncontended lock must succeed");
+        let _guard = poisoner
+            .lock()
+            .expect("C-6: the uncontended lock must succeed");
         panic!("11r-g C-6: deliberate panic while holding the type-chart cache lock");
     });
     assert!(

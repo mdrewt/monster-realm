@@ -27,6 +27,7 @@ use game_core::{
     STEP_MS,
 };
 use spacetimedb::{ReducerContext, ScheduleAt, Table};
+use std::sync::Mutex;
 
 /// Per-zone movement schedule: one interval-row per active zone makes the
 /// scheduler call `movement_tick` for THAT zone every `STEP_MS`.
@@ -170,6 +171,72 @@ pub fn clear_queue(ctx: &ReducerContext, seq: u64) -> Result<(), String> {
     Ok(())
 }
 
+// --- Rate-limited encounter-failure logging (11r-g, ADR-0170 D4) -------------
+
+/// A process-static log rate limiter (ADR-0170 D4): at most one emit per
+/// window, counting what was suppressed in between.
+///
+/// ONE `Mutex` over `(last_emit_ms, suppressed)` makes read-decide-write-back
+/// atomic by construction; `Option<i64>` makes never-emitted unrepresentable
+/// as a magic value (no sentinel a real clock could collide with). All
+/// arithmetic saturates: the workspace ships `overflow-checks = true`, so a
+/// bare subtraction on an extreme clock operand would panic the zone tick from
+/// the very logging path added to make faults visible.
+pub(crate) struct RateLimiter {
+    state: Mutex<(Option<i64>, u32)>,
+}
+
+impl RateLimiter {
+    /// `const` so the two production limiters can be plain process `static`s.
+    pub(crate) const fn new() -> Self {
+        Self {
+            state: Mutex::new((None, 0)),
+        }
+    }
+
+    /// Decide whether to emit at `now_ms`: `Some(suppressed)` means EMIT and
+    /// report how many checks were suppressed since the last emit (then
+    /// re-anchor and reset the count); `None` means suppress and count.
+    ///
+    /// Emits on the first-ever check, at `elapsed >= window_ms` (boundary
+    /// INCLUSIVE), and when the clock runs BACKWARDS — re-anchoring to the new
+    /// earlier instant rather than suppressing until the clock catches up
+    /// (ADR-0170 D4 accepts the jittery-clock trade explicitly). A poisoned
+    /// lock is recovered: one unrelated panic must not silence the encounter
+    /// log path for the process lifetime.
+    pub(crate) fn check(&self, now_ms: i64, window_ms: i64) -> Option<u32> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let (last, suppressed) = *state;
+        let emit = match last {
+            None => true,
+            Some(l) => now_ms < l || now_ms.saturating_sub(l) >= window_ms,
+        };
+        if emit {
+            *state = (Some(now_ms), 0);
+            Some(suppressed)
+        } else {
+            *state = (last, suppressed.saturating_add(1));
+            None
+        }
+    }
+}
+
+/// Shared emit window for both grass-block failure limiters: at most one
+/// `log::error!` per limiter per 5000 ms of the tick's injected clock
+/// (ADR-0003 — never a wall clock). A NAMED constant so both arms provably
+/// share one window value instead of drifting apart.
+const ENCOUNTER_ERR_WINDOW_MS: i64 = 5000;
+
+/// Gates `encounter_table_error` logging (a failed `table_from_encounter_row`).
+static ENCOUNTER_TABLE_ERR_LIMITER: RateLimiter = RateLimiter::new();
+
+/// Gates `begin_encounter_error` logging. A SECOND, independent limiter on
+/// purpose (ADR-0170 D4): the party-has-no-conscious-monster Err from
+/// `begin_encounter` is routine gameplay (a fainted party walking grass) and
+/// bursts; sharing one limiter would let that burst mask a real content
+/// defect in the encounter table.
+static BEGIN_ENCOUNTER_ERR_LIMITER: RateLimiter = RateLimiter::new();
+
 /// Per-zone, server-paced tick: drain ≤1 move per character in THIS zone, compute
 /// the outcome via `game_core::apply_move`, write back. Scheduler-only.
 #[spacetimedb::reducer]
@@ -183,14 +250,22 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
     let zone_maps = match crate::content_cache::cached_zone_maps() {
         Ok(z) => z,
         Err(e) => {
-            log::error!("{{\"evt\":\"movement_tick_error\",\"zone\":{zone},\"reason\":\"{e}\"}}");
+            // Reason through json_escape (ADR-0170 D4/D5): a RON parse error is
+            // exactly the shape that carries a double quote into hand-built JSON.
+            log::error!(
+                "{{\"evt\":\"movement_tick_error\",\"zone\":{zone},\"reason\":\"{}\"}}",
+                crate::guards::json_escape(&e)
+            );
             return Ok(()); // logged no-op: a content-load failure must not abort the tick (ADR-0066)
         }
     };
     let map = match map_for(zone, zone_maps) {
         Ok(m) => m,
         Err(e) => {
-            log::error!("{{\"evt\":\"movement_tick_error\",\"zone\":{zone},\"reason\":\"{e}\"}}");
+            log::error!(
+                "{{\"evt\":\"movement_tick_error\",\"zone\":{zone},\"reason\":\"{}\"}}",
+                crate::guards::json_escape(&e)
+            );
             return Ok(());
         }
     };
@@ -316,21 +391,45 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         let Some(enc_row) = ctx.db.encounter().zone_id().find(zone) else {
             continue;
         };
-        let Ok(table) = table_from_encounter_row(&enc_row) else {
-            continue;
+        // A malformed encounter row is a rate-limited logged no-op (ADR-0170 D4):
+        // the content fault must never abort the zone tick (ADR-0066), but it must
+        // no longer be silent — it stops all wild encounters in this zone.
+        let table = match table_from_encounter_row(&enc_row) {
+            Ok(t) => t,
+            Err(e) => {
+                if let Some(suppressed) =
+                    ENCOUNTER_TABLE_ERR_LIMITER.check(now.0, ENCOUNTER_ERR_WINDOW_MS)
+                {
+                    log::error!(
+                        "{{\"evt\":\"encounter_table_error\",\"zone\":{zone},\"reason\":\"{}\",\"suppressed\":{suppressed}}}",
+                        crate::guards::json_escape(&e)
+                    );
+                }
+                continue;
+            }
         };
         let seed: u32 = ctx.random();
         if let Some(w) = resolve_encounter(&table, seed, player_level) {
-            // A failed begin_encounter is a no-op (logged inside on the happy path);
-            // swallow the Err so one character's encounter cannot abort the tick.
-            let _ = begin_encounter(
+            // A failed begin_encounter is a rate-limited logged no-op (ADR-0170 D4):
+            // one character's failure cannot abort the tick, and its own limiter
+            // keeps the routine fainted-party burst from masking content defects.
+            if let Err(e) = begin_encounter(
                 ctx,
                 player_identity,
                 party_ids,
                 w.species_id,
                 w.level.as_u8(),
                 w.individuality_seed,
-            );
+            ) {
+                if let Some(suppressed) =
+                    BEGIN_ENCOUNTER_ERR_LIMITER.check(now.0, ENCOUNTER_ERR_WINDOW_MS)
+                {
+                    log::error!(
+                        "{{\"evt\":\"begin_encounter_error\",\"zone\":{zone},\"reason\":\"{}\",\"suppressed\":{suppressed}}}",
+                        crate::guards::json_escape(&e)
+                    );
+                }
+            }
         }
     }
 

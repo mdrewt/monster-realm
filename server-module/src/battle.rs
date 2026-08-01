@@ -17,16 +17,16 @@ use crate::guards::{
 use crate::inventory::consume_one;
 use crate::marshal::{
     battle_monster_from_row, build_ability_store, loser_base_stat_total, now_ms, pub_from_monster,
-    type_chart_from_rows, wild_battle_monster, write_back_hp,
+    wild_battle_monster, write_back_hp,
 };
 use crate::schema::{
     battle, battle_wild, inventory, monster, monster_pub, skill_row, species_row, trade_offer,
-    type_relation_row, Battle, BattleWild, Monster, SkillRow,
+    Battle, BattleWild, Monster, SkillRow,
 };
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
 use game_core::{
-    apply_entry_ability, apply_xp_gain, battle_currency_reward, battle_xp_reward, load_abilities,
+    apply_entry_ability, apply_xp_gain, battle_currency_reward, battle_xp_reward,
     resolve_full_turn, BattleOutcome, BattleSide, BattleState, BattleStatusStore, Level, SideId,
     StatBlock, StatusVariance, TurnChoice, TurnVariance,
 };
@@ -238,9 +238,10 @@ pub fn start_battle(
         weather: None,
     };
 
-    // Apply entry abilities for both initial actives (ADR-0100).
-    let ability_defs = load_abilities()?;
-    let abilities = build_ability_store(&ability_ids_a, &ability_ids_b, &ability_defs);
+    // Apply entry abilities for both initial actives (ADR-0100). Abilities come
+    // from the process-wide content cache (ADR-0170 D2).
+    let ability_defs = crate::content_cache::cached_abilities()?;
+    let abilities = build_ability_store(&ability_ids_a, &ability_ids_b, ability_defs);
     let mut status = BattleStatusStore {
         side_a: state.side_a.team.iter().map(|m| m.status).collect(),
         side_b: state.side_b.team.iter().map(|m| m.status).collect(),
@@ -408,9 +409,10 @@ pub(crate) fn begin_encounter(
         weather: None,
     };
 
-    // Apply entry abilities for both initial actives (ADR-0100).
-    let ability_defs = load_abilities()?;
-    let abilities = build_ability_store(&ability_ids_a, &ability_ids_b, &ability_defs);
+    // Apply entry abilities for both initial actives (ADR-0100). Abilities come
+    // from the process-wide content cache (ADR-0170 D2).
+    let ability_defs = crate::content_cache::cached_abilities()?;
+    let abilities = build_ability_store(&ability_ids_a, &ability_ids_b, ability_defs);
     let mut status = BattleStatusStore {
         side_a: state.side_a.team.iter().map(|m| m.status).collect(),
         side_b: state.side_b.team.iter().map(|m| m.status).collect(),
@@ -571,7 +573,9 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
     // applies_status (M14d, ADR-0095) are populated by game_core::load_skills, which is
     // the LazyLock initializer and runs only once.
     let skill_defs = crate::content_cache::cached_skills()?;
-    let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
+    // Type chart from the version-keyed cache (ADR-0170 D1): rebuilt only when
+    // the config row's content_version changes, not on every attack.
+    let type_chart = crate::content_cache::cached_type_chart(ctx)?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
     let sv = StatusVariance::from_ctx_random(ctx.random());
 
@@ -591,9 +595,9 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
     };
 
     // Build AbilityStore from species content for this battle's teams (ADR-0100).
-    // PARK(ADR-0089 amendment, M14.5e): load_abilities() is NOT cached — it re-parses
-    // RON per call. Caching abilities is a named follow-up; skills/items are cached.
-    let ability_defs = load_abilities()?;
+    // Abilities come from the process-wide content cache (ADR-0170 D2, which
+    // completed the ADR-0089 M14.5e follow-up): parsed once per process.
+    let ability_defs = crate::content_cache::cached_abilities()?;
     let a_ability_ids: Vec<Option<u32>> = battle
         .state
         .side_a
@@ -620,7 +624,7 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
                 .and_then(|sp| sp.ability)
         })
         .collect();
-    let abilities = build_ability_store(&a_ability_ids, &b_ability_ids, &ability_defs);
+    let abilities = build_ability_store(&a_ability_ids, &b_ability_ids, ability_defs);
 
     let _events = resolve_full_turn(
         &mut battle.state,
@@ -716,7 +720,9 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
     // sets_weather/applies_status populated by game_core::load_skills, the LazyLock
     // initializer (runs only once).
     let skill_defs = crate::content_cache::cached_skills()?;
-    let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
+    // Type chart from the version-keyed cache (ADR-0170 D1): rebuilt only when
+    // the config row's content_version changes, not on every swap.
+    let type_chart = crate::content_cache::cached_type_chart(ctx)?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
     let sv = StatusVariance::from_ctx_random(ctx.random());
 
@@ -728,9 +734,9 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
     };
 
     // Build AbilityStore from species content for this battle's teams (ADR-0100).
-    // PARK(ADR-0089 amendment, M14.5e): load_abilities() is NOT cached — it re-parses
-    // RON per call. Caching abilities is a named follow-up; skills/items are cached.
-    let ability_defs = load_abilities()?;
+    // Abilities come from the process-wide content cache (ADR-0170 D2, which
+    // completed the ADR-0089 M14.5e follow-up): parsed once per process.
+    let ability_defs = crate::content_cache::cached_abilities()?;
     let a_ability_ids: Vec<Option<u32>> = battle
         .state
         .side_a
@@ -757,7 +763,7 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
                 .and_then(|sp| sp.ability)
         })
         .collect();
-    let abilities = build_ability_store(&a_ability_ids, &b_ability_ids, &ability_defs);
+    let abilities = build_ability_store(&a_ability_ids, &b_ability_ids, ability_defs);
 
     let _events = game_core::resolve_player_swap(
         &mut battle.state,
