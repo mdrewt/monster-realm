@@ -12,6 +12,12 @@
 //   - costItemName resolved from itemDefs by costItemId (null when not found or free)
 //   - TOTAL: never throws
 //
+// AMENDED 11r-g (ADR-0170 §D3) — nothing above is deleted; the amendment ADDS a
+// required VM field and NARROWS isFree. See the appended [11r-g V-*] block at the
+// foot of this file for the full pinned contract:
+//   - HealLocationViewModel gains a REQUIRED `costCurrency: number` (`?? 0` when absent)
+//   - isFree = costItemId undefined AND costQty === 0 AND costCurrency === 0
+//
 // Pattern follows raisingModel.test.ts: pure function, no DOM, no SDK.
 
 import * as fc from 'fast-check';
@@ -36,6 +42,12 @@ interface StoreHealLocationRow {
   costItemId?: number;
   costQty: number;
   cooldownMs: number;
+  // 11r-g (ADR-0170 §D3): the heal-cost currency seam. OPTIONAL here because the net
+  // layer's StoreHealLocationRow does NOT carry it yet (the `cost_currency` column leg
+  // is parked — ADR-0170 residual 1), so the builder input widens locally to
+  // `StoreHealLocationRow & { readonly costCurrency?: number }` and an ABSENT field must
+  // project to 0. Deliberately NOT defaulted in makeLocation: absent is production's path.
+  costCurrency?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +63,9 @@ function makeLocation(overrides: Partial<StoreHealLocationRow> = {}): StoreHealL
     costItemId: undefined,
     costQty: 0,
     cooldownMs: 30000,
+    // 11r-g: `costCurrency` is DELIBERATELY absent from the defaults — today's store rows
+    // have no such field, so absent ⇒ 0 is the DEFAULT path under test. Tests that need a
+    // currency cost pass it explicitly via `overrides`.
     ...overrides,
   };
 }
@@ -249,6 +264,16 @@ describe('buildHealViewModel criterion 6: locationId and zoneId pass-through', (
     expect(entry).toHaveProperty('costQty', 1);
     expect(entry).toHaveProperty('cooldownMs', 60000);
     expect(entry).toHaveProperty('isFree', false);
+    // 11r-g (ADR-0170 §D3) EXTENSION — nothing above removed; `costCurrency` joins the
+    // required-key contract. The fixture row carries NO costCurrency, so the required key
+    // must still be present, as the number 0.
+    // Kills: an impl that leaves the field off the VM entirely (consumers would read
+    // `undefined` and healView would render a "Cost: undefined gold" pad), and — via the
+    // typed member access below — the type-level form of the same defect (TS2339 against a
+    // HealLocationViewModel that lacks the key).
+    expect(entry).toHaveProperty('costCurrency', 0);
+    expect(entry.costCurrency).toBe(0);
+    expect(typeof entry.costCurrency).toBe('number');
   });
 });
 
@@ -281,6 +306,10 @@ describe('buildHealViewModel criterion 7: total function — never throws', () =
 
   it('BITES fast-check: never throws for any valid location array', () => {
     // Property: no structurally valid location array should crash the pure model.
+    // 11r-g EXTENSION (input domain only — the assertion below is untouched): the
+    // generated rows now also carry an optional costCurrency, so this totality property
+    // covers currency-bearing rows too. The VALUE invariants for that field live in the
+    // sibling [11r-g V-5] property at the foot of this file.
     fc.assert(
       fc.property(
         fc.array(
@@ -292,6 +321,16 @@ describe('buildHealViewModel criterion 7: total function — never throws', () =
             costItemId: fc.option(fc.integer({ min: 1, max: 999 })),
             costQty: fc.integer({ min: 0, max: 99 }),
             cooldownMs: fc.integer({ min: 0, max: 86400000 }),
+            // absent (nil) | 0 | natural | negative | absurdly large (past 2**40).
+            costCurrency: fc.option(
+              fc.oneof(
+                fc.nat(),
+                fc.integer({ min: -1000, max: -1 }),
+                fc.constant(0),
+                fc.integer({ min: 2 ** 40, max: 2 ** 45 }),
+              ),
+              { nil: undefined },
+            ),
           }),
           { maxLength: 20 },
         ),
@@ -480,5 +519,311 @@ describe('buildHealViewModelForLocation [uxd2-2]: unknown id → empty, never a 
     const locs = [makeLocation({ locationId: 4, costItemId: 2, costQty: 1, cooldownMs: 60_000 })];
     const defs = new Map<number, StoreItemRow>([[2, makeItemDef(2, 'Herb')]]);
     expect(buildHealViewModelForLocation(4, locs, defs)).toEqual(buildHealViewModel(locs, defs));
+  });
+});
+
+// ===========================================================================
+// 11r-g (ADR-0170 §D3) — HEAL COST CURRENCY SEAM.
+// APPENDED BLOCK — every case above this line is untouched except two legitimate
+// EXTENSIONS: the criterion-6 shape contract gained the new required key, and the
+// criterion-7 property gained a costCurrency arbitrary in its INPUT DOMAIN (its
+// assertion is unchanged). Nothing was weakened, renamed, or removed.
+//
+// SOURCE OF TRUTH: docs/adr/0170-server-hardening-cache-completion-log-escaping.md §D3.
+//
+// CONTRACT (pinned — the implementer builds exactly this in healModel.ts):
+//   export interface HealLocationViewModel { …; costCurrency: number }  // REQUIRED
+//   buildHealViewModel(
+//     healLocations: readonly (StoreHealLocationRow & { readonly costCurrency?: number })[],
+//     itemDefs: ReadonlyMap<number, StoreItemRow>,
+//   ): HealViewModel
+//   - costCurrency = `loc.costCurrency ?? 0`  (NULLISH coalesce — never `|| 0`)
+//   - isFree = costItemId === undefined AND costQty === 0 AND costCurrency === 0
+//   - the module stays TOTAL: never throws.
+//   The field is REQUIRED on the VM (not optional) so every future consumer must reckon
+//   with it; an optional field could be `?? 0`-ed past, reintroducing the gap.
+//
+// WHY THE SEAM IS INERT: the `cost_currency` COLUMN leg is parked (ADR-0170 residual 1),
+// so store rows carry no such field today — the ABSENT ⇒ 0 path IS production's path.
+// The isFree contract is fixed now so the follow-up wiring is mechanical.
+//
+// RED TODAY (runtime assertion RED in every case below unless noted): healModel.ts
+// computes `isFree = costItemId === undefined && costQty === 0` and never emits
+// costCurrency, so `entry.costCurrency` is `undefined` and a currency-only pad reports
+// isFree === true — the silent-debit trap (ADR-0170 Context item 3: `spend_currency`
+// charges correctly server-side; only the UI lies). The `.costCurrency` member accesses
+// are ALSO a type-level RED (TS2339 against the current HealLocationViewModel) — note
+// client/tsconfig.json excludes `**/*.test.ts`, so that arm surfaces in the editor and
+// not in `npm run typecheck`; the gating signal is the runtime failure under vitest.
+// ===========================================================================
+
+describe('buildHealViewModel [11r-g V-1/V-2]: costCurrency projection', () => {
+  it('★ [V-1] BITES: costCurrency=50 is passed through verbatim', () => {
+    // Kills: an impl that drops the field, hardcodes 0, or re-derives it from costQty.
+    const loc = makeLocation({ costCurrency: 50 });
+    const vm = buildHealViewModel([loc], new Map());
+    expect(vm.locations).toHaveLength(1);
+    expect(vm.locations[0]!.costCurrency).toBe(50);
+    expect(typeof vm.locations[0]!.costCurrency).toBe('number');
+  });
+
+  it('[V-1] BITES: a huge costCurrency (2**40) is neither clamped nor bit-truncated', () => {
+    // Kills: `costCurrency | 0` / `>>> 0` "normalization" — 2**40 | 0 === 0, which would
+    // paint a 1.1-trillion-gold pad as free. Also kills Math.min-style clamping. The
+    // server column is u64; the client convention narrows to number (ADR-0170 residual 1).
+    const loc = makeLocation({ costCurrency: 1_099_511_627_776 }); // 2 ** 40
+    const vm = buildHealViewModel([loc], new Map());
+    expect(vm.locations[0]!.costCurrency).toBe(1_099_511_627_776);
+    expect(vm.locations[0]!.isFree).toBe(false);
+  });
+
+  it('★ [V-2] BITES: a row with NO costCurrency key → costCurrency 0 (the inert-seam default)', () => {
+    // Kills: a missing `?? 0` projection — the VM would emit `undefined` for EVERY
+    // production row today (the column is parked) and healView would render "undefined".
+    // makeLocation deliberately leaves the key absent; the pre-condition below pins that.
+    const loc = makeLocation();
+    expect(Object.hasOwn(loc, 'costCurrency')).toBe(false); // fixture pre-condition
+    const vm = buildHealViewModel([loc], new Map());
+    expect(vm.locations[0]!.costCurrency).toBe(0);
+    expect(typeof vm.locations[0]!.costCurrency).toBe('number');
+  });
+
+  it('[V-2] BITES: an explicit costCurrency 0 → 0 (not undefined, not dropped)', () => {
+    // Kills the same missing-projection defect through the explicit-zero door. `?? 0` and
+    // `|| 0` AGREE here and on the absent case above, so pinning BOTH fixes the projection
+    // shape without over-specifying the operator; the NaN case in the [V-5] block below is
+    // the one place the two operators observably diverge.
+    const loc = makeLocation({ costCurrency: 0 });
+    const vm = buildHealViewModel([loc], new Map());
+    expect(vm.locations[0]!.costCurrency).toBe(0);
+  });
+
+  it('[V-1] BITES: an item cost and a currency cost are BOTH surfaced on one row', () => {
+    // Kills: an impl that reads costCurrency only in the else-branch of "has an item cost"
+    // — a hybrid pad would show the herb and hide the gold.
+    const loc = makeLocation({ costItemId: 2, costQty: 3, costCurrency: 75 });
+    const defs = new Map<number, StoreItemRow>([[2, makeItemDef(2, 'Herb')]]);
+    const vm = buildHealViewModel([loc], defs);
+    const entry = vm.locations[0]!;
+    expect(entry.costItemName).toBe('Herb');
+    expect(entry.costQty).toBe(3);
+    expect(entry.costCurrency).toBe(75);
+    expect(entry.isFree).toBe(false);
+  });
+
+  it('[V-1] BITES: each row keeps its OWN costCurrency (no cross-row bleed)', () => {
+    // Kills: an impl that hoists one row's currency out of the per-row map callback, or
+    // reuses the first/last row's value for the whole list.
+    const locs = [
+      makeLocation({ locationId: 1, costCurrency: 10 }),
+      makeLocation({ locationId: 2 }),
+      makeLocation({ locationId: 3, costCurrency: 250 }),
+    ];
+    const vm = buildHealViewModel(locs, new Map());
+    expect(vm.locations.map((l) => l.costCurrency)).toEqual([10, 0, 250]);
+  });
+});
+
+describe('buildHealViewModel [11r-g V-3]: isFree requires ALL THREE cost channels empty', () => {
+  it('★ [V-3] BITES: no item, costQty 0, costCurrency 50 → isFree FALSE (the silent-debit trap)', () => {
+    // THE decisive case. Kills the pre-0170 predicate
+    // `isFree = costItemId === undefined && costQty === 0`, which reports TRUE here: a pure
+    // CONTENT edit (seed a gold cost on a pad) would then paint "Free heal" over a charge
+    // the server happily debits. ADR-0170 Context (3) / §D3.
+    const loc = makeLocation({ costItemId: undefined, costQty: 0, costCurrency: 50 });
+    const vm = buildHealViewModel([loc], new Map());
+    expect(vm.locations[0]!.isFree).toBe(false);
+    expect(typeof vm.locations[0]!.isFree).toBe('boolean');
+  });
+
+  it('[V-3] BITES: no item, costQty 0, explicit costCurrency 0 → isFree TRUE', () => {
+    // Kills the OVER-correction: any impl that treats "the currency field is present" as
+    // "there is a cost" (e.g. `costCurrency !== undefined ? false : …`).
+    const loc = makeLocation({ costItemId: undefined, costQty: 0, costCurrency: 0 });
+    const vm = buildHealViewModel([loc], new Map());
+    expect(vm.locations[0]!.isFree).toBe(true);
+    expect(vm.locations[0]!.costCurrency).toBe(0);
+  });
+
+  it('★ [V-3] BITES: an ABSENT costCurrency leaves a legacy free pad free (isFree TRUE)', () => {
+    // Kills the other over-correction: `loc.costCurrency === 0` tested WITHOUT the `?? 0`
+    // — `undefined === 0` is false, so EVERY production row (the column is parked) would
+    // flip to "not free" and today's free heal pad would grow a phantom price. This is the
+    // regression guard that keeps the seam INERT until the column leg lands.
+    const loc = makeLocation(); // no costCurrency key at all
+    const vm = buildHealViewModel([loc], new Map());
+    expect(vm.locations[0]!.isFree).toBe(true);
+    expect(vm.locations[0]!.costItemName).toBeNull();
+    expect(vm.locations[0]!.costCurrency).toBe(0);
+  });
+
+  it('★ [V-3] BITES: truth table — isFree is true in EXACTLY 1 of the 8 (item × qty × currency) combinations', () => {
+    // Kills every partial predicate at once: `&&` swapped for `||`, a dropped conjunct, a
+    // negated conjunct, or a two-of-three check. Only the all-empty row may be free.
+    const cases: ReadonlyArray<{
+      readonly costItemId: number | undefined;
+      readonly costQty: number;
+      readonly costCurrency: number;
+      readonly isFree: boolean;
+    }> = [
+      { costItemId: undefined, costQty: 0, costCurrency: 0, isFree: true },
+      { costItemId: undefined, costQty: 0, costCurrency: 50, isFree: false },
+      { costItemId: undefined, costQty: 2, costCurrency: 0, isFree: false },
+      { costItemId: undefined, costQty: 2, costCurrency: 50, isFree: false },
+      { costItemId: 2, costQty: 0, costCurrency: 0, isFree: false },
+      { costItemId: 2, costQty: 0, costCurrency: 50, isFree: false },
+      { costItemId: 2, costQty: 2, costCurrency: 0, isFree: false },
+      { costItemId: 2, costQty: 2, costCurrency: 50, isFree: false },
+    ];
+    expect(cases).toHaveLength(8); // the table itself is well-formed: all 8 combinations…
+    expect(cases.filter((c) => c.isFree)).toHaveLength(1); // …and exactly one is free.
+    for (const c of cases) {
+      const vm = buildHealViewModel(
+        [
+          makeLocation({
+            costItemId: c.costItemId,
+            costQty: c.costQty,
+            costCurrency: c.costCurrency,
+          }),
+        ],
+        new Map(),
+      );
+      // Compare whole cases so a failure names the exact offending combination.
+      expect({ ...c, actualIsFree: vm.locations[0]!.isFree }).toEqual({
+        ...c,
+        actualIsFree: c.isFree,
+      });
+    }
+  });
+});
+
+describe('buildHealViewModel [11r-g V-4]: a currency-only cost invents no item name', () => {
+  it('★ [V-4] BITES: costCurrency 50 with no item cost → isFree false AND costItemName null', () => {
+    // Kills: an impl that reaches for an item name whenever ANY cost exists (e.g. widening
+    // `itemDefs.get(loc.costItemId ?? 0)?.name` into the currency branch). A gold cost must
+    // never fabricate an item row — healView would print a nonexistent reagent.
+    const loc = makeLocation({ costItemId: undefined, costQty: 0, costCurrency: 50 });
+    const vm = buildHealViewModel([loc], new Map());
+    const entry = vm.locations[0]!;
+    expect(entry.isFree).toBe(false);
+    expect(entry.costItemName).toBeNull();
+    expect(entry.costQty).toBe(0);
+    expect(entry.costCurrency).toBe(50);
+  });
+
+  it('[V-4] BITES: a POPULATED itemDefs map leaks no name onto a currency-only row', () => {
+    // Kills: a fallback to itemDefs.get(0) / the first def when costItemId is undefined but
+    // a cost is present — id 0 is a representable item id, so an empty map would not have
+    // caught it.
+    const loc = makeLocation({ costItemId: undefined, costQty: 0, costCurrency: 120 });
+    const defs = new Map<number, StoreItemRow>([
+      [0, makeItemDef(0, 'Zero Item')],
+      [1, makeItemDef(1, 'First Item')],
+    ]);
+    const vm = buildHealViewModel([loc], defs);
+    expect(vm.locations[0]!.costItemName).toBeNull();
+    expect(vm.locations[0]!.costCurrency).toBe(120);
+    expect(vm.locations[0]!.isFree).toBe(false);
+  });
+});
+
+describe('buildHealViewModel [11r-g V-5]: totality over adversarial costCurrency', () => {
+  it('[V-5] BITES: a negative costCurrency passes through unchanged (projection, not validation)', () => {
+    // The VM is a PURE PROJECTION: rejecting an out-of-range cost is the server's job
+    // (reject-not-clamp). Kills: `Math.max(0, …)` laundering nonsense content into a
+    // plausible-looking zero — which would HIDE the bad row instead of surfacing it.
+    const vm = buildHealViewModel([makeLocation({ costCurrency: -25 })], new Map());
+    expect(vm.locations[0]!.costCurrency).toBe(-25);
+    expect(vm.locations[0]!.isFree).toBe(false); // -25 !== 0
+  });
+
+  it('★ [V-5] BITES: costCurrency NaN survives as NaN, is NOT free, and does not throw', () => {
+    // THE `?? 0` vs `|| 0` discriminator — the ONE input where they observably differ:
+    // `NaN ?? 0` is NaN (the pinned behavior), `NaN || 0` is 0. The `|| 0` variant would
+    // launder a corrupt row into "Free heal"; that mutant dies here. Also kills a
+    // Number()/isFinite sanitizer that maps NaN to 0, and pins totality on a non-finite.
+    let vm!: ReturnType<typeof buildHealViewModel>;
+    expect(() => {
+      vm = buildHealViewModel([makeLocation({ costCurrency: Number.NaN })], new Map());
+    }).not.toThrow();
+    expect(vm.locations[0]!.costCurrency).toBeNaN();
+    expect(vm.locations[0]!.isFree).toBe(false);
+  });
+
+  it('[V-5] BITES fast-check: costCurrency is always a number equal to its input (absent ⇒ 0), and building never throws', () => {
+    // Property: for ANY mix of absent / zero / natural / negative / absurd (>= 2**40)
+    // currency values, buildHealViewModel is TOTAL, every entry carries a NUMERIC
+    // costCurrency exactly equal to its input (0 when absent — never `undefined`, never
+    // clamped), and isFree is exactly the three-way conjunction.
+    // Kills: a dropped `?? 0` (undefined leaks under randomized input), clamping/coercion,
+    // and any isFree predicate that ignores or mis-weights one of the three channels.
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.record({
+            locationId: fc.integer({ min: 0, max: 9999 }),
+            zoneId: fc.integer({ min: 0, max: 99 }),
+            tileX: fc.integer({ min: 0, max: 255 }),
+            tileY: fc.integer({ min: 0, max: 255 }),
+            costItemId: fc.option(fc.integer({ min: 1, max: 999 }), { nil: undefined }),
+            costQty: fc.integer({ min: 0, max: 99 }),
+            cooldownMs: fc.integer({ min: 0, max: 86400000 }),
+            costCurrency: fc.option(
+              fc.oneof(
+                fc.nat(),
+                fc.integer({ min: -1000, max: -1 }),
+                fc.constant(0),
+                fc.integer({ min: 2 ** 40, max: 2 ** 45 }),
+              ),
+              { nil: undefined },
+            ),
+          }),
+          { maxLength: 20 },
+        ),
+        (locs) => {
+          let vm!: ReturnType<typeof buildHealViewModel>;
+          expect(() => {
+            vm = buildHealViewModel(locs, new Map());
+          }).not.toThrow();
+          expect(vm.locations).toHaveLength(locs.length);
+          vm.locations.forEach((entry, i) => {
+            const src = locs[i]!;
+            expect(typeof entry.costCurrency).toBe('number');
+            expect(entry.costCurrency).toBe(src.costCurrency ?? 0);
+            expect(entry.isFree).toBe(
+              src.costItemId === undefined && src.costQty === 0 && (src.costCurrency ?? 0) === 0,
+            );
+          });
+        },
+      ),
+    );
+  });
+});
+
+describe('buildHealViewModelForLocation [11r-g V-1]: the bound arm carries costCurrency too', () => {
+  it('★ [V-1] BITES: the bound location surfaces its OWN costCurrency and isFree=false', () => {
+    // Kills: a ForLocation body that hand-rolls the view model instead of delegating — it
+    // would miss the new field entirely, and the bound overlay (the KeyT heal arm) is the
+    // ONE heal surface a player actually sees.
+    const locs = [
+      makeLocation({ locationId: 1, costCurrency: 10 }),
+      makeLocation({ locationId: 2, costCurrency: 60 }),
+    ];
+    const vm = buildHealViewModelForLocation(2, locs, new Map());
+    expect(vm.locations).toHaveLength(1);
+    expect(vm.locations[0]!.locationId).toBe(2);
+    expect(vm.locations[0]!.costCurrency).toBe(60);
+    expect(vm.locations[0]!.isFree).toBe(false);
+  });
+
+  it('[V-1] CONSISTENCY PIN: ForLocation(id) equals the default arm for a currency-only pad', () => {
+    // Differential re-pin of "thin filter + delegate" across the NEW field (the uxd2-2
+    // pattern). Kills a future divergence where one arm learns about costCurrency and the
+    // other does not. NOTE: both arms are equally wrong today, so this case is GREEN before
+    // the fix — it is a divergence guard, not one of the RED teeth.
+    const locs = [makeLocation({ locationId: 4, costCurrency: 500 })];
+    expect(buildHealViewModelForLocation(4, locs, new Map())).toEqual(
+      buildHealViewModel(locs, new Map()),
+    );
   });
 });

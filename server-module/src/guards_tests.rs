@@ -1053,3 +1053,543 @@ fn authorize_move_carries_no_battle_guard() {
          green."
     );
 }
+
+// ===========================================================================
+// 11r-g (ADR-0170 D5) — `json_escape` at the `log_reject` choke point
+//
+// EARS criteria covered by this section:
+//
+//   G-1  `json_escape(s)` SHALL escape the two JSON structural characters —
+//        backslash and double quote — in ONE forward pass over `s.chars()`, so
+//        that a backslash immediately followed by a double quote is escaped
+//        exactly once each (sequential `str::replace` passes double-escape the
+//        backslashes an earlier pass inserted).
+//   G-2  `json_escape` SHALL escape every character below 0x20 (the three short
+//        forms for 0x0A/0x0D/0x09, every other one as a four-digit lowercase
+//        backslash-u escape) and SHALL pass 0x20, 0x7F and every non-ASCII
+//        scalar value through unchanged.
+//   G-3  (properties) the output SHALL contain no raw character below 0x20 for
+//        ANY input, and input containing no backslash, no double quote and no
+//        control character SHALL round-trip byte-identical.
+//   G-4  `log_reject` SHALL pass BOTH `reducer` and `reason` through
+//        `json_escape` before interpolating them into its hand-built JSON
+//        (~127 call sites exist; several forward a `&str` parameter, so
+//        "the reducer name is always a literal" is an unenforced convention).
+//   G-5  the three production files this slice touches SHALL contain no
+//        char-literal double quote and SHALL keep their block-comment markers
+//        balanced — the repo's source-scan substrate (eval W-pre plus every
+//        per-file stripper helper in this crate) mis-lexes otherwise, and the
+//        blast radius is a FALSE RED in an unrelated file's gate.
+//
+// RED STATE.
+//   * G-1, G-2, G-3 are COMPILE-RED: `json_escape` does not exist in
+//     `guards.rs`, so `use super::*;` cannot resolve it and the crate does not
+//     build. This is the established house precedent for a new pure seam
+//     (`content_cache_tests.rs:14-25`, the M10b block above).
+//   * G-4 is ASSERTION-RED once the symbol exists: `log_reject`'s body at HEAD
+//     interpolates `reducer` and `reason` raw.
+//   * G-5 is a GREEN-AT-HEAD fence. It is deliberately a SEPARATE `#[test]`
+//     from every red one (the split reason `movement_tests.rs:917-921` records:
+//     folded into a failing test it could never be observed passing).
+//
+// SCAN SUBSTRATE RULES honoured by everything below (violating them breaks
+// OTHER slices' gates, not this one): every needle naming a production symbol
+// is assembled from fragments, no raw double-quote CHARACTER literal is written
+// anywhere in this file, and no block-comment opener/closer is ever spelled
+// contiguously — the two markers used by the G-5 scan are built from parts,
+// exactly like `assert_stripper_preconditions`'s own `close_marker` above.
+// ===========================================================================
+
+use proptest::prelude::*;
+
+/// The ASCII backslash byte, spelled as a NUMBER for the same reason `DQUOTE`
+/// above is: this file must contain no bare delimiter characters that a
+/// text-level stripper could mis-lex.
+const BACKSLASH: u8 = 0x5C;
+
+/// The ASCII single quote (apostrophe) byte, spelled as a NUMBER.
+///
+/// Used only to ASSEMBLE the G-5 needle for a char-literal double quote. The
+/// three-byte sequence it builds must never appear literally in this file — it
+/// is the exact landmine G-5 exists to detect, and this file sorts before
+/// `lib.rs` in the evals' concatenation order.
+const SQUOTE: u8 = 0x27;
+
+/// The ASCII backslash as a one-character `String`.
+fn backslash() -> String {
+    char::from(BACKSLASH).to_string()
+}
+
+/// The ASCII double quote as a one-character `String`.
+fn double_quote() -> String {
+    char::from(DQUOTE).to_string()
+}
+
+/// The expected two-character short-form escape (backslash + `letter`).
+fn short_escape(letter: &str) -> String {
+    [backslash().as_str(), letter].concat()
+}
+
+/// The expected six-character escape (backslash + `u00` + two lowercase digits).
+fn u_escape(hex: &str) -> String {
+    [backslash().as_str(), "u00", hex].concat()
+}
+
+/// One table row: `json_escape(input)` must equal `expected`, exactly.
+///
+/// `label` names the row so a failure points at the case rather than at the
+/// (deliberately unprintable) bytes; each row's mutant is named in the doc
+/// comment of the test that drives it.
+fn assert_escapes(label: &str, input: &str, expected: &str) {
+    let got = json_escape(input);
+    assert_eq!(
+        got, expected,
+        "TEETH (11r-g G-1/G-2, ADR-0170 D5) row `{label}`: json_escape({input:?}) \
+         returned {got:?} but must return {expected:?}. `json_escape` is the choke \
+         point that keeps `log_reject`'s hand-built JSON well-formed for adversarial \
+         or parser-generated reason strings; a row that fails here means some log \
+         line is emitted malformed and silently dropped by the log ingest. See this \
+         test's doc comment for the specific wrong implementation the row kills."
+    );
+}
+
+/// **G-1** — backslash and double quote are escaped, in ONE forward pass.
+///
+/// The rows and the wrong implementations they kill:
+///   * `empty` / `plain` — kills an impl that mangles or truncates ordinary text
+///     (e.g. one that returns `String::new()` unconditionally).
+///   * `bs` (a lone backslash becomes two) — kills the classic escape-the-quote-
+///     only impl, which leaves the backslash raw so the JSON reader treats the
+///     NEXT character as an escape introducer.
+///   * `dq` (a lone double quote becomes backslash + quote) — kills an impl that
+///     only escapes backslashes, and kills the QUOTE-FIRST sequential
+///     `s.replace(quote, ..).replace(backslash, ..)` impl outright: its second
+///     pass doubles the backslash its first pass just inserted, leaving a RAW
+///     quote that terminates the JSON string early.
+///   * `bs_then_dq` — THE ADJACENCY ATTACK named in ADR-0170 D5. Input is a
+///     backslash immediately followed by a quote; the only correct output is
+///     three backslashes then a quote. A quote-first sequential impl emits FOUR
+///     backslashes then a quote (it re-escapes its own insertions), so a table
+///     that only tested each character in isolation would miss it.
+///   * `dq_then_bs`, `bs_bs`, `embedded`, `sentence` — the same adjacency
+///     property in the other order, doubled, and in the middle of real text;
+///     they kill an impl that special-cases only the first or last character.
+///
+/// COMPILE-RED: `json_escape` does not exist in `guards.rs` yet.
+#[test]
+fn json_escape_escapes_backslash_and_quote_in_one_pass() {
+    let b = backslash();
+    let q = double_quote();
+
+    let bb = [b.as_str(), b.as_str()].concat();
+    let bbbb = [bb.as_str(), bb.as_str()].concat();
+    let esc_q = [b.as_str(), q.as_str()].concat();
+    let bs_then_dq = [b.as_str(), q.as_str()].concat();
+    let bs_then_dq_out = [bb.as_str(), esc_q.as_str()].concat();
+    let dq_then_bs = [q.as_str(), b.as_str()].concat();
+    let dq_then_bs_out = [esc_q.as_str(), bb.as_str()].concat();
+    let embedded = ["a", bs_then_dq.as_str(), "b"].concat();
+    let embedded_out = ["a", bs_then_dq_out.as_str(), "b"].concat();
+    let sentence = ["he said ", q.as_str(), "hi", q.as_str()].concat();
+    let sentence_out = ["he said ", esc_q.as_str(), "hi", esc_q.as_str()].concat();
+
+    assert_escapes("empty", "", "");
+    assert_escapes("plain", "not owner", "not owner");
+    assert_escapes("bs", &b, &bb);
+    assert_escapes("dq", &q, &esc_q);
+    assert_escapes("bs_then_dq", &bs_then_dq, &bs_then_dq_out);
+    assert_escapes("dq_then_bs", &dq_then_bs, &dq_then_bs_out);
+    assert_escapes("bs_bs", &bb, &bbbb);
+    assert_escapes("embedded", &embedded, &embedded_out);
+    assert_escapes("sentence", &sentence, &sentence_out);
+}
+
+/// **G-2** — the control-character boundary, and everything that must NOT change.
+///
+/// The rows and the wrong implementations they kill:
+///   * 0x00, 0x08, 0x0B, 0x0C, 0x1F become six-character lowercase escapes.
+///     These kill (a) an impl that emits only the three short forms and passes
+///     every other control character through RAW — a raw NUL or VT inside a JSON
+///     string is a hard parse error; (b) an impl that adds the JSON backspace
+///     (0x08) and form-feed (0x0C) short forms, which ADR-0170 D5 deliberately
+///     does NOT sanction — the contract is exactly three short forms and a
+///     four-digit escape for everything else; (c) an impl that emits UPPERCASE
+///     hex or fewer than four digits, both of which are invalid or ambiguous
+///     JSON escapes.
+///   * 0x09, 0x0A, 0x0D become the `t` / `n` / `r` short forms. These kill an
+///     impl that four-digit-encodes ALL control characters (contract violation
+///     in the other direction) and an impl that maps the wrong letter to the
+///     wrong byte.
+///   * 0x20 (space), 0x7F (DEL), U+00E9 and U+1F600 pass through unchanged.
+///     0x20 kills an off-by-one `<= 0x20` boundary that would mangle every space
+///     in every reason string. 0x7F kills an `is_ascii_control()`-based impl:
+///     DEL *is* an ASCII control character but is NOT below 0x20, and it is
+///     legal raw JSON. The two non-ASCII rows kill an over-eager impl that
+///     escapes all non-ASCII — Rust `char` iteration cannot produce a lone
+///     surrogate, so pass-through is valid JSON by construction (ADR-0170 D5),
+///     and re-encoding would also mangle the astral-plane row.
+///
+/// COMPILE-RED: `json_escape` does not exist in `guards.rs` yet.
+#[test]
+fn json_escape_control_char_boundary_table() {
+    let cases = [
+        (0x00u32, u_escape("00")),
+        (0x08u32, u_escape("08")),
+        (0x09u32, short_escape("t")),
+        (0x0Au32, short_escape("n")),
+        (0x0Bu32, u_escape("0b")),
+        (0x0Cu32, u_escape("0c")),
+        (0x0Du32, short_escape("r")),
+        (0x1Fu32, u_escape("1f")),
+        (0x20u32, " ".to_string()),
+        (0x7Fu32, char::from(0x7Fu8).to_string()),
+        (0x00E9u32, "\u{00E9}".to_string()),
+        (0x1F600u32, "\u{1F600}".to_string()),
+    ];
+
+    for (codepoint, expected) in cases {
+        let c = char::from_u32(codepoint).expect("G-2 table codepoint must be a valid char");
+        let input = c.to_string();
+        let label = format!("U+{codepoint:04X}");
+        assert_escapes(&label, &input, &expected);
+    }
+}
+
+/// Arbitrary `String`s, control characters included — the G-3(a) generator.
+fn arb_any_string() -> impl Strategy<Value = String> {
+    prop::collection::vec(any::<char>(), 0..24).prop_map(|v| v.into_iter().collect::<String>())
+}
+
+/// Arbitrary `String`s with every backslash, double quote and control character
+/// REMOVED (filtered, never rejected — so the generator has no rejection budget
+/// to exhaust) — the G-3(b) generator.
+fn arb_plain_string() -> impl Strategy<Value = String> {
+    prop::collection::vec(any::<char>(), 0..24).prop_map(|v| {
+        v.into_iter()
+            .filter(|c| u32::from(*c) >= 0x20)
+            .filter(|c| *c != char::from(BACKSLASH) && *c != char::from(DQUOTE))
+            .collect::<String>()
+    })
+}
+
+proptest! {
+    /// **G-3(a)** — for ANY input, the output contains no raw character below 0x20.
+    ///
+    /// The whole-of-domain version of the G-2 table: the table names the eight
+    /// interesting control bytes, this covers all thirty-two in every position
+    /// and combination. Kills an impl that handles the control characters it was
+    /// shown a test for and passes the rest through raw, and an impl whose
+    /// control-character arm is unreachable because an earlier arm matched first.
+    /// A raw control byte inside a JSON string is a hard parse error, so the log
+    /// line is dropped — exactly the observability hole ADR-0170 D5 closes.
+    ///
+    /// No hand-rolled JSON unescaper oracle: this is a one-directional structural
+    /// property, so there is no second implementation to get wrong.
+    ///
+    /// COMPILE-RED: `json_escape` does not exist in `guards.rs` yet.
+    #[test]
+    fn json_escape_output_has_no_raw_control_chars(s in arb_any_string()) {
+        let out = json_escape(&s);
+        let offender = out.chars().find(|c| u32::from(*c) < 0x20);
+        prop_assert!(
+            offender.is_none(),
+            "TEETH (11r-g G-3a, ADR-0170 D5): json_escape emitted a RAW control \
+             character U+{:04X} for input {:?} (output {:?}). Every character below \
+             0x20 must leave as an escape sequence; a raw one makes the surrounding \
+             hand-built JSON log line unparseable and the line is dropped.",
+            offender.map_or(0u32, u32::from),
+            s,
+            out
+        );
+    }
+
+    /// **G-3(b)** — text with no backslash, no double quote and no control
+    /// character round-trips byte-identical.
+    ///
+    /// Kills an over-eager impl: one that escapes the JSON-optional forward
+    /// slash, one that escapes all non-ASCII, one that escapes 0x7F, and one
+    /// that normalises or re-orders anything. It is the exact complement of
+    /// G-3(a): together they pin "escape precisely the characters that need
+    /// escaping, and nothing else". Without this half, `json_escape` could
+    /// satisfy G-3(a) by escaping every character in the input.
+    ///
+    /// COMPILE-RED: `json_escape` does not exist in `guards.rs` yet.
+    #[test]
+    fn json_escape_is_identity_on_plain_text(s in arb_plain_string()) {
+        let out = json_escape(&s);
+        prop_assert!(
+            out == s,
+            "TEETH (11r-g G-3b, ADR-0170 D5): json_escape changed input {:?} into \
+             {:?}, but input containing no backslash, no double quote and no \
+             character below 0x20 must pass through UNCHANGED. Escaping more than \
+             the contract says corrupts every reason string a human has to read and \
+             breaks the multi-byte scalar values the pass-through rule preserves.",
+            s,
+            out
+        );
+    }
+}
+
+/// **G-4** (ADR-0170 D5) — `log_reject` must escape BOTH `reducer` and `reason`.
+///
+/// ASSERTION-RED once `json_escape` exists: at HEAD `log_reject`'s single
+/// `log::warn!` interpolates both parameters raw, so a RON/serde parse error
+/// carrying a double quote emits a malformed JSON log line.
+///
+/// WHY BOTH ARGUMENTS. `reason` is the obvious one (it carries parser output
+/// across the trust boundary). `reducer` is the non-obvious one, and is why this
+/// test counts TWO escapes rather than one: production holds ~127 `log_reject(`
+/// call sites and most pass a name literal, but several helpers in `guards.rs` /
+/// `pvp.rs` / `trading.rs` FORWARD a `&str` parameter, so "the reducer name is
+/// always a literal" is an unenforced convention, not an invariant. This is the
+/// reject path, never a hot path, so escaping both costs nothing.
+///
+/// The scan runs over the comment- AND string-blanked, whitespace-squashed
+/// `guards.rs` produced by [`squashed_guards`], so a doc comment or a log message
+/// mentioning the function cannot satisfy any needle — only executable code can.
+/// The needles accept the call WITHOUT its closing paren so a borrow or an
+/// `.as_ref()` at the call site does not false-RED, and the region is anchored
+/// exactly the way [`authorize_move_carries_no_battle_guard`] anchors its own:
+/// from the `pub(crate) fn` marker to the next `pub(crate) fn`.
+///
+/// WHAT EACH LAYER KILLS.
+///   * count >= 2 — kills escaping neither argument (HEAD) and escaping only one.
+///   * the two named needles — kill the same argument escaped TWICE, which
+///     satisfies a bare count while leaving the other one raw.
+///   * the surviving `log::warn!(` — kills an impl that escapes both arguments
+///     and then drops or downgrades the log call itself, which would make every
+///     assertion above vacuously true while deleting the observability this whole
+///     seam exists to protect.
+///   * **ZERO `let_` in the region** — kills the DISCARD idiom
+///     `let _ = json_escape(reason);` sitting beside a raw interpolation, which
+///     satisfies every needle above while every log line stays malformed. The
+///     three-character needle catches `let _ =`, `let _esc =` and
+///     `let _: String =` alike; the legitimate shadowing form
+///     `let reducer = json_escape(reducer);` squashes to `letreducer=` and does
+///     not match.
+///
+/// THE DISCARD IDIOM IS CLOSED BY THAT NEEDLE, NOT BY THE LINT GATE. An earlier
+/// draft of this comment claimed `-D warnings` made the discard a build failure.
+/// That is WRONG: `let _ = expr;` binds the wildcard pattern, which
+/// `unused_variables` never reports (and `let _esc = ..` would at most be a
+/// warning-level lint, not the hard error the claim assumed). The same evasion
+/// with the same wrong justification was found and fixed once before in this
+/// crate — `trading_tests.rs:1959-2039`.
+///
+/// HONEST LIMITS. (a) With the discard closed, what remains unpinned is only
+/// "escaped into the wrong slot of the right log line": the format string is
+/// blanked before matching (the same trade `movement_tests.rs:658-669` records),
+/// so the scan sees that both parameters are escaped and that nothing throws the
+/// results away, but not which placeholder consumes which. That residue is
+/// covered from the other side by G-1..G-3, which prove the function is worth
+/// calling at all. (b) Source scan, not execution: `log_reject` writes to the
+/// host logger and this crate has no harness that can read it back (ADR-0156 P7).
+#[test]
+fn log_reject_escapes_both_reducer_and_reason() {
+    let squashed = squashed_guards();
+
+    let marker = ["pub(crate)fnlog", "_reject("].concat();
+    let n_marker = squashed.matches(marker.as_str()).count();
+    assert_eq!(
+        n_marker, 1,
+        "SCAN PRECONDITION (11r-g G-4): `pub(crate)fnlog_reject(` must appear EXACTLY \
+         ONCE in the squashed `guards.rs`; found {n_marker}. With zero the reject \
+         logger was renamed or moved and the region below cannot be built; with two \
+         the region extractor takes the FIRST match, so a decoy definition could \
+         carry the escapes while the real one still interpolates raw."
+    );
+
+    let start = squashed
+        .find(marker.as_str())
+        .expect("guards_tests: `pub(crate)fnlog_reject(` not found in guards.rs");
+    let rest_at = start + marker.len();
+    let next_fn = ["pub(crate)", "fn"].concat();
+    let end = squashed[rest_at..]
+        .find(next_fn.as_str())
+        .map_or(squashed.len(), |off| rest_at + off);
+    let region = &squashed[start..end];
+
+    let esc = ["json", "_escape("].concat();
+    let n_esc = region.matches(esc.as_str()).count();
+    assert!(
+        n_esc >= 2,
+        "TEETH (11r-g G-4, ADR-0170 D5): `log_reject`'s body must call the escape \
+         helper at least TWICE — once for `reducer`, once for `reason` — but it \
+         calls it {n_esc} time(s). At HEAD the count is 0: both parameters are \
+         interpolated raw into a hand-built JSON object, so a reason carrying a \
+         double quote (a RON/serde parse error, a forwarded validator message) \
+         closes the JSON string early and the whole log line is emitted malformed. \
+         `reducer` is escaped too because several helpers forward a `&str` parameter \
+         rather than a literal — see this test's doc comment. Comments AND string \
+         literals are blanked before this count, so only executable calls are seen."
+    );
+
+    let esc_reducer = ["json", "_escape(reducer"].concat();
+    assert!(
+        region.contains(esc_reducer.as_str()),
+        "TEETH (11r-g G-4, ADR-0170 D5): `log_reject` must pass its `reducer` \
+         parameter through the escape helper — the squashed body must contain the \
+         call applied to `reducer`. The bare count above is satisfied by escaping \
+         `reason` twice; only this needle proves the FIRST interpolated field is \
+         escaped as well. ~127 `log_reject(` call sites exist and several forward a \
+         `&str` parameter, so an unescaped reducer name is reachable from the trust \
+         boundary."
+    );
+
+    let esc_reason = ["json", "_escape(reason"].concat();
+    assert!(
+        region.contains(esc_reason.as_str()),
+        "TEETH (11r-g G-4, ADR-0170 D5): `log_reject` must pass its `reason` \
+         parameter through the escape helper — the squashed body must contain the \
+         call applied to `reason`. This is the primary vector: `reason` carries \
+         parser-generated and validator-generated text straight into a hand-built \
+         JSON string."
+    );
+
+    let warn = ["log::wa", "rn!("].concat();
+    assert!(
+        region.contains(warn.as_str()),
+        "ANTI-VACUITY (11r-g G-4): `log_reject` must still contain a `log::warn!(` \
+         call. An implementation that escapes both arguments and then deletes or \
+         downgrades the log call satisfies every needle above while removing the \
+         observability the whole seam exists to protect."
+    );
+
+    // The discard kill. Green at HEAD (the body is a single `log::warn!` with no
+    // bindings at all) and it must STAY green: every needle above is satisfied by
+    // `let _ = json_escape(reducer); let _ = json_escape(reason); log::warn!(..)`
+    // with both parameters still interpolated raw. That shell is neither a compile
+    // error nor a lint failure — see this test's doc comment and the identical
+    // finding at trading_tests.rs:1959-2039.
+    let discard = ["let", "_"].concat();
+    let n_discard = region.matches(discard.as_str()).count();
+    assert_eq!(
+        n_discard, 0,
+        "TEETH (11r-g G-4, ADR-0170 D5): `log_reject`'s region contains {n_discard} \
+         underscore binding(s) (`let _`) and must contain ZERO. \
+         WHAT THIS KILLS: `let _ = json_escape(reducer); let _ = json_escape(reason);` \
+         placed beside a `log::warn!` that still interpolates both parameters RAW. \
+         That shell satisfies the escape COUNT and both named needles above while \
+         emitting exactly the malformed JSON this seam exists to prevent, and it is \
+         caught by nothing else: `let _ = expr;` binds the wildcard pattern, so \
+         `unused_variables` never fires and `-D warnings` is silent (the same evasion, \
+         with the same wrong 'the lint gate catches it' justification, was found and \
+         fixed before at trading_tests.rs:1959-2039). \
+         Use the escaped values directly in the format arguments, or bind them by \
+         shadowing under their real names — `let reducer = json_escape(reducer);` \
+         squashes to `letreducer=` and does not match this needle. Green at HEAD; if \
+         it ever fires, the escape results are being thrown away."
+    );
+}
+
+/// **G-5(a)** (ADR-0170, scan-substrate invariant) — none of the three production
+/// files this slice touches may spell a double quote as a CHAR literal.
+///
+/// GREEN AT HEAD and green after the slice; RED the moment the obvious spelling
+/// of the quote character lands in `guards.rs`'s new `json_escape`. It must be
+/// written as a Unicode escape inside the char literal (or reached through a
+/// numeric constant), never as a bare quote between two apostrophes.
+///
+/// WHY THIS IS A REAL HAZARD, not tidiness. Every text-level stripper in this
+/// repo — the evals' `stripRustStrings`, and the byte-sequential
+/// [`strip_comments_and_strings`] in this very file — either has no char-literal
+/// lexer at all or bounds it to four bytes. A lone double quote inside a char
+/// literal therefore reads as OPENING a string literal and inverts string/code
+/// polarity for the rest of that file. The measured cost of exactly this mistake,
+/// recorded in this file's own `DQUOTE` doc comment: `pub fn init(` in `lib.rs`
+/// was blanked and the zone-warp eval failed with "init not found" — a loud
+/// failure pointing at a completely innocent file. `cargo test` runs in seconds
+/// and the eval suite does not, so this fence is the fast local canary for the
+/// eval layer's W-pre precondition, deliberately NOT a second copy of it.
+///
+/// The needle is assembled from `char::from(SQUOTE)` / `char::from(DQUOTE)` so
+/// the landmine sequence never appears in this file either — a scan that carries
+/// its own counterexample is worse than no scan.
+///
+/// HONEST LIMIT: three named files, not the whole crate. The eval layer owns the
+/// crate-wide sweep (and records four pre-existing landmines in test files that
+/// are outside this slice's touch set); this fence covers exactly the files
+/// 11r-g edits, which is where a new landmine would come from.
+#[test]
+fn touched_production_sources_have_no_char_literal_double_quote() {
+    let sq = char::from(SQUOTE).to_string();
+    let dq = double_quote();
+    let needle = [sq.as_str(), dq.as_str(), sq.as_str()].concat();
+
+    let files = [
+        ("guards.rs", GUARDS_RS),
+        ("movement.rs", include_str!("movement.rs")),
+        ("content_cache.rs", include_str!("content_cache.rs")),
+    ];
+
+    for (name, src) in files {
+        let n = src.matches(needle.as_str()).count();
+        assert_eq!(
+            n, 0,
+            "TEETH (11r-g G-5a, ADR-0170 scan substrate): `{name}` contains {n} \
+             char-literal double quote(s). Spell the character with a Unicode escape \
+             inside the char literal instead. A lone double quote in a char literal \
+             is read as a STRING OPENER by every text-level stripper in this repo \
+             (the evals' `stripRustStrings` has no char-literal lexer; this file's \
+             own stripper bounds one to four bytes), which inverts string/code \
+             polarity for the rest of that file and blanks whatever follows. The \
+             observed blast radius was `pub fn init(` in `lib.rs` disappearing and an \
+             unrelated eval failing with 'init not found'. Green at HEAD — keep it \
+             that way."
+        );
+    }
+}
+
+/// **G-5(b)** (ADR-0170, scan-substrate invariant) — block-comment markers stay
+/// balanced in the three production files this slice touches.
+///
+/// GREEN AT HEAD (all three files contain zero of either marker) and green after
+/// the slice. RED if an unpaired opener lands in a comment — for example the
+/// natural way to write a file glob while documenting the new logging.
+///
+/// WHY: the evals' comment stripper is a non-greedy REGEX applied to source that
+/// is concatenated in sorted filename order. An unpaired opener swallows
+/// everything up to the next closer ACROSS FILE BOUNDARIES, silently deleting a
+/// later file's reducers from the eval's view and false-REDing a check that has
+/// nothing to do with this slice. This crate already carries a written warning
+/// about it in three places (the 11r-c section above, `movement_tests.rs:676-682`
+/// and `movement.rs`); this is the executable version.
+///
+/// Counts must be EQUAL rather than zero: a legitimately paired block comment is
+/// fine, an unpaired opener (or a stray closer) is not. Both markers are
+/// assembled from single characters so this file never spells either one
+/// contiguously — the same discipline `assert_stripper_preconditions`'s own
+/// `close_marker` uses.
+///
+/// HONEST LIMIT: equal counts are necessary, not sufficient — one opener and one
+/// closer in the WRONG order would balance. That shape cannot be written by
+/// accident in a comment (a stray closer outside a comment does not compile), and
+/// the stripper-precondition assertion in [`squashed_guards`] independently
+/// catches a nested comment.
+#[test]
+fn touched_production_sources_have_balanced_block_comment_markers() {
+    let open_marker = ["/", "*"].concat();
+    let close_marker = ["*", "/"].concat();
+
+    let files = [
+        ("guards.rs", GUARDS_RS),
+        ("movement.rs", include_str!("movement.rs")),
+        ("content_cache.rs", include_str!("content_cache.rs")),
+    ];
+
+    for (name, src) in files {
+        let opens = src.matches(open_marker.as_str()).count();
+        let closes = src.matches(close_marker.as_str()).count();
+        assert_eq!(
+            opens, closes,
+            "TEETH (11r-g G-5b, ADR-0170 scan substrate): `{name}` has {opens} \
+             block-comment opener(s) but {closes} closer(s). The evals strip comments \
+             with a non-greedy REGEX over sources concatenated in sorted filename \
+             order, so an unpaired opener swallows everything up to the next closer \
+             ACROSS FILE BOUNDARIES — it deletes a later file's reducers from the \
+             eval's view and turns an unrelated check RED with a misleading message. \
+             If you need the sequence in prose, spell it out in words instead. All \
+             three files start at 0 and 0; green at HEAD."
+        );
+    }
+}

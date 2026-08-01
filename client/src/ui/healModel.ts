@@ -1,6 +1,20 @@
 // ui/healModel.ts — pure heal location view model (M12d, ADR-0071).
 // TOTAL: never throws.
+//
+// 11r-g (ADR-0170 D3): the heal-cost currency seam. The builders accept an
+// optional `costCurrency` on each input row and the VM carries a REQUIRED
+// `costCurrency` (absent ⇒ 0 via `??`), with `isFree` requiring all THREE cost
+// channels empty. The input field is INERT until the parked `cost_currency`
+// column lands (ADR-0170 residual 1) — today's store rows never carry it, so
+// absent ⇒ 0 is production's path.
 import type { StoreHealLocationRow, StoreItemRow } from '../net/store';
+
+/**
+ * Builder input row: the net-layer store row widened by the not-yet-wired
+ * currency cost (ADR-0170 D3). Plain `StoreHealLocationRow[]` remains
+ * assignable — the extra field is optional on the INPUT only.
+ */
+type HealLocationInputRow = StoreHealLocationRow & { readonly costCurrency?: number };
 
 export interface HealLocationViewModel {
   locationId: number;
@@ -9,8 +23,11 @@ export interface HealLocationViewModel {
   tileY: number;
   costItemName: string | null;
   costQty: number;
+  // REQUIRED (not optional) so every future consumer must reckon with it —
+  // an optional field could be silently `?? 0`-ed past (ADR-0170 D3).
+  costCurrency: number;
   cooldownMs: number;
-  isFree: boolean; // costItemId === undefined AND costQty === 0
+  isFree: boolean; // costItemId === undefined AND costQty === 0 AND costCurrency === 0
 }
 
 export interface HealViewModel {
@@ -43,7 +60,7 @@ export function healTargetLocationId(
  */
 export function buildHealViewModelForLocation(
   locationId: number,
-  healLocations: readonly StoreHealLocationRow[],
+  healLocations: readonly HealLocationInputRow[],
   itemDefs: ReadonlyMap<number, StoreItemRow>,
 ): HealViewModel {
   return buildHealViewModel(
@@ -53,12 +70,15 @@ export function buildHealViewModelForLocation(
 }
 
 export function buildHealViewModel(
-  healLocations: readonly StoreHealLocationRow[],
+  healLocations: readonly HealLocationInputRow[],
   itemDefs: ReadonlyMap<number, StoreItemRow>,
 ): HealViewModel {
   return {
     locations: healLocations.map((loc) => {
-      const isFree = loc.costItemId === undefined && loc.costQty === 0;
+      // `??`, never `||` (ADR-0170 D3): a NaN cost must survive as NaN — `|| 0`
+      // would launder a corrupt row into "Free heal". Pure projection, no clamping.
+      const costCurrency = loc.costCurrency ?? 0;
+      const isFree = loc.costItemId === undefined && loc.costQty === 0 && costCurrency === 0;
       const costItemName =
         loc.costItemId !== undefined ? (itemDefs.get(loc.costItemId)?.name ?? null) : null;
       return {
@@ -68,6 +88,7 @@ export function buildHealViewModel(
         tileY: loc.tileY,
         costItemName,
         costQty: loc.costQty,
+        costCurrency,
         cooldownMs: loc.cooldownMs,
         isFree,
       };

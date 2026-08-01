@@ -13,7 +13,45 @@ use crate::{MAX_NAME_LEN, MAX_PARTY_SIZE, PARTY_SLOT_NONE};
 use game_core::SideId;
 use spacetimedb::{Identity, ReducerContext};
 
+/// Escape a string for interpolation into a hand-built JSON log line
+/// (ADR-0170 D5). Backslash and double quote are escaped; 0x0A / 0x0D / 0x09
+/// take their short forms; every other character below 0x20 becomes a
+/// four-digit lowercase backslash-u escape; everything else (0x20, 0x7F DEL,
+/// non-ASCII) passes through unchanged — Rust `char` iteration cannot produce
+/// a lone surrogate, so pass-through is valid JSON as UTF-8 by construction.
+///
+/// ONE forward pass over `s.chars()` on purpose: sequential `str::replace`
+/// passes double-escape the backslashes an earlier pass inserted (attack
+/// input: a backslash directly followed by a double quote).
+///
+/// The two structural characters are spelled as Unicode escapes in the match
+/// arms, never as raw char literals: the repo's text-level source scanners
+/// have no char-literal lexer, and a bare quote between apostrophes inverts
+/// string/code polarity for the rest of the file (guards_tests G-5a).
+pub(crate) fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\u{005C}' => out.push_str("\\\\"),
+            '\u{0022}' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 pub(crate) fn log_reject(reducer: &str, sender: Identity, reason: &str) {
+    // BOTH parameters go through json_escape (ADR-0170 D5): `reason` carries
+    // parser/validator text across the trust boundary, and several helpers
+    // forward `reducer` as a `&str` parameter, so a name literal is an
+    // unenforced convention. This is the reject path, never a hot path.
+    let reducer = json_escape(reducer);
+    let reason = json_escape(reason);
+    // `sender` stays raw: Identity Display is fixed-width lowercase hex, structurally quote-free.
     log::warn!("{{\"evt\":\"reject\",\"reducer\":\"{reducer}\",\"sender\":\"{sender}\",\"reason\":\"{reason}\"}}");
 }
 

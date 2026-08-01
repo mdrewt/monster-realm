@@ -17,16 +17,16 @@ use crate::guards::{
 use crate::inventory::consume_one;
 use crate::marshal::{
     battle_monster_from_row, build_ability_store, loser_base_stat_total, now_ms, pub_from_monster,
-    type_chart_from_rows, wild_battle_monster, write_back_hp,
+    wild_battle_monster, write_back_hp,
 };
 use crate::schema::{
     battle, battle_wild, inventory, monster, monster_pub, skill_row, species_row, trade_offer,
-    type_relation_row, Battle, BattleWild, Monster, SkillRow,
+    Battle, BattleWild, Monster, SkillRow,
 };
 use crate::{PARTY_SLOT_NONE, WILD_IDENTITY};
 use game_core::combat::xp::level_up_healed_hp;
 use game_core::{
-    apply_entry_ability, apply_xp_gain, battle_currency_reward, battle_xp_reward, load_abilities,
+    apply_entry_ability, apply_xp_gain, battle_currency_reward, battle_xp_reward,
     resolve_full_turn, BattleOutcome, BattleSide, BattleState, BattleStatusStore, Level, SideId,
     StatBlock, StatusVariance, TurnChoice, TurnVariance,
 };
@@ -238,9 +238,10 @@ pub fn start_battle(
         weather: None,
     };
 
-    // Apply entry abilities for both initial actives (ADR-0100).
-    let ability_defs = load_abilities()?;
-    let abilities = build_ability_store(&ability_ids_a, &ability_ids_b, &ability_defs);
+    // Apply entry abilities for both initial actives (ADR-0100). Abilities come
+    // from the process-wide content cache (ADR-0170 D2).
+    let ability_defs = crate::content_cache::cached_abilities()?;
+    let abilities = build_ability_store(&ability_ids_a, &ability_ids_b, ability_defs);
     let mut status = BattleStatusStore {
         side_a: state.side_a.team.iter().map(|m| m.status).collect(),
         side_b: state.side_b.team.iter().map(|m| m.status).collect(),
@@ -291,6 +292,14 @@ pub(crate) fn lead_party(ctx: &ReducerContext, owner: Identity) -> Option<(Vec<u
     let ids = party.iter().map(|m| m.monster_id).collect();
     Some((ids, lead_level))
 }
+
+/// `begin_encounter`'s ROUTINE rejection: the party has zero conscious monsters
+/// (a fainted party walking grass — normal gameplay, not a fault). A shared
+/// `pub(crate)` const (ADR-0170 D4 hardening) so `movement_tick`'s limiter
+/// filter compares against this reducer's actual Err text and can never drift
+/// from it — a hostile client must not be able to saturate the
+/// begin-encounter error limiter with this reason and mask genuine faults.
+pub(crate) const NO_CONSCIOUS_MONSTER_REASON: &str = "party has no conscious monster";
 
 /// Begin a wild battle: build side A from the player's owned party and side B from
 /// a single freshly-rolled wild (no owned `monster` row). Builds the `Battle` row
@@ -369,8 +378,8 @@ pub(crate) fn begin_encounter(
     // Seat side A's lead: the first slot with HP > 0 (ADR-0156 D1). `None` is
     // the "party has a conscious monster" precondition. Team order is preserved,
     // keeping `team[i]` coupled to `party_monster_ids[i]`.
-    let side_a = BattleSide::with_lead(team_a)
-        .ok_or_else(|| "party has no conscious monster".to_string())?;
+    let side_a =
+        BattleSide::with_lead(team_a).ok_or_else(|| NO_CONSCIOUS_MONSTER_REASON.to_string())?;
 
     // Build side B: exactly ONE wild monster (no owned monster row). The species
     // must exist at creation (R-G): a battle created after `sync_content` cannot
@@ -408,9 +417,10 @@ pub(crate) fn begin_encounter(
         weather: None,
     };
 
-    // Apply entry abilities for both initial actives (ADR-0100).
-    let ability_defs = load_abilities()?;
-    let abilities = build_ability_store(&ability_ids_a, &ability_ids_b, &ability_defs);
+    // Apply entry abilities for both initial actives (ADR-0100). Abilities come
+    // from the process-wide content cache (ADR-0170 D2).
+    let ability_defs = crate::content_cache::cached_abilities()?;
+    let abilities = build_ability_store(&ability_ids_a, &ability_ids_b, ability_defs);
     let mut status = BattleStatusStore {
         side_a: state.side_a.team.iter().map(|m| m.status).collect(),
         side_b: state.side_b.team.iter().map(|m| m.status).collect(),
@@ -571,7 +581,9 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
     // applies_status (M14d, ADR-0095) are populated by game_core::load_skills, which is
     // the LazyLock initializer and runs only once.
     let skill_defs = crate::content_cache::cached_skills()?;
-    let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
+    // Type chart from the version-keyed cache (ADR-0170 D1): rebuilt only when
+    // the config row's content_version changes, not on every attack.
+    let type_chart = crate::content_cache::cached_type_chart(ctx)?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
     let sv = StatusVariance::from_ctx_random(ctx.random());
 
@@ -591,9 +603,9 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
     };
 
     // Build AbilityStore from species content for this battle's teams (ADR-0100).
-    // PARK(ADR-0089 amendment, M14.5e): load_abilities() is NOT cached — it re-parses
-    // RON per call. Caching abilities is a named follow-up; skills/items are cached.
-    let ability_defs = load_abilities()?;
+    // Abilities come from the process-wide content cache (ADR-0170 D2, which
+    // completed the ADR-0089 M14.5e follow-up): parsed once per process.
+    let ability_defs = crate::content_cache::cached_abilities()?;
     let a_ability_ids: Vec<Option<u32>> = battle
         .state
         .side_a
@@ -620,7 +632,7 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
                 .and_then(|sp| sp.ability)
         })
         .collect();
-    let abilities = build_ability_store(&a_ability_ids, &b_ability_ids, &ability_defs);
+    let abilities = build_ability_store(&a_ability_ids, &b_ability_ids, ability_defs);
 
     let _events = resolve_full_turn(
         &mut battle.state,
@@ -716,7 +728,9 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
     // sets_weather/applies_status populated by game_core::load_skills, the LazyLock
     // initializer (runs only once).
     let skill_defs = crate::content_cache::cached_skills()?;
-    let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
+    // Type chart from the version-keyed cache (ADR-0170 D1): rebuilt only when
+    // the config row's content_version changes, not on every swap.
+    let type_chart = crate::content_cache::cached_type_chart(ctx)?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
     let sv = StatusVariance::from_ctx_random(ctx.random());
 
@@ -728,9 +742,9 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
     };
 
     // Build AbilityStore from species content for this battle's teams (ADR-0100).
-    // PARK(ADR-0089 amendment, M14.5e): load_abilities() is NOT cached — it re-parses
-    // RON per call. Caching abilities is a named follow-up; skills/items are cached.
-    let ability_defs = load_abilities()?;
+    // Abilities come from the process-wide content cache (ADR-0170 D2, which
+    // completed the ADR-0089 M14.5e follow-up): parsed once per process.
+    let ability_defs = crate::content_cache::cached_abilities()?;
     let a_ability_ids: Vec<Option<u32>> = battle
         .state
         .side_a
@@ -757,7 +771,7 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
                 .and_then(|sp| sp.ability)
         })
         .collect();
-    let abilities = build_ability_store(&a_ability_ids, &b_ability_ids, &ability_defs);
+    let abilities = build_ability_store(&a_ability_ids, &b_ability_ids, ability_defs);
 
     let _events = game_core::resolve_player_swap(
         &mut battle.state,

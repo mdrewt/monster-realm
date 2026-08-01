@@ -320,10 +320,11 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
         .unwrap_or(0);
     evaluate_heal(last_heal, now, loc.cooldown_ms)?;
 
-    // Step 6b: currency cost (ADR-0083). Load cost from content; 0 means free.
-    let currency_cost = game_core::load_heal_locations()
-        .map_err(|e| format!("heal_party: load_heal_locations: {e}"))?
-        .into_iter()
+    // Step 6b: currency cost (ADR-0083). Cost from the process-wide
+    // heal-location cache (ADR-0170 D3) — no per-call RON re-parse; 0 means free.
+    let currency_cost = crate::content_cache::cached_heal_locations()
+        .map_err(|e| format!("heal_party: cached_heal_locations: {e}"))?
+        .iter()
         .find(|d| d.location_id == location_id)
         .map(|d| d.cost_currency)
         .unwrap_or(0);

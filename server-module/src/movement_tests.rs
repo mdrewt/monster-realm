@@ -1359,3 +1359,1166 @@ fn clear_queue_is_deliberately_not_battle_guarded() {
          red build green."
     );
 }
+
+// ===========================================================================
+// 11r-g (ADR-0170 D4) — rate-limited, JSON-escaped wild-encounter failure logs
+//
+// EARS criteria covered below:
+//
+//   M-1  A fresh `RateLimiter`'s first `check` SHALL emit, reporting zero
+//        suppressed events.
+//   M-2  WHILE inside the window a `check` SHALL suppress (return `None`) and
+//        count; the next emit SHALL report the EXACT suppressed count and then
+//        reset it to zero.
+//   M-3  The window boundary SHALL be INCLUSIVE: `elapsed == window` emits,
+//        `elapsed == window - 1` suppresses.
+//   M-4  WHEN the injected clock goes BACKWARDS the limiter SHALL emit and
+//        re-anchor to the new (earlier) instant rather than suppress forever.
+//   M-5  For extreme operands (`i64::MIN`, `i64::MAX`) `check` SHALL NOT panic.
+//        This workspace ships `overflow-checks = true`, so a bare subtraction
+//        would PANIC the zone tick in production — the exact failure this
+//        feature exists to surface.
+//   M-6  `movement_tick` SHALL pass every interpolated error reason through
+//        `json_escape`, including the two pre-existing `movement_tick_error`
+//        sites (ADR-0170 D4 last bullet).
+//   M-7  The two swallow sites in the grass-encounter block SHALL become logged
+//        no-ops, each gated by its OWN process-static limiter — a spammy
+//        bad-content zone must not mask `begin_encounter` failures (one of
+//        `begin_encounter`'s Err paths, "party has no conscious monster", is
+//        ROUTINE gameplay and can burst).
+//
+// RED STATE.
+//   * M-1..M-5 are COMPILE-RED: `RateLimiter` does not exist in `movement.rs`,
+//     so `use super::RateLimiter;` cannot resolve and the crate does not build
+//     (the house precedent for a new seam — `content_cache_tests.rs:14-25`).
+//   * M-6 / M-7 and the RateLimiter source-scan are ASSERTION-RED once the type
+//     exists: HEAD has zero limiter statics, zero `json_escape` calls and two
+//     (not four) `log::error!` sites inside `movement_tick`, and it still spells
+//     both swallow sites as `let _ = begin_encounter(..)` and a bare
+//     `let Ok(table) = .. else` binding.
+//   * `movement_tick_grass_block_never_aborts_the_tick` is a GREEN-AT-HEAD
+//     fence, a separate `#[test]` for the reason recorded at line ~917: behind a
+//     failing assertion it could never be observed passing.
+//
+// Same source-scan doctrine as the sections above (no reducer-executing
+// harness, ADR-0156 P7), with one addition: the two new `evt` names live inside
+// STRING literals, which `squashed_movement()` deliberately blanks. Those two
+// needles therefore run against a comments-only view
+// ([`squashed_movement_keeping_strings`]) while every needle with teeth — the
+// limiter statics, their `.check(` calls, `json_escape(`, and the two negative
+// needles — runs against the string-blanked view where only executable code
+// survives.
+// ===========================================================================
+
+use super::RateLimiter;
+
+/// The window every `RateLimiter` unit test below uses. Production picks 5000 ms
+/// (ADR-0170 D4); the tests pass it explicitly so they pin the SEMANTICS of the
+/// parameter rather than a constant that a later tuning slice may legitimately
+/// change.
+const TEST_WINDOW_MS: i64 = 5_000;
+
+/// `movement.rs` with comments blanked, string literals KEPT, and whitespace
+/// squashed.
+///
+/// The complement of [`squashed_movement`], and used for exactly one thing: the
+/// two new `evt` names are string-literal CONTENT, so the string-blanking view
+/// cannot see them. Comments are still stripped, so a comment naming the evt
+/// cannot satisfy the needle.
+///
+/// This view is deliberately NOT used for any needle that decides whether the
+/// feature works — a dead `let _decoy = "…";` could satisfy it (the red-team hole
+/// documented at line ~45). The structural needles all stay on the blanked view.
+fn squashed_movement_keeping_strings() -> String {
+    let bytes = MOVEMENT_RS.as_bytes();
+    let len = bytes.len();
+    let mut out = vec![b' '; len];
+    let mut i = 0;
+    while i < len {
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else {
+            out[i] = bytes[i];
+            i += 1;
+        }
+    }
+    let stripped = String::from_utf8(out).expect("stripped source must be valid UTF-8");
+    stripped.split_whitespace().collect()
+}
+
+/// The brace-matched body that follows `marker` in `squashed`.
+///
+/// Scans forward from `marker` to the first `{`, then counts braces to the
+/// matching `}`. Safe on the STRING-BLANKED squash only: string literals are
+/// blanked there, so a brace inside a log format string cannot corrupt the count
+/// (`movement.rs` contains no char literals, the one other construct this file's
+/// stripper copies through).
+///
+/// `.expect`s loudly rather than returning an empty slice: a silently-missing
+/// anchor would turn every assertion scoped to the region into a vacuous pass.
+fn brace_body<'a>(squashed: &'a str, marker: &str) -> &'a str {
+    let start = squashed
+        .find(marker)
+        .expect("movement_tests: brace-region marker not found in movement.rs");
+    let bytes = squashed.as_bytes();
+    let mut i = start + marker.len();
+    while i < bytes.len() && bytes[i] != b'{' {
+        i += 1;
+    }
+    assert!(
+        i < bytes.len(),
+        "movement_tests: no opening brace after the brace-region marker in movement.rs"
+    );
+    let body_start = i + 1;
+    let mut depth: usize = 1;
+    let mut j = body_start;
+    while j < bytes.len() && depth > 0 {
+        match bytes[j] {
+            b'{' => depth += 1,
+            b'}' => depth -= 1,
+            _ => {}
+        }
+        j += 1;
+    }
+    assert_eq!(
+        depth, 0,
+        "movement_tests: unbalanced braces while extracting a brace region from movement.rs"
+    );
+    &squashed[body_start..j - 1]
+}
+
+/// `movement_tick`'s brace-matched body, from the string-blanked squash.
+fn movement_tick_body(squashed: &str) -> &str {
+    let marker = ["pubfnmovement", "_tick("].concat();
+    brace_body(squashed, marker.as_str())
+}
+
+/// The grass-encounter tail of `movement_tick`'s body: from the
+/// `stepped_onto_grass(` trigger to the end of the reducer.
+///
+/// Deliberately a TAIL rather than a brace-matched block: the two failure arms
+/// this slice changes sit at different nesting depths (one is a `match`/`else`
+/// arm on the table lookup, the other is inside `if let Some(w) = ..`), and the
+/// NPC-wander loop that follows contains no `log::error!`, no `?` and no
+/// `return` — so including it cannot weaken any assertion below.
+fn grass_region(body: &str) -> &str {
+    let marker = ["stepped_onto", "_grass("].concat();
+    let at = body
+        .find(marker.as_str())
+        .expect("movement_tests: `stepped_onto_grass(` not found in movement_tick's body");
+    &body[at..]
+}
+
+/// **M-1** — a fresh limiter's FIRST `check` emits, reporting zero suppressed.
+///
+/// kills: an impl that stores `last_emit_ms` as a plain `i64` initialised to 0
+/// (or any magic sentinel) instead of `Option<i64>`. With a 0 sentinel and the
+/// tick's injected clock at, say, 1_000 ms, the first `elapsed` is 1_000 — inside
+/// the window — so the very first content fault is SILENTLY DROPPED, which is
+/// precisely the swallowing this feature exists to end. Also kills an impl whose
+/// first emit reports a non-zero suppressed count (a fabricated backlog in the
+/// first log line an operator ever sees).
+///
+/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
+#[test]
+fn rate_limiter_first_check_emits_zero_suppressed() {
+    let limiter = RateLimiter::new();
+    let first = limiter.check(1_000, TEST_WINDOW_MS);
+    assert_eq!(
+        first,
+        Some(0),
+        "TEETH (11r-g M-1, ADR-0170 D4): a fresh RateLimiter's first check must be \
+         Some(0) — EMIT, with zero suppressed — but it returned {first:?}. \
+         `last_emit_ms` is `Option<i64>` exactly so that never-emitted is \
+         unrepresentable as a magic value: with a 0 sentinel the first check at a \
+         non-zero clock reads as `elapsed = 1000 < window` and the FIRST content \
+         fault is dropped, which is the swallowing ADR-0170 D4 exists to end."
+    );
+}
+
+/// **M-1b** — `RateLimiter::new()` is a `const fn` and the type is `Sync`.
+///
+/// A COMPILE-TIME proof, not a runtime one: `static PROBE: RateLimiter =
+/// RateLimiter::new();` only compiles if `new` is `const` and `RateLimiter: Sync`.
+/// Both are load-bearing — ADR-0170 D4 makes the two limiters PROCESS STATICS
+/// (`static X: RateLimiter = RateLimiter::new();`), and a non-const constructor
+/// would force a `LazyLock`/`OnceLock` wrapper whose extra indirection is exactly
+/// what the `Mutex`-inside-the-struct design avoids.
+///
+/// kills: an impl whose `new` is a plain `fn`, and an impl that reaches for a
+/// `Cell`/`RefCell` (not `Sync`) instead of a `Mutex` — the latter would also
+/// silently drop the read-decide-write-back atomicity the single lock provides.
+///
+/// The probe static is function-local, so it shares no state with any other test.
+///
+/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
+#[test]
+fn rate_limiter_new_is_const_and_the_type_is_sync() {
+    static PROBE: RateLimiter = RateLimiter::new();
+    let first = PROBE.check(0, TEST_WINDOW_MS);
+    assert_eq!(
+        first,
+        Some(0),
+        "TEETH (11r-g M-1b, ADR-0170 D4): a limiter declared as a process `static` \
+         must behave exactly like a locally constructed one on its first check; got \
+         {first:?}. The real content of this test is that it COMPILES: \
+         `static PROBE: RateLimiter = RateLimiter::new();` requires `new` to be a \
+         `const fn` and `RateLimiter` to be `Sync`, which is what lets ADR-0170 D4 \
+         declare the two production limiters as plain statics."
+    );
+}
+
+/// **M-2** — inside the window `check` suppresses and COUNTS; the next emit
+/// reports the exact count and resets it.
+///
+/// The sequence (window 5_000): emit at 0, three suppressed checks at 1_000 /
+/// 2_000 / 3_000, an emit at 5_000 that must report exactly `Some(3)`, then one
+/// suppressed check and a second emit that must report exactly `Some(1)`.
+///
+/// kills, in order: (a) an impl that never suppresses (every check would emit, so
+/// a bad-content zone re-logs at 5 Hz per character and the rate limit does
+/// nothing); (b) an impl that suppresses but does not count (the emit would
+/// report `Some(0)` and the loss would be invisible — ADR-0170 D4 makes the
+/// suppressed count the ONLY surviving evidence of what was dropped); (c) an impl
+/// that forgets to RESET the counter on emit — the second emit would report 4
+/// instead of 1, so every subsequent log line over-reports a monotonically
+/// growing backlog; (d) an off-by-one in the counter (Some(2) or Some(4) at the
+/// first emit).
+///
+/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
+#[test]
+fn rate_limiter_suppresses_in_window_then_reports_the_exact_count() {
+    let limiter = RateLimiter::new();
+
+    let opening = limiter.check(0, TEST_WINDOW_MS);
+    assert_eq!(
+        opening,
+        Some(0),
+        "TEETH (11r-g M-2 precondition): the opening check must emit Some(0); got \
+         {opening:?}. Every count below is measured relative to this anchor."
+    );
+
+    for now in [1_000i64, 2_000, 3_000] {
+        let suppressed = limiter.check(now, TEST_WINDOW_MS);
+        assert_eq!(
+            suppressed, None,
+            "TEETH (11r-g M-2, ADR-0170 D4): check({now}) is {now} ms after the emit \
+             at 0 — inside the 5_000 ms window — so it must SUPPRESS (None); got \
+             {suppressed:?}. An impl that emits here re-logs the same content fault \
+             on every tick for every character in the zone, which is the log flood \
+             the limiter exists to prevent."
+        );
+    }
+
+    let after_window = limiter.check(5_000, TEST_WINDOW_MS);
+    assert_eq!(
+        after_window,
+        Some(3),
+        "TEETH (11r-g M-2, ADR-0170 D4): the emit at the window boundary must report \
+         EXACTLY the three checks it suppressed — Some(3) — but it returned \
+         {after_window:?}. Some(0) means the impl suppresses without counting, and \
+         the suppressed count is the only surviving evidence of what was dropped (a \
+         window conflates zones AND reasons, so nothing else records the loss)."
+    );
+
+    let suppressed_again = limiter.check(5_001, TEST_WINDOW_MS);
+    assert_eq!(
+        suppressed_again, None,
+        "TEETH (11r-g M-2, ADR-0170 D4): one ms after an emit must suppress; got \
+         {suppressed_again:?}. This also proves the emit at 5_000 RE-ANCHORED the \
+         window rather than leaving it at 0."
+    );
+
+    let second_emit = limiter.check(10_001, TEST_WINDOW_MS);
+    assert_eq!(
+        second_emit,
+        Some(1),
+        "TEETH (11r-g M-2, ADR-0170 D4): the second emit must report exactly the ONE \
+         check suppressed since the previous emit — Some(1) — but it returned \
+         {second_emit:?}. Some(4) is the signature of an impl that never resets the \
+         counter, which makes every later log line over-report a backlog that has \
+         already been reported."
+    );
+}
+
+/// **M-3** — the window boundary is INCLUSIVE.
+///
+/// Two independent, freshly constructed limiters so neither assertion can be
+/// perturbed by the other's suppressed count:
+///   * limiter A: emit at 0, then `window - 1` must SUPPRESS.
+///   * limiter B: emit at 0, then exactly `window` must EMIT, with Some(0)
+///     because nothing was suppressed in between.
+///
+/// kills: the `>` / `>=` mutant in `elapsed >= window`. A strict `>` makes
+/// limiter B return None (the assertion fires); an `elapsed >= window - 1` or a
+/// `>` flipped the other way makes limiter A emit. This is the single most
+/// mutable line in the whole struct, and both directions are covered.
+///
+/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
+#[test]
+fn rate_limiter_window_boundary_is_inclusive() {
+    let just_inside = RateLimiter::new();
+    let opened_a = just_inside.check(0, TEST_WINDOW_MS);
+    assert_eq!(
+        opened_a,
+        Some(0),
+        "TEETH (11r-g M-3 precondition): limiter A's opening check must emit Some(0); \
+         got {opened_a:?}."
+    );
+    let one_short = just_inside.check(TEST_WINDOW_MS - 1, TEST_WINDOW_MS);
+    assert_eq!(
+        one_short, None,
+        "TEETH (11r-g M-3, ADR-0170 D4): one ms SHORT of the window must suppress, \
+         but check(window - 1) returned {one_short:?}. Together with the assertion \
+         below this pins the comparison as `elapsed >= window`: an impl using \
+         `elapsed >= window - 1` (or no comparison at all) emits here."
+    );
+
+    let exactly_at = RateLimiter::new();
+    let opened_b = exactly_at.check(0, TEST_WINDOW_MS);
+    assert_eq!(
+        opened_b,
+        Some(0),
+        "TEETH (11r-g M-3 precondition): limiter B's opening check must emit Some(0); \
+         got {opened_b:?}."
+    );
+    let at_boundary = exactly_at.check(TEST_WINDOW_MS, TEST_WINDOW_MS);
+    assert_eq!(
+        at_boundary,
+        Some(0),
+        "TEETH (11r-g M-3, ADR-0170 D4): EXACTLY at the window must emit with zero \
+         suppressed, but check(window) returned {at_boundary:?}. This kills the \
+         `elapsed > window` mutant, which would silently stretch every window by one \
+         millisecond and — with a tick clock that lands on exact multiples — could \
+         drop an emit entirely. A SECOND, freshly constructed limiter is used here \
+         so limiter A's suppressed check cannot leak into this count."
+    );
+}
+
+/// **M-4** — a clock that goes BACKWARDS emits and RE-ANCHORS.
+///
+/// ADR-0170 D4 accepts the trade explicitly: a persistently jittery host clock
+/// forces an emit per oscillation, which is a host-reliability scenario and not
+/// attacker-reachable; suppressing forever is the unacceptable alternative.
+///
+/// The sequence proves both halves. After an emit at 1_000 and one suppressed
+/// check at 2_000, a check at 500 (backwards) must return `Some(1)` — it EMITS
+/// and reports the suppressed check. The two follow-up probes then prove the
+/// anchor moved to 500 rather than staying at 1_000: `500 + window - 1`
+/// suppresses, and `500 + window` emits. With the anchor left at 1_000 the second
+/// probe is only 4_500 ms elapsed and would return None.
+///
+/// kills: (a) an impl with NO backwards branch that just computes
+/// `now.saturating_sub(last)` — it yields 0, suppresses, and (with a clock that
+/// jumped back far enough) the limiter is stuck suppressing until the clock
+/// catches up, so a real content fault is silently swallowed for as long as the
+/// jump; (b) an impl that emits on backwards but does NOT re-anchor, which leaves
+/// the window computed against a future instant.
+///
+/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
+#[test]
+fn rate_limiter_clock_backwards_emits_and_reanchors() {
+    let limiter = RateLimiter::new();
+
+    let opening = limiter.check(1_000, TEST_WINDOW_MS);
+    assert_eq!(
+        opening,
+        Some(0),
+        "TEETH (11r-g M-4 precondition): the opening check at 1_000 must emit \
+         Some(0); got {opening:?}."
+    );
+    let inside = limiter.check(2_000, TEST_WINDOW_MS);
+    assert_eq!(
+        inside, None,
+        "TEETH (11r-g M-4 precondition): check(2_000) is inside the window and must \
+         suppress; got {inside:?}."
+    );
+
+    let backwards = limiter.check(500, TEST_WINDOW_MS);
+    assert_eq!(
+        backwards,
+        Some(1),
+        "TEETH (11r-g M-4, ADR-0170 D4): a check whose clock reading is EARLIER than \
+         the last emit must EMIT and report the one suppressed check — Some(1) — but \
+         it returned {backwards:?}. None is the signature of an impl with no \
+         backwards branch, which just computes `now.saturating_sub(last)` = 0: after \
+         a backwards clock jump such a limiter suppresses until the clock catches up \
+         again, silently swallowing every content fault in between."
+    );
+
+    let short_of_new_window = limiter.check(500 + TEST_WINDOW_MS - 1, TEST_WINDOW_MS);
+    assert_eq!(
+        short_of_new_window, None,
+        "TEETH (11r-g M-4, ADR-0170 D4): one ms short of the window measured from the \
+         NEW anchor (500) must suppress; got {short_of_new_window:?}."
+    );
+    let at_new_window = limiter.check(500 + TEST_WINDOW_MS, TEST_WINDOW_MS);
+    assert_eq!(
+        at_new_window,
+        Some(1),
+        "TEETH (11r-g M-4, ADR-0170 D4): exactly one window after the NEW anchor (500) \
+         must emit, reporting the one check suppressed since — Some(1) — but it \
+         returned {at_new_window:?}. This is the assertion that proves the backwards \
+         check RE-ANCHORED: with the anchor left at 1_000 this instant is only 4_500 \
+         ms elapsed, so a non-re-anchoring impl returns None here while passing every \
+         assertion above it."
+    );
+}
+
+/// **M-5** — extreme clock operands never panic.
+///
+/// This workspace sets `overflow-checks = true` (and `cargo test` builds with
+/// them on by default), so a bare `now - last` on these operands ABORTS. In
+/// production that abort is a panicking zone tick — the exact catastrophic
+/// failure a LOGGING feature must never introduce, and it would fire on the very
+/// path that exists to make faults visible.
+///
+/// kills: any non-saturating arithmetic in `check`. The decisive row is the
+/// fresh limiter anchored at `i64::MIN` and then checked at `i64::MAX`:
+/// `i64::MAX - i64::MIN` overflows, while `i64::MAX.saturating_sub(i64::MIN)`
+/// saturates to `i64::MAX`, which is past any window and therefore emits. The
+/// other rows cover the backwards branch at the extremes and the `MIN + window`
+/// boundary, all of which a mutant that "fixes" only one subtraction would still
+/// blow up on.
+///
+/// COMPILE-RED: `RateLimiter` does not exist in `movement.rs` yet.
+#[test]
+fn rate_limiter_extreme_clock_operands_never_panic() {
+    // Row 1 — an emit at 0, then the clock jumps to i64::MIN (backwards).
+    let jumped_back = RateLimiter::new();
+    let anchor = jumped_back.check(0, TEST_WINDOW_MS);
+    assert_eq!(
+        anchor,
+        Some(0),
+        "TEETH (11r-g M-5 precondition): the opening check at 0 must emit Some(0); \
+         got {anchor:?}."
+    );
+    let at_min = jumped_back.check(i64::MIN, TEST_WINDOW_MS);
+    assert_eq!(
+        at_min,
+        Some(0),
+        "TEETH (11r-g M-5, ADR-0170 D4): check(i64::MIN) after an emit at 0 is the \
+         backwards case at the extreme — it must emit Some(0) and re-anchor, not \
+         panic; got {at_min:?}."
+    );
+    let min_plus_window = jumped_back.check(i64::MIN + TEST_WINDOW_MS, TEST_WINDOW_MS);
+    assert_eq!(
+        min_plus_window,
+        Some(0),
+        "TEETH (11r-g M-5, ADR-0170 D4): exactly one window after an anchor at \
+         i64::MIN must emit Some(0); got {min_plus_window:?}."
+    );
+
+    // Row 2 — the decisive overflow row: anchored at i64::MIN, checked at i64::MAX.
+    let full_span = RateLimiter::new();
+    let anchored_at_min = full_span.check(i64::MIN, TEST_WINDOW_MS);
+    assert_eq!(
+        anchored_at_min,
+        Some(0),
+        "TEETH (11r-g M-5 precondition): a fresh limiter's first check must emit \
+         Some(0) whatever the clock reads; got {anchored_at_min:?}."
+    );
+    let at_max = full_span.check(i64::MAX, TEST_WINDOW_MS);
+    assert_eq!(
+        at_max,
+        Some(0),
+        "TEETH (11r-g M-5, ADR-0170 D4): with the anchor at i64::MIN, a check at \
+         i64::MAX must emit Some(0); got {at_max:?}. THIS IS THE OVERFLOW ROW: a bare \
+         `now - last` computes `i64::MAX - i64::MIN`, which PANICS under this \
+         workspace's `overflow-checks = true` — in production that is a panicking \
+         zone tick raised by the very code path added to make faults visible. \
+         `now.saturating_sub(last)` saturates to i64::MAX, which is past any window, \
+         so the correct answer is an emit."
+    );
+    let immediately_again = full_span.check(i64::MAX, TEST_WINDOW_MS);
+    assert_eq!(
+        immediately_again, None,
+        "TEETH (11r-g M-5, ADR-0170 D4): a second check at the same extreme instant \
+         is zero ms elapsed and must suppress; got {immediately_again:?}. This proves \
+         the saturating subtraction did not simply make every comparison true."
+    );
+}
+
+/// **M-5b / structural** — the limiter's arithmetic saturates and its lock
+/// recovers from poisoning.
+///
+/// Three properties that a pure unit test cannot reach from outside the type:
+///   * `saturating_add` — the suppressed counter must saturate at `u32::MAX`.
+///     A test cannot drive 4.3 billion suppressed checks, so this is pinned as a
+///     source needle. kills a bare `suppressed += 1`, which panics under
+///     `overflow-checks = true` after a long enough burst — a panicking zone tick
+///     raised by the log path.
+///   * `saturating_sub` — pinned even though `rate_limiter_extreme_clock_operands_never_panic`
+///     also bites, because the source needle names the fix rather than only the
+///     symptom.
+///   * `into_inner` — ADR-0170 D1/D4 recover a poisoned lock as
+///     defence-in-depth: if the host unwinds panics and keeps the instance alive,
+///     one unrelated panic must not brick every encounter log for the process
+///     lifetime. kills a `.lock().unwrap()`, which would do exactly that. The
+///     `RateLimiter`'s `Mutex` is private and `check` calls no user code, so
+///     there is no way to poison it from a test — a source needle is the only
+///     available gate. (Its sibling `type_chart_cache_lookup` IS poisoned and
+///     exercised for real in `content_cache_tests.rs`, because that cell is
+///     passed in by the caller.)
+///
+/// The cell type is pinned as well: `Mutex<(Option<i64>, u32)>` is ADR-0170 D4's
+/// sanctioned shape. `Option<i64>` makes "never emitted" unrepresentable as a
+/// magic value, and the SINGLE lock makes read-decide-write-back atomic by
+/// construction — two separate atomics would lose an update under concurrent
+/// checks and mis-report the suppressed count.
+///
+/// ASSERTION-RED at HEAD: `movement.rs` declares no `RateLimiter` at all.
+///
+/// HONEST LIMIT: an exact-shape pin. A semantically identical struct with named
+/// fields would false-RED; ADR-0170 D4 fixes this text as the shape, and a future
+/// slice that needs a different one must change the ADR and this needle together.
+#[test]
+fn rate_limiter_arithmetic_saturates_and_lock_poisoning_recovers() {
+    let squashed = squashed_movement();
+
+    let struct_marker = ["structRate", "Limiter"].concat();
+    assert!(
+        squashed.contains(struct_marker.as_str()),
+        "TEETH (11r-g M-5b, ADR-0170 D4): `movement.rs` must declare a `RateLimiter` \
+         struct. RED at HEAD — the two swallow sites in the grass block log nothing \
+         at all today."
+    );
+
+    let cell_type = ["Mutex<(Option<i64>,", "u32)>"].concat();
+    assert!(
+        squashed.contains(cell_type.as_str()),
+        "TEETH (11r-g M-5b, ADR-0170 D4): `RateLimiter` must wrap \
+         `Mutex<(Option<i64>, u32)>` — last-emit instant and suppressed count behind \
+         ONE lock. `Option<i64>` makes never-emitted unrepresentable as a magic value \
+         (no i64::MIN sentinel that a real clock could collide with), and the single \
+         lock makes read-decide-write-back atomic by construction; two separate \
+         atomics would lose updates and mis-report the suppressed count that is the \
+         only evidence of dropped logs."
+    );
+
+    let impl_marker = ["implRate", "Limiter"].concat();
+    let n_impl = squashed.matches(impl_marker.as_str()).count();
+    assert_eq!(
+        n_impl, 1,
+        "SCAN PRECONDITION (11r-g M-5b): `implRateLimiter` must appear EXACTLY ONCE \
+         in the squashed `movement.rs`; found {n_impl}. With zero the region below \
+         cannot be built and every needle in it would be vacuous; with two the \
+         extractor takes the first block and a decoy could carry the saturating \
+         arithmetic while the real one overflows."
+    );
+
+    let region = brace_body(&squashed, impl_marker.as_str());
+
+    let sat_add = ["saturating", "_add("].concat();
+    assert!(
+        region.contains(sat_add.as_str()),
+        "TEETH (11r-g M-5b, ADR-0170 D4): `RateLimiter`'s impl must increment the \
+         suppressed counter with `saturating_add` so it pins at u32::MAX. A bare \
+         `+= 1` PANICS under this workspace's `overflow-checks = true` once a long \
+         enough burst accumulates — a panicking zone tick raised by the logging path \
+         itself. No unit test can drive 4.3 billion suppressed checks, so this needle \
+         is the only available gate."
+    );
+
+    let sat_sub = ["saturating", "_sub("].concat();
+    assert!(
+        region.contains(sat_sub.as_str()),
+        "TEETH (11r-g M-5b, ADR-0170 D4): `RateLimiter`'s impl must compute the \
+         elapsed time with `saturating_sub`. `rate_limiter_extreme_clock_operands_never_panic` \
+         bites on the symptom (a panic at i64::MAX minus i64::MIN); this needle names \
+         the fix, so a reader of a failing build is told what to write."
+    );
+
+    let into_inner = ["into", "_inner()"].concat();
+    assert!(
+        region.contains(into_inner.as_str()),
+        "TEETH (11r-g M-5b, ADR-0170 D1/D4): `RateLimiter`'s impl must recover a \
+         POISONED lock via `into_inner()` rather than `.unwrap()`ing the \
+         `PoisonError`. If the host unwinds panics and keeps the module instance \
+         alive, one unrelated panic while the lock is held would brick every \
+         encounter-failure log for the whole process lifetime — the feature would \
+         silently stop working exactly after something went wrong. The `Mutex` is \
+         private and `check` calls no user code, so a test cannot poison it; this \
+         needle is the only available gate (its sibling `type_chart_cache_lookup` is \
+         poisoned for real in `content_cache_tests.rs`)."
+    );
+}
+
+/// **M-7** (ADR-0170 D4) — the two grass-block swallow sites become logged
+/// no-ops, each gated by its OWN limiter.
+///
+/// ASSERTION-RED at HEAD on every layer: the grass block logs nothing, and both
+/// swallow sites are still spelled as the discarding forms this test forbids.
+///
+/// LAYER BY LAYER, and what each kills:
+///
+///   * **Two limiter STATICS, each declared exactly once, each a `RateLimiter`.**
+///     ADR-0170 D4 requires two INDEPENDENT limiters and gives the concrete
+///     reason: one of `begin_encounter`'s Err paths ("party has no conscious
+///     monster") is ROUTINE gameplay — a fainted party walking through grass — so
+///     it bursts. A single shared limiter would let that routine burst mask a
+///     real content defect in the encounter table, which is the failure this
+///     whole feature exists to surface. Kills the natural simplification of one
+///     shared static.
+///
+///   * **A shared `const ENCOUNTER_ERR_WINDOW_MS: i64 = 5000;`.** Named, not two
+///     inline literals, because the contiguous gate needles below pin the window
+///     BY NAME — which also makes the two arms provably share one window value
+///     instead of drifting apart.
+///
+///   * **Each log lives INSIDE its own limiter's gate — pinned CONTIGUOUSLY.**
+///     This is the layer a red-team defeated in the first draft. A presence-only
+///     `LIMITER.check(` needle is satisfied by
+///     `let _ = ENCOUNTER_TABLE_ERR_LIMITER.check(..); log::error!(..);`: the
+///     limiter is consulted, its answer is DISCARDED, and the error line fires on
+///     every tick for every character in the zone — a worse flood than the
+///     silence this slice replaces, passing every count-based needle. Requiring
+///     `ifletSome(suppressed)=<LIMITER>.check(now.0,ENCOUNTER_ERR_WINDOW_MS){log::error!(`
+///     as ONE squashed string makes it unrepresentable (E3/E1 precedent, this
+///     file). Because the binding is `suppressed` and not `_suppressed`, the
+///     compiler itself then forces the log body to consume it.
+///
+///   * **The routine-reason filter sits IMMEDIATELY OUTSIDE the begin-encounter
+///     gate, spelled `!=`.** `NO_CONSCIOUS_MONSTER_REASON` is client-reachable
+///     (walk grass with an all-fainted party), so it must consume neither the log
+///     NOR the limiter window — a filter placed inside the `if let Some(..)` block
+///     would still let it `.check(`, re-anchoring the window and resetting the
+///     suppressed counter, which is a client-driven way to mask genuine faults.
+///     Pinning filter+gate as one contiguous sequence also kills the
+///     `replace != with ==` mutant that a cargo-mutants run found surviving every
+///     other assertion here (inverted, only the non-event is ever logged and every
+///     real fault is permanently silent).
+///
+///   * **Neither limiter is consulted anywhere ELSE in the tail (exactly once
+///     each).** The gate needle proves one correct call exists; only the count
+///     proves it is the only one. A second, discarded `check` re-anchors the
+///     window and resets the suppressed counter, so the emitted count
+///     under-reports the loss it exists to report.
+///
+///   * **Exactly TWO `log::error!` sites in the grass region.** Zero at HEAD.
+///     Pins one log per failure arm: with one, only one arm was wired; with
+///     three, something else in the block started logging and the pairing with
+///     the `json_escape` count in
+///     [`movement_tick_error_reasons_are_json_escaped`] would no longer hold.
+///
+///   * **The two OLD spellings are gone.** `let _ = begin_encounter(` is the
+///     literal swallow ADR-0170 exists to delete; a `let Ok(table) = .. else`
+///     binding discards the Err before anything can log it. Leaving either in
+///     place while ADDING a log elsewhere is the most plausible partial fix, and
+///     only these negative needles see it.
+///
+///   * **Both calls SURVIVE.** `table_from_encounter_row(` and
+///     `begin_encounter(` must still appear exactly once each. Without this, the
+///     cheapest way to satisfy every negative needle is to delete the encounter
+///     path outright — which would silently end wild encounters.
+///
+/// HONEST LIMITS. (a) Source scan, not execution (ADR-0156 P7). (b) The needles
+/// run on the string-BLANKED squash, so the JSON payload shape is not pinned
+/// here; the two `evt` names are pinned separately by
+/// [`movement_tick_encounter_error_events_are_named`], which runs on the
+/// comments-only view. (c) Hand-derived counts: if a later slice legitimately
+/// adds a third failure arm, re-derive them DELIBERATELY.
+#[test]
+fn movement_tick_encounter_failures_are_logged_and_rate_limited() {
+    let squashed = squashed_movement();
+    let body = movement_tick_body(&squashed);
+    let region = grass_region(body);
+
+    // --- Layer 1: two distinct limiter statics, of the right type -------------
+    let table_static = ["staticENCOUNTER_TABLE_ERR", "_LIMITER"].concat();
+    let n_table_static = squashed.matches(table_static.as_str()).count();
+    assert_eq!(
+        n_table_static, 1,
+        "TEETH (11r-g M-7, ADR-0170 D4): `movement.rs` must declare the \
+         encounter-table error limiter as a process static EXACTLY ONCE; found \
+         {n_table_static} (HEAD has 0). Process-static, not per-zone: a per-zone map \
+         is unbounded growth for a log path, and the zone id rides in the payload."
+    );
+
+    let begin_static = ["staticBEGIN_ENCOUNTER_ERR", "_LIMITER"].concat();
+    let n_begin_static = squashed.matches(begin_static.as_str()).count();
+    assert_eq!(
+        n_begin_static, 1,
+        "TEETH (11r-g M-7, ADR-0170 D4): `movement.rs` must declare the \
+         begin-encounter error limiter as a SECOND, separate process static EXACTLY \
+         ONCE; found {n_begin_static} (HEAD has 0). Two independent limiters are the \
+         decision, not an accident: `begin_encounter`'s 'party has no conscious \
+         monster' Err is ROUTINE gameplay (a fainted party walking grass) and bursts, \
+         so a shared limiter would let it mask a real content defect in the encounter \
+         table — the exact fault this feature exists to surface."
+    );
+
+    let typed_static = ["_LIMITER:Rate", "Limiter"].concat();
+    let n_typed = squashed.matches(typed_static.as_str()).count();
+    assert_eq!(
+        n_typed, 2,
+        "TEETH (11r-g M-7, ADR-0170 D4): exactly TWO statics must be typed \
+         `RateLimiter`; found {n_typed}. This is the spelling-independent version of \
+         the two counts above — it catches a second limiter introduced under a \
+         different name, and a limiter declared with some other (unlocked, \
+         non-saturating) type."
+    );
+
+    // --- Layer 1b: the shared window constant exists, at the ADR's value ------
+    let window_const = ["constENCOUNTER_ERR_WINDOW", "_MS:i64="].concat();
+    let window_variants = [
+        [window_const.as_str(), "5000;"].concat(),
+        [window_const.as_str(), "5_000;"].concat(),
+    ];
+    let window_ok = window_variants
+        .iter()
+        .any(|v| squashed.contains(v.as_str()));
+    assert!(
+        window_ok,
+        "TEETH (11r-g M-7, ADR-0170 D4): `movement.rs` must declare a file-level \
+         `const ENCOUNTER_ERR_WINDOW_MS: i64 = 5000;` (the `5_000` spelling is also \
+         accepted) — the 5000 ms window both limiters share. It is a NAMED constant, \
+         not two inline literals, because the two contiguous gate needles below pin \
+         it by name: an inline number in one arm and a different one in the other is \
+         exactly the drift this constant removes. RED at HEAD."
+    );
+
+    // --- Layer 2: each log is INSIDE its own limiter's gate -------------------
+    // Contiguous mega-needles, the E3/E1 precedent in this file. A presence-only
+    // needle for `LIMITER.check(` is satisfied by
+    // `let _ = LIMITER.check(..); log::error!(..)` — the limiter is consulted, its
+    // answer is thrown away, and the log fires on EVERY tick for EVERY character
+    // in the zone. That shell passed every earlier draft of this test.
+    let gate_open = ["ifletSome(suppressed)", "="].concat();
+    let gate_tail = [".check(now.0,ENCOUNTER_ERR_WINDOW", "_MS){log::error!("].concat();
+    let gate = |limiter: &str| [gate_open.as_str(), limiter, gate_tail.as_str()].concat();
+
+    let table_gate = gate(&["ENCOUNTER_TABLE_ERR", "_LIMITER"].concat());
+    let n_table_gate = region.matches(table_gate.as_str()).count();
+    assert_eq!(
+        n_table_gate, 1,
+        "TEETH (11r-g M-7, ADR-0170 D4): the encounter-table arm must contain, as ONE \
+         contiguous whitespace-squashed expression, \
+         `ifletSome(suppressed)=ENCOUNTER_TABLE_ERR_LIMITER.check(now.0,\
+         ENCOUNTER_ERR_WINDOW_MS){{log::error!(` — i.e. the source must read \
+         `if let Some(suppressed) = ENCOUNTER_TABLE_ERR_LIMITER.check(now.0, \
+         ENCOUNTER_ERR_WINDOW_MS) {{ log::error!(..` — found {n_table_gate}. \
+         WHY CONTIGUITY: a presence-only `LIMITER.check(` needle is satisfied by \
+         `let _ = ENCOUNTER_TABLE_ERR_LIMITER.check(..); log::error!(..);` — the \
+         limiter is consulted, its answer DISCARDED, and the error line fires on \
+         every tick for every character in the zone. That is a worse log flood than \
+         the silence this slice replaces, and it passes every count-based needle. \
+         Only pinning the `if let Some(..) = ..` gate and the log's opening token as \
+         ONE string makes it unrepresentable. `now.0` is the tick's INJECTED clock \
+         (ADR-0003, movement.rs:181) — never a wall clock. The `suppressed` binding \
+         is not underscore-prefixed, so the compiler itself requires the log body to \
+         consume it. RED at HEAD."
+    );
+
+    let begin_gate = gate(&["BEGIN_ENCOUNTER_ERR", "_LIMITER"].concat());
+    let n_begin_gate = region.matches(begin_gate.as_str()).count();
+    assert_eq!(
+        n_begin_gate, 1,
+        "TEETH (11r-g M-7, ADR-0170 D4): the begin-encounter arm must contain the \
+         SAME contiguous gate, with its OWN limiter: \
+         `ifletSome(suppressed)=BEGIN_ENCOUNTER_ERR_LIMITER.check(now.0,\
+         ENCOUNTER_ERR_WINDOW_MS){{log::error!(` — found {n_begin_gate}. This is the \
+         arm where an ungated log hurts most: the routine 'party has no conscious \
+         monster' Err fires on EVERY grass step of EVERY fainted party, so a \
+         discarded `check` answer turns a bounded one-line-per-window signal into a \
+         5 Hz per-character ERROR flood. RED at HEAD."
+    );
+
+    // --- Layer 2-filter: the routine-reason filter, and its COMPARISON DIRECTION
+    // A refinement of layer 2's begin-encounter gate, so it lives here rather than
+    // after the counts below. Added after a cargo-mutants run showed
+    // `replace != with == at movement.rs:433` SURVIVING every other assertion in
+    // this file: the filter was present, contiguous, correctly placed, and
+    // semantically inverted.
+    let routine_filter = ["ife!=NO_CONSCIOUS_MONSTER", "_REASON{"].concat();
+    let filtered_gate = [
+        routine_filter.as_str(),
+        gate_open.as_str(),
+        "BEGIN_ENCOUNTER_ERR",
+        "_LIMITER.check(",
+    ]
+    .concat();
+    let n_filtered = region.matches(filtered_gate.as_str()).count();
+    assert_eq!(
+        n_filtered, 1,
+        "TEETH (11r-g M-7 layer 2-filter, ADR-0170 D4): the begin-encounter arm must \
+         contain, as ONE contiguous whitespace-squashed sequence, \
+         `ife!=NO_CONSCIOUS_MONSTER_REASON{{ifletSome(suppressed)=\
+         BEGIN_ENCOUNTER_ERR_LIMITER.check(` — i.e. the source must read \
+         `if e != NO_CONSCIOUS_MONSTER_REASON {{ if let Some(suppressed) = \
+         BEGIN_ENCOUNTER_ERR_LIMITER.check(..` — found {n_filtered}. \
+         THE MUTANT THIS KILLS: `replace != with ==` at movement.rs:433, which a \
+         cargo-mutants run found SURVIVING every other assertion in this file — the \
+         filter is still present, still contiguous, still correctly placed, and \
+         exactly backwards. Inverted, the limiter and the log fire ONLY for the \
+         routine fainted-party reason and NEVER for a genuine fault \
+         (species-not-found, stat corruption): those are permanently silenced, while \
+         the one non-event that must never be logged becomes the only thing in the \
+         log. It is strictly worse than the pre-slice silence, because it looks like \
+         a working feature. The `==` spelling squashes to `ife==…` and cannot match \
+         this needle. \
+         WHY THE FILTER AND THE GATE ARE PINNED ADJACENTLY: the routine reason is \
+         client-reachable (walk grass with an all-fainted party), so it must consume \
+         NEITHER the log NOR the limiter window. A filter wrapped around the \
+         `log::error!` alone — inside the `if let Some(suppressed)` block instead of \
+         outside it — still lets the routine reason call `.check(`, which re-anchors \
+         the window and resets the suppressed counter: a client could then saturate \
+         the limiter and mask genuine faults, the exact attack the filter exists to \
+         close. Only requiring the filter IMMEDIATELY OUTSIDE the gate rules that out. \
+         A dropped filter fails this needle too (the sequence simply does not occur). \
+         GREEN at HEAD. \
+         HONEST LIMIT: this pins the comparison and its position, not the CONSTANT's \
+         value — `NO_CONSCIOUS_MONSTER_REASON` is a `pub(crate) const` in `battle.rs`, \
+         outside this file's scan, and is the SSOT precisely so the reason string \
+         cannot drift apart from the guard that produces it."
+    );
+
+    // --- Layer 2b: neither limiter is consulted anywhere ELSE in the tail -----
+    let table_check = ["ENCOUNTER_TABLE_ERR", "_LIMITER.check("].concat();
+    let n_table_check = region.matches(table_check.as_str()).count();
+    assert_eq!(
+        n_table_check, 1,
+        "TEETH (11r-g M-7, ADR-0170 D4): the encounter-table limiter must be \
+         consulted EXACTLY ONCE inside `movement_tick`'s grass block; found \
+         {n_table_check}. Layer 2 proves ONE correct gated call exists; this proves \
+         it is the ONLY call. A second, discarded `check` alongside the good one \
+         burns the window (it re-anchors and resets the suppressed count), so the \
+         emitted count under-reports what was dropped — the one number ADR-0170 D4 \
+         relies on to make the loss visible."
+    );
+
+    let begin_check = ["BEGIN_ENCOUNTER_ERR", "_LIMITER.check("].concat();
+    let n_begin_check = region.matches(begin_check.as_str()).count();
+    assert_eq!(
+        n_begin_check, 1,
+        "TEETH (11r-g M-7, ADR-0170 D4): the begin-encounter limiter must be \
+         consulted EXACTLY ONCE inside `movement_tick`'s grass block; found \
+         {n_begin_check}. Same reasoning as the encounter-table count above: a second \
+         `check` silently re-anchors the window and resets the suppressed counter."
+    );
+
+    // --- Layer 3: exactly two error logs in the grass region ------------------
+    let log_error = ["log::err", "or!("].concat();
+    let n_log_error = region.matches(log_error.as_str()).count();
+    assert_eq!(
+        n_log_error, 2,
+        "TEETH (11r-g M-7, ADR-0170 D4): `movement_tick`'s grass block must contain \
+         EXACTLY TWO `log::error!` sites — one per failure arm; found {n_log_error} \
+         (HEAD has 0, which is the swallowing this slice ends). One means only one \
+         arm was wired. Three or more means something else started logging and the \
+         escape/log pairing asserted by \
+         `movement_tick_error_reasons_are_json_escaped` no longer holds — re-derive \
+         both counts DELIBERATELY in that case."
+    );
+
+    // --- Layer 4: the OLD swallowing spellings are gone -----------------------
+    let discarded_call = ["let_=begin", "_encounter("].concat();
+    let n_discarded = region.matches(discarded_call.as_str()).count();
+    assert_eq!(
+        n_discarded, 0,
+        "TEETH (11r-g M-7, ADR-0170 D4): the discarding `let _ = begin_encounter(..)` \
+         form must be GONE; found {n_discarded} (HEAD has 1, at movement.rs:326). \
+         That single line is the swallow: every `begin_encounter` failure — content \
+         faults included — disappears with no trace anywhere. The Err must now be \
+         bound, escaped and logged through the begin-encounter limiter."
+    );
+
+    let bare_table_binding = ["letOk(table)=table_from_encounter", "_row("].concat();
+    let n_bare = region.matches(bare_table_binding.as_str()).count();
+    assert_eq!(
+        n_bare, 0,
+        "TEETH (11r-g M-7, ADR-0170 D4): the bare `let Ok(table) = \
+         table_from_encounter_row(..) else` binding must be GONE; found {n_bare} \
+         (HEAD has 1, at movement.rs:319). A refutable `let Ok(..) else` DISCARDS the \
+         Err before anything can log it, so a malformed encounter row silently stops \
+         all wild encounters in that zone with no diagnostic at all. The Err must be \
+         bound (a `match` or `if let Err(e)`), escaped and logged."
+    );
+
+    // --- Layer 5: the calls themselves survive --------------------------------
+    let table_call = ["table_from_encounter", "_row("].concat();
+    let n_table_call = region.matches(table_call.as_str()).count();
+    assert_eq!(
+        n_table_call, 1,
+        "ANTI-VACUITY (11r-g M-7): `table_from_encounter_row(` must still be called \
+         EXACTLY ONCE in the grass block; found {n_table_call}. Without this, the \
+         cheapest way to satisfy layer 4's negative needle is to delete the encounter \
+         table lookup outright — which silently ends wild encounters everywhere."
+    );
+
+    let begin_call = ["begin", "_encounter("].concat();
+    let n_begin_call = region.matches(begin_call.as_str()).count();
+    assert_eq!(
+        n_begin_call, 1,
+        "ANTI-VACUITY (11r-g M-7): `begin_encounter(` must still be called EXACTLY \
+         ONCE in the grass block; found {n_begin_call}. The uppercase limiter static \
+         `BEGIN_ENCOUNTER_ERR_LIMITER` does not match this lowercase needle, so the \
+         count is unambiguous. Deleting the call would satisfy every negative needle \
+         above while removing wild encounters entirely."
+    );
+}
+
+/// **M-7b** (ADR-0170 D4) — the two new log lines carry their own `evt` names.
+///
+/// ASSERTION-RED at HEAD: neither name exists anywhere in `movement.rs`.
+///
+/// This is the ONE assertion in this section that runs on the comments-only view
+/// ([`squashed_movement_keeping_strings`]), because an `evt` name is string
+/// literal CONTENT and the string-blanking squash every other needle uses cannot
+/// see it. Comments are still stripped, so a comment naming the evt cannot
+/// satisfy it.
+///
+/// The weakness of that view is understood and bounded: a dead
+/// `let _decoy = "encounter_table_error";` would satisfy these two needles. It
+/// would NOT satisfy any needle in
+/// [`movement_tick_encounter_failures_are_logged_and_rate_limited`], which is
+/// where all the structural teeth live — the limiter statics, their `.check(`
+/// calls and the `log::error!` count are code and are asserted on the blanked
+/// view. This test's job is narrower: pin the two names an operator greps for,
+/// and pin that they are DISTINCT.
+///
+/// kills: a single shared `evt` name for both arms (which would make the two
+/// separate limiters pointless — an operator could not tell which fault fired),
+/// and the deletion of the two pre-existing `movement_tick_error` events while
+/// retrofitting them with `json_escape`.
+#[test]
+fn movement_tick_encounter_error_events_are_named() {
+    let squashed = squashed_movement_keeping_strings();
+
+    let table_evt = ["encounter_table", "_error"].concat();
+    assert!(
+        squashed.contains(table_evt.as_str()),
+        "TEETH (11r-g M-7b, ADR-0170 D4): `movement.rs` must emit an \
+         `encounter_table_error` event for a failed `table_from_encounter_row`. RED \
+         at HEAD — that failure is a bare `continue` with no diagnostic, so a \
+         malformed encounter row silently stops wild encounters in that zone."
+    );
+
+    let begin_evt = ["begin_encounter", "_error"].concat();
+    assert!(
+        squashed.contains(begin_evt.as_str()),
+        "TEETH (11r-g M-7b, ADR-0170 D4): `movement.rs` must emit a distinct \
+         `begin_encounter_error` event for a failed `begin_encounter`. RED at HEAD. \
+         A DISTINCT name (not one shared with the table fault) is what makes the two \
+         independent limiters useful: an operator must be able to tell a routine \
+         'no conscious monster' burst from a real content defect."
+    );
+
+    let tick_evt = ["movement_tick", "_error"].concat();
+    let n_tick_evt = squashed.matches(tick_evt.as_str()).count();
+    assert_eq!(
+        n_tick_evt, 2,
+        "ANTI-REGRESSION (11r-g M-7b): the two pre-existing `movement_tick_error` \
+         events must SURVIVE the `json_escape` retrofit; found {n_tick_evt} (HEAD has \
+         2, at movement.rs:186 and :193). Green at HEAD — this fires only if the \
+         retrofit renames or deletes them, which would break whatever already greps \
+         for the name."
+    );
+}
+
+/// **M-6** (ADR-0170 D4, final bullet) — EVERY error reason interpolated inside
+/// `movement_tick` goes through `json_escape`.
+///
+/// ASSERTION-RED at HEAD: the body holds two `log::error!` sites and zero
+/// `json_escape(` calls.
+///
+/// THE PAIRED COUNTS ARE THE POINT. Four `log::error!` sites is the arithmetic
+/// ADR-0170 D4 fixes: the two pre-existing `movement_tick_error` sites (:186 —
+/// the zone-map cache failure, :193 — `map_for`) plus the two new grass-block
+/// arms. Each interpolates exactly one error reason, so at least four
+/// `json_escape(` calls must be present. Asserting BOTH numbers, and asserting
+/// that the escapes are at least as many as the logs, means a fifth error log
+/// added later cannot quietly ship an unescaped reason: the count assertion fires
+/// and forces the arithmetic to be re-derived on purpose.
+///
+/// WHY THE TWO OLD SITES ARE IN SCOPE AT ALL: they are the same defect class in
+/// the same file. `map_for`'s Err carries content-derived text, and
+/// `cached_zone_maps`'s Err is a RON parse error — precisely the shape that
+/// contains a double quote. They are NOT rate-limited (ADR-0170 residual 3), and
+/// deliberately so: they fire at most once per zone per tick, so the per-step
+/// spam risk does not apply.
+///
+/// The count runs on the string-BLANKED squash, so a log format string mentioning
+/// the helper cannot inflate it — only executable calls count. The needle keeps
+/// the opening paren so the `use crate::guards::{..}` import (which has none)
+/// is not counted, and it is scoped to `movement_tick`'s brace-matched body so
+/// the import cannot be reached at all.
+///
+/// THE DISCARD IDIOM IS CLOSED BY A NEGATIVE NEEDLE, NOT BY THE LINT GATE.
+/// An earlier draft of this comment claimed `-D warnings` made
+/// `let _ = json_escape(&e);` beside a raw interpolation a build failure. That is
+/// WRONG: `let _ = expr;` binds to the wildcard pattern, which `unused_variables`
+/// never reports (and `let _esc = ..` would only be a warning-level lint, not the
+/// hard error the claim assumed). The same evasion with the same wrong
+/// justification was found and fixed once before in this crate —
+/// `trading_tests.rs:1959-2039`. What actually closes it here is the ZERO-`let_`
+/// assertion below: every discard spelling (`let _ =`, `let _esc =`,
+/// `let _unused:`) squashes to a string containing `let_`, while the legitimate
+/// shadowing form `let reason = json_escape(&e);` squashes to `letreason=` and
+/// does not match.
+///
+/// HONEST LIMIT: the counts pin that the escape is CALLED as many times as
+/// reasons are logged, and the `let_` needle pins that no call's result is
+/// discarded; together they leave only "escaped into the wrong slot of the right
+/// log line", which no lexical scan can see. That residue is covered by
+/// `guards_tests.rs`'s G-1..G-3 (the helper is worth calling) and by the eval
+/// layer's independent body scan.
+#[test]
+fn movement_tick_error_reasons_are_json_escaped() {
+    let squashed = squashed_movement();
+    let body = movement_tick_body(&squashed);
+
+    let log_error = ["log::err", "or!("].concat();
+    let n_log_error = body.matches(log_error.as_str()).count();
+    assert_eq!(
+        n_log_error, 4,
+        "TEETH (11r-g M-6, ADR-0170 D4): `movement_tick`'s body must contain EXACTLY \
+         FOUR `log::error!` sites; found {n_log_error}. THE ARITHMETIC: 2 pre-existing \
+         `movement_tick_error` sites (movement.rs:186 zone-map cache failure, :193 \
+         `map_for`) + 2 new grass-block arms (encounter table, begin encounter) = 4. \
+         HEAD has 2, so this is RED. It is paired with the escape count below: a \
+         fifth error log added later trips this assertion and forces someone to \
+         re-derive the arithmetic rather than quietly shipping an unescaped reason."
+    );
+
+    let escape = ["json", "_escape("].concat();
+    let n_escape = body.matches(escape.as_str()).count();
+    assert!(
+        n_escape >= 4,
+        "TEETH (11r-g M-6, ADR-0170 D4): `movement_tick`'s body must pass every \
+         interpolated error reason through the JSON escape helper — at least FOUR \
+         calls — but it makes {n_escape}. HEAD makes 0: `map_for`'s Err carries \
+         content-derived text and `cached_zone_maps`'s Err is a RON parse error, \
+         exactly the shape that contains a double quote and emits a malformed log \
+         line. The needle keeps the opening paren, so the `use crate::guards::{{..}}` \
+         import does not count, and it is scoped to the reducer body so the import is \
+         out of reach. String literals are blanked before counting, so only executable \
+         calls are seen."
+    );
+
+    assert!(
+        n_escape >= n_log_error,
+        "TEETH (11r-g M-6, ADR-0170 D4): `movement_tick` makes {n_escape} escape \
+         call(s) for {n_log_error} `log::error!` site(s). Every error log in this \
+         reducer interpolates exactly one error reason, so the escapes can never be \
+         fewer than the logs. This is the invariant that survives a future slice \
+         adding a fifth log line."
+    );
+
+    // --- The discard kill: no underscore binding anywhere in the body --------
+    // `let _ = json_escape(&e);` next to a RAW interpolation satisfies both counts
+    // above while every log line stays malformed. It is NOT a compile error and
+    // NOT a lint failure — `let _ = expr;` is a wildcard pattern and
+    // `unused_variables` never fires on it. (Same evasion, same wrong "the lint
+    // will catch it" justification: trading_tests.rs:1959-2039.)
+    //
+    // The needle is the three-character `let_` on the squashed body, which catches
+    // `let _ =`, `let _esc =` and `let _: String =` alike, while the legitimate
+    // shadowing form `let reason = json_escape(&e);` squashes to `letreason=` and
+    // does not match.
+    //
+    // AT HEAD this is RED, and the arithmetic is exact: `movement_tick`'s body
+    // contains exactly ONE underscore binding today — `let _ = begin_encounter(..)`
+    // at movement.rs:326 — which this slice deletes. Every other binding in the
+    // body is named (`zone_maps`, `map`, `ids`, `row`, `battle_locked`, `input`,
+    // `prev`, `next`, `entity_id`, `to_zone`, `skip_warp`, `player`,
+    // `player_identity`, `already`, `party_ids`, `player_level`, `enc_row`,
+    // `table`, `seed`, `tick_counter`, `npc_entity_ids`, `npc_row`, `ch`,
+    // `current`, `home`, `st`, `dir`, `next_state`), and none of them ENDS in
+    // `let` before an underscore, so none can produce the substring by accident.
+    // After the slice the count must be 0 and stay 0.
+    let discard = ["let", "_"].concat();
+    let n_discard = body.matches(discard.as_str()).count();
+    assert_eq!(
+        n_discard, 0,
+        "TEETH (11r-g M-6, ADR-0170 D4): `movement_tick`'s body contains {n_discard} \
+         underscore binding(s) (`let _`) and must contain ZERO. \
+         WHAT THIS KILLS: `let _ = json_escape(&e); log::error!(.., e);` — the escape \
+         is called (satisfying both counts above), its result is thrown away, and the \
+         reason is still interpolated RAW, so a parse error containing a double quote \
+         still emits a malformed JSON log line. This is NOT caught by the compiler or \
+         by `-D warnings`: `let _ = expr;` binds the wildcard pattern and \
+         `unused_variables` never reports it. The same evasion with the same wrong \
+         'the lint gate catches it' justification was found and fixed before in this \
+         crate at trading_tests.rs:1959-2039. \
+         AT HEAD the count is 1 — `let _ = begin_encounter(..)` at movement.rs:326, \
+         the swallow this slice deletes — so this assertion is RED now and must be \
+         green after. Use the escaped value directly in the format arguments, or \
+         bind it under a real name (`let reason = json_escape(&e);` squashes to \
+         `letreason=` and does not match). If a future slice genuinely needs a \
+         discarded expression here, it must re-argue this needle rather than delete \
+         it."
+    );
+}
+
+/// **ADR-0066 fence** — a grass-block content fault must stay a logged NO-OP and
+/// never abort the zone tick.
+///
+/// GREEN AT HEAD and green after the slice; RED the moment either new failure arm
+/// is written with `?` or an early `return`.
+///
+/// A SEPARATE `#[test]` on purpose, for the reason recorded at line ~917: folded
+/// into `movement_tick_encounter_failures_are_logged_and_rate_limited` it would
+/// sit behind assertions that fail at HEAD, so it could never be observed passing
+/// and would prove nothing about the fix.
+///
+/// WHY IT IS A REAL HAZARD, not a hypothetical. The natural way to bind an Err so
+/// you can log it is `let table = table_from_encounter_row(&enc_row)
+/// .map_err(|e| ..)?;` — and the `?` is invisible in a diff full of new logging.
+/// That single character converts one character's content fault into a failure of
+/// the WHOLE zone tick: every other character in the zone stops moving, and the
+/// NPC-wander loop below never runs. ADR-0066 is explicit that a content fault
+/// must never abort the tick, and ADR-0170 D4 restates it ("both still
+/// `continue`").
+///
+/// The region is the whole grass tail of `movement_tick`, which also covers the
+/// NPC-wander loop — neither contains a `?` or a `return` at HEAD, so including
+/// it costs nothing and closes the same hazard there.
+///
+/// HONEST LIMIT: it forbids the two ABORT spellings, not every possible abort. A
+/// `std::process::exit` or a panic is not seen here; both are already out of
+/// reach in a `spacetimedb::reducer` and would be caught by the crate's other
+/// gates.
+#[test]
+fn movement_tick_grass_block_never_aborts_the_tick() {
+    let squashed = squashed_movement();
+    let body = movement_tick_body(&squashed);
+    let region = grass_region(body);
+
+    let n_try = region.matches('?').count();
+    assert_eq!(
+        n_try, 0,
+        "TEETH (11r-g / ADR-0066, green at HEAD): the grass tail of `movement_tick` \
+         contains {n_try} `?` operator(s) and must contain ZERO. The natural way to \
+         bind an Err so it can be logged is \
+         `table_from_encounter_row(&enc_row).map_err(..)?`, and that one character \
+         turns ONE character's content fault into a failure of the WHOLE zone tick: \
+         every other character in the zone stops moving and the NPC-wander loop never \
+         runs. ADR-0066 requires a content fault to be a logged NO-OP; ADR-0170 D4 \
+         restates it — both new arms log and then `continue`."
+    );
+
+    let n_return = region.matches("return").count();
+    assert_eq!(
+        n_return, 0,
+        "TEETH (11r-g / ADR-0066, green at HEAD): the grass tail of `movement_tick` \
+         contains {n_return} `return` statement(s) and must contain ZERO. An early \
+         `return Ok(())` reads as harmless — the reducer still succeeds — but it \
+         abandons every remaining character in the zone AND the entire NPC-wander \
+         loop for that tick, on the strength of one character's bad content row. The \
+         two pre-existing `return Ok(())` sites in this reducer are legitimate and \
+         sit ABOVE this region (they abort a tick whose MAP could not be loaded, \
+         where there is nothing left to do)."
+    );
+}
