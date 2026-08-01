@@ -239,28 +239,26 @@ export function devReducerRevivalStatus({ specSources, workflowSources }) {
 /**
  * Returns true iff `clientSrc` names the LITERAL token `grantBait` on a LIVE line.
  *
- * Comment handling (plan §R4, revised): whole-line comment forms are skipped, and
- * every line is truncated at its first `//` before the token test.  A trailing
- * comment on a live statement — the exact sentence someone would plausibly write,
- * `const snapshot = { ... }; // deliberately no grantBait hook, see ADR-0172` — is
- * NOT an exposure, and a tripwire that false-alarms on it gets deleted rather than
- * fixed.  Accepted under-detection from the same truncation: a `//` inside a string
- * literal earlier on the line hides the rest of that line.
+ * Comment handling (plan §R4, revised twice).  BOTH comment syntaxes are removed
+ * before the token test, because a tripwire that false-alarms gets deleted rather
+ * than fixed — and the sentence someone will plausibly write is a comment saying the
+ * hook is deliberately ABSENT:
+ *   - block comments are stripped wholesale via the m16.5a `stripBlockComments`
+ *     scanner (declaration-hoisted, defined below).  Red-team 11r-h found the
+ *     line-prefix approach that preceded this FALSE-ALARMED on both a trailing
+ *     `x(); /* no grantBait hook, see ADR-0172 *`+`/` and on a multi-line block whose
+ *     continuation lines carry no leading `*` (biome does not force that prefix).
+ *   - each surviving line is then truncated at its first `//`, so a trailing line
+ *     comment on a live statement is not an exposure either.
+ * Accepted under-detection from the truncation: a `//` inside a string literal
+ * earlier on the line hides the rest of that line.
  *
  * NOT TOTAL, by construction: this covers the literal token only (see the section
  * header's "or equivalent" gap).
  */
 export function clientExposesGrantBait(clientSrc) {
-  const lines = clientSrc.split('\n');
+  const lines = stripBlockComments(clientSrc).split('\n');
   for (const line of lines) {
-    const trimmed = line.trimStart();
-    // Whole-line comment forms: `//`, a block-comment continuation (`*`), and a
-    // block-comment opener.  Compared char-by-char rather than with a slash-star
-    // string literal — the repo's source-scan strippers misalign on an unpaired one
-    // (see the m16.5a stripBlockComments scanner below, same technique).
-    if (trimmed.startsWith('//')) continue;
-    if (trimmed[0] === '*') continue;
-    if (trimmed[0] === '/' && trimmed[1] === '*') continue;
     const commentAt = line.indexOf('//');
     const live = commentAt === -1 ? line : line.slice(0, commentAt);
     if (live.indexOf('grantBait') !== -1) return true;
@@ -337,19 +335,40 @@ function collectClientSourceFiles(dir) {
   const out = [];
   let entries = [];
   try {
-    entries = readdirSync(dir);
+    // withFileTypes so the dirent classifies WITHOUT a stat() — an unguarded
+    // statSync() on a dangling symlink threw ENOENT and reddened the whole eval with
+    // a misleading "cannot walk client/src" (red-team 11r-h).  Dirents also report a
+    // symlink AS a symlink, so `isDirectory()` is false for a linked directory and a
+    // symlink cycle cannot recurse forever.
+    entries = readdirSync(dir, { withFileTypes: true });
   } catch {
     return out;
   }
   for (const entry of entries) {
-    const full = path.join(dir, entry);
-    if (statSync(full).isDirectory()) {
-      if (entry === 'module_bindings') continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === 'module_bindings') continue;
       out.push(...collectClientSourceFiles(full));
       continue;
     }
-    if (entry.endsWith('.test.ts') || entry.endsWith('.test.tsx')) continue;
-    if (entry.endsWith('.ts') || entry.endsWith('.tsx')) out.push(full);
+    // Symlinked FILES are skipped too: the target may live outside client/src, and a
+    // link to evals/ would feed this detector its own synthetic fixtures.
+    if (!entry.isFile()) continue;
+    if (entry.name.endsWith('.test.ts') || entry.name.endsWith('.test.tsx')) continue;
+    // Extensions: every module form TypeScript/Vite would actually resolve from
+    // client/src.  `.mjs`/`.cjs` are deliberately EXCLUDED — every eval file is
+    // `.mjs`, and admitting that extension would let a symlink turn this detector on
+    // its own fixtures.  client/src is all-`.ts` today; the rest is forward cover.
+    if (
+      entry.name.endsWith('.ts') ||
+      entry.name.endsWith('.tsx') ||
+      entry.name.endsWith('.mts') ||
+      entry.name.endsWith('.cts') ||
+      entry.name.endsWith('.js') ||
+      entry.name.endsWith('.jsx')
+    ) {
+      out.push(full);
+    }
   }
   return out;
 }
@@ -2023,6 +2042,26 @@ export function buildGameSnapshot() {
 }
 `;
 
+  // Client fixture: the token appears ONLY in a TRAILING BLOCK comment on a live
+  // line.  Same false-alarm class as GB2b in the other comment syntax — red-team
+  // 11r-h measured the line-prefix approach RED on exactly this input.
+  const clientWithTrailingBlockCommentGrantBait = `export function buildGameSnapshot() {
+  const snapshot = { zoneId: store.zoneId }; /* deliberately no grantBait hook, see ADR-0172 */
+  return snapshot;
+}
+`;
+
+  // Client fixture: a MULTI-LINE block comment whose continuation lines carry no
+  // leading '*' (biome does not force that prefix), so a line-prefix skip cannot
+  // see them as comment lines at all.
+  const clientWithMultilineBlockCommentGrantBait = `export function buildGameSnapshot() {
+/*
+  we deliberately do not expose grantBait here — see ADR-0172 D8
+*/
+  return { zoneId: store.zoneId };
+}
+`;
+
   // Client fixture: no mention at all (today's real client/src).
   const clientWithNoGrantBait = `export function buildGameSnapshot() {
   return { zoneId: store.zoneId, party: store.party };
@@ -2128,6 +2167,41 @@ test.fixme('R4: bait selector lists only items with recruit_bonus > 0', async ()
         pass: false,
         detail:
           'tooth GB2b: clientExposesGrantBait must return false when grantBait appears only in a TRAILING comment on an otherwise-live line — kills: impl that skips only whole-line comments and never truncates a line at its first //.',
+      };
+    }
+  }
+
+  // =========================================================================
+  // Teeth GB2c / GB2d (clientExposesGrantBait — BLOCK comments → false).
+  // The second and third false-alarm teeth.  Kill: any impl that handles only the
+  // `//` syntax (GB2/GB2b's shape).  Red-team 11r-h measured BOTH of these RED on
+  // that impl, and a gate that reddens a correct tree because someone documented
+  // WHY the hook is absent gets deleted rather than fixed.  The fix is running
+  // stripBlockComments over the source before the line walk.
+  // =========================================================================
+  for (const [toothId, fixture, shape] of [
+    ['GB2c', clientWithTrailingBlockCommentGrantBait, 'a TRAILING block comment'],
+    [
+      'GB2d',
+      clientWithMultilineBlockCommentGrantBait,
+      'a MULTI-LINE block comment with no leading asterisk on its continuation lines',
+    ],
+  ]) {
+    let blockResult;
+    try {
+      blockResult = clientExposesGrantBait(fixture);
+    } catch (err) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth ${toothId} (clientExposesGrantBait with ${shape}): threw — ${err.message}`,
+      };
+    }
+    if (blockResult !== false) {
+      return {
+        name,
+        pass: false,
+        detail: `tooth ${toothId}: clientExposesGrantBait must return false when grantBait appears only inside ${shape} — kills: impl that handles the // syntax only and never strips block comments.`,
       };
     }
   }
@@ -2511,6 +2585,6 @@ test.fixme('R4: bait selector lists only items with recruit_bonus > 0', async ()
     name,
     pass: true,
     detail:
-      'spec-gap-revival teeth all pass: findTradeTransferReducers correct (swap_active not matched, give_monster/donate_monster matched, trade_monster matched, benign reducers clean), parkedTestIsIgnored correct (bare and cfg_attr forms recognised, revived form false), specGapStatus matrix all 5 cases correct (incl. reducer-landed+fn-deleted), real codebase is in healthy/dormant state; test.fixme condition-expiry guard GREEN (T-E1/T-E1b/T-E2/T-E3 teeth pass, no expired conditions in client/e2e/); 13.5h-2 dev_reducers fixme tripwire GREEN (W1/W2/W3/W4/W5 workflow detector teeth incl. env-var form, F1/F1h/F2/F3 spec-citation teeth, S1/S1b/S2/S3 combined-status teeth, R-real on live tree all pass); m16.5a vacuous-revival check GREEN (V1/V2/V3/V4 teeth pass: line-comment and block-comment vacuous forms both rejected; real m7b_2 body has assert when revived); 11r-h grantBait revival tripwire GREEN (GB1/GB2/GB2b/GB3 client-exposure teeth incl. the trailing-comment false-alarm case, GB4/GB5/GB6 spec-citation teeth, GBS1-GBS4 combined-status matrix, GB-ANCHOR proves recruit.spec.ts still carries the R4 fixme citing grantBait, GB-SCOPE proves the client/src walk is non-empty and excludes *.test.ts + module_bindings/**, GB-real on the live tree not violated — no client/src file exposes the hook yet)',
+      'spec-gap-revival teeth all pass: findTradeTransferReducers correct (swap_active not matched, give_monster/donate_monster matched, trade_monster matched, benign reducers clean), parkedTestIsIgnored correct (bare and cfg_attr forms recognised, revived form false), specGapStatus matrix all 5 cases correct (incl. reducer-landed+fn-deleted), real codebase is in healthy/dormant state; test.fixme condition-expiry guard GREEN (T-E1/T-E1b/T-E2/T-E3 teeth pass, no expired conditions in client/e2e/); 13.5h-2 dev_reducers fixme tripwire GREEN (W1/W2/W3/W4/W5 workflow detector teeth incl. env-var form, F1/F1h/F2/F3 spec-citation teeth, S1/S1b/S2/S3 combined-status teeth, R-real on live tree all pass); m16.5a vacuous-revival check GREEN (V1/V2/V3/V4 teeth pass: line-comment and block-comment vacuous forms both rejected; real m7b_2 body has assert when revived); 11r-h grantBait revival tripwire GREEN (GB1/GB2/GB2b/GB2c/GB2d/GB3 client-exposure teeth incl. all three comment false-alarm cases (trailing //, trailing block, multi-line block), GB4/GB5/GB6 spec-citation teeth, GBS1-GBS4 combined-status matrix, GB-ANCHOR proves recruit.spec.ts still carries the R4 fixme citing grantBait, GB-SCOPE proves the client/src walk is non-empty and excludes *.test.ts + module_bindings/**, GB-real on the live tree not violated — no client/src file exposes the hook yet)',
   };
 }

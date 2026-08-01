@@ -196,6 +196,12 @@ export type RateLimitPolicy = { readonly minGapMs: number; readonly cap: number 
  * i.e. permanently "inside the gap", and no test that only walks time forwards can see it.
  * The cap term is deliberately outside that relaxation — a clock jump must not resurrect
  * an exhausted session cap.
+ *
+ * EDGE CASES, stated so a future reader does not have to re-derive them: a `cap` of 0 or less
+ * disables emission entirely (the session budget is already spent), a `minGapMs` of 0 or less
+ * emits on every tick until the cap, and a NaN clock reading degrades to emit-until-cap rather
+ * than suppress-forever — the cap is the only hard bound on the emit path, which is why it is a
+ * const literal at the call site and pinned by a source-scan tooth.
  */
 export function rateLimitTick(
   state: RateLimitState,

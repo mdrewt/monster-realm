@@ -390,12 +390,24 @@ describe('main.ts wiring (F-5): DEV debug hook window assignments are all gated 
     ).toBeGreaterThan(gateIdx);
     const gateBlock = stripped.slice(gateIdx, blockEndIdx + 2);
 
-    // ANTI-VACUITY, asserted before the containment checks: the slice really is the gate.
+    // ANTI-VACUITY, asserted before the containment checks: the slice really is a CLOSED gate
+    // block. Checking that it starts with the gate would be a tautology — `gateIdx` is by
+    // construction the index of that needle, so the assertion could never fail (a vacuous
+    // assertion in the very test that exists to delete vacuous assertions). What CAN fail, and
+    // is the real hazard for assertion (4), is a mis-bounded slice: a column-0 `}` appearing
+    // inside the gate body (e.g. inside a future template literal) would truncate the block,
+    // and (4) would then look for the three hooks in a fragment that no longer contains them.
     expect(
-      gateBlock.includes('if (import.meta.env.DEV) {'),
-      'ANTI-VACUITY: the extracted block must start at the DEV gate itself — a degenerate or ' +
-        'mis-bounded slice would make assertions (3) and (4) meaningless in opposite directions',
+      gateBlock.trimEnd().endsWith('}'),
+      'ANTI-VACUITY: the extracted block must END at a closing brace — otherwise the ' +
+        'column-0 `}` walk resolved somewhere unintended and assertions (3) and (4) are ' +
+        'judging a fragment',
     ).toBe(true);
+    expect(
+      countOccurrences(gateBlock, 'if (import.meta.env.DEV) {'),
+      'ANTI-VACUITY: the extracted block must contain the gate statement EXACTLY once — a ' +
+        'second occurrence means the block swallowed a later gate and its contents',
+    ).toBe(1);
 
     // --- (3) CONTAINMENT: the build stamp is NOT inside the gate block --------------------
     // WRONG IMPL KILLED: moving main.ts:1856 inside the gate (i.e. above the `}` at :1850).
@@ -7125,7 +7137,7 @@ describe('★ main.ts wiring (11r-h/ADR-0172): movement rejections reach the F9 
 
     // And the helper must WRITE THE STATE BACK — a pure tick whose result is discarded is
     // indistinguishable from having no throttle at all.
-    const body = moveRejectHelperBody(src);
+    const body = squashWhitespace(moveRejectHelperBody(src));
     expect(
       countOccurrences(body, 'moveRejectLimit ='),
       'noteMoveRejection must assign the new rate-limit state back to `moveRejectLimit` — ' +
@@ -7133,6 +7145,43 @@ describe('★ main.ts wiring (11r-h/ADR-0172): movement rejections reach the F9 
         'Discarding the returned state leaves lastMs/emitted at their initial values forever, ' +
         'so every rejection emits and the throttle is decorative.',
     ).toBeGreaterThanOrEqual(1);
+
+    // --- added after the 11r-h red-team pass: the four cheats a presence-only scan let in ---
+    // WRONG IMPL KILLED (5, CH-7): `moveRejectLimit = RATE_LIMIT_INITIAL;` — an assignment
+    // that satisfies the count above while resetting the throttle on every rejection.
+    expect(
+      body.includes('moveRejectLimit = tick.state;'),
+      'the write-back must be the tick RESULT (`moveRejectLimit = tick.state;`). Assigning ' +
+        'anything else — most plausibly RATE_LIMIT_INITIAL — satisfies the occurrence count ' +
+        'above and still resets the throttle on every rejection (red-team CH-7).',
+    ).toBe(true);
+    expect(
+      body.includes('rateLimitTick('),
+      'noteMoveRejection must call `rateLimitTick(` — the pure transition unit-tested in ' +
+        'net/devLog.test.ts. Without this needle the state could be advanced by a hand-rolled ' +
+        'in-file copy that no executable test covers.',
+    ).toBe(true);
+    // WRONG IMPL KILLED (6, CH-8): Date.now(). ADR-0172 D1 specifies a MONOTONIC clock; a
+    // backwards NTP correction on a wall clock is a case rateLimitTick then has to absorb.
+    expect(
+      body.includes('performance.now()'),
+      'the clock must be `performance.now()` (monotonic, ADR-0172 D1), not Date.now() — main.ts ' +
+        'already uses it on the movement path',
+    ).toBe(true);
+    // WRONG IMPL KILLED (7, CH-2): the two policy numbers D1 spends fifteen lines justifying
+    // were pinned by NOTHING. `cap: 0` disables every breadcrumb — the slice's entire purpose —
+    // and `minGapMs: 0` re-opens the ring flood, both with every other needle here green.
+    const live = squashWhitespace(stripped);
+    expect(
+      countOccurrences(live, 'minGapMs: 3_000'),
+      'MOVE_REJECT_POLICY must keep `minGapMs: 3_000` (ADR-0172 D1). A smaller gap re-opens the ' +
+        'ring flood the throttle exists to prevent; a larger one silently degrades the bundle.',
+    ).toBe(1);
+    expect(
+      countOccurrences(live, 'cap: 16'),
+      'MOVE_REJECT_POLICY must keep `cap: 16` (ADR-0172 D1). `cap: 0` emits NOTHING — the F9 ' +
+        'bundle stays exactly as blind as before this slice — and reds no other assertion.',
+    ).toBe(1);
   });
 
   it('★ W-11RH-SILENT BITES: noteMoveRejection writes the ring breadcrumb and NEVER surfaces anything to the user', () => {
@@ -7193,6 +7242,48 @@ describe('★ main.ts wiring (11r-h/ADR-0172): movement rejections reach the F9 
         'value today, and it is what distinguishes this line from a send line',
     ).toBe(true);
 
+    // --- added after the 11r-h red-team pass ------------------------------------------
+    // WRONG IMPL KILLED (4, CH-1): the ring push moved OUT of `if (tick.emit)`. Every needle
+    // above still matches, rateLimitTick still runs, the state is still written back — and the
+    // throttle is decorative. At the observed ~5 rejections/second a rubber-band episode
+    // destroys all 64 crash-record slots in ~13 seconds. This is the exact harm ADR-0172 D1
+    // exists to prevent, and it was a one-line edit that reddened nothing.
+    const emitGuardIdx = body.indexOf('if (tick.emit)');
+    expect(
+      emitGuardIdx,
+      'the breadcrumb push must be GUARDED by `if (tick.emit)` — without the guard the ' +
+        'rate limit is computed, stored, and ignored (red-team CH-1)',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      emitGuardIdx,
+      'the `if (tick.emit)` guard must come BEFORE `errorRing.push(` — a push that precedes ' +
+        'or escapes the guard fires on EVERY rejection',
+    ).toBeLessThan(body.indexOf('errorRing.push('));
+    // WRONG IMPL KILLED (5, CH-3): the prefix const used, but not at position 0 of the message
+    // (`seq=${seq} ${MOVE_REJECT_PREFIX}…`). pushError's overlay filter is a startsWith, so the
+    // breadcrumb then reaches the PLAYER-VISIBLE overlay on the next unrelated error — M2 §3
+    // violated — and 16 of them evict every genuine error from the 8-record display window.
+    // The needle is BUILT, not written literally: a plain string containing an
+    // interpolation-looking dollar-brace trips biome's noTemplateCurlyInString. 0x60 is the
+    // backtick, 0x24 the dollar — the same char-code idiom this file already uses for quotes.
+    const prefixOpensTemplate = String.fromCharCode(0x60, 0x24) + '{MOVE_REJECT_PREFIX}';
+    expect(
+      body.includes(prefixOpensTemplate),
+      'the breadcrumb template must OPEN with the MOVE_REJECT_PREFIX interpolation (backtick ' +
+        "immediately before it). pushError's overlay filter is a startsWith on that prefix, so " +
+        'a prefix anywhere but position 0 silently makes the breadcrumb user-visible ' +
+        '(ADR-0172 D3, red-team CH-3).',
+    ).toBe(true);
+    // D1 claims the magnitude survives suppression and that truncation self-announces. Pin it.
+    for (const field of ['count=', 'breadcrumb='] as const) {
+      expect(
+        body.includes(field),
+        `the breadcrumb must carry the \`$field\` field (ADR-0172 D1). Dropping it loses the ` +
+          'suppressed-count / cap-truncation signal that is the whole reason the rate limit is ' +
+          'acceptable in the first place.',
+      ).toBe(true);
+    }
+
     for (const banned of ['pushError(', 'reportError(', 'statusEl'] as const) {
       expect(
         body.includes(banned),
@@ -7242,6 +7333,33 @@ describe('★ main.ts wiring (11r-h/ADR-0172): movement rejections reach the F9 
       'noteMoveRejection must CATCH — a bare `try` with only a `finally` still propagates. ' +
         'Mirror devLog.ts:161-166: swallow, and say in the catch body why.',
     ).toBe(true);
+
+    // --- added after the 11r-h red-team pass ------------------------------------------
+    // WRONG IMPL KILLED (2, CH-5): a DECORATIVE try/catch — `try { void 0; } catch {}` parked
+    // after the real work. Both presence needles above match and the helper is not total at
+    // all, so D4's failure path is fully re-opened. Totality is about what the try ENCLOSES,
+    // so assert the ordering: the try opens before every throwing call, the catch closes after.
+    const tryIdx = body.indexOf('try {');
+    const catchIdx = body.lastIndexOf('catch');
+    for (const call of ['fateLogger?.(', 'rateLimitTick(', 'errorRing.push('] as const) {
+      const callIdx = body.indexOf(call);
+      expect(
+        callIdx,
+        `ANTI-VACUITY: the helper body must contain \`${call}\` for the enclosure check below ` +
+          'to mean anything',
+      ).toBeGreaterThanOrEqual(0);
+      expect(
+        tryIdx,
+        `\`try {\` must open BEFORE \`${call}\` — a try/catch that does not ENCLOSE the ` +
+          'throwing calls is decorative, and E5-9 is unmet while both presence needles above ' +
+          'still match (red-team CH-5)',
+      ).toBeLessThan(callIdx);
+      expect(
+        catchIdx,
+        `the \`catch\` must close AFTER \`${call}\` — otherwise that call sits outside the ` +
+          'guarded region',
+      ).toBeGreaterThan(callIdx);
+    }
   });
 
   it('★ W-11RH-FATE-SINK BITES: the makeFateLogger( sink writes to console.log and touches NO ring', () => {
@@ -7309,6 +7427,29 @@ describe('★ main.ts wiring (11r-h/ADR-0172): movement rejections reach the F9 
         'scope with the eager resolve, so it cannot be rebuilt per call or skipped on an early ' +
         'return inside main()',
     ).toBeLessThan(live.indexOf('async function main('));
+
+    // --- added after the 11r-h red-team pass ------------------------------------------
+    // WRONG IMPL KILLED (4, CH-6 — the ring ban above is defeated by ONE named indirection):
+    //     const fateLogger = makeFateLogger(DEV_LOG_LEVEL, (line) => {
+    //       console.log(line);
+    //       archiveDevLine(line);            // hoisted module-scope fn: errorRing.push(line)
+    //     });
+    // DEVLOG_RING_NEEDLES is scanned only INSIDE the balanced-paren argument list, so a call to
+    // a function declared elsewhere carries no banned token and every assertion above stays
+    // green — while every dev-log line (reducer args, i.e. player free text) lands in the
+    // shared, downloadable F9 bundle. ADR-0157 §4 breached with no signal.
+    // The fix is the same discipline the state tooth already uses: pin the sink VERBATIM, so
+    // the only admissible sink is the one whose body is visible right here.
+    // NOTE (inherited, NOT introduced here): W-DEVLOG-EAGER (c) has the identical hole on the
+    // SEND side. Out of this slice's touch-set; flagged as a follow-up in ADR-0172.
+    expect(
+      live.includes(
+        'const fateLogger = makeFateLogger(DEV_LOG_LEVEL, (line) => console.log(line));',
+      ),
+      'the fate sink must be VERBATIM `makeFateLogger(DEV_LOG_LEVEL, (line) => console.log(line))` ' +
+        '(ADR-0157 §4). A block-bodied sink that calls a helper defeats the ring ban above with ' +
+        'one indirection and ships player free text into the F9 bundle (red-team CH-6).',
+    ).toBe(true);
   });
 
   it('★ W-11RH-OVERLAY-FILTERED BITES: the breadcrumb reaches the F9 bundle but is filtered OUT of the error overlay, via ONE shared prefix const', () => {
@@ -7371,5 +7512,28 @@ describe('★ main.ts wiring (11r-h/ADR-0172): movement rejections reach the F9 
         'movement breadcrumbs start appearing in the player-visible error overlay with no ' +
         'symptom until someone sees it in a playtest.',
     ).toBe(1);
+
+    // --- added after the 11r-h red-team pass ------------------------------------------
+    // WRONG IMPL KILLED (3, CH-4): a DECORATIVE filter —
+    //     .filter((r) => !r.message.startsWith(MOVE_REJECT_PREFIX) || true)
+    // The const is present, `errorRing`/`snapshot()` are present, every assertion above is
+    // green, and the predicate keeps every record. Pin the predicate itself (squashed, so
+    // biome's wrapping is irrelevant) and ban the boolean escape hatches.
+    const squashedOverlayArgs = squashWhitespace(overlayArgs);
+    expect(
+      squashedOverlayArgs.includes('!r.message.startsWith(MOVE_REJECT_PREFIX)'),
+      'the overlay filter predicate must be exactly `!r.message.startsWith(MOVE_REJECT_PREFIX)` ' +
+        '— a filter that merely MENTIONS the const while keeping every record (e.g. `… || true`) ' +
+        'satisfies every other assertion here and leaves the breadcrumb user-visible ' +
+        '(red-team CH-4)',
+    ).toBe(true);
+    for (const widening of ['||', '&&', '?'] as const) {
+      expect(
+        squashedOverlayArgs.includes(widening),
+        `the overlay filter predicate must not contain \`${widening}\` — the mandated form is a ` +
+          'single negated startsWith. Any boolean widening is either a no-op filter or a second, ' +
+          'unpinned rule about what the player sees.',
+      ).toBe(false);
+    }
   });
 });

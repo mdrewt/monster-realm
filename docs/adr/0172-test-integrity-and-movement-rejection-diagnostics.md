@@ -48,9 +48,19 @@ suppression and truncation self-announces without an extra branch.
 
 **The honest counter-argument, accepted:** the cap has no decay. A benign episode in minute 1
 permanently occupies 16/64 = 25 % of the ring and permanently disables movement diagnostics for
-a genuine incident in minute 60. Accepted because (a) the remaining 48 slots are reserved for
-the crash records the bundle exists to carry, and (b) the console fate line (D2) stays complete
-for the whole session. Revisit if a playtest bundle is ever observed to be breadcrumb-starved.
+a genuine incident in minute 60. Accepted because the remaining 48 slots are reserved for the
+crash records the bundle exists to carry. Revisit if a playtest bundle is ever observed to be
+breadcrumb-starved.
+
+**Correction to an earlier draft of this ADR** (it claimed the cap was safe partly because "the
+console fate line stays complete for the whole session"): that is FALSE in the build where it
+matters. `resolveDevLogLevel(undefined, …)` returns `'off'`, `makeFateLogger` returns `undefined`
+at `'off'`, and the call site is `fateLogger?.(…)` — so a playtester, who will not have
+`VITE_MR_DEVLOG` set, gets no fate lines at all. Past breadcrumb 16 there is therefore **no
+record of movement rejections anywhere** in a default playtest build: `moveRejectLimit.pending`
+keeps counting but is never emitted and never read. The cap is still the right call against ring
+flooding, but this is the accurate statement of its cost, and closing it (a single
+cap-exhaustion breadcrumb carrying the final count) is a named follow-up below.
 
 The clock is `performance.now()` (monotonic), not `Date.now()` — `main.ts` already uses it on
 the movement path. `rateLimitTick` is nonetheless specified to treat a backwards clock jump as
@@ -100,8 +110,16 @@ The helper runs inside a rejection `.catch`. If it throws, the handler's promise
 reaches `main.ts:609`'s `unhandledrejection` listener, which calls `pushError`, which **shows
 the overlay** — turning a silent movement rejection into the user-visible error M2 §3 forbids.
 The body is therefore wrapped in `try { … } catch { }`, mirroring the identical guarantee
-`devLog.ts:161-166` already gives the send sink ("a throwing sink must NEVER take the game
-down"), and a tooth pins it.
+`devLog.ts`'s send sink already gives ("a throwing sink must NEVER take the game down"), and a
+tooth pins it — including the ORDERING (the `try` opens before every throwing call and the
+`catch` closes after all of them), because a decorative `try { void 0; } catch {}` parked after
+the real work satisfies a presence-only scan while leaving the failure path fully open.
+
+Scope note: this makes `noteMoveRejection` total. The two statements that precede it in the
+`.catch` — `predictor.dropRejected(seq, epoch)` and `reconcileFromStore()` — are outside any
+`try` and always were; `reconcileFromStore` is total by construction (its own internal
+try/catch, the 12.5c-4 no-throw contract). This decision does not change that, and does not
+claim to.
 
 ### D5 — Item 2: rewrite as a positive pin, not delete; plus a negative control
 
@@ -150,9 +168,14 @@ the comment, 147 lines above the real gate at `:1846`. Consequence: deleting the
 as a hard gate and was not one.
 
 Fixed with one shared helper, `devGateIndex(src)`: the needle `'\nif (import.meta.env.DEV) {'`
-against **comment-stripped** source, guarded by `expectUniqueAnchor`. F-5a/c/d/e are re-pointed
-at it along with F-5f — leaving two competing definitions of "the gate index" side by side, one
-correct and one silently wrong, would have been a worse SSOT violation than not touching them.
+against **comment-stripped** source, guarded by `expectUniqueAnchor`. All five siblings
+(F-5a, F-5b, F-5c, F-5d, F-5e) are re-pointed at it along with F-5f — leaving two competing
+definitions of "the gate index" side by side, one correct and one silently wrong, would have
+been a worse SSOT violation than not touching them.
+
+Verified, not assumed: the red-team pass re-ran the "delete the real DEV gate" mutation against
+**origin/master's** copy of `main.wiring.test.ts` (6 passed / 0 failed — the hole is real) and
+against this slice's copy (6 failed — closed).
 
 F-5f itself becomes four falsifiable assertions with no conditional and no `expect(true)`:
 the gate resolves; `).__mrBuild =` occurs exactly once; the gate **block** does not contain the
@@ -178,10 +201,25 @@ Accepted bypass vectors, documented in the eval's own header as well as here:
   bindings from a `dev_reducers`-featured module would drop a `grantBait` into
   `module_bindings/grant_bait_reducer.ts` and fire on an event that is **not** the revival
   condition.
-- Lines are truncated at their first `//` before the token test. Without this, the very comment
-  someone would plausibly write — `// deliberately no grantBait hook, see ADR-0172` — is a live
-  line and false-alarms, and a false-alarming gate gets deleted.
+- **Both comment syntaxes are removed before the token test.** Block comments are stripped
+  wholesale (reusing the m16.5a `stripBlockComments` scanner) and each surviving line is then
+  truncated at its first `//`. The first implementation only handled line-prefixes, and the
+  red-team pass measured it RED on two inputs that are exactly the sentence someone will write:
+  a trailing `x(); /* deliberately no grantBait hook, see ADR-0172 */`, and a multi-line block
+  whose continuation lines carry no leading `*` (biome does not force that prefix). Either one
+  turns the whole `spec-gap-revival` eval red on a correct tree — and a false-alarming gate gets
+  deleted rather than fixed, which is the failure this whole slice is about. Teeth GB2/GB2b/
+  GB2c/GB2d cover all three comment forms. Accepted under-detection from the `//` truncation: a
+  `//` inside a string literal earlier on the line hides the rest of that line.
+- The directory walk uses `readdirSync(…, { withFileTypes: true })`. An unguarded `statSync`
+  threw `ENOENT` on a dangling symlink and reddened the entire eval with a misleading "cannot
+  walk client/src"; dirents also classify a symlink AS a symlink, so a linked directory cannot
+  recurse and a linked file cannot drag in a target outside `client/src`.
+- Extensions scanned are `.ts/.tsx/.mts/.cts/.js/.jsx`. `.mjs`/`.cjs` are deliberately excluded:
+  every eval file is `.mjs`, and admitting that extension would let a symlink point this
+  detector at its own fixtures.
 - `evals/**` is never scanned, so the detector's own synthetic fixtures cannot self-trip it.
+  Confirmed under symlink attack (`client/src/zz -> ../../evals` leaves the gate green).
 
 A `GB-ANCHOR` tooth asserts the fixme still cites the token **today**; without it the tripwire
 would go dormant the moment the prose is reworded. Its failure message instructs the reader to
@@ -204,3 +242,34 @@ delete the tripwire and its anchor together when R4 is finally revived.
   defect (this slice removes both existing sites), and it is a clean cut — parked as a follow-up.
 - Deliberately **not** built: an inbound-event logger. `formatFateLine` is shaped generically
   enough for one, but the obs-e caller does not exist and was not speculated into being.
+
+### Named follow-ups (found by this slice's own red-team pass, deliberately out of scope)
+
+1. **The durable fix for the item-5 teeth.** `noteMoveRejection` is a coverage-excluded shell
+   function pinned by source scanning. The red-team pass wrote **eight** intent-breaking
+   implementations that passed all 1827 client tests, all 74 evals and `tsc`: the ring push
+   moved out of `if (tick.emit)`; `cap: 0` / `minGapMs: 0`; the prefix interpolated anywhere but
+   position 0 (defeating the overlay filter's `startsWith`); a `|| true` filter; a decorative
+   `try { void 0; } catch {}`; `moveRejectLimit = RATE_LIMIT_INITIAL`; `Date.now()`; and a
+   block-bodied fate sink calling a hoisted `archiveDevLine` that pushes into the ring. **All
+   eight now red** — the teeth were strengthened with ordering and verbatim assertions and each
+   kill was re-measured. But the durable answer is to extract the helper's body into an
+   injectable unit under `client/src/net/` (`makeMoveRejectRecorder({ fate, ring, clock,
+   policy })`) and unit-test emit-guard / prefix / totality / state-carry executably, leaving
+   `main.ts` with one call for the scan to pin. That needs a new file, which is outside this
+   slice's declared touch-set.
+2. **`W-DEVLOG-EAGER (c)` has the identical one-hop-indirection hole on the SEND side.** It
+   scans `DEVLOG_RING_NEEDLES` only inside `makeSendLogger(`'s balanced-paren argument list, so
+   a named helper defeats it exactly as it defeated the first draft of `W-11RH-FATE-SINK`. This
+   is inherited, not introduced here, and its file region is outside this slice's scope. The
+   same verbatim-sink pin fixes it.
+3. **The `grantBait` tripwire's "or equivalent" half stays uncovered** (see D8). A
+   `__game()`-key-set detector would close it.
+4. **A cap-exhaustion breadcrumb** carrying the final suppressed count, so a default playtest
+   build is not silent past breadcrumb 16 (see the correction in D1).
+5. **`main.ts` is at ~50.3 % comments** and three source-scan teeth anti-vacuity-guard on
+   `stripped.length > raw.length / 2`. Headroom after this slice is ~408 characters, and the
+   failure message ("the block-comment strip bailed early") misdiagnoses the real cause. The
+   guard should be structural (assert a known tail anchor survives the strip) rather than a size
+   ratio — otherwise the next well-documented slice trips three teeth for the wrong reason.
+6. **A vacuous-assertion class scanner** over `client/src/**/*.test.ts` (see above).
