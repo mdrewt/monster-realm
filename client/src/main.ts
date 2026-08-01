@@ -1381,6 +1381,7 @@ store.onBatchApplied(() => {
               store.allShopItems(),
               store.itemDefs(),
               store.ownInventory(identity),
+              store.ownWallet(identity),
             ),
           );
           shopView?.show();
@@ -1439,12 +1440,14 @@ store.onBatchApplied(() => {
             store.allShopItems(),
             store.itemDefs(),
             store.ownInventory(identity),
+            store.ownWallet(identity),
           )
         : buildShopViewModel(
             store.allShops(),
             store.allShopItems(),
             store.itemDefs(),
             store.ownInventory(identity),
+            store.ownWallet(identity),
           ),
     );
   } catch (err) {

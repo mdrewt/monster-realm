@@ -2379,3 +2379,323 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
     expect(HANDLED_ENUM_VARIANTS.NpcInteraction).toEqual(['Dialogue', 'Shop', 'Heal']);
   });
 });
+
+// =============================================================================
+// 11r-e (ux2b) — playerWalletRowToStore: the `my_wallet` view row converter
+// SOURCE OF TRUTH: docs/adr/0169-wallet-view-runtime-path.md D3, amending
+//   docs/adr/0154-owner-scoped-wallet-view.md D1/D6.
+//
+// EARS 11r-e-2 — WHERE an SDK `my_wallet` row is supplied, playerWalletRowToStore
+//   SHALL return `{ownerIdentity: <hex string>, balance: <the same bigint>}`, SHALL
+//   preserve `0n` and `18446744073709551615n` byte-identically, and SHALL NOT throw
+//   for any well-typed input.
+//
+// RED REASON (verified by reading client/src/net/rowConvert.ts this session):
+//   `playerWalletRowToStore` does NOT exist anywhere in rowConvert.ts. The M12d
+//   own-row converter block stops at `playerConversationRowToStore` (rowConvert.ts:416)
+//   and `shouldRemoveOnViewDelete` (:444); neither the function nor the
+//   `SdkPlayerWalletRow` type is exported. The `import { playerWalletRowToStore, type
+//   SdkPlayerWalletRow }` below therefore fails at module-eval time and EVERY test in
+//   this section reds. That is a MISSING IMPLEMENTATION, not a typo in this file.
+//   (`StoreWallet` DOES already exist — store.ts:185 — because ux2/ADR-0154 shipped the
+//   pure client half; only the runtime path is missing. So the `StoreWallet` import
+//   below is green today and cannot be the cause of the red.)
+//
+// REQUIRED CONTRACT (ADR-0169 D3 — the exact shape the implementer must ship, and the
+// exact shape these tests call):
+//
+//   export interface SdkPlayerWalletRow {
+//     readonly ownerIdentity: { toHexString(): string };
+//     readonly balance: bigint;
+//   }
+//
+//   export function playerWalletRowToStore(row: SdkPlayerWalletRow): StoreWallet {
+//     return { ownerIdentity: row.ownerIdentity.toHexString(), balance: row.balance };
+//   }
+//
+// WHY THIS FILE CARRIES REAL BEHAVIORAL TESTS (and connection.test.ts does not):
+//   rowConvert.ts is PURE and importable — no DOM, no wasm, no generated-binding side
+//   effects — so it is the one surface of this slice where an actual call can be made.
+//   connection.ts is coverage-excluded (vite.config.ts:99-100) and can only be source
+//   scanned. Neither substitutes for the other.
+//
+// WHAT THESE TESTS KILL (ADR-0169 D3 names all four wrong implementations):
+//   (a) `Number(row.balance)` — silent precision loss at/near u64 MAX plus a type lie
+//       (StoreWallet.balance is `bigint`). `50` is exactly representable as a JS number,
+//       so NO e2e in this slice can ever see this bug: RC-PW-02b/02c are the only gate.
+//   (b) `row.balance ?? 0n` (or `|| 0n`, or `BigInt(row.balance ?? 0)`) — fabricates
+//       "broke" out of "dark". shopModel.balanceViewModel (shopModel.ts:75-79) decides
+//       `unknown` vs `known` on `typeof amount !== 'bigint'`, so a coerced 0n renders
+//       `Gold: 0` where the player actually has NO wallet row at all — the exact
+//       ADR-0154 D6 collapse. RC-PW-03b/03c are the only gate (a well-typed row can
+//       never trip `??`, so the malformed-input probe is required to see it).
+//   (c) `String(row.ownerIdentity)` → `"[object Object]"`. store.ownWallet(identity)
+//       (store.ts:992-995) filters `slot.ownerIdentity === identity`, so this makes the
+//       owner filter miss FOREVER and the readout is `unknown` in perpetuity — a bug
+//       that looks exactly like "the feature was never wired". RC-PW-01a/01b.
+//   (d) a THROWING converter — it runs inside a subscription row callback
+//       (connection.ts wireTables) and flushBatch has no per-listener isolation
+//       (ADR-0085 A6), so one throw starves every sibling table's ingest for that
+//       batch. RC-PW-05a/05b.
+//   (e) `{ ...row, ownerIdentity: row.ownerIdentity.toHexString() }` — a spread impl
+//       leaks whatever extra fields the SDK row carries into the store row. RC-PW-04.
+//
+// NO `shouldRemoveOnViewDelete` SIBLING IS TESTED HERE, deliberately: ADR-0154 D4
+//   forbids a delete gate for wallets (through a view an UPDATE arrives as unordered
+//   onInsert(new) + onDelete(old), so the coalesced `I(50) I(100) D(100) D(50)` makes
+//   ANY net-effect delete gate remove the LIVE row). That invariant is a wiring fact,
+//   so it is gated in connection.test.ts, not here — one fact, one file.
+// =============================================================================
+
+import { playerWalletRowToStore, type SdkPlayerWalletRow } from './rowConvert';
+import type { StoreWallet } from './store';
+
+/** Factory: a minimal well-typed SdkPlayerWalletRow with a mock SDK Identity object.
+ *  Mirrors makeSdkProfileRow above — the SDK hands rowConvert an object whose only
+ *  contract is `toHexString()`, never a bare string. */
+function makeSdkWalletRow(ownerHex: string, balance: bigint): SdkPlayerWalletRow {
+  return {
+    ownerIdentity: { toHexString: () => ownerHex },
+    balance,
+  };
+}
+
+/** u64::MAX — the widest value the server's `player_wallet.balance` column can hold.
+ *  Not representable as a JS number: Number(this) === 18446744073709551616. */
+const U64_MAX = 18446744073709551615n;
+
+describe('rowConvert 11r-e: playerWalletRowToStore — ownerIdentity via toHexString() (RC-PW-01)', () => {
+  it('RC-PW-01a BITES: ownerIdentity is the plain hex string from toHexString() — kills String(row.ownerIdentity) => "[object Object]"', () => {
+    // WRONG IMPL KILLED (ADR-0169 D3 c): `String(row.ownerIdentity)` or storing the raw
+    // SDK Identity object. store.ownWallet(identity) (store.ts:992-995) compares
+    // `slot.ownerIdentity === identity` against a hex string; an object (or the string
+    // "[object Object]") NEVER matches, so buildShopViewModel* always receives undefined
+    // and #shop-balance renders `unknown` forever — indistinguishable from an unwired
+    // feature, but with the subscription burning bandwidth.
+    const sdk = makeSdkWalletRow('deadbeef1234abcd', 50n);
+    const stored = playerWalletRowToStore(sdk);
+    expect(typeof stored.ownerIdentity).toBe('string');
+    expect(stored.ownerIdentity).toBe('deadbeef1234abcd');
+    // Explicit: the exact wrong value a String() coercion would produce.
+    expect(stored.ownerIdentity).not.toBe('[object Object]');
+  });
+
+  it('RC-PW-01b BITES: toHexString() is actually invoked (exactly once) — kills a converter that reads some other field', () => {
+    // WRONG IMPL KILLED: an impl that reads `row.ownerIdentity.toString()`,
+    // `row.ownerIdentity.data`, or a hard-coded constant and coincidentally produces a
+    // string. Counting the call proves the documented SDK contract is the source.
+    let calls = 0;
+    const sdk = {
+      ownerIdentity: {
+        toHexString: (): string => {
+          calls += 1;
+          return 'cafebabe';
+        },
+      },
+      balance: 7n,
+    } as SdkPlayerWalletRow;
+    const stored = playerWalletRowToStore(sdk);
+    expect(stored.ownerIdentity).toBe('cafebabe');
+    expect(calls, 'playerWalletRowToStore must call ownerIdentity.toHexString() exactly once').toBe(
+      1,
+    );
+  });
+
+  it('RC-PW-01c BITES: the hex string is preserved verbatim — no case normalization, no trimming', () => {
+    // WRONG IMPL KILLED: `.toLowerCase()` / `.trim()` "helpfulness". The owner filter is
+    // an exact `===` against the identity main.ts holds, so ANY normalization applied on
+    // one side and not the other silently disables the readout.
+    const lower = playerWalletRowToStore(makeSdkWalletRow('aabbccdd', 1n));
+    const upper = playerWalletRowToStore(makeSdkWalletRow('AABBCCDD', 1n));
+    expect(lower.ownerIdentity).toBe('aabbccdd');
+    expect(upper.ownerIdentity).toBe('AABBCCDD');
+    expect(lower.ownerIdentity).not.toBe(upper.ownerIdentity);
+  });
+
+  it('RC-PW-01d BITES: an empty hex string passes through as "" — no fabricated fallback owner', () => {
+    // WRONG IMPL KILLED: `row.ownerIdentity.toHexString() || 'unknown'`. store.ownWallet('')
+    // must return the row only for the '' identity; substituting a sentinel owner would
+    // make the slot match the WRONG player (or no player) at the shop call sites, and
+    // main.ts:1345's dialogue listener genuinely can pass '' (ADR-0169 D5).
+    const stored = playerWalletRowToStore(makeSdkWalletRow('', 999n));
+    expect(stored.ownerIdentity).toBe('');
+    expect(typeof stored.ownerIdentity).toBe('string');
+  });
+});
+
+describe('rowConvert 11r-e: playerWalletRowToStore — balance is a pass-through bigint (RC-PW-02)', () => {
+  it('RC-PW-02a BITES: balance stays typeof "bigint" and byte-identical — kills Number(row.balance)', () => {
+    // WRONG IMPL KILLED (ADR-0169 D3 a): `Number(row.balance)` / `BigInt(Number(...))`.
+    // The typeof pin alone kills the plain Number() cast; RC-PW-02b/02c kill the
+    // round-tripped variant that restores the bigint TYPE but not the VALUE.
+    const stored = playerWalletRowToStore(makeSdkWalletRow('aaa', 50n));
+    expect(typeof stored.balance).toBe('bigint');
+    expect(stored.balance).toBe(50n);
+  });
+
+  it('RC-PW-02b BITES (CRITICAL): u64::MAX (18446744073709551615n) survives byte-identically', () => {
+    // WRONG IMPL KILLED (ADR-0169 D3 a): any impl that routes the balance through a JS
+    // number. Number(18446744073709551615n) === 18446744073709551616 — off by one, and
+    // BigInt()-ing it back restores the TYPE while silently keeping the WRONG VALUE.
+    // The second assertion states that mutant's exact output so the failure message
+    // names the bug rather than just "expected X received Y".
+    const stored = playerWalletRowToStore(makeSdkWalletRow('aaa', U64_MAX));
+    expect(typeof stored.balance).toBe('bigint');
+    expect(stored.balance).toBe(18446744073709551615n);
+    expect(
+      stored.balance,
+      'balance must NOT equal BigInt(Number(u64::MAX)) === 18446744073709551616n — that is ' +
+        'exactly what a Number() round trip produces (ADR-0169 D3 a)',
+    ).not.toBe(BigInt(Number(U64_MAX)));
+  });
+
+  it('RC-PW-02c BITES: 2^53 + 1 (9007199254740993n) survives — the first value a JS number cannot hold', () => {
+    // The smallest realistic witness of the lossy cast: Number(9007199254740993n) is
+    // 9007199254740992. A wallet can reach this through repeated grant_currency calls.
+    const stored = playerWalletRowToStore(makeSdkWalletRow('aaa', 9007199254740993n));
+    expect(stored.balance).toBe(9007199254740993n);
+    expect(stored.balance).not.toBe(9007199254740992n);
+  });
+
+  it('RC-PW-02d BITES: the returned object is assignable to StoreWallet (compile-time contract pin)', () => {
+    // Not a runtime tooth — a tsc tooth. If the implementer returns
+    // `{ ownerIdentity: string; balance: number }` this ANNOTATION fails typecheck even
+    // though every runtime assertion above could be rewritten to pass. It also pins the
+    // field NAMES against store.ts:185-188 (a converter emitting `owner`/`amount` would
+    // typecheck-fail here rather than mysteriously never matching the owner filter).
+    const stored: StoreWallet = playerWalletRowToStore(makeSdkWalletRow('abc', 12n));
+    expect(stored.balance).toBe(12n);
+    expect(stored.ownerIdentity).toBe('abc');
+  });
+});
+
+describe('rowConvert 11r-e: playerWalletRowToStore — "broke" is never fabricated from "dark" (RC-PW-03)', () => {
+  it('RC-PW-03a BITES: a genuine 0n balance is preserved as 0n (not dropped, not undefined)', () => {
+    // ADR-0154 D6: "broke" (balance 0n, renders `Gold: 0`) and "dark" (no wallet row at
+    // all, renders nothing) are DIFFERENT states and must stay distinguishable end to end.
+    // WRONG IMPL KILLED: an impl that treats 0n as falsy-and-absent (`balance: row.balance
+    // ? row.balance : undefined`), which would turn a broke player's readout into a blank.
+    const stored = playerWalletRowToStore(makeSdkWalletRow('aaa', 0n));
+    expect(stored.balance).toBe(0n);
+    expect(typeof stored.balance).toBe('bigint');
+    expect(stored.balance).not.toBeUndefined();
+  });
+
+  it('RC-PW-03b BITES (CRITICAL): an ABSENT balance passes through as undefined — kills `row.balance ?? 0n`', () => {
+    // This is the ONLY assertion that can see ADR-0169 D3 (b). A well-typed row always
+    // has a bigint, so `?? 0n` is unobservable on well-typed input — the mutant has to be
+    // probed with the malformed row the SDK could hand us after a schema drift.
+    //
+    // WHY IT MATTERS DOWNSTREAM: shopModel.balanceViewModel (shopModel.ts:75-79) branches
+    // on `typeof amount !== 'bigint'`. Passing `undefined` through yields {kind:'unknown'}
+    // -> the node stays hidden, which is correct and honest. Coercing to 0n yields
+    // {kind:'known', label:'Gold: 0'} -> the client CONFIDENTLY tells the player they have
+    // zero gold when the truth is that the client has no idea. That is the exact
+    // fabrication ADR-0154 D1 refused to let `economy::wallet_balance`'s `.unwrap_or(0)`
+    // reach the UI, re-introduced one layer up.
+    const malformed = {
+      ownerIdentity: { toHexString: () => 'aaa' },
+      balance: undefined,
+    } as unknown as SdkPlayerWalletRow;
+    const stored = playerWalletRowToStore(malformed);
+    expect(
+      (stored as { balance: unknown }).balance,
+      'an absent balance must pass through as undefined so shopModel renders `unknown` — ' +
+        'a `?? 0n` / `|| 0n` default fabricates `Gold: 0` (ADR-0154 D6 collapse)',
+    ).toBeUndefined();
+    expect((stored as { balance: unknown }).balance).not.toBe(0n);
+  });
+
+  it('RC-PW-03c BITES: a null balance is NOT defaulted to 0n either', () => {
+    // Same tooth against the `??`-sibling that only some impls write (`row.balance ?? 0n`
+    // catches null too; `row.balance === undefined ? 0n : row.balance` does not). Either
+    // way, no fabricated zero.
+    const malformed = {
+      ownerIdentity: { toHexString: () => 'aaa' },
+      balance: null,
+    } as unknown as SdkPlayerWalletRow;
+    const stored = playerWalletRowToStore(malformed);
+    expect((stored as { balance: unknown }).balance).not.toBe(0n);
+    expect((stored as { balance: unknown }).balance).toBeNull();
+  });
+});
+
+describe('rowConvert 11r-e: playerWalletRowToStore — exact key set (RC-PW-04)', () => {
+  it('RC-PW-04 BITES: output has EXACTLY the keys ["balance", "ownerIdentity"] — kills the spread impl', () => {
+    // WRONG IMPL KILLED (ADR-0169 D3 e): `{ ...row, ownerIdentity: row.ownerIdentity.
+    // toHexString() }`. Any SDK-only field the generator adds later (or the raw Identity
+    // object itself, under a differently-cased key) would be smuggled into the store row,
+    // where store.ownWallet hands it to shopModel and, ultimately, to the DOM. The exact
+    // key set proves the converter performs EXPLICIT field mapping — the same tooth
+    // RC-PR-02c applies to profileRowToStore.
+    const sdk = {
+      ownerIdentity: { toHexString: () => 'deadbeef' },
+      balance: 42n,
+      // A field the current generated binding does not have; a spread impl leaks it.
+      serverOnlyScratch: 'leak-me',
+    } as unknown as SdkPlayerWalletRow;
+    const stored = playerWalletRowToStore(sdk);
+    const keys = Object.keys(stored as Record<string, unknown>).sort();
+    expect(keys).toEqual(['balance', 'ownerIdentity']);
+  });
+
+  it('RC-PW-04b BITES: the result is a FRESH object, not the SDK row itself', () => {
+    // WRONG IMPL KILLED: `return row as unknown as StoreWallet` — a zero-work "converter"
+    // that satisfies a naive `stored.balance === 50n` assertion while leaving the SDK
+    // Identity object in ownerIdentity (and aliasing SDK-owned memory into the store).
+    const sdk = makeSdkWalletRow('aaa', 5n);
+    const stored = playerWalletRowToStore(sdk);
+    expect(stored as unknown).not.toBe(sdk as unknown);
+  });
+});
+
+describe('rowConvert 11r-e: playerWalletRowToStore — totality (RC-PW-05)', () => {
+  it('RC-PW-05a BITES: never throws across the full u64 balance domain, and round-trips both fields (property)', () => {
+    // ADR-0169 D3 (d): the converter runs inside a subscription row callback and
+    // flushBatch has NO per-listener isolation (ADR-0085 A6) — one throw starves every
+    // sibling table's ingest for that batch, so the world goes stale, not just the wallet.
+    // The property also carries the "byte-identical for ANY u64" half of EARS 11r-e-2:
+    // a Number() round trip fails here for every value above 2^53.
+    fc.assert(
+      fc.property(fc.bigUintN(64), fc.string(), (balance, ownerHex) => {
+        // Block body (not expression body): fast-check reads an expression-bodied
+        // matcher's return value as a `false` predicate and fails spuriously.
+        const stored = playerWalletRowToStore(makeSdkWalletRow(ownerHex, balance));
+        expect(stored.balance).toBe(balance);
+        expect(typeof stored.balance).toBe('bigint');
+        expect(stored.ownerIdentity).toBe(ownerHex);
+      }),
+    );
+  });
+
+  it('RC-PW-05b BITES: does not throw for hostile/degenerate rows (fail-soft, not fail-loud)', () => {
+    // WRONG IMPL KILLED: a defensive converter that VALIDATES and throws
+    // (`if (typeof row.balance !== 'bigint') throw new Error(...)`). Rejecting a bad row
+    // loudly is the right instinct in a reducer and the WRONG one here: the throw
+    // escapes into the SDK's row-callback dispatch and takes the batch with it.
+    const cases: readonly SdkPlayerWalletRow[] = [
+      makeSdkWalletRow('', 0n),
+      makeSdkWalletRow('aaa', U64_MAX),
+      { ownerIdentity: { toHexString: () => '' }, balance: -1n } as SdkPlayerWalletRow,
+      { ownerIdentity: { toHexString: () => 'x' }, balance: 0 } as unknown as SdkPlayerWalletRow,
+      {
+        ownerIdentity: { toHexString: () => 'x' },
+        balance: '100',
+      } as unknown as SdkPlayerWalletRow,
+    ];
+    for (const row of cases) {
+      expect(() => {
+        playerWalletRowToStore(row);
+      }, 'playerWalletRowToStore must never throw — a throw inside a row callback kills the whole flushBatch (ADR-0085 A6)').not.toThrow();
+    }
+  });
+
+  it('RC-PW-05c BITES: a negative balance passes through unchanged (no clamping in the converter)', () => {
+    // The server column is u64 so this is unreachable today, but clamping is a GAME-RULE
+    // concern, never a wire-format concern (the same reasoning as RC-PR-05's negative
+    // rating). WRONG IMPL KILLED: `balance: row.balance < 0n ? 0n : row.balance`, which is
+    // another route to fabricating a zero the server never sent.
+    const stored = playerWalletRowToStore(makeSdkWalletRow('aaa', -7n));
+    expect(stored.balance).toBe(-7n);
+  });
+});

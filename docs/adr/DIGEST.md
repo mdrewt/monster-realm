@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 134 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 135 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -143,6 +143,7 @@ Generated from 134 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0166](./0166-pvp-server-guard-parity.md) | 0166 — PvP server-guard parity: `with_lead` at the PvP start, a fainted-active attack reject, the both-role warp guard, and trade size bounds | Accepted | security-authz, battle, movement-netcode | 11r-a (M-postgate-eleventh-review-residuals §2; EARS E1–E4) | PvP adopts `BattleSide::with_lead` at both start sites and rejects an Attack from a fainted active; the warp guard moves to the both-role ADR-0122 SSOT; `propose_trade` gains O(1) size bounds ahead of its O(N) dedup. |
 | [0167](./0167-pvp-side-b-battle-perspective.md) | 0167 — PvP side-B battle overlay: role-agnostic accessors + a view-boundary perspective projection | Accepted | battle, client-ui | 11r-b | The store's battle accessors match either PvP role and return RAW server rows; a pure `ownPerspective()` projection re-seats the local player as sideA and is applied at exactly ONE view call site, leaving diagnostics on server truth. |
 | [0168](./0168-server-battle-movement-lock.md) | 0168 — Real server battle movement lock: drain-time freeze in `movement_tick`, intake rejects in the move reducers | Accepted | movement-netcode, security-authz, battle | 11r-c (M-postgate-eleventh-review-residuals §2; EARS E1–E3) | `movement_tick` gains a drain-time battle lock (skip the drain, queue intact, via the ADR-0122 SSOT) and `enqueue_move`/`set_move` reject intake mid-battle; `clear_queue` stays deliberately unguarded. |
+| [0169](./0169-wallet-view-runtime-path.md) | 0169 — Wallet view runtime path: `my_wallet` subscription, insert-only ingest, and a three-site call-site tooth | Accepted | client-ui, economy-quests, security-authz | 11r-e (M-postgate-eleventh-review-residuals — ux2b wallet view completion; EARS 11r-e-1..11r-e-9) | Subscribe the owner-scoped `my_wallet` view, ingest it insert-only with no delete handler, and pass `store.ownWallet(identity)` at all THREE `buildShopViewModel*` call sites, pinned by a contiguous-needle ingest tooth and a count tooth. |
 
 ## Harness design corpus (H- namespace)
 
@@ -360,6 +361,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0163](./0163-overlay-probe-substrate-and-click-front-door.md) — uxd3-b (M-postgate-ux-design — unified overlay IA) — 0163 — One overlay probe table behind all five fan-out surfaces, and the AC-12 click front door (Accepted)
 - [0164](./0164-overlay-registry-write-substrate-and-canopen-migration.md) — uxd3-c (M-postgate-ux-design — unified overlay IA) — 0164 — Overlay registry write substrate and `canOpen` migration (Accepted)
 - [0167](./0167-pvp-side-b-battle-perspective.md) — 11r-b — 0167 — PvP side-B battle overlay: role-agnostic accessors + a view-boundary perspective projection (Accepted)
+- [0169](./0169-wallet-view-runtime-path.md) — 11r-e (M-postgate-eleventh-review-residuals — ux2b wallet view completion; EARS 11r-e-1..11r-e-9) — 0169 — Wallet view runtime path: `my_wallet` subscription, insert-only ingest, and a three-site call-site tooth (Accepted)
 
 ### ci-gates
 
@@ -461,6 +463,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0154](./0154-owner-scoped-wallet-view.md) — ux2 (M-postgate-ux-hardening — owner-scoped `#[view]` over `player_wallet` + shop balance seam; EARS ux2-1..ux2-3) — 0154 — Owner-scoped `my_wallet` view over the private `player_wallet` table (Accepted)
 - [0166](./0166-pvp-server-guard-parity.md) — 11r-a (M-postgate-eleventh-review-residuals §2; EARS E1–E4) — 0166 — PvP server-guard parity: `with_lead` at the PvP start, a fainted-active attack reject, the both-role warp guard, and trade size bounds (Accepted)
 - [0168](./0168-server-battle-movement-lock.md) — 11r-c (M-postgate-eleventh-review-residuals §2; EARS E1–E3) — 0168 — Real server battle movement lock: drain-time freeze in `movement_tick`, intake rejects in the move reducers (Accepted)
+- [0169](./0169-wallet-view-runtime-path.md) — 11r-e (M-postgate-eleventh-review-residuals — ux2b wallet view completion; EARS 11r-e-1..11r-e-9) — 0169 — Wallet view runtime path: `my_wallet` subscription, insert-only ingest, and a three-site call-site tooth (Accepted)
 
 ### economy-quests
 
@@ -483,3 +486,4 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0134](./0134-trade-propose-ui.md) — pt-c2 — Client trade-PROPOSE UI (KeyO offer overlay) (Accepted)
 - [0145](./0145-encounter-recruit-economy-tuning-pass.md) — pt-d3 (M-playtest-d content pack — encounter/recruit/economy tuning; EARS pt-d3-1..6) — 0145 — pt-d3 tuning pass: zone 0 frozen, zone 1 carries the wild-legal roster, one economy fix (Accepted)
 - [0154](./0154-owner-scoped-wallet-view.md) — ux2 (M-postgate-ux-hardening — owner-scoped `#[view]` over `player_wallet` + shop balance seam; EARS ux2-1..ux2-3) — 0154 — Owner-scoped `my_wallet` view over the private `player_wallet` table (Accepted)
+- [0169](./0169-wallet-view-runtime-path.md) — 11r-e (M-postgate-eleventh-review-residuals — ux2b wallet view completion; EARS 11r-e-1..11r-e-9) — 0169 — Wallet view runtime path: `my_wallet` subscription, insert-only ingest, and a three-site call-site tooth (Accepted)
