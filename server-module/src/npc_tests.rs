@@ -838,11 +838,7 @@ fn quest_def_missing_arm() -> String {
     let body = extract_npc_fn_body(&stripped, "apply_quest_trigger")
         .expect("fn apply_quest_trigger must exist in npc.rs");
     let squashed = squash_ws(body);
-    let lookup = [
-        "quest_defs.iter().find(|d|d.id==row.quest_id)",
-        "else{",
-    ]
-    .concat();
+    let lookup = ["quest_defs.iter().find(|d|d.id==row.quest_id)", "else{"].concat();
     let start = squashed.find(lookup.as_str()).unwrap_or_else(|| {
         panic!(
             "npc_tests T4: could not find the quest-def lookup `{lookup}` inside \
