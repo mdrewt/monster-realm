@@ -212,6 +212,135 @@ export function parseStringIds(ron, fieldName) {
   return out;
 }
 
+/**
+ * 11r-i (red-team follow-up): comment-masking detector for the STRING gate —
+ * the direct analogue of `append-only-ids.eval.mjs`'s `trailingCommentIdNeedles`,
+ * which this file previously had NO counterpart to at all.
+ *
+ * `readRegistryParts` strips WHOLE-LINE `//` comments (see its docstring), but
+ * `parseStringIds` is otherwise comment-blind: it tracks depth over `(`/`)`
+ * only. So a MID-LINE trailing comment, or a BLOCK comment (which
+ * NOTHING strips), sitting at depth 1 and echoing an id-shaped needle keeps a
+ * genuinely-deleted string id "present" to the scan, and `removedIds` never
+ * flags the removal. Red-team's executed repro:
+ *
+ *   [                                    parseStringIds(ron, 'id')
+ *     (                                    -> ['quest_001', 'quest_002']
+ *       id: "quest_001",                 removedIds([...both...], ids) -> []
+ *       name: "A", // formerly also shipped as id: "quest_002"
+ *     ),                                 <-- quest_002 was REALLY removed
+ *   ]
+ *
+ * That defeats the gate for exactly the ids live player rows key on
+ * (`PlayerQuestRow.quest_id`, `PlayerConversation.current_node_id`,
+ * `Npc.npc_id`), so the registry is REFUSED rather than silently trusted; the
+ * ambiguity has to be resolved by an author (rewrite as `id=quest_002`, or
+ * drop the echo).
+ *
+ * Rules, mirroring the numeric gate exactly:
+ *   - a `//` comment is flagged only when real CODE precedes it on the same
+ *     line — a whole-line `//` comment is already stripped upstream by
+ *     `readRegistryParts` and can therefore never mask anything;
+ *   - a block comment (slash-star … star-slash) is flagged WHEREVER it sits (own line or
+ *     not), because nothing strips block comments;
+ *   - string-literal aware in both directions: a `//` or `/*` inside a quoted
+ *     RON value (e.g. `"Path: C://data"`, `"http://x"`) is DATA, never a
+ *     comment opener, and a quote INSIDE a comment never opens a string.
+ *
+ * The needle is exactly what `parseStringIds` would harvest for THIS
+ * `fieldName` — `<fieldName>:` with a left word boundary, then optional
+ * whitespace, then `"` — so `dialogue_tree_id:` never trips an `npc_id` scan
+ * and the conventional `id=<value>` form is left alone. Matched via
+ * `indexOf`/`slice` because `fieldName` is caller-supplied and `new RegExp(`
+ * is forbidden (Semgrep `detect-non-literal-regexp`).
+ *
+ * @param {string} ron - RON source, as returned by `readRegistryParts`
+ * @param {string} fieldName - the field being scanned, e.g. "id" / "npc_id"
+ * @returns {string[]} human-readable `line N: <comment>` descriptions
+ */
+export function commentIdNeedles(ron, fieldName) {
+  const found = [];
+  let i = 0;
+  let line = 1;
+  let codeSeenOnLine = false;
+  while (i < ron.length) {
+    const ch = ron[i];
+    if (ch === '\n') {
+      line += 1;
+      codeSeenOnLine = false;
+      i += 1;
+      continue;
+    }
+    // Skip a RON string literal WHOLESALE (escapes honoured), so neither `//`
+    // nor `/*` inside a quoted value is ever read as a comment opener.
+    if (ch === '"') {
+      codeSeenOnLine = true;
+      i += 1;
+      while (i < ron.length) {
+        if (ron[i] === '\\') {
+          i += 2;
+          continue;
+        }
+        if (ron[i] === '"') {
+          i += 1;
+          break;
+        }
+        if (ron[i] === '\n') line += 1;
+        i += 1;
+      }
+      continue;
+    }
+    if (ch === '/' && ron[i + 1] === '/') {
+      const nl = ron.indexOf('\n', i);
+      const end = nl === -1 ? ron.length : nl;
+      const comment = ron.slice(i, end);
+      if (codeSeenOnLine && hasFieldIdNeedle(comment, fieldName)) {
+        found.push(`line ${line}: ${comment.trim()}`);
+      }
+      i = end;
+      continue;
+    }
+    if (ch === '/' && ron[i + 1] === '*') {
+      const close = ron.indexOf('*/', i + 2);
+      const end = close === -1 ? ron.length : close + 2;
+      const comment = ron.slice(i, end);
+      if (hasFieldIdNeedle(comment, fieldName)) {
+        found.push(`line ${line}: ${comment.trim()}`);
+      }
+      for (let k = i; k < end; k += 1) {
+        if (ron[k] === '\n') line += 1;
+      }
+      i = end;
+      continue;
+    }
+    if (ch !== ' ' && ch !== '\t' && ch !== '\r') {
+      codeSeenOnLine = true;
+    }
+    i += 1;
+  }
+  return found;
+}
+
+// True when `text` contains `<fieldName>:` (left word boundary) followed by
+// optional whitespace and then a `"` — i.e. exactly the shape `parseStringIds`
+// harvests. `indexOf`/`slice` only: `fieldName` is caller-supplied and
+// `new RegExp(` is forbidden (Semgrep `detect-non-literal-regexp`).
+function hasFieldIdNeedle(text, fieldName) {
+  const needle = `${fieldName}:`;
+  let k = text.indexOf(needle);
+  while (k !== -1) {
+    if (!isIdentChar(text[k - 1])) {
+      let j = k + needle.length;
+      while (j < text.length && (text[j] === ' ' || text[j] === '\t' || text[j] === '\r')) {
+        j += 1;
+      }
+      if (text[j] === '"') return true;
+    }
+    k = text.indexOf(needle, k + 1);
+  }
+  return false;
+}
+
 // Returns the baseline ids that are MISSING from current (the violation set).
 // Deliberately re-implemented here (not imported from append-only-ids.eval.mjs)
 // — a small, self-contained, generic set-difference; the codebase already
@@ -233,6 +362,19 @@ function checkStringRegistry(dirPath, baselinePath, baselineKey, fieldName, labe
     return {
       pass: false,
       detail: `${label}: baseline ${baselinePath} key "${baselineKey}" is missing or EMPTY — a wiped baseline silently disables append-only enforcement (ADR-0006); restore the pinned ids`,
+    };
+  }
+  // 11r-i (red-team follow-up): refuse BEFORE extracting. A trailing/block
+  // comment echoing `<fieldName>: "…"` makes `parseStringIds`' output
+  // untrustworthy for this registry (it would silently keep a removed id
+  // "present"), so the registry is refused rather than scanned — see
+  // `commentIdNeedles`. Placed ahead of `parseStringIds` so an ambiguous
+  // comment is reported as the ambiguity it is, never as a parse throw.
+  const maskingComments = commentIdNeedles(ron, fieldName);
+  if (maskingComments.length) {
+    return {
+      pass: false,
+      detail: `${label}: a comment (trailing mid-line \`//\`, or a block comment) carries a \`${fieldName}: "…"\`-shaped needle, which masks a removed stable string id from the append-only scan — rewrite it in the \`${fieldName}=<value>\` form: ${maskingComments.join('; ')}`,
     };
   }
   const current = parseStringIds(ron, fieldName);
@@ -486,6 +628,116 @@ export default async function () {
     }
   } finally {
     rmSync(commentDir, { recursive: true, force: true });
+  }
+
+  // --------------------------------------------------------------------
+  // T3-i: comment masking — the red-team's executed repro, verbatim:
+  //
+  //   const ron = '[\n  (\n    id: "quest_001",\n' +
+  //               '    name: "A", // formerly also shipped as id: "quest_002"\n' +
+  //               '  ),\n]\n';
+  //   parseStringIds(ron, 'id')                          -> ['quest_001','quest_002']
+  //   removedIds(['quest_001','quest_002'], ids)         -> []   <-- gate PASSES
+  //
+  // quest_002 was genuinely REMOVED and the drift was invisible: this file
+  // had NO comment awareness beyond `readRegistryParts`' whole-line strip —
+  // no counterpart at all to the numeric gate's `trailingCommentIdNeedles`.
+  // Because the ids this gate pins are the ones live player rows key on
+  // (`PlayerQuestRow.quest_id`, `PlayerConversation.current_node_id`,
+  // `Npc.npc_id`), that is the gate's whole reason to exist.
+  //
+  // Cases below cover: (1) the verbatim repro; (2) the same via a `/* … */`
+  // BLOCK comment, which NOTHING strips and which sits on its own line (so a
+  // guard reusing the `//` rule's "code must precede it" condition still
+  // fails); (3) a block comment whose needle is on a LATER line than its
+  // opener; (4) the `npc_id` field, proving the guard is fieldName-aware and
+  // not hardcoded to `id`. All go through the REAL checkStringRegistry.
+  // --------------------------------------------------------------------
+  const maskingCommentCases = [
+    {
+      what: 'trailing mid-line // comment (red-team repro, verbatim)',
+      label: 'quests',
+      fieldName: 'id',
+      ron: '[\n  (\n    id: "quest_001",\n    name: "A", // formerly also shipped as id: "quest_002"\n  ),\n]\n',
+      baselineIds: ['quest_001', 'quest_002'],
+    },
+    {
+      what: 'block comment on its own line, no code beside it',
+      label: 'quests',
+      fieldName: 'id',
+      ron: '[\n  (\n    id: "quest_001",\n    /* id: "quest_002" retired, folded into quest_001 */\n    name: "A",\n  ),\n]\n',
+      baselineIds: ['quest_001', 'quest_002'],
+    },
+    {
+      what: 'multi-line block comment, needle after the opening line',
+      label: 'dialogue_trees',
+      fieldName: 'id',
+      ron: '[\n  (\n    id: "tree_a",\n    /* retired:\n       id: "tree_b" was merged in here\n    */\n    nodes: [],\n  ),\n]\n',
+      baselineIds: ['tree_a', 'tree_b'],
+    },
+    {
+      what: 'fieldName-aware: an npc_id needle in a trailing comment',
+      label: 'npc_ids',
+      fieldName: 'npc_id',
+      // The comment sits INSIDE the tuple (depth 1), so `parseStringIds`
+      // genuinely harvests "tideglass_shopkeeper" from it and the removal is
+      // invisible — a comment after the closing `)` would be depth 0 and get
+      // caught by the depth rule alone, proving nothing about this guard.
+      ron: '[\n  (\n    id: 1,\n    npc_id: "elder_oak", // absorbed npc_id: "tideglass_shopkeeper"\n    zone_id: 0,\n  ),\n]\n',
+      baselineIds: ['elder_oak', 'tideglass_shopkeeper'],
+    },
+  ];
+  for (const { what, label, fieldName, ron, baselineIds } of maskingCommentCases) {
+    const result = withTempStringRegistry(ron, baselineIds, fieldName, label);
+    if (result.pass) {
+      return {
+        name,
+        pass: false,
+        detail: `T3-i proof-of-teeth (${what}): ${label} passed with a baseline id genuinely gone from every real field, surviving ONLY inside a comment — the gate must refuse the registry rather than trust parseStringIds' comment-blind scan — got ${JSON.stringify(result)}`,
+      };
+    }
+  }
+
+  // --------------------------------------------------------------------
+  // T3-i(controls): the comment guard must not become a blunt "contains a
+  // slash" refusal. Negative controls a string-BLIND or needle-blind
+  // implementation would false-fail:
+  //   (1) `//` and slash-star sequences inside a quoted RON string VALUE are
+  //       DATA (a path, a URL, flavour text) — never comment openers. This is
+  //       the exact hazard the sibling T1 gate's `"Path: C://data"` fixture
+  //       pins for dialogue text;
+  //   (2) a comment mentioning the field in the conventional `id=<value>`
+  //       form, or naming a DIFFERENT field, carries no harvestable needle.
+  // --------------------------------------------------------------------
+  const maskingCommentControls = [
+    {
+      what: 'comment-looking sequences inside quoted string VALUES',
+      fieldName: 'id',
+      ron: '[\n  (id: "quest_001", name: "Path: C://data"),\n  (id: "quest_002", name: "see /* id: \\"quest_009\\" */ in the lore"),\n]\n',
+      baselineIds: ['quest_001', 'quest_002'],
+    },
+    {
+      what: 'conventional `id=<value>` form and a different field name',
+      fieldName: 'id',
+      ron: '[\n  (id: "quest_001", name: "A"), // id=quest_002 retired; npc_id: "elder_oak" is unrelated\n]\n',
+      baselineIds: ['quest_001'],
+    },
+    {
+      what: 'left word boundary: a `dialogue_tree_id:` needle must not trip an `npc_id` scan',
+      fieldName: 'npc_id',
+      ron: '[\n  (id: 1, npc_id: "elder_oak"), // was dialogue_tree_id: "elder_oak_talk"\n]\n',
+      baselineIds: ['elder_oak'],
+    },
+  ];
+  for (const { what, fieldName, ron, baselineIds } of maskingCommentControls) {
+    const result = withTempStringRegistry(ron, baselineIds, fieldName, 'control');
+    if (!result.pass) {
+      return {
+        name,
+        pass: false,
+        detail: `T3-i negative control FAILED (${what}): the comment guard must not refuse this — got ${JSON.stringify(result)}`,
+      };
+    }
   }
 
   const registries = [

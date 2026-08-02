@@ -60,44 +60,96 @@ function readRegistryDir(dirPath) {
 // species/evolutions/encounters/items/shops but NOT abilities/npcs; extending it
 // is a named follow-up in ADR-0173).
 //
-// String-aware: a `//` inside a RON string value (e.g. a URL in flavour text) is
-// not a comment and must not trip the guard. The needle is `\bid:\s*\d` — exactly
-// what `parseIds` would harvest — so `item_id:`/`species_id:` mentions and the
+// 11r-i (red-team follow-up): BLOCK comments `/* … */` are a second, WIDER
+// instance of the same blind spot. Nothing strips them — `readRegistryDir`'s
+// `^[ \t]*//.*$` replace is line-comment-only — so a block comment echoing
+// `id: 99` keeps a genuinely-deleted id "present" to `parseIds` exactly as a
+// trailing `//` comment does, and it does not even need to share a line with
+// real code:
+//
+//   [                                          parseIds -> [1, 99, 2]
+//     (id: 1, name: "A"),                      removedIds([1,2,99], …) -> []
+//     /* id: 99 retired, no longer real */     <-- id 99 REALLY removed, unflagged
+//     (id: 2, name: "B"),
+//   ]
+//
+// Block comments are already used in this repo's `.ron` content, and the Rust
+// `t6_ron_comment_hygiene_over_tuning_dirs` sees inside them only for the
+// tuning dirs — zones/skills/abilities/npcs/species had no block-comment
+// defence at all. So block comments are scanned here for EVERY registry.
+//
+// A block comment is flagged REGARDLESS of whether real code precedes it on
+// its line (unlike a `//` comment, which is only flagged mid-line, because a
+// whole-line `//` comment is already stripped upstream by `readRegistryDir`
+// and so can never mask anything).
+//
+// String-aware in BOTH directions: a `//` or `/*` inside a RON string value
+// (e.g. a URL in flavour text) is DATA, not a comment, and must not trip the
+// guard; conversely quotes INSIDE a comment must never be mistaken for the
+// start of a string literal. The needle is `\bid:\s*\d` — exactly what
+// `parseIds` would harvest — so `item_id:`/`species_id:` mentions and the
 // conventional `id=N` form are left alone.
 function trailingCommentIdNeedles(ron) {
   const found = [];
-  const lines = ron.split('\n');
-  for (let n = 0; n < lines.length; n += 1) {
-    const line = lines[n];
-    let inString = false;
-    let codeSeen = false;
-    for (let i = 0; i < line.length; i += 1) {
-      const ch = line[i];
-      if (inString) {
-        if (ch === '\\') {
-          i += 1;
-        } else if (ch === '"') {
-          inString = false;
-        }
-        continue;
-      }
-      if (ch === '"') {
-        inString = true;
-        codeSeen = true;
-        continue;
-      }
-      if (ch === '/' && line[i + 1] === '/') {
-        const comment = line.slice(i);
-        // Whole-line comments are already stripped upstream and are safe anyway.
-        if (codeSeen && /\bid:\s*\d/.test(comment)) {
-          found.push(`line ${n + 1}: ${comment.trim()}`);
-        }
-        break;
-      }
-      if (ch !== ' ' && ch !== '\t' && ch !== '\r') {
-        codeSeen = true;
-      }
+  let i = 0;
+  let line = 1;
+  let codeSeenOnLine = false;
+  while (i < ron.length) {
+    const ch = ron[i];
+    if (ch === '\n') {
+      line += 1;
+      codeSeenOnLine = false;
+      i += 1;
+      continue;
     }
+    // A RON string literal is skipped WHOLESALE, escapes honoured, so neither
+    // `//` nor `/*` inside a quoted value is ever read as a comment opener.
+    if (ch === '"') {
+      codeSeenOnLine = true;
+      i += 1;
+      while (i < ron.length) {
+        if (ron[i] === '\\') {
+          i += 2;
+          continue;
+        }
+        if (ron[i] === '"') {
+          i += 1;
+          break;
+        }
+        if (ron[i] === '\n') line += 1;
+        i += 1;
+      }
+      continue;
+    }
+    if (ch === '/' && ron[i + 1] === '/') {
+      const nl = ron.indexOf('\n', i);
+      const end = nl === -1 ? ron.length : nl;
+      const comment = ron.slice(i, end);
+      // Whole-line comments are already stripped upstream and are safe anyway.
+      if (codeSeenOnLine && /\bid:\s*\d/.test(comment)) {
+        found.push(`line ${line}: ${comment.trim()}`);
+      }
+      i = end;
+      continue;
+    }
+    if (ch === '/' && ron[i + 1] === '*') {
+      const close = ron.indexOf('*/', i + 2);
+      const end = close === -1 ? ron.length : close + 2;
+      const comment = ron.slice(i, end);
+      // NOTHING strips block comments — flag them wherever they sit.
+      if (/\bid:\s*\d/.test(comment)) {
+        found.push(`line ${line}: ${comment.trim()}`);
+      }
+      for (let k = i; k < end; k += 1) {
+        if (ron[k] === '\n') line += 1;
+      }
+      i = end;
+      continue;
+    }
+    if (ch !== ' ' && ch !== '\t' && ch !== '\r') {
+      codeSeenOnLine = true;
+    }
+    i += 1;
   }
   return found;
 }
@@ -119,7 +171,7 @@ function checkRegistry(ronDir, baselinePath, baselineKey, label) {
   if (maskingComments.length) {
     return {
       pass: false,
-      detail: `${label}: trailing (mid-line) comment carries an id-shaped needle, which masks a removed id from the append-only scan — rewrite it in the \`id=N\` form: ${maskingComments.join('; ')}`,
+      detail: `${label}: a comment (trailing mid-line \`//\`, or a \`/* … */\` block) carries an id-shaped needle, which masks a removed id from the append-only scan — rewrite it in the \`id=N\` form: ${maskingComments.join('; ')}`,
     };
   }
   const current = parseIds(ron);
@@ -315,6 +367,90 @@ export default async function () {
         name,
         pass: false,
         detail: `T2-d proof-of-teeth: ${label} passed with id 99 genuinely gone from every real field, surviving ONLY inside a trailing mid-line comment — the gate must still flag it as removed (residual: extend game-core/tests/{pt_d1_roster,pt_d3_tuning}.rs comment_needle_violations to abilities/npcs, tracked in ADR-0173)`,
+      };
+    }
+  }
+
+  // --------------------------------------------------------------------
+  // T2-e: BLOCK-comment masking — the red-team's executed repro, verbatim:
+  //
+  //   const ron = '[\n  (id: 1, name: "A"),\n' +
+  //               '  /* id: 99 retired, no longer a real entry */\n' +
+  //               '  (id: 2, name: "B"),\n]\n';
+  //   parseIds(ron)                 -> [1, 99, 2]
+  //   removedIds([1,2,99], [1,99,2]) -> []      <-- id 99 REALLY removed, unflagged
+  //
+  // `readRegistryDir` strips WHOLE-LINE `//` comments only, and T2-d's guard
+  // (as first written) only looked at mid-line `//` comments — so a `/* … */`
+  // block comment was invisible to BOTH, for EVERY registry. Note the block
+  // comment here sits on its OWN line with no code beside it, so a guard that
+  // reuses the `//` rule's "only when real code precedes it" condition still
+  // fails this tooth: block comments are never stripped and must be flagged
+  // wherever they sit.
+  //
+  // Applied to all seven registries' shapes via the shared checkRegistry —
+  // zones/skills/abilities/npcs/species have no Rust-side block-comment
+  // defence at all (`t6_ron_comment_hygiene_over_tuning_dirs` covers only the
+  // tuning dirs), so this JS guard is their only net.
+  // --------------------------------------------------------------------
+  const blockCommentCases = [
+    {
+      label: 'abilities',
+      key: 'abilities',
+      ron: '[\n  (id: 1, name: "A"),\n  /* id: 99 retired, no longer a real entry */\n  (id: 2, name: "B"),\n]\n',
+    },
+    {
+      label: 'npcs',
+      key: 'npcs',
+      ron: '[\n  (id: 1, npc_id: "a", zone_id: 0), /* was id: 99 before consolidation */\n  (id: 2, npc_id: "b", zone_id: 0),\n]\n',
+    },
+    {
+      label: 'species',
+      key: 'species',
+      // Multi-line block comment: the needle is on a LATER line than the `/*`,
+      // killing a guard that only inspects the opening line of the span.
+      ron: '[\n  (id: 1, name: "A"),\n  /* retired roster entry:\n     id: 99 was folded into id 2\n  */\n  (id: 2, name: "B"),\n]\n',
+    },
+  ];
+  for (const { label, key, ron } of blockCommentCases) {
+    const result = withTempRegistry(ron, [1, 2, 99], key, label);
+    if (result.pass) {
+      return {
+        name,
+        pass: false,
+        detail: `T2-e proof-of-teeth: ${label} passed with id 99 genuinely gone from every real field, surviving ONLY inside a /* … */ BLOCK comment — nothing strips block comments, so the gate must refuse the registry rather than trust parseIds' raw scan — got ${JSON.stringify(result)}`,
+      };
+    }
+  }
+
+  // --------------------------------------------------------------------
+  // T2-e(controls): the block-comment guard must not become a blunt
+  // "contains /*" refusal. Two negative controls, both of which a
+  // string-BLIND or needle-blind implementation would false-fail:
+  //   (1) a block comment with NO id-shaped needle is fine (the `id=N`
+  //       convention, and ordinary prose, must stay authorable);
+  //   (2) `/*` and `//` appearing INSIDE a quoted RON string VALUE are DATA
+  //       (flavour text, a URL, a path) — never a comment opener.
+  // Kills a guard that scans raw text for `/*` without string-literal
+  // awareness, which would refuse legitimate committed content.
+  // --------------------------------------------------------------------
+  const blockCommentControls = [
+    {
+      what: 'block comment with no id-shaped needle (id=N convention)',
+      ron: '[\n  (id: 1, name: "A"),\n  /* id=99 was retired here; see ADR-0006 */\n  (id: 2, name: "B"),\n]\n',
+    },
+    {
+      what: 'comment-looking sequences inside a quoted string VALUE',
+      ron: '[\n  (id: 1, name: "Path: C://data"),\n  (id: 2, name: "glob /* id: 99 */ in flavour text"),\n]\n',
+    },
+  ];
+  for (const { what, ron } of blockCommentControls) {
+    const result = withTempRegistry(ron, [1, 2], 'zones', 'zones');
+    if (!result.pass) {
+      return {
+        name,
+        pass: false,
+        detail: `T2-e negative control FAILED (${what}): the comment guard must not refuse this — got ${JSON.stringify(result)}`,
       };
     }
   }

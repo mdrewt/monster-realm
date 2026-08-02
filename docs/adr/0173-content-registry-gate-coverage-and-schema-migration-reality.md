@@ -257,27 +257,63 @@ one.
 ## Consequences
 
 **Positive.** The dialogue gate now catches text drift and survives content
-fan-out. Nine registries are append-only-gated instead of five, including the
-three whose ids live player rows key on. A broken quest reference is visible in
-the logs instead of silently stalling a player's quest. The most load-bearing
-schema assumption in the project is now a measured fact with a documented safe
-recipe, rather than an untested claim in an eval header.
+fan-out. **Ten** registry-gates exist where there were five: the original five
+(zones, species, skills, items, zone_maps) plus abilities, shops and npcs
+(numeric) and quests and dialogue_trees (string) — `npcs` is gated twice over,
+once on its numeric entity `id` and once on its string `npc_id`. A broken quest
+reference is visible in the logs instead of silently stalling a player's quest.
+The most load-bearing schema assumption in the project is now a measured fact
+with a documented safe recipe, rather than an untested claim in an eval header.
+
+Of the 12 glob-loaded registries, that leaves `encounters`, `heal_locations` and
+`zone_maps`-adjacent content. `heal_locations` is excluded deliberately (D3).
+**`encounters` needs no append-only gate**: its entries carry no stable per-entry
+`id:` field at all (`game-core/content/encounters/000-core.ron` — each entry is a
+`species_id`/`weight`/`min_level`/`max_level` tuple keyed by the row's `zone_id`),
+so there is no id for a player row to key on and nothing to pin.
 
 **Negative / accepted.**
 
-- **Trailing-comment blind spot on the two new numeric registries.**
-  `readRegistryDir` strips only *whole-line* `//` comments (deliberately — a
-  mid-line `//` can occur inside a string value). A trailing comment mentioning
-  `id: 99` therefore keeps a genuinely deleted id "present", defeating the gate.
-  `game-core/tests/{pt_d1_roster,pt_d3_tuning}.rs::comment_needle_violations`
-  defends species, evolutions, encounters, items and shops against exactly this —
-  but **not `abilities` or `npcs`**. `game-core/**` is outside this slice's
-  declared `touches:`, so the Rust-side guard cannot be extended here. Mitigated
-  in-scope by an eval tooth asserting that a trailing-comment id does not mask a
-  real removal; **extending `comment_needle_violations` to `abilities` and `npcs`
-  is a named follow-up.**
+- **Comment-masking of a removed id** — a mid-line `//` or a `/* … */` block
+  comment that still mentions `id: 99` keeps a genuinely deleted id looking
+  present, because `readRegistryDir` strips only *whole-line* `//` comments
+  (deliberately: a mid-line `//` can occur inside a string value) and `parseIds`
+  then scans whatever survives. Both vectors were proven live by a red-team pass.
+  Closed **in-scope** by `trailingCommentIdNeedles` (numeric gate) and
+  `commentIdNeedles` (string gate): a string-literal-aware cursor that scans both
+  comment forms and makes the registry check **refuse** an ambiguous registry
+  rather than silently trust the scan, applied uniformly to every registry.
+  `parseIds`/`readRegistryDir`/`removedIds` are byte-identical to before — the
+  `game-core/tests/{pt_d1_roster,pt_d3_tuning}.rs` pins on their semantics still
+  hold. **Residual:** the Rust-side `comment_needle_violations` /
+  `t6_ron_comment_hygiene_over_tuning_dirs` guards still cover only
+  species/evolutions/encounters/items/shops and only the `//` form; extending
+  them to `abilities`/`npcs` and to block comments is a **named follow-up**
+  (`game-core/**` is outside this slice's `touches:`).
+- **`quest_defs_load_error` is an unbounded, client-triggerable `log::error!`**
+  (`server-module/src/npc.rs:161-167`, pre-existing and ten lines above the code
+  this slice hardens). `cached_quest_defs` caches its `Err`, so a malformed
+  embedded RON makes that line fire on *every* `talk()` call with no limiter — a
+  client looping `talk` turns a content defect into a log-ingest DoS. It is the
+  identical failure class ADR-0170 D4 exists to close. Deliberately **not** fixed
+  here: it is outside this slice's declared items and would ship an untested
+  behaviour change. **Named follow-up:** give it its own `RateLimiter` static
+  alongside `QUEST_DEF_MISSING_LIMITER`.
+- **The `npc_tests.rs` source-scan teeth prove shape, not semantics.** They pin
+  that the escaped binding is what reaches `log::warn!`, that the window operand
+  is the named constant, that `row.quest_id` appears exactly once in the arm and
+  that exactly one `log::` macro exists there — three successive red-team/audit
+  passes each found a cheat that satisfied the previous tooth set (an unread
+  `let _escaped =` binding; a second ungated `log::error!` leaking the raw value;
+  a `check(now_ms(ctx), 0)` window). The compiler (`clippy -D warnings`) remains
+  the backstop for the shadow-rebind variant. This is the accepted cost of having
+  no SpacetimeDB reducer-test harness.
 - The `quest_def_missing` limiter is not keyed per quest id (D4).
-- `next_node` linkage is not compared by C6 (D1).
+- `next_node`/`root_node_id` linkage is not compared by C6 (D1). A red-team pass
+  confirmed a crafted RON/bundle pair with identical text but different
+  navigation targets passes clean. Not currently exploitable — `nextNodeId` is
+  dead client-side (the server drives navigation via `conv.currentNodeId`) — but
+  it becomes real the moment any client-side prediction reads it.
 - `readRegistryDir` is duplicated three times across evals with **divergent**
   comment-strip semantics (`append-only-ids.eval.mjs:21`,
   `zone-id-append-only.eval.mjs:10`,

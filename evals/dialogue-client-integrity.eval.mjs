@@ -17,7 +17,7 @@
 //       part separately) and segmented per-tree (node ids are tree-scoped, NOT
 //       global) before comparing node text and the ORDERED list of choice texts
 //       against DIALOGUE_TREES, bidirectionally (a bundle-only tree/node is
-//       drift too). See T1-a..T1-l below for the full tooth list.
+//       drift too). See T1-a..T1-n below for the full tooth list.
 //   C7. main.ts contains dismissPending flag (prevents double dismiss_dialogue on Escape)
 //
 // Implementation note: indexOf and split ONLY — NO `new RegExp(` anywhere.
@@ -374,27 +374,6 @@ function ronStruct(cur, name) {
 }
 
 /** @param {{src: string, i: number}} cur */
-function ronMap(cur) {
-  cur.i++; // '{'
-  for (;;) {
-    ronTrivia(cur);
-    if (cur.src[cur.i] === '}') {
-      cur.i++;
-      return { kind: 'map' };
-    }
-    if (cur.i >= cur.src.length) throw new Error('RON parse error: unterminated map');
-    ronValue(cur);
-    ronTrivia(cur);
-    if (cur.src[cur.i] === ':') {
-      cur.i++;
-      ronValue(cur);
-    }
-    ronTrivia(cur);
-    if (cur.src[cur.i] === ',') cur.i++;
-  }
-}
-
-/** @param {{src: string, i: number}} cur */
 function ronValue(cur) {
   ronTrivia(cur);
   const s = cur.src;
@@ -409,7 +388,21 @@ function ronValue(cur) {
   }
   if (ch === '[') return ronSeq(cur);
   if (ch === '(') return ronStruct(cur, null);
-  if (ch === '{') return ronMap(cur);
+  if (ch === '{') {
+    // 11r-i (red-team simplify lens): RON map literals were previously walked
+    // by a `ronMap` helper that silently ACCEPTED and DISCARDED their content
+    // — unreachable dead code (the dialogue schema,
+    // game-core/src/dialogue/model.rs, has no map-typed field) whose only
+    // possible behaviour was to swallow, not to check. Deleted; a `{` here now
+    // fails LOUD, matching how the raw/byte-string case just below is handled.
+    // If a map-typed field is ever added to the dialogue schema, this throw is
+    // the signal to teach the checker about it deliberately.
+    throw new Error(
+      `unsupported string form: RON map literal '{' at offset ${cur.i} — the dialogue ` +
+        'schema (game-core/src/dialogue/model.rs) has no map-typed field, so the ' +
+        'dialogue-tree checker refuses to walk one rather than silently discard its content',
+    );
+  }
   if (ch === "'") {
     scanQuoted(cur, "'"); // char literal — value irrelevant, but must be skipped safely
     return { kind: 'other' };
@@ -954,8 +947,19 @@ export function decodeRonString(literal) {
  * Decode a TS string literal's INNER content (between the opening and
  * closing `'` or `"`, quotes NOT included) using JS/TS string escape rules:
  *   `\\`  `\'`  `\"`  `\n`  `\r`  `\t`  `\0`
+ *   `\xHH`    — exactly 2 hex digits (ECMAScript HexEscapeSequence)
  *   `\uXXXX`  — exactly 4 hex digits, BARE (JS's own form — the opposite of
- *               RON's braced form; do not conflate the two grammars)
+ *               RON's *only* form; do not conflate the two grammars)
+ *   `\u{H…H}` — BRACED code-point escape, 1+ hex digits, value <= 0x10FFFF
+ *               (ES2015 UnicodeEscapeSequence). Unlike RON, TS accepts BOTH
+ *               the bare and the braced form, so both are decoded here.
+ *
+ * 11r-i (red-team follow-up): `\xHH` and `\u{…}` were previously rejected as
+ * `unsupported string form` even though `tsc`/Node accept both. That made the
+ * C6 gate hard-FAIL on legitimate `dialogueContent.ts` content — e.g. an emoji
+ * written `'\u{1F600}'` in dialogue text. The rejection is now limited to
+ * genuinely unsupported forms; `decodeRonString` is deliberately NOT relaxed,
+ * because RON really does reject a bare `\uXXXX` (T1-k pins that).
  *
  * Any escape outside this set MUST throw with `.message` containing
  * `unsupported string form`. This function decodes ONLY a single plain
@@ -1010,9 +1014,50 @@ export function decodeTsString(literal) {
       i += 2;
       continue;
     }
+    if (esc === 'x') {
+      // ECMAScript HexEscapeSequence: exactly 2 hex digits. Malformed input
+      // still throws rather than guessing a width (the T1-k discipline,
+      // applied to the TS grammar).
+      const hi = literal[i + 2];
+      const lo = literal[i + 3];
+      if (!isHexDigit(hi) || !isHexDigit(lo)) {
+        throw new Error(
+          `unsupported string form: TS \\x escape needs exactly 2 hex digits (got '\\x${literal.slice(i + 2, i + 4)}')`,
+        );
+      }
+      out += String.fromCharCode(Number.parseInt(`${hi}${lo}`, 16));
+      i += 4;
+      continue;
+    }
     if (esc === 'u') {
-      // JS/TS grammar: BARE \uXXXX, exactly 4 hex digits (the opposite of
-      // RON's braced form — the two grammars are never conflated).
+      // ES2015 braced code-point escape: \u{1..N hex}, value <= 0x10FFFF.
+      // Checked BEFORE the bare form because `\u{` can never be a valid bare
+      // \uXXXX ('{' is not a hex digit).
+      if (literal[i + 2] === '{') {
+        let j = i + 3;
+        let hex = '';
+        while (j < literal.length && isHexDigit(literal[j])) {
+          hex += literal[j];
+          j++;
+        }
+        if (hex.length === 0 || literal[j] !== '}') {
+          throw new Error(
+            'unsupported string form: TS braced unicode escape must be \\u{...} with 1 or more ' +
+              'hex digits followed by a closing brace',
+          );
+        }
+        const cp = Number.parseInt(hex, 16);
+        if (cp > 0x10ffff) {
+          throw new Error(
+            `unsupported string form: TS \\u{${hex}} exceeds the maximum code point 0x10FFFF`,
+          );
+        }
+        out += String.fromCodePoint(cp);
+        i = j + 1;
+        continue;
+      }
+      // JS/TS grammar: BARE \uXXXX, exactly 4 hex digits (RON has no such
+      // form — the two grammars are never conflated).
       const hex = literal.slice(i + 2, i + 6);
       if (
         hex.length !== 4 ||
@@ -1022,7 +1067,7 @@ export function decodeTsString(literal) {
         !isHexDigit(hex[3])
       ) {
         throw new Error(
-          `unsupported string form: TS unicode escape must be a bare \\uXXXX with exactly 4 hex digits (got '\\u${hex}')`,
+          `unsupported string form: TS unicode escape must be a bare \\uXXXX with exactly 4 hex digits, or a braced \\u{...} (got '\\u${hex}')`,
         );
       }
       out += String.fromCharCode(Number.parseInt(hex, 16));
@@ -1396,7 +1441,8 @@ export const DIALOGUE_TREES = new Map([
 `;
 
 // ---------------------------------------------------------------------------
-// C6 (11r-i/T1) proof-of-teeth fixtures — T1-a..T1-l.
+// C6 (11r-i/T1) proof-of-teeth fixtures — T1-a..T1-n (T1-m/T1-n added by the
+// 11r-i red-team follow-up: legitimate TS escapes, and RON map rejection).
 //
 // All fixtures below are passed to `checkRonBundleCrossRef` (or, for T1-k,
 // directly to `decodeRonString`). Every fixture is annotated with WHICH wrong
@@ -1867,9 +1913,127 @@ const T1K_BARE_UNBRACED_ESCAPE = 'It\\u0041s bare, not RON-braced.';
 const T1K_BRACED_NON_HEX_ESCAPE = 'Bad \\u{ZZZZ} escape.';
 const T1K_UNTERMINATED_BRACE_ESCAPE = 'Unterminated \\u{1234 and then more text follows.';
 
+// --- T1-m: legitimate TS escapes must DECODE, malformed ones must throw -----
+// 11r-i (red-team follow-up). `\u{1F600}` (ES2015 braced code-point escape)
+// and `\x41` (ECMAScript HexEscapeSequence) are valid TypeScript that
+// `tsc`/Node accept, but `decodeTsString` used to throw `unsupported string
+// form` on BOTH. That is a false-FAIL, not a tooth: the moment a
+// `dialogueContent.ts` edit used either form (an emoji in dialogue text is the
+// obvious case), the C6 gate would hard-fail on legitimate, correct content.
+//
+// The end-to-end fixtures below express the SAME text two ways — a literal
+// character in the RON, the corresponding escape in the TS bundle — so they
+// must cross-reference CLEAN. The unit fixtures underneath pin that the
+// fail-loud posture survives for genuinely malformed variants of each new
+// form (kills a fix that just swallows unknown escapes).
+//
+// `decodeRonString` is deliberately NOT relaxed — RON genuinely rejects a bare
+// `\uXXXX`, and T1-k above pins exactly that.
+const T1M_EMOJI = String.fromCodePoint(0x1f600);
+const T1M_RON_EMOJI = `
+[
+  (
+    id: "elder_oak_talk",
+    root_node_id: "greeting",
+    nodes: [
+      (
+        id: "greeting",
+        text: "Hello ${T1M_EMOJI} friend.",
+        entry_conditions: [],
+        auto_effects: [],
+        choices: [
+          (text: "A nice day.", conditions: [], effects: [], next_node: None),
+        ],
+      ),
+    ],
+  ),
+]
+`;
+// Bundle writes the same emoji as a BRACED code-point escape, and the same
+// choice text's 'A' as a legacy `\x41` two-hex escape.
+const T1M_BUNDLE_BRACED_AND_HEX_ESCAPES = `
+export const DIALOGUE_TREES = new Map([
+  ['elder_oak_talk', {
+    nodes: new Map([
+      ['greeting', { text: 'Hello \\u{1F600} friend.', choices: [{ text: '\\x41 nice day.', nextNodeId: null }] }],
+    ]),
+  }],
+]);
+`;
+// Same shape, but the escape decodes to the WRONG character — proves the new
+// escape support did not turn into "accept anything shaped like an escape".
+const T1M_BUNDLE_WRONG_CODEPOINT = `
+export const DIALOGUE_TREES = new Map([
+  ['elder_oak_talk', {
+    nodes: new Map([
+      ['greeting', { text: 'Hello \\u{1F601} friend.', choices: [{ text: '\\x41 nice day.', nextNodeId: null }] }],
+    ]),
+  }],
+]);
+`;
+// Unit fixtures — inner content of a TS string literal, quotes excluded.
+const T1M_ACCEPTED = [
+  { literal: '\\x41', expected: 'A', what: 'legacy two-hex \\xHH escape' },
+  { literal: '\\u{1F600}', expected: T1M_EMOJI, what: 'ES2015 braced code-point escape' },
+  { literal: '\\u{41}', expected: 'A', what: 'braced escape with fewer than 4 hex digits' },
+  { literal: '\\u0041', expected: 'A', what: 'bare four-hex escape (must still work)' },
+];
+const T1M_REJECTED = [
+  { literal: '\\xZZ', what: 'malformed \\x escape (non-hex digits)' },
+  { literal: '\\x4', what: 'truncated \\x escape (one hex digit)' },
+  { literal: '\\u{ZZZZ}', what: 'malformed braced escape (non-hex digits)' },
+  { literal: '\\u{1F600', what: 'unterminated braced escape (no closing brace)' },
+  { literal: '\\u{}', what: 'empty braced escape' },
+  { literal: '\\u{110000}', what: 'braced escape above the maximum code point' },
+  { literal: '\\q', what: 'unknown escape (fail-loud posture must survive)' },
+];
+
+// --- T1-n: a RON map literal must be REJECTED, never silently discarded -----
+// 11r-i (red-team simplify lens). `ronMap` walked RON `{…}` map literals and
+// returned `{kind:'map'}` — it silently ACCEPTED and DISCARDED their content,
+// unlike the byte/raw-string case beside it which throws `unsupported string
+// form`. It was also unreachable: the dialogue schema
+// (game-core/src/dialogue/model.rs) has no map-typed field. Deleting it is
+// strictly simpler AND strengthens the fail-loud posture — but only if the `{`
+// dispatch actually rejects. This fixture is a dialogue tree carrying a
+// map-typed field whose content silently disappeared under the old code; the
+// gate must now refuse it loudly.
+const T1N_RON_MAP_LITERAL = `
+[
+  (
+    id: "elder_oak_talk",
+    root_node_id: "greeting",
+    metadata: { "unexpected": "map-typed field" },
+    nodes: [
+      (
+        id: "greeting",
+        text: "The ancient oak spirit greets you.",
+        entry_conditions: [],
+        auto_effects: [],
+        choices: [
+          (text: "I seek a quest.", conditions: [], effects: [], next_node: None),
+        ],
+      ),
+    ],
+  ),
+]
+`;
+// The bundle side MATCHES the RON's tree/node/choice text exactly — so the
+// only thing that can fail this fixture is the map literal itself. A gate that
+// silently walked past the map would report a clean PASS here.
+const T1N_BUNDLE_MATCHING = `
+export const DIALOGUE_TREES = new Map([
+  ['elder_oak_talk', {
+    nodes: new Map([
+      ['greeting', { text: 'The ancient oak spirit greets you.', choices: [{ text: 'I seek a quest.', nextNodeId: null }] }],
+    ]),
+  }],
+]);
+`;
+
 // --- T1-l: positive control ---------------------------------------------
 // (real committed files — exercised in the REAL CHECKS section below, not
-// here; listed for completeness of the T1-a..T1-l enumeration.)
+// here; listed for completeness of the T1-a..T1-n enumeration.)
 
 /**
  * Small helper used only by proof-of-teeth blocks below: build a ronParts
@@ -2347,6 +2511,114 @@ export default async function () {
         name,
         pass: false,
         detail: `TEETH T1-k(unterminated): expected 'unsupported string form' in thrown message, got: ${message}`,
+      };
+    }
+  }
+
+  // --- T1-m: legitimate TS escapes decode; malformed ones still fail loud ---
+  {
+    for (const { literal, expected, what } of T1M_ACCEPTED) {
+      let decoded;
+      try {
+        decoded = decodeTsString(literal);
+      } catch (e) {
+        return {
+          name,
+          pass: false,
+          detail:
+            `TEETH T1-m(accept): decodeTsString rejected the VALID TypeScript ${what} ` +
+            `'${literal}' — tsc/Node accept it, so the C6 gate would hard-fail on ` +
+            `legitimate dialogueContent.ts content: ${e?.message ?? String(e)}`,
+        };
+      }
+      if (decoded !== expected) {
+        return {
+          name,
+          pass: false,
+          detail:
+            `TEETH T1-m(accept): decodeTsString('${literal}') (${what}) decoded to ` +
+            `${JSON.stringify(decoded)}, expected ${JSON.stringify(expected)}`,
+        };
+      }
+    }
+    for (const { literal, what } of T1M_REJECTED) {
+      let threw = false;
+      let message = '';
+      try {
+        decodeTsString(literal);
+      } catch (e) {
+        threw = true;
+        message = e?.message ?? String(e);
+      }
+      if (!threw) {
+        return {
+          name,
+          pass: false,
+          detail:
+            `TEETH T1-m(reject): decodeTsString ACCEPTED '${literal}' (${what}) — adding ` +
+            '\\xHH / \\u{...} support must not turn into "accept anything escape-shaped"',
+        };
+      }
+      if (message.indexOf('unsupported string form') === -1) {
+        return {
+          name,
+          pass: false,
+          detail: `TEETH T1-m(reject): '${literal}' (${what}) threw without 'unsupported string form': ${message}`,
+        };
+      }
+    }
+    // End-to-end: RON literal emoji + literal 'A' vs bundle '\u{1F600}' / '\x41'
+    // must cross-reference CLEAN (this is the false-FAIL the hole caused).
+    const cleanErr = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1M_RON_EMOJI]),
+      T1M_BUNDLE_BRACED_AND_HEX_ESCAPES,
+    );
+    if (cleanErr) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T1-m(e2e): a bundle expressing the RON text via a braced \\u{1F600} ' +
+          `code-point escape and a legacy \\x41 escape was flagged as drift: ${cleanErr}`,
+      };
+    }
+    // …and a WRONG code point in that same escape must still be flagged.
+    const driftErr = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1M_RON_EMOJI]),
+      T1M_BUNDLE_WRONG_CODEPOINT,
+    );
+    if (!driftErr) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T1-m(e2e): a bundle whose \\u{1F601} escape decodes to a DIFFERENT emoji ' +
+          'than the RON was NOT flagged as drift — the new escape support must decode, not skip',
+      };
+    }
+  }
+
+  // --- T1-n: a RON map literal must be rejected loudly, not discarded ---
+  {
+    const err = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1N_RON_MAP_LITERAL]),
+      T1N_BUNDLE_MATCHING,
+    );
+    if (!err) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T1-n: a RON `{…}` map literal was silently walked past and its content ' +
+          'discarded — the dialogue schema has no map-typed field, so a `{` must be REJECTED ' +
+          'loudly (mirroring the raw/byte-string case), never quietly accepted',
+      };
+    }
+    if (err.indexOf('unsupported string form') === -1) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH T1-n: expected 'unsupported string form' in the rejection, got: ${err}`,
       };
     }
   }
