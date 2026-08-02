@@ -1,8 +1,9 @@
-// dialogue-client-integrity.eval.mjs — M12d
+// dialogue-client-integrity.eval.mjs — M12d, C6 redesigned 11r-i/T1 (ADR-0173)
 //
 // Checks that the client dialogue/quest/heal model files are pure
 // (no SDK imports, no reducer calls) and that the dialogue content bundle
-// matches the RON source (no drift between 000-core.ron and dialogueContent.ts).
+// matches the RON source (no drift between game-core/content/dialogue_trees/
+// and dialogueContent.ts).
 //
 // Teeth:
 //   C1. dialogueModel.ts has no import from 'spacetimedb'
@@ -10,8 +11,13 @@
 //   C3. questLogModel.ts has no advance_quest/complete_quest/apply_quest logic
 //   C4. healModel.ts has no heal_party/healParty direct call
 //   C5. dialogueContent.ts has NO `new RegExp(` and no `fetch(`
-//   C6. RON vs bundle cross-reference: every node id in 000-core.ron appears in
-//       DIALOGUE_TREES export, and choice counts match
+//   C6. RON vs bundle cross-reference: EVERY `*.ron` part under
+//       game-core/content/dialogue_trees/ is read independently (sorted filename
+//       order, never concatenated — game-core/src/content.rs:299-310 parses each
+//       part separately) and segmented per-tree (node ids are tree-scoped, NOT
+//       global) before comparing node text and the ORDERED list of choice texts
+//       against DIALOGUE_TREES, bidirectionally (a bundle-only tree/node is
+//       drift too). See T1-a..T1-l below for the full tooth list.
 //   C7. main.ts contains dismissPending flag (prevents double dismiss_dialogue on Escape)
 //
 // Implementation note: indexOf and split ONLY — NO `new RegExp(` anywhere.
@@ -147,142 +153,194 @@ export function checkNoRegExpOrFetchInContent(src) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// C6 seam (11r-i/T1) — pure helper stubs. Bodies are the IMPLEMENTER's job;
+// this file defines the exact contract each must satisfy. Every stub throws
+// until implemented — that is the intended RED state for this eval.
+// ---------------------------------------------------------------------------
+
 /**
- * Find the position of a standalone `id: "nodeId"` in src.
- * Skips occurrences where `id:` is preceded by a word character (e.g. `root_node_id:`).
- * Returns -1 if not found.
- * @param {string} src
- * @param {string} nodeId
- * @returns {number}
+ * Read all `*.ron` files directly inside `dirPath`, in sorted filename order
+ * (lexicographic `Array.prototype.sort()`, matching game-core/build.rs's glob
+ * + parse order). Returns each file's RAW text UNCHANGED and UNCONCATENATED —
+ * dialogue-tree parts are parsed independently by
+ * game-core/src/content.rs:299-310 `parse_parts`, and this reader must mirror
+ * that: joining file contents together (as the old single-file / concatenated
+ * read did) is the exact "multi-part blind spot" bug T1-a exists to catch.
+ *
+ * MUST throw (fail loud, never fail-open) if `dirPath` does not exist or
+ * contains zero `.ron` files — a silently empty read must not read as "no
+ * drift found".
+ *
+ * @param {string} dirPath absolute or cwd-relative path to a directory of
+ *   `*.ron` dialogue-tree part files
+ * @returns {{fileName: string, src: string}[]} one entry per `.ron` file,
+ *   sorted by `fileName`, `src` = that file's raw text
  */
-function findStandaloneIdPos(src, nodeId) {
-  const needle = `id: "${nodeId}"`;
-  let pos = 0;
-  while (pos < src.length) {
-    const found = src.indexOf(needle, pos);
-    if (found === -1) return -1;
-    const charBefore = found > 0 ? src[found - 1] : '';
-    if ('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_'.indexOf(charBefore) === -1) {
-      return found;
-    }
-    pos = found + needle.length;
-  }
-  return -1;
+export function readDialogueTreeParts(dirPath) {
+  throw new Error('T1 not implemented: readDialogueTreeParts');
 }
 
 /**
- * C6a: Extract all node ids from a RON dialogue tree source using indexOf/split.
- * Looks for lines containing `id:` inside nodes blocks.
- * Returns array of node id strings found.
+ * Segment a SINGLE RON part's source text (one file's raw content, as
+ * returned by `readDialogueTreeParts`) into its top-level dialogue trees.
  *
- * RON shape:
- *   nodes: [
- *     (
- *       id: "greeting",
- *       ...
- *     ),
- *   ]
+ * A RON part is shaped `[ (id: "tree_a", root_node_id: "...", nodes: [...]),
+ * (id: "tree_b", ...), ... ]`. This function MUST be STRING-LITERAL AWARE:
+ * while scanning for the `(`, `)`, `[`, `]` that delimit trees/nodes/choices,
+ * it must track whether the scan position is currently inside a quoted RON
+ * string (honoring `\"` and `\\` escapes so an escaped quote never closes the
+ * string early) and MUST NOT treat a structural-looking character appearing
+ * inside a `text:` string VALUE as real structure. (T1-j: an authored choice
+ * text containing an unbalanced `]`/`(`, or a `//` sequence, must not
+ * desynchronize segmentation.)
  *
- * Strategy: find every occurrence of `id: "` then extract the string up to the
- * closing `"`. Stops at the first closing quote. Uses split and indexOf only.
+ * Every `text:` field value (node text AND each choice's text) MUST be run
+ * through `decodeRonString` (escape-decode only, no other normalization)
+ * before being placed in the returned shape. If `decodeRonString` throws for
+ * any string in this part, that throw MUST propagate out of this function
+ * un-caught (fail loud, never silently skip the offending node/tree) — its
+ * `.message` will contain the substring `unsupported string form`.
  *
- * @param {string} ronSrc
- * @returns {string[]} node ids found
+ * @param {string} ronSrc one RON part's raw file text (NOT concatenated with
+ *   any other file)
+ * @returns {{
+ *   treeId: string,
+ *   nodes: { nodeId: string, text: string, choices: { text: string }[] }[]
+ * }[]} trees in source order; each tree's `nodes` in source order; each
+ *   node's `choices` in source order (order is semantically meaningful —
+ *   see T1-i, comparisons downstream are POSITIONAL)
  */
-export function extractRonNodeIds(ronSrc) {
-  const ids = [];
-  const needle = 'id: "';
-  let pos = 0;
-  while (pos < ronSrc.length) {
-    const found = ronSrc.indexOf(needle, pos);
-    if (found === -1) break;
-    // Skip if this `id: "` is part of a longer field name like `root_node_id: "`.
-    // In that case the character immediately before `id:` is a word char (letter/_).
-    // Standalone `id:` fields are preceded by whitespace or start of string.
-    const charBefore = found > 0 ? ronSrc[found - 1] : '';
-    if ('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_'.indexOf(charBefore) !== -1) {
-      pos = found + needle.length;
-      continue;
-    }
-    const start = found + needle.length;
-    const end = ronSrc.indexOf('"', start);
-    if (end === -1) break;
-    ids.push(ronSrc.slice(start, end));
-    pos = end + 1;
-  }
-  return ids;
+export function segmentDialogueTrees(ronSrc) {
+  throw new Error('T1 not implemented: segmentDialogueTrees');
 }
 
 /**
- * C6b: Extract choice counts per node from RON.
- * For each node block (delimited by `(` and matching `)`), count the number of
- * `text:` occurrences inside the `choices:` sub-block.
+ * Decode a RON string literal's INNER content (the text between the opening
+ * and closing quote characters, quotes NOT included) per the real RON 0.8.1
+ * escape grammar (ron-0.8.1/src/parse.rs:836-886):
+ *   `\'`  `\"`  `\\`  `\n`  `\r`  `\t`  `\0`
+ *   `\xHH`              — exactly 2 hex digits
+ *   `\u{H..HHHHHH}`      — BRACED, 1 to 6 hex digits (NEVER bare `\uXXXX`;
+ *                          that is JS/TS grammar, not RON's — see
+ *                          `decodeTsString`)
  *
- * Strategy: find each `choices: [` block, then count `text:` occurrences
- * up to the matching `]`. Uses indexOf and split only.
+ * Any escape sequence outside this set, an unterminated `\u{` (no closing
+ * `}` before the literal ends), or brace contents that are not 1-6 valid hex
+ * digits forming a valid Unicode scalar value MUST throw an `Error` whose
+ * `.message` contains the exact substring `unsupported string form` — NEVER
+ * silently pass the raw escape through, and never mis-consume/skip trailing
+ * characters as if the malformed escape had a plausible width (T1-k).
  *
- * Returns a map from the index of each choices block to the choice count.
- * Since we use node order, we zip with extractRonNodeIds results by order.
+ * Performs ONLY escape decoding — no trimming, case-folding, whitespace
+ * collapsing, or Unicode normalization. The result is compared byte-for-byte
+ * downstream.
  *
- * @param {string} ronSrc
- * @returns {number[]} choice counts in node order (one per node, 0 if no choices)
+ * @param {string} literal the string's inner content, WITHOUT surrounding
+ *   quote characters
+ * @returns {string} the decoded value
  */
-export function extractRonChoiceCounts(ronSrc) {
-  const counts = [];
-  // Find each node block: look for `id: "` occurrences, then find the next
-  // `choices: [` within 2000 chars and count `text:` inside it.
-  // Apply the same skip guard as checkRonBundleCrossRef: skip any `id:` occurrence
-  // that appears BEFORE the first `nodes:` block marker (those are tree-level ids,
-  // not node-level ids). This keeps the counts array parallel to the node ids that
-  // checkRonBundleCrossRef actually iterates (which also skips tree-level ids).
-  const nodesBlockStart = ronSrc.indexOf('nodes:');
-  const nodeNeedle = 'id: "';
-  let pos = 0;
-  while (pos < ronSrc.length) {
-    const nodeStart = ronSrc.indexOf(nodeNeedle, pos);
-    if (nodeStart === -1) break;
+export function decodeRonString(literal) {
+  throw new Error('T1 not implemented: decodeRonString');
+}
 
-    // Skip tree-level id: occurrences that appear before the first `nodes:` block.
-    // These are tree ids (e.g. `id: "elder_oak_talk"`) not node ids inside nodes:[].
-    if (nodesBlockStart !== -1 && nodeStart < nodesBlockStart) {
-      pos = nodeStart + nodeNeedle.length;
-      continue;
-    }
+/**
+ * Decode a TS string literal's INNER content (between the opening and
+ * closing `'` or `"`, quotes NOT included) using JS/TS string escape rules:
+ *   `\\`  `\'`  `\"`  `\n`  `\r`  `\t`  `\0`
+ *   `\uXXXX`  — exactly 4 hex digits, BARE (JS's own form — the opposite of
+ *               RON's braced form; do not conflate the two grammars)
+ *
+ * Any escape outside this set MUST throw with `.message` containing
+ * `unsupported string form`. This function decodes ONLY a single plain
+ * quoted-string literal's inner text; a TS TEMPLATE LITERAL (backtick
+ * delimited, with or without `${...}` interpolation) is a categorically
+ * different, unsupported string form and callers (`parseBundleTrees`) MUST
+ * detect a backtick-delimited value BEFORE calling this function and treat it
+ * as an unsupported string form (T1-e) rather than passing its raw contents
+ * here. String concatenation (`'a' + 'b'`) is likewise unsupported and must
+ * be rejected by the caller, not silently accepted here.
+ *
+ * @param {string} literal inner content of a single-or-double-quoted TS
+ *   string, WITHOUT the quote characters
+ * @returns {string} the decoded value
+ */
+export function decodeTsString(literal) {
+  throw new Error('T1 not implemented: decodeTsString');
+}
 
-    // Find the choices: [ block within 2000 chars after node start
-    const searchWindow = ronSrc.slice(nodeStart, nodeStart + 2000);
-    const choicesStart = searchWindow.indexOf('choices: [');
-    if (choicesStart === -1) {
-      // No choices block found for this node
-      counts.push(0);
-      pos = nodeStart + nodeNeedle.length;
-      continue;
-    }
+/**
+ * Parse the client TS bundle source (`dialogueContent.ts`) into the same
+ * shape `segmentDialogueTrees` produces, so both sides can be compared
+ * structurally by `checkRonBundleCrossRef`.
+ *
+ * Like `segmentDialogueTrees`, this MUST be string-literal aware while
+ * scanning for the `[`/`]`/`{`/`}` that delimit the `DIALOGUE_TREES` Map
+ * literal, its per-tree entries, its per-node `Map`, and each node's
+ * `choices` array — an authored choice text containing `]`/`)`/`//` must not
+ * desynchronize the scan (same T1-j hazard, TS side).
+ *
+ * Every node/choice `text` string MUST be decoded via `decodeTsString`
+ * UNLESS it is backtick-delimited (a template literal), in which case this
+ * function MUST throw an `Error` whose `.message` contains
+ * `unsupported string form` naming the offending tree/node (T1-e) — never
+ * silently decode a template literal's raw source text.
+ *
+ * @param {string} bundleSrc raw TS source of `dialogueContent.ts`
+ * @returns {{
+ *   treeId: string,
+ *   nodes: { nodeId: string, text: string, choices: { text: string }[] }[]
+ * }[]} trees in `DIALOGUE_TREES` source order; nodes/choices in source order
+ */
+export function parseBundleTrees(bundleSrc) {
+  throw new Error('T1 not implemented: parseBundleTrees');
+}
 
-    // Find the end of the choices block (matching ])
-    const choicesContentStart = nodeStart + choicesStart + 'choices: ['.length;
-    let depth = 1;
-    let i = choicesContentStart;
-    while (i < ronSrc.length && depth > 0) {
-      if (ronSrc[i] === '[') depth++;
-      else if (ronSrc[i] === ']') depth--;
-      i++;
-    }
-    const choicesContent = ronSrc.slice(choicesContentStart, i - 1);
-
-    // Count `text:` occurrences inside the choices block
-    let choiceCount = 0;
-    let textPos = 0;
-    while (textPos < choicesContent.length) {
-      const t = choicesContent.indexOf('text:', textPos);
-      if (t === -1) break;
-      choiceCount++;
-      textPos = t + 'text:'.length;
-    }
-    counts.push(choiceCount);
-    pos = nodeStart + nodeNeedle.length;
-  }
-  return counts;
+/**
+ * Cross-reference EVERY dialogue-tree PART (as returned by
+ * `readDialogueTreeParts` — each file read and segmented INDEPENDENTLY,
+ * never concatenated) against the parsed client bundle. Returns `null` on a
+ * full match, else a single joined string describing every mismatch found
+ * (never throws for a CONTENT mismatch — only propagates a decode error as
+ * text, see below).
+ *
+ * Checks performed, ALL of them, ALL bidirectional:
+ *   1. Every tree id declared across ALL parts appears as a key in the
+ *      parsed bundle. A tree id declared in a part OTHER than the first
+ *      (alphabetically) is not exempt (T1-a) — the failure names the
+ *      offending part's `fileName`.
+ *   2. No tree id is declared in more than one part file (T1-h) — a
+ *      duplicate is drift regardless of whether the two definitions agree.
+ *   3. For every (treeId, nodeId) pair present in the RON parts, the node's
+ *      `text` matches the bundle's text for the SAME treeId+nodeId EXACTLY
+ *      (byte-for-byte, post `decodeRonString`/`decodeTsString`). Node ids are
+ *      resolved PER TREE — a node id that repeats across trees (e.g.
+ *      `"greeting"` in both `elder_oak_talk` and `shopkeeper_greeting`) is
+ *      never resolved by first-occurrence-across-the-whole-file (T1-f).
+ *   4. For every such pair, the node's `choices` are compared POSITIONALLY —
+ *      index 0 vs index 0, index 1 vs index 1, etc, both text AND length. A
+ *      swap, reorder, truncation, or duplicate-vs-single-instance mismatch is
+ *      drift (T1-i) even when both sides have the same choice COUNT or the
+ *      same SET of choice texts.
+ *   5. The REVERSE direction: every tree the bundle declares must exist in
+ *      some RON part, and every node a bundle tree declares must exist in
+ *      that RON tree (T1-g) — a bundle-only tree/node is drift too.
+ *
+ * If segmenting/parsing either side throws (an unsupported string form —
+ * template literal, RON raw string, malformed escape, etc — from
+ * `segmentDialogueTrees`/`parseBundleTrees`), this function catches that
+ * throw and returns its `.message` (which contains
+ * `unsupported string form`) as its own string result, so callers never need
+ * to wrap this function in try/catch to observe a decode failure.
+ *
+ * @param {{fileName: string, src: string}[]} ronParts as returned by
+ *   `readDialogueTreeParts`
+ * @param {string} bundleSrc raw TS bundle source (`dialogueContent.ts`)
+ * @returns {string|null} null = pass; else every mismatch found, joined,
+ *   each naming the offending file/tree/node/choice-index
+ */
+export function checkRonBundleCrossRef(ronParts, bundleSrc) {
+  throw new Error('T1 not implemented: checkRonBundleCrossRef');
 }
 
 // ---------------------------------------------------------------------------
@@ -405,49 +463,77 @@ export const DIALOGUE_TREES = new Map([
 ]);
 `;
 
-// C6: BAD RON — extra node not in the bundle (drift detection)
-const BAD_RON_EXTRA_NODE = `
+// ---------------------------------------------------------------------------
+// C6 (11r-i/T1) proof-of-teeth fixtures — T1-a..T1-l.
+//
+// All fixtures below are passed to `checkRonBundleCrossRef` (or, for T1-k,
+// directly to `decodeRonString`). Every fixture is annotated with WHICH wrong
+// implementation it kills. `ronParts` arguments are built in-memory as
+// `{fileName, src}[]` (mirroring `readDialogueTreeParts`'s return shape)
+// rather than touching the filesystem — these are pure-function teeth.
+// ---------------------------------------------------------------------------
+
+// --- T1-a: multi-part blind spot -------------------------------------------
+// A synthetic `010-*` part (never read by the OLD implementation, which
+// hardcoded a single `000-core.ron` path) declares tree_b/node "intro". The
+// bundle matches part 000 (tree_a) perfectly but is MISSING tree_b entirely.
+// Kills: the OLD single-file read (and any impl that reads only 000-core.ron,
+// or globs but silently concatenates parts instead of segmenting each
+// independently) — both would never even look at the 010 part's content, so
+// they report a false PASS.
+const T1A_RON_PART_000 = `
 [
   (
-    id: "elder_oak_talk",
-    root_node_id: "greeting",
+    id: "tree_a",
+    root_node_id: "start",
     nodes: [
       (
-        id: "greeting",
-        text: "Hello",
+        id: "start",
+        text: "Hello from tree A.",
         entry_conditions: [],
         auto_effects: [],
         choices: [
-          (text: "Choice A", conditions: [], effects: [], next_node: None),
+          (text: "Continue", conditions: [], effects: [], next_node: None),
         ],
-      ),
-      (
-        id: "followup_node",
-        text: "This node is in RON but NOT in the TS bundle",
-        entry_conditions: [],
-        auto_effects: [],
-        choices: [],
       ),
     ],
   ),
 ]
 `;
-
-// C6: BAD TS bundle — missing "followup_node"
-const BAD_BUNDLE_MISSING_NODE = `
+const T1A_RON_PART_010 = `
+[
+  (
+    id: "tree_b",
+    root_node_id: "intro",
+    nodes: [
+      (
+        id: "intro",
+        text: "Hello from tree B, part 010.",
+        entry_conditions: [],
+        auto_effects: [],
+        choices: [
+          (text: "Okay", conditions: [], effects: [], next_node: None),
+        ],
+      ),
+    ],
+  ),
+]
+`;
+const T1A_BUNDLE_MISSING_010 = `
 export const DIALOGUE_TREES = new Map([
-  ['elder_oak_talk', {
-    rootNodeId: 'greeting',
+  ['tree_a', {
     nodes: new Map([
-      ['greeting', { text: 'Hello', choices: [{ text: 'Choice A' }] }],
-      // followup_node is MISSING — drift detected
+      ['start', { text: 'Hello from tree A.', choices: [{ text: 'Continue', nextNodeId: null }] }],
     ]),
   }],
+  // tree_b (declared only in the 010-* part) is MISSING — the multi-part blind spot.
 ]);
 `;
 
-// C6: GOOD RON — single node
-const GOOD_RON_SINGLE_NODE = `
+// --- T1-b: one-character node-text drift ------------------------------------
+// Kills: any impl that stops at "node id present in bundle" (the OLD
+// checkRonBundleCrossRef's only node-level check) without comparing `text`.
+const T1B_RON = `
 [
   (
     id: "elder_oak_talk",
@@ -457,111 +543,414 @@ const GOOD_RON_SINGLE_NODE = `
         id: "greeting",
         text: "The ancient oak spirit greets you.",
         entry_conditions: [],
-        auto_effects: [SetFlag("met_elder_oak")],
+        auto_effects: [],
         choices: [
-          (
-            text: "I seek a quest.",
-            conditions: [],
-            effects: [StartQuest("quest_001")],
-            next_node: None,
-          ),
+          (text: "I seek a quest.", conditions: [], effects: [], next_node: None),
         ],
       ),
     ],
   ),
 ]
 `;
-
-// C6: GOOD TS bundle — node + choice count matches RON
-const GOOD_BUNDLE_MATCHES_RON = `
+const T1B_BUNDLE_ONE_CHAR_DRIFT = `
 export const DIALOGUE_TREES = new Map([
   ['elder_oak_talk', {
-    rootNodeId: 'greeting',
     nodes: new Map([
-      ['greeting', { text: 'The ancient oak spirit greets you.', choices: [{ text: 'I seek a quest.' }] }],
+      ['greeting', { text: 'The ancient oak spirit greets you!', choices: [{ text: 'I seek a quest.', nextNodeId: null }] }],
     ]),
   }],
 ]);
 `;
 
+// --- T1-c: same choice COUNT, different choice TEXT -------------------------
+// Kills: the OLD implementation exactly — `extractRonChoiceCounts` only
+// counted `text:` occurrences (1 vs 1 here), never compared the text itself,
+// so the OLD code PASSes this fixture. The new text comparison must bite.
+const T1C_RON = T1B_RON;
+const T1C_BUNDLE_SAME_COUNT_DIFFERENT_TEXT = `
+export const DIALOGUE_TREES = new Map([
+  ['elder_oak_talk', {
+    nodes: new Map([
+      ['greeting', { text: 'The ancient oak spirit greets you.', choices: [{ text: 'I seek fortune.', nextNodeId: null }] }],
+    ]),
+  }],
+]);
+`;
+
+// --- T1-d: escape equivalence -----------------------------------------------
+// RON's `"It's here."` needs no escaping inside a double-quoted string. The
+// TS bundle expresses the same text in a single-quoted string, where the
+// apostrophe MUST be escaped as `\'`. Kills: any impl comparing raw
+// (undecoded) source bytes instead of running BOTH sides through their
+// respective escape decoders — a raw-byte compare would see `It's here.` vs
+// `It\'s here.` and falsely report drift on the GOOD case.
+const T1D_RON = `
+[
+  (
+    id: "elder_oak_talk",
+    root_node_id: "greeting",
+    nodes: [
+      (
+        id: "greeting",
+        text: "It's here.",
+        entry_conditions: [],
+        auto_effects: [],
+        choices: [
+          (text: "Good.", conditions: [], effects: [], next_node: None),
+        ],
+      ),
+    ],
+  ),
+]
+`;
+const T1D_BUNDLE_ESCAPED_APOSTROPHE_MATCHES = `
+export const DIALOGUE_TREES = new Map([
+  ['elder_oak_talk', {
+    nodes: new Map([
+      ['greeting', { text: 'It\\'s here.', choices: [{ text: 'Good.', nextNodeId: null }] }],
+    ]),
+  }],
+]);
+`;
+const T1D_BUNDLE_MISSING_APOSTROPHE_DRIFTS = `
+export const DIALOGUE_TREES = new Map([
+  ['elder_oak_talk', {
+    nodes: new Map([
+      ['greeting', { text: 'Its here.', choices: [{ text: 'Good.', nextNodeId: null }] }],
+    ]),
+  }],
+]);
+`;
+
+// --- T1-e: TS template literal is an unsupported string form ----------------
+// Kills: any impl that decodes a template literal's raw source text as if it
+// were a plain string (silently ignoring `${...}` interpolation semantics) —
+// the design requires a LOUD, explicit rejection, never a best-effort decode.
+const T1E_RON = T1B_RON;
+// Fixture deliberately embeds a real TS template literal (backtick-delimited)
+// as the node text, with a single backslash escaping each inner backtick so
+// it survives being embedded inside this file's own outer backtick literal.
+const T1E_BUNDLE_TEMPLATE_LITERAL = `
+export const DIALOGUE_TREES = new Map([
+  ['elder_oak_talk', {
+    nodes: new Map([
+      ['greeting', { text: \`The ancient oak spirit greets you.\`, choices: [{ text: 'I seek a quest.', nextNodeId: null }] }],
+    ]),
+  }],
+]);
+`;
+
+// --- T1-f: duplicate node id across two DIFFERENT trees ---------------------
+// Both `elder_oak_talk` and `shopkeeper_greeting` define a node id "greeting"
+// (this is the real, committed shape — see 000-core.ron). The GOOD bundle
+// keeps each tree's own text; the BAD bundle swaps tree B's "greeting" text
+// for tree A's. Kills: any impl resolving node ids by FIRST OCCURRENCE across
+// the whole bundle/RON source (the exact `findStandaloneIdPos` defect this
+// task's root-cause finding names) — such an impl would compare tree B's
+// "greeting" node against tree A's first "greeting" match and falsely PASS.
+const T1F_RON_TWO_TREES = `
+[
+  (
+    id: "elder_oak_talk",
+    root_node_id: "greeting",
+    nodes: [
+      (
+        id: "greeting",
+        text: "The ancient oak spirit greets you.",
+        entry_conditions: [],
+        auto_effects: [],
+        choices: [
+          (text: "I seek a quest.", conditions: [], effects: [], next_node: None),
+        ],
+      ),
+    ],
+  ),
+  (
+    id: "shopkeeper_greeting",
+    root_node_id: "greeting",
+    nodes: [
+      (
+        id: "greeting",
+        text: "Hello, customer!",
+        entry_conditions: [],
+        auto_effects: [],
+        choices: [
+          (text: "Leave", conditions: [], effects: [], next_node: None),
+        ],
+      ),
+    ],
+  ),
+]
+`;
+const T1F_BUNDLE_CORRECT = `
+export const DIALOGUE_TREES = new Map([
+  ['elder_oak_talk', {
+    nodes: new Map([
+      ['greeting', { text: 'The ancient oak spirit greets you.', choices: [{ text: 'I seek a quest.', nextNodeId: null }] }],
+    ]),
+  }],
+  ['shopkeeper_greeting', {
+    nodes: new Map([
+      ['greeting', { text: 'Hello, customer!', choices: [{ text: 'Leave', nextNodeId: null }] }],
+    ]),
+  }],
+]);
+`;
+const T1F_BUNDLE_TREE_B_TEXT_SWAPPED_FOR_A = `
+export const DIALOGUE_TREES = new Map([
+  ['elder_oak_talk', {
+    nodes: new Map([
+      ['greeting', { text: 'The ancient oak spirit greets you.', choices: [{ text: 'I seek a quest.', nextNodeId: null }] }],
+    ]),
+  }],
+  ['shopkeeper_greeting', {
+    nodes: new Map([
+      ['greeting', { text: 'The ancient oak spirit greets you.', choices: [{ text: 'Leave', nextNodeId: null }] }],
+    ]),
+  }],
+]);
+`;
+
+// --- T1-g: reverse direction — bundle node absent from RON -------------------
+// Kills: any impl that only walks RON->bundle and never the reverse — a
+// content author who adds a node to the client bundle without ever touching
+// the RON (e.g. copy-paste from a different tree) would go undetected.
+const T1G_RON = T1B_RON;
+const T1G_BUNDLE_EXTRA_NODE = `
+export const DIALOGUE_TREES = new Map([
+  ['elder_oak_talk', {
+    nodes: new Map([
+      ['greeting', { text: 'The ancient oak spirit greets you.', choices: [{ text: 'I seek a quest.', nextNodeId: null }] }],
+      ['bundle_only_node', { text: 'This node exists ONLY in the client bundle.', choices: [] }],
+    ]),
+  }],
+]);
+`;
+
+// --- T1-h (E1-7): the SAME tree id declared in two different part files -----
+// Kills: any impl that treats each part independently for the bundle
+// comparison but never cross-checks part files against EACH OTHER for a
+// duplicate tree id — a second author unknowingly re-declaring
+// "elder_oak_talk" in a later part would silently shadow (or be shadowed by)
+// the first, and neither the OLD nor a naive new impl would ever flag it.
+const T1H_RON_PART_000 = T1B_RON;
+const T1H_RON_PART_010_DUPLICATE_TREE_ID = `
+[
+  (
+    id: "elder_oak_talk",
+    root_node_id: "greeting",
+    nodes: [
+      (
+        id: "greeting",
+        text: "A duplicate declaration of the same tree id in a different part.",
+        entry_conditions: [],
+        auto_effects: [],
+        choices: [],
+      ),
+    ],
+  ),
+]
+`;
+const T1H_BUNDLE = `
+export const DIALOGUE_TREES = new Map([
+  ['elder_oak_talk', {
+    nodes: new Map([
+      ['greeting', { text: 'The ancient oak spirit greets you.', choices: [{ text: 'I seek a quest.', nextNodeId: null }] }],
+    ]),
+  }],
+]);
+`;
+
+// --- T1-i: ordered choice comparison is POSITIONAL, not membership ----------
+// (a) swap: kills a set/sorted-comparison impl that ignores order.
+// (b) duplicate-text-with-one-deleted: kills a MEMBERSHIP check
+//     (`ronChoices.every(rc => bundleChoices.some(bc => bc.text === rc.text))`)
+//     — every RON choice text ("Continue") IS present somewhere in the
+//     bundle's single-element array, so a membership-only check falsely
+//     PASSes; only a positional (index + length) comparison catches it.
+const T1I_RON_TWO_CHOICES = `
+[
+  (
+    id: "elder_oak_talk",
+    root_node_id: "greeting",
+    nodes: [
+      (
+        id: "greeting",
+        text: "Greetings.",
+        entry_conditions: [],
+        auto_effects: [],
+        choices: [
+          (text: "Choice A", conditions: [], effects: [], next_node: None),
+          (text: "Choice B", conditions: [], effects: [], next_node: None),
+        ],
+      ),
+    ],
+  ),
+]
+`;
+const T1I_BUNDLE_CHOICES_SWAPPED = `
+export const DIALOGUE_TREES = new Map([
+  ['elder_oak_talk', {
+    nodes: new Map([
+      ['greeting', { text: 'Greetings.', choices: [{ text: 'Choice B', nextNodeId: null }, { text: 'Choice A', nextNodeId: null }] }],
+    ]),
+  }],
+]);
+`;
+const T1I_RON_DUPLICATE_TEXT_TWICE = `
+[
+  (
+    id: "elder_oak_talk",
+    root_node_id: "greeting",
+    nodes: [
+      (
+        id: "greeting",
+        text: "Greetings.",
+        entry_conditions: [],
+        auto_effects: [],
+        choices: [
+          (text: "Continue", conditions: [], effects: [], next_node: None),
+          (text: "Continue", conditions: [], effects: [], next_node: None),
+        ],
+      ),
+    ],
+  ),
+]
+`;
+const T1I_BUNDLE_ONE_CONTINUE_DELETED = `
+export const DIALOGUE_TREES = new Map([
+  ['elder_oak_talk', {
+    nodes: new Map([
+      ['greeting', { text: 'Greetings.', choices: [{ text: 'Continue', nextNodeId: null }] }],
+    ]),
+  }],
+]);
+`;
+
+// --- T1-j: string-literal awareness (red-team-proved live false-PASS) -------
+// An authored choice `text:` value containing an unbalanced `]` must not
+// corrupt bracket/paren-based segmentation. Each fixture's RON has TWO
+// choices; the bundle is missing the SECOND choice entirely. A
+// bracket-blind scanner (the plan's confirmed live defect in
+// `extractRonChoiceCounts`) treats the `]`/`(` inside the string value as
+// real structure, desynchronizes, and can miscount its way to a false PASS
+// even though a whole choice is missing from the bundle.
+const T1J_RON_UNBALANCED_BRACKET = `
+[
+  (
+    id: "elder_oak_talk",
+    root_node_id: "greeting",
+    nodes: [
+      (
+        id: "greeting",
+        text: "Greetings.",
+        entry_conditions: [],
+        auto_effects: [],
+        choices: [
+          (text: "Rank 1] Accept the quest", conditions: [], effects: [], next_node: None),
+          (text: "Decline", conditions: [], effects: [], next_node: None),
+        ],
+      ),
+    ],
+  ),
+]
+`;
+const T1J_BUNDLE_MISSING_SECOND_CHOICE_BRACKET = `
+export const DIALOGUE_TREES = new Map([
+  ['elder_oak_talk', {
+    nodes: new Map([
+      ['greeting', { text: 'Greetings.', choices: [{ text: 'Rank 1] Accept the quest', nextNodeId: null }] }],
+    ]),
+  }],
+]);
+`;
+const T1J_RON_UNBALANCED_PAREN = `
+[
+  (
+    id: "elder_oak_talk",
+    root_node_id: "greeting",
+    nodes: [
+      (
+        id: "greeting",
+        text: "Greetings.",
+        entry_conditions: [],
+        auto_effects: [],
+        choices: [
+          (text: "Warning (danger ahead", conditions: [], effects: [], next_node: None),
+          (text: "Decline", conditions: [], effects: [], next_node: None),
+        ],
+      ),
+    ],
+  ),
+]
+`;
+const T1J_BUNDLE_MISSING_SECOND_CHOICE_PAREN = `
+export const DIALOGUE_TREES = new Map([
+  ['elder_oak_talk', {
+    nodes: new Map([
+      ['greeting', { text: 'Greetings.', choices: [{ text: 'Warning (danger ahead', nextNodeId: null }] }],
+    ]),
+  }],
+]);
+`;
+const T1J_RON_DOUBLE_SLASH_IN_STRING = `
+[
+  (
+    id: "elder_oak_talk",
+    root_node_id: "greeting",
+    nodes: [
+      (
+        id: "greeting",
+        text: "Greetings.",
+        entry_conditions: [],
+        auto_effects: [],
+        choices: [
+          (text: "Path: C://data", conditions: [], effects: [], next_node: None),
+          (text: "Decline", conditions: [], effects: [], next_node: None),
+        ],
+      ),
+    ],
+  ),
+]
+`;
+const T1J_BUNDLE_MISSING_SECOND_CHOICE_SLASH = `
+export const DIALOGUE_TREES = new Map([
+  ['elder_oak_talk', {
+    nodes: new Map([
+      ['greeting', { text: 'Greetings.', choices: [{ text: 'Path: C://data', nextNodeId: null }] }],
+    ]),
+  }],
+]);
+`;
+
+// --- T1-k: malformed unicode escape — direct decodeRonString unit fixtures --
+// RON's real unicode escape is BRACED: `\u{1..6 hex digits}`. A decoder that
+// (a) accepts a bare `\uXXXX` (JS-style, wrong grammar for RON), or (b) reads
+// past a malformed brace body treating it as "as many hex digits as look
+// plausible" (mis-consuming trailing characters instead of throwing) would
+// silently corrupt or misplace real content instead of failing loud. Kills:
+// any decoder that special-cases "no closing brace found" by treating the
+// rest of the string as literal text (mis-consumption) rather than throwing.
+const T1K_BARE_UNBRACED_ESCAPE = 'It\\u0041s bare, not RON-braced.';
+const T1K_BRACED_NON_HEX_ESCAPE = 'Bad \\u{ZZZZ} escape.';
+const T1K_UNTERMINATED_BRACE_ESCAPE = 'Unterminated \\u{1234 and then more text follows.';
+
+// --- T1-l: positive control ---------------------------------------------
+// (real committed files — exercised in the REAL CHECKS section below, not
+// here; listed for completeness of the T1-a..T1-l enumeration.)
+
 /**
- * Check C6: all node ids from the RON appear in the TS bundle string,
- * and choice counts match.
- * @param {string} ronSrc RON source text
- * @param {string} bundleSrc TS bundle source text
- * @returns {string|null} null=pass, string=failure
+ * Small helper used only by proof-of-teeth blocks below: build a ronParts
+ * array from one or more inline RON source strings, paired with synthetic
+ * file names in the given order (mirrors `readDialogueTreeParts`'s return
+ * shape without touching the filesystem). Named `buildRonParts` (not
+ * `ronParts`) so it never shadows `checkRonBundleCrossRef`'s `ronParts`
+ * parameter.
+ * @param {...[string, string]} pairs [fileName, src] tuples
+ * @returns {{fileName: string, src: string}[]}
  */
-export function checkRonBundleCrossRef(ronSrc, bundleSrc) {
-  const ronNodeIds = extractRonNodeIds(ronSrc);
-  // extractRonChoiceCounts now skips tree-level ids (same guard), so its indices
-  // are parallel to the node-level ids only. We use a separate choiceCountIdx that
-  // increments only for non-skipped (node-level) entries, keeping the two arrays aligned.
-  const ronChoiceCounts = extractRonChoiceCounts(ronSrc);
-
-  const failures = [];
-  const nodesBlockStart = ronSrc.indexOf('nodes:');
-
-  // choiceCountIdx tracks position in ronChoiceCounts (which skips tree-level ids).
-  // It increments only when we do NOT skip an entry, keeping alignment with
-  // extractRonChoiceCounts which also skips tree-level ids.
-  let choiceCountIdx = 0;
-
-  for (let i = 0; i < ronNodeIds.length; i++) {
-    const nodeId = ronNodeIds[i];
-    // Skip tree-level ids (they appear before `nodes:`) — we want node-level ids only.
-    // Use findStandaloneIdPos (not bare indexOf) so that `root_node_id: "greeting"`
-    // does not shadow the real `id: "greeting"` node entry via first-occurrence match.
-    const standalonePos = findStandaloneIdPos(ronSrc, nodeId);
-    if (nodesBlockStart !== -1 && (standalonePos === -1 || standalonePos < nodesBlockStart)) {
-      // This is a tree-level id, not a node-level id — skip.
-      // Do NOT increment choiceCountIdx: extractRonChoiceCounts also skipped this entry.
-      continue;
-    }
-
-    // Check that the node id appears in the bundle
-    if (bundleSrc.indexOf(`'${nodeId}'`) === -1 && bundleSrc.indexOf(`"${nodeId}"`) === -1) {
-      failures.push(
-        `RON node id '${nodeId}' not found in client bundle (dialogueContent.ts) — ` +
-          'bundle is drifting from server content; update the bundle to match 000-core.ron',
-      );
-    }
-
-    // Check that choice count matches (skip if node not in bundle — already flagged above)
-    // Use choiceCountIdx (not i) because extractRonChoiceCounts skips tree-level ids too.
-    const ronCount = ronChoiceCounts[choiceCountIdx] ?? 0;
-    choiceCountIdx++;
-    // Count choices in the bundle for this node by finding the node's entry
-    // and counting `text:` occurrences within its choices array
-    const nodeEntry =
-      bundleSrc.indexOf(`'${nodeId}'`) !== -1
-        ? bundleSrc.indexOf(`'${nodeId}'`)
-        : bundleSrc.indexOf(`"${nodeId}"`);
-    if (nodeEntry !== -1) {
-      // Look for `choices:` within 500 chars after the node entry
-      const nodeWindow = bundleSrc.slice(nodeEntry, nodeEntry + 500);
-      const choicesStart = nodeWindow.indexOf('choices:');
-      if (choicesStart !== -1) {
-        // Count `text:` inside the choices array (within 300 chars)
-        const choicesWindow = nodeWindow.slice(choicesStart, choicesStart + 300);
-        let bundleCount = 0;
-        let pos = 0;
-        while (pos < choicesWindow.length) {
-          const t = choicesWindow.indexOf('text:', pos);
-          if (t === -1) break;
-          bundleCount++;
-          pos = t + 'text:'.length;
-        }
-        if (bundleCount !== ronCount) {
-          failures.push(
-            `RON node '${nodeId}' has ${ronCount} choice(s) but bundle has ${bundleCount} — ` +
-              'choice count mismatch between 000-core.ron and dialogueContent.ts',
-          );
-        }
-      }
-    }
-  }
-
-  return failures.length > 0 ? failures.join('; ') : null;
+function buildRonParts(...pairs) {
+  return pairs.map(([fileName, src]) => ({ fileName, src }));
 }
 
 // ---------------------------------------------------------------------------
@@ -707,37 +1096,331 @@ export default async function () {
     }
   }
 
-  // --- C6: BAD (extra RON node missing from bundle) must be flagged ---
+  // --- T1-a: multi-part blind spot (010-* part's node missing from bundle) ---
   {
-    const err = checkRonBundleCrossRef(BAD_RON_EXTRA_NODE, BAD_BUNDLE_MISSING_NODE);
+    const err = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1A_RON_PART_000], ['010-extra.ron', T1A_RON_PART_010]),
+      T1A_BUNDLE_MISSING_010,
+    );
     if (!err) {
       return {
         name,
         pass: false,
         detail:
-          'TEETH C6: BAD RON+bundle pair (followup_node in RON, absent from bundle) was NOT flagged — ' +
-          'checkRonBundleCrossRef failed to detect drift',
+          'TEETH T1-a: a node declared only in a synthetic 010-* part, missing from the bundle, ' +
+          'was NOT flagged — proves the multi-part read (over the OLD single-file ' +
+          '000-core.ron-only read) is actually wired in',
       };
     }
-    if (err.indexOf('followup_node') === -1) {
+    if (err.indexOf('tree_b') === -1 && err.indexOf('intro') === -1) {
       return {
         name,
         pass: false,
-        detail: `TEETH C6: checkRonBundleCrossRef flagged the wrong item — expected 'followup_node' in error: ${err}`,
+        detail: `TEETH T1-a: wrong item flagged — expected 'tree_b'/'intro' named in error: ${err}`,
       };
     }
   }
-  // --- C6: GOOD (RON matches bundle) must pass ---
+
+  // --- T1-b: one-character node-text drift ---
   {
-    const err = checkRonBundleCrossRef(GOOD_RON_SINGLE_NODE, GOOD_BUNDLE_MATCHES_RON);
-    if (err) {
+    const err = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1B_RON]),
+      T1B_BUNDLE_ONE_CHAR_DRIFT,
+    );
+    if (!err) {
       return {
         name,
         pass: false,
-        detail: `TEETH C6: GOOD RON+bundle pair was incorrectly flagged: ${err}`,
+        detail: 'TEETH T1-b: a one-character node-text drift was NOT flagged',
       };
     }
   }
+
+  // --- T1-c: same choice COUNT, different choice TEXT ---
+  {
+    const err = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1C_RON]),
+      T1C_BUNDLE_SAME_COUNT_DIFFERENT_TEXT,
+    );
+    if (!err) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T1-c: same choice COUNT (1) but different choice TEXT was NOT flagged — ' +
+          'the OLD count-only implementation PASSes this; the new text comparison must bite',
+      };
+    }
+  }
+
+  // --- T1-d: escape equivalence ---
+  {
+    const passErr = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1D_RON]),
+      T1D_BUNDLE_ESCAPED_APOSTROPHE_MATCHES,
+    );
+    if (passErr) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH T1-d: RON "It's here." vs TS 'It\\'s here.' (escape-equivalent) incorrectly flagged: ${passErr}`,
+      };
+    }
+    const failErr = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1D_RON]),
+      T1D_BUNDLE_MISSING_APOSTROPHE_DRIFTS,
+    );
+    if (!failErr) {
+      return {
+        name,
+        pass: false,
+        detail:
+          "TEETH T1-d: genuine text drift ('Its here.' missing the apostrophe) was NOT flagged",
+      };
+    }
+  }
+
+  // --- T1-e: TS template literal is an unsupported string form ---
+  {
+    const err = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1E_RON]),
+      T1E_BUNDLE_TEMPLATE_LITERAL,
+    );
+    if (!err) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH T1-e: a TS template literal node text was NOT rejected as unsupported',
+      };
+    }
+    if (err.indexOf('unsupported string form') === -1) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH T1-e: expected detail to contain 'unsupported string form', got: ${err}`,
+      };
+    }
+  }
+
+  // --- T1-f: duplicate node id ("greeting") across two DIFFERENT trees ---
+  {
+    const goodErr = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1F_RON_TWO_TREES]),
+      T1F_BUNDLE_CORRECT,
+    );
+    if (goodErr) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH T1-f: correct per-tree "greeting" bundle incorrectly flagged: ${goodErr}`,
+      };
+    }
+    const badErr = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1F_RON_TWO_TREES]),
+      T1F_BUNDLE_TREE_B_TEXT_SWAPPED_FOR_A,
+    );
+    if (!badErr) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T1-f: shopkeeper_greeting\'s "greeting" text silently swapped for ' +
+          'elder_oak_talk\'s "greeting" text was NOT flagged — kills a global ' +
+          'first-occurrence node-id match',
+      };
+    }
+  }
+
+  // --- T1-g: reverse direction — a bundle node absent from the RON ---
+  {
+    const err = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1G_RON]),
+      T1G_BUNDLE_EXTRA_NODE,
+    );
+    if (!err) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T1-g: a bundle-only node (absent from every RON part) was NOT flagged as drift',
+      };
+    }
+  }
+
+  // --- T1-h (E1-7): the SAME tree id declared in two different part files ---
+  {
+    const err = checkRonBundleCrossRef(
+      buildRonParts(
+        ['000-core.ron', T1H_RON_PART_000],
+        ['010-dup.ron', T1H_RON_PART_010_DUPLICATE_TREE_ID],
+      ),
+      T1H_BUNDLE,
+    );
+    if (!err) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T1-h: the SAME tree id "elder_oak_talk" declared in TWO different part files ' +
+          'was NOT flagged',
+      };
+    }
+  }
+
+  // --- T1-i: ordered choice comparison is POSITIONAL, not membership ---
+  {
+    const swapErr = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1I_RON_TWO_CHOICES]),
+      T1I_BUNDLE_CHOICES_SWAPPED,
+    );
+    if (!swapErr) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T1-i(a): choices "Choice A"/"Choice B" swapped in position (same set, ' +
+          'different order) was NOT flagged',
+      };
+    }
+    const dupErr = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1I_RON_DUPLICATE_TEXT_TWICE]),
+      T1I_BUNDLE_ONE_CONTINUE_DELETED,
+    );
+    if (!dupErr) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T1-i(b): two identical-text ("Continue") choices in RON with only one in the ' +
+          'bundle was NOT flagged — kills a membership-only (non-positional) comparison',
+      };
+    }
+  }
+
+  // --- T1-j: string-literal awareness (unbalanced bracket/paren/`//` in a choice text) ---
+  {
+    const bracketErr = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1J_RON_UNBALANCED_BRACKET]),
+      T1J_BUNDLE_MISSING_SECOND_CHOICE_BRACKET,
+    );
+    if (!bracketErr) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T1-j(bracket): an unbalanced "]" inside a choice text ("Rank 1] Accept the ' +
+          'quest") let a MISSING second choice ("Decline") pass undetected — segmentation desynced',
+      };
+    }
+    const parenErr = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1J_RON_UNBALANCED_PAREN]),
+      T1J_BUNDLE_MISSING_SECOND_CHOICE_PAREN,
+    );
+    if (!parenErr) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T1-j(paren): an unbalanced "(" inside a choice text ("Warning (danger ahead") ' +
+          'let a MISSING second choice pass undetected',
+      };
+    }
+    const slashErr = checkRonBundleCrossRef(
+      buildRonParts(['000-core.ron', T1J_RON_DOUBLE_SLASH_IN_STRING]),
+      T1J_BUNDLE_MISSING_SECOND_CHOICE_SLASH,
+    );
+    if (!slashErr) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T1-j(slash): a "//" sequence inside a choice text ("Path: C://data") let a ' +
+          'MISSING second choice pass undetected — a whole-line comment stripper must not eat this',
+      };
+    }
+  }
+
+  // --- T1-k: malformed unicode escape must FAIL LOUD, never mis-consume ---
+  {
+    let threw = false;
+    let message = '';
+    try {
+      decodeRonString(T1K_BARE_UNBRACED_ESCAPE);
+    } catch (e) {
+      threw = true;
+      message = e?.message ?? String(e);
+    }
+    if (!threw) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T1-k(bare): a bare \\u0041 escape (JS/TS grammar, NOT RON — RON requires ' +
+          'braced \\u{...}) was NOT rejected by decodeRonString',
+      };
+    }
+    if (message.indexOf('unsupported string form') === -1) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH T1-k(bare): expected 'unsupported string form' in thrown message, got: ${message}`,
+      };
+    }
+  }
+  {
+    let threw = false;
+    let message = '';
+    try {
+      decodeRonString(T1K_BRACED_NON_HEX_ESCAPE);
+    } catch (e) {
+      threw = true;
+      message = e?.message ?? String(e);
+    }
+    if (!threw) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH T1-k(non-hex): a braced \\u{ZZZZ} escape (non-hex digits) was NOT rejected',
+      };
+    }
+    if (message.indexOf('unsupported string form') === -1) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH T1-k(non-hex): expected 'unsupported string form' in thrown message, got: ${message}`,
+      };
+    }
+  }
+  {
+    let threw = false;
+    let message = '';
+    try {
+      decodeRonString(T1K_UNTERMINATED_BRACE_ESCAPE);
+    } catch (e) {
+      threw = true;
+      message = e?.message ?? String(e);
+    }
+    if (!threw) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T1-k(unterminated): an unterminated \\u{ escape (no closing brace before the ' +
+          'literal ends) was NOT rejected — a decoder that mis-consumes trailing characters ' +
+          'instead of throwing would land here',
+      };
+    }
+    if (message.indexOf('unsupported string form') === -1) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH T1-k(unterminated): expected 'unsupported string form' in thrown message, got: ${message}`,
+      };
+    }
+  }
+
+  // T1-l (positive control) is exercised against the REAL committed files in
+  // the REAL CHECKS section below, not here.
 
   // --- C7: BAD (no dismissPending) must be flagged ---
   {
@@ -826,18 +1509,22 @@ export function initInput(store) {
     if (c5) failures.push(`dialogueContent.ts C5: ${c5}`);
   }
 
-  // --- C6: RON vs bundle cross-reference ---
-  const ronSrc = readFile('game-core/content/dialogue_trees/000-core.ron');
-  if (ronSrc === null) {
+  // --- C6 / T1-l: RON vs bundle cross-reference (positive control against
+  // the COMMITTED game-core/content/dialogue_trees/ + dialogueContent.ts,
+  // read as independent parts — see readDialogueTreeParts's contract) ---
+  try {
+    const ronDirParts = readDialogueTreeParts('game-core/content/dialogue_trees');
+    if (contentSrc !== null) {
+      // Only run cross-ref if the bundle file exists; if contentSrc is null,
+      // C5 already flagged it — no duplicate error needed.
+      const c6 = checkRonBundleCrossRef(ronDirParts, contentSrc);
+      if (c6) failures.push(`C6 RON/bundle drift: ${c6}`);
+    }
+  } catch (err) {
     failures.push(
-      'game-core/content/dialogue_trees/000-core.ron not found — cannot cross-reference bundle',
+      `C6: readDialogueTreeParts('game-core/content/dialogue_trees') threw — ${err?.message ?? String(err)}`,
     );
-  } else if (contentSrc !== null) {
-    // Only run cross-ref if both files exist
-    const c6 = checkRonBundleCrossRef(ronSrc, contentSrc);
-    if (c6) failures.push(`C6 RON/bundle drift: ${c6}`);
   }
-  // If contentSrc is null, C5 already flagged it; no duplicate error needed
 
   // --- C7: main.ts must contain dismissPending flag (structural presence check) ---
   const mainSrc = readFile('client/src/main.ts');
@@ -860,7 +1547,8 @@ export function initInput(store) {
     detail:
       'C1 no SDK import in dialogueModel + C2 no reducer calls in dialogueModel + ' +
       'C3 no quest logic in questLogModel + C4 no heal_party in healModel + ' +
-      'C5 no RegExp/fetch in dialogueContent + C6 RON/bundle node ids + choice counts match + ' +
+      'C5 no RegExp/fetch in dialogueContent + C6 RON parts vs bundle: tree/node text + ' +
+      'ordered choice text match bidirectionally, per-tree-scoped, no duplicate tree ids + ' +
       'C7 dismissPending flag in main.ts — all teeth verified',
   };
 }

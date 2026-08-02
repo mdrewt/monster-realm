@@ -747,3 +747,381 @@ fn advance_dialogue_node_lookups_use_equality_not_inequality() {
          mutant replaces == with != selecting the wrong node (one that is NOT the current node)"
     );
 }
+
+// ===========================================================================
+// T4 (11r-i): `apply_quest_trigger` must log a rate-limited, escaped
+// `quest_def_missing` structured warn when a player's active `PlayerQuestRow`
+// references a `quest_id` absent from the compiled-in quest defs (npc.rs's
+// `let Some(def) = quest_defs.iter().find(..) else { continue; }` arm,
+// currently ~npc.rs:157-160).
+//
+// RED at HEAD for T4-a..T4-f: none of this logging exists yet, so
+// `quest_def_missing_arm()` below currently returns just `"continue;"`.
+// T4-g is a non-regression pin and is GREEN at HEAD (and must stay green).
+//
+// Whitespace-squashed, comment-stripped, brace-matched scanning (same
+// discipline as movement_tests.rs's ADR-0170 D4 rate-limiter teeth) so a
+// rustfmt line split can never cause a false RED, and no needle can be
+// satisfied by inert text (e.g. this test file's own strings, which is why
+// every needle here is built via `.concat()` from parts rather than written
+// as one long literal matching npc.rs verbatim).
+// ===========================================================================
+
+/// `npc.rs` with comments stripped and ALL whitespace squashed out.
+fn squash_ws(s: &str) -> String {
+    s.split_whitespace().collect()
+}
+
+/// Index just past the `)` that balances the `(` at byte offset `open_idx`
+/// in `s` (`s.as_bytes()[open_idx]` must be `(`). Depth-counts parens only;
+/// safe here because every squashed span this is used on is either plain
+/// Rust expression syntax or a hand-built JSON log literal containing no
+/// parens (the established convention in guards.rs / movement.rs).
+fn matching_paren_end(s: &str, open_idx: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    if bytes.get(open_idx) != Some(&b'(') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut i = open_idx;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Same as [`matching_paren_end`] but for `{` / `}`.
+fn matching_brace_end(s: &str, open_idx: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    if bytes.get(open_idx) != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut i = open_idx;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Isolate the INNER content (braces excluded) of the
+/// `let Some(def) = quest_defs.iter().find(|d| d.id == row.quest_id) else { .. };`
+/// arm inside `apply_quest_trigger` — the exact site T4 must edit. Squashed
+/// (comment-stripped + whitespace-collapsed) so rustfmt reflow of the `let ..
+/// else` line cannot desync this from the real source.
+///
+/// At HEAD this returns exactly `"continue;"`. After T4, it must return the
+/// escape-binding statement + the rate-limit gate + `log::warn!(..)`, still
+/// ending in `continue;` (T4-f — control flow is unchanged).
+fn quest_def_missing_arm() -> String {
+    let stripped = strip_npc_comments(NPC_SOURCE);
+    let body = extract_npc_fn_body(&stripped, "apply_quest_trigger")
+        .expect("fn apply_quest_trigger must exist in npc.rs");
+    let squashed = squash_ws(body);
+    let lookup = [
+        "quest_defs.iter().find(|d|d.id==row.quest_id)",
+        "else{",
+    ]
+    .concat();
+    let start = squashed.find(lookup.as_str()).unwrap_or_else(|| {
+        panic!(
+            "npc_tests T4: could not find the quest-def lookup `{lookup}` inside \
+             apply_quest_trigger's squashed body — has the `let Some(def) = \
+             quest_defs.iter().find(..) else {{ .. }}` shape changed? \
+             squashed body was: {squashed:?}"
+        )
+    });
+    let brace_open = start + lookup.len() - 1;
+    let brace_close = matching_brace_end(&squashed, brace_open).unwrap_or_else(|| {
+        panic!("npc_tests T4: unbalanced braces after the quest-def-missing `else {{`")
+    });
+    squashed[brace_open + 1..brace_close - 1].to_string()
+}
+
+/// Parse a `if let Some(suppressed) = <LIMITER>.check(<args>) { log::warn!(<args>) }`
+/// gate as ONE contiguous (whitespace-squashed) expression. Returns
+/// `(check_args, warn_args)` on a full match, `None` otherwise.
+///
+/// Deliberately does NOT pin the limiter's static name (T4's spec does not
+/// prescribe one) — only that SOME identifier's `.check(` result is what the
+/// `if let Some(suppressed) = ..` binds, and that `log::warn!(` opens
+/// IMMEDIATELY inside that `if`'s body, with nothing else between `)` and
+/// `{log::warn!(`. This is what makes `let _ = LIMITER.check(..);
+/// log::warn!(..);` (limiter consulted, answer discarded) fail to match: that
+/// cheat squashes to `let_=LIMITER.check(..);log::warn!(..);`, which contains
+/// neither `ifletSome(suppressed)=` immediately before `.check(` nor
+/// `){log::warn!(` immediately after it.
+fn find_rate_limited_warn(squashed_arm: &str) -> Option<(String, String)> {
+    let gate_open = ["ifletSome(suppressed)", "="].concat();
+    let gate_start = squashed_arm.find(gate_open.as_str())?;
+    let after_eq = &squashed_arm[gate_start + gate_open.len()..];
+
+    let check_marker = ".check(";
+    let check_rel = after_eq.find(check_marker)?;
+    let limiter_ident = &after_eq[..check_rel];
+    if limiter_ident.is_empty()
+        || !limiter_ident
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+    {
+        return None;
+    }
+
+    let check_open = check_rel + check_marker.len() - 1;
+    let check_close = matching_paren_end(after_eq, check_open)?;
+    let check_args = after_eq[check_open + 1..check_close - 1].to_string();
+
+    // `check_close` is the index just PAST the matching `)` of `.check(..)`,
+    // so back up one to re-include that `)` in the marker we match against.
+    let tail = &after_eq[check_close - 1..];
+    let warn_open_marker = "){log::warn!(";
+    if !tail.starts_with(warn_open_marker) {
+        return None;
+    }
+    let warn_open = check_close - 1 + warn_open_marker.len() - 1;
+    let warn_close = matching_paren_end(after_eq, warn_open)?;
+    let warn_args = after_eq[warn_open + 1..warn_close - 1].to_string();
+
+    Some((check_args, warn_args))
+}
+
+/// T4-a: the quest-def-missing arm must name its event `quest_def_missing`.
+///
+/// KILLS: an impl that adds SOME log but under a different/no event name,
+/// or a later edit that deletes the event name while leaving other T4 shape
+/// (log::warn!, rate limiting) in place — this test still catches the
+/// deleted/renamed event specifically.
+#[test]
+fn apply_quest_trigger_missing_def_logs_named_event() {
+    let arm = quest_def_missing_arm();
+    let event_name = ["quest_def", "_missing"].concat();
+    assert!(
+        arm.contains(event_name.as_str()),
+        "TEETH (T4-a): apply_quest_trigger's quest-def-missing arm must contain \
+         the event name `quest_def_missing`. RED at HEAD (arm is just \
+         `continue;`). Kills: deleting the event, or renaming it to something \
+         else while otherwise satisfying T4's other teeth. Arm was: {arm:?}"
+    );
+}
+
+/// T4-b: the log macro must be `log::warn!`, never `log::info!` / `debug!` /
+/// `trace!`.
+///
+/// KILLS: severity downgrade — an operator relying on WARN-level alerting for
+/// content-authoring defects (a `PlayerQuestRow.quest_id` with no matching
+/// `QuestDef`) would never see it at info/debug/trace level in production.
+#[test]
+fn apply_quest_trigger_missing_def_uses_warn_severity() {
+    let arm = quest_def_missing_arm();
+    let warn_macro = ["log::", "warn!("].concat();
+    assert!(
+        arm.contains(warn_macro.as_str()),
+        "TEETH (T4-b): apply_quest_trigger's quest-def-missing arm must contain \
+         `log::warn!(`. RED at HEAD. Arm was: {arm:?}"
+    );
+    for bad in ["info!(", "debug!(", "trace!("] {
+        let downgraded = ["log::", bad].concat();
+        assert!(
+            !arm.contains(downgraded.as_str()),
+            "TEETH (T4-b): apply_quest_trigger's quest-def-missing arm must NOT \
+             use `log::{bad}` for the quest_def_missing event — found it. A \
+             content-authoring defect (dangling quest_id) logged below WARN is \
+             effectively invisible to production alerting. Arm was: {arm:?}"
+        );
+    }
+}
+
+/// T4-c: the `log::warn!` must be GATED by a `RateLimiter.check(..)` call, as
+/// ONE contiguous expression, and the clock argument must be the injected
+/// `now_ms(ctx)` (never a wall clock — ADR-0003).
+///
+/// KILLS: `let _ = LIMITER.check(..); log::warn!(..);` — the limiter is
+/// consulted, its `Option<u32>` answer thrown away, and the warn fires on
+/// EVERY tick for EVERY player with a dangling quest, unbounded. A
+/// presence-only `arm.contains("LIMITER.check(")` needle is satisfied by that
+/// exact cheat; only the contiguous `ifletSome(suppressed)=..check(..){
+/// log::warn!(` shape rules it out.
+#[test]
+fn apply_quest_trigger_missing_def_warn_is_rate_limit_gated() {
+    let arm = quest_def_missing_arm();
+    let gate = find_rate_limited_warn(&arm);
+    assert!(
+        gate.is_some(),
+        "TEETH (T4-c): apply_quest_trigger's quest-def-missing warn must be \
+         gated as ONE contiguous expression: `if let Some(suppressed) = \
+         <LIMITER>.check(<now>, <window_ms>) {{ log::warn!(..) }}`. RED at HEAD \
+         (arm is just `continue;`). Kills: `let _ = LIMITER.check(..); \
+         log::warn!(..);` (limiter consulted, answer discarded — unbounded \
+         warn flood). Arm was: {arm:?}"
+    );
+    let (check_args, _warn_args) = gate.unwrap();
+    assert!(
+        check_args.contains("now_ms"),
+        "TEETH (T4-c): the RateLimiter.check(..) call's clock argument must be \
+         the tick's injected `now_ms(ctx)` (crate::marshal::now_ms), never a \
+         wall clock (ADR-0003). check(..) args were: {check_args:?}"
+    );
+}
+
+/// T4-d — ESCAPE-BINDING TOOTH (the red-team cheat).
+///
+/// A red-team-proven cheat passes every naive tooth above: compute an
+/// escaped value into an UNUSED binding (not `let _ =`, so clippy stays
+/// silent), then interpolate the RAW, un-escaped `row.quest_id` into the
+/// `log::warn!` call anyway:
+///
+/// ```ignore
+/// let _escaped = crate::guards::json_escape(&row.quest_id); // unused
+/// if let Some(suppressed) = LIMITER.check(crate::marshal::now_ms(ctx), 60_000) {
+///     log::warn!("{{\"evt\":\"quest_def_missing\",\"quest_id\":\"{}\",\"suppressed\":{}}}",
+///                row.quest_id, suppressed); // RAW, unescaped
+/// }
+/// ```
+///
+/// This pins the escape call's output BINDING NAME (implementer: name it
+/// exactly `escaped_quest_id`) and requires that exact identifier to be an
+/// argument of the `log::warn!(..)` call, AND that `row.quest_id` is NOT.
+///
+/// KILLS: computing `json_escape(&row.quest_id)` into a binding nobody reads
+/// while the warn interpolates the raw field — a `quest_id` containing a
+/// double-quote or backslash then corrupts the hand-built JSON log line,
+/// breaking downstream log parsing (exactly what `json_escape` exists to
+/// prevent, per guards.rs's `log_reject` precedent).
+#[test]
+fn apply_quest_trigger_missing_def_warn_uses_escaped_quest_id_binding() {
+    const ESCAPED_BINDING: &str = "escaped_quest_id";
+    let arm = quest_def_missing_arm();
+
+    let escape_stmt = [
+        "let",
+        ESCAPED_BINDING,
+        "=crate::guards::json_escape(&row.quest_id);",
+    ]
+    .concat();
+    assert!(
+        arm.contains(escape_stmt.as_str()),
+        "TEETH (T4-d ESCAPE-BINDING, red-team cheat kill): apply_quest_trigger's \
+         quest-def-missing arm must bind the escaped quest_id to the EXACT \
+         identifier `{ESCAPED_BINDING}`, via the contiguous statement `let \
+         {ESCAPED_BINDING} = crate::guards::json_escape(&row.quest_id);` — not \
+         found. RED at HEAD (arm is just `continue;`). This exact binding name \
+         is required so this test can prove the SAME value that was escaped is \
+         the one that reaches `log::warn!` (see the next assertion) — a \
+         differently-named, unread escape binding is the red-team's proven \
+         cheat: `let _escaped = json_escape(&row.quest_id);` (unused, not \
+         `let _ =`, so clippy stays silent) while `log::warn!` interpolates \
+         raw `row.quest_id`. Arm was: {arm:?}"
+    );
+
+    let gate = find_rate_limited_warn(&arm).expect(
+        "TEETH (T4-d): the rate-limit gate around log::warn! must exist \
+         (see apply_quest_trigger_missing_def_warn_is_rate_limit_gated) before \
+         its argument list can be checked for escape-binding use",
+    );
+    let (_check_args, warn_args) = gate;
+
+    assert!(
+        warn_args.contains(ESCAPED_BINDING),
+        "TEETH (T4-d ESCAPE-BINDING): the log::warn!(..) call must interpolate \
+         the identifier `{ESCAPED_BINDING}` (the json_escape output) — either as \
+         a positional argument or an inline `{{{ESCAPED_BINDING}}}` capture. \
+         Got log::warn!(..) args = {warn_args:?}. This is the red-team's exact \
+         cheat: an escaped value computed and never read."
+    );
+    assert!(
+        !warn_args.contains("row.quest_id"),
+        "TEETH (T4-d ESCAPE-BINDING): the log::warn!(..) call must NOT pass \
+         `row.quest_id` directly — the RAW, un-escaped field must never reach \
+         the hand-built JSON format string. Got log::warn!(..) args = \
+         {warn_args:?}. A quest_id containing a double-quote or backslash would \
+         corrupt the JSON log line otherwise."
+    );
+}
+
+/// T4-e: exactly ONE `log::warn!` site in the quest-def-missing arm.
+///
+/// KILLS: shotgunning — e.g. an extra debug-oriented `log::warn!` left in
+/// alongside the real one, doubling log volume and confusing the single
+/// `quest_def_missing` event's cardinality assumptions.
+#[test]
+fn apply_quest_trigger_missing_def_has_exactly_one_warn_site() {
+    let arm = quest_def_missing_arm();
+    let warn_marker = ["log::", "warn!("].concat();
+    let n = arm.matches(warn_marker.as_str()).count();
+    assert_eq!(
+        n, 1,
+        "TEETH (T4-e): apply_quest_trigger's quest-def-missing arm must contain \
+         exactly ONE `log::warn!(` site; found {n}. RED at HEAD (found 0). \
+         Arm was: {arm:?}"
+    );
+}
+
+/// T4-f: `continue` must still be the LAST statement in the quest-def-missing
+/// arm — control flow is unchanged by T4.
+///
+/// KILLS: an impl that moves the `continue` earlier (so the new logging code
+/// never runs), or drops it (falling through to the code that expects `def`
+/// to be `Some`, which would then panic/misbehave on the very row this arm
+/// exists to skip).
+#[test]
+fn apply_quest_trigger_missing_def_arm_still_ends_in_continue() {
+    let arm = quest_def_missing_arm();
+    assert!(
+        arm.trim_end().ends_with("continue;"),
+        "TEETH (T4-f): apply_quest_trigger's quest-def-missing arm must still \
+         end with `continue;` as its LAST statement (control flow unchanged by \
+         T4 — only logging is added before it). Arm was: {arm:?}"
+    );
+}
+
+/// T4-g — NON-REGRESSION PIN (not part of T4's new behavior; must stay GREEN).
+///
+/// Two out-of-scope graders brace-slice `apply_quest_trigger`'s full body and
+/// assume `grant_currency` / `grant_item` survive inside it:
+/// `evals/economy-sinks-sources.eval.mjs` and
+/// `server-module/src/economy_tests.rs:696`
+/// (`apply_quest_trigger_calls_grant_currency`). T4 only touches the
+/// quest-def-missing arm; this pin makes that non-interference assumption
+/// explicit HERE so a T4 diff that (incorrectly) touches the QuestComplete
+/// reward-granting arm is caught locally, not just by those other graders.
+#[test]
+fn apply_quest_trigger_still_grants_currency_and_item_on_quest_complete() {
+    let stripped = strip_npc_comments(NPC_SOURCE);
+    let body = extract_npc_fn_body(&stripped, "apply_quest_trigger")
+        .expect("fn apply_quest_trigger must exist in npc.rs");
+    assert!(
+        body.contains("grant_currency("),
+        "NON-REGRESSION (T4-g): apply_quest_trigger must still call \
+         grant_currency(..) on QuestComplete — evals/economy-sinks-sources.eval.mjs \
+         and server-module/src/economy_tests.rs:696 brace-slice this exact \
+         function body and depend on this call surviving. T4 must only add \
+         logging to the quest-def-missing arm, never touch reward granting."
+    );
+    assert!(
+        body.contains("grant_item("),
+        "NON-REGRESSION (T4-g): apply_quest_trigger must still call \
+         grant_item(..) on QuestComplete reward items — see \
+         economy-sinks-sources.eval.mjs / economy_tests.rs:696, which brace-slice \
+         this body and depend on this call surviving."
+    );
+}
