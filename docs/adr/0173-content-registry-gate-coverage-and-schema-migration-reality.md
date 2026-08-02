@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** ADR-0006, ADR-0093, ADR-0095
 **Subsystems:** ci-gates, content, schema-persistence
-**Decision:** Widen the dialogue gate to the whole registry dir and to node/choice TEXT, extend append-only ids to five more registries (heal_locations excluded by design), warn once per window on unknown quest ids, and correct the false engine-additive claim.
+**Decision:** Widen the dialogue gate to the whole registry dir and to node/choice TEXT, extend append-only ids to five more registries (heal_locations excluded), warn once per window on unknown quest ids, and correct the false engine-additive claim.
 
 ## Context
 

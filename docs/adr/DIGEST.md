@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 138 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 139 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -147,6 +147,7 @@ Generated from 138 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0170](./0170-server-hardening-cache-completion-log-escaping.md) | 0170 — Server hardening basket: version-keyed type-chart cache, ADR-0089 completion, heal-cost seam split, and JSON log escaping | Accepted | battle, movement-netcode, economy-quests | 11r-g (M-postgate-eleventh-review-residuals — server hardening basket; EARS G-1..G-5, M-1..M-7, C-1..C-10, H-1..H-3, V-1..V-5) | Cache abilities/heal-locations as LazyLock statics and the type chart behind a content_version-keyed rebuild; rate-limit + JSON-escape silent wild-encounter failure logs; ship heal-cost cached read + inert client seam, column parked. |
 | [0171](./0171-resume-from-idle-interpolation.md) | 0171 — Resume-from-idle interpolation smoothness: idle-gap-gated jitter EWMA + re-anchored lerp bracket | Accepted | movement-netcode, client-ui | 11r-f (M-postgate-eleventh-review-residuals — resume-from-idle smoothness; EARS E1) | Gate the per-character jitter EWMA to inter-arrival intervals <= 3x stepMs (idleness is not jitter) and re-anchor any interpolation bracket wider than 2x stepMs to [next-stepMs, next], holding at prev below it. |
 | [0172](./0172-test-integrity-and-movement-rejection-diagnostics.md) | 0172 — Test-integrity residuals and movement-rejection diagnostics | Accepted | ci-gates, client-ui, movement-netcode | 11r-h (M-postgate-eleventh-review-residuals — test-integrity & diagnostics residuals; EARS E1-1..E1-2, E2-1..E2-3, E3-1..E3-4, E4-1..E4-4, E5-1..E5-9) | De-vacuify three assertions (RT-SZ-02, F-5f, the M14d weather pin), add a grantBait revival tripwire for R4, and trace movement rejections into the F9 bundle via a rate-limited, overlay-filtered breadcrumb plus a dev fate line. |
+| [0173](./0173-content-registry-gate-coverage-and-schema-migration-reality.md) | 0173 — Content-registry gate coverage, unknown-quest diagnostics, and the real SpacetimeDB additive-schema rules | Accepted | ci-gates, content, schema-persistence | 11r-i (M-postgate-eleventh-review-residuals — gate-coverage extensions; EARS E1-1..E1-11, E2-1..E2-6, E3-1..E3-8, E4-1..E4-8, E5-1..E5-3) | Widen the dialogue gate to the whole registry dir and to node/choice TEXT, extend append-only ids to five more registries (heal_locations excluded), warn once per window on unknown quest ids, and correct the false engine-additive claim. |
 
 ## Harness design corpus (H- namespace)
 
@@ -296,6 +297,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0145](./0145-encounter-recruit-economy-tuning-pass.md) — pt-d3 (M-playtest-d content pack — encounter/recruit/economy tuning; EARS pt-d3-1..6) — 0145 — pt-d3 tuning pass: zone 0 frozen, zone 1 carries the wild-legal roster, one economy fix (Accepted)
 - [0149](./0149-item-triggered-evolution-content.md) — B (M-postgate-evolution-fusion-hardening — item-triggered evolution content; EARS B-1..B-5) — 0149 — item-triggered evolution content (species 7/8 branches, id band 30..=39) (Accepted)
 - [0161](./0161-npc-interaction-context-interact.md) — uxd2 (M-postgate-ux-design — shop-via-NPC interaction) — 0161 — Server-anchored NpcInteraction enum and the context-sensitive KeyT interact system (Accepted)
+- [0173](./0173-content-registry-gate-coverage-and-schema-migration-reality.md) — 11r-i (M-postgate-eleventh-review-residuals — gate-coverage extensions; EARS E1-1..E1-11, E2-1..E2-6, E3-1..E3-8, E4-1..E4-8, E5-1..E5-3) — 0173 — Content-registry gate coverage, unknown-quest diagnostics, and the real SpacetimeDB additive-schema rules (Accepted)
 
 ### schema-persistence
 
@@ -322,6 +324,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0131](./0131-server-playtest-capture.md) — pt-b2 — Server-side playtest capture: additive `playtest_event` table + interval-singleton reaper + H1 report (Accepted)
 - [0138](./0138-ptc5b-wild-disconnect-gc.md) — ptc5b (M-playtest-c.5 pre-gate residuals — wild-battle disconnect GC, EARS ptc5b-1..3) — 0138 — ptc5b wild-battle disconnect resolution: auto-flee + GC the `battle`/`battle_wild` rows to unblock returning-player re-entry (Accepted)
 - [0161](./0161-npc-interaction-context-interact.md) — uxd2 (M-postgate-ux-design — shop-via-NPC interaction) — 0161 — Server-anchored NpcInteraction enum and the context-sensitive KeyT interact system (Accepted)
+- [0173](./0173-content-registry-gate-coverage-and-schema-migration-reality.md) — 11r-i (M-postgate-eleventh-review-residuals — gate-coverage extensions; EARS E1-1..E1-11, E2-1..E2-6, E3-1..E3-8, E4-1..E4-8, E5-1..E5-3) — 0173 — Content-registry gate coverage, unknown-quest diagnostics, and the real SpacetimeDB additive-schema rules (Accepted)
 
 ### client-ui
 
@@ -416,6 +419,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0153](./0153-ux3-playtest-preflight.md) — ux3 (M-postgate-ux-hardening — `playtest-up`/`playtest-wipe` preflight-check `$STDB_SERVER` reachability; EARS ux3-1..ux3-3) — 0153 — ux3 playtest preflight: reach the server through the CLI's own resolver, and gate it behaviorally (Accepted)
 - [0165](./0165-changelog-freshness-nightly-check.md) — 11r-d — 0165 — Changelog freshness: nightly drift check (not per-PR, not manual) (Accepted)
 - [0172](./0172-test-integrity-and-movement-rejection-diagnostics.md) — 11r-h (M-postgate-eleventh-review-residuals — test-integrity & diagnostics residuals; EARS E1-1..E1-2, E2-1..E2-3, E3-1..E3-4, E4-1..E4-4, E5-1..E5-9) — 0172 — Test-integrity residuals and movement-rejection diagnostics (Accepted)
+- [0173](./0173-content-registry-gate-coverage-and-schema-migration-reality.md) — 11r-i (M-postgate-eleventh-review-residuals — gate-coverage extensions; EARS E1-1..E1-11, E2-1..E2-6, E3-1..E3-8, E4-1..E4-8, E5-1..E5-3) — 0173 — Content-registry gate coverage, unknown-quest diagnostics, and the real SpacetimeDB additive-schema rules (Accepted)
 
 ### tooling-docs
 
