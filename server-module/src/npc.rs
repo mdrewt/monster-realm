@@ -18,6 +18,23 @@ use spacetimedb::{Identity, ReducerContext, Table};
 
 const TALK_RANGE: i64 = 2;
 
+/// Emit window for the dangling-`quest_id` warn: at most one `log::warn!` per
+/// 60_000 ms of the caller's injected clock (ADR-0003 — never a wall clock).
+///
+/// This is the concrete realization of the spec's "once per sync" (ADR-0173 D4):
+/// there is no sync-generation counter to hang a literal per-sync gate on, and
+/// quest content can only change via a republish, which reinstantiates the wasm
+/// module and therefore resets this process static — so "once per window per
+/// process" is at least once per content sync.
+const QUEST_DEF_MISSING_WINDOW_MS: i64 = 60_000;
+
+/// Process-static limiter for the dangling-`quest_id` warn, reusing the
+/// `movement` limiter type (ADR-0170 D4). Deliberately NOT keyed per `quest_id`:
+/// in a burst only the first offender's id is logged and the rest collapse into
+/// the `suppressed` count — an accepted trade recorded in ADR-0173 D4.
+static QUEST_DEF_MISSING_LIMITER: crate::movement::RateLimiter =
+    crate::movement::RateLimiter::new();
+
 // ---------------------------------------------------------------------------
 // Marshal helpers (DB Vec<String> ↔ game_core BTreeSet<String>)
 // ---------------------------------------------------------------------------
@@ -156,6 +173,22 @@ fn apply_quest_trigger(
         .collect();
     for row in active_rows {
         let Some(def) = quest_defs.iter().find(|d| d.id == row.quest_id) else {
+            // A `player_quest` row whose id no longer resolves to a loaded
+            // definition: the player's quest silently stops advancing. Surface it
+            // (ADR-0173 D4) without changing control flow — the remaining rows
+            // still process. `quest_id` is content-authored text crossing into a
+            // hand-built JSON log line, so it goes through `json_escape`
+            // (ADR-0170 D5). Rate-limited to at most one emit per
+            // QUEST_DEF_MISSING_WINDOW_MS of the injected clock (ADR-0003), with
+            // the suppressed count reported so the warn is never silently lossy.
+            let escaped_quest_id = crate::guards::json_escape(&row.quest_id);
+            if let Some(suppressed) = QUEST_DEF_MISSING_LIMITER
+                .check(crate::marshal::now_ms(ctx), QUEST_DEF_MISSING_WINDOW_MS)
+            {
+                log::warn!(
+                    "{{\"evt\":\"quest_def_missing\",\"quest_id\":\"{escaped_quest_id}\",\"suppressed\":{suppressed}}}"
+                );
+            }
             continue;
         };
         let progress = PlayerQuestProgress {

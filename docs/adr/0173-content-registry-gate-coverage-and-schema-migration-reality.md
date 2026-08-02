@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** ADR-0006, ADR-0093, ADR-0095
 **Subsystems:** ci-gates, content, schema-persistence
-**Decision:** Widen the dialogue gate to the whole registry directory and to node/choice TEXT, extend append-only id coverage to abilities/shops/npcs (numeric) and quests/dialogue_trees/npc_id (string) while deliberately excluding heal_locations, log unknown quest ids once per rate-limit window, and replace the false "the engine handles additive schema" claim with the empirically verified migration rules.
+**Decision:** Widen the dialogue gate to the whole registry dir and to node/choice TEXT, extend append-only ids to five more registries (heal_locations excluded by design), warn once per window on unknown quest ids, and correct the false engine-additive claim.
 
 ## Context
 

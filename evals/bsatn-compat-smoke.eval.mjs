@@ -3,9 +3,30 @@
 // The M14b/M14d "old rows deserialize as None" claim rests on #[serde(default)] +
 // serde/RON round-trip tests. But battle.state persists via SpacetimeType/BSATN
 // derive — a different codec (position-based, all fields required in order; no
-// missing-field defaults). SpacetimeDB handles additive schema at the ENGINE level
-// when publishing without --delete-data. This eval documents that finding and
-// verifies the serde-side annotations are present.
+// missing-field defaults). This eval documents that finding and verifies the
+// serde-side annotations are present.
+//
+// CORRECTED 11r-i (ADR-0173 D5). This header previously asserted, untested, that
+// the engine transparently handles additive schema on a publish without
+// --delete-data. That claim is FALSE. Measured against live spacetime 2.6.0 by
+// republishing an existing database without --delete-data:
+//   - a field added to a NESTED SpacetimeType struct (BattleState; likewise
+//     EncounterEntryRow inside a Vec column) is REJECTED — "requires a manual
+//     migration". Option<T> + #[serde(default)] does not help: the engine
+//     compares the whole nested product type.
+//   - a top-level column inserted mid-struct is REJECTED twice over — as a
+//     reordering, and for want of a default value annotation.
+//   - the ONLY accepted additive shape is a column appended at the END of the
+//     table struct carrying an explicit #[default(...)] annotation. That
+//     publishes cleanly and pre-existing rows survive.
+// So ADR-0006's additive promise is narrower than it read: append-at-end +
+// explicit default. The serde(default) annotations below remain correct and
+// necessary for the serde/RON path (content, fixtures, save data) — they simply
+// buy nothing at the engine boundary.
+//
+// A nested-type widening is caught in CI by evals/spacetime-type-snapshot.eval.mjs
+// (via evals/baselines/spacetime-types.json, which pins BattleState's field
+// list) — at authorship time, not 24h later in nightly.
 //
 // PASS conditions:
 //   1. #[serde(default)] on BattleMonster.status (co-located: immediately before field)
@@ -1153,10 +1174,19 @@ export default async function () {
     'SpacetimeType derive confirmed on both structs; serde/RON default tests confirmed in m14b_tests.rs. ' +
     'FINDING (14.5f-1): serde/RON tests prove serde-codec compat only. ' +
     'battle.state persists via BSATN (SpacetimeType derive — position-based codec, no missing-field defaults). ' +
-    'SpacetimeDB engine migration handles additive columns at the engine level ' +
-    '(publish without --delete-data), NOT the BSATN codec. ' +
     'The serde(default) annotation covers the serde serialization path (RON content, JSON wire format) ' +
     'but is NOT what makes BSATN-persisted rows backward-compatible with new optional fields. ' +
+    'VERIFIED RULES (11r-i / ADR-0173 D5 — measured against live spacetime 2.6.0 by republishing an ' +
+    'existing database WITHOUT --delete-data, superseding the earlier unqualified engine-handles-it claim): ' +
+    'adding a field to a nested SpacetimeType struct (BattleState, or EncounterEntryRow inside a Vec column) ' +
+    'is REJECTED and requires a manual migration — Option<T> plus serde(default) does NOT help, because the ' +
+    'engine compares the whole nested product type; a top-level column inserted mid-struct is REJECTED as a ' +
+    'reordering AND for want of a default value annotation; the ONLY accepted additive shape is a column ' +
+    'append-ed at the END of the table struct carrying an explicit #[default(...)] annotation, which ' +
+    'publishes cleanly and preserves pre-existing rows. ' +
+    'ENFORCING GATE: a nested-type widening is caught in CI by spacetime-type-snapshot ' +
+    '(evals/spacetime-type-snapshot.eval.mjs + evals/baselines/spacetime-types.json, which pins ' +
+    "BattleState's field list) — not by this static eval and not by the nightly smoke job. " +
     '16.5e-3 (ADR-0116 D4): additive-content coupling verified — every Option column on a ' +
     'content-synced table has its field-assignment in a content.rs re-seed row literal ' +
     '(anchors: ability, train_stat, cure_status, cost_item_id).';

@@ -47,9 +47,81 @@ function readRegistryDir(dirPath) {
   return text.replace(/^[ \t]*\/\/.*$/gm, '');
 }
 
+// 11r-i / T2-d: trailing-comment ambiguity detector. `readRegistryDir` strips
+// WHOLE-LINE `//` comments only — deliberately, and its behaviour is pinned by
+// out-of-scope `game-core/tests/{pt_d1_roster,pt_d3_tuning}.rs`, so it must not
+// change. That leaves a blind spot: a MID-LINE trailing comment echoing
+// `id: 99` keeps a genuinely-deleted id "present" to `parseIds`'s raw scan, so
+// `removedIds` never flags the removal. This guard is layered ON TOP (it does
+// not touch `parseIds`/`readRegistryDir`): the registry is REFUSED rather than
+// silently trusted whenever such a comment exists, so the ambiguity has to be
+// resolved by an author (the shipped convention is the `id=N` form — see
+// `pt_d1_roster.rs::comment_needle_violations`, which enforces it Rust-side for
+// species/evolutions/encounters/items/shops but NOT abilities/npcs; extending it
+// is a named follow-up in ADR-0173).
+//
+// String-aware: a `//` inside a RON string value (e.g. a URL in flavour text) is
+// not a comment and must not trip the guard. The needle is `\bid:\s*\d` — exactly
+// what `parseIds` would harvest — so `item_id:`/`species_id:` mentions and the
+// conventional `id=N` form are left alone.
+function trailingCommentIdNeedles(ron) {
+  const found = [];
+  const lines = ron.split('\n');
+  for (let n = 0; n < lines.length; n += 1) {
+    const line = lines[n];
+    let inString = false;
+    let codeSeen = false;
+    for (let i = 0; i < line.length; i += 1) {
+      const ch = line[i];
+      if (inString) {
+        if (ch === '\\') {
+          i += 1;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        codeSeen = true;
+        continue;
+      }
+      if (ch === '/' && line[i + 1] === '/') {
+        const comment = line.slice(i);
+        // Whole-line comments are already stripped upstream and are safe anyway.
+        if (codeSeen && /\bid:\s*\d/.test(comment)) {
+          found.push(`line ${n + 1}: ${comment.trim()}`);
+        }
+        break;
+      }
+      if (ch !== ' ' && ch !== '\t' && ch !== '\r') {
+        codeSeen = true;
+      }
+    }
+  }
+  return found;
+}
+
 function checkRegistry(ronDir, baselinePath, baselineKey, label) {
   const ron = readRegistryDir(ronDir);
   const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'))[baselineKey];
+  // 11r-i / T2-c (attributed Boy Scout fix): `removedIds([], anything)` is always
+  // `[]`, so an absent/wiped baseline array would report pass:true and silently
+  // disable append-only enforcement for the whole registry. An empty baseline is
+  // a BROKEN baseline, never "nothing to enforce".
+  if (!Array.isArray(baseline) || baseline.length === 0) {
+    return {
+      pass: false,
+      detail: `${label}: baseline ${baselinePath} key "${baselineKey}" is missing or EMPTY — a wiped baseline silently disables append-only enforcement (ADR-0006); restore the pinned ids`,
+    };
+  }
+  const maskingComments = trailingCommentIdNeedles(ron);
+  if (maskingComments.length) {
+    return {
+      pass: false,
+      detail: `${label}: trailing (mid-line) comment carries an id-shaped needle, which masks a removed id from the append-only scan — rewrite it in the \`id=N\` form: ${maskingComments.join('; ')}`,
+    };
+  }
   const current = parseIds(ron);
   const missing = removedIds(baseline, current);
   return {

@@ -60,7 +60,7 @@
 // No `new RegExp(` anywhere (Semgrep `detect-non-literal-regexp`) — the
 // caller-supplied `fieldName` in `parseStringIds` must therefore be matched
 // via `indexOf`/`slice`, never a dynamically-built regex.
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -77,7 +77,48 @@ import { join } from 'node:path';
  * @returns {string} concatenated, whole-line-comment-stripped RON source
  */
 export function readRegistryParts(dirPath) {
-  throw new Error('T3 not implemented: readRegistryParts');
+  const text = readdirSync(dirPath)
+    .filter((name) => name.endsWith('.ron'))
+    .sort()
+    .map((name) => readFileSync(join(dirPath, name), 'utf8'))
+    .join('\n');
+  return text.replace(/^[ \t]*\/\/.*$/gm, '');
+}
+
+// True for characters that may appear inside a RON field identifier. Used as the
+// LEFT word-boundary test (the `\b` the numeric gate gets from its literal
+// regex), so `id` never matches the tail of `npc_id` / `dialogue_tree_id` /
+// `root_node_id`. `undefined` (start of input) is not an identifier char.
+function isIdentChar(ch) {
+  return ch !== undefined && /[A-Za-z0-9_]/.test(ch);
+}
+
+// Reads the RON string literal that starts at `start` (which must index the
+// opening `"`), returning its decoded value and the index just past the closing
+// quote. Throws on an unterminated literal — a half-authored id must fail loud,
+// never be silently truncated or skipped.
+function readStringLiteral(src, start) {
+  let i = start + 1;
+  let value = '';
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch === '\\') {
+      if (i + 1 >= src.length) {
+        break;
+      }
+      value += src[i + 1];
+      i += 2;
+      continue;
+    }
+    if (ch === '"') {
+      return { value, end: i + 1 };
+    }
+    value += ch;
+    i += 1;
+  }
+  throw new Error(
+    `parseStringIds: unterminated string literal starting at index ${start} — malformed RON, refusing to guess`,
+  );
 }
 
 /**
@@ -119,7 +160,56 @@ export function readRegistryParts(dirPath) {
  * @returns {string[]}
  */
 export function parseStringIds(ron, fieldName) {
-  throw new Error('T3 not implemented: parseStringIds');
+  const needle = `${fieldName}:`;
+  const out = [];
+  let depth = 0;
+  let i = 0;
+  while (i < ron.length) {
+    const ch = ron[i];
+    // Strings are skipped wholesale: parens, `//` and field-shaped text inside a
+    // RON string value are DATA, and must not move the depth counter or match.
+    if (ch === '"') {
+      i = readStringLiteral(ron, i).end;
+      continue;
+    }
+    // Depth is tracked over PARENTHESES only — `[` / `]` (steps, nodes, choices,
+    // stock) never change it, so a tuple nested inside an array is still depth 2.
+    if (ch === '(') {
+      depth += 1;
+      i += 1;
+      continue;
+    }
+    if (ch === ')') {
+      depth -= 1;
+      i += 1;
+      continue;
+    }
+    if (
+      depth === 1 &&
+      ch === needle[0] &&
+      ron.slice(i, i + needle.length) === needle &&
+      !isIdentChar(ron[i - 1])
+    ) {
+      let j = i + needle.length;
+      while (
+        j < ron.length &&
+        (ron[j] === ' ' || ron[j] === '\t' || ron[j] === '\n' || ron[j] === '\r')
+      ) {
+        j += 1;
+      }
+      if (ron[j] !== '"') {
+        throw new Error(
+          `parseStringIds: top-level \`${needle}\` at index ${i} is not followed by a quoted string value — malformed or half-authored id, refusing to skip it silently`,
+        );
+      }
+      const { value, end } = readStringLiteral(ron, j);
+      out.push(value);
+      i = end;
+      continue;
+    }
+    i += 1;
+  }
+  return out;
 }
 
 // Returns the baseline ids that are MISSING from current (the violation set).
@@ -136,6 +226,15 @@ export function removedIds(baselineIds, currentIds) {
 function checkStringRegistry(dirPath, baselinePath, baselineKey, fieldName, label) {
   const ron = readRegistryParts(dirPath);
   const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'))[baselineKey];
+  // T3-f: `removedIds([], anything)` is always `[]`, so an absent/wiped baseline
+  // array would report pass:true and silently disable enforcement for the whole
+  // registry. An empty baseline is a BROKEN baseline, never "nothing to enforce".
+  if (!Array.isArray(baseline) || baseline.length === 0) {
+    return {
+      pass: false,
+      detail: `${label}: baseline ${baselinePath} key "${baselineKey}" is missing or EMPTY — a wiped baseline silently disables append-only enforcement (ADR-0006); restore the pinned ids`,
+    };
+  }
   const current = parseStringIds(ron, fieldName);
   const missing = removedIds(baseline, current);
   return {

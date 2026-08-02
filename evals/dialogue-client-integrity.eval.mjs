@@ -22,7 +22,8 @@
 //
 // Implementation note: indexOf and split ONLY — NO `new RegExp(` anywhere.
 // (ReDoS policy: ADR-0055 bans non-literal RegExp; eval tools follow same rule.)
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Helpers — string-only, no dynamic RegExp
@@ -159,6 +160,548 @@ export function checkNoRegExpOrFetchInContent(src) {
 // until implemented — that is the intended RED state for this eval.
 // ---------------------------------------------------------------------------
 
+// --- shared low-level scanners ---------------------------------------------
+// Character-class predicates + hand-rolled cursors. NO dynamic RegExp anywhere
+// (ADR-0055 / Semgrep detect-non-literal-regexp): char-code comparisons,
+// String.prototype.slice and indexOf only.
+
+const DQUOTE = '"';
+const BACKTICK = '`';
+
+/** @param {string|undefined} ch */
+function isWs(ch) {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f' || ch === '\v';
+}
+
+/** @param {string|undefined} ch */
+function isHexDigit(ch) {
+  if (ch === undefined) return false;
+  const c = ch.charCodeAt(0);
+  return (c >= 48 && c <= 57) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70);
+}
+
+/** @param {string|undefined} ch */
+function isIdentStart(ch) {
+  if (ch === undefined) return false;
+  const c = ch.charCodeAt(0);
+  return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || ch === '_' || ch === '$';
+}
+
+/** @param {string|undefined} ch */
+function isIdentChar(ch) {
+  if (ch === undefined) return false;
+  const c = ch.charCodeAt(0);
+  return isIdentStart(ch) || (c >= 48 && c <= 57);
+}
+
+/** @param {string|undefined} ch */
+function isOperatorChar(ch) {
+  if (ch === undefined) return false;
+  return '=!<>+-*/%&|^'.indexOf(ch) !== -1;
+}
+
+/**
+ * Read an identifier at the cursor (cursor must already be on an ident-start
+ * char).
+ * @param {{src: string, i: number}} cur
+ * @returns {string}
+ */
+function readIdent(cur) {
+  const start = cur.i;
+  while (cur.i < cur.src.length && isIdentChar(cur.src[cur.i])) cur.i++;
+  return cur.src.slice(start, cur.i);
+}
+
+/**
+ * Scan a quoted string starting at the cursor (cursor is ON the opening quote)
+ * and return its RAW inner text (escapes NOT decoded). Backslash escapes are
+ * honored so an escaped quote never closes the literal early — this is the
+ * string-literal awareness both segmenters depend on (T1-j).
+ * @param {{src: string, i: number}} cur
+ * @param {string} quote the delimiter character
+ * @returns {string} raw inner text, quotes excluded
+ */
+function scanQuoted(cur, quote) {
+  const s = cur.src;
+  cur.i++; // opening quote
+  const start = cur.i;
+  while (cur.i < s.length) {
+    const ch = s[cur.i];
+    if (ch === '\\') {
+      cur.i += 2;
+      continue;
+    }
+    if (ch === quote) {
+      const raw = s.slice(start, cur.i);
+      cur.i++;
+      return raw;
+    }
+    cur.i++;
+  }
+  throw new Error(
+    `unsupported string form: unterminated ${quote} string literal starting at offset ${start - 1}`,
+  );
+}
+
+/**
+ * Scan a TS template literal (cursor is ON the opening backtick), tracking
+ * `${...}` interpolation nesting so an inner backtick never closes it early.
+ * The raw text is returned so the CALLER can reject it with context (T1-e);
+ * it is never decoded as if it were a plain string.
+ * @param {{src: string, i: number}} cur
+ * @returns {string} raw inner text
+ */
+function scanTemplate(cur) {
+  const s = cur.src;
+  cur.i++; // opening backtick
+  const start = cur.i;
+  let depth = 0;
+  while (cur.i < s.length) {
+    const ch = s[cur.i];
+    if (ch === '\\') {
+      cur.i += 2;
+      continue;
+    }
+    if (ch === '$' && s[cur.i + 1] === '{') {
+      depth++;
+      cur.i += 2;
+      continue;
+    }
+    if (ch === '}' && depth > 0) {
+      depth--;
+      cur.i++;
+      continue;
+    }
+    if (ch === BACKTICK && depth === 0) {
+      const raw = s.slice(start, cur.i);
+      cur.i++;
+      return raw;
+    }
+    cur.i++;
+  }
+  throw new Error('unsupported string form: unterminated template literal');
+}
+
+// --- RON value scanner ------------------------------------------------------
+// A minimal, string-literal-aware RON reader. Values are represented as
+// {kind:'str'|'seq'|'struct'|'map'|'ident'|'other'} — enough structure to walk
+// trees/nodes/choices, and nothing more. Strings keep their RAW inner text;
+// decoding happens at extraction time so errors can name the tree/node.
+
+/** @param {{src: string, i: number}} cur */
+function ronTrivia(cur) {
+  const s = cur.src;
+  for (;;) {
+    while (cur.i < s.length && isWs(s[cur.i])) cur.i++;
+    if (s[cur.i] === '/' && s[cur.i + 1] === '/') {
+      cur.i += 2;
+      while (cur.i < s.length && s[cur.i] !== '\n') cur.i++;
+      continue;
+    }
+    if (s[cur.i] === '/' && s[cur.i + 1] === '*') {
+      cur.i += 2;
+      let level = 1;
+      while (cur.i < s.length && level > 0) {
+        if (s[cur.i] === '/' && s[cur.i + 1] === '*') {
+          level++;
+          cur.i += 2;
+          continue;
+        }
+        if (s[cur.i] === '*' && s[cur.i + 1] === '/') {
+          level--;
+          cur.i += 2;
+          continue;
+        }
+        cur.i++;
+      }
+      if (level > 0) throw new Error('RON parse error: unterminated block comment');
+      continue;
+    }
+    return;
+  }
+}
+
+/** @param {{src: string, i: number}} cur */
+function ronSeq(cur) {
+  cur.i++; // '['
+  const items = [];
+  for (;;) {
+    ronTrivia(cur);
+    if (cur.src[cur.i] === ']') {
+      cur.i++;
+      return { kind: 'seq', items };
+    }
+    if (cur.i >= cur.src.length) throw new Error('RON parse error: unterminated list');
+    items.push(ronValue(cur));
+    ronTrivia(cur);
+    if (cur.src[cur.i] === ',') cur.i++;
+  }
+}
+
+/**
+ * @param {{src: string, i: number}} cur
+ * @param {string|null} name
+ */
+function ronStruct(cur, name) {
+  cur.i++; // '('
+  const fields = [];
+  const items = [];
+  for (;;) {
+    ronTrivia(cur);
+    if (cur.src[cur.i] === ')') {
+      cur.i++;
+      return { kind: 'struct', name, fields, items };
+    }
+    if (cur.i >= cur.src.length) throw new Error('RON parse error: unterminated struct/tuple');
+    const save = cur.i;
+    let key = null;
+    if (isIdentStart(cur.src[cur.i])) {
+      const ident = readIdent(cur);
+      ronTrivia(cur);
+      if (cur.src[cur.i] === ':' && cur.src[cur.i + 1] !== ':') {
+        cur.i++;
+        key = ident;
+      } else {
+        cur.i = save;
+      }
+    }
+    const value = ronValue(cur);
+    if (key === null) items.push(value);
+    else fields.push({ key, value });
+    ronTrivia(cur);
+    if (cur.src[cur.i] === ',') cur.i++;
+  }
+}
+
+/** @param {{src: string, i: number}} cur */
+function ronMap(cur) {
+  cur.i++; // '{'
+  for (;;) {
+    ronTrivia(cur);
+    if (cur.src[cur.i] === '}') {
+      cur.i++;
+      return { kind: 'map' };
+    }
+    if (cur.i >= cur.src.length) throw new Error('RON parse error: unterminated map');
+    ronValue(cur);
+    ronTrivia(cur);
+    if (cur.src[cur.i] === ':') {
+      cur.i++;
+      ronValue(cur);
+    }
+    ronTrivia(cur);
+    if (cur.src[cur.i] === ',') cur.i++;
+  }
+}
+
+/** @param {{src: string, i: number}} cur */
+function ronValue(cur) {
+  ronTrivia(cur);
+  const s = cur.src;
+  const ch = s[cur.i];
+  if (ch === undefined) throw new Error('RON parse error: unexpected end of input');
+  if (ch === DQUOTE) return { kind: 'str', raw: scanQuoted(cur, DQUOTE) };
+  if ((ch === 'r' || ch === 'b') && (s[cur.i + 1] === DQUOTE || s[cur.i + 1] === '#')) {
+    throw new Error(
+      `unsupported string form: RON raw/byte string literal (${ch}${s[cur.i + 1]}) at offset ${cur.i} — ` +
+        'the dialogue-tree checker only understands plain double-quoted RON strings',
+    );
+  }
+  if (ch === '[') return ronSeq(cur);
+  if (ch === '(') return ronStruct(cur, null);
+  if (ch === '{') return ronMap(cur);
+  if (ch === "'") {
+    scanQuoted(cur, "'"); // char literal — value irrelevant, but must be skipped safely
+    return { kind: 'other' };
+  }
+  if (isIdentStart(ch)) {
+    const name = readIdent(cur);
+    const save = cur.i;
+    ronTrivia(cur);
+    if (cur.src[cur.i] === '(') return ronStruct(cur, name);
+    cur.i = save;
+    return { kind: 'ident', name };
+  }
+  const start = cur.i;
+  while (cur.i < s.length) {
+    const c = s[cur.i];
+    if (c === ',' || c === ')' || c === ']' || c === '}' || isWs(c)) break;
+    cur.i++;
+  }
+  if (cur.i === start) {
+    throw new Error(`RON parse error: unexpected character '${ch}' at offset ${cur.i}`);
+  }
+  return { kind: 'other' };
+}
+
+/**
+ * Parse one whole RON document (a single part file's text).
+ * @param {string} src
+ */
+function parseRonDocument(src) {
+  const cur = { src, i: 0 };
+  const value = ronValue(cur);
+  ronTrivia(cur);
+  if (cur.i < src.length) {
+    throw new Error(`RON parse error: unexpected trailing content at offset ${cur.i}`);
+  }
+  return value;
+}
+
+/**
+ * Look up a named field on a parsed RON struct.
+ * @param {{kind: string, fields?: {key: string, value: object}[]}|undefined} value
+ * @param {string} key
+ */
+function ronField(value, key) {
+  if (value?.kind !== 'struct' || !value.fields) return undefined;
+  for (const f of value.fields) {
+    if (f.key === key) return f.value;
+  }
+  return undefined;
+}
+
+// --- TS value scanner -------------------------------------------------------
+// Same idea for the client bundle: a minimal, string-literal-aware reader over
+// the `DIALOGUE_TREES` initializer expression. `new Map([[k, v], ...])` is
+// modeled as {kind:'map', entries}; arrays/objects/strings keep source order.
+
+/** @param {{src: string, i: number}} cur */
+function tsTrivia(cur) {
+  const s = cur.src;
+  for (;;) {
+    while (cur.i < s.length && isWs(s[cur.i])) cur.i++;
+    if (s[cur.i] === '/' && s[cur.i + 1] === '/') {
+      cur.i += 2;
+      while (cur.i < s.length && s[cur.i] !== '\n') cur.i++;
+      continue;
+    }
+    if (s[cur.i] === '/' && s[cur.i + 1] === '*') {
+      cur.i += 2;
+      while (cur.i < s.length && !(s[cur.i] === '*' && s[cur.i + 1] === '/')) cur.i++;
+      if (cur.i >= s.length) throw new Error('bundle parse error: unterminated block comment');
+      cur.i += 2;
+      continue;
+    }
+    return;
+  }
+}
+
+/** @param {{src: string, i: number}} cur */
+function tsArray(cur) {
+  cur.i++; // '['
+  const items = [];
+  for (;;) {
+    tsTrivia(cur);
+    if (cur.src[cur.i] === ']') {
+      cur.i++;
+      return { kind: 'array', items };
+    }
+    if (cur.i >= cur.src.length) throw new Error('bundle parse error: unterminated array literal');
+    items.push(tsValue(cur));
+    tsTrivia(cur);
+    if (cur.src[cur.i] === ',') cur.i++;
+  }
+}
+
+/** @param {{src: string, i: number}} cur */
+function tsObject(cur) {
+  cur.i++; // '{'
+  const fields = [];
+  for (;;) {
+    tsTrivia(cur);
+    if (cur.src[cur.i] === '}') {
+      cur.i++;
+      return { kind: 'object', fields };
+    }
+    if (cur.i >= cur.src.length) throw new Error('bundle parse error: unterminated object literal');
+    const ch = cur.src[cur.i];
+    let key;
+    if (ch === "'" || ch === DQUOTE) key = decodeTsString(scanQuoted(cur, ch));
+    else if (isIdentStart(ch)) key = readIdent(cur);
+    else throw new Error(`bundle parse error: unsupported object key at offset ${cur.i}`);
+    tsTrivia(cur);
+    if (cur.src[cur.i] !== ':') {
+      throw new Error(`bundle parse error: expected ':' after object key '${key}'`);
+    }
+    cur.i++;
+    fields.push({ key, value: tsValue(cur) });
+    tsTrivia(cur);
+    if (cur.src[cur.i] === ',') cur.i++;
+  }
+}
+
+/** @param {{src: string, i: number}} cur */
+function tsArgs(cur) {
+  cur.i++; // '('
+  const args = [];
+  for (;;) {
+    tsTrivia(cur);
+    if (cur.src[cur.i] === ')') {
+      cur.i++;
+      return args;
+    }
+    if (cur.i >= cur.src.length) throw new Error('bundle parse error: unterminated argument list');
+    args.push(tsValue(cur));
+    tsTrivia(cur);
+    if (cur.src[cur.i] === ',') cur.i++;
+  }
+}
+
+/** @param {{kind: string, items?: object[]}[]} args */
+function tsMapFromArgs(args) {
+  const entries = [];
+  if (args.length === 0) return { kind: 'map', entries };
+  const arg = args[0];
+  if (arg.kind !== 'array') {
+    throw new Error(
+      'bundle parse error: new Map(...) must be initialised with an array literal of [key, value] pairs',
+    );
+  }
+  for (const pair of arg.items) {
+    if (pair.kind !== 'array' || pair.items.length !== 2) {
+      throw new Error(
+        'bundle parse error: every new Map(...) entry must be a two-element [key, value] array literal',
+      );
+    }
+    entries.push({ key: pair.items[0], value: pair.items[1] });
+  }
+  return { kind: 'map', entries };
+}
+
+/** @param {{src: string, i: number}} cur */
+function tsPrimary(cur) {
+  tsTrivia(cur);
+  const s = cur.src;
+  const ch = s[cur.i];
+  if (ch === undefined) throw new Error('bundle parse error: unexpected end of input');
+  if (ch === "'" || ch === DQUOTE) return { kind: 'str', raw: scanQuoted(cur, ch), quote: ch };
+  if (ch === BACKTICK) return { kind: 'str', raw: scanTemplate(cur), quote: BACKTICK };
+  if (ch === '[') return tsArray(cur);
+  if (ch === '{') return tsObject(cur);
+  if (isIdentStart(ch)) {
+    const ident = readIdent(cur);
+    if (ident !== 'new') return { kind: 'ident', name: ident };
+    tsTrivia(cur);
+    const ctor = readIdent(cur);
+    tsTrivia(cur);
+    if (s[cur.i] !== '(') {
+      throw new Error(`bundle parse error: expected '(' after 'new ${ctor}'`);
+    }
+    const args = tsArgs(cur);
+    if (ctor === 'Map') return tsMapFromArgs(args);
+    return { kind: 'other' };
+  }
+  const start = cur.i;
+  while (cur.i < s.length) {
+    const c = s[cur.i];
+    if (c === ',' || c === ']' || c === '}' || c === ')' || c === ':' || isWs(c)) break;
+    cur.i++;
+  }
+  if (cur.i === start) {
+    throw new Error(`bundle parse error: unexpected character '${ch}' at offset ${cur.i}`);
+  }
+  return { kind: 'other' };
+}
+
+/** @param {{src: string, i: number}} cur */
+function tsValue(cur) {
+  const value = tsPrimary(cur);
+  const save = cur.i;
+  tsTrivia(cur);
+  if (cur.src[cur.i] === '+') {
+    throw new Error(
+      `unsupported string form: string concatenation at offset ${cur.i} — dialogue bundle ` +
+        'text must be a single plain quoted string literal',
+    );
+  }
+  cur.i = save;
+  return value;
+}
+
+/**
+ * Look up a named field on a parsed TS object literal.
+ * @param {{kind: string, fields?: {key: string, value: object}[]}|undefined} value
+ * @param {string} key
+ */
+function tsField(value, key) {
+  if (value?.kind !== 'object' || !value.fields) return undefined;
+  for (const f of value.fields) {
+    if (f.key === key) return f.value;
+  }
+  return undefined;
+}
+
+/**
+ * Decode a parsed TS string node, rejecting template literals (T1-e) LOUDLY
+ * with the offending tree/node named.
+ * @param {{kind: string, raw?: string, quote?: string}|undefined} value
+ * @param {string} where human-readable location for the error message
+ * @returns {string}
+ */
+function decodeBundleText(value, where) {
+  if (value?.kind !== 'str') {
+    throw new Error(`unsupported string form: ${where} is not a plain quoted string literal`);
+  }
+  if (value.quote === BACKTICK) {
+    throw new Error(
+      `unsupported string form: ${where} is a TS template literal (backtick-delimited); ` +
+        'the dialogue bundle must use plain quoted string literals so it can be compared to the RON',
+    );
+  }
+  return decodeTsString(value.raw);
+}
+
+/**
+ * Find the offset just past the `=` of the `DIALOGUE_TREES` declaration,
+ * skipping comments and string literals so a mention inside either can never
+ * be mistaken for the declaration.
+ * @param {string} src
+ * @returns {number}
+ */
+function findDialogueTreesAssignment(src) {
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch === '/' && src[i + 1] === '/') {
+      i += 2;
+      while (i < src.length && src[i] !== '\n') i++;
+      continue;
+    }
+    if (ch === '/' && src[i + 1] === '*') {
+      i += 2;
+      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      i += 2;
+      continue;
+    }
+    if (ch === "'" || ch === DQUOTE || ch === BACKTICK) {
+      const cur = { src, i };
+      if (ch === BACKTICK) scanTemplate(cur);
+      else scanQuoted(cur, ch);
+      i = cur.i;
+      continue;
+    }
+    if (isIdentStart(ch)) {
+      const cur = { src, i };
+      const ident = readIdent(cur);
+      i = cur.i;
+      if (ident !== 'DIALOGUE_TREES') continue;
+      let k = i;
+      while (k < src.length) {
+        const c = src[k];
+        if (c === ';') break;
+        if (c === '=' && src[k + 1] !== '=' && !isOperatorChar(src[k - 1])) return k + 1;
+        k++;
+      }
+      continue;
+    }
+    i++;
+  }
+  throw new Error(
+    'bundle parse error: no `DIALOGUE_TREES` assignment found in the client dialogue bundle',
+  );
+}
+
 /**
  * Read all `*.ron` files directly inside `dirPath`, in sorted filename order
  * (lexicographic `Array.prototype.sort()`, matching game-core/build.rs's glob
@@ -178,7 +721,35 @@ export function checkNoRegExpOrFetchInContent(src) {
  *   sorted by `fileName`, `src` = that file's raw text
  */
 export function readDialogueTreeParts(dirPath) {
-  throw new Error('T1 not implemented: readDialogueTreeParts');
+  let dirEntries;
+  try {
+    dirEntries = readdirSync(dirPath, { withFileTypes: true });
+  } catch (err) {
+    throw new Error(
+      `readDialogueTreeParts: cannot read dialogue-tree part directory '${dirPath}' — ` +
+        `${err?.message ?? String(err)}`,
+    );
+  }
+  const fileNames = [];
+  for (const entry of dirEntries) {
+    if (!entry.isFile()) continue;
+    const n = entry.name;
+    if (n.length > 4 && n.slice(-4) === '.ron') fileNames.push(n);
+  }
+  fileNames.sort();
+  if (fileNames.length === 0) {
+    throw new Error(
+      `readDialogueTreeParts: no '*.ron' dialogue-tree parts found in '${dirPath}' — ` +
+        'an empty read must never be mistaken for "no drift found"',
+    );
+  }
+  // Each part is returned RAW and SEPARATE — game-core/src/content.rs parse_parts
+  // deserializes every file independently, so concatenating here would recreate
+  // the multi-part blind spot T1-a exists to catch.
+  return fileNames.map((fileName) => ({
+    fileName,
+    src: readFileSync(join(dirPath, fileName), 'utf8'),
+  }));
 }
 
 /**
@@ -212,7 +783,60 @@ export function readDialogueTreeParts(dirPath) {
  *   see T1-i, comparisons downstream are POSITIONAL)
  */
 export function segmentDialogueTrees(ronSrc) {
-  throw new Error('T1 not implemented: segmentDialogueTrees');
+  const top = parseRonDocument(ronSrc);
+  if (top.kind !== 'seq') {
+    throw new Error('RON parse error: expected a top-level list of dialogue trees');
+  }
+  const trees = [];
+  for (let t = 0; t < top.items.length; t++) {
+    const treeVal = top.items[t];
+    const treeIdVal = ronField(treeVal, 'id');
+    if (treeIdVal?.kind !== 'str') {
+      throw new Error(`RON parse error: dialogue tree #${t} has no string 'id' field`);
+    }
+    const treeId = decodeRonString(treeIdVal.raw);
+    const nodesVal = ronField(treeVal, 'nodes');
+    if (nodesVal?.kind !== 'seq') {
+      throw new Error(`RON parse error: dialogue tree '${treeId}' has no 'nodes' list`);
+    }
+    const nodes = [];
+    for (let n = 0; n < nodesVal.items.length; n++) {
+      const nodeVal = nodesVal.items[n];
+      const nodeIdVal = ronField(nodeVal, 'id');
+      if (nodeIdVal?.kind !== 'str') {
+        throw new Error(`RON parse error: tree '${treeId}' node #${n} has no string 'id' field`);
+      }
+      const nodeId = decodeRonString(nodeIdVal.raw);
+      const textVal = ronField(nodeVal, 'text');
+      if (textVal?.kind !== 'str') {
+        throw new Error(
+          `RON parse error: tree '${treeId}' node '${nodeId}' has no string 'text' field`,
+        );
+      }
+      const text = decodeRonString(textVal.raw);
+      const choicesVal = ronField(nodeVal, 'choices');
+      const choices = [];
+      if (choicesVal !== undefined) {
+        if (choicesVal.kind !== 'seq') {
+          throw new Error(
+            `RON parse error: tree '${treeId}' node '${nodeId}' has a non-list 'choices' field`,
+          );
+        }
+        for (let c = 0; c < choicesVal.items.length; c++) {
+          const choiceTextVal = ronField(choicesVal.items[c], 'text');
+          if (choiceTextVal?.kind !== 'str') {
+            throw new Error(
+              `RON parse error: tree '${treeId}' node '${nodeId}' choice[${c}] has no string 'text' field`,
+            );
+          }
+          choices.push({ text: decodeRonString(choiceTextVal.raw) });
+        }
+      }
+      nodes.push({ nodeId, text, choices });
+    }
+    trees.push({ treeId, nodes });
+  }
+  return trees;
 }
 
 /**
@@ -241,7 +865,89 @@ export function segmentDialogueTrees(ronSrc) {
  * @returns {string} the decoded value
  */
 export function decodeRonString(literal) {
-  throw new Error('T1 not implemented: decodeRonString');
+  let out = '';
+  let i = 0;
+  while (i < literal.length) {
+    const ch = literal[i];
+    if (ch !== '\\') {
+      out += ch;
+      i++;
+      continue;
+    }
+    const esc = literal[i + 1];
+    if (esc === undefined) {
+      throw new Error('unsupported string form: dangling backslash at end of RON string literal');
+    }
+    if (esc === "'" || esc === DQUOTE || esc === '\\') {
+      out += esc;
+      i += 2;
+      continue;
+    }
+    if (esc === 'n') {
+      out += '\n';
+      i += 2;
+      continue;
+    }
+    if (esc === 'r') {
+      out += '\r';
+      i += 2;
+      continue;
+    }
+    if (esc === 't') {
+      out += '\t';
+      i += 2;
+      continue;
+    }
+    if (esc === '0') {
+      out += '\0';
+      i += 2;
+      continue;
+    }
+    if (esc === 'x') {
+      // ron-0.8.1 decode_ascii_escape: exactly 2 hex digits, taken as a byte.
+      const hi = literal[i + 2];
+      const lo = literal[i + 3];
+      if (!isHexDigit(hi) || !isHexDigit(lo)) {
+        throw new Error(
+          `unsupported string form: RON \\x escape needs exactly 2 hex digits (got '\\x${literal.slice(i + 2, i + 4)}')`,
+        );
+      }
+      out += String.fromCharCode(Number.parseInt(`${hi}${lo}`, 16));
+      i += 4;
+      continue;
+    }
+    if (esc === 'u') {
+      // ron-0.8.1 parse_escape: BRACED \u{1..6 hex}. A bare \uXXXX is JS/TS
+      // grammar, NOT RON's — reject rather than guess a width (T1-k).
+      if (literal[i + 2] !== '{') {
+        throw new Error(
+          "unsupported string form: RON unicode escape must be braced \\u{...} (a bare \\uXXXX is JS/TS grammar, not RON's)",
+        );
+      }
+      let j = i + 3;
+      let hex = '';
+      while (j < literal.length && hex.length < 6 && isHexDigit(literal[j])) {
+        hex += literal[j];
+        j++;
+      }
+      if (hex.length === 0 || literal[j] !== '}') {
+        throw new Error(
+          'unsupported string form: RON \\u{...} escape must contain 1-6 hex digits followed by a closing brace',
+        );
+      }
+      const cp = Number.parseInt(hex, 16);
+      if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) {
+        throw new Error(
+          `unsupported string form: RON \\u{${hex}} is not a valid Unicode scalar value`,
+        );
+      }
+      out += String.fromCodePoint(cp);
+      i = j + 1;
+      continue;
+    }
+    throw new Error(`unsupported string form: unknown RON escape '\\${esc}'`);
+  }
+  return out;
 }
 
 /**
@@ -266,7 +972,66 @@ export function decodeRonString(literal) {
  * @returns {string} the decoded value
  */
 export function decodeTsString(literal) {
-  throw new Error('T1 not implemented: decodeTsString');
+  let out = '';
+  let i = 0;
+  while (i < literal.length) {
+    const ch = literal[i];
+    if (ch !== '\\') {
+      out += ch;
+      i++;
+      continue;
+    }
+    const esc = literal[i + 1];
+    if (esc === undefined) {
+      throw new Error('unsupported string form: dangling backslash at end of TS string literal');
+    }
+    if (esc === "'" || esc === DQUOTE || esc === '\\') {
+      out += esc;
+      i += 2;
+      continue;
+    }
+    if (esc === 'n') {
+      out += '\n';
+      i += 2;
+      continue;
+    }
+    if (esc === 'r') {
+      out += '\r';
+      i += 2;
+      continue;
+    }
+    if (esc === 't') {
+      out += '\t';
+      i += 2;
+      continue;
+    }
+    if (esc === '0') {
+      out += '\0';
+      i += 2;
+      continue;
+    }
+    if (esc === 'u') {
+      // JS/TS grammar: BARE \uXXXX, exactly 4 hex digits (the opposite of
+      // RON's braced form — the two grammars are never conflated).
+      const hex = literal.slice(i + 2, i + 6);
+      if (
+        hex.length !== 4 ||
+        !isHexDigit(hex[0]) ||
+        !isHexDigit(hex[1]) ||
+        !isHexDigit(hex[2]) ||
+        !isHexDigit(hex[3])
+      ) {
+        throw new Error(
+          `unsupported string form: TS unicode escape must be a bare \\uXXXX with exactly 4 hex digits (got '\\u${hex}')`,
+        );
+      }
+      out += String.fromCharCode(Number.parseInt(hex, 16));
+      i += 6;
+      continue;
+    }
+    throw new Error(`unsupported string form: unknown TS escape '\\${esc}'`);
+  }
+  return out;
 }
 
 /**
@@ -293,7 +1058,51 @@ export function decodeTsString(literal) {
  * }[]} trees in `DIALOGUE_TREES` source order; nodes/choices in source order
  */
 export function parseBundleTrees(bundleSrc) {
-  throw new Error('T1 not implemented: parseBundleTrees');
+  const cur = { src: bundleSrc, i: findDialogueTreesAssignment(bundleSrc) };
+  const root = tsValue(cur);
+  if (root.kind !== 'map') {
+    throw new Error(
+      'bundle parse error: DIALOGUE_TREES must be initialised with `new Map([[id, tree], ...])`',
+    );
+  }
+  const trees = [];
+  for (const treeEntry of root.entries) {
+    const treeId = decodeBundleText(treeEntry.key, 'a DIALOGUE_TREES tree key');
+    const nodesVal = tsField(treeEntry.value, 'nodes');
+    if (nodesVal?.kind !== 'map') {
+      throw new Error(
+        `bundle parse error: tree '${treeId}' has no \`nodes: new Map([...])\` member`,
+      );
+    }
+    const nodes = [];
+    for (const nodeEntry of nodesVal.entries) {
+      const nodeId = decodeBundleText(nodeEntry.key, `a node key in bundle tree '${treeId}'`);
+      const text = decodeBundleText(
+        tsField(nodeEntry.value, 'text'),
+        `bundle tree '${treeId}' node '${nodeId}' text`,
+      );
+      const choicesVal = tsField(nodeEntry.value, 'choices');
+      const choices = [];
+      if (choicesVal !== undefined) {
+        if (choicesVal.kind !== 'array') {
+          throw new Error(
+            `bundle parse error: tree '${treeId}' node '${nodeId}' has a non-array 'choices' member`,
+          );
+        }
+        for (let c = 0; c < choicesVal.items.length; c++) {
+          choices.push({
+            text: decodeBundleText(
+              tsField(choicesVal.items[c], 'text'),
+              `bundle tree '${treeId}' node '${nodeId}' choice[${c}] text`,
+            ),
+          });
+        }
+      }
+      nodes.push({ nodeId, text, choices });
+    }
+    trees.push({ treeId, nodes });
+  }
+  return trees;
 }
 
 /**
@@ -340,7 +1149,130 @@ export function parseBundleTrees(bundleSrc) {
  *   each naming the offending file/tree/node/choice-index
  */
 export function checkRonBundleCrossRef(ronParts, bundleSrc) {
-  throw new Error('T1 not implemented: checkRonBundleCrossRef');
+  let parsedParts;
+  let bundleTrees;
+  try {
+    parsedParts = ronParts.map((part) => ({
+      fileName: part.fileName,
+      trees: segmentDialogueTrees(part.src),
+    }));
+    bundleTrees = parseBundleTrees(bundleSrc);
+  } catch (err) {
+    // A decode/parse failure (unsupported string form, malformed escape, …) is
+    // surfaced as this function's own result so callers never need try/catch.
+    return err?.message ?? String(err);
+  }
+
+  const failures = [];
+
+  // Index the RON side by tree id, flagging a tree id declared twice (T1-h).
+  const ronByTreeId = new Map();
+  for (const part of parsedParts) {
+    for (const tree of part.trees) {
+      const prior = ronByTreeId.get(tree.treeId);
+      if (prior !== undefined) {
+        failures.push(
+          `duplicate tree id '${tree.treeId}' declared in BOTH '${prior.fileName}' and ` +
+            `'${part.fileName}' — each dialogue tree must be declared in exactly one RON part`,
+        );
+        continue;
+      }
+      ronByTreeId.set(tree.treeId, { fileName: part.fileName, tree });
+    }
+  }
+
+  const bundleByTreeId = new Map();
+  for (const tree of bundleTrees) {
+    if (bundleByTreeId.has(tree.treeId)) {
+      failures.push(`bundle DIALOGUE_TREES declares tree '${tree.treeId}' more than once`);
+      continue;
+    }
+    bundleByTreeId.set(tree.treeId, tree);
+  }
+
+  // --- direction 1: RON parts -> bundle ---
+  for (const [treeId, entry] of ronByTreeId) {
+    const bundleTree = bundleByTreeId.get(treeId);
+    if (bundleTree === undefined) {
+      const nodeIds = entry.tree.nodes.map((n) => n.nodeId).join(', ');
+      failures.push(
+        `RON part '${entry.fileName}' declares tree '${treeId}' (nodes: ${nodeIds}) but the ` +
+          'client bundle DIALOGUE_TREES has no such tree',
+      );
+      continue;
+    }
+    // Node ids are resolved WITHIN this tree only — never by a global
+    // first-occurrence match across the whole file (T1-f).
+    const bundleNodes = new Map();
+    for (const node of bundleTree.nodes) {
+      if (!bundleNodes.has(node.nodeId)) bundleNodes.set(node.nodeId, node);
+    }
+    const seenRonNodeIds = new Set();
+    for (const node of entry.tree.nodes) {
+      if (seenRonNodeIds.has(node.nodeId)) {
+        failures.push(
+          `RON part '${entry.fileName}' tree '${treeId}' declares node '${node.nodeId}' more than once`,
+        );
+        continue;
+      }
+      seenRonNodeIds.add(node.nodeId);
+      const bundleNode = bundleNodes.get(node.nodeId);
+      if (bundleNode === undefined) {
+        failures.push(
+          `RON part '${entry.fileName}' tree '${treeId}' declares node '${node.nodeId}' but the ` +
+            'bundle tree has no such node',
+        );
+        continue;
+      }
+      if (bundleNode.text !== node.text) {
+        failures.push(
+          `text drift in tree '${treeId}' node '${node.nodeId}': RON ('${entry.fileName}') ` +
+            `${JSON.stringify(node.text)} vs bundle ${JSON.stringify(bundleNode.text)}`,
+        );
+      }
+      if (bundleNode.choices.length !== node.choices.length) {
+        failures.push(
+          `choice COUNT drift in tree '${treeId}' node '${node.nodeId}': RON ('${entry.fileName}') ` +
+            `has ${node.choices.length} choice(s), bundle has ${bundleNode.choices.length}`,
+        );
+      }
+      // Positional (index-for-index) comparison — a swap or reorder is drift
+      // even when both sides hold the same SET of choice texts (T1-i).
+      const shared = Math.min(node.choices.length, bundleNode.choices.length);
+      for (let c = 0; c < shared; c++) {
+        if (node.choices[c].text !== bundleNode.choices[c].text) {
+          failures.push(
+            `choice[${c}] text drift in tree '${treeId}' node '${node.nodeId}': RON ` +
+              `('${entry.fileName}') ${JSON.stringify(node.choices[c].text)} vs bundle ` +
+              `${JSON.stringify(bundleNode.choices[c].text)}`,
+          );
+        }
+      }
+    }
+  }
+
+  // --- direction 2: bundle -> RON parts (a bundle-only tree/node is drift, T1-g) ---
+  for (const [treeId, bundleTree] of bundleByTreeId) {
+    const entry = ronByTreeId.get(treeId);
+    if (entry === undefined) {
+      failures.push(
+        `bundle DIALOGUE_TREES declares tree '${treeId}' but no RON part under ` +
+          'game-core/content/dialogue_trees/ declares it',
+      );
+      continue;
+    }
+    const ronNodeIds = new Set(entry.tree.nodes.map((n) => n.nodeId));
+    for (const node of bundleTree.nodes) {
+      if (!ronNodeIds.has(node.nodeId)) {
+        failures.push(
+          `bundle tree '${treeId}' declares node '${node.nodeId}' but RON part ` +
+            `'${entry.fileName}' does not`,
+        );
+      }
+    }
+  }
+
+  return failures.length > 0 ? failures.join('; ') : null;
 }
 
 // ---------------------------------------------------------------------------
