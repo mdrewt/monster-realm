@@ -3,9 +3,30 @@
 // The M14b/M14d "old rows deserialize as None" claim rests on #[serde(default)] +
 // serde/RON round-trip tests. But battle.state persists via SpacetimeType/BSATN
 // derive — a different codec (position-based, all fields required in order; no
-// missing-field defaults). SpacetimeDB handles additive schema at the ENGINE level
-// when publishing without --delete-data. This eval documents that finding and
-// verifies the serde-side annotations are present.
+// missing-field defaults). This eval documents that finding and verifies the
+// serde-side annotations are present.
+//
+// CORRECTED 11r-i (ADR-0173 D5). This header previously asserted, untested, that
+// the engine transparently handles additive schema on a publish without
+// --delete-data. That claim is FALSE. Measured against live spacetime 2.6.0 by
+// republishing an existing database without --delete-data:
+//   - a field added to a NESTED SpacetimeType struct (BattleState; likewise
+//     EncounterEntryRow inside a Vec column) is REJECTED — "requires a manual
+//     migration". Option<T> + #[serde(default)] does not help: the engine
+//     compares the whole nested product type.
+//   - a top-level column inserted mid-struct is REJECTED twice over — as a
+//     reordering, and for want of a default value annotation.
+//   - the ONLY accepted additive shape is a column appended at the END of the
+//     table struct carrying an explicit #[default(...)] annotation. That
+//     publishes cleanly and pre-existing rows survive.
+// So ADR-0006's additive promise is narrower than it read: append-at-end +
+// explicit default. The serde(default) annotations below remain correct and
+// necessary for the serde/RON path (content, fixtures, save data) — they simply
+// buy nothing at the engine boundary.
+//
+// A nested-type widening is caught in CI by evals/spacetime-type-snapshot.eval.mjs
+// (via evals/baselines/spacetime-types.json, which pins BattleState's field
+// list) — at authorship time, not 24h later in nightly.
 //
 // PASS conditions:
 //   1. #[serde(default)] on BattleMonster.status (co-located: immediately before field)
@@ -108,6 +129,70 @@ export function hasRonDefaultTests(testSrc) {
 export function documentsBsatnGap(nameStr, detailStr) {
   const combined = `${nameStr} ${detailStr}`;
   return combined.includes('BSATN') && combined.includes('serde') && combined.includes('engine');
+}
+
+// ---------------------------------------------------------------------------
+// T6-lite (11r-i): correct the false, unqualified claim this eval's own
+// header/detail previously made about the engine handling additive schema
+// changes unconditionally on republish without --delete-data. That claim is
+// FALSE, verified empirically against live spacetime 2.6.0 (see the
+// ADR/handoff notes for the republish matrix). The VERIFIED rule is
+// narrower: a nested-struct field widening (e.g. inside BattleState or a
+// Vec<...> row) is REJECTED ("requires a manual migration"); only a
+// top-level column APPENDED AT THE END with an explicit `#[default(...)]`
+// annotation is ACCEPTED.
+//
+// Criterion 6 (documentsBsatnGap, above) stays UNCHANGED — it only asserts
+// the BSATN-vs-serde codec distinction is machine-visible, which remains
+// true. These are NEW, ADDITIONAL criteria; they do not weaken 1-7.
+// ---------------------------------------------------------------------------
+
+// Criterion 8 (T6-a): the eval's own passing `detail` must make the VERIFIED
+// additive-schema rules machine-visible — mirrors documentsBsatnGap's style.
+// Requires BOTH:
+//   * the nested-struct-widening-requires-manual-migration finding, and
+//   * the supported shape (append-at-end + explicit default annotation).
+export function documentsVerifiedAdditiveSchemaRules(nameStr, detailStr) {
+  const combined = `${nameStr} ${detailStr}`;
+  const nestedRequiresManualMigration =
+    combined.includes('nested') && combined.includes('manual migration');
+  const appendAtEndWithDefaultAnnotation =
+    combined.includes('append') && combined.includes('#[default(');
+  return nestedRequiresManualMigration && appendAtEndWithDefaultAnnotation;
+}
+
+// Criterion 9 (T6-b): the eval's own HEADER (the comment block above the
+// first `import`) must no longer contain the false, unqualified claim that
+// the engine handles additive schema without qualification.
+//
+// The banned phrase is assembled from two parts via `.join('')` — NOT
+// written contiguously anywhere in this file's source text — so this
+// checker's own presence in the file can never satisfy its own negative
+// assertion (the self-scan target IS this file).
+function bannedUnqualifiedEngineClaim() {
+  const partA = 'SpacetimeDB handles additive schema';
+  const partB = ' at the ENGINE level';
+  return [partA, partB].join('');
+}
+
+function headerRegion(rawSrc) {
+  const importIdx = rawSrc.indexOf('import {');
+  return importIdx === -1 ? rawSrc : rawSrc.slice(0, importIdx);
+}
+
+export function headerHasUnqualifiedEngineAdditiveClaim(rawSrc) {
+  const header = headerRegion(rawSrc);
+  return header.indexOf(bannedUnqualifiedEngineClaim()) !== -1;
+}
+
+// Criterion 10 (T6-c): the eval must name `spacetime-type-snapshot` — the
+// gate (evals/spacetime-type-snapshot.eval.mjs) that actually pins
+// BattleState's field list and so catches a nested-type widening in CI —
+// routing a reader from this smoke-eval's narrower finding to the mechanism
+// that enforces it.
+export function namesEnforcingSnapshotGate(nameStr, detailStr) {
+  const combined = `${nameStr} ${detailStr}`;
+  return combined.includes('spacetime-type-snapshot');
 }
 
 // ---------------------------------------------------------------------------
@@ -452,6 +537,112 @@ export default async function () {
       detail:
         "proof-of-teeth D': documentsBsatnGap failed to accept real name+detail containing " +
         "'BSATN', 'serde', and 'engine'",
+    };
+  }
+
+  // =========================================================================
+  // T6-lite proof-of-teeth: documentsVerifiedAdditiveSchemaRules,
+  // headerHasUnqualifiedEngineAdditiveClaim, namesEnforcingSnapshotGate.
+  // =========================================================================
+
+  // Tooth E (T6-a): documentsVerifiedAdditiveSchemaRules rejects a detail that
+  // only has the nested/manual-migration half of the finding.
+  const badOnlyNestedHalf =
+    'a nested struct field widening requires a manual migration in spacetime 2.6.0';
+  if (documentsVerifiedAdditiveSchemaRules('name', badOnlyNestedHalf)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'proof-of-teeth E: documentsVerifiedAdditiveSchemaRules failed to reject a detail ' +
+        'missing the append-at-end + #[default(...)] half of the finding',
+    };
+  }
+
+  // Tooth E-bis: rejects a detail that only has the append/default half.
+  const badOnlyAppendHalf =
+    'a column appended at the end with an explicit #[default(0)] annotation is accepted';
+  if (documentsVerifiedAdditiveSchemaRules('name', badOnlyAppendHalf)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'proof-of-teeth E-bis: documentsVerifiedAdditiveSchemaRules failed to reject a detail ' +
+        'missing the nested-struct + manual-migration half of the finding',
+    };
+  }
+
+  // Tooth E': accepts a detail containing BOTH halves.
+  const goodVerifiedRulesDetail =
+    'verified against live spacetime 2.6.0: a nested struct field widening (e.g. inside ' +
+    'BattleState) requires a manual migration and is REJECTED on republish; the only ' +
+    'accepted additive shape is a top-level column appended at the end with an explicit ' +
+    '#[default(0)] annotation.';
+  if (!documentsVerifiedAdditiveSchemaRules('name', goodVerifiedRulesDetail)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "proof-of-teeth E': documentsVerifiedAdditiveSchemaRules failed to accept a detail " +
+        'containing both the nested/manual-migration finding and the append/default shape',
+    };
+  }
+
+  // Tooth F: headerHasUnqualifiedEngineAdditiveClaim detects the false claim when present.
+  const badHeaderWithFalseClaim =
+    '// SpacetimeDB handles additive schema at the ENGINE level when publishing\n' +
+    '// without --delete-data.\n' +
+    'import { readFileSync } from "node:fs";\n';
+  if (!headerHasUnqualifiedEngineAdditiveClaim(badHeaderWithFalseClaim)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'proof-of-teeth F: headerHasUnqualifiedEngineAdditiveClaim failed to detect the false ' +
+        'unqualified claim in a header fixture that contains it verbatim',
+    };
+  }
+
+  // Tooth F': accepts (returns false for) a corrected header with no such claim.
+  const goodHeaderCorrected =
+    '// A top-level column appended at the end with an explicit #[default(0)]\n' +
+    '// annotation is accepted on republish without --delete-data; a nested\n' +
+    '// struct widening requires a manual migration and is rejected.\n' +
+    'import { readFileSync } from "node:fs";\n';
+  if (headerHasUnqualifiedEngineAdditiveClaim(goodHeaderCorrected)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "proof-of-teeth F': headerHasUnqualifiedEngineAdditiveClaim wrongly flagged a corrected " +
+        'header that does not contain the unqualified claim',
+    };
+  }
+
+  // Tooth G: namesEnforcingSnapshotGate rejects a detail that never names the gate.
+  if (namesEnforcingSnapshotGate('name', 'no mention of any enforcing gate here')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'proof-of-teeth G: namesEnforcingSnapshotGate failed to reject a detail that never ' +
+        "names 'spacetime-type-snapshot'",
+    };
+  }
+
+  // Tooth G': accepts a detail that names the enforcing gate.
+  if (
+    !namesEnforcingSnapshotGate(
+      'name',
+      'see evals/spacetime-type-snapshot.eval.mjs for the enforcing gate',
+    )
+  ) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "proof-of-teeth G': namesEnforcingSnapshotGate failed to accept a detail naming " +
+        "'spacetime-type-snapshot'",
     };
   }
 
@@ -983,10 +1174,19 @@ export default async function () {
     'SpacetimeType derive confirmed on both structs; serde/RON default tests confirmed in m14b_tests.rs. ' +
     'FINDING (14.5f-1): serde/RON tests prove serde-codec compat only. ' +
     'battle.state persists via BSATN (SpacetimeType derive — position-based codec, no missing-field defaults). ' +
-    'SpacetimeDB engine migration handles additive columns at the engine level ' +
-    '(publish without --delete-data), NOT the BSATN codec. ' +
     'The serde(default) annotation covers the serde serialization path (RON content, JSON wire format) ' +
     'but is NOT what makes BSATN-persisted rows backward-compatible with new optional fields. ' +
+    'VERIFIED RULES (11r-i / ADR-0173 D5 — measured against live spacetime 2.6.0 by republishing an ' +
+    'existing database WITHOUT --delete-data, superseding the earlier unqualified engine-handles-it claim): ' +
+    'adding a field to a nested SpacetimeType struct (BattleState, or EncounterEntryRow inside a Vec column) ' +
+    'is REJECTED and requires a manual migration — Option<T> plus serde(default) does NOT help, because the ' +
+    'engine compares the whole nested product type; a top-level column inserted mid-struct is REJECTED as a ' +
+    'reordering AND for want of a default value annotation; the ONLY accepted additive shape is a column ' +
+    'append-ed at the END of the table struct carrying an explicit #[default(...)] annotation, which ' +
+    'publishes cleanly and preserves pre-existing rows. ' +
+    'ENFORCING GATE: a nested-type widening is caught in CI by spacetime-type-snapshot ' +
+    '(evals/spacetime-type-snapshot.eval.mjs + evals/baselines/spacetime-types.json, which pins ' +
+    "BattleState's field list) — not by this static eval and not by the nightly smoke job. " +
     '16.5e-3 (ADR-0116 D4): additive-content coupling verified — every Option column on a ' +
     'content-synced table has its field-assignment in a content.rs re-seed row literal ' +
     '(anchors: ability, train_stat, cure_status, cost_item_id).';
@@ -998,6 +1198,64 @@ export default async function () {
       detail:
         'criterion 6 FAIL: BSATN gap finding not present in eval name+detail — ' +
         "expected 'BSATN', 'serde', 'engine' in combined string",
+    };
+  }
+
+  // Criterion 8 (T6-a): the eval's passing detail must make the VERIFIED
+  // additive-schema rules machine-visible (nested-widening-requires-manual-
+  // migration AND append-at-end-with-#[default(...)]-is-accepted) — not the
+  // false unqualified "engine handles additive schema" claim this eval
+  // previously made. RED until the implementer rewrites `passingDetail`.
+  if (!documentsVerifiedAdditiveSchemaRules(name, passingDetail)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'criterion 8 FAIL (T6-a): eval name+detail must document the VERIFIED additive-schema ' +
+        'rules (empirically tested against live spacetime 2.6.0, republishing WITHOUT ' +
+        '--delete-data): a nested-struct field widening requires a manual migration and is ' +
+        'REJECTED; the only accepted additive shape is a top-level column appended at the end ' +
+        'with an explicit #[default(...)] annotation. The prior unqualified claim ("SpacetimeDB ' +
+        'handles additive schema at the ENGINE level") is FALSE — got detail: ' +
+        passingDetail,
+    };
+  }
+
+  // Criterion 9 (T6-b): this eval's own HEADER must no longer assert the
+  // false, unqualified claim. RED until the implementer corrects the header
+  // comment (lines ~1-25).
+  const selfPath = path.resolve('evals/bsatn-compat-smoke.eval.mjs');
+  let selfSrc = '';
+  try {
+    selfSrc = readFileSync(selfPath, 'utf8');
+  } catch {
+    return { name, pass: false, detail: `criterion 9 FAIL (T6-b): cannot read ${selfPath}` };
+  }
+  if (headerHasUnqualifiedEngineAdditiveClaim(selfSrc)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "criterion 9 FAIL (T6-b): this eval's own header still asserts the false, unqualified " +
+        'claim that "SpacetimeDB handles additive schema at the ENGINE level when publishing ' +
+        'without --delete-data" — verified FALSE against live spacetime 2.6.0 (nested-struct ' +
+        'widening is REJECTED with "requires a manual migration"; only append-at-end + ' +
+        '#[default(...)] is accepted). Correct the header comment.',
+    };
+  }
+
+  // Criterion 10 (T6-c): route a reader to the mechanism that actually
+  // enforces this: evals/spacetime-type-snapshot.eval.mjs, which pins
+  // BattleState's field list and so catches a nested-type widening in CI.
+  if (!namesEnforcingSnapshotGate(name, passingDetail)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "criterion 10 FAIL (T6-c): eval name+detail must name 'spacetime-type-snapshot' — the " +
+        "gate (evals/spacetime-type-snapshot.eval.mjs) that pins BattleState's field list and " +
+        'so actually catches a nested-type widening in CI, per the baseline in ' +
+        'evals/baselines/spacetime-types.json.',
     };
   }
 

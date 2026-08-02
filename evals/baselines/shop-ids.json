@@ -1,0 +1,4 @@
+{
+  "_comment": "Released stable shop ids — APPEND-ONLY (ADR-0006, 11r-i/T2). append-only-ids eval fails if any id here disappears from game-core/content/shops/*.ron. Add new ids; never remove or renumber. Derived by reading the RON by hand (000-core.ron: Pebble Town Shop, id 1 — the nested stock `item_id:` values 1/2/3 are NOT shop ids), then cross-checked against parseIds.",
+  "shops": [1]
+}
