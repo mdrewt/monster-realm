@@ -9,6 +9,10 @@ import {
   type AlgebraicTypeType as __AlgebraicTypeType,
   type Infer as __Infer,
 } from "spacetimedb";
+import {
+  TrustTier,
+} from "./types";
+
 
 export default __t.row({
   monsterId: __t.u64().primaryKey().name("monster_id"),
@@ -27,4 +31,18 @@ export default __t.row({
   statSpDefense: __t.u16().name("stat_sp_defense"),
   partySlot: __t.u8().name("party_slot"),
   evolvesTo: __t.option(__t.u32()).name("evolves_to"),
+  tier: __t.u8(),
+  essenceFire: __t.u32().name("essence_fire"),
+  essenceWater: __t.u32().name("essence_water"),
+  essencePlant: __t.u32().name("essence_plant"),
+  essenceElectric: __t.u32().name("essence_electric"),
+  essenceEarth: __t.u32().name("essence_earth"),
+  essenceWind: __t.u32().name("essence_wind"),
+  essenceLight: __t.u32().name("essence_light"),
+  essenceDark: __t.u32().name("essence_dark"),
+  get trustTier() {
+    return TrustTier.name("trust_tier");
+  },
+  qualityTimeTier: __t.u8().name("quality_time_tier"),
+  nutritionPct: __t.u8().name("nutrition_pct"),
 });

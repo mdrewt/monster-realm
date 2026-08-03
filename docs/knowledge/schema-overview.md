@@ -2,20 +2,21 @@
 type: Schema Overview
 title: Monster Realm Schema Overview
 slug: schema-overview
-updated: 2026-07-31
+updated: 2026-08-03
 tags: [schema, spacetimedb, overview]
-abstract: "34-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 42 reducers."
+abstract: "35-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 41 reducers."
 source: scripts/okf-export.mjs@server-module/src/
 ---
 
 ## Tables
 
-### Public (20)
+### Public (21)
 
 - [battle](tables/battle.md)
 - [battle_challenge](tables/battle_challenge.md)
 - [character](tables/character.md)
 - [config](tables/config.md)
+- [evolution_path](tables/evolution_path.md)
 - [fusion](tables/fusion.md)
 - [heal_location_row](tables/heal_location_row.md)
 - [inventory](tables/inventory.md)
@@ -50,7 +51,7 @@ source: scripts/okf-export.mjs@server-module/src/
 - [pvp_deadline_schedule](tables/pvp_deadline_schedule.md)
 - [trade_offer_reaper_schedule](tables/trade_offer_reaper_schedule.md)
 
-## Reducers (42)
+## Reducers (41)
 
 - [accept_challenge](reducers/accept_challenge.md)
 - [advance_dialogue](reducers/advance_dialogue.md)
@@ -68,7 +69,6 @@ source: scripts/okf-export.mjs@server-module/src/
 - [enqueue_move](reducers/enqueue_move.md)
 - [evolve](reducers/evolve.md)
 - [flee](reducers/flee.md)
-- [fuse](reducers/fuse.md)
 - [grant_bait](reducers/grant_bait.md)
 - [heal_party](reducers/heal_party.md)
 - [init](reducers/init.md)

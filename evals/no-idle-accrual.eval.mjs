@@ -166,9 +166,9 @@ export const GROWTH_FIELDS = [
  * update this list — that is the mechanical enforcement gate.
  *
  * M10b (ADR-0062): `evolve` rewrites derived_stats from the target species (stat_hp etc.
- * are recalculated, not grown — they change species, not accrue passively). `fuse`
- * creates an offspring row with freshly derived stats. Both are intent-path writes
- * triggered only by explicit player action — not scheduled, not idle accrual.
+ * are recalculated, not grown — they change species, not accrue passively). It is an
+ * intent-path write triggered only by explicit player action — not scheduled, not idle
+ * accrual. (`fuse` was deleted by EG1/ADR-0174 — fusion is no longer a feature.)
  *
  * M12.5b (ADR-0073 §12.5b-3): `recompute_monster_derived_fields` is the pure
  * re-derive helper called from `sync_content_inner` during a content-version
@@ -181,7 +181,6 @@ export const GROWTH_WRITERS = [
   'train',
   'write_back_battle_results',
   'evolve',
-  'fuse',
   'recompute_monster_derived_fields',
 ];
 

@@ -49,7 +49,6 @@ import DismissDialogueReducer from "./dismiss_dialogue_reducer";
 import EnqueueMoveReducer from "./enqueue_move_reducer";
 import EvolveReducer from "./evolve_reducer";
 import FleeReducer from "./flee_reducer";
-import FuseReducer from "./fuse_reducer";
 import HealPartyReducer from "./heal_party_reducer";
 import JoinGameReducer from "./join_game_reducer";
 import ProposeTradeReducer from "./propose_trade_reducer";
@@ -75,6 +74,7 @@ import BattleRow from "./battle_table";
 import BattleChallengeRow from "./battle_challenge_table";
 import CharacterRow from "./character_table";
 import ConfigRow from "./config_table";
+import EvolutionPathRow from "./evolution_path_table";
 import FusionRow from "./fusion_table";
 import HealLocationRowRow from "./heal_location_row_table";
 import InventoryRow from "./inventory_table";
@@ -157,6 +157,20 @@ const tablesSchema = __schema({
       { name: 'config_id_key', constraint: 'unique', columns: ['id'] },
     ],
   }, ConfigRow),
+  evolution_path: __table({
+    name: 'evolution_path',
+    indexes: [
+      { accessor: 'from_species', name: 'evolution_path_from_species_idx_btree', algorithm: 'btree', columns: [
+        'fromSpecies',
+      ] },
+      { accessor: 'path_id', name: 'evolution_path_path_id_idx_btree', algorithm: 'btree', columns: [
+        'pathId',
+      ] },
+    ],
+    constraints: [
+      { name: 'evolution_path_path_id_key', constraint: 'unique', columns: ['pathId'] },
+    ],
+  }, EvolutionPathRow),
   fusion: __table({
     name: 'fusion',
     indexes: [
@@ -397,7 +411,6 @@ const reducersSchema = __reducers(
   __reducerSchema("enqueue_move", EnqueueMoveReducer),
   __reducerSchema("evolve", EvolveReducer),
   __reducerSchema("flee", FleeReducer),
-  __reducerSchema("fuse", FuseReducer),
   __reducerSchema("heal_party", HealPartyReducer),
   __reducerSchema("join_game", JoinGameReducer),
   __reducerSchema("propose_trade", ProposeTradeReducer),

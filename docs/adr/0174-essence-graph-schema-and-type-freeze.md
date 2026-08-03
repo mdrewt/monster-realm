@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** ADR-0060, ADR-0061, ADR-0062
 **Subsystems:** evolution-fusion, schema-persistence
-**Decision:** Land Migration A (additive: +16 Monster / +12 MonsterPub / Species.tier / new public evolution_path table) and the game-core essence-graph type freeze (EssenceRequirement/EvolutionPath/TrustTier + path_satisfied/eligible_evolution_paths), deleting fusion outright, so EG2/EG3/EG4 fan out behind one frozen contract.
+**Decision:** Land Migration A (+16 Monster / +12 MonsterPub / Species.tier / new public evolution_path table) and the game-core essence-graph type freeze, deleting fusion outright, so EG2/EG3/EG4 fan out behind one frozen contract.
 
 ## Context
 

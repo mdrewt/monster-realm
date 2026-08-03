@@ -19,9 +19,8 @@
 | reducers/decline_challenge | SpacetimeDB Reducer | decline_challenge | Decline a pending PvP challenge. Deletes the challenge row. |
 | reducers/dismiss_dialogue | SpacetimeDB Reducer | dismiss_dialogue | Dismiss the current dialogue (no-op if no active conversation). |
 | reducers/enqueue_move | SpacetimeDB Reducer | enqueue_move | Append one intent to the bounded queue (anti-flood: reject when full). Buffers i |
-| reducers/evolve | SpacetimeDB Reducer | evolve | Evolve a monster into its passive-eligible target species (M10b, ADR-0061). Step |
+| reducers/evolve | SpacetimeDB Reducer | evolve | Evolve a monster along one authored evolution-graph edge (EG2-1 shape). Steps: 1 |
 | reducers/flee | SpacetimeDB Reducer | flee | Flee from a battle. Sets outcome to `Fled`; no XP awarded. |
-| reducers/fuse | SpacetimeDB Reducer | fuse | Fuse two owned monsters into a new offspring (M10b, ADR-0061; carry model ADR-01 |
 | reducers/grant_bait | SpacetimeDB Reducer | grant_bait | DEV/TEST: grant bait to the CALLER only (self-scoped to `ctx.sender`; no arbitra |
 | reducers/heal_party | SpacetimeDB Reducer | heal_party | Restore all party monsters to full HP at a heal location. Reject-never-burns: al |
 | reducers/init | SpacetimeDB Reducer | init | SpacetimeDB reducer init. |

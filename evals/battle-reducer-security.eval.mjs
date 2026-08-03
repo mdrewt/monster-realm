@@ -1579,18 +1579,16 @@ export default async function () {
   }
 
   // -------------------------------------------------------------------------
-  // C2: evolve/fuse bodies must contain the structural .chain(ctx.db.battle()
+  // C2: the evolve body must contain the structural .chain(ctx.db.battle()
   // .opponent_identity().filter( token (E3 strengthening — whitespace-collapsed
   // combined-token check, not a bare presence check).
   // Per-reducer chain count requirements (ADR-0122 §1.3):
   //   evolve → ≥ 1 chain occurrence (one reject_if_in_battle call)
-  //   fuse   → ≥ 2 chain occurrences (two calls: parent a and parent b)
-  // RED now: both use player_identity().filter only (countBothRoleChains returns 0).
+  // (`fuse` was deleted by EG1/ADR-0174 — its ≥2-chain entry went with it; the
+  // synthetic fuse-shaped teeth fixtures above stay: they exercise the
+  // countBothRoleChains ≥2 mechanics, not the deleted reducer.)
   // -------------------------------------------------------------------------
-  const CHAIN_GUARD_REDUCERS = [
-    { name: 'evolve', minChains: 1 },
-    { name: 'fuse', minChains: 2 },
-  ];
+  const CHAIN_GUARD_REDUCERS = [{ name: 'evolve', minChains: 1 }];
   for (const { name: reducerName, minChains } of CHAIN_GUARD_REDUCERS) {
     const body = extractReducerBody(src, reducerName);
     if (!body) {

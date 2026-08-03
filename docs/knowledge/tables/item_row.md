@@ -2,10 +2,10 @@
 type: SpacetimeDB Table
 title: item_row
 slug: tables/item_row
-updated: 2026-07-31
+updated: 2026-08-03
 tags: [schema, spacetimedb, public]
 abstract: "Item definitions seeded from the `game-core` RON registry."
-resource: server-module/src/schema.rs#L120
+resource: server-module/src/schema.rs#L125
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

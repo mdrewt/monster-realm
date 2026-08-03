@@ -13,6 +13,7 @@
 | tables/character | SpacetimeDB Table | character | One renderable entity. The enum/queue columns are the EXACT M1 `game-core` types |
 | tables/config | SpacetimeDB Table | config | Singleton world config. |
 | tables/encounter | SpacetimeDB Table | encounter | PRIVATE encounter table (no `public`). Spawn weights/level bands are server-only |
+| tables/evolution_path | SpacetimeDB Table | evolution_path | PUBLIC evolution-graph edge table (EG1-4), seeded clear-and-reinsert from the ga |
 | tables/fusion | SpacetimeDB Table | fusion | Fusion recipes (M10b, ADR-0061): public content table seeded from game-core. Eac |
 | tables/heal_cooldown | SpacetimeDB Table | heal_cooldown | PRIVATE per-player heal cooldown anchor. Must-never-leak: timestamp reveals heal |
 | tables/heal_location_row | SpacetimeDB Table | heal_location_row | Healing location content seeded by `sync_content`. Public (world-readable). |

@@ -108,9 +108,8 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
         let row = monster_from_instance(me, &inst, 0); // party slot 0
         let inserted = ctx.db.monster().insert(row);
         // FRESH tier (EG1-8/ADR-0174 D7): creation site — the species row is in hand.
-        ctx.db
-            .monster_pub()
-            .insert(pub_from_monster(&inserted, species.tier));
+        let pub_row = pub_from_monster(&inserted, species.tier);
+        ctx.db.monster_pub().insert(pub_row);
         log::info!(
             "{{\"evt\":\"starter_granted\",\"sender\":\"{me}\",\"monster_id\":{}}}",
             inserted.monster_id

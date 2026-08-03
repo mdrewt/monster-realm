@@ -196,6 +196,31 @@ export const EncounterRow = __t.object("EncounterRow", {
 });
 export type EncounterRow = __Infer<typeof EncounterRow>;
 
+export const EssenceRequirementRow = __t.object("EssenceRequirementRow", {
+  get affinity() {
+    return Affinity;
+  },
+  amount: __t.u32(),
+});
+export type EssenceRequirementRow = __Infer<typeof EssenceRequirementRow>;
+
+export const EvolutionPathRow = __t.object("EvolutionPathRow", {
+  pathId: __t.u64(),
+  edgeId: __t.u32(),
+  fromSpecies: __t.u32(),
+  toSpecies: __t.u32(),
+  minLevel: __t.u8(),
+  get essence() {
+    return __t.array(EssenceRequirementRow);
+  },
+  get minTrustTier() {
+    return __t.option(TrustTier);
+  },
+  minQualityTimeTier: __t.option(__t.u8()),
+  minNutritionPct: __t.option(__t.u8()),
+});
+export type EvolutionPathRow = __Infer<typeof EvolutionPathRow>;
+
 export const Fusion = __t.object("Fusion", {
   fusionId: __t.u64(),
   aSpecies: __t.u32(),
@@ -278,6 +303,22 @@ export const Monster = __t.object("Monster", {
   partySlot: __t.u8(),
   lastCareAtMs: __t.i64(),
   evolvesTo: __t.option(__t.u32()),
+  essenceFire: __t.u32(),
+  essenceWater: __t.u32(),
+  essencePlant: __t.u32(),
+  essenceElectric: __t.u32(),
+  essenceEarth: __t.u32(),
+  essenceWind: __t.u32(),
+  essenceLight: __t.u32(),
+  essenceDark: __t.u32(),
+  trustFavorableCount: __t.u32(),
+  trustUnfavorableCount: __t.u32(),
+  trustFavorableBattleDayEpoch: __t.u32(),
+  qualityTimeTicksTotal: __t.u32(),
+  qualityTimeAccumMs: __t.u32(),
+  qualityTimeWindowMs: __t.u32(),
+  qualityTimeWindowStartMs: __t.i64(),
+  lastEssenceTrainAtMs: __t.i64(),
 });
 export type Monster = __Infer<typeof Monster>;
 
@@ -308,6 +349,20 @@ export const MonsterPub = __t.object("MonsterPub", {
   statSpDefense: __t.u16(),
   partySlot: __t.u8(),
   evolvesTo: __t.option(__t.u32()),
+  tier: __t.u8(),
+  essenceFire: __t.u32(),
+  essenceWater: __t.u32(),
+  essencePlant: __t.u32(),
+  essenceElectric: __t.u32(),
+  essenceEarth: __t.u32(),
+  essenceWind: __t.u32(),
+  essenceLight: __t.u32(),
+  essenceDark: __t.u32(),
+  get trustTier() {
+    return TrustTier;
+  },
+  qualityTimeTier: __t.u8(),
+  nutritionPct: __t.u8(),
 });
 export type MonsterPub = __Infer<typeof MonsterPub>;
 
@@ -499,6 +554,7 @@ export const SpeciesRow = __t.object("SpeciesRow", {
   },
   learnableSkillIds: __t.array(__t.u32()),
   ability: __t.option(__t.u32()),
+  tier: __t.u8(),
 });
 export type SpeciesRow = __Infer<typeof SpeciesRow>;
 
@@ -589,6 +645,16 @@ export const TradeStatus = __t.enum("TradeStatus", {
   ConfirmedByCounterparty: __t.unit(),
 });
 export type TradeStatus = __Infer<typeof TradeStatus>;
+
+// The tagged union or sum type for the algebraic type `TrustTier`.
+export const TrustTier = __t.enum("TrustTier", {
+  Hostile: __t.unit(),
+  Wary: __t.unit(),
+  Neutral: __t.unit(),
+  Friendly: __t.unit(),
+  Devoted: __t.unit(),
+});
+export type TrustTier = __Infer<typeof TrustTier>;
 
 export const TypeRelationRow = __t.object("TypeRelationRow", {
   id: __t.u64(),

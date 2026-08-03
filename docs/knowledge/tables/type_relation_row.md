@@ -2,10 +2,10 @@
 type: SpacetimeDB Table
 title: type_relation_row
 slug: tables/type_relation_row
-updated: 2026-07-31
+updated: 2026-08-03
 tags: [schema, spacetimedb, public]
 abstract: "Type effectiveness chart seeded from the `game-core` RON registry."
-resource: server-module/src/schema.rs#L109
+resource: server-module/src/schema.rs#L114
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

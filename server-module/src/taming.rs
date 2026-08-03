@@ -163,9 +163,8 @@ pub fn attempt_recruit(
         let row = monster_from_instance(me, &inst, PARTY_SLOT_NONE);
         let inserted = ctx.db.monster().insert(row);
         // FRESH tier (EG1-8/ADR-0174 D7): creation site — the species row is in hand.
-        ctx.db
-            .monster_pub()
-            .insert(pub_from_monster(&inserted, species_row.tier));
+        let pub_row = pub_from_monster(&inserted, species_row.tier);
+        ctx.db.monster_pub().insert(pub_row);
 
         battle.state.outcome = BattleOutcome::SideAWins;
         // NO XP on recruit (ADR-0047): do NOT swap for write_back_battle_results.

@@ -20,14 +20,26 @@
       ]
     ]
   },
-  "StatusEffect": {
+  "EssenceRequirementRow": {
+    "kind": "struct",
+    "fields": [
+      [
+        "affinity",
+        "Affinity"
+      ],
+      [
+        "amount",
+        "u32"
+      ]
+    ]
+  },
+  "ChallengeStatus": {
     "kind": "enum",
     "variants": [
-      "Poison",
-      "Burn",
-      "Paralysis",
-      "Sleep",
-      "Freeze"
+      "Pending",
+      "Accepted",
+      "Declined",
+      "Cancelled"
     ]
   },
   "StatusKind": {
@@ -40,13 +52,21 @@
       "Freeze"
     ]
   },
-  "WeatherEffect": {
+  "PvpAction": {
     "kind": "enum",
     "variants": [
-      "Rain",
-      "Sun",
-      "Sandstorm",
-      "Hail"
+      "Attack",
+      "Swap"
+    ]
+  },
+  "StatusEffect": {
+    "kind": "enum",
+    "variants": [
+      "Poison",
+      "Burn",
+      "Paralysis",
+      "Sleep",
+      "Freeze"
     ]
   },
   "BattleMonster": {
@@ -133,6 +153,25 @@
       ]
     ]
   },
+  "WeatherEffect": {
+    "kind": "enum",
+    "variants": [
+      "Rain",
+      "Sun",
+      "Sandstorm",
+      "Hail"
+    ]
+  },
+  "TrustTier": {
+    "kind": "enum",
+    "variants": [
+      "Hostile",
+      "Wary",
+      "Neutral",
+      "Friendly",
+      "Devoted"
+    ]
+  },
   "Affinity": {
     "kind": "enum",
     "variants": [
@@ -216,51 +255,6 @@
       "Quirky"
     ]
   },
-  "Direction": {
-    "kind": "enum",
-    "variants": [
-      "North",
-      "South",
-      "East",
-      "West"
-    ]
-  },
-  "TilePos": {
-    "kind": "struct",
-    "fields": [
-      [
-        "x",
-        "i32"
-      ],
-      [
-        "y",
-        "i32"
-      ]
-    ]
-  },
-  "ActionState": {
-    "kind": "enum",
-    "variants": [
-      "Idle",
-      "Walking",
-      "Jumping"
-    ]
-  },
-  "MoveInput": {
-    "kind": "enum",
-    "variants": [
-      "Step",
-      "Jump"
-    ]
-  },
-  "TileKind": {
-    "kind": "enum",
-    "variants": [
-      "Floor",
-      "Wall",
-      "TallGrass"
-    ]
-  },
   "MonsterCard": {
     "kind": "struct",
     "fields": [
@@ -310,20 +304,49 @@
       "ConfirmedByCounterparty"
     ]
   },
-  "ChallengeStatus": {
+  "Direction": {
     "kind": "enum",
     "variants": [
-      "Pending",
-      "Accepted",
-      "Declined",
-      "Cancelled"
+      "North",
+      "South",
+      "East",
+      "West"
     ]
   },
-  "PvpAction": {
+  "TilePos": {
+    "kind": "struct",
+    "fields": [
+      [
+        "x",
+        "i32"
+      ],
+      [
+        "y",
+        "i32"
+      ]
+    ]
+  },
+  "ActionState": {
     "kind": "enum",
     "variants": [
-      "Attack",
-      "Swap"
+      "Idle",
+      "Walking",
+      "Jumping"
+    ]
+  },
+  "MoveInput": {
+    "kind": "enum",
+    "variants": [
+      "Step",
+      "Jump"
+    ]
+  },
+  "TileKind": {
+    "kind": "enum",
+    "variants": [
+      "Floor",
+      "Wall",
+      "TallGrass"
     ]
   },
   "NpcInteraction": {
