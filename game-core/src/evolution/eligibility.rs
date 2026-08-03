@@ -8,6 +8,12 @@
 //! multi-choice UX) and the write path (the server `evolve` reducer's single
 //! targeted row) call it — one predicate, so they cannot drift.
 //!
+//! `unmet_requirement` is its explanatory twin: the SAME gate order, rendered
+//! as the player-facing reason. It lives here rather than in the reducer so
+//! the rejection message and the client requirements panel (EG4-1, which ports
+//! this logic) describe a gate identically — gate-describing logic is rules,
+//! not reducer plumbing.
+//!
 //! All three derived tiers come from `MonsterInstance` fields, never from a
 //! caller-computed argument: `trust_tier_of` (Bayesian-smoothed, `K = 10`),
 //! `quality_time_tier_of` (tick bands), `nutrition_pct_of` (the EV pool as a
@@ -50,6 +56,26 @@ pub const QUALITY_TIME_TIER_TICKS: [u32; 4] = [10, 50, 150, 400];
 /// and the reducer's indexed lookup.
 #[must_use]
 pub fn path_satisfied(instance: &MonsterInstance, path: &EvolutionPath) -> bool {
+    let _ = (instance, path);
+    unimplemented!("EG1")
+}
+
+/// Why `instance` does NOT satisfy `path` — `None` exactly when
+/// [`path_satisfied`] returns `true`.
+///
+/// Lives HERE, not in the server reducer (EG1-6's shared-predicate rule): the
+/// reducer's "reject naming the specific failing requirement" message (EG2-1)
+/// and the EG4 client requirements panel must describe the SAME gate the SAME
+/// way, so the description logic is rules-layer state, not reducer state.
+///
+/// Returns the FIRST unmet gate in the canonical gate order
+/// `level -> essence -> trust -> quality time -> nutrition`. The message names
+/// the gate (containing the keyword `level` / `essence` plus the offending
+/// `Affinity` / `trust` / `quality` / `nutrition`) AND that path's own
+/// threshold value — never a hardcoded constant, since two edges out of the
+/// same species routinely carry different thresholds.
+#[must_use]
+pub fn unmet_requirement(instance: &MonsterInstance, path: &EvolutionPath) -> Option<String> {
     let _ = (instance, path);
     unimplemented!("EG1")
 }

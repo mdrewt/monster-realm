@@ -3033,6 +3033,12 @@ mod tests {
     /// Kills: a validator that omits R2. A self-edge can never satisfy R5
     /// either, so the message assertion is what forces R2 to exist explicitly
     /// rather than being masked by the tier rule.
+    ///
+    /// ORDER DEPENDENCY (deliberate, documented): the `self` message assertion
+    /// only holds while R2 is evaluated BEFORE R5, per the R1 -> R12 rule
+    /// order this validator's doc-comment declares. If a future change
+    /// reorders the checks, fix the ORDER (or re-derive this assertion from
+    /// the spec) — never weaken this test to match the reordered code.
     #[test]
     fn r2_self_edge_rejected() {
         let species = vec![eg1_species(1, 0)];
@@ -3371,8 +3377,10 @@ mod tests {
         let err = validate_evolution_paths(&species, &paths, &[], &[])
             .expect_err("R10 TEETH: species 3 (tier 1) is unreachable and must be rejected");
         assert!(
-            err.contains('3'),
-            "R10 TEETH: the error must name the unreachable species 3, got: {err:?}"
+            err.contains("species 3"),
+            "R10 TEETH: the error must name the unreachable species UNAMBIGUOUSLY as `species 3` \
+             — a bare `3` would also match the tier number or an index in an unrelated message, \
+             got: {err:?}"
         );
     }
 

@@ -60,8 +60,8 @@ pub use dialogue::{
 };
 pub use evolution::{
     eligible_evolution_paths, evolve, nutrition_pct_from_ev_total, nutrition_pct_of,
-    path_satisfied, quality_time_tier_of, trust_tier_of, QUALITY_TIME_TIER_TICKS, TRUST_BAND_PCT,
-    TRUST_K,
+    path_satisfied, quality_time_tier_of, trust_tier_of, unmet_requirement,
+    QUALITY_TIME_TIER_TICKS, TRUST_BAND_PCT, TRUST_K,
 };
 pub use monster::{
     build_monster, derive_stats, level_bounds, level_for_xp, roll_individuality, roll_starter,

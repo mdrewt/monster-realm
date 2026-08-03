@@ -16,15 +16,24 @@
 //!     property against `path_satisfied`.
 //!   - `evolve` — zeroes all 8 essence pools, carries Trust/Quality-Time verbatim.
 //!
+//!   - `unmet_requirement`  — the explanatory twin of `path_satisfied`: `None`
+//!     iff satisfied, and the message names the failing gate AND *that path's
+//!     own* threshold (checked against TWO paths with different thresholds).
+//!
 //! Band CONSTANTS are deliberately NOT pinned by equality assertions: the
 //! exact-tie boundary fixtures below ARE the pin (a retune must move them).
+//! The three ORACLE properties, however, recompute the expected answer FROM
+//! the exported constants over a wide random domain — so a hand-written
+//! lookup table or `match` ladder that agrees at the pinned boundaries but
+//! drifts from the constants anywhere else is caught.
 //!
 //! Run: cargo test -p game-core m10a_gating
 
 use crate::content::{EssenceRequirement, EvolutionPath, Species, TrustTier};
 use crate::evolution::{
     eligible_evolution_paths, evolve, nutrition_pct_from_ev_total, nutrition_pct_of,
-    path_satisfied, quality_time_tier_of, trust_tier_of,
+    path_satisfied, quality_time_tier_of, trust_tier_of, unmet_requirement,
+    QUALITY_TIME_TIER_TICKS, TRUST_BAND_PCT, TRUST_K,
 };
 use crate::monster::rules::{derive_stats, xp_for_level};
 use crate::monster::types::{
@@ -324,6 +333,40 @@ fn five_gate_monster() -> MonsterInstance {
     )
 }
 
+/// A SECOND fully-gated path out of the same species, with a DIFFERENT value
+/// in every one of the five slots: level 45, Water essence 75, Trust >=
+/// Devoted, Quality-Time tier >= 4, Nutrition >= 90%.
+///
+/// Its purpose is discrimination: any message or predicate that hardcodes the
+/// canonical edge's thresholds agrees with `five_gate_path` and disagrees here.
+fn second_five_gate_path() -> EvolutionPath {
+    EvolutionPath {
+        edge_id: 2,
+        from_species: 1,
+        to_species: 3,
+        min_level: lv(45),
+        essence: vec![req(Affinity::Water, 75)],
+        min_trust_tier: Some(TrustTier::Devoted),
+        min_quality_time_tier: Some(4),
+        min_nutrition_pct: Some(90),
+    }
+}
+
+/// A monster sitting EXACTLY on all five of `second_five_gate_path`'s
+/// thresholds: level 45, Water 75, Trust (30, 0) = 80% = Devoted, 400 ticks =
+/// QT tier 4, EV total 459 = 90% Nutrition.
+fn second_five_gate_monster() -> MonsterInstance {
+    monster(
+        1,
+        45,
+        essence_of(Affinity::Water, 75),
+        30,
+        0,
+        400,
+        evs_totalling(459),
+    )
+}
+
 /// EG1-6: all five gates met exactly at their thresholds -> satisfied.
 /// kills: any gate implemented with a strict `>` instead of `>=`.
 #[test]
@@ -379,6 +422,174 @@ fn path_satisfied_rejects_when_any_single_gate_fails() {
              must NOT be satisfied (a dropped gate or an || combination passes here)"
         );
     }
+}
+
+// ===========================================================================
+// unmet_requirement — the explanatory twin of path_satisfied (EG1-6 SSOT)
+// ===========================================================================
+
+/// Assert that `instance` fails `path`, that `unmet_requirement` reports it,
+/// and that the message carries every `needle` (case-insensitively).
+fn assert_unmet_names(
+    path: &EvolutionPath,
+    gate: &str,
+    instance: &MonsterInstance,
+    needles: &[&str],
+) {
+    assert!(
+        !path_satisfied(instance, path),
+        "fixture sanity: edge {} must be UNSATISFIED on its {gate} gate",
+        path.edge_id
+    );
+    let message = unmet_requirement(instance, path)
+        .unwrap_or_else(|| panic!("edge {} must report its unmet {gate} gate", path.edge_id));
+    let lowered = message.to_lowercase();
+    for needle in needles {
+        assert!(
+            lowered.contains(&needle.to_lowercase()),
+            "edge {}'s {gate} message must contain `{needle}` — the gate keyword and THIS path's \
+             OWN threshold. A message hardcoded to the canonical edge's thresholds passes the \
+             canonical cases and fails here; got: {message:?}",
+            path.edge_id
+        );
+    }
+}
+
+/// EG1-6: `unmet_requirement` is `None` EXACTLY when `path_satisfied` is
+/// `true`, over two paths with different thresholds and a 324-cell instance
+/// grid spanning satisfying/failing values on all five dimensions.
+///
+/// kills: a second, drifting copy of the gate logic in the message path (the
+/// exact drift the shared-predicate rule exists to prevent) — e.g. one that
+/// reports a reason for an eligible monster, or returns `None` for an
+/// ineligible one so the reducer rejects with no explanation.
+#[test]
+fn unmet_requirement_agrees_with_path_satisfied() {
+    let paths = [five_gate_path(), second_five_gate_path()];
+    let both_essences = {
+        let mut e = essence_of(Affinity::Fire, 100);
+        e[Affinity::Water.index()] = 75;
+        e
+    };
+    let essence_grid = [
+        [0u32; 8],
+        essence_of(Affinity::Fire, 100),
+        essence_of(Affinity::Water, 75),
+        both_essences,
+    ];
+
+    for path in &paths {
+        for level in [1u8, 20, 45] {
+            for essence in essence_grid {
+                for favorable in [0u32, 5, 30] {
+                    for ticks in [0u32, 50, 400] {
+                        for ev_total in [0u16, 255, 459] {
+                            let m = monster(
+                                1,
+                                level,
+                                essence,
+                                favorable,
+                                0,
+                                ticks,
+                                evs_totalling(ev_total),
+                            );
+                            let unmet = unmet_requirement(&m, path);
+                            assert_eq!(
+                                unmet.is_none(),
+                                path_satisfied(&m, path),
+                                "unmet_requirement must be None EXACTLY when path_satisfied is \
+                                 true (edge {}, level {level}, essence {essence:?}, fav \
+                                 {favorable}, ticks {ticks}, ev total {ev_total}); got {unmet:?}",
+                                path.edge_id
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// EG1-6 / EG2-1: each of the five gates, on BOTH paths, produces a message
+/// naming that gate AND that path's OWN threshold.
+///
+/// Every fixture below satisfies its path's other four gates, so the reported
+/// gate is unambiguous regardless of evaluation order. The final case pins the
+/// documented first-unmet ordering (level -> essence -> trust -> quality ->
+/// nutrition) with a monster that fails all five.
+///
+/// kills: a message that hardcodes the canonical edge's thresholds (level 20 /
+/// Fire 100 / Friendly / tier 2 / 50%) — it passes the canonical half and
+/// fails every alternate-edge case; also kills a generic "requirements not
+/// met" string that names no gate at all.
+#[test]
+fn unmet_requirement_names_each_gate() {
+    let canonical = five_gate_path();
+    let alternate = second_five_gate_path();
+
+    // --- canonical edge: level 20 / Fire 100 / Friendly / QT 2 / 50% -------
+    let mut m = five_gate_monster();
+    m.level = lv(19);
+    assert_unmet_names(&canonical, "level", &m, &["level", "20"]);
+
+    let mut m = five_gate_monster();
+    m.essence = essence_of(Affinity::Fire, 99);
+    assert_unmet_names(&canonical, "essence", &m, &["essence", "fire", "100"]);
+
+    let mut m = five_gate_monster();
+    m.trust_favorable_count = 0; // (0, 0) = 50% = Neutral, one band short
+    assert_unmet_names(&canonical, "trust", &m, &["trust", "friendly"]);
+
+    let mut m = five_gate_monster();
+    m.quality_time_ticks_total = 49; // tier 1
+    assert_unmet_names(&canonical, "quality", &m, &["quality", "2"]);
+
+    let m = monster(
+        1,
+        20,
+        essence_of(Affinity::Fire, 100),
+        5,
+        0,
+        50,
+        evs_totalling(254), // 49%
+    );
+    assert_unmet_names(&canonical, "nutrition", &m, &["nutrition", "50"]);
+
+    // --- alternate edge: level 45 / Water 75 / Devoted / QT 4 / 90% -------
+    let mut m = second_five_gate_monster();
+    m.level = lv(44);
+    assert_unmet_names(&alternate, "level", &m, &["level", "45"]);
+
+    let mut m = second_five_gate_monster();
+    m.essence = essence_of(Affinity::Water, 74);
+    assert_unmet_names(&alternate, "essence", &m, &["essence", "water", "75"]);
+
+    let mut m = second_five_gate_monster();
+    m.trust_favorable_count = 5; // (5, 0) = 60% = Friendly, one band short
+    assert_unmet_names(&alternate, "trust", &m, &["trust", "devoted"]);
+
+    let mut m = second_five_gate_monster();
+    m.quality_time_ticks_total = 399; // tier 3
+    assert_unmet_names(&alternate, "quality", &m, &["quality", "4"]);
+
+    let m = monster(
+        1,
+        45,
+        essence_of(Affinity::Water, 75),
+        30,
+        0,
+        400,
+        evs_totalling(458), // 89%
+    );
+    assert_unmet_names(&alternate, "nutrition", &m, &["nutrition", "90"]);
+
+    // --- ordering: all five unmet reports the FIRST gate, level ----------
+    assert_unmet_names(
+        &canonical,
+        "level (first-unmet ordering)",
+        &plain_monster(1),
+        &["level", "20"],
+    );
 }
 
 // ===========================================================================
@@ -836,6 +1047,83 @@ proptest! {
                 );
             }
         }
+    }
+
+    /// ORACLE: `quality_time_tier_of` equals the number of
+    /// `QUALITY_TIME_TIER_TICKS` bands the monster has reached, over a domain
+    /// far wider than the pinned boundaries.
+    ///
+    /// kills: a hand-written `match`/lookup ladder that happens to agree at
+    /// the ten probed boundaries but drifts from the published constants
+    /// anywhere else — and kills any future band retune that edits the
+    /// constant without re-deriving the implementation from it.
+    #[test]
+    fn quality_time_tier_of_matches_band_reference(ticks in 0u32..2000u32) {
+        let expected = QUALITY_TIME_TIER_TICKS
+            .iter()
+            .filter(|&&band| ticks >= band)
+            .count() as u8;
+        prop_assert_eq!(
+            quality_time_tier_of(ticks),
+            expected,
+            "quality_time_tier_of({}) must equal the count of QUALITY_TIME_TIER_TICKS bands \
+             reached (INCLUSIVE lower bounds), derived from the constant itself",
+            ticks
+        );
+    }
+
+    /// ORACLE: `nutrition_pct_from_ev_total` is `min(total, 510) * 100 / 510`
+    /// over a domain that runs well past the 510 budget, so the clamp is
+    /// exercised on ~half the draws (ADR-0174 D3).
+    ///
+    /// kills: a lookup table or a piecewise approximation; kills an unclamped
+    /// formula (which exceeds 100 above 510); kills a wrong denominator.
+    #[test]
+    fn nutrition_pct_from_ev_total_matches_reference(total in 0u32..1000u32) {
+        let expected = ((total.min(510) * 100) / 510) as u8;
+        let observed = nutrition_pct_from_ev_total(
+            u16::try_from(total).expect("the generated domain stays below u16::MAX"),
+        );
+        prop_assert_eq!(
+            observed,
+            expected,
+            "nutrition_pct_from_ev_total({}) must equal min(total, 510) * 100 / 510",
+            total
+        );
+    }
+
+    /// ORACLE: `trust_tier_of` equals the band index reached by the pinned
+    /// integer cross-multiplication
+    /// `(fav + TRUST_K) * 100 >= band_pct * (fav + unfav + 2 * TRUST_K)`,
+    /// recomputed from `TRUST_K` and `TRUST_BAND_PCT` over a wide domain.
+    ///
+    /// kills: a lookup table / `match` ladder agreeing only at the four pinned
+    /// exact ties; kills a float implementation whose rounding disagrees near
+    /// a boundary; kills a `K` baked into the code rather than read from the
+    /// constant; kills a truncating-division form (`lhs / denom >= band`)
+    /// which loses the tie at every non-exact ratio.
+    #[test]
+    fn trust_tier_of_matches_band_reference(
+        favorable in 0u32..2000u32,
+        unfavorable in 0u32..2000u32,
+    ) {
+        let denominator =
+            u64::from(favorable) + u64::from(unfavorable) + 2 * u64::from(TRUST_K);
+        let smoothed = (u64::from(favorable) + u64::from(TRUST_K)) * 100;
+        // The bands are ascending, so the satisfied set is a prefix and the
+        // count IS the band index (0 = Hostile .. 4 = Devoted).
+        let reached = TRUST_BAND_PCT
+            .iter()
+            .filter(|&&band| smoothed >= u64::from(band) * denominator)
+            .count();
+        prop_assert_eq!(
+            trust_tier_of(favorable, unfavorable),
+            ALL_TRUST_TIERS[reached],
+            "trust_tier_of({}, {}) must equal the band reached by \
+             (fav + TRUST_K) * 100 >= band_pct * (fav + unfav + 2 * TRUST_K)",
+            favorable,
+            unfavorable
+        );
     }
 
     /// `trust_tier_of` is monotone NON-DECREASING in favorable events.

@@ -21,7 +21,7 @@
 //! test harness, so these tests drive `evolve_seam` — the seam mirroring the
 //! reducer against an in-memory `TestEvolutionDb` — while calling the REAL
 //! production helpers it can (`crate::guards::*`, `crate::marshal::*`,
-//! `game_core::path_satisfied`, `super::unmet_requirement`). The production
+//! `game_core::path_satisfied`, `game_core::unmet_requirement`). The production
 //! reducer's own delegation is pinned separately by the EG1-11 source-scan at
 //! the bottom of this file.
 //!
@@ -33,9 +33,10 @@
 // marshal_tests.rs).
 //
 // NOTE: deliberately NO `use super::*;` — every production symbol is reached by
-// an explicit path (`super::unmet_requirement`, `crate::guards::*`,
-// `crate::marshal::*`), so this file cannot silently pick up whatever
-// `evolution.rs` happens to import.
+// an explicit path (`crate::guards::*`, `crate::marshal::*`, `game_core::*`), so
+// this file cannot silently pick up whatever `evolution.rs` happens to import.
+// Nothing here reaches into `super` at all: the seam's gate decision and its
+// rejection message both come from game-core.
 // ---------------------------------------------------------------------------
 
 use crate::schema::{
@@ -798,141 +799,18 @@ fn evolve_preserves_trust_and_quality_time_columns() {
 }
 
 // ===========================================================================
-// EG2-1 message layer — `unmet_requirement` (the requirement-NAMING helper) must
-// agree with the SSOT gate, `game_core::path_satisfied`.
+// EG2-1 message layer — NOTE ON OWNERSHIP.
 //
-// The gate DECISION belongs to `path_satisfied` (EG1-11); this helper exists
-// only to turn a failure into a player-facing sentence. Keeping it a separate
-// function is what lets the source-scan below forbid gate arithmetic inside the
-// `evolve` reducer body itself.
+// `unmet_requirement` lives in GAME-CORE (`game_core::unmet_requirement`), NOT
+// in `evolution.rs`: it is a pure function of (instance, path), and keeping it
+// out of the server layer is what makes the whole-file source scan below sound
+// (nothing in `evolution.rs` has any legitimate reason to read a gate field).
+//
+// Its own contract tests — `None` exactly when `path_satisfied` is true, and the
+// per-gate keyword/threshold vocabulary — live in game-core alongside it. This
+// file exercises it only through the seam, where it is the reducer's rejection
+// message (`evolve_rejects_names_the_failing_requirement`).
 // ===========================================================================
-
-/// Marshal a row into the pure instance the gate predicates operate on.
-fn instance_of(m: &Monster) -> game_core::MonsterInstance {
-    crate::marshal::monster_to_instance(m).expect("fixture rows are always valid")
-}
-
-/// The pure path built from the canonical row fixture.
-fn canonical_path() -> game_core::EvolutionPath {
-    crate::marshal::evolution_path_from_row(&make_evolution_path_row(1, 100, 1, 2))
-        .expect("the canonical path row marshals")
-}
-
-/// `unmet_requirement` returns `None` exactly when `path_satisfied` returns true.
-///
-/// PROOF-OF-TEETH: this is the anti-drift assertion. If the describer ever checks
-/// a gate the predicate does not (or vice-versa) — e.g. it forgets Nutrition —
-/// one of the six rows below disagrees and this fires. Six rows: one all-pass and
-/// five single-gate failures.
-///
-/// kills: a describer that silently disagrees with the SSOT gate; a describer
-///        that returns Some(..) unconditionally (row 0 fires) or None
-///        unconditionally (rows 1-5 fire).
-#[test]
-fn unmet_requirement_agrees_with_path_satisfied() {
-    let path = canonical_path();
-    let owner = owner_id();
-
-    let mut below_level = make_qualified_monster_row(1, owner);
-    below_level.level = 19;
-    let mut short_essence = make_qualified_monster_row(1, owner);
-    short_essence.essence_fire = 99;
-    let mut low_trust = make_qualified_monster_row(1, owner);
-    low_trust.trust_favorable_count = 0;
-    low_trust.trust_unfavorable_count = 0;
-    let mut low_quality_time = make_qualified_monster_row(1, owner);
-    low_quality_time.quality_time_ticks_total = 9;
-    let mut low_nutrition = make_qualified_monster_row(1, owner);
-    low_nutrition.ev_hp = 0;
-    low_nutrition.ev_attack = 0;
-
-    let cases: [(&str, Monster); 6] = [
-        ("all gates satisfied", make_qualified_monster_row(1, owner)),
-        ("level 19 < min_level 20", below_level),
-        ("essence_fire 99 < Fire 100", short_essence),
-        ("trust Neutral < Friendly", low_trust),
-        ("quality-time tier 0 < 2", low_quality_time),
-        ("nutrition 0% < 50%", low_nutrition),
-    ];
-
-    for (label, row) in cases {
-        let inst = instance_of(&row);
-        let satisfied = game_core::path_satisfied(&inst, &path);
-        let described = super::unmet_requirement(&inst, &path);
-        assert_eq!(
-            described.is_none(),
-            satisfied,
-            "TEETH(anti-drift, {label}): unmet_requirement must return None EXACTLY \
-             when game_core::path_satisfied returns true; got satisfied={satisfied}, \
-             message={described:?}"
-        );
-    }
-}
-
-/// Each unmet gate is named by its own vocabulary, so a player can tell the five
-/// gates apart.
-///
-/// kills: a describer that always reports the same gate (e.g. always "level");
-///        one that reports a gate the monster actually clears.
-#[test]
-fn unmet_requirement_names_each_gate() {
-    let path = canonical_path();
-    let owner = owner_id();
-
-    let mut below_level = make_qualified_monster_row(1, owner);
-    below_level.level = 19;
-    let msg = super::unmet_requirement(&instance_of(&below_level), &path)
-        .expect("an unmet level gate must be described");
-    assert!(
-        msg.to_lowercase().contains("level"),
-        "the level gate must be named \"level\"; got: {msg:?}"
-    );
-
-    let mut short_essence = make_qualified_monster_row(1, owner);
-    short_essence.essence_fire = 99;
-    let msg = super::unmet_requirement(&instance_of(&short_essence), &path)
-        .expect("an unmet essence gate must be described");
-    let lower = msg.to_lowercase();
-    assert!(
-        lower.contains("essence"),
-        "the essence gate must be named \"essence\"; got: {msg:?}"
-    );
-    assert!(
-        lower.contains("fire"),
-        "TEETH: the essence gate must name the AFFINITY that is short (Fire) — a \
-         message that only says \"essence\" cannot tell a player which of up to \
-         three pools to grow; got: {msg:?}"
-    );
-
-    let mut low_trust = make_qualified_monster_row(1, owner);
-    low_trust.trust_favorable_count = 0;
-    low_trust.trust_unfavorable_count = 0;
-    let msg = super::unmet_requirement(&instance_of(&low_trust), &path)
-        .expect("an unmet trust gate must be described");
-    assert!(
-        msg.to_lowercase().contains("trust"),
-        "the Trust gate must be named \"trust\"; got: {msg:?}"
-    );
-
-    let mut low_quality_time = make_qualified_monster_row(1, owner);
-    low_quality_time.quality_time_ticks_total = 9;
-    let msg = super::unmet_requirement(&instance_of(&low_quality_time), &path)
-        .expect("an unmet quality-time gate must be described");
-    assert!(
-        msg.to_lowercase().contains("quality"),
-        "the Quality-Time gate must be named \"quality\"; got: {msg:?}"
-    );
-
-    let mut low_nutrition = make_qualified_monster_row(1, owner);
-    low_nutrition.ev_hp = 0;
-    low_nutrition.ev_attack = 0;
-    let msg = super::unmet_requirement(&instance_of(&low_nutrition), &path)
-        .expect("an unmet nutrition gate must be described");
-    assert!(
-        msg.to_lowercase().contains("nutrition"),
-        "the Nutrition gate must be named \"nutrition\"; got: {msg:?}"
-    );
-}
 
 // ===========================================================================
 // EG1-11 SOURCE SCAN — the `evolve` reducer must SHARE `path_satisfied`, not
@@ -1009,28 +887,72 @@ fn extract_fn_body(stripped: &str, decl_needle: &str) -> String {
     stripped[body_start..body_start + byte_off].to_string()
 }
 
-/// EG1-11 (positive): the `evolve` reducer body must call the SHARED predicate.
+/// The PRODUCTION region of a source file: everything before the first
+/// `#[cfg(test)]` marker, comments stripped.
 ///
-/// kills: an `evolve` that decides eligibility with its own inline comparisons,
-///        which is exactly how the read path (`eligible_evolution_paths`, powering
-///        the client requirements panel) and the write path silently drift apart.
+/// Test-only code must never be able to satisfy (or pollute) a production-shape
+/// assertion — the same file-scoping lesson `evolution-reducer-security`'s
+/// `readServerModuleProdSources` already encodes at the eval layer.
+fn production_region(src: &str) -> String {
+    let stripped = strip_rust_comments(src);
+    match stripped.find("#[cfg(test)]") {
+        Some(idx) => stripped[..idx].to_string(),
+        None => stripped,
+    }
+}
+
+/// EG1-11 (positive): the `evolve` reducer body must make its gate decision BY
+/// CALLING the shared predicate — in the load-bearing `if !…` form.
+///
+/// A bare `path_satisfied(` substring is NOT enough: a body that computes its own
+/// verdict and merely mentions the predicate somewhere (a dead branch, a
+/// `let _ = path_satisfied(..);`, a logging call) would satisfy a substring check
+/// while the real decision came from re-implemented arithmetic. So the accepted
+/// forms are exactly the two import styles of the negated call that GUARDS the
+/// rejection:
+///     if !game_core::path_satisfied(   |   if !path_satisfied(
+///
+/// kills: a decoy/dead-branch call to the shared predicate; an `evolve` that
+///        decides eligibility with its own inline comparisons — which is exactly
+///        how the read path (`eligible_evolution_paths`, powering the client
+///        requirements panel) and the write path silently drift apart.
 #[test]
 fn eg1_11_evolve_body_delegates_to_path_satisfied() {
     let stripped = strip_rust_comments(EVOLUTION_RS_SOURCE);
     let body = extract_fn_body(&stripped, "pub fn evolve(ctx");
 
+    // Vacuity guard: an empty extraction must never pass this test silently.
     assert!(
-        body.contains("path_satisfied("),
-        "TEETH(EG1-11): the `evolve` reducer body must call `path_satisfied(...)` — \
-         ONE shared gate predicate for both the read path \
-         (eligible_evolution_paths) and this write path, so they cannot drift"
+        !body.trim().is_empty(),
+        "vacuity guard: the extracted `evolve` body is empty — the source scanner \
+         has rotted and any verdict below would be meaningless"
+    );
+
+    let qualified = body.contains("if !game_core::path_satisfied(");
+    let bare = body.contains("if !path_satisfied(");
+    assert!(
+        qualified || bare,
+        "TEETH(EG1-11): the `evolve` reducer body must GUARD its rejection on the \
+         shared predicate, written as `if !game_core::path_satisfied(` or \
+         `if !path_satisfied(` — ONE shared gate predicate for both the read path \
+         (eligible_evolution_paths) and this write path, so they cannot drift. A \
+         bare mention of the predicate elsewhere in the body (dead branch, \
+         `let _ = …`, a log line) does NOT count: the negated call must be the \
+         thing that decides the rejection."
     );
 }
 
-/// EG1-11 (negative): the `evolve` reducer body must NOT contain gate arithmetic
-/// of its own.
+/// EG1-11 (negative): NOTHING in the production region of `evolution.rs` may
+/// contain gate arithmetic — not just `evolve`'s own body.
 ///
-/// Each banned needle is a field or helper that ONLY a re-implemented gate (or a
+/// WHY WHOLE-FILE (the bypass this closes): scoping the ban to `extract_fn_body`
+/// alone left a trivial escape — move the re-implemented gate into a private
+/// helper two lines below `evolve` and call it. The ban is now sound at file
+/// scope because the ONE function with a legitimate reason to read gate fields,
+/// `unmet_requirement`, lives in GAME-CORE (pure, testable there), not here.
+/// `evolution.rs` is a ctx/DB layer: it has no business touching a gate field.
+///
+/// Each banned needle is a field or helper that only a re-implemented gate (or a
 /// re-implemented requirement description) touches:
 ///   * `min_level` / `min_trust_tier` / `min_quality_time_tier` /
 ///     `min_nutrition_pct` — the `EvolutionPath` gate fields,
@@ -1041,18 +963,49 @@ fn eg1_11_evolve_body_delegates_to_path_satisfied() {
 ///     forbids on this path (the targeted, indexed lookup is the point).
 ///
 /// NOTE FOR THE IMPLEMENTER: naming the failing requirement is still required
-/// (EG2-1) — put that logic in the separate `unmet_requirement` helper (tested
-/// above), which lives OUTSIDE this function body. The write-back of the
-/// transformed instance (`transformed.essence[...]` into the eight columns) is
-/// deliberately NOT banned; only gate/threshold reads are.
+/// (EG2-1) — call `game_core::unmet_requirement(&instance, &path)`; do not
+/// re-derive the message here. The write-back of the transformed instance
+/// (`transformed.essence[...]` into the eight columns) is deliberately NOT
+/// banned; only gate/threshold reads are.
 ///
-/// kills: a hand-rolled `path.min_level <= level && ...` chain inside `evolve`;
-///        a body that computes the three tiers itself; a full-set eligibility
-///        query where a targeted lookup is required.
+/// kills: a hand-rolled `path.min_level <= level && …` chain anywhere in
+///        `evolution.rs`; a private `fn describe_gate(..)` helper next to
+///        `evolve` that re-implements the five gates; a body that computes the
+///        three tiers itself; a full-set eligibility query where a targeted
+///        lookup is required.
 #[test]
-fn eg1_11_evolve_body_has_no_inlined_gate_logic() {
-    let stripped = strip_rust_comments(EVOLUTION_RS_SOURCE);
-    let body = extract_fn_body(&stripped, "pub fn evolve(ctx");
+fn eg1_11_evolution_rs_production_region_has_no_inlined_gate_logic() {
+    let production = production_region(EVOLUTION_RS_SOURCE);
+
+    // Vacuity guards: the scanned region must be real production code that still
+    // contains the reducer, otherwise a truncated/empty region would pass.
+    assert!(
+        !production.trim().is_empty(),
+        "vacuity guard: the production region of evolution.rs is empty — the \
+         scanner has rotted"
+    );
+    assert!(
+        production.contains("pub fn evolve("),
+        "vacuity guard: the production region of evolution.rs does not contain \
+         `pub fn evolve(` — either the reducer moved or a `#[cfg(test)]` marker \
+         above it truncated the scan, which would let gate logic below the cut \
+         escape this check"
+    );
+    // Soundness of the cut: the ONLY `#[cfg(test)]` in evolution.rs must be the
+    // test-module declaration at the bottom. A second one placed above `evolve`
+    // would shrink the scanned region (the exact way to smuggle gate logic past
+    // a first-marker cut), and EG1 deletes the old cfg(test) effect structs
+    // anyway.
+    assert_eq!(
+        strip_rust_comments(EVOLUTION_RS_SOURCE)
+            .matches("#[cfg(test)]")
+            .count(),
+        1,
+        "TEETH: evolution.rs must contain EXACTLY ONE `#[cfg(test)]` (the \
+         `mod evolution_tests;` declaration at the bottom). A second marker moves \
+         the production/test cut and would let code below it escape the gate scan; \
+         EG1 also deletes the old cfg(test) EvolutionEffect/FuseEffect structs."
+    );
 
     let banned = [
         "min_level",
@@ -1068,12 +1021,14 @@ fn eg1_11_evolve_body_has_no_inlined_gate_logic() {
     ];
     for needle in banned {
         assert!(
-            !body.contains(needle),
-            "TEETH(EG1-11): the `evolve` reducer body contains {needle:?} — that is \
-             gate logic re-implemented next to `path_satisfied` instead of \
-             delegated to it. The gate DECISION belongs to \
-             `game_core::path_satisfied`; requirement NAMING belongs to the \
-             separate `unmet_requirement` helper. Move it out of this fn body."
+            !production.contains(needle),
+            "TEETH(EG1-11): the production region of evolution.rs contains \
+             {needle:?} — that is gate logic re-implemented in the server layer \
+             instead of delegated to game-core. The gate DECISION belongs to \
+             `game_core::path_satisfied`; requirement NAMING belongs to \
+             `game_core::unmet_requirement`. Moving it into a private helper next \
+             to `evolve` does not make it legal — this scan is file-scoped for \
+             exactly that reason."
         );
     }
 }
@@ -1106,7 +1061,7 @@ fn eg1_9_evolution_rs_has_no_fusion_or_compute_evolves_to_leftovers() {
 }
 
 // ===========================================================================
-// A3 SOURCE SCAN — no `pub_from_monster` call site may FABRICATE a tier.
+// A3 SOURCE SCAN — no call site may FABRICATE a MonsterPub tier.
 //
 // ADR-0174 D7 / plan amendment A3: the 9 copy-forward sites take the tier from
 // the existing `monster_pub` row; a MISSING row is fail-loud (or the site's own
@@ -1114,9 +1069,19 @@ fn eg1_9_evolution_rs_has_no_fusion_or_compute_evolves_to_leftovers() {
 // fabricated tier 0 would silently demote an evolved monster to a base form in
 // every client that reads the public projection.
 //
+// TWO CHECKS, because either alone is bypassable:
+//   1. `fabricated_tier_violations` — the tier ARGUMENT of every
+//      `pub_from_monster(..)` call.
+//   2. `monster_pub_literal_violations` — any DIRECT `MonsterPub { … }`
+//      construction outside marshal.rs. Without this, a site can dodge check 1
+//      entirely by hand-building the public row (no `pub_from_monster` call for
+//      the tier scan to inspect) — and the monster-dual-write eval only requires
+//      that the STRING `pub_from_monster(` appear somewhere in the same fn body,
+//      which a neighbouring legitimate call already provides. That is the joint
+//      bypass this sibling check closes.
+//
 // (Deliberately NOT a call-site COUNT pin — amendment A11: the compiler and the
-// monster-dual-write eval already cover the site set. This scans the shape of
-// each site's tier argument only.)
+// monster-dual-write eval already cover the site set. These scan SHAPE only.)
 // ===========================================================================
 
 /// One violation string per `pub_from_monster(..)` call whose tier argument is
@@ -1191,6 +1156,151 @@ fn fabricated_tier_violations(file: &str, src: &str) -> Vec<String> {
     out
 }
 
+/// Is `c` an identifier character (used for word-boundary checks)?
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// One violation string per DIRECT `MonsterPub { … }` construction (or a fn
+/// returning one) outside `marshal.rs`. `[]` = clean.
+///
+/// `pub_from_monster` is the SINGLE projection point (derive-on-write, ADR-0016).
+/// A hand-rolled `MonsterPub { … }` literal at a call site bypasses it entirely:
+/// it neither takes the tier argument nor re-derives `trust_tier` /
+/// `quality_time_tier` / `nutrition_pct`, so every A3 tier check and the
+/// monster-dual-write eval's `pub_from_monster` requirement are both satisfied
+/// on paper while the row is built by hand with a fabricated tier.
+///
+/// Word-boundary aware, so `StoreMonsterPubRow`/`MonsterPubSomething` and type
+/// positions (`Vec<MonsterPub>`, `&MonsterPub)`) are never flagged; only
+/// `MonsterPub` immediately followed by `{` is.
+fn monster_pub_literal_violations(file: &str, src: &str) -> Vec<String> {
+    let stripped = strip_rust_comments(src);
+    let needle = "MonsterPub";
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    while let Some(idx) = stripped[pos..].find(needle) {
+        let start = pos + idx;
+        let end = start + needle.len();
+        pos = end;
+        // Word boundary on the LEFT: `StoreMonsterPub` must not match.
+        if start > 0 {
+            let prev = stripped[..start]
+                .chars()
+                .next_back()
+                .expect("start > 0 implies a preceding char");
+            if is_word_char(prev) {
+                continue;
+            }
+        }
+        // The first non-whitespace char to the RIGHT must be `{` for this to be a
+        // struct-literal construction (or a fn whose return type it is).
+        let rest = stripped[end..].trim_start();
+        if rest.starts_with('{') {
+            out.push(format!(
+                "{file}: a `MonsterPub {{ … }}` value is constructed directly — only \
+                 marshal.rs may build a MonsterPub. Every call site must go through \
+                 pub_from_monster(&Monster, tier), the single projection point \
+                 (ADR-0016): a hand-rolled literal fabricates the tier and skips the \
+                 trust_tier / quality_time_tier / nutrition_pct derivations"
+            ));
+        }
+    }
+    out
+}
+
+/// The production files that call `pub_from_monster`. `marshal.rs` is
+/// DELIBERATELY excluded: it owns both the definition and the one legitimate
+/// `MonsterPub { … }` literal.
+fn scanned_production_files() -> [(&'static str, &'static str); 9] {
+    [
+        ("evolution.rs", EVOLUTION_RS_SOURCE),
+        ("battle.rs", BATTLE_RS_SOURCE),
+        ("content.rs", CONTENT_RS_SOURCE),
+        ("monster_mgmt.rs", MONSTER_MGMT_RS_SOURCE),
+        ("movement.rs", MOVEMENT_RS_SOURCE),
+        ("pvp.rs", PVP_RS_SOURCE),
+        ("raising.rs", RAISING_RS_SOURCE),
+        ("taming.rs", TAMING_RS_SOURCE),
+        ("trading.rs", TRADING_RS_SOURCE),
+    ]
+}
+
+/// PROOF-OF-TEETH for `monster_pub_literal_violations`.
+///
+/// kills: a checker that misses the joint A3/dual-write bypass (build the public
+///        row by hand with `tier: 0`, so no `pub_from_monster(.., 0)` call site
+///        exists for the A3 scan to find); and an over-eager checker that flags
+///        mere type mentions.
+#[test]
+fn a3_monster_pub_literal_checker_has_teeth() {
+    // Bad: a hand-rolled public row with a fabricated tier and no derived fields.
+    let bad_literal =
+        "    let pub_row = MonsterPub {\n        monster_id: m.monster_id,\n        tier: 0,\n    };\n";
+    assert!(
+        !monster_pub_literal_violations("fixture", bad_literal).is_empty(),
+        "TEETH: a direct MonsterPub literal must be flagged — this is the joint \
+         A3/dual-write bypass (no pub_from_monster call exists to inspect, so the \
+         tier scan sees nothing, yet the row carries a fabricated tier 0)"
+    );
+
+    // Bad: the same shape written with a fully qualified path.
+    let bad_qualified = "    let p = crate::schema::MonsterPub { monster_id: 1, tier: 0 };\n";
+    assert!(
+        !monster_pub_literal_violations("fixture", bad_qualified).is_empty(),
+        "TEETH: a path-qualified MonsterPub literal must be flagged too"
+    );
+
+    // Good: the projection helper (the only legal way outside marshal.rs).
+    let good_helper = "    let pub_row = pub_from_monster(&m, existing_pub.tier);\n";
+    assert!(
+        monster_pub_literal_violations("fixture", good_helper).is_empty(),
+        "the pub_from_monster projection must NOT be flagged"
+    );
+
+    // Good: type positions and longer identifiers are only MENTIONS, not
+    // constructions.
+    let good_type_positions = "    fn f(p: &MonsterPub) -> u8 { p.tier }\n    let v: Vec<MonsterPub> = vec![];\n    struct StoreMonsterPubRow { x: u8 }\n";
+    assert!(
+        monster_pub_literal_violations("fixture", good_type_positions).is_empty(),
+        "type mentions (&MonsterPub, Vec<MonsterPub>) and longer identifiers \
+         (StoreMonsterPubRow) must NOT be flagged — only `MonsterPub {{` is a \
+         construction"
+    );
+
+    // Good: a comment describing the literal is not the literal.
+    let good_comment = "    // Dual-write: build MonsterPub { .. } via the helper\n    let p = pub_from_monster(&m, sp.tier);\n";
+    assert!(
+        monster_pub_literal_violations("fixture", good_comment).is_empty(),
+        "a COMMENTED mention must NOT be flagged (comments are stripped first)"
+    );
+}
+
+/// A3 sibling (real files): no production file outside `marshal.rs` constructs a
+/// `MonsterPub` directly.
+///
+/// kills: the joint bypass where a call site skips `pub_from_monster` altogether
+///        and hand-builds the public row with a fabricated tier — invisible to
+///        the tier-argument scan above.
+#[test]
+fn a3_no_production_file_constructs_monster_pub_directly() {
+    let mut violations: Vec<String> = Vec::new();
+    for (name, src) in scanned_production_files() {
+        violations.extend(monster_pub_literal_violations(name, src));
+    }
+
+    // No vacuity guard on a mention count here: ZERO `MonsterPub` mentions across
+    // these files is a legitimate (indeed ideal) state — every site goes through
+    // the helper and never names the type. The checker's own teeth are proven by
+    // the fixtures in `a3_monster_pub_literal_checker_has_teeth`.
+    assert!(
+        violations.is_empty(),
+        "TEETH(A3 sibling): {} direct MonsterPub construction(s) outside marshal.rs:\n{}",
+        violations.len(),
+        violations.join("\n")
+    );
+}
+
 /// PROOF-OF-TEETH for `fabricated_tier_violations`: the checker must bite on each
 /// fabrication shape and stay silent on the legitimate ones.
 ///
@@ -1252,21 +1362,9 @@ fn a3_fabricated_tier_checker_has_teeth() {
 ///        row with a default tier instead of failing loud.
 #[test]
 fn a3_no_call_site_fabricates_a_tier() {
-    let files: [(&str, &str); 9] = [
-        ("evolution.rs", EVOLUTION_RS_SOURCE),
-        ("battle.rs", BATTLE_RS_SOURCE),
-        ("content.rs", CONTENT_RS_SOURCE),
-        ("monster_mgmt.rs", MONSTER_MGMT_RS_SOURCE),
-        ("movement.rs", MOVEMENT_RS_SOURCE),
-        ("pvp.rs", PVP_RS_SOURCE),
-        ("raising.rs", RAISING_RS_SOURCE),
-        ("taming.rs", TAMING_RS_SOURCE),
-        ("trading.rs", TRADING_RS_SOURCE),
-    ];
-
     let mut violations: Vec<String> = Vec::new();
     let mut sites = 0usize;
-    for (name, src) in files {
+    for (name, src) in scanned_production_files() {
         sites += strip_rust_comments(src)
             .matches("pub_from_monster(")
             .count();
@@ -1347,10 +1445,11 @@ pub(crate) fn evolve_seam(
 
     let instance = crate::marshal::monster_to_instance(&m)?;
 
-    // The SHARED gate predicate (EG1-11) makes the decision; the describer only
-    // turns a failure into a sentence.
+    // The SHARED gate predicate (EG1-11) makes the decision; game-core's
+    // describer only turns a failure into a sentence. Both are pure and live in
+    // game-core, so `evolution.rs` never touches a gate field.
     if !game_core::path_satisfied(&instance, &path) {
-        return Err(super::unmet_requirement(&instance, &path)
+        return Err(game_core::unmet_requirement(&instance, &path)
             .unwrap_or_else(|| "evolution requirements not met".to_string()));
     }
 
