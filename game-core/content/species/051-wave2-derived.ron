@@ -22,6 +22,7 @@
         base_stats: (hp: 72, attack: 65, defense: 78, speed: 100, sp_attack: 82, sp_defense: 78),
         affinity: Dark,
         learnable_skill_ids: [11, 9],
+        tier: 1,
     ),
     // Tempestrix (Wind, support) — the roster's first true wall: hp 92 exceeds
     // Embersworn's 80 and sp_defense 96 exceeds Steamveil's 80. Ability 3
@@ -36,5 +37,6 @@
         affinity: Wind,
         learnable_skill_ids: [10, 7, 3],
         ability: Some(3), // Regeneration (id=3): heals 1/4 max HP on entry (ADR-0100)
+        tier: 1,
     ),
 ]

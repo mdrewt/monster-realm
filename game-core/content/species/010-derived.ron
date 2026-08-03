@@ -12,6 +12,7 @@
         base_stats: (hp: 75, attack: 84, defense: 70, speed: 90, sp_attack: 90, sp_defense: 70),
         affinity: Fire,
         learnable_skill_ids: [1, 2],
+        tier: 1,
     ),
     (
         id: 5,
@@ -19,6 +20,7 @@
         base_stats: (hp: 80, attack: 95, defense: 75, speed: 80, sp_attack: 70, sp_defense: 70),
         affinity: Fire,
         learnable_skill_ids: [1, 2],
+        tier: 1,
     ),
     (
         id: 6,
@@ -26,5 +28,6 @@
         base_stats: (hp: 70, attack: 70, defense: 72, speed: 70, sp_attack: 88, sp_defense: 80),
         affinity: Water,
         learnable_skill_ids: [1, 3],
+        tier: 1,
     ),
 ]

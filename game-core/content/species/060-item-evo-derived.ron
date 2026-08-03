@@ -38,6 +38,7 @@
         base_stats: (hp: 84, attack: 60, defense: 90, speed: 46, sp_attack: 94, sp_defense: 78),
         affinity: Water,
         learnable_skill_ids: [3, 9],
+        tier: 1,
     ),
     // Cindershade (Fire, fast special attacker) — the item fork of the Shadelet
     // line: Umbrafang is a physical sweeper, Cindershade is a special one with
@@ -49,5 +50,6 @@
         base_stats: (hp: 72, attack: 68, defense: 66, speed: 92, sp_attack: 104, sp_defense: 64),
         affinity: Fire,
         learnable_skill_ids: [2, 11],
+        tier: 1,
     ),
 ]

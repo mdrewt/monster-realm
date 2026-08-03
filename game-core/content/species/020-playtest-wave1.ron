@@ -62,6 +62,7 @@
         // is the Water answer this bulk-first form would otherwise lack.
         learnable_skill_ids: [9, 5],
         ability: Some(3), // Regeneration (id=3): heals 1/4 max HP on entry (ADR-0100)
+        tier: 1,
     ),
     (
         id: 10,
@@ -71,5 +72,6 @@
         // Fire Fang is the sweeper's real damage; Toxic Sting is inherited utility.
         learnable_skill_ids: [11, 2],
         ability: Some(2), // Vital Spirit (id=2): immune to Sleep (ADR-0100)
+        tier: 1,
     ),
 ]

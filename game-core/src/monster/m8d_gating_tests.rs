@@ -27,7 +27,7 @@
 use crate::content::{validate_content, ItemDef, SkillDef, Species};
 use crate::monster::rolls::{build_monster, roll_individuality, roll_starter};
 use crate::monster::rules::{derive_stats, xp_for_level};
-use crate::monster::types::{Affinity, Bond, EVs, Level, StatBlock, StatKind};
+use crate::monster::types::{Affinity, EVs, Level, StatBlock, StatKind};
 use crate::taming::rules::RECRUIT_BASE_RATE;
 
 use proptest::prelude::*;
@@ -55,6 +55,7 @@ fn fixture_species(id: u32) -> Species {
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![],
         ability: None,
+        tier: 0,
     }
 }
 
@@ -68,6 +69,8 @@ fn fixture_item(id: u32, recruit_bonus: u16) -> ItemDef {
         train_amount: 0,
         sell_price: 0,
         cure_status: None,
+        essence_affinity: None,
+        essence_amount: 0,
     }
 }
 
@@ -196,13 +199,14 @@ proptest! {
 }
 
 // ---------------------------------------------------------------------------
-// CRITERION A4 — Full HP, correct xp, zero EVs, default bond, party_slot None
+// CRITERION A4 — Full HP, correct xp, zero EVs, zero growth state, party_slot None
 // The M8d recruit grants: current_hp == derived HP, xp == xp_for_level(level),
-// evs == zero, bond == default(70), party_slot == None.
+// evs == zero, all 8 essence pools + both Trust counters + the Quality-Time
+// total == 0 (EG1-7 replaces the retired bond field), party_slot == None.
 // ---------------------------------------------------------------------------
 
 /// Kills: an impl that starts current_hp at 0, gives non-zero EVs, wrong XP,
-/// wrong bond, or sets a party_slot.
+/// non-zero essence/Trust/Quality-Time, or sets a party_slot.
 /// EARS A4: all five postconditions hold at levels 1, 5, 50, 100.
 #[test]
 fn build_monster_postconditions_across_levels() {
@@ -233,11 +237,23 @@ fn build_monster_postconditions_across_levels() {
             "level={lv}: EVs must be zero on recruit"
         );
 
-        // Bond is the default (70) — trust starts at the species default.
+        // Growth state starts empty (EG1-7): no essence, no Trust history, no
+        // Quality Time. `bond` no longer exists on MonsterInstance.
         assert_eq!(
-            inst.bond,
-            Bond::default_bond(),
-            "level={lv}: bond must be default(70)"
+            inst.essence, [0u32; 8],
+            "level={lv}: all 8 essence pools must be empty on recruit"
+        );
+        assert_eq!(
+            inst.trust_favorable_count, 0,
+            "level={lv}: trust_favorable_count must be 0 on recruit"
+        );
+        assert_eq!(
+            inst.trust_unfavorable_count, 0,
+            "level={lv}: trust_unfavorable_count must be 0 on recruit"
+        );
+        assert_eq!(
+            inst.quality_time_ticks_total, 0,
+            "level={lv}: quality_time_ticks_total must be 0 on recruit"
         );
 
         // party_slot is None — recruited monster goes to box, NOT party.

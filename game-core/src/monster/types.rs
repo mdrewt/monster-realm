@@ -21,6 +21,41 @@ pub enum Affinity {
     Dark,
 }
 
+impl Affinity {
+    /// Every affinity in DECLARATION order — the canonical order the 8 flat
+    /// essence columns (`essence_fire`..`essence_dark`) and the
+    /// `MonsterInstance.essence` array are laid out in (EG1-1/EG1-7, ADR-0174 D1).
+    pub const ALL: [Affinity; 8] = [
+        Affinity::Fire,
+        Affinity::Water,
+        Affinity::Plant,
+        Affinity::Electric,
+        Affinity::Earth,
+        Affinity::Wind,
+        Affinity::Light,
+        Affinity::Dark,
+    ];
+
+    /// This affinity's index into `Affinity::ALL` / an `[T; 8]` essence array.
+    ///
+    /// An EXHAUSTIVE match with NO wildcard arm (ADR-0174 D7): adding a ninth
+    /// `Affinity` variant is a COMPILE error here, never a silent
+    /// out-of-bounds or a wrong bucket at runtime.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Affinity::Fire => 0,
+            Affinity::Water => 1,
+            Affinity::Plant => 2,
+            Affinity::Electric => 3,
+            Affinity::Earth => 4,
+            Affinity::Wind => 5,
+            Affinity::Light => 6,
+            Affinity::Dark => 7,
+        }
+    }
+}
+
 /// Which stat a modifier targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "spacetimedb", derive(spacetimedb::SpacetimeType))]
@@ -543,7 +578,18 @@ pub struct MonsterInstance {
     pub ivs: IVs,
     pub nature: Nature,
     pub evs: EVs,
-    pub bond: Bond,
+    /// Per-`Affinity` essence balances, indexed by `Affinity::index()`
+    /// (declaration order: Fire, Water, Plant, Electric, Earth, Wind, Light,
+    /// Dark). Mirrors the 8 flat `essence_*` schema columns (EG1-1/EG1-7).
+    pub essence: [u32; 8],
+    /// Lifetime count of Trust-favorable events (care, capped battle wins).
+    /// Field name matches the schema column EXACTLY (EG1-7).
+    pub trust_favorable_count: u32,
+    /// Lifetime count of Trust-unfavorable events (faints).
+    /// Field name matches the schema column EXACTLY (EG1-7).
+    pub trust_unfavorable_count: u32,
+    /// Lifetime Quality-Time ticks earned through player-triggered reducers.
+    pub quality_time_ticks_total: u32,
     pub current_hp: u16,
     pub derived_stats: StatBlock,
     pub party_slot: Option<u8>,
