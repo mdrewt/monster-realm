@@ -41,7 +41,12 @@ pub fn set_nickname(ctx: &ReducerContext, monster_id: u64, nickname: String) -> 
         validate_name(&nickname).inspect_err(|e| log_reject("set_nickname", me, e))?
     };
     m.nickname = validated;
-    let pub_row = pub_from_monster(&m);
+    // Copy-forward tier (ADR-0174 D7/A3): a missing monster_pub row is a broken
+    // dual-write invariant — fail loud, never fabricate a tier.
+    let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
+        return Err(format!("monster_pub row missing for monster {monster_id}"));
+    };
+    let pub_row = pub_from_monster(&m, existing_pub.tier);
     ctx.db.monster().monster_id().update(m);
     ctx.db.monster_pub().monster_id().update(pub_row);
     Ok(())
@@ -84,7 +89,11 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
         return Err(e);
     }
     m.party_slot = slot;
-    let pub_row = pub_from_monster(&m);
+    // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing monster_pub row.
+    let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
+        return Err(format!("monster_pub row missing for monster {monster_id}"));
+    };
+    let pub_row = pub_from_monster(&m, existing_pub.tier);
     ctx.db.monster().monster_id().update(m);
     ctx.db.monster_pub().monster_id().update(pub_row);
     Ok(())

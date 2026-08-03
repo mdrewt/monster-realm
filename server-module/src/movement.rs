@@ -101,12 +101,16 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
             affinity: species.affinity,
             learnable_skill_ids: species.learnable_skill_ids.clone(),
             ability: None,
+            tier: species.tier,
         };
         let seed: u32 = ctx.random();
         let inst = roll_starter(seed, &species_core);
         let row = monster_from_instance(me, &inst, 0); // party slot 0
         let inserted = ctx.db.monster().insert(row);
-        ctx.db.monster_pub().insert(pub_from_monster(&inserted));
+        // FRESH tier (EG1-8/ADR-0174 D7): creation site — the species row is in hand.
+        ctx.db
+            .monster_pub()
+            .insert(pub_from_monster(&inserted, species.tier));
         log::info!(
             "{{\"evt\":\"starter_granted\",\"sender\":\"{me}\",\"monster_id\":{}}}",
             inserted.monster_id

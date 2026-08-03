@@ -648,7 +648,15 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
             .ok_or_else(|| format!("monster {} gone during apply", xfer.monster_id))?;
         m.owner_identity = new_owner;
         m.party_slot = crate::PARTY_SLOT_NONE;
-        let mut mp = pub_from_monster(&m);
+        // Copy-forward tier (ADR-0174 D7/A3): read the existing monster_pub row;
+        // a missing row fails loud (same convention as the monster read above).
+        let existing_pub = ctx
+            .db
+            .monster_pub()
+            .monster_id()
+            .find(xfer.monster_id)
+            .ok_or_else(|| format!("monster_pub {} gone during apply", xfer.monster_id))?;
+        let mut mp = pub_from_monster(&m, existing_pub.tier);
         mp.owner_identity = new_owner;
         mp.party_slot = crate::PARTY_SLOT_NONE;
         ctx.db.monster().monster_id().update(m);

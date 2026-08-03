@@ -22,6 +22,8 @@ Live spacetime 2.6.0 (measured, ADR-0173 D5) accepts an automatic migration ONLY
 - New public table `evolution_path` (`EvolutionPathRow`): `path_id: u64` PK auto_inc (DB-internal only — NEVER durable identity; `edge_id: u32` is the durable, author-assigned, append-only edge identity, EG1-12), `edge_id`, `from_species: u32` `#[index(btree)]`, `to_species: u32`, `min_level: u8`, `essence: Vec<EssenceRequirementRow>`, `min_trust_tier: Option<TrustTier>`, `min_quality_time_tier: Option<u8>`, `min_nutrition_pct: Option<u8>`.
 - New nested `SpacetimeType` struct `EssenceRequirementRow { affinity: Affinity, amount: u32 }` (EncounterEntryRow precedent).
 
+**Measured during the build (new BSATN rule):** `#[default(0)]` on an `i64` column encodes the default as 4 bytes and live spacetime 2.6.0 REJECTS the publish (`data too short for i64: Expected 8, given 4`). i64 columns must use a typed literal — `#[default(0i64)]` — for the automigration to be accepted. Verified end-to-end: the pre-EG1 (v17) module was published to a scratch DB, a live monster created, then this v18 module published WITHOUT `--delete-data` — accepted; the row survived; all 28 appended columns read their defaults; stale `fusion` rows cleared.
+
 `bond`, `evolves_to`, and the `Fusion` table struct remain in place, unused/frozen — their removal is **Migration B** (EG5-6), a separate publish; automatic migration rejects combined additive+removal.
 
 ## D2 — The A/B migration split

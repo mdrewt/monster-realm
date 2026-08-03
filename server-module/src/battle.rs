@@ -991,7 +991,12 @@ pub(crate) fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) -> Resu
                 ));
             }
             write_back_hp(&mut m, bm);
-            let pub_row = pub_from_monster(&m);
+            // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing
+            // monster_pub row — never fabricate a tier.
+            let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(mid) else {
+                return Err(format!("monster_pub row missing for monster {mid}"));
+            };
+            let pub_row = pub_from_monster(&m, existing_pub.tier);
             ctx.db.monster().monster_id().update(m);
             ctx.db.monster_pub().monster_id().update(pub_row);
         }
@@ -1105,12 +1110,6 @@ pub(crate) fn write_back_battle_results(
         // (RT-M16-02: opponent_identity != WILD_IDENTITY is wrong for PvP).
         let is_practice = battle.player_identity == battle.opponent_identity;
 
-        // Hoist evolution registry load above the monster loop: content is compile-time-embedded
-        // and immutable, so the LazyLock cache amortizes the parse across the whole XP loop.
-        // Preserved as a Result so per-monster 'stat_recompute can log-and-break individually
-        // (ADR-0077 log-and-continue semantics, ADR-0089 cache).
-        let all_evolutions_cache = crate::content_cache::cached_evolutions();
-
         // Award XP to each conscious member of the winning team.
         for (i, bm) in battle.state.side_a.team.iter().enumerate() {
             if bm.is_fainted() {
@@ -1207,34 +1206,17 @@ pub(crate) fn write_back_battle_results(
                         // Heal the HP gained from the max-HP growth on level-up
                         // (SSOT: game_core owns the heal rule, ADR-0003).
                         m.current_hp = level_up_healed_hp(m.current_hp, bm.max_hp, derived.hp);
-                        // Recompute evolves_to after level-up (12.5b-4, ADR-0073).
-                        // Scoped inside `if leveled_up { if let Some(species) }` because:
-                        // only a level change can unlock a new level-based evolution branch.
-                        // Use the pre-loaded (hoisted) evolution cache; match on &result so
-                        // the Result is borrowed (not moved) on each loop iteration.
-                        let all_evolutions = match &all_evolutions_cache {
-                            Ok(v) => *v,
-                            Err(e) => {
-                                log::error!(
-                                    "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"load_evolutions: {e}\"}}",
-                                );
-                                break 'stat_recompute;
-                            }
-                        };
-                        let monster_evolutions = all_evolutions
-                            .iter()
-                            .find(|se| se.species_id == m.species_id)
-                            .map(|se| &se.evolutions[..])
-                            .unwrap_or(&[]);
-                        m.evolves_to = crate::evolution::compute_evolves_to(
-                            monster_evolutions,
-                            m.level,
-                            m.bond,
-                        );
+                        // EG1 (ADR-0174 D2): the evolves_to recompute is GONE —
+                        // the column is frozen dead until Migration B.
                     }
                 }
             }
-            let pub_row = pub_from_monster(&m);
+            // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing
+            // monster_pub row — never fabricate a tier.
+            let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(mid) else {
+                return Err(format!("monster_pub row missing for monster {mid}"));
+            };
+            let pub_row = pub_from_monster(&m, existing_pub.tier);
             ctx.db.monster().monster_id().update(m);
             ctx.db.monster_pub().monster_id().update(pub_row);
         }

@@ -21,9 +21,12 @@
 //! Pattern: these tests call the pure-seam helpers exposed by the implementation
 //! and verify concrete state changes. No SpacetimeDB live context is used.
 
-use crate::evolution::compute_evolves_to;
+// EG1 mechanical migration (ADR-0174): `compute_evolves_to`, `EvolutionCondition`
+// and `EvolutionTrigger` were deleted with the essence-graph redesign, so the
+// imports (and the tests whose sole subject they were) are gone — see the
+// deletion notes inline below.
 use crate::schema::{Monster, SpeciesRow};
-use game_core::{Bond, EvolutionCondition, EvolutionTrigger, Level, NatureKind};
+use game_core::NatureKind;
 use spacetimedb::Identity;
 
 // ---------------------------------------------------------------------------
@@ -48,6 +51,7 @@ fn make_species_row(id: u32, base_hp: u16, base_other: u16) -> SpeciesRow {
         affinity: game_core::Affinity::Fire,
         learnable_skill_ids: vec![],
         ability: None,
+        tier: 0,
     }
 }
 
@@ -87,6 +91,23 @@ fn make_stale_monster(monster_id: u64, owner: Identity, species_id: u32) -> Mons
         party_slot: 0,
         last_care_at_ms: 0,
         evolves_to: None, // stale: may be wrong
+        // EG1 Migration A columns at creation defaults (compiler-forced append).
+        essence_fire: 0,
+        essence_water: 0,
+        essence_plant: 0,
+        essence_electric: 0,
+        essence_earth: 0,
+        essence_wind: 0,
+        essence_light: 0,
+        essence_dark: 0,
+        trust_favorable_count: 0,
+        trust_unfavorable_count: 0,
+        trust_favorable_battle_day_epoch: 0,
+        quality_time_ticks_total: 0,
+        quality_time_accum_ms: 0,
+        quality_time_window_ms: 0,
+        quality_time_window_start_ms: 0,
+        last_essence_train_at_ms: 0,
     }
 }
 
@@ -140,13 +161,14 @@ fn make_stale_monster(monster_id: u64, owner: Identity, species_id: u32) -> Mons
 #[test]
 fn sync_content_inner_recheck_returns_result_on_valid_input() {
     // Load real content (same as the existing content_parses_and_validates test).
+    // EG1 mechanical migration: load_evolutions -> load_evolution_paths.
     let species = game_core::load_species().expect("species must parse for this test");
-    let evolutions = game_core::load_evolutions().expect("evolutions must parse");
+    let paths = game_core::load_evolution_paths().expect("evolution paths must parse");
 
     // Call the pure validation seam. RED until `sync_content_inner_recheck` exists.
     // The seam takes loaded registries and returns Result<(), String> for the
     // validation phase — no DB writes occur.
-    let result = super::sync_content_inner_recheck(&species, &evolutions);
+    let result = super::sync_content_inner_recheck(&species, &paths);
 
     assert!(
         result.is_ok(),
@@ -165,10 +187,11 @@ fn sync_content_inner_recheck_returns_result_on_valid_input() {
 /// empty content registry to wipe the live DB's species table with no rows).
 #[test]
 fn sync_content_inner_recheck_rejects_empty_species() {
-    let evolutions = game_core::load_evolutions().expect("evolutions must parse");
+    // EG1 mechanical migration: load_evolutions -> load_evolution_paths.
+    let paths = game_core::load_evolution_paths().expect("evolution paths must parse");
 
     // Empty species slice: this is a degenerate content state.
-    let result = super::sync_content_inner_recheck(&[], &evolutions);
+    let result = super::sync_content_inner_recheck(&[], &paths);
 
     assert!(
         result.is_err(),
@@ -222,11 +245,9 @@ fn recompute_monster_derived_fields_updates_stat_hp() {
     // NEW species: same id, but base_hp bumped to 100.
     let new_species = make_species_row(1, 100, 49);
 
-    // No evolution conditions → evolves_to should be None after recompute.
-    let evolutions: Vec<EvolutionCondition> = vec![];
-
     // Call the re-derive seam. RED until implementer adds recompute_monster_derived_fields.
-    super::recompute_monster_derived_fields(&mut monster, &new_species, &evolutions);
+    // EG1 mechanical migration: the evolutions parameter is gone (ADR-0174 D2).
+    super::recompute_monster_derived_fields(&mut monster, &new_species);
 
     // stat_hp must be recomputed from new base_hp=100 at level=20, IVs=15, EVs=0, Hardy.
     // Formula: HP = floor((2*100 + 15) * 20 / 100) + 20 + 10 = floor(215*20/100) + 30 = 43 + 30 = 73.
@@ -287,15 +308,32 @@ fn recompute_monster_derived_fields_clamps_current_hp() {
         party_slot: 0,
         last_care_at_ms: 0,
         evolves_to: None,
+        // EG1 Migration A columns at creation defaults (compiler-forced append).
+        essence_fire: 0,
+        essence_water: 0,
+        essence_plant: 0,
+        essence_electric: 0,
+        essence_earth: 0,
+        essence_wind: 0,
+        essence_light: 0,
+        essence_dark: 0,
+        trust_favorable_count: 0,
+        trust_unfavorable_count: 0,
+        trust_favorable_battle_day_epoch: 0,
+        quality_time_ticks_total: 0,
+        quality_time_accum_ms: 0,
+        quality_time_window_ms: 0,
+        quality_time_window_start_ms: 0,
+        last_essence_train_at_ms: 0,
     };
 
     // NEW species: base_hp drastically REDUCED to 10.
     // New stat_hp at L5, IVs=0, EVs=0, Hardy:
     // HP = floor((2*10 + 0) * 5 / 100) + 5 + 10 = floor(100/100) + 15 = 1 + 15 = 16.
     let new_species = make_species_row(1, 10, 10);
-    let evolutions: Vec<EvolutionCondition> = vec![];
 
-    super::recompute_monster_derived_fields(&mut monster, &new_species, &evolutions);
+    // EG1 mechanical migration: the evolutions parameter is gone (ADR-0174 D2).
+    super::recompute_monster_derived_fields(&mut monster, &new_species);
 
     assert!(
         monster.current_hp <= monster.stat_hp,
@@ -307,46 +345,23 @@ fn recompute_monster_derived_fields_clamps_current_hp() {
     );
 }
 
-/// 12.5b-3: after recompute_monster_derived_fields, evolves_to is recomputed via
-/// compute_evolves_to (not left as a stale None when the monster now meets a threshold).
+// EG1 (ADR-0174 D2) — DELETED here, mechanical consequence of a deleted subject:
+//   * `recompute_monster_derived_fields_updates_evolves_to` asserted that the
+//     re-derive pass sets `evolves_to = Some(target)` from an `EvolutionCondition`
+//     trigger list. Both `compute_evolves_to` and the whole trigger content model
+//     (`EvolutionCondition`/`EvolutionTrigger`) are deleted; the spec now freezes
+//     `evolves_to` to `None` on every sync (dead column until Migration B), so
+//     no implementation can produce `Some(2)` any more.
+//   * `compute_evolves_to_handles_bond_trigger_in_recompute_path` exercised
+//     `compute_evolves_to` directly — the function no longer exists.
+// The ineligible-stays-None sibling below survives with the trigger fixture
+// removed: `None` staying `None` is exactly the frozen-column contract.
+
+/// 12.5b-3 proof-of-teeth (EG1-updated): `evolves_to` must remain None after a
+/// recompute — the column is frozen dead (ADR-0174 D2) and the re-derive pass
+/// writes None.
 ///
-/// Fixture: monster at level=20 was seeded when no evolution existed (evolves_to=None).
-///          After a content revision adding Level(20)→species 2, the re-derive pass
-///          must set evolves_to=Some(2).
-///
-/// KILLS: an impl that updates stats but does not call compute_evolves_to, leaving
-///        evolves_to as None even when the monster is now eligible.
-#[test]
-fn recompute_monster_derived_fields_updates_evolves_to() {
-    let owner = owner_id();
-    let mut monster = make_stale_monster(3, owner, 1); // evolves_to=None (stale)
-
-    let new_species = make_species_row(1, 45, 49); // same base stats (no stat change)
-
-    // NEW evolution condition: Level(20) → species 2.
-    // Monster is level 20 — exactly at threshold — so evolves_to must become Some(2).
-    let evolutions = vec![EvolutionCondition {
-        trigger: EvolutionTrigger::Level(Level::new(20).unwrap()),
-        to_species: 2,
-    }];
-
-    super::recompute_monster_derived_fields(&mut monster, &new_species, &evolutions);
-
-    assert_eq!(
-        monster.evolves_to,
-        Some(2),
-        "TEETH(12.5b-3 evolves_to): after recompute, evolves_to must be Some(2) because \
-         the monster (level=20) meets the new Level(20) evolution threshold; \
-         was None (stale). \
-         Kills: impl that updates stats but skips the compute_evolves_to call."
-    );
-}
-
-/// 12.5b-3 proof-of-teeth: a monster below the evolution threshold must remain
-/// evolves_to=None after recompute (does not accidentally gain an evolves_to).
-///
-/// KILLS: a recompute impl that sets evolves_to unconditionally (always Some or
-///        always clones from the evolutions list without checking eligibility).
+/// KILLS: a recompute impl that writes any Some(..) into the frozen column.
 #[test]
 fn recompute_monster_derived_fields_does_not_set_evolves_to_for_ineligible() {
     let owner = owner_id();
@@ -355,88 +370,14 @@ fn recompute_monster_derived_fields_does_not_set_evolves_to_for_ineligible() {
 
     let new_species = make_species_row(1, 45, 49);
 
-    // Evolution requires Level(30) — monster is level=20 (below threshold).
-    let evolutions = vec![EvolutionCondition {
-        trigger: EvolutionTrigger::Level(Level::new(30).unwrap()),
-        to_species: 2,
-    }];
-
-    super::recompute_monster_derived_fields(&mut monster, &new_species, &evolutions);
+    // EG1 mechanical migration: the evolutions parameter is gone (ADR-0174 D2).
+    super::recompute_monster_derived_fields(&mut monster, &new_species);
 
     assert_eq!(
         monster.evolves_to, None,
-        "TEETH(12.5b-3 proof-of-teeth): monster at level=20 does NOT meet Level(30) threshold; \
-         evolves_to must remain None after recompute. \
-         Kills: impl that sets evolves_to=Some(first_entry) without checking eligibility."
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Direct compute_evolves_to re-use as oracle for 12.5b-3
-//
-// These tests ensure compute_evolves_to itself (the function recompute_monster_derived_fields
-// must delegate to) handles edge cases that are specific to the sync_content re-derive path.
-// ---------------------------------------------------------------------------
-
-/// 12.5b-3 oracle: compute_evolves_to called with a Bond threshold checks the monster's
-/// bond, not just level. After a content revision adding a Bond-based evolution, a monster
-/// with sufficient bond must get evolves_to = Some(target).
-///
-/// KILLS: a recompute impl that only calls the level-branch of compute_evolves_to and
-///        ignores bond-based conditions added in content revisions.
-#[test]
-fn compute_evolves_to_handles_bond_trigger_in_recompute_path() {
-    let owner = owner_id();
-
-    // Monster: level=10, bond=100. Below any typical Level threshold, but high bond.
-    let monster = Monster {
-        monster_id: 5,
-        owner_identity: owner,
-        species_id: 1,
-        nickname: String::new(),
-        level: 10,
-        xp: 0,
-        bond: 100,
-        iv_hp: 0,
-        iv_attack: 0,
-        iv_defense: 0,
-        iv_speed: 0,
-        iv_sp_attack: 0,
-        iv_sp_defense: 0,
-        nature_kind: NatureKind::Hardy,
-        ev_hp: 0,
-        ev_attack: 0,
-        ev_defense: 0,
-        ev_speed: 0,
-        ev_sp_attack: 0,
-        ev_sp_defense: 0,
-        stat_hp: 30,
-        stat_attack: 20,
-        stat_defense: 20,
-        stat_speed: 20,
-        stat_sp_attack: 20,
-        stat_sp_defense: 20,
-        current_hp: 30,
-        party_slot: 0,
-        last_care_at_ms: 0,
-        evolves_to: None,
-    };
-
-    // New content: Bond(50) → species 3. Monster has bond=100 ≥ 50 → eligible.
-    let evolutions = vec![EvolutionCondition {
-        trigger: EvolutionTrigger::Bond(Bond::new(50)),
-        to_species: 3,
-    }];
-
-    let result = compute_evolves_to(&evolutions, monster.level, monster.bond);
-
-    assert_eq!(
-        result,
-        Some(3),
-        "TEETH(12.5b-3 bond trigger): compute_evolves_to with Bond(50) trigger and monster \
-         bond=100 must return Some(3); after a content revision adding this evolution, \
-         the re-derive pass must pick it up. \
-         Kills: a recompute impl that only checks level-based triggers."
+        "TEETH(12.5b-3 proof-of-teeth, EG1): evolves_to is a frozen dead column; \
+         it must remain None after recompute. \
+         Kills: impl that writes Some(..) into the frozen column."
     );
 }
 

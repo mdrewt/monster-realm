@@ -65,7 +65,11 @@ pub(crate) const ZONE_0: u32 = 0;
 /// v16 (B): item-triggered evolution content — species 30/31 + items 4/5 + two Item branches (ADR-0149).
 /// v17 (uxd2): npc row gains the interaction column + the Tideglass shopkeeper
 ///   (Shop(1), zone 1) and its inert greeting tree are seeded (ADR-0161).
-pub(crate) const CONTENT_VERSION: u32 = 17;
+/// v18 (EG1): essence-graph Migration A (ADR-0174) — Monster +16 / MonsterPub
+///   +12 / SpeciesRow.tier columns, new public evolution_path table seeded from
+///   the evolution_paths registry; fusion content removed (stale fusion rows
+///   cleared, no reseed) and the evolutions trigger registry deleted.
+pub(crate) const CONTENT_VERSION: u32 = 18;
 pub(crate) const SPRITE_PLAYER: u32 = 0;
 pub(crate) const MAX_NAME_LEN: usize = 24;
 pub(crate) const MAX_PARTY_SIZE: u8 = game_core::PARTY_SIZE; // SSOT (ADR-0052)

@@ -1,6 +1,6 @@
 //! Content parse caches — `LazyLock` statics for compile-time-embedded registries.
 //!
-//! All eight registries are `include_str!`-embedded at build time (ADR-0057) and
+//! All registries are `include_str!`-embedded at build time (ADR-0057) and
 //! immutable at runtime: content is data, not code, and only changes on a fresh
 //! binary deploy. These helpers parse once per server process and return a
 //! `&'static` reference on every subsequent call. Game-core stays pure (no caches
@@ -25,8 +25,14 @@ use crate::schema::{config, type_relation_row};
 static ZONE_MAPS: LazyLock<Result<Vec<game_core::ZoneMapDef>, String>> =
     LazyLock::new(game_core::load_zone_maps);
 
-static EVOLUTIONS: LazyLock<Result<Vec<game_core::SpeciesEvolutions>, String>> =
-    LazyLock::new(game_core::load_evolutions);
+// EG1 (ADR-0174): the old EVOLUTIONS static (SpeciesEvolutions trigger model)
+// is replaced by the essence-graph EVOLUTION_PATHS registry. The evolve reducer
+// now reads the seeded `evolution_path` TABLE (not this cache), so the cache is
+// currently test-only (`#[cfg(test)]`, the skill_defs_from_rows precedent);
+// drop the gate when an EG2+ production caller lands.
+#[cfg(test)]
+static EVOLUTION_PATHS: LazyLock<Result<Vec<game_core::EvolutionPath>, String>> =
+    LazyLock::new(game_core::load_evolution_paths);
 
 static DIALOGUE_TREES: LazyLock<Result<Vec<game_core::DialogueTree>, String>> =
     LazyLock::new(game_core::load_dialogue_trees);
@@ -54,12 +60,14 @@ pub(crate) fn cached_zone_maps() -> Result<&'static Vec<game_core::ZoneMapDef>, 
     (*ZONE_MAPS).as_ref().map_err(Clone::clone)
 }
 
-/// Evolution registry: parsed once per process.
+/// Evolution-paths registry: parsed once per process. Test-only in EG1 (see the
+/// static above for the rationale).
 ///
 /// # Errors
 /// Returns a clone of the cached parse error if the embedded RON was malformed.
-pub(crate) fn cached_evolutions() -> Result<&'static Vec<game_core::SpeciesEvolutions>, String> {
-    (*EVOLUTIONS).as_ref().map_err(Clone::clone)
+#[cfg(test)]
+pub(crate) fn cached_evolution_paths() -> Result<&'static Vec<game_core::EvolutionPath>, String> {
+    (*EVOLUTION_PATHS).as_ref().map_err(Clone::clone)
 }
 
 /// Dialogue-trees registry: parsed once per process.

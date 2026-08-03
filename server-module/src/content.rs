@@ -9,26 +9,25 @@
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
 
-use crate::evolution::compute_evolves_to;
 use crate::marshal::{encounter_rows_from_table, pub_from_monster};
 use crate::schema::{
-    character, config, encounter, fusion, heal_location_row, item_row, monster, monster_pub, npc,
-    player_conversation, shop_item_row, shop_row, skill_row, species_row, type_relation_row,
-    zone_def, Character, Fusion, HealLocationRow, ItemRow, Monster, Npc, ShopItemRow, ShopRow,
-    SkillRow, SpeciesRow, TypeRelationRow, ZoneDefRow,
+    character, config, encounter, evolution_path, fusion, heal_location_row, item_row, monster,
+    monster_pub, npc, player_conversation, shop_item_row, shop_row, skill_row, species_row,
+    type_relation_row, zone_def, Character, EssenceRequirementRow, EvolutionPathRow,
+    HealLocationRow, ItemRow, Monster, Npc, ShopItemRow, ShopRow, SkillRow, SpeciesRow,
+    TypeRelationRow, ZoneDefRow,
 };
 use crate::CONTENT_VERSION;
 use game_core::{
-    derive_stats, load_abilities, load_dialogue_trees, load_encounters, load_evolutions,
-    load_fusion, load_heal_locations, load_items, load_npc_defs, load_quest_defs, load_shops,
-    load_skills, load_species, load_type_chart, load_zone_maps, validate_abilities,
-    validate_content, validate_encounters, validate_evolution_fusion, validate_npc_content,
-    validate_npc_interactions, validate_shops, validate_zone_maps, ActionState, Direction, EVs,
-    EvolutionCondition, IVs, Level, Nature, StatBlock,
+    derive_stats, load_abilities, load_dialogue_trees, load_encounters, load_evolution_paths,
+    load_heal_locations, load_items, load_npc_defs, load_quest_defs, load_shops, load_skills,
+    load_species, load_type_chart, load_zone_maps, validate_abilities, validate_content,
+    validate_encounters, validate_evolution_paths, validate_npc_content, validate_npc_interactions,
+    validate_shops, validate_zone_maps, ActionState, Direction, EVs, IVs, Level, Nature, StatBlock,
 };
-// Species and SpeciesEvolutions are only used by the test-only recheck seam.
+// Species and EvolutionPath are only used by the test-only recheck seam.
 #[cfg(test)]
-use game_core::{Species, SpeciesEvolutions};
+use game_core::{EvolutionPath, Species};
 use spacetimedb::{ReducerContext, Table};
 
 pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
@@ -47,8 +46,7 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
     let type_chart = load_type_chart().map_err(|e| format!("type_chart: {e}"))?;
     let items = load_items().map_err(|e| format!("items: {e}"))?;
     let encounters = load_encounters().map_err(|e| format!("encounters: {e}"))?;
-    let evolutions = load_evolutions().map_err(|e| format!("evolutions: {e}"))?;
-    let fusions = load_fusion().map_err(|e| format!("fusions: {e}"))?;
+    let evolution_paths = load_evolution_paths().map_err(|e| format!("evolution_paths: {e}"))?;
     let npc_defs = load_npc_defs().map_err(|e| format!("npcs: {e}"))?;
     let dialogue_trees = load_dialogue_trees().map_err(|e| format!("dialogue_trees: {e}"))?;
     let quest_defs = load_quest_defs().map_err(|e| format!("quests: {e}"))?;
@@ -64,8 +62,24 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
         .map_err(|e| format!("content invalid: {e}"))?;
     validate_encounters(&encounters, &species, &zones)
         .map_err(|e| format!("encounters invalid: {e}"))?;
-    validate_evolution_fusion(&species, &evolutions, &fusions, &encounters, &items)
-        .map_err(|e| format!("evolution_fusion invalid: {e}"))?;
+    // EG1-10 (M2 discipline): the R1-R12 content gate runs BEFORE any DB write.
+    validate_evolution_paths(&species, &evolution_paths, &encounters, &items)
+        .map_err(|e| format!("evolution_paths invalid: {e}"))?;
+    // Defensive duplicate-(from, to)-pair check before seeding (ADR-0174 D5/R1
+    // backstop): this toolchain has no composite unique constraint, so the seed
+    // gate is the LAST line of defense against a duplicate edge reaching the DB
+    // (which would make the evolve reducer lookup ambiguous).
+    {
+        let mut seen_pairs = std::collections::HashSet::new();
+        for p in &evolution_paths {
+            if !seen_pairs.insert((p.from_species, p.to_species)) {
+                return Err(format!(
+                    "evolution_paths invalid: duplicate (from, to) pair ({}, {}) at the seed gate (R1 backstop)",
+                    p.from_species, p.to_species
+                ));
+            }
+        }
+    }
     validate_npc_content(
         &npc_defs,
         &dialogue_trees,
@@ -139,6 +153,7 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
             affinity: sp.affinity,
             learnable_skill_ids: sp.learnable_skill_ids.clone(),
             ability: sp.ability,
+            tier: sp.tier,
         };
         match ctx.db.species_row().id().find(sp.id) {
             Some(_) => {
@@ -242,17 +257,38 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
             }
         }
     }
-    // Fusion table: clear-and-reinsert (no stable species-pair PK; auto_inc fusion_id).
+    // Fusion rows: CLEAR ONLY (ADR-0174 D3/D8) — fusion is removed as a feature,
+    // so the v18 sync reaps any stale rows a live DB still carries (rows are
+    // data, not schema; the still-shipped client UI must not render recipes for
+    // a removed feature). The table STRUCT stays until Migration B; there is no
+    // reinsert.
     for existing in ctx.db.fusion().iter().collect::<Vec<_>>() {
         ctx.db.fusion().fusion_id().delete(existing.fusion_id);
     }
-    for r in &fusions {
-        let (a_species, b_species) = if r.a <= r.b { (r.a, r.b) } else { (r.b, r.a) };
-        ctx.db.fusion().insert(Fusion {
-            fusion_id: 0, // auto_inc
-            a_species,
-            b_species,
-            to_species: r.to,
+    // evolution_path: clear-and-reinsert (path_id is auto_inc and DB-internal
+    // ONLY; edge_id is the durable identity, EG1-12 — reminting path_ids on
+    // reseed is therefore harmless by design).
+    for existing in ctx.db.evolution_path().iter().collect::<Vec<_>>() {
+        ctx.db.evolution_path().path_id().delete(existing.path_id);
+    }
+    for p in &evolution_paths {
+        ctx.db.evolution_path().insert(EvolutionPathRow {
+            path_id: 0, // auto_inc
+            edge_id: p.edge_id,
+            from_species: p.from_species,
+            to_species: p.to_species,
+            min_level: p.min_level.as_u8(),
+            essence: p
+                .essence
+                .iter()
+                .map(|e| EssenceRequirementRow {
+                    affinity: e.affinity,
+                    amount: e.amount,
+                })
+                .collect(),
+            min_trust_tier: p.min_trust_tier,
+            min_quality_time_tier: p.min_quality_time_tier,
+            min_nutrition_pct: p.min_nutrition_pct,
         });
     }
     sync_npc_entities_from(ctx, &npc_defs);
@@ -268,13 +304,9 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
             );
             continue;
         };
-        let monster_evolutions = evolutions
-            .iter()
-            .find(|se| se.species_id == m.species_id)
-            .map(|se| &se.evolutions[..])
-            .unwrap_or(&[]);
-        recompute_monster_derived_fields(&mut m, &species_row, monster_evolutions);
-        let pub_row = pub_from_monster(&m);
+        recompute_monster_derived_fields(&mut m, &species_row);
+        // FRESH tier (EG1-8/ADR-0174 D7): the species row is already in hand.
+        let pub_row = pub_from_monster(&m, species_row.tier);
         ctx.db.monster().monster_id().update(m);
         ctx.db.monster_pub().monster_id().update(pub_row);
     }
@@ -293,18 +325,20 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
     Ok(())
 }
 
-/// Pure validation seam (12.5b-2, ADR-0073): verify species + evolutions are
-/// minimally valid before any DB write. Called from sync_content_inner (which
-/// does the real full validation) and unit-testable without a DB context.
-/// Checks: species non-empty; every evolution entry references a known species_id.
-/// Full graph-level validation (cycles, fusion coherence) is done by
-/// `validate_evolution_fusion` in sync_content_inner's validate phase.
+/// Pure validation seam (12.5b-2, ADR-0073): verify species + evolution paths
+/// are minimally valid before any DB write. Called from sync_content_inner
+/// (which does the real full validation) and unit-testable without a DB context.
+/// Checks: species non-empty; every path endpoint references a known species_id.
+/// EG1 mechanical migration: the old `SpeciesEvolutions` trigger model was
+/// deleted with the essence-graph redesign (ADR-0174); the seam now takes
+/// `EvolutionPath` edges. Full graph-level validation (R1-R12) is done by
+/// `validate_evolution_paths` in sync_content_inner's validate phase.
 /// Test-only: this function has no production call site. The `#[cfg(test)]` gate
 /// ensures it does not cause a dead_code lint error in `just lint` (clippy -D warnings).
 #[cfg(test)]
 pub(crate) fn sync_content_inner_recheck(
     species: &[Species],
-    evolutions: &[SpeciesEvolutions],
+    paths: &[EvolutionPath],
 ) -> Result<(), String> {
     if species.is_empty() {
         return Err(
@@ -312,11 +346,11 @@ pub(crate) fn sync_content_inner_recheck(
         );
     }
     let species_ids: std::collections::HashSet<u32> = species.iter().map(|s| s.id).collect();
-    for ev in evolutions {
-        if !species_ids.contains(&ev.species_id) {
+    for p in paths {
+        if !species_ids.contains(&p.from_species) || !species_ids.contains(&p.to_species) {
             return Err(format!(
-                "evolution entry references unknown species_id {}",
-                ev.species_id
+                "evolution path edge {} references an unknown species id ({} -> {})",
+                p.edge_id, p.from_species, p.to_species
             ));
         }
     }
@@ -324,14 +358,12 @@ pub(crate) fn sync_content_inner_recheck(
 }
 
 /// Pure re-derive seam (12.5b-3, ADR-0073): update a Monster row in-place with
-/// stats derived from `species` (new base stats) and recomputed `evolves_to`.
+/// stats derived from `species` (new base stats).
 /// Clamps `current_hp` to the new `stat_hp` (no-idle-accrual, ADR-0058).
 /// Returns without mutating on invalid IV/EV/level values (data integrity guard).
-pub(crate) fn recompute_monster_derived_fields(
-    monster: &mut Monster,
-    species: &SpeciesRow,
-    evolutions: &[EvolutionCondition],
-) {
+/// EG1 (ADR-0174 D2): `evolves_to` is a frozen dead column — its trigger content
+/// model no longer exists, so the re-derive pass writes `None`.
+pub(crate) fn recompute_monster_derived_fields(monster: &mut Monster, species: &SpeciesRow) {
     let base = StatBlock {
         hp: species.base_hp,
         attack: species.base_attack,
@@ -369,8 +401,9 @@ pub(crate) fn recompute_monster_derived_fields(
         monster.stat_sp_defense = derived.sp_defense;
         // Clamp current_hp — sync_content is not a heal (no-idle-accrual, ADR-0058).
         monster.current_hp = monster.current_hp.min(derived.hp);
-        // Recompute evolves_to with the new content.
-        monster.evolves_to = compute_evolves_to(evolutions, monster.level, monster.bond);
+        // EG1 (ADR-0174 D2): evolves_to freezes to None on every sync — the
+        // trigger content model behind the old recompute is deleted.
+        monster.evolves_to = None;
     }
 }
 
@@ -743,17 +776,11 @@ mod tests {
         assert!(!skills.is_empty(), "skills registry must have entries");
     }
 
-    /// Fusion registry parses and is non-empty (M10b gate).
-    /// KILLS: an impl of sync_content_inner that omits the fusion seeding block, or a
-    /// fusion.ron that accidentally becomes empty (empty table → fuse always rejects).
-    #[test]
-    fn fusion_registry_parses_and_is_nonempty_for_seeding() {
-        let recipes = game_core::load_fusion().expect("fusion RON must parse");
-        assert!(
-            !recipes.is_empty(),
-            "fusion.ron must contain at least one recipe — an empty registry means fuse() always rejects"
-        );
-    }
+    // EG1 (ADR-0174 D3): the fusion_registry_parses_and_is_nonempty_for_seeding
+    // test was DELETED here — its subject (`game_core::load_fusion` and the
+    // fusion.ron registry) is removed outright with the fusion feature, so the
+    // test could no longer compile. Removal is the mechanical consequence of
+    // the deleted subject, not a weakened assertion.
 
     // =========================================================================
     // M12.5b structural tests (source-guard pattern; see battle_tests.rs for

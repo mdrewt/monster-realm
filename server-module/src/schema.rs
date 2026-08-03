@@ -15,7 +15,7 @@
 
 use game_core::{
     ActionState, Affinity, BattleState, Direction, MoveInput, NatureKind, NpcInteraction, StatKind,
-    StatusKind,
+    StatusKind, TrustTier,
 };
 use spacetimedb::Identity;
 
@@ -91,6 +91,11 @@ pub struct SpeciesRow {
     pub affinity: Affinity,
     pub learnable_skill_ids: Vec<u32>,
     pub ability: Option<u32>, // additive (ADR-0006); None = no passive ability
+    // Evolution-graph tier (EG1-3, ADR-0174 D1): 0 = a base, wild-catchable
+    // form; every evolution edge advances exactly +1 (R5). Tail-appended with an
+    // explicit default (ADR-0173 D5).
+    #[default(0)]
+    pub tier: u8,
 }
 
 /// Skill definitions seeded from the `game-core` RON registry.
@@ -243,9 +248,59 @@ pub struct Monster {
     pub last_care_at_ms: i64,
     // Evolution eligibility (M10b, ADR-0061): server-computed passive evolves_to.
     // Additive (ADR-0006). Exposed to client subscription for UI hints.
-    // None on creation (taming sets None; sync_content, evolve, battle level-up,
-    // and care recompute via compute_evolves_to; ADR-0073 §12.5b-4).
+    // FROZEN dead column since EG1 (ADR-0174 D2): compute_evolves_to and all its
+    // write paths are deleted; sync_content re-derive now writes None. Removal is
+    // Migration B (EG5-6) — automatic migration rejects additive+removal combined.
     pub evolves_to: Option<u32>,
+    // --- EG1 Migration A: 16 appended columns (ADR-0174 D1). APPEND-AT-END ONLY:
+    // live spacetime 2.6.0 accepts an automatic migration only as tail-appended
+    // columns each carrying an explicit default (ADR-0173 D5); a mid-struct
+    // insert is a live-DB migration rejection. Trust and Quality-Time SEMANTICS
+    // (who writes these, when) land in EG2 — EG1 only freezes the storage.
+    // Per-Affinity essence pools, in Affinity declaration order (Fire..Dark) —
+    // the same order as Affinity::ALL and MonsterInstance.essence (EG1-1/EG1-7).
+    #[default(0)]
+    pub essence_fire: u32,
+    #[default(0)]
+    pub essence_water: u32,
+    #[default(0)]
+    pub essence_plant: u32,
+    #[default(0)]
+    pub essence_electric: u32,
+    #[default(0)]
+    pub essence_earth: u32,
+    #[default(0)]
+    pub essence_wind: u32,
+    #[default(0)]
+    pub essence_light: u32,
+    #[default(0)]
+    pub essence_dark: u32,
+    // Lifetime Trust event counters (EG1-1; tiering via game_core::trust_tier_of).
+    #[default(0)]
+    pub trust_favorable_count: u32,
+    #[default(0)]
+    pub trust_unfavorable_count: u32,
+    // Server-only Trust bookkeeping: day-epoch anchor for the once-per-24h
+    // favorable battle credit (EG2 writes it; 0 = never credited).
+    #[default(0)]
+    pub trust_favorable_battle_day_epoch: u32,
+    // Lifetime Quality-Time ticks (EG1-1; tiering via quality_time_tier_of).
+    #[default(0)]
+    pub quality_time_ticks_total: u32,
+    // Server-only Quality-Time accumulators (EG2 semantics; 0 = empty window).
+    #[default(0)]
+    pub quality_time_accum_ms: u32,
+    #[default(0)]
+    pub quality_time_window_ms: u32,
+    // NOTE: the two i64 columns carry a TYPED 0i64 literal — an untyped 0 in
+    // #[default(..)] BSATN-encodes as 4 bytes and the publish rejects with
+    // "data too short for i64" (measured on live spacetime, EG1).
+    #[default(0i64)]
+    pub quality_time_window_start_ms: i64,
+    // Essence-training cooldown anchor, server clock ms (EG2 writes it; 0 =
+    // epoch, cooldown elapsed, first train allowed — mirrors last_care_at_ms).
+    #[default(0i64)]
+    pub last_essence_train_at_ms: i64,
 }
 
 /// Public projection of the monster table — NO hidden fields (no IVs, EVs,
@@ -272,9 +327,43 @@ pub struct MonsterPub {
     pub stat_sp_attack: u16,
     pub stat_sp_defense: u16,
     pub party_slot: u8,
-    // Evolution eligibility (M10b, ADR-0061): server-computed passive evolves_to.
-    // Safe to expose (client never computes it, only reads for UI).
+    // FROZEN dead column since EG1 (ADR-0174 D2): sync_content re-derive writes
+    // None; removal is Migration B (EG5-6).
     pub evolves_to: Option<u32>,
+    // --- EG1 Migration A: 12 appended public columns (ADR-0174 D1). APPEND-AT-
+    // END ONLY with explicit defaults (ADR-0173 D5). The EG4 client requirements
+    // panel reads these — all are derived server-side, never client-written.
+    // Evolution-graph tier of this monster's species (EG1-8): written fresh at
+    // creation/evolve/sync from the species row, copied forward elsewhere.
+    #[default(0)]
+    pub tier: u8,
+    // Public copies of the 8 essence pools (Affinity declaration order).
+    #[default(0)]
+    pub essence_fire: u32,
+    #[default(0)]
+    pub essence_water: u32,
+    #[default(0)]
+    pub essence_plant: u32,
+    #[default(0)]
+    pub essence_electric: u32,
+    #[default(0)]
+    pub essence_earth: u32,
+    #[default(0)]
+    pub essence_wind: u32,
+    #[default(0)]
+    pub essence_light: u32,
+    #[default(0)]
+    pub essence_dark: u32,
+    // Derived Trust tier (ADR-0174 D4): with K=10 smoothing, zero history is
+    // exactly 0.5 — the 5-band midpoint — so Neutral is the correct default.
+    #[default(TrustTier::Neutral)]
+    pub trust_tier: TrustTier,
+    // Derived Quality-Time tier (ADR-0174 D6 bands).
+    #[default(0)]
+    pub quality_time_tier: u8,
+    // Derived Nutrition percentage of the 510 EV budget (ADR-0174 D3).
+    #[default(0)]
+    pub nutrition_pct: u8,
 }
 
 // --- Battle table (M7b, public, ADR-0042) ------------------------------------
@@ -353,6 +442,48 @@ pub struct Fusion {
     pub a_species: u32,
     pub b_species: u32,
     pub to_species: u32,
+}
+
+// --- EG1 evolution-graph tables (ADR-0174 D1) ---------------------------------
+
+/// One per-Affinity essence requirement on an evolution edge (EG1-4). Nested
+/// SpacetimeType, mirroring the EncounterEntryRow precedent above. The field
+/// set is FROZEN at publish (ADR-0174 D8: live automigration rejects nested-
+/// type widening) and Vec semantics are AND-only — every entry must be met.
+#[derive(spacetimedb::SpacetimeType, Clone, Debug, PartialEq, Eq)]
+pub struct EssenceRequirementRow {
+    pub affinity: Affinity,
+    pub amount: u32,
+}
+
+/// PUBLIC evolution-graph edge table (EG1-4), seeded clear-and-reinsert from
+/// the game-core evolution_paths registry by sync_content. Clients subscribe to
+/// it for the requirements panel (EG4); the evolve reducer reads it for the
+/// targeted gate lookup.
+///
+/// IDENTITY (EG1-12): path_id is DB-internal ONLY — an auto_inc value reminted
+/// on every reseed, NEVER durable identity. edge_id is THE durable, author-
+/// assigned, append-only edge identity.
+///
+/// INDEX (ADR-0174 D5): this toolchain has no composite unique constraint, so
+/// from_species carries a plain btree index for the evolve reducer lookup and
+/// R1 — no duplicate (from, to) pair — has NO DB-level backstop; it is enforced
+/// by validate_evolution_paths at the content gate plus the sync_content
+/// duplicate-pair seed check.
+#[spacetimedb::table(name = evolution_path, public)]
+pub struct EvolutionPathRow {
+    #[primary_key]
+    #[auto_inc]
+    pub path_id: u64,
+    pub edge_id: u32,
+    #[index(btree)]
+    pub from_species: u32,
+    pub to_species: u32,
+    pub min_level: u8,
+    pub essence: Vec<EssenceRequirementRow>,
+    pub min_trust_tier: Option<TrustTier>,
+    pub min_quality_time_tier: Option<u8>,
+    pub min_nutrition_pct: Option<u8>,
 }
 
 // --- M12b tables: NPC, dialogue, quest, healing (ADR-0069) -------------------
