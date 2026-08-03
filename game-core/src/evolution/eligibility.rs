@@ -45,6 +45,41 @@ pub const TRUST_BAND_PCT: [u32; 4] = [30, 45, 60, 80];
 /// Below the first entry is tier 0. Playtest-tunable (spec §6).
 pub const QUALITY_TIME_TIER_TICKS: [u32; 4] = [10, 50, 150, 400];
 
+/// The level gate: INCLUSIVE `>=` against `path.min_level`.
+fn level_gate_met(instance: &MonsterInstance, path: &EvolutionPath) -> bool {
+    instance.level >= path.min_level
+}
+
+/// The essence gate: EVERY entry satisfied (AND), looked up by `Affinity`
+/// (never by list position). An empty list imposes no requirement.
+fn essence_gate_met(instance: &MonsterInstance, path: &EvolutionPath) -> bool {
+    path.essence
+        .iter()
+        .all(|req| instance.essence[req.affinity.index()] >= req.amount)
+}
+
+/// The Trust gate: `Ord >=` on the smoothed tier; `None` is permissive.
+fn trust_gate_met(instance: &MonsterInstance, path: &EvolutionPath) -> bool {
+    path.min_trust_tier.is_none_or(|tier| {
+        trust_tier_of(
+            instance.trust_favorable_count,
+            instance.trust_unfavorable_count,
+        ) >= tier
+    })
+}
+
+/// The Quality-Time gate: `>=` on the tick-banded tier; `None` is permissive.
+fn quality_time_gate_met(instance: &MonsterInstance, path: &EvolutionPath) -> bool {
+    path.min_quality_time_tier
+        .is_none_or(|tier| quality_time_tier_of(instance.quality_time_ticks_total) >= tier)
+}
+
+/// The Nutrition gate: `>=` on the EV-budget percentage; `None` is permissive.
+fn nutrition_gate_met(instance: &MonsterInstance, path: &EvolutionPath) -> bool {
+    path.min_nutrition_pct
+        .is_none_or(|pct| nutrition_pct_of(&instance.evs) >= pct)
+}
+
 /// Does `instance` satisfy EVERY gate on `path`?
 ///
 /// AND-combination of all five gates. A `None` history gate is PERMISSIVE
@@ -56,8 +91,11 @@ pub const QUALITY_TIME_TIER_TICKS: [u32; 4] = [10, 50, 150, 400];
 /// and the reducer's indexed lookup.
 #[must_use]
 pub fn path_satisfied(instance: &MonsterInstance, path: &EvolutionPath) -> bool {
-    let _ = (instance, path);
-    unimplemented!("EG1")
+    level_gate_met(instance, path)
+        && essence_gate_met(instance, path)
+        && trust_gate_met(instance, path)
+        && quality_time_gate_met(instance, path)
+        && nutrition_gate_met(instance, path)
 }
 
 /// Why `instance` does NOT satisfy `path` — `None` exactly when
@@ -76,8 +114,40 @@ pub fn path_satisfied(instance: &MonsterInstance, path: &EvolutionPath) -> bool 
 /// same species routinely carry different thresholds.
 #[must_use]
 pub fn unmet_requirement(instance: &MonsterInstance, path: &EvolutionPath) -> Option<String> {
-    let _ = (instance, path);
-    unimplemented!("EG1")
+    if !level_gate_met(instance, path) {
+        return Some(format!("requires level {}", path.min_level.as_u8()));
+    }
+    if !essence_gate_met(instance, path) {
+        // Name the FIRST unmet entry — the same list order the gate checks.
+        let unmet = path
+            .essence
+            .iter()
+            .find(|req| instance.essence[req.affinity.index()] < req.amount)
+            .expect("essence gate reported unmet, so an unmet entry exists");
+        return Some(format!(
+            "requires {} {:?} essence",
+            unmet.amount, unmet.affinity
+        ));
+    }
+    if !trust_gate_met(instance, path) {
+        let tier = path
+            .min_trust_tier
+            .expect("trust gate reported unmet, so a threshold is present");
+        return Some(format!("requires trust tier {tier:?}"));
+    }
+    if !quality_time_gate_met(instance, path) {
+        let tier = path
+            .min_quality_time_tier
+            .expect("quality-time gate reported unmet, so a threshold is present");
+        return Some(format!("requires quality time tier {tier}"));
+    }
+    if !nutrition_gate_met(instance, path) {
+        let pct = path
+            .min_nutrition_pct
+            .expect("nutrition gate reported unmet, so a threshold is present");
+        return Some(format!("requires nutrition {pct}%"));
+    }
+    None
 }
 
 /// Indices INTO `paths` of every edge whose `from_species` matches the
@@ -88,8 +158,14 @@ pub fn unmet_requirement(instance: &MonsterInstance, path: &EvolutionPath) -> Op
 /// what the player-choice UX is built on.
 #[must_use]
 pub fn eligible_evolution_paths(instance: &MonsterInstance, paths: &[EvolutionPath]) -> Vec<usize> {
-    let _ = (instance, paths);
-    unimplemented!("EG1")
+    paths
+        .iter()
+        .enumerate()
+        .filter(|(_, path)| {
+            path.from_species == instance.species_id && path_satisfied(instance, path)
+        })
+        .map(|(index, _)| index)
+        .collect()
 }
 
 /// Trust tier from the lifetime favorable/unfavorable counts, with Drew's
@@ -102,16 +178,40 @@ pub fn eligible_evolution_paths(instance: &MonsterInstance, paths: &[EvolutionPa
 /// `u32::MAX` (the workspace builds release with overflow checks on).
 #[must_use]
 pub fn trust_tier_of(favorable: u32, unfavorable: u32) -> TrustTier {
-    let _ = (favorable, unfavorable);
-    unimplemented!("EG1")
+    /// The five tiers in the same ascending order the bands climb — index N is
+    /// the tier reached by clearing exactly N band floors.
+    const ASCENDING: [TrustTier; 5] = [
+        TrustTier::Hostile,
+        TrustTier::Wary,
+        TrustTier::Neutral,
+        TrustTier::Friendly,
+        TrustTier::Devoted,
+    ];
+    // Widen each operand to u64 BEFORE any addition: fav/unfav at u32::MAX must
+    // not overflow (the workspace builds release with overflow checks on).
+    let numerator = (u64::from(favorable) + u64::from(TRUST_K)) * 100;
+    let denominator = u64::from(favorable) + u64::from(unfavorable) + 2 * u64::from(TRUST_K);
+    // The bands ascend, so the cleared set is a prefix and its count IS the
+    // tier index (0 = Hostile .. 4 = Devoted). Inclusive `>=`: an exact tie
+    // resolves upward.
+    let cleared = TRUST_BAND_PCT
+        .iter()
+        .filter(|&&band_pct| numerator >= u64::from(band_pct) * denominator)
+        .count();
+    ASCENDING[cleared]
 }
 
 /// Quality-Time tier (0..=4) from lifetime ticks, banded by
 /// `QUALITY_TIME_TIER_TICKS` with INCLUSIVE lower bounds. Saturates at 4.
 #[must_use]
 pub fn quality_time_tier_of(ticks: u32) -> u8 {
-    let _ = ticks;
-    unimplemented!("EG1")
+    // The bands ascend, so the reached set is a prefix and its count is the
+    // tier; 4 bands means the count (and so the tier) saturates at 4.
+    let reached = QUALITY_TIME_TIER_TICKS
+        .iter()
+        .filter(|&&band| ticks >= band)
+        .count();
+    u8::try_from(reached).expect("at most 4 bands exist, which fits a u8")
 }
 
 /// Nutrition as a percentage (0..=100) of the EV budget: the existing EV pool
@@ -131,6 +231,8 @@ pub fn nutrition_pct_of(evs: &EVs) -> u8 {
 /// 100 even if a caller passes a total above the budget.
 #[must_use]
 pub fn nutrition_pct_from_ev_total(total: u16) -> u8 {
-    let _ = (total, EV_TOTAL_CAP);
-    unimplemented!("EG1")
+    // Clamp BEFORE scaling so an out-of-budget total reads 100, never above.
+    let clamped = u32::from(total.min(EV_TOTAL_CAP));
+    let pct = clamped * 100 / u32::from(EV_TOTAL_CAP);
+    u8::try_from(pct).expect("min(total, 510) * 100 / 510 is at most 100, which fits a u8")
 }

@@ -48,6 +48,10 @@ pub fn evolve(monster: &MonsterInstance, to_species: &Species) -> MonsterInstanc
     out.derived_stats = derived;
     // Transformation, not a heal: preserve damage but never exceed the new max.
     out.current_hp = monster.current_hp.min(derived.hp);
+    // Essence is SPENT by an evolution (ADR-0174 D2): ALL 8 pools reset, so the
+    // next tier's bar is climbed from zero. Trust/Quality-Time stay untouched —
+    // the clone above carries the lifetime history verbatim.
+    out.essence = [0; 8];
     out
 }
 

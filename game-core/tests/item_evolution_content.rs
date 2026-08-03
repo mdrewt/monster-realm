@@ -36,7 +36,7 @@
 //!   - The dangling-Item-id validator path is already proven by
 //!     `game_core::content::tests::m10a_dangling_item_trigger_ref_rejected`
 //!     (`game-core/src/content.rs`) — an unknown `Item` id is already Err.
-
+//!
 //! EG1 RETIREMENT (ADR-0174): every T-B* criterion above was expressed against
 //! `evolutions.ron`'s `EvolutionTrigger::Item` branch model, which this
 //! milestone deletes outright — item-assisted evolution becomes "the item

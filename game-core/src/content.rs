@@ -951,8 +951,173 @@ pub fn validate_evolution_paths(
     encounters: &[EncounterTable],
     items: &[ItemDef],
 ) -> Result<(), String> {
-    let _ = (species, paths, encounters, items);
-    unimplemented!("EG1")
+    // The rules run in DECLARED order R1 -> R12: the per-rule proof-of-teeth
+    // fixtures (notably R2's `self` message, which a self-edge would otherwise
+    // trip R5's tier arithmetic for) depend on it. Reordering is a spec change,
+    // not a refactor.
+    let tier_by_id: std::collections::HashMap<u32, u8> =
+        species.iter().map(|sp| (sp.id, sp.tier)).collect();
+
+    // R1: no duplicate (from_species, to_species) pair. The ONLY enforcement —
+    // no composite unique index exists at the DB level (ADR-0174 D5) — and what
+    // keeps evolve(monster_id, to_species) an unambiguous wire signature.
+    let mut seen_pairs = std::collections::HashSet::new();
+    for path in paths {
+        if !seen_pairs.insert((path.from_species, path.to_species)) {
+            return Err(format!(
+                "R1: duplicate evolution pair {} -> {} (edge {})",
+                path.from_species, path.to_species, path.edge_id
+            ));
+        }
+    }
+
+    // R2: no self-evolution.
+    for path in paths {
+        if path.from_species == path.to_species {
+            return Err(format!(
+                "R2: edge {} is a self-evolution: species {} evolves into itself",
+                path.edge_id, path.from_species
+            ));
+        }
+    }
+
+    // R3: no dangling species reference, BOTH directions.
+    for path in paths {
+        if !tier_by_id.contains_key(&path.from_species) {
+            return Err(format!(
+                "R3: edge {} references missing from_species {}",
+                path.edge_id, path.from_species
+            ));
+        }
+        if !tier_by_id.contains_key(&path.to_species) {
+            return Err(format!(
+                "R3: edge {} references missing to_species {}",
+                path.edge_id, path.to_species
+            ));
+        }
+    }
+
+    // R4: no vacuous path — a monster must not qualify at birth.
+    for path in paths {
+        if path.min_level.as_u8() <= 1
+            && path.essence.is_empty()
+            && path.min_trust_tier.is_none()
+            && path.min_quality_time_tier.is_none()
+            && path.min_nutrition_pct.is_none()
+        {
+            return Err(format!(
+                "R4: edge {} is vacuous — min_level <= 1, no essence, and no history gates",
+                path.edge_id
+            ));
+        }
+    }
+
+    // R5: tier monotonicity — every edge advances by exactly +1, no skipping.
+    // R3 already guaranteed both lookups resolve.
+    for path in paths {
+        let from_tier = tier_by_id
+            .get(&path.from_species)
+            .copied()
+            .ok_or_else(|| format!("R5: edge {} from_species vanished", path.edge_id))?;
+        let to_tier = tier_by_id
+            .get(&path.to_species)
+            .copied()
+            .ok_or_else(|| format!("R5: edge {} to_species vanished", path.edge_id))?;
+        if u16::from(to_tier) != u16::from(from_tier) + 1 {
+            return Err(format!(
+                "R5: edge {} breaks tier monotonicity — species {} (tier {from_tier}) -> \
+                 species {} (tier {to_tier}) must advance by exactly +1",
+                path.edge_id, path.from_species, path.to_species
+            ));
+        }
+    }
+
+    // R6: derived forms are never wild-catchable.
+    for path in paths {
+        for table in encounters {
+            if table
+                .entries
+                .iter()
+                .any(|entry| entry.species_id == path.to_species)
+            {
+                return Err(format!(
+                    "R6: evolution target species {} (edge {}) appears in the encounter table \
+                     for zone {} — derived forms must not be wild-catchable",
+                    path.to_species, path.edge_id, table.zone_id
+                ));
+            }
+        }
+    }
+
+    // R7: essence legibility cap — at most 3 entries per path.
+    for path in paths {
+        if path.essence.len() > 3 {
+            return Err(format!(
+                "R7: edge {} carries {} essence requirements — the legibility cap is 3",
+                path.edge_id,
+                path.essence.len()
+            ));
+        }
+    }
+
+    // R8: fan-in (same to_species from different sources) is explicitly
+    // PERMITTED — a positive pin, no check.
+
+    // R9: an essence item is single-role — essence_affinity excludes both
+    // train_stat and cure_status.
+    for item in items {
+        if item.essence_affinity.is_some()
+            && (item.train_stat.is_some() || item.cure_status.is_some())
+        {
+            return Err(format!(
+                "R9: item {} carries essence_affinity alongside train_stat/cure_status — \
+                 an essence item must have no other consumption role",
+                item.id
+            ));
+        }
+    }
+
+    // R10: universal reachability — every tier > 0 species is the to_species
+    // of at least one edge. CARVE-OUT (ADR-0174 D6): SKIPPED ENTIRELY when the
+    // path set is EMPTY — EG1 ships explicit `tier: 1` species while the edge
+    // set stays empty until EG3, and without the skip `sync_content` could
+    // never succeed and a fresh-DB `init` would panic for the whole window. An
+    // empty graph is the declared pre-content state, not a shipped graph.
+    if !paths.is_empty() {
+        for sp in species {
+            if sp.tier > 0 && !paths.iter().any(|path| path.to_species == sp.id) {
+                return Err(format!(
+                    "R10: species {} (tier {}) is unreachable — every tier > 0 species must be \
+                     the to_species of at least one evolution path",
+                    sp.id, sp.tier
+                ));
+            }
+        }
+    }
+
+    // R11: tier cap (PROVISIONAL, spec §4).
+    for sp in species {
+        if sp.tier > 5 {
+            return Err(format!(
+                "R11: species {} has tier {} — above the cap of 5",
+                sp.id, sp.tier
+            ));
+        }
+    }
+
+    // R12: edge_id is unique across the set (the durable edge identity, EG1-12).
+    let mut seen_edge_ids = std::collections::HashSet::new();
+    for path in paths {
+        if !seen_edge_ids.insert(path.edge_id) {
+            return Err(format!(
+                "R12: edge_id {} is reused across evolution paths — edge_id is the durable, \
+                 append-only edge identity",
+                path.edge_id
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 // ===========================================================================
