@@ -1143,7 +1143,7 @@ pub(crate) fn write_back_battle_results(
             if leveled_up {
                 // Recompute derived stats on level-up. Stat-recompute failures are
                 // logged and skipped (XP/level already written above); `level_up_healed_hp`
-                // and `compute_evolves_to` remain the SSOT (ADR-0003, ADR-0073).
+                // remains the SSOT (ADR-0003, ADR-0073).
                 if let Some(species) = ctx.db.species_row().id().find(m.species_id) {
                     let base = StatBlock {
                         hp: species.base_hp,

@@ -190,8 +190,7 @@ canonical `touches:` vocabulary**: adding content is a new
 | zones | `content/zones/*.ron` | directory |
 | zone_maps | `content/zone_maps/*.ron` | directory (string-art tile rows + warp list; keyed by zone_id) |
 | type_chart | `content/type_chart.ron` | **single file** (one coherent matrix, rarely appended in parallel) |
-| evolutions | `content/evolutions.ron` | **single file** (evolution conditions + triggers per species — ADR-0060) |
-| fusion | `content/fusion.ron` | **single file** (fusion recipes — ADR-0060) |
+| evolution_paths | `content/evolution_paths/*.ron` | directory (evolution-graph edges: `edge_id`-keyed, tier/essence/Trust/Quality-Time/Nutrition gates — ADR-0174; empty until EG3 authors content) |
 | npcs | `content/npcs/*.ron` | directory |
 | dialogue_trees | `content/dialogue_trees/*.ron` | directory |
 | quests | `content/quests/*.ron` | directory |
