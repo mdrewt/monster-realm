@@ -60,6 +60,8 @@ fn test_species() -> game_core::Species {
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![1, 2],
         ability: None,
+        // EG1-3: evolution-graph tier. 0 = a base, wild-catchable form.
+        tier: 0,
     }
 }
 
@@ -74,7 +76,8 @@ fn monster_from_instance_flattens_correctly() {
     assert_eq!(m.species_id, inst.species_id);
     assert_eq!(m.level, inst.level.as_u8());
     assert_eq!(m.xp, inst.xp.value());
-    assert_eq!(m.bond, inst.bond.value());
+    // EG1-7: `bond` is gone from MonsterInstance (the row column survives, frozen,
+    // until Migration B / EG5-6) — there is nothing to flatten from any more.
     assert_eq!(m.iv_hp, inst.ivs.get(StatKind::Hp));
     assert_eq!(m.iv_attack, inst.ivs.get(StatKind::Attack));
     assert_eq!(m.iv_defense, inst.ivs.get(StatKind::Defense));
@@ -93,13 +96,17 @@ fn monster_from_instance_flattens_correctly() {
 }
 
 /// pub_from_monster produces a projection with NO hidden fields.
+///
+/// EG1-8: the signature is now `pub_from_monster(&Monster, tier: u8)`. `bond` STAYS
+/// on both sides this slice (Migration A is additive-only; the pair is removed in
+/// Migration B / EG5-6), so the bond assertion below is deliberately retained.
 #[test]
 fn pub_from_monster_omits_hidden_fields() {
     let sp = test_species();
     let inst = roll_starter(42, &sp);
     let identity = Identity::from_byte_array([1u8; 32]);
     let m = monster_from_instance(identity, &inst, PARTY_SLOT_NONE);
-    let p = pub_from_monster(&m);
+    let p = pub_from_monster(&m, 0);
 
     // Public fields match
     assert_eq!(p.monster_id, m.monster_id);
@@ -179,6 +186,23 @@ fn m7b_test_monster_row() -> Monster {
         party_slot: 0,
         last_care_at_ms: 0,
         evolves_to: None,
+        // --- EG1 Migration A: the 16 appended Monster columns (ADR-0174 D1) ------
+        essence_fire: 0,
+        essence_water: 0,
+        essence_plant: 0,
+        essence_electric: 0,
+        essence_earth: 0,
+        essence_wind: 0,
+        essence_light: 0,
+        essence_dark: 0,
+        trust_favorable_count: 0,
+        trust_unfavorable_count: 0,
+        trust_favorable_battle_day_epoch: 0,
+        quality_time_ticks_total: 0,
+        quality_time_accum_ms: 0,
+        quality_time_window_ms: 0,
+        quality_time_window_start_ms: 0,
+        last_essence_train_at_ms: 0,
     }
 }
 
@@ -216,6 +240,7 @@ fn m7b_test_species_row() -> SpeciesRow {
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![1, 2],
         ability: None,
+        tier: 0,
     }
 }
 
@@ -446,6 +471,7 @@ fn m7b_loser_base_stat_total_high_bst_species() {
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![],
         ability: None,
+        tier: 0,
     };
     // 100 + 120 + 90 + 100 + 130 + 90 = 630
     let bst: u16 = loser_base_stat_total(&species);
@@ -473,6 +499,7 @@ fn m7b_loser_base_stat_total_max_stats_no_overflow() {
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![],
         ability: None,
+        tier: 0,
     };
     // 255 * 6 = 1530, which fits in u16.
     let bst: u16 = loser_base_stat_total(&species);
@@ -812,6 +839,7 @@ fn m8c_test_species_row() -> SpeciesRow {
         affinity: Affinity::Plant,
         learnable_skill_ids: vec![1, 2, 3],
         ability: None,
+        tier: 0,
     }
 }
 
@@ -1062,6 +1090,7 @@ fn m10_5a_wild_battle_monster_rejects_empty_known_skills() {
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![1, 2],
         ability: None,
+        tier: 0,
     };
 
     // Skill ids [7, 8, 9] are entirely disjoint from learnable [1, 2].
@@ -1330,6 +1359,7 @@ fn m10_5a_battle_monster_from_row_rejects_empty_known_skills() {
         affinity: Affinity::Fire,
         learnable_skill_ids: vec![1, 2], // species has skills in content
         ability: None,
+        tier: 0,
     };
     let mut monster = m7b_test_monster_row();
     monster.species_id = 97;
@@ -1460,4 +1490,679 @@ fn m13_5c_write_back_hp_equality_edge_passes_through() {
          got {}",
         monster.current_hp
     );
+}
+
+// =========================================================================
+// EG1 gating tests — Migration A marshaling (spec EG1-1/EG1-2/EG1-3/EG1-5/
+// EG1-7/EG1-8; ADR-0174 D1/D3/D4/D7).
+//
+// Everything below is COMPILE-RED until the implementer lands:
+//   * schema.rs: Monster +16 / MonsterPub +12 / SpeciesRow.tier /
+//     EssenceRequirementRow / EvolutionPathRow (ADR-0174 D1),
+//   * marshal.rs: pub_from_monster(&Monster, tier: u8), the essence/trust/
+//     quality-time legs of monster_from_instance + monster_to_instance,
+//     species_from_row's tier, and the new evolution_path_from_row.
+//
+// Field-by-field with DISTINCTIVE values throughout: a transposed column or a
+// hardcoded constant must not be able to survive.
+// =========================================================================
+
+/// A `MonsterInstance` whose every EG1 field carries a DISTINCT value, so no
+/// two columns can be swapped without a test firing.
+///
+/// essence = [1,2,3,4,5,6,7,8] in `Affinity::ALL` order (Fire..Dark),
+/// trust favorable = 11, unfavorable = 22, quality-time ticks = 33.
+fn eg1_distinctive_instance() -> MonsterInstance {
+    let ivs = game_core::IVs::new(1, 2, 3, 4, 5, 6).expect("valid IVs");
+    let evs = EVs::new(10, 20, 30, 40, 50, 60).expect("valid EVs");
+    let nature = game_core::Nature::new(game_core::NatureKind::Adamant);
+    let level = Level::new(25).expect("valid level");
+    MonsterInstance {
+        species_id: 7,
+        nickname: Some("Distinct".to_string()),
+        level,
+        xp: game_core::Xp::new(15_625),
+        ivs,
+        nature,
+        evs,
+        essence: [1, 2, 3, 4, 5, 6, 7, 8],
+        trust_favorable_count: 11,
+        trust_unfavorable_count: 22,
+        quality_time_ticks_total: 33,
+        current_hp: 55,
+        derived_stats: StatBlock {
+            hp: 70,
+            attack: 40,
+            defense: 41,
+            speed: 42,
+            sp_attack: 43,
+            sp_defense: 44,
+        },
+        party_slot: Some(2),
+    }
+}
+
+/// A `Monster` row whose every EG1 column carries a DISTINCT value (the row-side
+/// mirror of `eg1_distinctive_instance`).
+fn eg1_distinctive_monster_row() -> Monster {
+    let mut m = m7b_test_monster_row();
+    m.essence_fire = 1;
+    m.essence_water = 2;
+    m.essence_plant = 3;
+    m.essence_electric = 4;
+    m.essence_earth = 5;
+    m.essence_wind = 6;
+    m.essence_light = 7;
+    m.essence_dark = 8;
+    m.trust_favorable_count = 11;
+    m.trust_unfavorable_count = 22;
+    m.quality_time_ticks_total = 33;
+    m
+}
+
+// -------------------------------------------------------------------------
+// EG1-7 / EG1-1: monster_from_instance flattens the new instance fields
+// -------------------------------------------------------------------------
+
+/// EG1-1/EG1-7: the 8 essence pools and the three history stats flatten from the
+/// `MonsterInstance` into their named columns, in `Affinity::ALL` order.
+///
+/// Kills: an impl that leaves the new columns at 0 on creation (essence/trust/
+/// quality-time silently discarded at the boundary), and any transposition of the
+/// essence array into the flat columns (every value is distinct).
+#[test]
+fn eg1_monster_from_instance_flattens_new_fields() {
+    let inst = eg1_distinctive_instance();
+    let identity = Identity::from_byte_array([3u8; 32]);
+    let m = monster_from_instance(identity, &inst, 0);
+
+    assert_eq!(
+        (
+            m.essence_fire,
+            m.essence_water,
+            m.essence_plant,
+            m.essence_electric,
+            m.essence_earth,
+            m.essence_wind,
+            m.essence_light,
+            m.essence_dark
+        ),
+        (1, 2, 3, 4, 5, 6, 7, 8),
+        "TEETH(EG1-1): the 8 flat essence columns must take instance.essence in \
+         Affinity::ALL order (Fire..Dark); kills a transposed or zeroing flatten"
+    );
+    assert_eq!(
+        m.trust_favorable_count, 11,
+        "trust_favorable_count must flatten from the instance (11)"
+    );
+    assert_eq!(
+        m.trust_unfavorable_count, 22,
+        "trust_unfavorable_count must flatten from the instance (22); \
+         kills a favorable/unfavorable swap (11 vs 22 are distinct on purpose)"
+    );
+    assert_eq!(
+        m.quality_time_ticks_total, 33,
+        "quality_time_ticks_total must flatten from the instance (33)"
+    );
+}
+
+/// EG1-1: the SERVER-ONLY columns — the ones with no `MonsterInstance` counterpart
+/// — start at 0 for a freshly created monster (epoch anchors / empty accumulators).
+///
+/// Kills: an impl that copies an unrelated field into them (e.g. seeding
+/// `last_essence_train_at_ms` from `now_ms`, which would silently put a brand-new
+/// monster on cooldown), or that leaves them uninitialised garbage.
+#[test]
+fn eg1_monster_from_instance_defaults_server_only_columns_to_zero() {
+    let inst = eg1_distinctive_instance();
+    let identity = Identity::from_byte_array([3u8; 32]);
+    let m = monster_from_instance(identity, &inst, 0);
+
+    assert_eq!(
+        m.trust_favorable_battle_day_epoch, 0,
+        "trust_favorable_battle_day_epoch is server-only state — 0 at creation"
+    );
+    assert_eq!(
+        m.quality_time_accum_ms, 0,
+        "quality_time_accum_ms is server-only state — 0 at creation"
+    );
+    assert_eq!(
+        m.quality_time_window_ms, 0,
+        "quality_time_window_ms is server-only state — 0 at creation"
+    );
+    assert_eq!(
+        m.quality_time_window_start_ms, 0,
+        "quality_time_window_start_ms is server-only state — 0 at creation"
+    );
+    assert_eq!(
+        m.last_essence_train_at_ms, 0,
+        "TEETH: last_essence_train_at_ms must be 0 (epoch ⇒ cooldown elapsed ⇒ the \
+         first essence_train is allowed); kills seeding it from the clock"
+    );
+}
+
+// -------------------------------------------------------------------------
+// EG1-7: monster_to_instance rebuilds the new fields (the inverse leg)
+// -------------------------------------------------------------------------
+
+/// EG1-7: the 8 named essence columns rebuild `instance.essence` INDEXED BY
+/// `Affinity::index()` — column `essence_fire` lands at `Affinity::Fire`'s index,
+/// `essence_dark` at `Affinity::Dark`'s, and so on.
+///
+/// Kills: a reversed array build ([8,7,..,1]), any pairwise transposition, and a
+/// positional build that ignores `Affinity::ALL` order — every one of the 8 values
+/// is distinct, and the per-affinity assertions below pin each slot by NAME.
+#[test]
+fn eg1_monster_to_instance_round_trips_new_fields() {
+    let m = eg1_distinctive_monster_row();
+
+    let inst = monster_to_instance(&m).expect("a valid row marshals");
+
+    assert_eq!(
+        inst.essence,
+        [1u32, 2, 3, 4, 5, 6, 7, 8],
+        "TEETH(EG1-7): instance.essence must be [essence_fire..essence_dark] in \
+         Affinity::ALL order; kills a reversed or re-sorted rebuild"
+    );
+    // Per-affinity pins: these are what actually kill a transposition, because they
+    // name the affinity rather than assuming a position.
+    assert_eq!(
+        inst.essence[Affinity::Fire.index()],
+        1,
+        "essence_fire (1) must land at Affinity::Fire's index"
+    );
+    assert_eq!(
+        inst.essence[Affinity::Water.index()],
+        2,
+        "essence_water (2) must land at Affinity::Water's index"
+    );
+    assert_eq!(
+        inst.essence[Affinity::Plant.index()],
+        3,
+        "essence_plant (3) must land at Affinity::Plant's index"
+    );
+    assert_eq!(
+        inst.essence[Affinity::Electric.index()],
+        4,
+        "essence_electric (4) must land at Affinity::Electric's index"
+    );
+    assert_eq!(
+        inst.essence[Affinity::Earth.index()],
+        5,
+        "essence_earth (5) must land at Affinity::Earth's index"
+    );
+    assert_eq!(
+        inst.essence[Affinity::Wind.index()],
+        6,
+        "essence_wind (6) must land at Affinity::Wind's index"
+    );
+    assert_eq!(
+        inst.essence[Affinity::Light.index()],
+        7,
+        "essence_light (7) must land at Affinity::Light's index"
+    );
+    assert_eq!(
+        inst.essence[Affinity::Dark.index()],
+        8,
+        "essence_dark (8) must land at Affinity::Dark's index"
+    );
+
+    assert_eq!(
+        inst.trust_favorable_count, 11,
+        "trust_favorable_count must rebuild from the row (11)"
+    );
+    assert_eq!(
+        inst.trust_unfavorable_count, 22,
+        "TEETH: trust_unfavorable_count must rebuild from the row (22); \
+         11 vs 22 are distinct precisely so a favorable/unfavorable swap dies here"
+    );
+    assert_eq!(
+        inst.quality_time_ticks_total, 33,
+        "quality_time_ticks_total must rebuild from the row (33)"
+    );
+}
+
+/// Round-trip closure: row -> instance -> row preserves every EG1 value.
+///
+/// Kills: an asymmetric pair of marshal legs (e.g. `monster_to_instance` reading
+/// `essence_light` where `monster_from_instance` writes `essence_dark`) — an error
+/// that cancels out in neither direction alone but is visible across the round trip.
+#[test]
+fn eg1_monster_essence_round_trip_is_lossless() {
+    let m = eg1_distinctive_monster_row();
+    let inst = monster_to_instance(&m).expect("a valid row marshals");
+    let back = monster_from_instance(m.owner_identity, &inst, m.party_slot);
+
+    assert_eq!(
+        (
+            back.essence_fire,
+            back.essence_water,
+            back.essence_plant,
+            back.essence_electric,
+            back.essence_earth,
+            back.essence_wind,
+            back.essence_light,
+            back.essence_dark
+        ),
+        (
+            m.essence_fire,
+            m.essence_water,
+            m.essence_plant,
+            m.essence_electric,
+            m.essence_earth,
+            m.essence_wind,
+            m.essence_light,
+            m.essence_dark
+        ),
+        "row -> instance -> row must preserve all 8 essence columns exactly"
+    );
+    assert_eq!(back.trust_favorable_count, m.trust_favorable_count);
+    assert_eq!(back.trust_unfavorable_count, m.trust_unfavorable_count);
+    assert_eq!(back.quality_time_ticks_total, m.quality_time_ticks_total);
+}
+
+// -------------------------------------------------------------------------
+// EG1-8 / EG1-2: pub_from_monster(m, tier) — the projection now DERIVES three
+// public tiers and takes `tier` from its caller.
+// -------------------------------------------------------------------------
+
+/// EG1-8: `tier` comes from the ARGUMENT, never from a default or from the row.
+///
+/// Kills: an impl that hardcodes `tier: 0` (or any constant) and ignores the new
+/// parameter — two calls with different tiers must produce different projections.
+#[test]
+fn eg1_pub_from_monster_uses_passed_tier_not_default() {
+    let m = eg1_distinctive_monster_row();
+
+    let p3 = pub_from_monster(&m, 3);
+    assert_eq!(
+        p3.tier, 3,
+        "TEETH(EG1-8): MonsterPub.tier must be the passed tier (3); \
+         kills a hardcoded 0/default"
+    );
+
+    let p0 = pub_from_monster(&m, 0);
+    assert_eq!(
+        p0.tier, 0,
+        "tier 0 must also come through verbatim (no clamping/bumping)"
+    );
+    assert_ne!(
+        p3.tier, p0.tier,
+        "TEETH: the projection must actually vary with the tier argument"
+    );
+}
+
+/// EG1-2/EG1-6 (ADR-0174 D4): `MonsterPub.trust_tier` is DERIVED from the row's
+/// two lifetime counters via `game_core::trust_tier_of` — never stored, never a
+/// caller argument.
+///
+/// Fixtures: (fav=30, unfav=0) sits exactly on the Devoted band edge
+/// ((30+10)*100 == 80*(30+0+20)), and (0, 0) is the zero-history midpoint,
+/// Neutral.
+///
+/// Kills: an impl that writes the `#[default(TrustTier::Neutral)]` value
+/// unconditionally (the Devoted case fires), and one that hardcodes any single
+/// tier (the Neutral case fires).
+#[test]
+fn eg1_pub_from_monster_computes_trust_tier() {
+    let mut devoted = eg1_distinctive_monster_row();
+    devoted.trust_favorable_count = 30;
+    devoted.trust_unfavorable_count = 0;
+    assert_eq!(
+        pub_from_monster(&devoted, 1).trust_tier,
+        game_core::TrustTier::Devoted,
+        "TEETH: (fav=30, unfav=0) is the Devoted band edge — smoothed \
+         (30+10)/(30+0+20) = 40/50 = 80%, inclusive; kills an always-Neutral impl"
+    );
+
+    let mut fresh = eg1_distinctive_monster_row();
+    fresh.trust_favorable_count = 0;
+    fresh.trust_unfavorable_count = 0;
+    assert_eq!(
+        pub_from_monster(&fresh, 1).trust_tier,
+        game_core::TrustTier::Neutral,
+        "TEETH: zero history smooths to exactly 50% = Neutral; \
+         kills an always-Devoted impl and a raw fav/(fav+unfav) ratio (0/0)"
+    );
+
+    // The projection must AGREE with the game-core SSOT, not re-derive its own bands.
+    assert_eq!(
+        pub_from_monster(&devoted, 1).trust_tier,
+        game_core::trust_tier_of(
+            devoted.trust_favorable_count,
+            devoted.trust_unfavorable_count
+        ),
+        "MonsterPub.trust_tier must equal game_core::trust_tier_of(fav, unfav)"
+    );
+}
+
+/// EG1-2/EG1-6 (ADR-0174 D6): `MonsterPub.quality_time_tier` is derived from
+/// `quality_time_ticks_total` via `game_core::quality_time_tier_of`.
+///
+/// 150 ticks is the INCLUSIVE lower bound of tier 3; 149 is still tier 2.
+///
+/// Kills: an off-by-one band lookup (exclusive `>`), a hardcoded 0, and an impl
+/// that copies the raw tick count into the u8 column.
+#[test]
+fn eg1_pub_from_monster_computes_quality_time_tier() {
+    let mut at_boundary = eg1_distinctive_monster_row();
+    at_boundary.quality_time_ticks_total = 150;
+    assert_eq!(
+        pub_from_monster(&at_boundary, 1).quality_time_tier,
+        3,
+        "TEETH: 150 ticks is the INCLUSIVE lower bound of quality-time tier 3; \
+         kills an exclusive `>` band lookup (would say 2) and a raw-tick copy"
+    );
+
+    let mut just_below = eg1_distinctive_monster_row();
+    just_below.quality_time_ticks_total = 149;
+    assert_eq!(
+        pub_from_monster(&just_below, 1).quality_time_tier,
+        2,
+        "TEETH: 149 ticks is still tier 2; kills a constant-3 impl and an \
+         off-by-one that rounds the boundary down a band early"
+    );
+}
+
+/// EG1-2/EG1-6 (ADR-0174 D3): `MonsterPub.nutrition_pct` is the EV pool as a
+/// percentage of the 510 budget, computed over the SIX ev_* columns.
+///
+/// 252 + 3 = 255 EVs = exactly half the 510 budget → 50.
+///
+/// Kills: summing only five columns (would give 3 or 47 here), dividing by 255
+/// instead of 510 (would give 100), and a hardcoded 0.
+#[test]
+fn eg1_pub_from_monster_computes_nutrition_pct() {
+    let mut half = eg1_distinctive_monster_row();
+    half.ev_hp = 252;
+    half.ev_attack = 3;
+    half.ev_defense = 0;
+    half.ev_speed = 0;
+    half.ev_sp_attack = 0;
+    half.ev_sp_defense = 0;
+    assert_eq!(
+        pub_from_monster(&half, 1).nutrition_pct,
+        50,
+        "TEETH: EV total 255 of the 510 budget is 50%; kills a /255 denominator \
+         (100), a five-column sum (49), and a hardcoded 0"
+    );
+
+    let mut empty = eg1_distinctive_monster_row();
+    empty.ev_hp = 0;
+    empty.ev_attack = 0;
+    empty.ev_defense = 0;
+    empty.ev_speed = 0;
+    empty.ev_sp_attack = 0;
+    empty.ev_sp_defense = 0;
+    assert_eq!(
+        pub_from_monster(&empty, 1).nutrition_pct,
+        0,
+        "an empty EV pool is 0% nutrition; kills a constant-50 impl"
+    );
+
+    // Agreement with the game-core SSOT formula (ADR-0174 D3, A12: the total-based
+    // helper is `pub` precisely so this cross-crate caller shares ONE formula).
+    let total: u16 = half.ev_hp
+        + half.ev_attack
+        + half.ev_defense
+        + half.ev_speed
+        + half.ev_sp_attack
+        + half.ev_sp_defense;
+    assert_eq!(
+        pub_from_monster(&half, 1).nutrition_pct,
+        game_core::nutrition_pct_from_ev_total(total),
+        "MonsterPub.nutrition_pct must equal game_core::nutrition_pct_from_ev_total(total)"
+    );
+}
+
+/// EG1-2: all 8 public essence columns are copied VERBATIM from the private row
+/// (they are public by design — the client's requirements panel reads them).
+///
+/// Kills: a projection that zeroes or transposes essence on the way out — every
+/// value is distinct, so any permutation fires.
+#[test]
+fn eg1_pub_from_monster_copies_all_eight_essence_columns() {
+    let m = eg1_distinctive_monster_row();
+    let p = pub_from_monster(&m, 2);
+
+    assert_eq!(
+        p.essence_fire, m.essence_fire,
+        "essence_fire must be copied"
+    );
+    assert_eq!(
+        p.essence_water, m.essence_water,
+        "essence_water must be copied"
+    );
+    assert_eq!(
+        p.essence_plant, m.essence_plant,
+        "essence_plant must be copied"
+    );
+    assert_eq!(
+        p.essence_electric, m.essence_electric,
+        "essence_electric must be copied"
+    );
+    assert_eq!(
+        p.essence_earth, m.essence_earth,
+        "essence_earth must be copied"
+    );
+    assert_eq!(
+        p.essence_wind, m.essence_wind,
+        "essence_wind must be copied"
+    );
+    assert_eq!(
+        p.essence_light, m.essence_light,
+        "essence_light must be copied"
+    );
+    assert_eq!(
+        p.essence_dark, m.essence_dark,
+        "essence_dark must be copied"
+    );
+    assert_eq!(
+        (
+            p.essence_fire,
+            p.essence_water,
+            p.essence_plant,
+            p.essence_electric,
+            p.essence_earth,
+            p.essence_wind,
+            p.essence_light,
+            p.essence_dark
+        ),
+        (1, 2, 3, 4, 5, 6, 7, 8),
+        "TEETH(EG1-2): the projected essence tuple must be (1..8) — kills any \
+         permutation of the eight copies"
+    );
+}
+
+// -------------------------------------------------------------------------
+// EG1-3: species_from_row carries the new tier column
+// -------------------------------------------------------------------------
+
+/// EG1-3: `SpeciesRow.tier` marshals into `game_core::Species.tier`.
+///
+/// Kills: an impl that leaves `tier: 0` on the domain struct (which would make
+/// every tier-monotonicity check pass vacuously against real content).
+#[test]
+fn eg1_species_from_row_carries_tier() {
+    let mut row = m7b_test_species_row();
+    row.tier = 3;
+
+    let sp = species_from_row(&row).expect("a valid species row marshals");
+    assert_eq!(
+        sp.tier, 3,
+        "TEETH(EG1-3): Species.tier must come from SpeciesRow.tier (3); \
+         kills a hardcoded 0"
+    );
+
+    let mut base = m7b_test_species_row();
+    base.tier = 0;
+    assert_eq!(
+        species_from_row(&base).expect("valid").tier,
+        0,
+        "a tier-0 base form marshals as 0 (kills a constant-3 impl)"
+    );
+}
+
+// -------------------------------------------------------------------------
+// EG1-4/EG1-5: evolution_path_from_row — the DB row -> pure content struct leg
+// -------------------------------------------------------------------------
+
+/// A fully populated `EvolutionPathRow` with distinctive values in every field.
+fn eg1_evolution_path_row() -> crate::schema::EvolutionPathRow {
+    crate::schema::EvolutionPathRow {
+        path_id: 9_001, // DB-internal only — NEVER durable identity (EG1-12)
+        edge_id: 77,
+        from_species: 3,
+        to_species: 9,
+        min_level: 22,
+        essence: vec![
+            crate::schema::EssenceRequirementRow {
+                affinity: Affinity::Water,
+                amount: 120,
+            },
+            crate::schema::EssenceRequirementRow {
+                affinity: Affinity::Fire,
+                amount: 5,
+            },
+        ],
+        min_trust_tier: Some(game_core::TrustTier::Friendly),
+        min_quality_time_tier: Some(2),
+        min_nutrition_pct: Some(40),
+    }
+}
+
+/// EG1-4/EG1-5: every field of the DB row lands on the matching field of the pure
+/// `game_core::EvolutionPath`, with `min_level` parsed into the `Level` newtype
+/// (ADR-0174 D4).
+///
+/// Kills: a from/to species swap (3 vs 9 are distinct), a dropped `edge_id` (the
+/// DURABLE identity, EG1-12 — a 0 here would silently orphan the edge), essence
+/// entries re-ordered or collapsed, and any of the three Option gates being
+/// hardcoded to None (which would make every gate permissive).
+#[test]
+fn eg1_evolution_path_from_row_round_trips() {
+    let row = eg1_evolution_path_row();
+
+    let path = evolution_path_from_row(&row).expect("a valid path row marshals");
+
+    assert_eq!(
+        path.edge_id, 77,
+        "TEETH(EG1-12): edge_id is the DURABLE edge identity and must carry over; \
+         kills an impl that drops it or substitutes path_id (9001)"
+    );
+    assert_ne!(
+        path.edge_id, 9_001,
+        "TEETH(EG1-12): edge_id must NEVER be sourced from the DB auto_inc path_id"
+    );
+    assert_eq!(
+        path.from_species, 3,
+        "from_species must be 3; kills a from/to swap"
+    );
+    assert_eq!(
+        path.to_species, 9,
+        "to_species must be 9; kills a from/to swap"
+    );
+    assert_eq!(
+        path.min_level.as_u8(),
+        22,
+        "min_level must parse into Level(22)"
+    );
+    assert_eq!(
+        path.essence,
+        vec![
+            game_core::EssenceRequirement {
+                affinity: Affinity::Water,
+                amount: 120,
+            },
+            game_core::EssenceRequirement {
+                affinity: Affinity::Fire,
+                amount: 5,
+            },
+        ],
+        "TEETH: the essence requirement list must carry over in order, with each \
+         (affinity, amount) pair intact; kills a re-sorted, truncated, or \
+         affinity-transposed rebuild"
+    );
+    assert_eq!(
+        path.min_trust_tier,
+        Some(game_core::TrustTier::Friendly),
+        "min_trust_tier must carry over as Some(Friendly); kills a hardcoded None \
+         (which would make the Trust gate permissive for every edge)"
+    );
+    assert_eq!(
+        path.min_quality_time_tier,
+        Some(2),
+        "min_quality_time_tier must carry over as Some(2)"
+    );
+    assert_eq!(
+        path.min_nutrition_pct,
+        Some(40),
+        "min_nutrition_pct must carry over as Some(40)"
+    );
+}
+
+/// EG1-5 / ADR-0174 D4 (parse-don't-validate): `min_level` is the `Level` newtype,
+/// so a row carrying an out-of-range `min_level: u8` is a loud `Err`, never a panic
+/// and never a silently clamped gate.
+///
+/// Kills: `Level::new(row.min_level).unwrap()` (panics inside a reducer — a WASM
+/// trap, not a rejection) and `unwrap_or(Level::new(1))` (silently turns a corrupt
+/// row into a level-1 gate that every monster clears).
+#[test]
+fn eg1_evolution_path_from_row_rejects_level_zero() {
+    let mut zero = eg1_evolution_path_row();
+    zero.min_level = 0;
+    assert!(
+        evolution_path_from_row(&zero).is_err(),
+        "TEETH: min_level 0 is out of Level's [1,100] range and must be Err"
+    );
+
+    let mut too_high = eg1_evolution_path_row();
+    too_high.min_level = 101;
+    assert!(
+        evolution_path_from_row(&too_high).is_err(),
+        "TEETH: min_level 101 exceeds Level's [1,100] range and must be Err; \
+         kills a lower-bound-only check"
+    );
+
+    // Positive sibling: the vacuous always-Err impl must not survive.
+    let mut boundary = eg1_evolution_path_row();
+    boundary.min_level = 1;
+    assert!(
+        evolution_path_from_row(&boundary).is_ok(),
+        "min_level 1 is the inclusive lower boundary and must marshal Ok — \
+         kills a vacuous always-Err impl"
+    );
+    let mut top = eg1_evolution_path_row();
+    top.min_level = 100;
+    assert!(
+        evolution_path_from_row(&top).is_ok(),
+        "min_level 100 is the inclusive upper boundary and must marshal Ok"
+    );
+}
+
+/// An empty `essence` list marshals to an empty `Vec`, and all three history gates
+/// may legitimately be `None` (a plain level-gated edge, e.g. EG3-5's 20 -> 22).
+///
+/// Kills: an impl that rejects empty essence, or that substitutes a placeholder
+/// requirement when the list is empty.
+#[test]
+fn eg1_evolution_path_from_row_allows_empty_essence_and_no_history_gates() {
+    let mut plain = eg1_evolution_path_row();
+    plain.essence = vec![];
+    plain.min_trust_tier = None;
+    plain.min_quality_time_tier = None;
+    plain.min_nutrition_pct = None;
+
+    let path = evolution_path_from_row(&plain).expect("a plain level gate marshals");
+    assert!(
+        path.essence.is_empty(),
+        "an empty essence list must stay empty (no placeholder requirement)"
+    );
+    assert_eq!(
+        path.min_trust_tier, None,
+        "None must stay None (permissive)"
+    );
+    assert_eq!(path.min_quality_time_tier, None, "None must stay None");
+    assert_eq!(path.min_nutrition_pct, None, "None must stay None");
 }

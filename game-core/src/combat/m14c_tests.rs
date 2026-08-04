@@ -96,6 +96,7 @@ fn make_species(id: u32, ability: Option<u32>) -> Species {
         affinity: Affinity::Water,
         learnable_skill_ids: vec![1],
         ability,
+        tier: 0,
     }
 }
 

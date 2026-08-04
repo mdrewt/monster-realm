@@ -1,17 +1,21 @@
-//! Evolution subsystem — eligibility resolution and species transforms (M10a-rules).
+//! Evolution subsystem — essence-graph eligibility + the species transform
+//! (spec EG1-6, ADR-0174). Fusion is deleted, not repurposed (EG1-9).
 //!
-//! `eligibility` holds the pure predicate layer: `resolve_evolution` (which
-//! species does this monster evolve into? canonical primitive) with its passive
-//! wrapper `evolves_to`, and `fusion_eligible` (may this pair be fused? —
-//! self-fusion and under-invested parents rejected, ADR-0147).
+//! `eligibility` holds the pure predicate layer: `path_satisfied` (the ONE
+//! shared five-gate predicate, used by both the panel read path and the
+//! reducer write path), its explanatory twin `unmet_requirement` (the
+//! player-facing "which gate blocked me" message, rules-layer SSOT for both
+//! the reducer rejection and the EG4 client panel), `eligible_evolution_paths`
+//! (the full eligible set — never a first-match winner), and the three
+//! derived-tier helpers `trust_tier_of` / `quality_time_tier_of` /
+//! `nutrition_pct_of`.
 //!
-//! `transform` holds the constructors: `evolve` (single-species evolution, carries
-//! all individuality — ADR-0019 carry rule) and `fuse` (two-parent fusion, carries
-//! TAXED individuality — per-stat-max IVs, 75%-taxed bond/level/EVs, optional
-//! chosen nickname — ADR-0147).
+//! `transform` holds the constructor: `evolve` (single-species evolution,
+//! carries all individuality per the ADR-0019 carry rule, zeroes all 8 essence
+//! pools per ADR-0174 D2, leaves Trust/Quality-Time untouched).
 //!
 //! All functions are pure and deterministic (ADR-0003): no wall-clock reads, no
-//! unseeded RNG. Time and randomness are injected by the caller if ever needed.
+//! unseeded RNG, no floats.
 
 pub mod eligibility;
 pub mod transform;
@@ -20,6 +24,8 @@ pub mod transform;
 mod m10a_gating_tests;
 
 pub use eligibility::{
-    evolves_to, fusion_eligible, resolve_evolution, FusionError, MIN_FUSION_BOND, MIN_FUSION_LEVEL,
+    eligible_evolution_paths, nutrition_pct_from_ev_total, nutrition_pct_of, path_satisfied,
+    quality_time_tier_of, trust_tier_of, unmet_requirement, QUALITY_TIME_TIER_TICKS,
+    TRUST_BAND_PCT, TRUST_K,
 };
-pub use transform::{evolve, fuse};
+pub use transform::evolve;

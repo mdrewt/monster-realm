@@ -9,15 +9,15 @@
 //! ADR-0056 — keep it stable.
 
 use crate::schema::{
-    Character, EncounterEntryRow, EncounterRow, Monster, MonsterPub, SkillRow, SpeciesRow,
-    TypeRelationRow,
+    Character, EncounterEntryRow, EncounterRow, EvolutionPathRow, Monster, MonsterPub, SkillRow,
+    SpeciesRow, TypeRelationRow,
 };
 #[cfg(test)]
 use game_core::SkillDef;
 use game_core::{
-    derive_stats, roll_individuality, AbilityDef, AbilityStore, BattleMonster, CharacterState, EVs,
-    EncounterEntry, EncounterTable, Level, Millis, MonsterInstance, StatBlock, StatKind, TilePos,
-    TypeChart,
+    derive_stats, roll_individuality, AbilityDef, AbilityStore, Affinity, BattleMonster,
+    CharacterState, EVs, EncounterEntry, EncounterTable, Level, Millis, MonsterInstance, StatBlock,
+    StatKind, TilePos, TypeChart,
 };
 use spacetimedb::{Identity, ReducerContext};
 
@@ -62,7 +62,10 @@ pub(crate) fn monster_from_instance(
         nickname: inst.nickname.clone().unwrap_or_default(),
         level: inst.level.as_u8(),
         xp: inst.xp.value(),
-        bond: inst.bond.value(),
+        // `bond` is gone from MonsterInstance (EG1-7); the row column stays,
+        // frozen until Migration B. Creation keeps the pre-EG1 starting value
+        // (Bond::default_bond) so the care loop's behavior is unchanged.
+        bond: game_core::Bond::default_bond().value(),
         iv_hp: inst.ivs.get(StatKind::Hp),
         iv_attack: inst.ivs.get(StatKind::Attack),
         iv_defense: inst.ivs.get(StatKind::Defense),
@@ -86,6 +89,27 @@ pub(crate) fn monster_from_instance(
         party_slot,
         last_care_at_ms: 0, // epoch ⇒ cooldown elapsed ⇒ first care allowed (ADR-0059)
         evolves_to: None,
+        // EG1-1/EG1-7: the 8 essence pools flatten from the instance array in
+        // Affinity::ALL order (each named column reads its own affinity index).
+        essence_fire: inst.essence[Affinity::Fire.index()],
+        essence_water: inst.essence[Affinity::Water.index()],
+        essence_plant: inst.essence[Affinity::Plant.index()],
+        essence_electric: inst.essence[Affinity::Electric.index()],
+        essence_earth: inst.essence[Affinity::Earth.index()],
+        essence_wind: inst.essence[Affinity::Wind.index()],
+        essence_light: inst.essence[Affinity::Light.index()],
+        essence_dark: inst.essence[Affinity::Dark.index()],
+        trust_favorable_count: inst.trust_favorable_count,
+        trust_unfavorable_count: inst.trust_unfavorable_count,
+        // Server-only columns (no MonsterInstance counterpart): 0 at creation —
+        // epoch anchors and empty accumulators (EG1-1; never seeded from now_ms,
+        // which would put a brand-new monster on cooldown).
+        trust_favorable_battle_day_epoch: 0,
+        quality_time_ticks_total: inst.quality_time_ticks_total,
+        quality_time_accum_ms: 0,
+        quality_time_window_ms: 0,
+        quality_time_window_start_ms: 0,
+        last_essence_train_at_ms: 0,
     }
 }
 
@@ -180,7 +204,23 @@ pub(crate) fn wild_battle_monster(
 }
 
 /// Derive the public projection from a private monster row. No hidden fields.
-pub(crate) fn pub_from_monster(m: &Monster) -> MonsterPub {
+///
+/// EG1-8: `tier` comes from the CALLER — fresh from the species row at the 4
+/// creation/transform sites, copied forward from the existing `monster_pub` row
+/// everywhere else (never fabricated; a missing row is the caller's fail-loud
+/// problem, ADR-0174 D7/A3). The three history tiers are DERIVED here from the
+/// private counters via the game-core SSOT helpers — pure and infallible.
+pub(crate) fn pub_from_monster(m: &Monster, tier: u8) -> MonsterPub {
+    // Sum the six EV columns in u32 (cannot overflow: 6 * 65535 << u32::MAX),
+    // then clamp into the u16 the SSOT helper takes — a corrupt row saturates
+    // instead of panicking (the helper caps at 100% far below u16::MAX anyway).
+    let ev_total_u32 = u32::from(m.ev_hp)
+        + u32::from(m.ev_attack)
+        + u32::from(m.ev_defense)
+        + u32::from(m.ev_speed)
+        + u32::from(m.ev_sp_attack)
+        + u32::from(m.ev_sp_defense);
+    let ev_total = u16::try_from(ev_total_u32).unwrap_or(u16::MAX);
     MonsterPub {
         monster_id: m.monster_id,
         owner_identity: m.owner_identity,
@@ -198,16 +238,29 @@ pub(crate) fn pub_from_monster(m: &Monster) -> MonsterPub {
         stat_sp_defense: m.stat_sp_defense,
         party_slot: m.party_slot,
         evolves_to: m.evolves_to,
+        tier,
+        essence_fire: m.essence_fire,
+        essence_water: m.essence_water,
+        essence_plant: m.essence_plant,
+        essence_electric: m.essence_electric,
+        essence_earth: m.essence_earth,
+        essence_wind: m.essence_wind,
+        essence_light: m.essence_light,
+        essence_dark: m.essence_dark,
+        trust_tier: game_core::trust_tier_of(m.trust_favorable_count, m.trust_unfavorable_count),
+        quality_time_tier: game_core::quality_time_tier_of(m.quality_time_ticks_total),
+        nutrition_pct: game_core::nutrition_pct_from_ev_total(ev_total),
     }
 }
 
-/// Marshal a Monster row to a game-core MonsterInstance (M10b evolution/fusion).
-/// Trust boundary: rejects illegal level (0 or >100) per Level::new bounds.
+/// Marshal a Monster row to a game-core MonsterInstance (M10b; EG1-7 essence
+/// graph). Trust boundary: rejects illegal level (0 or >100) per Level::new
+/// bounds. The row's frozen `bond` column has no instance counterpart any more;
+/// the server-only Quality-Time/Trust bookkeeping columns stay behind too.
 pub(crate) fn monster_to_instance(m: &Monster) -> Result<game_core::MonsterInstance, String> {
     let level =
         game_core::Level::new(m.level).map_err(|_| format!("invalid monster level {}", m.level))?;
     let xp = game_core::Xp::new(m.xp);
-    let bond = game_core::Bond::new(m.bond);
     let ivs = game_core::IVs::new(
         m.iv_hp,
         m.iv_attack,
@@ -240,6 +293,17 @@ pub(crate) fn monster_to_instance(m: &Monster) -> Result<game_core::MonsterInsta
     } else {
         Some(m.party_slot)
     };
+    // EG1-7: rebuild the essence array from the 8 named columns, each landing at
+    // its own Affinity::index() slot (the inverse of monster_from_instance).
+    let mut essence = [0u32; 8];
+    essence[Affinity::Fire.index()] = m.essence_fire;
+    essence[Affinity::Water.index()] = m.essence_water;
+    essence[Affinity::Plant.index()] = m.essence_plant;
+    essence[Affinity::Electric.index()] = m.essence_electric;
+    essence[Affinity::Earth.index()] = m.essence_earth;
+    essence[Affinity::Wind.index()] = m.essence_wind;
+    essence[Affinity::Light.index()] = m.essence_light;
+    essence[Affinity::Dark.index()] = m.essence_dark;
 
     Ok(game_core::MonsterInstance {
         species_id: m.species_id,
@@ -253,7 +317,10 @@ pub(crate) fn monster_to_instance(m: &Monster) -> Result<game_core::MonsterInsta
         ivs,
         nature,
         evs,
-        bond,
+        essence,
+        trust_favorable_count: m.trust_favorable_count,
+        trust_unfavorable_count: m.trust_unfavorable_count,
+        quality_time_ticks_total: m.quality_time_ticks_total,
         current_hp: m.current_hp,
         derived_stats,
         party_slot,
@@ -276,6 +343,39 @@ pub(crate) fn species_from_row(row: &SpeciesRow) -> Result<game_core::Species, S
         affinity: row.affinity,
         learnable_skill_ids: row.learnable_skill_ids.clone(),
         ability: row.ability,
+        tier: row.tier,
+    })
+}
+
+/// Marshal a public `evolution_path` row to the pure `game_core::EvolutionPath`
+/// content struct (EG1-4/EG1-5). Parse-don't-validate: `min_level` goes through
+/// the `Level` newtype, so a corrupt row is a loud `Err`, never a panic and
+/// never a silently clamped gate (ADR-0174 D4).
+pub(crate) fn evolution_path_from_row(
+    row: &EvolutionPathRow,
+) -> Result<game_core::EvolutionPath, String> {
+    let min_level = Level::new(row.min_level).map_err(|e| {
+        format!(
+            "evolution path edge {}: invalid min_level: {e}",
+            row.edge_id
+        )
+    })?;
+    Ok(game_core::EvolutionPath {
+        edge_id: row.edge_id,
+        from_species: row.from_species,
+        to_species: row.to_species,
+        min_level,
+        essence: row
+            .essence
+            .iter()
+            .map(|e| game_core::EssenceRequirement {
+                affinity: e.affinity,
+                amount: e.amount,
+            })
+            .collect(),
+        min_trust_tier: row.min_trust_tier,
+        min_quality_time_tier: row.min_quality_time_tier,
+        min_nutrition_pct: row.min_nutrition_pct,
     })
 }
 

@@ -2,10 +2,10 @@
 type: SpacetimeDB Reducer
 title: enqueue_move
 slug: reducers/enqueue_move
-updated: 2026-07-31
+updated: 2026-08-03
 tags: [reducer, spacetimedb, movement]
 abstract: "Append one intent to the bounded queue (anti-flood: reject when full). Buffers intent only — NEVER computes movement. A…"
-resource: server-module/src/movement.rs#L123
+resource: server-module/src/movement.rs#L126
 source: scripts/okf-export.mjs@server-module/src/movement.rs
 ---
 

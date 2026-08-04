@@ -8,16 +8,22 @@
 //!
 //! Criteria:
 //!   pt-d1-1  new species rows land + the whole merged registry still validates
-//!   pt-d1-2  evolution wiring (7 -> 9 @ L18, 8 -> 10 @ L20; 9/10 never wild)
+//!   pt-d1-2  derived forms 9/10 are never wild-catchable
 //!   pt-d1-3  STAB invariant (registry-wide: every species can learn its own type)
 //!   pt-d1-4  relative archetype separation, scoped to the NEW rows only
 //!   pt-d1-6  CONTENT_VERSION floor  (pt-d1-5 lives in the spritesheet eval)
+//!
+//! EG1 RETIREMENT: the `evolutions.ron` branch-shape arms of pt-d1-2 are gone
+//! with the file and the `EvolutionTrigger`/`SpeciesEvolutions` model itself
+//! (ADR-0174). Their successor is the R1-R12 gate in
+//! `game-core/src/content.rs` plus EG3's re-authored `evolution_paths/`
+//! content. The derived-forms-not-wild arm survives verbatim — it reads the
+//! encounter registry alone.
 
 use game_core::{
-    base_stat_total, load_abilities, load_encounters, load_evolutions, load_fusion, load_items,
-    load_skills, load_species, load_type_chart, parse_encounters, parse_evolutions, parse_species,
-    validate_abilities, validate_content, validate_evolution_fusion, Affinity, EncounterTable,
-    EvolutionCondition, EvolutionTrigger, Level, Species, SpeciesEvolutions, StatBlock,
+    base_stat_total, load_abilities, load_encounters, load_items, load_skills, load_species,
+    load_type_chart, parse_species, validate_abilities, validate_content, Affinity, Species,
+    StatBlock,
 };
 
 // ===========================================================================
@@ -247,6 +253,7 @@ fn synth(id: u32, affinity: Affinity, learn: &[u32], base: StatBlock) -> Species
         affinity,
         learnable_skill_ids: learn.to_vec(),
         ability: None,
+        tier: 0,
     }
 }
 
@@ -296,9 +303,6 @@ fn pt_d1_1_live_registry_still_validates_end_to_end() {
     let type_chart = load_type_chart().expect("type chart must parse");
     let items = load_items().expect("items registry must parse");
     let abilities = load_abilities().expect("abilities registry must parse");
-    let evolutions = load_evolutions().expect("evolutions registry must parse");
-    let fusion = load_fusion().expect("fusion registry must parse");
-    let encounters = load_encounters().expect("encounters registry must parse");
 
     assert_eq!(
         validate_content(&species, &skills, &type_chart, &items),
@@ -310,11 +314,9 @@ fn pt_d1_1_live_registry_still_validates_end_to_end() {
         Ok(()),
         "pt-d1-1: species 8/9/10 reference abilities 2/3 — a dangling ability id must fail here"
     );
-    assert_eq!(
-        validate_evolution_fusion(&species, &evolutions, &fusion, &encounters, &items),
-        Ok(()),
-        "pt-d1-1: the new evolution blocks must be cross-registry clean"
-    );
+    // The evolution/fusion half of this gate moved to
+    // `game_core::content::validate_evolution_paths` (EG1-10) and is asserted
+    // over the live registries by that module's own test suite.
 }
 
 #[test]
@@ -381,63 +383,13 @@ fn pt_d1_1_teeth_duplicate_species_id_is_rejected() {
 // pt-d1-2 — evolution wiring
 // ===========================================================================
 
-// TIGHTENED (not weakened) by ADR-0149 D7 / slice B: species 7/8 legitimately
-// gained a second, Item-triggered branch (`item_evolution_content.rs`'s
-// T-B1a/T-B1b/T-B1c own that criterion in full). The old form here was
-// `assert_eq!(blocks[0].evolutions, vec![want])` against a length-1 vector,
-// so ANY second branch broke it — cardinality, not order. A weaker "contains
-// the level branch" replacement would have let a future slice silently
-// replace the level payoff, so this keeps every guarantee the old form had
-// (exactly one block per source; the pinned Level branch present VERBATIM)
-// and adds the new one this slice requires: exactly one OTHER branch, and it
-// must be an `Item` trigger (not e.g. a second, redundant Level/Bond branch).
-// It does NOT pin the Item branch's item id or target — that belongs to
-// `item_evolution_content.rs`'s T-B1b, which is the slice-B-owned criterion.
-#[test]
-fn pt_d1_2_evolution_blocks_for_7_and_8_are_exact() {
-    let evolutions = load_evolutions().expect("evolutions registry must parse");
-    for (src, level, target) in [(7u32, 18u8, 9u32), (8, 20, 10)] {
-        let blocks: Vec<&SpeciesEvolutions> =
-            evolutions.iter().filter(|b| b.species_id == src).collect();
-        assert_eq!(
-            blocks.len(),
-            1,
-            "pt-d1-2: exactly ONE evolutions block for species {src} (two blocks are a validator Err)"
-        );
-        let want_level = EvolutionCondition {
-            trigger: EvolutionTrigger::Level(Level::new(level).expect("level in [1,100]")),
-            to_species: target,
-        };
-        let level_count = blocks[0]
-            .evolutions
-            .iter()
-            .filter(|c| *c == &want_level)
-            .count();
-        assert_eq!(
-            level_count, 1,
-            "pt-d1-2: species {src} must still carry Level({level}) -> {target} VERBATIM exactly \
-             once — kills a replaced or duplicated level payoff (ADR-0149 D7)"
-        );
-        assert_eq!(
-            blocks[0].evolutions.len(),
-            2,
-            "pt-d1-2: species {src} must have exactly 2 branches (the pinned Level branch above \
-             plus ADR-0149's new Item branch) — kills an extra, unrelated branch; got {:?}",
-            blocks[0].evolutions
-        );
-        let other_is_item = blocks[0]
-            .evolutions
-            .iter()
-            .filter(|c| *c != &want_level)
-            .all(|c| matches!(c.trigger, EvolutionTrigger::Item(_)));
-        assert!(
-            other_is_item,
-            "pt-d1-2: species {src}'s non-Level branch must be an Item trigger (ADR-0149 B-1); \
-             got {:?}",
-            blocks[0].evolutions
-        );
-    }
-}
+// EG1 RETIREMENT (ADR-0174): `pt_d1_2_evolution_blocks_for_7_and_8_are_exact`
+// pinned the exact `EvolutionCondition` branch shape of species 7/8 in
+// `evolutions.ron`. Both the file and the `EvolutionTrigger` model are deleted;
+// species 7 -> 9 / 8 -> 10 are re-authored as `evolution_paths/` edges by EG3-7
+// and pinned there. The two synthetic-fixture teeth that called
+// `validate_evolution_fusion` (duplicate block, derived-form-in-encounters) are
+// superseded by R1/R6's biting fixtures in `game-core/src/content.rs`.
 
 #[test]
 fn pt_d1_2_derived_forms_9_and_10_are_not_wild_catchable() {
@@ -453,47 +405,6 @@ fn pt_d1_2_derived_forms_9_and_10_are_not_wild_catchable() {
             );
         }
     }
-}
-
-#[test]
-fn pt_d1_2_teeth_duplicate_evolution_block_is_rejected() {
-    // TEETH(pt-d1-2/A): two blocks for the same species_id (the natural mistake
-    // when appending 7's block to a file that already holds one) must be Err.
-    let bad = parse_evolutions(
-        "[(species_id: 7, evolutions: [(trigger: Level(18), to_species: 9)]),
-          (species_id: 7, evolutions: [(trigger: Level(19), to_species: 9)])]",
-    )
-    .expect("fixture must parse");
-    let species = vec![
-        synth(7, Affinity::Earth, &[9], stats(60, 55, 70, 30, 40, 55)),
-        synth(9, Affinity::Earth, &[9], stats(80, 70, 100, 35, 55, 75)),
-    ];
-    assert!(
-        validate_evolution_fusion(&species, &bad, &[], &[], &[]).is_err(),
-        "TEETH(pt-d1-2/A): a duplicate evolutions block for one species must be rejected"
-    );
-}
-
-#[test]
-fn pt_d1_2_teeth_derived_form_in_encounter_table_is_rejected() {
-    // TEETH(pt-d1-2/B): kills the "just make Stoneward wild too" authoring
-    // shortcut — an evolution target in an encounter table must be Err.
-    let evolutions =
-        parse_evolutions("[(species_id: 7, evolutions: [(trigger: Level(18), to_species: 9)])]")
-            .expect("fixture must parse");
-    let encounters: Vec<EncounterTable> = parse_encounters(
-        "[(zone_id: 0, encounter_rate: 200,
-           entries: [(species_id: 9, weight: 5, min_level: 4, max_level: 8)])]",
-    )
-    .expect("fixture must parse");
-    let species = vec![
-        synth(7, Affinity::Earth, &[9], stats(60, 55, 70, 30, 40, 55)),
-        synth(9, Affinity::Earth, &[9], stats(80, 70, 100, 35, 55, 75)),
-    ];
-    assert!(
-        validate_evolution_fusion(&species, &evolutions, &[], &encounters, &[]).is_err(),
-        "TEETH(pt-d1-2/B): a derived form in an encounter table must be rejected"
-    );
 }
 
 // ===========================================================================
@@ -731,9 +642,22 @@ fn pt_d1_7_ron_comments_carry_no_id_shaped_needles() {
         violations.extend(comment_needle_violations(&label, &src));
     }
 
-    let evo_path = format!("{content_dir}/evolutions.ron");
-    let evo = std::fs::read_to_string(&evo_path).expect("evolutions.ron must be readable");
-    violations.extend(comment_needle_violations("evolutions.ron", &evo));
+    let evo_dir = format!("{content_dir}/evolution_paths");
+    let mut evo_parts: Vec<_> = std::fs::read_dir(&evo_dir)
+        .expect("evolution_paths content directory must exist")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "ron"))
+        .collect();
+    evo_parts.sort();
+    assert!(
+        !evo_parts.is_empty(),
+        "pt-d1-7: the evolution_paths registry must ship at least one part file"
+    );
+    for p in &evo_parts {
+        let label = p.file_name().unwrap().to_string_lossy().to_string();
+        let src = std::fs::read_to_string(p).expect("evolution_paths part must be readable");
+        violations.extend(comment_needle_violations(&label, &src));
+    }
 
     assert!(
         violations.is_empty(),

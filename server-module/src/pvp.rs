@@ -554,7 +554,12 @@ fn write_back_party_hp_pvp_side_b(ctx: &ReducerContext, battle: &Battle) -> Resu
                 ));
             }
             crate::marshal::write_back_hp(&mut m, bm);
-            let pub_row = pub_from_monster(&m);
+            // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing
+            // monster_pub row — never fabricate a tier.
+            let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(mid) else {
+                return Err(format!("monster_pub row missing for monster {mid}"));
+            };
+            let pub_row = pub_from_monster(&m, existing_pub.tier);
             ctx.db.monster().monster_id().update(m);
             ctx.db.monster_pub().monster_id().update(pub_row);
         }

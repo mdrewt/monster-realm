@@ -1,0 +1,24 @@
+// Evolution-path graph — DATA, not code (ADR-0006/0057/0174). Replaces the
+// deleted evolutions.ron and fusion.ron entirely (spec EG3-1).
+//
+// Each entry is one directed edge with an author-assigned, unique, APPEND-ONLY
+// edge_id (EG1-4/EG1-12 — never reused, never renumbered, even if the edge is
+// later removed). Shape:
+//
+// (
+//     edge_id: 1,
+//     from_species: 7,
+//     to_species: 9,
+//     min_level: 18,
+//     essence: [(affinity: Water, amount: 100)],
+//     min_trust_tier: Some(Friendly),
+//     min_quality_time_tier: Some(2),
+//     min_nutrition_pct: Some(50),
+// ),
+//
+// DELIBERATELY EMPTY in EG1: the schema/type freeze ships before the content
+// pass (EG3) authors the real graph. R1-R12 are runnable against this empty
+// set (EG1-10), and R10 (universal reachability) explicitly skips it
+// (ADR-0174 D6) so the tier: 1 species EG1-3 authors do not deadlock
+// sync_content during the EG1 -> EG3 window.
+[]

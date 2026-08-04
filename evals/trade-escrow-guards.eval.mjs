@@ -152,7 +152,9 @@ function bodyHasGuard(combinedSrc, fnName, guard, minCount) {
 // ---------------------------------------------------------------------------
 const GUARD_SITES = [
   ['evolve', 'reject_if_monster_in_trade', 1, 'TR-2'],
-  ['fuse', 'reject_if_monster_in_trade', 2, 'TR-3 (both parents)'],
+  // TR-3 (`fuse`, both parents) removed: the fuse reducer was deleted by
+  // EG1/ADR-0174. The synthetic fuse-named teeth fixtures below stay — they
+  // exercise the minCount=2 checker mechanics, not the deleted reducer.
   ['set_nickname', 'reject_if_monster_in_trade', 1, 'TR-4'],
   ['set_party_slot', 'reject_if_monster_in_trade', 1, 'TR-5'],
   ['care', 'reject_if_monster_in_trade', 1, 'TR-6'],

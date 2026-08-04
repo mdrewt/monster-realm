@@ -2,15 +2,15 @@
 type: SpacetimeDB Reducer
 title: evolve
 slug: reducers/evolve
-updated: 2026-07-31
+updated: 2026-08-03
 tags: [reducer, spacetimedb, evolution]
-abstract: "Evolve a monster into its passive-eligible target species (M10b, ADR-0061). Steps: 1. Look up Monster + Species (reject…"
-resource: server-module/src/evolution.rs#L90
+abstract: "Evolve a monster along one authored evolution-graph edge (EG2-1 shape). Steps: 1. Look up the Monster row (loud reject …"
+resource: server-module/src/evolution.rs#L36
 source: scripts/okf-export.mjs@server-module/src/evolution.rs
 ---
 
 ## Signature
 
 ```rust
-pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String>
+pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String>
 ```

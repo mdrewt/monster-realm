@@ -2,10 +2,10 @@
 type: SpacetimeDB Table
 title: profile
 slug: tables/profile
-updated: 2026-07-31
+updated: 2026-08-03
 tags: [schema, spacetimedb, public]
 abstract: "Persistent per-player ranked-ladder record (M17, ADR-0119 D1) — the progression counterpart to the ephemeral `player` p…"
-resource: server-module/src/schema.rs#L552
+resource: server-module/src/schema.rs#L683
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

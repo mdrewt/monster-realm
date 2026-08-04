@@ -28,4 +28,5 @@ export default __t.row({
   },
   learnableSkillIds: __t.array(__t.u32()).name("learnable_skill_ids"),
   ability: __t.option(__t.u32()),
+  tier: __t.u8(),
 });

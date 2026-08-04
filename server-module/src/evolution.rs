@@ -1,93 +1,39 @@
-//! `evolution` — server-module domain submodule (M10b, ADR-0061).
+//! `evolution` — server-module domain submodule (EG1 rewrite, ADR-0174).
 //!
-//! The M10b evolve + fuse reducers: ownership-validated, battle-guarded, delegating
-//! the pure transform logic to `game_core::evolution::{evolve, fuse}`. Server-computes
-//! `evolves_to` on all monster mutations (passive eligibility check, no item applied).
-//! Also owns `reject_if_not_fusable` — the single server delegation point to the
-//! `game_core::fusion_eligible` gate (ADR-0147), shared by the reducer and the seam.
+//! ONE reducer: `evolve(ctx, monster_id, to_species)` — the write path of the
+//! essence-graph evolution model. It is a ctx/DB shell only: the gate DECISION
+//! is `game_core::path_satisfied` and the requirement NAMING is
+//! `game_core::unmet_requirement`; nothing in this file reads a gate field
+//! (EG1-11 source scan, whole production region). Fusion is deleted as a
+//! feature (EG1-9); the `Fusion` TABLE struct stays in schema.rs until
+//! Migration B, but no code here references it.
 //!
-//! This file name is part of the canonical `touches:` vocabulary fixed by ADR-0056
-//! — keep it stable.
+//! This file name is part of the canonical `touches:` vocabulary fixed by
+//! ADR-0056 — keep it stable.
 
-use crate::guards::{log_reject, reject_if_in_battle, reject_if_monster_in_trade, require_owner};
-use crate::marshal::{monster_to_instance, pub_from_monster, species_from_row};
-use crate::schema::{
-    battle, fusion, monster, monster_pub, species_row, trade_offer, Fusion, Monster,
+use crate::guards::{reject_if_in_battle, reject_if_monster_in_trade, require_owner};
+use crate::marshal::{
+    evolution_path_from_row, monster_to_instance, pub_from_monster, species_from_row,
 };
-use game_core::{
-    evolve as game_core_evolve, resolve_evolution, Bond, EvolutionCondition, FusionError, Level,
-    MonsterInstance, MIN_FUSION_BOND, MIN_FUSION_LEVEL,
-};
-use spacetimedb::{ReducerContext, Table};
+use crate::schema::{battle, evolution_path, monster, monster_pub, species_row, trade_offer};
+use game_core::Affinity;
+use spacetimedb::ReducerContext;
 
-/// Fusion eligibility gate — the ONLY server entry point to the pure
-/// `game_core::fusion_eligible` SSOT (ADR-0147). Maps the typed `FusionError`
-/// to the player-facing message ONCE; both the real `fuse` reducer and the
-/// `fuse_seam` test double call this helper, so the guard chain can never be
-/// hand-duplicated again (the pre-A0 seam copy is deleted, not migrated).
-/// Lives here rather than guards.rs because the fusion rule is
-/// evolution-domain, and guards.rs is outside this slice's touch-set
-/// (naming exception recorded in ADR-0147).
-pub(crate) fn reject_if_not_fusable(
-    a_id: u64,
-    b_id: u64,
-    a: &MonsterInstance,
-    b: &MonsterInstance,
-) -> Result<(), String> {
-    game_core::fusion_eligible(a_id, b_id, a, b).map_err(|e| match e {
-        FusionError::SelfFusion => "cannot fuse a monster with itself".to_string(),
-        FusionError::BelowMinLevel => {
-            format!("both monsters must be at least level {MIN_FUSION_LEVEL} to fuse")
-        }
-        FusionError::BelowMinBond => {
-            format!("both monsters must have at least {MIN_FUSION_BOND} bond to fuse")
-        }
-    })
-}
-
-// Result types for seams (test-harness effects) — only used in #[cfg(test)] seam fns.
-#[cfg(test)]
-#[derive(Debug, Clone)]
-pub(crate) struct EvolutionEffect;
-
-#[cfg(test)]
-#[derive(Debug, Clone)]
-pub(crate) struct FuseEffect {
-    pub offspring_monster_id: u64,
-}
-
-/// Server-compute the passive evolution target species (if any) for a monster.
-/// Delegates directly to `game_core::resolve_evolution` (the primitive — no item
-/// applied). Used by:
-/// - `evolve` reducer (after species transform)
-/// - `sync_content` seeding (when creating initial party-slotted monsters)
-/// - test fixtures seeding monsters with evolves_to pre-computed
+/// Evolve a monster along one authored evolution-graph edge (EG2-1 shape).
 ///
-/// Returns None if the monster is not eligible to evolve passively, or if
-/// `level` is out of the valid `Level` range (fail-safe).
-pub(crate) fn compute_evolves_to(
-    evolutions: &[EvolutionCondition],
-    level: u8,
-    bond: u8,
-) -> Option<u32> {
-    let Ok(lv) = Level::new(level) else {
-        return None;
-    };
-    let bond = Bond::new(bond);
-    resolve_evolution(evolutions, lv, bond, None)
-}
-
-/// Evolve a monster into its passive-eligible target species (M10b, ADR-0061).
 /// Steps:
-/// 1. Look up Monster + Species (reject loud if not found)
-/// 2. require_owner (ownership gate)
-/// 3. reject_if_in_battle (escrowed guard)
-/// 4. Load evolutions from game-core + check eligibility
-/// 5. Call game_core::evolve to transform
-/// 6. Recompute evolves_to on the new species
-/// 7. Dual-write: update both Monster + MonsterPub (ADR-0015 discipline)
+/// 1. Look up the Monster row (loud reject if not found)
+/// 2. require_owner -> both-role battle guard (ADR-0122) -> trade escrow guard
+/// 3. ONE targeted `evolution_path` lookup keyed on BOTH endpoints (btree on
+///    from_species, then compare to_species) — a client-supplied `to_species`
+///    can never cross-apply a foreign edge
+/// 4. Marshal to the pure instance + path, gate via the SHARED predicate
+/// 5. FRESH target-species lookup (the MonsterPub.tier source, EG1-8)
+/// 6. `game_core::evolve` transform (re-derives stats, clamps HP, zeroes all 8
+///    essence pools — ADR-0174 D2); Trust/Quality-Time survive untouched
+/// 7. Dual-write Monster + MonsterPub (ADR-0015 discipline)
 #[spacetimedb::reducer]
-pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
+pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
         return Err("monster not found".to_string());
     };
@@ -114,57 +60,42 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
         monster_id,
     )?;
 
-    // Load source species (for evolutions branches) — verify it exists
-    let Some(_src_species_row) = ctx.db.species_row().id().find(m.species_id) else {
-        return Err("source species not found".to_string());
+    // EG2-1: the ONE targeted row, keyed on BOTH endpoints. R1 guarantees at
+    // most one (from, to) edge; an empty table (the pre-EG3 state) or a foreign
+    // edge both land here as a clean rejection.
+    let Some(path_row) = ctx
+        .db
+        .evolution_path()
+        .from_species()
+        .filter(m.species_id)
+        .find(|p| p.to_species == to_species)
+    else {
+        return Err(format!(
+            "no such evolution: species {} has no path to species {to_species}",
+            m.species_id
+        ));
     };
+    let path = evolution_path_from_row(&path_row)?;
+    let instance = monster_to_instance(&m)?;
 
-    // Build the evolutions list from game-core (M10a-content registry, cached ADR-0089)
-    let all_evolutions = match crate::content_cache::cached_evolutions() {
-        Ok(ev) => ev,
-        Err(e) => {
-            log_reject(
-                "evolve",
-                ctx.sender,
-                &format!("load_evolutions failed: {e}"),
-            );
-            return Err(format!("failed to load evolutions: {e}"));
-        }
+    // The SHARED gate predicate decides (EG1-11); the game-core describer only
+    // turns a failure into a player-facing sentence.
+    if !game_core::path_satisfied(&instance, &path) {
+        return Err(game_core::unmet_requirement(&instance, &path)
+            .unwrap_or_else(|| "evolution requirements not met".to_string()));
+    }
+
+    // FRESH target-species lookup — the MonsterPub.tier source (EG1-8) and the
+    // transform's base stats both come from it.
+    let Some(to_species_row) = ctx.db.species_row().id().find(to_species) else {
+        return Err(format!("target species {to_species} not found"));
     };
+    let target = species_from_row(&to_species_row)?;
 
-    // Find evolutions for this monster's current species
-    let evolutions = all_evolutions
-        .iter()
-        .find(|se| se.species_id == m.species_id)
-        .map(|se| &se.evolutions[..])
-        .unwrap_or(&[]);
+    // Pure transform: carries individuality, re-derives stats from the TARGET
+    // base stats, clamps current_hp, zeroes all 8 essence pools (ADR-0174 D2).
+    let transformed = game_core::evolve(&instance, &target);
 
-    // Check passive eligibility
-    let to_species_id = match compute_evolves_to(evolutions, m.level, m.bond) {
-        Some(id) => id,
-        None => {
-            log_reject("evolve", ctx.sender, "monster is not eligible to evolve");
-            return Err("monster is not eligible to evolve".to_string());
-        }
-    };
-
-    // Load target species
-    let Some(to_species_row) = ctx.db.species_row().id().find(to_species_id) else {
-        return Err(format!("target species {to_species_id} not found"));
-    };
-
-    // Marshal Monster row to game-core MonsterInstance
-    let mi = monster_to_instance(&m)?;
-
-    // Marshal SpeciesRow to game-core Species
-    let to_species = species_from_row(&to_species_row)?;
-
-    // Call pure transform (carries individuality, re-derives stats)
-    let transformed = game_core_evolve(&mi, &to_species);
-
-    // Update Monster with transformed fields (additive: preserve owner_identity, monster_id).
-    // Bond is carried verbatim by game_core::evolve — do NOT write it here, so the
-    // no-idle-accrual eval gate doesn't flag evolution as a growth-path.
     m.species_id = transformed.species_id;
     m.level = transformed.level.as_u8();
     m.xp = transformed.xp.value();
@@ -175,219 +106,22 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
     m.stat_sp_attack = transformed.derived_stats.sp_attack;
     m.stat_sp_defense = transformed.derived_stats.sp_defense;
     m.current_hp = transformed.current_hp;
+    m.essence_fire = transformed.essence[Affinity::Fire.index()];
+    m.essence_water = transformed.essence[Affinity::Water.index()];
+    m.essence_plant = transformed.essence[Affinity::Plant.index()];
+    m.essence_electric = transformed.essence[Affinity::Electric.index()];
+    m.essence_earth = transformed.essence[Affinity::Earth.index()];
+    m.essence_wind = transformed.essence[Affinity::Wind.index()];
+    m.essence_light = transformed.essence[Affinity::Light.index()];
+    m.essence_dark = transformed.essence[Affinity::Dark.index()];
+    // Trust and Quality-Time are lifetime history — untouched on purpose, as
+    // are the server-only bookkeeping columns. `evolves_to` stays frozen too
+    // (dead column until Migration B, ADR-0174 D2).
 
-    // Recompute evolves_to on the new species
-    let evolutions_after = all_evolutions
-        .iter()
-        .find(|se| se.species_id == transformed.species_id)
-        .map(|se| &se.evolutions[..])
-        .unwrap_or(&[]);
-    m.evolves_to = compute_evolves_to(evolutions_after, m.level, m.bond);
-
-    // Dual-write: Monster + MonsterPub
-    let pub_row = pub_from_monster(&m);
+    // Dual-write, with the tier read fresh from the TARGET species row.
+    let pub_row = pub_from_monster(&m, to_species_row.tier);
     ctx.db.monster().monster_id().update(m);
     ctx.db.monster_pub().monster_id().update(pub_row);
-
-    Ok(())
-}
-
-/// Order-independent fusion recipe lookup: given two species ids, find the recipe.
-/// Normalizes to (min, max) pair for order-independence.
-fn find_fusion_recipe(
-    ctx: &ReducerContext,
-    a_species_id: u32,
-    b_species_id: u32,
-) -> Result<Fusion, String> {
-    let (recipe_a, recipe_b) = if a_species_id <= b_species_id {
-        (a_species_id, b_species_id)
-    } else {
-        (b_species_id, a_species_id)
-    };
-
-    ctx.db
-        .fusion()
-        .iter()
-        .find(|r| r.a_species == recipe_a && r.b_species == recipe_b)
-        .map(|r| Fusion {
-            fusion_id: r.fusion_id,
-            a_species: r.a_species,
-            b_species: r.b_species,
-            to_species: r.to_species,
-        })
-        .ok_or_else(|| "no fusion recipe for these species".to_string())
-}
-
-/// Fuse two owned monsters into a new offspring (M10b, ADR-0061; carry model ADR-0147).
-/// Steps:
-/// 1. Look up both Monster rows (reject loud if not found)
-/// 2. require_owner for both (ownership precedes any stats-derived error)
-/// 3. Marshal both rows to MonsterInstance (parse-don't-validate boundary)
-/// 4. reject_if_not_fusable — the game_core::fusion_eligible SSOT (self-fusion,
-///    MIN_FUSION_LEVEL, MIN_FUSION_BOND) — BEFORE the recipe lookup so self-fusion
-///    reports itself and can never reach the transform
-/// 5. reject_if_in_battle + reject_if_monster_in_trade for both (escrow guards)
-/// 6. Find fusion recipe (order-independent lookup)
-/// 7. Call game_core::fuse (per-stat max IV, higher-bond nature, TAXED
-///    bond/level/EVs carry, nickname None until A1's UI)
-/// 8. Atomic: DELETE both parents + INSERT offspring (one transaction)
-#[spacetimedb::reducer]
-pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-    let Some(a) = ctx.db.monster().monster_id().find(a_id) else {
-        return Err("monster a not found".to_string());
-    };
-    let Some(b) = ctx.db.monster().monster_id().find(b_id) else {
-        return Err("monster b not found".to_string());
-    };
-
-    // Both must be owned by the caller. (No separate same-owner check: two
-    // require_owner passes against the same ctx.sender imply it — the old
-    // explicit branch was unreachable, ADR-0147.)
-    require_owner(ctx, "fuse", a.owner_identity)?;
-    require_owner(ctx, "fuse", b.owner_identity)?;
-
-    // Marshal early: the eligibility gate reads pure MonsterInstance values.
-    let a_inst = monster_to_instance(&a)?;
-    let b_inst = monster_to_instance(&b)?;
-
-    // Fusion eligibility (ADR-0147): self-fusion + investment minimums, via the
-    // single game-core SSOT. Must precede the recipe lookup (step 4 rationale).
-    if let Err(msg) = reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst) {
-        log_reject("fuse", ctx.sender, &msg);
-        return Err(msg);
-    }
-
-    // Neither can be in battle — both roles (ADR-0122): chain the
-    // opponent_identity iterator per parent, mirroring the m16.5a trading.rs
-    // chain shape (ADR-0112 D1/D2), so a parent on side B of an ongoing PvP
-    // battle is caught too.
-    reject_if_in_battle(
-        ctx.db
-            .battle()
-            .player_identity()
-            .filter(a.owner_identity)
-            .chain(ctx.db.battle().opponent_identity().filter(a.owner_identity)),
-        a_id,
-    )?;
-    reject_if_in_battle(
-        ctx.db
-            .battle()
-            .player_identity()
-            .filter(b.owner_identity)
-            .chain(ctx.db.battle().opponent_identity().filter(b.owner_identity)),
-        b_id,
-    )?;
-    // Trade escrow guard (TR-3, ADR-0106): both parents must be free of active trade offers.
-    reject_if_monster_in_trade(
-        ctx.db
-            .trade_offer()
-            .initiator()
-            .filter(a.owner_identity)
-            .chain(ctx.db.trade_offer().counterparty().filter(a.owner_identity)),
-        a_id,
-    )?;
-    reject_if_monster_in_trade(
-        ctx.db
-            .trade_offer()
-            .initiator()
-            .filter(b.owner_identity)
-            .chain(ctx.db.trade_offer().counterparty().filter(b.owner_identity)),
-        b_id,
-    )?;
-
-    // Load both species rows (validation only — the actual species transform is via offspring_species)
-    let Some(_a_species_row) = ctx.db.species_row().id().find(a.species_id) else {
-        return Err(format!("species {} not found", a.species_id));
-    };
-    let Some(_b_species_row) = ctx.db.species_row().id().find(b.species_id) else {
-        return Err(format!("species {} not found", b.species_id));
-    };
-
-    // Find fusion recipe (order-independent)
-    let fusion_recipe = find_fusion_recipe(ctx, a.species_id, b.species_id)?;
-
-    // Load offspring species
-    let Some(offspring_species_row) = ctx.db.species_row().id().find(fusion_recipe.to_species)
-    else {
-        return Err(format!(
-            "offspring species {} not found",
-            fusion_recipe.to_species
-        ));
-    };
-
-    let offspring_species = species_from_row(&offspring_species_row)?;
-
-    // Call pure transform (order-independent when bonds differ; canonicalize for tie-break)
-    // Canonicalize: ascending monster_id for reproducibility when bonds are equal.
-    // Nickname is None until A1's confirm-screen UI supplies one (ADR-0147).
-    let offspring_inst = if a_id < b_id {
-        game_core::fuse(&a_inst, &b_inst, &offspring_species, None)
-    } else {
-        game_core::fuse(&b_inst, &a_inst, &offspring_species, None)
-    };
-
-    // Compute evolves_to for offspring (cached ADR-0089)
-    let all_evolutions = match crate::content_cache::cached_evolutions() {
-        Ok(ev) => ev,
-        Err(e) => {
-            log_reject("fuse", ctx.sender, &format!("load_evolutions failed: {e}"));
-            return Err(format!("failed to load evolutions: {e}"));
-        }
-    };
-    let offspring_evolutions = all_evolutions
-        .iter()
-        .find(|se| se.species_id == offspring_inst.species_id)
-        .map(|se| &se.evolutions[..])
-        .unwrap_or(&[]);
-
-    let offspring_evolves_to = compute_evolves_to(
-        offspring_evolutions,
-        offspring_inst.level.as_u8(),
-        offspring_inst.bond.value(),
-    );
-
-    // Marshal offspring MonsterInstance to Monster row (owner same as parents)
-    let offspring_monster = Monster {
-        monster_id: 0, // auto_inc
-        owner_identity: a.owner_identity,
-        species_id: offspring_inst.species_id,
-        nickname: offspring_inst.nickname.clone().unwrap_or_default(),
-        level: offspring_inst.level.as_u8(),
-        xp: offspring_inst.xp.value(),
-        bond: offspring_inst.bond.value(),
-        iv_hp: offspring_inst.ivs.get(game_core::StatKind::Hp),
-        iv_attack: offspring_inst.ivs.get(game_core::StatKind::Attack),
-        iv_defense: offspring_inst.ivs.get(game_core::StatKind::Defense),
-        iv_speed: offspring_inst.ivs.get(game_core::StatKind::Speed),
-        iv_sp_attack: offspring_inst.ivs.get(game_core::StatKind::SpAttack),
-        iv_sp_defense: offspring_inst.ivs.get(game_core::StatKind::SpDefense),
-        nature_kind: offspring_inst.nature.kind(),
-        ev_hp: offspring_inst.evs.get(game_core::StatKind::Hp),
-        ev_attack: offspring_inst.evs.get(game_core::StatKind::Attack),
-        ev_defense: offspring_inst.evs.get(game_core::StatKind::Defense),
-        ev_speed: offspring_inst.evs.get(game_core::StatKind::Speed),
-        ev_sp_attack: offspring_inst.evs.get(game_core::StatKind::SpAttack),
-        ev_sp_defense: offspring_inst.evs.get(game_core::StatKind::SpDefense),
-        stat_hp: offspring_inst.derived_stats.hp,
-        stat_attack: offspring_inst.derived_stats.attack,
-        stat_defense: offspring_inst.derived_stats.defense,
-        stat_speed: offspring_inst.derived_stats.speed,
-        stat_sp_attack: offspring_inst.derived_stats.sp_attack,
-        stat_sp_defense: offspring_inst.derived_stats.sp_defense,
-        current_hp: offspring_inst.current_hp,
-        party_slot: offspring_inst.party_slot.unwrap_or(crate::PARTY_SLOT_NONE),
-        last_care_at_ms: 0, // Fresh monster, no care yet
-        evolves_to: offspring_evolves_to,
-    };
-
-    // ATOMIC: delete both parents, insert offspring (one transaction per SpacetimeDB)
-    ctx.db.monster().monster_id().delete(a_id);
-    ctx.db.monster().monster_id().delete(b_id);
-    ctx.db.monster_pub().monster_id().delete(a_id);
-    ctx.db.monster_pub().monster_id().delete(b_id);
-
-    let inserted = ctx.db.monster().insert(offspring_monster);
-    ctx.db.monster_pub().insert(pub_from_monster(&inserted));
 
     Ok(())
 }

@@ -36,11 +36,20 @@
 //!   - The dangling-Item-id validator path is already proven by
 //!     `game_core::content::tests::m10a_dangling_item_trigger_ref_rejected`
 //!     (`game-core/src/content.rs`) — an unknown `Item` id is already Err.
+//!
+//! EG1 RETIREMENT (ADR-0174): every T-B* criterion above was expressed against
+//! `evolutions.ron`'s `EvolutionTrigger::Item` branch model, which this
+//! milestone deletes outright — item-assisted evolution becomes "the item
+//! grants essence, the essence clears an `EvolutionPath` gate" (EG2-4/EG3-8).
+//! T-B1a/T-B1b/T-B1c/TEETH-B1/T-B2/TEETH-B2/T-B3b are therefore RETIRED here;
+//! their successors are R1-R12's biting fixtures in `game-core/src/content.rs`
+//! plus EG3's re-authored `evolution_paths/` edges. T-B3a (item shape) and the
+//! whole T-S* species block survive verbatim — they read the item and species
+//! registries alone.
 
 use game_core::{
-    base_stat_total, load_encounters, load_evolutions, load_fusion, load_items, load_species,
-    parse_evolutions, resolve_evolution, validate_evolution_fusion, Affinity, Bond,
-    EvolutionCondition, EvolutionTrigger, ItemDef, Level, Species, SpeciesEvolutions, StatBlock,
+    base_stat_total, load_encounters, load_items, load_species, Affinity, ItemDef, Species,
+    StatBlock,
 };
 
 // ===========================================================================
@@ -73,20 +82,7 @@ fn synth(id: u32, affinity: Affinity, learn: &[u32], base: StatBlock) -> Species
         affinity,
         learnable_skill_ids: learn.to_vec(),
         ability: None,
-    }
-}
-
-fn cond_level(threshold: u8, to_species: u32) -> EvolutionCondition {
-    EvolutionCondition {
-        trigger: EvolutionTrigger::Level(Level::new(threshold).expect("level in [1,100]")),
-        to_species,
-    }
-}
-
-fn cond_item(item_id: u32, to_species: u32) -> EvolutionCondition {
-    EvolutionCondition {
-        trigger: EvolutionTrigger::Item(item_id),
-        to_species,
+        tier: 0,
     }
 }
 
@@ -96,192 +92,6 @@ fn find_species(species: &[Species], id: u32) -> Option<&Species> {
 
 fn find_item(items: &[ItemDef], id: u32) -> Option<&ItemDef> {
     items.iter().find(|i| i.id == id)
-}
-
-// ===========================================================================
-// T-B1a — exactly ONE evolutions block per source species (7 and 8)
-// ===========================================================================
-
-#[test]
-fn t_b1a_exactly_one_evolutions_block_for_7_and_8() {
-    let evolutions = load_evolutions().expect("evolutions registry must parse");
-    for src in [7u32, 8] {
-        let blocks: Vec<&SpeciesEvolutions> =
-            evolutions.iter().filter(|b| b.species_id == src).collect();
-        assert_eq!(
-            blocks.len(),
-            1,
-            "T-B1a: exactly ONE evolutions block for species {src} (a second block is a \
-             validator Err per ADR-0149 B-1 — append to the EXISTING block, never create a \
-             new SpeciesEvolutions block)"
-        );
-    }
-}
-
-// ===========================================================================
-// T-B1b — each block has exactly 2 branches: pinned Level branch VERBATIM +
-// exactly one Item branch. This REPLACES the old length-1 pin in
-// pt_d1_roster.rs (see the edit to that file for the ADR-0149 D7 rationale).
-// ===========================================================================
-
-#[test]
-fn t_b1b_branch_shape_is_level_plus_item_for_7_and_8() {
-    let evolutions = load_evolutions().expect("evolutions registry must parse");
-    for (src, level, level_target, item_id, item_target) in
-        [(7u32, 18u8, 9u32, 4u32, 30u32), (8, 20, 10, 5, 31)]
-    {
-        let block = evolutions
-            .iter()
-            .find(|b| b.species_id == src)
-            .unwrap_or_else(|| panic!("T-B1b: species {src} must have an evolutions block"));
-        assert_eq!(
-            block.evolutions.len(),
-            2,
-            "T-B1b: species {src} must have exactly 2 branches (the pinned Level branch + one \
-             new Item branch), got {:?}",
-            block.evolutions
-        );
-
-        let want_level = cond_level(level, level_target);
-        let level_count = block
-            .evolutions
-            .iter()
-            .filter(|c| *c == &want_level)
-            .count();
-        assert_eq!(
-            level_count, 1,
-            "T-B1b: species {src} must still carry Level({level}) -> {level_target} VERBATIM \
-             exactly once — a replaced or duplicated level branch must be caught here"
-        );
-
-        let want_item = cond_item(item_id, item_target);
-        let item_count = block.evolutions.iter().filter(|c| *c == &want_item).count();
-        assert_eq!(
-            item_count, 1,
-            "T-B1b: species {src} must carry exactly one Item({item_id}) -> {item_target} \
-             branch — kills a missing branch or a duplicated one"
-        );
-    }
-}
-
-// ===========================================================================
-// T-B1c — ORDERING tooth (ADR-0149 D2): Item declared FIRST.
-//
-// At level 100 (>= both thresholds) with no item applied, resolution must
-// still yield the passive Level target (regression guard — every existing
-// passive caller is unaffected). With the item APPLIED, resolution must yield
-// the Item target — which is RED if the Item branch is declared SECOND (the
-// Level branch would fire first at level >= 18/20 and the item would never be
-// consulted, exactly the hazard ADR-0149 D2/B2-2 exists to prevent).
-// ===========================================================================
-
-#[test]
-fn t_b1c_item_branch_declared_first_wins_above_level_threshold() {
-    let evolutions = load_evolutions().expect("evolutions registry must parse");
-    let max_level = Level::new(100).expect("100 is a valid level");
-    let max_bond = Bond::new(255);
-
-    for (src, passive_target, item_id, item_target) in [(7u32, 9u32, 4u32, 30u32), (8, 10, 5, 31)] {
-        let block = evolutions
-            .iter()
-            .find(|b| b.species_id == src)
-            .unwrap_or_else(|| panic!("T-B1c: species {src} must have an evolutions block"));
-
-        assert_eq!(
-            resolve_evolution(&block.evolutions, max_level, max_bond, None),
-            Some(passive_target),
-            "T-B1c: species {src} passive resolution (no item applied) at max level/bond must \
-             still yield {passive_target} — every existing passive caller must be unaffected \
-             by the new Item branch"
-        );
-
-        assert_eq!(
-            resolve_evolution(&block.evolutions, max_level, max_bond, Some(item_id)),
-            Some(item_target),
-            "T-B1c: species {src} with item {item_id} APPLIED at level 100 (>= the level \
-             threshold) must resolve to {item_target}, not fall through to the level target — \
-             this is RED if the Item branch is declared SECOND (ADR-0149 D2)"
-        );
-    }
-}
-
-// ===========================================================================
-// TEETH-B1 — a synthetic duplicate evolutions block for one species is Err
-// ===========================================================================
-
-#[test]
-fn teeth_b1_synthetic_duplicate_block_for_species_7_is_rejected() {
-    let bad = parse_evolutions(
-        "[(species_id: 7, evolutions: [(trigger: Level(18), to_species: 9)]),
-          (species_id: 7, evolutions: [(trigger: Item(4), to_species: 30)])]",
-    )
-    .expect("fixture must parse (the violation is semantic, not syntactic)");
-    let species = vec![
-        synth(7, Affinity::Earth, &[9], stats(60, 55, 70, 30, 40, 55)),
-        synth(9, Affinity::Earth, &[9], stats(90, 75, 105, 35, 60, 85)),
-        synth(30, Affinity::Water, &[3], stats(84, 60, 90, 46, 94, 78)),
-    ];
-    assert!(
-        validate_evolution_fusion(&species, &bad, &[], &[], &[]).is_err(),
-        "TEETH-B1: a second evolutions block for species 7 (even a well-formed Item branch) \
-         must be rejected"
-    );
-}
-
-// ===========================================================================
-// T-B2 — no species-7/8 branch targets species 6 (fusion.ron's sole output)
-// ===========================================================================
-
-/// Returns the `species_id` of every block in `sources` that carries a branch
-/// targeting `target`. Scoped by `sources` on purpose (per the spec Decision:
-/// the fusion/evolution disjointness is same-round-only) — a registry-wide
-/// "nothing ever evolves into 6" gate would over-bind a future wave.
-fn branches_targeting(blocks: &[SpeciesEvolutions], sources: &[u32], target: u32) -> Vec<u32> {
-    blocks
-        .iter()
-        .filter(|b| sources.contains(&b.species_id))
-        .filter(|b| b.evolutions.iter().any(|c| c.to_species == target))
-        .map(|b| b.species_id)
-        .collect()
-}
-
-#[test]
-fn t_b2_no_species_7_or_8_branch_targets_species_6() {
-    let evolutions = load_evolutions().expect("evolutions registry must parse");
-    let violators = branches_targeting(&evolutions, &[7, 8], 6);
-    assert!(
-        violators.is_empty(),
-        "T-B2: species 7/8 must never gain a branch targeting species 6 (fusion.ron's sole \
-         output) — violators: {violators:?}"
-    );
-}
-
-// ===========================================================================
-// TEETH-B2 — the helper bites a synthetic violation; the good fixture is
-// clean (two-sided non-vacuity, mirroring pt_d1_roster.rs's pattern)
-// ===========================================================================
-
-#[test]
-fn teeth_b2_branches_targeting_flags_bad_and_clears_good() {
-    let bad = vec![SpeciesEvolutions {
-        species_id: 7,
-        evolutions: vec![cond_item(4, 6)],
-    }];
-    assert_eq!(
-        branches_targeting(&bad, &[7, 8], 6),
-        vec![7],
-        "TEETH-B2: a synthetic species-7 branch targeting 6 must be flagged"
-    );
-
-    let good = vec![SpeciesEvolutions {
-        species_id: 7,
-        evolutions: vec![cond_item(4, 30), cond_level(18, 9)],
-    }];
-    assert!(
-        branches_targeting(&good, &[7, 8], 6).is_empty(),
-        "TEETH-B2: the good fixture (branch targets 30, not 6) must NOT be flagged — else the \
-         tooth above is vacuous"
-    );
 }
 
 // ===========================================================================
@@ -323,56 +133,6 @@ fn t_b3a_new_trigger_items_have_exact_shape() {
             "T-B3a: item {id} cure_status must be None — this is not a battle-use cure item"
         );
     }
-}
-
-// ===========================================================================
-// T-B3b — cross-registry closure: every Item trigger id in evolutions exists
-// in items, and the live merged registry validates end-to-end.
-// ===========================================================================
-
-#[test]
-fn t_b3b_item_triggers_resolve_and_live_registry_validates() {
-    let species = load_species().expect("species registry must parse");
-    // NOTE: the skills/type-chart half of registry validation (`validate_content`)
-    // is already asserted registry-wide by `pt_d1_1_live_registry_still_validates_end_to_end`
-    // — not re-loaded or re-authored here (YAGNI).
-    let items = load_items().expect("items registry must parse");
-    let evolutions = load_evolutions().expect("evolutions registry must parse");
-    let fusion = load_fusion().expect("fusion registry must parse");
-    let encounters = load_encounters().expect("encounters registry must parse");
-
-    let mut item_trigger_ids: Vec<u32> = Vec::new();
-    for se in &evolutions {
-        for cond in &se.evolutions {
-            if let EvolutionTrigger::Item(id) = &cond.trigger {
-                item_trigger_ids.push(*id);
-            }
-        }
-    }
-    assert!(
-        !item_trigger_ids.is_empty(),
-        "T-B3b: expected at least the two new Item triggers (4, 5) declared in evolutions.ron \
-         — found none; the item-triggered evolution content is missing"
-    );
-
-    let item_ids: std::collections::BTreeSet<u32> = items.iter().map(|i| i.id).collect();
-    for id in &item_trigger_ids {
-        assert!(
-            item_ids.contains(id),
-            "T-B3b: evolutions.ron declares Item({id}) but load_items() has no item {id} — \
-             dangling item trigger reference"
-        );
-    }
-
-    // Belt-and-suspenders: `validate_evolution_fusion` already proves an
-    // unknown Item id is Err elsewhere (`content.rs`'s
-    // `m10a_dangling_item_trigger_ref_rejected`) — not re-authored here.
-    assert_eq!(
-        validate_evolution_fusion(&species, &evolutions, &fusion, &encounters, &items),
-        Ok(()),
-        "T-B3b: the live merged registry (species 30/31 + items 4/5 + evolutions branches) \
-         must be cross-registry clean"
-    );
 }
 
 // ===========================================================================

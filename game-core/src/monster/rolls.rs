@@ -5,7 +5,7 @@
 use super::types::{IVs, MonsterInstance, Nature};
 use crate::content::Species;
 
-use super::types::{Bond, EVs, Level, StatKind};
+use super::types::{EVs, Level, StatKind};
 use crate::monster::rules::{derive_stats, xp_for_level};
 
 /// Splitmix32-style mixing function (follows the `tick_seed` pattern in lib.rs).
@@ -41,9 +41,10 @@ pub fn roll_individuality(seed: u32) -> (IVs, Nature) {
 /// The level-parameterized generalization of [`roll_starter`]: IVs+nature come
 /// from [`roll_individuality`] (so the SAME seed always rebuilds the SAME
 /// individual — the M8d "recruit THAT exact wild" trust invariant), EVs are
-/// zero, bond is the species default (70), `current_hp` equals the derived HP
-/// (full HP on grant), and `xp` is `xp_for_level(level)` (the start of the
-/// target level band, not 0).
+/// zero, all 8 essence pools and both Trust counters and the Quality-Time
+/// total start at 0 (EG1-7), `current_hp` equals the derived HP (full HP on
+/// grant), and `xp` is `xp_for_level(level)` (the start of the target level
+/// band, not 0).
 #[must_use]
 pub fn build_monster(seed: u32, species: &Species, level: Level) -> MonsterInstance {
     let (ivs, nature) = roll_individuality(seed);
@@ -59,7 +60,10 @@ pub fn build_monster(seed: u32, species: &Species, level: Level) -> MonsterInsta
         ivs,
         nature,
         evs,
-        bond: Bond::default_bond(),
+        essence: [0; 8],
+        trust_favorable_count: 0,
+        trust_unfavorable_count: 0,
+        quality_time_ticks_total: 0,
         current_hp,
         derived_stats,
         party_slot: None,
@@ -67,7 +71,8 @@ pub fn build_monster(seed: u32, species: &Species, level: Level) -> MonsterInsta
 }
 
 /// Create a level-5 starter monster from a seed and species definition.
-/// EVs are zero, bond is default (70), current_hp equals derived HP.
+/// EVs, essence, Trust counters and Quality Time are all zero; current_hp
+/// equals derived HP.
 ///
 /// Thin wrapper over [`build_monster`] at the fixed starter level (5) — kept as
 /// a distinct entry point so M7 callers and their tests read intentionally.
@@ -98,6 +103,7 @@ mod tests {
             affinity: Affinity::Fire,
             learnable_skill_ids: vec![1, 2],
             ability: None,
+            tier: 0,
         }
     }
 
@@ -144,12 +150,19 @@ mod tests {
         assert_eq!(m.evs, EVs::zero());
     }
 
-    /// #50: roll_starter creates a monster with default bond (70).
-    /// Kills: an impl that uses a different default bond.
+    /// #50 (EG1-7 REWRITE): a fresh monster starts with all 8 essence pools,
+    /// both Trust counters and its Quality-Time total at zero.
+    /// `bond` no longer exists on `MonsterInstance` — the old default-bond
+    /// assertion's subject is gone (`Bond::default_bond()` itself is still
+    /// pinned by `types.rs::bond_default_is_70`, since raising still uses it).
+    /// Kills: an impl that seeds a new monster with non-zero growth state.
     #[test]
-    fn roll_starter_has_default_bond() {
+    fn roll_starter_has_zero_growth_state() {
         let m = roll_starter(0, &test_species());
-        assert_eq!(m.bond, Bond::default_bond());
+        assert_eq!(m.essence, [0u32; 8], "all 8 essence pools must start empty");
+        assert_eq!(m.trust_favorable_count, 0);
+        assert_eq!(m.trust_unfavorable_count, 0);
+        assert_eq!(m.quality_time_ticks_total, 0);
     }
 
     /// #51: roll_starter creates a monster whose current_hp equals its derived HP.
@@ -201,7 +214,10 @@ mod tests {
             let m = roll_starter(seed, &sp);
             prop_assert_eq!(m.level.as_u8(), 5);
             prop_assert_eq!(m.evs, EVs::zero());
-            prop_assert_eq!(m.bond, Bond::default_bond());
+            prop_assert_eq!(m.essence, [0u32; 8]);
+            prop_assert_eq!(m.trust_favorable_count, 0);
+            prop_assert_eq!(m.trust_unfavorable_count, 0);
+            prop_assert_eq!(m.quality_time_ticks_total, 0);
             prop_assert_eq!(m.current_hp, m.derived_stats.get(StatKind::Hp));
             prop_assert_eq!(m.species_id, sp.id);
         }

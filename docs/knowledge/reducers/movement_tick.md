@@ -2,10 +2,10 @@
 type: SpacetimeDB Reducer
 title: movement_tick
 slug: reducers/movement_tick
-updated: 2026-07-31
+updated: 2026-08-03
 tags: [reducer, spacetimedb, movement]
 abstract: "Per-zone, server-paced tick: drain ≤1 move per character in THIS zone, compute the outcome via `game_core::apply_move`,…"
-resource: server-module/src/movement.rs#L246
+resource: server-module/src/movement.rs#L249
 source: scripts/okf-export.mjs@server-module/src/movement.rs
 ---
 

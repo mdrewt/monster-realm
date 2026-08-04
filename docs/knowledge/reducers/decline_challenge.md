@@ -2,10 +2,10 @@
 type: SpacetimeDB Reducer
 title: decline_challenge
 slug: reducers/decline_challenge
-updated: 2026-07-31
+updated: 2026-08-03
 tags: [reducer, spacetimedb, pvp]
 abstract: "Decline a pending PvP challenge. Deletes the challenge row."
-resource: server-module/src/pvp.rs#L904
+resource: server-module/src/pvp.rs#L909
 source: scripts/okf-export.mjs@server-module/src/pvp.rs
 ---
 

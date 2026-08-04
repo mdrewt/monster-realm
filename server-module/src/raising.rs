@@ -92,17 +92,14 @@ pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
     let new_bond = evaluate_care(m.bond, m.last_care_at_ms, now)?;
     m.bond = new_bond;
     m.last_care_at_ms = now;
-    // Recompute evolves_to after bond change from care (12.5b-4, ADR-0073, cached ADR-0089).
-    // fail-loud on parse error — silently zeroing evolves_to would mask content issues.
-    let all_evolutions = crate::content_cache::cached_evolutions()
-        .map_err(|e| format!("care: load_evolutions failed: {e}"))?;
-    let monster_evolutions = all_evolutions
-        .iter()
-        .find(|se| se.species_id == m.species_id)
-        .map(|se| &se.evolutions[..])
-        .unwrap_or(&[]);
-    m.evolves_to = crate::evolution::compute_evolves_to(monster_evolutions, m.level, m.bond);
-    let pub_row = pub_from_monster(&m);
+    // EG1 (ADR-0174 D2): the evolves_to recompute is GONE — the column is frozen
+    // dead until Migration B. The bond write above stays (frozen column, but its
+    // care semantics are unchanged this slice).
+    // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing monster_pub row.
+    let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
+        return Err(format!("monster_pub row missing for monster {monster_id}"));
+    };
+    let pub_row = pub_from_monster(&m, existing_pub.tier);
     ctx.db.monster().monster_id().update(m);
     ctx.db.monster_pub().monster_id().update(pub_row);
     Ok(())
@@ -248,7 +245,11 @@ pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result
     m.stat_sp_attack = result.derived_stats.sp_attack;
     m.stat_sp_defense = result.derived_stats.sp_defense;
 
-    let pub_row = pub_from_monster(&m);
+    // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing monster_pub row.
+    let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
+        return Err(format!("monster_pub row missing for monster {monster_id}"));
+    };
+    let pub_row = pub_from_monster(&m, existing_pub.tier);
     ctx.db.monster().monster_id().update(m);
     ctx.db.monster_pub().monster_id().update(pub_row);
     Ok(())
@@ -369,7 +370,12 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
     for mid in monster_ids {
         if let Some(mut m) = ctx.db.monster().monster_id().find(mid) {
             m.current_hp = m.stat_hp;
-            let pub_row = pub_from_monster(&m);
+            // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing
+            // monster_pub row — never fabricate a tier.
+            let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(mid) else {
+                return Err(format!("monster_pub row missing for monster {mid}"));
+            };
+            let pub_row = pub_from_monster(&m, existing_pub.tier);
             ctx.db.monster().monster_id().update(m);
             ctx.db.monster_pub().monster_id().update(pub_row);
         }

@@ -2,10 +2,10 @@
 type: SpacetimeDB Table
 title: monster_pub
 slug: tables/monster_pub
-updated: 2026-07-31
+updated: 2026-08-03
 tags: [schema, spacetimedb, public]
 abstract: "Public projection of the monster table — NO hidden fields (no IVs, EVs, nature). Clients subscribe to this for the box/…"
-resource: server-module/src/schema.rs#L255
+resource: server-module/src/schema.rs#L310
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---
@@ -30,3 +30,15 @@ visibility: public
 | `stat_sp_defense` | `u16` | — |
 | `party_slot` | `u8` | — |
 | `evolves_to` | `Option<u32>` | — |
+| `tier` | `u8` | — |
+| `essence_fire` | `u32` | — |
+| `essence_water` | `u32` | — |
+| `essence_plant` | `u32` | — |
+| `essence_electric` | `u32` | — |
+| `essence_earth` | `u32` | — |
+| `essence_wind` | `u32` | — |
+| `essence_light` | `u32` | — |
+| `essence_dark` | `u32` | — |
+| `trust_tier` | `TrustTier` | — |
+| `quality_time_tier` | `u8` | — |
+| `nutrition_pct` | `u8` | — |

@@ -1,42 +1,34 @@
-// evolution-reducer-security eval (M10d, ADR-0061/0062):
-// The `evolve` and `fuse` reducers in server-module/src/evolution.rs must each
-// satisfy a security invariant ladder so no player can mutate another player's
-// monsters or trigger a fusion while in battle.
+// evolution-reducer-security eval (EG1 rewrite, ADR-0174; formerly ADR-0061/0062/0147):
+// The `evolve` reducer in server-module/src/evolution.rs must satisfy a security
+// invariant ladder so no player can mutate another player's monsters, evolve a
+// monster that is mid-battle, or bypass the shared essence-graph gate.
 //
-// Invariants checked:
+// EG1 (ADR-0174 D3) DELETED fusion as a feature: the `fuse` reducer, its
+// eligibility helper chain (`reject_if_not_fusable` / `game_core::fusion_eligible`)
+// and every fuse-specific check that lived here (E1-fuse-twice, E2-fuse-twice,
+// the E3 delegation ladder, fuse body extraction) are gone with it. `evolve` is
+// now the two-argument essence-graph edge walk: `evolve(ctx, monster_id, to_species)`.
+// EG5-2 adds the essence_train/consume reducer invariants when those reducers land.
 //
-//   E1. Ownership guard — evolve/fuse both call require_owner( for every
-//       input monster. fuse calls it TWICE (once per parent).
-//   E2. Battle guard — evolve calls reject_if_in_battle( before the transform;
-//       fuse calls it for BOTH parents.
-//   E3. Fusion eligibility DELEGATION (A0, ADR-0147) — fuse must not hand-roll
-//       any part of the eligibility chain. It calls
-//       `reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst)` — all four
-//       arguments pinned — and ENFORCES the returned Result (`?`, or
-//       `if let Err(..) { ... return Err(..) }`); the helper's own body
-//       delegates to the `game_core::fusion_eligible` SSOT (self-fusion +
-//       MIN_FUSION_LEVEL + MIN_FUSION_BOND, ONE implementation shared by the
-//       reducer and the fuse_seam test double). The deleted inline
-//       `a_id == b_id` comparison must NOT come back (anti-migration lint), and
-//       the gate must sit after ALL ownership checks and BEFORE the recipe
-//       lookup: eligibility-late cannot own self-fusion (a self-fuse would
-//       report "no fusion recipe" instead, and if a same-species recipe ever
-//       ships it would DELETE the parent). Both symbols must be defined exactly
-//       once in production source (extraction-shadowing guard).
-//       Deliberately NOT ordered against reject_if_in_battle — the
-//       battle-vs-eligibility order is not load-bearing and enshrining an
-//       arbitrary choice would make the eval brittle.
-//       Red-team-proved bypasses this ladder closes: `let _ = <gate>`,
-//       `(&a_inst, &a_inst)`, and parent b's require_owner sliding below the gate.
-//   E4. Dual-write mirror — both evolve and fuse write monster_pub as well as
-//       monster so the public projection stays coherent (ADR-0040 discipline).
-//   E5. SSOT delegation — evolve delegates the transform to a game_core function
-//       (game_core_evolve / game_core::evolve); fuse delegates to game_core::fuse
-//       or game_core_fuse. No rule logic inlined in the reducer.
+// Invariants checked (evolve only):
 //
-// Proof-of-teeth: each invariant has a pair of synthetic Rust snippets — a BAD
-// fixture that MUST be flagged and a GOOD fixture that MUST pass — so a regression
-// in the checker is caught before it lets a bad implementation slip through.
+//   E1. Ownership guard — evolve calls require_owner( for the input monster.
+//   E2. Battle guard — evolve calls reject_if_in_battle( before the transform.
+//   E4. Dual-write mirror — evolve writes monster_pub as well as monster so the
+//       public projection stays coherent (ADR-0040/ADR-0015 discipline), via
+//       pub_from_monster( (never a hand-rolled partial struct).
+//   E5. SSOT delegation, two halves (ADR-0174 D4b / EG1-11):
+//       (gate)      the DECISION is `(game_core::)path_satisfied(` in enforced
+//                   `if !path_satisfied(..) { .. return Err/Err(..) }` form — a
+//                   discarded call (`let _ = ..`) satisfies a bare presence scan
+//                   while the gate does nothing;
+//       (transform) the species change is `game_core::evolve(` / `game_core_evolve(`
+//                   — inlining it bypasses the carry-individuality + essence-zeroing
+//                   invariant (ADR-0174 D2).
+//
+// Proof-of-teeth: each invariant has a BAD fixture that MUST be flagged and the
+// GOOD fixture must pass every check, so a regression in a checker is caught
+// before it lets a bad implementation slip through.
 //
 // All pattern matching uses String.indexOf() or literal /regex/ — NO
 // `new RegExp(...)` with a non-literal argument (Semgrep detect-non-literal-regexp).
@@ -53,55 +45,6 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
  */
 export function stripRustComments(src) {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-}
-
-/**
- * Replace Rust double-quoted string literal CONTENTS with `""` (M16.5d RT-SEC-02b /
- * ADR-0116 precedent, verbatim from trade-escrow-guards.eval.mjs's stripRustStrings).
- *
- * Why the A0 checks need it: `stripRustComments` does NOT touch strings, so a
- * needle sitting inside `Err("...")` or `log::debug!("...")` would otherwise
- * satisfy (or trip) an indexOf probe without any real code doing the thing.
- *
- * The escape branch matches backslash + ANY char INCLUDING newline (JS `.`
- * excludes newline): a backslash-newline line-continuation string would
- * otherwise fail to match, invert the quote pairing, and swallow whole code
- * regions as "strings". A first pass blanks single-hash raw strings
- * (`r#"..."#`), whose contents ignore backslash escaping and would otherwise
- * invert the quote pairing for everything after them.
- *
- * HONEST RESIDUALS: `r##"..."##` and deeper raw strings are NOT handled, and a
- * block-comment terminator inside a normal string can corrupt the
- * comment-then-string strip ordering (ADR-0116). This stripper is a LINT
- * HARDENING that removes the easy bypasses — it is not a proof of absence, and
- * the E3 checks must not be described as one.
- *
- * LITERAL regex — NO `new RegExp(...)` (Semgrep detect-non-literal-regexp).
- *
- * @param {string} src Rust source (comment-stripped first).
- * @returns {string} Source with string literal contents blanked.
- */
-export function stripRustStringLiterals(src) {
-  return src.replace(/r#"[\s\S]*?"#/g, '""').replace(/"(?:[^"\\]|\\[\s\S])*"/g, '""');
-}
-
-/**
- * Count non-overlapping occurrences of `needle` in `hay` (indexOf loop — no RegExp).
- *
- * @param {string} hay
- * @param {string} needle
- * @returns {number}
- */
-export function countOccurrences(hay, needle) {
-  let count = 0;
-  let i = 0;
-  while (true) {
-    const idx = hay.indexOf(needle, i);
-    if (idx === -1) break;
-    count++;
-    i = idx + needle.length;
-  }
-  return count;
 }
 
 /**
@@ -198,40 +141,6 @@ export function checkOwnershipGuard(body, fnName) {
 }
 
 /**
- * E1 specialised for fuse — must call require_owner( AT LEAST TWICE (once per
- * parent monster). A fuse with only one require_owner passes the base
- * checkOwnershipGuard but would leave the second parent unguarded.
- *
- * Strategy: count the number of `require_owner(` occurrences in the compact body.
- *
- * Uses only indexOf — NO new RegExp(...).
- *
- * @param {string} body  Comment-stripped fuse function body.
- * @returns {string|null}
- */
-export function checkFuseOwnershipBothParents(body) {
-  const compact = body.replace(/\s+/g, '');
-  // Count occurrences of `require_owner(` using indexOf in a loop.
-  let count = 0;
-  let i = 0;
-  while (true) {
-    const idx = compact.indexOf('require_owner(', i);
-    if (idx === -1) break;
-    count++;
-    i = idx + 1;
-  }
-
-  if (count < 2) {
-    return (
-      'fuse: require_owner( appears fewer than 2 times — ' +
-      'fuse takes two parent monsters; BOTH parents must be ownership-checked ' +
-      'before any DB write (a single require_owner leaves one parent unguarded)'
-    );
-  }
-  return null;
-}
-
-/**
  * E2 — Battle guard: the body must call reject_if_in_battle(.
  *
  * Uses only indexOf — NO new RegExp(...).
@@ -245,257 +154,7 @@ export function checkBattleGuard(body, fnName) {
   if (compact.indexOf('reject_if_in_battle(') === -1) {
     return (
       `${fnName}: missing battle guard — must call reject_if_in_battle( to ` +
-      'prevent evolving/fusing a monster that is currently in a battle'
-    );
-  }
-  return null;
-}
-
-/**
- * E2 specialised for fuse — must call reject_if_in_battle( AT LEAST TWICE
- * (once per parent). A fuse that only guards one parent allows the opponent to
- * steal a monster mid-battle.
- *
- * @param {string} body  Comment-stripped fuse function body.
- * @returns {string|null}
- */
-export function checkFuseBattleGuardBothParents(body) {
-  const compact = body.replace(/\s+/g, '');
-  let count = 0;
-  let i = 0;
-  while (true) {
-    const idx = compact.indexOf('reject_if_in_battle(', i);
-    if (idx === -1) break;
-    count++;
-    i = idx + 1;
-  }
-  if (count < 2) {
-    return (
-      'fuse: reject_if_in_battle( appears fewer than 2 times — ' +
-      'both parent monsters must be individually battle-guarded; ' +
-      'a single guard only protects one parent'
-    );
-  }
-  return null;
-}
-
-/**
- * E3 (A0, ADR-0147) — Fusion eligibility DELEGATION, three sub-checks over the
- * `fuse` reducer body (comment-stripped, string-literal-stripped, whitespace-
- * collapsed):
- *
- *   (a) CALL — the body calls the ONE shared helper, and calls it correctly:
- *       - `E3a-missing:` `reject_if_not_fusable(` is absent entirely;
- *       - `E3a-args:`    ARG IDENTITY — the call must be exactly
- *         `reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst)`. Without pinning
- *         all four arguments, `(a_id, b_id, &a_inst, &a_inst)` (parent b never
- *         checked) passes;
- *       - `E3a-unenforced:` RESULT PROPAGATION — the returned `Result` must be
- *         enforced, in one of the two shapes this codebase actually uses:
- *           * `...)?` — direct propagation (the seam / the GOOD fixture), or
- *           * `if let Err(..) = ...` immediately before the call AND a
- *             `return Err(` within ~200 compacted chars after it (the shipped
- *             reducer, which log_reject()s before returning).
- *         Without this, `let _ = reject_if_not_fusable(...)` satisfies every
- *         other check while the gate does nothing (house precedent:
- *         shop-reducer-security.eval.mjs's "does not propagate the Result
- *         with `?`" check). DELIBERATELY STRICT: only these two shapes count, so
- *         e.g. `...).map_err(..)?` would be flagged — use one of the two pinned
- *         forms rather than loosening this check.
- *   (b) `E3b-inline:` ANTI-MIGRATION LINT — the deleted inline `a_id == b_id`
- *       comparison must not reappear. A lint against the literal deleted form,
- *       NOT a proof of absence for every possible hand-rolled self-check — do
- *       not over-claim it. The canonicalization `if a_id < b_id` uses `<` and is
- *       unaffected.
- *   (c) `E3c-*:` ORDERING — ALL `require_owner(` calls (lastIndexOf, not the
- *       first) precede the gate, and the gate precedes `find_fusion_recipe(`.
- *       Anchoring on the FIRST require_owner would let parent b's ownership
- *       check slide below the gate, leaking b's level/bond to a non-owner.
- *       Eligibility before the recipe lookup: placed late it cannot own
- *       self-fusion (a self-fuse would report "no fusion recipe"), and a future
- *       same-species recipe would let a self-fuse DELETE the parent.
- *       Deliberately NOT ordered against reject_if_in_battle — that order is not
- *       load-bearing.
- *
- * MUST be given the body extracted from PRODUCTION source only (see
- * readServerModuleProdSources) so a `pub fn fuse(` decoy in test code cannot
- * satisfy it.
- *
- * Every failure message starts with a STABLE `E3x-...:` prefix so each tooth can
- * assert WHICH sub-check fired — a collapsed sub-check cannot hide behind a
- * sibling's flag.
- *
- * Uses only indexOf + literal regex — NO new RegExp(...).
- *
- * @param {string} body  Comment-stripped fuse function body.
- * @returns {string|null}  null = pass, string = failure description.
- */
-export function checkFuseEligibilityDelegation(body) {
-  const compact = stripRustStringLiterals(body).replace(/\s+/g, '');
-
-  // (a) delegation present at all.
-  if (compact.indexOf('reject_if_not_fusable(') === -1) {
-    return (
-      'E3a-missing: fuse does not call reject_if_not_fusable( — the body must call ' +
-      '`reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst)`, the single helper that ' +
-      'delegates to the game_core::fusion_eligible SSOT (self-fusion + MIN_FUSION_LEVEL + ' +
-      'MIN_FUSION_BOND). A hand-rolled guard chain in the reducer is exactly the ' +
-      'duplication ADR-0147 deleted (the fuse_seam test double would drift from it)'
-    );
-  }
-
-  // (a) ARG IDENTITY — all four arguments pinned.
-  const gateCall = 'reject_if_not_fusable(a_id,b_id,&a_inst,&b_inst)';
-  const gateIdx = compact.indexOf(gateCall);
-  if (gateIdx === -1) {
-    return (
-      'E3a-args: reject_if_not_fusable( is called with the wrong arguments — the call must ' +
-      'be exactly `reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst)`. A duplicated ' +
-      'argument (e.g. `&a_inst, &a_inst`) type-checks and passes every other check while ' +
-      'parent b is never evaluated at all; a swapped id would break self-fusion detection'
-    );
-  }
-
-  // (a) RESULT PROPAGATION — the gate's Result must actually be enforced.
-  // The `if let Err` window is 32 compacted chars: long enough to tolerate a
-  // longer Err binding than the shipped `msg` (`ifletErr(msg)=` is 14), far too
-  // short to credit an unrelated `if let Err` elsewhere in the body.
-  const afterGate = compact.slice(gateIdx + gateCall.length, gateIdx + gateCall.length + 200);
-  const beforeGate = compact.slice(Math.max(0, gateIdx - 32), gateIdx);
-  const propagatesWithQuestionMark = afterGate.indexOf('?') === 0;
-  const returnsFromIfLetErr =
-    beforeGate.indexOf('ifletErr(') !== -1 && afterGate.indexOf('returnErr(') !== -1;
-  if (!propagatesWithQuestionMark && !returnsFromIfLetErr) {
-    return (
-      'E3a-unenforced: reject_if_not_fusable( is called but its Result is DISCARDED — the ' +
-      'call must either propagate with `?` or sit in `if let Err(..) = ... { ... return Err(..) }`. ' +
-      '`let _ = reject_if_not_fusable(...)` (or an ignored return) leaves every other check ' +
-      'satisfied while the fusion gate does nothing at all'
-    );
-  }
-
-  // (b) anti-migration lint against the deleted inline comparison.
-  if (compact.indexOf('a_id==b_id') !== -1 || compact.indexOf('b_id==a_id') !== -1) {
-    return (
-      'E3b-inline: the inline `a_id == b_id` self-fusion comparison is still present — ' +
-      'ADR-0147 DELETES it, it is not migrated: keeping it alongside the delegation ' +
-      'restores two sources of truth for the same rule (the inline copy silently wins ' +
-      'and the shared helper stops being exercised). The canonicalization `a_id < b_id` ' +
-      'is unaffected by this lint'
-    );
-  }
-
-  // (c) ordering: ALL ownership checks -> eligibility -> recipe.
-  const lastOwnerIdx = compact.lastIndexOf('require_owner(');
-  const recipeIdx = compact.indexOf('find_fusion_recipe(');
-
-  if (lastOwnerIdx === -1) {
-    return (
-      'E3c-noowner: require_owner( not found — the eligibility gate must sit AFTER ' +
-      'ownership, so ownership must be present to order against'
-    );
-  }
-  if (recipeIdx === -1) {
-    return (
-      'E3c-norecipe: find_fusion_recipe( not found — the eligibility gate must sit BEFORE ' +
-      'the recipe lookup, so the recipe lookup must be present to order against'
-    );
-  }
-  if (gateIdx < lastOwnerIdx) {
-    return (
-      'E3c-order-owner: reject_if_not_fusable( is called before the LAST require_owner( — ' +
-      'EVERY ownership check must precede the eligibility gate, not just the first. With ' +
-      "parent b's require_owner below the gate, a caller who owns only parent a learns b's " +
-      'level/bond from the eligibility message before being told they do not own b'
-    );
-  }
-  if (gateIdx > recipeIdx) {
-    return (
-      'E3c-order-recipe: reject_if_not_fusable( is called AFTER find_fusion_recipe( — ' +
-      'eligibility must precede the recipe lookup: placed late it cannot own self-fusion ' +
-      '(fuse(ctx, 7, 7) would report "no fusion recipe" instead), and if a same-species ' +
-      'recipe ever ships a self-fuse would DELETE the parent and mint an offspring from ' +
-      'one monster'
-    );
-  }
-
-  return null;
-}
-
-/**
- * E3-unique (A0) — extraction-shadowing guard.
- *
- * `extractReducerBody` takes the FIRST match, so a second `pub fn fuse(` or
- * `fn reject_if_not_fusable(` in an alphabetically-earlier production file would
- * silently redirect every E3 check at a decoy. Both symbols must be defined
- * EXACTLY once in production source.
- *
- * Counted on comment-stripped, string-literal-stripped, WHITESPACE-PRESERVED
- * source (the `fn ` prefix disappears under whitespace collapse).
- *
- * @param {string} prodSource  Comment-stripped PRODUCTION-only server-module source.
- * @returns {string|null}
- */
-export function checkUniqueProdDefinitions(prodSource) {
-  const scrubbed = stripRustStringLiterals(prodSource);
-
-  const fuseCount = countOccurrences(scrubbed, 'pub fn fuse(');
-  if (fuseCount !== 1) {
-    return (
-      `E3-unique: expected exactly 1 \`pub fn fuse(\` definition in production source, found ${fuseCount} — ` +
-      'extractReducerBody takes the FIRST match, so a second definition (or zero) means the ' +
-      'E3 checks are scanning something other than the real fuse reducer'
-    );
-  }
-
-  const helperCount = countOccurrences(scrubbed, 'fn reject_if_not_fusable(');
-  if (helperCount !== 1) {
-    return (
-      `E3-unique: expected exactly 1 \`fn reject_if_not_fusable(\` definition in production source, found ${helperCount} — ` +
-      'a second definition would let the E3b helper check pass against a decoy while the ' +
-      'real one hand-rolls the rule (zero means production has no shared eligibility helper)'
-    );
-  }
-
-  return null;
-}
-
-/**
- * E3b (A0, ADR-0147) — the shared helper must DELEGATE, not hand-roll.
- *
- * Extracts `reject_if_not_fusable`'s own body and requires the fully-qualified
- * `game_core::fusion_eligible(` call inside it.
- *
- * Two bypasses this closes (rev-2 #1, the vacuity finding):
- *  - FILE-scoped needles are satisfiable by TEST code, so the caller must pass
- *    PRODUCTION-only source (readServerModuleProdSources) — `fuse_seam` in
- *    evolution_tests.rs legitimately calls the helper and would otherwise
- *    "prove" the invariant for it;
- *  - a needle inside a string literal (`log::debug!("... game_core::fusion_eligible( ...")`)
- *    would satisfy a naive scan, so the body is string-literal-stripped first.
- *
- * @param {string} prodSource  Comment-stripped PRODUCTION-only server-module source.
- * @returns {string|null}
- */
-export function checkHelperDelegatesToGameCore(prodSource) {
-  const body = extractReducerBody(prodSource, 'reject_if_not_fusable');
-  if (body === null) {
-    return (
-      'E3d-missing: reject_if_not_fusable helper not found in PRODUCTION server-module ' +
-      'source — ADR-0147 requires one shared server-side eligibility helper that both the ' +
-      'fuse reducer and the fuse_seam test double call; a definition that exists only in ' +
-      '_tests.rs does not count (production would be unguarded)'
-    );
-  }
-
-  const compact = stripRustStringLiterals(body).replace(/\s+/g, '');
-  if (compact.indexOf('game_core::fusion_eligible(') === -1) {
-    return (
-      'E3d-handrolled: reject_if_not_fusable body does not call game_core::fusion_eligible( — ' +
-      'the helper must DELEGATE to the pure game-core SSOT, not hand-roll the level/bond/' +
-      'self-fusion comparisons (a hand-rolled copy drifts from the constants and from the ' +
-      "game-core suite's boundary pins; the string-literal stripper means a mention of the " +
-      'function name inside a log message cannot satisfy this check)'
+      'prevent evolving a monster that is currently in a battle'
     );
   }
   return null;
@@ -545,574 +204,238 @@ export function checkDualWriteMirror(body, fnName) {
 }
 
 /**
- * E4 (fuse extension) — Parent pub cleanup: fuse must delete the parent rows from
- * monster_pub (not just insert the offspring pub row). Stale parent pub rows would leave
- * ghost public projections for consumed monsters (ADR-0040 dual-write discipline).
+ * E5 (gate half, ADR-0174 D4b) — the evolve body must DELEGATE the gate
+ * DECISION to the shared `path_satisfied` predicate, and ENFORCE it:
  *
- * Requires `monster_pub().monster_id().delete(` at least twice (once per parent).
+ *   E5g-missing:    no `path_satisfied(` call at all — the reducer decides the
+ *                   gate itself (or not at all), exactly the drift EG1-11 bans;
+ *   E5g-unenforced: `path_satisfied(` is called but not in the enforced
+ *                   `if !(game_core::)path_satisfied(` shape with a
+ *                   `return Err(` / `Err(` in the guarded block — a discarded
+ *                   `let _ = path_satisfied(..)` satisfies a bare presence scan
+ *                   while the gate does nothing.
+ *
+ * Accepted enforcement shape (compacted): `if!game_core::path_satisfied(` or
+ * `if!path_satisfied(`, followed by `Err(` within 400 compacted chars (the
+ * shipped reducer builds the message via game_core::unmet_requirement first).
+ *
+ * Every failure message starts with a STABLE `E5g-...:` prefix so each tooth
+ * can assert WHICH sub-check fired.
  *
  * Uses only indexOf — NO new RegExp(...).
  *
- * @param {string} body  Comment-stripped fuse function body.
+ * @param {string} body  Comment-stripped evolve function body.
  * @returns {string|null}
  */
-export function checkFuseParentPubDeletes(body) {
+export function checkPathSatisfiedGate(body) {
   const compact = body.replace(/\s+/g, '');
-  let count = 0;
-  let i = 0;
-  while (true) {
-    const idx = compact.indexOf('monster_pub().monster_id().delete(', i);
-    if (idx === -1) break;
-    count++;
-    i = idx + 1;
-  }
-  if (count < 2) {
+
+  if (compact.indexOf('path_satisfied(') === -1) {
     return (
-      'fuse: monster_pub().monster_id().delete( appears fewer than 2 times — ' +
-      'fuse consumes both parent monsters; their monster_pub rows must also be deleted ' +
-      'to prevent stale public projections (ADR-0040 dual-write discipline)'
+      'E5g-missing: evolve does not call path_satisfied( — the gate DECISION must be ' +
+      'the shared game_core predicate (ADR-0174 D4b / EG1-11); a reducer that decides ' +
+      '(or skips) the gate itself is exactly the server-side rule drift this bans'
     );
   }
+
+  let gateIdx = compact.indexOf('if!game_core::path_satisfied(');
+  if (gateIdx === -1) gateIdx = compact.indexOf('if!path_satisfied(');
+  if (gateIdx === -1) {
+    return (
+      'E5g-unenforced: path_satisfied( is called but not in the enforced ' +
+      '`if !(game_core::)path_satisfied(..) { .. Err(..) }` shape — a discarded call ' +
+      '(`let _ = path_satisfied(..)`) leaves every other check satisfied while the ' +
+      'gate does nothing at all'
+    );
+  }
+
+  const afterGate = compact.slice(gateIdx, gateIdx + 400);
+  if (afterGate.indexOf('Err(') === -1) {
+    return (
+      'E5g-unenforced: `if !path_satisfied(` found but no Err( within 400 chars — ' +
+      'the negated gate must lead to a rejection'
+    );
+  }
+
   return null;
 }
 
 /**
- * E5 — SSOT delegation: the body must call the game-core transform function,
- * not inline the species-change or individuality logic.
+ * E5 (transform half) — SSOT delegation: the body must call the game-core
+ * transform function, not inline the species-change or individuality logic.
  *
- * Accepted patterns for evolve:
- *   game_core_evolve(  OR  game_core::evolve(
- *
- * Accepted patterns for fuse:
- *   game_core::fuse(  OR  game_core_fuse(
+ * Accepted patterns: game_core_evolve(  OR  game_core::evolve(
  *
  * Uses only indexOf — NO new RegExp(...).
  *
  * @param {string} body    Comment-stripped function body.
- * @param {'evolve'|'fuse'} reducerKind
  * @returns {string|null}
  */
-export function checkSSOTDelegation(body, reducerKind) {
+export function checkSSOTDelegation(body) {
   const compact = body.replace(/\s+/g, '');
 
-  if (reducerKind === 'evolve') {
-    if (
-      compact.indexOf('game_core_evolve(') !== -1 ||
-      compact.indexOf('game_core::evolve(') !== -1
-    ) {
-      return null;
-    }
-    return (
-      'evolve: body does not call game_core_evolve( or game_core::evolve( — ' +
-      'the species transform must be delegated to the game-core pure rule (ADR-0003 SSOT); ' +
-      'inlining the transform bypasses the carry-individuality invariant (ADR-0019)'
-    );
-  }
-
-  // fuse
-  if (compact.indexOf('game_core::fuse(') !== -1 || compact.indexOf('game_core_fuse(') !== -1) {
+  if (compact.indexOf('game_core_evolve(') !== -1 || compact.indexOf('game_core::evolve(') !== -1) {
     return null;
   }
   return (
-    'fuse: body does not call game_core::fuse( or game_core_fuse( — ' +
-    'the offspring creation must be delegated to the game-core pure rule (ADR-0003 SSOT); ' +
-    'inlining the fusion logic bypasses the per-stat-max-IV + higher-bond-nature invariant (ADR-0019)'
+    'evolve: body does not call game_core_evolve( or game_core::evolve( — ' +
+    'the species transform must be delegated to the game-core pure rule (ADR-0003 SSOT); ' +
+    'inlining the transform bypasses the carry-individuality + essence-zeroing ' +
+    'invariant (ADR-0174 D2)'
   );
 }
 
 // ---------------------------------------------------------------------------
-// Proof-of-teeth fixture strings.
+// Proof-of-teeth fixture strings — all in the EG1 two-argument evolve shape.
 // ---------------------------------------------------------------------------
 
-// E1 BAD — evolve without ownership guard.
-const BAD_EVOLVE_NO_OWNERSHIP = `
-  pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
+// GOOD — the EG1 target shape: ownership, battle guard, targeted edge lookup,
+// enforced path_satisfied gate, game_core::evolve transform, dual-write.
+// This ONE fixture must pass E1, E2, E4 and both halves of E5.
+const GOOD_EVOLVE = `
+  pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
       let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
-          return Err("not found".to_string());
-      };
-      reject_if_in_battle(ctx.db.battle().player_identity().filter(m.owner_identity), monster_id)?;
-      let evolutions = game_core::load_evolutions().map_err(|e| e)?;
-      let to_species_id = 4u32;
-      let transformed = game_core_evolve(&mi, &to_species);
-      m.species_id = transformed.species_id;
-      let pub_row = pub_from_monster(&m);
-      ctx.db.monster().monster_id().update(m);
-      ctx.db.monster_pub().monster_id().update(pub_row);
-      Ok(())
-  }
-`;
-
-// E1 GOOD — evolve with require_owner.
-const GOOD_EVOLVE_OWNERSHIP = `
-  pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
-      let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
-          return Err("not found".to_string());
+          return Err("monster not found".to_string());
       };
       require_owner(ctx, "evolve", m.owner_identity)?;
       reject_if_in_battle(ctx.db.battle().player_identity().filter(m.owner_identity), monster_id)?;
-      let transformed = game_core_evolve(&mi, &to_species);
+      let Some(path_row) = ctx.db.evolution_path().from_species().filter(m.species_id).find(|p| p.to_species == to_species) else {
+          return Err("no such evolution".to_string());
+      };
+      let path = evolution_path_from_row(&path_row)?;
+      let instance = monster_to_instance(&m)?;
+      if !game_core::path_satisfied(&instance, &path) {
+          return Err(game_core::unmet_requirement(&instance, &path)
+              .unwrap_or_else(|| "evolution requirements not met".to_string()));
+      }
+      let target = species_from_row(&to_species_row)?;
+      let transformed = game_core::evolve(&instance, &target);
       m.species_id = transformed.species_id;
-      let pub_row = pub_from_monster(&m);
+      let pub_row = pub_from_monster(&m, to_species_row.tier);
       ctx.db.monster().monster_id().update(m);
       ctx.db.monster_pub().monster_id().update(pub_row);
       Ok(())
   }
 `;
 
-// E1 BAD (fuse) — only one require_owner (both parents need checking).
-const BAD_FUSE_ONE_OWNERSHIP = `
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      if a_id == b_id { return Err("cannot fuse with itself".to_string()); }
-      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
-      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      reject_if_in_battle(ctx.db.battle().player_identity().filter(a.owner_identity), a_id)?;
-      reject_if_in_battle(ctx.db.battle().player_identity().filter(b.owner_identity), b_id)?;
-      let offspring_inst = game_core::fuse(&a_inst, &b_inst, &offspring_species);
-      ctx.db.monster().monster_id().delete(a_id);
-      ctx.db.monster().monster_id().delete(b_id);
-      ctx.db.monster_pub().monster_id().delete(a_id);
-      ctx.db.monster_pub().monster_id().delete(b_id);
-      ctx.db.monster().insert(offspring_monster);
-      ctx.db.monster_pub().insert(pub_from_monster(&offspring_monster));
-      Ok(())
-  }
-`;
-
-// GOOD (fuse) — the A0/ADR-0147 target shape, MIGRATED IN PLACE (rev-2 #4):
-// no inline id comparison, delegation to reject_if_not_fusable placed between
-// ownership and the recipe lookup, 4-arg game_core::fuse, and the shared helper
-// itself delegating to game_core::fusion_eligible so E3b can run against
-// fixture-shaped "production" source.
-//
-// This one fixture must satisfy E1 (require_owner ×2), E2 (reject_if_in_battle ×2),
-// E3 (a/b/c), E3b and E5 — every legacy BAD fixture below keeps its OLD inline
-// line and is NEVER run through the new E3 checks.
-const GOOD_FUSE_BOTH_PARENTS = `
-  fn reject_if_not_fusable(a_id: u64, b_id: u64, a: &MonsterInstance, b: &MonsterInstance) -> Result<(), String> {
-      game_core::fusion_eligible(a_id, b_id, a, b).map_err(|e| match e {
-          FusionError::SelfFusion => "cannot fuse a monster with itself".to_string(),
-          FusionError::BelowMinLevel => "both monsters must be at least level 10 to fuse".to_string(),
-          FusionError::BelowMinBond => "both monsters must have at least 120 bond to fuse".to_string(),
-      })
-  }
-
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
-      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      require_owner(ctx, "fuse", b.owner_identity)?;
-      let a_inst = monster_to_instance(&a)?;
-      let b_inst = monster_to_instance(&b)?;
-      reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst)?;
-      reject_if_in_battle(ctx.db.battle().player_identity().filter(a.owner_identity), a_id)?;
-      reject_if_in_battle(ctx.db.battle().player_identity().filter(b.owner_identity), b_id)?;
-      let fusion_recipe = find_fusion_recipe(ctx, a.species_id, b.species_id)?;
-      let offspring_inst = if a_id < b_id {
-          game_core::fuse(&a_inst, &b_inst, &offspring_species, None)
-      } else {
-          game_core::fuse(&b_inst, &a_inst, &offspring_species, None)
+// E1 BAD — evolve without ownership guard.
+const BAD_EVOLVE_NO_OWNERSHIP = `
+  pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
+      let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+          return Err("monster not found".to_string());
       };
-      ctx.db.monster().monster_id().delete(a_id);
-      ctx.db.monster().monster_id().delete(b_id);
-      ctx.db.monster_pub().monster_id().delete(a_id);
-      ctx.db.monster_pub().monster_id().delete(b_id);
-      ctx.db.monster().insert(offspring_monster);
-      ctx.db.monster_pub().insert(pub_from_monster(&offspring_monster));
-      Ok(())
-  }
-`;
-
-// E3 GOOD (string-literal stripper tooth) — the ONLY occurrence of the deleted
-// inline comparison is inside a string literal. Without stripRustStringLiterals
-// the compacted body reads `...a_id==b_id...` and check (b) would flag a
-// perfectly correct implementation for merely MENTIONING the old form.
-const GOOD_FUSE_ID_COMPARE_IN_STRING_ONLY = `
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
-      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      require_owner(ctx, "fuse", b.owner_identity)?;
-      let a_inst = monster_to_instance(&a)?;
-      let b_inst = monster_to_instance(&b)?;
-      log_reject("fuse", ctx.sender, "the inline a_id == b_id check was deleted by ADR-0147");
-      reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst)?;
-      let fusion_recipe = find_fusion_recipe(ctx, a.species_id, b.species_id)?;
-      let offspring_inst = game_core::fuse(&a_inst, &b_inst, &offspring_species, None);
-      Ok(())
-  }
-`;
-
-// E3 BAD — the PRE-A0 shape: inline id comparison, no delegation at all.
-// Flagged by check (a): "some gate exists" is not enough, it must be THE shared one.
-const BAD_FUSE_INLINE_ONLY = `
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      if a_id == b_id { return Err("cannot fuse a monster with itself".to_string()); }
-      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
-      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      require_owner(ctx, "fuse", b.owner_identity)?;
-      reject_if_in_battle(ctx.db.battle().player_identity().filter(a.owner_identity), a_id)?;
-      reject_if_in_battle(ctx.db.battle().player_identity().filter(b.owner_identity), b_id)?;
-      let fusion_recipe = find_fusion_recipe(ctx, a.species_id, b.species_id)?;
-      let offspring_inst = game_core::fuse(&a_inst, &b_inst, &offspring_species, None);
-      Ok(())
-  }
-`;
-
-// E3 BAD — delegation added but the inline comparison KEPT "for safety".
-// Flagged by check (b): two sources of truth for one rule; the inline copy wins
-// and the shared helper stops being exercised by the self-fusion path.
-const BAD_FUSE_BOTH_FORMS = `
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      if a_id == b_id { return Err("cannot fuse a monster with itself".to_string()); }
-      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
-      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      require_owner(ctx, "fuse", b.owner_identity)?;
-      let a_inst = monster_to_instance(&a)?;
-      let b_inst = monster_to_instance(&b)?;
-      reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst)?;
-      let fusion_recipe = find_fusion_recipe(ctx, a.species_id, b.species_id)?;
-      let offspring_inst = game_core::fuse(&a_inst, &b_inst, &offspring_species, None);
-      Ok(())
-  }
-`;
-
-// E3 BAD — delegation present but placed AFTER the recipe lookup.
-// Flagged by check (c): fuse(ctx, 7, 7) would report "no fusion recipe", and a
-// future same-species recipe would let a self-fuse DELETE the parent.
-const BAD_FUSE_ELIGIBILITY_AFTER_RECIPE = `
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
-      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      require_owner(ctx, "fuse", b.owner_identity)?;
-      let a_inst = monster_to_instance(&a)?;
-      let b_inst = monster_to_instance(&b)?;
-      let fusion_recipe = find_fusion_recipe(ctx, a.species_id, b.species_id)?;
-      reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst)?;
-      let offspring_inst = game_core::fuse(&a_inst, &b_inst, &offspring_species, None);
-      Ok(())
-  }
-`;
-
-// E3 BAD — delegation present but placed BEFORE ownership.
-// Flagged by check (c): a caller could probe a foreign monster's level/bond
-// through the eligibility message before being told they do not own it.
-const BAD_FUSE_ELIGIBILITY_BEFORE_OWNERSHIP = `
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
-      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
-      let a_inst = monster_to_instance(&a)?;
-      let b_inst = monster_to_instance(&b)?;
-      reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst)?;
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      require_owner(ctx, "fuse", b.owner_identity)?;
-      let fusion_recipe = find_fusion_recipe(ctx, a.species_id, b.species_id)?;
-      let offspring_inst = game_core::fuse(&a_inst, &b_inst, &offspring_species, None);
-      Ok(())
-  }
-`;
-
-// E3 GOOD (second accepted enforcement shape) — the SHIPPED reducer's form:
-// `if let Err(msg) = <gate> { log_reject(...); return Err(msg); }` instead of `?`.
-// Carrying both GOOD shapes stops a future "only `?` counts" narrowing from
-// silently failing the real source.
-const GOOD_FUSE_GATE_IF_LET_ERR = `
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
-      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      require_owner(ctx, "fuse", b.owner_identity)?;
-      let a_inst = monster_to_instance(&a)?;
-      let b_inst = monster_to_instance(&b)?;
-      if let Err(msg) = reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst) {
-          log_reject("fuse", ctx.sender, &msg);
-          return Err(msg);
+      reject_if_in_battle(ctx.db.battle().player_identity().filter(m.owner_identity), monster_id)?;
+      if !game_core::path_satisfied(&instance, &path) {
+          return Err("evolution requirements not met".to_string());
       }
-      let fusion_recipe = find_fusion_recipe(ctx, a.species_id, b.species_id)?;
-      let offspring_inst = game_core::fuse(&a_inst, &b_inst, &offspring_species, None);
+      let transformed = game_core::evolve(&instance, &target);
+      m.species_id = transformed.species_id;
+      let pub_row = pub_from_monster(&m, to_species_row.tier);
+      ctx.db.monster().monster_id().update(m);
+      ctx.db.monster_pub().monster_id().update(pub_row);
       Ok(())
-  }
-`;
-
-// E3 BAD — the gate is called with the CORRECT four arguments and in the correct
-// position, but its Result is thrown away. Every other sub-check is satisfied
-// while the fusion gate does literally nothing. Flagged by E3a-unenforced.
-const BAD_FUSE_GATE_RESULT_DISCARDED = `
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
-      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      require_owner(ctx, "fuse", b.owner_identity)?;
-      let a_inst = monster_to_instance(&a)?;
-      let b_inst = monster_to_instance(&b)?;
-      let _ = reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst);
-      let fusion_recipe = find_fusion_recipe(ctx, a.species_id, b.species_id)?;
-      let offspring_inst = game_core::fuse(&a_inst, &b_inst, &offspring_species, None);
-      Ok(())
-  }
-`;
-
-// E3 BAD — the gate is called and propagated, but parent b's instance is never
-// passed: `&a_inst` twice type-checks and parent b is never evaluated at all.
-// Flagged by E3a-args.
-const BAD_FUSE_GATE_DUPLICATED_ARG = `
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
-      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      require_owner(ctx, "fuse", b.owner_identity)?;
-      let a_inst = monster_to_instance(&a)?;
-      let b_inst = monster_to_instance(&b)?;
-      reject_if_not_fusable(a_id, b_id, &a_inst, &a_inst)?;
-      let fusion_recipe = find_fusion_recipe(ctx, a.species_id, b.species_id)?;
-      let offspring_inst = game_core::fuse(&a_inst, &b_inst, &offspring_species, None);
-      Ok(())
-  }
-`;
-
-// E3 BAD — parent a's ownership check precedes the gate but parent b's does NOT.
-// A first-occurrence ordering anchor passes this; lastIndexOf catches it.
-// Flagged by E3c-order-owner.
-const BAD_FUSE_SECOND_OWNERSHIP_AFTER_GATE = `
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
-      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      let a_inst = monster_to_instance(&a)?;
-      let b_inst = monster_to_instance(&b)?;
-      reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst)?;
-      require_owner(ctx, "fuse", b.owner_identity)?;
-      let fusion_recipe = find_fusion_recipe(ctx, a.species_id, b.species_id)?;
-      let offspring_inst = game_core::fuse(&a_inst, &b_inst, &offspring_species, None);
-      Ok(())
-  }
-`;
-
-// E3-unique BAD — a second `pub fn fuse(` shadows extraction: extractReducerBody
-// takes the FIRST match, so every E3 check would scan the decoy while the real
-// reducer goes unexamined.
-const TWO_FUSE_DEFINITIONS_SOURCE = `
-  fn reject_if_not_fusable(a_id: u64, b_id: u64, a: &MonsterInstance, b: &MonsterInstance) -> Result<(), String> {
-      game_core::fusion_eligible(a_id, b_id, a, b).map_err(|e| e.to_string())
-  }
-
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      require_owner(ctx, "fuse", b.owner_identity)?;
-      reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst)?;
-      let fusion_recipe = find_fusion_recipe(ctx, a.species_id, b.species_id)?;
-      Ok(())
-  }
-
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      Ok(())
-  }
-`;
-
-// E3b BAD — the F1 (vacuity) closure fixture. The reducer body is PERFECT: it
-// passes checks (a), (b) and (c). The rot is one level down — the helper
-// hand-rolls the comparisons instead of delegating — and it carries BOTH
-// bypasses the naive file-level scan would fall for:
-//   1. `game_core::fusion_eligible(` inside a STRING LITERAL within the helper
-//      body (killed by stripRustStringLiterals);
-//   2. `game_core::fusion_eligible(` in a separate test-shaped function OUTSIDE
-//      the helper body (killed by body-scoping; the filesystem half — that
-//      *_tests.rs files are never read at all — is proven by the
-//      readServerModuleProdSources probe against the real tree).
-const BAD_HELPER_HAND_ROLLS = `
-  fn reject_if_not_fusable(a_id: u64, b_id: u64, a: &MonsterInstance, b: &MonsterInstance) -> Result<(), String> {
-      log::debug!("inlined for speed instead of game_core::fusion_eligible( per ADR-0147");
-      if a_id == b_id {
-          return Err("cannot fuse a monster with itself".to_string());
-      }
-      if a.level.as_u8() < 10 || b.level.as_u8() < 10 {
-          return Err("both monsters must be at least level 10 to fuse".to_string());
-      }
-      if a.bond.value() < 120 || b.bond.value() < 120 {
-          return Err("both monsters must have at least 120 bond to fuse".to_string());
-      }
-      Ok(())
-  }
-
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
-      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      require_owner(ctx, "fuse", b.owner_identity)?;
-      let a_inst = monster_to_instance(&a)?;
-      let b_inst = monster_to_instance(&b)?;
-      reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst)?;
-      let fusion_recipe = find_fusion_recipe(ctx, a.species_id, b.species_id)?;
-      let offspring_inst = game_core::fuse(&a_inst, &b_inst, &offspring_species, None);
-      Ok(())
-  }
-
-  pub(crate) fn fuse_seam_decoy_shaped_like_a_tests_file(db: &mut TestEvolutionDb) -> Result<(), String> {
-      game_core::fusion_eligible(a_id, b_id, &a_inst, &b_inst)
   }
 `;
 
 // E2 BAD — evolve without battle guard.
 const BAD_EVOLVE_NO_BATTLE_GUARD = `
-  pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
+  pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
       let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
-          return Err("not found".to_string());
+          return Err("monster not found".to_string());
       };
       require_owner(ctx, "evolve", m.owner_identity)?;
-      // DELIBERATELY MISSING: no reject_if_in_battle
-      let transformed = game_core_evolve(&mi, &to_species);
+      if !game_core::path_satisfied(&instance, &path) {
+          return Err("evolution requirements not met".to_string());
+      }
+      let transformed = game_core::evolve(&instance, &target);
       m.species_id = transformed.species_id;
-      let pub_row = pub_from_monster(&m);
+      let pub_row = pub_from_monster(&m, to_species_row.tier);
       ctx.db.monster().monster_id().update(m);
       ctx.db.monster_pub().monster_id().update(pub_row);
-      Ok(())
-  }
-`;
-
-// E2 BAD (fuse) — only one reject_if_in_battle.
-const BAD_FUSE_ONE_BATTLE_GUARD = `
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      if a_id == b_id { return Err("cannot fuse with itself".to_string()); }
-      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
-      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      require_owner(ctx, "fuse", b.owner_identity)?;
-      reject_if_in_battle(ctx.db.battle().player_identity().filter(a.owner_identity), a_id)?;
-      // DELIBERATELY MISSING: second reject_if_in_battle for b
-      let offspring_inst = game_core::fuse(&a_inst, &b_inst, &offspring_species);
-      ctx.db.monster().monster_id().delete(a_id);
-      ctx.db.monster().monster_id().delete(b_id);
-      ctx.db.monster_pub().monster_id().delete(a_id);
-      ctx.db.monster_pub().monster_id().delete(b_id);
-      ctx.db.monster().insert(offspring_monster);
-      ctx.db.monster_pub().insert(pub_from_monster(&offspring_monster));
-      Ok(())
-  }
-`;
-
-// E3 BAD (RETARGETED by A0) — fuse with NO eligibility gate whatsoever: neither
-// the deleted inline comparison nor the delegation. Flagged by check (a).
-const BAD_FUSE_NO_ELIGIBILITY_GATE = `
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      // DELIBERATELY MISSING: no eligibility gate of any kind
-      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
-      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      require_owner(ctx, "fuse", b.owner_identity)?;
-      reject_if_in_battle(ctx.db.battle().player_identity().filter(a.owner_identity), a_id)?;
-      reject_if_in_battle(ctx.db.battle().player_identity().filter(b.owner_identity), b_id)?;
-      let offspring_inst = game_core::fuse(&a_inst, &b_inst, &offspring_species);
-      ctx.db.monster().insert(offspring_monster);
-      ctx.db.monster_pub().insert(pub_from_monster(&offspring_monster));
       Ok(())
   }
 `;
 
 // E4 BAD — evolve without monster_pub update.
 const BAD_EVOLVE_NO_PUB_WRITE = `
-  pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
+  pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
       let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
-          return Err("not found".to_string());
+          return Err("monster not found".to_string());
       };
       require_owner(ctx, "evolve", m.owner_identity)?;
       reject_if_in_battle(ctx.db.battle().player_identity().filter(m.owner_identity), monster_id)?;
-      let transformed = game_core_evolve(&mi, &to_species);
+      if !game_core::path_satisfied(&instance, &path) {
+          return Err("evolution requirements not met".to_string());
+      }
+      let transformed = game_core::evolve(&instance, &target);
       m.species_id = transformed.species_id;
       ctx.db.monster().monster_id().update(m);
-      // DELIBERATELY MISSING: ctx.db.monster_pub().monster_id().update(...)
       Ok(())
   }
 `;
 
-// E5 BAD — evolve without game_core delegation.
+// E5 (transform) BAD — evolve without game_core delegation (path gate present).
 const BAD_EVOLVE_NO_SSOT = `
-  pub fn evolve(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
+  pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
       let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
-          return Err("not found".to_string());
+          return Err("monster not found".to_string());
       };
       require_owner(ctx, "evolve", m.owner_identity)?;
       reject_if_in_battle(ctx.db.battle().player_identity().filter(m.owner_identity), monster_id)?;
-      // DELIBERATELY WRONG: inlines the species change, no game_core delegation
-      m.species_id = 4;
+      if !game_core::path_satisfied(&instance, &path) {
+          return Err("evolution requirements not met".to_string());
+      }
+      m.species_id = to_species;
       m.stat_hp = 75;
-      let pub_row = pub_from_monster(&m);
+      let pub_row = pub_from_monster(&m, to_species_row.tier);
       ctx.db.monster().monster_id().update(m);
       ctx.db.monster_pub().monster_id().update(pub_row);
       Ok(())
   }
 `;
 
-// E5 BAD — fuse without game_core delegation.
-const BAD_FUSE_NO_SSOT = `
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      if a_id == b_id { return Err("cannot fuse with itself".to_string()); }
-      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
-      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      require_owner(ctx, "fuse", b.owner_identity)?;
-      reject_if_in_battle(ctx.db.battle().player_identity().filter(a.owner_identity), a_id)?;
-      reject_if_in_battle(ctx.db.battle().player_identity().filter(b.owner_identity), b_id)?;
-      // DELIBERATELY WRONG: inlines the IV-max logic, no game_core::fuse delegation
-      let iv_hp = a.iv_hp.max(b.iv_hp);
-      ctx.db.monster().insert(Monster { species_id: 6, iv_hp, ..Default::default() });
-      ctx.db.monster_pub().insert(pub_from_monster(&offspring_monster));
+// E5 (gate) BAD — no path_satisfied call at all: the reducer never gates.
+const BAD_EVOLVE_NO_PATH_GATE = `
+  pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
+      let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+          return Err("monster not found".to_string());
+      };
+      require_owner(ctx, "evolve", m.owner_identity)?;
+      reject_if_in_battle(ctx.db.battle().player_identity().filter(m.owner_identity), monster_id)?;
+      let transformed = game_core::evolve(&instance, &target);
+      m.species_id = transformed.species_id;
+      let pub_row = pub_from_monster(&m, to_species_row.tier);
+      ctx.db.monster().monster_id().update(m);
+      ctx.db.monster_pub().monster_id().update(pub_row);
       Ok(())
   }
 `;
 
-// E4 BAD (fuse) — correct guards + offspring dual-write, but drops parent monster_pub deletes.
-const BAD_FUSE_NO_PUB_DELETES = `
-  pub fn fuse(ctx: &ReducerContext, a_id: u64, b_id: u64) -> Result<(), String> {
-      if a_id == b_id { return Err("cannot fuse with itself".to_string()); }
-      let Some(a) = ctx.db.monster().monster_id().find(a_id) else { return Err("a not found".to_string()); };
-      let Some(b) = ctx.db.monster().monster_id().find(b_id) else { return Err("b not found".to_string()); };
-      require_owner(ctx, "fuse", a.owner_identity)?;
-      require_owner(ctx, "fuse", b.owner_identity)?;
-      reject_if_in_battle(ctx.db.battle().player_identity().filter(a.owner_identity), a_id)?;
-      reject_if_in_battle(ctx.db.battle().player_identity().filter(b.owner_identity), b_id)?;
-      let offspring_inst = game_core::fuse(&a_inst, &b_inst, &offspring_species);
-      ctx.db.monster().monster_id().delete(a_id);
-      ctx.db.monster().monster_id().delete(b_id);
-      // DELIBERATELY MISSING: monster_pub().monster_id().delete(a_id) and delete(b_id)
-      // leaving stale pub rows for both consumed parents
-      ctx.db.monster().insert(offspring_monster);
-      ctx.db.monster_pub().insert(pub_from_monster(&offspring_monster));
+// E5 (gate) BAD — path_satisfied is called but its verdict is DISCARDED: every
+// bare-presence scan is satisfied while the gate does nothing at all.
+const BAD_EVOLVE_GATE_DISCARDED = `
+  pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
+      let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+          return Err("monster not found".to_string());
+      };
+      require_owner(ctx, "evolve", m.owner_identity)?;
+      reject_if_in_battle(ctx.db.battle().player_identity().filter(m.owner_identity), monster_id)?;
+      let _ = game_core::path_satisfied(&instance, &path);
+      let transformed = game_core::evolve(&instance, &target);
+      m.species_id = transformed.species_id;
+      let pub_row = pub_from_monster(&m, to_species_row.tier);
+      ctx.db.monster().monster_id().update(m);
+      ctx.db.monster_pub().monster_id().update(pub_row);
       Ok(())
   }
 `;
 
 // ---------------------------------------------------------------------------
-// Concatenate server-module sources (ADR-0056 split: recursive glob).
-//
-// LEGACY reader — includes *_tests.rs. Kept UNCHANGED for the untouched E1/E2/
-// E4/E5 checks so this slice does not silently re-scope them.
+// PRODUCTION-ONLY reader — recursive glob over server-module/src, skipping
+// files ending in `_tests.rs` (the no-idle-accrual.eval.mjs pattern). The
+// invariants are about what PRODUCTION does: evolution_tests.rs contains
+// evolve-shaped fixture strings that could otherwise shadow the real reducer.
 // ---------------------------------------------------------------------------
-function readServerModuleSources(dir) {
-  const parts = [];
-  for (const entry of readdirSync(dir).sort()) {
-    const full = `${dir}/${entry}`;
-    if (statSync(full).isDirectory()) parts.push(readServerModuleSources(full));
-    else if (entry.endsWith('.rs')) parts.push(readFileSync(full, 'utf8'));
-  }
-  return parts.join('\n');
-}
-
-/**
- * PRODUCTION-ONLY reader (A0, rev-2 #1) — same recursion, but skips files ending
- * in `_tests.rs` (the no-idle-accrual.eval.mjs pattern).
- *
- * The A0 checks are about what PRODUCTION does. `evolution_tests.rs` legitimately
- * contains `fuse_seam`, which calls `reject_if_not_fusable` and names
- * `game_core::fusion_eligible` — reading it would let test infrastructure "prove"
- * the production invariant, and a `pub fn fuse(` decoy there could even be
- * extracted instead of the real reducer.
- *
- * @param {string} dir Path to the server-module src dir.
- * @returns {string} Concatenated source of all non-test .rs files.
- */
 export function readServerModuleProdSources(dir) {
   const parts = [];
   for (const entry of readdirSync(dir).sort()) {
@@ -1132,7 +455,7 @@ export function readServerModuleProdSources(dir) {
 
 export default async function () {
   const name =
-    'evolution-reducer-security (evolve+fuse: ownership, battle-guard, fusion-eligibility delegation, dual-write, SSOT delegation; ADR-0061/0062/0147)';
+    'evolution-reducer-security (evolve: ownership, battle-guard, dual-write, path_satisfied gate + game_core::evolve SSOT delegation; ADR-0174, fuse deleted)';
 
   // =========================================================================
   // PROOFS-OF-TEETH — run before real-source scan.
@@ -1157,69 +480,6 @@ export default async function () {
     }
   }
 
-  // --- Tooth E1 GOOD: evolve with require_owner must pass -------------------
-  {
-    const body = extractReducerBody(stripRustComments(GOOD_EVOLVE_OWNERSHIP), 'evolve');
-    if (!body) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: could not extract evolve body from GOOD_EVOLVE_OWNERSHIP',
-      };
-    }
-    if (checkOwnershipGuard(body, 'evolve')) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH: GOOD_EVOLVE_OWNERSHIP incorrectly flagged: ${checkOwnershipGuard(body, 'evolve')}`,
-      };
-    }
-  }
-
-  // --- Tooth E1 fuse: only one require_owner must be flagged ----------------
-  {
-    const body = extractReducerBody(stripRustComments(BAD_FUSE_ONE_OWNERSHIP), 'fuse');
-    if (!body) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: could not extract fuse body from BAD_FUSE_ONE_OWNERSHIP',
-      };
-    }
-    if (!checkFuseOwnershipBothParents(body)) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH: BAD_FUSE_ONE_OWNERSHIP (one require_owner) was NOT flagged by checkFuseOwnershipBothParents',
-      };
-    }
-  }
-
-  // --- Tooth E1+E2 GOOD fuse: two require_owner + two reject_if_in_battle --
-  {
-    const body = extractReducerBody(stripRustComments(GOOD_FUSE_BOTH_PARENTS), 'fuse');
-    if (!body) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: could not extract fuse body from GOOD_FUSE_BOTH_PARENTS',
-      };
-    }
-    const e1a = checkOwnershipGuard(body, 'fuse');
-    const e1b = checkFuseOwnershipBothParents(body);
-    const e2a = checkBattleGuard(body, 'fuse');
-    const e2b = checkFuseBattleGuardBothParents(body);
-    const errs = [e1a, e1b, e2a, e2b].filter((e) => e !== null);
-    if (errs.length > 0) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH: GOOD_FUSE_BOTH_PARENTS incorrectly flagged: ${errs.join(' | ')}`,
-      };
-    }
-  }
-
   // --- Tooth E2: evolve without battle guard must be flagged ----------------
   {
     const body = extractReducerBody(stripRustComments(BAD_EVOLVE_NO_BATTLE_GUARD), 'evolve');
@@ -1235,306 +495,6 @@ export default async function () {
         name,
         pass: false,
         detail: 'TEETH: BAD_EVOLVE_NO_BATTLE_GUARD was NOT flagged by checkBattleGuard',
-      };
-    }
-  }
-
-  // --- Tooth E2 fuse: one reject_if_in_battle must be flagged ---------------
-  {
-    const body = extractReducerBody(stripRustComments(BAD_FUSE_ONE_BATTLE_GUARD), 'fuse');
-    if (!body) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: could not extract fuse body from BAD_FUSE_ONE_BATTLE_GUARD',
-      };
-    }
-    if (!checkFuseBattleGuardBothParents(body)) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH: BAD_FUSE_ONE_BATTLE_GUARD (one reject_if_in_battle) was NOT flagged by checkFuseBattleGuardBothParents',
-      };
-    }
-  }
-
-  // --- Teeth E3 (A0, ADR-0147) ---------------------------------------------
-  // Every BAD fixture must be flagged BY THE NAMED SUB-CHECK: each row pins the
-  // expected `E3x-...:` message prefix, so a collapsed sub-check can no longer
-  // hide behind a sibling's flag (e.g. an ordering regression that happens to be
-  // caught by the anti-migration lint would no longer count as "flagged").
-  {
-    const e3Bad = [
-      [
-        'BAD_FUSE_NO_ELIGIBILITY_GATE',
-        BAD_FUSE_NO_ELIGIBILITY_GATE,
-        'E3a-missing:',
-        'no gate of any kind',
-      ],
-      [
-        'BAD_FUSE_INLINE_ONLY',
-        BAD_FUSE_INLINE_ONLY,
-        'E3a-missing:',
-        'pre-A0 inline shape, no delegation',
-      ],
-      [
-        'BAD_FUSE_GATE_DUPLICATED_ARG',
-        BAD_FUSE_GATE_DUPLICATED_ARG,
-        'E3a-args:',
-        '&a_inst passed twice — parent b never evaluated',
-      ],
-      [
-        'BAD_FUSE_GATE_RESULT_DISCARDED',
-        BAD_FUSE_GATE_RESULT_DISCARDED,
-        'E3a-unenforced:',
-        '`let _ =` throws the gate result away',
-      ],
-      [
-        'BAD_FUSE_BOTH_FORMS',
-        BAD_FUSE_BOTH_FORMS,
-        'E3b-inline:',
-        'delegation AND the deleted inline comparison',
-      ],
-      [
-        'BAD_FUSE_ELIGIBILITY_AFTER_RECIPE',
-        BAD_FUSE_ELIGIBILITY_AFTER_RECIPE,
-        'E3c-order-recipe:',
-        'gate after find_fusion_recipe(',
-      ],
-      [
-        'BAD_FUSE_ELIGIBILITY_BEFORE_OWNERSHIP',
-        BAD_FUSE_ELIGIBILITY_BEFORE_OWNERSHIP,
-        'E3c-order-owner:',
-        'gate before any require_owner(',
-      ],
-      [
-        'BAD_FUSE_SECOND_OWNERSHIP_AFTER_GATE',
-        BAD_FUSE_SECOND_OWNERSHIP_AFTER_GATE,
-        'E3c-order-owner:',
-        "parent b's require_owner( sits BELOW the gate (first-occurrence anchor would miss it)",
-      ],
-    ];
-    for (const [label, fixture, prefix, why] of e3Bad) {
-      const body = extractReducerBody(stripRustComments(fixture), 'fuse');
-      if (!body) {
-        return { name, pass: false, detail: `TEETH: could not extract fuse body from ${label}` };
-      }
-      const flagged = checkFuseEligibilityDelegation(body);
-      if (!flagged) {
-        return {
-          name,
-          pass: false,
-          detail: `TEETH: ${label} was NOT flagged by checkFuseEligibilityDelegation (${why})`,
-        };
-      }
-      if (flagged.indexOf(prefix) !== 0) {
-        return {
-          name,
-          pass: false,
-          detail:
-            `TEETH ATTRIBUTION: ${label} (${why}) was flagged, but by the WRONG sub-check — ` +
-            `expected a message starting with "${prefix}", got: ${flagged}`,
-        };
-      }
-    }
-  }
-
-  // --- Tooth E3: the SHIPPED enforcement shape (if let Err + return) passes --
-  // The reducer log_reject()s before returning, so it cannot use `?`. If the
-  // result-propagation check ever narrows to "only `?` counts", this fails here
-  // instead of turning the real source red.
-  {
-    const body = extractReducerBody(stripRustComments(GOOD_FUSE_GATE_IF_LET_ERR), 'fuse');
-    if (!body) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: could not extract fuse body from GOOD_FUSE_GATE_IF_LET_ERR',
-      };
-    }
-    const ifLetGood = checkFuseEligibilityDelegation(body);
-    if (ifLetGood) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH: GOOD_FUSE_GATE_IF_LET_ERR (the shipped reducer's shape) incorrectly flagged: ${ifLetGood}`,
-      };
-    }
-  }
-
-  // --- Tooth E3-unique: a shadowing second definition must be flagged -------
-  {
-    const shadowed = checkUniqueProdDefinitions(stripRustComments(TWO_FUSE_DEFINITIONS_SOURCE));
-    if (!shadowed) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH: TWO_FUSE_DEFINITIONS_SOURCE (two `pub fn fuse(` definitions) was NOT flagged ' +
-          'by checkUniqueProdDefinitions — extractReducerBody takes the FIRST match, so a decoy ' +
-          'in an alphabetically-earlier file would redirect every E3 check',
-      };
-    }
-    if (shadowed.indexOf('E3-unique:') !== 0) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH ATTRIBUTION: TWO_FUSE_DEFINITIONS_SOURCE flagged by the wrong check: ${shadowed}`,
-      };
-    }
-    // Zero helper definitions must also be flagged (not pass vacuously).
-    const noHelperDef = checkUniqueProdDefinitions(stripRustComments(BAD_FUSE_NO_ELIGIBILITY_GATE));
-    if (!noHelperDef) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH: a source with ZERO `fn reject_if_not_fusable(` definitions was NOT flagged by ' +
-          'checkUniqueProdDefinitions',
-      };
-    }
-    // The GOOD fixture defines each exactly once and must pass.
-    const uniqueGood = checkUniqueProdDefinitions(stripRustComments(GOOD_FUSE_BOTH_PARENTS));
-    if (uniqueGood) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH: GOOD_FUSE_BOTH_PARENTS incorrectly flagged by checkUniqueProdDefinitions: ${uniqueGood}`,
-      };
-    }
-  }
-
-  // --- Tooth E3 GOOD: the migrated target shape must pass all three ---------
-  {
-    const body = extractReducerBody(stripRustComments(GOOD_FUSE_BOTH_PARENTS), 'fuse');
-    if (!body) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: could not extract fuse body from GOOD_FUSE_BOTH_PARENTS (E3 check)',
-      };
-    }
-    const e3good = checkFuseEligibilityDelegation(body);
-    if (e3good) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH: GOOD_FUSE_BOTH_PARENTS incorrectly flagged by checkFuseEligibilityDelegation: ${e3good}`,
-      };
-    }
-  }
-
-  // --- Tooth E3 (string-literal stripper): a MENTION is not an occurrence ---
-  // Without stripRustStringLiterals this fixture's Err/log message compacts to
-  // `...a_id==b_id...` and check (b) would flag a correct implementation.
-  {
-    const body = extractReducerBody(stripRustComments(GOOD_FUSE_ID_COMPARE_IN_STRING_ONLY), 'fuse');
-    if (!body) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: could not extract fuse body from GOOD_FUSE_ID_COMPARE_IN_STRING_ONLY',
-      };
-    }
-    if (body.replace(/\s+/g, '').indexOf('a_id==b_id') === -1) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH VACUOUS: GOOD_FUSE_ID_COMPARE_IN_STRING_ONLY no longer contains `a_id == b_id` ' +
-          'inside a string literal — the string-literal stripper is not being exercised',
-      };
-    }
-    const strFalsePositive = checkFuseEligibilityDelegation(body);
-    if (strFalsePositive) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH: GOOD_FUSE_ID_COMPARE_IN_STRING_ONLY incorrectly flagged (string-literal stripping failed): ${strFalsePositive}`,
-      };
-    }
-  }
-
-  // --- Tooth E3b (F1 vacuity closure): hand-rolled helper must be flagged ---
-  // The reducer body passes (a)/(b)/(c) — the ONLY thing that catches this is
-  // the body-scoped, string-stripped helper check.
-  {
-    const stripped = stripRustComments(BAD_HELPER_HAND_ROLLS);
-    const body = extractReducerBody(stripped, 'fuse');
-    if (!body) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: could not extract fuse body from BAD_HELPER_HAND_ROLLS',
-      };
-    }
-    const bodyLevel = checkFuseEligibilityDelegation(body);
-    if (bodyLevel) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH VACUOUS: BAD_HELPER_HAND_ROLLS was flagged by the BODY-level E3 checks ' +
-          `(${bodyLevel}) — it must be a clean reducer body so that only ` +
-          'checkHelperDelegatesToGameCore can catch it, otherwise this fixture proves nothing ' +
-          'about the helper-level invariant',
-      };
-    }
-    const handRolled = checkHelperDelegatesToGameCore(stripped);
-    if (!handRolled) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH: BAD_HELPER_HAND_ROLLS was NOT flagged by checkHelperDelegatesToGameCore — ' +
-          'a hand-rolled helper slipped through despite (1) a game_core::fusion_eligible( ' +
-          'mention inside a string literal in its body and (2) a real call in a test-shaped ' +
-          'function outside its body (the F1 vacuity bypasses)',
-      };
-    }
-    if (handRolled.indexOf('E3d-handrolled:') !== 0) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH ATTRIBUTION: BAD_HELPER_HAND_ROLLS was flagged, but not as a hand-rolled body — ' +
-          `expected a message starting with "E3d-handrolled:", got: ${handRolled}`,
-      };
-    }
-  }
-
-  // --- Tooth E3b GOOD: the delegating helper must pass ----------------------
-  {
-    const helperGood = checkHelperDelegatesToGameCore(stripRustComments(GOOD_FUSE_BOTH_PARENTS));
-    if (helperGood) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH: GOOD_FUSE_BOTH_PARENTS incorrectly flagged by checkHelperDelegatesToGameCore: ${helperGood}`,
-      };
-    }
-  }
-
-  // --- Tooth E3b: a MISSING helper must be flagged (not silently passed) ----
-  {
-    const noHelper = checkHelperDelegatesToGameCore(
-      stripRustComments(BAD_FUSE_NO_ELIGIBILITY_GATE),
-    );
-    if (!noHelper) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH: source with NO reject_if_not_fusable definition was NOT flagged by ' +
-          'checkHelperDelegatesToGameCore — an absent helper must fail loudly, not pass vacuously',
-      };
-    }
-    if (noHelper.indexOf('E3d-missing:') !== 0) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH ATTRIBUTION: an absent helper was flagged by the wrong sub-check: ${noHelper}`,
       };
     }
   }
@@ -1559,46 +519,7 @@ export default async function () {
     }
   }
 
-  // --- Tooth E4 GOOD: evolve with dual-write must pass ----------------------
-  {
-    const body = extractReducerBody(stripRustComments(GOOD_EVOLVE_OWNERSHIP), 'evolve');
-    if (!body) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: could not extract evolve body from GOOD_EVOLVE_OWNERSHIP (E4 check)',
-      };
-    }
-    if (checkDualWriteMirror(body, 'evolve')) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH: GOOD_EVOLVE_OWNERSHIP incorrectly flagged by checkDualWriteMirror: ${checkDualWriteMirror(body, 'evolve')}`,
-      };
-    }
-  }
-
-  // --- Tooth E4 fuse BAD: missing parent pub deletes must be flagged ---------
-  {
-    const body = extractReducerBody(stripRustComments(BAD_FUSE_NO_PUB_DELETES), 'fuse');
-    if (!body) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: could not extract fuse body from BAD_FUSE_NO_PUB_DELETES',
-      };
-    }
-    if (!checkFuseParentPubDeletes(body)) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH: BAD_FUSE_NO_PUB_DELETES (missing monster_pub parent deletes) was NOT flagged by checkFuseParentPubDeletes',
-      };
-    }
-  }
-
-  // --- Tooth E5: evolve without game_core must be flagged ------------------
+  // --- Tooth E5 (transform): evolve without game_core must be flagged -------
   {
     const body = extractReducerBody(stripRustComments(BAD_EVOLVE_NO_SSOT), 'evolve');
     if (!body) {
@@ -1608,7 +529,7 @@ export default async function () {
         detail: 'TEETH: could not extract evolve body from BAD_EVOLVE_NO_SSOT',
       };
     }
-    if (!checkSSOTDelegation(body, 'evolve')) {
+    if (!checkSSOTDelegation(body)) {
       return {
         name,
         pass: false,
@@ -1618,112 +539,92 @@ export default async function () {
     }
   }
 
-  // --- Tooth E5: fuse without game_core::fuse must be flagged ---------------
+  // --- Teeth E5 (gate): each BAD fixture flagged BY THE NAMED SUB-CHECK -----
   {
-    const body = extractReducerBody(stripRustComments(BAD_FUSE_NO_SSOT), 'fuse');
-    if (!body) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: could not extract fuse body from BAD_FUSE_NO_SSOT',
-      };
-    }
-    if (!checkSSOTDelegation(body, 'fuse')) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH: BAD_FUSE_NO_SSOT (inline IV-max logic) was NOT flagged by checkSSOTDelegation',
-      };
+    const gateBad = [
+      [
+        'BAD_EVOLVE_NO_PATH_GATE',
+        BAD_EVOLVE_NO_PATH_GATE,
+        'E5g-missing:',
+        'no path_satisfied call at all',
+      ],
+      [
+        'BAD_EVOLVE_GATE_DISCARDED',
+        BAD_EVOLVE_GATE_DISCARDED,
+        'E5g-unenforced:',
+        '`let _ =` throws the gate verdict away',
+      ],
+    ];
+    for (const [label, fixture, prefix, why] of gateBad) {
+      const body = extractReducerBody(stripRustComments(fixture), 'evolve');
+      if (!body) {
+        return { name, pass: false, detail: `TEETH: could not extract evolve body from ${label}` };
+      }
+      const flagged = checkPathSatisfiedGate(body);
+      if (!flagged) {
+        return {
+          name,
+          pass: false,
+          detail: `TEETH: ${label} was NOT flagged by checkPathSatisfiedGate (${why})`,
+        };
+      }
+      if (flagged.indexOf(prefix) !== 0) {
+        return {
+          name,
+          pass: false,
+          detail:
+            `TEETH ATTRIBUTION: ${label} (${why}) was flagged, but by the WRONG sub-check — ` +
+            `expected a message starting with "${prefix}", got: ${flagged}`,
+        };
+      }
     }
   }
 
-  // --- Tooth E5 GOOD: evolve with game_core_evolve must pass ----------------
+  // --- Tooth GOOD: the EG1 target shape must pass EVERY check ----------------
   {
-    const body = extractReducerBody(stripRustComments(GOOD_EVOLVE_OWNERSHIP), 'evolve');
+    const body = extractReducerBody(stripRustComments(GOOD_EVOLVE), 'evolve');
     if (!body) {
       return {
         name,
         pass: false,
-        detail: 'TEETH: could not extract evolve body from GOOD_EVOLVE_OWNERSHIP (E5 check)',
+        detail: 'TEETH: could not extract evolve body from GOOD_EVOLVE',
       };
     }
-    if (checkSSOTDelegation(body, 'evolve')) {
+    const errs = [
+      checkOwnershipGuard(body, 'evolve'),
+      checkBattleGuard(body, 'evolve'),
+      checkDualWriteMirror(body, 'evolve'),
+      checkPathSatisfiedGate(body),
+      checkSSOTDelegation(body),
+    ].filter((e) => e !== null);
+    if (errs.length > 0) {
       return {
         name,
         pass: false,
-        detail: `TEETH: GOOD_EVOLVE_OWNERSHIP incorrectly flagged by checkSSOTDelegation: ${checkSSOTDelegation(body, 'evolve')}`,
-      };
-    }
-  }
-
-  // --- Tooth E5 GOOD: fuse with game_core::fuse must pass ------------------
-  {
-    const body = extractReducerBody(stripRustComments(GOOD_FUSE_BOTH_PARENTS), 'fuse');
-    if (!body) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: could not extract fuse body from GOOD_FUSE_BOTH_PARENTS (E5 check)',
-      };
-    }
-    if (checkSSOTDelegation(body, 'fuse')) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH: GOOD_FUSE_BOTH_PARENTS incorrectly flagged by checkSSOTDelegation: ${checkSSOTDelegation(body, 'fuse')}`,
+        detail: `TEETH: GOOD_EVOLVE incorrectly flagged: ${errs.join(' | ')}`,
       };
     }
   }
 
   // =========================================================================
-  // REAL-SOURCE SCAN — apply all checks to the actual server-module source.
-  //
-  // TWO readers (rev-2 #1): the LEGACY one (includes *_tests.rs) feeds the
-  // untouched E1/E2/E4/E5 checks; the PRODUCTION-ONLY one feeds the new A0 E3
-  // checks so test infrastructure can never satisfy them.
+  // REAL-SOURCE SCAN — apply all checks to the actual PRODUCTION source.
   // =========================================================================
 
   const SERVER_SRC = 'server-module/src';
-  let src;
   let prodSrc;
   try {
-    src = stripRustComments(readServerModuleSources(SERVER_SRC));
     prodSrc = stripRustComments(readServerModuleProdSources(SERVER_SRC));
   } catch (e) {
     return { name, pass: false, detail: `cannot read ${SERVER_SRC}: ${e.message}` };
   }
 
-  // --- Tooth E3 (reader exclusion, filesystem half of the F1 closure) -------
-  // `fn fuse_seam(` exists ONLY in evolution_tests.rs. The legacy reader must see
-  // it and the production reader must NOT — otherwise "prod-only" is a lie and
-  // the seam's own calls would satisfy the production invariant for free.
-  if (src.indexOf('fn fuse_seam(') === -1) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'TEETH VACUOUS: the legacy reader does not see `fn fuse_seam(` — the reader-exclusion ' +
-        'probe has lost its subject (was fuse_seam renamed or moved out of a *_tests.rs file?)',
-    };
-  }
-  if (prodSrc.indexOf('fn fuse_seam(') !== -1) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'TEETH: readServerModuleProdSources returned content from a *_tests.rs file ' +
-        '(`fn fuse_seam(` is test-only) — the production-only reader is not excluding tests, ' +
-        'so the A0 E3 checks could be satisfied by test infrastructure (the F1 vacuity bypass)',
-    };
-  }
-
   const failures = [];
 
-  // --- Check evolve ---------------------------------------------------------
-  const evolveBody = extractReducerBody(src, 'evolve');
+  const evolveBody = extractReducerBody(prodSrc, 'evolve');
   if (!evolveBody) {
-    failures.push('evolve: reducer not found in server-module source');
+    failures.push(
+      'evolve: reducer not found in PRODUCTION server-module source (non-*_tests.rs files)',
+    );
   } else {
     const e1 = checkOwnershipGuard(evolveBody, 'evolve');
     if (e1) failures.push(e1);
@@ -1731,52 +632,10 @@ export default async function () {
     if (e2) failures.push(e2);
     const e4 = checkDualWriteMirror(evolveBody, 'evolve');
     if (e4) failures.push(e4);
-    const e5 = checkSSOTDelegation(evolveBody, 'evolve');
-    if (e5) failures.push(e5);
-  }
-
-  // --- Check fuse -----------------------------------------------------------
-  const fuseBody = extractReducerBody(src, 'fuse');
-  if (!fuseBody) {
-    failures.push('fuse: reducer not found in server-module source');
-  } else {
-    const e1a = checkOwnershipGuard(fuseBody, 'fuse');
-    if (e1a) failures.push(e1a);
-    const e1b = checkFuseOwnershipBothParents(fuseBody);
-    if (e1b) failures.push(e1b);
-    const e2a = checkBattleGuard(fuseBody, 'fuse');
-    if (e2a) failures.push(e2a);
-    const e2b = checkFuseBattleGuardBothParents(fuseBody);
-    if (e2b) failures.push(e2b);
-    const e4 = checkDualWriteMirror(fuseBody, 'fuse');
-    if (e4) failures.push(e4);
-    const e4b = checkFuseParentPubDeletes(fuseBody);
-    if (e4b) failures.push(e4b);
-    const e5 = checkSSOTDelegation(fuseBody, 'fuse');
-    if (e5) failures.push(e5);
-  }
-
-  // --- Check fuse eligibility delegation (E3, A0) — PRODUCTION SOURCE ONLY --
-  // Uniqueness FIRST: extractReducerBody takes the first match, so if either
-  // symbol is defined more than once (or not at all) the checks below would be
-  // scanning a decoy and every result is meaningless.
-  const e3unique = checkUniqueProdDefinitions(prodSrc);
-  if (e3unique) {
-    failures.push(e3unique);
-  } else {
-    const fuseProdBody = extractReducerBody(prodSrc, 'fuse');
-    if (!fuseProdBody) {
-      failures.push(
-        'fuse: reducer not found in PRODUCTION server-module source (non-*_tests.rs files) — ' +
-          'the eligibility invariants are about production code, so a definition that exists ' +
-          'only in test files does not satisfy them',
-      );
-    } else {
-      const e3 = checkFuseEligibilityDelegation(fuseProdBody);
-      if (e3) failures.push(e3);
-    }
-    const e3d = checkHelperDelegatesToGameCore(prodSrc);
-    if (e3d) failures.push(e3d);
+    const e5g = checkPathSatisfiedGate(evolveBody);
+    if (e5g) failures.push(e5g);
+    const e5t = checkSSOTDelegation(evolveBody);
+    if (e5t) failures.push(e5t);
   }
 
   if (failures.length > 0) {
@@ -1787,13 +646,9 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'evolve: ownership guard, battle guard, dual-write mirror, SSOT delegation verified; ' +
-      'fuse: ownership guard (×2), battle guard (×2), dual-write mirror, parent pub deletes (×2), ' +
-      'SSOT delegation verified; fuse eligibility (A0/ADR-0147, production source only): ' +
-      'single fuse/reject_if_not_fusable definitions, gate called as ' +
-      'reject_if_not_fusable(a_id, b_id, &a_inst, &b_inst) with its Result enforced, no inline ' +
-      'a_id/b_id comparison, ordered ALL require_owner < reject_if_not_fusable < ' +
-      'find_fusion_recipe, and the helper delegates to game_core::fusion_eligible ' +
-      '(teeth: 23 synthetic fixtures + 1 production-reader exclusion probe verified)',
+      'evolve: ownership guard, battle guard, dual-write mirror, enforced path_satisfied ' +
+      'gate and game_core::evolve SSOT delegation verified against production source ' +
+      '(teeth: 6 BAD + 1 GOOD synthetic fixtures verified; fuse checks deleted with the ' +
+      'reducer, EG1/ADR-0174 — EG5-2 adds essence_train/consume invariants)',
   };
 }

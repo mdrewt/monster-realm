@@ -2,10 +2,10 @@
 type: SpacetimeDB Reducer
 title: submit_pvp_action
 slug: reducers/submit_pvp_action
-updated: 2026-07-31
+updated: 2026-08-03
 tags: [reducer, spacetimedb, pvp]
 abstract: "Submit a PvP action (Attack or Swap) for the current turn. Guard order: 1. Battle exists. 2. ctx.sender is player_ident…"
-resource: server-module/src/pvp.rs#L990
+resource: server-module/src/pvp.rs#L995
 source: scripts/okf-export.mjs@server-module/src/pvp.rs
 ---
 

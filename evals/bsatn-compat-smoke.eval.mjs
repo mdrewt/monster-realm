@@ -36,6 +36,12 @@
 //   5. RON/serde default tests for `status` exist in m14b_tests.rs
 //      (two specific fn names — module-qualified needles, per m14.5e lesson)
 //   6. The BSATN-vs-serde codec finding is machine-visible in eval name+detail
+//  11. (EG1-11, ADR-0174 D1) Migration A's 16 Monster + 12 MonsterPub + 1
+//      SpeciesRow columns each sit AFTER that struct's last pre-migration column
+//      (Monster/MonsterPub: evolves_to; SpeciesRow: ability), in the ADR's
+//      declared order, each carrying an explicit #[default(...)]
+//  12. (EG1-11) the nested row struct EssenceRequirementRow exists and derives
+//      SpacetimeType (a table/shape snapshot does not cover nested types)
 //
 // NOTE (weather nuance): there is NO dedicated RON-omits-`weather` test in
 // m14b_tests.rs (none was written for the weather field). The weather-side proof
@@ -408,10 +414,219 @@ export function checkAdditiveColumnCoupling(schemaSrc, contentSrc) {
   return violations;
 }
 
+// ---------------------------------------------------------------------------
+// EG1-11 (ADR-0174 D1): Migration A's appended columns.
+//
+// The verified additive rule (ADR-0173 D5, measured on live spacetime 2.6.0) is
+// narrow: a column must be APPENDED AT THE END of the table struct and carry an
+// explicit `#[default(...)]`. A mid-struct insert is rejected twice over (as a
+// reordering AND for want of a default). This section pins Migration A's exact
+// column lists against that rule so the migration cannot be authored in a shape
+// the engine will reject at publish time.
+//
+// Only String.indexOf / literal regexes — no new RegExp (Semgrep
+// detect-non-literal-regexp).
+// ---------------------------------------------------------------------------
+
+// Monster +16, in ADR-0174 D1 declaration order, appended after `evolves_to`.
+export const EG1_MONSTER_APPENDED_COLUMNS = [
+  'essence_fire',
+  'essence_water',
+  'essence_plant',
+  'essence_electric',
+  'essence_earth',
+  'essence_wind',
+  'essence_light',
+  'essence_dark',
+  'trust_favorable_count',
+  'trust_unfavorable_count',
+  'trust_favorable_battle_day_epoch',
+  'quality_time_ticks_total',
+  'quality_time_accum_ms',
+  'quality_time_window_ms',
+  'quality_time_window_start_ms',
+  'last_essence_train_at_ms',
+];
+
+// MonsterPub +12, in ADR-0174 D1 declaration order, appended after `evolves_to`.
+export const EG1_MONSTER_PUB_APPENDED_COLUMNS = [
+  'tier',
+  'essence_fire',
+  'essence_water',
+  'essence_plant',
+  'essence_electric',
+  'essence_earth',
+  'essence_wind',
+  'essence_light',
+  'essence_dark',
+  'trust_tier',
+  'quality_time_tier',
+  'nutrition_pct',
+];
+
+// SpeciesRow +1, appended after `ability`.
+export const EG1_SPECIES_ROW_APPENDED_COLUMNS = ['tier'];
+
+/**
+ * Locate `pub struct <structName> {` (word-boundary on the name) and return its
+ * body text, or null. Brace-walked, so a nested block cannot end it early.
+ * @param {string} src Comment/string-stripped Rust source.
+ * @param {string} structName
+ * @returns {string|null}
+ */
+function findStructBody(src, structName) {
+  const marker = `pub struct ${structName}`;
+  let pos = 0;
+  for (;;) {
+    const idx = src.indexOf(marker, pos);
+    if (idx === -1) return null;
+    pos = idx + marker.length;
+    // Word boundary: `pub struct Monster` must not match `pub struct MonsterPub`.
+    if (isWordChar(src[pos])) continue;
+    const braceIdx = src.indexOf('{', idx);
+    if (braceIdx === -1) return null;
+    let depth = 1;
+    let i = braceIdx + 1;
+    while (i < src.length && depth > 0) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') depth--;
+      i++;
+    }
+    return src.slice(braceIdx + 1, i - 1);
+  }
+}
+
+/**
+ * Ordered field list of a struct, each with the attribute lines that immediately
+ * precede it.
+ * @param {string} rustSrc Raw Rust source.
+ * @param {string} structName
+ * @returns {{ name: string, attrs: string[] }[] | null}
+ */
+export function parseStructFieldOrder(rustSrc, structName) {
+  const src = stripRustCommentsAndStrings(rustSrc);
+  const body = findStructBody(src, structName);
+  if (body === null) return null;
+  const fields = [];
+  let pending = [];
+  const fieldRe = /^pub\s+(\w+)\s*:/;
+  for (const rawLine of body.split('\n')) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+    if (line.indexOf('#[') === 0) {
+      pending.push(line);
+      continue;
+    }
+    const m = fieldRe.exec(line);
+    if (m) {
+      fields.push({ name: m[1], attrs: pending });
+      pending = [];
+    } else {
+      pending = [];
+    }
+  }
+  return fields;
+}
+
+/**
+ * EG1-11 gate: every column in `requiredCols` must
+ *   (a) exist on `structName`,
+ *   (b) sit STRICTLY AFTER `anchorField` (the struct's last pre-migration
+ *       column) — i.e. be appended, never inserted mid-struct,
+ *   (c) carry an explicit `#[default(` annotation, and
+ *   (d) appear in the same relative order as `requiredCols` (ADR-0174 D1 fixes
+ *       the append order).
+ * Returns [] when clean; one string per violation.
+ *
+ * @param {string} rustSrc Raw schema.rs source.
+ * @param {string} structName
+ * @param {string} anchorField Last column that existed BEFORE the migration.
+ * @param {string[]} requiredCols Appended columns, in their required order.
+ * @returns {string[]}
+ */
+export function checkAppendedColumns(rustSrc, structName, anchorField, requiredCols) {
+  const fields = parseStructFieldOrder(rustSrc, structName);
+  if (fields === null) {
+    return [`struct '${structName}' not found in schema source`];
+  }
+  const names = fields.map((f) => f.name);
+  const anchorIdx = names.indexOf(anchorField);
+  if (anchorIdx === -1) {
+    return [
+      `struct '${structName}': anchor column '${anchorField}' (the last pre-migration column) not found — parser rot or an unexpected schema rewrite`,
+    ];
+  }
+
+  const violations = [];
+  const foundIdx = [];
+  for (const col of requiredCols) {
+    const idx = names.indexOf(col);
+    if (idx === -1) {
+      violations.push(`struct '${structName}': appended column '${col}' is MISSING`);
+      continue;
+    }
+    foundIdx.push({ col, idx });
+    if (idx <= anchorIdx) {
+      violations.push(
+        `struct '${structName}': column '${col}' is at position ${idx}, at or BEFORE the pre-migration anchor '${anchorField}' (position ${anchorIdx}) — a mid-struct insert is REJECTED by live spacetime 2.6.0 automigration (as a reordering AND for want of a default)`,
+      );
+    }
+    const attrs = fields[idx].attrs.join(' ');
+    if (attrs.indexOf('#[default(') === -1) {
+      violations.push(
+        `struct '${structName}': column '${col}' has no explicit #[default(...)] annotation — the only accepted additive shape is append-at-end WITH a default`,
+      );
+    }
+  }
+
+  for (let i = 1; i < foundIdx.length; i++) {
+    if (foundIdx[i].idx <= foundIdx[i - 1].idx) {
+      violations.push(
+        `struct '${structName}': column '${foundIdx[i].col}' must be declared AFTER '${foundIdx[i - 1].col}' (ADR-0174 D1 fixes the append order)`,
+      );
+    }
+  }
+
+  return violations;
+}
+
+/**
+ * Does the attribute block immediately above `pub struct <structName>` contain
+ * `deriveName`? Comment-stripped first, so a doc comment mentioning the derive
+ * cannot produce a false pass. The window starts at the last `}` before the
+ * struct (the end of the preceding item), so a neighbouring struct's derives
+ * cannot leak in.
+ *
+ * @param {string} rustSrc Raw Rust source.
+ * @param {string} structName
+ * @param {string} deriveName
+ * @returns {boolean}
+ */
+export function hasDeriveOnStruct(rustSrc, structName, deriveName) {
+  const src = stripRustCommentsAndStrings(rustSrc);
+  const marker = `pub struct ${structName}`;
+  let structIdx = -1;
+  let pos = 0;
+  for (;;) {
+    const idx = src.indexOf(marker, pos);
+    if (idx === -1) break;
+    pos = idx + marker.length;
+    if (isWordChar(src[pos])) continue;
+    structIdx = idx;
+    break;
+  }
+  if (structIdx === -1) return false;
+  const before = src.slice(0, structIdx);
+  const boundary = before.lastIndexOf('}');
+  const attrBlock = boundary === -1 ? before : before.slice(boundary + 1);
+  return attrBlock.indexOf(deriveName) !== -1;
+}
+
 export default async function () {
   const name =
     'bsatn-compat-smoke (14.5f-1: serde(default)+SpacetimeType on battle.state fields; ' +
-    'BSATN is a different codec — SpacetimeDB engine handles additive columns)';
+    'BSATN is a different codec — SpacetimeDB engine handles additive columns; ' +
+    'EG1-11: Migration A appended-column + EssenceRequirementRow checks)';
 
   // -------------------------------------------------------------------------
   // PROOF-OF-TEETH: each predicate must reject its known-bad fixture BEFORE
@@ -1065,6 +1280,233 @@ export default async function () {
   // END 16.5e teeth (C-1..C-6, C-W)
   // =========================================================================
 
+  // =========================================================================
+  // EG1-11 teeth (H-0..H-6, ADR-0174 D1) — checkAppendedColumns must bite on
+  // each shape live spacetime 2.6.0 actually rejects, and hasDeriveOnStruct
+  // must bite on a missing SpacetimeType derive.
+  //
+  // Fixtures are deliberately MINIMAL (a two-column append) so each tooth
+  // isolates one failure mode.
+  // =========================================================================
+
+  // H-0 (positive control): a correctly appended pair must be clean.
+  {
+    const goodAppend =
+      'pub struct Monster {\n' +
+      '    pub monster_id: u64,\n' +
+      '    pub evolves_to: Option<u32>,\n' +
+      '    #[default(0)]\n' +
+      '    pub essence_fire: u32,\n' +
+      '    #[default(0)]\n' +
+      '    pub trust_favorable_count: u32,\n' +
+      '}\n';
+    const result = checkAppendedColumns(goodAppend, 'Monster', 'evolves_to', [
+      'essence_fire',
+      'trust_favorable_count',
+    ]);
+    if (!Array.isArray(result) || result.length !== 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (H-0): checkAppendedColumns must return [] for two columns appended ' +
+          'after the anchor with explicit #[default(0)]; got: ' +
+          JSON.stringify(result),
+      };
+    }
+  }
+
+  // H-1: a MID-STRUCT INSERT (column placed before the pre-migration anchor)
+  // must be flagged — this is the shape the engine rejects as a reordering.
+  {
+    const midStructInsert =
+      'pub struct Monster {\n' +
+      '    pub monster_id: u64,\n' +
+      '    #[default(0)]\n' +
+      '    pub essence_fire: u32,\n' +
+      '    pub evolves_to: Option<u32>,\n' +
+      '    #[default(0)]\n' +
+      '    pub trust_favorable_count: u32,\n' +
+      '}\n';
+    const result = checkAppendedColumns(midStructInsert, 'Monster', 'evolves_to', [
+      'essence_fire',
+      'trust_favorable_count',
+    ]);
+    const text = Array.isArray(result) ? result.join(' ') : String(result);
+    if (!Array.isArray(result) || result.length === 0 || text.indexOf('essence_fire') === -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (H-1): checkAppendedColumns must FLAG essence_fire declared BEFORE the ' +
+          'pre-migration anchor evolves_to (a mid-struct insert — rejected by live spacetime ' +
+          '2.6.0 both as a reordering and for want of a default); got: ' +
+          JSON.stringify(result),
+      };
+    }
+  }
+
+  // H-2: an appended column with NO #[default(...)] must be flagged.
+  {
+    const missingDefault =
+      'pub struct Monster {\n' +
+      '    pub monster_id: u64,\n' +
+      '    pub evolves_to: Option<u32>,\n' +
+      '    #[default(0)]\n' +
+      '    pub essence_fire: u32,\n' +
+      '    pub trust_favorable_count: u32,\n' +
+      '}\n';
+    const result = checkAppendedColumns(missingDefault, 'Monster', 'evolves_to', [
+      'essence_fire',
+      'trust_favorable_count',
+    ]);
+    const text = Array.isArray(result) ? result.join(' ') : String(result);
+    if (
+      !Array.isArray(result) ||
+      result.length === 0 ||
+      text.indexOf('trust_favorable_count') === -1 ||
+      text.indexOf('#[default(') === -1
+    ) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (H-2): checkAppendedColumns must FLAG an appended column carrying no ' +
+          'explicit #[default(...)] annotation (append-at-end alone is not sufficient); got: ' +
+          JSON.stringify(result),
+      };
+    }
+  }
+
+  // H-3: an attribute belonging to a DIFFERENT field must not satisfy the
+  // default requirement (co-location rigor, mirroring tooth A'').
+  {
+    const defaultOnWrongField =
+      'pub struct Monster {\n' +
+      '    pub monster_id: u64,\n' +
+      '    #[default(0)]\n' +
+      '    pub evolves_to: Option<u32>,\n' +
+      '    pub essence_fire: u32,\n' +
+      '}\n';
+    const result = checkAppendedColumns(defaultOnWrongField, 'Monster', 'evolves_to', [
+      'essence_fire',
+    ]);
+    if (!Array.isArray(result) || result.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (H-3): checkAppendedColumns accepted essence_fire although the ' +
+          '#[default(0)] sits on evolves_to — the annotation must be co-located with the ' +
+          'TARGET column, not merely present in the struct',
+      };
+    }
+  }
+
+  // H-4: a MISSING appended column must be flagged (not silently skipped).
+  {
+    const missingColumn =
+      'pub struct Monster {\n' +
+      '    pub monster_id: u64,\n' +
+      '    pub evolves_to: Option<u32>,\n' +
+      '    #[default(0)]\n' +
+      '    pub essence_fire: u32,\n' +
+      '}\n';
+    const result = checkAppendedColumns(missingColumn, 'Monster', 'evolves_to', [
+      'essence_fire',
+      'trust_favorable_count',
+    ]);
+    const text = Array.isArray(result) ? result.join(' ') : String(result);
+    if (!Array.isArray(result) || result.length === 0 || text.indexOf('MISSING') === -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (H-4): checkAppendedColumns must FLAG a required appended column that ' +
+          'is absent from the struct; got: ' +
+          JSON.stringify(result),
+      };
+    }
+  }
+
+  // H-5: the two appended columns declared in the WRONG relative order must be
+  // flagged (ADR-0174 D1 fixes the append order).
+  {
+    const wrongOrder =
+      'pub struct Monster {\n' +
+      '    pub monster_id: u64,\n' +
+      '    pub evolves_to: Option<u32>,\n' +
+      '    #[default(0)]\n' +
+      '    pub trust_favorable_count: u32,\n' +
+      '    #[default(0)]\n' +
+      '    pub essence_fire: u32,\n' +
+      '}\n';
+    const result = checkAppendedColumns(wrongOrder, 'Monster', 'evolves_to', [
+      'essence_fire',
+      'trust_favorable_count',
+    ]);
+    if (!Array.isArray(result) || result.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (H-5): checkAppendedColumns must FLAG the two appended columns declared ' +
+          'in the wrong relative order (ADR-0174 D1 pins the append order)',
+      };
+    }
+  }
+
+  // H-6: hasDeriveOnStruct must reject a nested row struct that lacks the
+  // SpacetimeType derive, and accept one that has it.
+  {
+    const noDerive =
+      'pub struct Other {\n    pub x: u32,\n}\n' +
+      '#[derive(Clone, Debug, PartialEq, Eq)]\n' +
+      'pub struct EssenceRequirementRow {\n    pub affinity: Affinity,\n    pub amount: u32,\n}\n';
+    if (hasDeriveOnStruct(noDerive, 'EssenceRequirementRow', 'SpacetimeType')) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (H-6): hasDeriveOnStruct accepted EssenceRequirementRow with no ' +
+          'SpacetimeType derive — a nested row struct without it cannot be a column type at all',
+      };
+    }
+    const withDerive =
+      'pub struct Other {\n    pub x: u32,\n}\n' +
+      '#[derive(spacetimedb::SpacetimeType, Clone, Debug, PartialEq, Eq)]\n' +
+      'pub struct EssenceRequirementRow {\n    pub affinity: Affinity,\n    pub amount: u32,\n}\n';
+    if (!hasDeriveOnStruct(withDerive, 'EssenceRequirementRow', 'SpacetimeType')) {
+      return {
+        name,
+        pass: false,
+        detail:
+          "TEETH FAILED (H-6'): hasDeriveOnStruct failed to accept EssenceRequirementRow with " +
+          'the SpacetimeType derive in its own attribute block',
+      };
+    }
+    // A neighbouring struct's derive must not leak across the item boundary.
+    const neighbourDerive =
+      '#[derive(spacetimedb::SpacetimeType)]\n' +
+      'pub struct Other {\n    pub x: u32,\n}\n' +
+      '#[derive(Clone)]\n' +
+      'pub struct EssenceRequirementRow {\n    pub affinity: Affinity,\n    pub amount: u32,\n}\n';
+    if (hasDeriveOnStruct(neighbourDerive, 'EssenceRequirementRow', 'SpacetimeType')) {
+      return {
+        name,
+        pass: false,
+        detail:
+          "TEETH FAILED (H-6''): hasDeriveOnStruct let the PRECEDING struct's SpacetimeType " +
+          'derive satisfy EssenceRequirementRow — the attribute window must stop at the end of ' +
+          'the previous item',
+      };
+    }
+  }
+
+  // =========================================================================
+  // END EG1-11 teeth (H-0..H-6)
+  // =========================================================================
+
   // -------------------------------------------------------------------------
   // REAL FILE CHECKS
   // -------------------------------------------------------------------------
@@ -1168,6 +1610,48 @@ export default async function () {
     };
   }
 
+  // Criterion 11 (EG1-11, ADR-0174 D1): Migration A's 16 Monster + 12 MonsterPub
+  // + 1 SpeciesRow columns must each be APPENDED after that struct's last
+  // pre-migration column AND carry an explicit #[default(...)] — the only shape
+  // live spacetime 2.6.0 accepts without --delete-data.
+  const eg1Violations = [
+    ...checkAppendedColumns(schemaSrc, 'Monster', 'evolves_to', EG1_MONSTER_APPENDED_COLUMNS),
+    ...checkAppendedColumns(
+      schemaSrc,
+      'MonsterPub',
+      'evolves_to',
+      EG1_MONSTER_PUB_APPENDED_COLUMNS,
+    ),
+    ...checkAppendedColumns(schemaSrc, 'SpeciesRow', 'ability', EG1_SPECIES_ROW_APPENDED_COLUMNS),
+  ];
+  if (eg1Violations.length > 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'criterion 11 FAIL (EG1-11 / ADR-0174 D1 — Migration A appended columns): ' +
+        eg1Violations.join('; '),
+    };
+  }
+
+  // Criterion 12 (EG1-11): the new NESTED row struct EssenceRequirementRow must
+  // exist and derive SpacetimeType. A table/shape snapshot alone does not cover
+  // nested SpacetimeType structs (battle-schema-snapshot's own documented
+  // exclusion), and ADR-0174 D8 records that this struct's field set is a
+  // one-shot freeze — widening it later is rejected by automigration.
+  if (!hasDeriveOnStruct(schemaSrc, 'EssenceRequirementRow', 'SpacetimeType')) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'criterion 12 FAIL (EG1-11): server-module/src/schema.rs must declare the nested row ' +
+        'struct EssenceRequirementRow { affinity: Affinity, amount: u32 } deriving ' +
+        'spacetimedb::SpacetimeType (the EncounterEntryRow precedent) — it is the element type ' +
+        'of evolution_path.essence: Vec<EssenceRequirementRow>, and its field set is a one-shot ' +
+        'freeze (ADR-0174 D8): a nested-struct widening is rejected by live automigration.',
+    };
+  }
+
   // Criterion 6: BSATN gap finding documented in name+detail (self-check)
   const passingDetail =
     'serde(default) present on BattleMonster.status and BattleState.weather (co-located); ' +
@@ -1189,7 +1673,12 @@ export default async function () {
     "BattleState's field list) — not by this static eval and not by the nightly smoke job. " +
     '16.5e-3 (ADR-0116 D4): additive-content coupling verified — every Option column on a ' +
     'content-synced table has its field-assignment in a content.rs re-seed row literal ' +
-    '(anchors: ability, train_stat, cure_status, cost_item_id).';
+    '(anchors: ability, train_stat, cure_status, cost_item_id). ' +
+    'EG1-11 (ADR-0174 D1): Migration A verified against the same rule — all 16 Monster and ' +
+    '12 MonsterPub columns sit after evolves_to and SpeciesRow.tier after ability, in the ' +
+    "ADR's declared order, each with an explicit #[default(...)]; the nested row struct " +
+    'EssenceRequirementRow derives SpacetimeType (its field set is a one-shot freeze, ' +
+    'ADR-0174 D8 — nested widening is rejected by automigration).';
 
   if (!documentsBsatnGap(name, passingDetail)) {
     return {

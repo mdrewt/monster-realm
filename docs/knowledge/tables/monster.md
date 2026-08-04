@@ -2,10 +2,10 @@
 type: SpacetimeDB Table
 title: monster
 slug: tables/monster
-updated: 2026-07-31
+updated: 2026-08-03
 tags: [schema, spacetimedb, private]
 abstract: "The authoritative monster record — PRIVATE (no `public`). Contains hidden genes (IVs, EVs, nature) that must NEVER reac…"
-resource: server-module/src/schema.rs#L202
+resource: server-module/src/schema.rs#L207
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: private
 ---
@@ -44,6 +44,22 @@ visibility: private
 | `party_slot` | `u8` | — |
 | `last_care_at_ms` | `i64` | — |
 | `evolves_to` | `Option<u32>` | — |
+| `essence_fire` | `u32` | — |
+| `essence_water` | `u32` | — |
+| `essence_plant` | `u32` | — |
+| `essence_electric` | `u32` | — |
+| `essence_earth` | `u32` | — |
+| `essence_wind` | `u32` | — |
+| `essence_light` | `u32` | — |
+| `essence_dark` | `u32` | — |
+| `trust_favorable_count` | `u32` | — |
+| `trust_unfavorable_count` | `u32` | — |
+| `trust_favorable_battle_day_epoch` | `u32` | — |
+| `quality_time_ticks_total` | `u32` | — |
+| `quality_time_accum_ms` | `u32` | — |
+| `quality_time_window_ms` | `u32` | — |
+| `quality_time_window_start_ms` | `i64` | — |
+| `last_essence_train_at_ms` | `i64` | — |
 
 ## Privacy
 

@@ -2105,11 +2105,13 @@ async function main(): Promise<void> {
     });
     evolutionView = new EvolutionViewClass(mount, {
       onEvolve: (monsterId) => {
-        sendGuarded('evolve', () => conn?.conn.reducers.evolve({ monsterId }));
+        // EG1 transitional: evolution dark until EG3 content; EG4 wires real path selection (spec EG4-3)
+        sendGuarded('evolve', () => conn?.conn.reducers.evolve({ monsterId, toSpecies: 0 }));
       },
-      onFuse: (aId, bId) => {
-        sendGuarded('fuse', () => conn?.conn.reducers.fuse({ aId, bId }));
-      },
+      // EG1 transitional: evolution dark until EG3 content; EG4 wires real path selection (spec EG4-3)
+      // The fuse reducer was deleted (EG1/ADR-0174 — fusion removed); the callback SHAPE
+      // stays until EG4 deletes the fusion UI (EG4-5), so this is a no-op stub.
+      onFuse: () => {},
     });
     // M12d: dialogue / quest log / heal DOM shells (ADR-0071).
     dialogueView = new DialogueViewClass();

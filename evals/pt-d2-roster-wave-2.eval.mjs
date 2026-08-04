@@ -1,17 +1,24 @@
 // pt-d2 roster wave 2 gating eval.
 //
-// The implementer (a subsequent slice) will add:
+// Guards the wave-2 roster content:
 //   game-core/content/species/050-wave2.ron          (base forms: Umbraquill 20, Gustwyrm 21)
 //   game-core/content/species/051-wave2-derived.ron  (evolution-only: Venumbra 22, Tempestrix 23)
-//   game-core/content/evolutions.ron                 (+2 blocks: 20->22 Level(22), 21->180 Bond)
 //   client/art-src/generate_monsters.py              (per-species sprite generator)
 //   client/public/assets/monster-{slug}.{png,json}   (+ -normal.{png,json}) for every COVERED entry
 //
-// This eval is intentionally RED until all of the above exists AND is internally
-// consistent (reserved id band, no dangling refs, STAB coverage, no orphan derived
-// forms, monotonic evolution BST, a complete + well-formed sprite set per species,
-// distinct per-species silhouettes, and a generator that does not duplicate the
-// PNG/sheet-JSON codec owned by generate_art.py).
+// Checks: reserved id band, no dangling refs, STAB coverage, a complete +
+// well-formed sprite set per species, distinct per-species silhouettes, and a
+// generator that does not duplicate the PNG/sheet-JSON codec owned by
+// generate_art.py.
+//
+// EG1 RETIREMENT (ADR-0174, amendment A9): `evolutions.ron` was deleted with
+// the essence-graph redesign, so the checkers that read it are RETIRED here:
+// parseEvolutionBlocks, the orphan-derived/bad-source checks (W2-EVO-ORPHAN)
+// and W2-BST-MONOTONIC, plus their teeth. Successors: the orphan check's
+// successor is the Rust gate's R10 universal-reachability rule
+// (game_core::validate_evolution_paths, ADR-0174 D6 — empty-set carve-out
+// until EG3 authors the graph). BST-monotonicity has NO R1-R12 successor —
+// whether to revive it as a general rule is EG5's decision (EG5-1 handoff).
 //
 // RON parsing is hand-rolled string scanning (no RON parser available in JS here),
 // following the same convention as evolution-fusion-content-integrity.eval.mjs:
@@ -53,7 +60,6 @@ const COLS = ['idle', 'walk0', 'walk1'];
 
 const SPECIES_DIR = 'game-core/content/species';
 const SKILLS_DIR = 'game-core/content/skills';
-const EVOLUTIONS_FILE = 'game-core/content/evolutions.ron';
 const ASSETS_DIR = 'client/public/assets';
 const GENERATE_ART_FILE = 'client/art-src/generate_art.py';
 const GENERATE_MONSTERS_FILE = 'client/art-src/generate_monsters.py';
@@ -203,27 +209,6 @@ export function parseSkillsFile(text) {
     .filter((s) => s.id !== undefined);
 }
 
-/**
- * @param {string} text Comment-stripped RON evolutions-file text.
- * @returns {{ speciesId: number, targets: number[] }[]}
- */
-export function parseEvolutionBlocks(text) {
-  const results = [];
-  const sidRe = /species_id\s*:\s*(\d+)/g;
-  let m = sidRe.exec(text);
-  while (m !== null) {
-    const speciesId = Number(m[1]);
-    const after = text.slice(m.index + m[0].length);
-    const vecText = extractBalancedAfter(after, 'evolutions', '[', ']');
-    const targets = vecText
-      ? [...vecText.matchAll(/to_species\s*:\s*(\d+)/g)].map((mm) => Number(mm[1]))
-      : [];
-    results.push({ speciesId, targets });
-    m = sidRe.exec(text);
-  }
-  return results;
-}
-
 function readDirTextSorted(dirPath) {
   return readdirSync(dirPath)
     .filter((n) => n.endsWith('.ron'))
@@ -319,97 +304,9 @@ export function findMissingSTAB(speciesList, skillAffinityById) {
 }
 
 // ---------------------------------------------------------------------------
-// Checker 5 — W2-EVO-ORPHAN: every derived id reached exactly once; every
-// wave-2 evolution source is a wave-2 base species; every wave-2 evolution
-// SOURCE (base species) targets ONLY a declared wave-2 derived form — never
-// another base id (wild-legal or otherwise) and never an out-of-band id.
-//
-// Gap 1 fix: the original version only inspected targets that were already
-// known to be derived ids, so a base-to-base evolution (e.g. wild-legal
-// Umbraquill (20) -> wild-legal Gustwyrm (21)) was invisible — Rust's
-// derived-forms-not-wild rule is vacuous here too, since no wave-2 species
-// has an encounter row yet. This is scoped to wave-2 sources deliberately; a
-// general fix belongs in the Rust validator (tracked as a follow-up, out of
-// this slice's touch set).
-//
-// INFORMATIONAL (no check needed): this only reads evolutions.ron, so a
-// derived form reachable ONLY via fusion.ron would false-positive as an
-// orphan. Not reachable today (neither 22 nor 23 is a fusion target) and it
-// fails safe/over-strict, so it is left as a documented gap, not a bug.
+// Checkers 5+6 (W2-EVO-ORPHAN, W2-BST-MONOTONIC) RETIRED by EG1/ADR-0174 —
+// they read the deleted evolutions.ron. See the header note for successors.
 // ---------------------------------------------------------------------------
-
-export function findEvoOrphansAndBadSources(derivedIds, evolutionBlocks, baseIdSet) {
-  const violations = [];
-  const targetCounts = new Map();
-  for (const block of evolutionBlocks) {
-    for (const target of block.targets) {
-      targetCounts.set(target, (targetCounts.get(target) ?? 0) + 1);
-    }
-  }
-  for (const id of derivedIds) {
-    const count = targetCounts.get(id) ?? 0;
-    if (count === 0) {
-      violations.push(
-        `derived species ${id} is never reached as a to_species — orphan derived form`,
-      );
-    } else if (count > 1) {
-      violations.push(
-        `derived species ${id} is reached as a to_species ${count} times — expected exactly once`,
-      );
-    }
-  }
-  const derivedSet = new Set(derivedIds);
-  for (const block of evolutionBlocks) {
-    if (block.targets.some((t) => derivedSet.has(t)) && !baseIdSet.has(block.speciesId)) {
-      violations.push(
-        `evolution block for source species ${block.speciesId} targets a wave-2 derived form but its source is not a wave-2 base species`,
-      );
-    }
-    // Gap 1: a wave-2 BASE source must target ONLY a declared wave-2 derived
-    // form. A base-to-base (or base-to-out-of-band) evolution is exactly the
-    // "wild-legal evolves into another wild-legal" hole the Rust step-6
-    // check can't see yet (no wave-2 encounter rows exist to trip it).
-    if (baseIdSet.has(block.speciesId)) {
-      for (const target of block.targets) {
-        if (!derivedSet.has(target)) {
-          violations.push(
-            `wave-2 evolution source ${block.speciesId} targets species ${target}, which is not a member of the declared wave-2 derived set (051-wave2-derived.ron) — wave-2 evolutions must target only wave-2 derived forms, never a base species or out-of-band id`,
-          );
-        }
-      }
-    }
-  }
-  return violations;
-}
-
-// ---------------------------------------------------------------------------
-// Checker 6 — W2-BST-MONOTONIC: evolution target BST strictly > source BST
-// ---------------------------------------------------------------------------
-
-export function sumBaseStats(baseStats) {
-  return (
-    (baseStats.hp ?? 0) +
-    (baseStats.attack ?? 0) +
-    (baseStats.defense ?? 0) +
-    (baseStats.speed ?? 0) +
-    (baseStats.sp_attack ?? 0) +
-    (baseStats.sp_defense ?? 0)
-  );
-}
-
-export function findNonMonotonicEvolutions(evoPairs, bstById) {
-  const violations = [];
-  for (const { from, to } of evoPairs) {
-    const fromBst = bstById.get(from);
-    const toBst = bstById.get(to);
-    if (!(toBst > fromBst)) {
-      violations.push(
-        `evolution ${from} -> ${to}: target BST ${toBst} is not strictly greater than source BST ${fromBst}`,
-      );
-    }
-  }
-  return violations;
-}
 
 // ---------------------------------------------------------------------------
 // Checker 7 — SPR-SET: the 4-file sprite set exists for every COVERED entry
@@ -882,7 +779,8 @@ function circleMask(canvasW, canvasH, cx, cy, r) {
 // ---------------------------------------------------------------------------
 
 export default async function () {
-  const name = 'pt-d2 roster wave 2 (reserved band, orphan-derived, sprite set/format/silhouette)';
+  const name =
+    'pt-d2 roster wave 2 (reserved band, sprite set/format/silhouette; evolution checkers retired by EG1/ADR-0174)';
 
   // =========================================================================
   // PROOFS-OF-TEETH — every checker must bite a BAD fixture and pass a GOOD one.
@@ -1019,162 +917,8 @@ export default async function () {
     }
   }
 
-  // --- W2-EVO-ORPHAN: orphan derived id -------------------------------------------
-  {
-    const violations = findEvoOrphansAndBadSources(
-      [22, 23],
-      [{ speciesId: 21, targets: [23] }],
-      new Set([20, 21]),
-    );
-    if (!violations.some((v) => v.includes('22'))) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: W2-EVO-ORPHAN — orphan derived species 22 was NOT flagged',
-      };
-    }
-  }
-  // --- W2-EVO-ORPHAN: duplicate target ---------------------------------------------
-  {
-    const violations = findEvoOrphansAndBadSources(
-      [22],
-      [
-        { speciesId: 20, targets: [22] },
-        { speciesId: 21, targets: [22] },
-      ],
-      new Set([20, 21]),
-    );
-    if (violations.length === 0) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: W2-EVO-ORPHAN — target 22 reached twice was NOT flagged',
-      };
-    }
-  }
-  // --- W2-EVO-ORPHAN: bad source --------------------------------------------------
-  {
-    const violations = findEvoOrphansAndBadSources(
-      [22],
-      [{ speciesId: 99, targets: [22] }],
-      new Set([20, 21]),
-    );
-    if (violations.length === 0) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: W2-EVO-ORPHAN — source 99 (not a wave-2 base) was NOT flagged',
-      };
-    }
-  }
-  // --- W2-EVO-ORPHAN: GOOD ---------------------------------------------------------
-  {
-    const violations = findEvoOrphansAndBadSources(
-      [22, 23],
-      [
-        { speciesId: 20, targets: [22] },
-        { speciesId: 21, targets: [23] },
-      ],
-      new Set([20, 21]),
-    );
-    if (violations.length > 0) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH: W2-EVO-ORPHAN — GOOD data was incorrectly flagged: ${violations.join('; ')}`,
-      };
-    }
-  }
-  // --- W2-EVO-ORPHAN (Gap 1 fix): wave-2 base evolving into ANOTHER wave-2 base
-  // must be flagged — this is the exact red-team fixture: Umbraquill (20, base,
-  // wild-legal) -> Gustwyrm (21, base, wild-legal). Both the Rust authority and
-  // the pre-fix version of this checker passed it silently.
-  {
-    const violations = findEvoOrphansAndBadSources(
-      [22, 23],
-      [
-        { speciesId: 20, targets: [22, 21] }, // 21 is a wave-2 BASE id, not derived
-        { speciesId: 21, targets: [23] },
-      ],
-      new Set([20, 21]),
-    );
-    if (!violations.some((v) => v.includes('20') && v.includes('21'))) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH: W2-EVO-ORPHAN (Gap 1) — base-to-base evolution 20 -> 21 (Umbraquill -> Gustwyrm) was NOT flagged',
-      };
-    }
-  }
-  // --- W2-EVO-ORPHAN (Gap 1 fix): wave-2 base evolving to an out-of-band id -------
-  {
-    const violations = findEvoOrphansAndBadSources(
-      [22, 23],
-      [
-        { speciesId: 20, targets: [22] },
-        { speciesId: 21, targets: [23, 1] }, // 1 is out-of-band and not derived
-      ],
-      new Set([20, 21]),
-    );
-    if (!violations.some((v) => v.includes('21') && v.includes(' 1'))) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH: W2-EVO-ORPHAN (Gap 1) — base-to-out-of-band evolution 21 -> 1 was NOT flagged',
-      };
-    }
-  }
-  // --- W2-EVO-ORPHAN (Gap 1 fix): GOOD — base sources targeting ONLY derived ids --
-  {
-    const violations = findEvoOrphansAndBadSources(
-      [22, 23],
-      [
-        { speciesId: 20, targets: [22] },
-        { speciesId: 21, targets: [23] },
-      ],
-      new Set([20, 21]),
-    );
-    if (violations.length > 0) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH: W2-EVO-ORPHAN (Gap 1) — GOOD base-to-derived-only data was incorrectly flagged: ${violations.join('; ')}`,
-      };
-    }
-  }
-
-  // --- W2-BST-MONOTONIC: target BST <= source BST ----------------------------------
-  {
-    const bstById = new Map([
-      [20, 300],
-      [22, 250],
-    ]);
-    const violations = findNonMonotonicEvolutions([{ from: 20, to: 22 }], bstById);
-    if (violations.length === 0) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: W2-BST-MONOTONIC — target BST <= source BST was NOT flagged',
-      };
-    }
-  }
-  // --- W2-BST-MONOTONIC: GOOD -------------------------------------------------------
-  {
-    const bstById = new Map([
-      [20, 300],
-      [22, 400],
-    ]);
-    const violations = findNonMonotonicEvolutions([{ from: 20, to: 22 }], bstById);
-    if (violations.length > 0) {
-      return {
-        name,
-        pass: false,
-        detail: 'TEETH: W2-BST-MONOTONIC — GOOD monotonic BST was incorrectly flagged',
-      };
-    }
-  }
+  // --- W2-EVO-ORPHAN / W2-BST-MONOTONIC teeth RETIRED with their checkers
+  // (EG1/ADR-0174 — evolutions.ron deleted; see header note for successors).
 
   // --- SPR-SET: missing sprite file -------------------------------------------------
   {
@@ -1706,37 +1450,8 @@ export default async function () {
     failures.push(...findMissingSTAB(wave2AllSpecies, skillAffinityById));
   }
 
-  // --- evolutions.ron ---
-  let evolutionBlocks = [];
-  try {
-    const text = stripLineComments(readFileSync(EVOLUTIONS_FILE, 'utf8'));
-    evolutionBlocks = parseEvolutionBlocks(text);
-  } catch (e) {
-    failures.push(`cannot read ${EVOLUTIONS_FILE}: ${e.message}`);
-  }
-
-  const derivedIds = wave2DerivedSpecies.map((s) => s.id);
-  const baseIdSet = new Set(wave2BaseSpecies.map((s) => s.id));
-  // Run whenever EITHER file has content: a base-only registry with no derived
-  // forms yet still needs the Gap-1 base-to-non-derived check to fire (every
-  // target from a wave-2 base source would correctly be flagged as not-derived).
-  if (derivedIds.length > 0 || baseIdSet.size > 0) {
-    failures.push(...findEvoOrphansAndBadSources(derivedIds, evolutionBlocks, baseIdSet));
-  }
-
-  // --- W2-BST-MONOTONIC ---
-  const bstById = new Map(wave2AllSpecies.map((s) => [s.id, sumBaseStats(s.baseStats)]));
-  const derivedSet = new Set(derivedIds);
-  const evoPairs = [];
-  for (const block of evolutionBlocks) {
-    if (!baseIdSet.has(block.speciesId)) continue;
-    for (const target of block.targets) {
-      if (derivedSet.has(target)) evoPairs.push({ from: block.speciesId, to: target });
-    }
-  }
-  if (evoPairs.length > 0) {
-    failures.push(...findNonMonotonicEvolutions(evoPairs, bstById));
-  }
+  // --- evolutions.ron checks (W2-EVO-ORPHAN, W2-BST-MONOTONIC) RETIRED ---
+  // (EG1/ADR-0174 — the file is deleted; see header note for successors.)
 
   // --- SPR-SET ---
   let existingAssetFiles = new Set();
@@ -1829,6 +1544,6 @@ export default async function () {
   return {
     name,
     pass: true,
-    detail: `wave-2 species reserved to 20..=29, no dangling refs, STAB satisfied, no orphan derived forms, no base-to-non-derived evolutions, monotonic evolution BST; full sprite set/format/registration/non-degenerate-silhouette for all ${COVERED.length} COVERED species; generate_monsters.py has unique plans (both quote styles) and does not duplicate the PNG/JSON codec (all proof-of-teeth fixtures verified)${infoLine ? ` | ${infoLine}` : ''}`,
+    detail: `wave-2 species reserved to 20..=29, no dangling refs, STAB satisfied; full sprite set/format/registration/non-degenerate-silhouette for all ${COVERED.length} COVERED species; generate_monsters.py has unique plans (both quote styles) and does not duplicate the PNG/JSON codec (all proof-of-teeth fixtures verified; evolutions.ron checkers retired by EG1/ADR-0174)${infoLine ? ` | ${infoLine}` : ''}`,
   };
 }

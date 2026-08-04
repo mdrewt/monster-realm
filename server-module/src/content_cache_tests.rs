@@ -105,19 +105,23 @@ fn cached_zone_maps_matches_load() {
     }
 }
 
-/// CRITERION 13.5d-1 (evolutions): cached_evolutions() == load_evolutions().
+/// CRITERION 13.5d-1 (evolution paths, EG1-migrated):
+/// cached_evolution_paths() == load_evolution_paths().
 ///
-/// SpeciesEvolutions derives PartialEq, so direct equality is safe.
+/// EG1 mechanical migration (ADR-0174): the SpeciesEvolutions trigger registry
+/// was deleted; the cache now fronts the essence-graph evolution_paths
+/// registry. EvolutionPath derives PartialEq, so direct equality is safe.
 ///
 /// Wrong impl killed: a static populated with a different content snapshot, or
 /// one whose OnceLock is never seeded (returns empty Vec).
 #[test]
-fn cached_evolutions_matches_load() {
-    let cached = cached_evolutions().expect("cached_evolutions must succeed");
-    let loaded = game_core::load_evolutions().expect("game_core::load_evolutions must succeed");
+fn cached_evolution_paths_matches_load() {
+    let cached = cached_evolution_paths().expect("cached_evolution_paths must succeed");
+    let loaded =
+        game_core::load_evolution_paths().expect("game_core::load_evolution_paths must succeed");
     assert_eq!(
         *cached, loaded,
-        "cached_evolutions() data does not match game_core::load_evolutions()"
+        "cached_evolution_paths() data does not match game_core::load_evolution_paths()"
     );
 }
 
@@ -178,18 +182,19 @@ fn cached_zone_maps_ptr_eq_second_call() {
     );
 }
 
-/// CRITERION 13.5d-1 structural (evolutions): two successive calls to
-/// cached_evolutions() return the SAME Vec pointer, proving LazyLock caching.
+/// CRITERION 13.5d-1 structural (evolution paths, EG1-migrated): two successive
+/// calls to cached_evolution_paths() return the SAME Vec pointer, proving
+/// LazyLock caching.
 ///
-/// Wrong impl killed: any impl that calls load_evolutions() on every invocation,
-/// or allocates a new Vec<SpeciesEvolutions> on each call.
+/// Wrong impl killed: any impl that calls load_evolution_paths() on every
+/// invocation, or allocates a new Vec<EvolutionPath> on each call.
 #[test]
-fn cached_evolutions_ptr_eq_second_call() {
-    let first = cached_evolutions().expect("first call must succeed");
-    let second = cached_evolutions().expect("second call must succeed");
+fn cached_evolution_paths_ptr_eq_second_call() {
+    let first = cached_evolution_paths().expect("first call must succeed");
+    let second = cached_evolution_paths().expect("second call must succeed");
     assert!(
         std::ptr::eq(first as *const _, second as *const _),
-        "cached_evolutions() returned different pointers on two calls — \
+        "cached_evolution_paths() returned different pointers on two calls — \
          OnceLock is not caching (the Vec was re-allocated or re-parsed)"
     );
 }
@@ -219,95 +224,14 @@ fn cached_zone_maps_is_consistent_with_map_for() {
 }
 
 // ---------------------------------------------------------------------------
-// 13.5d-1 battle.rs hoist — compute_evolves_to parity
+// EG1 (ADR-0174 D2): the 13.5d-1 battle.rs-hoist parity test
+// (`cached_evolves_to_matches_load_evolves_to`) was DELETED here — its entire
+// subject chain (`compute_evolves_to`, `cached_evolutions`,
+// `game_core::load_evolutions`, the SpeciesEvolutions trigger model, and the
+// battle level-up evolves_to recompute it pinned) is removed outright by the
+// essence-graph redesign. Removal is the mechanical consequence of the deleted
+// subject, not a weakened assertion.
 // ---------------------------------------------------------------------------
-
-/// CRITERION 13.5d-1 (battle.rs hoist): compute_evolves_to called with
-/// evolutions from cached_evolutions() produces the same result as when called
-/// with evolutions from load_evolutions().
-///
-/// This encodes the observational equivalence of the hoist: before the hoist,
-/// write_back_battle_results called load_evolutions() inside the XP loop;
-/// after the hoist, it uses cached_evolutions(). The per-monster evolves_to
-/// output must be unchanged.
-///
-/// Strategy: build a minimal Monster row for species 1 at level 16/bond 50,
-/// look up its evolution branches from both sources, call compute_evolves_to on
-/// each, and assert equality. Works even if there are no evolutions (both
-/// return None). This is deterministic and requires no DB or context.
-///
-/// Wrong impl killed: a cached_evolutions() that returns stale/different content
-/// — a monster that should evolve at level 16 would silently fail to show
-/// evolves_to after battle XP pushes it past level 16.
-#[test]
-fn cached_evolves_to_matches_load_evolves_to() {
-    use crate::schema::Monster;
-    use game_core::NatureKind;
-
-    // Minimal Monster row — only species_id, level, bond are used by
-    // compute_evolves_to (see evolution.rs: builds a MonsterInstance and calls
-    // game_core_evolves_to). The other fields are required to construct the
-    // struct but are unused by the seam. `nickname` is String (not Option),
-    // `party_slot` is u8 (255 = boxed sentinel per PARTY_SLOT_NONE, 0 = slot 0).
-    let m = Monster {
-        monster_id: 1,
-        owner_identity: spacetimedb::Identity::from_byte_array([1u8; 32]),
-        species_id: 1,
-        nickname: String::new(),
-        level: 16, // a level that could trigger a level-based evolution
-        xp: 0,
-        bond: 50,
-        iv_hp: 15,
-        iv_attack: 15,
-        iv_defense: 15,
-        iv_speed: 15,
-        iv_sp_attack: 15,
-        iv_sp_defense: 15,
-        nature_kind: NatureKind::Hardy,
-        ev_hp: 0,
-        ev_attack: 0,
-        ev_defense: 0,
-        ev_speed: 0,
-        ev_sp_attack: 0,
-        ev_sp_defense: 0,
-        stat_hp: 50,
-        stat_attack: 50,
-        stat_defense: 50,
-        stat_speed: 50,
-        stat_sp_attack: 50,
-        stat_sp_defense: 50,
-        current_hp: 50,
-        party_slot: 0,
-        last_care_at_ms: 0,
-        evolves_to: None,
-    };
-
-    // Get evolution slices from both sources for species_id == m.species_id.
-    let cached = cached_evolutions().expect("cached_evolutions must succeed");
-    let loaded = game_core::load_evolutions().expect("load_evolutions must succeed");
-
-    let cached_slice = cached
-        .iter()
-        .find(|se| se.species_id == m.species_id)
-        .map(|se| &se.evolutions[..])
-        .unwrap_or(&[]);
-
-    let loaded_slice = loaded
-        .iter()
-        .find(|se| se.species_id == m.species_id)
-        .map(|se| &se.evolutions[..])
-        .unwrap_or(&[]);
-
-    let result_cached = crate::evolution::compute_evolves_to(cached_slice, m.level, m.bond);
-    let result_loaded = crate::evolution::compute_evolves_to(loaded_slice, m.level, m.bond);
-
-    assert_eq!(
-        result_cached, result_loaded,
-        "compute_evolves_to with cached evolutions ({:?}) differs from \
-         result with freshly-loaded evolutions ({:?}) for species {} level {}",
-        result_cached, result_loaded, m.species_id, m.level
-    );
-}
 
 // ===========================================================================
 // M14.5e — skills + items cache: EARS 14.5e-1 transparency + LazyLock proof

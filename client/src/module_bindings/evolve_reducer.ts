@@ -12,4 +12,5 @@ import {
 
 export default {
   monsterId: __t.u64(),
+  toSpecies: __t.u32(),
 };

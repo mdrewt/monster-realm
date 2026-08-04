@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 139 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 140 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -148,6 +148,7 @@ Generated from 139 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0171](./0171-resume-from-idle-interpolation.md) | 0171 — Resume-from-idle interpolation smoothness: idle-gap-gated jitter EWMA + re-anchored lerp bracket | Accepted | movement-netcode, client-ui | 11r-f (M-postgate-eleventh-review-residuals — resume-from-idle smoothness; EARS E1) | Gate the per-character jitter EWMA to inter-arrival intervals <= 3x stepMs (idleness is not jitter) and re-anchor any interpolation bracket wider than 2x stepMs to [next-stepMs, next], holding at prev below it. |
 | [0172](./0172-test-integrity-and-movement-rejection-diagnostics.md) | 0172 — Test-integrity residuals and movement-rejection diagnostics | Accepted | ci-gates, client-ui, movement-netcode | 11r-h (M-postgate-eleventh-review-residuals — test-integrity & diagnostics residuals; EARS E1-1..E1-2, E2-1..E2-3, E3-1..E3-4, E4-1..E4-4, E5-1..E5-9) | De-vacuify three assertions (RT-SZ-02, F-5f, the M14d weather pin), add a grantBait revival tripwire for R4, and trace movement rejections into the F9 bundle via a rate-limited, overlay-filtered breadcrumb plus a dev fate line. |
 | [0173](./0173-content-registry-gate-coverage-and-schema-migration-reality.md) | 0173 — Content-registry gate coverage, unknown-quest diagnostics, and the real SpacetimeDB additive-schema rules | Accepted | ci-gates, content, schema-persistence | 11r-i (M-postgate-eleventh-review-residuals — gate-coverage extensions; EARS E1-1..E1-11, E2-1..E2-6, E3-1..E3-8, E4-1..E4-8, E5-1..E5-3) | Widen the dialogue gate to the whole registry dir and to node/choice TEXT, extend append-only ids to five more registries (heal_locations excluded), warn once per window on unknown quest ids, and correct the false engine-additive claim. |
+| [0174](./0174-essence-graph-schema-and-type-freeze.md) | 0174 — Essence-graph schema & core-type freeze (Migration A; fusion deleted) | Accepted | evolution-fusion, schema-persistence | EG1 (M-evolution-essence-graph — EARS EG1-1..EG1-12) | Land Migration A (+16 Monster / +12 MonsterPub / Species.tier / new public evolution_path table) and the game-core essence-graph type freeze, deleting fusion outright, so EG2/EG3/EG4 fan out behind one frozen contract. |
 
 ## Harness design corpus (H- namespace)
 
@@ -248,6 +249,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0143](./0143-playtest-roster-wave-1.md) — pt-d1 (M-playtest-d content pack — roster wave 1; EARS pt-d1-1..6) — 0143 — pt-d1 playtest roster wave 1: two new species lines (Earth + Dark) as pure ADR-0057 content, shipped data-complete but not yet wild-obtainable (Accepted)
 - [0147](./0147-fuse-field-carry-and-fusion-eligibility.md) — A0 (M-postgate-evolution-fusion-hardening — fuse() field-carry fix + fusion_eligible extraction; EARS A0-1..A0-9) — 0147 — fuse() field-carry repair (taxed, not reset) + fusion_eligible guard SSOT (Accepted)
 - [0149](./0149-item-triggered-evolution-content.md) — B (M-postgate-evolution-fusion-hardening — item-triggered evolution content; EARS B-1..B-5) — 0149 — item-triggered evolution content (species 7/8 branches, id band 30..=39) (Accepted)
+- [0174](./0174-essence-graph-schema-and-type-freeze.md) — EG1 (M-evolution-essence-graph — EARS EG1-1..EG1-12) — 0174 — Essence-graph schema & core-type freeze (Migration A; fusion deleted) (Accepted)
 
 ### movement-netcode
 
@@ -325,6 +327,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0138](./0138-ptc5b-wild-disconnect-gc.md) — ptc5b (M-playtest-c.5 pre-gate residuals — wild-battle disconnect GC, EARS ptc5b-1..3) — 0138 — ptc5b wild-battle disconnect resolution: auto-flee + GC the `battle`/`battle_wild` rows to unblock returning-player re-entry (Accepted)
 - [0161](./0161-npc-interaction-context-interact.md) — uxd2 (M-postgate-ux-design — shop-via-NPC interaction) — 0161 — Server-anchored NpcInteraction enum and the context-sensitive KeyT interact system (Accepted)
 - [0173](./0173-content-registry-gate-coverage-and-schema-migration-reality.md) — 11r-i (M-postgate-eleventh-review-residuals — gate-coverage extensions; EARS E1-1..E1-11, E2-1..E2-6, E3-1..E3-8, E4-1..E4-8, E5-1..E5-3) — 0173 — Content-registry gate coverage, unknown-quest diagnostics, and the real SpacetimeDB additive-schema rules (Accepted)
+- [0174](./0174-essence-graph-schema-and-type-freeze.md) — EG1 (M-evolution-essence-graph — EARS EG1-1..EG1-12) — 0174 — Essence-graph schema & core-type freeze (Migration A; fusion deleted) (Accepted)
 
 ### client-ui
 

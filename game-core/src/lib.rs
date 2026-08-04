@@ -39,17 +39,17 @@ pub use combat::{
     StatusKind, StatusVariance, TurnChoice, TurnVariance, TypeChart, CHALLENGE_TTL_MS,
 };
 pub use content::{
-    load_abilities, load_dialogue_trees, load_encounters, load_evolutions, load_fusion,
+    load_abilities, load_dialogue_trees, load_encounters, load_evolution_paths,
     load_heal_locations, load_items, load_npc_defs, load_quest_defs, load_shops, load_skills,
     load_species, load_type_chart, load_zone_maps, load_zones, parse_abilities,
-    parse_dialogue_trees, parse_dialogue_trees_parts, parse_encounters, parse_evolutions,
-    parse_fusion, parse_heal_locations, parse_heal_locations_parts, parse_items, parse_npc_defs,
-    parse_npc_defs_parts, parse_quest_defs, parse_quest_defs_parts, parse_shops, parse_skills,
-    parse_species, parse_type_chart, parse_zone_maps, parse_zone_maps_parts, parse_zones,
-    validate_abilities, validate_content, validate_encounters, validate_evolution_fusion,
-    validate_npc_content, validate_npc_interactions, validate_shops, validate_zones, AbilityDef,
-    EvolutionCondition, EvolutionTrigger, FusionRecipe, HealLocationDef, ItemDef, NpcDef, ShopDef,
-    ShopStockEntry, SkillDef, Species, SpeciesEvolutions, TypeRelation, WarpDef, ZoneDef,
+    parse_dialogue_trees, parse_dialogue_trees_parts, parse_encounters, parse_evolution_paths,
+    parse_evolution_paths_parts, parse_heal_locations, parse_heal_locations_parts, parse_items,
+    parse_npc_defs, parse_npc_defs_parts, parse_quest_defs, parse_quest_defs_parts, parse_shops,
+    parse_skills, parse_species, parse_type_chart, parse_zone_maps, parse_zone_maps_parts,
+    parse_zones, validate_abilities, validate_content, validate_encounters,
+    validate_evolution_paths, validate_npc_content, validate_npc_interactions, validate_shops,
+    validate_zones, AbilityDef, EssenceRequirement, EvolutionPath, HealLocationDef, ItemDef,
+    NpcDef, ShopDef, ShopStockEntry, SkillDef, Species, TrustTier, TypeRelation, WarpDef, ZoneDef,
     ZoneMapDef,
 };
 pub use currency::battle_currency_reward;
@@ -59,8 +59,9 @@ pub use dialogue::{
     DialogueTree, PlayerDialogueState,
 };
 pub use evolution::{
-    evolve, evolves_to, fuse, fusion_eligible, resolve_evolution, FusionError, MIN_FUSION_BOND,
-    MIN_FUSION_LEVEL,
+    eligible_evolution_paths, evolve, nutrition_pct_from_ev_total, nutrition_pct_of,
+    path_satisfied, quality_time_tier_of, trust_tier_of, unmet_requirement,
+    QUALITY_TIME_TIER_TICKS, TRUST_BAND_PCT, TRUST_K,
 };
 pub use monster::{
     build_monster, derive_stats, level_bounds, level_for_xp, roll_individuality, roll_starter,

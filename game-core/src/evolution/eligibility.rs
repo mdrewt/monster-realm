@@ -1,566 +1,238 @@
-//! Evolution AND fusion eligibility rules — the pure predicate layer for the
-//! evolution subsystem.
+//! Evolution eligibility — the pure predicate layer of the essence-graph model
+//! (spec EG1-6, ADR-0174).
 //!
-//! `resolve_evolution` is the canonical evolution primitive: it takes the
-//! evolution branch list plus the three eligibility dimensions (level, bond,
-//! applied item) and returns the first matching target species id (FIRST-wins,
-//! declaration order).
+//! `path_satisfied` is the ONE shared gate predicate: it AND-combines an
+//! `EvolutionPath`'s five gates (level, per-`Affinity` essence, Trust,
+//! Quality Time, Nutrition) against a `MonsterInstance`. Both the read path
+//! (`eligible_evolution_paths`, powering the requirements panel and the
+//! multi-choice UX) and the write path (the server `evolve` reducer's single
+//! targeted row) call it — one predicate, so they cannot drift.
 //!
-//! `evolves_to` is the passive convenience wrapper: it reads level+bond from a
-//! `MonsterInstance` and passes `None` for the item slot (passive check, no item
-//! applied). It delegates to `resolve_evolution` — ONE implementation path (SSOT).
+//! `unmet_requirement` is its explanatory twin: the SAME gate order, rendered
+//! as the player-facing reason. It lives here rather than in the reducer so
+//! the rejection message and the client requirements panel (EG4-1, which ports
+//! this logic) describe a gate identically — gate-describing logic is rules,
+//! not reducer plumbing.
 //!
-//! `fusion_eligible` is the fusion gate (ADR-0147): self-fusion and
-//! under-invested parents (below `MIN_FUSION_LEVEL`/`MIN_FUSION_BOND`, raw
-//! pre-tax values) are rejected. Both the real `fuse` reducer and the
-//! `fuse_seam` test double delegate here — ONE guard SSOT, never hand-copied.
+//! All three derived tiers come from `MonsterInstance` fields, never from a
+//! caller-computed argument: `trust_tier_of` (Bayesian-smoothed, `K = 10`),
+//! `quality_time_tier_of` (tick bands), `nutrition_pct_of` (the EV pool as a
+//! percentage of its 510 budget).
 //!
-//! No wildcard `_` arms on `EvolutionTrigger`: a new variant MUST compiler-flag
-//! every match here (exhaustiveness guard, ADR-0061 §non_exhaustive note).
+//! Fusion is DELETED, not repurposed (`fusion_eligible`, `FusionError`,
+//! `MIN_FUSION_LEVEL`, `MIN_FUSION_BOND`), as are `resolve_evolution` and
+//! `evolves_to` — the whole trigger model they served no longer exists.
+//!
+//! Pure and deterministic (ADR-0003): integer math only, no floats, no clock,
+//! no RNG.
 
-use crate::content::{EvolutionCondition, EvolutionTrigger};
-use crate::monster::types::{Bond, Level, MonsterInstance};
+use crate::content::{EvolutionPath, TrustTier};
+use crate::monster::types::{EVs, MonsterInstance, EV_TOTAL_CAP};
 
-/// Minimum level BOTH parents need before they may be fused (ADR-0147).
-pub const MIN_FUSION_LEVEL: u8 = 10;
+/// Bayesian smoothing constant for Trust (spec EG1-6, ADR-0174 D4).
+///
+/// `smoothed = (fav + K) / (fav + unfav + 2K)`. FIXED by directive — unlike the
+/// band boundaries, this is a structural design choice, not a playtest knob:
+/// it is what stops a single favorable event from saturating the ratio to 1.0.
+pub const TRUST_K: u32 = 10;
 
-/// Minimum raw (pre-tax) bond BOTH parents need before they may be fused
-/// (ADR-0147). Paired with the `FUSION_EFFICIENCY` output tax in `transform.rs`
-/// (`120 × 75% = 90 < 120`): a minimum-bond pair's offspring is NOT immediately
-/// re-fusable — bond must be regrown through cooldown-gated care first.
-pub const MIN_FUSION_BOND: u8 = 120;
+/// Lower bounds (percent, INCLUSIVE) of the four upper Trust bands, ascending:
+/// `>= 30%` Wary, `>= 45%` Neutral, `>= 60%` Friendly, `>= 80%` Devoted.
+/// Below the first band is `Hostile`. Playtest-tunable (spec §6).
+pub const TRUST_BAND_PCT: [u32; 4] = [30, 45, 60, 80];
 
-/// Why a fusion pair is ineligible (ADR-0147). Unit variants, no payload — the
-/// server boundary owns the player-facing message mapping (CareError precedent).
-/// Deliberately NOT `#[non_exhaustive]`: a new variant must compiler-flag every
-/// consumer match (ADR-0061 exhaustiveness discipline).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FusionError {
-    /// The two ids name the same monster.
-    SelfFusion,
-    /// Either parent is below `MIN_FUSION_LEVEL`.
-    BelowMinLevel,
-    /// Either parent's raw pre-tax bond is below `MIN_FUSION_BOND`.
-    BelowMinBond,
+/// Lower bounds (INCLUSIVE) of Quality-Time tiers 1..=4 in lifetime ticks.
+/// Below the first entry is tier 0. Playtest-tunable (spec §6).
+pub const QUALITY_TIME_TIER_TICKS: [u32; 4] = [10, 50, 150, 400];
+
+/// The level gate: INCLUSIVE `>=` against `path.min_level`.
+fn level_gate_met(instance: &MonsterInstance, path: &EvolutionPath) -> bool {
+    instance.level >= path.min_level
 }
 
-/// Pure fusion eligibility gate (ADR-0147): rejects self-fusion, then either
-/// parent below `MIN_FUSION_LEVEL`, then either parent below `MIN_FUSION_BOND`
-/// (checked on raw pre-tax values). Check order is part of the contract — the
-/// eligibility-parity tests pin it.
-///
-/// `MonsterInstance` carries no identity, so the caller passes the two monster
-/// ids as opaque handles compared only for equality (the recorded deviation
-/// from the spec's two-argument signature — ADR-0147).
-///
-/// # Errors
-/// Returns the first failing `FusionError` in the order above.
-pub fn fusion_eligible(
-    a_id: u64,
-    b_id: u64,
-    a: &MonsterInstance,
-    b: &MonsterInstance,
-) -> Result<(), FusionError> {
-    if a_id == b_id {
-        return Err(FusionError::SelfFusion);
-    }
-    if a.level.as_u8() < MIN_FUSION_LEVEL || b.level.as_u8() < MIN_FUSION_LEVEL {
-        return Err(FusionError::BelowMinLevel);
-    }
-    if a.bond.value() < MIN_FUSION_BOND || b.bond.value() < MIN_FUSION_BOND {
-        return Err(FusionError::BelowMinBond);
-    }
-    Ok(())
+/// The essence gate: EVERY entry satisfied (AND), looked up by `Affinity`
+/// (never by list position). An empty list imposes no requirement.
+fn essence_gate_met(instance: &MonsterInstance, path: &EvolutionPath) -> bool {
+    path.essence
+        .iter()
+        .all(|req| instance.essence[req.affinity.index()] >= req.amount)
 }
 
-/// Resolve which species `evolutions` says the monster evolves into, given its
-/// current `level`, `bond`, and an optionally `applied_item` id.
-///
-/// Returns the `to_species` id of the FIRST matching branch in declaration order,
-/// or `None` if no branch matches. Item branches NEVER fire on a passive `None`
-/// check (the item must have been explicitly applied).
-///
-/// Trigger semantics (INCLUSIVE on both sides):
-/// - `Level(l)` fires when `level >= l`
-/// - `Bond(b)` fires when `bond >= b`
-/// - `Item(id)` fires when `applied_item == Some(id)` (exact id match, never on `None`)
-#[must_use]
-pub fn resolve_evolution(
-    evolutions: &[EvolutionCondition],
-    level: Level,
-    bond: Bond,
-    applied_item: Option<u32>,
-) -> Option<u32> {
-    // FIRST-wins, declaration order. The `match` is EXHAUSTIVE with NO wildcard
-    // arm so a future `EvolutionTrigger` variant compiler-flags here (ADR-0061).
-    evolutions.iter().find_map(|cond| {
-        let fires = match cond.trigger {
-            EvolutionTrigger::Level(l) => level >= l,
-            EvolutionTrigger::Bond(b) => bond >= b,
-            EvolutionTrigger::Item(id) => applied_item == Some(id),
-        };
-        fires.then_some(cond.to_species)
+/// The Trust gate: `Ord >=` on the smoothed tier; `None` is permissive.
+fn trust_gate_met(instance: &MonsterInstance, path: &EvolutionPath) -> bool {
+    path.min_trust_tier.is_none_or(|tier| {
+        trust_tier_of(
+            instance.trust_favorable_count,
+            instance.trust_unfavorable_count,
+        ) >= tier
     })
 }
 
-/// Passive convenience wrapper: checks whether `monster` is eligible to evolve
-/// without any item being applied (i.e. `applied_item = None`).
-///
-/// Equivalent to `resolve_evolution(&evolutions, monster.level, monster.bond, None)`.
-/// Delegates to `resolve_evolution` (single implementation path — SSOT).
-#[must_use]
-pub fn evolves_to(evolutions: &[EvolutionCondition], monster: &MonsterInstance) -> Option<u32> {
-    resolve_evolution(evolutions, monster.level, monster.bond, None)
+/// The Quality-Time gate: `>=` on the tick-banded tier; `None` is permissive.
+fn quality_time_gate_met(instance: &MonsterInstance, path: &EvolutionPath) -> bool {
+    path.min_quality_time_tier
+        .is_none_or(|tier| quality_time_tier_of(instance.quality_time_ticks_total) >= tier)
 }
 
-// ============================================================================
-// Eligibility unit and boundary tests (M10a-rules, criteria 1–7 + #19 note)
-// ============================================================================
+/// The Nutrition gate: `>=` on the EV-budget percentage; `None` is permissive.
+fn nutrition_gate_met(instance: &MonsterInstance, path: &EvolutionPath) -> bool {
+    path.min_nutrition_pct
+        .is_none_or(|pct| nutrition_pct_of(&instance.evs) >= pct)
+}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::content::{EvolutionCondition, EvolutionTrigger};
-    use crate::monster::rules::derive_stats;
-    use crate::monster::types::{
-        Bond, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock, Xp,
-    };
-    // A0 T-reach: `apply_care` is the ONLY bond writer in the game, so the fusion
-    // bond minimum's real cost is measured in care actions (ADR-0140 moved these
-    // constants into `game-core::raising`).
-    use crate::raising::CARE_BOND_AMOUNT;
+/// Does `instance` satisfy EVERY gate on `path`?
+///
+/// AND-combination of all five gates. A `None` history gate is PERMISSIVE
+/// (absent, not "requires the lowest tier"); an empty `essence` list imposes no
+/// essence requirement. Essence is matched by `Affinity`, never by position.
+/// Thresholds are INCLUSIVE (`>=`).
+///
+/// Does NOT check `from_species` — that is `eligible_evolution_paths`' filter
+/// and the reducer's indexed lookup.
+#[must_use]
+pub fn path_satisfied(instance: &MonsterInstance, path: &EvolutionPath) -> bool {
+    level_gate_met(instance, path)
+        && essence_gate_met(instance, path)
+        && trust_gate_met(instance, path)
+        && quality_time_gate_met(instance, path)
+        && nutrition_gate_met(instance, path)
+}
 
-    // -----------------------------------------------------------------------
-    // Fixture helpers
-    // -----------------------------------------------------------------------
-
-    fn lv(n: u8) -> Level {
-        Level::new(n).unwrap()
+/// Why `instance` does NOT satisfy `path` — `None` exactly when
+/// [`path_satisfied`] returns `true`.
+///
+/// Lives HERE, not in the server reducer (EG1-6's shared-predicate rule): the
+/// reducer's "reject naming the specific failing requirement" message (EG2-1)
+/// and the EG4 client requirements panel must describe the SAME gate the SAME
+/// way, so the description logic is rules-layer state, not reducer state.
+///
+/// Returns the FIRST unmet gate in the canonical gate order
+/// `level -> essence -> trust -> quality time -> nutrition`. The message names
+/// the gate (containing the keyword `level` / `essence` plus the offending
+/// `Affinity` / `trust` / `quality` / `nutrition`) AND that path's own
+/// threshold value — never a hardcoded constant, since two edges out of the
+/// same species routinely carry different thresholds.
+#[must_use]
+pub fn unmet_requirement(instance: &MonsterInstance, path: &EvolutionPath) -> Option<String> {
+    if !level_gate_met(instance, path) {
+        return Some(format!("requires level {}", path.min_level.as_u8()));
     }
-
-    fn bond(n: u8) -> Bond {
-        Bond::new(n)
+    if !essence_gate_met(instance, path) {
+        // Name the FIRST unmet entry — the same list order the gate checks.
+        let unmet = path
+            .essence
+            .iter()
+            .find(|req| instance.essence[req.affinity.index()] < req.amount)
+            .expect("essence gate reported unmet, so an unmet entry exists");
+        return Some(format!(
+            "requires {} {:?} essence",
+            unmet.amount, unmet.affinity
+        ));
     }
-
-    fn cond_level(threshold: u8, to_species: u32) -> EvolutionCondition {
-        EvolutionCondition {
-            trigger: EvolutionTrigger::Level(lv(threshold)),
-            to_species,
-        }
+    if !trust_gate_met(instance, path) {
+        let tier = path
+            .min_trust_tier
+            .expect("trust gate reported unmet, so a threshold is present");
+        return Some(format!("requires trust tier {tier:?}"));
     }
-
-    fn cond_bond(threshold: u8, to_species: u32) -> EvolutionCondition {
-        EvolutionCondition {
-            trigger: EvolutionTrigger::Bond(bond(threshold)),
-            to_species,
-        }
+    if !quality_time_gate_met(instance, path) {
+        let tier = path
+            .min_quality_time_tier
+            .expect("quality-time gate reported unmet, so a threshold is present");
+        return Some(format!("requires quality time tier {tier}"));
     }
-
-    fn cond_item(item_id: u32, to_species: u32) -> EvolutionCondition {
-        EvolutionCondition {
-            trigger: EvolutionTrigger::Item(item_id),
-            to_species,
-        }
+    if !nutrition_gate_met(instance, path) {
+        let pct = path
+            .min_nutrition_pct
+            .expect("nutrition gate reported unmet, so a threshold is present");
+        return Some(format!("requires nutrition {pct}%"));
     }
+    None
+}
 
-    /// Build a minimal `MonsterInstance` for passive `evolves_to` tests.
-    fn fixture_monster(level: u8, bond_val: u8) -> MonsterInstance {
-        let base = StatBlock {
-            hp: 45,
-            attack: 49,
-            defense: 49,
-            speed: 65,
-            sp_attack: 65,
-            sp_defense: 45,
-        };
-        let ivs = IVs::new(15, 15, 15, 15, 15, 15).unwrap();
-        let evs = EVs::zero();
-        let nature = Nature::new(NatureKind::Hardy);
-        let lv = Level::new(level).unwrap();
-        let derived_stats = derive_stats(&base, &ivs, &evs, &nature, lv);
-        MonsterInstance {
-            species_id: 1,
-            nickname: None,
-            level: lv,
-            xp: Xp::new(level as u32 * level as u32 * level as u32),
-            ivs,
-            nature,
-            evs,
-            bond: Bond::new(bond_val),
-            current_hp: derived_stats.hp,
-            derived_stats,
-            party_slot: None,
-        }
-    }
+/// Indices INTO `paths` of every edge whose `from_species` matches the
+/// monster's current species AND whose gates are all satisfied.
+///
+/// Returns the FULL eligible set — never a first-match winner (EG2-2): a
+/// monster simultaneously eligible for two paths yields both indices, which is
+/// what the player-choice UX is built on.
+#[must_use]
+pub fn eligible_evolution_paths(instance: &MonsterInstance, paths: &[EvolutionPath]) -> Vec<usize> {
+    paths
+        .iter()
+        .enumerate()
+        .filter(|(_, path)| {
+            path.from_species == instance.species_id && path_satisfied(instance, path)
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
 
-    // -----------------------------------------------------------------------
-    // Criterion 1 — Level boundary INCLUSIVE
-    // kills: a `>` (strict) impl instead of `>=` (inclusive)
-    // -----------------------------------------------------------------------
+/// Trust tier from the lifetime favorable/unfavorable counts, with Drew's
+/// Bayesian smoothing applied BEFORE any band lookup (EG1-6):
+/// `smoothed = (fav + TRUST_K) / (fav + unfav + 2 * TRUST_K)`.
+///
+/// Evaluated in integer math by cross-multiplication against `TRUST_BAND_PCT`
+/// (no floats in game-core, ADR-0003). Zero history is exactly 50% -> `Neutral`.
+/// Must be TOTAL: the widened sum must not overflow for `fav`/`unfav` at
+/// `u32::MAX` (the workspace builds release with overflow checks on).
+#[must_use]
+pub fn trust_tier_of(favorable: u32, unfavorable: u32) -> TrustTier {
+    /// The five tiers in the same ascending order the bands climb — index N is
+    /// the tier reached by clearing exactly N band floors.
+    const ASCENDING: [TrustTier; 5] = [
+        TrustTier::Hostile,
+        TrustTier::Wary,
+        TrustTier::Neutral,
+        TrustTier::Friendly,
+        TrustTier::Devoted,
+    ];
+    // Widen each operand to u64 BEFORE any addition: fav/unfav at u32::MAX must
+    // not overflow (the workspace builds release with overflow checks on).
+    let numerator = (u64::from(favorable) + u64::from(TRUST_K)) * 100;
+    let denominator = u64::from(favorable) + u64::from(unfavorable) + 2 * u64::from(TRUST_K);
+    // The bands ascend, so the cleared set is a prefix and its count IS the
+    // tier index (0 = Hostile .. 4 = Devoted). Inclusive `>=`: an exact tie
+    // resolves upward.
+    let cleared = TRUST_BAND_PCT
+        .iter()
+        .filter(|&&band_pct| numerator >= u64::from(band_pct) * denominator)
+        .count();
+    ASCENDING[cleared]
+}
 
-    /// Criterion 1a: level 15 is BELOW threshold 16 → None.
-    /// Discriminator: proves the boundary is at 16, not 15.
-    #[test]
-    fn level_trigger_below_threshold_yields_none() {
-        // kills: an impl that uses level > 15 (accepting 15 as matching)
-        let evolutions = vec![cond_level(16, 4)];
-        assert_eq!(
-            resolve_evolution(&evolutions, lv(15), bond(0), None),
-            None,
-            "level 15 is below threshold 16 — must not match"
-        );
-    }
+/// Quality-Time tier (0..=4) from lifetime ticks, banded by
+/// `QUALITY_TIME_TIER_TICKS` with INCLUSIVE lower bounds. Saturates at 4.
+#[must_use]
+pub fn quality_time_tier_of(ticks: u32) -> u8 {
+    // The bands ascend, so the reached set is a prefix and its count is the
+    // tier; 4 bands means the count (and so the tier) saturates at 4.
+    let reached = QUALITY_TIME_TIER_TICKS
+        .iter()
+        .filter(|&&band| ticks >= band)
+        .count();
+    u8::try_from(reached).expect("at most 4 bands exist, which fits a u8")
+}
 
-    /// Criterion 1b: level 16 equals threshold exactly → Some(4).
-    /// THIS is the discriminator that kills `>` instead of `>=`.
-    #[test]
-    fn level_trigger_at_threshold_is_inclusive() {
-        // kills: `level > threshold` (strict) — level==threshold would return None
-        let evolutions = vec![cond_level(16, 4)];
-        assert_eq!(
-            resolve_evolution(&evolutions, lv(16), bond(0), None),
-            Some(4),
-            "level == threshold (16) must match INCLUSIVELY"
-        );
-    }
+/// Nutrition as a percentage (0..=100) of the EV budget: the existing EV pool
+/// relabeled, no new storage (spec §1). Delegates to
+/// [`nutrition_pct_from_ev_total`] so the server's row-based caller and this
+/// instance-based one share ONE formula (ADR-0174 D3).
+#[must_use]
+pub fn nutrition_pct_of(evs: &EVs) -> u8 {
+    nutrition_pct_from_ev_total(evs.total())
+}
 
-    /// Criterion 1c: level 17 exceeds threshold 16 → Some(4).
-    #[test]
-    fn level_trigger_above_threshold_matches() {
-        let evolutions = vec![cond_level(16, 4)];
-        assert_eq!(
-            resolve_evolution(&evolutions, lv(17), bond(0), None),
-            Some(4),
-            "level 17 > threshold 16 — must match"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Criterion 2 — Bond boundary INCLUSIVE
-    // kills: `>` (strict) instead of `>=` (inclusive)
-    // -----------------------------------------------------------------------
-
-    /// Criterion 2a: bond 199 below threshold 200 → None.
-    #[test]
-    fn bond_trigger_below_threshold_yields_none() {
-        // kills: treating bond==200 as "not yet reached"
-        let evolutions = vec![cond_bond(200, 5)];
-        assert_eq!(
-            resolve_evolution(&evolutions, lv(1), bond(199), None),
-            None,
-            "bond 199 < threshold 200 — must not match"
-        );
-    }
-
-    /// Criterion 2b: bond 200 equals threshold exactly → Some(5).
-    /// THIS is the discriminator that kills `>` instead of `>=`.
-    #[test]
-    fn bond_trigger_at_threshold_is_inclusive() {
-        // kills: `bond > threshold` — bond==threshold would return None
-        let evolutions = vec![cond_bond(200, 5)];
-        assert_eq!(
-            resolve_evolution(&evolutions, lv(1), bond(200), None),
-            Some(5),
-            "bond == threshold (200) must match INCLUSIVELY"
-        );
-    }
-
-    /// Criterion 2c: bond 201 above threshold 200 → Some(5).
-    #[test]
-    fn bond_trigger_above_threshold_matches() {
-        let evolutions = vec![cond_bond(200, 5)];
-        assert_eq!(
-            resolve_evolution(&evolutions, lv(1), bond(201), None),
-            Some(5),
-            "bond 201 > threshold 200 — must match"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Criterion 3 — FIRST-wins when multiple branches match
-    // kills: last-wins, collect-all, nondeterministic iteration
-    // -----------------------------------------------------------------------
-
-    /// Criterion 3: both Level(16) and Bond(200) match simultaneously → first branch wins.
-    /// Species has [Level(16)->4, Bond(200)->5]; at level=16 AND bond=200 both fire.
-    /// FIRST-wins = Level branch = Some(4), not Some(5).
-    #[test]
-    fn first_wins_when_multiple_branches_match() {
-        // kills: last-wins (would return Some(5)) / collect-all / nondeterministic order
-        let evolutions = vec![cond_level(16, 4), cond_bond(200, 5)];
-        assert_eq!(
-            resolve_evolution(&evolutions, lv(16), bond(200), None),
-            Some(4),
-            "FIRST-wins: Level branch (idx 0) must win over Bond branch (idx 1)"
-        );
-    }
-
-    /// Criterion 3 (swapped order): Bond first in list → Bond branch wins.
-    /// Confirms it is truly declaration order, not trigger type priority.
-    #[test]
-    fn first_wins_respects_declaration_order() {
-        // kills: a type-based priority (e.g. Level always beats Bond)
-        let evolutions = vec![cond_bond(200, 5), cond_level(16, 4)];
-        assert_eq!(
-            resolve_evolution(&evolutions, lv(16), bond(200), None),
-            Some(5),
-            "Bond is first in list — must win (declaration order, not type priority)"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Criterion 4 — Item NEVER fires on a passive None check
-    // kills: treating Item like passive state / unwrapping None
-    // -----------------------------------------------------------------------
-
-    /// Criterion 4: Item trigger with applied_item=None → None (never passive).
-    /// Max level and max bond — the item branch must still not fire.
-    #[test]
-    fn item_trigger_never_fires_passively() {
-        // kills: `applied_item.is_some()` / treating None as "any item" / unwrap
-        let evolutions = vec![cond_item(42, 99)];
-        assert_eq!(
-            resolve_evolution(&evolutions, lv(100), bond(255), None),
-            None,
-            "Item(42) with applied_item=None must NEVER match (even at max level/bond)"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Criterion 5 — Item exact id match
-    // kills: `is_some()` instead of `== Some(id)`
-    // -----------------------------------------------------------------------
-
-    /// Criterion 5a: applied_item=Some(42) matches Item(42) → Some(99).
-    #[test]
-    fn item_trigger_matches_exact_id() {
-        // kills: any impl that does not check the item id (e.g. `applied_item.is_some()`)
-        let evolutions = vec![cond_item(42, 99)];
-        assert_eq!(
-            resolve_evolution(&evolutions, lv(1), bond(0), Some(42)),
-            Some(99),
-            "Item(42) with applied_item=Some(42) must match and return 99"
-        );
-    }
-
-    /// Criterion 5b: applied_item=Some(99) does NOT match Item(42) → None.
-    /// Kills: `is_some()` which would incorrectly match any item id.
-    #[test]
-    fn item_trigger_rejects_wrong_id() {
-        // kills: `applied_item.is_some()` — would return Some(99) for item 99 too
-        let evolutions = vec![cond_item(42, 99)];
-        assert_eq!(
-            resolve_evolution(&evolutions, lv(1), bond(0), Some(99)),
-            None,
-            "Item(42) with applied_item=Some(99) must NOT match (wrong item id)"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Criterion 6 — Empty/non-matching branch list → None (no panic)
-    // -----------------------------------------------------------------------
-
-    /// Criterion 6a: empty evolutions list → None (no panic).
-    #[test]
-    fn empty_evolutions_yields_none_no_panic() {
-        // kills: an impl that panics on empty slice (e.g. [0] index)
-        let result = resolve_evolution(&[], lv(100), bond(255), Some(42));
-        assert_eq!(
-            result, None,
-            "empty branch list must return None, not panic"
-        );
-    }
-
-    /// Criterion 6b: non-matching conditions → None.
-    #[test]
-    fn non_matching_conditions_yield_none() {
-        // Level too low, bond too low, no item applied
-        let evolutions = vec![cond_level(50, 4), cond_bond(200, 5), cond_item(99, 7)];
-        assert_eq!(
-            resolve_evolution(&evolutions, lv(10), bond(100), None),
-            None,
-            "no conditions match — must return None"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Criterion 7 — evolves_to is the passive seam over resolve_evolution
-    // kills: a separate implementation that diverges from resolve_evolution
-    // -----------------------------------------------------------------------
-
-    /// Criterion 7: evolves_to(evolutions, monster) == resolve_evolution(evolutions, monster.level, monster.bond, None).
-    #[test]
-    fn evolves_to_matches_resolve_evolution_with_none_item() {
-        // kills: a parallel impl that may diverge (e.g. off-by-one on level/bond)
-        let evolutions = vec![cond_level(16, 4), cond_bond(200, 5)];
-
-        // Test multiple (level, bond) combinations
-        for (lv_val, bond_val) in [(15u8, 199u8), (16, 100), (1, 200), (16, 200)] {
-            let monster = fixture_monster(lv_val, bond_val);
-            let direct = resolve_evolution(&evolutions, lv(lv_val), bond(bond_val), None);
-            let via_wrapper = evolves_to(&evolutions, &monster);
-            assert_eq!(
-                direct, via_wrapper,
-                "evolves_to must equal resolve_evolution(..., None) for level={lv_val} bond={bond_val}"
-            );
-        }
-    }
-
-    // =======================================================================
-    // A0-7 (ADR-0147) — `fusion_eligible` gate: T17–T23 + T-reach
-    //
-    // Check order under test (D4): self -> level (EITHER parent) -> bond (EITHER
-    // parent). `FusionError` variants are payload-free, so only the CATEGORY order
-    // is observable — that is exactly what T22 pins.
-    //
-    // Every fixture below sits STRICTLY above the minimum it is not testing, so a
-    // `<` -> `!=` mutation cannot hide behind an exact-boundary-only fixture.
-    // =======================================================================
-
-    /// T17: the EXACT minimums (level 10, bond 120 on BOTH parents) → `Ok(())`.
-    #[test]
-    fn fusion_eligible_accepts_the_exact_minimums() {
-        // kills: `>` / `<=` boundary bugs — a strict impl rejects level==10 or bond==120
-        assert_eq!(
-            fusion_eligible(1, 2, &fixture_monster(10, 120), &fixture_monster(10, 120)),
-            Ok(()),
-            "level 10 / bond 120 is the INCLUSIVE minimum on both parents — must be Ok"
-        );
-    }
-
-    /// T17b: strictly ABOVE both minimums → `Ok(())`.
-    #[test]
-    fn fusion_eligible_accepts_strictly_above_the_minimums() {
-        // kills: `<` -> `!=` mutants, which survive an exact-boundary-only Ok fixture
-        assert_eq!(
-            fusion_eligible(1, 2, &fixture_monster(50, 200), &fixture_monster(50, 200)),
-            Ok(()),
-            "levels 50 / bonds 200 are strictly above both minimums — must be Ok"
-        );
-    }
-
-    /// T18: the same monster id on both sides is `SelfFusion`, whatever its stats.
-    #[test]
-    fn fusion_eligible_rejects_self_fusion() {
-        // kills: dropping the id comparison entirely; comparing the INSTANCES
-        // (identical stats would then read as "different monsters")
-        assert_eq!(
-            fusion_eligible(7, 7, &fixture_monster(50, 200), &fixture_monster(50, 200)),
-            Err(FusionError::SelfFusion),
-            "the same monster id on both sides must be SelfFusion even with perfect stats"
-        );
-    }
-
-    /// T19: identity is checked BEFORE the stat gates.
-    #[test]
-    fn fusion_eligible_reports_self_fusion_before_stat_failures() {
-        // kills: level/bond checked first — a level-1 bond-0 self-fuse would then
-        // report BelowMinLevel and the reducer's self-fusion message would drift
-        assert_eq!(
-            fusion_eligible(7, 7, &fixture_monster(1, 0), &fixture_monster(1, 0)),
-            Err(FusionError::SelfFusion),
-            "a level-1 / bond-0 self-fuse must report SelfFusion, not BelowMinLevel"
-        );
-    }
-
-    /// T20: level below the minimum on EITHER parent → `BelowMinLevel`.
-    /// Both fixtures carry bond 200 (strictly above 120) so bond can never fire.
-    #[test]
-    fn fusion_eligible_rejects_level_below_minimum_on_either_parent() {
-        // kills: `&&` instead of `||` (only both-below rejects), a-only, b-only
-        assert_eq!(
-            fusion_eligible(1, 2, &fixture_monster(9, 200), &fixture_monster(50, 200)),
-            Err(FusionError::BelowMinLevel),
-            "parent a at level 9 must be rejected (kills b-only and && forms)"
-        );
-        assert_eq!(
-            fusion_eligible(1, 2, &fixture_monster(50, 200), &fixture_monster(9, 200)),
-            Err(FusionError::BelowMinLevel),
-            "parent b at level 9 must be rejected (kills a-only and && forms)"
-        );
-    }
-
-    /// T21: bond below the minimum on EITHER parent → `BelowMinBond`.
-    /// Both fixtures carry level 50 (strictly above 10) so level can never fire.
-    #[test]
-    fn fusion_eligible_rejects_bond_below_minimum_on_either_parent() {
-        // kills: `&&` instead of `||`, a-only, b-only, and a POST-TAX bond check
-        // (the gate reads the raw stored bond, not 119 * 75 / 100)
-        assert_eq!(
-            fusion_eligible(1, 2, &fixture_monster(50, 119), &fixture_monster(50, 200)),
-            Err(FusionError::BelowMinBond),
-            "parent a at bond 119 must be rejected (kills b-only and && forms)"
-        );
-        assert_eq!(
-            fusion_eligible(1, 2, &fixture_monster(50, 200), &fixture_monster(50, 119)),
-            Err(FusionError::BelowMinBond),
-            "parent b at bond 119 must be rejected (kills a-only and && forms)"
-        );
-    }
-
-    /// T22: level is the COARSER gate and is reported before bond.
-    #[test]
-    fn fusion_eligible_reports_level_before_bond() {
-        // kills: bond-checked-first (would report BelowMinBond and drift the
-        // server-side message mapping away from the parity matrix)
-        assert_eq!(
-            fusion_eligible(1, 2, &fixture_monster(9, 200), &fixture_monster(50, 119)),
-            Err(FusionError::BelowMinLevel),
-            "a level failure on a and a bond failure on b must report BelowMinLevel"
-        );
-    }
-
-    /// T23: the two published minimums are pinned to their spec values.
-    #[test]
-    fn fusion_minimum_constants_are_pinned() {
-        // kills: a silent retune of either constant (every other test in this file
-        // hardcodes its expectations, so a retune must land HERE first)
-        assert_eq!(
-            MIN_FUSION_LEVEL, 10u8,
-            "MIN_FUSION_LEVEL must be exactly 10 (spec A0-7)"
-        );
-        assert_eq!(
-            MIN_FUSION_BOND, 120u8,
-            "MIN_FUSION_BOND must be exactly 120 (spec A0-7)"
-        );
-    }
-
-    /// T-reach: `MIN_FUSION_BOND` must stay REACHABLE by real play. `apply_care`
-    /// (+`CARE_BOND_AMOUNT` per action, 6h cooldown) is the only bond writer, so a
-    /// default-bond monster needs exactly 10 care actions to become fusable.
-    /// The 10 is hardcoded: any retune of `MIN_FUSION_BOND`, `CARE_BOND_AMOUNT`, or
-    /// `Bond::default_bond()` must surface here as a wall-clock grind change.
-    #[test]
-    fn fusion_bond_minimum_is_ten_care_actions_above_default_bond() {
-        // kills: a silent MIN_FUSION_BOND / CARE_BOND_AMOUNT / default_bond retune
-        // that quietly changes the fusion grind without any other test going red
-        let gap = u32::from(MIN_FUSION_BOND) - u32::from(Bond::default_bond().value());
-        assert_eq!(
-            gap, 50,
-            "the fusion bond gap above default bond must be 50 (120 - 70)"
-        );
-        assert_eq!(
-            gap / u32::from(CARE_BOND_AMOUNT),
-            10,
-            "MIN_FUSION_BOND must be exactly 10 apply_care actions above Bond::default_bond()"
-        );
-        // Exactness (not just the floor of the division): 10 whole care actions land
-        // EXACTLY on the minimum — no truncated 11th partial action hiding in the gap.
-        assert_eq!(
-            10 * u32::from(CARE_BOND_AMOUNT),
-            gap,
-            "10 care actions must land exactly on MIN_FUSION_BOND, not merely past it"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // #19 exhaustiveness guard (comment, not a runtime test)
-    //
-    // NO wildcard `_` arm is used in the match on `EvolutionTrigger` inside
-    // `resolve_evolution`. Adding a new `EvolutionTrigger` variant to `content.rs`
-    // MUST produce a compile error in `eligibility.rs`, forcing the implementer to
-    // handle the new trigger explicitly (exhaustiveness as a compiler gate).
-    //
-    // The spec forbids `#[non_exhaustive]` on `EvolutionTrigger` for exactly this reason.
-    // -----------------------------------------------------------------------
+/// Nutrition percentage from a raw EV total. `pub` (not `pub(crate)`) because
+/// `server-module`'s marshal layer computes `MonsterPub.nutrition_pct` from a
+/// stored total across the crate boundary.
+///
+/// `0 -> 0`, the full `EV_TOTAL_CAP` (510) -> 100, and the result NEVER exceeds
+/// 100 even if a caller passes a total above the budget.
+#[must_use]
+pub fn nutrition_pct_from_ev_total(total: u16) -> u8 {
+    // Clamp BEFORE scaling so an out-of-budget total reads 100, never above.
+    let clamped = u32::from(total.min(EV_TOTAL_CAP));
+    let pct = clamped * 100 / u32::from(EV_TOTAL_CAP);
+    u8::try_from(pct).expect("min(total, 510) * 100 / 510 is at most 100, which fits a u8")
 }
