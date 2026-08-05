@@ -592,6 +592,90 @@ fn unmet_requirement_names_each_gate() {
     );
 }
 
+// MUTATION SURVIVOR NOTE (eligibility.rs:125:64, `<` -> `<=` in
+// `unmet_requirement`'s essence branch:
+// `.find(|req| instance.essence[req.affinity.index()] < req.amount)`):
+// every existing essence fixture above (`five_gate_path` /
+// `second_five_gate_path`) carries a SINGLE essence entry, so `<` and `<=`
+// select the very same entry and produce the very same message — the
+// mutant is invisible there. `essence_gate_met` (eligibility.rs:55-59) is a
+// SEPARATE `>=` comparison, not the mutated line, so it can never diverge
+// from this one; and because `<=` matches a superset of what `<` matches,
+// the `.expect()` on eligibility.rs:126 can never panic under the mutation
+// either — the mutant only changes WHICH entry gets named when there is a
+// CHOICE of more than one unmet-or-not entry to pick from.
+// `unmet_requirement_agrees_with_path_satisfied` above compares only
+// `.is_none()` against `path_satisfied`, so it is structurally incapable of
+// seeing a message-content difference. ONLY a TWO-entry essence list, where
+// the FIRST entry sits EXACTLY at its threshold (correctly MET, so `<`
+// skips it — but `<=` wrongly treats "at threshold" as unmet and reports
+// it) and the SECOND entry is genuinely short (the entry `<` actually
+// finds), can distinguish the two operators by message content.
+#[test]
+fn unmet_requirement_essence_names_the_strictly_unmet_entry_not_an_at_threshold_one() {
+    // Two-entry essence list: Fire at 100, Water at 75. Fire sits EXACTLY at
+    // its threshold (met, `>=`); Water is genuinely short.
+    let mut path = level_path(1, 1, 2, 1);
+    path.essence = vec![req(Affinity::Fire, 100), req(Affinity::Water, 75)];
+    // Permissive on level and all three history gates so ONLY the essence
+    // branch is reachable.
+    let m = monster(
+        1,
+        50, // comfortably above min_level 1
+        {
+            let mut e = essence_of(Affinity::Fire, 100); // Fire: exactly at threshold -> MET
+            e[Affinity::Water.index()] = 74; // Water: one short -> UNMET
+            e
+        },
+        0,
+        0,
+        0,
+        EVs::zero(),
+    );
+
+    // Real `<`: Fire `100 < 100` is false (skip, met) -> Water `74 < 75` is
+    // true -> the message names Water / 75. Mutated `<=`: Fire `100 <= 100`
+    // is true -> the message wrongly names Fire / 100 instead. KILLED.
+    assert_unmet_names(
+        &path,
+        "essence (two-entry, first at threshold)",
+        &m,
+        &["essence", "water", "75"],
+    );
+    let message = unmet_requirement(&m, &path).expect("edge 1 must report its unmet essence gate");
+    assert!(
+        !message.to_lowercase().contains("fire"),
+        "TEETH: species is exactly AT its Fire threshold (100 >= 100) — Fire is MET and must \
+         NEVER be named as the unmet requirement. A `<=` mutant names Fire here instead of \
+         Water; got: {message:?}"
+    );
+
+    // ANCHOR (not a killer — pins list-order independent of `<` vs `<=`):
+    // the FIRST entry is itself strictly unmet, so both operators name Fire.
+    let anchor = monster(
+        1,
+        50,
+        {
+            let mut e = essence_of(Affinity::Fire, 99); // strictly short
+            e[Affinity::Water.index()] = 75; // met
+            e
+        },
+        0,
+        0,
+        0,
+        EVs::zero(),
+    );
+    // The message names the THRESHOLD (100), not the monster's held amount
+    // (99) — see `unmet_requirement_names_each_gate` above for the same
+    // pattern.
+    assert_unmet_names(
+        &path,
+        "essence (anchor: first entry unmet)",
+        &anchor,
+        &["essence", "fire", "100"],
+    );
+}
+
 // ===========================================================================
 // trust_tier_of — teeth
 // ===========================================================================

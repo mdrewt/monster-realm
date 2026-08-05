@@ -3123,6 +3123,36 @@ mod tests {
         );
     }
 
+    /// CANARY (self-expiring, NOT a mutant killer): pairs with entry 4 of
+    /// `.cargo/mutants.toml` — see that file for why the empty registry makes
+    /// `content.rs:624:5 load_evolution_paths -> Ok(vec![])` equivalent TODAY.
+    ///
+    /// `eg1_live_registries_pass_validate_evolution_paths` (above) will NOT
+    /// start catching that mutant once EG3 lands real content either: an
+    /// empty path set and a valid non-empty graph both validate `Ok(())`
+    /// (the R10 empty-set carve-out, content.rs:1080-1096) — `validate_`
+    /// cannot distinguish "no rows" from "rows, but none unreachable".
+    ///
+    /// When EG3 lands, THIS test will fail — that failure is the deliberate
+    /// signal to retire the pin: delete this canary, the 4th
+    /// `.cargo/mutants.toml` exclusion, and its entry in
+    /// `evals/mutate-core-recipe-integrity.eval.mjs` (which requires exactly
+    /// those four) together, at which point an ordinary non-emptiness
+    /// assertion kills the mutant for real.
+    #[test]
+    fn eg1_load_evolution_paths_is_empty_pending_eg3() {
+        let paths = load_evolution_paths().expect("evolution_paths registry must parse");
+        assert!(
+            paths.is_empty(),
+            "CANARY EXPIRED: `load_evolution_paths()` returned a non-empty registry — EG3 has \
+             landed real evolution-path content. DELETE this test AND the matching 4th \
+             `content.rs:624:5 load_evolution_paths -> Ok(vec![])` entry in \
+             `.cargo/mutants.toml` together; a plain non-emptiness assertion (or a specific \
+             content check) now kills that mutant for real. Got {} path(s).",
+            paths.len()
+        );
+    }
+
     // -----------------------------------------------------------------------
     // EG1-3 — explicit `tier: 1` authoring for the nine derived species
     // -----------------------------------------------------------------------
@@ -3393,6 +3423,60 @@ mod tests {
             !err.contains("non-existent"),
             "R6 TEETH: species 2 exists in the registry — this must be the wild/encounter \
              violation, not a dangling-reference error, got: {err:?}"
+        );
+    }
+
+    // MUTATION SURVIVOR NOTE (content.rs:1041:47, `==` -> `!=` in R6's
+    // `.any(|entry| entry.species_id == path.to_species)`): the test above
+    // cannot kill it — under `!=` the species-1 entry still makes `.any` true,
+    // and the R6 message interpolates `path.to_species` / `table.zone_id`,
+    // never the matched entry, so `expect_err` sees the same `Err` either way.
+    // Every OTHER `validate_evolution_paths` test passes `encounters = &[]`,
+    // so the loop body never runs. Either test below kills the mutant on its
+    // own; both are kept because they pin the two distinct branches — a base
+    // form legitimately IS wild-catchable, a derived form is not.
+
+    /// R6 TEETH (kills `==` -> `!=`): a wild-catchable BASE form must be
+    /// accepted — only the evolution TARGET must be absent from encounter
+    /// tables, never the source species.
+    ///
+    /// Real `==`: `any(|e| 1 == 2)` is false for the single entry (species 1)
+    /// — R6 does not fire — `Ok(())`. Mutated `!=`: `any(|e| 1 != 2)` is TRUE
+    /// for that same entry — R6 wrongly fires — `Err(..)` — the `assert_eq!`
+    /// below fails. KILLED.
+    #[test]
+    fn r6_a_wild_catchable_base_form_is_accepted() {
+        let (species, paths) = eg1_valid_world();
+        // Species 1 is the base form (from_species) — legitimately
+        // wild-catchable. Species 2 (to_species) is absent from the table.
+        let encounters = eg1_encounters(0, &[1]);
+        assert_eq!(
+            validate_evolution_paths(&species, &paths, &encounters, &[]),
+            Ok(()),
+            "R6 TEETH: base form species 1 (never an evolution target) appearing in an \
+             encounter table must NOT trip R6 — only `to_species` (species 2) is forbidden \
+             there. A `!=` in place of `==` wrongly rejects this world."
+        );
+    }
+
+    /// R6 TEETH (kills `==` -> `!=`): a table containing ONLY the evolution
+    /// target is still rejected.
+    ///
+    /// Real `==`: `any(|e| 2 == 2)` is true — R6 fires — `Err("R6: ...")`.
+    /// Mutated `!=`: `any(|e| 2 != 2)` is false — R6 never fires — validation
+    /// completes `Ok(())` — `expect_err` panics. KILLED.
+    #[test]
+    fn r6_to_species_alone_in_encounter_table_rejected() {
+        let (species, paths) = eg1_valid_world();
+        let encounters = eg1_encounters(0, &[2]);
+        let err = validate_evolution_paths(&species, &paths, &encounters, &[]).expect_err(
+            "R6 TEETH: a table listing ONLY the evolution target (species 2) must still be \
+             rejected — a `!=` mutant would let this Ok(()) through",
+        );
+        assert!(
+            err.contains("R6"),
+            "R6 TEETH: the rejection must identify itself as R6's wild-catchable rule, got: \
+             {err:?}"
         );
     }
 
