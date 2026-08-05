@@ -207,13 +207,22 @@ rediscover it from the diff.
 - The `evolution_path` table is seeded with ten real rows on the next
   `sync_content`; the requirements/progress panel (EG4) has content to render.
 - `load_evolution_paths()` is no longer trivially `Ok(vec![])`, so EG1's
-  self-expiring blessed mutant exclusion (`.cargo/mutants.toml` entry 4), its
-  canary test `eg1_load_evolution_paths_is_empty_pending_eg3`, and the four-entry
-  pin in `evals/mutate-core-recipe-integrity.eval.mjs` **must all be retired
-  together** — the three-place retirement that exclusion documents. Those three
-  files sit outside this slice's declared `touches:` set; see the PR body.
-- Content changes are coupled to `CONTENT_VERSION` (ADR-0073), which lives in
-  `server-module/src/lib.rs` — so **no content-only slice can ever be file-set
-  disjoint from `server-module/`**. Recorded here because this slice was
-  scheduled as disjoint from the concurrent EG2 slice on the assumption that it
-  could be.
+  self-expiring blessed mutant exclusion is **retired in this slice, in the three
+  places its own comment block named**: `.cargo/mutants.toml` entry 4 (the list
+  is back to three permanent, equivalent-by-construction exclusions), the canary
+  test `eg1_load_evolution_paths_is_empty_pending_eg3` (replaced by
+  `eg3_load_evolution_paths_returns_the_authored_graph`, a plain non-emptiness
+  assertion that kills the mutant for real, with the exact-shape pin living in
+  `game-core/tests/eg3_evolution_graph.rs` T2), and the four-entry pin in
+  `evals/mutate-core-recipe-integrity.eval.mjs` (now three, with its over-growth
+  tooth rebased to bite at four and a new duplicate-entry tooth added, since the
+  pre-existing duplicate check was not directly exercised at three entries).
+  The self-expiry mechanism worked exactly as designed: both tripwires fired the
+  moment the first edge was authored.
+- Content is coupled to `CONTENT_VERSION` (ADR-0073), bumped 18 → 19 with a
+  regenerated `evals/baselines/content-hash.json`. That constant lives in
+  `server-module/src/lib.rs`, so **no content-only slice can ever be file-set
+  disjoint from `server-module/`** — recorded because this slice was scheduled
+  as disjoint from the concurrent EG2 slice on the assumption that it could be.
+  All five of these files sit outside the slice's originally declared
+  `touches:`; they are enumerated in the PR body under `touches-delta:`.
