@@ -22,18 +22,22 @@
         cure_status: Some(Poison),
         sell_price: 60,
     ),
-    // ---- slice B: evolution-trigger consumables (ADR-0149) ---------------
-    // Items 4 and 5 are the triggers for the Item-branch evolutions of species
-    // 7 (Cragling -> Tidecrag, 30) and 8 (Shadelet -> Cindershade, 31). They
-    // carry NO recruit/train/cure fields on purpose: they are neither bait,
-    // nor a training tonic, nor a battle-use cure item.
+    // ---- crystalized-essence consumables (ADR-0149, ADR-0176 D6) ---------
+    // Items id=4 and id=5 were slice B's discrete evolution TRIGGERS. That
+    // role is deleted with EvolutionTrigger itself (EG1/ADR-0174); under the
+    // essence-graph model they are essence SOURCES instead, consumed by
+    // consume_crystalized_essence (EG2-4). They still carry NO
+    // recruit/train/cure fields — rule R9 requires an essence item to be
+    // single-role, and validate_evolution_paths rejects the combination.
     //
-    // DELIBERATELY UNSTOCKED (ADR-0149 D5/D6): shops/000-core.ron is NOT
-    // touched this round. No reducer can supply `applied_item` yet, so a
-    // stocked item would be a player-facing trap — gold spent on something
-    // use_battle_item rejects and nothing else accepts. Shop stocking (buy
-    // price follows that file's own 40% convention off sell_price) lands with
-    // slice B2, in the same PR as the reducer that makes these usable.
+    // Each grants exactly the amount its item-assisted evolution edge
+    // requires (edge=6 Water 100, edge=8 Fire 100 in
+    // evolution_paths/000-core.ron), so one feed clears the bar in a single
+    // use — the old trigger's one-shot-unlock feel, preserved (EG3-8).
+    //
+    // NOW STOCKED in shops/000-core.ron at 500, retiring ADR-0149 D5/D6's
+    // deliberate non-stocking; its stated condition was "stock these once a
+    // reducer can consume them", and EG2-4 is that reducer.
     //
     // COMMENT HYGIENE (gated by pt_d3_tuning.rs t6, which scans this directory
     // for id-shaped needles in BOTH line and block comments): full-line
@@ -42,12 +46,16 @@
         id: 4,
         name: "Tidewell Shard",
         description: "A cold, spring-fed shard; the tide it holds remakes a stone-born monster.",
+        essence_affinity: Some(Water),
+        essence_amount: 100,
         sell_price: 200,
     ),
     (
         id: 5,
         name: "Emberheart Cinder",
         description: "A cinder that never cools; its ember kindles a shadow-born monster.",
+        essence_affinity: Some(Fire),
+        essence_amount: 100,
         sell_price: 200,
     ),
 ]

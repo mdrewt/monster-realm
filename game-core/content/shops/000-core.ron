@@ -17,6 +17,18 @@
             // sell_price is 60, so 150 preserves that convention. ~5 wild wins
             // at the unchanged 31-32 gold faucet.
             ( item_id: 3, buy_price: 150 ),
+            // Crystalized-essence consumables (EG3-6, ADR-0176 D6). Both sell
+            // at 200, so 500 is the 40% convention every entry above follows
+            // (80/200, 120/300, 60/150). Each grants exactly the essence its
+            // item-assisted evolution edge requires, so one purchase is one
+            // guaranteed branch unlock rather than a lottery ticket.
+            //
+            // These become consumable when consume_crystalized_essence (EG2-4)
+            // lands in the sibling slice; until it merges they are buyable but
+            // inert, which is why the price is high enough not to be an
+            // impulse buy. See ADR-0176 D6.
+            ( item_id: 4, buy_price: 500 ),
+            ( item_id: 5, buy_price: 500 ),
         ],
     ),
 ]

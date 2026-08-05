@@ -1,24 +1,180 @@
-// Evolution-path graph — DATA, not code (ADR-0006/0057/0174). Replaces the
+// Evolution-path graph — DATA, not code (ADR-0006/0057/0174/0176). Replaces the
 // deleted evolutions.ron and fusion.ron entirely (spec EG3-1).
 //
 // Each entry is one directed edge with an author-assigned, unique, APPEND-ONLY
-// edge_id (EG1-4/EG1-12 — never reused, never renumbered, even if the edge is
-// later removed). Shape:
+// edge_id (EG1-4/EG1-12, ADR-0176 D1 — never reused, never renumbered, even if
+// the edge is later removed). This part file OWNS THE edge_id BAND 1-99; a new
+// part file must claim its own band so two content passes cannot collide into
+// an append-only violation that can never be renumbered away.
 //
-// (
-//     edge_id: 1,
-//     from_species: 7,
-//     to_species: 9,
-//     min_level: 18,
-//     essence: [(affinity: Water, amount: 100)],
-//     min_trust_tier: Some(Friendly),
-//     min_quality_time_tier: Some(2),
-//     min_nutrition_pct: Some(50),
-// ),
+// min_level is the Level newtype, deserialized from a bare u8 in [1, 100]:
+// write it as a plain number, never as a wrapped tuple. All five gates are
+// AND-combined; a None history gate is PERMISSIVE (absent), not "requires the
+// lowest tier".
 //
-// DELIBERATELY EMPTY in EG1: the schema/type freeze ships before the content
-// pass (EG3) authors the real graph. R1-R12 are runnable against this empty
-// set (EG1-10), and R10 (universal reachability) explicitly skips it
-// (ADR-0174 D6) so the tier: 1 species EG1-3 authors do not deadlock
-// sync_content during the EG1 -> EG3 window.
-[]
+// AUTHORING RULE (ADR-0176 D2) — auto-evolution makes level a RACE, not just a
+// threshold. A monster with exactly one currently-eligible path evolves
+// automatically and immediately (EG2-11), so an unconditional low-min_level
+// edge silently kills every higher-level sibling branch out of the same
+// species before the player is ever offered a choice. For any species with two
+// or more outgoing edges, either give them all the same min_level, or make the
+// lowest one carry an extra gate. Pinned by t11 in
+// game-core/tests/eg3_evolution_graph.rs.
+//
+// COMMENT HYGIENE: full-line comments only, and never write a bare id field
+// name in a comment (use the "edge=N" / "species=N" form) — the content
+// scanners strip whole lines only and then regex-scan the rest.
+[
+    // ---- species=1 Flameling, tier 0 -> three branches ------------------
+    //
+    // Common branch to Pyroleo (species=4). The pre-EG1 registry gated this
+    // at level 16; ADR-0176 D2 retunes it to 20 so it ties the Steamveil
+    // branch below instead of racing it to death under auto-evolution.
+    (
+        edge_id: 1,
+        from_species: 1,
+        to_species: 4,
+        min_level: 20,
+        essence: [],
+        min_trust_tier: None,
+        min_quality_time_tier: None,
+        min_nutrition_pct: None,
+    ),
+    // Rare branch to Embersworn (species=5). Migrated from the deleted
+    // Bond(200) trigger (EG3-3): 200/255 is roughly .78, mapping to the tier
+    // one below max, plus the Fire-essence investment that replaces Bond's
+    // accumulator role. A min level of 1 is non-vacuous under R4 because both
+    // the essence and the Trust gate are present.
+    (
+        edge_id: 2,
+        from_species: 1,
+        to_species: 5,
+        min_level: 1,
+        essence: [(affinity: Fire, amount: 150)],
+        min_trust_tier: Some(Friendly),
+        min_quality_time_tier: None,
+        min_nutrition_pct: None,
+    ),
+    // Steamveil (species=6) fan-in, half one (EG3-2). Steamveil was orphaned
+    // by fusion's removal — it is a tier-1 form with no wild encounter and,
+    // until this edge and edge=4 below, no way to obtain it at all. Water
+    // essence from a Flameling is the deliberately cross-affinity ask: go
+    // fight the type you need.
+    (
+        edge_id: 3,
+        from_species: 1,
+        to_species: 6,
+        min_level: 20,
+        essence: [(affinity: Water, amount: 120)],
+        min_trust_tier: None,
+        min_quality_time_tier: None,
+        min_nutrition_pct: None,
+    ),
+    // ---- species=2 Tidalin, tier 0 --------------------------------------
+    //
+    // Steamveil fan-in, half two (EG3-2) — the mirror of edge=3, Fire essence
+    // from a Water base form. R8 (fan-in) is explicitly permitted, and this
+    // pair is its positive pin.
+    (
+        edge_id: 4,
+        from_species: 2,
+        to_species: 6,
+        min_level: 20,
+        essence: [(affinity: Fire, amount: 120)],
+        min_trust_tier: None,
+        min_quality_time_tier: None,
+        min_nutrition_pct: None,
+    ),
+    // ---- species=7 Cragling, tier 0 -> two branches ----------------------
+    //
+    // Common branch to its tier-1 form (species=9), migrated from the deleted
+    // Level(18) trigger (EG3-7). No species data changes — only the incoming
+    // edge is re-authored.
+    (
+        edge_id: 5,
+        from_species: 7,
+        to_species: 9,
+        min_level: 18,
+        essence: [],
+        min_trust_tier: None,
+        min_quality_time_tier: None,
+        min_nutrition_pct: None,
+    ),
+    // Item-assisted branch to Tidecrag (species=30), migrated from the
+    // deleted item trigger (EG3-8). The Water requirement equals item 4's
+    // full essence grant, so one Tidewell Shard clears the bar in a single
+    // feed — the old item's one-shot-unlock feel, preserved. It sits below
+    // the common branch's level but carries the essence gate, so it does not
+    // dominate edge=5 unconditionally. See ADR-0176 D3 for the accepted risk
+    // that passive wild-win essence can also clear this bar.
+    (
+        edge_id: 6,
+        from_species: 7,
+        to_species: 30,
+        min_level: 15,
+        essence: [(affinity: Water, amount: 100)],
+        min_trust_tier: None,
+        min_quality_time_tier: None,
+        min_nutrition_pct: None,
+    ),
+    // ---- species=8 Shadelet, tier 0 -> two branches ----------------------
+    //
+    // Common branch to its tier-1 form (species=10), migrated from the
+    // deleted Level(20) trigger.
+    (
+        edge_id: 7,
+        from_species: 8,
+        to_species: 10,
+        min_level: 20,
+        essence: [],
+        min_trust_tier: None,
+        min_quality_time_tier: None,
+        min_nutrition_pct: None,
+    ),
+    // Item-assisted branch to Cindershade (species=31), migrated from the
+    // deleted item trigger; the Fire amount equals item 5's essence grant,
+    // mirroring edge=6.
+    (
+        edge_id: 8,
+        from_species: 8,
+        to_species: 31,
+        min_level: 17,
+        essence: [(affinity: Fire, amount: 100)],
+        min_trust_tier: None,
+        min_quality_time_tier: None,
+        min_nutrition_pct: None,
+    ),
+    // ---- species=20 Umbraquill, tier 0 -----------------------------------
+    //
+    // Plain level gate to Venumbra (species=22), migrated verbatim from the
+    // deleted Level(22) trigger (EG3-5). Deliberately NO Trust component:
+    // verified against the pre-EG1 registry, this branch was never Bond-gated
+    // — only species 1 and species 21 were.
+    (
+        edge_id: 9,
+        from_species: 20,
+        to_species: 22,
+        min_level: 22,
+        essence: [],
+        min_trust_tier: None,
+        min_quality_time_tier: None,
+        min_nutrition_pct: None,
+    ),
+    // ---- species=21 Gustwyrm, tier 0 -------------------------------------
+    //
+    // Migrated from the deleted Bond(180) trigger (EG3-4): 180/255 is roughly
+    // .71, the same tier-one-below-max mapping edge=2 uses. No essence
+    // component — Bond's whole role here was the care-action grind, which
+    // Trust now carries. Non-vacuous under R4 solely because of the Trust
+    // gate; dropping it would make this edge fire at birth.
+    (
+        edge_id: 10,
+        from_species: 21,
+        to_species: 23,
+        min_level: 1,
+        essence: [],
+        min_trust_tier: Some(Friendly),
+        min_quality_time_tier: None,
+        min_nutrition_pct: None,
+    ),
+]
