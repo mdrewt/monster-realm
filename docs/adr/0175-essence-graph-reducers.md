@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** ADR-0174
 **Subsystems:** evolution-fusion, battle, movement-netcode
-**Decision:** Land the essence-graph write layer — apply_evolution/check_and_evolve with chain cascade, essence_train/consume_crystalized_essence, Trust/Quality-Time credits — defining the EG1-frozen quality-time columns as bounded-gap active-playtime accrual.
+**Decision:** Land the essence-graph write layer — apply_evolution/check_and_evolve with chain cascade, essence_train/consume_crystalized_essence, Trust/Quality-Time credits — defining quality time as bounded-gap active-playtime accrual.
 
 ## Context
 
