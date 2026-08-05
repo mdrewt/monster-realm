@@ -41,10 +41,11 @@
 #      • the canary test `eg1_load_evolution_paths_is_empty_pending_eg3`
 #        (game-core/src/content.rs), which asserts the registry is still empty; and
 #      • evals/mutate-core-recipe-integrity.eval.mjs, whose self-expiry teeth
-#        require — WHENEVER this entry is present — that the canary still exists
-#        and that every content/evolution_paths/*.ron is still semantically `[]`.
-#    When EG3 lands, delete this entry and the canary together; an ordinary
-#    non-emptiness test then kills the mutant for real.
+#        require that the canary is still a live `#[test]` and that every
+#        content/evolution_paths/*.ron is still semantically `[]`.
+#    When EG3 lands, retire the pin in THREE places together — this entry, the
+#    canary, and the four-entry pin in the eval — after which an ordinary
+#    non-emptiness test kills the mutant for real.
 exclude_re = [
     "npc/rules\\.rs:61:15: replace > with >= in toward_home",
     "ability\\.rs:170:60: replace < with <= in apply_entry_ability",

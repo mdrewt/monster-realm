@@ -3123,14 +3123,9 @@ mod tests {
         );
     }
 
-    /// CANARY (self-expiring, NOT a mutant killer): the embedded
-    /// `content/evolution_paths/000-core.ron` is deliberately `[]` until
-    /// slice EG3 authors the real evolution graph (EG1-10 / ADR-0174 D6).
-    /// That emptiness is exactly why `content.rs:624:5 load_evolution_paths
-    /// -> Ok(vec![])` is an EQUIVALENT mutant TODAY — replacing the real
-    /// parse with a hardcoded empty `Ok` is observationally identical while
-    /// the registry ships no rows — and why it carries a blessed `exclude_re`
-    /// entry in `.cargo/mutants.toml`.
+    /// CANARY (self-expiring, NOT a mutant killer): pairs with entry 4 of
+    /// `.cargo/mutants.toml` — see that file for why the empty registry makes
+    /// `content.rs:624:5 load_evolution_paths -> Ok(vec![])` equivalent TODAY.
     ///
     /// `eg1_live_registries_pass_validate_evolution_paths` (above) will NOT
     /// start catching that mutant once EG3 lands real content either: an
@@ -3139,9 +3134,11 @@ mod tests {
     /// cannot distinguish "no rows" from "rows, but none unreachable".
     ///
     /// When EG3 lands, THIS test will fail — that failure is the deliberate
-    /// signal to delete BOTH this canary and the matching 4th
-    /// `.cargo/mutants.toml` exclusion together, at which point an ordinary
-    /// non-emptiness assertion kills the mutant for real.
+    /// signal to retire the pin: delete this canary, the 4th
+    /// `.cargo/mutants.toml` exclusion, and its entry in
+    /// `evals/mutate-core-recipe-integrity.eval.mjs` (which requires exactly
+    /// those four) together, at which point an ordinary non-emptiness
+    /// assertion kills the mutant for real.
     #[test]
     fn eg1_load_evolution_paths_is_empty_pending_eg3() {
         let paths = load_evolution_paths().expect("evolution_paths registry must parse");
@@ -3431,17 +3428,13 @@ mod tests {
 
     // MUTATION SURVIVOR NOTE (content.rs:1041:47, `==` -> `!=` in R6's
     // `.any(|entry| entry.species_id == path.to_species)`): the test above
-    // uses `eg1_encounters(0, &[1, 2])` with `to_species == 2`. Under the `!=`
-    // mutation the FIRST entry (species 1, `1 != 2`) already makes `.any`
-    // true, so R6 still fires an `Err` — same outcome, wrong reason — and
-    // since the R6 message interpolates `path.to_species` / `table.zone_id`
-    // (never the matched entry), `expect_err` cannot tell the two operators
-    // apart. Every OTHER `validate_evolution_paths` test passes
-    // `encounters = &[]`, so the loop body never runs at all. Only a
-    // POSITIVE fixture (a table that must NOT trip R6) and a NEGATIVE
-    // fixture built from a single, precisely-targeted entry can distinguish
-    // `==` from `!=`. The two tests below do that; do not weaken the
-    // existing test above to compensate.
+    // cannot kill it — under `!=` the species-1 entry still makes `.any` true,
+    // and the R6 message interpolates `path.to_species` / `table.zone_id`,
+    // never the matched entry, so `expect_err` sees the same `Err` either way.
+    // Every OTHER `validate_evolution_paths` test passes `encounters = &[]`,
+    // so the loop body never runs. Either test below kills the mutant on its
+    // own; both are kept because they pin the two distinct branches — a base
+    // form legitimately IS wild-catchable, a derived form is not.
 
     /// R6 TEETH (kills `==` -> `!=`): a wild-catchable BASE form must be
     /// accepted — only the evolution TARGET must be absent from encounter
