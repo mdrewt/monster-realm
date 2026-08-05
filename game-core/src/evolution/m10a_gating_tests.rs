@@ -636,11 +636,13 @@ fn unmet_requirement_essence_names_the_strictly_unmet_entry_not_an_at_threshold_
     // Real `<`: Fire `100 < 100` is false (skip, met) -> Water `74 < 75` is
     // true -> the message names Water / 75. Mutated `<=`: Fire `100 <= 100`
     // is true -> the message wrongly names Fire / 100 instead. KILLED.
-    assert_unmet_names(&path, "essence (two-entry, first at threshold)", &m, &[
-        "essence", "water", "75",
-    ]);
-    let message = unmet_requirement(&m, &path)
-        .expect("edge 1 must report its unmet essence gate");
+    assert_unmet_names(
+        &path,
+        "essence (two-entry, first at threshold)",
+        &m,
+        &["essence", "water", "75"],
+    );
+    let message = unmet_requirement(&m, &path).expect("edge 1 must report its unmet essence gate");
     assert!(
         !message.to_lowercase().contains("fire"),
         "TEETH: species is exactly AT its Fire threshold (100 >= 100) — Fire is MET and must \
@@ -666,9 +668,12 @@ fn unmet_requirement_essence_names_the_strictly_unmet_entry_not_an_at_threshold_
     // The message names the THRESHOLD (100), not the monster's held amount
     // (99) — see `unmet_requirement_names_each_gate` above for the same
     // pattern.
-    assert_unmet_names(&path, "essence (anchor: first entry unmet)", &anchor, &[
-        "essence", "fire", "100",
-    ]);
+    assert_unmet_names(
+        &path,
+        "essence (anchor: first entry unmet)",
+        &anchor,
+        &["essence", "fire", "100"],
+    );
 }
 
 // ===========================================================================
