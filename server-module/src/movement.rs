@@ -12,13 +12,16 @@
 //! ADR-0056 — keep it stable.
 
 use crate::battle::{begin_encounter, lead_party, NO_CONSCIOUS_MONSTER_REASON};
+use crate::evolution::check_and_evolve;
 use crate::guards::{authorize_move, is_in_ongoing_battle, json_escape, log_reject, validate_name};
 use crate::marshal::{
     apply_state, char_state, monster_from_instance, now_ms, pub_from_monster,
     table_from_encounter_row,
 };
+use crate::raising::accrue_quality_time;
 use crate::schema::{
-    battle, character, encounter, monster, monster_pub, npc, player, species_row, Character, Player,
+    battle, character, encounter, monster, monster_pub, npc, player, species_row, trade_offer,
+    Character, Player,
 };
 use crate::{SPRITE_PLAYER, STARTER_SPECIES_ID, ZONE_0};
 use game_core::{
@@ -140,6 +143,46 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
     }
     ch.move_queue.push(input);
     ctx.db.character().entity_id().update(ch);
+    // EG2-8/EG2-12 growth tails: THE movement call site — a genuinely
+    // player-triggered reducer (never movement_tick, EG2-9). Once per party
+    // monster over lead_party's FULL id list (not just the lead); accrual
+    // first, auto-evolution check LAST. No party -> credit nothing.
+    if let Some((party_ids, _)) = lead_party(ctx, ctx.sender) {
+        // Trade escrow (TR-6, ADR-0106): an escrowed party monster keeps its
+        // party slot until settlement, so without this it would keep accruing
+        // Quality Time and could AUTO-EVOLVE out from under the counterparty's
+        // propose-time card snapshot (confirm_trade never revalidates it).
+        // Collect the caller's escrowed ids ONCE, from BOTH trade roles (the
+        // same both-role chain care uses), and SKIP those monsters — never
+        // reject the move (a pending offer must not freeze the player).
+        // Collected inside this arm on purpose: a caller with no party pays
+        // zero trade-offer index reads on the hottest reducer in the game.
+        let escrowed: Vec<u64> = ctx
+            .db
+            .trade_offer()
+            .initiator()
+            .filter(ctx.sender)
+            .chain(ctx.db.trade_offer().counterparty().filter(ctx.sender))
+            .filter(|t| t.status.is_active())
+            .flat_map(|t| {
+                t.initiator_monster_ids
+                    .into_iter()
+                    .chain(t.counterparty_monster_ids)
+            })
+            .collect();
+        for mid in party_ids {
+            if escrowed.contains(&mid) {
+                continue;
+            }
+            // PERF (ADR-0148 latency budget): walking can only move the
+            // Quality-Time gate, so the eligibility read runs only when this
+            // call actually minted a tick. The other call sites check
+            // unconditionally — they mutate other gate values.
+            if accrue_quality_time(ctx, mid) {
+                check_and_evolve(ctx, mid);
+            }
+        }
+    }
     Ok(())
 }
 

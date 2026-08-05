@@ -10,21 +10,32 @@
 // now the two-argument essence-graph edge walk: `evolve(ctx, monster_id, to_species)`.
 // EG5-2 adds the essence_train/consume reducer invariants when those reducers land.
 //
-// Invariants checked (evolve only):
+// EG2 (ADR-0175 D3/D6) factored the transform-and-write OUT of `evolve` into
+// the shared `apply_evolution(ctx, monster_id, &EvolutionPathRow)` helper (the
+// ONE transform path, called by both `evolve` and `check_and_evolve`). The
+// dual-write and SSOT-transform invariants therefore now bind
+// `apply_evolution`'s body, and a NEW delegation check binds `evolve`'s: it
+// must actually CALL apply_evolution(, so the delegation cannot be satisfied by
+// an orphan helper nobody invokes.
+//
+// Invariants checked:
 //
 //   E1. Ownership guard — evolve calls require_owner( for the input monster.
 //   E2. Battle guard — evolve calls reject_if_in_battle( before the transform.
-//   E4. Dual-write mirror — evolve writes monster_pub as well as monster so the
-//       public projection stays coherent (ADR-0040/ADR-0015 discipline), via
-//       pub_from_monster( (never a hand-rolled partial struct).
+//   E3. Delegation (EG2) — evolve's body calls apply_evolution( — the
+//       player-invoked path and the auto-evolution path apply an evolution
+//       through exactly one code path (EG2-11).
+//   E4. Dual-write mirror — apply_evolution writes monster_pub as well as
+//       monster so the public projection stays coherent (ADR-0040/ADR-0015
+//       discipline), via pub_from_monster( (never a hand-rolled partial struct).
 //   E5. SSOT delegation, two halves (ADR-0174 D4b / EG1-11):
-//       (gate)      the DECISION is `(game_core::)path_satisfied(` in enforced
-//                   `if !path_satisfied(..) { .. return Err/Err(..) }` form — a
-//                   discarded call (`let _ = ..`) satisfies a bare presence scan
-//                   while the gate does nothing;
-//       (transform) the species change is `game_core::evolve(` / `game_core_evolve(`
-//                   — inlining it bypasses the carry-individuality + essence-zeroing
-//                   invariant (ADR-0174 D2).
+//       (gate)      evolve's DECISION is `(game_core::)path_satisfied(` in
+//                   enforced `if !path_satisfied(..) { .. return Err/Err(..) }`
+//                   form — a discarded call (`let _ = ..`) satisfies a bare
+//                   presence scan while the gate does nothing;
+//       (transform) apply_evolution's species change is `game_core::evolve(` /
+//                   `game_core_evolve(` — inlining it bypasses the
+//                   carry-individuality + essence-zeroing invariant (ADR-0174 D2).
 //
 // Proof-of-teeth: each invariant has a BAD fixture that MUST be flagged and the
 // GOOD fixture must pass every check, so a regression in a checker is caught
@@ -263,6 +274,7 @@ export function checkPathSatisfiedGate(body) {
 /**
  * E5 (transform half) — SSOT delegation: the body must call the game-core
  * transform function, not inline the species-change or individuality logic.
+ * EG2: scoped to `apply_evolution`'s body — the ONE transform path.
  *
  * Accepted patterns: game_core_evolve(  OR  game_core::evolve(
  *
@@ -278,23 +290,52 @@ export function checkSSOTDelegation(body) {
     return null;
   }
   return (
-    'evolve: body does not call game_core_evolve( or game_core::evolve( — ' +
+    'apply_evolution: body does not call game_core_evolve( or game_core::evolve( — ' +
     'the species transform must be delegated to the game-core pure rule (ADR-0003 SSOT); ' +
     'inlining the transform bypasses the carry-individuality + essence-zeroing ' +
     'invariant (ADR-0174 D2)'
   );
 }
 
+/**
+ * E3 (EG2, ADR-0175 D3/D6) — delegation: `evolve`'s body must CALL
+ * `apply_evolution(`. The dual-write/SSOT checks moved to apply_evolution's
+ * body, so without this check an `evolve` that keeps (or regrows) its own
+ * inline transform next to an orphan helper would satisfy every other check
+ * while the codebase carries two write paths — the exact "an evolution is
+ * NEVER applied through two different code paths" failure EG2-11 names.
+ *
+ * Uses only indexOf — NO new RegExp(...).
+ *
+ * @param {string} body  Comment-stripped evolve function body.
+ * @returns {string|null}
+ */
+export function checkEvolveDelegation(body) {
+  const compact = body.replace(/\s+/g, '');
+  if (compact.indexOf('apply_evolution(') === -1) {
+    return (
+      'evolve: body does not call apply_evolution( — the transform-and-write must be ' +
+      'delegated to the ONE shared helper both evolve and check_and_evolve use (EG2-11, ' +
+      'ADR-0175 D3); an evolve with its own transform tail leaves two write paths that ' +
+      'drift the first time one is fixed'
+    );
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
-// Proof-of-teeth fixture strings — all in the EG1 two-argument evolve shape.
+// Proof-of-teeth fixture strings — all in the EG2 delegating shape (ADR-0175):
+// evolve = guards + targeted lookup + enforced gate + apply_evolution call;
+// apply_evolution = fresh find + fresh target species + game_core::evolve +
+// dual-write.
 // ---------------------------------------------------------------------------
 
-// GOOD — the EG1 target shape: ownership, battle guard, targeted edge lookup,
-// enforced path_satisfied gate, game_core::evolve transform, dual-write.
-// This ONE fixture must pass E1, E2, E4 and both halves of E5.
+// GOOD — the EG2 target shape for the reducer: ownership, battle guard,
+// targeted edge lookup, enforced path_satisfied gate, DELEGATED transform.
+// This ONE fixture must pass E1, E2, E3 and the gate half of E5.
 const GOOD_EVOLVE = `
   pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
-      let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+      let Some(m) = ctx.db.monster().monster_id().find(monster_id) else {
           return Err("monster not found".to_string());
       };
       require_owner(ctx, "evolve", m.owner_identity)?;
@@ -308,7 +349,48 @@ const GOOD_EVOLVE = `
           return Err(game_core::unmet_requirement(&instance, &path)
               .unwrap_or_else(|| "evolution requirements not met".to_string()));
       }
+      apply_evolution(ctx, monster_id, &path_row)?;
+      check_and_evolve(ctx, monster_id);
+      Ok(())
+  }
+`;
+
+// GOOD — the EG2 target shape for the shared helper: fresh find, fresh target
+// species, game_core::evolve transform, pub_from_monster dual-write.
+// Must pass E4 and the transform half of E5.
+const GOOD_APPLY_EVOLUTION = `
+  pub(crate) fn apply_evolution(ctx: &ReducerContext, monster_id: u64, path: &EvolutionPathRow) -> Result<(), String> {
+      let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+          return Err("monster not found".to_string());
+      };
+      let instance = monster_to_instance(&m)?;
+      let Some(to_species_row) = ctx.db.species_row().id().find(path.to_species) else {
+          return Err("target species not found".to_string());
+      };
       let target = species_from_row(&to_species_row)?;
+      let transformed = game_core::evolve(&instance, &target);
+      m.species_id = transformed.species_id;
+      let pub_row = pub_from_monster(&m, to_species_row.tier);
+      ctx.db.monster().monster_id().update(m);
+      ctx.db.monster_pub().monster_id().update(pub_row);
+      Ok(())
+  }
+`;
+
+// E3 BAD — an evolve that never delegates: it keeps its own inline transform
+// and dual-write (the pre-EG2 shape). checkEvolveDelegation must flag it —
+// every other check would pass this body, and an orphan apply_evolution
+// elsewhere in the file would satisfy a mere-existence scan.
+const BAD_EVOLVE_NO_DELEGATION = `
+  pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
+      let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+          return Err("monster not found".to_string());
+      };
+      require_owner(ctx, "evolve", m.owner_identity)?;
+      reject_if_in_battle(ctx.db.battle().player_identity().filter(m.owner_identity), monster_id)?;
+      if !game_core::path_satisfied(&instance, &path) {
+          return Err("evolution requirements not met".to_string());
+      }
       let transformed = game_core::evolve(&instance, &target);
       m.species_id = transformed.species_id;
       let pub_row = pub_from_monster(&m, to_species_row.tier);
@@ -321,18 +403,15 @@ const GOOD_EVOLVE = `
 // E1 BAD — evolve without ownership guard.
 const BAD_EVOLVE_NO_OWNERSHIP = `
   pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
-      let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+      let Some(m) = ctx.db.monster().monster_id().find(monster_id) else {
           return Err("monster not found".to_string());
       };
       reject_if_in_battle(ctx.db.battle().player_identity().filter(m.owner_identity), monster_id)?;
       if !game_core::path_satisfied(&instance, &path) {
           return Err("evolution requirements not met".to_string());
       }
-      let transformed = game_core::evolve(&instance, &target);
-      m.species_id = transformed.species_id;
-      let pub_row = pub_from_monster(&m, to_species_row.tier);
-      ctx.db.monster().monster_id().update(m);
-      ctx.db.monster_pub().monster_id().update(pub_row);
+      apply_evolution(ctx, monster_id, &path_row)?;
+      check_and_evolve(ctx, monster_id);
       Ok(())
   }
 `;
@@ -340,33 +419,30 @@ const BAD_EVOLVE_NO_OWNERSHIP = `
 // E2 BAD — evolve without battle guard.
 const BAD_EVOLVE_NO_BATTLE_GUARD = `
   pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
-      let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+      let Some(m) = ctx.db.monster().monster_id().find(monster_id) else {
           return Err("monster not found".to_string());
       };
       require_owner(ctx, "evolve", m.owner_identity)?;
       if !game_core::path_satisfied(&instance, &path) {
           return Err("evolution requirements not met".to_string());
       }
-      let transformed = game_core::evolve(&instance, &target);
-      m.species_id = transformed.species_id;
-      let pub_row = pub_from_monster(&m, to_species_row.tier);
-      ctx.db.monster().monster_id().update(m);
-      ctx.db.monster_pub().monster_id().update(pub_row);
+      apply_evolution(ctx, monster_id, &path_row)?;
+      check_and_evolve(ctx, monster_id);
       Ok(())
   }
 `;
 
-// E4 BAD — evolve without monster_pub update.
-const BAD_EVOLVE_NO_PUB_WRITE = `
-  pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
+// E4 BAD — apply_evolution without the monster_pub update.
+const BAD_APPLY_EVOLUTION_NO_PUB_WRITE = `
+  pub(crate) fn apply_evolution(ctx: &ReducerContext, monster_id: u64, path: &EvolutionPathRow) -> Result<(), String> {
       let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
           return Err("monster not found".to_string());
       };
-      require_owner(ctx, "evolve", m.owner_identity)?;
-      reject_if_in_battle(ctx.db.battle().player_identity().filter(m.owner_identity), monster_id)?;
-      if !game_core::path_satisfied(&instance, &path) {
-          return Err("evolution requirements not met".to_string());
-      }
+      let instance = monster_to_instance(&m)?;
+      let Some(to_species_row) = ctx.db.species_row().id().find(path.to_species) else {
+          return Err("target species not found".to_string());
+      };
+      let target = species_from_row(&to_species_row)?;
       let transformed = game_core::evolve(&instance, &target);
       m.species_id = transformed.species_id;
       ctx.db.monster().monster_id().update(m);
@@ -374,18 +450,17 @@ const BAD_EVOLVE_NO_PUB_WRITE = `
   }
 `;
 
-// E5 (transform) BAD — evolve without game_core delegation (path gate present).
-const BAD_EVOLVE_NO_SSOT = `
-  pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
+// E5 (transform) BAD — apply_evolution without game_core delegation: the
+// species change and a stat write are inlined instead of transformed.
+const BAD_APPLY_EVOLUTION_NO_SSOT = `
+  pub(crate) fn apply_evolution(ctx: &ReducerContext, monster_id: u64, path: &EvolutionPathRow) -> Result<(), String> {
       let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
           return Err("monster not found".to_string());
       };
-      require_owner(ctx, "evolve", m.owner_identity)?;
-      reject_if_in_battle(ctx.db.battle().player_identity().filter(m.owner_identity), monster_id)?;
-      if !game_core::path_satisfied(&instance, &path) {
-          return Err("evolution requirements not met".to_string());
-      }
-      m.species_id = to_species;
+      let Some(to_species_row) = ctx.db.species_row().id().find(path.to_species) else {
+          return Err("target species not found".to_string());
+      };
+      m.species_id = path.to_species;
       m.stat_hp = 75;
       let pub_row = pub_from_monster(&m, to_species_row.tier);
       ctx.db.monster().monster_id().update(m);
@@ -397,16 +472,13 @@ const BAD_EVOLVE_NO_SSOT = `
 // E5 (gate) BAD — no path_satisfied call at all: the reducer never gates.
 const BAD_EVOLVE_NO_PATH_GATE = `
   pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
-      let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+      let Some(m) = ctx.db.monster().monster_id().find(monster_id) else {
           return Err("monster not found".to_string());
       };
       require_owner(ctx, "evolve", m.owner_identity)?;
       reject_if_in_battle(ctx.db.battle().player_identity().filter(m.owner_identity), monster_id)?;
-      let transformed = game_core::evolve(&instance, &target);
-      m.species_id = transformed.species_id;
-      let pub_row = pub_from_monster(&m, to_species_row.tier);
-      ctx.db.monster().monster_id().update(m);
-      ctx.db.monster_pub().monster_id().update(pub_row);
+      apply_evolution(ctx, monster_id, &path_row)?;
+      check_and_evolve(ctx, monster_id);
       Ok(())
   }
 `;
@@ -415,17 +487,14 @@ const BAD_EVOLVE_NO_PATH_GATE = `
 // bare-presence scan is satisfied while the gate does nothing at all.
 const BAD_EVOLVE_GATE_DISCARDED = `
   pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
-      let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+      let Some(m) = ctx.db.monster().monster_id().find(monster_id) else {
           return Err("monster not found".to_string());
       };
       require_owner(ctx, "evolve", m.owner_identity)?;
       reject_if_in_battle(ctx.db.battle().player_identity().filter(m.owner_identity), monster_id)?;
       let _ = game_core::path_satisfied(&instance, &path);
-      let transformed = game_core::evolve(&instance, &target);
-      m.species_id = transformed.species_id;
-      let pub_row = pub_from_monster(&m, to_species_row.tier);
-      ctx.db.monster().monster_id().update(m);
-      ctx.db.monster_pub().monster_id().update(pub_row);
+      apply_evolution(ctx, monster_id, &path_row)?;
+      check_and_evolve(ctx, monster_id);
       Ok(())
   }
 `;
@@ -455,7 +524,7 @@ export function readServerModuleProdSources(dir) {
 
 export default async function () {
   const name =
-    'evolution-reducer-security (evolve: ownership, battle-guard, dual-write, path_satisfied gate + game_core::evolve SSOT delegation; ADR-0174, fuse deleted)';
+    'evolution-reducer-security (evolve: ownership, battle-guard, path_satisfied gate, apply_evolution delegation; apply_evolution: dual-write + game_core::evolve SSOT; ADR-0174/0175)';
 
   // =========================================================================
   // PROOFS-OF-TEETH — run before real-source scan.
@@ -499,34 +568,61 @@ export default async function () {
     }
   }
 
-  // --- Tooth E4: evolve without monster_pub update must be flagged ----------
+  // --- Tooth E3: evolve without the apply_evolution delegation must be flagged
   {
-    const body = extractReducerBody(stripRustComments(BAD_EVOLVE_NO_PUB_WRITE), 'evolve');
+    const body = extractReducerBody(stripRustComments(BAD_EVOLVE_NO_DELEGATION), 'evolve');
     if (!body) {
       return {
         name,
         pass: false,
-        detail: 'TEETH: could not extract evolve body from BAD_EVOLVE_NO_PUB_WRITE',
+        detail: 'TEETH: could not extract evolve body from BAD_EVOLVE_NO_DELEGATION',
       };
     }
-    if (!checkDualWriteMirror(body, 'evolve')) {
+    if (!checkEvolveDelegation(body)) {
       return {
         name,
         pass: false,
         detail:
-          'TEETH: BAD_EVOLVE_NO_PUB_WRITE (no monster_pub update) was NOT flagged by checkDualWriteMirror',
+          'TEETH: BAD_EVOLVE_NO_DELEGATION (inline transform, no apply_evolution call) was NOT flagged by checkEvolveDelegation',
       };
     }
   }
 
-  // --- Tooth E5 (transform): evolve without game_core must be flagged -------
+  // --- Tooth E4: apply_evolution without monster_pub update must be flagged --
   {
-    const body = extractReducerBody(stripRustComments(BAD_EVOLVE_NO_SSOT), 'evolve');
+    const body = extractReducerBody(
+      stripRustComments(BAD_APPLY_EVOLUTION_NO_PUB_WRITE),
+      'apply_evolution',
+    );
     if (!body) {
       return {
         name,
         pass: false,
-        detail: 'TEETH: could not extract evolve body from BAD_EVOLVE_NO_SSOT',
+        detail:
+          'TEETH: could not extract apply_evolution body from BAD_APPLY_EVOLUTION_NO_PUB_WRITE',
+      };
+    }
+    if (!checkDualWriteMirror(body, 'apply_evolution')) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_APPLY_EVOLUTION_NO_PUB_WRITE (no monster_pub update) was NOT flagged by checkDualWriteMirror',
+      };
+    }
+  }
+
+  // --- Tooth E5 (transform): apply_evolution without game_core must be flagged
+  {
+    const body = extractReducerBody(
+      stripRustComments(BAD_APPLY_EVOLUTION_NO_SSOT),
+      'apply_evolution',
+    );
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: could not extract apply_evolution body from BAD_APPLY_EVOLUTION_NO_SSOT',
       };
     }
     if (!checkSSOTDelegation(body)) {
@@ -534,7 +630,7 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH: BAD_EVOLVE_NO_SSOT (inline species change) was NOT flagged by checkSSOTDelegation',
+          'TEETH: BAD_APPLY_EVOLUTION_NO_SSOT (inline species change) was NOT flagged by checkSSOTDelegation',
       };
     }
   }
@@ -580,7 +676,7 @@ export default async function () {
     }
   }
 
-  // --- Tooth GOOD: the EG1 target shape must pass EVERY check ----------------
+  // --- Tooth GOOD: the EG2 target shapes must pass EVERY scoped check --------
   {
     const body = extractReducerBody(stripRustComments(GOOD_EVOLVE), 'evolve');
     if (!body) {
@@ -593,15 +689,34 @@ export default async function () {
     const errs = [
       checkOwnershipGuard(body, 'evolve'),
       checkBattleGuard(body, 'evolve'),
-      checkDualWriteMirror(body, 'evolve'),
+      checkEvolveDelegation(body),
       checkPathSatisfiedGate(body),
-      checkSSOTDelegation(body),
     ].filter((e) => e !== null);
     if (errs.length > 0) {
       return {
         name,
         pass: false,
         detail: `TEETH: GOOD_EVOLVE incorrectly flagged: ${errs.join(' | ')}`,
+      };
+    }
+  }
+  {
+    const body = extractReducerBody(stripRustComments(GOOD_APPLY_EVOLUTION), 'apply_evolution');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: could not extract apply_evolution body from GOOD_APPLY_EVOLUTION',
+      };
+    }
+    const errs = [checkDualWriteMirror(body, 'apply_evolution'), checkSSOTDelegation(body)].filter(
+      (e) => e !== null,
+    );
+    if (errs.length > 0) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: GOOD_APPLY_EVOLUTION incorrectly flagged: ${errs.join(' | ')}`,
       };
     }
   }
@@ -630,11 +745,22 @@ export default async function () {
     if (e1) failures.push(e1);
     const e2 = checkBattleGuard(evolveBody, 'evolve');
     if (e2) failures.push(e2);
-    const e4 = checkDualWriteMirror(evolveBody, 'evolve');
-    if (e4) failures.push(e4);
+    const e3 = checkEvolveDelegation(evolveBody);
+    if (e3) failures.push(e3);
     const e5g = checkPathSatisfiedGate(evolveBody);
     if (e5g) failures.push(e5g);
-    const e5t = checkSSOTDelegation(evolveBody);
+  }
+
+  const applyBody = extractReducerBody(prodSrc, 'apply_evolution');
+  if (!applyBody) {
+    failures.push(
+      'apply_evolution: shared transform helper not found in PRODUCTION server-module ' +
+        'source (non-*_tests.rs files) — EG2-11 puts the ONE transform-and-write path there',
+    );
+  } else {
+    const e4 = checkDualWriteMirror(applyBody, 'apply_evolution');
+    if (e4) failures.push(e4);
+    const e5t = checkSSOTDelegation(applyBody);
     if (e5t) failures.push(e5t);
   }
 
@@ -646,9 +772,10 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'evolve: ownership guard, battle guard, dual-write mirror, enforced path_satisfied ' +
-      'gate and game_core::evolve SSOT delegation verified against production source ' +
-      '(teeth: 6 BAD + 1 GOOD synthetic fixtures verified; fuse checks deleted with the ' +
+      'evolve: ownership guard, battle guard, enforced path_satisfied gate and ' +
+      'apply_evolution delegation; apply_evolution: dual-write mirror and ' +
+      'game_core::evolve SSOT delegation — verified against production source ' +
+      '(teeth: 6 BAD + 2 GOOD synthetic fixtures verified; fuse checks deleted with the ' +
       'reducer, EG1/ADR-0174 — EG5-2 adds essence_train/consume invariants)',
   };
 }

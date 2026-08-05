@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 141 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 142 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -149,6 +149,7 @@ Generated from 141 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0172](./0172-test-integrity-and-movement-rejection-diagnostics.md) | 0172 — Test-integrity residuals and movement-rejection diagnostics | Accepted | ci-gates, client-ui, movement-netcode | 11r-h (M-postgate-eleventh-review-residuals — test-integrity & diagnostics residuals; EARS E1-1..E1-2, E2-1..E2-3, E3-1..E3-4, E4-1..E4-4, E5-1..E5-9) | De-vacuify three assertions (RT-SZ-02, F-5f, the M14d weather pin), add a grantBait revival tripwire for R4, and trace movement rejections into the F9 bundle via a rate-limited, overlay-filtered breadcrumb plus a dev fate line. |
 | [0173](./0173-content-registry-gate-coverage-and-schema-migration-reality.md) | 0173 — Content-registry gate coverage, unknown-quest diagnostics, and the real SpacetimeDB additive-schema rules | Accepted | ci-gates, content, schema-persistence | 11r-i (M-postgate-eleventh-review-residuals — gate-coverage extensions; EARS E1-1..E1-11, E2-1..E2-6, E3-1..E3-8, E4-1..E4-8, E5-1..E5-3) | Widen the dialogue gate to the whole registry dir and to node/choice TEXT, extend append-only ids to five more registries (heal_locations excluded), warn once per window on unknown quest ids, and correct the false engine-additive claim. |
 | [0174](./0174-essence-graph-schema-and-type-freeze.md) | 0174 — Essence-graph schema & core-type freeze (Migration A; fusion deleted) | Accepted | evolution-fusion, schema-persistence | EG1 (M-evolution-essence-graph — EARS EG1-1..EG1-12) | Land Migration A (+16 Monster / +12 MonsterPub / Species.tier / new public evolution_path table) and the game-core essence-graph type freeze, deleting fusion outright, so EG2/EG3/EG4 fan out behind one frozen contract. |
+| [0175](./0175-essence-graph-reducers.md) | 0175 — Essence-graph reducers: quality-time semantics, auto-evolution, battle credits (EG2) | Accepted | evolution-fusion, battle, movement-netcode | EG2 (M-evolution-essence-graph — EARS EG2-1..EG2-13) | Land the essence-graph write layer — apply_evolution/check_and_evolve with chain cascade, essence_train/consume_crystalized_essence, Trust/Quality-Time credits — defining quality time as bounded-gap active-playtime accrual. |
 | [0176](./0176-essence-graph-content-authoring.md) | 0176 — Essence-graph content authoring (evolution_paths registry, essence items) | Accepted | content, evolution-fusion | EG3 (M-evolution-essence-graph — EARS EG3-1..EG3-9) | Author the ten-edge essence graph into `evolution_paths/` with explicit append-only `edge_id`s, retuning the legacy `1→4` gate to level 20 so auto-evolution cannot temporally dominate the Steamveil fan-in edge. |
 
 ## Harness design corpus (H- namespace)
@@ -236,6 +237,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0167](./0167-pvp-side-b-battle-perspective.md) — 11r-b — 0167 — PvP side-B battle overlay: role-agnostic accessors + a view-boundary perspective projection (Accepted)
 - [0168](./0168-server-battle-movement-lock.md) — 11r-c (M-postgate-eleventh-review-residuals §2; EARS E1–E3) — 0168 — Real server battle movement lock: drain-time freeze in `movement_tick`, intake rejects in the move reducers (Accepted)
 - [0170](./0170-server-hardening-cache-completion-log-escaping.md) — 11r-g (M-postgate-eleventh-review-residuals — server hardening basket; EARS G-1..G-5, M-1..M-7, C-1..C-10, H-1..H-3, V-1..V-5) — 0170 — Server hardening basket: version-keyed type-chart cache, ADR-0089 completion, heal-cost seam split, and JSON log escaping (Accepted)
+- [0175](./0175-essence-graph-reducers.md) — EG2 (M-evolution-essence-graph — EARS EG2-1..EG2-13) — 0175 — Essence-graph reducers: quality-time semantics, auto-evolution, battle credits (EG2) (Accepted)
 
 ### evolution-fusion
 
@@ -251,6 +253,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0147](./0147-fuse-field-carry-and-fusion-eligibility.md) — A0 (M-postgate-evolution-fusion-hardening — fuse() field-carry fix + fusion_eligible extraction; EARS A0-1..A0-9) — 0147 — fuse() field-carry repair (taxed, not reset) + fusion_eligible guard SSOT (Accepted)
 - [0149](./0149-item-triggered-evolution-content.md) — B (M-postgate-evolution-fusion-hardening — item-triggered evolution content; EARS B-1..B-5) — 0149 — item-triggered evolution content (species 7/8 branches, id band 30..=39) (Accepted)
 - [0174](./0174-essence-graph-schema-and-type-freeze.md) — EG1 (M-evolution-essence-graph — EARS EG1-1..EG1-12) — 0174 — Essence-graph schema & core-type freeze (Migration A; fusion deleted) (Accepted)
+- [0175](./0175-essence-graph-reducers.md) — EG2 (M-evolution-essence-graph — EARS EG2-1..EG2-13) — 0175 — Essence-graph reducers: quality-time semantics, auto-evolution, battle credits (EG2) (Accepted)
 - [0176](./0176-essence-graph-content-authoring.md) — EG3 (M-evolution-essence-graph — EARS EG3-1..EG3-9) — 0176 — Essence-graph content authoring (evolution_paths registry, essence items) (Accepted)
 
 ### movement-netcode
@@ -279,6 +282,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0170](./0170-server-hardening-cache-completion-log-escaping.md) — 11r-g (M-postgate-eleventh-review-residuals — server hardening basket; EARS G-1..G-5, M-1..M-7, C-1..C-10, H-1..H-3, V-1..V-5) — 0170 — Server hardening basket: version-keyed type-chart cache, ADR-0089 completion, heal-cost seam split, and JSON log escaping (Accepted)
 - [0171](./0171-resume-from-idle-interpolation.md) — 11r-f (M-postgate-eleventh-review-residuals — resume-from-idle smoothness; EARS E1) — 0171 — Resume-from-idle interpolation smoothness: idle-gap-gated jitter EWMA + re-anchored lerp bracket (Accepted)
 - [0172](./0172-test-integrity-and-movement-rejection-diagnostics.md) — 11r-h (M-postgate-eleventh-review-residuals — test-integrity & diagnostics residuals; EARS E1-1..E1-2, E2-1..E2-3, E3-1..E3-4, E4-1..E4-4, E5-1..E5-9) — 0172 — Test-integrity residuals and movement-rejection diagnostics (Accepted)
+- [0175](./0175-essence-graph-reducers.md) — EG2 (M-evolution-essence-graph — EARS EG2-1..EG2-13) — 0175 — Essence-graph reducers: quality-time semantics, auto-evolution, battle credits (EG2) (Accepted)
 
 ### content
 

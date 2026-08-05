@@ -16,6 +16,7 @@
 //! ADR-0056 — keep it stable.
 
 use crate::economy::{spend_currency, wallet_balance};
+use crate::evolution::check_and_evolve;
 use crate::guards::{
     escrowed_currency_amount, escrowed_item_qty, is_in_ongoing_battle, reject_if_monster_in_trade,
     require_owner, saturating_sub_u64,
@@ -24,11 +25,11 @@ use crate::inventory::consume_one;
 use crate::marshal::{now_ms, pub_from_monster};
 use crate::schema::{
     character, heal_cooldown, heal_location_row, inventory, item_row, monster, monster_pub, player,
-    species_row, trade_offer, HealCooldown,
+    species_row, trade_offer, HealCooldown, Monster,
 };
 use game_core::{
-    apply_care, focus_train, is_cooldown_ready, Bond, EVs, FocusTrainError, FocusTrainResult, IVs,
-    Level, Nature, StatBlock, StatKind,
+    apply_care, focus_train, is_cooldown_ready, Affinity, Bond, CareError, EVs, FocusTrainError,
+    FocusTrainResult, IVs, Level, Nature, StatBlock, StatKind,
 };
 // SSOT (ptc5e-1): the CARE policy magnitudes now live in game-core beside
 // `apply_care`. Re-exported `pub(crate)` — and ONLY these two names, not the
@@ -38,26 +39,38 @@ use game_core::{
 pub(crate) use game_core::{CARE_BOND_AMOUNT, CARE_COOLDOWN_MS};
 use spacetimedb::{ReducerContext, Table};
 
-/// Pure decision seam (testable without a DB): apply the SSOT bond rule FIRST
-/// (so `AtMaxBond` / `NoEffect` reject before the cooldown is consulted — the
-/// order matches ADR-0058 §3 / ADR-0059 §3), THEN gate on the cooldown. Returns
-/// the new bond value, or `Err` if the action is rejected.
+/// Pure decision seam (testable without a DB): apply the SSOT bond rule, remap
+/// EXACTLY ONE of its rejects, then gate on the cooldown. Returns the new bond
+/// value, or `Err` if the action is rejected.
+///
+/// EG2-5 / ADR-0175 D2: `CareError::AtMaxBond` is a bond-UNCHANGED continuation
+/// — `bond` is a frozen dead column until Migration B, and rejecting at 255
+/// would let it permanently starve the LIVE Trust gate `care` now feeds. The
+/// remap is AtMaxBond-SPECIFIC (`NoEffect` still rejects loudly) and the
+/// cooldown still gates UNCONDITIONALLY below, so a maxed-bond monster earns
+/// Trust at exactly the same rate as any other. `apply_care` remains the called
+/// SSOT for the bond arithmetic.
 ///
 /// The cooldown gate delegates to the SSOT `game_core::is_cooldown_ready`
 /// (ptc5e-1): ready ⟺ `now - last >= CARE_COOLDOWN_MS`, so elapsed ==
 /// `CARE_COOLDOWN_MS` is ALLOWED and the `saturating_sub` elapsed means a
-/// future/zero clock can only OVER-reject, never wrap into a bypass. This is the
-/// exact dual of the prior in-line strict-`<` reject — behavior is unchanged.
+/// future/zero clock can only OVER-reject, never wrap into a bypass.
 ///
 /// The `now` parameter is the server clock ms (the caller passes `now_ms(ctx)`);
 /// it is named `now` — NOT `now_ms` — to avoid shadowing the module-level
 /// `now_ms` helper inside this body (red-team F2, least-surprise).
 pub(crate) fn evaluate_care(bond: u8, last_care_at_ms: i64, now: i64) -> Result<u8, String> {
-    let new_bond = apply_care(Bond::new(bond), CARE_BOND_AMOUNT).map_err(|e| format!("{e:?}"))?;
+    let new_bond = match apply_care(Bond::new(bond), CARE_BOND_AMOUNT) {
+        Ok(b) => b.value(),
+        // EG2-5: max bond continues with the bond unchanged — never a reject.
+        Err(CareError::AtMaxBond) => bond,
+        // A zero-magnitude care is a mis-tune, not a success — keep it loud.
+        Err(CareError::NoEffect) => return Err("care grants no effect".to_string()),
+    };
     if !is_cooldown_ready(last_care_at_ms, now, CARE_COOLDOWN_MS) {
         return Err("care cooldown not yet elapsed".to_string());
     }
-    Ok(new_bond.value())
+    Ok(new_bond)
 }
 
 /// Raise a monster's bond, gated by a per-monster cooldown measured from the
@@ -92,6 +105,9 @@ pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
     let new_bond = evaluate_care(m.bond, m.last_care_at_ms, now)?;
     m.bond = new_bond;
     m.last_care_at_ms = now;
+    // EG2-5: care is the Trust-favorable writer — saturating, the counter is a
+    // u32 lifetime total and a raw increment would overflow-panic mid-reducer.
+    m.trust_favorable_count = m.trust_favorable_count.saturating_add(1);
     // EG1 (ADR-0174 D2): the evolves_to recompute is GONE — the column is frozen
     // dead until Migration B. The bond write above stays (frozen column, but its
     // care semantics are unchanged this slice).
@@ -102,6 +118,11 @@ pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
     let pub_row = pub_from_monster(&m, existing_pub.tier);
     ctx.db.monster().monster_id().update(m);
     ctx.db.monster_pub().monster_id().update(pub_row);
+    // EG2-8/EG2-12 tails (fresh-find, after this reducer's own dual-write):
+    // Quality-Time credit first — it is itself an evolution gate — then the
+    // auto-evolution check LAST.
+    accrue_quality_time(ctx, monster_id);
+    check_and_evolve(ctx, monster_id);
     Ok(())
 }
 
@@ -252,6 +273,10 @@ pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result
     let pub_row = pub_from_monster(&m, existing_pub.tier);
     ctx.db.monster().monster_id().update(m);
     ctx.db.monster_pub().monster_id().update(pub_row);
+    // EG2-6: the EV path above is mechanically unchanged; EG2 adds ONLY the two
+    // tails (accrual first, auto-evolution check LAST — nutrition is a gate).
+    accrue_quality_time(ctx, monster_id);
+    check_and_evolve(ctx, monster_id);
     Ok(())
 }
 
@@ -401,6 +426,322 @@ pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> 
     }
 
     log::info!("{{\"evt\":\"heal_party\",\"sender\":\"{me}\",\"location\":{location_id}}}");
+    Ok(())
+}
+
+// ===========================================================================
+// EG2 — the essence-graph raising layer (spec §2 EG2-3/4/5/8/10, ADR-0175).
+// All pacing magnitudes below are playtest-tunable placeholders (spec §6); the
+// SHAPES (clamp-never-reject, bounded-gap accrual, shared cooldown clock) are
+// the decisions.
+// ===========================================================================
+
+/// Shared essence-training cooldown (5 h in ms) — ONE clock for `essence_train`
+/// and `consume_crystalized_essence` (EG2-4), anchored on
+/// `last_essence_train_at_ms`.
+pub(crate) const ESSENCE_TRAIN_COOLDOWN_MS: i64 = 18_000_000;
+/// Flat essence granted per `essence_train` (EG2-3).
+pub(crate) const ESSENCE_TRAIN_AMOUNT: u32 = 5;
+/// Per-pool essence soft cap — grants CLAMP here, never reject (EG1-1).
+pub(crate) const ESSENCE_SOFT_CAP: u32 = 999;
+/// One Quality-Time tick per this many credited active ms (1 tick per minute).
+pub(crate) const QT_TICK_MS: i64 = 60_000;
+/// A gap longer than this means the player was away — idle time never credits.
+pub(crate) const QT_IDLE_GAP_MS: i64 = 120_000;
+/// A gap shorter than this batches (no DB write, anchor kept) — hot-path bound.
+pub(crate) const QT_MIN_WRITE_GAP_MS: i64 = 5_000;
+/// Hard cap on credited Quality Time per UTC day (2 h) — defense in depth.
+pub(crate) const QT_DAILY_CAP_MS: i64 = 7_200_000;
+
+/// Grant essence to the ONE pool matching `affinity`:
+/// `saturating_add(amount).min(ESSENCE_SOFT_CAP)` — clamp, never reject, never
+/// panic (EG2-3 / EG1-1). Exhaustive match, so a new affinity cannot silently
+/// no-op.
+pub(crate) fn grant_essence(m: &mut Monster, affinity: Affinity, amount: u32) {
+    match affinity {
+        Affinity::Fire => {
+            m.essence_fire = m.essence_fire.saturating_add(amount).min(ESSENCE_SOFT_CAP);
+        }
+        Affinity::Water => {
+            m.essence_water = m.essence_water.saturating_add(amount).min(ESSENCE_SOFT_CAP);
+        }
+        Affinity::Plant => {
+            m.essence_plant = m.essence_plant.saturating_add(amount).min(ESSENCE_SOFT_CAP);
+        }
+        Affinity::Electric => {
+            m.essence_electric = m
+                .essence_electric
+                .saturating_add(amount)
+                .min(ESSENCE_SOFT_CAP);
+        }
+        Affinity::Earth => {
+            m.essence_earth = m.essence_earth.saturating_add(amount).min(ESSENCE_SOFT_CAP);
+        }
+        Affinity::Wind => {
+            m.essence_wind = m.essence_wind.saturating_add(amount).min(ESSENCE_SOFT_CAP);
+        }
+        Affinity::Light => {
+            m.essence_light = m.essence_light.saturating_add(amount).min(ESSENCE_SOFT_CAP);
+        }
+        Affinity::Dark => {
+            m.essence_dark = m.essence_dark.saturating_add(amount).min(ESSENCE_SOFT_CAP);
+        }
+    }
+}
+
+/// Pure bounded-gap Quality-Time accrual (EG2-8, ADR-0175 D1). Mutates the four
+/// Quality-Time columns of `m` in place; returns whether the row changed (false
+/// = the caller must perform NO DB write — the sub-threshold hot-path batch).
+///
+/// Branch order is load-bearing (each step is pinned by a unit test):
+///   1. `now < anchor` (backwards clock): re-anchor only. Checked FIRST —
+///      saturating_sub would otherwise collapse it into the keep-anchor branch
+///      and leave a FUTURE anchor in the row (a silent accrual lockout).
+///   2. `gap < QT_MIN_WRITE_GAP_MS` (strict): pure no-op, anchor KEPT so the
+///      skipped time batches against the older anchor.
+///   3. UTC-day rollover resets the day window — ABOVE the idle branch, i.e.
+///      compared BEFORE any re-anchor. The common rollover is "capped on day N,
+///      idle overnight, back on day N+1": that path takes the idle branch, and
+///      a reset placed below it would re-anchor into the new day without ever
+///      clearing `window_ms`, silently turning the 2 h DAILY cap into a
+///      permanent LIFETIME cap. The day rule is the SSOT `day_epoch_utc`
+///      (battle.rs) — sound here because anchors are non-negative server
+///      timestamps once the backwards-clock branch has run.
+///   4. `gap > QT_IDLE_GAP_MS` (strict): the player was away — re-anchor, no
+///      credit. The first-ever call (anchor 0) lands here by construction.
+///   5. credit `min(gap, QT_DAILY_CAP_MS - window)`, floored at 0; convert
+///      whole ticks at QT_TICK_MS, keep the remainder, saturate the counter.
+pub(crate) fn apply_quality_time_credit(m: &mut Monster, now: i64) -> bool {
+    let anchor = m.quality_time_window_start_ms;
+    if now < anchor {
+        m.quality_time_window_start_ms = now;
+        return true;
+    }
+    let gap = now.saturating_sub(anchor);
+    if gap < QT_MIN_WRITE_GAP_MS {
+        return false;
+    }
+    if crate::battle::day_epoch_utc(now) != crate::battle::day_epoch_utc(anchor) {
+        m.quality_time_window_ms = 0;
+    }
+    if gap > QT_IDLE_GAP_MS {
+        m.quality_time_window_start_ms = now;
+        return true;
+    }
+    let headroom = QT_DAILY_CAP_MS
+        .saturating_sub(i64::from(m.quality_time_window_ms))
+        .max(0);
+    let creditable = gap.min(headroom);
+    if creditable == 0 {
+        m.quality_time_window_start_ms = now;
+        return true;
+    }
+    // creditable <= QT_IDLE_GAP_MS here, so the conversion cannot fail; the
+    // defensive arm re-anchors without credit rather than truncating (no `as`).
+    let Ok(credit) = u32::try_from(creditable) else {
+        m.quality_time_window_start_ms = now;
+        return true;
+    };
+    m.quality_time_window_ms = m.quality_time_window_ms.saturating_add(credit);
+    m.quality_time_accum_ms = m.quality_time_accum_ms.saturating_add(credit);
+    // QT_TICK_MS (60_000) always fits u32; the MAX fallback keeps the division
+    // total and errs toward crediting FEWER ticks, never more.
+    let tick_ms = u32::try_from(QT_TICK_MS).unwrap_or(u32::MAX);
+    m.quality_time_ticks_total = m
+        .quality_time_ticks_total
+        .saturating_add(m.quality_time_accum_ms / tick_ms);
+    m.quality_time_accum_ms %= tick_ms;
+    m.quality_time_window_start_ms = now;
+    true
+}
+
+/// Quality-Time ctx shell (EG2-8, ADR-0175 D1/D3): delegate the ms rule to the
+/// pure seam above, then write back — re-projecting `monster_pub` ONLY when the
+/// public `quality_time_tier` actually changed (an unchanged tier is a
+/// byte-identical projection, and this runs on the movement hot path).
+///
+/// Returns whether `quality_time_ticks_total` actually advanced this call —
+/// the ONE Quality-Time observable an evolution gate can see. `enqueue_move`
+/// gates its `check_and_evolve` tail on it (walking changes no other gate
+/// value, so a no-tick call cannot change eligibility — ADR-0148 latency
+/// budget); every other call site ignores the return and checks
+/// unconditionally, because it mutates other gate values itself.
+///
+/// Infallible outward (a reducer TAIL must never fail its caller's write):
+/// missing rows are log-and-return-false. A missing `monster_pub` row writes
+/// NOTHING — the tier is copy-forward-only here, never fabricated (ADR-0174
+/// D7/A3).
+pub(crate) fn accrue_quality_time(ctx: &ReducerContext, monster_id: u64) -> bool {
+    let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+        log::warn!("{{\"evt\":\"qt_accrue_skip\",\"monster_id\":{monster_id},\"reason\":\"monster row missing\"}}");
+        return false;
+    };
+    let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
+        log::error!("{{\"evt\":\"qt_accrue_skip\",\"monster_id\":{monster_id},\"reason\":\"monster_pub row missing\"}}");
+        return false;
+    };
+    let ticks_before = m.quality_time_ticks_total;
+    if !apply_quality_time_credit(&mut m, now_ms(ctx)) {
+        return false;
+    }
+    let ticked = m.quality_time_ticks_total != ticks_before;
+    let new_pub = pub_from_monster(&m, existing_pub.tier);
+    ctx.db.monster().monster_id().update(m);
+    if new_pub.quality_time_tier != existing_pub.quality_time_tier {
+        ctx.db.monster_pub().monster_id().update(new_pub);
+    }
+    ticked
+}
+
+/// Pure cooldown seam for `essence_train` (EG2-3): the SSOT
+/// `game_core::is_cooldown_ready` predicate against the shared 5 h clock.
+pub(crate) fn evaluate_essence_train(last_train_ms: i64, now: i64) -> Result<(), String> {
+    if !is_cooldown_ready(last_train_ms, now, ESSENCE_TRAIN_COOLDOWN_MS) {
+        return Err("essence training cooldown not yet elapsed".to_string());
+    }
+    Ok(())
+}
+
+/// Pure decision seam for `consume_crystalized_essence` (EG2-4/EG2-10): exactly
+/// two rejects — not a crystalized-essence item, or the SHARED cooldown — both
+/// decided BEFORE the caller's irreversible `consume_one`. Ok hands back the
+/// ITEM's affinity and the ITEM's amount verbatim.
+pub(crate) fn evaluate_consume_crystalized(
+    item: &game_core::ItemDef,
+    last_train_ms: i64,
+    now: i64,
+) -> Result<(game_core::Affinity, u32), String> {
+    let Some(affinity) = item.essence_affinity else {
+        return Err("item is not crystalized essence".to_string());
+    };
+    if !is_cooldown_ready(last_train_ms, now, ESSENCE_TRAIN_COOLDOWN_MS) {
+        return Err("essence training cooldown not yet elapsed".to_string());
+    }
+    Ok((affinity, item.essence_amount))
+}
+
+/// Essence-train a monster: +ESSENCE_TRAIN_AMOUNT to ONE pool, gated by the
+/// shared 5 h cooldown (EG2-3). Full care-shaped guard set; decision before
+/// mutation (reject-never-burns); dual-write; then the EG2 growth tails.
+#[spacetimedb::reducer]
+pub fn essence_train(
+    ctx: &ReducerContext,
+    monster_id: u64,
+    affinity: Affinity,
+) -> Result<(), String> {
+    let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+        return Err("monster not found".to_string());
+    };
+    require_owner(ctx, "essence_train", m.owner_identity)?;
+    // Both-role ongoing-battle guard (ADR-0136 amends ADR-0122 §D7), as in care.
+    if is_in_ongoing_battle(ctx, ctx.sender) {
+        return Err("cannot essence-train during an ongoing battle".to_string());
+    }
+    // Trade escrow guard (ADR-0106): an escrowed monster must not be mutated.
+    reject_if_monster_in_trade(
+        ctx.db
+            .trade_offer()
+            .initiator()
+            .filter(m.owner_identity)
+            .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
+        monster_id,
+    )?;
+    let now = now_ms(ctx);
+    // DECISION before mutation (reject-never-burns, ADR-0059 §3).
+    evaluate_essence_train(m.last_essence_train_at_ms, now)?;
+    grant_essence(&mut m, affinity, ESSENCE_TRAIN_AMOUNT);
+    m.last_essence_train_at_ms = now;
+    // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing monster_pub row.
+    let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
+        return Err(format!("monster_pub row missing for monster {monster_id}"));
+    };
+    let pub_row = pub_from_monster(&m, existing_pub.tier);
+    ctx.db.monster().monster_id().update(m);
+    ctx.db.monster_pub().monster_id().update(pub_row);
+    // EG2-8/EG2-12 tails: accrual first (Quality Time is itself a gate), then
+    // the auto-evolution check LAST — essence just changed, a gate value.
+    accrue_quality_time(ctx, monster_id);
+    check_and_evolve(ctx, monster_id);
+    Ok(())
+}
+
+/// Consume a crystalized-essence item: grant the ITEM's essence to the matching
+/// pool, sharing `essence_train`'s cooldown clock (EG2-4). Exactly two decision
+/// rejects (wrong item; cooldown), both BEFORE `consume_one` — a reject never
+/// burns the item (EG2-10). Item defs come from the compile-time content
+/// registry: `ItemRow` carries no essence columns (ADR-0175 D5).
+#[spacetimedb::reducer]
+pub fn consume_crystalized_essence(
+    ctx: &ReducerContext,
+    monster_id: u64,
+    item_id: u32,
+) -> Result<(), String> {
+    let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+        return Err("monster not found".to_string());
+    };
+    require_owner(ctx, "consume_crystalized_essence", m.owner_identity)?;
+    // Both-role ongoing-battle guard (ADR-0136 amends ADR-0122 §D7), as in care.
+    if is_in_ongoing_battle(ctx, ctx.sender) {
+        return Err("cannot consume essence during an ongoing battle".to_string());
+    }
+    // Trade escrow guard (ADR-0106): an escrowed monster must not be mutated.
+    reject_if_monster_in_trade(
+        ctx.db
+            .trade_offer()
+            .initiator()
+            .filter(m.owner_identity)
+            .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
+        monster_id,
+    )?;
+    // Item escrow: reject if consuming this item would breach the escrowed
+    // reserve (same block as train, EG2-4's non-optional double-spend guard).
+    {
+        let escrowed = escrowed_item_qty(
+            ctx.db
+                .trade_offer()
+                .initiator()
+                .filter(m.owner_identity)
+                .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
+            m.owner_identity,
+            item_id,
+        );
+        let count = ctx
+            .db
+            .inventory()
+            .owner_identity()
+            .filter(m.owner_identity)
+            .find(|r| r.item_id == item_id)
+            .map(|r| r.count)
+            .unwrap_or(0);
+        if escrowed >= count {
+            return Err("item is in an active trade".to_string());
+        }
+    }
+    // ItemDef from the process-wide content registry (essence fields live only
+    // there — ItemRow has no essence columns, ADR-0175 D5).
+    let item = crate::content_cache::cached_items()
+        .map_err(|e| format!("consume_crystalized_essence: cached_items: {e}"))?
+        .iter()
+        .find(|d| d.id == item_id)
+        .ok_or_else(|| format!("item {item_id} not found"))?;
+    let now = now_ms(ctx);
+    // DECISION before the irreversible spend (reject-never-burns, EG2-10).
+    let (item_affinity, amount) =
+        evaluate_consume_crystalized(item, m.last_essence_train_at_ms, now)?;
+    consume_one(ctx, ctx.sender, item_id)?;
+    grant_essence(&mut m, item_affinity, amount);
+    m.last_essence_train_at_ms = now;
+    // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing monster_pub row.
+    let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
+        return Err(format!("monster_pub row missing for monster {monster_id}"));
+    };
+    let pub_row = pub_from_monster(&m, existing_pub.tier);
+    ctx.db.monster().monster_id().update(m);
+    ctx.db.monster_pub().monster_id().update(pub_row);
+    // EG2-8/EG2-12 tails: the sixth call site (ADR-0175 D3) — accrual first,
+    // auto-evolution check LAST so a full-bar feed evolves immediately.
+    accrue_quality_time(ctx, monster_id);
+    check_and_evolve(ctx, monster_id);
     Ok(())
 }
 

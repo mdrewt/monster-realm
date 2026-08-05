@@ -14,10 +14,19 @@
 //!
 //! EARS criteria covered (from M9 spec §3):
 //!   - Care cooldown: boundary is `<`, not `<=` (equal-to-cooldown is ALLOWED).
-//!   - Max bond rejects before burning cooldown (AtMaxBond path).
+//!   - Max bond is NOT a reject any more — EG2-5 / ADR-0175 D2 remaps
+//!     `CareError::AtMaxBond` to a bond-unchanged continuation so the Trust
+//!     credit keeps flowing; the cooldown still gates unconditionally. (This
+//!     supersedes the M9 bullet "max bond rejects before burning cooldown" —
+//!     see `care_at_max_bond_still_succeeds_and_increments_trust` below.)
 //!   - Care raises bond by exactly min(CARE_BOND_AMOUNT, 255 - bond).
 //!   - Safe-direction clock: future last_care_at_ms only over-rejects (no bypass).
 //!   - Elapsed from nonzero base works correctly.
+//!
+//! EG2 (ADR-0175) adds, at the bottom of this file, the essence-graph raising
+//! layer: `apply_quality_time_credit`, `grant_essence`, `evaluate_essence_train`,
+//! `evaluate_consume_crystalized`, the revised `care` semantics, and the
+//! source-scan pins for the two new reducers' guard/tail discipline.
 //!
 //! Each test carries a `// kills:` comment naming which wrong implementation it
 //! catches. Reference consts symbolically so they survive tuning.
@@ -435,25 +444,82 @@ fn cooldown_elapsed_from_nonzero_base_is_ok() {
 }
 
 // ---------------------------------------------------------------------------
-// Max bond rejects even with cooldown elapsed
+// Max bond: REVISED by EG2-5 / ADR-0175 D2 (was: "rejects even with cooldown
+// elapsed"). See the doc comment on the first test below for why the old pin is
+// gone — the change is spec-driven, not implementation-driven.
 // ---------------------------------------------------------------------------
 
-/// A monster already at max bond (255) must be rejected regardless of cooldown.
-/// kills: an impl that checks cooldown first and only then checks bond, so a
-/// max-bond monster would burn the cooldown before being rejected (F1 violation).
-/// The spec: "IF the monster is at max bond THE SYSTEM SHALL reject BEFORE
-/// burning the cooldown."
-/// Rationale: evaluate_care applies bond arithmetic BEFORE the cooldown gate
-/// (per the specified order: apply_care first, then cooldown) — so AtMaxBond
-/// fires before the cooldown check.
+/// **REVISION (EG2-5, ADR-0175 D2 — supersedes the M9b pin
+/// `max_bond_rejects_even_with_cooldown_elapsed`).**
+///
+/// The deleted pin asserted `evaluate_care(255, 0, CARE_COOLDOWN_MS)` is `Err`,
+/// encoding M9b's "a maxed-bond monster has nothing left to gain, so reject
+/// before burning the cooldown". EG2-5 makes `care` the Trust-favorable writer
+/// (`trust_favorable_count`), and `bond` is a FROZEN dead column until Migration
+/// B (EG5-6). Keeping the old reject would mean the live gate (Trust) is
+/// permanently starved by the dead column: after ~51 cares (~13 days of routine
+/// play at the 6 h cooldown) `care` would reject forever and Trust could never
+/// grow again. So `CareError::AtMaxBond` now maps to a bond-UNCHANGED
+/// continuation and the reducer proceeds to the Trust credit.
+///
+/// The revision is written from the spec (EG2-5 + ADR-0175 D2), not to match any
+/// implementation; the cooldown half of the old pin is NOT relaxed — it is
+/// re-asserted, harder, by `care_at_max_bond_still_cooldown_gated` below.
+///
+/// kills: an impl that keeps propagating `AtMaxBond` as `Err` (Trust growth
+///        silently dies at bond 255); an impl that "fixes" it by returning a
+///        bumped bond (256 is unrepresentable — the value must stay 255).
+///
+/// The Trust increment itself lives in `care`'s body (not in this pure seam) and
+/// is pinned by `care_body_has_trust_increment_and_tails`.
 #[test]
-fn max_bond_rejects_even_with_cooldown_elapsed() {
+fn care_at_max_bond_still_succeeds_and_increments_trust() {
     // bond = 255 (max), cooldown fully elapsed.
     let result = evaluate_care(255, 0, CARE_COOLDOWN_MS);
+    match result {
+        Ok(new_bond) => {
+            assert_eq!(
+                new_bond, 255,
+                "evaluate_care(bond=255, cooldown elapsed) must return the bond \
+                 UNCHANGED at 255 (AtMaxBond ⇒ bond-unchanged continuation, \
+                 ADR-0175 D2) — never a wrapped or clamped-down value"
+            );
+        }
+        Err(e) => {
+            panic!(
+                "TEETH (EG2-5, ADR-0175 D2): evaluate_care(bond=255, last=0, \
+                 now=CARE_COOLDOWN_MS) must now be Ok(255), NOT Err. A maxed-bond \
+                 monster must keep earning Trust through `care`; rejecting here \
+                 lets a FROZEN dead column (bond) permanently starve a LIVE \
+                 evolution gate (Trust). Got Err: {e:?}"
+            );
+        }
+    }
+}
+
+/// **EG2-5 / ADR-0175 D2, second half — the remap must NOT open a rate hole.**
+///
+/// A maxed-bond monster earns Trust at exactly the same cooldown-limited rate as
+/// every other monster. This is the reason D2 says the `AtMaxBond` remap must be
+/// REORDERED inside `evaluate_care` rather than bolted on: if the impl keeps
+/// `apply_care(..)?`-first shape and merely turns the error into an early
+/// `return Ok(bond)`, the early return jumps straight over the cooldown gate and
+/// a bond-255 monster can be cared — and Trust-credited — in an unbounded loop.
+///
+/// kills: `match apply_care(..) { Err(AtMaxBond) => return Ok(bond), .. }` placed
+///        BEFORE the `is_cooldown_ready` check (rate-unlimited Trust farming on
+///        any monster the player has already maxed) — the exact wrong shape the
+///        naive reading of D2 produces.
+#[test]
+fn care_at_max_bond_still_cooldown_gated() {
+    // bond = 255 (max), ONE ms short of the cooldown boundary.
+    let result = evaluate_care(255, 0, CARE_COOLDOWN_MS - 1);
     assert!(
         result.is_err(),
-        "evaluate_care(bond=255, ...) must be Err (AtMaxBond path) \
-         even when cooldown has elapsed; got Ok: {:?}",
+        "TEETH (EG2-5, ADR-0175 D2): evaluate_care(bond=255, last=0, \
+         now=CARE_COOLDOWN_MS-1) must be Err — the AtMaxBond remap must not \
+         short-circuit past the cooldown gate. A maxed-bond monster earns Trust \
+         at the SAME rate as any other, never faster. Got Ok: {:?}",
         result.ok()
     );
 }
@@ -1308,4 +1374,1594 @@ fn heal_party_keeps_owner_and_escrow_checks_before_the_spend() {
          `escrowed_currency_amount` exists to close and which \
          `economy-sinks-sources.eval.mjs` pins from outside this crate. Green at HEAD."
     );
+}
+
+// ###########################################################################
+// EG2 (spec M-evolution-essence-graph §2 EG2-3/4/5/6/8/10, ADR-0175) —
+// the essence-graph raising layer.
+//
+// RED STATE, and WHY. Every test below references a production symbol that does
+// not exist yet, so this whole file is RED BY COMPILE ERROR until the specialist
+// lands, in `server-module/src/raising.rs`:
+//
+//   pub(crate) const ESSENCE_TRAIN_COOLDOWN_MS: i64;   // 5 h
+//   pub(crate) const ESSENCE_TRAIN_AMOUNT: u32;        // 5
+//   pub(crate) const ESSENCE_SOFT_CAP: u32;            // 999
+//   pub(crate) const QT_TICK_MS / QT_IDLE_GAP_MS
+//                  / QT_MIN_WRITE_GAP_MS / QT_DAILY_CAP_MS: i64;
+//   pub(crate) fn grant_essence(m: &mut Monster, affinity: Affinity, amount: u32);
+//   pub(crate) fn apply_quality_time_credit(m: &mut Monster, now: i64) -> bool;
+//   pub(crate) fn accrue_quality_time(ctx: &ReducerContext, monster_id: u64);
+//   pub(crate) fn evaluate_essence_train(last_train_ms: i64, now: i64)
+//                  -> Result<(), String>;
+//   pub(crate) fn evaluate_consume_crystalized(
+//                    item: &game_core::ItemDef, last_train_ms: i64, now: i64,
+//                  ) -> Result<(game_core::Affinity, u32), String>;
+//   #[spacetimedb::reducer] pub fn essence_train(..) / consume_crystalized_essence(..)
+//
+// After it compiles, the source-scan block at the bottom stays RED until the two
+// new reducers carry the full guard set and the accrue/check_and_evolve tails.
+//
+// SHAPE OF THE SUITE. The ms-level accrual rule is exercised DIRECTLY on the pure
+// `apply_quality_time_credit(&mut Monster, now)` seam with hand-built rows — the
+// pattern this file already uses for `evaluate_care`/`evaluate_train`/
+// `evaluate_heal`, and the only pattern available: this crate has NO
+// reducer-executing harness (ADR-0156 P7, restated at
+// `heal_party_reads_the_cached_heal_location_registry`'s honest-limit note), so
+// the ctx shells are pinned structurally instead.
+//
+// NOTE ON THE CONSTANTS. ADR-0175 calls all five pacing magnitudes playtest
+// placeholders and the SHAPE the decision. The hand-computed expectations below
+// are written against the placeholder values, so each value is pinned exactly
+// ONCE, in the test whose arithmetic depends on it, with a `RETUNE` note —
+// retuning is then a deliberate two-line edit (constant + its one pin), never a
+// silent behaviour change. Everything else references the consts symbolically.
+// ###########################################################################
+
+use crate::schema::Monster;
+use game_core::Affinity;
+
+/// One UTC day in ms — the `day(ms) = ms / 86_400_000` bucket ADR-0175 D1 uses
+/// for the Quality-Time daily window. Spelled locally so the fixtures below can
+/// straddle a day boundary on purpose.
+const EG2_DAY_MS: i64 = 86_400_000;
+
+/// A Quality-Time anchor sitting 1 h into UTC day 10 — far enough from both day
+/// edges that every "same day" fixture below genuinely stays inside one day.
+const QT_ANCHOR: i64 = 10 * EG2_DAY_MS + 3_600_000;
+
+/// A `Monster` row with boring, known values in every column.
+///
+/// Distinct nonzero stats mean an accidental write to the wrong column shows up
+/// as a value mismatch rather than a silent pass. Mirrors the shape
+/// `marshal_tests.rs::m7b_test_monster_row` uses; kept local because that one is
+/// private to its own module.
+fn eg2_monster() -> Monster {
+    Monster {
+        monster_id: 77,
+        owner_identity: spacetimedb::Identity::from_byte_array([9u8; 32]),
+        species_id: 1,
+        nickname: "Quill".to_string(),
+        level: 12,
+        xp: 340,
+        bond: 40,
+        iv_hp: 11,
+        iv_attack: 12,
+        iv_defense: 13,
+        iv_speed: 14,
+        iv_sp_attack: 15,
+        iv_sp_defense: 16,
+        nature_kind: NatureKind::Hardy,
+        ev_hp: 4,
+        ev_attack: 8,
+        ev_defense: 12,
+        ev_speed: 16,
+        ev_sp_attack: 20,
+        ev_sp_defense: 24,
+        stat_hp: 120,
+        stat_attack: 55,
+        stat_defense: 45,
+        stat_speed: 70,
+        stat_sp_attack: 50,
+        stat_sp_defense: 40,
+        current_hp: 90,
+        party_slot: 0,
+        last_care_at_ms: 0,
+        evolves_to: None,
+        essence_fire: 0,
+        essence_water: 0,
+        essence_plant: 0,
+        essence_electric: 0,
+        essence_earth: 0,
+        essence_wind: 0,
+        essence_light: 0,
+        essence_dark: 0,
+        trust_favorable_count: 0,
+        trust_unfavorable_count: 0,
+        trust_favorable_battle_day_epoch: 0,
+        quality_time_ticks_total: 0,
+        quality_time_accum_ms: 0,
+        quality_time_window_ms: 0,
+        quality_time_window_start_ms: 0,
+        last_essence_train_at_ms: 0,
+    }
+}
+
+/// A `Monster` row whose four Quality-Time columns carry exactly the given
+/// state: `(anchor, window_ms, accum_ms, ticks_total)`.
+fn qt_monster(anchor: i64, window_ms: u32, accum_ms: u32, ticks_total: u32) -> Monster {
+    let mut m = eg2_monster();
+    m.quality_time_window_start_ms = anchor;
+    m.quality_time_window_ms = window_ms;
+    m.quality_time_accum_ms = accum_ms;
+    m.quality_time_ticks_total = ticks_total;
+    m
+}
+
+/// The four Quality-Time columns as one tuple, for whole-state assertions:
+/// `(window_start_ms, window_ms, accum_ms, ticks_total)`.
+///
+/// Asserting the WHOLE tuple (not one field at a time) is what makes the
+/// "nothing else moved" claims in the tests below real teeth: an impl that
+/// credits the right ticks while also clobbering the day window fails.
+fn qt_state(m: &Monster) -> (i64, u32, u32, u32) {
+    (
+        m.quality_time_window_start_ms,
+        m.quality_time_window_ms,
+        m.quality_time_accum_ms,
+        m.quality_time_ticks_total,
+    )
+}
+
+/// The 8 flat essence columns in `Affinity::ALL` order (Fire..Dark).
+fn essence_columns(m: &Monster) -> [u32; 8] {
+    [
+        m.essence_fire,
+        m.essence_water,
+        m.essence_plant,
+        m.essence_electric,
+        m.essence_earth,
+        m.essence_wind,
+        m.essence_light,
+        m.essence_dark,
+    ]
+}
+
+/// A crystalized-essence `ItemDef` (the EG3-6 shape: essence fields set, both
+/// other roles `None` per validation rule R9).
+fn essence_item(affinity: Affinity, amount: u32) -> game_core::ItemDef {
+    game_core::ItemDef {
+        id: 4,
+        name: "Tidewell Shard".to_string(),
+        description: "A crystalized shard humming with essence.".to_string(),
+        recruit_bonus: 0,
+        train_stat: None,
+        train_amount: 0,
+        sell_price: 200,
+        cure_status: None,
+        essence_affinity: Some(affinity),
+        essence_amount: amount,
+    }
+}
+
+/// A TRAINING-food `ItemDef` — a perfectly valid item that is NOT crystalized
+/// essence (`essence_affinity: None`). The EG2-10 wrong-item fixture.
+fn training_food_item() -> game_core::ItemDef {
+    game_core::ItemDef {
+        id: 2,
+        name: "Protein Cube".to_string(),
+        description: "Focus-training food.".to_string(),
+        recruit_bonus: 0,
+        train_stat: Some(StatKind::Attack),
+        train_amount: 64,
+        sell_price: 40,
+        cure_status: None,
+        essence_affinity: None,
+        essence_amount: 0,
+    }
+}
+
+// ===========================================================================
+// EG2-8 / ADR-0175 D1 — `apply_quality_time_credit`: bounded-gap active-playtime
+//
+// The rule, restated from ADR-0175 D1 (this is the contract the 10 tests below
+// encode, in the order the impl must evaluate it):
+//   anchor = quality_time_window_start_ms; gap = now.saturating_sub(anchor)
+//   now < anchor                 → re-anchor only, no credit, true
+//   gap < QT_MIN_WRITE_GAP_MS    → NOTHING mutated (anchor KEPT), false
+//   gap > QT_IDLE_GAP_MS         → re-anchor only, no credit, true
+//   else: day(now) != day(anchor) ⇒ window_ms = 0
+//         creditable = min(gap, QT_DAILY_CAP_MS - window_ms), floored at 0
+//         creditable == 0 ⇒ re-anchor only, true
+//         window_ms += c; accum_ms += c;
+//         ticks_total = ticks_total.saturating_add(accum_ms / QT_TICK_MS);
+//         accum_ms %= QT_TICK_MS; anchor = now; true
+// ===========================================================================
+
+/// EG2-8: a gap inside the idle window credits, converts whole ticks, and
+/// re-anchors.
+///
+/// kills: an impl that never advances the anchor (every later call would
+///        re-credit the same elapsed span — unbounded free ticks); an impl that
+///        converts ms to ticks with the wrong divisor; an impl that banks the
+///        credit in `accum_ms` but never converts it to a tick.
+#[test]
+fn credits_gap_within_idle_window() {
+    // RETUNE: this fixture's "60 s ⇒ exactly 1 tick" arithmetic is the ONLY
+    // place QT_TICK_MS's value is pinned. Change both together, deliberately.
+    assert_eq!(
+        QT_TICK_MS, 60_000,
+        "fixture precondition (ADR-0175 D1): 1 tick == 1 active minute"
+    );
+
+    let now = QT_ANCHOR + 60_000;
+    let mut m = qt_monster(QT_ANCHOR, 0, 0, 0);
+    let wrote = apply_quality_time_credit(&mut m, now);
+
+    assert!(
+        wrote,
+        "a credited call must return true so the ctx shell writes the row back"
+    );
+    assert_eq!(
+        qt_state(&m),
+        (now, 60_000, 0, 1),
+        "TEETH (EG2-8, ADR-0175 D1): a 60 s gap inside the idle window must \
+         credit 60 s to the day window, convert to exactly 1 tick, leave a 0 ms \
+         remainder, and RE-ANCHOR to `now`. Expected \
+         (anchor, window_ms, accum_ms, ticks) = (now, 60_000, 0, 1)."
+    );
+}
+
+/// EG2-8 / EG2-9 (the no-idle-accrual invariant at the unit level): a gap LONGER
+/// than `QT_IDLE_GAP_MS` credits NOTHING — the player was away.
+///
+/// This is the unit-level proof-of-teeth for the whole no-idle-accrual gate:
+/// `evals/no-idle-accrual.eval.mjs` proves nothing SCHEDULED can call the growth
+/// writers, and this proves that even a genuine player call cannot launder
+/// away-from-keyboard time into Quality Time.
+///
+/// kills: an impl with no idle bound at all (10 idle minutes would credit 10
+///        ticks — leave the game running overnight and the top Quality-Time tier
+///        arrives free); an impl that clamps the gap to the idle bound instead of
+///        dropping it (would still credit 2 ticks here).
+#[test]
+fn reanchors_without_credit_beyond_idle_gap() {
+    // RETUNE: the only pin of QT_IDLE_GAP_MS's value (see credits_gap... above).
+    assert_eq!(
+        QT_IDLE_GAP_MS, 120_000,
+        "fixture precondition (ADR-0175 D1): 2 min of silence means 'away'"
+    );
+
+    let now = QT_ANCHOR + 600_000; // 10 minutes — far beyond the idle bound.
+    let mut m = qt_monster(QT_ANCHOR, 1_000, 17_000, 7);
+    let wrote = apply_quality_time_credit(&mut m, now);
+
+    assert!(
+        wrote,
+        "the re-anchor must be persisted (true) — otherwise the stale anchor \
+         makes the NEXT call look idle too, and an idle bound that never resets \
+         locks the monster out of Quality Time forever"
+    );
+    assert_eq!(
+        qt_state(&m),
+        (now, 1_000, 17_000, 7),
+        "TEETH (EG2-8/EG2-9, ADR-0175 D1): a gap beyond QT_IDLE_GAP_MS must move \
+         the anchor to `now` and change NOTHING else — no window, no accum, no \
+         ticks. Idle time NEVER credits."
+    );
+}
+
+/// EG2-8: the first-ever call on a fresh monster (anchor 0) only anchors.
+///
+/// A brand-new row carries `quality_time_window_start_ms = 0`, so the gap is the
+/// whole Unix epoch — it lands in the idle branch BY CONSTRUCTION (ADR-0175 D1).
+///
+/// kills: an impl that special-cases anchor 0 by crediting the elapsed span —
+///        `now / QT_TICK_MS` is ~29 million ticks, so the very first `care` would
+///        saturate `quality_time_ticks_total` and hand out the top Quality-Time
+///        tier to a monster that has never been played with.
+#[test]
+fn first_call_only_anchors() {
+    let now = 1_700_000_000_000i64; // a realistic wall clock, ~2023-11.
+    let mut m = qt_monster(0, 0, 0, 0);
+    let wrote = apply_quality_time_credit(&mut m, now);
+
+    assert!(wrote, "the first call must persist its fresh anchor");
+    assert_eq!(
+        qt_state(&m),
+        (now, 0, 0, 0),
+        "TEETH (EG2-8, ADR-0175 D1): the first-ever call must ONLY anchor — zero \
+         window, zero accum, zero ticks. The epoch-sized gap is idle by \
+         construction, not a jackpot."
+    );
+}
+
+/// EG2-8: a backwards server clock re-anchors and credits nothing.
+///
+/// The `now < anchor` test must be evaluated FIRST — before the min-write-gap
+/// test — because `saturating_sub` collapses a backwards gap to 0, which would
+/// otherwise be read as "sub-threshold, keep the anchor".
+///
+/// kills: (a) an impl that orders the min-write-gap check first — the anchor
+///        stays in the FUTURE, so every later call keeps saturating to gap 0 and
+///        the monster silently stops earning Quality Time until wall-clock time
+///        catches up; (b) an impl using wrapping/unchecked subtraction, where a
+///        backwards clock produces a huge positive gap and a credit windfall.
+#[test]
+fn reanchors_on_backwards_clock() {
+    let now = QT_ANCHOR - 10_000; // the server clock stepped backwards.
+    let mut m = qt_monster(QT_ANCHOR, 500, 1_234, 3);
+    let wrote = apply_quality_time_credit(&mut m, now);
+
+    assert!(
+        wrote,
+        "the backwards-clock re-anchor must be persisted (true) — leaving a \
+         future anchor in the row is the lockout described above"
+    );
+    assert_eq!(
+        qt_state(&m),
+        (now, 500, 1_234, 3),
+        "TEETH (EG2-8, ADR-0175 D1): `now < anchor` must re-anchor to `now` and \
+         change NOTHING else. Expected the anchor to move BACK to now={now}."
+    );
+}
+
+/// EG2-8: credit accumulates across calls and converts to whole ticks, keeping
+/// the sub-tick remainder.
+///
+/// Two sub-cases: one that lands exactly on a tick boundary, and one that must
+/// leave a nonzero remainder behind.
+///
+/// kills: an impl that zeroes `accum_ms` after conversion instead of taking the
+///        remainder (sub-case B would lose 50 s of real playtime EVERY call —
+///        a monster played in short bursts could never tick); an impl that
+///        converts the GAP alone and ignores the banked accumulator (sub-case A
+///        would produce 1 tick, not 2).
+#[test]
+fn converts_whole_ticks_and_keeps_remainder() {
+    // A: 50 s banked + a 70 s gap = 120 s ⇒ exactly 2 ticks, remainder 0.
+    let now_a = QT_ANCHOR + 70_000;
+    let mut a = qt_monster(QT_ANCHOR, 0, 50_000, 0);
+    assert!(apply_quality_time_credit(&mut a, now_a));
+    assert_eq!(
+        qt_state(&a),
+        (now_a, 70_000, 0, 2),
+        "TEETH (EG2-8): 50_000 ms banked + a 70_000 ms gap is 120_000 ms of \
+         active time — exactly 2 ticks with a 0 ms remainder. An impl that \
+         converts only the gap would report 1."
+    );
+
+    // B: 10 s banked + a 100 s gap = 110 s ⇒ 1 tick, remainder 50 s.
+    let now_b = QT_ANCHOR + 100_000;
+    let mut b = qt_monster(QT_ANCHOR, 0, 10_000, 4);
+    assert!(apply_quality_time_credit(&mut b, now_b));
+    assert_eq!(
+        qt_state(&b),
+        (now_b, 100_000, 50_000, 5),
+        "TEETH (EG2-8): 10_000 + 100_000 = 110_000 ms is 1 whole tick with a \
+         50_000 ms REMAINDER that must be carried, not discarded. An impl that \
+         resets accum_ms to 0 silently burns 50 s of real playtime here."
+    );
+}
+
+/// EG2-8: a sub-threshold gap is a PURE no-op that returns false — and the kept
+/// anchor means the batched time is credited in full by the next call.
+///
+/// The hot path is `enqueue_move`, which fires roughly once per tile-step for
+/// EVERY party monster; without this gate each step would write up to 6 monster
+/// rows plus their public projections. Returning false is what lets the ctx shell
+/// skip the DB write entirely.
+///
+/// kills: (a) an impl that re-anchors on the sub-threshold call (it would return
+///        the right `false` but silently DISCARD 3 s of real playtime per call —
+///        under sustained movement almost all Quality Time would evaporate);
+///        (b) an impl that returns true (a DB write on every single step, the
+///        exact churn the threshold exists to prevent).
+#[test]
+fn below_min_write_gap_is_a_pure_noop_returning_false() {
+    // RETUNE: the only pin of QT_MIN_WRITE_GAP_MS's value.
+    assert_eq!(
+        QT_MIN_WRITE_GAP_MS, 5_000,
+        "fixture precondition (ADR-0175 D1): sub-5 s calls batch, never write"
+    );
+
+    let mut m = qt_monster(QT_ANCHOR, 4_000, 3_000, 2);
+
+    // Call 1 — 3 s after the anchor: below the write threshold.
+    let wrote = apply_quality_time_credit(&mut m, QT_ANCHOR + 3_000);
+    assert!(
+        !wrote,
+        "TEETH (EG2-8, ADR-0175 D1): a sub-QT_MIN_WRITE_GAP_MS call must return \
+         FALSE so the caller performs no DB write at all"
+    );
+    assert_eq!(
+        qt_state(&m),
+        (QT_ANCHOR, 4_000, 3_000, 2),
+        "TEETH (EG2-8, ADR-0175 D1): the sub-threshold call must mutate NOTHING \
+         — the ANCHOR ESPECIALLY must stay at its old value so the skipped time \
+         batches instead of being lost"
+    );
+
+    // Call 2 — 10 s after the ORIGINAL anchor: the full 10 s must credit.
+    let now2 = QT_ANCHOR + 10_000;
+    let wrote2 = apply_quality_time_credit(&mut m, now2);
+    assert!(
+        wrote2,
+        "a 10 s gap is above the write threshold — must return true"
+    );
+    assert_eq!(
+        qt_state(&m),
+        (now2, 14_000, 13_000, 2),
+        "TEETH (EG2-8, ADR-0175 D1): the follow-up call must credit the FULL \
+         10_000 ms measured from the ORIGINAL anchor (window 4_000+10_000, accum \
+         3_000+10_000). An impl that re-anchored on the skipped call would credit \
+         only 7_000 ms here — 3 s of real playtime lost per sub-threshold call."
+    );
+}
+
+/// EG2-8: a gap of EXACTLY `QT_MIN_WRITE_GAP_MS` CREDITS — the no-write rule is
+/// strict `<`, so the threshold value itself is on the crediting side.
+///
+/// Deliberately the same starting row as
+/// `below_min_write_gap_is_a_pure_noop_returning_false` so the pair brackets the
+/// boundary: at +3_000 ms nothing happens at all, at +5_000 ms the full 5 s
+/// credits. Both directions of the comparison are now pinned, exactly as
+/// `cooldown_boundary_exact_is_ok` / `cooldown_boundary_one_ms_before_is_err`
+/// bracket the care cooldown.
+///
+/// kills: a `<=` written where ADR-0175 D1 specifies `<` — the sub-threshold
+///        branch would swallow this call, returning false and dropping 5 s of
+///        real playtime on a call that is supposed to be a normal credit. That
+///        mutant is invisible to every other test in this file: the sibling test
+///        below the threshold and the crediting tests well above it both pass
+///        under it.
+#[test]
+fn min_write_gap_boundary_exactly_credits() {
+    let now = QT_ANCHOR + QT_MIN_WRITE_GAP_MS;
+    let mut m = qt_monster(QT_ANCHOR, 4_000, 3_000, 2);
+    let wrote = apply_quality_time_credit(&mut m, now);
+
+    assert!(
+        wrote,
+        "TEETH (EG2-8, ADR-0175 D1): a gap of EXACTLY QT_MIN_WRITE_GAP_MS is NOT \
+         below the threshold (the rule is `gap < QT_MIN_WRITE_GAP_MS`), so this \
+         call must credit and return true"
+    );
+    assert_eq!(
+        qt_state(&m),
+        (now, 9_000, 8_000, 2),
+        "TEETH (EG2-8, ADR-0175 D1): the boundary gap must credit the FULL \
+         5_000 ms (window 4_000+5_000, accum 3_000+5_000, still short of a tick) \
+         and re-anchor. A `<=` in the threshold test leaves the row untouched at \
+         (QT_ANCHOR, 4_000, 3_000, 2)."
+    );
+}
+
+/// EG2-8: once the day window is full, further gaps credit nothing (but still
+/// re-anchor).
+///
+/// Defense in depth per ADR-0175 D1: one marathon session must not walk the whole
+/// tier ladder.
+///
+/// kills: an impl with no daily cap (the 60 s gap would credit another tick); an
+///        impl that returns false / keeps the old anchor when capped — the stale
+///        anchor makes the next call look IDLE, so the first post-midnight gap
+///        would be dropped instead of credited.
+#[test]
+fn daily_cap_stops_credit() {
+    // RETUNE: the only pin of QT_DAILY_CAP_MS's value.
+    assert_eq!(
+        QT_DAILY_CAP_MS, 7_200_000,
+        "fixture precondition (ADR-0175 D1): 2 h of credit per UTC day"
+    );
+    let cap = u32::try_from(QT_DAILY_CAP_MS)
+        .expect("QT_DAILY_CAP_MS must fit the u32 quality_time_window_ms column");
+
+    let now = QT_ANCHOR + 60_000; // same UTC day as the anchor.
+    let mut m = qt_monster(QT_ANCHOR, cap, 0, 120);
+    let wrote = apply_quality_time_credit(&mut m, now);
+
+    assert!(
+        wrote,
+        "a capped call must still persist the fresh anchor (true) — otherwise \
+         the next call reads a stale anchor and mis-classifies live play as idle"
+    );
+    assert_eq!(
+        qt_state(&m),
+        (now, cap, 0, 120),
+        "TEETH (EG2-8, ADR-0175 D1): with the day window already at \
+         QT_DAILY_CAP_MS the creditable amount is 0 — anchor moves, ticks and \
+         accum do not."
+    );
+}
+
+/// EG2-8: crossing into a new UTC day resets the day window, so credit flows
+/// again.
+///
+/// The fixture straddles the day-10/day-11 boundary with a gap still inside the
+/// idle window: 60 s before midnight to 30 s after.
+///
+/// kills: an impl that never resets `quality_time_window_ms` (a monster that hit
+///        the cap once would be capped FOREVER — Quality Time would stop
+///        accruing permanently); an impl that resets the window but forgets to
+///        add the new credit to it (window would read 0 and the cap would be
+///        unenforceable for the rest of the day).
+#[test]
+fn daily_cap_resets_on_next_utc_day() {
+    let cap = u32::try_from(QT_DAILY_CAP_MS)
+        .expect("QT_DAILY_CAP_MS must fit the u32 quality_time_window_ms column");
+
+    let anchor = 11 * EG2_DAY_MS - 60_000; // 60 s before the day-11 boundary.
+    let now = 11 * EG2_DAY_MS + 30_000; // 30 s after it — a 90 s gap.
+    assert_ne!(
+        anchor / EG2_DAY_MS,
+        now / EG2_DAY_MS,
+        "fixture sanity: the anchor and now must fall in DIFFERENT UTC days"
+    );
+
+    let mut m = qt_monster(anchor, cap, 0, 120);
+    let wrote = apply_quality_time_credit(&mut m, now);
+
+    assert!(wrote, "a credited call must return true");
+    assert_eq!(
+        qt_state(&m),
+        (now, 90_000, 30_000, 121),
+        "TEETH (EG2-8, ADR-0175 D1): day(now) != day(anchor) must RESET the day \
+         window to 0 before crediting, so the full 90_000 ms gap credits: window \
+         = 90_000 (not cap, not 0), accum 90_000 ⇒ 1 tick with a 30_000 ms \
+         remainder."
+    );
+}
+
+/// EG2-8 / ADR-0175 D1 — **the realistic rollover: an IDLE overnight gap must
+/// still reset the day window.** A capped day plus a night away must not become a
+/// permanent lifetime cap.
+///
+/// THE BUG THIS GATES (found in review at `raising.rs:517-523`): the day-rollover
+/// reset sits BELOW the idle-branch early return. The overwhelmingly common
+/// rollover is not a 90-second straddle of midnight — it is "play until the 2 h
+/// cap on day N, log off, come back on day N+1". That path takes the idle branch,
+/// which re-anchors into day N+1 and returns WITHOUT touching
+/// `quality_time_window_ms`. From then on `day(now) == day(anchor)` on every
+/// subsequent call, so the reset condition can never fire again: the 2 h daily cap
+/// silently degrades into a permanent LIFETIME cap and Quality-Time tiers 3 and 4
+/// become unreachable for that monster, forever.
+///
+/// THE FIX: hoist the day-rollover reset ABOVE the idle branch — and BELOW the
+/// min-write-gap short-circuit, which must keep mutating nothing at all (pinned by
+/// `below_min_write_gap_is_a_pure_noop_returning_false`).
+///
+/// WHAT IS ASSERTED: only the observable contract. Step 2 credits NOTHING (an idle
+/// gap never credits — that rule is not being relaxed) and re-anchors;
+/// `quality_time_window_ms` is deliberately NOT asserted there, because whether the
+/// reset lands eagerly during step 2 or lazily at step 3 is implementation detail.
+/// Step 3 is where the contract bites: a normal 60 s active gap on the new day must
+/// credit normally, ending with `window_ms` at exactly 60_000.
+///
+/// kills: the shipped ordering (day reset below the idle branch) — the permanent
+///        cap lockout. Neither existing day-window pin sees it:
+///        `reanchors_without_credit_beyond_idle_gap` uses a SAME-day idle gap, and
+///        `daily_cap_resets_on_next_utc_day` uses a 90 s crediting straddle — the
+///        one rollover shape the buggy ordering happens to handle. Both stay green
+///        under the fix.
+#[test]
+fn daily_cap_resets_after_an_idle_overnight_gap() {
+    let cap = u32::try_from(QT_DAILY_CAP_MS)
+        .expect("QT_DAILY_CAP_MS must fit the u32 quality_time_window_ms column");
+
+    let anchor = 10 * EG2_DAY_MS + 79_200_000; // 22:00 UTC, day 10 — cap reached.
+    let now_idle = anchor + 12 * 3_600_000; // 10:00 UTC, day 11 — a 12 h gap.
+    let now_active = now_idle + 60_000; // one active minute later, same day 11.
+
+    assert_ne!(
+        anchor / EG2_DAY_MS,
+        now_idle / EG2_DAY_MS,
+        "fixture sanity: the overnight gap must cross a UTC day boundary"
+    );
+    assert_eq!(
+        now_idle / EG2_DAY_MS,
+        now_active / EG2_DAY_MS,
+        "fixture sanity: steps 2 and 3 must fall on the SAME UTC day, so only a \
+         reset performed at (or before) step 2 can let step 3 credit"
+    );
+    assert!(
+        now_idle - anchor > QT_IDLE_GAP_MS,
+        "fixture sanity: the overnight gap must land in the IDLE branch"
+    );
+
+    // Day 10 ended with the window at the cap and 15 s banked toward the next tick.
+    let mut m = qt_monster(anchor, cap, 15_000, 120);
+
+    // Step 2 — the player returns the next morning. Idle time never credits.
+    let wrote_idle = apply_quality_time_credit(&mut m, now_idle);
+    assert!(
+        wrote_idle,
+        "the overnight re-anchor must be persisted (true) — this is the write \
+         that carries the day rollover into the row"
+    );
+    assert_eq!(
+        m.quality_time_window_start_ms, now_idle,
+        "TEETH (EG2-8): the idle overnight gap must re-anchor to `now`"
+    );
+    assert_eq!(
+        m.quality_time_accum_ms, 15_000,
+        "TEETH (EG2-9): idle time must credit NOTHING — the banked remainder is \
+         untouched"
+    );
+    assert_eq!(
+        m.quality_time_ticks_total, 120,
+        "TEETH (EG2-9): idle time must credit NOTHING — no new ticks overnight"
+    );
+    // `quality_time_window_ms` is intentionally NOT asserted here: eager reset
+    // (0 now) and lazy reset (still `cap`, cleared at step 3) are both acceptable
+    // shapes. Step 3 asserts the behaviour they must share.
+
+    // Step 3 — one ordinary active minute on the NEW day. This must credit.
+    let wrote_active = apply_quality_time_credit(&mut m, now_active);
+    assert!(
+        wrote_active,
+        "a 60 s active gap on the new day is a normal credited call"
+    );
+    assert_eq!(
+        qt_state(&m),
+        (now_active, 60_000, 15_000, 121),
+        "TEETH (ADR-0175 D1, day-reset-above-the-idle-branch): after an IDLE \
+         overnight gap the day window must be reset, so this ordinary 60 s active \
+         gap credits in full — window_ms exactly 60_000 (a FRESH day's window, not \
+         the carried-over cap), one new tick (120 ⇒ 121), the 15_000 ms remainder \
+         carried. With the reset below the idle branch the window is still at \
+         QT_DAILY_CAP_MS here, creditable computes to 0, and this reads \
+         (now, cap, 15_000, 120): the 2 h DAILY cap has silently become a \
+         permanent LIFETIME cap and tiers 3-4 are unreachable for this monster."
+    );
+}
+
+/// EG2-8: `quality_time_ticks_total` saturates instead of wrapping or panicking.
+///
+/// The fixture also sits EXACTLY on the idle bound (`gap == QT_IDLE_GAP_MS`),
+/// which ADR-0175 D1 specifies as still-credited (the idle test is strictly
+/// greater-than).
+///
+/// kills: (a) a plain `+` on the tick counter — `cargo test` builds with
+///        overflow checks on, so a near-max counter would PANIC inside a reducer
+///        and abort the transaction; (b) an idle test written as `>=`, which
+///        would drop this exactly-at-the-bound gap and leave the counter at
+///        u32::MAX - 1.
+#[test]
+fn saturates_ticks_total() {
+    let now = QT_ANCHOR + QT_IDLE_GAP_MS; // exactly at the bound ⇒ still credits.
+    let mut m = qt_monster(QT_ANCHOR, 0, 0, u32::MAX - 1);
+    let wrote = apply_quality_time_credit(&mut m, now);
+
+    assert!(wrote, "a credited call must return true");
+    assert_eq!(
+        qt_state(&m),
+        (now, 120_000, 0, u32::MAX),
+        "TEETH (EG2-8, ADR-0175 D1): 120_000 ms is 2 ticks, but the counter has \
+         room for 1 — it must SATURATE at u32::MAX, never wrap and never panic. \
+         A ticks_total of u32::MAX - 1 here instead means the idle bound was \
+         written as `>=` and this exactly-at-the-bound gap was wrongly dropped."
+    );
+}
+
+/// EG2-8: when the day window is PARTLY full, exactly the remaining headroom is
+/// credited — not the whole gap, and not zero.
+///
+/// kills: an impl that credits `min(gap, cap)` instead of
+///        `min(gap, cap - window_ms)` (the 100 s gap would credit in full and the
+///        day would run 70 s over its cap, every time — the cap would leak);
+///        an impl that treats "window non-empty" as "capped" and credits 0.
+#[test]
+fn partial_cap_credit() {
+    let cap = u32::try_from(QT_DAILY_CAP_MS)
+        .expect("QT_DAILY_CAP_MS must fit the u32 quality_time_window_ms column");
+    let window = cap - 30_000; // exactly 30 s of headroom left today.
+
+    let now = QT_ANCHOR + 100_000; // a 100 s gap — more than the headroom.
+    let mut m = qt_monster(QT_ANCHOR, window, 0, 50);
+    let wrote = apply_quality_time_credit(&mut m, now);
+
+    assert!(wrote, "a credited call must return true");
+    assert_eq!(
+        qt_state(&m),
+        (now, cap, 30_000, 50),
+        "TEETH (EG2-8, ADR-0175 D1): creditable = min(gap, cap - window) = \
+         min(100_000, 30_000) = 30_000 — the window lands EXACTLY on the cap, \
+         accum takes 30_000 (short of a tick, so ticks stay 50)."
+    );
+}
+
+// ===========================================================================
+// EG2-3 / EG1-1 / ADR-0175 D5 — `grant_essence`: clamp, never reject
+// ===========================================================================
+
+/// EG2-3: `grant_essence` writes the ONE column matching the affinity and leaves
+/// the other seven untouched — exercised for all 8 affinities.
+///
+/// kills: a mis-wired match arm (e.g. `Light => essence_dark`) — the whole-array
+///        assertion pins the exact column per affinity, which a single-affinity
+///        smoke test would miss; a `for` loop over all columns; a non-exhaustive
+///        match with a catch-all no-op arm (that affinity's grant would vanish).
+#[test]
+fn adds_to_the_matching_affinity_only() {
+    for (idx, affinity) in Affinity::ALL.iter().enumerate() {
+        let mut m = eg2_monster();
+        grant_essence(&mut m, *affinity, 7);
+
+        let mut expected = [0u32; 8];
+        expected[idx] = 7;
+
+        assert_eq!(
+            essence_columns(&m),
+            expected,
+            "TEETH (EG2-3, EG1-1): grant_essence(.., {affinity:?}, 7) must add 7 \
+             to index {idx} of the Fire..Dark column order and leave the other \
+             seven at 0. A wrong match arm shows up here as a shifted array."
+        );
+    }
+}
+
+/// EG2-3 / EG1-1: the soft cap CLAMPS — it never rejects, and never overshoots.
+///
+/// kills: an impl that returns/propagates an error at the cap (EG1-1 says
+///        "saturating_add on grant, soft cap, never reject" — a reject would let
+///        a battle win fail wholesale on a maxed pool); an impl with no cap at
+///        all (1_010 here); an impl that clamps to the wrong bound.
+#[test]
+fn clamps_at_soft_cap_999_without_reject() {
+    // RETUNE: the only pin of ESSENCE_SOFT_CAP's value (ADR-0175 D5 / EG1-1).
+    assert_eq!(
+        ESSENCE_SOFT_CAP, 999,
+        "fixture precondition: the essence soft cap is 999 per pool"
+    );
+
+    let mut m = eg2_monster();
+    m.essence_fire = 990;
+    grant_essence(&mut m, Affinity::Fire, 20);
+
+    assert_eq!(
+        m.essence_fire, 999,
+        "TEETH (EG2-3, EG1-1): 990 + 20 must CLAMP to ESSENCE_SOFT_CAP (999), \
+         not reject and not land on 1_010"
+    );
+    assert_eq!(
+        essence_columns(&m),
+        [999, 0, 0, 0, 0, 0, 0, 0],
+        "the clamp must not spill into any other pool"
+    );
+}
+
+/// EG2-3: the add SATURATES before the clamp — a near-u32::MAX pool cannot panic.
+///
+/// Integer overflow checks are ON in a debug build (which is what `cargo test`
+/// builds), so a plain `+` here would panic and abort the whole reducer
+/// transaction rather than clamping.
+///
+/// kills: `m.essence_x = (m.essence_x + amount).min(CAP)` — the inner add
+///        overflows and PANICS in a debug build (and wraps to a tiny value in
+///        release, silently DELETING a nearly-full pool).
+#[test]
+fn saturates_before_clamp() {
+    let mut m = eg2_monster();
+    m.essence_water = u32::MAX - 3;
+    grant_essence(&mut m, Affinity::Water, 100);
+
+    assert_eq!(
+        m.essence_water, 999,
+        "TEETH (EG2-3): the grant must saturating_add THEN clamp — result 999, \
+         with no overflow panic and no wrap-around to a near-zero pool"
+    );
+}
+
+// ===========================================================================
+// EG2-3 — `evaluate_essence_train`: the shared 5 h cooldown seam
+// ===========================================================================
+
+/// EG2-3: a call inside the cooldown is rejected.
+///
+/// kills: a missing cooldown gate entirely (essence_train would be spammable and
+///        the 999 cap reachable in one session, collapsing evolution pacing);
+///        an off-by-one that admits the last millisecond.
+#[test]
+fn rejects_within_cooldown() {
+    // RETUNE: the only pin of ESSENCE_TRAIN_COOLDOWN_MS's value (5 h, ADR-0175 D5).
+    assert_eq!(
+        ESSENCE_TRAIN_COOLDOWN_MS, 18_000_000,
+        "fixture precondition: the essence-training cooldown is 5 h in ms"
+    );
+
+    let msg = match evaluate_essence_train(0, ESSENCE_TRAIN_COOLDOWN_MS - 1) {
+        Ok(()) => panic!(
+            "TEETH (EG2-3): evaluate_essence_train(last=0, now=cooldown-1) must \
+             be Err — one ms short of the boundary is still on cooldown"
+        ),
+        Err(e) => e,
+    };
+    assert!(
+        msg.contains("cooldown"),
+        "the rejection must name the cooldown so the client can explain the \
+         refusal; got: {msg:?}"
+    );
+}
+
+/// EG2-3: elapsed EXACTLY equal to the cooldown is allowed.
+///
+/// This is `game_core::is_cooldown_ready`'s documented `>=` boundary — the same
+/// SSOT predicate `care` and `heal_party` use.
+///
+/// kills: an open-coded `elapsed > COOLDOWN` (or `<=` reject) that re-derives the
+///        boundary instead of delegating, silently making every essence-training
+///        cooldown 1 ms longer than the shared predicate says.
+#[test]
+fn allows_at_exact_boundary() {
+    let result = evaluate_essence_train(1_000, 1_000 + ESSENCE_TRAIN_COOLDOWN_MS);
+    assert!(
+        result.is_ok(),
+        "TEETH (EG2-3): elapsed == ESSENCE_TRAIN_COOLDOWN_MS (from a NONZERO \
+         base) must be Ok — the boundary is `>=`, per game_core::is_cooldown_ready. \
+         Got Err: {:?}",
+        result.err()
+    );
+}
+
+/// EG2-3: a monster that has never essence-trained (anchor 0) may train now.
+///
+/// `last_essence_train_at_ms` defaults to 0 exactly like `last_care_at_ms`
+/// (schema.rs: "0 = epoch, cooldown elapsed, first train allowed").
+///
+/// kills: an impl that treats a 0 anchor as "no record ⇒ reject" (no monster
+///        could EVER essence-train — the feature would be dead on arrival); an
+///        impl that compares `now < COOLDOWN` instead of the elapsed span.
+#[test]
+fn zero_anchor_first_train_allowed() {
+    let result = evaluate_essence_train(0, 1_700_000_000_000);
+    assert!(
+        result.is_ok(),
+        "TEETH (EG2-3): a fresh monster (last_essence_train_at_ms = 0) must be \
+         allowed to train. Got Err: {:?}",
+        result.err()
+    );
+}
+
+// ===========================================================================
+// EG2-4 / EG2-10 — `evaluate_consume_crystalized`: the decision that runs
+// BEFORE `consume_one`
+// ===========================================================================
+
+/// EG2-10 (proof-of-teeth, half 1): a wrong item — a perfectly valid TRAINING
+/// food, `essence_affinity: None` — is rejected.
+///
+/// Because this decision seam runs BEFORE `consume_one` (pinned textually by
+/// `consume_body_has_item_escrow_and_decision_before_consume`), an `Err` here is
+/// exactly the "item NOT consumed" half of EG2-10.
+///
+/// kills: an impl that unwraps `essence_affinity` (panics, aborting the reducer);
+///        an impl that defaults a missing affinity to Fire (feeding any item
+///        would grant essence); an impl that grants `essence_amount` of 0 and
+///        returns Ok — which BURNS the player's training food for nothing.
+#[test]
+fn rejects_item_without_essence_affinity() {
+    let item = training_food_item();
+    // Cooldown fully elapsed, so the ONLY possible reason to reject is the item.
+    let result = evaluate_consume_crystalized(&item, 0, ESSENCE_TRAIN_COOLDOWN_MS);
+
+    assert!(
+        result.is_err(),
+        "TEETH (EG2-10): an item with essence_affinity = None must be REJECTED \
+         even with the cooldown fully elapsed — it is not crystalized essence. \
+         Got Ok: {:?}",
+        result.ok()
+    );
+}
+
+/// EG2-4: consumption shares `essence_train`'s cooldown clock.
+///
+/// kills: an impl that skips the cooldown for items (a player could chain-consume
+///        every purchased crystal in one transaction burst — the exact
+///        zero-time-gating hole EG2-4 calls out by name).
+#[test]
+fn rejects_within_shared_cooldown() {
+    let item = essence_item(Affinity::Water, 100);
+    let msg = match evaluate_consume_crystalized(&item, 0, ESSENCE_TRAIN_COOLDOWN_MS - 1) {
+        Ok(granted) => panic!(
+            "TEETH (EG2-4): a valid crystal inside the shared cooldown must be \
+             rejected; got Ok({granted:?})"
+        ),
+        Err(e) => e,
+    };
+    assert!(
+        msg.contains("cooldown"),
+        "the rejection must name the cooldown, not the item; got: {msg:?}"
+    );
+}
+
+/// EG2-4: the accepted case returns the ITEM's affinity and the ITEM's amount.
+///
+/// kills: an impl that returns `ESSENCE_TRAIN_AMOUNT` (5) instead of the item's
+///        `essence_amount` (100) — EG3-8 sizes a crystal to fully clear an
+///        authored gate in one feed, so a 5-point grant would quietly break the
+///        item's whole "one-shot unlock" purpose; an impl that returns the
+///        monster's own affinity, or a hardcoded one.
+#[test]
+fn ok_returns_affinity_and_amount() {
+    let item = essence_item(Affinity::Water, 100);
+    let result = evaluate_consume_crystalized(&item, 0, ESSENCE_TRAIN_COOLDOWN_MS);
+
+    match result {
+        Ok(pair) => {
+            assert_eq!(
+                pair,
+                (Affinity::Water, 100),
+                "TEETH (EG2-4): the seam must hand back the ITEM's affinity and \
+                 the ITEM's essence_amount verbatim"
+            );
+        }
+        Err(e) => panic!(
+            "TEETH (EG2-4): a crystalized-essence item with the cooldown elapsed \
+             must be accepted; got Err: {e:?}"
+        ),
+    }
+}
+
+/// EG2-4: the consumption boundary is the SAME instant as `essence_train`'s —
+/// one clock, one constant, asserted side by side.
+///
+/// kills: an impl that gives `consume_crystalized_essence` its own private
+///        cooldown constant (or its own open-coded predicate). The two calls
+///        below share `last`/`now`, so any divergence in the constant or the
+///        boundary operator makes exactly one of them disagree.
+#[test]
+fn shared_cooldown_boundary_allowed() {
+    let item = essence_item(Affinity::Fire, 100);
+    let last = 1_000i64;
+    let now = last + ESSENCE_TRAIN_COOLDOWN_MS;
+
+    let consume = evaluate_consume_crystalized(&item, last, now);
+    assert!(
+        consume.is_ok(),
+        "TEETH (EG2-4): elapsed == ESSENCE_TRAIN_COOLDOWN_MS must be allowed for \
+         consumption too. Got Err: {:?}",
+        consume.err()
+    );
+    assert!(
+        evaluate_essence_train(last, now).is_ok(),
+        "TEETH (EG2-4): at the SAME (last, now) the training seam must agree — \
+         item-consumption and training share ONE clock and ONE constant"
+    );
+}
+
+// ===========================================================================
+// EG2-5 — the revised `care` seam (the other two cases live beside the
+// superseded max-bond pin above)
+// ===========================================================================
+
+/// EG2-5 / ADR-0175 D2 regression fence: the AtMaxBond remap must not disturb the
+/// ordinary path.
+///
+/// kills: a remap implemented by making `apply_care` infallible-by-clamping in
+///        the shell (e.g. `Ok(bond.saturating_add(CARE_BOND_AMOUNT))` computed
+///        inline), which would drop the `game_core::apply_care` SSOT delegation
+///        the raising-reducer-security gate requires; and any drift in the
+///        magnitude while the surrounding code is being edited.
+#[test]
+fn evaluate_care_normal_path_unchanged() {
+    let result = evaluate_care(100, 0, CARE_COOLDOWN_MS);
+    match result {
+        Ok(new_bond) => {
+            let expected = 100u8.saturating_add(CARE_BOND_AMOUNT);
+            assert_eq!(
+                new_bond, expected,
+                "TEETH (EG2-5): a normal care must still raise bond by exactly \
+                 CARE_BOND_AMOUNT ({CARE_BOND_AMOUNT}): 100 ⇒ {expected}"
+            );
+        }
+        Err(e) => panic!(
+            "evaluate_care(bond=100, last=0, now=CARE_COOLDOWN_MS) must be Ok; \
+             got Err: {e:?}"
+        ),
+    }
+}
+
+// ===========================================================================
+// EG2 SOURCE SCANS on `raising.rs` (production, NOT this file).
+//
+// HONEST LIMIT, stated once for the whole block: these are source scans, not
+// executions — this crate has no reducer-executing harness (ADR-0156 P7). They
+// pin the guard set, the decision-before-consume order and the tail discipline
+// that no pure seam can observe. `evals/evolution-reducer-security.eval.mjs`
+// (EG5-2) remains the authoritative gate; these are the fast local canaries that
+// run in the same `cargo test` as the implementation.
+//
+// Every scan below runs on a view with COMMENTS AND STRING LITERALS BLANKED
+// (`blank_heal_scan_strings ∘ strip_raising_comments`, this file's existing
+// helpers) and then whitespace-collapsed, so (a) a rustfmt line split can never
+// cause a false RED and (b) a dead `let _decoy = "<needle>";` cannot satisfy a
+// positive needle — only executable code can. Needles are assembled from
+// fragments (house rule) so an eval that concatenates every source file in this
+// crate is never satisfied by this test file's own text.
+// ===========================================================================
+
+/// Comment-stripped, string-blanked, whitespace-collapsed body of a `raising.rs`
+/// function. Panics loudly (RED) if the function does not exist yet.
+fn eg2_scan_body(fn_needle: &str) -> String {
+    assert_no_heal_scan_landmines(RAISING_SOURCE);
+    let stripped = blank_heal_scan_strings(&strip_raising_comments(RAISING_SOURCE));
+    let body = reducer_body(&stripped, fn_needle);
+    let collapsed: String = body.split_whitespace().collect();
+    assert!(
+        !collapsed.is_empty(),
+        "VACUITY GUARD: the extracted body for {fn_needle:?} is EMPTY — the \
+         scanner has rotted and every verdict in this block would be meaningless"
+    );
+    collapsed
+}
+
+/// Assert a needle is present in a collapsed body, with the reason attached.
+fn assert_body_has(collapsed: &str, label: &str, needle: &str, why: &str) {
+    assert!(
+        collapsed.contains(needle),
+        "TEETH (EG2, ADR-0175): {label} must contain `{needle}` (whitespace- \
+         collapsed; comments and string literals are blanked first, so only \
+         executable code can satisfy this). {why}"
+    );
+}
+
+/// Assert a needle appears EXACTLY once — the duplicated-site hazard this file's
+/// H-3 fence already records (`movement_tests.rs` E1 layer-3).
+fn assert_body_has_exactly_one(collapsed: &str, label: &str, needle: &str, why: &str) {
+    let n = collapsed.matches(needle).count();
+    assert_eq!(
+        n, 1,
+        "TEETH (EG2, ADR-0175): {label} must contain `{needle}` EXACTLY once; \
+         found {n}. Zero means the step is missing; two means a second, \
+         unguarded copy runs elsewhere in the same body. {why}"
+    );
+}
+
+/// The `raising.rs` fn-declaration needles, assembled from fragments and
+/// deliberately WITHOUT the `(ctx:` suffix the older ptc5a needles carry: two of
+/// these signatures are past rustfmt's width limit and are broken across lines,
+/// where `(ctx:` would never match.
+fn care_decl() -> String {
+    ["fn care", "("].concat()
+}
+fn train_decl() -> String {
+    ["fn train", "("].concat()
+}
+fn essence_train_decl() -> String {
+    ["fn essence", "_train("].concat()
+}
+fn consume_decl() -> String {
+    ["fn consume_crystalized", "_essence("].concat()
+}
+fn accrue_decl() -> String {
+    ["fn accrue_quality", "_time("].concat()
+}
+
+/// EG2-3: `essence_train` carries the full `care`-shaped guard set, delegates its
+/// decision and magnitude, and ends with both tails.
+///
+/// kills: a new reducer that forgets ANY guard — each omission is a distinct live
+///        vulnerability: no ownership check ⇒ train a stranger's monster; no
+///        battle guard ⇒ mid-battle mutation (the ADR-0136 class); no trade-escrow
+///        guard ⇒ mutate a monster already locked in an offer (TR-6); no
+///        `evaluate_essence_train` ⇒ an ungated cooldown; a hardcoded grant
+///        amount instead of `ESSENCE_TRAIN_AMOUNT` ⇒ silent pacing drift.
+/// The `if ...{` shape on the battle guard additionally kills a dead-code
+/// `let _ = is_in_ongoing_battle(..);` evasion, exactly as ptc5a Test 1 does.
+#[test]
+fn essence_train_body_has_full_guard_set() {
+    // RETUNE: the only pin of ESSENCE_TRAIN_AMOUNT's value (ADR-0175 D9).
+    assert_eq!(
+        ESSENCE_TRAIN_AMOUNT, 5,
+        "fixture precondition: one essence_train grants a flat 5 (EG2-3)"
+    );
+
+    let body = eg2_scan_body(&essence_train_decl());
+    let label = "the `essence_train` reducer body";
+
+    assert_body_has(
+        &body,
+        label,
+        &["require", "_owner(ctx,"].concat(),
+        "EG2-3 mirrors `care`: no ownership check means any caller can train any \
+         monster in the database.",
+    );
+    assert_body_has(
+        &body,
+        label,
+        &["ifis_in_ongoing", "_battle(ctx,ctx.sender){"].concat(),
+        "EG2-3 mirrors `care`'s both-role battle guard (ADR-0136).",
+    );
+    assert_body_has(
+        &body,
+        label,
+        &["reject_if_monster", "_in_trade("].concat(),
+        "TR-6 (ADR-0106): a monster locked in an active trade offer must not be \
+         mutated out from under the counterparty.",
+    );
+
+    let decide = ["evaluate_essence", "_train("].concat();
+    let grant = ["grant", "_essence("].concat();
+    assert_body_has_exactly_one(
+        &body,
+        label,
+        &decide,
+        "the cooldown decision must come from the pure seam this file tests, not \
+         from a second open-coded copy that can drift; and one decision, one \
+         place — a second call could be reached with different arguments after \
+         the first has already been checked.",
+    );
+    assert_body_has_exactly_one(
+        &body,
+        label,
+        &grant,
+        "EG1-1's clamp-never-reject rule lives in ONE helper; an inline \
+         `m.essence_fire += amount` bypasses both the saturation and the cap. \
+         Exactly one grant per call — a second would double the payout.",
+    );
+
+    // DECISION BEFORE MUTATION — the essence_train counterpart of `care`'s
+    // `care_reject_still_never_burns` and `consume`'s decision-before-consume
+    // index assertion. Without it, this reducer is the only one of the four with
+    // no ordering pin at all.
+    let decide_at = body
+        .find(decide.as_str())
+        .expect("EG2-3: the cooldown decision seam call must exist in the body");
+    let grant_at = body
+        .find(grant.as_str())
+        .expect("EG2-3: grant_essence must exist in the body");
+    assert!(
+        decide_at < grant_at,
+        "TEETH (EG2-3, ADR-0059 §3 reject-never-burns): the cooldown decision is \
+         at collapsed byte {decide_at} but the essence grant is at {grant_at} — \
+         the DECISION MUST COME FIRST. A grant-then-reject shape mutates the \
+         monster's essence pool and only afterwards consults the cooldown; the \
+         transaction rollback happens to cover it today, but the ordering is the \
+         house discipline every sibling reducer in this file follows, and one \
+         refactor that turns the reject into a logged early-`Ok` makes the \
+         un-cooled-down grant permanent."
+    );
+    assert_body_has(
+        &body,
+        label,
+        &["ESSENCE_TRAIN", "_AMOUNT"].concat(),
+        "the granted magnitude must reference the named constant, so retuning it \
+         is one edit and not a hunt for literals.",
+    );
+    assert_body_has(
+        &body,
+        label,
+        &["accrue_quality", "_time("].concat(),
+        "EG2-8 lists essence_train as a Quality-Time call site.",
+    );
+    assert_body_has(
+        &body,
+        label,
+        &["check_and", "_evolve("].concat(),
+        "EG2-12: essence_train mutates a gate value (essence), so it must give \
+         auto-evolution its chance to fire.",
+    );
+}
+
+/// EG2-4 / EG2-10: `consume_crystalized_essence` carries the ITEM-escrow guard,
+/// reads the content registry, and decides BEFORE it consumes.
+///
+/// The ordering assertion is the load-bearing one: it is the textual proof of
+/// EG2-10's "the item is NOT consumed on either reject". `consume_one` is the
+/// irreversible step; every reject must be upstream of it.
+///
+/// kills: a reducer that consumes first and validates after (a wrong-item call
+///        would burn the player's item and only then reject — the reject-burns
+///        bug ADR-0058/0059 exist to prevent, and the exact shape EG2-10 pins);
+///        a missing `escrowed_item_qty` check (spend an item already promised in
+///        a trade offer — the double-spend-shaped gap EG2-4 calls non-optional);
+///        an impl that reads item defs from the DB `item_row` instead of the
+///        content registry, where the essence fields do not exist at all
+///        (ADR-0175 consequence note).
+#[test]
+fn consume_body_has_item_escrow_and_decision_before_consume() {
+    let body = eg2_scan_body(&consume_decl());
+    let label = "the `consume_crystalized_essence` reducer body";
+
+    assert_body_has(
+        &body,
+        label,
+        &["require", "_owner(ctx,"].concat(),
+        "EG2-10 requires the unowned-monster reject.",
+    );
+    assert_body_has(
+        &body,
+        label,
+        &["ifis_in_ongoing", "_battle(ctx,ctx.sender){"].concat(),
+        "EG2-4 specifies the both-role battle guard.",
+    );
+    assert_body_has(
+        &body,
+        label,
+        &["reject_if_monster", "_in_trade("].concat(),
+        "EG2-4 specifies the monster trade-escrow guard.",
+    );
+    assert_body_has(
+        &body,
+        label,
+        &["escrowed_item", "_qty("].concat(),
+        "EG2-4: the ITEM-escrow guard is non-optional — it closes the \
+         double-spend-shaped gap where an item pledged in an open trade offer is \
+         consumed anyway (the same block `train` carries).",
+    );
+    assert_body_has(
+        &body,
+        label,
+        &["cached_", "items("].concat(),
+        "ItemRow carries no essence columns; the essence fields exist only on the \
+         compile-time content registry (ADR-0175 D5).",
+    );
+
+    let decide = ["evaluate_consume", "_crystalized("].concat();
+    let consume = ["consume", "_one("].concat();
+    assert_body_has_exactly_one(&body, label, &decide, "one decision, one place.");
+    assert_body_has_exactly_one(
+        &body,
+        label,
+        &consume,
+        "a second consume would burn a second item per call.",
+    );
+
+    let decide_at = body
+        .find(decide.as_str())
+        .expect("EG2-10: the decision seam call must exist in the body");
+    let consume_at = body
+        .find(consume.as_str())
+        .expect("EG2-10: consume_one must exist in the body");
+    assert!(
+        decide_at < consume_at,
+        "TEETH (EG2-4/EG2-10, decision-before-consume): the decision seam is at \
+         collapsed byte {decide_at} but `consume_one` is at {consume_at} — the \
+         DECISION MUST COME FIRST. Consuming before deciding burns the player's \
+         item on a wrong-item or on-cooldown call, which is precisely the \
+         behaviour EG2-10 forbids."
+    );
+}
+
+/// EG2-8 / EG2-12 + ADR-0175 D3: `consume_crystalized_essence` is the SIXTH
+/// accrue/auto-evolve call site, and `check_and_evolve` is LAST.
+///
+/// The spec's "exactly five" completeness argument omits EG2-4, which mutates
+/// essence — the one gate value a crystal feed changes. Without the tail, a
+/// full-bar feed would not evolve until some unrelated later action, contradicting
+/// EG2-1's "evolves automatically the instant it becomes eligible" and EG3-8's
+/// one-shot-unlock intent. Recorded as a spec correction in ADR-0175 D3.
+///
+/// kills: an implementation that follows the spec's literal five-site list and
+///        leaves the crystal path un-evolved.
+#[test]
+fn consume_body_tails() {
+    let body = eg2_scan_body(&consume_decl());
+    let label = "the `consume_crystalized_essence` reducer body";
+    let accrue = ["accrue_quality", "_time("].concat();
+    let evolve = ["check_and", "_evolve("].concat();
+
+    assert_body_has_exactly_one(
+        &body,
+        label,
+        &accrue,
+        "ADR-0175 D3 makes this the sixth Quality-Time call site.",
+    );
+    assert_body_has_exactly_one(
+        &body,
+        label,
+        &evolve,
+        "ADR-0175 D3: a full-bar crystal feed must be able to evolve immediately.",
+    );
+
+    let accrue_at = body.find(accrue.as_str()).expect("accrue call must exist");
+    let evolve_at = body.find(evolve.as_str()).expect("evolve call must exist");
+    assert!(
+        accrue_at < evolve_at,
+        "TEETH (EG2-12): `check_and_evolve` must be the LAST step — it is at \
+         collapsed byte {evolve_at} but `accrue_quality_time` is at {accrue_at}. \
+         Quality Time is itself one of the five evolution gates, so evolving \
+         before crediting it evaluates a stale gate set and misses an evolution \
+         that this very call made eligible."
+    );
+}
+
+/// EG2-5: `care` writes the Trust-favorable counter and carries both tails.
+///
+/// kills: the D2 half-implementation that remaps AtMaxBond but never adds the
+///        Trust write (the whole point of the remap — Trust would still never
+///        grow); a raw `+= 1` on a u32 counter (overflow-panics inside a reducer
+///        in a debug build); a `care` that mutates a gate value and then skips
+///        `check_and_evolve`, leaving the monster un-evolved until an unrelated
+///        later action.
+#[test]
+fn care_body_has_trust_increment_and_tails() {
+    let body = eg2_scan_body(&care_decl());
+    let label = "the `care` reducer body";
+
+    assert_body_has(
+        &body,
+        label,
+        &["trust_favorable", "_count"].concat(),
+        "EG2-5 makes `care` the Trust-favorable writer, REPLACING the frozen \
+         bond write's role.",
+    );
+    assert_body_has(
+        &body,
+        label,
+        &[".saturating", "_add(1"].concat(),
+        "the counter is a u32 lifetime total — a raw `+= 1` panics on overflow \
+         inside the reducer transaction.",
+    );
+    assert_body_has_exactly_one(
+        &body,
+        label,
+        &["accrue_quality", "_time("].concat(),
+        "EG2-8 lists `care` as a Quality-Time call site; two calls would \
+         double-credit.",
+    );
+    assert_body_has_exactly_one(
+        &body,
+        label,
+        &["check_and", "_evolve("].concat(),
+        "EG2-12 lists `care` as an auto-evolution call site.",
+    );
+}
+
+/// EG2-6: `train` gains ONLY the two tails — its EV logic is untouched.
+///
+/// kills: a tail-adding edit that also disturbs the EV path (the fence asserts
+///        the `evaluate_train` decision and the single `consume_one` spend are
+///        both still exactly where EG2-6's "MECHANICALLY UNCHANGED" requires);
+///        a `train` that credits Quality Time but never checks evolution.
+#[test]
+fn train_body_has_tails() {
+    let body = eg2_scan_body(&train_decl());
+    let label = "the `train` reducer body";
+
+    assert_body_has_exactly_one(
+        &body,
+        label,
+        &["accrue_quality", "_time("].concat(),
+        "EG2-8 lists `train` as a Quality-Time call site.",
+    );
+    assert_body_has_exactly_one(
+        &body,
+        label,
+        &["check_and", "_evolve("].concat(),
+        "EG2-12 lists `train` as an auto-evolution call site.",
+    );
+    assert_body_has_exactly_one(
+        &body,
+        label,
+        &["evaluate", "_train("].concat(),
+        "EG2-6: the EV path stays MECHANICALLY UNCHANGED — one decision seam.",
+    );
+    assert_body_has_exactly_one(
+        &body,
+        label,
+        &["consume", "_one("].concat(),
+        "EG2-6: exactly one food is spent per train, as today.",
+    );
+}
+
+/// EG2-12 (fresh-find tail discipline): in EVERY raising call site, the caller's
+/// own dual-write comes first, THEN `accrue_quality_time`, THEN
+/// `check_and_evolve` last.
+///
+/// Why the order is load-bearing: both tails re-FIND the monster row rather than
+/// taking the caller's stale local copy. If a tail ran before the caller's own
+/// `update`, it would read pre-mutation state and then the caller's write would
+/// clobber whatever the tail wrote — silently discarding the Quality-Time credit,
+/// or worse, un-doing an evolution that had just been applied.
+///
+/// kills: a tail hoisted above the dual-write (lost credit / clobbered
+///        evolution); `check_and_evolve` called before `accrue_quality_time`
+///        (evaluates a stale Quality-Time gate and misses the evolution this very
+///        call unlocked).
+#[test]
+fn tails_ordering() {
+    let update = ["monster_pub().monster_id()", ".update("].concat();
+    let accrue = ["accrue_quality", "_time("].concat();
+    let evolve = ["check_and", "_evolve("].concat();
+
+    for decl in [
+        care_decl(),
+        train_decl(),
+        essence_train_decl(),
+        consume_decl(),
+    ] {
+        let body = eg2_scan_body(&decl);
+
+        let last_update = body.rfind(update.as_str()).unwrap_or_else(|| {
+            panic!(
+                "TEETH (EG2-12): no `monster_pub` dual-write found in {decl:?}'s \
+                 body — every one of these reducers mutates the monster and must \
+                 dual-write its public projection before the tails run"
+            )
+        });
+        let accrue_at = body.find(accrue.as_str()).unwrap_or_else(|| {
+            panic!("TEETH (EG2-8): `accrue_quality_time` missing from {decl:?}'s body")
+        });
+        let evolve_at = body.find(evolve.as_str()).unwrap_or_else(|| {
+            panic!("TEETH (EG2-12): `check_and_evolve` missing from {decl:?}'s body")
+        });
+
+        assert!(
+            last_update < accrue_at,
+            "TEETH (EG2-12, fresh-find): in {decl:?}'s body the LAST monster_pub \
+             dual-write is at collapsed byte {last_update} but \
+             `accrue_quality_time` is at {accrue_at} — the tails must come AFTER \
+             the caller's own write, or the caller's update clobbers the tail's."
+        );
+        assert!(
+            accrue_at < evolve_at,
+            "TEETH (EG2-12): in {decl:?}'s body `check_and_evolve` (byte \
+             {evolve_at}) must be the LAST step, after `accrue_quality_time` \
+             (byte {accrue_at}) — Quality Time is one of the five evolution \
+             gates, so evolving first evaluates a stale gate set."
+        );
+    }
+}
+
+/// EG2-8 / ADR-0175 D1+D3: the `accrue_quality_time` shell delegates to the pure
+/// seam, re-projects the public row only on a TIER CHANGE, and NEVER fabricates
+/// a tier.
+///
+/// kills: (a) an inline re-implementation of the accrual rule in the ctx shell,
+///        where none of this file's ten unit tests can see it — the delegation
+///        needle is what keeps those tests load-bearing; (b) an unconditional
+///        `monster_pub` write on the movement hot path (public-row churn for
+///        every party monster on every tile step); (c) a missing `monster_pub`
+///        row papered over with `unwrap_or(0)` — a fabricated tier of 0 would
+///        publish a WRONG public projection (ADR-0174 D7/A3's fail-loud rule,
+///        which every other write site in this file already follows).
+#[test]
+fn accrue_quality_time_body_never_fabricates_tier() {
+    let body = eg2_scan_body(&accrue_decl());
+    let label = "the `accrue_quality_time` body";
+
+    assert_body_has(
+        &body,
+        label,
+        &["apply_quality_time", "_credit("].concat(),
+        "the ms-level rule must live in the PURE seam (the one this file's ten \
+         accrual tests exercise); an inline copy in the shell is untested by \
+         construction.",
+    );
+    assert_body_has(
+        &body,
+        label,
+        &["pub_from", "_monster("].concat(),
+        "the public projection is derived, never hand-assembled.",
+    );
+
+    let ne = ["quality_time_tier", "!="].concat();
+    let eq = ["quality_time_tier", "=="].concat();
+    assert!(
+        body.contains(ne.as_str()) || body.contains(eq.as_str()),
+        "TEETH (ADR-0175 D1/D3): `accrue_quality_time` must COMPARE the freshly \
+         projected `quality_time_tier` against the existing public row and write \
+         `monster_pub` only when it actually changed. Neither \
+         `quality_time_tier!=` nor `quality_time_tier==` appears in the collapsed \
+         body, so no comparison is being made — the write is either unconditional \
+         (public-row churn on the movement hot path for every party monster on \
+         every step) or absent (the tier never becomes visible to the client)."
+    );
+
+    let fabricate = ["unwrap", "_or(0"].concat();
+    let n = body.matches(fabricate.as_str()).count();
+    assert_eq!(
+        n, 0,
+        "TEETH (ADR-0174 D7/A3): `accrue_quality_time`'s body contains {n} \
+         `unwrap_or(0…)` default(s) and must contain ZERO. A missing `monster_pub` \
+         row is a fail-loud (log and return, write nothing) condition — defaulting \
+         a tier to 0 publishes a projection the private row does not support, and \
+         is exactly the fabrication ADR-0174 forbids at every other write site in \
+         this file."
+    );
+}
+
+/// EG2-5 / ADR-0175 D2: the remap is `AtMaxBond`-SPECIFIC — it must not be a
+/// catch-all that swallows every `CareError`.
+///
+/// The behavioural tests above cannot see this. `evaluate_care(255, ..)` returns
+/// `Ok(255)` under BOTH the correct
+/// `Err(CareError::AtMaxBond) => Ok(bond)` and the over-broad
+/// `Err(_) => Ok(bond)`, because `AtMaxBond` is the only variant a bond of 255
+/// can produce. `CareError` also carries `NoEffect` (`apply_care` returns it when
+/// the amount is 0), and ADR-0175 D2 remaps exactly ONE variant: "every other
+/// reject (cooldown included) still gates unconditionally". A catch-all would
+/// silently convert a future `CARE_BOND_AMOUNT = 0` mis-tune — today a loud
+/// reject — into a permanently succeeding no-op care that still credits Trust.
+///
+/// kills: `Err(_) => Ok(bond)` (and the same shape written as
+///        `.unwrap_or(bond)`, which spells no variant at all and so fails the
+///        POSITIVE needle).
+///
+/// HONEST LIMIT: the negative needle covers the `Err(_)` spelling only — a bare
+/// `_ =>` arm in a `match` over the full `Result`, for instance, is not caught by
+/// it. The POSITIVE `CareError::AtMaxBond` needle is the load-bearing half: no
+/// catch-all can satisfy it, because naming the variant is precisely what a
+/// catch-all avoids doing.
+#[test]
+fn evaluate_care_remaps_only_the_at_max_bond_variant() {
+    let body = eg2_scan_body(&["fn evaluate", "_care("].concat());
+    let label = "the `evaluate_care` seam body";
+
+    assert_body_has(
+        &body,
+        label,
+        &["CareError::", "AtMaxBond"].concat(),
+        "ADR-0175 D2 remaps exactly ONE CareError variant; the body must NAME it. \
+         RED at HEAD, where the body maps every variant alike with \
+         `map_err(|e| format!(..))?`.",
+    );
+
+    let catch_all = ["Err(", "_)"].concat();
+    let n = body.matches(catch_all.as_str()).count();
+    assert_eq!(
+        n, 0,
+        "TEETH (EG2-5, ADR-0175 D2): `evaluate_care`'s body contains {n} \
+         `Err(_)` catch-all pattern(s) and must contain ZERO. The remap is \
+         AtMaxBond-ONLY — a catch-all also swallows `NoEffect`, turning a \
+         mis-tuned zero-magnitude care from a loud reject into a silently \
+         succeeding no-op that still credits Trust."
+    );
+}
+
+/// EG2-5 (reject-never-burns, ADR-0059 §3 carried into the D2 remap): `care`'s
+/// decision seam runs BEFORE every mutation in the body, and its `Result` is
+/// never swallowed.
+///
+/// kills: (a) `let _ = evaluate_care(..)` — the shape the D2 remap invites, since
+///        "AtMaxBond is no longer an error" reads a step away from "the seam's
+///        error no longer matters"; it would make `care` unrejectable, cooldown
+///        and all; (b) a body that bumps `trust_favorable_count` or stamps
+///        `last_care_at_ms` above the decision, which puts the growth write on
+///        the same side of the seam as the reject and breaks the house ordering
+///        the reducer-security gate reads.
+#[test]
+fn care_reject_still_never_burns() {
+    let body = eg2_scan_body(&care_decl());
+    let label = "the `care` reducer body";
+    let decide = ["evaluate", "_care("].concat();
+
+    assert_body_has_exactly_one(
+        &body,
+        label,
+        &decide,
+        "one decision, one place — a second call could be reached with different \
+         arguments after the first has already been checked.",
+    );
+    let swallowed = ["let_=evaluate", "_care("].concat();
+    assert!(
+        !body.contains(swallowed.as_str()),
+        "TEETH (EG2-5, reject-never-burns): `care` must PROPAGATE the decision \
+         seam's Result (`evaluate_care(..)?`), never discard it with \
+         `let _ = ..`. Discarding it makes every reject — cooldown included — \
+         silently succeed."
+    );
+
+    let decide_at = body
+        .find(decide.as_str())
+        .expect("the decision seam call must exist in `care`'s body");
+
+    for (what, needle) in [
+        ("the cooldown stamp", ["last_care_at", "_ms="].concat()),
+        ("the Trust credit", ["trust_favorable", "_count"].concat()),
+        ("the first row write", [".update", "("].concat()),
+    ] {
+        let at = body.find(needle.as_str()).unwrap_or_else(|| {
+            panic!("FENCE PRECONDITION: {what} (`{needle}`) not found in `care`'s body")
+        });
+        assert!(
+            decide_at < at,
+            "TEETH (EG2-5, ADR-0059 §3 reject-never-burns): {what} is at collapsed \
+             byte {at} but the `evaluate_care` decision is at {decide_at} — the \
+             DECISION MUST COME FIRST. Hoisting a growth write above the seam puts \
+             it on the reject side of the gate."
+        );
+    }
 }

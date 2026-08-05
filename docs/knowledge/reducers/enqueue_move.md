@@ -5,7 +5,7 @@ slug: reducers/enqueue_move
 updated: 2026-08-04
 tags: [reducer, spacetimedb, movement]
 abstract: "Append one intent to the bounded queue (anti-flood: reject when full). Buffers intent only — NEVER computes movement. A…"
-resource: server-module/src/movement.rs#L126
+resource: server-module/src/movement.rs#L129
 source: scripts/okf-export.mjs@server-module/src/movement.rs
 ---
 
