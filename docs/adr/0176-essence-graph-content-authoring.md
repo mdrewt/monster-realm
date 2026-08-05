@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** ADR-0143, ADR-0144, ADR-0145, ADR-0149, ADR-0174
 **Subsystems:** content, evolution-fusion
-**Decision:** Author the ten-edge essence-graph registry into the glob-loaded `evolution_paths/` directory with explicit append-only `edge_id`s, retuning the legacy `1→4` gate to level 20 so auto-evolution cannot temporally dominate the Steamveil fan-in edge.
+**Decision:** Author the ten-edge essence graph into `evolution_paths/` with explicit append-only `edge_id`s, retuning the legacy `1→4` gate to level 20 so auto-evolution cannot temporally dominate the Steamveil fan-in edge.
 
 ## Context
 

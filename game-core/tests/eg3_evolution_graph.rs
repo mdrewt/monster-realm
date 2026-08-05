@@ -1,30 +1,32 @@
 //! Slice EG3 — evolution-path content (ADR-0176, spec EG3-1..EG3-9) gating
 //! tests.
 //!
-//! RED-first: `game-core/content/evolution_paths/000-core.ron` ships `[]`
-//! today (EG1's deliberate placeholder, ADR-0174 D6) and
-//! `game-core/content/items/000-core.ron` items 4/5 carry no
-//! `essence_affinity`/`essence_amount`, and shop 1 does not stock them. Most
-//! tests below therefore start red against the *current* content and turn
-//! green only once the ten-edge graph + item/shop changes described in
-//! ADR-0176 land — a different agent's job, not this file's. T1, T6, and T11
-//! are the exceptions: their POSITIVE half is a cross-cutting rule
-//! (R11/R9-adjacent, or a test-local invariant) that holds trivially over an
-//! empty/pre-content graph, so it already passes; their assertions still bind
-//! once content lands (T1 stops being vacuous the moment R10 goes live off an
-//! empty-set skip, T11 stops being vacuous the moment any species gets 2+
-//! out-edges) and their NEGATIVE halves already bite today.
+//! The ten-edge `evolution_paths/000-core.ron` graph and the items
+//! 4/5 (`essence_affinity`/`essence_amount`) + shop 1 stocking changes
+//! described in ADR-0176 have landed. These tests were originally written
+//! RED against the pre-content state (an empty `evolution_paths` registry
+//! and un-essenced items 4/5, EG1's deliberate placeholder, ADR-0174 D6) and
+//! now exercise the real, authored registry end-to-end.
 //!
-//! T1..T11 mirror the task list 1:1; each negative/TEETH half constructs its
-//! violation on a CLONE of the loaded `Vec`, never on the shipped RON
-//! (`item_evolution_content.rs`'s doctrine, carried over verbatim).
+//! T1..T11 mirror the spec-handoff task list 1:1; each negative/TEETH half
+//! constructs its violation on a CLONE of the loaded `Vec`, never on the
+//! shipped RON (`item_evolution_content.rs`'s doctrine, carried over
+//! verbatim). Several negative halves must isolate a single rule against the
+//! DECLARED R1->R12 evaluation order (`content.rs:954-957`) rather than the
+//! first rule the mutation happens to trip — see T3/T4 (must trip R1, not an
+//! incidental later rule) and especially T6 (R11 is mutually inescapable
+//! against the live ten-edge graph: every species is either edge-participating,
+//! which trips R5 first, or edge-free with `tier > 0`... wait, edge-free
+//! `tier > 0` species trip R10 first; T6's doc comment on
+//! `t6_r11_tier_cap` works through this in full and lands on the one fixture
+//! shape — an empty path set — that reaches R11 at all).
 
 use std::collections::{HashMap, HashSet};
 
 use game_core::{
     load_encounters, load_evolution_paths, load_items, load_shops, load_species,
-    validate_evolution_paths, Affinity, EncounterTable, EssenceRequirement, EvolutionPath,
-    ItemDef, Species, StatKind, TrustTier,
+    validate_evolution_paths, Affinity, EncounterTable, EssenceRequirement, EvolutionPath, ItemDef,
+    Species, StatKind, TrustTier,
 };
 
 // ===========================================================================
@@ -38,7 +40,12 @@ use game_core::{
 /// Panics (via `expect`) if any registry fails to parse — a parse failure is
 /// not this file's concern (it is covered elsewhere) and would make every
 /// downstream assertion meaningless.
-fn live_world() -> (Vec<Species>, Vec<EvolutionPath>, Vec<EncounterTable>, Vec<ItemDef>) {
+fn live_world() -> (
+    Vec<Species>,
+    Vec<EvolutionPath>,
+    Vec<EncounterTable>,
+    Vec<ItemDef>,
+) {
     let species = load_species().expect("species registry must parse");
     let paths = load_evolution_paths().expect("evolution_paths registry must parse");
     let encounters = load_encounters().expect("encounters registry must parse");
@@ -59,7 +66,14 @@ fn essence(pairs: &[(Affinity, u32)]) -> Vec<EssenceRequirement> {
 fn expected_edges() -> Vec<(u32, u32, u32, u8, Vec<(Affinity, u32)>, Option<TrustTier>)> {
     vec![
         (1, 1, 4, 20, vec![], None),
-        (2, 1, 5, 1, vec![(Affinity::Fire, 150)], Some(TrustTier::Friendly)),
+        (
+            2,
+            1,
+            5,
+            1,
+            vec![(Affinity::Fire, 150)],
+            Some(TrustTier::Friendly),
+        ),
         (3, 1, 6, 20, vec![(Affinity::Water, 120)], None),
         (4, 2, 6, 20, vec![(Affinity::Fire, 120)], None),
         (5, 7, 9, 18, vec![], None),
@@ -121,7 +135,11 @@ fn t2_registry_pins_exactly_the_ten_edges() {
             min_level,
             "T2: edge {edge_id} min_level"
         );
-        assert_eq!(path.essence, essence(&essence_pairs), "T2: edge {edge_id} essence");
+        assert_eq!(
+            path.essence,
+            essence(&essence_pairs),
+            "T2: edge {edge_id} essence"
+        );
         assert_eq!(
             path.min_trust_tier, trust,
             "T2: edge {edge_id} min_trust_tier"
@@ -276,9 +294,28 @@ fn t5_r10_universal_reachability() {
 /// cap that silently regressed to 0, which max <= 5 alone wouldn't catch —
 /// hence the `>= 1` non-vacuity half). Negative half kills a
 /// `validate_evolution_paths` that stopped enforcing R11.
+///
+/// The negative fixture MUST run against an EMPTY path set. R11 is a pure
+/// species-set rule (it never reads `paths`), but every other rule outranks
+/// it in the DECLARED R1->R12 order (`content.rs:954-957`), and against the
+/// live ten-edge graph R11 is *mutually inescapable*: bumping an
+/// edge-participating species (e.g. species 1, a `from_species` of edges
+/// 1-3) trips R5 first ("R5: edge 1 breaks tier monotonicity"), and bumping
+/// an edge-FREE species (e.g. species 3, Sproutlet — ADR-0176 D4's
+/// deliberate tier-0 dead end) instead trips R10 ("species 3 ... is
+/// unreachable"), because R10 requires every `tier > 0` species to be a
+/// `to_species` and a freshly tier-6 Sproutlet has no in-edge. No species in
+/// the live registry can isolate R11 while the live paths are present. The
+/// only fixture shape that reaches R11 is `paths == &[]`: R1-R8 then iterate
+/// nothing (vacuously pass) and R10 hits its documented empty-set carve-out
+/// (`content.rs:1086`), leaving R11 as the sole rule that can still fire.
+/// Sanity check: with R11 hypothetically deleted, this exact fixture (live
+/// species with one bumped to tier 6, empty paths) would return `Ok(())` —
+/// no other rule reads the tier-6 value — so `expect_err` below is a real
+/// bite, not a vacuous pass-through from some other rule.
 #[test]
 fn t6_r11_tier_cap() {
-    let (species, paths, encounters, items) = live_world();
+    let (species, _paths, encounters, items) = live_world();
 
     let max_tier = species.iter().map(|sp| sp.tier).max().unwrap_or(0);
     assert!(
@@ -292,8 +329,12 @@ fn t6_r11_tier_cap() {
     );
 
     let mut broken_species = species.clone();
-    broken_species[0].tier = 6;
-    let result = validate_evolution_paths(&broken_species, &paths, &encounters, &items);
+    let sproutlet = broken_species
+        .iter_mut()
+        .find(|sp| sp.id == 3)
+        .expect("T6 negative: species 3 (Sproutlet) must exist");
+    sproutlet.tier = 6;
+    let result = validate_evolution_paths(&broken_species, &[], &encounters, &items);
     let err = result.expect_err("T6 negative: a tier-6 species must fail validation");
     assert!(
         err.contains("R11"),
