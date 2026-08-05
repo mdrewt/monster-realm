@@ -2658,7 +2658,11 @@ fn first_two_args(body: &str, at: usize) -> (String, String) {
 /// grass-encounter path. (b) Layer 5 accepts `for id in ..`, `for &id in ..`,
 /// `for mut id in ..` and `for &mut id in ..`, but not a `.for_each(..)` or an
 /// index loop; those would false-RED. The `for` loop is the sanctioned shape
-/// (ADR-0175 D3) and the failure message says so.
+/// (ADR-0175 D3) and the failure message says so. (c) Every needle here is
+/// position- or token-based, never whole-block, so the trade-escrow SKIP that
+/// [`enqueue_move_skips_trade_escrowed_party_monsters`] requires between the loop
+/// binding and the first credit does NOT disturb any of them — the two tests are
+/// jointly satisfiable and the sketch above that test proves it line by line.
 #[test]
 fn enqueue_move_body_loops_party_growth_tails() {
     let squashed = squashed_movement();
@@ -2800,6 +2804,225 @@ fn enqueue_move_body_loops_party_growth_tails() {
          Accepted spellings: `for id in ..`, `for &id in ..`, `for mut id in ..`, \
          `for &mut id in ..`; a `.for_each(..)` or an index loop would false-RED — \
          the `for` loop is the sanctioned shape."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ONE `enqueue_move` tail shape that satisfies EVERY movement scan at once.
+//
+// Written out because these tests are not editable by the implementer, so joint
+// satisfiability has to be demonstrated rather than asserted. Only the tail is
+// shown; everything above it (the ADR-0168 D2 battle-guard reject, the
+// `authorize_move` call, the MOVE_QUEUE_CAP reject, the push and the character
+// update) is unchanged:
+//
+//       ctx.db.character().entity_id().update(ch);              [UP]
+//
+//       // EG2-8/EG2-12 growth tails. Trade escrow (TR-6, ADR-0106): an escrowed
+//       // party monster KEEPS its party slot until settlement, so without the
+//       // skip it would keep accruing Quality Time and could AUTO-EVOLVE while
+//       // the counterparty is looking at a propose-time card snapshot that
+//       // confirm_trade never revalidates. Skip the monster; never reject the
+//       // move (a pending trade must not freeze the player in place).
+//       if let Some((party_ids, _)) = lead_party(ctx, ctx.sender) {      [L]
+//           let escrowed: Vec<u64> = ctx.db.trade_offer()               [T]
+//               .initiator().filter(ctx.sender)                          [I]
+//               .chain(ctx.db.trade_offer().counterparty()               [C]
+//                          .filter(ctx.sender))
+//               ..active-offer filter + both monster-id lists.., collect();
+//           for mid in party_ids {                                       [F]
+//               if escrowed.contains(&mid) { continue; }                 [S]
+//               accrue_quality_time(ctx, mid);                           [A]
+//               check_and_evolve(ctx, mid);                              [K]
+//           }
+//       }
+//       Ok(())
+//
+// The escrow set is collected INSIDE the `if let`, after [L], on purpose: a
+// caller with no party pays zero trade-offer index reads, and this is the hottest
+// player-triggered reducer in the game (roughly one call per tile-step while a
+// key is held).
+//
+// Check against every movement assertion:
+//   enqueue_move_reject_paths_precede_tails ... both rejects are above [L]   OK
+//   enqueue_move_body_loops_party_growth_tails
+//        [UP] < [A] and [UP] < [K]; [A] < [K]; [L] < [A];
+//        both calls take (ctx, mid); `formidin` sits in [L]..[A]            OK
+//   enqueue_move_skips_trade_escrowed_party_monsters
+//        [T]/[I]/[C] all sit in [L]..[A]; [F]..[A] holds `contains(`
+//        and `continue` and no `return`                                     OK
+//   movement_tick_body_never_calls_growth_triggers ... untouched reducers    OK
+// And the pre-existing movement gates still hold: `is_in_ongoing_battle(`
+// stays at 4 file-wide (the tail adds none), `battle()` stays at 1 (the tail
+// reads `trade_offer()`, not `battle()`), and `clear_queue`'s body pin is
+// untouched.
+// ---------------------------------------------------------------------------
+
+/// **TR-6 / ADR-0106 (trade integrity)** — the growth tail must SKIP party
+/// monsters that are escrowed in an active trade offer.
+///
+/// kills: the unfiltered tail loop — the HIGH finding from implementation review.
+/// A monster escrowed in a `Pending` / `ConfirmedByCounterparty` offer KEEPS its
+/// party slot until settlement (`trading.rs:650`), so an unfiltered loop keeps
+/// crediting it Quality Time and can AUTO-EVOLVE it mid-offer. The counterparty is
+/// looking at a propose-time `MonsterCard` snapshot and `confirm_trade` never
+/// revalidates the card, so the trade settles on a monster that is no longer the
+/// one advertised: a bait-and-switch that needs no exploit, just patience and a
+/// walk. Every other growth call site already guards escrow — `care`, `train`,
+/// `essence_train` and `consume_crystalized_essence` each guard their ONE monster
+/// via `reject_if_monster_in_trade`, and battle entry escrow-guards the whole
+/// party — so this loop is the only unguarded growth path in the tree.
+///
+/// Two layers (the second carries three assertions):
+///
+/// * **(a) the escrow set is collected from BOTH trade roles, before the loop.**
+///   `trade_offer()`, `initiator()` and `counterparty()` must each appear after
+///   `lead_party(` and before the first growth credit. Both index reads are pinned
+///   because an initiator-only (or counterparty-only) collection leaves half of
+///   all offers unguarded — the same both-roles chain `care` spells at
+///   `raising.rs:96-103`, which is also why this survives the likely refactor into
+///   a `guards.rs` helper: in that pattern the CALL SITE builds the iterator and
+///   the helper only owns the active-offer filter.
+///
+/// * **(b) the skip is a per-id SKIP, not a reject.** Between the loop binding and
+///   the first credit there must be a membership test (`contains(`) and a
+///   `continue`, and there must be NO `return`. The negative is not decorative:
+///   rejecting the MOVE when a party monster is escrowed would freeze the player
+///   in place for the entire life of a trade offer — a far worse bug than the one
+///   being fixed, and a tempting one-liner for anyone reaching for the existing
+///   `reject_if_monster_in_trade` guard.
+///
+/// RED at HEAD (and red against the first implementation): `enqueue_move`'s body
+/// contains no `trade_offer` read at all, and its tail loop has no skip.
+///
+/// HONEST LIMITS. (a) TEXTUAL — this proves the skip SHAPE exists, never that the
+/// collected set is correct. Set-collection correctness rides on the pinned
+/// `trade_offer().initiator()` / `.counterparty()` chain being the same shape the
+/// four escrow-guarded reducers already use, plus `TradeStatus::is_active`'s own
+/// tests; a scan cannot see which ids end up in the set. (b) `is_active()` is
+/// deliberately NOT pinned: the moment this is factored into a `guards.rs` helper
+/// (mirroring `escrowed_item_qty`), the active-offer filter moves out of this body
+/// and the needle would false-RED an improvement. (c) The `continue` spelling is
+/// pinned as the sanctioned shape; an equivalent
+/// `for mid in ids.into_iter().filter(|id| !escrowed.contains(id))` would
+/// false-RED. See the sketch above — it is the shape to write.
+#[test]
+fn enqueue_move_skips_trade_escrowed_party_monsters() {
+    let squashed = squashed_movement();
+    let enqueue_marker = ["pubfn", "enqueue", "_move("].concat();
+    let body = brace_body(&squashed, enqueue_marker.as_str());
+
+    let lead = ["lead", "_party("].concat();
+    let accrue = ["accrue_quality", "_time("].concat();
+
+    let lead_at = body.find(lead.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (TR-6): `enqueue_move` must resolve the party via `lead_party(`. \
+             RED at HEAD: it never calls it."
+        )
+    });
+    let accrue_at = body.find(accrue.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (TR-6): `enqueue_move` has no growth credit to filter — see \
+             enqueue_move_body_loops_party_growth_tails."
+        )
+    });
+
+    // --- (a) both trade roles, collected between the party lookup and the loop
+    let offers = ["trade", "_offer()"].concat();
+    let initiator = ["initiator", "()"].concat();
+    let counterparty = ["counterparty", "()"].concat();
+    for needle in [offers.as_str(), initiator.as_str(), counterparty.as_str()] {
+        let at = body.find(needle).unwrap_or_else(|| {
+            panic!(
+                "TEETH (TR-6, HIGH): `enqueue_move`'s growth tail never reads \
+                 `{needle}`, so it credits Quality Time to — and can AUTO-EVOLVE — a \
+                 party monster that is escrowed in an active trade offer. An \
+                 escrowed monster keeps its party slot until settlement \
+                 (trading.rs:650), the counterparty sees only the propose-time \
+                 MonsterCard snapshot, and confirm_trade never revalidates it: the \
+                 trade settles on a monster that silently changed species. Collect \
+                 the caller's escrowed ids from BOTH roles \
+                 (`trade_offer().initiator().filter(ctx.sender)` chained with \
+                 `trade_offer().counterparty().filter(ctx.sender)` — the same shape \
+                 `care` uses at raising.rs:96-103) and skip those ids in the loop. \
+                 RED at HEAD: `enqueue_move` reads no trade offers at all."
+            )
+        });
+        assert!(
+            lead_at < at && at < accrue_at,
+            "TEETH (TR-6): `{needle}` is at body byte {at}, outside the window \
+             between the party lookup ({lead_at}) and the first growth credit \
+             ({accrue_at}). The escrowed-id set must be collected ONCE, after the \
+             party is resolved and before the loop that credits it — inside the \
+             `if let Some((party_ids, _)) = lead_party(..)` arm, so a caller with no \
+             party pays no trade-offer index reads at all (this is the hottest \
+             player-triggered reducer in the game, roughly one call per tile-step \
+             while a key is held). HONEST LIMIT: hoisting the collection ABOVE \
+             `lead_party(` is semantically equivalent and would false-RED here; the \
+             sketch above this test fixes collect-after-resolve as the sanctioned \
+             shape."
+        );
+    }
+
+    // --- (b) the skip is a per-id SKIP, not a reject -------------------------
+    let (_, accrue_id) = first_two_args(body, accrue_at);
+    let loop_var = ident_of(&accrue_id).to_string();
+    let between = &body[lead_at..accrue_at];
+    let mut for_rel: Option<usize> = None;
+    for prefix in ["", "&", "mut", "&mut"] {
+        let form = ["for", prefix, loop_var.as_str(), "in"].concat();
+        if let Some(rel) = between.find(form.as_str()) {
+            for_rel = Some(rel);
+            break;
+        }
+    }
+    let for_rel = for_rel.unwrap_or_else(|| {
+        panic!(
+            "TEETH (TR-6): no `for` loop over the party ids was found before the \
+             first growth credit — see enqueue_move_body_loops_party_growth_tails, \
+             which owns that pin."
+        )
+    });
+    let for_at = lead_at + for_rel;
+    let window = &body[for_at..accrue_at];
+
+    let membership = ["cont", "ains("].concat();
+    assert!(
+        window.contains(membership.as_str()),
+        "TEETH (TR-6, HIGH): between the loop binding and the first growth credit \
+         there is no `contains(` membership test — the loop credits EVERY party id, \
+         escrowed or not. That is the trade bait-and-switch: a monster escrowed in a \
+         Pending offer keeps accruing Quality Time and can auto-evolve out from \
+         under the propose-time MonsterCard the counterparty accepted, which \
+         confirm_trade never revalidates. Test each id against the escrowed set \
+         collected above the loop."
+    );
+
+    let skip = ["cont", "inue"].concat();
+    assert!(
+        window.contains(skip.as_str()),
+        "TEETH (TR-6): the escrow check between the loop binding and the first \
+         growth credit does not `continue`. An escrowed monster must be SKIPPED, \
+         with the loop carrying on to the rest of the party. HONEST LIMIT: an \
+         equivalent `ids.into_iter().filter(|id| !escrowed.contains(id))` would \
+         false-RED — write the `continue` skip shown in the sketch above this test."
+    );
+
+    let reject = ["ret", "urn"].concat();
+    let n_reject = window.matches(reject.as_str()).count();
+    assert_eq!(
+        n_reject, 0,
+        "TEETH (TR-6): the escrow check between the loop binding and the first \
+         growth credit contains {n_reject} `return` statement(s); it must contain \
+         ZERO. An escrowed party monster must SKIP its credit, never reject the \
+         MOVE: rejecting would freeze the player in place for the entire life of a \
+         trade offer — strictly worse than the bug being fixed, and a tempting \
+         one-liner for anyone reaching for the existing `reject_if_monster_in_trade` \
+         guard, which is built to REJECT and is the wrong tool here. (It is also the \
+         wrong tool for a second reason: it takes one monster_id and would re-scan \
+         every trade offer once per party member on the hottest reducer in the \
+         game.)"
     );
 }
 

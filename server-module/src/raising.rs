@@ -499,9 +499,16 @@ pub(crate) fn grant_essence(m: &mut Monster, affinity: Affinity, amount: u32) {
 ///      and leave a FUTURE anchor in the row (a silent accrual lockout).
 ///   2. `gap < QT_MIN_WRITE_GAP_MS` (strict): pure no-op, anchor KEPT so the
 ///      skipped time batches against the older anchor.
-///   3. `gap > QT_IDLE_GAP_MS` (strict): the player was away — re-anchor, no
+///   3. UTC-day rollover resets the day window — ABOVE the idle branch, i.e.
+///      compared BEFORE any re-anchor. The common rollover is "capped on day N,
+///      idle overnight, back on day N+1": that path takes the idle branch, and
+///      a reset placed below it would re-anchor into the new day without ever
+///      clearing `window_ms`, silently turning the 2 h DAILY cap into a
+///      permanent LIFETIME cap. The day rule is the SSOT `day_epoch_utc`
+///      (battle.rs) — sound here because anchors are non-negative server
+///      timestamps once the backwards-clock branch has run.
+///   4. `gap > QT_IDLE_GAP_MS` (strict): the player was away — re-anchor, no
 ///      credit. The first-ever call (anchor 0) lands here by construction.
-///   4. UTC-day rollover (day = ms/86_400_000) resets the day window.
 ///   5. credit `min(gap, QT_DAILY_CAP_MS - window)`, floored at 0; convert
 ///      whole ticks at QT_TICK_MS, keep the remainder, saturate the counter.
 pub(crate) fn apply_quality_time_credit(m: &mut Monster, now: i64) -> bool {
@@ -514,12 +521,12 @@ pub(crate) fn apply_quality_time_credit(m: &mut Monster, now: i64) -> bool {
     if gap < QT_MIN_WRITE_GAP_MS {
         return false;
     }
+    if crate::battle::day_epoch_utc(now) != crate::battle::day_epoch_utc(anchor) {
+        m.quality_time_window_ms = 0;
+    }
     if gap > QT_IDLE_GAP_MS {
         m.quality_time_window_start_ms = now;
         return true;
-    }
-    if now / 86_400_000 != anchor / 86_400_000 {
-        m.quality_time_window_ms = 0;
     }
     let headroom = QT_DAILY_CAP_MS
         .saturating_sub(i64::from(m.quality_time_window_ms))
@@ -553,26 +560,37 @@ pub(crate) fn apply_quality_time_credit(m: &mut Monster, now: i64) -> bool {
 /// public `quality_time_tier` actually changed (an unchanged tier is a
 /// byte-identical projection, and this runs on the movement hot path).
 ///
+/// Returns whether `quality_time_ticks_total` actually advanced this call —
+/// the ONE Quality-Time observable an evolution gate can see. `enqueue_move`
+/// gates its `check_and_evolve` tail on it (walking changes no other gate
+/// value, so a no-tick call cannot change eligibility — ADR-0148 latency
+/// budget); every other call site ignores the return and checks
+/// unconditionally, because it mutates other gate values itself.
+///
 /// Infallible outward (a reducer TAIL must never fail its caller's write):
-/// missing rows are log-and-return. A missing `monster_pub` row writes NOTHING
-/// — the tier is copy-forward-only here, never fabricated (ADR-0174 D7/A3).
-pub(crate) fn accrue_quality_time(ctx: &ReducerContext, monster_id: u64) {
+/// missing rows are log-and-return-false. A missing `monster_pub` row writes
+/// NOTHING — the tier is copy-forward-only here, never fabricated (ADR-0174
+/// D7/A3).
+pub(crate) fn accrue_quality_time(ctx: &ReducerContext, monster_id: u64) -> bool {
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
         log::warn!("{{\"evt\":\"qt_accrue_skip\",\"monster_id\":{monster_id},\"reason\":\"monster row missing\"}}");
-        return;
+        return false;
     };
     let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
         log::error!("{{\"evt\":\"qt_accrue_skip\",\"monster_id\":{monster_id},\"reason\":\"monster_pub row missing\"}}");
-        return;
+        return false;
     };
+    let ticks_before = m.quality_time_ticks_total;
     if !apply_quality_time_credit(&mut m, now_ms(ctx)) {
-        return;
+        return false;
     }
+    let ticked = m.quality_time_ticks_total != ticks_before;
     let new_pub = pub_from_monster(&m, existing_pub.tier);
     ctx.db.monster().monster_id().update(m);
     if new_pub.quality_time_tier != existing_pub.quality_time_tier {
         ctx.db.monster_pub().monster_id().update(new_pub);
     }
+    ticked
 }
 
 /// Pure cooldown seam for `essence_train` (EG2-3): the SSOT

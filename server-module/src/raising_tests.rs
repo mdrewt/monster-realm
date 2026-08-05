@@ -1913,6 +1913,109 @@ fn daily_cap_resets_on_next_utc_day() {
     );
 }
 
+/// EG2-8 / ADR-0175 D1 — **the realistic rollover: an IDLE overnight gap must
+/// still reset the day window.** A capped day plus a night away must not become a
+/// permanent lifetime cap.
+///
+/// THE BUG THIS GATES (found in review at `raising.rs:517-523`): the day-rollover
+/// reset sits BELOW the idle-branch early return. The overwhelmingly common
+/// rollover is not a 90-second straddle of midnight — it is "play until the 2 h
+/// cap on day N, log off, come back on day N+1". That path takes the idle branch,
+/// which re-anchors into day N+1 and returns WITHOUT touching
+/// `quality_time_window_ms`. From then on `day(now) == day(anchor)` on every
+/// subsequent call, so the reset condition can never fire again: the 2 h daily cap
+/// silently degrades into a permanent LIFETIME cap and Quality-Time tiers 3 and 4
+/// become unreachable for that monster, forever.
+///
+/// THE FIX: hoist the day-rollover reset ABOVE the idle branch — and BELOW the
+/// min-write-gap short-circuit, which must keep mutating nothing at all (pinned by
+/// `below_min_write_gap_is_a_pure_noop_returning_false`).
+///
+/// WHAT IS ASSERTED: only the observable contract. Step 2 credits NOTHING (an idle
+/// gap never credits — that rule is not being relaxed) and re-anchors;
+/// `quality_time_window_ms` is deliberately NOT asserted there, because whether the
+/// reset lands eagerly during step 2 or lazily at step 3 is implementation detail.
+/// Step 3 is where the contract bites: a normal 60 s active gap on the new day must
+/// credit normally, ending with `window_ms` at exactly 60_000.
+///
+/// kills: the shipped ordering (day reset below the idle branch) — the permanent
+///        cap lockout. Neither existing day-window pin sees it:
+///        `reanchors_without_credit_beyond_idle_gap` uses a SAME-day idle gap, and
+///        `daily_cap_resets_on_next_utc_day` uses a 90 s crediting straddle — the
+///        one rollover shape the buggy ordering happens to handle. Both stay green
+///        under the fix.
+#[test]
+fn daily_cap_resets_after_an_idle_overnight_gap() {
+    let cap = u32::try_from(QT_DAILY_CAP_MS)
+        .expect("QT_DAILY_CAP_MS must fit the u32 quality_time_window_ms column");
+
+    let anchor = 10 * EG2_DAY_MS + 79_200_000; // 22:00 UTC, day 10 — cap reached.
+    let now_idle = anchor + 12 * 3_600_000; // 10:00 UTC, day 11 — a 12 h gap.
+    let now_active = now_idle + 60_000; // one active minute later, same day 11.
+
+    assert_ne!(
+        anchor / EG2_DAY_MS,
+        now_idle / EG2_DAY_MS,
+        "fixture sanity: the overnight gap must cross a UTC day boundary"
+    );
+    assert_eq!(
+        now_idle / EG2_DAY_MS,
+        now_active / EG2_DAY_MS,
+        "fixture sanity: steps 2 and 3 must fall on the SAME UTC day, so only a \
+         reset performed at (or before) step 2 can let step 3 credit"
+    );
+    assert!(
+        now_idle - anchor > QT_IDLE_GAP_MS,
+        "fixture sanity: the overnight gap must land in the IDLE branch"
+    );
+
+    // Day 10 ended with the window at the cap and 15 s banked toward the next tick.
+    let mut m = qt_monster(anchor, cap, 15_000, 120);
+
+    // Step 2 — the player returns the next morning. Idle time never credits.
+    let wrote_idle = apply_quality_time_credit(&mut m, now_idle);
+    assert!(
+        wrote_idle,
+        "the overnight re-anchor must be persisted (true) — this is the write \
+         that carries the day rollover into the row"
+    );
+    assert_eq!(
+        m.quality_time_window_start_ms, now_idle,
+        "TEETH (EG2-8): the idle overnight gap must re-anchor to `now`"
+    );
+    assert_eq!(
+        m.quality_time_accum_ms, 15_000,
+        "TEETH (EG2-9): idle time must credit NOTHING — the banked remainder is \
+         untouched"
+    );
+    assert_eq!(
+        m.quality_time_ticks_total, 120,
+        "TEETH (EG2-9): idle time must credit NOTHING — no new ticks overnight"
+    );
+    // `quality_time_window_ms` is intentionally NOT asserted here: eager reset
+    // (0 now) and lazy reset (still `cap`, cleared at step 3) are both acceptable
+    // shapes. Step 3 asserts the behaviour they must share.
+
+    // Step 3 — one ordinary active minute on the NEW day. This must credit.
+    let wrote_active = apply_quality_time_credit(&mut m, now_active);
+    assert!(
+        wrote_active,
+        "a 60 s active gap on the new day is a normal credited call"
+    );
+    assert_eq!(
+        qt_state(&m),
+        (now_active, 60_000, 15_000, 121),
+        "TEETH (ADR-0175 D1, day-reset-above-the-idle-branch): after an IDLE \
+         overnight gap the day window must be reset, so this ordinary 60 s active \
+         gap credits in full — window_ms exactly 60_000 (a FRESH day's window, not \
+         the carried-over cap), one new tick (120 ⇒ 121), the 15_000 ms remainder \
+         carried. With the reset below the idle branch the window is still at \
+         QT_DAILY_CAP_MS here, creditable computes to 0, and this reads \
+         (now, cap, 15_000, 120): the 2 h DAILY cap has silently become a \
+         permanent LIFETIME cap and tiers 3-4 are unreachable for this monster."
+    );
+}
+
 /// EG2-8: `quality_time_ticks_total` saturates instead of wrapping or panicking.
 ///
 /// The fixture also sits EXACTLY on the idle bound (`gap == QT_IDLE_GAP_MS`),

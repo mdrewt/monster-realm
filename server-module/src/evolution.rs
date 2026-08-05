@@ -173,8 +173,12 @@ pub(crate) fn apply_evolution(
 
 /// Auto-evolution driver (EG2-11/EG2-13, ADR-0175 D3): called as a TAIL from
 /// the intent reducers (care / train / essence_train / consume_crystalized_
-/// essence / enqueue_move) and from the battle write-back — never from a
-/// scheduled reducer (EG2-9).
+/// essence / enqueue_move) and from the battle write-back — never DIRECTLY
+/// from a scheduled reducer's own body (EG2-9 is direct-call-only). It stays
+/// transitively reachable via pvp_deadline_reaper -> apply_pvp_forfeit ->
+/// settle_pvp_battle -> write_back_battle_results, where the only gate value
+/// that can have changed is level/XP from the pre-existing forfeit settlement
+/// — harmless, and the credits at that site are wild-gated anyway.
 ///
 /// Each iteration: FRESH monster read, the DB `evolution_path` rows for the
 /// CURRENT species (the same source `evolve()` and the EG4 client read — never
@@ -188,10 +192,19 @@ pub(crate) fn check_and_evolve(ctx: &ReducerContext, monster_id: u64) {
     while steps < MAX_EVOLUTION_CHAIN_STEPS {
         // FRESH find every step — the row changed under us on the last one.
         let Some(m) = ctx.db.monster().monster_id().find(monster_id) else {
+            log::warn!(
+                "{{\"evt\":\"check_and_evolve_skip\",\"monster_id\":{monster_id},\"reason\":\"monster row missing\"}}",
+            );
             return;
         };
-        let Ok(instance) = monster_to_instance(&m) else {
-            return;
+        let instance = match monster_to_instance(&m) {
+            Ok(instance) => instance,
+            Err(e) => {
+                log::warn!(
+                    "{{\"evt\":\"check_and_evolve_skip\",\"monster_id\":{monster_id},\"reason\":\"{e}\"}}",
+                );
+                return;
+            }
         };
         // Candidate edges out of the monster's CURRENT species, via the
         // from_species btree index (EG1-4 — this runs on the movement hot path).
@@ -225,9 +238,11 @@ pub(crate) fn check_and_evolve(ctx: &ReducerContext, monster_id: u64) {
         }
         steps += 1;
     }
-    // Cap reached with the loop still live: an R5/R11 invariant violation
-    // shipped in content (a cycle or an over-deep chain). Distinct signal, never
-    // a silent stop (ADR-0175 D3).
+    // Cap reached with the loop still live. This can only fire against
+    // R5/R11-VIOLATING content (a cycle, or a future tier-cap raise outpacing
+    // MAX_EVOLUTION_CHAIN_STEPS): with valid content the loop always exits via
+    // the 0/2+-eligible branch first. Distinct signal, never a silent stop
+    // (ADR-0175 D3).
     log::error!(
         "{{\"evt\":\"check_and_evolve_cap_hit\",\"monster_id\":{monster_id},\"steps\":{steps}}}",
     );
