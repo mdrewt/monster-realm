@@ -1,4 +1,4 @@
-// mutate-core recipe + .cargo/mutants.toml integrity eval (fix-nightly / ADR-0088 + M14.5h + EG1).
+// mutate-core recipe + .cargo/mutants.toml integrity eval (fix-nightly / ADR-0088 + M14.5h).
 //
 // Guards two files whose contents change mutation semantics for every nightly run:
 //   1. the justfile `mutate-core:` recipe (AC-M5): -p game-core scope, missed.txt
@@ -6,22 +6,22 @@
 //      shell-neuter, and a HARD ZERO — the header must carry NO parameters (a
 //      `cap=` in the header is asymmetric vs mutate-server: game-core is
 //      zero-tolerance, so no cap knob is allowed to leak in).
-//   2. `.cargo/mutants.toml` (AC-M8): EXACTLY the four blessed exclude_re
+//   2. `.cargo/mutants.toml` (AC-M8): EXACTLY the three blessed exclude_re
 //      entries listed in BLESSED_EXCLUSIONS below, PER ENTRY — every blessed
 //      exclusion must appear exactly once and every entry must be one of them,
 //      so a wildcard (`.*`) or widened pattern is rejected outright. The
 //      rationale for each entry lives in `.cargo/mutants.toml`'s own comment
 //      block; it is not duplicated here. Nothing may shape scope beyond those
-//      four exclusions (no examine_re/exclude_globs/examine_globs).
+//      three exclusions (no examine_re/exclude_globs/examine_globs).
 //
-// SELF-EXPIRY (EG1, entry 4 only): entries 1-3 are equivalent by construction,
-// permanently; entry 4 is equivalent only while the evolution-path registry is
-// empty. Because entry 4 is REQUIRED here, the two tripwires below run
-// unconditionally: the canary test `eg1_load_evolution_paths_is_empty_pending_eg3`
-// must be a live `#[test]` in game-core/src/content.rs, and every
-// content/evolution_paths/*.ron must still reduce to `[]`. The instant EG3
-// authors one edge this eval goes red; retiring the exclusion then means
-// editing BOTH `.cargo/mutants.toml` and this file (see Real check 3).
+// All three blessed exclusions are equivalent BY CONSTRUCTION, permanently —
+// there is no contingent entry and therefore no self-expiry machinery here.
+// (Slice EG1 added a fourth, contingently-equivalent entry pinning
+// content.rs:624:5 load_evolution_paths -> Ok(vec![]); it was equivalent only
+// while content/evolution_paths/ was deliberately empty. Slice EG3 authored the
+// real graph, so that mutant is killable again and the entry was RETIRED in all
+// three places its own self-expiry note named: the toml entry, the canary test,
+// and this eval's pin. The list is back to three.)
 //
 // Proof-of-teeth: every predicate is exercised against a known-bad fixture that
 // MUST be rejected BEFORE the real files are read; a tooth that fails to bite
@@ -31,13 +31,10 @@
 // IMPORTANT: NO new RegExp(...) — only literal regex literals or String methods
 // (detect-non-literal-regexp Semgrep rule has bitten this project 3×). This file
 // uses ONLY indexOf / startsWith / split line-scans, no regex at all.
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
-// The EG1 canary test that pairs with the fourth blessed exclusion.
-const CANARY_FN = 'eg1_load_evolution_paths_is_empty_pending_eg3';
-
-// The four blessed exclusions. `key` is the mutated function name — the four
+// The three blessed exclusions. `key` is the mutated function name — the three
 // keys are mutually exclusive across the canonical texts, so an entry is
 // classified by which key it names. `canonical` is the entry text with every
 // backslash stripped: the entries are cargo-mutants REGEXES, so the same pin may
@@ -52,11 +49,6 @@ const BLESSED_EXCLUSIONS = [
   {
     key: 'is_active',
     canonical: 'trading/types.rs:56:9: replace TradeStatus::is_active -> bool with true',
-  },
-  {
-    key: 'load_evolution_paths',
-    canonical:
-      'content.rs:624:5: replace load_evolution_paths -> Result<Vec<EvolutionPath>, String> with Ok(vec![])',
   },
 ];
 
@@ -146,11 +138,12 @@ export function mutateCoreRecipeIntact(justfileText) {
 // Helper: split the `exclude_re` array body into its INDIVIDUAL quoted entries.
 // Returns { entries: string[] } or { reason: string } for a malformed array.
 //
-// The scan is quote-aware because entry 4 legitimately contains literal bracket
-// characters (the escaped `Ok(vec![])` token), so a naive first-`]` search would
-// truncate the body mid-entry. No blessed entry contains an escaped quote, so a
-// plain in-string toggle is sufficient. Anything unquoted between entries other
-// than whitespace and commas is rejected rather than ignored.
+// The scan is quote-aware rather than a naive first-`]` search: an entry may
+// legitimately contain literal bracket characters (e.g. an escaped `vec![]`
+// token), which would truncate the body mid-entry. No blessed entry contains an
+// escaped quote, so a plain in-string toggle is sufficient. Anything unquoted
+// between entries other than whitespace and commas is rejected rather than
+// ignored.
 // ---------------------------------------------------------------------------
 function splitExcludeReEntries(tomlText) {
   const keyIdx = tomlText.indexOf('exclude_re');
@@ -194,24 +187,21 @@ function splitExcludeReEntries(tomlText) {
 }
 
 // ---------------------------------------------------------------------------
-// Pure predicate: `.cargo/mutants.toml` is pinned to exactly the four blessed
-// exclusions (AC-M8, ADR-0088 + M14.5h + fix-nightly-mutants + EG1).
+// Pure predicate: `.cargo/mutants.toml` is pinned to exactly the three blessed
+// exclusions (AC-M8, ADR-0088 + M14.5h + fix-nightly-mutants).
 // Returns { ok: boolean, reason: string }.
 //
 //   null/absent input → { ok:false } (handled gracefully — never throws).
-//   EXACTLY FOUR exclude_re entries, validated PER ENTRY (not as one
+//   EXACTLY THREE exclude_re entries, validated PER ENTRY (not as one
 //   concatenated blob — a blob scan is satisfied by a wildcard entry sitting
-//   beside a comment-like entry naming all four pins, which would disable the
+//   beside a comment-like entry naming all three pins, which would disable the
 //   whole zero-tolerance gate):
 //     • each blessed exclusion in BLESSED_EXCLUSIONS must be matched by exactly
 //       one entry, with its line-pin and its exact operator text; and
-//     • every entry must be one of the four, byte-identical modulo regex
+//     • every entry must be one of the three, byte-identical modulo regex
 //       backslashes — an unrecognised, widened or wildcard entry is rejected.
 //   ANY `examine_re` / `exclude_globs` / `examine_globs` key present → false
 //     (scope-shaping beyond the blessed exclusions is banned).
-//
-// Entry 4 alone is CONTINGENTLY equivalent; its self-expiry tripwires live in
-// canaryTestPresent() + evolutionPathsRegistryEmpty() below, not here.
 // ---------------------------------------------------------------------------
 export function mutantsTomlPinned(tomlText) {
   if (tomlText === null || tomlText === undefined) {
@@ -254,27 +244,20 @@ export function mutantsTomlPinned(tomlText) {
     return {
       ok: false,
       reason:
-        'mutants.toml exclude_re has only ONE entry — all four blessed exclusions are required: toward_home (npc/rules.rs:61:15), apply_entry_ability (ability.rs:170:60), is_active (trading/types.rs:56:9), and load_evolution_paths (content.rs:624:5)',
+        'mutants.toml exclude_re has only ONE entry — all three blessed exclusions are required: toward_home (npc/rules.rs:61:15), apply_entry_ability (ability.rs:170:60), and is_active (trading/types.rs:56:9)',
     };
   }
   if (entries.length === 2) {
     return {
       ok: false,
       reason:
-        'mutants.toml exclude_re has only TWO entries — the third (trading/types.rs:56:9 is_active, fix-nightly-mutants) and fourth (content.rs:624:5 load_evolution_paths, EG1) blessed exclusions are missing; EXACTLY FOUR entries are required',
+        'mutants.toml exclude_re has only TWO entries — the third blessed exclusion (trading/types.rs:56:9 is_active, fix-nightly-mutants) is missing; EXACTLY THREE entries are required',
     };
   }
-  if (entries.length === 3) {
+  if (entries.length !== 3) {
     return {
       ok: false,
-      reason:
-        'mutants.toml exclude_re has only THREE entries — the fourth blessed exclusion (content.rs:624:5 load_evolution_paths -> Ok(vec![]) equivalent mutant, EG1) is missing; EXACTLY FOUR entries are required',
-    };
-  }
-  if (entries.length !== 4) {
-    return {
-      ok: false,
-      reason: `mutants.toml exclude_re must have EXACTLY FOUR entries (found ${entries.length} entries / ${entries.length * 2} quotes) — the list is pinned to exactly four blessed exclusions (toward_home + apply_entry_ability + is_active + load_evolution_paths)`,
+      reason: `mutants.toml exclude_re must have EXACTLY THREE entries (found ${entries.length} entries / ${entries.length * 2} quotes) — the list is pinned to exactly three blessed exclusions (toward_home + apply_entry_ability + is_active)`,
     };
   }
 
@@ -282,7 +265,7 @@ export function mutantsTomlPinned(tomlText) {
   // of them is the wildcard/bypass class: `.*` matches EVERY mutant in the crate
   // and silently disables the whole gate, and it would sail through any check
   // that scans the array as one concatenated blob.
-  const matched = [null, null, null, null];
+  const matched = [null, null, null];
   for (const entry of entries) {
     const hits = [];
     for (let s = 0; s < BLESSED_EXCLUSIONS.length; s++) {
@@ -291,7 +274,7 @@ export function mutantsTomlPinned(tomlText) {
     if (hits.length === 0) {
       return {
         ok: false,
-        reason: `mutants.toml exclude_re carries an UNRECOGNISED entry \`${entry.slice(0, 80)}\` — every entry must be one of the four blessed exclusions (toward_home / apply_entry_ability / is_active / load_evolution_paths). An unrecognised or wildcard pattern such as \`.*\` matches every mutant in game-core and silently disables the whole zero-tolerance gate (ADR-0050)`,
+        reason: `mutants.toml exclude_re carries an UNRECOGNISED entry \`${entry.slice(0, 80)}\` — every entry must be one of the three blessed exclusions (toward_home / apply_entry_ability / is_active). An unrecognised or wildcard pattern such as \`.*\` matches every mutant in game-core and silently disables the whole zero-tolerance gate (ADR-0050)`,
       };
     }
     if (hits.length > 1) {
@@ -303,7 +286,7 @@ export function mutantsTomlPinned(tomlText) {
     if (matched[hits[0]] !== null) {
       return {
         ok: false,
-        reason: `mutants.toml exclude_re names the ${BLESSED_EXCLUSIONS[hits[0]].key} exclusion TWICE — each of the four blessed exclusions must appear exactly once (a duplicate hides a missing one behind the four-entry count)`,
+        reason: `mutants.toml exclude_re names the ${BLESSED_EXCLUSIONS[hits[0]].key} exclusion TWICE — each of the three blessed exclusions must appear exactly once (a duplicate hides a missing one behind the three-entry count)`,
       };
     }
     matched[hits[0]] = entry;
@@ -377,28 +360,6 @@ export function mutantsTomlPinned(tomlText) {
     };
   }
 
-  // Entry 4: load_evolution_paths must be present with its full line-pin (EG1).
-  // CONTINGENTLY equivalent — see canaryTestPresent / evolutionPathsRegistryEmpty.
-  const loadEvolutionPaths = matched[3];
-  if (
-    loadEvolutionPaths === null ||
-    loadEvolutionPaths.indexOf('content') === -1 ||
-    loadEvolutionPaths.indexOf('.rs:624:5') === -1
-  ) {
-    return {
-      ok: false,
-      reason:
-        'mutants.toml is missing the content.rs:624:5 load_evolution_paths line-pin (fourth blessed exclusion, EG1 — the registry is deliberately empty until slice EG3, so the whole-body replacement is equivalent TODAY)',
-    };
-  }
-  if (loadEvolutionPaths.indexOf('with Ok(vec![])') === -1) {
-    return {
-      ok: false,
-      reason:
-        'mutants.toml load_evolution_paths entry is missing the text "with Ok(vec![])" — must name the EXACT mutation to prevent silencing the non-equivalent siblings at the same line (`with Err(...)` and `with Ok(vec![Default::default()])` are both killed by eg1_load_evolution_paths_is_empty_pending_eg3)',
-    };
-  }
-
   // Final: each entry must be the canonical text and NOTHING more. The fragment
   // checks above prove the required text is there; this proves nothing extra is
   // (an alternation, a trailing `.*`, a widened path) that would silence mutants
@@ -415,123 +376,16 @@ export function mutantsTomlPinned(tomlText) {
   return {
     ok: true,
     reason:
-      'mutants.toml pins exactly the four blessed exclusions: 61:15 toward_home (ADR-0088), 170:60 apply_entry_ability (M14.5h re-pinned), 56:9 is_active (fix-nightly-mutants), and 624:5 load_evolution_paths (EG1, self-expiring)',
+      'mutants.toml pins exactly the three blessed exclusions: 61:15 toward_home (ADR-0088), 170:60 apply_entry_ability (M14.5h re-pinned), and 56:9 is_active (fix-nightly-mutants)',
   };
 }
 
 // ---------------------------------------------------------------------------
-// SELF-EXPIRY TRIPWIRE 1 (EG1) — pure predicate: the canary test that pairs with
-// the fourth blessed exclusion still exists in game-core/src/content.rs.
-// Returns { ok: boolean, reason: string }.
-//
-// The exclusion at content.rs:624:5 is equivalent only while the evolution-path
-// registry is empty. `eg1_load_evolution_paths_is_empty_pending_eg3` is the test
-// that goes red when that stops being true, so deleting the canary while keeping
-// the exclusion would strand the pin with no expiry mechanism at all.
-//
-// We require a LIVE test, not a mere mention. The name also appears in prose
-// (this file, the toml comment block, doc comments), and a deleted canary whose
-// name survives in a comment — or a gutted `#[ignore]`d one — must not satisfy
-// the tripwire. So the declaration line must not be commented out, and the
-// attribute lines immediately above it must carry `#[test]` and no `#[ignore]`.
-// ---------------------------------------------------------------------------
-export function canaryTestPresent(contentRsText) {
-  if (typeof contentRsText !== 'string' || contentRsText.length === 0) {
-    return { ok: false, reason: 'game-core/src/content.rs is absent or empty' };
-  }
-
-  const lines = contentRsText.split('\n');
-  let firstFailure = null;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    // A real declaration, not a prose/commented-out mention of the name.
-    if (line.indexOf(`fn ${CANARY_FN}(`) === -1) continue;
-    if (line.startsWith('//')) continue;
-
-    // Walk up over the attribute / doc-comment block attached to this `fn`.
-    let hasTestAttr = false;
-    let isIgnored = false;
-    for (let j = i - 1; j >= 0; j--) {
-      const above = lines[j].trim();
-      if (above.length === 0 || above.startsWith('//')) continue;
-      if (!above.startsWith('#[')) break;
-      if (above.indexOf('#[test]') !== -1) hasTestAttr = true;
-      if (above.indexOf('ignore') !== -1) isIgnored = true;
-    }
-
-    if (!hasTestAttr) {
-      firstFailure =
-        firstFailure ??
-        `game-core/src/content.rs declares \`fn ${CANARY_FN}\` but it carries no \`#[test]\` attribute — the canary must be a test the suite actually runs, or the fourth blessed exclusion (content.rs:624:5 load_evolution_paths) keeps no expiry mechanism at all`;
-      continue;
-    }
-    if (isIgnored) {
-      firstFailure =
-        firstFailure ??
-        `game-core/src/content.rs declares \`fn ${CANARY_FN}\` as an \`#[ignore]\`d test — an ignored canary never runs, so it can never fire when slice EG3 lands content; the fourth blessed exclusion (content.rs:624:5 load_evolution_paths) would silence a real killable mutant forever`;
-      continue;
-    }
-    return { ok: true, reason: `content.rs declares the live canary test ${CANARY_FN}` };
-  }
-
-  if (firstFailure !== null) {
-    return { ok: false, reason: firstFailure };
-  }
-  return {
-    ok: false,
-    reason: `game-core/src/content.rs has no live \`fn ${CANARY_FN}\` declaration (a commented-out or prose mention does not count) — the fourth blessed exclusion (content.rs:624:5 load_evolution_paths) is CONTINGENT on the empty registry and MUST keep its canary; without it the pin would silence a real killable mutant forever once slice EG3 lands`,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// SELF-EXPIRY TRIPWIRE 2 (EG1) — pure predicate: every evolution-path RON part
-// is STILL semantically empty. Input is an array of { file, text } parts (the
-// caller reads content/evolution_paths/*.ron); returns { ok, reason }.
-//
-// Each part is reduced by stripping `//` line comments and trimming every line,
-// then concatenating; the remainder must be exactly `[]`. 000-core.ron is a
-// heavily commented `[]` today, which reduces cleanly. The instant slice EG3
-// authors ONE edge, this predicate fails → the eval goes red → the fourth
-// blessed exclusion must be deleted, at which point an ordinary non-emptiness
-// test kills the content.rs:624:5 mutant for real.
-//
-// Zero parts is a FAILURE, not a vacuous pass: an empty (or mis-globbed)
-// directory would otherwise satisfy the tripwire without proving anything.
-// ---------------------------------------------------------------------------
-export function evolutionPathsRegistryEmpty(parts) {
-  if (!Array.isArray(parts) || parts.length === 0) {
-    return {
-      ok: false,
-      reason:
-        'no content/evolution_paths/*.ron parts were found — build.rs globs that directory into EVOLUTION_PATHS_RON_PARTS, so an empty glob means a broken checkout or a moved registry, not an empty registry (vacuous-green class)',
-    };
-  }
-  for (const part of parts) {
-    const reduced = part.text
-      .split('\n')
-      .map((line) => {
-        const c = line.indexOf('//');
-        return (c === -1 ? line : line.slice(0, c)).trim();
-      })
-      .join('');
-    if (reduced !== '[]') {
-      return {
-        ok: false,
-        reason: `content/evolution_paths/${part.file} is no longer semantically empty (reduces to \`${reduced.slice(0, 80)}\`, expected \`[]\`) — slice EG3 has authored evolution-path content, so the fourth blessed exclusion (content.rs:624:5 load_evolution_paths -> Ok(vec![])) is NO LONGER EQUIVALENT. SELF-EXPIRY FIRED: delete that exclude_re entry and the ${CANARY_FN} canary together; a plain non-emptiness assertion now kills the mutant for real`,
-      };
-    }
-  }
-  return {
-    ok: true,
-    reason: `all ${parts.length} evolution-path RON part(s) still reduce to \`[]\` (pre-EG3 state)`,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Canonical positive-control fixtures — updated to include ALL FOUR blessed
-// exclusions (EG1 adds the fourth). The installed recipe + toml and these
-// fixtures must be byte-consistent; if a later slice changes the wrapper or the
-// toml, these controls document the contract the change must still satisfy.
+// Canonical positive-control fixtures — the THREE blessed exclusions (EG1's
+// fourth, contingently-equivalent entry was retired by slice EG3). The
+// installed recipe + toml and these fixtures must be byte-consistent; if a
+// later slice changes the wrapper or the toml, these controls document the
+// contract the change must still satisfy.
 // ---------------------------------------------------------------------------
 const CANONICAL_MUTATE_CORE = `mutate-core:
     #!/usr/bin/env bash
@@ -558,7 +412,7 @@ const CANONICAL_MUTATE_CORE = `mutate-core:
     fi
 `;
 
-const CANONICAL_MUTANTS_TOML = `# Blessed equivalent-mutant exclusions (ADR-0088 §Decision 2 + M14.5h + EG1).
+const CANONICAL_MUTANTS_TOML = `# Blessed equivalent-mutant exclusions (ADR-0088 §Decision 2 + M14.5h).
 #
 # 1. toward_home Y-branch (npc/rules.rs:61:15): |dx| < |dy| → dy != 0, so
 #    \`dy > 0\` and \`dy >= 0\` are indistinguishable on the reachable domain.
@@ -580,37 +434,21 @@ const CANONICAL_MUTANTS_TOML = `# Blessed equivalent-mutant exclusions (ADR-0088
 #    correctly always true. No behavioral test can distinguish correct-always-true from
 #    mutation-always-true. Line-pinned.
 #
-# 4. load_evolution_paths (content.rs:624:5): \`replace load_evolution_paths ->
-#    Result<Vec<EvolutionPath>, String> with Ok(vec![])\` is equivalent. game-core's
-#    build.rs globs content/evolution_paths/*.ron into the compile-time constant
-#    EVOLUTION_PATHS_RON_PARTS; that directory holds exactly one part, 000-core.ron,
-#    whose payload is \`[]\` — DELIBERATELY empty until slice EG3 authors the real
-#    evolution graph (EG1-10 / ADR-0174 D6 require rules R1-R12 to be runnable
-#    against the empty set). load_evolution_paths is a nullary pure delegate, so it
-#    really does return \`Ok(vec![])\` today, and no test can distinguish the mutant
-#    because no test can alter a build-time constant. The pin names the EXACT
-#    mutation: the siblings at the same line (\`with Err(...)\`, \`with
-#    Ok(vec![Default::default()])\`) are NOT equivalent and stay killable.
+# 4. RETIRED by slice EG3 (2026-08-05). The fourth entry
+#    (content.rs:624:5 load_evolution_paths -> Ok(vec![])) was CONTINGENTLY
+#    equivalent — only while content/evolution_paths/ was deliberately empty.
+#    EG3 authored the real ten-edge graph, so the mutation is now killable and
+#    is killed for real by \`eg3_load_evolution_paths_returns_the_authored_graph\`
+#    (game-core/src/content.rs) plus the exact-shape pin T2 in
+#    game-core/tests/eg3_evolution_graph.rs. Retired in all three places its own
+#    self-expiry instructions named: this entry, the canary test, and the
+#    four-entry pin in evals/mutate-core-recipe-integrity.eval.mjs. The list is
+#    back to THREE permanent, equivalent-by-construction exclusions.
 #
-#    CONTINGENT, NOT PERMANENT — this is the one entry that differs in kind from
-#    1-3. Those are equivalent by construction, forever. This one is equivalent
-#    only while the registry is empty, and content.rs:624 will NOT move when EG3
-#    adds RON data — so a naive line-pin would silently suppress a real, killable
-#    mutant forever. It is therefore SELF-EXPIRING via two mechanical tripwires
-#    that both go red the instant EG3 authors a single edge:
-#      • the canary test \`eg1_load_evolution_paths_is_empty_pending_eg3\`
-#        (game-core/src/content.rs), which asserts the registry is still empty; and
-#      • evals/mutate-core-recipe-integrity.eval.mjs, whose self-expiry teeth
-#        require that the canary is still a live \`#[test]\` and that every
-#        content/evolution_paths/*.ron is still semantically \`[]\`.
-#    When EG3 lands, retire the pin in THREE places together — this entry, the
-#    canary, and the four-entry pin in the eval — after which an ordinary
-#    non-emptiness test kills the mutant for real.
 exclude_re = [
     "npc/rules\\\\.rs:61:15: replace > with >= in toward_home",
     "ability\\\\.rs:170:60: replace < with <= in apply_entry_ability",
     "trading/types\\\\.rs:56:9: replace TradeStatus::is_active -> bool with true",
-    "content\\\\.rs:624:5: replace load_evolution_paths -> Result<Vec<EvolutionPath>, String> with Ok\\\\(vec!\\\\[\\\\]\\\\)",
 ]
 `;
 
@@ -619,7 +457,7 @@ exclude_re = [
 // ---------------------------------------------------------------------------
 export default async function () {
   const name =
-    'mutate-core-recipe-integrity (fix-nightly / ADR-0088 + M14.5h + EG1: mutate-core wrapper + .cargo/mutants.toml pinned to four blessed exclusions, the fourth self-expiring)'; // name kept for log-stability
+    'mutate-core-recipe-integrity (fix-nightly / ADR-0088 + M14.5h: mutate-core wrapper + .cargo/mutants.toml pinned to three blessed exclusions)'; // name kept for log-stability
 
   // =========================================================================
   // PROOF-OF-TEETH — known-bad fixtures first, then positive controls.
@@ -708,20 +546,20 @@ export default async function () {
     };
   }
 
-  // TEETH 8 — mutants.toml with FIVE exclude_re entries → must be rejected
-  // (unbounded growth: only four blessed exclusions are allowed). The fixture is
-  // the four blessed entries PLUS a bogus fifth, so the tooth bites on the count
+  // TEETH 8 — mutants.toml with FOUR exclude_re entries → must be rejected
+  // (unbounded growth: only three blessed exclusions are allowed). The fixture is
+  // the three blessed entries PLUS a bogus fourth, so the tooth bites on the count
   // alone and cannot be satisfied by any per-entry fragment check.
-  const tomlFiveEntries =
-    'exclude_re = ["npc/rules\\\\.rs:61:15: replace > with >= in toward_home", "ability\\\\.rs:170:60: replace < with <= in apply_entry_ability", "trading/types\\\\.rs:56:9: replace TradeStatus::is_active -> bool with true", "content\\\\.rs:624:5: replace load_evolution_paths -> Result<Vec<EvolutionPath>, String> with Ok\\\\(vec!\\\\[\\\\]\\\\)", "npc/rules\\\\.rs:53:15: replace > with >= in toward_home"]\n';
+  const tomlOverGrown =
+    'exclude_re = ["npc/rules\\\\.rs:61:15: replace > with >= in toward_home", "ability\\\\.rs:170:60: replace < with <= in apply_entry_ability", "trading/types\\\\.rs:56:9: replace TradeStatus::is_active -> bool with true", "npc/rules\\\\.rs:53:15: replace > with >= in toward_home"]\n';
   {
-    const r = mutantsTomlPinned(tomlFiveEntries);
+    const r = mutantsTomlPinned(tomlOverGrown);
     if (r.ok) {
       return {
         name,
         pass: false,
         detail:
-          'TEETH 8 (five entries): mutantsTomlPinned accepted a mutants.toml with FIVE exclude_re entries — the exclusion list is pinned to EXACTLY FOUR blessed entries; unbounded growth would silence real surviving mutants (the fifth 53:15 entry is NOT equivalent and must get a killing test, not exclusion)',
+          'TEETH 8 (over-growth): mutantsTomlPinned accepted a mutants.toml with FOUR exclude_re entries — the exclusion list is pinned to EXACTLY THREE blessed entries; unbounded growth would silence real surviving mutants (the fourth 53:15 entry is NOT equivalent and must get a killing test, not exclusion)',
       };
     }
   }
@@ -750,7 +588,7 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH 10 (examine_re): mutantsTomlPinned accepted a mutants.toml with an examine_re key — examine_re narrows which mutants run AT ALL, changing scope for every nightly. Only the four blessed exclude_re exclusions are permitted; any other scope-shaping key must be rejected',
+          'TEETH 10 (examine_re): mutantsTomlPinned accepted a mutants.toml with an examine_re key — examine_re narrows which mutants run AT ALL, changing scope for every nightly. Only the three blessed exclude_re exclusions are permitted; any other scope-shaping key must be rejected',
       };
     }
   }
@@ -809,8 +647,8 @@ export default async function () {
   }
 
   // TEETH 14 — mutants.toml with only the toward_home exclusion (missing entries
-  // 2+3+4) → must be rejected. Four blessed entries are required; a single-entry
-  // file misses the ability.rs, is_active and load_evolution_paths exclusions.
+  // 2+3) → must be rejected. Three blessed entries are required; a single-entry
+  // file misses the ability.rs and is_active exclusions.
   const tomlOnlyTowardHome =
     'exclude_re = ["npc/rules\\\\.rs:61:15: replace > with >= in toward_home"]\n';
   {
@@ -820,13 +658,13 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH 14 (missing entries 2+3+4): mutantsTomlPinned accepted a single-entry mutants.toml missing the ability.rs:170:60, is_active and load_evolution_paths exclusions — the gate must require EXACTLY FOUR blessed entries',
+          'TEETH 14 (missing entries 2+3): mutantsTomlPinned accepted a single-entry mutants.toml missing the ability.rs:170:60 and is_active exclusions — the gate must require EXACTLY THREE blessed entries',
       };
     }
   }
 
-  // TEETH 15 — mutants.toml with toward_home + ability.rs only (missing entries
-  // 3+4) → must be rejected. All four blessed entries are required; two is
+  // TEETH 15 — mutants.toml with toward_home + ability.rs only (missing entry 3)
+  // → must be rejected. All three blessed entries are required; two is
   // insufficient.
   const tomlMissingIsActive =
     'exclude_re = ["npc/rules\\\\.rs:61:15: replace > with >= in toward_home", "ability\\\\.rs:170:60: replace < with <= in apply_entry_ability"]\n';
@@ -837,34 +675,17 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH 15 (missing entries 3+4): mutantsTomlPinned accepted a two-entry mutants.toml that is missing the third (trading/types.rs:56:9 is_active, fix-nightly-mutants) and fourth (content.rs:624:5 load_evolution_paths, EG1) blessed exclusions — four entries are now required',
+          'TEETH 15 (missing entry 3): mutantsTomlPinned accepted a two-entry mutants.toml that is missing the third blessed exclusion (trading/types.rs:56:9 is_active, fix-nightly-mutants) — three entries are required',
       };
     }
   }
 
-  // TEETH 16 — the pre-EG1 three-entry mutants.toml (missing entry 4) → must be
-  // rejected. This is the exact file shape that shipped before EG1; without this
-  // tooth the count bump from THREE to FOUR would be unenforced.
-  const tomlMissingLoadEvolutionPaths =
-    'exclude_re = ["npc/rules\\\\.rs:61:15: replace > with >= in toward_home", "ability\\\\.rs:170:60: replace < with <= in apply_entry_ability", "trading/types\\\\.rs:56:9: replace TradeStatus::is_active -> bool with true"]\n';
-  {
-    const r = mutantsTomlPinned(tomlMissingLoadEvolutionPaths);
-    if (r.ok) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH 16 (missing load_evolution_paths entry): mutantsTomlPinned accepted the pre-EG1 three-entry mutants.toml — the fourth blessed exclusion (content.rs:624:5 load_evolution_paths -> Ok(vec![]), EG1) is required, otherwise the nightly zero-tolerance gate (ADR-0050) stays red on a provably-equivalent mutant',
-      };
-    }
-  }
-
-  // TEETH 16b (WILDCARD BYPASS) — four entries, one of them `.*` → must be
+  // TEETH 16 (WILDCARD BYPASS) — three entries, one of them `.*` → must be
   // rejected. `.*` matches EVERY mutant in game-core, so it single-handedly
-  // disables the zero-tolerance gate; the sibling entry here names all four
+  // disables the zero-tolerance gate; the sibling entry here names all three
   // blessed pins in one string, which is exactly what defeats a checker that
   // scans the array as one concatenated blob instead of per entry.
-  const tomlWildcardBypass = `exclude_re = [".*", "npc/rules.rs:61:15 toward_home replace > with >= ability.rs:170:60 apply_entry_ability replace < with <= trading/types.rs:56:9 is_active with true content.rs:624:5 load_evolution_paths with Ok(vec![])", "", ""]\n`;
+  const tomlWildcardBypass = `exclude_re = [".*", "npc/rules.rs:61:15 toward_home replace > with >= ability.rs:170:60 apply_entry_ability replace < with <= trading/types.rs:56:9 is_active with true", ""]\n`;
   {
     const r = mutantsTomlPinned(tomlWildcardBypass);
     if (r.ok) {
@@ -872,129 +693,24 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH 16b (wildcard bypass): mutantsTomlPinned accepted an exclude_re array containing a `.*` entry — that one pattern matches every mutant in game-core and silently disables the entire zero-tolerance mutate-core gate (ADR-0050) while the file still LOOKS like four blessed exclusions. Every entry must individually be one of the four blessed exclusions',
+          'TEETH 16 (wildcard bypass): mutantsTomlPinned accepted an exclude_re array containing a `.*` entry — that one pattern matches every mutant in game-core and silently disables the entire zero-tolerance mutate-core gate (ADR-0050) while the file still LOOKS like three blessed exclusions. Every entry must individually be one of the three blessed exclusions',
       };
     }
   }
 
-  // TEETH 17 (SELF-EXPIRY 1) — content.rs that only MENTIONS the canary in prose,
-  // with no `fn` declaration → must be rejected. Deleting the canary while keeping
-  // the fourth exclusion would strand a contingently-equivalent pin with no expiry
-  // mechanism; a doc-comment reference must not satisfy the tripwire.
-  const contentRsCanaryOnlyInProse = `/// See ${CANARY_FN} (deleted in a cleanup pass) for why 624:5 is blessed.
-#[test]
-fn unrelated_test() {}
-`;
+  // TEETH 16b (DUPLICATE) — three entries where one blessed exclusion appears
+  // TWICE and another is missing → must be rejected. A duplicate otherwise hides
+  // a missing pin behind the three-entry count.
+  const tomlDuplicateEntry =
+    'exclude_re = ["npc/rules\\\\.rs:61:15: replace > with >= in toward_home", "npc/rules\\\\.rs:61:15: replace > with >= in toward_home", "ability\\\\.rs:170:60: replace < with <= in apply_entry_ability"]\n';
   {
-    const r = canaryTestPresent(contentRsCanaryOnlyInProse);
-    if (r.ok) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH 17 (canary in prose only): canaryTestPresent accepted a content.rs where ${CANARY_FN} appears ONLY in a doc comment, with no \`fn\` declaration — the fourth blessed exclusion is CONTINGENTLY equivalent and must be tied to a live canary; a prose mention keeps no tripwire at all`,
-      };
-    }
-  }
-
-  // TEETH 17b — absent / empty content.rs → graceful reject, never a throw.
-  {
-    const r = canaryTestPresent(null);
-    if (r.ok || typeof r.reason !== 'string' || r.reason.length === 0) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH 17b (absent content.rs): canaryTestPresent(null) must return { ok:false } with a non-empty reason — an unreadable content.rs must never yield a vacuous pass',
-      };
-    }
-  }
-
-  // TEETH 17c — the canary DELETED but its full signature quoted in a comment →
-  // must be rejected. A bare `fn <name>` substring search reads the comment as a
-  // declaration and keeps the exclusion alive with no test behind it.
-  {
-    const r = canaryTestPresent(`#[test]
-fn unrelated_test() {}
-// (it used to read: fn ${CANARY_FN}() { ... })
-`);
-    if (r.ok) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH 17c (canary commented out): canaryTestPresent accepted a content.rs where \`fn ${CANARY_FN}()\` appears only inside a \`//\` comment — the canary has been DELETED, so nothing goes red when EG3 lands and the fourth blessed exclusion silences a real killable mutant forever. Only a live, uncommented declaration counts`,
-      };
-    }
-  }
-
-  // TEETH 17d — the canary present but `#[ignore]`d → must be rejected. An
-  // ignored test never runs, so it can never fire.
-  {
-    const r = canaryTestPresent(`#[test]
-#[ignore = "slow"]
-fn ${CANARY_FN}() {}
-`);
-    if (r.ok) {
-      return {
-        name,
-        pass: false,
-        detail: `TEETH 17d (canary #[ignore]d): canaryTestPresent accepted an \`#[ignore]\`d \`fn ${CANARY_FN}\` — an ignored test is never executed by \`cargo test\`, so the self-expiry tripwire could never fire when slice EG3 authors content. The canary must be a live \`#[test]\``,
-      };
-    }
-  }
-
-  // TEETH 18 (SELF-EXPIRY 2) — an evolution-path RON part carrying a real edge
-  // → must be rejected. This is the tooth that fires the instant slice EG3 lands
-  // content: at that moment content.rs:624:5 stops being equivalent and the
-  // fourth exclusion MUST be deleted.
-  const ronWithOneEdge = `// Evolution-path graph — DATA, not code.
-[
-    (
-        edge_id: 1,
-        from_species: 7,
-        to_species: 9,
-        min_level: 18,
-    ),
-]
-`;
-  {
-    const r = evolutionPathsRegistryEmpty([{ file: '000-core.ron', text: ronWithOneEdge }]);
+    const r = mutantsTomlPinned(tomlDuplicateEntry);
     if (r.ok) {
       return {
         name,
         pass: false,
         detail:
-          'TEETH 18 (EG3 content landed): evolutionPathsRegistryEmpty accepted a RON part containing a real edge (edge_id: 1) — this is exactly the self-expiry condition. Once the registry is non-empty, load_evolution_paths no longer returns Ok(vec![]) and the fourth blessed exclusion silences a REAL, killable mutant; the checker must reject it so the exclusion is forced out',
-      };
-    }
-  }
-
-  // TEETH 18b — a LATER part in the list carries an edge while the first is `[]`
-  // → must be rejected (every globbed part is checked, not just the first).
-  {
-    const r = evolutionPathsRegistryEmpty([
-      { file: 'a.ron', text: '[]\n' },
-      { file: '999-eg3.ron', text: '// EG3 first pass\n[(edge_id: 2)] // one edge\n' },
-    ]);
-    if (r.ok) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH 18b (second part non-empty): evolutionPathsRegistryEmpty accepted a part list where the FIRST part is `[]` but a later part carries an edge — every part is globbed into EVOLUTION_PATHS_RON_PARTS and concatenated, so ALL parts must reduce to `[]`',
-      };
-    }
-  }
-
-  // TEETH 18c — zero parts → must be rejected (vacuous-green class). An empty or
-  // mis-globbed directory must not be mistaken for an empty registry.
-  {
-    const r = evolutionPathsRegistryEmpty([]);
-    if (r.ok) {
-      return {
-        name,
-        pass: false,
-        detail:
-          'TEETH 18c (zero parts): evolutionPathsRegistryEmpty accepted an EMPTY part list — a broken glob or moved registry directory would then satisfy the self-expiry tripwire while proving nothing (V4 vacuous-green class)',
+          'TEETH 16b (duplicate entry): mutantsTomlPinned accepted an exclude_re array naming toward_home TWICE while the is_active exclusion is absent — a duplicate must not satisfy the three-entry count',
       };
     }
   }
@@ -1016,49 +732,13 @@ fn ${CANARY_FN}() {}
       return {
         name,
         pass: false,
-        detail: `POSITIVE CONTROL B: mutantsTomlPinned REJECTED the canonical .cargo/mutants.toml (plan §T6 + EG1 entry 4): ${r.reason} — the predicate is too strict and would fail even with the blessed toml installed`,
-      };
-    }
-  }
-
-  // POSITIVE CONTROL C — a content.rs carrying the real canary declaration must PASS.
-  {
-    const contentRsWithCanary = `    #[test]
-    fn ${CANARY_FN}() {
-        assert!(load_evolution_paths().unwrap().is_empty(), "CANARY EXPIRED");
-    }
-`;
-    const r = canaryTestPresent(contentRsWithCanary);
-    if (!r.ok) {
-      return {
-        name,
-        pass: false,
-        detail: `POSITIVE CONTROL C: canaryTestPresent REJECTED a content.rs that DOES declare ${CANARY_FN}: ${r.reason} — the tripwire is too strict and would fail a correct tree`,
-      };
-    }
-  }
-
-  // POSITIVE CONTROL D — the shipped, heavily-commented `[]` registry must PASS.
-  // 000-core.ron is ~25 lines of comment around a bare `[]`; the reducer must see
-  // through that or the self-expiry tooth would fire permanently (a tooth that
-  // ALWAYS bites is as useless as one that never does).
-  {
-    const ronCommentedEmpty = `// Evolution-path graph — DATA, not code (ADR-0006/0057/0174).
-// (edge_id: 1, from_species: 7),  <- illustrative, DELIBERATELY EMPTY until EG3
-[]
-`;
-    const r = evolutionPathsRegistryEmpty([{ file: '000-core.ron', text: ronCommentedEmpty }]);
-    if (!r.ok) {
-      return {
-        name,
-        pass: false,
-        detail: `POSITIVE CONTROL D: evolutionPathsRegistryEmpty REJECTED a commented-out-but-empty RON part: ${r.reason} — the comment stripper is broken and the self-expiry tooth would fire on the correct pre-EG3 tree`,
+        detail: `POSITIVE CONTROL B: mutantsTomlPinned REJECTED the canonical .cargo/mutants.toml (plan §T6): ${r.reason} — the predicate is too strict and would fail even with the blessed toml installed`,
       };
     }
   }
 
   // =========================================================================
-  // REAL FILE CHECKS (EXPECTED RED on the fix-nightly branch tip)
+  // REAL FILE CHECKS
   // =========================================================================
   const root = path.resolve('.');
   const justfilePath = path.join(root, 'justfile');
@@ -1083,13 +763,13 @@ fn ${CANARY_FN}() {}
     };
   }
 
-  // Real check 2: .cargo/mutants.toml pinned to the four blessed exclusions.
+  // Real check 2: .cargo/mutants.toml pinned to the three blessed exclusions.
   if (!existsSync(tomlPath)) {
     return {
       name,
       pass: false,
       detail:
-        '.cargo/mutants.toml is absent — it must carry the four line-pinned blessed exclusions per ADR-0088 + M14.5h + fix-nightly-mutants + EG1',
+        '.cargo/mutants.toml is absent — it must carry the three line-pinned blessed exclusions per ADR-0088 + M14.5h + fix-nightly-mutants',
     };
   }
   const tomlText = readFileSync(tomlPath, 'utf8');
@@ -1104,52 +784,10 @@ fn ${CANARY_FN}() {}
     }
   }
 
-  // Real check 3 (SELF-EXPIRY, EG1): entry 4 is CONTINGENTLY equivalent, so both
-  // tripwires must hold. Unconditional: real check 2 above already REQUIRES entry
-  // 4, so it is necessarily present here. When EG3 lands, retiring the exclusion
-  // means editing this file too — drop entry 4 from BLESSED_EXCLUSIONS, its
-  // count-related teeth, and this block, together with the toml entry and canary.
-  const contentRsPath = path.join(root, 'game-core/src/content.rs');
-  let contentRs = null;
-  try {
-    contentRs = readFileSync(contentRsPath, 'utf8');
-  } catch {
-    return {
-      name,
-      pass: false,
-      detail:
-        'cannot read game-core/src/content.rs — required while the fourth blessed exclusion (content.rs:624:5 load_evolution_paths) is pinned',
-    };
-  }
-  const canary = canaryTestPresent(contentRs);
-  if (!canary.ok) {
-    return { name, pass: false, detail: `SELF-EXPIRY 1 failed: ${canary.reason}` };
-  }
-
-  const ronDir = path.join(root, 'game-core/content/evolution_paths');
-  let parts = [];
-  try {
-    parts = readdirSync(ronDir)
-      .filter((f) => f.endsWith('.ron'))
-      .sort()
-      .map((f) => ({ file: f, text: readFileSync(path.join(ronDir, f), 'utf8') }));
-  } catch {
-    return {
-      name,
-      pass: false,
-      detail:
-        'cannot read game-core/content/evolution_paths/ — required while the fourth blessed exclusion (content.rs:624:5 load_evolution_paths) is pinned',
-    };
-  }
-  const registry = evolutionPathsRegistryEmpty(parts);
-  if (!registry.ok) {
-    return { name, pass: false, detail: `SELF-EXPIRY 2 failed: ${registry.reason}` };
-  }
-
   return {
     name,
     pass: true,
     detail:
-      'mutate-core recipe intact (whole-crate -p game-core, fail-closed missed.txt count-compare, no scope-narrowing / neuter / cap= knob) and .cargo/mutants.toml pins exactly the four blessed equivalent-mutant exclusions: 61:15 toward_home (ADR-0088), 170:60 apply_entry_ability (M14.5h re-pinned), 56:9 is_active (fix-nightly-mutants), and 624:5 load_evolution_paths (EG1) — the last of which is CONTINGENTLY equivalent and self-expires: its canary eg1_load_evolution_paths_is_empty_pending_eg3 is declared in game-core/src/content.rs and every content/evolution_paths/*.ron still reduces to `[]`',
+      'mutate-core recipe intact (whole-crate -p game-core, fail-closed missed.txt count-compare, no scope-narrowing / neuter / cap= knob) and .cargo/mutants.toml pins exactly the three blessed equivalent-mutant exclusions, per entry and byte-identical modulo regex backslashes: 61:15 toward_home (ADR-0088), 170:60 apply_entry_ability (M14.5h re-pinned), and 56:9 is_active (fix-nightly-mutants)',
   };
 }
