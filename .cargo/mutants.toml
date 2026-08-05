@@ -1,4 +1,4 @@
-# Blessed equivalent-mutant exclusions (ADR-0088 §Decision 2 + M14.5h + EG1).
+# Blessed equivalent-mutant exclusions (ADR-0088 §Decision 2 + M14.5h).
 #
 # 1. toward_home Y-branch (npc/rules.rs:61:15): |dx| < |dy| → dy != 0, so
 #    `dy > 0` and `dy >= 0` are indistinguishable on the reachable domain.
@@ -20,35 +20,19 @@
 #    correctly always true. No behavioral test can distinguish correct-always-true from
 #    mutation-always-true. Line-pinned.
 #
-# 4. load_evolution_paths (content.rs:624:5): `replace load_evolution_paths ->
-#    Result<Vec<EvolutionPath>, String> with Ok(vec![])` is equivalent. game-core's
-#    build.rs globs content/evolution_paths/*.ron into the compile-time constant
-#    EVOLUTION_PATHS_RON_PARTS; that directory holds exactly one part, 000-core.ron,
-#    whose payload is `[]` — DELIBERATELY empty until slice EG3 authors the real
-#    evolution graph (EG1-10 / ADR-0174 D6 require rules R1-R12 to be runnable
-#    against the empty set). load_evolution_paths is a nullary pure delegate, so it
-#    really does return `Ok(vec![])` today, and no test can distinguish the mutant
-#    because no test can alter a build-time constant. The pin names the EXACT
-#    mutation: the siblings at the same line (`with Err(...)`, `with
-#    Ok(vec![Default::default()])`) are NOT equivalent and stay killable.
+# 4. RETIRED by slice EG3 (2026-08-05). The fourth entry
+#    (content.rs:624:5 load_evolution_paths -> Ok(vec![])) was CONTINGENTLY
+#    equivalent — only while content/evolution_paths/ was deliberately empty.
+#    EG3 authored the real ten-edge graph, so the mutation is now killable and
+#    is killed for real by `eg3_load_evolution_paths_returns_the_authored_graph`
+#    (game-core/src/content.rs) plus the exact-shape pin T2 in
+#    game-core/tests/eg3_evolution_graph.rs. Retired in all three places its own
+#    self-expiry instructions named: this entry, the canary test, and the
+#    four-entry pin in evals/mutate-core-recipe-integrity.eval.mjs. The list is
+#    back to THREE permanent, equivalent-by-construction exclusions.
 #
-#    CONTINGENT, NOT PERMANENT — this is the one entry that differs in kind from
-#    1-3. Those are equivalent by construction, forever. This one is equivalent
-#    only while the registry is empty, and content.rs:624 will NOT move when EG3
-#    adds RON data — so a naive line-pin would silently suppress a real, killable
-#    mutant forever. It is therefore SELF-EXPIRING via two mechanical tripwires
-#    that both go red the instant EG3 authors a single edge:
-#      • the canary test `eg1_load_evolution_paths_is_empty_pending_eg3`
-#        (game-core/src/content.rs), which asserts the registry is still empty; and
-#      • evals/mutate-core-recipe-integrity.eval.mjs, whose self-expiry teeth
-#        require that the canary is still a live `#[test]` and that every
-#        content/evolution_paths/*.ron is still semantically `[]`.
-#    When EG3 lands, retire the pin in THREE places together — this entry, the
-#    canary, and the four-entry pin in the eval — after which an ordinary
-#    non-emptiness test kills the mutant for real.
 exclude_re = [
     "npc/rules\\.rs:61:15: replace > with >= in toward_home",
     "ability\\.rs:170:60: replace < with <= in apply_entry_ability",
     "trading/types\\.rs:56:9: replace TradeStatus::is_active -> bool with true",
-    "content\\.rs:624:5: replace load_evolution_paths -> Result<Vec<EvolutionPath>, String> with Ok\\(vec!\\[\\]\\)",
 ]

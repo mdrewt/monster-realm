@@ -3123,33 +3123,33 @@ mod tests {
         );
     }
 
-    /// CANARY (self-expiring, NOT a mutant killer): pairs with entry 4 of
-    /// `.cargo/mutants.toml` — see that file for why the empty registry makes
-    /// `content.rs:624:5 load_evolution_paths -> Ok(vec![])` equivalent TODAY.
+    /// The successor to EG1's self-expiring canary
+    /// `eg1_load_evolution_paths_is_empty_pending_eg3`, which asserted the
+    /// OPPOSITE (an empty registry) and expired the moment EG3 authored the
+    /// real graph. Retired together with entry 4 of `.cargo/mutants.toml` and
+    /// its pin in `evals/mutate-core-recipe-integrity.eval.mjs`, exactly as
+    /// that exclusion's comment block instructed.
     ///
-    /// `eg1_live_registries_pass_validate_evolution_paths` (above) will NOT
-    /// start catching that mutant once EG3 lands real content either: an
-    /// empty path set and a valid non-empty graph both validate `Ok(())`
-    /// (the R10 empty-set carve-out, content.rs:1080-1096) — `validate_`
-    /// cannot distinguish "no rows" from "rows, but none unreachable".
+    /// Kills `content.rs:624:5 replace load_evolution_paths -> Ok(vec![])`
+    /// for real, which the blessed exclusion could only silence while the
+    /// registry was genuinely empty. `eg1_live_registries_pass_validate_...`
+    /// (above) cannot kill it — an empty path set and a valid non-empty graph
+    /// both validate `Ok(())` via the R10 empty-set carve-out
+    /// (content.rs:1080-1096), so `validate_` cannot distinguish "no rows"
+    /// from "rows, none unreachable". Only a non-emptiness assertion can.
     ///
-    /// When EG3 lands, THIS test will fail — that failure is the deliberate
-    /// signal to retire the pin: delete this canary, the 4th
-    /// `.cargo/mutants.toml` exclusion, and its entry in
-    /// `evals/mutate-core-recipe-integrity.eval.mjs` (which requires exactly
-    /// those four) together, at which point an ordinary non-emptiness
-    /// assertion kills the mutant for real.
+    /// The exact-shape pin lives in `game-core/tests/eg3_evolution_graph.rs`
+    /// (T2); this one deliberately asserts only non-emptiness, so a future
+    /// content pass that adds or retunes edges does not have to edit it.
     #[test]
-    fn eg1_load_evolution_paths_is_empty_pending_eg3() {
+    fn eg3_load_evolution_paths_returns_the_authored_graph() {
         let paths = load_evolution_paths().expect("evolution_paths registry must parse");
         assert!(
-            paths.is_empty(),
-            "CANARY EXPIRED: `load_evolution_paths()` returned a non-empty registry — EG3 has \
-             landed real evolution-path content. DELETE this test AND the matching 4th \
-             `content.rs:624:5 load_evolution_paths -> Ok(vec![])` entry in \
-             `.cargo/mutants.toml` together; a plain non-emptiness assertion (or a specific \
-             content check) now kills that mutant for real. Got {} path(s).",
-            paths.len()
+            !paths.is_empty(),
+            "`load_evolution_paths()` returned an EMPTY registry — EG3 authored the real \
+             evolution graph into content/evolution_paths/, so an empty result means the \
+             glob in build.rs stopped picking the parts up, or the loader regressed to \
+             `Ok(vec![])`."
         );
     }
 
