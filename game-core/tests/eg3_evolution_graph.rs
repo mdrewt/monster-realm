@@ -12,14 +12,14 @@
 //! constructs its violation on a CLONE of the loaded `Vec`, never on the
 //! shipped RON (`item_evolution_content.rs`'s doctrine, carried over
 //! verbatim). Several negative halves must isolate a single rule against the
-//! DECLARED R1->R12 evaluation order (`content.rs:954-957`) rather than the
-//! first rule the mutation happens to trip — see T3/T4 (must trip R1, not an
-//! incidental later rule) and especially T6 (R11 is mutually inescapable
-//! against the live ten-edge graph: every species is either edge-participating,
-//! which trips R5 first, or edge-free with `tier > 0`... wait, edge-free
-//! `tier > 0` species trip R10 first; T6's doc comment on
-//! `t6_r11_tier_cap` works through this in full and lands on the one fixture
-//! shape — an empty path set — that reaches R11 at all).
+//! DECLARED R1->R12 evaluation order (`content.rs:954-957`) rather than
+//! whichever rule the mutation happens to trip first — see T3/T4 (must trip
+//! R1, not some incidental later rule) and especially T6, where R11 is
+//! mutually inescapable against the live ten-edge graph: every
+//! edge-participating species trips R5 first, and every edge-free
+//! `tier > 0` species trips R10 first. `t6_r11_tier_cap`'s doc comment works
+//! through this in full and lands on the one fixture shape — an empty path
+//! set — that can reach R11 at all.
 
 use std::collections::{HashMap, HashSet};
 
@@ -521,11 +521,37 @@ fn t10_shop_1_stocks_items_4_and_5_at_500() {
 /// — ADR-0176 D2 proposes it as a future R13 candidate for the EG5-1 gate
 /// rewrite). For every species with 2+ out-edges, either ALL out-edges share
 /// one `min_level`, or the lowest-`min_level` out-edge carries at least one
-/// additional gate. Without this, an unconditional low-level edge races its
-/// siblings to death under EG2-11 auto-evolution: the first monster to hit
-/// that level auto-resolves onto the dominant edge before any sibling with a
-/// higher `min_level` (or the same level but an unmet essence/history gate)
-/// ever becomes eligible, permanently starving that sibling in practice.
+/// additional gate (any of essence / Trust / Quality Time / Nutrition).
+///
+/// SCOPE, READ CAREFULLY — this catches exactly ONE failure mode:
+/// *unconditional* dominance, i.e. a low-level out-edge with NO other gate at
+/// all (the literal ADR-0176 D2 regression: `1->4` transcribed verbatim at
+/// `min_level: 16` with nothing else, racing `1->6`'s `min_level: 20`).
+///
+/// It does NOT catch, and CANNOT be extended cheaply to catch, *difficulty*
+/// dominance: a low-level out-edge whose non-level gate(s) are in practice
+/// EASIER to clear than a higher-level sibling's level gate, so the
+/// low-level edge still wins the EG2-11 auto-evolution race despite
+/// satisfying "has an extra gate". Edge 2 (`1->5`, `min_level: 1`, essence
+/// Fire 150, `min_trust_tier: Some(Friendly)`) is the KNOWN LIVE INSTANCE:
+/// it passes this test (it has two extra gates) while still being cheaper
+/// than both `1->4` and `1->6`'s `min_level: 20` in expected play time —
+/// `Friendly` needs only `fav=5, unfav=0` care() calls (`trust_tier_of`'s
+/// smoothing puts that at exactly the 60% `Friendly` floor,
+/// `game-core/src/evolution/eligibility.rs:180-201`), roughly a day at the
+/// 6h cooldown (`game-core/src/raising/rules.rs:106`) and at NO level at
+/// all; Fire 150 is ~15 wild wins against a Fire-type opponent, and
+/// Flameling — the very species evolving — is itself a weighted common in
+/// zones 0 and 1. So `1->5` forecloses `1->4` and `1->6` in practice, and
+/// this test does not and cannot flag it: judging relative gate difficulty
+/// needs the essence accrual rate, encounter weights and Trust/Bond math
+/// that live in `game-core/src/evolution/` and `game-core/src/raising/`, not
+/// in this content-only registry. Do not read a green T11 as "no edge in
+/// this graph can race its siblings" — read it as "no edge in this graph is
+/// UNCONDITIONALLY undefended". The residual difficulty-dominance risk for
+/// edge 2 is recorded as its own item in ADR-0176 (see the ADR's
+/// residual-risk note); that note, not this test, is the source of truth for
+/// whether `1->5` is an accepted risk or a defect.
 #[test]
 fn t11_no_out_edge_is_temporally_dominated() {
     let (_species, paths, _encounters, _items) = live_world();
@@ -557,9 +583,14 @@ fn t11_no_out_edge_is_temporally_dominated() {
             assert!(
                 has_extra_gate,
                 "T11: species {from_species}'s lowest-min_level out-edge (edge_id {edge_id}, \
-                 level {min_level}) carries no essence or history gate — under EG2-11 \
-                 auto-evolution it races and permanently starves its higher-level sibling(s); \
-                 levels seen: {levels:?}"
+                 level {min_level}) carries NO essence or history gate at all — this is \
+                 UNCONDITIONAL dominance (the literal ADR-0176 D2 regression): under EG2-11 \
+                 auto-evolution it races and permanently starves its higher-level sibling(s) \
+                 with certainty, no playtest data needed. (Note: passing this assertion is NOT \
+                 proof the edge is race-safe — an edge with an extra gate can still be a \
+                 DIFFICULTY-dominant racer if that gate is cheaper in practice than the \
+                 sibling's level gate; this test cannot detect that, see edge 2's doc-comment \
+                 case above and ADR-0176's residual-risk note.) levels seen: {levels:?}"
             );
         }
     }
