@@ -2415,7 +2415,12 @@ fn scheduled_scan_sources() -> [(&'static str, &'static str); 10] {
 /// form `no-idle-accrual.eval.mjs`'s `findScheduledReducers` scans, ported to
 /// Rust so the companion test and the eval agree on what "scheduled" means.
 fn scheduled_reducer_names(stripped: &str) -> Vec<String> {
-    const ATTR: &str = "#[spacetimedb::table(";
+    // Fragment-assembled (concat! yields the identical contiguous value at
+    // compile time): several evals parse the CONCATENATED server source for
+    // this exact attribute marker, and comment-stripping does not blank string
+    // literals — a contiguous copy here poisons their table scan (measured:
+    // conversation-privacy lost schema.rs tables to the paren-walk).
+    const ATTR: &str = concat!("#[spacetimedb::", "table(");
     const SCHED: &str = "scheduled(";
     let mut names = Vec::new();
     let mut pos = 0usize;
@@ -2539,7 +2544,7 @@ fn eg2_9_no_scheduled_reducer_body_calls_growth_triggers() {
     let names = scheduled_reducer_names(&stripped);
     assert!(
         !names.is_empty(),
-        "vacuity guard(EG2-9): no `#[spacetimedb::table(... scheduled(..))]` \
+        "vacuity guard(EG2-9): no table attribute carrying a scheduled(..) \
          declaration found — movement_tick must exist; the scanner has rotted"
     );
     for known in [
